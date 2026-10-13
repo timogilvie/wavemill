@@ -70,6 +70,10 @@ runTool({
       type: 'string',
       description: 'Sealed challenge execution intent JSON (with --resolve-sealed)',
     },
+    'executed-stages': {
+      type: 'string',
+      description: 'HOK-3156: comma-separated stages the primary already executed (with --resolve-sealed); they keep their sealed models',
+    },
   },
   async run({ args }) {
     const repoDir = (args['repo-dir'] as string) || process.cwd();
@@ -85,6 +89,7 @@ runTool({
         repoDir,
         sealedIntentRaw: args['sealed-intent'] as string | undefined,
         featureDir: args['feature-dir'] as string | undefined,
+        executedStages: parseExecutedStages(args['executed-stages'] as string | undefined),
         defaultAgent: (loadWavemillConfig(repoDir).router?.defaultAgent) || 'claude',
       });
       return;
@@ -726,10 +731,18 @@ function stageToAgentPhase(stage: 'plan' | 'implementation' | 'review'): AgentRe
  * `{status:'materialize', variedStage, challengerVariedModel, intent}` or
  * `{status:'collapse', reason, detail}`.
  */
+function parseExecutedStages(raw: string | undefined): ChallengeStage[] {
+  return (raw ?? '')
+    .split(',')
+    .map((value) => normalizeChallengeStage(value))
+    .filter((stage): stage is ChallengeStage => stage !== undefined);
+}
+
 function resolveSealedAndPrint(input: {
   repoDir: string;
   sealedIntentRaw?: string;
   featureDir?: string;
+  executedStages?: ChallengeStage[];
   defaultAgent: AgentType;
 }): void {
   let sealed: ChallengeExecutionIntent | undefined;
@@ -786,6 +799,8 @@ function resolveSealedAndPrint(input: {
     sealed,
     expandedRoute,
     eligibleVariedModels,
+    executedStages: input.executedStages,
+    repoDir: input.repoDir,
   });
   console.log(JSON.stringify(result));
 }

@@ -1163,7 +1163,12 @@ startup_run_task_phases() {
   fi
 
   [[ -z "$task_agent" ]] && task_agent="$AGENT_CMD"
-  [[ -z "$coder_model" && -n "$challenge_model" ]] && coder_model="$challenge_model"
+  # challengeModel is the varied stage's model (HOK-3156); it names the coder
+  # only for implementation-stage pairs (or legacy state with no stage).
+  if [[ -z "$coder_model" && -n "$challenge_model" ]] \
+    && [[ -z "$challenge_stage" || "$challenge_stage" == "implementation" ]]; then
+    coder_model="$challenge_model"
+  fi
   [[ -z "$coder_model" && -n "$FORCE_MODEL" ]] && coder_model="$FORCE_MODEL"
 
   if ! agent_validate "$task_agent"; then

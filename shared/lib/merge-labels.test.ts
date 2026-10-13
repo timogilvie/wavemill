@@ -1,9 +1,14 @@
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   deriveMergeLabel,
   reconcileMergeLabelsForPr,
   reconcileHandoffForPr,
+  buildMergeLabelLiveState,
+  findTaskInState,
   type MergeLabelTaskView,
   type MergeLabelLiveState,
   type MergeLabelDecision,
@@ -432,8 +437,9 @@ describe('reconcileMergeLabelsForPr', () => {
     });
     const pr = { number: 123, labels: [], headSha: 'abc123' };
     const result = await reconcileMergeLabelsForPr(pr, deps);
-    assert.equal(result.decision, null);
+    assert.deepEqual(result.decision, { label: null, reason: 'no-task-view' });
     assert.deepEqual(result.updatedLabels, []);
+    assert.equal(result.noTaskView, true);
   });
 
   it('no-op when wm:ready label matches derived decision', async () => {
@@ -558,7 +564,132 @@ describe('reconcileMergeLabelsForPr', () => {
       after: 'wm:ready',
     });
   });
+
+  it('logs warning and sets noTaskView when task view is not available', async () => {
+    const warnings: string[] = [];
+    const deps = createMockDeps({
+      readTaskView: async () => null,
+      logger: {
+        info: () => {},
+        warn: (msg) => warnings.push(msg),
+      },
+    });
+    const pr = { number: 9999, labels: [], headSha: 'abc123' };
+    const result = await reconcileMergeLabelsForPr(pr, deps);
+    assert.equal(result.noTaskView, true);
+    assert.deepEqual(result.decision, { label: null, reason: 'no-task-view' });
+    assert.deepEqual(result.updatedLabels, []);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /\[merge-label\] no task view for #9999/);
+  });
 });
+
+describe('findTaskInState (real workflow-state shape)', () => {
+  it('finds task with pr as string and derives featureDir from worktree + slug', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'merge-labels-test-'));
+    const worktree = tmpDir;
+    const slug = 'test-feature';
+    const featuresDir = join(worktree, 'features', slug);
+    mkdirSync(featuresDir, { recursive: true });
+    writeFileSync(join(featuresDir, '.ready-result.json'), JSON.stringify({
+      status: 'completed',
+      sha: null,
+      artifacts: {
+        verdict: 'pass',
+        readyHeadSha: 'abc123',
+      },
+    }));
+
+    const state = {
+      tasks: {
+        'HOK-9999': {
+          pr: '9999',
+          slug,
+          worktree,
+          phase: 'ready',
+        },
+      },
+    };
+
+    const result = findTaskInState(9999, state, tmpDir);
+    assert.ok(result);
+    assert.equal(result.prNumber, 9999);
+    assert.equal(result.featureDir, featuresDir);
+    assert.equal(result.challengeRole, 'primary');
+    assert.equal(result.headSha, 'abc123'); // from ready artifact
+  });
+
+  it('identifies challenger role from task ID with _c suffix', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'merge-labels-test-'));
+    const worktree = tmpDir;
+    const slug = 'test-feature-c';
+    const featuresDir = join(worktree, 'features', slug);
+    mkdirSync(featuresDir, { recursive: true });
+
+    const state = {
+      tasks: {
+        'HOK-123_c': {
+          pr: '456',
+          slug,
+          worktree,
+          phase: 'ready',
+        },
+      },
+    };
+
+    const result = findTaskInState(456, state, tmpDir);
+    assert.ok(result);
+    assert.equal(result.challengeRole, 'challenger');
+  });
+
+  it('returns null when pr field is blank', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'merge-labels-test-'));
+    const worktree = tmpDir;
+    const slug = 'test-feature';
+    const featuresDir = join(worktree, 'features', slug);
+    mkdirSync(featuresDir, { recursive: true });
+
+    const state = {
+      tasks: {
+        'HOK-789': {
+          pr: '',
+          slug,
+          worktree,
+          phase: 'planning',
+        },
+      },
+    };
+
+    const result = findTaskInState(789, state, tmpDir);
+    assert.equal(result, null);
+  });
+
+  it('uses bugs/<slug> when features/<slug> does not exist', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'merge-labels-test-'));
+    const worktree = tmpDir;
+    const slug = 'bug-fix';
+    const bugsDir = join(worktree, 'bugs', slug);
+    mkdirSync(bugsDir, { recursive: true });
+
+    const state = {
+      tasks: {
+        'HOK-111': {
+          pr: '111',
+          slug,
+          worktree,
+          phase: 'ready',
+        },
+      },
+    };
+
+    const result = findTaskInState(111, state, tmpDir);
+    assert.ok(result);
+    assert.equal(result.featureDir, bugsDir);
+  });
+});
+
+// Note: buildMergeLabelLiveState tests are covered by the shell integration test
+// tests/merge-labels-real-state.test.sh since they require GitHub API access
 
 describe('reconcileHandoffForPr', () => {
   const mockLogger = {

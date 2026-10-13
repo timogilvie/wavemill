@@ -39,7 +39,16 @@ import {
 } from '../shared/lib/observer-alerts.ts';
 import { abortTaskInState } from '../shared/lib/task-abort.ts';
 import { getResultFilePath, type ReadyArtifacts, type StageResult } from '../shared/lib/stage-result.ts';
-import { detectIncidentsForRepo, detectIncidentsForTask, type TendCandidateDiagnostic } from '../shared/lib/wavemill-incident-detector.ts';
+import { detectIncidentsForRepo, detectIncidentsForTask } from '../shared/lib/wavemill-incident-detector.ts';
+import { buildTendCandidates } from '../shared/lib/wavemill-incident-tend-candidates.ts';
+import { evaluateRecoveryPredicate } from '../shared/lib/wavemill-incident-recovery.ts';
+import {
+  OBSERVER_SNAPSHOT_SCHEMA_VERSION,
+  incidentChainEvidenceLines,
+  projectRemediationProposals,
+  supersedeGenericFindings,
+  type RemediationProposalProjection,
+} from '../shared/lib/wavemill-incident-projection.ts';
 import { IncidentStore } from '../shared/lib/wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentRecord, type IncidentRootCauseClass } from '../shared/lib/wavemill-incident-model.ts';
 import { createLookupBudget, syncIncident, syncIncidentLifecycle, type LifecycleSyncResult, type SyncResult } from '../shared/lib/incident-to-linear-synchronizer.ts';
@@ -256,12 +265,18 @@ interface RepoSnapshot {
   millLogPath?: string;
   queueHealthPath?: string;
   queueHealth?: any;
+  /** HOK-3207: path to .wavemill/monitor-timing.json, if present. */
+  monitorTimingPath?: string;
+  /** HOK-3207: parsed .wavemill/monitor-timing.json (undefined on parse errors). */
+  monitorTiming?: any;
   tasks: TaskState[];
   stateMtime?: string;
   logMtime?: string;
 }
 
 interface ObserverSnapshot {
+  /** Machine-readable schema id of the `--json` snapshot (HOK-2595); additive changes keep `/1`. */
+  schemaVersion?: typeof OBSERVER_SNAPSHOT_SCHEMA_VERSION;
   timestamp: string;
   sessions: string[];
   panes: Pane[];
@@ -269,6 +284,12 @@ interface ObserverSnapshot {
   repos: RepoSnapshot[];
   findings: Finding[];
   incidents?: IncidentRecord[];
+  /** Typed, validated remediation proposals from non-resolved incidents; never authorization. */
+  remediationProposals?: RemediationProposalProjection[];
+  /** Proposals dropped because they failed `validateRemediationProposal`. */
+  remediationProposalErrors?: number;
+  /** Incidents resolved this tick because their recovery predicate held. */
+  recoveredIncidents?: Array<{ fingerprint: string; rootCauseClass: IncidentRootCauseClass; reason: string; evidence?: string }>;
   incidentSync?: IncidentSyncSnapshot;
 }
 
@@ -1450,6 +1471,7 @@ function snapshotRepos(sessions: string[], options: ObserverOptions): RepoSnapsh
     const stateDir = join(repoDir, '.wavemill');
     const workflowStatePath = join(stateDir, 'workflow-state.json');
     const queueHealthPath = join(stateDir, 'queue-health.json');
+    const monitorTimingPath = join(stateDir, 'monitor-timing.json');
     const logDir = join(stateDir, 'logs');
     const millLogPath = findNewestMillLog(logDir, session);
     let queueHealth: any;
@@ -1460,6 +1482,14 @@ function snapshotRepos(sessions: string[], options: ObserverOptions): RepoSnapsh
         queueHealth = undefined;
       }
     }
+    let monitorTiming: any;
+    if (existsSync(monitorTimingPath)) {
+      try {
+        monitorTiming = JSON.parse(readFileSync(monitorTimingPath, 'utf-8'));
+      } catch {
+        monitorTiming = undefined;
+      }
+    }
     repos.push({
       session,
       repoDir,
@@ -1467,6 +1497,8 @@ function snapshotRepos(sessions: string[], options: ObserverOptions): RepoSnapsh
       millLogPath,
       queueHealthPath: existsSync(queueHealthPath) ? queueHealthPath : undefined,
       queueHealth,
+      monitorTimingPath: existsSync(monitorTimingPath) ? monitorTimingPath : undefined,
+      monitorTiming,
       tasks: existsSync(workflowStatePath) ? readWorkflowTasks(workflowStatePath) : [],
       stateMtime: existsSync(workflowStatePath) ? statSync(workflowStatePath).mtime.toISOString() : undefined,
       logMtime: millLogPath && existsSync(millLogPath) ? statSync(millLogPath).mtime.toISOString() : undefined,
@@ -1482,6 +1514,7 @@ function snapshotRepos(sessions: string[], options: ObserverOptions): RepoSnapsh
     const stateDir = join(repoDir, '.wavemill');
     const workflowStatePath = join(stateDir, 'workflow-state.json');
     const queueHealthPath = join(stateDir, 'queue-health.json');
+    const monitorTimingPath = join(stateDir, 'monitor-timing.json');
     const logDir = join(stateDir, 'logs');
     const millLogPath = findNewestMillLog(logDir, session);
     let queueHealth: any;
@@ -1492,6 +1525,14 @@ function snapshotRepos(sessions: string[], options: ObserverOptions): RepoSnapsh
         queueHealth = undefined;
       }
     }
+    let monitorTiming: any;
+    if (existsSync(monitorTimingPath)) {
+      try {
+        monitorTiming = JSON.parse(readFileSync(monitorTimingPath, 'utf-8'));
+      } catch {
+        monitorTiming = undefined;
+      }
+    }
     repos.push({
       session,
       repoDir,
@@ -1499,6 +1540,8 @@ function snapshotRepos(sessions: string[], options: ObserverOptions): RepoSnapsh
       millLogPath,
       queueHealthPath: existsSync(queueHealthPath) ? queueHealthPath : undefined,
       queueHealth,
+      monitorTimingPath: existsSync(monitorTimingPath) ? monitorTimingPath : undefined,
+      monitorTiming,
       tasks: existsSync(workflowStatePath) ? readWorkflowTasks(workflowStatePath) : [],
       stateMtime: existsSync(workflowStatePath) ? statSync(workflowStatePath).mtime.toISOString() : undefined,
       logMtime: millLogPath && existsSync(millLogPath) ? statSync(millLogPath).mtime.toISOString() : undefined,
@@ -1661,6 +1704,102 @@ function buildMarkerIgnoredFinding(
   };
 }
 
+// HOK-3207: raise a sustained-slow-pass incident when monitor-timing p50
+// has been over warnMs for ≥ 1 h. Driven by slowSinceAt / p50Ms in
+// monitor-timing.json, which the shell recorder updates on every pass.
+// Hysteresis in the recorder means slowSinceAt is only set while p50 is
+// above warnMs, so recovery (p50 drops below warnMs) clears the finding
+// naturally — no explicit clear path is needed.
+const SUSTAINED_SLOW_PASS_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
+// HOK-3207: default warn threshold (15 000 ms). MUST be kept in sync with
+// WAVEMILL_MONITOR_PASS_WARN_MS in shared/lib/wavemill-monitor.sh (currently 15000 ms).
+const DEFAULT_MONITOR_WARN_MS = 15_000;
+
+// HOK-3207: raise a stuck-queue-inference incident when the queue
+// classifier has been failing for ≥ 5 consecutive runs. The existing
+// DependencyHealthDetector trips at 3 at low/medium severity; this is a
+// distinct, higher-severity signal bound to a single deduplicated alert
+// so the operator sees one line, not interleaved generic incidents.
+const QUEUE_INFERENCE_STUCK_THRESHOLD = 5;
+
+export function detectSustainedSlowPasses(
+  repo: RepoSnapshot,
+  now: number,
+): Finding[] {
+  const timing = repo.monitorTiming;
+  if (!timing || typeof timing !== 'object') return [];
+  const slowSinceAt = typeof timing.slowSinceAt === 'string' ? timing.slowSinceAt : null;
+  if (!slowSinceAt) return [];
+  const sinceMs = Date.parse(slowSinceAt);
+  if (!Number.isFinite(sinceMs)) return [];
+  const sustainedMs = now - sinceMs;
+  if (sustainedMs < SUSTAINED_SLOW_PASS_THRESHOLD_MS) return [];
+  const warnMs = typeof timing.warnMs === 'number' ? timing.warnMs : DEFAULT_MONITOR_WARN_MS;
+  const p50 = typeof timing.p50Ms === 'number' ? timing.p50Ms : 0;
+  // Defensive: the recorder clears slowSinceAt when p50 drops below warnMs,
+  // but a race (observer reads an older timing file than the recorder just
+  // wrote) could still land here. Treat a current p50 at/under warnMs as
+  // recovered.
+  if (p50 <= warnMs) return [];
+  const slowestSteps: Array<{ name: string; ms: number }> = Array.isArray(timing.slowestSteps)
+    ? timing.slowestSteps
+        .filter((s: any) => s && typeof s.name === 'string' && typeof s.ms === 'number')
+        .slice(0, 3)
+    : [];
+  const topSummary = slowestSteps.map((s) => `${s.name}:${s.ms}ms`).join(',') || 'none';
+  const sustainedMinutes = Math.round(sustainedMs / 60_000);
+  return [{
+    id: `monitor-sustained-slow-pass-${repo.session}`,
+    severity: 'high',
+    category: 'operational',
+    confidence: 'high',
+    session: repo.session,
+    repoDir: repo.repoDir,
+    title: `Monitor pass p50 ${p50}ms over warnMs ${warnMs}ms for ${sustainedMinutes} min`,
+    evidence: [
+      `p50Ms=${p50}`,
+      `warnMs=${warnMs}`,
+      `slowSinceAt=${slowSinceAt}`,
+      `sustainedMinutes=${sustainedMinutes}`,
+      `topSteps=${topSummary}`,
+      `source=${repo.monitorTimingPath ?? 'unknown'}`,
+    ],
+    recommendation: `Investigate the top slow steps (${topSummary}) in shared/lib/wavemill-monitor.sh; attach a 24h monitor-timing.json sample to the perf issue before closing.`,
+  }];
+}
+
+export function detectQueueInferenceStuck(
+  repo: RepoSnapshot,
+  _now: number,
+): Finding[] {
+  const inference = repo.queueHealth?.inference;
+  if (!inference || typeof inference !== 'object') return [];
+  const failures = typeof inference.consecutiveFailures === 'number' ? inference.consecutiveFailures : 0;
+  if (failures < QUEUE_INFERENCE_STUCK_THRESHOLD) return [];
+  const lastError = typeof inference.lastError === 'string'
+    ? inference.lastError
+    : (typeof inference.error === 'string' ? inference.error : null);
+  const lastAttempt = typeof inference.lastAttemptAt === 'string' ? inference.lastAttemptAt : null;
+  const lastSuccess = typeof inference.lastSuccessAt === 'string' ? inference.lastSuccessAt : null;
+  return [{
+    id: `monitor-queue-inference-stuck-${repo.session}`,
+    severity: 'high',
+    category: 'operational',
+    confidence: 'high',
+    session: repo.session,
+    repoDir: repo.repoDir,
+    title: `Queue inference stuck: ${failures} consecutive failures`,
+    evidence: [
+      `consecutiveFailures=${failures}`,
+      `lastError=${lastError ?? 'unknown'}`,
+      `lastAttemptAt=${lastAttempt ?? 'unknown'}`,
+      `lastSuccessAt=${lastSuccess ?? 'never'}`,
+      `source=${repo.queueHealthPath ?? 'unknown'}`,
+    ],
+    recommendation: 'Inspect the [classifier] lines in the mill log and the Claude CLI login; the mill is running on explicit Linear relations only until classification recovers.',
+  }];
+}
+
 export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, options: ObserverOptions): Finding[] {
   const findings: Finding[] = [];
   const now = Date.now();
@@ -1700,6 +1839,16 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
     } catch { /* best-effort: advisory detector, never blocks the pass */ }
     try {
       findings.push(...detectBranchBehindBase(repo, now));
+    } catch { /* best-effort: advisory detector, never blocks the pass */ }
+    // HOK-3207: sustained slow passes (p50 > warnMs for ≥ 1 h) and
+    // stuck queue inference (consecutiveFailures ≥ 5). Each has a stable
+    // `id`, so `selectAlertsToSend` dedupes repeat findings and recovery
+    // (slowSinceAt cleared, failures reset) naturally retracts them.
+    try {
+      findings.push(...detectSustainedSlowPasses(repo, now));
+    } catch { /* best-effort: advisory detector, never blocks the pass */ }
+    try {
+      findings.push(...detectQueueInferenceStuck(repo, now));
     } catch { /* best-effort: advisory detector, never blocks the pass */ }
 
     const rejectedEvalCount = countRejectedEvalRecords(repo.repoDir);
@@ -3702,7 +3851,8 @@ function observe(options: ObserverOptions): ObserverSnapshot {
   const panes = listPanes().filter((pane) => !options.session || pane.session === options.session);
   const processes = filterRelevantProcesses(processRows(), panes);
   const repos = snapshotRepos(sessions, options);
-  const partial = {
+  const partial: Omit<ObserverSnapshot, 'findings'> = {
+    schemaVersion: OBSERVER_SNAPSHOT_SCHEMA_VERSION,
     timestamp: new Date().toISOString(),
     sessions,
     panes,
@@ -3720,6 +3870,8 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
   if (!options.incidentDetector) {
     return { ...snapshot, incidents };
   }
+  const incidentsByRepo = new Map<string, IncidentRecord[]>();
+  const recoveredIncidents: NonNullable<ObserverSnapshot['recoveredIncidents']> = [];
 
   for (const repo of snapshot.repos) {
     let incidentConfig: ReturnType<typeof getIncidentConfig>;
@@ -3744,7 +3896,12 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
     // a detector or persistence failure must not resolve incidents by absence.
     let cycleComplete = true;
     const candidates: IncidentRecord[] = [];
-    const tendCandidates = buildTendCandidateDiagnostics(repo, snapshot.findings);
+    const tendCandidates = buildTendCandidates({
+      repoDir: repo.repoDir,
+      now: new Date(snapshot.timestamp),
+      findings: snapshot.findings,
+      tasks: repo.tasks,
+    });
     try {
       const detectorContext = { repoDir: repo.repoDir, session: repo.session, now: new Date(snapshot.timestamp), tendCandidates };
       for (const task of repo.tasks) {
@@ -3775,11 +3932,16 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
     }
 
     const freshFingerprints: string[] = [];
+    const observedFingerprints = new Set<string>();
+    const repoIncidents: IncidentRecord[] = [];
+    incidentsByRepo.set(repo.repoDir, repoIncidents);
     for (const incident of dedupeIncidentCandidates(candidates, store)) {
       try {
         const { record: stored, freshEvent } = await store.upsertDetailed(incident);
         if (freshEvent) freshFingerprints.push(stored.fingerprint);
+        observedFingerprints.add(stored.fingerprint);
         incidents.push(stored);
+        repoIncidents.push(stored);
       } catch (error) {
         cycleComplete = false;
         snapshot.findings.push({
@@ -3798,6 +3960,38 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
     }
 
     if (cycleComplete) {
+      // Recovery predicates (HOK-2595): an open correlated incident that was
+      // not re-observed this cycle resolves as soon as its declared progress
+      // condition holds (new review attempt, head change, comparison), rather
+      // than waiting out the absence sweep. Missing evidence never resolves.
+      try {
+        for (const record of await store.getIncidents()) {
+          if (observedFingerprints.has(record.fingerprint)) continue;
+          const recovery = evaluateRecoveryPredicate(record, repo.repoDir);
+          if (!recovery.satisfied || !recovery.reason) continue;
+          const resolved = await store.autoResolve(record.fingerprint, { reason: recovery.reason });
+          if (resolved) {
+            recoveredIncidents.push({
+              fingerprint: resolved.fingerprint,
+              rootCauseClass: resolved.rootCauseClass,
+              reason: recovery.reason,
+              ...(recovery.evidence ? { evidence: recovery.evidence } : {}),
+            });
+          }
+        }
+      } catch (error) {
+        snapshot.findings.push({
+          id: `incident-recovery-error-${repo.session}-${hashText(repo.repoDir)}`,
+          severity: 'medium',
+          category: 'operational',
+          confidence: 'high',
+          session: repo.session,
+          repoDir: repo.repoDir,
+          title: 'Observer could not evaluate incident recovery predicates',
+          evidence: [`error=${error instanceof Error ? error.message : String(error)}`],
+          recommendation: 'Inspect .wavemill/incidents permissions and malformed state files; correlated incidents will still resolve through the absence sweep.',
+        });
+      }
       try {
         await store.runResolutionSweep(
           freshFingerprints,
@@ -3820,68 +4014,25 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
   }
 
   const uniqueIncidents = dedupeIncidents(incidents);
+  // A specific causal chain supersedes the generic stale-task advice for the
+  // same repo/issue; without one the generic finding is untouched.
+  let findings = snapshot.findings;
+  for (const [repoDir, repoIncidents] of incidentsByRepo) {
+    const repoFindings = findings.filter((finding) => finding.repoDir === repoDir);
+    const rewritten = supersedeGenericFindings(repoFindings, repoIncidents);
+    const replacement = new Map(repoFindings.map((finding, index) => [finding, rewritten[index]] as const));
+    findings = findings.map((finding) => replacement.get(finding) ?? finding);
+  }
+  const projection = projectRemediationProposals(uniqueIncidents);
   return {
     ...snapshot,
-    findings: dedupeFindings([...snapshot.findings, ...uniqueIncidents.map(convertIncidentToFinding)]),
+    schemaVersion: OBSERVER_SNAPSHOT_SCHEMA_VERSION,
+    findings: dedupeFindings([...findings, ...uniqueIncidents.map(convertIncidentToFinding)]),
     incidents: uniqueIncidents,
+    remediationProposals: projection.proposals,
+    remediationProposalErrors: projection.errors,
+    recoveredIncidents,
   };
-}
-
-function buildTendCandidateDiagnostics(repo: RepoSnapshot, findings: Finding[]): TendCandidateDiagnostic[] {
-  const candidates: TendCandidateDiagnostic[] = [];
-  for (const finding of findings) {
-    if (finding.repoDir !== repo.repoDir) continue;
-    if (!finding.id.startsWith('marker-')) continue;
-    const fields = evidenceKeyValueMap(finding.evidence);
-    const markerKind = fields.get('markerKind');
-    if (markerKind !== 'merge-lane-idle-stall' && markerKind !== 'merge-lane-idle-stalled') continue;
-    const pr = numberFromString(fields.get('firstBlockedPr'))
-      ?? numberFromString(fields.get('prNumber'))
-      ?? firstNumberFromCsv(fields.get('blockedPrs'));
-    if (!pr) continue;
-    const task = repo.tasks.find((entry) => prNumberFromTask(entry) === pr);
-    candidates.push({
-      taskId: finding.issue ?? task?.issue,
-      pr,
-      headBranch: task?.branch,
-      markerKind,
-      firstBlockedGate: fields.get('firstBlockedGate') ?? fields.get('gate'),
-      pairId: fields.get('pairId') ?? task?.challengePairId,
-      blockedReason: fields.get('blockedReason') ?? fields.get('tendBlockReason'),
-    });
-  }
-  return candidates;
-}
-
-function evidenceKeyValueMap(evidence: string[]): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const line of evidence) {
-    const index = line.indexOf('=');
-    if (index <= 0) continue;
-    map.set(line.slice(0, index), line.slice(index + 1));
-  }
-  return map;
-}
-
-function numberFromString(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  const parsed = Number(value.replace(/^#/, ''));
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
-
-function firstNumberFromCsv(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  for (const part of value.split(',')) {
-    const parsed = numberFromString(part.trim());
-    if (parsed) return parsed;
-  }
-  return undefined;
-}
-
-function prNumberFromTask(task: TaskState): number | undefined {
-  if (!task.pr) return undefined;
-  const match = task.pr.match(/\d+/);
-  return match ? numberFromString(match[0]) : undefined;
 }
 
 function resolveTaskArtifactDir(repoDir: string, task: TaskState): string | null {
@@ -3907,6 +4058,7 @@ function convertIncidentToFinding(incident: IncidentRecord): Finding {
       `rootCause=${incident.rootCauseClass}`,
       `lifecycle=${incident.lifecycle}`,
       `occurrences=${incident.occurrenceCount}`,
+      ...incidentChainEvidenceLines(incident),
       ...incident.evidence.slice(-2).map((evidence) => `${evidence.type}:${basename(evidence.source)} ${evidence.redactedData}`),
     ],
     recommendation: incident.operatorAction,
@@ -4763,8 +4915,26 @@ function renderSummary(snapshot: ObserverSnapshot): string {
     lines.push('');
     lines.push(`Incidents: ${snapshot.incidents.length}`);
     for (const incident of snapshot.incidents.slice(0, 8)) {
-      lines.push(`  [${incident.lifecycle}/${incident.category}] ${incident.rootCauseClass}: ${incident.summary}`);
+      lines.push(`  [${incident.lifecycle}/${incident.category}/${incident.confidence}] ${incident.rootCauseClass}: ${incident.summary}`);
+      const chain = Array.isArray(incident.metadata?.causalChain) ? incident.metadata.causalChain : [];
+      if (chain.length > 0) lines.push(`  cause: ${chain.map((entry) => entry.cause).join(' → ')}`);
       lines.push(`  action: ${incident.operatorAction}`);
+    }
+  }
+  if (snapshot.remediationProposals && snapshot.remediationProposals.length > 0) {
+    lines.push('');
+    lines.push(`Remediation proposals (not authorization): ${snapshot.remediationProposals.length}${snapshot.remediationProposalErrors ? ` (${snapshot.remediationProposalErrors} invalid dropped)` : ''}`);
+    for (const item of snapshot.remediationProposals.slice(0, 8)) {
+      const target = item.proposal.target;
+      const targetText = target?.prNumber ? ` PR #${target.prNumber}` : '';
+      lines.push(`  ${item.proposal.kind}@${item.proposal.schemaVersion}${targetText} [${item.issue ?? 'repo'}] allowed=${(item.proposal.allowedActions ?? []).join(',') || 'none'}`);
+    }
+  }
+  if (snapshot.recoveredIncidents && snapshot.recoveredIncidents.length > 0) {
+    lines.push('');
+    lines.push(`Recovered incidents: ${snapshot.recoveredIncidents.length}`);
+    for (const item of snapshot.recoveredIncidents.slice(0, 8)) {
+      lines.push(`  ${item.rootCauseClass} ${item.fingerprint.slice(0, 16)} ${item.reason}${item.evidence ? ` (${item.evidence})` : ''}`);
     }
   }
   if (snapshot.incidentSync) {

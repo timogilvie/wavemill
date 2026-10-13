@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { getIntegrationConfig, getReadyConfig } from './config.ts';
 import { errorMessage } from './error-utils.ts';
 import { resolveOwnerRepo } from './github.ts';
+import { cachedRequiredChecks, findCachedPullRequest } from './session-gh-cache.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -205,6 +206,18 @@ export async function resolveRequiredContexts(
   deps: Partial<PrCiStatusDeps> = {},
 ): Promise<RequiredContextsResult> {
   const resolvedDeps = { ...prCiStatusDeps, ...deps };
+  // HOK-3206: branch protection is a session constant; the mill records it
+  // once per base branch in the session repo cache.
+  // A recorded empty list means the base has no protection (GitHub 404):
+  // use the configured checks, as a live 404 would, without asking again.
+  const cachedContexts = baseBranch ? cachedRequiredChecks(baseBranch) : undefined;
+  if (cachedContexts && cachedContexts.length > 0) {
+    return { contexts: uniqueOrdered(cachedContexts), source: 'branch-protection' };
+  }
+  if (cachedContexts) {
+    const configured = uniqueOrdered(resolvedDeps.getIntegrationRequiredChecks(repoDir));
+    return configured.length > 0 ? { contexts: configured, source: 'config' } : { contexts: [], source: 'none' };
+  }
   const repo = resolvedDeps.resolveOwnerRepo(repoDir);
   if (repo && baseBranch) {
     try {
@@ -240,21 +253,36 @@ export async function fetchPrCiStatus(
 ): Promise<PrCiStatus> {
   const resolvedDeps = { ...prCiStatusDeps, ...deps };
   let stdout = '';
-  try {
-    const result = await resolvedDeps.execFile(
-      'gh',
-      [
-        'pr',
-        'view',
-        String(prNumber),
-        '--json',
-        'headRefOid,state,mergeable,mergeStateStatus,baseRefName,statusCheckRollup',
-      ],
-      { cwd: repoDir, encoding: 'utf-8', maxBuffer: 1024 * 1024 },
-    );
-    stdout = result.stdout;
-  } catch (error) {
-    return unknownCiStatus(classifyCheckReadError(error));
+  // HOK-3206: the monitor's batched per-pass PR query already carries every
+  // field below. A cached row is used only when it matches the caller's
+  // expected head (when one is given); otherwise read GitHub directly.
+  const cached = findCachedPullRequest(prNumber, { expectedHeadSha: options.expectedHeadSha });
+  if (cached && cached.statusCheckRollup !== undefined) {
+    stdout = JSON.stringify({
+      headRefOid: cached.headRefOid,
+      state: cached.state,
+      mergeable: cached.mergeable,
+      mergeStateStatus: cached.mergeStateStatus,
+      baseRefName: cached.baseRefName,
+      statusCheckRollup: cached.statusCheckRollup,
+    });
+  } else {
+    try {
+      const result = await resolvedDeps.execFile(
+        'gh',
+        [
+          'pr',
+          'view',
+          String(prNumber),
+          '--json',
+          'headRefOid,state,mergeable,mergeStateStatus,baseRefName,statusCheckRollup',
+        ],
+        { cwd: repoDir, encoding: 'utf-8', maxBuffer: 1024 * 1024 },
+      );
+      stdout = result.stdout;
+    } catch (error) {
+      return unknownCiStatus(classifyCheckReadError(error));
+    }
   }
 
   let parsed: Record<string, unknown>;

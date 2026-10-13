@@ -249,6 +249,12 @@ fi
 if [[ -f "$LIB_DIR/condition-reconciler.sh" ]]; then
 source "$LIB_DIR/condition-reconciler.sh"
 fi
+# Async ready-path checks (HOK-3206): cross-PR guard, CI status, ready
+# watchdog and routing run as tracked jobs. Sourced after the condition
+# reconciler so marker and bounded-retry helpers are available.
+if [[ -f "$LIB_DIR/monitor-async-jobs.sh" ]]; then
+source "$LIB_DIR/monitor-async-jobs.sh"
+fi
 # Plan<->packet binding gate (HOK-3099). Sourced after wavemill-common.sh so
 # the mtime fallback can reuse standard helpers.
 if [[ -f "$LIB_DIR/plan-packet-binding.sh" ]]; then
@@ -783,7 +789,14 @@ EOF
 
 dispatch_task_and_persist() {
   local issue="${1:-unknown}" slug="${2:-}" rc=0
-  launch_task "$@" || rc=$?
+  LAUNCH_TASK_ALLOW_ROUTE_DEFER=1 launch_task "$@" || rc=$?
+  if (( rc == ${LAUNCH_TASK_DEFERRED_RC:-75} )) && declare -F enqueue_deferred_launch >/dev/null 2>&1; then
+    # HOK-3206: routing is running in the background; the selection keeps
+    # its slot and drain_deferred_launches re-dispatches it.
+    enqueue_deferred_launch "$@"
+    LAST_LAUNCHED_SLOTS=1
+    return 0
+  fi
   if (( rc != 0 )); then
     log_error "launch_task failed for $issue (exit $rc); monitor continues"
     mark_task_needs_user_and_defer "$issue" "$slug" "launch_failed" "launch_task exit $rc"
@@ -908,6 +921,24 @@ challenge_varied_stage_model() {
   selected_model=$(get_task_meta "$issue" "challengeVariedModel" 2>/dev/null || true)
   [[ -n "$selected_model" ]] || return 0
   printf '%s' "$selected_model"
+}
+
+# HOK-3156 — the coder of a challenge arm. challengeModel names the varied
+# stage's model, so it only doubles as the coder for implementation-stage pairs
+# (and legacy state that predates challengeStage). Everything that needs the
+# coder must read it through here, never straight from challengeModel.
+challenge_coder_model_for_task() {
+  local issue="$1" coder stage
+  [[ -n "$issue" ]] || return 0
+  coder="$(get_task_meta "$issue" "coderModel" 2>/dev/null || true)"
+  if [[ -n "$coder" ]]; then
+    printf '%s\n' "$coder"
+    return 0
+  fi
+  stage="$(get_task_meta "$issue" "challengeStage" 2>/dev/null || true)"
+  if [[ -z "$stage" || "$stage" == "implementation" ]]; then
+    get_task_meta "$issue" "challengeModel" 2>/dev/null || true
+  fi
 }
 
 challenge_result_stage_for_launch() {
@@ -1666,6 +1697,249 @@ challenge_cancel_challenger_arm() {
   return 0
 }
 
+# HOK-3156 — collapse a pair whose arms no longer differ in exactly the varied
+# stage. Whichever arm detected the drift, the pair is dissolved as a unit: a
+# pending (unmaterialised) challenger arm is cancelled, a live challenger is
+# torn down, and the primary continues as a solo task. Never leaves one arm
+# drifted and the other running.
+#
+# <reason> is `route-drift` (default) when a post-sealing re-route moved one
+# arm, or `multiple-varied-roles` when the pre-review preflight finds the arms'
+# launch routes differ beyond the varied stage. Both are harness faults.
+#
+# Usage: challenge_collapse_route_drift <issue> <feature_dir> <detail> [reason]
+# Returns 0 when the pair was collapsed; 1 when cleanup had to preserve work.
+CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF=""
+challenge_collapse_route_drift() {
+  local issue="$1" feature_dir="${2:-}" detail="${3:-}" reason="${4:-route-drift}"
+  [[ -n "$issue" ]] || return 1
+  CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF=""
+
+  local role primary_issue challenger_key=""
+  role="$(get_task_meta "$issue" "challengeRole" 2>/dev/null || true)"
+  if [[ "$role" == "challenger" ]]; then
+    primary_issue="$(get_task_meta "$issue" "challengePairId" 2>/dev/null || true)"
+    [[ -n "$primary_issue" && "$primary_issue" != "$issue" ]] || primary_issue="$(task_identity_parse "$issue" | cut -f2 || true)"
+    challenger_key="$issue"
+  else
+    primary_issue="$issue"
+    local candidate_key
+    candidate_key="$(task_identity_challenger_key "$issue")"
+    if [[ -n "$(read_state_value "" --arg i "$candidate_key" '.tasks[$i].slug // ""' 2>/dev/null || true)" ]]; then
+      challenger_key="$candidate_key"
+    fi
+  fi
+
+  local primary_slug stage varied_model
+  primary_slug="$(read_state_value "" --arg i "$primary_issue" '.tasks[$i].slug // ""' 2>/dev/null || true)"
+  stage="$(get_task_meta "$primary_issue" "challengeStage" 2>/dev/null || true)"
+  varied_model="$(get_task_meta "$primary_issue" "challengeVariedModel" 2>/dev/null || true)"
+
+  log_warn "  $primary_issue: challenge arms drifted beyond stage=${stage:-unknown} (${detail:-$reason}) — collapsing to a solo run as $reason"
+  challenge_arms_cancel_pending "$primary_issue" "$reason" "$detail" || true
+  if [[ -n "$challenger_key" ]]; then
+    challenge_cancel_challenger_arm "$primary_issue" "$primary_slug" "$challenger_key" \
+      "$feature_dir" "$stage" "$varied_model" "$reason" "$detail" || return 1
+    [[ "$challenger_key" == "$issue" ]] && CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF="true"
+    return 0
+  fi
+  log_route_lifecycle "challenge_collapsed" \
+    "issue=$primary_issue" \
+    "slug=$primary_slug" \
+    "stage=$stage" \
+    "model=\"$varied_model\"" \
+    "reason=$reason" \
+    "detail=\"$detail\""
+  return 0
+}
+
+# HOK-3156 — record the varied stage's model on a challenge arm's state, so
+# challenge_varied_stage_model / resolve_stage_result_model restore the arm's
+# own model on every launch and stage-result write.
+challenge_set_varied_model() {
+  local issue="$1" model="$2" agent="${3:-}"
+  [[ -n "$issue" && -n "$model" && -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]] || return 0
+  state_mutate "$STATE_FILE" \
+    'if .tasks[$issue] != null then
+       .tasks[$issue].challengeVariedModel = $model
+       | .tasks[$issue].challengeVariedAgent = $agent
+     else . end' \
+    --arg issue "$issue" --arg model "$model" --arg agent "$agent" >/dev/null 2>&1 || true
+}
+
+# HOK-3156 — one-variable preflight of a candidate challenger route against the
+# primary's launch route (its .phase-config.json). Prints the drifted
+# dimensions and returns 3 on drift. Returns 0 when the arms differ only at the
+# varied stage, or when the check cannot run (it never invents a drift).
+#
+# Usage: challenge_preflight_route_against_primary <primary_feature_dir> <stage> <challenger_route_json>
+challenge_preflight_route_against_primary() {
+  local primary_feature_dir="$1" stage="$2" challenger_route_json="$3"
+  [[ -n "${TOOLS_DIR:-}" && -f "$TOOLS_DIR/check-challenge-route.ts" ]] || return 0
+  [[ -f "$primary_feature_dir/.phase-config.json" ]] || return 0
+  local route_file out rc=0
+  route_file="$(mktemp "${TMPDIR:-/tmp}/wavemill-challenger-route.XXXXXX")" || return 0
+  printf '%s\n' "$challenger_route_json" > "$route_file"
+  out="$(wavemill_run_tool "check-challenge-route.ts" --stage "$stage" \
+    --primary-feature-dir "$primary_feature_dir" --challenger-routing "$route_file" \
+    --repo-dir "$REPO_DIR" 2>/dev/null)" || rc=$?
+  rm -f "$route_file"
+  if [[ "$rc" -eq 3 ]]; then
+    jq -r '(.driftedFields // []) | join(",")' <<<"$out" 2>/dev/null || true
+    return 3
+  fi
+  return 0
+}
+
+# HOK-3156 — bring the primary's route to the enriched (re-sealed) primary side
+# of a plan-stage intent, for every stage that has not executed yet. Writes
+# .routing-complete, .phase-config.json and state together so all three agree.
+#
+# Usage: challenge_reseal_primary_route <primary_issue> <primary_feature_dir> <enriched_intent_json> <executed_stages_csv>
+challenge_reseal_primary_route() {
+  local primary_issue="$1" feature_dir="$2" intent_json="$3" executed="${4:-}"
+  [[ -n "$primary_issue" && -d "$feature_dir" ]] || return 1
+
+  local role stage phase state_key model agent provider changed=""
+  for role in planner coder reviewer; do
+    case "$role" in
+      planner) stage="plan"; phase="planning"; state_key="plannerModel" ;;
+      coder) stage="implementation"; phase="coding"; state_key="coderModel" ;;
+      reviewer) stage="review"; phase="review"; state_key="reviewerModel" ;;
+    esac
+    [[ ",$executed," == *",$stage,"* ]] && continue
+    model="$(jq -r --arg r "$role" '.primary[$r].model // ""' <<<"$intent_json" 2>/dev/null || true)"
+    [[ -n "$model" ]] || continue
+    [[ "$(read_phase_config "$feature_dir" "$phase" "model")" == "$model" ]] && continue
+
+    agent="$(jq -r --arg r "$role" '.primary[$r].agent // ""' <<<"$intent_json" 2>/dev/null || true)"
+    if [[ -z "$agent" ]] && declare -F agent_resolve_from_model >/dev/null 2>&1; then
+      agent="$(agent_resolve_from_model "$model" "$phase" 2>/dev/null || true)"
+    fi
+    provider="$(phase_config_provider_for_agent "$agent")"
+
+    if [[ -f "$feature_dir/.routing-complete" ]]; then
+      state_mutate "$feature_dir/.routing-complete" '.[$role] = $model' \
+        --arg role "$role" --arg model "$model" >/dev/null 2>&1 || return 1
+    fi
+    ensure_phase_config_state_file "$feature_dir"
+    state_mutate "$feature_dir/.phase-config.json" \
+      '.[$phase] = ((.[$phase] // {}) + {model: $model, stageRole: $phase}
+         + (if $agent != "" then {agent: $agent} else {} end)
+         + (if $provider != "" then {provider: $provider} else {} end))' \
+      --arg phase "$phase" --arg model "$model" --arg agent "$agent" --arg provider "$provider" >/dev/null 2>&1 || return 1
+    if [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]]; then
+      state_mutate "$STATE_FILE" \
+        'if .tasks[$issue] != null then .tasks[$issue][$key] = $model else . end' \
+        --arg issue "$primary_issue" --arg key "$state_key" --arg model "$model" >/dev/null 2>&1 || true
+    fi
+    changed="${changed:+$changed,}$role"
+  done
+
+  if [[ -n "$changed" ]]; then
+    log_route_lifecycle "challenge_primary_resealed" "issue=$primary_issue" "fields=$changed"
+  fi
+  return 0
+}
+
+# HOK-3156 fix #5 — one-variable preflight before a challenge arm's review.
+#
+# Non-deferred pairs launch both arms at bootstrap and reach review on their
+# own, so neither materialiser sees them. Before either arm's review launches,
+# compare both arms' launch routes (.phase-config.json); when they differ in
+# more than the varied stage the pair is dissolved now as
+# `challenge_collapsed reason=multiple-varied-roles` instead of only surfacing
+# at comparison after both arms ran. Cached per head SHA in
+# .challenge-route-preflight.json so it runs once per head.
+#
+# Returns 0 to continue the review launch; 1 when this arm was itself torn
+# down by the collapse (the caller must stop processing it).
+#
+# Usage: challenge_pre_review_route_preflight <issue> <feature_dir> <wt_dir>
+challenge_pre_review_route_preflight() {
+  local issue="$1" feature_dir="$2" wt_dir="${3:-}"
+  [[ -n "$issue" && -d "$feature_dir" ]] || return 0
+  [[ -n "${TOOLS_DIR:-}" && -f "$TOOLS_DIR/check-challenge-route.ts" ]] || return 0
+
+  local role stage pair sibling primary_key challenger_key
+  role="$(get_task_meta "$issue" "challengeRole" 2>/dev/null || true)"
+  stage="$(get_task_meta "$issue" "challengeStage" 2>/dev/null || true)"
+  [[ "$role" == "primary" || "$role" == "challenger" ]] || return 0
+  [[ -n "$stage" ]] || return 0
+  if [[ "$role" == "challenger" ]]; then
+    pair="$(get_task_meta "$issue" "challengePairId" 2>/dev/null || true)"
+    [[ -n "$pair" && "$pair" != "$issue" ]] || pair="$(task_identity_parse "$issue" | cut -f2 || true)"
+    primary_key="$pair"
+    challenger_key="$issue"
+    sibling="$pair"
+  else
+    primary_key="$issue"
+    challenger_key="$(task_identity_challenger_key "$issue")"
+    sibling="$challenger_key"
+  fi
+
+  local sibling_slug sibling_wt sibling_dir
+  sibling_slug="$(read_state_value "" --arg i "$sibling" '.tasks[$i].slug // ""' 2>/dev/null || true)"
+  # No live sibling (deferred arm not yet materialised, or already collapsed):
+  # the fork-time preflight in the materialiser owns that case.
+  [[ -n "$sibling_slug" ]] || return 0
+  sibling_wt="$(read_state_value "" --arg i "$sibling" '.tasks[$i].worktree // ""' 2>/dev/null || true)"
+  [[ -n "$sibling_wt" ]] || sibling_wt="${WORKTREE_ROOT}/${sibling_slug}"
+  sibling_dir="$sibling_wt/features/$sibling_slug"
+  [[ -f "$sibling_dir/.phase-config.json" && -f "$feature_dir/.phase-config.json" ]] || return 0
+
+  local head cache="$feature_dir/.challenge-route-preflight.json"
+  head="$(git -C "${wt_dir:-$feature_dir}" rev-parse HEAD 2>/dev/null || echo "")"
+  if [[ -n "$head" && "$(jq -r '.head // ""' "$cache" 2>/dev/null || true)" == "$head" ]]; then
+    return 0
+  fi
+
+  local primary_dir challenger_dir out rc=0
+  if [[ "$role" == "primary" ]]; then
+    primary_dir="$feature_dir"; challenger_dir="$sibling_dir"
+  else
+    primary_dir="$sibling_dir"; challenger_dir="$feature_dir"
+  fi
+  out="$(wavemill_run_tool "check-challenge-route.ts" --stage "$stage" \
+    --primary-feature-dir "$primary_dir" --challenger-feature-dir "$challenger_dir" \
+    --repo-dir "$REPO_DIR" 2>/dev/null)" || rc=$?
+  if [[ "$rc" -ne 0 && "$rc" -ne 3 ]]; then
+    return 0
+  fi
+  jq -n --arg head "$head" --argjson rc "$rc" --arg out "$out" \
+    '{head: $head, checkedAt: (now | todate), status: (if $rc == 3 then "drift" else "ok" end),
+      result: ($out | fromjson? // null)}' > "$cache" 2>/dev/null || true
+  [[ "$rc" -eq 3 ]] || return 0
+
+  local detail
+  detail="dimensions=$(jq -r '(.driftedFields // []) | join(",")' <<<"$out" 2>/dev/null || true)"
+  log_route_lifecycle "challenge_route_drift" "issue=$issue" "side=$role" "stage=$stage" "$detail"
+
+  local primary_pr challenger_pr
+  primary_pr="$(read_state_value "" --arg i "$primary_key" '.tasks[$i].pr // ""' 2>/dev/null || true)"
+  challenger_pr="$(read_state_value "" --arg i "$challenger_key" '.tasks[$i].pr // ""' 2>/dev/null || true)"
+  if [[ -n "$primary_pr" || -n "$challenger_pr" ]]; then
+    # An arm already has a PR: there is no clean pre-run collapse. Record the
+    # typed reason on both arms so the comparison and attribution read the same
+    # invalid cause; the pair voids at comparison rather than being judged.
+    log_warn "  $issue: challenge arms differ beyond stage=$stage after a PR opened ($detail) — recording invalid_challenge:multiple-varied-roles"
+    local key
+    for key in "$primary_key" "$challenger_key"; do
+      state_mutate "$STATE_FILE" \
+        'if .tasks[$k] != null then
+           .tasks[$k].challengeDivergenceReason = "multiple-varied-roles"
+           | .tasks[$k].challengeRouteDriftDetail = $detail
+         else . end' \
+        --arg k "$key" --arg detail "$detail" >/dev/null 2>&1 || true
+    done
+    return 0
+  fi
+
+  challenge_collapse_route_drift "$issue" "$feature_dir" "$detail" "multiple-varied-roles" || return 0
+  [[ "$CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF" == "true" ]] && return 1
+  return 0
+}
+
 # A pair whose two sides run the same model at the varied stage measures
 # nothing.  The comparison stage already rejects these, but only after both arms
 # have run; surfacing it at selection time makes the waste visible immediately.
@@ -1827,6 +2101,45 @@ challenge_intent_files_valid() {
   challenge_intent_file_json "$dir" >/dev/null 2>&1
 }
 
+# HOK-3156 — point a review-stage challenger's own route artifacts at its
+# sealed reviewer. Planning/coding entries are left as inherited.
+#
+# Usage: challenge_write_review_arm_route <challenger_feature_dir> <reviewer_model> <reviewer_agent> <review_mode>
+challenge_write_review_arm_route() {
+  local feature_dir="$1" reviewer_model="$2" reviewer_agent="${3:-}" review_mode="${4:-}"
+  [[ -n "$feature_dir" && -n "$reviewer_model" ]] || return 1
+  if [[ -z "$reviewer_agent" ]] && declare -F agent_resolve_from_model >/dev/null 2>&1; then
+    reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review" 2>/dev/null || true)"
+  fi
+  local provider
+  provider="$(phase_config_provider_for_agent "$reviewer_agent")"
+
+  ensure_phase_config_state_file "$feature_dir"
+  state_mutate "$feature_dir/.phase-config.json" \
+    '.review = {
+       model: $model,
+       stageRole: "review",
+       challengeSide: "challenger",
+       selectedAt: (now | todateiso8601),
+       mode: (if $mode != "" then $mode else (.review.mode // "") end)
+     }
+     + (if $agent != "" then {agent: $agent} else {} end)
+     + (if $provider != "" then {provider: $provider} else {} end)' \
+    --arg model "$reviewer_model" --arg agent "$reviewer_agent" \
+    --arg provider "$provider" --arg mode "$review_mode" || return 1
+
+  if [[ -f "$feature_dir/.routing-complete" ]]; then
+    state_mutate "$feature_dir/.routing-complete" \
+      '.reviewer = $model
+       | .reviewMode = (if $mode != "" then $mode else (.reviewMode // .reviewRecommended // "") end)
+       | .reviewRecommended = .reviewMode
+       | .challengeIntentApplied = true
+       | .intendedStage = "review"' \
+      --arg model "$reviewer_model" --arg mode "$review_mode" || return 1
+  fi
+  return 0
+}
+
 # HOK-2811 (Arbiter P2.4a) — mirror of challenge_cancel_challenger_arm.
 #
 # Materialise a deferred (awaiting_fork) challenger arm at the primary's
@@ -1880,6 +2193,39 @@ challenge_materialize_challenger_arm() {
     return 1
   fi
 
+  # HOK-3156: the sealed intent, not the bootstrap arm record, is the source of
+  # truth for the challenger's route. Its challenger side names the reviewer
+  # that will actually run; the arm record is only a fallback.
+  local sealed_intent=""
+  sealed_intent="$(echo "$arm_json" | jq -c '.executionIntent // empty' 2>/dev/null || true)"
+  if ! challenge_intent_json_is_canonical "$sealed_intent" && [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
+    sealed_intent="$(jq -c --arg issue "$primary_issue" '.tasks[$issue].challengeExecutionIntent // empty' "$STATE_FILE" 2>/dev/null || true)"
+  fi
+  if ! challenge_intent_json_is_canonical "$sealed_intent"; then
+    sealed_intent="$(challenge_intent_file_json "$primary_feature_dir" 2>/dev/null || true)"
+  fi
+  if challenge_intent_json_is_canonical "$sealed_intent"; then
+    local sealed_value
+    sealed_value="$(jq -r '(.challenger // {}) as $c
+      | ($c.reviewer.model // "") as $runtime
+      | if $runtime != "" then $runtime
+        elif (($c.challengeStage // .challengeStage // .selectedStage // "") == "review") and (($c.expectedStageModel // "") != "")
+          then $c.expectedStageModel
+        else ($c.expectedRoute.reviewer // "") end' <<<"$sealed_intent" 2>/dev/null || true)"
+    if [[ -n "$sealed_value" && "$sealed_value" != "$reviewer_model" ]]; then
+      [[ -n "$reviewer_model" ]] && \
+        log_warn "  $arm_key: arm record reviewer ($reviewer_model) differs from the sealed intent ($sealed_value) — using the sealed reviewer"
+      reviewer_model="$sealed_value"
+      reviewer_agent="$(jq -r '.challenger.reviewer.agent // .challenger.expectedStageAgent // ""' <<<"$sealed_intent" 2>/dev/null || true)"
+    fi
+    sealed_value="$(jq -r '.challenger.expectedRoute.reviewMode // ""' <<<"$sealed_intent" 2>/dev/null || true)"
+    [[ -n "$sealed_value" ]] && review_mode="$sealed_value"
+  fi
+  if [[ -z "$reviewer_model" ]]; then
+    log_error "  $arm_key: no challenger reviewer in the sealed intent or arm record"
+    return 1
+  fi
+
   local challenger_wt_dir="${WORKTREE_ROOT}/${arm_slug}"
   local challenger_feature_dir="${challenger_wt_dir}/features/${arm_slug}"
 
@@ -1892,10 +2238,34 @@ challenge_materialize_challenger_arm() {
   fi
 
   # Guard: challenger's review must not already have run in this or a prior
-  # attempt (would indicate materialisation somehow already produced a review).
-  if [[ -f "$challenger_feature_dir/.review-result.json" ]]; then
-    log_warn "  $arm_key: refusing to materialise — .review-result.json already exists"
+  # attempt. A `running` result left by a failed launch below is retryable.
+  local prior_review_status=""
+  prior_review_status="$(jq -r '.status // empty' "$challenger_feature_dir/.review-result.json" 2>/dev/null || true)"
+  if [[ -n "$prior_review_status" && "$prior_review_status" != "running" ]]; then
+    log_warn "  $arm_key: refusing to materialise — challenger review already $prior_review_status"
     return 1
+  fi
+
+  # HOK-3156 one-variable preflight (fix #5), before anything is created: the
+  # planner and coder the challenger inherits are what the primary ran (its
+  # .phase-config.json); they must equal the challenger's sealed route. A
+  # primary that drifted after sealing collapses the pair here, with a typed
+  # reason, instead of producing a multiple-varied-roles comparison.
+  if challenge_intent_json_is_canonical "$sealed_intent" \
+    && [[ -n "${TOOLS_DIR:-}" && -f "$TOOLS_DIR/check-challenge-route.ts" && -f "$primary_feature_dir/.phase-config.json" ]]; then
+    local preflight_out preflight_rc=0
+    preflight_out="$(wavemill_run_tool "check-challenge-route.ts" --stage "${varied_stage:-review}" \
+      --intent-json "$sealed_intent" --primary-feature-dir "$primary_feature_dir" \
+      --repo-dir "$REPO_DIR" 2>/dev/null)" || preflight_rc=$?
+    if (( preflight_rc == 3 )); then
+      CHALLENGE_MATERIALIZE_DRIFT_DETAIL="dimensions=$(jq -r '(.driftedFields // []) | join(",")' <<<"$preflight_out" 2>/dev/null || true)"
+      log_warn "  $arm_key: arms differ beyond stage=${varied_stage:-review} (${CHALLENGE_MATERIALIZE_DRIFT_DETAIL}) — not materialising"
+      return 4
+    fi
+    if [[ "$(jq -r '.identicalAtVariedStage // false' <<<"$preflight_out" 2>/dev/null || true)" == "true" ]]; then
+      challenge_assert_arms_diverge "$primary_issue" "${varied_stage:-review}" \
+        "$(read_phase_config "$primary_feature_dir" "review" "model")" "$reviewer_model" "$sealed_intent"
+    fi
   fi
 
   # Step 2: branch + worktree. Tolerate a partial prior attempt where the
@@ -1995,6 +2365,19 @@ challenge_materialize_challenger_arm() {
     fi
   fi
 
+  # HOK-3156 fix #3: the copied .phase-config.json / .routing-complete carry
+  # the primary's reviewer. Rewrite the varied stage to the challenger's own
+  # sealed reviewer so every relaunch, stage-result write and route stamp sees
+  # the reviewer that actually runs. Planning and coding stay inherited: the
+  # preflight above proved they match the challenger's sealed route.
+  challenge_write_review_arm_route "$challenger_feature_dir" "$reviewer_model" "$reviewer_agent" "$review_mode" || {
+    log_error "  $arm_key: failed to write the challenger's own review route"
+    return 1
+  }
+  # The varied stage's result is never inherited; drop any stale result or
+  # marker left by a prior partial attempt before the review launches.
+  rm -f "$challenger_feature_dir/.review-result.json" "$challenger_feature_dir/.review-complete" 2>/dev/null || true
+
   # Step 4: stamp inherited stage results. The files are jq-additive rewrites
   # so schema validation (source: inherited allowed by
   # shared/schemas/stage-result.schema.json) still passes.
@@ -2038,12 +2421,15 @@ challenge_materialize_challenger_arm() {
   # Step 7: save the challenger's task-state entry at phase=review.
   local linear_issue
   linear_issue="$(get_linear_issue_id "$primary_issue" 2>/dev/null || echo "$primary_issue")"
+  # challengeModel names the varied stage's model (HOK-3156 fix #4): for a
+  # review-stage pair that is the reviewer, not the shared coder.
   save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
     "" "" "${planner_agent:-$coder_agent}" "$linear_issue" \
-    "true" "$primary_issue" "challenger" "$coder_model" \
+    "true" "$primary_issue" "challenger" "$reviewer_model" \
     "$planner_model" "$coder_model" "$reviewer_model" \
     "$plan_depth" "$code_depth" "$review_mode" \
     "$varied_stage" "review"
+  challenge_set_varied_model "$arm_key" "$reviewer_model" "$reviewer_agent"
 
   # Register in monitor arrays so subsequent monitor_issue_state ticks find
   # the arm through the same lookup as any other task.
@@ -2371,6 +2757,7 @@ challenge_materialize_implementation_arm() {
     "$planner_model" "$coder_model" "$reviewer_model" \
     "$plan_depth" "$code_depth" "$review_mode" \
     "implementation" "coding"
+  challenge_set_varied_model "$arm_key" "$coder_model" "$coder_agent"
   BRANCH_BY_ISSUE["$arm_key"]="$arm_branch"
   SLUG_BY_ISSUE["$arm_key"]="$arm_slug"
   state_mutate "$STATE_FILE" \
@@ -2546,6 +2933,7 @@ challenge_maybe_materialize_deferred_arms() {
     bounded_retry_increment "$primary_feature_dir" "$bucket" "$head" >/dev/null 2>&1 || true
 
     local materialise_rc=0
+    CHALLENGE_MATERIALIZE_DRIFT_DETAIL=""
     if [[ "$arm_stage" == "implementation" ]]; then
       challenge_materialize_implementation_arm \
         "$primary_issue" "$primary_slug" "$arm_json" \
@@ -2579,6 +2967,19 @@ challenge_maybe_materialize_deferred_arms() {
         "issue=$primary_issue" \
         "arm=$arm_key" \
         "reason=missing_challenge_intent"
+    elif (( materialise_rc == 4 )); then
+      # HOK-3156: the arms would differ beyond the varied stage. Collapse the
+      # pair before the challenger exists; the primary continues solo.
+      local drift_detail="${CHALLENGE_MATERIALIZE_DRIFT_DETAIL:-route-drift}"
+      bounded_retry_mark_exhausted "$primary_feature_dir" "$bucket" "route-drift: $drift_detail" >/dev/null 2>&1 || true
+      challenge_arms_set_state "$primary_issue" "$arm_key" "materializing" "awaiting_fork" 2>/dev/null || true
+      challenge_arms_cancel_pending "$primary_issue" "route-drift" "$drift_detail" || true
+      log_route_lifecycle "challenge_collapsed" \
+        "issue=$primary_issue" \
+        "slug=$primary_slug" \
+        "stage=$arm_stage" \
+        "reason=route-drift" \
+        "detail=\"$drift_detail\""
     elif (( materialise_rc == 3 )); then
       # HOK-3086: the plan-time fork point is gone or unusable and cannot be
       # rebuilt once the primary's coder has run — terminal, never re-forked
@@ -2624,6 +3025,7 @@ challenge_materialize_expanded_route_arm() {
   local base_branch="${6:-${BASE_BRANCH:-main}}"
 
   CHALLENGE_EXPANDED_ROUTE_COLLAPSE_REASON=""
+  CHALLENGE_EXPANDED_ROUTE_COLLAPSE_DETAIL=""
 
   local arm_key arm_slug arm_branch varied_stage
   arm_key=$(challenge_arm_read_field "$arm_json" '.key')
@@ -2653,9 +3055,17 @@ challenge_materialize_expanded_route_arm() {
     return 2
   fi
 
+  # HOK-3156: stages the primary already executed keep their sealed models in
+  # the enriched intent; the router never rewrites history.
+  local executed_stages=""
+  executed_stage_result_present "$primary_feature_dir/.planning-result.json" && executed_stages="plan"
+  if executed_stage_result_present "$primary_feature_dir/.coding-result.json"; then
+    executed_stages="${executed_stages:+$executed_stages,}implementation"
+  fi
+
   local resolution status
   resolution=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "resolve-challenge-task.ts" \
-    --resolve-sealed --sealed-intent "$sealed_intent" \
+    --resolve-sealed --sealed-intent "$sealed_intent" --executed-stages "$executed_stages" \
     --feature-dir "$primary_feature_dir" --repo-dir "$REPO_DIR" 2>/dev/null || echo "")
   status="$(echo "$resolution" | jq -r '.status // "collapse"' 2>/dev/null || echo "collapse")"
   if [[ "$status" != "materialize" ]]; then
@@ -2694,6 +3104,27 @@ challenge_materialize_expanded_route_arm() {
   [[ -n "$plan_depth" ]] || plan_depth="light"
   [[ -n "$code_depth" ]] || code_depth="medium"
   [[ -n "$review_mode" ]] || review_mode="static"
+
+  # HOK-3156: re-seal both arms together. The enrichment fills the non-varied
+  # roles from the expanded route on both sides, but the primary's own
+  # post-expansion apply froze it to its bootstrap seal; bring the primary to
+  # the enriched side (stages that already ran stay as they ran) so the two
+  # arms launch with identical non-varied routes.
+  challenge_reseal_primary_route "$primary_issue" "$primary_feature_dir" "$enriched_intent" "$executed_stages" || \
+    log_warn "  $arm_key: re-sealing the primary route to the enriched intent reported failure"
+
+  # One-variable preflight before anything is created on disk: the challenger
+  # route is the primary's launch route with only the planner replaced.
+  local drifted=""
+  if ! drifted="$(challenge_preflight_route_against_primary "$primary_feature_dir" "$varied_stage" \
+      "$(jq -cn --arg p "$challenger_planner" --arg c "$shared_coder" --arg r "$shared_reviewer" \
+        --arg pd "$plan_depth" --arg cd "$code_depth" --arg rm "$review_mode" \
+        '{planner: $p, coder: $c, reviewer: $r, planDepth: $pd, codeDepth: $cd, reviewMode: $rm}')")"; then
+    CHALLENGE_EXPANDED_ROUTE_COLLAPSE_REASON="route-drift"
+    CHALLENGE_EXPANDED_ROUTE_COLLAPSE_DETAIL="dimensions=${drifted:-unknown}"
+    log "status" "  $arm_key: plan-stage arms would differ beyond the planner (${drifted}) — collapsing"
+    return 2
+  fi
 
   local challenger_wt_dir="${WORKTREE_ROOT}/${arm_slug}"
   local challenger_feature_dir="${challenger_wt_dir}/features/${arm_slug}"
@@ -2776,12 +3207,14 @@ challenge_materialize_expanded_route_arm() {
   local planner_agent="$challenger_planner_agent"
   [[ -n "$planner_agent" ]] || planner_agent="$(challenge_arm_read_field "$arm_json" '.agents.planner')"
   [[ -n "$planner_agent" ]] || planner_agent="${AGENT_CMD:-claude}"
+  # challengeModel names the varied stage's model (HOK-3156): the planner here.
   save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
     "" "" "$planner_agent" "$linear_issue" \
-    "true" "$primary_issue" "challenger" "$shared_coder" \
+    "true" "$primary_issue" "challenger" "$challenger_planner" \
     "$challenger_planner" "$shared_coder" "$shared_reviewer" \
     "$plan_depth" "$code_depth" "$review_mode" \
     "$varied_stage"
+  challenge_set_varied_model "$arm_key" "$challenger_planner" "$challenger_planner_agent"
 
   BRANCH_BY_ISSUE["$arm_key"]="$arm_branch"
   SLUG_BY_ISSUE["$arm_key"]="$arm_slug"
@@ -2928,6 +3361,7 @@ challenge_maybe_materialize_expanded_route_arms() {
 
     local materialise_rc=0
     CHALLENGE_EXPANDED_ROUTE_COLLAPSE_REASON=""
+    CHALLENGE_EXPANDED_ROUTE_COLLAPSE_DETAIL=""
     challenge_materialize_expanded_route_arm \
       "$primary_issue" "$primary_slug" "$arm_json" \
       "$primary_wt_dir" "$primary_feature_dir" "$base_branch" || materialise_rc=$?
@@ -2949,7 +3383,7 @@ challenge_maybe_materialize_expanded_route_arms() {
       challenge_cancel_challenger_arm "$primary_issue" "$primary_slug" "$arm_key" \
         "$primary_feature_dir" "$(challenge_arm_read_field "$arm_json" '.variedStage')" \
         "$(challenge_arm_read_field "$arm_json" '.models.planner')" \
-        "$reason" "Sealed plan-stage challenger could not materialise against the expanded route" 2>/dev/null || true
+        "$reason" "${CHALLENGE_EXPANDED_ROUTE_COLLAPSE_DETAIL:-Sealed plan-stage challenger could not materialise against the expanded route}" 2>/dev/null || true
       log_route_lifecycle "challenge_arm_invalid_intent" \
         "issue=$primary_issue" \
         "arm=$arm_key" \
@@ -4106,6 +4540,13 @@ run_ready_watchdog_tick() {
   watchdog_timeout=$(printf '%s' "$watchdog_json" | jq -r '.timeoutSeconds // 30' 2>/dev/null || echo "30")
   [[ "$watchdog_timeout" =~ ^[0-9]+$ ]] || watchdog_timeout=30
 
+  # HOK-3206: the sweep (~5 s) runs as a tracked job; this tick consumes the
+  # previous sweep's findings and starts the next one.
+  if declare -F ready_watchdog_tick_async >/dev/null 2>&1 && ! ready_checks_sync; then
+    ready_watchdog_tick_async "$watchdog_timeout"
+    return 0
+  fi
+
   watchdog_stderr="$(mktemp "${TMPDIR:-/tmp}/wavemill-ready-watchdog.XXXXXX")" || {
     log_warn "ready watchdog tick failed: could not create diagnostic file"
     return 0
@@ -4133,6 +4574,14 @@ run_ready_watchdog_tick() {
   LAST_READY_WATCHDOG_FAILURE_DETAIL=""
   LAST_READY_WATCHDOG_FAILURE_AT=0
 
+  ready_watchdog_dispatch_findings "$watchdog_output"
+}
+
+# Act on one ready-watchdog sweep's `--json` output: queue remediation for
+# stable failures and log every finding. Shared by the inline tick and the
+# async consumer (HOK-3206).
+ready_watchdog_dispatch_findings() {
+  local watchdog_output="$1"
   while IFS= read -r finding; do
     [[ -n "$finding" ]] || continue
     local issue label detail action slug branch base_branch pr_number title wt_dir state_dir remediation_categories
@@ -4588,6 +5037,112 @@ coding_interrupted_late_completion_reconcile() {
   write_stage_result "$feature_dir" "coding" "running" "$result_agent" "$result_model" \
     "Reconciled: late .coding-complete accepted after interrupted stamp"
   set_window_attention_state "$win" "clear"
+  return 0
+}
+
+# HOK-3211: a task can sit in `planning / awaiting_user` while its coding
+# agent has already finished the work in the planning pane — committed the
+# diff, written a valid `.coding-complete` whose `commit` equals HEAD on a
+# clean tree. The monitor's planning branch only reacts to `.plan-approved`,
+# so it never notices the finished work and the task looks stuck. When the
+# operator eventually touches `.plan-approved`, the plan→coding handoff calls
+# `archive_stale_coding_artifacts` and moves the valid marker aside, then
+# launches a fresh coder on top of already-committed work.
+#
+# Reconcile wherever the monitor sits in a planning state: on a condition-
+# valid late marker, approve the plan and record coding as completed in-
+# place, so the next pass transitions to review from the state machine's
+# existing completed-coding handler. The validity checks mirror HOK-3137's
+# `coding_interrupted_late_completion_reconcile`, plus a HEAD-ahead-of-base
+# check so a marker whose commit equals the base commit (no durable work)
+# still falls through to the normal launch path.
+#
+# Returns 0 when reconciled (caller: `active_count++; return 0`), 1 to fall
+# through.
+planning_late_coding_complete_reconcile() {
+  local issue="$1" feature_dir="$2" worktree="$3" win="$4" current_agent="${5:-}"
+  local slug planning_status marker_commit head base
+  local dirty_paths verdict_cache cached_mtime marker_epoch seam_rc
+  local coding_model
+
+  slug="$(basename "$feature_dir")"
+  recover_misplaced_coding_complete_marker "$issue" "$worktree" "$feature_dir" "$slug" || true
+  [[ -f "$feature_dir/.coding-complete" ]] || return 1
+
+  # Only reconcile from a planning state. HOK-3137 reconciler already covers
+  # the coding-stage interrupted/failed path; these two guards are mutually
+  # exclusive.
+  planning_status="$(read_stage_status "$feature_dir" "planning")"
+  case "$planning_status" in
+    awaiting_user|completed) ;;
+    *) return 1 ;;
+  esac
+
+  # Tree must be clean — a dirty tree falls through to the HOK-3128 dirty
+  # handoff machinery, not a silent reconcile.
+  dirty_paths="$(coding_output_dirty_paths "$worktree" "$slug")"
+  [[ -z "$dirty_paths" ]] || return 1
+
+  head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  [[ -n "$head" ]] || return 1
+  marker_commit="$(jq -r '.commit // empty' "$feature_dir/.coding-complete" 2>/dev/null || true)"
+  if [[ -n "$marker_commit" ]]; then
+    blocked_completion_commit_matches_head "$marker_commit" "$head" || return 1
+  fi
+
+  # HEAD must be ahead of base: a .coding-complete at the base commit (no
+  # durable work) still falls through to the normal launch path. Empty base
+  # (git failure, no BASE_BRANCH) is treated as "cannot confirm ahead" and
+  # falls through so a reconcile cannot be based on a missing merge-base.
+  base="$(phase_launch_base "$feature_dir")"
+  [[ -n "$base" ]] || return 1
+  [[ "$base" != "$head" ]] || return 1
+
+  marker_epoch="$(portable_file_mtime_epoch "$feature_dir/.coding-complete" 2>/dev/null || true)"
+  [[ "$marker_epoch" =~ ^[0-9]+$ ]] || return 1
+
+  # Seam validation spawns tsx; cache the verdict keyed by marker mtime so a
+  # permanently-invalid marker does not re-spawn the validator every tick.
+  verdict_cache="$feature_dir/.late-planning-reconcile.json"
+  cached_mtime=""
+  if [[ -f "$verdict_cache" ]]; then
+    cached_mtime="$(jq -r '.markerMtime // empty' "$verdict_cache" 2>/dev/null || true)"
+    if [[ "$cached_mtime" == "$marker_epoch" ]]; then
+      [[ "$(jq -r '.valid // false' "$verdict_cache" 2>/dev/null || echo false)" == "true" ]] || return 1
+    else
+      cached_mtime=""
+    fi
+  fi
+  if [[ -z "$cached_mtime" ]]; then
+    seam_rc=0
+    seam_validate_artifact coding-complete "$feature_dir/.coding-complete" --canonicalize || seam_rc=$?
+    local verdict_tmp
+    verdict_tmp="$(mktemp "$verdict_cache.tmp.XXXXXX" 2>/dev/null)" && {
+      jq -cn --arg mtime "$marker_epoch" --argjson valid "$([[ "$seam_rc" -eq 0 ]] && echo true || echo false)" \
+        '{markerMtime: $mtime, valid: $valid}' > "$verdict_tmp" 2>/dev/null \
+        && mv "$verdict_tmp" "$verdict_cache" 2>/dev/null || rm -f "$verdict_tmp"
+    }
+    [[ "$seam_rc" -eq 0 ]] || return 1
+  fi
+
+  # Write planning=completed via approve_plan + clear any pending marker, so
+  # the next pass does not re-enter the approve branch and re-archive. Then
+  # write coding=completed so the state machine advances to review.
+  approve_plan "$feature_dir" "$current_agent" ""
+  rm -f "$feature_dir/.plan-approved" 2>/dev/null || true
+
+  coding_model="$(resolve_stage_result_model "$feature_dir" "coding" "claude-opus-4-7")"
+  write_stage_result "$feature_dir" "coding" "completed" "$current_agent" "$coding_model" \
+    "Reconciled: valid .coding-complete found during planning wait (commit=${marker_commit:-${head:0:9}})"
+
+  log "status" "$issue → late_completion_reconciled: planning cleared and coding completed from in-planning marker (commit=${marker_commit:-${head:0:9}} HEAD=${head:0:9} tree clean)"
+  if declare -F wavemill_hook_write >/dev/null 2>&1; then
+    WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
+      wavemill_hook_write "working" "late_completion_reconciled" "late .coding-complete accepted during planning wait" "wavemill" "" "monitor" || true
+  fi
+  set_window_attention_state "$win" "clear"
+  quarantine_completed_coding_pane "$issue" "$feature_dir" "$worktree" || true
+  reap_completed_planning_pane "$issue" "$feature_dir" "$worktree" || true
   return 0
 }
 
@@ -6584,7 +7139,7 @@ archive_stale_coding_artifacts() {
     ".coding-uncommitted-output-announced"
     ".coding-failure-handoff.json"
   )
-  local present=() name archive_dir archived_names=()
+  local present=() name archive_dir archived_names=() preserved=0
 
   for name in "${candidates[@]}"; do
     [[ -e "$feature_dir/$name" ]] && present+=("$name")
@@ -6598,6 +7153,18 @@ archive_stale_coding_artifacts() {
   fi
 
   for name in "${present[@]}"; do
+    # HOK-3211: do not move a .coding-complete whose HOK-3172 condition
+    # still holds (commit matches HEAD, tree clean, HEAD ahead of base).
+    # The archive is a cleanup helper, not a semantic action; the
+    # dirty-handoff relaunch (6202) and plan-approved launch (20170) both
+    # benefit from this defense-in-depth. In practice the dirty-handoff
+    # callsite only runs when the tree is dirty, so the preservation
+    # branch cannot fire there.
+    if [[ "$name" == ".coding-complete" ]] \
+      && coding_complete_marker_condition_valid "$feature_dir"; then
+      preserved=1
+      continue
+    fi
     if mv "$feature_dir/$name" "$archive_dir/$name" 2>/dev/null; then
       archived_names+=("$name")
     fi
@@ -6607,6 +7174,93 @@ archive_stale_coding_artifacts() {
     local IFS=', '
     log "status" "$issue → archived stale coding artifacts from a previous attempt: ${archived_names[*]}"
   fi
+  if (( preserved == 1 )); then
+    log "status" "$issue → preserved condition-valid .coding-complete at launch gate"
+  fi
+  return 0
+}
+
+# HOK-3211: shared predicate used by the planning late-completion reconciler
+# and by archive_stale_coding_artifacts to recognise a .coding-complete whose
+# HOK-3172 condition still holds: the worktree is on the marker's commit (or
+# unspecified) and the tree is clean. Callers that also need "HEAD ahead of
+# base" check that separately.
+#
+# Returns 0 when the marker is condition-valid, 1 otherwise. Empty worktree,
+# missing marker, or a git failure returns 1 — a validity assertion must be
+# positively confirmed.
+coding_complete_marker_condition_valid() {
+  local feature_dir="$1"
+  local marker="$feature_dir/.coding-complete"
+  local worktree slug head marker_commit dirty_paths
+
+  [[ -f "$marker" ]] || return 1
+  worktree="${feature_dir%/features/*}"
+  [[ -n "$worktree" && "$worktree" != "$feature_dir" && -d "$worktree" ]] || return 1
+  slug="$(basename "$feature_dir")"
+
+  head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  [[ -n "$head" ]] || return 1
+  marker_commit="$(jq -r '.commit // empty' "$marker" 2>/dev/null || true)"
+  if [[ -n "$marker_commit" ]]; then
+    blocked_completion_commit_matches_head "$marker_commit" "$head" || return 1
+  fi
+
+  dirty_paths="$(coding_output_dirty_paths "$worktree" "$slug")"
+  [[ -z "$dirty_paths" ]] || return 1
+
+  return 0
+}
+
+# HOK-3211 diagnostic: when the planning branch is in awaiting_user but the
+# coder has already finished work (or at least committed something ahead of
+# base) and the reconciler did not fire this pass, log once per task so an
+# operator can see the task is not actually waiting on a plan. Guard variable
+# fires once per task-run (same mechanism as _approval_wait_logged_*).
+# Does nothing when the reconciler has already fired.
+maybe_log_planning_wait_coding_present() {
+  local issue="$1" feature_dir="$2" worktree="$3"
+  local guard_var="_coding_present_wait_logged_${issue//[^a-zA-Z0-9]/_}"
+  local marker="$feature_dir/.coding-complete"
+  local head base marker_commit dirty_paths seam_rc slug
+  local marker_present="false" ahead_of_base="false" seam_valid="false"
+
+  [[ "${!guard_var:-}" == "true" ]] && return 0
+
+  if [[ -f "$marker" ]]; then
+    marker_present="true"
+  fi
+
+  head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  base="$(phase_launch_base "$feature_dir")"
+  if [[ -n "$head" && -n "$base" && "$head" != "$base" ]]; then
+    ahead_of_base="true"
+  fi
+
+  # Log only when the operator should notice (marker present, or at least
+  # commits ahead of base). An awaiting_user with no coding output at all is
+  # a plain plan wait, not an in-progress coding handoff.
+  if [[ "$marker_present" != "true" && "$ahead_of_base" != "true" ]]; then
+    return 0
+  fi
+
+  slug="$(basename "$feature_dir")"
+  dirty_paths="$(coding_output_dirty_paths "$worktree" "$slug")"
+  local dirty_count=0
+  if [[ -n "$dirty_paths" ]]; then
+    dirty_count="$(printf '%s\n' "$dirty_paths" | grep -c . || true)"
+  fi
+
+  marker_commit=""
+  if [[ "$marker_present" == "true" ]]; then
+    marker_commit="$(jq -r '.commit // empty' "$marker" 2>/dev/null || true)"
+    seam_rc=0
+    seam_validate_artifact coding-complete "$marker" --canonicalize >/dev/null 2>&1 || seam_rc=$?
+    [[ "$seam_rc" -eq 0 ]] && seam_valid="true"
+  fi
+
+  log "status" "⚠ $issue → coder finished work during planning wait but marker not condition-valid — marker=${marker_present} marker_commit=${marker_commit:-none} head=${head:0:9} ahead_of_base=${ahead_of_base} dirty_paths=${dirty_count} seam_valid=${seam_valid}"
+  printf -v "$guard_var" '%s' "true"
   return 0
 }
 
@@ -7628,7 +8282,12 @@ maybe_retry_failed_stage() {
 
   case "$stage" in
     planning) retry_phase="routing" ;;
-    coding) retry_phase="planning" ;;
+    # HOK-3211: a coding retry relaunches coding directly, not planning. The
+    # old `retry_phase=planning` routed the retry through
+    # validate_planning_phase_output, which treated the coder's in-flight
+    # edits as planning overreach and stashed them. `.coding-failure-
+    # decision.json`'s own `nextAction` already says "coding".
+    coding) retry_phase="coding" ;;
     review) retry_phase="coding" ;;
     *) return 1 ;;
   esac
@@ -7680,9 +8339,100 @@ maybe_retry_failed_stage() {
   # on the relaunched run before its first hook write (see HOK-2885 relaunch).
   rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
   clear_stage_result "$feature_dir" "$stage"
+
+  # HOK-3211: for stage=coding, relaunch coding directly instead of
+  # transitioning back to planning. Mirrors coding_dirty_handoff_relaunch:
+  # resolve the launch identity (challenger from immutable intent; primary
+  # from phase-config → task-meta → default), prepare recovery surfaces,
+  # and launch_coding_phase. On success, set the task phase to coding and
+  # return 0; on failure, fall back to the generic retry_phase path so the
+  # task doesn't park silently.
+  if [[ "$stage" == "coding" ]]; then
+    if _stage_failure_coding_relaunch "$issue" "$feature_dir" "$win" "$failure_kind" "$failure_class" "$attempts" "$limit" "$fresh"; then
+      return 0
+    fi
+    log_warn "$issue → coding stage-failure direct relaunch failed; falling back to generic phase revert"
+    retry_phase="planning"
+  fi
+
   set_task_phase "$issue" "$retry_phase"
   set_window_attention_state "$win" "clear"
   log "status" "♻ $issue → ${stage} failed (${failure_kind}, ${failure_class}), relaunch ${attempts}/${limit}${fresh} via ${retry_phase}"
+  return 0
+}
+
+# HOK-3211: direct coding relaunch for a retryable coding stage failure.
+# Mirrors coding_dirty_handoff_relaunch's launch identity resolution (which
+# is itself the challenger-aware launcher pattern) so the planning overreach
+# guard never runs on a coding retry. Returns 0 on successful launch, 1
+# otherwise (caller falls back to generic retry_phase handling).
+_stage_failure_coding_relaunch() {
+  local issue="$1" feature_dir="$2" win="$3" failure_kind="$4" failure_class="$5"
+  local attempts="$6" limit="$7" fresh="$8"
+  local slug worktree branch title issue_json role is_challenge
+  local launch_identity agent="" model="" depth contract_payload rc=0
+
+  slug="$(basename "$feature_dir")"
+  worktree="$(pass_task_field "$issue" worktree 2>/dev/null || true)"
+  [[ -n "$worktree" ]] || worktree="${WORKTREE_ROOT:-}/${slug}"
+  [[ -d "$worktree" ]] || return 1
+
+  declare -F agent_resolve_from_model >/dev/null 2>&1 || return 1
+  declare -F agent_validate_phase_launch >/dev/null 2>&1 || return 1
+  declare -F _prepare_recovery_phase_launch >/dev/null 2>&1 || return 1
+  declare -F launch_coding_phase >/dev/null 2>&1 || return 1
+
+  role="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
+  is_challenge="$(get_task_meta "$issue" "challenge" 2>/dev/null || true)"
+
+  if [[ "$is_challenge" == "true" && "$role" == "challenger" ]]; then
+    launch_identity="$(resolve_challenger_transient_retry_launch_intent "$issue" "$feature_dir" "coding" "")"
+    if ! printf '%s' "$launch_identity" | jq -e '.ok == true' >/dev/null 2>&1; then
+      log_warn "$issue → coding stage-failure relaunch: challenger launch identity unavailable ($(printf '%s' "$launch_identity" | jq -r '.reason // "unknown"' 2>/dev/null || echo unknown))"
+      return 1
+    fi
+    agent="$(printf '%s' "$launch_identity" | jq -r '.agent // ""' 2>/dev/null || echo "")"
+    model="$(printf '%s' "$launch_identity" | jq -r '.model // ""' 2>/dev/null || echo "")"
+  else
+    model="$(read_phase_config "$feature_dir" "coding" "model")"
+    [[ -n "$model" ]] || model="$(get_task_meta "$issue" "coderModel" 2>/dev/null || true)"
+    model="$(resolve_phase_model "coding" "$model" "claude-opus-4-7")"
+    if ! agent="$(agent_resolve_from_model "$model" "coding")"; then
+      log_warn "$issue → coding stage-failure relaunch: ${AGENT_RESOLVE_LAST_DIAGNOSTIC:-agent resolution failed for $model}"
+      return 1
+    fi
+  fi
+  if [[ -z "$agent" || -z "$model" ]] || ! agent_validate_phase_launch "$agent" "coding" "$model" "$REPO_DIR"; then
+    log_warn "$issue → coding stage-failure relaunch: launch identity not launchable (adapter=${agent:-?} model=${model:-?})"
+    return 1
+  fi
+
+  branch="$(pass_task_field "$issue" branch)"
+  [[ -n "$branch" ]] || branch="task/${slug}"
+  title="$(pass_task_field "$issue" title)"
+  if [[ -z "$title" ]]; then
+    issue_json="$(cat "/tmp/${SESSION}-${issue}-issue.json" 2>/dev/null || echo "{}")"
+    title="$(printf '%s' "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")"
+  fi
+  depth="$(read_phase_config "$feature_dir" "coding" "depth")"
+  [[ -n "$depth" ]] || depth="$(get_task_meta "$issue" "codeDepth" 2>/dev/null || true)"
+  [[ -n "$depth" ]] || depth="medium"
+
+  contract_payload="$(jq -cn --arg agent "$agent" --arg model "$model" \
+    '{stageRole:"coding",agent:$agent,model:$model,recovery:"stage-failure-coding"}' 2>/dev/null || printf '{}')"
+  if ! _prepare_recovery_phase_launch "$issue" "$slug" "coding" "$feature_dir" "$worktree" "$agent" "$model" "$contract_payload"; then
+    return 1
+  fi
+  launch_coding_phase "$issue" "$slug" "$title" "$worktree" "$branch" "$BASE_BRANCH" \
+    "$model" "$agent" "$depth" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    log_warn "$issue → coding stage-failure relaunch: launch failed (rc=$rc)"
+    return 1
+  fi
+
+  set_task_phase "$issue" "coding"
+  set_window_attention_state "$win" "clear"
+  log "status" "♻ $issue → coding failed (${failure_kind}, ${failure_class}), relaunch ${attempts}/${limit}${fresh} directly via coding (planning guard bypassed)"
   return 0
 }
 
@@ -8924,22 +9674,145 @@ _ensure_task_window_exists() {
   printf '%s\n' "$target"
 }
 
+# Record the tmux window id on an EXISTING task row. HOK-3210: this runs from
+# window-recreation paths that can fire after an out-of-band reap, so it goes
+# through task_state_mutate_existing — a raw `.tasks[$issue].windowId = ...`
+# write recreated the reaped row as a windowId-only HOK-3125 orphan stub,
+# which in turn defeated the next tick's window lookup and fed the loop.
 persist_task_window_id() {
   local issue="$1" target="$2"
   local resolved_target window_id
 
   [[ -n "$issue" && -n "$target" ]] || return 0
   [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  # Reaped: skip the locked rewrite entirely. task_state_mutate_existing below
+  # still covers a reap that lands between this probe and the write.
+  task_state_entry_exists "$issue" || return 0
 
   resolved_target="$target"
   [[ "$resolved_target" == @* ]] || resolved_target="$SESSION:$resolved_target"
   window_id="$(tmux display-message -p -t "$resolved_target" '#{window_id}' 2>/dev/null || true)"
   [[ -n "$window_id" ]] || return 0
 
-  state_mutate "$STATE_FILE" \
-    '.tasks[$issue].windowId = $windowId | .tasks[$issue].updated = (now | todate)' \
-    --arg issue "$issue" \
+  task_state_mutate_existing "$issue" \
+    '.windowId = $windowId | .updated = (now | todate)' \
     --arg windowId "$window_id" >/dev/null 2>&1 || true
+}
+
+# HOK-3210: probe whether <issue> was reaped out of band (`wavemill cleanup`,
+# cleanup-terminal-inbox.ts --execute) while the monitor still tracks it.
+# Prints a short reason and returns 0 when reaped; returns 1 otherwise.
+#
+# Reaped means the state row is gone (or is only an HOK-3125 orphan stub) AND
+# a second, durable reap signal holds: a terminal tombstone in
+# terminalTaskHistory.tasks, or the worktree directory no longer exists. The
+# second signal keeps a row that is merely not-yet-saved (launch in flight)
+# from being dropped. The tombstone alone is not required because the
+# HOK-3203 hot-state byte cap may evict it.
+#
+# Hot-path cost: a live row always carries slug/phase/status, which the pass
+# snapshot already holds, so healthy tasks never pay for the precise jq probe.
+# An unparsable state file (in-flight write) reads as "not reaped".
+monitor_task_reap_reason() {
+  local issue="$1" wt_dir="${2:-}"
+  local probe row_state tombstone
+
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  if [[ -n "$(pass_task_field "$issue" slug)$(pass_task_field "$issue" phase)$(pass_task_field "$issue" status)" ]]; then
+    return 1
+  fi
+
+  probe="$(jq -r --arg i "$issue" "$(task_lifecycle_jq_filter '
+    (.tasks[$i] // null) as $t
+    | (if $t == null then "missing" elif ($t | wm_orphan_stub) then "stub" else "live" end)
+      + " "
+      + (if (.terminalTaskHistory.tasks[$i] // null) != null then "tombstone" else "none" end)
+  ')" "$STATE_FILE" 2>/dev/null)" || return 1
+  read -r row_state tombstone <<<"$probe"
+
+  [[ "$row_state" == "missing" || "$row_state" == "stub" ]] || return 1
+  if [[ "$tombstone" == "tombstone" ]]; then
+    printf 'state row %s, terminal tombstone present\n' "$row_state"
+    return 0
+  fi
+  if [[ -n "$wt_dir" && ! -d "$wt_dir" ]]; then
+    printf 'state row %s, worktree %s gone\n' "$row_state" "$wt_dir"
+    return 0
+  fi
+  return 1
+}
+
+# HOK-3210: stop tracking a task that was reaped out of band. Deregistration
+# goes through the shared terminal path (CLEANED + registry unset) so no later
+# tick or post-loop scan recreates its window, worktree or state row. Logs
+# once per issue per monitor process.
+declare -A REAP_LOGGED=()
+monitor_drop_reaped_issue() {
+  local issue="$1" reason="${2:-reaped out of band}"
+  [[ -n "$issue" ]] || return 0
+  # Callers that load only this file's functions (the incident harness) skip
+  # the top-level declare; an undeclared array would index "$issue" as math.
+  declare -p REAP_LOGGED >/dev/null 2>&1 || declare -gA REAP_LOGGED=()
+  if [[ -z "${REAP_LOGGED[$issue]:-}" ]]; then
+    log "status" "⚠ $issue → reaped out of band ($reason), dropping from monitor tracking"
+    REAP_LOGGED["$issue"]=1
+  fi
+  monitor_deregister_terminal_task "$issue"
+  return 0
+}
+
+# HOK-3210: the generic missing-window recovery in monitor_issue_state. The
+# window is gone (it should survive with remain-on-exit, so this is an
+# anomaly); flag the task for attention in a fresh window instead of cleaning
+# up, since the worktree and branch still have value. Increments the caller's
+# active_count whenever the task stays tracked.
+#
+# Two guards keep a reaped task from spawning a bare shell every tick (the
+# 67-window loop):
+#   1. A vanished worktree means the task was reaped out of band, not that its
+#      window crashed: drop tracking, never `tmux new-window` into $HOME.
+#   2. Recreation is bounded per worktree head through bounded-retry.sh
+#      (bucket `window-recreate`, ceiling WAVEMILL_WINDOW_RECREATE_MAX_ATTEMPTS,
+#      default 3, with the standard backoff between attempts), so any future
+#      variant where the recreated window cannot be found again parks at
+#      needs-user. A new commit resets the budget; the exhausted sentinel's
+#      HOK-3172 condition companion expires on head/operator events.
+monitor_recreate_missing_task_window() {
+  local issue="$1" win="$2" wt_dir="$3" feature_dir="$4" phase="${5:-}"
+  local win_target wrec_head wrec_decision
+  local wrec_limit="${WAVEMILL_WINDOW_RECREATE_MAX_ATTEMPTS:-3}"
+
+  if [[ ! -d "$wt_dir" ]]; then
+    monitor_drop_reaped_issue "$issue" "worktree $wt_dir gone at window recreate"
+    return 0
+  fi
+
+  wrec_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+  wrec_decision="$(bounded_retry_gate "$feature_dir" "window-recreate" "$wrec_head" "$wrec_limit")"
+  # proceed | backoff | exhausted | exhausted-quiet (see bounded_retry_gate).
+  if [[ "$wrec_decision" != "proceed" ]]; then
+    if [[ "$wrec_decision" == "exhausted" ]] \
+      && bounded_retry_mark_exhausted "$feature_dir" "window-recreate" \
+        "window-recreate: $wrec_limit window recreations on head ${wrec_head:-unknown} without the window persisting"; then
+      log "status" "⛔ $issue → window recreated $wrec_limit times on head ${wrec_head:0:12} and still missing, parking at needs-user"
+    fi
+    set_window_attention_state "$win" "needs-user"
+    active_count=$((active_count + 1))
+    return 0
+  fi
+  bounded_retry_increment "$feature_dir" "window-recreate" "$wrec_head" >/dev/null
+
+  log "status" "⚠ $issue → Window disappeared during $phase phase, recreating..."
+  tmux new-window -d -t "$SESSION" -n "$win" -c "$wt_dir" 2>/dev/null || true
+  win_target="$(tmux display-message -p -t "$SESSION:$win" '#{window_id}' 2>/dev/null || true)"
+  [[ -n "$win_target" ]] || win_target="$win"
+  persist_task_window_id "$issue" "$win_target"
+  win_target="$(_tmux_target_join "$SESSION" "$win_target" 2>/dev/null || printf '%s:%s\n' "$SESSION" "$win_target")"
+  tmux set-option -t "$win_target" remain-on-exit on 2>/dev/null || true
+  sleep 1
+  active_count=$((active_count + 1))
+  set_window_attention_state "$win" "needs-user"
+  return 0
 }
 
 _challenge_side_for_issue() {
@@ -9801,8 +10674,16 @@ pr_live_labels_json() {
     fi
   fi
 
+  # HOK-3206: labels come with this pass's batched PR query.
+  if output="$(wavemill_pr_cache_lookup_pr "$pr_number" labels 2>/dev/null)" \
+    && output="$(jq -c 'if type == "array" then map(.name) else empty end' <<<"$output" 2>/dev/null)" \
+    && [[ -n "$output" ]]; then
+    printf '%s\n' "$output"
+    return 0
+  fi
+
   local repo_slug
-  repo_slug="$(cd "$wt_dir" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo)"
+  repo_slug="$(wavemill_repo_name_with_owner "$wt_dir")"
   output=$(_with_timeout "$API_TIMEOUT" gh -R "$repo_slug" pr view "$pr_number" --json labels --jq '[.labels[].name]' 2>/dev/null) || rc=$?
   if (( rc != 0 )) || [[ -z "$output" ]] || ! printf '%s' "$output" | jq -e 'type == "array"' >/dev/null 2>&1; then
     # Fall back to running gh inside the worktree if the repo lookup above
@@ -10223,7 +11104,7 @@ refresh_ready_merge_queue_tick() {
       continue
     fi
 
-    ci_json="$(ready_live_ci_json "$wt_dir" "$pr" "$BASE_BRANCH")"
+    ci_json="$(ready_ci_json_cached "$wt_dir" "$pr" "$BASE_BRANCH" "$issue" "$state_dir")"
     ci_conclusion=$(printf '%s' "$ci_json" | jq -r '.conclusion // "unknown"' 2>/dev/null || echo "unknown")
     ci_head=$(printf '%s' "$ci_json" | jq -r '.headSha // empty' 2>/dev/null || echo "")
     ci_summary="$(ci_summary_from_json "$ci_json")"
@@ -10377,7 +11258,7 @@ refresh_ready_merge_queue_tick() {
     wt_dir="${WORKTREE_ROOT}/${slug}"
     state_dir="$(ready_state_dir "$wt_dir" "$slug")"
     pr="${PR_BY_ISSUE[$issue]:-}"
-    ci_json="$(ready_live_ci_json "$wt_dir" "$pr" "$BASE_BRANCH")"
+    ci_json="$(ready_ci_json_cached "$wt_dir" "$pr" "$BASE_BRANCH" "$issue" "$state_dir")"
     demote_merge_candidate "$issue" "$state_dir" "live CI failing"
     invalidate_ready_for_ci "$issue" "$state_dir" "$ci_json"
   done
@@ -10630,8 +11511,7 @@ clear_cross_pr_guard_ready_evidence() {
 
 cross_pr_revert_gate_allows_merge() {
   local issue="$1" state_dir="$2" wt_dir="$3" pr_number="$4" base_branch="${5-}"
-  local result rc prs files message stderr_file raw_error classification checked_head_sha
-  local tool_stderr=""
+  local result rc stderr_file raw_error checked_head_sha
   local extra_args=()
   raw_error=""
   checked_head_sha=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
@@ -10656,6 +11536,18 @@ cross_pr_revert_gate_allows_merge() {
   else
     rc=$?
   fi
+
+  cross_pr_revert_gate_apply_result "$issue" "$state_dir" "$pr_number" "$checked_head_sha" "$rc" "$result" "$raw_error"
+}
+
+# cross_pr_revert_gate_apply_result <issue> <state_dir> <pr> <checked_head> <rc> <stdout> <stderr>
+# Publishes a cross-PR guard verdict (exit code + tool output) as Ready
+# evidence. Shared by the inline gate and the async consumer (HOK-3206), so
+# a verdict computed by the background job lands exactly as an inline one.
+cross_pr_revert_gate_apply_result() {
+  local issue="$1" state_dir="$2" pr_number="$3" checked_head_sha="$4" rc="$5" result="$6" raw_error="$7"
+  local prs files message classification
+  local tool_stderr=""
 
   if [[ "$rc" -eq 0 ]]; then
     clear_cross_pr_guard_ready_evidence "$state_dir"
@@ -12923,7 +13815,7 @@ launch_ready_watchdog_remediation() {
   return 0
 }
 
-if [[ "${WAVEMILL_READY_WATCHDOG_SOURCE_ONLY:-}" == "1" ]]; then
+if [[ "${WAVEMILL_READY_WATCHDOG_SOURCE_ONLY:-}" == "1" && "${WAVEMILL_MONITOR_SOURCE_ONLY:-}" != "1" ]]; then
   return 0 2>/dev/null || exit 0
 fi
 
@@ -13122,7 +14014,18 @@ launch_ready_phase() {
       ;;
   esac
 
-  if ! cross_pr_revert_gate_allows_merge "$issue" "$state_dir" "$wt_dir" "$pr_number" "$base_branch"; then
+  # HOK-3206: the guard (19 s inline) runs as a tracked job; its verdict is
+  # consumed on a later pass, and only for the head and base it checked.
+  local cross_pr_rc=0
+  ready_cross_pr_revert_gate "$issue" "$state_dir" "$wt_dir" "$pr_number" "$base_branch" || cross_pr_rc=$?
+  if (( cross_pr_rc == 4 )); then
+    write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
+      "Cross-PR revert guard running for PR #$pr_number; Ready deferred" \
+      "$(jq -cn --argjson pr "$pr_number" '{type:"ready",verdict:"pending",prNumber:$pr,pendingReason:"cross-pr-guard-running"}')"
+    log "$pending_log_level" "  $issue: cross-PR revert guard pending - deferring Ready (PR #$pr_number)"
+    return 4
+  fi
+  if (( cross_pr_rc != 0 )); then
     return 1
   fi
 
@@ -14033,10 +14936,14 @@ handle_comparison_job_success() {
   fi
 }
 
-poll_challenge_jobs() {
+# Poll every tracked job once per pass: challenge eval/comparison jobs and the
+# HOK-3206 check jobs (cross-pr-guard, pr-ci-status, ready-watchdog,
+# route-task). Succeeded check jobs are settled by job-tracker.ts itself;
+# their result marker is the output.
+poll_tracked_jobs() {
   local poll_json
   if ! poll_json=$(wavemill_run_tool "job-tracker.ts" poll --state-file "$STATE_FILE" 2>/dev/null); then
-    log_warn "challenge job poll failed"
+    log_warn "tracked job poll failed"
     return 0
   fi
 
@@ -14054,6 +14961,14 @@ poll_challenge_jobs() {
     log_path=$(echo "$job_json" | jq -r '.logPath // empty')
     result_path=$(echo "$job_json" | jq -r '.resultPath // empty')
     side=$(echo "$job_json" | jq -r '.side // empty')
+
+    case "$kind" in
+      cross-pr-guard|pr-ci-status|ready-watchdog|route-task)
+        [[ "$status" == "succeeded" ]] || handle_check_job_failure "$job_id" "$kind" "$status" "$reason" "$result_path" "$excerpt"
+        settle_tracked_job "$job_id"
+        continue
+        ;;
+    esac
 
     if [[ "$kind" == "eval" && "$status" == "succeeded" ]]; then
       log "status" "Challenge eval completed for $issue_id${side:+ ($side)}"
@@ -14491,7 +15406,9 @@ maybe_run_challenge_eval() {
       return 0
     fi
   fi
-  solution_model=$(get_task_meta "$issue" "challengeModel")
+  # The eval's solution model has always been the coder; keep that meaning now
+  # that challengeModel names the varied stage's model (HOK-3156).
+  solution_model="$(challenge_coder_model_for_task "$issue")"
   linear_issue=$(get_linear_issue_id "$issue")
   eval_agent=$(pass_task_field "$issue" agent)
   [[ -z "$eval_agent" ]] && eval_agent="$AGENT_CMD"
@@ -14816,6 +15733,12 @@ maybe_run_challenge_comparison() {
   challenger_plan_depth=$(get_task_meta "$challenger_key" "planDepth")
   challenger_code_depth=$(get_task_meta "$challenger_key" "codeDepth")
   challenger_review_mode=$(get_task_meta "$challenger_key" "reviewMode")
+  # HOK-3156: primary_model/challenger_model are the varied stage's models; the
+  # routing coder is passed separately so a review- or plan-stage pair does not
+  # look like a coder variation as well.
+  local primary_coder challenger_coder
+  primary_coder="$(challenge_coder_model_for_task "$primary_key")"
+  challenger_coder="$(challenge_coder_model_for_task "$challenger_key")"
 
   log "status" "  ⚖ [mill] comparison running: pair=$pair_id primary_pr=#$primary_pr challenger_pr=#$challenger_pr"
   job_dir=$(challenge_job_dir)
@@ -14836,6 +15759,7 @@ maybe_run_challenge_comparison() {
     --issue "$linear_issue" --pair-id "$pair_id" \
     --primary-pr "$primary_pr" --challenger-pr "$challenger_pr" \
     --primary-model "$primary_model" --challenger-model "$challenger_model" \
+    --primary-coder "${primary_coder:-$primary_model}" --challenger-coder "${challenger_coder:-$challenger_model}" \
     --primary-planner "$primary_planner" --primary-reviewer "$primary_reviewer" \
     --primary-plan-depth "$primary_plan_depth" --primary-code-depth "$primary_code_depth" --primary-review-mode "$primary_review_mode" \
     --challenger-planner "$challenger_planner" --challenger-reviewer "$challenger_reviewer" \
@@ -15431,15 +16355,131 @@ monitor_side_effect_detector_tick() {
   return 0
 }
 
+# ─── Ledger F recovery loop (HOK-3185) ──────────────────────────────────────
+#
+# One recovery rule over ledger step rows: a step past its deadline with no
+# HOK-3101 progress gets the HOK-3176 failure policy (terminal → settle,
+# code-failure → remediation, retryable → bounded retry → fresh relaunch →
+# one waiting_on operator escalation). Shadow by default: decisions land in
+# .wavemill/ledger-recovery.jsonl and nothing else changes.
+# Live: WAVEMILL_LEDGER_RECOVERY_LIVE=1. Kill switch:
+# WAVEMILL_LEDGER_RECOVERY_DISABLED=1 (or the ledger-wide
+# WAVEMILL_LEDGER_SHADOW_DISABLED=1).
+ledger_recovery_tick_enabled() {
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 1
+  [[ "${WAVEMILL_LEDGER_RECOVERY_DISABLED:-0}" == "1" ]] && return 1
+  [[ "${WAVEMILL_LEDGER_SHADOW_DISABLED:-0}" == "1" ]] && return 1
+  [[ -n "${STATE_DIR:-}" && -n "${REPO_DIR:-}" ]] || return 1
+  declare -F wavemill_run_tool >/dev/null 2>&1 || return 1
+  return 0
+}
+
+monitor_ledger_recovery_interval() {
+  local value="${LEDGER_RECOVERY_INTERVAL_SECONDS:-120}"
+  [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]] || value=120
+  printf '%s\n' "$value"
+}
+
+monitor_ledger_recovery_tick() {
+  ledger_recovery_tick_enabled || return 0
+
+  local interval last_at now stamp_file="$STATE_DIR/.ledger-recovery-last-at"
+  interval="$(monitor_ledger_recovery_interval)"
+  now="$(date +%s)"
+  if [[ -f "$stamp_file" ]]; then
+    last_at="$(cat "$stamp_file" 2>/dev/null || echo 0)"
+    [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
+    (( now - last_at < interval )) && return 0
+  fi
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  _monitor_terminal_cleanup_write "$stamp_file" "$now"
+
+  local -a cli=(ledger-recovery-tick.ts --repo-dir "$REPO_DIR")
+  [[ -n "${STATE_FILE:-}" ]] && cli+=(--state-file "$STATE_FILE")
+  [[ -n "${WORKTREE_ROOT:-}" ]] && cli+=(--worktree-root "$WORKTREE_ROOT")
+  local log_file="${MILL_LOG_FILE:-/dev/null}"
+  # Background so a slow ledger open never stalls the monitor pass.
+  (
+    wavemill_run_tool "${cli[@]}" >>"$log_file" 2>&1 || true
+  ) >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  return 0
+}
+
 # ─── Per-step pass timing (HOK-3190) ────────────────────────────────────────
 #
 # `monitor_step_begin NAME` and `monitor_step_end NAME` sandwich a measured
 # step inside the pass. Durations accumulate in MONITOR_STEP_MS, keyed by
 # step name. `wavemill_record_monitor_iteration_timing` emits per-step
 # durations and the three slowest steps alongside the pass duration, and
-# warns when a pass exceeds the warn threshold (default 30 000 ms).
+# warns when a pass exceeds the warn threshold (default 15 000 ms, HOK-3207).
 declare -A MONITOR_STEP_MS=()
 declare -A MONITOR_STEP_START_MS=()
+
+# ─── Per-pass spawn tally (HOK-3207) ───────────────────────────────────────
+#
+# To catch perf regressions deterministically (no wall time) a CI budget
+# fixture counts how many `node` / `gh` / `jq` processes the monitor loop
+# spawns per pass. Spawn counts are kept in a per-pass append-only tally
+# file so pipeline sub-shells still contribute (shell function wrappers
+# alone are blind to pipelines). `WAVEMILL_MONITOR_SPAWN_TALLY=""`
+# disables counting (no STATE_DIR, early-boot callers).
+WAVEMILL_MONITOR_SPAWN_TALLY=""
+
+wavemill_monitor_spawn_pass_begin() {
+  [[ -n "${STATE_DIR:-}" ]] || { WAVEMILL_MONITOR_SPAWN_TALLY=""; return 0; }
+  if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
+    log "warn" "Failed to create STATE_DIR=$STATE_DIR; spawn counting disabled"
+    WAVEMILL_MONITOR_SPAWN_TALLY=""
+    return 0
+  fi
+  WAVEMILL_MONITOR_SPAWN_TALLY="$STATE_DIR/.spawn-tally.$$"
+  if ! : > "$WAVEMILL_MONITOR_SPAWN_TALLY" 2>/dev/null; then
+    log "warn" "Failed to initialize spawn tally at $WAVEMILL_MONITOR_SPAWN_TALLY; spawn counting disabled"
+    WAVEMILL_MONITOR_SPAWN_TALLY=""
+  fi
+  export WAVEMILL_MONITOR_SPAWN_TALLY
+}
+
+_wavemill_spawn_record() {
+  [[ -n "${WAVEMILL_MONITOR_SPAWN_TALLY:-}" ]] || return 0
+  printf '%s\n' "$1" >> "$WAVEMILL_MONITOR_SPAWN_TALLY" 2>/dev/null || true
+}
+
+# Function wrappers. `command` suppresses function lookup to prevent
+# infinite recursion. The wrappers return the wrapped binary's exit code
+# unmodified so set -e / pipefail semantics are preserved.
+node() { _wavemill_spawn_record node; command node "$@"; }
+gh()   { _wavemill_spawn_record gh;   command gh   "$@"; }
+jq()   { _wavemill_spawn_record jq;   command jq   "$@"; }
+
+# Prints `<node> <gh> <jq>` ints. Zero when counting is off or the file is
+# unreadable. Uses grep over the append-only tally file so pipeline
+# sub-shells (which get a copy of WAVEMILL_MONITOR_SPAWN_TALLY by export)
+# contribute to the parent's count.
+wavemill_monitor_spawn_pass_counts() {
+  local tally="${WAVEMILL_MONITOR_SPAWN_TALLY:-}"
+  if [[ -z "$tally" || ! -f "$tally" ]]; then
+    printf '0 0 0\n'
+    return 0
+  fi
+  local node_count gh_count jq_count
+  node_count=$(grep -c '^node$' "$tally" 2>/dev/null || printf '0')
+  gh_count=$(grep -c   '^gh$'   "$tally" 2>/dev/null || printf '0')
+  jq_count=$(grep -c   '^jq$'   "$tally" 2>/dev/null || printf '0')
+  [[ "$node_count" =~ ^[0-9]+$ ]] || node_count=0
+  [[ "$gh_count"   =~ ^[0-9]+$ ]] || gh_count=0
+  [[ "$jq_count"   =~ ^[0-9]+$ ]] || jq_count=0
+  printf '%s %s %s\n' "$node_count" "$gh_count" "$jq_count"
+}
+
+# Truncate the tally file so the next pass starts from zero. Keeps the
+# file path (and inode) alive across passes.
+wavemill_monitor_spawn_pass_reset() {
+  local tally="${WAVEMILL_MONITOR_SPAWN_TALLY:-}"
+  [[ -n "$tally" && -f "$tally" ]] || return 0
+  : > "$tally" 2>/dev/null || true
+}
 
 monitor_step_begin() {
   local name="${1:-}"
@@ -15484,6 +16524,16 @@ wavemill_record_monitor_iteration_timing() {
   tmp="$(mktemp "${timing_file}.XXXXXX" 2>/dev/null || true)"
   [[ -n "$tmp" ]] || return 0
 
+  # HOK-3207: capture per-pass spawn counts (node/gh/jq) BEFORE the
+  # recorder itself calls jq, so the tally reflects the pass body work
+  # instead of the recorder's own overhead.
+  local spawn_counts spawn_node spawn_gh spawn_jq
+  spawn_counts="$(wavemill_monitor_spawn_pass_counts 2>/dev/null || printf '0 0 0')"
+  read -r spawn_node spawn_gh spawn_jq <<<"$spawn_counts"
+  [[ "$spawn_node" =~ ^[0-9]+$ ]] || spawn_node=0
+  [[ "$spawn_gh"   =~ ^[0-9]+$ ]] || spawn_gh=0
+  [[ "$spawn_jq"   =~ ^[0-9]+$ ]] || spawn_jq=0
+
   # Build the per-step JSON object and the top-3 slowest step summary.
   local steps_json="{}" top_json="[]" step_name step_ms sorted_pairs
   if (( ${#MONITOR_STEP_MS[@]} > 0 )); then
@@ -15506,8 +16556,68 @@ wavemill_record_monitor_iteration_timing() {
     ' 2>/dev/null || echo "[]")"
   fi
 
-  local warn_ms="${WAVEMILL_MONITOR_PASS_WARN_MS:-30000}"
-  if (( duration_ms > warn_ms )); then
+  local github_json="{}" jobs_json="{}"
+  if declare -F monitor_github_pass_counters_json >/dev/null 2>&1; then
+    github_json="$(monitor_github_pass_counters_json 2>/dev/null || echo '{}')"
+  fi
+  if declare -F monitor_async_job_stats_json >/dev/null 2>&1; then
+    jobs_json="$(monitor_async_job_stats_json 2>/dev/null || echo '{}')"
+  fi
+  [[ -n "$github_json" ]] || github_json="{}"
+  [[ -n "$jobs_json" ]] || jobs_json="{}"
+
+  # HOK-3207: default warn threshold is 15 000 ms (the real monitor-pass
+  # target). The sustained-slow observer detector trips on p50 > warnMs
+  # for ≥ 1 h. MUST be kept in sync with DEFAULT_MONITOR_WARN_MS in
+  # tools/observer.ts (currently 15_000 ms).
+  local warn_ms="${WAVEMILL_MONITOR_PASS_WARN_MS:-15000}"
+
+  # HOK-3207: read the previous slowState / slowSinceAt from the current
+  # timing file so hysteresis spans passes. On a fresh install both fields
+  # are null, which is treated as "fast" so the first slow pass of a
+  # fresh mill emits the warn.
+  local prior_slow_state prior_slow_since current_slow_state current_slow_since now_iso
+  prior_slow_state="$(jq -r '.slowState // false | tostring' "$timing_file" 2>/dev/null || echo false)"
+  prior_slow_since="$(jq -r '.slowSinceAt // null | if . == null then "" else . end' "$timing_file" 2>/dev/null || echo "")"
+  [[ "$prior_slow_state" == "true" ]] || prior_slow_state=false
+  now_iso="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+  # Peek at the p50 that will result from appending this pass. We cannot
+  # read the fresh p50 before the main jq write, so compute it locally
+  # from the stored samples. This is the same formula as the write below.
+  local projected_p50
+  projected_p50="$(jq --argjson d "$duration_ms" '
+      (.samples // []) as $s
+      | (($s + [$d]) | .[-100:]) as $n
+      | ($n | sort) as $sorted
+      | (if $sorted | length == 0 then 0 else $sorted[((($sorted | length) - 1) / 2 | floor)] end)
+    ' "$timing_file" 2>/dev/null || echo 0)"
+  [[ "$projected_p50" =~ ^-?[0-9]+$ ]] || projected_p50=0
+
+  # The observer detector reads slowSinceAt. We drive it off p50 (sticky)
+  # rather than duration_ms (per-pass) so one lucky fast pass inside a
+  # slow regime does not reset the 1 h clock. The operator-facing warn
+  # line, however, is a per-pass signal, so it is still gated on
+  # duration_ms.
+  current_slow_state=false
+  if (( projected_p50 > warn_ms )); then
+    current_slow_state=true
+  fi
+
+  if [[ "$current_slow_state" == "true" ]]; then
+    if [[ -n "$prior_slow_since" ]]; then
+      current_slow_since="$prior_slow_since"
+    else
+      current_slow_since="$now_iso"
+    fi
+  else
+    current_slow_since=""
+  fi
+
+  # Operator warn line: emit only on the fast → slow edge for duration_ms
+  # (HOK-3207 hysteresis). The warn text keeps its (duration, warn, top)
+  # content so operator logs stay informative.
+  if (( duration_ms > warn_ms )) && [[ "$prior_slow_state" != "true" ]]; then
     local top_summary
     top_summary="$(printf '%s' "$top_json" | jq -r 'map("\(.name):\(.ms)ms") | join(",")' 2>/dev/null || echo "")"
     if [[ -n "$top_summary" ]]; then
@@ -15525,12 +16635,20 @@ wavemill_record_monitor_iteration_timing() {
     --argjson steps "$steps_json" \
     --argjson top "$top_json" \
     --argjson warnMs "$warn_ms" \
-    --arg updatedAt "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    --argjson spawnNode "$spawn_node" \
+    --argjson spawnGh "$spawn_gh" \
+    --argjson spawnJq "$spawn_jq" \
+    --arg slowSinceAt "$current_slow_since" \
+    --arg slowState "$current_slow_state" \
+    --arg updatedAt "$now_iso" \
+    --argjson github "$github_json" \
+    --argjson jobs "$jobs_json" \
     '
       (.samples // []) as $samples
       | (($samples + [$duration]) | .[-100:]) as $nextSamples
-      | ($nextSamples | sort | if length == 0 then 0 else .[((length * 95 / 100) | tostring | split(".")[0] | tonumber)] end) as $p95
-      | ($nextSamples | sort | if length == 0 then 0 else .[((length / 2) | tostring | split(".")[0] | tonumber)] end) as $p50
+      | ($nextSamples | sort) as $sorted
+      | (if $sorted | length == 0 then 0 else $sorted[((($sorted | length) - 1) * 95 / 100 | floor)] end) as $p95
+      | (if $sorted | length == 0 then 0 else $sorted[((($sorted | length) - 1) / 2 | floor)] end) as $p50
       | {
           lastIterationMs: $duration,
           samples: $nextSamples,
@@ -15540,6 +16658,11 @@ wavemill_record_monitor_iteration_timing() {
           warnMs: $warnMs,
           lastSteps: $steps,
           slowestSteps: $top,
+          spawns: { node: $spawnNode, gh: $spawnGh, jq: $spawnJq },
+          slowState: ($slowState == "true"),
+          slowSinceAt: (if $slowSinceAt == "" then null else $slowSinceAt end),
+          github: $github,
+          jobs: $jobs,
           cleanupSkippedCount: ((.cleanupSkippedCount // 0) + $cleanupSkipped),
           remoteCallAvoidedCount: ((.remoteCallAvoidedCount // 0) + $remoteAvoided),
           updatedAt: $updatedAt
@@ -15549,6 +16672,79 @@ wavemill_record_monitor_iteration_timing() {
   else
     rm -f "$tmp" 2>/dev/null || true
   fi
+
+  # HOK-3207: zero the tally for the next pass. Keeps the file alive so
+  # exported sub-shells on the next pass append to the same inode.
+  wavemill_monitor_spawn_pass_reset
+}
+
+# ─── Per-pass GitHub read batching (HOK-3206) ───────────────────────────────
+#
+# One batched `gh pr list` per pass feeds every per-task PR reader through the
+# PR cache; repo-level constants come from the session repo cache. The
+# exported paths are inherited by tsx tools the monitor spawns (including the
+# async check jobs), and only by them: tend and other backstage processes keep
+# reading GitHub directly.
+
+monitor_github_session_init() {
+  WAVEMILL_SESSION_PR_CACHE="$(wavemill_pr_cache_file)"
+  WAVEMILL_SESSION_REPO_CACHE="$(wavemill_session_repo_cache_file)"
+  MONITOR_GH_CALL_COUNTER_FILE="${WAVEMILL_SESSION_PR_CACHE}.gh-calls"
+  export WAVEMILL_SESSION_PR_CACHE WAVEMILL_SESSION_REPO_CACHE MONITOR_GH_CALL_COUNTER_FILE
+  : > "$MONITOR_GH_CALL_COUNTER_FILE" 2>/dev/null || true
+  # Count every shell `gh` spawn from the monitor and its subshells (the
+  # spawn-sample acceptance metric). Skipped when a test already mocks gh.
+  if [[ "${WAVEMILL_GH_CALL_COUNTING:-1}" == "1" ]] && ! declare -F gh >/dev/null 2>&1; then
+    gh() {
+      printf '.' >> "${MONITOR_GH_CALL_COUNTER_FILE:-/dev/null}" 2>/dev/null || true
+      command gh "$@"
+    }
+  fi
+  wavemill_session_repo_cache_refresh "$REPO_DIR" "$BASE_BRANCH" || true
+  MONITOR_REPO_CACHE_BASES=" ${BASE_BRANCH} "
+}
+
+# Refresh the per-pass PR cache with one query covering every active task
+# branch, and record branch protection for any base branch not yet cached.
+monitor_refresh_pr_cache() {
+  local issue base
+  local -a branches=() new_bases=()
+  for issue in "${!BRANCH_BY_ISSUE[@]}"; do
+    [[ -n "${CLEANED[$issue]:-}" ]] && continue
+    [[ -n "${BRANCH_BY_ISSUE[$issue]}" ]] && branches+=("${BRANCH_BY_ISSUE[$issue]}")
+    base="$(pass_task_field "$issue" baseBranch 2>/dev/null || true)"
+    if [[ -n "$base" && "${MONITOR_REPO_CACHE_BASES:-}" != *" $base "* ]]; then
+      new_bases+=("$base")
+      MONITOR_REPO_CACHE_BASES="${MONITOR_REPO_CACHE_BASES:- } $base "
+    fi
+  done
+  if (( ${#new_bases[@]} > 0 )); then
+    wavemill_session_repo_cache_refresh "$REPO_DIR" "${new_bases[@]}" || true
+  fi
+  wavemill_pr_cache_refresh "${branches[@]}"
+}
+
+# Print the byte count of a one-byte-per-event counter file, then reset it.
+_monitor_counter_take() {
+  local file="$1" n=0
+  if [[ -f "$file" ]]; then
+    n="$(wc -c < "$file" 2>/dev/null | tr -d ' ')"
+    : > "$file" 2>/dev/null || true
+  fi
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  printf '%s' "$n"
+}
+
+# Read and reset this pass's GitHub counters for monitor-timing.json.
+monitor_github_pass_counters_json() {
+  local cache counter calls hits misses
+  cache="$(wavemill_pr_cache_file)"
+  counter="${MONITOR_GH_CALL_COUNTER_FILE:-${cache}.gh-calls}"
+  calls="$(_monitor_counter_take "$counter")"
+  hits="$(_monitor_counter_take "${cache}.hits")"
+  misses="$(_monitor_counter_take "${cache}.misses")"
+  jq -cn --argjson calls "$calls" --argjson hits "$hits" --argjson misses "$misses" \
+    '{ghCalls: $calls, prCacheHits: $hits, prCacheMisses: $misses}'
 }
 
 # ============================================================================
@@ -16981,7 +18177,11 @@ launch_task() {
   LAST_LAUNCHED_SLOTS=1
 
   linear_issue=$(get_linear_issue_id "$issue")
+  # A preset challenge arm (challengeModel set) relaunches with its stored
+  # coder. challengeModel itself names the varied stage's model (HOK-3156), so
+  # the coder is read through challenge_coder_model_for_task.
   challenge_model=$(get_task_meta "$issue" "challengeModel")
+  [[ -n "$challenge_model" ]] && challenge_model="$(challenge_coder_model_for_task "$issue")"
 
   log "status" "$issue: Launching - $title"
 
@@ -17022,6 +18222,18 @@ launch_task() {
   fi
   local packet_content
   packet_content=$(cat "$packet_file" 2>/dev/null || echo "")
+
+  # HOK-3206: a live route (route-task.ts, 30-60 s on a cache miss) runs as a
+  # tracked job before any worktree or Linear side effect; the caller queues
+  # the launch and re-dispatches it once the route lands.
+  if [[ "${LAUNCH_TASK_ALLOW_ROUTE_DEFER:-0}" == "1" ]] && launch_task_needs_live_route "$issue" "$challenge_model"; then
+    local prefetch_rc=0
+    launch_task_route_prefetch "$issue" "$packet_file" "$feature_dir" || prefetch_rc=$?
+    if (( prefetch_rc == LAUNCH_TASK_DEFERRED_RC )); then
+      log "status" "$issue: routing in background; launch deferred to a later pass"
+      return "$LAUNCH_TASK_DEFERRED_RC"
+    fi
+  fi
 
   # Refresh base branch on a TTL so repeated dynamic launches avoid redundant fetches.
   wavemill_fetch_base_branch "$effective_base" 2>/dev/null || true
@@ -17202,10 +18414,17 @@ launch_task() {
 
       printf 'issue=%s\npacket=%s\nsaved_route=%s\n' "$issue" "$route_input_file" "$saved_route" >> "$routing_log_file"
 
-      if [[ -f "$saved_route" ]] && [[ -f "$saved_route_source_file" ]] && [[ "$(cat "$saved_route_source_file" 2>/dev/null)" == "batch-cache" ]] && jq -e '.planner and .coder and .reviewer' "$saved_route" >/dev/null 2>&1; then
+      local saved_route_source=""
+      saved_route_source="$(cat "$saved_route_source_file" 2>/dev/null || true)"
+      if [[ -f "$saved_route" ]] && [[ "$saved_route_source" == "batch-cache" ]] && jq -e '.planner and .coder and .reviewer' "$saved_route" >/dev/null 2>&1; then
         route_json=$(cat "$saved_route" 2>/dev/null || echo "")
         route_source="batch-cache"
         log "info" "  Workflow route cache hit from batch cache"
+      elif [[ -f "$saved_route" ]] && [[ "$saved_route_source" == route-job:* ]] && jq -e '.planner and .coder and .reviewer' "$saved_route" >/dev/null 2>&1; then
+        # HOK-3206: computed by the background route job (a live route).
+        route_json=$(cat "$saved_route" 2>/dev/null || echo "")
+        route_source="live"
+        log "info" "  Workflow route from background route job"
       elif [[ ! -s "$route_input_file" ]]; then
         route_reason="missing_packet"
         log_warn "  Workflow routing skipped: no packet content available"
@@ -17720,7 +18939,16 @@ EOF
   if [[ "$effective_challenge" != "true" && -n "$challenge_role" ]]; then
     effective_challenge="true"
   fi
-  save_task_state "$issue" "$slug" "$branch" "$wt_dir" "" "" "${planner_agent:-$task_agent_cmd}" "$linear_issue" "$effective_challenge" "$challenge_pair" "${challenge_role:-}" "$task_model" "$planner_model" "$task_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "${challenge_stage:-}"
+  # challengeModel names the varied stage's model (HOK-3156); coderModel keeps
+  # the coder.
+  # A preset arm relaunching keeps its stored stage.
+  local primary_challenge_model="$task_model" varied_stage_for_state="${challenge_stage:-}"
+  [[ -n "$varied_stage_for_state" ]] || varied_stage_for_state="$(get_task_meta "$issue" "challengeStage" 2>/dev/null || true)"
+  if [[ "$effective_challenge" == "true" && -n "$varied_stage_for_state" ]]; then
+    primary_challenge_model="$(challenge_selection_health_varied_model "$varied_stage_for_state" "$planner_model" "$task_model" "$reviewer_model")"
+    [[ -n "$primary_challenge_model" ]] || primary_challenge_model="$task_model"
+  fi
+  save_task_state "$issue" "$slug" "$branch" "$wt_dir" "" "" "${planner_agent:-$task_agent_cmd}" "$linear_issue" "$effective_challenge" "$challenge_pair" "${challenge_role:-}" "$primary_challenge_model" "$planner_model" "$task_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "${challenge_stage:-}"
   if [[ "$challenge_enabled_for_launch" == "true" ]]; then
     if [[ "${defer_challenger:-false}" == "true" ]]; then
       # HOK-2811: Review-stage — record the challenger as a pending arm on the
@@ -17748,7 +18976,7 @@ EOF
         "${WORKTREE_ROOT}/${slug}/features/${slug}" \
         "$challenge_execution_intent"
     else
-      save_task_state "$challenger_key" "$challenger_slug" "task/${challenger_slug}" "${WORKTREE_ROOT}/${challenger_slug}" "" "" "${challenger_planner_agent:-$challenger_agent}" "$linear_issue" "true" "$challenge_pair" "challenger" "$challenger_model" "$challenger_planner" "$challenger_model" "$challenger_reviewer" "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" "$challenge_stage"
+      save_task_state "$challenger_key" "$challenger_slug" "task/${challenger_slug}" "${WORKTREE_ROOT}/${challenger_slug}" "" "" "${challenger_planner_agent:-$challenger_agent}" "$linear_issue" "true" "$challenge_pair" "challenger" "$(challenge_selection_health_varied_model "$challenge_stage" "$challenger_planner" "$challenger_model" "$challenger_reviewer")" "$challenger_planner" "$challenger_model" "$challenger_reviewer" "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" "$challenge_stage"
       state_mutate "$STATE_FILE" '.tasks[$issue].challengeStage = $stage' --arg issue "$challenger_key" --arg stage "$challenge_stage" || true
       state_mutate "$STATE_FILE" \
         '.tasks[$issue].challengerLaunched = true
@@ -18090,6 +19318,19 @@ Implement from the issue description plus direct codebase analysis."
 # MAIN MONITORING LOOP
 # ============================================================================
 
+# HOK-3207: a second, finer-grained source-only guard. The existing
+# WAVEMILL_READY_WATCHDOG_SOURCE_ONLY=1 returns early right after the
+# ready-watchdog helpers are defined, which is before this file's per-step
+# timing helpers, spawn tally helpers, and iteration-timing recorder. The
+# monitor-pass-budget fixture needs those later helpers available while
+# NOT running the top-level task-rehydration or the main `while :;` loop,
+# so this flag returns after all function definitions but before any
+# top-level task reads or the loop itself. Both guards are checked (either
+# flag suffices).
+if [[ "${WAVEMILL_MONITOR_SOURCE_ONLY:-}" == "1" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 # Parse initial tasks from file
 declare -A PR_BY_ISSUE BRANCH_BY_ISSUE SLUG_BY_ISSUE CLEANED
 
@@ -18141,6 +19382,7 @@ while IFS= read -r line; do
 done < "$TASKS_FILE"
 
 
+monitor_github_session_init
 log "status" "Monitoring tasks and managing work queue..."
 [[ "$PLANNING_MODE" == "interactive" ]] && log "info" "  Planning mode: interactive (watching for plan approval)"
 if (( EFFECTIVE_MAX_PARALLEL < MAX_PARALLEL )); then
@@ -19048,6 +20290,15 @@ monitor_issue_state() {
   WIN="$ISSUE-$SLUG"
   WT_DIR=$(pass_task_field "$ISSUE" worktree)
   [[ -z "$WT_DIR" ]] && WT_DIR="${WORKTREE_ROOT}/${SLUG}"
+  # HOK-3210: an out-of-band cleanup deletes the state row and worktree but
+  # cannot reach this process's in-memory tracking. Honor the durable reap
+  # evidence before any branch below can relaunch a stage, recreate a window
+  # or write the row back as a stub.
+  local _reap_reason
+  if _reap_reason="$(monitor_task_reap_reason "$ISSUE" "$WT_DIR")"; then
+    monitor_drop_reaped_issue "$ISSUE" "$_reap_reason"
+    return 0
+  fi
   local WIN_TARGET
   WIN_TARGET="$(_tmux_task_window_target "$SESSION" "$ISSUE" "$SLUG" "${STATE_FILE:-}" "$WT_DIR" 2>/dev/null || true)"
   if [[ -z "$WIN_TARGET" ]]; then
@@ -19519,6 +20770,14 @@ monitor_issue_state() {
 
           if [[ "$resolved_phase" == "coding" ]]; then
             unset "$approval_wait_var" 2>/dev/null || true
+            # HOK-3211: if coding already finished in-planning (valid marker,
+            # commit=HEAD, tree clean, HEAD ahead of base), reconcile in-place
+            # instead of letting the planning overreach guard stash the work
+            # and the stale-artifact archive move the valid marker aside.
+            if planning_late_coding_complete_reconcile "$ISSUE" "$FEATURE_DIR" "$WT_DIR" "$WIN" "$current_agent"; then
+              active_count=$((active_count + 1))
+              return 0
+            fi
             # Before launching coding, validate planning did not overreach.
             if ! validate_planning_phase_output "$WT_DIR"; then
               handle_planning_overreach_rejection "$ISSUE" "$FEATURE_DIR" "$WIN" "$current_agent"
@@ -19529,13 +20788,36 @@ monitor_issue_state() {
             # notified" on the dashboard even after the plan was re-approved
             # (HOK-2765). Drop it now that we're transitioning to coding.
             rm -f "$FEATURE_DIR/.planning-rejected.json" 2>/dev/null || true
+
+            # HOK-3206: the expanded reroute (route-tasks.ts, 30-60 s) runs as
+            # a tracked job keyed on the packet content. Hold the handoff
+            # until its result lands; re-enter on a later pass.
+            local reroute_rc=0
+            expanded_reroute_gate "$ISSUE" "$SLUG" "$FEATURE_DIR" || reroute_rc=$?
+            if (( reroute_rc == 4 )); then
+              set_window_attention_state "$WIN" "clear"
+              log "debug" "$ISSUE → expanded reroute running, plan→code handoff held"
+              active_count=$((active_count + 1))
+              return 0
+            fi
+
             # Record approval via approve_plan (HOK-1193: controller-owned stage result)
             approve_plan "$FEATURE_DIR" "$current_agent" ""
 
-            if ! reroute_expanded_packets_for_coding_handoff "$ISSUE" "$SLUG" "$FEATURE_DIR"; then
+            if (( reroute_rc != 0 )); then
               handle_expanded_reroute_handoff_failure "$ISSUE" "$FEATURE_DIR"
             fi
-            if ! apply_expanded_route_if_present "$FEATURE_DIR" "$ISSUE" "$SLUG" "$WT_DIR" "$STATE_FILE"; then
+            local apply_route_rc=0
+            apply_expanded_route_if_present "$FEATURE_DIR" "$ISSUE" "$SLUG" "$WT_DIR" "$STATE_FILE" || apply_route_rc=$?
+            if (( apply_route_rc == 3 )); then
+              # HOK-3156: the arms would differ in more than the varied stage.
+              # Collapse the pair before coding instead of discovering it at
+              # comparison; the route just written stays valid for a solo run.
+              challenge_collapse_route_drift "$ISSUE" "$FEATURE_DIR" "${APPLY_EXPANDED_ROUTE_DRIFT_DETAIL:-}" || true
+              if [[ "$CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF" == "true" ]]; then
+                return 0
+              fi
+            elif (( apply_route_rc != 0 )); then
               log_warn "$ISSUE → expanded route invalid; using bootstrap execution route for coding"
             fi
             emit_execution_active_route "$FEATURE_DIR" "$ISSUE"
@@ -19546,7 +20828,14 @@ monitor_issue_state() {
 
             if [[ "$handshake_reason" == "missing" && "$handshake_policy" == "recover" ]]; then
               if recover_missing_expansion_artifact "$ISSUE" "$SLUG" "$FEATURE_DIR"; then
-                if ! apply_expanded_route_if_present "$FEATURE_DIR" "$ISSUE" "$SLUG" "$WT_DIR" "$STATE_FILE"; then
+                apply_route_rc=0
+                apply_expanded_route_if_present "$FEATURE_DIR" "$ISSUE" "$SLUG" "$WT_DIR" "$STATE_FILE" || apply_route_rc=$?
+                if (( apply_route_rc == 3 )); then
+                  challenge_collapse_route_drift "$ISSUE" "$FEATURE_DIR" "${APPLY_EXPANDED_ROUTE_DRIFT_DETAIL:-}" || true
+                  [[ "$CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF" == "true" ]] && return 0
+                  apply_route_rc=0
+                fi
+                if (( apply_route_rc != 0 )); then
                   expansion_recovery_mark_result "$FEATURE_DIR" "$ISSUE" "failed" "expanded-route-promotion-failed" "1" || true
                   log_warn "$ISSUE → recovered expanded route was invalid during promotion; using bootstrap execution route for coding"
                   handshake_reason="recovery-fallback-bootstrap"
@@ -19598,6 +20887,10 @@ monitor_issue_state() {
               FINALIZED_CHALLENGE_CODER=""
               FINALIZED_CHALLENGE_STAGE=""
               finalize_challenge_execution_intent_before_coding "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$FEATURE_DIR" "$coder_model" "$challenge_role_meta" "$challenge_stage_meta"
+              # HOK-3156: materialising a plan-stage arm re-seals the primary's
+              # non-varied route, so re-read the coder it settled on.
+              coder_model=$(read_phase_config "$FEATURE_DIR" "coding" "model")
+              [[ -z "$coder_model" ]] && coder_model=$(get_task_meta "$ISSUE" "coderModel")
               if [[ -n "$FINALIZED_CHALLENGE_CODER" ]]; then
                 challenge_coder="$FINALIZED_CHALLENGE_CODER"
                 challenge_stage_meta="$FINALIZED_CHALLENGE_STAGE"
@@ -19736,6 +21029,14 @@ monitor_issue_state() {
           fi
 
           if [[ "$planning_status" == "awaiting_user" ]]; then
+            # HOK-3211: fire the reconciler on any pass that enters this
+            # branch, including the pass that *created* awaiting_user — a
+            # late .coding-complete written while the operator was deciding
+            # must be accepted instead of silently waiting on the plan gate.
+            if planning_late_coding_complete_reconcile "$ISSUE" "$FEATURE_DIR" "$WT_DIR" "$WIN" "$current_agent"; then
+              active_count=$((active_count + 1))
+              return 0
+            fi
             if [[ -f "$FEATURE_DIR/.plan-approved" ]]; then
               unset "$approval_wait_var" 2>/dev/null || true
               if ! validate_planning_phase_output "$WT_DIR"; then
@@ -19763,6 +21064,15 @@ monitor_issue_state() {
 
           # Check if plan exists but not yet approved (awaiting_user)
           if [[ "$resolved_phase" == "awaiting_user" ]]; then
+            # HOK-3211: a late .coding-complete arrives here too (the task
+            # transitioned to awaiting_user while the operator was deciding
+            # and the coder has since finished and committed). Accept it in
+            # place of waiting on an approval that would archive the valid
+            # marker.
+            if planning_late_coding_complete_reconcile "$ISSUE" "$FEATURE_DIR" "$WT_DIR" "$WIN" "$current_agent"; then
+              active_count=$((active_count + 1))
+              return 0
+            fi
             # Check if user signaled approval by creating .plan-approved marker
             if [[ -f "$FEATURE_DIR/.plan-approved" ]]; then
               unset "$approval_wait_var" 2>/dev/null || true
@@ -19790,6 +21100,11 @@ monitor_issue_state() {
                 printf -v "$approval_wait_var" '%s' "true"
               fi
             fi
+
+            # HOK-3211 diagnostic: when the reconciler did not fire but a
+            # .coding-complete exists or HEAD is ahead of base, log once per
+            # task so the operator can see the coder actually finished work.
+            maybe_log_planning_wait_coding_present "$ISSUE" "$FEATURE_DIR" "$WT_DIR" || true
 
             set_window_attention_state "$WIN" "needs-user"
             active_count=$((active_count + 1))
@@ -19877,6 +21192,12 @@ monitor_issue_state() {
             # terminalize once the phase-launch budget is spent.
             if ! phase_launch_gate "$ISSUE" "$FEATURE_DIR" "review" "$WIN"; then
               active_count=$((active_count + 1))
+              return 0
+            fi
+
+            # HOK-3156: a pair whose arms differ beyond the varied stage is
+            # collapsed before review spend, never discovered at comparison.
+            if ! challenge_pre_review_route_preflight "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}"; then
               return 0
             fi
 
@@ -20418,16 +21739,7 @@ monitor_issue_state() {
           active_count=$((active_count + 1))
           return 0
         fi
-        log "status" "⚠ $ISSUE → Window disappeared during $current_phase phase, recreating..."
-        tmux new-window -d -t "$SESSION" -n "$WIN" -c "${WORKTREE_ROOT}/${SLUG}" 2>/dev/null || true
-        WIN_TARGET="$(tmux display-message -p -t "$SESSION:$WIN" '#{window_id}' 2>/dev/null || true)"
-        [[ -n "$WIN_TARGET" ]] || WIN_TARGET="$WIN"
-        persist_task_window_id "$ISSUE" "$WIN_TARGET"
-        WIN_TARGET="$(_tmux_target_join "$SESSION" "$WIN_TARGET" 2>/dev/null || printf '%s:%s\n' "$SESSION" "$WIN_TARGET")"
-        tmux set-option -t "$WIN_TARGET" remain-on-exit on 2>/dev/null || true
-        sleep 1
-        active_count=$((active_count + 1))
-        set_window_attention_state "$WIN" "needs-user"
+        monitor_recreate_missing_task_window "$ISSUE" "$WIN" "$WT_DIR" "$FEATURE_DIR" "$current_phase"
         return 0
       fi
 
@@ -22359,6 +23671,9 @@ while :; do
   cleanup_skipped_count=0
   remote_call_avoided_count=0
   monitor_reset_steps
+  # HOK-3207: open the per-pass spawn tally so the recorder can report
+  # process-spawn counts in monitor-timing.json.
+  wavemill_monitor_spawn_pass_begin
   # HOK-3190: one jq pass extracts the per-task fields the loop needs so
   # subsequent `pass_task_field` / `pass_state_root` calls read from bash
   # associative arrays instead of re-parsing the 15 MB state file hundreds
@@ -22367,6 +23682,14 @@ while :; do
   monitor_step_begin passSnapshot
   monitor_build_pass_snapshot
   monitor_step_end passSnapshot
+  if declare -F monitor_async_job_stats_reset >/dev/null 2>&1; then
+    monitor_async_job_stats_reset
+  fi
+  # HOK-3206: refresh the batched PR cache first so every reader in this
+  # pass (condition reconciler, ready gates, merge queue, PR discovery) hits it.
+  monitor_step_begin prCacheRefresh
+  monitor_refresh_pr_cache
+  monitor_step_end prCacheRefresh
   # ── Phase A: Monitor existing tasks ──────────────────────────────────
   _update_effective_max_parallel
   monitor_step_begin linearRetryDrain
@@ -22396,12 +23719,16 @@ while :; do
   monitor_step_begin sideEffectDuplicateDetector
   monitor_side_effect_detector_tick || true
   monitor_step_end sideEffectDuplicateDetector
+  # HOK-3185: the one recovery loop over ledger step rows (shadow by default).
+  monitor_step_begin ledgerRecovery
+  monitor_ledger_recovery_tick || true
+  monitor_step_end ledgerRecovery
   # HOK-3174: after a host wake, re-check running stages before normal gates.
   if [[ -n "$monitor_wake_episode" ]]; then
     monitor_resume_agents_after_wake "$monitor_wake_episode"
   fi
   monitor_step_begin pollTrackedJobs
-  poll_challenge_jobs
+  poll_tracked_jobs
   monitor_step_end pollTrackedJobs
   monitor_step_begin backstageHealth
   check_backstage_health
@@ -22420,9 +23747,6 @@ while :; do
   monitor_step_begin millPaneHealth
   check_mill_pane_health
   monitor_step_end millPaneHealth
-  monitor_step_begin prCacheRefresh
-  wavemill_pr_cache_refresh
-  monitor_step_end prCacheRefresh
   monitor_step_begin readyMergeQueue
   refresh_ready_merge_queue_tick
   monitor_step_end readyMergeQueue
@@ -22500,8 +23824,17 @@ while :; do
   fi
 
   # ── Phase C: Offer new tasks if slots available ─────────────────────
+  # HOK-3206: launches deferred on background routing re-dispatch once their
+  # route lands; queued ones keep the slot their selection claimed.
+  deferred_launches=0
+  if declare -F drain_deferred_launches >/dev/null 2>&1; then
+    monitor_step_begin deferredLaunchDrain
+    drain_deferred_launches
+    monitor_step_end deferredLaunchDrain
+    deferred_launches=$(( $(deferred_launch_count) + ${DEFERRED_LAUNCHES_DISPATCHED:-0} ))
+  fi
   # Challengers are free overhead — don't count them against MAX_PARALLEL
-  free_slots=$((EFFECTIVE_MAX_PARALLEL - (active_count - active_challenger_count)))
+  free_slots=$((EFFECTIVE_MAX_PARALLEL - (active_count - active_challenger_count) - deferred_launches))
   update_free_slots_state "$free_slots"
 
   if (( free_slots <= 0 )); then
@@ -22597,7 +23930,8 @@ while :; do
               _warn_cache_file="${STATE_DIR}/.queue-warn-episode"
               _prev_episode="$(cat "$_warn_cache_file" 2>/dev/null || echo '')"
               if [[ -z "$_prev_episode" || "$_prev_episode" != "$_episode_started" ]]; then
-                log_warn "queue analysis unavailable (reason: ${_queue_reason:-unknown}), falling back to flat list"
+                _queue_step="$(printf '%s' "$_health_status" | jq -r '.failureStep // ""' 2>/dev/null || echo '')"
+                log_warn "queue analysis unavailable (reason: ${_queue_reason:-unknown}${_queue_step:+, step=${_queue_step}}), falling back to flat list"
                 [[ -n "$_episode_started" ]] && printf '%s' "$_episode_started" > "$_warn_cache_file" 2>/dev/null || true
               fi
               [[ -n "$queue_plan_diag_file" ]] && log_fetch_queue_plan_failure "$queue_plan_diag_file"

@@ -47,7 +47,12 @@ export const INCIDENT_ROOT_CAUSE_CLASSES = [
   'review_context_overflow_stale_base',
   'provider_quota_exhaustion_blocking_review',
   'challenge_arm_missing_current_head_eval',
+  // A challenge arm's review failed without provider evidence and its pair is
+  // blocked on the missing comparison (HOK-2595 / HOK-2934 fixture).
+  'challenge_arm_review_failed_blocking_pair',
   'inspection_required',
+  // A stage artifact exists but cannot be parsed/validated (coverage gap).
+  'malformed_stage_artifact',
   'cleanup_retained_by_policy',
   'cleanup_unpublished_at_risk',
   // Active-task delivery risk (HOK-2972): not a cleanup class - the task is
@@ -205,31 +210,151 @@ export type IncidentEvidenceType =
   | 'challenge_pair_state'
   | 'eval_fallback_event'
   | 'quota_state'
-  | 'log_excerpt';
+  | 'log_excerpt'
+  // Additive (HOK-2595): structured stage/lane sources for correlation.
+  | 'ready_result'
+  | 'review_failure_envelope'
+  | 'tend_lane';
 
-export type RemediationProposalKind =
-  | 'refresh_base_and_rereview'
-  | 'provider_retry_or_forfeit_inspection'
-  | 'inspection_only';
+export const REMEDIATION_PROPOSAL_KINDS = [
+  'refresh_base_and_rereview',
+  'provider_retry_or_forfeit_inspection',
+  // The failed challenge arm's review must be rerun; no provider evidence.
+  'rereview_failed_challenge_arm',
+  'inspection_only',
+] as const;
+export type RemediationProposalKind = typeof REMEDIATION_PROPOSAL_KINDS[number];
 
-export type RemediationForbiddenAction =
-  | 'add_ready_label'
-  | 'merge'
-  | 'destructive_git'
-  | 'delete_branch';
+export const REMEDIATION_FORBIDDEN_ACTIONS = [
+  'add_ready_label',
+  'merge',
+  'destructive_git',
+  'delete_branch',
+  'synthesize_winner',
+  'force_comparison',
+  'kill_process',
+  'modify_worktree',
+] as const;
+export type RemediationForbiddenAction = typeof REMEDIATION_FORBIDDEN_ACTIONS[number];
+
+/**
+ * Actions a separate, explicitly configured recovery executor may take for a
+ * proposal (v1.2). A proposal is never authorization by itself: the executor
+ * must validate it, honour `prerequisites`, and key its bounded retries on
+ * `retryKey`.
+ */
+export const REMEDIATION_ALLOWED_ACTIONS = [
+  'refresh_authoritative_base',
+  'invalidate_stale_review_evidence',
+  'rerun_review',
+  'retry_same_reviewer_after_provider_recovery',
+  'terminalize_forfeit_after_policy_exhaustion',
+  'inspect',
+] as const;
+export type RemediationAllowedAction = typeof REMEDIATION_ALLOWED_ACTIONS[number];
+
+export const REMEDIATION_SAFETY_LEVELS = ['inspect', 'safe_read', 'operator_only'] as const;
+
+export const RECOVERY_PREDICATE_KINDS = [
+  'head_changed',
+  'review_now_ready',
+  'current_head_eval_present',
+  'comparison_present',
+  // The failed arm's review produced a new attempt (new head/finishedAt) or is running.
+  'review_attempt_progressed',
+] as const;
+export type RecoveryPredicateKind = typeof RECOVERY_PREDICATE_KINDS[number];
+
+export const REMEDIATION_PROPOSAL_SCHEMA_VERSIONS = ['1.1', '1.2'] as const;
+/** Version written by current detectors; `1.1` records stay readable. */
+export const REMEDIATION_PROPOSAL_SCHEMA_VERSION = '1.2';
+
+export interface RemediationTarget {
+  issueId?: string;
+  prNumber?: number;
+  headSha?: string;
+  baseSha?: string;
+  pairId?: string;
+  failedSide?: 'primary' | 'challenger';
+  failedIssueId?: string;
+  failedPrNumber?: number;
+}
 
 export interface RemediationProposal {
-  schemaVersion: '1.1';
+  schemaVersion: typeof REMEDIATION_PROPOSAL_SCHEMA_VERSIONS[number];
   kind: RemediationProposalKind;
   prerequisites: string[];
   retryKey: string;
-  safetyLevel: 'inspect' | 'safe_read' | 'operator_only';
+  safetyLevel: typeof REMEDIATION_SAFETY_LEVELS[number];
   evidenceRefs: Array<{ index: number; type: IncidentEvidenceType; source: string }>;
   forbiddenActions: RemediationForbiddenAction[];
   recoveryPredicate?: {
-    kind: 'head_changed' | 'review_now_ready' | 'current_head_eval_present' | 'comparison_present';
+    kind: RecoveryPredicateKind;
     details: Record<string, string>;
   };
+  /** v1.2: exact identity the proposal applies to. */
+  target?: RemediationTarget;
+  /** v1.2: the only actions an executor may take; disjoint from `forbiddenActions`. */
+  allowedActions?: RemediationAllowedAction[];
+  /** v1.2: stable id of the recommended next safe action (e.g. `refresh_base_and_rereview`). */
+  recommendationId?: string;
+}
+
+export type RemediationProposalValidation =
+  | { ok: true; value: RemediationProposal }
+  | { ok: false; errors: string[] };
+
+/**
+ * Validate a remediation proposal structurally so an executor never has to
+ * parse prose. Every non-inspection proposal must forbid `add_ready_label`
+ * and `merge`, and allowed/forbidden actions must be disjoint.
+ */
+export function validateRemediationProposal(value: unknown): RemediationProposalValidation {
+  const errors: string[] = [];
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return { ok: false, errors: ['proposal must be an object'] };
+  }
+  const proposal = value as Record<string, unknown>;
+  const inSet = (set: readonly string[], item: unknown): boolean => typeof item === 'string' && set.includes(item);
+  if (!inSet(REMEDIATION_PROPOSAL_SCHEMA_VERSIONS, proposal.schemaVersion)) errors.push('schemaVersion is not a supported version');
+  if (!inSet(REMEDIATION_PROPOSAL_KINDS, proposal.kind)) errors.push('kind is not a known proposal kind');
+  if (!inSet(REMEDIATION_SAFETY_LEVELS, proposal.safetyLevel)) errors.push('safetyLevel is not a known level');
+  if (typeof proposal.retryKey !== 'string' || proposal.retryKey.length === 0) errors.push('retryKey must be a non-empty string');
+  if (!Array.isArray(proposal.prerequisites) || !proposal.prerequisites.every((item) => typeof item === 'string')) {
+    errors.push('prerequisites must be a string array');
+  }
+  if (!Array.isArray(proposal.evidenceRefs)) errors.push('evidenceRefs must be an array');
+  const forbidden = Array.isArray(proposal.forbiddenActions) ? proposal.forbiddenActions : null;
+  if (!forbidden || forbidden.length === 0) {
+    errors.push('forbiddenActions must be a non-empty array');
+  } else if (!forbidden.every((action) => inSet(REMEDIATION_FORBIDDEN_ACTIONS, action))) {
+    errors.push('forbiddenActions contains an unknown action');
+  }
+  if (proposal.kind !== 'inspection_only' && forbidden) {
+    for (const required of ['add_ready_label', 'merge']) {
+      if (!forbidden.includes(required)) errors.push(`forbiddenActions must include ${required}`);
+    }
+  }
+  if (proposal.allowedActions !== undefined) {
+    const allowed = Array.isArray(proposal.allowedActions) ? proposal.allowedActions : null;
+    if (!allowed || !allowed.every((action) => inSet(REMEDIATION_ALLOWED_ACTIONS, action))) {
+      errors.push('allowedActions contains an unknown action');
+    } else if (forbidden && allowed.some((action) => forbidden.includes(action))) {
+      errors.push('allowedActions and forbiddenActions must be disjoint');
+    }
+  }
+  if (proposal.recoveryPredicate !== undefined) {
+    const predicate = proposal.recoveryPredicate as Record<string, unknown> | null;
+    if (!predicate || typeof predicate !== 'object' || !inSet(RECOVERY_PREDICATE_KINDS, predicate.kind)) {
+      errors.push('recoveryPredicate.kind is not a known predicate');
+    } else if (typeof predicate.details !== 'object' || predicate.details === null) {
+      errors.push('recoveryPredicate.details must be an object');
+    }
+  }
+  if (proposal.target !== undefined && (typeof proposal.target !== 'object' || proposal.target === null)) {
+    errors.push('target must be an object');
+  }
+  return errors.length > 0 ? { ok: false, errors } : { ok: true, value: proposal as unknown as RemediationProposal };
 }
 
 export interface CausalChainEntry {

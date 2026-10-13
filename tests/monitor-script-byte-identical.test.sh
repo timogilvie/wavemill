@@ -87,11 +87,11 @@ fi
 # Ready-watchdog source-only contract (tools/ready-watchdog.ts sources the
 # generated monitor and expects this exact early-return to stop execution).
 SOURCE_ONLY_GUARD="$(awk '
-  /^if \[\[ "\$\{WAVEMILL_READY_WATCHDOG_SOURCE_ONLY:-\}" == "1" \]\]; then$/ { found=1 }
+  /^if \[\[ "\$\{WAVEMILL_READY_WATCHDOG_SOURCE_ONLY:-\}" == "1" && "\$\{WAVEMILL_MONITOR_SOURCE_ONLY:-\}" != "1" \]\]; then$/ { found=1 }
   found { print; count++ }
   count == 3 { exit }
 ' "$MONITOR_SCRIPT_FILE")"
-EXPECTED_GUARD='if [[ "${WAVEMILL_READY_WATCHDOG_SOURCE_ONLY:-}" == "1" ]]; then
+EXPECTED_GUARD='if [[ "${WAVEMILL_READY_WATCHDOG_SOURCE_ONLY:-}" == "1" && "${WAVEMILL_MONITOR_SOURCE_ONLY:-}" != "1" ]]; then
   return 0 2>/dev/null || exit 0
 fi'
 if [[ "$SOURCE_ONLY_GUARD" == "$EXPECTED_GUARD" ]]; then

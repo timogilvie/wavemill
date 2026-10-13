@@ -65,6 +65,9 @@ condition_reconcile_task() {
   if [[ -f "$state_dir/.needs-attention" ]] || \
      [[ -f "$state_dir/.needs-attention-transient" ]] || \
      [[ -f "$state_dir/.ready-waiting-on.json" ]] || \
+     [[ -f "$state_dir/.cross-pr-guard-result.json" ]] || \
+     [[ -f "$state_dir/.pr-ci-status-result.json" ]] || \
+     [[ -f "$state_dir/.expanded-reroute-result.json" ]] || \
      compgen -G "$state_dir/.retry-*-exhausted" >/dev/null 2>&1 || \
      compgen -G "$state_dir/.failed-ready-recheck-exhausted" >/dev/null 2>&1; then
     needs_reconcile=true
@@ -370,6 +373,21 @@ condition_reconcile_task() {
     fi
   fi
 
+  # Reconcile async check results (HOK-3206). Readers already refuse a result
+  # for another head; expiring it here keeps the marker from outliving its
+  # condition (cross-PR guard: head; CI status: remote PR head; expanded
+  # reroute: operator event).
+  local async_marker
+  for async_marker in .cross-pr-guard-result.json .pr-ci-status-result.json .expanded-reroute-result.json; do
+    if [[ -f "$state_dir/$async_marker" ]]; then
+      local reason
+      if reason=$(_should_expire "$state_dir/$async_marker"); then
+        _log_clear "$async_marker" "${reason%%:*}" "${reason#*:}"
+        marker_clear "$state_dir/$async_marker"
+      fi
+    fi
+  done
+
   # Reconcile .retry-*-exhausted sentinels
   local exhausted_files
   exhausted_files=$(compgen -G "$state_dir/.retry-*-exhausted" 2>/dev/null || true)
@@ -522,5 +540,30 @@ reconcile_condition_markers_tick() {
     condition_reconcile_task "$issue" "$wt_dir" "$state_dir" || true
   done
 
+  reconcile_ledger_waiting_on || true
+  return 0
+}
+
+# reconcile_ledger_waiting_on
+# HOK-3185: the ledger half of the reconciler. A Ledger F escalation is a
+# `waiting_on: operator-event` step row; it expires on a later operator event
+# (.operator-events.jsonl seq), a new worktree head, or later agent progress,
+# and the step returns to pending. Only live recovery writes these rows, so
+# shadow mode spawns nothing. Backgrounded so a slow ledger open never stalls
+# the tick; the tool swallows ledger errors (shadow-suppressing).
+reconcile_ledger_waiting_on() {
+  [[ "${WAVEMILL_LEDGER_RECOVERY_LIVE:-0}" == "1" ]] || return 0
+  [[ "${WAVEMILL_LEDGER_RECOVERY_DISABLED:-0}" == "1" ]] && return 0
+  [[ "${WAVEMILL_LEDGER_SHADOW_DISABLED:-0}" == "1" ]] && return 0
+  [[ -n "${REPO_DIR:-}" ]] || return 0
+  declare -F wavemill_run_tool >/dev/null 2>&1 || return 0
+
+  local -a cli=(ledger-recovery-tick.ts --reconcile --repo-dir "$REPO_DIR")
+  [[ -n "${STATE_FILE:-}" ]] && cli+=(--state-file "$STATE_FILE")
+  [[ -n "${WORKTREE_ROOT:-}" ]] && cli+=(--worktree-root "$WORKTREE_ROOT")
+  (
+    wavemill_run_tool "${cli[@]}" >>"${MILL_LOG_FILE:-/dev/null}" 2>&1 || true
+  ) >/dev/null 2>&1 &
+  disown 2>/dev/null || true
   return 0
 }

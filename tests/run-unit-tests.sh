@@ -35,6 +35,7 @@ TESTS=(
   shared/lib/ledger-consistency.test.ts
   shared/lib/ledger-replay-contract.test.ts
   shared/lib/ledger-pair-abort.test.ts
+  shared/lib/ledger-recovery.test.ts
   shared/lib/side-effect-ledger.test.ts
   shared/lib/side-effect-duplicate-detector.test.ts
   shared/lib/side-effect-replay-contract.test.ts
@@ -74,6 +75,7 @@ TESTS=(
   shared/lib/native-agent/tool-compat-fixtures.test.ts
   shared/lib/native-agent/patch-contract.test.ts
   shared/lib/native-agent/patch-runtime.test.ts
+  shared/lib/native-agent/patch-journal.test.ts
   shared/lib/native-agent/patch-matcher.test.ts
   shared/lib/native-agent/coding-failure-handoff.test.ts
   shared/lib/native-agent/stage-failure-envelope.test.ts
@@ -274,9 +276,13 @@ TESTS=(
   shared/lib/wavemill-incident-artifact-diagnostics.test.ts
   shared/lib/wavemill-incident-detector.test.ts
   shared/lib/wavemill-incident-model.test.ts
+  shared/lib/wavemill-incident-tend-candidates.test.ts
+  shared/lib/wavemill-incident-recovery.test.ts
+  shared/lib/wavemill-incident-projection.test.ts
   shared/lib/wavemill-incident-store.test.ts
   shared/lib/state-mutex.test.ts
   shared/lib/job-tracker.test.ts
+  shared/lib/session-gh-cache.test.ts
   shared/lib/operating-mode.test.ts
   shared/lib/plan-prompt-selector.test.ts
   shared/lib/cli-prompt.test.ts

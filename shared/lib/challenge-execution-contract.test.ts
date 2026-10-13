@@ -20,6 +20,11 @@ import {
   CHALLENGE_ARM_PENDING_STATES,
   isChallengeArmPendingState,
   sealChallengeDecision,
+  assessChallengeRouteInvariant,
+  loadChallengeDivergenceFromState,
+  sealedSideRoute,
+  routeFromPhaseConfig,
+  variedFieldsForStage,
   sealedSelectionViolations,
   resolveSealedDecisionAgainstExpandedRoute,
   type ChallengeExecutionAttestation,
@@ -28,6 +33,8 @@ import {
   type InvalidChallengeReason,
   type ReviewExecutedIdentitySet,
 } from './challenge-execution-contract.ts';
+import { buildChallengeExecutionIntent as buildEnvelopeChallengeIntent } from './challenge-mode.ts';
+import { checkChallengeRoute } from './challenge-route-check.ts';
 import { attachChallengeExecutionMetadata } from './eval-record-builder.ts';
 import { appendEvalRecord, readEvalRecords } from './eval-persistence.ts';
 import { validateEvalRecord } from './eval-validator.ts';
@@ -703,6 +710,7 @@ test('every TypeScript divergence reason is accepted by the eval JSON schema', (
     'missing_challenge_intent',
     'multiple-varied-roles',
     'arm_infrastructure_failure',
+    'route-drift',
   ];
   for (const reason of reasons) {
     assert.equal(validateReason(reason), true, `schema rejects divergence reason ${reason}`);
@@ -1106,6 +1114,251 @@ test('resolveReviewStageChallengePin ignores non-challenge directories', () => {
       branchName: 'task/solo-task',
     });
     assert.equal(pin, undefined);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+// ── HOK-3156: one-variable route invariant ──────────────────────────────────
+
+function envelopeSide(role: 'primary' | 'challenger', overrides: Record<string, string> = {}) {
+  return {
+    key: role === 'primary' ? 'HOK-3156' : 'HOK-3156_c',
+    issueId: 'HOK-3156',
+    slug: 'route-drift',
+    branch: 'task/route-drift',
+    role,
+    model: 'claude-opus-4-7',
+    agent: 'claude',
+    planner: 'claude-opus-5-5',
+    plannerAgent: 'claude',
+    reviewer: 'gpt-5.6-terra',
+    reviewerAgent: 'codex',
+    planDepth: 'deep',
+    codeDepth: 'deep',
+    reviewMode: 'llm',
+    ...overrides,
+  };
+}
+
+function makeReviewStageIntent(
+  primary: Record<string, string> = {},
+  challenger: Record<string, string> = {},
+): ChallengeExecutionIntent {
+  return buildEnvelopeChallengeIntent({
+    pairId: 'HOK-3156',
+    issueId: 'HOK-3156',
+    selectedStage: 'review',
+    decisionSource: 'bootstrap',
+    selectionPath: 'random-roll',
+    primary: envelopeSide('primary', primary),
+    challenger: envelopeSide('challenger', { reviewer: 'kimi-k2', reviewerAgent: 'native-openrouter', ...challenger }),
+  }) as ChallengeExecutionIntent;
+}
+
+test('variedFieldsForStage names the role and its depth/mode per stage', () => {
+  assert.deepEqual(variedFieldsForStage('plan'), ['planner', 'planDepth']);
+  assert.deepEqual(variedFieldsForStage('implementation'), ['coder', 'codeDepth']);
+  assert.deepEqual(variedFieldsForStage('review'), ['reviewer', 'reviewMode']);
+});
+
+test('assessChallengeRouteInvariant accepts a reviewer-only difference', () => {
+  const intent = makeReviewStageIntent();
+  const result = assessChallengeRouteInvariant({
+    variedStage: 'review',
+    primary: sealedSideRoute(intent, 'primary'),
+    challenger: sealedSideRoute(intent, 'challenger'),
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.driftedFields, []);
+  assert.equal(result.identicalAtVariedStage, false);
+});
+
+test('assessChallengeRouteInvariant reports a drifted depth alongside the varied reviewer', () => {
+  const intent = makeReviewStageIntent({}, { planDepth: 'light' });
+  const result = assessChallengeRouteInvariant({
+    variedStage: 'review',
+    primary: sealedSideRoute(intent, 'primary'),
+    challenger: sealedSideRoute(intent, 'challenger'),
+  });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.driftedFields, ['planDepth']);
+});
+
+test('assessChallengeRouteInvariant reports the HOK-3154 shape (planner + depths drifted on a review pair)', () => {
+  // The primary was re-routed after sealing; the challenger kept the seal.
+  const result = assessChallengeRouteInvariant({
+    variedStage: 'review',
+    primary: {
+      planner: 'claude-opus-4-7', coder: 'claude-opus-4-7', reviewer: 'gpt-5.6-terra',
+      planDepth: 'medium', codeDepth: 'medium', reviewMode: 'llm',
+    },
+    challenger: {
+      planner: 'claude-opus-5-5', coder: 'claude-opus-4-7', reviewer: 'kimi-k2',
+      planDepth: 'deep', codeDepth: 'deep', reviewMode: 'llm',
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.driftedFields, ['planner', 'planDepth', 'codeDepth']);
+});
+
+test('assessChallengeRouteInvariant treats alias-equivalent model ids as the same model', () => {
+  const result = assessChallengeRouteInvariant({
+    variedStage: 'review',
+    primary: { planner: 'claude-haiku-4-5', coder: 'qwen-3-coder', reviewer: 'gpt-5.6-terra' },
+    challenger: { planner: 'claude-haiku-4-5-20251001', coder: 'qwen/qwen3-coder', reviewer: 'kimi-k2' },
+  });
+  assert.deepEqual(result.driftedFields, []);
+  assert.equal(result.ok, true);
+});
+
+test('assessChallengeRouteInvariant: unset on both sides is not drift, unset on one side is', () => {
+  const both = assessChallengeRouteInvariant({
+    variedStage: 'implementation',
+    primary: { coder: 'a', planner: 'p' },
+    challenger: { coder: 'b', planner: 'p' },
+  });
+  assert.deepEqual(both.driftedFields, []);
+  const oneSided = assessChallengeRouteInvariant({
+    variedStage: 'implementation',
+    primary: { coder: 'a', planner: 'p', reviewMode: 'llm' },
+    challenger: { coder: 'b', planner: 'p' },
+  });
+  assert.deepEqual(oneSided.driftedFields, ['reviewMode']);
+});
+
+test('assessChallengeRouteInvariant flags arms identical at the varied stage unless intentionally identical', () => {
+  const route = { planner: 'p', coder: 'c', reviewer: 'r' };
+  const identical = assessChallengeRouteInvariant({ variedStage: 'review', primary: route, challenger: route });
+  assert.equal(identical.identicalAtVariedStage, true);
+  assert.equal(identical.ok, false);
+  assert.deepEqual(identical.driftedFields, []);
+  const control = assessChallengeRouteInvariant({
+    variedStage: 'review', primary: route, challenger: route, intentionallyIdentical: true,
+  });
+  assert.equal(control.identicalAtVariedStage, false);
+  assert.equal(control.ok, true);
+});
+
+test('routeFromPhaseConfig reads the launch route from .phase-config.json', () => {
+  assert.deepEqual(routeFromPhaseConfig({
+    planning: { model: 'p', depth: 'deep' },
+    coding: { model: 'c', depth: 'medium' },
+    review: { model: 'r', mode: 'llm' },
+  }), { planner: 'p', coder: 'c', reviewer: 'r', planDepth: 'deep', codeDepth: 'medium', reviewMode: 'llm' });
+  assert.deepEqual(routeFromPhaseConfig(null), {});
+});
+
+test('resolveSealedDecisionAgainstExpandedRoute keeps sealed models for executed stages', () => {
+  const result = resolveSealedDecisionAgainstExpandedRoute({
+    sealed: makeSealedPlanIntent(),
+    expandedRoute: EXPANDED_PLAN_ROUTE,
+    executedStages: ['plan'],
+  });
+  assert.equal(result.status, 'materialize');
+  if (result.status !== 'materialize') return;
+  const primary = result.intent.primary as { planner: { model: string }; coder: { model: string } };
+  const challenger = result.intent.challenger as { planner: { model: string }; coder: { model: string } };
+  // The primary planned on its sealed planner; the record must not be rewritten
+  // to the expanded planner after the fact.
+  assert.equal(primary.planner.model, 'bootstrap-planner');
+  assert.equal(challenger.planner.model, 'glm-5.2');
+  // Stages that have not run still take the expanded route on both sides.
+  assert.equal(primary.coder.model, 'expanded-coder');
+  assert.equal(challenger.coder.model, 'expanded-coder');
+});
+
+test('resolveSealedDecisionAgainstExpandedRoute collapses as route-drift when executed stages diverge', () => {
+  // The coder already ran on different models per side for a plan-stage pair:
+  // freezing executed stages exposes a second varied role, so the pair collapses.
+  const sealed = makeSealedPlanIntent({
+    challenger: {
+      key: 'HOK-3065_c',
+      role: 'challenger',
+      planner: { model: 'glm-5.2', agent: 'native-openrouter' },
+      coder: { model: 'some-other-coder', agent: 'claude' },
+      reviewer: { model: 'bootstrap-reviewer', agent: 'claude' },
+    },
+  });
+  const result = resolveSealedDecisionAgainstExpandedRoute({
+    sealed,
+    expandedRoute: EXPANDED_PLAN_ROUTE,
+    executedStages: ['plan', 'implementation'],
+  });
+  assert.equal(result.status, 'collapse');
+  if (result.status !== 'collapse') return;
+  assert.equal(result.reason, 'route-drift');
+  assert.match(result.detail, /dimensions=coder/);
+});
+
+test('checkChallengeRoute compares arm phase-configs and reports drift', () => {
+  const root = mkdtempSync(join(tmpdir(), 'challenge-route-check-'));
+  try {
+    const primaryDir = join(root, 'primary');
+    const challengerDir = join(root, 'challenger');
+    mkdirSync(primaryDir, { recursive: true });
+    mkdirSync(challengerDir, { recursive: true });
+    const config = (planner: string, reviewer: string, depth: string) => JSON.stringify({
+      planning: { model: planner, depth },
+      coding: { model: 'claude-opus-4-7', depth },
+      review: { model: reviewer, mode: 'llm' },
+    });
+    writeFileSync(join(primaryDir, '.phase-config.json'), config('claude-opus-4-7', 'gpt-5.6-terra', 'medium'));
+    writeFileSync(join(challengerDir, '.phase-config.json'), config('claude-opus-5-5', 'kimi-k2', 'deep'));
+    const drift = checkChallengeRoute({ stage: 'review', primaryFeatureDir: primaryDir, challengerFeatureDir: challengerDir });
+    assert.equal(drift.status, 'drift');
+    if (drift.status === 'unreadable') return;
+    assert.deepEqual(drift.result.driftedFields, ['planner', 'planDepth', 'codeDepth']);
+
+    // A sealed intent supplies whichever side is not given as a file.
+    const intentPath = join(root, 'challenge-intent.json');
+    writeFileSync(intentPath, JSON.stringify(makeReviewStageIntent()));
+    writeFileSync(join(primaryDir, '.phase-config.json'), config('claude-opus-5-5', 'gpt-5.6-terra', 'deep'));
+    const ok = checkChallengeRoute({ intentPath, primaryFeatureDir: primaryDir });
+    assert.equal(ok.status, 'ok');
+    if (ok.status === 'unreadable') return;
+    assert.equal(ok.sources.challenger, 'intent');
+    assert.equal(ok.result.variedStage, 'review');
+
+    // Against a sealed intent, a field the launch route left unset is not
+    // drift (the fork copies that entry); a field set to another value is.
+    writeFileSync(join(primaryDir, '.phase-config.json'), JSON.stringify({
+      planning: { model: 'claude-opus-5-5' },
+      coding: { model: 'claude-opus-4-7', depth: 'deep' },
+      review: { model: 'gpt-5.6-terra', mode: 'llm' },
+    }));
+    const unsetDepth = checkChallengeRoute({ intentPath, primaryFeatureDir: primaryDir });
+    assert.equal(unsetDepth.status, 'ok');
+    writeFileSync(join(primaryDir, '.phase-config.json'), config('claude-opus-5-5', 'gpt-5.6-terra', 'medium'));
+    const changedDepth = checkChallengeRoute({ intentPath, primaryFeatureDir: primaryDir });
+    assert.equal(changedDepth.status, 'drift');
+    if (changedDepth.status === 'unreadable') return;
+    assert.deepEqual(changedDepth.result.driftedFields, ['planDepth', 'codeDepth']);
+
+    const unreadable = checkChallengeRoute({ stage: 'review', primaryFeatureDir: join(root, 'missing') });
+    assert.equal(unreadable.status, 'unreadable');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('loadChallengeDivergenceFromState reads a recorded route-drift cause for either arm', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'challenge-divergence-'));
+  try {
+    mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+    writeFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), JSON.stringify({
+      tasks: {
+        'HOK-3156': { challengeRole: 'primary', challengeDivergenceReason: 'route-drift' },
+        'HOK-3156_c': { challengeRole: 'challenger', challengeDivergenceReason: 'route-drift' },
+        'HOK-1': { challengeRole: 'primary', challengeDivergenceReason: 'not-a-reason' },
+      },
+    }));
+    assert.equal(loadChallengeDivergenceFromState(repoDir, 'HOK-3156', 'HOK-3156'), 'route-drift');
+    assert.equal(loadChallengeDivergenceFromState(repoDir, 'HOK-3156_c', 'HOK-3156'), 'route-drift');
+    // Unknown strings never become an invalid-challenge cause.
+    assert.equal(loadChallengeDivergenceFromState(repoDir, 'HOK-1', 'HOK-1'), undefined);
+    assert.equal(loadChallengeDivergenceFromState(repoDir, 'HOK-2', undefined), undefined);
+    assert.ok(INVALID_CHALLENGE_REASONS.includes('route-drift'));
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }
