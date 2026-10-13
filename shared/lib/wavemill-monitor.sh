@@ -12923,7 +12923,7 @@ launch_ready_watchdog_remediation() {
   return 0
 }
 
-if [[ "${WAVEMILL_READY_WATCHDOG_SOURCE_ONLY:-}" == "1" ]]; then
+if [[ "${WAVEMILL_READY_WATCHDOG_SOURCE_ONLY:-}" == "1" && "${WAVEMILL_MONITOR_SOURCE_ONLY:-}" != "1" ]]; then
   return 0 2>/dev/null || exit 0
 fi
 
@@ -15504,9 +15504,16 @@ WAVEMILL_MONITOR_SPAWN_TALLY=""
 
 wavemill_monitor_spawn_pass_begin() {
   [[ -n "${STATE_DIR:-}" ]] || { WAVEMILL_MONITOR_SPAWN_TALLY=""; return 0; }
-  mkdir -p "$STATE_DIR" 2>/dev/null || { WAVEMILL_MONITOR_SPAWN_TALLY=""; return 0; }
+  if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
+    log "warn" "Failed to create STATE_DIR=$STATE_DIR; spawn counting disabled"
+    WAVEMILL_MONITOR_SPAWN_TALLY=""
+    return 0
+  fi
   WAVEMILL_MONITOR_SPAWN_TALLY="$STATE_DIR/.spawn-tally.$$"
-  : > "$WAVEMILL_MONITOR_SPAWN_TALLY" 2>/dev/null || WAVEMILL_MONITOR_SPAWN_TALLY=""
+  if ! : > "$WAVEMILL_MONITOR_SPAWN_TALLY" 2>/dev/null; then
+    log "warn" "Failed to initialize spawn tally at $WAVEMILL_MONITOR_SPAWN_TALLY; spawn counting disabled"
+    WAVEMILL_MONITOR_SPAWN_TALLY=""
+  fi
   export WAVEMILL_MONITOR_SPAWN_TALLY
 }
 
@@ -15627,7 +15634,8 @@ wavemill_record_monitor_iteration_timing() {
 
   # HOK-3207: default warn threshold is 15 000 ms (the real monitor-pass
   # target). The sustained-slow observer detector trips on p50 > warnMs
-  # for ≥ 1 h.
+  # for ≥ 1 h. MUST be kept in sync with DEFAULT_MONITOR_WARN_MS in
+  # tools/observer.ts (currently 15_000 ms).
   local warn_ms="${WAVEMILL_MONITOR_PASS_WARN_MS:-15000}"
 
   # HOK-3207: read the previous slowState / slowSinceAt from the current
@@ -15684,20 +15692,6 @@ wavemill_record_monitor_iteration_timing() {
     fi
   fi
 
-  # Encode slowSinceAt as a JSON string or null for `--argjson`.
-  local slow_since_json
-  if [[ -z "$current_slow_since" ]]; then
-    slow_since_json=null
-  else
-    slow_since_json="$(printf '%s' "$current_slow_since" | jq -R . 2>/dev/null || printf '"%s"' "$current_slow_since")"
-  fi
-  local slow_state_json
-  if [[ "$current_slow_state" == "true" ]]; then
-    slow_state_json=true
-  else
-    slow_state_json=false
-  fi
-
   if jq \
     --argjson duration "$duration_ms" \
     --argjson pollSeconds "$poll_seconds" \
@@ -15709,14 +15703,15 @@ wavemill_record_monitor_iteration_timing() {
     --argjson spawnNode "$spawn_node" \
     --argjson spawnGh "$spawn_gh" \
     --argjson spawnJq "$spawn_jq" \
-    --argjson slowState "$slow_state_json" \
-    --argjson slowSinceAt "$slow_since_json" \
+    --arg slowSinceAt "$current_slow_since" \
+    --arg slowState "$current_slow_state" \
     --arg updatedAt "$now_iso" \
     '
       (.samples // []) as $samples
       | (($samples + [$duration]) | .[-100:]) as $nextSamples
-      | ($nextSamples | sort | if length == 0 then 0 else .[((length * 95 / 100) | tostring | split(".")[0] | tonumber)] end) as $p95
-      | ($nextSamples | sort | if length == 0 then 0 else .[((length / 2) | tostring | split(".")[0] | tonumber)] end) as $p50
+      | ($nextSamples | sort) as $sorted
+      | (if $sorted | length == 0 then 0 else $sorted[((($sorted | length) - 1) * 95 / 100 | floor)] end) as $p95
+      | (if $sorted | length == 0 then 0 else $sorted[((($sorted | length) - 1) / 2 | floor)] end) as $p50
       | {
           lastIterationMs: $duration,
           samples: $nextSamples,
@@ -15727,8 +15722,8 @@ wavemill_record_monitor_iteration_timing() {
           lastSteps: $steps,
           slowestSteps: $top,
           spawns: { node: $spawnNode, gh: $spawnGh, jq: $spawnJq },
-          slowState: $slowState,
-          slowSinceAt: $slowSinceAt,
+          slowState: ($slowState == "true"),
+          slowSinceAt: (if $slowSinceAt == "" then null else $slowSinceAt end),
           cleanupSkippedCount: ((.cleanupSkippedCount // 0) + $cleanupSkipped),
           remoteCallAvoidedCount: ((.remoteCallAvoidedCount // 0) + $remoteAvoided),
           updatedAt: $updatedAt

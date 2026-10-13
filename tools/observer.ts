@@ -1694,6 +1694,8 @@ function buildMarkerIgnoredFinding(
 // above warnMs, so recovery (p50 drops below warnMs) clears the finding
 // naturally — no explicit clear path is needed.
 const SUSTAINED_SLOW_PASS_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
+// HOK-3207: default warn threshold (15 000 ms). MUST be kept in sync with
+// WAVEMILL_MONITOR_PASS_WARN_MS in shared/lib/wavemill-monitor.sh (currently 15000 ms).
 const DEFAULT_MONITOR_WARN_MS = 15_000;
 
 // HOK-3207: raise a stuck-queue-inference incident when the queue

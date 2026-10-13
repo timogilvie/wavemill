@@ -135,6 +135,18 @@ done
 # file, recorder) is exercised exactly as it is in prod. Driving the step
 # functions directly keeps the fixture inside the mkdtemp sandbox and off
 # the network.
+#
+# Included steps: passSnapshot (main jq read of state), issueMonitorLoop
+# (per-task field reads), pipelineSanity (synthetic jq calls).
+#
+# Omitted steps that don't spawn: reconcile_condition_markers_tick,
+# monitor_side_effect_detector_tick, check_backstage_health,
+# check_backstage_observer_health, wavemill_pr_cache_refresh,
+# refresh_ready_merge_queue_tick. These are omitted because they either
+# have negligible spawn counts or are not central to the pass-budget
+# regression detection (model-validator spawns are the primary concern).
+# The budget ceiling is set to accommodate the omitted steps' typical
+# spawns in a real pass, so regressions in the included steps are caught.
 run_pass() {
   local extra_node="${1:-0}"
   bash -c '
