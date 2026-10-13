@@ -183,6 +183,7 @@ TESTS=(
   config-false-booleans.test.sh
   check-no-npx-in-monitor.sh
   monitor-pass-snapshot.test.sh
+  monitor-pass-budget.test.sh
   agent-model-memo.test.sh
   monitor-state-size.test.sh
   hot-state-byte-cap.test.sh

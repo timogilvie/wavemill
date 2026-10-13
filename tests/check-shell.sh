@@ -209,6 +209,7 @@ for f in \
   "$REPO_DIR"/tests/config-false-booleans.test.sh \
   "$REPO_DIR"/tests/check-no-npx-in-monitor.sh \
   "$REPO_DIR"/tests/monitor-pass-snapshot.test.sh \
+  "$REPO_DIR"/tests/monitor-pass-budget.test.sh \
   "$REPO_DIR"/tests/agent-model-memo.test.sh \
   "$REPO_DIR"/tests/monitor-state-size.test.sh \
   "$REPO_DIR"/tests/hot-state-byte-cap.test.sh \
@@ -661,7 +662,7 @@ else
       | grep -vE '^(legacy_stale|stale)$' \
       | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|completed|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$' \
       | grep -vE '^(capabilities|const|import|throw)$' \
-      | grep -vE '^(ascii_upcase|first|it|num|retrying|sibling)$')
+      | grep -vE '^(ascii_upcase|first|it|num|retrying|sibling|floor|spawn)$')
 
     # Check which called names look like they could be custom functions
     # and verify they're defined
