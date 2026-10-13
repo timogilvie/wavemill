@@ -94,7 +94,7 @@ export class PlanningFailureDetector {
       severity: 'high',
       confidence: 'definite',
       lifecycle: 'observed',
-      rootCauseClass: normalizedReason,
+      rootCauseClass: normalizedReason as IncidentRootCauseClass,
       summary: `Planning failed with ${normalizedReason} for ${taskId}.`,
       operatorAction: 'Review task scope and native planning limits; simplify the task or adjust planning budgets before retrying.',
       evidence: [{
@@ -1536,7 +1536,8 @@ function diagnosticReason(queueHealth: Record<string, unknown>): string | null {
     return detail ? `${degradationReason} (${detail})` : degradationReason;
   }
   return stringField(diagnostics?.stderrExcerpt)
-    ?? stringField(queueHealth.underlyingReason);
+    ?? stringField(queueHealth.underlyingReason)
+    ?? null;
 }
 
 function safeReaddir(dir: string): string[] {

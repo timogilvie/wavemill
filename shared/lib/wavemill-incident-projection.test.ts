@@ -6,6 +6,7 @@ import {
   incidentChainEvidenceLines,
   projectRemediationProposals,
   supersedeGenericFindings,
+  type SupersedableFinding,
 } from './wavemill-incident-projection.ts';
 
 const validProposal = {
@@ -56,7 +57,7 @@ test('projectRemediationProposals keeps valid open proposals and counts invalid 
 });
 
 test('supersedeGenericFindings groups both pair arms and leaves unrelated findings untouched', () => {
-  const findings = [
+  const findings: SupersedableFinding[] = [
     { id: 'stale-active-task-live-process-wavemill-HOK-2934', issue: 'HOK-2934', evidence: [], recommendation: 'parked prompt' },
     { id: 'stale-active-task-no-live-process-wavemill-HOK-2934_c', issue: 'HOK-2934_c', evidence: [], recommendation: 'parked prompt' },
     { id: 'stale-active-task-live-process-wavemill-HOK-9', issue: 'HOK-9', evidence: [], recommendation: 'parked prompt' },

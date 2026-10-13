@@ -3719,7 +3719,7 @@ function observe(options: ObserverOptions): ObserverSnapshot {
   const panes = listPanes().filter((pane) => !options.session || pane.session === options.session);
   const processes = filterRelevantProcesses(processRows(), panes);
   const repos = snapshotRepos(sessions, options);
-  const partial = {
+  const partial: Omit<ObserverSnapshot, 'findings'> = {
     schemaVersion: OBSERVER_SNAPSHOT_SCHEMA_VERSION,
     timestamp: new Date().toISOString(),
     sessions,
