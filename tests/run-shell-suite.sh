@@ -57,6 +57,7 @@ TESTS=(
   ready-exhausted-challenge.test.sh
   review-gate-refused-challenge.test.sh
   monitor-late-completion.test.sh
+  plan-reapproval-late-coding-complete.test.sh
   monitor-terminal-cleanup-tick.test.sh
   monitor-reaped-task-no-window-recreation.test.sh
   monitor-window-recreate-bounded.test.sh

@@ -159,6 +159,7 @@ for f in \
   "$REPO_DIR"/tests/ready-exhausted-challenge.test.sh \
   "$REPO_DIR"/tests/review-gate-refused-challenge.test.sh \
   "$REPO_DIR"/tests/monitor-late-completion.test.sh \
+  "$REPO_DIR"/tests/plan-reapproval-late-coding-complete.test.sh \
   "$REPO_DIR"/tests/monitor-terminal-cleanup-tick.test.sh \
   "$REPO_DIR"/tests/monitor-reaped-task-no-window-recreation.test.sh \
   "$REPO_DIR"/tests/monitor-window-recreate-bounded.test.sh \
