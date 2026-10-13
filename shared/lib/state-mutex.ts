@@ -102,11 +102,19 @@ function maybeRenderWorkflowStateFromLedger(statePath: string): void {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
     const repoDir = dirname(dirname(statePath));
-    execFileSync(
-      'npx',
-      ['tsx', `${repoDir}/tools/ledger.ts`, 'view', 'workflow-state', '--repo-dir', repoDir, '--out', statePath],
-      { stdio: 'ignore' },
-    );
+    const tool = `${repoDir}/tools/ledger.ts`;
+    const args = [tool, 'view', 'workflow-state', '--repo-dir', repoDir, '--out', statePath];
+    // HOK-3190 fast strip: prefer `node --experimental-strip-types` (~0.3s)
+    // over `npx tsx` (4-7s cold). The shell helper does the same probe.
+    if (process.env.WAVEMILL_SKIP_FAST_STRIP !== '1') {
+      try {
+        execFileSync('node', ['--experimental-strip-types', '--no-warnings', ...args], { stdio: 'ignore' });
+        return;
+      } catch {
+        // fall through to npx tsx fallback (older Node)
+      }
+    }
+    execFileSync('npx', ['tsx', ...args], { stdio: 'ignore' });
   } catch {
     // Best-effort: never surface renderer errors over the primary write.
   }

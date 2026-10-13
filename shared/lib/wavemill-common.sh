@@ -7166,7 +7166,9 @@ state_mutate() {
 
 # HOK-3187: resolve the ledger CLI path and re-render workflow-state.json from
 # the ledger over the one at `$state_path`. Best-effort, swallows errors so a
-# render fault never trumps the primary write.
+# render fault never trumps the primary write. Routes through
+# `wavemill_run_tool` (HOK-3190) so the render path uses the fast strip
+# invoker on the monitor hot path.
 _wavemill_render_workflow_state_from_ledger() {
   local state_path="$1"
   local repo_dir
@@ -7177,8 +7179,7 @@ _wavemill_render_workflow_state_from_ledger() {
   fi
   local tool="$tool_dir/tools/ledger.ts"
   [[ -f "$tool" ]] || return 0
-  command -v npx >/dev/null 2>&1 || return 0
-  npx tsx "$tool" view workflow-state --repo-dir "$repo_dir" --out "$state_path" 2>/dev/null || return 0
+  wavemill_run_tool "$tool" view workflow-state --repo-dir "$repo_dir" --out "$state_path" >/dev/null 2>&1 || return 0
 }
 
 # operator_touch_record <wavemill_dir> <kind> [issue] [detail]

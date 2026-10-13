@@ -21,6 +21,7 @@ import type {
   TaskRow,
   WaitingOnRow,
 } from './ledger.ts';
+import { parseTaskId } from './task-identity.ts';
 
 /**
  * The slice of the ledger surface the renderer reads. Narrowing to this
@@ -216,9 +217,11 @@ function renderPair(ledger: RenderableLedger, pair: TaskRow): PairView {
 }
 
 function findPairForIssue(pairs: TaskRow[], issueKey: string): TaskRow | null {
+  const parsed = parseTaskId(issueKey);
+  const baseIssueKey = parsed?.linearId ?? issueKey;
   for (const pair of pairs) {
     const slug = pair.slug ?? '';
-    if (slug === issueKey || slug === issueKey.replace(/_c$/, '')) return pair;
+    if (slug === issueKey || slug === baseIssueKey) return pair;
   }
   return null;
 }
