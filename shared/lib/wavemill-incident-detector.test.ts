@@ -404,6 +404,133 @@ test('job detector degrades safely when logPath is binary', () => {
   }
 });
 
+// ── Original-scope residual gaps (HOK-2595 Phase 6) ──────────────────────────
+
+test('queue fallback carries the structured producer reason, step and planner exit', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-queue-structured-'));
+  try {
+    mkdirSync(join(repo, '.wavemill'), { recursive: true });
+    // Shape written by queue_health_record_failure (queue-health.sh).
+    writeFileSync(join(repo, '.wavemill', 'queue-health.json'), JSON.stringify({
+      schemaVersion: 1,
+      status: 'degraded',
+      lastAttemptAt: now.toISOString(),
+      degradationReason: 'timeout',
+      failureStep: 'plan_queue_failed',
+      failureCount: 1,
+      planner: { pid: 123, pgid: 123, timeoutSeconds: 60, exitCode: 124, signal: null, cancellationOwner: 'watchdog' },
+      diagnostics: { inputSnapshot: { taskCount: 12 }, stdoutExcerpt: '', stderrExcerpt: 'Killed: 9 something about github ssh' },
+    }));
+    const [incident] = new DependencyHealthDetector({ thresholdConsecutiveFailures: 3 }).detectRepo(repo, { repoDir: repo, now });
+    assert.ok(incident);
+    // The explicit mapping wins over stderr text that mentions github/ssh.
+    assert.equal(incident.rootCauseClass, 'queue_planner_degraded');
+    assert.equal(incident.category, 'configuration_operator_condition');
+    assert.equal(incident.summary, 'Queue planner fallback is active: timeout (step=plan_queue_failed, exit=124, cancelledBy=watchdog).');
+    assert.equal(incident.metadata.failureStep, 'plan_queue_failed');
+    assert.equal(incident.metadata.plannerExitCode, 124);
+    assert.equal(incident.metadata.diagnosticReason, 'timeout (step=plan_queue_failed, exit=124, cancelledBy=watchdog)');
+    assert.notEqual(incident.metadata.diagnosticReason, 'dependency_planning_failed');
+    assert.match(incident.evidence[0].redactedData, /step=plan_queue_failed exit=124/);
+
+    writeFileSync(join(repo, '.wavemill', 'queue-health.json'), JSON.stringify({
+      status: 'degraded',
+      degradationReason: 'malformed_graph',
+      failureStep: 'validation_failed',
+      failureCount: 4,
+      planner: { exitCode: 0 },
+      diagnostics: { stderrExcerpt: '' },
+    }));
+    const [malformed] = new DependencyHealthDetector({ thresholdConsecutiveFailures: 3 }).detectRepo(repo, { repoDir: repo, now });
+    assert.equal(malformed.rootCauseClass, 'local_parse_failure');
+    assert.equal(malformed.severity, 'medium');
+
+    writeFileSync(join(repo, '.wavemill', 'queue-health.json'), JSON.stringify({
+      status: 'degraded',
+      degradationReason: 'planner_input_missing',
+      failureStep: 'planner_input_missing',
+      failureCount: 1,
+      planner: { exitCode: 1 },
+    }));
+    const [missingInput] = new DependencyHealthDetector().detectRepo(repo, { repoDir: repo, now });
+    assert.equal(missingInput.rootCauseClass, 'local_config_failure');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('a malformed planning result becomes one low-severity coverage incident without content', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-planning-malformed-'));
+  try {
+    const taskPath = join(repo, 'features', 'broken-plan');
+    mkdirSync(taskPath, { recursive: true });
+    writeFileSync(join(taskPath, '.planning-result.json'), '{"status": "failed", "prompt": "SECRET PLAN TEXT"');
+    const context = { repoDir: repo, now };
+    const first = new PlanningFailureDetector().detect(taskPath, 'HOK-77', context);
+    assert.equal(first.length, 1);
+    assert.equal(first[0].rootCauseClass, 'malformed_stage_artifact');
+    assert.equal(first[0].category, 'configuration_operator_condition');
+    assert.equal(first[0].severity, 'low');
+    assert.doesNotMatch(JSON.stringify(first[0]), /SECRET PLAN TEXT/);
+
+    const store = new IncidentStore(join(repo, '.wavemill', 'incidents'));
+    await store.upsert(first[0]);
+    await store.upsert(new PlanningFailureDetector().detect(taskPath, 'HOK-77', context)[0]);
+    const stored = await store.getIncidents();
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].occurrenceCount, 1);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('backstage service probe failures are observed below threshold and degraded at it', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-backstage-threshold-'));
+  try {
+    mkdirSync(join(repo, '.wavemill'), { recursive: true });
+    const writeHealth = (failureCount: number, at: string) => writeFileSync(join(repo, '.wavemill', 'backstage-health.json'), JSON.stringify({
+      services: {
+        tend: {
+          status: failureCount > 0 ? 'degraded' : 'healthy',
+          detail: 'backstage tend loop poll failed (transient)',
+          failureCount,
+          lastError: `transient: git ls-remote origin failed: ssh: connect to host github.com port 22: Operation timed out GH_TOKEN=ghp_${'x'.repeat(30)}`,
+          lastErrorAt: at,
+          updatedAt: at,
+        },
+      },
+    }));
+    const store = new IncidentStore(join(repo, '.wavemill', 'incidents'), { escalationThreshold: 3 });
+    const detector = new DependencyHealthDetector({ thresholdConsecutiveFailures: 3 });
+
+    writeHealth(1, '2026-08-03T12:00:00.000Z');
+    const [observation] = detector.detectRepo(repo, { repoDir: repo, now });
+    assert.equal(observation.rootCauseClass, 'remote_ssh_failure');
+    assert.equal(observation.category, 'external_transient_dependency');
+    assert.equal(observation.severity, 'low');
+    assert.equal(observation.metadata.escalated, false);
+    await store.upsert(observation);
+
+    writeHealth(3, '2026-08-03T12:03:00.000Z');
+    const [degraded] = detector.detectRepo(repo, { repoDir: repo, now });
+    assert.equal(degraded.severity, 'medium');
+    assert.equal(degraded.metadata.escalated, true);
+    assert.match(degraded.summary, /3 consecutive probe failures/);
+    assert.doesNotMatch(JSON.stringify(degraded), /ghp_x{20}/);
+    assert.ok(String(degraded.metadata.lastErrorSummary).length <= 260);
+    const stored = await store.upsert(degraded);
+    // Same record, now medium severity: one-off observation and escalation share identity.
+    assert.equal((await store.getIncidents()).length, 1);
+    assert.equal(stored.severity, 'medium');
+    assert.equal(stored.occurrenceCount, 2);
+
+    writeHealth(0, '2026-08-03T12:05:00.000Z');
+    assert.deepEqual(detector.detectRepo(repo, { repoDir: repo, now }), []);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 // ── Stalled lifecycle correlation (HOK-2595 reopened) ─────────────────────────
 //
 // Fixtures write the *real* review StageResult shape produced by

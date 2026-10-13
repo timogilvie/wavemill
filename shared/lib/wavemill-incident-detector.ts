@@ -76,7 +76,8 @@ export class PlanningFailureDetector {
   detect(taskPath: string, taskId: string, context: DetectorContext): IncidentRecord[] {
     const resultPath = join(taskPath, '.planning-result.json');
     const result = readPlanningResult(resultPath);
-    if (!result || result.error || result.status !== 'failed' || !result.failureReason) return [];
+    if (result?.error) return [malformedPlanningResultIncident(resultPath, taskId, result.error, context)];
+    if (!result || result.status !== 'failed' || !result.failureReason) return [];
     const normalizedReason = normalizePlanningReason(result.failureReason);
     if (!PLANNING_TERMINAL_REASONS.has(normalizedReason)) return [];
 
@@ -112,6 +113,40 @@ export class PlanningFailureDetector {
       metadata: { planArtifactState: planState, planner: agent, model },
     })];
   }
+}
+
+/**
+ * A `.planning-result.json` that exists but cannot be parsed is a coverage
+ * gap, not a planning outcome. Evidence is the path plus a bounded parse
+ * error with any quoted content removed — never the file content. The file
+ * mtime is the event time, so re-polling the same broken file dedupes.
+ */
+function malformedPlanningResultIncident(resultPath: string, taskId: string, error: string, context: DetectorContext): IncidentRecord {
+  const parseError = redactIncidentData(boundedOneLine(error.replace(/(["'`]).*?\1/g, '$1…$1'), 160));
+  return createIncidentDraft({
+    taskId,
+    session: context.session ?? null,
+    category: 'configuration_operator_condition',
+    severity: 'low',
+    confidence: 'high',
+    lifecycle: 'observed',
+    rootCauseClass: 'malformed_stage_artifact',
+    summary: `${taskId} has an unreadable planning result artifact; planning outcome detection is blind for this task.`,
+    operatorAction: 'Inspect the planning result file; rerun or rewrite it through the normal planning path. The observer does not modify stage artifacts.',
+    evidence: [{
+      type: 'planning_result',
+      source: resultPath,
+      timestamp: safeMtimeIso(resultPath) ?? context.now?.toISOString() ?? new Date().toISOString(),
+      redactedData: `malformed=true parseError=${parseError}`,
+      key: 'malformed_planning_result',
+    }],
+    metadata: { artifact: basename(resultPath), parseError },
+  });
+}
+
+function boundedOneLine(text: string, maxLength: number): string {
+  const line = text.replace(/\s+/g, ' ').trim();
+  return line.length > maxLength ? `${line.slice(0, maxLength)}…` : line;
 }
 
 export class WorkflowStateDetector {
@@ -318,16 +353,17 @@ export class DependencyHealthDetector {
       // inference block instead.
       const inferenceUnavailable = reason === 'inference_unavailable';
       const inference = objectField(queueHealth.inference);
+      const planner = queueFailurePlanner(queueHealth);
       const diagnostic = inferenceUnavailable
         ? stringField(inference?.error) ?? `inference_${stringField(queueHealth.inferenceStatus) ?? 'unknown'}`
         : diagnosticReason(queueHealth) ?? reason;
       const failureCount = inferenceUnavailable
         ? Math.max(1, numberField(inference?.consecutiveFailures) ?? 1)
         : numberField(queueHealth.failureCount) ?? 1;
-      const classified = canonicalizeRootCauseClass(diagnostic);
-      // An unclassifiable degradation diagnostic is still a known local
-      // condition of the queue planner, not free text.
-      const rootCauseClass = classified === 'unclassified_local_failure' ? 'queue_planner_degraded' : classified;
+      const rootCauseClass = inferenceUnavailable
+        ? queuePlannerClass(canonicalizeRootCauseClass(diagnostic))
+        : queueDegradationRootCause(reason, diagnostic, planner.step);
+      const plannerDetail = formatQueuePlannerDetail(planner);
       incidents.push(createIncidentDraft({
         taskId: null,
         session: context.session ?? null,
@@ -336,7 +372,7 @@ export class DependencyHealthDetector {
         confidence: failureCount >= threshold ? 'high' : 'medium',
         lifecycle: 'observed',
         rootCauseClass,
-        summary: `Queue planner fallback is active: ${reason}.`,
+        summary: `Queue planner fallback is active: ${reason}${plannerDetail ? ` (${plannerDetail})` : ''}.`,
         operatorAction: inferenceUnavailable
           ? 'Queue dependency inference is not answering; the wave uses explicit Linear relations only. Check the [classifier] lines in the mill log and the Claude CLI login, then the inference block in queue-health.json.'
           : 'Inspect queue-health diagnostics and dependency planner inputs; fallback is acceptable briefly but should not persist.',
@@ -344,10 +380,19 @@ export class DependencyHealthDetector {
           type: 'backstage_health',
           source: queueHealthPath,
           timestamp: stringField(queueHealth.lastAttemptAt) ?? stringField(queueHealth.updatedAt) ?? timestamp,
-          redactedData: redactIncidentData(`reason=${reason} diagnostic=${diagnostic} failureCount=${failureCount}`),
+          redactedData: redactIncidentData(`reason=${reason} step=${planner.step ?? 'unknown'} exit=${planner.exitCode ?? 'unknown'} signal=${planner.signal ?? 'none'} diagnostic=${diagnostic} failureCount=${failureCount}`),
           key: 'queue_planner_fallback',
         }],
-        metadata: { threshold, failureCount, diagnosticReason: diagnostic },
+        metadata: {
+          threshold,
+          failureCount,
+          diagnosticReason: diagnostic,
+          degradationReason: reason,
+          failureStep: planner.step,
+          plannerExitCode: planner.exitCode,
+          plannerSignal: planner.signal,
+          cancellationOwner: planner.cancellationOwner,
+        },
       }));
     }
 
@@ -355,32 +400,44 @@ export class DependencyHealthDetector {
     const backstageHealth = readObjectFile(backstageHealthPath);
     const services = objectField(backstageHealth?.services);
     if (services) {
-      for (const [serviceName, service] of Object.entries(services)) {
-        const detail = `${stringField(service.detail) ?? ''} ${stringField(service.lastError) ?? ''}`;
+      for (const [serviceName, rawService] of Object.entries(services)) {
+        const service = objectField(rawService);
+        if (!service) continue;
+        const lastError = stringField(service.lastError);
+        const detail = `${stringField(service.detail) ?? ''} ${lastError ?? ''}`;
         const failureCount = numberField(service.failureCount) ?? numberField(service.restartAttemptCount) ?? 0;
-        if (failureCount < threshold || !/\b(remote|ssh|github|dependency|probe)\b/i.test(detail)) continue;
+        if (failureCount < 1 || !/\b(remote|ssh|github|dependency|probe)\b/i.test(detail)) continue;
         const serviceRootCause = canonicalizeRootCauseClass(detail);
         const serviceRemote = isRemoteRootCauseClass(serviceRootCause);
+        // A one-off probe failure is observed, not escalated; the same record
+        // (same evidence key) is raised to a degraded-dependency incident once
+        // the service reports the configured number of consecutive failures.
+        const degraded = failureCount >= threshold;
+        const errorSummary = redactIncidentData(boundedOneLine(lastError ?? detail, 240));
         incidents.push(createIncidentDraft({
           taskId: null,
           session: context.session ?? null,
           category: dependencyCategoryFor(serviceRootCause),
-          severity: 'medium',
-          confidence: 'high',
+          severity: degraded ? 'medium' : 'low',
+          confidence: degraded ? 'high' : 'low',
           lifecycle: 'observed',
           rootCauseClass: serviceRootCause,
-          summary: serviceRemote
-            ? `${serviceName} dependency health is degraded by repeated probe failures.`
-            : `${serviceName} health is degraded by repeated local failures (${serviceRootCause}).`,
-          operatorAction: 'Check the external dependency and credentials before treating this as a Wavemill product defect.',
+          summary: degraded
+            ? (serviceRemote
+              ? `${serviceName} dependency health is degraded by ${failureCount} consecutive probe failures: ${errorSummary}`
+              : `${serviceName} health is degraded by repeated local failures (${serviceRootCause}).`)
+            : `${serviceName} observed ${failureCount} ${serviceRemote ? 'remote probe' : 'local'} failure(s); below the ${threshold}-failure escalation threshold.`,
+          operatorAction: degraded
+            ? 'Check the external dependency and credentials before treating this as a Wavemill product defect.'
+            : `Watch for repetition; escalate only when this reaches ${threshold} consecutive failures or blocks workflow progress.`,
           evidence: [{
             type: 'backstage_health',
             source: backstageHealthPath,
-            timestamp: stringField(service.updatedAt) ?? timestamp,
-            redactedData: redactIncidentData(`service=${serviceName} failureCount=${failureCount} detail=${detail}`),
-            key: 'degraded_dependency_health',
+            timestamp: stringField(service.lastErrorAt) ?? stringField(service.updatedAt) ?? timestamp,
+            redactedData: redactIncidentData(`service=${serviceName} failureCount=${failureCount} lastError=${errorSummary}`),
+            key: `degraded_dependency_health:${serviceName}`,
           }],
-          metadata: { threshold, failureCount, serviceName },
+          metadata: { threshold, failureCount, serviceName, escalated: degraded, lastErrorSummary: errorSummary },
         }));
       }
     }
@@ -1410,11 +1467,75 @@ function readJobs(repoDir: string): JobStateWithSource[] {
   return jobs;
 }
 
+/** Planner failure fields written by `queue_health_record_failure` (queue-health.sh). */
+interface QueueFailurePlanner {
+  step?: string;
+  exitCode?: number;
+  signal?: number;
+  cancellationOwner?: string;
+}
+
+function queueFailurePlanner(queueHealth: Record<string, unknown>): QueueFailurePlanner {
+  const planner = objectField(queueHealth.planner);
+  return {
+    step: stringField(queueHealth.failureStep),
+    exitCode: numberField(planner?.exitCode),
+    signal: numberField(planner?.signal),
+    cancellationOwner: stringField(planner?.cancellationOwner),
+  };
+}
+
+function formatQueuePlannerDetail(planner: QueueFailurePlanner): string {
+  return [
+    planner.step ? `step=${planner.step}` : null,
+    planner.exitCode !== undefined ? `exit=${planner.exitCode}` : null,
+    planner.signal !== undefined ? `signal=${planner.signal}` : null,
+    planner.cancellationOwner ? `cancelledBy=${planner.cancellationOwner}` : null,
+  ].filter((part): part is string => part !== null).join(', ');
+}
+
+/**
+ * Structured degradation reasons recorded by the queue planner, mapped
+ * explicitly so the class never depends on stderr wording.
+ * `planner_error` and unmapped reasons fall through to the diagnostic.
+ */
+const QUEUE_DEGRADATION_ROOT_CAUSES: Record<string, IncidentRootCauseClass> = {
+  timeout: 'queue_planner_degraded',
+  external_cancellation: 'queue_planner_degraded',
+  diagnostics_setup_failed: 'queue_planner_degraded',
+  malformed_graph: 'local_parse_failure',
+  invalid_input: 'local_parse_failure',
+  planner_input_missing: 'local_config_failure',
+};
+
+function queueDegradationRootCause(reason: string, diagnostic: string, step: string | undefined): IncidentRootCauseClass {
+  const mapped = QUEUE_DEGRADATION_ROOT_CAUSES[reason];
+  if (mapped) return mapped;
+  const fromDiagnostic = canonicalizeRootCauseClass(diagnostic);
+  if (fromDiagnostic !== 'unclassified_local_failure') return queuePlannerClass(fromDiagnostic);
+  return step ? queuePlannerClass(canonicalizeRootCauseClass(step)) : 'queue_planner_degraded';
+}
+
+/** An unclassifiable degradation is still a known local queue-planner condition, not free text. */
+function queuePlannerClass(rootCauseClass: IncidentRootCauseClass): IncidentRootCauseClass {
+  return rootCauseClass === 'unclassified_local_failure' ? 'queue_planner_degraded' : rootCauseClass;
+}
+
+/**
+ * The queue fallback's underlying diagnostic: an explicit structured reason
+ * first, then the recorded degradation reason with its failure step and
+ * planner exit; the stderr excerpt is only a last resort.
+ */
 function diagnosticReason(queueHealth: Record<string, unknown>): string | null {
   const diagnostics = objectField(queueHealth.diagnostics);
-  return stringField(diagnostics?.structuredReason)
-    ?? stringField(diagnostics?.reason)
-    ?? stringField(diagnostics?.stderrExcerpt)
+  const structured = stringField(diagnostics?.structuredReason) ?? stringField(diagnostics?.reason);
+  if (structured) return structured;
+  const degradationReason = stringField(queueHealth.degradationReason);
+  if (degradationReason && degradationReason !== 'dependency_planning_failed') {
+    const detail = formatQueuePlannerDetail(queueFailurePlanner(queueHealth));
+    return detail ? `${degradationReason} (${detail})` : degradationReason;
+  }
+  return stringField(diagnostics?.stderrExcerpt)
     ?? stringField(queueHealth.underlyingReason);
 }
 

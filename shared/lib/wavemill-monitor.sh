@@ -22443,7 +22443,8 @@ while :; do
               _warn_cache_file="${STATE_DIR}/.queue-warn-episode"
               _prev_episode="$(cat "$_warn_cache_file" 2>/dev/null || echo '')"
               if [[ -z "$_prev_episode" || "$_prev_episode" != "$_episode_started" ]]; then
-                log_warn "queue analysis unavailable (reason: ${_queue_reason:-unknown}), falling back to flat list"
+                _queue_step="$(printf '%s' "$_health_status" | jq -r '.failureStep // ""' 2>/dev/null || echo '')"
+                log_warn "queue analysis unavailable (reason: ${_queue_reason:-unknown}${_queue_step:+, step=${_queue_step}}), falling back to flat list"
                 [[ -n "$_episode_started" ]] && printf '%s' "$_episode_started" > "$_warn_cache_file" 2>/dev/null || true
               fi
               [[ -n "$queue_plan_diag_file" ]] && log_fetch_queue_plan_failure "$queue_plan_diag_file"
