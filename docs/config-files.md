@@ -261,24 +261,50 @@ comparison identifies a winner.
 ### Challenge Mode Default
 
 `challenge.enabled` controls whether a new mill task may launch a challenge
-pair at all. The default is **`false`** (HOK-3175).
+pair at all. The shipped `.wavemill-config.json` currently sets
+`enabled: true` at `rate: 0.25` for the HOK-3189 staged re-enable window;
+the schema default in `wavemill-config.schema.json` remains **`false`**
+(HOK-3175).
 
-- With `enabled: false` — the shipped default — the launcher short-circuits
-  before any pair state is minted: `tools/resolve-challenge-task.ts` returns
-  `mode: 'single'` with `reason: 'challenge_disabled'`, no `_c` arm is
-  created, no `challengePairId` is written to `.wavemill/workflow-state.json`,
-  and tend never engages the pair gate.
+- With `enabled: false` the launcher short-circuits before any pair state is
+  minted: `tools/resolve-challenge-task.ts` returns `mode: 'single'` with
+  `reason: 'challenge_disabled'`, no `_c` arm is created, no
+  `challengePairId` is written to `.wavemill/workflow-state.json`, and tend
+  never engages the pair gate.
 - With `enabled: true`, selection proceeds under the configured `rate`,
   `recommendationRate`, and `stageWeights`.
 - In-flight pairs resolve normally after flipping the switch: pair membership
   is persisted on each task's state entry and is never re-derived from current
   config.
 
-**Re-enable criteria.** Keep this off until
-[HOK-3173](https://linear.app/hokusai/issue/HOK-3173)'s unattended exit
-criterion is met on single-arm runs. Prefer re-enabling once durable task
-records support challengers forked from one record at the plan-to-code handoff
-([HOK-3151](https://linear.app/hokusai/issue/HOK-3151)).
+**Staged re-enable (HOK-3189).** The code-side preconditions (Ledger G
+pair rows per [HOK-3186](https://linear.app/hokusai/issue/HOK-3186),
+challenge route drift fix per
+[HOK-3156](https://linear.app/hokusai/issue/HOK-3156), Ledger C operator-touch
+tagging per [HOK-3182](https://linear.app/hokusai/issue/HOK-3182), and the
+plan-to-code fork landing per
+[HOK-3151](https://linear.app/hokusai/issue/HOK-3151)) have all landed. The
+re-enable is staged in three phases:
+
+- **Phase 1 (current PR):** `enabled: true, rate: 0.25` in the shipped
+  `.wavemill-config.json`. 7-day low-rate observation window with one pair in
+  flight at a time.
+- **Phase 2 (follow-up PR):** raise to `rate: 0.75` once phase 1 is clean
+  (zero Class O operator touches on pairs, valid judged comparisons recorded,
+  unattended rate holds the [HOK-3173](https://linear.app/hokusai/issue/HOK-3173)
+  threshold).
+- **Phase 3 (follow-up PR):** flip the `wavemill-config.schema.json`
+  `properties.challenge.properties.enabled.default` from `false` to `true`
+  once phase 2 is clean.
+
+**Rollback.** Set `challenge.enabled: false` in `.wavemill-config.json` —
+a one-line revert. The `rate` value may stay at `0.25`; it is inert when
+`enabled` is false. In-flight pairs resolve normally after the flip.
+
+**Monitoring during the window.** Track per-pair operator touches with
+`wavemill report reliability --include-classes --since 7d`. Any Class O
+operator touch on a pair → immediate rollback and a Ledger G follow-up
+issue, not a point fix (HOK-3189 step 3).
 
 ### Cleanup Episodes
 

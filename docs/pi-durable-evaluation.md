@@ -760,7 +760,8 @@ about 1 s per model deterministic plus one live canary per cohort model,
   rejected). Forking would add it only for native arms.
 - Gate 4 is expected to fail for cross-model pairs (no shared provider
   cache), and a fresh `sessionId` per fork may defeat same-model caching.
-- Challenge pairs are paused by default (HOK-3175).
+- Challenge pairs are staged-re-enabled at low rate under HOK-3189; the
+  schema default remains `false` (HOK-3175).
 - Open risks remain untested: real providers accepting another model's tool-call
   history, contamination from the planning transcript (F-plan), and a
   certification gap for runs resumed from a foreign transcript.
