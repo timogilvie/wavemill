@@ -152,6 +152,10 @@ REAL_FUNC_FILE="$TEST_TMP/lifecycle-real-functions.sh"
 harness_extract_real_functions() {
   local func
   cat "$REPO_DIR/shared/lib/transient-marker.sh" > "$REAL_FUNC_FILE"
+  # HOK-3206: Ready/routing checks run as async jobs by default; these cases
+  # pin the inline contract, so load the async lib and select its sync mode.
+  cat "$REPO_DIR/shared/lib/monitor-async-jobs.sh" >> "$REAL_FUNC_FILE"
+  export WAVEMILL_SYNC_READY_CHECKS=1 WAVEMILL_SYNC_ROUTING=1
   for func in \
     trim_outer_whitespace \
     merge_retry_marker_until \

@@ -86,9 +86,9 @@ do
   extract_function_occurrence "$MILL_SCRIPT" "$name" "$occurrence" >> "$FUNCTION_FILE"
   printf '\n' >> "$FUNCTION_FILE"
 done
-# poll_challenge_jobs lives only in the committed monitor script (HOK-2899
+# poll_tracked_jobs lives only in the committed monitor script (HOK-2899
 # extracted the heredoc body; the mill copy no longer exists).
-extract_function_occurrence "$MONITOR_SCRIPT_FILE" "poll_challenge_jobs" 1 >> "$FUNCTION_FILE"
+extract_function_occurrence "$MONITOR_SCRIPT_FILE" "poll_tracked_jobs" 1 >> "$FUNCTION_FILE"
 printf '\n' >> "$FUNCTION_FILE"
 
 STATUS_FUNCTION_FILE="$TEST_TMP/challenge-timeout-status-functions.sh"
@@ -210,7 +210,7 @@ JSON
   mkdir -p "$WORKTREE_ROOT/hok-2269-c/features/hok-2269-c/ready"
   POLL_JSON='{"unsettled":[{"id":"eval-HOK-2269-primary-754","kind":"eval","status":"timeout","issueId":"HOK-2269","pairId":"HOK-2269","side":"primary","reason":"timed_out","logPath":"/tmp/primary.log"}]}'
   SETTLE_ISSUE="HOK-2269"
-  poll_challenge_jobs
+  poll_tracked_jobs
   printf 'retry_state=%s\n' "$(jq -r '.tasks["HOK-2269"].comparisonState' "$STATE_FILE")"
   printf 'retry_reason=%s\n' "$(jq -r '.tasks["HOK-2269"].comparisonBlockedReason' "$STATE_FILE")"
   printf 'retry_count=%s\n' "$(jq -r '.tasks["HOK-2269"].comparisonRetryCount' "$STATE_FILE")"
@@ -274,7 +274,7 @@ JSON
   mkdir -p "$WORKTREE_ROOT/hok-2269-c/features/hok-2269-c/ready"
   POLL_JSON='{"unsettled":[{"id":"eval-HOK-2269-primary-754","kind":"eval","status":"timeout","issueId":"HOK-2269","pairId":"HOK-2269","side":"primary","reason":"timed_out","logPath":"/tmp/primary.log"}]}'
   SETTLE_ISSUE="HOK-2269"
-  poll_challenge_jobs
+  poll_tracked_jobs
   printf 'second_state=%s\n' "$(jq -r '.tasks["HOK-2269"].comparisonState' "$STATE_FILE")"
   printf 'second_count=%s\n' "$(jq -r '.tasks["HOK-2269"].comparisonRetryCount' "$STATE_FILE")"
   printf 'second_max=%s\n' "$(jq -r '.tasks["HOK-2269"].comparisonRetryMaxAttempts' "$STATE_FILE")"
@@ -336,7 +336,7 @@ JSON
   mkdir -p "$WORKTREE_ROOT/hok-2269-c/features/hok-2269-c/ready"
   POLL_JSON='{"unsettled":[{"id":"eval-HOK-2269-primary-754","kind":"eval","status":"timeout","issueId":"HOK-2269","pairId":"HOK-2269","side":"primary","reason":"timed_out","logPath":"/tmp/primary.log"}]}'
   SETTLE_ISSUE="HOK-2269"
-  poll_challenge_jobs
+  poll_tracked_jobs
   printf 'exhausted_state=%s\n' "$(jq -r '.tasks["HOK-2269"].comparisonState' "$STATE_FILE")"
   printf 'exhausted_count=%s\n' "$(jq -r '.tasks["HOK-2269"].comparisonRetryCount' "$STATE_FILE")"
   printf 'exhausted_max=%s\n' "$(jq -r '.tasks["HOK-2269"].comparisonRetryMaxAttempts' "$STATE_FILE")"
@@ -398,7 +398,7 @@ JSON
   mkdir -p "$WORKTREE_ROOT/hok-2269-c/features/hok-2269-c/ready"
   POLL_JSON='{"unsettled":[{"id":"eval-HOK-2269_c-challenger-755","kind":"eval","status":"timeout","issueId":"HOK-2269_c","pairId":"HOK-2269","side":"challenger","reason":"timed_out","logPath":"/tmp/challenger.log"}]}'
   SETTLE_ISSUE="HOK-2269_c"
-  poll_challenge_jobs
+  poll_tracked_jobs
   printf 'manual_state=%s\n' "$(jq -r '.tasks["HOK-2269"].comparisonState' "$STATE_FILE")"
   printf 'manual_reason=%s\n' "$(jq -r '.tasks["HOK-2269"].comparisonBlockedReason' "$STATE_FILE")"
   printf 'manual_sides=%s\n' "$(jq -r '.tasks["HOK-2269"].comparisonTimedOutSides | join(",")' "$STATE_FILE")"

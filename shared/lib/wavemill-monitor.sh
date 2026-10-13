@@ -249,6 +249,12 @@ fi
 if [[ -f "$LIB_DIR/condition-reconciler.sh" ]]; then
 source "$LIB_DIR/condition-reconciler.sh"
 fi
+# Async ready-path checks (HOK-3206): cross-PR guard, CI status, ready
+# watchdog and routing run as tracked jobs. Sourced after the condition
+# reconciler so marker and bounded-retry helpers are available.
+if [[ -f "$LIB_DIR/monitor-async-jobs.sh" ]]; then
+source "$LIB_DIR/monitor-async-jobs.sh"
+fi
 # Plan<->packet binding gate (HOK-3099). Sourced after wavemill-common.sh so
 # the mtime fallback can reuse standard helpers.
 if [[ -f "$LIB_DIR/plan-packet-binding.sh" ]]; then
@@ -783,7 +789,14 @@ EOF
 
 dispatch_task_and_persist() {
   local issue="${1:-unknown}" slug="${2:-}" rc=0
-  launch_task "$@" || rc=$?
+  LAUNCH_TASK_ALLOW_ROUTE_DEFER=1 launch_task "$@" || rc=$?
+  if (( rc == ${LAUNCH_TASK_DEFERRED_RC:-75} )) && declare -F enqueue_deferred_launch >/dev/null 2>&1; then
+    # HOK-3206: routing is running in the background; the selection keeps
+    # its slot and drain_deferred_launches re-dispatches it.
+    enqueue_deferred_launch "$@"
+    LAST_LAUNCHED_SLOTS=1
+    return 0
+  fi
   if (( rc != 0 )); then
     log_error "launch_task failed for $issue (exit $rc); monitor continues"
     mark_task_needs_user_and_defer "$issue" "$slug" "launch_failed" "launch_task exit $rc"
@@ -4106,6 +4119,13 @@ run_ready_watchdog_tick() {
   watchdog_timeout=$(printf '%s' "$watchdog_json" | jq -r '.timeoutSeconds // 30' 2>/dev/null || echo "30")
   [[ "$watchdog_timeout" =~ ^[0-9]+$ ]] || watchdog_timeout=30
 
+  # HOK-3206: the sweep (~5 s) runs as a tracked job; this tick consumes the
+  # previous sweep's findings and starts the next one.
+  if declare -F ready_watchdog_tick_async >/dev/null 2>&1 && ! ready_checks_sync; then
+    ready_watchdog_tick_async "$watchdog_timeout"
+    return 0
+  fi
+
   watchdog_stderr="$(mktemp "${TMPDIR:-/tmp}/wavemill-ready-watchdog.XXXXXX")" || {
     log_warn "ready watchdog tick failed: could not create diagnostic file"
     return 0
@@ -4133,6 +4153,14 @@ run_ready_watchdog_tick() {
   LAST_READY_WATCHDOG_FAILURE_DETAIL=""
   LAST_READY_WATCHDOG_FAILURE_AT=0
 
+  ready_watchdog_dispatch_findings "$watchdog_output"
+}
+
+# Act on one ready-watchdog sweep's `--json` output: queue remediation for
+# stable failures and log every finding. Shared by the inline tick and the
+# async consumer (HOK-3206).
+ready_watchdog_dispatch_findings() {
+  local watchdog_output="$1"
   while IFS= read -r finding; do
     [[ -n "$finding" ]] || continue
     local issue label detail action slug branch base_branch pr_number title wt_dir state_dir remediation_categories
@@ -9924,8 +9952,16 @@ pr_live_labels_json() {
     fi
   fi
 
+  # HOK-3206: labels come with this pass's batched PR query.
+  if output="$(wavemill_pr_cache_lookup_pr "$pr_number" labels 2>/dev/null)" \
+    && output="$(jq -c 'if type == "array" then map(.name) else empty end' <<<"$output" 2>/dev/null)" \
+    && [[ -n "$output" ]]; then
+    printf '%s\n' "$output"
+    return 0
+  fi
+
   local repo_slug
-  repo_slug="$(cd "$wt_dir" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo)"
+  repo_slug="$(wavemill_repo_name_with_owner "$wt_dir")"
   output=$(_with_timeout "$API_TIMEOUT" gh -R "$repo_slug" pr view "$pr_number" --json labels --jq '[.labels[].name]' 2>/dev/null) || rc=$?
   if (( rc != 0 )) || [[ -z "$output" ]] || ! printf '%s' "$output" | jq -e 'type == "array"' >/dev/null 2>&1; then
     # Fall back to running gh inside the worktree if the repo lookup above
@@ -10346,7 +10382,7 @@ refresh_ready_merge_queue_tick() {
       continue
     fi
 
-    ci_json="$(ready_live_ci_json "$wt_dir" "$pr" "$BASE_BRANCH")"
+    ci_json="$(ready_ci_json_cached "$wt_dir" "$pr" "$BASE_BRANCH" "$issue" "$state_dir")"
     ci_conclusion=$(printf '%s' "$ci_json" | jq -r '.conclusion // "unknown"' 2>/dev/null || echo "unknown")
     ci_head=$(printf '%s' "$ci_json" | jq -r '.headSha // empty' 2>/dev/null || echo "")
     ci_summary="$(ci_summary_from_json "$ci_json")"
@@ -10500,7 +10536,7 @@ refresh_ready_merge_queue_tick() {
     wt_dir="${WORKTREE_ROOT}/${slug}"
     state_dir="$(ready_state_dir "$wt_dir" "$slug")"
     pr="${PR_BY_ISSUE[$issue]:-}"
-    ci_json="$(ready_live_ci_json "$wt_dir" "$pr" "$BASE_BRANCH")"
+    ci_json="$(ready_ci_json_cached "$wt_dir" "$pr" "$BASE_BRANCH" "$issue" "$state_dir")"
     demote_merge_candidate "$issue" "$state_dir" "live CI failing"
     invalidate_ready_for_ci "$issue" "$state_dir" "$ci_json"
   done
@@ -10753,8 +10789,7 @@ clear_cross_pr_guard_ready_evidence() {
 
 cross_pr_revert_gate_allows_merge() {
   local issue="$1" state_dir="$2" wt_dir="$3" pr_number="$4" base_branch="${5-}"
-  local result rc prs files message stderr_file raw_error classification checked_head_sha
-  local tool_stderr=""
+  local result rc stderr_file raw_error checked_head_sha
   local extra_args=()
   raw_error=""
   checked_head_sha=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
@@ -10779,6 +10814,18 @@ cross_pr_revert_gate_allows_merge() {
   else
     rc=$?
   fi
+
+  cross_pr_revert_gate_apply_result "$issue" "$state_dir" "$pr_number" "$checked_head_sha" "$rc" "$result" "$raw_error"
+}
+
+# cross_pr_revert_gate_apply_result <issue> <state_dir> <pr> <checked_head> <rc> <stdout> <stderr>
+# Publishes a cross-PR guard verdict (exit code + tool output) as Ready
+# evidence. Shared by the inline gate and the async consumer (HOK-3206), so
+# a verdict computed by the background job lands exactly as an inline one.
+cross_pr_revert_gate_apply_result() {
+  local issue="$1" state_dir="$2" pr_number="$3" checked_head_sha="$4" rc="$5" result="$6" raw_error="$7"
+  local prs files message classification
+  local tool_stderr=""
 
   if [[ "$rc" -eq 0 ]]; then
     clear_cross_pr_guard_ready_evidence "$state_dir"
@@ -13245,7 +13292,18 @@ launch_ready_phase() {
       ;;
   esac
 
-  if ! cross_pr_revert_gate_allows_merge "$issue" "$state_dir" "$wt_dir" "$pr_number" "$base_branch"; then
+  # HOK-3206: the guard (19 s inline) runs as a tracked job; its verdict is
+  # consumed on a later pass, and only for the head and base it checked.
+  local cross_pr_rc=0
+  ready_cross_pr_revert_gate "$issue" "$state_dir" "$wt_dir" "$pr_number" "$base_branch" || cross_pr_rc=$?
+  if (( cross_pr_rc == 4 )); then
+    write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
+      "Cross-PR revert guard running for PR #$pr_number; Ready deferred" \
+      "$(jq -cn --argjson pr "$pr_number" '{type:"ready",verdict:"pending",prNumber:$pr,pendingReason:"cross-pr-guard-running"}')"
+    log "$pending_log_level" "  $issue: cross-PR revert guard pending - deferring Ready (PR #$pr_number)"
+    return 4
+  fi
+  if (( cross_pr_rc != 0 )); then
     return 1
   fi
 
@@ -14156,10 +14214,14 @@ handle_comparison_job_success() {
   fi
 }
 
-poll_challenge_jobs() {
+# Poll every tracked job once per pass: challenge eval/comparison jobs and the
+# HOK-3206 check jobs (cross-pr-guard, pr-ci-status, ready-watchdog,
+# route-task). Succeeded check jobs are settled by job-tracker.ts itself;
+# their result marker is the output.
+poll_tracked_jobs() {
   local poll_json
   if ! poll_json=$(wavemill_run_tool "job-tracker.ts" poll --state-file "$STATE_FILE" 2>/dev/null); then
-    log_warn "challenge job poll failed"
+    log_warn "tracked job poll failed"
     return 0
   fi
 
@@ -14177,6 +14239,14 @@ poll_challenge_jobs() {
     log_path=$(echo "$job_json" | jq -r '.logPath // empty')
     result_path=$(echo "$job_json" | jq -r '.resultPath // empty')
     side=$(echo "$job_json" | jq -r '.side // empty')
+
+    case "$kind" in
+      cross-pr-guard|pr-ci-status|ready-watchdog|route-task)
+        [[ "$status" == "succeeded" ]] || handle_check_job_failure "$job_id" "$kind" "$status" "$reason" "$result_path" "$excerpt"
+        settle_tracked_job "$job_id"
+        continue
+        ;;
+    esac
 
     if [[ "$kind" == "eval" && "$status" == "succeeded" ]]; then
       log "status" "Challenge eval completed for $issue_id${side:+ ($side)}"
@@ -15680,6 +15750,16 @@ wavemill_record_monitor_iteration_timing() {
     ' 2>/dev/null || echo "[]")"
   fi
 
+  local github_json="{}" jobs_json="{}"
+  if declare -F monitor_github_pass_counters_json >/dev/null 2>&1; then
+    github_json="$(monitor_github_pass_counters_json 2>/dev/null || echo '{}')"
+  fi
+  if declare -F monitor_async_job_stats_json >/dev/null 2>&1; then
+    jobs_json="$(monitor_async_job_stats_json 2>/dev/null || echo '{}')"
+  fi
+  [[ -n "$github_json" ]] || github_json="{}"
+  [[ -n "$jobs_json" ]] || jobs_json="{}"
+
   local warn_ms="${WAVEMILL_MONITOR_PASS_WARN_MS:-30000}"
   if (( duration_ms > warn_ms )); then
     local top_summary
@@ -15699,6 +15779,8 @@ wavemill_record_monitor_iteration_timing() {
     --argjson steps "$steps_json" \
     --argjson top "$top_json" \
     --argjson warnMs "$warn_ms" \
+    --argjson github "$github_json" \
+    --argjson jobs "$jobs_json" \
     --arg updatedAt "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
     '
       (.samples // []) as $samples
@@ -15714,6 +15796,8 @@ wavemill_record_monitor_iteration_timing() {
           warnMs: $warnMs,
           lastSteps: $steps,
           slowestSteps: $top,
+          github: $github,
+          jobs: $jobs,
           cleanupSkippedCount: ((.cleanupSkippedCount // 0) + $cleanupSkipped),
           remoteCallAvoidedCount: ((.remoteCallAvoidedCount // 0) + $remoteAvoided),
           updatedAt: $updatedAt
@@ -15723,6 +15807,75 @@ wavemill_record_monitor_iteration_timing() {
   else
     rm -f "$tmp" 2>/dev/null || true
   fi
+}
+
+# ─── Per-pass GitHub read batching (HOK-3206) ───────────────────────────────
+#
+# One batched `gh pr list` per pass feeds every per-task PR reader through the
+# PR cache; repo-level constants come from the session repo cache. The
+# exported paths are inherited by tsx tools the monitor spawns (including the
+# async check jobs), and only by them: tend and other backstage processes keep
+# reading GitHub directly.
+
+monitor_github_session_init() {
+  WAVEMILL_SESSION_PR_CACHE="$(wavemill_pr_cache_file)"
+  WAVEMILL_SESSION_REPO_CACHE="$(wavemill_session_repo_cache_file)"
+  MONITOR_GH_CALL_COUNTER_FILE="${WAVEMILL_SESSION_PR_CACHE}.gh-calls"
+  export WAVEMILL_SESSION_PR_CACHE WAVEMILL_SESSION_REPO_CACHE MONITOR_GH_CALL_COUNTER_FILE
+  : > "$MONITOR_GH_CALL_COUNTER_FILE" 2>/dev/null || true
+  # Count every shell `gh` spawn from the monitor and its subshells (the
+  # spawn-sample acceptance metric). Skipped when a test already mocks gh.
+  if [[ "${WAVEMILL_GH_CALL_COUNTING:-1}" == "1" ]] && ! declare -F gh >/dev/null 2>&1; then
+    gh() {
+      printf '.' >> "${MONITOR_GH_CALL_COUNTER_FILE:-/dev/null}" 2>/dev/null || true
+      command gh "$@"
+    }
+  fi
+  wavemill_session_repo_cache_refresh "$REPO_DIR" "$BASE_BRANCH" || true
+  MONITOR_REPO_CACHE_BASES=" ${BASE_BRANCH} "
+}
+
+# Refresh the per-pass PR cache with one query covering every active task
+# branch, and record branch protection for any base branch not yet cached.
+monitor_refresh_pr_cache() {
+  local issue base
+  local -a branches=() new_bases=()
+  for issue in "${!BRANCH_BY_ISSUE[@]}"; do
+    [[ -n "${CLEANED[$issue]:-}" ]] && continue
+    [[ -n "${BRANCH_BY_ISSUE[$issue]}" ]] && branches+=("${BRANCH_BY_ISSUE[$issue]}")
+    base="$(pass_task_field "$issue" baseBranch 2>/dev/null || true)"
+    if [[ -n "$base" && "${MONITOR_REPO_CACHE_BASES:-}" != *" $base "* ]]; then
+      new_bases+=("$base")
+      MONITOR_REPO_CACHE_BASES="${MONITOR_REPO_CACHE_BASES:- } $base "
+    fi
+  done
+  if (( ${#new_bases[@]} > 0 )); then
+    wavemill_session_repo_cache_refresh "$REPO_DIR" "${new_bases[@]}" || true
+  fi
+  wavemill_pr_cache_refresh "${branches[@]}"
+}
+
+# Print the byte count of a one-byte-per-event counter file, then reset it.
+_monitor_counter_take() {
+  local file="$1" n=0
+  if [[ -f "$file" ]]; then
+    n="$(wc -c < "$file" 2>/dev/null | tr -d ' ')"
+    : > "$file" 2>/dev/null || true
+  fi
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  printf '%s' "$n"
+}
+
+# Read and reset this pass's GitHub counters for monitor-timing.json.
+monitor_github_pass_counters_json() {
+  local cache counter calls hits misses
+  cache="$(wavemill_pr_cache_file)"
+  counter="${MONITOR_GH_CALL_COUNTER_FILE:-${cache}.gh-calls}"
+  calls="$(_monitor_counter_take "$counter")"
+  hits="$(_monitor_counter_take "${cache}.hits")"
+  misses="$(_monitor_counter_take "${cache}.misses")"
+  jq -cn --argjson calls "$calls" --argjson hits "$hits" --argjson misses "$misses" \
+    '{ghCalls: $calls, prCacheHits: $hits, prCacheMisses: $misses}'
 }
 
 # ============================================================================
@@ -17197,6 +17350,18 @@ launch_task() {
   local packet_content
   packet_content=$(cat "$packet_file" 2>/dev/null || echo "")
 
+  # HOK-3206: a live route (route-task.ts, 30-60 s on a cache miss) runs as a
+  # tracked job before any worktree or Linear side effect; the caller queues
+  # the launch and re-dispatches it once the route lands.
+  if [[ "${LAUNCH_TASK_ALLOW_ROUTE_DEFER:-0}" == "1" ]] && launch_task_needs_live_route "$issue" "$challenge_model"; then
+    local prefetch_rc=0
+    launch_task_route_prefetch "$issue" "$packet_file" "$feature_dir" || prefetch_rc=$?
+    if (( prefetch_rc == LAUNCH_TASK_DEFERRED_RC )); then
+      log "status" "$issue: routing in background; launch deferred to a later pass"
+      return "$LAUNCH_TASK_DEFERRED_RC"
+    fi
+  fi
+
   # Refresh base branch on a TTL so repeated dynamic launches avoid redundant fetches.
   wavemill_fetch_base_branch "$effective_base" 2>/dev/null || true
 
@@ -17376,10 +17541,17 @@ launch_task() {
 
       printf 'issue=%s\npacket=%s\nsaved_route=%s\n' "$issue" "$route_input_file" "$saved_route" >> "$routing_log_file"
 
-      if [[ -f "$saved_route" ]] && [[ -f "$saved_route_source_file" ]] && [[ "$(cat "$saved_route_source_file" 2>/dev/null)" == "batch-cache" ]] && jq -e '.planner and .coder and .reviewer' "$saved_route" >/dev/null 2>&1; then
+      local saved_route_source=""
+      saved_route_source="$(cat "$saved_route_source_file" 2>/dev/null || true)"
+      if [[ -f "$saved_route" ]] && [[ "$saved_route_source" == "batch-cache" ]] && jq -e '.planner and .coder and .reviewer' "$saved_route" >/dev/null 2>&1; then
         route_json=$(cat "$saved_route" 2>/dev/null || echo "")
         route_source="batch-cache"
         log "info" "  Workflow route cache hit from batch cache"
+      elif [[ -f "$saved_route" ]] && [[ "$saved_route_source" == route-job:* ]] && jq -e '.planner and .coder and .reviewer' "$saved_route" >/dev/null 2>&1; then
+        # HOK-3206: computed by the background route job (a live route).
+        route_json=$(cat "$saved_route" 2>/dev/null || echo "")
+        route_source="live"
+        log "info" "  Workflow route from background route job"
       elif [[ ! -s "$route_input_file" ]]; then
         route_reason="missing_packet"
         log_warn "  Workflow routing skipped: no packet content available"
@@ -18315,6 +18487,7 @@ while IFS= read -r line; do
 done < "$TASKS_FILE"
 
 
+monitor_github_session_init
 log "status" "Monitoring tasks and managing work queue..."
 [[ "$PLANNING_MODE" == "interactive" ]] && log "info" "  Planning mode: interactive (watching for plan approval)"
 if (( EFFECTIVE_MAX_PARALLEL < MAX_PARALLEL )); then
@@ -19712,10 +19885,23 @@ monitor_issue_state() {
             # notified" on the dashboard even after the plan was re-approved
             # (HOK-2765). Drop it now that we're transitioning to coding.
             rm -f "$FEATURE_DIR/.planning-rejected.json" 2>/dev/null || true
+
+            # HOK-3206: the expanded reroute (route-tasks.ts, 30-60 s) runs as
+            # a tracked job keyed on the packet content. Hold the handoff
+            # until its result lands; re-enter on a later pass.
+            local reroute_rc=0
+            expanded_reroute_gate "$ISSUE" "$SLUG" "$FEATURE_DIR" || reroute_rc=$?
+            if (( reroute_rc == 4 )); then
+              set_window_attention_state "$WIN" "clear"
+              log "debug" "$ISSUE → expanded reroute running, plan→code handoff held"
+              active_count=$((active_count + 1))
+              return 0
+            fi
+
             # Record approval via approve_plan (HOK-1193: controller-owned stage result)
             approve_plan "$FEATURE_DIR" "$current_agent" ""
 
-            if ! reroute_expanded_packets_for_coding_handoff "$ISSUE" "$SLUG" "$FEATURE_DIR"; then
+            if (( reroute_rc != 0 )); then
               handle_expanded_reroute_handoff_failure "$ISSUE" "$FEATURE_DIR"
             fi
             if ! apply_expanded_route_if_present "$FEATURE_DIR" "$ISSUE" "$SLUG" "$WT_DIR" "$STATE_FILE"; then
@@ -22541,6 +22727,14 @@ while :; do
   monitor_step_begin passSnapshot
   monitor_build_pass_snapshot
   monitor_step_end passSnapshot
+  if declare -F monitor_async_job_stats_reset >/dev/null 2>&1; then
+    monitor_async_job_stats_reset
+  fi
+  # HOK-3206: refresh the batched PR cache first so every reader in this
+  # pass (condition reconciler, ready gates, merge queue, PR discovery) hits it.
+  monitor_step_begin prCacheRefresh
+  monitor_refresh_pr_cache
+  monitor_step_end prCacheRefresh
   # ── Phase A: Monitor existing tasks ──────────────────────────────────
   _update_effective_max_parallel
   monitor_step_begin linearRetryDrain
@@ -22579,7 +22773,7 @@ while :; do
     monitor_resume_agents_after_wake "$monitor_wake_episode"
   fi
   monitor_step_begin pollTrackedJobs
-  poll_challenge_jobs
+  poll_tracked_jobs
   monitor_step_end pollTrackedJobs
   monitor_step_begin backstageHealth
   check_backstage_health
@@ -22598,9 +22792,6 @@ while :; do
   monitor_step_begin millPaneHealth
   check_mill_pane_health
   monitor_step_end millPaneHealth
-  monitor_step_begin prCacheRefresh
-  wavemill_pr_cache_refresh
-  monitor_step_end prCacheRefresh
   monitor_step_begin readyMergeQueue
   refresh_ready_merge_queue_tick
   monitor_step_end readyMergeQueue
@@ -22678,8 +22869,17 @@ while :; do
   fi
 
   # ── Phase C: Offer new tasks if slots available ─────────────────────
+  # HOK-3206: launches deferred on background routing re-dispatch once their
+  # route lands; queued ones keep the slot their selection claimed.
+  deferred_launches=0
+  if declare -F drain_deferred_launches >/dev/null 2>&1; then
+    monitor_step_begin deferredLaunchDrain
+    drain_deferred_launches
+    monitor_step_end deferredLaunchDrain
+    deferred_launches=$(( $(deferred_launch_count) + ${DEFERRED_LAUNCHES_DISPATCHED:-0} ))
+  fi
   # Challengers are free overhead — don't count them against MAX_PARALLEL
-  free_slots=$((EFFECTIVE_MAX_PARALLEL - (active_count - active_challenger_count)))
+  free_slots=$((EFFECTIVE_MAX_PARALLEL - (active_count - active_challenger_count) - deferred_launches))
   update_free_slots_state "$free_slots"
 
   if (( free_slots <= 0 )); then

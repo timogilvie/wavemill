@@ -89,6 +89,7 @@ for f in \
   "$LIB_DIR"/task-identity.sh \
   "$LIB_DIR"/challenge-arms.sh \
   "$LIB_DIR"/transient-marker.sh \
+  "$LIB_DIR"/monitor-async-jobs.sh \
   "$LIB_DIR"/terminal-reconciler.sh \
   "$LIB_DIR"/startup-terminal-preflight.sh \
   "$LIB_DIR"/startup-progress.sh \
@@ -195,6 +196,14 @@ for f in \
   "$REPO_DIR"/tests/re-review-no-pr.test.sh \
   "$REPO_DIR"/tests/monitor-command-routing.test.sh \
   "$REPO_DIR"/tests/condition-reconciler.test.sh \
+  "$REPO_DIR"/tests/wavemill-pr-cache.test.sh \
+  "$REPO_DIR"/tests/cross-pr-revert-job.test.sh \
+  "$REPO_DIR"/tests/pr-ci-status-job.test.sh \
+  "$REPO_DIR"/tests/ready-watchdog-job.test.sh \
+  "$REPO_DIR"/tests/route-task-job.test.sh \
+  "$REPO_DIR"/tests/monitor-perf-smoke.test.sh \
+  "$REPO_DIR"/tests/fixtures/monitor-perf/async-harness.sh \
+  "$REPO_DIR"/tests/fixtures/monitor-perf/mock-gh.sh \
   "$REPO_DIR"/tests/config-false-booleans.test.sh \
   "$REPO_DIR"/tests/check-no-npx-in-monitor.sh \
   "$REPO_DIR"/tests/monitor-pass-snapshot.test.sh \
@@ -607,11 +616,14 @@ else
     # Extract function definitions from condition-reconciler.sh (also sourced by monitor, HOK-3172)
     CONDITION_RECONCILER_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/condition-reconciler.sh" | sed 's/()//' | sort -u)
 
+    # Extract function definitions from monitor-async-jobs.sh (sourced by monitor, HOK-3206)
+    ASYNC_JOBS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/monitor-async-jobs.sh" | sed 's/()//' | sort -u)
+
     # Extract function definitions from wavemill-worktree-deps.sh (sourced by monitor, HOK-2811)
     WORKTREE_DEPS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/wavemill-worktree-deps.sh" | sed 's/()//' | sort -u)
 
     # Combine all available function definitions
-    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$CONDITION_RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
+    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$ASYNC_JOBS_FUNCS" "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$CONDITION_RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
 
     # Known external commands and bash builtins that are NOT custom functions
     # This list covers standard utilities, coreutils, and tools used by wavemill
@@ -897,7 +909,7 @@ else
     fail "monitor does not overlay new tasks from TASKS_FILE"
   fi
 
-  if grep -q '^poll_challenge_jobs() {' <<< "$HEREDOC_CONTENT" \
+  if grep -q '^poll_tracked_jobs() {' <<< "$HEREDOC_CONTENT" \
     && grep -q 'job-tracker.ts" poll' <<< "$HEREDOC_CONTENT"; then
     pass "monitor defines tracked challenge job poller"
   else
@@ -930,7 +942,7 @@ else
     in_loop { print }
     in_loop && /^done$/ { exit }
   ' <<< "$HEREDOC_CONTENT")
-  if grep -qF 'poll_challenge_jobs' <<< "$MONITOR_LOOP_BLOCK"; then
+  if grep -qF 'poll_tracked_jobs' <<< "$MONITOR_LOOP_BLOCK"; then
     pass "monitor loop polls challenge jobs before issue processing"
   else
     fail "monitor loop does not poll challenge jobs"
