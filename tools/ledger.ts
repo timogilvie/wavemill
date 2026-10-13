@@ -24,6 +24,10 @@ import {
 } from '../shared/lib/ledger-shadow.ts';
 import { runConsistencyCheck, appendConsistencyLog } from '../shared/lib/ledger-consistency.ts';
 import { attemptPairAbortWalk } from '../shared/lib/ledger-pair-abort.ts';
+import { renderWorkflowState, serializeRenderedWorkflowState, type RenderableLedger } from '../shared/lib/view-workflow-state.ts';
+import { randomUUID } from 'node:crypto';
+import { closeSync, existsSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 
 const required = (value: string | undefined, name: string): string => { if (!value) throw new Error(`missing ${name}`); return value; };
 const parseJson = (value: string | undefined, name: string): unknown => { try { return value === undefined ? null : JSON.parse(value); } catch { throw new Error(`invalid JSON for ${name}`); } };
@@ -70,6 +74,7 @@ runTool({
     intent: { type: 'string', description: 'JSON execution intent for pair/arm' },
     role: { type: 'string', description: 'Arm role (primary|challenger)' },
     'arm-local': { type: 'string', description: 'JSON local arm intent for compat shim' },
+    out: { type: 'string', description: 'Destination path for `view workflow-state` (atomic rename)' },
   },
   examples: [
     'npx tsx tools/ledger.ts list --json',
@@ -91,11 +96,50 @@ runTool({
     'npx tsx tools/ledger.ts arm-settle-abort --id <arm-id> --reason sibling-stalled',
     'npx tsx tools/ledger.ts pair-walk --pair HOK-1234',
     'npx tsx tools/ledger.ts pair-intent-read --pair HOK-1234',
+    'npx tsx tools/ledger.ts view workflow-state --repo-dir . --out .wavemill/workflow-state.json',
   ],
   run({ args, positional }) {
     const [command, arg1, arg2] = positional;
-    if (command === 'resume' || (command === 'view' && arg1 === 'workflow-state')) {
-      console.error(`not yet implemented: ${command === 'view' ? 'view workflow-state' : command}`);
+    if (command === 'view' && arg1 === 'workflow-state') {
+      const repoDir = resolve(args['repo-dir'] ?? process.env.WAVEMILL_MILLED_REPO_DIR ?? process.cwd());
+      const dbPath = join(repoDir, '.wavemill', 'ledger.sqlite');
+      const ledger = existsSync(dbPath) ? Ledger.open({ repoDir, readOnly: true }) : null;
+      try {
+        const emptyLedger: RenderableLedger = {
+          listTasks: () => [],
+          listChildren: () => [],
+          listWaitingOn: () => [],
+          listEvidence: () => [],
+          listOperatorEvents: () => [],
+        };
+        const rendered = renderWorkflowState(ledger ?? emptyLedger);
+        const serialized = serializeRenderedWorkflowState(rendered);
+        if (args.out) {
+          const outPath = args.out;
+          mkdirSync(dirname(outPath), { recursive: true });
+          const tmpPath = `${outPath}.tmp.${process.pid}.${randomUUID()}`;
+          const fd = openSync(tmpPath, 'w');
+          try {
+            writeFileSync(fd, serialized, 'utf-8');
+          } finally {
+            closeSync(fd);
+          }
+          try {
+            renameSync(tmpPath, outPath);
+          } catch (error) {
+            try { unlinkSync(tmpPath); } catch { /* ignore */ }
+            throw error;
+          }
+        } else {
+          process.stdout.write(serialized);
+        }
+        return;
+      } finally {
+        if (ledger) ledger.close();
+      }
+    }
+    if (command === 'resume') {
+      console.error(`not yet implemented: ${command}`);
       process.exitCode = 2;
       return;
     }
