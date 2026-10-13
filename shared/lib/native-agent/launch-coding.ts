@@ -92,6 +92,7 @@ import {
 } from './completion-normalizer.ts';
 import { registerAndRecordNativeProvenance } from './prompts.ts';
 import { buildNativePatchGuidance } from './patch-contract.ts';
+import { recoverPatchJournal, type PatchRecoveryLogger } from './patch-journal.ts';
 import {
   CODING_FAILURE_HANDOFF_SCHEMA_VERSION,
   getCodingFailureHandoffPath,
@@ -977,6 +978,41 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       ...mcpDescriptors,
       ...(options.extraDescriptors ?? []),
     ];
+
+    // HOK-3213 patch journal recovery: run before the recovery guard so any
+    // interrupted flush from a prior crash is reconciled before the guard
+    // inspects worktree cleanliness.
+    const patchRecoveryLogger: PatchRecoveryLogger = {
+      onRecovery(result) {
+        if (result.recovered && result.restoredFiles) {
+          writeTextStatus(
+            options.session,
+            options.issue,
+            `patch-journal recovery: restored ${result.restoredFiles.length} file(s)`,
+          );
+          if (options.persistentSessionStreamWriter) {
+            options.persistentSessionStreamWriter.writeMutationOutcome({
+              commandType: 'patch_recovery',
+              isError: (result.warnings?.length ?? 0) > 0,
+              outcomeSummary: `restored ${result.restoredFiles.length} file(s) from stale patch journal`,
+            });
+          }
+        }
+        if (result.warnings?.length) {
+          writeTextStatus(options.session, options.issue, `patch-journal warnings: ${result.warnings.join('; ')}`);
+        }
+      },
+      onRecoveryError(error) {
+        if (options.persistentSessionStreamWriter) {
+          options.persistentSessionStreamWriter.writeMutationOutcome({
+            commandType: 'patch_recovery',
+            isError: true,
+            outcomeSummary: `patch-journal recovery error: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      },
+    };
+    await recoverPatchJournal(options.wtDir, patchRecoveryLogger);
 
     // HOK-3128 dirty-handoff recovery guard (HOK-3145): computed once at
     // launch. The monitor removes the instruction only when the tree is
