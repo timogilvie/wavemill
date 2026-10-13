@@ -226,7 +226,7 @@ import type { ChallengeStage } from './challenge-mode.ts';
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.52.0';
+export const SCHEMA_VERSION = '1.53.0';
 
 /**
  * Machine-readable exploration source for an eval row.
@@ -2003,6 +2003,11 @@ export interface StageExecutionIdentity {
     requestedWireId?: string;
     certifiedTarget?: string;
     identityVerdict?: 'match' | 'alias-resolved' | 'mismatch' | 'unverifiable' | 'absent';
+    /**
+     * Installed Pi runtime versions that ran the stage (HOK-3164, @since 1.53.0). Separates
+     * pre/post Pi-upgrade native runs, whose token and cost profiles differ.
+     */
+    piRuntimeVersions?: { 'pi-agent-core'?: string; 'pi-ai'?: string };
   };
 }
 

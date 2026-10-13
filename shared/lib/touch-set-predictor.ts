@@ -158,6 +158,7 @@ function looksLikeCodeIdentifier(token: string): boolean {
   if (!IDENTIFIER.test(token) || token.length < 4) return false;
   if (IDENTIFIER_STOPWORDS.has(token.toLowerCase())) return false;
   if (/^[A-Z][A-Z0-9_]*$/.test(token)) return token.includes('_'); // CONST_NAME, not ALLCAPS words
+  // allow-task-identity: detect-only — rejects issue-ID-shaped tokens so they are not treated as code identifiers; not identity derivation.
   if (/^[A-Z]+-\d+$/.test(token)) return false; // issue IDs
   return token.includes('_') || /[a-z][A-Z]/.test(token) || /^[A-Z][a-z]+[A-Z]/.test(token);
 }

@@ -1682,3 +1682,38 @@ test('buildComparisonRoutingMeta falls back to the varied model as coder for leg
   assert.equal(legacy.coder, 'qwen-3-coder');
   assert.equal(legacy.planDepth, '');
 });
+
+test('stage provenance carries Pi runtime versions from executionEvidence (HOK-3164)', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-pi-version-test-'));
+  try {
+    const featureDir = join(tmp, 'features', 'primary');
+    mkdirSync(featureDir, { recursive: true });
+    writeFileSync(
+      join(featureDir, '.coding-result.json'),
+      JSON.stringify({
+        stage: 'coding',
+        status: 'completed',
+        agent: 'native-openrouter',
+        model: 'moonshotai/kimi-k2.7-code',
+        intendedModel: 'moonshotai/kimi-k2.7-code',
+        executedModel: 'moonshotai/kimi-k2.7-code',
+        executionEvidence: {
+          status: 'direct',
+          source: 'provider-response',
+          identityVerdict: 'match',
+          piRuntimeVersions: { 'pi-agent-core': '1.0.2', 'pi-ai': '1.0.2', junk: 'x' },
+        },
+        modelAttributionEligible: true,
+        notes: '',
+      }),
+    );
+    writeStage(featureDir, 'planning', 'claude', 'claude-opus-4-7');
+
+    const provenance = resolveChallengeSideExecutionProvenance({ featureDir });
+    assert.deepEqual(provenance.coding.piRuntimeVersions, { 'pi-agent-core': '1.0.2', 'pi-ai': '1.0.2' });
+    // Non-native / pre-HOK-3164 stages carry no stamp rather than an empty object.
+    assert.equal('piRuntimeVersions' in provenance.planning, false);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});

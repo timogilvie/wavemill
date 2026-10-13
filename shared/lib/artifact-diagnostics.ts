@@ -17,6 +17,7 @@ import type { TaskContract } from './task-contract.ts';
 import type { FeatureState } from './feature-state.ts';
 import type { TraceEvent } from './trace-event.ts';
 import type { EvalRecord } from './eval-schema.ts';
+import { parseTaskId } from './task-identity.ts';
 
 // ── Public Types ──────────────────────────────────────────────────────────────
 
@@ -962,6 +963,25 @@ function checkCodingCompleteWithoutEvidence(
   return [];
 }
 
+/**
+ * True when an eval record belongs to `taskId` through its challenge pair.
+ *
+ * Both arms of a pair record the base Linear ID as `challengePairId` (eval
+ * records never carry the `<ID>_c` task ID there), so the pair ID alone
+ * cannot tell the arms apart: the record's `challengeSide` must also equal the
+ * task's role, or a task would inherit its pair-mate's evals. Records without
+ * a recorded side are left to the traceId / issueId matches.
+ */
+export function evalRecordMatchesTaskPair(
+  record: Pick<EvalRecord, 'challengePairId' | 'challengeSide'>,
+  taskId: string | null,
+): boolean {
+  const parsed = parseTaskId(taskId);
+  return parsed !== null
+    && record.challengePairId === parsed.linearId
+    && record.challengeSide === parsed.role;
+}
+
 function checkEvalWithoutOutcome(
   featureDir: string,
   featureStateResult: JsonReadResult<FeatureState>,
@@ -971,15 +991,13 @@ function checkEvalWithoutOutcome(
   traceId: string | null,
   repoDir: string,
 ): ArtifactDiagnosticFinding[] {
-  // Find matching eval records. Match by traceId, issueId, or challengePairId
-  // derived from the taskId (the `<id>_c` challenger convention) so challenge
-  // pair evals are not silently missed.
-  const challengePairId = taskId ? `${taskId}_c` : null;
+  // Find matching eval records. Match by traceId, issueId, or the challenge
+  // pair (base ID + side) so a challenger arm's evals, which record the base
+  // issue ID, are not silently missed.
   const matchingEvals = evalRecords.filter(r => {
     if (traceId && r.traceId === traceId) return true;
     if (taskId && r.issueId === taskId) return true;
-    if (challengePairId && r.challengePairId === challengePairId) return true;
-    return false;
+    return evalRecordMatchesTaskPair(r, taskId);
   });
 
   if (matchingEvals.length === 0) return [];

@@ -1,0 +1,27 @@
+{
+  "point": "A",
+  "trial": 1,
+  "pass": true,
+  "resumed": true,
+  "reachedCompletionArtifact": true,
+  "transcript": {
+    "exactlyOneResultPerCall": true,
+    "hasInterruptedForUnsafe": false
+  },
+  "worktreeState": "full",
+  "executesPerCallId": {
+    "t0-list_files": 1,
+    "t1-read_file": 1,
+    "t2-apply_patch": 1,
+    "t3-write_artifact": 1
+  },
+  "timings": {
+    "preCrashMs": 30042,
+    "resumeMs": 1410
+  },
+  "notes": [
+    "no crash-ready signal observed within kill timeout; trial may be invalid for this point",
+    "worktree-after-crash: full",
+    "resume-stdout: {\"settled\":\"done\",\"mode\":\"resume\",\"pid\":57277,\"crashPoint\":\"none\"}"
+  ]
+}

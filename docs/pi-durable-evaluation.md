@@ -1,14 +1,20 @@
 # Pi Durable evaluation (HOK-3148)
 
-**Status:** plan (HOK-3149) · spikes pending (HOK-3150, HOK-3151) · design
-pending (HOK-3152) · decision pending (HOK-3153)
+**Status:** plan (HOK-3149) · HOK-3150 **done** (§6) · HOK-3151 **done** (§7) ·
+design **done** (HOK-3152, `docs/mill-task-ledger-design.md`) · decision
+**recorded** (HOK-3153, §8): runtime swap **deferred**, fork pairs
+**deferred**, ledger **built natively**
 
-Pi 1.0 shipped `@earendil-works/pi-durable` 1.0.0 (MIT, released 2026-10-01,
-labelled experimental) alongside `pi-agent-core` and `pi-ai` 1.0.0. Wavemill's
-native agent pins `pi-agent-core` and `pi-ai` at **0.79.8**. This document sizes
-the problem Pi Durable might solve for wavemill, maps it onto Pi Durable's
-primitives, inventories the native agent's Pi surface, and fixes the pass/fail
-criteria for the spikes *before* they run.
+Pi 1.0 shipped `@earendil-works/pi-durable` 1.0.4 (MIT, 1.0.0 released
+2026-10-01; **1.0.4 released 2026-10-05 — four patch releases in four days,
+each carrying "Breaking Changes"**). Wavemill's native agent has since
+upgraded to `pi-agent-core` / `pi-ai` **1.0.2** (HOK-3161/HOK-3162/HOK-3164 on
+`auto/integration`), so the §3b table below is a retrospective, not a
+pre-condition. This document sizes the problem Pi Durable might solve for
+wavemill, maps it onto Pi Durable's primitives, inventories the native
+agent's Pi surface, fixes the pass/fail criteria for the spikes before they
+run, and (§6) reports the HOK-3150 crash-resume spike against those
+criteria.
 
 Sources: the [announcement post](https://earendil.com/posts/pi-durable/), the
 `pi-durable@1.0.0` README shipped in the npm tarball, and a type-check of this
@@ -228,3 +234,571 @@ are out of scope unless a spike result changes the picture. The dashboard and
 the cache-plus-`USR1` refresh are adequate for now. Swapping extension code
 into a running process conflicts with certification identity, which pins what
 a certified arm runs.
+
+## 6. HOK-3150 results (native coding arm on pi-durable 1.0.4)
+
+Evidence lives in [`spike/pi-durable-crash-test/`](../spike/pi-durable-crash-test/)
+with per-trial JSON in `spike/pi-durable-crash-test/results/`. The spike runs
+`pi-durable@1.0.4` + `pi-ai@1.0.4` + `chord@1.0.4` in its own `node_modules`,
+leaving the repo's `pi-ai@1.0.2` dependency untouched. All trials use the
+`pi-ai` **faux provider** — no real-model tokens spent — with a durable
+scripted factory that reads `TranscriptContext.messages` so the same tool
+sequence is produced before and after a kill (otherwise the faux state resets
+on process restart and resume is indistinguishable from a brand-new run).
+
+### 6.1 Crash points (gates 1 / 2 / 3)
+
+Three trials per point. "wt-after-crash" is `git` state after the first child
+is SIGKILLed; "wt-after-resume" is after the second child settles the
+submission. "interrupted" is whether a `pi.tool-result` entry in the SQLite
+transcript carries a diagnostic with `code: "interrupted"` (pi-durable's
+unsafe-tool kill marker; see `tool.js:fromSlot`).
+
+| Point | Trials | Resumed | Reached completion artifact | wt-after-crash | wt-after-resume | `interrupted` recorded | Safe-tool execute count (expect 2) | Unsafe-tool execute count (expect 1) | Median preCrashMs | Median resumeMs |
+|---|---:|---:|---:|---|---|---:|---:|---:|---:|---:|
+| **A** mid-model-request | 3/3 | 3/3 | 3/3 | full | full | 0/3 | 1 | 1 | 30 038 | 1 410 |
+| **B** mid-safe-tool | 3/3 | 3/3 | 3/3 | untouched | full | 0/3 | **2** | 1 | 776 | 855 |
+| **C1** mid-unsafe-tool, before write | 3/3 | 3/3 | 3/3 | untouched | untouched | **3/3** | 1 | 1 | 942 | 919 |
+| **C2** mid-unsafe-tool, between writes | 3/3 | 3/3 | 3/3 | **partial** | **partial** | **3/3** | 1 | 1 | 824 | 906 |
+| **C3** mid-unsafe-tool, after execute | 3/3 | 3/3 | 3/3 | full | full | **3/3** | 1 | 1 | 776 | 772 |
+
+**Gate 1 (A, mid-model-request): PASS on durability, UNDER-TESTED on the
+"partial response recorded as aborted" invariant.** Pi-ai's `fauxProvider`
+streams the whole scripted response atomically, so an observer on
+`docs["pi.live"]` never sees a partial. The harness falls back to the 30s
+ready-file timeout and SIGKILLs a process that is already idle after the
+submission settled. On resume there is nothing left to do — the completion
+artifact is already written. This proves SQLite durability survives SIGKILL
+but does not exercise an interrupted stream. **Follow-up:** rerun A once
+against a real OpenRouter model (one certified glm-5.2-air-ish; cost cap
+~$0.10 for 3 trials).
+
+**Gate 2 (B, mid-safe-tool): PASS 3/3.** Pre-crash the worktree is
+untouched (list_files is read-only). The safe tool's intent was committed
+before the pause, so pi-durable's recovery re-executed it on resume — exactly
+twice total (`list_files`: once in the killed child, once after
+`harness.resume()` — see `t0-list_files: 2` in `results/b-*.json`). The
+transcript's `exactlyOneResultPerCall` check passes (no duplicate results).
+
+**Gate 3 (C1/C2/C3, mid-unsafe-tool): MIXED.**
+
+- **C1 (before write): PASS 3/3** on the hard criteria. apply_patch's intent
+  was committed, no file was written, pi-durable's recovery wrote the
+  `interrupted` diagnostic (`hasInterruptedForUnsafe: true`) rather than
+  re-running the tool, and the arm still reached the completion artifact.
+- **C2 (between writes): FAIL on the atomicity sub-criterion**, as predicted
+  in the plan's §0 and §3.2. `apply_patch` writes files sequentially (same
+  shape as production `patch-runtime.ts:377-388` — in-process `try/catch`
+  rollback, no `kill -9` guard). After the kill, 1 of 2 files is on disk;
+  resume commits an `interrupted` result but *does not* undo the first
+  write, so the worktree remains **partial** forever unless the model
+  reconciles via `git_status`. The HOK-3149 gate 3 criterion ("worktree is
+  either fully patched or untouched (never partial)") is not met. The gate
+  is also not met by production's own `apply_patch`; adopting pi-durable
+  does not fix this. Fix would need a write-tempfile+atomic-rename or a
+  per-call undo log in `apply_patch` itself.
+- **C3 (after execute, before result commit): PASS 3/3**. The worktree is
+  already full when the kill lands (writes finished before the pause). On
+  resume, pi-durable commits `interrupted` with the output the execute
+  managed to flush, and the next generation continues to the completion
+  artifact. No duplicate tool executions.
+
+### 6.2 Resume vs today's relaunch (gate 4)
+
+`baseline-relaunch.ts` compares (crash + `harness.resume()`) to (crash +
+new SQLite + fresh conversation, which models today's `launch-coding.ts`
+semantics). The spike runs **the faux provider**, so no real token cost can
+be measured and the gate 4 ratio ≤ 0.5 cannot be assessed from this
+evidence. The faux-run wall-clock median for a crashed-and-resumed B trial
+is **855 ms** vs **~1.5–2 s** for a crash-and-fresh-restart on the same
+scratch tree (the fresh child reruns every tool from zero), i.e. a wall-time
+ratio of roughly 0.5 — which matches the production expectation but is not
+proof. A real-provider repeat on a single cheap OpenRouter coding model (<
+$1 for 6 trials) is the standard way to settle gate 4 and should land before
+HOK-3153.
+
+### 6.3 Provider coverage (gate 5)
+
+`provider-matrix.ts` runs on the mill host (reads `~/.wavemill/native-agent-certifications`).
+On this spike host there is no cert store, so the matrix script reports zero
+certified models. The static findings do not need credentials:
+
+- `pi-ai@1.0.4` ships both `openrouterProvider()` and `openaiProvider()`
+  (`node_modules/@earendil-works/pi-ai/dist/providers/openrouter.d.ts`,
+  `openai.d.ts`), the two providers `shared/lib/native-agent/models.ts` uses
+  today — so provider coverage, in principle, matches wavemill's.
+- `pi-ai` is **version 1.0.2 in the repo and 1.0.4 in the spike**. Two
+  copies co-exist in the tree. The repo's `createNativeModelsCollection` is
+  bound to 1.0.2's `Models` type and cannot be reused with pi-durable 1.0.4
+  — the `models` field of `HarnessOptions` requires a 1.0.4 `Models`.
+  Adopting pi-durable means bumping repo pi-ai from 1.0.2 → 1.0.4 first.
+- Pi-ai 1.0.2 → 1.0.4 is **two more patch bumps with breaking changes**
+  (observed from the `@earendil-works/pi-durable` release cadence: four
+  breaking patch releases in four days). This cadence is an adoption
+  blocker in itself: a mill pin needs upstream commitment to semver.
+- **Gate 5 verdict: NOT YET PROVEN.** The spike cannot run a certified-model
+  smoke on this host; the matrix script is ready to run on the mill host
+  with `wavemill native-agent certifications list --json`-driven input.
+
+### 6.4 Policy hooks (gate 6)
+
+`policy-parity.ts` drives six fixtures (allow + two deny classes from
+`mutation-policy.test.ts` and `tools/policies.test.ts`) through both
+(a) the production functions directly and (b) a pi-durable
+`beforeTool`+`afterTool` hook stack that calls those same functions.
+
+**Result: 0 diffs over 6 fixtures (`results/policy-parity.json`). PASS.**
+
+Fixtures covered:
+
+| Fixture | Expected | Production | Hook |
+|---|---|---|---|
+| mutation: patch inside worktree allowed | allow | allow | allow |
+| mutation: patch outside worktree denied | block | block | block |
+| mutation: sibling-prefix false positive denied | block | block | block |
+| mutation: whole-file deny when not allowlisted | block | block | block |
+| phase: read-only tool denied in planning | block | block | block |
+| path-field: path argument outside worktree denied | block | block | block |
+
+Also recorded as findings during the port:
+
+- `beforeTool(call, api, context)` returns only `{ arguments?, block? }`.
+  Argument rewriting and allow/deny are expressible; the full
+  `ToolPolicyDenyDecision` payload (reason code, resolvedPath, policy
+  category) has to be flattened into the `block` string. Audit downstream
+  consumers (loop.ts:966-998 writes `tool_decision_capture` entries with
+  structured reasons; the hook would need `api.memo()` or a side-channel
+  document to keep that structure).
+- `afterTool(call, result, api, context)` can replace `content`, `details`,
+  `diagnostics`, `usage`, and `control`. Output-byte cap + `redactSecrets`
+  port cleanly. `redactSecretsInValue` for `details` ports cleanly.
+- **`beforeRequest(request, …) → { messages }` cannot set `max_tokens`.**
+  Max-token reservation (`computeDynamicMaxTokens`, loop.ts:806 and
+  loop.ts:1169) must move to `HarnessSettings.stream.maxTokens` or an
+  extension-level stream wrapper. This is HOK-2585-adjacent (OpenRouter 402
+  on inflated reservations) and is a real porting cost, not just a rewrite.
+- Model-text redaction (`redactSecrets` on committed assistant content)
+  has no in-place hook: `afterResponse(message, …)` returns `void`.
+  Redaction of model text would need either a `wrapTool` on every tool
+  that forwards model output or a post-commit overlay. Operationally this
+  is minor (`redactSecrets` is 20 lines) but it is **custom code
+  pi-durable does not provide a hook for**.
+
+### 6.5 `loop.ts` responsibility map (info 7)
+
+| Responsibility | loop.ts LOC | Pi-durable primitive | Verdict | Lines remaining as custom code |
+|---|---:|---|---|---:|
+| Budgets (turns, tool calls, cost, wall-clock) | ~140 | — no direct equivalent; must stay as a wrapper around `submit()`/`wait()` or as `onYield` with external accounting | still custom | ~140 |
+| Cost accounting (`pi-usage-cost.ts`) | 25 (file) + ~60 in loop | `harness.usage()` returns pi.usage; need to re-wire price-table lookup | hybrid: pi-durable gives the usage, pricing stays custom | ~30 |
+| Context-window guard | ~290 (`context-window-guard.ts`) + ~40 in loop | `settings.compaction.reserveTokens` + overflow retry are built in | **replaced** | 0 |
+| Compaction | ~180 (`compaction.ts`) + ~30 in loop | Built-in `CompactionTask` + `beforeCompact` hook + `settings.compaction` | **replaced** | 0 |
+| Tool-compat validation | — (`tool-compat-validator.ts` is launch-time) | Pi-durable's `validateToolArguments` (via typebox) covers runtime; the launch-time registry audit stays | mostly replaced | ~40 |
+| Mutation + path policy | ~35 in loop | **ported to `beforeTool` (this spike)** | **replaced** | ~15 (the hook) |
+| Output cap + redaction | ~75 in loop | **ported to `afterTool` (this spike)** | **replaced** | ~25 (the hook) |
+| Fail-fast batch skipping | ~60 | `control.terminate` on tool result is the primitive; can be driven from `afterTool` | replaceable | ~20 |
+| Stagnation tracker | ~55 | No primitive; must stay as a `beforeRequest`/`afterTools` observer | still custom | ~55 |
+| Provider-identity verification (HOK-3143) | ~90 in loop | `afterResponse(message)` sees the real provider response — matches HOK-3143's "verify at message_end" | **replaced** | ~30 (invalidation plumbing) |
+| Tool-decision capture | ~80 | `afterTool` return value is the point; the capture itself is custom | partial | ~50 |
+| Session-stream writer | 650 (`session-stream.ts`) + ~90 in loop | `root.watch()` delivers an exact-frame stream of commits; most of session-stream.ts becomes a translator | partial | ~250 |
+| Provider tool-menu drift | ~60 | `beforeRequest` can filter messages but not tools; `settings.extensions` picks tools per conversation. Drift detection stays custom. | still custom | ~60 |
+| `finishTurn` / `prepareNextTurn` plan | ~110 | `GenerationHooks.onYield` is the direct equivalent | **replaced** | ~20 |
+| Abort composition | ~70 | `conversation.abort()` + `root.abort()` + per-task abort cover it | **replaced** | 0 |
+
+**Totals (coding path only, loop.ts + launch-coding.ts + the companion files
+above):** today ≈ **5 400 lines**; after an ideal port ≈ **735 lines of custom
+glue** — a removal of roughly **4 600–4 800 lines**. The two hooks actually
+ported in this spike (`policy-extension.ts` 252 lines) replace loop.ts:966–1060
+(~95 lines of mutation-policy + output-limits + redaction + decision log), so
+the ratio on the ported slice is ~2.6× (hooks slightly larger than the loop
+code they replace, mainly because the hooks need their own log and typing).
+
+### 6.6 Breaking-change retrospective (info 9)
+
+The native agent already paid the 0.79.8 → 1.0 cost before this spike was
+scoped. The retrospective:
+
+| Issue | SHA | Lines | What it hit |
+|---|---|---:|---|
+| HOK-3161 (pi-ai 1.0 migration) | `275effba` | 18 files, +495/−628 | Section-based system prompt, `SystemMessage` in `Message` union, moved `registerApiProvider`/`streamSimple` to `@earendil-works/pi-ai/compat` |
+| HOK-3162 (Models API migration) | `4442e164` | 13 files, +564/−70 | Dropped the compat shim; adopted `createModels()`/`setProvider`; providers now constructed via `openrouterProvider()`/`openaiProvider()` |
+| HOK-3163 ("Response incomplete" terminal) | — | small | Classify new terminal reason |
+| HOK-3164 (pi runtime version in provenance) | `65f484a0` | — | Record `piRuntimeVersions` on sessions |
+
+Delta a pi-durable move would add on top of 1.0.2:
+
+- pi-ai 1.0.2 → 1.0.4: two patch bumps with "Breaking Changes" (`CHANGELOG`
+  in `node_modules/@earendil-works/pi-ai/dist/`).
+- `@earendil-works/chord` as a new direct dep (currently transitive via
+  pi-ai).
+- `pi-agent-core` **dropped entirely**: `runAgentLoopContinue`, `AgentTool`,
+  `BeforeToolCallContext`/`AfterToolCallContext`, `finishTurn`,
+  `ShouldStopAfterTurnContext` all become dead imports. 1 639 lines of
+  `launch-coding.ts` and 1 733 lines of `loop.ts` must be rewritten around
+  `Harness.open` + `extension.hooks`.
+- Pi-durable itself: 1.0.0 → 1.0.4 shipped **four breaking patch releases
+  in four days** (observed 2026-10-01 to 2026-10-05). The README labels the
+  package experimental and warns that "the API changes without notice
+  between releases". **This is the single largest risk for adoption and is
+  not reducible by shipping-ahead work.**
+
+### 6.7 Certification identity (info 8)
+
+Read-only analysis against `shared/lib/native-agent/certification/identity.ts`
+and `catalog-hash-migration.ts`:
+
+- Subject = `registryKey`, provider ids, `identityRevision`, `fingerprint`,
+  `catalogHash` (per-row for OpenRouter from the launch-priority audit;
+  `'registry'` for everything else). **No Pi runtime version in the
+  subject.** A runtime swap (pi-agent-core → pi-durable) does **not** rotate
+  catalog hashes.
+- Certificates carry `suiteVersion`. The live-coding canary runner
+  (`live-coding-canary.ts`) depends on `runAgentLoopContinue` + the current
+  `loop.ts` scenario runner. Porting it to pi-durable means reimplementing
+  the scenario runner on `Harness` — a `suiteVersion` bump by design, which
+  per the user memory "cert suite bump uncertifies the fleet" (recorded in
+  `project_cert_suite_bump_uncertifies_fleet.md`) triggers a fleet
+  re-certify.
+- Deterministic re-certify is ~1 s/model and uses the standard
+  `wavemill native-agent certify --all --phase workflow` flow (no new
+  tooling). The live-coding canary cohort would need one real coding smoke
+  per bounded cohort model — a one-time cost on the credentialed mill host.
+- HOK-3164 already records `piRuntimeVersions` on session provenance, so
+  the attribution path survives the swap without further work.
+
+### 6.8 Decision-rule outcome
+
+Scored per HOK-3149 §4.1 decision rule ("go if 1–6 pass; adopt-later if 1–3
+pass but 5 fails; otherwise defer"):
+
+- Gate 1 (A): **PASS on durability**; under-tested on partial-stream
+  recording until a real-provider rerun.
+- Gate 2 (B): **PASS 3/3**.
+- Gate 3 (C): **MIXED** — C1 and C3 pass; **C2 fails the "no partial
+  worktree" criterion**. The failure is a property of our in-process
+  `apply_patch`, not of pi-durable, so adopting pi-durable does not fix it.
+- Gate 4: **NOT MEASURED** — needs a real-provider rerun to measure
+  tokens, which the gate's "≤ 0.5 cost ratio" criterion requires.
+- Gate 5: **NOT YET PROVEN** — pi-ai 1.0.4 has the providers wavemill
+  uses, but the certified-model smoke needs the mill host's cert store.
+- Gate 6: **PASS 6/6 fixtures, 0 diffs**.
+
+**Recommendation: defer the runtime swap** until (a) pi-durable's patch
+cadence stabilises enough to give a non-experimental ship window; (b)
+`apply_patch` is made file-atomic (independent of pi-durable, since C2
+reproduces today); (c) a real-provider A/C/baseline rerun on the mill host
+closes gates 1 (A real) and 4; (d) the matrix script runs on-mill against
+every certified model. **Core-upgrade work (pi-ai 1.0.2 → 1.0.4) can
+ship ahead** on its own merits, independent of the runtime decision — it is
+a ~day of mechanical rebinding (openrouter/openai providers unchanged;
+typebox version bump).
+
+Policy hooks (gate 6) are strong evidence that the hook surface is
+expressive enough; the main gap found is **`max_tokens` is not expressible
+through `beforeRequest`**, which is load-bearing for OpenRouter 402
+avoidance (HOK-2585 memory) and is probably the single most important
+missing primitive to request from pi-durable.
+
+## 7. HOK-3151 results (fork-based challenge pair)
+
+### 7.1 Model switch on fork (gate 1)
+
+**Result:** PASS (faux mode). The fork inherits the parent's agent at the fork
+entry, then applies the `AgentChange` (model + cwd + extensions) in the
+creating commit before any request. The challenger's first request uses the
+challenger model, verified via provider-reported `response.model`. The
+extension removed from the challenger is absent from its tool menu. The primary
+is unaffected.
+
+Fresh provider identity: PASS (documented). Each conversation receives a fresh
+`sessionId` in `pi.provider`, forwarded to pi-ai for prompt-cache and session
+affinity. A fork receives a fresh identity even when the model is the same.
+
+**Observed:** `faux/primary` → `faux/challenger` agent change applied correctly.
+Extension count differs (primary: 1, challenger: 0). No `[constraint] model
+switch ignored` emitted.
+
+**Constraint:** cross-model history. When the fork inherits a transcript
+produced by a different model (F-plan shape), the challenger sees
+assistant/tool-call messages that model P wrote. Faux mode accepts them. Real
+providers may or may not accept cross-model tool-call ids and thinking blocks
+(not tested in this spike).
+
+### 7.2 Atomic pairing (gate 2)
+
+**Result:** PASS at the transcript level. INCOMPLETE at the worktree level.
+
+| Point | Where | After SIGKILL + reopen | One-armed pairs (5 trials) |
+|---|---|---|---|
+| **F1** | Inside the creating commit (`conversationCreated` blocks) | Neither arm, no `app.pair` | 0 |
+| **F2** | After fork commit, before `materializeArmWorktree` | Both arms, `app.pair` exists, challenger worktree missing | 0 |
+| **F3** | After worktree, during first request | Both arms, both worktrees exist | 0 |
+
+Idempotent rerun: a second call to `forkChallengePair` with the same `pairId`
+returns the existing conversation ids (no duplicate challenger). **Zero
+one-armed pairs over 15 trials.**
+
+**Limitation:** worktree materialisation is an external effect outside the
+SQLite commit. A crash at F2 leaves both arms but no worktree for the
+challenger. The fix is an idempotent reconciler step
+(`materializeArmWorktree(conv, repo, forkCommit, cwd)`) keyed by conversation
+id, which reads `app.patch-state.worktree` and creates the worktree if missing.
+This is the HOK-3152 design recommendation.
+
+**Constraint via fallback:** if `tx.forkConversation` + `configure` is
+unavailable (not exported or throws), the spike falls back to two
+`conversation.fork` calls and emits `[constraint] pair not single-commit`. In
+that fallback, F1 would show one-armed pairs after a crash (the first fork
+succeeds, the second crashes). The tested pi-durable 1.0.4 did not hit this
+fallback.
+
+### 7.3 Worktree isolation (gate 3)
+
+**Result:** PASS. Each arm's `cwd` is its own `materializeArmWorktree` dir.
+Both arms ran to completion through the faux script (applied patches). Observed:
+`src/a.ts` exists in the primary worktree, exists in the challenger worktree,
+and does NOT exist in the fixture repo. The policy hook (inherited from
+HOK-3150 `policy-extension.ts`) rejected a deliberate cross-worktree patch from
+the challenger.
+
+Execution log verification: every tool call's resolved path is under its own
+arm's `cwd` (not tested in this faux run; real-provider test deferred).
+
+### 7.4 Cost (gate 4)
+
+**Not measured.** Real-provider mode is a stub (`--real` flag prints
+`not measured: no key` without `OPENROUTER_API_KEY`). The plan defines the
+measurement protocol:
+
+- **S** — separate launch (today's baseline): fresh conversation, system prompt
+  + plan+packet, challenger model C.
+- **F-seed** — fork at the coding handoff seed entry (system prompt and
+  plan+packet committed, before primary's first response), switched to C. Its
+  prefix is byte-identical to S, so expected token difference ≈ 0.
+- **F-plan** — fork from the planning conversation at its final entry, switched
+  to C. Carries the whole planning transcript, expected to cost MORE input
+  tokens than S.
+- **F-same** — F-seed with C = P (same model), run after the primary's first
+  request. The only case where a cache hit is possible. Tests whether the fresh
+  `sessionId` defeats it.
+
+**Expected outcome:** F-seed ≈ S. F-plan > S. Only F-same can achieve < S,
+and only if the fresh `sessionId` does not break provider cache affinity.
+Cross-model pairs (P ≠ C) cannot read each other's cache, so the forking win is
+atomicity and lineage, not tokens.
+
+Gate 4 pass/fail bar: challenger input-token **cost** of F-seed and F-plan ÷ S
+≤ 0.70. **Likely FAIL** for cross-model pairs. The fresh `sessionId` per fork
+may also break same-model cache hits (unconfirmed).
+
+**Baseline history:** production challenger coding transcripts (82 runs, from
+`.wavemill/runs/*/native-sessions/coding-*.jsonl` filtered with
+`isChallengerTaskId`). First-turn input ≈ 10.2K tokens, in-session cacheRead
+ratio ≈ 0.83. This provides context for interpreting the 3-trial real numbers
+(deferred).
+
+### 7.5 Counterfactual fidelity (info 5)
+
+Comparison: fork at a mid-session tool decision vs `session-checkpoint.ts` /
+`replayFromCheckpoint`.
+
+| Dimension | Fork | Checkpoint | Fidelity |
+|---|---|---|---|
+| Pre-decision model context | exact (messages/tools hash match) | exact (same messages) | **exact** |
+| Tool menu | inherited from parent agent | captured (frozen) | **exact** |
+| Working tree | rewindable doc with `asOf` (proposed) | captured (`workingFileHashes`) | **exact** |
+| Git state | rewindable doc (proposed) | captured (`headSha`, `cleanTree`) | **exact** |
+| Entropy (Math.random, Date, uuid) | live (not captured) | captured (seeds) | **lossy** |
+| Env whitelist | live (from agent cwd) | captured | **lossy** |
+| Network hermeticity | none (fork runs live) | attested (no-network sandbox) | **missing** |
+| Redaction attestation | none | attested (via filters) | **missing** |
+| Model switchable | yes (agent change allowed) | no (`model_mismatch` error) | **exact** |
+| Runs the model | yes | no (structural only) | **exact** |
+| Storage cost | conversation entry (SQLite) | tar.gz + events JSON | **exact** |
+
+**Fidelity check A:** the fork's next request context (messages hash, tools
+hash) is byte-identical to the primary's recorded pre-decision request. PASS in
+faux mode.
+
+**Counterfactual branch:** switched the fork's model to a forced-choice faux
+(`faux/cf-read_file`) that emits the alternative tool, then switched back. The
+fork runs to completion on the alternative path. This proves that a fork + model
+switch IS a counterfactual branch runner.
+
+**Proposed `app.worktree-ref` doc:** a rewindable doc `{ headSha, dirtyDiff }`
+written by an `afterTool` hook after each mutating tool. Fork with `asOf`
+re-materializes the exact pre-decision tree via `git worktree add` + `git apply
+dirtyDiff`. File hashes from the fork match the checkpoint's
+`workingFileHashes` (not tested; faux mode has no real files).
+
+**Answer to "can it replace the counterfactual checkpoint path?"**: Replace the
+transcript half (model context, tool menu, model switch), keep or rebuild the
+environment half (entropy, env, hermeticity, redaction). The fork beats the
+checkpoint on fidelity (exact, runs the model, allows model switch) and loses
+hermeticity/redaction attestation unless those are rebuilt as rewindable docs.
+
+### 7.6 Constraints
+
+**Worktree isolation:** PASS (§7.3). External effect: `git worktree add` is
+outside the SQLite commit, so a crash between the fork commit and the worktree
+existing leaves the arm without a cwd. Fix: idempotent reconciler
+(`materializeArmWorktree`).
+
+**Arms on different models:**
+- Cross-model history: the challenger sees assistant/tool-call messages that the
+  primary model wrote. Faux mode accepts them. Real providers may reject them
+  (not tested).
+- No cross-model cache: provider prompt caches are per model. A challenger on
+  model C cannot read the primary's cache (model P), whether forked or not.
+- Contamination: F-plan shows the challenger the primary model's planning
+  reasoning. Today's `plan.md`-only inheritance does not.
+
+**Certification pinning:** the certified identity must be resolved for C
+*before* the fork commit (gate runs pre-commit; a refused model must never
+create a fork). The fork's agent pins the certified `resolvedTarget.model`.
+Provider identity is verified on the fork's first `afterResponse`
+(`verifyProviderIdentity` from HOK-3143). The inherited prefix was produced by
+an uncertified-for-C history, so the live coding canary does not cover "resume
+from a foreign transcript" — a suite gap if F-plan is adopted.
+
+**Fresh `sessionId`:** Each fork receives a fresh `pi.provider` `sessionId`
+(documented), even when the model is the same. This may break provider
+prompt-cache affinity (OpenRouter sticky routing). Measured in gate 4 real mode
+(deferred).
+
+**Single-owner-process storage rule (§2):** pi-durable's SQLite storage
+expects one owner process per session. Wavemill's many concurrent writers
+(monitor, tend, observer, eval, operator commands) would need to route all
+writes through a single session or coordinate via external locking. This is
+orthogonal to forking.
+
+### 7.7 Decision and recommendation
+
+**Report-back answers:**
+
+1. **Is the fork atomic?** YES at the transcript level (pair + both arms in one
+   SQLite commit, zero one-armed pairs over 15 trials). NO at the
+   pair-including-worktree level (worktree materialisation is an external
+   effect; a crash at F2 leaves the arm without a cwd). Fix: idempotent
+   reconciler keyed by conversation id.
+
+2. **Token and cost difference:** Not measured (gate 4 deferred to real-provider
+   mode). Expected: F-seed ≈ S, F-plan > S. Cross-model pairs cannot benefit
+   from cache, so the forking win is atomicity, not tokens. Fresh `sessionId`
+   may break same-model cache.
+
+3. **Can it replace the counterfactual checkpoint path?** Partially. Replace the
+   transcript half (exact model context, runs the model, allows model switch).
+   Keep or rebuild the environment half (entropy, env, hermeticity, redaction).
+   A rewindable `app.worktree-ref` doc can provide exact worktree fidelity.
+
+4. **Constraints:** Cross-model history acceptance (untested), no cross-model
+   cache, contamination (F-plan shows challenger the primary's reasoning), cert
+   suite gap (foreign transcript), fresh `sessionId` may break cache, worktree
+   reconciler required.
+
+**Recommendation for HOK-3152 (design):**
+
+- Forking IS atomic at the transcript level and CAN replace today's pairing step
+  for that half (pair record + both arm conversations).
+- Worktree materialisation MUST be an idempotent reconciler step keyed by
+  conversation id, not inline with the fork commit.
+- Gate 4 (cost) SHOULD be measured with real providers to confirm the
+  cross-model cache limitation and the `sessionId` effect.
+- Certification suite SHOULD cover "resume from a foreign transcript" if F-plan
+  is adopted, or only use F-seed (which is byte-identical to S, so no
+  contamination).
+- **Adopt the fork for pairing atomicity, not for token savings.**
+
+## 8. Decision (HOK-3153, 2026-10-13)
+
+Each track is scored against the §4 criteria, which were fixed before the
+spikes ran.
+
+| Track | Decision | Basis |
+|---|---|---|
+| 1. Native agent on pi-durable | **Defer** | Gates 2 and 6 pass and gate 1 passes on durability. Gate 3 is mixed (C2 fails), gate 4 was not measured and gate 5 was not proven. The §4 rule says defer. |
+| 2. Fork-based challenge pairs | **Defer** (reject for the current program) | Gates 1–3 pass. Gate 4 was not measured and is expected to fail for cross-model pairs. |
+| 3. Mill task ledger | **Build natively, reusing pi-durable's patterns** | HOK-3152 §6c: the mill has 7 or more writers, which rules out pi-durable's single-owner storage |
+| 4. Multi-client streaming, extension hot-swap | **Not doing** | Neither spike changed the §5 reasoning |
+
+### 8.1 Native runtime swap: defer
+
+Closing the measurement gaps (a real-provider rerun of A/C and the baseline for
+gates 1 and 4, under $1, and the on-mill provider matrix for gate 5) would not
+change today's outcome. Two blockers are independent of the gates:
+
+- **Upstream stability.** pi-durable shipped four patch releases with breaking
+  changes in four days (1.0.0 → 1.0.4), and its README says the API changes
+  without notice. A port rewrites about 3,400 lines (`loop.ts` +
+  `launch-coding.ts`) against that API. The ~4,600-line reduction (§6.5) is a
+  reason to come back later, not to start now.
+- **Missing primitive.** `beforeRequest` cannot set `max_tokens` (§6.4). The
+  dynamic max-token reservation is what keeps OpenRouter 402s away, so a port
+  without it would regress.
+
+There is **no pi-ai 1.0.2 → 1.0.4 bump for its own sake**. That bump only
+matters for pi-durable, so it waits until there is a pi-durable reason.
+
+Upgrade blockers and re-certification cost when this is revisited: bump
+pi-ai to the pi-durable-pinned version; rewrite the live-coding canary scenario
+runner on `Harness` (a `suiteVersion` bump, then a fleet re-certify, which is
+about 1 s per model deterministic plus one live canary per cohort model,
+§6.7). Catalog hashes do not rotate.
+
+**Revisit triggers** (all three must hold):
+
+1. pi-durable publishes a non-experimental release with a semver commitment.
+2. Request-level `max_tokens` is expressible through a hook or setting.
+3. A real-provider rerun of crash point A, C2 and the gate-4 baseline, plus
+   the on-mill provider matrix, pass the §4 gates.
+
+### 8.2 Fork-based challenge pairs: defer
+
+- The atomicity benefit (0 one-armed pairs in 15 trials, §7.2) is already
+  delivered for **all** arm types, including Claude Code and Codex CLI arms, by
+  Ledger G (HOK-3186: pair rows, bottom-up abort, writes to settled rows
+  rejected). Forking would add it only for native arms.
+- Gate 4 is expected to fail for cross-model pairs (no shared provider
+  cache), and a fresh `sessionId` per fork may defeat same-model caching.
+- Challenge pairs are paused by default (HOK-3175).
+- Open risks remain untested: real providers accepting another model's tool-call
+  history, contamination from the planning transcript (F-plan), and a
+  certification gap for runs resumed from a foreign transcript.
+
+**Revisit trigger:** the challenge program resumes with native arms on both
+sides. Separately, the §7.5 counterfactual-fidelity result (the fork reproduced
+the pre-decision context exactly and allows a model switch) remains a research
+option for replacing the transcript half of `session-checkpoint.ts` /
+`deterministic-replay.ts`. It is not a scheduled track.
+
+### 8.3 Mill task ledger: build natively
+
+The ledger is the HOK-3178 epic: SQLite WAL with multiple writers, a direct-access
+guard, and pi-durable's ownership tree, explicit states, idempotency keys and
+replay semantics re-expressed as rows. Migration order as executed:
+
+| Phase | Issue | Classes | State (2026-10-13) |
+|---|---|---|---|
+| A: ledger core | HOK-3180 | — | merged |
+| B: derived merge labels | HOK-3181 | S | merged (regression HOK-3212 open) |
+| C: intervention tagging baseline (§1c) | HOK-3182 | metric | merged |
+| D: side-effect ledger, shadow | HOK-3183 | S | merged |
+| E: step rows for review/Ready/eval, shadow | HOK-3184 | R, L | merged |
+| F: one recovery path | HOK-3185 | R | in review |
+| G: ownership tree, pair rows | HOK-3186 | O | merged |
+| H: retire old surfaces | HOK-3187 | O, L | backlog |
+
+Architectural invariants that change when phase H lands (task progress
+becomes a reader of ledger rows; `workflow-state.json` becomes a render view)
+are documented in the HOK-3178 phase issues and will update
+`.wavemill/context/` with that phase, not with this decision.
+
+### 8.4 Follow-on work
+
+- **HOK-3213:** make native `apply_patch` crash-atomic (temp file + rename
+  per file, plus an undo journal across files). Gate 3 / C2 reproduces with
+  today's production runtime, so this is a go on its own merits and not
+  pi-durable work.
+- No new epic is filed. Neither pi-durable track is a go, and the ledger
+  already has HOK-3178.
+- HOK-3148 closes as deferred, with the §8.1 and §8.2 revisit triggers.

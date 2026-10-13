@@ -195,6 +195,14 @@ function makeRepo(coderHistory: string[], opts: {
   return repoDir;
 }
 
+function makeRepoWithoutChallenge(coderHistory: string[] = []): string {
+  const repoDir = makeRepo(coderHistory);
+  updateRepoConfig(repoDir, (config) => {
+    delete config.challenge;
+  });
+  return repoDir;
+}
+
 function runResolveChallengeTask(repoDir: string, args: string[]): Record<string, unknown> {
   const stdout = execFileSync('npx', ['tsx', resolveChallengeTaskTool, ...args], {
     encoding: 'utf-8',
@@ -215,6 +223,31 @@ function updateRepoConfig(repoDir: string, update: (config: Record<string, unkno
 }
 
 describe('resolve-challenge-task CLI', () => {
+  it('launches a single arm without minting pair state when challenge is not configured', () => {
+    const repoDir = makeRepoWithoutChallenge();
+    try {
+      const result = runResolveChallengeTask(repoDir, [
+        '--issue', 'HOK-3175',
+        '--slug', 'single-arm-default',
+        '--title', 'Single arm default',
+        '--primary-model', 'claude-sonnet-4-6',
+        '--remaining-slots', '2',
+        '--repo-dir', repoDir,
+      ]);
+
+      assert.equal(result.mode, 'single');
+      assert.equal(result.reason, 'challenge_disabled');
+      assert.equal(result.slotsRequired, 1);
+      assert.equal(result.entries, undefined);
+      assert.equal(
+        (result.challengeExecutionIntent as Record<string, unknown>).noChallengeReason,
+        'challenge_disabled',
+      );
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('claims reservations so sequential selectors choose distinct zero-record challengers', () => {
     const aliases = ['qwen-3-coder', 'glm-5.2'];
     const repoDir = makeRepo([], {

@@ -21,6 +21,7 @@ import {
   readStageResult,
   readAllStageResults,
   updateStageResult,
+  executionTruthFields,
   extractReviewOutcome,
   getResultFilePath,
   isInfrastructureReviewFailure,
@@ -860,6 +861,23 @@ describe('review outcome helpers', () => {
     assert.equal(isInfrastructureReviewFailure(nested), true);
   });
 
+  it('classifies review-scope-mismatch as retryable infrastructure (HOK-3166)', () => {
+    assert.equal(isInfrastructureReviewFailure({ verdict: 'error', failureCategory: 'review-scope-mismatch' }), true);
+    const flat = makeResult({
+      stage: 'review',
+      status: 'completed',
+      artifacts: {
+        type: 'review',
+        exitCode: 1,
+        verdict: 'error',
+        iterations: 1,
+        blockerCount: 0,
+        failureCategory: 'review-scope-mismatch',
+      },
+    });
+    assert.equal(isInfrastructureReviewFailure(flat), true);
+  });
+
   it('classifies native-context-window-exceeded as retryable infrastructure regardless of verdict (HOK-2964 REQ-F1)', () => {
     const flat = makeResult({
       stage: 'review',
@@ -945,11 +963,23 @@ describe('review outcome helpers', () => {
       verdict: 'not_ready',
       blockerCount: 1,
     }), false);
+    // HOK-3169: a malformed native-review response is now an infra failure.
+    // The ready gate routes it through the bounded `review-infra-recovery`
+    // bucket instead of refusing Ready terminally.
     assert.equal(isInfrastructureReviewFailure({
       type: 'review',
-      verdict: 'not_ready',
+      verdict: 'error',
       failureCategory: 'native-review-malformed-response',
-    }), false);
+      reviewToolError: 'Native review returned malformed response: expected JSON',
+    }), true);
+    // HOK-3169: an empty review input is a typed infra failure, not a code
+    // defect, and must flow through the same recovery path.
+    assert.equal(isInfrastructureReviewFailure({
+      type: 'review',
+      verdict: 'error',
+      failureCategory: 'review-scope-empty',
+      reviewToolError: 'Native review input diff is empty; refusing to invoke the model.',
+    }), true);
   });
 });
 
@@ -1112,5 +1142,74 @@ describe('appendReviewIteration', () => {
       makeIteration({ iteration: 1 }),
     );
     assert.deepEqual(result.map((entry) => entry.iteration), [1, 3]);
+  });
+});
+
+describe('executionEvidence.piRuntimeVersions (HOK-3164)', () => {
+  beforeEach(async () => { testDir = await createTestDir(); });
+  afterEach(async () => { await fs.rm(testDir, { recursive: true, force: true }); });
+
+  const versions = { 'pi-agent-core': '1.0.2', 'pi-ai': '1.0.2' };
+
+  it('round-trips through updateStageResult for provider-response evidence', async () => {
+    await updateStageResult(testDir, 'coding', {
+      status: 'completed',
+      agent: 'native',
+      model: 'm',
+      executedModel: 'm',
+      executionEvidence: {
+        status: 'direct',
+        source: 'provider-response',
+        identityVerdict: 'match',
+        piRuntimeVersions: versions,
+      },
+    });
+
+    const read = await readStageResult(testDir, 'coding');
+    assert.deepEqual(read?.executionEvidence?.piRuntimeVersions, versions);
+  });
+
+  it('round-trips through updateStageResult for native-runtime fallback evidence', async () => {
+    await updateStageResult(testDir, 'planning', {
+      status: 'awaiting_user',
+      agent: 'native',
+      model: 'm',
+      executedModel: 'm',
+      executionEvidence: { status: 'direct', source: 'native-runtime', piRuntimeVersions: versions },
+    });
+
+    const read = await readStageResult(testDir, 'planning');
+    assert.deepEqual(read?.executionEvidence?.piRuntimeVersions, versions);
+  });
+
+  it('stage-result CLI truth fields preserve the native Pi stamp for a still-running stage', () => {
+    const existing = makeResult({
+      stage: 'coding',
+      status: 'running',
+      model: 'm',
+      executedModel: 'm',
+      executionEvidence: { status: 'direct', source: 'native-runtime', piRuntimeVersions: versions },
+    });
+
+    const fields = executionTruthFields({ status: 'completed', flags: {}, existing, now: '2026-10-06T00:00:00Z' });
+    assert.deepEqual(fields.executionEvidence?.piRuntimeVersions, versions);
+  });
+
+  it('stage-result CLI truth fields drop the Pi stamp when an explicit executed model replaces it', () => {
+    const existing = makeResult({
+      stage: 'coding',
+      status: 'running',
+      model: 'm',
+      executedModel: 'm',
+      executionEvidence: { status: 'direct', source: 'native-runtime', piRuntimeVersions: versions },
+    });
+
+    const fields = executionTruthFields({
+      status: 'completed',
+      flags: { 'executed-model': 'claude-opus-4-7' },
+      existing,
+      now: '2026-10-06T00:00:00Z',
+    });
+    assert.equal(fields.executionEvidence?.piRuntimeVersions, undefined);
   });
 });

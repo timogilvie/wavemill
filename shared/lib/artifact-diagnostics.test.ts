@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, it, before, after } from 'node:test';
 import {
   diagnoseArtifacts,
+  evalRecordMatchesTaskPair,
   readEvalFallbackEventsDiagnostic,
   readPrIdentity,
   readQuotaSnapshotDiagnostic,
@@ -422,6 +423,28 @@ describe('diagnoseArtifacts', () => {
     assert.equal(evalFindings[0].severity, 'warn');
   });
 
+  // HOK-3116: challenger evals record the base issue ID as challengePairId;
+  // the check used to look for `<taskId>_c` (HOK-0017_c_c here) and missed it.
+  it('7b. challenger eval matched through the base pair ID — eval_without_outcome warning', () => {
+    const tmpRepo = makeTempRepo();
+    tempDirs.push(tmpRepo);
+    const slug = 'eval-no-outcome-challenger';
+    const featureDir = makeFeatureDir(tmpRepo, slug);
+    writeSelectedTask(featureDir, 'HOK-0017_c', slug);
+    writeEvalRecord(tmpRepo, {
+      issueId: 'HOK-0017',
+      challengePairId: 'HOK-0017',
+      challengeSide: 'challenger',
+      score: 0.75,
+    });
+    writeFeatureState(featureDir, { issueId: 'HOK-0017_c', slug, currentPhase: 'coding', normalizedState: 'running' });
+
+    const report = diagnoseArtifacts({ repoDir: tmpRepo, taskId: 'HOK-0017_c' });
+
+    const evalFindings = report.findings.filter(f => f.code === 'eval_without_outcome');
+    assert.equal(evalFindings.length, 1, 'Expected eval_without_outcome finding for the challenger arm');
+  });
+
   it('8. trace coverage and unreflected events — trace_id_missing and trace_event_unreflected', () => {
     const tmpRepo = makeTempRepo();
     tempDirs.push(tmpRepo);
@@ -614,5 +637,26 @@ describe('stalled lifecycle artifact readers', () => {
     assert.equal(events.length, 1);
     assert.equal(events[0].challengePairId, 'HOK-1328-pair');
     assert.deepEqual(events[0].failedProviders, ['openrouter']);
+  });
+});
+
+describe('evalRecordMatchesTaskPair', () => {
+  const pair = (challengeSide?: 'primary' | 'challenger') => ({ challengePairId: 'HOK-42', challengeSide });
+
+  it('matches each arm on the base pair ID and its own side', () => {
+    assert.equal(evalRecordMatchesTaskPair(pair('primary'), 'HOK-42'), true);
+    assert.equal(evalRecordMatchesTaskPair(pair('challenger'), 'HOK-42_c'), true);
+  });
+
+  it('never attributes the pair-mate arm or a side-less record', () => {
+    assert.equal(evalRecordMatchesTaskPair(pair('primary'), 'HOK-42_c'), false);
+    assert.equal(evalRecordMatchesTaskPair(pair('challenger'), 'HOK-42'), false);
+    assert.equal(evalRecordMatchesTaskPair(pair(undefined), 'HOK-42_c'), false);
+  });
+
+  it('never matches the legacy `<id>_c` pair form or an unparseable task ID', () => {
+    assert.equal(evalRecordMatchesTaskPair({ challengePairId: 'HOK-42_c', challengeSide: 'challenger' }, 'HOK-42_c'), false);
+    assert.equal(evalRecordMatchesTaskPair(pair('primary'), null), false);
+    assert.equal(evalRecordMatchesTaskPair(pair('primary'), 'not-a-task'), false);
   });
 });

@@ -1,4 +1,4 @@
-import { TASK_ID_RE } from './task-identity.ts';
+import { parseTaskId } from './task-identity.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readActiveChallengeComparisons, type StoredChallengeComparison } from './challenge-comparison.ts';
@@ -46,7 +46,6 @@ export interface ChallengeLoserCleanupCandidate {
 }
 
 const BRANCH_NAME_PATTERN = /^[a-zA-Z0-9._/-]+$/;
-const TASK_IDENTIFIER_PATTERN = TASK_ID_RE;
 const ORPHAN_PAIR_GRACE_MS = 60_000;
 /**
  * HOK-3128: how long a tracked, no-PR sibling may go without agent progress
@@ -241,7 +240,6 @@ export interface ChallengeClassificationOptions {
 export type ChallengeGate =
   | { kind: 'not-in-challenge' }
   | { kind: 'pair-unresolved'; pairId: string; otherPr: number | null; reason: string }
-  | { kind: 'pair-unresolvable'; pairId: string; otherPr: number | null; reason: UnresolvableReason }
   | { kind: 'cool-off'; reason: string }
   | { kind: 'winner'; pairId: string; loserPr: number | null; autoMerge: boolean }
   /**
@@ -530,10 +528,10 @@ export function classifyChallengeState(
     const hardFailureState = classifyPairUnresolvableState(pairState, options.evalHardFailureRetryMax ?? DEFAULT_HARD_FAILURE_RETRY_MAX);
     if (hardFailureState) {
       return {
-        kind: 'pair-unresolvable',
+        kind: 'pair-unresolved',
         pairId,
         otherPr,
-        reason: hardFailureState,
+        reason: `pair-unresolved:${hardFailureState}`,
       };
     }
 
@@ -552,19 +550,19 @@ export function classifyChallengeState(
       // challenger parked on a dirty-tree coding handoff after its agent
       // exited) holds a green primary at `no-comparison` forever.
       return {
-        kind: 'pair-unresolvable',
+        kind: 'pair-unresolved',
         pairId,
         otherPr,
-        reason: 'sibling-stalled',
+        reason: 'pair-unresolved:sibling-stalled',
       };
     }
 
     if (isOrphanedPair(pairState, otherPr, options.siblingLive ?? false, options.nowMs, options.orphanGraceMs)) {
       return {
-        kind: 'pair-unresolvable',
+        kind: 'pair-unresolved',
         pairId,
         otherPr,
-        reason: 'orphan-sibling',
+        reason: 'pair-unresolved:orphan-sibling',
       };
     }
 
@@ -792,11 +790,6 @@ export async function applyChallengePairGates<T extends ChallengeEligibleWorkIte
 
     if (state.kind === 'pair-unresolved') {
       nextBlocked.push(toBlockedCandidate(item, `challenge:${state.reason}`));
-      continue;
-    }
-
-    if (state.kind === 'pair-unresolvable') {
-      nextBlocked.push(toBlockedCandidate(item, `challenge:pair-unresolvable:${state.reason}`));
       continue;
     }
 
@@ -1331,11 +1324,7 @@ async function getBranchExistence(
 }
 
 function normalizeChallengeIdentifierRoot(identifier: string | undefined): string | null {
-  if (!identifier || !TASK_IDENTIFIER_PATTERN.test(identifier)) {
-    return null;
-  }
-
-  return identifier.endsWith('_c') ? identifier.slice(0, -2) : identifier;
+  return parseTaskId(identifier)?.linearId ?? null;
 }
 
 function deriveTwinBranch(headBranch: string): string | null {

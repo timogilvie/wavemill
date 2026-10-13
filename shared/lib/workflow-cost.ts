@@ -138,19 +138,39 @@ export interface ExactPricingOptions {
 // Project directory resolution
 // ────────────────────────────────────────────────────────────────
 
+/** Claude Code caps project directory names at this many characters. */
+export const CLAUDE_PROJECT_DIR_MAX_LENGTH = 200;
+
+/** Java-style 32-bit string hash, as Claude Code uses for truncated names. */
+function javaStringHash(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) {
+    hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0;
+  }
+  return hash;
+}
+
 /**
  * Derive the Claude projects directory name from a worktree absolute path.
  *
- * Claude Code encodes the working directory path by replacing `/` with `-`.
- * For example:
+ * Claude Code replaces every non-alphanumeric character with `-`, e.g.
  *   /Users/tim/worktrees/my-feature → -Users-tim-worktrees-my-feature
+ * Names longer than 200 characters are cut to 200 and suffixed with
+ * `-<base36 hash of the raw path>`. Without that rule, task worktrees with
+ * long slugs never matched their sessions, so executed-model evidence and
+ * session cost came back missing.
  *
  * @param worktreePath - Absolute path to the worktree
  * @returns The encoded project directory name
  */
 export function encodeProjectDir(worktreePath: string): string {
   const absolute = resolve(worktreePath);
-  return absolute.replace(/\//g, '-');
+  const encoded = absolute.replace(/[^a-zA-Z0-9]/g, '-');
+  if (encoded.length <= CLAUDE_PROJECT_DIR_MAX_LENGTH) {
+    return encoded;
+  }
+  const suffix = Math.abs(javaStringHash(absolute)).toString(36);
+  return `${encoded.slice(0, CLAUDE_PROJECT_DIR_MAX_LENGTH)}-${suffix}`;
 }
 
 /**

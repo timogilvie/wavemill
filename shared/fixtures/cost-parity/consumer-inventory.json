@@ -100,6 +100,15 @@
       "notes": "Session file discovery for outcome collection"
     },
     {
+      "file": "shared/lib/reliability-metrics.ts",
+      "symbols": [
+        { "name": "resolveProjectsDirs", "kind": "value" }
+      ],
+      "class": "wavemill_only_join",
+      "production": true,
+      "notes": "Session file discovery for operator-touch counting"
+    },
+    {
       "file": "shared/lib/deepseek-smoke.ts",
       "symbols": [
         { "name": "encodeProjectDir", "kind": "value" }

@@ -4,12 +4,74 @@
 # This library provides reusable functions for agent hooks to report status
 # in a standardized format. Hooks are no-ops outside wavemill contexts.
 
+# HOK-3184: optional ledger shadow helper. The helper is sourced defensively
+# so standalone/bare agents without a wavemill install silently skip the
+# shadow path. The helper itself is a no-op outside wavemill contexts.
+_wavemill_hook_proto_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || true)"
+if [[ -n "${_wavemill_hook_proto_dir:-}" && -f "${_wavemill_hook_proto_dir}/wavemill-hook-ledger-shadow.sh" ]]; then
+  # shellcheck source=wavemill-hook-ledger-shadow.sh
+  source "${_wavemill_hook_proto_dir}/wavemill-hook-ledger-shadow.sh" 2>/dev/null || true
+fi
+
 # Verify we are running inside a wavemill-launched agent context.
 # Hooks must be no-ops outside wavemill to avoid disrupting standalone use.
 wavemill_hook_check() {
   [[ -n "${WAVEMILL_SESSION:-}" ]] || exit 0
   [[ -n "${WAVEMILL_ISSUE:-}" ]] || exit 0
   command -v jq >/dev/null 2>&1 || exit 0
+}
+
+# HOK-3190: Send USR2 to the monitor process to interrupt poll_sleep and
+# make it re-enter its loop body immediately. Marker writers (plan-approved,
+# coding-complete, ready-complete, re-review commands) call this so operator
+# actions aren't gated on the next POLL_SECONDS boundary.
+#
+# Mirrors the shape of wavemill_hook_notify (which signals the dashboard
+# with USR1). Best-effort: a stale/missing PID is a no-op and never fails.
+#
+# The monitor PID lives on the tmux session environment as
+# WAVEMILL_MONITOR_PID; agent panes export it via write_monitor_env, and
+# marker writers that are not in a wavemill-launched pane fall back to
+# tmux show-environment (resolved by the caller).
+wavemill_monitor_notify() {
+  local monitor_pid="${WAVEMILL_MONITOR_PID:-}"
+  [[ -n "$monitor_pid" ]] || return 0
+  [[ "$monitor_pid" =~ ^[0-9]+$ ]] || return 0
+  [[ "$monitor_pid" -eq 0 ]] && return 0
+  kill -0 "$monitor_pid" 2>/dev/null || return 0
+  kill -USR2 "$monitor_pid" 2>/dev/null || true
+  return 0
+}
+
+# HOK-3190: touch a lifecycle marker (`.plan-approved`, `.coding-complete`,
+# `.review-complete`, `.ready-complete`) AND wake the monitor so the next
+# phase launch doesn't wait on the poll tick. Call this from any site that
+# would otherwise do `touch "$feature_dir/.X"` or `printf '…' > "$feature_dir/.X"`.
+#
+# Usage: wavemill_touch_marker <path> [--content <string>]
+# A missing --content writes an empty file (touch semantics). The write is
+# atomic (tmp + rename) when --content is supplied.
+wavemill_touch_marker() {
+  local marker_path="${1:-}"
+  shift || true
+  [[ -n "$marker_path" ]] || return 1
+  local content=""
+  local have_content=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --content) content="${2:-}"; have_content=1; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  mkdir -p "$(dirname "$marker_path")" 2>/dev/null || true
+  if (( have_content )); then
+    local tmp="${marker_path}.tmp.$$"
+    printf '%s' "$content" > "$tmp" && mv "$tmp" "$marker_path"
+  else
+    : > "$marker_path"
+  fi
+  wavemill_monitor_notify
+  return 0
 }
 
 # Send USR1 to dashboard process to trigger an immediate refresh.
@@ -313,6 +375,11 @@ wavemill_hook_write() {
     if mv "$tmp_file" "$hook_file" 2>/dev/null; then
       wavemill_hook_notify
       _wavemill_hook_emit_osc "$state" "$event" "$detail" "$agent" || true
+      # HOK-3184: mirror the agent record as an evidence row. Monitor writes
+      # return immediately inside the helper (writer-field enforcement).
+      if declare -F wavemill_hook_shadow_evidence >/dev/null 2>&1; then
+        wavemill_hook_shadow_evidence "$state" "$event" "$detail" "$writer" "$agent" || true
+      fi
     else
       rm -f "$tmp_file"
     fi

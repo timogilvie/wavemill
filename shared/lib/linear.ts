@@ -1,4 +1,5 @@
-import { ISSUE_ID_RE } from './task-identity.ts';
+import { ISSUE_ID_RE, challengerTaskId } from './task-identity.ts';
+import { linearTransitionKey, shadowRecordSideEffect, synthesizeTriggerEventId } from './side-effect-ledger.ts';
 /**
  * Shared Linear API client used by both Claude and Codex tooling.
  *
@@ -693,16 +694,47 @@ export async function getBacklogForScoring(projectName?: string): Promise<Linear
   return issues?.nodes || [];
 }
 
+/** Optional trigger attribution for a Linear state transition (HOK-3183). */
+export interface LinearTransitionOptions {
+  /** Event that caused the transition; the side-effect key's `trigger_event_id`. */
+  triggerEventId?: string;
+  /** Caller label used to synthesise a trigger id when none is passed. */
+  triggerHint?: string;
+}
+
+/** Shadow-record one applied Linear transition in the side-effect ledger. */
+function shadowRecordLinearTransition(
+  identifier: string,
+  fromState: string | undefined,
+  toState: string,
+  stateId: string,
+  triggerEventId: string,
+): void {
+  shadowRecordSideEffect({
+    kind: 'linear-transition',
+    idempotencyKey: linearTransitionKey(identifier, fromState, toState, triggerEventId),
+    result: { stateId, outcome: 'applied' },
+    issueKey: identifier,
+  });
+}
+
 /**
  * Set issue state by state name.
  *
  * @param identifier - Issue identifier (e.g., 'HOK-123')
  * @param stateName - State name (e.g., 'In Progress')
+ * @param opts - Optional trigger attribution for the side-effect ledger
  * @returns Update result
  */
-export async function setIssueState(identifier: string, stateName: string): Promise<{ success: boolean; issue: LinearIssue }> {
+export async function setIssueState(
+  identifier: string,
+  stateName: string,
+  opts: LinearTransitionOptions = {},
+): Promise<{ success: boolean; issue: LinearIssue }> {
+  const triggerEventId = opts.triggerEventId ?? synthesizeTriggerEventId(opts.triggerHint, stateName);
   const issue = await fetchIssueByIdentifier(identifier, `
     id
+    state { name }
     team {
       id
     }
@@ -715,7 +747,11 @@ export async function setIssueState(identifier: string, stateName: string): Prom
     throw new Error(`State "${stateName}" not found. Available: ${available}`);
   }
 
-  return await updateIssue(issue.id, { stateId: targetStateId });
+  const result = await updateIssue(issue.id, { stateId: targetStateId });
+  if (result.success) {
+    shadowRecordLinearTransition(identifier, issue.state?.name, stateName, targetStateId, triggerEventId);
+  }
+  return result;
 }
 
 type LinearIssueUpdateResult = {
@@ -726,16 +762,18 @@ type LinearIssueUpdateResult = {
 export async function setIssuesState(
   identifiers: string[],
   stateName: string,
+  opts: LinearTransitionOptions = {},
 ): Promise<{ updated: string[]; failed: LinearBatchFailure[] }> {
   if (identifiers.length === 0) {
     return { updated: [], failed: [] };
   }
+  const triggerEventId = opts.triggerEventId ?? synthesizeTriggerEventId(opts.triggerHint, stateName);
 
   const failed: LinearBatchFailure[] = [];
   const updated: string[] = [];
   const PAGE_SIZE = 250;
   const fetchedIdentifiers = new Set<string>();
-  const allNodes: Array<{ id: string; identifier: string; team: { id: string } }> = [];
+  const allNodes: Array<{ id: string; identifier: string; state?: { name?: string }; team: { id: string } }> = [];
   const groupedIdentifiers = new Map<string, Array<{ identifier: string; number: number }>>();
   const pushFailure = (issueId: string, detail: { error: string } & Partial<ClassifiedLinearError>) => {
     failed.push({
@@ -791,6 +829,7 @@ export async function setIssuesState(
                 nodes {
                   id
                   identifier
+                  state { name }
                   team {
                     id
                   }
@@ -812,7 +851,7 @@ export async function setIssuesState(
         continue;
       }
       const nodes = (data.issues as {
-        nodes?: Array<{ id: string; identifier: string; team: { id: string } }>;
+        nodes?: Array<{ id: string; identifier: string; state?: { name?: string }; team: { id: string } }>;
       } | undefined)?.nodes || [];
       for (const node of nodes) {
         fetchedIdentifiers.add(node.identifier);
@@ -871,7 +910,7 @@ export async function setIssuesState(
       return null;
     }
     return { issue, stateId };
-  }).filter((item): item is { issue: { id: string; identifier: string; team: { id: string } }; stateId: string } => item !== null);
+  }).filter((item): item is { issue: { id: string; identifier: string; state?: { name?: string }; team: { id: string } }; stateId: string } => item !== null);
 
   const results = await Promise.allSettled(
     planned.map(({ issue, stateId }) => updateIssue(issue.id, { stateId })),
@@ -882,6 +921,7 @@ export async function setIssuesState(
     const issue = planned[i].issue;
     if (result.status === 'fulfilled' && result.value.success) {
       updated.push(issue.identifier);
+      shadowRecordLinearTransition(issue.identifier, issue.state?.name, stateName, planned[i].stateId, triggerEventId);
     } else if (result.status === 'fulfilled') {
       pushFailure(issue.identifier, {
         error: 'Failed to update issue state',
@@ -1096,7 +1136,7 @@ export async function getIssueCompletionState(identifier: string): Promise<Pick<
 export async function listOpenIssuesByIdentifierPrefix(prefix: string): Promise<LinearIssueSummary[]> {
   const root = parseIdentifier(prefix);
   const identifier = `${root.teamKey}-${root.number}`;
-  const identifiers = new Set([identifier, deriveChallengerIdentifier(identifier)]);
+  const identifiers = new Set([identifier, challengerTaskId(identifier)]);
   const data = await request(
     `
       query($term: String!, $teamKey: String!) {
@@ -1201,10 +1241,6 @@ export async function getIssueForLabeling(identifier: string): Promise<LinearIss
     team { id }
     labels { nodes { id name } }
   `);
-}
-
-function deriveChallengerIdentifier(identifier: string): string {
-  return `${identifier}_c`;
 }
 
 /**

@@ -35,6 +35,16 @@ trap 'rm -rf "$tmp"' EXIT
 helper_file="$tmp/primary-merge-helper.sh"
 extract_function "$MONITOR_SCRIPT_FILE" "resolve_pair_on_primary_merge" > "$helper_file"
 extract_function "$MONITOR_SCRIPT_FILE" "cleanup_merged_primary_challenge_task" >> "$helper_file"
+# HOK-3190: resolve_pair_on_primary_merge now spawns resolve-primary-merged-pair.ts
+# through wavemill_run_tool. Provide a minimal shim so the extracted helper can
+# actually invoke the real tool from TOOLS_DIR.
+cat >> "$helper_file" <<'SHIM'
+wavemill_run_tool() {
+  local tool="${1:?wavemill_run_tool requires a tool basename}"
+  shift
+  npx tsx "$TOOLS_DIR/$tool" "$@"
+}
+SHIM
 
 case_dir="$tmp/case"
 mkdir -p "$case_dir/repo/.wavemill/evals"

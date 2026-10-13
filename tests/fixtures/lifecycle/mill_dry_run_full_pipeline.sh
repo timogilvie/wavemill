@@ -226,17 +226,18 @@ if ! jq -e '.tasks[] | select(.issue == "HOK-2917")' "$LAUNCH_PLAN_FILE" >/dev/n
   exit 1
 fi
 
-# HOK-2867: Verify skip warning was logged
-if ! grep -q "Skipping parent issue HOK-2867" "$STDERR_FILE" "$STDOUT_FILE" 2>/dev/null; then
-  echo "FAIL: expected skip warning for parent issue HOK-2867"
+# HOK-3188: Verify the low-noise, identifier-free active-parent diagnostic
+# replaces the previous per-parent WARN. If any diagnostic is captured, it
+# must be the new INFO form; the deprecated WARN must not appear.
+if grep -q "Skipping parent issue" "$STDERR_FILE" "$STDOUT_FILE" 2>/dev/null; then
+  echo "FAIL: deprecated per-parent 'Skipping parent issue' WARN should no longer be emitted"
   cat "$STDERR_FILE"
   cat "$STDOUT_FILE"
   exit 1
 fi
 
-# HOK-2867: Verify child IDs are in warning
-if ! grep -q "HOK-2867-child-1,HOK-2867-child-2" "$STDERR_FILE" "$STDOUT_FILE" 2>/dev/null; then
-  echo "FAIL: expected child IDs in skip warning"
+if grep -q "HOK-2867-child-1\|HOK-2867-child-2" "$STDERR_FILE" "$STDOUT_FILE" 2>/dev/null; then
+  echo "FAIL: active-child parent diagnostic should not include child identifiers"
   cat "$STDERR_FILE"
   cat "$STDOUT_FILE"
   exit 1

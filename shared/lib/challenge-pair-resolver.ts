@@ -15,6 +15,7 @@ import { readEvalRecords } from './eval-persistence.ts';
 import type { EvalRecord } from './eval-schema.ts';
 import type { ForkIdentity, InvalidChallengeReason } from './challenge-execution-contract.ts';
 import { readForkIdentity } from './fork-identity.ts';
+import { challengerTaskKey } from './task-identity.ts';
 import {
   getSiblingBranch,
   classifyPairUnresolvableState,
@@ -36,6 +37,10 @@ import {
   type ChallengeArmFailure,
 } from './arm-failure-taxonomy.ts';
 import { repairChallengePairingSync } from './challenge-pairing-repair.ts';
+import { Ledger } from './ledger.ts';
+import { withShadowSuppressing } from './ledger-shadow.ts';
+import { settleArmAbort } from './ledger-shadow.ts';
+import { attemptPairAbortWalk } from './ledger-pair-abort.ts';
 import {
   recordSelectionOutcome,
   releaseReservation,
@@ -194,6 +199,47 @@ export async function resolveUnresolvablePair(input: UnresolvablePairInput): Pro
     if (stalledArm) {
       await stampStalledArm(input.repoDir, stalledArm, input.now);
     }
+
+    // Shadow write: settle aborted arm(s) and attempt pair abort walk
+    // This includes both explicitly stalled arms and any other arms marked as
+    // challengeAborted in the resolution (e.g., sibling-challenge-aborted)
+    withShadowSuppressing(() => {
+      const ledger = Ledger.open({ repoDir: input.repoDir });
+      try {
+        const roots = ledger.listTasks({ kind: 'pair' });
+        const pairRow = roots.find((row) => row.slug === input.pairId && row.parent_id === null);
+        if (pairRow) {
+          const arms = ledger.listChildren(pairRow.id).filter((row) => row.kind === 'arm');
+
+          // Settle every arm marked as challengeAborted in the resolution.
+          // Not `.some()`: it short-circuits and would leave the second
+          // aborted arm unsettled when both arms aborted.
+          let settledAnyArm = false;
+          for (const { arm, key } of [
+            { arm: resolutionPairState.primary, key: input.pairId },
+            { arm: resolutionPairState.challenger, key: challengerTaskKey(input.pairId) },
+          ]) {
+            if (!arm?.challengeAborted) continue;
+            const armRow = arms.find((row) => row.slug === key);
+            if (!armRow) continue;
+
+            const settleReason = stalledArm && arm === stalledArm
+              ? SIBLING_STALLED_ABORT_REASON
+              : arm.challengeAborted;
+            settleArmAbort(ledger, armRow.id, settleReason);
+            settledAnyArm = true;
+          }
+
+          // If any arm was settled, attempt pair abort walk
+          if (settledAnyArm) {
+            attemptPairAbortWalk(ledger, input.pairId);
+          }
+        }
+      } finally {
+        ledger.close();
+      }
+    });
+
     appendChallengeComparison(resolution.record, evalsDir);
     await safelyReleasePairSelectionHealth(input.repoDir, input.pairId, pairState, resolution.outcome);
   }
@@ -234,7 +280,7 @@ function hydrateCleanedAbortedArm(
 
   const missingRole = pairState.primary ? 'challenger' : 'primary';
   const taskKeys = missingRole === 'challenger'
-    ? [`${pairId}_c`, `${pairId}-challenger`]
+    ? [challengerTaskKey(pairId), `${pairId}-challenger`]
     : [pairId];
 
   for (const taskKey of taskKeys) {

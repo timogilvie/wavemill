@@ -7,6 +7,7 @@ runTool({
   name: 'set-issue-state',
   description: 'Set the state of a Linear issue',
   options: {
+    'trigger-event': { type: 'string', description: 'Event id that triggered this transition (side-effect ledger key)' },
   },
   positional: {
     name: 'identifier stateName',
@@ -17,7 +18,7 @@ runTool({
     'npx tsx tools/set-issue-state.ts HOK-123 "In Progress"',
     'npx tsx tools/set-issue-state.ts HOK-123 "Done"',
   ],
-  async run({ positional }) {
+  async run({ args, positional }) {
     const [identifier, stateName] = positional;
 
     if (!identifier || !stateName) {
@@ -28,7 +29,10 @@ runTool({
     const linearId = linearWriteTargetOrSkip(identifier);
     if (!linearId) return;
 
-    const result = await setIssueState(linearId, stateName);
+    const result = await setIssueState(linearId, stateName, {
+      triggerEventId: args['trigger-event'] || undefined,
+      triggerHint: 'set-issue-state',
+    });
 
     if (result.success) {
       console.log(`✓ ${linearId} → ${stateName}`);

@@ -25,8 +25,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Note: tests/check-shell.sh is deliberately absent. It is a lint/syntax pass
 # over every shell script, not a per-shard test, and runs once via `npm run lint`.
 TESTS=(
+  check-direct-ledger-access.test.sh
+  ledger-cli-shadow.test.sh
+  ledger-hook-shadow.test.sh
+  check-ledger-shadow-swallow.test.sh
+  monitor-side-effect-detector-tick.test.sh
+  ledger-recovery-tick.test.sh
   aborted-challenge-cleanup.test.sh
   safe-branch-cleanup.test.sh
+  preserved-branch-record-long-slug.test.sh
   challenge-primary-merge-cleanup.test.sh
   operator-abort-cleanup.test.sh
   agent-resolve-from-model.test.sh
@@ -45,11 +52,16 @@ TESTS=(
   challenge-record-decisive.test.sh
   native-terminal-failure.test.sh
   native-failure-classification.test.sh
-  challenger-transient-retry.test.sh
+  stage-failure-retry.test.sh
   coding-dirty-handoff.test.sh
   ready-exhausted-challenge.test.sh
   review-gate-refused-challenge.test.sh
   monitor-late-completion.test.sh
+  monitor-terminal-cleanup-tick.test.sh
+  monitor-reaped-task-no-window-recreation.test.sh
+  monitor-window-recreate-bounded.test.sh
+  persist-task-window-id-reaped.test.sh
+  monitor-wake-resume.test.sh
   parent-monitor-function-drift.test.sh
   save-task-state-canonicalization.test.sh
   linear-state-canonicalization.test.sh
@@ -71,6 +83,8 @@ TESTS=(
   bounded-retry.test.sh
   check-install-paths.test.sh
   check-common-guards.test.sh
+  check-marker-clear-sites.test.sh
+  check-label-write-sites.test.sh
   ready-update-from-base.test.sh
   plan-packet-binding.test.sh
   task-progress.test.sh
@@ -89,6 +103,8 @@ TESTS=(
   lifecycle-scenarios.test.sh
   lifecycle-harness.test.sh
   archive-stage-artifacts.test.sh
+  operator-touch-record.test.sh
+  report-reliability-cli.test.sh
   cleanup-branch.test.sh
   cleanup-episodes.test.sh
   completed-task-cleanup.test.sh
@@ -123,6 +139,7 @@ TESTS=(
   wavemill-input-reader.test.sh
   merge-retry-marker.test.sh
   queue-health.test.sh
+  queue-inference-degraded-banner.test.sh
   merge-queue-live-ci.test.sh
   merge-queue-blocked-label.test.sh
   merge-lane-progress-artifacts.test.sh
@@ -154,6 +171,20 @@ TESTS=(
   review-missing-window-relaunch.test.sh
   re-review-no-pr.test.sh
   monitor-command-routing.test.sh
+  condition-reconciler.test.sh
+  wavemill-pr-cache.test.sh
+  cross-pr-revert-job.test.sh
+  pr-ci-status-job.test.sh
+  ready-watchdog-job.test.sh
+  route-task-job.test.sh
+  monitor-perf-smoke.test.sh
+  config-false-booleans.test.sh
+  check-no-npx-in-monitor.sh
+  monitor-pass-snapshot.test.sh
+  agent-model-memo.test.sh
+  monitor-state-size.test.sh
+  hot-state-byte-cap.test.sh
+  monitor-usr2-wakeup.test.sh
 )
 
 SHARD_INDEX=1

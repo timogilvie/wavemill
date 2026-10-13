@@ -307,6 +307,7 @@ test('a running-ready PR with queueState=ready and clean green still classifies 
 });
 
 test('classify failing CI as waiting-on-ci', () => {
+  // HOK-3176: an unrecognised red check is retried (re-polled), not parked.
   const classification = classifyReadyTask(
     makeSnapshot(),
     makeTruth({
@@ -321,8 +322,23 @@ test('classify failing CI as waiting-on-ci', () => {
     },
   );
 
+  assert.equal(classification.kind, 'waiting-on-ci');
+  assert.equal(classification.ciFailureCategory, 'unknown');
+});
+
+test('a GitHub-only gate is the allowlisted operator-gate terminal and parks at once', () => {
+  const classification = classifyReadyTask(
+    makeSnapshot(),
+    makeTruth({
+      checks: [{ name: 'review', status: 'failure', rawStatus: 'FAILURE', text: 'Review required by branch protection' }],
+    }),
+    new Date('2026-05-05T12:30:00.000Z'),
+    { enabled: true, thresholdMinutes: 10, autoRecover: true, timeoutSeconds: 30 },
+  );
+
   assert.equal(classification.kind, 'needs-user');
   assert.match(classification.detail, /operator attention/);
+  assert.doesNotMatch(classification.detail, /held for/);
 });
 
 test('classify pending CI as waiting-on-ci', () => {
@@ -1142,10 +1158,10 @@ test('tick degrades to current classification when failed check log enrichment t
       },
     });
 
+    // HOK-3176: the unenriched (unrecognised) failure is re-polled first.
     assert.equal(result.findings.length, 1);
-    assert.equal(result.findings[0].classification, 'needs-user');
+    assert.equal(result.findings[0].classification, 'waiting-on-ci');
     assert.equal(result.findings[0].action, 'reported');
-    assert.match(result.findings[0].detail, /operator attention/);
   } finally {
     await rm(repoDir, { recursive: true, force: true });
   }
@@ -2899,10 +2915,10 @@ test('classify orphaned challenge PR in merge lane as needs-user with recovery c
     WATCHDOG_CONFIG,
     undefined,
     {
-      kind: 'pair-unresolvable',
+      kind: 'pair-unresolved',
       pairId: 'HOK-2358',
       otherPr: null,
-      reason: 'orphan-sibling',
+      reason: 'pair-unresolved:orphan-sibling',
     },
   );
 
@@ -2925,10 +2941,10 @@ test('classify challenge PR with exhausted sibling eval as needs-user with recov
     WATCHDOG_CONFIG,
     undefined,
     {
-      kind: 'pair-unresolvable',
+      kind: 'pair-unresolved',
       pairId: 'HOK-2358',
       otherPr: 900,
-      reason: 'sibling-eval-hard-failed',
+      reason: 'pair-unresolved:sibling-eval-hard-failed',
     },
   );
 
@@ -2950,10 +2966,10 @@ test('classify challenge PR with aborted sibling as needs-user with recovery com
     WATCHDOG_CONFIG,
     undefined,
     {
-      kind: 'pair-unresolvable',
+      kind: 'pair-unresolved',
       pairId: 'HOK-2358',
       otherPr: 900,
-      reason: 'sibling-challenge-aborted',
+      reason: 'pair-unresolved:sibling-challenge-aborted',
     },
   );
 
@@ -2975,10 +2991,10 @@ test('classify challenge PR with a stalled no-PR sibling as needs-user with reco
     WATCHDOG_CONFIG,
     undefined,
     {
-      kind: 'pair-unresolvable',
+      kind: 'pair-unresolved',
       pairId: 'HOK-2358',
       otherPr: null,
-      reason: 'sibling-stalled',
+      reason: 'pair-unresolved:sibling-stalled',
     },
   );
 
@@ -3000,10 +3016,10 @@ test('classify challenge PR with both arms aborted as needs-user with recovery c
     WATCHDOG_CONFIG,
     undefined,
     {
-      kind: 'pair-unresolvable',
+      kind: 'pair-unresolved',
       pairId: 'HOK-2358',
       otherPr: 900,
-      reason: 'both-challenge-aborted',
+      reason: 'pair-unresolved:both-challenge-aborted',
     },
   );
 

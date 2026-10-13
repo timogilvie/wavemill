@@ -251,6 +251,46 @@ describe('SessionStreamWriter: basic operations', () => {
       const content = readFileSync(path, 'utf-8');
       const parsed = JSON.parse(content.trim());
       assert.equal(parsed.type, 'session_started');
+      // HOK-3164: no versions passed → no empty provenance object persisted.
+      assert.equal('piRuntimeVersions' in parsed, false);
+    } finally {
+      cleanup(tempDir);
+    }
+  });
+
+  it('records Pi runtime versions on session_started (HOK-3164)', () => {
+    const tempDir = makeTempDir();
+    try {
+      const path = join(tempDir, 'session-events', 'test.jsonl');
+      const writer = new SessionStreamWriter(
+        { sessionId: TEST_SESSION_ID, traceId: TEST_TRACE_ID, phase: TEST_PHASE, path, clock },
+        tempDir,
+      );
+      const versions = Object.freeze({ 'pi-agent-core': '1.0.2', 'pi-ai': '1.0.2' });
+
+      const event = writer.writeSessionStarted({ initialConfigDigest: 'd', piRuntimeVersions: versions });
+
+      assert.deepEqual((event as SessionStartedEvent).piRuntimeVersions, versions);
+      const [parsed] = filterEventsByType(parseSessionEventJsonl(readFileSync(path, 'utf-8')), 'session_started');
+      assert.deepEqual(parsed.piRuntimeVersions, { 'pi-agent-core': '1.0.2', 'pi-ai': '1.0.2' });
+    } finally {
+      cleanup(tempDir);
+    }
+  });
+
+  it('omits an empty Pi runtime versions object (HOK-3164)', () => {
+    const tempDir = makeTempDir();
+    try {
+      const path = join(tempDir, 'session-events', 'test.jsonl');
+      const writer = new SessionStreamWriter(
+        { sessionId: TEST_SESSION_ID, traceId: TEST_TRACE_ID, phase: TEST_PHASE, path, clock },
+        tempDir,
+      );
+
+      writer.writeSessionStarted({ initialConfigDigest: 'd', piRuntimeVersions: {} });
+
+      const parsed = JSON.parse(readFileSync(path, 'utf-8').trim());
+      assert.equal('piRuntimeVersions' in parsed, false);
     } finally {
       cleanup(tempDir);
     }

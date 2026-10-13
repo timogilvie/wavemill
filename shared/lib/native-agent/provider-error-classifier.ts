@@ -3,6 +3,7 @@ export type ProviderErrorKind =
   | 'provider-credit-exhausted'
   | 'provider-config-error'
   | 'context-window-exceeded'
+  | 'provider-response-incomplete'
   | 'provider-unknown-error';
 
 export interface ProviderErrorClassification {
@@ -32,6 +33,10 @@ export function classifyProviderError(errorMessage: string): ProviderErrorClassi
     || /(?:^|\D)404(?:\D|$).*endpoint|no endpoints found|tool use.*not supported|support tool use/.test(detail)
   ) {
     return terminal('provider-config-error');
+  }
+
+  if (/response incomplete:\s*\S/.test(detail)) {
+    return terminal('provider-response-incomplete');
   }
 
   if (

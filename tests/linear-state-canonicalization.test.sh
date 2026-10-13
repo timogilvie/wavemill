@@ -121,7 +121,7 @@ if [[ -z "$SET_STATE_BODY" || -z "$IS_COMPLETED_BODY" ]]; then
 fi
 
 check_contains "canonical writer is bounded by API_TIMEOUT" \
-  "$SET_STATE_BODY" '_with_timeout "$API_TIMEOUT" npx tsx "$TOOLS_DIR/set-issue-state.ts"'
+  "$SET_STATE_BODY" '_with_timeout "$API_TIMEOUT" wavemill_run_tool "set-issue-state.ts"'
 check_not_contains "canonical writer does not go through the retry ladder" \
   "$SET_STATE_BODY" 'retry npx'
 check_not_contains "canonical writer never returns 1 (would exit callers under set -e)" \
@@ -129,7 +129,7 @@ check_not_contains "canonical writer never returns 1 (would exit callers under s
 check_contains "canonical writer surfaces the exit code" \
   "$SET_STATE_BODY" '(exit $rc)'
 check_contains "canonical probe uses get-issue-state.ts" \
-  "$IS_COMPLETED_BODY" '_with_timeout "$API_TIMEOUT" npx tsx "$TOOLS_DIR/get-issue-state.ts"'
+  "$IS_COMPLETED_BODY" '_with_timeout "$API_TIMEOUT" wavemill_run_tool "get-issue-state.ts"'
 check_not_contains "canonical probe no longer matches display state names" \
   "$IS_COMPLETED_BODY" 'state.name'
 check_contains "API_TIMEOUT default is provided by wavemill-common.sh" \
@@ -187,8 +187,11 @@ run_case() {
   : > "$case_dir/warn.log"
   : > "$case_dir/info.log"
   : > "$case_dir/calls.log"
+  # HOK-3190: force the npx tsx path so the fixture's fake npx on PATH is hit.
+  # The default fast-strip path shells out to `node --experimental-strip-types`
+  # instead, which this test's mock does not intercept.
   PATH="$FIXTURE_BIN:$PATH" TOOLS_DIR="$FIXTURE_TOOLS" REPO_DIR="$REPO_DIR" \
-  STATE_FILE="$case_dir/state.json" \
+  STATE_FILE="$case_dir/state.json" WAVEMILL_SKIP_FAST_STRIP=1 \
   WARN_LOG="$case_dir/warn.log" INFO_LOG="$case_dir/info.log" MOCK_CALL_LOG="$case_dir/calls.log" \
     bash -c '
       set -euo pipefail

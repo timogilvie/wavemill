@@ -42,6 +42,8 @@ printf '{"severity":"major","type":"operator_recovery"}\n' > "$feature_dir/.oper
 printf '{"stage":"planning","status":"completed","startedAt":"2026-01-01T00:00:00Z","finishedAt":"2026-01-01T00:01:00Z","agent":"claude","model":"m","notes":""}\n' > "$feature_dir/.planning-result.json"
 printf '{"stage":"coding","status":"failed","startedAt":"2026-01-01T00:00:00Z","finishedAt":"2026-01-01T00:01:00Z","agent":"native","model":"m","notes":"bad"}\n' > "$feature_dir/.coding-result.attempt-1-failed.json"
 printf '{bad\n' > "$feature_dir/.coding-result.json"
+printf '{"payload":{"state":"working","timestamp":1}}\n' > "$feature_dir/.terminal-history.jsonl"
+printf '{"seq":1,"command":"advance","at":"2026-01-01T00:00:00Z"}\n' > "$feature_dir/.operator-events.jsonl"
 
 warnings="$tmp/warnings.log"
 (
@@ -56,6 +58,9 @@ warnings="$tmp/warnings.log"
 )
 
 [[ -f "$archive_dir/operator-intervention.json" ]] || { echo "missing operator archive" >&2; exit 1; }
+# HOK-3182: reliability evidence survives reaping.
+cmp -s "$feature_dir/.terminal-history.jsonl" "$archive_dir/terminal-history.jsonl" || { echo "missing terminal history archive" >&2; exit 1; }
+cmp -s "$feature_dir/.operator-events.jsonl" "$archive_dir/operator-events.jsonl" || { echo "missing operator events archive" >&2; exit 1; }
 [[ -f "$archive_dir/planning-result.json" ]] || { echo "missing planning result archive" >&2; exit 1; }
 [[ -f "$archive_dir/coding-result.attempt-1-failed.json" ]] || { echo "missing failed attempt archive" >&2; exit 1; }
 [[ ! -f "$archive_dir/coding-result.json" ]] || { echo "malformed coding result was archived" >&2; exit 1; }

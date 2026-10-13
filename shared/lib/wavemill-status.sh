@@ -126,13 +126,22 @@ refresh_pr_cache() {
   local now
   now=$(date +%s)
   local mtime=0
-  [[ -f "$PR_CACHE" ]] && mtime=$(stat -f %m "$PR_CACHE" 2>/dev/null || echo 0)
+  [[ -f "$PR_CACHE" ]] && mtime=$(stat -c %Y "$PR_CACHE" 2>/dev/null || stat -f %m "$PR_CACHE" 2>/dev/null || echo 0)
   if (( now - mtime >= PR_TTL )); then
+    # HOK-3206: while the monitor keeps the batched cache fresh (its meta
+    # sidecar is recent), the dashboard reads it instead of overwriting it
+    # with a narrower open-PR dump.
+    local meta_written_at
+    meta_written_at=$(jq -r '.writtenAt // 0' "${PR_CACHE}.meta.json" 2>/dev/null || echo 0)
+    [[ "$meta_written_at" =~ ^[0-9]+$ ]] || meta_written_at=0
+    if (( now - meta_written_at < ${WAVEMILL_PR_CACHE_MAX_AGE_SECONDS:-180} )); then
+      return 0
+    fi
     local tmp_file
     # Per-writer tmp file so this dashboard refresh does not race the monitor's
     # wavemill_pr_cache_refresh on a shared "${PR_CACHE}.tmp" path.
     tmp_file=$(mktemp "${PR_CACHE}.tmp.XXXXXX" 2>/dev/null) || return 0
-    if gh pr list --json number,headRefName,state,statusCheckRollup --limit 50 \
+    if gh pr list --json number,headRefName,headRefOid,baseRefName,state,mergedAt,mergeable,mergeStateStatus,statusCheckRollup,labels,url --limit 50 \
          < /dev/null 2>/dev/null > "$tmp_file"; then
       if [[ -s "$tmp_file" ]]; then
         mv "$tmp_file" "$PR_CACHE" 2>/dev/null || rm -f "$tmp_file"
@@ -1809,8 +1818,9 @@ render_incidents_section() {
 }
 
 # HOK-3068: extract compact Backstage fields for one terminal retained task.
-# Emits a tab-separated "disposition\treason\twhen\taction" record, degrading
-# gracefully on missing metadata. Used only by the Backstage recovery section.
+# HOK-3201: adds `hold` so KEPT items can be split into their own section.
+# Emits a tab-separated "disposition\treason\twhen\taction\thold" record,
+# degrading gracefully on missing metadata.
 backstage_retained_detail() {
   local issue="$1"
   [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]] || return 0
@@ -1822,8 +1832,36 @@ backstage_retained_detail() {
     | (($l.retention.reason // $ep.lastOutcome // $ep.failureClass // "")) as $reason
     | (($ep.lastAttemptAt // $ep.updatedAt // $t.updated // "")) as $when
     | (($ep.requiredOperatorAction // $l.retention.requiredAction // "")) as $action
-    | [$disp, $reason, $when, $action] | @tsv
+    | (($l.retention.hold // "")) as $hold
+    | [$disp, $reason, $when, $action, $hold] | @tsv
   ' "$STATE_FILE" 2>/dev/null || true
+}
+
+# HOK-3201: age ("Nm" / "Nh" / "Nd") until the next unattended cleanup tick,
+# or "-" when no cadence file exists. Read from $STATE_DIR/.terminal-cleanup-next-at.
+format_backstage_next_action() {
+  local state_dir="${STATE_DIR:-}"
+  [[ -n "$state_dir" ]] || { printf '-'; return 0; }
+  local file="$state_dir/.terminal-cleanup-next-at"
+  [[ -f "$file" ]] || { printf '-'; return 0; }
+  local next now delta
+  next="$(cat "$file" 2>/dev/null || echo "")"
+  [[ "$next" =~ ^[0-9]+$ ]] || { printf '-'; return 0; }
+  now="$(date +%s)"
+  if (( next <= now )); then
+    printf 'now'
+    return 0
+  fi
+  delta=$(( next - now ))
+  if (( delta < 60 )); then
+    printf '%ds' "$delta"
+  elif (( delta < 3600 )); then
+    printf '%dm' $(( delta / 60 ))
+  elif (( delta < 86400 )); then
+    printf '%dh' $(( delta / 3600 ))
+  else
+    printf '%dd' $(( delta / 86400 ))
+  fi
 }
 
 # Format an ISO-8601 timestamp as a compact "Nm"/"Nh"/"Nd" age, or "-".
@@ -1845,29 +1883,91 @@ format_backstage_age() {
 }
 
 # HOK-3068: compact Backstage recovery section for terminal retained resources.
+# HOK-3201: splits KEPT (operator-held) items into their own section and shows
+# the next unattended auto-action ETA on auto-reap-eligible rows.
 # Shows issue, disposition/reason, age, and one explicit operator action when
 # stored — never a per-task warning stream and never full completed-task rows.
 render_backstage_retained_section() {
   local count="${#backstage_terminal_rows[@]}"
   (( count == 0 )) && return 0
 
-  local row issue slug branch worktree outcome detail disp reason when action age
-  printf "${EL}\n${B}%s${N} ${D}(%s)${N}${EL}\n" "🗄️  BACKSTAGE (retained)" "$count" >> "$FRAME"
-  printf "${D}%s${N}${EL}\n" "terminal resources retained for recovery — not active" >> "$FRAME"
+  local row issue slug branch worktree outcome detail disp reason when action hold age
+  local -a retained_rows=() kept_rows=()
   for row in "${backstage_terminal_rows[@]}"; do
     IFS='|' read -r issue slug branch worktree outcome <<<"$row"
     detail="$(backstage_retained_detail "$issue")"
-    IFS=$'\t' read -r disp reason when action <<<"$detail"
+    IFS=$'\t' read -r disp reason when action hold <<<"$detail"
+    if [[ "$hold" == "keep" ]]; then
+      kept_rows+=("$issue|$slug|$branch|$worktree|$outcome|$disp|$reason|$when|$action")
+    else
+      retained_rows+=("$issue|$slug|$branch|$worktree|$outcome|$disp|$reason|$when|$action")
+    fi
+  done
+
+  local next_eta
+  next_eta="$(format_backstage_next_action)"
+
+  local retained_count="${#retained_rows[@]}"
+  if (( retained_count > 0 )); then
+    printf "${EL}\n${B}%s${N} ${D}(%s)${N}${EL}\n" "🗄️  BACKSTAGE (retained)" "$retained_count" >> "$FRAME"
+    printf "${D}%s${N}${EL}\n" "terminal resources retained for recovery — not active" >> "$FRAME"
+    for row in "${retained_rows[@]}"; do
+      IFS='|' read -r issue slug branch worktree outcome disp reason when action <<<"$row"
+      [[ -n "$disp" ]] || disp="retained"
+      age="$(format_backstage_age "$when")"
+      if [[ -n "$reason" ]]; then
+        printf "${D}%-10s  %s  %s (%s)${N}${EL}\n" "$issue" "$outcome" "$disp" "$reason" >> "$FRAME"
+      else
+        printf "${D}%-10s  %s  %s${N}${EL}\n" "$issue" "$outcome" "$disp" >> "$FRAME"
+      fi
+      printf "${D}%10s  └─ age %s${N}${EL}\n" "" "$age" >> "$FRAME"
+      if [[ -n "$action" ]]; then
+        printf "${Y}%10s  └─ %s${N}${EL}\n" "" "$(truncate_detail "$action")" >> "$FRAME"
+      fi
+      # HOK-3201: ETA until the next unattended cleanup tick. Hidden when the
+      # cadence file is absent (cleanup off, or monitor hasn't ticked yet).
+      if [[ "$next_eta" != "-" ]]; then
+        printf "${D}%10s  └─ next auto-action in %s${N}${EL}\n" "" "$next_eta" >> "$FRAME"
+      fi
+    done
+  fi
+
+  render_backstage_kept_section "${kept_rows[@]}"
+}
+
+# HOK-3201: KEPT items are operator-held via `wavemill cleanup <id> --keep`.
+# They are never auto-reaped. Rendered separately from retained so an operator
+# can see at a glance which items are intentionally parked.
+render_backstage_kept_section() {
+  local count="$#"
+  (( count == 0 )) && return 0
+
+  local row issue slug branch worktree outcome disp reason when action age set_by set_at reason_text
+  printf "${EL}\n${B}%s${N} ${D}(%s)${N}${EL}\n" "📌 BACKSTAGE (kept)" "$count" >> "$FRAME"
+  printf "${D}%s${N}${EL}\n" "operator-held — the unattended cleanup never auto-reaps these" >> "$FRAME"
+  for row in "$@"; do
+    IFS='|' read -r issue slug branch worktree outcome disp reason when action <<<"$row"
     [[ -n "$disp" ]] || disp="retained"
     age="$(format_backstage_age "$when")"
-    if [[ -n "$reason" ]]; then
-      printf "${D}%-10s  %s  %s (%s)${N}${EL}\n" "$issue" "$outcome" "$disp" "$reason" >> "$FRAME"
-    else
-      printf "${D}%-10s  %s  %s${N}${EL}\n" "$issue" "$outcome" "$disp" >> "$FRAME"
+    # Read keep metadata directly from the state file for the detail line.
+    set_by=""
+    set_at=""
+    reason_text=""
+    if [[ -r "$STATE_FILE" && -s "$STATE_FILE" ]]; then
+      IFS=$'\t' read -r set_by set_at reason_text < <(
+        jq -r --arg issue "$issue" '
+          (.tasks[$issue].lifecycle.retention // {}) as $r
+          | [($r.setBy // ""), ($r.setAt // ""), ($r.reason // "")] | @tsv
+        ' "$STATE_FILE" 2>/dev/null || printf '\t\t\n'
+      )
     fi
+    printf "${D}%-10s  %s  %s${N}${EL}\n" "$issue" "$outcome" "kept" >> "$FRAME"
     printf "${D}%10s  └─ age %s${N}${EL}\n" "" "$age" >> "$FRAME"
-    if [[ -n "$action" ]]; then
-      printf "${Y}%10s  └─ %s${N}${EL}\n" "" "$(truncate_detail "$action")" >> "$FRAME"
+    if [[ -n "$reason_text" ]]; then
+      printf "${D}%10s  └─ %s${N}${EL}\n" "" "$(truncate_detail "$reason_text")" >> "$FRAME"
+    fi
+    if [[ -n "$set_by" ]]; then
+      printf "${D}%10s  └─ held by %s${N}${EL}\n" "" "$set_by" >> "$FRAME"
     fi
   done
 }
@@ -2241,6 +2341,64 @@ backstage_health_dashboard_line() {
   return 0
 }
 
+# HOK-3177: emit the unattended-rate + time-stuck line from the TTL-bounded
+# cache file written off-render by wavemill-reliability-refresh.sh. Reads
+# only; the cache may be stale or missing, in which case this returns 1 so
+# the renderer can show a "…" placeholder (or omit the row entirely when
+# WAVEMILL_SKIP_RELIABILITY_METRIC=1).
+reliability_dashboard_line() {
+  local cache_file="/tmp/wavemill-${SESSION:-}-reliability.json"
+  [[ "${WAVEMILL_SKIP_RELIABILITY_METRIC:-0}" != "1" ]] || return 1
+  [[ -r "$cache_file" ]] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+
+  local merged rate_json p50_ms p90_ms rate_pct p50_m p90_m
+  merged="$(jq -r '(.buckets[0].merged // .overall.merged // 0)' "$cache_file" 2>/dev/null || echo 0)"
+  [[ "$merged" =~ ^[0-9]+$ ]] && (( merged > 0 )) || return 1
+
+  rate_json="$(jq -r '(.buckets[0].unattendedRate // .overall.unattendedRate)' "$cache_file" 2>/dev/null || echo null)"
+  p50_ms="$(jq -r '(.buckets[0].stuckP50Ms // .overall.stuckP50Ms // 0)' "$cache_file" 2>/dev/null || echo 0)"
+  p90_ms="$(jq -r '(.buckets[0].stuckP90Ms // .overall.stuckP90Ms // 0)' "$cache_file" 2>/dev/null || echo 0)"
+
+  if [[ "$rate_json" == "null" || -z "$rate_json" ]]; then
+    rate_pct="N/A"
+  else
+    rate_pct="$(awk -v r="$rate_json" 'BEGIN{printf "%.1f%%", r*100}')"
+  fi
+
+  p50_m="$(awk -v v="$p50_ms" 'BEGIN{printf "%dm", (v/60000)}')"
+  p90_m="$(awk -v v="$p90_ms" 'BEGIN{printf "%dm", (v/60000)}')"
+
+  printf '7d unattended: %s · stuck p50 %s · p90 %s (%s merged)' "$rate_pct" "$p50_m" "$p90_m" "$merged"
+  return 0
+}
+
+# HOK-3177: trigger a background refresh of the reliability cache at most
+# once per WAVEMILL_RELIABILITY_REFRESH_SECONDS (default 300). Throttled on the
+# shell's own SECONDS counter rather than `date`/`stat`, so a render never
+# consumes clock reads that other dashboard timers (tip refresh) depend on. The
+# refresher flock-guards concurrent runs and writes atomically.
+_RELIABILITY_LAST_REFRESH_AT=""
+reliability_schedule_refresh() {
+  [[ "${WAVEMILL_SKIP_RELIABILITY_METRIC:-0}" != "1" ]] || return 0
+  local refresh_script="${WAVEMILL_INSTALL_DIR:-}/shared/lib/wavemill-reliability-refresh.sh"
+  [[ -f "$refresh_script" ]] || return 0
+  local max_age="${WAVEMILL_RELIABILITY_REFRESH_SECONDS:-300}"
+  [[ "$max_age" =~ ^[0-9]+$ ]] || max_age=300
+
+  if [[ -n "$_RELIABILITY_LAST_REFRESH_AT" ]] \
+    && (( SECONDS - _RELIABILITY_LAST_REFRESH_AT < max_age )); then
+    return 0
+  fi
+  _RELIABILITY_LAST_REFRESH_AT=$SECONDS
+  (
+    WAVEMILL_SESSION="${SESSION:-}" \
+      WAVEMILL_INSTALL_DIR="${WAVEMILL_INSTALL_DIR:-}" \
+      WAVEMILL_MILLED_REPO_DIR="${WAVEMILL_MILLED_REPO_DIR:-${REPO_DIR:-$PWD}}" \
+      bash "$refresh_script" >/dev/null 2>&1 &
+  ) >/dev/null 2>&1 &
+}
+
 # HOK-3123: surface the tool-choice-gate progress line beneath the backstage
 # health row so operators see G2 progress toward the I-27 initiative without
 # reading .wavemill/backstage-health.json by hand.
@@ -2270,7 +2428,7 @@ tool_choice_gate_dashboard_line() {
 
 render_dashboard() {
   local tasks line issue slug branch worktree task_status task_phase state_pr
-  local win agent_state classification task_data free_slots queue_owned_tasks usage_tip openrouter_warning backstage_health_line tool_choice_gate_line malformed_challenge_warning resource_disposition workflow_outcome
+  local win agent_state classification task_data free_slots queue_owned_tasks usage_tip openrouter_warning backstage_health_line tool_choice_gate_line reliability_line malformed_challenge_warning resource_disposition workflow_outcome
   declare -ga inbox_tasks=()
   declare -ga active_tasks=()
   # HOK-3068: terminal work with retained resources is surfaced only here.
@@ -2307,6 +2465,15 @@ render_dashboard() {
   fi
   if tool_choice_gate_line="$(tool_choice_gate_dashboard_line "$STATE_FILE" 2>/dev/null)"; then
     printf "${D}├─ %s${N}${EL}\n" "$tool_choice_gate_line" >> "$FRAME"
+  fi
+  # HOK-3177: unattended-rate / time-stuck line + off-render refresh.
+  if declare -F reliability_schedule_refresh >/dev/null; then
+    reliability_schedule_refresh
+  fi
+  if reliability_line="$(reliability_dashboard_line 2>/dev/null)"; then
+    printf "${D}├─ %s${N}${EL}\n" "$reliability_line" >> "$FRAME"
+  elif [[ "${WAVEMILL_SKIP_RELIABILITY_METRIC:-0}" != "1" ]]; then
+    printf "${D}├─ reliability: …${N}${EL}\n" >> "$FRAME"
   fi
 
   tasks=$(gather_tasks)

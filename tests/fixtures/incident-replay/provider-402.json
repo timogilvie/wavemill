@@ -1,0 +1,28 @@
+{
+  "chain": "openrouter-balance-exhausted",
+  "incidents": [],
+  "initialState": {
+    "task": {
+      "issue": "HOK-REPLAY-005",
+      "slug": "replay-provider-402",
+      "phase": "coding",
+      "status": "working"
+    },
+    "hook": {
+      "state": "working",
+      "event": "PreToolUse",
+      "writer": "agent",
+      "timestamp": 1759900000
+    }
+  },
+  "fault": "provider_402_or_429",
+  "faultParams": {
+    "status": 402,
+    "exhausted": false
+  },
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 10,
+    "tickIntervalSeconds": 30
+  }
+}

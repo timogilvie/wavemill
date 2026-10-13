@@ -327,6 +327,13 @@ check_eq "aborted challenger classifies terminal" "terminal:operator_abort" "$(s
   export PATH NPX_CALLS
   TOOLS_DIR="$REPO_DIR/tools"
   DRY_RUN="false"
+  # HOK-3190: linear_set_state now routes through `wavemill_run_tool`; this
+  # subshell deliberately drops the common helper, so forward the shim to
+  # the stub npx binary this test puts on PATH.
+  wavemill_run_tool() {
+    local tool="$1"; shift
+    npx tsx "$tool" "$@"
+  }
   startup_terminal_preflight "$SESSION"
 )
 npx_calls="$(cat "$NPX_CALLS" 2>/dev/null || true)"

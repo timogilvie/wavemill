@@ -5,6 +5,7 @@ import {
   buildPartialRefreshPrompt,
   parseQueueAnalysisEdges,
   QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS,
+  QUEUE_ANALYSIS_PROMPT_MAX_BYTES,
 } from './queue-partial-refresh.ts';
 
 describe('queue-partial-refresh', () => {
@@ -24,7 +25,57 @@ describe('queue-partial-refresh', () => {
       assert.match(prompt, /…\[truncated]/);
       assert.doesNotMatch(prompt, /TAIL-MARKER/);
       assert.match(prompt, /description: "short description"/);
+      // HOK-3179: 400-char cap keeps every per-task slice tight.
       assert.ok(prompt.length < QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS + 600);
+      assert.equal(QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS, 400);
+    });
+
+    it('keeps the full prompt under the hard size bound for many fat tasks (HOK-3179)', () => {
+      // 20 tasks, each with a 10 KB description, would be ~200 KB raw — the
+      // bound forces aggressive per-task trimming instead of a blown budget.
+      const tasks = Array.from({ length: 20 }, (_, i) => ({
+        id: `HOK-${100 + i}`,
+        title: `Task ${i}`,
+        description: 'x'.repeat(10_000),
+        labels: ['backend'],
+        priority: i,
+      }));
+      const prompt = buildPartialRefreshPrompt({
+        changedTaskIds: tasks.slice(0, 5).map((t) => t.id),
+        contextTasks: tasks,
+        template: 'changed={{CHANGED_TASK_IDS}}\ncontext:\n{{CONTEXT_TASKS}}',
+      });
+
+      assert.ok(
+        Buffer.byteLength(prompt, 'utf8') <= QUEUE_ANALYSIS_PROMPT_MAX_BYTES,
+        `prompt is ${Buffer.byteLength(prompt, 'utf8')} bytes, bound is ${QUEUE_ANALYSIS_PROMPT_MAX_BYTES}`,
+      );
+    });
+
+    it('does not include dropped fields in the rendered prompt (HOK-3179)', () => {
+      const prompt = buildPartialRefreshPrompt({
+        changedTaskIds: ['HOK-1'],
+        contextTasks: [{
+          id: 'HOK-1',
+          title: 'Refresh cache',
+          description: 'Update partial queue refresh',
+          labels: ['backend'],
+          priority: 2,
+          state: 'Todo',
+          dueDate: '2026-10-20',
+          projectMilestone: { name: 'M1', targetDate: '2026-10-30' },
+          dependsOn: ['HOK-0'],
+          blocks: ['HOK-2'],
+        }],
+        template: '{{CONTEXT_TASKS}}',
+      });
+
+      assert.doesNotMatch(prompt, /\bstate:/);
+      assert.doesNotMatch(prompt, /\bdueDate:/);
+      assert.doesNotMatch(prompt, /\bprojectMilestone:/);
+      // Fields we keep must still render.
+      assert.match(prompt, /priority: 2/);
+      assert.match(prompt, /dependsOn: \["HOK-0"\]/);
     });
   });
 

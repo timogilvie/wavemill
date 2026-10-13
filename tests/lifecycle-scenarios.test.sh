@@ -97,6 +97,9 @@ trap 'rm -rf "$TEST_TMP"' EXIT
 
 MONITOR_FUNC_FILE="$TEST_TMP/lifecycle-controller-functions.sh"
 cat "$REPO_DIR/shared/lib/transient-marker.sh" > "$MONITOR_FUNC_FILE"
+# HOK-3206: pin the inline Ready/routing contract (async lib in sync mode).
+cat "$REPO_DIR/shared/lib/monitor-async-jobs.sh" >> "$MONITOR_FUNC_FILE"
+export WAVEMILL_SYNC_READY_CHECKS=1 WAVEMILL_SYNC_ROUTING=1
 for fn in \
   approve_plan \
   capture_planning_baseline \
@@ -113,6 +116,7 @@ for fn in \
   check_stage_complete \
   check_stage_awaiting_user \
   phase_launch_head \
+  phase_launch_base \
   phase_launch_gate \
   coding_launch_refusal_limit \
   coding_launch_refusal_is_transient \
@@ -196,6 +200,11 @@ for fn in \
   native_coding_failure_handoff_reason \
   native_terminal_failure_kind \
   native_terminal_failure_next_action \
+  native_stage_failure_envelope_json \
+  stage_failure_decision \
+  stage_failure_owned_by_bucket \
+  maybe_retry_failed_stage \
+  clear_stage_result \
   emit_native_terminal_failure_attention \
   _coding_terminal_blocked_completion_detected \
   emit_terminal_blocked_completion_attention \

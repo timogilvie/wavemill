@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { TerminalFailureKind } from '../arm-failure-taxonomy.ts';
+import type { ArmFailureKind } from '../arm-failure-taxonomy.ts';
 
 /**
  * Typed native stage-failure envelope (HOK-3064).
@@ -28,7 +28,7 @@ export type StageFailureStage = (typeof STAGE_FAILURE_ENVELOPE_STAGES)[number];
 
 /**
  * Typed terminal cause of a native stage attempt. Maps one-to-one (via
- * {@link terminalFailureKindForEnvelope}) onto the {@link TerminalFailureKind}
+ * {@link terminalFailureKindForEnvelope}) onto the {@link ArmFailureKind}
  * taxonomy so retry, challenge-resolution, and selection-health logic can act
  * on the cause without substring inference.
  */
@@ -218,18 +218,18 @@ export async function readStageFailureEnvelope(filePath: string): Promise<StageF
 }
 
 /**
- * The single cause → {@link TerminalFailureKind} conversion (HOK-3064).
+ * The single cause → {@link ArmFailureKind} conversion (HOK-3064).
  *
  * `model-protocol` reuses `native-completion-protocol` (already classified
  * `model-fault`): the provider delivered output but the model violated the
  * stage's output protocol — a malformed/empty *review* response is the same
  * class of signal as a malformed coding completion artifact.
  */
-export function terminalFailureKindForEnvelope(envelope: StageFailureEnvelope): TerminalFailureKind {
+export function terminalFailureKindForEnvelope(envelope: StageFailureEnvelope): ArmFailureKind {
   return terminalFailureKindForCause(envelope.cause);
 }
 
-export function terminalFailureKindForCause(cause: StageFailureCause): TerminalFailureKind {
+export function terminalFailureKindForCause(cause: StageFailureCause): ArmFailureKind {
   switch (cause) {
     case 'stage-timeout':
       return 'native-stage-timeout';

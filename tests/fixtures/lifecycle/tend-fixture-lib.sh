@@ -218,7 +218,10 @@ fi
 
 if [[ "${1:-}" == "rebase" ]]; then
   if [[ "${GIT_REBASE_FAIL:-0}" == "1" ]]; then
-    echo "${GIT_REBASE_FAIL_MESSAGE:-rebase conflict}" >&2
+    # Real git conflict output: the HOK-3176 failure policy recognises it as a
+    # code failure (blocked for remediation), unlike an unrecognised error.
+    printf '%s\n' "${GIT_REBASE_FAIL_MESSAGE:-CONFLICT (content): Merge conflict in conflict.txt
+error: could not apply 1a2b3c4... task change}" >&2
     exit 1
   fi
   exit 0

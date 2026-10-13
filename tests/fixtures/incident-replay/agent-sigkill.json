@@ -1,0 +1,27 @@
+{
+  "chain": "coding-complete-dirty-tree",
+  "incidents": [],
+  "initialState": {
+    "task": {
+      "issue": "HOK-REPLAY-006",
+      "slug": "replay-sigkill-mid-stage",
+      "phase": "coding",
+      "status": "working"
+    },
+    "hook": {
+      "state": "working",
+      "event": "PreToolUse",
+      "writer": "agent",
+      "timestamp": 1759900000
+    }
+  },
+  "fault": "agent_sigkill_mid_stage",
+  "faultParams": {
+    "retryBudget": 1
+  },
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  }
+}

@@ -20,6 +20,7 @@ import {
   TASK_ID_SUFFIX_RE,
   WINDOW_TASK_PREFIX_RE,
   challengerTaskId,
+  challengerTaskKey,
   isChallengerTaskId,
   isLinearWriter,
   parseTaskId,
@@ -37,6 +38,8 @@ interface FixtureCase {
     error: string | null;
     isChallenger: boolean;
     isLinearWriter: boolean;
+    challengerId: string | null;
+    challengerKey: string;
   };
 }
 
@@ -57,6 +60,13 @@ for (const c of cases) {
 
     assert.equal(isChallengerTaskId(c.taskId), c.expected.isChallenger);
     assert.equal(isLinearWriter(c.taskId, c.task), c.expected.isLinearWriter);
+
+    if (c.expected.challengerId === null) {
+      assert.throws(() => challengerTaskId(c.taskId), /Invalid task ID/);
+    } else {
+      assert.equal(challengerTaskId(c.taskId), c.expected.challengerId);
+    }
+    assert.equal(challengerTaskKey(c.taskId), c.expected.challengerKey);
   });
 }
 
@@ -87,6 +97,14 @@ test('challengerTaskId builds the _c ID and is idempotent', () => {
   assert.equal(challengerTaskId('HOK-1_c'), 'HOK-1_c');
   assert.equal(challengerTaskId('https://linear.app/hokusai/issue/HOK-1/slug'), 'HOK-1_c');
   assert.throws(() => challengerTaskId('hok-1'), /Invalid task ID/);
+});
+
+test('challengerTaskKey matches challengerTaskId for valid pair IDs and never throws', () => {
+  assert.equal(challengerTaskKey('HOK-1'), challengerTaskId('HOK-1'));
+  // Opaque pair IDs (legacy state, fixtures) keep the verbatim suffix.
+  assert.equal(challengerTaskKey('pair-1'), 'pair-1_c');
+  // A drifted challenger-shaped pair ID must not collapse onto the arm itself.
+  assert.equal(challengerTaskKey('HOK-1_c'), 'HOK-1_c_c');
 });
 
 test('non-string inputs fail closed', () => {

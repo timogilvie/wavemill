@@ -3,6 +3,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/wavemill-common.sh"
+# HOK-3190: load the monitor-notify helper so operator commands wake the
+# monitor immediately instead of waiting for the next POLL_SECONDS tick.
+if [[ -r "$SCRIPT_DIR/../hooks/wavemill-hook-protocol.sh" ]]; then
+  # shellcheck source=../hooks/wavemill-hook-protocol.sh
+  source "$SCRIPT_DIR/../hooks/wavemill-hook-protocol.sh"
+fi
+# Resolve the monitor PID from the tmux session environment the first time
+# through, mirroring how agent_resolve_dashboard_pid does it in
+# agent-adapters.sh. Falls back to no-op when tmux isn't present.
+if [[ -z "${WAVEMILL_MONITOR_PID:-}" && -n "${1:-}" ]] && command -v tmux >/dev/null 2>&1; then
+  WAVEMILL_MONITOR_PID="$(tmux show-environment -t "$1" WAVEMILL_MONITOR_PID 2>/dev/null | awk -F= 'NR==1{print $2}' || true)"
+  export WAVEMILL_MONITOR_PID
+fi
 
 session="${1:-${WAVEMILL_SESSION:-}}"
 if [[ -z "$session" ]]; then
@@ -81,6 +94,11 @@ while :; do
   shopt -u nocasematch
 
   printf '%s\n' "$event" >> "$cmd_file"
+  # HOK-3190: wake the monitor so re-review / advance / enter / select /
+  # quit are acted on within ~1 s regardless of POLL_SECONDS.
+  if declare -F wavemill_monitor_notify >/dev/null 2>&1; then
+    wavemill_monitor_notify
+  fi
 
   case "$event" in
     select\ *|enter)

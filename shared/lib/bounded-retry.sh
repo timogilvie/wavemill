@@ -12,12 +12,14 @@
 # removes every file under the bucket's prefix.
 #
 # Storage per bucket, under $state_dir:
-#   .retry-<bucket>-count      attempt counter (positive integer)
-#   .retry-<bucket>-head       head SHA the counter is keyed to; a two-line
-#                              file (head\nbase) when a base SHA is provided,
-#                              a single line otherwise (HOK-3092)
-#   .retry-<bucket>-last-at    epoch seconds of the last increment
-#   .retry-<bucket>-exhausted  terminal sentinel; contents = terminal reason
+#   .retry-<bucket>-count               attempt counter (positive integer)
+#   .retry-<bucket>-head                head SHA the counter is keyed to; a two-line
+#                                       file (head\nbase) when a base SHA is provided,
+#                                       a single line otherwise (HOK-3092)
+#   .retry-<bucket>-last-at             epoch seconds of the last increment
+#   .retry-<bucket>-exhausted           terminal sentinel; contents = terminal reason
+#   .retry-<bucket>-exhausted-condition.json  condition companion (HOK-3172); JSON marker
+#                                       with expiry triggers for the reconciler
 #
 # The failed-ready-recheck bucket keeps its pre-HOK-2924 file names
 # (.failed-ready-recheck-*) so an in-flight session upgrading to this code
@@ -36,6 +38,107 @@ _bounded_retry_prefix() {
     failed-ready-recheck) printf '.failed-ready-recheck-' ;;
     *) printf '.retry-%s-' "$bucket" ;;
   esac
+}
+
+# HOK-3184: optional per-bucket shadow step id. The id is written by the
+# launch sites after a successful ledger step-upsert via
+# bounded_retry_bind_shadow. When absent, the ledger shadow writes are
+# skipped silently.
+_bounded_retry_shadow_step_id() {
+  local state_dir="$1" bucket="$2"
+  local shadow_file
+  shadow_file="$state_dir/$(_bounded_retry_prefix "$bucket")step-id"
+  [[ -f "$shadow_file" ]] || { echo ""; return 0; }
+  cat "$shadow_file" 2>/dev/null || echo ""
+  return 0
+}
+
+# HOK-3184: launch-site shadow helper. One function the three stage
+# launchers (review, Ready, eval) call to upsert a step row and bind it to
+# a retry bucket. Returns the step id on stdout (empty on failure); always
+# returns 0 so a shadow failure never crashes the launcher.
+#
+# Usage: wavemill_ledger_step_upsert <issue> <kind> <state_dir> <bucket>
+#          [--head <sha>] [--base <sha>] [--pr <n>] [--pair <id>]
+#          [--side primary|challenger] [--prompt <identity>]
+#          [--owner <s>] [--next-action <s>] [--deadline <iso>]
+#          [--max-attempts <n>]
+wavemill_ledger_step_upsert() {
+  local issue="$1" kind="$2" state_dir="$3" bucket="$4"
+  shift 4 2>/dev/null || return 0
+  [[ "${WAVEMILL_LEDGER_SHADOW_DISABLED:-0}" == "1" ]] && return 0
+  [[ -n "$issue" && -n "$kind" ]] || return 0
+  declare -F wavemill_run_tool >/dev/null 2>&1 || return 0
+  local -a cli=(ledger.ts step-upsert --issue "$issue" --kind "$kind")
+  while (( $# > 0 )); do
+    cli+=("$1")
+    shift
+  done
+  local raw step_id
+  raw="$(wavemill_run_tool "${cli[@]}" --json 2>/dev/null || echo '')"
+  [[ -n "$raw" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  step_id="$(printf '%s' "$raw" | jq -r '.id // empty' 2>/dev/null || echo '')"
+  [[ -n "$step_id" ]] || return 0
+  if [[ -n "$state_dir" && -n "$bucket" ]]; then
+    bounded_retry_bind_shadow "$state_dir" "$bucket" "$step_id" || true
+  fi
+  printf '%s' "$step_id"
+  return 0
+}
+
+# Settle a shadow step row (best-effort). Called from stage-completion sites
+# in launch_review_phase / launch_ready_phase / the eval settler.
+wavemill_ledger_step_settle() {
+  local step_id="$1" settled_as="$2" reason="${3:-}"
+  [[ "${WAVEMILL_LEDGER_SHADOW_DISABLED:-0}" == "1" ]] && return 0
+  [[ -n "$step_id" && -n "$settled_as" ]] || return 0
+  declare -F wavemill_run_tool >/dev/null 2>&1 || return 0
+  local -a cli=(ledger.ts step-settle --id "$step_id" --as "$settled_as")
+  [[ -n "$reason" ]] && cli+=(--reason "$reason")
+  wavemill_run_tool "${cli[@]}" >/dev/null 2>&1 || true
+  return 0
+}
+
+# Bind a bucket to its mirror step row. Called by launch_review_phase /
+# launch_ready_phase / the challenge eval launcher immediately after a
+# successful `ledger.ts step-upsert`.
+bounded_retry_bind_shadow() {
+  local state_dir="$1" bucket="$2" step_id="$3"
+  [[ -n "$state_dir" && -n "$bucket" && -n "$step_id" ]] || return 0
+  mkdir -p "$state_dir" 2>/dev/null || return 0
+  local shadow_file
+  shadow_file="$state_dir/$(_bounded_retry_prefix "$bucket")step-id"
+  printf '%s\n' "$step_id" > "$shadow_file" 2>/dev/null || true
+  return 0
+}
+
+# Mirror an attempt increment onto the step row's attempt counter.
+# Always returns 0 (best-effort).
+_bounded_retry_shadow_attempt() {
+  local state_dir="$1" bucket="$2"
+  [[ "${WAVEMILL_LEDGER_SHADOW_DISABLED:-0}" == "1" ]] && return 0
+  local step_id
+  step_id=$(_bounded_retry_shadow_step_id "$state_dir" "$bucket")
+  [[ -n "$step_id" ]] || return 0
+  declare -F wavemill_run_tool >/dev/null 2>&1 || return 0
+  wavemill_run_tool ledger.ts retry-attempt --id "$step_id" >/dev/null 2>&1 || true
+  return 0
+}
+
+# Mirror a terminal exhaustion onto the step row (settled=aborted with reason).
+# Always returns 0.
+_bounded_retry_shadow_exhaust() {
+  local state_dir="$1" bucket="$2" reason="$3"
+  [[ "${WAVEMILL_LEDGER_SHADOW_DISABLED:-0}" == "1" ]] && return 0
+  local step_id
+  step_id=$(_bounded_retry_shadow_step_id "$state_dir" "$bucket")
+  [[ -n "$step_id" ]] || return 0
+  declare -F wavemill_run_tool >/dev/null 2>&1 || return 0
+  local -a cli=(ledger.ts retry-exhaust --id "$step_id" --bucket "$bucket")
+  [[ -n "$reason" ]] && cli+=(--reason "$reason")
+  wavemill_run_tool "${cli[@]}" >/dev/null 2>&1 || true
+  return 0
 }
 
 _bounded_retry_file() {
@@ -236,6 +339,8 @@ bounded_retry_increment() {
     fi
   fi
   printf '%s\n' "$(date +%s)" > "$(_bounded_retry_file "$state_dir" "$bucket" "last-at")"
+  # HOK-3184: mirror the new attempt onto the shadow step row (if bound).
+  _bounded_retry_shadow_attempt "$state_dir" "$bucket" || true
   echo "$count"
 }
 
@@ -280,8 +385,16 @@ bounded_retry_due() {
 # the count at 0 (REQ-F4). Returns 0 on the first-time transition (caller
 # emits the status line / attention file) and 1 when the sentinel already
 # exists. Call behind `if`.
+#
+# HOK-3172: on first-time transition, also writes a condition companion via
+# marker_write. Extra flags (--head, --expires-on, etc.) are forwarded. When
+# marker_write is unavailable (declare -F guard fails, such as in the TS
+# bridge's bash -c), behaves exactly as before (plain-text sentinel only).
 bounded_retry_mark_exhausted() {
   local state_dir="$1" bucket="$2" reason="${3:-}"
+  # Callers may omit the reason; a bare `shift 3` would fail under set -e.
+  shift "$(( $# < 3 ? $# : 3 ))"
+  local -a condition_flags=("$@")
   local sentinel
   sentinel="$(_bounded_retry_file "$state_dir" "$bucket" "exhausted")"
 
@@ -290,6 +403,53 @@ bounded_retry_mark_exhausted() {
   fi
   mkdir -p "$state_dir"
   printf '%s\n' "$reason" > "$sentinel"
+
+  # Write condition companion if marker_write is available
+  if declare -F marker_write >/dev/null 2>&1; then
+    local companion
+    companion="$state_dir/$(_bounded_retry_prefix "$bucket")exhausted-condition.json"
+
+    # Build condition flags: use explicit flags if given, else derive from key.
+    # A head trigger is only recorded when the key holds a real SHA. Without
+    # one (terminal short-circuits, the pending-ready lockstep halt) the
+    # sentinel must hold until an operator acts; a placeholder head would never
+    # match HEAD and the reconciler would clear the terminal state next tick.
+    local stored_head=""
+    if [[ ${#condition_flags[@]} -eq 0 ]]; then
+      local head_file
+      head_file="$(_bounded_retry_file "$state_dir" "$bucket" "head")"
+      if [[ -f "$head_file" ]]; then
+        stored_head=$(head -n 1 "$head_file" 2>/dev/null | cut -d: -f1 || true)
+      fi
+      if [[ "$stored_head" =~ ^[0-9a-f]{40}$ ]]; then
+        condition_flags+=(--expires-on "head,operator-event")
+      else
+        stored_head=""
+        condition_flags+=(--expires-on "operator-event")
+      fi
+    fi
+
+    # Auto-add state-dir if not present
+    local has_state_dir=false
+    for flag in "${condition_flags[@]}"; do
+      if [[ "$flag" == "--state-dir" ]]; then
+        has_state_dir=true
+        break
+      fi
+    done
+    if [[ "$has_state_dir" == "false" ]]; then
+      condition_flags+=(--state-dir "$state_dir")
+    fi
+
+    # Write companion marker
+    local -a head_args=()
+    [[ -n "$stored_head" ]] && head_args=(--head "$stored_head")
+    marker_write "$companion" --kind retry-exhausted "${head_args[@]}" --reason "$reason" "${condition_flags[@]}" 2>/dev/null || true
+  fi
+
+  # HOK-3184: mirror the exhaustion onto the shadow step row (if bound).
+  _bounded_retry_shadow_exhaust "$state_dir" "$bucket" "$reason" || true
+
   return 0
 }
 
@@ -307,6 +467,13 @@ bounded_retry_exhaustion_reason() {
   [[ -f "$sentinel" ]] || { echo ""; return 0; }
   cat "$sentinel" 2>/dev/null || echo ""
   return 0
+}
+
+# Path to the condition companion for an exhausted sentinel (HOK-3172).
+# Returns the path whether or not the file exists; caller checks existence.
+bounded_retry_condition_path() {
+  local state_dir="$1" bucket="$2"
+  printf '%s/%sexhausted-condition.json' "$state_dir" "$(_bounded_retry_prefix "$bucket")"
 }
 
 # The composed relaunch decision. Echoes exactly one of:

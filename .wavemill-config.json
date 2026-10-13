@@ -256,7 +256,7 @@
     }
   },
   "challenge": {
-    "enabled": true,
+    "enabled": false,
     "rate": 0.75,
     "recommendationRate": 1,
     "stageWeights": {

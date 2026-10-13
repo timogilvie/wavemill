@@ -1,4 +1,10 @@
-import { TASK_ID_RE } from './task-identity.ts';
+import {
+  TASK_ID_RE,
+  challengerTaskKey,
+  isChallengerTaskId,
+  parseTaskId,
+  resolveLinearIssueId,
+} from './task-identity.ts';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -6,6 +12,12 @@ import { fileURLToPath } from 'node:url';
 import { mutateJsonState } from './state-mutex.ts';
 import { archiveTaskResidue, type ArchiveTaskResidueResult } from './task-residue-archive.ts';
 import { filterWorktreeDirtyStatus } from './worktree-dirty-status.ts';
+import {
+  appendTombstoneToArchive,
+  compactHotRecord,
+  enforceHotStateByteCap,
+  DEFAULT_BYTE_CAP,
+} from './state-archive.ts';
 
 /**
  * Wavemill's own shell libraries. These ship with the wavemill install, so
@@ -82,7 +94,19 @@ export type TerminalInboxStatus =
   | 'refused'
   | 'already-reaped'
   | 'not-terminal'
+  | 'kept'
   | 'executed';
+
+/**
+ * HOK-3201: refusals that live on terminal, delivered arms and are safe to
+ * convert into archive-and-reap. The unattended inbox executor retries each
+ * such refusal with `archiveAndReap: true` so no human has to run the command.
+ */
+export const INBOX_AUTO_ARCHIVE_REFUSALS: ReadonlySet<string> = new Set([
+  'unique_local_patch',
+  'closed_loser_head_unpublished',
+  'aborted_pr_less_requires_abandon',
+]);
 
 export interface TerminalInboxDecision {
   issue: string;
@@ -96,6 +120,15 @@ export interface TerminalInboxDecision {
   resourceDisposition: string;
   challengeRole: string;
   challengePairId: string;
+  /**
+   * HOK-3209: how the sibling-identity resolver sourced the pair metadata.
+   * `task-metadata` — both `challengeRole` and `challengePairId` were present on the row.
+   * `inferred-from-task-id` — the row's pair fields were null; identity was derived
+   *   from the task ID itself (via the task-identity helpers) and a sibling PR was found.
+   * `none` — either the task ID did not parse, or inference ran but no sibling PR
+   *   turned up anywhere, so the row is treated as unpaired.
+   */
+  pairEvidence: 'task-metadata' | 'inferred-from-task-id' | 'none';
   siblingPrNumber: string;
   siblingPrState: string;
   pr: PrEvidence;
@@ -107,6 +140,8 @@ export interface TerminalInboxDecision {
     intendedAction: 'release' | 'none';
   };
   intendedActions: string[];
+  /** HOK-3201: operator-set hold (`keep` short-circuits auto-reap). Empty when no hold is set. */
+  cleanupHold?: string;
   /** HOK-3160: when archive-and-reap executes, the resulting archive path. */
   archive?: {
     path: string;
@@ -274,6 +309,19 @@ function lifecycle(task: JsonRecord | undefined): JsonRecord {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonRecord : {};
 }
 
+/**
+ * HOK-3201: operator-set hold on a terminal task. When
+ * `lifecycle.retention.hold === 'keep'` the inbox never auto-reaps the task,
+ * independent of whether its residue is unpublished. Returns `''` when no
+ * hold is set.
+ */
+function retentionHold(task: JsonRecord | undefined): string {
+  const retention = lifecycle(task).retention;
+  if (!retention || typeof retention !== 'object' || Array.isArray(retention)) return '';
+  const hold = (retention as JsonRecord).hold;
+  return typeof hold === 'string' ? hold : '';
+}
+
 function launchContract(task: JsonRecord | undefined): JsonRecord {
   const value = lifecycle(task).launchContract;
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonRecord : {};
@@ -413,7 +461,7 @@ function collectGitEvidence(repoDir: string, task: JsonRecord | undefined, branc
 
 function siblingKey(issue: string, role: string, pairId: string): string {
   if (!pairId || !role) return '';
-  return role === 'primary' ? `${pairId}_c` : pairId;
+  return role === 'primary' ? challengerTaskKey(pairId) : pairId;
 }
 
 function findHistoricalTask(state: WorkflowState, issue: string): JsonRecord | undefined {
@@ -425,12 +473,175 @@ function findHistoricalTask(state: WorkflowState, issue: string): JsonRecord | u
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonRecord : undefined;
 }
 
-function siblingPr(state: WorkflowState, task: JsonRecord | undefined, issue: string): string {
-  const role = taskString(task, 'challengeRole');
-  const pairId = taskString(task, 'challengePairId');
-  const key = siblingKey(issue, role, pairId);
-  if (!key) return '';
-  return taskString(state.tasks?.[key], 'pr') || taskString(findHistoricalTask(state, key), 'prNumber') || taskString(findHistoricalTask(state, key), 'pr');
+/**
+ * HOK-3209: sibling-identity resolution. For well-formed rows (both pair fields
+ * present) this preserves the previous `siblingKey` logic verbatim. For rows
+ * that lost their pair metadata — the HOK-3150_c shape — the role and pair ID
+ * are derived from the task ID through the canonical task-identity helpers
+ * (never inline `_c` parsing, per HOK-3118).
+ *
+ * The resolver returns a tentative `pairEvidence` of `'inferred-from-task-id'`
+ * for inferred rows; the caller downgrades to `'none'` when the subsequent
+ * sibling-PR lookup finds no evidence a sibling actually exists.
+ */
+interface SiblingIdentity {
+  sibKey: string;
+  role: 'primary' | 'challenger' | '';
+  pairId: string;
+  pairEvidence: TerminalInboxDecision['pairEvidence'];
+}
+
+function resolveSiblingIdentity(task: JsonRecord | undefined, issue: string): SiblingIdentity {
+  const recordedRole = taskString(task, 'challengeRole');
+  const recordedPair = taskString(task, 'challengePairId');
+  if (recordedRole && recordedPair) {
+    return {
+      sibKey: siblingKey(issue, recordedRole, recordedPair),
+      role: recordedRole === 'primary' || recordedRole === 'challenger' ? recordedRole : '',
+      pairId: recordedPair,
+      pairEvidence: 'task-metadata',
+    };
+  }
+  const parsed = parseTaskId(issue);
+  if (!parsed) {
+    return { sibKey: '', role: '', pairId: '', pairEvidence: 'none' };
+  }
+  if (parsed.role === 'challenger') {
+    // Challenger task ID → sibling is the primary with the base Linear ID.
+    const resolved = resolveLinearIssueId(issue, task);
+    const linearId = resolved.ok ? resolved.linearId : parsed.linearId;
+    return {
+      sibKey: linearId,
+      role: 'challenger',
+      pairId: parsed.linearId,
+      pairEvidence: 'inferred-from-task-id',
+    };
+  }
+  // Primary task ID → sibling is the challenger with the `_c` suffix. The
+  // pair ID is the base Linear ID either way.
+  return {
+    sibKey: challengerTaskKey(parsed.linearId),
+    role: 'primary',
+    pairId: parsed.linearId,
+    pairEvidence: 'inferred-from-task-id',
+  };
+}
+
+/**
+ * HOK-3209: enumerate candidate sibling branch names for the `gh pr list`
+ * fallback. Prefers slug-level transformation of the current task's slug
+ * (strip or append `-challenger`), then falls back to the lowercased sibling
+ * task key patterns. Both touches operate on slugs / branch strings, never on
+ * issue IDs — the HOK-3118 preflight exempts those sites.
+ */
+function siblingBranchCandidates(sibKey: string, taskSlug: string, taskRole: 'primary' | 'challenger' | ''): string[] {
+  const candidates: string[] = [];
+  const CHALLENGER_SLUG_SUFFIX = '-challenger';
+  if (taskSlug) {
+    if (taskRole === 'challenger' && taskSlug.endsWith(CHALLENGER_SLUG_SUFFIX)) {
+      candidates.push(`task/${taskSlug.slice(0, -CHALLENGER_SLUG_SUFFIX.length)}`);
+    } else if (taskRole === 'primary') {
+      candidates.push(`task/${taskSlug}${CHALLENGER_SLUG_SUFFIX}`);
+    }
+  }
+  // Fall back to lowercased task-key patterns. We do not try to differentiate
+  // primary vs challenger here beyond adding the `-challenger` suffix for a
+  // challenger sibling, because the sibling's actual slug is unknown.
+  if (sibKey) {
+    const base = sibKey.toLowerCase();
+    const challengerShape = isChallengerTaskId(sibKey);
+    if (challengerShape) {
+      candidates.push(`task/${base}-challenger`);
+    } else {
+      candidates.push(`task/${base}`);
+    }
+  }
+  // Dedupe, preserving order.
+  const seen = new Set<string>();
+  return candidates.filter((branch) => {
+    if (seen.has(branch)) return false;
+    seen.add(branch);
+    return true;
+  });
+}
+
+/**
+ * HOK-3209: expanded sibling-PR lookup. Ordered chain:
+ *   1. `state.tasks[sibKey].pr`
+ *   2. `terminalTaskHistory.tasks[sibKey]` (existing historical fallback)
+ *   3. `terminalTaskTombstones[*]` whose `issue === sibKey`
+ *   4. `terminalTaskHistory.challengePairs[*]` entries matching `sibKey`
+ *   5. `gh pr list --head task/<slug>` by branch prefix (only when pair
+ *      metadata was inferred — well-formed rows never pay the extra round-trip)
+ */
+function findSiblingPr(
+  state: WorkflowState,
+  identity: SiblingIdentity,
+  taskSlug: string,
+  repoDir: string,
+  deps: CleanupDeps,
+): string {
+  const sibKey = identity.sibKey;
+  if (!sibKey) return '';
+
+  // 1. Live state row for the sibling.
+  const livePr = taskString(state.tasks?.[sibKey], 'pr');
+  if (livePr) return livePr;
+
+  // 2. Historical task record keyed by issue.
+  const historical = findHistoricalTask(state, sibKey);
+  const historicalPr = taskString(historical, 'prNumber') || taskString(historical, 'pr');
+  if (historicalPr) return historicalPr;
+
+  // 3. Scan tombstones for one whose `issue` matches the sibling key.
+  const tombstones = state.terminalTaskTombstones;
+  if (tombstones && typeof tombstones === 'object' && !Array.isArray(tombstones)) {
+    for (const value of Object.values(tombstones)) {
+      if (value && typeof value === 'object' && (value as TerminalTaskTombstone).issue === sibKey) {
+        const tombstonePr = taskString(value as unknown as JsonRecord, 'prNumber');
+        if (tombstonePr) return tombstonePr;
+      }
+    }
+  }
+
+  // 4. Scan terminalTaskHistory.challengePairs for inner records matching sibKey.
+  const history = state.terminalTaskHistory;
+  if (history && typeof history === 'object' && !Array.isArray(history)) {
+    const pairs = (history as JsonRecord).challengePairs;
+    if (pairs && typeof pairs === 'object' && !Array.isArray(pairs)) {
+      for (const pair of Object.values(pairs as Record<string, unknown>)) {
+        if (!pair || typeof pair !== 'object' || Array.isArray(pair)) continue;
+        for (const inner of Object.values(pair as Record<string, unknown>)) {
+          if (!inner || typeof inner !== 'object' || Array.isArray(inner)) continue;
+          const record = inner as JsonRecord;
+          if (taskString(record, 'issue') !== sibKey) continue;
+          const pairPr = taskString(record, 'prNumber') || taskString(record, 'pr');
+          if (pairPr) return pairPr;
+        }
+      }
+    }
+  }
+
+  // 5. Last resort: ask gh. Only when the row's pair metadata was inferred —
+  // a well-formed row that reached this point simply has no sibling.
+  if (identity.pairEvidence === 'inferred-from-task-id') {
+    const candidates = siblingBranchCandidates(sibKey, taskSlug, identity.role);
+    for (const branch of candidates) {
+      try {
+        const output = deps.gh(['pr', 'list', '--head', branch, '--state', 'all', '--json', 'number', '--limit', '1'], repoDir);
+        const parsed = JSON.parse(output);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const entry = parsed[0] as JsonRecord;
+          const number = taskString(entry, 'number');
+          if (number) return number;
+        }
+      } catch {
+        // Any gh failure (missing CLI, auth, network, no match) → treat as no sibling.
+        continue;
+      }
+    }
+  }
+  return '';
 }
 
 export function buildTerminalTaskTombstone(
@@ -473,27 +684,41 @@ export async function writeTerminalTaskTombstone(
   stateFile: string,
   tombstone: TerminalTaskTombstone,
 ): Promise<void> {
+  // 1. Append full tombstone to archive (HOK-3203)
+  const stateDir = dirname(dirname(stateFile));
+  appendTombstoneToArchive(stateDir, tombstone as unknown as Record<string, unknown>);
+
+  // 2. Write compact form to hot state (HOK-3203)
+  const compactTombstone = compactHotRecord(tombstone as unknown as Record<string, unknown>) as TerminalTaskTombstone;
+
   await mutateJsonState<WorkflowState>(stateFile, (state) => {
     const next = state ?? {};
     const key = tombstoneKey(tombstone);
-    next.terminalTaskTombstones = { ...(next.terminalTaskTombstones ?? {}), [key]: tombstone };
+    next.terminalTaskTombstones = { ...(next.terminalTaskTombstones ?? {}), [key]: compactTombstone };
     const history = next.terminalTaskHistory && typeof next.terminalTaskHistory === 'object' && !Array.isArray(next.terminalTaskHistory)
       ? { ...next.terminalTaskHistory }
       : {};
     const tasks = history.tasks && typeof history.tasks === 'object' && !Array.isArray(history.tasks) ? { ...history.tasks as JsonRecord } : {};
-    tasks[tombstone.issue] = tombstone;
+    tasks[tombstone.issue] = compactTombstone;
     history.tasks = tasks;
     if (tombstone.challengePairId) {
       const pairs = history.challengePairs && typeof history.challengePairs === 'object' && !Array.isArray(history.challengePairs) ? { ...history.challengePairs as JsonRecord } : {};
       const priorPair = pairs[tombstone.challengePairId];
       const pair = priorPair && typeof priorPair === 'object' && !Array.isArray(priorPair) ? { ...priorPair as JsonRecord } : {};
-      pair[tombstone.challengeRole || tombstone.issue] = tombstone;
+      pair[tombstone.challengeRole || tombstone.issue] = compactTombstone;
       pairs[tombstone.challengePairId] = pair;
       history.challengePairs = pairs;
     }
     next.terminalTaskHistory = history;
     return next;
   });
+
+  // 3. Enforce byte cap (HOK-3203)
+  const byteCap = parseInt(process.env.WAVEMILL_HOT_STATE_BYTE_CAP ?? '', 10) || DEFAULT_BYTE_CAP;
+  const result = enforceHotStateByteCap({ stateFile, byteCap, keepFloor: 10 });
+  if (result.warning) {
+    console.warn(result.warning);
+  }
 }
 
 /**
@@ -528,6 +753,34 @@ export function decideTerminalTask(
   const prNumber = taskString(task, 'pr') || taskString(deliveryEvidence(task), 'prNumber');
   const outcome = workflowOutcome(task);
   const disposition = resourceDisposition(task);
+  const hold = retentionHold(task);
+  // HOK-3201: a `keep` hold short-circuits every remote fetch so the dashboard
+  // can render the kept list without any gh/git cost.
+  if (hold === 'keep') {
+    const recordedRole = taskString(task, 'challengeRole');
+    const recordedPair = taskString(task, 'challengePairId');
+    return {
+      issue,
+      slug,
+      branch,
+      worktree,
+      prNumber,
+      status: 'kept',
+      refusalReason: 'kept_by_operator',
+      workflowOutcome: outcome,
+      resourceDisposition: disposition,
+      challengeRole: recordedRole,
+      challengePairId: recordedPair,
+      pairEvidence: recordedRole && recordedPair ? 'task-metadata' : 'none',
+      siblingPrNumber: '',
+      siblingPrState: '',
+      pr: unknownPr(prNumber),
+      git: { worktreeExists: false, worktreeDirty: 'unknown', dirtyStatus: '', localBranchExists: false, localHeadSha: '', remoteHeadSha: '', remoteContainsHead: false, commitsAhead: null, patchEquivalent: 'unknown', patchUniqueCount: null, patchEquivalentCount: null },
+      pane: { windowId: taskString(task, 'windowId'), paneState: taskString(task, 'paneState') || 'active', paneReleased: taskBoolean(task, 'paneReleased') || taskString(task, 'paneState') === 'released', intendedAction: 'none' },
+      intendedActions: [],
+      cleanupHold: hold,
+    };
+  }
   const pr = fetchPr(repoDir, prNumber, task, deps);
   const effectiveBase = taskString(launchContract(task), 'baseBranch') || baseBranch;
   let classified: ClassifyEvidence | undefined;
@@ -544,10 +797,33 @@ export function decideTerminalTask(
     git.verifiedTopLevel = classified.verifiedTopLevel;
     git.classifierVerdict = classified.classification;
   }
-  const challengeRole = taskString(task, 'challengeRole');
-  const challengePairId = taskString(task, 'challengePairId');
-  const sibPr = siblingPr(state, task, issue);
-  const sibEvidence = sibPr ? fetchPr(repoDir, sibPr, state.tasks?.[siblingKey(issue, challengeRole, challengePairId)] ?? findHistoricalTask(state, siblingKey(issue, challengeRole, challengePairId)), deps) : unknownPr();
+  // HOK-3209: resolve the sibling identity through the task-identity helpers
+  // when `challengeRole` / `challengePairId` are missing from the row, then run
+  // the expanded PR lookup chain. The merged (stored || inferred) values are
+  // threaded through every downstream path — isDelivered, the CLOSED-no-merged
+  // refusal, the recorded decision — so a row rebuilt from a stub can still
+  // retire once its merged sibling is found. A row that cannot find a sibling
+  // via inference downgrades to `pairEvidence: 'none'` and keeps the pair
+  // fields empty, so a bare primary is still refused exactly as today.
+  const recordedRole = taskString(task, 'challengeRole');
+  const recordedPair = taskString(task, 'challengePairId');
+  const identity = resolveSiblingIdentity(task, issue);
+  const sibPr = findSiblingPr(state, identity, slug, repoDir, deps);
+  let challengeRole = recordedRole;
+  let challengePairId = recordedPair;
+  let pairEvidence: TerminalInboxDecision['pairEvidence'] = identity.pairEvidence;
+  if (identity.pairEvidence === 'inferred-from-task-id') {
+    if (sibPr) {
+      challengeRole = recordedRole || identity.role;
+      challengePairId = recordedPair || identity.pairId;
+    } else {
+      // No evidence of a real sibling: don't fabricate pair metadata.
+      pairEvidence = 'none';
+    }
+  }
+  const sibEvidence = sibPr
+    ? fetchPr(repoDir, sibPr, state.tasks?.[identity.sibKey] ?? findHistoricalTask(state, identity.sibKey), deps)
+    : unknownPr();
   const paneReleased = taskBoolean(task, 'paneReleased') || taskString(task, 'paneState') === 'released';
 
   const decision: TerminalInboxDecision = {
@@ -562,6 +838,7 @@ export function decideTerminalTask(
     resourceDisposition: disposition,
     challengeRole,
     challengePairId,
+    pairEvidence,
     siblingPrNumber: sibPr,
     siblingPrState: sibEvidence.state,
     pr,
@@ -573,6 +850,7 @@ export function decideTerminalTask(
       intendedAction: paneReleased ? 'none' : 'release',
     },
     intendedActions: [],
+    cleanupHold: hold,
   };
 
   if (disposition === 'reaped') {
@@ -613,7 +891,7 @@ export function decideTerminalTask(
     return decision;
   }
   if (!prNumber && (outcome === 'aborted' || outcome === 'error')) {
-    return decidePrLessAbortedArm(decision, git, allowAbandon);
+    return decidePrLessAbortedArm(decision, git, allowAbandon, archiveAndReap);
   }
   if (!prNumber || pr.state === 'UNKNOWN') {
     decision.refusalReason = 'pr_state_unverifiable';
@@ -630,6 +908,16 @@ export function decideTerminalTask(
       decision.intendedActions = ['archive-artifacts', 'release-pane', 'write-tombstone', 'remove-local-worktree', 'remove-local-branch', 'remove-active-task-row'];
       return decision;
     }
+    // HOK-3201: a merged arm whose local branch carries a non-equivalent extra
+    // commit (self-review residue, HOK-3177 shape) is delivered: with
+    // archiveAndReap we snapshot the unpublished patch to the residue archive
+    // and reap. Without the flag, surface the refusal for operator review.
+    if (archiveAndReap && git.patchEquivalent === false && isDelivered(pr, sibEvidence.state, challengeRole, allowAbandon)) {
+      decision.status = 'would-archive-and-reap';
+      decision.refusalReason = '';
+      decision.intendedActions = ['archive-residue', 'archive-artifacts', 'release-pane', 'write-tombstone', 'remove-local-worktree', 'remove-local-branch', 'remove-active-task-row'];
+      return decision;
+    }
     decision.refusalReason = git.patchEquivalent === false ? 'unique_local_patch' : 'merged_delivery_unverified';
     return decision;
   }
@@ -639,6 +927,15 @@ export function decideTerminalTask(
       return decision;
     }
     if (!git.remoteContainsHead && (!pr.headRefOid || pr.headRefOid !== git.localHeadSha)) {
+      // HOK-3201: a losing challenger with an unpushed head is delivered via
+      // its MERGED sibling. With archiveAndReap we snapshot the discarded
+      // branch tip to the residue archive instead of waiting on an operator.
+      if (archiveAndReap && isDelivered(pr, sibEvidence.state, challengeRole, allowAbandon)) {
+        decision.status = 'would-archive-and-reap';
+        decision.refusalReason = '';
+        decision.intendedActions = ['archive-residue', 'archive-artifacts', 'release-pane', 'write-tombstone', 'remove-local-worktree', 'remove-local-branch', 'retain-remote-branch', 'remove-active-task-row'];
+        return decision;
+      }
       decision.refusalReason = 'closed_loser_head_unpublished';
       return decision;
     }
@@ -665,7 +962,7 @@ export function decideTerminalTask(
  * that push fails), which is the same path the monitor takes once the arm's
  * sibling PR has merged. The caller has already refused dirty worktrees.
  */
-function decidePrLessAbortedArm(decision: TerminalInboxDecision, git: GitEvidence, allowAbandon: boolean): TerminalInboxDecision {
+function decidePrLessAbortedArm(decision: TerminalInboxDecision, git: GitEvidence, allowAbandon: boolean, archiveAndReap: boolean): TerminalInboxDecision {
   const reapActions = ['archive-artifacts', 'release-pane', 'write-tombstone', 'remove-local-worktree', 'remove-local-branch', 'remove-active-task-row'];
   if (!git.localBranchExists || git.commitsAhead === 0 || git.remoteContainsHead) {
     decision.status = 'would-reap';
@@ -673,6 +970,15 @@ function decidePrLessAbortedArm(decision: TerminalInboxDecision, git: GitEvidenc
     return decision;
   }
   if (!allowAbandon) {
+    // HOK-3201: a PR-less aborted arm with unpublished commits is delivered —
+    // its work was discarded by abort, nothing is lost by archiving to disk.
+    // archiveAndReap implies abandon authority inside cleanupTerminalInbox,
+    // which satisfies HOK-3089's "no silent discard" rule via the archive.
+    if (archiveAndReap) {
+      decision.status = 'would-archive-and-reap';
+      decision.intendedActions = ['archive-residue', 'archive-unpublished-head', ...reapActions];
+      return decision;
+    }
     decision.refusalReason = 'aborted_pr_less_requires_abandon';
     return decision;
   }
@@ -706,6 +1012,96 @@ function runArchiveResidueStep(decision: TerminalInboxDecision, context: Cleanup
   });
 }
 
+/**
+ * HOK-3201: set or clear the operator-driven `keep` hold on a terminal task.
+ * A `keep` hold short-circuits every decision in `decideTerminalTask`, so the
+ * unattended cleanup never auto-reaps the task even once its only residue is
+ * dirt or an unpushed commit.
+ *
+ * `hold: 'keep'` sets `lifecycle.retention.hold = 'keep'` and records who/why.
+ * `hold: null` clears the hold (and the retention metadata when the retention
+ * block has no other content).
+ *
+ * The write is atomic through `mutateJsonState`; callers must emit the
+ * operator event (`keep` / `unkeep`) separately so the HOK-3172 reconciler
+ * and the monitor cadence throttle wake up on the next tick.
+ */
+export interface SetKeepHoldOptions {
+  issue: string;
+  repoDir: string;
+  stateFile?: string;
+  hold: 'keep' | null;
+  reason?: string;
+  actor?: string;
+  now?(): string;
+}
+
+export interface SetKeepHoldResult {
+  issue: string;
+  hold: 'keep' | '';
+  reason: string;
+}
+
+export async function setTerminalTaskKeepHold(options: SetKeepHoldOptions): Promise<SetKeepHoldResult> {
+  const repoDir = resolve(options.repoDir);
+  const stateFile = statePath(repoDir, options.stateFile);
+  if (!existsSync(stateFile)) {
+    throw new Error(`workflow state file not found: ${stateFile}`);
+  }
+  const now = (options.now ?? (() => new Date().toISOString()))();
+  const actor = options.actor ?? 'operator';
+  const reason = options.reason ?? '';
+  await mutateJsonState<WorkflowState>(stateFile, (state) => {
+    const next = state ?? {};
+    const tasks = next.tasks ?? {};
+    if (!tasks[options.issue]) {
+      throw new Error(`task ${options.issue} is not present in workflow state`);
+    }
+    const task = { ...(tasks[options.issue] as JsonRecord) };
+    const lifecycleObj = (task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle))
+      ? { ...(task.lifecycle as JsonRecord) }
+      : {};
+    const retention = (lifecycleObj.retention && typeof lifecycleObj.retention === 'object' && !Array.isArray(lifecycleObj.retention))
+      ? { ...(lifecycleObj.retention as JsonRecord) }
+      : {};
+    if (options.hold === 'keep') {
+      retention.hold = 'keep';
+      retention.setBy = actor;
+      retention.setAt = now;
+      if (reason) retention.reason = reason;
+      lifecycleObj.retention = retention;
+    } else {
+      // Clear every field this helper writes on `keep`. A pre-existing
+      // retention.reason set by another code path (e.g.
+      // set_task_lifecycle_disposition) survives only when the previous
+      // state had no `setBy` — i.e. the reason was not written by us.
+      const operatorOwned = typeof retention.setBy === 'string' && retention.setBy.length > 0;
+      delete retention.hold;
+      delete retention.setBy;
+      delete retention.setAt;
+      if (operatorOwned) {
+        delete retention.reason;
+      }
+      if (Object.keys(retention).length === 0) {
+        delete lifecycleObj.retention;
+      } else {
+        lifecycleObj.retention = retention;
+      }
+    }
+    task.lifecycle = lifecycleObj;
+    task.updated = now;
+    tasks[options.issue] = task;
+    next.tasks = tasks;
+    return next;
+  });
+  return {
+    issue: options.issue,
+    hold: options.hold === 'keep' ? 'keep' : '',
+    reason: options.hold === 'keep' ? reason : '',
+  };
+}
+
+
 export function discoverTerminalInboxIssues(state: WorkflowState): string[] {
   return Object.entries(state.tasks ?? {})
     .filter(([, task]) => isTerminalTask(task) && resourceDisposition(task) !== 'reaped')
@@ -734,6 +1130,11 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
   }
 
   const decisions: TerminalInboxDecision[] = [];
+  // HOK-3201: when the unattended monitor calls the inbox executor it wants
+  // every refusal that lives on a terminal, delivered arm to auto-promote to
+  // archive-and-reap. The dry-run surface (no --execute) keeps the original
+  // refusal reasons so operators can still inspect them.
+  const inboxExecute = options.inbox === true && options.execute === true;
   for (const issue of issues) {
     if (!issue) continue;
     const state = readWorkflowState(stateFile);
@@ -742,7 +1143,17 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
     // arm needs; the residue archive includes a bundle of its unpublished
     // commits so the HOK-3089 "no silent discard" rule still holds.
     const abandon = (options.abandon === true || archiveAndReap) && !options.inbox;
-    const decision = decideTerminalTask(state, issue, repoDir, baseBranch, deps, abandon, archiveAndReap);
+    let decision = decideTerminalTask(state, issue, repoDir, baseBranch, deps, abandon, archiveAndReap);
+    // HOK-3201: convert a safe refusal into archive-and-reap for the
+    // unattended inbox path. Grant abandon authority here too, so the
+    // archive step owns the unpublished-head rescue the same way
+    // `--abandon` does for an operator.
+    if (inboxExecute && decision.status === 'refused' && INBOX_AUTO_ARCHIVE_REFUSALS.has(decision.refusalReason)) {
+      const retry = decideTerminalTask(state, issue, repoDir, baseBranch, deps, true, true);
+      if (retry.status === 'would-archive-and-reap') {
+        decision = retry;
+      }
+    }
     const now = deps.now();
     if (options.execute || options.out) {
       writeDecisionArtifact(repoDir, decision, now, options.out && issues.length === 1 ? options.out : undefined);
@@ -750,13 +1161,18 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
     if (options.execute && isExecutable(decision.status)) {
       const task = state.tasks?.[issue];
       if (!task) throw new Error(`task ${issue} disappeared before execution`);
+      // HOK-3201: an inbox-execute that promoted a refusal to
+      // would-archive-and-reap also needs the executor context to carry the
+      // archive flag so the destructive cleanup resets the dirty tree first
+      // and takes abandon authority for a PR-less head.
+      const decisionArchives = decision.status === 'would-archive-and-reap';
       const context: CleanupExecuteContext = {
         repoDir,
         stateFile,
         baseBranch,
         session: initial.session ?? process.env.SESSION ?? 'wavemill',
-        abandon,
-        archiveAndReap,
+        abandon: abandon || decisionArchives,
+        archiveAndReap: archiveAndReap || decisionArchives,
       };
       // HOK-3160: run the archive step FIRST. A failure retains the task:
       // the destructive cleanup and the tombstone are skipped.

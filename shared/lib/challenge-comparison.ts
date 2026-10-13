@@ -6,6 +6,7 @@ import { getEffectiveRegistry, resolveModelRegistryKey } from './model-registry.
 import { resolveWavemillAliasFromOpenRouterId } from './openrouter-catalog.ts';
 import type { StageExecutionEvidenceStatus, StageName, StageResult, StageStatus } from './stage-result.ts';
 import type { ChallengeArmFailure } from './arm-failure-taxonomy.ts';
+import { parsePiRuntimeVersions, piRuntimeVersionsField, type PiRuntimeVersions } from './native-agent/pi-runtime-version.ts';
 import type { ChallengeStage } from './challenge-mode.ts';
 import type {
   DeliveryVerdict,
@@ -205,6 +206,11 @@ export interface ChallengeExecutedStageProvenance {
    * target of a certified rolling alias, which is not an executed-model mismatch.
    */
   identityVerdict?: 'match' | 'alias-resolved' | 'mismatch' | 'unverifiable' | 'absent';
+  /**
+   * HOK-3164: Pi runtime versions carried from the stage result's
+   * executionEvidence, so comparisons can separate pre/post Pi-upgrade arms.
+   */
+  piRuntimeVersions?: PiRuntimeVersions;
 }
 
 export interface ChallengeSideExecutionProvenance {
@@ -860,6 +866,7 @@ function parseStageArtifact(
     ...(typeof parsed.executionEvidence?.identityVerdict === 'string'
       ? { identityVerdict: parsed.executionEvidence.identityVerdict as ChallengeExecutedStageProvenance['identityVerdict'] }
       : {}),
+    ...piRuntimeVersionsField(parsePiRuntimeVersions(parsed.executionEvidence?.piRuntimeVersions)),
   };
 }
 

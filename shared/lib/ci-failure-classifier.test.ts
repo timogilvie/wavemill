@@ -94,6 +94,123 @@ describe('classifyCiFailure', () => {
     assert.equal(result.localCommand, 'npm test');
   });
 
+  it('classifies the HOK-3162 Pi vendor seam guard FAIL as deterministic-local', () => {
+    const log = [
+      'Error: Pi vendor seam guard: found code outside shared/lib/native-agent/providers/pi/compat',
+      '  shared/lib/native-agent/models.ts:12',
+      '##[error]Process completed with exit code 1.',
+    ].join('\n');
+    const result = classifyCiFailure({
+      name: 'Preflight Checks',
+      rawStatus: 'FAILURE',
+      text: log,
+    }, {
+      localCommandMap: { 'Preflight Checks': 'npm run lint && npm run test:preflight' },
+    });
+
+    assert.equal(result.category, 'deterministic-local');
+    assert.equal(result.localCommand, 'npm run lint && npm run test:preflight');
+    assert.match(result.reason, /exit code 1/i);
+    assert.match(result.logExcerpt, /Pi vendor seam guard/);
+  });
+
+  it('classifies the HOK-3162 test-registration drift as deterministic-local', () => {
+    const log = [
+      'test-registration: test registry drift found:',
+      '',
+      'Unregistered test files:',
+      '- shared/lib/native-agent/models.test.ts',
+      '##[error]Process completed with exit code 1.',
+    ].join('\n');
+    const result = classifyCiFailure({
+      name: 'Preflight Checks',
+      rawStatus: 'FAILURE',
+      text: log,
+    }, {
+      localCommandMap: { 'Preflight Checks': 'npm run lint && npm run test:preflight' },
+    });
+
+    assert.equal(result.category, 'deterministic-local');
+    assert.equal(result.localCommand, 'npm run lint && npm run test:preflight');
+    assert.match(result.reason, /drift found/i);
+    assert.match(result.logExcerpt, /Unregistered test files:/);
+  });
+
+  it('ranks a code-failure signature above an ambient transient fragment', () => {
+    const log = [
+      'FAIL shared/lib/foo.test.ts',
+      '  something broke',
+      'Took 507ms',
+    ].join('\n');
+    const result = classifyCiFailure({
+      name: 'Unit Tests',
+      text: log,
+    }, {
+      localCommandMap: { 'Unit Tests': 'npm test' },
+    });
+
+    assert.equal(result.category, 'deterministic-local');
+    assert.equal(result.localCommand, 'npm test');
+    assert.match(result.reason, /FAIL/);
+  });
+
+  it('classifies a test timeout as deterministic-local, not transient', () => {
+    const result = classifyCiFailure({
+      name: 'Unit Tests',
+      text: 'test timed out after 2000ms',
+    }, {
+      localCommandMap: { 'Unit Tests': 'npm test' },
+    });
+
+    assert.equal(result.category, 'deterministic-local');
+    assert.equal(result.localCommand, 'npm test');
+    assert.notEqual(result.category, 'transient-infra');
+  });
+
+  it('surfaces a code-failure signature without a recipe as unknown, not transient', () => {
+    const result = classifyCiFailure({
+      name: 'Preflight Checks',
+      text: 'FAIL some/thing.test.ts',
+    });
+
+    assert.equal(result.category, 'unknown');
+    assert.equal(result.localCommand, undefined);
+    assert.match(result.reason, /FAIL/);
+    assert.match(result.reason, /no configured local recipe/i);
+  });
+
+  it('still classifies runner-provisioning failures as transient-infra', () => {
+    const result = classifyCiFailure({
+      name: 'build',
+      text: 'Error: Received workflow does not match expected... not acquired by Runner within 00:05:00',
+    });
+
+    assert.equal(result.category, 'transient-infra');
+    assert.match(result.reason, /not acquired by Runner/i);
+  });
+
+  it('classifies cancelled jobs via rawStatus as transient-infra', () => {
+    const result = classifyCiFailure({
+      name: 'build',
+      rawStatus: 'CANCELLED',
+    });
+
+    assert.equal(result.category, 'transient-infra');
+    assert.match(result.reason, /CANCELLED/i);
+  });
+
+  it('no longer classifies 5xx-looking numbers in prose as transient-infra', () => {
+    const result = classifyCiFailure({
+      name: 'Unit Tests',
+      text: 'size: 512 bytes allocated at line 507',
+    }, {
+      localCommandMap: { 'Unit Tests': 'npm test' },
+    });
+
+    assert.equal(result.category, 'unknown');
+    assert.notEqual(result.category, 'transient-infra');
+  });
+
   it('bounds large logs with a truncation marker and tail bias', () => {
     const log = `${'a'.repeat(100)}\nfinal failure line`;
     const result = classifyCiFailure({

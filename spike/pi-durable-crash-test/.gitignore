@@ -1,0 +1,7 @@
+node_modules/
+scratch/
+results/*.local.json
+*.log
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

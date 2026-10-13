@@ -35,6 +35,8 @@ eval "$(extract_function native_hook_terminal_failure_detail)"
 eval "$(extract_function native_coding_failure_handoff_reason)"
 eval "$(extract_function native_terminal_failure_kind)"
 eval "$(extract_function native_terminal_failure_next_action)"
+eval "$(extract_function stage_failure_decision)"
+eval "$(extract_function native_stage_failure_envelope_json)"
 eval "$(extract_function agent_or_model_is_native_for_recovery)"
 eval "$(extract_function emit_native_terminal_failure_attention)"
 eval "$(extract_function emit_challenge_stage_failure_quarantine)"
@@ -43,6 +45,22 @@ eval "$(extract_function record_openrouter_credits_challenge_abort)"
 eval "$(extract_function challenge_abort_pair)"
 eval "$(extract_function challenge_abort_scope_for_failure)"
 eval "$(extract_function _challenge_side_for_issue)"
+
+# HOK-3176: classification is the TS failure policy, reached through the
+# wavemill-common.sh bridge helpers.
+extract_common_function() {
+  awk -v name="$1" '$0 ~ "^" name "\\(\\) \\{" { capture=1 } capture { print } /^}/ && capture { exit }' \
+    "$REPO_DIR/shared/lib/wavemill-common.sh"
+}
+eval "$(extract_common_function failure_policy_decide)"
+eval "$(extract_common_function failure_policy_next_action)"
+eval "$(extract_common_function _failure_policy_cli)"
+# HOK-3190: _failure_policy_cli now delegates to wavemill_run_tool
+# (fast-strip wrapper). Extract that too so the extracted bridge works.
+eval "$(extract_common_function wavemill_run_tool)"
+# shellcheck source=../shared/lib/bounded-retry.sh
+source "$REPO_DIR/shared/lib/bounded-retry.sh"
+TOOLS_DIR="$REPO_DIR/tools"
 
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -136,57 +154,14 @@ else
   fail "context overflow misclassified as $(native_terminal_failure_kind "$ctx_detail")"
 fi
 
-if [[ "$(native_terminal_failure_kind "$preflight_ctx_detail")" == "context-window-exceeded" ]]; then
-  pass "pre-flight context overflow is classified"
-else
-  fail "pre-flight context overflow misclassified as $(native_terminal_failure_kind "$preflight_ctx_detail")"
-fi
-
-if [[ "$(native_terminal_failure_kind "$context_exhausted_detail")" == "context-exhausted" ]]; then
-  pass "context exhaustion is classified distinctly"
-else
-  fail "context exhaustion misclassified as $(native_terminal_failure_kind "$context_exhausted_detail")"
-fi
-
-if [[ "$(native_terminal_failure_kind "$bad_model_detail")" == "provider-config-error" ]]; then
-  pass "invalid model ID is classified"
-else
-  fail "invalid model ID misclassified as $(native_terminal_failure_kind "$bad_model_detail")"
-fi
-
-if [[ "$(native_terminal_failure_kind "$tool_use_detail")" == "tool-use-unsupported" ]]; then
-  pass "unsupported tool use is classified"
-else
-  fail "unsupported tool use misclassified as $(native_terminal_failure_kind "$tool_use_detail")"
-fi
-
 if [[ "$(native_terminal_failure_kind "$credits_detail")" == "provider-credit-exhausted" ]]; then
   pass "OpenRouter credit exhaustion is classified"
 else
   fail "OpenRouter credit exhaustion misclassified as $(native_terminal_failure_kind "$credits_detail")"
 fi
 
-# HOK-3155: the "exceed your available credits" wording also classifies.
-if [[ "$(native_terminal_failure_kind "$credits_detail_exceed")" == "provider-credit-exhausted" ]]; then
-  pass "exceed-your-available-credits 402 is classified as provider-credit-exhausted"
-else
-  fail "exceed-your-available-credits 402 misclassified as $(native_terminal_failure_kind "$credits_detail_exceed")"
-fi
-
-if [[ "$(native_terminal_failure_kind "$transient_detail")" == "provider-transient-error" ]]; then
-  pass "transient provider errors are classified"
-else
-  fail "transient provider error misclassified as $(native_terminal_failure_kind "$transient_detail")"
-fi
-
-if [[ "$(native_terminal_failure_kind "$empty_turn_detail")" == "empty-model-turn" ]]; then
-  pass "empty model turns are classified"
-else
-  fail "empty model turns misclassified as $(native_terminal_failure_kind "$empty_turn_detail")"
-fi
-
 if [[ "$(native_terminal_failure_kind "something else entirely")" == "native-unclassified" ]]; then
-  pass "unrecognised failures without typed evidence fall back to native-unclassified"
+  pass "unrecognised failures without typed evidence fall back to native-unclassified (shell bridge)"
 else
   fail "untyped unrecognised failure misclassified as $(native_terminal_failure_kind "something else entirely")"
 fi
@@ -195,24 +170,6 @@ if [[ "$(native_terminal_failure_next_action context-window-exceeded)" == *"comp
   pass "context overflow surfaces a specific recovery action"
 else
   fail "context overflow recovery action missing"
-fi
-
-if [[ "$(native_terminal_failure_next_action context-exhausted)" == *"larger-context model"* ]]; then
-  pass "context exhaustion surfaces a resumable recovery action"
-else
-  fail "context exhaustion recovery action missing"
-fi
-
-if [[ "$(native_terminal_failure_next_action provider-credit-exhausted)" == *"Top up OpenRouter credits"* || "$(native_terminal_failure_next_action provider-credit-exhausted)" == *"top up OpenRouter credits"* ]]; then
-  pass "OpenRouter credit exhaustion surfaces a billing recovery action"
-else
-  fail "OpenRouter credit exhaustion recovery action missing"
-fi
-
-if [[ "$(native_terminal_failure_next_action empty-model-turn)" == *"bounded continuation"* ]]; then
-  pass "empty model turn surfaces a specific recovery action"
-else
-  fail "empty model turn recovery action missing"
 fi
 
 # ── Context overflow end-to-end ───────────────────────────────────────
@@ -318,24 +275,32 @@ else
   fail "invalid model ID was not detected"
 fi
 
-# ── Transient hook failure while running: challenger-only quarantine ──
-# HOK-2885: an upstream idle-timeout stall on the challenger must not stamp
-# the healthy primary, so the pair stays resolvable by forfeit.
-seed "PAIR-1_c"
-fd="$TMP_ROOT/f-transient-running"
-write_stage_result "$fd" "coding" "running" "native" "llama-4-maverick"
-write_hook "PAIR-1_c" "error" "provider-transient-error: Upstream idle timeout exceeded"
-if emit_native_terminal_failure_attention "PAIR-1_c" "$fd" "coding" "win-transient" "%9" "native" "llama-4-maverick"; then
-  if [[ "$(jq -r '.tasks["PAIR-1_c"].challengeAborted' "$STATE_FILE")" == "terminal_launch_failure:provider-transient-error" ]] \
-    && [[ "$(jq -r '.tasks["PAIR-1"] | has("challengeAborted")' "$STATE_FILE")" == "false" ]] \
-    && [[ -f "$fd/.challenge-aborted.json" ]]; then
-    pass "running-stage transient challenger failure quarantines the challenger only"
+# ── Retryable hook failures while running: fail the stage, never park ──
+# HOK-3176: a transient stall or an unrecognised failure is recorded as a
+# failed stage for maybe_retry_failed_stage to relaunch. No quarantine, no
+# needs-user — only allowlisted causes park.
+for retry_case in "transient|provider-transient-error: Upstream idle timeout exceeded|provider-transient-error" \
+  "unknown|zstd decoder mismatch on shard 7 (never seen before)|native-unclassified"; do
+  IFS='|' read -r case_name case_detail case_kind <<<"$retry_case"
+  seed "PAIR-1_c"
+  fd="$TMP_ROOT/f-retry-running-$case_name"
+  write_stage_result "$fd" "coding" "running" "native" "llama-4-maverick"
+  write_hook "PAIR-1_c" "error" "$case_detail"
+  if emit_native_terminal_failure_attention "PAIR-1_c" "$fd" "coding" "win-$case_name" "%9" "native" "llama-4-maverick"; then
+    if [[ "$(jq -r '.status' "$fd/.coding-result.json")" == "failed" ]] \
+      && [[ "$(jq -r '.artifacts.failureKind' "$fd/.coding-result.json")" == "$case_kind" ]] \
+      && [[ "$(jq -r '.artifacts.failureClass' "$fd/.coding-result.json")" == "retryable" ]] \
+      && [[ "$(jq -r '.tasks | map(has("challengeAborted")) | any' "$STATE_FILE")" == "false" ]] \
+      && [[ ! -f "$fd/.challenge-aborted.json" ]] \
+      && ! grep -q "win-$case_name=needs-user" "$ATTENTION_FILE"; then
+      pass "running-stage $case_name failure fails the stage for retry without parking"
+    else
+      fail "running-stage $case_name failure parked or quarantined"
+    fi
   else
-    fail "running-stage transient challenger scoping wrong"
+    fail "running-stage $case_name failure was not detected"
   fi
-else
-  fail "running-stage transient challenger failure was not detected"
-fi
+done
 
 # ── Guards ────────────────────────────────────────────────────────────
 # A terminal hook is deliberately NOT TTL-gated, but it must never override a
@@ -436,18 +401,20 @@ seed "PAIR-1_c"
 fd="$TMP_ROOT/f-review-stage-failed"
 write_stage_result "$fd" "review" "failed" "native" "claude-sonnet-5" "Native review failed: Provider finish_reason: error"
 write_hook "PAIR-1_c" "error" "Native review failed: Provider finish_reason: error"
+# The caller only quarantines once maybe_retry_failed_stage spent the budget.
+bounded_retry_mark_exhausted "$fd" "stage-failure-review" "unknown-failure-after-retries:review:provider-transient-error"
 if emit_challenge_stage_failure_quarantine "PAIR-1_c" "$fd" "review" "win-review"; then
   if [[ "$(jq -r '.tasks["PAIR-1_c"].challengeAbortedStage' "$STATE_FILE")" == "review" ]] \
-    && [[ "$CLEANUP_CALLS" == *"PAIR-1_c|review|terminal stage failure:provider-transient-error"* ]]; then
+    && [[ "$CLEANUP_CALLS" == *"PAIR-1_c|review|retry exhausted:provider-transient-error"* ]]; then
     pass "review-stage quarantine schedules aborted cleanup"
   else
     fail "review-stage quarantine did not schedule cleanup"
   fi
   # HOK-2885: a transient challenger fault aborts the challenger only — the
   # healthy primary keeps running so the pair can resolve by forfeit.
-  if [[ "$(jq -r '.tasks["PAIR-1_c"].challengeAborted' "$STATE_FILE")" == "terminal_stage_failure:provider-transient-error" ]] \
+  if [[ "$(jq -r '.tasks["PAIR-1_c"].challengeAborted' "$STATE_FILE")" == "retry_exhausted:provider-transient-error" ]] \
     && [[ "$(jq -r '.tasks["PAIR-1"] | has("challengeAborted")' "$STATE_FILE")" == "false" ]]; then
-    pass "transient challenger failure stamps only the challenger arm"
+    pass "retry-exhausted challenger failure stamps only the challenger arm"
   else
     fail "transient challenger failure stamped the healthy primary"
   fi
@@ -468,12 +435,13 @@ seed "PAIR-1_c"
 fd="$TMP_ROOT/f-empty-turn"
 rm -f "/tmp/wavemill-${SESSION}-PAIR-1_c.hook"
 write_stage_result "$fd" "coding" "failed" "native" "google/gemini-2.5-pro" "$empty_turn_detail"
+bounded_retry_mark_exhausted "$fd" "stage-failure-coding" "unknown-failure-after-retries:coding:empty-model-turn"
 if emit_challenge_stage_failure_quarantine "PAIR-1_c" "$fd" "coding" "win-empty"; then
   reliability_file="$WAVEMILL_RELIABILITY_REPO_DIR/.wavemill/evals/reliability-records.jsonl"
-  if [[ "$(jq -r '.tasks["PAIR-1_c"].challengeAborted' "$STATE_FILE")" == "terminal_stage_failure:empty-model-turn" ]] \
+  if [[ "$(jq -r '.tasks["PAIR-1_c"].challengeAborted' "$STATE_FILE")" == "retry_exhausted:empty-model-turn" ]] \
     && [[ -f "$reliability_file" ]] \
-    && [[ "$(jq -r 'select(.abortReason == "terminal_stage_failure:empty-model-turn") | .failureKind' "$reliability_file" | tail -n 1)" == "empty-model-turn" ]] \
-    && [[ "$(jq -r 'select(.abortReason == "terminal_stage_failure:empty-model-turn") | .faultClass' "$reliability_file" | tail -n 1)" == "harness-fault" ]]; then
+    && [[ "$(jq -r 'select(.abortReason == "retry_exhausted:empty-model-turn") | .failureKind' "$reliability_file" | tail -n 1)" == "empty-model-turn" ]] \
+    && [[ "$(jq -r 'select(.abortReason == "retry_exhausted:empty-model-turn") | .faultClass' "$reliability_file" | tail -n 1)" == "harness-fault" ]]; then
     pass "empty turn exhaustion quarantines with named reliability fault"
   else
     fail "empty turn exhaustion side effects incomplete"

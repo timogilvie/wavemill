@@ -70,6 +70,13 @@ export function formatReviewResult(result: ReviewResult, verbose: boolean): stri
   if (result.metadata) {
     lines.push(`  ${DIM}Branch:${NC}  ${result.metadata.branch}`);
     lines.push(`  ${DIM}Files:${NC}   ${result.metadata.files.length} changed`);
+    const diffBase = result.metadata.diffBase;
+    if (diffBase) {
+      const tip = diffBase.reviewedBase ? diffBase.reviewedBase.slice(0, 8) : 'unresolved';
+      const mergeBase = diffBase.mergeBaseSha ? diffBase.mergeBaseSha.slice(0, 8) : 'unresolved';
+      const staleNote = diffBase.kind === 'local' ? ` ${DIM}(local ref — may be stale)${NC}` : '';
+      lines.push(`  ${DIM}Base:${NC}    ${diffBase.ref} @ ${tip} (merge-base ${mergeBase})${staleNote}`);
+    }
     if (result.metadata.hasUiChanges) {
       lines.push(`  ${DIM}UI:${NC}      Changes detected`);
     }

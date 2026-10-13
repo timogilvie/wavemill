@@ -1,0 +1,27 @@
+{
+  "chain": "host-sleep-tick-gap",
+  "incidents": [],
+  "initialState": {
+    "task": {
+      "issue": "HOK-REPLAY-001",
+      "slug": "replay-host-sleep",
+      "phase": "coding",
+      "status": "working"
+    },
+    "hook": {
+      "state": "working",
+      "event": "PreToolUse",
+      "writer": "agent",
+      "timestamp": 1759900000
+    }
+  },
+  "fault": "host_sleep",
+  "faultParams": {
+    "tickGapSeconds": 900
+  },
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 10,
+    "tickIntervalSeconds": 30
+  }
+}

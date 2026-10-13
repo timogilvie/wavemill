@@ -11,9 +11,9 @@ Rules:
 - Only emit concrete task relationships, not plans, waves, queues, scheduling, sequencing, or execution order commentary.
 - Use `depends_on` when one task must happen before another.
 - Use `shared_surface` when two tasks should avoid parallel execution because they touch the same user-visible or code surface.
-- Keep reasons short and specific.
+- `reason` must be at most 12 words. No prose, no reasoning, no lead-ins.
 
-Return JSON only in this exact shape:
+Return JSON only, no prose, no markdown fences, in this exact shape:
 {
   "edges": [
     {

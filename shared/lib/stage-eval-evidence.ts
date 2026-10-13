@@ -13,6 +13,7 @@ import type {
   RoutingDecision,
 } from './eval-schema.ts';
 import type { ExecutedIdentity, ReviewExecutedIdentitySet } from './challenge-execution-contract.ts';
+import { parsePiRuntimeVersions, piRuntimeVersionsField } from './native-agent/pi-runtime-version.ts';
 
 const MAX_SNIPPET_CHARS = 320;
 
@@ -622,6 +623,7 @@ type StageResultWithIdentity = StageResultShape & {
     requestedWireId?: string;
     certifiedTarget?: string;
     identityVerdict?: string;
+    piRuntimeVersions?: unknown;
   };
   modelAttributionIneligibleReason?: string;
 };
@@ -724,6 +726,9 @@ function toStageExecutionIdentity(
       ...(evidence.requestedWireId ? { requestedWireId: evidence.requestedWireId } : {}),
       ...(evidence.certifiedTarget ? { certifiedTarget: evidence.certifiedTarget } : {}),
       ...(verdict ? { identityVerdict: verdict } : {}),
+      // HOK-3164: stage results are read from disk, so sanitize before
+      // persisting under the eval schema's `additionalProperties: false`.
+      ...piRuntimeVersionsField(parsePiRuntimeVersions(evidence.piRuntimeVersions)),
     };
   }
   return entry;

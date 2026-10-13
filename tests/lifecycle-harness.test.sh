@@ -152,6 +152,10 @@ REAL_FUNC_FILE="$TEST_TMP/lifecycle-real-functions.sh"
 harness_extract_real_functions() {
   local func
   cat "$REPO_DIR/shared/lib/transient-marker.sh" > "$REAL_FUNC_FILE"
+  # HOK-3206: Ready/routing checks run as async jobs by default; these cases
+  # pin the inline contract, so load the async lib and select its sync mode.
+  cat "$REPO_DIR/shared/lib/monitor-async-jobs.sh" >> "$REAL_FUNC_FILE"
+  export WAVEMILL_SYNC_READY_CHECKS=1 WAVEMILL_SYNC_ROUTING=1
   for func in \
     trim_outer_whitespace \
     merge_retry_marker_until \
@@ -249,6 +253,11 @@ harness_extract_real_functions() {
     native_coding_failure_handoff_reason \
     native_terminal_failure_kind \
     native_terminal_failure_next_action \
+    native_stage_failure_envelope_json \
+    stage_failure_decision \
+    stage_failure_owned_by_bucket \
+    maybe_retry_failed_stage \
+    clear_stage_result \
     emit_native_terminal_failure_attention \
     challenge_varied_stage_model \
     challenge_result_stage_for_launch \
@@ -293,6 +302,7 @@ harness_extract_real_functions() {
     check_stage_awaiting_user \
     check_stage_aborted \
     phase_launch_head \
+    phase_launch_base \
     phase_launch_gate \
     coding_launch_refusal_limit \
     coding_launch_refusal_is_transient \

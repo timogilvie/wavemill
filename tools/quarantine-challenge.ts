@@ -71,9 +71,8 @@ async function quarantineChallenges(repoDir: string, issues: string[], dryRun: b
     try {
       const record = JSON.parse(line) as QuarantinedRecord & { challengePairId?: string };
 
-      // Extract issue IDs from challengePairId (e.g., "HOK-2806:HOK-2806_c" -> ["HOK-2806"])
-      const pairId = record.challengePairId || '';
-      const primaryIssue = (normalizeIssueId(pairId.split(':')[0]) ?? '').toLowerCase();
+      // challengePairId is the pair's base Linear issue ID (e.g. "HOK-2806").
+      const primaryIssue = (normalizeIssueId(record.challengePairId) ?? '').toLowerCase();
 
       if (!quarantineSet.has(primaryIssue)) {
         return line;

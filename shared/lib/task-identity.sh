@@ -11,6 +11,15 @@
 #       returns 2. Returns 1 for an invalid task ID (even with metadata).
 #   task_identity_is_challenger <task_id>
 #       Returns 0 iff the task ID is <ID>_c. Metadata is never consulted.
+#   task_identity_challenger_id <task_id>
+#       Prints the challenger task ID (<ID>_c) for a task ID. Idempotent on
+#       challenger IDs. Returns 1 for an invalid task ID (fail closed, like the
+#       TS challengerTaskId's throw).
+#   task_identity_challenger_key <pair_id>
+#       Prints the challenger state key for a recorded challenge pair ID. Equal
+#       to task_identity_challenger_id for every valid pair ID; never fails and
+#       never collapses, so opaque or drifted (<ID>_c) pair IDs get the suffix
+#       appended verbatim (twin of TS challengerTaskKey). Use on read paths.
 #   task_identity_is_linear_writer <task_id> [state_file]
 #       Returns 0 iff the task is primary, its metadata does not record
 #       challengeRole=challenger, and its Linear ID resolves without conflict.
@@ -93,6 +102,17 @@ task_identity_is_challenger() {
   parsed="$(task_identity_parse "$1")" || return 1
   IFS=$'\t' read -r _ _ role <<< "$parsed"
   [[ "$role" == "challenger" ]]
+}
+
+task_identity_challenger_id() {
+  local parsed linear_id
+  parsed="$(task_identity_parse "$1")" || return 1
+  IFS=$'\t' read -r _ linear_id _ <<< "$parsed"
+  printf '%s%s\n' "$linear_id" "$TASK_IDENTITY_CHALLENGER_SUFFIX"
+}
+
+task_identity_challenger_key() {
+  printf '%s%s\n' "$1" "$TASK_IDENTITY_CHALLENGER_SUFFIX"
 }
 
 task_identity_is_linear_writer() {

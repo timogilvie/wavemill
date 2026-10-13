@@ -13,7 +13,6 @@ import {
   routeChangedMaterially,
   deriveChallengeBranch,
   deriveChallengeSlug,
-  deriveChallengerKey,
   filterDeepSeekChallengeModels,
   getChallengeModelPool,
   insufficientStagePoolReason,
@@ -181,7 +180,6 @@ test('canRunChallenge requires at least two distinct models', () => {
 });
 
 test('derive challenge identifiers and branches', () => {
-  assert.equal(deriveChallengerKey('HOK-970'), 'HOK-970_c');
   assert.equal(deriveChallengeSlug('feature-name', 'primary'), 'feature-name');
   assert.equal(deriveChallengeSlug('feature-name', 'challenger'), 'feature-name-challenger');
   assert.equal(deriveChallengeBranch('feature-name', 'primary'), 'task/feature-name');

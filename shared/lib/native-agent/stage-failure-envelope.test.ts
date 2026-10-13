@@ -16,7 +16,7 @@ import {
   type StageFailureCause,
   type StageFailureEnvelope,
 } from './stage-failure-envelope.ts';
-import type { TerminalFailureKind } from '../arm-failure-taxonomy.ts';
+import type { ArmFailureKind } from '../arm-failure-taxonomy.ts';
 
 function makeEnvelope(overrides: Partial<StageFailureEnvelope> = {}): StageFailureEnvelope {
   return {
@@ -145,7 +145,7 @@ test('validation fails closed on a negative retryAttempt', () => {
 });
 
 test('terminalFailureKindForEnvelope covers the full cause table', () => {
-  const table: Record<StageFailureCause, TerminalFailureKind> = {
+  const table: Record<StageFailureCause, ArmFailureKind> = {
     'stage-timeout': 'native-stage-timeout',
     'provider-rate-limited': 'provider-rate-limited',
     'provider-outage': 'provider-transient-error',

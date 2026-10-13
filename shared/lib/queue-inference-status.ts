@@ -74,6 +74,23 @@ export const QUEUE_INFERENCE_REPORT_SCHEMA_VERSION = 1 as const;
 export const QUEUE_INFERENCE_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * True when a cached inferred edge is older than the inference state's last
+ * successful refresh (HOK-3179). A later successful refresh that did not
+ * re-emit the edge means the current classifier no longer stands by it;
+ * callers surface such edges as stale and prefer explicit relations.
+ */
+export function isInferredEdgeStale(
+  classifiedAt: string | null | undefined,
+  state: QueueInferenceState | undefined,
+): boolean {
+  if (!state || !state.lastSuccessAt || !classifiedAt) return false;
+  const classifiedMs = Date.parse(classifiedAt);
+  const lastSuccessMs = Date.parse(state.lastSuccessAt);
+  if (!Number.isFinite(classifiedMs) || !Number.isFinite(lastSuccessMs)) return false;
+  return classifiedMs < lastSuccessMs;
+}
+
+/**
  * After a failed attempt, skip inference for this long. The mill polls the
  * planner every ~60s and one failing ladder can hold the loop for most of
  * its 52s deadline, so without a cooldown a broken classifier stalls every poll.

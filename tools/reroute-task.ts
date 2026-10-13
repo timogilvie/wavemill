@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { resolveModelAgent } from '../shared/lib/model-agent-resolution.ts';
+import { isChallengerTaskId } from '../shared/lib/task-identity.ts';
 import {
   appendRerouteAudit,
   providerForModel,
@@ -81,7 +82,7 @@ await runTool({
       throw new Error(`task ${taskId} is active; retry with --force to reroute anyway`);
     }
 
-    const challengeSide = side(args['challenge-side']) ?? stateTask.challengeSide ?? (taskId.endsWith('_c') ? 'challenger' : undefined);
+    const challengeSide = side(args['challenge-side']) ?? stateTask.challengeSide ?? (isChallengerTaskId(taskId) ? 'challenger' : undefined);
     const beforeRead = readPersistedContract({ featureDir: stateTask.featureDir, stageRole: phase, challengeSide });
     const before = beforeRead.ok ? beforeRead.contract : null;
     if (!before && !args.model) throw new Error(`no existing contract; --model is required to establish one`);

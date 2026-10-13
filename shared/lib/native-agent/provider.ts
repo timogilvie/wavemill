@@ -7,6 +7,7 @@ import {
   type AssistantMessageEvent,
   type JsonObject,
   type Model,
+  type Models,
   type SimpleStreamOptions,
   type StopReason,
   type StreamFunction,
@@ -14,9 +15,8 @@ import {
   type TranscriptContext,
   type Usage,
 } from '@earendil-works/pi-ai';
-// Pi 1.0 moved the global API-provider registry and `streamSimple` to the
-// temporary `compat` entrypoint (HOK-3161).
-import { registerApiProvider, streamSimple } from '@earendil-works/pi-ai/compat';
+import type { StreamFn } from '@earendil-works/pi-agent-core';
+import { getActiveNativeModels } from './models.ts';
 import type { SessionModelUsage } from '../session-adapters.ts';
 import {
   createPiContext,
@@ -56,6 +56,14 @@ export interface ToolCallingProviderInput {
   state: ProviderConversationState;
   tools?: NativeToolSchema[];
   options?: ProviderTurnOptions;
+  /**
+   * Explicit Models collection whose `streamSimple` dispatches the request
+   * (HOK-3162). Takes precedence over the active-models fallback. Low-level
+   * tests can skip this and use `streamFn` directly.
+   */
+  models?: Models;
+  /** Low-level stream override. Takes precedence over `models`. */
+  streamFn?: StreamFn;
 }
 
 export interface ProviderTurnOptions {
@@ -156,9 +164,57 @@ export function createPiToolCallingProvider(): ToolCallingProvider {
   return new PiToolCallingProvider();
 }
 
+// ---------------------------------------------------------------------------
+// Scripted-provider registry (HOK-3162).
+//
+// Pre-HOK-3162 scripted tests pushed providers into the global compat
+// registry, which dispatched by `model.api` and ignored `model.provider`.
+// Pi 1.0's `Models` dispatches by `model.provider` instead, which would
+// require every test to pre-wire a matching provider id. To preserve the
+// loose "api is enough" contract these tests rely on, scripted providers
+// live in a module-local api-indexed map and we expose their combined
+// stream dispatch as a `StreamFn` the loop uses when no explicit `models`
+// is passed. The function is a thin stand-in for the removed compat
+// registry; production launches never hit it.
+// ---------------------------------------------------------------------------
+
+type ScriptedPiStream = StreamFunction<Api, SimpleStreamOptions>;
+
+const scriptedPiStreams = new Map<string, ScriptedPiStream>();
+
+/**
+ * Drop every scripted provider from the module-local registry. Tests that
+ * need isolation call this between runs; without it, scripted providers leak
+ * across the next test's expectations.
+ */
+export function clearScriptedPiProviders(): void {
+  scriptedPiStreams.clear();
+}
+
+/**
+ * Return the current api-indexed scripted stream, or undefined when no
+ * scripted provider has been registered. The loop uses this as a fallback
+ * when the caller passes neither `models` nor `streamFn`.
+ */
+export function getScriptedPiStreamFn(): StreamFn | undefined {
+  if (scriptedPiStreams.size === 0) {
+    return undefined;
+  }
+  return (model, context, options) => {
+    const stream = scriptedPiStreams.get(model.api);
+    if (!stream) {
+      throw new Error(
+        `No scripted provider registered for api '${model.api}'. Call `
+        + 'registerScriptedPiProvider or pass an explicit models/streamFn.',
+      );
+    }
+    return stream(model as Model<Api>, context, options);
+  };
+}
+
 export function registerScriptedPiProvider(definition: ScriptedPiProviderDefinition): void {
   let turnIndex = 0;
-  const stream: StreamFunction<Api, SimpleStreamOptions> = (model, context, options) => {
+  const stream: ScriptedPiStream = (model, context, options) => {
     const scriptContext = toScriptedProviderContext(context, options);
     const turn = typeof definition.turns === 'function'
       ? definition.turns(scriptContext)
@@ -181,19 +237,21 @@ export function registerScriptedPiProvider(definition: ScriptedPiProviderDefinit
     return eventStream;
   };
 
-  registerApiProvider({ api: definition.api, stream, streamSimple: stream }, `wavemill-native-agent:${definition.api}`);
+  scriptedPiStreams.set(definition.api, stream);
 }
 
 class PiToolCallingProvider implements ToolCallingProvider {
   async createTurn(input: ToolCallingProviderInput): Promise<ProviderTurnResult> {
     const context = createPiContext(input.state.messages, input.tools?.map(toPiTool));
     const model = toPiModel(input.model);
-    // An undefined ceiling makes Pi drop `max_tokens` from the payload, which
-    // inflates the provider-side credit reservation. See ./output-limits.ts.
-    const stream = streamSimple(model, context, {
+    const options: SimpleStreamOptions = {
       ...input.options,
+      // An undefined ceiling makes Pi drop `max_tokens` from the payload,
+      // which inflates the provider-side credit reservation. See
+      // ./output-limits.ts.
       maxTokens: input.options?.maxTokens ?? model.maxTokens,
-    });
+    };
+    const stream = await resolveToolCallingStream(input, model, context, options);
     const events: ProviderTurnEvent[] = [];
     let finalMessage: AssistantMessage | undefined;
     let finishReason: ProviderFinishReason = 'unknown';
@@ -370,6 +428,40 @@ function createPiUsage(usage: Partial<Usage> | undefined): Usage {
     totalTokens: usage?.totalTokens ?? input + output + cacheRead + cacheWrite,
     cost: usage?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
+}
+
+/**
+ * Resolve the per-turn stream for `PiToolCallingProvider`. Precedence
+ * mirrors the loop's: explicit `streamFn` → explicit `models` →
+ * scripted-provider registry (api-indexed, test-only) → module-local active
+ * `Models` collection. Nothing available is a misuse.
+ */
+async function resolveToolCallingStream(
+  input: ToolCallingProviderInput,
+  model: Model<Api>,
+  context: ReturnType<typeof createPiContext>,
+  options: SimpleStreamOptions,
+): Promise<ReturnType<StreamFn>> {
+  if (input.streamFn) {
+    return input.streamFn(model, context as unknown as TranscriptContext, options);
+  }
+  if (input.models) {
+    return input.models.streamSimple(model, context, options);
+  }
+  const scripted = getScriptedPiStreamFn();
+  if (scripted) {
+    return scripted(model, context as unknown as TranscriptContext, options);
+  }
+  const active = getActiveNativeModels();
+  if (active) {
+    return active.streamSimple(model, context, options);
+  }
+  throw new Error(
+    'PiToolCallingProvider.createTurn: no models collection or streamFn '
+    + 'provided and no active native models have been registered. Register a '
+    + 'scripted provider (registerScriptedPiProvider) or pass `models`/'
+    + '`streamFn` explicitly.',
+  );
 }
 
 function toScriptedProviderContext(

@@ -15,6 +15,7 @@ import {
 } from './config.ts';
 import { classifyCiFailure, type CiFailureCategory } from './ci-failure-classifier.ts';
 import { enrichFailingChecks as enrichFailingChecksDefault } from './ci-log-fetcher.ts';
+import { classifyFailure } from './failure-policy.ts';
 import { errorMessage } from './error-utils.ts';
 import { appendObserverFinding } from './observer-findings.ts';
 import { resolveSessionCapabilities } from './config.ts';
@@ -26,6 +27,7 @@ import {
 import { normalizeJobs, type MillJob, type WorkflowStateLike } from './job-tracker.ts';
 import { updateBranchWithBase, type BranchBaseUpdateResult } from './promotion-controller.ts';
 import { escapeShellArg } from './shell-utils.ts';
+import { findCachedPullRequest } from './session-gh-cache.ts';
 import { mutateJsonState } from './state-mutex.ts';
 import { readStageResult, updateStageResult, type ReadyArtifacts, type StageResult } from './stage-result.ts';
 import {
@@ -358,6 +360,20 @@ const defaultDeps: ReadyWatchdogDeps = {
   },
   async fetchGitHubTruth(prNumber, repoDir) {
     let stdout = '';
+    // HOK-3206: the monitor's batched per-pass PR query carries every field
+    // the watchdog reads; fall back to `gh pr view` on a cache miss.
+    const cached = findCachedPullRequest(prNumber);
+    if (cached && cached.statusCheckRollup !== undefined) {
+      return {
+        state: String(cached.state ?? ''),
+        mergeable: String(cached.mergeable ?? ''),
+        mergeStateStatus: String(cached.mergeStateStatus ?? ''),
+        url: cached.url,
+        headRefName: cached.headRefName,
+        baseRefName: cached.baseRefName,
+        checks: normalizeStatusCheckRollup(cached.statusCheckRollup),
+      };
+    }
     try {
       const result = await execFileAsync(
         'gh',
@@ -1208,15 +1224,27 @@ export function classifyReadyTask(
       && ciClassifications.every((classification) => classification.category === 'deterministic-local');
     const allTransient = ciClassifications.length > 0
       && ciClassifications.every((classification) => classification.category === 'transient-infra');
-    const hasOperatorOnly = ciClassifications.some((classification) =>
-      classification.category === 'github-only' || classification.category === 'unknown',
-    );
+    // HOK-3176: only an allowlisted cause parks at once — a GitHub-only gate
+    // (approval, branch protection) is `operator-gate`. An unrecognised failure
+    // is retried: CI is re-polled here and the monitor's failed-ready-recheck
+    // bucket re-runs Ready; it escalates only once the same failure has held
+    // for stableFailureEscalateAfterPolls polls.
+    const policyDecisions = ciClassifications.map((classification) => classifyFailure({
+      stage: 'ready',
+      failureKind: classification.category === 'github-only' ? 'operator-gate' : undefined,
+      ciCategory: classification.category,
+      detail: classification.reason,
+    }));
+    const operatorGated = policyDecisions.some((decision) => decision.class === 'terminal');
+    const unrecognisedStable = ciClassifications.some((classification) => classification.category === 'unknown')
+      && consecutiveFailurePolls >= normalizedConfig.stableFailureEscalateAfterPolls;
 
-    if (hasOperatorOnly) {
+    if (operatorGated || unrecognisedStable) {
       const reasons = ciClassifications.map((classification) => classification.reason).join(' ');
+      const held = operatorGated ? '' : ` Unrecognised failure held for ${consecutiveFailurePolls} polls.`;
       return {
         kind: 'needs-user',
-        detail: `Failing checks require operator attention: ${checkSummary.failures.join(', ')}. ${reasons}`,
+        detail: `Failing checks require operator attention: ${checkSummary.failures.join(', ')}. ${reasons}${held}`,
         consecutiveFailurePolls,
         ciFailureCategory: primaryClassification?.category,
         failingJob: primaryClassification?.failingJob,
@@ -1309,7 +1337,7 @@ export function classifyReadyTask(
       // Before reporting a merge-lane wait, check if the tend challenge gate would block
       // this PR. A PR blocked by a missing challenge comparison will never be selected by
       // the merge controller, so reporting waiting-on-merge-lane is misleading.
-      if (challengeGate?.kind === 'pair-unresolved' || challengeGate?.kind === 'pair-unresolvable') {
+      if (challengeGate?.kind === 'pair-unresolved') {
         return classifyMergeLaneChallengeBlocker(snapshot, challengeGate, config);
       }
 
@@ -1371,62 +1399,66 @@ export function classifyReadyTask(
 
 function classifyMergeLaneChallengeBlocker(
   snapshot: ReadyTaskSnapshot,
-  challengeGate: Extract<ChallengeGate, { kind: 'pair-unresolved' | 'pair-unresolvable' }>,
+  challengeGate: Extract<ChallengeGate, { kind: 'pair-unresolved' }>,
 ): ReadyWatchdogClassification {
   const pairLabel = challengeGate.otherPr ? ` (pair PR #${challengeGate.otherPr})` : '';
-  if (challengeGate.kind === 'pair-unresolved') {
-    if (challengeGate.reason === 'pair-unresolved:comparison-in-progress') {
-      return {
-        kind: 'waiting-on-eval-comparison',
-        detail: `PR #${snapshot.prNumber} is waiting for the challenge comparison job for pair ${challengeGate.pairId}${pairLabel} to finish.`,
-      };
-    }
+
+  if (challengeGate.reason === 'pair-unresolved:comparison-in-progress') {
     return {
       kind: 'waiting-on-eval-comparison',
-      detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} has no comparison record (${challengeGate.reason}). The merge controller will not select this PR until the challenge comparison exists or challenge metadata is cleared.`,
+      detail: `PR #${snapshot.prNumber} is waiting for the challenge comparison job for pair ${challengeGate.pairId}${pairLabel} to finish.`,
     };
   }
 
-  const recoveryCommand = buildChallengePairRecoveryCommand(snapshot, challengeGate.pairId, challengeGate.reason);
-  if (challengeGate.reason === 'orphan-sibling') {
+  // Extract the unresolvable reason from the prefixed format
+  const reasonMatch = challengeGate.reason.match(/^pair-unresolved:(.+)$/);
+  const baseReason = reasonMatch ? reasonMatch[1] : challengeGate.reason;
+
+  if (baseReason === 'orphan-sibling') {
+    const recoveryCommand = buildChallengePairRecoveryCommand(snapshot, challengeGate.pairId, baseReason);
     return {
       kind: 'needs-user',
       detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} has no discoverable sibling task/PR/branch, so no comparison can be produced.`,
       recoveryCommand,
     };
   }
-  if (challengeGate.reason === 'sibling-eval-hard-failed') {
+  if (baseReason === 'sibling-eval-hard-failed') {
+    const recoveryCommand = buildChallengePairRecoveryCommand(snapshot, challengeGate.pairId, baseReason);
     return {
       kind: 'needs-user',
       detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} cannot produce a comparison because one side exhausted challenge eval hard-failure retries.`,
       recoveryCommand,
     };
   }
-  if (challengeGate.reason === 'sibling-challenge-aborted') {
+  if (baseReason === 'sibling-challenge-aborted') {
+    const recoveryCommand = buildChallengePairRecoveryCommand(snapshot, challengeGate.pairId, baseReason);
     return {
       kind: 'needs-user',
       detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} cannot produce a comparison because one arm hit a terminal launch failure and was quarantined.`,
       recoveryCommand,
     };
   }
-  if (challengeGate.reason === 'sibling-stalled') {
+  if (baseReason === 'sibling-stalled') {
+    const recoveryCommand = buildChallengePairRecoveryCommand(snapshot, challengeGate.pairId, baseReason);
     return {
       kind: 'needs-user',
       detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} cannot produce a comparison because one arm has shown no agent progress for ≥30m without opening a PR (agent exited or stalled).`,
       recoveryCommand,
     };
   }
-  if (challengeGate.reason === 'both-challenge-aborted') {
+  if (baseReason === 'both-challenge-aborted') {
+    const recoveryCommand = buildChallengePairRecoveryCommand(snapshot, challengeGate.pairId, baseReason);
     return {
       kind: 'needs-user',
       detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} cannot produce a comparison because both arms were quarantined after a terminal launch failure.`,
       recoveryCommand,
     };
   }
+
+  // Default case for all other pair-unresolved reasons
   return {
-    kind: 'needs-user',
-    detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} cannot produce a comparison because both sides exhausted challenge eval hard-failure retries.`,
-    recoveryCommand,
+    kind: 'waiting-on-eval-comparison',
+    detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} has no comparison record (${challengeGate.reason}). The merge controller will not select this PR until the challenge comparison exists or challenge metadata is cleared.`,
   };
 }
 

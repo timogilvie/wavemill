@@ -10,8 +10,17 @@ import assert from 'node:assert/strict';
 import { writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { reviewChanges, reviewRunnerDeps, type ReviewOptions } from './review-runner.ts';
+import {
+  checkReviewScopeMatch,
+  reviewChanges,
+  reviewRunnerDeps,
+  type PrChangedFilesLookup,
+  type ReviewOptions,
+} from './review-runner.ts';
 import type { ReviewScopeGuardResult } from './review-scope-guard.ts';
+import type { ReviewDiffBase } from './git-base-resolver.ts';
+import type { ReviewProgressEvent } from './review-progress.ts';
+import { isInfrastructureReviewFailure } from './stage-result.ts';
 
 // Test constants
 const TEST_DIR = join(tmpdir(), `review-runner-test-${Date.now()}`);
@@ -22,6 +31,19 @@ describe('review-runner', () => {
     if (!existsSync(TEST_DIR)) {
       mkdirSync(TEST_DIR, { recursive: true });
     }
+    // Hermetic defaults: no network fetch, no gh lookup (HOK-3166).
+    mock.method(reviewRunnerDeps, 'resolveReviewDiffBase', (_repoDir: string, targetBranch: string): ReviewDiffBase => ({
+      requestedRef: targetBranch,
+      ref: `origin/${targetBranch}`,
+      kind: 'remote',
+      fetch: 'skipped',
+      baseSha: 'b'.repeat(40),
+      mergeBaseSha: 'm'.repeat(40),
+    }));
+    mock.method(reviewRunnerDeps, 'lookupPrChangedFiles', (): PrChangedFilesLookup => ({
+      status: 'skipped',
+      reason: 'no-pr',
+    }));
   });
 
   afterEach(() => {
@@ -443,6 +465,205 @@ describe('review-runner', () => {
       assert.equal(scopeFindings.length, 1);
       assert.equal(scopeFindings[0].severity, 'warning');
       assert.match(scopeFindings[0].description, /unexpected guard crash/);
+    });
+  });
+
+  describe('Diff base resolution and scope-mismatch guard (HOK-3166)', () => {
+    const HEAD_SHA = 'h'.repeat(40);
+
+    function mockPipeline(files: string[], options: { headSha?: string } = {}) {
+      const getGitDiff = mock.method(reviewRunnerDeps, 'getGitDiff', () => 'diff --git a/x b/x');
+      mock.method(reviewRunnerDeps, 'getCurrentBranch', () => 'task/diff-base');
+      mock.method(reviewRunnerDeps, 'assertReviewableDiff', () => undefined);
+      mock.method(reviewRunnerDeps, 'ensureClaudeAvailable', async () => undefined);
+      const gather = mock.method(reviewRunnerDeps, 'gatherReviewContextAsync', async () => ({
+        diff: 'diff --git a/x b/x',
+        plan: 'plan',
+        taskPacket: 'packet',
+        designContext: null,
+        metadata: { branch: 'task/diff-base', files, lineCount: { added: 1, removed: 0 }, hasUiChanges: false },
+      }));
+      mock.method(reviewRunnerDeps, 'validateReviewScope', () => ({
+        ok: true,
+        status: 'pass',
+        baselineSource: 'explicit',
+        inScopePaths: files,
+        outOfScopePaths: [],
+        findings: [],
+      } as unknown as ReviewScopeGuardResult));
+      mock.method(reviewRunnerDeps, 'detectCrossPrReverts', () => ({
+        findings: [],
+        evidence: {
+          baseRef: 'origin/auto/integration',
+          headRef: 'HEAD',
+          baseSha: '0'.repeat(40),
+          headSha: '0'.repeat(40),
+          mergeBaseSha: '0'.repeat(40),
+        },
+      }));
+      mock.method(reviewRunnerDeps, 'execShellCommand', (command: string) => {
+        if (command === 'git rev-parse HEAD') return `${options.headSha ?? HEAD_SHA}\n`;
+        if (command.includes('git merge-base')) return 'base-sha\n';
+        if (command.includes('gh pr view') || command.includes('git log --format=%B')) return '';
+        throw new Error(`unexpected command: ${command}`);
+      });
+      const runReview = mock.method(reviewRunnerDeps, 'runReview', async () => ({
+        verdict: 'ready' as const,
+        codeReviewFindings: [],
+        metadata: {
+          branch: 'task/diff-base',
+          files,
+          hasUiChanges: false,
+          designContextAvailable: false,
+          uiVerificationRun: false,
+        },
+      }));
+      return { getGitDiff, gather, runReview };
+    }
+
+    function recordingReporter() {
+      const events: ReviewProgressEvent[] = [];
+      return { events, reporter: { emit: async (event: ReviewProgressEvent) => { events.push(event); } } };
+    }
+
+    function prLookup(files: string[], headRefOid = HEAD_SHA): PrChangedFilesLookup {
+      return { status: 'ok', number: 1591, headRefOid, files };
+    }
+
+    it('diffs and gathers context against the resolved origin ref, not the bare name', async () => {
+      const { getGitDiff, gather } = mockPipeline(['a.ts']);
+
+      await reviewChanges({ repoDir: TEST_DIR, targetBranch: 'auto/integration', featureDir: TEST_DIR });
+
+      assert.equal(getGitDiff.mock.calls[0].arguments[0], 'origin/auto/integration');
+      assert.equal(gather.mock.calls[0].arguments[0], 'origin/auto/integration');
+    });
+
+    it('logs the resolved base, SHAs, and file count, and records metadata.diffBase', async () => {
+      mockPipeline(['a.ts', 'b.ts']);
+      const { events, reporter } = recordingReporter();
+
+      const result = await reviewChanges({ repoDir: TEST_DIR, targetBranch: 'auto/integration', reporter });
+
+      const preflight = events.find((event) => event.event === 'preflight_ok');
+      assert.match(preflight?.message ?? '', /origin\/auto\/integration @ bbbbbbbb \(merge-base mmmmmmmm\)/);
+      assert.equal(preflight?.details?.resolvedBase, 'origin/auto/integration');
+      assert.equal(preflight?.details?.requestedBase, 'auto/integration');
+      assert.equal(preflight?.details?.baseSha, 'b'.repeat(40));
+      assert.equal(preflight?.details?.mergeBaseSha, 'm'.repeat(40));
+      const loaded = events.find((event) => event.event === 'context_loaded');
+      assert.match(loaded?.message ?? '', /2 changed files \(base origin\/auto\/integration @ bbbbbbbb/);
+      assert.equal(loaded?.details?.fileCount, 2);
+      assert.equal(loaded?.details?.scopeCheck, 'skipped:no-pr');
+      assert.deepEqual(result.metadata?.diffBase, {
+        requestedRef: 'auto/integration',
+        ref: 'origin/auto/integration',
+        kind: 'remote',
+        fetch: 'skipped',
+        reviewedBase: 'b'.repeat(40),
+        mergeBaseSha: 'm'.repeat(40),
+        reviewedHead: HEAD_SHA,
+        reviewedFileCount: 2,
+      });
+    });
+
+    it('warns when only a local base ref exists', async () => {
+      mockPipeline(['a.ts']);
+      mock.method(reviewRunnerDeps, 'resolveReviewDiffBase', (): ReviewDiffBase => ({
+        requestedRef: 'main',
+        ref: 'main',
+        kind: 'local',
+        fetch: 'failed',
+        baseSha: 'b'.repeat(40),
+        mergeBaseSha: 'm'.repeat(40),
+      }));
+      const { events, reporter } = recordingReporter();
+
+      const result = await reviewChanges({ repoDir: TEST_DIR, targetBranch: 'main', reporter });
+
+      const warning = events.find((event) => event.level === 'warn');
+      assert.ok(warning, 'expected a warn-level event');
+      assert.match(warning.message, /local 'main': no origin\/main ref/);
+      assert.equal(result.metadata?.diffBase?.kind, 'local');
+    });
+
+    it('refuses to review a strict superset of the PR\'s files as retryable infrastructure', async () => {
+      const { runReview } = mockPipeline(['a.ts', 'other-pr.ts', 'z-other.ts']);
+      mock.method(reviewRunnerDeps, 'lookupPrChangedFiles', () => prLookup(['a.ts']));
+
+      const result = await reviewChanges({ repoDir: TEST_DIR, targetBranch: 'auto/integration' });
+
+      assert.equal(runReview.mock.callCount(), 0);
+      assert.equal(result.verdict, 'error');
+      assert.equal(result.failureCategory, 'review-scope-mismatch');
+      assert.match(result.reviewToolError ?? '', /origin\/auto\/integration/);
+      assert.match(result.reviewToolError ?? '', /3 files.*PR #1591's 1/);
+      assert.match(result.reviewToolError ?? '', /other-pr\.ts, z-other\.ts/);
+      assert.ok(result.codeReviewFindings.every((finding) => finding.severity !== 'blocker'));
+      assert.ok(result.codeReviewFindings.some((finding) => finding.category === 'review-scope-mismatch'));
+      assert.equal(result.metadata?.diffBase?.reviewedFileCount, 3);
+      assert.equal(isInfrastructureReviewFailure({ verdict: result.verdict, failureCategory: result.failureCategory }), true);
+    });
+
+    it('runs the review when the review files equal the PR files', async () => {
+      const { runReview } = mockPipeline(['a.ts', 'b.ts']);
+      mock.method(reviewRunnerDeps, 'lookupPrChangedFiles', () => prLookup(['b.ts', 'a.ts']));
+      const { events, reporter } = recordingReporter();
+
+      const result = await reviewChanges({ repoDir: TEST_DIR, targetBranch: 'auto/integration', reporter });
+
+      assert.equal(runReview.mock.callCount(), 1);
+      assert.equal(result.verdict, 'ready');
+      assert.equal(events.find((event) => event.event === 'context_loaded')?.details?.scopeCheck, 'match');
+    });
+
+    it('skips the guard when the PR head differs from local HEAD (unpushed review fixes)', async () => {
+      const { runReview } = mockPipeline(['a.ts', 'b.ts']);
+      mock.method(reviewRunnerDeps, 'lookupPrChangedFiles', () => prLookup(['a.ts'], 'p'.repeat(40)));
+
+      const result = await reviewChanges({ repoDir: TEST_DIR, targetBranch: 'auto/integration' });
+
+      assert.equal(runReview.mock.callCount(), 1);
+      assert.equal(result.verdict, 'ready');
+    });
+
+    it('skips both the fetch and the guard for a sinceCommit review', async () => {
+      const { getGitDiff, runReview } = mockPipeline(['a.ts', 'b.ts']);
+      const resolveBase = mock.method(reviewRunnerDeps, 'resolveReviewDiffBase', () => {
+        throw new Error('must not resolve a diff base for sinceCommit reviews');
+      });
+      const lookup = mock.method(reviewRunnerDeps, 'lookupPrChangedFiles', () => prLookup(['a.ts']));
+
+      const result = await reviewChanges({
+        repoDir: TEST_DIR,
+        targetBranch: 'auto/integration',
+        sinceCommit: 'c'.repeat(40),
+      });
+
+      assert.equal(resolveBase.mock.callCount(), 0);
+      assert.equal(lookup.mock.callCount(), 0);
+      assert.equal(runReview.mock.callCount(), 1);
+      assert.equal(getGitDiff.mock.calls[0].arguments[0], 'auto/integration');
+      assert.equal(result.metadata?.diffBase, undefined);
+    });
+
+    it('checkReviewScopeMatch only flags a strict superset at the PR head', () => {
+      const ok = (files: string[]) => prLookup(files);
+      assert.equal(checkReviewScopeMatch(['a', 'b'], HEAD_SHA, ok(['a'])).scopeCheck, 'mismatch');
+      assert.equal(checkReviewScopeMatch(['a'], HEAD_SHA, ok(['a'])).scopeCheck, 'match');
+      assert.equal(checkReviewScopeMatch(['a'], HEAD_SHA, ok(['a', 'b'])).scopeCheck, 'match');
+      assert.equal(checkReviewScopeMatch(['a', 'c'], HEAD_SHA, ok(['a', 'b'])).scopeCheck, 'match');
+      assert.equal(checkReviewScopeMatch(['x'], HEAD_SHA, ok(['y'])).scopeCheck, 'match');
+      assert.equal(checkReviewScopeMatch(['a', 'b'], null, ok(['a'])).scopeCheck, 'skipped:head-mismatch');
+      assert.equal(
+        checkReviewScopeMatch(['a', 'b'], HEAD_SHA, { status: 'skipped', reason: 'no-pr' }).scopeCheck,
+        'skipped:no-pr',
+      );
+      const hundred = Array.from({ length: 100 }, (_, index) => `f${index}`);
+      assert.equal(
+        checkReviewScopeMatch([...hundred, 'extra'], HEAD_SHA, ok(hundred)).scopeCheck,
+        'skipped:pr-file-list-truncated',
+      );
     });
   });
 

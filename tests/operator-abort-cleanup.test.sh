@@ -52,6 +52,8 @@ cleanup_file="$tmp/operator-abort-cleanup.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_cleanup_run"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "_wavemill_incident_record_name"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_write_preserved_branch_incident"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "cleanup_outcome_is_safe"
@@ -76,6 +78,14 @@ cleanup_file="$tmp/operator-abort-cleanup.sh"
   extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_discard_prompt_registry_artifact"
+  printf '\n'
+  # HOK-3160: safe_remove_task_worktree_and_branch also discards the
+  # generated-artifact allowlist; the monitor's cleanup paths rely on it.
+  extract_function "$COMMON_SCRIPT" "wavemill_discard_hok3160_generated_artifacts"
+  printf '\n'
+  # HOK-3190: cleanup_aborted_challenge_arm reads state via pass_task_field;
+  # provide the fallback form that falls through to the read_state_value stub.
+  extract_function "$COMMON_SCRIPT" "pass_task_field"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_fetch_pr_terminal_evidence"
   printf '\n'

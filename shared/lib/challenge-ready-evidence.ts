@@ -21,6 +21,7 @@ import type { EvalRecord } from './eval-schema.ts';
 import type { ChallengeComparison } from './challenge-comparison.ts';
 import { isDecisiveChallengeComparison } from './challenge-comparison.ts';
 import { canonicalChallengePrUrl } from './current-challenge-eval-selector.ts';
+import { challengerTaskKey } from './task-identity.ts';
 import {
   selectChallengeComparisonEvalEvidence,
   type ChallengeComparisonEvalEvidence,
@@ -242,7 +243,7 @@ export function resolveChallengePairFromState(
     const pairId = typeof task.challengePairId === 'string' ? task.challengePairId.trim() : '';
     if (!pairId) continue;
     const side: 'primary' | 'challenger' = task.challengeRole === 'challenger' ? 'challenger' : 'primary';
-    const siblingKey = side === 'primary' ? `${pairId}_c` : pairId;
+    const siblingKey = side === 'primary' ? challengerTaskKey(pairId) : pairId;
     const sibling = (tasks as Record<string, unknown>)[siblingKey];
     if (!sibling || typeof sibling !== 'object') return null;
     const siblingPr = Number((sibling as Record<string, unknown>).pr);

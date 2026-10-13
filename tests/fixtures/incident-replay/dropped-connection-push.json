@@ -1,0 +1,27 @@
+{
+  "chain": "dropped-push-bounded-retry",
+  "incidents": [],
+  "initialState": {
+    "task": {
+      "issue": "HOK-REPLAY-003",
+      "slug": "replay-dropped-push",
+      "phase": "ready",
+      "status": "working"
+    },
+    "hook": {
+      "state": "working",
+      "event": "PreToolUse",
+      "writer": "agent",
+      "timestamp": 1759900000
+    }
+  },
+  "fault": "dropped_connection_push_rebase",
+  "faultParams": {
+    "throwCount": 2
+  },
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  }
+}

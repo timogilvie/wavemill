@@ -1,0 +1,26 @@
+{
+  "summary": {
+    "providers": [
+      "(none)"
+    ],
+    "stages": [
+      "(unknown)"
+    ],
+    "totalModels": 1,
+    "piAiSupported": 0,
+    "piAiUnsupported": [],
+    "outcomes": {
+      "skipped-dry-run": 1
+    }
+  },
+  "rows": [
+    {
+      "provider": "(none)",
+      "modelId": "(none)",
+      "piAiProviderAvailable": false,
+      "certified": false,
+      "smokeOutcome": "skipped-dry-run",
+      "notes": "No cert store at ~/.wavemill/native-agent-certifications. Run `wavemill native-agent certifications list` on the mill host to list certified models."
+    }
+  ]
+}

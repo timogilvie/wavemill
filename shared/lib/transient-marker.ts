@@ -3,6 +3,35 @@ import { dirname, join } from 'path';
 import { randomUUID } from 'crypto';
 import { mkdirSync } from 'fs';
 
+export interface MarkerCondition {
+  head?: string;
+  expiresOn?: string[];
+  operatorEventSeq?: number;
+  reviewArtifact?: {
+    stage: string;
+    status: string;
+    startedAt?: string;
+    finishedAt?: string;
+    verdict?: string;
+    failureCategory?: string;
+  } | null;
+  readyArtifact?: {
+    stage: string;
+    status: string;
+    startedAt?: string;
+    finishedAt?: string;
+    verdict?: string;
+    failureCategory?: string;
+  } | null;
+  observed?: Record<string, string>;
+  waitingOn?: {
+    kind: string;
+    value: string;
+    prNumber?: number;
+  };
+  recheckAfter?: string; // ISO 8601
+}
+
 export interface MarkerPayload {
   schemaVersion: 1;
   kind: string;
@@ -10,6 +39,7 @@ export interface MarkerPayload {
   writtenAt: string; // ISO 8601
   reason?: string;
   detail?: Record<string, unknown>;
+  condition?: MarkerCondition;
 }
 
 export interface MarkerHandle {
@@ -43,6 +73,7 @@ export function writeMarker(
     headSha: string;
     reason?: string;
     detail?: Record<string, unknown>;
+    condition?: MarkerCondition;
   }
 ): void {
   const payload: MarkerPayload = {
@@ -52,6 +83,7 @@ export function writeMarker(
     writtenAt: new Date().toISOString(),
     reason: args.reason,
     detail: args.detail,
+    condition: args.condition,
   };
 
   const content = JSON.stringify(payload, null, 2);

@@ -108,6 +108,21 @@ export interface ReviewResult {
     reviewProvider?: string;
     /** Canonical `native-<provider>` agent identity for the native review (HOK-3064). */
     reviewAgent?: string;
+    /**
+     * The base the review diff was computed against (HOK-3166). Set by
+     * `reviewChanges` for three-dot reviews; absent for `sinceCommit` reviews.
+     * `reviewedBase` (tip of `ref`) is comparable to the PR's `baseRefOid`.
+     */
+    diffBase?: {
+      requestedRef: string;
+      ref: string;
+      kind: 'remote' | 'local' | 'explicit';
+      fetch: 'fetched' | 'failed' | 'skipped';
+      reviewedBase: string | null;
+      mergeBaseSha: string | null;
+      reviewedHead: string | null;
+      reviewedFileCount: number;
+    };
   };
 }
 

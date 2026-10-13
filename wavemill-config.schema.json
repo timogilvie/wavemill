@@ -313,6 +313,30 @@
             },
             "additionalProperties": false
         },
+        "reliability": {
+            "type": "object",
+            "description": "Reliability report (`wavemill report reliability`, HOK-3177/HOK-3182) tunables.",
+            "properties": {
+                "millActorLogins": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "default": [],
+                    "description": "GitHub logins used exclusively by the mill or tend (e.g. a dedicated bot account). PR label edits and merges by these actors are never counted as operator touches. Leave empty when the mill shares the operator's login; the mill label-write ledger disambiguates instead. Overridden by WAVEMILL_RELIABILITY_MILL_ACTOR_LOGINS (comma-separated)."
+                },
+                "stallMinutes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 30,
+                    "description": "No-progress threshold (minutes) above which the time-stuck replay counts a task as stalled."
+                },
+                "github": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "When false, skip the GitHub PR-timeline touch sources (label edits, manual pushes) and report only local evidence."
+                }
+            },
+            "additionalProperties": false
+        },
         "observer": {
             "type": "object",
             "description": "Controls the dedicated Backstage Wavemill Observer service. Runs in every mill session unless `enabled` is false; independent of integration mode.",
@@ -1196,7 +1220,7 @@
             "properties": {
                 "enabled": {
                     "type": "boolean",
-                    "default": true,
+                    "default": false,
                     "description": "Master toggle for challenge mode."
                 },
                 "rate": {
@@ -2885,6 +2909,30 @@
                             "minimum": 0,
                             "maximum": 1,
                             "description": "Deterministic jitter ratio applied to cleanup retry backoff."
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "terminalInbox": {
+                    "type": "object",
+                    "description": "HOK-3201: unattended terminal inbox cleanup. The monitor runs `wavemill cleanup inbox --execute` on a slow cadence so delivered/dead arms get auto-reaped without an operator action.",
+                    "properties": {
+                        "unattended": {
+                            "type": "object",
+                            "properties": {
+                                "enabled": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "Enable the monitor-driven cleanup tick. Rollback by setting to false (or exporting WAVEMILL_UNATTENDED_CLEANUP_ENABLED=0)."
+                                },
+                                "intervalSeconds": {
+                                    "type": "integer",
+                                    "default": 600,
+                                    "minimum": 60,
+                                    "description": "Minimum seconds between unattended cleanup ticks. Env override: WAVEMILL_TERMINAL_CLEANUP_INTERVAL_SECONDS."
+                                }
+                            },
+                            "additionalProperties": false
                         }
                     },
                     "additionalProperties": false

@@ -53,6 +53,7 @@ extract_function() {
 FUNC_FILE="$TEST_TMP/handle_phase_launch_result.sh"
 cat "$REPO_DIR/shared/lib/bounded-retry.sh" > "$FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "phase_launch_head" >> "$FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "phase_launch_base" >> "$FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "phase_launch_gate" >> "$FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "handle_phase_launch_result" >> "$FUNC_FILE"
 

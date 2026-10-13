@@ -30,6 +30,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 TESTS=(
+  tests/ledger.test.ts
+  shared/lib/ledger-shadow.test.ts
+  shared/lib/ledger-consistency.test.ts
+  shared/lib/ledger-replay-contract.test.ts
+  shared/lib/ledger-pair-abort.test.ts
+  shared/lib/ledger-recovery.test.ts
+  shared/lib/side-effect-ledger.test.ts
+  shared/lib/side-effect-duplicate-detector.test.ts
+  shared/lib/side-effect-replay-contract.test.ts
   shared/lib/session.test.js
   shared/lib/session-timer.test.js
   shared/lib/eval-prompt-size.test.ts
@@ -37,12 +46,17 @@ TESTS=(
   shared/lib/json-repair.test.ts
   shared/lib/operator-intervention.test.ts
   shared/lib/intervention-detector.test.ts
+  shared/lib/reliability-metrics.test.ts
+  shared/lib/label-write-ledger.test.ts
+  shared/lib/pr-timeline.test.ts
   shared/lib/stage-result.test.ts
   shared/lib/task-progress.test.ts
   shared/lib/task-identity.test.ts
+  tests/llm-cli.test.ts
   shared/lib/linear-write-gate.test.ts
   shared/lib/session-adapters.test.ts
   shared/lib/executed-model-resolver.test.ts
+  shared/lib/native-agent/models.test.ts
   shared/lib/native-agent/provider.test.ts
   shared/lib/native-agent/provider-error-classifier.test.ts
   shared/lib/native-agent/provider-identity.test.ts
@@ -170,6 +184,10 @@ TESTS=(
   shared/lib/reviewer-stage-adjudicator.test.ts
   tools/quarantine-legacy-reviewer-forfeits.test.ts
   shared/lib/arm-failure-taxonomy.test.ts
+  shared/lib/failure-policy.test.ts
+  shared/lib/failure-policy.fixtures.test.ts
+  shared/lib/failure-policy.random.test.ts
+  shared/lib/eval-skip-guard.test.ts
   shared/lib/arm-reliability.test.ts
   shared/lib/stale-task-branches.test.ts
   shared/lib/tend-controller.test.ts
@@ -182,6 +200,7 @@ TESTS=(
   shared/lib/cross-pr-revert-detector.test.ts
   shared/lib/git-branch-changes.test.ts
   shared/lib/git-base-resolver.test.ts
+  shared/lib/review-diff-base.test.ts
   shared/lib/llm-cli.test.ts
   shared/lib/headless-llm.test.ts
   shared/lib/router-log.test.ts
@@ -208,8 +227,11 @@ TESTS=(
   shared/lib/launch-validation.test.ts
   shared/lib/manual-edit-attribution-audit.test.ts
   shared/lib/merge-queue.test.ts
+  shared/lib/merge-labels.test.ts
   shared/lib/model-registry.test.ts
   shared/lib/model-registry-gpt55-inventory.test.ts
+  shared/lib/model-registry-loader.test.ts
+  shared/lib/schema-validators.test.ts
   shared/lib/model-promotion.test.ts
   shared/lib/model-evidence-policy.test.ts
   shared/lib/disabled-models.test.ts
@@ -248,6 +270,7 @@ TESTS=(
   shared/lib/quota-state.test.ts
   shared/lib/template-curly-checker.test.ts
   shared/lib/test-tracked-write-checker.test.ts
+  shared/lib/task-identity-checker.test.ts
   shared/lib/transient-marker.test.ts
   shared/lib/wavemill-incident-artifact-diagnostics.test.ts
   shared/lib/wavemill-incident-detector.test.ts
@@ -255,6 +278,7 @@ TESTS=(
   shared/lib/wavemill-incident-store.test.ts
   shared/lib/state-mutex.test.ts
   shared/lib/job-tracker.test.ts
+  shared/lib/session-gh-cache.test.ts
   shared/lib/operating-mode.test.ts
   shared/lib/plan-prompt-selector.test.ts
   shared/lib/cli-prompt.test.ts
@@ -330,13 +354,12 @@ TESTS=(
   tools/measure-repo-attribution.test.ts
   tools/observer.test.ts
   tools/parity-report.test.ts
+  tools/quarantine-challenge.test.ts
   tools/resolve-challenge-task.test.ts
   tools/route-tasks.test.ts
   tools/seam-artifact-cli.test.ts
   tools/plan-queue.test.ts
   tools/select-wave.test.ts
-  tools/set-pr-ready-label.test.ts
-  tools/set-pr-blocked-label.test.ts
   tools/smoke-deepseek.test.ts
   tools/openrouter-doctor.test.ts
   tools/review-scope-prompt.test.ts
@@ -402,6 +425,7 @@ TESTS=(
   shared/lib/native-agent/launch-coding.test.ts
   shared/lib/native-agent/review.test.ts
   shared/lib/native-agent/session-stream.test.ts
+  shared/lib/native-agent/pi-runtime-version.test.ts
   shared/lib/native-agent/smoke.test.ts
   shared/lib/native-agent/tool-decision-schema.test.ts
   shared/lib/native-agent/tool-decision-projector.test.ts
@@ -485,6 +509,7 @@ TESTS=(
   shared/lib/cost-parity.test.ts
   shared/lib/observer-findings.test.ts
   shared/lib/pr-comparison-actions.test.ts
+  tests/state-archive-roundtrip.test.ts
 )
 
 SHARD_INDEX=1

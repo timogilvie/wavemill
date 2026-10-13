@@ -19,6 +19,8 @@
 // Shared types and base event shape
 // ---------------------------------------------------------------------------
 
+import type { PiRuntimeVersions } from './pi-runtime-version.ts';
+
 export const SESSION_STREAM_SCHEMA_VERSION = '1';
 
 export interface EventBase {
@@ -89,6 +91,12 @@ export interface SessionStartedEvent extends EventBase {
   initialConfigDigest: string;
   /** Manifest ID for this session's resources. */
   manifestId?: string;
+  /**
+   * Installed Pi runtime versions that served this session (HOK-3164), so
+   * pre/post Pi-upgrade runs can be separated. Absent on streams written
+   * before HOK-3164 or when no Pi install was resolvable.
+   */
+  piRuntimeVersions?: PiRuntimeVersions;
 }
 
 export interface SessionEndedEvent extends EventBase {

@@ -5,6 +5,7 @@ import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
 import type { ChallengeRoutingMeta, NoComparisonReason } from './challenge-comparison.ts';
 import type { EvalRecord, EvalRouting } from './eval-schema.ts';
 import { resolveEffectiveChallengeRole } from './challenge-role-utils.ts';
+import { challengerTaskKey } from './task-identity.ts';
 
 export type ChallengeValidity = 'valid' | 'invalid_challenge' | 'identical_control';
 export const INVALID_CHALLENGE_REASONS = [
@@ -438,8 +439,8 @@ function stateTaskKeys(issueId: string | undefined, challengePairId: string): st
     issueId?.replace(/-/g, '_'),
     challengePairId,
     challengePairId.replace(/-/g, '_'),
-    `${challengePairId}_c`,
-    `${challengePairId.replace(/-/g, '_')}_c`,
+    challengerTaskKey(challengePairId),
+    challengerTaskKey(challengePairId.replace(/-/g, '_')),
     `${challengePairId}-challenger`,
     `${challengePairId.replace(/-/g, '_')}-challenger`,
   ].filter((key): key is string => Boolean(key))));
@@ -539,8 +540,9 @@ function deriveChallengeSideFromBranch(
   if (!challengePairId) return undefined;
   const cleanSlug = slug?.replace(/^(task|bug)\//, '') || '';
   if (
-    issueId === `${challengePairId}_c`
+    issueId === challengerTaskKey(challengePairId)
     || issueId === `${challengePairId}-challenger`
+    // allow-task-identity: cleanSlug is a worktree branch slug, not a task ID — slug-shaped challenger heuristic, no task-identity primitive applies.
     || cleanSlug.endsWith('_c')
     || cleanSlug.endsWith('-challenger')
   ) {

@@ -50,6 +50,7 @@ import type { ModelPricing } from '../../workflow-cost.ts';
 import { getNativeAgentConfig } from '../../config.ts';
 import { resolveEnvValue } from '../../env-file.ts';
 import { runWavemillLoop, type LoopResult, type WavemillLoopConfig } from '../loop.ts';
+import { createNativeModelsCollection } from '../models.ts';
 import type { AgentContext, LoopStopReason } from '../loop.ts';
 import type { AgentMessage, AgentTurn, Message } from '../messages.ts';
 import { classifyProviderError } from '../provider-error-classifier.ts';
@@ -183,7 +184,13 @@ export async function runLiveCodingCanary(
   let last: AttemptOutcome | undefined;
   while (attempt < maxAttempts) {
     attempt += 1;
-    last = await runSingleCanaryAttempt({ options, model: model.model, limits, now });
+    last = await runSingleCanaryAttempt({
+      options,
+      model: model.model,
+      authEnv: model.authEnv,
+      limits,
+      now,
+    });
     const transient = last.status === 'inconclusive' && last.reason === 'provider_transient_error';
     if (!transient) {
       break;
@@ -216,11 +223,26 @@ interface AttemptOutcome {
 async function runSingleCanaryAttempt(input: {
   options: RunLiveCodingCanaryOptions;
   model: WavemillLoopConfig['model'];
+  authEnv?: { apiKey: string; apiKeyEnv: string };
   limits: LiveCodingCanaryLimits;
   now: () => Date;
 }): Promise<AttemptOutcome> {
-  const { options, limits } = input;
+  const { options, limits, authEnv } = input;
   const runLoopFn = options.runLoopFn ?? runWavemillLoop;
+  // When run live (no modelOverride), build a Models collection whose
+  // AuthContext injects the resolved api key under the canonical variable
+  // each built-in factory reads. Scripted tests (modelOverride set) fall
+  // back to the active-models pointer. HOK-3162.
+  const nativeModels = authEnv
+    ? createNativeModelsCollection({
+      env: {
+        [authEnv.apiKeyEnv]: authEnv.apiKey,
+        OPENAI_API_KEY: options.provider === 'openai' ? authEnv.apiKey : process.env.OPENAI_API_KEY,
+        OPENROUTER_API_KEY: options.provider === 'openrouter' ? authEnv.apiKey : process.env.OPENROUTER_API_KEY,
+      },
+      repoDir: options.repoDir,
+    })
+    : undefined;
 
   let tmpRoot: string | undefined;
   const removeOnExit = () => {
@@ -266,6 +288,7 @@ async function runSingleCanaryAttempt(input: {
     try {
       result = await runLoopFn({
         model: input.model,
+        ...(nativeModels ? { models: nativeModels } : {}),
         context,
         convertToLlm: (messages) => messages as unknown as Message[],
         afterToolCall: async (toolContext) => codingMutationAfterToolCall(toolContext),
@@ -429,9 +452,17 @@ function buildCanaryUserPrompt(): string {
 // Model resolution
 // ---------------------------------------------------------------------------
 
-function resolveCanaryModel(
-  options: RunLiveCodingCanaryOptions,
-): { ok: true; model: WavemillLoopConfig['model'] } | { ok: false; detail: string } {
+interface ResolvedCanaryModel {
+  model: WavemillLoopConfig['model'];
+  /** apiKey + apiKeyEnv for building the per-run Models collection, absent for `modelOverride`. */
+  authEnv?: { apiKey: string; apiKeyEnv: string };
+}
+
+type CanaryModelResolution =
+  | ({ ok: true } & ResolvedCanaryModel)
+  | { ok: false; detail: string };
+
+function resolveCanaryModel(options: RunLiveCodingCanaryOptions): CanaryModelResolution {
   if (options.modelOverride) {
     return { ok: true, model: options.modelOverride };
   }
@@ -451,15 +482,12 @@ function resolveCanaryModel(
     ? buildOpenAiResponsesModel({ modelId: options.registryModelId, ...(baseUrl ? { baseUrl } : {}), headers })
     : buildOpenRouterModel({ modelId: options.registryModelId, ...(baseUrl ? { baseUrl } : {}), headers });
 
+  // HOK-3162: Models owns auth injection; keep model.headers for user-provided
+  // headers only.
   return {
     ok: true,
-    model: {
-      ...built,
-      headers: {
-        ...(built.headers ?? {}),
-        Authorization: `Bearer ${apiKey}`,
-      },
-    },
+    model: { ...built, headers: { ...(built.headers ?? {}) } },
+    authEnv: { apiKey, apiKeyEnv },
   };
 }
 

@@ -47,6 +47,16 @@ trap 'rm -rf "$TEST_TMP"' EXIT
 
 FUNC_FILE="$TEST_TMP/write_stage_result.sh"
 extract_function "$MONITOR_SCRIPT_FILE" "write_stage_result" > "$FUNC_FILE"
+# HOK-3190: write_stage_result now routes tool spawns through
+# `wavemill_run_tool` (fast-strip wrapper). Forward it to the test's `npx`
+# intercept so the fixture keeps capturing calls.
+cat >> "$FUNC_FILE" <<'SHIM'
+
+wavemill_run_tool() {
+  local tool="$1"; shift
+  npx tsx "$tool" "$@"
+}
+SHIM
 cat >> "$FUNC_FILE" <<'EOS'
 
 write_existing_result() {

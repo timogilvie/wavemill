@@ -1,3 +1,5 @@
+import { challengerTaskKey } from './task-identity.ts';
+
 export type EffectiveChallengeRole = 'primary' | 'challenger';
 
 export function asEffectiveChallengeRole(value: unknown): EffectiveChallengeRole | null {
@@ -10,7 +12,7 @@ export function challengeTaskKeyVariants(pairId: string, role: EffectiveChalleng
   if (role === 'primary') {
     return pairIds;
   }
-  return pairIds.flatMap((id) => [`${id}_c`, `${id}-challenger`]);
+  return pairIds.flatMap((id) => [challengerTaskKey(id), `${id}-challenger`]);
 }
 
 export function resolveEffectiveChallengeRole(

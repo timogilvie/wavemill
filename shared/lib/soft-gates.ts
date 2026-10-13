@@ -12,7 +12,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { diagnoseArtifacts, type DiagnoseArtifactsOptions } from './artifact-diagnostics.ts';
+import { diagnoseArtifacts, evalRecordMatchesTaskPair, type DiagnoseArtifactsOptions } from './artifact-diagnostics.ts';
 import { appendJsonlRecord } from './jsonl-utils.ts';
 import { mutateJsonState } from './state-mutex.ts';
 import type { EvalRecord, FeatureOutcomeDiagnostics } from './eval-schema.ts';
@@ -132,9 +132,6 @@ function checkEvalExportInconsistency(
   const evalRecords = readEvalRecords(repoDir);
   if (evalRecords.length === 0) return [];
 
-  const challengePairId = taskId
-    ? (taskId.endsWith('_c') ? taskId : `${taskId}_c`)
-    : null;
   const traceContextPath = join(featureDir, '.trace-context.json');
   const traceCtx = readJsonTolerant<Record<string, unknown>>(traceContextPath);
   const traceId = typeof traceCtx?.traceId === 'string' ? traceCtx.traceId : null;
@@ -152,8 +149,7 @@ function checkEvalExportInconsistency(
   const matchingEvals = evalRecords.filter(r => {
     if (resolvedTraceId && r.traceId === resolvedTraceId) return true;
     if (taskId && r.issueId === taskId) return true;
-    if (challengePairId && r.challengePairId === challengePairId) return true;
-    return false;
+    return evalRecordMatchesTaskPair(r, taskId);
   });
 
   const warnings: SoftGateWarning[] = [];

@@ -15,6 +15,13 @@
 
 set -euo pipefail
 
+# HOK-3190: wavemill_run_tool now prefers `node --experimental-strip-types` and
+# only routes through `npx tsx` when it detects a shell-function `npx` or when
+# WAVEMILL_SKIP_FAST_STRIP=1. This test stubs `npx` via PATH (handle_review_capacity_stop
+# calls reroute-refused-reviewer.ts through wavemill_run_tool), so pin the npx
+# tsx shape so the PATH stub keeps intercepting the launch.
+export WAVEMILL_SKIP_FAST_STRIP=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MONITOR_SCRIPT="$REPO_DIR/shared/lib/wavemill-monitor.sh"

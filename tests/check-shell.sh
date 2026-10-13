@@ -85,9 +85,11 @@ for f in \
   "$LIB_DIR"/bounded-retry.sh \
   "$LIB_DIR"/plan-packet-binding.sh \
   "$LIB_DIR"/task-progress.sh \
+  "$LIB_DIR"/wavemill-reliability-refresh.sh \
   "$LIB_DIR"/task-identity.sh \
   "$LIB_DIR"/challenge-arms.sh \
   "$LIB_DIR"/transient-marker.sh \
+  "$LIB_DIR"/monitor-async-jobs.sh \
   "$LIB_DIR"/terminal-reconciler.sh \
   "$LIB_DIR"/startup-terminal-preflight.sh \
   "$LIB_DIR"/startup-progress.sh \
@@ -96,6 +98,14 @@ for f in \
   "$REPO_DIR"/shared/agent-bin/tmux \
   "$REPO_DIR"/tests/check-install-paths.test.sh \
   "$REPO_DIR"/tests/check-common-guards.test.sh \
+  "$REPO_DIR"/tests/check-direct-ledger-access.test.sh \
+  "$REPO_DIR"/tests/ledger-cli-shadow.test.sh \
+  "$REPO_DIR"/tests/ledger-hook-shadow.test.sh \
+  "$REPO_DIR"/tests/check-ledger-shadow-swallow.test.sh \
+  "$REPO_DIR"/tests/monitor-side-effect-detector-tick.test.sh \
+  "$REPO_DIR"/tests/ledger-recovery-tick.test.sh \
+  "$REPO_DIR"/tests/check-marker-clear-sites.test.sh \
+  "$REPO_DIR"/tests/check-label-write-sites.test.sh \
   "$REPO_DIR"/tests/control-pane-recovery.test.sh \
   "$REPO_DIR"/tests/dashboard-refresh.test.sh \
   "$REPO_DIR"/tests/state-mutex.test.sh \
@@ -125,6 +135,7 @@ for f in \
   "$REPO_DIR"/tests/wavemill-background-jobs-cleanup.test.sh \
   "$REPO_DIR"/tests/global-model-parity.test.sh \
   "$REPO_DIR"/tests/queue-health.test.sh \
+  "$REPO_DIR"/tests/queue-inference-degraded-banner.test.sh \
   "$REPO_DIR"/tests/merge-queue-live-ci.test.sh \
   "$REPO_DIR"/tests/merge-queue-blocked-label.test.sh \
   "$REPO_DIR"/tests/merge-lane-progress-artifacts.test.sh \
@@ -143,11 +154,16 @@ for f in \
   "$REPO_DIR"/tests/challenge-record-decisive.test.sh \
   "$REPO_DIR"/tests/native-terminal-failure.test.sh \
   "$REPO_DIR"/tests/native-failure-classification.test.sh \
-  "$REPO_DIR"/tests/challenger-transient-retry.test.sh \
+  "$REPO_DIR"/tests/stage-failure-retry.test.sh \
   "$REPO_DIR"/tests/coding-dirty-handoff.test.sh \
   "$REPO_DIR"/tests/ready-exhausted-challenge.test.sh \
   "$REPO_DIR"/tests/review-gate-refused-challenge.test.sh \
   "$REPO_DIR"/tests/monitor-late-completion.test.sh \
+  "$REPO_DIR"/tests/monitor-terminal-cleanup-tick.test.sh \
+  "$REPO_DIR"/tests/monitor-reaped-task-no-window-recreation.test.sh \
+  "$REPO_DIR"/tests/monitor-window-recreate-bounded.test.sh \
+  "$REPO_DIR"/tests/persist-task-window-id-reaped.test.sh \
+  "$REPO_DIR"/tests/monitor-wake-resume.test.sh \
   "$REPO_DIR"/tests/challenge-deferred-arm.test.sh \
   "$REPO_DIR"/tests/parent-monitor-function-drift.test.sh \
   "$REPO_DIR"/tests/linear-state-canonicalization.test.sh \
@@ -156,11 +172,14 @@ for f in \
   "$REPO_DIR"/tests/with-timeout.test.sh \
   "$REPO_DIR"/tests/aborted-challenge-cleanup.test.sh \
   "$REPO_DIR"/tests/safe-branch-cleanup.test.sh \
+  "$REPO_DIR"/tests/preserved-branch-record-long-slug.test.sh \
   "$REPO_DIR"/tests/challenge-primary-merge-cleanup.test.sh \
   "$REPO_DIR"/tests/operator-abort-cleanup.test.sh \
   "$REPO_DIR"/tests/transient-marker.test.sh \
   "$REPO_DIR"/tests/startup-terminal-prune.test.sh \
   "$REPO_DIR"/tests/archive-stage-artifacts.test.sh \
+  "$REPO_DIR"/tests/operator-touch-record.test.sh \
+  "$REPO_DIR"/tests/report-reliability-cli.test.sh \
   "$REPO_DIR"/tests/completed-task-cleanup.test.sh \
   "$REPO_DIR"/tests/native-agent-shell-operators.test.sh \
   "$REPO_DIR"/tests/hokusai-test-registration.test.sh \
@@ -176,6 +195,22 @@ for f in \
   "$REPO_DIR"/tests/review-missing-window-relaunch.test.sh \
   "$REPO_DIR"/tests/re-review-no-pr.test.sh \
   "$REPO_DIR"/tests/monitor-command-routing.test.sh \
+  "$REPO_DIR"/tests/condition-reconciler.test.sh \
+  "$REPO_DIR"/tests/wavemill-pr-cache.test.sh \
+  "$REPO_DIR"/tests/cross-pr-revert-job.test.sh \
+  "$REPO_DIR"/tests/pr-ci-status-job.test.sh \
+  "$REPO_DIR"/tests/ready-watchdog-job.test.sh \
+  "$REPO_DIR"/tests/route-task-job.test.sh \
+  "$REPO_DIR"/tests/monitor-perf-smoke.test.sh \
+  "$REPO_DIR"/tests/fixtures/monitor-perf/async-harness.sh \
+  "$REPO_DIR"/tests/fixtures/monitor-perf/mock-gh.sh \
+  "$REPO_DIR"/tests/config-false-booleans.test.sh \
+  "$REPO_DIR"/tests/check-no-npx-in-monitor.sh \
+  "$REPO_DIR"/tests/monitor-pass-snapshot.test.sh \
+  "$REPO_DIR"/tests/agent-model-memo.test.sh \
+  "$REPO_DIR"/tests/monitor-state-size.test.sh \
+  "$REPO_DIR"/tests/hot-state-byte-cap.test.sh \
+  "$REPO_DIR"/tests/monitor-usr2-wakeup.test.sh \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
   "$REPO_DIR"/tests/challenge-eval-soft-retry.test.sh \
@@ -579,15 +614,21 @@ else
     # Extract function definitions from terminal-reconciler.sh (also sourced by monitor)
     RECONCILER_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/terminal-reconciler.sh" | sed 's/()//' | sort -u)
 
+    # Extract function definitions from condition-reconciler.sh (also sourced by monitor, HOK-3172)
+    CONDITION_RECONCILER_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/condition-reconciler.sh" | sed 's/()//' | sort -u)
+
+    # Extract function definitions from monitor-async-jobs.sh (sourced by monitor, HOK-3206)
+    ASYNC_JOBS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/monitor-async-jobs.sh" | sed 's/()//' | sort -u)
+
     # Extract function definitions from wavemill-worktree-deps.sh (sourced by monitor, HOK-2811)
     WORKTREE_DEPS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/wavemill-worktree-deps.sh" | sed 's/()//' | sort -u)
 
     # Combine all available function definitions
-    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
+    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$ASYNC_JOBS_FUNCS" "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$CONDITION_RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
 
     # Known external commands and bash builtins that are NOT custom functions
     # This list covers standard utilities, coreutils, and tools used by wavemill
-    KNOWN_EXTERNALS="bash|cat|cd|chmod|column|command|continue|cut|date|declare|diff|dirname|echo|eval|exec|exit|export|false|find|fold|git|grep|gh|head|jq|kill|local|ls|mkdir|mktemp|mv|node|npx|printf|ps|pwd|read|readlink|return|rm|sed|set|shift|sleep|sort|source|sqlite3|stat|tail|tee|test|tmux|touch|tr|trap|true|tput|tsx|type|to_entries|uniq|unset|wait|wc|xargs|basename|awk|seq|ascii_downcase"
+    KNOWN_EXTERNALS="bash|cat|cd|chmod|cksum|column|command|continue|cut|date|declare|diff|dirname|disown|echo|eval|exec|exit|export|false|find|fold|git|grep|gh|head|jq|kill|local|ls|mkdir|mktemp|mv|node|npx|printf|ps|pwd|read|readlink|return|rm|sed|set|shift|sleep|sort|source|sqlite3|stat|tail|tee|test|tmux|touch|tr|trap|true|tput|tsx|type|to_entries|uniq|unset|wait|wc|xargs|basename|awk|seq|ascii_downcase|sha256sum|shasum"
 
     # Extract function calls from the heredoc.
     # Restrict matches to actual command positions instead of every bare word;
@@ -611,7 +652,7 @@ else
       | grep -vE '^(pipefail|euo|noglob|errexit|nounset)$' \
       | grep -vE '^(env|stdin|stdout|stderr|json|txt|csv|pid|utf)$' \
       | grep -vE '^(true|false|yes|string|number|empty|null|undefined)$' \
-      | grep -vE '^(try|catch|def|fromjson|add|rollout_path|thread_id|thread_row|updated_at|exits|setting|falling|select|strings|tostring|valid_dismissal_count)$' \
+      | grep -vE '^(try|catch|def|fromjson|add|rollout_path|thread_id|thread_row|updated_at|exits|setting|falling|select|strings|tostring|valid_dismissal_count|tojson|obj|title|wm_orphan_stub)$' \
       | grep -vE '^(bad|internal|keeping|marking|monitor|rate|reduce|service|skipping|staying|timed|too|using|wavemill|waiting)$' \
       | grep -vE '^(advance|review)$' \
       | grep -vE '^(not_eligible|routing_error|invalid_challenge)$' \
@@ -869,7 +910,7 @@ else
     fail "monitor does not overlay new tasks from TASKS_FILE"
   fi
 
-  if grep -q '^poll_challenge_jobs() {' <<< "$HEREDOC_CONTENT" \
+  if grep -q '^poll_tracked_jobs() {' <<< "$HEREDOC_CONTENT" \
     && grep -q 'job-tracker.ts" poll' <<< "$HEREDOC_CONTENT"; then
     pass "monitor defines tracked challenge job poller"
   else
@@ -902,7 +943,7 @@ else
     in_loop { print }
     in_loop && /^done$/ { exit }
   ' <<< "$HEREDOC_CONTENT")
-  if grep -qF 'poll_challenge_jobs' <<< "$MONITOR_LOOP_BLOCK"; then
+  if grep -qF 'poll_tracked_jobs' <<< "$MONITOR_LOOP_BLOCK"; then
     pass "monitor loop polls challenge jobs before issue processing"
   else
     fail "monitor loop does not poll challenge jobs"
@@ -1138,8 +1179,12 @@ else
     fail "canonical get_task_phase is missing the inlined state-read guard"
   fi
 
-  if grep -Fq 'current_agent=$(read_state_value ""' <<< "$MONITOR_ISSUE_BLOCK" \
-    && grep -Fq 'task_status=$(read_state_value ""' <<< "$MONITOR_ISSUE_BLOCK"; then
+  # HOK-3190: monitor_issue_state now reads via pass_task_field (cached per
+  # pass); fall back to read_state_value accepts the pre-HOK-3190 shape.
+  if { grep -Fq 'current_agent=$(pass_task_field "$ISSUE" agent)' <<< "$MONITOR_ISSUE_BLOCK" \
+      || grep -Fq 'current_agent=$(read_state_value ""' <<< "$MONITOR_ISSUE_BLOCK"; } \
+    && { grep -Fq 'task_status=$(pass_task_field "$ISSUE" status)' <<< "$MONITOR_ISSUE_BLOCK" \
+      || grep -Fq 'task_status=$(read_state_value ""' <<< "$MONITOR_ISSUE_BLOCK"; }; then
     pass "monitor_issue_state guards agent and status reads from STATE_FILE"
   else
     fail "monitor_issue_state is missing guarded state-file reads"
@@ -1286,7 +1331,9 @@ else
 fi
 
 SECOND_FORCE_GUARD_LINE=$(grep -n 'if \[\[ -n "\${FORCE_MODEL:-}" \]\]; then' "$MONITOR_FILE" | sed -n '1p' | cut -d: -f1 || true)
-SECOND_RESOLVE_LINE=$(grep -nF 'challenge_plan=$(_with_timeout "$API_TIMEOUT" npx tsx "$TOOLS_DIR/resolve-challenge-task.ts"' "$MONITOR_FILE" | sed -n '1p' | cut -d: -f1 || true)
+# HOK-3190: monitor runtime launch path now routes through wavemill_run_tool
+# instead of a literal `npx tsx "$TOOLS_DIR/..."` invocation; accept either.
+SECOND_RESOLVE_LINE=$(grep -nE 'challenge_plan=\$\(_with_timeout "\$API_TIMEOUT" (npx tsx "\$TOOLS_DIR/resolve-challenge-task\.ts"|wavemill_run_tool "resolve-challenge-task\.ts")' "$MONITOR_FILE" | sed -n '1p' | cut -d: -f1 || true)
 if [[ -n "$SECOND_FORCE_GUARD_LINE" && -n "$SECOND_RESOLVE_LINE" ]] && (( SECOND_FORCE_GUARD_LINE < SECOND_RESOLVE_LINE )); then
   pass "runtime launch path bypasses resolve-challenge-task.ts when FORCE_MODEL is set"
 else
@@ -1387,8 +1434,11 @@ POST_MERGE_EVAL_BLOCK=$(awk '
   in_block { print }
   in_block && /^}/ { exit }
 ' "$LIB_DIR/wavemill-monitor.sh")
-if grep -q '_with_timeout "\$eval_timeout" npx tsx "\$TOOLS_DIR/run-eval-hook.ts"' <<< "$POST_MERGE_EVAL_BLOCK" \
-  && ! grep -q '_with_timeout 120 npx tsx "\$TOOLS_DIR/run-eval-hook.ts"' <<< "$POST_MERGE_EVAL_BLOCK"; then
+# HOK-3190: run-eval-hook.ts is invoked via wavemill_run_tool now; accept both.
+if { grep -q '_with_timeout "\$eval_timeout" npx tsx "\$TOOLS_DIR/run-eval-hook.ts"' <<< "$POST_MERGE_EVAL_BLOCK" \
+    || grep -q '_with_timeout "\$eval_timeout" wavemill_run_tool "run-eval-hook.ts"' <<< "$POST_MERGE_EVAL_BLOCK"; } \
+  && ! grep -q '_with_timeout 120 npx tsx "\$TOOLS_DIR/run-eval-hook.ts"' <<< "$POST_MERGE_EVAL_BLOCK" \
+  && ! grep -q '_with_timeout 120 wavemill_run_tool "run-eval-hook.ts"' <<< "$POST_MERGE_EVAL_BLOCK"; then
   pass "detached post-merge eval uses configurable timeout"
 else
   fail "detached post-merge eval does not use configurable timeout"
@@ -2747,6 +2797,10 @@ EOF
       log_warn() { :; }
       get_linear_issue_id() { echo "HOK-1226"; }
       read_state_value() { printf "%s\n" "$1"; }
+      # HOK-3190: restore_review_task_window now reads state via
+      # pass_task_field and spawns tools through wavemill_run_tool.
+      pass_task_field() { printf "%s\n" "${3:-}"; }
+      wavemill_run_tool() { printf "%s\n" "{}"; }
       _with_timeout() { printf "%s\n" "{}"; }
       _pane_is_dead_or_idle() { return 0; }
       tmux() {
@@ -3068,8 +3122,10 @@ echo "=== Sourced Library Verification ==="
 for script in "$LIB_DIR"/wavemill-*.sh; do
   [[ -f "$script" ]] || continue
   while IFS= read -r line; do
-    # Extract the sourced file path (handle both $SCRIPT_DIR and $LIB_DIR variables)
-    sourced=$(echo "$line" | sed -E 's/^source "//;s/"$//' \
+    # Extract the sourced file path (handle both $SCRIPT_DIR and $LIB_DIR variables).
+    # HOK-3190: strip any leading whitespace too — wavemill-input-reader.sh
+    # now has a guarded `  source "..."` inside an `if [[ -r ... ]]` block.
+    sourced=$(echo "$line" | sed -E 's/^[[:space:]]*source "//;s/"$//' \
       | sed "s|\\\$SCRIPT_DIR|$LIB_DIR|g" \
       | sed "s|\\\$LIB_DIR|$LIB_DIR|g" \
       | sed "s|\\\${BASH_SOURCE\[0\]}|$script|g")
@@ -3555,6 +3611,8 @@ PI_ALLOWED_FILES=(
   "shared/lib/native-agent/loop.test.ts"
   "shared/lib/native-agent/loop.ts"
   "shared/lib/native-agent/messages.ts"
+  "shared/lib/native-agent/models.test.ts"
+  "shared/lib/native-agent/models.ts"
   "shared/lib/native-agent/provider.ts"
   "shared/lib/native-agent/tool-compat-fixtures.test.ts"
   "shared/lib/native-agent/transcript.ts"

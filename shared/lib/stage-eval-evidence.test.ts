@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import type { EvalRecord } from './eval-schema.ts';
-import { buildChallengeStageEval, extractReviewExecutedIdentity } from './stage-eval-evidence.ts';
+import {
+  buildChallengeStageEval,
+  buildStageExecutionIdentity,
+  extractReviewExecutedIdentity,
+} from './stage-eval-evidence.ts';
 
 function makeRecord(): EvalRecord {
   return {
@@ -344,5 +349,98 @@ describe('extractReviewExecutedIdentity (HOK-2969)', () => {
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('buildStageExecutionIdentity Pi runtime provenance (HOK-3164)', () => {
+  const require = createRequire(import.meta.url);
+  const Ajv2020 = require('ajv/dist/2020').default || require('ajv/dist/2020');
+  const ajv = new Ajv2020({ allErrors: true, strict: false, validateFormats: false });
+  ajv.addSchema(require('./eval-schema.json'));
+  const validateIdentity = ajv.getSchema('eval-record.schema.json#/$defs/stageExecutionIdentity') as
+    ((value: unknown) => boolean) & { errors?: unknown };
+
+  function withStageResults(
+    results: Record<string, unknown>,
+    fn: (dir: string) => void,
+  ): void {
+    const dir = mkdtempSync(join(tmpdir(), 'stage-exec-identity-'));
+    try {
+      for (const [stage, body] of Object.entries(results)) {
+        writeFileSync(join(dir, `.${stage}-result.json`), JSON.stringify(body));
+      }
+      fn(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('propagates piRuntimeVersions from stage executionEvidence into the eval record', () => {
+    withStageResults({
+      coding: {
+        stage: 'coding',
+        status: 'completed',
+        intendedModel: 'moonshotai/kimi-k2.7-code',
+        executedModel: 'moonshotai/kimi-k2.7-code',
+        executionEvidence: {
+          status: 'direct',
+          source: 'provider-response',
+          providerReportedModel: 'moonshotai/kimi-k2.7-code',
+          identityVerdict: 'match',
+          piRuntimeVersions: { 'pi-agent-core': '1.0.2', 'pi-ai': '1.0.2' },
+        },
+      },
+    }, (dir) => {
+      const identity = buildStageExecutionIdentity({ stageResultsDir: dir });
+      assert.deepEqual(identity?.coding?.executionEvidence?.piRuntimeVersions, {
+        'pi-agent-core': '1.0.2',
+        'pi-ai': '1.0.2',
+      });
+      assert.equal(validateIdentity(identity?.coding), true, JSON.stringify(validateIdentity.errors));
+    });
+  });
+
+  it('drops unknown keys and non-string versions so the record stays schema-valid', () => {
+    withStageResults({
+      planning: {
+        stage: 'planning',
+        status: 'completed',
+        intendedModel: 'm',
+        executedModel: 'm',
+        executionEvidence: {
+          status: 'direct',
+          source: 'native-runtime',
+          piRuntimeVersions: { 'pi-ai': '1.0.2', 'pi-coding-agent': '1.0.2', 'pi-agent-core': 1 },
+        },
+      },
+    }, (dir) => {
+      const identity = buildStageExecutionIdentity({ stageResultsDir: dir });
+      assert.deepEqual(identity?.planning?.executionEvidence?.piRuntimeVersions, { 'pi-ai': '1.0.2' });
+      assert.equal(validateIdentity(identity?.planning), true, JSON.stringify(validateIdentity.errors));
+    });
+  });
+
+  it('omits piRuntimeVersions for pre-HOK-3164 stage results', () => {
+    withStageResults({
+      coding: {
+        stage: 'coding',
+        status: 'completed',
+        intendedModel: 'm',
+        executedModel: 'm',
+        executionEvidence: { status: 'direct', source: 'native-runtime', piRuntimeVersions: {} },
+      },
+    }, (dir) => {
+      const identity = buildStageExecutionIdentity({ stageResultsDir: dir });
+      assert.equal(identity?.coding?.executionEvidence !== undefined, true);
+      assert.equal('piRuntimeVersions' in (identity?.coding?.executionEvidence ?? {}), false);
+    });
+  });
+
+  it('rejects unknown Pi package keys at the schema level', () => {
+    assert.equal(validateIdentity({
+      intendedModel: 'm',
+      executedModel: 'm',
+      executionEvidence: { status: 'direct', piRuntimeVersions: { 'pi-tui': '1.0.2' } },
+    }), false);
   });
 });

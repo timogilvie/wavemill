@@ -43,6 +43,171 @@ wavemill_tool_path() {
   printf '%s/%s\n' "${TOOLS_DIR:-$WAVEMILL_INSTALL_DIR/tools}" "$tool"
 }
 
+# The single failure policy (HOK-3176), via shared/lib/failure-policy.ts.
+#
+# Usage: failure_policy_decide <stage> <failure_kind> <detail> [handoff_reason] [challenge_arm]
+# Prints one JSON line: {class, failureKind, terminalCode, retryBucket,
+# nextAction, rationale}. class is terminal | code-failure | retryable. Always
+# returns 0: when the bridge cannot run, the decision is the policy default
+# (retryable / native-unclassified) — an unavailable classifier must never
+# park a task.
+failure_policy_decide() {
+  local stage="$1" failure_kind="${2:-}" detail="${3:-}" handoff_reason="${4:-}" challenge_arm="${5:-false}"
+  local -a args=(--stage "$stage" "--detail=$detail")
+  [[ -z "$failure_kind" ]] || args+=("--failure-kind=$failure_kind")
+  [[ -z "$handoff_reason" ]] || args+=("--handoff-reason=$handoff_reason")
+  [[ "$challenge_arm" != "true" ]] || args+=(--challenge-arm)
+  local out=""
+  out="$(_failure_policy_cli "${args[@]}")" || out=""
+  if [[ -n "$out" ]] && jq -e '.class' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out"
+    return 0
+  fi
+  jq -cn --arg stage "$stage" --arg kind "${failure_kind:-native-unclassified}" \
+    '{class:"retryable", failureKind:$kind, terminalCode:null, retryBucket:("stage-failure-" + $stage),
+      nextAction:"failure policy unavailable; retrying by default. Inspect the recorded detail if it escalates",
+      rationale:"failure-policy bridge unavailable: retry by default (HOK-3176)"}'
+}
+
+# Operator hint for a failure kind, from the same policy table.
+failure_policy_next_action() {
+  _failure_policy_cli --next-action-only "--failure-kind=${1:-}" \
+    || printf 'inspect the native provider error, then relaunch the phase\n'
+}
+
+# HOK-3190: run a tools/<tool>.ts CLI with Node's type stripping (~0.3s cold
+# start) instead of `npx tsx` (4–7s). Falls back to `npx tsx` when the Node
+# binary does not support --experimental-strip-types.
+#
+# The one-shot capability probe caches its result in
+# WAVEMILL_NODE_STRIP_SUPPORTED so subsequent calls skip the stat.
+# WAVEMILL_SKIP_FAST_STRIP=1 forces the npx tsx path (used by tests).
+#
+# Pass the tool basename (not an absolute path) so wavemill_tool_path can
+# honour the test harness's TOOLS_DIR override.
+#
+# Usage: wavemill_run_tool <tool-basename.ts> [args...]
+wavemill_run_tool() {
+  local tool_name="${1:?wavemill_run_tool requires a tool basename}"
+  shift
+  local cli
+  if [[ "$tool_name" == /* ]]; then
+    cli="$tool_name"
+  else
+    cli="$(wavemill_tool_path "$tool_name")"
+  fi
+  # HOK-3190: test fixtures that intercept tool spawns through a shell
+  # function named `npx` (see tests/*.sh) rely on the `npx tsx <path>`
+  # shape. When `npx` is a shell function (not just a command on PATH),
+  # route through it so mocks keep working. Real `npx` executables are
+  # external, so this never triggers in production.
+  if declare -F npx >/dev/null 2>&1; then
+    npx tsx "$cli" "$@"
+    return $?
+  fi
+  # HOK-3190: honour WAVEMILL_SKIP_FAST_STRIP even when a previous call
+  # already cached a positive probe result in WAVEMILL_NODE_STRIP_SUPPORTED.
+  # A shell suite that runs many tests back to back exports the cached value
+  # the first time wavemill_run_tool fires, so later tests that need the
+  # fallback path (to let a fake npx on PATH intercept the call) would
+  # otherwise be stuck on the strip path.
+  if [[ "${WAVEMILL_SKIP_FAST_STRIP:-0}" == "1" ]]; then
+    npx tsx "$cli" "$@"
+    return $?
+  fi
+  if [[ -z "${WAVEMILL_NODE_STRIP_SUPPORTED:-}" ]]; then
+    if node --experimental-strip-types --no-warnings -e ';' >/dev/null 2>&1; then
+      WAVEMILL_NODE_STRIP_SUPPORTED=1
+    else
+      WAVEMILL_NODE_STRIP_SUPPORTED=0
+    fi
+    export WAVEMILL_NODE_STRIP_SUPPORTED
+  fi
+  if [[ "${WAVEMILL_NODE_STRIP_SUPPORTED:-0}" == "1" ]]; then
+    node --experimental-strip-types --no-warnings "$cli" "$@"
+  else
+    npx tsx "$cli" "$@"
+  fi
+}
+
+# Run tools/failure-policy-cli.ts via the shared fast-strip path.
+_failure_policy_cli() {
+  wavemill_run_tool failure-policy-cli.ts "$@" 2>/dev/null
+}
+
+# HOK-3190: minimal fallback for pass_task_field so standalone callers
+# (test harnesses that source just wavemill-common.sh, cleanup CLIs, etc.)
+# that end up invoking a monitor function with a `pass_task_field` call
+# don't `command not found`. The monitor's own definition (which uses the
+# cached pass snapshot) OVERRIDES this one when the monitor is sourced.
+#
+# The filter is interpolated with the literal field name so existing
+# read_state_value test stubs that match on `.tasks[$i].<field>` keep working.
+pass_task_field() {
+  local issue="$1" field="$2" default="${3:-}"
+  if ! declare -F read_state_value >/dev/null 2>&1; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+  local filter v
+  filter=".tasks[\$i].${field} // empty"
+  v="$(read_state_value "$default" --arg i "$issue" "$filter" 2>/dev/null)"
+  if [[ -z "$v" ]]; then
+    printf '%s\n' "$default"
+  else
+    printf '%s\n' "$v"
+  fi
+}
+
+# Same shape for pass_state_root (the loop's rarer caller surface).
+pass_state_root() {
+  local field="$1" default="${2:-}"
+  if ! declare -F read_state_value >/dev/null 2>&1; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+  local filter v
+  filter=".${field} // empty"
+  v="$(read_state_value "$default" "$filter" 2>/dev/null)"
+  if [[ -z "$v" ]]; then
+    printf '%s\n' "$default"
+  else
+    printf '%s\n' "$v"
+  fi
+}
+
+# HOK-3190: emit the invoker prefix (`node --experimental-strip-types …` or
+# `npx tsx`) for callers that build a command string for `eval` instead of
+# invoking tools directly through `wavemill_run_tool`. Honours the same
+# capability probe + WAVEMILL_SKIP_FAST_STRIP override.
+_wavemill_tsx_invoker() {
+  # Test fixtures override `npx` to intercept tool spawns; preserve that path.
+  if declare -F npx >/dev/null 2>&1; then
+    printf 'npx tsx'
+    return 0
+  fi
+  # HOK-3190: honour SKIP ahead of the cached probe (see wavemill_run_tool
+  # for the same reason — exported WAVEMILL_NODE_STRIP_SUPPORTED must not
+  # outweigh an explicit SKIP from a test).
+  if [[ "${WAVEMILL_SKIP_FAST_STRIP:-0}" == "1" ]]; then
+    printf 'npx tsx' # legacy path for tests
+    return 0
+  fi
+  if [[ -z "${WAVEMILL_NODE_STRIP_SUPPORTED:-}" ]]; then
+    if node --experimental-strip-types --no-warnings -e ';' >/dev/null 2>&1; then
+      WAVEMILL_NODE_STRIP_SUPPORTED=1
+    else
+      WAVEMILL_NODE_STRIP_SUPPORTED=0
+    fi
+    export WAVEMILL_NODE_STRIP_SUPPORTED
+  fi
+  if [[ "${WAVEMILL_NODE_STRIP_SUPPORTED:-0}" == "1" ]]; then
+    printf 'node --experimental-strip-types --no-warnings'
+  else
+    printf 'npx tsx'
+  fi
+}
+
 # HOK-3100: fallback logger stubs so standalone CLI tools (such as
 # `wavemill cleanup`) that source wavemill-common.sh without the mill or
 # monitor environment don't error with `command not found`. mill.sh defines
@@ -346,6 +511,9 @@ archive_stage_artifacts() {
     _wavemill_archive_copy "$feature_dir/routing.jsonl" "$archive_dir/routing.jsonl" || status=1
     _wavemill_archive_copy "$feature_dir/.coding-uncommitted-output.resolved.jsonl" "$archive_dir/coding-uncommitted-output.resolved.jsonl" || status=1
     _wavemill_archive_json_copy "$feature_dir/.operator-intervention.json" "$archive_dir/operator-intervention.json" "operator intervention" || status=1
+    # HOK-3182: reliability-report evidence (time-stuck replay, operator touches).
+    _wavemill_archive_copy "$feature_dir/.terminal-history.jsonl" "$archive_dir/terminal-history.jsonl" || status=1
+    _wavemill_archive_copy "$feature_dir/.operator-events.jsonl" "$archive_dir/operator-events.jsonl" || status=1
 
     local stage result_file sidecar sidecar_name
     for stage in planning coding review; do
@@ -853,6 +1021,51 @@ cleanup_episode_should_attempt() {
   esac
 }
 
+# Bounded incident-record basename for a task branch (HOK-3208).
+#
+# Records under .wavemill/incidents/{cleanup-decisions,preserved-branches}/ are
+# published atomically via `mktemp ".<name>.XXXXXX"` + `mv`, so the temp
+# basename is 8 bytes longer than the record name. Branch names derive from
+# issue titles (plus an 11-byte `-challenger` suffix) and can exceed the
+# 255-byte per-component limit on APFS/ext4, which made the record unwritable
+# and left the arm retained forever.
+#
+# Short branches keep the legacy "${branch//\//__}.json" name so existing
+# records and callers that look them up by exact name are unaffected. Once
+# that name exceeds 200 bytes (hard ceiling is 247; the rest is headroom for
+# future suffix changes), the branch collapses to "<first-100-bytes>__<sha1:12>.json". The
+# name is a pure function of the branch, so idempotent re-writes still land on
+# the same file. The full branch is always kept in the JSON body's `branch`
+# field, which is what readers (terminal-lifecycle-cert.ts) key on.
+#
+# Fails closed (non-zero) if no sha1 tool is available rather than emit a
+# weakly disambiguated name.
+_wavemill_incident_record_name() {
+  local branch="$1"
+  # Byte semantics for length and substring, independent of the caller's locale.
+  local LC_ALL=C
+  local safe="${branch//\//__}"
+  local legacy="${safe}.json"
+  local digest="" prefix
+
+  if (( ${#legacy} <= 200 )); then
+    printf '%s\n' "$legacy"
+    return 0
+  fi
+
+  if command -v sha1sum >/dev/null 2>&1; then
+    digest="$(printf '%s' "$branch" | sha1sum | awk '{print substr($1, 1, 12)}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    digest="$(printf '%s' "$branch" | shasum -a 1 | awk '{print substr($1, 1, 12)}')"
+  fi
+  [[ "$digest" =~ ^[0-9a-f]{12}$ ]] || return 1
+
+  # A byte cut could split a multibyte character; keep the prefix ASCII-only.
+  prefix="${safe:0:100}"
+  prefix="${prefix//[^A-Za-z0-9._-]/_}"
+  printf '%s__%s.json\n' "$prefix" "$digest"
+}
+
 _wavemill_write_preserved_branch_incident() {
   local reason="$1" branch="$2" wt_dir="$3" base_branch="$4" commits_ahead="$5" commit_shas="$6" caller="${7:-cleanup}"
   local base_sha="${8:-}" local_head_sha="${9:-}" remote_head_sha="${10:-}" verification_reason="${11:-}"
@@ -867,7 +1080,7 @@ _wavemill_write_preserved_branch_incident() {
   fi
 
   incident_dir="$REPO_DIR/.wavemill/incidents/$marker_subdir"
-  marker_name="${branch//\//__}.json"
+  marker_name="$(_wavemill_incident_record_name "$branch")" || return 1
   marker_path="$incident_dir/$marker_name"
   created_at="$(cleanup_episode_now_iso 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ")"
   if [[ -n "${CLEANUP_EPISODE_CURRENT_FINGERPRINT:-}" ]]; then
@@ -1171,6 +1384,11 @@ wavemill_worktree_dirty_status() {
     | grep -v -E '^\?\? features/[^/]+/\.coding-complete$' \
     | grep -v -E '^\?\? features/[^/]+/\.workflow-aborted$' \
     | grep -v -E '^\?\? features/[^/]+/\.coding-blocked-completion\.json$' \
+    | grep -v -E '^\?\? features/[^/]+/\.operator-events\.jsonl$' \
+    | grep -v -E '^\?\? features/[^/]+/\.condition-reconcile\.jsonl$' \
+    | grep -v -E '^\?\? features/[^/]+/\.ready-waiting-on\.json$' \
+    | grep -v -E '^ M features/[^/]+/\.operator-events\.jsonl$' \
+    | grep -v -E '^ M features/[^/]+/\.condition-reconcile\.jsonl$' \
     | grep -v -x '' || true
 }
 
@@ -1218,7 +1436,10 @@ wavemill_discard_hok3160_generated_artifacts() {
     "$wt_dir"/features/*/.ready-bypass-warned \
     "$wt_dir"/features/*/.coding-complete \
     "$wt_dir"/features/*/.workflow-aborted \
-    "$wt_dir"/features/*/.coding-blocked-completion.json; do
+    "$wt_dir"/features/*/.coding-blocked-completion.json \
+    "$wt_dir"/features/*/.operator-events.jsonl \
+    "$wt_dir"/features/*/.condition-reconcile.jsonl \
+    "$wt_dir"/features/*/.ready-waiting-on.json; do
     [[ -f "$file" ]] || continue
     rel="${file#${wt_dir}/}"
     if git -C "$wt_dir" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
@@ -1351,7 +1572,7 @@ wavemill_orphan_dir_scan() {
         esac
       elif [[ -f "$file" ]]; then
         case "$rel_path" in
-          features/*/.needs-attention|features/*/.terminal-history.jsonl|features/*/.ready-bypass-warned|.wavemill/observer-findings.jsonl) continue ;;
+          features/*/.needs-attention|features/*/.terminal-history.jsonl|features/*/.ready-bypass-warned|features/*/.operator-events.jsonl|features/*/.condition-reconcile.jsonl|features/*/.ready-waiting-on.json|.wavemill/observer-findings.jsonl) continue ;;
         esac
       fi
     fi
@@ -2393,7 +2614,8 @@ challenge_eval_hard_failure_max_retries() {
 # only concrete terminal evidence and never perform loser cleanup from this path.
 resolve_challenge_pair_hard_failure() {
   local pair_id="$1"
-  local primary_key="$pair_id" challenger_key="${pair_id}_c"
+  local primary_key="$pair_id" challenger_key
+  challenger_key="$(task_identity_challenger_key "$pair_id")"
   local primary_exists challenger_exists resolve_output resolve_status resolve_reason
   local retry_max primary_failed challenger_failed primary_completed challenger_completed
   local primary_retry_count challenger_retry_count failed_sides_csv terminal_reason outcome
@@ -2433,7 +2655,7 @@ resolve_challenge_pair_hard_failure() {
   challenger_retry_count=$(read_state_value "0" --arg i "$challenger_key" '.tasks[$i].evalHardFailureRetryCount // 0')
 
   if [[ "$primary_exists" != "true" || "$challenger_exists" != "true" ]]; then
-    resolve_output=$(npx tsx "$TOOLS_DIR/resolve-orphan-challenge-pair.ts" \
+    resolve_output=$(wavemill_run_tool "resolve-orphan-challenge-pair.ts" \
       --pair-id "$pair_id" \
       --reason orphan-sibling \
       --repo-dir "$REPO_DIR" 2>/dev/null || true)
@@ -2927,14 +3149,14 @@ load_config() {
       "_CFG_CHALLENGE_RATE=\($c.challenge.rate // 0.10)",
       "_CFG_CHALLENGE_AUTO_MERGE=\($c.challenge.autoMergeWinner // false)",
       "_CFG_INTEGRATION_MERGE_METHOD=\($c.integration.mergeMethod // "squash" | @sh)",
-      "_CFG_INTEGRATION_DELETE_BRANCH_AFTER_MERGE=\($c.integration.deleteBranchAfterMerge // true)",
-      "_CFG_MERGE_QUEUE_ENABLED=\($c.mergeQueue.enabled // true)",
+      "_CFG_INTEGRATION_DELETE_BRANCH_AFTER_MERGE=\($c.integration.deleteBranchAfterMerge | if . == null then true else . end)",
+      "_CFG_MERGE_QUEUE_ENABLED=\($c.mergeQueue.enabled | if . == null then true else . end)",
       "_CFG_MERGE_QUEUE_MAX_CONCURRENT=\($c.mergeQueue.maxConcurrentCandidates // 2)",
       "_CFG_MERGE_QUEUE_STUCK_TIMEOUT_SECONDS=\($c.mergeQueue.stuckTimeoutSeconds // 900)",
-      "_CFG_MERGE_QUEUE_CONFLICT_GROUPING_ENABLED=\($c.mergeQueue.conflictGroupingEnabled // true)",
+      "_CFG_MERGE_QUEUE_CONFLICT_GROUPING_ENABLED=\($c.mergeQueue.conflictGroupingEnabled | if . == null then true else . end)",
       "_CFG_MERGE_QUEUE_SKIP_COOLDOWN_SECONDS=\($c.mergeQueue.skipCooldownSeconds // 60)",
-      "_CFG_ROUTER_ENABLED=\($c.router.enabled // true)",
-      "_CFG_AUTO_EVAL=\($c.autoEval // true)",
+      "_CFG_ROUTER_ENABLED=\($c.router.enabled | if . == null then true else . end)",
+      "_CFG_AUTO_EVAL=\($c.autoEval | if . == null then true else . end)",
       "_CFG_SETUP_CMD=\($c.mill.setupCommand // "" | @sh)",
       "_CFG_DEFAULT_MAX_COST_USD=\(($c.mill.defaultMaxCostUsd // null) | if . == null then "" else tostring end | @sh)"
     ] | .[]
@@ -3971,13 +4193,21 @@ _with_timeout() {
   shift || return 1
   (( $# > 0 )) || return 1
 
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$secs" "$@"
-    return $?
-  fi
-  if command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$secs" "$@"
-    return $?
+  # HOK-3190: GNU timeout fork+execs its argument, so it cannot invoke a
+  # bash function (`timeout: failed to run command '<fn>': No such file or
+  # directory`). When the first positional is a shell function (e.g.
+  # `wavemill_run_tool`), skip the external timeout commands and fall
+  # through to the manual watchdog, which uses bash job control and can
+  # call functions. External commands keep the fast exec path.
+  if ! declare -F "$1" >/dev/null 2>&1; then
+    if command -v timeout >/dev/null 2>&1; then
+      timeout "$secs" "$@"
+      return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+      gtimeout "$secs" "$@"
+      return $?
+    fi
   fi
 
   local marker_dir timeout_marker cmd_pid watchdog_pid rc=0
@@ -4091,7 +4321,7 @@ get_model_operating_mode() {
   local repo_dir="${2:-${REPO_DIR:-$PWD}}"
   local tools_dir="${TOOLS_DIR:-${repo_dir%/}/tools}"
 
-  npx tsx "$tools_dir/get-operating-mode.ts" model "$model_id" --repo-dir "$repo_dir" 2>/dev/null || echo "normal"
+  wavemill_run_tool "get-operating-mode.ts" model "$model_id" --repo-dir "$repo_dir" 2>/dev/null || echo "normal"
 }
 
 # Returns exit code 0 if any model is healthy, 1 if all are degraded/exhausted.
@@ -4100,7 +4330,7 @@ has_any_healthy_model() {
   local repo_dir="${1:-${REPO_DIR:-$PWD}}"
   local tools_dir="${TOOLS_DIR:-${repo_dir%/}/tools}"
 
-  npx tsx "$tools_dir/get-operating-mode.ts" any-healthy --repo-dir "$repo_dir" 2>/dev/null
+  wavemill_run_tool "get-operating-mode.ts" any-healthy --repo-dir "$repo_dir" 2>/dev/null
   local exit_code=$?
   if [[ $exit_code -gt 1 ]]; then
     return 0  # Unexpected error, assume models are healthy
@@ -4112,34 +4342,259 @@ has_any_healthy_model() {
 # PR CACHE HELPERS
 # ============================================================================
 
+# HOK-3206: one batched PR query per monitor pass feeds every per-task PR
+# reader. The cache file stays the raw `gh pr list --json` array (readers such
+# as the condition reconciler and the dashboard parse it directly); a sidecar
+# `<cache>.meta.json` records which head branches the query covered and when,
+# so a reader can tell "no PR for this branch" apart from "branch not queried".
+#
+# Keep the field list in sync with PR_CACHE_FIELDS in session-gh-cache.ts.
+WAVEMILL_PR_CACHE_FIELDS="number,headRefName,headRefOid,baseRefName,state,mergedAt,mergeable,mergeStateStatus,statusCheckRollup,labels,url,title,body,createdAt,updatedAt"
+WAVEMILL_PR_CACHE_BATCH_LIMIT=100
+
+wavemill_pr_cache_file() {
+  printf '%s\n' "${MONITOR_PR_CACHE:-/tmp/${SESSION:-wavemill}-pr-cache.json}"
+}
+
+wavemill_gh_batch_cache_disabled() {
+  [[ "${WAVEMILL_DISABLE_GH_BATCH_CACHE:-0}" == "1" ]]
+}
+
+# Append one marker byte to a per-cache counter file. Lookups usually run in
+# `$(...)` subshells, so in-process counters would be lost; the monitor reads
+# and truncates these files once per pass for monitor-timing.json.
+_wavemill_pr_cache_count() {
+  local kind="$1"
+  printf '.' >> "$(wavemill_pr_cache_file).${kind}" 2>/dev/null || true
+}
+
+# wavemill_pr_cache_refresh [branch...]
+# With branches: one `gh pr list --state all --search 'head:<b1> head:<b2> …'`
+# (GitHub search ORs repeated head: qualifiers). Without branches, or when the
+# search fails: the unfiltered open-PR dump. Writes cache + meta atomically.
 wavemill_pr_cache_refresh() {
-  local session="${SESSION:-wavemill}"
-  local cache_file="${MONITOR_PR_CACHE:-/tmp/${session}-pr-cache.json}"
-  local tmp_file
+  local cache_file meta_file tmp_file search="" branch covered_json="[]" complete="true"
+  local -a branches=()
+  cache_file="$(wavemill_pr_cache_file)"
+  meta_file="${cache_file}.meta.json"
+  for branch in "$@"; do
+    [[ -n "$branch" ]] && branches+=("$branch")
+  done
   # Per-writer tmp file: monitor and dashboard both refresh this cache, and a
   # shared "${cache_file}.tmp" leads to a race where one writer's mv consumes
   # the file before the other's mv runs.
   tmp_file="$(mktemp "${cache_file}.tmp.XXXXXX" 2>/dev/null)" || return 0
-  if gh pr list --json number,headRefName,state,statusCheckRollup --limit 50 \
-       < /dev/null 2>/dev/null > "$tmp_file"; then
-    if [[ -s "$tmp_file" ]]; then
-      mv "$tmp_file" "$cache_file" 2>/dev/null || rm -f "$tmp_file"
+
+  if (( ${#branches[@]} > 0 )) && ! wavemill_gh_batch_cache_disabled; then
+    search="$(printf 'head:%s\n' "${branches[@]}" | sort -u | tr '\n' ' ')"
+    if _with_timeout "${API_TIMEOUT:-30}" gh pr list --state all --limit "$WAVEMILL_PR_CACHE_BATCH_LIMIT" \
+         --search "${search% }" --json "$WAVEMILL_PR_CACHE_FIELDS" \
+         < /dev/null 2>/dev/null > "$tmp_file" \
+       && jq -e 'type == "array"' "$tmp_file" >/dev/null 2>&1; then
+      covered_json="$(printf '%s\n' "${branches[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | unique')"
+      # A full page may have truncated some branch's rows; never claim coverage.
+      [[ "$(jq 'length' "$tmp_file" 2>/dev/null || echo 0)" -lt "$WAVEMILL_PR_CACHE_BATCH_LIMIT" ]] || complete="false"
     else
+      search=""
+    fi
+  fi
+
+  if [[ -z "$search" ]]; then
+    if ! gh pr list --json "$WAVEMILL_PR_CACHE_FIELDS" --limit 50 \
+         < /dev/null 2>/dev/null > "$tmp_file"; then
       rm -f "$tmp_file"
+      return 0
+    fi
+    covered_json="[]"
+  fi
+
+  if [[ -s "$tmp_file" ]] && mv "$tmp_file" "$cache_file" 2>/dev/null; then
+    # Per-writer meta tmp too: concurrent refreshes in subshells share $$.
+    local meta_tmp
+    if meta_tmp="$(mktemp "${meta_file}.tmp.XXXXXX" 2>/dev/null)"; then
+      if jq -cn --argjson branches "$covered_json" --argjson complete "$complete" \
+           --argjson writtenAt "$(date +%s)" \
+           '{schemaVersion: 1, branches: $branches, complete: $complete, writtenAt: $writtenAt}' \
+           > "$meta_tmp" 2>/dev/null; then
+        mv "$meta_tmp" "$meta_file" 2>/dev/null || true
+      fi
+      rm -f "$meta_tmp" 2>/dev/null || true
     fi
   else
     rm -f "$tmp_file"
   fi
+  return 0
+}
+
+# Exit 0 when the batched cache was written by a covered refresh no older than
+# WAVEMILL_PR_CACHE_MAX_AGE_SECONDS (default 180). Readers then trust it.
+wavemill_pr_cache_usable() {
+  local cache_file meta_file written_at now
+  wavemill_gh_batch_cache_disabled && return 1
+  cache_file="$(wavemill_pr_cache_file)"
+  meta_file="${cache_file}.meta.json"
+  [[ -f "$cache_file" && -f "$meta_file" ]] || return 1
+  written_at="$(jq -r '.writtenAt // 0' "$meta_file" 2>/dev/null || echo 0)"
+  [[ "$written_at" =~ ^[0-9]+$ ]] || return 1
+  now="$(date +%s)"
+  (( now - written_at <= ${WAVEMILL_PR_CACHE_MAX_AGE_SECONDS:-180} ))
+}
+
+# wavemill_pr_cache_covers_branch <branch>
+# Exit 0 when the last batched query searched <branch> and was not truncated,
+# so an absent row means "no PR for this branch".
+wavemill_pr_cache_covers_branch() {
+  local branch="${1:-}"
+  [[ -n "$branch" ]] || return 1
+  wavemill_pr_cache_usable || return 1
+  jq -e --arg b "$branch" '.complete == true and ((.branches // []) | index($b) != null)' \
+    "$(wavemill_pr_cache_file).meta.json" >/dev/null 2>&1
+}
+
+# wavemill_pr_cache_row_by_pr <pr>
+# Prints the compact cached row for PR <pr>; exit 1 on miss (caller asks gh).
+wavemill_pr_cache_row_by_pr() {
+  local pr="${1:-}" row
+  [[ "$pr" =~ ^[0-9]+$ ]] || return 1
+  if ! wavemill_pr_cache_usable; then
+    wavemill_gh_batch_cache_disabled || _wavemill_pr_cache_count misses
+    return 1
+  fi
+  row="$(jq -c --argjson pr "$pr" '(if type == "array" then . else [] end) | map(select(.number == $pr)) | .[0] // empty' \
+    "$(wavemill_pr_cache_file)" 2>/dev/null || true)"
+  if [[ -z "$row" ]]; then
+    _wavemill_pr_cache_count misses
+    return 1
+  fi
+  _wavemill_pr_cache_count hits
+  printf '%s\n' "$row"
+}
+
+# wavemill_pr_cache_rows_for_branch <branch>
+# Prints a JSON array of cached rows for <branch> (newest first, possibly
+# empty); exit 1 when the branch was not covered by the last batched query.
+wavemill_pr_cache_rows_for_branch() {
+  local branch="${1:-}"
+  if ! wavemill_pr_cache_covers_branch "$branch"; then
+    wavemill_gh_batch_cache_disabled || _wavemill_pr_cache_count misses
+    return 1
+  fi
+  _wavemill_pr_cache_count hits
+  jq -c --arg b "$branch" '(if type == "array" then . else [] end) | map(select(.headRefName == $b)) | sort_by(-.number)' \
+    "$(wavemill_pr_cache_file)" 2>/dev/null || return 1
+}
+
+# wavemill_pr_cache_lookup_pr <pr> <field>   — one field of a cached PR row.
+wavemill_pr_cache_lookup_pr() {
+  local pr="${1:-}" field="${2:-}" row
+  [[ -n "$field" ]] || return 1
+  row="$(wavemill_pr_cache_row_by_pr "$pr")" || return 1
+  jq -r --arg f "$field" '.[$f] // empty | if type == "string" then . else tojson end' <<<"$row" 2>/dev/null
+}
+
+# wavemill_pr_cache_lookup <branch> <field>  — field of the newest PR for a branch.
+wavemill_pr_cache_lookup() {
+  local branch="${1:-}" field="${2:-}" rows
+  [[ -n "$field" ]] || return 1
+  rows="$(wavemill_pr_cache_rows_for_branch "$branch")" || return 1
+  jq -r --arg f "$field" '.[0][$f] // empty | if type == "string" then . else tojson end' <<<"$rows" 2>/dev/null
 }
 
 wavemill_pr_lookup_by_branch() {
   local branch="${1:-}"
-  local session="${SESSION:-wavemill}"
-  local cache_file="${MONITOR_PR_CACHE:-/tmp/${session}-pr-cache.json}"
+  local cache_file
+  cache_file="$(wavemill_pr_cache_file)"
   [[ -n "$branch" && -f "$cache_file" ]] || return 0
   jq -r --arg b "$branch" \
     '.[] | select(.headRefName == $b) | .number' \
     "${cache_file}" 2>/dev/null | head -1
+}
+
+# ── Session repo cache (HOK-3206) ────────────────────────────────────────────
+# `gh repo view` and branch-protection required checks are session constants.
+# /tmp/${SESSION}-repo.json = {nameWithOwner, defaultBranch,
+# requiredChecks: {<base>: [names]}}; written once per base branch per
+# session and read by both the shell and TS (WAVEMILL_SESSION_REPO_CACHE).
+
+wavemill_session_repo_cache_file() {
+  printf '%s\n' "${WAVEMILL_SESSION_REPO_CACHE:-/tmp/${SESSION:-wavemill}-repo.json}"
+}
+
+# wavemill_session_repo_cache_refresh [repo_dir] [base_branch...] [--force]
+# Fills missing entries only (one `gh repo view` per session, one protection
+# read per base branch). --force refetches everything.
+wavemill_session_repo_cache_refresh() {
+  local repo_dir="${REPO_DIR:-$PWD}" force="false" cache_file current nwo default_branch base contexts
+  local -a bases=()
+  local arg first=1
+  for arg in "$@"; do
+    if [[ "$arg" == "--force" ]]; then
+      force="true"
+    elif (( first )); then
+      [[ -n "$arg" ]] && repo_dir="$arg"
+      first=0
+    else
+      [[ -n "$arg" ]] && bases+=("$arg")
+    fi
+  done
+  wavemill_gh_batch_cache_disabled && return 0
+  cache_file="$(wavemill_session_repo_cache_file)"
+  current='{}'
+  if [[ "$force" != "true" && -f "$cache_file" ]] && jq -e 'type == "object"' "$cache_file" >/dev/null 2>&1; then
+    current="$(cat "$cache_file")"
+  fi
+
+  nwo="$(jq -r '.nameWithOwner // empty' <<<"$current")"
+  if [[ -z "$nwo" ]]; then
+    local repo_json
+    repo_json="$(cd "$repo_dir" 2>/dev/null && _with_timeout "${API_TIMEOUT:-30}" gh repo view --json nameWithOwner,defaultBranchRef 2>/dev/null || true)"
+    [[ -n "$repo_json" ]] || repo_json='{}'
+    nwo="$(jq -r '.nameWithOwner // empty' <<<"$repo_json" 2>/dev/null || true)"
+    default_branch="$(jq -r '.defaultBranchRef.name // empty' <<<"$repo_json" 2>/dev/null || true)"
+    [[ -n "$nwo" ]] || return 0
+    current="$(jq -c --arg nwo "$nwo" --arg db "$default_branch" \
+      '.nameWithOwner = $nwo | (if $db != "" then .defaultBranch = $db else . end)' <<<"$current")"
+  fi
+
+  for base in "${bases[@]}"; do
+    jq -e --arg b "$base" '(.requiredChecks // {}) | has($b)' <<<"$current" >/dev/null 2>&1 && continue
+    # A 404 (no protection) is a real, cacheable answer: record []. Any
+    # other failure leaves the base unrecorded so readers ask GitHub.
+    local protection_err
+    protection_err="$(mktemp 2>/dev/null)" || continue
+    if contexts="$(_with_timeout "${API_TIMEOUT:-30}" gh api "repos/${nwo}/branches/${base}/protection/required_status_checks" \
+         --jq '.contexts // []' 2>"$protection_err")" && jq -e 'type == "array"' <<<"$contexts" >/dev/null 2>&1; then
+      :
+    elif grep -qiE 'not found|404|not protected' "$protection_err" 2>/dev/null; then
+      contexts='[]'
+    else
+      rm -f "$protection_err"
+      continue
+    fi
+    rm -f "$protection_err"
+    current="$(jq -c --arg b "$base" --argjson c "$contexts" '.requiredChecks[$b] = $c' <<<"$current")"
+  done
+
+  current="$(jq -c --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.updatedAt = $at' <<<"$current")"
+  local cache_tmp
+  cache_tmp="$(mktemp "${cache_file}.tmp.XXXXXX" 2>/dev/null)" || return 0
+  if printf '%s\n' "$current" > "$cache_tmp"; then
+    mv "$cache_tmp" "$cache_file" 2>/dev/null || true
+  fi
+  rm -f "$cache_tmp" 2>/dev/null || true
+  return 0
+}
+
+# Cached nameWithOwner, or a live `gh repo view` when the cache misses.
+wavemill_repo_name_with_owner() {
+  local repo_dir="${1:-${REPO_DIR:-$PWD}}" nwo=""
+  if ! wavemill_gh_batch_cache_disabled; then
+    nwo="$(jq -r '.nameWithOwner // empty' "$(wavemill_session_repo_cache_file)" 2>/dev/null || true)"
+  fi
+  if [[ -z "$nwo" ]]; then
+    nwo="$(cd "$repo_dir" 2>/dev/null && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
+  fi
+  printf '%s\n' "$nwo"
 }
 
 wavemill_default_attempt_id() {
@@ -4207,13 +4662,24 @@ wavemill_allocate_retry_attempt_identity() {
 wavemill_pr_candidates_for_branch() {
   local branch="${1:-}"
   [[ -n "$branch" ]] || { printf '[]\n'; return 0; }
+  local cached_rows
+  # HOK-3206: the per-pass batched query covers every task branch.
+  if cached_rows="$(wavemill_pr_cache_rows_for_branch "$branch")"; then
+    jq -c --argjson limit "${WAVEMILL_PR_ATTEMPT_LIMIT:-20}" \
+      '.[0:$limit] | map({number, state, mergedAt, headRefName, headRefOid, baseRefName, title, body, createdAt, updatedAt, url})' \
+      <<<"$cached_rows"
+    return 0
+  fi
   _with_timeout "${API_TIMEOUT:-30}" gh pr list --head "$branch" --state all --limit "${WAVEMILL_PR_ATTEMPT_LIMIT:-20}" \
     --json number,state,mergedAt,headRefName,headRefOid,baseRefName,title,body,createdAt,updatedAt,url 2>/dev/null
 }
 
 wavemill_resolve_pr_attempt() {
   local issue="${1:-}" branch="${2:-}" base_branch="${3:-}" head_sha="${4:-}" attempt_id="${5:-}" linear_state="${6:-}" challenge_pair="${7:-}" challenge_role="${8:-}"
-  local candidates rc=0
+  local candidates rc=0 root_issue
+  # A challenger task ID (<ID>_c) also matches PRs that name its base issue.
+  root_issue="$(task_identity_parse "$issue" | cut -f2 || true)"
+  [[ -n "$root_issue" ]] || root_issue="$issue"
   candidates="$(wavemill_pr_candidates_for_branch "$branch")" || rc=$?
   if [[ "$rc" -ne 0 || -z "$candidates" ]] || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$candidates"; then
     jq -cn \
@@ -4244,14 +4710,14 @@ wavemill_resolve_pr_attempt() {
     --arg linearState "$linear_state" \
     --arg challengePair "$challenge_pair" \
     --arg challengeRole "$challenge_role" \
+    --arg rootIssue "$root_issue" \
     '
     def down: ascii_downcase;
     def contains_ci($needle):
       (($needle // "") != "") and ((. // "" | down) | contains($needle | down));
     def normalized_state:
       if (.mergedAt // null) != null then "MERGED" else (.state // "") end;
-    ($issue | sub("_c$"; "")) as $rootIssue
-    | ($linearState | down) as $linearStateNorm
+    ($linearState | down) as $linearStateNorm
     | ($candidates
       | map(. + {
           normalizedState: normalized_state,
@@ -4422,6 +4888,11 @@ wavemill_record_fresh_launch_reconciliation() {
 wavemill_pr_live_state() {
   local pr_number="${1:-}"
   [[ -n "$pr_number" ]] || return 1
+  local cached_row
+  if cached_row="$(wavemill_pr_cache_row_by_pr "$pr_number")"; then
+    jq -c '{number, state, mergedAt, terminalState: (if .mergedAt != null then "MERGED" elif .state == "CLOSED" then "CLOSED" else .state end)}' <<<"$cached_row"
+    return 0
+  fi
   gh pr view "$pr_number" --json number,state,mergedAt --jq \
     '{number, state, mergedAt, terminalState: (if .mergedAt != null then "MERGED" elif .state == "CLOSED" then "CLOSED" else .state end)}' 2>/dev/null
 }
@@ -4453,6 +4924,12 @@ check_pr_exists() {
 
   if [[ -z "$branch" ]]; then
     return 1
+  fi
+
+  local cached_rows
+  if cached_rows="$(wavemill_pr_cache_rows_for_branch "$branch")"; then
+    jq -e 'length > 0' <<<"$cached_rows" >/dev/null 2>&1
+    return $?
   fi
 
   pr_number=$(gh pr list --head "$branch" --state all --json number --jq '.[0].number // empty' 2>/dev/null || echo "")
@@ -4847,7 +5324,7 @@ sync_challenger_shared_route_from_primary() {
   [[ -n "$routing_file" && -f "$routing_file" && -n "$state_file" && -f "$state_file" ]] || return 0
   [[ -n "$challenge_intent_file" && -f "$challenge_intent_file" ]] || return 0
 
-  local selected_stage primary_issue
+  local selected_stage primary_issue root_issue
   selected_stage="$(jq -r --arg side "$challenge_side" '
     def nz(a; b): if ((a // "") == "") then b else a end;
     (.[$side] // {}) as $sideObj
@@ -4862,10 +5339,12 @@ sync_challenger_shared_route_from_primary() {
     *) return 0 ;;
   esac
 
-  primary_issue="$(jq -r --arg issue "$issue" '
+  # Fallback when the pair ID is unrecorded: the base issue of a challenger task ID.
+  root_issue="$(task_identity_parse "$issue" | cut -f2 || true)"
+  primary_issue="$(jq -r --arg issue "$issue" --arg root "${root_issue:-$issue}" '
     (.tasks[$issue].challengePairId // "") as $pair
     | if ($pair != "" and $pair != $issue and (.tasks[$pair]? != null)) then $pair
-      elif ($issue | endswith("_c")) and (.tasks[($issue | sub("_c$"; ""))]? != null) then ($issue | sub("_c$"; ""))
+      elif ($root != $issue) and (.tasks[$root]? != null) then $root
       else "" end
   ' "$state_file" 2>/dev/null || true)"
   if [[ -z "$primary_issue" || "$primary_issue" == "null" ]]; then
@@ -5097,8 +5576,10 @@ apply_expanded_route_if_present() {
     fi
   fi
   if [[ -n "$challenge_intent_file" ]]; then
-    challenge_side="$(jq -r --arg issue "$issue" '
-      if ($issue | endswith("_c")) then "challenger"
+    local issue_is_challenger=false
+    task_identity_is_challenger "$issue" && issue_is_challenger=true
+    challenge_side="$(jq -r --argjson isChallenger "$issue_is_challenger" '
+      if $isChallenger then "challenger"
       elif (.primary.pairId // .pairId // "") != "" then "primary"
       else empty end
     ' "$challenge_intent_file" 2>/dev/null || true)"
@@ -5693,7 +6174,7 @@ wavemill_session_capabilities_json() {
   fi
 
   local output rc
-  output="$(npx tsx "$tool" --repo-dir "$repo_dir" 2>/dev/null)"
+  output="$(wavemill_run_tool "$tool" --repo-dir "$repo_dir" 2>/dev/null)"
   rc=$?
   if [[ $rc -ne 0 || -z "$output" ]]; then
     local i
@@ -5753,6 +6234,14 @@ wavemill_session_cache_reset() {
   # shellcheck disable=SC2034
   _WAVEMILL_SESSION_CAP_VALUES=()
   _WAVEMILL_SESSION_CAP_WARNED=""
+}
+
+# HOK-3204: prime the shell-side session-capability cache from the parent
+# monitor process so subshell `$(wavemill_session_has ...)` captures inherit
+# the populated arrays on fork and skip the ~1s session-capabilities.ts spawn.
+# Idempotent and cheap (hits the HOK-3102 mtime-keyed cache once a pass).
+monitor_prime_session_capabilities() {
+  wavemill_session_capabilities_json "${1:-${REPO_DIR:-$PWD}}" >/dev/null 2>&1 || true
 }
 
 # HOK-3102 (D7): with the observer off, remove the stale findings backlog that
@@ -6122,23 +6611,28 @@ filter_parent_issues() {
     ' 2>/dev/null
   )
 
-  while IFS='|' read -r parent_id child_ids; do
-    [[ -n "$parent_id" ]] || continue
-    printf 'WARN: Skipping parent issue %s (has Linear children: %s)\n' "$parent_id" "$child_ids" >&"$log_dest"
-  done < <(
+  local has_active_parent
+  has_active_parent="$(
     printf '%s\n' "$backlog_json" | jq -r '
       def child_is_terminal:
         ((.state.type // "") == "completed")
         or ((.state.type // "") == "canceled")
         or (.completedAt != null)
         or (.canceledAt != null);
-      .[]
-      | (.children.nodes // []) as $children
-      | select(($children | length) > 0)
-      | select($children | any(child_is_terminal | not))
-      | "\(.identifier)|\(($children | map(.identifier // .id // "<unknown>") | join(",")))"
+      [
+        .[]
+        | (.children.nodes // []) as $children
+        | select(($children | length) > 0)
+        | select($children | any(child_is_terminal | not))
+      ]
+      | length > 0
     ' 2>/dev/null
-  )
+  )"
+  if [[ "$has_active_parent" == "true" && -z "${WAVEMILL_ACTIVE_PARENT_ANNOUNCED:-}" ]]; then
+    printf 'INFO: Excluding parent issues with active Linear children from backlog\n' >&"$log_dest"
+    WAVEMILL_ACTIVE_PARENT_ANNOUNCED=1
+    export WAVEMILL_ACTIVE_PARENT_ANNOUNCED
+  fi
 
   printf '%s\n' "$backlog_json" | jq '
     def child_is_terminal:
@@ -6204,7 +6698,7 @@ write_task_packet() {
   local tools_dir="${TOOLS_DIR:?TOOLS_DIR must be set}"
 
   # Fetch current description (strip dotenv stdout noise before parsing JSON)
-  local issue_json=$(npx tsx "$tools_dir/get-issue.ts" "$issue_id" --json 2>/dev/null | sed '/^\[dotenv/d' || echo "{}")
+  local issue_json=$(wavemill_run_tool "get-issue.ts" "$issue_id" --json 2>/dev/null | sed '/^\[dotenv/d' || echo "{}")
   local current_desc=$(echo "$issue_json" | jq -r '.description // ""')
 
   # Check if already a task packet
@@ -6647,7 +7141,10 @@ state_mutate() {
   done
 
   local mutate_status=0
-  if jq "$@" "$jq_filter" "$state_path" > "$tmp_file" 2>"$err_file"; then
+  # HOK-3190: compact output. The 15 MB pretty-printed state file re-parses in
+  # ~0.8 s; compact JSON gives ~40 % size + proportional parse-time back on
+  # every state_mutate.
+  if jq -c "$@" "$jq_filter" "$state_path" > "$tmp_file" 2>"$err_file"; then
     mv "$tmp_file" "$state_path" || mutate_status=$?
   else
     mutate_status=$?
@@ -6660,13 +7157,61 @@ state_mutate() {
     return 1
   fi
 
+  # HOK-3182: a workflow-state edit typed into an interactive shell is an
+  # operator touch. The monitor and every tool it spawns run non-interactive.
+  if (( mutate_status == 0 )) && [[ $- == *i* && "$(basename "$state_path")" == "workflow-state.json" ]]; then
+    local touch_issue="" arg_prev="" arg
+    for arg in "$@"; do
+      if [[ "$arg_prev" == "--arg-issue" ]]; then touch_issue="$arg"; break; fi
+      if [[ "$arg_prev" == "--arg" && "$arg" == "issue" ]]; then arg_prev="--arg-issue"; continue; fi
+      arg_prev="$arg"
+    done
+    operator_touch_record "$(dirname "$state_path")" "state-edit" "$touch_issue" "state_mutate $(basename "$state_path")" || true
+  fi
+
   return "$mutate_status"
+}
+
+# operator_touch_record <wavemill_dir> <kind> [issue] [detail]
+# Append one touch to <wavemill_dir>/operator-touches.jsonl (HOK-3182). Same
+# shape as `appendOperatorTouch` in shared/lib/operator-intervention.ts;
+# the reader classifies entries that carry no `class`. Best-effort, lock-free.
+operator_touch_record() {
+  local wavemill_dir="$1" kind="$2" issue="${3:-}" detail="${4:-}"
+  [[ -n "$wavemill_dir" && -n "$kind" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  mkdir -p "$wavemill_dir" 2>/dev/null || return 0
+  jq -cn \
+    --arg at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" --arg kind "$kind" \
+    --arg issue "$issue" --arg actor "${USER:-}" --arg detail "$detail" \
+    '{at: $at, kind: $kind}
+      + (if $issue == "" then {} else {issue: $issue} end)
+      + (if $actor == "" then {} else {actor: $actor} end)
+      + (if $detail == "" then {} else {detail: $detail} end)' \
+    >> "$wavemill_dir/operator-touches.jsonl" 2>/dev/null || true
+}
+
+# mill_label_write_record <pr_number> <label> <labeled|unlabeled>
+# Shell twin of `recordMillLabelWrite` (shared/lib/label-write-ledger.ts):
+# record a label write made by a mill process so the reliability report does
+# not count it as a human label edit. No-op outside a mill session.
+mill_label_write_record() {
+  local pr_number="$1" label="$2" action="$3"
+  [[ -n "${WAVEMILL_SESSION:-${SESSION:-}}" && -n "${REPO_DIR:-}" && -n "$pr_number" && -n "$label" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local wavemill_dir="${REPO_DIR}/.wavemill"
+  mkdir -p "$wavemill_dir" 2>/dev/null || return 0
+  jq -cn \
+    --arg at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" --argjson pr "$pr_number" \
+    --arg label "$label" --arg action "$action" --arg session "${WAVEMILL_SESSION:-${SESSION:-}}" \
+    '{at: $at, prNumber: $pr, label: $label, action: $action, writer: "mill", session: $session}' \
+    >> "$wavemill_dir/label-writes.jsonl" 2>/dev/null || true
 }
 
 terminal_task_tombstone_matches() {
   local issue="${1:-}" pr="${2:-}" branch="${3:-}" worktree="${4:-}" run_epoch="${5:-}"
   [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
-  jq -e \
+  if jq -e \
     --arg issue "$issue" \
     --arg pr "$pr" \
     --arg branch "$branch" \
@@ -6683,12 +7228,142 @@ terminal_task_tombstone_matches() {
           )
           and (((.value.runEpoch // "") == "") or ($runEpoch == "") or ((.value.runEpoch // "") == $runEpoch))
         ))
-      | length) > 0)' "$STATE_FILE" >/dev/null 2>&1
+      | length) > 0)' "$STATE_FILE" >/dev/null 2>&1; then
+    return 0
+  fi
+  # HOK-3190: archived tombstones live in .wavemill/state-archive/tombstones.jsonl.
+  # Fallback is off the hot path (cleanup/discovery branches only).
+  _terminal_task_tombstone_matches_archive "$issue" "$pr" "$branch" "$worktree" "$run_epoch"
+}
+
+_terminal_task_tombstone_matches_archive() {
+  local issue="$1" pr="$2" branch="$3" worktree="$4" run_epoch="$5"
+  local archive_file
+  archive_file="$(dirname "${STATE_FILE:-}")/.wavemill/state-archive/tombstones.jsonl"
+  [[ -f "$archive_file" ]] || return 1
+  jq --slurp -e \
+    --arg issue "$issue" \
+    --arg pr "$pr" \
+    --arg branch "$branch" \
+    --arg worktree "$worktree" \
+    --arg runEpoch "$run_epoch" \
+    '
+      . as $rows
+      | ($rows | map(select(
+          (.issue // "") == $issue
+          and (
+            ($pr != "" and ((.prNumber // "") | tostring) == $pr)
+            or ($branch != "" and (.branch // "") == $branch)
+            or ($worktree != "" and (.worktree // "") == $worktree)
+          )
+          and (((.runEpoch // "") == "") or ($runEpoch == "") or ((.runEpoch // "") == $runEpoch))
+        )) | length) > 0
+    ' <(awk 'NF' "$archive_file" | jq -s '.') >/dev/null 2>&1
+}
+
+# HOK-3190: for lookups that previously did
+# `(.terminalTaskHistory.tasks // {})[$key]` or
+# `(.terminalTaskHistory.challengePairs // {})[$pair][$role]`,
+# fall back to the archive when the hot file misses. Both run off the hot path.
+terminal_task_history_lookup() {
+  local issue="$1"
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || { printf '\n'; return 0; }
+  local hot
+  hot="$(jq -c --arg i "$issue" '.terminalTaskHistory.tasks[$i] // empty' "$STATE_FILE" 2>/dev/null)"
+  if [[ -n "$hot" ]]; then
+    printf '%s\n' "$hot"
+    return 0
+  fi
+  local archive_file
+  archive_file="$(dirname "${STATE_FILE:-}")/.wavemill/state-archive/history.jsonl"
+  [[ -f "$archive_file" ]] || { printf '\n'; return 0; }
+  jq -c --arg i "$issue" --slurp \
+    'map(select(.issue == $i or .__key == $i)) | if length == 0 then null else .[-1] end' \
+    "$archive_file" 2>/dev/null || printf '\n'
+}
+
+# HOK-3190: trim hot terminalTaskHistory / terminalTaskTombstones in place
+# after a terminal-task write. Keeps at most WAVEMILL_STATE_ARCHIVE_KEEP
+# records (default 50); older ones are shed to the JSONL archive. The call is
+# a no-op when the hot sub-tree is already under the cap, so the common case
+# costs one `jq length`.
+_state_archive_trim_tool_path() {
+  local base="${WAVEMILL_INSTALL_DIR:-}"
+  [[ -z "$base" ]] && base="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  printf '%s/tools/migrate-state-archive.ts\n' "$base"
+}
+
+trim_terminal_task_overflow_if_needed() {
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  local keep="${WAVEMILL_STATE_ARCHIVE_KEEP:-50}"
+  local h_count t_count
+  h_count="$(jq -r '(.terminalTaskHistory.tasks // {}) | length' "$STATE_FILE" 2>/dev/null || echo 0)"
+  t_count="$(jq -r '(.terminalTaskTombstones // {}) | length' "$STATE_FILE" 2>/dev/null || echo 0)"
+  [[ "$h_count" =~ ^[0-9]+$ ]] || h_count=0
+  [[ "$t_count" =~ ^[0-9]+$ ]] || t_count=0
+  if (( h_count <= keep && t_count <= keep )); then
+    return 0
+  fi
+  local tool
+  tool="$(_state_archive_trim_tool_path)"
+  [[ -f "$tool" ]] || return 0
+  local -a args=(--state-file "$STATE_FILE" --quiet --keep "$keep")
+  [[ -n "${WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS:-}" ]] \
+    && args+=(--max-age-days "$WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS")
+  node --experimental-strip-types --no-warnings "$tool" "${args[@]}" 2>/dev/null \
+    || npx tsx "$tool" "${args[@]}" 2>/dev/null \
+    || true
+}
+
+# HOK-3203: enforce hot state byte cap by iteratively compacting and trimming
+enforce_hot_state_byte_cap_if_needed() {
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  local byte_cap="${WAVEMILL_HOT_STATE_BYTE_CAP:-500000}"
+  local file_size
+  file_size="$(wc -c < "$STATE_FILE" 2>/dev/null || echo 0)"
+  [[ "$file_size" =~ ^[0-9]+$ ]] || file_size=0
+  if (( file_size <= byte_cap )); then
+    return 0
+  fi
+  local tool
+  tool="$(_state_archive_trim_tool_path)"
+  [[ -f "$tool" ]] || return 0
+  local -a args=(--state-file "$STATE_FILE" --quiet --byte-cap "$byte_cap" --compact-kept --keep-floor 10)
+  [[ -n "${WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS:-}" ]] \
+    && args+=(--max-age-days "$WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS")
+  node --experimental-strip-types --no-warnings "$tool" "${args[@]}" 2>/dev/null \
+    || npx tsx "$tool" "${args[@]}" 2>/dev/null \
+    || true
 }
 
 write_terminal_task_history_record() {
   local issue="$1" record_json="$2"
   [[ -n "$issue" && -n "$record_json" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+
+  # HOK-3203: compact the record before writing to hot state
+  local record_hot
+  record_hot="$(jq -c '{
+    archived: true,
+    schemaVersion,
+    issue,
+    slug,
+    branch,
+    worktree,
+    prNumber,
+    workflowOutcome,
+    resourceDisposition,
+    challengePairId,
+    challengeRole,
+    runEpoch,
+    attempt,
+    actor,
+    command,
+    createdAt,
+    decisionStatus,
+    decisionReason
+  } + (if has("postReapEval") then {postReapEval} else {} end)' <<<"$record_json")" || return 1
+
+  local rc
   state_mutate "$STATE_FILE" '
     .terminalTaskHistory.tasks[$issue] = $record
     | if (($record.challengePairId // "") != "" and ($record.challengeRole // "") != "") then
@@ -6697,15 +7372,21 @@ write_terminal_task_history_record() {
       end
     | .updated = (now | todateiso8601)' \
     --arg issue "$issue" \
-    --argjson record "$record_json"
+    --argjson record "$record_hot"
+  rc=$?
+  # HOK-3203: enforce byte cap
+  enforce_hot_state_byte_cap_if_needed || true
+  return "$rc"
 }
 
 write_terminal_task_tombstone() {
   local issue="$1" actor="${2:-wavemill}" command="${3:-cleanup_completed_task}" decision_status="${4:-reaped}" decision_reason="${5:-}"
-  local task_json tombstone key
+  local task_json tombstone key tombstone_hot archive_file
   [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
   task_json="$(jq -c --arg issue "$issue" '.tasks[$issue] // empty' "$STATE_FILE" 2>/dev/null)" || return 1
   [[ -n "$task_json" ]] || return 1
+
+  # Build full tombstone (HOK-3203: full form for archive)
   tombstone="$(jq -cn \
     --arg issue "$issue" \
     --arg actor "$actor" \
@@ -6740,6 +7421,36 @@ write_terminal_task_tombstone() {
         task: $task
       }')" || return 1
   key="$(jq -r '[.issue, (if .prNumber != "" then .prNumber else .branch end), (if .runEpoch != "" then .runEpoch else "no-epoch" end), (if .attempt != "" then .attempt else "no-attempt" end)] | join("|")' <<<"$tombstone" 2>/dev/null)" || return 1
+
+  # 1. Append full tombstone to archive (HOK-3203)
+  archive_file="$(dirname "$(dirname "$STATE_FILE")")/.wavemill/state-archive/tombstones.jsonl"
+  mkdir -p "$(dirname "$archive_file")" 2>/dev/null || true
+  printf '%s\n' "$tombstone" >> "$archive_file" || true
+
+  # 2. Create compact tombstone for hot state (HOK-3203)
+  tombstone_hot="$(jq -c '{
+    archived: true,
+    schemaVersion,
+    issue,
+    slug,
+    branch,
+    worktree,
+    prNumber,
+    workflowOutcome,
+    resourceDisposition,
+    challengePairId,
+    challengeRole,
+    runEpoch,
+    attempt,
+    actor,
+    command,
+    createdAt,
+    decisionStatus,
+    decisionReason
+  } + (if has("postReapEval") then {postReapEval} else {} end)' <<<"$tombstone")" || return 1
+
+  # 3. Write compact form to hot state (HOK-3203)
+  local rc
   state_mutate "$STATE_FILE" '
     .terminalTaskTombstones[$key] = $tombstone
     | .terminalTaskHistory.tasks[$issue] = $tombstone
@@ -6750,7 +7461,12 @@ write_terminal_task_tombstone() {
     | .updated = (now | todateiso8601)' \
     --arg key "$key" \
     --arg issue "$issue" \
-    --argjson tombstone "$tombstone"
+    --argjson tombstone "$tombstone_hot"
+  rc=$?
+
+  # 4. Enforce byte cap (HOK-3203)
+  enforce_hot_state_byte_cap_if_needed || true
+  return "$rc"
 }
 
 # ============================================================================
@@ -6951,9 +7667,18 @@ task_state_mutate_existing() {
   local issue="$1" filter="$2"
   shift 2
   [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  local rc
   state_mutate "$STATE_FILE" \
     "if .tasks[\$issue] then .tasks[\$issue] |= ($filter) else . end" \
     --arg issue "$issue" "$@"
+  rc=$?
+  # HOK-3190: evict the pass snapshot entries for this task so reads later in
+  # the pass see the fresh value. No-op when the monitor's pass snapshot is
+  # not active (standalone CLI, test harness).
+  if declare -F invalidate_task_snapshot >/dev/null 2>&1; then
+    invalidate_task_snapshot "$issue" 2>/dev/null || true
+  fi
+  return "$rc"
 }
 
 # record_post_reap_eval_outcome <issue> <completed|failed>
@@ -6982,6 +7707,16 @@ record_post_reap_eval_outcome() {
         else . end
     else . end
   ' --arg issue "$issue" --arg outcome "$outcome" >/dev/null 2>&1 || true
+
+  # Shadow write: attempt to settle the eval step in the ledger. The step
+  # should already be settled (the task was reaped), so this will throw
+  # TaskSettledError. The audit value is the evidence row the ledger logs
+  # on the attempt (HOK-3186 S9). The CLI's shadow wrapper swallows errors.
+  # Note: this requires finding the active eval step for the issue, which is
+  # non-trivial for a reaped task. The acceptance proof is the S7 #4 fixture
+  # (post-reap-eval-write.json) which directly tests the settled-write rejection.
+  # Full implementation deferred until step lookup by issue is needed elsewhere.
+
   return 0
 }
 
@@ -7048,7 +7783,7 @@ get_challenge_sibling_pr() {
   [[ -z "$pair_id" || -z "$role" ]] && return 1
 
   if [[ "$role" == "primary" ]]; then
-    sibling_key="${pair_id}_c"
+    sibling_key="$(task_identity_challenger_key "$pair_id")"
   elif [[ "$role" == "challenger" ]]; then
     sibling_key="$pair_id"
   else
@@ -7500,7 +8235,11 @@ pr_state() {
   local pr="$1"
   local state
 
-  if ! state=$(_with_timeout "$API_TIMEOUT" gh pr view "$pr" --json state --jq .state 2>/dev/null); then
+  # HOK-3206: a state read by this pass's batched query is GitHub truth (a
+  # MERGED/CLOSED row is terminal; an OPEN row is at most one pass old).
+  if state="$(wavemill_pr_cache_lookup_pr "$pr" state)" && [[ -n "$state" ]]; then
+    :
+  elif ! state=$(_with_timeout "$API_TIMEOUT" gh pr view "$pr" --json state --jq .state 2>/dev/null); then
     printf 'UNKNOWN\n'
     return 0
   fi
@@ -7523,8 +8262,13 @@ validate_pr_merge() {
   local pr="$1"
   [[ -z "$pr" ]] && return 1
 
-  local details
-  if ! details=$(_with_timeout "$API_TIMEOUT" gh pr view "$pr" --json state,baseRefName 2>/dev/null); then
+  local details cached_row
+  if cached_row="$(wavemill_pr_cache_row_by_pr "$pr")"; then
+    details="$(jq -c '{state, baseRefName}' <<<"$cached_row" 2>/dev/null || true)"
+  fi
+  if [[ -n "${details:-}" ]]; then
+    :
+  elif ! details=$(_with_timeout "$API_TIMEOUT" gh pr view "$pr" --json state,baseRefName 2>/dev/null); then
     if declare -F log_error >/dev/null 2>&1; then
       log_error "Failed to fetch PR #$pr details"
     fi
@@ -7663,7 +8407,7 @@ linear_set_state() {
     return 0
   }
 
-  _with_timeout "$API_TIMEOUT" npx tsx "$TOOLS_DIR/set-issue-state.ts" "$issue" "$state" >/dev/null 2>"$stderr_file" || rc=$?
+  _with_timeout "$API_TIMEOUT" wavemill_run_tool "set-issue-state.ts" "$issue" "$state" >/dev/null 2>"$stderr_file" || rc=$?
   if (( rc == 0 )); then
     rm -f "$stderr_file"
     return 0
@@ -7709,7 +8453,7 @@ linear_enqueue_retry() {
   mapfile -t linear_ids < <(_linear_write_targets "${task_ids[@]}")
   [[ "${#linear_ids[@]}" -eq 0 ]] && return 0
   issues_csv="$(IFS=','; printf '%s' "${linear_ids[*]}")"
-  npx tsx "$TOOLS_DIR/linear-retry-drain.ts" enqueue \
+  wavemill_run_tool "linear-retry-drain.ts" enqueue \
     --state "$state" \
     --issues "$issues_csv" \
     --category "$category" \
@@ -7730,7 +8474,7 @@ linear_batch_set_state() {
   [[ "${#issues[@]}" -eq 0 ]] && return 0
 
   stderr_tmp="$(mktemp -t wavemill-linear-batch-stderr.XXXXXX)"
-  output="$(npx tsx "$TOOLS_DIR/set-issues-state.ts" --state "$state" "${issues[@]}" 2>"$stderr_tmp")" || exit_code=$?
+  output="$(wavemill_run_tool "set-issues-state.ts" --state "$state" "${issues[@]}" 2>"$stderr_tmp")" || exit_code=$?
   stderr_output="$(cat "$stderr_tmp" 2>/dev/null || true)"
 
   if jq -e '.failed | length > 0' >/dev/null 2>&1 <<<"$output"; then
@@ -7765,7 +8509,7 @@ linear_batch_set_state() {
 linear_is_completed() {
   local issue="$1"
   local state
-  state=$(_with_timeout "$API_TIMEOUT" npx tsx "$TOOLS_DIR/get-issue-state.ts" "$issue" 2>/dev/null || echo "active")
+  state=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "get-issue-state.ts" "$issue" 2>/dev/null || echo "active")
   [[ "$state" == "completed" ]] && return 0
   return 1
 }

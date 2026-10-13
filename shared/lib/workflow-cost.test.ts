@@ -167,6 +167,21 @@ test('Handles paths with trailing slashes', () => {
   assert.equal(result, '-Users-tim-worktrees-my-feature');
 });
 
+test('Replaces every non-alphanumeric character, as Claude Code does', () => {
+  assert.equal(encodeProjectDir('/Users/tim/my.repo/wt_1'), '-Users-tim-my-repo-wt-1');
+});
+
+test('Truncates names over 200 chars with the Claude Code hash suffix', () => {
+  // Observed on disk: Claude Code stored this worktree's sessions under the
+  // 200-char prefix plus `-erm9lf`.
+  const worktree = '/Users/timothyogilvie/Dropbox/wavemill/worktrees/terminal-cleanup-must-reap-delivered-work-automatically-once-the-pr-is-merged-or-the-arm-is-retired-with-its-sibling-merged-and-linear-is-done-archive-any-residue-and-free-the-task-never-retain-it-indefinitely';
+  const result = encodeProjectDir(worktree);
+  assert.equal(result.length, 207);
+  assert.equal(result.slice(0, 200), worktree.replace(/[^a-zA-Z0-9]/g, '-').slice(0, 200));
+  assert.ok(result.endsWith('-erm9lf'), result);
+  assert.notEqual(encodeProjectDir(`${worktree}-challenger`), result, 'sibling arms must not share a directory');
+});
+
 // ────────────────────────────────────────────────────────────────
 // Tests: computeModelCost
 // ────────────────────────────────────────────────────────────────

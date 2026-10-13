@@ -81,6 +81,13 @@ log_error() { :; }
 # challenge-deferred-arm.test.sh; we call it here after the copy loop).
 eval "$(extract_function challenge_intent_stamp_fork_descriptor)"
 eval "$(extract_function challenge_compute_fork_identity)"
+# HOK-3190: challenge_compute_fork_identity now delegates to wavemill_run_tool
+# (fast-strip wrapper in shared/lib/wavemill-common.sh) instead of calling
+# `npx tsx` directly. Pull the wrapper and a TOOLS_DIR-aware tool-path stub
+# into scope so the extracted function can actually resolve its CLI target.
+eval "$(awk '$0 ~ "^wavemill_run_tool\\(\\) \\{" { capture=1 } capture { print } /^}/ && capture { exit }' \
+  "$REPO_DIR_ROOT/shared/lib/wavemill-common.sh")"
+wavemill_tool_path() { printf '%s/%s\n' "${TOOLS_DIR:-$REPO_DIR_ROOT/tools}" "$1"; }
 
 # The materialiser's copy loop is a straightforward for-loop over a fixed
 # artifact list; encoding it here mirrors what the real function does so

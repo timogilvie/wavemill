@@ -64,6 +64,33 @@ Ready publishes `.ready-tend-handoff.json` at the head it checked. Tend claims i
 | Healed PR (HOK-3105) still skipped by tend | Self-heal cleared `wm:blocked` but left the record at the pre-push head | Self-heal now rebinds/republishes at the live head first |
 | Ready refuses with "unpushed local work" | Task worktree has commits not on the PR head (e.g. remediation fix never pushed) | Push or discard the local commits; the next Ready tick syncs |
 
+## Async Ready-Path Checks (HOK-3206)
+
+The cross-PR revert guard (~19 s), the live CI read (~2.5 s per PR), the ready-watchdog sweep (~5 s) and routing (30-60 s) run as tracked jobs (`launch_tracked_job` → `job-tracker.ts`, kinds `cross-pr-guard`, `pr-ci-status`, `ready-watchdog`, `route-task`). Each job writes a condition-keyed result marker; the monitor consumes it on a later pass. Implementation: `shared/lib/monitor-async-jobs.sh`.
+
+| Result | Location | Valid only while | Consumer |
+|---|---|---|---|
+| `.cross-pr-guard-result.json` | ready state dir | worktree HEAD **and** compare-base tip match | `ready_cross_pr_revert_gate` in `launch_ready_phase` (rc 4 = pending) |
+| `.pr-ci-status-result.json` | ready state dir | PR head (per-pass PR cache) matches; refreshed every `WAVEMILL_PR_CI_STATUS_REFRESH_SECONDS` (30) | `ready_ci_json_cached` in `refresh_ready_merge_queue_tick` |
+| `async-jobs/ready-watchdog/output.json` | mill state dir | not yet consumed (sequence) and < 2× sweep timeout old | `run_ready_watchdog_tick` |
+| `.expanded-reroute-result.json` | feature dir | task packet content hash matches | `expanded_reroute_gate` at the plan→code handoff |
+| `/tmp/<session>-<issue>-route.json` (source `route-job:<hash>`) | tmp | packet hash matches | `launch_task` (launch deferred via `deferred-launches.list`) |
+
+- DO treat an absent or other-head result as **pending**, never as pass. The CI pending shape is `conclusion: "unknown"` with `pendingReason: "pr-ci-status-running"`, which the merge-queue planner never selects.
+- DO charge job crashes/timeouts to the job's bounded-retry bucket (`cross-pr-guard-job`, `pr-ci-status-job`, `route-task-job`, `launch-route-job`) keyed on the same condition. Exhausted guard → tool-error evidence + attention; exhausted CI read → the inline `readError` shape; exhausted reroute → `handle_expanded_reroute_handoff_failure`; spent launch route → inline route once.
+- DO let the condition reconciler expire result markers (`head` for the guard, `remote` for CI, `operator-event` for reroute). Gates only read.
+- DON'T consume a guard verdict whose run saw the head move: the job publishes nothing and the next pass relaunches.
+- DON'T read GitHub per task in the hot pass: `monitor_refresh_pr_cache` makes one `gh pr list --state all --search 'head:<b1> head:<b2> …'` per pass (`<cache>.meta.json` records which branches were covered and whether the page was complete). `pr_state`, `validate_pr_merge`, `wavemill_pr_candidates_for_branch`, `check_pr_exists`, `pr_live_labels_json` and the TS readers (`probePrLiveState`, `fetchPrCiStatus`, the watchdog's GitHub truth) read it first; `probePrLiveState` and expected-head CI reads use a row only for the matching head. `gh repo view` and branch protection live in the session repo cache (`/tmp/<session>-repo.json`).
+
+Rollback switches (debug only, not config): `WAVEMILL_SYNC_READY_CHECKS=1` (guard, CI, watchdog inline), `WAVEMILL_SYNC_ROUTING=1` (routing inline), `WAVEMILL_DISABLE_GH_BATCH_CACHE=1` (every PR/repo read goes to `gh` directly).
+
+`monitor-timing.json` carries `github: {ghCalls, prCacheHits, prCacheMisses}` (shell `gh` spawns this pass) and `jobs: {<kind>: {launched, consumed, pending}}`.
+
+| Symptom | Root Cause | Fix |
+|---|---|---|
+| Ready stays `pendingReason: cross-pr-guard-running` | Guard job keeps crashing; backoff between attempts | Read `.wavemill/…/async-jobs/cross-pr-guard-<issue>/job.log`; after `WAVEMILL_ASYNC_CHECK_JOB_RETRY_LIMIT` (3) failures the gate terminalizes with the last stderr |
+| Merge queue shows `ci.conclusion: unknown` for one pass after a push | CI result is for the previous PR head; the read for the new head is in flight | Expected; the next pass consumes the new result |
+
 ## Migration Checks
 
 When a repo has `alembic/versions/` and no explicit `ready.checks`, ready auto-enables:

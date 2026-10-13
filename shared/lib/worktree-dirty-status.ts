@@ -57,6 +57,12 @@ const GENERATED_ARTIFACT_PATTERNS: RegExp[] = [
   /^\?\? features\/[^/]+\/\.coding-complete$/,
   /^\?\? features\/[^/]+\/\.workflow-aborted$/,
   /^\?\? features\/[^/]+\/\.coding-blocked-completion\.json$/,
+  // HOK-3172: condition reconciler artifacts
+  /^\?\? features\/[^/]+\/\.operator-events\.jsonl$/,
+  /^\?\? features\/[^/]+\/\.condition-reconcile\.jsonl$/,
+  /^\?\? features\/[^/]+\/\.ready-waiting-on\.json$/,
+  /^ M features\/[^/]+\/\.operator-events\.jsonl$/,
+  /^ M features\/[^/]+\/\.condition-reconcile\.jsonl$/,
 ];
 
 export type WorktreeDirtyState = 'clean' | 'dirty' | 'unreadable' | 'absent';

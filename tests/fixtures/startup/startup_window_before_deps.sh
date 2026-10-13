@@ -245,6 +245,11 @@ setup_env "$T1" "$T1_EVENT" "false"
 
 export HOME="$T1/home"
 export PATH="$T1/mock-bin:$PATH"
+# HOK-3190: force wavemill_run_tool to use the `npx tsx <tool>` shape so
+# the fake npx above intercepts tool spawns. Without this, the fast-strip
+# path shells out to `node --experimental-strip-types` directly and
+# crashes on the fixture's missing tools dir.
+export WAVEMILL_SKIP_FAST_STRIP=1
 export MOCK_TMUX_LOG="$T1/tmux.log"
 export MOCK_GIT_LOG="$T1/git.log"
 export MOCK_NPX_LOG="$T1/npx.log"

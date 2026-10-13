@@ -7,6 +7,8 @@ import { Readable, Writable } from 'node:stream';
 import { describe, it } from 'node:test';
 import { registerScriptedPiProvider, type ScriptedProviderContext } from './provider.ts';
 import { describeNativePlanningHelperFailure, launchNativePlanning } from './launch-planning.ts';
+import { resolvePiRuntimeVersions } from './pi-runtime-version.ts';
+import { resolveSessionEventsDir } from './session-stream.ts';
 import {
   parseNativePlanningApprovalCommand,
   resolveNativePlanningApprovalMode,
@@ -355,6 +357,18 @@ describe('launchNativePlanning', () => {
       assert.equal(stageResult.agent, 'native');
       assert.equal(stageResult.model, `scripted:${api}`);
       assert.equal(stageResult.notes, 'Native planning ready for approval');
+      // HOK-3164: native evidence carries the Pi runtime that ran the stage.
+      assert.deepEqual(
+        (stageResult.executionEvidence as Record<string, unknown>).piRuntimeVersions,
+        { ...resolvePiRuntimeVersions() },
+      );
+      const sessionStarted = readdirSync(resolveSessionEventsDir(wtDir))
+        .filter((name) => name.endsWith('.jsonl'))
+        .flatMap((name) => readFileSync(join(resolveSessionEventsDir(wtDir), name), 'utf-8').trim().split('\n'))
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .filter((event) => event.type === 'session_started');
+      assert.equal(sessionStarted.length, 1);
+      assert.deepEqual(sessionStarted[0].piRuntimeVersions, { ...resolvePiRuntimeVersions() });
       const artifacts = stageResult.artifacts as Record<string, any>;
       assert.equal(artifacts.type, 'planning');
       assert.equal(artifacts.planFile, 'features/demo/plan.md');

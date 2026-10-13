@@ -13,6 +13,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import type { AgentMessage, AgentTurn, Message } from './messages.ts';
 import type { AgentContext, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
+import { createNativeModelsCollection } from './models.ts';
 import {
   ProviderIdentityMismatchError,
   ProviderIdentityTracker,
@@ -35,6 +36,7 @@ import { TranscriptWriter } from './transcript.ts';
 import { isLinearWriter, parseTaskId } from '../task-identity.ts';
 import { resolveWavemillToolPath } from './install-paths.ts';
 import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-stream.ts';
+import { piRuntimeVersionsField } from './pi-runtime-version.ts';
 import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import type { SessionStreamConfig } from './loop.ts';
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
@@ -655,13 +657,26 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       phase: 'planning',
     });
     const apiKey = readyProvider ? getNativeProviderApiKey(readyProvider) : undefined;
+    // HOK-3162: Models owns auth injection via the collection's AuthContext,
+    // so model.headers no longer carries an Authorization: Bearer header.
     const model = options.loopModelOverride ?? {
       ...readyProvider!.model,
-      headers: {
-        ...(readyProvider!.model.headers ?? {}),
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      },
+      headers: { ...(readyProvider!.model.headers ?? {}) },
     };
+    const nativeModels = !options.loopModelOverride && readyProvider && apiKey
+      ? createNativeModelsCollection({
+        env: {
+          [readyProvider.apiKeyEnv]: apiKey,
+          OPENAI_API_KEY: readyProvider.providerName === 'openai'
+            ? apiKey
+            : process.env.OPENAI_API_KEY,
+          OPENROUTER_API_KEY: readyProvider.providerName === 'openrouter'
+            ? apiKey
+            : process.env.OPENROUTER_API_KEY,
+        },
+        repoDir: options.repoDir,
+      })
+      : undefined;
     const modelName = model.name ?? model.id;
     const requestedModelName = options.resolvedModel?.trim() || modelName;
     // HOK-3143: shared across the main planning run and the one bounded repair
@@ -793,6 +808,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
 
     const result = await runWavemillLoop({
       model,
+      ...(nativeModels ? { models: nativeModels } : {}),
       context,
       maxTokens: effectiveMaxTokens,
       contextManagement: getNativeContextManagementConfig(options.repoDir),
@@ -860,6 +876,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         executionEvidence: {
           status: 'contradicted',
           source: 'native-runtime',
+          ...piRuntimeVersionsField(),
           detail: providerFailureReason || stopFailureReason,
           recordedAt: new Date().toISOString(),
         },
@@ -897,6 +914,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         executionEvidence: {
           status: 'contradicted',
           source: 'native-runtime',
+          ...piRuntimeVersionsField(),
           detail: providerError || 'empty_final_plan',
           recordedAt: new Date().toISOString(),
         },
@@ -950,6 +968,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       const repairContext: AgentContext = { ...context, messages: repairMessages };
       const repairResult = await runWavemillLoop({
         model,
+        ...(nativeModels ? { models: nativeModels } : {}),
         context: repairContext,
         maxTokens: effectiveMaxTokens,
         contextManagement: getNativeContextManagementConfig(options.repoDir),
@@ -989,6 +1008,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         executionEvidence: {
           status: 'contradicted',
           source: 'native-runtime',
+          ...piRuntimeVersionsField(),
           detail: validation.reason ?? 'invalid',
           recordedAt: new Date().toISOString(),
         },
@@ -1028,6 +1048,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       ? {
         status: 'direct' as const,
         source: 'provider-response',
+        ...piRuntimeVersionsField(),
         detail: `verified ${planningIdentitySummary.identityVerdict} after ${planningIdentitySummary.turnsVerified} turn(s)`,
         recordedAt: new Date().toISOString(),
         ...(planningIdentitySummary.providerReportedModel
@@ -1044,6 +1065,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       : {
         status: 'direct' as const,
         source: 'native-runtime',
+        ...piRuntimeVersionsField(),
         recordedAt: new Date().toISOString(),
       };
     await updateStageResult(featureDir, 'planning', {
@@ -1112,6 +1134,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
           executionEvidence: {
             status: 'contradicted',
             source: 'provider-response',
+            ...piRuntimeVersionsField(),
             detail: `${err.reason}: expected=${err.expectedModel} reported=${err.reportedModel ?? '(none)'} turn=${err.turnIndex}`,
             recordedAt: new Date().toISOString(),
             ...(err.reportedModel ? { providerReportedModel: err.reportedModel } : {}),
