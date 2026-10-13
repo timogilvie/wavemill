@@ -357,7 +357,7 @@ test('formatter aggregates delivered-and-archived tasks and collapses merged-awa
   const base: TerminalInboxDecision = {
     issue: '', slug: '', branch: '', worktree: '', prNumber: '',
     status: 'refused', refusalReason: '', workflowOutcome: 'merged', resourceDisposition: 'retained',
-    challengeRole: '', challengePairId: '', siblingPrNumber: '', siblingPrState: '',
+    challengeRole: '', challengePairId: '', pairEvidence: 'none', siblingPrNumber: '', siblingPrState: '',
     pr: { number: '', state: 'UNKNOWN', mergedAt: '', headRefOid: '', headRefName: '', baseRefName: '', mergeCommitOid: '' },
     git: { worktreeExists: false, worktreeDirty: false, dirtyStatus: '', localBranchExists: false, localHeadSha: '', remoteHeadSha: '', remoteContainsHead: false, commitsAhead: 0, patchEquivalent: false, patchUniqueCount: 0, patchEquivalentCount: 0 },
     pane: { windowId: '', paneState: '', paneReleased: false, intendedAction: 'none' },
@@ -624,7 +624,7 @@ test('formatter surfaces the kept status in the summary counts (HOK-3201)', () =
   const base: TerminalInboxDecision = {
     issue: 'HOK-3005', slug: 'demo', branch: 'task/demo', worktree: '/tmp/demo', prNumber: '101',
     status: 'kept', refusalReason: 'kept_by_operator', workflowOutcome: 'merged', resourceDisposition: 'retained',
-    challengeRole: '', challengePairId: '', siblingPrNumber: '', siblingPrState: '',
+    challengeRole: '', challengePairId: '', pairEvidence: 'none', siblingPrNumber: '', siblingPrState: '',
     pr: { number: '101', state: 'UNKNOWN', mergedAt: '', headRefOid: '', headRefName: '', baseRefName: '', mergeCommitOid: '' },
     git: { worktreeExists: false, worktreeDirty: 'unknown', dirtyStatus: '', localBranchExists: false, localHeadSha: '', remoteHeadSha: '', remoteContainsHead: false, commitsAhead: null, patchEquivalent: 'unknown', patchUniqueCount: null, patchEquivalentCount: null },
     pane: { windowId: '', paneState: 'active', paneReleased: false, intendedAction: 'none' },
@@ -635,4 +635,337 @@ test('formatter surfaces the kept status in the summary counts (HOK-3201)', () =
   assert.match(out, /kept=1/);
   // kept tasks are not executable — the row never says "execute"
   assert.doesNotMatch(out, /^execute\tHOK-3005/m);
+});
+
+// ─── HOK-3209: sibling-identity resolution when pair metadata is lost ───────
+//
+// A challenger task row whose `challengeRole` and `challengePairId` were
+// dropped (stub recreation, HOK-3125 shape) still has to retire once its
+// winning primary PR merges. The resolver derives role + pair ID from the
+// task ID itself via the task-identity helpers, then walks state → history →
+// tombstones → challengePairs → `gh pr list` to find the sibling PR.
+
+function hok3209State(options: {
+  challenger: Record<string, unknown>;
+  primaryInTasks?: Record<string, unknown>;
+  terminalTaskHistory?: Record<string, unknown>;
+  terminalTaskTombstones?: Record<string, unknown>;
+}): WorkflowState {
+  const tasks: Record<string, Record<string, unknown>> = {
+    'HOK-3150_c': {
+      slug: '',
+      branch: 'task/hok-3150_c',
+      worktree: '/tmp/hok-3150_c',
+      pr: '1598',
+      status: 'closed',
+      phase: 'closed',
+      challengeRole: null,
+      challengePairId: null,
+      lifecycle: {
+        workflowOutcome: 'closed',
+        resourceDisposition: 'retained',
+        launchContract: { baseBranch: 'auto/integration', runEpoch: 'epoch-1' },
+      },
+      ...options.challenger,
+    },
+  };
+  if (options.primaryInTasks) {
+    tasks['HOK-3150'] = options.primaryInTasks;
+  }
+  return {
+    session: 'cleanup-test',
+    tasks,
+    ...(options.terminalTaskHistory ? { terminalTaskHistory: options.terminalTaskHistory } : {}),
+    ...(options.terminalTaskTombstones ? { terminalTaskTombstones: options.terminalTaskTombstones as Record<string, never> } : {}),
+  };
+}
+
+test('HOK-3209: closed challenger with null pair fields, merged primary in state → would-abandon-loser (inferred)', () => {
+  const workflow = hok3209State({
+    challenger: {},
+    primaryInTasks: {
+      slug: 'spike-pi-crash-resume',
+      branch: 'task/spike-pi-crash-resume',
+      worktree: '/tmp/spike-pi-crash-resume',
+      pr: '1602',
+      status: 'merged',
+    },
+  });
+  const decision = decideTerminalTask(
+    workflow,
+    'HOK-3150_c',
+    process.cwd(),
+    'auto/integration',
+    deps({ prs: { 1598: closedPr('1598'), 1602: mergedPr('1602') } }),
+    true,
+  );
+  assert.equal(decision.status, 'would-abandon-loser');
+  assert.equal(decision.pairEvidence, 'inferred-from-task-id');
+  assert.equal(decision.challengeRole, 'challenger');
+  assert.equal(decision.challengePairId, 'HOK-3150');
+  assert.equal(decision.siblingPrNumber, '1602');
+  assert.equal(decision.siblingPrState, 'MERGED');
+});
+
+test('HOK-3209: without --abandon, inferred-sibling closed challenger still requires abandon', () => {
+  const workflow = hok3209State({
+    challenger: {},
+    primaryInTasks: {
+      slug: 'spike-pi-crash-resume',
+      branch: 'task/spike-pi-crash-resume',
+      worktree: '/tmp/spike-pi-crash-resume',
+      pr: '1602',
+      status: 'merged',
+    },
+  });
+  const decision = decideTerminalTask(
+    workflow,
+    'HOK-3150_c',
+    process.cwd(),
+    'auto/integration',
+    deps({ prs: { 1598: closedPr('1598'), 1602: mergedPr('1602') } }),
+    false,
+  );
+  assert.equal(decision.status, 'refused');
+  assert.equal(decision.refusalReason, 'closed_loser_requires_abandon');
+  assert.equal(decision.pairEvidence, 'inferred-from-task-id');
+});
+
+test('HOK-3209: closed challenger with null pair fields, OPEN primary PR → still refused', () => {
+  const workflow = hok3209State({
+    challenger: {},
+    primaryInTasks: {
+      slug: 'spike-pi-crash-resume',
+      branch: 'task/spike-pi-crash-resume',
+      worktree: '/tmp/spike-pi-crash-resume',
+      pr: '1602',
+      status: 'active',
+    },
+  });
+  const openPrimary = JSON.stringify({ number: 1602, state: 'OPEN', mergedAt: null, headRefOid: 'x', headRefName: 'task/spike-pi-crash-resume', baseRefName: 'auto/integration', mergeCommit: null });
+  const decision = decideTerminalTask(
+    workflow,
+    'HOK-3150_c',
+    process.cwd(),
+    'auto/integration',
+    deps({ prs: { 1598: closedPr('1598'), 1602: openPrimary } }),
+    true,
+  );
+  assert.equal(decision.status, 'refused');
+  assert.equal(decision.refusalReason, 'closed_loser_sibling_not_merged');
+  // Inference still succeeded — we found a sibling PR — but the sibling has not merged.
+  assert.equal(decision.pairEvidence, 'inferred-from-task-id');
+  assert.equal(decision.siblingPrState, 'OPEN');
+});
+
+test('HOK-3209: sibling resolved via terminalTaskHistory.tasks when not in state.tasks', () => {
+  const workflow = hok3209State({
+    challenger: {},
+    terminalTaskHistory: {
+      tasks: {
+        'HOK-3150': {
+          issue: 'HOK-3150',
+          prNumber: '1602',
+          decisionStatus: 'executed',
+        },
+      },
+    },
+  });
+  const decision = decideTerminalTask(
+    workflow,
+    'HOK-3150_c',
+    process.cwd(),
+    'auto/integration',
+    deps({ prs: { 1598: closedPr('1598'), 1602: mergedPr('1602') } }),
+    true,
+  );
+  assert.equal(decision.status, 'would-abandon-loser');
+  assert.equal(decision.pairEvidence, 'inferred-from-task-id');
+  assert.equal(decision.siblingPrNumber, '1602');
+});
+
+test('HOK-3209: sibling resolved via terminalTaskTombstones when not in state or history.tasks', () => {
+  const workflow = hok3209State({
+    challenger: {},
+    terminalTaskTombstones: {
+      'HOK-3150|1602|epoch-1|1': {
+        schemaVersion: 1,
+        issue: 'HOK-3150',
+        slug: 'spike-pi-crash-resume',
+        branch: 'task/spike-pi-crash-resume',
+        worktree: '/tmp/spike-pi-crash-resume',
+        prNumber: '1602',
+        workflowOutcome: 'merged',
+        resourceDisposition: 'reaped',
+        challengePairId: 'HOK-3150',
+        challengeRole: 'primary',
+        runEpoch: 'epoch-1',
+        attempt: '1',
+        actor: 'cleanup',
+        command: 'cleanup HOK-3150 --execute',
+        createdAt: '2026-10-10T00:00:00Z',
+        decisionStatus: 'executed',
+        decisionReason: '',
+        task: {},
+      },
+    },
+  });
+  const decision = decideTerminalTask(
+    workflow,
+    'HOK-3150_c',
+    process.cwd(),
+    'auto/integration',
+    deps({ prs: { 1598: closedPr('1598'), 1602: mergedPr('1602') } }),
+    true,
+  );
+  assert.equal(decision.status, 'would-abandon-loser');
+  assert.equal(decision.pairEvidence, 'inferred-from-task-id');
+  assert.equal(decision.siblingPrNumber, '1602');
+});
+
+test('HOK-3209: sibling resolved via terminalTaskHistory.challengePairs inner records', () => {
+  const workflow = hok3209State({
+    challenger: {},
+    terminalTaskHistory: {
+      challengePairs: {
+        'HOK-3150': {
+          primary: {
+            issue: 'HOK-3150',
+            prNumber: '1602',
+            decisionStatus: 'executed',
+          },
+        },
+      },
+    },
+  });
+  const decision = decideTerminalTask(
+    workflow,
+    'HOK-3150_c',
+    process.cwd(),
+    'auto/integration',
+    deps({ prs: { 1598: closedPr('1598'), 1602: mergedPr('1602') } }),
+    true,
+  );
+  assert.equal(decision.status, 'would-abandon-loser');
+  assert.equal(decision.pairEvidence, 'inferred-from-task-id');
+  assert.equal(decision.siblingPrNumber, '1602');
+});
+
+test('HOK-3209: gh pr list fallback resolves sibling by branch prefix', () => {
+  const workflow = hok3209State({ challenger: {} });
+  let listedBranches: string[] = [];
+  const ghStub: CleanupDeps['gh'] = (args) => {
+    if (args[0] === 'pr' && args[1] === 'list') {
+      const headIndex = args.indexOf('--head');
+      listedBranches.push(args[headIndex + 1]);
+      // Return a hit for the first attempted branch.
+      return JSON.stringify([{ number: 1602 }]);
+    }
+    if (args[0] === 'pr' && args[1] === 'view') {
+      const pr = args[2];
+      if (pr === '1598') return closedPr('1598');
+      if (pr === '1602') return mergedPr('1602');
+    }
+    throw new Error(`unexpected gh call: ${args.join(' ')}`);
+  };
+  const decision = decideTerminalTask(
+    workflow,
+    'HOK-3150_c',
+    process.cwd(),
+    'auto/integration',
+    deps({ gh: ghStub }),
+    true,
+  );
+  assert.equal(decision.status, 'would-abandon-loser');
+  assert.equal(decision.pairEvidence, 'inferred-from-task-id');
+  assert.equal(decision.siblingPrNumber, '1602');
+  assert.ok(listedBranches.length >= 1, 'gh pr list must be called for inferred rows');
+  assert.ok(listedBranches.some((branch) => branch.startsWith('task/')), 'gh pr list must receive a task/<slug> branch');
+});
+
+test('HOK-3209: well-formed row does NOT invoke the gh pr list fallback', () => {
+  const sibling = { slug: 'winner', branch: 'task/winner', worktree: '/tmp/winner', pr: '102', status: 'merged' };
+  const task = { status: 'closed', phase: 'closed', challenge: true, challengeRole: 'primary', challengePairId: 'HOK-3005' };
+  let prListCalls = 0;
+  const ghStub: CleanupDeps['gh'] = (args) => {
+    if (args[0] === 'pr' && args[1] === 'list') {
+      prListCalls += 1;
+      return '[]';
+    }
+    const pr = args[2];
+    if (pr === '101') return closedPr('101');
+    if (pr === '102') return mergedPr('102');
+    throw new Error(`unexpected gh call: ${args.join(' ')}`);
+  };
+  const decision = decideTerminalTask(
+    state(task, sibling),
+    'HOK-3005',
+    process.cwd(),
+    'auto/integration',
+    deps({ gh: ghStub }),
+    true,
+  );
+  assert.equal(decision.status, 'would-abandon-loser');
+  assert.equal(decision.pairEvidence, 'task-metadata', 'well-formed rows must report task-metadata evidence');
+  assert.equal(prListCalls, 0, 'well-formed rows must not pay for a gh pr list round-trip');
+});
+
+test('HOK-3209: bare primary with null pair fields and no challenger evidence stays refused', () => {
+  // A primary task that has no challenger anywhere: inference tentatively
+  // assigns role=primary, but findSiblingPr returns nothing, so pairEvidence
+  // downgrades to 'none' and the CLOSED-no-merged branch refuses as today.
+  const workflow: WorkflowState = {
+    session: 'cleanup-test',
+    tasks: {
+      'HOK-3300': {
+        slug: 'bare-primary',
+        branch: 'task/bare-primary',
+        worktree: '/tmp/bare-primary',
+        pr: '2001',
+        status: 'closed',
+        phase: 'closed',
+        challengeRole: null,
+        challengePairId: null,
+        lifecycle: {
+          workflowOutcome: 'closed',
+          resourceDisposition: 'retained',
+          launchContract: { baseBranch: 'auto/integration', runEpoch: 'epoch-1' },
+        },
+      },
+    },
+  };
+  const ghStub: CleanupDeps['gh'] = (args) => {
+    if (args[0] === 'pr' && args[1] === 'list') return '[]';
+    const pr = args[2];
+    if (pr === '2001') return closedPr('2001');
+    throw new Error(`unexpected gh call: ${args.join(' ')}`);
+  };
+  const decision = decideTerminalTask(
+    workflow,
+    'HOK-3300',
+    process.cwd(),
+    'auto/integration',
+    deps({ gh: ghStub }),
+    true,
+  );
+  assert.equal(decision.status, 'refused');
+  assert.equal(decision.refusalReason, 'closed_loser_sibling_not_merged');
+  assert.equal(decision.pairEvidence, 'none', 'no fabricated pair metadata without evidence');
+  assert.equal(decision.challengeRole, '');
+  assert.equal(decision.challengePairId, '');
+});
+
+test('HOK-3209: well-formed merged row reports pairEvidence = task-metadata', () => {
+  const decision = decideTerminalTask(
+    state({}),
+    'HOK-3005',
+    process.cwd(),
+    'auto/integration',
+    deps({ prs: { 101: mergedPr('101') }, cherry: '- abc\n- def\n' }),
+  );
+  assert.equal(decision.status, 'would-reap');
+  // No challenge metadata on the row at all — a solo primary is unpaired, so
+  // the evidence is `none` (not `task-metadata` which is reserved for rows
+  // that recorded both fields).
+  assert.equal(decision.pairEvidence, 'none');
 });
