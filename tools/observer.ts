@@ -39,7 +39,16 @@ import {
 } from '../shared/lib/observer-alerts.ts';
 import { abortTaskInState } from '../shared/lib/task-abort.ts';
 import { getResultFilePath, type ReadyArtifacts, type StageResult } from '../shared/lib/stage-result.ts';
-import { detectIncidentsForRepo, detectIncidentsForTask, type TendCandidateDiagnostic } from '../shared/lib/wavemill-incident-detector.ts';
+import { detectIncidentsForRepo, detectIncidentsForTask } from '../shared/lib/wavemill-incident-detector.ts';
+import { buildTendCandidates } from '../shared/lib/wavemill-incident-tend-candidates.ts';
+import { evaluateRecoveryPredicate } from '../shared/lib/wavemill-incident-recovery.ts';
+import {
+  OBSERVER_SNAPSHOT_SCHEMA_VERSION,
+  incidentChainEvidenceLines,
+  projectRemediationProposals,
+  supersedeGenericFindings,
+  type RemediationProposalProjection,
+} from '../shared/lib/wavemill-incident-projection.ts';
 import { IncidentStore } from '../shared/lib/wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentRecord, type IncidentRootCauseClass } from '../shared/lib/wavemill-incident-model.ts';
 import { createLookupBudget, syncIncident, syncIncidentLifecycle, type LifecycleSyncResult, type SyncResult } from '../shared/lib/incident-to-linear-synchronizer.ts';
@@ -262,6 +271,8 @@ interface RepoSnapshot {
 }
 
 interface ObserverSnapshot {
+  /** Machine-readable schema id of the `--json` snapshot (HOK-2595); additive changes keep `/1`. */
+  schemaVersion?: typeof OBSERVER_SNAPSHOT_SCHEMA_VERSION;
   timestamp: string;
   sessions: string[];
   panes: Pane[];
@@ -269,6 +280,12 @@ interface ObserverSnapshot {
   repos: RepoSnapshot[];
   findings: Finding[];
   incidents?: IncidentRecord[];
+  /** Typed, validated remediation proposals from non-resolved incidents; never authorization. */
+  remediationProposals?: RemediationProposalProjection[];
+  /** Proposals dropped because they failed `validateRemediationProposal`. */
+  remediationProposalErrors?: number;
+  /** Incidents resolved this tick because their recovery predicate held. */
+  recoveredIncidents?: Array<{ fingerprint: string; rootCauseClass: IncidentRootCauseClass; reason: string; evidence?: string }>;
   incidentSync?: IncidentSyncSnapshot;
 }
 
@@ -3703,6 +3720,7 @@ function observe(options: ObserverOptions): ObserverSnapshot {
   const processes = filterRelevantProcesses(processRows(), panes);
   const repos = snapshotRepos(sessions, options);
   const partial = {
+    schemaVersion: OBSERVER_SNAPSHOT_SCHEMA_VERSION,
     timestamp: new Date().toISOString(),
     sessions,
     panes,
@@ -3720,6 +3738,8 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
   if (!options.incidentDetector) {
     return { ...snapshot, incidents };
   }
+  const incidentsByRepo = new Map<string, IncidentRecord[]>();
+  const recoveredIncidents: NonNullable<ObserverSnapshot['recoveredIncidents']> = [];
 
   for (const repo of snapshot.repos) {
     let incidentConfig: ReturnType<typeof getIncidentConfig>;
@@ -3744,7 +3764,12 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
     // a detector or persistence failure must not resolve incidents by absence.
     let cycleComplete = true;
     const candidates: IncidentRecord[] = [];
-    const tendCandidates = buildTendCandidateDiagnostics(repo, snapshot.findings);
+    const tendCandidates = buildTendCandidates({
+      repoDir: repo.repoDir,
+      now: new Date(snapshot.timestamp),
+      findings: snapshot.findings,
+      tasks: repo.tasks,
+    });
     try {
       const detectorContext = { repoDir: repo.repoDir, session: repo.session, now: new Date(snapshot.timestamp), tendCandidates };
       for (const task of repo.tasks) {
@@ -3775,11 +3800,16 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
     }
 
     const freshFingerprints: string[] = [];
+    const observedFingerprints = new Set<string>();
+    const repoIncidents: IncidentRecord[] = [];
+    incidentsByRepo.set(repo.repoDir, repoIncidents);
     for (const incident of dedupeIncidentCandidates(candidates, store)) {
       try {
         const { record: stored, freshEvent } = await store.upsertDetailed(incident);
         if (freshEvent) freshFingerprints.push(stored.fingerprint);
+        observedFingerprints.add(stored.fingerprint);
         incidents.push(stored);
+        repoIncidents.push(stored);
       } catch (error) {
         cycleComplete = false;
         snapshot.findings.push({
@@ -3798,6 +3828,38 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
     }
 
     if (cycleComplete) {
+      // Recovery predicates (HOK-2595): an open correlated incident that was
+      // not re-observed this cycle resolves as soon as its declared progress
+      // condition holds (new review attempt, head change, comparison), rather
+      // than waiting out the absence sweep. Missing evidence never resolves.
+      try {
+        for (const record of await store.getIncidents()) {
+          if (observedFingerprints.has(record.fingerprint)) continue;
+          const recovery = evaluateRecoveryPredicate(record, repo.repoDir);
+          if (!recovery.satisfied || !recovery.reason) continue;
+          const resolved = await store.autoResolve(record.fingerprint, { reason: recovery.reason });
+          if (resolved) {
+            recoveredIncidents.push({
+              fingerprint: resolved.fingerprint,
+              rootCauseClass: resolved.rootCauseClass,
+              reason: recovery.reason,
+              ...(recovery.evidence ? { evidence: recovery.evidence } : {}),
+            });
+          }
+        }
+      } catch (error) {
+        snapshot.findings.push({
+          id: `incident-recovery-error-${repo.session}-${hashText(repo.repoDir)}`,
+          severity: 'medium',
+          category: 'operational',
+          confidence: 'high',
+          session: repo.session,
+          repoDir: repo.repoDir,
+          title: 'Observer could not evaluate incident recovery predicates',
+          evidence: [`error=${error instanceof Error ? error.message : String(error)}`],
+          recommendation: 'Inspect .wavemill/incidents permissions and malformed state files; correlated incidents will still resolve through the absence sweep.',
+        });
+      }
       try {
         await store.runResolutionSweep(
           freshFingerprints,
@@ -3820,68 +3882,25 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
   }
 
   const uniqueIncidents = dedupeIncidents(incidents);
+  // A specific causal chain supersedes the generic stale-task advice for the
+  // same repo/issue; without one the generic finding is untouched.
+  let findings = snapshot.findings;
+  for (const [repoDir, repoIncidents] of incidentsByRepo) {
+    const repoFindings = findings.filter((finding) => finding.repoDir === repoDir);
+    const rewritten = supersedeGenericFindings(repoFindings, repoIncidents);
+    const replacement = new Map(repoFindings.map((finding, index) => [finding, rewritten[index]] as const));
+    findings = findings.map((finding) => replacement.get(finding) ?? finding);
+  }
+  const projection = projectRemediationProposals(uniqueIncidents);
   return {
     ...snapshot,
-    findings: dedupeFindings([...snapshot.findings, ...uniqueIncidents.map(convertIncidentToFinding)]),
+    schemaVersion: OBSERVER_SNAPSHOT_SCHEMA_VERSION,
+    findings: dedupeFindings([...findings, ...uniqueIncidents.map(convertIncidentToFinding)]),
     incidents: uniqueIncidents,
+    remediationProposals: projection.proposals,
+    remediationProposalErrors: projection.errors,
+    recoveredIncidents,
   };
-}
-
-function buildTendCandidateDiagnostics(repo: RepoSnapshot, findings: Finding[]): TendCandidateDiagnostic[] {
-  const candidates: TendCandidateDiagnostic[] = [];
-  for (const finding of findings) {
-    if (finding.repoDir !== repo.repoDir) continue;
-    if (!finding.id.startsWith('marker-')) continue;
-    const fields = evidenceKeyValueMap(finding.evidence);
-    const markerKind = fields.get('markerKind');
-    if (markerKind !== 'merge-lane-idle-stall' && markerKind !== 'merge-lane-idle-stalled') continue;
-    const pr = numberFromString(fields.get('firstBlockedPr'))
-      ?? numberFromString(fields.get('prNumber'))
-      ?? firstNumberFromCsv(fields.get('blockedPrs'));
-    if (!pr) continue;
-    const task = repo.tasks.find((entry) => prNumberFromTask(entry) === pr);
-    candidates.push({
-      taskId: finding.issue ?? task?.issue,
-      pr,
-      headBranch: task?.branch,
-      markerKind,
-      firstBlockedGate: fields.get('firstBlockedGate') ?? fields.get('gate'),
-      pairId: fields.get('pairId') ?? task?.challengePairId,
-      blockedReason: fields.get('blockedReason') ?? fields.get('tendBlockReason'),
-    });
-  }
-  return candidates;
-}
-
-function evidenceKeyValueMap(evidence: string[]): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const line of evidence) {
-    const index = line.indexOf('=');
-    if (index <= 0) continue;
-    map.set(line.slice(0, index), line.slice(index + 1));
-  }
-  return map;
-}
-
-function numberFromString(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  const parsed = Number(value.replace(/^#/, ''));
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
-
-function firstNumberFromCsv(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  for (const part of value.split(',')) {
-    const parsed = numberFromString(part.trim());
-    if (parsed) return parsed;
-  }
-  return undefined;
-}
-
-function prNumberFromTask(task: TaskState): number | undefined {
-  if (!task.pr) return undefined;
-  const match = task.pr.match(/\d+/);
-  return match ? numberFromString(match[0]) : undefined;
 }
 
 function resolveTaskArtifactDir(repoDir: string, task: TaskState): string | null {
@@ -3907,6 +3926,7 @@ function convertIncidentToFinding(incident: IncidentRecord): Finding {
       `rootCause=${incident.rootCauseClass}`,
       `lifecycle=${incident.lifecycle}`,
       `occurrences=${incident.occurrenceCount}`,
+      ...incidentChainEvidenceLines(incident),
       ...incident.evidence.slice(-2).map((evidence) => `${evidence.type}:${basename(evidence.source)} ${evidence.redactedData}`),
     ],
     recommendation: incident.operatorAction,
@@ -4763,8 +4783,26 @@ function renderSummary(snapshot: ObserverSnapshot): string {
     lines.push('');
     lines.push(`Incidents: ${snapshot.incidents.length}`);
     for (const incident of snapshot.incidents.slice(0, 8)) {
-      lines.push(`  [${incident.lifecycle}/${incident.category}] ${incident.rootCauseClass}: ${incident.summary}`);
+      lines.push(`  [${incident.lifecycle}/${incident.category}/${incident.confidence}] ${incident.rootCauseClass}: ${incident.summary}`);
+      const chain = Array.isArray(incident.metadata?.causalChain) ? incident.metadata.causalChain : [];
+      if (chain.length > 0) lines.push(`  cause: ${chain.map((entry) => entry.cause).join(' → ')}`);
       lines.push(`  action: ${incident.operatorAction}`);
+    }
+  }
+  if (snapshot.remediationProposals && snapshot.remediationProposals.length > 0) {
+    lines.push('');
+    lines.push(`Remediation proposals (not authorization): ${snapshot.remediationProposals.length}${snapshot.remediationProposalErrors ? ` (${snapshot.remediationProposalErrors} invalid dropped)` : ''}`);
+    for (const item of snapshot.remediationProposals.slice(0, 8)) {
+      const target = item.proposal.target;
+      const targetText = target?.prNumber ? ` PR #${target.prNumber}` : '';
+      lines.push(`  ${item.proposal.kind}@${item.proposal.schemaVersion}${targetText} [${item.issue ?? 'repo'}] allowed=${(item.proposal.allowedActions ?? []).join(',') || 'none'}`);
+    }
+  }
+  if (snapshot.recoveredIncidents && snapshot.recoveredIncidents.length > 0) {
+    lines.push('');
+    lines.push(`Recovered incidents: ${snapshot.recoveredIncidents.length}`);
+    for (const item of snapshot.recoveredIncidents.slice(0, 8)) {
+      lines.push(`  ${item.rootCauseClass} ${item.fingerprint.slice(0, 16)} ${item.reason}${item.evidence ? ` (${item.evidence})` : ''}`);
     }
   }
   if (snapshot.incidentSync) {
