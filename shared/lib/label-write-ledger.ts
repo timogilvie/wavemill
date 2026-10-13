@@ -43,7 +43,7 @@ export function labelWriteLedgerPath(repoDir: string): string {
  * repo's `.wavemill/`, so a write from inside a task worktree lands in the
  * same file the reliability report reads.
  */
-function resolveLedgerRepoDir(env: NodeJS.ProcessEnv, cwd: string): string | null {
+export function resolveLedgerRepoDir(env: NodeJS.ProcessEnv, cwd: string): string | null {
   const explicit = env.WAVEMILL_MILLED_REPO_DIR || env.REPO_DIR;
   if (explicit) return explicit;
   try {

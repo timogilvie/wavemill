@@ -6,6 +6,9 @@ import test from 'node:test';
 import { readChallengeComparisons } from './challenge-comparison.ts';
 import { resolvePrimaryMergedPair, resolveUnresolvablePair } from './challenge-pair-resolver.ts';
 import { applyChallengePairGates, type ChallengeEligibleWorkItem } from './tend-challenge-gate.ts';
+import { Ledger } from './ledger.ts';
+import { ensureArm } from './ledger-shadow.ts';
+import { challengerTaskKey } from './task-identity.ts';
 
 function setupRepoDir(config: Record<string, unknown> = {}): { repoDir: string; cleanup: () => void } {
   const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-resolver-'));
@@ -739,6 +742,59 @@ test('resolver auto-detects both aborted arms and forfeits to completed survivor
   }
 });
 
+test('resolver shadow write settles both ledger arms when both arms aborted', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    const seed = Ledger.open({ repoDir });
+    try {
+      ensureArm(seed, 'pair-both', 'pair-both', 'primary');
+      ensureArm(seed, 'pair-both', challengerTaskKey('pair-both'), 'challenger');
+    } finally {
+      seed.close();
+    }
+    writeWorkflowState(repoDir, {
+      HOK_1: {
+        pr: 101,
+        branch: 'task/primary',
+        updated: '2026-07-01T00:00:00Z',
+        challengePairId: 'pair-both',
+        challengeRole: 'primary',
+        challengeModel: 'gpt-5.5',
+        evalCompleted: true,
+        challengeAborted: 'terminal_stage_failure:tool-use-unsupported',
+        challengeAbortedStage: 'coding',
+      },
+      HOK_1_c: {
+        branch: 'task/primary-challenger',
+        updated: '2026-07-01T00:00:00Z',
+        challengePairId: 'pair-both',
+        challengeRole: 'challenger',
+        challengeModel: 'qwen-2.5-coder-32b',
+        challengeAborted: 'terminal_stage_failure:tool-use-unsupported',
+        challengeAbortedStage: 'coding',
+      },
+    });
+
+    const result = await resolveUnresolvablePair({ pairId: 'pair-both', repoDir });
+    assert.equal(result.status, 'resolved');
+
+    const ledger = Ledger.open({ repoDir });
+    try {
+      const pairRow = ledger.listTasks({ kind: 'pair' }).find((row) => row.slug === 'pair-both');
+      assert.ok(pairRow);
+      const arms = ledger.listChildren(pairRow.id).filter((row) => row.kind === 'arm');
+      assert.equal(arms.length, 2);
+      for (const arm of arms) {
+        assert.equal(arm.settled_as, 'aborted', `arm ${arm.slug} should be settled`);
+      }
+    } finally {
+      ledger.close();
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test('resolver skips aborted pair when lone surviving PR has not persisted eval', async () => {
   const { repoDir, cleanup } = setupRepoDir();
   try {
@@ -980,7 +1036,7 @@ test('resolver and gate agree on aborted pair reason and unblock after resolutio
       { remoteBranches: ['task/primary'], coolOffSeconds: 0 },
     );
     assert.equal(blocked.eligible.length, 0);
-    assert.equal(blocked.blocked[0]?.reason, 'challenge:pair-unresolvable:both-challenge-aborted');
+    assert.equal(blocked.blocked[0]?.reason, 'challenge:pair-unresolved:both-challenge-aborted');
 
     const resolution = await resolveUnresolvablePair({ pairId: 'pair-abort', repoDir });
     assert.equal(resolution.status, 'resolved');
@@ -1356,7 +1412,7 @@ test('dirty-handoff abort resolves the pair and releases the primary PR (HOK-312
     };
 
     const before = await applyChallengePairGates(items, [], repoDir, gateOptions);
-    assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolvable:sibling-challenge-aborted');
+    assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolved:sibling-challenge-aborted');
 
     const resolution = await resolveUnresolvablePair({ pairId: 'HOK-3121', repoDir, remoteBranches: [] });
     assert.equal(resolution.status, 'resolved');
@@ -1383,7 +1439,7 @@ test('tend backstop: a stalled challenger with no abort stamp still releases the
     };
 
     const before = await applyChallengePairGates(items, [], repoDir, gateOptions);
-    assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolvable:sibling-stalled');
+    assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolved:sibling-stalled');
 
     const resolution = await resolveUnresolvablePair({
       pairId: 'HOK-3121',
@@ -1619,7 +1675,7 @@ for (const [label, abort, expectedOutcome] of [
       // Before the resolver runs, the stamp alone makes the pair unresolvable
       // rather than `no-comparison`.
       const before = await applyChallengePairGates([primaryItem], [], repoDir, gateOptions);
-      assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolvable:sibling-challenge-aborted');
+      assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolved:sibling-challenge-aborted');
 
       const resolution = await resolveUnresolvablePair({ pairId: 'HOK-3145', repoDir });
       assert.equal(resolution.status, 'resolved');

@@ -30,7 +30,7 @@ runTool({
     const stateName = args.state || 'In Progress';
     // Challengers are skipped; invalid/conflicting IDs are reported in
     // `failed` as non-retryable client errors (HOK-3115).
-    const result = await setTaskIssuesState(positional, stateName);
+    const result = await setTaskIssuesState(positional, stateName, { transition: { triggerHint: 'set-issues-state' } });
     console.log(JSON.stringify(result, null, 2));
     if (result.failed.length > 0) {
       process.exit(1);

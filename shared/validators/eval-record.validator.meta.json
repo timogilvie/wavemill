@@ -1,0 +1,12 @@
+{
+  "name": "eval-record",
+  "schemaPath": "shared/lib/eval-schema.json",
+  "schemaSha256": "b80929d89fe0e7576940705278f399620988e637e0ee57aa2e2f20e7ce0e21ab",
+  "codeSha256": "a5d7ac0a42bcf4e9e1e3bdb7dee5896ca6e72294ab91b3467f6e0dd55fb5523e",
+  "ajvOptions": {
+    "allErrors": true,
+    "strict": false,
+    "validateFormats": false
+  },
+  "ajvModule": "ajv/dist/2020"
+}

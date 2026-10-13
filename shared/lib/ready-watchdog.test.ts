@@ -2915,10 +2915,10 @@ test('classify orphaned challenge PR in merge lane as needs-user with recovery c
     WATCHDOG_CONFIG,
     undefined,
     {
-      kind: 'pair-unresolvable',
+      kind: 'pair-unresolved',
       pairId: 'HOK-2358',
       otherPr: null,
-      reason: 'orphan-sibling',
+      reason: 'pair-unresolved:orphan-sibling',
     },
   );
 
@@ -2941,10 +2941,10 @@ test('classify challenge PR with exhausted sibling eval as needs-user with recov
     WATCHDOG_CONFIG,
     undefined,
     {
-      kind: 'pair-unresolvable',
+      kind: 'pair-unresolved',
       pairId: 'HOK-2358',
       otherPr: 900,
-      reason: 'sibling-eval-hard-failed',
+      reason: 'pair-unresolved:sibling-eval-hard-failed',
     },
   );
 
@@ -2966,10 +2966,10 @@ test('classify challenge PR with aborted sibling as needs-user with recovery com
     WATCHDOG_CONFIG,
     undefined,
     {
-      kind: 'pair-unresolvable',
+      kind: 'pair-unresolved',
       pairId: 'HOK-2358',
       otherPr: 900,
-      reason: 'sibling-challenge-aborted',
+      reason: 'pair-unresolved:sibling-challenge-aborted',
     },
   );
 
@@ -2991,10 +2991,10 @@ test('classify challenge PR with a stalled no-PR sibling as needs-user with reco
     WATCHDOG_CONFIG,
     undefined,
     {
-      kind: 'pair-unresolvable',
+      kind: 'pair-unresolved',
       pairId: 'HOK-2358',
       otherPr: null,
-      reason: 'sibling-stalled',
+      reason: 'pair-unresolved:sibling-stalled',
     },
   );
 
@@ -3016,10 +3016,10 @@ test('classify challenge PR with both arms aborted as needs-user with recovery c
     WATCHDOG_CONFIG,
     undefined,
     {
-      kind: 'pair-unresolvable',
+      kind: 'pair-unresolved',
       pairId: 'HOK-2358',
       otherPr: 900,
-      reason: 'both-challenge-aborted',
+      reason: 'pair-unresolved:both-challenge-aborted',
     },
   );
 

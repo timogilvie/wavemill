@@ -13,6 +13,7 @@ export interface FixtureTask {
   readonly worktree: string;
   readonly featureDir: string;
   readonly slug: string;
+  readonly forkCommit: string;
 }
 
 const TASK_PACKET = `# Task Packet — spike/multi-file
@@ -69,5 +70,10 @@ export async function createFixtureTask(): Promise<FixtureTask> {
   await writeFile(path.join(featureDir, 'task-packet.md'), TASK_PACKET, 'utf8');
   await writeFile(path.join(featureDir, 'plan.md'), PLAN_MD, 'utf8');
 
-  return { scratch, worktree, featureDir, slug };
+  const forkCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: worktree,
+    encoding: 'utf8',
+  }).trim();
+
+  return { scratch, worktree, featureDir, slug, forkCommit };
 }

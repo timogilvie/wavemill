@@ -31,6 +31,14 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 TESTS=(
   tests/ledger.test.ts
+  shared/lib/ledger-shadow.test.ts
+  shared/lib/ledger-consistency.test.ts
+  shared/lib/ledger-replay-contract.test.ts
+  shared/lib/ledger-pair-abort.test.ts
+  shared/lib/ledger-recovery.test.ts
+  shared/lib/side-effect-ledger.test.ts
+  shared/lib/side-effect-duplicate-detector.test.ts
+  shared/lib/side-effect-replay-contract.test.ts
   shared/lib/session.test.js
   shared/lib/session-timer.test.js
   shared/lib/eval-prompt-size.test.ts
@@ -67,6 +75,7 @@ TESTS=(
   shared/lib/native-agent/tool-compat-fixtures.test.ts
   shared/lib/native-agent/patch-contract.test.ts
   shared/lib/native-agent/patch-runtime.test.ts
+  shared/lib/native-agent/patch-journal.test.ts
   shared/lib/native-agent/patch-matcher.test.ts
   shared/lib/native-agent/coding-failure-handoff.test.ts
   shared/lib/native-agent/stage-failure-envelope.test.ts
@@ -222,6 +231,8 @@ TESTS=(
   shared/lib/merge-labels.test.ts
   shared/lib/model-registry.test.ts
   shared/lib/model-registry-gpt55-inventory.test.ts
+  shared/lib/model-registry-loader.test.ts
+  shared/lib/schema-validators.test.ts
   shared/lib/model-promotion.test.ts
   shared/lib/model-evidence-policy.test.ts
   shared/lib/disabled-models.test.ts
@@ -271,6 +282,7 @@ TESTS=(
   shared/lib/wavemill-incident-store.test.ts
   shared/lib/state-mutex.test.ts
   shared/lib/job-tracker.test.ts
+  shared/lib/session-gh-cache.test.ts
   shared/lib/operating-mode.test.ts
   shared/lib/plan-prompt-selector.test.ts
   shared/lib/cli-prompt.test.ts

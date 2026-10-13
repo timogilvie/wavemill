@@ -31,6 +31,10 @@ spike/pi-durable-crash-test/
                              search_text, apply_patch, write_artifact)
     fixture-task.ts          mkdtemp scratch repo seeded with the task packet
     crash-points.ts          HOK3150_CRASH_POINT=<A|B|C1|C2|C3|none> signalling
+    fork-docs.ts             (HOK-3151) app state docs with fork rules
+    fork-pair.ts             (HOK-3151) forkChallengePair + materializeArmWorktree
+    usage-probe.ts           (HOK-3151) extension to capture usage metrics
+    faux-script.ts           (HOK-3151) durable faux factory (factored)
   scripts/
     smoke.ts                 pi-durable 1.0.4 opens SQLite, round-trips a run
     run-arm.ts               child: open storage, submit or resume
@@ -39,10 +43,17 @@ spike/pi-durable-crash-test/
     baseline-relaunch.ts     resume vs today's fresh relaunch (gate 4)
     provider-matrix.ts       pi-ai support probe for certified models (gate 5)
     policy-parity.ts         gate 6: production policy vs hook decisions
+    test-forking.ts          (HOK-3151) gates 1, 3, state rules (faux + real)
+    fork-child.ts            (HOK-3151) child process for crash harness
+    fork-crash-harness.ts    (HOK-3151) gate 2: atomic pairing
+    challenger-baseline-history.ts  (HOK-3151) production baseline aggregator
+    test-counterfactual-fork.ts     (HOK-3151) info 5: fork vs checkpoint
   results/                   — JSON evidence per trial + summaries
 ```
 
 ## How to run
+
+### HOK-3150 (existing)
 
 ```sh
 cd spike/pi-durable-crash-test
@@ -64,8 +75,30 @@ npx tsx scripts/baseline-relaunch.ts
 npx tsx scripts/provider-matrix.ts
 ```
 
-The write-up lives in [docs/pi-durable-evaluation.md §6](../../docs/pi-durable-evaluation.md),
-not here, so this spike is one place to run and one place to read.
+### HOK-3151 (fork-based challenge pairs)
+
+```sh
+cd spike/pi-durable-crash-test
+npm install
+
+# gates 1, 3, state rules — faux mode (free)
+npx tsx scripts/test-forking.ts
+
+# gate 2: atomic pairing crash tests (faux, free)
+npx tsx scripts/fork-crash-harness.ts --point=F1,F2,F3 --trials=5
+
+# gate 4: real-provider cost mode (requires OPENROUTER_API_KEY, capped $2)
+npx tsx scripts/test-forking.ts --real --max-usd=2
+
+# production challenger baseline (read-only)
+npx tsx scripts/challenger-baseline-history.ts /Users/timothyogilvie/Dropbox/wavemill
+
+# info 5: counterfactual fork vs checkpoint (faux, free)
+npx tsx scripts/test-counterfactual-fork.ts
+```
+
+The write-up lives in [docs/pi-durable-evaluation.md](../../docs/pi-durable-evaluation.md):
+§6 for HOK-3150, §7 for HOK-3151. One place to run and one place to read.
 
 ## Faux limitations (recorded as findings)
 

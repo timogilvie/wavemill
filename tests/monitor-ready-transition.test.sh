@@ -49,6 +49,9 @@ MONITOR_FUNC_FILE="$TEST_TMP/monitor_issue_state.sh"
 # module (HOK-2924); make it available first.
 cat "$REPO_DIR/shared/lib/bounded-retry.sh" > "$MONITOR_FUNC_FILE"
 cat "$REPO_DIR/shared/lib/transient-marker.sh" >> "$MONITOR_FUNC_FILE"
+# HOK-3206: pin the inline Ready contract (async lib in sync mode).
+cat "$REPO_DIR/shared/lib/monitor-async-jobs.sh" >> "$MONITOR_FUNC_FILE"
+export WAVEMILL_SYNC_READY_CHECKS=1 WAVEMILL_SYNC_ROUTING=1
 extract_function "$MONITOR_SCRIPT_FILE" "ready_base_sha" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "get_main_head_sha" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_stage_allows_merge" >> "$MONITOR_FUNC_FILE"

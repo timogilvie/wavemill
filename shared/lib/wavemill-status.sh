@@ -126,13 +126,22 @@ refresh_pr_cache() {
   local now
   now=$(date +%s)
   local mtime=0
-  [[ -f "$PR_CACHE" ]] && mtime=$(stat -f %m "$PR_CACHE" 2>/dev/null || echo 0)
+  [[ -f "$PR_CACHE" ]] && mtime=$(stat -c %Y "$PR_CACHE" 2>/dev/null || stat -f %m "$PR_CACHE" 2>/dev/null || echo 0)
   if (( now - mtime >= PR_TTL )); then
+    # HOK-3206: while the monitor keeps the batched cache fresh (its meta
+    # sidecar is recent), the dashboard reads it instead of overwriting it
+    # with a narrower open-PR dump.
+    local meta_written_at
+    meta_written_at=$(jq -r '.writtenAt // 0' "${PR_CACHE}.meta.json" 2>/dev/null || echo 0)
+    [[ "$meta_written_at" =~ ^[0-9]+$ ]] || meta_written_at=0
+    if (( now - meta_written_at < ${WAVEMILL_PR_CACHE_MAX_AGE_SECONDS:-180} )); then
+      return 0
+    fi
     local tmp_file
     # Per-writer tmp file so this dashboard refresh does not race the monitor's
     # wavemill_pr_cache_refresh on a shared "${PR_CACHE}.tmp" path.
     tmp_file=$(mktemp "${PR_CACHE}.tmp.XXXXXX" 2>/dev/null) || return 0
-    if gh pr list --json number,headRefName,state,statusCheckRollup --limit 50 \
+    if gh pr list --json number,headRefName,headRefOid,baseRefName,state,mergedAt,mergeable,mergeStateStatus,statusCheckRollup,labels,url --limit 50 \
          < /dev/null 2>/dev/null > "$tmp_file"; then
       if [[ -s "$tmp_file" ]]; then
         mv "$tmp_file" "$PR_CACHE" 2>/dev/null || rm -f "$tmp_file"

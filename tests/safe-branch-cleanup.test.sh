@@ -48,6 +48,8 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_cleanup_run"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "_wavemill_incident_record_name"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_write_preserved_branch_incident"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "cleanup_outcome_is_safe"
@@ -180,6 +182,21 @@ decision_path() {
   printf '%s/.wavemill/incidents/cleanup-decisions/%s.json\n' "$repo" "${branch//\//__}"
 }
 
+# Locate a record by its JSON `branch` field rather than by filename. Long
+# branches get a bounded hashed filename (HOK-3208), so readers must not
+# assume "${branch//\//__}.json".
+record_for_branch() {
+  local dir="$1" branch="$2" file
+  for file in "$dir"/*.json; do
+    [[ -f "$file" ]] || continue
+    if [[ "$(jq -r '.branch // empty' "$file")" == "$branch" ]]; then
+      printf '%s\n' "$file"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # record_pr_fixture <path> <state> <mergedAt|null> <headRefOid> <baseRefName>
 record_pr_fixture() {
   local path="$1" state="$2" merged_at="$3" head_oid="$4" base_ref="$5"
@@ -267,6 +284,37 @@ case_merged_deleted() {
   assert_exists "$(decision_path "$repo" "$branch")"
   [[ "$(jq -r '.classification' "$(decision_path "$repo" "$branch")")" == "safe_ancestor" ]] || fail "merged decision classification mismatch"
   [[ "$(jq -r '.finalCheckPassed' "$(decision_path "$repo" "$branch")")" == "true" ]] || fail "merged decision finalCheckPassed mismatch"
+}
+
+# HOK-3208: a 250-byte branch (long issue-title slug + "-challenger") used to
+# make the cleanup-decision temp file name exceed 255 bytes, so the authority
+# record never persisted and cleanup fell back to retain_unverifiable forever.
+case_long_branch_merged_deleted() {
+  local repo branch slug wt out decision
+  repo="$(setup_repo long-branch)"
+  slug="$(printf 'challenge-pair-routes-drift-after-sealing-post-expansion-re-routing-%.0s' 1 2 3 4)"
+  slug="${slug:0:234}-challenger"
+  branch="task/$slug"
+  (( ${#branch} == 250 )) || fail "long-branch fixture length is ${#branch}, expected 250"
+  wt="$tmp/long-branch/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  commit_in_worktree "$wt" "feature.txt" "feature"
+  git -C "$repo" merge --ff-only "$branch" >/dev/null
+  git -C "$repo" push origin auto/integration >/dev/null 2>&1
+
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  assert_contains "$out" "rc=0" "long-branch return"
+  assert_contains "$out" "outcome=safe_ancestor" "long-branch outcome"
+  [[ "$out" != *"Failed to persist cleanup authority record"* ]] || fail "long-branch decision record failed to persist: $out"
+  branch_exists "$repo" "$branch" && fail "long-branch branch was retained"
+  assert_absent "$wt"
+  decision="$(record_for_branch "$repo/.wavemill/incidents/cleanup-decisions" "$branch")" \
+    || fail "long-branch decision record not found by branch field"
+  (( $(basename "$decision" | LC_ALL=C wc -c) <= 247 )) || fail "long-branch decision filename too long: $decision"
+  [[ "$(jq -r '.classification' "$decision")" == "safe_ancestor" ]] || fail "long-branch decision classification mismatch"
+  [[ "$(jq -r '.safeToDelete' "$decision")" == "true" ]] || fail "long-branch decision safeToDelete mismatch"
+  compgen -G "$repo/.wavemill/incidents/cleanup-decisions/.*" >/dev/null && fail "long-branch left a temp file behind"
+  return 0
 }
 
 case_pushed_then_local_commit_retained() {
@@ -990,6 +1038,7 @@ case_classifier_parity_read_only_matches_destructive() {
 case_unpushed_commits_retained
 case_pushed_unmerged_deleted
 case_merged_deleted
+case_long_branch_merged_deleted
 case_pushed_then_local_commit_retained
 case_stale_local_base_uses_origin_base
 case_remote_verification_failure_preserved

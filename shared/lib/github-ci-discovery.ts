@@ -11,6 +11,7 @@
 import { execSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
+import { cachedNameWithOwner, cachedRequiredChecks } from './session-gh-cache.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -122,7 +123,10 @@ export async function discoverGitHubRequiredChecks(
   // them off err.stderr on failure. Redirecting also pollutes stdout on
   // success, which we split as a checks list.
   try {
-    const protection = await retryWithBackoff(async () => {
+    // HOK-3206: inside a mill session the protection contexts for this repo
+    // are cached once per base branch; rulesets below are still read live.
+    const cachedProtection = cachedNameWithOwner() === repo ? cachedRequiredChecks(branch) : undefined;
+    const protection = cachedProtection ?? await retryWithBackoff(async () => {
       const output = execSync(
         `gh api repos/${repo}/branches/${branch}/protection/required_status_checks --jq '.contexts[]'`,
         { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },

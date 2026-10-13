@@ -4,7 +4,21 @@ import { mutateJsonState } from './state-mutex.ts';
 import { errorMessage } from './error-utils.ts';
 import type { NoComparisonReason } from './challenge-comparison.ts';
 
-export type MillJobKind = 'eval' | 'comparison';
+/**
+ * Check kinds (HOK-3206) move slow ready-path reads off the monitor loop. Their
+ * canonical output is a condition-keyed result marker the job writes itself;
+ * the tracker only supervises the process (timeout, exit classification).
+ */
+export const CHECK_JOB_KINDS = ['cross-pr-guard', 'pr-ci-status', 'ready-watchdog', 'route-task'] as const;
+export type CheckJobKind = typeof CHECK_JOB_KINDS[number];
+export type MillJobKind = 'eval' | 'comparison' | CheckJobKind;
+
+/** Settled check jobs older than this are pruned from workflow state. */
+export const CHECK_JOB_RETENTION_MS = 60 * 60 * 1000;
+
+export function isCheckJobKind(kind: string): kind is CheckJobKind {
+  return (CHECK_JOB_KINDS as readonly string[]).includes(kind);
+}
 export type MillJobStatus = 'running' | 'succeeded' | 'failed' | 'timeout';
 
 export interface MillJob {
@@ -93,6 +107,12 @@ export function buildJobId(job: Pick<MillJob, 'kind' | 'issueId' | 'side' | 'pai
 
   if (job.kind === 'eval') {
     return `eval-${sanitize(job.issueId)}-${sanitize(job.side)}-${job.prNumbers[0] ?? 'na'}`;
+  }
+
+  if (isCheckJobKind(job.kind)) {
+    // One stable id per (kind, subject): a relaunch overwrites the settled
+    // predecessor, so check jobs never accumulate in workflow state.
+    return job.issueId ? `${job.kind}-${sanitize(job.issueId)}` : job.kind;
   }
 
   const prPart = [...job.prNumbers].sort((a, b) => a - b).join('-');
@@ -413,13 +433,22 @@ export async function pollJobs({
       ...completion,
       finishedAt: now.toISOString(),
       excerpt: completion.status === 'succeeded' ? null : extractLogExcerpt(job.logPath),
-      settled: false,
+      // A succeeded check job has nothing left for the monitor to do: its
+      // result marker is the output. Settle it here so the hot pass never
+      // spends a tsx spawn on `mark-settled`. Failures stay unsettled so the
+      // monitor can charge the job's bounded-retry bucket.
+      settled: isCheckJobKind(job.kind) && completion.status === 'succeeded',
     });
     changedIds.add(job.id);
   }
 
+  const pruneIds = Object.values(jobs)
+    .filter((job) => isCheckJobKind(job.kind) && job.settled && job.finishedAt
+      && now.getTime() - Date.parse(job.finishedAt) > CHECK_JOB_RETENTION_MS)
+    .map((job) => job.id);
+
   let nextState = state;
-  if (updates.size > 0) {
+  if (updates.size > 0 || pruneIds.length > 0) {
     nextState = await mutateJsonState<WorkflowStateLike>(statePath, (current) => {
       const nextJobs = normalizeJobs(current);
       for (const [jobId, patch] of updates.entries()) {
@@ -431,6 +460,12 @@ export async function pollJobs({
           ...existing,
           ...patch,
         };
+      }
+      for (const jobId of pruneIds) {
+        const existing = nextJobs[jobId];
+        if (existing && existing.settled && !isActiveStatus(existing.status)) {
+          delete nextJobs[jobId];
+        }
       }
       return {
         ...current,
@@ -539,6 +574,8 @@ export async function markJobSettled({
 export function formatJobSummary(job: MillJob): string {
   const target = job.kind === 'eval'
     ? `${job.issueId || 'unknown'}:${job.side || 'unknown'}`
-    : `${job.pairId || 'unknown'}:${job.prNumbers.join('/')}`;
+    : isCheckJobKind(job.kind)
+      ? `${job.issueId || 'global'}${job.prNumbers.length > 0 ? `:${job.prNumbers.join('/')}` : ''}`
+      : `${job.pairId || 'unknown'}:${job.prNumbers.join('/')}`;
   return `${job.kind} ${target} ${job.status} ${basename(job.logPath)}`;
 }

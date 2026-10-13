@@ -38,7 +38,7 @@ check_contains() {
 TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "$TEST_TMP"' EXIT
 
-# Brace-aware extractor (strings stripped) — poll_challenge_jobs contains
+# Brace-aware extractor (strings stripped) — poll_tracked_jobs contains
 # braces inside jq programs and quoted strings.
 extract_function() {
   local source_file="$1"
@@ -64,10 +64,10 @@ extract_function() {
 # shellcheck source=../shared/lib/wavemill-common.sh
 source "$REPO_DIR/shared/lib/wavemill-common.sh"
 
-FUNC_FILE="$TEST_TMP/poll_challenge_jobs.sh"
-extract_function "$MONITOR_SCRIPT_FILE" "poll_challenge_jobs" > "$FUNC_FILE"
+FUNC_FILE="$TEST_TMP/poll_tracked_jobs.sh"
+extract_function "$MONITOR_SCRIPT_FILE" "poll_tracked_jobs" > "$FUNC_FILE"
 if ! grep -q "challenge-eval-soft" "$FUNC_FILE"; then
-  echo "Could not extract poll_challenge_jobs() with the soft-retry bucket"
+  echo "Could not extract poll_tracked_jobs() with the soft-retry bucket"
   exit 1
 fi
 # shellcheck source=/dev/null
@@ -152,7 +152,7 @@ soft_count() { bounded_retry_count "$FEATURE_DIR" "challenge-eval-soft"; }
 # --- first timeout retries and counts against the bucket ---------------------
 reset_state 0
 reset_capture
-poll_challenge_jobs
+poll_tracked_jobs
 check_eq "first timeout relaunches the eval" "$EVAL_RELAUNCHES" "1"
 check_eq "first timeout counts attempt 1 in the bucket" "$(soft_count)" "1"
 check_eq "first timeout keys the bucket to the arm head" \
@@ -162,14 +162,14 @@ check_contains "first timeout logs the attempt" "$LOG_OUTPUT" "(attempt 1/2)"
 
 # --- second timeout consumes the last attempt --------------------------------
 reset_capture
-poll_challenge_jobs
+poll_tracked_jobs
 check_eq "second timeout relaunches the eval" "$EVAL_RELAUNCHES" "1"
 check_eq "second timeout counts attempt 2" "$(soft_count)" "2"
 check_contains "second timeout logs the attempt" "$LOG_OUTPUT" "(attempt 2/2)"
 
 # --- third timeout exhausts the budget with a recorded reason ----------------
 reset_capture
-poll_challenge_jobs
+poll_tracked_jobs
 check_eq "exhausted timeout does not relaunch" "$EVAL_RELAUNCHES" "0"
 check_contains "exhausted timeout blocks the comparison" "$PAIR_STATE_CALLS" "HOK-9001|manual_comparison_needed"
 if bounded_retry_is_exhausted "$FEATURE_DIR" "challenge-eval-soft"; then
@@ -184,7 +184,7 @@ check_contains "exhausted timeout records a greppable reason" \
 # --- a fresh commit on the arm restores the budget ---------------------------
 reset_capture
 GIT_HEAD="sha-two"
-poll_challenge_jobs
+poll_tracked_jobs
 check_eq "new head relaunches the eval" "$EVAL_RELAUNCHES" "1"
 check_eq "new head restarts the counter" "$(soft_count)" "1"
 if bounded_retry_is_exhausted "$FEATURE_DIR" "challenge-eval-soft"; then
@@ -200,7 +200,7 @@ rm -rf "$FEATURE_DIR"
 mkdir -p "$FEATURE_DIR"
 reset_state 2
 reset_capture
-poll_challenge_jobs
+poll_tracked_jobs
 check_eq "mirrored retry count blocks further retries" "$EVAL_RELAUNCHES" "0"
 check_contains "mirrored retry count reaches manual comparison" "$PAIR_STATE_CALLS" "manual_comparison_needed"
 

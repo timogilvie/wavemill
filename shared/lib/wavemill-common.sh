@@ -1021,6 +1021,51 @@ cleanup_episode_should_attempt() {
   esac
 }
 
+# Bounded incident-record basename for a task branch (HOK-3208).
+#
+# Records under .wavemill/incidents/{cleanup-decisions,preserved-branches}/ are
+# published atomically via `mktemp ".<name>.XXXXXX"` + `mv`, so the temp
+# basename is 8 bytes longer than the record name. Branch names derive from
+# issue titles (plus an 11-byte `-challenger` suffix) and can exceed the
+# 255-byte per-component limit on APFS/ext4, which made the record unwritable
+# and left the arm retained forever.
+#
+# Short branches keep the legacy "${branch//\//__}.json" name so existing
+# records and callers that look them up by exact name are unaffected. Once
+# that name exceeds 200 bytes (hard ceiling is 247; the rest is headroom for
+# future suffix changes), the branch collapses to "<first-100-bytes>__<sha1:12>.json". The
+# name is a pure function of the branch, so idempotent re-writes still land on
+# the same file. The full branch is always kept in the JSON body's `branch`
+# field, which is what readers (terminal-lifecycle-cert.ts) key on.
+#
+# Fails closed (non-zero) if no sha1 tool is available rather than emit a
+# weakly disambiguated name.
+_wavemill_incident_record_name() {
+  local branch="$1"
+  # Byte semantics for length and substring, independent of the caller's locale.
+  local LC_ALL=C
+  local safe="${branch//\//__}"
+  local legacy="${safe}.json"
+  local digest="" prefix
+
+  if (( ${#legacy} <= 200 )); then
+    printf '%s\n' "$legacy"
+    return 0
+  fi
+
+  if command -v sha1sum >/dev/null 2>&1; then
+    digest="$(printf '%s' "$branch" | sha1sum | awk '{print substr($1, 1, 12)}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    digest="$(printf '%s' "$branch" | shasum -a 1 | awk '{print substr($1, 1, 12)}')"
+  fi
+  [[ "$digest" =~ ^[0-9a-f]{12}$ ]] || return 1
+
+  # A byte cut could split a multibyte character; keep the prefix ASCII-only.
+  prefix="${safe:0:100}"
+  prefix="${prefix//[^A-Za-z0-9._-]/_}"
+  printf '%s__%s.json\n' "$prefix" "$digest"
+}
+
 _wavemill_write_preserved_branch_incident() {
   local reason="$1" branch="$2" wt_dir="$3" base_branch="$4" commits_ahead="$5" commit_shas="$6" caller="${7:-cleanup}"
   local base_sha="${8:-}" local_head_sha="${9:-}" remote_head_sha="${10:-}" verification_reason="${11:-}"
@@ -1035,7 +1080,7 @@ _wavemill_write_preserved_branch_incident() {
   fi
 
   incident_dir="$REPO_DIR/.wavemill/incidents/$marker_subdir"
-  marker_name="${branch//\//__}.json"
+  marker_name="$(_wavemill_incident_record_name "$branch")" || return 1
   marker_path="$incident_dir/$marker_name"
   created_at="$(cleanup_episode_now_iso 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ")"
   if [[ -n "${CLEANUP_EPISODE_CURRENT_FINGERPRINT:-}" ]]; then
@@ -4297,34 +4342,259 @@ has_any_healthy_model() {
 # PR CACHE HELPERS
 # ============================================================================
 
+# HOK-3206: one batched PR query per monitor pass feeds every per-task PR
+# reader. The cache file stays the raw `gh pr list --json` array (readers such
+# as the condition reconciler and the dashboard parse it directly); a sidecar
+# `<cache>.meta.json` records which head branches the query covered and when,
+# so a reader can tell "no PR for this branch" apart from "branch not queried".
+#
+# Keep the field list in sync with PR_CACHE_FIELDS in session-gh-cache.ts.
+WAVEMILL_PR_CACHE_FIELDS="number,headRefName,headRefOid,baseRefName,state,mergedAt,mergeable,mergeStateStatus,statusCheckRollup,labels,url,title,body,createdAt,updatedAt"
+WAVEMILL_PR_CACHE_BATCH_LIMIT=100
+
+wavemill_pr_cache_file() {
+  printf '%s\n' "${MONITOR_PR_CACHE:-/tmp/${SESSION:-wavemill}-pr-cache.json}"
+}
+
+wavemill_gh_batch_cache_disabled() {
+  [[ "${WAVEMILL_DISABLE_GH_BATCH_CACHE:-0}" == "1" ]]
+}
+
+# Append one marker byte to a per-cache counter file. Lookups usually run in
+# `$(...)` subshells, so in-process counters would be lost; the monitor reads
+# and truncates these files once per pass for monitor-timing.json.
+_wavemill_pr_cache_count() {
+  local kind="$1"
+  printf '.' >> "$(wavemill_pr_cache_file).${kind}" 2>/dev/null || true
+}
+
+# wavemill_pr_cache_refresh [branch...]
+# With branches: one `gh pr list --state all --search 'head:<b1> head:<b2> …'`
+# (GitHub search ORs repeated head: qualifiers). Without branches, or when the
+# search fails: the unfiltered open-PR dump. Writes cache + meta atomically.
 wavemill_pr_cache_refresh() {
-  local session="${SESSION:-wavemill}"
-  local cache_file="${MONITOR_PR_CACHE:-/tmp/${session}-pr-cache.json}"
-  local tmp_file
+  local cache_file meta_file tmp_file search="" branch covered_json="[]" complete="true"
+  local -a branches=()
+  cache_file="$(wavemill_pr_cache_file)"
+  meta_file="${cache_file}.meta.json"
+  for branch in "$@"; do
+    [[ -n "$branch" ]] && branches+=("$branch")
+  done
   # Per-writer tmp file: monitor and dashboard both refresh this cache, and a
   # shared "${cache_file}.tmp" leads to a race where one writer's mv consumes
   # the file before the other's mv runs.
   tmp_file="$(mktemp "${cache_file}.tmp.XXXXXX" 2>/dev/null)" || return 0
-  if gh pr list --json number,headRefName,headRefOid,state,statusCheckRollup --limit 50 \
-       < /dev/null 2>/dev/null > "$tmp_file"; then
-    if [[ -s "$tmp_file" ]]; then
-      mv "$tmp_file" "$cache_file" 2>/dev/null || rm -f "$tmp_file"
+
+  if (( ${#branches[@]} > 0 )) && ! wavemill_gh_batch_cache_disabled; then
+    search="$(printf 'head:%s\n' "${branches[@]}" | sort -u | tr '\n' ' ')"
+    if _with_timeout "${API_TIMEOUT:-30}" gh pr list --state all --limit "$WAVEMILL_PR_CACHE_BATCH_LIMIT" \
+         --search "${search% }" --json "$WAVEMILL_PR_CACHE_FIELDS" \
+         < /dev/null 2>/dev/null > "$tmp_file" \
+       && jq -e 'type == "array"' "$tmp_file" >/dev/null 2>&1; then
+      covered_json="$(printf '%s\n' "${branches[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | unique')"
+      # A full page may have truncated some branch's rows; never claim coverage.
+      [[ "$(jq 'length' "$tmp_file" 2>/dev/null || echo 0)" -lt "$WAVEMILL_PR_CACHE_BATCH_LIMIT" ]] || complete="false"
     else
+      search=""
+    fi
+  fi
+
+  if [[ -z "$search" ]]; then
+    if ! gh pr list --json "$WAVEMILL_PR_CACHE_FIELDS" --limit 50 \
+         < /dev/null 2>/dev/null > "$tmp_file"; then
       rm -f "$tmp_file"
+      return 0
+    fi
+    covered_json="[]"
+  fi
+
+  if [[ -s "$tmp_file" ]] && mv "$tmp_file" "$cache_file" 2>/dev/null; then
+    # Per-writer meta tmp too: concurrent refreshes in subshells share $$.
+    local meta_tmp
+    if meta_tmp="$(mktemp "${meta_file}.tmp.XXXXXX" 2>/dev/null)"; then
+      if jq -cn --argjson branches "$covered_json" --argjson complete "$complete" \
+           --argjson writtenAt "$(date +%s)" \
+           '{schemaVersion: 1, branches: $branches, complete: $complete, writtenAt: $writtenAt}' \
+           > "$meta_tmp" 2>/dev/null; then
+        mv "$meta_tmp" "$meta_file" 2>/dev/null || true
+      fi
+      rm -f "$meta_tmp" 2>/dev/null || true
     fi
   else
     rm -f "$tmp_file"
   fi
+  return 0
+}
+
+# Exit 0 when the batched cache was written by a covered refresh no older than
+# WAVEMILL_PR_CACHE_MAX_AGE_SECONDS (default 180). Readers then trust it.
+wavemill_pr_cache_usable() {
+  local cache_file meta_file written_at now
+  wavemill_gh_batch_cache_disabled && return 1
+  cache_file="$(wavemill_pr_cache_file)"
+  meta_file="${cache_file}.meta.json"
+  [[ -f "$cache_file" && -f "$meta_file" ]] || return 1
+  written_at="$(jq -r '.writtenAt // 0' "$meta_file" 2>/dev/null || echo 0)"
+  [[ "$written_at" =~ ^[0-9]+$ ]] || return 1
+  now="$(date +%s)"
+  (( now - written_at <= ${WAVEMILL_PR_CACHE_MAX_AGE_SECONDS:-180} ))
+}
+
+# wavemill_pr_cache_covers_branch <branch>
+# Exit 0 when the last batched query searched <branch> and was not truncated,
+# so an absent row means "no PR for this branch".
+wavemill_pr_cache_covers_branch() {
+  local branch="${1:-}"
+  [[ -n "$branch" ]] || return 1
+  wavemill_pr_cache_usable || return 1
+  jq -e --arg b "$branch" '.complete == true and ((.branches // []) | index($b) != null)' \
+    "$(wavemill_pr_cache_file).meta.json" >/dev/null 2>&1
+}
+
+# wavemill_pr_cache_row_by_pr <pr>
+# Prints the compact cached row for PR <pr>; exit 1 on miss (caller asks gh).
+wavemill_pr_cache_row_by_pr() {
+  local pr="${1:-}" row
+  [[ "$pr" =~ ^[0-9]+$ ]] || return 1
+  if ! wavemill_pr_cache_usable; then
+    wavemill_gh_batch_cache_disabled || _wavemill_pr_cache_count misses
+    return 1
+  fi
+  row="$(jq -c --argjson pr "$pr" '(if type == "array" then . else [] end) | map(select(.number == $pr)) | .[0] // empty' \
+    "$(wavemill_pr_cache_file)" 2>/dev/null || true)"
+  if [[ -z "$row" ]]; then
+    _wavemill_pr_cache_count misses
+    return 1
+  fi
+  _wavemill_pr_cache_count hits
+  printf '%s\n' "$row"
+}
+
+# wavemill_pr_cache_rows_for_branch <branch>
+# Prints a JSON array of cached rows for <branch> (newest first, possibly
+# empty); exit 1 when the branch was not covered by the last batched query.
+wavemill_pr_cache_rows_for_branch() {
+  local branch="${1:-}"
+  if ! wavemill_pr_cache_covers_branch "$branch"; then
+    wavemill_gh_batch_cache_disabled || _wavemill_pr_cache_count misses
+    return 1
+  fi
+  _wavemill_pr_cache_count hits
+  jq -c --arg b "$branch" '(if type == "array" then . else [] end) | map(select(.headRefName == $b)) | sort_by(-.number)' \
+    "$(wavemill_pr_cache_file)" 2>/dev/null || return 1
+}
+
+# wavemill_pr_cache_lookup_pr <pr> <field>   — one field of a cached PR row.
+wavemill_pr_cache_lookup_pr() {
+  local pr="${1:-}" field="${2:-}" row
+  [[ -n "$field" ]] || return 1
+  row="$(wavemill_pr_cache_row_by_pr "$pr")" || return 1
+  jq -r --arg f "$field" '.[$f] // empty | if type == "string" then . else tojson end' <<<"$row" 2>/dev/null
+}
+
+# wavemill_pr_cache_lookup <branch> <field>  — field of the newest PR for a branch.
+wavemill_pr_cache_lookup() {
+  local branch="${1:-}" field="${2:-}" rows
+  [[ -n "$field" ]] || return 1
+  rows="$(wavemill_pr_cache_rows_for_branch "$branch")" || return 1
+  jq -r --arg f "$field" '.[0][$f] // empty | if type == "string" then . else tojson end' <<<"$rows" 2>/dev/null
 }
 
 wavemill_pr_lookup_by_branch() {
   local branch="${1:-}"
-  local session="${SESSION:-wavemill}"
-  local cache_file="${MONITOR_PR_CACHE:-/tmp/${session}-pr-cache.json}"
+  local cache_file
+  cache_file="$(wavemill_pr_cache_file)"
   [[ -n "$branch" && -f "$cache_file" ]] || return 0
   jq -r --arg b "$branch" \
     '.[] | select(.headRefName == $b) | .number' \
     "${cache_file}" 2>/dev/null | head -1
+}
+
+# ── Session repo cache (HOK-3206) ────────────────────────────────────────────
+# `gh repo view` and branch-protection required checks are session constants.
+# /tmp/${SESSION}-repo.json = {nameWithOwner, defaultBranch,
+# requiredChecks: {<base>: [names]}}; written once per base branch per
+# session and read by both the shell and TS (WAVEMILL_SESSION_REPO_CACHE).
+
+wavemill_session_repo_cache_file() {
+  printf '%s\n' "${WAVEMILL_SESSION_REPO_CACHE:-/tmp/${SESSION:-wavemill}-repo.json}"
+}
+
+# wavemill_session_repo_cache_refresh [repo_dir] [base_branch...] [--force]
+# Fills missing entries only (one `gh repo view` per session, one protection
+# read per base branch). --force refetches everything.
+wavemill_session_repo_cache_refresh() {
+  local repo_dir="${REPO_DIR:-$PWD}" force="false" cache_file current nwo default_branch base contexts
+  local -a bases=()
+  local arg first=1
+  for arg in "$@"; do
+    if [[ "$arg" == "--force" ]]; then
+      force="true"
+    elif (( first )); then
+      [[ -n "$arg" ]] && repo_dir="$arg"
+      first=0
+    else
+      [[ -n "$arg" ]] && bases+=("$arg")
+    fi
+  done
+  wavemill_gh_batch_cache_disabled && return 0
+  cache_file="$(wavemill_session_repo_cache_file)"
+  current='{}'
+  if [[ "$force" != "true" && -f "$cache_file" ]] && jq -e 'type == "object"' "$cache_file" >/dev/null 2>&1; then
+    current="$(cat "$cache_file")"
+  fi
+
+  nwo="$(jq -r '.nameWithOwner // empty' <<<"$current")"
+  if [[ -z "$nwo" ]]; then
+    local repo_json
+    repo_json="$(cd "$repo_dir" 2>/dev/null && _with_timeout "${API_TIMEOUT:-30}" gh repo view --json nameWithOwner,defaultBranchRef 2>/dev/null || true)"
+    [[ -n "$repo_json" ]] || repo_json='{}'
+    nwo="$(jq -r '.nameWithOwner // empty' <<<"$repo_json" 2>/dev/null || true)"
+    default_branch="$(jq -r '.defaultBranchRef.name // empty' <<<"$repo_json" 2>/dev/null || true)"
+    [[ -n "$nwo" ]] || return 0
+    current="$(jq -c --arg nwo "$nwo" --arg db "$default_branch" \
+      '.nameWithOwner = $nwo | (if $db != "" then .defaultBranch = $db else . end)' <<<"$current")"
+  fi
+
+  for base in "${bases[@]}"; do
+    jq -e --arg b "$base" '(.requiredChecks // {}) | has($b)' <<<"$current" >/dev/null 2>&1 && continue
+    # A 404 (no protection) is a real, cacheable answer: record []. Any
+    # other failure leaves the base unrecorded so readers ask GitHub.
+    local protection_err
+    protection_err="$(mktemp 2>/dev/null)" || continue
+    if contexts="$(_with_timeout "${API_TIMEOUT:-30}" gh api "repos/${nwo}/branches/${base}/protection/required_status_checks" \
+         --jq '.contexts // []' 2>"$protection_err")" && jq -e 'type == "array"' <<<"$contexts" >/dev/null 2>&1; then
+      :
+    elif grep -qiE 'not found|404|not protected' "$protection_err" 2>/dev/null; then
+      contexts='[]'
+    else
+      rm -f "$protection_err"
+      continue
+    fi
+    rm -f "$protection_err"
+    current="$(jq -c --arg b "$base" --argjson c "$contexts" '.requiredChecks[$b] = $c' <<<"$current")"
+  done
+
+  current="$(jq -c --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.updatedAt = $at' <<<"$current")"
+  local cache_tmp
+  cache_tmp="$(mktemp "${cache_file}.tmp.XXXXXX" 2>/dev/null)" || return 0
+  if printf '%s\n' "$current" > "$cache_tmp"; then
+    mv "$cache_tmp" "$cache_file" 2>/dev/null || true
+  fi
+  rm -f "$cache_tmp" 2>/dev/null || true
+  return 0
+}
+
+# Cached nameWithOwner, or a live `gh repo view` when the cache misses.
+wavemill_repo_name_with_owner() {
+  local repo_dir="${1:-${REPO_DIR:-$PWD}}" nwo=""
+  if ! wavemill_gh_batch_cache_disabled; then
+    nwo="$(jq -r '.nameWithOwner // empty' "$(wavemill_session_repo_cache_file)" 2>/dev/null || true)"
+  fi
+  if [[ -z "$nwo" ]]; then
+    nwo="$(cd "$repo_dir" 2>/dev/null && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
+  fi
+  printf '%s\n' "$nwo"
 }
 
 wavemill_default_attempt_id() {
@@ -4392,6 +4662,14 @@ wavemill_allocate_retry_attempt_identity() {
 wavemill_pr_candidates_for_branch() {
   local branch="${1:-}"
   [[ -n "$branch" ]] || { printf '[]\n'; return 0; }
+  local cached_rows
+  # HOK-3206: the per-pass batched query covers every task branch.
+  if cached_rows="$(wavemill_pr_cache_rows_for_branch "$branch")"; then
+    jq -c --argjson limit "${WAVEMILL_PR_ATTEMPT_LIMIT:-20}" \
+      '.[0:$limit] | map({number, state, mergedAt, headRefName, headRefOid, baseRefName, title, body, createdAt, updatedAt, url})' \
+      <<<"$cached_rows"
+    return 0
+  fi
   _with_timeout "${API_TIMEOUT:-30}" gh pr list --head "$branch" --state all --limit "${WAVEMILL_PR_ATTEMPT_LIMIT:-20}" \
     --json number,state,mergedAt,headRefName,headRefOid,baseRefName,title,body,createdAt,updatedAt,url 2>/dev/null
 }
@@ -4610,6 +4888,11 @@ wavemill_record_fresh_launch_reconciliation() {
 wavemill_pr_live_state() {
   local pr_number="${1:-}"
   [[ -n "$pr_number" ]] || return 1
+  local cached_row
+  if cached_row="$(wavemill_pr_cache_row_by_pr "$pr_number")"; then
+    jq -c '{number, state, mergedAt, terminalState: (if .mergedAt != null then "MERGED" elif .state == "CLOSED" then "CLOSED" else .state end)}' <<<"$cached_row"
+    return 0
+  fi
   gh pr view "$pr_number" --json number,state,mergedAt --jq \
     '{number, state, mergedAt, terminalState: (if .mergedAt != null then "MERGED" elif .state == "CLOSED" then "CLOSED" else .state end)}' 2>/dev/null
 }
@@ -4641,6 +4924,12 @@ check_pr_exists() {
 
   if [[ -z "$branch" ]]; then
     return 1
+  fi
+
+  local cached_rows
+  if cached_rows="$(wavemill_pr_cache_rows_for_branch "$branch")"; then
+    jq -e 'length > 0' <<<"$cached_rows" >/dev/null 2>&1
+    return $?
   fi
 
   pr_number=$(gh pr list --head "$branch" --state all --json number --jq '.[0].number // empty' 2>/dev/null || echo "")
@@ -5825,6 +6114,14 @@ wavemill_session_cache_reset() {
   _WAVEMILL_SESSION_CAP_WARNED=""
 }
 
+# HOK-3204: prime the shell-side session-capability cache from the parent
+# monitor process so subshell `$(wavemill_session_has ...)` captures inherit
+# the populated arrays on fork and skip the ~1s session-capabilities.ts spawn.
+# Idempotent and cheap (hits the HOK-3102 mtime-keyed cache once a pass).
+monitor_prime_session_capabilities() {
+  wavemill_session_capabilities_json "${1:-${REPO_DIR:-$PWD}}" >/dev/null 2>&1 || true
+}
+
 # HOK-3102 (D7): with the observer off, remove the stale findings backlog that
 # nothing will ever read. Idempotent; safe to call from startup.
 _cleanup_stale_observer_findings() {
@@ -6192,29 +6489,7 @@ filter_parent_issues() {
     ' 2>/dev/null
   )
 
-  local has_active_parent
-  has_active_parent="$(
-    printf '%s\n' "$backlog_json" | jq -r '
-      def child_is_terminal:
-        ((.state.type // "") == "completed")
-        or ((.state.type // "") == "canceled")
-        or (.completedAt != null)
-        or (.canceledAt != null);
-      [
-        .[]
-        | (.children.nodes // []) as $children
-        | select(($children | length) > 0)
-        | select($children | any(child_is_terminal | not))
-      ]
-      | length > 0
-    ' 2>/dev/null
-  )"
-  if [[ "$has_active_parent" == "true" && -z "${WAVEMILL_ACTIVE_PARENT_ANNOUNCED:-}" ]]; then
-    printf 'INFO: Excluding parent issues with active Linear children from backlog\n' >&"$log_dest"
-    WAVEMILL_ACTIVE_PARENT_ANNOUNCED=1
-    export WAVEMILL_ACTIVE_PARENT_ANNOUNCED
-  fi
-
+  # Active-child exclusion is routine filtering; keep backlog refreshes quiet.
   printf '%s\n' "$backlog_json" | jq '
     def child_is_terminal:
       ((.state.type // "") == "completed")
@@ -6896,9 +7171,54 @@ trim_terminal_task_overflow_if_needed() {
     || true
 }
 
+# HOK-3203: enforce hot state byte cap by iteratively compacting and trimming
+enforce_hot_state_byte_cap_if_needed() {
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  local byte_cap="${WAVEMILL_HOT_STATE_BYTE_CAP:-500000}"
+  local file_size
+  file_size="$(wc -c < "$STATE_FILE" 2>/dev/null || echo 0)"
+  [[ "$file_size" =~ ^[0-9]+$ ]] || file_size=0
+  if (( file_size <= byte_cap )); then
+    return 0
+  fi
+  local tool
+  tool="$(_state_archive_trim_tool_path)"
+  [[ -f "$tool" ]] || return 0
+  local -a args=(--state-file "$STATE_FILE" --quiet --byte-cap "$byte_cap" --compact-kept --keep-floor 10)
+  [[ -n "${WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS:-}" ]] \
+    && args+=(--max-age-days "$WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS")
+  node --experimental-strip-types --no-warnings "$tool" "${args[@]}" 2>/dev/null \
+    || npx tsx "$tool" "${args[@]}" 2>/dev/null \
+    || true
+}
+
 write_terminal_task_history_record() {
   local issue="$1" record_json="$2"
   [[ -n "$issue" && -n "$record_json" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+
+  # HOK-3203: compact the record before writing to hot state
+  local record_hot
+  record_hot="$(jq -c '{
+    archived: true,
+    schemaVersion,
+    issue,
+    slug,
+    branch,
+    worktree,
+    prNumber,
+    workflowOutcome,
+    resourceDisposition,
+    challengePairId,
+    challengeRole,
+    runEpoch,
+    attempt,
+    actor,
+    command,
+    createdAt,
+    decisionStatus,
+    decisionReason
+  } + (if has("postReapEval") then {postReapEval} else {} end)' <<<"$record_json")" || return 1
+
   local rc
   state_mutate "$STATE_FILE" '
     .terminalTaskHistory.tasks[$issue] = $record
@@ -6908,19 +7228,21 @@ write_terminal_task_history_record() {
       end
     | .updated = (now | todateiso8601)' \
     --arg issue "$issue" \
-    --argjson record "$record_json"
+    --argjson record "$record_hot"
   rc=$?
-  # HOK-3190: shed overflow to the archive if the hot sub-tree is above the cap.
-  trim_terminal_task_overflow_if_needed || true
+  # HOK-3203: enforce byte cap
+  enforce_hot_state_byte_cap_if_needed || true
   return "$rc"
 }
 
 write_terminal_task_tombstone() {
   local issue="$1" actor="${2:-wavemill}" command="${3:-cleanup_completed_task}" decision_status="${4:-reaped}" decision_reason="${5:-}"
-  local task_json tombstone key
+  local task_json tombstone key tombstone_hot archive_file
   [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
   task_json="$(jq -c --arg issue "$issue" '.tasks[$issue] // empty' "$STATE_FILE" 2>/dev/null)" || return 1
   [[ -n "$task_json" ]] || return 1
+
+  # Build full tombstone (HOK-3203: full form for archive)
   tombstone="$(jq -cn \
     --arg issue "$issue" \
     --arg actor "$actor" \
@@ -6955,6 +7277,35 @@ write_terminal_task_tombstone() {
         task: $task
       }')" || return 1
   key="$(jq -r '[.issue, (if .prNumber != "" then .prNumber else .branch end), (if .runEpoch != "" then .runEpoch else "no-epoch" end), (if .attempt != "" then .attempt else "no-attempt" end)] | join("|")' <<<"$tombstone" 2>/dev/null)" || return 1
+
+  # 1. Append full tombstone to archive (HOK-3203)
+  archive_file="$(dirname "$(dirname "$STATE_FILE")")/.wavemill/state-archive/tombstones.jsonl"
+  mkdir -p "$(dirname "$archive_file")" 2>/dev/null || true
+  printf '%s\n' "$tombstone" >> "$archive_file" || true
+
+  # 2. Create compact tombstone for hot state (HOK-3203)
+  tombstone_hot="$(jq -c '{
+    archived: true,
+    schemaVersion,
+    issue,
+    slug,
+    branch,
+    worktree,
+    prNumber,
+    workflowOutcome,
+    resourceDisposition,
+    challengePairId,
+    challengeRole,
+    runEpoch,
+    attempt,
+    actor,
+    command,
+    createdAt,
+    decisionStatus,
+    decisionReason
+  } + (if has("postReapEval") then {postReapEval} else {} end)' <<<"$tombstone")" || return 1
+
+  # 3. Write compact form to hot state (HOK-3203)
   local rc
   state_mutate "$STATE_FILE" '
     .terminalTaskTombstones[$key] = $tombstone
@@ -6966,10 +7317,11 @@ write_terminal_task_tombstone() {
     | .updated = (now | todateiso8601)' \
     --arg key "$key" \
     --arg issue "$issue" \
-    --argjson tombstone "$tombstone"
+    --argjson tombstone "$tombstone_hot"
   rc=$?
-  # HOK-3190: shed overflow to the archive if the hot sub-tree is above the cap.
-  trim_terminal_task_overflow_if_needed || true
+
+  # 4. Enforce byte cap (HOK-3203)
+  enforce_hot_state_byte_cap_if_needed || true
   return "$rc"
 }
 
@@ -7211,6 +7563,16 @@ record_post_reap_eval_outcome() {
         else . end
     else . end
   ' --arg issue "$issue" --arg outcome "$outcome" >/dev/null 2>&1 || true
+
+  # Shadow write: attempt to settle the eval step in the ledger. The step
+  # should already be settled (the task was reaped), so this will throw
+  # TaskSettledError. The audit value is the evidence row the ledger logs
+  # on the attempt (HOK-3186 S9). The CLI's shadow wrapper swallows errors.
+  # Note: this requires finding the active eval step for the issue, which is
+  # non-trivial for a reaped task. The acceptance proof is the S7 #4 fixture
+  # (post-reap-eval-write.json) which directly tests the settled-write rejection.
+  # Full implementation deferred until step lookup by issue is needed elsewhere.
+
   return 0
 }
 
@@ -7729,7 +8091,11 @@ pr_state() {
   local pr="$1"
   local state
 
-  if ! state=$(_with_timeout "$API_TIMEOUT" gh pr view "$pr" --json state --jq .state 2>/dev/null); then
+  # HOK-3206: a state read by this pass's batched query is GitHub truth (a
+  # MERGED/CLOSED row is terminal; an OPEN row is at most one pass old).
+  if state="$(wavemill_pr_cache_lookup_pr "$pr" state)" && [[ -n "$state" ]]; then
+    :
+  elif ! state=$(_with_timeout "$API_TIMEOUT" gh pr view "$pr" --json state --jq .state 2>/dev/null); then
     printf 'UNKNOWN\n'
     return 0
   fi
@@ -7752,8 +8118,13 @@ validate_pr_merge() {
   local pr="$1"
   [[ -z "$pr" ]] && return 1
 
-  local details
-  if ! details=$(_with_timeout "$API_TIMEOUT" gh pr view "$pr" --json state,baseRefName 2>/dev/null); then
+  local details cached_row
+  if cached_row="$(wavemill_pr_cache_row_by_pr "$pr")"; then
+    details="$(jq -c '{state, baseRefName}' <<<"$cached_row" 2>/dev/null || true)"
+  fi
+  if [[ -n "${details:-}" ]]; then
+    :
+  elif ! details=$(_with_timeout "$API_TIMEOUT" gh pr view "$pr" --json state,baseRefName 2>/dev/null); then
     if declare -F log_error >/dev/null 2>&1; then
       log_error "Failed to fetch PR #$pr details"
     fi

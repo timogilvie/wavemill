@@ -1,7 +1,9 @@
 # Pi Durable evaluation (HOK-3148)
 
-**Status:** plan (HOK-3149) · HOK-3150 **done** (§6) · HOK-3151 pending ·
-design pending (HOK-3152) · decision pending (HOK-3153)
+**Status:** plan (HOK-3149) · HOK-3150 **done** (§6) · HOK-3151 **done** (§7) ·
+design **done** (HOK-3152, `docs/mill-task-ledger-design.md`) · decision
+**recorded** (HOK-3153, §8): runtime swap **deferred**, fork pairs
+**deferred**, ledger **built natively**
 
 Pi 1.0 shipped `@earendil-works/pi-durable` 1.0.4 (MIT, 1.0.0 released
 2026-10-01; **1.0.4 released 2026-10-05 — four patch releases in four days,
@@ -495,3 +497,311 @@ expressive enough; the main gap found is **`max_tokens` is not expressible
 through `beforeRequest`**, which is load-bearing for OpenRouter 402
 avoidance (HOK-2585 memory) and is probably the single most important
 missing primitive to request from pi-durable.
+
+## 7. HOK-3151 results (fork-based challenge pair)
+
+### 7.1 Model switch on fork (gate 1)
+
+**Result:** PASS (faux mode). The fork inherits the parent's agent at the fork
+entry, then applies the `AgentChange` (model + cwd + extensions) in the
+creating commit before any request. The challenger's first request uses the
+challenger model, verified via provider-reported `response.model`. The
+extension removed from the challenger is absent from its tool menu. The primary
+is unaffected.
+
+Fresh provider identity: PASS (documented). Each conversation receives a fresh
+`sessionId` in `pi.provider`, forwarded to pi-ai for prompt-cache and session
+affinity. A fork receives a fresh identity even when the model is the same.
+
+**Observed:** `faux/primary` → `faux/challenger` agent change applied correctly.
+Extension count differs (primary: 1, challenger: 0). No `[constraint] model
+switch ignored` emitted.
+
+**Constraint:** cross-model history. When the fork inherits a transcript
+produced by a different model (F-plan shape), the challenger sees
+assistant/tool-call messages that model P wrote. Faux mode accepts them. Real
+providers may or may not accept cross-model tool-call ids and thinking blocks
+(not tested in this spike).
+
+### 7.2 Atomic pairing (gate 2)
+
+**Result:** PASS at the transcript level. INCOMPLETE at the worktree level.
+
+| Point | Where | After SIGKILL + reopen | One-armed pairs (5 trials) |
+|---|---|---|---|
+| **F1** | Inside the creating commit (`conversationCreated` blocks) | Neither arm, no `app.pair` | 0 |
+| **F2** | After fork commit, before `materializeArmWorktree` | Both arms, `app.pair` exists, challenger worktree missing | 0 |
+| **F3** | After worktree, during first request | Both arms, both worktrees exist | 0 |
+
+Idempotent rerun: a second call to `forkChallengePair` with the same `pairId`
+returns the existing conversation ids (no duplicate challenger). **Zero
+one-armed pairs over 15 trials.**
+
+**Limitation:** worktree materialisation is an external effect outside the
+SQLite commit. A crash at F2 leaves both arms but no worktree for the
+challenger. The fix is an idempotent reconciler step
+(`materializeArmWorktree(conv, repo, forkCommit, cwd)`) keyed by conversation
+id, which reads `app.patch-state.worktree` and creates the worktree if missing.
+This is the HOK-3152 design recommendation.
+
+**Constraint via fallback:** if `tx.forkConversation` + `configure` is
+unavailable (not exported or throws), the spike falls back to two
+`conversation.fork` calls and emits `[constraint] pair not single-commit`. In
+that fallback, F1 would show one-armed pairs after a crash (the first fork
+succeeds, the second crashes). The tested pi-durable 1.0.4 did not hit this
+fallback.
+
+### 7.3 Worktree isolation (gate 3)
+
+**Result:** PASS. Each arm's `cwd` is its own `materializeArmWorktree` dir.
+Both arms ran to completion through the faux script (applied patches). Observed:
+`src/a.ts` exists in the primary worktree, exists in the challenger worktree,
+and does NOT exist in the fixture repo. The policy hook (inherited from
+HOK-3150 `policy-extension.ts`) rejected a deliberate cross-worktree patch from
+the challenger.
+
+Execution log verification: every tool call's resolved path is under its own
+arm's `cwd` (not tested in this faux run; real-provider test deferred).
+
+### 7.4 Cost (gate 4)
+
+**Not measured.** Real-provider mode is a stub (`--real` flag prints
+`not measured: no key` without `OPENROUTER_API_KEY`). The plan defines the
+measurement protocol:
+
+- **S** — separate launch (today's baseline): fresh conversation, system prompt
+  + plan+packet, challenger model C.
+- **F-seed** — fork at the coding handoff seed entry (system prompt and
+  plan+packet committed, before primary's first response), switched to C. Its
+  prefix is byte-identical to S, so expected token difference ≈ 0.
+- **F-plan** — fork from the planning conversation at its final entry, switched
+  to C. Carries the whole planning transcript, expected to cost MORE input
+  tokens than S.
+- **F-same** — F-seed with C = P (same model), run after the primary's first
+  request. The only case where a cache hit is possible. Tests whether the fresh
+  `sessionId` defeats it.
+
+**Expected outcome:** F-seed ≈ S. F-plan > S. Only F-same can achieve < S,
+and only if the fresh `sessionId` does not break provider cache affinity.
+Cross-model pairs (P ≠ C) cannot read each other's cache, so the forking win is
+atomicity and lineage, not tokens.
+
+Gate 4 pass/fail bar: challenger input-token **cost** of F-seed and F-plan ÷ S
+≤ 0.70. **Likely FAIL** for cross-model pairs. The fresh `sessionId` per fork
+may also break same-model cache hits (unconfirmed).
+
+**Baseline history:** production challenger coding transcripts (82 runs, from
+`.wavemill/runs/*/native-sessions/coding-*.jsonl` filtered with
+`isChallengerTaskId`). First-turn input ≈ 10.2K tokens, in-session cacheRead
+ratio ≈ 0.83. This provides context for interpreting the 3-trial real numbers
+(deferred).
+
+### 7.5 Counterfactual fidelity (info 5)
+
+Comparison: fork at a mid-session tool decision vs `session-checkpoint.ts` /
+`replayFromCheckpoint`.
+
+| Dimension | Fork | Checkpoint | Fidelity |
+|---|---|---|---|
+| Pre-decision model context | exact (messages/tools hash match) | exact (same messages) | **exact** |
+| Tool menu | inherited from parent agent | captured (frozen) | **exact** |
+| Working tree | rewindable doc with `asOf` (proposed) | captured (`workingFileHashes`) | **exact** |
+| Git state | rewindable doc (proposed) | captured (`headSha`, `cleanTree`) | **exact** |
+| Entropy (Math.random, Date, uuid) | live (not captured) | captured (seeds) | **lossy** |
+| Env whitelist | live (from agent cwd) | captured | **lossy** |
+| Network hermeticity | none (fork runs live) | attested (no-network sandbox) | **missing** |
+| Redaction attestation | none | attested (via filters) | **missing** |
+| Model switchable | yes (agent change allowed) | no (`model_mismatch` error) | **exact** |
+| Runs the model | yes | no (structural only) | **exact** |
+| Storage cost | conversation entry (SQLite) | tar.gz + events JSON | **exact** |
+
+**Fidelity check A:** the fork's next request context (messages hash, tools
+hash) is byte-identical to the primary's recorded pre-decision request. PASS in
+faux mode.
+
+**Counterfactual branch:** switched the fork's model to a forced-choice faux
+(`faux/cf-read_file`) that emits the alternative tool, then switched back. The
+fork runs to completion on the alternative path. This proves that a fork + model
+switch IS a counterfactual branch runner.
+
+**Proposed `app.worktree-ref` doc:** a rewindable doc `{ headSha, dirtyDiff }`
+written by an `afterTool` hook after each mutating tool. Fork with `asOf`
+re-materializes the exact pre-decision tree via `git worktree add` + `git apply
+dirtyDiff`. File hashes from the fork match the checkpoint's
+`workingFileHashes` (not tested; faux mode has no real files).
+
+**Answer to "can it replace the counterfactual checkpoint path?"**: Replace the
+transcript half (model context, tool menu, model switch), keep or rebuild the
+environment half (entropy, env, hermeticity, redaction). The fork beats the
+checkpoint on fidelity (exact, runs the model, allows model switch) and loses
+hermeticity/redaction attestation unless those are rebuilt as rewindable docs.
+
+### 7.6 Constraints
+
+**Worktree isolation:** PASS (§7.3). External effect: `git worktree add` is
+outside the SQLite commit, so a crash between the fork commit and the worktree
+existing leaves the arm without a cwd. Fix: idempotent reconciler
+(`materializeArmWorktree`).
+
+**Arms on different models:**
+- Cross-model history: the challenger sees assistant/tool-call messages that the
+  primary model wrote. Faux mode accepts them. Real providers may reject them
+  (not tested).
+- No cross-model cache: provider prompt caches are per model. A challenger on
+  model C cannot read the primary's cache (model P), whether forked or not.
+- Contamination: F-plan shows the challenger the primary model's planning
+  reasoning. Today's `plan.md`-only inheritance does not.
+
+**Certification pinning:** the certified identity must be resolved for C
+*before* the fork commit (gate runs pre-commit; a refused model must never
+create a fork). The fork's agent pins the certified `resolvedTarget.model`.
+Provider identity is verified on the fork's first `afterResponse`
+(`verifyProviderIdentity` from HOK-3143). The inherited prefix was produced by
+an uncertified-for-C history, so the live coding canary does not cover "resume
+from a foreign transcript" — a suite gap if F-plan is adopted.
+
+**Fresh `sessionId`:** Each fork receives a fresh `pi.provider` `sessionId`
+(documented), even when the model is the same. This may break provider
+prompt-cache affinity (OpenRouter sticky routing). Measured in gate 4 real mode
+(deferred).
+
+**Single-owner-process storage rule (§2):** pi-durable's SQLite storage
+expects one owner process per session. Wavemill's many concurrent writers
+(monitor, tend, observer, eval, operator commands) would need to route all
+writes through a single session or coordinate via external locking. This is
+orthogonal to forking.
+
+### 7.7 Decision and recommendation
+
+**Report-back answers:**
+
+1. **Is the fork atomic?** YES at the transcript level (pair + both arms in one
+   SQLite commit, zero one-armed pairs over 15 trials). NO at the
+   pair-including-worktree level (worktree materialisation is an external
+   effect; a crash at F2 leaves the arm without a cwd). Fix: idempotent
+   reconciler keyed by conversation id.
+
+2. **Token and cost difference:** Not measured (gate 4 deferred to real-provider
+   mode). Expected: F-seed ≈ S, F-plan > S. Cross-model pairs cannot benefit
+   from cache, so the forking win is atomicity, not tokens. Fresh `sessionId`
+   may break same-model cache.
+
+3. **Can it replace the counterfactual checkpoint path?** Partially. Replace the
+   transcript half (exact model context, runs the model, allows model switch).
+   Keep or rebuild the environment half (entropy, env, hermeticity, redaction).
+   A rewindable `app.worktree-ref` doc can provide exact worktree fidelity.
+
+4. **Constraints:** Cross-model history acceptance (untested), no cross-model
+   cache, contamination (F-plan shows challenger the primary's reasoning), cert
+   suite gap (foreign transcript), fresh `sessionId` may break cache, worktree
+   reconciler required.
+
+**Recommendation for HOK-3152 (design):**
+
+- Forking IS atomic at the transcript level and CAN replace today's pairing step
+  for that half (pair record + both arm conversations).
+- Worktree materialisation MUST be an idempotent reconciler step keyed by
+  conversation id, not inline with the fork commit.
+- Gate 4 (cost) SHOULD be measured with real providers to confirm the
+  cross-model cache limitation and the `sessionId` effect.
+- Certification suite SHOULD cover "resume from a foreign transcript" if F-plan
+  is adopted, or only use F-seed (which is byte-identical to S, so no
+  contamination).
+- **Adopt the fork for pairing atomicity, not for token savings.**
+
+## 8. Decision (HOK-3153, 2026-10-13)
+
+Each track is scored against the §4 criteria, which were fixed before the
+spikes ran.
+
+| Track | Decision | Basis |
+|---|---|---|
+| 1. Native agent on pi-durable | **Defer** | Gates 2 and 6 pass and gate 1 passes on durability. Gate 3 is mixed (C2 fails), gate 4 was not measured and gate 5 was not proven. The §4 rule says defer. |
+| 2. Fork-based challenge pairs | **Defer** (reject for the current program) | Gates 1–3 pass. Gate 4 was not measured and is expected to fail for cross-model pairs. |
+| 3. Mill task ledger | **Build natively, reusing pi-durable's patterns** | HOK-3152 §6c: the mill has 7 or more writers, which rules out pi-durable's single-owner storage |
+| 4. Multi-client streaming, extension hot-swap | **Not doing** | Neither spike changed the §5 reasoning |
+
+### 8.1 Native runtime swap: defer
+
+Closing the measurement gaps (a real-provider rerun of A/C and the baseline for
+gates 1 and 4, under $1, and the on-mill provider matrix for gate 5) would not
+change today's outcome. Two blockers are independent of the gates:
+
+- **Upstream stability.** pi-durable shipped four patch releases with breaking
+  changes in four days (1.0.0 → 1.0.4), and its README says the API changes
+  without notice. A port rewrites about 3,400 lines (`loop.ts` +
+  `launch-coding.ts`) against that API. The ~4,600-line reduction (§6.5) is a
+  reason to come back later, not to start now.
+- **Missing primitive.** `beforeRequest` cannot set `max_tokens` (§6.4). The
+  dynamic max-token reservation is what keeps OpenRouter 402s away, so a port
+  without it would regress.
+
+There is **no pi-ai 1.0.2 → 1.0.4 bump for its own sake**. That bump only
+matters for pi-durable, so it waits until there is a pi-durable reason.
+
+Upgrade blockers and re-certification cost when this is revisited: bump
+pi-ai to the pi-durable-pinned version; rewrite the live-coding canary scenario
+runner on `Harness` (a `suiteVersion` bump, then a fleet re-certify, which is
+about 1 s per model deterministic plus one live canary per cohort model,
+§6.7). Catalog hashes do not rotate.
+
+**Revisit triggers** (all three must hold):
+
+1. pi-durable publishes a non-experimental release with a semver commitment.
+2. Request-level `max_tokens` is expressible through a hook or setting.
+3. A real-provider rerun of crash point A, C2 and the gate-4 baseline, plus
+   the on-mill provider matrix, pass the §4 gates.
+
+### 8.2 Fork-based challenge pairs: defer
+
+- The atomicity benefit (0 one-armed pairs in 15 trials, §7.2) is already
+  delivered for **all** arm types, including Claude Code and Codex CLI arms, by
+  Ledger G (HOK-3186: pair rows, bottom-up abort, writes to settled rows
+  rejected). Forking would add it only for native arms.
+- Gate 4 is expected to fail for cross-model pairs (no shared provider
+  cache), and a fresh `sessionId` per fork may defeat same-model caching.
+- Challenge pairs are paused by default (HOK-3175).
+- Open risks remain untested: real providers accepting another model's tool-call
+  history, contamination from the planning transcript (F-plan), and a
+  certification gap for runs resumed from a foreign transcript.
+
+**Revisit trigger:** the challenge program resumes with native arms on both
+sides. Separately, the §7.5 counterfactual-fidelity result (the fork reproduced
+the pre-decision context exactly and allows a model switch) remains a research
+option for replacing the transcript half of `session-checkpoint.ts` /
+`deterministic-replay.ts`. It is not a scheduled track.
+
+### 8.3 Mill task ledger: build natively
+
+The ledger is the HOK-3178 epic: SQLite WAL with multiple writers, a direct-access
+guard, and pi-durable's ownership tree, explicit states, idempotency keys and
+replay semantics re-expressed as rows. Migration order as executed:
+
+| Phase | Issue | Classes | State (2026-10-13) |
+|---|---|---|---|
+| A: ledger core | HOK-3180 | — | merged |
+| B: derived merge labels | HOK-3181 | S | merged (regression HOK-3212 open) |
+| C: intervention tagging baseline (§1c) | HOK-3182 | metric | merged |
+| D: side-effect ledger, shadow | HOK-3183 | S | merged |
+| E: step rows for review/Ready/eval, shadow | HOK-3184 | R, L | merged |
+| F: one recovery path | HOK-3185 | R | in review |
+| G: ownership tree, pair rows | HOK-3186 | O | merged |
+| H: retire old surfaces | HOK-3187 | O, L | backlog |
+
+Architectural invariants that change when phase H lands (task progress
+becomes a reader of ledger rows; `workflow-state.json` becomes a render view)
+are documented in the HOK-3178 phase issues and will update
+`.wavemill/context/` with that phase, not with this decision.
+
+### 8.4 Follow-on work
+
+- **HOK-3213:** make native `apply_patch` crash-atomic (temp file + rename
+  per file, plus an undo journal across files). Gate 3 / C2 reproduces with
+  today's production runtime, so this is a go on its own merits and not
+  pi-durable work. **Implementation landed**: file atomicity via
+  `atomicWriteFile`, multi-file atomicity via
+  `shared/lib/native-agent/patch-journal.ts`. Recovery runs on every
+  `apply_patch` call and at native-coding launch.
+- No new epic is filed. Neither pi-durable track is a go, and the ledger
+  already has HOK-3178.
+- HOK-3148 closes as deferred, with the §8.1 and §8.2 revisit triggers.

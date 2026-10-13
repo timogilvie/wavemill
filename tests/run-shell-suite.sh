@@ -26,8 +26,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # over every shell script, not a per-shard test, and runs once via `npm run lint`.
 TESTS=(
   check-direct-ledger-access.test.sh
+  ledger-cli-shadow.test.sh
+  ledger-hook-shadow.test.sh
+  check-ledger-shadow-swallow.test.sh
+  monitor-side-effect-detector-tick.test.sh
+  ledger-recovery-tick.test.sh
   aborted-challenge-cleanup.test.sh
   safe-branch-cleanup.test.sh
+  preserved-branch-record-long-slug.test.sh
   challenge-primary-merge-cleanup.test.sh
   operator-abort-cleanup.test.sh
   agent-resolve-from-model.test.sh
@@ -51,7 +57,11 @@ TESTS=(
   ready-exhausted-challenge.test.sh
   review-gate-refused-challenge.test.sh
   monitor-late-completion.test.sh
+  plan-reapproval-late-coding-complete.test.sh
   monitor-terminal-cleanup-tick.test.sh
+  monitor-reaped-task-no-window-recreation.test.sh
+  monitor-window-recreate-bounded.test.sh
+  persist-task-window-id-reaped.test.sh
   monitor-wake-resume.test.sh
   parent-monitor-function-drift.test.sh
   save-task-state-canonicalization.test.sh
@@ -163,10 +173,18 @@ TESTS=(
   re-review-no-pr.test.sh
   monitor-command-routing.test.sh
   condition-reconciler.test.sh
+  wavemill-pr-cache.test.sh
+  cross-pr-revert-job.test.sh
+  pr-ci-status-job.test.sh
+  ready-watchdog-job.test.sh
+  route-task-job.test.sh
+  monitor-perf-smoke.test.sh
   config-false-booleans.test.sh
   check-no-npx-in-monitor.sh
   monitor-pass-snapshot.test.sh
+  agent-model-memo.test.sh
   monitor-state-size.test.sh
+  hot-state-byte-cap.test.sh
   monitor-usr2-wakeup.test.sh
 )
 

@@ -1,0 +1,10 @@
+{
+  "name": "model-registry",
+  "schemaPath": "shared/schemas/model-registry.schema.json",
+  "schemaSha256": "10469ad28d3f8897c42e36b6629de7d72a1f1d10f59599636ba4568d0eeeff34",
+  "codeSha256": "7d1ba766b4a919de01d2c1c6f55d9bd991e6a413c038867310451c696bf762ff",
+  "ajvOptions": {
+    "allErrors": true
+  },
+  "ajvModule": "ajv"
+}

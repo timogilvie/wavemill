@@ -2,8 +2,16 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import Ajv from 'ajv';
 import type { ModelCapabilities, ModelRegistry, RegistryTaskType } from './model-registry.ts';
+import {
+  compileSchemaValidator,
+  hasValidationStamp,
+  loadPrecompiledValidator,
+  MODEL_REGISTRY_AJV_OPTIONS,
+  recordValidationStamp,
+  sha256,
+  type SchemaValidatorFunction,
+} from './schema-validators.ts';
 
 export const MODEL_REGISTRY_CATALOG_SCHEMA_VERSION = '1';
 
@@ -22,6 +30,7 @@ export interface ModelRegistryCatalog {
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const defaultCatalogPath = join(moduleDir, '..', 'fixtures', 'model-registry.v1.json');
 const defaultSchemaPath = join(moduleDir, '..', 'schemas', 'model-registry.schema.json');
+const VALIDATION_STAMP_SCOPE = 'model-registry';
 
 export class ModelRegistryCatalogError extends Error {
   constructor(message: string) {
@@ -30,9 +39,9 @@ export class ModelRegistryCatalogError extends Error {
   }
 }
 
-function parseJsonFile(path: string): unknown {
+function readTextFile(path: string): string {
   try {
-    return JSON.parse(readFileSync(path, 'utf-8'));
+    return readFileSync(path, 'utf-8');
   } catch (error) {
     throw new ModelRegistryCatalogError(
       `Invalid model registry catalog at ${path}: ${error instanceof Error ? error.message : String(error)}`,
@@ -40,10 +49,39 @@ function parseJsonFile(path: string): unknown {
   }
 }
 
-function validateSchema(parsed: unknown, schemaPath: string): void {
-  const schema = parseJsonFile(schemaPath);
-  const ajv = new Ajv({ allErrors: true });
-  const validate = ajv.compile(schema);
+function parseJsonText(text: string, path: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new ModelRegistryCatalogError(
+      `Invalid model registry catalog at ${path}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+const compiledSchemaValidators = new Map<string, SchemaValidatorFunction>();
+
+/**
+ * Validator for the registry schema: the committed standalone artifact when it
+ * matches the schema bytes, otherwise a runtime compile (cached per schema
+ * hash so repeat loads in one process compile at most once).
+ */
+function getSchemaValidator(schemaText: string, schemaPath: string): SchemaValidatorFunction {
+  const precompiled = loadPrecompiledValidator('model-registry', schemaText, MODEL_REGISTRY_AJV_OPTIONS);
+  if (precompiled) {
+    return precompiled;
+  }
+  const key = sha256(schemaText);
+  let validate = compiledSchemaValidators.get(key);
+  if (!validate) {
+    validate = compileSchemaValidator(parseJsonText(schemaText, schemaPath), MODEL_REGISTRY_AJV_OPTIONS);
+    compiledSchemaValidators.set(key, validate);
+  }
+  return validate;
+}
+
+function validateSchema(parsed: unknown, schemaText: string, schemaPath: string): void {
+  const validate = getSchemaValidator(schemaText, schemaPath);
   if (validate(parsed)) {
     return;
   }
@@ -161,11 +199,52 @@ export function projectModelRegistryCatalog(catalog: ModelRegistryCatalog): Mode
   };
 }
 
+let validatorSourceSha: string | null = null;
+
+/**
+ * Hash of this module's own source. Part of the validation stamp key so a
+ * change to the semantic checks below invalidates every existing stamp.
+ */
+function getValidatorSourceSha(): string {
+  if (validatorSourceSha === null) {
+    try {
+      validatorSourceSha = sha256(readFileSync(fileURLToPath(import.meta.url)));
+    } catch {
+      validatorSourceSha = 'unknown';
+    }
+  }
+  return validatorSourceSha;
+}
+
+/** Validated catalogs by content key, so repeat loads in one process skip all work. */
+const validatedCatalogs = new Map<string, ModelRegistryCatalog>();
+
+/**
+ * Load, validate, and return a deep copy of the model registry catalog.
+ *
+ * Validation (schema + semantics) runs once per distinct (catalog bytes,
+ * schema bytes, loader source) key: within a process via an in-memory map,
+ * and across spawns via a validation stamp (HOK-3205). Set
+ * `WAVEMILL_DISABLE_SCHEMA_STAMP=1` to force full validation.
+ */
 export function loadModelRegistryCatalog(catalogPath = defaultCatalogPath): ModelRegistryCatalog {
-  const parsed = parseJsonFile(catalogPath);
-  validateSchema(parsed, defaultSchemaPath);
+  const catalogText = readTextFile(catalogPath);
+  const schemaText = readTextFile(defaultSchemaPath);
+  const key = `${sha256(catalogText)}.${sha256(schemaText)}.${getValidatorSourceSha()}`;
+
+  const memoized = validatedCatalogs.get(key);
+  if (memoized) {
+    return cloneJson(memoized);
+  }
+
+  const parsed = parseJsonText(catalogText, catalogPath);
+  if (!hasValidationStamp(VALIDATION_STAMP_SCOPE, key)) {
+    validateSchema(parsed, schemaText, defaultSchemaPath);
+    validateCatalogSemantics(parsed as ModelRegistryCatalog);
+    recordValidationStamp(VALIDATION_STAMP_SCOPE, key);
+  }
   const catalog = parsed as ModelRegistryCatalog;
-  validateCatalogSemantics(catalog);
+  validatedCatalogs.set(key, catalog);
   return cloneJson(catalog);
 }
 
