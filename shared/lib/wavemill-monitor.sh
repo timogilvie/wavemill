@@ -1780,7 +1780,7 @@ challenge_preflight_route_against_primary() {
   local route_file out rc=0
   route_file="$(mktemp "${TMPDIR:-/tmp}/wavemill-challenger-route.XXXXXX")" || return 0
   printf '%s\n' "$challenger_route_json" > "$route_file"
-  out="$(npx tsx "$TOOLS_DIR/check-challenge-route.ts" --stage "$stage" \
+  out="$(wavemill_run_tool "check-challenge-route.ts" --stage "$stage" \
     --primary-feature-dir "$primary_feature_dir" --challenger-routing "$route_file" \
     --repo-dir "$REPO_DIR" 2>/dev/null)" || rc=$?
   rm -f "$route_file"
@@ -1900,7 +1900,7 @@ challenge_pre_review_route_preflight() {
   else
     primary_dir="$sibling_dir"; challenger_dir="$feature_dir"
   fi
-  out="$(npx tsx "$TOOLS_DIR/check-challenge-route.ts" --stage "$stage" \
+  out="$(wavemill_run_tool "check-challenge-route.ts" --stage "$stage" \
     --primary-feature-dir "$primary_dir" --challenger-feature-dir "$challenger_dir" \
     --repo-dir "$REPO_DIR" 2>/dev/null)" || rc=$?
   if [[ "$rc" -ne 0 && "$rc" -ne 3 ]]; then
@@ -2254,7 +2254,7 @@ challenge_materialize_challenger_arm() {
   if challenge_intent_json_is_canonical "$sealed_intent" \
     && [[ -n "${TOOLS_DIR:-}" && -f "$TOOLS_DIR/check-challenge-route.ts" && -f "$primary_feature_dir/.phase-config.json" ]]; then
     local preflight_out preflight_rc=0
-    preflight_out="$(npx tsx "$TOOLS_DIR/check-challenge-route.ts" --stage "${varied_stage:-review}" \
+    preflight_out="$(wavemill_run_tool "check-challenge-route.ts" --stage "${varied_stage:-review}" \
       --intent-json "$sealed_intent" --primary-feature-dir "$primary_feature_dir" \
       --repo-dir "$REPO_DIR" 2>/dev/null)" || preflight_rc=$?
     if (( preflight_rc == 3 )); then

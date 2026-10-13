@@ -5514,7 +5514,7 @@ challenge_route_drift_check() {
   local -a args=(--intent "$intent_file" "--${side}-routing" "$routing_file" --repo-dir "${REPO_DIR:-$PWD}")
   [[ -n "$sibling_routing" ]] && args+=("--${sibling_side}-routing" "$sibling_routing")
   local out rc=0
-  out="$(npx tsx "$TOOLS_DIR/check-challenge-route.ts" "${args[@]}" 2>/dev/null)" || rc=$?
+  out="$(wavemill_run_tool "check-challenge-route.ts" "${args[@]}" 2>/dev/null)" || rc=$?
   if [[ "$rc" -eq 3 ]]; then
     jq -r '(.driftedFields // []) | join(",")' <<<"$out" 2>/dev/null || true
     return 3
