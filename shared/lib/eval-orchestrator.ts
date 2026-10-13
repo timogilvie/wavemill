@@ -64,6 +64,7 @@ import {
   enforceChallengeIntentPresence,
   loadChallengeIntentFromFeatureDir,
   loadChallengeIntentFromState,
+  loadChallengeDivergenceFromState,
   resolveChallengeSide,
   type ChallengeExecutionIntent,
 } from './challenge-execution-contract.ts';
@@ -786,13 +787,18 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
     intent: record.challengeIntent,
     evidence: attestation,
   });
-  if (challengeSide.invalidReason) {
-    record.challengeDivergenceReason = challengeSide.invalidReason;
+  // HOK-3156: a cause the mill recorded on the pair's state (route-drift found
+  // by the pre-review preflight after a PR opened) invalidates the record the
+  // same way a side mismatch does.
+  const challengeInvalidReason = challengeSide.invalidReason
+    ?? loadChallengeDivergenceFromState(repoDir, issueId, challengePairId);
+  if (challengeInvalidReason) {
+    record.challengeDivergenceReason = challengeInvalidReason;
     record.invalidChallenge = true;
     record.trainingEligible = false;
     record.nonRewardReason = {
       code: 'INVALID_CHALLENGE',
-      message: `Invalid challenge: ${challengeSide.invalidReason}`,
+      message: `Invalid challenge: ${challengeInvalidReason}`,
     };
   }
 

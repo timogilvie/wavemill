@@ -30,6 +30,7 @@ import {
   resolveChallengeSideExecutionProvenance,
   validateChallengeExecutionProvenance,
   challengeModelIdsEquivalent,
+  buildComparisonRoutingMeta,
   type ChallengeComparison,
   type ChallengeDiffIdentity,
   type ChallengeRoutingMeta,
@@ -1656,6 +1657,30 @@ process.on('exit', () => {
   console.log(`\nPassed: ${passed}`);
   console.log(`Failed: ${failed}`);
   if (failed > 0) process.exitCode = 1;
+});
+
+test('buildComparisonRoutingMeta keeps a review-stage pair reviewer-only (HOK-3156)', () => {
+  // The launcher's per-side model is the varied stage's model (the reviewer
+  // here); the coder arrives separately. Reading the varied model as the coder
+  // turned every review-stage pair into a coder + reviewer variation.
+  const primary = buildComparisonRoutingMeta({
+    planner: 'claude-opus-5-5', coder: 'claude-opus-4-7', reviewer: 'gpt-5.6-terra',
+    planDepth: 'deep', codeDepth: 'deep', reviewMode: 'llm', variedModelFallback: 'gpt-5.6-terra',
+  });
+  const challenger = buildComparisonRoutingMeta({
+    planner: 'claude-opus-5-5', coder: 'claude-opus-4-7', reviewer: 'kimi-k2',
+    planDepth: 'deep', codeDepth: 'deep', reviewMode: 'llm', variedModelFallback: 'kimi-k2',
+  });
+  const varied = detectVariedDimensions(primary, challenger);
+  assert.ok(varied);
+  assert.equal(classifyChallengeType(varied!), 'reviewer-only');
+  assert.equal(primary.coder, 'claude-opus-4-7');
+});
+
+test('buildComparisonRoutingMeta falls back to the varied model as coder for legacy implementation launches', () => {
+  const legacy = buildComparisonRoutingMeta({ planner: 'p', reviewer: 'r', variedModelFallback: 'qwen-3-coder' });
+  assert.equal(legacy.coder, 'qwen-3-coder');
+  assert.equal(legacy.planDepth, '');
 });
 
 test('stage provenance carries Pi runtime versions from executionEvidence (HOK-3164)', () => {

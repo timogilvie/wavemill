@@ -521,7 +521,7 @@ done
 COPY_LOOP=$(awk '
   /^  for artifact in \\/ { capture=1 }
   capture { print }
-  /^  do$/ && capture { exit }
+  /(^  |; )do$/ && capture { exit }
 ' <<< "$MATERIALIZE_BLOCK")
 if [[ -n "$COPY_LOOP" ]] && ! grep -qF ".review-result.json" <<< "$COPY_LOOP"; then
   pass "materialiser copy loop does NOT include .review-result.json"

@@ -67,6 +67,7 @@ for fn in \
   challenge_record_implementation_fork_point \
   challenge_maybe_materialize_deferred_arms \
   challenge_materialize_implementation_arm \
+  challenge_set_varied_model \
   challenge_compute_fork_identity \
   challenge_intent_stamp_fork_descriptor \
   challenge_intent_files_valid \
@@ -209,6 +210,8 @@ check_eq "challenger launched coding (not planning/review)" "coding launch_codin
 check_eq "challenger codes with its own coder model" "qwen-3-coder" "$(awk '{print $(NF-2)}' <<<"$LAUNCH")"
 check_eq "challenger task state at phase=coding" "coding" "$(jq -r '.tasks["HOK-9001_c"].phase' "$STATE_FILE")"
 check_eq "challenger task state challengeStage=implementation" "implementation" "$(jq -r '.tasks["HOK-9001_c"].challengeStage' "$STATE_FILE")"
+check_eq "challenger challengeModel is its varied coder" "qwen-3-coder" "$(jq -r '.tasks["HOK-9001_c"].challengeModel' "$STATE_FILE")"
+check_eq "challenger challengeVariedModel is its varied coder" "qwen-3-coder" "$(jq -r '.tasks["HOK-9001_c"].challengeVariedModel' "$STATE_FILE")"
 check_eq "shared reviewer comes from the plan-time route, not the stale arm record" "claude-sonnet-5" \
   "$(jq -r '.tasks["HOK-9001_c"].reviewerModel' "$STATE_FILE")"
 check_eq "shared review mode comes from the plan-time route" "static+llm" \

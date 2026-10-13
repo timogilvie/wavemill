@@ -2514,6 +2514,11 @@ for t in "${TASKS[@]}"; do
     challenger_entry_code_depth=$(echo "$challenge_plan" | jq -r '.entries[1].codeDepth // empty' 2>/dev/null)
     challenger_entry_review_mode=$(echo "$challenge_plan" | jq -r '.entries[1].reviewMode // empty' 2>/dev/null)
     challenge_intent=$(echo "$challenge_plan" | jq -c '.challengeIntent // null' 2>/dev/null || echo "null")
+    # challengeModel names the varied stage's model (HOK-3156): the reviewer for
+    # a review-stage pair, the planner for a plan-stage pair. coderModel keeps
+    # the coder. Older plans without variedModel fall back to the coder.
+    primary_varied_model=$(echo "$challenge_plan" | jq -r '.entries[0].variedModel // .entries[0].model // empty' 2>/dev/null)
+    challenger_varied_model=$(echo "$challenge_plan" | jq -r '.entries[1].variedModel // .entries[1].model // empty' 2>/dev/null)
 
     # HOK-2811 / HOK-3086: review- and implementation-stage challenges defer the
     # challenger to a fork of the primary (after coding for review, after the
@@ -2541,7 +2546,7 @@ for t in "${TASKS[@]}"; do
     TASK_CHALLENGE_BY_ISSUE["$ISSUE"]="true"
     TASK_CHALLENGE_PAIR_BY_ISSUE["$ISSUE"]="$ISSUE"
     TASK_CHALLENGE_ROLE_BY_ISSUE["$ISSUE"]="primary"
-    TASK_CHALLENGE_MODEL_BY_ISSUE["$ISSUE"]="$primary_model"
+    TASK_CHALLENGE_MODEL_BY_ISSUE["$ISSUE"]="$primary_varied_model"
     TASK_CHALLENGE_STAGE_BY_ISSUE["$ISSUE"]="$challenge_stage"
     TASK_CHALLENGE_INTENT_BY_ISSUE["$ISSUE"]="$challenge_intent"
     TASK_AGENT_BY_ISSUE["$ISSUE"]="${primary_entry_planner_agent:-${primary_agent:-$rec_agent}}"
@@ -2557,7 +2562,7 @@ for t in "${TASKS[@]}"; do
       TASK_CHALLENGE_BY_ISSUE["$challenger_key"]="true"
       TASK_CHALLENGE_PAIR_BY_ISSUE["$challenger_key"]="$ISSUE"
       TASK_CHALLENGE_ROLE_BY_ISSUE["$challenger_key"]="challenger"
-      TASK_CHALLENGE_MODEL_BY_ISSUE["$challenger_key"]="$challenger_model"
+      TASK_CHALLENGE_MODEL_BY_ISSUE["$challenger_key"]="$challenger_varied_model"
       TASK_CHALLENGE_STAGE_BY_ISSUE["$challenger_key"]="$challenge_stage"
       TASK_CHALLENGE_INTENT_BY_ISSUE["$challenger_key"]="$challenge_intent"
       TASK_AGENT_BY_ISSUE["$challenger_key"]="${challenger_entry_planner_agent:-${challenger_agent:-$AGENT_CMD}}"

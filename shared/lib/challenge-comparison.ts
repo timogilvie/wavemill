@@ -122,6 +122,7 @@ export type NoComparisonReason =
   | 'missing_challenge_intent'
   | 'multiple-varied-roles'
   | 'arm_infrastructure_failure'
+  | 'route-drift'
   // legacy skip reason
   | 'identical_routing_dimensions'
   // provenance validation outcomes
@@ -154,6 +155,7 @@ export const NO_COMPARISON_REASONS = [
   'missing_challenge_intent',
   'multiple-varied-roles',
   'arm_infrastructure_failure',
+  'route-drift',
   'identical_routing_dimensions',
   'provenance_invalid',
   'provenance_inconclusive',
@@ -503,6 +505,34 @@ function variantDiffers(a: string | undefined, b: string | undefined): boolean {
   const na = normalize(a);
   const nb = normalize(b);
   return na !== '' && nb !== '' && na !== nb;
+}
+
+/**
+ * Build one arm's routing metadata from the comparison launcher's inputs.
+ *
+ * HOK-3156: the launcher's per-side "model" is the varied stage's model, not
+ * the coder. The coder is passed explicitly; `variedModelFallback` only fills
+ * it for legacy implementation-stage launches that predate the explicit
+ * coder, where the two coincide. Reading the varied model as the coder is
+ * what made a review-stage pair look like coder + reviewer variation.
+ */
+export function buildComparisonRoutingMeta(input: {
+  planner?: string;
+  coder?: string;
+  reviewer?: string;
+  planDepth?: string;
+  codeDepth?: string;
+  reviewMode?: string;
+  variedModelFallback?: string;
+}): ChallengeRoutingMeta {
+  return {
+    planner: normalize(input.planner),
+    coder: normalize(input.coder) || normalize(input.variedModelFallback),
+    reviewer: normalize(input.reviewer),
+    planDepth: normalize(input.planDepth),
+    codeDepth: normalize(input.codeDepth),
+    reviewMode: normalize(input.reviewMode),
+  };
 }
 
 export function routingMetaFromChallengeEntry(entry: ChallengeEntryLike): ChallengeRoutingMeta {
