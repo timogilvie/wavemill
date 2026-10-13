@@ -159,6 +159,9 @@ for f in \
   "$REPO_DIR"/tests/review-gate-refused-challenge.test.sh \
   "$REPO_DIR"/tests/monitor-late-completion.test.sh \
   "$REPO_DIR"/tests/monitor-terminal-cleanup-tick.test.sh \
+  "$REPO_DIR"/tests/monitor-reaped-task-no-window-recreation.test.sh \
+  "$REPO_DIR"/tests/monitor-window-recreate-bounded.test.sh \
+  "$REPO_DIR"/tests/persist-task-window-id-reaped.test.sh \
   "$REPO_DIR"/tests/monitor-wake-resume.test.sh \
   "$REPO_DIR"/tests/challenge-deferred-arm.test.sh \
   "$REPO_DIR"/tests/parent-monitor-function-drift.test.sh \
@@ -636,7 +639,7 @@ else
       | grep -vE '^(pipefail|euo|noglob|errexit|nounset)$' \
       | grep -vE '^(env|stdin|stdout|stderr|json|txt|csv|pid|utf)$' \
       | grep -vE '^(true|false|yes|string|number|empty|null|undefined)$' \
-      | grep -vE '^(try|catch|def|fromjson|add|rollout_path|thread_id|thread_row|updated_at|exits|setting|falling|select|strings|tostring|valid_dismissal_count|tojson|obj|title)$' \
+      | grep -vE '^(try|catch|def|fromjson|add|rollout_path|thread_id|thread_row|updated_at|exits|setting|falling|select|strings|tostring|valid_dismissal_count|tojson|obj|title|wm_orphan_stub)$' \
       | grep -vE '^(bad|internal|keeping|marking|monitor|rate|reduce|service|skipping|staying|timed|too|using|wavemill|waiting)$' \
       | grep -vE '^(advance|review)$' \
       | grep -vE '^(not_eligible|routing_error|invalid_challenge)$' \
