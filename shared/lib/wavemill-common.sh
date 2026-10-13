@@ -6489,29 +6489,7 @@ filter_parent_issues() {
     ' 2>/dev/null
   )
 
-  local has_active_parent
-  has_active_parent="$(
-    printf '%s\n' "$backlog_json" | jq -r '
-      def child_is_terminal:
-        ((.state.type // "") == "completed")
-        or ((.state.type // "") == "canceled")
-        or (.completedAt != null)
-        or (.canceledAt != null);
-      [
-        .[]
-        | (.children.nodes // []) as $children
-        | select(($children | length) > 0)
-        | select($children | any(child_is_terminal | not))
-      ]
-      | length > 0
-    ' 2>/dev/null
-  )"
-  if [[ "$has_active_parent" == "true" && -z "${WAVEMILL_ACTIVE_PARENT_ANNOUNCED:-}" ]]; then
-    printf 'INFO: Excluding parent issues with active Linear children from backlog\n' >&"$log_dest"
-    WAVEMILL_ACTIVE_PARENT_ANNOUNCED=1
-    export WAVEMILL_ACTIVE_PARENT_ANNOUNCED
-  fi
-
+  # Active-child exclusion is routine filtering; keep backlog refreshes quiet.
   printf '%s\n' "$backlog_json" | jq '
     def child_is_terminal:
       ((.state.type // "") == "completed")
