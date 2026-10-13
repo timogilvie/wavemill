@@ -57,6 +57,8 @@ state_mutate() {
 source "$REPO_ROOT/shared/lib/challenge-arms.sh"
 # shellcheck source=../../../shared/lib/bounded-retry.sh
 source "$REPO_ROOT/shared/lib/bounded-retry.sh"
+# shellcheck source=../../../shared/lib/task-identity.sh
+source "$REPO_ROOT/shared/lib/task-identity.sh"
 
 extract_function() {
   awk -v name="$2" '
@@ -83,6 +85,14 @@ for fn in \
   eval "$(extract_function "$MONITOR_SCRIPT_FILE" "$fn")"
 done
 eval "$(extract_function "$COMMON_SCRIPT_FILE" phase_config_provider_for_agent)"
+eval "$(extract_function "$COMMON_SCRIPT_FILE" pass_task_field)"
+# The monitor spawns check-challenge-route.ts through wavemill_run_tool; run it
+# directly so the real one-variable check executes.
+wavemill_run_tool() {
+  local tool="${1:?wavemill_run_tool requires a tool basename}"
+  shift
+  npx tsx "$TOOLS_DIR/$tool" "$@"
+}
 # The real helper seeds a default file through a heredoc (not extractable by
 # brace matching); the fork always copies a phase config, so seed minimally.
 ensure_phase_config_state_file() { [[ -f "$1/.phase-config.json" ]] || printf '{}\n' > "$1/.phase-config.json"; }
