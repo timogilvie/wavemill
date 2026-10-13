@@ -5,6 +5,7 @@
  */
 
 import { execShellCommand } from './shell-utils.ts';
+import { findCachedPullRequest } from './session-gh-cache.ts';
 
 const GH_COMMAND_TIMEOUT_MS = 120_000;
 const FAILING_CHECK_CONCLUSIONS = new Set(['failure', 'timed_out', 'cancelled']);
@@ -28,13 +29,34 @@ export interface PrLiveState {
   statusCheckRollup?: Array<{ name: string; conclusion: string; status: string }>;
 }
 
+/**
+ * HOK-3206: serve the probe from the monitor's per-pass PR cache when the
+ * cached row is for the checkout's current HEAD; any other head (or no
+ * checkout HEAD) is a miss so a stale row never decides a gate.
+ */
+function cachedLiveStateSource(prNumber: number, repoDir: string): unknown {
+  let head = '';
+  try {
+    head = String(execShellCommand('git rev-parse HEAD', { encoding: 'utf-8', cwd: repoDir, timeout: 5_000 })).trim();
+  } catch {
+    return null;
+  }
+  if (!head) return null;
+  const row = findCachedPullRequest(prNumber, { expectedHeadSha: head });
+  if (!row || row.statusCheckRollup === undefined) return null;
+  return {
+    mergeable: row.mergeable,
+    mergeStateStatus: row.mergeStateStatus,
+    statusCheckRollup: row.statusCheckRollup,
+  };
+}
+
 export async function probePrLiveState(prNumber: number, repoDir: string): Promise<PrLiveState> {
   try {
-    const output = String(execShellCommand(
+    const parsed = cachedLiveStateSource(prNumber, repoDir) ?? JSON.parse(String(execShellCommand(
       `gh pr view ${prNumber} --json mergeable,mergeStateStatus,statusCheckRollup`,
       { encoding: 'utf-8', cwd: repoDir, timeout: GH_COMMAND_TIMEOUT_MS },
-    ));
-    const parsed = JSON.parse(output) as unknown;
+    ))) as unknown;
     if (!isRecord(parsed)) {
       return { available: false };
     }

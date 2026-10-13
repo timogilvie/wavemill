@@ -3,13 +3,14 @@
 import {
   buildJobId,
   formatJobSummary,
+  isCheckJobKind,
   launchJob,
   markJobSettled,
   pollJobs,
   type MillJob,
 } from '../shared/lib/job-tracker.ts';
 
-const USAGE = `job-tracker — manage monitored challenge jobs
+const USAGE = `job-tracker — manage monitored background jobs (challenge eval/comparison, HOK-3206 ready checks)
 
 Subcommands:
   launch         Persist a newly launched background job
@@ -53,8 +54,12 @@ async function main(): Promise<void> {
   const flags = parseFlags(rest);
 
   if (subcommand === 'launch') {
-    const kind = requireFlag(flags, 'kind') as MillJob['kind'];
-    const prNumbers = parsePrNumbers(requireFlag(flags, 'pr-numbers'));
+    const kind = requireFlag(flags, 'kind');
+    if (kind !== 'eval' && kind !== 'comparison' && !isCheckJobKind(kind)) {
+      throw new Error(`Unknown job kind: ${kind}`);
+    }
+    // Check kinds may have no PR (e.g. the global ready-watchdog job).
+    const prNumbers = parsePrNumbers(isCheckJobKind(kind) ? (flags['pr-numbers'] ?? '') : requireFlag(flags, 'pr-numbers'));
     const job: MillJob = {
       id: flags['job-id'] || buildJobId({
         kind,

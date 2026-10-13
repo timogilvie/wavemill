@@ -30,8 +30,10 @@ TESTS=(
   ledger-hook-shadow.test.sh
   check-ledger-shadow-swallow.test.sh
   monitor-side-effect-detector-tick.test.sh
+  ledger-recovery-tick.test.sh
   aborted-challenge-cleanup.test.sh
   safe-branch-cleanup.test.sh
+  preserved-branch-record-long-slug.test.sh
   challenge-primary-merge-cleanup.test.sh
   operator-abort-cleanup.test.sh
   agent-resolve-from-model.test.sh
@@ -55,7 +57,11 @@ TESTS=(
   ready-exhausted-challenge.test.sh
   review-gate-refused-challenge.test.sh
   monitor-late-completion.test.sh
+  plan-reapproval-late-coding-complete.test.sh
   monitor-terminal-cleanup-tick.test.sh
+  monitor-reaped-task-no-window-recreation.test.sh
+  monitor-window-recreate-bounded.test.sh
+  persist-task-window-id-reaped.test.sh
   monitor-wake-resume.test.sh
   parent-monitor-function-drift.test.sh
   save-task-state-canonicalization.test.sh
@@ -80,6 +86,7 @@ TESTS=(
   check-common-guards.test.sh
   check-marker-clear-sites.test.sh
   check-label-write-sites.test.sh
+  merge-labels-real-state.test.sh
   ready-update-from-base.test.sh
   plan-packet-binding.test.sh
   task-progress.test.sh
@@ -167,9 +174,16 @@ TESTS=(
   re-review-no-pr.test.sh
   monitor-command-routing.test.sh
   condition-reconciler.test.sh
+  wavemill-pr-cache.test.sh
+  cross-pr-revert-job.test.sh
+  pr-ci-status-job.test.sh
+  ready-watchdog-job.test.sh
+  route-task-job.test.sh
+  monitor-perf-smoke.test.sh
   config-false-booleans.test.sh
   check-no-npx-in-monitor.sh
   monitor-pass-snapshot.test.sh
+  monitor-pass-budget.test.sh
   agent-model-memo.test.sh
   monitor-state-size.test.sh
   hot-state-byte-cap.test.sh

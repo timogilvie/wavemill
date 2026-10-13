@@ -89,6 +89,7 @@ for f in \
   "$LIB_DIR"/task-identity.sh \
   "$LIB_DIR"/challenge-arms.sh \
   "$LIB_DIR"/transient-marker.sh \
+  "$LIB_DIR"/monitor-async-jobs.sh \
   "$LIB_DIR"/terminal-reconciler.sh \
   "$LIB_DIR"/startup-terminal-preflight.sh \
   "$LIB_DIR"/startup-progress.sh \
@@ -102,8 +103,10 @@ for f in \
   "$REPO_DIR"/tests/ledger-hook-shadow.test.sh \
   "$REPO_DIR"/tests/check-ledger-shadow-swallow.test.sh \
   "$REPO_DIR"/tests/monitor-side-effect-detector-tick.test.sh \
+  "$REPO_DIR"/tests/ledger-recovery-tick.test.sh \
   "$REPO_DIR"/tests/check-marker-clear-sites.test.sh \
   "$REPO_DIR"/tests/check-label-write-sites.test.sh \
+  "$REPO_DIR"/tests/merge-labels-real-state.test.sh \
   "$REPO_DIR"/tests/control-pane-recovery.test.sh \
   "$REPO_DIR"/tests/dashboard-refresh.test.sh \
   "$REPO_DIR"/tests/state-mutex.test.sh \
@@ -157,7 +160,11 @@ for f in \
   "$REPO_DIR"/tests/ready-exhausted-challenge.test.sh \
   "$REPO_DIR"/tests/review-gate-refused-challenge.test.sh \
   "$REPO_DIR"/tests/monitor-late-completion.test.sh \
+  "$REPO_DIR"/tests/plan-reapproval-late-coding-complete.test.sh \
   "$REPO_DIR"/tests/monitor-terminal-cleanup-tick.test.sh \
+  "$REPO_DIR"/tests/monitor-reaped-task-no-window-recreation.test.sh \
+  "$REPO_DIR"/tests/monitor-window-recreate-bounded.test.sh \
+  "$REPO_DIR"/tests/persist-task-window-id-reaped.test.sh \
   "$REPO_DIR"/tests/monitor-wake-resume.test.sh \
   "$REPO_DIR"/tests/challenge-deferred-arm.test.sh \
   "$REPO_DIR"/tests/parent-monitor-function-drift.test.sh \
@@ -167,6 +174,7 @@ for f in \
   "$REPO_DIR"/tests/with-timeout.test.sh \
   "$REPO_DIR"/tests/aborted-challenge-cleanup.test.sh \
   "$REPO_DIR"/tests/safe-branch-cleanup.test.sh \
+  "$REPO_DIR"/tests/preserved-branch-record-long-slug.test.sh \
   "$REPO_DIR"/tests/challenge-primary-merge-cleanup.test.sh \
   "$REPO_DIR"/tests/operator-abort-cleanup.test.sh \
   "$REPO_DIR"/tests/transient-marker.test.sh \
@@ -190,9 +198,18 @@ for f in \
   "$REPO_DIR"/tests/re-review-no-pr.test.sh \
   "$REPO_DIR"/tests/monitor-command-routing.test.sh \
   "$REPO_DIR"/tests/condition-reconciler.test.sh \
+  "$REPO_DIR"/tests/wavemill-pr-cache.test.sh \
+  "$REPO_DIR"/tests/cross-pr-revert-job.test.sh \
+  "$REPO_DIR"/tests/pr-ci-status-job.test.sh \
+  "$REPO_DIR"/tests/ready-watchdog-job.test.sh \
+  "$REPO_DIR"/tests/route-task-job.test.sh \
+  "$REPO_DIR"/tests/monitor-perf-smoke.test.sh \
+  "$REPO_DIR"/tests/fixtures/monitor-perf/async-harness.sh \
+  "$REPO_DIR"/tests/fixtures/monitor-perf/mock-gh.sh \
   "$REPO_DIR"/tests/config-false-booleans.test.sh \
   "$REPO_DIR"/tests/check-no-npx-in-monitor.sh \
   "$REPO_DIR"/tests/monitor-pass-snapshot.test.sh \
+  "$REPO_DIR"/tests/monitor-pass-budget.test.sh \
   "$REPO_DIR"/tests/agent-model-memo.test.sh \
   "$REPO_DIR"/tests/monitor-state-size.test.sh \
   "$REPO_DIR"/tests/hot-state-byte-cap.test.sh \
@@ -215,6 +232,7 @@ for f in \
   "$REPO_DIR"/tests/challenge-fork-review-launch-refusal.test.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/deferred_challenger_materialises_after_coding.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/deferred_implementation_challenger_forks_at_plan_handoff.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/review_challenger_owns_its_route.sh \
   "$REPO_DIR"/tests/run-shell-suite.sh \
   "$REPO_DIR"/tests/run-unit-tests.sh \
   "$REPO_DIR"/tests/run-custom-tests.sh \
@@ -602,11 +620,14 @@ else
     # Extract function definitions from condition-reconciler.sh (also sourced by monitor, HOK-3172)
     CONDITION_RECONCILER_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/condition-reconciler.sh" | sed 's/()//' | sort -u)
 
+    # Extract function definitions from monitor-async-jobs.sh (sourced by monitor, HOK-3206)
+    ASYNC_JOBS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/monitor-async-jobs.sh" | sed 's/()//' | sort -u)
+
     # Extract function definitions from wavemill-worktree-deps.sh (sourced by monitor, HOK-2811)
     WORKTREE_DEPS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/wavemill-worktree-deps.sh" | sed 's/()//' | sort -u)
 
     # Combine all available function definitions
-    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$CONDITION_RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
+    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$ASYNC_JOBS_FUNCS" "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$CONDITION_RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
 
     # Known external commands and bash builtins that are NOT custom functions
     # This list covers standard utilities, coreutils, and tools used by wavemill
@@ -634,14 +655,14 @@ else
       | grep -vE '^(pipefail|euo|noglob|errexit|nounset)$' \
       | grep -vE '^(env|stdin|stdout|stderr|json|txt|csv|pid|utf)$' \
       | grep -vE '^(true|false|yes|string|number|empty|null|undefined)$' \
-      | grep -vE '^(try|catch|def|fromjson|add|rollout_path|thread_id|thread_row|updated_at|exits|setting|falling|select|strings|tostring|valid_dismissal_count|tojson|obj|title)$' \
+      | grep -vE '^(try|catch|def|fromjson|add|rollout_path|thread_id|thread_row|updated_at|exits|setting|falling|select|strings|tostring|valid_dismissal_count|tojson|obj|title|wm_orphan_stub)$' \
       | grep -vE '^(bad|internal|keeping|marking|monitor|rate|reduce|service|skipping|staying|timed|too|using|wavemill|waiting)$' \
       | grep -vE '^(advance|review)$' \
       | grep -vE '^(not_eligible|routing_error|invalid_challenge)$' \
       | grep -vE '^(legacy_stale|stale)$' \
-      | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$' \
+      | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|completed|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$' \
       | grep -vE '^(capabilities|const|import|throw)$' \
-      | grep -vE '^(ascii_upcase|first|it|num|retrying|sibling)$')
+      | grep -vE '^(ascii_upcase|first|it|num|retrying|sibling|floor|spawn)$')
 
     # Check which called names look like they could be custom functions
     # and verify they're defined
@@ -892,7 +913,7 @@ else
     fail "monitor does not overlay new tasks from TASKS_FILE"
   fi
 
-  if grep -q '^poll_challenge_jobs() {' <<< "$HEREDOC_CONTENT" \
+  if grep -q '^poll_tracked_jobs() {' <<< "$HEREDOC_CONTENT" \
     && grep -q 'job-tracker.ts" poll' <<< "$HEREDOC_CONTENT"; then
     pass "monitor defines tracked challenge job poller"
   else
@@ -925,7 +946,7 @@ else
     in_loop { print }
     in_loop && /^done$/ { exit }
   ' <<< "$HEREDOC_CONTENT")
-  if grep -qF 'poll_challenge_jobs' <<< "$MONITOR_LOOP_BLOCK"; then
+  if grep -qF 'poll_tracked_jobs' <<< "$MONITOR_LOOP_BLOCK"; then
     pass "monitor loop polls challenge jobs before issue processing"
   else
     fail "monitor loop does not poll challenge jobs"
@@ -3416,7 +3437,8 @@ run_fixtures_parallel \
   "$REPO_DIR/tests/fixtures/lifecycle/tend_challenge_winner_merges_loser_cleanup.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/tend_status_line_not_repeated.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/deferred_challenger_materialises_after_coding.sh" \
-  "$REPO_DIR/tests/fixtures/lifecycle/deferred_implementation_challenger_forks_at_plan_handoff.sh"
+  "$REPO_DIR/tests/fixtures/lifecycle/deferred_implementation_challenger_forks_at_plan_handoff.sh" \
+  "$REPO_DIR/tests/fixtures/lifecycle/review_challenger_owns_its_route.sh"
 
 # ============================================================================
 # TEST 15: Startup lifecycle fixtures

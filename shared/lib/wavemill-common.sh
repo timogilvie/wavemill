@@ -1021,6 +1021,51 @@ cleanup_episode_should_attempt() {
   esac
 }
 
+# Bounded incident-record basename for a task branch (HOK-3208).
+#
+# Records under .wavemill/incidents/{cleanup-decisions,preserved-branches}/ are
+# published atomically via `mktemp ".<name>.XXXXXX"` + `mv`, so the temp
+# basename is 8 bytes longer than the record name. Branch names derive from
+# issue titles (plus an 11-byte `-challenger` suffix) and can exceed the
+# 255-byte per-component limit on APFS/ext4, which made the record unwritable
+# and left the arm retained forever.
+#
+# Short branches keep the legacy "${branch//\//__}.json" name so existing
+# records and callers that look them up by exact name are unaffected. Once
+# that name exceeds 200 bytes (hard ceiling is 247; the rest is headroom for
+# future suffix changes), the branch collapses to "<first-100-bytes>__<sha1:12>.json". The
+# name is a pure function of the branch, so idempotent re-writes still land on
+# the same file. The full branch is always kept in the JSON body's `branch`
+# field, which is what readers (terminal-lifecycle-cert.ts) key on.
+#
+# Fails closed (non-zero) if no sha1 tool is available rather than emit a
+# weakly disambiguated name.
+_wavemill_incident_record_name() {
+  local branch="$1"
+  # Byte semantics for length and substring, independent of the caller's locale.
+  local LC_ALL=C
+  local safe="${branch//\//__}"
+  local legacy="${safe}.json"
+  local digest="" prefix
+
+  if (( ${#legacy} <= 200 )); then
+    printf '%s\n' "$legacy"
+    return 0
+  fi
+
+  if command -v sha1sum >/dev/null 2>&1; then
+    digest="$(printf '%s' "$branch" | sha1sum | awk '{print substr($1, 1, 12)}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    digest="$(printf '%s' "$branch" | shasum -a 1 | awk '{print substr($1, 1, 12)}')"
+  fi
+  [[ "$digest" =~ ^[0-9a-f]{12}$ ]] || return 1
+
+  # A byte cut could split a multibyte character; keep the prefix ASCII-only.
+  prefix="${safe:0:100}"
+  prefix="${prefix//[^A-Za-z0-9._-]/_}"
+  printf '%s__%s.json\n' "$prefix" "$digest"
+}
+
 _wavemill_write_preserved_branch_incident() {
   local reason="$1" branch="$2" wt_dir="$3" base_branch="$4" commits_ahead="$5" commit_shas="$6" caller="${7:-cleanup}"
   local base_sha="${8:-}" local_head_sha="${9:-}" remote_head_sha="${10:-}" verification_reason="${11:-}"
@@ -1035,7 +1080,7 @@ _wavemill_write_preserved_branch_incident() {
   fi
 
   incident_dir="$REPO_DIR/.wavemill/incidents/$marker_subdir"
-  marker_name="${branch//\//__}.json"
+  marker_name="$(_wavemill_incident_record_name "$branch")" || return 1
   marker_path="$incident_dir/$marker_name"
   created_at="$(cleanup_episode_now_iso 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ")"
   if [[ -n "${CLEANUP_EPISODE_CURRENT_FINGERPRINT:-}" ]]; then
@@ -4297,34 +4342,259 @@ has_any_healthy_model() {
 # PR CACHE HELPERS
 # ============================================================================
 
+# HOK-3206: one batched PR query per monitor pass feeds every per-task PR
+# reader. The cache file stays the raw `gh pr list --json` array (readers such
+# as the condition reconciler and the dashboard parse it directly); a sidecar
+# `<cache>.meta.json` records which head branches the query covered and when,
+# so a reader can tell "no PR for this branch" apart from "branch not queried".
+#
+# Keep the field list in sync with PR_CACHE_FIELDS in session-gh-cache.ts.
+WAVEMILL_PR_CACHE_FIELDS="number,headRefName,headRefOid,baseRefName,state,mergedAt,mergeable,mergeStateStatus,statusCheckRollup,labels,url,title,body,createdAt,updatedAt"
+WAVEMILL_PR_CACHE_BATCH_LIMIT=100
+
+wavemill_pr_cache_file() {
+  printf '%s\n' "${MONITOR_PR_CACHE:-/tmp/${SESSION:-wavemill}-pr-cache.json}"
+}
+
+wavemill_gh_batch_cache_disabled() {
+  [[ "${WAVEMILL_DISABLE_GH_BATCH_CACHE:-0}" == "1" ]]
+}
+
+# Append one marker byte to a per-cache counter file. Lookups usually run in
+# `$(...)` subshells, so in-process counters would be lost; the monitor reads
+# and truncates these files once per pass for monitor-timing.json.
+_wavemill_pr_cache_count() {
+  local kind="$1"
+  printf '.' >> "$(wavemill_pr_cache_file).${kind}" 2>/dev/null || true
+}
+
+# wavemill_pr_cache_refresh [branch...]
+# With branches: one `gh pr list --state all --search 'head:<b1> head:<b2> …'`
+# (GitHub search ORs repeated head: qualifiers). Without branches, or when the
+# search fails: the unfiltered open-PR dump. Writes cache + meta atomically.
 wavemill_pr_cache_refresh() {
-  local session="${SESSION:-wavemill}"
-  local cache_file="${MONITOR_PR_CACHE:-/tmp/${session}-pr-cache.json}"
-  local tmp_file
+  local cache_file meta_file tmp_file search="" branch covered_json="[]" complete="true"
+  local -a branches=()
+  cache_file="$(wavemill_pr_cache_file)"
+  meta_file="${cache_file}.meta.json"
+  for branch in "$@"; do
+    [[ -n "$branch" ]] && branches+=("$branch")
+  done
   # Per-writer tmp file: monitor and dashboard both refresh this cache, and a
   # shared "${cache_file}.tmp" leads to a race where one writer's mv consumes
   # the file before the other's mv runs.
   tmp_file="$(mktemp "${cache_file}.tmp.XXXXXX" 2>/dev/null)" || return 0
-  if gh pr list --json number,headRefName,headRefOid,state,statusCheckRollup --limit 50 \
-       < /dev/null 2>/dev/null > "$tmp_file"; then
-    if [[ -s "$tmp_file" ]]; then
-      mv "$tmp_file" "$cache_file" 2>/dev/null || rm -f "$tmp_file"
+
+  if (( ${#branches[@]} > 0 )) && ! wavemill_gh_batch_cache_disabled; then
+    search="$(printf 'head:%s\n' "${branches[@]}" | sort -u | tr '\n' ' ')"
+    if _with_timeout "${API_TIMEOUT:-30}" gh pr list --state all --limit "$WAVEMILL_PR_CACHE_BATCH_LIMIT" \
+         --search "${search% }" --json "$WAVEMILL_PR_CACHE_FIELDS" \
+         < /dev/null 2>/dev/null > "$tmp_file" \
+       && jq -e 'type == "array"' "$tmp_file" >/dev/null 2>&1; then
+      covered_json="$(printf '%s\n' "${branches[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | unique')"
+      # A full page may have truncated some branch's rows; never claim coverage.
+      [[ "$(jq 'length' "$tmp_file" 2>/dev/null || echo 0)" -lt "$WAVEMILL_PR_CACHE_BATCH_LIMIT" ]] || complete="false"
     else
+      search=""
+    fi
+  fi
+
+  if [[ -z "$search" ]]; then
+    if ! gh pr list --json "$WAVEMILL_PR_CACHE_FIELDS" --limit 50 \
+         < /dev/null 2>/dev/null > "$tmp_file"; then
       rm -f "$tmp_file"
+      return 0
+    fi
+    covered_json="[]"
+  fi
+
+  if [[ -s "$tmp_file" ]] && mv "$tmp_file" "$cache_file" 2>/dev/null; then
+    # Per-writer meta tmp too: concurrent refreshes in subshells share $$.
+    local meta_tmp
+    if meta_tmp="$(mktemp "${meta_file}.tmp.XXXXXX" 2>/dev/null)"; then
+      if jq -cn --argjson branches "$covered_json" --argjson complete "$complete" \
+           --argjson writtenAt "$(date +%s)" \
+           '{schemaVersion: 1, branches: $branches, complete: $complete, writtenAt: $writtenAt}' \
+           > "$meta_tmp" 2>/dev/null; then
+        mv "$meta_tmp" "$meta_file" 2>/dev/null || true
+      fi
+      rm -f "$meta_tmp" 2>/dev/null || true
     fi
   else
     rm -f "$tmp_file"
   fi
+  return 0
+}
+
+# Exit 0 when the batched cache was written by a covered refresh no older than
+# WAVEMILL_PR_CACHE_MAX_AGE_SECONDS (default 180). Readers then trust it.
+wavemill_pr_cache_usable() {
+  local cache_file meta_file written_at now
+  wavemill_gh_batch_cache_disabled && return 1
+  cache_file="$(wavemill_pr_cache_file)"
+  meta_file="${cache_file}.meta.json"
+  [[ -f "$cache_file" && -f "$meta_file" ]] || return 1
+  written_at="$(jq -r '.writtenAt // 0' "$meta_file" 2>/dev/null || echo 0)"
+  [[ "$written_at" =~ ^[0-9]+$ ]] || return 1
+  now="$(date +%s)"
+  (( now - written_at <= ${WAVEMILL_PR_CACHE_MAX_AGE_SECONDS:-180} ))
+}
+
+# wavemill_pr_cache_covers_branch <branch>
+# Exit 0 when the last batched query searched <branch> and was not truncated,
+# so an absent row means "no PR for this branch".
+wavemill_pr_cache_covers_branch() {
+  local branch="${1:-}"
+  [[ -n "$branch" ]] || return 1
+  wavemill_pr_cache_usable || return 1
+  jq -e --arg b "$branch" '.complete == true and ((.branches // []) | index($b) != null)' \
+    "$(wavemill_pr_cache_file).meta.json" >/dev/null 2>&1
+}
+
+# wavemill_pr_cache_row_by_pr <pr>
+# Prints the compact cached row for PR <pr>; exit 1 on miss (caller asks gh).
+wavemill_pr_cache_row_by_pr() {
+  local pr="${1:-}" row
+  [[ "$pr" =~ ^[0-9]+$ ]] || return 1
+  if ! wavemill_pr_cache_usable; then
+    wavemill_gh_batch_cache_disabled || _wavemill_pr_cache_count misses
+    return 1
+  fi
+  row="$(jq -c --argjson pr "$pr" '(if type == "array" then . else [] end) | map(select(.number == $pr)) | .[0] // empty' \
+    "$(wavemill_pr_cache_file)" 2>/dev/null || true)"
+  if [[ -z "$row" ]]; then
+    _wavemill_pr_cache_count misses
+    return 1
+  fi
+  _wavemill_pr_cache_count hits
+  printf '%s\n' "$row"
+}
+
+# wavemill_pr_cache_rows_for_branch <branch>
+# Prints a JSON array of cached rows for <branch> (newest first, possibly
+# empty); exit 1 when the branch was not covered by the last batched query.
+wavemill_pr_cache_rows_for_branch() {
+  local branch="${1:-}"
+  if ! wavemill_pr_cache_covers_branch "$branch"; then
+    wavemill_gh_batch_cache_disabled || _wavemill_pr_cache_count misses
+    return 1
+  fi
+  _wavemill_pr_cache_count hits
+  jq -c --arg b "$branch" '(if type == "array" then . else [] end) | map(select(.headRefName == $b)) | sort_by(-.number)' \
+    "$(wavemill_pr_cache_file)" 2>/dev/null || return 1
+}
+
+# wavemill_pr_cache_lookup_pr <pr> <field>   — one field of a cached PR row.
+wavemill_pr_cache_lookup_pr() {
+  local pr="${1:-}" field="${2:-}" row
+  [[ -n "$field" ]] || return 1
+  row="$(wavemill_pr_cache_row_by_pr "$pr")" || return 1
+  jq -r --arg f "$field" '.[$f] // empty | if type == "string" then . else tojson end' <<<"$row" 2>/dev/null
+}
+
+# wavemill_pr_cache_lookup <branch> <field>  — field of the newest PR for a branch.
+wavemill_pr_cache_lookup() {
+  local branch="${1:-}" field="${2:-}" rows
+  [[ -n "$field" ]] || return 1
+  rows="$(wavemill_pr_cache_rows_for_branch "$branch")" || return 1
+  jq -r --arg f "$field" '.[0][$f] // empty | if type == "string" then . else tojson end' <<<"$rows" 2>/dev/null
 }
 
 wavemill_pr_lookup_by_branch() {
   local branch="${1:-}"
-  local session="${SESSION:-wavemill}"
-  local cache_file="${MONITOR_PR_CACHE:-/tmp/${session}-pr-cache.json}"
+  local cache_file
+  cache_file="$(wavemill_pr_cache_file)"
   [[ -n "$branch" && -f "$cache_file" ]] || return 0
   jq -r --arg b "$branch" \
     '.[] | select(.headRefName == $b) | .number' \
     "${cache_file}" 2>/dev/null | head -1
+}
+
+# ── Session repo cache (HOK-3206) ────────────────────────────────────────────
+# `gh repo view` and branch-protection required checks are session constants.
+# /tmp/${SESSION}-repo.json = {nameWithOwner, defaultBranch,
+# requiredChecks: {<base>: [names]}}; written once per base branch per
+# session and read by both the shell and TS (WAVEMILL_SESSION_REPO_CACHE).
+
+wavemill_session_repo_cache_file() {
+  printf '%s\n' "${WAVEMILL_SESSION_REPO_CACHE:-/tmp/${SESSION:-wavemill}-repo.json}"
+}
+
+# wavemill_session_repo_cache_refresh [repo_dir] [base_branch...] [--force]
+# Fills missing entries only (one `gh repo view` per session, one protection
+# read per base branch). --force refetches everything.
+wavemill_session_repo_cache_refresh() {
+  local repo_dir="${REPO_DIR:-$PWD}" force="false" cache_file current nwo default_branch base contexts
+  local -a bases=()
+  local arg first=1
+  for arg in "$@"; do
+    if [[ "$arg" == "--force" ]]; then
+      force="true"
+    elif (( first )); then
+      [[ -n "$arg" ]] && repo_dir="$arg"
+      first=0
+    else
+      [[ -n "$arg" ]] && bases+=("$arg")
+    fi
+  done
+  wavemill_gh_batch_cache_disabled && return 0
+  cache_file="$(wavemill_session_repo_cache_file)"
+  current='{}'
+  if [[ "$force" != "true" && -f "$cache_file" ]] && jq -e 'type == "object"' "$cache_file" >/dev/null 2>&1; then
+    current="$(cat "$cache_file")"
+  fi
+
+  nwo="$(jq -r '.nameWithOwner // empty' <<<"$current")"
+  if [[ -z "$nwo" ]]; then
+    local repo_json
+    repo_json="$(cd "$repo_dir" 2>/dev/null && _with_timeout "${API_TIMEOUT:-30}" gh repo view --json nameWithOwner,defaultBranchRef 2>/dev/null || true)"
+    [[ -n "$repo_json" ]] || repo_json='{}'
+    nwo="$(jq -r '.nameWithOwner // empty' <<<"$repo_json" 2>/dev/null || true)"
+    default_branch="$(jq -r '.defaultBranchRef.name // empty' <<<"$repo_json" 2>/dev/null || true)"
+    [[ -n "$nwo" ]] || return 0
+    current="$(jq -c --arg nwo "$nwo" --arg db "$default_branch" \
+      '.nameWithOwner = $nwo | (if $db != "" then .defaultBranch = $db else . end)' <<<"$current")"
+  fi
+
+  for base in "${bases[@]}"; do
+    jq -e --arg b "$base" '(.requiredChecks // {}) | has($b)' <<<"$current" >/dev/null 2>&1 && continue
+    # A 404 (no protection) is a real, cacheable answer: record []. Any
+    # other failure leaves the base unrecorded so readers ask GitHub.
+    local protection_err
+    protection_err="$(mktemp 2>/dev/null)" || continue
+    if contexts="$(_with_timeout "${API_TIMEOUT:-30}" gh api "repos/${nwo}/branches/${base}/protection/required_status_checks" \
+         --jq '.contexts // []' 2>"$protection_err")" && jq -e 'type == "array"' <<<"$contexts" >/dev/null 2>&1; then
+      :
+    elif grep -qiE 'not found|404|not protected' "$protection_err" 2>/dev/null; then
+      contexts='[]'
+    else
+      rm -f "$protection_err"
+      continue
+    fi
+    rm -f "$protection_err"
+    current="$(jq -c --arg b "$base" --argjson c "$contexts" '.requiredChecks[$b] = $c' <<<"$current")"
+  done
+
+  current="$(jq -c --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.updatedAt = $at' <<<"$current")"
+  local cache_tmp
+  cache_tmp="$(mktemp "${cache_file}.tmp.XXXXXX" 2>/dev/null)" || return 0
+  if printf '%s\n' "$current" > "$cache_tmp"; then
+    mv "$cache_tmp" "$cache_file" 2>/dev/null || true
+  fi
+  rm -f "$cache_tmp" 2>/dev/null || true
+  return 0
+}
+
+# Cached nameWithOwner, or a live `gh repo view` when the cache misses.
+wavemill_repo_name_with_owner() {
+  local repo_dir="${1:-${REPO_DIR:-$PWD}}" nwo=""
+  if ! wavemill_gh_batch_cache_disabled; then
+    nwo="$(jq -r '.nameWithOwner // empty' "$(wavemill_session_repo_cache_file)" 2>/dev/null || true)"
+  fi
+  if [[ -z "$nwo" ]]; then
+    nwo="$(cd "$repo_dir" 2>/dev/null && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
+  fi
+  printf '%s\n' "$nwo"
 }
 
 wavemill_default_attempt_id() {
@@ -4392,6 +4662,14 @@ wavemill_allocate_retry_attempt_identity() {
 wavemill_pr_candidates_for_branch() {
   local branch="${1:-}"
   [[ -n "$branch" ]] || { printf '[]\n'; return 0; }
+  local cached_rows
+  # HOK-3206: the per-pass batched query covers every task branch.
+  if cached_rows="$(wavemill_pr_cache_rows_for_branch "$branch")"; then
+    jq -c --argjson limit "${WAVEMILL_PR_ATTEMPT_LIMIT:-20}" \
+      '.[0:$limit] | map({number, state, mergedAt, headRefName, headRefOid, baseRefName, title, body, createdAt, updatedAt, url})' \
+      <<<"$cached_rows"
+    return 0
+  fi
   _with_timeout "${API_TIMEOUT:-30}" gh pr list --head "$branch" --state all --limit "${WAVEMILL_PR_ATTEMPT_LIMIT:-20}" \
     --json number,state,mergedAt,headRefName,headRefOid,baseRefName,title,body,createdAt,updatedAt,url 2>/dev/null
 }
@@ -4610,6 +4888,11 @@ wavemill_record_fresh_launch_reconciliation() {
 wavemill_pr_live_state() {
   local pr_number="${1:-}"
   [[ -n "$pr_number" ]] || return 1
+  local cached_row
+  if cached_row="$(wavemill_pr_cache_row_by_pr "$pr_number")"; then
+    jq -c '{number, state, mergedAt, terminalState: (if .mergedAt != null then "MERGED" elif .state == "CLOSED" then "CLOSED" else .state end)}' <<<"$cached_row"
+    return 0
+  fi
   gh pr view "$pr_number" --json number,state,mergedAt --jq \
     '{number, state, mergedAt, terminalState: (if .mergedAt != null then "MERGED" elif .state == "CLOSED" then "CLOSED" else .state end)}' 2>/dev/null
 }
@@ -4641,6 +4924,12 @@ check_pr_exists() {
 
   if [[ -z "$branch" ]]; then
     return 1
+  fi
+
+  local cached_rows
+  if cached_rows="$(wavemill_pr_cache_rows_for_branch "$branch")"; then
+    jq -e 'length > 0' <<<"$cached_rows" >/dev/null 2>&1
+    return $?
   fi
 
   pr_number=$(gh pr list --head "$branch" --state all --json number --jq '.[0].number // empty' 2>/dev/null || echo "")
@@ -5168,6 +5457,71 @@ sync_challenger_shared_route_from_primary() {
   return 0
 }
 
+# HOK-3156: true when a stage result file records a stage that has executed
+# (or is executing). A stage that ran keeps the route it ran with; re-routing
+# must never rewrite its recorded model.
+executed_stage_result_present() {
+  local result_file="$1"
+  [[ -n "$result_file" && -f "$result_file" ]] || return 1
+  jq -e '(.status // "") as $s | ["running","awaiting_user","completed","failed"] | index($s) != null' \
+    "$result_file" >/dev/null 2>&1
+}
+
+# Map an agent id to the phase-config provider label.
+phase_config_provider_for_agent() {
+  case "${1:-}" in
+    native-openrouter) printf '%s\n' "native-openrouter" ;;
+    native-openai) printf '%s\n' "native-openai" ;;
+    claude) printf '%s\n' "anthropic" ;;
+    codex) printf '%s\n' "openai" ;;
+    *) printf '\n' ;;
+  esac
+}
+
+# HOK-3156 fail-closed check: after a challenge arm's route is written, assert
+# it still differs from its sibling in exactly the varied stage. The sibling is
+# read from its own .routing-complete when that arm exists on disk, otherwise
+# from its sealed side of the intent. Prints the drifted dimensions (comma
+# separated) and returns 3 on drift; returns 0 when the pair is one-variable or
+# the check cannot run (missing tooling/inputs never invent a drift).
+#
+# Usage: challenge_route_drift_check <routing_file> <issue> <side> <intent_file> [state_file]
+challenge_route_drift_check() {
+  local routing_file="$1" issue="$2" side="$3" intent_file="$4" state_file="${5:-}"
+  [[ -n "$side" && -n "$intent_file" && -f "$intent_file" && -f "$routing_file" ]] || return 0
+  [[ -n "${TOOLS_DIR:-}" && -f "$TOOLS_DIR/check-challenge-route.ts" ]] || return 0
+
+  local sibling_side sibling_issue="" sibling_routing=""
+  if [[ "$side" == "primary" ]]; then
+    sibling_side="challenger"
+    sibling_issue="$(task_identity_challenger_key "$issue")"
+  else
+    sibling_side="primary"
+    sibling_issue="$(task_identity_parse "$issue" | cut -f2 || true)"
+    [[ -n "$sibling_issue" ]] || return 0
+  fi
+  if [[ -n "$state_file" && -f "$state_file" ]]; then
+    local sibling_dir
+    sibling_dir="$(jq -r --arg i "$sibling_issue" '
+      (.tasks[$i] // {}) as $t
+      | if (($t.worktree // "") != "" and ($t.slug // "") != "")
+        then "\($t.worktree)/features/\($t.slug)" else "" end' "$state_file" 2>/dev/null || true)"
+    if [[ -n "$sibling_dir" && -f "$sibling_dir/.routing-complete" ]]; then
+      sibling_routing="$sibling_dir/.routing-complete"
+    fi
+  fi
+
+  local -a args=(--intent "$intent_file" "--${side}-routing" "$routing_file" --repo-dir "${REPO_DIR:-$PWD}")
+  [[ -n "$sibling_routing" ]] && args+=("--${sibling_side}-routing" "$sibling_routing")
+  local out rc=0
+  out="$(wavemill_run_tool "check-challenge-route.ts" "${args[@]}" 2>/dev/null)" || rc=$?
+  if [[ "$rc" -eq 3 ]]; then
+    jq -r '(.driftedFields // []) | join(",")' <<<"$out" 2>/dev/null || true
+    return 3
+  fi
+  return 0
+}
+
 apply_expanded_route_if_present() {
   local feature_dir="$1" issue="$2" slug="$3" worktree_dir="$4" state_file="${5:-${STATE_FILE:-}}"
   local route_file routing_file phase_config_file planner_model plan_depth coder_model code_depth reviewer_model review_mode
@@ -5232,6 +5586,20 @@ apply_expanded_route_if_present() {
     ' "$challenge_intent_file" 2>/dev/null || true)"
   fi
 
+  # HOK-3156 fix #2: a stage that already executed keeps the route it ran
+  # with. Planning has normally completed by the plan→code handoff, so the
+  # router may still move coder/reviewer for a solo task but never rewrites
+  # the planner after the fact.
+  local planning_result_file="" coding_result_file="" executed_stages=""
+  if executed_stage_result_present "$feature_dir/.planning-result.json"; then
+    planning_result_file="$feature_dir/.planning-result.json"
+    executed_stages="plan"
+  fi
+  if executed_stage_result_present "$feature_dir/.coding-result.json"; then
+    coding_result_file="$feature_dir/.coding-result.json"
+    executed_stages="${executed_stages:+$executed_stages,}implementation"
+  fi
+
   if ! state_mutate "$routing_file" \
     '# nz: first argument unless it is null/empty string, else the fallback.
      # jq "//" only rejects null and false, so "" would otherwise win.
@@ -5249,6 +5617,10 @@ apply_expanded_route_if_present() {
          elif $raw == "review" or $raw == "reviewer" then "review"
          elif $raw == "implementation" or $raw == "coding" or $raw == "coder" then "implementation"
          else "" end;
+     # A route field as recorded, with the legacy reviewRecommended alias.
+     def route_field($obj; $f):
+       if $f == "reviewMode" then nz($obj.reviewMode; ($obj.reviewRecommended // ""))
+       else ($obj[$f] // "") end;
      def expected_of($sideObj):
        nz($sideObj.expectedRoute;
           { planner:  ($sideObj.planner.model  // ""),
@@ -5276,31 +5648,45 @@ apply_expanded_route_if_present() {
               # check.
               $rawEffective
             else
-              $rawEffective
-              | if $stage == "plan" then
-                  .planner = $variedModel
-                  | .planDepth = nz($expected.planDepth; .planDepth)
-                elif $stage == "review" then
-                  .reviewer = $variedModel
-                  | .reviewMode = nz($expected.reviewMode; nz(.reviewMode; .reviewRecommended))
-                  | .reviewRecommended = .reviewMode
-                else
-                  .coder = $variedModel
-                  | .codeDepth = nz($expected.codeDepth; .codeDepth)
-                end
+              # HOK-3156 fix #1: freeze every route field at its sealed value.
+              # Restoring only the varied stage let the expanded route move the
+              # primary'"'"'s non-varied roles and depths after sealing while the
+              # challenger kept the seal, so completed pairs differed in more
+              # than one variable.  Precedence per field: sealed side → the
+              # pre-expansion route → the expanded route.  The varied stage is
+              # the special case where the sealed value is the experiment.
+              reduce $fields[] as $f ($rawEffective;
+                .[$f] = nz($expected[$f]; nz(route_field($base; $f); route_field($route; $f))))
+              | .reviewRecommended = .reviewMode
               | .challengeIntentApplied = true
               | .intendedStage = $stage
+              | .challengeRouteFrozen = true
               | .rawExpandedRoute = $route
+              | . as $frozen
+              | .frozenFields = [$fields[] | select(route_field($route; .) != "" and ($frozen[.] // "") != route_field($route; .))]
             end
         end)
      | .reviewMode = (
-         if (.challengeIntentApplied == true and .intendedStage == "review") then
-           (.reviewMode // $route.reviewMode // $route.reviewRecommended // $base.reviewMode // $base.reviewRecommended // "")
+         if (.challengeRouteFrozen == true) then
+           (.reviewMode // "")
          else
            ($route.reviewMode // $route.reviewRecommended // .reviewMode // $base.reviewMode // $base.reviewRecommended // "")
          end
        )
      | .reviewRecommended = .reviewMode
+     # HOK-3156 fix #2: executed stages keep the model and depth they ran with
+     # (the pre-expansion route), whatever the expanded route or seal says.
+     | ($planResult[0]? // null) as $planRes
+     | ($codeResult[0]? // null) as $codeRes
+     | (if $planRes != null then
+          .planner = nz(route_field($base; "planner"); nz($planRes.intendedModel; ($planRes.model // .planner)))
+          | .planDepth = nz(route_field($base; "planDepth"); .planDepth)
+        else . end)
+     | (if $codeRes != null then
+          .coder = nz(route_field($base; "coder"); nz($codeRes.intendedModel; ($codeRes.model // .coder)))
+          | .codeDepth = nz(route_field($base; "codeDepth"); .codeDepth)
+        else . end)
+     | (if $executedStages != "" then .executedStagesPinned = ($executedStages | split(",")) else del(.executedStagesPinned) end)
      | .provenance = (($base.provenance // {}) + ($route.provenance // {}) + {
          source: "expanded",
          appliedFrom: $routeFile,
@@ -5317,7 +5703,11 @@ apply_expanded_route_if_present() {
        })' \
     --arg routeFile "$route_file" \
     --arg side "$challenge_side" \
+    --arg executedStages "$executed_stages" \
+    --argjson fields '["planner","coder","reviewer","planDepth","codeDepth","reviewMode"]' \
     --slurpfile intent "${challenge_intent_file:-/dev/null}" \
+    --slurpfile planResult "${planning_result_file:-/dev/null}" \
+    --slurpfile codeResult "${coding_result_file:-/dev/null}" \
     --slurpfile route "$route_file"; then
     log "warn" "expanded route invalid: $route_file (failed to update .routing-complete)"
     active_route="$(route_lifecycle_route_id "$feature_dir/.routing-complete" 2>/dev/null || true)"
@@ -5331,6 +5721,12 @@ apply_expanded_route_if_present() {
   # disarmed preservation for every later phase of the same task.
   if [[ -n "$challenge_intent_file" && ! -f "$feature_dir/challenge-intent.json" ]]; then
     cp "$challenge_intent_file" "$feature_dir/challenge-intent.json" 2>/dev/null || true
+  fi
+
+  local frozen_fields
+  frozen_fields="$(jq -r '(.frozenFields // []) | join(",")' "$routing_file" 2>/dev/null || true)"
+  if [[ -n "$frozen_fields" ]]; then
+    log_route_lifecycle "challenge_route_frozen" "issue=$issue" "side=$challenge_side" "fields=$frozen_fields"
   fi
 
   if ! sync_challenger_shared_route_from_primary "$routing_file" "$issue" "$state_file" "$challenge_intent_file" "$challenge_side"; then
@@ -5370,38 +5766,30 @@ apply_expanded_route_if_present() {
     [[ -n "$reviewer_model" ]] && reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review" || true)"
   fi
 
-  case "$planner_agent" in
-    native-openrouter) planner_provider="native-openrouter" ;;
-    native-openai) planner_provider="native-openai" ;;
-    claude) planner_provider="anthropic" ;;
-    codex) planner_provider="openai" ;;
-  esac
-  case "$coder_agent" in
-    native-openrouter) coder_provider="native-openrouter" ;;
-    native-openai) coder_provider="native-openai" ;;
-    claude) coder_provider="anthropic" ;;
-    codex) coder_provider="openai" ;;
-  esac
-  case "$reviewer_agent" in
-    native-openrouter) reviewer_provider="native-openrouter" ;;
-    native-openai) reviewer_provider="native-openai" ;;
-    claude) reviewer_provider="anthropic" ;;
-    codex) reviewer_provider="openai" ;;
-  esac
+  planner_provider="$(phase_config_provider_for_agent "$planner_agent")"
+  coder_provider="$(phase_config_provider_for_agent "$coder_agent")"
+  reviewer_provider="$(phase_config_provider_for_agent "$reviewer_agent")"
 
+  # Executed stages keep their phase-config entry (launchRoute, selectedAt,
+  # agent) exactly as launched (HOK-3156 fix #2).
   if ! state_mutate "$phase_config_file" \
-    '.planning.model = $plannerModel
-     | .planning.agent = $plannerAgent
-     | .planning.provider = $plannerProvider
-     | .planning.stageRole = "planning"
-     | .planning.selectedAt = (.planning.selectedAt // .resolvedAt // (now | todateiso8601))
-     | .planning.depth = $planDepth
-     | .coding.model = $coderModel
-     | .coding.agent = $coderAgent
-     | .coding.provider = $coderProvider
-     | .coding.stageRole = "coding"
-     | .coding.selectedAt = (.coding.selectedAt // .resolvedAt // (now | todateiso8601))
-     | .coding.depth = $codeDepth
+    '($executedStages | split(",")) as $executed
+     | (if ($executed | index("plan")) != null then . else
+         .planning.model = $plannerModel
+         | .planning.agent = $plannerAgent
+         | .planning.provider = $plannerProvider
+         | .planning.stageRole = "planning"
+         | .planning.selectedAt = (.planning.selectedAt // .resolvedAt // (now | todateiso8601))
+         | .planning.depth = $planDepth
+       end)
+     | (if ($executed | index("implementation")) != null then . else
+         .coding.model = $coderModel
+         | .coding.agent = $coderAgent
+         | .coding.provider = $coderProvider
+         | .coding.stageRole = "coding"
+         | .coding.selectedAt = (.coding.selectedAt // .resolvedAt // (now | todateiso8601))
+         | .coding.depth = $codeDepth
+       end)
      | .review.model = $reviewerModel
      | .review.agent = $reviewerAgent
      | .review.provider = $reviewerProvider
@@ -5421,6 +5809,7 @@ apply_expanded_route_if_present() {
     --arg reviewerModel "$reviewer_model" \
     --arg reviewerAgent "$reviewer_agent" \
     --arg reviewerProvider "$reviewer_provider" \
+    --arg executedStages "$executed_stages" \
     --arg reviewMode "$review_mode"; then
     log "warn" "expanded route invalid: $route_file (failed to update .phase-config.json)"
     active_route="$(route_lifecycle_route_id "$routing_file" 2>/dev/null || true)"
@@ -5487,6 +5876,29 @@ apply_expanded_route_if_present() {
   fi
 
   log_router_route_summary "$issue" "$routing_file"
+
+  # HOK-3156 fail-closed fallback: the freeze cannot guarantee a one-variable
+  # pair when the sealed side is incomplete (e.g. an envelope intent without
+  # depths whose pre-expansion routes already differed). Report the drift with
+  # a distinct rc so the caller collapses the pair instead of letting one arm
+  # drift; the route written above stays valid for a solo run.
+  APPLY_EXPANDED_ROUTE_DRIFT_DETAIL=""
+  local pair_collapsed="false"
+  if [[ -n "$state_file" && -f "$state_file" ]] \
+    && jq -e --arg i "$issue" '.tasks[$i].challenge == false' "$state_file" >/dev/null 2>&1; then
+    pair_collapsed="true"
+  fi
+  if [[ -n "$challenge_side" && "$pair_collapsed" != "true" && -f "$feature_dir/challenge-intent.json" ]]; then
+    local drifted="" drift_rc=0
+    drifted="$(challenge_route_drift_check "$routing_file" "$issue" "$challenge_side" \
+      "$feature_dir/challenge-intent.json" "$state_file")" || drift_rc=$?
+    if [[ "$drift_rc" -eq 3 ]]; then
+      APPLY_EXPANDED_ROUTE_DRIFT_DETAIL="dimensions=${drifted:-unknown}"
+      log "warn" "challenge route drift after expanded route for $issue ($APPLY_EXPANDED_ROUTE_DRIFT_DETAIL)"
+      log_route_lifecycle "challenge_route_drift" "issue=$issue" "side=$challenge_side" "$APPLY_EXPANDED_ROUTE_DRIFT_DETAIL"
+      return 3
+    fi
+  fi
 
   return 0
 }
@@ -6200,29 +6612,7 @@ filter_parent_issues() {
     ' 2>/dev/null
   )
 
-  local has_active_parent
-  has_active_parent="$(
-    printf '%s\n' "$backlog_json" | jq -r '
-      def child_is_terminal:
-        ((.state.type // "") == "completed")
-        or ((.state.type // "") == "canceled")
-        or (.completedAt != null)
-        or (.canceledAt != null);
-      [
-        .[]
-        | (.children.nodes // []) as $children
-        | select(($children | length) > 0)
-        | select($children | any(child_is_terminal | not))
-      ]
-      | length > 0
-    ' 2>/dev/null
-  )"
-  if [[ "$has_active_parent" == "true" && -z "${WAVEMILL_ACTIVE_PARENT_ANNOUNCED:-}" ]]; then
-    printf 'INFO: Excluding parent issues with active Linear children from backlog\n' >&"$log_dest"
-    WAVEMILL_ACTIVE_PARENT_ANNOUNCED=1
-    export WAVEMILL_ACTIVE_PARENT_ANNOUNCED
-  fi
-
+  # Active-child exclusion is routine filtering; keep backlog refreshes quiet.
   printf '%s\n' "$backlog_json" | jq '
     def child_is_terminal:
       ((.state.type // "") == "completed")
@@ -7824,7 +8214,11 @@ pr_state() {
   local pr="$1"
   local state
 
-  if ! state=$(_with_timeout "$API_TIMEOUT" gh pr view "$pr" --json state --jq .state 2>/dev/null); then
+  # HOK-3206: a state read by this pass's batched query is GitHub truth (a
+  # MERGED/CLOSED row is terminal; an OPEN row is at most one pass old).
+  if state="$(wavemill_pr_cache_lookup_pr "$pr" state)" && [[ -n "$state" ]]; then
+    :
+  elif ! state=$(_with_timeout "$API_TIMEOUT" gh pr view "$pr" --json state --jq .state 2>/dev/null); then
     printf 'UNKNOWN\n'
     return 0
   fi
@@ -7847,8 +8241,13 @@ validate_pr_merge() {
   local pr="$1"
   [[ -z "$pr" ]] && return 1
 
-  local details
-  if ! details=$(_with_timeout "$API_TIMEOUT" gh pr view "$pr" --json state,baseRefName 2>/dev/null); then
+  local details cached_row
+  if cached_row="$(wavemill_pr_cache_row_by_pr "$pr")"; then
+    details="$(jq -c '{state, baseRefName}' <<<"$cached_row" 2>/dev/null || true)"
+  fi
+  if [[ -n "${details:-}" ]]; then
+    :
+  elif ! details=$(_with_timeout "$API_TIMEOUT" gh pr view "$pr" --json state,baseRefName 2>/dev/null); then
     if declare -F log_error >/dev/null 2>&1; then
       log_error "Failed to fetch PR #$pr details"
     fi

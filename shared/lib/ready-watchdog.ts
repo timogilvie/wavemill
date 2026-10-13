@@ -27,6 +27,7 @@ import {
 import { normalizeJobs, type MillJob, type WorkflowStateLike } from './job-tracker.ts';
 import { updateBranchWithBase, type BranchBaseUpdateResult } from './promotion-controller.ts';
 import { escapeShellArg } from './shell-utils.ts';
+import { findCachedPullRequest } from './session-gh-cache.ts';
 import { mutateJsonState } from './state-mutex.ts';
 import { readStageResult, updateStageResult, type ReadyArtifacts, type StageResult } from './stage-result.ts';
 import {
@@ -359,6 +360,20 @@ const defaultDeps: ReadyWatchdogDeps = {
   },
   async fetchGitHubTruth(prNumber, repoDir) {
     let stdout = '';
+    // HOK-3206: the monitor's batched per-pass PR query carries every field
+    // the watchdog reads; fall back to `gh pr view` on a cache miss.
+    const cached = findCachedPullRequest(prNumber);
+    if (cached && cached.statusCheckRollup !== undefined) {
+      return {
+        state: String(cached.state ?? ''),
+        mergeable: String(cached.mergeable ?? ''),
+        mergeStateStatus: String(cached.mergeStateStatus ?? ''),
+        url: cached.url,
+        headRefName: cached.headRefName,
+        baseRefName: cached.baseRefName,
+        checks: normalizeStatusCheckRollup(cached.statusCheckRollup),
+      };
+    }
     try {
       const result = await execFileAsync(
         'gh',

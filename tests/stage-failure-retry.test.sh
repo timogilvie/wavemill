@@ -56,6 +56,7 @@ for fn in \
   stage_failure_decision \
   stage_failure_owned_by_bucket \
   maybe_retry_failed_stage \
+  _stage_failure_coding_relaunch \
   emit_challenge_stage_failure_quarantine \
   challenge_abort_scope_for_failure \
   challenge_abort_pair \

@@ -5,8 +5,10 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   TEND_READY_UNMERGED_WARN_MS,
+  TEND_BLOCKED_LANE_MAX_ENTRIES,
   TEND_SKIP_LOG_REPEAT_MS,
   buildIntegrationUnhealthyFinding,
+  buildTendBlockedLane,
   buildReadyPrUnmergedFinding,
   buildSkipStallFinding,
   classifyTendLoopError,
@@ -1105,3 +1107,110 @@ describe('HOK-3108 skip-stall loop integration', () => {
   });
 });
 
+
+describe('HOK-2595 tend blockedLane heartbeat surface', () => {
+  function blockedCandidates(count: number) {
+    return Array.from({ length: count }, (_, index) => ({
+      number: 1300 + index,
+      title: `Blocked ${index}`,
+      headBranch: `task/blocked-${index}`,
+      reason: index === 0 ? 'missing-metadata' : 'ready-failed:not-ready',
+      labels: ['wavemill', 'wm:blocked'],
+    }));
+  }
+
+  it('buildTendBlockedLane keeps every blocked PR with its gate, capped at the max', () => {
+    const lane = buildTendBlockedLane(blockedCandidates(2));
+    assert.deepEqual(lane, [
+      { pr: 1300, headBranch: 'task/blocked-0', gate: 'missing-metadata', labels: ['wavemill', 'wm:blocked'] },
+      { pr: 1301, headBranch: 'task/blocked-1', gate: 'ready-failed:not-ready', labels: ['wavemill', 'wm:blocked'] },
+    ]);
+    assert.equal(buildTendBlockedLane(blockedCandidates(TEND_BLOCKED_LANE_MAX_ENTRIES + 5)).length, TEND_BLOCKED_LANE_MAX_ENTRIES);
+  });
+
+  it('bounds an oversized gate to one line', () => {
+    const [entry] = buildTendBlockedLane([{
+      number: 1, title: 't', headBranch: 'task/x', reason: `line one\nline two ${'x'.repeat(400)}`,
+    }]);
+    assert.ok(entry);
+    assert.ok(entry.gate.length <= 203);
+    assert.ok(!entry.gate.includes('\n'));
+    assert.deepEqual(entry.labels, []);
+  });
+
+  it('idle-blocked polls write every blocked PR; a progressing poll clears the list', async () => {
+    const heartbeats: Array<Record<string, unknown>> = [];
+    let iteration = 0;
+    const r = renderer();
+    await assert.rejects(runTendLoop({
+      repoDir: '/nonexistent-tend-blocked-lane',
+      renderer: r,
+      intervalMs: 60_000,
+      deps: {
+        selectNextCandidate: async () => {
+          iteration += 1;
+          if (iteration === 1) {
+            return { integrationHealth: { state: 'healthy' }, eligible: [], blocked: blockedCandidates(2), nextPR: null };
+          }
+          return {
+            integrationHealth: { state: 'healthy' },
+            eligible: [{ number: 9, title: 'ok', headBranch: 'task/ok', createdAt: '2026-08-18T00:00:00Z', dependencyDepth: 0 }],
+            blocked: [],
+            nextPR: 9,
+          };
+        },
+        executeMerge: async () => ({ status: 'merged', prNumber: 9, haltLoop: false }),
+        writePollHeartbeat: async (_repoDir, health) => { heartbeats.push({ ...health }); },
+        writeFailureState: async () => {},
+        emitObserverFinding: () => {},
+        maybeRunToolChoiceGate: async () => ({ ran: false, skipped: 'fresh', nextLastCheckedMs: 0 }),
+        sleep: async () => {
+          if (iteration >= 2) throw new TypeError('stop');
+        },
+        now: () => new Date('2026-08-18T12:00:00Z'),
+        log: () => undefined,
+        random: () => 0.5,
+      },
+    }), TypeError);
+
+    const idle = heartbeats[0];
+    assert.equal(idle?.laneCondition, 'needs-user-hold');
+    assert.deepEqual((idle?.blockedLane as Array<{ pr: number; gate: string }>).map((entry) => [entry.pr, entry.gate]), [
+      [1300, 'missing-metadata'],
+      [1301, 'ready-failed:not-ready'],
+    ]);
+    assert.equal(idle?.blockedStreak, 1);
+    const progressing = heartbeats.find((heartbeat) => heartbeat.laneCondition === 'progressing');
+    assert.deepEqual(progressing?.blockedLane, []);
+    assert.equal(progressing?.blockedStreak, 0);
+  });
+
+  it('writeTendHeartbeat persists, caps, clears, and preserves blockedLane', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-tend-loop-'));
+    const base = { failureCount: 0, lastError: null, lastErrorAt: null };
+    const read = () => JSON.parse(readFileSync(join(repoDir, '.wavemill', 'backstage-health.json'), 'utf-8')).services.tend;
+    try {
+      mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+      const oversized = buildTendBlockedLane(blockedCandidates(TEND_BLOCKED_LANE_MAX_ENTRIES))
+        .concat([{ pr: 9999, headBranch: 'task/extra', gate: 'extra', labels: [] }]);
+      await writeTendHeartbeat(repoDir, '2026-09-04T10:00:00Z', {
+        ...base,
+        laneCondition: 'idle-blocked-stall',
+        blockedLane: oversized,
+        blockedStreak: 31,
+      });
+      assert.equal(read().blockedLane.length, TEND_BLOCKED_LANE_MAX_ENTRIES);
+      assert.equal(read().blockedStreak, 31);
+
+      // undefined preserves (e.g. a writer that never saw the decision)
+      await writeTendHeartbeat(repoDir, '2026-09-04T10:01:00Z', { ...base });
+      assert.equal(read().blockedLane.length, TEND_BLOCKED_LANE_MAX_ENTRIES);
+
+      await writeTendHeartbeat(repoDir, '2026-09-04T10:02:00Z', { ...base, blockedLane: [], blockedStreak: 0 });
+      assert.deepEqual(read().blockedLane, []);
+      assert.equal(read().blockedStreak, 0);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+});

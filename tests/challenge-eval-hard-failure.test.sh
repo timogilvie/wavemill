@@ -94,6 +94,7 @@ for fn in \
   write_challenge_pair_state:1:monitor \
   challenge_pair_manual_artifact_path:1:monitor \
   write_manual_challenge_comparison_artifact:1:monitor \
+  challenge_coder_model_for_task:1:monitor \
   maybe_run_challenge_eval:1:monitor
 do
   IFS=: read -r name occurrence source <<<"$fn"

@@ -66,6 +66,8 @@ for fn in \
   coding_compare_commit_counts \
   write_coding_uncommitted_output_artifact \
   archive_stale_coding_artifacts \
+  coding_complete_marker_condition_valid \
+  blocked_completion_commit_matches_head \
   coding_recovery_instruction_path \
   coding_dirty_handoff_grace_seconds \
   coding_dirty_handoff_agent_exited \

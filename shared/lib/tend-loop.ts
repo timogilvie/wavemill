@@ -113,6 +113,33 @@ export type TendLaneCondition =
   // shared `progress_state == stalled` branch.
   | 'skip-stall';
 
+/**
+ * One blocked PR as recorded on the tend heartbeat (HOK-2595). The Observer
+ * reads this every tick to correlate a stalled lane with task artifacts, so it
+ * carries only bounded identity: PR number, branch, the gate that holds it,
+ * and label names. The list is overwritten on every poll (`[]` when the lane is
+ * not blocked) so it never outlives the condition that produced it.
+ */
+export interface TendBlockedLaneEntry {
+  pr: number;
+  headBranch: string;
+  gate: string;
+  labels: string[];
+}
+
+/** Upper bound on `services.tend.blockedLane` entries written per poll. */
+export const TEND_BLOCKED_LANE_MAX_ENTRIES = 20;
+
+/** Project the decision's blocked candidates into the bounded heartbeat shape. */
+export function buildTendBlockedLane(blocked: BlockedCandidate[]): TendBlockedLaneEntry[] {
+  return blocked.slice(0, TEND_BLOCKED_LANE_MAX_ENTRIES).map((candidate) => ({
+    pr: candidate.number,
+    headBranch: truncateOneLine(candidate.headBranch, 200),
+    gate: truncateOneLine(candidate.reason, 200),
+    labels: (candidate.labels ?? []).slice(0, 20).map((label) => truncateOneLine(label, 80)),
+  }));
+}
+
 export interface TendLoopOptions {
   repoDir: string;
   renderer: StatusRenderer;
@@ -632,6 +659,8 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
           status: heartbeatStatus,
           detail: heartbeatDetail,
           integrationAdvisory: decision.integrationHealth.advisoryFailures ?? [],
+          blockedLane: buildTendBlockedLane(decision.blocked),
+          blockedStreak: idleBlockedStreak,
           ...pollMetadata,
         });
         await fireToolChoiceGate();
@@ -666,6 +695,8 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
         laneCondition: 'progressing',
         laneEvidenceId: decisionEvidenceId(decision),
         integrationAdvisory: decision.integrationHealth.advisoryFailures ?? [],
+        blockedLane: [],
+        blockedStreak: 0,
         ...pollMetadata,
       });
 
@@ -688,6 +719,7 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
             status: 'healthy',
             detail: `merging-#${prNumber} worktree-prep:${phase}`,
             integrationAdvisory: decision.integrationHealth.advisoryFailures ?? [],
+            blockedLane: [],
           });
         },
       });
@@ -801,6 +833,7 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
             status: 'healthy',
             detail: stallDetail,
             integrationAdvisory: decision.integrationHealth.advisoryFailures ?? [],
+            blockedLane: [],
           });
         }
       } else {
@@ -1013,6 +1046,14 @@ export async function writeTendHeartbeat(
      * check runs).
      */
     integrationAdvisory?: AdvisoryCheckFailure[];
+    /**
+     * Blocked PRs on an idle poll (HOK-2595). Same semantics as
+     * `integrationAdvisory`: defined (even `[]`) overwrites, `undefined`
+     * preserves the existing value.
+     */
+    blockedLane?: TendBlockedLaneEntry[];
+    /** Consecutive unchanged idle-blocked polls behind `blockedLane`. */
+    blockedStreak?: number;
   },
 ): Promise<void> {
   const healthPath = join(repoDir, '.wavemill', 'backstage-health.json');
@@ -1045,6 +1086,10 @@ export async function writeTendHeartbeat(
         ...(health.laneCondition !== undefined ? { laneCondition: health.laneCondition } : {}),
         ...(health.laneEvidenceId !== undefined ? { laneEvidenceId: health.laneEvidenceId } : {}),
         ...(health.integrationAdvisory !== undefined ? { integrationAdvisory: health.integrationAdvisory } : {}),
+        ...(health.blockedLane !== undefined
+          ? { blockedLane: health.blockedLane.slice(0, TEND_BLOCKED_LANE_MAX_ENTRIES) }
+          : {}),
+        ...(health.blockedStreak !== undefined ? { blockedStreak: health.blockedStreak } : {}),
       };
       next.updatedAt = timestamp;
       next.status = status;
@@ -1117,6 +1162,8 @@ export async function writeTendPollHeartbeatBestEffort(
     status?: 'healthy' | 'degraded' | 'unhealthy';
     detail?: string;
     integrationAdvisory?: AdvisoryCheckFailure[];
+    blockedLane?: TendBlockedLaneEntry[];
+    blockedStreak?: number;
   } = {},
 ): Promise<void> {
   try {
@@ -1137,6 +1184,8 @@ export async function writeTendPollHeartbeatBestEffort(
         status: options.status,
         detail: options.detail,
         integrationAdvisory: options.integrationAdvisory,
+        blockedLane: options.blockedLane,
+        blockedStreak: options.blockedStreak,
       },
     );
   } catch (error) {

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import {
   buildJobId,
+  isCheckJobKind,
   launchJob,
   markJobSettled,
   normalizeJobs,
@@ -448,6 +449,72 @@ test('markJobSettled clears comparison running state on failure', async () => {
     assert.equal('comparisonRetryTargetIssue' in next.tasks['PAIR-1_c'], false);
     assert.equal('comparisonTimedOutSides' in next.tasks['PAIR-1_c'], false);
     assert.equal('manualComparisonArtifact' in next.tasks['PAIR-1_c'], false);
+  } finally {
+    cleanup();
+  }
+});
+
+// ── HOK-3206: check job kinds ──────────────────────────────────────────────
+
+test('buildJobId gives check kinds one stable id per subject', () => {
+  assert.equal(buildJobId({ kind: 'cross-pr-guard', issueId: 'HOK-7', prNumbers: [12] }), 'cross-pr-guard-HOK-7');
+  assert.equal(buildJobId({ kind: 'pr-ci-status', issueId: 'HOK-7_c', prNumbers: [13] }), 'pr-ci-status-HOK-7_c');
+  assert.equal(buildJobId({ kind: 'ready-watchdog', prNumbers: [] }), 'ready-watchdog');
+  assert.equal(isCheckJobKind('route-task'), true);
+  assert.equal(isCheckJobKind('eval'), false);
+});
+
+test('pollJobs auto-settles a succeeded check job and leaves a failed one unsettled', async () => {
+  const { root, statePath, cleanup } = makeTempState();
+  try {
+    const okResult = join(root, 'ok.result.json');
+    const badResult = join(root, 'bad.result.json');
+    writeFileSync(okResult, JSON.stringify({ ok: true, exitCode: 0 }));
+    writeFileSync(badResult, JSON.stringify({ ok: false, exitCode: 3, reason: 'tool_crashed' }));
+    await launchJob({ statePath, job: makeJob({ id: 'cross-pr-guard-HOK-1', kind: 'cross-pr-guard', pid: 999_999_9, resultPath: okResult }) });
+    await launchJob({ statePath, job: makeJob({ id: 'pr-ci-status-HOK-2', kind: 'pr-ci-status', issueId: 'HOK-2', pid: 999_999_8, resultPath: badResult }) });
+
+    const result = await pollJobs({ statePath });
+    const ok = result.jobs['cross-pr-guard-HOK-1'];
+    const bad = result.jobs['pr-ci-status-HOK-2'];
+    assert.equal(ok.status, 'succeeded');
+    assert.equal(ok.settled, true);
+    assert.equal(bad.status, 'failed');
+    assert.equal(bad.settled, false);
+    assert.deepEqual(result.unsettled.map((job) => job.id), ['pr-ci-status-HOK-2']);
+  } finally {
+    cleanup();
+  }
+});
+
+test('pollJobs prunes settled check jobs past retention but keeps eval jobs', async () => {
+  const { statePath, cleanup } = makeTempState();
+  try {
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    writeFileSync(statePath, JSON.stringify({
+      tasks: {},
+      jobs: {
+        'ready-watchdog': makeJob({ id: 'ready-watchdog', kind: 'ready-watchdog', status: 'succeeded', settled: true, finishedAt: old }),
+        'eval-HOK-1-primary-101': makeJob({ status: 'succeeded', settled: true, finishedAt: old }),
+      },
+    }));
+    const result = await pollJobs({ statePath });
+    assert.equal(result.jobs['ready-watchdog'], undefined);
+    assert.ok(result.jobs['eval-HOK-1-primary-101']);
+  } finally {
+    cleanup();
+  }
+});
+
+test('launchJob overwrites a settled check job with the same stable id', async () => {
+  const { statePath, cleanup } = makeTempState();
+  try {
+    await launchJob({ statePath, job: makeJob({ id: 'route-task-HOK-3', kind: 'route-task', status: 'failed', settled: true }) });
+    const relaunched = await launchJob({ statePath, job: makeJob({ id: 'route-task-HOK-3', kind: 'route-task', pid: 4242 }) });
+    assert.equal(relaunched.status, 'running');
+    assert.equal(relaunched.pid, 4242);
+    const state = JSON.parse(readFileSync(statePath, 'utf-8')) as { jobs: Record<string, MillJob> };
+    assert.equal(Object.keys(state.jobs).length, 1);
   } finally {
     cleanup();
   }

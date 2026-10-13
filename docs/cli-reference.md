@@ -257,6 +257,62 @@ revision), and a partial failure (comment succeeded but state transition failed,
 vice versa) is retried idempotently via the incident retry queue. Health output
 exposes `lifecycleSynced` / `lifecycleFailed` / `lifecycleRetried` counters.
 
+#### Stalled-lane correlation and remediation proposals (HOK-2595)
+
+The Observer correlates PRs that Tend is holding with their task artifacts and
+emits one typed root cause per stall. It is read-only: it never edits
+worktrees, labels, branches, jobs or merge decisions.
+
+- **Input.** Every idle Tend poll writes `services.tend.blockedLane` (each
+  blocked PR's number, branch, gate and labels, capped at 20) and
+  `blockedStreak` to `.wavemill/backstage-health.json`. Non-idle polls write
+  `[]`. The Observer correlates only while `laneCondition` is
+  `idle-blocked-stall` and the heartbeat is under 15 minutes old. The
+  consume-once `merge-lane-idle-stall` marker finding is a secondary source.
+- **Evidence.** Each candidate is joined to its task, `.review-result.json`
+  (the nested `artifacts.*` / `artifacts.diagnostics.metadata.diffBase`
+  shape), `.review-failure-envelope.json`, `.ready-result.json`, the PR's
+  exact head/base (`gh pr view` with `changedFiles`), `quota-state.json` and
+  background jobs. Diagnosis uses only structured fields. If a required input
+  is missing, the result is an `inspection_required` incident with
+  `missingEvidence` and low confidence; the Observer never guesses a cause.
+- **Root causes.**
+  - `review_context_overflow_stale_base` requires all of:
+    - a context-window failure;
+    - a stale or missing review base or head (including a `local` or
+      fetch-failed diff base);
+    - an authoritative diff materially smaller than the reviewed scope.
+  - For `challenge:pair-unresolved*` gates, both arms are resolved. The result
+    names the failed side, the earliest actionable cause and the `pairState`
+    (`blocked_on_provider_recovery`, `ready_for_rereview` or
+    `blocked_on_rereview`), as either `provider_quota_exhaustion_blocking_review`
+    or `challenge_arm_review_failed_blocking_pair`. If a pair job or an arm's
+    review is still running, the pair is waiting for work and no incident is
+    raised.
+- **Generic findings.** A correlated incident supersedes the generic
+  `stale-active-task-*` finding for the same issue. That finding is grouped
+  under the incident, and its parked-prompt advice is replaced by the next
+  safe action. If no causal chain applies, the generic finding is left
+  unchanged.
+- **`--json`.** The snapshot carries:
+  - `schemaVersion: "observer-snapshot/1"`;
+  - `remediationProposals[]`, built from non-resolved incidents and checked
+    with `validateRemediationProposal` (in `wavemill-incident-model.ts`);
+  - `remediationProposalErrors` and `recoveredIncidents[]`.
+
+  Each proposal (schema `1.2`; `1.1` records stay readable) carries `kind`,
+  `target` (exact issue/PR/head/base, plus the failed side for pairs),
+  `allowedActions`, `forbiddenActions`, `prerequisites`, `retryKey` and
+  `recoveryPredicate`. `forbiddenActions` always includes `add_ready_label`
+  and `merge`; pair proposals also include `synthesize_winner` and
+  `force_comparison`. **A proposal is not authorization.** An executor must
+  validate it and apply its own explicit configuration and bounded retries.
+- **Recovery.** After each complete cycle, an open incident that was not
+  re-observed is auto-resolved (`recovery_predicate:<kind>`) as soon as its
+  predicate holds: a new review attempt or ready verdict, a head change, or
+  a comparison or current-head eval. Unreadable evidence never resolves an
+  incident. The absence sweep remains as the fallback.
+
 ### `npx tsx tools/incidents.ts`
 
 Operator surface for the incident store — no more hand-editing

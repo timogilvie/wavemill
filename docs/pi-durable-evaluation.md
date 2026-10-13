@@ -1,7 +1,9 @@
 # Pi Durable evaluation (HOK-3148)
 
 **Status:** plan (HOK-3149) · HOK-3150 **done** (§6) · HOK-3151 **done** (§7) ·
-design pending (HOK-3152) · decision pending (HOK-3153)
+design **done** (HOK-3152, `docs/mill-task-ledger-design.md`) · decision
+**recorded** (HOK-3153, §8): runtime swap **deferred**, fork pairs
+**deferred**, ledger **built natively**
 
 Pi 1.0 shipped `@earendil-works/pi-durable` 1.0.4 (MIT, 1.0.0 released
 2026-10-01; **1.0.4 released 2026-10-05 — four patch releases in four days,
@@ -706,3 +708,100 @@ orthogonal to forking.
   is adopted, or only use F-seed (which is byte-identical to S, so no
   contamination).
 - **Adopt the fork for pairing atomicity, not for token savings.**
+
+## 8. Decision (HOK-3153, 2026-10-13)
+
+Each track is scored against the §4 criteria, which were fixed before the
+spikes ran.
+
+| Track | Decision | Basis |
+|---|---|---|
+| 1. Native agent on pi-durable | **Defer** | Gates 2 and 6 pass and gate 1 passes on durability. Gate 3 is mixed (C2 fails), gate 4 was not measured and gate 5 was not proven. The §4 rule says defer. |
+| 2. Fork-based challenge pairs | **Defer** (reject for the current program) | Gates 1–3 pass. Gate 4 was not measured and is expected to fail for cross-model pairs. |
+| 3. Mill task ledger | **Build natively, reusing pi-durable's patterns** | HOK-3152 §6c: the mill has 7 or more writers, which rules out pi-durable's single-owner storage |
+| 4. Multi-client streaming, extension hot-swap | **Not doing** | Neither spike changed the §5 reasoning |
+
+### 8.1 Native runtime swap: defer
+
+Closing the measurement gaps (a real-provider rerun of A/C and the baseline for
+gates 1 and 4, under $1, and the on-mill provider matrix for gate 5) would not
+change today's outcome. Two blockers are independent of the gates:
+
+- **Upstream stability.** pi-durable shipped four patch releases with breaking
+  changes in four days (1.0.0 → 1.0.4), and its README says the API changes
+  without notice. A port rewrites about 3,400 lines (`loop.ts` +
+  `launch-coding.ts`) against that API. The ~4,600-line reduction (§6.5) is a
+  reason to come back later, not to start now.
+- **Missing primitive.** `beforeRequest` cannot set `max_tokens` (§6.4). The
+  dynamic max-token reservation is what keeps OpenRouter 402s away, so a port
+  without it would regress.
+
+There is **no pi-ai 1.0.2 → 1.0.4 bump for its own sake**. That bump only
+matters for pi-durable, so it waits until there is a pi-durable reason.
+
+Upgrade blockers and re-certification cost when this is revisited: bump
+pi-ai to the pi-durable-pinned version; rewrite the live-coding canary scenario
+runner on `Harness` (a `suiteVersion` bump, then a fleet re-certify, which is
+about 1 s per model deterministic plus one live canary per cohort model,
+§6.7). Catalog hashes do not rotate.
+
+**Revisit triggers** (all three must hold):
+
+1. pi-durable publishes a non-experimental release with a semver commitment.
+2. Request-level `max_tokens` is expressible through a hook or setting.
+3. A real-provider rerun of crash point A, C2 and the gate-4 baseline, plus
+   the on-mill provider matrix, pass the §4 gates.
+
+### 8.2 Fork-based challenge pairs: defer
+
+- The atomicity benefit (0 one-armed pairs in 15 trials, §7.2) is already
+  delivered for **all** arm types, including Claude Code and Codex CLI arms, by
+  Ledger G (HOK-3186: pair rows, bottom-up abort, writes to settled rows
+  rejected). Forking would add it only for native arms.
+- Gate 4 is expected to fail for cross-model pairs (no shared provider
+  cache), and a fresh `sessionId` per fork may defeat same-model caching.
+- Challenge pairs are paused by default (HOK-3175).
+- Open risks remain untested: real providers accepting another model's tool-call
+  history, contamination from the planning transcript (F-plan), and a
+  certification gap for runs resumed from a foreign transcript.
+
+**Revisit trigger:** the challenge program resumes with native arms on both
+sides. Separately, the §7.5 counterfactual-fidelity result (the fork reproduced
+the pre-decision context exactly and allows a model switch) remains a research
+option for replacing the transcript half of `session-checkpoint.ts` /
+`deterministic-replay.ts`. It is not a scheduled track.
+
+### 8.3 Mill task ledger: build natively
+
+The ledger is the HOK-3178 epic: SQLite WAL with multiple writers, a direct-access
+guard, and pi-durable's ownership tree, explicit states, idempotency keys and
+replay semantics re-expressed as rows. Migration order as executed:
+
+| Phase | Issue | Classes | State (2026-10-13) |
+|---|---|---|---|
+| A: ledger core | HOK-3180 | — | merged |
+| B: derived merge labels | HOK-3181 | S | merged (regression HOK-3212 open) |
+| C: intervention tagging baseline (§1c) | HOK-3182 | metric | merged |
+| D: side-effect ledger, shadow | HOK-3183 | S | merged |
+| E: step rows for review/Ready/eval, shadow | HOK-3184 | R, L | merged |
+| F: one recovery path | HOK-3185 | R | in review |
+| G: ownership tree, pair rows | HOK-3186 | O | merged |
+| H: retire old surfaces | HOK-3187 | O, L | backlog |
+
+Architectural invariants that change when phase H lands (task progress
+becomes a reader of ledger rows; `workflow-state.json` becomes a render view)
+are documented in the HOK-3178 phase issues and will update
+`.wavemill/context/` with that phase, not with this decision.
+
+### 8.4 Follow-on work
+
+- **HOK-3213:** make native `apply_patch` crash-atomic (temp file + rename
+  per file, plus an undo journal across files). Gate 3 / C2 reproduces with
+  today's production runtime, so this is a go on its own merits and not
+  pi-durable work. **Implementation landed**: file atomicity via
+  `atomicWriteFile`, multi-file atomicity via
+  `shared/lib/native-agent/patch-journal.ts`. Recovery runs on every
+  `apply_patch` call and at native-coding launch.
+- No new epic is filed. Neither pi-durable track is a go, and the ledger
+  already has HOK-3178.
+- HOK-3148 closes as deferred, with the §8.1 and §8.2 revisit triggers.

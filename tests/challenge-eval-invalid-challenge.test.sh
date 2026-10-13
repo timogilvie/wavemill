@@ -85,6 +85,7 @@ for fn in \
   challenge_eval_current_head_state:1 \
   challenge_eval_stale_relaunch_allowed:1 \
   challenge_eval_invalid_terminalize:1 \
+  challenge_coder_model_for_task:1 \
   maybe_run_challenge_eval:1
 do
   IFS=: read -r name occurrence <<<"$fn"
