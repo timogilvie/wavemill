@@ -1021,6 +1021,51 @@ cleanup_episode_should_attempt() {
   esac
 }
 
+# Bounded incident-record basename for a task branch (HOK-3208).
+#
+# Records under .wavemill/incidents/{cleanup-decisions,preserved-branches}/ are
+# published atomically via `mktemp ".<name>.XXXXXX"` + `mv`, so the temp
+# basename is 8 bytes longer than the record name. Branch names derive from
+# issue titles (plus an 11-byte `-challenger` suffix) and can exceed the
+# 255-byte per-component limit on APFS/ext4, which made the record unwritable
+# and left the arm retained forever.
+#
+# Short branches keep the legacy "${branch//\//__}.json" name so existing
+# records and callers that look them up by exact name are unaffected. Once
+# that name exceeds 200 bytes (hard ceiling is 247; the rest is headroom for
+# future suffix changes), the branch collapses to "<first-100-bytes>__<sha1:12>.json". The
+# name is a pure function of the branch, so idempotent re-writes still land on
+# the same file. The full branch is always kept in the JSON body's `branch`
+# field, which is what readers (terminal-lifecycle-cert.ts) key on.
+#
+# Fails closed (non-zero) if no sha1 tool is available rather than emit a
+# weakly disambiguated name.
+_wavemill_incident_record_name() {
+  local branch="$1"
+  # Byte semantics for length and substring, independent of the caller's locale.
+  local LC_ALL=C
+  local safe="${branch//\//__}"
+  local legacy="${safe}.json"
+  local digest="" prefix
+
+  if (( ${#legacy} <= 200 )); then
+    printf '%s\n' "$legacy"
+    return 0
+  fi
+
+  if command -v sha1sum >/dev/null 2>&1; then
+    digest="$(printf '%s' "$branch" | sha1sum | awk '{print substr($1, 1, 12)}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    digest="$(printf '%s' "$branch" | shasum -a 1 | awk '{print substr($1, 1, 12)}')"
+  fi
+  [[ "$digest" =~ ^[0-9a-f]{12}$ ]] || return 1
+
+  # A byte cut could split a multibyte character; keep the prefix ASCII-only.
+  prefix="${safe:0:100}"
+  prefix="${prefix//[^A-Za-z0-9._-]/_}"
+  printf '%s__%s.json\n' "$prefix" "$digest"
+}
+
 _wavemill_write_preserved_branch_incident() {
   local reason="$1" branch="$2" wt_dir="$3" base_branch="$4" commits_ahead="$5" commit_shas="$6" caller="${7:-cleanup}"
   local base_sha="${8:-}" local_head_sha="${9:-}" remote_head_sha="${10:-}" verification_reason="${11:-}"
@@ -1035,7 +1080,7 @@ _wavemill_write_preserved_branch_incident() {
   fi
 
   incident_dir="$REPO_DIR/.wavemill/incidents/$marker_subdir"
-  marker_name="${branch//\//__}.json"
+  marker_name="$(_wavemill_incident_record_name "$branch")" || return 1
   marker_path="$incident_dir/$marker_name"
   created_at="$(cleanup_episode_now_iso 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ")"
   if [[ -n "${CLEANUP_EPISODE_CURRENT_FINGERPRINT:-}" ]]; then
