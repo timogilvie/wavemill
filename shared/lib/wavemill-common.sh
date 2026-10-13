@@ -5494,10 +5494,11 @@ challenge_route_drift_check() {
   local sibling_side sibling_issue="" sibling_routing=""
   if [[ "$side" == "primary" ]]; then
     sibling_side="challenger"
-    sibling_issue="${issue}_c"
+    sibling_issue="$(task_identity_challenger_key "$issue")"
   else
     sibling_side="primary"
-    sibling_issue="${issue%_c}"
+    sibling_issue="$(task_identity_parse "$issue" | cut -f2 || true)"
+    [[ -n "$sibling_issue" ]] || return 0
   fi
   if [[ -n "$state_file" && -f "$state_file" ]]; then
     local sibling_dir

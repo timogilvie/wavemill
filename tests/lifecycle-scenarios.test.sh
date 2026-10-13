@@ -213,6 +213,7 @@ for fn in \
   challenge_stage_for_launch_env \
   challenge_abort_for_unresolvable_varied_model \
   challenge_guard_varied_model_resolvable \
+  challenge_pre_review_route_preflight \
   resolve_stage_result_model \
   coding_pane_replacement_intent_path \
   record_coding_pane_replacement_intent \

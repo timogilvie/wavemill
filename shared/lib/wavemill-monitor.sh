@@ -1719,12 +1719,14 @@ challenge_collapse_route_drift() {
   role="$(get_task_meta "$issue" "challengeRole" 2>/dev/null || true)"
   if [[ "$role" == "challenger" ]]; then
     primary_issue="$(get_task_meta "$issue" "challengePairId" 2>/dev/null || true)"
-    [[ -n "$primary_issue" && "$primary_issue" != "$issue" ]] || primary_issue="${issue%_c}"
+    [[ -n "$primary_issue" && "$primary_issue" != "$issue" ]] || primary_issue="$(task_identity_parse "$issue" | cut -f2 || true)"
     challenger_key="$issue"
   else
     primary_issue="$issue"
-    if [[ -n "$(read_state_value "" --arg i "${issue}_c" '.tasks[$i].slug // ""' 2>/dev/null || true)" ]]; then
-      challenger_key="${issue}_c"
+    local candidate_key
+    candidate_key="$(task_identity_challenger_key "$issue")"
+    if [[ -n "$(read_state_value "" --arg i "$candidate_key" '.tasks[$i].slug // ""' 2>/dev/null || true)" ]]; then
+      challenger_key="$candidate_key"
     fi
   fi
 
@@ -1866,13 +1868,13 @@ challenge_pre_review_route_preflight() {
   [[ -n "$stage" ]] || return 0
   if [[ "$role" == "challenger" ]]; then
     pair="$(get_task_meta "$issue" "challengePairId" 2>/dev/null || true)"
-    [[ -n "$pair" && "$pair" != "$issue" ]] || pair="${issue%_c}"
+    [[ -n "$pair" && "$pair" != "$issue" ]] || pair="$(task_identity_parse "$issue" | cut -f2 || true)"
     primary_key="$pair"
     challenger_key="$issue"
     sibling="$pair"
   else
     primary_key="$issue"
-    challenger_key="${issue}_c"
+    challenger_key="$(task_identity_challenger_key "$issue")"
     sibling="$challenger_key"
   fi
 
