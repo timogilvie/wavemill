@@ -438,7 +438,9 @@ export function readReviewFailureEnvelope(taskDir: string): ReviewFailureEnvelop
   if (result.status === 'missing') return null;
   if (result.status === 'malformed') return { error: clampText(result.reason, 200), source };
   const validated = validateStageFailureEnvelope(result.value);
-  if (!validated.ok) return { error: clampText(validated.message, 200), source };
+  if (validated.ok !== true) {
+    return { error: clampText('message' in validated ? validated.message : 'invalid envelope', 200), source };
+  }
   const envelope = validated.value;
   return {
     cause: envelope.cause,

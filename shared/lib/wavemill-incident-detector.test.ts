@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -12,7 +12,7 @@ import {
   StalledLifecycleCorrelator,
   WorkflowStateDetector,
 } from './wavemill-incident-detector.ts';
-import { canonicalizeRootCauseClass, INCIDENT_ROOT_CAUSE_CLASSES } from './wavemill-incident-model.ts';
+import { canonicalizeRootCauseClass, INCIDENT_ROOT_CAUSE_CLASSES, validateRemediationProposal, type IncidentRecord } from './wavemill-incident-model.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 
 const now = new Date('2026-08-03T12:00:00.000Z');
@@ -404,146 +404,497 @@ test('job detector degrades safely when logPath is binary', () => {
   }
 });
 
-test('stalled lifecycle correlator diagnoses review context overflow on stale base', () => {
-  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-stale-base-'));
-  try {
-    writeStalledFixtureBase(repo, {
-      taskId: 'HOK-1324',
-      slug: 'stale-base-overflow',
-      pr: 1324,
-      prHead: 'current-head-1324',
-      prBase: 'current-base-1324',
-      reviewedHead: 'old-head-1324',
-      reviewedBase: 'old-base-1324',
-      reviewedFileCount: 40,
-      currentFileCount: 12,
-      failureCategory: 'context-window-exceeded',
-    });
+// ── Stalled lifecycle correlation (HOK-2595 reopened) ─────────────────────────
+//
+// Fixtures write the *real* review StageResult shape produced by
+// review-flow.ts buildStageArtifacts + review-runner.ts withDiffBaseMetadata:
+// everything nested under `artifacts`, scope under
+// `artifacts.diagnostics.metadata.diffBase`.
 
+const SHA = (char: string) => char.repeat(40);
+
+interface RealReviewOptions {
+  status?: string;
+  verdict?: string;
+  failureCategory?: string;
+  reviewHeadSha?: string;
+  prNumber?: number;
+  finishedAt?: string;
+  executedModel?: string;
+  diffBase?: {
+    reviewedBase?: string;
+    mergeBaseSha?: string;
+    reviewedHead?: string;
+    reviewedFileCount?: number;
+    kind?: string;
+    fetch?: string;
+    ref?: string;
+  };
+}
+
+function writeRealReviewResult(featureDir: string, options: RealReviewOptions): void {
+  mkdirSync(featureDir, { recursive: true });
+  writeFileSync(join(featureDir, '.review-result.json'), JSON.stringify({
+    stage: 'review',
+    status: options.status ?? 'failed',
+    startedAt: '2026-09-04T09:00:00.000Z',
+    finishedAt: options.finishedAt ?? '2026-09-04T09:30:00.000Z',
+    agent: 'native-openrouter',
+    model: 'kimi-k2',
+    ...(options.executedModel ? { executedModel: options.executedModel } : {}),
+    notes: 'Native review flow failed after 0 findings',
+    artifacts: {
+      type: 'review',
+      ...(options.prNumber ? { prNumber: options.prNumber } : {}),
+      verdict: options.verdict ?? 'not_ready',
+      ...(options.failureCategory ? { failureCategory: options.failureCategory } : {}),
+      ...(options.reviewHeadSha ? { reviewHeadSha: options.reviewHeadSha } : {}),
+      ...(options.diffBase ? {
+        diagnostics: {
+          reviewToolError: 'review failed',
+          metadata: { diffBase: { requestedRef: 'auto/integration', ref: options.diffBase.ref ?? 'auto/integration', ...options.diffBase } },
+        },
+      } : {}),
+      review: { status: options.status ?? 'failed', verdict: options.verdict ?? 'not_ready', failureCategory: options.failureCategory },
+    },
+  }));
+}
+
+function writeEnvelope(featureDir: string, envelope: { cause: string; providerErrorKind?: string; provider?: string; model?: string; createdAt?: string }): void {
+  writeFileSync(join(featureDir, '.review-failure-envelope.json'), JSON.stringify({
+    schemaVersion: '1.0',
+    stage: 'review',
+    cause: envelope.cause,
+    ...(envelope.providerErrorKind ? { providerErrorKind: envelope.providerErrorKind } : {}),
+    provider: envelope.provider ?? 'openrouter',
+    model: envelope.model ?? 'kimi-k2',
+    agent: 'native-openrouter',
+    evidence: { source: 'native-loop', detail: 'HTTP 402: Insufficient credits. RAW PROMPT SHOULD NOT LEAK', transcriptPath: '/abs/sessions/review-1329.jsonl' },
+    createdAt: envelope.createdAt ?? '2026-09-05T01:00:00.000Z',
+  }));
+}
+
+function writePrFixture(repo: string, pr: number, options: { head: string; base: string; changedFiles?: number; labels?: string[] }): void {
+  mkdirSync(join(repo, '.wavemill', 'prs'), { recursive: true });
+  writeFileSync(join(repo, '.wavemill', 'prs', `${pr}.json`), JSON.stringify({
+    number: pr,
+    headRefOid: options.head,
+    baseRefOid: options.base,
+    headRefName: `task/pr-${pr}`,
+    baseRefName: 'auto/integration',
+    ...(options.changedFiles !== undefined ? { changedFiles: options.changedFiles } : {}),
+    labels: (options.labels ?? ['wavemill']).map((name) => ({ name })),
+  }));
+}
+
+function writeWorkflowTasks(repo: string, tasks: Record<string, Record<string, unknown>>, jobs?: Record<string, unknown>): void {
+  mkdirSync(join(repo, '.wavemill'), { recursive: true });
+  writeFileSync(join(repo, '.wavemill', 'workflow-state.json'), JSON.stringify({ tasks, ...(jobs ? { jobs } : {}) }));
+}
+
+/** #1324: native context overflow against a stale local base; PR diff is much smaller. */
+function write1324Fixture(repo: string, overrides: Partial<RealReviewOptions> = {}, pr: { changedFiles?: number } = {}): string {
+  const featureDir = join(repo, 'features', 'hok-1324');
+  writeWorkflowTasks(repo, { 'HOK-1324': { issue: 'HOK-1324', slug: 'hok-1324', worktree: repo, phase: 'ready', pr: '1324' } });
+  writeRealReviewResult(featureDir, {
+    failureCategory: 'native-context-window-exceeded',
+    reviewHeadSha: SHA('a'),
+    prNumber: 1324,
+    diffBase: { reviewedBase: SHA('0'), mergeBaseSha: SHA('0'), reviewedHead: SHA('a'), reviewedFileCount: 84, kind: 'local', fetch: 'failed', ref: 'main' },
+    ...overrides,
+  });
+  writePrFixture(repo, 1324, { head: SHA('a'), base: SHA('b'), changedFiles: 'changedFiles' in pr ? pr.changedFiles : 12, labels: ['wavemill', 'wm:blocked'] });
+  return featureDir;
+}
+
+function stallCandidate(pr: number, gate: string, extra: Record<string, unknown> = {}) {
+  return {
+    pr,
+    markerKind: 'merge-lane-idle-stall',
+    firstBlockedGate: gate,
+    source: 'backstage-health' as const,
+    labels: ['wavemill', 'wm:blocked'],
+    blockedStreak: 31,
+    ...extra,
+  };
+}
+
+function assertValidProposals(incidents: IncidentRecord[]): void {
+  for (const incident of incidents) {
+    const result = validateRemediationProposal(incident.metadata.proposal);
+    assert.equal(result.ok, true, `invalid proposal for ${incident.rootCauseClass}: ${JSON.stringify(result)}`);
+  }
+}
+
+test('#1324 real StageResult shape: context overflow on a stale base yields one stale-base incident', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-1324-'));
+  try {
+    const featureDir = write1324Fixture(repo);
     const incidents = new StalledLifecycleCorrelator().detect(repo, {
       repoDir: repo,
       now,
-      tendCandidates: [{
-        taskId: 'HOK-1324',
-        pr: 1324,
-        markerKind: 'merge-lane-idle-stall',
-        firstBlockedGate: 'review:not-ready',
-      }],
+      tendCandidates: [stallCandidate(1324, 'ready-failed:not-ready', { taskId: 'HOK-1324' })],
     });
 
     assert.equal(incidents.length, 1);
-    assert.equal(incidents[0].rootCauseClass, 'review_context_overflow_stale_base');
-    assert.equal(incidents[0].confidence, 'high');
-    assert.equal(incidents[0].metadata.authoritativeHead, 'current-head-1324');
-    assert.equal(incidents[0].metadata.authoritativeBase, 'current-base-1324');
-    assert.equal(incidents[0].metadata.reviewedFileCount, 40);
-    assert.equal(incidents[0].metadata.authoritativeFileCount, 12);
-    assert.equal(incidents[0].metadata.proposal?.kind, 'refresh_base_and_rereview');
-    assert.deepEqual(incidents[0].metadata.proposal?.forbiddenActions, [
-      'add_ready_label',
-      'merge',
-      'destructive_git',
-      'delete_branch',
+    const [incident] = incidents;
+    assert.equal(incident.rootCauseClass, 'review_context_overflow_stale_base');
+    assert.equal(incident.confidence, 'high');
+    assert.equal(incident.taskId, 'HOK-1324');
+    const metadata = incident.metadata;
+    assert.equal(metadata.prNumber, 1324);
+    assert.equal(metadata.taskId, 'HOK-1324');
+    assert.equal(metadata.tendGate, 'ready-failed:not-ready');
+    assert.equal(metadata.failureCategory, 'native-context-window-exceeded');
+    assert.equal(metadata.recordedHead, SHA('a'));
+    assert.equal(metadata.recordedBase, SHA('0'));
+    assert.equal(metadata.currentHead, SHA('a'));
+    assert.equal(metadata.currentBase, SHA('b'));
+    assert.equal(metadata.reviewedFileCount, 84);
+    assert.equal(metadata.authoritativeFileCount, 12);
+    assert.equal(metadata.diffBaseKind, 'local');
+    const paths = metadata.artifactPaths as string[];
+    assert.ok(paths.includes(join(featureDir, '.review-result.json')));
+    assert.ok(paths.includes(join(repo, '.wavemill', 'prs', '1324.json')));
+    assert.ok(paths.includes(join(repo, '.wavemill', 'backstage-health.json')));
+    assert.deepEqual(metadata.causalChain?.map((entry) => entry.cause), [
+      'context_window_exceeded',
+      'stale_review_scope',
+      'review_not_ready',
+      'no_wm_ready',
+      'tend_blocked(ready-failed:not-ready)',
     ]);
+
+    assert.match(incident.operatorAction, /^Refresh authoritative base, invalidate stale review evidence, rerun review\./);
+    assert.doesNotMatch(incident.operatorAction.replace(/Do not add wm:ready[^.]*\./, ''), /wm:ready|merge/i);
+
+    const proposal = metadata.proposal!;
+    assert.equal(proposal.schemaVersion, '1.2');
+    assert.equal(proposal.kind, 'refresh_base_and_rereview');
+    assert.deepEqual(proposal.allowedActions, ['refresh_authoritative_base', 'invalidate_stale_review_evidence', 'rerun_review']);
+    assert.ok(proposal.forbiddenActions.includes('add_ready_label'));
+    assert.ok(proposal.forbiddenActions.includes('merge'));
+    assert.ok(proposal.forbiddenActions.includes('destructive_git'));
+    assert.deepEqual(proposal.target, { issueId: 'HOK-1324', prNumber: 1324, headSha: SHA('a'), baseSha: SHA('b') });
+    assert.equal(proposal.retryKey, `refresh-base-rereview:pr:1324:head:${SHA('a')}:base:${SHA('b')}`);
+    assert.equal(proposal.recoveryPredicate?.kind, 'review_now_ready');
+    assertValidProposals(incidents);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
 });
 
-test('stalled lifecycle correlator downgrades contradictory stale-base evidence to inspection', () => {
-  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-inspection-'));
+test('#1325 matching base/head: context overflow downgrades to a low-confidence inspection', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-1325-'));
   try {
-    writeStalledFixtureBase(repo, {
-      taskId: 'HOK-1325',
-      slug: 'stale-base-inspection',
-      pr: 1325,
-      prHead: 'same-head',
-      prBase: 'same-base',
-      reviewedHead: 'same-head',
-      reviewedBase: 'same-base',
-      reviewedFileCount: 12,
-      currentFileCount: 12,
-      failureCategory: 'context-window-exceeded',
+    const featureDir = join(repo, 'features', 'hok-1325');
+    writeWorkflowTasks(repo, { 'HOK-1325': { issue: 'HOK-1325', slug: 'hok-1325', worktree: repo, pr: '1325' } });
+    writeRealReviewResult(featureDir, {
+      failureCategory: 'native-context-window-exceeded',
+      reviewHeadSha: SHA('c'),
+      diffBase: { reviewedBase: SHA('d'), mergeBaseSha: SHA('d'), reviewedHead: SHA('c'), reviewedFileCount: 40, kind: 'remote', fetch: 'ok' },
     });
+    writePrFixture(repo, 1325, { head: SHA('c'), base: SHA('d'), changedFiles: 40 });
 
     const incidents = new StalledLifecycleCorrelator().detect(repo, {
       repoDir: repo,
       now,
-      tendCandidates: [{
-        taskId: 'HOK-1325',
-        pr: 1325,
-        markerKind: 'merge-lane-idle-stalled',
-        firstBlockedGate: 'review:not-ready',
-      }],
+      tendCandidates: [stallCandidate(1325, 'ready-failed:not-ready', { taskId: 'HOK-1325' })],
     });
-
     assert.equal(incidents.length, 1);
     assert.equal(incidents[0].rootCauseClass, 'inspection_required');
     assert.equal(incidents[0].confidence, 'low');
+    assert.equal(incidents[0].metadata.inspectionReason, 'contradictory_context_scope_evidence');
     assert.equal(incidents[0].metadata.proposal?.kind, 'inspection_only');
+    assert.doesNotMatch(incidents[0].summary, /stale base\b(?!-)/i);
+    assertValidProposals(incidents);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
 });
 
-test('stalled lifecycle correlator identifies provider quota chain for challenge pair', () => {
-  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-challenge-'));
+test('missing PR identity lowers to inspection and never claims stale base', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-nopr-'));
   try {
-    writeChallengeQuotaFixture(repo);
-
-    const incidents = detectIncidentsForRepo(repo, {
-      repoDir: repo,
-      now,
-      tendCandidates: [{
-        taskId: 'HOK-1328',
-        pr: 1328,
-        markerKind: 'merge-lane-idle-stall',
-        firstBlockedGate: 'challenge:pair-unresolved',
-        pairId: 'HOK-1328-pair',
-      }],
-    });
-    const incident = incidents.find((item) => item.rootCauseClass === 'provider_quota_exhaustion_blocking_review');
-    assert.ok(incident);
-    assert.equal(incident.metadata.pairId, 'HOK-1328-pair');
-    assert.equal(incident.metadata.failedPr, 1328);
-    assert.equal(incident.metadata.proposal?.kind, 'provider_retry_or_forfeit_inspection');
-    assert.deepEqual(incident.metadata.causalChain?.map((entry) => entry.cause), [
-      'provider_quota_failure',
-      'review_not_ready',
-      'no_ready_label',
-      'no_current_head_eval',
-      'no_comparison',
-    ]);
-  } finally {
-    rmSync(repo, { recursive: true, force: true });
-  }
-});
-
-test('stalled lifecycle correlator clears when current comparison evidence progresses', () => {
-  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-recovered-'));
-  try {
-    writeChallengeQuotaFixture(repo);
-    mkdirSync(join(repo, '.wavemill', 'jobs'), { recursive: true });
-    writeFileSync(join(repo, '.wavemill', 'jobs', 'comparison-success.json'), JSON.stringify({
-      id: 'comparison-HOK-1328-pair',
-      kind: 'comparison',
-      status: 'succeeded',
-      pairId: 'HOK-1328-pair',
-      finishedAt: now.toISOString(),
-    }));
-
+    write1324Fixture(repo);
+    rmSync(join(repo, '.wavemill', 'prs'), { recursive: true, force: true });
     const incidents = new StalledLifecycleCorrelator().detect(repo, {
       repoDir: repo,
       now,
-      tendCandidates: [{
-        taskId: 'HOK-1328',
-        pr: 1328,
-        markerKind: 'merge-lane-idle-stall',
-        pairId: 'HOK-1328-pair',
-      }],
+      tendCandidates: [stallCandidate(1324, 'ready-failed:not-ready', { taskId: 'HOK-1324' })],
     });
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].rootCauseClass, 'inspection_required');
+    assert.equal(incidents[0].confidence, 'low');
+    assert.deepEqual(incidents[0].metadata.missingEvidence, ['pr_identity']);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
 
-    assert.equal(incidents.length, 0);
+test('missing reviewed/authoritative file counts lowers to inspection', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-nocounts-'));
+  try {
+    write1324Fixture(repo, {
+      diffBase: { reviewedBase: SHA('0'), reviewedHead: SHA('a'), kind: 'local', fetch: 'failed' },
+    });
+    const incidents = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(1324, 'ready-failed:not-ready', { taskId: 'HOK-1324' })],
+    });
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].rootCauseClass, 'inspection_required');
+    assert.deepEqual(incidents[0].metadata.missingEvidence, ['file_counts']);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('review-scope-unverifiable alone is an inspection, not a context overflow', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-unverifiable-'));
+  try {
+    write1324Fixture(repo, { failureCategory: 'review-scope-unverifiable' });
+    const incidents = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(1324, 'ready-failed:not-ready', { taskId: 'HOK-1324' })],
+    });
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].rootCauseClass, 'inspection_required');
+    assert.equal(incidents[0].metadata.inspectionReason, 'review_scope_unverifiable');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('a running review is waiting-for-work, not a stall cause', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-running-'));
+  try {
+    write1324Fixture(repo, { status: 'running' });
+    const incidents = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(1324, 'ready-failed:not-ready', { taskId: 'HOK-1324' })],
+    });
+    assert.deepEqual(incidents, []);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('legacy flat review shape still diagnoses stale-base overflow', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-legacy-'));
+  try {
+    const featureDir = join(repo, 'features', 'legacy');
+    mkdirSync(featureDir, { recursive: true });
+    writeFileSync(join(featureDir, 'selected-task.json'), JSON.stringify({ taskId: 'HOK-1324' }));
+    writeFileSync(join(featureDir, '.review-result.json'), JSON.stringify({
+      status: 'not_ready',
+      failureCategory: 'context-window-exceeded',
+      reviewedHead: 'old-head',
+      reviewedBase: 'old-base',
+      reviewedFileCount: 40,
+      reviewedAt: now.toISOString(),
+    }));
+    writePrFixture(repo, 1324, { head: 'current-head', base: 'current-base', changedFiles: 12 });
+    const incidents = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [{ taskId: 'HOK-1324', pr: 1324, markerKind: 'merge-lane-idle-stalled', firstBlockedGate: 'review:not-ready' }],
+    });
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].rootCauseClass, 'review_context_overflow_stale_base');
+    assert.equal(incidents[0].metadata.authoritativeBase, 'current-base');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('a candidate with no owning task records missing task evidence', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-notask-'));
+  try {
+    writePrFixture(repo, 900, { head: SHA('e'), base: SHA('f'), changedFiles: 3 });
+    const incidents = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(900, 'missing-metadata', { headBranch: 'feature/manual' })],
+    });
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].rootCauseClass, 'inspection_required');
+    assert.deepEqual(incidents[0].metadata.missingEvidence, ['task', 'review_result']);
+    assert.equal(incidents[0].metadata.tendGate, 'missing-metadata');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// HOK-2934 / PRs #1328 (primary, green) and #1329 (challenger, review failed on 402).
+function writeHok2934Pair(repo: string, options: { challengerEnvelope?: boolean; challengerCategory?: string; jobs?: Record<string, unknown> } = {}): void {
+  writeWorkflowTasks(repo, {
+    'HOK-2934': { issue: 'HOK-2934', slug: 'hok-2934', worktree: repo, phase: 'ready', pr: '1328', challengePairId: 'HOK-2934' },
+    'HOK-2934_c': { issue: 'HOK-2934_c', slug: 'hok-2934-challenger', worktree: repo, phase: 'ready', pr: '1329', challengePairId: 'HOK-2934', challengeRole: 'challenger' },
+  }, options.jobs);
+  writeRealReviewResult(join(repo, 'features', 'hok-2934'), {
+    status: 'completed',
+    verdict: 'ready',
+    reviewHeadSha: SHA('1'),
+    prNumber: 1328,
+  });
+  const challengerDir = join(repo, 'features', 'hok-2934-challenger');
+  writeRealReviewResult(challengerDir, {
+    status: 'failed',
+    verdict: 'error',
+    failureCategory: options.challengerCategory ?? 'native-review-failed',
+    reviewHeadSha: SHA('2'),
+    prNumber: 1329,
+    finishedAt: '2026-09-05T01:00:05.000Z',
+  });
+  if (options.challengerEnvelope !== false) {
+    writeEnvelope(challengerDir, { cause: 'provider-credit-exhausted', providerErrorKind: 'insufficient_credits' });
+  }
+  writePrFixture(repo, 1328, { head: SHA('1'), base: SHA('9'), changedFiles: 6, labels: ['wavemill', 'wm:ready'] });
+  writePrFixture(repo, 1329, { head: SHA('2'), base: SHA('9'), changedFiles: 7, labels: ['wavemill'] });
+}
+
+const PAIR_GATE = 'challenge:pair-unresolved:no-comparison';
+
+test('HOK-2934 pair: provider 402 on the challenger review yields one root-cause chain', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-pair-2934-'));
+  try {
+    writeHok2934Pair(repo);
+    const incidents = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(1328, PAIR_GATE, { taskId: 'HOK-2934' })],
+    });
+    assert.equal(incidents.length, 1);
+    const [incident] = incidents;
+    assert.equal(incident.rootCauseClass, 'provider_quota_exhaustion_blocking_review');
+    assert.equal(incident.category, 'external_transient_dependency');
+    assert.equal(incident.taskId, 'HOK-2934_c');
+    const metadata = incident.metadata;
+    assert.equal(metadata.failedSide, 'challenger');
+    assert.equal(metadata.failedIssueId, 'HOK-2934_c');
+    assert.equal(metadata.failedPrNumber, 1329);
+    assert.equal(metadata.blockedIssueId, 'HOK-2934');
+    assert.equal(metadata.blockedPrNumber, 1328);
+    assert.equal(metadata.pairState, 'blocked_on_provider_recovery');
+    assert.equal(metadata.earliestActionableCause, 'provider_credit_exhausted');
+    assert.deepEqual(metadata.causalChain?.map((entry) => entry.cause), [
+      'provider_credit_exhausted',
+      'review_not_ready(native-review-failed)',
+      'no_wm_ready(challenger)',
+      'no_current_head_eval',
+      'no_comparison',
+      `tend_blocked(${PAIR_GATE})`,
+    ]);
+    const proposal = metadata.proposal!;
+    assert.deepEqual(proposal.allowedActions, ['retry_same_reviewer_after_provider_recovery', 'terminalize_forfeit_after_policy_exhaustion']);
+    for (const action of ['synthesize_winner', 'force_comparison', 'add_ready_label', 'merge'] as const) {
+      assert.ok(proposal.forbiddenActions.includes(action), action);
+    }
+    assert.equal(proposal.recoveryPredicate?.kind, 'review_attempt_progressed');
+    assert.equal(proposal.target?.failedSide, 'challenger');
+    assert.match(incident.operatorAction, /cannot start until openrouter recovers/);
+    assert.doesNotMatch(JSON.stringify(incident), /RAW PROMPT SHOULD NOT LEAK|\/abs\/sessions/);
+    assertValidProposals(incidents);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('HOK-2934 pair: primary and challenger candidates dedupe into the same fingerprint', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-pair-dedupe-'));
+  try {
+    writeHok2934Pair(repo);
+    const store = new IncidentStore(join(repo, '.wavemill', 'incidents'));
+    const fromPrimary = new StalledLifecycleCorrelator().detect(repo, { repoDir: repo, now, tendCandidates: [stallCandidate(1328, PAIR_GATE, { taskId: 'HOK-2934' })] });
+    const fromChallenger = new StalledLifecycleCorrelator().detect(repo, { repoDir: repo, now, tendCandidates: [stallCandidate(1329, PAIR_GATE, { taskId: 'HOK-2934_c' })] });
+    const both = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(1328, PAIR_GATE, { taskId: 'HOK-2934' }), stallCandidate(1329, PAIR_GATE, { taskId: 'HOK-2934_c' })],
+    });
+    assert.equal(fromPrimary.length, 1);
+    assert.equal(fromChallenger.length, 1);
+    assert.equal(both.length, 1);
+    assert.equal(store.computeFingerprint(fromPrimary[0]), store.computeFingerprint(fromChallenger[0]));
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('HOK-2934 pair without provider evidence names the failed arm review', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-pair-rereview-'));
+  try {
+    writeHok2934Pair(repo, { challengerEnvelope: false });
+    const incidents = new StalledLifecycleCorrelator().detect(repo, { repoDir: repo, now, tendCandidates: [stallCandidate(1328, PAIR_GATE, { taskId: 'HOK-2934' })] });
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].rootCauseClass, 'challenge_arm_review_failed_blocking_pair');
+    assert.equal(incidents[0].metadata.pairState, 'blocked_on_rereview');
+    assert.equal(incidents[0].metadata.proposal?.kind, 'rereview_failed_challenge_arm');
+    assert.equal(incidents[0].metadata.earliestActionableCause, 'review_not_ready(native-review-failed)');
+    assertValidProposals(incidents);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('HOK-2934 pair with a running comparison job is waiting for work (no incident)', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-pair-waiting-'));
+  try {
+    writeHok2934Pair(repo, {
+      jobs: { 'comparison-HOK-2934': { id: 'comparison-HOK-2934', kind: 'comparison', status: 'running', pairId: 'HOK-2934' } },
+    });
+    const incidents = new StalledLifecycleCorrelator().detect(repo, { repoDir: repo, now, tendCandidates: [stallCandidate(1328, PAIR_GATE, { taskId: 'HOK-2934' })] });
+    assert.deepEqual(incidents, []);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('HOK-2934 pair with a succeeded comparison clears (no incident)', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-pair-compared-'));
+  try {
+    writeHok2934Pair(repo, {
+      jobs: { 'comparison-HOK-2934': { id: 'comparison-HOK-2934', kind: 'comparison', status: 'succeeded', pairId: 'HOK-2934' } },
+    });
+    const incidents = new StalledLifecycleCorrelator().detect(repo, { repoDir: repo, now, tendCandidates: [stallCandidate(1328, PAIR_GATE, { taskId: 'HOK-2934' })] });
+    assert.deepEqual(incidents, []);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('HOK-2934 pair: provider recovered after the failure means ready for re-review', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-pair-recovered-'));
+  try {
+    writeHok2934Pair(repo);
+    writeFileSync(join(repo, '.wavemill', 'quota-state.json'), JSON.stringify({
+      models: { 'kimi-k2': { status: 'healthy', lastSuccessAt: '2026-09-05T04:00:00.000Z' } },
+      providers: { openrouter: { balanceUsd: 20, updatedAt: '2026-09-05T04:00:00.000Z' } },
+    }));
+    const incidents = new StalledLifecycleCorrelator().detect(repo, { repoDir: repo, now, tendCandidates: [stallCandidate(1328, PAIR_GATE, { taskId: 'HOK-2934' })] });
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].metadata.pairState, 'ready_for_rereview');
+    assert.match(incidents[0].operatorAction, /^Provider has recovered: retry the same reviewer on HOK-2934_c/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('pair with a missing arm is a low-confidence inspection', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-pair-missing-arm-'));
+  try {
+    writeHok2934Pair(repo);
+    writeWorkflowTasks(repo, { 'HOK-2934': { issue: 'HOK-2934', slug: 'hok-2934', worktree: repo, pr: '1328', challengePairId: 'HOK-2934' } });
+    const incidents = new StalledLifecycleCorrelator().detect(repo, { repoDir: repo, now, tendCandidates: [stallCandidate(1328, PAIR_GATE, { taskId: 'HOK-2934' })] });
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].rootCauseClass, 'inspection_required');
+    assert.equal(incidents[0].confidence, 'low');
+    assert.deepEqual(incidents[0].metadata.missingEvidence, ['pair_state']);
+    assertValidProposals(incidents);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
@@ -552,142 +903,26 @@ test('stalled lifecycle correlator clears when current comparison evidence progr
 test('stalled lifecycle correlator is deterministic for identical snapshots', () => {
   const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-deterministic-'));
   try {
-    writeStalledFixtureBase(repo, {
-      taskId: 'HOK-1324',
-      slug: 'deterministic-stale-base',
-      pr: 1324,
-      prHead: 'current-head',
-      prBase: 'current-base',
-      reviewedHead: 'old-head',
-      reviewedBase: 'old-base',
-      reviewedFileCount: 30,
-      currentFileCount: 10,
-      failureCategory: 'context-window-exceeded',
-    });
+    writeHok2934Pair(repo);
+    const pairTasks = JSON.parse(readFileSync(join(repo, '.wavemill', 'workflow-state.json'), 'utf-8')).tasks;
+    write1324Fixture(repo);
+    const tasks = JSON.parse(readFileSync(join(repo, '.wavemill', 'workflow-state.json'), 'utf-8')).tasks;
+    writeWorkflowTasks(repo, { ...pairTasks, ...tasks });
     const context = {
       repoDir: repo,
       now,
-      tendCandidates: [{
-        taskId: 'HOK-1324',
-        pr: 1324,
-        markerKind: 'merge-lane-idle-stall',
-        firstBlockedGate: 'review:not-ready',
-      }],
+      tendCandidates: [
+        stallCandidate(1324, 'ready-failed:not-ready', { taskId: 'HOK-1324' }),
+        stallCandidate(1328, PAIR_GATE, { taskId: 'HOK-2934' }),
+      ],
     };
-
+    const store = new IncidentStore(join(repo, '.wavemill', 'incidents'));
     const first = new StalledLifecycleCorrelator().detect(repo, context);
     const second = new StalledLifecycleCorrelator().detect(repo, context);
+    assert.deepEqual(first.map((incident) => incident.rootCauseClass), ['review_context_overflow_stale_base', 'provider_quota_exhaustion_blocking_review']);
     assert.deepEqual(first, second);
+    assert.deepEqual(first.map((incident) => store.computeFingerprint(incident)), second.map((incident) => store.computeFingerprint(incident)));
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
 });
-
-function writeStalledFixtureBase(repo: string, options: {
-  taskId: string;
-  slug: string;
-  pr: number;
-  prHead: string;
-  prBase: string;
-  reviewedHead: string;
-  reviewedBase: string;
-  reviewedFileCount: number;
-  currentFileCount: number;
-  failureCategory: string;
-}): void {
-  const featureDir = join(repo, 'features', options.slug);
-  mkdirSync(featureDir, { recursive: true });
-  mkdirSync(join(repo, '.wavemill', 'prs'), { recursive: true });
-  writeFileSync(join(featureDir, 'selected-task.json'), JSON.stringify({
-    taskId: options.taskId,
-    featureName: options.slug,
-  }));
-  writeFileSync(join(featureDir, '.review-result.json'), JSON.stringify({
-    status: 'not_ready',
-    failureCategory: options.failureCategory,
-    reviewedHead: options.reviewedHead,
-    reviewedBase: options.reviewedBase,
-    reviewedFileCount: options.reviewedFileCount,
-    reviewedAt: now.toISOString(),
-  }));
-  writeFileSync(join(repo, '.wavemill', 'workflow-state.json'), JSON.stringify({
-    tasks: {
-      [options.taskId]: {
-        issue: options.taskId,
-        slug: options.slug,
-        worktree: repo,
-        phase: 'ready',
-      },
-    },
-  }));
-  writeFileSync(join(repo, '.wavemill', 'prs', `${options.pr}.json`), JSON.stringify({
-    number: options.pr,
-    headRefOid: options.prHead,
-    baseRefOid: options.prBase,
-    headRefName: `task/${options.taskId}`,
-    baseRefName: 'auto/integration',
-    files: Array.from({ length: options.currentFileCount }, (_, index) => ({
-      path: `src/file-${index}.ts`,
-      additions: 1,
-      deletions: 0,
-    })),
-    labels: [{ name: 'wavemill' }],
-  }));
-}
-
-function writeChallengeQuotaFixture(repo: string): void {
-  writeStalledFixtureBase(repo, {
-    taskId: 'HOK-1328',
-    slug: 'challenge-provider-quota',
-    pr: 1328,
-    prHead: 'head-1328',
-    prBase: 'base-1328',
-    reviewedHead: 'head-1328',
-    reviewedBase: 'base-1328',
-    reviewedFileCount: 10,
-    currentFileCount: 10,
-    failureCategory: 'provider-credit-exhausted',
-  });
-  const workflowPath = join(repo, '.wavemill', 'workflow-state.json');
-  writeFileSync(workflowPath, JSON.stringify({
-    tasks: {
-      'HOK-1328': {
-        issue: 'HOK-1328',
-        slug: 'challenge-provider-quota',
-        worktree: repo,
-        phase: 'ready',
-        challengeRole: 'primary',
-        challengePairId: 'HOK-1328-pair',
-        comparisonState: 'manual_comparison_needed',
-      },
-      'HOK-1329': {
-        issue: 'HOK-1329',
-        slug: 'challenge-provider-quota-peer',
-        worktree: repo,
-        phase: 'ready',
-        challengeRole: 'challenger',
-        challengePairId: 'HOK-1328-pair',
-        comparisonState: 'manual_comparison_needed',
-      },
-    },
-  }));
-  writeFileSync(join(repo, '.wavemill', 'quota-state.json'), JSON.stringify({
-    models: {
-      'openrouter/provider-model': {
-        status: 'exhausted',
-        lastLimitErrorAt: now.toISOString(),
-      },
-    },
-  }));
-  mkdirSync(join(repo, '.wavemill', 'evals'), { recursive: true });
-  writeFileSync(join(repo, '.wavemill', 'evals', 'evals.jsonl'), `${JSON.stringify({
-    issueId: 'HOK-1328',
-    challengePairId: 'HOK-1328-pair',
-    timestamp: now.toISOString(),
-    fallbackEvent: {
-      outcome: 'all_exhausted',
-      task_type: 'review',
-      fallback_chain: [{ model: 'openrouter/provider-model', reason: 'quota' }],
-    },
-  })}\n`);
-}
