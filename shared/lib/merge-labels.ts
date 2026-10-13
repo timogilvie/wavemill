@@ -20,7 +20,8 @@ import {
   setWavemillBlocked,
   clearWavemillState,
 } from './pr-state-labels.ts';
-import { readFileSync } from 'node:fs';
+import { parseTaskId } from './task-identity.ts';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 export interface MergeLabelTaskView {
@@ -176,11 +177,12 @@ export interface ReconcileMergeLabelsDeps {
 export async function reconcileMergeLabelsForPr(
   pr: { number: number; labels: readonly string[]; headSha: string },
   deps: ReconcileMergeLabelsDeps,
-): Promise<{ decision: MergeLabelDecision | null; updatedLabels: string[] }> {
+): Promise<{ decision: MergeLabelDecision | null; updatedLabels: string[]; noTaskView?: boolean }> {
   const task = await deps.readTaskView(pr.number);
   if (!task) {
-    // PR is not a wavemill PR or task view not available
-    return { decision: null, updatedLabels: [...pr.labels] };
+    // PR is not a wavemill PR or task view not available - fail loudly
+    deps.logger.warn(`[merge-label] no task view for #${pr.number}`);
+    return { decision: { label: null, reason: 'no-task-view' }, updatedLabels: [...pr.labels], noTaskView: true };
   }
 
   const liveState = await deps.probeLiveState(pr.number);
@@ -252,34 +254,79 @@ export async function reconcileMergeLabelsForPr(
 /**
  * Build task view from workflow state for a given PR number.
  * Returns null if the PR is not tracked in workflow state.
+ *
+ * Real workflow-state tasks have `pr` (string), `slug`, `worktree` (abs path).
+ * `prNumber`, `headSha`, `featureDir` are never populated. We derive them here.
+ *
+ * @internal Exported for testing only
  */
-function findTaskInState(
+export function findTaskInState(
   prNumber: number,
   state: { tasks?: Record<string, unknown> },
+  repoDir: string,
 ): MergeLabelTaskView | null {
   const tasks = state.tasks ?? {};
-  for (const [_issueId, taskData] of Object.entries(tasks)) {
+  for (const [taskId, taskData] of Object.entries(tasks)) {
     if (typeof taskData !== 'object' || taskData === null) {
       continue;
     }
     const task = taskData as Record<string, unknown>;
-    // Type-check prNumber: must be a number, even in JSON-parsed data
-    if (typeof task.prNumber !== 'number' || task.prNumber !== prNumber) {
+
+    // Match on Number(task.pr ?? task.prNumber) === prNumber
+    const taskPrNumber = Number(task.pr ?? task.prNumber);
+    if (!Number.isFinite(taskPrNumber) || taskPrNumber !== prNumber || taskPrNumber <= 0) {
       continue;
     }
-    const headSha = typeof task.headSha === 'string' ? task.headSha : undefined;
-    const featureDir = typeof task.featureDir === 'string' ? task.featureDir : undefined;
-    // Return null if critical fields are missing (data corruption)
-    if (!headSha || !featureDir) {
-      return null;
+
+    // Derive featureDir from worktree + slug
+    const worktree = typeof task.worktree === 'string' ? task.worktree : '';
+    const slug = typeof task.slug === 'string' ? task.slug : '';
+    let featureDir = '';
+
+    if (worktree && slug) {
+      const featuresPath = join(worktree, 'features', slug);
+      const bugsPath = join(worktree, 'bugs', slug);
+      if (existsSync(featuresPath)) {
+        featureDir = featuresPath;
+      } else if (existsSync(bugsPath)) {
+        featureDir = bugsPath;
+      } else {
+        // Fall back to features/<slug> even if it doesn't exist yet
+        // so downstream reads ENOENT cleanly
+        featureDir = featuresPath;
+      }
     }
+
+    if (!featureDir) {
+      // Can't derive feature dir without worktree and slug
+      continue;
+    }
+
+    // Derive challengeRole from taskId using parseTaskId
+    const parsed = parseTaskId(taskId);
+    const challengeRole = parsed ? parsed.role : undefined;
+
+    // Derive headSha: try task.headSha, then ready artifact, then empty string
+    let headSha = typeof task.headSha === 'string' && task.headSha ? task.headSha : '';
+    if (!headSha) {
+      // Try reading from .ready-result.json artifacts.readyHeadSha synchronously
+      try {
+        const readyResultPath = join(featureDir, '.ready-result.json');
+        const readyResultContent = readFileSync(readyResultPath, 'utf-8');
+        const readyResult = JSON.parse(readyResultContent) as { artifacts?: { readyHeadSha?: string } };
+        if (readyResult.artifacts?.readyHeadSha) {
+          headSha = readyResult.artifacts.readyHeadSha;
+        }
+      } catch {
+        // Ready result not available, headSha stays empty
+      }
+    }
+
     return {
       prNumber,
       headSha,
       phase: typeof task.phase === 'string' ? task.phase : 'unknown',
-      challengeRole: task.challengeRole === 'primary' || task.challengeRole === 'challenger'
-        ? task.challengeRole
-        : undefined,
+      challengeRole,
       linearIssueId: typeof task.linearIssueId === 'string' ? task.linearIssueId : undefined,
       featureDir,
     };
@@ -295,7 +342,7 @@ export async function buildTaskView(
     const stateFile = join(repoDir, '.wavemill', 'workflow-state.json');
     const stateContent = readFileSync(stateFile, 'utf-8');
     const state = JSON.parse(stateContent) as { tasks?: Record<string, unknown> };
-    return findTaskInState(prNumber, state);
+    return findTaskInState(prNumber, state, repoDir);
   } catch {
     return null;
   }
@@ -324,14 +371,25 @@ export async function buildMergeLabelLiveState(
     try {
       const readyResult = await readStageResult('ready', featureDir);
       if (readyResult) {
-        const verdict =
-          readyResult.status === 'completed' ? 'ready' :
-          readyResult.status === 'running' ? 'running' :
-          readyResult.status === 'failed' ? 'not-ready' :
-          'errored';
+        // Read head from readyResult.sha (null) OR readyResult.artifacts.readyHeadSha
+        const readyHead = readyResult.sha ?? readyResult.artifacts?.readyHeadSha ?? '';
+
+        // Map status + artifacts.verdict to our verdict
+        let verdict: 'ready' | 'not-ready' | 'running' | 'errored';
+        if (readyResult.status === 'running') {
+          verdict = 'running';
+        } else if (readyResult.artifacts?.verdict === 'pass') {
+          verdict = 'ready';
+        } else if (readyResult.artifacts?.verdict === 'fail') {
+          verdict = 'not-ready';
+        } else {
+          // status completed/failed with no verdict, or other states
+          verdict = 'errored';
+        }
+
         readyAtHead = {
           verdict,
-          sha: readyResult.sha ?? '',
+          sha: readyHead,
         };
       }
     } catch {
@@ -375,9 +433,9 @@ export function createDefaultReconcilerDeps(
   workflowState: { tasks?: Record<string, unknown> },
 ): ReconcileMergeLabelsDeps {
   return {
-    readTaskView: async (prNumber) => findTaskInState(prNumber, workflowState),
+    readTaskView: async (prNumber) => findTaskInState(prNumber, workflowState, repoDir),
     probeLiveState: async (prNumber) => {
-      const task = findTaskInState(prNumber, workflowState);
+      const task = findTaskInState(prNumber, workflowState, repoDir);
       const prHeadSha = prHeadShaByNumber.get(prNumber);
       if (!task || !prHeadSha) {
         return {
@@ -488,14 +546,21 @@ export async function reconcileMergeLabels(
   }
 
   const deps = createDefaultReconcilerDeps(repoDir, prHeadShaByNumber, workflowState);
+  const noTaskViewPrs: number[] = [];
+
   for (const pr of prs) {
     try {
       const result = await reconcileMergeLabelsForPr(pr, deps);
       // Update PR labels in-place so downstream code sees reconciled truth
       pr.labels = result.updatedLabels;
 
+      // Track PRs with no task view
+      if (result.noTaskView) {
+        noTaskViewPrs.push(pr.number);
+      }
+
       // Also reconcile handoff if needed
-      const task = findTaskInState(pr.number, workflowState);
+      const task = findTaskInState(pr.number, workflowState, repoDir);
       if (task) {
         const liveState = await buildMergeLabelLiveState(pr.number, pr.headSha, task.featureDir, repoDir);
         await reconcileHandoffForPr(pr, task.featureDir, liveState?.readyAtHead, deps.logger);
@@ -503,5 +568,11 @@ export async function reconcileMergeLabels(
     } catch (error) {
       deps.logger.warn(`Failed to reconcile labels for PR ${pr.number}`, { error: String(error) });
     }
+  }
+
+  // Emit aggregated warning for PRs with no task view
+  if (noTaskViewPrs.length > 0) {
+    const prList = noTaskViewPrs.map(n => `#${n}`).join(', ');
+    deps.logger.warn(`[merge-label] no task view for PRs: ${prList}`);
   }
 }

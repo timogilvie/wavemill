@@ -12,6 +12,7 @@ import { runBuildCheck, type BuildCheckConfig } from './checks.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
 import { recordMillLabelWrite } from './label-write-ledger.ts';
 import { prLabelKey, shadowRecordSideEffect, type PrLabelAction } from './side-effect-ledger.ts';
+import { cachedNameWithOwner } from './session-gh-cache.ts';
 
 /**
  * Options for listing pull requests.
@@ -862,6 +863,9 @@ function wrapIssueLabelError(
  */
 export function resolveOwnerRepo(repoDir?: string): string | undefined {
   const cwd = repoDir || process.cwd();
+  // HOK-3206: nameWithOwner is a session constant cached by the mill.
+  const cached = cachedNameWithOwner();
+  if (cached) return cached;
 
   try {
     const nwo = execShellCommand(

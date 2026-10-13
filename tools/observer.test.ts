@@ -26,7 +26,7 @@ import {
   writeServiceHeartbeat,
 } from './observer.ts';
 import { IncidentStore } from '../shared/lib/wavemill-incident-store.ts';
-import { createIncidentDraft } from '../shared/lib/wavemill-incident-model.ts';
+import { createIncidentDraft, validateRemediationProposal } from '../shared/lib/wavemill-incident-model.ts';
 
 function defaultObserverOptions() {
   return {
@@ -2581,12 +2581,9 @@ test('incident reconciliation correlates stalled Tend markers into typed remedia
     assert.ok(incident);
     assert.equal(incident.taskId, 'HOK-1324');
     assert.equal(incident.metadata.proposal?.kind, 'refresh_base_and_rereview');
-    assert.deepEqual(incident.metadata.proposal?.forbiddenActions, [
-      'add_ready_label',
-      'merge',
-      'destructive_git',
-      'delete_branch',
-    ]);
+    for (const action of ['add_ready_label', 'merge', 'destructive_git', 'delete_branch'] as const) {
+      assert.ok(incident.metadata.proposal?.forbiddenActions.includes(action), action);
+    }
     assert.ok(first.findings.some((finding) => finding.evidence.includes('rootCause=review_context_overflow_stale_base')));
 
     const second = await reconcileIncidents(snapshot, defaultObserverOptions());
@@ -2599,6 +2596,287 @@ test('incident reconciliation correlates stalled Tend markers into typed remedia
     // must therefore accrue a missed cycle and eventually auto-resolve.
     assert.equal(stalled[0].metadata.missedCycles, 1);
     assert.equal(second.incidents?.filter((item) => item.rootCauseClass === 'review_context_overflow_stale_base').length, 1);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+// --- HOK-2595 reopened: stalled Tend candidate correlation end-to-end ---
+
+const OBS_SHA = (char: string) => char.repeat(40);
+
+function writeObserverReview(featureDir: string, review: {
+  status?: string;
+  verdict?: string;
+  failureCategory?: string;
+  reviewHeadSha?: string;
+  finishedAt?: string;
+  diffBase?: Record<string, unknown>;
+}): void {
+  mkdirSync(featureDir, { recursive: true });
+  writeFileSync(join(featureDir, '.review-result.json'), JSON.stringify({
+    stage: 'review',
+    status: review.status ?? 'failed',
+    startedAt: '2026-09-04T09:00:00.000Z',
+    finishedAt: review.finishedAt ?? '2026-09-04T09:30:00.000Z',
+    agent: 'native-openrouter',
+    model: 'kimi-k2',
+    notes: 'n',
+    artifacts: {
+      type: 'review',
+      verdict: review.verdict ?? 'not_ready',
+      ...(review.failureCategory ? { failureCategory: review.failureCategory } : {}),
+      ...(review.reviewHeadSha ? { reviewHeadSha: review.reviewHeadSha } : {}),
+      ...(review.diffBase ? { diagnostics: { metadata: { diffBase: review.diffBase } } } : {}),
+    },
+  }));
+}
+
+function writeObserverPr(repoDir: string, pr: number, head: string, base: string, changedFiles: number, labels: string[] = ['wavemill']): void {
+  mkdirSync(join(repoDir, '.wavemill', 'prs'), { recursive: true });
+  writeFileSync(join(repoDir, '.wavemill', 'prs', `${pr}.json`), JSON.stringify({
+    number: pr,
+    headRefOid: head,
+    baseRefOid: base,
+    changedFiles,
+    labels: labels.map((name) => ({ name })),
+  }));
+}
+
+function writeBlockedLane(repoDir: string, heartbeatAt: string, lane: Array<{ pr: number; headBranch: string; gate: string; labels?: string[] }>): void {
+  writeFileSync(join(repoDir, '.wavemill', 'backstage-health.json'), JSON.stringify({
+    services: {
+      tend: {
+        status: 'healthy',
+        laneCondition: 'idle-blocked-stall',
+        progressState: 'stalled',
+        heartbeatAt,
+        blockedStreak: 140,
+        blockedLane: lane.map((entry) => ({ labels: ['wavemill', 'wm:blocked'], ...entry })),
+      },
+    },
+  }));
+}
+
+/** #1324 (stale local base, 84 reviewed vs 12 authoritative) and #1325 (current scope). */
+function stalledReviewFixture(): { repoDir: string; snapshot: any; tasks: any[] } {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-hok2595-'));
+  mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+  writePermissiveSchema(repoDir);
+  const tasks = [
+    { issue: 'HOK-1324', slug: 'hok-1324', worktree: repoDir, phase: 'ready', status: 'running', pr: '#1324', branch: 'task/stale-review-1324' },
+    { issue: 'HOK-1325', slug: 'hok-1325', worktree: repoDir, phase: 'ready', status: 'running', pr: '#1325', branch: 'task/current-review-1325' },
+  ];
+  writeFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), JSON.stringify({
+    tasks: Object.fromEntries(tasks.map((task) => [task.issue, task])),
+  }));
+  writeObserverReview(join(repoDir, 'features', 'hok-1324'), {
+    failureCategory: 'native-context-window-exceeded',
+    reviewHeadSha: OBS_SHA('a'),
+    diffBase: { ref: 'main', kind: 'local', fetch: 'failed', reviewedBase: OBS_SHA('0'), mergeBaseSha: OBS_SHA('0'), reviewedHead: OBS_SHA('a'), reviewedFileCount: 84 },
+  });
+  writeObserverReview(join(repoDir, 'features', 'hok-1325'), {
+    failureCategory: 'native-context-window-exceeded',
+    reviewHeadSha: OBS_SHA('c'),
+    diffBase: { ref: 'origin/auto/integration', kind: 'remote', fetch: 'ok', reviewedBase: OBS_SHA('d'), mergeBaseSha: OBS_SHA('d'), reviewedHead: OBS_SHA('c'), reviewedFileCount: 30 },
+  });
+  writeObserverPr(repoDir, 1324, OBS_SHA('a'), OBS_SHA('b'), 12, ['wavemill', 'wm:blocked']);
+  writeObserverPr(repoDir, 1325, OBS_SHA('c'), OBS_SHA('d'), 30, ['wavemill', 'wm:blocked']);
+  writeBlockedLane(repoDir, '2026-09-04T11:59:00.000Z', [
+    { pr: 1324, headBranch: 'task/stale-review-1324', gate: 'missing-metadata' },
+    { pr: 1325, headBranch: 'task/current-review-1325', gate: 'ready-failed:not-ready' },
+  ]);
+  const genericFinding = (issue: string) => ({
+    id: `stale-active-task-live-process-wavemill-${issue}`,
+    severity: 'high' as const,
+    category: 'stuck' as const,
+    confidence: 'medium' as const,
+    session: 'wavemill',
+    repoDir,
+    issue,
+    title: `${issue} has live pane or process residue but has not progressed in ready`,
+    evidence: ['phase=ready'],
+    recommendation: 'Inspect the task pane and hook state. If the agent is parked at a prompt or waiting after reporting completion, send a narrow recovery instruction; stop a child process only when it is conclusively wedged.',
+  });
+  const snapshot = {
+    timestamp: '2026-09-04T12:00:00.000Z',
+    sessions: ['wavemill'],
+    panes: [],
+    processes: [],
+    repos: [{ session: 'wavemill', repoDir, workflowStatePath: join(repoDir, '.wavemill', 'workflow-state.json'), tasks }],
+    findings: [genericFinding('HOK-1324'), genericFinding('HOK-1325')],
+  };
+  return { repoDir, snapshot, tasks };
+}
+
+test('HOK-2595: #1324/#1325 via the tend blockedLane correlate stale review scope, not a parked prompt', async () => {
+  const { repoDir, snapshot } = stalledReviewFixture();
+  try {
+    const result = await reconcileIncidents(snapshot, defaultObserverOptions());
+    assert.equal(result.schemaVersion, 'observer-snapshot/1');
+
+    const staleBase = result.incidents?.find((item) => item.rootCauseClass === 'review_context_overflow_stale_base');
+    assert.ok(staleBase, 'expected a stale-base incident for #1324');
+    assert.equal(staleBase.taskId, 'HOK-1324');
+    assert.equal(staleBase.metadata.tendGate, 'missing-metadata');
+    assert.equal(staleBase.metadata.recordedBase, OBS_SHA('0'));
+    assert.equal(staleBase.metadata.currentBase, OBS_SHA('b'));
+    assert.equal(staleBase.metadata.reviewedFileCount, 84);
+    assert.equal(staleBase.metadata.authoritativeFileCount, 12);
+
+    // #1325 reviewed the current scope: inspection, not a stale-base claim.
+    const inspection = result.incidents?.find((item) => item.taskId === 'HOK-1325' && item.rootCauseClass === 'inspection_required');
+    assert.equal(inspection?.rootCauseClass, 'inspection_required');
+    assert.equal(inspection?.confidence, 'low');
+
+    // The generic parked-pane finding is grouped under the causal incident and
+    // carries its next safe action instead of the parked-prompt advice.
+    const generic1324 = result.findings.find((finding) => finding.id === 'stale-active-task-live-process-wavemill-HOK-1324');
+    assert.equal(generic1324?.groupedUnder, `incident-${staleBase.fingerprint}`);
+    assert.ok(generic1324?.evidence.includes('supersededBy=review_context_overflow_stale_base'));
+    assert.match(generic1324?.recommendation ?? '', /^Refresh authoritative base, invalidate stale review evidence, rerun review\./);
+    assert.doesNotMatch(generic1324?.recommendation ?? '', /parked at a prompt|wedged/);
+    assert.doesNotMatch((generic1324?.recommendation ?? '').replace(/Do not add wm:ready[^.]*\./, ''), /wm:ready|merge/i);
+    // No specific chain for #1325, so its generic finding is untouched.
+    const generic1325 = result.findings.find((finding) => finding.id === 'stale-active-task-live-process-wavemill-HOK-1325');
+    assert.equal(generic1325?.groupedUnder, undefined);
+    assert.match(generic1325?.recommendation ?? '', /parked at a prompt/);
+
+    // The incident finding carries the causal chain and proposal identity.
+    const incidentFinding = result.findings.find((finding) => finding.id === `incident-${staleBase.fingerprint}`);
+    assert.ok(incidentFinding?.evidence.some((line) => line.startsWith('causalChain=context_window_exceeded → stale_review_scope')));
+    assert.ok(incidentFinding?.evidence.includes('proposal=refresh_base_and_rereview@1.2'));
+
+    // Machine-readable, schema-versioned proposals an executor can validate.
+    const json = JSON.parse(JSON.stringify(result));
+    assert.equal(json.schemaVersion, 'observer-snapshot/1');
+    assert.equal(json.remediationProposalErrors, 0);
+    const proposal = json.remediationProposals.find((item: any) => item.rootCauseClass === 'review_context_overflow_stale_base');
+    assert.ok(proposal);
+    assert.equal(proposal.issue, 'HOK-1324');
+    assert.equal(validateRemediationProposal(proposal.proposal).ok, true);
+    assert.equal(proposal.proposal.target.prNumber, 1324);
+    assert.ok(!proposal.proposal.allowedActions.includes('add_ready_label'));
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-2595: repeated polls dedupe into one incident with growing occurrence history', async () => {
+  const { repoDir, snapshot } = stalledReviewFixture();
+  try {
+    await reconcileIncidents(snapshot, defaultObserverOptions());
+    writeBlockedLane(repoDir, '2026-09-04T12:04:00.000Z', [{ pr: 1324, headBranch: 'task/stale-review-1324', gate: 'missing-metadata' }]);
+    await reconcileIncidents({ ...snapshot, timestamp: '2026-09-04T12:05:00.000Z', findings: [] }, defaultObserverOptions());
+    const stored = (await new IncidentStore(join(repoDir, '.wavemill', 'incidents')).getIncidents())
+      .filter((item) => item.rootCauseClass === 'review_context_overflow_stale_base');
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].occurrenceCount, 2);
+    assert.equal(stored[0].metadata.missedCycles, 0);
+    const tendObservations = stored[0].evidence.filter((item) => item.type === 'tend_lane');
+    assert.deepEqual(tendObservations.map((item) => item.timestamp), ['2026-09-04T12:00:00.000Z', '2026-09-04T12:05:00.000Z']);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-2595: a new review attempt resolves the incident through its recovery predicate', async () => {
+  const { repoDir, snapshot } = stalledReviewFixture();
+  try {
+    const first = await reconcileIncidents(snapshot, defaultObserverOptions());
+    const staleBase = first.incidents?.find((item) => item.rootCauseClass === 'review_context_overflow_stale_base');
+    assert.ok(staleBase);
+
+    // The operator refreshed the base and reran review: now ready on the PR scope.
+    writeObserverReview(join(repoDir, 'features', 'hok-1324'), {
+      status: 'completed',
+      verdict: 'ready',
+      reviewHeadSha: OBS_SHA('a'),
+      finishedAt: '2026-09-04T12:10:00.000Z',
+      diffBase: { ref: 'origin/auto/integration', kind: 'remote', fetch: 'ok', reviewedBase: OBS_SHA('b'), reviewedHead: OBS_SHA('a'), reviewedFileCount: 12 },
+    });
+    const second = await reconcileIncidents({ ...snapshot, timestamp: '2026-09-04T12:11:00.000Z', findings: [] }, defaultObserverOptions());
+    assert.deepEqual(second.recoveredIncidents?.map((item) => [item.fingerprint, item.reason]), [
+      [staleBase.fingerprint, 'recovery_predicate:review_now_ready'],
+    ]);
+    const record = await new IncidentStore(join(repoDir, '.wavemill', 'incidents')).getIncident(staleBase.fingerprint);
+    assert.equal(record?.lifecycle, 'resolved');
+    assert.equal(record?.metadata.resolution?.action, 'auto_resolved');
+    assert.equal(record?.metadata.resolution?.reason, 'recovery_predicate:review_now_ready');
+    assert.ok(!(second.remediationProposals ?? []).some((item) => item.incidentFingerprint === staleBase.fingerprint));
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-2595: the HOK-2934 pair produces one incident naming the failed challenger', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-hok2934-'));
+  try {
+    mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+    writePermissiveSchema(repoDir);
+    const tasks = [
+      { issue: 'HOK-2934', slug: 'hok-2934', worktree: repoDir, phase: 'ready', status: 'running', pr: '#1328', branch: 'task/pair-primary', challengePairId: 'HOK-2934' },
+      { issue: 'HOK-2934_c', slug: 'hok-2934-c', worktree: repoDir, phase: 'ready', status: 'running', pr: '#1329', branch: 'task/pair-challenger', challengePairId: 'HOK-2934', challengeRole: 'challenger' },
+    ];
+    writeFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), JSON.stringify({ tasks: Object.fromEntries(tasks.map((task) => [task.issue, task])) }));
+    writeObserverReview(join(repoDir, 'features', 'hok-2934'), { status: 'completed', verdict: 'ready', reviewHeadSha: OBS_SHA('1') });
+    const challengerDir = join(repoDir, 'features', 'hok-2934-c');
+    writeObserverReview(challengerDir, { status: 'failed', verdict: 'error', failureCategory: 'native-review-failed', reviewHeadSha: OBS_SHA('2') });
+    writeFileSync(join(challengerDir, '.review-failure-envelope.json'), JSON.stringify({
+      schemaVersion: '1.0', stage: 'review', cause: 'provider-credit-exhausted', provider: 'openrouter', model: 'kimi-k2', agent: 'native-openrouter',
+      evidence: { source: 'native-loop', detail: '402' }, createdAt: '2026-09-05T01:00:00.000Z',
+    }));
+    writeObserverPr(repoDir, 1328, OBS_SHA('1'), OBS_SHA('9'), 6, ['wavemill', 'wm:ready']);
+    writeObserverPr(repoDir, 1329, OBS_SHA('2'), OBS_SHA('9'), 7);
+    writeBlockedLane(repoDir, '2026-09-05T11:59:00.000Z', [
+      { pr: 1328, headBranch: 'task/pair-primary', gate: 'challenge:pair-unresolved:no-comparison', labels: ['wavemill', 'wm:ready'] },
+      { pr: 1329, headBranch: 'task/pair-challenger', gate: 'challenge:pair-unresolved:no-comparison' },
+    ]);
+    const snapshot = {
+      timestamp: '2026-09-05T12:00:00.000Z',
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{ session: 'wavemill', repoDir, workflowStatePath: join(repoDir, '.wavemill', 'workflow-state.json'), tasks }],
+      findings: [],
+    };
+    const result = await reconcileIncidents(snapshot, defaultObserverOptions());
+    const pairIncidents = (result.incidents ?? []).filter((item) => item.metadata.pairId === 'HOK-2934');
+    assert.equal(pairIncidents.length, 1);
+    assert.equal(pairIncidents[0].rootCauseClass, 'provider_quota_exhaustion_blocking_review');
+    assert.equal(pairIncidents[0].metadata.failedSide, 'challenger');
+    assert.equal(pairIncidents[0].metadata.pairState, 'blocked_on_provider_recovery');
+    const proposal = result.remediationProposals?.find((item) => item.incidentFingerprint === pairIncidents[0].fingerprint);
+    assert.ok(proposal?.proposal.forbiddenActions.includes('synthesize_winner'));
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-2595: malformed tend health and review artifacts degrade without crashing', async () => {
+  const { repoDir, snapshot } = stalledReviewFixture();
+  try {
+    writeFileSync(join(repoDir, '.wavemill', 'backstage-health.json'), '{not json');
+    writeFileSync(join(repoDir, 'features', 'hok-1324', '.review-result.json'), '{truncated');
+    const markerFinding = {
+      id: 'marker-merge-lane/idle-stall/#1324-merge-lane-idle-stall',
+      severity: 'urgent' as const,
+      category: 'warning' as const,
+      confidence: 'high' as const,
+      session: 'wavemill',
+      repoDir,
+      title: 'Merge lane stalled',
+      evidence: ['markerKind=merge-lane-idle-stall', 'firstBlockedPr=1324', 'firstBlockedGate=missing-metadata'],
+      recommendation: 'Inspect the named gate.',
+    };
+    const result = await reconcileIncidents({ ...snapshot, findings: [...snapshot.findings, markerFinding] }, defaultObserverOptions());
+    const inspection = result.incidents?.find((item) => item.taskId === 'HOK-1324' && item.rootCauseClass === 'inspection_required');
+    assert.equal(inspection?.rootCauseClass, 'inspection_required');
+    assert.deepEqual(inspection?.metadata.missingEvidence, ['review_result']);
+    // No specific chain, so the generic finding keeps firing unchanged.
+    const generic = result.findings.find((finding) => finding.id === 'stale-active-task-live-process-wavemill-HOK-1324');
+    assert.equal(generic?.groupedUnder, undefined);
+    assert.ok(!result.findings.some((finding) => finding.id.startsWith('incident-store-error-') || finding.id.startsWith('incident-recovery-error-')));
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }

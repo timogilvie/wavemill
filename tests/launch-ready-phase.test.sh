@@ -72,6 +72,11 @@ extract_function "$MONITOR_SCRIPT_FILE" "_write_cross_pr_diagnostic" >> "$LAUNCH
 extract_function "$MONITOR_SCRIPT_FILE" "write_cross_pr_guard_ready_result" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "clear_cross_pr_guard_ready_evidence" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "cross_pr_revert_gate_allows_merge" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "cross_pr_revert_gate_apply_result" >> "$LAUNCH_FUNC_FILE"
+# HOK-3206: launch_ready_phase reaches the guard through the async gate; these
+# cases pin the inline contract via WAVEMILL_SYNC_READY_CHECKS=1 (the async
+# path is covered by tests/cross-pr-revert-job.test.sh).
+cat "$REPO_DIR/shared/lib/monitor-async-jobs.sh" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "write_transient_ready_attention_file" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_count" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "clear_failed_ready_recheck_state" >> "$LAUNCH_FUNC_FILE"
@@ -161,6 +166,7 @@ run_launch_case() {
     REPO_DIR="$CASE_DIR/repo"
     AGENT_CMD="codex"
     READY_TRANSIENT_MAX_ATTEMPTS=6
+    export WAVEMILL_SYNC_READY_CHECKS=1
     mkdir -p "$TOOLS_DIR" "$REPO_DIR"
 
     STATE_DIR="$CASE_DIR/feature/ready"

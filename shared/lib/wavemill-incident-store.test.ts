@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -573,6 +573,64 @@ test('getLifecyclePendingIncidents returns only linked records with an unsynced 
     const reloaded = await store.getIncident(rec.fingerprint);
     assert.equal(reloaded?.metadata.lifecycleSync?.observerClosedIssue, true);
     assert.equal(reloaded?.metadata.lifecycleSync?.commentDelivered, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a malformed index is quarantined and the next upsert succeeds', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incident-store-malformed-'));
+  try {
+    const indexPath = join(dir, 'index.json');
+    writeFileSync(indexPath, '{"truncated": ');
+    const store = new IncidentStore(dir);
+    const result = await store.upsertDetailed(incident());
+    assert.equal(result.freshEvent, true);
+    assert.equal(result.record.occurrenceCount, 1);
+    const quarantined = readdirSync(dir).filter((name) => name.startsWith('index.json.malformed.'));
+    assert.equal(quarantined.length, 1);
+    assert.equal(readFileSync(join(dir, quarantined[0]), 'utf-8'), '{"truncated": ');
+    const index = JSON.parse(readFileSync(indexPath, 'utf-8'));
+    assert.deepEqual(Object.keys(index), [result.record.fingerprint]);
+    // Restart-safe: a fresh store instance reads the recovered index.
+    assert.equal((await new IncidentStore(dir).getIncidents()).length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a distinct event refreshes live correlation metadata but keeps first-event lineage', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incident-store-live-metadata-'));
+  try {
+    const store = new IncidentStore(dir);
+    await store.upsert(incidentEvent('2026-08-03T12:00:00.000Z', {
+      metadata: { pairState: 'blocked_on_provider_recovery', jobId: 'job-first', authoritativeFailureAt: '2026-08-03T12:00:00.000Z' },
+    }));
+    const second = await store.upsert(incidentEvent('2026-08-03T13:00:00.000Z', {
+      metadata: { pairState: 'ready_for_rereview', jobId: 'job-second', authoritativeFailureAt: '2026-08-03T13:00:00.000Z' },
+    }));
+    assert.equal(second.occurrenceCount, 2);
+    assert.equal(second.metadata.pairState, 'ready_for_rereview');
+    assert.equal(second.metadata.jobId, 'job-first');
+    assert.equal(second.metadata.authoritativeFailureAt, '2026-08-03T12:00:00.000Z');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('autoResolve records auto_resolved with a reason and never reopens closed records', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incident-store-auto-resolve-'));
+  try {
+    const store = new IncidentStore(dir);
+    const record = await store.upsert(incident());
+    const resolved = await store.autoResolve(record.fingerprint, { reason: 'recovery_predicate:review_now_ready' });
+    assert.equal(resolved?.lifecycle, 'resolved');
+    assert.equal(resolved?.metadata.resolution?.action, 'auto_resolved');
+    assert.equal(resolved?.metadata.resolution?.reason, 'recovery_predicate:review_now_ready');
+    await store.archive(record.fingerprint, { reason: 'operator' });
+    assert.equal(await store.autoResolve(record.fingerprint, { reason: 'again' }), null);
+    assert.equal((await store.getIncident(record.fingerprint))?.lifecycle, 'archived');
+    assert.equal(await store.autoResolve('missing'), null);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

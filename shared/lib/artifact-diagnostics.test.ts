@@ -10,6 +10,8 @@ import {
   readEvalFallbackEventsDiagnostic,
   readPrIdentity,
   readQuotaSnapshotDiagnostic,
+  readReadyResultDiagnostic,
+  readReviewFailureEnvelope,
   readReviewResultDiagnostic,
 } from './artifact-diagnostics.ts';
 
@@ -658,5 +660,182 @@ describe('evalRecordMatchesTaskPair', () => {
     assert.equal(evalRecordMatchesTaskPair({ challengePairId: 'HOK-42_c', challengeSide: 'challenger' }, 'HOK-42_c'), false);
     assert.equal(evalRecordMatchesTaskPair(pair('primary'), null), false);
     assert.equal(evalRecordMatchesTaskPair(pair('primary'), 'not-a-task'), false);
+  });
+});
+
+describe('HOK-2595 stage-artifact readers match the real writers', () => {
+  const tempDirs: string[] = [];
+  after(() => {
+    for (const d of tempDirs) rmSync(d, { recursive: true, force: true });
+  });
+
+  function featureDir(): string {
+    const repoDir = makeTempRepo();
+    tempDirs.push(repoDir);
+    return makeFeatureDir(repoDir, 'real-shape');
+  }
+
+  it('reads verdict, category, head and diffBase scope from the nested StageResult shape', () => {
+    const dir = featureDir();
+    writeFileSync(join(dir, '.review-result.json'), JSON.stringify({
+      stage: 'review',
+      status: 'failed',
+      startedAt: '2026-09-04T10:00:00.000Z',
+      finishedAt: '2026-09-04T10:20:00.000Z',
+      agent: 'native-openrouter',
+      model: 'kimi-k2',
+      executedModel: 'moonshotai/kimi-k2',
+      notes: 'Native review flow failed after 0 findings',
+      artifacts: {
+        type: 'review',
+        prNumber: 1324,
+        verdict: 'not_ready',
+        failureCategory: 'native-context-window-exceeded',
+        reviewHeadSha: 'h'.repeat(40),
+        diagnostics: {
+          reviewToolError: 'context window exceeded',
+          metadata: {
+            diffBase: {
+              requestedRef: 'auto/integration',
+              ref: 'auto/integration',
+              kind: 'local',
+              fetch: 'failed',
+              reviewedBase: 's'.repeat(40),
+              mergeBaseSha: 'm'.repeat(40),
+              reviewedHead: 'h'.repeat(40),
+              reviewedFileCount: 84,
+            },
+          },
+        },
+        review: { status: 'failed', verdict: 'not_ready', failureCategory: 'native-context-window-exceeded' },
+      },
+    }));
+
+    const review = readReviewResultDiagnostic(dir);
+    assert.ok(review);
+    assert.equal(review.verdict, 'not_ready');
+    assert.equal(review.stageStatus, 'failed');
+    assert.equal(review.failureCategory, 'native-context-window-exceeded');
+    assert.equal(review.reviewedHead, 'h'.repeat(40));
+    assert.equal(review.reviewedBase, 's'.repeat(40));
+    assert.equal(review.reviewedMergeBase, 'm'.repeat(40));
+    assert.equal(review.diffBaseKind, 'local');
+    assert.equal(review.diffBaseFetch, 'failed');
+    assert.equal(review.reviewedFileCount, 84);
+    assert.equal(review.prNumber, 1324);
+    assert.equal(review.finishedAt, '2026-09-04T10:20:00.000Z');
+    assert.equal(review.executedReviewer, 'moonshotai/kimi-k2');
+  });
+
+  it('never reports the stage status as the verdict', () => {
+    const dir = featureDir();
+    writeFileSync(join(dir, '.review-result.json'), JSON.stringify({ stage: 'review', status: 'failed', artifacts: { type: 'review' } }));
+    const review = readReviewResultDiagnostic(dir);
+    assert.equal(review?.verdict, undefined);
+    assert.equal(review?.stageStatus, 'failed');
+  });
+
+  it('falls back to reviewIterations for head and file count', () => {
+    const dir = featureDir();
+    writeFileSync(join(dir, '.review-result.json'), JSON.stringify({
+      stage: 'review',
+      status: 'completed',
+      artifacts: {
+        type: 'review',
+        verdict: 'ready',
+        reviewIterations: [
+          { iteration: 1, recordedAt: 'x', findings: [], headSha: 'a'.repeat(40), reviewerDelta: { filesChanged: ['a.ts'] } },
+          { iteration: 2, recordedAt: 'y', findings: [], headSha: 'b'.repeat(40), reviewerDelta: { filesChanged: ['a.ts', 'b.ts'] } },
+        ],
+      },
+    }));
+    const review = readReviewResultDiagnostic(dir);
+    assert.equal(review?.reviewedHead, 'b'.repeat(40));
+    assert.equal(review?.reviewedFileCount, 2);
+  });
+
+  it('reads a valid review failure envelope without transcript content', () => {
+    const dir = featureDir();
+    writeFileSync(join(dir, '.review-failure-envelope.json'), JSON.stringify({
+      schemaVersion: '1.0',
+      stage: 'review',
+      cause: 'provider-credit-exhausted',
+      providerErrorKind: 'insufficient_credits',
+      provider: 'openrouter',
+      model: 'kimi-k2',
+      agent: 'native-openrouter',
+      evidence: { source: 'native-loop', detail: 'SECRET PROMPT TEXT', transcriptPath: '/abs/path/to/session-123.jsonl' },
+      createdAt: '2026-09-05T01:00:00.000Z',
+    }));
+    const envelope = readReviewFailureEnvelope(dir);
+    assert.ok(envelope);
+    assert.equal(envelope.cause, 'provider-credit-exhausted');
+    assert.equal(envelope.providerErrorKind, 'insufficient_credits');
+    assert.equal(envelope.transcriptBasename, 'session-123.jsonl');
+    assert.doesNotMatch(JSON.stringify(envelope), /SECRET PROMPT TEXT|\/abs\/path/);
+  });
+
+  it('degrades a malformed or invalid envelope to an error and a missing one to null', () => {
+    const dir = featureDir();
+    assert.equal(readReviewFailureEnvelope(dir), null);
+    writeFileSync(join(dir, '.review-failure-envelope.json'), '{not json');
+    assert.ok(readReviewFailureEnvelope(dir)?.error);
+    writeFileSync(join(dir, '.review-failure-envelope.json'), JSON.stringify({ schemaVersion: '1.0', stage: 'review', cause: 'made-up' }));
+    const invalid = readReviewFailureEnvelope(dir);
+    assert.ok(invalid?.error);
+    assert.equal(invalid?.cause, undefined);
+  });
+
+  it('reads ready result identity fields', () => {
+    const dir = featureDir();
+    writeFileSync(join(dir, '.ready-result.json'), JSON.stringify({
+      stage: 'ready',
+      status: 'failed',
+      failureReason: 'review verdict not_ready',
+      finishedAt: '2026-09-04T11:00:00.000Z',
+      artifacts: { type: 'ready', verdict: 'fail', readyHeadSha: 'h1', readyBaseSha: 'b1', targetBaseSha: 't1', queueState: 'ready-stale' },
+    }));
+    assert.deepEqual(readReadyResultDiagnostic(dir), {
+      stageStatus: 'failed',
+      verdict: 'fail',
+      readyHeadSha: 'h1',
+      readyBaseSha: 'b1',
+      staleBaseSha: undefined,
+      targetBaseSha: 't1',
+      queueState: 'ready-stale',
+      failureReason: 'review verdict not_ready',
+      finishedAt: '2026-09-04T11:00:00.000Z',
+      source: join(dir, '.ready-result.json'),
+    });
+    writeFileSync(join(dir, '.ready-result.json'), '[]');
+    assert.equal(readReadyResultDiagnostic(dir), null);
+  });
+
+  it('prefers GitHub changedFiles over the capped files list', () => {
+    const repoDir = makeTempRepo();
+    tempDirs.push(repoDir);
+    mkdirSync(join(repoDir, '.wavemill', 'prs'), { recursive: true });
+    writeFileSync(join(repoDir, '.wavemill', 'prs', '77.json'), JSON.stringify({
+      number: 77,
+      changedFiles: 140,
+      files: Array.from({ length: 100 }, (_, index) => ({ path: `f${index}.ts` })),
+      labels: [],
+    }));
+    assert.equal(readPrIdentity(77, repoDir)?.changedFileCount, 140);
+    writeFileSync(join(repoDir, '.wavemill', 'prs', '78.json'), JSON.stringify({ number: 78, labels: [] }));
+    assert.equal(readPrIdentity(78, repoDir)?.changedFileCount, undefined);
+  });
+
+  it('exposes provider balance, refresh time and per-model health', () => {
+    const repoDir = makeTempRepo();
+    tempDirs.push(repoDir);
+    writeFileSync(join(repoDir, '.wavemill', 'quota-state.json'), JSON.stringify({
+      models: { 'kimi-k2': { status: 'healthy', lastSuccessAt: '2026-09-05T03:00:00.000Z' } },
+      providers: { openrouter: { balanceUsd: 12.5, updatedAt: '2026-09-05T02:00:00.000Z' } },
+    }));
+    const quota = readQuotaSnapshotDiagnostic(repoDir);
+    assert.equal(quota?.openrouterBalanceUsd, 12.5);
+    assert.equal(quota?.providersUpdatedAt, '2026-09-05T02:00:00.000Z');
+    assert.deepEqual(quota?.modelHealth['kimi-k2'], { status: 'healthy', lastSuccessAt: '2026-09-05T03:00:00.000Z', lastLimitErrorAt: undefined });
   });
 });
