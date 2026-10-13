@@ -58,6 +58,27 @@ export function computeStepInputsHash(input: StepInputs): string {
   return createHash('sha256').update(payload).digest('hex');
 }
 
+const DEFAULT_STEP_TTL_MINUTES: Readonly<Record<string, number>> = { review: 15, ready: 15, eval: 60 };
+const FALLBACK_STEP_TTL_MINUTES = 30;
+
+/**
+ * Minutes a step may run before the Ledger F recovery loop (HOK-3185)
+ * inspects it. Per-kind override `WAVEMILL_LEDGER_STEP_TTL_<KIND>_MINUTES`,
+ * then `WAVEMILL_LEDGER_STEP_TTL_MINUTES`.
+ */
+export function stepTtlMinutes(kind: string, env: NodeJS.ProcessEnv = process.env): number {
+  for (const raw of [env[`WAVEMILL_LEDGER_STEP_TTL_${kind.toUpperCase()}_MINUTES`], env.WAVEMILL_LEDGER_STEP_TTL_MINUTES]) {
+    const parsed = Number.parseFloat(raw ?? '');
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_STEP_TTL_MINUTES[kind] ?? FALLBACK_STEP_TTL_MINUTES;
+}
+
+/** Default `deadline` for a step launched at `now`; `upsertStep` stamps it when the launcher passes none. */
+export function defaultStepDeadline(kind: string, now: Date = new Date(), env: NodeJS.ProcessEnv = process.env): string {
+  return new Date(now.getTime() + stepTtlMinutes(kind, env) * 60_000).toISOString();
+}
+
 export interface UpsertStepArgs {
   issueKey: string;
   kind: StepKind;
@@ -111,7 +132,7 @@ export function upsertStep(ledger: Ledger, args: UpsertStepArgs): UpsertStepResu
       inputsHash: args.inputsHash,
       owner: args.owner,
       nextAction: args.nextAction,
-      deadline: args.deadline,
+      deadline: args.deadline ?? defaultStepDeadline(args.kind),
       maxAttempts: args.maxAttempts,
     });
     tx.transitionState(row.id, 'running');

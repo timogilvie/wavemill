@@ -7,10 +7,17 @@
  *   - a fault (one of six environmental classes),
  *   - a convergence contract (`mustMerge | mustEscalate`, tick budget).
  *
- * The harness is a *simulator*, not the real monitor: faults are applied as
- * state transformations, and the simulator ticks forward using the same
- * recovery decisions the real system should make. The assertion is simply
- * "converges within the budget" — one of:
+ * Two modes (HOK-3185):
+ *   - `recovery-loop` (default): each tick feeds the fixture's stalled step
+ *     to the real Ledger F `decideRecovery`, so recovery is driven only by the
+ *     one loop (failure policy + bounded retry + one escalation). The fault
+ *     model says what failure the stage reports and how many relaunches it
+ *     survives; the loop decides everything else.
+ *   - `legacy`: the original simulator, which applies faults as state
+ *     transformations with a hard-coded outcome. Kept for one cycle while the
+ *     per-stage recovery branches are retired, then deleted.
+ *
+ * The assertion is simply "converges within the budget" — one of:
  *   - `lifecycle.workflowOutcome ∈ {merged, aborted}` AND evidence file exists;
  *   - `.needs-attention` present with a typed evidence companion.
  *
@@ -26,6 +33,9 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DEFAULT_RETRY_ATTEMPTS, type FailureStage } from './failure-policy.ts';
+import type { TaskRow } from './ledger.ts';
+import { decideRecovery, type RecoveryActionKind, type RecoveryDecision, type RecoveryRetryBudget } from './ledger-recovery.ts';
 
 export const INCIDENT_REPLAY_FAULTS = [
   'host_sleep',
@@ -307,6 +317,8 @@ export interface RunResult {
   outcome: 'merged' | 'escalated' | 'pending';
   ticks: number;
   evidencePath?: string;
+  /** `recovery-loop` mode: the loop's action on each tick, in order. */
+  actions?: RecoveryActionKind[];
 }
 
 /**
@@ -352,17 +364,184 @@ export function assertConverged(result: RunResult, fixture: IncidentReplayFixtur
   return { ok: true };
 }
 
+// ── recovery-loop mode (HOK-3185) ───────────────────────────────────────────
+
+/** What the stage reports for a fault, and how many relaunches the fault survives. */
+export interface FaultModel {
+  failureKind?: string;
+  detail?: string;
+  /** Relaunches that still hit the fault; `Infinity` never recovers. */
+  survivesRelaunches: number;
+  /** The agent keeps making progress (no recovery needed). */
+  progressing?: boolean;
+}
+
+/**
+ * Translate a fixture's environmental fault into the failure evidence a real
+ * stage would report. This is the only fixture-specific knowledge in
+ * `recovery-loop` mode — the outcome itself comes from `decideRecovery`.
+ */
+export function faultModelFor(fixture: IncidentReplayFixture): FaultModel {
+  const params = fixture.faultParams ?? {};
+  switch (fixture.fault) {
+    case 'host_sleep':
+      // The agent was suspended mid-stage; the step went silent past its deadline.
+      return { detail: '', survivesRelaunches: 0 };
+    case 'github_head_lag':
+      return {
+        detail: 'handoff rebind refused: head does not match pushed commit',
+        survivesRelaunches: Math.max(0, Math.ceil(Number(params.lagSeconds ?? 180) / 120) - 1),
+      };
+    case 'dropped_connection_push_rebase':
+      return { detail: 'git push failed: ECONNRESET (connection reset by peer)', survivesRelaunches: Math.max(0, Number(params.throwCount ?? 2) - 1) };
+    case 'malformed_model_response':
+      return { failureKind: 'review-malformed-response', detail: `reviewer returned ${String(params.responseKind ?? 'non-json')} output`, survivesRelaunches: Infinity };
+    case 'provider_402_or_429':
+      return params.exhausted
+        ? { detail: '402 This request would exceed your available credits', survivesRelaunches: Infinity }
+        : { detail: '429 Too Many Requests: rate limit exceeded, retry later', survivesRelaunches: 0 };
+    case 'agent_sigkill_mid_stage': {
+      const budget = Number(params.retryBudget ?? 1);
+      return { detail: 'interrupted: coding agent exited without recording a result', survivesRelaunches: budget <= 0 ? Infinity : budget - 1 };
+    }
+    case 'control_no_fault':
+    default:
+      return { survivesRelaunches: 0, progressing: true };
+  }
+}
+
+/** In-memory bounded-retry budget (no backoff — one harness tick is one backoff window). */
+export function createMemoryRetryBudget(maxAttempts = DEFAULT_RETRY_ATTEMPTS): RecoveryRetryBudget {
+  let attempts = 0;
+  return {
+    peek: () => ({ decision: attempts >= maxAttempts ? 'exhausted' : 'proceed', attempts, maxAttempts }),
+    consume: () => { attempts += 1; },
+  };
+}
+
+function syntheticStep(fixture: IncidentReplayFixture, nowMs: number, attempt: number): TaskRow {
+  const iso = new Date(nowMs).toISOString();
+  return {
+    id: `${fixture.initialState.task.issue}-${fixture.initialState.task.phase}-${attempt}`,
+    parent_id: fixture.initialState.task.issue,
+    kind: 'step',
+    slug: fixture.initialState.task.phase,
+    inputs_hash: `replay-${attempt}`,
+    state: 'running',
+    owner: null,
+    next_action: null,
+    // Harness time is compressed: each attempt reaches its deadline on the next tick.
+    deadline: iso,
+    background: 0,
+    replay: 'unsafe',
+    attempt,
+    max_attempts: null,
+    created_at: new Date(nowMs - 60_000).toISOString(),
+    settled_at: null,
+    settled_as: null,
+    settled_reason: null,
+  };
+}
+
+function writeEscalation(ctx: SandboxContext, fixture: IncidentReplayFixture, decision: RecoveryDecision): ConvergenceEvidence {
+  const needsAttention = join(ctx.featureDir, '.needs-attention');
+  writeFileSync(needsAttention, `reason=${decision.failureKind ?? fixture.fault}\n`);
+  const evidence = join(ctx.featureDir, '.needs-attention.evidence.json');
+  writeFileSync(evidence, JSON.stringify({
+    schemaVersion: '1.0',
+    reason: decision.failureKind ?? fixture.fault,
+    recordedAt: new Date(ctx.clock.nowMs).toISOString(),
+    conditionJson: { action: decision.action, rationale: decision.rationale, nextAction: decision.nextAction },
+  }));
+  return { outcome: 'escalated', evidencePath: evidence };
+}
+
+function writeMerged(ctx: SandboxContext): ConvergenceEvidence {
+  const mergedEvidence = join(ctx.featureDir, '.merged.evidence.json');
+  writeFileSync(mergedEvidence, JSON.stringify({ prNumber: 999_999, mergedAt: new Date(ctx.clock.nowMs).toISOString() }));
+  return { outcome: 'merged', evidencePath: mergedEvidence };
+}
+
+/**
+ * Drive the fixture with the real recovery loop. Each tick the current
+ * attempt's step reaches its deadline; if the fault has cleared (or the
+ * agent is progressing) the task merges, otherwise `decideRecovery` chooses:
+ * a relaunch spends the budget and starts a new attempt, an escalation or a
+ * terminal settle converges as escalated.
+ */
+export function runWithRecoveryLoop(ctx: SandboxContext, fixture: IncidentReplayFixture): RunResult {
+  const model = faultModelFor(fixture);
+  const retry = createMemoryRetryBudget();
+  const actions: RecoveryActionKind[] = [];
+  let relaunches = 0;
+  let step = syntheticStep(fixture, ctx.clock.nowMs, 0);
+  const stage = fixture.initialState.task.phase as FailureStage;
+
+  for (let i = 0; i < fixture.convergence.maxTickCount; i++) {
+    ctx.clock.advance(fixture.convergence.tickIntervalSeconds * 1000);
+    const nowIso = new Date(ctx.clock.nowMs).toISOString();
+    const recovered = relaunches > model.survivesRelaunches;
+    const progressing = model.progressing === true || recovered;
+    const decision = decideRecovery({
+      step,
+      issueKey: fixture.initialState.task.issue,
+      now: new Date(ctx.clock.nowMs),
+      waitingOn: [],
+      evidence: [],
+      env: {
+        stateDir: ctx.featureDir,
+        head: 'feedface',
+        progress: () => (progressing
+          ? { agentIdle: false, stalled: false, lastProgressAt: nowIso }
+          : { agentIdle: true, stalled: true, lastProgressAt: null }),
+        failure: () => ({ stage, failureKind: model.failureKind ?? null, detail: model.detail ?? '' }),
+      },
+      retry,
+    });
+    actions.push(decision.action);
+
+    switch (decision.action) {
+      case 'skip':
+        if (progressing) {
+          const merged = writeMerged(ctx);
+          return { converged: true, outcome: 'merged', ticks: i + 1, evidencePath: merged.evidencePath, actions };
+        }
+        break;
+      case 'bounded-relaunch':
+      case 'spawn-remediation':
+        retry.consume(decision.retryBucket ?? 'remediation', ctx.featureDir);
+        relaunches += 1;
+        step = syntheticStep(fixture, ctx.clock.nowMs, relaunches);
+        break;
+      case 'escalate-waiting-on':
+      case 'settle-aborted': {
+        const escalated = writeEscalation(ctx, fixture, decision);
+        return { converged: true, outcome: 'escalated', ticks: i + 1, evidencePath: escalated.evidencePath, actions };
+      }
+    }
+  }
+  const last = detectConvergence(ctx);
+  return { converged: last.outcome !== 'pending', outcome: last.outcome, ticks: fixture.convergence.maxTickCount, evidencePath: last.evidencePath, actions };
+}
+
+export type HarnessMode = 'recovery-loop' | 'legacy';
+
 /**
  * One-shot: load → sandbox → run → assert → cleanup. Returns the assertion
  * result and the discovered RunResult. Cleanup runs in a finally so
  * sandboxes are never leaked.
  */
-export function runFixture(fixturePath: string): { fixture: IncidentReplayFixture; run: RunResult; assertion: AssertionResult } {
+export function runFixture(
+  fixturePath: string,
+  options: { mode?: HarnessMode } = {},
+): { fixture: IncidentReplayFixture; run: RunResult; assertion: AssertionResult } {
   const fixture = loadFixture(fixturePath);
   const clock = createInjectableClock();
   const ctx = createSandbox(fixture, clock);
   try {
-    const run = runUntilConverged(ctx, fixture);
+    const run = (options.mode ?? 'recovery-loop') === 'legacy'
+      ? runUntilConverged(ctx, fixture)
+      : runWithRecoveryLoop(ctx, fixture);
     const assertion = assertConverged(run, fixture);
     return { fixture, run, assertion };
   } finally {
