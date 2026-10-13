@@ -798,7 +798,10 @@ are documented in the HOK-3178 phase issues and will update
 - **HOK-3213:** make native `apply_patch` crash-atomic (temp file + rename
   per file, plus an undo journal across files). Gate 3 / C2 reproduces with
   today's production runtime, so this is a go on its own merits and not
-  pi-durable work.
+  pi-durable work. **Implementation landed**: file atomicity via
+  `atomicWriteFile`, multi-file atomicity via
+  `shared/lib/native-agent/patch-journal.ts`. Recovery runs on every
+  `apply_patch` call and at native-coding launch.
 - No new epic is filed. Neither pi-durable track is a go, and the ledger
   already has HOK-3178.
 - HOK-3148 closes as deferred, with the §8.1 and §8.2 revisit triggers.
