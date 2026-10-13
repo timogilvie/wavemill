@@ -322,7 +322,7 @@ test_filter_drops_issue_with_active_children() {
   stderr_text="$(cat "$stderr_file")"
 
   check_eq "filter drops issue with active children" "0" "$(jq 'length' <<<"$output")"
-  check_contains "filter active child info" "$stderr_text" "INFO: Excluding parent issues with active Linear children from backlog"
+  check_not_contains "filter active child is quiet" "$stderr_text" "INFO: Excluding parent issues"
   if grep -q "WARN: Skipping parent issue" "$stderr_file"; then
     check_eq "filter active child does not emit per-parent WARN" "0" "1"
   fi
@@ -404,7 +404,7 @@ test_filter_treats_unknown_state_as_nonterminal() {
   stderr_text="$(cat "$stderr_file")"
 
   check_eq "filter treats unknown child state as nonterminal" "0" "$(jq 'length' <<<"$output")"
-  check_contains "filter unknown state info" "$stderr_text" "INFO: Excluding parent issues with active Linear children from backlog"
+  check_not_contains "filter unknown state is quiet" "$stderr_text" "INFO: Excluding parent issues"
   if grep -q "WARN: Skipping parent issue" "$stderr_file"; then
     check_eq "filter unknown state does not emit per-parent WARN" "0" "1"
   fi
@@ -441,8 +441,8 @@ test_filter_dedupes_all_terminal_info() {
   check_contains "filter dedupe still announces once" "$stderr_text" "all 1 children terminal"
 }
 
-test_filter_dedupes_active_parent_info() {
-  local backlog stderr_file info_count
+test_filter_active_parents_stay_quiet_across_refreshes() {
+  local backlog stderr_file
   stderr_file="$TEST_TMP/filter-active-dedupe.err"
   backlog='[
     {
@@ -467,12 +467,10 @@ test_filter_dedupes_active_parent_info() {
     set -euo pipefail
     # shellcheck source=/dev/null
     source "$FUNCTIONS_FILE"
-    filter_parent_issues "$BACKLOG_JSON" >/dev/null
-    filter_parent_issues "$BACKLOG_JSON" >/dev/null
+    filtered="$(filter_parent_issues "$BACKLOG_JSON")"
+    filtered="$(filter_parent_issues "$BACKLOG_JSON")"
   ' 2>"$stderr_file"
-  info_count="$(grep -c "INFO: Excluding parent issues with active Linear children" "$stderr_file" || true)"
-
-  check_eq "filter dedupes active-parent info across multiple parents and invocations" "1" "$info_count"
+  check_not_contains "filter stays quiet across multiple parents and subshell refreshes" "$(cat "$stderr_file")" "INFO: Excluding parent issues"
   if grep -q "WARN: Skipping parent issue" "$stderr_file"; then
     check_eq "filter dedupe does not emit per-parent WARN" "0" "1"
   fi
@@ -965,7 +963,7 @@ test_filter_keeps_parent_with_all_terminal_children
 test_filter_uses_completed_at_fallback
 test_filter_treats_unknown_state_as_nonterminal
 test_filter_dedupes_all_terminal_info
-test_filter_dedupes_active_parent_info
+test_filter_active_parents_stay_quiet_across_refreshes
 test_invoke_first_wave_helper_packs_priority_without_violating_dependencies
 test_grouped_render_with_fixture_output
 test_grouped_render_orders_available_by_score
