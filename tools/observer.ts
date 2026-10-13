@@ -265,6 +265,10 @@ interface RepoSnapshot {
   millLogPath?: string;
   queueHealthPath?: string;
   queueHealth?: any;
+  /** HOK-3207: path to .wavemill/monitor-timing.json, if present. */
+  monitorTimingPath?: string;
+  /** HOK-3207: parsed .wavemill/monitor-timing.json (undefined on parse errors). */
+  monitorTiming?: any;
   tasks: TaskState[];
   stateMtime?: string;
   logMtime?: string;
@@ -1467,6 +1471,7 @@ function snapshotRepos(sessions: string[], options: ObserverOptions): RepoSnapsh
     const stateDir = join(repoDir, '.wavemill');
     const workflowStatePath = join(stateDir, 'workflow-state.json');
     const queueHealthPath = join(stateDir, 'queue-health.json');
+    const monitorTimingPath = join(stateDir, 'monitor-timing.json');
     const logDir = join(stateDir, 'logs');
     const millLogPath = findNewestMillLog(logDir, session);
     let queueHealth: any;
@@ -1477,6 +1482,14 @@ function snapshotRepos(sessions: string[], options: ObserverOptions): RepoSnapsh
         queueHealth = undefined;
       }
     }
+    let monitorTiming: any;
+    if (existsSync(monitorTimingPath)) {
+      try {
+        monitorTiming = JSON.parse(readFileSync(monitorTimingPath, 'utf-8'));
+      } catch {
+        monitorTiming = undefined;
+      }
+    }
     repos.push({
       session,
       repoDir,
@@ -1484,6 +1497,8 @@ function snapshotRepos(sessions: string[], options: ObserverOptions): RepoSnapsh
       millLogPath,
       queueHealthPath: existsSync(queueHealthPath) ? queueHealthPath : undefined,
       queueHealth,
+      monitorTimingPath: existsSync(monitorTimingPath) ? monitorTimingPath : undefined,
+      monitorTiming,
       tasks: existsSync(workflowStatePath) ? readWorkflowTasks(workflowStatePath) : [],
       stateMtime: existsSync(workflowStatePath) ? statSync(workflowStatePath).mtime.toISOString() : undefined,
       logMtime: millLogPath && existsSync(millLogPath) ? statSync(millLogPath).mtime.toISOString() : undefined,
@@ -1499,6 +1514,7 @@ function snapshotRepos(sessions: string[], options: ObserverOptions): RepoSnapsh
     const stateDir = join(repoDir, '.wavemill');
     const workflowStatePath = join(stateDir, 'workflow-state.json');
     const queueHealthPath = join(stateDir, 'queue-health.json');
+    const monitorTimingPath = join(stateDir, 'monitor-timing.json');
     const logDir = join(stateDir, 'logs');
     const millLogPath = findNewestMillLog(logDir, session);
     let queueHealth: any;
@@ -1509,6 +1525,14 @@ function snapshotRepos(sessions: string[], options: ObserverOptions): RepoSnapsh
         queueHealth = undefined;
       }
     }
+    let monitorTiming: any;
+    if (existsSync(monitorTimingPath)) {
+      try {
+        monitorTiming = JSON.parse(readFileSync(monitorTimingPath, 'utf-8'));
+      } catch {
+        monitorTiming = undefined;
+      }
+    }
     repos.push({
       session,
       repoDir,
@@ -1516,6 +1540,8 @@ function snapshotRepos(sessions: string[], options: ObserverOptions): RepoSnapsh
       millLogPath,
       queueHealthPath: existsSync(queueHealthPath) ? queueHealthPath : undefined,
       queueHealth,
+      monitorTimingPath: existsSync(monitorTimingPath) ? monitorTimingPath : undefined,
+      monitorTiming,
       tasks: existsSync(workflowStatePath) ? readWorkflowTasks(workflowStatePath) : [],
       stateMtime: existsSync(workflowStatePath) ? statSync(workflowStatePath).mtime.toISOString() : undefined,
       logMtime: millLogPath && existsSync(millLogPath) ? statSync(millLogPath).mtime.toISOString() : undefined,
@@ -1678,6 +1704,102 @@ function buildMarkerIgnoredFinding(
   };
 }
 
+// HOK-3207: raise a sustained-slow-pass incident when monitor-timing p50
+// has been over warnMs for ≥ 1 h. Driven by slowSinceAt / p50Ms in
+// monitor-timing.json, which the shell recorder updates on every pass.
+// Hysteresis in the recorder means slowSinceAt is only set while p50 is
+// above warnMs, so recovery (p50 drops below warnMs) clears the finding
+// naturally — no explicit clear path is needed.
+const SUSTAINED_SLOW_PASS_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
+// HOK-3207: default warn threshold (15 000 ms). MUST be kept in sync with
+// WAVEMILL_MONITOR_PASS_WARN_MS in shared/lib/wavemill-monitor.sh (currently 15000 ms).
+const DEFAULT_MONITOR_WARN_MS = 15_000;
+
+// HOK-3207: raise a stuck-queue-inference incident when the queue
+// classifier has been failing for ≥ 5 consecutive runs. The existing
+// DependencyHealthDetector trips at 3 at low/medium severity; this is a
+// distinct, higher-severity signal bound to a single deduplicated alert
+// so the operator sees one line, not interleaved generic incidents.
+const QUEUE_INFERENCE_STUCK_THRESHOLD = 5;
+
+export function detectSustainedSlowPasses(
+  repo: RepoSnapshot,
+  now: number,
+): Finding[] {
+  const timing = repo.monitorTiming;
+  if (!timing || typeof timing !== 'object') return [];
+  const slowSinceAt = typeof timing.slowSinceAt === 'string' ? timing.slowSinceAt : null;
+  if (!slowSinceAt) return [];
+  const sinceMs = Date.parse(slowSinceAt);
+  if (!Number.isFinite(sinceMs)) return [];
+  const sustainedMs = now - sinceMs;
+  if (sustainedMs < SUSTAINED_SLOW_PASS_THRESHOLD_MS) return [];
+  const warnMs = typeof timing.warnMs === 'number' ? timing.warnMs : DEFAULT_MONITOR_WARN_MS;
+  const p50 = typeof timing.p50Ms === 'number' ? timing.p50Ms : 0;
+  // Defensive: the recorder clears slowSinceAt when p50 drops below warnMs,
+  // but a race (observer reads an older timing file than the recorder just
+  // wrote) could still land here. Treat a current p50 at/under warnMs as
+  // recovered.
+  if (p50 <= warnMs) return [];
+  const slowestSteps: Array<{ name: string; ms: number }> = Array.isArray(timing.slowestSteps)
+    ? timing.slowestSteps
+        .filter((s: any) => s && typeof s.name === 'string' && typeof s.ms === 'number')
+        .slice(0, 3)
+    : [];
+  const topSummary = slowestSteps.map((s) => `${s.name}:${s.ms}ms`).join(',') || 'none';
+  const sustainedMinutes = Math.round(sustainedMs / 60_000);
+  return [{
+    id: `monitor-sustained-slow-pass-${repo.session}`,
+    severity: 'high',
+    category: 'operational',
+    confidence: 'high',
+    session: repo.session,
+    repoDir: repo.repoDir,
+    title: `Monitor pass p50 ${p50}ms over warnMs ${warnMs}ms for ${sustainedMinutes} min`,
+    evidence: [
+      `p50Ms=${p50}`,
+      `warnMs=${warnMs}`,
+      `slowSinceAt=${slowSinceAt}`,
+      `sustainedMinutes=${sustainedMinutes}`,
+      `topSteps=${topSummary}`,
+      `source=${repo.monitorTimingPath ?? 'unknown'}`,
+    ],
+    recommendation: `Investigate the top slow steps (${topSummary}) in shared/lib/wavemill-monitor.sh; attach a 24h monitor-timing.json sample to the perf issue before closing.`,
+  }];
+}
+
+export function detectQueueInferenceStuck(
+  repo: RepoSnapshot,
+  _now: number,
+): Finding[] {
+  const inference = repo.queueHealth?.inference;
+  if (!inference || typeof inference !== 'object') return [];
+  const failures = typeof inference.consecutiveFailures === 'number' ? inference.consecutiveFailures : 0;
+  if (failures < QUEUE_INFERENCE_STUCK_THRESHOLD) return [];
+  const lastError = typeof inference.lastError === 'string'
+    ? inference.lastError
+    : (typeof inference.error === 'string' ? inference.error : null);
+  const lastAttempt = typeof inference.lastAttemptAt === 'string' ? inference.lastAttemptAt : null;
+  const lastSuccess = typeof inference.lastSuccessAt === 'string' ? inference.lastSuccessAt : null;
+  return [{
+    id: `monitor-queue-inference-stuck-${repo.session}`,
+    severity: 'high',
+    category: 'operational',
+    confidence: 'high',
+    session: repo.session,
+    repoDir: repo.repoDir,
+    title: `Queue inference stuck: ${failures} consecutive failures`,
+    evidence: [
+      `consecutiveFailures=${failures}`,
+      `lastError=${lastError ?? 'unknown'}`,
+      `lastAttemptAt=${lastAttempt ?? 'unknown'}`,
+      `lastSuccessAt=${lastSuccess ?? 'never'}`,
+      `source=${repo.queueHealthPath ?? 'unknown'}`,
+    ],
+    recommendation: 'Inspect the [classifier] lines in the mill log and the Claude CLI login; the mill is running on explicit Linear relations only until classification recovers.',
+  }];
+}
+
 export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, options: ObserverOptions): Finding[] {
   const findings: Finding[] = [];
   const now = Date.now();
@@ -1717,6 +1839,16 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
     } catch { /* best-effort: advisory detector, never blocks the pass */ }
     try {
       findings.push(...detectBranchBehindBase(repo, now));
+    } catch { /* best-effort: advisory detector, never blocks the pass */ }
+    // HOK-3207: sustained slow passes (p50 > warnMs for ≥ 1 h) and
+    // stuck queue inference (consecutiveFailures ≥ 5). Each has a stable
+    // `id`, so `selectAlertsToSend` dedupes repeat findings and recovery
+    // (slowSinceAt cleared, failures reset) naturally retracts them.
+    try {
+      findings.push(...detectSustainedSlowPasses(repo, now));
+    } catch { /* best-effort: advisory detector, never blocks the pass */ }
+    try {
+      findings.push(...detectQueueInferenceStuck(repo, now));
     } catch { /* best-effort: advisory detector, never blocks the pass */ }
 
     const rejectedEvalCount = countRejectedEvalRecords(repo.repoDir);

@@ -11,7 +11,8 @@ HARNESS_DIR="$(mktemp -d)"
 trap 'rm -rf "$HARNESS_DIR"' EXIT
 source "$SCRIPT_DIR/fixtures/monitor-perf/async-harness.sh"
 for fn in wavemill_monitor_now_ms ready_watchdog_config_json run_ready_watchdog_tick monitor_step_begin monitor_step_end \
-  monitor_reset_steps wavemill_record_monitor_iteration_timing _monitor_counter_take monitor_github_pass_counters_json; do
+  monitor_reset_steps wavemill_record_monitor_iteration_timing _monitor_counter_take monitor_github_pass_counters_json \
+  wavemill_monitor_spawn_pass_counts wavemill_monitor_spawn_pass_reset; do
   eval "$(harness_extract_function "$fn")"
 done
 declare -A MONITOR_STEP_MS=()

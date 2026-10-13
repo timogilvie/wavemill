@@ -13394,7 +13394,7 @@ launch_ready_watchdog_remediation() {
   return 0
 }
 
-if [[ "${WAVEMILL_READY_WATCHDOG_SOURCE_ONLY:-}" == "1" ]]; then
+if [[ "${WAVEMILL_READY_WATCHDOG_SOURCE_ONLY:-}" == "1" && "${WAVEMILL_MONITOR_SOURCE_ONLY:-}" != "1" ]]; then
   return 0 2>/dev/null || exit 0
 fi
 
@@ -15982,9 +15982,74 @@ monitor_ledger_recovery_tick() {
 # step inside the pass. Durations accumulate in MONITOR_STEP_MS, keyed by
 # step name. `wavemill_record_monitor_iteration_timing` emits per-step
 # durations and the three slowest steps alongside the pass duration, and
-# warns when a pass exceeds the warn threshold (default 30 000 ms).
+# warns when a pass exceeds the warn threshold (default 15 000 ms, HOK-3207).
 declare -A MONITOR_STEP_MS=()
 declare -A MONITOR_STEP_START_MS=()
+
+# ─── Per-pass spawn tally (HOK-3207) ───────────────────────────────────────
+#
+# To catch perf regressions deterministically (no wall time) a CI budget
+# fixture counts how many `node` / `gh` / `jq` processes the monitor loop
+# spawns per pass. Spawn counts are kept in a per-pass append-only tally
+# file so pipeline sub-shells still contribute (shell function wrappers
+# alone are blind to pipelines). `WAVEMILL_MONITOR_SPAWN_TALLY=""`
+# disables counting (no STATE_DIR, early-boot callers).
+WAVEMILL_MONITOR_SPAWN_TALLY=""
+
+wavemill_monitor_spawn_pass_begin() {
+  [[ -n "${STATE_DIR:-}" ]] || { WAVEMILL_MONITOR_SPAWN_TALLY=""; return 0; }
+  if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
+    log "warn" "Failed to create STATE_DIR=$STATE_DIR; spawn counting disabled"
+    WAVEMILL_MONITOR_SPAWN_TALLY=""
+    return 0
+  fi
+  WAVEMILL_MONITOR_SPAWN_TALLY="$STATE_DIR/.spawn-tally.$$"
+  if ! : > "$WAVEMILL_MONITOR_SPAWN_TALLY" 2>/dev/null; then
+    log "warn" "Failed to initialize spawn tally at $WAVEMILL_MONITOR_SPAWN_TALLY; spawn counting disabled"
+    WAVEMILL_MONITOR_SPAWN_TALLY=""
+  fi
+  export WAVEMILL_MONITOR_SPAWN_TALLY
+}
+
+_wavemill_spawn_record() {
+  [[ -n "${WAVEMILL_MONITOR_SPAWN_TALLY:-}" ]] || return 0
+  printf '%s\n' "$1" >> "$WAVEMILL_MONITOR_SPAWN_TALLY" 2>/dev/null || true
+}
+
+# Function wrappers. `command` suppresses function lookup to prevent
+# infinite recursion. The wrappers return the wrapped binary's exit code
+# unmodified so set -e / pipefail semantics are preserved.
+node() { _wavemill_spawn_record node; command node "$@"; }
+gh()   { _wavemill_spawn_record gh;   command gh   "$@"; }
+jq()   { _wavemill_spawn_record jq;   command jq   "$@"; }
+
+# Prints `<node> <gh> <jq>` ints. Zero when counting is off or the file is
+# unreadable. Uses grep over the append-only tally file so pipeline
+# sub-shells (which get a copy of WAVEMILL_MONITOR_SPAWN_TALLY by export)
+# contribute to the parent's count.
+wavemill_monitor_spawn_pass_counts() {
+  local tally="${WAVEMILL_MONITOR_SPAWN_TALLY:-}"
+  if [[ -z "$tally" || ! -f "$tally" ]]; then
+    printf '0 0 0\n'
+    return 0
+  fi
+  local node_count gh_count jq_count
+  node_count=$(grep -c '^node$' "$tally" 2>/dev/null || printf '0')
+  gh_count=$(grep -c   '^gh$'   "$tally" 2>/dev/null || printf '0')
+  jq_count=$(grep -c   '^jq$'   "$tally" 2>/dev/null || printf '0')
+  [[ "$node_count" =~ ^[0-9]+$ ]] || node_count=0
+  [[ "$gh_count"   =~ ^[0-9]+$ ]] || gh_count=0
+  [[ "$jq_count"   =~ ^[0-9]+$ ]] || jq_count=0
+  printf '%s %s %s\n' "$node_count" "$gh_count" "$jq_count"
+}
+
+# Truncate the tally file so the next pass starts from zero. Keeps the
+# file path (and inode) alive across passes.
+wavemill_monitor_spawn_pass_reset() {
+  local tally="${WAVEMILL_MONITOR_SPAWN_TALLY:-}"
+  [[ -n "$tally" && -f "$tally" ]] || return 0
+  : > "$tally" 2>/dev/null || true
+}
 
 monitor_step_begin() {
   local name="${1:-}"
@@ -16029,6 +16094,16 @@ wavemill_record_monitor_iteration_timing() {
   tmp="$(mktemp "${timing_file}.XXXXXX" 2>/dev/null || true)"
   [[ -n "$tmp" ]] || return 0
 
+  # HOK-3207: capture per-pass spawn counts (node/gh/jq) BEFORE the
+  # recorder itself calls jq, so the tally reflects the pass body work
+  # instead of the recorder's own overhead.
+  local spawn_counts spawn_node spawn_gh spawn_jq
+  spawn_counts="$(wavemill_monitor_spawn_pass_counts 2>/dev/null || printf '0 0 0')"
+  read -r spawn_node spawn_gh spawn_jq <<<"$spawn_counts"
+  [[ "$spawn_node" =~ ^[0-9]+$ ]] || spawn_node=0
+  [[ "$spawn_gh"   =~ ^[0-9]+$ ]] || spawn_gh=0
+  [[ "$spawn_jq"   =~ ^[0-9]+$ ]] || spawn_jq=0
+
   # Build the per-step JSON object and the top-3 slowest step summary.
   local steps_json="{}" top_json="[]" step_name step_ms sorted_pairs
   if (( ${#MONITOR_STEP_MS[@]} > 0 )); then
@@ -16061,8 +16136,58 @@ wavemill_record_monitor_iteration_timing() {
   [[ -n "$github_json" ]] || github_json="{}"
   [[ -n "$jobs_json" ]] || jobs_json="{}"
 
-  local warn_ms="${WAVEMILL_MONITOR_PASS_WARN_MS:-30000}"
-  if (( duration_ms > warn_ms )); then
+  # HOK-3207: default warn threshold is 15 000 ms (the real monitor-pass
+  # target). The sustained-slow observer detector trips on p50 > warnMs
+  # for ≥ 1 h. MUST be kept in sync with DEFAULT_MONITOR_WARN_MS in
+  # tools/observer.ts (currently 15_000 ms).
+  local warn_ms="${WAVEMILL_MONITOR_PASS_WARN_MS:-15000}"
+
+  # HOK-3207: read the previous slowState / slowSinceAt from the current
+  # timing file so hysteresis spans passes. On a fresh install both fields
+  # are null, which is treated as "fast" so the first slow pass of a
+  # fresh mill emits the warn.
+  local prior_slow_state prior_slow_since current_slow_state current_slow_since now_iso
+  prior_slow_state="$(jq -r '.slowState // false | tostring' "$timing_file" 2>/dev/null || echo false)"
+  prior_slow_since="$(jq -r '.slowSinceAt // null | if . == null then "" else . end' "$timing_file" 2>/dev/null || echo "")"
+  [[ "$prior_slow_state" == "true" ]] || prior_slow_state=false
+  now_iso="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+  # Peek at the p50 that will result from appending this pass. We cannot
+  # read the fresh p50 before the main jq write, so compute it locally
+  # from the stored samples. This is the same formula as the write below.
+  local projected_p50
+  projected_p50="$(jq --argjson d "$duration_ms" '
+      (.samples // []) as $s
+      | (($s + [$d]) | .[-100:]) as $n
+      | ($n | sort) as $sorted
+      | (if $sorted | length == 0 then 0 else $sorted[((($sorted | length) - 1) / 2 | floor)] end)
+    ' "$timing_file" 2>/dev/null || echo 0)"
+  [[ "$projected_p50" =~ ^-?[0-9]+$ ]] || projected_p50=0
+
+  # The observer detector reads slowSinceAt. We drive it off p50 (sticky)
+  # rather than duration_ms (per-pass) so one lucky fast pass inside a
+  # slow regime does not reset the 1 h clock. The operator-facing warn
+  # line, however, is a per-pass signal, so it is still gated on
+  # duration_ms.
+  current_slow_state=false
+  if (( projected_p50 > warn_ms )); then
+    current_slow_state=true
+  fi
+
+  if [[ "$current_slow_state" == "true" ]]; then
+    if [[ -n "$prior_slow_since" ]]; then
+      current_slow_since="$prior_slow_since"
+    else
+      current_slow_since="$now_iso"
+    fi
+  else
+    current_slow_since=""
+  fi
+
+  # Operator warn line: emit only on the fast → slow edge for duration_ms
+  # (HOK-3207 hysteresis). The warn text keeps its (duration, warn, top)
+  # content so operator logs stay informative.
+  if (( duration_ms > warn_ms )) && [[ "$prior_slow_state" != "true" ]]; then
     local top_summary
     top_summary="$(printf '%s' "$top_json" | jq -r 'map("\(.name):\(.ms)ms") | join(",")' 2>/dev/null || echo "")"
     if [[ -n "$top_summary" ]]; then
@@ -16080,14 +16205,20 @@ wavemill_record_monitor_iteration_timing() {
     --argjson steps "$steps_json" \
     --argjson top "$top_json" \
     --argjson warnMs "$warn_ms" \
+    --argjson spawnNode "$spawn_node" \
+    --argjson spawnGh "$spawn_gh" \
+    --argjson spawnJq "$spawn_jq" \
+    --arg slowSinceAt "$current_slow_since" \
+    --arg slowState "$current_slow_state" \
+    --arg updatedAt "$now_iso" \
     --argjson github "$github_json" \
     --argjson jobs "$jobs_json" \
-    --arg updatedAt "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
     '
       (.samples // []) as $samples
       | (($samples + [$duration]) | .[-100:]) as $nextSamples
-      | ($nextSamples | sort | if length == 0 then 0 else .[((length * 95 / 100) | tostring | split(".")[0] | tonumber)] end) as $p95
-      | ($nextSamples | sort | if length == 0 then 0 else .[((length / 2) | tostring | split(".")[0] | tonumber)] end) as $p50
+      | ($nextSamples | sort) as $sorted
+      | (if $sorted | length == 0 then 0 else $sorted[((($sorted | length) - 1) * 95 / 100 | floor)] end) as $p95
+      | (if $sorted | length == 0 then 0 else $sorted[((($sorted | length) - 1) / 2 | floor)] end) as $p50
       | {
           lastIterationMs: $duration,
           samples: $nextSamples,
@@ -16097,6 +16228,9 @@ wavemill_record_monitor_iteration_timing() {
           warnMs: $warnMs,
           lastSteps: $steps,
           slowestSteps: $top,
+          spawns: { node: $spawnNode, gh: $spawnGh, jq: $spawnJq },
+          slowState: ($slowState == "true"),
+          slowSinceAt: (if $slowSinceAt == "" then null else $slowSinceAt end),
           github: $github,
           jobs: $jobs,
           cleanupSkippedCount: ((.cleanupSkippedCount // 0) + $cleanupSkipped),
@@ -16108,6 +16242,10 @@ wavemill_record_monitor_iteration_timing() {
   else
     rm -f "$tmp" 2>/dev/null || true
   fi
+
+  # HOK-3207: zero the tally for the next pass. Keeps the file alive so
+  # exported sub-shells on the next pass append to the same inode.
+  wavemill_monitor_spawn_pass_reset
 }
 
 # ─── Per-pass GitHub read batching (HOK-3206) ───────────────────────────────
@@ -18736,6 +18874,19 @@ Implement from the issue description plus direct codebase analysis."
 # ============================================================================
 # MAIN MONITORING LOOP
 # ============================================================================
+
+# HOK-3207: a second, finer-grained source-only guard. The existing
+# WAVEMILL_READY_WATCHDOG_SOURCE_ONLY=1 returns early right after the
+# ready-watchdog helpers are defined, which is before this file's per-step
+# timing helpers, spawn tally helpers, and iteration-timing recorder. The
+# monitor-pass-budget fixture needs those later helpers available while
+# NOT running the top-level task-rehydration or the main `while :;` loop,
+# so this flag returns after all function definitions but before any
+# top-level task reads or the loop itself. Both guards are checked (either
+# flag suffices).
+if [[ "${WAVEMILL_MONITOR_SOURCE_ONLY:-}" == "1" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 # Parse initial tasks from file
 declare -A PR_BY_ISSUE BRANCH_BY_ISSUE SLUG_BY_ISSUE CLEANED
@@ -23050,6 +23201,9 @@ while :; do
   cleanup_skipped_count=0
   remote_call_avoided_count=0
   monitor_reset_steps
+  # HOK-3207: open the per-pass spawn tally so the recorder can report
+  # process-spawn counts in monitor-timing.json.
+  wavemill_monitor_spawn_pass_begin
   # HOK-3190: one jq pass extracts the per-task fields the loop needs so
   # subsequent `pass_task_field` / `pass_state_root` calls read from bash
   # associative arrays instead of re-parsing the 15 MB state file hundreds
