@@ -8952,22 +8952,145 @@ _ensure_task_window_exists() {
   printf '%s\n' "$target"
 }
 
+# Record the tmux window id on an EXISTING task row. HOK-3210: this runs from
+# window-recreation paths that can fire after an out-of-band reap, so it goes
+# through task_state_mutate_existing — a raw `.tasks[$issue].windowId = ...`
+# write recreated the reaped row as a windowId-only HOK-3125 orphan stub,
+# which in turn defeated the next tick's window lookup and fed the loop.
 persist_task_window_id() {
   local issue="$1" target="$2"
   local resolved_target window_id
 
   [[ -n "$issue" && -n "$target" ]] || return 0
   [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  # Reaped: skip the locked rewrite entirely. task_state_mutate_existing below
+  # still covers a reap that lands between this probe and the write.
+  task_state_entry_exists "$issue" || return 0
 
   resolved_target="$target"
   [[ "$resolved_target" == @* ]] || resolved_target="$SESSION:$resolved_target"
   window_id="$(tmux display-message -p -t "$resolved_target" '#{window_id}' 2>/dev/null || true)"
   [[ -n "$window_id" ]] || return 0
 
-  state_mutate "$STATE_FILE" \
-    '.tasks[$issue].windowId = $windowId | .tasks[$issue].updated = (now | todate)' \
-    --arg issue "$issue" \
+  task_state_mutate_existing "$issue" \
+    '.windowId = $windowId | .updated = (now | todate)' \
     --arg windowId "$window_id" >/dev/null 2>&1 || true
+}
+
+# HOK-3210: probe whether <issue> was reaped out of band (`wavemill cleanup`,
+# cleanup-terminal-inbox.ts --execute) while the monitor still tracks it.
+# Prints a short reason and returns 0 when reaped; returns 1 otherwise.
+#
+# Reaped means the state row is gone (or is only an HOK-3125 orphan stub) AND
+# a second, durable reap signal holds: a terminal tombstone in
+# terminalTaskHistory.tasks, or the worktree directory no longer exists. The
+# second signal keeps a row that is merely not-yet-saved (launch in flight)
+# from being dropped. The tombstone alone is not required because the
+# HOK-3203 hot-state byte cap may evict it.
+#
+# Hot-path cost: a live row always carries slug/phase/status, which the pass
+# snapshot already holds, so healthy tasks never pay for the precise jq probe.
+# An unparsable state file (in-flight write) reads as "not reaped".
+monitor_task_reap_reason() {
+  local issue="$1" wt_dir="${2:-}"
+  local probe row_state tombstone
+
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  if [[ -n "$(pass_task_field "$issue" slug)$(pass_task_field "$issue" phase)$(pass_task_field "$issue" status)" ]]; then
+    return 1
+  fi
+
+  probe="$(jq -r --arg i "$issue" "$(task_lifecycle_jq_filter '
+    (.tasks[$i] // null) as $t
+    | (if $t == null then "missing" elif ($t | wm_orphan_stub) then "stub" else "live" end)
+      + " "
+      + (if (.terminalTaskHistory.tasks[$i] // null) != null then "tombstone" else "none" end)
+  ')" "$STATE_FILE" 2>/dev/null)" || return 1
+  read -r row_state tombstone <<<"$probe"
+
+  [[ "$row_state" == "missing" || "$row_state" == "stub" ]] || return 1
+  if [[ "$tombstone" == "tombstone" ]]; then
+    printf 'state row %s, terminal tombstone present\n' "$row_state"
+    return 0
+  fi
+  if [[ -n "$wt_dir" && ! -d "$wt_dir" ]]; then
+    printf 'state row %s, worktree %s gone\n' "$row_state" "$wt_dir"
+    return 0
+  fi
+  return 1
+}
+
+# HOK-3210: stop tracking a task that was reaped out of band. Deregistration
+# goes through the shared terminal path (CLEANED + registry unset) so no later
+# tick or post-loop scan recreates its window, worktree or state row. Logs
+# once per issue per monitor process.
+declare -A REAP_LOGGED=()
+monitor_drop_reaped_issue() {
+  local issue="$1" reason="${2:-reaped out of band}"
+  [[ -n "$issue" ]] || return 0
+  # Callers that load only this file's functions (the incident harness) skip
+  # the top-level declare; an undeclared array would index "$issue" as math.
+  declare -p REAP_LOGGED >/dev/null 2>&1 || declare -gA REAP_LOGGED=()
+  if [[ -z "${REAP_LOGGED[$issue]:-}" ]]; then
+    log "status" "⚠ $issue → reaped out of band ($reason), dropping from monitor tracking"
+    REAP_LOGGED["$issue"]=1
+  fi
+  monitor_deregister_terminal_task "$issue"
+  return 0
+}
+
+# HOK-3210: the generic missing-window recovery in monitor_issue_state. The
+# window is gone (it should survive with remain-on-exit, so this is an
+# anomaly); flag the task for attention in a fresh window instead of cleaning
+# up, since the worktree and branch still have value. Increments the caller's
+# active_count whenever the task stays tracked.
+#
+# Two guards keep a reaped task from spawning a bare shell every tick (the
+# 67-window loop):
+#   1. A vanished worktree means the task was reaped out of band, not that its
+#      window crashed: drop tracking, never `tmux new-window` into $HOME.
+#   2. Recreation is bounded per worktree head through bounded-retry.sh
+#      (bucket `window-recreate`, ceiling WAVEMILL_WINDOW_RECREATE_MAX_ATTEMPTS,
+#      default 3, with the standard backoff between attempts), so any future
+#      variant where the recreated window cannot be found again parks at
+#      needs-user. A new commit resets the budget; the exhausted sentinel's
+#      HOK-3172 condition companion expires on head/operator events.
+monitor_recreate_missing_task_window() {
+  local issue="$1" win="$2" wt_dir="$3" feature_dir="$4" phase="${5:-}"
+  local win_target wrec_head wrec_decision
+  local wrec_limit="${WAVEMILL_WINDOW_RECREATE_MAX_ATTEMPTS:-3}"
+
+  if [[ ! -d "$wt_dir" ]]; then
+    monitor_drop_reaped_issue "$issue" "worktree $wt_dir gone at window recreate"
+    return 0
+  fi
+
+  wrec_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+  wrec_decision="$(bounded_retry_gate "$feature_dir" "window-recreate" "$wrec_head" "$wrec_limit")"
+  # proceed | backoff | exhausted | exhausted-quiet (see bounded_retry_gate).
+  if [[ "$wrec_decision" != "proceed" ]]; then
+    if [[ "$wrec_decision" == "exhausted" ]] \
+      && bounded_retry_mark_exhausted "$feature_dir" "window-recreate" \
+        "window-recreate: $wrec_limit window recreations on head ${wrec_head:-unknown} without the window persisting"; then
+      log "status" "⛔ $issue → window recreated $wrec_limit times on head ${wrec_head:0:12} and still missing, parking at needs-user"
+    fi
+    set_window_attention_state "$win" "needs-user"
+    active_count=$((active_count + 1))
+    return 0
+  fi
+  bounded_retry_increment "$feature_dir" "window-recreate" "$wrec_head" >/dev/null
+
+  log "status" "⚠ $issue → Window disappeared during $phase phase, recreating..."
+  tmux new-window -d -t "$SESSION" -n "$win" -c "$wt_dir" 2>/dev/null || true
+  win_target="$(tmux display-message -p -t "$SESSION:$win" '#{window_id}' 2>/dev/null || true)"
+  [[ -n "$win_target" ]] || win_target="$win"
+  persist_task_window_id "$issue" "$win_target"
+  win_target="$(_tmux_target_join "$SESSION" "$win_target" 2>/dev/null || printf '%s:%s\n' "$SESSION" "$win_target")"
+  tmux set-option -t "$win_target" remain-on-exit on 2>/dev/null || true
+  sleep 1
+  active_count=$((active_count + 1))
+  set_window_attention_state "$win" "needs-user"
+  return 0
 }
 
 _challenge_side_for_issue() {
@@ -15501,6 +15624,57 @@ monitor_side_effect_detector_tick() {
   return 0
 }
 
+# ─── Ledger F recovery loop (HOK-3185) ──────────────────────────────────────
+#
+# One recovery rule over ledger step rows: a step past its deadline with no
+# HOK-3101 progress gets the HOK-3176 failure policy (terminal → settle,
+# code-failure → remediation, retryable → bounded retry → fresh relaunch →
+# one waiting_on operator escalation). Shadow by default: decisions land in
+# .wavemill/ledger-recovery.jsonl and nothing else changes.
+# Live: WAVEMILL_LEDGER_RECOVERY_LIVE=1. Kill switch:
+# WAVEMILL_LEDGER_RECOVERY_DISABLED=1 (or the ledger-wide
+# WAVEMILL_LEDGER_SHADOW_DISABLED=1).
+ledger_recovery_tick_enabled() {
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 1
+  [[ "${WAVEMILL_LEDGER_RECOVERY_DISABLED:-0}" == "1" ]] && return 1
+  [[ "${WAVEMILL_LEDGER_SHADOW_DISABLED:-0}" == "1" ]] && return 1
+  [[ -n "${STATE_DIR:-}" && -n "${REPO_DIR:-}" ]] || return 1
+  declare -F wavemill_run_tool >/dev/null 2>&1 || return 1
+  return 0
+}
+
+monitor_ledger_recovery_interval() {
+  local value="${LEDGER_RECOVERY_INTERVAL_SECONDS:-120}"
+  [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]] || value=120
+  printf '%s\n' "$value"
+}
+
+monitor_ledger_recovery_tick() {
+  ledger_recovery_tick_enabled || return 0
+
+  local interval last_at now stamp_file="$STATE_DIR/.ledger-recovery-last-at"
+  interval="$(monitor_ledger_recovery_interval)"
+  now="$(date +%s)"
+  if [[ -f "$stamp_file" ]]; then
+    last_at="$(cat "$stamp_file" 2>/dev/null || echo 0)"
+    [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
+    (( now - last_at < interval )) && return 0
+  fi
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  _monitor_terminal_cleanup_write "$stamp_file" "$now"
+
+  local -a cli=(ledger-recovery-tick.ts --repo-dir "$REPO_DIR")
+  [[ -n "${STATE_FILE:-}" ]] && cli+=(--state-file "$STATE_FILE")
+  [[ -n "${WORKTREE_ROOT:-}" ]] && cli+=(--worktree-root "$WORKTREE_ROOT")
+  local log_file="${MILL_LOG_FILE:-/dev/null}"
+  # Background so a slow ledger open never stalls the monitor pass.
+  (
+    wavemill_run_tool "${cli[@]}" >>"$log_file" 2>&1 || true
+  ) >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  return 0
+}
+
 # ─── Per-step pass timing (HOK-3190) ────────────────────────────────────────
 #
 # `monitor_step_begin NAME` and `monitor_step_end NAME` sandwich a measured
@@ -19221,6 +19395,15 @@ monitor_issue_state() {
   WIN="$ISSUE-$SLUG"
   WT_DIR=$(pass_task_field "$ISSUE" worktree)
   [[ -z "$WT_DIR" ]] && WT_DIR="${WORKTREE_ROOT}/${SLUG}"
+  # HOK-3210: an out-of-band cleanup deletes the state row and worktree but
+  # cannot reach this process's in-memory tracking. Honor the durable reap
+  # evidence before any branch below can relaunch a stage, recreate a window
+  # or write the row back as a stub.
+  local _reap_reason
+  if _reap_reason="$(monitor_task_reap_reason "$ISSUE" "$WT_DIR")"; then
+    monitor_drop_reaped_issue "$ISSUE" "$_reap_reason"
+    return 0
+  fi
   local WIN_TARGET
   WIN_TARGET="$(_tmux_task_window_target "$SESSION" "$ISSUE" "$SLUG" "${STATE_FILE:-}" "$WT_DIR" 2>/dev/null || true)"
   if [[ -z "$WIN_TARGET" ]]; then
@@ -20604,16 +20787,7 @@ monitor_issue_state() {
           active_count=$((active_count + 1))
           return 0
         fi
-        log "status" "⚠ $ISSUE → Window disappeared during $current_phase phase, recreating..."
-        tmux new-window -d -t "$SESSION" -n "$WIN" -c "${WORKTREE_ROOT}/${SLUG}" 2>/dev/null || true
-        WIN_TARGET="$(tmux display-message -p -t "$SESSION:$WIN" '#{window_id}' 2>/dev/null || true)"
-        [[ -n "$WIN_TARGET" ]] || WIN_TARGET="$WIN"
-        persist_task_window_id "$ISSUE" "$WIN_TARGET"
-        WIN_TARGET="$(_tmux_target_join "$SESSION" "$WIN_TARGET" 2>/dev/null || printf '%s:%s\n' "$SESSION" "$WIN_TARGET")"
-        tmux set-option -t "$WIN_TARGET" remain-on-exit on 2>/dev/null || true
-        sleep 1
-        active_count=$((active_count + 1))
-        set_window_attention_state "$WIN" "needs-user"
+        monitor_recreate_missing_task_window "$ISSUE" "$WIN" "$WT_DIR" "$FEATURE_DIR" "$current_phase"
         return 0
       fi
 
@@ -22590,6 +22764,10 @@ while :; do
   monitor_step_begin sideEffectDuplicateDetector
   monitor_side_effect_detector_tick || true
   monitor_step_end sideEffectDuplicateDetector
+  # HOK-3185: the one recovery loop over ledger step rows (shadow by default).
+  monitor_step_begin ledgerRecovery
+  monitor_ledger_recovery_tick || true
+  monitor_step_end ledgerRecovery
   # HOK-3174: after a host wake, re-check running stages before normal gates.
   if [[ -n "$monitor_wake_episode" ]]; then
     monitor_resume_agents_after_wake "$monitor_wake_episode"

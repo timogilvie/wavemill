@@ -35,6 +35,7 @@ TESTS=(
   shared/lib/ledger-consistency.test.ts
   shared/lib/ledger-replay-contract.test.ts
   shared/lib/ledger-pair-abort.test.ts
+  shared/lib/ledger-recovery.test.ts
   shared/lib/side-effect-ledger.test.ts
   shared/lib/side-effect-duplicate-detector.test.ts
   shared/lib/side-effect-replay-contract.test.ts

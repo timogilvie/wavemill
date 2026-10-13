@@ -30,8 +30,10 @@ TESTS=(
   ledger-hook-shadow.test.sh
   check-ledger-shadow-swallow.test.sh
   monitor-side-effect-detector-tick.test.sh
+  ledger-recovery-tick.test.sh
   aborted-challenge-cleanup.test.sh
   safe-branch-cleanup.test.sh
+  preserved-branch-record-long-slug.test.sh
   challenge-primary-merge-cleanup.test.sh
   operator-abort-cleanup.test.sh
   agent-resolve-from-model.test.sh
@@ -56,6 +58,9 @@ TESTS=(
   review-gate-refused-challenge.test.sh
   monitor-late-completion.test.sh
   monitor-terminal-cleanup-tick.test.sh
+  monitor-reaped-task-no-window-recreation.test.sh
+  monitor-window-recreate-bounded.test.sh
+  persist-task-window-id-reaped.test.sh
   monitor-wake-resume.test.sh
   parent-monitor-function-drift.test.sh
   save-task-state-canonicalization.test.sh
