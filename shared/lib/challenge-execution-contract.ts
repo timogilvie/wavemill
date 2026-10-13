@@ -493,8 +493,8 @@ export function loadChallengeRoleFromState(
 
 /**
  * HOK-3156: an invalid-challenge cause the mill recorded on the pair's task
- * state (e.g. `route-drift` from the pre-review preflight when an arm already
- * had a PR). Both arms carry the stamp, so eval records on either side read
+ * state (e.g. `multiple-varied-roles` from the pre-review preflight when an arm
+ * already had a PR). Both arms carry the stamp, so eval records on either side read
  * the same cause and the comparison voids instead of judging a drifted pair.
  */
 export function loadChallengeDivergenceFromState(

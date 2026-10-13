@@ -1676,16 +1676,20 @@ challenge_cancel_challenger_arm() {
 }
 
 # HOK-3156 — collapse a pair whose arms no longer differ in exactly the varied
-# stage (`route-drift`). Whichever arm detected the drift, the pair is dissolved
-# as a unit: a pending (unmaterialised) challenger arm is cancelled, a live
-# challenger is torn down, and the primary continues as a solo task. Never
-# leaves one arm drifted and the other running.
+# stage. Whichever arm detected the drift, the pair is dissolved as a unit: a
+# pending (unmaterialised) challenger arm is cancelled, a live challenger is
+# torn down, and the primary continues as a solo task. Never leaves one arm
+# drifted and the other running.
 #
-# Usage: challenge_collapse_route_drift <issue> <feature_dir> <detail>
+# <reason> is `route-drift` (default) when a post-sealing re-route moved one
+# arm, or `multiple-varied-roles` when the pre-review preflight finds the arms'
+# launch routes differ beyond the varied stage. Both are harness faults.
+#
+# Usage: challenge_collapse_route_drift <issue> <feature_dir> <detail> [reason]
 # Returns 0 when the pair was collapsed; 1 when cleanup had to preserve work.
 CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF=""
 challenge_collapse_route_drift() {
-  local issue="$1" feature_dir="${2:-}" detail="${3:-}"
+  local issue="$1" feature_dir="${2:-}" detail="${3:-}" reason="${4:-route-drift}"
   [[ -n "$issue" ]] || return 1
   CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF=""
 
@@ -1707,11 +1711,11 @@ challenge_collapse_route_drift() {
   stage="$(get_task_meta "$primary_issue" "challengeStage" 2>/dev/null || true)"
   varied_model="$(get_task_meta "$primary_issue" "challengeVariedModel" 2>/dev/null || true)"
 
-  log_warn "  $primary_issue: challenge arms drifted beyond stage=${stage:-unknown} (${detail:-route-drift}) — collapsing to a solo run"
-  challenge_arms_cancel_pending "$primary_issue" "route-drift" "$detail" || true
+  log_warn "  $primary_issue: challenge arms drifted beyond stage=${stage:-unknown} (${detail:-$reason}) — collapsing to a solo run as $reason"
+  challenge_arms_cancel_pending "$primary_issue" "$reason" "$detail" || true
   if [[ -n "$challenger_key" ]]; then
     challenge_cancel_challenger_arm "$primary_issue" "$primary_slug" "$challenger_key" \
-      "$feature_dir" "$stage" "$varied_model" "route-drift" "$detail" || return 1
+      "$feature_dir" "$stage" "$varied_model" "$reason" "$detail" || return 1
     [[ "$challenger_key" == "$issue" ]] && CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF="true"
     return 0
   fi
@@ -1720,7 +1724,7 @@ challenge_collapse_route_drift() {
     "slug=$primary_slug" \
     "stage=$stage" \
     "model=\"$varied_model\"" \
-    "reason=route-drift" \
+    "reason=$reason" \
     "detail=\"$detail\""
   return 0
 }
@@ -1819,9 +1823,10 @@ challenge_reseal_primary_route() {
 # Non-deferred pairs launch both arms at bootstrap and reach review on their
 # own, so neither materialiser sees them. Before either arm's review launches,
 # compare both arms' launch routes (.phase-config.json); when they differ in
-# more than the varied stage the pair is dissolved now with a typed reason
-# instead of surfacing as multiple-varied-roles after both arms ran. Cached per
-# head SHA in .challenge-route-preflight.json so it runs once per head.
+# more than the varied stage the pair is dissolved now as
+# `challenge_collapsed reason=multiple-varied-roles` instead of only surfacing
+# at comparison after both arms ran. Cached per head SHA in
+# .challenge-route-preflight.json so it runs once per head.
 #
 # Returns 0 to continue the review launch; 1 when this arm was itself torn
 # down by the collapse (the caller must stop processing it).
@@ -1874,13 +1879,13 @@ challenge_pre_review_route_preflight() {
   out="$(npx tsx "$TOOLS_DIR/check-challenge-route.ts" --stage "$stage" \
     --primary-feature-dir "$primary_dir" --challenger-feature-dir "$challenger_dir" \
     --repo-dir "$REPO_DIR" 2>/dev/null)" || rc=$?
-  if (( rc != 0 && rc != 3 )); then
+  if [[ "$rc" -ne 0 && "$rc" -ne 3 ]]; then
     return 0
   fi
   jq -n --arg head "$head" --argjson rc "$rc" --arg out "$out" \
     '{head: $head, checkedAt: (now | todate), status: (if $rc == 3 then "drift" else "ok" end),
       result: ($out | fromjson? // null)}' > "$cache" 2>/dev/null || true
-  (( rc == 3 )) || return 0
+  [[ "$rc" -eq 3 ]] || return 0
 
   local detail
   detail="dimensions=$(jq -r '(.driftedFields // []) | join(",")' <<<"$out" 2>/dev/null || true)"
@@ -1893,12 +1898,12 @@ challenge_pre_review_route_preflight() {
     # An arm already has a PR: there is no clean pre-run collapse. Record the
     # typed reason on both arms so the comparison and attribution read the same
     # invalid cause; the pair voids at comparison rather than being judged.
-    log_warn "  $issue: challenge arms drifted beyond stage=$stage after a PR opened ($detail) — recording invalid_challenge:route-drift"
+    log_warn "  $issue: challenge arms differ beyond stage=$stage after a PR opened ($detail) — recording invalid_challenge:multiple-varied-roles"
     local key
     for key in "$primary_key" "$challenger_key"; do
       state_mutate "$STATE_FILE" \
         'if .tasks[$k] != null then
-           .tasks[$k].challengeDivergenceReason = "route-drift"
+           .tasks[$k].challengeDivergenceReason = "multiple-varied-roles"
            | .tasks[$k].challengeRouteDriftDetail = $detail
          else . end' \
         --arg k "$key" --arg detail "$detail" >/dev/null 2>&1 || true
@@ -1906,7 +1911,7 @@ challenge_pre_review_route_preflight() {
     return 0
   fi
 
-  challenge_collapse_route_drift "$issue" "$feature_dir" "$detail" || return 0
+  challenge_collapse_route_drift "$issue" "$feature_dir" "$detail" "multiple-varied-roles" || return 0
   [[ "$CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF" == "true" ]] && return 1
   return 0
 }

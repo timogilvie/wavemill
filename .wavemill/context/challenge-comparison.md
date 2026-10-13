@@ -139,11 +139,11 @@ A pair is only comparable when its arms differ in exactly the varied stage. `ass
 | Executed stages (all tasks) | A stage whose result shows it ran (`running/awaiting_user/completed/failed`) keeps its route: `.routing-complete` pins it (`executedStagesPinned`) and `.phase-config.json` leaves that stage untouched. The router never rewrites the planner after planning. |
 | Plan-stage materialiser (HOK-3065) | Passes executed stages to `resolve-challenge-task.ts --resolve-sealed --executed-stages`, re-seals the primary to the enriched intent (`challenge_primary_resealed`), and preflights before creating the challenger. Enrichment that would vary a second field collapses as `route-drift`. |
 | Review-stage materialiser | Takes the challenger's reviewer from the sealed intent, preflights the primary's `.phase-config.json` against the challenger's sealed route (drift → rc 4 → arm cancelled `route-drift`), writes the challenger's own `review` phase-config entry and `.routing-complete` reviewer, and never inherits `.review-result.json`. |
-| Pre-review preflight (`challenge_pre_review_route_preflight`) | Non-deferred pairs are checked once per head before either arm's review. No PR yet → collapse; a PR already open → both arms record `challengeDivergenceReason: route-drift`, which eval records carry so the comparison voids instead of judging. |
+| Pre-review preflight (`challenge_pre_review_route_preflight`) | Non-deferred pairs are checked once per head before either arm's review. No PR yet → collapse as `challenge_collapsed reason=multiple-varied-roles`; a PR already open → both arms record `challengeDivergenceReason: multiple-varied-roles`, which eval records carry so the comparison voids instead of judging. |
 
 `challengeModel` names the **varied stage's** model on every arm (the reviewer for review pairs, the planner for plan pairs); `challengeVariedModel` mirrors it so `resolve_stage_result_model` restores the arm's own model. Readers that need the coder use `coderModel` via `challenge_coder_model_for_task` (falling back to `challengeModel` only for implementation/legacy state); compare-prs receives it as `--primary-coder` / `--challenger-coder`.
 
-`route-drift` is an `InvalidChallengeReason` and a harness-fault arm-failure kind: no winner, no model forfeit. `multiple-varied-roles` remains the comparison-time backstop for pairs that predate the fix.
+`route-drift` and `multiple-varied-roles` are `InvalidChallengeReason`s and harness-fault arm-failure kinds: no winner, no model forfeit. `multiple-varied-roles` is both the pre-review preflight's collapse reason and the comparison-time backstop for pairs that predate the fix.
 
 ## Invalid-challenge auto-resolution (HOK-2970)
 
@@ -161,7 +161,7 @@ Rules of the road:
 
 ### 2026-10-06T00:00:00.000Z - HOK-3156: Challenge pair routes no longer drift after sealing
 
-Post-expansion re-routing freezes challenge arms to their sealed routes and never rewrites an executed stage; review-stage forks write their own phase-config/routing and stage results; `challengeModel` is the varied stage's model; a one-variable preflight (fork time and pre-review) collapses drifted pairs as `route-drift` before comparison. See "One-Variable Route Invariant" above.
+Post-expansion re-routing freezes challenge arms to their sealed routes and never rewrites an executed stage; review-stage forks write their own phase-config/routing and stage results; `challengeModel` is the varied stage's model; a one-variable preflight collapses drifted pairs before comparison — `route-drift` at fork time, `multiple-varied-roles` pre-review. See "One-Variable Route Invariant" above.
 
 ### 2026-10-02T12:00:00.000Z - HOK-3154: Review-gate refusal retires the arm (HOK-3147 third path)
 

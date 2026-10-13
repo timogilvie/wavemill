@@ -19,8 +19,10 @@
 #   4. A primary that drifted after sealing (planner + depths) collapses the pair
 #      as route-drift at fork time: no challenger branch, worktree or launch.
 #   5. The pre-review preflight collapses a non-deferred pair whose arms differ
-#      beyond the varied stage, and records invalid_challenge:route-drift on
-#      both arms once a PR exists instead.
+#      beyond the varied stage as multiple-varied-roles, and records
+#      invalid_challenge:multiple-varied-roles on both arms once a PR exists
+#      instead. A review-stage pair differing only in the reviewer passes; one
+#      that also differs in plan depth collapses.
 set -euo pipefail
 
 # Guard against being sourced.
@@ -344,7 +346,7 @@ rm -f "$TMP_DIR/cancelled.txt"
 preflight_rc=0
 challenge_pre_review_route_preflight "HOK-9103" "$P_DIR" "$WORKTREE_ROOT/plan-pair" || preflight_rc=$?
 check_eq "primary continues after collapsing its drifted challenger" "0" "$preflight_rc"
-check_eq "challenger torn down with route-drift" "route-drift dimensions=coder" \
+check_eq "challenger torn down with multiple-varied-roles" "multiple-varied-roles dimensions=coder" \
   "$(cut -d'|' -f7,8 "$TMP_DIR/cancelled.txt" 2>/dev/null | tr '|' ' ' || echo none)"
 check_eq "preflight verdict cached" "drift" "$(jq -r '.status' "$P_DIR/.challenge-route-preflight.json")"
 
@@ -352,8 +354,40 @@ rm -f "$TMP_DIR/cancelled.txt" "$C_DIR/.challenge-route-preflight.json"
 state_mutate "$STATE_FILE" '.tasks["HOK-9103"].pr = "4242"'
 challenge_pre_review_route_preflight "HOK-9103_c" "$C_DIR" "$WORKTREE_ROOT/plan-pair-c"
 check_eq "with a PR open the pair is not torn down" "absent" "$([[ -f "$TMP_DIR/cancelled.txt" ]] && echo present || echo absent)"
-check_eq "both arms record invalid_challenge:route-drift" "route-drift route-drift" \
+check_eq "both arms record invalid_challenge:multiple-varied-roles" "multiple-varied-roles multiple-varied-roles" \
   "$(jq -r '"\(.tasks["HOK-9103"].challengeDivergenceReason) \(.tasks["HOK-9103_c"].challengeDivergenceReason)"' "$STATE_FILE")"
+
+# Review-stage pair: arms that differ only in the reviewer pass the preflight.
+mk_review_arm() {
+  local slug="$1" reviewer="$2" plan_depth="$3" feature="$WORKTREE_ROOT/$1/features/$1"
+  mkdir -p "$feature"
+  jq -n --arg r "$reviewer" --arg d "$plan_depth" '{planning: {model: "claude-opus-5-5", depth: $d},
+    coding: {model: "claude-opus-4-7", depth: "deep"}, review: {model: $r, mode: "llm"}}' > "$feature/.phase-config.json"
+  printf '%s\n' "$feature"
+}
+RP_DIR="$(mk_review_arm rev-pair gpt-5.6-terra deep)"
+RC_DIR="$(mk_review_arm rev-pair-c kimi-k2 deep)"
+state_mutate "$STATE_FILE" \
+  '.tasks["HOK-9104"] = {slug: "rev-pair", worktree: $pw, challenge: true, challengeRole: "primary",
+     challengePairId: "HOK-9104", challengeStage: "review"}
+   | .tasks["HOK-9104_c"] = {slug: "rev-pair-c", worktree: $cw, challenge: true, challengeRole: "challenger",
+     challengePairId: "HOK-9104", challengeStage: "review"}' \
+  --arg pw "$WORKTREE_ROOT/rev-pair" --arg cw "$WORKTREE_ROOT/rev-pair-c"
+rm -f "$TMP_DIR/cancelled.txt"
+preflight_rc=0
+challenge_pre_review_route_preflight "HOK-9104_c" "$RC_DIR" "$WORKTREE_ROOT/rev-pair-c" || preflight_rc=$?
+check_eq "reviewer-only pair passes the preflight" "0" "$preflight_rc"
+check_eq "reviewer-only pair is not torn down" "absent" "$([[ -f "$TMP_DIR/cancelled.txt" ]] && echo present || echo absent)"
+check_eq "reviewer-only verdict cached as ok" "ok" "$(jq -r '.status' "$RC_DIR/.challenge-route-preflight.json")"
+
+# Same pair after the challenger's plan depth drifted: reviewer + planDepth.
+rm -f "$RC_DIR/.challenge-route-preflight.json"
+state_mutate "$RC_DIR/.phase-config.json" '.planning.depth = "shallow"'
+preflight_rc=0
+challenge_pre_review_route_preflight "HOK-9104" "$RP_DIR" "$WORKTREE_ROOT/rev-pair" || preflight_rc=$?
+check_eq "primary continues after collapsing reviewer+planDepth drift" "0" "$preflight_rc"
+check_eq "reviewer+planDepth pair collapses as multiple-varied-roles" "multiple-varied-roles" \
+  "$(cut -d'|' -f7 "$TMP_DIR/cancelled.txt" 2>/dev/null || echo none)"
 
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"
