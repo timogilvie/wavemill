@@ -7,6 +7,8 @@
 #   3. branch coverage: unsearched branches and truncated pages miss
 #   4. stale meta / kill switch / search failure fall back to direct gh
 #   5. session repo cache: one repo view + one protection read per base
+#   5b. a repo cache left by another repo's mill (same session name) or an
+#       unstamped legacy one is discarded, never served
 #   6. the dashboard does not overwrite a fresh monitor cache
 
 set -euo pipefail
@@ -25,6 +27,7 @@ export MOCK_GH_REQUIRED='["Shell and Unit Tests","Preflight Checks"]'
 export SESSION="pr-cache-test"
 export MONITOR_PR_CACHE="$TMP_DIR/pr-cache.json"
 export WAVEMILL_SESSION_REPO_CACHE="$TMP_DIR/repo.json"
+export WAVEMILL_SESSION_REPO_DIR="$(cd "$TMP_DIR" && pwd -P)"
 API_TIMEOUT=10
 export BASE_BRANCH=main
 
@@ -120,6 +123,26 @@ assert_eq "new base costs one protection read" "1" "$(gh_calls)"
 reset_calls
 assert_eq "repo name from cache" "acme/widgets" "$(wavemill_repo_name_with_owner "$TMP_DIR")"
 assert_eq "no gh call for the repo name" "0" "$(gh_calls)"
+
+echo "=== 5b. another repo's session cache is discarded ==="
+mkdir -p "$TMP_DIR/other-repo"
+other_dir="$(cd "$TMP_DIR/other-repo" && pwd -P)"
+jq -cn --arg dir "$other_dir" \
+  '{repoDir: $dir, nameWithOwner: "other/repo", requiredChecks: {main: ["Foreign Check"]}}' > "$WAVEMILL_SESSION_REPO_CACHE"
+reset_calls
+assert_eq "foreign cache is not served as the repo name" "acme/widgets" "$(wavemill_repo_name_with_owner "$TMP_DIR")"
+assert_eq "foreign cache miss asks GitHub" "1" "$(gh_calls)"
+reset_calls
+wavemill_session_repo_cache_refresh "$TMP_DIR" main
+assert_eq "foreign cache refetched: repo view + protection" "2" "$(gh_calls)"
+assert_eq "refreshed name is this repo's" "acme/widgets" "$(jq -r '.nameWithOwner' "$WAVEMILL_SESSION_REPO_CACHE")"
+assert_eq "foreign required checks dropped" '["Shell and Unit Tests","Preflight Checks"]' "$(jq -c '.requiredChecks.main' "$WAVEMILL_SESSION_REPO_CACHE")"
+assert_eq "cache stamped with this repo" "$WAVEMILL_SESSION_REPO_DIR" "$(jq -r '.repoDir' "$WAVEMILL_SESSION_REPO_CACHE")"
+jq -cn '{nameWithOwner: "other/repo", requiredChecks: {main: ["Foreign Check"]}}' > "$WAVEMILL_SESSION_REPO_CACHE"
+reset_calls
+wavemill_session_repo_cache_refresh "$TMP_DIR" main
+assert_eq "unstamped legacy cache refetched" "2" "$(gh_calls)"
+assert_eq "legacy name replaced" "acme/widgets" "$(jq -r '.nameWithOwner' "$WAVEMILL_SESSION_REPO_CACHE")"
 
 echo "=== 6. dashboard leaves a fresh monitor cache alone ==="
 wavemill_pr_cache_refresh "${BRANCHES[@]}"

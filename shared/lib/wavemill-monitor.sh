@@ -16621,8 +16621,9 @@ wavemill_record_monitor_iteration_timing() {
 monitor_github_session_init() {
   WAVEMILL_SESSION_PR_CACHE="$(wavemill_pr_cache_file)"
   WAVEMILL_SESSION_REPO_CACHE="$(wavemill_session_repo_cache_file)"
+  WAVEMILL_SESSION_REPO_DIR="$(wavemill_session_repo_cache_repo_dir "$REPO_DIR")"
   MONITOR_GH_CALL_COUNTER_FILE="${WAVEMILL_SESSION_PR_CACHE}.gh-calls"
-  export WAVEMILL_SESSION_PR_CACHE WAVEMILL_SESSION_REPO_CACHE MONITOR_GH_CALL_COUNTER_FILE
+  export WAVEMILL_SESSION_PR_CACHE WAVEMILL_SESSION_REPO_CACHE WAVEMILL_SESSION_REPO_DIR MONITOR_GH_CALL_COUNTER_FILE
   : > "$MONITOR_GH_CALL_COUNTER_FILE" 2>/dev/null || true
   # Count every shell `gh` spawn from the monitor and its subshells (the
   # spawn-sample acceptance metric). Skipped when a test already mocks gh.
