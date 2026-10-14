@@ -7682,11 +7682,11 @@ task_state_mutate_existing() {
     "if .tasks[\$issue] then .tasks[\$issue] |= ($filter) else . end" \
     --arg issue "$issue" "$@"
   rc=$?
-  # HOK-3190: evict the pass snapshot entries for this task so reads later in
-  # the pass see the fresh value. No-op when the monitor's pass snapshot is
-  # not active (standalone CLI, test harness).
-  if declare -F invalidate_task_snapshot >/dev/null 2>&1; then
-    invalidate_task_snapshot "$issue" 2>/dev/null || true
+  # HOK-3190: re-read this task's pass snapshot entries so reads later in the
+  # pass see the written row. No-op when the monitor's pass snapshot is not
+  # active (standalone CLI, test harness).
+  if declare -F pass_snapshot_refresh_task >/dev/null 2>&1; then
+    pass_snapshot_refresh_task "$issue" 2>/dev/null || true
   fi
   return "$rc"
 }
