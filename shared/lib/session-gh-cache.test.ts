@@ -38,10 +38,18 @@ function fixture(): { dir: string; env: NodeJS.ProcessEnv; cleanup: () => void }
     { number: 9, headRefName: 'task/a', headRefOid: 'b'.repeat(40), state: 'CLOSED' },
     { number: 'bad' },
   ]));
-  writeFileSync(repoCache, JSON.stringify({ nameWithOwner: 'acme/widgets', requiredChecks: { main: ['CI'], dev: [] } }));
+  writeFileSync(repoCache, JSON.stringify({
+    repoDir: '/repos/widgets',
+    nameWithOwner: 'acme/widgets',
+    requiredChecks: { main: ['CI'], dev: [] },
+  }));
   return {
     dir,
-    env: { WAVEMILL_SESSION_PR_CACHE: prCache, WAVEMILL_SESSION_REPO_CACHE: repoCache },
+    env: {
+      WAVEMILL_SESSION_PR_CACHE: prCache,
+      WAVEMILL_SESSION_REPO_CACHE: repoCache,
+      WAVEMILL_SESSION_REPO_DIR: '/repos/widgets',
+    },
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
 }
@@ -93,6 +101,23 @@ test('session repo cache serves nameWithOwner and per-base required checks', () 
     assert.deepEqual(cachedRequiredChecks('dev', { env }), [], 'a recorded unprotected base is an empty list');
     assert.equal(cachedRequiredChecks('other', { env }), undefined, 'an unrecorded base is a miss');
     assert.equal(cachedNameWithOwner({ env: { ...env, WAVEMILL_DISABLE_GH_BATCH_CACHE: '1' } }), undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test('session repo cache written for another repo (or unstamped) is a miss', () => {
+  const { dir, env, cleanup } = fixture();
+  try {
+    // Same tmux session name, different milled repo: never serve its values.
+    const otherRepo = { ...env, WAVEMILL_SESSION_REPO_DIR: '/repos/site' };
+    assert.equal(cachedNameWithOwner({ env: otherRepo }), undefined);
+    assert.equal(cachedRequiredChecks('main', { env: otherRepo }), undefined);
+    const { WAVEMILL_SESSION_REPO_DIR: _unset, ...noSessionRepo } = env;
+    assert.equal(cachedNameWithOwner({ env: noSessionRepo }), undefined);
+    const legacy = join(dir, 'legacy-repo.json');
+    writeFileSync(legacy, JSON.stringify({ nameWithOwner: 'acme/widgets', requiredChecks: { main: ['CI'] } }));
+    assert.equal(cachedRequiredChecks('main', { env: { ...env, WAVEMILL_SESSION_REPO_CACHE: legacy } }), undefined);
   } finally {
     cleanup();
   }

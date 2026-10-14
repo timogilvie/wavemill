@@ -4520,11 +4520,32 @@ wavemill_session_repo_cache_file() {
   printf '%s\n' "${WAVEMILL_SESSION_REPO_CACHE:-/tmp/${SESSION:-wavemill}-repo.json}"
 }
 
+# Canonical path of the repo the session cache belongs to. The cache file is
+# named by tmux session, which is reused across repos, so every writer stamps
+# `.repoDir` and every reader ignores a cache stamped for another repo (or not
+# stamped at all) instead of serving another repo's name and protection.
+wavemill_session_repo_cache_repo_dir() {
+  local dir="${1:-${WAVEMILL_SESSION_REPO_DIR:-${REPO_DIR:-}}}"
+  [[ -n "$dir" ]] || return 0
+  (cd "$dir" 2>/dev/null && pwd -P) || true
+}
+
+# Print the session repo cache only when it belongs to this session's repo.
+wavemill_session_repo_cache_read() {
+  local cache_file expected
+  wavemill_gh_batch_cache_disabled && return 0
+  cache_file="$(wavemill_session_repo_cache_file)"
+  [[ -f "$cache_file" ]] || return 0
+  expected="$(wavemill_session_repo_cache_repo_dir)"
+  [[ -n "$expected" ]] || return 0
+  jq -c --arg dir "$expected" 'select(type == "object" and .repoDir == $dir)' "$cache_file" 2>/dev/null || true
+}
+
 # wavemill_session_repo_cache_refresh [repo_dir] [base_branch...] [--force]
 # Fills missing entries only (one `gh repo view` per session, one protection
 # read per base branch). --force refetches everything.
 wavemill_session_repo_cache_refresh() {
-  local repo_dir="${REPO_DIR:-$PWD}" force="false" cache_file current nwo default_branch base contexts
+  local repo_dir="${REPO_DIR:-$PWD}" force="false" cache_file current nwo default_branch base contexts repo_id
   local -a bases=()
   local arg first=1
   for arg in "$@"; do
@@ -4539,10 +4560,16 @@ wavemill_session_repo_cache_refresh() {
   done
   wavemill_gh_batch_cache_disabled && return 0
   cache_file="$(wavemill_session_repo_cache_file)"
+  repo_id="$(wavemill_session_repo_cache_repo_dir "$repo_dir")"
+  [[ -n "$repo_id" ]] || return 0
   current='{}'
-  if [[ "$force" != "true" && -f "$cache_file" ]] && jq -e 'type == "object"' "$cache_file" >/dev/null 2>&1; then
+  # A cache left by another repo's mill under the same session name (or an
+  # unstamped legacy one) is discarded, never extended.
+  if [[ "$force" != "true" && -f "$cache_file" ]] \
+    && jq -e --arg dir "$repo_id" 'type == "object" and .repoDir == $dir' "$cache_file" >/dev/null 2>&1; then
     current="$(cat "$cache_file")"
   fi
+  current="$(jq -c --arg dir "$repo_id" '.repoDir = $dir' <<<"$current")"
 
   nwo="$(jq -r '.nameWithOwner // empty' <<<"$current")"
   if [[ -z "$nwo" ]]; then
@@ -4588,9 +4615,7 @@ wavemill_session_repo_cache_refresh() {
 # Cached nameWithOwner, or a live `gh repo view` when the cache misses.
 wavemill_repo_name_with_owner() {
   local repo_dir="${1:-${REPO_DIR:-$PWD}}" nwo=""
-  if ! wavemill_gh_batch_cache_disabled; then
-    nwo="$(jq -r '.nameWithOwner // empty' "$(wavemill_session_repo_cache_file)" 2>/dev/null || true)"
-  fi
+  nwo="$(wavemill_session_repo_cache_read | jq -r '.nameWithOwner // empty' 2>/dev/null || true)"
   if [[ -z "$nwo" ]]; then
     nwo="$(cd "$repo_dir" 2>/dev/null && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
   fi
