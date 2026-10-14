@@ -191,6 +191,7 @@ TESTS=(
   monitor-state-size.test.sh
   hot-state-byte-cap.test.sh
   monitor-usr2-wakeup.test.sh
+  fakes/fakes-contract.test.sh
 )
 
 SHARD_INDEX=1

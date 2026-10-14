@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Shared tmux fake (HOK-3226): the real tmux binary on a private socket.
+#
+# Production code calls bare `tmux` everywhere. Pointing it at a per-test
+# server gives real window/pane/send-keys semantics (pane pids, dead panes,
+# pane_current_path) without touching the developer's own tmux sessions.
+set -euo pipefail
+: "${FAKE_TMUX_REAL:?FAKE_TMUX_REAL must name the real tmux binary}"
+: "${FAKE_TMUX_SOCK:?FAKE_TMUX_SOCK must name the private tmux socket}"
+if [[ -n "${FAKE_TMUX_LOG:-}" ]]; then
+  printf '%s\n' "$*" >> "$FAKE_TMUX_LOG"
+fi
+exec "$FAKE_TMUX_REAL" -S "$FAKE_TMUX_SOCK" "$@"
