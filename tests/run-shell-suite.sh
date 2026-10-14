@@ -10,9 +10,11 @@ set -euo pipefail
 #   bash tests/run-shell-suite.sh --list          # print selected tests and exit
 #   bash tests/run-shell-suite.sh --timing-out FILE  # also write per-test timing JSON
 #
-# Shards are assigned round-robin rather than in contiguous blocks: the slow
-# suites (lifecycle-*, challenge-*) are clustered in the list, and contiguous
-# blocks would pile them into one shard.
+# Sharding uses the deterministic weighted partitioner
+# (tools/partition-tests.ts + tests/ci-test-weights.json, suite "shell") so
+# shard runtimes stay balanced; round-robin left one shard at ~2.5x the
+# others (HOK-3233). An unsharded run (the default) never invokes the
+# partitioner, so plain local runs have no extra dependency.
 #
 # Timing output (--timing-out or TIMING_OUTPUT env) is a single bounded JSON
 # document: one entry per executed test with id, elapsed ms, and result. It
@@ -231,12 +233,24 @@ if (( SHARD_TOTAL < 1 || SHARD_INDEX < 1 || SHARD_INDEX > SHARD_TOTAL )); then
   exit 2
 fi
 
-SELECTED=()
-for i in "${!TESTS[@]}"; do
-  if (( i % SHARD_TOTAL == SHARD_INDEX - 1 )); then
-    SELECTED+=("${TESTS[$i]}")
+if (( SHARD_TOTAL == 1 )); then
+  SELECTED=("${TESTS[@]}")
+else
+  # Deterministic weighted partitioning. A partitioner failure must fail the
+  # shard loudly: a silent fallback could drop or duplicate tests across the
+  # matrix if one leg fell back while others did not.
+  if ! SELECTION="$(
+    printf '%s\n' "${TESTS[@]}" |
+      (cd "$SCRIPT_DIR/.." && npx tsx tools/partition-tests.ts --suite shell --shard "${SHARD_INDEX}/${SHARD_TOTAL}")
+  )"; then
+    echo "run-shell-suite.sh: partitioner failed for shard ${SHARD_INDEX}/${SHARD_TOTAL}" >&2
+    exit 2
   fi
-done
+  SELECTED=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && SELECTED+=("$line")
+  done <<< "$SELECTION"
+fi
 
 # A shard with no work is a configuration error, not a silent pass.
 if (( ${#SELECTED[@]} == 0 )); then
