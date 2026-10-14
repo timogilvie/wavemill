@@ -1069,7 +1069,7 @@ describe('cool-off window in applyChallengePairGates', () => {
 
   it('uses config default when coolOffSeconds not passed in options', async () => {
     const { repoDir, cleanup } = setupRepoDir({
-      challenge: { gate: { coolOffSeconds: 60 } },
+      challenge: { enabled: true, gate: { coolOffSeconds: 60 } },
     });
     try {
       const now = Date.parse('2026-04-01T00:00:30Z');
@@ -1086,6 +1086,27 @@ describe('cool-off window in applyChallengePairGates', () => {
       const result = await applyChallengePairGates(items, [], repoDir, options);
       assert.equal(result.eligible.length, 0);
       assert.equal(result.blocked[0].reason, 'challenge:cool-off');
+    } finally {
+      cleanup();
+    }
+  });
+
+  // protects: holding fresh task PRs for a challenger that can never be
+  // launched because challenge mode is off.
+  it('skips the cool-off when challenge mode is disabled', async () => {
+    const { repoDir, cleanup } = setupRepoDir({
+      challenge: { enabled: false, gate: { coolOffSeconds: 60 } },
+    });
+    try {
+      const now = Date.parse('2026-04-01T00:00:30Z');
+      const items = [makeWorkItem({
+        number: 102,
+        headRefName: 'task/challenges-off',
+        createdAt: '2026-04-01T00:00:00Z',
+      })];
+      const result = await applyChallengePairGates(items, [], repoDir, { remoteBranches: [], nowMs: () => now });
+      assert.equal(result.blocked.length, 0);
+      assert.equal(result.eligible.length, 1);
     } finally {
       cleanup();
     }

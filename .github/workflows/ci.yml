@@ -381,8 +381,9 @@ jobs:
   # Golden journeys (HOK-3227): the real monitor loop + tend driving one task
   # from backlog to merged and reaped against the shared fakes (tests/fakes/).
   # One journey per matrix leg so the suite adds ~0 to CI wall-clock. Runs on
-  # mill-core changes, nightly, and on demand; always reports a conclusion so
-  # it can be made a required check (not required yet -- see HOK-3228).
+  # mill-core changes, nightly, and on demand; legs always report a
+  # conclusion, and the "Golden Journeys" aggregator below is the required
+  # check.
   journeys:
     name: Golden Journey (${{ matrix.journey }})
     runs-on: ubuntu-latest
@@ -443,6 +444,27 @@ jobs:
           path: journey-timing-${{ matrix.journey }}.json
           if-no-files-found: ignore
           retention-days: 7
+
+  # Single required status check for the journey matrix. Branch protection
+  # requires "Golden Journeys", so adding a journey to the matrix never needs a
+  # protection change. Legs that skip (no mill-core changes) report success.
+  # The name is load-bearing; rename only alongside the protection rule.
+  journeys-required:
+    name: Golden Journeys
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+    needs: [journeys]
+
+    steps:
+      - name: Report journey results
+        run: echo "journeys=${{ needs.journeys.result }}"
+
+      - name: Fail unless every journey succeeded
+        if: needs.journeys.result != 'success'
+        run: |
+          echo "::error::One or more golden journeys did not succeed (${{ needs.journeys.result }})."
+          exit 1
 
   lifecycle-integration:
     name: Lifecycle Integration Tests
