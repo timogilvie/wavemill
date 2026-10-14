@@ -6,7 +6,9 @@
  * (`WAVEMILL_SESSION_PR_CACHE`, a JSON array in `gh pr list --json` shape).
  * Repo-level constants (`nameWithOwner`, branch-protection required checks)
  * live in the session repo cache (`WAVEMILL_SESSION_REPO_CACHE`), written once
- * per mill session.
+ * per mill session. That file is named by tmux session, which is reused across
+ * repos, so it is stamped with the repo it describes (`repoDir`) and served
+ * only to a session whose `WAVEMILL_SESSION_REPO_DIR` matches.
  *
  * Every reader here is best-effort and fail-open to the network: a missing,
  * unreadable, stale or malformed cache returns `null`, and the caller falls
@@ -44,6 +46,8 @@ export interface CachedPullRequest {
 
 /** Session repo cache shape written by `wavemill_session_repo_cache_refresh`. */
 export interface SessionRepoCache {
+  /** Canonical path of the repo this cache describes (`pwd -P`). */
+  repoDir?: string;
   nameWithOwner?: string;
   defaultBranch?: string;
   /** Branch-protection required contexts keyed by base branch name. */
@@ -132,14 +136,21 @@ export function findCachedPullRequestsForBranch(
     .sort((a, b) => b.number - a.number);
 }
 
-/** Read the session repo cache, or `null` when disabled/unset/unreadable. */
+/**
+ * Read the session repo cache, or `null` when disabled/unset/unreadable or
+ * when it describes a different repo than `WAVEMILL_SESSION_REPO_DIR` (an
+ * unstamped legacy cache is also a miss). Serving another repo's name or
+ * branch protection would gate this repo's PRs on checks that never run there.
+ */
 export function readSessionRepoCache(options: Omit<CacheReadOptions, 'maxAgeMs'> = {}): SessionRepoCache | null {
   const env = options.env ?? process.env;
   if (ghBatchCacheDisabled(env)) return null;
   const path = env.WAVEMILL_SESSION_REPO_CACHE;
-  if (!path) return null;
+  const expectedRepoDir = env.WAVEMILL_SESSION_REPO_DIR?.trim();
+  if (!path || !expectedRepoDir) return null;
   const parsed = readJsonFile(path);
-  return isRecord(parsed) ? (parsed as SessionRepoCache) : null;
+  if (!isRecord(parsed) || parsed.repoDir !== expectedRepoDir) return null;
+  return parsed as SessionRepoCache;
 }
 
 /** Cached `nameWithOwner`, or `undefined` on any miss. */
