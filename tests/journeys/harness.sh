@@ -293,9 +293,17 @@ journey_trace() {
   if [[ -s "$JOURNEY_TMP/logs/tend.log" ]]; then
     echo "tend (last 15 lines):"; tail -15 "$JOURNEY_TMP/logs/tend.log" | sed 's/^/  /'
   fi
+  if [[ -s "$JOURNEY_TMP/logs/status.log" ]]; then
+    echo "mill status log (last 40 lines):"; tail -40 "$JOURNEY_TMP/logs/status.log" | cut -c1-240 | sed 's/^/  /'
+  fi
   echo "monitor (last 40 lines):"
   tail -40 "$JOURNEY_TMP/logs/monitor.out" 2>/dev/null | sed 's/\x1b\[[0-9;]*[A-Za-z]//g; s/^/  /'
   echo "artifacts kept in: $JOURNEY_TMP"
+  if [[ -n "${JOURNEY_ARTIFACT_DIR:-}" ]]; then
+    mkdir -p "$JOURNEY_ARTIFACT_DIR"
+    tar -C "$(dirname "$JOURNEY_TMP")" -czf "$JOURNEY_ARTIFACT_DIR/journey-$JOURNEY_NAME.tgz" \
+      --exclude='*/origin.git/objects' --exclude='*/.git/objects' "$(basename "$JOURNEY_TMP")" 2>/dev/null || true
+  fi
   echo "──────────────────────────────────────────────────────────────"
 }
 

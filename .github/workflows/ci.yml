@@ -419,10 +419,21 @@ jobs:
 
       - name: Run journey
         if: env.RUN_JOURNEYS == 'true'
+        env:
+          JOURNEY_ARTIFACT_DIR: ${{ runner.temp }}/journey-artifacts
         run: |
           start=$(date +%s)
           bash tests/journeys/run-journeys.sh "${{ matrix.journey }}"
           printf '{"suite":"journeys","journey":"%s","elapsedMs":%d}\n' "${{ matrix.journey }}" "$(( ($(date +%s) - start) * 1000 ))" > "journey-timing-${{ matrix.journey }}.json"
+
+      - name: Upload journey artifacts on failure
+        if: env.RUN_JOURNEYS == 'true' && failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: journey-failure-${{ matrix.journey }}
+          path: ${{ runner.temp }}/journey-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload journey timing
         if: env.RUN_JOURNEYS == 'true' && always()
