@@ -40,7 +40,7 @@ export interface WeightsManifest {
 }
 
 /** The suites whose CI jobs use weighted partitioning. */
-export const PARTITIONED_SUITES = ['unit', 'custom'] as const;
+export const PARTITIONED_SUITES = ['shell', 'unit', 'custom'] as const;
 export type PartitionedSuite = (typeof PARTITIONED_SUITES)[number];
 
 /** Default manifest location relative to the repo root. */
@@ -123,9 +123,11 @@ export function parseShellArray(script: string, arrayName: string): string[] {
 
 /** Registered files per partitioned suite, read from the runners. */
 export function readRegisteredSuites(repoDir: string): Record<PartitionedSuite, string[]> {
+  const shellScript = readFileSync(join(repoDir, 'tests', 'run-shell-suite.sh'), 'utf8');
   const unitScript = readFileSync(join(repoDir, 'tests', 'run-unit-tests.sh'), 'utf8');
   const customScript = readFileSync(join(repoDir, 'tests', 'run-custom-tests.sh'), 'utf8');
   return {
+    shell: parseShellArray(shellScript, 'TESTS'),
     unit: parseShellArray(unitScript, 'TESTS'),
     custom: [
       ...parseShellArray(customScript, 'CUSTOM_TS_TESTS'),

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Shared stateful gh fake (HOK-3226); implementation in tests/fakes/gh.mjs.
+exec node "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/gh.mjs" "$@"

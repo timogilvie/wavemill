@@ -116,10 +116,9 @@ The matrix uses the smallest shard count whose LPT-estimated maximum shard is
 at or below ~240 seconds under the checked-in weights, leaving headroom
 against the five-minute aggregator budget. Current counts: **unit 7, custom
 3, shell 3** (HOK-3043 dropped shell from 4 → 3 to shave one runner off peak
-fan-out; the shell suite is still round-robin over ~108 files, so per-shard
-runtime is estimated from file count rather than the weights manifest — the
-timing artifact uploaded by each shell shard exists to make an eventual
-weighted-partitioner switch evidence-based). Two caveats the estimates carry:
+fan-out). The shell suite was round-robin until HOK-3233, which left one shard
+at ~255s against ~102s/~136s for the others; it now uses the same weighted
+partitioner under suite `shell`, fed by the `timing-shell-*` artifacts. Two caveats the estimates carry:
 unit file walls are measured under `node --test`'s internal parallelism, so a
 shard's real wall clock is below its estimated sum; and a single indivisible
 test can set a shard's wall-clock floor regardless of balance — the cross-repo

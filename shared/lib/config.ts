@@ -1952,9 +1952,15 @@ export function getChallengeConfig(repoDir?: string): ChallengeConfig {
 }
 
 export function getChallengeGateConfig(repoDir?: string): Required<ChallengeGateConfig> {
-  const gate = loadWavemillConfig(repoDir).challenge?.gate ?? {};
+  const challenge = loadWavemillConfig(repoDir).challenge ?? {};
+  // The cool-off holds a fresh task PR in case a challenger arm appears. With
+  // challenge mode off no challenger is ever launched (resolve-challenge-task
+  // requires `enabled === true`), so there is nothing to wait for.
+  if (challenge.enabled !== true) {
+    return { coolOffSeconds: 0 };
+  }
   return {
-    coolOffSeconds: gate.coolOffSeconds ?? 300,
+    coolOffSeconds: challenge.gate?.coolOffSeconds ?? 300,
   };
 }
 

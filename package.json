@@ -20,6 +20,7 @@
     "test:shell": "bash tests/check-shell.sh && bash tests/run-shell-suite.sh",
     "test:shell-suite": "bash tests/run-shell-suite.sh",
     "test:lifecycle": "bash tests/run-lifecycle-tests.sh",
+    "test:journeys": "bash tests/journeys/run-journeys.sh",
     "test:layout": "bash tests/control-layout.test.sh",
     "test:unit": "npm run test:node-test && npm run test:custom",
     "test:node-test": "bash tests/run-unit-tests.sh",

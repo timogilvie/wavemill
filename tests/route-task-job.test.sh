@@ -6,6 +6,7 @@
 #   2. a changed packet invalidates the result (keyed on packet content)
 #   3. a failed reroute surfaces its reason to the handoff failure path
 #   4. no packet / WAVEMILL_SYNC_ROUTING=1 run the reroute inline
+#   4b. router.enabled=false (ROUTER_ENABLED) skips the reroute entirely
 # Launch routing (launch_task):
 #   5. a live-route miss defers the launch and runs route-task.ts in the
 #      background; the route lands in the saved-route cache as route-job
@@ -70,6 +71,18 @@ assert_eq "no packet runs inline (cheap not_eligible path)" "1" "$(harness_count
 printf '\nSync.\n' >> "$FEATURE/task-packet.md"
 assert_eq "sync routing runs inline" "0" "$(WAVEMILL_SYNC_ROUTING=1 gate)"
 assert_eq "no job in sync mode" "0" "$(harness_count "launch_tracked_job")"
+
+echo "=== 4b. router disabled skips the expanded reroute ==="
+# protects: router.enabled=false being ignored after expansion — the reroute
+# swapped the operator's pinned agent for a routed reviewer (found by the
+# golden journeys, HOK-3227).
+: > "$HARNESS_LOG"
+printf '\nRouter off.\n' >> "$FEATURE/task-packet.md"
+rc=0; ROUTER_ENABLED=false expanded_reroute_gate "$ISSUE" "slug" "$FEATURE" || rc=$?
+assert_eq "router disabled returns 1 (handoff keeps current route)" "1" "$rc"
+assert_eq "skip reason is disabled" "disabled" "$REROUTE_EXPANDED_LAST_REASON"
+assert_eq "no reroute ran" "0" "$(harness_count "reroute $ISSUE")"
+assert_eq "no reroute job launched" "0" "$(harness_count "launch_tracked_job")"
 
 echo "=== 5. launch routing defers on a live-route miss ==="
 LAUNCH_ISSUE="HOK-7005"
