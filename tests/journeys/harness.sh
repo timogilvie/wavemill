@@ -102,7 +102,7 @@ journey_write_config() {
       integration: {enabled: true, integrationBranch: $ib, mergeMethod: "squash", readyPolicy: {enabled: true}},
       router: {enabled: false},
       observer: {enabled: false},
-      challenge: {enabled: false, gate: {coolOffSeconds: 0}},
+      challenge: {enabled: false},
       ready: {watchdog: {enabled: false}},
       monitor: {readyWatchdog: {enabled: false}}
     } * $overlay' > "$REPO_DIR/.wavemill-config.json"
