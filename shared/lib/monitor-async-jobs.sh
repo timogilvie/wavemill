@@ -80,7 +80,7 @@ ASYNC_JOB_MAX_RUNTIME_SECONDS="${WAVEMILL_ASYNC_JOB_MAX_RUNTIME_SECONDS:-3600}"
 monitor_async_job_running() {
   local job_id="$1" dir pid started_at
   dir="$(monitor_async_job_dir "$job_id")"
-  read -r pid started_at < "$dir/inflight" 2>/dev/null || return 1
+  read -r pid started_at 2>/dev/null < "$dir/inflight" || return 1
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
   if [[ "$started_at" =~ ^[0-9]+$ ]] && (( $(date +%s) - started_at > ASYNC_JOB_MAX_RUNTIME_SECONDS )); then
     return 1
@@ -503,6 +503,15 @@ expanded_reroute_gate() {
   local issue="$1" slug="$2" feature_dir="$3"
   local packet_hash marker detail rc job_id meta decision
   REROUTE_EXPANDED_LAST_REASON=""
+
+  # router.enabled=false (ROUTER_ENABLED) must hold for the whole task, not
+  # only the launch route: an expanded reroute would otherwise swap in a
+  # routed planner/coder/reviewer the operator turned routing off to avoid.
+  # "disabled" is already a skip reason for the handoff (keep current route).
+  if [[ "${ROUTER_ENABLED:-true}" != "true" ]]; then
+    REROUTE_EXPANDED_LAST_REASON="disabled"
+    return 1
+  fi
 
   packet_hash="$(expanded_reroute_packet_hash "$feature_dir")"
   if routing_sync || [[ -z "$packet_hash" ]]; then

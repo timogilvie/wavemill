@@ -28,6 +28,7 @@ import {
   type StrictBaseRetryOps,
   type TendCandidate,
   type TendDecision,
+  reconcileWavemillPrLabels,
 } from './tend-controller.ts';
 import { mergeLaneStateDir } from './merge-queue.ts';
 import {
@@ -5071,5 +5072,31 @@ describe('executeMerge handoff-rebind lag (HOK-3105)', () => {
     } finally {
       options.cleanup();
     }
+  });
+});
+
+describe('reconcileWavemillPrLabels', () => {
+  // protects: tend handing raw `gh pr list` entries (labels as {name},
+  // head as headRefOid) to the reconciler, which reads string labels and
+  // headSha — every PR then looked label-less and headless, so wm:ready was
+  // never applied and nothing merged (found by the golden journey, HOK-3227).
+  it('gives the reconciler string labels and the head SHA, then maps labels back', async () => {
+    const prs = [{
+      number: 7,
+      title: 't',
+      headRefName: 'task/x',
+      headRefOid: 'abc123',
+      createdAt: '2026-10-14T00:00:00Z',
+      isDraft: false,
+      labels: [{ name: 'wavemill' }],
+      body: '',
+    }];
+    let seen: unknown;
+    await reconcileWavemillPrLabels(prs, '/repo', async (views) => {
+      seen = structuredClone(views);
+      views[0].labels.push('wm:ready');
+    });
+    assert.deepEqual(seen, [{ number: 7, labels: ['wavemill'], headSha: 'abc123' }]);
+    assert.deepEqual(prs[0].labels, [{ name: 'wavemill' }, { name: 'wm:ready' }]);
   });
 });

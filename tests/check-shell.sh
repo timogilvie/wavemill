@@ -257,6 +257,15 @@ for f in \
   "$REPO_DIR"/tests/incident-fixtures-terminal-panes.test.sh \
   "$REPO_DIR"/tests/incident-fixtures-safety-controls.test.sh \
   "$REPO_DIR"/tests/lib/incident-fixture-harness.sh \
+  "$REPO_DIR"/tests/fakes/lib.sh \
+  "$REPO_DIR"/tests/fakes/bin/gh \
+  "$REPO_DIR"/tests/fakes/bin/tmux \
+  "$REPO_DIR"/tests/fakes/bin/claude \
+  "$REPO_DIR"/tests/fakes/fakes-contract.test.sh \
+  "$REPO_DIR"/tests/journeys/harness.sh \
+  "$REPO_DIR"/tests/journeys/run-journeys.sh \
+  "$REPO_DIR"/tests/journeys/happy-path.journey.sh \
+  "$REPO_DIR"/tests/journeys/gh-lag-after-push.journey.sh \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
   "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
   "$REPO_DIR"/tests/tracked-tree-guard.test.sh \
