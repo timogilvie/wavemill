@@ -6,7 +6,9 @@
 #   2. explicit `false` and `0` survive the TSV round-trip (regression test
 #      for the `.field // null` jq-fallback bug — false must not collapse to
 #      null)
-#   3. invalidate_task_field evicts a specific key
+#   3. a task_state_mutate_existing write refreshes the task's entries: the
+#      written field and the untouched ones read correctly later in the pass,
+#      and launch-model resolution still works after the write
 #   4. the monitor_build_pass_snapshot call site runs exactly one `jq -r`
 #      against STATE_FILE (traced via a shim)
 #   5. pass_task_field falls through to read_state_value when the snapshot is
@@ -126,17 +128,23 @@ assert_eq "$dexp" "false" "root depsExpanded preserves literal false"
 assert_eq "$fs" "2" "root freeSlots"
 assert_eq "$noexist" "DFLT" "missing field returns default"
 
-# ── 3: invalidate_task_field ───────────────────────────────────────────────
-INV=$(bash -c '
+# ── 3: a write mid-pass refreshes, never blanks, the task's entries ───────
+# Regression: invalidation used to unset the task's entries and pass_task_field
+# then answered every field with the default for the rest of the pass, so a
+# launch that persisted its window id read an empty model ("no model
+# configured") and an empty PR.
+WRITE=$(bash -c '
   set -Eeuo pipefail
   source '"$REPO_DIR"'/shared/lib/wavemill-monitor.sh '"$TMP"'/env.sh
   monitor_build_pass_snapshot
-  # Prevent the pass_task_field fallback from re-reading the file.
-  rm -f "$STATE_FILE"
-  invalidate_task_field HOK-1 slug
-  printf "%s" "$(pass_task_field HOK-1 slug CLEARED)"
+  task_state_mutate_existing HOK-1 ".windowId = \"@7\" | .coderModel = \"claude-opus-4-7\""
+  printf "%s|%s|%s|%s" \
+    "$(pass_task_field HOK-1 windowId)" \
+    "$(pass_task_field HOK-1 pr)" \
+    "$(pass_task_field HOK-1 evalCompleted)" \
+    "$(task_launch_model HOK-1)"
 ')
-assert_eq "$INV" "CLEARED" "invalidate_task_field evicts entry"
+assert_eq "$WRITE" "@7|500|false|claude-opus-4-7" "write mid-pass: written and untouched fields read back"
 
 # Restore the state file for the remaining tests.
 cat > "$STATE_FILE" <<'JSON'
