@@ -24,6 +24,7 @@ import {
   REVIEW_MERGE_DEFAULTS,
   getChallengeConfig,
   getChallengeSchedulerConfig,
+  getChallengeGateConfig,
   getRouterConfig,
   getEvalConfig,
   getHarnessRetentionConfig,
@@ -233,6 +234,27 @@ test('valid config passes validation', () => {
     assert.equal(config.resources?.runtimeSelection?.defaultVariant, 'optimized');
   } finally {
     cleanUp(tmp);
+  }
+});
+
+// protects: tend holding every fresh task PR for 5 minutes waiting for a
+// challenger arm that can never be launched because challenge mode is off.
+test('challenge gate cool-off is 0 unless challenge mode is enabled', () => {
+  const cases: Array<[string, number]> = [
+    ['{}', 0],
+    ['{"challenge":{"enabled":false,"gate":{"coolOffSeconds":300}}}', 0],
+    ['{"challenge":{"enabled":true}}', 300],
+    ['{"challenge":{"enabled":true,"gate":{"coolOffSeconds":45}}}', 45],
+  ];
+  for (const [config, expected] of cases) {
+    const tmp = makeTempRepo();
+    try {
+      clearConfigCache();
+      writeConfig(tmp, config);
+      assert.equal(getChallengeGateConfig(tmp).coolOffSeconds, expected, config);
+    } finally {
+      cleanUp(tmp);
+    }
   }
 });
 

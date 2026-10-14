@@ -3,8 +3,8 @@ set -euo pipefail
 
 # Shard-surface contract test for the sharded runners.
 #
-# Covers tests/run-custom-tests.sh and tests/run-unit-tests.sh (weighted
-# partitioning, HOK-2939) plus tests/run-shell-suite.sh (round-robin, HOK-3043),
+# Covers tests/run-custom-tests.sh, tests/run-unit-tests.sh (weighted
+# partitioning, HOK-2939) and tests/run-shell-suite.sh (weighted since HOK-3233),
 # all at the shard counts configured in .github/workflows/ci.yml. Asserts:
 #   - the union of every shard's --list output is exactly the full registered
 #     list (every test exactly once, no duplicates, nothing dropped);

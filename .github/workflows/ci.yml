@@ -278,6 +278,7 @@ jobs:
     outputs:
       lifecycle: ${{ steps.filter.outputs.lifecycle == 'true' }}
       openrouter_alias_audit: ${{ steps.filter.outputs.openrouter_alias_audit == 'true' }}
+      journeys: ${{ steps.filter.outputs.journeys == 'true' }}
 
     steps:
       - name: Checkout
@@ -339,6 +340,34 @@ jobs:
               - 'docs/terminal-lifecycle-certification.md'
               # Stage result CLI tool
               - 'tools/stage-result-cli.ts'
+            # Golden journeys (HOK-3227): paths on the plan -> code -> review ->
+            # ready -> tend merge -> reap chain, plus the journeys and fakes.
+            journeys:
+              - 'shared/lib/wavemill-*.sh'
+              - 'shared/lib/agent-adapters.sh'
+              - 'shared/lib/condition-reconciler.sh'
+              - 'shared/lib/monitor-async-jobs.sh'
+              - 'shared/lib/task-progress.*'
+              - 'shared/lib/task-identity.*'
+              - 'shared/lib/tend-*.ts'
+              - 'shared/lib/merge-labels.ts'
+              - 'shared/lib/merge-queue.ts'
+              - 'shared/lib/pr-state-labels.ts'
+              - 'shared/lib/pr-live-state.ts'
+              - 'shared/lib/ready-*.ts'
+              - 'shared/lib/stage-result.ts'
+              - 'shared/lib/seam-artifacts.ts'
+              - 'shared/lib/github.ts'
+              - 'shared/lib/linear.ts'
+              - 'shared/lib/config.ts'
+              - 'shared/hooks/**'
+              - 'tools/tend.ts'
+              - 'tools/ready.ts'
+              - 'tools/stage-result-cli.ts'
+              - 'tools/prompts/**'
+              - 'tests/journeys/**'
+              - 'tests/fakes/**'
+              - '.github/workflows/ci.yml'
             openrouter_alias_audit:
               - 'shared/fixtures/model-registry.v1.json'
               - 'shared/lib/disabled-models.ts'
@@ -348,6 +377,94 @@ jobs:
               - 'tools/check-openrouter-alias-audit-ci.ts'
               - 'tools/check-openrouter-alias-audit-ci.test.ts'
               - '.github/workflows/ci.yml'
+
+  # Golden journeys (HOK-3227): the real monitor loop + tend driving one task
+  # from backlog to merged and reaped against the shared fakes (tests/fakes/).
+  # One journey per matrix leg so the suite adds ~0 to CI wall-clock. Runs on
+  # mill-core changes, nightly, and on demand; legs always report a
+  # conclusion, and the "Golden Journeys" aggregator below is the required
+  # check.
+  journeys:
+    name: Golden Journey (${{ matrix.journey }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: check-paths
+    if: always()
+    strategy:
+      fail-fast: false
+      matrix:
+        journey: [happy-path, gh-lag-after-push]
+    env:
+      RUN_JOURNEYS: ${{ needs.check-paths.outputs.journeys == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+
+    steps:
+      - name: Fail if change detection did not succeed
+        if: needs.check-paths.result != 'success'
+        run: |
+          echo "::error::check-paths did not succeed (${{ needs.check-paths.result }}); cannot determine journey relevance."
+          exit 1
+
+      - name: Report skip
+        if: env.RUN_JOURNEYS != 'true'
+        run: echo "No mill-core changes detected; golden journeys not required for this change."
+
+      - name: Checkout
+        if: env.RUN_JOURNEYS == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup
+        if: env.RUN_JOURNEYS == 'true'
+        uses: ./.github/actions/setup
+        with:
+          packages: jq tmux
+
+      - name: Run journey
+        if: env.RUN_JOURNEYS == 'true'
+        env:
+          JOURNEY_ARTIFACT_DIR: ${{ runner.temp }}/journey-artifacts
+        run: |
+          start=$(date +%s)
+          bash tests/journeys/run-journeys.sh "${{ matrix.journey }}"
+          printf '{"suite":"journeys","journey":"%s","elapsedMs":%d}\n' "${{ matrix.journey }}" "$(( ($(date +%s) - start) * 1000 ))" > "journey-timing-${{ matrix.journey }}.json"
+
+      - name: Upload journey artifacts on failure
+        if: env.RUN_JOURNEYS == 'true' && failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: journey-failure-${{ matrix.journey }}
+          path: ${{ runner.temp }}/journey-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload journey timing
+        if: env.RUN_JOURNEYS == 'true' && always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: journey-timing-${{ matrix.journey }}
+          path: journey-timing-${{ matrix.journey }}.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Single required status check for the journey matrix. Branch protection
+  # requires "Golden Journeys", so adding a journey to the matrix never needs a
+  # protection change. Legs that skip (no mill-core changes) report success.
+  # The name is load-bearing; rename only alongside the protection rule.
+  journeys-required:
+    name: Golden Journeys
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+    needs: [journeys]
+
+    steps:
+      - name: Report journey results
+        run: echo "journeys=${{ needs.journeys.result }}"
+
+      - name: Fail unless every journey succeeded
+        if: needs.journeys.result != 'success'
+        run: |
+          echo "::error::One or more golden journeys did not succeed (${{ needs.journeys.result }})."
+          exit 1
 
   lifecycle-integration:
     name: Lifecycle Integration Tests

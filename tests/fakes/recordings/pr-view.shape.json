@@ -1,0 +1,47 @@
+{
+  "author": {
+    "id": "string",
+    "is_bot": "boolean",
+    "login": "string",
+    "name": "string"
+  },
+  "baseRefName": "string",
+  "baseRefOid": "string",
+  "body": "string",
+  "closedAt": "string",
+  "createdAt": "string",
+  "headRefName": "string",
+  "headRefOid": "string",
+  "isDraft": "boolean",
+  "labels": [
+    {
+      "color": "string",
+      "description": "string",
+      "id": "string",
+      "name": "string"
+    }
+  ],
+  "mergeCommit": {
+    "oid": "string"
+  },
+  "mergeStateStatus": "string",
+  "mergeable": "string",
+  "mergedAt": "string",
+  "number": "number",
+  "state": "string",
+  "statusCheckRollup": [
+    {
+      "__typename": "string",
+      "completedAt": "string",
+      "conclusion": "string",
+      "detailsUrl": "string",
+      "name": "string",
+      "startedAt": "string",
+      "status": "string",
+      "workflowName": "string"
+    }
+  ],
+  "title": "string",
+  "updatedAt": "string",
+  "url": "string"
+}

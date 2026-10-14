@@ -21,6 +21,12 @@ import {
 const FIXTURE_WORKFLOW = `name: CI
 
 jobs:
+  shell:
+    name: Shell Tests (shard \${{ matrix.shard }}/3)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
   unit:
     name: Unit Tests (shard \${{ matrix.shard }}/5)
     strategy:
@@ -38,6 +44,7 @@ jobs:
 `;
 
 interface FixtureOptions {
+  shellTests?: string[];
   unitTests?: string[];
   customTs?: string[];
   customSh?: string[];
@@ -59,6 +66,11 @@ function withFixtureRepo(options: FixtureOptions, fn: (repoDir: string) => void)
       'shared/lib/r.test.ts',
     ];
     const customSh = options.customSh ?? ['tests/w.test.sh'];
+    const shellTests = options.shellTests ?? ['s-a.test.sh', 's-b.test.sh', 's-c.test.sh', 's-d.test.sh', 's-e.test.sh', 's-f.test.sh'];
+    writeFileSync(
+      path.join(repoDir, 'tests', 'run-shell-suite.sh'),
+      `TESTS=(\n${shellTests.map((t) => `  ${t}`).join('\n')}\n)\n`
+    );
     writeFileSync(
       path.join(repoDir, 'tests', 'run-unit-tests.sh'),
       `TESTS=(\n${unitTests.map((t) => `  ${t}`).join('\n')}\n)\n`
@@ -77,6 +89,7 @@ function withFixtureRepo(options: FixtureOptions, fn: (repoDir: string) => void)
 }
 
 test('parseShardCount reads matrix shard lists per job', () => {
+  assert.equal(parseShardCount(FIXTURE_WORKFLOW, 'shell'), 3);
   assert.equal(parseShardCount(FIXTURE_WORKFLOW, 'unit'), 5);
   assert.equal(parseShardCount(FIXTURE_WORKFLOW, 'custom'), 3);
   assert.equal(parseShardCount(FIXTURE_WORKFLOW, 'smoke'), null);
@@ -89,9 +102,10 @@ test('parseShellArray reads entries and ignores comments', () => {
   assert.throws(() => parseShellArray(script, 'MISSING'), /MISSING/);
 });
 
-test('readRegisteredSuites merges custom ts and sh arrays', () => {
+test('readRegisteredSuites reads the shell array and merges custom ts and sh arrays', () => {
   withFixtureRepo({}, (repoDir) => {
     const suites = readRegisteredSuites(repoDir);
+    assert.deepEqual(suites.shell, ['s-a.test.sh', 's-b.test.sh', 's-c.test.sh', 's-d.test.sh', 's-e.test.sh', 's-f.test.sh']);
     assert.equal(suites.unit.length, 5);
     assert.deepEqual(suites.custom, [
       'shared/lib/x.test.ts',
@@ -128,7 +142,7 @@ test('checkShardBalance passes on a balanced fixture', () => {
   withFixtureRepo({}, (repoDir) => {
     const result = checkShardBalance(repoDir);
     assert.equal(result.ok, true, formatShardBalance(result));
-    assert.equal(result.suites.length, 2);
+    assert.equal(result.suites.length, 3);
     const unit = result.suites.find((suite) => suite.suite === 'unit')!;
     assert.equal(unit.shardCount, 5);
     // Every registered test assigned exactly once.

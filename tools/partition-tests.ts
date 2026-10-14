@@ -3,8 +3,8 @@
  *
  * Reads a test-file list from stdin (one per line), partitions it with the
  * checked-in weights manifest, and prints the files assigned to the requested
- * shard. Both tests/run-unit-tests.sh and tests/run-custom-tests.sh call this
- * for --shard N/M with M > 1; every matrix leg computes the identical full
+ * shard. tests/run-shell-suite.sh, tests/run-unit-tests.sh and
+ * tests/run-custom-tests.sh call this for --shard N/M with M > 1; every matrix leg computes the identical full
  * partition and selects only its own shard, so assignment is exactly-once by
  * construction.
  *
@@ -35,7 +35,7 @@ runTool({
   name: 'partition-tests',
   description: 'Deterministically assign test files (from stdin) to weighted CI shards',
   options: {
-    suite: { type: 'string', description: 'Suite name in the weights manifest (unit|custom)' },
+    suite: { type: 'string', description: 'Suite name in the weights manifest (shell|unit|custom)' },
     shard: { type: 'string', description: 'Shard to select, as INDEX/TOTAL (e.g. 2/5)' },
     weights: { type: 'string', description: `Weights manifest path (default: ${WEIGHTS_MANIFEST_PATH})` },
     report: { type: 'boolean', description: 'Print the full partition and balance analysis as JSON instead of a shard selection' },

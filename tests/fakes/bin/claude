@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# Scripted fake agent CLI (HOK-3226).
+#
+# Stands in for `claude` inside the mill's agent panes. The mill launches it
+# with WAVEMILL_SESSION / WAVEMILL_ISSUE / WAVEMILL_PHASE exported and the
+# task worktree as cwd; the fake then performs that phase's real contract
+# (plan.md, a commit + .coding-complete, push + PR + review artifacts) using
+# the same tools a real agent would. Behaviour per phase comes from
+# $FAKE_AGENT_SCRIPT_DIR/<phase> when present (a bash snippet sourced in
+# place of the default), so a journey can script "exit with a dirty tree",
+# "hang", "fail review", etc.
+set -euo pipefail
+
+case "${1:-}" in
+  auth) exit 0 ;;
+  --version|-v) echo "0.0.0 (fake claude)"; exit 0 ;;
+esac
+
+if [[ -z "${WAVEMILL_PHASE:-}" ]]; then
+  # Not a phase launch (e.g. a `claude -p` helper call). Record it as an
+  # unmodelled call so a journey can see it, and fail like an unavailable CLI.
+  if [[ -n "${FAKE_AGENT_UNHANDLED:-}" ]]; then
+    jq -cn --arg cwd "$(pwd)" --args '{cwd:$cwd, argv:$ARGS.positional}' -- "${@:0:6}" >> "$FAKE_AGENT_UNHANDLED"
+  fi
+  echo "fake claude: unmodelled invocation: $*" | cut -c1-200 >&2
+  exit 1
+fi
+: "${WAVEMILL_ISSUE:?fake claude: WAVEMILL_ISSUE not exported by the launcher}"
+FAKE_AGENT_LOG="${FAKE_AGENT_LOG:-/dev/null}"
+WT="$(pwd -P)"
+SLUG="${WAVEMILL_SLUG:-$(basename "$WT")}"
+FEATURE_DIR="$WT/features/$SLUG"
+BASE_BRANCH="${FAKE_AGENT_BASE_BRANCH:-${WAVEMILL_BASE_BRANCH:-main}}"
+mkdir -p "$FEATURE_DIR"
+printf '%s phase=%s issue=%s wt=%s\n' "$(date -u +%FT%TZ)" "$WAVEMILL_PHASE" "$WAVEMILL_ISSUE" "$WT" >> "$FAKE_AGENT_LOG"
+
+run_tool() {
+  # tsx resolves from the wavemill install, not the milled worktree.
+  (cd "$FAKE_AGENT_TOOLS_DIR/.." && node --import tsx "tools/$1" "${@:2}")
+}
+
+default_planning() {
+  # A real planner first expands the issue (expand-issue.ts, an LLM call) into
+  # the progressive-disclosure task packet; write that packet directly.
+  cat > "$FEATURE_DIR/task-packet-header.md" <<PACKET
+# Task Packet: $WAVEMILL_ISSUE
+
+## Objective
+Add journey-output.txt recording that $WAVEMILL_ISSUE was implemented.
+
+## Key Files
+- journey-output.txt
+
+## Detailed Sections
+See task-packet-details.md.
+PACKET
+  cat > "$FEATURE_DIR/task-packet-details.md" <<PACKET
+## 1. Objective & Scope
+Add journey-output.txt.
+
+## 2. Technical Context
+Fixture repository.
+
+## 3. Implementation Approach
+Append one line to journey-output.txt.
+
+## 4. Success Criteria
+- [REQ-F1] journey-output.txt exists on the integration branch.
+
+## 5. Implementation Constraints
+None.
+
+## 6. Validation Steps
+cat journey-output.txt
+
+## 7. Definition of Done
+Merged.
+
+## 8. Rollback Plan
+Revert the commit.
+
+## 9. Proposed Labels
+journey
+PACKET
+  cat "$FEATURE_DIR/task-packet-header.md" "$FEATURE_DIR/task-packet-details.md" > "$FEATURE_DIR/task-packet.md"
+  cat > "$FEATURE_DIR/plan.md" <<PLAN
+# Plan: $WAVEMILL_ISSUE
+
+## Files to Modify
+- journey-output.txt
+
+## Steps
+1. Write journey-output.txt.
+PLAN
+}
+
+default_coding() {
+  printf 'implemented %s\n' "$WAVEMILL_ISSUE" >> journey-output.txt
+  git add journey-output.txt
+  git -c user.name=fake-agent -c user.email=fake-agent@example.invalid commit -q -m "$WAVEMILL_ISSUE: implement"
+  jq -n --arg commit "$(git rev-parse HEAD)" '{stage:"coding",confidence:"high",commit:$commit}' > "$FEATURE_DIR/.coding-complete"
+}
+
+default_review() {
+  local branch pr_url pr_number artifacts
+  branch="$(git rev-parse --abbrev-ref HEAD)"
+  git push -q -u origin "$branch"
+  pr_url="$(gh pr create --base "$BASE_BRANCH" --head "$branch" --label wavemill \
+    --title "$WAVEMILL_ISSUE: journey change" \
+    --body "$(printf '## Summary\n- journey\n\n## Self-review\nready\n\n<!-- wavemill-meta\ntask: %s\n-->\n' "$WAVEMILL_ISSUE")")"
+  pr_number="${pr_url##*/}"
+  artifacts="$(jq -cn --argjson pr "$pr_number" --arg head "$(git rev-parse HEAD)" \
+    '{type:"review",prNumber:$pr,exitCode:0,verdict:"ready",iterations:1,blockerCount:0,warningCount:0,reviewHeadSha:$head}')"
+  run_tool stage-result-cli.ts update "$FEATURE_DIR" review --status completed --notes "PR #$pr_number created" --artifacts "$artifacts"
+}
+
+# A real agent runs for minutes. Stay alive long enough for the mill's launch
+# verification (agent_verify_launch polls the pane for a non-shell foreground
+# process for up to 5s); an agent that exits within milliseconds reads as a
+# failed launch and is retried.
+sleep "${FAKE_AGENT_MIN_RUNTIME_SECONDS:-2}"
+
+script="${FAKE_AGENT_SCRIPT_DIR:-}/$WAVEMILL_PHASE"
+if [[ -n "${FAKE_AGENT_SCRIPT_DIR:-}" && -f "$script" ]]; then
+  # shellcheck disable=SC1090
+  source "$script"
+else
+  "default_${WAVEMILL_PHASE}"
+fi
+printf '%s phase=%s done\n' "$(date -u +%FT%TZ)" "$WAVEMILL_PHASE" >> "$FAKE_AGENT_LOG"

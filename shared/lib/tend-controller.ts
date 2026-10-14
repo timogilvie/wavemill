@@ -559,6 +559,38 @@ function resolveRefSha(ref: string, repoDir: string): string | null {
   }
 }
 
+/** The reconciler's PR view: plain label names and the PR head SHA. */
+export interface ReconcilePrView {
+  number: number;
+  labels: string[];
+  headSha: string;
+}
+
+/**
+ * Run the merge-label reconciler over `gh pr list` entries.
+ *
+ * The reconciler takes `{labels: string[], headSha}`, but tend's list entries
+ * carry `labels: {name}[]` and `headRefOid`. Passing the entries straight
+ * through made every head SHA undefined and every label lookup miss, so the
+ * reconciler never applied `wm:ready` and no PR could merge. Adapt in, then
+ * write the reconciled labels back in tend's own shape.
+ */
+export async function reconcileWavemillPrLabels(
+  prs: GhPrListEntry[],
+  repoDir: string,
+  reconcile: (views: ReconcilePrView[], repoDir: string) => Promise<void>,
+): Promise<void> {
+  const views = prs.map((pr) => ({
+    number: pr.number,
+    labels: pr.labels.map((label) => label.name),
+    headSha: pr.headRefOid ?? '',
+  }));
+  await reconcile(views, repoDir);
+  prs.forEach((pr, index) => {
+    pr.labels = views[index].labels.map((name) => ({ name }));
+  });
+}
+
 export async function selectNextCandidate(options: SelectNextCandidateOptions): Promise<TendDecision> {
   const integrationBranch = getConfiguredIntegrationBranch(options.repoDir);
   const healthChecker = options.healthChecker ?? defaultHealthChecker;
@@ -574,7 +606,7 @@ export async function selectNextCandidate(options: SelectNextCandidateOptions): 
   // and "before decisioning". The reconciler treats the GitHub label as stale,
   // derives the correct label from task state, and applies the difference.
   const { reconcileMergeLabels } = await import('./merge-labels.ts');
-  await reconcileMergeLabels(wavemillPrs, options.repoDir);
+  await reconcileWavemillPrLabels(wavemillPrs, options.repoDir, reconcileMergeLabels);
 
   if (integrationHealth.state === 'unhealthy') {
     return {
