@@ -1,7 +1,7 @@
 /**
  * check-shard-balance - Preflight enforcement for CI shard partitioning (HOK-2939).
  *
- * Thin CLI over shared/lib/shard-balance.ts. Reads the unit/custom shard
+ * Thin CLI over shared/lib/shard-balance.ts. Reads the shell/unit/custom shard
  * counts straight from .github/workflows/ci.yml (so this check can never
  * disagree with the real matrix), the registered test lists from the runners'
  * arrays (the single registration source), and the checked-in weights
