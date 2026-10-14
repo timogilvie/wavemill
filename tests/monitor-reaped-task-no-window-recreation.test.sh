@@ -87,7 +87,8 @@ for fn in \
   _pass_snapshot_unwrap \
   _unescape_json_string \
   pass_task_field \
-  invalidate_task_snapshot \
+  _pass_snapshot_load \
+  pass_snapshot_refresh_task \
   persist_task_window_id \
   monitor_task_reap_reason \
   monitor_drop_reaped_issue \

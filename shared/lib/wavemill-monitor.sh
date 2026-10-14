@@ -3472,9 +3472,10 @@ read_state_value() {
 # common per-task fields and state-root globals in ONE jq call per pass; the
 # `pass_task_field` and `pass_state_root` helpers read from those arrays.
 #
-# Writes still go through `state_mutate` / `task_state_mutate_existing`. When
-# a write mutates a field read later in the same pass, call
-# `invalidate_task_field` for the affected (issue, field) pair.
+# Writes still go through `state_mutate` / `task_state_mutate_existing`; the
+# latter calls `pass_snapshot_refresh_task` so reads later in the pass see the
+# written row. A raw `state_mutate` of a task field read later in the same
+# pass must call `pass_snapshot_refresh_task` itself.
 #
 # The cache is active only while `MONITOR_PASS_SNAPSHOT_ACTIVE=1`. Call sites
 # outside the loop continue to use `read_state_value`, which bypasses the
@@ -3508,124 +3509,77 @@ monitor_build_pass_snapshot() {
 
   [[ -r "$STATE_FILE" && -s "$STATE_FILE" ]] || return 0
 
-  # Reset per-pass state.
   TASK_FIELD=()
   STATE_ROOT=()
+  _pass_snapshot_load "" || return 0
+  MONITOR_PASS_SNAPSHOT_ACTIVE=1
+  return 0
+}
 
-  local tsv jq_fields jq_root sep field
-  sep=$'\t'
-  jq_fields=""
+# Re-read one task's snapshot entries from disk after a write, so later reads
+# in the same pass see the value just written. A task missing from the state
+# (reaped) ends with no entries, which reads as absent.
+pass_snapshot_refresh_task() {
+  local issue="$1" field
+  (( ${MONITOR_PASS_SNAPSHOT_ACTIVE:-0} == 1 )) || return 0
   for field in "${MONITOR_PASS_SNAPSHOT_FIELDS[@]}"; do
-    jq_fields+="    (\$v.$field // null | tojson),\n"
+    unset "TASK_FIELD[$issue:$field]"
   done
+  _pass_snapshot_load "$issue"
+}
 
-  # One jq call: an R row for state-root globals, then a T row per task
-  # carrying `T<tab>issue<tab>field1<tab>...`. `tojson` keeps nulls, bools and
-  # strings distinguishable; `_pass_snapshot_unwrap` reverses the quoting.
-  # NB: use plain `.field | tojson`, NOT `.field // null | tojson`. jq's `//`
-  # treats `false` as a fallback trigger, so `.evalCompleted // null` would
-  # erase an explicit `false` into `null`.
-  tsv=$(jq -r '
+# Load snapshot rows from $STATE_FILE in one jq call: the state-root globals
+# plus every task when <only> is empty, otherwise just task <only>. Each task
+# row is `T<tab>issue<tab>cell...` with one cell per
+# MONITOR_PASS_SNAPSHOT_FIELDS entry, in that order. `tojson` keeps nulls,
+# bools and strings distinguishable; `_pass_snapshot_unwrap` reverses it.
+# NB: cells use plain `.field | tojson`, NOT `.field // null`: jq's `//`
+# treats `false` as a fallback trigger and would erase an explicit `false`.
+_pass_snapshot_load() {
+  local only="$1" cells="" field tsv
+  for field in "${MONITOR_PASS_SNAPSHOT_FIELDS[@]}"; do
+    cells+="${cells:+, }enc(\"$field\"; \$v)"
+  done
+  tsv=$(jq -r --arg only "$only" '
     def enc(key; obj): (obj[key] | tojson);
     . as $root
-    | ("R\t__root__\t" +
-        (enc("backlogExpanded"; $root) + "\t" +
-         enc("depsExpanded"; $root) + "\t" +
-         enc("freeSlots"; $root) + "\t" +
-         enc("updated"; $root))),
-      (($root.tasks // {}) | to_entries[]? as $t
-       | ($t.key) as $issue
-       | ($t.value) as $v
-       | "T\t" + $issue + "\t" + (
-           [
-             enc("title"; $v),
-             enc("updated"; $v),
-             enc("agent"; $v),
-             enc("pr"; $v),
-             enc("worktree"; $v),
-             enc("slug"; $v),
-             enc("branch"; $v),
-             enc("model"; $v),
-             enc("phase"; $v),
-             enc("status"; $v),
-             enc("evalCompleted"; $v),
-             enc("evalFailed"; $v),
-             enc("evalRunning"; $v),
-             enc("challengerLaunched"; $v),
-             enc("reviewerModel"; $v),
-             enc("plannerModel"; $v),
-             enc("coderModel"; $v),
-             enc("reviewerAgent"; $v),
-             enc("reviewMode"; $v),
-             enc("comparisonState"; $v),
-             enc("challengeExecutionIntent"; $v),
-             enc("challengeCompared"; $v),
-             enc("challengeAborted"; $v),
-             enc("challengeStage"; $v),
-             enc("challengeCollapseReason"; $v),
-             enc("challengeCollapseDetail"; $v),
-             enc("challengePairId"; $v),
-             enc("challengeRole"; $v),
-             enc("challenge"; $v),
-             enc("challengeModel"; $v),
-             enc("dependsOnPr"; $v),
-             enc("windowId"; $v),
-             enc("baseBranch"; $v),
-             enc("provider"; $v),
-             enc("launchFailure"; $v),
-             enc("linearIssueId"; $v),
-             enc("linearState"; $v),
-             enc("attempt"; $v),
-             enc("stageRole"; $v),
-             enc("rehydration"; $v)
-           ] | join("\t")
-         ))
-    ' "$STATE_FILE" 2>/dev/null) || return 0
+    | (if $only == "" then
+         "R\t__root__\t" + ([enc("backlogExpanded"; $root), enc("depsExpanded"; $root),
+                              enc("freeSlots"; $root), enc("updated"; $root)] | join("\t"))
+       else empty end),
+      (($root.tasks // {}) | to_entries[]? | select($only == "" or .key == $only)
+       | .value as $v
+       | "T\t" + .key + "\t" + (['"$cells"'] | join("\t")))
+    ' "$STATE_FILE" 2>/dev/null) || return 1
 
-  local line kind issue values i unquoted
+  local line issue values i unquoted root_field
+  local -a parts=()
+  local -a root_fields=(backlogExpanded depsExpanded freeSlots updated)
   while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    kind="${line%%$'\t'*}"
-    case "$kind" in
-      T)
+    case "$line" in
+      T$'\t'*)
         line="${line#T$'\t'}"
         issue="${line%%$'\t'*}"
         values="${line#*$'\t'}"
-        i=0
-        local IFS=$'\t'
-        local -a parts=()
-        read -r -a parts <<<"$values"
+        IFS=$'\t' read -r -a parts <<<"$values"
         for (( i = 0; i < ${#MONITOR_PASS_SNAPSHOT_FIELDS[@]} && i < ${#parts[@]}; i++ )); do
           field="${MONITOR_PASS_SNAPSHOT_FIELDS[$i]}"
           if unquoted=$(_pass_snapshot_unwrap "${parts[$i]}"); then
             TASK_FIELD["$issue:$field"]="$unquoted"
           fi
         done
-        unset IFS
         ;;
-      R)
-        line="${line#R$'\t'__root__$'\t'}"
-        local IFS=$'\t'
-        local -a rvals=()
-        read -r -a rvals <<<"$line"
-        unset IFS
-        local root_val
-        if root_val=$(_pass_snapshot_unwrap "${rvals[0]:-null}"); then
-          STATE_ROOT[backlogExpanded]="$root_val"
-        fi
-        if root_val=$(_pass_snapshot_unwrap "${rvals[1]:-null}"); then
-          STATE_ROOT[depsExpanded]="$root_val"
-        fi
-        if root_val=$(_pass_snapshot_unwrap "${rvals[2]:-null}"); then
-          STATE_ROOT[freeSlots]="$root_val"
-        fi
-        if root_val=$(_pass_snapshot_unwrap "${rvals[3]:-null}"); then
-          STATE_ROOT[updated]="$root_val"
-        fi
+      R$'\t'*)
+        IFS=$'\t' read -r -a parts <<<"${line#R$'\t'__root__$'\t'}"
+        for (( i = 0; i < ${#root_fields[@]}; i++ )); do
+          root_field="${root_fields[$i]}"
+          if unquoted=$(_pass_snapshot_unwrap "${parts[$i]:-null}"); then
+            STATE_ROOT[$root_field]="$unquoted"
+          fi
+        done
         ;;
     esac
   done <<<"$tsv"
-  MONITOR_PASS_SNAPSHOT_ACTIVE=1
   return 0
 }
 
@@ -3669,8 +3623,7 @@ pass_task_field() {
     local key="$issue:$field"
     if [[ -n "${TASK_FIELD[$key]+x}" ]]; then
       # Preserve the stored value verbatim, including explicit `false` or `0`.
-      # Absent fields were skipped at load time so this branch means the field
-      # was present and parsed.
+      # Null/absent fields are never stored, so a miss means "absent".
       printf '%s\n' "${TASK_FIELD[$key]}"
       return 0
     fi
@@ -3692,6 +3645,17 @@ pass_task_field() {
   fi
 }
 
+# The model a relaunch of <issue> runs on: the task's explicit model, else its
+# coder, reviewer, then planner model (HOK-2879). Empty when none is recorded.
+task_launch_model() {
+  local issue="$1" field model
+  for field in model coderModel reviewerModel plannerModel; do
+    model=$(pass_task_field "$issue" "$field")
+    [[ -n "$model" ]] && break
+  done
+  printf '%s\n' "$model"
+}
+
 # Lookup a top-level state key (backlogExpanded, depsExpanded, freeSlots,
 # updated). Falls back to <default> when the snapshot is inactive or the
 # key is unknown.
@@ -3706,25 +3670,6 @@ pass_state_root() {
   else
     printf '%s\n' "$default"
   fi
-}
-
-# Invalidate a single (issue, field) cache entry so later reads in the same
-# pass re-fetch from disk. Call this after any `state_mutate` /
-# `task_state_mutate_existing` that writes a field the loop reads later.
-invalidate_task_field() {
-  local issue="$1" field="$2"
-  if [[ -n "${TASK_FIELD[$issue:$field]+x}" ]]; then
-    unset "TASK_FIELD[$issue:$field]"
-  fi
-}
-
-# Invalidate the whole task's snapshot entries (used after large task-level
-# writes).
-invalidate_task_snapshot() {
-  local issue="$1" field
-  for field in "${MONITOR_PASS_SNAPSHOT_FIELDS[@]}"; do
-    unset "TASK_FIELD[$issue:$field]" 2>/dev/null || true
-  done
 }
 
 # Clear the whole pass snapshot. Used by tests and the pass boundary when the
@@ -13630,9 +13575,6 @@ _launch_ready_remediation_attempt() {
   [[ -z "$remediation_agent" ]] && remediation_agent="$AGENT_CMD"
 
   resolved_model="$current_model"
-  [[ -z "$resolved_model" ]] && resolved_model=$(pass_task_field "$issue" coderModel)
-  [[ -z "$resolved_model" ]] && resolved_model=$(pass_task_field "$issue" reviewerModel)
-  [[ -z "$resolved_model" ]] && resolved_model=$(pass_task_field "$issue" plannerModel)
 
   if [[ -z "$resolved_model" ]]; then
     local no_model_artifacts_json
@@ -13728,19 +13670,14 @@ launch_ready_watchdog_remediation() {
   local issue="$1" slug="$2" wt_dir="$3" branch="$4" base_branch="$5" pr_number="$6"
   local failed_check_summary="$7" attempt_number="$8" max_attempts="$9" failed_check_names_json="${10}"
   local win state_dir status_file current_agent current_model current_head remediation_attempts remediation_launch_head
-  local ready_status checks_run checks_passed merge_status ready_result_file helper_rc resolved_model
+  local ready_status checks_run checks_passed merge_status ready_result_file helper_rc
 
   : "${SESSION:=wavemill}"
   state_dir="$(ready_state_dir "$wt_dir" "$slug")"
   status_file="/tmp/${SESSION}-${issue}-status.txt"
   current_agent=$(pass_task_field "$issue" agent)
-  current_model=$(pass_task_field "$issue" model)
+  current_model=$(task_launch_model "$issue")
   [[ -z "$current_agent" ]] && current_agent="$AGENT_CMD"
-
-  resolved_model="$current_model"
-  [[ -z "$resolved_model" ]] && resolved_model=$(pass_task_field "$issue" coderModel)
-  [[ -z "$resolved_model" ]] && resolved_model=$(pass_task_field "$issue" reviewerModel)
-  [[ -z "$resolved_model" ]] && resolved_model=$(pass_task_field "$issue" plannerModel)
 
   current_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
   remediation_attempts=$(ready_remediation_attempts "$state_dir")
@@ -13860,13 +13797,8 @@ launch_ready_phase() {
   state_dir="$(ready_state_dir "$wt_dir" "$slug")"
   status_file="/tmp/${SESSION}-${issue}-status.txt"
   current_agent=$(pass_task_field "$issue" agent)
-  current_model=$(pass_task_field "$issue" model)
+  current_model=$(task_launch_model "$issue")
   [[ -z "$current_agent" ]] && current_agent="$AGENT_CMD"
-  if [[ -z "$current_model" ]]; then
-    current_model=$(pass_task_field "$issue" coderModel)
-    [[ -z "$current_model" ]] && current_model=$(pass_task_field "$issue" reviewerModel)
-    [[ -z "$current_model" ]] && current_model=$(pass_task_field "$issue" plannerModel)
-  fi
   prior_ready_status=$(read_stage_status "$state_dir" "ready")
   prior_ready_verdict=$(ready_stage_pending_verdict "$state_dir")
   if [[ "$prior_ready_status" == "running" && "$prior_ready_verdict" == "pending" ]]; then
@@ -23677,8 +23609,7 @@ while :; do
   # HOK-3190: one jq pass extracts the per-task fields the loop needs so
   # subsequent `pass_task_field` / `pass_state_root` calls read from bash
   # associative arrays instead of re-parsing the 15 MB state file hundreds
-  # of times. Writers that mutate fields read later in the same pass must
-  # call `invalidate_task_field` after their state_mutate.
+  # of times. Writers keep it current via `pass_snapshot_refresh_task`.
   monitor_step_begin passSnapshot
   monitor_build_pass_snapshot
   monitor_step_end passSnapshot
