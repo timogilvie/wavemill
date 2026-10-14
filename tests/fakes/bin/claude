@@ -114,6 +114,12 @@ default_review() {
   run_tool stage-result-cli.ts update "$FEATURE_DIR" review --status completed --notes "PR #$pr_number created" --artifacts "$artifacts"
 }
 
+# A real agent runs for minutes. Stay alive long enough for the mill's launch
+# verification (agent_verify_launch polls the pane for a non-shell foreground
+# process for up to 5s); an agent that exits within milliseconds reads as a
+# failed launch and is retried.
+sleep "${FAKE_AGENT_MIN_RUNTIME_SECONDS:-2}"
+
 script="${FAKE_AGENT_SCRIPT_DIR:-}/$WAVEMILL_PHASE"
 if [[ -n "${FAKE_AGENT_SCRIPT_DIR:-}" && -f "$script" ]]; then
   # shellcheck disable=SC1090
