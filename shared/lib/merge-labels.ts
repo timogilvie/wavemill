@@ -11,8 +11,6 @@
 import { readStageResult } from './stage-result.ts';
 import {
   readReadyTendHandoff,
-  classifyClaim,
-  rebindTendHandoff,
 } from './ready-tend-handoff.ts';
 import { probePrLiveState, type PrLiveState } from './pr-live-state.ts';
 import {
@@ -363,63 +361,60 @@ export async function buildMergeLabelLiveState(
     return null;
   }
 
-  let readyAtHead: MergeLabelLiveState['readyAtHead'] | undefined;
-  let handoffAtHead: MergeLabelLiveState['handoffAtHead'] | undefined;
-
-  if (featureDir) {
-    // Read Ready result
-    try {
-      const readyResult = await readStageResult('ready', featureDir);
-      if (readyResult) {
-        // Read head from readyResult.sha (null) OR readyResult.artifacts.readyHeadSha
-        const readyHead = readyResult.sha ?? readyResult.artifacts?.readyHeadSha ?? '';
-
-        // Map status + artifacts.verdict to our verdict
-        let verdict: 'ready' | 'not-ready' | 'running' | 'errored';
-        if (readyResult.status === 'running') {
-          verdict = 'running';
-        } else if (readyResult.artifacts?.verdict === 'pass') {
-          verdict = 'ready';
-        } else if (readyResult.artifacts?.verdict === 'fail') {
-          verdict = 'not-ready';
-        } else {
-          // status completed/failed with no verdict, or other states
-          verdict = 'errored';
-        }
-
-        readyAtHead = {
-          verdict,
-          sha: readyHead,
-        };
-      }
-    } catch {
-      // Ready result not available
-    }
-
-    // Read handoff
-    try {
-      const handoffRecord = readReadyTendHandoff(featureDir);
-      if (handoffRecord) {
-        const classification = classifyClaim(handoffRecord);
-        handoffAtHead = {
-          state: classification.state as 'checked' | 'ready-published' | 'tend-claimed' | 'terminal',
-          headSha: handoffRecord.headSha,
-          prNumber: handoffRecord.prNumber,
-        };
-      }
-    } catch {
-      // Handoff not available
-    }
-  }
-
   return {
     prHeadSha,
     mergeable: (prLiveState.mergeable?.toUpperCase() as 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN') ?? 'UNKNOWN',
     mergeStateStatus: prLiveState.mergeStateStatus ?? 'UNKNOWN',
     statusCheckRollup: prLiveState.statusCheckRollup ?? [],
-    readyAtHead,
-    handoffAtHead,
+    ...(featureDir ? await readMergeLabelEvidence(featureDir) : {}),
   };
+}
+
+/**
+ * Read the task-side evidence the label is derived from: the Ready stage
+ * result (verdict + the head it was computed at) and the Ready→tend handoff.
+ */
+export async function readMergeLabelEvidence(
+  featureDir: string,
+): Promise<Pick<MergeLabelLiveState, 'readyAtHead' | 'handoffAtHead'>> {
+  let readyAtHead: MergeLabelLiveState['readyAtHead'] | undefined;
+  let handoffAtHead: MergeLabelLiveState['handoffAtHead'] | undefined;
+
+  try {
+    const readyResult = await readStageResult(featureDir, 'ready');
+    if (readyResult) {
+      const artifacts = readyResult.artifacts?.type === 'ready' ? readyResult.artifacts : undefined;
+      let verdict: 'ready' | 'not-ready' | 'running' | 'errored';
+      if (readyResult.status === 'running') {
+        verdict = 'running';
+      } else if (artifacts?.verdict === 'pass') {
+        verdict = 'ready';
+      } else if (artifacts?.verdict === 'fail') {
+        verdict = 'not-ready';
+      } else {
+        // status completed/failed with no verdict, or other states
+        verdict = 'errored';
+      }
+      readyAtHead = { verdict, sha: artifacts?.readyHeadSha ?? '' };
+    }
+  } catch {
+    // Ready result not available
+  }
+
+  try {
+    const handoffRecord = readReadyTendHandoff(featureDir);
+    if (handoffRecord) {
+      handoffAtHead = {
+        state: handoffRecord.state,
+        headSha: handoffRecord.headSha,
+        prNumber: handoffRecord.prNumber,
+      };
+    }
+  } catch {
+    // Handoff not available
+  }
+
+  return { readyAtHead, handoffAtHead };
 }
 
 /**
@@ -455,13 +450,13 @@ export function createDefaultReconcilerDeps(
     },
     applyLabel: {
       setReady: async (prNumber) => {
-        setWavemillReady(prNumber, repoDir);
+        setWavemillReady(prNumber, { markerRoot: repoDir });
       },
       setBlocked: async (prNumber, reason) => {
-        setWavemillBlocked(prNumber, reason, repoDir);
+        setWavemillBlocked(prNumber, { reason }, { markerRoot: repoDir });
       },
       clear: async (prNumber) => {
-        clearWavemillState(prNumber, repoDir);
+        clearWavemillState(prNumber, { markerRoot: repoDir });
       },
     },
     logger: {
@@ -469,60 +464,6 @@ export function createDefaultReconcilerDeps(
       warn: (msg, meta) => console.warn(msg, meta ? JSON.stringify(meta) : ''),
     },
   };
-}
-
-/**
- * Reconcile handoff for a single PR. If the handoff is at a different head
- * than the PR, and Ready passed at the current head, rebind the handoff to
- * the current head.
- */
-export async function reconcileHandoffForPr(
-  pr: { number: number; headSha: string },
-  featureDir: string | undefined,
-  readyAtHead: MergeLabelLiveState['readyAtHead'] | undefined,
-  logger: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void },
-): Promise<void> {
-  if (!featureDir || !readyAtHead || readyAtHead.verdict !== 'ready') {
-    // No handoff to reconcile or Ready hasn't passed
-    return;
-  }
-
-  try {
-    const handoffRecord = readReadyTendHandoff(featureDir);
-    if (!handoffRecord) {
-      // No handoff exists yet - this is not an error, just no action needed
-      return;
-    }
-
-    const classification = classifyClaim(handoffRecord);
-
-    // Only rebind if handoff is at a different head and in a transient state
-    if (
-      handoffRecord.headSha !== pr.headSha &&
-      (classification.state === 'checked' || classification.state === 'ready-published')
-    ) {
-      logger.info('Rebinding handoff to current head', {
-        pr: pr.number,
-        oldHead: handoffRecord.headSha,
-        newHead: pr.headSha,
-      });
-      // Rebind handoff to current head
-      rebindTendHandoff(featureDir, {
-        prNumber: pr.number,
-        newHeadSha: pr.headSha,
-        newToken: handoffRecord.claimToken, // Preserve existing token
-      });
-    }
-  } catch (error) {
-    // Log specific error context for handoff reconciliation failure
-    // This is logged but not fatal - labels have already been reconciled
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    logger.warn(
-      `Handoff reconciliation failed for PR ${pr.number}: ${errorMsg}. ` +
-      `Labels have been reconciled, but handoff may not be at current head.`,
-      { featureDir, prHeadSha: pr.headSha, error: errorMsg },
-    );
-  }
 }
 
 /**
@@ -559,12 +500,6 @@ export async function reconcileMergeLabels(
         noTaskViewPrs.push(pr.number);
       }
 
-      // Also reconcile handoff if needed
-      const task = findTaskInState(pr.number, workflowState, repoDir);
-      if (task) {
-        const liveState = await buildMergeLabelLiveState(pr.number, pr.headSha, task.featureDir, repoDir);
-        await reconcileHandoffForPr(pr, task.featureDir, liveState?.readyAtHead, deps.logger);
-      }
     } catch (error) {
       deps.logger.warn(`Failed to reconcile labels for PR ${pr.number}`, { error: String(error) });
     }

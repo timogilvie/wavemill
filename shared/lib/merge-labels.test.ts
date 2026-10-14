@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os';
 import {
   deriveMergeLabel,
   reconcileMergeLabelsForPr,
-  reconcileHandoffForPr,
   buildMergeLabelLiveState,
+  readMergeLabelEvidence,
   findTaskInState,
   type MergeLabelTaskView,
   type MergeLabelLiveState,
@@ -688,39 +688,68 @@ describe('findTaskInState (real workflow-state shape)', () => {
   });
 });
 
-// Note: buildMergeLabelLiveState tests are covered by the shell integration test
-// tests/merge-labels-real-state.test.sh since they require GitHub API access
 
-describe('reconcileHandoffForPr', () => {
-  const mockLogger = {
-    info: () => {},
-    warn: () => {},
-  };
+describe('readMergeLabelEvidence (real Ready artifacts)', () => {
+  // Regression: the reconciler called readStageResult('ready', featureDir)
+  // with its arguments swapped, so it never saw a Ready result, decided
+  // `ready-pending` for every PR, and no PR ever received wm:ready.
+  const head = '8c57e6e4a5e18f0aa1b5cf6b59eefa8ed4fb3301';
 
-  it('no-op when featureDir is missing', async () => {
-    const pr = { number: 123, headSha: 'new-sha' };
-    await reconcileHandoffForPr(pr, undefined, undefined, mockLogger);
-    // No error thrown = success
+  function featureDirWithReady(status: 'completed' | 'running', verdict: 'pass' | 'fail'): string {
+    const featureDir = mkdtempSync(join(tmpdir(), 'merge-labels-evidence-'));
+    writeFileSync(join(featureDir, '.ready-result.json'), JSON.stringify({
+      stage: 'ready',
+      status,
+      startedAt: '2026-10-14T12:36:43.161Z',
+      finishedAt: status === 'completed' ? '2026-10-14T13:25:25Z' : null,
+      agent: 'claude',
+      model: '',
+      notes: `verdict: ${verdict}`,
+      artifacts: {
+        type: 'ready',
+        verdict,
+        prNumber: 103,
+        mergeConflict: 'CLEAN',
+        readyHeadSha: head,
+        readyTendHandoff: 'ready-published',
+      },
+    }));
+    writeFileSync(join(featureDir, '.ready-tend-handoff.json'), JSON.stringify({
+      version: 1,
+      prNumber: 103,
+      headSha: head,
+      token: '4e21bef06990d6943110f972d0b7b8ebf2a8931ef59c5697b5f3cb17d6b025e4',
+      state: 'ready-published',
+      checkedAt: '2026-10-14T13:04:19.665Z',
+      readyPublishedAt: '2026-10-14T13:04:19.838Z',
+    }));
+    return featureDir;
+  }
+
+  it('reads a passed Ready result and the handoff at the head they were written for', async () => {
+    const evidence = await readMergeLabelEvidence(featureDirWithReady('completed', 'pass'));
+    assert.deepEqual(evidence.readyAtHead, { verdict: 'ready', sha: head });
+    assert.deepEqual(evidence.handoffAtHead, { state: 'ready-published', headSha: head, prNumber: 103 });
   });
 
-  it('no-op when readyAtHead is missing', async () => {
-    const pr = { number: 123, headSha: 'new-sha' };
-    await reconcileHandoffForPr(pr, '/path/to/feature', undefined, mockLogger);
-    // No error thrown = success
+  it('a green, mergeable PR with that evidence derives wm:ready', async () => {
+    const evidence = await readMergeLabelEvidence(featureDirWithReady('completed', 'pass'));
+    const decision = deriveMergeLabel(
+      { prNumber: 103, headSha: head, phase: 'ready', featureDir: '' },
+      { number: 103, labels: ['wavemill'], headSha: head },
+      {
+        prHeadSha: head,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'CLEAN',
+        statusCheckRollup: [{ name: 'validate', conclusion: 'SUCCESS', status: 'COMPLETED' }],
+        ...evidence,
+      },
+    );
+    assert.deepEqual(decision, { label: 'wm:ready' });
   });
 
-  it('no-op when Ready verdict is not ready', async () => {
-    const pr = { number: 123, headSha: 'new-sha' };
-    const readyAtHead = { verdict: 'running' as const, sha: 'new-sha' };
-    await reconcileHandoffForPr(pr, '/path/to/feature', readyAtHead, mockLogger);
-    // No error thrown = success
-  });
-
-  it('no-op when handoff head matches PR head', async () => {
-    const pr = { number: 123, headSha: 'abc123' };
-    const readyAtHead = { verdict: 'ready' as const, sha: 'abc123' };
-    // This would require mocking readReadyTendHandoff, which we skip for simplicity
-    // The integration will be tested end-to-end
-    await reconcileHandoffForPr(pr, '/path/to/feature', readyAtHead, mockLogger);
+  it('maps a failed Ready result to not-ready and a running one to running', async () => {
+    assert.equal((await readMergeLabelEvidence(featureDirWithReady('completed', 'fail'))).readyAtHead?.verdict, 'not-ready');
+    assert.equal((await readMergeLabelEvidence(featureDirWithReady('running', 'pass'))).readyAtHead?.verdict, 'running');
   });
 });
