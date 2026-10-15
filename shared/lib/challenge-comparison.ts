@@ -833,9 +833,16 @@ function parseStageArtifact(
 
   const hasExecutedModel = hasOwn(parsed, 'executedModel');
   const reviewIdentity = stage === 'review' ? pinnedReviewExecutedIdentity(parsed) : null;
-  const rawModel = hasExecutedModel
-    ? normalizeUnknown(parsed.executedModel)
-    : reviewIdentity?.model ?? '';
+  // Review stage (HOK-3247): the top-level `executedModel` is stamped from the
+  // review *pane* session (the agent that ran review-changes and opened the
+  // PR), not from the model that analysed the diff. A pinned substantive
+  // analysis identity is the reviewer under comparison, so it wins. Other
+  // stages are unchanged.
+  const rawModel = reviewIdentity
+    ? reviewIdentity.model
+    : hasExecutedModel
+      ? normalizeUnknown(parsed.executedModel)
+      : '';
   const rawIntendedModel = hasOwn(parsed, 'intendedModel')
     ? normalizeUnknown(parsed.intendedModel)
     : reviewIdentity?.requestedModel ?? normalizeUnknown(parsed.model);
@@ -858,12 +865,20 @@ function parseStageArtifact(
     source,
     artifactPath,
     consultedArtifactPaths,
-    executionEvidenceStatus: parsed.executionEvidence?.status ?? (reviewIdentity ? 'direct' : 'missing'),
-    modelAttributionEligible: parsed.modelAttributionEligible ?? (reviewIdentity ? parsed.status === 'completed' : false),
-    modelAttributionIneligibleReason: parsed.modelAttributionIneligibleReason,
+    // With a pinned analysis identity the pane's evidence/attribution fields
+    // describe the wrong model, so they are derived from the identity instead.
+    executionEvidenceStatus: reviewIdentity ? 'direct' : parsed.executionEvidence?.status ?? 'missing',
+    modelAttributionEligible: reviewIdentity
+      ? parsed.status === 'completed'
+      : parsed.modelAttributionEligible ?? false,
+    modelAttributionIneligibleReason: reviewIdentity
+      ? (parsed.status === 'completed' ? undefined : parsed.modelAttributionIneligibleReason)
+      : parsed.modelAttributionIneligibleReason,
     // HOK-3143: carry the provider-identity verdict so attribution can tell
-    // an alias-resolved stage apart from an executed-model mismatch.
-    ...(typeof parsed.executionEvidence?.identityVerdict === 'string'
+    // an alias-resolved stage apart from an executed-model mismatch. It
+    // describes the pane session, so it is dropped when the analysis identity
+    // is used.
+    ...(!reviewIdentity && typeof parsed.executionEvidence?.identityVerdict === 'string'
       ? { identityVerdict: parsed.executionEvidence.identityVerdict as ChallengeExecutedStageProvenance['identityVerdict'] }
       : {}),
     ...piRuntimeVersionsField(parsePiRuntimeVersions(parsed.executionEvidence?.piRuntimeVersions)),

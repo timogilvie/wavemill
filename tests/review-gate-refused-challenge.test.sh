@@ -521,6 +521,53 @@ else
   fail "pending-ready-recheck wiring missing (got $wiring_count call sites)"
 fi
 
+# ── 14. HOK-3247: review-model-unlaunchable is classified by shape ─────────
+# Routed (non-challenge) reviewer → verdict error → retryable review infra.
+# Challenge-pinned reviewer → verdict not_ready (review-runner re-shapes it) →
+# terminal Ready refusal → retired as invalid_challenge:review-identity-mismatch,
+# even when every recorded identity agrees (the analysis never ran on the pin).
+UNLAUNCHABLE_ROUTED_ARTIFACTS='{"type":"review","exitCode":1,"verdict":"error","iterations":1,"blockerCount":0,"failureCategory":"review-model-unlaunchable","reviewToolError":"review-model-unlaunchable: model=gpt-5.6-terra reason=codex-chatgpt-ineligible"}'
+UNLAUNCHABLE_ROUTED_NO_TOOL_ERROR='{"type":"review","exitCode":1,"verdict":"error","iterations":1,"blockerCount":0,"failureCategory":"review-model-unlaunchable"}'
+UNLAUNCHABLE_PINNED_ARTIFACTS='{"type":"review","exitCode":1,"verdict":"not_ready","iterations":3,"blockerCount":1,"failureCategory":"review-model-unlaunchable"}'
+unl_ok=true
+seed "HOK-3097_c" "completed"
+dir="$(state_dir_for HOK-3097_c)"
+write_review_result "$dir" "$UNLAUNCHABLE_ROUTED_ARTIFACTS"
+if ! review_result_infra_failure "$dir"; then unl_ok=false; echo "    routed shape should be infra" >&2; fi
+if review_gate_refusal_is_terminal "$dir"; then unl_ok=false; echo "    routed shape should not be terminal" >&2; fi
+write_review_result "$dir" "$UNLAUNCHABLE_ROUTED_NO_TOOL_ERROR"
+if ! review_result_infra_failure "$dir"; then unl_ok=false; echo "    routed shape without reviewToolError should still be infra" >&2; fi
+write_review_result "$dir" "$UNLAUNCHABLE_PINNED_ARTIFACTS"
+if review_result_infra_failure "$dir"; then unl_ok=false; echo "    challenge-pinned shape should not be infra" >&2; fi
+if ! review_gate_refusal_is_terminal "$dir"; then unl_ok=false; echo "    challenge-pinned shape should be terminal" >&2; fi
+if [[ "$unl_ok" == "true" ]]; then
+  pass "review-model-unlaunchable: routed shape is retryable infra, challenge-pinned shape is a terminal gate refusal"
+else
+  fail "review-model-unlaunchable shape classification wrong"
+fi
+
+seed "HOK-3097_c" "completed"
+dir="$(state_dir_for HOK-3097_c)"
+write_review_result "$dir" "$UNLAUNCHABLE_PINNED_ARTIFACTS" \
+  '{"model":"kimi-k2","intendedModel":"kimi-k2","executedModel":"kimi-k2","executionEvidence":{"status":"direct","source":"claude-session"}}'
+cause_model="$(review_refused_challenge_cause "$dir" "HOK-3097_c")"
+run_terminalize "HOK-3097_c"
+if [[ "${cause_model%%$'\t'*}" == "invalid_challenge:review-identity-mismatch" ]] \
+  && [[ "$rc" == "0" ]] \
+  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "invalid_challenge:review-identity-mismatch" ]] \
+  && [[ "$(close_count)" == "1" ]]; then
+  pass "a challenge-pinned unlaunchable reviewer retires the arm as invalid_challenge:review-identity-mismatch"
+else
+  fail "pinned unlaunchable retirement wrong (cause=$cause_model rc=$rc aborted=$(get_task_meta HOK-3097_c challengeAborted))"
+fi
+
+eval "$(extract_function review_infra_recovery_next_action)"
+if [[ "$(review_infra_recovery_next_action review-model-unlaunchable)" == *"cannot run the review analysis"* ]]; then
+  pass "review infra recovery names the unlaunchable reviewer in its next action"
+else
+  fail "review_infra_recovery_next_action has no review-model-unlaunchable guidance"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

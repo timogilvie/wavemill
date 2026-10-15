@@ -64,6 +64,7 @@ function makeDeps(overrides: Partial<CommandToolsDeps> = {}): CommandToolsDeps &
     clock: overrides.clock ?? (() => 1_000),
     agentName: overrides.agentName,
     modelName: overrides.modelName,
+    reviewModel: overrides.reviewModel,
     expander: overrides.expander,
     reviewChangesImpl: overrides.reviewChangesImpl,
     routeBatchImpl: overrides.routeBatchImpl,
@@ -104,6 +105,23 @@ describe('executeReviewChanges', () => {
     assert.equal(event.tool, 'review_changes');
     assert.equal((event.details as { invocation: { base: string } }).invocation.base, 'auto/integration');
     assert.equal((event.details as { diagnostics: { verdict: string } }).diagnostics.verdict, 'not_ready');
+  });
+
+  it('passes the routed reviewer model to review_changes analysis (HOK-3247)', async () => {
+    const reviewResult = loadFixture<ReviewResult>('review-success.json');
+    const seen: Array<string | undefined> = [];
+    const pinned = makeDeps({
+      phase: 'review',
+      reviewModel: 'kimi-k2',
+      reviewChangesImpl: async (options) => { seen.push(options.model); return reviewResult; },
+    });
+    await executeReviewChanges({ base: 'auto/integration', json: true }, pinned);
+    const unpinned = makeDeps({
+      phase: 'review',
+      reviewChangesImpl: async (options) => { seen.push(options.model); return reviewResult; },
+    });
+    await executeReviewChanges({ base: 'auto/integration', json: true }, unpinned);
+    assert.deepEqual(seen, ['kimi-k2', undefined]);
   });
 
   it('returns review_failed and records diagnostics on failure', async () => {

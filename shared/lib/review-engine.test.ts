@@ -273,3 +273,226 @@ describe('review-engine artifact citations (HOK-3058)', () => {
     assert.deepEqual(result.uiFindings?.[0].artifactRefs, [validRef]);
   });
 });
+
+describe('review-engine per-model dispatch (HOK-3247)', () => {
+  afterEach(() => {
+    reviewEngineTestUtils.resetDeps();
+  });
+
+  type CallLLM = Parameters<typeof reviewEngineTestUtils.setCallLLM>[0];
+  type CallOptions = Parameters<CallLLM>[1];
+
+  const READY_JSON = JSON.stringify({ verdict: 'ready', codeReviewFindings: [] });
+
+  function setup(input: {
+    agents?: Record<string, string>;
+    nativeOptedIn?: boolean;
+    reportedModel?: (options: CallOptions) => string | undefined;
+  }) {
+    const calls: CallOptions[] = [];
+    const nativeCalls: Array<string | undefined> = [];
+    reviewEngineTestUtils.setResolveReviewAgent((model) => {
+      const agent = input.agents?.[model];
+      return agent
+        ? { ok: true, agent: agent as never }
+        : { ok: false, reason: 'uncertified', diagnostic: `[agent-resolution] model=${model} phase=review reason=uncertified` };
+    });
+    reviewEngineTestUtils.setIsNativeReviewOptedIn(() => input.nativeOptedIn === true);
+    reviewEngineTestUtils.setCheckCliReviewContextWindow(() => undefined);
+    reviewEngineTestUtils.setCallLLM(async (_prompt, options) => {
+      calls.push(options);
+      const reportedModel = input.reportedModel?.(options);
+      return {
+        text: READY_JSON,
+        rawOutput: READY_JSON,
+        provider: options?.provider ?? 'claude',
+        model: options?.model ?? '(default)',
+        ...(reportedModel ? { reportedModel } : {}),
+      };
+    });
+    reviewEngineTestUtils.setLoadNativeReviewModule(async () => ({
+      async runNativeReview(context, _repoDir, options) {
+        nativeCalls.push(options?.model);
+        return {
+          verdict: 'ready',
+          codeReviewFindings: [],
+          metadata: {
+            branch: context.metadata.branch,
+            files: context.metadata.files,
+            hasUiChanges: false,
+            designContextAvailable: false,
+            uiVerificationRun: false,
+          },
+        };
+      },
+    }));
+    return { calls, nativeCalls };
+  }
+
+  async function review(model?: string) {
+    const repoDir = mkdtempSync(join(tmpdir(), 'review-engine-dispatch-'));
+    try {
+      const { runReview } = await import('./review-engine.ts');
+      return await runReview(makeReviewContext(), repoDir, {
+        skipClaudePreflight: true,
+        ...(model ? { model } : {}),
+      });
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  }
+
+  it('runs an Anthropic reviewer on the claude CLI, pinned, with no fallback ladder', async () => {
+    const { calls, nativeCalls } = setup({
+      agents: { 'claude-opus-5-5': 'claude' },
+      nativeOptedIn: true,
+      reportedModel: (options) => options?.model,
+    });
+    const result = await review('claude-opus-5-5');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.provider, 'claude');
+    assert.equal(calls[0]?.model, 'claude-opus-5-5');
+    assert.equal(calls[0]?.taskType, undefined);
+    assert.deepEqual(calls[0]?.fallbackModels, []);
+    // Native review is opted in, yet an Anthropic model never reaches it.
+    assert.deepEqual(nativeCalls, []);
+    assert.equal(result.verdict, 'ready');
+    assert.equal(result.substantiveAnalysisIdentity?.resolvedModel, 'claude-opus-5-5');
+    assert.equal(result.substantiveAnalysisIdentity?.agent, 'claude-cli');
+    assert.equal(result.substantiveAnalysisIdentity?.source, 'artifact');
+    assert.equal(result.substantiveAnalysisIdentity?.pinned, true);
+  });
+
+  it('runs an OpenAI reviewer on the codex CLI and records it unverified (codex reports no model)', async () => {
+    const { calls, nativeCalls } = setup({ agents: { 'gpt-5.6-terra': 'codex' }, nativeOptedIn: true });
+    const result = await review('gpt-5.6-terra');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.provider, 'codex');
+    assert.equal(calls[0]?.model, 'gpt-5.6-terra');
+    assert.equal(calls[0]?.taskType, undefined);
+    assert.deepEqual(calls[0]?.fallbackModels, []);
+    assert.deepEqual(nativeCalls, []);
+    assert.equal(result.substantiveAnalysisIdentity?.agent, 'codex-cli');
+    assert.equal(result.substantiveAnalysisIdentity?.requestedModel, 'gpt-5.6-terra');
+    assert.equal(result.substantiveAnalysisIdentity?.source, 'derived');
+    assert.equal(result.substantiveAnalysisIdentity?.pinned, false);
+  });
+
+  it('runs a certified native reviewer through runNativeReview with the exact pin', async () => {
+    const { calls, nativeCalls } = setup({ agents: { 'kimi-k2': 'native-openrouter' }, nativeOptedIn: true });
+    const result = await review('kimi-k2');
+    assert.deepEqual(nativeCalls, ['kimi-k2']);
+    assert.equal(calls.length, 0);
+    assert.equal(result.verdict, 'ready');
+  });
+
+  it('fails closed with review-model-unlaunchable for an unresolvable requested model', async () => {
+    const { calls, nativeCalls } = setup({ agents: {}, nativeOptedIn: true });
+    const result = await review('glm-5.3');
+    assert.equal(calls.length, 0);
+    assert.deepEqual(nativeCalls, []);
+    assert.equal(result.verdict, 'error');
+    assert.equal(result.failureCategory, 'review-model-unlaunchable');
+    assert.match(result.reviewToolError ?? '', /model=glm-5\.3 reason=uncertified/);
+    assert.equal(result.substantiveAnalysisIdentity?.pinned, false);
+  });
+
+  it('fails closed when a native-resolving model is requested but native review is not opted in', async () => {
+    const { calls, nativeCalls } = setup({ agents: { 'kimi-k2': 'native-openrouter' }, nativeOptedIn: false });
+    const result = await review('kimi-k2');
+    assert.equal(calls.length, 0);
+    assert.deepEqual(nativeCalls, []);
+    assert.equal(result.failureCategory, 'review-model-unlaunchable');
+    assert.match(result.reviewToolError ?? '', /agent=native-openrouter reason=native-review-not-opted-in/);
+  });
+
+  it('keeps the legacy unpinned executors when no model is requested', async () => {
+    const native = setup({ nativeOptedIn: true });
+    await review();
+    assert.deepEqual(native.nativeCalls, [undefined]);
+    assert.equal(native.calls.length, 0);
+    reviewEngineTestUtils.resetDeps();
+
+    // Native off: eval.judge.model (default claude-sonnet-5) on its resolved
+    // CLI, with the quota fallback ladder as before.
+    const cli = setup({ agents: { 'claude-sonnet-5': 'claude' }, nativeOptedIn: false });
+    await review();
+    assert.equal(cli.calls.length, 1);
+    assert.equal(cli.calls[0]?.provider, 'claude');
+    assert.equal(cli.calls[0]?.model, 'claude-sonnet-5');
+    assert.equal(cli.calls[0]?.taskType, 'review');
+    assert.deepEqual(cli.nativeCalls, []);
+  });
+
+  it('routes a legacy judge model to codex when the resolver places it there', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'review-engine-judge-codex-'));
+    writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({ eval: { judge: { model: 'gpt-5.5' } } }), 'utf-8');
+    const { calls } = setup({ agents: { 'gpt-5.5': 'codex' } });
+    try {
+      const { runReview } = await import('./review-engine.ts');
+      await runReview(makeReviewContext(), repoDir, { skipClaudePreflight: true });
+      assert.equal(calls[0]?.provider, 'codex');
+      assert.equal(calls[0]?.model, 'gpt-5.5');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('never pins the requested id when the CLI reports a different executed model', async () => {
+    setup({ agents: { 'claude-opus-5-5': 'claude' }, reportedModel: () => 'claude-sonnet-5' });
+    const result = await review('claude-opus-5-5');
+    assert.equal(result.substantiveAnalysisIdentity?.requestedModel, 'claude-opus-5-5');
+    assert.equal(result.substantiveAnalysisIdentity?.resolvedModel, 'claude-sonnet-5');
+    assert.equal(result.substantiveAnalysisIdentity?.pinned, false);
+    assert.equal(result.substantiveAnalysisIdentity?.fallbackReason, 'requested_model_unavailable');
+  });
+
+  it('returns native-context-window-exceeded when the CLI prompt cannot fit', async () => {
+    const { calls } = setup({ agents: { 'claude-opus-5-5': 'claude' } });
+    reviewEngineTestUtils.setCheckCliReviewContextWindow(() => ({
+      ok: false,
+      message: 'Native review pre-flight rejected the launch: prompt exceeds the context window',
+      diagnostic: {} as never,
+    }));
+    const result = await review('claude-opus-5-5');
+    assert.equal(calls.length, 0);
+    assert.equal(result.verdict, 'error');
+    assert.equal(result.failureCategory, 'native-context-window-exceeded');
+    assert.match(result.reviewToolError ?? '', /context window/);
+  });
+});
+
+describe('review-engine CLI helpers (HOK-3247)', () => {
+  it('matches CLI-reported ids across variant and snapshot suffixes only', async () => {
+    const { cliReportedModelMatches } = await import('./review-engine.ts');
+    assert.equal(cliReportedModelMatches('claude-opus-4-6', 'claude-opus-4-6[1m]'), true);
+    assert.equal(cliReportedModelMatches('claude-haiku-4-5-20251001', 'claude-haiku-4-5'), true);
+    assert.equal(cliReportedModelMatches('claude-sonnet-5', 'claude-opus-5-5'), false);
+  });
+
+  it('pre-checks the CLI prompt against the registry context window', async () => {
+    const { checkCliReviewContextWindow } = await import('./review-engine.ts');
+    const repoDir = mkdtempSync(join(tmpdir(), 'review-engine-cw-'));
+    try {
+      assert.equal(
+        checkCliReviewContextWindow({ model: 'claude-haiku-4-5', provider: 'claude', prompt: 'small diff', repoDir }),
+        undefined,
+      );
+      const overflow = checkCliReviewContextWindow({
+        model: 'claude-haiku-4-5',
+        provider: 'claude',
+        prompt: 'x'.repeat(4 * 1024 * 1024),
+        repoDir,
+      });
+      assert.ok(overflow);
+      assert.match(overflow!.message, /context/i);
+      // Models without a registry limit are not pre-checked.
+      assert.equal(
+        checkCliReviewContextWindow({ model: 'not-a-registered-model', provider: 'claude', prompt: 'x'.repeat(4 * 1024 * 1024), repoDir }),
+        undefined,
+      );
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+});

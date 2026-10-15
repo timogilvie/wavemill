@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { clearConfigCache } from './config.ts';
@@ -13,6 +14,7 @@ import {
   DEFAULT_CLI_PREFLIGHT_TIMEOUT_MS,
   LLMQuotaError,
   parseJsonFromLLM,
+  reportedModelFromEnvelope,
   resolveCliPreflightTimeoutMs,
 } from './llm-cli.ts';
 import { DEEPSEEK_BASE_URL } from './deepseek-provider.ts';
@@ -1160,6 +1162,46 @@ describe('resolveCliPreflightTimeoutMs', () => {
         DEFAULT_CLI_PREFLIGHT_TIMEOUT_MS,
         `override ${JSON.stringify(value)}`,
       );
+    }
+  });
+});
+
+describe('CLI-reported model (HOK-3247)', () => {
+  it('reads the dominant model from the claude envelope modelUsage', () => {
+    assert.equal(reportedModelFromEnvelope(undefined), undefined);
+    assert.equal(reportedModelFromEnvelope([]), undefined);
+    assert.equal(reportedModelFromEnvelope({ 'claude-haiku-4-5': { outputTokens: 39 } }), 'claude-haiku-4-5');
+    assert.equal(
+      reportedModelFromEnvelope({
+        'claude-haiku-4-5': { outputTokens: 12 },
+        'claude-opus-5-5': { outputTokens: 900, canonicalModel: 'claude-opus-5-5' },
+      }),
+      'claude-opus-5-5',
+    );
+    assert.equal(
+      reportedModelFromEnvelope({ 'claude-opus-4-6[1m]': { outputTokens: 5, canonicalModel: 'claude-opus-4-6' } }),
+      'claude-opus-4-6',
+    );
+  });
+
+  it('surfaces reportedModel for claude and none for codex', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'llm-cli-reported-model-'));
+    try {
+      const claudeCli = join(dir, 'fake-claude');
+      writeFileSync(claudeCli, `#!/bin/sh\ncat >/dev/null\nprintf '%s' '{"type":"result","is_error":false,"result":"OK","modelUsage":{"claude-sonnet-5":{"outputTokens":3}}}'\n`);
+      chmodSync(claudeCli, 0o755);
+      const claude = await callLLM('p', { provider: 'claude', mode: 'sync', cliCmd: claudeCli, model: 'claude-opus-5-5' });
+      assert.equal(claude.model, 'claude-opus-5-5');
+      assert.equal(claude.reportedModel, 'claude-sonnet-5');
+
+      const codexCli = join(dir, 'fake-codex');
+      writeFileSync(codexCli, `#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"OK"}}'\n`);
+      chmodSync(codexCli, 0o755);
+      const codex = await callLLM('p', { provider: 'codex', mode: 'sync', cliCmd: codexCli, model: 'gpt-5.5' });
+      assert.equal(codex.text, 'OK');
+      assert.equal(codex.reportedModel, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
