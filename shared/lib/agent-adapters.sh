@@ -2023,10 +2023,18 @@ build_review_prompt() {
   exit_guard_text="$(agent_exit_guard_text "$agent_cmd" "the PR is created and all review steps are done")"
   review_completion_text="$(agent_completion_text "$agent_cmd")"
 
-  # Build reviewer note
-  local reviewer_note=""
+  # The routed reviewer performs the review analysis itself (HOK-3247):
+  # review-changes.ts takes it as --model and runs it on its own executable.
+  # Empty model → no flag at all (never `--model ""`). The id is single-quoted
+  # so a bracketed variant like `claude-opus-4-6[1m]` is not shell-globbed;
+  # an id with characters outside the model-id charset is dropped.
+  local reviewer_model_arg=""
   if [[ -n "$reviewer_model" ]]; then
-    reviewer_note="NOTE: Workflow router recommends using $reviewer_model for review (mode: ${review_mode})"
+    if [[ "$reviewer_model" =~ ^[A-Za-z0-9._/:@+-]+(\[[A-Za-z0-9._-]+\])?$ ]]; then
+      reviewer_model_arg=" --model '${reviewer_model}'"
+    else
+      echo "[warn] build_review_prompt: ignoring reviewer model with unexpected characters: $reviewer_model" >&2
+    fi
   fi
 
   # Build mode-specific guidance
@@ -2114,7 +2122,10 @@ The reviewer is operating in degraded scoped-review mode.
     template_content="${template_content//\{\{ISSUE\}\}/$issue}"
     template_content="${template_content//\{\{SLUG\}\}/$slug}"
     template_content="${template_content//\{\{FEATURE_DIR\}\}/$feature_dir}"
-    template_content="${template_content//\{\{REVIEWER_NOTE\}\}/$reviewer_note}"
+    template_content="${template_content//\{\{REVIEWER_MODEL_ARG\}\}/$reviewer_model_arg}"
+    # Legacy runtime-selected templates may still carry the retired
+    # router-recommendation placeholder; render it empty.
+    template_content="${template_content//\{\{REVIEWER_NOTE\}\}/}"
     template_content="${template_content//\{\{MODE_GUIDANCE\}\}/$mode_guidance}"
     template_content="${template_content//\{\{OPERATING_MODE_GUIDANCE\}\}/$operating_mode_guidance}"
     template_content="${template_content//\{\{OPERATING_MODE\}\}/$operating_mode}"

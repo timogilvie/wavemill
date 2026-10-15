@@ -75,6 +75,13 @@ export interface CommandToolsDeps {
   clock?: () => number;
   agentName?: string;
   modelName?: string;
+  /**
+   * Wavemill model id that must perform `review_changes`' substantive
+   * analysis (the routed reviewer, HOK-3247). Distinct from `modelName`, which
+   * names this calling orchestrator; the native review flow is deterministic
+   * code with no orchestrator model of its own.
+   */
+  reviewModel?: string;
   expander?: ExpanderFn;
   reviewChangesImpl?: (options: ReviewOptions) => Promise<ReviewResult>;
   routeBatchImpl?: typeof routeBatch;
@@ -433,6 +440,7 @@ export async function executeReviewChanges(
       repoDir,
       featureDir: params.featureDir,
       additionalContext: params.additionalContext,
+      ...(deps.reviewModel ? { model: deps.reviewModel } : {}),
     });
     const counts = countFindings(reviewResult);
     const findings = normalizeReviewFindings(reviewResult, params.json, params.maxOutputBytes);

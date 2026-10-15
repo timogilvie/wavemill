@@ -9,8 +9,8 @@ The implementation is complete. Your job is to review and create a PR.
 1. **Run self-review tool** (up to 3 iterations):
    IMPORTANT: Run from your current directory (the worktree). Do NOT change directories.
    IMPORTANT: This tool calls the Claude API and takes 2-5 minutes. Configure your tool's built-in timeout (for Claude Code's Bash tool: `timeout: 600000` — 600000 ms = 10 minutes) so the call is not killed at the default cap. Do NOT prefix the command with the external `timeout` binary — it is not installed by default on macOS and will fail with `command not found: timeout`.
-   npx tsx {{TOOLS_DIR}}/review-changes.ts {{BASE_BRANCH}} --json --operating-mode {{OPERATING_MODE}}
-   {{REVIEWER_NOTE}}
+   npx tsx {{TOOLS_DIR}}/review-changes.ts {{BASE_BRANCH}} --json --operating-mode {{OPERATING_MODE}}{{REVIEWER_MODEL_ARG}}
+   Run this command exactly as written, including any `--model` flag: it selects the model that performs the review analysis.
    Track `FINAL_REVIEW_EXIT_CODE`, `REVIEW_ITERATIONS`, final verdict, blocker count, warning count, the `failureCategory` field from the final review JSON when present, and any review-tool stderr for the last run.
    - Exit code 0 = review passed → proceed to step 3
    - Exit code 1 = issues found → fix blockers and re-run (step 2)
@@ -22,7 +22,7 @@ The implementation is complete. Your job is to review and create a PR.
    ⚠️  Review tool failed with exit code 2
 
    Diagnostics:
-   - Command: npx tsx {{TOOLS_DIR}}/review-changes.ts {{BASE_BRANCH}} --json --operating-mode {{OPERATING_MODE}}
+   - Command: npx tsx {{TOOLS_DIR}}/review-changes.ts {{BASE_BRANCH}} --json --operating-mode {{OPERATING_MODE}}{{REVIEWER_MODEL_ARG}}
    - Working directory: $(pwd)
    - Tool path: {{TOOLS_DIR}}/review-changes.ts
    - Tool exists: $(ls -lh {{TOOLS_DIR}}/review-changes.ts 2>&1 || echo "NOT FOUND")

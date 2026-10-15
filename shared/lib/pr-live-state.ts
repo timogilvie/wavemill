@@ -106,7 +106,32 @@ function pendingRollupCheckNames(rollup: Array<Record<string, unknown>>): string
     .map((entry) => stringField(entry, 'name') ?? stringField(entry, 'context') ?? 'check');
 }
 
+/**
+ * Commit statuses (`StatusContext`, e.g. Vercel) report a single `state`
+ * (SUCCESS | FAILURE | ERROR | PENDING | EXPECTED) and no `status`/`conclusion`.
+ * Map them onto the CheckRun shape so every reader sees a finished status as
+ * finished; otherwise a green commit status reads as pending forever and the
+ * merge-label reconciler never applies wm:ready.
+ */
+function normalizeRollupEntry(entry: Record<string, unknown>): Record<string, unknown> {
+  if (stringField(entry, 'status') || stringField(entry, 'conclusion')) {
+    return entry;
+  }
+  const state = (stringField(entry, 'state') ?? '').toUpperCase();
+  if (!state) {
+    return entry;
+  }
+  if (state === 'PENDING' || state === 'EXPECTED') {
+    return { ...entry, status: 'PENDING', conclusion: '' };
+  }
+  return { ...entry, status: 'COMPLETED', conclusion: state === 'ERROR' ? 'FAILURE' : state };
+}
+
 function extractStatusCheckRollupEntries(rollup: unknown): Array<Record<string, unknown>> {
+  return extractRawStatusCheckRollupEntries(rollup).map(normalizeRollupEntry);
+}
+
+function extractRawStatusCheckRollupEntries(rollup: unknown): Array<Record<string, unknown>> {
   if (Array.isArray(rollup)) {
     return rollup.filter(isRecord);
   }

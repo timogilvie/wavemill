@@ -21,6 +21,22 @@ import {
   executionTruthFields,
 } from '../shared/lib/stage-result.ts';
 import type { StageResult, StageName, StageStatus, StageArtifacts } from '../shared/lib/stage-result.ts';
+import { applyReviewAnalysisIdentity } from '../shared/lib/review-analysis-identity.ts';
+
+/**
+ * Fold `review-changes`' head-keyed analysis identity into the review stage
+ * result (HOK-3247). Every review result write — the pane agent's update and
+ * the monitor's `write_stage_result` — goes through here, so the identity
+ * never depends on the prompt telling the agent to copy it. Best-effort.
+ */
+async function mergeReviewIdentity(featureDir: string, stage: StageName): Promise<void> {
+  if (stage !== 'review') return;
+  try {
+    await applyReviewAnalysisIdentity(featureDir);
+  } catch (error) {
+    console.error(`Warning: review analysis identity not merged: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
 const USAGE = `stage-result-cli — manage controller-owned stage result files
 
@@ -155,6 +171,7 @@ async function main(): Promise<void> {
     } else {
       await writeStageResult(featureDir, result);
     }
+    await mergeReviewIdentity(featureDir, stage);
     return;
   }
 
@@ -209,6 +226,7 @@ async function main(): Promise<void> {
     }
 
     await updateStageResult(featureDir, stage, patch);
+    await mergeReviewIdentity(featureDir, stage);
     return;
   }
 

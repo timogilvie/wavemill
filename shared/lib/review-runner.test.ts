@@ -647,6 +647,59 @@ describe('review-runner', () => {
       assert.equal(result.metadata?.diffBase, undefined);
     });
 
+    it('passes the routed reviewer model to the engine (HOK-3247)', async () => {
+      const { runReview } = mockPipeline(['a.ts']);
+      await reviewChanges({ repoDir: TEST_DIR, targetBranch: 'main', model: 'claude-opus-5-5' });
+      const engineOptions = runReview.mock.calls[0].arguments[2] as { model?: string; skipClaudePreflight?: boolean };
+      assert.equal(engineOptions.model, 'claude-opus-5-5');
+      // The engine runs the preflight for the executor it dispatches to.
+      assert.equal(engineOptions.skipClaudePreflight, false);
+
+      runReview.mock.resetCalls();
+      await reviewChanges({ repoDir: TEST_DIR, targetBranch: 'main', model: '  ' });
+      assert.equal((runReview.mock.calls[0].arguments[2] as { model?: string }).model, undefined);
+    });
+
+    it('lets a challenge pin win over the routed reviewer model (HOK-3247)', async () => {
+      const featureDir = join(TEST_DIR, 'features', 'diff-base');
+      mkdirSync(featureDir, { recursive: true });
+      const { runReview } = mockPipeline(['a.ts']);
+      mock.method(reviewRunnerDeps, 'resolveReviewStageChallengePin', () => ({ pairId: 'HOK-1', model: 'kimi-k2' }));
+      await reviewChanges({ repoDir: TEST_DIR, targetBranch: 'main', featureDir, model: 'claude-opus-5-5' });
+      assert.equal((runReview.mock.calls[0].arguments[2] as { model?: string }).model, 'kimi-k2');
+    });
+
+    it('re-shapes an unlaunchable challenge-pinned reviewer as a non-infra refusal (HOK-3247)', async () => {
+      const featureDir = join(TEST_DIR, 'features', 'diff-base');
+      mkdirSync(featureDir, { recursive: true });
+      const { runReview } = mockPipeline(['a.ts']);
+      const unlaunchable = {
+        verdict: 'error' as const,
+        codeReviewFindings: [],
+        failureCategory: 'review-model-unlaunchable',
+        reviewToolError: 'review-model-unlaunchable: model=kimi-k2 reason=uncertified: diag',
+        metadata: { branch: 'task/diff-base', files: ['a.ts'], hasUiChanges: false, designContextAvailable: false, uiVerificationRun: false },
+      };
+      runReview.mock.mockImplementation(async () => unlaunchable);
+
+      // Routed (no challenge pin): stays retryable review infrastructure.
+      mock.method(reviewRunnerDeps, 'resolveReviewStageChallengePin', () => undefined);
+      const routed = await reviewChanges({ repoDir: TEST_DIR, targetBranch: 'main', featureDir, model: 'kimi-k2' });
+      assert.equal(routed.verdict, 'error');
+      assert.equal(isInfrastructureReviewFailure(routed), true);
+
+      // Challenge-pinned: a harness-fault refusal the Ready gate terminalizes.
+      mock.method(reviewRunnerDeps, 'resolveReviewStageChallengePin', () => ({ pairId: 'HOK-1', model: 'kimi-k2' }));
+      const pinned = await reviewChanges({ repoDir: TEST_DIR, targetBranch: 'main', featureDir });
+      assert.equal(pinned.verdict, 'not_ready');
+      assert.equal(pinned.failureCategory, 'review-model-unlaunchable');
+      assert.equal(pinned.reviewToolError, undefined);
+      assert.equal(pinned.codeReviewFindings[0].severity, 'blocker');
+      assert.equal(pinned.codeReviewFindings[0].category, 'challenge-review-pin');
+      assert.match(pinned.codeReviewFindings[0].description, /model=kimi-k2/);
+      assert.equal(isInfrastructureReviewFailure(pinned), false);
+    });
+
     it('checkReviewScopeMatch only flags a strict superset at the PR head', () => {
       const ok = (files: string[]) => prLookup(files);
       assert.equal(checkReviewScopeMatch(['a', 'b'], HEAD_SHA, ok(['a'])).scopeCheck, 'mismatch');

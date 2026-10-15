@@ -1857,6 +1857,22 @@ else
   fail "normal review prompt unexpectedly includes scoped-review guidance"
 fi
 
+# HOK-3247: the routed reviewer reaches review-changes as --model on both
+# command lines (run + diagnostics); an empty reviewer renders no flag at all.
+build_review_prompt "Test title" "HOK-1130" "$REPO_DIR" "branch" "main" \
+  "Issue Description:
+Test
+" "/tmp/status.txt" "$REPO_DIR/tools" "test-slug" "" "static" "claude" > "$PROMPT_RENDER_DIR/review-no-model.txt"
+if [[ "$(grep -c -- "review-changes.ts main --json --operating-mode normal --model 'claude-sonnet'\$" "$PROMPT_RENDER_DIR/review-claude.txt")" == "2" ]] \
+  && ! grep -q 'Workflow router recommends' "$PROMPT_RENDER_DIR/review-claude.txt" \
+  && ! grep -q '{{REVIEWER_' "$PROMPT_RENDER_DIR/review-claude.txt" \
+  && [[ "$(grep -c -- 'review-changes.ts main --json --operating-mode normal$' "$PROMPT_RENDER_DIR/review-no-model.txt")" == "2" ]] \
+  && ! grep -q -- "--model '" "$PROMPT_RENDER_DIR/review-no-model.txt"; then
+  pass "review prompt passes the routed reviewer as --model and omits the flag when empty"
+else
+  fail "review prompt reviewer --model rendering is wrong"
+fi
+
 if grep -q -- '--base main' "$PROMPT_RENDER_DIR/review-claude.txt" \
   && grep -q -- '--base main' "$PROMPT_RENDER_DIR/review-codex.txt"; then
   pass "review prompt specifies --base for PR creation"

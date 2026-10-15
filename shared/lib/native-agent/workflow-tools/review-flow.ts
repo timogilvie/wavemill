@@ -93,6 +93,12 @@ export interface ReviewFlowOptions {
   title: string;
   body: string;
   reviewContextAppendix?: string;
+  /**
+   * Wavemill id of the routed reviewer (HOK-3247). Passed to `review_changes`
+   * so the analysis runs on exactly this model instead of the first ready
+   * native provider.
+   */
+  reviewModel?: string;
   labels?: string[];
   sessionId: string;
   phase?: WorkflowPhase;
@@ -466,6 +472,7 @@ function createDeps(options: ReviewFlowOptions): CommandToolsDeps {
     phase: options.phase ?? DEFAULT_PHASE,
     repoDir: options.worktreeDir ?? options.featureDir,
     clock: options.clock,
+    ...(options.reviewModel?.trim() ? { reviewModel: options.reviewModel.trim() } : {}),
     reviewChangesImpl: options.reviewChangesImpl,
     readStageResultImpl: options.readStageResultImpl,
     writeStageResultImpl: options.writeStageResultImpl,
