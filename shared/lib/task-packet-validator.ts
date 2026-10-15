@@ -13,6 +13,7 @@ import { sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { callClaude, callLLM, parseJsonFromLLM } from './llm-cli.ts';
+import { fillPromptSlots } from './prompt-utils.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -631,7 +632,7 @@ export async function runLayer2Validation(
   }
 
   // Build prompt
-  const prompt = template.replace('{{TASK_PACKET}}', taskPacket);
+  const prompt = fillPromptSlots(template, { TASK_PACKET: taskPacket });
 
   // Call LLM
   let response: string;

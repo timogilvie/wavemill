@@ -27,6 +27,7 @@ import {
   type RubricDeterminativeBoundary,
 } from './eval-schema.ts';
 import { parseJsonFromLLM } from './llm-cli.ts';
+import { fillPromptSlots } from './prompt-utils.ts';
 import { callHeadlessLLM } from './headless-llm.ts';
 import { getEvalConfig } from './config.ts';
 import { loadPricingTable } from './workflow-cost.ts';
@@ -382,13 +383,14 @@ function buildPromptComponents(
 }
 
 function fillJudgePrompt(template: string, components: PromptComponents): string {
-  return template
-    .replace('{{TASK_PROMPT}}', components.taskPrompt ?? '')
-    .replace('{{PR_REVIEW_OUTPUT}}', components.prReviewOutput ?? '')
-    .replace('{{INTERVENTION_METADATA}}', components.interventionMetadata ?? '')
-    .replace('{{TASK_PACKET}}', components.taskPacket ?? '')
-    .replace('{{PLAN_CONTENT}}', components.planContent ?? '')
-    .replace('{{SELF_REVIEW_SUMMARY}}', components.selfReviewSummary ?? '');
+  return fillPromptSlots(template, {
+    TASK_PROMPT: components.taskPrompt ?? '',
+    PR_REVIEW_OUTPUT: components.prReviewOutput ?? '',
+    INTERVENTION_METADATA: components.interventionMetadata ?? '',
+    TASK_PACKET: components.taskPacket ?? '',
+    PLAN_CONTENT: components.planContent ?? '',
+    SELF_REVIEW_SUMMARY: components.selfReviewSummary ?? '',
+  });
 }
 
 async function callJudgeLLM(prompt: string, model: string): Promise<LLMCallResult> {

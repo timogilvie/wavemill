@@ -20,6 +20,7 @@ import {
   type LLMCallOptions,
   type LLMCallResult,
 } from './llm-cli.ts';
+import { fillPromptSlots } from './prompt-utils.ts';
 import { getNativeAgentConfig, loadWavemillConfig } from './config.ts';
 import { getEffectiveRegistry, getModel } from './model-registry.ts';
 import { isLaunchableForStage, type StageLaunchability } from './stage-launchability.ts';
@@ -379,11 +380,12 @@ export function fillReviewPromptTemplate(
     designContext = formatDesignContext(context.designContext);
   }
 
-  return template
-    .replace('{{DIFF}}', diff)
-    .replace('{{PLAN_CONTEXT}}', plan)
-    .replace('{{TASK_PACKET_CONTEXT}}', taskPacket)
-    .replace('{{DESIGN_CONTEXT}}', designContext);
+  return fillPromptSlots(template, {
+    DIFF: diff,
+    PLAN_CONTEXT: plan,
+    TASK_PACKET_CONTEXT: taskPacket,
+    DESIGN_CONTEXT: designContext,
+  });
 }
 
 // ────────────────────────────────────────────────────────────────
