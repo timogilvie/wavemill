@@ -33,10 +33,14 @@ assert_eq() {
 }
 exists() { [[ -e "$1" ]] && echo yes || echo no; }
 
-# Infra classification stub: tests set INFRA_REVIEW=1 to make the current
-# review an infra failure.
+# The real infra classifier, so the reconciler is held to its calling
+# contract (it takes the feature dir, not the result file). Tests set
+# INFRA_REVIEW=1 to make write_review produce an infra-failure artifact.
 INFRA_REVIEW=0
-review_result_infra_failure() { [[ "$INFRA_REVIEW" == "1" ]]; }
+for fn in review_result_has_final_evidence review_result_missing_final_evidence review_result_infra_failure; do
+  eval "$(sed -n "/^${fn}() {/,/^}/p" "$REPO_DIR/shared/lib/wavemill-monitor.sh")"
+  declare -F "$fn" >/dev/null || { echo "could not extract $fn" >&2; exit 1; }
+done
 
 ISSUE="HOK-9999"
 SESSION="reconciler-test"
@@ -58,10 +62,12 @@ new_fixture() {
   echo '[]' > "$MONITOR_PR_CACHE"
 }
 reconcile() { condition_reconcile_task "$ISSUE" "$WT" "$STATE_DIR"; }
-write_review() { # status finishedAt
+write_review() { # status finishedAt — infra tool error when INFRA_REVIEW=1
+  local artifacts='{type: "review", verdict: "not_ready", exitCode: 1, iterations: 1, blockerCount: 2}'
+  [[ "$INFRA_REVIEW" == "1" ]] && artifacts='{type: "review", verdict: "error", exitCode: 1, reviewToolError: "claude exited 1"}'
   jq -n --arg s "$1" --arg f "$2" \
-    '{stage: "review", status: $s, startedAt: "2026-10-06T21:00:00.123Z", finishedAt: $f,
-      artifacts: {type: "review", verdict: "not_ready", exitCode: 1}}' > "$STATE_DIR/.review-result.json"
+    "{stage: \"review\", status: \$s, startedAt: \"2026-10-06T21:00:00.123Z\", finishedAt: \$f,
+      artifacts: $artifacts}" > "$STATE_DIR/.review-result.json"
 }
 pr_cache() { # number headRefOid
   jq -n --argjson n "$1" --arg h "$2" '[{number: 42, headRefOid: "deadbeef"}, {number: $n, headRefOid: $h}]' > "$MONITOR_PR_CACHE"
@@ -164,6 +170,23 @@ assert_eq "composite key, same head: exhaustion kept" "yes" "$(exists "$STATE_DI
 git -C "$WT" -c user.email=t@t -c user.name=t commit -q --allow-empty -m three
 reconcile
 assert_eq "composite key, new head: exhaustion cleared" "no" "$(exists "$STATE_DIR/.retry-review-infra-recovery-exhausted")"
+
+echo "=== review-infra exhaustion expires on a substantive verdict at the same head ==="
+# HOK-2804: the exhausted sentinel latched for an hour after a real review
+# landed, because the reconciler passed the result file where the classifier
+# expects the feature dir and every artifact read as an infra failure.
+new_fixture
+INFRA_REVIEW=1
+write_review completed "2026-10-15T14:14:14Z"
+bounded_retry_mark_exhausted "$STATE_DIR" "review-infra-recovery" "exhausted after 2 attempt(s)" \
+  --head "${HEAD_SHA}:review-tool-error" --expires-on "head,operator-event,review-artifact-substantive" \
+  --review-artifact
+reconcile
+assert_eq "same infra artifact: exhaustion kept" "yes" "$(exists "$STATE_DIR/.retry-review-infra-recovery-exhausted")"
+INFRA_REVIEW=0
+write_review completed "2026-10-15T14:16:28Z"
+reconcile
+assert_eq "substantive verdict at same head: exhaustion cleared" "no" "$(exists "$STATE_DIR/.retry-review-infra-recovery-exhausted")"
 
 echo "=== terminal short-circuit without a SHA head ==="
 new_fixture

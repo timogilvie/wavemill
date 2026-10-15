@@ -201,7 +201,7 @@ condition_reconcile_task() {
                 if [[ "$trigger" == "review-artifact-substantive" ]]; then
                   # Check if current is substantive (not infra failure)
                   if declare -F review_result_infra_failure >/dev/null 2>&1; then
-                    if ! review_result_infra_failure "$state_dir/.review-result.json" 2>/dev/null; then
+                    if ! review_result_infra_failure "$state_dir" 2>/dev/null; then
                       echo "review-artifact-substantive:new substantive verdict"
                       return 0
                     fi
@@ -462,7 +462,7 @@ condition_reconcile_task() {
               if [[ -n "$review_finished_epoch" && "$review_finished_epoch" -gt "$sentinel_mtime" ]]; then
                 # Check if substantive
                 if declare -F review_result_infra_failure >/dev/null 2>&1; then
-                  if ! review_result_infra_failure "$state_dir/.review-result.json" 2>/dev/null; then
+                  if ! review_result_infra_failure "$state_dir" 2>/dev/null; then
                     _log_clear ".failed-ready-recheck-exhausted" "legacy-review-substantive" "new substantive verdict"
                     rm -f "$state_dir/.failed-ready-recheck-"* 2>/dev/null || true
                   fi
