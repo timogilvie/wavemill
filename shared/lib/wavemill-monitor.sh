@@ -12469,10 +12469,14 @@ review_result_has_final_evidence() {
   local review_file="$feature_dir/.review-result.json"
   [[ -f "$review_file" ]] || return 1
 
+  # A recovery relaunch carries the prior attempt's verdict forward while the
+  # new review runs (recoveryReplay.status == "running"). That verdict belongs
+  # to the attempt being replaced, so it is never evidence for this one.
   jq -e '
     (.artifacts // {}) as $artifacts
     | (if ($artifacts.type // "") == "review" then $artifacts else ($artifacts.review // {}) end) as $review
-    | (($review.exitCode | type) == "number") and
+    | (($review.recoveryReplay.status // "") != "running") and
+      (($review.exitCode | type) == "number") and
       (($review.verdict | type) == "string" and ($review.verdict | length) > 0) and
       (($review.iterations | type) == "number" and $review.iterations >= 1) and
       (((($review.blockerCount // $review.blockingIssues // $review.blockingCount) // null) | type) == "number")

@@ -122,7 +122,7 @@ read_stage_status() {
   jq -r '.status // empty' "$feature_dir/.${stage}-result.json" 2>/dev/null || true
 }
 write_stage_result_with_history() {
-  local feature_dir="$1" stage="$2" status="$3" agent="${4:-}" model="${5:-}" notes="${6:-}" artifacts="${7:-{}}"
+  local feature_dir="$1" stage="$2" status="$3" agent="${4:-}" model="${5:-}" notes="${6:-}" artifacts="${7:-}"
   [[ "${WRITE_STAGE_RESULT_FAIL:-0}" != "1" ]] || return 1
   mkdir -p "$feature_dir"
   if [[ -z "$artifacts" ]] || ! jq empty <<<"$artifacts" >/dev/null 2>&1; then
@@ -174,6 +174,22 @@ assert_eq "successful recovery publishes running" "running" "$(jq -r '.status' "
 assert_eq "task phase moves ready to review" "review" "$(jq -r '.tasks["HOK-2999_c"].phase' "$STATE_FILE")"
 assert_eq "state records contract agent" "claude" "$(jq -r '.tasks["HOK-2999_c"].agent' "$STATE_FILE")"
 assert_eq "prior verdict preserved in audit" "error" "$(jq -r '.previousReviewResult.artifacts.verdict' "$FEATURE_DIR/.review-rerun-request.json")"
+
+# HOK-2804: the running replay carries the prior attempt's complete verdict.
+# Counting it as final evidence let the review-phase handler stamp it
+# completed ~20s into the new review, flip the task to ready, and relaunch
+# over the live reviewer every backoff interval.
+setup_case "running-replay-is-not-final-evidence"
+cat > "$FEATURE_DIR/.review-result.json" <<'EOF'
+{"stage":"review","status":"completed","agent":"claude","model":"claude-opus-5-5","artifacts":{"type":"review","prNumber":1378,"exitCode":1,"verdict":"error","iterations":1,"blockerCount":0,"reviewToolError":"claude CLI exited with code 1: (empty stderr)"}}
+EOF
+review_recovery_coordinator "HOK-2999_c" "slug" "Task" "$WT_DIR" "task/slug" "auto/integration" "1378" "$FEATURE_DIR" "test recovery" "manual" "manual" "" 0 "false"
+assert_eq "replay publishes running with the prior verdict" "running|error" "$(jq -r '[.status, .artifacts.verdict] | join("|")' "$FEATURE_DIR/.review-result.json")"
+if review_result_has_final_evidence "$FEATURE_DIR"; then
+  fail "running replay's prior verdict counted as final evidence"
+else
+  pass "running replay's prior verdict is not final evidence"
+fi
 
 setup_case "launch-failure"
 cat > "$FEATURE_DIR/.review-result.json" <<'EOF'
