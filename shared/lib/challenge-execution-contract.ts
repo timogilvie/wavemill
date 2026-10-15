@@ -816,8 +816,9 @@ function hasUnpinnedIdentity(identity: ReviewExecutedIdentitySet | undefined): b
  * derives `pinned` the same way instead of each hand-rolling the rule.
  *
  * `pinned` is true only when a requested model was supplied, it matches the
- * resolved model exactly, and no conflict was recorded. A missing requested
- * model, a fallback, or a conflict all fail closed to `pinned: false`.
+ * resolved model exactly, no conflict was recorded, and the resolved model was
+ * observed rather than assumed. A missing requested model, a fallback, a
+ * conflict, or `verified: false` all fail closed to `pinned: false`.
  */
 export function buildExecutedIdentity(input: {
   role: ExecutedIdentityRole;
@@ -828,11 +829,17 @@ export function buildExecutedIdentity(input: {
   source: ExecutedIdentity['source'];
   fallbackReason?: string;
   conflict?: ExecutedIdentity['conflict'];
+  /**
+   * False when `resolvedModel` is the id the runner was *asked* to use and no
+   * execution evidence confirmed it (e.g. a CLI whose output reports no model,
+   * HOK-3247). An unverified identity is never pinned. Defaults to true.
+   */
+  verified?: boolean;
 }): ExecutedIdentity {
   const requested = clean(input.requestedModel);
   const resolved = clean(input.resolvedModel);
   const mismatch = Boolean(requested) && requested !== resolved;
-  const pinned = Boolean(requested) && !mismatch && !input.conflict;
+  const pinned = Boolean(requested) && !mismatch && !input.conflict && input.verified !== false;
   return {
     role: input.role,
     requestedModel: requested || resolved,

@@ -62,11 +62,46 @@ export function fillPromptTemplate(
   for (const [key, value] of Object.entries(vars)) {
     if (value !== undefined) {
       const placeholder = `{{${key}}}`;
-      result = result.replaceAll(placeholder, value);
+      // Replacer function: a string replacement would expand `$&`, `$'` and `$\``.
+      result = result.replaceAll(placeholder, () => value);
     }
   }
 
   return result;
+}
+
+/**
+ * Substitute `{{NAME}}` slots in one pass over the template only.
+ *
+ * - A slot is a placeholder alone on its line. Review templates also mention
+ *   placeholders inline (the "Template Parameters" list, conditional prose);
+ *   those stay literal. Templates without a standalone slot fall back to the
+ *   first occurrence.
+ * - Values are inserted verbatim through a replacer function. A string
+ *   replacement would expand `$\``, `$'` and `$&` found in diffs, plans and
+ *   packets — each `$\`` re-inserts everything before the match, which turned
+ *   a 2.7 MB diff into a 32 MB review prompt.
+ * - Filled values are never rescanned, so placeholder text inside a diff or
+ *   plan is not substituted.
+ */
+export function fillPromptSlots(template: string, values: Record<string, string>): string {
+  const names = Object.keys(values).filter((name) => /^[A-Z_]+$/.test(name));
+  if (names.length === 0) return template;
+  const alternation = names.join('|');
+  const standalone = new Set(
+    [...template.matchAll(new RegExp(`^\\{\\{(${alternation})\\}\\}$`, 'gm'))].map((match) => match[1]),
+  );
+  const filled = new Set<string>();
+  return template.replace(
+    new RegExp(`^\\{\\{(${alternation})\\}\\}$|\\{\\{(${alternation})\\}\\}`, 'gm'),
+    (match, slotName: string | undefined, inlineName: string | undefined) => {
+      const name = slotName ?? inlineName!;
+      if (filled.has(name)) return match;
+      if (slotName === undefined && standalone.has(name)) return match;
+      filled.add(name);
+      return values[name];
+    },
+  );
 }
 
 /**

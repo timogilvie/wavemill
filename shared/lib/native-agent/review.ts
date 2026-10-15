@@ -79,8 +79,10 @@ import {
   NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
   NATIVE_REVIEW_TIMEOUT_CATEGORY,
   PROVIDER_CREDIT_EXHAUSTED_CATEGORY,
+  REVIEW_MODEL_UNLAUNCHABLE_FAILURE_CATEGORY,
   updateStageResult,
 } from '../stage-result.ts';
+import { equivalentOpenRouterModelIds } from '../openrouter-catalog.ts';
 import { getNativeContextManagementConfig, getNativeReviewTimeoutConfig } from '../config.ts';
 import type { NormalizedPricing } from '../openrouter-catalog.ts';
 import {
@@ -110,18 +112,32 @@ export interface DeniedToolRecord {
 interface SelectedProviderSuccess {
   ok: true;
   entry: ReadyNativeProviderEntry;
-  /** Populated only when a specific analysis model was requested (challenge pinning). */
+  /** Populated only when a specific analysis model was requested (routed or challenge-pinned). */
   requestedModel?: string;
-  /** Set when the requested model could not be selected and a fallback ran instead. */
+  /**
+   * Legacy: set when the requested model could not be selected and a fallback
+   * ran instead. `selectReviewProvider` no longer falls back (HOK-3247); kept
+   * so stubbed selections in tests and older callers still type-check.
+   */
   fallbackReason?: string;
 }
 
 interface SelectedProviderFailure {
   ok: false;
   message: string;
+  /**
+   * Set when a specific model was requested and no ready provider serves it
+   * (HOK-3247): a refusal, not a pool outage.
+   */
+  requestedModel?: string;
 }
 
 type SelectedProvider = SelectedProviderSuccess | SelectedProviderFailure;
+
+/** Type guard usable without strictNullChecks (the static tsconfig is non-strict). */
+function isSelectedProviderFailure(provider: SelectedProvider): provider is SelectedProviderFailure {
+  return provider.ok === false;
+}
 
 /**
  * Normalize a requested model selector down to the bare model id and an
@@ -141,13 +157,23 @@ function parseRequestedNativeModel(requested: string): { providerName?: string; 
   return { providerName: providerName || undefined, modelId };
 }
 
+/**
+ * Same model, not "a ready model": the requested id must name this entry's
+ * model. OpenRouter ids compare through `equivalentOpenRouterModelIds` — the
+ * same alias canonicalization the native launch probe
+ * (`tools/check-native-agent-launch.ts`) uses — so the Wavemill alias the
+ * router emits ("qwen-3-coder") matches the configured slug
+ * ("qwen/qwen3-coder"). Different models never match.
+ */
 function matchesRequestedModel(
   entry: ReadyNativeProviderEntry,
   requested: { providerName?: string; modelId: string },
 ): boolean {
-  if (entry.modelId !== requested.modelId) return false;
   if (requested.providerName && requested.providerName !== entry.providerName) return false;
-  return true;
+  if (entry.modelId === requested.modelId) return true;
+  if (entry.providerName !== 'openrouter') return false;
+  const requestedIds = new Set(equivalentOpenRouterModelIds(requested.modelId));
+  return equivalentOpenRouterModelIds(entry.modelId).some((id) => requestedIds.has(id));
 }
 
 function nativeReviewFailure(
@@ -354,39 +380,52 @@ export function readyReviewEntries(
  * Select the native provider entry that performs substantive review
  * analysis.
  *
- * When `requestedModel` is given (a reviewer-stage challenge pins the exact
- * analysis model under test), the exact ready entry matching it is selected.
- * If that model is not among the ready entries, this falls back to the first
- * ready entry as before — availability must not regress — but the caller
- * records the fallback so the executed identity comes back unpinned rather
- * than silently normalized (HOK-2969): a challenge cannot prove which model
- * analyzed the diff when the wrong model ran instead.
+ * When `requestedModel` is given (the routed reviewer, or a reviewer-stage
+ * challenge pin), only the ready entry serving exactly that model is
+ * selected. If none is ready the selection is refused (HOK-3247) — it never
+ * falls back to another ready entry, because a review analysed by a different
+ * model is attributed to the wrong reviewer (the HOK-2969 fallback let a
+ * gpt-5.6 vs claude-opus challenge run both analyses on gemini-2.5-flash).
+ *
+ * With no requested model (manual `wavemill review`, harness replay) the
+ * first ready entry is used, as before.
  */
+export function selectReviewProviderFromEntries(
+  readyEntries: ReadyNativeProviderEntry[],
+  requestedModel?: string,
+): SelectedProviderSuccess | { ok: false; requestedModel?: string } {
+  if (requestedModel) {
+    const parsed = parseRequestedNativeModel(requestedModel);
+    const exactMatch = readyEntries.find((entry) => matchesRequestedModel(entry, parsed));
+    return exactMatch
+      ? { ok: true, entry: exactMatch, requestedModel }
+      : { ok: false, requestedModel };
+  }
+  const readyEntry = readyEntries[0];
+  return readyEntry ? { ok: true, entry: readyEntry } : { ok: false };
+}
+
 function selectReviewProvider(
   repoDir: string,
   env: NodeJS.ProcessEnv = process.env,
   requestedModel?: string,
 ): SelectedProvider {
   const providers = resolveNativeAgentProviders(repoDir, { env, phase: 'review' });
-  const readyEntries = readyReviewEntries(providers);
-
-  if (requestedModel) {
-    const parsed = parseRequestedNativeModel(requestedModel);
-    const exactMatch = readyEntries.find((entry) => matchesRequestedModel(entry, parsed));
-    if (exactMatch) {
-      return { ok: true, entry: exactMatch, requestedModel };
-    }
+  const selection = selectReviewProviderFromEntries(readyReviewEntries(providers), requestedModel);
+  if (selection.ok) {
+    return selection;
   }
-
-  const readyEntry = readyEntries[0];
-  if (readyEntry) {
+  if (selection.requestedModel) {
+    const ready = readyReviewEntries(providers).map((entry) => `${entry.providerName}/${entry.modelId}`);
     return {
-      ok: true,
-      entry: readyEntry,
-      ...(requestedModel ? { requestedModel, fallbackReason: 'requested_model_unavailable' } : {}),
+      ok: false,
+      requestedModel: selection.requestedModel,
+      message:
+        `review-model-unlaunchable: model=${selection.requestedModel} agent=native ` +
+        `reason=no-ready-native-provider detail="no ready native review provider serves exactly this model` +
+        ` (ready: ${ready.length > 0 ? ready.join(', ') : 'none'}); refusing to analyse with a different model"`,
     };
   }
-
   return {
     ok: false,
     message: buildNativeProviderResolutionFailureMessage('review', providers),
@@ -603,14 +642,34 @@ export async function runNativeReview(
   options: ReviewEngineOptions = {},
 ): Promise<ReviewResult> {
   const requestedAnalysisModel = options.model?.trim() || undefined;
-  const provider = nativeReviewDeps.selectReviewProvider(repoDir, process.env, requestedAnalysisModel);
-  if (!provider.ok) {
+  const selected = nativeReviewDeps.selectReviewProvider(repoDir, process.env, requestedAnalysisModel);
+  if (isSelectedProviderFailure(selected)) {
+    const provider = selected;
+    if (provider.requestedModel) {
+      // The requested reviewer has no ready provider: refuse rather than
+      // analyse with another model (HOK-3247).
+      return nativeReviewNoEvidenceFailure(
+        context,
+        REVIEW_MODEL_UNLAUNCHABLE_FAILURE_CATEGORY,
+        provider.message,
+        [],
+        buildExecutedIdentity({
+          role: 'substantive_analysis',
+          requestedModel: provider.requestedModel,
+          resolvedModel: 'unresolved',
+          agent: 'native',
+          source: 'derived',
+          fallbackReason: 'review_model_unlaunchable',
+        }),
+      );
+    }
     // Provider resolution failed before any analysis ran (HOK-3106): route
     // through the no-evidence result shape so this infra condition never
     // masquerades as a substantive `not_ready` review verdict that would
     // otherwise feed the ready gate and burn its retry budget.
     return nativeReviewNoEvidenceFailure(context, 'native-runtime-unavailable', provider.message);
   }
+  const provider = selected as SelectedProviderSuccess;
 
   // `resolvedModel` must stay in the same bare-model-id namespace as
   // `requestedModel` (challenge routing emits bare ids like "glm-5.3", never

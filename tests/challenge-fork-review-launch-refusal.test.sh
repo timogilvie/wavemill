@@ -2,17 +2,17 @@
 # HOK-2814 / HOK-3006: a review-stage challenger arm with no resolvable
 # challenge intent must NOT run an unpinned review. The materialiser
 # refuses (rc=2, terminal, no launch), and `selectReviewProvider` retains
-# its fallback marker (`requested_model_unavailable`) rather than silently
-# returning readyEntries[0] for a challenge arm.
+# a pinned request (HOK-3247: it refuses) rather than silently returning
+# readyEntries[0] for a challenge arm.
 #
 # The behaviour is enforced at two layers:
 #   1. Shell: challenge_maybe_materialize_deferred_arms treats
 #      `materialise_rc == 2` as terminal, marks the arm exhausted with a
 #      `missing_challenge_intent` reason, and never calls launch_review.
-#   2. TypeScript: selectReviewProvider preserves the requestedModel and
-#      records `fallbackReason: 'requested_model_unavailable'` when the
-#      requested model is not among ready entries — so downstream folding
-#      surfaces `executed_identity_missing` instead of a silent normalisation.
+#   2. TypeScript: selectReviewProvider never substitutes a different model
+#      for a requested (challenge-pinned or routed) reviewer. Since HOK-3247 it
+#      refuses with `review-model-unlaunchable` instead of falling back with a
+#      `requested_model_unavailable` marker, so no unpinned analysis runs.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -97,12 +97,14 @@ fi
 
 # ────────────────────────────────────────────────────────────────
 # TypeScript-side: selectReviewProvider must NOT silently normalise a
-# challenge-pinned request. When requestedModel is passed and unavailable,
-# it must include fallbackReason='requested_model_unavailable' so downstream
-# folding surfaces the mismatch as executed_identity_missing.
+# requested reviewer. HOK-3006 required the fallback to carry a marker;
+# HOK-3247 strengthens that to a refusal: with requestedModel set and no
+# exact ready entry, selection fails and the review returns the typed
+# `review-model-unlaunchable` category. The literal strings are checked on
+# purpose (a rename must fail the test).
 # ────────────────────────────────────────────────────────────────
 echo ""
-echo "=== selectReviewProvider preserves the pin marker on fallback ==="
+echo "=== selectReviewProvider refuses an unavailable requested model ==="
 
 if grep -Fq 'requestedModel?: string' "$REVIEW_TS"; then
   pass "selectReviewProvider accepts a requestedModel argument"
@@ -110,18 +112,19 @@ else
   fail "selectReviewProvider dropped the requestedModel parameter"
 fi
 
-# Extract the function body and assert the fallback branch records the
-# pin marker. The literal string is intentionally checked (a rename must
-# fail the test) — it is the exact taxonomy value the folding function
-# consumes when detecting unpinned identities.
+ENTRIES_BLOCK=$(awk '
+  /^export function selectReviewProviderFromEntries\(/ { capture=1 }
+  capture { print }
+  /^}/ && capture { exit }
+' "$REVIEW_TS")
 FN_BLOCK=$(awk '
   /^function selectReviewProvider\(/ { capture=1 }
   capture { print }
   /^}/ && capture { exit }
 ' "$REVIEW_TS")
 
-check_contains "fallback branch is guarded by 'requestedModel'" "$FN_BLOCK" '...(requestedModel ? { requestedModel, fallbackReason:'
-check_contains "fallback marker uses requested_model_unavailable" "$FN_BLOCK" "'requested_model_unavailable'"
+check_contains "a requested model with no exact entry fails selection" "$ENTRIES_BLOCK" ': { ok: false, requestedModel };'
+check_contains "the refusal is the typed review-model-unlaunchable category" "$FN_BLOCK" 'review-model-unlaunchable: model='
 
 # Guard against re-introducing the silent `return readyEntries[0]` for a
 # challenge arm — the exact regression HOK-3006 flagged. The function's

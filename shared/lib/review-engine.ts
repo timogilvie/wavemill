@@ -12,8 +12,28 @@ import {
   type ReviewContext,
   type DesignContext,
 } from './review-context-gatherer.ts';
-import { callClaude, parseJsonFromLLM, ensureClaudeAvailable } from './llm-cli.ts';
+import {
+  callLLM,
+  ensureClaudeAvailable,
+  ensureCodexAvailable,
+  parseJsonFromLLM,
+  type LLMCallOptions,
+  type LLMCallResult,
+} from './llm-cli.ts';
+import { fillPromptSlots } from './prompt-utils.ts';
 import { getNativeAgentConfig, loadWavemillConfig } from './config.ts';
+import { getEffectiveRegistry, getModel } from './model-registry.ts';
+import { isLaunchableForStage, type StageLaunchability } from './stage-launchability.ts';
+import {
+  estimatePromptTokens,
+  evaluateContextWindow,
+  type ContextWindowVerdict,
+} from './native-agent/context-window-guard.ts';
+import { REVIEW_MAX_OUTPUT_TOKENS } from './native-agent/output-limits.ts';
+import {
+  NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
+  REVIEW_MODEL_UNLAUNCHABLE_FAILURE_CATEGORY,
+} from './stage-result.ts';
 import type { ReviewProgressReporter } from './review-progress.ts';
 import type { OperatingMode } from './operating-mode.ts';
 import { loadPromptResourceSync, resolveRuntimeResource } from './resource-retrieval.ts';
@@ -127,7 +147,14 @@ export interface ReviewResult {
 }
 
 export interface ReviewEngineOptions {
-  /** Review model override (uses config if not specified) */
+  /**
+   * The model that must perform the substantive analysis (the routed reviewer
+   * or a challenge pin). When set, the executor is chosen per model through
+   * `resolveModelAgent` and the review fails closed (no fallback ladder, no
+   * different native model) when that model cannot run (HOK-3247). When
+   * unset, the legacy executor is used: the native pool when native review is
+   * opted in, otherwise `eval.judge.model` via its CLI.
+   */
   model?: string;
   /** Timeout override in milliseconds (uses config default if not specified) */
   timeout?: number;
@@ -353,16 +380,44 @@ export function fillReviewPromptTemplate(
     designContext = formatDesignContext(context.designContext);
   }
 
-  return template
-    .replace('{{DIFF}}', diff)
-    .replace('{{PLAN_CONTEXT}}', plan)
-    .replace('{{TASK_PACKET_CONTEXT}}', taskPacket)
-    .replace('{{DESIGN_CONTEXT}}', designContext);
+  return fillPromptSlots(template, {
+    DIFF: diff,
+    PLAN_CONTEXT: plan,
+    TASK_PACKET_CONTEXT: taskPacket,
+    DESIGN_CONTEXT: designContext,
+  });
 }
 
 // ────────────────────────────────────────────────────────────────
 // LLM Invocation
 // ────────────────────────────────────────────────────────────────
+
+/**
+ * How the CLI analysis call is made (HOK-3247).
+ *
+ * `failClosed` is set when a specific reviewer was requested: the call then
+ * runs only that model on its own executable. Leaving `taskType` unset and
+ * passing an empty `fallbackModels` keeps `callLLM` off the quota fallback
+ * ladder, which would otherwise walk to other models (and drop ones the
+ * transport cannot serve). `taskType: 'review'` drives nothing else in
+ * `llm-cli.ts` — classifier isolation keys on `classify` only — so omitting it
+ * loses no non-ladder behaviour.
+ */
+export interface ReviewCliCall {
+  provider: 'claude' | 'codex';
+  failClosed: boolean;
+}
+
+/** Result of one CLI analysis call, with the evidence needed for identity. */
+interface ReviewLLMResponse {
+  text: string;
+  provider: LLMCallResult['provider'];
+  /** Model id the CLI was invoked with (the ladder candidate when one ran). */
+  invokedModel: string;
+  /** Model id the CLI's own output reported, when it reports one. */
+  reportedModel?: string;
+  fallbackChain?: LLMCallResult['fallbackChain'];
+}
 
 /**
  * Invoke LLM with retry logic.
@@ -374,12 +429,17 @@ async function invokeLLMWithRetry(
   maxRetries: number,
   options: ReviewEngineOptions,
   reviewer: ReviewerPersona,
-  llmAttempt: number
-): Promise<string> {
-  const result = await callClaude(prompt, {
+  llmAttempt: number,
+  cli: ReviewCliCall = { provider: 'claude', failClosed: false },
+): Promise<ReviewLLMResponse> {
+  const ladder: Pick<LLMCallOptions, 'taskType' | 'fallbackModels'> = cli.failClosed
+    ? { fallbackModels: [] }
+    : { taskType: 'review' };
+  const result = await reviewEngineDeps.callLLM(prompt, {
+    provider: cli.provider,
     mode: 'stream',
     model,
-    taskType: 'review',
+    ...ladder,
     timeout,
     maxBuffer: 50 * 1024 * 1024, // 50MB for large diffs
     retry: true,
@@ -462,7 +522,148 @@ async function invokeLLMWithRetry(
     },
   });
 
-  return result.text;
+  return {
+    text: result.text,
+    provider: result.provider,
+    invokedModel: result.model && result.model !== '(default)' ? result.model : model,
+    ...(result.reportedModel ? { reportedModel: result.reportedModel } : {}),
+    ...(result.fallbackChain?.length ? { fallbackChain: result.fallbackChain } : {}),
+  };
+}
+
+/**
+ * Normalize a model id for comparing a CLI-reported id with the id the CLI was
+ * invoked with: provider prefix, a bracketed variant suffix (`[1m]`) and a
+ * dated snapshot suffix (`-20251001`) name the same model.
+ */
+function normalizeCliModelId(model: string): string {
+  return model
+    .trim()
+    .toLowerCase()
+    .replace(/^anthropic\//, '')
+    .replace(/\[[^\]]*\]$/, '')
+    .replace(/-\d{8}$/, '');
+}
+
+export function cliReportedModelMatches(reportedModel: string, invokedModel: string): boolean {
+  return normalizeCliModelId(reportedModel) === normalizeCliModelId(invokedModel);
+}
+
+/**
+ * Executed identity of a CLI analysis call (HOK-3247).
+ *
+ * Pinned only when the CLI's own output reported the model that served the
+ * turn (the claude CLI's `modelUsage`) and it is the requested model. A model
+ * the CLI did not report (codex `exec --json` reports none) is recorded as
+ * unverified (`source: 'derived'`, never pinned) — the requested id is never
+ * stamped as executed with pinned evidence.
+ */
+export function buildCliAnalysisIdentity(input: {
+  requestedModel: string;
+  response: Pick<ReviewLLMResponse, 'provider' | 'invokedModel' | 'reportedModel' | 'fallbackChain'>;
+}): ExecutedIdentity {
+  const { response } = input;
+  const agent = response.provider === 'codex' ? 'codex-cli' : 'claude-cli';
+  const fallbackReason = response.fallbackChain?.length
+    ? `fallback_ladder:${response.fallbackChain.map((step) => `${step.model}=${step.reason}`).join(',')}`
+    : undefined;
+  if (response.reportedModel) {
+    const resolvedModel = cliReportedModelMatches(response.reportedModel, response.invokedModel)
+      ? response.invokedModel
+      : response.reportedModel;
+    return buildExecutedIdentity({
+      role: 'substantive_analysis',
+      requestedModel: input.requestedModel,
+      resolvedModel,
+      agent,
+      source: 'artifact',
+      fallbackReason,
+    });
+  }
+  return buildExecutedIdentity({
+    role: 'substantive_analysis',
+    requestedModel: input.requestedModel,
+    resolvedModel: response.invokedModel,
+    agent,
+    source: 'derived',
+    fallbackReason,
+    verified: false,
+  });
+}
+
+/**
+ * Combine per-persona analysis identities. Personas that resolved different
+ * models record a conflict (never pinned).
+ */
+function combineAnalysisIdentities(identities: ExecutedIdentity[]): ExecutedIdentity | undefined {
+  const [first, ...rest] = identities;
+  if (!first) return undefined;
+  const other = rest.find((identity) => identity.resolvedModel !== first.resolvedModel);
+  if (other) {
+    return {
+      ...first,
+      pinned: false,
+      conflict: {
+        otherSource: other.source,
+        otherResolvedModel: other.resolvedModel,
+        detail: 'review personas were analysed by different models',
+      },
+    };
+  }
+  return { ...first, pinned: identities.every((identity) => identity.pinned) };
+}
+
+// ────────────────────────────────────────────────────────────────
+// CLI context-window pre-check (HOK-3247)
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Tokens the CLI harness adds on top of the review prompt (its own system
+ * prompt and tool declarations). Measured on a one-word prompt: claude CLI
+ * 2.1.x reported ~28.6k input tokens, codex-cli 0.162 ~19.4k.
+ */
+const CLI_HARNESS_OVERHEAD_TOKENS: Record<ReviewCliCall['provider'], number> = {
+  claude: 30_000,
+  codex: 20_000,
+};
+
+/**
+ * Refuse a CLI review whose prompt cannot fit the model's registry context
+ * window, using the native guard's estimator and safety margin
+ * (`context-window-guard.ts`). Returns the failing verdict, or undefined when
+ * it fits or the registry has no limit for the model.
+ */
+export function checkCliReviewContextWindow(input: {
+  model: string;
+  provider: ReviewCliCall['provider'];
+  prompt: string;
+  repoDir: string;
+}): Extract<ContextWindowVerdict, { ok: false }> | undefined {
+  const limit = getModel(getEffectiveRegistry(input.repoDir), input.model)?.contextWindowTokens;
+  if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) {
+    return undefined;
+  }
+  const promptEstimate = estimatePromptTokens({ messages: [{ role: 'user', content: input.prompt }] });
+  const overhead = CLI_HARNESS_OVERHEAD_TOKENS[input.provider];
+  const verdict = evaluateContextWindow({
+    phase: 'review',
+    model: { id: input.model, provider: `${input.provider}-cli` },
+    limit: { limit, source: 'registry', registryModelId: input.model },
+    estimate: {
+      ...promptEstimate,
+      systemPromptTokens: promptEstimate.systemPromptTokens + overhead,
+      inputTokens: promptEstimate.inputTokens + overhead,
+    },
+    reservedOutputTokens: REVIEW_MAX_OUTPUT_TOKENS,
+  });
+  return verdict.ok ? undefined : verdict as Extract<ContextWindowVerdict, { ok: false }>;
+}
+
+class ReviewCliContextWindowExceededError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ReviewCliContextWindowExceededError';
+  }
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -652,20 +853,23 @@ async function runReviewWithRetry(
   maxRetries: number,
   options: ReviewEngineOptions,
   persona: ReviewerPersona,
-  attempt: number = 1
+  attempt: number = 1,
+  cli: ReviewCliCall = { provider: 'claude', failClosed: false },
 ): Promise<ReviewResult> {
   const maxAttempts = 2;
 
   // Invoke LLM
-  const responseText = await invokeLLMWithRetry(
+  const response = await invokeLLMWithRetry(
     prompt,
     model,
     timeout,
     maxRetries,
     options,
     persona,
-    attempt
+    attempt,
+    cli,
   );
+  const responseText = response.text;
 
   // Show raw response in verbose mode
   if (options.verbose) {
@@ -709,7 +913,8 @@ async function runReviewWithRetry(
         maxRetries,
         options,
         persona,
-        attempt + 1
+        attempt + 1,
+        cli,
       );
     } else {
       throw new Error(
@@ -737,7 +942,10 @@ async function runReviewWithRetry(
       attempt,
       maxAttempts,
     });
-    return parseNativeReviewResponse(responseText, context, options.operatingMode ?? 'normal');
+    return {
+      ...parseNativeReviewResponse(responseText, context, options.operatingMode ?? 'normal'),
+      substantiveAnalysisIdentity: buildCliAnalysisIdentity({ requestedModel: model, response }),
+    };
   } catch (error) {
     if (attempt < maxAttempts) {
       await options.reporter?.emit({
@@ -769,7 +977,8 @@ async function runReviewWithRetry(
         maxRetries,
         options,
         persona,
-        attempt + 1
+        attempt + 1,
+        cli,
       );
     }
     throw error;
@@ -872,7 +1081,8 @@ async function runPersonaReview(
   model: string,
   timeout: number,
   maxRetries: number,
-  options: ReviewEngineOptions
+  options: ReviewEngineOptions,
+  cli: ReviewCliCall = { provider: 'claude', failClosed: false },
 ): Promise<ReviewResult> {
   // Load persona-specific template
   const template = loadPersonaPromptTemplate(persona, options.operatingMode ?? 'normal');
@@ -880,6 +1090,16 @@ async function runPersonaReview(
   // Design persona needs design context, others skip it
   const skipDesignContext = persona !== 'design';
   const prompt = fillReviewPromptTemplate(template, context, skipDesignContext);
+
+  const overflow = reviewEngineDeps.checkCliReviewContextWindow({
+    model,
+    provider: cli.provider,
+    prompt,
+    repoDir,
+  });
+  if (overflow) {
+    throw new ReviewCliContextWindowExceededError(overflow.message);
+  }
 
   // Run review with retry logic
   const result = await runReviewWithRetry(
@@ -891,7 +1111,8 @@ async function runPersonaReview(
     maxRetries,
     options,
     persona,
-    1
+    1,
+    cli,
   );
 
   // Tag all findings with this persona
@@ -927,13 +1148,23 @@ async function runPersonaReview(
  * @param options - Optional overrides for model, timeout, reviewers, etc.
  * @returns ReviewResult with deduplicated findings and persona attribution
  */
+/** The launcher's own resolver for the review phase (HOK-3142 parity). */
+function resolveReviewAgent(model: string, repoDir: string): StageLaunchability {
+  return isLaunchableForStage(model, 'review', { repoDir });
+}
+
 const reviewEngineDeps = {
+  callLLM,
+  checkCliReviewContextWindow,
   ensureClaudeAvailable,
+  ensureCodexAvailable,
   filterEnabledPersonas,
+  isNativeReviewOptedIn,
   loadConfig,
   async loadNativeReviewModule(): Promise<NativeReviewModule> {
     return import('./native-agent/review.ts');
   },
+  resolveReviewAgent,
   runPersonaReview,
 };
 
@@ -942,21 +1173,158 @@ export function isNativeReviewOptedIn(repoDir: string): boolean {
   return config.enabled === true && (config.allowedPhases ?? []).includes('review');
 }
 
+/**
+ * Where a review's substantive analysis runs (HOK-3247).
+ *
+ * - `cli`: the claude or codex executable, chosen by `resolveModelAgent`
+ *   (Anthropic → claude, OpenAI → codex). `failClosed` = a specific reviewer
+ *   was requested, so no fallback ladder.
+ * - `native`: `runNativeReview`; `model` pins exactly one native provider
+ *   entry, or is undefined for the legacy unpinned pool.
+ * - `unlaunchable`: a requested model that cannot run the review.
+ */
+export type ReviewDispatch =
+  | { kind: 'cli'; provider: ReviewCliCall['provider']; model: string; failClosed: boolean }
+  | { kind: 'native'; model?: string }
+  | { kind: 'unlaunchable'; model: string; reason: string; diagnostic: string; agent?: string };
+
+/**
+ * Choose the executor for a review per model, through the single resolver
+ * the launcher and router use (`resolveModelAgent`, via
+ * `isLaunchableForStage`). Anthropic and OpenAI models never reach the
+ * native/OpenRouter path, even when native review is opted in.
+ *
+ * With no requested model the legacy behaviour is kept: the native pool when
+ * native review is opted in, otherwise `judgeModel` on its own CLI (claude
+ * when the resolver does not place it on claude or codex, as before).
+ */
+export function resolveReviewDispatch(input: {
+  repoDir: string;
+  requestedModel?: string;
+  judgeModel: () => string;
+}): ReviewDispatch {
+  const requested = input.requestedModel?.trim();
+  if (!requested) {
+    if (reviewEngineDeps.isNativeReviewOptedIn(input.repoDir)) {
+      return { kind: 'native' };
+    }
+    const judgeModel = input.judgeModel();
+    const judge = reviewEngineDeps.resolveReviewAgent(judgeModel, input.repoDir);
+    const provider = judge.ok === true && (judge.agent === 'claude' || judge.agent === 'codex')
+      ? judge.agent
+      : 'claude';
+    return { kind: 'cli', provider, model: judgeModel, failClosed: false };
+  }
+
+  const resolution = reviewEngineDeps.resolveReviewAgent(requested, input.repoDir);
+  if (resolution.ok === false) {
+    return {
+      kind: 'unlaunchable',
+      model: requested,
+      reason: resolution.reason,
+      diagnostic: resolution.diagnostic,
+    };
+  }
+  const agent = resolution.agent;
+  if (agent === 'claude' || agent === 'codex') {
+    return { kind: 'cli', provider: agent, model: requested, failClosed: true };
+  }
+  if (agent === 'native-openai' || agent === 'native-openrouter') {
+    if (!reviewEngineDeps.isNativeReviewOptedIn(input.repoDir)) {
+      return {
+        kind: 'unlaunchable',
+        model: requested,
+        agent,
+        reason: 'native-review-not-opted-in',
+        diagnostic:
+          `${requested} resolves to ${agent}, but native review is not opted in for this repo ` +
+          '(nativeAgent.enabled with "review" in nativeAgent.allowedPhases)',
+      };
+    }
+    return { kind: 'native', model: requested };
+  }
+  return {
+    kind: 'unlaunchable',
+    model: requested,
+    agent,
+    reason: 'unsupported-review-agent',
+    diagnostic: `${requested} resolves to agent ${agent}, which cannot run review analysis`,
+  };
+}
+
+function reviewResultMetadata(context: ReviewContext): NonNullable<ReviewResult['metadata']> {
+  return {
+    branch: context.metadata.branch,
+    files: context.metadata.files,
+    hasUiChanges: context.metadata.hasUiChanges,
+    designContextAvailable: context.designContext !== null,
+    uiVerificationRun: false,
+  };
+}
+
+/**
+ * Typed fail-closed result for a requested reviewer that cannot run
+ * (HOK-3247). `verdict: "error"` makes it retryable review infrastructure;
+ * `review-runner.ts` re-shapes it for challenge pins (see
+ * REVIEW_MODEL_UNLAUNCHABLE_FAILURE_CATEGORY).
+ */
+function reviewModelUnlaunchableResult(
+  context: ReviewContext,
+  dispatch: Extract<ReviewDispatch, { kind: 'unlaunchable' }>,
+): ReviewResult {
+  const detail =
+    `review-model-unlaunchable: model=${dispatch.model}` +
+    `${dispatch.agent ? ` agent=${dispatch.agent}` : ''} reason=${dispatch.reason}: ${dispatch.diagnostic}`;
+  return {
+    verdict: 'error',
+    codeReviewFindings: [],
+    failureCategory: REVIEW_MODEL_UNLAUNCHABLE_FAILURE_CATEGORY,
+    reviewToolError: detail,
+    substantiveAnalysisIdentity: buildExecutedIdentity({
+      role: 'substantive_analysis',
+      requestedModel: dispatch.model,
+      resolvedModel: 'unresolved',
+      ...(dispatch.agent ? { agent: dispatch.agent } : {}),
+      source: 'derived',
+      fallbackReason: 'review_model_unlaunchable',
+    }),
+    metadata: reviewResultMetadata(context),
+  };
+}
+
 export async function runReview(
   context: ReviewContext,
   repoDir: string,
   options: ReviewEngineOptions = {}
 ): Promise<ReviewResult> {
-  if (isNativeReviewOptedIn(repoDir)) {
-    const nativeReview = await reviewEngineDeps.loadNativeReviewModule();
-    return nativeReview.runNativeReview(context, repoDir, options);
+  const dispatch = resolveReviewDispatch({
+    repoDir,
+    requestedModel: options.model,
+    judgeModel: () => reviewEngineDeps.loadConfig(repoDir).judge.model,
+  });
+
+  if (dispatch.kind === 'unlaunchable') {
+    await options.reporter?.emit({
+      event: 'error',
+      level: 'error',
+      message: `Reviewer ${dispatch.model} cannot run this review (${dispatch.reason})`,
+      details: { model: dispatch.model, agent: dispatch.agent ?? null, reason: dispatch.reason },
+    });
+    return reviewModelUnlaunchableResult(context, dispatch);
   }
 
-  // Load configuration
-  const config = reviewEngineDeps.loadConfig(repoDir);
+  if (dispatch.kind === 'native') {
+    const nativeReview = await reviewEngineDeps.loadNativeReviewModule();
+    return nativeReview.runNativeReview(context, repoDir, {
+      ...options,
+      model: dispatch.model,
+    });
+  }
+
+  const cli: ReviewCliCall = { provider: dispatch.provider, failClosed: dispatch.failClosed };
 
   // Determine effective settings (options override config)
-  const model = options.model || config.judge.model;
+  const model = dispatch.model;
   const timeout = options.timeout || DEFAULT_TIMEOUT_MS;
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
   const operatingMode = options.operatingMode ?? 'normal';
@@ -980,6 +1348,7 @@ export async function runReview(
   if (options.verbose) {
     console.error('=== Review Engine Configuration ===');
     console.error(`Model: ${model}`);
+    console.error(`Executor: ${cli.provider} CLI${cli.failClosed ? ' (pinned, no fallback)' : ''}`);
     console.error(`Timeout: ${timeout}ms`);
     console.error(`Max retries: ${maxRetries}`);
     console.error(`Operating mode: ${operatingMode}`);
@@ -990,20 +1359,23 @@ export async function runReview(
     console.error('');
   }
 
-  // Pre-flight check: Verify Claude CLI is available
+  // Pre-flight check: verify the executor's CLI is available
   // Skip if SKIP_PREFLIGHT_CHECK=1 is set (for testing)
   if (!options.skipClaudePreflight && !process.env.SKIP_PREFLIGHT_CHECK) {
     if (options.verbose) {
       console.error('=== Pre-Flight Check ===');
     }
 
-    await reviewEngineDeps.ensureClaudeAvailable({
+    const ensureAvailable = cli.provider === 'codex'
+      ? reviewEngineDeps.ensureCodexAvailable
+      : reviewEngineDeps.ensureClaudeAvailable;
+    await ensureAvailable({
       verbose: options.verbose,
       reporter: options.reporter,
     });
 
     if (options.verbose) {
-      console.error('✓ Claude CLI is available and working\n');
+      console.error(`✓ ${cli.provider} CLI is available and working\n`);
     }
   }
 
@@ -1021,15 +1393,43 @@ export async function runReview(
       reviewer: persona,
     });
 
-    const result = await reviewEngineDeps.runPersonaReview(
-      persona,
-      context,
-      repoDir,
-      model,
-      timeout,
-      maxRetries,
-      options
-    );
+    let result: ReviewResult;
+    try {
+      result = await reviewEngineDeps.runPersonaReview(
+        persona,
+        context,
+        repoDir,
+        model,
+        timeout,
+        maxRetries,
+        options,
+        cli,
+      );
+    } catch (error) {
+      if (error instanceof ReviewCliContextWindowExceededError) {
+        // Reuses the native category so the monitor's HOK-2964 context-window
+        // recovery (stale-base rebuild / larger-context reroute) applies. The
+        // `native-` prefix is a naming wart: the category now covers CLI
+        // reviewers too; it is not renamed because recovery keys on it.
+        return {
+          verdict: 'error',
+          codeReviewFindings: [],
+          failureCategory: NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
+          reviewToolError: error.message,
+          substantiveAnalysisIdentity: buildExecutedIdentity({
+            role: 'substantive_analysis',
+            requestedModel: model,
+            resolvedModel: model,
+            agent: `${cli.provider}-cli`,
+            source: 'derived',
+            fallbackReason: 'context_window_preflight_refused',
+            verified: false,
+          }),
+          metadata: reviewResultMetadata(context),
+        };
+      }
+      throw error;
+    }
 
     results.push(result);
 
@@ -1113,16 +1513,19 @@ export async function runReview(
     verdict: hasBlockers ? 'not_ready' : 'ready',
     codeReviewFindings: deduplicatedCodeFindings,
     uiFindings: deduplicatedUiFindings.length > 0 ? deduplicatedUiFindings : undefined,
-    // The legacy (non-native) path always invokes the LLM directly with
-    // `model` — there is no separate provider-discovery step that could pick
-    // a different model, so the requested model is definitionally what ran
-    // (HOK-2969).
-    substantiveAnalysisIdentity: buildExecutedIdentity({
+    // Built from what each CLI call reported, never from the requested id
+    // alone (HOK-3247): a model the CLI did not report stays unverified.
+    substantiveAnalysisIdentity: combineAnalysisIdentities(
+      results
+        .map((result) => result.substantiveAnalysisIdentity)
+        .filter((identity): identity is ExecutedIdentity => Boolean(identity)),
+    ) ?? buildExecutedIdentity({
       role: 'substantive_analysis',
       requestedModel: model,
       resolvedModel: model,
-      agent: 'claude-cli',
-      source: 'route',
+      agent: `${cli.provider}-cli`,
+      source: 'derived',
+      verified: false,
     }),
     metadata: {
       branch: context.metadata.branch,
@@ -1156,8 +1559,25 @@ export const reviewEngineTestUtils = {
   setRunPersonaReview(fn: typeof reviewEngineDeps.runPersonaReview) {
     reviewEngineDeps.runPersonaReview = fn;
   },
+  /** HOK-3247 seams: the CLI transport, the review-phase resolver, and native opt-in. */
+  setCallLLM(fn: typeof reviewEngineDeps.callLLM) {
+    reviewEngineDeps.callLLM = fn;
+  },
+  setResolveReviewAgent(fn: typeof reviewEngineDeps.resolveReviewAgent) {
+    reviewEngineDeps.resolveReviewAgent = fn;
+  },
+  setIsNativeReviewOptedIn(fn: typeof reviewEngineDeps.isNativeReviewOptedIn) {
+    reviewEngineDeps.isNativeReviewOptedIn = fn;
+  },
+  setCheckCliReviewContextWindow(fn: typeof reviewEngineDeps.checkCliReviewContextWindow) {
+    reviewEngineDeps.checkCliReviewContextWindow = fn;
+  },
   resetDeps() {
+    reviewEngineDeps.callLLM = callLLM;
+    reviewEngineDeps.checkCliReviewContextWindow = checkCliReviewContextWindow;
+    reviewEngineDeps.isNativeReviewOptedIn = isNativeReviewOptedIn;
     reviewEngineDeps.loadNativeReviewModule = async () => import('./native-agent/review.ts');
+    reviewEngineDeps.resolveReviewAgent = resolveReviewAgent;
     reviewEngineDeps.runPersonaReview = runPersonaReview;
   },
 };

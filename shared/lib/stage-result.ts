@@ -203,6 +203,28 @@ export const NATIVE_REVIEW_MALFORMED_RESPONSE_CATEGORY = 'native-review-malforme
  * after a stale-base rebuild).
  */
 export const REVIEW_SCOPE_EMPTY_FAILURE_CATEGORY = 'review-scope-empty';
+/**
+ * The requested reviewer model cannot run the review's substantive analysis
+ * (HOK-3247): `resolveModelAgent` refused it for the review phase, it resolves
+ * to a native agent while native review is not opted in for the repo, or no
+ * ready native provider serves exactly that model. The review fails closed
+ * instead of silently analysing with a different model.
+ *
+ * Classified by result shape rather than by a static list entry, because the
+ * right class depends on who pinned the model:
+ * - routed (non-challenge) reviewer — `verdict: "error"`: retryable
+ *   infrastructure. A re-certification or reroute can make the model
+ *   launchable, so the bounded `review-infra-recovery` bucket retries it and
+ *   escalates to needs-user with evidence (HOK-3176: not terminal-allowlisted).
+ * - challenge-pinned reviewer — `verdict: "not_ready"` with a blocker
+ *   (`review-runner.ts`): the pin is frozen by the route invariant (HOK-3156),
+ *   so a retry cannot change it; this is a harness fault and Ready's
+ *   review-gate refusal retires the arm as
+ *   `invalid_challenge:review-identity-mismatch` (HOK-3154).
+ * See {@link isInfrastructureReviewFailure} and the monitor's
+ * `review_result_infra_failure` / `review_refused_challenge_cause`.
+ */
+export const REVIEW_MODEL_UNLAUNCHABLE_FAILURE_CATEGORY = 'review-model-unlaunchable';
 export const INFRA_REVIEW_FAILURE_CATEGORIES = [
   'native-runtime-unavailable',
   'native-review-prompt-missing',
@@ -788,6 +810,12 @@ export function isInfrastructureReviewFailure(
     failureCategory
     && (INFRA_REVIEW_FAILURE_CATEGORIES as readonly string[]).includes(failureCategory)
   ) {
+    return true;
+  }
+  // A challenge-pinned unlaunchable reviewer is recorded as not_ready (harness
+  // fault, never retried); every other shape of this category is retryable
+  // infrastructure (HOK-3247).
+  if (failureCategory === REVIEW_MODEL_UNLAUNCHABLE_FAILURE_CATEGORY && outcome.verdict !== 'not_ready') {
     return true;
   }
   return outcome.verdict === 'error'

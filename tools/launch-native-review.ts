@@ -258,6 +258,10 @@ async function main(): Promise<void> {
       codingHandoff,
     }),
     worktreeDir: wtDir,
+    // The launcher exports the Wavemill id it resolved and certified for this
+    // review (agent_launch_autonomous → WAVEMILL_RESOLVED_MODEL), never a
+    // provider wire id (HOK-3247).
+    ...(reviewerModel ? { reviewModel: reviewerModel } : {}),
     reviewContextAppendix: codingHandoff
       ? [
         'Native coding handoff artifacts from the completed coding phase:',

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
-import { runNativeReview, nativeReviewTestUtils, readyReviewEntries } from './review.ts';
+import { runNativeReview, nativeReviewTestUtils, readyReviewEntries, selectReviewProviderFromEntries } from './review.ts';
 import { ContextExhaustedError, ContextWindowExceededError } from './context-window-guard.ts';
 import type { ReviewContext } from '../review-context-gatherer.ts';
 import { parseTranscriptJsonl } from './transcript.ts';
@@ -94,39 +94,53 @@ describe('native review', () => {
     }
   });
 
-  it('records an unpinned fallback identity when the requested model has no ready provider (HOK-2969)', async () => {
+  it('refuses instead of falling back when the requested model has no ready provider (HOK-3247)', async () => {
     const repoDir = makeTempRepo();
-    setProviderSelection({
-      requestedModel: 'glm-5.3',
-      fallbackReason: 'requested_model_unavailable',
+    let loopRan = false;
+    nativeReviewTestUtils.setSelectReviewProvider((_repo, _env, requested) => {
+      // Real selection over a pool that does not serve the requested model.
+      const selection = selectReviewProviderFromEntries([readyEntry('openrouter', 'gemini-2.5-flash')], requested);
+      assert.equal(selection.ok, false);
+      return { ok: false, requestedModel: requested, message: `review-model-unlaunchable: model=${requested}` };
     });
-
-    nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
-      const message = assistantMessage(JSON.stringify({ verdict: 'ready', codeReviewFindings: [] }));
-      emitCommonEvents(config, message);
-      return {
-        messages: [message],
-        stopReason: 'stop',
-        turnsCompleted: 1,
-        toolCallsExecuted: 0,
-        totalInputTokens: 10,
-        totalOutputTokens: 10,
-        totalCostUsd: 0,
-        wallClockMs: 5,
-      };
+    nativeReviewTestUtils.setGetNativeProviderApiKey(() => 'test-key');
+    nativeReviewTestUtils.setRunWavemillLoop(async () => {
+      loopRan = true;
+      throw new Error('the native loop must not run for an unavailable requested model');
     });
 
     try {
       const result = await runNativeReview(makeReviewContext(), repoDir, { model: 'glm-5.3' });
-      // The fallback entry (from setProviderSelection) still resolves gpt-4o —
-      // a challenge cannot be proven when the wrong model actually ran.
+      assert.equal(loopRan, false);
+      assert.equal(result.verdict, 'error');
+      assert.equal(result.failureCategory, 'review-model-unlaunchable');
+      assert.match(result.reviewToolError ?? '', /model=glm-5\.3/);
       assert.equal(result.substantiveAnalysisIdentity?.requestedModel, 'glm-5.3');
-      assert.equal(result.substantiveAnalysisIdentity?.resolvedModel, 'gpt-4o');
+      assert.equal(result.substantiveAnalysisIdentity?.resolvedModel, 'unresolved');
       assert.equal(result.substantiveAnalysisIdentity?.pinned, false);
-      assert.equal(result.substantiveAnalysisIdentity?.fallbackReason, 'requested_model_unavailable');
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
+  });
+
+  it('selects only the exact requested entry, never the first ready one (HOK-3247)', () => {
+    const pool = [readyEntry('openrouter', 'gemini-2.5-flash'), readyEntry('openrouter', 'qwen/qwen3-coder')];
+    const refused = selectReviewProviderFromEntries(pool, 'glm-5.3');
+    assert.deepEqual(refused, { ok: false, requestedModel: 'glm-5.3' });
+
+    const exact = selectReviewProviderFromEntries(pool, 'openrouter/qwen/qwen3-coder');
+    assert.equal(exact.ok, true);
+    assert.equal(exact.ok && exact.entry.modelId, 'qwen/qwen3-coder');
+
+    // The router's Wavemill alias matches its configured OpenRouter slug (same
+    // canonicalization as the native launch probe) — same model, not a fallback.
+    const alias = selectReviewProviderFromEntries(pool, 'qwen-3-coder');
+    assert.equal(alias.ok && alias.entry.modelId, 'qwen/qwen3-coder');
+
+    // Unpinned (manual review, harness replay) keeps the legacy first-ready pick.
+    const unpinned = selectReviewProviderFromEntries(pool);
+    assert.equal(unpinned.ok && unpinned.entry.modelId, 'gemini-2.5-flash');
+    assert.deepEqual(selectReviewProviderFromEntries([], undefined), { ok: false });
   });
 
   it('carries the substantive-analysis identity onto a malformed-response failure too (HOK-2969)', async () => {
@@ -1065,3 +1079,22 @@ describe('readyReviewEntries', () => {
     assert.deepEqual(picked.map((e) => e.modelId), ['glm-5.2']);
   });
 });
+
+function readyEntry(providerName: 'openai' | 'openrouter', modelId: string): ReadyNativeProviderEntry {
+  return {
+    providerName,
+    modelId,
+    status: 'ready',
+    apiKeyEnv: providerName === 'openai' ? 'OPENAI_API_KEY' : 'OPENROUTER_API_KEY',
+    baseUrl: providerName === 'openai' ? 'https://api.openai.com/v1' : 'https://openrouter.ai/api/v1',
+    headers: {},
+    model: {
+      id: `${providerName}:${modelId}`,
+      name: modelId,
+      api: 'openai-completions',
+      provider: providerName,
+      baseUrl: providerName === 'openai' ? 'https://api.openai.com/v1' : 'https://openrouter.ai/api/v1',
+      headers: {},
+    } as ReadyNativeProviderEntry['model'],
+  };
+}

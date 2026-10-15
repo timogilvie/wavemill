@@ -258,6 +258,51 @@ test('probePrLiveState serves the cached row only for the checkout HEAD', async 
   }
 });
 
+test('probePrLiveState treats commit statuses (StatusContext) by their state, not as pending', async () => {
+  const { dir, env, cleanup } = fixture();
+  const saved = { ...process.env };
+  try {
+    const repo = join(dir, 'repo');
+    mkdirSync(repo);
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'one'], { cwd: repo });
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim();
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'gh'), '#!/bin/sh\nexit 1\n');
+    chmodSync(join(bin, 'gh'), 0o755);
+    Object.assign(process.env, env, { PATH: `${bin}:${process.env.PATH ?? ''}` });
+
+    const write = (state: string) => writeFileSync(env.WAVEMILL_SESSION_PR_CACHE as string, JSON.stringify([{
+      number: 11, headRefOid: head, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN',
+      statusCheckRollup: [
+        { __typename: 'CheckRun', name: 'typecheck', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        // Real hokusai-site shape: Vercel posts a commit status with only `state`.
+        { __typename: 'StatusContext', context: 'Vercel', state },
+      ],
+    }]));
+
+    write('SUCCESS');
+    const green = await probePrLiveState(11, repo);
+    assert.deepEqual(green.pendingChecks, []);
+    assert.deepEqual(green.failingChecks, []);
+    assert.ok(
+      green.statusCheckRollup?.every((c) => c.status === 'COMPLETED'),
+      'a green commit status must read as completed, or deriveMergeLabel reports checks-pending forever',
+    );
+    assert.deepEqual(green.statusCheckRollup?.find((c) => c.name === 'Vercel'), { name: 'Vercel', status: 'COMPLETED', conclusion: 'SUCCESS' });
+
+    write('PENDING');
+    assert.deepEqual((await probePrLiveState(11, repo)).pendingChecks, ['Vercel']);
+
+    write('ERROR');
+    assert.deepEqual((await probePrLiveState(11, repo)).failingChecks, ['Vercel']);
+  } finally {
+    process.env = saved;
+    cleanup();
+  }
+});
+
 test('discoverGitHubRequiredChecks takes protection contexts from the session cache for the same repo', async () => {
   const { dir, env, cleanup } = fixture();
   const saved = { ...process.env };
