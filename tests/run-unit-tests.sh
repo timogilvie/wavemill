@@ -150,6 +150,7 @@ TESTS=(
   shared/lib/context-analyzer.test.ts
   shared/lib/review-engine.test.ts
   shared/lib/review-runner.test.ts
+  shared/lib/review-analysis-identity.test.ts
   shared/lib/review-scope-guard.test.ts
   shared/lib/review-progress.test.ts
   shared/lib/review-formatter.test.ts

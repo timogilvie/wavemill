@@ -32,6 +32,7 @@ import {
   type ReviewScopeGuardToolError,
 } from './review-scope-guard.ts';
 import {
+  REVIEW_MODEL_UNLAUNCHABLE_FAILURE_CATEGORY,
   REVIEW_SCOPE_MISMATCH_FAILURE_CATEGORY,
   REVIEW_SCOPE_UNVERIFIABLE_FAILURE_CATEGORY,
 } from './stage-result.ts';
@@ -80,6 +81,13 @@ export interface ReviewOptions {
    * model derived from `featureDir`'s challenge intent (HOK-2969).
    */
   requestedModel?: string;
+  /**
+   * The routed reviewer model (`review-changes --model`, HOK-3247). Used for
+   * the substantive analysis when no explicit override or challenge pin
+   * applies; the review then runs on that model's own executable and fails
+   * closed if it cannot.
+   */
+  model?: string;
 }
 
 // Re-export types from review-engine for backward compatibility
@@ -139,6 +147,11 @@ export function lookupPrChangedFiles(repoDir: string): PrChangedFilesLookup {
 export const reviewRunnerDeps = {
   assertReviewableDiff,
   detectCrossPrReverts,
+  /**
+   * Unused since HOK-3247: the review engine runs the preflight for the
+   * executor it dispatches to (claude or codex). Kept so existing test
+   * doubles that stub it keep compiling.
+   */
   ensureClaudeAvailable,
   execShellCommand,
   gatherReviewContextAsync,
@@ -220,13 +233,6 @@ export async function reviewChanges(
         `Diffing against local '${diffBase.ref}': no origin/${diffBase.ref} ref — ` +
         'review scope may include already-merged work',
       details: { requestedBase: diffBase.requestedRef, baseFetch: diffBase.fetch },
-    });
-  }
-
-  if (!process.env.SKIP_PREFLIGHT_CHECK) {
-    await reviewRunnerDeps.ensureClaudeAvailable({
-      verbose: options.verbose,
-      reporter,
     });
   }
 
@@ -325,12 +331,14 @@ export async function reviewChanges(
     return withDiffBase(mergeDeterministicFindings(mismatchResult, deterministic));
   }
 
-  // Pin the analysis model to the challenged reviewer when this run is part
-  // of a reviewer-stage challenge pair, unless the caller already gave an
-  // explicit override (HOK-2969). Every `review_changes` invocation in a
+  // Analysis model precedence (HOK-2969, HOK-3247): an explicit override,
+  // else the challenged reviewer when this run is part of a reviewer-stage
+  // challenge pair, else the routed reviewer passed by the review pane, else
+  // none (legacy executor). Every `review_changes` invocation in a
   // reviewer-stage challenge — coding-phase self-review included — must use
   // the same pinned model so all collected evidence attributes consistently.
   let requestedModel = options.requestedModel?.trim() || undefined;
+  let challengePinned = false;
   if (!requestedModel && options.featureDir) {
     const challengePin = reviewRunnerDeps.resolveReviewStageChallengePin({
       repoDir,
@@ -363,7 +371,11 @@ export async function reviewChanges(
       };
       return withDiffBase(mergeDeterministicFindings(failedResult, deterministic));
     }
-    requestedModel = challengePin?.model;
+    requestedModel = challengePin?.model?.trim() || undefined;
+    challengePinned = Boolean(requestedModel);
+  }
+  if (!requestedModel) {
+    requestedModel = options.model?.trim() || undefined;
   }
 
   // Delegate to review engine
@@ -372,14 +384,46 @@ export async function reviewChanges(
     verbose: options.verbose,
     reviewers: options.reviewers,
     reporter,
-    skipClaudePreflight: true,
+    skipClaudePreflight: false,
     operatingMode: options.operatingMode,
     featureDir: options.featureDir,
     repoDir,
     ...(requestedModel ? { model: requestedModel } : {}),
   });
 
-  return withDiffBase(mergeDeterministicFindings(result, deterministic));
+  const shaped = challengePinned ? challengePinUnlaunchableAsRefusal(result) : result;
+  return withDiffBase(mergeDeterministicFindings(shaped, deterministic));
+}
+
+/**
+ * A challenge-pinned reviewer that cannot run is a harness fault, not
+ * retryable infrastructure (HOK-3247): the route invariant freezes the pin
+ * (HOK-3156), so relaunching the same review cannot change the outcome.
+ * Re-shape it like `challenge-review-pin-unresolvable`: a `not_ready` blocker
+ * that the Ready gate refuses terminally, which retires the arm as
+ * `invalid_challenge:review-identity-mismatch` (monitor
+ * `review_refused_challenge_cause`) and releases the sibling.
+ */
+function challengePinUnlaunchableAsRefusal(result: ReviewResult): ReviewResult {
+  if (result.failureCategory !== REVIEW_MODEL_UNLAUNCHABLE_FAILURE_CATEGORY) {
+    return result;
+  }
+  const { reviewToolError, ...rest } = result;
+  return {
+    ...rest,
+    verdict: 'not_ready',
+    codeReviewFindings: [
+      {
+        severity: 'blocker',
+        location: 'challenge-review-pin',
+        category: 'challenge-review-pin',
+        description:
+          `${reviewToolError ?? 'The challenge-pinned reviewer cannot run this review.'} ` +
+          'The challenge arm cannot be reviewed by its assigned model; this is a harness fault, not a code defect.',
+      },
+      ...result.codeReviewFindings,
+    ],
+  };
 }
 
 // ────────────────────────────────────────────────────────────────

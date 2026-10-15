@@ -22,6 +22,10 @@ import {
   parseLogFormat,
 } from '../shared/lib/review-formatter.ts';
 import { getCurrentOperatingMode, type OperatingMode } from '../shared/lib/operating-mode.ts';
+import {
+  clearReviewAnalysisIdentity,
+  writeReviewAnalysisIdentity,
+} from '../shared/lib/review-analysis-identity.ts';
 
 const VALID_OPERATING_MODES: readonly OperatingMode[] = ['normal', 'constrained', 'survival'];
 
@@ -50,6 +54,7 @@ runTool({
     'ui-only': { type: 'boolean', description: 'Run only UI verification (skip code review)' },
     'since-commit': { type: 'string', description: 'Only review changes after this commit SHA (scopes review to task-specific changes)' },
     'operating-mode': { type: 'string', description: 'Force review mode: normal, constrained, or survival. Auto-detected when omitted.' },
+    model: { type: 'string', description: 'Reviewer model for the analysis (the routed reviewer). Runs on that model\'s own executable and fails closed if it cannot run. Defaults to eval.judge.model / the native pool.' },
   },
   positional: {
     name: 'targetBranch repoDir',
@@ -65,6 +70,7 @@ runTool({
     'npx tsx tools/review-changes.ts main /path/to/repo --skip-ui',
     'npx tsx tools/review-changes.ts main --since-commit abc1234',
     'npx tsx tools/review-changes.ts main --operating-mode constrained',
+    'npx tsx tools/review-changes.ts main --json --model claude-opus-5-5',
   ],
   additionalHelp: `Exit Codes:
   0 - Review passed (verdict: ready)
@@ -84,6 +90,7 @@ Output Modes:
     const logFormat = parseLogFormat(args['log-format'] as string | undefined);
     const reporter = createReviewProgressReporter({ format: logFormat });
     const forcedOperatingMode = parseOperatingMode(args['operating-mode'] as string | undefined);
+    const reviewerModel = (args.model as string | undefined)?.trim() || undefined;
 
     // Initialize metrics tracking
     let metric: ReviewMetric | undefined;
@@ -170,6 +177,11 @@ Use the relative path: npx tsx tools/review-changes.ts ${targetBranch} --json
       const sinceCommit = (args['since-commit'] as string | undefined)
         || detectSinceCommit(currentBranch, repoDir, verbose);
       const featureDir = resolveReviewFeatureDir(repoDir, currentBranch);
+      const reviewedHeadSha = readHeadSha(repoDir);
+      if (featureDir) {
+        // A crashed run must not leave the previous run's identity behind.
+        clearReviewAnalysisIdentity(featureDir);
+      }
       let operatingMode = forcedOperatingMode;
       if (!operatingMode) {
         try {
@@ -190,6 +202,7 @@ Use the relative path: npx tsx tools/review-changes.ts ${targetBranch} --json
           sinceCommit: sinceCommit || null,
           featureDir: featureDir || null,
           operatingMode,
+          model: reviewerModel ?? null,
         },
       });
       if (verbose) {
@@ -217,7 +230,18 @@ Use the relative path: npx tsx tools/review-changes.ts ${targetBranch} --json
         sinceCommit,
         operatingMode,
         featureDir: featureDir ?? undefined,
+        ...(reviewerModel ? { model: reviewerModel } : {}),
       });
+
+      // Hand the analysis identity to the stage-result writer, keyed to the
+      // reviewed head (HOK-3247; see shared/lib/review-analysis-identity.ts).
+      const identityHead = result.metadata?.diffBase?.reviewedHead ?? reviewedHeadSha;
+      if (featureDir && identityHead && result.substantiveAnalysisIdentity) {
+        writeReviewAnalysisIdentity(featureDir, {
+          headSha: identityHead,
+          substantiveAnalysis: result.substantiveAnalysisIdentity,
+        });
+      }
 
       // Add iteration to metric
       const iterationNumber = metric.iterations.length + 1;
@@ -293,6 +317,14 @@ Use the relative path: npx tsx tools/review-changes.ts ${targetBranch} --json
     }
   },
 });
+
+function readHeadSha(repoDir: string): string | null {
+  try {
+    return execSync('git rev-parse HEAD', { cwd: repoDir, encoding: 'utf-8' }).trim() || null;
+  } catch {
+    return null;
+  }
+}
 
 function resolveReviewFeatureDir(repoDir: string, branchName: string): string | null {
   const match = branchName.match(/^(?:task|feature|bugfix|bug)\/(.+)$/);

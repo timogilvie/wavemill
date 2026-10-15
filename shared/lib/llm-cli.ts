@@ -122,6 +122,14 @@ export interface LLMCallResult {
   provider: LLMProvider;
   /** Model that actually produced the response */
   model: string;
+  /**
+   * Model id the CLI itself reported in its output (HOK-3247), when it reports
+   * one. The claude CLI's `--output-format json` envelope carries a
+   * `modelUsage` map keyed by the model(s) that served the turn; `codex exec
+   * --json` reports no model, so this stays undefined for codex. Unlike
+   * `model` (the id the CLI was *asked* for), this is execution evidence.
+   */
+  reportedModel?: string;
   /** Models skipped due to quota exhaustion before success */
   fallbackChain?: Array<{ model: string; reason: string }>;
 }
@@ -697,8 +705,37 @@ interface JsonEnvelope {
     cache_read_input_tokens?: number;
   };
   total_cost_usd?: number;
+  /** Per-model usage keyed by the model id(s) that served the turn (claude CLI). */
+  modelUsage?: Record<string, { outputTokens?: number; canonicalModel?: string } | undefined>;
   is_error?: boolean;
   error?: string;
+}
+
+/**
+ * Pick the model the claude CLI reports as having served the turn from its
+ * `modelUsage` map (HOK-3247). The map can hold helper models next to the main
+ * one, so the entry with the most output tokens wins; `canonicalModel` is
+ * preferred over the map key when present. Returns undefined when the
+ * envelope reports no model — callers must then treat identity as unverified.
+ */
+export function reportedModelFromEnvelope(modelUsage: unknown): string | undefined {
+  if (!modelUsage || typeof modelUsage !== 'object' || Array.isArray(modelUsage)) {
+    return undefined;
+  }
+  let best: { model: string; outputTokens: number } | undefined;
+  for (const [key, usage] of Object.entries(modelUsage as NonNullable<JsonEnvelope['modelUsage']>)) {
+    const canonical = typeof usage?.canonicalModel === 'string' && usage.canonicalModel.trim()
+      ? usage.canonicalModel.trim()
+      : key.trim();
+    if (!canonical) continue;
+    const outputTokens = typeof usage?.outputTokens === 'number' && Number.isFinite(usage.outputTokens)
+      ? usage.outputTokens
+      : 0;
+    if (!best || outputTokens > best.outputTokens) {
+      best = { model: canonical, outputTokens };
+    }
+  }
+  return best?.model;
 }
 
 /**
@@ -715,6 +752,7 @@ function unwrapJsonEnvelope(raw: string): {
   text: string;
   usage?: LLMCallResult['usage'];
   costUsd?: number;
+  reportedModel?: string;
 } {
   let data: JsonEnvelope;
   try {
@@ -751,8 +789,9 @@ function unwrapJsonEnvelope(raw: string): {
 
   // Extract cost if present
   const costUsd = data.total_cost_usd;
+  const reportedModel = reportedModelFromEnvelope(data.modelUsage);
 
-  return { text, usage, costUsd };
+  return { text, usage, costUsd, ...(reportedModel ? { reportedModel } : {}) };
 }
 
 /**
@@ -776,6 +815,7 @@ function unwrapCodexJsonl(raw: string): {
   text: string;
   usage?: LLMCallResult['usage'];
   costUsd?: number;
+  reportedModel?: string;
 } {
   const messages: string[] = [];
   let usage: LLMCallResult['usage'] | undefined;
@@ -1742,7 +1782,7 @@ async function callLLMOnce(
 
     // Unwrap provider output: Claude/OpenAI emit a single JSON envelope; Codex
     // emits a JSONL event stream.
-    const { text: unwrappedText, usage, costUsd } =
+    const { text: unwrappedText, usage, costUsd, reportedModel } =
       provider === 'codex' ? unwrapCodexJsonl(rawOutput) : unwrapJsonEnvelope(rawOutput);
 
     // Strip tool calls if enabled
@@ -1755,6 +1795,7 @@ async function callLLMOnce(
       rawOutput,
       provider,
       model: options.model || '(default)',
+      ...(reportedModel ? { reportedModel } : {}),
     };
   } catch (error) {
     throw withElapsed(error as Error, getElapsed(error) || Date.now() - startedAt);

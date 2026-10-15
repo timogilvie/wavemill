@@ -12080,7 +12080,7 @@ review_refused_challenge_cause() {
   local state_dir="$1" issue="$2"
   local review_file="$state_dir/.review-result.json"
   local kind="" assigned="" recorded="" executed="" evidence_status="" attribution_eligible=""
-  local cause="" model=""
+  local cause="" model="" failure_category=""
 
   if [[ -f "$review_file" ]]; then
     # Review kind, read from the artifacts (same unwrapping as
@@ -12108,6 +12108,7 @@ review_refused_challenge_cause() {
     executed="$(jq -r '(.executedModel // "") | tostring' "$review_file" 2>/dev/null || true)"
     evidence_status="$(jq -r '(.executionEvidence.status // "") | tostring' "$review_file" 2>/dev/null || true)"
     attribution_eligible="$(jq -r '(.modelAttributionEligible // false) | tostring' "$review_file" 2>/dev/null || true)"
+    failure_category="$(review_result_failure_category "$state_dir" 2>/dev/null || true)"
     [[ "$recorded" == "null" ]] && recorded=""
     [[ "$executed" == "null" ]] && executed=""
   fi
@@ -12119,6 +12120,10 @@ review_refused_challenge_cause() {
   # or executionEvidence.status == "contradicted".
   local mismatch=0 ids_total=0
   if [[ "$evidence_status" == "contradicted" ]]; then
+    mismatch=1
+  elif [[ "$failure_category" == "review-model-unlaunchable" ]]; then
+    # HOK-3247: the arm's pinned reviewer could not run the analysis, so the
+    # review that exists was not performed by the assigned model.
     mismatch=1
   else
     local a1 a2 a3
@@ -12512,6 +12517,9 @@ review_result_infra_failure() {
       (($review.failureCategory // "") == "provider-credit-exhausted") or
       (($review.failureCategory // "") == "native-review-timeout") or
       (($review.failureCategory // "") == "native-review-malformed-response") or
+      # HOK-3247: a routed reviewer that cannot run is retryable infra; the
+      # challenge-pinned shape (verdict not_ready) is a harness fault instead.
+      ((($review.failureCategory // "") == "review-model-unlaunchable") and (($review.verdict // "") != "not_ready")) or
       ((($review.verdict // "") == "error") and ((($review.reviewToolError // "") | tostring | length) > 0))
     )
   ' "$review_file" >/dev/null 2>&1
@@ -12580,6 +12588,9 @@ review_infra_recovery_next_action() {
       ;;
     native-review-timeout)
       printf 'native review exhausted its wall-clock budget after escalated retries, challenger arms forfeit, otherwise manual re-review required'
+      ;;
+    review-model-unlaunchable)
+      printf 'the routed reviewer model cannot run the review analysis (see reviewToolError for the model and resolver reason), so certify or reroute the reviewer, then manual re-review required'
       ;;
     *)
       printf 'manual re-review required'

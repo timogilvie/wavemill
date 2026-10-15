@@ -1717,3 +1717,59 @@ test('stage provenance carries Pi runtime versions from executionEvidence (HOK-3
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('review stage prefers the pinned substantive identity over the pane executedModel (HOK-3247)', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-review-identity-test-'));
+  try {
+    const featureDir = join(tmp, 'features', 'arm');
+    mkdirSync(featureDir, { recursive: true });
+    const reviewResult = (substantivePinned: boolean) => JSON.stringify({
+      stage: 'review',
+      status: 'completed',
+      agent: 'claude',
+      model: 'claude-opus-5-5',
+      intendedModel: 'claude-opus-5-5',
+      // The pane session (the agent that ran review-changes) — not the analysis.
+      executedModel: 'claude-sonnet-5',
+      executionEvidence: { status: 'direct', source: 'claude-session', identityVerdict: 'mismatch' },
+      modelAttributionEligible: false,
+      modelAttributionIneligibleReason: 'runtime_fallback',
+      notes: '',
+      artifacts: {
+        type: 'review',
+        reviewExecutedIdentity: {
+          orchestrator: { role: 'review_orchestrator', requestedModel: 'claude-opus-5-5', resolvedModel: 'claude-sonnet-5', source: 'artifact', pinned: false },
+          substantiveAnalysis: {
+            role: 'substantive_analysis',
+            requestedModel: 'claude-opus-5-5',
+            resolvedModel: 'claude-opus-5-5',
+            agent: 'claude-cli',
+            source: 'artifact',
+            pinned: substantivePinned,
+          },
+          remediation: null,
+        },
+      },
+    });
+    writeFileSync(join(featureDir, '.review-result.json'), reviewResult(true));
+    writeStage(featureDir, 'planning', 'claude', 'claude-opus-4-7');
+
+    const pinned = resolveChallengeSideExecutionProvenance({ featureDir });
+    assert.equal(pinned.review.rawModel, 'claude-opus-5-5');
+    assert.equal(pinned.review.agent, 'claude-cli');
+    assert.equal(pinned.review.executionEvidenceStatus, 'direct');
+    assert.equal(pinned.review.modelAttributionEligible, true);
+    assert.equal(pinned.review.identityVerdict, undefined);
+
+    // An unpinned (unverified) analysis identity never overrides the pane.
+    writeFileSync(join(featureDir, '.review-result.json'), reviewResult(false));
+    const unpinned = resolveChallengeSideExecutionProvenance({ featureDir });
+    assert.equal(unpinned.review.rawModel, 'claude-sonnet-5');
+    assert.equal(unpinned.review.modelAttributionEligible, false);
+
+    // Non-review stages keep reading the top-level executedModel.
+    assert.equal(pinned.planning.rawModel, 'claude-opus-4-7');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});

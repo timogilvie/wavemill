@@ -164,6 +164,23 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     evidence: { stage: 'ready', failureKind: 'review-not-ready', detail: 'Ready launch refused for PR #1544: review verdict does not pass the readiness gate (terminal until the review artifact changes); verdict=not_ready, blockers=7', challengeArm: true },
     expectedClass: 'terminal',
   },
+  // ── HOK-3247: requested reviewer cannot run the review analysis ──
+  {
+    name: 'HOK-3247: routed reviewer unlaunchable (typed category)',
+    evidence: { stage: 'review', failureKind: 'review-model-unlaunchable', detail: 'review-model-unlaunchable: model=gpt-5.6-terra agent=codex reason=codex-chatgpt-ineligible: [agent-resolution] model=gpt-5.6-terra phase=review surface=codex-chatgpt reason=codex-chatgpt-ineligible' },
+    expectedClass: 'retryable',
+    expectedKind: 'review-model-unlaunchable',
+  },
+  {
+    name: 'HOK-3247: review-infra-recovery exhausted on an unlaunchable reviewer (untyped)',
+    evidence: { stage: 'review', detail: 'Review infrastructure recovery exhausted after 3 attempt(s) for PR #1700 (category=review-model-unlaunchable); the routed reviewer model cannot run the review analysis (see reviewToolError for the model and resolver reason), so certify or reroute the reviewer, then manual re-review required' },
+    expectedClass: 'retryable',
+  },
+  {
+    name: 'HOK-3247: challenge-pinned reviewer unlaunchable retires as identity mismatch',
+    evidence: { stage: 'ready', failureKind: 'review-identity-mismatch', detail: 'Ready launch refused for PR #1700: review verdict does not pass the readiness gate; failureCategory=review-model-unlaunchable', challengeArm: true },
+    expectedClass: 'terminal',
+  },
   // ── HOK-3170: deterministic CI failure ──
   {
     name: 'HOK-3170: preflight seam guard failure in CI',
