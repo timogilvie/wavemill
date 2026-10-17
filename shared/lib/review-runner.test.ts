@@ -471,13 +471,14 @@ describe('review-runner', () => {
   describe('Diff base resolution and scope-mismatch guard (HOK-3166)', () => {
     const HEAD_SHA = 'h'.repeat(40);
 
-    function mockPipeline(files: string[], options: { headSha?: string } = {}) {
+    function mockPipeline(files: string[], options: { headSha?: string; diff?: string } = {}) {
       const getGitDiff = mock.method(reviewRunnerDeps, 'getGitDiff', () => 'diff --git a/x b/x');
       mock.method(reviewRunnerDeps, 'getCurrentBranch', () => 'task/diff-base');
       mock.method(reviewRunnerDeps, 'assertReviewableDiff', () => undefined);
       mock.method(reviewRunnerDeps, 'ensureClaudeAvailable', async () => undefined);
+      mock.method(reviewRunnerDeps, 'readLinguistGeneratedPaths', () => new Set<string>());
       const gather = mock.method(reviewRunnerDeps, 'gatherReviewContextAsync', async () => ({
-        diff: 'diff --git a/x b/x',
+        diff: options.diff ?? 'diff --git a/x b/x',
         plan: 'plan',
         taskPacket: 'packet',
         designContext: null,
@@ -658,6 +659,27 @@ describe('review-runner', () => {
       runReview.mock.resetCalls();
       await reviewChanges({ repoDir: TEST_DIR, targetBranch: 'main', model: '  ' });
       assert.equal((runReview.mock.calls[0].arguments[2] as { model?: string }).model, undefined);
+    });
+
+    it('hands the model a compacted diff that lists omitted generated files', async () => {
+      const section = (path: string, body: string) =>
+        `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -0,0 +1 @@\n+${body}\n`;
+      const diff = section('src/a.ts', 'export const a = 1;') + section('dist/index.js', 'bundled();');
+      const { runReview } = mockPipeline(['src/a.ts', 'dist/index.js'], { diff });
+      const { events, reporter } = recordingReporter();
+
+      await reviewChanges({ repoDir: TEST_DIR, targetBranch: 'main', reporter });
+
+      const modelDiff = (runReview.mock.calls[0].arguments[0] as { diff: string }).diff;
+      assert.match(modelDiff, /^# Review diff note: 1 changed file\(s\) were omitted/);
+      assert.match(modelDiff, /dist\/index\.js \(generated output/);
+      assert.ok(modelDiff.includes('+++ b/src/a.ts'));
+      assert.ok(!modelDiff.includes('bundled();'));
+      // The full file list still drives metadata and scope checks.
+      const loaded = events.find((event) => event.event === 'context_loaded');
+      assert.equal(loaded?.details?.fileCount, 2);
+      const compacted = events.find((event) => event.event === 'diff_compacted');
+      assert.equal(compacted?.level, 'warn');
     });
 
     it('lets a challenge pin win over the routed reviewer model (HOK-3247)', async () => {

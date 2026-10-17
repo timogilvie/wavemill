@@ -26,6 +26,7 @@ import {
   type CrossPrRevertFinding,
 } from './cross-pr-revert-detector.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
+import { compactReviewDiff, listDiffPaths, readLinguistGeneratedPaths } from './review-diff-budget.ts';
 import {
   validateReviewScope,
   type ReviewScopeGuardFinding,
@@ -158,6 +159,7 @@ export const reviewRunnerDeps = {
   getCurrentBranch,
   getGitDiff,
   lookupPrChangedFiles,
+  readLinguistGeneratedPaths,
   resolveReviewDiffBase,
   resolveReviewStageChallengePin,
   runReview,
@@ -253,12 +255,35 @@ export async function reviewChanges(
     sinceCommit: options.sinceCommit,
   });
   const deterministicFindings = deterministic.findings;
+
+  // Keep the diff inside the reviewer's input limit: generated output and
+  // oversized files are listed, not inlined. Only the model-facing diff is
+  // compacted; scope checks below still use the full context.metadata.files.
+  const compacted = compactReviewDiff(context.diff, {
+    generatedPaths: reviewRunnerDeps.readLinguistGeneratedPaths(repoDir, listDiffPaths(context.diff)),
+  });
+  if (compacted.omitted.length > 0) {
+    await reporter?.emit({
+      event: 'diff_compacted',
+      level: 'warn',
+      message:
+        `Omitted ${compacted.omitted.length} file(s) from the review diff ` +
+        `(${compacted.originalChars} -> ${compacted.keptChars} chars)`,
+      details: {
+        originalChars: compacted.originalChars,
+        keptChars: compacted.keptChars,
+        omitted: compacted.omitted.map((entry) => ({ path: entry.path, reason: entry.reason, chars: entry.chars })),
+      },
+    });
+  }
+  const modelContext = compacted.omitted.length > 0 ? { ...context, diff: compacted.diff } : context;
+
   const reviewContextWithDeterministicFindings = deterministicFindings.length > 0
     ? {
-      ...context,
-      diff: prependCrossPrRevertContext(context.diff, deterministicFindings),
+      ...modelContext,
+      diff: prependCrossPrRevertContext(modelContext.diff, deterministicFindings),
     }
-    : context;
+    : modelContext;
   const additionalContext = options.additionalContext?.trim();
   const reviewContext = additionalContext
     ? {
