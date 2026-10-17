@@ -476,7 +476,7 @@ describe('review-runner', () => {
       mock.method(reviewRunnerDeps, 'getCurrentBranch', () => 'task/diff-base');
       mock.method(reviewRunnerDeps, 'assertReviewableDiff', () => undefined);
       mock.method(reviewRunnerDeps, 'ensureClaudeAvailable', async () => undefined);
-      mock.method(reviewRunnerDeps, 'readLinguistGeneratedPaths', () => new Set<string>());
+      mock.method(reviewRunnerDeps, 'readGeneratedFileInfo', () => new Map());
       const gather = mock.method(reviewRunnerDeps, 'gatherReviewContextAsync', async () => ({
         diff: options.diff ?? 'diff --git a/x b/x',
         plan: 'plan',
@@ -671,15 +671,42 @@ describe('review-runner', () => {
       await reviewChanges({ repoDir: TEST_DIR, targetBranch: 'main', reporter });
 
       const modelDiff = (runReview.mock.calls[0].arguments[0] as { diff: string }).diff;
-      assert.match(modelDiff, /^# Review diff note: 1 changed file\(s\) were omitted/);
-      assert.match(modelDiff, /dist\/index\.js \(generated output/);
+      assert.match(modelDiff, /^# Review diff note: 1 changed file\(s\) are summarized/);
+      assert.match(modelDiff, /# Generated output[^\n]*\n#   - dist\/index\.js/);
       assert.ok(modelDiff.includes('+++ b/src/a.ts'));
       assert.ok(!modelDiff.includes('bundled();'));
       // The full file list still drives metadata and scope checks.
       const loaded = events.find((event) => event.event === 'context_loaded');
       assert.equal(loaded?.details?.fileCount, 2);
       const compacted = events.find((event) => event.event === 'diff_compacted');
-      assert.equal(compacted?.level, 'warn');
+      assert.equal(compacted?.level, 'info');
+    });
+
+    it('adds a review-coverage warning when the input budget drops hand-written files', async () => {
+      const previous = process.env.WAVEMILL_REVIEW_DIFF_MAX_CHARS;
+      process.env.WAVEMILL_REVIEW_DIFF_MAX_CHARS = '400';
+      try {
+        const section = (path: string, lines: number) =>
+          `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -0,0 +1 @@\n` +
+          Array.from({ length: lines }, (_, i) => `+const v${i} = ${i};`).join('\n') + '\n';
+        const diff = section('src/small.ts', 2) + section('src/huge.ts', 200);
+        const { runReview } = mockPipeline(['src/small.ts', 'src/huge.ts'], { diff });
+        const { events, reporter } = recordingReporter();
+
+        const result = await reviewChanges({ repoDir: TEST_DIR, targetBranch: 'main', reporter });
+
+        const modelDiff = (runReview.mock.calls[0].arguments[0] as { diff: string }).diff;
+        assert.match(modelDiff, /# NOT REVIEWED[^\n]*\n#   - src\/huge\.ts/);
+        const coverage = result.codeReviewFindings.filter((finding) => finding.category === 'review-coverage');
+        assert.equal(coverage.length, 1);
+        assert.equal(coverage[0].severity, 'warning');
+        assert.match(coverage[0].description, /1 hand-written file\(s\) were not reviewed.*src\/huge\.ts/);
+        assert.equal(result.verdict, 'ready');
+        assert.equal(events.find((event) => event.event === 'diff_compacted')?.level, 'warn');
+      } finally {
+        if (previous === undefined) delete process.env.WAVEMILL_REVIEW_DIFF_MAX_CHARS;
+        else process.env.WAVEMILL_REVIEW_DIFF_MAX_CHARS = previous;
+      }
     });
 
     it('lets a challenge pin win over the routed reviewer model (HOK-3247)', async () => {

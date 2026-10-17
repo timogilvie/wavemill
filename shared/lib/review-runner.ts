@@ -26,7 +26,7 @@ import {
   type CrossPrRevertFinding,
 } from './cross-pr-revert-detector.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
-import { compactReviewDiff, listDiffPaths, readLinguistGeneratedPaths } from './review-diff-budget.ts';
+import { compactReviewDiff, listDiffPaths, readGeneratedFileInfo, type ReviewDiffOmission } from './review-diff-budget.ts';
 import {
   validateReviewScope,
   type ReviewScopeGuardFinding,
@@ -159,7 +159,7 @@ export const reviewRunnerDeps = {
   getCurrentBranch,
   getGitDiff,
   lookupPrChangedFiles,
-  readLinguistGeneratedPaths,
+  readGeneratedFileInfo,
   resolveReviewDiffBase,
   resolveReviewStageChallengePin,
   runReview,
@@ -256,19 +256,20 @@ export async function reviewChanges(
   });
   const deterministicFindings = deterministic.findings;
 
-  // Keep the diff inside the reviewer's input limit: generated output and
-  // oversized files are listed, not inlined. Only the model-facing diff is
-  // compacted; scope checks below still use the full context.metadata.files.
+  // Keep the diff inside the reviewer's input limit: generated output is
+  // summarized and near-duplicate files become deltas. Only the model-facing
+  // diff is compacted; scope checks below still use context.metadata.files.
   const compacted = compactReviewDiff(context.diff, {
-    generatedPaths: reviewRunnerDeps.readLinguistGeneratedPaths(repoDir, listDiffPaths(context.diff)),
+    generated: reviewRunnerDeps.readGeneratedFileInfo(repoDir, listDiffPaths(context.diff)),
   });
   if (compacted.omitted.length > 0) {
     await reporter?.emit({
       event: 'diff_compacted',
-      level: 'warn',
+      level: compacted.unreviewed.length > 0 ? 'warn' : 'info',
       message:
-        `Omitted ${compacted.omitted.length} file(s) from the review diff ` +
-        `(${compacted.originalChars} -> ${compacted.keptChars} chars)`,
+        `Summarized ${compacted.omitted.length} file(s) in the review diff ` +
+        `(${compacted.originalChars} -> ${compacted.keptChars} chars)` +
+        (compacted.unreviewed.length > 0 ? `; ${compacted.unreviewed.length} file(s) NOT reviewed (input budget)` : ''),
       details: {
         originalChars: compacted.originalChars,
         keptChars: compacted.keptChars,
@@ -417,7 +418,13 @@ export async function reviewChanges(
   });
 
   const shaped = challengePinned ? challengePinUnlaunchableAsRefusal(result) : result;
-  return withDiffBase(mergeDeterministicFindings(shaped, deterministic));
+  const coverageFindings = compacted.unreviewed.length > 0
+    ? [buildReviewCoverageFinding(compacted.unreviewed, compacted.originalChars)]
+    : [];
+  return withDiffBase(mergeDeterministicFindings(shaped, {
+    ...deterministic,
+    findings: [...deterministicFindings, ...coverageFindings],
+  }));
 }
 
 /**
@@ -837,6 +844,24 @@ function buildScopeUnverifiableFinding(toolError?: ReviewScopeGuardToolError): R
       `Review scope could not be verified${detail}. ` +
       'This is a review-infrastructure condition, not a code defect: nothing was found wrong with the change. ' +
       `It is surfaced as failureCategory "${REVIEW_SCOPE_UNVERIFIABLE_FAILURE_CATEGORY}" so the orchestrator can retry the review.`,
+  };
+}
+
+/** Unreviewed files named in a review-coverage finding before truncating. */
+const MAX_LISTED_UNREVIEWED_FILES = 20;
+
+function buildReviewCoverageFinding(unreviewed: ReviewDiffOmission[], originalChars: number): ReviewFinding {
+  const paths = unreviewed.map((entry) => entry.path);
+  const listed = paths.slice(0, MAX_LISTED_UNREVIEWED_FILES).join(', ');
+  const more = paths.length > MAX_LISTED_UNREVIEWED_FILES ? ` and ${paths.length - MAX_LISTED_UNREVIEWED_FILES} more` : '';
+  return {
+    severity: 'warning',
+    location: paths.slice(0, MAX_LISTED_UNREVIEWED_FILES).join(', '),
+    category: 'review-coverage',
+    description:
+      `${paths.length} hand-written file(s) were not reviewed: the ${originalChars}-char diff exceeded the reviewer ` +
+      `input budget after generated and near-duplicate files were summarized. Unreviewed: ${listed}${more}. ` +
+      'Review them manually, split the change, or raise WAVEMILL_REVIEW_DIFF_MAX_CHARS.',
   };
 }
 
