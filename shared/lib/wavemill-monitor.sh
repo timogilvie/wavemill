@@ -18374,6 +18374,7 @@ LAST_LAUNCHED_SLOTS=1
 
 launch_task() {
   local issue="$1" slug="$2" title="$3" remaining_slots="${4:-1}" override_base="${5:-}"
+  [[ -n "$title" ]] || title="Task"
   local branch="task/${slug}"
   local wt_dir="${WORKTREE_ROOT}/${slug}"
   local feature_dir="${wt_dir}/features/${slug}"

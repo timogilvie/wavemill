@@ -7805,12 +7805,12 @@ read_state_value() {
   shift
   local value
 
-  if [[ ! -r "$STATE_FILE" || ! -s "$STATE_FILE" ]]; then
+  if [[ ! -r "${STATE_FILE:-}" || ! -s "${STATE_FILE:-}" ]]; then
     printf '%s\n' "$default"
     return 0
   fi
 
-  if value=$(jq -r "$@" "$STATE_FILE" 2>/dev/null); then
+  if value=$(jq -r "$@" "${STATE_FILE:-}" 2>/dev/null); then
     printf '%s\n' "$value"
   else
     printf '%s\n' "$default"
