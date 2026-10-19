@@ -71,7 +71,12 @@ import type {
   ReviewExecutedIdentitySet,
 } from './challenge-execution-contract.ts';
 import { projectChallengeIntentForPersistence } from './challenge-execution-contract.ts';
-import type { WorkflowCostOutcome, WorkflowCostResult, WorkflowCostFailure } from './workflow-cost.ts';
+import {
+  reportableWorkflowCostUsd,
+  type WorkflowCostOutcome,
+  type WorkflowCostResult,
+  type WorkflowCostFailure,
+} from './workflow-cost.ts';
 import { getHarnessId, getManifest, getManifestRef } from './resource-manifest.ts';
 import type { RuntimeResourceSelection } from './resource-selection.ts';
 import { getResource } from './resource-registry.ts';
@@ -851,6 +856,10 @@ export function attachRepoContextMetadata(
  * Handles both success and failure cases:
  * - Success: sets workflowCost, workflowTokenUsage, workflowCostStatus, pricingSnapshot
  * - Failure: sets workflowCostStatus, workflowCostDiagnostics
+ *
+ * A success that priced nothing (see {@link reportableWorkflowCostUsd})
+ * carries its usage and attribution but no `workflowCost`: unavailable cost
+ * stays unavailable instead of becoming `$0.00` (HOK-3076).
  */
 export function attachWorkflowCostMetadata(
   record: EvalRecord,
@@ -862,7 +871,12 @@ export function attachWorkflowCostMetadata(
 
   if (costOutcome.status === 'success') {
     const success = costOutcome as WorkflowCostResult;
-    record.workflowCost = success.totalCostUsd;
+    const workflowCost = reportableWorkflowCostUsd(success);
+    if (workflowCost === undefined) {
+      delete record.workflowCost;
+    } else {
+      record.workflowCost = workflowCost;
+    }
     record.workflowTokenUsage = success.models;
     record.workflowCostStatus = 'success';
     record.pricingSnapshot = success.pricingUsed;

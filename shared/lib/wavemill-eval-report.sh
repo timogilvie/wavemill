@@ -236,11 +236,31 @@ REPORT_JSON=$(echo "$RECORDS_JSON" | jq \
   --argjson min_records "$MIN_RECORDS" \
   --argjson limit "$LIMIT" \
 '
+  # A workflowCost is reportable unless its attribution says nothing was
+  # priced (HOK-3076): unavailable cost stays out of aggregates instead of
+  # adding $0.00. Older records without attribution are taken as-is.
+  def cost_priced_nothing:
+    (.workflowCostAttribution // null) as $a
+    | $a != null and ($a.pricedSessions // 0) == 0 and $a.coverage != "known_zero";
+  # Prefer workflowCost, fall back to estimatedCost.
+  def reportable_cost:
+    if .workflowCost != null then (if cost_priced_nothing then empty else .workflowCost end)
+    elif .estimatedCost != null then .estimatedCost
+    else empty end;
+  # CLI (Claude Code / Codex) subscription costs are token-equivalent
+  # estimates; native costs are exact only when every priced model was
+  # provider-reported.
+  def cost_is_estimate:
+    (.workflowCostAttribution // null) as $a
+    | $a != null and ($a.source != "native"
+        or any($a.models[]?; .priced == true and .pricingSource != "openrouter_api"));
+
   (map(.score) | add / length) as $overall_avg |
 
-  # Overall cost stats (prefer workflowCost, fall back to estimatedCost)
-  ([.[] | select(.workflowCost != null) | .workflowCost] +
-   [.[] | select(.workflowCost == null and .estimatedCost != null) | .estimatedCost]) as $costs |
+  # Overall cost stats
+  [.[] | reportable_cost] as $costs |
+  ([.[] | select([reportable_cost] | length > 0) | select(cost_is_estimate)] | length) as $estimated_cost_records |
+  ([.[] | select(.workflowCost != null or .workflowCostAttribution != null) | select([reportable_cost] | length == 0)] | length) as $unavailable_cost_records |
   (if ($costs | length) > 0 then ($costs | add) else null end) as $total_cost |
   (if ($costs | length) > 0 then ($costs | add / length) else null end) as $avg_cost |
 
@@ -253,13 +273,12 @@ REPORT_JSON=$(echo "$RECORDS_JSON" | jq \
        min: (map(.score) | min),
        max: (map(.score) | max),
        avg_cost: (
-         ([.[] | select(.workflowCost != null) | .workflowCost] +
-          [.[] | select(.workflowCost == null and .estimatedCost != null) | .estimatedCost]) |
+         [.[] | reportable_cost] |
          if length > 0 then (add / length) else null end
        ),
+       cost_is_estimate: any(.[]; ([reportable_cost] | length > 0) and cost_is_estimate),
        cost_per_score_point: (
-         (([.[] | select(.workflowCost != null) | .workflowCost] +
-           [.[] | select(.workflowCost == null and .estimatedCost != null) | .estimatedCost]) | if length > 0 then (add / length) else null end) as $ac |
+         ([.[] | reportable_cost] | if length > 0 then (add / length) else null end) as $ac |
          (map(.score) | add / length) as $as |
          if $ac != null and $as > 0 then ($ac / $as) else null end
        )
@@ -311,6 +330,8 @@ REPORT_JSON=$(echo "$RECORDS_JSON" | jq \
     overall_average: ($overall_avg * 100 | round / 100),
     total_cost: $total_cost,
     avg_cost: (if $avg_cost != null then ($avg_cost * 10000 | round / 10000) else null end),
+    estimated_cost_records: $estimated_cost_records,
+    unavailable_cost_records: $unavailable_cost_records,
     per_model: $per_model_filtered,
     per_model_all: $per_model,
     distribution: $distribution,
@@ -374,6 +395,8 @@ make_bar() {
 OVERALL_AVG=$(echo "$REPORT_JSON" | jq -r '.overall_average')
 TOTAL_COST=$(echo "$REPORT_JSON" | jq -r '.total_cost // "null"')
 AVG_COST=$(echo "$REPORT_JSON" | jq -r '.avg_cost // "null"')
+ESTIMATED_COST_RECORDS=$(echo "$REPORT_JSON" | jq -r '.estimated_cost_records // 0')
+UNAVAILABLE_COST_RECORDS=$(echo "$REPORT_JSON" | jq -r '.unavailable_cost_records // 0')
 
 echo ""
 echo "${BOLD}${CYAN}${SEPARATOR}${NC}"
@@ -397,7 +420,16 @@ echo "  ${BOLD}Overall Average:${NC} ${SC_COLOR}${OVERALL_AVG}${NC}"
 if [[ "$TOTAL_COST" != "null" ]]; then
   TOTAL_COST_FMT=$(printf "%.4f" "$TOTAL_COST")
   AVG_COST_FMT=$(printf "%.4f" "$AVG_COST")
-  echo "  ${DIM}Total Workflow Cost:${NC} \$${TOTAL_COST_FMT}  ${DIM}Avg Cost/Eval:${NC} \$${AVG_COST_FMT}"
+  COST_PREFIX=""
+  COST_NOTE=""
+  if [[ "$ESTIMATED_COST_RECORDS" -gt 0 ]]; then
+    COST_PREFIX="~"
+    COST_NOTE="  ${DIM}(estimate: ${ESTIMATED_COST_RECORDS} record(s) priced from CLI/local token estimates)${NC}"
+  fi
+  echo "  ${DIM}Total Workflow Cost:${NC} ${COST_PREFIX}\$${TOTAL_COST_FMT}  ${DIM}Avg Cost/Eval:${NC} ${COST_PREFIX}\$${AVG_COST_FMT}${COST_NOTE}"
+fi
+if [[ "$UNAVAILABLE_COST_RECORDS" -gt 0 ]]; then
+  echo "  ${DIM}Cost unavailable (excluded from totals):${NC} ${UNAVAILABLE_COST_RECORDS} record(s)"
 fi
 echo ""
 
@@ -408,9 +440,9 @@ echo "  ${DIM}${LINE}${NC}"
 
 echo "$REPORT_JSON" | jq -r '
   .per_model[] |
-  "\(.model)|\(.avg)|\(.count)|\(.min)|\(.max)|\(.avg_cost // "null")|\(.cost_per_score_point // "null")"
+  "\(.model)|\(.avg)|\(.count)|\(.min)|\(.max)|\(.avg_cost // "null")|\(.cost_per_score_point // "null")|\(.cost_is_estimate)"
 ' | \
-while IFS='|' read -r model avg count min_s max_s avg_cost cost_per_sp; do
+while IFS='|' read -r model avg count min_s max_s avg_cost cost_per_sp cost_estimate; do
   avg_fmt=$(printf "%.2f" "$avg")
   min_fmt=$(printf "%.2f" "$min_s")
   max_fmt=$(printf "%.2f" "$max_s")
@@ -422,7 +454,9 @@ while IFS='|' read -r model avg count min_s max_s avg_cost cost_per_sp; do
   if [[ "$avg_cost" != "null" ]]; then
     cost_fmt=$(printf "%.4f" "$avg_cost")
     cpsp_fmt=$(printf "%.4f" "$cost_per_sp")
-    cost_str="  ${DIM}\$${cost_fmt}/eval, \$${cpsp_fmt}/score-pt${NC}"
+    cost_prefix=""
+    [[ "$cost_estimate" == "true" ]] && cost_prefix="~"
+    cost_str="  ${DIM}${cost_prefix}\$${cost_fmt}/eval, ${cost_prefix}\$${cpsp_fmt}/score-pt${NC}"
   fi
 
   printf "  %-28s %s%s%s %s %s(n=%s, %s-%s)%s%s\n" \

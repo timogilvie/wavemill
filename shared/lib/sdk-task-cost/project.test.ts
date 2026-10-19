@@ -68,8 +68,15 @@ describe('projectTaskCostSummaryToWorkflowCost', () => {
     const outcome = project('codex-reasoning-and-cache');
     assert.equal(outcome.models['gpt-5-codex'].outputTokens, 225);
     assert.equal(outcome.attribution?.source, 'codex');
+    // Codex has no cache-write category: a structural 0, not a gap.
+    assert.equal(outcome.attribution?.coverage, 'complete');
+    assert.equal(outcome.attribution?.reason, undefined);
+  });
+
+  it('names the gap on a partial record instead of a bare mixed_coverage', () => {
+    const outcome = project('native-unpriced-model');
     assert.equal(outcome.attribution?.coverage, 'partial');
-    assert.equal(outcome.attribution?.reason, 'mixed_coverage');
+    assert.equal(outcome.attribution?.reason, 'unpriced_model');
   });
 
   it('keeps provider-reported cost distinguishable from the estimate', () => {
@@ -133,8 +140,12 @@ describe('SDK-backed eval records through existing readers', () => {
       .filter((issue) => issue.code === 'SCHEMA_VIOLATION');
     assert.deepEqual(schemaIssues, []);
 
-    assert.equal(formatCostDisplay(record.workflowCost), ', workflow cost: $0.0851');
-    assert.equal(formatWorkflowCostOutcome(record.workflowCost!, 2, 1), 'workflow cost $0.0851 (2 turns across 1 session(s))');
+    // Claude Code runs on a subscription: the dollars are an estimate (HOK-3076).
+    assert.equal(formatCostDisplay(record.workflowCost, record.workflowCostAttribution), ', workflow cost: ~$0.0851 (estimate)');
+    assert.equal(
+      formatWorkflowCostOutcome(record.workflowCost!, 2, 1, record.workflowCostAttribution),
+      'workflow cost ~$0.0851 (estimate) (2 turns across 1 session(s))',
+    );
     const stats = computeCostStatistics([record, baseRecord()]);
     assert.equal(stats.recordsWithCost, 1);
     assert.equal(stats.workflowCostStatusDistribution.success, 1);

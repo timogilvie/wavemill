@@ -164,7 +164,7 @@
       "harness": "codex",
       "task_id": "HOK-0010",
       "total_cost_usd": 0.004175,
-      "coverage": "partial"
+      "coverage": "complete"
     }
   ]
 }

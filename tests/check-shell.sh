@@ -101,6 +101,7 @@ for f in \
   "$REPO_DIR"/tests/check-install-paths.test.sh \
   "$REPO_DIR"/tests/check-common-guards.test.sh \
   "$REPO_DIR"/tests/check-direct-ledger-access.test.sh \
+  "$REPO_DIR"/tests/eval-report-cost-availability.test.sh \
   "$REPO_DIR"/tests/ledger-cli-shadow.test.sh \
   "$REPO_DIR"/tests/ledger-hook-shadow.test.sh \
   "$REPO_DIR"/tests/check-ledger-shadow-swallow.test.sh \
@@ -268,6 +269,7 @@ for f in \
   "$REPO_DIR"/tests/journeys/run-journeys.sh \
   "$REPO_DIR"/tests/journeys/happy-path.journey.sh \
   "$REPO_DIR"/tests/journeys/gh-lag-after-push.journey.sh \
+  "$REPO_DIR"/tests/journeys/errored-with-pr.journey.sh \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
   "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
   "$REPO_DIR"/tests/tracked-tree-guard.test.sh \

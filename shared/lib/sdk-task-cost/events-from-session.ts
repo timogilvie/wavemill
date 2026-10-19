@@ -171,17 +171,45 @@ function emptyUsage(): TaskCostTokenUsage {
   };
 }
 
-function fromExternalUsage(usage: ExternalTurnUsage): TaskCostTokenUsage {
-  return {
+/**
+ * Token dimensions a harness's wire format never reports as a separate,
+ * additive category (HOK-3076). Claude Code bills thinking inside
+ * `output_tokens` and Codex has no cache-write category, so once a turn
+ * reports usage at all these are a structural zero, not a missing value.
+ * Leaving them `null` made the SDK label every such run `partial`, which no
+ * missing token could explain.
+ */
+const STRUCTURALLY_ABSENT_FIELDS: Record<ExternalSessionUsageRecord['harness'], readonly (keyof TaskCostTokenUsage)[]> = {
+  'claude-code': ['reasoning_tokens'],
+  codex: ['cache_write_tokens'],
+};
+
+function fromExternalUsage(
+  usage: ExternalTurnUsage,
+  harness: ExternalSessionUsageRecord['harness'],
+): TaskCostTokenUsage {
+  const converted: TaskCostTokenUsage = {
     input_tokens: tokenCount(usage.inputTokens),
     output_tokens: tokenCount(usage.outputTokens),
     cache_read_tokens: tokenCount(usage.cacheReadTokens),
     cache_write_tokens: tokenCount(usage.cacheWriteTokens),
     reasoning_tokens: tokenCount(usage.reasoningTokens),
   };
+  if (usageCoverage(converted) === 'unavailable') return converted;
+  for (const field of STRUCTURALLY_ABSENT_FIELDS[harness]) {
+    converted[field] ??= 0;
+  }
+  return converted;
 }
 
-/** Native transcripts report no reasoning dimension; it stays `null`. */
+/**
+ * Native transcripts report no reasoning dimension; it stays `null`. Unlike
+ * the external harnesses ({@link STRUCTURALLY_ABSENT_FIELDS}) this is not a
+ * provable structural zero: the Pi parser (`piUsageToSessionModelUsage`)
+ * coerces every missing token field to `0`, so the bridge cannot tell a
+ * complete native turn from one that dropped a count. `partial` is the
+ * honest label until the adapter preserves missing fields (HOK-3076).
+ */
 function fromNativeUsage(usage: {
   inputTokens?: number;
   outputTokens?: number;
@@ -283,7 +311,10 @@ function buildEvent(fields: EventFields): TaskCostEventV1 {
     event_id: `tce-${shortHash(fields.harness, fields.sessionId, fields.scope, String(fields.index), fields.turnId ?? '')}`,
     task_id: fields.taskId,
     session_id: toTaskCostId(fields.sessionId),
-    turn_id: toTaskCostId(fields.turnId, `turn-${fields.index}`),
+    // `sequence` (not `index`) is unique per session even across the native
+    // per-model records that share one session id, so id-less turns from
+    // different models never collapse into one SDK turn (HOK-3076).
+    turn_id: toTaskCostId(fields.turnId, `turn-${fields.sequence}`),
     sequence: fields.sequence,
     ...(typeof fields.isSubagent === 'boolean' ? { is_subagent: fields.isSubagent } : {}),
     harness: fields.harness,
@@ -367,7 +398,7 @@ export function eventsFromExternalSession(
 
   if (turnsReconcileWithSession(session)) {
     return session.turns.map((turn, index) => {
-      const usage = fromExternalUsage(turn.usage);
+      const usage = fromExternalUsage(turn.usage, harness);
       const cost = estimateExternalCost(harness, usage, turn.model, ctx);
       return buildEvent({
         ...common,
@@ -388,7 +419,7 @@ export function eventsFromExternalSession(
   // Session-level fallback: the session totals are authoritative.
   const models = [...new Set(session.turns.map((turn) => turn.model).filter((m): m is string => !!m))];
   const model = models.length === 0 ? fallbackModel : dominantModel(session.turns);
-  const usage = fromExternalUsage(session.usage);
+  const usage = fromExternalUsage(session.usage, harness);
   // A multi-model session cannot be priced from its totals: the legacy engine
   // reports its estimate unavailable rather than pricing everything at one rate.
   const cost: CostEstimate = models.length > 1
