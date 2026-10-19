@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { after, before, describe, it } from 'node:test';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { SDK_TASK_COST_SHADOW_ENV } from './feature-switch.ts';
 import { collectSdkTaskCostSummariesLazy } from './lazy-collect.ts';
 import { runSdkTaskCostShadow } from './shadow.ts';
@@ -64,16 +66,51 @@ describe('collectSdkTaskCostSummariesLazy', () => {
   });
 });
 
-describe('eval entrypoints keep the SDK off their static import graph', () => {
-  // A value import of the barrel, the collector, or the contract pulls
-  // `@hokusai/core`'s task-cost exports in at module load, so a stale install
-  // fails every eval even with the shadow switch off.
-  const forbidden = /^import\s+(?!type\b)[^;]*from\s+'\.\/sdk-task-cost\/(index|collect|contract)\.ts'/m;
+describe('eval entrypoints load when the SDK task-cost exports are unavailable', () => {
+  // protects: a value import of the SDK barrel/collector/contract from an eval
+  // entrypoint, which turns a stale @hokusai/core install into a module-load
+  // SyntaxError for every eval even with the shadow switch off.
+  //
+  // A loader hook fails `sdk-task-cost/contract.ts` (the one module that
+  // imports the SDK's task-cost names) the way a stale install does, then a
+  // child process imports the module under test.
+  let hookDir = '';
+  before(() => {
+    hookDir = mkdtempSync(join(tmpdir(), 'sdk-cost-stale-'));
+    writeFileSync(join(hookDir, 'hooks.mjs'), [
+      'export async function load(url, context, next) {',
+      "  if (url.endsWith('/sdk-task-cost/contract.ts')) {",
+      "    throw new SyntaxError(\"The requested module '@hokusai/core' does not provide an export named 'aggregateTaskCost'\");",
+      '  }',
+      '  return next(url, context);',
+      '}',
+    ].join('\n'));
+    writeFileSync(
+      join(hookDir, 'register.mjs'),
+      "import { register } from 'node:module';\nregister('./hooks.mjs', import.meta.url);\n",
+    );
+  });
+  after(() => rmSync(hookDir, { recursive: true, force: true }));
+
+  function importUnderStaleSdk(file: string) {
+    const url = pathToFileURL(join(libDir, file)).href;
+    return spawnSync(
+      process.execPath,
+      ['--import', join(hookDir, 'register.mjs'), '--input-type=module', '-e', `await import(${JSON.stringify(url)});`],
+      { encoding: 'utf8', timeout: 60_000 },
+    );
+  }
+
+  it('the stale-SDK hook does break the SDK barrel (oracle check)', () => {
+    const result = importUnderStaleSdk('sdk-task-cost/index.ts');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /export named 'aggregateTaskCost'/);
+  });
 
   for (const file of ['eval-orchestrator.ts', 'post-completion-hook.ts']) {
     it(file, () => {
-      const source = readFileSync(join(libDir, file), 'utf8');
-      assert.doesNotMatch(source, forbidden);
+      const result = importUnderStaleSdk(file);
+      assert.equal(result.status, 0, result.stderr);
     });
   }
 });
