@@ -338,7 +338,8 @@ export function renderCodingSystemPrompt(input: {
     '',
     '- Use write_artifact/create_marker only for Wavemill-owned artifacts under the feature directory.',
     '- Use run_tests/run_format for verification and formatting commands inside the worktree. Commands run without a shell: use one program per call, pass cwd instead of cd ... &&, and avoid pipes, redirects, &&/;, $VAR, and backticks; POSIX-style quoting is honored.',
-    '- run_tests runs focused tests on the changed code (`node --test <files>`, `npx tsx --test <files>`, `bash tests/<one>.test.sh`). Full-suite commands (`npm test`, `pnpm test`, `yarn test`, and unsharded `tests/run-*.sh`) are refused — CI runs the full suite. A command identical to one that just timed out is refused on the next attempt until the worktree changes.',
+    '- The preferred focused command is `bash tests/run-related.sh` (selects transitive dependents of the diff; typically <60 s; prints only failing tests).',
+    '- run_tests runs focused tests on the changed code (`bash tests/run-related.sh`, `node --test <files>`, `npx tsx --test <files>`, `bash tests/<one>.test.sh`). Full-suite commands (`npm test`, `pnpm test`, `yarn test`, and unsharded `tests/run-*.sh` other than `tests/run-related.sh`) are refused — CI runs the full suite. A command identical to one that just timed out is refused on the next attempt until the worktree changes.',
     '- Use git_add/git_commit to commit intended changed files before completion.',
     `- Prefer .coding-complete when focused verification of the changed code passes; otherwise write ${input.blockedCompletionPath} only when implementation is complete, scoped checks passed, changes are committed, and remaining blockers are unrelated or environmental.`,
   ];
@@ -385,7 +386,7 @@ function buildUserPrompt(options: {
     options.planText ? `Plan:\n${options.planText.trim()}\n` : '',
     `Task packet path: ${options.taskPacketPath}`,
     options.taskPacket ? `Task Packet:\n${options.taskPacket.trim()}\n` : '',
-    'Implement the plan, verify, commit intended changes, then write the appropriate coding completion artifact.',
+    'State the success criterion and the specific test that would fail if the change were wrong, implement the plan, verify with `bash tests/run-related.sh`, commit intended changes, then write the appropriate coding completion artifact.',
   ].filter(Boolean).join('\n');
 }
 

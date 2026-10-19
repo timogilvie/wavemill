@@ -27,6 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Note: tests/check-shell.sh is deliberately absent. It is a lint/syntax pass
 # over every shell script, not a per-shard test, and runs once via `npm run lint`.
 TESTS=(
+  run-related.test.sh
   check-direct-ledger-access.test.sh
   ledger-cli-shadow.test.sh
   ledger-hook-shadow.test.sh

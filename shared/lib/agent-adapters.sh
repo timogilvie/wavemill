@@ -1776,7 +1776,7 @@ build_coding_prompt() {
 Apply tighter scope to conserve model capacity:
 - Limit changes to files directly required by the plan (aim for 10 files or fewer).
 - Commit after each plan phase before moving to the next phase.
-- Run tests/lint after each plan phase, not just at the end.
+- Run \`bash tests/run-related.sh\` after each plan phase, not just at the end.
 - If a phase grows beyond the stated scope, stop at the safest checkpoint and document the remaining work in your commit message."
       ;;
     survival)
@@ -1785,7 +1785,7 @@ Apply tighter scope to conserve model capacity:
 Apply minimal scope. A focused small PR is better than a large incomplete one:
 - Limit changes to at most 5 files. If more are needed, implement only the critical path and document deferrals.
 - Commit after every 1-2 file changes; do not batch large edit sets.
-- Run tests/lint after every commit to catch regressions early.
+- Run \`bash tests/run-related.sh\` after every commit to catch regressions early.
 - Scope is reduced here, so the confidence you record in the completion marker matters more than usual:
   prefer '\"confidence\":\"low\"' whenever correctness is uncertain even after validation, so review scrutinizes it."
       ;;
@@ -1849,7 +1849,7 @@ When you receive user feedback:
 
 Before creating .coding-complete, verify ALL of these are true:
 - All phases from plan.md are implemented
-- All tests pass (run the test/lint commands)
+- \`bash tests/run-related.sh\` passes (focused subset, under 60 s; refuses \`npm test\` and unsharded \`tests/run-*.sh\`)
 - No compilation errors
 - Changes are committed to git
 If ANY item is false, continue working. Do NOT create the marker.
