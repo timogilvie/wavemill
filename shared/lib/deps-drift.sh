@@ -202,3 +202,15 @@ deps_drift_check() {
   _deps_drift_emit drift "hidden-lockfile-missing" "$packages"
   return 1
 }
+
+# deps_lockfile_fingerprint <dir>
+# Shell twin of depsLockfileFingerprint (deps-drift.ts): a compact hash of the
+# current lockfile, used by callers as a bounded-retry key so a fresh
+# dependency bump resets the attempt counter. Prints the hash on stdout, or
+# nothing when no lockfile or no hash tool is available.
+deps_lockfile_fingerprint() {
+  local dir="${1:-.}"
+  local lock="$dir/package-lock.json"
+  [[ -f "$lock" ]] || return 0
+  _deps_drift_hash_file "$lock" 2>/dev/null || return 0
+}

@@ -16397,7 +16397,7 @@ _monitor_deps_drift_reinstall() {
   local backup_nm="$repo_dir/node_modules.deps-drift.$ts.$$"
 
   mkdir -p "$staging" 2>/dev/null || {
-    printf '[deps-drift] staging mkdir failed; leaving node_modules in place\n' \
+    printf '[deps-drift] staging mkdir failed, leaving node_modules in place\n' \
       >>"$log_file" 2>&1 || true
     return 1
   }
@@ -16417,13 +16417,13 @@ _monitor_deps_drift_reinstall() {
 
   if ! (cd "$staging" && npm ci --no-audit --no-fund >>"$log_file" 2>&1); then
     rm -rf "$staging" 2>/dev/null || true
-    printf '[deps-drift] npm ci failed (fingerprint=%s); leaving node_modules in place\n' \
+    printf '[deps-drift] npm ci failed (fingerprint=%s), leaving node_modules in place\n' \
       "${fingerprint:0:12}" >>"$log_file" 2>&1 || true
     return 1
   fi
   if [[ ! -d "$new_nm_target" ]]; then
     rm -rf "$staging" 2>/dev/null || true
-    printf '[deps-drift] staging install produced no node_modules; aborting swap\n' \
+    printf '[deps-drift] staging install produced no node_modules, aborting swap\n' \
       >>"$log_file" 2>&1 || true
     return 1
   fi
@@ -16435,7 +16435,7 @@ _monitor_deps_drift_reinstall() {
   if [[ -d "$final_nm" ]]; then
     if ! mv "$final_nm" "$backup_nm" 2>/dev/null; then
       rm -rf "$staging" 2>/dev/null || true
-      printf '[deps-drift] could not aside existing node_modules; aborting swap\n' \
+      printf '[deps-drift] could not aside existing node_modules, aborting swap\n' \
         >>"$log_file" 2>&1 || true
       return 1
     fi
@@ -16446,7 +16446,7 @@ _monitor_deps_drift_reinstall() {
       mv "$backup_nm" "$final_nm" 2>/dev/null || true
     fi
     rm -rf "$staging" 2>/dev/null || true
-    printf '[deps-drift] atomic swap failed; restored prior node_modules\n' \
+    printf '[deps-drift] atomic swap failed, restored prior node_modules\n' \
       >>"$log_file" 2>&1 || true
     return 1
   fi
@@ -16488,7 +16488,7 @@ monitor_deps_drift_tick() {
       return 0
       ;;
     unknown)
-      printf '[deps-drift] unknown status for %s (reason=%s); skipping\n' \
+      printf '[deps-drift] unknown status for %s (reason=%s), skipping\n' \
         "$REPO_DIR" "${reason:-unknown}" >>"$log_file" 2>&1 || true
       return 0
       ;;
@@ -16523,7 +16523,7 @@ monitor_deps_drift_tick() {
   esac
 
   if ! command -v npm >/dev/null 2>&1; then
-    printf '[deps-drift] npm not on PATH; cannot auto-fix\n' >>"$log_file" 2>&1 || true
+    printf '[deps-drift] npm not on PATH, cannot auto-fix\n' >>"$log_file" 2>&1 || true
     return 0
   fi
 
@@ -16549,7 +16549,7 @@ monitor_deps_drift_tick() {
   fi
   case "$gate_result" in
     exhausted|exhausted-quiet)
-      printf '[deps-drift] reinstall budget exhausted for fingerprint=%s; backstage left degraded\n' \
+      printf '[deps-drift] reinstall budget exhausted for fingerprint=%s, backstage left degraded\n' \
         "${fingerprint:0:12}" >>"$log_file" 2>&1 || true
       return 0
       ;;
