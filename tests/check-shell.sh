@@ -83,6 +83,7 @@ echo "=== Syntax Check (bash -n) ==="
 for f in \
   "$LIB_DIR"/wavemill-*.sh \
   "$LIB_DIR"/bounded-retry.sh \
+  "$LIB_DIR"/mill-clock.sh \
   "$LIB_DIR"/plan-packet-binding.sh \
   "$LIB_DIR"/task-progress.sh \
   "$LIB_DIR"/wavemill-reliability-refresh.sh \
@@ -96,9 +97,11 @@ for f in \
   "$LIB_DIR"/agent-adapters.sh \
   "$REPO_DIR"/shared/hooks/*.sh \
   "$REPO_DIR"/shared/agent-bin/tmux \
+  "$REPO_DIR"/tests/ready-sync-github-head-lag.test.sh \
   "$REPO_DIR"/tests/check-install-paths.test.sh \
   "$REPO_DIR"/tests/check-common-guards.test.sh \
   "$REPO_DIR"/tests/check-direct-ledger-access.test.sh \
+  "$REPO_DIR"/tests/eval-report-cost-availability.test.sh \
   "$REPO_DIR"/tests/ledger-cli-shadow.test.sh \
   "$REPO_DIR"/tests/ledger-hook-shadow.test.sh \
   "$REPO_DIR"/tests/check-ledger-shadow-swallow.test.sh \
@@ -266,6 +269,7 @@ for f in \
   "$REPO_DIR"/tests/journeys/run-journeys.sh \
   "$REPO_DIR"/tests/journeys/happy-path.journey.sh \
   "$REPO_DIR"/tests/journeys/gh-lag-after-push.journey.sh \
+  "$REPO_DIR"/tests/journeys/errored-with-pr.journey.sh \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
   "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
   "$REPO_DIR"/tests/tracked-tree-guard.test.sh \
@@ -603,6 +607,9 @@ else
     # Extract function definitions from bounded-retry.sh (sourced by wavemill-common.sh)
     BOUNDED_RETRY_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/bounded-retry.sh" | sed 's/()//' | sort -u)
 
+    # Extract function definitions from mill-clock.sh (sourced by bounded-retry.sh, HOK-3227)
+    MILL_CLOCK_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/mill-clock.sh" | sed 's/()//' | sort -u)
+
     # Extract function definitions from plan-packet-binding.sh (sourced by monitor, HOK-3099)
     PLAN_PACKET_BINDING_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/plan-packet-binding.sh" | sed 's/()//' | sort -u)
 
@@ -637,7 +644,7 @@ else
     WORKTREE_DEPS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/wavemill-worktree-deps.sh" | sed 's/()//' | sort -u)
 
     # Combine all available function definitions
-    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$ASYNC_JOBS_FUNCS" "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$CONDITION_RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
+    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$ASYNC_JOBS_FUNCS" "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$MILL_CLOCK_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$CONDITION_RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
 
     # Known external commands and bash builtins that are NOT custom functions
     # This list covers standard utilities, coreutils, and tools used by wavemill

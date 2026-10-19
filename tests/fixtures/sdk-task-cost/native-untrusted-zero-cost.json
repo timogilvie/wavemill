@@ -1,0 +1,50 @@
+{
+  "description": "Provider-cost precedence: a positive provider charge is kept, but a reported $0 on a priced, non-free model with real usage is the 'provider omitted cost' case and falls through to the local estimate (legacy computeNativeWorkflowCost rule). The summary is mixed-source.",
+  "taskId": "HOK-0005",
+  "now": "2026-10-01T00:00:00.000Z",
+  "pricingTable": {
+    "deepseek/deepseek-chat": { "inputCostPerMTok": 0.27, "outputCostPerMTok": 1.1 }
+  },
+  "scanResults": [
+    {
+      "models": { "deepseek/deepseek-chat": { "inputTokens": 2000, "cacheCreationTokens": 0, "cacheReadTokens": 0, "outputTokens": 200 } },
+      "sessionCount": 1,
+      "turnCount": 2,
+      "source": "native",
+      "nativeSessions": [
+        {
+          "sessionId": "native-session-5",
+          "filePath": "/repo/.wavemill/runs/run-1/native-sessions/HOK-0005.jsonl",
+          "provider": "openrouter",
+          "modelId": "deepseek/deepseek-chat",
+          "turnCount": 2,
+          "responseIds": ["gen-a", "gen-b"],
+          "turns": [
+            { "responseId": "gen-a", "inputTokens": 1000, "cacheCreationTokens": 0, "cacheReadTokens": 0, "outputTokens": 100, "totalTokens": 1100, "providerReportedCostUsd": 0.002, "usageAvailable": true, "invalidUsage": false },
+            { "responseId": "gen-b", "inputTokens": 1000, "cacheCreationTokens": 0, "cacheReadTokens": 0, "outputTokens": 100, "totalTokens": 1100, "providerReportedCostUsd": 0, "usageAvailable": true, "invalidUsage": false }
+          ],
+          "inputTokens": 2000,
+          "cacheCreationTokens": 0,
+          "cacheReadTokens": 0,
+          "outputTokens": 200,
+          "totalTokens": 2200,
+          "providerReportedCostUsd": 0.002,
+          "usageAvailable": true,
+          "invalidUsage": false
+        }
+      ]
+    }
+  ],
+  "expected": [
+    {
+      "harness": "native",
+      "actual_cost_usd": 0.002,
+      "estimated_cost_usd": 0.00038,
+      "total_cost_usd": 0.00238,
+      "cost_source": "mixed",
+      "pricing_source": "local_estimate",
+      "field_availability": { "usage": "partial", "actual_cost": "partial", "estimated_cost": "partial", "pricing": "partial" },
+      "diagnostics": ["mixed_coverage", "provider_reported_cost"]
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+# task-record-shape-allowlist.txt — justified exceptions to the HOK-3220 guard.
+#
+# One repo-relative path per line, each followed by `# <reason>` on the same
+# line (entries without a reason fail the guard). A listed file is skipped
+# entirely by tools/check-task-record-shape.ts. The canonical module
+# (shared/lib/workflow-state.ts) and the guard itself are excluded
+# automatically and must NOT be listed here.
+#
+# Prefer a one-line `// allow-task-record-shape: <reason>` suppression over a
+# whole-file entry whenever only a line or two is involved.
+shared/lib/view-workflow-state.ts  # Ledger H render view (RenderedWorkflowState, HOK-3187): a projection keyed off settledAs, deliberately separate from the writer shape

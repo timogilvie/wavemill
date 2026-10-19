@@ -17,8 +17,18 @@ import { appendEvalRecord } from './eval-persistence.ts';
 import { resolveEvalsDir, resolveRouteArtifactArchiveDir } from './evals-paths.ts';
 import { execShellCommand } from './shell-utils.ts';
 import { detectAndFormatInterventions } from './intervention-detector.ts';
-import { computeWorkflowCost, loadPricingTable } from './workflow-cost.ts';
+import {
+  computeWorkflowCost,
+  loadPricingTable,
+  reportableWorkflowCostUsd,
+  type PricingTable,
+} from './workflow-cost.ts';
 import { collectExecutionEconomics } from './execution-economics.ts';
+// Lazy: the SDK loads only when the collection runner invokes the collector,
+// so a stale @hokusai/core cannot fail module load for every eval.
+import { collectSdkTaskCostSummariesLazy } from './sdk-task-cost/lazy-collect.ts';
+import { resolveAuthoritativeWorkflowCost } from './sdk-task-cost/resolve.ts';
+import { runSdkTaskCostCollection } from './sdk-task-cost/shadow.ts';
 import { getDeepSeekProviderMetadata } from './deepseek-provider.ts';
 import { runEvalAnalysis } from './eval-analysis.ts';
 import { callHeadlessLLM } from './headless-llm.ts';
@@ -67,7 +77,7 @@ import {
   deriveRouteDecisionSource,
   readRouteLifecycleArtifacts,
 } from './route-artifact.ts';
-import { printEvalSummary, formatDifficultyDisplay, formatTaskContextDisplay, formatRepoContextDisplay, formatInterventionDisplay } from './eval-summary-printer.ts';
+import { printEvalSummary, formatWorkflowCostAmount, formatDifficultyDisplay, formatTaskContextDisplay, formatRepoContextDisplay, formatInterventionDisplay } from './eval-summary-printer.ts';
 import { errorMessage } from './error-utils.ts';
 import { resolvePrIdentityMetadata } from './pr-comparison.ts';
 import type {
@@ -77,6 +87,7 @@ import type {
   EvalRecord,
   EvalRouteProvenance,
   EvalRouting,
+  EvalTaskCostSummary,
   EvalTaskScorerResult,
   InterventionRecord,
   PlanningExecutionOutcome,
@@ -256,6 +267,7 @@ export const postCompletionHookDeps = {
   gatherEvalContext,
   gatherStageArtifacts,
   collectExecutionEconomics,
+  collectSdkTaskCostSummaries: collectSdkTaskCostSummariesLazy,
   execShellCommand,
   detectAndFormatInterventions,
   runEvalAnalysis,
@@ -468,6 +480,8 @@ interface PostCompletionEnrichmentInput {
   costOutcome: WorkflowCostOutcome | null;
   /** Normalized external-harness execution economics (HOK-2958). */
   executionEconomics?: EvalExecutionEconomics[] | null;
+  /** Shadow SDK task-cost summaries; null unless the shadow switch is on (HOK-3075). */
+  taskCostSummary?: EvalTaskCostSummary[] | null;
   interventionRecords: InterventionRecord[];
   routingDecision?: RoutingDecision;
   routing?: EvalRouting | null;
@@ -573,7 +587,7 @@ export function buildTaskDescriptorForPostCompletion(
     ? fetchRoutingCompleteRawWithArchive(input.repoDir, slug, input.issueId || '', input.worktreePath)
     : null;
   const workflowCost = input.costOutcome?.status === 'success'
-    ? input.costOutcome.totalCostUsd
+    ? reportableWorkflowCostUsd(input.costOutcome)
     : input.record.workflowCost;
   const workflowTokenUsage = input.costOutcome?.status === 'success'
     ? input.costOutcome.models
@@ -691,6 +705,7 @@ export function enrichPostCompletionRecord(
     repoContext: input.repoContextData,
     workflowCost: input.costOutcome,
     executionEconomics: input.executionEconomics,
+    taskCostSummary: input.taskCostSummary,
     taskDescriptor,
     constraints: (() => {
       const maxCostUsd = resolvePostCompletionBudget(input);
@@ -909,9 +924,11 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
     attachPhaseDurations(record, phaseDurations);
 
     // 5. Compute workflow cost
-    let costOutcome: ReturnType<typeof computeWorkflowCost> | null = null;
+    let costOutcome: WorkflowCostOutcome | null = null;
     let executionEconomics: EvalExecutionEconomics[] | null = null;
+    let taskCostSummary: EvalTaskCostSummary[] | null = null;
     if (ctx.worktreePath && branchName) {
+      let pricingTable: PricingTable | undefined;
       console.log('Post-completion eval: computing workflow cost...');
 
       if (debug) {
@@ -923,7 +940,7 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
 
       try {
         const wavemillConfigDir = resolve(__dirname, '../..');
-        const pricingTable = loadPricingTable(wavemillConfigDir);
+        pricingTable = loadPricingTable(wavemillConfigDir);
 
         if (debug) {
           console.log(`[DEBUG_COST]   Loaded pricing for ${Object.keys(pricingTable).length} model(s)`);
@@ -938,22 +955,6 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
           agentType: ctx.agentType,
         });
 
-        if (costOutcome.status === 'success') {
-          const coverage = costOutcome.attribution
-            ? `, coverage ${costOutcome.attribution.coverage}`
-            : '';
-          console.log(
-            `Post-completion eval: workflow cost $${costOutcome.totalCostUsd.toFixed(4)} ` +
-            `(${costOutcome.turnCount} turns across ${costOutcome.sessionCount} session(s)${coverage})`
-          );
-        } else {
-          console.warn(
-            `Post-completion eval: workflow cost computation failed (${costOutcome.status}) — ${costOutcome.reason}`
-          );
-          if (!debug) {
-            console.log('Post-completion eval: run with DEBUG_COST=1 for detailed diagnostics');
-          }
-        }
         // Normalized execution-economics collection (HOK-2958): fail-soft,
         // observation-only — never influences routing or the workflow.
         try {
@@ -978,6 +979,49 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
       } catch (costErr: unknown) {
         const costMsg = errorMessage(costErr);
         console.warn(`Post-completion eval: workflow cost computation failed — ${costMsg}`);
+      }
+
+      // SDK task-cost metering (HOK-3075/HOK-3076): authoritative by default,
+      // collected independently of the legacy outcome with the same pricing
+      // table. The legacy outcome stays the fallback (no SDK summary) and the
+      // WAVEMILL_COST_METERING_LEGACY rollback.
+      const worktreePath = ctx.worktreePath;
+      taskCostSummary = await runSdkTaskCostCollection(
+        () => postCompletionHookDeps.collectSdkTaskCostSummaries({
+          worktreePath,
+          branchName,
+          repoDir,
+          issueId: ctx.issueId,
+          pricingTable,
+        }),
+        { label: 'Post-completion eval' },
+      );
+      const costSelection = resolveAuthoritativeWorkflowCost({
+        legacyOutcome: costOutcome,
+        summaries: taskCostSummary,
+        agentType: ctx.agentType,
+        pricingTable,
+        repoDir,
+      });
+      costOutcome = costSelection.outcome;
+
+      if (costOutcome?.status === 'success') {
+        const coverage = costOutcome.attribution
+          ? `, coverage ${costOutcome.attribution.coverage}`
+          : '';
+        const reportable = reportableWorkflowCostUsd(costOutcome);
+        console.log(
+          `Post-completion eval: workflow cost ${formatWorkflowCostAmount(reportable, costOutcome.attribution)} ` +
+          `(${costOutcome.turnCount} turns across ${costOutcome.sessionCount} session(s)${coverage}; ` +
+          `${costSelection.engine} engine, ${costSelection.reason})`
+        );
+      } else if (costOutcome) {
+        console.warn(
+          `Post-completion eval: workflow cost computation failed (${costOutcome.status}) — ${costOutcome.reason}`
+        );
+        if (!debug) {
+          console.log('Post-completion eval: run with DEBUG_COST=1 for detailed diagnostics');
+        }
       }
     } else {
       // Create skipped outcome with diagnostics
@@ -1019,6 +1063,7 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
       repoContextData,
       costOutcome,
       executionEconomics,
+      taskCostSummary,
       interventionRecords: interventionData.records,
       routingDecision: stageArtifacts.routingDecision,
       routing: stageArtifacts.routing,

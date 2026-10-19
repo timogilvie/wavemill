@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { getPullRequest } from './github.ts';
 import { prStateLabelDeps, WM_LABELS } from './pr-state-labels.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
-import { mutateJsonState } from './state-mutex.ts';
+import { mutateWorkflowState, workflowTaskEntries } from './workflow-state.ts';
 
 export interface RecoverSupersededPrOptions {
   prNumber: number;
@@ -143,23 +143,12 @@ async function updateWorkflowStateToManualComparison(prNumber: number, repoDir: 
   const workflowStatePath = join(repoDir, '.wavemill', 'workflow-state.json');
 
   try {
-    await mutateJsonState(workflowStatePath, (state: Record<string, unknown>) => {
-      if (!state.tasks || typeof state.tasks !== 'object') {
-        return state;
-      }
-
-      const tasks = state.tasks as Record<string, unknown>;
-
+    await mutateWorkflowState(workflowStatePath, (state) => {
       // Find the task with this PR number
-      for (const [issueId, task] of Object.entries(tasks)) {
-        if (typeof task === 'object' && task !== null) {
-          const taskObj = task as Record<string, unknown>;
-          if (taskObj.pr === prNumber || String(taskObj.pr) === String(prNumber)) {
-            // Only update if there's a challenge pair (indicating this is a comparison-related PR)
-            if (taskObj.challengePairId) {
-              taskObj.comparisonState = 'manual_comparison_needed';
-            }
-          }
+      for (const [, taskObj] of workflowTaskEntries(state)) {
+        // Only update if there's a challenge pair (indicating this is a comparison-related PR)
+        if (String(taskObj.pr) === String(prNumber) && taskObj.challengePairId) {
+          taskObj.comparisonState = 'manual_comparison_needed';
         }
       }
 

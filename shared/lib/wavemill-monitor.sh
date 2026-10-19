@@ -13489,7 +13489,12 @@ ready_sync_worktree_to_github_head() {
     elif [[ -n "$tend_previous" && "$tend_previous" == "$local_head" ]]; then
       sync_reason="tend push"
     elif [[ -n "$pre_fetch_origin" ]] \
-      && git -C "$wt_dir" merge-base --is-ancestor "$local_head" "$pre_fetch_origin" >/dev/null 2>&1; then
+      && git -C "$wt_dir" merge-base --is-ancestor "$local_head" "$pre_fetch_origin" >/dev/null 2>&1 \
+      && ! git -C "$wt_dir" merge-base --is-ancestor "$gh_head" "$local_head" >/dev/null 2>&1; then
+      # A PR head that is an ancestor of local HEAD is never a rewrite: right
+      # after a push, local == origin/<branch> and the API can still report
+      # the parent. Fall through to the HOK-3171 lag check instead of
+      # resetting the worktree backwards.
       sync_reason="remote rewrite"
     else
       # HOK-3171: check git ls-remote before refusing — may be GitHub lag
@@ -14910,7 +14915,7 @@ poll_tracked_jobs() {
     side=$(echo "$job_json" | jq -r '.side // empty')
 
     case "$kind" in
-      cross-pr-guard|pr-ci-status|ready-watchdog|route-task)
+      cross-pr-guard|pr-ci-status|ready-watchdog|route-task|state-invariants)
         [[ "$status" == "succeeded" ]] || handle_check_job_failure "$job_id" "$kind" "$status" "$reason" "$result_path" "$excerpt"
         settle_tracked_job "$job_id"
         continue
@@ -16350,6 +16355,48 @@ monitor_ledger_recovery_tick() {
     wavemill_run_tool "${cli[@]}" >>"$log_file" 2>&1 || true
   ) >/dev/null 2>&1 &
   disown 2>/dev/null || true
+  return 0
+}
+
+# ─── Live state-invariant checker (HOK-3229) ────────────────────────────────
+#
+# A tracked async job that evaluates the HOK-3229 structural invariants over
+# live workflow state every monitor tick. Detection only; it never mutates
+# state. Writes `.wavemill/invariant-violations.jsonl` and routes urgent
+# findings through `appendObserverFinding` for OS desktop notification on
+# first occurrence.
+# Kill switch: WAVEMILL_STATE_INVARIANTS_DISABLED=1
+monitor_state_invariants_interval() {
+  local value="${STATE_INVARIANTS_INTERVAL_SECONDS:-60}"
+  [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]] || value=60
+  printf '%s\n' "$value"
+}
+
+monitor_state_invariants_tick() {
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
+  [[ "${WAVEMILL_STATE_INVARIANTS_DISABLED:-0}" == "1" ]] && return 0
+  [[ -n "${STATE_DIR:-}" && -n "${REPO_DIR:-}" ]] || return 0
+  declare -F monitor_async_job_launch >/dev/null 2>&1 || return 0
+
+  local interval last_at now stamp_file="$STATE_DIR/.state-invariants-last-at"
+  interval="$(monitor_state_invariants_interval)"
+  now="$(date +%s)"
+  if [[ -f "$stamp_file" ]]; then
+    last_at="$(cat "$stamp_file" 2>/dev/null || echo 0)"
+    [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
+    (( now - last_at < interval )) && return 0
+  fi
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  printf '%s\n' "$now" > "$stamp_file" 2>/dev/null || true
+
+  local job_id dir result_marker meta_json
+  job_id="state-invariants-$(sanitize_job_token "${SESSION:-wavemill}")"
+  dir="$(monitor_async_job_dir "$job_id")"
+  result_marker="$dir/invariants.json"
+  meta_json="$(jq -cn --arg s "$STATE_DIR" --arg b "state-invariants-job" --arg k "$now" '{stateDir: $s, bucket: $b, key: $k}')"
+
+  monitor_async_job_launch state-invariants "$job_id" "" "" 60 "$meta_json" \
+    wavemill_run_tool state-invariants.ts --repo-dir "$REPO_DIR" --result-path "$result_marker"
   return 0
 }
 
@@ -20363,7 +20410,10 @@ monitor_issue_state() {
       if [[ -n "$recovered_pr" ]]; then
         PR_BY_ISSUE["$ISSUE"]="$recovered_pr"
         log "status" "$ISSUE → Found PR #$recovered_pr for errored task (updating state)"
-        save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$recovered_pr" "" "$current_agent"
+        # Pass `active` explicitly: an empty status keeps an existing terminal
+        # status, so the task stayed `error` and this branch re-ran every pass
+        # with nothing driving Ready or remediation (HOK-3246).
+        save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$recovered_pr" "active" "$current_agent"
         set_task_phase "$ISSUE" "review"
       fi
     fi
@@ -22305,6 +22355,15 @@ monitor_issue_state() {
             return 0
           fi
         fi
+        # Tend merging this PR is itself what advances main, and this pass's
+        # PR cache can still read OPEN. Confirm live before re-running Ready,
+        # or the re-run's running status reads as merged-before-ready.
+        if [[ "$(_with_timeout "$API_TIMEOUT" gh pr view "$PR" --json state --jq .state 2>/dev/null || true)" == "MERGED" ]]; then
+          log "status" "$ISSUE → PR #$PR merged after Ready passed; skipping stale re-run"
+          set_window_attention_state "$WIN" "clear"
+          active_count=$((active_count + 1))
+          return 0
+        fi
         log "status" "⚠ $ISSUE → Ready result stale (main advanced); re-running ready checks for PR #$PR"
         title=$(pass_task_field "$ISSUE" title)
         if [[ -z "$title" ]]; then
@@ -23676,6 +23735,10 @@ while :; do
   monitor_step_begin ledgerRecovery
   monitor_ledger_recovery_tick || true
   monitor_step_end ledgerRecovery
+  # HOK-3229: live workflow-state invariant checker (detection only).
+  monitor_step_begin stateInvariants
+  monitor_state_invariants_tick || true
+  monitor_step_end stateInvariants
   # HOK-3174: after a host wake, re-check running stages before normal gates.
   if [[ -n "$monitor_wake_episode" ]]; then
     monitor_resume_agents_after_wake "$monitor_wake_episode"
@@ -23750,6 +23813,7 @@ while :; do
   monitor_iteration_end_ms="$(wavemill_monitor_now_ms 2>/dev/null || printf '0')"
   wavemill_record_monitor_iteration_timing "$monitor_iteration_start_ms" "$monitor_iteration_end_ms" "$POLL_SECONDS" 2>/dev/null || true
   monitor_record_tick_epoch
+  mill_clock_advance_tick
 
   # ── Phase B: Check for stop signal ──────────────────────────────────
   if [[ -f "$STATE_DIR/.stop-loop" ]]; then

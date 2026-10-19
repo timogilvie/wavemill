@@ -1,0 +1,446 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wavemill.dev/schemas/workflow-task.schema.json",
+  "title": "Wavemill workflow-state.json",
+  "description": "Shape of .wavemill/workflow-state.json and its task records (HOK-3220). Derived from the WRITERS (save_task_state, state_mutate / task_state_mutate_existing sites that set .tasks[$id].*, mutateJsonState callers), never from readers. Every TaskRecord property must have a writer: shared/lib/workflow-state.writer-coverage.test.ts enforces it. additionalProperties stays true so an in-flight writer is never rejected; reader-only names (prNumber, headSha, prHeadSha, pullRequest) are deliberately absent.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "session": {
+      "type": "string",
+      "description": "tmux session that owns this state file."
+    },
+    "started": {
+      "type": "string",
+      "description": "When the state file was created."
+    },
+    "updated": {
+      "type": "string",
+      "description": "Last state-file mutation timestamp."
+    },
+    "tasks": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/TaskRecord"
+      }
+    },
+    "jobs": {
+      "type": [
+        "object",
+        "array"
+      ],
+      "description": "Tracked background jobs, keyed by job id (legacy files store an array). Owned and validated by job-tracker.ts (mill-job.schema.json)."
+    },
+    "terminalTaskHistory": {
+      "type": "object",
+      "description": "Tombstone history. Owned by terminal-inbox-cleanup.ts / the terminal reconciler."
+    },
+    "terminalTaskTombstones": {
+      "type": "object",
+      "description": "Compact terminal tombstones. Owned by terminal-inbox-cleanup.ts."
+    }
+  },
+  "$defs": {
+    "TaskRecord": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "abortedAt": {
+          "type": "string",
+          "description": "Operator abort timestamp. task-abort.ts."
+        },
+        "abortedCleanupAt": {
+          "type": "string",
+          "description": "When a stale arm was aborted for cleanup. Monitor / reap-stale-challengers.ts."
+        },
+        "abortedCleanupReason": {
+          "type": "string",
+          "description": "Why a stale arm was aborted for cleanup. Monitor / reap-stale-challengers.ts."
+        },
+        "abortedReason": {
+          "type": "string",
+          "description": "Operator abort reason. task-abort.ts."
+        },
+        "agent": {
+          "type": "string",
+          "description": "Agent CLI driving the current stage. save_task_state / reroute."
+        },
+        "attempt": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true,
+          "description": "PR attempt identity. wavemill_persist_attempt_reconciliation / fresh-launch reconciliation."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Task branch name. save_task_state."
+        },
+        "capsuleDigest": {
+          "type": "string",
+          "description": "Reconciliation capsule digest at queue handoff. set_task_queue_owned."
+        },
+        "challenge": {
+          "type": "boolean",
+          "description": "True when this task is an arm of a challenge pair. save_task_state."
+        },
+        "challengeAborted": {
+          "type": "string",
+          "description": "Challenge abort reason (operator abort marker, sibling-stalled, ...). challenge_abort_pair / task-abort.ts / challenge-pair-resolver.ts."
+        },
+        "challengeAbortedDetail": {
+          "type": "string",
+          "description": "Human-readable abort detail. challenge_abort_pair."
+        },
+        "challengeAbortedNextAction": {
+          "type": "string",
+          "description": "Operator next action for the abort. challenge_abort_pair."
+        },
+        "challengeAbortedStage": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Stage the arm was aborted in. challenge_abort_pair / challenge-pair-resolver.ts."
+        },
+        "challengeArms": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "description": "Pending/materialised challenger arms on the primary. challenge-arms.sh."
+        },
+        "challengeCollapseDetail": {
+          "type": "string",
+          "description": "Collapse detail. challenge-arms.sh / monitor."
+        },
+        "challengeCollapseReason": {
+          "type": "string",
+          "description": "Why the pair collapsed (route-drift, multiple-varied-roles, ...). challenge-arms.sh / monitor."
+        },
+        "challengeCompared": {
+          "type": "boolean",
+          "description": "Comparison has run for this pair. mark_challenge_compared / void-challenge-record.ts."
+        },
+        "challengeComparedSource": {
+          "type": "string",
+          "description": "What marked the pair compared. mark_challenge_compared."
+        },
+        "challengeDivergenceReason": {
+          "type": "string",
+          "description": "Why the arms diverged. Monitor."
+        },
+        "challengeExecutionIntent": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Sealed challenge execution intent. challenge-arms.sh."
+        },
+        "challengeModel": {
+          "type": "string",
+          "description": "Model of the varied stage. save_task_state."
+        },
+        "challengePairId": {
+          "type": "string",
+          "description": "Pair id (the primary's task id). save_task_state."
+        },
+        "challengeRepairAction": {
+          "type": "string",
+          "description": "Operator repair command for an invalid challenge. mark_challenge_invalid."
+        },
+        "challengeRole": {
+          "type": "string",
+          "description": "Arm role: primary or challenger. save_task_state. Legacy rows may carry ''."
+        },
+        "challengeRouteDriftDetail": {
+          "type": "string",
+          "description": "Route-drift detail (HOK-3156). Monitor."
+        },
+        "challengeStage": {
+          "type": "string",
+          "description": "Stage varied by the challenge. save_task_state / challenge-arms.sh."
+        },
+        "challengeVariedAgent": {
+          "type": "string",
+          "description": "Expected varied-stage agent from the execution intent. challenge-arms.sh."
+        },
+        "challengeVariedModel": {
+          "type": "string",
+          "description": "Expected varied-stage model from the execution intent. challenge-arms.sh."
+        },
+        "challengerLaunched": {
+          "type": "boolean",
+          "description": "Primary has launched its challenger. Monitor fork trigger."
+        },
+        "codeDepth": {
+          "type": "string",
+          "description": "Coding depth. save_task_state."
+        },
+        "coderModel": {
+          "type": "string",
+          "description": "Routed coding model. save_task_state / coder reroute."
+        },
+        "comparisonBlockedReason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why the comparison is blocked. Mill / monitor. Legacy rows written before the clear-by-del() convention carry null."
+        },
+        "comparisonLaunchEvidence": {
+          "type": "string",
+          "description": "Eval-evidence identity the comparison launched against (HOK-2963). Monitor."
+        },
+        "comparisonPairingRepaired": {
+          "type": "boolean",
+          "description": "Pairing metadata was repaired before comparison. Monitor."
+        },
+        "comparisonRetryCount": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Comparison retry attempts. Mill / monitor. Legacy rows written before the clear-by-del() convention carry null."
+        },
+        "comparisonRetryMaxAttempts": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Comparison retry ceiling. Mill / monitor. Legacy rows written before the clear-by-del() convention carry null."
+        },
+        "comparisonRetryTargetIssue": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Arm whose eval the comparison retry re-runs. Mill / monitor. Legacy rows written before the clear-by-del() convention carry null."
+        },
+        "comparisonRunning": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true,
+          "description": "In-flight comparison descriptor. Mill / monitor. Legacy rows written before the clear-by-del() convention carry null."
+        },
+        "comparisonState": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Comparison lifecycle state (comparison_running, invalid_challenge, manual_comparison_needed, ...). Mill / monitor / challenge-recovery.ts."
+        },
+        "comparisonTimedOutSides": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Pair sides whose eval timed out. Mill / monitor. Legacy rows written before the clear-by-del() convention carry null."
+        },
+        "dependsOnPr": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Parent PR this task is stacked on {number, url, branch, parent_issue}. Dependency queue."
+        },
+        "evalCompleted": {
+          "type": "boolean",
+          "description": "Post-merge / challenge eval completed. Monitor."
+        },
+        "evalFailed": {
+          "type": "boolean",
+          "description": "Eval failed. Monitor."
+        },
+        "evalHardFailureRetryCount": {
+          "type": "number",
+          "description": "Mirror of the challenge-eval-hard bounded-retry count. Monitor."
+        },
+        "evalRunning": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true,
+          "description": "In-flight eval descriptor {issue, side, pr, phase, startedAt}. Mill / monitor. Legacy rows written before the clear-by-del() convention carry null."
+        },
+        "executionOwner": {
+          "type": "string",
+          "enum": [
+            "task",
+            "queue",
+            "reconciliation"
+          ],
+          "description": "Who owns execution (HOK-3102). set_task_*_owned."
+        },
+        "invalidChallengeDetails": {
+          "type": "string",
+          "description": "invalid_challenge details. mark_challenge_invalid."
+        },
+        "invalidChallengeReason": {
+          "type": "string",
+          "description": "invalid_challenge reason. mark_challenge_invalid."
+        },
+        "launchFailure": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true,
+          "description": "Unlaunchable-route failure {reason, detail, recoveryAction, updated}. Monitor dispatch. Legacy rows written before the clear-by-del() convention carry null."
+        },
+        "lifecycle": {
+          "$ref": "task-lifecycle-state.schema.json"
+        },
+        "linearIssueId": {
+          "type": "string",
+          "description": "Linear issue id this task writes to (task-identity.ts). save_task_state."
+        },
+        "manualComparisonArtifact": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Path of a manual comparison artifact. Mill / monitor. Legacy rows written before the clear-by-del() convention carry null."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model of the stage currently launched. Monitor stage launch."
+        },
+        "paneReleased": {
+          "type": "boolean",
+          "description": "Pane released by the terminal reconciler."
+        },
+        "paneReleasedAt": {
+          "type": "string",
+          "description": "When the pane was released. Terminal reconciler."
+        },
+        "paneState": {
+          "type": "string",
+          "enum": [
+            "active",
+            "rehydrating",
+            "released"
+          ],
+          "description": "tmux pane disposition. set_task_*_owned / terminal reconciler."
+        },
+        "phase": {
+          "type": "string",
+          "description": "Workflow phase (planning, coding, review, ready, done, aborted, superseded, needs-user, ...). save_task_state / set_task_phase."
+        },
+        "planDepth": {
+          "type": "string",
+          "description": "Planning depth. save_task_state."
+        },
+        "plannerModel": {
+          "type": "string",
+          "description": "Routed planning model. save_task_state / route reseal."
+        },
+        "pr": {
+          "type": [
+            "string",
+            "number"
+          ],
+          "description": "PR number. Shell writers (save_task_state, terminal reconciler) store a string; '' means no PR yet. Never spell this prNumber at the top level."
+        },
+        "prReconciliation": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true,
+          "description": "PR reconciliation result. wavemill_persist_attempt_reconciliation / fresh-launch reconciliation."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Provider of the stage currently launched. Monitor stage launch."
+        },
+        "queueHandoffAt": {
+          "type": "number",
+          "description": "Epoch seconds of the merge-queue handoff. set_task_queue_owned."
+        },
+        "rehydration": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Startup rehydration eligibility stamp. startup-terminal-preflight.sh / fresh-launch reconciliation."
+        },
+        "retryFailure": {
+          "type": "string",
+          "description": "Bounded-retry terminal reason. Monitor."
+        },
+        "retryFailureDetail": {
+          "type": "string",
+          "description": "Bounded-retry terminal detail. Monitor."
+        },
+        "reviewMode": {
+          "type": "string",
+          "description": "Review mode. save_task_state."
+        },
+        "reviewerModel": {
+          "type": "string",
+          "description": "Routed review model. save_task_state / route reseal."
+        },
+        "slug": {
+          "type": "string",
+          "description": "Worktree/feature slug. save_task_state."
+        },
+        "stageRole": {
+          "type": "string",
+          "description": "Stage role of the current launch (planning, coding, review). Monitor stage launch."
+        },
+        "status": {
+          "type": "string",
+          "description": "Task status (active, needs-user, merged, aborted, superseded, error, ...). save_task_state and every stage gate."
+        },
+        "statusClearedBy": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Operator event that cleared status=error {command, seq, at}. Condition reconciler."
+        },
+        "stopDetail": {
+          "type": "string",
+          "description": "Stop detail. Monitor."
+        },
+        "stopReason": {
+          "type": "string",
+          "description": "Why the monitor stopped the task. Monitor."
+        },
+        "stopSubReason": {
+          "type": "string",
+          "description": "Stop sub-reason. Monitor."
+        },
+        "supersededAt": {
+          "type": "string",
+          "description": "When the arm was superseded. Startup preflight / challenge-pair-resolver.ts."
+        },
+        "supersededReason": {
+          "type": "string",
+          "description": "Why the arm was superseded. Startup preflight / challenge-pair-resolver.ts."
+        },
+        "terminalRecordWritten": {
+          "type": "boolean",
+          "description": "Terminal reconciler wrote the terminal record."
+        },
+        "traceId": {
+          "type": "string",
+          "description": "Trace id resolved from features/<slug>/.trace-context.json. save_task_state."
+        },
+        "updated": {
+          "type": "string",
+          "description": "Last task-progress timestamp (ISO 8601). Every writer."
+        },
+        "windowId": {
+          "type": "string",
+          "description": "tmux window id. save_task_state / window recreation."
+        },
+        "worktree": {
+          "type": "string",
+          "description": "Absolute worktree path. save_task_state."
+        }
+      }
+    }
+  }
+}

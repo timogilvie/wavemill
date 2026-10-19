@@ -6,35 +6,40 @@
       "symbols": [
         { "name": "computeWorkflowCost", "kind": "value" },
         { "name": "loadPricingTable", "kind": "value" },
+        { "name": "reportableWorkflowCostUsd", "kind": "value" },
+        { "name": "PricingTable", "kind": "type" },
         { "name": "WorkflowCostOutcome", "kind": "type" }
       ],
       "class": "measurement",
       "production": true,
-      "notes": "Measurement entrypoint: mill/monitor → tools/run-eval-hook.ts",
-      "migrationTarget": "HOK-3075"
+      "notes": "Measurement entrypoint: mill/monitor → tools/run-eval-hook.ts; SDK projection authoritative since HOK-3076, legacy is the fallback and the WAVEMILL_COST_METERING_LEGACY rollback",
+      "migrationTarget": "HOK-3076"
     },
     {
       "file": "shared/lib/eval-orchestrator.ts",
       "symbols": [
         { "name": "computeWorkflowCostWithExactPricing", "kind": "value" },
         { "name": "loadPricingTable", "kind": "value" },
+        { "name": "reportableWorkflowCostUsd", "kind": "value" },
+        { "name": "PricingTable", "kind": "type" },
         { "name": "WorkflowCostOutcome", "kind": "type" }
       ],
       "class": "measurement",
       "production": true,
-      "notes": "Measurement entrypoint: wavemill eval → tools/eval-workflow.ts",
-      "migrationTarget": "HOK-3075"
+      "notes": "Measurement entrypoint: wavemill eval → tools/eval-workflow.ts; SDK projection authoritative since HOK-3076, legacy is the fallback, the exact-pricing guard, and the WAVEMILL_COST_METERING_LEGACY rollback",
+      "migrationTarget": "HOK-3076"
     },
     {
       "file": "shared/lib/eval-record-builder.ts",
       "symbols": [
+        { "name": "reportableWorkflowCostUsd", "kind": "value" },
         { "name": "WorkflowCostOutcome", "kind": "type" },
         { "name": "WorkflowCostResult", "kind": "type" },
         { "name": "WorkflowCostFailure", "kind": "type" }
       ],
       "class": "measurement",
       "production": true,
-      "notes": "Record writer: attachWorkflowCostMetadata writes cost fields",
+      "notes": "Record writer: attachWorkflowCostMetadata writes cost fields; omits workflowCost when nothing was priced (HOK-3076)",
       "migrationTarget": "HOK-3075"
     },
     {
@@ -249,6 +254,88 @@
       "production": false,
       "notes": "Migration oracle harness: runs the legacy engine against the parity corpus",
       "migrationTarget": "HOK-3074"
+    },
+    {
+      "file": "shared/lib/sdk-task-cost/events-from-session.ts",
+      "symbols": [
+        { "name": "computeModelCost", "kind": "value" },
+        { "name": "ModelPricing", "kind": "type" },
+        { "name": "PricingTable", "kind": "type" }
+      ],
+      "class": "measurement",
+      "production": true,
+      "notes": "SDK bridge: prices TaskCostEventV1 events with the legacy local estimate (authoritative since HOK-3076)",
+      "migrationTarget": "HOK-3077"
+    },
+    {
+      "file": "shared/lib/sdk-task-cost/collect.ts",
+      "symbols": [
+        { "name": "loadPricingTable", "kind": "value" },
+        { "name": "PricingTable", "kind": "type" }
+      ],
+      "class": "measurement",
+      "production": true,
+      "notes": "SDK bridge: scans sessions and reduces them with aggregateTaskCost (authoritative since HOK-3076)",
+      "migrationTarget": "HOK-3077"
+    },
+    {
+      "file": "shared/lib/sdk-task-cost/project.ts",
+      "symbols": [
+        { "name": "ModelPricing", "kind": "type" },
+        { "name": "ModelTokenUsage", "kind": "type" },
+        { "name": "PricingTable", "kind": "type" },
+        { "name": "WorkflowCostAttribution", "kind": "type" },
+        { "name": "WorkflowCostAttributionModel", "kind": "type" },
+        { "name": "WorkflowCostAttributionReason", "kind": "type" },
+        { "name": "WorkflowCostPricingSource", "kind": "type" },
+        { "name": "WorkflowCostResult", "kind": "type" }
+      ],
+      "class": "measurement",
+      "production": true,
+      "notes": "SDK bridge read side: projects TaskCostSummaryV1 into the legacy WorkflowCostResult shape; the authoritative eval cost since HOK-3076",
+      "migrationTarget": "HOK-3076"
+    },
+    {
+      "file": "shared/lib/sdk-task-cost/resolve.ts",
+      "symbols": [
+        { "name": "PricingTable", "kind": "type" },
+        { "name": "WorkflowCostOutcome", "kind": "type" }
+      ],
+      "class": "measurement",
+      "production": true,
+      "notes": "Authoritative cost selection: SDK projection vs legacy fallback / WAVEMILL_COST_METERING_LEGACY rollback",
+      "migrationTarget": "HOK-3076"
+    },
+    {
+      "file": "shared/lib/cost-migration.ts",
+      "symbols": [
+        { "name": "PricingTable", "kind": "type" },
+        { "name": "WorkflowCostOutcome", "kind": "type" }
+      ],
+      "class": "measurement",
+      "production": false,
+      "notes": "Migration release gate: legacy vs SDK like-for-like comparison and difference classification",
+      "migrationTarget": "HOK-3076"
+    },
+    {
+      "file": "tools/compare-task-costs.ts",
+      "symbols": [
+        { "name": "loadPricingTable", "kind": "value" }
+      ],
+      "class": "measurement",
+      "production": false,
+      "notes": "Release-gate CLI over the parity corpus and bounded local historical samples",
+      "migrationTarget": "HOK-3076"
+    },
+    {
+      "file": "shared/lib/sdk-task-cost/fixtures.ts",
+      "symbols": [
+        { "name": "PricingTable", "kind": "type" }
+      ],
+      "class": "measurement",
+      "production": false,
+      "notes": "Test helper: loads the HOK-3075 SDK bridge F fixtures",
+      "migrationTarget": "HOK-3075"
     }
   ],
   "testOnlyConsumers": [
@@ -258,7 +345,10 @@
     "shared/lib/executed-model-resolver.test.ts",
     "shared/lib/eval-orchestrator.test.ts",
     "shared/lib/native-agent/pi-usage-cost.test.ts",
-    "tools/backfill-stage-executed-model.test.ts"
+    "tools/backfill-stage-executed-model.test.ts",
+    "shared/lib/sdk-task-cost/events-from-session.test.ts",
+    "shared/lib/sdk-task-cost/resolve.test.ts",
+    "shared/lib/cost-migration.test.ts"
   ],
   "indirectConsumers": [
     {

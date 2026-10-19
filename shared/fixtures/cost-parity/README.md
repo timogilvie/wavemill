@@ -95,7 +95,7 @@ The 15 cases cover:
 
 These are documented in `docs/cost-engine-migration-oracle.md` under "Legacy Behavior and Expected Fixes". Each defect has:
 
-- **ID** (EF-1, EF-2, ..., EF-12)
+- **ID** (EF-1, EF-2, ..., EF-13)
 - **Impact** — which downstream consumers are affected
 - **Current behavior** — what the legacy engine does
 - **Proposed fix** — what the SDK should do instead
@@ -108,14 +108,92 @@ Examples:
 
 ## Integration: HOK-3075 and HOK-3076
 
-The SDK bridge (_not in this PR_) will:
+HOK-3075 landed the SDK bridge in `shared/lib/sdk-task-cost/`:
 
-1. Implement a `SdkCostEngine` compatible with the harness's `CostEngine` interface
-2. Plug it into the same comparator: `npx tsx tools/cost-parity.ts --mode migration --engine sdk`
-3. Classify differences as strict violations or expected fixes per case
-4. Document any additional cross-repo issues (e.g., EF-3 is also in hokusai-sdk's Codex parser)
+- `collectSdkTaskCostSummaries` scans sessions with the existing adapters,
+  emits `TaskCostEventV1` events priced with the legacy local estimate, and
+  reduces each harness with `aggregateTaskCost` (`@hokusai/core` 0.5.0).
+- `projectTaskCostSummaryToWorkflowCost` maps a summary back to the legacy
+  `WorkflowCostResult` / `WorkflowCostAttribution` shape.
+- `shared/lib/sdk-task-cost/collect.test.ts` runs every case in this corpus
+  through the bridge and requires the projected dollars to equal the legacy
+  engine's `totalCostUsd` within 1e-9.
 
-When migration mode reports all differences as either "stale_expected_fix", "expected_fix_applied", or "expected_fix_wrong_value" on SDK-bridged cases, the SDK engine is ready to replace the legacy one.
+## SDK migration gate (HOK-3076)
+
+The SDK projection is the authoritative workflow/eval cost. Both eval
+entrypoints collect SDK summaries, attach them as `taskCostSummary`, and
+write the projection through `attachWorkflowCostMetadata`
+(`shared/lib/sdk-task-cost/resolve.ts`). The legacy outcome is still computed
+and is used when there is no SDK summary (no sessions, or a swallowed bridge
+failure) and, in the eval orchestrator, when OpenRouter exact generation
+charges exceed what the transcripts recorded.
+
+### Release gate
+
+```bash
+npx tsx tools/compare-task-costs.ts                    # fixture corpus
+npx tsx tools/compare-task-costs.ts --json --out report.json
+# Bounded local historical sample (read in place; nothing is uploaded, only ids and cost views are reported):
+npx tsx tools/compare-task-costs.ts --no-fixtures --sample sample.json --repo-dir ~/wavemill --limit 25
+npx tsx tools/compare-task-costs.ts --no-fixtures --eval-store .wavemill/evals/evals.jsonl --limit 50
+```
+
+`--sample` takes a JSON array of `{ id, worktreePath, branchName, issueId?, agentType? }`;
+`--eval-store` compares each record's persisted legacy cost with its
+persisted `taskCostSummary`. Exit 0 = gate passed, 1 = failed, 2 = input error.
+
+Each case reduces both outcomes to the same view (total, per-model tokens and
+dollars, sessions, turns, coverage, reason, pricing entries, status), with
+one pricing table on both sides so price-table drift cannot mask accounting
+drift. Every difference is classified:
+
+| Rule | Classification | Difference |
+|---|---|---|
+| EF-n | `legacy_bug` | A manifest expected fix whose `expected` value the SDK now delivers |
+| M-1 | `unpriced_data` | Usage observed, nothing priced: legacy `unavailable` → SDK `partial`; neither reports a dollar figure |
+| M-2 | `intentional_contract_change` | Native coverage stays `partial`: the Pi parser coerces missing token fields to 0 and reports no reasoning dimension, so completeness is unprovable |
+| M-3 | `legacy_bug` | EF-2: replayed Claude Code lines no longer count as extra turns |
+| M-4 | `intentional_contract_change` | Projected native attribution names the harness, not the upstream provider |
+| M-5 | `intentional_contract_change` | Priced/unpriced counts are model segments (EF-5) |
+| M-6 | `legacy_bug` | EF-13: legacy native `workflowTokenUsage` duplicates/short-counts tokens under raw route ids; SDK equals legacy's own per-model attribution |
+| M-7 | `intentional_contract_change` | SDK model-id charset re-keys a model (e.g. Claude Code's zero-usage `<synthetic>`) with an identical value |
+| — | `sdk_bug` / `unexplained` | Anything else — **fails the gate** |
+
+The gate also fails, regardless of rules, if a projected coverage is
+`complete`/`known_zero` while the SDK total is unresolved, if the projection
+promotes a partial/unavailable SDK summary, or if a legacy partial/unavailable
+cost becomes complete/known-zero. Any dollar difference above 1e-9 is
+unexplained by construction (no rule covers `totalCostUsd` or `costUsd`).
+
+SDK-side (bridge) bugs the gate surfaced as unexplained differences, fixed in HOK-3076:
+Claude Code reasoning and Codex cache-write tokens are structural zeros once
+a turn reports usage (every fully observed CLI run was mislabelled `partial`);
+id-less native turns from several per-model records of one session no longer
+collide on one turn id (turn counts were undercounted).
+
+Evidence (2026-10-19): fixtures 15/15 (3 match, 12 approved); 40 local Claude
+Code/Codex tasks (15 match, 25 approved); 20 local native tasks (20 approved;
+the largest spans 303 sessions and $230.49 with identical dollars). Zero
+unexplained differences, zero SDK bugs, zero dollar drift.
+
+### Reporting semantics
+
+- A run that priced nothing has no `workflowCost` (attribution keeps the
+  coverage); it never contributes `$0.00` to aggregates. Only an explicit
+  known zero records `$0`.
+- CLI (Claude Code / Codex) costs are token-equivalent estimates — these
+  harnesses run on subscriptions with no per-call charge — and are shown as
+  `~$X (estimate)` in eval summaries and `wavemill eval report`. Native cost is
+  exact only when every priced model's cost was provider-reported.
+
+### Rollback
+
+Set `WAVEMILL_COST_METERING_LEGACY=1` (`true`/`on`) to make the legacy engine
+authoritative again; the SDK collector then does not run unless
+`WAVEMILL_SDK_COST_METERING_SHADOW=1` keeps `taskCostSummary` as diagnostic
+evidence. Unrecognised values keep the SDK default. Shadow `strict` makes
+collector failures throw (tests/CI only).
 
 ## Validation Tests
 

@@ -13,9 +13,25 @@ import {
   formatTaskContextDisplay,
   formatRepoContextDisplay,
   formatRouteProvenanceDisplay,
+  formatWorkflowCostAmount,
   formatWorkflowCostOutcome,
+  isEstimatedWorkflowCost,
   printEvalSummary,
 } from './eval-summary-printer.ts';
+import type { WorkflowCostAttribution } from './eval-schema.ts';
+
+function costAttribution(overrides: Partial<WorkflowCostAttribution> = {}): WorkflowCostAttribution {
+  return {
+    source: 'claude',
+    coverage: 'complete',
+    sessions: 1,
+    turns: 1,
+    pricedSessions: 1,
+    unpricedSessions: 0,
+    models: [{ provider: 'claude', modelId: 'claude-opus-4', priced: true, pricingSource: 'local_estimate' }],
+    ...overrides,
+  };
+}
 
 describe('eval-summary-printer', () => {
   describe('formatScoreDisplay', () => {
@@ -47,6 +63,46 @@ describe('eval-summary-printer', () => {
 
     it('should handle zero cost', () => {
       expect(formatCostDisplay(0)).toBe(', workflow cost: $0.0000');
+    });
+
+    it('labels CLI subscription cost as an estimate (HOK-3076)', () => {
+      expect(formatCostDisplay(0.1234, costAttribution())).toBe(', workflow cost: ~$0.1234 (estimate)');
+      expect(formatCostDisplay(0.1234, costAttribution({ source: 'codex' }))).toBe(', workflow cost: ~$0.1234 (estimate)');
+    });
+
+    it('shows unavailable instead of $0 when attribution priced nothing (HOK-3076)', () => {
+      expect(formatCostDisplay(undefined, costAttribution({ coverage: 'partial', pricedSessions: 0 })))
+        .toBe(', workflow cost: unavailable');
+    });
+  });
+
+  describe('isEstimatedWorkflowCost', () => {
+    it('treats CLI harness cost as an estimate', () => {
+      expect(isEstimatedWorkflowCost(costAttribution())).toBe(true);
+    });
+
+    it('treats fully provider-reported native cost as exact', () => {
+      const native = costAttribution({
+        source: 'native',
+        models: [{ provider: 'native', modelId: 'm', priced: true, pricingSource: 'openrouter_api' }],
+      });
+      expect(isEstimatedWorkflowCost(native)).toBe(false);
+      expect(formatWorkflowCostAmount(0.5, native)).toBe('$0.5000');
+    });
+
+    it('treats native cost with any local estimate as an estimate', () => {
+      const mixed = costAttribution({
+        source: 'native',
+        models: [
+          { provider: 'native', modelId: 'a', priced: true, pricingSource: 'openrouter_api' },
+          { provider: 'native', modelId: 'b', priced: true, pricingSource: 'local_estimate' },
+        ],
+      });
+      expect(isEstimatedWorkflowCost(mixed)).toBe(true);
+    });
+
+    it('leaves unattributed (legacy) cost unlabelled', () => {
+      expect(isEstimatedWorkflowCost(undefined)).toBe(false);
     });
   });
 
@@ -109,6 +165,12 @@ describe('eval-summary-printer', () => {
     it('should format cost outcome with multiple sessions', () => {
       const result = formatWorkflowCostOutcome(0.5678, 25, 3);
       expect(result).toBe('workflow cost $0.5678 (25 turns across 3 session(s))');
+    });
+
+    it('labels estimates and unavailable cost', () => {
+      expect(formatWorkflowCostOutcome(0.5678, 25, 3, costAttribution()))
+        .toBe('workflow cost ~$0.5678 (estimate) (25 turns across 3 session(s))');
+      expect(formatWorkflowCostOutcome(undefined, 2, 1)).toBe('workflow cost unavailable (2 turns across 1 session(s))');
     });
   });
 

@@ -427,6 +427,22 @@ export function hashLaunchPriorityModelRow(
   return createHash('sha256').update(canonicalJson(identityFields), 'utf-8').digest('hex');
 }
 
+/**
+ * Bind a certification subject's catalogHash to the model's OpenRouter routing
+ * pin. A certificate earned under one set of upstream hosts says nothing about
+ * another, so adding, changing or removing a pin re-identifies the subject.
+ * Unpinned models keep their row hash unchanged.
+ */
+export function foldOpenRouterRoutingIntoCatalogHash(
+  catalogHash: string,
+  routing: Record<string, unknown> | undefined,
+): string {
+  if (!routing) return catalogHash;
+  return createHash('sha256')
+    .update(canonicalJson({ catalogHash, openRouterRouting: routing }), 'utf-8')
+    .digest('hex');
+}
+
 // ── OpenRouter HTTP fetcher ──────────────────────────────────────────────────
 
 export interface OpenRouterApiResponse {

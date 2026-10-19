@@ -36,6 +36,7 @@ import {
   attachRepoContextMetadata,
   attachWorkflowCostMetadata,
   attachExecutionEconomics,
+  attachTaskCostSummaries,
   attachFeatureOutcomeDiagnostics,
   attachPlanningExecutionOutcome,
   attachVerificationTelemetry,
@@ -445,6 +446,89 @@ describe('eval-record-builder', () => {
     });
   });
 
+  describe('attachTaskCostSummaries (HOK-3075)', () => {
+    const summary = {
+      schema_version: 'task_cost_summary/v1' as const,
+      task_id: 'HOK-3075',
+      session_ids: ['session-1'],
+      harness: 'claude-code' as const,
+      provider_contract_version: 'claude-code/1',
+      models: ['claude-opus-4'],
+      model_segments: [],
+      turn_count: 1,
+      turns_truncated: false,
+      usage: { input_tokens: 10, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: null },
+      actual_cost_usd: null,
+      estimated_cost_usd: 0.01,
+      total_cost_usd: 0.01,
+      cost_source: 'local_estimate' as const,
+      cost_basis: 'unknown' as const,
+      coverage: 'partial' as const,
+      field_availability: { usage: 'partial', actual_cost: 'unavailable', estimated_cost: 'available', pricing: 'available' } as const,
+      pricing_source: 'local_estimate' as const,
+      join_confidence: 'branch_worktree' as const,
+      collected_at: '2026-10-01T00:00:00.000Z',
+      event_count: 1,
+      event_ids: ['tce-1'],
+      diagnostics: ['mixed_coverage' as const],
+    };
+
+    it('attaches SDK summaries when provided', () => {
+      attachTaskCostSummaries(baseRecord, [summary]);
+      expect(baseRecord.taskCostSummary).toEqual([summary]);
+    });
+
+    it('is a no-op for null, undefined, and empty input', () => {
+      const before = { ...baseRecord };
+      attachTaskCostSummaries(baseRecord, null);
+      attachTaskCostSummaries(baseRecord, undefined);
+      attachTaskCostSummaries(baseRecord, []);
+      expect(baseRecord).toEqual(before);
+    });
+
+    it('never touches the legacy cost fields', () => {
+      attachWorkflowCostMetadata(baseRecord, {
+        status: 'success',
+        totalCostUsd: 1.25,
+        models: {},
+        sessionCount: 1,
+        turnCount: 1,
+        pricingUsed: {},
+        attribution: {
+          source: 'claude', coverage: 'complete', sessions: 1, turns: 1, pricedSessions: 1, unpricedSessions: 0, models: [],
+        },
+      });
+      const legacy = {
+        workflowCost: baseRecord.workflowCost,
+        workflowCostAttribution: baseRecord.workflowCostAttribution,
+        pricingSnapshot: baseRecord.pricingSnapshot,
+        workflowCostStatus: baseRecord.workflowCostStatus,
+        executionEconomics: baseRecord.executionEconomics,
+      };
+      attachTaskCostSummaries(baseRecord, [summary]);
+      expect({
+        workflowCost: baseRecord.workflowCost,
+        workflowCostAttribution: baseRecord.workflowCostAttribution,
+        pricingSnapshot: baseRecord.pricingSnapshot,
+        workflowCostStatus: baseRecord.workflowCostStatus,
+        executionEconomics: baseRecord.executionEconomics,
+      }).toEqual(legacy);
+    });
+
+    it('is wired into both enrichment paths via the metadata bag', () => {
+      enrichTrainingMetadata(baseRecord, { taskCostSummary: [summary] });
+      expect(baseRecord.taskCostSummary).toEqual([summary]);
+      const other = { ...baseRecord, taskCostSummary: undefined };
+      enrichEvalRecord(other, { taskCostSummary: [summary] });
+      expect(other.taskCostSummary).toEqual([summary]);
+    });
+
+    it('leaves the record without the field when metadata omits it', () => {
+      enrichTrainingMetadata(baseRecord, {});
+      expect('taskCostSummary' in baseRecord).toBe(false);
+    });
+  });
+
   describe('attachWorkflowCostMetadata', () => {
     it('should attach workflow cost on success', () => {
       const costOutcome = {
@@ -499,6 +583,56 @@ describe('eval-record-builder', () => {
       attachWorkflowCostMetadata(baseRecord, costOutcome);
 
       expect(baseRecord.workflowCostAttribution).toEqual(costOutcome.attribution);
+      // Nothing was priced: no $0.00 workflowCost (HOK-3076).
+      expect(baseRecord.workflowCost).toBe(undefined);
+      expect(baseRecord.workflowCostStatus).toBe('success');
+    });
+
+    it('keeps an explicit known-zero cost as $0 (HOK-3076)', () => {
+      baseRecord.workflowCost = 9;
+      attachWorkflowCostMetadata(baseRecord, {
+        status: 'success' as const,
+        totalCostUsd: 0,
+        models: {},
+        sessionCount: 1,
+        turnCount: 1,
+        pricingUsed: {},
+        attribution: {
+          source: 'native' as const,
+          coverage: 'known_zero' as const,
+          sessions: 1,
+          turns: 1,
+          pricedSessions: 1,
+          unpricedSessions: 0,
+          models: [{ provider: 'pi', modelId: 'free-model', priced: true, costUsd: 0 }],
+        },
+      });
+
+      expect(baseRecord.workflowCost).toBe(0);
+    });
+
+    it('drops a stale workflowCost when the new outcome priced nothing (HOK-3076)', () => {
+      baseRecord.workflowCost = 9;
+      attachWorkflowCostMetadata(baseRecord, {
+        status: 'success' as const,
+        totalCostUsd: 0,
+        models: {},
+        sessionCount: 1,
+        turnCount: 1,
+        pricingUsed: {},
+        attribution: {
+          source: 'claude' as const,
+          coverage: 'partial' as const,
+          reason: 'unpriced_model' as const,
+          sessions: 1,
+          turns: 1,
+          pricedSessions: 0,
+          unpricedSessions: 1,
+          models: [{ provider: 'claude', modelId: 'mystery', priced: false, reason: 'unpriced_model' as const }],
+        },
+      });
+
+      expect(baseRecord.workflowCost).toBe(undefined);
     });
 
     it('should attach diagnostics on failure', () => {

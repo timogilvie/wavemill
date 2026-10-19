@@ -1394,7 +1394,12 @@
           "piTransportKind": "openai-completions",
           "readOnlyNative": "certified",
           "compatFlags": {
-            "thinkingFormat": "openrouter"
+            "thinkingFormat": "openrouter",
+            "openRouterRouting": {
+              "order": [
+                "google-ai-studio"
+              ]
+            }
           },
           "certification": {
             "maxCertifiedPhase": "workflow",
@@ -1454,11 +1459,11 @@
           "classify": 54
         },
         "pricing": {
-          "inputCostPerMTok": 0.27,
-          "outputCostPerMTok": 0.85
+          "inputCostPerMTok": 0.35,
+          "outputCostPerMTok": 1.15
         },
         "defaultLadderEligible": false,
-        "contextWindowTokens": 1048576,
+        "contextWindowTokens": 524288,
         "toolSupport": "basic",
         "multimodal": {
           "text": true,
@@ -1466,8 +1471,8 @@
         },
         "latencyTier": "standard",
         "reasoningTier": "standard",
-        "costPerMillionInputTokensUsd": 0.27,
-        "costPerMillionOutputTokensUsd": 0.85,
+        "costPerMillionInputTokensUsd": 0.35,
+        "costPerMillionOutputTokensUsd": 1.15,
         "agent": "native-openrouter",
         "nativeCapability": {
           "nativeProvider": "openrouter",
@@ -2450,7 +2455,13 @@
           "piTransportKind": "openai-completions",
           "readOnlyNative": "certified",
           "compatFlags": {
-            "thinkingFormat": "openrouter"
+            "thinkingFormat": "openrouter",
+            "openRouterRouting": {
+              "order": [
+                "moonshotai"
+              ],
+              "allow_fallbacks": false
+            }
           },
           "certification": {
             "maxCertifiedPhase": "workflow",

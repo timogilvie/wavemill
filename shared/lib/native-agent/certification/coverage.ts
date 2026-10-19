@@ -233,6 +233,7 @@ function evaluateIdentityCoverage(
         reason: eligibility.reason,
         cause: classifyReidentificationCause(eligibility.artifact, subject.subject, {
           ...(legacy ? { legacyCatalogHash: legacy } : {}),
+          ...(subject.unpinnedCatalogHash ? { unpinnedCatalogHash: subject.unpinnedCatalogHash } : {}),
         }),
       });
     } else {

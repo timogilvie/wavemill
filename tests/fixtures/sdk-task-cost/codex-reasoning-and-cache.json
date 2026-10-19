@@ -1,0 +1,64 @@
+{
+  "description": "Codex session with cached input and reasoning tokens. Events keep Wavemill's codex/1 parse: reasoning is billed as output by the local estimate, Codex has no cache-write category, so once a turn reports usage its cache_write_tokens is a structural 0 and the fully observed session is complete (HOK-3076).",
+  "taskId": "HOK-0003",
+  "now": "2026-10-01T00:00:00.000Z",
+  "pricingTable": {
+    "gpt-5-codex": { "inputCostPerMTok": 1.25, "outputCostPerMTok": 10, "cacheReadCostPerMTok": 0.125 }
+  },
+  "scanResults": [
+    {
+      "models": { "gpt-5-codex": { "inputTokens": 1500, "cacheCreationTokens": 0, "cacheReadTokens": 400, "outputTokens": 225 } },
+      "sessionCount": 1,
+      "turnCount": 1,
+      "source": "codex",
+      "externalSessions": [
+        {
+          "sessionId": "019a-codex-session",
+          "harness": "codex",
+          "harnessVersion": "0.46.0",
+          "triggerSource": "codex_exec",
+          "triggerProvenance": "codex.session_meta.originator",
+          "startedAt": "2026-09-30T09:00:00.000Z",
+          "endedAt": "2026-09-30T09:10:00.000Z",
+          "turnCount": 2,
+          "turns": [
+            {
+              "turnId": "codex-turn-1", "parentId": null, "isSubagent": null, "model": "gpt-5-codex",
+              "timestamp": "2026-09-30T09:00:00.000Z",
+              "usage": { "inputTokens": 1000, "outputTokens": 100, "cacheReadTokens": 400, "cacheWriteTokens": null, "reasoningTokens": 50 },
+              "usageAvailable": true, "actualCostUsd": null
+            },
+            {
+              "turnId": "codex-turn-2", "parentId": "codex-turn-1", "isSubagent": null, "model": "gpt-5-codex",
+              "timestamp": "2026-09-30T09:10:00.000Z",
+              "usage": { "inputTokens": 500, "outputTokens": 50, "cacheReadTokens": 0, "cacheWriteTokens": null, "reasoningTokens": 25 },
+              "usageAvailable": true, "actualCostUsd": null
+            }
+          ],
+          "usage": { "inputTokens": 1500, "outputTokens": 150, "cacheReadTokens": 400, "cacheWriteTokens": null, "reasoningTokens": 75 },
+          "actualCostUsd": null,
+          "diagnostics": []
+        }
+      ]
+    }
+  ],
+  "expected": [
+    {
+      "harness": "codex",
+      "harness_version": "0.46.0",
+      "provider_contract_version": "codex/1",
+      "session_ids": ["019a-codex-session"],
+      "models": ["gpt-5-codex"],
+      "turn_count": 2,
+      "event_count": 2,
+      "usage": { "input_tokens": 1500, "output_tokens": 150, "cache_read_tokens": 400, "cache_write_tokens": 0, "reasoning_tokens": 75 },
+      "actual_cost_usd": null,
+      "estimated_cost_usd": 0.004175,
+      "total_cost_usd": 0.004175,
+      "cost_source": "local_estimate",
+      "coverage": "complete",
+      "field_availability": { "usage": "available", "actual_cost": "unavailable", "estimated_cost": "available", "pricing": "available" },
+      "diagnostics": []
+    }
+  ]
+}

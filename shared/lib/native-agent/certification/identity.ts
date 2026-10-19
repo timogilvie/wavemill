@@ -1,9 +1,11 @@
 import {
+  foldOpenRouterRoutingIntoCatalogHash,
   hashLaunchPriorityModelRow,
   resolveOpenRouterModelIdentity,
 } from '../../openrouter-catalog.ts';
 import {
   getModel,
+  getOpenRouterRouting,
   resolveModelIdentity,
   resolveModelRegistryKey,
   type ModelRegistry,
@@ -23,6 +25,12 @@ export interface CertificationStorageIdentity {
 export interface ResolvedCertificationSubject {
   subject: CertificationSubject;
   storageIdentity: CertificationStorageIdentity;
+  /**
+   * The catalogHash before the model's OpenRouter routing pin was folded in.
+   * Present only for pinned models; lets re-identification name the pin as
+   * the cause.
+   */
+  unpinnedCatalogHash?: string;
 }
 
 const UNSAFE_SEGMENT = /[/\\\0]/;
@@ -129,14 +137,19 @@ export function resolveCertificationSubject(input: {
     }
   }
 
-  const catalogHash = identity.verification?.catalogHash
+  const baseCatalogHash = identity.verification?.catalogHash
     ?? (nativeProvider === 'openrouter'
       ? resolveOpenRouterCatalogHash(registryKey, providerNativeId, input.launchPriorityFixturePath)
       : 'registry');
+  const catalogHash = foldOpenRouterRoutingIntoCatalogHash(
+    baseCatalogHash,
+    getOpenRouterRouting(input.registry, registryKey) as Record<string, unknown> | undefined,
+  );
   const storageIdentity = resolveCertificationStorageIdentity(nativeProvider, providerNativeId);
 
   return {
     storageIdentity,
+    ...(catalogHash !== baseCatalogHash ? { unpinnedCatalogHash: baseCatalogHash } : {}),
     subject: {
       registryKey,
       nativeProvider,

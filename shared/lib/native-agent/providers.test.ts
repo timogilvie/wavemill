@@ -420,6 +420,15 @@ describe('native-agent Pi provider lookup', () => {
     assert.equal(model.id, 'openrouter:qwen-3-coder');
   });
 
+  it('sends the registry routing pin as compat.openRouterRouting, and nothing when unpinned', () => {
+    const routing = { order: ['moonshotai'], allow_fallbacks: false };
+    const pinned = buildOpenRouterModel({ modelId: 'kimi-k3', routing });
+    assert.deepEqual((pinned.compat as { openRouterRouting?: unknown }).openRouterRouting, routing);
+
+    const unpinned = buildOpenRouterModel({ modelId: 'qwen-3-coder' });
+    assert.equal('openRouterRouting' in (unpinned.compat as object), false);
+  });
+
   it('leaves already provider-native and unknown model IDs unchanged', () => {
     assert.equal(
       buildOpenRouterModel({ modelId: 'qwen/qwen-2.5-coder-32b-instruct' }).name,

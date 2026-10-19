@@ -5,9 +5,9 @@
  * because its workflow-state entry is terminal.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { challengerTaskKey, isChallengerTaskId } from './task-identity.ts';
+import { readWorkflowState } from './workflow-state.ts';
 
 /**
  * Challenge arms share the Linear issue id, but the challenger's state entry is
@@ -32,20 +32,12 @@ export function shouldSkipAbortedTaskEval(
 ): string | undefined {
   if (!issue) return undefined;
   const statePath = join(resolve(repoDir ?? process.cwd()), '.wavemill', 'workflow-state.json');
-  if (!existsSync(statePath)) return undefined;
-  try {
-    const state = JSON.parse(readFileSync(statePath, 'utf-8')) as {
-      tasks?: Record<string, { status?: unknown; challengeAborted?: unknown; pr?: unknown }>;
-    };
-    const task = state.tasks?.[evalTaskStateKey(issue, challengeSide)];
-    if (!task) return undefined;
-    const statePr = typeof task.pr === 'string' ? task.pr : '';
-    if (task.status === 'aborted') return 'task_aborted';
-    if (typeof task.challengeAborted === 'string' && task.challengeAborted && !pr && !statePr) {
-      return 'challenge_aborted_no_pr';
-    }
-  } catch {
-    return undefined;
+  const task = readWorkflowState(statePath)?.tasks?.[evalTaskStateKey(issue, challengeSide)];
+  if (!task || typeof task !== 'object') return undefined;
+  const statePr = typeof task.pr === 'string' ? task.pr : '';
+  if (task.status === 'aborted') return 'task_aborted';
+  if (typeof task.challengeAborted === 'string' && task.challengeAborted && !pr && !statePr) {
+    return 'challenge_aborted_no_pr';
   }
   return undefined;
 }
