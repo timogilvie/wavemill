@@ -21,6 +21,15 @@
 #   waiting-on                 — awaited value now holds
 #   deadline                   — now >= recheckAfter
 
+# HOK-3227: backoff and deadlines read the tick clock seam (wall clock unless
+# a golden journey sets WAVEMILL_TICK_CLOCK_FILE).
+# Tests that inline this file elsewhere fall back to the wall clock.
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/mill-clock.sh" ]]; then
+  # shellcheck source=mill-clock.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/mill-clock.sh"
+fi
+declare -F mill_clock_now >/dev/null 2>&1 || mill_clock_now() { date +%s; }
+
 set -euo pipefail
 
 WAVEMILL_CONDITION_RECONCILER_LOADED=1
@@ -273,7 +282,7 @@ condition_reconcile_task() {
           if [[ -n "$recheck_after" ]]; then
             local deadline_epoch now_epoch
             deadline_epoch=$(_condition_iso_to_epoch "$recheck_after")
-            now_epoch=$(date +%s)
+            now_epoch=$(mill_clock_now)
             # An unparseable deadline never fires (fail closed).
             if [[ -n "$deadline_epoch" && "$now_epoch" -ge "$deadline_epoch" ]]; then
               echo "deadline:recheck time elapsed"
