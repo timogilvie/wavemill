@@ -22305,6 +22305,15 @@ monitor_issue_state() {
             return 0
           fi
         fi
+        # Tend merging this PR is itself what advances main, and this pass's
+        # PR cache can still read OPEN. Confirm live before re-running Ready,
+        # or the re-run's running status reads as merged-before-ready.
+        if [[ "$(_with_timeout "$API_TIMEOUT" gh pr view "$PR" --json state --jq .state 2>/dev/null || true)" == "MERGED" ]]; then
+          log "status" "$ISSUE → PR #$PR merged after Ready passed; skipping stale re-run"
+          set_window_attention_state "$WIN" "clear"
+          active_count=$((active_count + 1))
+          return 0
+        fi
         log "status" "⚠ $ISSUE → Ready result stale (main advanced); re-running ready checks for PR #$PR"
         title=$(pass_task_field "$ISSUE" title)
         if [[ -z "$title" ]]; then
