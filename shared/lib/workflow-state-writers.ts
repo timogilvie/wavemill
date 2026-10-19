@@ -41,8 +41,8 @@ export const TS_TASK_WRITER_FILES: readonly string[] = [
   'shared/lib/challenge-recovery.ts',
   'shared/lib/job-tracker.ts',
   'shared/lib/ready-watchdog.ts',
-  'tools/void-challenge-record.ts',
-  'tools/reap-stale-challengers.ts',
+  'tools/void-challenge-record.ts', // install-paths: allow repo-relative source file scanned for writes, not executed
+  'tools/reap-stale-challengers.ts', // install-paths: allow repo-relative source file scanned for writes, not executed
 ];
 
 /** Locals that TypeScript writers use to hold a single task record. */
