@@ -428,6 +428,7 @@ TESTS=(
   shared/lib/sdk-task-cost/collect.test.ts
   shared/lib/sdk-task-cost/project.test.ts
   shared/lib/sdk-task-cost/feature-switch.test.ts
+  shared/lib/sdk-task-cost/resolve.test.ts
   shared/lib/eval-summary-printer.test.ts
   shared/lib/evals-paths.test.ts
   shared/lib/execution-contract.test.ts
@@ -522,6 +523,7 @@ TESTS=(
   shared/lib/challenge-replay-capture.test.ts
   spike/pi-native-agent/mcp-proxy-spike.test.ts
   shared/lib/cost-parity.test.ts
+  shared/lib/cost-migration.test.ts
   shared/lib/observer-findings.test.ts
   shared/lib/pr-comparison-actions.test.ts
   tests/state-archive-roundtrip.test.ts

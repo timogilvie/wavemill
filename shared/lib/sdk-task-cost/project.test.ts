@@ -140,8 +140,12 @@ describe('SDK-backed eval records through existing readers', () => {
       .filter((issue) => issue.code === 'SCHEMA_VIOLATION');
     assert.deepEqual(schemaIssues, []);
 
-    assert.equal(formatCostDisplay(record.workflowCost), ', workflow cost: $0.0851');
-    assert.equal(formatWorkflowCostOutcome(record.workflowCost!, 2, 1), 'workflow cost $0.0851 (2 turns across 1 session(s))');
+    // Claude Code runs on a subscription: the dollars are an estimate (HOK-3076).
+    assert.equal(formatCostDisplay(record.workflowCost, record.workflowCostAttribution), ', workflow cost: ~$0.0851 (estimate)');
+    assert.equal(
+      formatWorkflowCostOutcome(record.workflowCost!, 2, 1, record.workflowCostAttribution),
+      'workflow cost ~$0.0851 (estimate) (2 turns across 1 session(s))',
+    );
     const stats = computeCostStatistics([record, baseRecord()]);
     assert.equal(stats.recordsWithCost, 1);
     assert.equal(stats.workflowCostStatusDistribution.success, 1);

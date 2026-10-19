@@ -117,6 +117,20 @@ export interface WorkflowCostFailure {
 /** Result of workflow cost computation - either success or failure with diagnostics */
 export type WorkflowCostOutcome = WorkflowCostResult | WorkflowCostFailure;
 
+/**
+ * The dollar figure an eval record may report for an outcome (HOK-3076), or
+ * `undefined` when there is none: a failure, or a success that priced
+ * nothing (unpriced models, missing usage) and is not an explicit known
+ * zero. Such a record keeps its attribution, but never presents `$0.00` as
+ * a cost or contributes it to an aggregate.
+ */
+export function reportableWorkflowCostUsd(outcome: WorkflowCostOutcome | null | undefined): number | undefined {
+  if (outcome?.status !== 'success') return undefined;
+  const attribution = outcome.attribution;
+  if (attribution && attribution.pricedSessions === 0 && attribution.coverage !== 'known_zero') return undefined;
+  return outcome.totalCostUsd;
+}
+
 /** Per-model pricing entry (from .wavemill-config.json). */
 export interface ModelPricing {
   inputCostPerMTok: number;

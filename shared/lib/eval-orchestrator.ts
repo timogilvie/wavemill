@@ -74,11 +74,16 @@ import { getConfiguredModelsForDescriptor } from './model-registry.ts';
 import {
   computeWorkflowCostWithExactPricing,
   loadPricingTable,
+  reportableWorkflowCostUsd,
   type PricingTable,
   type WorkflowCostOutcome,
 } from './workflow-cost.ts';
 import { collectExecutionEconomics } from './execution-economics.ts';
-import { collectSdkTaskCostSummaries, runSdkTaskCostShadow } from './sdk-task-cost/index.ts';
+import {
+  collectSdkTaskCostSummaries,
+  resolveAuthoritativeWorkflowCost,
+  runSdkTaskCostCollection,
+} from './sdk-task-cost/index.ts';
 import {
   buildStageExecutionIdentity,
   hasProviderModelSubstitution,
@@ -566,11 +571,12 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
     }
   }
 
-  // 9c-sdk. Shadow SDK task-cost metering (HOK-3075): only when
-  // WAVEMILL_SDK_COST_METERING_SHADOW is on; independent of the legacy
-  // outcome above and priced with the same table. Reads are not switched.
+  // 9c-sdk. SDK task-cost metering (HOK-3075/HOK-3076): authoritative by
+  // default and priced with the same table as the legacy outcome above,
+  // which stays the fallback (no SDK summary) and the
+  // WAVEMILL_COST_METERING_LEGACY rollback.
   const taskCostSummary = worktreePath && branch
-    ? await runSdkTaskCostShadow(
+    ? await runSdkTaskCostCollection(
       () => evalOrchestratorDeps.collectSdkTaskCostSummaries({
         worktreePath,
         branchName: branch,
@@ -581,6 +587,17 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
       { label: 'Eval' },
     )
     : null;
+  const costSelection = resolveAuthoritativeWorkflowCost({
+    legacyOutcome: workflowCostOutcome,
+    summaries: taskCostSummary,
+    agentType,
+    pricingTable,
+    repoDir,
+  });
+  workflowCostOutcome = costSelection.outcome;
+  if (taskCostSummary) {
+    console.log(`Eval: workflow cost from ${costSelection.engine} engine (${costSelection.reason})`);
+  }
 
   // 9c-identity. HOK-3143: per-stage provider identity. Fail-soft; a missing or
   // malformed stage result leaves `stageExecution` unset.
@@ -595,9 +612,7 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
     }
   }
 
-  const resolvedWorkflowCost = workflowCostOutcome?.status === 'success'
-    ? workflowCostOutcome.totalCostUsd
-    : undefined;
+  const resolvedWorkflowCost = reportableWorkflowCostUsd(workflowCostOutcome);
   const resolvedWorkflowTokenUsage = workflowCostOutcome?.status === 'success'
     ? workflowCostOutcome.models
     : undefined;
