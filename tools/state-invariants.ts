@@ -68,10 +68,9 @@ function readTaskProgress(repoDir: string, session: string, issue: string): Task
   if (cached) return cached;
   try {
     const stdout = execFileSync(
-      'node',
+      'npx',
       [
-        '--experimental-strip-types',
-        '--no-warnings',
+        'tsx',
         join(repoDir, 'tools', 'task-progress.ts'),
         '--issue',
         issue,

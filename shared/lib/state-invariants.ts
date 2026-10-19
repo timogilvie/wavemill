@@ -333,6 +333,9 @@ export function checkInvariant3LabelMismatch(
   config: InvariantConfig,
 ): void {
   const nowIso = new Date(inputs.stateInspection.nowMs).toISOString();
+  // I3 fires at `streak >= graceTicks + 1` so default 2 → fires on tick 3
+  // (matches task-packet §6 REQ-F3: "persists for at most 2 ticks"). I5 fires
+  // at `streak >= graceTicks` (tick 2); the asymmetry is intentional.
   const graceTicks = Math.max(1, config.labelMismatchGraceTicks);
 
   for (const pr of inputs.prs) {
