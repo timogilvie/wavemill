@@ -17,8 +17,9 @@ import { appendEvalRecord } from './eval-persistence.ts';
 import { resolveEvalsDir, resolveRouteArtifactArchiveDir } from './evals-paths.ts';
 import { execShellCommand } from './shell-utils.ts';
 import { detectAndFormatInterventions } from './intervention-detector.ts';
-import { computeWorkflowCost, loadPricingTable } from './workflow-cost.ts';
+import { computeWorkflowCost, loadPricingTable, type PricingTable } from './workflow-cost.ts';
 import { collectExecutionEconomics } from './execution-economics.ts';
+import { collectSdkTaskCostSummaries, runSdkTaskCostShadow } from './sdk-task-cost/index.ts';
 import { getDeepSeekProviderMetadata } from './deepseek-provider.ts';
 import { runEvalAnalysis } from './eval-analysis.ts';
 import { callHeadlessLLM } from './headless-llm.ts';
@@ -77,6 +78,7 @@ import type {
   EvalRecord,
   EvalRouteProvenance,
   EvalRouting,
+  EvalTaskCostSummary,
   EvalTaskScorerResult,
   InterventionRecord,
   PlanningExecutionOutcome,
@@ -256,6 +258,7 @@ export const postCompletionHookDeps = {
   gatherEvalContext,
   gatherStageArtifacts,
   collectExecutionEconomics,
+  collectSdkTaskCostSummaries,
   execShellCommand,
   detectAndFormatInterventions,
   runEvalAnalysis,
@@ -468,6 +471,8 @@ interface PostCompletionEnrichmentInput {
   costOutcome: WorkflowCostOutcome | null;
   /** Normalized external-harness execution economics (HOK-2958). */
   executionEconomics?: EvalExecutionEconomics[] | null;
+  /** Shadow SDK task-cost summaries; null unless the shadow switch is on (HOK-3075). */
+  taskCostSummary?: EvalTaskCostSummary[] | null;
   interventionRecords: InterventionRecord[];
   routingDecision?: RoutingDecision;
   routing?: EvalRouting | null;
@@ -691,6 +696,7 @@ export function enrichPostCompletionRecord(
     repoContext: input.repoContextData,
     workflowCost: input.costOutcome,
     executionEconomics: input.executionEconomics,
+    taskCostSummary: input.taskCostSummary,
     taskDescriptor,
     constraints: (() => {
       const maxCostUsd = resolvePostCompletionBudget(input);
@@ -911,7 +917,9 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
     // 5. Compute workflow cost
     let costOutcome: ReturnType<typeof computeWorkflowCost> | null = null;
     let executionEconomics: EvalExecutionEconomics[] | null = null;
+    let taskCostSummary: EvalTaskCostSummary[] | null = null;
     if (ctx.worktreePath && branchName) {
+      let pricingTable: PricingTable | undefined;
       console.log('Post-completion eval: computing workflow cost...');
 
       if (debug) {
@@ -923,7 +931,7 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
 
       try {
         const wavemillConfigDir = resolve(__dirname, '../..');
-        const pricingTable = loadPricingTable(wavemillConfigDir);
+        pricingTable = loadPricingTable(wavemillConfigDir);
 
         if (debug) {
           console.log(`[DEBUG_COST]   Loaded pricing for ${Object.keys(pricingTable).length} model(s)`);
@@ -979,6 +987,21 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
         const costMsg = errorMessage(costErr);
         console.warn(`Post-completion eval: workflow cost computation failed — ${costMsg}`);
       }
+
+      // Shadow SDK task-cost metering (HOK-3075): runs only when
+      // WAVEMILL_SDK_COST_METERING_SHADOW is on, after and independently of
+      // the legacy outcome, with the same pricing table so the dollars match.
+      const worktreePath = ctx.worktreePath;
+      taskCostSummary = await runSdkTaskCostShadow(
+        () => postCompletionHookDeps.collectSdkTaskCostSummaries({
+          worktreePath,
+          branchName,
+          repoDir,
+          issueId: ctx.issueId,
+          pricingTable,
+        }),
+        { label: 'Post-completion eval' },
+      );
     } else {
       // Create skipped outcome with diagnostics
       const missingParams = [];
@@ -1019,6 +1042,7 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
       repoContextData,
       costOutcome,
       executionEconomics,
+      taskCostSummary,
       interventionRecords: interventionData.records,
       routingDecision: stageArtifacts.routingDecision,
       routing: stageArtifacts.routing,

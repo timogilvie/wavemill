@@ -24,4 +24,5 @@ export {
   selectPrimaryTaskCostSummary,
   type ProjectTaskCostOptions,
 } from './project.ts';
+export { runSdkTaskCostShadow, type SdkTaskCostShadowOptions } from './shadow.ts';
 export type { TaskCostSummaryV1 } from './contract.ts';
