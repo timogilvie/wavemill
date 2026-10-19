@@ -35,6 +35,9 @@ import {
  * - `launch-priority-catalog` — only `catalogHash` differs otherwise: the
  *   model's launch-priority row changed (or, for a legacy whole-file hash, the
  *   fixture changed since it was issued).
+ * - `openrouter-routing` — only `catalogHash` differs, and the stored value is
+ *   the model's unpinned row hash: an OpenRouter routing pin was added since
+ *   the artifact was issued. Needs a fresh live canary under the pin.
  * - `registry-identity` — a registry identity field (key, wire id, revision,
  *   fingerprint) changed.
  * - `identity-invalidated` — the artifact carries a durable invalidation.
@@ -43,6 +46,7 @@ import {
 export type ReidentificationCause =
   | 'catalog-hash-migration'
   | 'launch-priority-catalog'
+  | 'openrouter-routing'
   | 'registry-identity'
   | 'identity-invalidated'
   | 'unknown';
@@ -51,6 +55,7 @@ export type ReidentificationCause =
 export const REIDENTIFICATION_CAUSE_LABELS: Record<ReidentificationCause, string> = {
   'catalog-hash-migration': 'catalog hash scheme migrated to per-model rows (live canaries carry forward)',
   'launch-priority-catalog': 'launch-priority fixture row changed',
+  'openrouter-routing': 'OpenRouter routing pin added (re-certify with --live-coding-canary)',
   'registry-identity': 'registry identity changed',
   'identity-invalidated': 'identity invalidated (provider substitution or unpinned alias)',
   unknown: 'stored subject missing or unreadable',
@@ -64,6 +69,12 @@ export interface LegacyCatalogHashOptions {
    */
   legacyCatalogHash?: string;
   fixturePath?: string;
+  /**
+   * The expected subject's catalogHash before its OpenRouter routing pin was
+   * folded in (`ResolvedCertificationSubject.unpinnedCatalogHash`). Set only
+   * for pinned models.
+   */
+  unpinnedCatalogHash?: string;
 }
 
 /**
@@ -85,6 +96,9 @@ export function classifyReidentificationCause(
   }
   if (!subjectsEqual({ ...stored, catalogHash: expected.catalogHash }, expected)) {
     return 'registry-identity';
+  }
+  if (options.unpinnedCatalogHash && stored.catalogHash === options.unpinnedCatalogHash) {
+    return 'openrouter-routing';
   }
   return stored.catalogHash === resolveLegacyCatalogHash(expected, options)
     ? 'catalog-hash-migration'

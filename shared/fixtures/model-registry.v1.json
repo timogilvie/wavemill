@@ -1394,7 +1394,12 @@
           "piTransportKind": "openai-completions",
           "readOnlyNative": "certified",
           "compatFlags": {
-            "thinkingFormat": "openrouter"
+            "thinkingFormat": "openrouter",
+            "openRouterRouting": {
+              "order": [
+                "google-ai-studio"
+              ]
+            }
           },
           "certification": {
             "maxCertifiedPhase": "workflow",
@@ -2450,7 +2455,13 @@
           "piTransportKind": "openai-completions",
           "readOnlyNative": "certified",
           "compatFlags": {
-            "thinkingFormat": "openrouter"
+            "thinkingFormat": "openrouter",
+            "openRouterRouting": {
+              "order": [
+                "moonshotai"
+              ],
+              "allow_fallbacks": false
+            }
           },
           "certification": {
             "maxCertifiedPhase": "workflow",
