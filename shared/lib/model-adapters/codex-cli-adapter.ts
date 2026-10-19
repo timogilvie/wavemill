@@ -129,6 +129,9 @@ export class CodexCliAdapter implements TransportAdapter {
       return { text: '', reportedModel: 'unverified', error: refusal };
     }
     try {
+      // Note: maxOutputTokens is not passed to Codex because Codex `exec`
+      // does not support output token limiting (see llm-cli.ts comment on maxOutputTokens).
+      // The option is still accepted for API consistency.
       const result = await callLLM(prompt, {
         provider: 'codex',
         mode: 'stream',
