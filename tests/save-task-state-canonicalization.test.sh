@@ -93,6 +93,8 @@ check_contains "canonical tail fixes phase at argument 20" \
   "$CANONICAL_BODY" 'phase="${20:-}"'
 check_contains "canonical tail fixes windowId at argument 21" \
   "$CANONICAL_BODY" 'window_id="${21:-}"'
+check_contains "canonical tail fixes title at argument 22 (HOK-3221)" \
+  "$CANONICAL_BODY" 'title="${22:-}"'
 
 # --- Behavioral coverage -----------------------------------------------------
 
@@ -403,6 +405,33 @@ TOMBSTONE_RESULT="$(bash -c '
 check_contains "terminal tombstone blocks active row recreation" "$TOMBSTONE_RESULT" "blocked|save_task_state: refusing to recreate terminal task HOK-3005"
 check_state "terminal tombstone leaves task absent" "false" \
   "$VALIDATION_STATE_FILE" '.tasks["HOK-3005"] != null'
+
+# HOK-3221: title propagates from launch through save_task_state so readers
+# (ready-watchdog remediation, dashboard refresh) do not fall through to
+# "Task" when the pass snapshot carries the persisted record. A blank title on
+# a later save preserves the previously stored title.
+TITLE_STATE_FILE="$TEST_TMP/state-title.json"
+printf '%s\n' '{"session":"canonicalization-title","tasks":{}}' > "$TITLE_STATE_FILE"
+bash -c '
+  set -euo pipefail
+  STATE_FILE="$1"; WORKTREE="$2"; REPO_DIR="$3"
+  source "$REPO_DIR/shared/lib/wavemill-common.sh"
+  log_warn() { :; }
+  save_task_state "HOK-3221" "hok-3221" "task/hok-3221" "$WORKTREE" "" "" "codex" "HOK-3221" \
+    "false" "" "" "" "" "" "" "" "" "" "" "planning" "" "Launched issue title"
+  # Later status-only save with a blank title must preserve the stored title.
+  save_task_state "HOK-3221" "hok-3221" "task/hok-3221" "$WORKTREE" "88" "review" "codex" "HOK-3221" \
+    "" "" "" "" "" "" "" "" "" "" "" "" ""
+' bash "$TITLE_STATE_FILE" "$WORKTREE" "$REPO_DIR"
+
+check_state "launch write persists the Linear title" "Launched issue title" \
+  "$TITLE_STATE_FILE" '.tasks["HOK-3221"].title'
+check_state "blank-title save preserves the stored title" "Launched issue title" \
+  "$TITLE_STATE_FILE" '.tasks["HOK-3221"].title'
+check_state "blank-title save still updates status/pr" "review" \
+  "$TITLE_STATE_FILE" '.tasks["HOK-3221"].status'
+check_state "blank-title save writes the pr argument" "88" \
+  "$TITLE_STATE_FILE" '.tasks["HOK-3221"].pr'
 
 echo ""
 echo "Passed: $PASS"
