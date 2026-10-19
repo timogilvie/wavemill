@@ -13489,7 +13489,12 @@ ready_sync_worktree_to_github_head() {
     elif [[ -n "$tend_previous" && "$tend_previous" == "$local_head" ]]; then
       sync_reason="tend push"
     elif [[ -n "$pre_fetch_origin" ]] \
-      && git -C "$wt_dir" merge-base --is-ancestor "$local_head" "$pre_fetch_origin" >/dev/null 2>&1; then
+      && git -C "$wt_dir" merge-base --is-ancestor "$local_head" "$pre_fetch_origin" >/dev/null 2>&1 \
+      && ! git -C "$wt_dir" merge-base --is-ancestor "$gh_head" "$local_head" >/dev/null 2>&1; then
+      # A PR head that is an ancestor of local HEAD is never a rewrite: right
+      # after a push, local == origin/<branch> and the API can still report
+      # the parent. Fall through to the HOK-3171 lag check instead of
+      # resetting the worktree backwards.
       sync_reason="remote rewrite"
     else
       # HOK-3171: check git ls-remote before refusing — may be GitHub lag

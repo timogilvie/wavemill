@@ -83,6 +83,7 @@ TESTS=(
   monitor-ready-transition.test.sh
   ready-failure-blocks-pr-label.test.sh
   launch-ready-phase.test.sh
+  ready-sync-github-head-lag.test.sh
   bounded-retry.test.sh
   check-install-paths.test.sh
   check-common-guards.test.sh
