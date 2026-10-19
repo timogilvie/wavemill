@@ -25,8 +25,11 @@
       }
     },
     "jobs": {
-      "type": "object",
-      "description": "Tracked background jobs. Owned and validated by job-tracker.ts (mill-job.schema.json)."
+      "type": [
+        "object",
+        "array"
+      ],
+      "description": "Tracked background jobs, keyed by job id (legacy files store an array). Owned and validated by job-tracker.ts (mill-job.schema.json)."
     },
     "terminalTaskHistory": {
       "type": "object",

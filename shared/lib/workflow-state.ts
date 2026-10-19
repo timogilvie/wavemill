@@ -42,6 +42,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { mutateJsonState, type MutateJsonStateOptions } from './state-mutex.ts';
+import type { MillJob } from './job-tracker.ts';
 import type { TaskLifecycleState } from './task-lifecycle.ts';
 import {
   compileSchemaValidator,
@@ -182,8 +183,8 @@ export type WorkflowState = {
   started?: string;
   updated?: string;
   tasks?: Record<string, TaskRecord>;
-  /** Owned and validated by `job-tracker.ts` (`MillJob`). */
-  jobs?: Record<string, unknown>;
+  /** Owned by `job-tracker.ts`; legacy files store an array (see `normalizeJobs`). */
+  jobs?: Record<string, MillJob> | MillJob[];
   /** Owned by `terminal-inbox-cleanup.ts` / the terminal reconciler. */
   terminalTaskHistory?: JsonObject;
   /** Owned by `terminal-inbox-cleanup.ts`. */

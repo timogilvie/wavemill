@@ -26,29 +26,12 @@ import {
   progressCacheIsFresh,
   type TaskProgress,
 } from '../shared/lib/task-progress.ts';
+import { readWorkflowState, type TaskRecord } from '../shared/lib/workflow-state.ts';
 
-interface TaskLookup {
-  updated?: string;
-  branch?: string;
-  slug?: string;
-  worktree?: string;
-  status?: string;
-  phase?: string;
-  lifecycle?: unknown;
-}
-
-function loadTaskFromState(stateFile: string | undefined, issue: string): TaskLookup | undefined {
-  if (!stateFile || !existsSync(stateFile)) return undefined;
-  try {
-    const parsed = JSON.parse(readFileSync(stateFile, 'utf-8')) as { tasks?: Record<string, unknown> };
-    const task = parsed?.tasks?.[issue];
-    if (task && typeof task === 'object') {
-      return task as TaskLookup;
-    }
-  } catch {
-    // ignore
-  }
-  return undefined;
+function loadTaskFromState(stateFile: string | undefined, issue: string): TaskRecord | undefined {
+  if (!stateFile) return undefined;
+  const task = readWorkflowState(stateFile)?.tasks?.[issue];
+  return task && typeof task === 'object' ? task : undefined;
 }
 
 function capturePaneText(target: string): string | undefined {

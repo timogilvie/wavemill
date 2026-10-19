@@ -16,7 +16,6 @@
  * The shell twin is `linear_write_target` in `shared/lib/wavemill-common.sh`.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
 import {
   parseTaskId,
   resolveLinearIssueId,
@@ -24,6 +23,7 @@ import {
   type TaskIdentityMeta,
 } from './task-identity.ts';
 import { setIssuesState, type LinearBatchFailure, type LinearTransitionOptions } from './linear.ts';
+import { readWorkflowState } from './workflow-state.ts';
 
 export type LinearWriteDecision =
   | { action: 'write'; taskId: string; linearId: string }
@@ -47,14 +47,9 @@ function defaultStateFile(): string | undefined {
  * @returns The task record, or `null` when the file or task is missing/unreadable.
  */
 export function readTaskIdentityMeta(taskId: string, stateFile = defaultStateFile()): TaskIdentityMeta | null {
-  if (!stateFile || !existsSync(stateFile)) return null;
-  try {
-    const state = JSON.parse(readFileSync(stateFile, 'utf-8')) as { tasks?: Record<string, unknown> };
-    const task = state.tasks?.[taskId];
-    return task && typeof task === 'object' ? (task as TaskIdentityMeta) : null;
-  } catch {
-    return null;
-  }
+  if (!stateFile) return null;
+  const task = readWorkflowState(stateFile)?.tasks?.[taskId];
+  return task && typeof task === 'object' ? task : null;
 }
 
 /** Decide whether and where `taskId` may write to Linear. */

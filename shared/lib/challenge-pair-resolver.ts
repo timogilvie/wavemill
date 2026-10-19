@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getChallengeEvalHardFailureRetryMaxAttempts } from './config.ts';
-import { mutateJsonState } from './state-mutex.ts';
 import {
   appendChallengeComparison,
   buildDoubleForfeitComparison,
@@ -16,6 +15,7 @@ import type { EvalRecord } from './eval-schema.ts';
 import type { ForkIdentity, InvalidChallengeReason } from './challenge-execution-contract.ts';
 import { readForkIdentity } from './fork-identity.ts';
 import { challengerTaskKey } from './task-identity.ts';
+import { mutateWorkflowState } from './workflow-state.ts';
 import {
   getSiblingBranch,
   classifyPairUnresolvableState,
@@ -582,7 +582,7 @@ function describeStalledArm(task: TaskEvalState): string {
 async function stampStalledArm(repoDir: string, task: TaskEvalState, now?: () => Date): Promise<void> {
   const statePath = join(repoDir, '.wavemill', 'workflow-state.json');
   const timestamp = (now ?? (() => new Date()))().toISOString();
-  await mutateJsonState<WorkflowStateFile>(statePath, (current) => {
+  await mutateWorkflowState(statePath, (current) => {
     const entry = current.tasks?.[task.issueId];
     if (!entry || (typeof entry.challengeAborted === 'string' && entry.challengeAborted)) {
       return current;
@@ -1093,11 +1093,6 @@ function normalizePrNumber(value: number): number | null {
   return Number.isInteger(value) && value > 0 ? value : null;
 }
 
-interface WorkflowStateFile {
-  tasks?: Record<string, Record<string, unknown>>;
-  [key: string]: unknown;
-}
-
 async function markChallengerSupersededForPrimaryMerge(
   repoDir: string,
   challenger: TaskEvalState,
@@ -1108,7 +1103,7 @@ async function markChallengerSupersededForPrimaryMerge(
   const timestamp = (now ?? (() => new Date()))().toISOString();
   const reason = `${PRIMARY_MERGED_REASON} #${primaryPr}`;
 
-  await mutateJsonState<WorkflowStateFile>(statePath, (current) => {
+  await mutateWorkflowState(statePath, (current) => {
     const task = current.tasks?.[challenger.issueId];
     if (!task) {
       return current;

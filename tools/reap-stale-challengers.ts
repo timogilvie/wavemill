@@ -5,21 +5,18 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
-  readFileSync,
   statSync,
   copyFileSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mutateJsonState } from '../shared/lib/state-mutex.ts';
 import { runTool, resolveRepoDir, type ParsedArgs } from '../shared/lib/tool-runner.ts';
-
-type JsonRecord = Record<string, unknown>;
-
-interface WorkflowState {
-  tasks?: Record<string, JsonRecord>;
-  [key: string]: unknown;
-}
+import {
+  mutateWorkflowState,
+  readWorkflowState,
+  type TaskRecord,
+  type WorkflowState,
+} from '../shared/lib/workflow-state.ts';
 
 interface WorktreeRecord {
   path: string;
@@ -32,7 +29,7 @@ export interface ReapCandidate {
   slug?: string;
   branch?: string;
   worktree?: string;
-  stateTask?: JsonRecord;
+  stateTask?: TaskRecord;
 }
 
 export interface ReapDecision {
@@ -75,7 +72,10 @@ function statePath(repoDir: string, explicit?: string): string {
 
 function readState(path: string): WorkflowState {
   if (!existsSync(path)) return { tasks: {} };
-  return JSON.parse(readFileSync(path, 'utf-8')) as WorkflowState;
+  // Fail closed: an unreadable state file must never look like "no tasks".
+  const state = readWorkflowState(path);
+  if (!state) throw new Error(`workflow state at ${path} is not a readable JSON object`);
+  return state;
 }
 
 function parseWorktrees(output: string): WorktreeRecord[] {
@@ -106,17 +106,17 @@ function isChallengerWorktree(path: string | undefined): boolean {
   return Boolean(path && basename(path).endsWith('-challenger'));
 }
 
-function taskString(task: JsonRecord | undefined, key: string): string {
+function taskString(task: TaskRecord | undefined, key: keyof TaskRecord): string {
   const value = task?.[key];
   return typeof value === 'string' ? value : '';
 }
 
 function findMatchingTask(
-  tasks: Record<string, JsonRecord>,
+  tasks: Record<string, TaskRecord>,
   branch: string | undefined,
   worktree: string | undefined,
   slug: string | undefined,
-): [string | undefined, JsonRecord | undefined] {
+): [string | undefined, TaskRecord | undefined] {
   for (const [issue, task] of Object.entries(tasks)) {
     if (branch && taskString(task, 'branch') === branch) return [issue, task];
     if (worktree && taskString(task, 'worktree') === worktree) return [issue, task];
@@ -248,7 +248,7 @@ function archiveArtifacts(repoDir: string, candidate: ReapCandidate): void {
 
 async function markStateAborted(stateFile: string, candidate: ReapCandidate, reason: string, now: string): Promise<void> {
   if (!candidate.issue || !existsSync(stateFile)) return;
-  await mutateJsonState<WorkflowState>(stateFile, (state) => {
+  await mutateWorkflowState(stateFile, (state) => {
     const task = state.tasks?.[candidate.issue!];
     if (!task) return state;
     task.status = 'aborted';
@@ -262,7 +262,7 @@ async function markStateAborted(stateFile: string, candidate: ReapCandidate, rea
 
 async function removeStateTask(stateFile: string, candidate: ReapCandidate): Promise<void> {
   if (!candidate.issue || !existsSync(stateFile)) return;
-  await mutateJsonState<WorkflowState>(stateFile, (state) => {
+  await mutateWorkflowState(stateFile, (state) => {
     if (state.tasks) {
       delete state.tasks[candidate.issue!];
     }

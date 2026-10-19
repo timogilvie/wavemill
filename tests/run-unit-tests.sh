@@ -274,6 +274,9 @@ TESTS=(
   shared/lib/template-curly-checker.test.ts
   shared/lib/test-tracked-write-checker.test.ts
   shared/lib/task-identity-checker.test.ts
+  shared/lib/task-record-shape-checker.test.ts
+  shared/lib/workflow-state.test.ts
+  shared/lib/workflow-state.writer-coverage.test.ts
   shared/lib/transient-marker.test.ts
   shared/lib/wavemill-incident-artifact-diagnostics.test.ts
   shared/lib/wavemill-incident-detector.test.ts

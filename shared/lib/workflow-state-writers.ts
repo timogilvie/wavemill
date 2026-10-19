@@ -21,8 +21,10 @@
  * - jq bulk rewrites: `.tasks |= with_entries(… .value.field = … )`
  * - `task_state_mutate_existing <issue> '<filter>'` filters, where `.` is the
  *   task object: `.field = …` and `. + { field: … }`
- * - TypeScript `mutateJsonState` writers that assign through a task-shaped
- *   local (`task.field = …`, `entry.field = …`, `taskObj.field = …`)
+ * - TypeScript `mutateWorkflowState` writers that assign through a
+ *   task-shaped local (`task.field = …`, `entry.field = …`,
+ *   `taskObj.field = …`) or rebuild a row as an object literal
+ *   (`tasks[id] = { ...tasks[id], field: … }`)
  *
  * It ignores `.terminalTaskHistory.tasks[…]`: tombstone history is a separate
  * record shape owned by the terminal reconciler.
@@ -31,18 +33,22 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-/** Repo-relative TypeScript files that write task records via `mutateJsonState`. */
+/** Repo-relative TypeScript files that write task records via `mutateWorkflowState`. */
 export const TS_TASK_WRITER_FILES: readonly string[] = [
   'shared/lib/task-abort.ts',
   'shared/lib/terminal-inbox-cleanup.ts',
   'shared/lib/challenge-pair-resolver.ts',
   'shared/lib/challenge-recovery.ts',
+  'shared/lib/job-tracker.ts',
+  'shared/lib/ready-watchdog.ts',
   'tools/void-challenge-record.ts',
   'tools/reap-stale-challengers.ts',
 ];
 
 /** Locals that TypeScript writers use to hold a single task record. */
 const TS_TASK_LOCAL = /\b(?:task|entry|taskObj)\.([A-Za-z_][A-Za-z0-9_]*)\s*=(?![=>])/g;
+/** `tasks[id] = {` — a row rebuilt as an object literal. */
+const TS_TASK_LITERAL = /\btasks\[[^\]]+\]\s*=\s*\{/g;
 
 const JQ_PATH_WRITE = /(?<!terminalTaskHistory)\.tasks\[[^\]]+\]\.([A-Za-z_][A-Za-z0-9_]*)\s*(?:\|=|\+=|=)(?!=)/g;
 
@@ -60,21 +66,22 @@ const FILTER_OBJECT_MERGE = /(?<![\w\])$])\.\s*\+\s*\{/g;
 
 /**
  * Collect depth-1 object keys from the object literal whose `{` sits at
- * `openIndex`. Brackets inside jq string literals are skipped.
+ * `openIndex`. Brackets inside string literals delimited by one of `quotes`
+ * are skipped (jq only has `"`; TypeScript adds `'` and backticks).
  */
-export function objectLiteralKeys(source: string, openIndex: number): string[] {
+export function objectLiteralKeys(source: string, openIndex: number, quotes = '"'): string[] {
   const keys: string[] = [];
   let depth = 0;
-  let inString = false;
+  let quote: string | null = null;
   for (let i = openIndex; i < source.length; i += 1) {
     const ch = source[i];
-    if (inString) {
+    if (quote) {
       if (ch === '\\') i += 1;
-      else if (ch === '"') inString = false;
+      else if (ch === quote) quote = null;
       continue;
     }
-    if (ch === '"') {
-      inString = true;
+    if (quotes.includes(ch)) {
+      quote = ch;
       continue;
     }
     if (ch === '{' || ch === '[' || ch === '(') {
@@ -129,10 +136,10 @@ function addMatches(target: Set<string>, source: string, pattern: RegExp): void 
   for (const match of source.matchAll(pattern)) target.add(match[1]);
 }
 
-function addObjectMerges(target: Set<string>, source: string, pattern: RegExp): void {
+function addObjectMerges(target: Set<string>, source: string, pattern: RegExp, quotes = '"'): void {
   for (const match of source.matchAll(pattern)) {
     const open = (match.index ?? 0) + match[0].length - 1;
-    for (const key of objectLiteralKeys(source, open)) target.add(key);
+    for (const key of objectLiteralKeys(source, open, quotes)) target.add(key);
   }
 }
 
@@ -165,6 +172,7 @@ export function extractShellTaskWriterFields(rawSource: string): Set<string> {
 export function extractTsTaskWriterFields(source: string): Set<string> {
   const fields = new Set<string>();
   addMatches(fields, source, TS_TASK_LOCAL);
+  addObjectMerges(fields, source, TS_TASK_LITERAL, '"\'`');
   return fields;
 }
 
@@ -186,7 +194,7 @@ export function collectTaskWriterFields(repoRoot: string): WriterFieldIndex {
       fields.set(field, files);
     }
   };
-  const shellFiles = readdirSync(join(repoRoot, 'shared/lib'))
+  const shellFiles = readdirSync(join(repoRoot, 'shared/lib')) // install-paths: allow repoRoot is the wavemill source tree being scanned
     .filter((name) => name.endsWith('.sh'))
     .sort()
     .map((name) => `shared/lib/${name}`);
