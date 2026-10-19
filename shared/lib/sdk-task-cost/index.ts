@@ -34,4 +34,5 @@ export {
   type WorkflowCostSelectionReason,
 } from './resolve.ts';
 export { runSdkTaskCostCollection, type SdkTaskCostCollectionOptions } from './shadow.ts';
+export { collectSdkTaskCostSummariesLazy } from './lazy-collect.ts';
 export type { TaskCostSummaryV1 } from './contract.ts';

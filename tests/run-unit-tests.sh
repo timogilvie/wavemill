@@ -429,6 +429,7 @@ TESTS=(
   shared/lib/sdk-task-cost/project.test.ts
   shared/lib/sdk-task-cost/feature-switch.test.ts
   shared/lib/sdk-task-cost/resolve.test.ts
+  shared/lib/sdk-task-cost/lazy-collect.test.ts
   shared/lib/eval-summary-printer.test.ts
   shared/lib/evals-paths.test.ts
   shared/lib/execution-contract.test.ts

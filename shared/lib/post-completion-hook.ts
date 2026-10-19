@@ -24,11 +24,11 @@ import {
   type PricingTable,
 } from './workflow-cost.ts';
 import { collectExecutionEconomics } from './execution-economics.ts';
-import {
-  collectSdkTaskCostSummaries,
-  resolveAuthoritativeWorkflowCost,
-  runSdkTaskCostCollection,
-} from './sdk-task-cost/index.ts';
+// Lazy: the SDK loads only when the collection runner invokes the collector,
+// so a stale @hokusai/core cannot fail module load for every eval.
+import { collectSdkTaskCostSummariesLazy } from './sdk-task-cost/lazy-collect.ts';
+import { resolveAuthoritativeWorkflowCost } from './sdk-task-cost/resolve.ts';
+import { runSdkTaskCostCollection } from './sdk-task-cost/shadow.ts';
 import { getDeepSeekProviderMetadata } from './deepseek-provider.ts';
 import { runEvalAnalysis } from './eval-analysis.ts';
 import { callHeadlessLLM } from './headless-llm.ts';
@@ -267,7 +267,7 @@ export const postCompletionHookDeps = {
   gatherEvalContext,
   gatherStageArtifacts,
   collectExecutionEconomics,
-  collectSdkTaskCostSummaries,
+  collectSdkTaskCostSummaries: collectSdkTaskCostSummariesLazy,
   execShellCommand,
   detectAndFormatInterventions,
   runEvalAnalysis,
