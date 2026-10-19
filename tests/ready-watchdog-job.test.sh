@@ -15,6 +15,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARNESS_DIR="$(mktemp -d)"
 trap 'rm -rf "$HARNESS_DIR"' EXIT
 source "$SCRIPT_DIR/fixtures/monitor-perf/async-harness.sh"
+# shellcheck source=lib/state-fixtures.sh
+source "$SCRIPT_DIR/lib/state-fixtures.sh"
+# Production state accessors (not the harness stubs) against the temp state.
+fixture_real_state_accessors
 eval "$(harness_extract_function ready_watchdog_config_json)"
 eval "$(harness_extract_function run_ready_watchdog_tick)"
 READY_WATCHDOG_FAILURE_LOG_INTERVAL=300
@@ -22,7 +26,9 @@ READY_WATCHDOG_SWEEP_INTERVAL_SECONDS=0
 
 ISSUE="HOK-7003"
 harness_new_worktree
-jq -n --arg i "$ISSUE" --arg wt "$WT" '{tasks: {($i): {slug: "fix-ci", branch: "task/fix-ci", baseBranch: "main", pr: "4403", worktree: $wt, title: "Fix CI"}}}' > "$STATE_FILE"
+# No writer sets baseBranch or title on a task row (HOK-3220 schema); the
+# tick's reads of them fall back, so the fixture carries only written fields.
+fixture_workflow_state "$STATE_FILE" "$ISSUE" slug=fix-ci branch=task/fix-ci pr=4403 worktree="$WT" phase=ready
 FINDINGS='{"findings":[{"issueId":"HOK-7003","displayLabel":"ready-stable-failure","detail":"lint failed twice","action":"queue-remediation","remediationCategories":["lint"]}]}'
 OUT_DIR="$STATE_DIR/async-jobs/ready-watchdog"
 
