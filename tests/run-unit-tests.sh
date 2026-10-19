@@ -279,6 +279,8 @@ TESTS=(
   shared/lib/test-tracked-write-checker.test.ts
   shared/lib/task-identity-checker.test.ts
   shared/lib/task-record-shape-checker.test.ts
+  shared/lib/test-task-literal-checker.test.ts
+  tests/lib/task-builder.test.ts
   shared/lib/workflow-state.test.ts
   shared/lib/workflow-state.writer-coverage.test.ts
   shared/lib/transient-marker.test.ts

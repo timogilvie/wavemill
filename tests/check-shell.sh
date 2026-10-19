@@ -113,6 +113,7 @@ for f in \
   "$REPO_DIR"/tests/check-state-surface-writes.test.sh \
   "$REPO_DIR"/tests/check-label-write-sites.test.sh \
   "$REPO_DIR"/tests/merge-labels-real-state.test.sh \
+  "$REPO_DIR"/tests/state-fixtures.test.sh \
   "$REPO_DIR"/tests/control-pane-recovery.test.sh \
   "$REPO_DIR"/tests/dashboard-refresh.test.sh \
   "$REPO_DIR"/tests/state-mutex.test.sh \
@@ -274,6 +275,7 @@ for f in \
   "$REPO_DIR"/tests/journeys/errored-with-pr.journey.sh \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
   "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
+  "$REPO_DIR"/tests/lib/state-fixtures.sh \
   "$REPO_DIR"/tests/tracked-tree-guard.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-matrix.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-restart.test.sh \

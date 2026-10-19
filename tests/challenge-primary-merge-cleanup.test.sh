@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
+# shellcheck source=lib/state-fixtures.sh
+source "$SCRIPT_DIR/lib/state-fixtures.sh"
 
 extract_function() {
   local source_file="$1"
@@ -49,34 +51,19 @@ SHIM
 case_dir="$tmp/case"
 mkdir -p "$case_dir/repo/.wavemill/evals"
 STATE_FILE="$case_dir/repo/.wavemill/workflow-state.json"
-cat > "$STATE_FILE" <<'JSON'
-{
-  "tasks": {
-    "HOK-2881": {
-      "pr": 1230,
-      "branch": "task/primary",
-      "challengePairId": "HOK-2881",
-      "challengeRole": "primary",
-      "challengeModel": "gpt-5",
-      "evalCompleted": true
-    },
-    "HOK-2881_c": {
-      "branch": "task/primary-challenger",
-      "challengePairId": "HOK-2881",
-      "challengeRole": "challenger",
-      "challengeModel": "claude-sonnet-4",
-      "phase": "review",
-      "status": "active"
-    }
-  }
-}
-JSON
+fixture_workflow_state "$STATE_FILE" --bare \
+  HOK-2881 pr:=1230 branch=task/primary challengePairId=HOK-2881 challengeRole=primary \
+    challengeModel=gpt-5 evalCompleted=true \
+  -- HOK-2881_c branch=task/primary-challenger challengePairId=HOK-2881 challengeRole=challenger \
+    challengeModel=claude-sonnet-4 phase=review status=active
 printf '{}\n' > "$case_dir/repo/.wavemill-config.json"
 
 output="$(
   CASE_DIR="$case_dir" REPO_ROOT="$REPO_DIR" bash -lc '
     set -euo pipefail
     source "$CASE_DIR/../primary-merge-helper.sh"
+    source "$REPO_ROOT/tests/lib/state-fixtures.sh"
+    fixture_real_state_accessors
 
     REPO_DIR="$CASE_DIR/repo"
     TOOLS_DIR="$REPO_ROOT/tools"
@@ -85,10 +72,6 @@ output="$(
     WARN_OUTPUT=""
     COMPARED_PAIR=""
 
-    get_task_meta() {
-      local issue="$1" key="$2"
-      jq -r --arg issue "$issue" --arg key "$key" ".tasks[\$issue][\$key] // \"\"" "$STATE_FILE"
-    }
     mark_challenge_compared() {
       COMPARED_PAIR="$1"
       return 0
@@ -121,37 +104,17 @@ preserve_output="$(
   CASE_DIR="$case_dir" REPO_ROOT="$REPO_DIR" bash -lc '
     set -euo pipefail
     source "$CASE_DIR/../primary-merge-helper.sh"
+    source "$REPO_ROOT/tests/lib/state-fixtures.sh"
+    fixture_real_state_accessors
 
     REPO_DIR="$CASE_DIR/repo"
     STATE_FILE="$REPO_DIR/.wavemill/workflow-state.json"
     CLEANUP_COUNT=0
-    cat > "$STATE_FILE" <<JSON
-{
-  "tasks": {
-    "HOK-2881": {
-      "pr": 1230,
-      "branch": "task/primary",
-      "slug": "primary",
-      "challengePairId": "HOK-2881",
-      "challengeRole": "primary",
-      "challengeModel": "gpt-5",
-      "evalCompleted": true
-    }
-  }
-}
-JSON
+    rm -f "$STATE_FILE"
+    fixture_workflow_state "$STATE_FILE" --bare \
+      HOK-2881 pr:=1230 branch=task/primary slug=primary challengePairId=HOK-2881 \
+        challengeRole=primary challengeModel=gpt-5 evalCompleted=true
 
-    get_task_meta() {
-      local issue="$1" key="$2"
-      jq -r --arg issue "$issue" --arg key "$key" ".tasks[\$issue][\$key] // \"\"" "$STATE_FILE"
-    }
-    state_mutate() {
-      local file="$1" filter="$2" tmp
-      shift 2
-      tmp="$(mktemp)"
-      jq "$@" "$filter" "$file" > "$tmp"
-      mv "$tmp" "$file"
-    }
     cleanup_completed_task() {
       CLEANUP_COUNT=$((CLEANUP_COUNT + 1))
       state_mutate "$STATE_FILE" "del(.tasks[\$issue])" --arg issue "$1"
