@@ -430,6 +430,13 @@
         "$ref": "#/$defs/EvalExecutionEconomics"
       }
     },
+    "taskCostSummary": {
+      "type": ["array", "null"],
+      "description": "Shadow SDK task-cost summaries (@hokusai/core TaskCostSummaryV1), one per harness that produced sessions (HOK-3075). Written only when WAVEMILL_SDK_COST_METERING_SHADOW is on; legacy workflowCost/workflowCostAttribution/executionEconomics stay authoritative. Local-only; excluded from Hokusai submissions.",
+      "items": {
+        "$ref": "#/$defs/TaskCostSummary"
+      }
+    },
     "trainingEligible": {
       "type": "boolean",
       "description": "Whether the record includes the fields required for training export."
@@ -2893,6 +2900,154 @@
     }
   },
   "$defs": {
+    "TaskCostHarness": {
+      "type": "string",
+      "description": "SDK TaskCostHarness (TASK_COST_HARNESSES).",
+      "enum": ["claude-code", "codex", "native", "pi", "wavemill", "unknown"]
+    },
+    "TaskCostSource": {
+      "type": "string",
+      "description": "SDK TaskCostSource (TASK_COST_SOURCES).",
+      "enum": ["provider_reported", "local_estimate", "mixed", "none"]
+    },
+    "TaskCostFieldAvailability": {
+      "type": "string",
+      "description": "SDK TaskCostFieldAvailability (TASK_COST_FIELD_AVAILABILITIES).",
+      "enum": ["available", "partial", "unavailable", "known_zero"]
+    },
+    "TaskCostDiagnosticCode": {
+      "type": "string",
+      "description": "SDK TaskCostDiagnosticCode (TASK_COST_DIAGNOSTIC_CODES).",
+      "enum": [
+        "missing_token_usage",
+        "invalid_token_usage",
+        "unpriced_model",
+        "mixed_coverage",
+        "provider_reported_cost",
+        "no_pricing_data",
+        "no_priced_sessions",
+        "stale_pricing_revision",
+        "replay_dropped",
+        "cumulative_backward_jump",
+        "subscription_basis_no_charge"
+      ]
+    },
+    "TaskCostId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "TaskCostModelId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$"
+    },
+    "TaskCostTimestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?Z$"
+    },
+    "TaskCostNullableCount": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "TaskCostNullableUsd": {
+      "type": ["number", "null"],
+      "minimum": 0
+    },
+    "TaskCostTokenUsage": {
+      "type": "object",
+      "description": "SDK TaskCostTokenUsage: null means not reported, never zero.",
+      "required": ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens"],
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": { "$ref": "#/$defs/TaskCostNullableCount" },
+        "output_tokens": { "$ref": "#/$defs/TaskCostNullableCount" },
+        "cache_read_tokens": { "$ref": "#/$defs/TaskCostNullableCount" },
+        "cache_write_tokens": { "$ref": "#/$defs/TaskCostNullableCount" },
+        "reasoning_tokens": { "$ref": "#/$defs/TaskCostNullableCount" }
+      }
+    },
+    "TaskCostModelSegment": {
+      "type": "object",
+      "description": "SDK TaskCostModelSegment: a consecutive same-model run of turns.",
+      "required": ["model", "turn_count", "usage", "actual_cost_usd", "estimated_cost_usd", "cost_source"],
+      "additionalProperties": false,
+      "properties": {
+        "model": { "$ref": "#/$defs/TaskCostModelId" },
+        "turn_count": { "type": "integer", "minimum": 0 },
+        "usage": { "$ref": "#/$defs/TaskCostTokenUsage" },
+        "actual_cost_usd": { "$ref": "#/$defs/TaskCostNullableUsd" },
+        "estimated_cost_usd": { "$ref": "#/$defs/TaskCostNullableUsd" },
+        "cost_source": { "$ref": "#/$defs/TaskCostSource" }
+      }
+    },
+    "TaskCostSummary": {
+      "type": "object",
+      "description": "Persisted @hokusai/core TaskCostSummaryV1 (HOK-3075). The SDK validator (validateTaskCostSummaryV1) is normative; this mirror lets eval-record validation run without the SDK and is drift-checked against the SDK enums in tests.",
+      "required": [
+        "schema_version",
+        "task_id",
+        "session_ids",
+        "harness",
+        "provider_contract_version",
+        "models",
+        "model_segments",
+        "turn_count",
+        "turns_truncated",
+        "usage",
+        "actual_cost_usd",
+        "estimated_cost_usd",
+        "total_cost_usd",
+        "cost_source",
+        "cost_basis",
+        "coverage",
+        "field_availability",
+        "pricing_source",
+        "join_confidence",
+        "collected_at",
+        "event_count",
+        "event_ids",
+        "diagnostics"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "type": "string", "const": "task_cost_summary/v1" },
+        "task_id": { "$ref": "#/$defs/TaskCostId" },
+        "session_ids": { "type": "array", "items": { "$ref": "#/$defs/TaskCostId" } },
+        "root_session_id": { "$ref": "#/$defs/TaskCostId" },
+        "harness": { "$ref": "#/$defs/TaskCostHarness" },
+        "harness_version": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$" },
+        "provider_contract_version": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}/[0-9]{1,4}$" },
+        "models": { "type": "array", "items": { "$ref": "#/$defs/TaskCostModelId" } },
+        "model_segments": { "type": "array", "items": { "$ref": "#/$defs/TaskCostModelSegment" } },
+        "turn_count": { "type": "integer", "minimum": 0 },
+        "turns_truncated": { "type": "boolean" },
+        "usage": { "$ref": "#/$defs/TaskCostTokenUsage" },
+        "actual_cost_usd": { "$ref": "#/$defs/TaskCostNullableUsd" },
+        "estimated_cost_usd": { "$ref": "#/$defs/TaskCostNullableUsd" },
+        "total_cost_usd": { "$ref": "#/$defs/TaskCostNullableUsd" },
+        "cost_source": { "$ref": "#/$defs/TaskCostSource" },
+        "cost_basis": { "type": "string", "enum": ["per_token_api", "subscription", "unknown"] },
+        "coverage": { "type": "string", "enum": ["complete", "partial", "unavailable", "known_zero"] },
+        "field_availability": {
+          "type": "object",
+          "required": ["usage", "actual_cost", "estimated_cost", "pricing"],
+          "additionalProperties": false,
+          "properties": {
+            "usage": { "$ref": "#/$defs/TaskCostFieldAvailability" },
+            "actual_cost": { "$ref": "#/$defs/TaskCostFieldAvailability" },
+            "estimated_cost": { "$ref": "#/$defs/TaskCostFieldAvailability" },
+            "pricing": { "$ref": "#/$defs/TaskCostFieldAvailability" }
+          }
+        },
+        "pricing_revision": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$" },
+        "pricing_timestamp": { "$ref": "#/$defs/TaskCostTimestamp" },
+        "pricing_source": { "type": "string", "enum": ["local_estimate", "openrouter_api", "mixed", "none"] },
+        "join_confidence": { "type": "string", "enum": ["branch_worktree", "timestamp_window", "unattributed"] },
+        "collected_at": { "$ref": "#/$defs/TaskCostTimestamp" },
+        "event_count": { "type": "integer", "minimum": 0 },
+        "event_ids": { "type": "array", "items": { "$ref": "#/$defs/TaskCostId" } },
+        "diagnostics": { "type": "array", "items": { "$ref": "#/$defs/TaskCostDiagnosticCode" } }
+      }
+    },
     "stageExecutionIdentity": {
       "type": "object",
       "description": "HOK-3143: provider-identity attribution for one stage.",

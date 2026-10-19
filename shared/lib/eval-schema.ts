@@ -202,6 +202,13 @@
  *   (stable machine-readable codes), and `policy_source` (free-form
  *   exploration-policy provenance tag). Additive; legacy rows without these
  *   fields still validate.
+ * - **1.54.0**: Added optional `taskCostSummary` — shadow `@hokusai/core`
+ *   `TaskCostSummaryV1` records (one per harness) computed by the SDK
+ *   task-cost bridge when `WAVEMILL_SDK_COST_METERING_SHADOW` is on
+ *   (HOK-3075). Legacy `workflowCost` / `workflowCostAttribution` /
+ *   `executionEconomics` / `pricingSnapshot` are unchanged and stay
+ *   authoritative. Local-only: not projected to Hokusai submissions.
+ *   Additive; legacy records without this field still validate.
  *
  * @module eval-schema
  */
@@ -220,13 +227,14 @@ import type {
 } from './challenge-execution-contract.ts';
 import type { ChallengeRoutingMeta } from './challenge-comparison.ts';
 import type { ChallengeStage } from './challenge-mode.ts';
+import type { TaskCostSummaryV1 } from './sdk-task-cost/contract.ts';
 
 /**
  * Current eval schema version for newly emitted records.
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.53.0';
+export const SCHEMA_VERSION = '1.54.0';
 
 /**
  * Machine-readable exploration source for an eval row.
@@ -497,6 +505,18 @@ export interface WorkflowCostAttribution {
   unpricedSessions: number;
   models: WorkflowCostAttributionModel[];
 }
+
+// ────────────────────────────────────────────────────────────────
+// SDK task-cost summary (HOK-3075)
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * A persisted `@hokusai/core` task-cost summary. An alias rather than a
+ * structural copy, so an SDK contract change is a compile-time change here;
+ * `$defs.TaskCostSummary` in eval-schema.json mirrors it for Ajv and is
+ * drift-checked against the SDK enums (`sdk-task-cost/schema-drift.ts`).
+ */
+export type EvalTaskCostSummary = TaskCostSummaryV1;
 
 // ────────────────────────────────────────────────────────────────
 // Execution Economics (HOK-2958)
@@ -2154,6 +2174,17 @@ export interface EvalRecord {
    * @since 1.47.0
    */
   executionEconomics?: EvalExecutionEconomics[];
+
+  /**
+   * Shadow SDK task-cost summaries (`@hokusai/core` `TaskCostSummaryV1`), one
+   * per harness that produced sessions, emitted only while
+   * `WAVEMILL_SDK_COST_METERING_SHADOW` is on (HOK-3075). Candidate source for
+   * cost reporting; nothing reads it until the HOK-3076 cutover. Local-only;
+   * not projected to Hokusai submissions. Readers must tolerate absence.
+   *
+   * @since 1.54.0
+   */
+  taskCostSummary?: EvalTaskCostSummary[] | null;
 
   /**
    * HOK-3143: per-stage provider-identity attribution assembled from stage
