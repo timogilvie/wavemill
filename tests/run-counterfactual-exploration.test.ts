@@ -47,8 +47,8 @@ function baseInput(): CreateCheckpointInput {
 }
 
 function runCli(args: string[], repoDir: string): { code: number; stdout: string; stderr: string } {
-  const result = spawnSync('npx', ['tsx', CLI, ...args], {
-    cwd: repoDir,
+  const result = spawnSync('npx', ['tsx', CLI, '--repo-dir', repoDir, ...args], {
+    cwd: REPO_ROOT,
     encoding: 'utf-8',
     env: { ...process.env, WAVEMILL_HOK2080_GATE_PATH: '' },
   });
