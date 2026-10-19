@@ -48,7 +48,7 @@ const TEST_FILE_PATTERN = /\.test\.(?:ts|tsx|mts|cts|js|mjs|cjs|sh)$/;
 const AUTO_EXCLUDED_PATHS = new Set([
   'shared/lib/test-task-literal-checker.ts',
   'shared/lib/test-task-literal-checker.test.ts',
-  'tools/check-test-task-literals.ts',
+  'tools/check-test-task-literals.ts', // install-paths: allow repo-relative scan-exclusion key, not an invocation
   'tests/lib/task-builder.ts',
   'tests/lib/bin/build-fixture-task.ts',
   'tests/lib/state-fixtures.sh',
