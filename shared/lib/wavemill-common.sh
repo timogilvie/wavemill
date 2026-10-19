@@ -7796,6 +7796,28 @@ drop_tombstoned_eval_stubs() {
   return 0
 }
 
+# Keep common-library consumers (startup and cleanup paths) on the same safe
+# state-read contract as the monitor, which replaces this fallback with its
+# pass-aware implementation after sourcing this file.
+if ! declare -F read_state_value >/dev/null 2>&1; then
+read_state_value() {
+  local default="$1"
+  shift
+  local value
+
+  if [[ ! -r "$STATE_FILE" || ! -s "$STATE_FILE" ]]; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+
+  if value=$(jq -r "$@" "$STATE_FILE" 2>/dev/null); then
+    printf '%s\n' "$value"
+  else
+    printf '%s\n' "$default"
+  fi
+}
+fi
+
 get_task_meta() {
   local issue="$1" field="$2"
   read_state_value "" --arg issue "$issue" --arg field "$field" \
