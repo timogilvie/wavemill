@@ -19,6 +19,8 @@ test('classifies observed provider error signatures', () => {
     ['Response incomplete: max_tool_calls', 'provider-response-incomplete', false],
     ['Response incomplete without a provider reason', 'provider-unknown-error', true],
     ['Provider returned error: strange opaque failure', 'provider-unknown-error', true],
+    ['request id heHfe8I401tLYl failed', 'provider-unknown-error', true],
+    ['trace abc402def x404yz endpoint', 'provider-unknown-error', true],
   ] as const;
 
   for (const [message, kind, retryable] of cases) {
