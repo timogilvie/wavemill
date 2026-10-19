@@ -25,6 +25,7 @@ import {
   getEffectiveRegistry,
   getLadder,
   getModel,
+  getOpenRouterRouting,
   hasSufficientContextWindow,
   getStageContextWindowFloor,
   STAGE_CONTEXT_WINDOW_FLOORS,
@@ -1298,6 +1299,43 @@ describe('model-registry', () => {
         }),
         { capability: 'certified', limitations: [] },
       );
+    });
+
+    it('accepts a well-formed OpenRouter routing pin and exposes it via getOpenRouterRouting', () => {
+      const nativeCapability = {
+        nativeProvider: 'openrouter',
+        piTransportKind: 'openai-completions',
+        readOnlyNative: 'certified',
+        compatFlags: { thinkingFormat: 'openrouter', openRouterRouting: { order: ['moonshotai'], allow_fallbacks: false } },
+      } as const;
+      validateNativeCapability('m', { nativeCapability } as any);
+      const registry = { models: { m: { nativeCapability } }, ladders: {} } as unknown as ModelRegistry;
+      assert.deepEqual(getOpenRouterRouting(registry, 'm'), { order: ['moonshotai'], allow_fallbacks: false });
+      assert.equal(getOpenRouterRouting(registry, 'unknown-model'), undefined);
+    });
+
+    it('rejects malformed or non-OpenRouter routing pins', () => {
+      const base = { piTransportKind: 'openai-completions', readOnlyNative: 'certified' };
+      for (const [nativeProvider, openRouterRouting, pattern] of [
+        ['openrouter', { order: [] }, /order must be a non-empty array/],
+        ['openrouter', { order: 'moonshotai' }, /order must be a non-empty array/],
+        ['openrouter', { allow_fallbacks: 'no' }, /allow_fallbacks must be a boolean/],
+        ['openrouter', { sort: 'price' }, /sort is not a supported routing field/],
+        ['openrouter', ['moonshotai'], /must be an object/],
+        ['openai', { order: ['openai'] }, /requires nativeProvider=openrouter/],
+      ] as const) {
+        assert.throws(
+          () => validateNativeCapability('m', {
+            nativeCapability: {
+              ...base,
+              nativeProvider,
+              compatFlags: { thinkingFormat: 'openrouter', openRouterRouting },
+            },
+          } as any),
+          (error: unknown) => error instanceof ModelValidationError && pattern.test(error.message),
+          JSON.stringify(openRouterRouting),
+        );
+      }
     });
 
     it('rejects certified entries that omit nativeProvider', () => {

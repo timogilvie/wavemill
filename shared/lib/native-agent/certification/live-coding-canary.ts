@@ -45,7 +45,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
-import type { ModelRegistry, NativeProviderName } from '../../model-registry.ts';
+import { getOpenRouterRouting, type ModelRegistry, type NativeProviderName } from '../../model-registry.ts';
 import type { ModelPricing } from '../../workflow-cost.ts';
 import { getNativeAgentConfig } from '../../config.ts';
 import { resolveEnvValue } from '../../env-file.ts';
@@ -480,7 +480,12 @@ function resolveCanaryModel(options: RunLiveCodingCanaryOptions): CanaryModelRes
   const headers = providerConfig?.headers ?? {};
   const built = options.provider === 'openai'
     ? buildOpenAiResponsesModel({ modelId: options.registryModelId, ...(baseUrl ? { baseUrl } : {}), headers })
-    : buildOpenRouterModel({ modelId: options.registryModelId, ...(baseUrl ? { baseUrl } : {}), headers });
+    : buildOpenRouterModel({
+      modelId: options.registryModelId,
+      ...(baseUrl ? { baseUrl } : {}),
+      headers,
+      routing: getOpenRouterRouting(options.registry, options.registryModelId),
+    });
 
   // HOK-3162: Models owns auth injection; keep model.headers for user-provided
   // headers only.
