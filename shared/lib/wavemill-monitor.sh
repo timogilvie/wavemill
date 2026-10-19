@@ -20363,7 +20363,10 @@ monitor_issue_state() {
       if [[ -n "$recovered_pr" ]]; then
         PR_BY_ISSUE["$ISSUE"]="$recovered_pr"
         log "status" "$ISSUE → Found PR #$recovered_pr for errored task (updating state)"
-        save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$recovered_pr" "" "$current_agent"
+        # Pass `active` explicitly: an empty status keeps an existing terminal
+        # status, so the task stayed `error` and this branch re-ran every pass
+        # with nothing driving Ready or remediation (HOK-3246).
+        save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$recovered_pr" "active" "$current_agent"
         set_task_phase "$ISSUE" "review"
       fi
     fi

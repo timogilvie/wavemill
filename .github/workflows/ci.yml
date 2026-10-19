@@ -393,7 +393,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        journey: [happy-path, gh-lag-after-push]
+        journey: [happy-path, gh-lag-after-push, errored-with-pr]
     env:
       RUN_JOURNEYS: ${{ needs.check-paths.outputs.journeys == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
 
