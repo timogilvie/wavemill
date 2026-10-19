@@ -6,10 +6,9 @@ import {
   resolveLinearIssueId,
 } from './task-identity.ts';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mutateJsonState } from './state-mutex.ts';
 import { archiveTaskResidue, type ArchiveTaskResidueResult } from './task-residue-archive.ts';
 import { filterWorktreeDirtyStatus } from './worktree-dirty-status.ts';
 import {
@@ -18,6 +17,13 @@ import {
   enforceHotStateByteCap,
   DEFAULT_BYTE_CAP,
 } from './state-archive.ts';
+import {
+  mutateWorkflowState,
+  readWorkflowState as readCanonicalWorkflowState,
+  type WorkflowState,
+} from './workflow-state.ts';
+
+export type { WorkflowState };
 
 /**
  * Wavemill's own shell libraries. These ship with the wavemill install, so
@@ -27,14 +33,6 @@ export const WAVEMILL_COMMON_SCRIPT = fileURLToPath(new URL('./wavemill-common.s
 export const TERMINAL_RECONCILER_SCRIPT = fileURLToPath(new URL('./terminal-reconciler.sh', import.meta.url));
 
 export type JsonRecord = Record<string, unknown>;
-
-export interface WorkflowState {
-  session?: string;
-  tasks?: Record<string, JsonRecord>;
-  terminalTaskHistory?: JsonRecord;
-  terminalTaskTombstones?: Record<string, TerminalTaskTombstone>;
-  [key: string]: unknown;
-}
 
 export interface TerminalTaskTombstone {
   schemaVersion: 1;
@@ -289,9 +287,15 @@ export function statePath(repoDir: string, explicit?: string): string {
   return explicit ? (isAbsolute(explicit) ? explicit : resolve(repoDir, explicit)) : join(repoDir, '.wavemill', 'workflow-state.json');
 }
 
-export function readWorkflowState(path: string): WorkflowState {
+/**
+ * A missing state file is an empty inbox; an unreadable one fails closed so a
+ * corrupt file never reads as "nothing to protect".
+ */
+function readCleanupState(path: string): WorkflowState {
   if (!existsSync(path)) return { tasks: {} };
-  return JSON.parse(readFileSync(path, 'utf-8')) as WorkflowState;
+  const state = readCanonicalWorkflowState(path);
+  if (!state) throw new Error(`workflow state at ${path} is not a readable JSON object`);
+  return state;
 }
 
 function taskString(task: JsonRecord | undefined, key: string): string {
@@ -691,7 +695,7 @@ export async function writeTerminalTaskTombstone(
   // 2. Write compact form to hot state (HOK-3203)
   const compactTombstone = compactHotRecord(tombstone as unknown as Record<string, unknown>) as TerminalTaskTombstone;
 
-  await mutateJsonState<WorkflowState>(stateFile, (state) => {
+  await mutateWorkflowState(stateFile, (state) => {
     const next = state ?? {};
     const key = tombstoneKey(tombstone);
     next.terminalTaskTombstones = { ...(next.terminalTaskTombstones ?? {}), [key]: compactTombstone };
@@ -1022,7 +1026,7 @@ function runArchiveResidueStep(decision: TerminalInboxDecision, context: Cleanup
  * `hold: null` clears the hold (and the retention metadata when the retention
  * block has no other content).
  *
- * The write is atomic through `mutateJsonState`; callers must emit the
+ * The write is atomic through `mutateWorkflowState`; callers must emit the
  * operator event (`keep` / `unkeep`) separately so the HOK-3172 reconciler
  * and the monitor cadence throttle wake up on the next tick.
  */
@@ -1051,7 +1055,7 @@ export async function setTerminalTaskKeepHold(options: SetKeepHoldOptions): Prom
   const now = (options.now ?? (() => new Date().toISOString()))();
   const actor = options.actor ?? 'operator';
   const reason = options.reason ?? '';
-  await mutateJsonState<WorkflowState>(stateFile, (state) => {
+  await mutateWorkflowState(stateFile, (state) => {
     const next = state ?? {};
     const tasks = next.tasks ?? {};
     if (!tasks[options.issue]) {
@@ -1123,7 +1127,7 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
   const repoDir = resolve(options.repoDir);
   const stateFile = statePath(repoDir, options.stateFile);
   const baseBranch = options.baseBranch ?? 'auto/integration';
-  const initial = readWorkflowState(stateFile);
+  const initial = readCleanupState(stateFile);
   const issues = options.inbox ? discoverTerminalInboxIssues(initial) : [options.issue ?? ''];
   if (!options.inbox && (!options.issue || !issuePattern.test(options.issue))) {
     throw new Error('cleanup requires either inbox or a valid issue id');
@@ -1137,7 +1141,7 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
   const inboxExecute = options.inbox === true && options.execute === true;
   for (const issue of issues) {
     if (!issue) continue;
-    const state = readWorkflowState(stateFile);
+    const state = readCleanupState(stateFile);
     const archiveAndReap = options.archiveAndReap === true && !options.inbox;
     // HOK-3160: --archive-and-reap implies the abandon authority a PR-less
     // arm needs; the residue archive includes a bundle of its unpublished

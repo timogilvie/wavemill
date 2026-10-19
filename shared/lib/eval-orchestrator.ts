@@ -71,8 +71,19 @@ import {
 import { getMaxCostUsd } from './config.ts';
 import { formatHokusaiSubmissionTriggerResult, triggerHokusaiSubmission } from './hokusai-submission-trigger.ts';
 import { getConfiguredModelsForDescriptor } from './model-registry.ts';
-import { computeWorkflowCostWithExactPricing, loadPricingTable, type WorkflowCostOutcome } from './workflow-cost.ts';
+import {
+  computeWorkflowCostWithExactPricing,
+  loadPricingTable,
+  reportableWorkflowCostUsd,
+  type PricingTable,
+  type WorkflowCostOutcome,
+} from './workflow-cost.ts';
 import { collectExecutionEconomics } from './execution-economics.ts';
+// Lazy: the SDK loads only when the collection runner invokes the collector,
+// so a stale @hokusai/core cannot fail module load for every eval.
+import { collectSdkTaskCostSummariesLazy } from './sdk-task-cost/lazy-collect.ts';
+import { resolveAuthoritativeWorkflowCost } from './sdk-task-cost/resolve.ts';
+import { runSdkTaskCostCollection } from './sdk-task-cost/shadow.ts';
 import {
   buildStageExecutionIdentity,
   hasProviderModelSubstitution,
@@ -111,6 +122,7 @@ export const evalOrchestratorDeps = {
   triggerHokusaiSubmission,
   computeWorkflowCost: computeWorkflowCostWithExactPricing,
   collectExecutionEconomics,
+  collectSdkTaskCostSummaries: collectSdkTaskCostSummariesLazy,
   loadPricingTable,
   execShellCommand,
 };
@@ -497,9 +509,10 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
   // 9b. Compute workflow cost metadata before building the descriptor so both
   // eval entrypoints describe the same run with the same cost context.
   let workflowCostOutcome: WorkflowCostOutcome | null = null;
+  let pricingTable: PricingTable | undefined;
   if (worktreePath && branch) {
     try {
-      const pricingTable = evalOrchestratorDeps.loadPricingTable(repoDir);
+      pricingTable = evalOrchestratorDeps.loadPricingTable(repoDir);
       workflowCostOutcome = await evalOrchestratorDeps.computeWorkflowCost({
         worktreePath,
         branchName: branch,
@@ -558,6 +571,34 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
     }
   }
 
+  // 9c-sdk. SDK task-cost metering (HOK-3075/HOK-3076): authoritative by
+  // default and priced with the same table as the legacy outcome above,
+  // which stays the fallback (no SDK summary) and the
+  // WAVEMILL_COST_METERING_LEGACY rollback.
+  const taskCostSummary = worktreePath && branch
+    ? await runSdkTaskCostCollection(
+      () => evalOrchestratorDeps.collectSdkTaskCostSummaries({
+        worktreePath,
+        branchName: branch,
+        repoDir,
+        issueId,
+        pricingTable,
+      }),
+      { label: 'Eval' },
+    )
+    : null;
+  const costSelection = resolveAuthoritativeWorkflowCost({
+    legacyOutcome: workflowCostOutcome,
+    summaries: taskCostSummary,
+    agentType,
+    pricingTable,
+    repoDir,
+  });
+  workflowCostOutcome = costSelection.outcome;
+  if (taskCostSummary) {
+    console.log(`Eval: workflow cost from ${costSelection.engine} engine (${costSelection.reason})`);
+  }
+
   // 9c-identity. HOK-3143: per-stage provider identity. Fail-soft; a missing or
   // malformed stage result leaves `stageExecution` unset.
   let stageExecution: ReturnType<typeof buildStageExecutionIdentity> | undefined;
@@ -571,9 +612,7 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
     }
   }
 
-  const resolvedWorkflowCost = workflowCostOutcome?.status === 'success'
-    ? workflowCostOutcome.totalCostUsd
-    : undefined;
+  const resolvedWorkflowCost = reportableWorkflowCostUsd(workflowCostOutcome);
   const resolvedWorkflowTokenUsage = workflowCostOutcome?.status === 'success'
     ? workflowCostOutcome.models
     : undefined;
@@ -757,6 +796,7 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
     repoContext: repoContextData,
     workflowCost: workflowCostOutcome,
     executionEconomics,
+    taskCostSummary,
     taskDescriptor,
     constraints: evalConstraints,
     featureOutcomeDiagnostics,

@@ -287,6 +287,33 @@ A new SDK issue should block HOK-3075.
 
 ---
 
+### EF-13: Native `workflowTokenUsage` duplicates or short-counts tokens
+
+Found by the HOK-3076 local historical sample (not reachable from the synthetic corpus, whose native ids are already canonical).
+
+**Current behavior**:
+
+- `computeNativeWorkflowCost` seeds `models` with every raw scan id at `$0`, then adds a canonical-id entry from the *first* session only when the raw id differs from the canonical registry id
+- `workflowTokenUsage` therefore holds a `$0` raw-id row (e.g. `google/gemini-2.5-pro`) beside a priced canonical row, double-counting tokens; with several sessions the canonical row's tokens are short
+- `attribution.models` accumulates per canonical id correctly; dollars are unaffected
+
+**Proposed fix**: Key each model once by canonical id. The SDK projection does this and matches legacy `attribution.models` exactly (release-gate rule M-6). Legacy is left unchanged so the rollback stays byte-for-byte.
+
+---
+
+## SDK Cutover (HOK-3076)
+
+The SDK bridge (`shared/lib/sdk-task-cost/`) is the authoritative workflow/eval cost source. `npx tsx tools/compare-task-costs.ts` is the release gate; difference rules and the rollback switch are documented in `shared/fixtures/cost-parity/README.md` ("SDK migration gate").
+
+Resolved decisions:
+
+1. **EF-1**: A run that priced nothing (unpriced models, missing usage) records no `workflowCost` — never `$0.00` — while `workflowCostAttribution` carries the coverage. A partial run keeps the priced lower bound with `coverage: partial`. Only an explicit known zero records `$0`.
+2. **EF-8**: Not unified. The eval orchestrator keeps the legacy outcome when its OpenRouter exact generation charges exceed what the transcripts recorded (`legacy_exact_pricing`); otherwise both entrypoints report the SDK projection.
+3. **EF-2 / EF-5**: The SDK de-duplicates replayed Claude Code turns and counts priced/unpriced model segments.
+4. **EF-3 / EF-10**: Still open — the bridge prices Codex with the legacy `codex/1` parse, so Codex totals match legacy exactly.
+
+---
+
 ## Strict-Parity Requirements (After SDK Integration)
 
 These must hold for the SDK bridge in all non-expected-fix cases:
@@ -329,10 +356,7 @@ npx tsx tools/cost-parity.ts --json
 
 ## Open Decisions for HOK-3075
 
-1. **EF-1**: When coverage is partial/unavailable, should `workflowCost` be `null` or a lower bound?
-2. **EF-8**: How to unify entrypoints without breaking mill determinism?
-
-Document decisions in the SDK PR when they are resolved.
+Resolved in HOK-3076 — see "SDK Cutover (HOK-3076)" above.
 
 ---
 
@@ -343,4 +367,5 @@ Document decisions in the SDK PR when they are resolved.
 - `shared/fixtures/cost-parity/consumer-inventory.json` — Machine-readable consumer list
 - `shared/lib/cost-parity.ts` — Harness implementation
 - `tools/cost-parity.ts` — CLI tool
+- `tools/compare-task-costs.ts` / `shared/lib/cost-migration.ts` — HOK-3076 SDK release gate
 - `shared/lib/cost-parity.test.ts` — Validation tests

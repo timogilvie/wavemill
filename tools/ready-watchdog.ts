@@ -1,7 +1,6 @@
 #!/usr/bin/env -S npx tsx
 
 import { execFile as execFileCb } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +8,7 @@ import { getMillConfig } from '../shared/lib/config.ts';
 import { errorMessage } from '../shared/lib/error-utils.ts';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { tickReadyWatchdog } from '../shared/lib/ready-watchdog.ts';
-import type { WorkflowStateLike } from '../shared/lib/job-tracker.ts';
+import { readWorkflowState } from '../shared/lib/workflow-state.ts';
 
 const execFile = promisify(execFileCb);
 const READY_WATCHDOG_TOOL_PATH = fileURLToPath(import.meta.url);
@@ -26,8 +25,7 @@ async function launchRemediation(args: {
   attemptNumber: number;
   maxAttempts: number;
 }) {
-  const workflowState = JSON.parse(await readFile(args.stateFile, 'utf-8')) as WorkflowStateLike;
-  const task = workflowState.tasks?.[args.issueId] as Record<string, unknown> | undefined;
+  const task = readWorkflowState(args.stateFile)?.tasks?.[args.issueId];
   if (!task) {
     return {
       status: 'failed',

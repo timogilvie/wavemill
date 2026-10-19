@@ -19,6 +19,9 @@ import {
   SCORE_BANDS,
   getScoreBand,
 } from './eval-schema.ts';
+import { buildSdkTaskCostSummaries } from './sdk-task-cost/collect.ts';
+import { listSdkTaskCostFixtures, loadSdkTaskCostFixture } from './sdk-task-cost/fixtures.ts';
+import { findTaskCostSchemaDrift } from './sdk-task-cost/schema-drift.ts';
 import {
   buildChallengeExecutionIntent,
   INVALID_CHALLENGE_REASONS,
@@ -786,7 +789,7 @@ function validPromptSizeDiagnostic() {
 }
 
 test('SCHEMA_VERSION is bumped for eval schema updates', () => {
-  assert.equal(SCHEMA_VERSION, '1.53.0');
+  assert.equal(SCHEMA_VERSION, '1.54.0');
 });
 
 function validReviewIdentitySet() {
@@ -2472,8 +2475,8 @@ test('Wavemill router fields validate and schema stays in parity', () => {
   assert.equal(properties.wavemill_router_scoring?.$ref, '#/$defs/WavemillRouterScoringMetadata');
 });
 
-test('Schema version constant is 1.53.0', () => {
-  assert.equal(SCHEMA_VERSION, '1.53.0');
+test('Schema version constant is 1.54.0', () => {
+  assert.equal(SCHEMA_VERSION, '1.54.0');
 });
 
 test('Record with an unknown_attribution intervention validates (HOK-2894)', () => {
@@ -3023,8 +3026,8 @@ test('Malformed subagent_model_economics_policy is rejected', () => {
 // HOK-2081: Counterfactual/replay lineage fields
 // ────────────────────────────────────────────────────────────────
 
-test('SCHEMA_VERSION bumped to 1.53.0 for HOK-3164 piRuntimeVersions', () => {
-  assert.equal(SCHEMA_VERSION, '1.53.0');
+test('SCHEMA_VERSION bumped to 1.54.0 for HOK-3075 taskCostSummary', () => {
+  assert.equal(SCHEMA_VERSION, '1.54.0');
 });
 
 test('Legacy record without HOK-2081 fields still validates', () => {
@@ -3078,6 +3081,87 @@ test('replay_fidelity out of range fails validation', () => {
     replay_fidelity: 1.5,
   };
   assert.equal(validateAgainstSchema(record).valid, false);
+});
+
+// ────────────────────────────────────────────────────────────────
+// HOK-3075: shadow SDK task-cost summaries
+// ────────────────────────────────────────────────────────────────
+
+function fixtureTaskCostSummaries(name: string) {
+  const fixture = loadSdkTaskCostFixture(name);
+  return buildSdkTaskCostSummaries({
+    scanResults: fixture.scanResults,
+    taskId: fixture.taskId,
+    pricingTable: fixture.pricingTable,
+    now: () => new Date(fixture.now),
+  });
+}
+
+test('taskCostSummary schema enums match the pinned @hokusai/core contract', () => {
+  assert.deepEqual(findTaskCostSchemaDrift(schema), []);
+});
+
+test('Schema drift guard reports an SDK enum the schema does not know', () => {
+  const drifted = JSON.parse(JSON.stringify(schema));
+  drifted.$defs.TaskCostHarness.enum = drifted.$defs.TaskCostHarness.enum.filter((value: string) => value !== 'pi');
+  drifted.$defs.TaskCostSummary.properties.schema_version.const = 'task_cost_summary/v2';
+  const findings = findTaskCostSchemaDrift(drifted);
+  assert.equal(findings.length, 2);
+  assert.ok(findings.some((finding) => finding.includes('TaskCostHarness')));
+  assert.ok(findings.some((finding) => finding.includes('schema_version')));
+});
+
+test('Record with SDK taskCostSummary from every bridge fixture validates', () => {
+  for (const name of listSdkTaskCostFixtures()) {
+    const summaries = fixtureTaskCostSummaries(name);
+    if (!summaries) continue;
+    const record = {
+      ...scenarios[0].record,
+      schemaVersion: SCHEMA_VERSION,
+      taskCostSummary: summaries,
+    } as unknown as Record<string, unknown>;
+    const result = validateAgainstSchema(record);
+    assert.ok(result.valid, `${name} should validate: ${result.errors.join('; ')}`);
+  }
+});
+
+test('taskCostSummary is optional and nullable (legacy rows still validate)', () => {
+  const legacy = scenarios[0].record as unknown as Record<string, unknown>;
+  assert.equal('taskCostSummary' in legacy, false);
+  assert.ok(validateAgainstSchema(legacy).valid);
+  assert.ok(validateAgainstSchema({ ...legacy, taskCostSummary: null }).valid);
+
+  const legacyRows = readFileSync(join(__dirname, '..', '..', 'tests', 'fixtures', 'eval-records-with-verification.jsonl'), 'utf-8')
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.ok(legacyRows.length > 0);
+  for (const row of legacyRows) {
+    const result = validateAgainstSchema(row);
+    assert.ok(result.valid, `legacy row ${String(row.id)} should validate: ${result.errors.join('; ')}`);
+  }
+});
+
+test('Malformed taskCostSummary is rejected', () => {
+  const [summary] = fixtureTaskCostSummaries('claude-success')!;
+  const withSummary = (value: unknown) => ({
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    taskCostSummary: [value],
+  } as unknown as Record<string, unknown>);
+
+  assert.equal(validateAgainstSchema(withSummary({ ...summary, coverage: 'mostly' })).valid, false);
+  assert.equal(validateAgainstSchema(withSummary({ ...summary, harness: 'cursor' })).valid, false);
+  assert.equal(validateAgainstSchema(withSummary({ ...summary, schema_version: 'task_cost_summary/v2' })).valid, false);
+  assert.equal(validateAgainstSchema(withSummary({ ...summary, branch: 'task/leak' })).valid, false);
+  assert.equal(validateAgainstSchema(withSummary({ ...summary, task_id: '/Users/someone/repo' })).valid, false);
+  assert.equal(validateAgainstSchema(withSummary({ ...summary, diagnostics: ['free text'] })).valid, false);
+  const { usage: _usage, ...missingUsage } = summary;
+  assert.equal(validateAgainstSchema(withSummary(missingUsage)).valid, false);
+  assert.equal(
+    validateAgainstSchema(withSummary({ ...summary, usage: { ...summary.usage, input_tokens: -1 } })).valid,
+    false,
+  );
 });
 
 // ────────────────────────────────────────────────────────────────

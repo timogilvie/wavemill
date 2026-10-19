@@ -1,9 +1,10 @@
 #!/usr/bin/env -S npx tsx
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { resolveModelAgent } from '../shared/lib/model-agent-resolution.ts';
 import { isChallengerTaskId } from '../shared/lib/task-identity.ts';
+import { readWorkflowState } from '../shared/lib/workflow-state.ts';
 import {
   appendRerouteAudit,
   providerForModel,
@@ -33,15 +34,8 @@ function side(value: string | undefined): ChallengeSide | undefined {
 function readStateTask(repoDir: string, taskId: string): { featureDir: string; active: boolean; challengeSide?: ChallengeSide } {
   const statePath = path.join(repoDir, '.wavemill', 'workflow-state.json');
   if (!existsSync(statePath)) throw new Error(`workflow state not found at ${statePath}; pass --feature-dir`);
-  const state = JSON.parse(readFileSync(statePath, 'utf-8')) as {
-    tasks?: Record<string, {
-      worktree?: string;
-      slug?: string;
-      status?: string;
-      phase?: string;
-      challengeRole?: string;
-    }>;
-  };
+  const state = readWorkflowState(statePath);
+  if (!state) throw new Error(`workflow state at ${statePath} is not a readable JSON object; pass --feature-dir`);
   const task = state.tasks?.[taskId];
   if (!task) throw new Error(`task ${taskId} not found in workflow state`);
   const featureDir = task.worktree && task.slug ? path.join(task.worktree, 'features', task.slug) : '';

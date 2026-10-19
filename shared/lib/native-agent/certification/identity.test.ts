@@ -9,6 +9,7 @@ import {
   computeIdentityFingerprint,
   type ModelCapabilities,
   type ModelRegistry,
+  type OpenRouterRoutingPreference,
 } from '../../model-registry.ts';
 
 describe('resolveCertificationStorageIdentity', () => {
@@ -89,9 +90,31 @@ describe('resolveCertificationSubject', () => {
     assert.notDeepEqual(first.subject, second.subject);
     assert.equal(second.subject.identityRevision, 2);
   });
+
+  // A certificate earned on whatever host OpenRouter picked says nothing about
+  // the pinned host (kimi-k3 tool args are mangled on some quantized hosts).
+  it('binds the subject catalogHash to the OpenRouter routing pin', () => {
+    const unpinned = resolveCertificationSubject({ provider: 'openrouter', model: 'qwen-3-coder', registry: makeRegistry() });
+    const pinned = resolveCertificationSubject({
+      provider: 'openrouter',
+      model: 'qwen-3-coder',
+      registry: makeRegistry(1, { order: ['alibaba'], allow_fallbacks: false }),
+    });
+    const repinned = resolveCertificationSubject({
+      provider: 'openrouter',
+      model: 'qwen-3-coder',
+      registry: makeRegistry(1, { order: ['together'], allow_fallbacks: false }),
+    });
+
+    assert.equal(unpinned.unpinnedCatalogHash, undefined);
+    assert.equal(pinned.unpinnedCatalogHash, unpinned.subject.catalogHash);
+    assert.notEqual(pinned.subject.catalogHash, unpinned.subject.catalogHash);
+    assert.notEqual(pinned.subject.catalogHash, repinned.subject.catalogHash);
+    assert.deepEqual({ ...pinned.subject, catalogHash: '' }, { ...unpinned.subject, catalogHash: '' });
+  });
 });
 
-function makeRegistry(revision = 1): ModelRegistry {
+function makeRegistry(revision = 1, openRouterRouting?: OpenRouterRoutingPreference): ModelRegistry {
   const alias = 'qwen-3-coder';
   const providerNativeId = 'qwen/qwen3-coder';
   const fingerprint = computeIdentityFingerprint({
@@ -117,6 +140,7 @@ function makeRegistry(revision = 1): ModelRegistry {
       nativeProvider: 'openrouter',
       piTransportKind: 'openai-completions',
       readOnlyNative: 'certified',
+      ...(openRouterRouting ? { compatFlags: { thinkingFormat: 'openrouter', openRouterRouting } } : {}),
     },
     supportedModel: {
       wavemillAlias: alias,

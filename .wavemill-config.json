@@ -369,6 +369,7 @@
       "Lifecycle Integration Tests": "npm run test:lifecycle",
     "Golden Journey (happy-path)": "bash tests/journeys/run-journeys.sh happy-path",
     "Golden Journey (gh-lag-after-push)": "bash tests/journeys/run-journeys.sh gh-lag-after-push",
+    "Golden Journey (errored-with-pr)": "bash tests/journeys/run-journeys.sh errored-with-pr",
     "Golden Journeys": "npm run test:journeys"
     },
     "postPrReconciliation": {

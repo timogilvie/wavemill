@@ -25,6 +25,8 @@ import {
   validateHokusaiSubmission,
 } from './hokusai-schema.ts';
 import { buildChallengeExecutionIntent } from './challenge-execution-contract.ts';
+import { buildSdkTaskCostSummaries } from './sdk-task-cost/collect.ts';
+import { loadSdkTaskCostFixture } from './sdk-task-cost/fixtures.ts';
 
 function makeDescriptor(overrides: Partial<TaskDescriptor> = {}): TaskDescriptor {
   return {
@@ -1136,6 +1138,38 @@ describe('hokusai-schema', () => {
       assert.equal(serialized.includes('a2f5c9e1-session-uuid'), false);
       assert.equal(serialized.includes('secret-diagnostic-marker'), false);
       assert.equal(serialized.includes('providerContractVersion'), false);
+    });
+
+    it('omits shadow SDK task-cost summaries from Hokusai submissions (HOK-3075)', () => {
+      const fixture = loadSdkTaskCostFixture('multi-harness');
+      const taskCostSummary = buildSdkTaskCostSummaries({
+        scanResults: fixture.scanResults,
+        taskId: fixture.taskId,
+        pricingTable: fixture.pricingTable,
+        now: () => new Date(fixture.now),
+      })!;
+      assert.equal(taskCostSummary.length, 2);
+
+      const baseline = expectSuccess(toHokusaiSubmission(makeRecord()));
+      const submission = expectSuccess(toHokusaiSubmission(makeRecord({ taskCostSummary })));
+      const serialized = JSON.stringify(submission);
+
+      assert.deepEqual(validateHokusaiSubmission(submission), { valid: true, errors: [] });
+      // Positive projection: the SDK ledger adds nothing to the payload.
+      assert.deepEqual(submission, baseline);
+      assert.equal('taskCostSummary' in (submission as unknown as Record<string, unknown>), false);
+      // SDK-only markers (generic cost names such as actual_cost_usd already
+      // exist in the historical allowlist, so the deepEqual above is the proof).
+      for (const marker of [
+        'task_cost_summary/v1',
+        'model_segments',
+        'event_ids',
+        'field_availability',
+        taskCostSummary[0].event_ids[0],
+        taskCostSummary[0].session_ids[0],
+      ]) {
+        assert.equal(serialized.includes(marker), false, `submission leaked ${marker}`);
+      }
     });
   });
 

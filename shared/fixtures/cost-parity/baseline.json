@@ -452,9 +452,9 @@
               "cacheCreationTokens": 0,
               "cacheReadTokens": 0,
               "costUsd": 0,
-              "inputTokens": 0,
+              "inputTokens": 1000,
               "modelId": "test-model",
-              "outputTokens": 0,
+              "outputTokens": 100,
               "priced": true,
               "pricingSource": "local_estimate",
               "provider": "test",
@@ -472,8 +472,8 @@
             "cacheCreationTokens": 0,
             "cacheReadTokens": 0,
             "costUsd": 0,
-            "inputTokens": 0,
-            "outputTokens": 0
+            "inputTokens": 1000,
+            "outputTokens": 100
           }
         },
         "pricingUsed": {
@@ -500,10 +500,10 @@
             {
               "cacheCreationTokens": 0,
               "cacheReadTokens": 0,
-              "costUsd": 0,
+              "costUsd": 0.0015,
               "inputTokens": 0,
               "modelId": "gpt-4o",
-              "outputTokens": 0,
+              "outputTokens": 100,
               "priced": true,
               "pricingSource": "local_estimate",
               "provider": "openai",
@@ -520,9 +520,9 @@
           "gpt-4o": {
             "cacheCreationTokens": 0,
             "cacheReadTokens": 0,
-            "costUsd": 0,
+            "costUsd": 0.0015,
             "inputTokens": 0,
-            "outputTokens": 0
+            "outputTokens": 100
           }
         },
         "pricingUsed": {
@@ -533,7 +533,7 @@
         },
         "sessionCount": 1,
         "status": "success",
-        "totalCostUsd": 0,
+        "totalCostUsd": 0.0015,
         "turnCount": 1
       },
       "warnings": []
@@ -550,9 +550,9 @@
               "cacheCreationTokens": 0,
               "cacheReadTokens": 0,
               "costUsd": 0.0095,
-              "inputTokens": 0,
+              "inputTokens": 1000,
               "modelId": "gpt-4o",
-              "outputTokens": 0,
+              "outputTokens": 100,
               "priced": true,
               "pricingSource": "openrouter_api",
               "provider": "openai",
@@ -572,8 +572,8 @@
             "cacheCreationTokens": 0,
             "cacheReadTokens": 0,
             "costUsd": 0.0095,
-            "inputTokens": 0,
-            "outputTokens": 0
+            "inputTokens": 1000,
+            "outputTokens": 100
           }
         },
         "pricingUsed": {},
@@ -596,9 +596,9 @@
               "cacheCreationTokens": 0,
               "cacheReadTokens": 0,
               "costUsd": 0.0095,
-              "inputTokens": 0,
+              "inputTokens": 1000,
               "modelId": "gpt-4o",
-              "outputTokens": 0,
+              "outputTokens": 100,
               "priced": true,
               "pricingSource": "openrouter_api",
               "provider": "openai",
@@ -618,8 +618,8 @@
             "cacheCreationTokens": 0,
             "cacheReadTokens": 0,
             "costUsd": 0.0095,
-            "inputTokens": 0,
-            "outputTokens": 0
+            "inputTokens": 1000,
+            "outputTokens": 100
           }
         },
         "pricingUsed": {},
@@ -639,9 +639,9 @@
               "cacheCreationTokens": 0,
               "cacheReadTokens": 0,
               "costUsd": 0.0095,
-              "inputTokens": 0,
+              "inputTokens": 1000,
               "modelId": "gpt-4o",
-              "outputTokens": 0,
+              "outputTokens": 100,
               "priced": true,
               "pricingSource": "openrouter_api",
               "provider": "openai",
@@ -661,8 +661,8 @@
             "cacheCreationTokens": 0,
             "cacheReadTokens": 0,
             "costUsd": 0.0095,
-            "inputTokens": 0,
-            "outputTokens": 0
+            "inputTokens": 1000,
+            "outputTokens": 100
           }
         },
         "pricingUsed": {},
@@ -684,9 +684,9 @@
             {
               "cacheCreationTokens": 0,
               "cacheReadTokens": 0,
-              "inputTokens": 0,
+              "inputTokens": 1000,
               "modelId": "unknown-model",
-              "outputTokens": 0,
+              "outputTokens": 100,
               "priced": false,
               "provider": "anthropic",
               "reason": "unpriced_model",
@@ -705,8 +705,8 @@
             "cacheCreationTokens": 0,
             "cacheReadTokens": 0,
             "costUsd": 0,
-            "inputTokens": 0,
-            "outputTokens": 0
+            "inputTokens": 1000,
+            "outputTokens": 100
           }
         },
         "pricingUsed": {},

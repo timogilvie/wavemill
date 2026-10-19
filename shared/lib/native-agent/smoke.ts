@@ -57,7 +57,7 @@ import { createToolRegistry } from './tools/registry.ts';
 import { toPiAgentTool } from './tools/pi-adapter.ts';
 import { loadNativePhasePrompt, registerAndRecordNativeProvenance } from './prompts.ts';
 import { getNativeAgentConfig, type NativeAgentConfig } from '../config.ts';
-import type { ModelCapabilities, ModelRegistry, PiCompatFlags } from '../model-registry.ts';
+import { getOpenRouterRouting, type ModelCapabilities, type ModelRegistry, type PiCompatFlags } from '../model-registry.ts';
 
 // ---------------------------------------------------------------------------
 // Public constants
@@ -237,7 +237,7 @@ function resolveProviderEntry(
         headers,
         model: provider === OPENAI_NATIVE_PROVIDER
           ? buildOpenAiResponsesModel({ modelId, baseUrl, headers })
-          : buildOpenRouterModel({ modelId, baseUrl, headers }),
+          : buildOpenRouterModel({ modelId, baseUrl, headers, routing: getOpenRouterRouting(registry, modelId) }),
         certificationOnly: true,
       };
       return readyEntry;

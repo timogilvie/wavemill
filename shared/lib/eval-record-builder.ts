@@ -49,6 +49,7 @@ import type {
   VerificationTelemetryLocalExecution,
   RoutingRole,
   EvalExecutionEconomics,
+  EvalTaskCostSummary,
   EvalTaskScorerResult,
 } from './eval-schema.ts';
 import {
@@ -70,7 +71,12 @@ import type {
   ReviewExecutedIdentitySet,
 } from './challenge-execution-contract.ts';
 import { projectChallengeIntentForPersistence } from './challenge-execution-contract.ts';
-import type { WorkflowCostOutcome, WorkflowCostResult, WorkflowCostFailure } from './workflow-cost.ts';
+import {
+  reportableWorkflowCostUsd,
+  type WorkflowCostOutcome,
+  type WorkflowCostResult,
+  type WorkflowCostFailure,
+} from './workflow-cost.ts';
 import { getHarnessId, getManifest, getManifestRef } from './resource-manifest.ts';
 import type { RuntimeResourceSelection } from './resource-selection.ts';
 import { getResource } from './resource-registry.ts';
@@ -135,6 +141,8 @@ export interface EvalRecordMetadata {
   workflowCost?: WorkflowCostOutcome | null;
   /** Normalized external-harness execution-economics blocks (HOK-2958). */
   executionEconomics?: EvalExecutionEconomics[] | null;
+  /** Shadow SDK task-cost summaries, one per harness (HOK-3075). */
+  taskCostSummary?: EvalTaskCostSummary[] | null;
   /** Shadow-mode task packet readiness prediction. */
   taskScorerResult?: EvalTaskScorerResult | null;
   /** Task descriptor for router training */
@@ -848,6 +856,10 @@ export function attachRepoContextMetadata(
  * Handles both success and failure cases:
  * - Success: sets workflowCost, workflowTokenUsage, workflowCostStatus, pricingSnapshot
  * - Failure: sets workflowCostStatus, workflowCostDiagnostics
+ *
+ * A success that priced nothing (see {@link reportableWorkflowCostUsd})
+ * carries its usage and attribution but no `workflowCost`: unavailable cost
+ * stays unavailable instead of becoming `$0.00` (HOK-3076).
  */
 export function attachWorkflowCostMetadata(
   record: EvalRecord,
@@ -859,7 +871,12 @@ export function attachWorkflowCostMetadata(
 
   if (costOutcome.status === 'success') {
     const success = costOutcome as WorkflowCostResult;
-    record.workflowCost = success.totalCostUsd;
+    const workflowCost = reportableWorkflowCostUsd(success);
+    if (workflowCost === undefined) {
+      delete record.workflowCost;
+    } else {
+      record.workflowCost = workflowCost;
+    }
     record.workflowTokenUsage = success.models;
     record.workflowCostStatus = 'success';
     record.pricingSnapshot = success.pricingUsed;
@@ -892,6 +909,24 @@ export function attachExecutionEconomics(
     return;
   }
   record.executionEconomics = blocks;
+}
+
+/**
+ * Attach shadow SDK task-cost summaries to an eval record (HOK-3075).
+ *
+ * Same contract as {@link attachExecutionEconomics}: no-op for null, a
+ * non-array, or an empty list, and never touches the legacy cost fields
+ * (`workflowCost`, `workflowCostAttribution`, `executionEconomics`,
+ * `pricingSnapshot`) — the summaries ride alongside them until cutover.
+ */
+export function attachTaskCostSummaries(
+  record: EvalRecord,
+  summaries: EvalTaskCostSummary[] | null | undefined,
+): void {
+  if (!Array.isArray(summaries) || summaries.length === 0) {
+    return;
+  }
+  record.taskCostSummary = summaries;
 }
 
 export function isEvalTaskScorerResult(value: unknown): value is EvalTaskScorerResult {
@@ -1750,6 +1785,7 @@ export function enrichEvalRecord(record: EvalRecord, metadata: EvalRecordMetadat
   attachRoutingDecisions(record, metadata.routing);
   attachWorkflowCostMetadata(record, metadata.workflowCost || null);
   attachExecutionEconomics(record, metadata.executionEconomics || null);
+  attachTaskCostSummaries(record, metadata.taskCostSummary || null);
   attachTaskScorerResult(record, metadata.taskScorerResult || null);
   attachRouteCalibration(record, computeRouteCalibration(record, record.routePrediction));
   attachTaskDescriptor(record, metadata.taskDescriptor || null);
@@ -1812,6 +1848,7 @@ export function enrichTrainingMetadata(
   attachRoutingDecisions(record, metadata.routing);
   attachWorkflowCostMetadata(record, metadata.workflowCost || null);
   attachExecutionEconomics(record, metadata.executionEconomics || null);
+  attachTaskCostSummaries(record, metadata.taskCostSummary || null);
   attachTaskScorerResult(record, metadata.taskScorerResult || null);
   attachRouteCalibration(record, computeRouteCalibration(record, record.routePrediction));
   attachTaskDescriptor(record, metadata.taskDescriptor || null);

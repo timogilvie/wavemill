@@ -1,0 +1,83 @@
+{
+  "description": "Claude Code task with one session whose per-turn usage is incomplete (falls back to one session-level event on the authoritative totals) and one session that never reported output tokens (unpriceable). The summary is partial: estimated cost is a lower bound and total_cost_usd is null.",
+  "taskId": "HOK-0002",
+  "now": "2026-10-01T00:00:00.000Z",
+  "pricingTable": {
+    "claude-opus-4": { "inputCostPerMTok": 15, "outputCostPerMTok": 75, "cacheWriteCostPerMTok": 18.75, "cacheReadCostPerMTok": 1.5 }
+  },
+  "scanResults": [
+    {
+      "models": { "claude-opus-4": { "inputTokens": 1200, "cacheCreationTokens": 0, "cacheReadTokens": 0, "outputTokens": 100 } },
+      "sessionCount": 2,
+      "turnCount": 3,
+      "source": "claude",
+      "externalSessions": [
+        {
+          "sessionId": "session-incomplete-turns",
+          "harness": "claude-code",
+          "harnessVersion": "2.1.270",
+          "triggerSource": null,
+          "triggerProvenance": null,
+          "startedAt": "2026-09-30T11:00:00.000Z",
+          "endedAt": "2026-09-30T11:02:00.000Z",
+          "turnCount": 2,
+          "turns": [
+            {
+              "turnId": null, "parentId": null, "isSubagent": null, "model": "claude-opus-4",
+              "timestamp": "2026-09-30T11:00:00.000Z",
+              "usage": { "inputTokens": 1000, "outputTokens": 100, "cacheReadTokens": 0, "cacheWriteTokens": 0, "reasoningTokens": null },
+              "usageAvailable": true, "actualCostUsd": null
+            },
+            {
+              "turnId": null, "parentId": null, "isSubagent": null, "model": "claude-opus-4",
+              "timestamp": "2026-09-30T11:02:00.000Z",
+              "usage": { "inputTokens": null, "outputTokens": null, "cacheReadTokens": null, "cacheWriteTokens": null, "reasoningTokens": null },
+              "usageAvailable": false, "actualCostUsd": null
+            }
+          ],
+          "usage": { "inputTokens": 1000, "outputTokens": 100, "cacheReadTokens": 0, "cacheWriteTokens": 0, "reasoningTokens": null },
+          "actualCostUsd": null,
+          "diagnostics": ["2/2 turn(s) missing uuid"]
+        },
+        {
+          "sessionId": "session-no-output",
+          "harness": "claude-code",
+          "harnessVersion": "2.1.270",
+          "triggerSource": null,
+          "triggerProvenance": null,
+          "startedAt": "2026-09-30T12:00:00.000Z",
+          "endedAt": "2026-09-30T12:00:00.000Z",
+          "turnCount": 1,
+          "turns": [
+            {
+              "turnId": "turn-c", "parentId": null, "isSubagent": false, "model": "claude-opus-4",
+              "timestamp": "2026-09-30T12:00:00.000Z",
+              "usage": { "inputTokens": 200, "outputTokens": null, "cacheReadTokens": null, "cacheWriteTokens": null, "reasoningTokens": null },
+              "usageAvailable": true, "actualCostUsd": null
+            }
+          ],
+          "usage": { "inputTokens": 200, "outputTokens": null, "cacheReadTokens": null, "cacheWriteTokens": null, "reasoningTokens": null },
+          "actualCostUsd": null,
+          "diagnostics": []
+        }
+      ]
+    }
+  ],
+  "expected": [
+    {
+      "harness": "claude-code",
+      "session_ids": ["session-incomplete-turns", "session-no-output"],
+      "models": ["claude-opus-4"],
+      "turn_count": 2,
+      "event_count": 2,
+      "usage": { "input_tokens": 1200, "output_tokens": 100, "cache_read_tokens": 0, "cache_write_tokens": 0, "reasoning_tokens": 0 },
+      "actual_cost_usd": null,
+      "estimated_cost_usd": 0.0225,
+      "total_cost_usd": null,
+      "cost_source": "local_estimate",
+      "coverage": "partial",
+      "field_availability": { "usage": "partial", "actual_cost": "unavailable", "estimated_cost": "partial", "pricing": "partial" },
+      "diagnostics": ["missing_token_usage", "mixed_coverage"]
+    }
+  ]
+}

@@ -74,6 +74,22 @@ describe('classifyReidentificationCause', () => {
     );
   });
 
+  it('names a newly added OpenRouter routing pin as the cause', () => {
+    const pinnedSubject = { ...SUBJECT, catalogHash: 'd'.repeat(64) };
+    assert.equal(
+      classifyReidentificationCause(artifact({ catalogHash: ROW_HASH }), pinnedSubject, {
+        ...opts,
+        unpinnedCatalogHash: ROW_HASH,
+      }),
+      'openrouter-routing',
+    );
+    // Without the unpinned hash the same drift reads as a fixture change.
+    assert.equal(
+      classifyReidentificationCause(artifact({ catalogHash: ROW_HASH }), pinnedSubject, opts),
+      'launch-priority-catalog',
+    );
+  });
+
   it('attributes registry identity changes regardless of the catalog hash', () => {
     for (const change of [
       { identityFingerprint: 'fingerprint-0' },

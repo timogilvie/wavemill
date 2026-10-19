@@ -34,6 +34,7 @@ TESTS=(
   shared/lib/ledger-shadow.test.ts
   shared/lib/view-workflow-state.test.ts
   shared/lib/ledger-consistency.test.ts
+  tests/state-invariants.test.ts
   shared/lib/ledger-replay-contract.test.ts
   shared/lib/ledger-pair-abort.test.ts
   shared/lib/ledger-recovery.test.ts
@@ -231,6 +232,7 @@ TESTS=(
   shared/lib/manual-edit-attribution-audit.test.ts
   shared/lib/merge-queue.test.ts
   shared/lib/merge-labels.test.ts
+  shared/lib/mill-clock.test.ts
   shared/lib/model-registry.test.ts
   shared/lib/model-registry-gpt55-inventory.test.ts
   shared/lib/model-registry-loader.test.ts
@@ -274,6 +276,9 @@ TESTS=(
   shared/lib/template-curly-checker.test.ts
   shared/lib/test-tracked-write-checker.test.ts
   shared/lib/task-identity-checker.test.ts
+  shared/lib/task-record-shape-checker.test.ts
+  shared/lib/workflow-state.test.ts
+  shared/lib/workflow-state.writer-coverage.test.ts
   shared/lib/transient-marker.test.ts
   shared/lib/wavemill-incident-artifact-diagnostics.test.ts
   shared/lib/wavemill-incident-detector.test.ts
@@ -419,6 +424,12 @@ TESTS=(
   shared/lib/eval-deduplication.test.ts
   shared/lib/execution-economics.test.ts
   shared/lib/execution-economics-report.test.ts
+  shared/lib/sdk-task-cost/events-from-session.test.ts
+  shared/lib/sdk-task-cost/collect.test.ts
+  shared/lib/sdk-task-cost/project.test.ts
+  shared/lib/sdk-task-cost/feature-switch.test.ts
+  shared/lib/sdk-task-cost/resolve.test.ts
+  shared/lib/sdk-task-cost/lazy-collect.test.ts
   shared/lib/eval-summary-printer.test.ts
   shared/lib/evals-paths.test.ts
   shared/lib/execution-contract.test.ts
@@ -513,6 +524,7 @@ TESTS=(
   shared/lib/challenge-replay-capture.test.ts
   spike/pi-native-agent/mcp-proxy-spike.test.ts
   shared/lib/cost-parity.test.ts
+  shared/lib/cost-migration.test.ts
   shared/lib/observer-findings.test.ts
   shared/lib/pr-comparison-actions.test.ts
   tests/state-archive-roundtrip.test.ts

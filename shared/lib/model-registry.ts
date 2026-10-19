@@ -62,8 +62,24 @@ export interface MultimodalSupport {
   video?: boolean;
 }
 
+/**
+ * OpenRouter provider-routing preferences, sent verbatim as the request's
+ * `provider` field (Pi's `compat.openRouterRouting`). Pins a model to the
+ * upstream hosts it actually works on — e.g. a first-party endpoint when
+ * third-party quantized hosts mangle nested tool arguments.
+ */
+export interface OpenRouterRoutingPreference {
+  order?: string[];
+  only?: string[];
+  ignore?: string[];
+  quantizations?: string[];
+  allow_fallbacks?: boolean;
+  require_parameters?: boolean;
+}
+
 export interface PiCompatFlags {
   thinkingFormat?: 'openrouter';
+  openRouterRouting?: OpenRouterRoutingPreference;
   [key: string]: unknown;
 }
 
@@ -392,7 +408,46 @@ function openRouterSupportedModel(input: {
 }
 
 function cloneCompatFlags(compatFlags: PiCompatFlags | undefined): PiCompatFlags | undefined {
-  return compatFlags ? { ...compatFlags } : undefined;
+  return compatFlags ? structuredClone(compatFlags) : undefined;
+}
+
+const OPENROUTER_ROUTING_LIST_FIELDS = ['order', 'only', 'ignore', 'quantizations'] as const;
+const OPENROUTER_ROUTING_BOOLEAN_FIELDS = ['allow_fallbacks', 'require_parameters'] as const;
+
+function validateOpenRouterRouting(modelId: string, routing: unknown): void {
+  const field = `model ${modelId}: nativeCapability.compatFlags.openRouterRouting`;
+  if (typeof routing !== 'object' || routing === null || Array.isArray(routing)) {
+    throw new ModelValidationError(modelId, `${field} must be an object`);
+  }
+  const allowed = new Set<string>([...OPENROUTER_ROUTING_LIST_FIELDS, ...OPENROUTER_ROUTING_BOOLEAN_FIELDS]);
+  for (const [key, value] of Object.entries(routing)) {
+    if (!allowed.has(key)) {
+      throw new ModelValidationError(modelId, `${field}.${key} is not a supported routing field`);
+    }
+    if ((OPENROUTER_ROUTING_LIST_FIELDS as readonly string[]).includes(key)) {
+      if (!Array.isArray(value) || value.length === 0 || !value.every((v) => typeof v === 'string' && v.length > 0)) {
+        throw new ModelValidationError(modelId, `${field}.${key} must be a non-empty array of provider slugs`);
+      }
+    } else if (typeof value !== 'boolean') {
+      throw new ModelValidationError(modelId, `${field}.${key} must be a boolean`);
+    }
+  }
+}
+
+/**
+ * The OpenRouter routing pin for a registry model, or undefined when the model
+ * routes freely. Feeds both the request (`buildOpenRouterModel`) and the
+ * certification subject, so a certificate is only valid for the pin it ran under.
+ */
+export function getOpenRouterRouting(
+  registry: ModelRegistry | undefined,
+  modelId: string,
+): OpenRouterRoutingPreference | undefined {
+  if (!registry) return undefined;
+  const capabilities = registry.models[resolveModelRegistryKey(registry, modelId)];
+  if (capabilities?.nativeCapability?.nativeProvider !== 'openrouter') return undefined;
+  const routing = capabilities.nativeCapability.compatFlags?.openRouterRouting;
+  return routing ? structuredClone(routing) : undefined;
 }
 
 function cloneCertificationMetadata(
@@ -1268,6 +1323,16 @@ export function validateNativeCapability(
   const nativeCapability = capabilities.nativeCapability;
   if (!nativeCapability) {
     return;
+  }
+
+  if (nativeCapability.compatFlags?.openRouterRouting !== undefined) {
+    if (nativeCapability.nativeProvider !== 'openrouter') {
+      throw new ModelValidationError(
+        modelId,
+        `model ${modelId}: nativeCapability.compatFlags.openRouterRouting requires nativeProvider=openrouter`,
+      );
+    }
+    validateOpenRouterRouting(modelId, nativeCapability.compatFlags.openRouterRouting);
   }
 
   if (!isReadOnlyNativeCapabilityValue(nativeCapability.readOnlyNative)) {

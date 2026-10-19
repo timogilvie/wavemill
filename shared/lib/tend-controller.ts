@@ -27,6 +27,7 @@ import {
 import { buildStaleMarkerFinding, type MarkerPayload, type MarkerValidation } from './transient-marker.ts';
 import { getIntegrationConfig, getIntegrationReadyPolicy, resolveSessionCapabilities } from './config.ts';
 import { appendObserverFinding as sharedAppendObserverFinding } from './observer-findings.ts';
+import { millClockNowMs, millClockSleep } from './mill-clock.ts';
 import { readChallengeComparisons } from './challenge-comparison.ts';
 import { getPullRequest, removeLabelFromPullRequest } from './github.ts';
 import { gitPushKey, prMergeKey, shadowRecordSideEffect } from './side-effect-ledger.ts';
@@ -2133,7 +2134,7 @@ export async function waitForChecks(
   const requiredChecks = options.requiredChecks ?? [];
   const expectedHeadSha = options.expectedHeadSha?.trim() || undefined;
   const pollIntervalMs = options.pollIntervalMs ?? CHECK_POLL_INTERVAL_MS;
-  const deadline = Date.now() + timeoutMs;
+  const deadline = millClockNowMs() + timeoutMs;
   let consecutiveHeadMismatches = 0;
 
   while (true) {
@@ -2183,7 +2184,7 @@ export async function waitForChecks(
       waitSummary = summarizeChecks(checks, requiredChecks);
     }
 
-    if (Date.now() >= deadline) {
+    if (millClockNowMs() >= deadline) {
       return { outcome: 'timeout', summary: waitSummary };
     }
 
@@ -3358,7 +3359,7 @@ function mergeExecutionDeps(deps: Partial<MergeExecutionDeps> | undefined, marke
       setWavemillReady(prNumber, { markerRoot });
     },
     retrySleep: sleep,
-    currentTimeMs: () => Date.now(),
+    currentTimeMs: () => millClockNowMs(),
     setMergeRetryWindow: (prNumber, untilIso, repoDir) => {
       writeMergeRetryMarker(prNumber, untilIso, repoDir);
     },
@@ -3646,8 +3647,10 @@ function summarizeChecks(checks: PrCheckRun[], requiredChecks: string[] = []): s
     : summary;
 }
 
+// HOK-3227: retry sleeps and wait deadlines go through the tick clock seam
+// (a real timer unless a golden journey sets WAVEMILL_TICK_CLOCK_FILE).
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return millClockSleep(ms);
 }
 
 function getConfiguredIntegrationBranch(repoDir: string): string {
