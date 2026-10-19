@@ -7,7 +7,9 @@ import {
 } from '../config.ts';
 import { resolveEnvValue } from '../env-file.ts';
 import {
+  getOpenRouterRouting,
   type ModelRegistry,
+  type OpenRouterRoutingPreference,
   type ReadOnlyNativeCapability,
 } from '../model-registry.ts';
 import {
@@ -184,7 +186,7 @@ export function resolveNativeAgentProviders(
           headers,
           model: providerName === OPENAI_NATIVE_PROVIDER
             ? buildOpenAiResponsesModel({ modelId, baseUrl, headers })
-            : buildOpenRouterModel({ modelId, baseUrl, headers }),
+            : buildOpenRouterModel({ modelId, baseUrl, headers, routing: getOpenRouterRouting(registry, modelId) }),
           certificationOnly: registry.models[modelId]?.nativeCapability?.readOnlyNative !== 'certified',
         };
         attachApiKey(readyEntry, apiKey);
@@ -232,7 +234,7 @@ export function resolveNativeAgentProviders(
         headers,
         model: providerName === OPENAI_NATIVE_PROVIDER
           ? buildOpenAiResponsesModel({ modelId, baseUrl, headers })
-          : buildOpenRouterModel({ modelId, baseUrl, headers }),
+          : buildOpenRouterModel({ modelId, baseUrl, headers, routing: getOpenRouterRouting(registry, modelId) }),
         certificationOnly: false,
         ...(certifiedIdentity ? { certifiedIdentity } : {}),
       };
@@ -362,10 +364,13 @@ export function buildOpenRouterModel({
   modelId,
   baseUrl = OPENROUTER_DEFAULT_BASE_URL,
   headers = {},
+  routing,
 }: {
   modelId: string;
   baseUrl?: string;
   headers?: Record<string, string>;
+  /** Registry routing pin (`getOpenRouterRouting`); omitted means OpenRouter routes freely. */
+  routing?: OpenRouterRoutingPreference;
 }): PiModel {
   return buildPiModel({
     // `id` stays keyed by the wavemill alias so provider matching, logging and
@@ -379,6 +384,7 @@ export function buildOpenRouterModel({
     compat: {
       thinkingFormat: 'openrouter',
       supportsStrictMode: true,
+      ...(routing ? { openRouterRouting: routing } : {}),
     },
   });
 }
