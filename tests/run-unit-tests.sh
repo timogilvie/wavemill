@@ -31,6 +31,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 TESTS=(
   tests/ledger.test.ts
+  shared/lib/deps-drift.test.ts
   shared/lib/ledger-shadow.test.ts
   shared/lib/view-workflow-state.test.ts
   shared/lib/ledger-consistency.test.ts

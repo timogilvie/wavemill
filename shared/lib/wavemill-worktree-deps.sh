@@ -1,5 +1,34 @@
 #!/usr/bin/env bash
 
+# HOK-3254: load the stale node_modules primitive. The worktree helpers (and
+# _detect_worktree_pm in wavemill-startup-runner.sh) consult it before the
+# "node_modules exists → skip install" shortcut, so a stale install triggers
+# a reinstall instead of silently running the next phase against drifted deps.
+if [[ -z "${__WAVEMILL_DEPS_DRIFT_LOADED:-}" ]]; then
+  _wd_deps_drift_src="${BASH_SOURCE[0]%/*}/deps-drift.sh"
+  if [[ -f "$_wd_deps_drift_src" ]]; then
+    # shellcheck source=./deps-drift.sh
+    . "$_wd_deps_drift_src"
+    __WAVEMILL_DEPS_DRIFT_LOADED=1
+  fi
+  unset _wd_deps_drift_src
+fi
+
+# Reasons the drift primitive returns that still represent a safe-to-reuse
+# tree (hidden lockfile matches, no lockfile at all, pre-existing legacy
+# install with no visible drift). Everything else — including `unknown` — must
+# not win over a lockfile-hash mismatch below.
+_wd_drift_reason_is_ok() {
+  case "$1" in
+    hidden-lockfile-match|no-lockfile|hidden-lockfile-missing-direct-deps-match|no-dir)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 _wd_detect_package_manager() {
   local dir="$1"
   if [[ -f "$dir/pnpm-lock.yaml" ]]; then
@@ -185,7 +214,34 @@ worktree_deps_ensure() {
     return 0
   fi
 
-  [[ -d "$wt_nm" ]] && return 0
+  # HOK-3254: a present `node_modules/` is not evidence it is fresh. Consult
+  # the drift primitive before the shortcut: on `ok` return 0; on `drift`
+  # fall through to the reuse / install path so the parent-hash compare or
+  # a fresh install repairs the tree. `unknown` (pnpm, yarn, missing hash
+  # tool) preserves the old shortcut rather than reinstalling blindly.
+  if [[ -d "$wt_nm" ]]; then
+    if declare -F deps_drift_check >/dev/null 2>&1; then
+      local _wd_drift_json _wd_drift_rc=0 _wd_drift_status _wd_drift_reason
+      _wd_drift_json="$(deps_drift_check "$wt_dir" 2>/dev/null)" || _wd_drift_rc=$?
+      _wd_drift_status="$(printf '%s' "$_wd_drift_json" | jq -r '.status // ""' 2>/dev/null)"
+      _wd_drift_reason="$(printf '%s' "$_wd_drift_json" | jq -r '.reason // ""' 2>/dev/null)"
+      case "$_wd_drift_status" in
+        ok)
+          return 0
+          ;;
+        drift)
+          reason="node-modules-drift:${_wd_drift_reason:-unknown}"
+          _wd_cleanup_node_modules_dest "$wt_nm"
+          ;;
+        *)
+          # unknown — preserve previous behaviour (treat existing tree as ok).
+          return 0
+          ;;
+      esac
+    else
+      return 0
+    fi
+  fi
 
   install_cmd="$(_wd_install_command "$pm")" || return 1
 
