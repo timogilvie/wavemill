@@ -23750,6 +23750,7 @@ while :; do
   monitor_iteration_end_ms="$(wavemill_monitor_now_ms 2>/dev/null || printf '0')"
   wavemill_record_monitor_iteration_timing "$monitor_iteration_start_ms" "$monitor_iteration_end_ms" "$POLL_SECONDS" 2>/dev/null || true
   monitor_record_tick_epoch
+  mill_clock_advance_tick
 
   # ── Phase B: Check for stop signal ──────────────────────────────────
   if [[ -f "$STATE_DIR/.stop-loop" ]]; then

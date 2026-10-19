@@ -355,6 +355,11 @@ jobs:
               - 'shared/lib/pr-state-labels.ts'
               - 'shared/lib/pr-live-state.ts'
               - 'shared/lib/ready-*.ts'
+              - 'shared/lib/bounded-retry.*'
+              - 'shared/lib/mill-clock.*'
+              - 'shared/lib/workflow-state*.ts'
+              - 'shared/lib/state-mutex.ts'
+              - 'shared/schemas/workflow-task.schema.json'
               - 'shared/lib/stage-result.ts'
               - 'shared/lib/seam-artifacts.ts'
               - 'shared/lib/github.ts'
@@ -380,10 +385,12 @@ jobs:
 
   # Golden journeys (HOK-3227): the real monitor loop + tend driving one task
   # from backlog to merged and reaped against the shared fakes (tests/fakes/).
-  # One journey per matrix leg so the suite adds ~0 to CI wall-clock. Runs on
-  # mill-core changes, nightly, and on demand; legs always report a
-  # conclusion, and the "Golden Journeys" aggregator below is the required
-  # check.
+  # One journey per matrix leg so the suite adds ~0 to CI wall-clock; each
+  # journey must finish within JOURNEY_BUDGET_SECONDS (90s, enforced by the
+  # harness). Runs on mill-core changes, on promotion (auto/integration ->
+  # main), nightly, and on demand; legs always report a conclusion, and the
+  # "Golden Journeys" aggregator below is the required check and publishes the
+  # merged `timing-journeys` artifact.
   journeys:
     name: Golden Journey (${{ matrix.journey }})
     runs-on: ubuntu-latest
@@ -395,7 +402,7 @@ jobs:
       matrix:
         journey: [happy-path, gh-lag-after-push]
     env:
-      RUN_JOURNEYS: ${{ needs.check-paths.outputs.journeys == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+      RUN_JOURNEYS: ${{ needs.check-paths.outputs.journeys == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.head_ref == 'auto/integration') }}
 
     steps:
       - name: Fail if change detection did not succeed
@@ -422,10 +429,17 @@ jobs:
         if: env.RUN_JOURNEYS == 'true'
         env:
           JOURNEY_ARTIFACT_DIR: ${{ runner.temp }}/journey-artifacts
+          JOURNEY_BUDGET_SECONDS: 90
         run: |
           start=$(date +%s)
-          bash tests/journeys/run-journeys.sh "${{ matrix.journey }}"
-          printf '{"suite":"journeys","journey":"%s","elapsedMs":%d}\n' "${{ matrix.journey }}" "$(( ($(date +%s) - start) * 1000 ))" > "journey-timing-${{ matrix.journey }}.json"
+          rc=0
+          bash tests/journeys/run-journeys.sh "${{ matrix.journey }}" || rc=$?
+          # One TimingDoc test entry (tools/ci-test-timings.ts shape).
+          jq -n --arg id "${{ matrix.journey }}" --argjson ms "$(( ($(date +%s) - start) * 1000 ))" \
+            --arg result "$([[ $rc == 0 ]] && echo pass || echo fail)" \
+            '{id: $id, elapsedMs: $ms, budgetMs: (env.JOURNEY_BUDGET_SECONDS | tonumber * 1000), result: $result}' \
+            > "timing-journeys-${{ matrix.journey }}.json"
+          exit "$rc"
 
       - name: Upload journey artifacts on failure
         if: env.RUN_JOURNEYS == 'true' && failure()
@@ -440,8 +454,8 @@ jobs:
         if: env.RUN_JOURNEYS == 'true' && always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: journey-timing-${{ matrix.journey }}
-          path: journey-timing-${{ matrix.journey }}.json
+          name: timing-journeys-${{ matrix.journey }}
+          path: timing-journeys-${{ matrix.journey }}.json
           if-no-files-found: ignore
           retention-days: 7
 
@@ -459,6 +473,37 @@ jobs:
     steps:
       - name: Report journey results
         run: echo "journeys=${{ needs.journeys.result }}"
+
+      - name: Download per-journey timings
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        continue-on-error: true
+        with:
+          pattern: timing-journeys-*
+          path: journey-timings
+          merge-multiple: true
+
+      - name: Merge journey timings
+        id: timings
+        run: |
+          shopt -s nullglob
+          files=(journey-timings/*.json)
+          if (( ${#files[@]} == 0 )); then
+            echo "No journey timings (journeys skipped)."
+            exit 0
+          fi
+          jq -s --arg runId "${{ github.run_id }}" --arg sha "${{ github.sha }}" \
+            '{suite: "journeys", shard: "all", runId: $runId, sha: $sha, generatedAt: (now | todate), tests: .}' \
+            "${files[@]}" > timing-journeys.json
+          jq -r '.tests[] | "\(.id): \(.elapsedMs / 1000)s of \(.budgetMs / 1000)s budget (\(.result))"' timing-journeys.json
+          echo "present=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload timing-journeys
+        if: steps.timings.outputs.present == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: timing-journeys
+          path: timing-journeys.json
+          retention-days: 7
 
       - name: Fail unless every journey succeeded
         if: needs.journeys.result != 'success'

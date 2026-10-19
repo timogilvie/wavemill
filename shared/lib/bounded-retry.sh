@@ -30,6 +30,15 @@
 # and bounded_retry_mark_exhausted use their exit status as a signal, and all
 # are documented to be called behind `if`.
 
+# HOK-3227: backoff and deadlines read the tick clock seam (wall clock unless
+# a golden journey sets WAVEMILL_TICK_CLOCK_FILE).
+# Tests that inline this file elsewhere fall back to the wall clock.
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/mill-clock.sh" ]]; then
+  # shellcheck source=mill-clock.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/mill-clock.sh"
+fi
+declare -F mill_clock_now >/dev/null 2>&1 || mill_clock_now() { date +%s; }
+
 # Resolve the per-bucket file prefix. Legacy buckets that shipped their own
 # file names before the helper existed keep them (upgrade compatibility).
 _bounded_retry_prefix() {
@@ -338,7 +347,7 @@ bounded_retry_increment() {
       fi
     fi
   fi
-  printf '%s\n' "$(date +%s)" > "$(_bounded_retry_file "$state_dir" "$bucket" "last-at")"
+  printf '%s\n' "$(mill_clock_now)" > "$(_bounded_retry_file "$state_dir" "$bucket" "last-at")"
   # HOK-3184: mirror the new attempt onto the shadow step row (if bound).
   _bounded_retry_shadow_attempt "$state_dir" "$bucket" || true
   echo "$count"
@@ -376,7 +385,7 @@ bounded_retry_due() {
   base="$(_bounded_retry_resolve_base "$bucket" "$base")"
   cap="$(_bounded_retry_resolve_cap "$bucket" "$cap")"
   delay=$(bounded_retry_backoff_seconds "$(bounded_retry_count "$state_dir" "$bucket")" "$base" "$cap")
-  now=$(date +%s)
+  now=$(mill_clock_now)
   (( now - last_at >= delay ))
 }
 
