@@ -99,3 +99,31 @@ When a repo has `alembic/versions/` and no explicit `ready.checks`, ready auto-e
 - `migration-base-refresh` as a non-blocking pre-check that fetches the base branch before migration validation.
 
 Operators can disable this with `ready.migrationChecks.enabled = false`.
+
+## Blast-radius routing (HOK-3238)
+
+`shared/lib/blast-radius.ts` classifies a changed-file set as `high` iff any
+file matches a mill-core pattern (monitor, tend, merge-labels, reconciler,
+state writers, ready stage, invariant checker). Everything else is `normal`.
+
+Three callers consume it:
+
+- `shared/lib/workflow-router.ts` — `applyBlastRadiusFloor` floors the reviewer
+  to `strong_generalist` (or `frontier`) for `high` PRs. The floor runs *before*
+  `finalizeDecision`, so the HOK-3142 launchability guard still runs on the
+  upgraded reviewer. The decision stamps `blastRadius`; a substituted reviewer
+  is captured in `preEscalationRoute`.
+- `shared/lib/review-engine.ts` — `fillReviewPromptTemplate` injects the
+  `HIGH_BLAST_RADIUS_GUIDANCE` block (fixture provenance, journey check, latch
+  check) at the top of both the standard and scoped review prompts. The three
+  bullets map directly to the HOK-3212 incident mode. The guidance's journey
+  command is `bash tests/journeys/run-journeys.sh happy-path`.
+- `shared/lib/state-invariants.ts` — `I8-bake-gate-stall` watches `main` for
+  `WAVEMILL_BAKE_GATE_MINUTES` (default 120 min) after a `high`-blast-radius
+  commit lands, firing when `services.tend.laneCondition === 'idle-blocked-stall'`
+  persists for `WAVEMILL_BAKE_GATE_TEND_STALL_MINUTES` (default 30 min) past
+  the commit. The urgent finding carries `evidence.revertCommand = git revert
+  <sha>` for a one-command rollback. Signature is `I8:<sha>` so repeat ticks
+  never spam past the first OS notification.
+
+**New mill-core paths belong in `MILL_CORE_PATTERNS` in `shared/lib/blast-radius.ts`.**
