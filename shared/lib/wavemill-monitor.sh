@@ -16358,6 +16358,216 @@ monitor_ledger_recovery_tick() {
   return 0
 }
 
+# ─── Stale node_modules detector (HOK-3254) ─────────────────────────────────
+#
+# A slow-cadence check on REPO_DIR. Loads the HOK-3254 drift primitive from
+# shared/lib/deps-drift.sh; on drift logs `[deps-drift] ...`, degrades
+# backstage service health (status=degraded), and — when
+# WAVEMILL_DEPS_DRIFT_AUTOFIX != 0 — schedules `npm ci` via a bounded-retry
+# gate keyed on the current lockfile hash so a fresh dependency bump resets
+# the budget. The reinstall runs into a temp `node_modules.new/` and swaps
+# atomically with `mv` so a mid-pass TS tool spawn cannot land halfway.
+# Kill switches: WAVEMILL_DEPS_DRIFT_DISABLED=1 (no detection at all),
+# WAVEMILL_DEPS_DRIFT_AUTOFIX=0 (detect only, no install).
+monitor_deps_drift_interval() {
+  local value="${DEPS_DRIFT_INTERVAL_SECONDS:-600}"
+  [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]] || value=600
+  printf '%s\n' "$value"
+}
+
+_monitor_deps_drift_load_primitive() {
+  if declare -F deps_drift_check >/dev/null 2>&1; then
+    return 0
+  fi
+  local src="${BASH_SOURCE[0]%/*}/deps-drift.sh"
+  if [[ -f "$src" ]]; then
+    # shellcheck source=./deps-drift.sh
+    . "$src" || return 1
+    return 0
+  fi
+  return 1
+}
+
+_monitor_deps_drift_reinstall() {
+  local repo_dir="$1" log_file="$2" fingerprint="$3"
+  local ts; ts="$(date +%s)"
+  local staging="$repo_dir/.wavemill/deps-drift-staging.$ts.$$"
+  local new_nm_target="$staging/node_modules"
+  local final_nm="$repo_dir/node_modules"
+  local backup_nm="$repo_dir/node_modules.deps-drift.$ts.$$"
+
+  mkdir -p "$staging" 2>/dev/null || {
+    printf '[deps-drift] staging mkdir failed, leaving node_modules in place\n' \
+      >>"$log_file" 2>&1 || true
+    return 1
+  }
+  # Copy only the files npm ci needs; this is a one-time snapshot of the
+  # repo's package manifests so the install is reproducible.
+  cp "$repo_dir/package.json" "$staging/package.json" 2>/dev/null || {
+    rm -rf "$staging" 2>/dev/null || true
+    return 1
+  }
+  cp "$repo_dir/package-lock.json" "$staging/package-lock.json" 2>/dev/null || {
+    rm -rf "$staging" 2>/dev/null || true
+    return 1
+  }
+  if [[ -f "$repo_dir/.npmrc" ]]; then
+    cp "$repo_dir/.npmrc" "$staging/.npmrc" 2>/dev/null || true
+  fi
+
+  if ! (cd "$staging" && npm ci --no-audit --no-fund >>"$log_file" 2>&1); then
+    rm -rf "$staging" 2>/dev/null || true
+    printf '[deps-drift] npm ci failed (fingerprint=%s), leaving node_modules in place\n' \
+      "${fingerprint:0:12}" >>"$log_file" 2>&1 || true
+    return 1
+  fi
+  if [[ ! -d "$new_nm_target" ]]; then
+    rm -rf "$staging" 2>/dev/null || true
+    printf '[deps-drift] staging install produced no node_modules, aborting swap\n' \
+      >>"$log_file" 2>&1 || true
+    return 1
+  fi
+
+  # Rename the live tree aside (not deleted) so a crash leaves a recoverable
+  # .deps-drift directory; then move the fresh one in. The window between
+  # the two renames is the only moment a TS tool spawn can see no
+  # node_modules; keep it as small as a single mv.
+  if [[ -d "$final_nm" ]]; then
+    if ! mv "$final_nm" "$backup_nm" 2>/dev/null; then
+      rm -rf "$staging" 2>/dev/null || true
+      printf '[deps-drift] could not aside existing node_modules, aborting swap\n' \
+        >>"$log_file" 2>&1 || true
+      return 1
+    fi
+  fi
+  if ! mv "$new_nm_target" "$final_nm" 2>/dev/null; then
+    # Attempt to restore the backup so the repo is not left without deps.
+    if [[ -d "$backup_nm" ]]; then
+      mv "$backup_nm" "$final_nm" 2>/dev/null || true
+    fi
+    rm -rf "$staging" 2>/dev/null || true
+    printf '[deps-drift] atomic swap failed, restored prior node_modules\n' \
+      >>"$log_file" 2>&1 || true
+    return 1
+  fi
+
+  rm -rf "$staging" 2>/dev/null || true
+  rm -rf "$backup_nm" 2>/dev/null || true
+  printf '[deps-drift] reinstall + swap complete (fingerprint=%s)\n' "${fingerprint:0:12}" \
+    >>"$log_file" 2>&1 || true
+  return 0
+}
+
+monitor_deps_drift_tick() {
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
+  [[ "${WAVEMILL_DEPS_DRIFT_DISABLED:-0}" == "1" ]] && return 0
+  [[ -n "${STATE_DIR:-}" && -n "${REPO_DIR:-}" ]] || return 0
+
+  local interval last_at now stamp_file="$STATE_DIR/.deps-drift-last-at"
+  interval="$(monitor_deps_drift_interval)"
+  now="$(date +%s)"
+  if [[ -f "$stamp_file" ]]; then
+    last_at="$(cat "$stamp_file" 2>/dev/null || echo 0)"
+    [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
+    (( now - last_at < interval )) && return 0
+  fi
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  _monitor_terminal_cleanup_write "$stamp_file" "$now"
+
+  _monitor_deps_drift_load_primitive || return 0
+
+  local log_file="${MILL_LOG_FILE:-/dev/null}"
+  local json status reason packages
+  json="$(deps_drift_check "$REPO_DIR" 2>/dev/null)" || json=""
+  status="$(printf '%s' "$json" | jq -r '.status // ""' 2>/dev/null)"
+  reason="$(printf '%s' "$json" | jq -r '.reason // ""' 2>/dev/null)"
+  packages="$(printf '%s' "$json" | jq -r '[.packages[]?.name] | join(",")' 2>/dev/null)"
+
+  case "$status" in
+    ok|"")
+      return 0
+      ;;
+    unknown)
+      printf '[deps-drift] unknown status for %s (reason=%s), skipping\n' \
+        "$REPO_DIR" "${reason:-unknown}" >>"$log_file" 2>&1 || true
+      return 0
+      ;;
+  esac
+
+  # status=drift
+  printf '[deps-drift] drifted packages reason=%s packages=%s\n' \
+    "${reason:-unknown}" "${packages:-<none>}" >>"$log_file" 2>&1 || true
+
+  # Mark backstage service health as degraded so the dashboard surfaces it.
+  local health_file
+  if declare -F wavemill_backstage_health_file >/dev/null 2>&1 \
+    && declare -F wavemill_write_backstage_service_health >/dev/null 2>&1; then
+    health_file="$(wavemill_backstage_health_file "$STATE_DIR" 2>/dev/null || true)"
+    if [[ -n "$health_file" ]]; then
+      local detail="stale node_modules: ${reason}${packages:+ (${packages})}"
+      wavemill_write_backstage_service_health \
+        "$health_file" "deps" "degraded" "$detail" 0 "" "" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" 1 \
+        >/dev/null 2>&1 || true
+    fi
+  fi
+
+  if [[ "${WAVEMILL_DEPS_DRIFT_AUTOFIX:-1}" == "0" ]]; then
+    return 0
+  fi
+
+  # Only npm is auto-fixable today; the primitive refuses pnpm / yarn.
+  case "$reason" in
+    pnpm-not-supported|yarn-not-supported|hash-tool-missing)
+      return 0
+      ;;
+  esac
+
+  if ! command -v npm >/dev/null 2>&1; then
+    printf '[deps-drift] npm not on PATH, cannot auto-fix\n' >>"$log_file" 2>&1 || true
+    return 0
+  fi
+
+  # Bounded retry: key on the lockfile's hash so a new dependency bump
+  # resets the budget. Reuse the existing bounded_retry helper when
+  # available; fall back to a single attempt otherwise.
+  local fingerprint
+  if declare -F deps_lockfile_fingerprint >/dev/null 2>&1; then
+    fingerprint="$(deps_lockfile_fingerprint "$REPO_DIR" 2>/dev/null || true)"
+  fi
+  if [[ -z "$fingerprint" ]]; then
+    if command -v sha256sum >/dev/null 2>&1; then
+      fingerprint="$(sha256sum "$REPO_DIR/package-lock.json" 2>/dev/null | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+      fingerprint="$(shasum -a 256 "$REPO_DIR/package-lock.json" 2>/dev/null | awk '{print $1}')"
+    fi
+  fi
+  [[ -n "$fingerprint" ]] || fingerprint="unknown"
+
+  local gate_result="proceed"
+  if declare -F bounded_retry_gate >/dev/null 2>&1; then
+    gate_result="$(bounded_retry_gate "$STATE_DIR" "deps-drift-reinstall" "$fingerprint" 4 2>/dev/null || echo proceed)"
+  fi
+  case "$gate_result" in
+    exhausted|exhausted-quiet)
+      printf '[deps-drift] reinstall budget exhausted for fingerprint=%s, backstage left degraded\n' \
+        "${fingerprint:0:12}" >>"$log_file" 2>&1 || true
+      return 0
+      ;;
+    backoff)
+      return 0
+      ;;
+  esac
+  if declare -F bounded_retry_increment >/dev/null 2>&1; then
+    bounded_retry_increment "$STATE_DIR" "deps-drift-reinstall" "$fingerprint" "" >/dev/null 2>&1 || true
+  fi
+
+  (
+    _monitor_deps_drift_reinstall "$REPO_DIR" "$log_file" "$fingerprint" || true
+  ) >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  return 0
+}
+
 # ─── Live state-invariant checker (HOK-3229) ────────────────────────────────
 #
 # A tracked async job that evaluates the HOK-3229 structural invariants over
@@ -23731,6 +23941,10 @@ while :; do
   monitor_step_begin sideEffectDuplicateDetector
   monitor_side_effect_detector_tick || true
   monitor_step_end sideEffectDuplicateDetector
+  # HOK-3254: slow-cadence stale node_modules detector + auto-fix.
+  monitor_step_begin depsDrift
+  monitor_deps_drift_tick || true
+  monitor_step_end depsDrift
   # HOK-3185: the one recovery loop over ledger step rows (shadow by default).
   monitor_step_begin ledgerRecovery
   monitor_ledger_recovery_tick || true
