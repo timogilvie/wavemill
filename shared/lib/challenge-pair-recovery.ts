@@ -32,6 +32,7 @@ import {
 import { resolvePrIdentityMetadata } from './pr-comparison.ts';
 import { taskHasPendingChallengeArm } from './tend-challenge-gate.ts';
 import { challengerTaskKey, parseTaskId } from './task-identity.ts';
+import { readWorkflowState, type TaskRecord } from './workflow-state.ts';
 
 export type ChallengeRecoveryVerdict = 'supersedable' | 'quarantine-upheld' | 'pair-not-found';
 
@@ -106,16 +107,11 @@ interface ExecutionIntent {
 
 export type ArmIntentSource = 'task-state' | 'primary-challenge-arm' | 'feature-dir';
 
-interface TaskState {
-  slug?: string;
-  linearIssueId?: string;
-  challengePairId?: string;
-  challengeRole?: string;
-  pr?: string;
-  prUrl?: string;
-  challengeExecutionIntent?: ExecutionIntent | null;
-  challengeArms?: unknown;
-}
+/** The task-record fields recovery reads. */
+type ArmTask = Pick<
+  TaskRecord,
+  'slug' | 'linearIssueId' | 'challengePairId' | 'challengeRole' | 'pr' | 'challengeExecutionIntent' | 'challengeArms'
+>;
 
 function defaultResolvePrIdentity(pr: string, repoDir: string): { url: string; headSha: string } {
   const metadata = resolvePrIdentityMetadata(pr, repoDir);
@@ -159,14 +155,15 @@ function resolveArmIntent(
   repoDir: string,
   issueId: string,
   pairId: string,
-  task: TaskState | undefined,
-  primaryTask: TaskState | undefined,
+  task: ArmTask | undefined,
+  primaryTask: ArmTask | undefined,
 ): { intent?: ExecutionIntent; source?: ArmIntentSource } {
   const belongsToPair = (intent: ExecutionIntent | null | undefined): intent is ExecutionIntent =>
     Boolean(intent?.createdAt) && (intent?.pairId === undefined || intent.pairId === pairId);
 
-  if (task?.challengeExecutionIntent?.createdAt) {
-    return { intent: task.challengeExecutionIntent, source: 'task-state' };
+  const taskIntent = task?.challengeExecutionIntent as ExecutionIntent | undefined;
+  if (taskIntent?.createdAt) {
+    return { intent: taskIntent, source: 'task-state' };
   }
   if (primaryTask && primaryTask !== task && Array.isArray(primaryTask.challengeArms)) {
     const arm = primaryTask.challengeArms.find(
@@ -190,7 +187,7 @@ function resolveArmIntent(
 }
 
 /** Resolve the feature directory an arm executed in, if its worktree survives. */
-function armFeatureDir(repoDir: string, task: TaskState | undefined): string | undefined {
+function armFeatureDir(repoDir: string, task: ArmTask | undefined): string | undefined {
   const slug = task?.slug;
   if (!slug) return undefined;
   const dir = join(repoDir, 'worktrees', slug, 'features', slug);
@@ -201,7 +198,7 @@ function collectArmEvidence(
   repoDir: string,
   side: 'primary' | 'challenger',
   issueId: string,
-  task: TaskState | undefined,
+  task: ArmTask | undefined,
   challengeStage: string | undefined,
   record: Record<string, unknown> | undefined,
   evals: EvalRecord[],
@@ -252,7 +249,7 @@ function collectArmEvidence(
     }
   }
 
-  let prReference = task.prUrl ?? task.pr ?? (side === 'primary'
+  let prReference = (task.pr != null ? String(task.pr) : undefined) ?? (side === 'primary'
     ? (record?.primaryPrUrl as string | undefined)
     : (record?.challengerPrUrl as string | undefined));
   if (!prReference) {
@@ -309,7 +306,7 @@ export function assessChallengePair(
   const recordsPath = join(repoDir, '.wavemill', 'evals', 'challenge-records.jsonl');
   const evalsPath = join(repoDir, '.wavemill', 'evals', 'evals.jsonl');
 
-  const state = readJson<{ tasks?: Record<string, TaskState> }>(statePath);
+  const state = readWorkflowState(statePath);
   const tasks = state?.tasks ?? {};
   const records = readJsonl<Record<string, unknown>>(recordsPath);
   const evals = readJsonl<EvalRecord>(evalsPath);

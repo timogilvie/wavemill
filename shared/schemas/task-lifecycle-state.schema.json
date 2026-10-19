@@ -138,7 +138,7 @@
       }
     },
     "attempt": {
-      "type": "object",
+      "type": ["object", "null"],
       "additionalProperties": true,
       "properties": {
         "schemaVersion": {
@@ -159,7 +159,7 @@
       }
     },
     "prReconciliation": {
-      "type": "object",
+      "type": ["object", "null"],
       "additionalProperties": true,
       "properties": {
         "schemaVersion": {

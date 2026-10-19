@@ -18,6 +18,12 @@ import type { FeatureState } from './feature-state.ts';
 import type { TraceEvent } from './trace-event.ts';
 import type { EvalRecord } from './eval-schema.ts';
 import { parseTaskId } from './task-identity.ts';
+import {
+  readWorkflowState as readWorkflowStateFile,
+  workflowTaskEntries,
+  type TaskRecord,
+  type WorkflowState,
+} from './workflow-state.ts';
 import { getStageFailureEnvelopePath, validateStageFailureEnvelope } from './native-agent/stage-failure-envelope.ts';
 
 // ── Public Types ──────────────────────────────────────────────────────────────
@@ -791,10 +797,8 @@ function readJsonlTolerant<T>(filePath: string): JsonlReadResult<T> {
   return { records, malformedLines, missing: false };
 }
 
-function readWorkflowState(repoDir: string): Record<string, unknown> | null {
-  const statePath = join(repoDir, '.wavemill', 'workflow-state.json');
-  const result = readJsonTolerant(statePath);
-  return result.status === 'ok' ? result.value : null;
+function readWorkflowState(repoDir: string): WorkflowState | null {
+  return readWorkflowStateFile(join(repoDir, '.wavemill', 'workflow-state.json'));
 }
 
 function readEvalRecordsTolerant(repoDir: string): { records: EvalRecord[]; malformedLines: Array<{ line: number; reason: string }> } {
@@ -839,25 +843,17 @@ function resolveIdentity(opts: DiagnoseArtifactsOptions): ResolvedIdentity {
 
   // Explicit taskId — search workflow-state, then scan features/
   if (opts.taskId) {
-    const workflowState = readWorkflowState(repoDir);
-    if (workflowState) {
-      const tasks = workflowState.tasks as Record<string, unknown> | undefined;
-      if (tasks && typeof tasks === 'object') {
-        for (const [id, task] of Object.entries(tasks)) {
-          if (id === opts.taskId && task && typeof task === 'object') {
-            const t = task as Record<string, unknown>;
-            // Try worktree path first
-            if (typeof t.worktree === 'string' && existsSync(t.worktree)) {
-              const slug = typeof t.slug === 'string' ? t.slug : readSlugFromFeatureDir(t.worktree);
-              return { featureDir: t.worktree, taskId: opts.taskId, slug };
-            }
-            // Try slug-based path
-            if (typeof t.slug === 'string') {
-              const featureDir = join(repoDir, 'features', t.slug);
-              return { featureDir, taskId: opts.taskId, slug: t.slug };
-            }
-          }
-        }
+    for (const [id, t] of workflowTaskEntries(readWorkflowState(repoDir))) {
+      if (id !== opts.taskId) continue;
+      // Try worktree path first
+      if (typeof t.worktree === 'string' && existsSync(t.worktree)) {
+        const slug = typeof t.slug === 'string' ? t.slug : readSlugFromFeatureDir(t.worktree);
+        return { featureDir: t.worktree, taskId: opts.taskId, slug };
+      }
+      // Try slug-based path
+      if (typeof t.slug === 'string') {
+        const featureDir = join(repoDir, 'features', t.slug);
+        return { featureDir, taskId: opts.taskId, slug: t.slug };
       }
     }
 
@@ -990,18 +986,13 @@ function checkContractHashDrift(
 function checkFeatureOutcomeStateMismatch(
   featureDir: string,
   featureState: FeatureState,
-  workflowState: Record<string, unknown> | null,
+  workflowState: WorkflowState | null,
   taskId: string | null,
   slug: string | null,
 ): ArtifactDiagnosticFinding[] {
-  if (!workflowState) return [];
-
-  const tasks = workflowState.tasks as Record<string, Record<string, unknown>> | undefined;
-  if (!tasks || typeof tasks !== 'object') return [];
-
   // Find the matching task entry
-  let taskEntry: Record<string, unknown> | null = null;
-  for (const [id, task] of Object.entries(tasks)) {
+  let taskEntry: TaskRecord | null = null;
+  for (const [id, task] of workflowTaskEntries(workflowState)) {
     if (taskId && id === taskId) {
       taskEntry = task;
       break;

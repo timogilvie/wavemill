@@ -1,8 +1,8 @@
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { errorMessage } from './error-utils.ts';
 import { listRemoteTaskBranches } from './tend-challenge-gate.ts';
 import { execArgvCommand } from './shell-utils.ts';
+import { readWorkflowState, workflowTaskEntries } from './workflow-state.ts';
 
 export interface PrRef {
   number: number;
@@ -193,19 +193,13 @@ function defaultWorktreeBranches(repoDir: string): Set<string> {
 }
 
 function defaultActiveWorkflowBranches(repoDir: string): Set<string> {
-  try {
-    const raw = readFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), 'utf-8');
-    const parsed = JSON.parse(raw) as { tasks?: Record<string, { branch?: unknown }> };
-    const branches = new Set<string>();
-    for (const task of Object.values(parsed.tasks ?? {})) {
-      if (typeof task.branch === 'string' && task.branch.length > 0) {
-        branches.add(task.branch);
-      }
+  const branches = new Set<string>();
+  for (const [, task] of workflowTaskEntries(readWorkflowState(join(repoDir, '.wavemill', 'workflow-state.json')))) {
+    if (typeof task.branch === 'string' && task.branch.length > 0) {
+      branches.add(task.branch);
     }
-    return branches;
-  } catch {
-    return new Set();
   }
+  return branches;
 }
 
 function defaultDeleteRemoteBranch(branch: string, repoDir: string): void {

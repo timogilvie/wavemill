@@ -38,6 +38,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import type { TaskRecord } from './workflow-state.ts';
 
 // ── Hook contract ────────────────────────────────────────────────────────────
 
@@ -177,20 +178,8 @@ export interface TaskProgress {
 export interface TaskProgressGatherOptions {
   issue: string;
   session?: string;
-  /** Task record from workflow-state.json (only used fields are optional). */
-  task?: {
-    updated?: string;
-    branch?: string;
-    slug?: string;
-    worktree?: string;
-    status?: string;
-    phase?: string;
-    lifecycle?: {
-      deliveryEvidence?: { prState?: string; prNumber?: string | number };
-      workflowOutcome?: string;
-      resourceDisposition?: string;
-    };
-  };
+  /** Task record from workflow-state.json (only the fields read here). */
+  task?: Pick<TaskRecord, 'updated' | 'branch' | 'slug' | 'worktree' | 'status' | 'phase' | 'lifecycle'>;
   worktree?: string;
   featureDir?: string;
   /**

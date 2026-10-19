@@ -24,11 +24,12 @@ import {
   normalizeStatusCheckRollup,
   type NormalizedCheckSummary,
 } from './pr-ci-status.ts';
-import { normalizeJobs, type MillJob, type WorkflowStateLike } from './job-tracker.ts';
+import { normalizeJobs, type MillJob } from './job-tracker.ts';
 import { updateBranchWithBase, type BranchBaseUpdateResult } from './promotion-controller.ts';
 import { escapeShellArg } from './shell-utils.ts';
 import { findCachedPullRequest } from './session-gh-cache.ts';
 import { mutateJsonState } from './state-mutex.ts';
+import { mutateWorkflowState, readWorkflowState as readWorkflowStateFile, type WorkflowState } from './workflow-state.ts';
 import { readStageResult, updateStageResult, type ReadyArtifacts, type StageResult } from './stage-result.ts';
 import {
   writeMarker,
@@ -233,6 +234,7 @@ export interface ReadyWatchdogStateEntry {
 
 export interface ReadyWatchdogStateFile {
   updatedAt: string;
+  // allow-task-record-shape: .wavemill/ready-watchdog.json entries, not workflow-state.json task records
   tasks: Record<string, ReadyWatchdogStateEntry>;
 }
 
@@ -260,7 +262,7 @@ export interface TickReadyWatchdogResult {
 }
 
 export interface ReadyWatchdogDeps {
-  readWorkflowState: (stateFile: string) => Promise<WorkflowStateLike>;
+  readWorkflowState: (stateFile: string) => Promise<WorkflowState>;
   fetchGitHubTruth: (prNumber: number, repoDir: string) => Promise<GitHubPRTruth>;
   enrichFailingChecks: (
     checks: NormalizedCheckSummary[],
@@ -356,7 +358,9 @@ export interface WorkflowTaskRecord extends Record<string, unknown> {
 
 const defaultDeps: ReadyWatchdogDeps = {
   async readWorkflowState(stateFile) {
-    return JSON.parse(await readFile(stateFile, 'utf-8')) as WorkflowStateLike;
+    const state = readWorkflowStateFile(stateFile);
+    if (!state) throw new Error(`workflow state at ${stateFile} is not a readable JSON object`);
+    return state;
   },
   async fetchGitHubTruth(prNumber, repoDir) {
     let stdout = '';
@@ -1603,10 +1607,10 @@ async function recoverReadyState(
     artifacts: nextArtifacts,
   });
 
-  await mutateJsonState<WorkflowStateLike>(stateFile, (current) => {
+  await mutateWorkflowState(stateFile, (current) => {
     const tasks = { ...(current.tasks ?? {}) };
     const existingTask = typeof tasks[snapshot.issueId] === 'object' && tasks[snapshot.issueId] !== null
-      ? tasks[snapshot.issueId] as Record<string, unknown>
+      ? tasks[snapshot.issueId]
       : {};
     tasks[snapshot.issueId] = {
       ...existingTask,

@@ -108,6 +108,7 @@ export function compactHotRecord(record: Record<string, unknown>): Record<string
 
 interface StateShape {
   terminalTaskHistory?: {
+    // allow-task-record-shape: terminalTaskHistory tombstones, not live .tasks records
     tasks?: Record<string, JsonValue>;
     challengePairs?: Record<string, Record<string, JsonValue>>;
   };

@@ -7,16 +7,9 @@
  * so its CLI contract and existing tests are unchanged.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { mutateJsonState } from './state-mutex.ts';
+import { existsSync } from 'node:fs';
 import { TASK_ID_RE } from './task-identity.ts';
-
-type JsonRecord = Record<string, unknown>;
-
-interface WorkflowState {
-  tasks?: Record<string, JsonRecord>;
-  [key: string]: unknown;
-}
+import { mutateWorkflowState, readWorkflowState, type TaskRecord } from './workflow-state.ts';
 
 export interface AbortTaskResult {
   issue: string;
@@ -40,7 +33,7 @@ export interface AbortTaskResult {
 // quality signal in challenge eval attribution.
 export const OPERATOR_ABORT_MARKER = 'operator_abort';
 
-function taskString(task: JsonRecord | undefined, key: string): string {
+function taskString(task: TaskRecord | undefined, key: 'phase' | 'status' | 'pr'): string {
   const value = task?.[key];
   if (typeof value === 'number') return String(value);
   return typeof value === 'string' ? value : '';
@@ -59,7 +52,10 @@ export async function abortTaskInState(
     throw new Error(`no active workflow state found at ${stateFile}`);
   }
 
-  const state = JSON.parse(readFileSync(stateFile, 'utf-8')) as WorkflowState;
+  const state = readWorkflowState(stateFile);
+  if (!state) {
+    throw new Error(`workflow state at ${stateFile} is not a readable JSON object`);
+  }
   const beforeTask = state.tasks?.[issue];
   if (!beforeTask) {
     throw new Error(`task ${issue} is not present in workflow state`);
@@ -81,7 +77,7 @@ export async function abortTaskInState(
     },
   };
 
-  await mutateJsonState<WorkflowState>(stateFile, (current) => {
+  await mutateWorkflowState(stateFile, (current) => {
     const task = current.tasks?.[issue];
     if (!task) {
       throw new Error(`task ${issue} disappeared from workflow state`);

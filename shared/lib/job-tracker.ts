@@ -1,6 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
-import { mutateJsonState } from './state-mutex.ts';
+import {
+  mutateWorkflowState,
+  readWorkflowState as readWorkflowStateFile,
+  type WorkflowState,
+} from './workflow-state.ts';
 import { errorMessage } from './error-utils.ts';
 import type { NoComparisonReason } from './challenge-comparison.ts';
 
@@ -71,13 +75,6 @@ export interface JobResultFile {
   invalidChallenge?: boolean;
 }
 
-export interface WorkflowStateLike {
-  tasks?: Record<string, Record<string, unknown>>;
-  jobs?: Record<string, MillJob> | MillJob[];
-  updated?: string;
-  [key: string]: unknown;
-}
-
 export interface LaunchJobOptions {
   statePath: string;
   job: MillJob;
@@ -119,7 +116,7 @@ export function buildJobId(job: Pick<MillJob, 'kind' | 'issueId' | 'side' | 'pai
   return `comparison-${sanitize(job.pairId)}-${prPart || 'na'}`;
 }
 
-export function normalizeJobs(state: WorkflowStateLike): Record<string, MillJob> {
+export function normalizeJobs(state: WorkflowState): Record<string, MillJob> {
   const rawJobs = state.jobs;
   if (!rawJobs) {
     return {};
@@ -188,7 +185,7 @@ export function classifyJobCompletion(
   };
 }
 
-export function settleJobSuccess<T extends WorkflowStateLike>(state: T, job: MillJob, now = new Date()): T {
+export function settleJobSuccess<T extends WorkflowState>(state: T, job: MillJob, now = new Date()): T {
   const tasks = { ...(state.tasks || {}) };
   const updatedAt = now.toISOString();
 
@@ -243,11 +240,15 @@ export function writeJobResultFile(path: string, result: JobResultFile): void {
   writeFileSync(path, `${JSON.stringify(result, null, 2)}\n`, 'utf-8');
 }
 
-function readWorkflowState(statePath: string): WorkflowStateLike {
+function readWorkflowState(statePath: string): WorkflowState {
   if (!existsSync(statePath)) {
     return {};
   }
-  return JSON.parse(readFileSync(statePath, 'utf-8')) as WorkflowStateLike;
+  const state = readWorkflowStateFile(statePath);
+  if (!state) {
+    throw new Error(`workflow state at ${statePath} is not a readable JSON object`);
+  }
+  return state;
 }
 
 function readResultFile(path: string): JobResultFile | null {
@@ -339,7 +340,7 @@ async function terminateProcess(pid: number, graceMs: number): Promise<void> {
 export async function launchJob({ statePath, job }: LaunchJobOptions): Promise<MillJob> {
   let storedJob = job;
 
-  await mutateJsonState<WorkflowStateLike>(statePath, (current) => {
+  await mutateWorkflowState(statePath, (current) => {
     const jobs = normalizeJobs(current);
     const existing = jobs[job.id];
 
@@ -449,7 +450,7 @@ export async function pollJobs({
 
   let nextState = state;
   if (updates.size > 0 || pruneIds.length > 0) {
-    nextState = await mutateJsonState<WorkflowStateLike>(statePath, (current) => {
+    nextState = await mutateWorkflowState(statePath, (current) => {
       const nextJobs = normalizeJobs(current);
       for (const [jobId, patch] of updates.entries()) {
         const existing = nextJobs[jobId];
@@ -490,7 +491,7 @@ export async function markJobSettled({
 }: MarkJobSettledOptions): Promise<MillJob | null> {
   let updatedJob: MillJob | null = null;
 
-  await mutateJsonState<WorkflowStateLike>(statePath, (current) => {
+  await mutateWorkflowState(statePath, (current) => {
     const jobs = normalizeJobs(current);
     const existing = jobs[jobId];
     if (!existing) {
@@ -501,7 +502,7 @@ export async function markJobSettled({
       };
     }
 
-    let nextState: WorkflowStateLike = {
+    let nextState: WorkflowState = {
       ...current,
       jobs,
       updated: now.toISOString(),

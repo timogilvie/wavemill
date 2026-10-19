@@ -1,10 +1,11 @@
 import { parseTaskId } from './task-identity.ts';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { readActiveChallengeComparisons, type StoredChallengeComparison } from './challenge-comparison.ts';
 import { getChallengeConfig, getChallengeEvalHardFailureRetryMaxAttempts, getChallengeGateConfig } from './config.ts';
 import { errorMessage } from './error-utils.ts';
-import { normalizeJobs, type MillJob, type WorkflowStateLike } from './job-tracker.ts';
+import { normalizeJobs, type MillJob } from './job-tracker.ts';
+import { readWorkflowState, workflowTaskEntries, type TaskRecord } from './workflow-state.ts';
 import { listOpenIssuesByIdentifierPrefix, type LinearIssueSummary } from './linear.ts';
 import type { PrMetadata } from './pr-metadata.ts';
 import { WM_LABELS } from './pr-state-labels.ts';
@@ -129,35 +130,6 @@ export interface WorkflowStateChallengeData {
   taskStateByPair: Map<string, PairTaskState>;
   activeJobsByPair: Map<string, MillJob[]>;
 }
-
-interface WorkflowStateTask {
-  pr?: unknown;
-  branch?: unknown;
-  updated?: unknown;
-  challengePairId?: unknown;
-  challengeRole?: unknown;
-  challengeModel?: unknown;
-  coderModel?: unknown;
-  evalFailed?: unknown;
-  evalCompleted?: unknown;
-  evalHardFailureRetryCount?: unknown;
-  comparisonState?: unknown;
-  challengeAborted?: unknown;
-  challengeAbortedDetail?: unknown;
-  challengeAbortedNextAction?: unknown;
-  challengeAbortedStage?: unknown;
-  challengeExecutionIntent?: unknown;
-  challengerLaunched?: unknown;
-  challengeArms?: unknown;
-  phase?: unknown;
-  slug?: unknown;
-  worktree?: unknown;
-  lifecycle?: unknown;
-}
-
-type WorkflowStateFile = WorkflowStateLike & {
-  tasks?: Record<string, WorkflowStateTask>;
-};
 
 interface ChallengeEligiblePr {
   number: number;
@@ -311,13 +283,15 @@ export function loadWorkflowStateChallengeData(repoDir: string): WorkflowStateCh
   }
 
   try {
-    const parsed = JSON.parse(readFileSync(statePath, 'utf-8')) as WorkflowStateFile;
-    const tasks = parsed.tasks ?? {};
+    const parsed = readWorkflowState(statePath);
+    if (!parsed) {
+      throw new Error('not a readable JSON object');
+    }
     const challengePairMap = new Map<number, ChallengePairInfo>();
     const taskStateByPair = new Map<string, PairTaskState>();
     const activeJobsByPair = buildActiveJobsByPair(normalizeJobs(parsed));
 
-    for (const [issueId, task] of Object.entries(tasks)) {
+    for (const [issueId, task] of workflowTaskEntries(parsed)) {
       const prNumber = parseWorkflowStatePr(task.pr);
       if (typeof task.challengePairId === 'string' && task.challengePairId.trim()) {
         const pairId = task.challengePairId.trim();
@@ -427,7 +401,7 @@ export function pairHasPendingChallengeArm(pairState: PairTaskState | undefined)
   return pairState?.primary?.hasPendingChallengeArm === true && !pairState.challenger;
 }
 
-function stageVariedModel(task: Record<string, unknown>): string | null {
+function stageVariedModel(task: TaskRecord): string | null {
   const stage = typeof task.challengeStage === 'string' ? task.challengeStage : '';
   if ((stage === 'plan' || stage === 'planning' || stage === 'planner') && typeof task.plannerModel === 'string') {
     return task.plannerModel;

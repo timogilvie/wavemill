@@ -6,6 +6,7 @@ import type { ChallengeRoutingMeta, NoComparisonReason } from './challenge-compa
 import type { EvalRecord, EvalRouting } from './eval-schema.ts';
 import { resolveEffectiveChallengeRole } from './challenge-role-utils.ts';
 import { challengerTaskKey } from './task-identity.ts';
+import { readWorkflowState, type TaskRecord } from './workflow-state.ts';
 
 export type ChallengeValidity = 'valid' | 'invalid_challenge' | 'identical_control';
 export const INVALID_CHALLENGE_REASONS = [
@@ -387,17 +388,20 @@ export interface ChallengeSideResolution {
   invalidDetails?: string;
 }
 
-type WorkflowChallengeTaskState = {
-  slug?: unknown;
-  branch?: unknown;
-  challengePairId?: unknown;
-  challengeStage?: unknown;
-  challengeVariedStage?: unknown;
-  challengeRole?: unknown;
+/**
+ * The task-record view this module reads: the canonical {@link TaskRecord}
+ * with the nested intent / arm objects narrowed to their contract types.
+ */
+type WorkflowChallengeTaskState = Omit<TaskRecord, 'challengeExecutionIntent' | 'challengeArms'> & {
   challengeExecutionIntent?: ChallengeExecutionIntent;
-  challengeIntent?: ChallengeExecutionIntent;
   challengeArms?: WorkflowChallengeArmState[];
-  challengeDivergenceReason?: unknown;
+  /**
+   * Legacy key: only pre-HOK-2900 copies of save_task_state wrote it and no
+   * current writer does, so it is not part of the schema. Rows still on disk
+   * can carry it; it is read only as a fallback behind
+   * `challengeExecutionIntent`.
+   */
+  challengeIntent?: ChallengeExecutionIntent;
 };
 
 type WorkflowChallengeArmState = {
@@ -407,10 +411,6 @@ type WorkflowChallengeArmState = {
   role?: unknown;
   variedStage?: unknown;
   executionIntent?: ChallengeExecutionIntent;
-};
-
-type WorkflowChallengeState = {
-  tasks?: Record<string, WorkflowChallengeTaskState>;
 };
 
 export type ChallengeEntryLike = {
@@ -462,14 +462,13 @@ function workflowStateCandidates(repoDir: string): string[] {
   ];
 }
 
-function loadWorkflowChallengeState(repoDir: string): WorkflowChallengeState | undefined {
+/** The task map of the first readable workflow-state candidate. */
+function loadWorkflowChallengeTasks(repoDir: string): Record<string, WorkflowChallengeTaskState> | undefined {
   for (const statePath of workflowStateCandidates(repoDir)) {
-    try {
-      if (!existsSync(statePath)) continue;
-      return JSON.parse(readFileSync(statePath, 'utf-8')) as WorkflowChallengeState;
-    } catch {
-      continue;
-    }
+    const state = readWorkflowState(statePath);
+    // The schema types the nested intent / arm objects as open records; this
+    // module's readers check each field they use before trusting it.
+    if (state) return (state.tasks ?? {}) as unknown as Record<string, WorkflowChallengeTaskState>;
   }
   return undefined;
 }
@@ -480,9 +479,9 @@ export function loadChallengeRoleFromState(
   challengePairId?: string,
 ): ChallengeSide | undefined {
   if (!challengePairId) return undefined;
-  const state = loadWorkflowChallengeState(repoDir);
+  const tasks = loadWorkflowChallengeTasks(repoDir);
   for (const key of stateTaskKeys(issueId, challengePairId)) {
-    const task = state?.tasks?.[key];
+    const task = tasks?.[key];
     if (!task) continue;
     const role = asChallengeSide(task.challengeRole)
       ?? resolveEffectiveChallengeRole(key, challengePairId, task.challengeRole)
@@ -504,9 +503,9 @@ export function loadChallengeDivergenceFromState(
   challengePairId?: string,
 ): InvalidChallengeReason | undefined {
   if (!challengePairId) return undefined;
-  const state = loadWorkflowChallengeState(repoDir);
+  const tasks = loadWorkflowChallengeTasks(repoDir);
   for (const key of stateTaskKeys(issueId, challengePairId)) {
-    const reason = clean(state?.tasks?.[key]?.challengeDivergenceReason);
+    const reason = clean(tasks?.[key]?.challengeDivergenceReason);
     if ((INVALID_CHALLENGE_REASONS as readonly string[]).includes(reason)) {
       return reason as InvalidChallengeReason;
     }
@@ -520,9 +519,9 @@ export function loadChallengeIntentFromState(
   challengePairId?: string,
 ): ChallengeExecutionIntent | undefined {
   if (!challengePairId) return undefined;
-  const state = loadWorkflowChallengeState(repoDir);
+  const tasks = loadWorkflowChallengeTasks(repoDir);
   for (const key of stateTaskKeys(issueId, challengePairId)) {
-    const task = state?.tasks?.[key];
+    const task = tasks?.[key];
     const canonical = task?.challengeExecutionIntent;
     if (canonical) return canonical;
     /* legacy fallback */
@@ -1332,7 +1331,7 @@ function taskIsReviewStageChallengeMember(
   arm?: WorkflowChallengeArmState,
 ): boolean {
   if (arm) return clean(arm.variedStage) === 'review';
-  const taskStage = clean(task.challengeStage) || clean(task.challengeVariedStage);
+  const taskStage = clean(task.challengeStage);
   if (taskStage === 'review') return true;
   if (task.challengeExecutionIntent && stageFromIntent(task.challengeExecutionIntent) === 'review') return true;
   return taskHasReviewChallengeArm(task);
@@ -1357,9 +1356,8 @@ export function resolveReviewStageChallengePin(input: {
   });
   if (filePin) return filePin;
 
-  const state = loadWorkflowChallengeState(input.repoDir);
+  const tasks = loadWorkflowChallengeTasks(input.repoDir) ?? {};
   const featureSlug = input.featureDir ? path.basename(input.featureDir) : undefined;
-  const tasks = state?.tasks ?? {};
   for (const [key, task] of Object.entries(tasks)) {
     const match = taskOrArmMatchesRun({
       key,
