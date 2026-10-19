@@ -147,6 +147,25 @@ function isRepoSuiteRunner(argv: readonly string[], opts: { cwd: string; worktre
   return /^tests\/run-[^/]+\.sh$/.test(normalized);
 }
 
+/**
+ * `tests/run-related.sh` is itself a focused selector — it only runs tests
+ * related to the current diff — so it is always allowed, with or without
+ * `--shard` / `--list`. Keeps the generic repo-suite refusal in place for
+ * every other `run-*.sh` runner.
+ */
+function isRunRelated(argv: readonly string[], opts: { cwd: string; worktreePath: string }): boolean {
+  if (argv.length === 0) return false;
+  let scriptIdx = -1;
+  if ((argv[0] === 'bash' || argv[0] === 'sh') && argv.length >= 2) {
+    scriptIdx = 1;
+  } else {
+    scriptIdx = 0;
+  }
+  const script = argv[scriptIdx]!;
+  const normalized = normalizeToRepoRelative(script, opts.cwd, opts.worktreePath);
+  return normalized === 'tests/run-related.sh';
+}
+
 function normalizeToRepoRelative(scriptPath: string, cwd: string, worktreePath: string): string | null {
   let resolved: string;
   if (path.isAbsolute(scriptPath)) {
@@ -315,6 +334,11 @@ export function classifyTestCommandScope(
     return { scope: 'focused', expansion };
   }
 
+  if (isRunRelated(argv, opts)) {
+    // tests/run-related.sh is a diff-scoped selector; always focused.
+    return { scope: 'focused' };
+  }
+
   if (isRepoSuiteRunner(argv, opts) && !hasShardOrListFlag(argv)) {
     return { scope: 'full-suite', reason: 'repo-suite-runner' };
   }
@@ -324,6 +348,7 @@ export function classifyTestCommandScope(
 
 export const FOCUSED_TEST_GUIDANCE = [
   'Use focused test commands that complete inside the run_tests time limit:',
+  '  - bash tests/run-related.sh (runs only the tests related to your diff; <60s typical)',
   '  - node --test <files>',
   '  - npx tsx --test <files>',
   '  - bash tests/<one>.test.sh',
