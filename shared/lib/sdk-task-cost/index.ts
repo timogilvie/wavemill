@@ -25,4 +25,5 @@ export {
   type ProjectTaskCostOptions,
 } from './project.ts';
 export { runSdkTaskCostShadow, type SdkTaskCostShadowOptions } from './shadow.ts';
+export { collectSdkTaskCostSummariesLazy } from './lazy-collect.ts';
 export type { TaskCostSummaryV1 } from './contract.ts';
