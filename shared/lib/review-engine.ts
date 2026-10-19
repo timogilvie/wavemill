@@ -428,7 +428,29 @@ async function invokeLLMWithRetry(
   reviewer: ReviewerPersona,
   llmAttempt: number,
   cli: ReviewCliCall = { provider: 'claude', failClosed: false },
+  adapter?: TransportAdapter,
 ): Promise<ReviewLLMResponse> {
+  // If adapter is provided, use it for invocation (HOK-3248)
+  if (adapter) {
+    const adapterResult = await adapter.invoke(prompt, {
+      timeout,
+      maxRetries,
+      signal: options.signal,
+    });
+
+    if (adapterResult.error) {
+      throw new ReviewCliContextWindowExceededError(adapterResult.error.message);
+    }
+
+    return {
+      text: adapterResult.text,
+      provider: cli.provider,
+      invokedModel: model,
+      ...(adapterResult.reportedModel !== 'unverified' ? { reportedModel: adapterResult.reportedModel } : {}),
+    };
+  }
+
+  // Fallback: use callLLM directly (for backward compatibility)
   const ladder: Pick<LLMCallOptions, 'taskType' | 'fallbackModels'> = cli.failClosed
     ? { fallbackModels: [] }
     : { taskType: 'review' };
@@ -546,7 +568,9 @@ export function buildCliAnalysisIdentity(input: {
   const fallbackReason = response.fallbackChain?.length
     ? `fallback_ladder:${response.fallbackChain.map((step) => `${step.model}=${step.reason}`).join(',')}`
     : undefined;
-  if (response.reportedModel) {
+  // Only treat reportedModel as verified if it's not the 'unverified' sentinel
+  const isReportedModelVerified = response.reportedModel && response.reportedModel !== 'unverified';
+  if (isReportedModelVerified) {
     const resolvedModel =
       response.provider === 'codex'
         ? response.reportedModel
@@ -809,6 +833,7 @@ async function runReviewWithRetry(
   persona: ReviewerPersona,
   attempt: number = 1,
   cli: ReviewCliCall = { provider: 'claude', failClosed: false },
+  adapter?: TransportAdapter,
 ): Promise<ReviewResult> {
   const maxAttempts = 2;
 
@@ -822,6 +847,7 @@ async function runReviewWithRetry(
     persona,
     attempt,
     cli,
+    adapter,
   );
   const responseText = response.text;
 
@@ -869,6 +895,7 @@ async function runReviewWithRetry(
         persona,
         attempt + 1,
         cli,
+        adapter,
       );
     } else {
       throw new Error(
@@ -933,6 +960,7 @@ async function runReviewWithRetry(
         persona,
         attempt + 1,
         cli,
+        adapter,
       );
     }
     throw error;
@@ -1063,6 +1091,7 @@ async function runPersonaReview(
     persona,
     1,
     cli,
+    adapter,
   );
 
   // Tag all findings with this persona
