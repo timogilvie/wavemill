@@ -17,6 +17,13 @@ import {
   type PricingTable,
 } from './workflow-cost.ts';
 import { ClaudeSessionAdapter, CodexSessionAdapter, NativeSessionAdapter } from './session-adapters.ts';
+import { getEffectiveRegistry, resolveModelRegistryKey } from './model-registry.ts';
+import {
+  collectSdkTaskCostSummaries,
+  projectTaskCostSummaryToWorkflowCost,
+  selectPrimaryTaskCostSummary,
+  type TaskCostSummaryV1,
+} from './sdk-task-cost/index.ts';
 import type { CostParityCase, CostParityManifest, ExpectedFix, ValidationResult } from '../fixtures/cost-parity/schema.ts';
 import { validateManifest } from '../fixtures/cost-parity/schema.ts';
 
@@ -211,17 +218,20 @@ function translateFixtureLine(
       };
       if (line.response_id !== undefined) translated.responseId = line.response_id;
       if (line.model !== undefined) translated.model = line.model;
+      // Pi transcript usage keys (`piUsageToSessionModelUsage`). A missing
+      // count is omitted so the adapter sees an absent field.
       const inputTokens = line.input_tokens ?? null;
       const outputTokens = line.output_tokens ?? null;
-      translated.usage = {
-        inputTokens,
-        outputTokens,
-        cacheCreationTokens: line.cache_creation_tokens ?? 0,
-        cacheReadTokens: line.cache_read_tokens ?? 0,
+      const usageOut: Record<string, unknown> = {
+        cacheWrite: line.cache_creation_tokens ?? 0,
+        cacheRead: line.cache_read_tokens ?? 0,
         totalTokens:
           (typeof inputTokens === 'number' ? inputTokens : 0) +
           (typeof outputTokens === 'number' ? outputTokens : 0),
       };
+      if (typeof inputTokens === 'number') usageOut.input = inputTokens;
+      if (typeof outputTokens === 'number') usageOut.output = outputTokens;
+      translated.usage = usageOut;
       if (typeof line.cost_usd === 'number') {
         (translated.usage as Record<string, unknown>).cost = { total: line.cost_usd };
       }
@@ -360,7 +370,7 @@ export type CostEngine = (ctx: {
   agentType: string;
   issueId: string;
   exact?: boolean;
-}) => Promise<{ outcome: WorkflowCostOutcome; warnings: string[] }>;
+}) => Promise<{ outcome: WorkflowCostOutcome; warnings: string[]; summary?: TaskCostSummaryV1 }>;
 
 export const legacyEngine: CostEngine = async (ctx) => {
   const warnings: string[] = [];
@@ -380,6 +390,50 @@ export const legacyEngine: CostEngine = async (ctx) => {
     });
 
     return { outcome, warnings };
+  } finally {
+    console.warn = originalWarn;
+  }
+};
+
+/**
+ * SDK engine (HOK-3076): the HOK-3075 bridge — adapter scan → SDK
+ * `TaskCostSummaryV1` → projection back into the legacy outcome shape — so it
+ * can be diffed like-for-like against {@link legacyEngine} on the same
+ * materialized sessions and the same pricing table. No summary is the SDK's
+ * "no evidence" and maps to the legacy `no_sessions` failure.
+ */
+export const sdkEngine: CostEngine = async (ctx) => {
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map((arg) => String(arg)).join(' '));
+  };
+
+  try {
+    const summaries = collectSdkTaskCostSummaries({
+      worktreePath: ctx.worktreePath,
+      branchName: ctx.branchName,
+      repoDir: ctx.repoDir,
+      issueId: ctx.issueId,
+      pricingTable: ctx.pricingTable,
+    });
+    const primary = selectPrimaryTaskCostSummary(summaries, ctx.agentType);
+    if (!primary) {
+      return {
+        outcome: {
+          status: 'no_sessions',
+          reason: 'SDK bridge produced no task-cost summary',
+          diagnostics: { agentType: ctx.agentType },
+        },
+        warnings,
+      };
+    }
+    const registry = getEffectiveRegistry(ctx.repoDir);
+    const outcome = projectTaskCostSummaryToWorkflowCost(primary, {
+      pricingTable: ctx.pricingTable,
+      registryLookup: (modelId) => resolveModelRegistryKey(registry, modelId),
+    });
+    return { outcome, warnings, summary: primary };
   } finally {
     console.warn = originalWarn;
   }
@@ -430,6 +484,32 @@ export async function captureCase(
       sync: syncResult,
       exact: exactResult,
     };
+  } finally {
+    cleanupMaterialization(ctx);
+  }
+}
+
+export interface CostParityCaseOutcomes {
+  legacy: Awaited<ReturnType<CostEngine>>;
+  sdk: Awaited<ReturnType<CostEngine>>;
+}
+
+/**
+ * Run the legacy and SDK engines on one materialization of a case, with the
+ * case's own pricing table on both sides (HOK-3076 migration compare).
+ */
+export async function captureCaseOutcomes(caseItem: CostParityCase): Promise<CostParityCaseOutcomes> {
+  const ctx = materializeCase(caseItem);
+  try {
+    const args = {
+      worktreePath: ctx.worktree,
+      branchName: caseItem.branch || 'task/parity',
+      repoDir: ctx.repoDir,
+      pricingTable: caseItem.pricingTable,
+      agentType: caseItem.agentType,
+      issueId: caseItem.issueId,
+    };
+    return { legacy: await legacyEngine(args), sdk: await sdkEngine(args) };
   } finally {
     cleanupMaterialization(ctx);
   }
@@ -510,7 +590,7 @@ function isUsdField(path: string): boolean {
   return /[Cc]ost[Uu]sd$|totalCostUsd|workflowCost/.test(path);
 }
 
-function deepDiff(baseline: unknown, candidate: unknown, path: string = ''): Array<{
+export function deepDiff(baseline: unknown, candidate: unknown, path: string = ''): Array<{
   path: string;
   baseline: unknown;
   candidate: unknown;

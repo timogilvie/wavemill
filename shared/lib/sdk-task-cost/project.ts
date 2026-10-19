@@ -102,7 +102,10 @@ function mergePricingSource(
 function attributionReason(summary: TaskCostSummaryV1): WorkflowCostAttributionReason | undefined {
   switch (summary.coverage) {
     case 'partial':
-      return 'mixed_coverage';
+      // Name the gap when the SDK recorded one (an unpriced model, missing
+      // usage), matching the legacy partial reason; else a mixed record.
+      return UNAVAILABLE_REASONS.find((reason) => reason !== 'no_priced_sessions' && summary.diagnostics.includes(reason))
+        ?? 'mixed_coverage';
     case 'known_zero':
       return undefined;
     case 'unavailable':

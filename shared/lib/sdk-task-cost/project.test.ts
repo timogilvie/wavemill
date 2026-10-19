@@ -68,8 +68,15 @@ describe('projectTaskCostSummaryToWorkflowCost', () => {
     const outcome = project('codex-reasoning-and-cache');
     assert.equal(outcome.models['gpt-5-codex'].outputTokens, 225);
     assert.equal(outcome.attribution?.source, 'codex');
+    // Codex has no cache-write category: a structural 0, not a gap.
+    assert.equal(outcome.attribution?.coverage, 'complete');
+    assert.equal(outcome.attribution?.reason, undefined);
+  });
+
+  it('names the gap on a partial record instead of a bare mixed_coverage', () => {
+    const outcome = project('native-unpriced-model');
     assert.equal(outcome.attribution?.coverage, 'partial');
-    assert.equal(outcome.attribution?.reason, 'mixed_coverage');
+    assert.equal(outcome.attribution?.reason, 'unpriced_model');
   });
 
   it('keeps provider-reported cost distinguishable from the estimate', () => {
