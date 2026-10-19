@@ -152,6 +152,11 @@ function triggersPreflight(p: string): boolean {
   if (/^tools\/check-[^/]+\.ts$/.test(p)) return true;
   if (/^tests\/check-[^/]+\.test\.(sh|ts)$/.test(p)) return true;
   if (/^shared\/lib\/[^/]+\.sh$/.test(p)) return true;
+  // Build/graph inputs: a change to tsconfig* or package.json can remap path
+  // aliases or deps and silently break the regex-only TS import graph. Run
+  // the preflight guards as a safe superset.
+  if (/^tsconfig[^/]*\.json$/.test(p)) return true;
+  if (p === 'package.json') return true;
   return false;
 }
 

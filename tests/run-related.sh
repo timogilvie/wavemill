@@ -107,7 +107,7 @@ resolve_base_ref() {
       echo "$BASE_REF"
       return 0
     fi
-    echo "run-related.sh: base ref '$BASE_REF' not found" >&2
+    echo "run-related.sh: --base '$BASE_REF' does not resolve to a known ref" >&2
     return 1
   fi
   for cand in origin/auto/integration origin/main main; do
@@ -126,7 +126,13 @@ compute_change_set() {
   fi
   local base
   if ! base="$(resolve_base_ref)"; then
-    # No usable base. Fall back to just the unstaged/staged diff.
+    # User explicitly asked for --base and it was invalid: resolve_base_ref
+    # printed the error to stderr. A silent fallback would run on the wrong
+    # change set, so bail out as a usage error.
+    if [[ -n "$BASE_REF" ]]; then
+      exit 2
+    fi
+    # Auto-fallback case: no candidate base available. Use just the local diff.
     {
       git -C "$REPO_ROOT" diff --name-only 2>/dev/null || true
       git -C "$REPO_ROOT" diff --name-only --cached 2>/dev/null || true
