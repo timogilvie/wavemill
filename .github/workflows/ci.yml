@@ -402,7 +402,7 @@ jobs:
       matrix:
         journey: [happy-path, gh-lag-after-push]
     env:
-      RUN_JOURNEYS: ${{ needs.check-paths.outputs.journeys == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.head_ref == 'auto/integration') }}
+      RUN_JOURNEYS: ${{ needs.check-paths.outputs.journeys == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.head_ref == 'auto/integration' && github.base_ref == 'main') }}
 
     steps:
       - name: Fail if change detection did not succeed
@@ -481,6 +481,14 @@ jobs:
           pattern: timing-journeys-*
           path: journey-timings
           merge-multiple: true
+
+      - name: Check journey timing artifacts
+        run: |
+          if [ -d journey-timings ] && [ "$(ls -A journey-timings 2>/dev/null)" ]; then
+            echo "✓ Found journey timing artifacts"
+          else
+            echo "ℹ️  No journey timing artifacts found (journeys may have been skipped)"
+          fi
 
       - name: Merge journey timings
         id: timings
