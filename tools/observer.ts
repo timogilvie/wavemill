@@ -67,7 +67,8 @@ import {
   detectRepoConfigIntegrity,
   type ConfigIntegrityIssue,
 } from '../shared/lib/config-integrity.ts';
-import { normalizeTaskLifecycle, type CleanupEpisode, type TaskLifecycleState } from '../shared/lib/task-lifecycle.ts';
+import { normalizeTaskLifecycle, type CleanupEpisode } from '../shared/lib/task-lifecycle.ts';
+import { readWorkflowState, workflowTaskEntries, type TaskRecord } from '../shared/lib/workflow-state.ts';
 import { resolveEffectiveTaskConfig, type EffectiveTaskConfig } from '../shared/lib/effective-task-config.ts';
 import {
   getTaskProgress,
@@ -167,25 +168,20 @@ interface ProcessRow {
   command: string;
 }
 
-interface TaskState {
+/**
+ * A workflow-state task as the observer sees it: keyed by `issue`, with the
+ * read fields taken from {@link TaskRecord} and empty strings normalized to
+ * undefined. `pr` is normalized to a string.
+ */
+type ObservedTask = Pick<
+  TaskRecord,
+  | 'slug' | 'phase' | 'status' | 'worktree' | 'branch' | 'updated' | 'agent'
+  | 'challengeRole' | 'challengePairId' | 'challengeAborted' | 'evalCompleted'
+  | 'executionOwner' | 'paneState' | 'lifecycle'
+> & {
   issue: string;
-  slug?: string;
-  phase?: string;
-  status?: string;
   pr?: string;
-  worktree?: string;
-  branch?: string;
-  baseBranch?: string;
-  updated?: string;
-  agent?: string;
-  challengeRole?: string;
-  challengePairId?: string;
-  challengeAborted?: string;
-  evalCompleted?: boolean;
-  executionOwner?: string;
-  paneState?: string;
-  lifecycle?: TaskLifecycleState | Record<string, unknown>;
-}
+};
 
 interface Finding {
   id: string;
@@ -269,7 +265,7 @@ interface RepoSnapshot {
   monitorTimingPath?: string;
   /** HOK-3207: parsed .wavemill/monitor-timing.json (undefined on parse errors). */
   monitorTiming?: any;
-  tasks: TaskState[];
+  tasks: ObservedTask[];
   stateMtime?: string;
   logMtime?: string;
 }
@@ -671,45 +667,34 @@ function isWavemillProcess(command: string): boolean {
   return /wavemill|\/tmp\/wavemill-monitor|tend\.ts|observer\.ts|plan-queue\.ts|ready-watchdog|tmux attach -t wavemill/.test(command);
 }
 
-function readWorkflowTasks(stateFile: string): TaskState[] {
-  try {
-    const parsed = JSON.parse(readFileSync(stateFile, 'utf8'));
-    const tasks = parsed?.tasks;
-    if (!tasks || typeof tasks !== 'object') return [];
-    return Object.entries(tasks).map(([issue, value]) => {
-      const task = (value ?? {}) as Record<string, unknown>;
-      return {
-        issue,
-        slug: stringValue(task.slug),
-        phase: stringValue(task.phase),
-        status: stringValue(task.status),
-        pr: stringValue(task.pr),
-        worktree: stringValue(task.worktree),
-        branch: stringValue(task.branch),
-        baseBranch: stringValue(task.baseBranch),
-        updated: stringValue(task.updated),
-        agent: stringValue(task.agent),
-        challengeRole: stringValue(task.challengeRole),
-        challengePairId: stringValue(task.challengePairId),
-        challengeAborted: stringValue(task.challengeAborted),
-        evalCompleted: task.evalCompleted === true,
-        executionOwner: stringValue(task.executionOwner),
-        paneState: stringValue(task.paneState),
-        lifecycle: task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle)
-          ? task.lifecycle as TaskLifecycleState | Record<string, unknown>
-          : undefined,
-      };
-    });
-  } catch {
-    return [];
-  }
+function readWorkflowTasks(stateFile: string): ObservedTask[] {
+  return workflowTaskEntries(readWorkflowState(stateFile)).map(([issue, task]) => ({
+    issue,
+    slug: stringValue(task.slug),
+    phase: stringValue(task.phase),
+    status: stringValue(task.status),
+    pr: stringValue(task.pr),
+    worktree: stringValue(task.worktree),
+    branch: stringValue(task.branch),
+    updated: stringValue(task.updated),
+    agent: stringValue(task.agent),
+    challengeRole: stringValue(task.challengeRole),
+    challengePairId: stringValue(task.challengePairId),
+    challengeAborted: stringValue(task.challengeAborted),
+    evalCompleted: task.evalCompleted === true,
+    executionOwner: stringValue(task.executionOwner) as TaskRecord['executionOwner'],
+    paneState: stringValue(task.paneState) as TaskRecord['paneState'],
+    lifecycle: task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle)
+      ? task.lifecycle
+      : undefined,
+  }));
 }
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-function taskCleanupEpisode(task: TaskState): CleanupEpisode | undefined {
+function taskCleanupEpisode(task: ObservedTask): CleanupEpisode | undefined {
   const lifecycle = task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle)
     ? task.lifecycle as Record<string, unknown>
     : undefined;
@@ -720,7 +705,7 @@ function taskCleanupEpisode(task: TaskState): CleanupEpisode | undefined {
   return record as CleanupEpisode;
 }
 
-function cleanupEpisodeFinding(repo: RepoSnapshot, task: TaskState): Finding | undefined {
+function cleanupEpisodeFinding(repo: RepoSnapshot, task: ObservedTask): Finding | undefined {
   const episode = taskCleanupEpisode(task);
   if (!episode || episode.disposition === 'reaped') return undefined;
 
@@ -776,13 +761,13 @@ interface ClassifiedResidue {
   evidence: string[];
 }
 
-function lifecycleRecord(task: TaskState): Record<string, unknown> {
+function lifecycleRecord(task: ObservedTask): Record<string, unknown> {
   return task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle)
     ? task.lifecycle as Record<string, unknown>
     : {};
 }
 
-function taskDeliveryEvidence(task: TaskState): Record<string, unknown> {
+function taskDeliveryEvidence(task: ObservedTask): Record<string, unknown> {
   const delivery = lifecycleRecord(task).deliveryEvidence;
   return delivery && typeof delivery === 'object' && !Array.isArray(delivery) ? delivery as Record<string, unknown> : {};
 }
@@ -791,7 +776,7 @@ function evidenceString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-function deliveryEvidenceProvesMerged(task: TaskState): boolean {
+function deliveryEvidenceProvesMerged(task: ObservedTask): boolean {
   const evidence = taskDeliveryEvidence(task);
   const state = evidenceString(evidence.prState)?.toUpperCase();
   return Boolean(evidenceString(evidence.mergeSha) && (!state || state === 'MERGED'));
@@ -801,14 +786,14 @@ function deliveryEvidenceProvesMerged(task: TaskState): boolean {
 // very large delta stays readable without hiding the fact that more work exists.
 const DIRTY_WORKTREE_PATH_LIMIT = 8;
 
-function renderDirtyWorktreeRecommendation(task: TaskState, worktreeDirty: WorktreeDirtyStatus): string {
+function renderDirtyWorktreeRecommendation(task: ObservedTask, worktreeDirty: WorktreeDirtyStatus): string {
   if (worktreeDirty.state === 'unreadable') {
     return `Observer could not read ${task.worktree ?? 'the task worktree'}'s git status. Inspect the worktree by hand before terminalizing cleanup; do not abort or reap while the risk state is unknown.`;
   }
   return `The worktree still holds uncommitted or untracked work that is not on any branch. Recover it first: commit and push the task branch and open or update a draft PR, or copy the files off the worktree, before terminalizing cleanup. Never run \`wavemill mill abort ${task.issue}\` while the tree is dirty - the reap deletes these files.`;
 }
 
-function renderCleanupRecommendation(disposition: ResidueDisposition, task: TaskState, config: EffectiveTaskConfig, residue?: BranchResidue, worktreeDirty?: WorktreeDirtyStatus): string {
+function renderCleanupRecommendation(disposition: ResidueDisposition, task: ObservedTask, config: EffectiveTaskConfig, residue?: BranchResidue, worktreeDirty?: WorktreeDirtyStatus): string {
   const branch = residue?.branch ?? taskBranch(task) ?? task.branch ?? 'the task branch';
   const base = config.baseBranch.value;
   const policy = config.remoteBranchDeletionPolicy?.value;
@@ -867,7 +852,7 @@ function dirtyWorktreeEvidence(worktreeDirty: WorktreeDirtyStatus): string[] {
   return evidence;
 }
 
-function classifyResidue(task: TaskState, config: EffectiveTaskConfig, residue?: BranchResidue, worktreeDirty?: WorktreeDirtyStatus): ClassifiedResidue {
+function classifyResidue(task: ObservedTask, config: EffectiveTaskConfig, residue?: BranchResidue, worktreeDirty?: WorktreeDirtyStatus): ClassifiedResidue {
   const episode = taskCleanupEpisode(task);
   const delivery = taskDeliveryEvidence(task);
   const evidence: string[] = [
@@ -940,7 +925,7 @@ function classifyResidue(task: TaskState, config: EffectiveTaskConfig, residue?:
   };
 }
 
-function resolveObserverTaskConfig(repo: RepoSnapshot, issue: string, task?: TaskState): EffectiveTaskConfig {
+function resolveObserverTaskConfig(repo: RepoSnapshot, issue: string, task?: ObservedTask): EffectiveTaskConfig {
   return resolveEffectiveTaskConfig({
     repoDir: repo.repoDir,
     issue,
@@ -961,7 +946,7 @@ function observerBaseBranchForIssue(repo: RepoSnapshot, issue?: string): string 
   }
 }
 
-function effectiveConfigDriftFinding(repo: RepoSnapshot, task: TaskState, config: EffectiveTaskConfig): Finding | undefined {
+function effectiveConfigDriftFinding(repo: RepoSnapshot, task: ObservedTask, config: EffectiveTaskConfig): Finding | undefined {
   const evidence: string[] = [];
   if (config.baseBranch.driftFromRepoConfig !== undefined) {
     evidence.push(`baseBranch=${config.baseBranch.value}`);
@@ -1004,7 +989,7 @@ function cleanupIncidentSeverity(disposition: ResidueDisposition): IncidentRecor
   return 'info';
 }
 
-function cleanupEvidenceKey(task: TaskState, config: EffectiveTaskConfig, residue?: BranchResidue): string {
+function cleanupEvidenceKey(task: ObservedTask, config: EffectiveTaskConfig, residue?: BranchResidue): string {
   const delivery = taskDeliveryEvidence(task);
   const episode = taskCleanupEpisode(task);
   return [
@@ -1014,7 +999,7 @@ function cleanupEvidenceKey(task: TaskState, config: EffectiveTaskConfig, residu
   ].join(':');
 }
 
-function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string, progressLookup?: (task: TaskState) => TaskProgress | undefined): IncidentRecord[] {
+function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string, progressLookup?: (task: ObservedTask) => TaskProgress | undefined): IncidentRecord[] {
   const incidents: IncidentRecord[] = [];
   const parsedNow = Date.parse(timestamp);
   const now = Number.isFinite(parsedNow) ? parsedNow : Date.now();
@@ -1652,7 +1637,7 @@ function statMarker(path: string, now: number): { mtimeMs: number; ageMs: number
 
 function buildMarkerIgnoredFinding(
   repo: RepoSnapshot,
-  task: TaskState,
+  task: ObservedTask,
   featureDir: string,
   now: number,
   options: ObserverOptions,
@@ -2846,11 +2831,11 @@ function terminalStatus(status?: string): boolean {
     || status === 'replaced';
 }
 
-function normalizedLifecycle(task: TaskState) {
+function normalizedLifecycle(task: ObservedTask) {
   return normalizeTaskLifecycle(task);
 }
 
-function taskWorkflowIsTerminal(task: TaskState): boolean {
+function taskWorkflowIsTerminal(task: ObservedTask): boolean {
   return normalizedLifecycle(task).lifecycle.workflowOutcome !== 'active';
 }
 
@@ -2866,7 +2851,7 @@ interface PaneResidue {
  * title references the issue/worktree. `live` distinguishes a running agent
  * from a window that has fallen back to a shell or a dead pane.
  */
-function taskPaneResidue(repo: RepoSnapshot, task: TaskState, panes: Pane[]): PaneResidue {
+function taskPaneResidue(repo: RepoSnapshot, task: ObservedTask, panes: Pane[]): PaneResidue {
   const expectedWindow = task.slug ? `${task.issue}-${task.slug}` : task.issue;
   const matching = panes.filter((pane) => {
     if (pane.session !== repo.session) return false;
@@ -2922,10 +2907,10 @@ const SETTLED_AGENT_STATES: ReadonlySet<HookState> = new Set<HookState>([
  */
 function taskHasLiveExecutionEvidence(
   repo: RepoSnapshot,
-  task: TaskState,
+  task: ObservedTask,
   panes: Pane[],
   processes: ProcessRow[],
-  progressLookup?: (task: TaskState) => TaskProgress | undefined,
+  progressLookup?: (task: ObservedTask) => TaskProgress | undefined,
 ): boolean {
   const progress = progressLookup ? progressLookup(task) : undefined;
   if (progress?.agentState === 'working') return true;
@@ -2949,11 +2934,11 @@ function taskHasLiveExecutionEvidence(
  * status/phase "error". HOK-2911 observed error arms parked with live
  * worktrees and unpushed commits; they must not be exempt from residue checks.
  */
-function taskHasTerminalResidueStatus(task: TaskState): boolean {
+function taskHasTerminalResidueStatus(task: ObservedTask): boolean {
   return taskWorkflowIsTerminal(task) || terminalStatus(task.status) || task.status === 'error' || task.phase === 'error';
 }
 
-function taskBranch(task: TaskState): string | undefined {
+function taskBranch(task: ObservedTask): string | undefined {
   if (task.branch) return task.branch;
   return task.slug ? `task/${task.slug}` : undefined;
 }
@@ -2969,8 +2954,8 @@ function taskBranch(task: TaskState): string | undefined {
  * WeakMap keyed on the task record so gather IO (git log, git status, stat)
  * happens at most once per task.
  */
-function makeProgressLookup(repo: RepoSnapshot, now: number): (task: TaskState) => TaskProgress | undefined {
-  const cache = new WeakMap<TaskState, TaskProgress>();
+function makeProgressLookup(repo: RepoSnapshot, now: number): (task: ObservedTask) => TaskProgress | undefined {
+  const cache = new WeakMap<ObservedTask, TaskProgress>();
   const nowDate = new Date(now);
   return (task) => {
     const cached = cache.get(task);
@@ -2994,10 +2979,10 @@ function makeProgressLookup(repo: RepoSnapshot, now: number): (task: TaskState) 
 }
 
 function taskAgeMinutes(
-  task: TaskState,
+  task: ObservedTask,
   repo: RepoSnapshot,
   now: number,
-  _progressLookup?: (task: TaskState) => TaskProgress | undefined,
+  _progressLookup?: (task: ObservedTask) => TaskProgress | undefined,
 ): number | undefined {
   // HOK-3101 note: `taskAgeMinutes` intentionally keeps the semantics that
   // existing residue and stale-active detectors pin — it is the age of the
@@ -3106,7 +3091,7 @@ function inspectTaskBranchResidue(repoDir: string, branch: string, baseBranch: s
 }
 
 /** Best-effort PR state evidence; a failed gh call reports unknown, never throws. */
-function taskPrEvidence(repoDir: string, task: TaskState): string {
+function taskPrEvidence(repoDir: string, task: ObservedTask): string {
   if (!task.pr) return 'pr=none';
   const result = run('gh', ['pr', 'view', task.pr, '--json', 'state,url,baseRefName'], 8_000, repoDir);
   if (!result.ok) return `pr=#${task.pr} state=unknown`;
@@ -3139,7 +3124,7 @@ function gitRevParse(repoDir: string, ref: string): string | undefined {
  * checkout (tests often run with `worktree === repoDir`), falling back to
  * `features/<slug>` under the worktree when neither exists yet.
  */
-function resolveTaskStateDir(repoDir: string, task: TaskState): string | undefined {
+function resolveTaskStateDir(repoDir: string, task: ObservedTask): string | undefined {
   if (!task.slug) return undefined;
   const bases = [task.worktree, repoDir].filter((base): base is string => Boolean(base));
   for (const base of bases) {
@@ -3386,7 +3371,7 @@ function lastCommitEpochMs(repoDir: string, branch: string): number | undefined 
 export function detectExhaustedRetries(
   repo: RepoSnapshot,
   now: number,
-  progressLookup: (task: TaskState) => TaskProgress | undefined,
+  progressLookup: (task: ObservedTask) => TaskProgress | undefined,
 ): Finding[] {
   const findings: Finding[] = [];
   for (const task of repo.tasks) {
@@ -3672,7 +3657,7 @@ function canResolveInteractivePromptByAbsence(
   return currentAt > observedAt;
 }
 
-function readTaskReviewArtifactText(task: TaskState): string | undefined {
+function readTaskReviewArtifactText(task: ObservedTask): string | undefined {
   if (!task.worktree || !task.slug) return undefined;
   const artifactPath = join(task.worktree, 'features', task.slug, '.review-result.json');
   if (!existsSync(artifactPath)) return undefined;
@@ -4035,7 +4020,7 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
   };
 }
 
-function resolveTaskArtifactDir(repoDir: string, task: TaskState): string | null {
+function resolveTaskArtifactDir(repoDir: string, task: ObservedTask): string | null {
   const candidates = [
     task.worktree && task.slug ? join(task.worktree, 'features', task.slug) : null,
     task.slug ? join(repoDir, 'features', task.slug) : null,
@@ -4568,7 +4553,7 @@ export async function applyAutoFixes(
       session: repo.session,
       workflowStatePath: repo.workflowStatePath,
       effectiveBaseBranch: (task) => observerBaseBranchForIssue(repo, task.issue),
-      resolveTaskStateDir: (task) => resolveTaskStateDir(repo.repoDir, task as TaskState),
+      resolveTaskStateDir: (task) => resolveTaskStateDir(repo.repoDir, task as ObservedTask),
       incidentStoreDir,
     };
 
@@ -4599,7 +4584,6 @@ export async function applyAutoFixes(
       pr: task.pr,
       worktree: task.worktree,
       branch: task.branch,
-      baseBranch: task.baseBranch,
       challengeRole: task.challengeRole,
       challengePairId: task.challengePairId,
       challengeAborted: task.challengeAborted,

@@ -5,11 +5,7 @@ import { join, resolve } from 'node:path';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { readChallengeComparisons } from '../shared/lib/challenge-comparison.ts';
 import { appendChallengeRecordVoid } from '../shared/lib/challenge-record-void.ts';
-import { mutateJsonState } from '../shared/lib/state-mutex.ts';
-
-interface WorkflowState {
-  tasks?: Record<string, Record<string, unknown>>;
-}
+import { mutateWorkflowState } from '../shared/lib/workflow-state.ts';
 
 runTool({
   name: 'void-challenge-record',
@@ -42,7 +38,7 @@ runTool({
 
     const statePath = join(repoDir, '.wavemill', 'workflow-state.json');
     if (existsSync(statePath)) {
-      await mutateJsonState<WorkflowState>(statePath, (state) => {
+      await mutateWorkflowState(statePath, (state) => {
         for (const task of Object.values(state.tasks ?? {})) {
           if (task.challengePairId === pairId) {
             task.challengeCompared = false;
