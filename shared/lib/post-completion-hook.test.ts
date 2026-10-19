@@ -13,6 +13,9 @@ import {
 } from './post-completion-hook.ts';
 import { evaluateTask, JudgeResponseRecoveryError } from './eval.ts';
 import { buildChallengeExecutionIntent } from './challenge-execution-contract.ts';
+import { buildSdkTaskCostSummaries } from './sdk-task-cost/collect.ts';
+import { loadSdkTaskCostFixture } from './sdk-task-cost/fixtures.ts';
+import { SDK_TASK_COST_SHADOW_ENV } from './sdk-task-cost/feature-switch.ts';
 
 let passed = 0;
 let failed = 0;
@@ -272,6 +275,7 @@ async function withMockedPostCompletionDeps(fn: () => Promise<void> | void): Pro
     postCompletionHookDeps.gatherEvalContext = evalContextGatherer.gatherEvalContext;
     postCompletionHookDeps.gatherStageArtifacts = evalContextGatherer.gatherStageArtifacts;
     postCompletionHookDeps.collectExecutionEconomics = defaultPostCompletionHookDeps.collectExecutionEconomics;
+    postCompletionHookDeps.collectSdkTaskCostSummaries = defaultPostCompletionHookDeps.collectSdkTaskCostSummaries;
     postCompletionHookDeps.execShellCommand = shellUtils.execShellCommand;
     postCompletionHookDeps.detectAndFormatInterventions = interventionDetector.detectAndFormatInterventions;
     postCompletionHookDeps.runEvalAnalysis = evalAnalysis.runEvalAnalysis;
@@ -590,6 +594,90 @@ await test('runPostCompletionEval collects and persists execution economics (HOK
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }
+});
+
+async function runShadowEval(
+  shadowEnv: string | undefined,
+  collect: typeof postCompletionHookDeps.collectSdkTaskCostSummaries,
+): Promise<{ ok: boolean; record: EvalRecord | undefined }> {
+  const repoDir = mkdtempSync(join(tmpdir(), 'post-completion-hook-sdk-shadow-'));
+  const savedEnv = process.env[SDK_TASK_COST_SHADOW_ENV];
+  let record: EvalRecord | undefined;
+  let ok = false;
+  try {
+    if (shadowEnv === undefined) delete process.env[SDK_TASK_COST_SHADOW_ENV];
+    else process.env[SDK_TASK_COST_SHADOW_ENV] = shadowEnv;
+    await withMockedPostCompletionDeps(async () => {
+      stubBaseEvalDeps();
+      postCompletionHookDeps.collectExecutionEconomics = async () => [];
+      postCompletionHookDeps.collectSdkTaskCostSummaries = collect;
+      postCompletionHookDeps.appendEvalRecord = (persisted) => {
+        record = persisted;
+      };
+      postCompletionHookDeps.runContextUpdateWork = async () => {};
+      ok = await runPostCompletionEval({
+        issueId: 'HOK-3075',
+        prNumber: '3075',
+        prUrl: 'https://example.test/pr/3075',
+        workflowType: 'mill',
+        repoDir,
+        branchName: 'task/sdk-shadow',
+        worktreePath: repoDir,
+        agentType: 'claude',
+      });
+    });
+  } finally {
+    if (savedEnv === undefined) delete process.env[SDK_TASK_COST_SHADOW_ENV];
+    else process.env[SDK_TASK_COST_SHADOW_ENV] = savedEnv;
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+  return { ok, record };
+}
+
+function fixtureTaskCostSummaries() {
+  const fixture = loadSdkTaskCostFixture('claude-success');
+  return buildSdkTaskCostSummaries({
+    scanResults: fixture.scanResults,
+    taskId: fixture.taskId,
+    pricingTable: fixture.pricingTable,
+    now: () => new Date(fixture.now),
+  })!;
+}
+
+await test('runPostCompletionEval skips the SDK task-cost shadow when the switch is off (HOK-3075)', async () => {
+  let calls = 0;
+  const { ok, record } = await runShadowEval(undefined, () => {
+    calls++;
+    throw new Error('must not be called');
+  });
+  assert.equal(ok, true);
+  assert.equal(calls, 0);
+  assert.ok(record);
+  assert.equal('taskCostSummary' in record!, false);
+});
+
+await test('runPostCompletionEval attaches SDK task-cost summaries when the shadow is on (HOK-3075)', async () => {
+  const summaries = fixtureTaskCostSummaries();
+  let collectInput: Record<string, unknown> | undefined;
+  const { ok, record } = await runShadowEval('1', (input) => {
+    collectInput = input as unknown as Record<string, unknown>;
+    return summaries;
+  });
+  assert.equal(ok, true);
+  assert.deepEqual(record?.taskCostSummary, summaries);
+  assert.equal(collectInput?.branchName, 'task/sdk-shadow');
+  assert.equal(collectInput?.issueId, 'HOK-3075');
+  // Same table the legacy engine priced with.
+  assert.ok(collectInput?.pricingTable && typeof collectInput.pricingTable === 'object');
+});
+
+await test('runPostCompletionEval stays fail-soft when the SDK task-cost shadow throws (HOK-3075)', async () => {
+  const { ok, record } = await runShadowEval('1', () => {
+    throw new Error('sdk exploded');
+  });
+  assert.equal(ok, true);
+  assert.ok(record);
+  assert.equal('taskCostSummary' in record!, false);
 });
 
 await test('runPostCompletionEval stays fail-soft when execution economics collection throws', async () => {

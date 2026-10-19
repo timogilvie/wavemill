@@ -71,8 +71,14 @@ import {
 import { getMaxCostUsd } from './config.ts';
 import { formatHokusaiSubmissionTriggerResult, triggerHokusaiSubmission } from './hokusai-submission-trigger.ts';
 import { getConfiguredModelsForDescriptor } from './model-registry.ts';
-import { computeWorkflowCostWithExactPricing, loadPricingTable, type WorkflowCostOutcome } from './workflow-cost.ts';
+import {
+  computeWorkflowCostWithExactPricing,
+  loadPricingTable,
+  type PricingTable,
+  type WorkflowCostOutcome,
+} from './workflow-cost.ts';
 import { collectExecutionEconomics } from './execution-economics.ts';
+import { collectSdkTaskCostSummaries, runSdkTaskCostShadow } from './sdk-task-cost/index.ts';
 import {
   buildStageExecutionIdentity,
   hasProviderModelSubstitution,
@@ -111,6 +117,7 @@ export const evalOrchestratorDeps = {
   triggerHokusaiSubmission,
   computeWorkflowCost: computeWorkflowCostWithExactPricing,
   collectExecutionEconomics,
+  collectSdkTaskCostSummaries,
   loadPricingTable,
   execShellCommand,
 };
@@ -497,9 +504,10 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
   // 9b. Compute workflow cost metadata before building the descriptor so both
   // eval entrypoints describe the same run with the same cost context.
   let workflowCostOutcome: WorkflowCostOutcome | null = null;
+  let pricingTable: PricingTable | undefined;
   if (worktreePath && branch) {
     try {
-      const pricingTable = evalOrchestratorDeps.loadPricingTable(repoDir);
+      pricingTable = evalOrchestratorDeps.loadPricingTable(repoDir);
       workflowCostOutcome = await evalOrchestratorDeps.computeWorkflowCost({
         worktreePath,
         branchName: branch,
@@ -557,6 +565,22 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
       console.warn(`Warning: failed to collect execution economics: ${errorMessage(err)}`);
     }
   }
+
+  // 9c-sdk. Shadow SDK task-cost metering (HOK-3075): only when
+  // WAVEMILL_SDK_COST_METERING_SHADOW is on; independent of the legacy
+  // outcome above and priced with the same table. Reads are not switched.
+  const taskCostSummary = worktreePath && branch
+    ? await runSdkTaskCostShadow(
+      () => evalOrchestratorDeps.collectSdkTaskCostSummaries({
+        worktreePath,
+        branchName: branch,
+        repoDir,
+        issueId,
+        pricingTable,
+      }),
+      { label: 'Eval' },
+    )
+    : null;
 
   // 9c-identity. HOK-3143: per-stage provider identity. Fail-soft; a missing or
   // malformed stage result leaves `stageExecution` unset.
@@ -757,6 +781,7 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
     repoContext: repoContextData,
     workflowCost: workflowCostOutcome,
     executionEconomics,
+    taskCostSummary,
     taskDescriptor,
     constraints: evalConstraints,
     featureOutcomeDiagnostics,

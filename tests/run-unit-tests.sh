@@ -419,6 +419,10 @@ TESTS=(
   shared/lib/eval-deduplication.test.ts
   shared/lib/execution-economics.test.ts
   shared/lib/execution-economics-report.test.ts
+  shared/lib/sdk-task-cost/events-from-session.test.ts
+  shared/lib/sdk-task-cost/collect.test.ts
+  shared/lib/sdk-task-cost/project.test.ts
+  shared/lib/sdk-task-cost/feature-switch.test.ts
   shared/lib/eval-summary-printer.test.ts
   shared/lib/evals-paths.test.ts
   shared/lib/execution-contract.test.ts
