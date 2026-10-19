@@ -632,8 +632,9 @@ function buildCliReviewAdapter(
   provider: ReviewCliCall['provider'],
   model: string,
   repoDir: string,
+  failClosed: boolean,
 ): TransportAdapter {
-  const common = { model, repoDir, reservedOutputTokens: REVIEW_MAX_OUTPUT_TOKENS, failClosed: true };
+  const common = { model, repoDir, reservedOutputTokens: REVIEW_MAX_OUTPUT_TOKENS, failClosed };
   return provider === 'codex' ? new CodexCliAdapter(common) : new ClaudeCliAdapter(common);
 }
 
@@ -1073,7 +1074,7 @@ async function runPersonaReview(
   const skipDesignContext = persona !== 'design';
   const prompt = fillReviewPromptTemplate(template, context, skipDesignContext);
 
-  const adapter = reviewEngineDeps.buildCliReviewAdapter(cli.provider, model, repoDir);
+  const adapter = reviewEngineDeps.buildCliReviewAdapter(cli.provider, model, repoDir, cli.failClosed);
   const refusal: AdapterError | undefined = adapter.preflight(prompt);
   if (refusal) {
     throw new ReviewCliContextWindowExceededError(refusal.message);

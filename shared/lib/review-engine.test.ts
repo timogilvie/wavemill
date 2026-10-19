@@ -298,16 +298,7 @@ describe('review-engine per-model dispatch (HOK-3247)', () => {
         : { ok: false, reason: 'uncertified', diagnostic: `[agent-resolution] model=${model} phase=review reason=uncertified` };
     });
     reviewEngineTestUtils.setIsNativeReviewOptedIn(() => input.nativeOptedIn === true);
-    reviewEngineTestUtils.setBuildCliReviewAdapter((provider, model) => ({
-      kind: provider === 'codex' ? 'codex-cli' : 'claude-cli',
-      model,
-      limits: {},
-      countTokens: () => 0,
-      preflight: () => undefined,
-      invoke: async () => ({ text: '', reportedModel: 'unverified' }),
-      parseResult: () => ({ text: '', reportedModel: 'unverified' }),
-    }));
-    reviewEngineTestUtils.setCallLLM(async (_prompt, options) => {
+    const mockCallLLM: CallLLM = async (_prompt, options) => {
       calls.push(options);
       const reportedModel = input.reportedModel?.(options);
       return {
@@ -317,7 +308,33 @@ describe('review-engine per-model dispatch (HOK-3247)', () => {
         model: options?.model ?? '(default)',
         ...(reportedModel ? { reportedModel } : {}),
       };
-    });
+    };
+    reviewEngineTestUtils.setCallLLM(mockCallLLM);
+    reviewEngineTestUtils.setBuildCliReviewAdapter((provider, model, _repoDir, failClosed) => ({
+      kind: provider === 'codex' ? 'codex-cli' : 'claude-cli',
+      model,
+      limits: {},
+      countTokens: () => 0,
+      preflight: () => undefined,
+      // Mirror the real adapter: invoke() delegates to callLLM with the ladder
+      // determined by failClosed (HOK-3248).
+      invoke: async (prompt, opts) => {
+        const result = await mockCallLLM(prompt, {
+          provider,
+          mode: 'stream',
+          model,
+          timeout: opts?.timeout,
+          maxRetries: opts?.maxRetries,
+          signal: opts?.signal,
+          ...(failClosed ? { fallbackModels: [] } : { taskType: 'review' as const }),
+        });
+        return {
+          text: result.text,
+          reportedModel: result.reportedModel ?? 'unverified',
+        };
+      },
+      parseResult: () => ({ text: '', reportedModel: 'unverified' }),
+    }));
     reviewEngineTestUtils.setLoadNativeReviewModule(async () => ({
       async runNativeReview(context, _repoDir, options) {
         nativeCalls.push(options?.model);
