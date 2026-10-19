@@ -16,8 +16,14 @@
 #   - runs one tend tick whenever the mill has published a Ready handoff.
 # Everything else is the mill's own behaviour.
 #
-# On failure it prints a compact trace (phase timeline, unhandled fake calls,
-# tail of the monitor log) instead of a log flood.
+# Time is a tick counter, not the wall clock: the monitor runs with
+# POLL_SECONDS=0 and the tick clock seam (shared/lib/mill-clock.sh / .ts) on,
+# so deadlines, retry backoff and tend's retry sleeps advance per monitor pass.
+# Waits are bounded in monitor ticks; JOURNEY_BUDGET_SECONDS (CI: 90) is the
+# wall-clock ceiling for the whole journey.
+#
+# On failure it prints a compact trace (tick-by-tick phase/marker/label table,
+# unhandled fake calls, last 30 monitor log lines) instead of a log flood.
 
 set -euo pipefail
 
@@ -33,6 +39,15 @@ JOURNEY_STARTED_AT=0
 JOURNEY_INTEGRATION_BRANCH="auto/integration"
 JOURNEY_TIMELINE=""
 JOURNEY_TEND_TICKS=0
+# Tick-by-tick table (one row per observed change) and what it has seen.
+JOURNEY_TABLE=""
+JOURNEY_LAST_ROW=""
+JOURNEY_SAW_ATTENTION=0
+# Whether the task may raise .needs-attention: 0 = never (default), 1 = it
+# must, any = tolerated (a known race the journey is not about).
+JOURNEY_EXPECT_ATTENTION=0
+# Wall-clock ceiling for the whole journey (0 = none). CI sets 90.
+JOURNEY_BUDGET_SECONDS="${JOURNEY_BUDGET_SECONDS:-0}"
 # Optional function name a journey sets to inject faults right before the
 # first tend tick (e.g. move the integration branch, add gh read lag).
 JOURNEY_BEFORE_FIRST_TEND=""
@@ -84,6 +99,11 @@ journey_init() {
   export WAVEMILL_SKIP_CANARY_AUTO_REFRESH=1
   export WAVEMILL_GH_CALL_COUNTING=0
   export FAKE_AGENT_BASE_BRANCH="$JOURNEY_INTEGRATION_BRANCH"
+  # Tick clock seam: the monitor advances this counter once per pass and
+  # bounded-retry backoff, condition deadlines and tend's sleeps read it.
+  export WAVEMILL_TICK_CLOCK_FILE="$JOURNEY_TMP/tick-clock"
+  export WAVEMILL_TICK_CLOCK_EPOCH="$JOURNEY_STARTED_AT"
+  export WAVEMILL_TICK_CLOCK_SECONDS=60
 
   journey_write_config '{}'
   journey_write_monitor_env
@@ -135,7 +155,7 @@ journey_write_monitor_env() {
     printf 'STATE_FILE=%q\n' "$STATE_FILE"
     printf 'WAVEMILL_STATE_FILE=%q\n' "$STATE_FILE"
     printf 'MERGE_QUEUE_SELECTION_FILE=%q\n' "$STATE_DIR/merge-queue-selection.json"
-    printf 'POLL_SECONDS=1\n'
+    printf 'POLL_SECONDS=0\n'
     printf 'REQUIRE_CONFIRM=false\n'
     printf 'DRY_RUN=false\n'
     printf 'BASE_BRANCH=%q\n' "$JOURNEY_INTEGRATION_BRANCH"
@@ -188,6 +208,16 @@ journey_backlog_offers() {
   grep -q "[0-9]\. $1 - " "$JOURNEY_TMP/logs/monitor.out" 2>/dev/null
 }
 
+# Monitor passes completed so far (the tick clock).
+journey_tick() {
+  local tick=0 _epoch
+  [[ -f "$WAVEMILL_TICK_CLOCK_FILE" ]] && read -r tick _epoch < "$WAVEMILL_TICK_CLOCK_FILE" 2>/dev/null
+  [[ "$tick" =~ ^[0-9]+$ ]] || tick=0
+  printf '%s\n' "$tick"
+}
+
+journey_elapsed() { printf '%s\n' "$(( $(journey_now) - JOURNEY_STARTED_AT ))"; }
+
 journey_task_field() {
   local issue="$1" field="$2"
   jq -r --arg id "$issue" --arg f "$field" '.tasks[$id][$f] // empty | tostring' "$STATE_FILE" 2>/dev/null || true
@@ -201,14 +231,47 @@ journey_feature_dir() {
   printf '%s/features/%s\n' "${wt:-$WORKTREE_ROOT/$slug}" "$slug"
 }
 
+# Compact marker flags for the trace table: plan.md, .plan-approved,
+# .coding-complete, review/ready result status, tend handoff state and
+# '!' when .needs-attention is present.
+journey_markers() {
+  local issue="$1" fd flags="" v
+  fd="$(journey_feature_dir "$issue" 2>/dev/null)" || { printf -- '-\n'; return 0; }
+  [[ -f "$fd/plan.md" ]] && flags+="plan "
+  [[ -f "$fd/.plan-approved" ]] && flags+="approved "
+  [[ -f "$fd/.coding-complete" ]] && flags+="coded "
+  v="$(jq -r '.status // empty' "$fd/.review-result.json" 2>/dev/null || true)"
+  [[ -n "$v" ]] && flags+="review:$v "
+  v="$(jq -r '.status // empty' "$fd/.ready-result.json" 2>/dev/null || true)"
+  [[ -n "$v" ]] && flags+="ready:$v "
+  v="$(jq -r '.state // empty' "$fd/.ready-tend-handoff.json" 2>/dev/null || true)"
+  [[ -n "$v" ]] && flags+="handoff:$v "
+  [[ -f "$fd/.needs-attention" ]] && flags+="! "
+  flags="${flags% }"
+  printf '%s\n' "${flags:--}"
+}
+
+journey_pr_summary() {
+  jq -r '.prs["1"] // empty | "\(.state) [\((.labels // []) | join(","))]"' "$FAKE_GH_STATE" 2>/dev/null || true
+}
+
+# Append a table row whenever phase/status, markers or the PR changed.
 journey_record_timeline() {
-  local issue="$1" phase status line
+  local issue="$1" phase status line markers pr row
   phase="$(journey_task_field "$issue" phase)"
   status="$(journey_task_field "$issue" status)"
   line="${phase:-<none>}/${status:-<none>}"
   if [[ "$JOURNEY_TIMELINE" != *"$line" ]]; then
     JOURNEY_TIMELINE+="${JOURNEY_TIMELINE:+ → }$line"
-    journey_log "task $issue: $line"
+    journey_log "task $issue: $line (tick $(journey_tick))"
+  fi
+  markers="$(journey_markers "$issue")"
+  [[ "$markers" == *"!"* ]] && JOURNEY_SAW_ATTENTION=1
+  pr="$(journey_pr_summary)"
+  row="$(printf '%-22s %-48s %s' "$line" "$markers" "${pr:--}")"
+  if [[ "$row" != "$JOURNEY_LAST_ROW" ]]; then
+    JOURNEY_LAST_ROW="$row"
+    JOURNEY_TABLE+="$(printf '%5s %5ss  %s' "$(journey_tick)" "$(journey_elapsed)" "$row")"$'\n'
   fi
 }
 
@@ -236,23 +299,32 @@ journey_tend_tick() {
   journey_log "tend tick #$JOURNEY_TEND_TICKS: $(grep -o 'action=[^ ]*' "$JOURNEY_TMP/logs/tend.log" | tail -1)"
 }
 
-# journey_wait_until <issue> <timeout-seconds> <description> <predicate...>
+# journey_wait_until <issue> <max-ticks> <description> <predicate...>
+# Bounded in monitor passes (ticks), plus the journey's wall-clock budget and
+# a hard safety cap so a monitor stuck inside one pass cannot hang CI.
 journey_wait_until() {
-  local issue="$1" timeout="$2" description="$3"; shift 3
-  local deadline=$(( $(journey_now) + timeout ))
-  while (( $(journey_now) < deadline )); do
+  local issue="$1" max_ticks="$2" description="$3"; shift 3
+  local tick_deadline=$(( $(journey_tick) + max_ticks ))
+  local safety_deadline=$(( $(journey_now) + ${JOURNEY_WAIT_SAFETY_SECONDS:-300} ))
+  while (( $(journey_tick) <= tick_deadline )); do
     if ! kill -0 "$JOURNEY_MONITOR_PID" 2>/dev/null; then
       journey_fail "monitor exited while waiting for: $description"
     fi
     journey_record_timeline "$issue"
     if "$@"; then
-      journey_log "reached: $description"
+      journey_log "reached: $description (tick $(journey_tick))"
       return 0
     fi
+    if (( JOURNEY_BUDGET_SECONDS > 0 && $(journey_elapsed) > JOURNEY_BUDGET_SECONDS )); then
+      journey_fail "over the ${JOURNEY_BUDGET_SECONDS}s journey budget waiting for: $description"
+    fi
+    if (( $(journey_now) > safety_deadline )); then
+      journey_fail "monitor made no progress for ${JOURNEY_WAIT_SAFETY_SECONDS:-300}s waiting for: $description"
+    fi
     journey_operator_tick "$issue"
-    sleep 0.5
+    sleep 0.2
   done
-  journey_fail "timed out after ${timeout}s waiting for: $description"
+  journey_fail "not reached within $max_ticks monitor ticks: $description"
 }
 
 # ── assertions ────────────────────────────────────────────────────────────
@@ -268,6 +340,50 @@ journey_assert() {
   fi
 }
 
+# jq -e as an assertion predicate, without echoing the result.
+journey_jq_true() { jq -e "$@" >/dev/null 2>&1; }
+
+journey_pr_merged() {
+  [[ "$(jq -r '.prs["1"].state // empty' "$FAKE_GH_STATE")" == "MERGED" ]]
+}
+
+# Reaped: the row is gone (or terminal) and so is the worktree, and the mill
+# has released the slot (freeSlots back to MAX_PARALLEL=1).
+journey_task_reaped() {
+  local issue="$1" status slug
+  status="$(journey_task_field "$issue" status)"
+  slug="$(jq -r --arg id "$issue" '.tasks[$id].slug // "__none__"' "$STATE_FILE" 2>/dev/null)"
+  [[ -z "$(journey_task_field "$issue" phase)" || "$status" == "merged" || "$status" == "completed" ]] \
+    && [[ ! -d "$WORKTREE_ROOT/$slug" ]] \
+    && [[ "$(jq -r '.freeSlots // empty' "$STATE_FILE" 2>/dev/null)" == "1" ]]
+}
+
+# Shared end-state assertions for a task that should have landed.
+journey_assert_landed() {
+  local issue="$1"
+  journey_assert "PR #1 targeted $JOURNEY_INTEGRATION_BRANCH and merged" \
+    test "$(fakes_gh_pr_field 1 baseRefName)/$(fakes_gh_pr_field 1 state)" = "$JOURNEY_INTEGRATION_BRANCH/MERGED"
+  journey_assert "the task's change is on $JOURNEY_INTEGRATION_BRANCH" \
+    git --git-dir "$FAKE_GH_ORIGIN" cat-file -e "refs/heads/$JOURNEY_INTEGRATION_BRANCH:journey-output.txt"
+  journey_assert "wm:ready was applied before the merge" \
+    journey_jq_true '.prs["1"].history // [] | (map(.event == "labeled" and .label == "wm:ready") | index(true)) as $r
+      | (map(.event == "merged") | index(true)) as $m | $r != null and $m != null and $r < $m' "$FAKE_GH_STATE"
+  journey_assert "PR never ended up wm:blocked" \
+    bash -c '! jq -e ".prs[\"1\"].labels | index(\"wm:blocked\")" "$1" >/dev/null' _ "$FAKE_GH_STATE"
+  journey_assert "Linear issue ended Done" test "$(fakes_linear_state_of "$issue")" = "Done"
+  journey_assert "Linear recorded In Progress before Done" \
+    bash -c 'jq -e --arg id "$2" "[.transitions[] | select(.identifier==\$id) | .to] | (index(\"In Progress\") // 99) < (index(\"Done\") // -1)" "$1" >/dev/null' _ "$FAKE_LINEAR_STATE" "$issue"
+  journey_assert "task row and worktree reaped" journey_task_reaped "$issue"
+  journey_assert "slot count back to 0 (freeSlots == MAX_PARALLEL)" \
+    test "$(jq -r '.freeSlots // empty' "$STATE_FILE")" = "1"
+  case "$JOURNEY_EXPECT_ATTENTION" in
+    1) journey_assert "task raised .needs-attention (expected)" test "$JOURNEY_SAW_ATTENTION" = "1" ;;
+    any) ;;
+    *) journey_assert "no .needs-attention at any tick" test "$JOURNEY_SAW_ATTENTION" = "0" ;;
+  esac
+  journey_assert_no_unhandled_fake_calls
+}
+
 journey_assert_no_unhandled_fake_calls() {
   journey_assert "no unmodelled gh calls" test ! -s "$FAKE_GH_UNHANDLED"
   journey_assert "no unmodelled Linear queries" test ! -s "$FAKE_LINEAR_UNHANDLED"
@@ -277,7 +393,8 @@ journey_assert_no_unhandled_fake_calls() {
 journey_trace() {
   echo ""
   echo "── journey trace: $JOURNEY_NAME ──────────────────────────────"
-  echo "timeline: ${JOURNEY_TIMELINE:-<no task observed>}"
+  printf ' tick  wall   %-22s %-48s %s\n' "phase/status" "markers" "PR #1"
+  if [[ -n "$JOURNEY_TABLE" ]]; then printf '%s' "$JOURNEY_TABLE"; else echo "  <no task observed>"; fi
   if [[ -s "${FAKE_GH_UNHANDLED:-/dev/null}" ]]; then
     echo "unhandled gh calls:"; sed 's/^/  /' "$FAKE_GH_UNHANDLED" | head -10
   fi
@@ -287,17 +404,14 @@ journey_trace() {
   if [[ -s "${FAKE_AGENT_UNHANDLED:-/dev/null}" ]]; then
     echo "unhandled agent CLI calls:"; sed 's/^/  /' "$FAKE_AGENT_UNHANDLED" | head -5
   fi
-  if [[ -s "${FAKE_AGENT_LOG:-/dev/null}" ]]; then
-    echo "agent log:"; sed 's/^/  /' "$FAKE_AGENT_LOG" | tail -8
-  fi
   if [[ -s "$JOURNEY_TMP/logs/tend.log" ]]; then
-    echo "tend (last 15 lines):"; tail -15 "$JOURNEY_TMP/logs/tend.log" | sed 's/^/  /'
+    echo "tend: $JOURNEY_TEND_TICKS tick(s), last action $(grep -o 'action=[^ ]*' "$JOURNEY_TMP/logs/tend.log" | tail -1)"
   fi
-  if [[ -s "$JOURNEY_TMP/logs/status.log" ]]; then
-    echo "mill status log (last 40 lines):"; tail -40 "$JOURNEY_TMP/logs/status.log" | cut -c1-240 | sed 's/^/  /'
-  fi
-  echo "monitor (last 40 lines):"
-  tail -40 "$JOURNEY_TMP/logs/monitor.out" 2>/dev/null | sed 's/\x1b\[[0-9;]*[A-Za-z]//g; s/^/  /'
+  # The mill's own log (status.log); monitor.out is the raw dashboard frame.
+  local monitor_log="$JOURNEY_TMP/logs/status.log"
+  [[ -s "$monitor_log" ]] || monitor_log="$JOURNEY_TMP/logs/monitor.out"
+  echo "monitor log (last 30 lines):"
+  tail -30 "$monitor_log" 2>/dev/null | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | cut -c1-200 | sed 's/^/  /'
   echo "artifacts kept in: $JOURNEY_TMP"
   if [[ -n "${JOURNEY_ARTIFACT_DIR:-}" ]]; then
     mkdir -p "$JOURNEY_ARTIFACT_DIR"
@@ -316,14 +430,19 @@ journey_fail() {
 }
 
 journey_finish() {
-  local elapsed=$(( $(journey_now) - JOURNEY_STARTED_AT ))
+  local elapsed
+  elapsed="$(journey_elapsed)"
+  if (( JOURNEY_BUDGET_SECONDS > 0 && elapsed > JOURNEY_BUDGET_SECONDS )); then
+    printf '  FAIL  journey took %ss, over the %ss budget\n' "$elapsed" "$JOURNEY_BUDGET_SECONDS"
+    JOURNEY_FAILURES=$((JOURNEY_FAILURES + 1))
+  fi
   if (( JOURNEY_FAILURES > 0 )); then
     journey_trace
     JOURNEY_KEEP_TMP=1
     echo "--- journey $JOURNEY_NAME: $JOURNEY_FAILURES failure(s) in ${elapsed}s ---"
     exit 1
   fi
-  echo "--- journey $JOURNEY_NAME: passed in ${elapsed}s (timeline: $JOURNEY_TIMELINE) ---"
+  echo "--- journey $JOURNEY_NAME: passed in ${elapsed}s / $(journey_tick) ticks (timeline: $JOURNEY_TIMELINE) ---"
 }
 
 journey_stop_monitor() {

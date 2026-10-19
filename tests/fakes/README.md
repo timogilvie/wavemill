@@ -40,6 +40,7 @@ gh state file (`$FAKE_GH_STATE`):
 | `faults` | `[{cmd:"pr view", remaining:1, exit:1, stderr:"HTTP 502"}]` — fail the next matching calls. |
 | `strictBehind` | Report `BEHIND` when the base is not an ancestor of the head. |
 | `prs[n].overrides` | Force `mergeable` / `mergeStateStatus`. |
+| `prs[n].history` | Written by the fake: ordered `{at, event: labeled\|unlabeled\|merged, label?}` entries, for asserting label/merge ordering. |
 
 Agent: put a bash snippet at `$FAKE_AGENT_SCRIPT_DIR/<phase>` (planning, coding,
 review) to replace that phase's default behaviour — e.g. exit with a dirty

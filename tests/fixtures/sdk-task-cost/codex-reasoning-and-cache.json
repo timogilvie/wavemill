@@ -1,5 +1,5 @@
 {
-  "description": "Codex session with cached input and reasoning tokens. Events keep Wavemill's codex/1 parse: reasoning is billed as output by the local estimate, cache writes are not reported (null).",
+  "description": "Codex session with cached input and reasoning tokens. Events keep Wavemill's codex/1 parse: reasoning is billed as output by the local estimate, Codex has no cache-write category, so once a turn reports usage its cache_write_tokens is a structural 0 and the fully observed session is complete (HOK-3076).",
   "taskId": "HOK-0003",
   "now": "2026-10-01T00:00:00.000Z",
   "pricingTable": {
@@ -51,14 +51,14 @@
       "models": ["gpt-5-codex"],
       "turn_count": 2,
       "event_count": 2,
-      "usage": { "input_tokens": 1500, "output_tokens": 150, "cache_read_tokens": 400, "cache_write_tokens": null, "reasoning_tokens": 75 },
+      "usage": { "input_tokens": 1500, "output_tokens": 150, "cache_read_tokens": 400, "cache_write_tokens": 0, "reasoning_tokens": 75 },
       "actual_cost_usd": null,
       "estimated_cost_usd": 0.004175,
       "total_cost_usd": 0.004175,
       "cost_source": "local_estimate",
-      "coverage": "partial",
-      "field_availability": { "usage": "partial", "actual_cost": "unavailable", "estimated_cost": "available", "pricing": "available" },
-      "diagnostics": ["mixed_coverage"]
+      "coverage": "complete",
+      "field_availability": { "usage": "available", "actual_cost": "unavailable", "estimated_cost": "available", "pricing": "available" },
+      "diagnostics": []
     }
   ]
 }

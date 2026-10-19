@@ -292,6 +292,25 @@ function view(state, pr, { observe = true } = {}) {
   };
 }
 
+// Ordered label/merge history per PR, so journeys can assert ordering (e.g.
+// wm:ready was applied before the merge) even for label writes whose names
+// arrive on stdin and never reach the call log.
+function recordHistory(pr, entry, now) {
+  (pr.history ??= []).push({ at: now, ...entry });
+}
+
+function addLabel(pr, label, now) {
+  if (pr.labels.includes(label)) return;
+  pr.labels.push(label);
+  recordHistory(pr, { event: 'labeled', label }, now);
+}
+
+function removeLabel(pr, label, now) {
+  if (!pr.labels.includes(label)) return;
+  pr.labels = pr.labels.filter((name) => name !== label);
+  recordHistory(pr, { event: 'unlabeled', label }, now);
+}
+
 function findPr(state, selector) {
   if (selector === undefined) {
     const branch = cwdBranch();
@@ -452,10 +471,11 @@ function dispatch(state, now) {
     case 'pr edit': {
       const pr = findPr(state, rest[0]);
       for (const label of many(flags, '--add-label').flatMap((l) => String(l).split(','))) {
-        if (!pr.labels.includes(label)) pr.labels.push(label);
+        addLabel(pr, label, now);
       }
-      const remove = new Set(many(flags, '--remove-label').flatMap((l) => String(l).split(',')));
-      pr.labels = pr.labels.filter((label) => !remove.has(label));
+      for (const label of many(flags, '--remove-label').flatMap((l) => String(l).split(','))) {
+        removeLabel(pr, label, now);
+      }
       if (one(flags, '--body', '-b') !== undefined) pr.body = one(flags, '--body', '-b');
       if (one(flags, '--title', '-t') !== undefined) pr.title = one(flags, '--title', '-t');
       if (one(flags, '--base', '-B') !== undefined) pr.baseRefName = one(flags, '--base', '-B');
@@ -500,6 +520,7 @@ function dispatch(state, now) {
       git(['update-ref', `refs/heads/${pr.baseRefName}`, commit, baseSha]);
       pr.state = 'MERGED';
       pr.mergedAt = now;
+      recordHistory(pr, { event: 'merged' }, now);
       pr.closedAt = now;
       pr.headRefOid = headSha;
       pr.mergeCommitOid = commit;
@@ -548,14 +569,14 @@ function api(state, now) {
       try { parsed = JSON.parse(stdinText || '[]'); } catch { /* -f form */ }
       const add = Array.isArray(parsed) ? parsed : parsed.labels ?? [];
       add.push(...many(flags, '-f', '--field', '--raw-field').map((f) => String(f).replace(/^labels\[\]=/, '')));
-      for (const label of add) if (!pr.labels.includes(label)) pr.labels.push(label);
+      for (const label of add) addLabel(pr, label, now);
       pr.updatedAt = now;
       return () => emit(pr.labels.map((name) => ({ name })), flags, { projectFields: false });
     }
     if (method === 'DELETE') {
       const name = decodeURIComponent(issueLabels[2] ?? '');
       if (!pr.labels.includes(name)) fail('gh: Label does not exist (HTTP 404)');
-      pr.labels = pr.labels.filter((label) => label !== name);
+      removeLabel(pr, name, now);
       pr.updatedAt = now;
       return () => emit(pr.labels.map((label) => ({ name: label })), flags, { projectFields: false });
     }

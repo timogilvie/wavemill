@@ -583,6 +583,56 @@ describe('eval-record-builder', () => {
       attachWorkflowCostMetadata(baseRecord, costOutcome);
 
       expect(baseRecord.workflowCostAttribution).toEqual(costOutcome.attribution);
+      // Nothing was priced: no $0.00 workflowCost (HOK-3076).
+      expect(baseRecord.workflowCost).toBe(undefined);
+      expect(baseRecord.workflowCostStatus).toBe('success');
+    });
+
+    it('keeps an explicit known-zero cost as $0 (HOK-3076)', () => {
+      baseRecord.workflowCost = 9;
+      attachWorkflowCostMetadata(baseRecord, {
+        status: 'success' as const,
+        totalCostUsd: 0,
+        models: {},
+        sessionCount: 1,
+        turnCount: 1,
+        pricingUsed: {},
+        attribution: {
+          source: 'native' as const,
+          coverage: 'known_zero' as const,
+          sessions: 1,
+          turns: 1,
+          pricedSessions: 1,
+          unpricedSessions: 0,
+          models: [{ provider: 'pi', modelId: 'free-model', priced: true, costUsd: 0 }],
+        },
+      });
+
+      expect(baseRecord.workflowCost).toBe(0);
+    });
+
+    it('drops a stale workflowCost when the new outcome priced nothing (HOK-3076)', () => {
+      baseRecord.workflowCost = 9;
+      attachWorkflowCostMetadata(baseRecord, {
+        status: 'success' as const,
+        totalCostUsd: 0,
+        models: {},
+        sessionCount: 1,
+        turnCount: 1,
+        pricingUsed: {},
+        attribution: {
+          source: 'claude' as const,
+          coverage: 'partial' as const,
+          reason: 'unpriced_model' as const,
+          sessions: 1,
+          turns: 1,
+          pricedSessions: 0,
+          unpricedSessions: 1,
+          models: [{ provider: 'claude', modelId: 'mystery', priced: false, reason: 'unpriced_model' as const }],
+        },
+      });
+
+      expect(baseRecord.workflowCost).toBe(undefined);
     });
 
     it('should attach diagnostics on failure', () => {

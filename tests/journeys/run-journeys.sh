@@ -6,7 +6,8 @@
 #   bash tests/journeys/run-journeys.sh --list          # print journey names
 #
 # Each journey runs the real mill monitor loop + tend against the shared fakes
-# (tests/fakes/) and takes roughly 2-3 minutes; CI runs one journey per job.
+# (tests/fakes/). CI runs one journey per job under a 90s budget
+# (JOURNEY_BUDGET_SECONDS); a local macOS run is slower, ~2 minutes.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

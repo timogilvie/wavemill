@@ -7,7 +7,7 @@
  * @module eval-summary-printer
  */
 
-import type { EvalRecord } from './eval-schema.ts';
+import type { EvalRecord, WorkflowCostAttribution } from './eval-schema.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Formatting Helpers
@@ -26,16 +26,46 @@ export function formatScoreDisplay(score: number, scoreBand: string): string {
 }
 
 /**
+ * True when a workflow cost is a local token-equivalent estimate rather than
+ * a provider charge (HOK-3076). CLI harnesses (Claude Code, Codex) run on
+ * subscriptions with no per-call charge, so their dollars are always an
+ * estimate; a native cost is exact only when every priced model's cost was
+ * provider-reported. Without attribution the provenance is unknown and the
+ * figure is shown as-is.
+ */
+export function isEstimatedWorkflowCost(attribution?: WorkflowCostAttribution | null): boolean {
+  if (!attribution) return false;
+  if (attribution.source !== 'native') return true;
+  return attribution.models.some((model) => model.priced && model.pricingSource !== 'openrouter_api');
+}
+
+/**
+ * Format a workflow cost amount: `$0.1234`, `~$0.1234 (estimate)` for an
+ * estimated cost, or `unavailable` when no dollar figure exists.
+ */
+export function formatWorkflowCostAmount(
+  workflowCost: number | undefined,
+  attribution?: WorkflowCostAttribution | null,
+): string {
+  if (workflowCost === undefined) {
+    return 'unavailable';
+  }
+  const amount = `$${workflowCost.toFixed(4)}`;
+  return isEstimatedWorkflowCost(attribution) ? `~${amount} (estimate)` : amount;
+}
+
+/**
  * Format workflow cost for display.
  *
  * @param workflowCost - Cost in USD
- * @returns Formatted string like "$0.1234" or empty string if no cost
+ * @param attribution - Cost attribution; labels estimates and marks a priced-nothing record unavailable
+ * @returns Formatted string like ", workflow cost: $0.1234", or empty string if there is no cost evidence
  */
-export function formatCostDisplay(workflowCost?: number): string {
-  if (workflowCost === undefined) {
+export function formatCostDisplay(workflowCost?: number, attribution?: WorkflowCostAttribution | null): string {
+  if (workflowCost === undefined && !attribution) {
     return '';
   }
-  return `, workflow cost: $${workflowCost.toFixed(4)}`;
+  return `, workflow cost: ${formatWorkflowCostAmount(workflowCost, attribution)}`;
 }
 
 /**
@@ -110,18 +140,20 @@ export function formatRepoContextDisplay(
 /**
  * Format workflow cost outcome for display.
  *
- * @param totalCostUsd - Total cost in USD
+ * @param totalCostUsd - Total cost in USD, or undefined when unavailable
  * @param turnCount - Number of turns
  * @param sessionCount - Number of sessions
+ * @param attribution - Cost attribution, for the estimate label
  * @returns Formatted string like "workflow cost $0.1234 (10 turns across 2 session(s))"
  */
 export function formatWorkflowCostOutcome(
-  totalCostUsd: number,
+  totalCostUsd: number | undefined,
   turnCount: number,
-  sessionCount: number
+  sessionCount: number,
+  attribution?: WorkflowCostAttribution | null,
 ): string {
   return (
-    `workflow cost $${totalCostUsd.toFixed(4)} ` +
+    `workflow cost ${formatWorkflowCostAmount(totalCostUsd, attribution)} ` +
     `(${turnCount} turns across ${sessionCount} session(s))`
   );
 }
@@ -157,7 +189,7 @@ export function formatRouteProvenanceDisplay(record: EvalRecord): string {
  */
 export function printEvalSummary(record: EvalRecord, prefix = 'Post-completion eval'): void {
   const scoreDisplay = formatScoreDisplay(record.score as number, record.scoreBand);
-  const costSuffix = formatCostDisplay(record.workflowCost);
+  const costSuffix = formatCostDisplay(record.workflowCost, record.workflowCostAttribution);
   const routeSuffix = formatRouteProvenanceDisplay(record);
   console.log(`${prefix}: ${scoreDisplay}${costSuffix}${routeSuffix} — saved to eval store`);
 }
