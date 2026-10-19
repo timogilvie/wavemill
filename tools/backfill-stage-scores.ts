@@ -20,11 +20,12 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { loadPromptTemplate } from '../shared/lib/prompt-utils.ts';
-import { callLLM, resolveProviderForModel, type LLMProvider } from '../shared/lib/llm-cli.ts';
+import { callLLM, type LLMProvider } from '../shared/lib/llm-cli.ts';
+import { headlessProviderForModel } from '../shared/lib/headless-llm.ts';
 
 /** Exported for testing: derive provider from a backfill model name. */
 export function getBackfillProvider(model: string, repoDir: string): LLMProvider {
-  return resolveProviderForModel(model, repoDir);
+  return headlessProviderForModel(model, repoDir);
 }
 
 const __filename = fileURLToPath(import.meta.url);

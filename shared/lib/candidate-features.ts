@@ -21,6 +21,7 @@ import {
 } from '@hokusai/core';
 import { collectStaticFeatures, type StaticFeaturesResult } from './static-features.ts';
 import { execArgvCommand } from './shell-utils.ts';
+import { estimateTokensDefault } from './model-adapters/token-estimator.ts';
 
 export const CANDIDATE_FEATURES_SCHEMA_VERSION = 'candidate_features/v1';
 
@@ -735,7 +736,7 @@ function bucketFilesTouched(count: number | null | undefined): CandidateFilesTou
 function bucketDescription(taskText: string | undefined): CandidateDescriptionLengthBucket | null {
   const trimmed = taskText?.trim();
   if (!trimmed) return null;
-  const tokens = Math.ceil(trimmed.length / 4);
+  const tokens = estimateTokensDefault(trimmed);
   if (tokens < 50) return 'short';
   if (tokens < 200) return 'medium';
   return 'long';
