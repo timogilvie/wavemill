@@ -25,6 +25,7 @@ describe('buildTask', () => {
   it('returns the default save_task_state row, which validates', () => {
     const task = buildTask();
     assert.deepEqual(task, DEFAULT_TASK);
+    // allow-task-literal: validates the built row directly
     assert.equal(validateWorkflowState({ tasks: { 'HOK-1': task } }).valid, true);
   });
 
@@ -99,6 +100,7 @@ describe('buildTask', () => {
 describe('buildWorkflowState', () => {
   it('builds every row and validates the whole state', () => {
     const state = buildWorkflowState({ 'HOK-1': {}, 'HOK-2': { phase: 'ready' } });
+    // allow-task-literal: expected builder output
     assert.deepEqual(state, { tasks: { 'HOK-1': { ...DEFAULT_TASK }, 'HOK-2': { ...DEFAULT_TASK, phase: 'ready' } } });
     assert.equal(validateWorkflowState(state).valid, true);
   });
@@ -112,6 +114,7 @@ describe('buildWorkflowState', () => {
       { 'HOK-1': { slug: 'a' } },
       { bare: true, topLevel: { session: 'wm-test', jobs: {} } },
     );
+    // allow-task-literal: expected builder output
     assert.deepEqual(state, { session: 'wm-test', jobs: {}, tasks: { 'HOK-1': { slug: 'a' } } });
   });
 

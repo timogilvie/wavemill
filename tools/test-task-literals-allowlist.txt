@@ -15,18 +15,14 @@
 #
 # One repo-relative path per line, each followed by `# <reason>`; an entry
 # without a reason fails the guard. A listed file is skipped by the scan.
-shared/lib/challenge-execution-contract.test.ts  # seeded from HOK-3223; migrate to buildTask / fixture_task
 shared/lib/challenge-pair-recovery.test.ts  # seeded from HOK-3223; migrate to buildTask / fixture_task
 shared/lib/challenge-pairing-repair.test.ts  # seeded from HOK-3223; migrate to buildTask / fixture_task
 shared/lib/challenge-ready-evidence.test.ts  # seeded from HOK-3223; migrate to buildTask / fixture_task
 shared/lib/challenge-recovery.test.ts  # seeded from HOK-3223; migrate to buildTask / fixture_task
 shared/lib/effective-task-config.test.ts  # seeded from HOK-3223; migrate to buildTask / fixture_task
 shared/lib/job-tracker.test.ts  # seeded from HOK-3223; migrate to buildTask / fixture_task
-shared/lib/merge-labels.test.ts  # seeded from HOK-3223; migrate to buildTask / fixture_task
-shared/lib/ready-watchdog.test.ts  # seeded from HOK-3223; migrate to buildTask / fixture_task
 shared/lib/schema-validators.test.ts  # seeded from HOK-3223; migrate to buildTask / fixture_task
 shared/lib/wavemill-incident-detector.test.ts  # seeded from HOK-3223; migrate to buildTask / fixture_task
-shared/lib/workflow-state.test.ts  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/aborted-challenge-cleanup.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/apply-expanded-route.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/backstage-tend-watchdog.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
@@ -43,7 +39,6 @@ tests/challenge-fork-pre-fork-collapse.test.sh  # seeded from HOK-3223; migrate 
 tests/challenge-fork-restart.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/challenge-intent-roundtrip.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/challenge-job-monitor-loop.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
-tests/challenge-primary-merge-cleanup.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/challenge-running-state.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/challenge-varied-model-abort.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/cleanup-episodes.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
@@ -54,7 +49,6 @@ tests/control-layout.test.sh  # seeded from HOK-3223; migrate to buildTask / fix
 tests/cross-pr-revert-job.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/error-recovery.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/eval-stub-slot-accounting.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
-tests/fixtures/lifecycle/deferred_challenger_materialises_after_coding.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/fixtures/lifecycle/deferred_implementation_challenger_forks_at_plan_handoff.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/fixtures/lifecycle/dep_queue_monitor_dispatches_child_on_parent_pr.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/fixtures/lifecycle/dep_queue_queued_task_skipped_when_parent_active.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
@@ -67,7 +61,6 @@ tests/launch-ready-phase.test.sh  # seeded from HOK-3223; migrate to buildTask /
 tests/ledger-recovery-tick.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/lifecycle-harness.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/lifecycle-scenarios.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
-tests/merge-labels-real-state.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/monitor-pass-budget.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/monitor-pass-snapshot.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/monitor-reaped-task-no-window-recreation.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
@@ -79,9 +72,7 @@ tests/operator-touch-record.test.sh  # seeded from HOK-3223; migrate to buildTas
 tests/persist-task-window-id-reaped.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/plan-reapproval-late-coding-complete.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/pr-ci-status-job.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
-tests/re-review-no-pr.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/ready-exhausted-challenge.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
-tests/ready-watchdog-job.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/review-gate-refused-challenge.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/review-recovery.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/review-scope-baseline-handoff.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
@@ -94,7 +85,6 @@ tests/startup-handoff.test.sh  # seeded from HOK-3223; migrate to buildTask / fi
 tests/startup-terminal-ownership.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/startup-terminal-prune.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/state-archive-roundtrip.test.ts  # seeded from HOK-3223; migrate to buildTask / fixture_task
-tests/state-invariants.test.ts  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/state-mutex.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/task-identity.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/task-phase-canonicalization.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task

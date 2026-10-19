@@ -36,12 +36,10 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 STATE_FILE="$TMP_DIR/workflow-state.json"
 export STATE_FILE
 
-state_mutate() {
-  local state_path="$1" filter="$2"
-  shift 2
-  jq "$@" "$filter" "$state_path" > "$state_path.tmp"
-  mv "$state_path.tmp" "$state_path"
-}
+# Production state accessors (HOK-3223) against the temp state, not stubs.
+# shellcheck source=../../lib/state-fixtures.sh
+source "$REPO_ROOT/tests/lib/state-fixtures.sh"
+fixture_real_state_accessors
 export -f state_mutate
 
 # shellcheck source=../../../shared/lib/challenge-arms.sh
@@ -90,7 +88,9 @@ cp "$PRIMARY_FEATURE/.challenge-intent.json" "$PRIMARY_FEATURE/challenge-intent.
 # ────────────────────────────────────────────────────────────────
 # Seed state — primary at coding=completed with an awaiting_fork arm.
 # ────────────────────────────────────────────────────────────────
-printf '%s\n' '{"session":"lifecycle","tasks":{"HOK-DEFER":{"slug":"deferred","branch":"task/deferred","phase":"coding","status":"active","challenge":true,"challengeRole":"primary","challengePairId":"HOK-DEFER","challengeStage":"review"}}}' > "$STATE_FILE"
+printf '%s\n' '{"session":"lifecycle"}' > "$STATE_FILE"
+fixture_workflow_state "$STATE_FILE" --bare HOK-DEFER slug=deferred branch=task/deferred phase=coding status=active \
+  challenge=true challengeRole=primary challengePairId=HOK-DEFER challengeStage=review
 
 CANONICAL_INTENT='{"schemaVersion":1,"pairId":"HOK-DEFER","issueId":"HOK-DEFER","selectedStage":"review","challengeStage":"review","primary":{"pairId":"HOK-DEFER","side":"primary","challengeStage":"review","expectedStageModel":"claude-sonnet-5","expectedRoute":{}},"challenger":{"pairId":"HOK-DEFER","side":"challenger","challengeStage":"review","expectedStageModel":"claude-haiku-4-5-20251001","expectedRoute":{}}}'
 ARM_JSON="$(challenge_arm_json_build \
