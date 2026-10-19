@@ -54,6 +54,7 @@ interface InputsOverrides {
   worktreeHeads?: Map<string, string>;
   operatorSeq?: Map<string, number>;
   prHeadByNumber?: Map<number, string>;
+  prNumberByTaskId?: Map<string, number>;
   nowMs?: number;
   config?: Partial<typeof DEFAULT_INVARIANT_CONFIG>;
 }
@@ -73,6 +74,7 @@ function makeInputs(overrides: InputsOverrides = {}): EvaluateInvariantsInputs {
       worktreeHeadsByTaskId: overrides.worktreeHeads ?? new Map(),
       operatorEventSeqByTaskId: overrides.operatorSeq ?? new Map(),
       prHeadByNumber: overrides.prHeadByNumber ?? new Map(),
+      prNumberByTaskId: overrides.prNumberByTaskId ?? new Map(),
       nowMs: overrides.nowMs ?? NOW_MS,
     },
     config: overrides.config,
@@ -460,22 +462,59 @@ test('expiredTriggerForSidecar handles deadline, operator-event, remote', () => 
   assert.equal(
     expiredTriggerForSidecar(
       { taskId: 't', path: '/x', raw: null, expiresOn: ['deadline'], recordedDeadline: past },
-      { worktreeHeadsByTaskId: new Map(), operatorEventSeqByTaskId: new Map(), prHeadByNumber: new Map(), nowMs: NOW_MS },
+      {
+        worktreeHeadsByTaskId: new Map(),
+        operatorEventSeqByTaskId: new Map(),
+        prHeadByNumber: new Map(),
+        prNumberByTaskId: new Map(),
+        nowMs: NOW_MS,
+      },
     ),
     `deadline:${past}`,
   );
   assert.equal(
     expiredTriggerForSidecar(
       { taskId: 't', path: '/x', raw: null, expiresOn: ['operator-event'], recordedOperatorEventSeq: 0 },
-      { worktreeHeadsByTaskId: new Map(), operatorEventSeqByTaskId: new Map([['t', 5]]), prHeadByNumber: new Map(), nowMs: NOW_MS },
+      {
+        worktreeHeadsByTaskId: new Map(),
+        operatorEventSeqByTaskId: new Map([['t', 5]]),
+        prHeadByNumber: new Map(),
+        prNumberByTaskId: new Map(),
+        nowMs: NOW_MS,
+      },
     ),
     'operator-event:0→5',
   );
   const remote = expiredTriggerForSidecar(
     { taskId: 't', path: '/x', raw: null, expiresOn: ['remote'], recordedPrHeadOid: 'aaaaaaaa' },
-    { worktreeHeadsByTaskId: new Map(), operatorEventSeqByTaskId: new Map(), prHeadByNumber: new Map([[1, 'bbbbbbbb']]), nowMs: NOW_MS },
+    {
+      worktreeHeadsByTaskId: new Map(),
+      operatorEventSeqByTaskId: new Map(),
+      prHeadByNumber: new Map([[1, 'bbbbbbbb']]),
+      prNumberByTaskId: new Map([['t', 1]]),
+      nowMs: NOW_MS,
+    },
   );
   assert.ok(remote?.startsWith('remote:'));
+});
+
+test('I5 remote expiry does not false-positive on unrelated PRs', () => {
+  // Sidecar belongs to task A with PR 1 (head still matches recorded).
+  // PR 2 (unrelated task B) has a different head — must NOT trigger.
+  const remote = expiredTriggerForSidecar(
+    { taskId: 'A', path: '/x', raw: null, expiresOn: ['remote'], recordedPrHeadOid: 'aaaaaaaa' },
+    {
+      worktreeHeadsByTaskId: new Map(),
+      operatorEventSeqByTaskId: new Map(),
+      prHeadByNumber: new Map([
+        [1, 'aaaaaaaa'],
+        [2, 'bbbbbbbb'],
+      ]),
+      prNumberByTaskId: new Map([['A', 1]]),
+      nowMs: NOW_MS,
+    },
+  );
+  assert.equal(remote, null);
 });
 
 // ── 13: I6 schema validation ────────────────────────────────────────────────

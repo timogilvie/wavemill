@@ -115,6 +115,8 @@ export interface StateInspection {
   operatorEventSeqByTaskId: Map<string, number>;
   /** Live PR head oid per PR number. */
   prHeadByNumber: Map<number, string>;
+  /** PR number per task id (built from workflow state .tasks[id].pr). */
+  prNumberByTaskId: Map<string, number>;
   /** Current time (ms). */
   nowMs: number;
 }
@@ -523,12 +525,13 @@ export function expiredTriggerForSidecar(
       case 'remote': {
         const recorded = sidecar.recordedPrHeadOid;
         if (!recorded) break;
-        for (const [, headOid] of inspection.prHeadByNumber) {
-          if (headOid && headOid !== recorded) {
-            // Only fire when we have a concrete different value — a single
-            // live PR we know about whose head drifted from the recorded one.
-            return `remote:${recorded.slice(0, 7)}→${headOid.slice(0, 7)}`;
-          }
+        // Scope the comparison to the sidecar's own PR to avoid firing on
+        // other active PRs whose heads naturally differ in a multi-PR mill.
+        const ownPr = inspection.prNumberByTaskId.get(sidecar.taskId);
+        if (ownPr === undefined) break;
+        const headOid = inspection.prHeadByNumber.get(ownPr);
+        if (headOid && headOid !== recorded) {
+          return `remote:${recorded.slice(0, 7)}→${headOid.slice(0, 7)}`;
         }
         break;
       }

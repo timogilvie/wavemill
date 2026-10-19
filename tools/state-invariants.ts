@@ -276,6 +276,7 @@ async function runCheck(args: ToolArgs): Promise<void> {
   const waitingOnByTaskId = new Map<string, WaitingOnEvidence>();
   const worktreeHeads = new Map<string, string>();
   const operatorSeq = new Map<string, number>();
+  const prNumberByTaskId = new Map<string, number>();
 
   for (const [taskId, task] of workflowTaskEntries(state)) {
     const stateDir = stateDirFor(task);
@@ -298,6 +299,9 @@ async function runCheck(args: ToolArgs): Promise<void> {
       const head = readWorktreeHead(worktree);
       if (head) worktreeHeads.set(taskId, head);
     }
+
+    const prNum = Number((task as { pr?: unknown }).pr);
+    if (Number.isFinite(prNum) && prNum > 0) prNumberByTaskId.set(taskId, prNum);
   }
 
   // PR cache + per-PR views and live state.
@@ -339,6 +343,7 @@ async function runCheck(args: ToolArgs): Promise<void> {
       worktreeHeadsByTaskId: worktreeHeads,
       operatorEventSeqByTaskId: operatorSeq,
       prHeadByNumber,
+      prNumberByTaskId,
       nowMs,
     },
     config: {
