@@ -2421,6 +2421,9 @@ challenge_materialize_challenger_arm() {
   # Step 7: save the challenger's task-state entry at phase=review.
   local linear_issue
   linear_issue="$(get_linear_issue_id "$primary_issue" 2>/dev/null || echo "$primary_issue")"
+  local arm_title
+  arm_title=$(pass_task_field "$primary_issue" title)
+  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
   # challengeModel names the varied stage's model (HOK-3156 fix #4): for a
   # review-stage pair that is the reviewer, not the shared coder.
   save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
@@ -2459,10 +2462,6 @@ challenge_materialize_challenger_arm() {
   set_task_phase "$arm_key" "review"
   write_stage_result_with_history "$challenger_feature_dir" "review" "running" \
     "$resolved_reviewer_agent" "$reviewer_launch_model"
-
-  local arm_title
-  arm_title=$(pass_task_field "$primary_issue" title)
-  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
 
   local launch_rc=0
   _run_phase_launch review launch_review_phase "$arm_key" "$arm_slug" "$arm_title" \
@@ -2751,6 +2750,9 @@ challenge_materialize_implementation_arm() {
   # Step 7: save the challenger's task-state entry at phase=coding.
   local linear_issue
   linear_issue="$(get_linear_issue_id "$primary_issue" 2>/dev/null || echo "$primary_issue")"
+  local arm_title
+  arm_title=$(pass_task_field "$primary_issue" title)
+  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
   save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
     "" "" "$coder_agent" "$linear_issue" \
     "true" "$primary_issue" "challenger" "$coder_model" \
@@ -2783,10 +2785,6 @@ challenge_materialize_implementation_arm() {
   set_task_phase "$arm_key" "coding"
   write_stage_result_with_history "$challenger_feature_dir" "coding" "running" \
     "$resolved_coder_agent" "$coder_launch_model" "" "" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-
-  local arm_title
-  arm_title=$(pass_task_field "$primary_issue" title)
-  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
 
   local launch_rc=0
   _run_phase_launch coding launch_coding_phase "$arm_key" "$arm_slug" "$arm_title" \
@@ -3207,6 +3205,9 @@ challenge_materialize_expanded_route_arm() {
   local planner_agent="$challenger_planner_agent"
   [[ -n "$planner_agent" ]] || planner_agent="$(challenge_arm_read_field "$arm_json" '.agents.planner')"
   [[ -n "$planner_agent" ]] || planner_agent="${AGENT_CMD:-claude}"
+  local arm_title
+  arm_title=$(pass_task_field "$primary_issue" title)
+  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
   # challengeModel names the varied stage's model (HOK-3156): the planner here.
   save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
     "" "" "$planner_agent" "$linear_issue" \
@@ -3239,10 +3240,6 @@ challenge_materialize_expanded_route_arm() {
   set_task_phase "$arm_key" "planning"
   write_stage_result_with_history "$challenger_feature_dir" "planning" "running" \
     "$resolved_planner_agent" "$planner_launch_model"
-
-  local arm_title
-  arm_title=$(pass_task_field "$primary_issue" title)
-  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
 
   local launch_rc=0
   _run_phase_launch planning launch_planning_phase "$arm_key" "$arm_slug" "$arm_title" \
