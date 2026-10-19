@@ -101,6 +101,7 @@ TESTS=(
   launch-failure-log-capture.test.sh
   challenge-eval-soft-retry.test.sh
   eval-stub-slot-accounting.test.sh
+  eval-report-cost-availability.test.sh
   challenge-deferred-arm.test.sh
   review-scope-baseline-handoff.test.sh
   launch-native-planning-phase.test.sh

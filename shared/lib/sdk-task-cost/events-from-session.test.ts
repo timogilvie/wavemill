@@ -235,6 +235,42 @@ describe('eventsFromExternalSession', () => {
     assert.deepEqual(noUsage.diagnostics, ['missing_token_usage']);
   });
 
+  it('treats dimensions a harness never reports as structural zeros, not gaps (HOK-3076)', () => {
+    const [claude] = eventsFromExternalSession(
+      externalSession({ turns: [], usage: usage(3000, 300, 0, 0, null) }),
+      ctx(OPUS),
+      'claude-opus-4',
+    );
+    assert.equal(claude.usage.reasoning_tokens, 0);
+    assert.equal(claude.usage_coverage, 'available');
+
+    const [codex] = eventsFromExternalSession(
+      externalSession({ harness: 'codex', turns: [], usage: usage(3000, 300, 0, null, 10) }),
+      ctx({}),
+      'gpt-5-codex',
+    );
+    assert.equal(codex.usage.cache_write_tokens, 0);
+    assert.equal(codex.usage_coverage, 'available');
+
+    // A dimension the harness does report stays a gap when it is missing...
+    const [missingInput] = eventsFromExternalSession(
+      externalSession({ turns: [], usage: usage(null, 300, 0, 0, null) }),
+      ctx(OPUS),
+      'claude-opus-4',
+    );
+    assert.equal(missingInput.usage.input_tokens, null);
+    assert.equal(missingInput.usage_coverage, 'partial');
+
+    // ...and a turn that reported nothing is never zero-filled.
+    const [nothing] = eventsFromExternalSession(
+      externalSession({ turns: [], usage: usage(null, null, null, null, null) }),
+      ctx(OPUS),
+      'claude-opus-4',
+    );
+    assert.equal(nothing.usage.reasoning_tokens, null);
+    assert.equal(nothing.usage_coverage, 'unavailable');
+  });
+
   it('attaches a valid pricing revision only to priced events', () => {
     const events = eventsFromExternalSession(externalSession(), ctx(OPUS, { pricingRevision: '2026-09-01' }));
     assert.equal(events[0].pricing_revision, '2026-09-01');
@@ -302,6 +338,25 @@ describe('eventsFromNativeSessions', () => {
     ], ctx(DEEPSEEK));
     assert.deepEqual(events.map((event) => event.sequence), [0, 1]);
     assert.equal(new Set(events.map((event) => event.event_id)).size, 2);
+  });
+
+  it('gives id-less turns from per-model records of one session distinct turn ids (HOK-3076)', () => {
+    const idless = (modelId: string) => nativeSession({
+      modelId,
+      responseIds: [],
+      turns: [{
+        inputTokens: 1000, cacheCreationTokens: 0, cacheReadTokens: 0, outputTokens: 100,
+        usageAvailable: true, invalidUsage: false,
+      }],
+    });
+    const events = eventsFromNativeSessions([idless('deepseek/deepseek-chat'), idless('other/model')], ctx(DEEPSEEK));
+    assert.equal(new Set(events.map((event) => event.turn_id)).size, 2);
+  });
+
+  it('keeps the native reasoning dimension unobserved: the Pi parser cannot prove it', () => {
+    const [event] = eventsFromNativeSessions([nativeSession()], ctx(DEEPSEEK));
+    assert.equal(event.usage.reasoning_tokens, null);
+    assert.equal(event.usage_coverage, 'partial');
   });
 
   it('emits a session-level event for a transcript without turns', () => {

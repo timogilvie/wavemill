@@ -10,7 +10,7 @@ import type { EvalContext } from './eval-context-gatherer.ts';
 import type { WorkflowCostOutcome } from './workflow-cost.ts';
 import { buildSdkTaskCostSummaries } from './sdk-task-cost/collect.ts';
 import { loadSdkTaskCostFixture } from './sdk-task-cost/fixtures.ts';
-import { SDK_TASK_COST_SHADOW_ENV } from './sdk-task-cost/feature-switch.ts';
+import { COST_METERING_LEGACY_ENV, SDK_TASK_COST_SHADOW_ENV } from './sdk-task-cost/feature-switch.ts';
 
 function fixtureTaskCostSummaries() {
   const fixture = loadSdkTaskCostFixture('claude-success');
@@ -211,6 +211,9 @@ describe('eval-orchestrator', () => {
       },
     }));
     mock.method(evalOrchestratorDeps, 'computeWorkflowCost', () => costOutcome);
+    // No SDK evidence by default, so the legacy stub above is what the SDK
+    // engine falls back to; SDK cutover tests override this.
+    mock.method(evalOrchestratorDeps, 'collectSdkTaskCostSummaries', () => null);
     mock.method(evalOrchestratorDeps, 'appendEvalRecord', () => undefined);
     mock.method(evalOrchestratorDeps, 'triggerHokusaiSubmission', async () => ({
       status: 'disabled',
@@ -232,19 +235,21 @@ describe('eval-orchestrator', () => {
     });
   });
 
-  const savedShadowEnv = process.env[SDK_TASK_COST_SHADOW_ENV];
+  const savedCostEnv = {
+    [SDK_TASK_COST_SHADOW_ENV]: process.env[SDK_TASK_COST_SHADOW_ENV],
+    [COST_METERING_LEGACY_ENV]: process.env[COST_METERING_LEGACY_ENV],
+  };
 
   afterEach(() => {
     mock.restoreAll();
     rmSync(repoDir, { recursive: true, force: true });
-    if (savedShadowEnv === undefined) {
-      delete process.env[SDK_TASK_COST_SHADOW_ENV];
-    } else {
-      process.env[SDK_TASK_COST_SHADOW_ENV] = savedShadowEnv;
+    for (const [key, value] of Object.entries(savedCostEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
   });
 
-  describe('SDK task-cost shadow (HOK-3075)', () => {
+  describe('SDK task-cost cutover (HOK-3075, HOK-3076)', () => {
     const runInput = () => ({
       issueId: 'HOK-1495',
       prNumber: '1495',
@@ -253,8 +258,35 @@ describe('eval-orchestrator', () => {
       agentType: 'codex',
     });
 
-    it('never runs the SDK collector and adds no field when the switch is off', async () => {
+    beforeEach(() => {
       delete process.env[SDK_TASK_COST_SHADOW_ENV];
+      delete process.env[COST_METERING_LEGACY_ENV];
+    });
+
+    it('makes the SDK projection authoritative by default', async () => {
+      const summaries = fixtureTaskCostSummaries();
+      let collectInput: Record<string, unknown> | undefined;
+      mock.method(evalOrchestratorDeps, 'collectSdkTaskCostSummaries', (input) => {
+        collectInput = input as unknown as Record<string, unknown>;
+        return summaries;
+      });
+
+      const record = await runEvaluation(runInput());
+
+      assert.deepEqual(record.taskCostSummary, summaries);
+      assert.ok(Math.abs((record.workflowCost ?? 0) - summaries[0].total_cost_usd!) < 1e-9);
+      assert.notEqual(record.workflowCost, 3.75);
+      assert.equal(record.workflowCostStatus, 'success');
+      assert.equal(record.workflowCostAttribution?.source, 'claude');
+      assert.equal(collectInput?.worktreePath, repoDir);
+      assert.equal(collectInput?.branchName, 'task/unified-eval');
+      assert.equal(collectInput?.issueId, 'HOK-1495');
+      // Same pricing table as the legacy engine, so the dollars match.
+      assert.deepEqual(collectInput?.pricingTable, { 'gpt-5.4': { inputCostPerMTok: 1, outputCostPerMTok: 2 } });
+    });
+
+    it('never runs the SDK collector under the legacy rollback with the shadow off', async () => {
+      process.env[COST_METERING_LEGACY_ENV] = '1';
       const collector = mock.method(evalOrchestratorDeps, 'collectSdkTaskCostSummaries', () => {
         throw new Error('must not be called');
       });
@@ -266,29 +298,20 @@ describe('eval-orchestrator', () => {
       assert.equal(record.workflowCost, 3.75);
     });
 
-    it('attaches SDK summaries alongside the untouched legacy cost when on', async () => {
+    it('attaches SDK summaries beside the untouched legacy cost under rollback with the shadow on', async () => {
+      process.env[COST_METERING_LEGACY_ENV] = 'on';
       process.env[SDK_TASK_COST_SHADOW_ENV] = '1';
       const summaries = fixtureTaskCostSummaries();
-      let collectInput: Record<string, unknown> | undefined;
-      mock.method(evalOrchestratorDeps, 'collectSdkTaskCostSummaries', (input) => {
-        collectInput = input as unknown as Record<string, unknown>;
-        return summaries;
-      });
+      mock.method(evalOrchestratorDeps, 'collectSdkTaskCostSummaries', () => summaries);
 
       const record = await runEvaluation(runInput());
 
       assert.deepEqual(record.taskCostSummary, summaries);
       assert.equal(record.workflowCost, 3.75);
       assert.equal(record.workflowCostStatus, 'success');
-      assert.equal(collectInput?.worktreePath, repoDir);
-      assert.equal(collectInput?.branchName, 'task/unified-eval');
-      assert.equal(collectInput?.issueId, 'HOK-1495');
-      // Same pricing table as the legacy engine, so the shadow dollars match.
-      assert.deepEqual(collectInput?.pricingTable, { 'gpt-5.4': { inputCostPerMTok: 1, outputCostPerMTok: 2 } });
     });
 
-    it('stays fail-soft when the SDK collector throws', async () => {
-      process.env[SDK_TASK_COST_SHADOW_ENV] = 'on';
+    it('falls back to the legacy outcome when the SDK collector throws', async () => {
       mock.method(evalOrchestratorDeps, 'collectSdkTaskCostSummaries', () => {
         throw new Error('sdk exploded');
       });
@@ -299,7 +322,7 @@ describe('eval-orchestrator', () => {
 
       assert.equal('taskCostSummary' in record, false);
       assert.equal(record.workflowCost, 3.75);
-      assert.ok(warnings.some((warning) => warning.includes('SDK task-cost shadow failed — sdk exploded')));
+      assert.ok(warnings.some((warning) => warning.includes('SDK task cost collection failed — sdk exploded')));
     });
 
     it('rethrows collector failures in strict mode', async () => {
