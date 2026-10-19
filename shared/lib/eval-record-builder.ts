@@ -49,6 +49,7 @@ import type {
   VerificationTelemetryLocalExecution,
   RoutingRole,
   EvalExecutionEconomics,
+  EvalTaskCostSummary,
   EvalTaskScorerResult,
 } from './eval-schema.ts';
 import {
@@ -135,6 +136,8 @@ export interface EvalRecordMetadata {
   workflowCost?: WorkflowCostOutcome | null;
   /** Normalized external-harness execution-economics blocks (HOK-2958). */
   executionEconomics?: EvalExecutionEconomics[] | null;
+  /** Shadow SDK task-cost summaries, one per harness (HOK-3075). */
+  taskCostSummary?: EvalTaskCostSummary[] | null;
   /** Shadow-mode task packet readiness prediction. */
   taskScorerResult?: EvalTaskScorerResult | null;
   /** Task descriptor for router training */
@@ -892,6 +895,24 @@ export function attachExecutionEconomics(
     return;
   }
   record.executionEconomics = blocks;
+}
+
+/**
+ * Attach shadow SDK task-cost summaries to an eval record (HOK-3075).
+ *
+ * Same contract as {@link attachExecutionEconomics}: no-op for null, a
+ * non-array, or an empty list, and never touches the legacy cost fields
+ * (`workflowCost`, `workflowCostAttribution`, `executionEconomics`,
+ * `pricingSnapshot`) — the summaries ride alongside them until cutover.
+ */
+export function attachTaskCostSummaries(
+  record: EvalRecord,
+  summaries: EvalTaskCostSummary[] | null | undefined,
+): void {
+  if (!Array.isArray(summaries) || summaries.length === 0) {
+    return;
+  }
+  record.taskCostSummary = summaries;
 }
 
 export function isEvalTaskScorerResult(value: unknown): value is EvalTaskScorerResult {
@@ -1750,6 +1771,7 @@ export function enrichEvalRecord(record: EvalRecord, metadata: EvalRecordMetadat
   attachRoutingDecisions(record, metadata.routing);
   attachWorkflowCostMetadata(record, metadata.workflowCost || null);
   attachExecutionEconomics(record, metadata.executionEconomics || null);
+  attachTaskCostSummaries(record, metadata.taskCostSummary || null);
   attachTaskScorerResult(record, metadata.taskScorerResult || null);
   attachRouteCalibration(record, computeRouteCalibration(record, record.routePrediction));
   attachTaskDescriptor(record, metadata.taskDescriptor || null);
@@ -1812,6 +1834,7 @@ export function enrichTrainingMetadata(
   attachRoutingDecisions(record, metadata.routing);
   attachWorkflowCostMetadata(record, metadata.workflowCost || null);
   attachExecutionEconomics(record, metadata.executionEconomics || null);
+  attachTaskCostSummaries(record, metadata.taskCostSummary || null);
   attachTaskScorerResult(record, metadata.taskScorerResult || null);
   attachRouteCalibration(record, computeRouteCalibration(record, record.routePrediction));
   attachTaskDescriptor(record, metadata.taskDescriptor || null);

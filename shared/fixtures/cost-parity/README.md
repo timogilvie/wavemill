@@ -108,12 +108,26 @@ Examples:
 
 ## Integration: HOK-3075 and HOK-3076
 
-The SDK bridge (_not in this PR_) will:
+HOK-3075 landed the SDK bridge in `shared/lib/sdk-task-cost/`:
 
-1. Implement a `SdkCostEngine` compatible with the harness's `CostEngine` interface
-2. Plug it into the same comparator: `npx tsx tools/cost-parity.ts --mode migration --engine sdk`
-3. Classify differences as strict violations or expected fixes per case
-4. Document any additional cross-repo issues (e.g., EF-3 is also in hokusai-sdk's Codex parser)
+- `collectSdkTaskCostSummaries` scans sessions with the existing adapters,
+  emits `TaskCostEventV1` events priced with the legacy local estimate, and
+  reduces each harness with `aggregateTaskCost` (`@hokusai/core` 0.5.0).
+- `projectTaskCostSummaryToWorkflowCost` maps a summary back to the legacy
+  `WorkflowCostResult` / `WorkflowCostAttribution` shape.
+- Eval entrypoints attach the summaries as `taskCostSummary` only when
+  `WAVEMILL_SDK_COST_METERING_SHADOW=1` (default off); no read is switched.
+- `shared/lib/sdk-task-cost/collect.test.ts` runs every case in this corpus
+  through the bridge and requires the projected dollars to equal the legacy
+  engine's `totalCostUsd` within 1e-9. Coverage labels intentionally differ
+  where the SDK is stricter (a `null` token dimension makes usage `partial`;
+  an explicit-zero-priced estimate is not `known_zero`).
+
+HOK-3076 (shadow compare + read switch) will:
+
+1. Wrap the bridge in a `CostEngine` and plug it into the same comparator: `npx tsx tools/cost-parity.ts --mode migration --engine sdk`
+2. Classify differences as strict violations or expected fixes per case
+3. Document any additional cross-repo issues (e.g., EF-3 is also in hokusai-sdk's Codex parser)
 
 When migration mode reports all differences as either "stale_expected_fix", "expected_fix_applied", or "expected_fix_wrong_value" on SDK-bridged cases, the SDK engine is ready to replace the legacy one.
 
