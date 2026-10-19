@@ -6,9 +6,9 @@
  * a stale `node_modules` once turned a shadow-only feature into a module-load
  * `SyntaxError` that failed every eval with the switch off. This module has
  * no runtime dependency on `@hokusai/core`: the collector (and the SDK) are
- * imported only when `runSdkTaskCostShadow` actually invokes it, so a load
- * failure surfaces inside the shadow runner and gets its `on`/`strict`
- * semantics (logged-and-swallowed vs rethrown).
+ * imported only when `runSdkTaskCostCollection` actually invokes it, so a load
+ * failure surfaces inside the collection runner and gets its
+ * logged-and-swallowed (or shadow `strict` rethrown) semantics.
  *
  * @module sdk-task-cost/lazy-collect
  */

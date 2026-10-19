@@ -21,16 +21,16 @@ export function classifyProviderError(errorMessage: string): ProviderErrorClassi
   }
 
   if (
-    /(?:^|\D)402(?:\D|$)|payment required|can only afford|requires more credits|insufficient.*credits?|openrouter-credits-exhausted/.test(detail)
+    /(?:^|[^a-z0-9])402(?:[^a-z0-9]|$)|payment required|can only afford|requires more credits|insufficient.*credits?|openrouter-credits-exhausted/.test(detail)
   ) {
     return terminal('provider-credit-exhausted');
   }
 
   if (
-    /(?:^|\D)401(?:\D|$)|unauthori[sz]ed|invalid api key|authentication|permission denied|forbidden/.test(detail)
+    /(?:^|[^a-z0-9])401(?:[^a-z0-9]|$)|unauthori[sz]ed|invalid api key|authentication|permission denied|forbidden/.test(detail)
     || /is not a valid model id|invalid model|unknown model|model_not_found|invalid model id/.test(detail)
     || /invalid.*(?:parameter|param|request)|unsupported parameter|bad request.*(?:parameter|param)/.test(detail)
-    || /(?:^|\D)404(?:\D|$).*endpoint|no endpoints found|tool use.*not supported|support tool use/.test(detail)
+    || /(?:^|[^a-z0-9])404(?:[^a-z0-9]|$).*endpoint|no endpoints found|tool use.*not supported|support tool use/.test(detail)
   ) {
     return terminal('provider-config-error');
   }

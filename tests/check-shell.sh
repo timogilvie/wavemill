@@ -100,6 +100,7 @@ for f in \
   "$REPO_DIR"/tests/check-install-paths.test.sh \
   "$REPO_DIR"/tests/check-common-guards.test.sh \
   "$REPO_DIR"/tests/check-direct-ledger-access.test.sh \
+  "$REPO_DIR"/tests/eval-report-cost-availability.test.sh \
   "$REPO_DIR"/tests/ledger-cli-shadow.test.sh \
   "$REPO_DIR"/tests/ledger-hook-shadow.test.sh \
   "$REPO_DIR"/tests/check-ledger-shadow-swallow.test.sh \
