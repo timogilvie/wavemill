@@ -346,7 +346,9 @@
     "shared/lib/eval-orchestrator.test.ts",
     "shared/lib/native-agent/pi-usage-cost.test.ts",
     "tools/backfill-stage-executed-model.test.ts",
-    "shared/lib/sdk-task-cost/events-from-session.test.ts"
+    "shared/lib/sdk-task-cost/events-from-session.test.ts",
+    "shared/lib/sdk-task-cost/resolve.test.ts",
+    "shared/lib/cost-migration.test.ts"
   ],
   "indirectConsumers": [
     {
