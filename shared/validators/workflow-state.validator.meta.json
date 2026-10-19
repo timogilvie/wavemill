@@ -1,0 +1,14 @@
+{
+  "name": "workflow-state",
+  "schemaPath": "shared/schemas/workflow-task.schema.json",
+  "schemaSha256": "55f6b4515891264c41a5b97b054e51c24f692eb6af9c65f464feb633e55dc578",
+  "codeSha256": "3b6d2319f7287bf0f3f6bb47940d53a21291f08c5b87d277d04a3dcbf9586599",
+  "ajvOptions": {
+    "allErrors": true,
+    "strict": false
+  },
+  "ajvModule": "ajv/dist/2020",
+  "refSchemaPaths": [
+    "shared/schemas/task-lifecycle-state.schema.json"
+  ]
+}

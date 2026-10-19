@@ -15,6 +15,7 @@ import {
   compileSchemaValidator,
   DEFAULT_REPO_ROOT,
   PRECOMPILED_SCHEMAS,
+  readRefSchemas,
 } from '../shared/lib/schema-validators.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -26,7 +27,12 @@ if (process.argv[1] === __filename) {
 
   for (const spec of PRECOMPILED_SCHEMAS) {
     try {
-      compileSchemaValidator(JSON.parse(readFileSync(join(repoRoot, spec.schemaPath), 'utf-8')), spec.ajvOptions, spec.ajvModule);
+      compileSchemaValidator(
+        JSON.parse(readFileSync(join(repoRoot, spec.schemaPath), 'utf-8')),
+        spec.ajvOptions,
+        spec.ajvModule,
+        readRefSchemas(spec, repoRoot),
+      );
     } catch (error) {
       problems.push(`${spec.schemaPath}: schema does not compile (${error instanceof Error ? error.message : String(error)})`);
     }

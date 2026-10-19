@@ -14,7 +14,9 @@ import {
   hasValidationStamp,
   loadPrecompiledValidator,
   PRECOMPILED_SCHEMAS,
+  readRefSchemas,
   recordValidationStamp,
+  schemaSourceText,
   type PrecompiledSchemaSpec,
 } from './schema-validators.ts';
 
@@ -34,18 +36,38 @@ const SAMPLES: Record<string, { good: unknown; bad: unknown[] }> = {
     good: {},
     bad: [{ schemaVersion: 42 }, []],
   },
+  'workflow-state': {
+    good: {
+      session: 'wavemill',
+      tasks: {
+        'HOK-1': {
+          slug: 'one',
+          pr: '12',
+          challenge: true,
+          lifecycle: { schemaVersion: 1, workflowOutcome: 'active', resourceDisposition: 'allocated', attempt: null },
+        },
+      },
+    },
+    bad: [
+      { tasks: { 'HOK-1': { challenge: 'true' } } },
+      { tasks: { 'HOK-1': { lifecycle: { schemaVersion: 2 } } } },
+      { tasks: [] },
+    ],
+  },
 };
 
 function schemaText(spec: PrecompiledSchemaSpec): string {
-  return readFileSync(join(repoRoot, spec.schemaPath), 'utf-8');
+  return schemaSourceText(spec, repoRoot);
 }
 
 /** Copy the schemas + committed artifacts into a scratch repo root. */
 function makeScratchRepo(): { root: string; validatorsDir: string } {
   const root = mkdtempSync(join(tmpdir(), 'schema-validators-'));
   for (const spec of PRECOMPILED_SCHEMAS) {
-    mkdirSync(dirname(join(root, spec.schemaPath)), { recursive: true });
-    cpSync(join(repoRoot, spec.schemaPath), join(root, spec.schemaPath));
+    for (const path of [spec.schemaPath, ...(spec.refSchemaPaths ?? [])]) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      cpSync(join(repoRoot, path), join(root, path));
+    }
   }
   const validatorsDir = join(root, 'shared', 'validators');
   cpSync(DEFAULT_VALIDATORS_DIR, validatorsDir, { recursive: true });
@@ -62,7 +84,12 @@ describe('committed standalone validators', () => {
       const text = schemaText(spec);
       const precompiled = loadPrecompiledValidator(spec.name, text, spec.ajvOptions, spec.ajvModule);
       assert.ok(precompiled, 'precompiled validator should load for the current schema');
-      const compiled = compileSchemaValidator(JSON.parse(text), spec.ajvOptions, spec.ajvModule);
+      const compiled = compileSchemaValidator(
+        JSON.parse(readFileSync(join(repoRoot, spec.schemaPath), 'utf-8')),
+        spec.ajvOptions,
+        spec.ajvModule,
+        readRefSchemas(spec, repoRoot),
+      );
       const samples = SAMPLES[spec.name];
       assert.ok(samples, `add SAMPLES for ${spec.name}`);
 
@@ -119,6 +146,14 @@ describe('checkPrecompiledValidators drift detection', () => {
     const problems = checkPrecompiledValidators(scratch.root, scratch.validatorsDir);
     assert.equal(problems.length, 1);
     assert.match(problems[0], /model-registry: .*schema sha256 mismatch/);
+  });
+
+  it('fails when a referenced schema changes without regenerating', () => {
+    const refPath = join(scratch.root, 'shared', 'schemas', 'task-lifecycle-state.schema.json');
+    writeFileSync(refPath, `${readFileSync(refPath, 'utf-8')}\n`);
+    const problems = checkPrecompiledValidators(scratch.root, scratch.validatorsDir);
+    assert.equal(problems.length, 1);
+    assert.match(problems[0], /workflow-state: .*schema sha256 mismatch/);
   });
 
   it('fails when a schema is malformed JSON (HOK-2908 class)', () => {
