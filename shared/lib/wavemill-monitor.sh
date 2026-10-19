@@ -4538,7 +4538,11 @@ ready_watchdog_dispatch_findings() {
     if [[ "$action" == "queue-remediation" ]]; then
       slug=$(pass_task_field "$issue" slug)
       branch=$(pass_task_field "$issue" branch)
-      base_branch=$(pass_task_field "$issue" baseBranch)
+      # No writer sets a top-level `.baseBranch` on a task row (HOK-3220); the
+      # base lives in the launch contract. Resolve it like the review relaunch
+      # does, else remediation never launches (found by HOK-3223's fixtures).
+      base_branch="$(effective_task_base_branch "$issue" 2>/dev/null || pass_task_field "$issue" baseBranch)"
+      [[ -n "$base_branch" ]] || base_branch="${BASE_BRANCH:-main}"
       pr_number=$(pass_task_field "$issue" pr)
       title=$(read_state_value "" --arg i "$issue" '.tasks[$i].title // "Task"')
       wt_dir=$(pass_task_field "$issue" worktree)

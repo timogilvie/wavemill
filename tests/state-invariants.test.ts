@@ -14,6 +14,7 @@ import type {
   MergeLabelTaskView,
 } from '../shared/lib/merge-labels.ts';
 import type { WorkflowState } from '../shared/lib/workflow-state.ts';
+import { buildWorkflowState } from './lib/task-builder.ts';
 import {
   checkInvariant1Progress,
   checkInvariant2Slots,
@@ -140,15 +141,13 @@ function makeLiveBlocked(sha = 'abc123'): MergeLabelLiveState {
 
 test('clean state produces no violations', () => {
   const inputs = makeInputs({
-    state: {
-      tasks: {
-        'HOK-1': {
-          phase: 'ready',
-          status: 'running',
-          slug: 'foo',
-        },
+    state: buildWorkflowState({
+      'HOK-1': {
+        phase: 'ready',
+        status: 'running',
+        slug: 'foo',
       },
-    },
+    }, { bare: true }),
     taskProgress: new Map([
       ['HOK-1', makeProgress({ issue: 'HOK-1', stalled: false })],
     ]),
@@ -162,11 +161,9 @@ test('clean state produces no violations', () => {
 
 test('I1 fires for a stalled non-terminal task with no waiting-on marker', () => {
   const inputs = makeInputs({
-    state: {
-      tasks: {
-        'HOK-2': { phase: 'coding', status: 'running', slug: 'bar' },
-      },
-    },
+    state: buildWorkflowState({
+      'HOK-2': { phase: 'coding', status: 'running', slug: 'bar' },
+    }, { bare: true }),
     taskProgress: new Map([
       ['HOK-2', makeProgress({ issue: 'HOK-2', stalled: true, stallMinutes: 30, progressAgeMinutes: 60 })],
     ]),
@@ -181,11 +178,9 @@ test('I1 fires for a stalled non-terminal task with no waiting-on marker', () =>
 
 test('I1 does not fire when a waiting-on marker is present', () => {
   const inputs = makeInputs({
-    state: {
-      tasks: {
-        'HOK-3': { phase: 'coding', status: 'running', slug: 'bar' },
-      },
-    },
+    state: buildWorkflowState({
+      'HOK-3': { phase: 'coding', status: 'running', slug: 'bar' },
+    }, { bare: true }),
     taskProgress: new Map([
       ['HOK-3', makeProgress({ issue: 'HOK-3', stalled: true, stallMinutes: 30 })],
     ]),
@@ -198,11 +193,9 @@ test('I1 does not fire when a waiting-on marker is present', () => {
 
 test('I1 skips terminal (phase=aborted) tasks', () => {
   const inputs = makeInputs({
-    state: {
-      tasks: {
-        'HOK-4': { phase: 'aborted', status: 'aborted', slug: 'bar' },
-      },
-    },
+    state: buildWorkflowState({
+      'HOK-4': { phase: 'aborted', status: 'aborted', slug: 'bar' },
+    }, { bare: true }),
     taskProgress: new Map([
       ['HOK-4', makeProgress({ issue: 'HOK-4', stalled: true, stallMinutes: 30 })],
     ]),
@@ -217,9 +210,7 @@ test('I1 signature is stable across ticks for the same stall (notification only 
   // lastProgressAt is unchanged. The signature must stay the same so the
   // JSONL + observer appender treat the second emission as a repeat.
   const base = {
-    state: {
-      tasks: { 'HOK-9': { phase: 'coding', status: 'running', slug: 'bar' } },
-    },
+    state: buildWorkflowState({ 'HOK-9': { phase: 'coding', status: 'running', slug: 'bar' } }, { bare: true }),
     waitingOnByTaskId: new Map([['HOK-9', { hasWaitingOnMarker: false }]]),
   };
   const first = evaluateInvariants(
@@ -272,12 +263,10 @@ test('I1 signature is stable across ticks for the same stall (notification only 
 
 test('I2 fires for an orphan stub row', () => {
   const inputs = makeInputs({
-    state: {
-      tasks: {
-        'HOK-9999': {}, // orphan stub (all fields missing)
-        'HOK-5': { phase: 'ready', status: 'running', slug: 'ok' },
-      },
-    },
+    state: buildWorkflowState({
+      'HOK-9999': {}, // orphan stub (all fields missing)
+      'HOK-5': { phase: 'ready', status: 'running', slug: 'ok' },
+    }, { bare: true }),
   });
   const out: InvariantViolation[] = [];
   checkInvariant2Slots(inputs, out);
@@ -579,6 +568,7 @@ test('I6 fires when a task record violates the A1 schema', () => {
   // phase must be a string per the schema; a number is a clean violation.
   const inputs = makeInputs({
     state: {
+      // allow-task-literal: deliberately schema-violating row (phase must be a string)
       tasks: {
         'HOK-7': { phase: 123, slug: 'ok' } as never,
       },

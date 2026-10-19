@@ -58,6 +58,10 @@ source "$COMMON_SCRIPT"
 source "$BOUNDED_RETRY"
 source "$SCRIPT_DIR/../shared/lib/task-identity.sh"
 source "$FUNCS_FILE"
+# shellcheck source=lib/state-fixtures.sh
+source "$SCRIPT_DIR/lib/state-fixtures.sh"
+# Production read_state_value / get_task_meta / state_mutate (HOK-3223).
+fixture_real_state_accessors
 
 # Fixture: branch with 2 commits over base, .coding-complete present, no PR.
 CASE_DIR="$TMP_DIR/case"
@@ -79,9 +83,10 @@ mkdir -p "$FEATURE_DIR"
 printf '{"stage":"coding","confidence":"high"}\n' > "$FEATURE_DIR/.coding-complete"
 
 STATE_FILE="$CASE_DIR/state.json"
-cat > "$STATE_FILE" <<EOF
-{"tasks":{"HOK-31461":{"phase":"review","slug":"slug","worktree":"$WT","branch":"task/slug","title":"re-review scenario","agent":"codex","model":"gpt-6-sol","baseBranch":"main"}}}
-EOF
+# title / baseBranch are not task fields (no writer sets them); the base comes
+# from effective_task_base_branch.
+fixture_workflow_state "$STATE_FILE" HOK-31461 phase=review slug=slug worktree="$WT" branch=task/slug \
+  agent=codex model=gpt-6-sol
 LOGS="$CASE_DIR/logs.txt"
 : > "$LOGS"
 LAUNCH_LOG="$CASE_DIR/launches.txt"
@@ -94,20 +99,6 @@ log() { echo "$2" >> "$LOGS"; }
 log_warn() { echo "warn:$1" >> "$LOGS"; }
 log_task() { :; }
 
-read_state_value() {
-  local default="$1"
-  shift
-  local value
-  if [[ ! -r "$STATE_FILE" || ! -s "$STATE_FILE" ]]; then
-    printf '%s\n' "$default"
-    return 0
-  fi
-  if value=$(jq -r "$@" "$STATE_FILE" 2>/dev/null); then
-    printf '%s\n' "$value"
-  else
-    printf '%s\n' "$default"
-  fi
-}
 resolve_phase() { echo "review"; }
 read_stage_status() {
   local fd="$1" stage="$2"
@@ -182,9 +173,8 @@ FEATURE_DIR="$WT/features/slug"
 mkdir -p "$FEATURE_DIR"
 # No .coding-complete; no new commits
 STATE_FILE="$CASE_DIR/state.json"
-cat > "$STATE_FILE" <<EOF
-{"tasks":{"HOK-31462":{"phase":"review","slug":"slug","worktree":"$WT","branch":"task/slug","title":"no commits scenario","agent":"codex","model":"gpt-6-sol","baseBranch":"main"}}}
-EOF
+fixture_workflow_state "$STATE_FILE" HOK-31462 phase=review slug=slug worktree="$WT" branch=task/slug \
+  agent=codex model=gpt-6-sol
 export REPO_DIR="$REPO"
 LOGS="$CASE_DIR/logs.txt"
 : > "$LOGS"
