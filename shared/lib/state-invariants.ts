@@ -40,6 +40,8 @@ import {
   validateWorkflowState,
   workflowTaskEntries,
 } from './workflow-state.ts';
+import { getBlastRadius } from './blast-radius.ts';
+import { TEND_BLOCKED_LANE_FRESH_MS } from './wavemill-incident-tend-candidates.ts';
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -51,6 +53,7 @@ export type InvariantId =
   | 'I5-stale-marker'
   | 'I6-schema'
   | 'I7-missing-condition-companion'
+  | 'I8-bake-gate-stall'
   | `ledger-${string}`;
 
 export interface InvariantViolation {
@@ -71,12 +74,26 @@ export interface InvariantConfig {
   labelMismatchGraceTicks: number;
   /** Ticks a stale condition marker must persist before I5 fires. */
   markerGraceTicks: number;
+  /**
+   * HOK-3238 post-promotion bake gate. Minutes after a `high`-blast-radius
+   * commit lands on `main` during which the gate watches throughput. `0`
+   * disables the gate.
+   */
+  bakeWindowMinutes: number;
+  /**
+   * HOK-3238 post-promotion bake gate. Minutes `tendHeartbeat.laneCondition
+   * === 'idle-blocked-stall'` must have persisted (relative to the bake
+   * commit) before I8 fires.
+   */
+  tendIdleStallMinutes: number;
 }
 
 export const DEFAULT_INVARIANT_CONFIG: InvariantConfig = {
   readyStuckMinutes: 15,
   labelMismatchGraceTicks: 2,
   markerGraceTicks: 2,
+  bakeWindowMinutes: 120,
+  tendIdleStallMinutes: 30,
 };
 
 /** Minimum shape consumed from the retry-sentinel enumerator. */
@@ -162,6 +179,26 @@ export interface EvaluateInvariantsInputs {
   cache: StateInvariantsCache;
   stateInspection: StateInspection;
   config?: Partial<InvariantConfig>;
+  /**
+   * HOK-3238 bake-gate inputs. Each entry is a commit on `main` within the
+   * bake window with its changed files; the checker filters to those still
+   * within `bakeWindowMinutes` of `nowMs`. Default `[]` disables I8.
+   */
+  recentMainCommits?: ReadonlyArray<{ sha: string; committedAtMs: number; files: string[] }>;
+  /**
+   * HOK-3238 bake-gate input. The current tend heartbeat read from
+   * `.wavemill/backstage-health.json` (`services.tend.{laneCondition,
+   * heartbeatAt}`). `null` means the file is missing/malformed, which the
+   * checker treats as "tend is not reporting a stall" → no violation.
+   */
+  tendHeartbeat?: TendHeartbeat | null;
+}
+
+/** Current tend heartbeat read for the bake gate (HOK-3238). */
+export interface TendHeartbeat {
+  laneCondition: string;
+  heartbeatAtMs: number | null;
+  blockedStreakMs?: number;
 }
 
 export interface WaitingOnEvidence {
@@ -230,6 +267,7 @@ export function evaluateInvariants(inputs: EvaluateInvariantsInputs): EvaluateIn
   checkInvariant5StaleMarker(inputs, violations, nextCache, config);
   checkInvariant6Schema(inputs, violations);
   checkInvariant7MissingConditionCompanion(inputs, violations);
+  checkInvariant8BakeGate(inputs, violations, config);
 
   // Update signatures journal: first-seen (new) and last-seen (repeat).
   const nowIso = new Date(inputs.stateInspection.nowMs).toISOString();
@@ -643,6 +681,87 @@ export function checkInvariant7MissingConditionCompanion(
       signature: `I7-missing-condition-companion:task=${sentinel.taskId}:bucket=${sentinel.bucket}`,
     });
   }
+}
+
+// ── I8: post-promotion bake gate (HOK-3238) ─────────────────────────────────
+
+/**
+ * Post-promotion bake gate.
+ *
+ * After a `high`-blast-radius commit lands on `main`, watch throughput for
+ * `bakeWindowMinutes` (default 120 min). Fire an urgent `I8-bake-gate-stall`
+ * finding when tend is in an `idle-blocked-stall` for more than
+ * `tendIdleStallMinutes` (default 30 min) after the promotion — which encodes
+ * "nothing is moving" without a separate merge-rate meter. The signature is
+ * stable per promotion so repeat ticks never spam past the first notification.
+ *
+ * `bakeWindowMinutes === 0` disables the gate (`WAVEMILL_BAKE_GATE_MINUTES=0`).
+ */
+export function checkInvariant8BakeGate(
+  inputs: EvaluateInvariantsInputs,
+  out: InvariantViolation[],
+  config: InvariantConfig,
+): void {
+  if (!config.bakeWindowMinutes || config.bakeWindowMinutes <= 0) return;
+  const commits = inputs.recentMainCommits ?? [];
+  if (commits.length === 0) return;
+  const nowMs = inputs.stateInspection.nowMs;
+  const nowIso = new Date(nowMs).toISOString();
+  const windowMs = config.bakeWindowMinutes * 60_000;
+  const stallThresholdMs = config.tendIdleStallMinutes * 60_000;
+
+  // The commit closest to `now` wins the signature — deterministic even when
+  // two mill-core commits land within the window. All reports share one
+  // signature so the OS notification fires once per promotion.
+  let bakeCommit: { sha: string; committedAtMs: number; files: string[] } | null = null;
+  for (const commit of commits) {
+    if (commit.committedAtMs > nowMs) continue; // Future-dated — ignore.
+    if (nowMs - commit.committedAtMs > windowMs) continue;
+    if (getBlastRadius(commit.files) !== 'high') continue;
+    if (!bakeCommit || commit.committedAtMs > bakeCommit.committedAtMs) {
+      bakeCommit = commit;
+    }
+  }
+  if (!bakeCommit) return;
+
+  const tend = inputs.tendHeartbeat ?? null;
+  if (!tend || tend.laneCondition !== 'idle-blocked-stall') return;
+  const heartbeatMs = tend.heartbeatAtMs;
+  if (heartbeatMs === null || !Number.isFinite(heartbeatMs)) return;
+  // Heartbeat must be fresh — a stale heartbeat means tend is not reporting
+  // the lane right now, so we cannot claim an ongoing stall (HOK-2595).
+  if (nowMs - heartbeatMs > TEND_BLOCKED_LANE_FRESH_MS) return;
+  // The stall must be *after* the promotion, by at least the configured
+  // tendIdleStallMinutes margin.
+  const stallDeltaMs = heartbeatMs - bakeCommit.committedAtMs;
+  if (stallDeltaMs <= stallThresholdMs) return;
+
+  const readyPrNumbers: number[] = [];
+  for (const pr of inputs.prs) {
+    const labels = (pr.labels ?? [])
+      .map((l) => (typeof l?.name === 'string' ? l.name : ''))
+      .filter(Boolean);
+    if (labels.includes('wm:ready')) readyPrNumbers.push(pr.number);
+  }
+
+  out.push({
+    invariantId: 'I8-bake-gate-stall',
+    severity: 'urgent',
+    detectedAt: nowIso,
+    evidence: {
+      commitSha: bakeCommit.sha,
+      committedAt: new Date(bakeCommit.committedAtMs).toISOString(),
+      bakeWindowMinutes: config.bakeWindowMinutes,
+      tendLaneCondition: tend.laneCondition,
+      tendHeartbeatAt: new Date(heartbeatMs).toISOString(),
+      tendStallMinutes: Math.floor(stallDeltaMs / 60_000),
+      tendStallThresholdMinutes: config.tendIdleStallMinutes,
+      readyPrNumbers,
+      filesChanged: bakeCommit.files.slice(0, 10),
+      revertCommand: `git revert ${bakeCommit.sha}`,
+    },
+    signature: `I8:${bakeCommit.sha}`,
+  });
 }
 
 // ── Helpers for CLI (sidecar parser, waiting-on evidence) ────────────────────

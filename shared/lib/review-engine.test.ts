@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { isBlockingFinding, isDismissedFinding, reviewEngineTestUtils } from './review-engine.ts';
+import { HIGH_BLAST_RADIUS_GUIDANCE, isBlockingFinding, isDismissedFinding, reviewEngineTestUtils } from './review-engine.ts';
 import type { ReviewContext } from './review-context-gatherer.ts';
 
 describe('review-engine scoped mode', () => {
@@ -521,5 +521,65 @@ describe('review-engine CLI helpers (HOK-3247, HOK-3248)', () => {
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('review-engine blast-radius guidance (HOK-3238)', () => {
+  it('substitutes the HIGH blast-radius block when context.blastRadius is high', () => {
+    const template = 'Preamble\n{{HIGH_BLAST_RADIUS_GUIDANCE}}\nAfter\n{{DIFF}}\n{{PLAN_CONTEXT}}\n{{TASK_PACKET_CONTEXT}}\n{{DESIGN_CONTEXT}}';
+    const context: ReviewContext = {
+      diff: 'd', plan: 'p', taskPacket: 't', designContext: null,
+      metadata: { branch: 'b', files: ['shared/lib/tend-loop.ts'], hasUiChanges: false },
+      blastRadius: 'high',
+    };
+    const out = reviewEngineTestUtils.fillReviewPromptTemplate(template, context, false);
+    assert.ok(out.includes('HIGH BLAST RADIUS'), 'should include guidance header');
+    assert.ok(out.includes('tests/journeys/run-journeys.sh happy-path'), 'should include journey command');
+    assert.ok(out.includes('Fixture provenance'), 'should include fixture provenance rule');
+  });
+
+  it('leaves the HIGH slot empty when context.blastRadius is normal', () => {
+    const template = 'Preamble\n{{HIGH_BLAST_RADIUS_GUIDANCE}}\nAfter\n{{DIFF}}\n{{PLAN_CONTEXT}}\n{{TASK_PACKET_CONTEXT}}\n{{DESIGN_CONTEXT}}';
+    const context: ReviewContext = {
+      diff: 'd', plan: 'p', taskPacket: 't', designContext: null,
+      metadata: { branch: 'b', files: ['src/components/Button.tsx'], hasUiChanges: false },
+      blastRadius: 'normal',
+    };
+    const out = reviewEngineTestUtils.fillReviewPromptTemplate(template, context, false);
+    assert.ok(!out.includes('HIGH BLAST RADIUS'));
+    assert.ok(!out.includes('tests/journeys/run-journeys.sh happy-path'));
+  });
+
+  it('treats missing blastRadius as normal', () => {
+    const template = 'Preamble\n{{HIGH_BLAST_RADIUS_GUIDANCE}}\nAfter\n{{DIFF}}\n{{PLAN_CONTEXT}}\n{{TASK_PACKET_CONTEXT}}\n{{DESIGN_CONTEXT}}';
+    const context: ReviewContext = {
+      diff: 'd', plan: 'p', taskPacket: 't', designContext: null,
+      metadata: { branch: 'b', files: ['docs/foo.md'], hasUiChanges: false },
+    };
+    const out = reviewEngineTestUtils.fillReviewPromptTemplate(template, context, false);
+    assert.ok(!out.includes('HIGH BLAST RADIUS'));
+  });
+
+  it('both prompt templates still render for a normal review', () => {
+    const normalTemplate = reviewEngineTestUtils.loadPersonaPromptTemplate('general', 'normal');
+    const scopedTemplate = reviewEngineTestUtils.loadPersonaPromptTemplate('general', 'survival');
+    const context: ReviewContext = {
+      diff: 'd', plan: 'p', taskPacket: 't', designContext: null,
+      metadata: { branch: 'b', files: ['docs/foo.md'], hasUiChanges: false },
+      blastRadius: 'normal',
+    };
+    const normalOut = reviewEngineTestUtils.fillReviewPromptTemplate(normalTemplate, context, true);
+    const scopedOut = reviewEngineTestUtils.fillReviewPromptTemplate(scopedTemplate, context, true);
+    // Sanity: slots were filled (no literal placeholders remain for defined slots).
+    assert.ok(!normalOut.includes('{{HIGH_BLAST_RADIUS_GUIDANCE}}'));
+    assert.ok(!scopedOut.includes('{{HIGH_BLAST_RADIUS_GUIDANCE}}'));
+    assert.ok(!normalOut.includes('HIGH BLAST RADIUS'));
+    assert.ok(!scopedOut.includes('HIGH BLAST RADIUS'));
+  });
+
+  it('guidance constant mentions all three HOK-3212 incident bullets', () => {
+    assert.match(HIGH_BLAST_RADIUS_GUIDANCE, /Fixture provenance/);
+    assert.match(HIGH_BLAST_RADIUS_GUIDANCE, /Journey check/);
+    assert.match(HIGH_BLAST_RADIUS_GUIDANCE, /Latch check/);
   });
 });

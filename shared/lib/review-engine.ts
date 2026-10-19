@@ -12,6 +12,7 @@ import {
   type ReviewContext,
   type DesignContext,
 } from './review-context-gatherer.ts';
+import type { BlastRadius } from './blast-radius.ts';
 import {
   callLLM,
   ensureClaudeAvailable,
@@ -350,6 +351,33 @@ function formatDesignContext(ctx: DesignContext): string {
 }
 
 /**
+ * Guidance block injected at the top of the review prompt when the PR touches
+ * mill-core paths (HOK-3238). The three bullets map directly to the HOK-3212
+ * incident mode: fixture provenance, the end-to-end journey, and
+ * condition-marker / bounded-retry latches.
+ */
+export const HIGH_BLAST_RADIUS_GUIDANCE = `---
+
+## HIGH BLAST RADIUS — Mill-core change
+
+This PR touches mill-core paths (monitor, tend, merge-labels, reconciler,
+state writers, ready stage). Before returning your verdict you MUST:
+
+1. **Fixture provenance** — every new test fixture under \`tests/\`,
+   \`shared/lib/*.fixtures*\`, or \`tests/fixtures/\` must declare where it
+   came from (a repro from a prior incident, a hand-authored case, or a
+   replay of production). A fixture whose provenance you cannot name is
+   a blocker.
+2. **Journey check** — the mill's end-to-end \`happy-path\` journey must
+   still cover the changed path. If the PR is likely to change
+   plan→code→review→ready→tend→merge semantics, note which journey the
+   change exercises; if none does, flag it as \`blocker\`.
+   Journey command: \`bash tests/journeys/run-journeys.sh happy-path\`.
+3. **Latch check** — any new condition-keyed marker must declare
+   \`--expires-on\`; any new relaunch path must go through \`bounded-retry\`.
+`;
+
+/**
  * Fill the prompt template with context.
  *
  * Substitutes:
@@ -357,6 +385,7 @@ function formatDesignContext(ctx: DesignContext): string {
  * - {{PLAN_CONTEXT}}
  * - {{TASK_PACKET_CONTEXT}}
  * - {{DESIGN_CONTEXT}}
+ * - {{HIGH_BLAST_RADIUS_GUIDANCE}}
  */
 export function fillReviewPromptTemplate(
   template: string,
@@ -377,11 +406,19 @@ export function fillReviewPromptTemplate(
     designContext = formatDesignContext(context.designContext);
   }
 
+  // HOK-3238: a `high` blast radius injects a mandatory journey/fixture
+  // provenance / latch-check preamble. Any other value (including missing)
+  // is treated as `normal` and the slot stays empty.
+  const highBlastRadiusGuidance = context.blastRadius === 'high'
+    ? HIGH_BLAST_RADIUS_GUIDANCE
+    : '';
+
   return fillPromptSlots(template, {
     DIFF: diff,
     PLAN_CONTEXT: plan,
     TASK_PACKET_CONTEXT: taskPacket,
     DESIGN_CONTEXT: designContext,
+    HIGH_BLAST_RADIUS_GUIDANCE: highBlastRadiusGuidance,
   });
 }
 
