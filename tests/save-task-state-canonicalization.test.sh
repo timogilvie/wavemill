@@ -22,6 +22,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=lib/state-fixtures.sh
+source "$SCRIPT_DIR/lib/state-fixtures.sh"
 
 PASS=0
 FAIL=0
@@ -411,7 +413,7 @@ check_state "terminal tombstone leaves task absent" "false" \
 # "Task" when the pass snapshot carries the persisted record. A blank title on
 # a later save preserves the previously stored title.
 TITLE_STATE_FILE="$TEST_TMP/state-title.json"
-printf '%s\n' '{"session":"canonicalization-title","tasks":{}}' > "$TITLE_STATE_FILE"
+fixture_workflow_state "$TITLE_STATE_FILE"
 bash -c '
   set -euo pipefail
   STATE_FILE="$1"; WORKTREE="$2"; REPO_DIR="$3"

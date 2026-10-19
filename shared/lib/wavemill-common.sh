@@ -7798,8 +7798,8 @@ drop_tombstoned_eval_stubs() {
 
 get_task_meta() {
   local issue="$1" field="$2"
-  [[ -n "${STATE_FILE:-}" && -r "$STATE_FILE" ]] || return 0
-  jq -r --arg issue "$issue" --arg field "$field" '.tasks[$issue][$field] // empty' "$STATE_FILE" 2>/dev/null || true
+  read_state_value "" --arg issue "$issue" --arg field "$field" \
+    '.tasks[$issue][$field] // empty'
 }
 
 is_challenge_task() {
