@@ -235,6 +235,7 @@ TESTS=(
   shared/lib/merge-labels.test.ts
   shared/lib/mill-clock.test.ts
   shared/lib/model-registry.test.ts
+  shared/lib/model-adapters/transport-adapter.test.ts
   shared/lib/model-registry-gpt55-inventory.test.ts
   shared/lib/model-registry-loader.test.ts
   shared/lib/schema-validators.test.ts

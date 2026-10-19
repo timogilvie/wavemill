@@ -298,8 +298,7 @@ describe('review-engine per-model dispatch (HOK-3247)', () => {
         : { ok: false, reason: 'uncertified', diagnostic: `[agent-resolution] model=${model} phase=review reason=uncertified` };
     });
     reviewEngineTestUtils.setIsNativeReviewOptedIn(() => input.nativeOptedIn === true);
-    reviewEngineTestUtils.setCheckCliReviewContextWindow(() => undefined);
-    reviewEngineTestUtils.setCallLLM(async (_prompt, options) => {
+    const mockCallLLM: CallLLM = async (_prompt, options) => {
       calls.push(options);
       const reportedModel = input.reportedModel?.(options);
       return {
@@ -309,7 +308,33 @@ describe('review-engine per-model dispatch (HOK-3247)', () => {
         model: options?.model ?? '(default)',
         ...(reportedModel ? { reportedModel } : {}),
       };
-    });
+    };
+    reviewEngineTestUtils.setCallLLM(mockCallLLM);
+    reviewEngineTestUtils.setBuildCliReviewAdapter((provider, model, _repoDir, failClosed) => ({
+      kind: provider === 'codex' ? 'codex-cli' : 'claude-cli',
+      model,
+      limits: {},
+      countTokens: () => 0,
+      preflight: () => undefined,
+      // Mirror the real adapter: invoke() delegates to callLLM with the ladder
+      // determined by failClosed (HOK-3248).
+      invoke: async (prompt, opts) => {
+        const result = await mockCallLLM(prompt, {
+          provider,
+          mode: 'stream',
+          model,
+          timeout: opts?.timeout,
+          maxRetries: opts?.maxRetries,
+          signal: opts?.signal,
+          ...(failClosed ? { fallbackModels: [] } : { taskType: 'review' as const }),
+        });
+        return {
+          text: result.text,
+          reportedModel: result.reportedModel ?? 'unverified',
+        };
+      },
+      parseResult: () => ({ text: '', reportedModel: 'unverified' }),
+    }));
     reviewEngineTestUtils.setLoadNativeReviewModule(async () => ({
       async runNativeReview(context, _repoDir, options) {
         nativeCalls.push(options?.model);
@@ -449,10 +474,18 @@ describe('review-engine per-model dispatch (HOK-3247)', () => {
 
   it('returns native-context-window-exceeded when the CLI prompt cannot fit', async () => {
     const { calls } = setup({ agents: { 'claude-opus-5-5': 'claude' } });
-    reviewEngineTestUtils.setCheckCliReviewContextWindow(() => ({
-      ok: false,
-      message: 'Native review pre-flight rejected the launch: prompt exceeds the context window',
-      diagnostic: {} as never,
+    reviewEngineTestUtils.setBuildCliReviewAdapter((provider, model) => ({
+      kind: provider === 'codex' ? 'codex-cli' : 'claude-cli',
+      model,
+      limits: {},
+      countTokens: () => 0,
+      preflight: () => ({
+        kind: 'context-exceeded',
+        message: 'Native review pre-flight rejected the launch: prompt exceeds the context window',
+        policyKind: 'context-window-exceeded',
+      }),
+      invoke: async () => ({ text: '', reportedModel: 'unverified' }),
+      parseResult: () => ({ text: '', reportedModel: 'unverified' }),
     }));
     const result = await review('claude-opus-5-5');
     assert.equal(calls.length, 0);
@@ -462,35 +495,29 @@ describe('review-engine per-model dispatch (HOK-3247)', () => {
   });
 });
 
-describe('review-engine CLI helpers (HOK-3247)', () => {
+describe('review-engine CLI helpers (HOK-3247, HOK-3248)', () => {
   it('matches CLI-reported ids across variant and snapshot suffixes only', async () => {
-    const { cliReportedModelMatches } = await import('./review-engine.ts');
-    assert.equal(cliReportedModelMatches('claude-opus-4-6', 'claude-opus-4-6[1m]'), true);
-    assert.equal(cliReportedModelMatches('claude-haiku-4-5-20251001', 'claude-haiku-4-5'), true);
-    assert.equal(cliReportedModelMatches('claude-sonnet-5', 'claude-opus-5-5'), false);
+    const { claudeCliReportedModelMatches } = await import('./model-adapters/claude-cli-adapter.ts');
+    assert.equal(claudeCliReportedModelMatches('claude-opus-4-6', 'claude-opus-4-6[1m]'), true);
+    assert.equal(claudeCliReportedModelMatches('claude-haiku-4-5-20251001', 'claude-haiku-4-5'), true);
+    assert.equal(claudeCliReportedModelMatches('claude-sonnet-5', 'claude-opus-5-5'), false);
   });
 
-  it('pre-checks the CLI prompt against the registry context window', async () => {
-    const { checkCliReviewContextWindow } = await import('./review-engine.ts');
+  it('pre-checks the CLI prompt against the registry context window via the adapter', async () => {
+    const { ClaudeCliAdapter } = await import('./model-adapters/claude-cli-adapter.ts');
     const repoDir = mkdtempSync(join(tmpdir(), 'review-engine-cw-'));
     try {
-      assert.equal(
-        checkCliReviewContextWindow({ model: 'claude-haiku-4-5', provider: 'claude', prompt: 'small diff', repoDir }),
-        undefined,
-      );
-      const overflow = checkCliReviewContextWindow({
-        model: 'claude-haiku-4-5',
-        provider: 'claude',
-        prompt: 'x'.repeat(4 * 1024 * 1024),
-        repoDir,
-      });
-      assert.ok(overflow);
-      assert.match(overflow!.message, /context/i);
+      const smallAdapter = new ClaudeCliAdapter({ model: 'claude-haiku-4-5', repoDir });
+      assert.equal(smallAdapter.preflight('small diff'), undefined);
+
+      const refusal = smallAdapter.preflight('x'.repeat(4 * 1024 * 1024));
+      assert.ok(refusal);
+      assert.equal(refusal!.kind, 'context-exceeded');
+      assert.match(refusal!.message, /context/i);
+
       // Models without a registry limit are not pre-checked.
-      assert.equal(
-        checkCliReviewContextWindow({ model: 'not-a-registered-model', provider: 'claude', prompt: 'x'.repeat(4 * 1024 * 1024), repoDir }),
-        undefined,
-      );
+      const unknown = new ClaudeCliAdapter({ model: 'not-a-registered-model', repoDir });
+      assert.equal(unknown.preflight('x'.repeat(4 * 1024 * 1024)), undefined);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }

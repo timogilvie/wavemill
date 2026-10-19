@@ -22,18 +22,15 @@ import {
 } from './llm-cli.ts';
 import { fillPromptSlots } from './prompt-utils.ts';
 import { getNativeAgentConfig, loadWavemillConfig } from './config.ts';
-import { getEffectiveRegistry, getModel } from './model-registry.ts';
 import { isLaunchableForStage, type StageLaunchability } from './stage-launchability.ts';
-import {
-  estimatePromptTokens,
-  evaluateContextWindow,
-  type ContextWindowVerdict,
-} from './native-agent/context-window-guard.ts';
 import { REVIEW_MAX_OUTPUT_TOKENS } from './native-agent/output-limits.ts';
 import {
   NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
   REVIEW_MODEL_UNLAUNCHABLE_FAILURE_CATEGORY,
 } from './stage-result.ts';
+import { ClaudeCliAdapter, claudeCliReportedModelMatches } from './model-adapters/claude-cli-adapter.ts';
+import { CodexCliAdapter } from './model-adapters/codex-cli-adapter.ts';
+import type { AdapterError, TransportAdapter } from './model-adapters/transport-adapter.ts';
 import type { ReviewProgressReporter } from './review-progress.ts';
 import type { OperatingMode } from './operating-mode.ts';
 import { loadPromptResourceSync, resolveRuntimeResource } from './resource-retrieval.ts';
@@ -431,7 +428,29 @@ async function invokeLLMWithRetry(
   reviewer: ReviewerPersona,
   llmAttempt: number,
   cli: ReviewCliCall = { provider: 'claude', failClosed: false },
+  adapter?: TransportAdapter,
 ): Promise<ReviewLLMResponse> {
+  // If adapter is provided, use it for invocation (HOK-3248)
+  if (adapter) {
+    const adapterResult = await adapter.invoke(prompt, {
+      timeout,
+      maxRetries,
+      signal: options.signal,
+    });
+
+    if (adapterResult.error) {
+      throw new ReviewCliContextWindowExceededError(adapterResult.error.message);
+    }
+
+    return {
+      text: adapterResult.text,
+      provider: cli.provider,
+      invokedModel: model,
+      ...(adapterResult.reportedModel !== 'unverified' ? { reportedModel: adapterResult.reportedModel } : {}),
+    };
+  }
+
+  // Fallback: use callLLM directly (for backward compatibility)
   const ladder: Pick<LLMCallOptions, 'taskType' | 'fallbackModels'> = cli.failClosed
     ? { fallbackModels: [] }
     : { taskType: 'review' };
@@ -532,31 +551,13 @@ async function invokeLLMWithRetry(
 }
 
 /**
- * Normalize a model id for comparing a CLI-reported id with the id the CLI was
- * invoked with: provider prefix, a bracketed variant suffix (`[1m]`) and a
- * dated snapshot suffix (`-20251001`) name the same model.
- */
-function normalizeCliModelId(model: string): string {
-  return model
-    .trim()
-    .toLowerCase()
-    .replace(/^anthropic\//, '')
-    .replace(/\[[^\]]*\]$/, '')
-    .replace(/-\d{8}$/, '');
-}
-
-export function cliReportedModelMatches(reportedModel: string, invokedModel: string): boolean {
-  return normalizeCliModelId(reportedModel) === normalizeCliModelId(invokedModel);
-}
-
-/**
- * Executed identity of a CLI analysis call (HOK-3247).
+ * Executed identity of a CLI analysis call (HOK-3247, HOK-3248).
  *
  * Pinned only when the CLI's own output reported the model that served the
  * turn (the claude CLI's `modelUsage`) and it is the requested model. A model
  * the CLI did not report (codex `exec --json` reports none) is recorded as
- * unverified (`source: 'derived'`, never pinned) — the requested id is never
- * stamped as executed with pinned evidence.
+ * unverified (`source: 'derived'`, never pinned). The id-normalisation rule
+ * for claude lives in `model-adapters/claude-cli-adapter.ts`.
  */
 export function buildCliAnalysisIdentity(input: {
   requestedModel: string;
@@ -567,10 +568,15 @@ export function buildCliAnalysisIdentity(input: {
   const fallbackReason = response.fallbackChain?.length
     ? `fallback_ladder:${response.fallbackChain.map((step) => `${step.model}=${step.reason}`).join(',')}`
     : undefined;
-  if (response.reportedModel) {
-    const resolvedModel = cliReportedModelMatches(response.reportedModel, response.invokedModel)
-      ? response.invokedModel
-      : response.reportedModel;
+  // Only treat reportedModel as verified if it's not the 'unverified' sentinel
+  const isReportedModelVerified = response.reportedModel && response.reportedModel !== 'unverified';
+  if (isReportedModelVerified) {
+    const resolvedModel =
+      response.provider === 'codex'
+        ? response.reportedModel
+        : claudeCliReportedModelMatches(response.reportedModel, response.invokedModel)
+          ? response.invokedModel
+          : response.reportedModel;
     return buildExecutedIdentity({
       role: 'substantive_analysis',
       requestedModel: input.requestedModel,
@@ -614,49 +620,22 @@ function combineAnalysisIdentities(identities: ExecutedIdentity[]): ExecutedIden
 }
 
 // ────────────────────────────────────────────────────────────────
-// CLI context-window pre-check (HOK-3247)
+// CLI context-window pre-check (HOK-3247, HOK-3248)
 // ────────────────────────────────────────────────────────────────
 
 /**
- * Tokens the CLI harness adds on top of the review prompt (its own system
- * prompt and tool declarations). Measured on a one-word prompt: claude CLI
- * 2.1.x reported ~28.6k input tokens, codex-cli 0.162 ~19.4k.
+ * Build the transport adapter for a CLI review call. The adapter owns the
+ * context-window limit, the CLI-harness token overhead, and the preflight
+ * refusal (HOK-3248). Review-engine never re-derives these.
  */
-const CLI_HARNESS_OVERHEAD_TOKENS: Record<ReviewCliCall['provider'], number> = {
-  claude: 30_000,
-  codex: 20_000,
-};
-
-/**
- * Refuse a CLI review whose prompt cannot fit the model's registry context
- * window, using the native guard's estimator and safety margin
- * (`context-window-guard.ts`). Returns the failing verdict, or undefined when
- * it fits or the registry has no limit for the model.
- */
-export function checkCliReviewContextWindow(input: {
-  model: string;
-  provider: ReviewCliCall['provider'];
-  prompt: string;
-  repoDir: string;
-}): Extract<ContextWindowVerdict, { ok: false }> | undefined {
-  const limit = getModel(getEffectiveRegistry(input.repoDir), input.model)?.contextWindowTokens;
-  if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) {
-    return undefined;
-  }
-  const promptEstimate = estimatePromptTokens({ messages: [{ role: 'user', content: input.prompt }] });
-  const overhead = CLI_HARNESS_OVERHEAD_TOKENS[input.provider];
-  const verdict = evaluateContextWindow({
-    phase: 'review',
-    model: { id: input.model, provider: `${input.provider}-cli` },
-    limit: { limit, source: 'registry', registryModelId: input.model },
-    estimate: {
-      ...promptEstimate,
-      systemPromptTokens: promptEstimate.systemPromptTokens + overhead,
-      inputTokens: promptEstimate.inputTokens + overhead,
-    },
-    reservedOutputTokens: REVIEW_MAX_OUTPUT_TOKENS,
-  });
-  return verdict.ok ? undefined : verdict as Extract<ContextWindowVerdict, { ok: false }>;
+function buildCliReviewAdapter(
+  provider: ReviewCliCall['provider'],
+  model: string,
+  repoDir: string,
+  failClosed: boolean,
+): TransportAdapter {
+  const common = { model, repoDir, reservedOutputTokens: REVIEW_MAX_OUTPUT_TOKENS, failClosed };
+  return provider === 'codex' ? new CodexCliAdapter(common) : new ClaudeCliAdapter(common);
 }
 
 class ReviewCliContextWindowExceededError extends Error {
@@ -855,6 +834,7 @@ async function runReviewWithRetry(
   persona: ReviewerPersona,
   attempt: number = 1,
   cli: ReviewCliCall = { provider: 'claude', failClosed: false },
+  adapter?: TransportAdapter,
 ): Promise<ReviewResult> {
   const maxAttempts = 2;
 
@@ -868,6 +848,7 @@ async function runReviewWithRetry(
     persona,
     attempt,
     cli,
+    adapter,
   );
   const responseText = response.text;
 
@@ -915,6 +896,7 @@ async function runReviewWithRetry(
         persona,
         attempt + 1,
         cli,
+        adapter,
       );
     } else {
       throw new Error(
@@ -979,6 +961,7 @@ async function runReviewWithRetry(
         persona,
         attempt + 1,
         cli,
+        adapter,
       );
     }
     throw error;
@@ -1091,14 +1074,10 @@ async function runPersonaReview(
   const skipDesignContext = persona !== 'design';
   const prompt = fillReviewPromptTemplate(template, context, skipDesignContext);
 
-  const overflow = reviewEngineDeps.checkCliReviewContextWindow({
-    model,
-    provider: cli.provider,
-    prompt,
-    repoDir,
-  });
-  if (overflow) {
-    throw new ReviewCliContextWindowExceededError(overflow.message);
+  const adapter = reviewEngineDeps.buildCliReviewAdapter(cli.provider, model, repoDir, cli.failClosed);
+  const refusal: AdapterError | undefined = adapter.preflight(prompt);
+  if (refusal) {
+    throw new ReviewCliContextWindowExceededError(refusal.message);
   }
 
   // Run review with retry logic
@@ -1113,6 +1092,7 @@ async function runPersonaReview(
     persona,
     1,
     cli,
+    adapter,
   );
 
   // Tag all findings with this persona
@@ -1155,7 +1135,7 @@ function resolveReviewAgent(model: string, repoDir: string): StageLaunchability 
 
 const reviewEngineDeps = {
   callLLM,
-  checkCliReviewContextWindow,
+  buildCliReviewAdapter,
   ensureClaudeAvailable,
   ensureCodexAvailable,
   filterEnabledPersonas,
@@ -1569,12 +1549,12 @@ export const reviewEngineTestUtils = {
   setIsNativeReviewOptedIn(fn: typeof reviewEngineDeps.isNativeReviewOptedIn) {
     reviewEngineDeps.isNativeReviewOptedIn = fn;
   },
-  setCheckCliReviewContextWindow(fn: typeof reviewEngineDeps.checkCliReviewContextWindow) {
-    reviewEngineDeps.checkCliReviewContextWindow = fn;
+  setBuildCliReviewAdapter(fn: typeof reviewEngineDeps.buildCliReviewAdapter) {
+    reviewEngineDeps.buildCliReviewAdapter = fn;
   },
   resetDeps() {
     reviewEngineDeps.callLLM = callLLM;
-    reviewEngineDeps.checkCliReviewContextWindow = checkCliReviewContextWindow;
+    reviewEngineDeps.buildCliReviewAdapter = buildCliReviewAdapter;
     reviewEngineDeps.isNativeReviewOptedIn = isNativeReviewOptedIn;
     reviewEngineDeps.loadNativeReviewModule = async () => import('./native-agent/review.ts');
     reviewEngineDeps.resolveReviewAgent = resolveReviewAgent;
