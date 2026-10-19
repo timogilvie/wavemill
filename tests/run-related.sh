@@ -173,21 +173,13 @@ if ! npx tsx "$REPO_ROOT/tools/related-tests/select.ts" "${SELECT_ARGS[@]}" > "$
 fi
 
 # Parse plan with jq if present; otherwise with node (jq is nearly always
-# installed on this repo's hosts, but keep a fallback).
-read_plan_field() {
-  local field="$1"
-  if command -v jq >/dev/null 2>&1; then
-    jq -r "$field" "$PLAN_JSON"
-  else
-    node --input-type=module -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));const r=$field.replace(/^\./,'').split('.').reduce((a,k)=>a?.[k],d);if(Array.isArray(r)){for(const x of r)console.log(typeof x==='string'?x:JSON.stringify(x));}else if(r!==undefined){console.log(typeof r==='string'?r:JSON.stringify(r));}" "$PLAN_JSON"
-  fi
-}
-
+# installed on this repo's hosts, but keep a fallback). The node fallbacks
+# default to CommonJS (no --input-type) so `require` is available.
 mapfile -t SELECTED_LINES < <(
   if command -v jq >/dev/null 2>&1; then
     jq -r '.tests[] | "\(.path)\t\(.runner)\t\(.reason)"' "$PLAN_JSON"
   else
-    node --input-type=module -e "const d=JSON.parse(require('fs').readFileSync('$PLAN_JSON','utf8'));for(const t of d.tests){console.log(t.path+'\t'+t.runner+'\t'+t.reason);}"
+    node -e "const d=JSON.parse(require('fs').readFileSync('$PLAN_JSON','utf8'));for(const t of d.tests){console.log(t.path+'\t'+t.runner+'\t'+t.reason);}"
   fi
 )
 
@@ -195,7 +187,7 @@ JOURNEYS_INJECTED="$(
   if command -v jq >/dev/null 2>&1; then
     jq -r '.journeysInjected' "$PLAN_JSON"
   else
-    node --input-type=module -e "console.log(JSON.parse(require('fs').readFileSync('$PLAN_JSON','utf8')).journeysInjected)"
+    node -e "console.log(JSON.parse(require('fs').readFileSync('$PLAN_JSON','utf8')).journeysInjected)"
   fi
 )"
 
