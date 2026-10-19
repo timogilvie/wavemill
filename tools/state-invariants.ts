@@ -27,6 +27,7 @@ import { join } from 'node:path';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { readWorkflowState, workflowTaskEntries, type WorkflowState } from '../shared/lib/workflow-state.ts';
 import { readSessionPrCache, type CachedPullRequest } from '../shared/lib/session-gh-cache.ts';
+import { resolveWavemillToolPath } from '../shared/lib/native-agent/install-paths.ts';
 import {
   findTaskInState,
   buildMergeLabelLiveState,
@@ -71,7 +72,7 @@ function readTaskProgress(repoDir: string, session: string, issue: string): Task
       'npx',
       [
         'tsx',
-        join(repoDir, 'tools', 'task-progress.ts'),
+        resolveWavemillToolPath('task-progress.ts'),
         '--issue',
         issue,
         '--session',
