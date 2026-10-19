@@ -78,7 +78,10 @@ import {
   type WorkflowCostOutcome,
 } from './workflow-cost.ts';
 import { collectExecutionEconomics } from './execution-economics.ts';
-import { collectSdkTaskCostSummaries, runSdkTaskCostShadow } from './sdk-task-cost/index.ts';
+// Lazy: the SDK loads only when the shadow switch runs the collector, so a
+// stale @hokusai/core cannot fail module load for every eval.
+import { collectSdkTaskCostSummariesLazy } from './sdk-task-cost/lazy-collect.ts';
+import { runSdkTaskCostShadow } from './sdk-task-cost/shadow.ts';
 import {
   buildStageExecutionIdentity,
   hasProviderModelSubstitution,
@@ -117,7 +120,7 @@ export const evalOrchestratorDeps = {
   triggerHokusaiSubmission,
   computeWorkflowCost: computeWorkflowCostWithExactPricing,
   collectExecutionEconomics,
-  collectSdkTaskCostSummaries,
+  collectSdkTaskCostSummaries: collectSdkTaskCostSummariesLazy,
   loadPricingTable,
   execShellCommand,
 };

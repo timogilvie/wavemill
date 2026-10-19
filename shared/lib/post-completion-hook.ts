@@ -19,7 +19,10 @@ import { execShellCommand } from './shell-utils.ts';
 import { detectAndFormatInterventions } from './intervention-detector.ts';
 import { computeWorkflowCost, loadPricingTable, type PricingTable } from './workflow-cost.ts';
 import { collectExecutionEconomics } from './execution-economics.ts';
-import { collectSdkTaskCostSummaries, runSdkTaskCostShadow } from './sdk-task-cost/index.ts';
+// Lazy: the SDK loads only when the shadow switch runs the collector, so a
+// stale @hokusai/core cannot fail module load for every eval.
+import { collectSdkTaskCostSummariesLazy } from './sdk-task-cost/lazy-collect.ts';
+import { runSdkTaskCostShadow } from './sdk-task-cost/shadow.ts';
 import { getDeepSeekProviderMetadata } from './deepseek-provider.ts';
 import { runEvalAnalysis } from './eval-analysis.ts';
 import { callHeadlessLLM } from './headless-llm.ts';
@@ -258,7 +261,7 @@ export const postCompletionHookDeps = {
   gatherEvalContext,
   gatherStageArtifacts,
   collectExecutionEconomics,
-  collectSdkTaskCostSummaries,
+  collectSdkTaskCostSummaries: collectSdkTaskCostSummariesLazy,
   execShellCommand,
   detectAndFormatInterventions,
   runEvalAnalysis,
