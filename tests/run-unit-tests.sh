@@ -34,6 +34,7 @@ TESTS=(
   shared/lib/ledger-shadow.test.ts
   shared/lib/view-workflow-state.test.ts
   shared/lib/ledger-consistency.test.ts
+  tests/state-invariants.test.ts
   shared/lib/ledger-replay-contract.test.ts
   shared/lib/ledger-pair-abort.test.ts
   shared/lib/ledger-recovery.test.ts

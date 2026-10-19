@@ -14910,7 +14910,7 @@ poll_tracked_jobs() {
     side=$(echo "$job_json" | jq -r '.side // empty')
 
     case "$kind" in
-      cross-pr-guard|pr-ci-status|ready-watchdog|route-task)
+      cross-pr-guard|pr-ci-status|ready-watchdog|route-task|state-invariants)
         [[ "$status" == "succeeded" ]] || handle_check_job_failure "$job_id" "$kind" "$status" "$reason" "$result_path" "$excerpt"
         settle_tracked_job "$job_id"
         continue
@@ -16350,6 +16350,48 @@ monitor_ledger_recovery_tick() {
     wavemill_run_tool "${cli[@]}" >>"$log_file" 2>&1 || true
   ) >/dev/null 2>&1 &
   disown 2>/dev/null || true
+  return 0
+}
+
+# ─── Live state-invariant checker (HOK-3229) ────────────────────────────────
+#
+# A tracked async job that evaluates the HOK-3229 structural invariants over
+# live workflow state every monitor tick. Detection only; it never mutates
+# state. Writes `.wavemill/invariant-violations.jsonl` and routes urgent
+# findings through `appendObserverFinding` for OS desktop notification on
+# first occurrence.
+# Kill switch: WAVEMILL_STATE_INVARIANTS_DISABLED=1
+monitor_state_invariants_interval() {
+  local value="${STATE_INVARIANTS_INTERVAL_SECONDS:-60}"
+  [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]] || value=60
+  printf '%s\n' "$value"
+}
+
+monitor_state_invariants_tick() {
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
+  [[ "${WAVEMILL_STATE_INVARIANTS_DISABLED:-0}" == "1" ]] && return 0
+  [[ -n "${STATE_DIR:-}" && -n "${REPO_DIR:-}" ]] || return 0
+  declare -F monitor_async_job_launch >/dev/null 2>&1 || return 0
+
+  local interval last_at now stamp_file="$STATE_DIR/.state-invariants-last-at"
+  interval="$(monitor_state_invariants_interval)"
+  now="$(date +%s)"
+  if [[ -f "$stamp_file" ]]; then
+    last_at="$(cat "$stamp_file" 2>/dev/null || echo 0)"
+    [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
+    (( now - last_at < interval )) && return 0
+  fi
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  printf '%s\n' "$now" > "$stamp_file" 2>/dev/null || true
+
+  local job_id dir result_marker meta_json
+  job_id="state-invariants-$(sanitize_job_token "${SESSION:-wavemill}")"
+  dir="$(monitor_async_job_dir "$job_id")"
+  result_marker="$dir/invariants.json"
+  meta_json="$(jq -cn --arg s "$STATE_DIR" --arg b "state-invariants-job" --arg k "$now" '{stateDir: $s, bucket: $b, key: $k}')"
+
+  monitor_async_job_launch state-invariants "$job_id" "" "" 60 "$meta_json" \
+    wavemill_run_tool state-invariants.ts --repo-dir "$REPO_DIR" --result-path "$result_marker"
   return 0
 }
 
@@ -23676,6 +23718,10 @@ while :; do
   monitor_step_begin ledgerRecovery
   monitor_ledger_recovery_tick || true
   monitor_step_end ledgerRecovery
+  # HOK-3229: live workflow-state invariant checker (detection only).
+  monitor_step_begin stateInvariants
+  monitor_state_invariants_tick || true
+  monitor_step_end stateInvariants
   # HOK-3174: after a host wake, re-check running stages before normal gates.
   if [[ -n "$monitor_wake_episode" ]]; then
     monitor_resume_agents_after_wake "$monitor_wake_episode"
