@@ -212,6 +212,62 @@ test('I1 skips terminal (phase=aborted) tasks', () => {
   assert.equal(out.length, 0);
 });
 
+test('I1 signature is stable across ticks for the same stall (notification only on first)', () => {
+  // Same stall, two monitor ticks: stallMinutes rises (30 → 31) but
+  // lastProgressAt is unchanged. The signature must stay the same so the
+  // JSONL + observer appender treat the second emission as a repeat.
+  const base = {
+    state: {
+      tasks: { 'HOK-9': { phase: 'coding', status: 'running', slug: 'bar' } },
+    },
+    waitingOnByTaskId: new Map([['HOK-9', { hasWaitingOnMarker: false }]]),
+  };
+  const first = evaluateInvariants(
+    makeInputs({
+      ...base,
+      taskProgress: new Map([
+        [
+          'HOK-9',
+          makeProgress({
+            issue: 'HOK-9',
+            stalled: true,
+            stallMinutes: 30,
+            progressAgeMinutes: 60,
+            lastProgressAt: '2026-10-18T00:00:00Z',
+          }),
+        ],
+      ]),
+    }),
+  );
+  const i1a = first.violations.find((v) => v.invariantId === 'I1-progress');
+  assert.ok(i1a);
+  const sigA = i1a!.signature;
+
+  const second = evaluateInvariants(
+    makeInputs({
+      ...base,
+      cache: first.nextCache,
+      taskProgress: new Map([
+        [
+          'HOK-9',
+          makeProgress({
+            issue: 'HOK-9',
+            stalled: true,
+            stallMinutes: 31,
+            progressAgeMinutes: 61,
+            lastProgressAt: '2026-10-18T00:00:00Z',
+          }),
+        ],
+      ]),
+    }),
+  );
+  const i1b = second.violations.find((v) => v.invariantId === 'I1-progress');
+  assert.ok(i1b);
+  assert.equal(i1b!.signature, sigA, 'rising stallMinutes must not mint a fresh signature');
+  // Confirm the GC pass preserves the signature while the stall persists.
+  assert.ok(second.nextCache.signatures[sigA], 'signature must survive GC while violation persists');
+});
+
 // ── 5: I2 orphan stub ───────────────────────────────────────────────────────
 
 test('I2 fires for an orphan stub row', () => {

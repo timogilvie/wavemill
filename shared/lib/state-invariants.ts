@@ -282,7 +282,10 @@ export function checkInvariant1Progress(
     // violation (the operator has evidence).
     const waiting = inputs.waitingOnByTaskId.get(taskId);
     if (waiting?.hasWaitingOnMarker) continue;
-    const sig = `I1-progress:task=${taskId}:stallMinutes=${progress.stallMinutes}`;
+    // Keyed on lastProgressAt so the signature stays stable while the stall
+    // persists (each tick's rising stallMinutes would otherwise mint a fresh
+    // signature and trigger an OS notification every tick — HOK-3229 §F9).
+    const sig = `I1-progress:task=${taskId}:lastProgressAt=${progress.lastProgressAt ?? 'unknown'}`;
     out.push({
       invariantId: 'I1-progress',
       taskId,
