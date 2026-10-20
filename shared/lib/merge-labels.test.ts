@@ -1,12 +1,14 @@
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
+import { clearConfigCache } from './config.ts';
 import {
   deriveMergeLabel,
   reconcileMergeLabelsForPr,
+  reconcileMergeLabels,
   buildMergeLabelLiveState,
   readMergeLabelEvidence,
   findTaskInState,
@@ -722,7 +724,54 @@ describe('readMergeLabelEvidence (real Ready artifacts)', () => {
   });
 
   it('maps a failed Ready result to not-ready and a running one to running', async () => {
+    assert.equal((await readMergeLabelEvidence(featureDirWithReady('completed', 'pass'))).readyAtHead?.verdict, 'ready');
     assert.equal((await readMergeLabelEvidence(featureDirWithReady('completed', 'fail'))).readyAtHead?.verdict, 'not-ready');
     assert.equal((await readMergeLabelEvidence(featureDirWithReady('running', 'pass'))).readyAtHead?.verdict, 'running');
+  });
+});
+
+describe('reconcileMergeLabels: aggregate observer finding (HOK-3241)', () => {
+  function makeRepo(overlay: Record<string, unknown>): string {
+    const dir = mkdtempSync(join(tmpdir(), 'reconcile-merge-labels-'));
+    writeFileSync(join(dir, '.wavemill-config.json'), JSON.stringify(overlay), 'utf-8');
+    mkdirSync(join(dir, '.wavemill'), { recursive: true });
+    // Empty workflow state so no PR matches a task → every PR is a noTaskView.
+    writeFileSync(join(dir, '.wavemill', 'workflow-state.json'), JSON.stringify({ tasks: {} }), 'utf-8');
+    clearConfigCache(dir);
+    return dir;
+  }
+
+  it('appends one aggregate finding to observer-findings.jsonl when PRs have no task view', async () => {
+    const repo = makeRepo({ integration: { enabled: true, useMillSession: true }, observer: { enabled: true } });
+    try {
+      const prs = [
+        { number: 101, labels: [] as string[], headSha: 'h1' },
+        { number: 202, labels: [] as string[], headSha: 'h2' },
+      ];
+      await reconcileMergeLabels(prs, repo);
+      const findingsPath = join(repo, '.wavemill', 'observer-findings.jsonl');
+      assert.ok(existsSync(findingsPath), 'expected observer-findings.jsonl to be created');
+      const lines = readFileSync(findingsPath, 'utf-8').trim().split('\n').filter(Boolean);
+      assert.equal(lines.length, 1);
+      const parsed = JSON.parse(lines[0]);
+      assert.equal(parsed.subsystem, 'merge-label-reconciler');
+      assert.match(parsed.title, /no task view for 2 PR/);
+      assert.equal(parsed.severity, 'medium');
+      assert.deepEqual(parsed.context.prNumbers, [101, 202]);
+      assert.equal(parsed.context.prCount, 2);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('observer-disabled: no finding is appended even when PRs lack task view', async () => {
+    const repo = makeRepo({ integration: { enabled: false }, observer: { enabled: false } });
+    try {
+      const prs = [{ number: 303, labels: [] as string[], headSha: 'h3' }];
+      await reconcileMergeLabels(prs, repo);
+      assert.equal(existsSync(join(repo, '.wavemill', 'observer-findings.jsonl')), false);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });

@@ -90,6 +90,32 @@ test('review_attempt_progressed: a running or new review attempt on the failed a
   assert.equal(evaluateRecoveryPredicate(record, '/repo', reviewReader({ stageStatus: 'failed', verdict: 'error', reviewedHead: 'a'.repeat(40), finishedAt: '2026-09-05T09:30:00.000Z' })).reason, 'recovery_predicate:review_attempt_progressed');
 });
 
+test('pr_merged: authoritative merged state resolves; missing or non-merged does not (HOK-3241)', () => {
+  const record = recordWith({ kind: 'pr_merged', details: { pr: '1324' } });
+
+  const merged = evaluateRecoveryPredicate(record, '/repo', {
+    readPr: () => ({ number: 1324, state: 'merged', mergedAt: '2026-10-13T00:30:00Z', labels: [], latestCheckRollup: [], source: 'fixture' }),
+  });
+  assert.equal(merged.satisfied, true);
+  assert.equal(merged.reason, 'recovery_predicate:pr_merged');
+  assert.match(merged.evidence ?? '', /pr=1324 merged at 2026-10-13T00:30:00Z/);
+
+  const open = evaluateRecoveryPredicate(record, '/repo', {
+    readPr: () => ({ number: 1324, state: 'open', labels: [], latestCheckRollup: [], source: 'fixture' }),
+  });
+  assert.equal(open.satisfied, false);
+
+  // Missing PR evidence is never proof of merge.
+  const unknown = evaluateRecoveryPredicate(record, '/repo', { readPr: () => null });
+  assert.equal(unknown.satisfied, false);
+
+  // No pr number in details — malformed, not satisfied.
+  const bad = recordWith({ kind: 'pr_merged', details: {} });
+  assert.equal(evaluateRecoveryPredicate(bad, '/repo', {
+    readPr: () => ({ number: 1324, state: 'merged', labels: [], latestCheckRollup: [], source: 'fixture' }),
+  }).satisfied, false);
+});
+
 test('head_changed, current_head_eval_present and comparison_present use their readers', () => {
   const headChanged = recordWith({ kind: 'head_changed', details: { pr: '1324', head: 'a'.repeat(40) } });
   assert.equal(evaluateRecoveryPredicate(headChanged, '/repo', {
