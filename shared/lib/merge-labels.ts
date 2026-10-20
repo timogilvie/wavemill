@@ -19,6 +19,7 @@ import {
   clearWavemillState,
 } from './pr-state-labels.ts';
 import { parseTaskId } from './task-identity.ts';
+import { appendObserverFinding } from './observer-findings.ts';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { readWorkflowState, workflowTaskEntries, type WorkflowState } from './workflow-state.ts';
@@ -493,5 +494,19 @@ export async function reconcileMergeLabels(
   if (noTaskViewPrs.length > 0) {
     const prList = noTaskViewPrs.map(n => `#${n}`).join(', ');
     deps.logger.warn(`[merge-label] no task view for PRs: ${prList}`);
+    appendObserverFinding(repoDir, {
+      subsystem: 'merge-lane',
+      severity: 'medium',
+      title: `No task view for wavemill PRs: ${prList}`,
+      body: `The merge label reconciler found PR(s) (${prList}) without a matching task view in workflow-state.json. `
+        + 'Merge labels cannot be reconciled until the task view is restored or the PR branch is recognized.',
+      recommendation: 'Inspect workflow-state.json and PR branches; verify tasks are tracked or branches match task naming conventions.',
+      context: {
+        markerPath: 'merge-lane/no-task-view',
+        markerKind: 'merge-lane-no-task-view',
+        prs: noTaskViewPrs.join(','),
+        prCount: String(noTaskViewPrs.length),
+      },
+    });
   }
 }

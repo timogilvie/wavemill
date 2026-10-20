@@ -105,6 +105,15 @@ export function evaluateRecoveryPredicate(
       if (!pairId) return NOT_SATISFIED;
       return read.comparisonSucceeded(repoDir, pairId) ? satisfied(`comparison succeeded for ${pairId}`) : NOT_SATISFIED;
     }
+    case 'pr_merged': {
+      const prNumber = positiveInt(details.pr);
+      if (!prNumber) return NOT_SATISFIED;
+      const pr = read.readPr(prNumber, repoDir);
+      if (!pr) return NOT_SATISFIED;
+      return pr.merged || pr.state?.toUpperCase() === 'MERGED'
+        ? satisfied(`pr=${prNumber} merged`)
+        : NOT_SATISFIED;
+    }
     default:
       return NOT_SATISFIED;
   }

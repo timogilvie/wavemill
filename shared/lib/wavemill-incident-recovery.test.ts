@@ -107,3 +107,32 @@ test('head_changed, current_head_eval_present and comparison_present use their r
   assert.equal(evaluateRecoveryPredicate(comparison, '/repo', { comparisonSucceeded: () => true }).satisfied, true);
   assert.equal(evaluateRecoveryPredicate(comparison, '/repo', { comparisonSucceeded: () => false }).satisfied, false);
 });
+
+test('pr_merged resolves when PR merged, never on null/open PR', () => {
+  const prMerged = recordWith({ kind: 'pr_merged', details: { pr: '1324' } });
+  // Merged flag
+  const satisfiedMerged = evaluateRecoveryPredicate(prMerged, '/repo', {
+    readPr: () => ({ number: 1324, merged: true, labels: [], latestCheckRollup: [], source: 'fixture' }),
+  });
+  assert.equal(satisfiedMerged.satisfied, true);
+  assert.equal(satisfiedMerged.reason, 'recovery_predicate:pr_merged');
+  assert.equal(satisfiedMerged.evidence, 'pr=1324 merged');
+
+  // MERGED state
+  assert.equal(evaluateRecoveryPredicate(prMerged, '/repo', {
+    readPr: () => ({ number: 1324, state: 'MERGED', labels: [], latestCheckRollup: [], source: 'fixture' }),
+  }).satisfied, true);
+
+  // OPEN state
+  assert.equal(evaluateRecoveryPredicate(prMerged, '/repo', {
+    readPr: () => ({ number: 1324, state: 'OPEN', merged: false, labels: [], latestCheckRollup: [], source: 'fixture' }),
+  }).satisfied, false);
+
+  // Unreadable/missing PR identity never treated as merged
+  assert.equal(evaluateRecoveryPredicate(prMerged, '/repo', { readPr: () => null }).satisfied, false);
+
+  // Missing or non-numeric PR detail
+  assert.equal(evaluateRecoveryPredicate(recordWith({ kind: 'pr_merged', details: {} }), '/repo', {
+    readPr: () => ({ number: 1324, merged: true, labels: [], latestCheckRollup: [], source: 'fixture' }),
+  }).satisfied, false);
+});

@@ -1,11 +1,13 @@
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { clearConfigCache } from './config.ts';
 import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
 import {
   deriveMergeLabel,
+  reconcileMergeLabels,
   reconcileMergeLabelsForPr,
   buildMergeLabelLiveState,
   readMergeLabelEvidence,
@@ -724,5 +726,68 @@ describe('readMergeLabelEvidence (real Ready artifacts)', () => {
   it('maps a failed Ready result to not-ready and a running one to running', async () => {
     assert.equal((await readMergeLabelEvidence(featureDirWithReady('completed', 'fail'))).readyAtHead?.verdict, 'not-ready');
     assert.equal((await readMergeLabelEvidence(featureDirWithReady('running', 'pass'))).readyAtHead?.verdict, 'running');
+  });
+});
+
+describe('reconcileMergeLabels', () => {
+  it('emits an observer finding and warning when PRs have no task view', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'reconcile-merge-labels-'));
+    try {
+      writeFileSync(join(repo, '.wavemill-config.json'), JSON.stringify({ integration: { enabled: false }, observer: { enabled: true } }), 'utf-8');
+      clearConfigCache(repo);
+      mkdirSync(join(repo, '.wavemill'), { recursive: true });
+      writeFileSync(join(repo, '.wavemill', 'workflow-state.json'), JSON.stringify({ tasks: {} }));
+
+      const warnings: string[] = [];
+      const origWarn = console.warn;
+      console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+
+      try {
+        const prs = [{ number: 999, labels: ['wavemill'], headSha: 'deadbeef' }];
+        await reconcileMergeLabels(prs, repo);
+
+        assert.ok(warnings.some((w) => w.includes('[merge-label] no task view for PRs: #999')));
+        const findingsPath = join(repo, '.wavemill', 'observer-findings.jsonl');
+        assert.ok(existsSync(findingsPath));
+        const finding = JSON.parse(readFileSync(findingsPath, 'utf-8').trim());
+        assert.equal(finding.subsystem, 'merge-lane');
+        assert.equal(finding.severity, 'medium');
+        assert.match(finding.title, /No task view for wavemill PRs: #999/);
+        assert.equal(finding.context.markerPath, 'merge-lane/no-task-view');
+        assert.equal(finding.context.markerKind, 'merge-lane-no-task-view');
+        assert.equal(finding.context.prs, '999');
+      } finally {
+        console.warn = origWarn;
+      }
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('respects observer capability gating and skips finding when observer is disabled', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'reconcile-merge-labels-disabled-'));
+    try {
+      writeFileSync(join(repo, '.wavemill-config.json'), JSON.stringify({ integration: { enabled: false }, observer: { enabled: false } }), 'utf-8');
+      clearConfigCache(repo);
+      mkdirSync(join(repo, '.wavemill'), { recursive: true });
+      writeFileSync(join(repo, '.wavemill', 'workflow-state.json'), JSON.stringify({ tasks: {} }));
+
+      const warnings: string[] = [];
+      const origWarn = console.warn;
+      console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+
+      try {
+        const prs = [{ number: 888, labels: ['wavemill'], headSha: 'feedface' }];
+        await reconcileMergeLabels(prs, repo);
+
+        assert.ok(warnings.some((w) => w.includes('[merge-label] no task view for PRs: #888')));
+        const findingsPath = join(repo, '.wavemill', 'observer-findings.jsonl');
+        assert.equal(existsSync(findingsPath), false);
+      } finally {
+        console.warn = origWarn;
+      }
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });

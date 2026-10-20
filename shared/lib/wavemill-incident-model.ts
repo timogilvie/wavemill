@@ -50,6 +50,7 @@ export const INCIDENT_ROOT_CAUSE_CLASSES = [
   // A challenge arm's review failed without provider evidence and its pair is
   // blocked on the missing comparison (HOK-2595 / HOK-2934 fixture).
   'challenge_arm_review_failed_blocking_pair',
+  'merge_label_withheld',
   'inspection_required',
   // A stage artifact exists but cannot be parsed/validated (coverage gap).
   'malformed_stage_artifact',
@@ -117,6 +118,9 @@ export function canonicalizeRootCauseClass(raw: string): IncidentRootCauseClass 
   }
   if (/pr[-_ ]create[-_ ]failed|pull[-_ ]request[-_ ]create[-_ ]failed/.test(lower)) {
     return 'pr_create_failed';
+  }
+  if (/merge[-_ ]label[-_ ]withheld|label[-_ ]withheld/.test(lower)) {
+    return 'merge_label_withheld';
   }
   if (/agent[-_ ]interactive[-_ ]prompt[-_ ]blocked|interactive[-_ ]prompt[-_ ]blocked/.test(lower)) {
     return 'agent_interactive_prompt_blocked';
@@ -265,6 +269,7 @@ export const RECOVERY_PREDICATE_KINDS = [
   'comparison_present',
   // The failed arm's review produced a new attempt (new head/finishedAt) or is running.
   'review_attempt_progressed',
+  'pr_merged',
 ] as const;
 export type RecoveryPredicateKind = typeof RECOVERY_PREDICATE_KINDS[number];
 

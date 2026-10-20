@@ -122,6 +122,8 @@ export interface PrIdentityDiagnostic {
   labels: string[];
   mergeStateStatus?: string;
   latestCheckRollup: string[];
+  state?: string;
+  merged?: boolean;
   source: string;
 }
 
@@ -323,7 +325,7 @@ export function readPrIdentity(prNumber: number, repoDir: string): PrIdentityDia
       'view',
       String(prNumber),
       '--json',
-      'number,headRefOid,baseRefOid,headRefName,baseRefName,changedFiles,files,labels,mergeStateStatus,statusCheckRollup',
+      'number,headRefOid,baseRefOid,headRefName,baseRefName,changedFiles,files,labels,mergeStateStatus,statusCheckRollup,state,mergedAt',
     ], {
       cwd: repoDir,
       encoding: 'utf-8',
@@ -696,6 +698,11 @@ function projectPrIdentity(prNumber: number, value: Record<string, unknown> | nu
     ?? sumNumberFields(files, 'additions');
   const deletions = numberField(value.deletions)
     ?? sumNumberFields(files, 'deletions');
+  const state = stringField(value.state);
+  const merged = value.merged === true
+    || value.isMerged === true
+    || state?.toUpperCase() === 'MERGED'
+    || Boolean(stringField(value.mergedAt));
   return {
     number: numberField(value.number) ?? prNumber,
     headSha: stringField(value.headRefOid) ?? stringField(value.headSha),
@@ -708,6 +715,8 @@ function projectPrIdentity(prNumber: number, value: Record<string, unknown> | nu
     labels,
     mergeStateStatus: stringField(value.mergeStateStatus),
     latestCheckRollup: checks,
+    state,
+    merged,
     source,
   };
 }

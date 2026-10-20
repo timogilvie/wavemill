@@ -14,6 +14,7 @@ import {
 } from './wavemill-incident-detector.ts';
 import { canonicalizeRootCauseClass, INCIDENT_ROOT_CAUSE_CLASSES, validateRemediationProposal, type IncidentRecord } from './wavemill-incident-model.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
+import { evaluateRecoveryPredicate } from './wavemill-incident-recovery.ts';
 
 const now = new Date('2026-08-03T12:00:00.000Z');
 
@@ -601,7 +602,7 @@ function writeEnvelope(featureDir: string, envelope: { cause: string; providerEr
   }));
 }
 
-function writePrFixture(repo: string, pr: number, options: { head: string; base: string; changedFiles?: number; labels?: string[] }): void {
+function writePrFixture(repo: string, pr: number, options: { head: string; base: string; changedFiles?: number; labels?: string[]; state?: string; merged?: boolean }): void {
   mkdirSync(join(repo, '.wavemill', 'prs'), { recursive: true });
   writeFileSync(join(repo, '.wavemill', 'prs', `${pr}.json`), JSON.stringify({
     number: pr,
@@ -610,8 +611,56 @@ function writePrFixture(repo: string, pr: number, options: { head: string; base:
     headRefName: `task/pr-${pr}`,
     baseRefName: 'auto/integration',
     ...(options.changedFiles !== undefined ? { changedFiles: options.changedFiles } : {}),
+    ...(options.state !== undefined ? { state: options.state } : {}),
+    ...(options.merged !== undefined ? { merged: options.merged } : {}),
     labels: (options.labels ?? ['wavemill']).map((name) => ({ name })),
   }));
+}
+
+function writeReadyResultFixture(taskDir: string, overrides: Record<string, unknown> = {}): void {
+  mkdirSync(taskDir, { recursive: true });
+  writeFileSync(join(taskDir, '.ready-result.json'), JSON.stringify({
+    status: 'completed',
+    finishedAt: '2026-10-12T22:00:00.000Z',
+    artifacts: {
+      type: 'ready',
+      verdict: 'pass',
+      queueState: 'merge-candidate',
+      readyHeadSha: SHA('a'),
+      readyBaseSha: SHA('b'),
+      ...overrides,
+    },
+  }));
+}
+
+function writeMergeCandidateFixture(repo: string, options: {
+  taskId?: string;
+  pr?: number;
+  readyOverrides?: Record<string, unknown>;
+  prOverrides?: Partial<{ head: string; base: string; changedFiles: number; labels: string[]; state: string; merged: boolean }>;
+  reviewStatus?: string;
+  reviewVerdict?: string;
+} = {}): { featureDir: string; taskId: string; prNumber: number } {
+  const taskId = options.taskId ?? 'HOK-3212';
+  const prNumber = options.pr ?? 3212;
+  const featureDir = join(repo, 'features', taskId.toLowerCase());
+  writeWorkflowTasks(repo, { [taskId]: { issue: taskId, slug: taskId.toLowerCase(), worktree: repo, phase: 'ready', pr: String(prNumber) } });
+  writeRealReviewResult(featureDir, {
+    status: options.reviewStatus ?? 'completed',
+    verdict: options.reviewVerdict ?? 'ready',
+    reviewHeadSha: SHA('a'),
+    prNumber,
+    diffBase: { reviewedBase: SHA('b'), mergeBaseSha: SHA('b'), reviewedHead: SHA('a'), reviewedFileCount: 10, kind: 'remote', fetch: 'ok' },
+  });
+  writeReadyResultFixture(featureDir, options.readyOverrides);
+  writePrFixture(repo, prNumber, {
+    head: SHA('a'),
+    base: SHA('b'),
+    changedFiles: 10,
+    labels: ['wavemill', 'wm:blocked'],
+    ...options.prOverrides,
+  });
+  return { featureDir, taskId, prNumber };
 }
 
 function writeWorkflowTasks(repo: string, tasks: Record<string, Record<string, unknown>>, jobs?: Record<string, unknown>): void {
@@ -1049,6 +1098,243 @@ test('stalled lifecycle correlator is deterministic for identical snapshots', ()
     assert.deepEqual(first.map((incident) => incident.rootCauseClass), ['review_context_overflow_stale_base', 'provider_quota_exhaustion_blocking_review']);
     assert.deepEqual(first, second);
     assert.deepEqual(first.map((incident) => store.computeFingerprint(incident)), second.map((incident) => store.computeFingerprint(incident)));
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('October 12 stall: ready-failed:not-ready with ready merge-candidate yields merge_label_withheld incident', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-merge-label-'));
+  try {
+    const { featureDir } = writeMergeCandidateFixture(repo);
+    const incidents = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(3212, 'ready-failed:not-ready', { taskId: 'HOK-3212' })],
+    });
+
+    assert.equal(incidents.length, 1);
+    const [incident] = incidents;
+    assert.equal(incident.rootCauseClass, 'merge_label_withheld');
+    assert.equal(incident.category, 'stale_orphaned_state');
+    assert.equal(incident.severity, 'high');
+    assert.equal(incident.confidence, 'high');
+    assert.equal(incident.taskId, 'HOK-3212');
+
+    const metadata = incident.metadata;
+    assert.equal(metadata.prNumber, 3212);
+    assert.equal(metadata.taskId, 'HOK-3212');
+    assert.equal(metadata.tendGate, 'ready-failed:not-ready');
+    assert.equal(metadata.queueState, 'merge-candidate');
+    assert.equal(metadata.readyHead, SHA('a'));
+    assert.equal(metadata.currentHead, SHA('a'));
+    assert.equal(metadata.currentBase, SHA('b'));
+
+    const paths = metadata.artifactPaths as string[];
+    assert.ok(paths.includes(join(featureDir, '.ready-result.json')));
+    assert.ok(paths.includes(join(repo, '.wavemill', 'prs', '3212.json')));
+
+    assert.deepEqual(metadata.causalChain?.map((entry) => entry.cause), [
+      'ready_merge_candidate',
+      'no_wm_ready',
+      'tend_blocked(ready-failed:not-ready)',
+    ]);
+
+    assert.match(incident.summary, /PR #3212 is a merge candidate according to ready artifacts/);
+    assert.match(incident.operatorAction, /^Inspect merge-lane labels and ready artifacts; verify reconciler status\./);
+
+    const proposal = metadata.proposal!;
+    assert.equal(proposal.schemaVersion, '1.2');
+    assert.equal(proposal.kind, 'inspection_only');
+    assert.equal(proposal.recommendationId, 'inspect_merge_label_withheld');
+    assert.equal(proposal.safetyLevel, 'inspect');
+    assert.equal(proposal.retryKey, `merge-label-withheld:pr:3212:head:${SHA('a')}`);
+    assert.equal(proposal.recoveryPredicate?.kind, 'pr_merged');
+    assert.equal(proposal.recoveryPredicate?.details.pr, '3212');
+    assertValidProposals(incidents);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('merge_label_withheld persists across passes and escalates at configured threshold', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-escalate-'));
+  try {
+    writeMergeCandidateFixture(repo);
+    const store = new IncidentStore(join(repo, '.wavemill', 'incidents'), { escalationThreshold: 3 });
+
+    // Pass 1
+    const t0 = new Date('2026-10-12T22:00:00.000Z');
+    const [inc0] = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now: t0,
+      tendCandidates: [stallCandidate(3212, 'ready-failed:not-ready', { taskId: 'HOK-3212' })],
+    });
+    const stored0 = await store.upsert(inc0);
+    assert.equal(stored0.occurrenceCount, 1);
+    assert.equal(stored0.lifecycle, 'observed');
+
+    // Pass 2
+    const t1 = new Date('2026-10-12T22:01:00.000Z');
+    const [inc1] = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now: t1,
+      tendCandidates: [stallCandidate(3212, 'ready-failed:not-ready', { taskId: 'HOK-3212' })],
+    });
+    const stored1 = await store.upsert(inc1);
+    assert.equal(stored1.fingerprint, stored0.fingerprint);
+    assert.equal(stored1.occurrenceCount, 2);
+    assert.equal(stored1.lifecycle, 'observed');
+
+    // Pass 3 (threshold reached: escalates to active)
+    const t2 = new Date('2026-10-12T22:02:00.000Z');
+    const [inc2] = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now: t2,
+      tendCandidates: [stallCandidate(3212, 'ready-failed:not-ready', { taskId: 'HOK-3212' })],
+    });
+    const stored2 = await store.upsert(inc2);
+    assert.equal(stored2.fingerprint, stored0.fingerprint);
+    assert.equal(stored2.occurrenceCount, 3);
+    assert.equal(stored2.lifecycle, 'active');
+    assert.equal(stored2.metadata.thresholdTriggered, true);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('merge_label_withheld auto-resolves when PR merges and does not re-detect from stale lane data', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-resolve-'));
+  try {
+    writeMergeCandidateFixture(repo);
+    const store = new IncidentStore(join(repo, '.wavemill', 'incidents'));
+
+    const [incident] = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(3212, 'ready-failed:not-ready', { taskId: 'HOK-3212' })],
+    });
+    const stored = await store.upsert(incident);
+    assert.equal(stored.lifecycle, 'observed');
+
+    // PR merges authoritative state
+    writePrFixture(repo, 3212, { head: SHA('a'), base: SHA('b'), merged: true, state: 'MERGED' });
+
+    // Stale lane data still passed to detect
+    const staleDetection = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now: new Date('2026-10-12T22:05:00.000Z'),
+      tendCandidates: [stallCandidate(3212, 'ready-failed:not-ready', { taskId: 'HOK-3212' })],
+    });
+    // Merged PR is skipped, so nothing re-detected
+    assert.equal(staleDetection.length, 0);
+
+    // Recovery predicate evaluation resolves the existing incident
+    const recovery = evaluateRecoveryPredicate(stored, repo);
+    assert.equal(recovery.satisfied, true);
+    assert.equal(recovery.reason, 'recovery_predicate:pr_merged');
+
+    const resolved = await store.autoResolve(stored.fingerprint, { reason: recovery.reason });
+    assert.ok(resolved);
+    assert.equal(resolved.lifecycle, 'resolved');
+    assert.equal(resolved.metadata.resolution?.action, 'auto_resolved');
+    assert.equal(resolved.metadata.resolution?.reason, 'recovery_predicate:pr_merged');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('missing or unreadable PR identity lowers to inspection and is never treated as merged', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-pr-missing-'));
+  try {
+    writeMergeCandidateFixture(repo);
+    rmSync(join(repo, '.wavemill', 'prs'), { recursive: true, force: true });
+
+    const incidents = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(3212, 'ready-failed:not-ready', { taskId: 'HOK-3212' })],
+    });
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].rootCauseClass, 'inspection_required');
+    assert.equal(incidents[0].confidence, 'low');
+    assert.deepEqual(incidents[0].metadata.missingEvidence, ['pr_identity']);
+    assertValidProposals(incidents);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('missing ready artifact at ready-failed:not-ready lowers to inspection', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-ready-missing-'));
+  try {
+    const { featureDir } = writeMergeCandidateFixture(repo);
+    rmSync(join(featureDir, '.ready-result.json'), { force: true });
+
+    const incidents = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(3212, 'ready-failed:not-ready', { taskId: 'HOK-3212' })],
+    });
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].rootCauseClass, 'inspection_required');
+    assert.equal(incidents[0].confidence, 'low');
+    assert.deepEqual(incidents[0].metadata.missingEvidence, ['ready_result']);
+    assertValidProposals(incidents);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('contradictory ready artifact lowers to inspection', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-ready-contra-'));
+  try {
+    // 1. Ready verdict is fail while queueState says merge-candidate
+    writeMergeCandidateFixture(repo, { readyOverrides: { verdict: 'fail' } });
+    const [inc1] = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(3212, 'ready-failed:not-ready', { taskId: 'HOK-3212' })],
+    });
+    assert.equal(inc1.rootCauseClass, 'inspection_required');
+    assert.equal(inc1.confidence, 'low');
+    assert.equal(inc1.metadata.inspectionReason, 'contradictory_ready_evidence');
+
+    // 2. Ready head differs from current PR head
+    writeMergeCandidateFixture(repo, { readyOverrides: { readyHeadSha: SHA('different') } });
+    const [inc2] = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(3212, 'ready-failed:not-ready', { taskId: 'HOK-3212' })],
+    });
+    assert.equal(inc2.rootCauseClass, 'inspection_required');
+    assert.equal(inc2.confidence, 'low');
+    assert.equal(inc2.metadata.inspectionReason, 'contradictory_ready_evidence');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('ready artifact without merge-candidate or unrelated gate does not assert merge_label_withheld', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-stalled-no-mc-'));
+  try {
+    // Ready says ready-stale, not merge-candidate
+    writeMergeCandidateFixture(repo, { readyOverrides: { queueState: 'ready-stale' } });
+    const incNoMc = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(3212, 'ready-failed:not-ready', { taskId: 'HOK-3212' })],
+    });
+    assert.equal(incNoMc.length, 0);
+
+    // Unrelated gate
+    writeMergeCandidateFixture(repo);
+    const incUnrelated = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(3212, 'clean-green-required-pending', { taskId: 'HOK-3212' })],
+    });
+    assert.equal(incUnrelated.length, 0);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

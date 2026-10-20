@@ -526,7 +526,7 @@ const DO_NOT_CLAUSE = 'Do not add wm:ready, merge, rewrite destructively, or del
 const PAIR_DO_NOT_CLAUSE = 'Do not synthesize a winner, force a comparison, add wm:ready, or merge from this proposal.';
 
 /** `missingEvidence` vocabulary for inspection incidents. */
-type MissingEvidenceKind = 'task' | 'pr_identity' | 'review_result' | 'pair_state' | 'file_counts';
+type MissingEvidenceKind = 'task' | 'pr_identity' | 'review_result' | 'pair_state' | 'file_counts' | 'ready_result';
 
 /** Where a challenge pair stands relative to the blocked comparison. */
 export type ChallengePairState =
@@ -591,6 +591,11 @@ export class StalledLifecycleCorrelator {
       const envelope = taskDir ? readReviewFailureEnvelope(taskDir) : null;
       const ready = taskDir ? readReadyResultDiagnostic(taskDir) : null;
       const pr = readPrIdentity(prNumber, repoDir);
+
+      // Authoritative PR state: a merged PR cannot be re-detected from stale lane data.
+      // Missing or unreadable PR evidence is never treated as proof of merge.
+      if (pr && (pr.merged || pr.state?.toUpperCase() === 'MERGED')) continue;
+
       const evidenceSet = { repoDir, candidate, taskId, taskDir, pr, review, envelope, ready, timestamp };
 
       const missing: MissingEvidenceKind[] = [];
@@ -620,6 +625,32 @@ export class StalledLifecycleCorrelator {
       if (review?.failureCategory === 'review-scope-unverifiable') {
         incidents.push(this.inspectionIncident({ ...evidenceSet, reason: 'review_scope_unverifiable', missing }));
         continue;
+      }
+
+      if (gate === 'ready-failed:not-ready') {
+        if (!ready) {
+          missing.push('ready_result');
+          incidents.push(this.inspectionIncident({ ...evidenceSet, reason: 'missing_authoritative_evidence', missing }));
+          continue;
+        }
+
+        const readyContradictory = ready.queueState === 'merge-candidate'
+          && (ready.stageStatus === 'failed' || ready.verdict === 'fail' || ready.verdict === 'not_ready'
+            || (Boolean(ready.readyHeadSha) && Boolean(pr?.headSha) && ready.readyHeadSha !== pr?.headSha));
+
+        if (readyContradictory) {
+          incidents.push(this.inspectionIncident({ ...evidenceSet, reason: 'contradictory_ready_evidence', missing }));
+          continue;
+        }
+
+        if (ready.queueState === 'merge-candidate') {
+          if (missing.length > 0) {
+            incidents.push(this.inspectionIncident({ ...evidenceSet, reason: 'missing_authoritative_evidence', missing }));
+          } else {
+            incidents.push(this.mergeLabelWithheldIncident({ ...evidenceSet, pr: pr!, ready }));
+          }
+          continue;
+        }
       }
 
       // No structured causal chain applies. With complete evidence the
@@ -720,6 +751,84 @@ export class StalledLifecycleCorrelator {
         authoritativeBase: pr.baseSha,
         reviewedFileCount: review.reviewedFileCount,
         authoritativeFileCount: pr.changedFileCount,
+        artifactPaths: artifactPaths(input),
+        knownIssueIds: input.taskId ? [input.taskId] : [],
+      },
+    });
+  }
+
+  private mergeLabelWithheldIncident(input: {
+    repoDir: string;
+    taskId: string | null;
+    taskDir: string | null;
+    candidate: TendCandidateDiagnostic;
+    pr: PrIdentityDiagnostic;
+    ready: ReadyResultDiagnostic;
+    review: ReviewResultDiagnostic | null;
+    envelope: ReviewFailureEnvelopeDiagnostic | null;
+    timestamp: string;
+  }): IncidentRecord {
+    const { pr, ready, candidate } = input;
+    const evidence: IncidentEvidence[] = [
+      prEvidence(pr, input.timestamp),
+      readyEvidence(ready, input.timestamp),
+      tendEvidence(candidate, input.repoDir, input.timestamp),
+      ...(input.review ? [reviewEvidence(input.review, input.timestamp)] : []),
+      ...(input.envelope ? [envelopeEvidence(input.envelope, input.timestamp)] : []),
+    ];
+    const gate = candidate.firstBlockedGate ?? candidate.blockedReason ?? 'ready-failed:not-ready';
+    const causalChain: CausalChainEntry[] = [
+      { cause: 'ready_merge_candidate', evidenceIndex: 1, detail: `queueState=${ready.queueState}` },
+      { cause: 'no_wm_ready', evidenceIndex: 0, detail: pr.labels.includes('wm:ready') ? 'wm:ready present' : 'wm:ready absent' },
+      { cause: `tend_blocked(${gate})`, evidenceIndex: 2 },
+    ];
+    const headSha = pr.headSha ?? 'unknown';
+    const baseSha = pr.baseSha ?? 'unknown';
+    const proposal = remediationProposal({
+      kind: 'inspection_only',
+      recommendationId: 'inspect_merge_label_withheld',
+      retryKey: `merge-label-withheld:pr:${pr.number}:head:${headSha}`,
+      safetyLevel: 'inspect',
+      prerequisites: [
+        'Confirm the PR ready artifacts indicate merge-candidate status.',
+        'Verify why merge labels (wm:ready) were withheld or not reconciled.',
+        'Do not force merge or bypass merge safety checks manually.',
+      ],
+      evidence,
+      allowedActions: ['inspect'],
+      forbiddenActions: FORBIDDEN_REMEDIATION_ACTIONS,
+      target: { issueId: input.taskId ?? undefined, prNumber: pr.number, headSha: pr.headSha, baseSha: pr.baseSha },
+      recoveryPredicate: {
+        kind: 'pr_merged',
+        details: {
+          pr: String(pr.number),
+        },
+      },
+    });
+    return createIncidentDraft({
+      taskId: input.taskId,
+      session: null,
+      category: 'stale_orphaned_state',
+      severity: 'high',
+      confidence: 'high',
+      lifecycle: 'observed',
+      rootCauseClass: 'merge_label_withheld',
+      summary: `PR #${pr.number} is a merge candidate according to ready artifacts, but Tend blocks it at ${gate} (wm:ready missing).`,
+      operatorAction: `Inspect merge-lane labels and ready artifacts; verify reconciler status. ${DO_NOT_CLAUSE}`,
+      evidence,
+      metadata: {
+        proposal,
+        causalChain,
+        prNumber: pr.number,
+        taskId: input.taskId,
+        tendGate: gate,
+        tendLabels: candidate.labels ?? pr.labels,
+        queueState: ready.queueState,
+        readyHead: ready.readyHeadSha,
+        currentHead: pr.headSha,
+        currentBase: pr.baseSha,
+        authoritativeHead: pr.headSha,
+        authoritativeBase: pr.baseSha,
         artifactPaths: artifactPaths(input),
         knownIssueIds: input.taskId ? [input.taskId] : [],
       },
@@ -962,6 +1071,7 @@ export class StalledLifecycleCorrelator {
       ...(input.pr ? [prEvidence(input.pr, input.timestamp)] : []),
       ...(input.review ? [reviewEvidence(input.review, input.timestamp)] : []),
       ...(input.envelope ? [envelopeEvidence(input.envelope, input.timestamp)] : []),
+      ...(input.ready ? [readyEvidence(input.ready, input.timestamp)] : []),
       tendEvidence(input.candidate, input.repoDir, input.timestamp),
     ];
     const gate = input.candidate.firstBlockedGate ?? input.candidate.blockedReason ?? 'unknown';
@@ -988,7 +1098,9 @@ export class StalledLifecycleCorrelator {
       rootCauseClass: 'inspection_required',
       summary: input.reason === 'contradictory_context_scope_evidence'
         ? `PR #${input.candidate.pr ?? 'unknown'} review overflowed its context but the reviewed scope matches the PR; this is not a stale-base diagnosis.`
-        : `PR #${input.candidate.pr ?? 'unknown'} stalled at ${gate} and its lifecycle evidence is incomplete.${missingText}`,
+        : input.reason === 'contradictory_ready_evidence'
+          ? `PR #${input.candidate.pr ?? 'unknown'} ready artifacts contradict merge candidacy; this is not a merge-label-withheld diagnosis.`
+          : `PR #${input.candidate.pr ?? 'unknown'} stalled at ${gate} and its lifecycle evidence is incomplete.${missingText}`,
       operatorAction: 'Inspect authoritative PR and stage artifacts manually; missing or conflicting evidence is not enough to diagnose stale base or provider failure.',
       evidence,
       metadata: {
