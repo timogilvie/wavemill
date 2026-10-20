@@ -3855,6 +3855,23 @@ function materializeStuckCandidateReadyResult(
   );
 }
 
+function materializeMergeQueueTransitions(
+  repoDir: string,
+  vars: { pr: string; headSha: string; escalated: boolean; cycles: number },
+): void {
+  materializeTemplateFile(
+    join(OBSERVER_FIXTURES_DIR, 'stuck-candidate', 'merge-queue-transitions.json'),
+    join(repoDir, '.wavemill', 'merge-queue-transitions.json'),
+    {
+      PR: vars.pr,
+      HEAD_SHA: vars.headSha,
+      ESCALATED: String(vars.escalated),
+      CYCLES: String(vars.cycles),
+      UPDATED_AT: agoIso(1),
+    },
+  );
+}
+
 function materializeHealthyReadyResult(featureDir: string, headSha: string): void {
   materializeTemplateFile(
     join(OBSERVER_FIXTURES_DIR, 'healthy', 'ready-result.json'),
@@ -3991,6 +4008,169 @@ test('HOK-3096 Detector 1: a malformed .ready-result.json is skipped without thr
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }
+});
+
+// HOK-3240: with tend + mergeQueue on (the fleet's normal mode) a candidate is
+// still stuck when its PR lacks `wm:ready` — the consumer never picks it up.
+const consumerCaps = () => fakeCaps({ tend: true, mergeExecutor: 'tend', mergeQueue: true });
+
+function prViewSpy(labels: string[] | undefined) {
+  const calls: string[] = [];
+  const readPrView = (_repoDir: string, pr: string) => {
+    calls.push(pr);
+    return labels === undefined ? undefined : { state: 'OPEN', baseRefName: 'auto/integration', labels };
+  };
+  return { calls, readPrView };
+}
+
+function withStuckCandidate(
+  name: string,
+  opts: { candidatePromotedAt: string; headSha?: string },
+  fn: (repoDir: string) => void,
+): void {
+  const repoDir = mkdtempSync(join(tmpdir(), `observer-${name}-`));
+  const featureDir = join(repoDir, 'features', 'stuck-candidate-fixture');
+  mkdirSync(featureDir, { recursive: true });
+  materializeStuckCandidateReadyResult(featureDir, { headSha: opts.headSha ?? 'head-sha-1', candidatePromotedAt: opts.candidatePromotedAt });
+  try {
+    fn(repoDir);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+}
+
+test('HOK-3240: stuck merge candidate fires when a consumer is active but the PR lacks wm:ready', () => {
+  withStuckCandidate('stuck-candidate-no-label', { candidatePromotedAt: agoIso(20) }, (repoDir) => {
+    const spy = prViewSpy(['wm:blocked']);
+    const findings = detectStuckMergeCandidates(
+      stuckCandidateRepo(repoDir, { pr: '1632' }) as never, Date.now(), consumerCaps() as never, { readPrView: spy.readPrView },
+    );
+    const finding = findings.find((f) => f.id === 'stuck-merge-candidate-wavemill-HOK-9100');
+    assert.ok(finding, `expected a stuck-merge-candidate finding, got: ${findings.map((f) => f.id).join(', ')}`);
+    assert.equal(finding?.severity, 'high');
+    assert.match(finding!.title, /PR #1632 has no wm:ready label/);
+    assert.ok(finding!.evidence.includes('gateReason=pr-lacks-wm-ready'));
+    assert.ok(finding!.evidence.includes('prLacksReadyLabel=true'));
+    assert.ok(finding!.evidence.includes('pr=#1632 state=OPEN base=auto/integration'));
+    assert.match(finding!.recommendation, /gh pr edit 1632 --add-label wm:ready/);
+  });
+});
+
+test('HOK-3240: no stuck finding when the PR carries wm:ready', () => {
+  withStuckCandidate('stuck-candidate-labelled', { candidatePromotedAt: agoIso(20) }, (repoDir) => {
+    const spy = prViewSpy(['wm:ready']);
+    const findings = detectStuckMergeCandidates(
+      stuckCandidateRepo(repoDir, { pr: '1632' }) as never, Date.now(), consumerCaps() as never, { readPrView: spy.readPrView },
+    );
+    assert.equal(findings.find((f) => f.id === 'stuck-merge-candidate-wavemill-HOK-9100'), undefined);
+  });
+});
+
+test('HOK-3240: no stuck finding when the PR labels cannot be read (gh failure)', () => {
+  withStuckCandidate('stuck-candidate-gh-fail', { candidatePromotedAt: agoIso(20) }, (repoDir) => {
+    const spy = prViewSpy(undefined);
+    const findings = detectStuckMergeCandidates(
+      stuckCandidateRepo(repoDir, { pr: '1632' }) as never, Date.now(), consumerCaps() as never, { readPrView: spy.readPrView },
+    );
+    assert.equal(findings.find((f) => f.id === 'stuck-merge-candidate-wavemill-HOK-9100'), undefined);
+  });
+});
+
+test('HOK-3240: a consumer-backed candidate with no PR is not flagged and never calls gh', () => {
+  withStuckCandidate('stuck-candidate-no-pr', { candidatePromotedAt: agoIso(20) }, (repoDir) => {
+    const spy = prViewSpy(['wm:blocked']);
+    const findings = detectStuckMergeCandidates(
+      stuckCandidateRepo(repoDir) as never, Date.now(), consumerCaps() as never, { readPrView: spy.readPrView },
+    );
+    assert.equal(findings.find((f) => f.id === 'stuck-merge-candidate-wavemill-HOK-9100'), undefined);
+    assert.equal(spy.calls.length, 0);
+  });
+});
+
+test('HOK-3240: one gh pr view per merge-candidate task per pass', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-stuck-candidate-budget-'));
+  const tasks = ['1701', '1702', '1703'].map((pr, i) => {
+    const slug = `stuck-candidate-budget-${i}`;
+    const featureDir = join(repoDir, 'features', slug);
+    mkdirSync(featureDir, { recursive: true });
+    materializeStuckCandidateReadyResult(featureDir, { headSha: `head-${i}`, candidatePromotedAt: agoIso(20) });
+    return { issue: `HOK-91${i}0`, slug, phase: 'ready', status: 'active', worktree: repoDir, pr };
+  });
+
+  try {
+    const spy = prViewSpy(['wm:blocked']);
+    const findings = detectStuckMergeCandidates(
+      { session: 'wavemill', repoDir, tasks } as never, Date.now(), consumerCaps() as never, { readPrView: spy.readPrView },
+    );
+    assert.equal(findings.filter((f) => f.id.startsWith('stuck-merge-candidate-')).length, 3);
+    // Acceptance cost line: one gh pr view per merge-candidate task per pass —
+    // the label gate and the PR evidence line share the same read.
+    assert.deepEqual(spy.calls, ['1701', '1702', '1703']);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3240 replay (HOK-3212, 2026-10-12 #1632): fires on the first 120s pass past the 15 min threshold', () => {
+  // Candidate progress stamped 16 minutes ago: the first monitor pass (120s
+  // cadence) after the 15 minute threshold must produce the finding.
+  withStuckCandidate('stuck-candidate-replay', { candidatePromotedAt: agoIso(16) }, (repoDir) => {
+    const spy = prViewSpy(['wm:blocked']);
+    const repo = stuckCandidateRepo(repoDir, { pr: '1632' });
+    const beforeThreshold = detectStuckMergeCandidates(
+      repo as never, Date.now() - 2 * 60_000, consumerCaps() as never, { readPrView: spy.readPrView },
+    );
+    assert.equal(beforeThreshold.find((f) => f.id === 'stuck-merge-candidate-wavemill-HOK-9100'), undefined);
+    const findings = detectStuckMergeCandidates(
+      repo as never, Date.now(), consumerCaps() as never, { readPrView: spy.readPrView },
+    );
+    assert.ok(findings.find((f) => f.id === 'stuck-merge-candidate-wavemill-HOK-9100'));
+  });
+});
+
+test('HOK-3240 durable churn: escalated transition record fires churn below the in-window threshold', () => {
+  withStuckCandidate('candidate-churn-durable', { candidatePromotedAt: agoIso(5), headSha: 'ci-head-1' }, (repoDir) => {
+    materializeMergeQueueTransitions(repoDir, { pr: '1633', headSha: 'ci-head-1', escalated: true, cycles: 58 });
+    const findings = detectStuckMergeCandidates(
+      stuckCandidateRepo(repoDir, { pr: '1633' }) as never, Date.now(), consumerCaps() as never,
+      { readPrView: prViewSpy(['wm:ready']).readPrView },
+    );
+    const churn = findings.find((f) => f.id === 'merge-candidate-churn-wavemill-HOK-9100');
+    assert.ok(churn, `expected a churn finding, got: ${findings.map((f) => f.id).join(', ')}`);
+    assert.equal(churn?.severity, 'high');
+    assert.ok(churn!.evidence.includes('promotions=1'));
+    assert.ok(churn!.evidence.includes('durablyEscalated=true'));
+    assert.ok(churn!.evidence.includes('cyclesRecorded=58'));
+  });
+});
+
+test('HOK-3240 durable churn: a non-escalated record, other head, or missing journal does not fire', () => {
+  withStuckCandidate('candidate-churn-not-escalated', { candidatePromotedAt: agoIso(5), headSha: 'ci-head-1' }, (repoDir) => {
+    const repo = stuckCandidateRepo(repoDir, { pr: '1633' });
+    const deps = { readPrView: prViewSpy(['wm:ready']).readPrView };
+    const churnFinding = () => detectStuckMergeCandidates(repo as never, Date.now(), consumerCaps() as never, deps)
+      .find((f) => f.id === 'merge-candidate-churn-wavemill-HOK-9100');
+
+    assert.equal(churnFinding(), undefined, 'missing journal');
+    materializeMergeQueueTransitions(repoDir, { pr: '1633', headSha: 'ci-head-1', escalated: false, cycles: 2 });
+    assert.equal(churnFinding(), undefined, 'escalated=false');
+    materializeMergeQueueTransitions(repoDir, { pr: '1633', headSha: 'older-head', escalated: true, cycles: 9 });
+    assert.equal(churnFinding(), undefined, 'escalation latched on a different head');
+  });
+});
+
+test('HOK-3240 durable churn: a malformed transitions journal is ignored without throwing', () => {
+  withStuckCandidate('candidate-churn-malformed', { candidatePromotedAt: agoIso(5) }, (repoDir) => {
+    mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+    writeFileSync(join(repoDir, '.wavemill', 'merge-queue-transitions.json'), 'not-valid-json');
+    assert.doesNotThrow(() => {
+      const findings = detectStuckMergeCandidates(
+        stuckCandidateRepo(repoDir, { pr: '1633' }) as never, Date.now(), consumerCaps() as never,
+        { readPrView: prViewSpy(['wm:ready']).readPrView },
+      );
+      assert.equal(findings.find((f) => f.id === 'merge-candidate-churn-wavemill-HOK-9100'), undefined);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

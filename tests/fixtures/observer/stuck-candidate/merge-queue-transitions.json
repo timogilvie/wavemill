@@ -1,0 +1,9 @@
+{
+  "{{PR}}:{{HEAD_SHA}}": {
+    "head": "{{HEAD_SHA}}",
+    "lastTransition": "demoted-stuck",
+    "promoteDemoteCycles": {{CYCLES}},
+    "escalated": {{ESCALATED}},
+    "updatedAt": "{{UPDATED_AT}}"
+  }
+}

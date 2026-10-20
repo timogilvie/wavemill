@@ -3130,19 +3130,42 @@ function inspectTaskBranchResidue(repoDir: string, branch: string, baseBranch: s
   return residue;
 }
 
+/** One `gh pr view` worth of PR facts; `labels` is undefined when they could not be read. */
+interface PrView {
+  state?: string;
+  baseRefName?: string;
+  labels?: string[];
+}
+
+/** Best-effort single `gh pr view` read; a failed/unparseable call returns undefined, never throws. */
+function defaultReadPrView(repoDir: string, pr: string): PrView | undefined {
+  const result = run('gh', ['pr', 'view', pr, '--json', 'state,baseRefName,labels'], 8_000, repoDir);
+  if (!result.ok) return undefined;
+  try {
+    const parsed = JSON.parse(result.stdout) as { state?: unknown; baseRefName?: unknown; labels?: unknown };
+    return {
+      state: typeof parsed.state === 'string' && parsed.state ? parsed.state : undefined,
+      baseRefName: typeof parsed.baseRefName === 'string' && parsed.baseRefName ? parsed.baseRefName : undefined,
+      labels: Array.isArray(parsed.labels)
+        ? (parsed.labels as Array<{ name?: unknown }>)
+          .map((label) => (typeof label?.name === 'string' ? label.name : undefined))
+          .filter((name): name is string => Boolean(name))
+        : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function formatPrEvidence(pr: string, view: PrView | undefined): string {
+  const base = view?.baseRefName ? ` base=${view.baseRefName}` : '';
+  return `pr=#${pr} state=${view?.state ?? 'unknown'}${base}`;
+}
+
 /** Best-effort PR state evidence; a failed gh call reports unknown, never throws. */
 function taskPrEvidence(repoDir: string, task: ObservedTask): string {
   if (!task.pr) return 'pr=none';
-  const result = run('gh', ['pr', 'view', task.pr, '--json', 'state,url,baseRefName'], 8_000, repoDir);
-  if (!result.ok) return `pr=#${task.pr} state=unknown`;
-  try {
-    const parsed = JSON.parse(result.stdout) as { state?: unknown; baseRefName?: unknown };
-    const state = typeof parsed.state === 'string' && parsed.state ? parsed.state : 'unknown';
-    const base = typeof parsed.baseRefName === 'string' && parsed.baseRefName ? ` base=${parsed.baseRefName}` : '';
-    return `pr=#${task.pr} state=${state}${base}`;
-  } catch {
-    return `pr=#${task.pr} state=unknown`;
-  }
+  return formatPrEvidence(task.pr, defaultReadPrView(repoDir, task.pr));
 }
 
 // ---------------------------------------------------------------------------
@@ -3259,16 +3282,56 @@ function recordCandidateChurnPromotion(
 }
 
 /**
+ * The monitor's HOK-3111 per-(PR, head) promote/demote journal at
+ * `<repoDir>/.wavemill/merge-queue-transitions.json`, keyed `${pr}:${head}`.
+ * `escalated` latches once `promoteDemoteCycles` crosses the monitor's
+ * escalation threshold and only resets on a new head.
+ */
+interface MergeQueueTransitionRecord {
+  head?: string;
+  lastTransition?: string;
+  promoteDemoteCycles?: number;
+  escalated?: boolean;
+  updatedAt?: string;
+}
+
+type MergeQueueTransitions = Record<string, MergeQueueTransitionRecord>;
+
+/** Best-effort read of the monitor's transition journal. Never throws. */
+function defaultReadMergeQueueTransitions(repoDir: string): MergeQueueTransitions | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(join(repoDir, '.wavemill', 'merge-queue-transitions.json'), 'utf8')) as unknown;
+    return parsed && typeof parsed === 'object' ? parsed as MergeQueueTransitions : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+interface StuckCandidateDeps {
+  readPrView?: (repoDir: string, pr: string) => PrView | undefined;
+  readMergeQueueTransitions?: (repoDir: string) => MergeQueueTransitions | undefined;
+}
+
+/**
  * Detector 1 (REQ-F1, REQ-F2): a task sitting in `queueState:
- * 'merge-candidate'` with no active merge consumer, or one that keeps
- * churning promote/demote on the same head without ever landing.
+ * 'merge-candidate'` with no active merge consumer — or with a consumer but
+ * no `wm:ready` label on its PR, so the consumer will never pick it up
+ * (HOK-3240) — or one that keeps churning promote/demote on the same head
+ * without ever landing.
+ *
+ * Cost: at most one `gh pr view` per merge-candidate task per pass; the
+ * label gate and the PR evidence line share the same read.
  */
 export function detectStuckMergeCandidates(
   repo: RepoSnapshot,
   now: number,
   caps: SessionCapabilities,
+  deps: StuckCandidateDeps = {},
 ): Finding[] {
+  const readPrView = deps.readPrView ?? defaultReadPrView;
+  const readMergeQueueTransitions = deps.readMergeQueueTransitions ?? defaultReadMergeQueueTransitions;
   const findings: Finding[] = [];
+  let transitions: MergeQueueTransitions | undefined | null = null;
   for (const task of repo.tasks) {
     if (taskWorkflowIsTerminal(task)) continue;
     const stateDir = resolveTaskStateDir(repo.repoDir, task);
@@ -3278,9 +3341,25 @@ export function detectStuckMergeCandidates(
     const artifacts = ready.artifacts;
     const headSha = artifacts.readyHeadSha ?? artifacts.launchHead ?? 'unknown';
 
+    let prView: PrView | undefined | null = null;
+    const taskPrView = (pr: string): PrView | undefined => {
+      if (prView === null) prView = readPrView(repo.repoDir, pr);
+      return prView;
+    };
+    const prEvidence = (): string => (task.pr ? formatPrEvidence(task.pr, taskPrView(task.pr)) : 'pr=none');
+
     if (artifacts.candidatePromotedAt) {
       const promotions = recordCandidateChurnPromotion(repo.repoDir, task.issue, headSha, artifacts.candidatePromotedAt, now);
-      if (promotions >= CANDIDATE_CHURN_THRESHOLD) {
+      // HOK-3240: the 30-minute window misses the lane's real 16-21 min
+      // promote/demote cadence, so also honour the monitor's durable
+      // per-(PR, head) escalation latch.
+      let transitionRecord: MergeQueueTransitionRecord | undefined;
+      if (task.pr) {
+        if (transitions === null) transitions = readMergeQueueTransitions(repo.repoDir);
+        transitionRecord = transitions?.[`${task.pr}:${artifacts.lastCiHeadSha ?? headSha}`];
+      }
+      const durablyEscalated = transitionRecord?.escalated === true;
+      if (promotions >= CANDIDATE_CHURN_THRESHOLD || durablyEscalated) {
         findings.push({
           id: `merge-candidate-churn-${repo.session}-${task.issue}`,
           severity: 'high',
@@ -3289,14 +3368,18 @@ export function detectStuckMergeCandidates(
           session: repo.session,
           repoDir: repo.repoDir,
           issue: task.issue,
-          title: `${task.issue} merge candidate has been promoted ${promotions} times on the same head in ${CANDIDATE_CHURN_WINDOW_MINUTES} minutes`,
+          title: durablyEscalated && promotions < CANDIDATE_CHURN_THRESHOLD
+            ? `${task.issue} merge candidate is in an escalated promote/demote loop on the same head`
+            : `${task.issue} merge candidate has been promoted ${promotions} times on the same head in ${CANDIDATE_CHURN_WINDOW_MINUTES} minutes`,
           evidence: [
             `promotions=${promotions}`,
             `windowMinutes=${CANDIDATE_CHURN_WINDOW_MINUTES}`,
+            `durablyEscalated=${durablyEscalated}`,
+            ...(transitionRecord ? [`cyclesRecorded=${transitionRecord.promoteDemoteCycles ?? 'unknown'}`] : []),
             `headSha=${headSha}`,
             `candidatePromotedAt=${artifacts.candidatePromotedAt}`,
             `lastSkipReason=${artifacts.candidateSkipReason ?? 'unknown'}`,
-            taskPrEvidence(repo.repoDir, task),
+            prEvidence(),
           ],
           recommendation: 'The merge lane keeps promoting and demoting this candidate on the same head without it ever landing. Inspect why it keeps getting demoted (flaky CI, base churn, a stuck health check) instead of letting the lane spin indefinitely.',
         });
@@ -3311,7 +3394,13 @@ export function detectStuckMergeCandidates(
     // D2: mergeExecutor/mergeQueue gate the finding; health is advisory
     // evidence only, never gating (HOK-3102).
     const hasConsumer = caps.mergeExecutor === 'tend' && caps.mergeQueue;
-    if (ageMinutes > CANDIDATE_STUCK_MINUTES && !hasConsumer) {
+    if (ageMinutes <= CANDIDATE_STUCK_MINUTES) continue;
+    // HOK-3240: with a consumer active, the candidate is still stuck when its
+    // PR lacks `wm:ready` (the consumer never picks it up). An unreadable
+    // label set never fires — we do not flag on unverified data.
+    const labels = hasConsumer && task.pr ? taskPrView(task.pr)?.labels : undefined;
+    const prLacksReadyLabel = labels !== undefined && !labels.includes('wm:ready');
+    if (!hasConsumer || prLacksReadyLabel) {
       findings.push({
         id: `stuck-merge-candidate-${repo.session}-${task.issue}`,
         severity: 'high',
@@ -3320,7 +3409,9 @@ export function detectStuckMergeCandidates(
         session: repo.session,
         repoDir: repo.repoDir,
         issue: task.issue,
-        title: `${task.issue} is stuck in merge-candidate with no active merge consumer`,
+        title: hasConsumer
+          ? `${task.issue} is stuck in merge-candidate: PR #${task.pr} has no wm:ready label`
+          : `${task.issue} is stuck in merge-candidate with no active merge consumer`,
         evidence: [
           `queueState=${artifacts.queueState}`,
           `candidatePromotedAt=${artifacts.candidatePromotedAt ?? 'unknown'}`,
@@ -3330,11 +3421,15 @@ export function detectStuckMergeCandidates(
           `tendHealth=${caps.health.tend ?? 'unknown'} (advisory)`,
           `headSha=${headSha}`,
           `targetBaseSha=${artifacts.targetBaseSha ?? 'unknown'}`,
-          taskPrEvidence(repo.repoDir, task),
+          `prLacksReadyLabel=${prLacksReadyLabel}`,
+          `gateReason=${hasConsumer ? 'pr-lacks-wm-ready' : 'no-consumer'}`,
+          prEvidence(),
         ],
-        recommendation: task.pr
-          ? `Task is stuck in merge-candidate with no active merge consumer. Consider enabling integration (integration.enabled + useMillSession) or merging PR #${task.pr} manually.`
-          : 'Task is stuck in merge-candidate with no active merge consumer. Consider enabling integration (integration.enabled + useMillSession) or merging manually.',
+        recommendation: hasConsumer
+          ? `Task is in merge-candidate but PR #${task.pr} has no wm:ready label, so the merge consumer will never pick it up. The merge-label reconciler (HOK-3181/HOK-3212) is responsible for setting it — investigate why it hasn't, or set it manually (gh pr edit ${task.pr} --add-label wm:ready).`
+          : task.pr
+            ? `Task is stuck in merge-candidate with no active merge consumer. Consider enabling integration (integration.enabled + useMillSession) or merging PR #${task.pr} manually.`
+            : 'Task is stuck in merge-candidate with no active merge consumer. Consider enabling integration (integration.enabled + useMillSession) or merging manually.',
       });
     }
   }
@@ -3475,17 +3570,7 @@ export function behindBaseSeverity(context: { hasReadyLabel?: boolean; queueStat
 
 /** Best-effort PR label read; a failed/missing gh call reports unknown (undefined), never throws. */
 function defaultReadPrLabels(repoDir: string, pr: string): string[] | undefined {
-  const result = run('gh', ['pr', 'view', pr, '--json', 'labels'], 8_000, repoDir);
-  if (!result.ok) return undefined;
-  try {
-    const parsed = JSON.parse(result.stdout) as { labels?: Array<{ name?: unknown }> };
-    if (!Array.isArray(parsed.labels)) return undefined;
-    return parsed.labels
-      .map((label) => (typeof label?.name === 'string' ? label.name : undefined))
-      .filter((name): name is string => Boolean(name));
-  } catch {
-    return undefined;
-  }
+  return defaultReadPrView(repoDir, pr)?.labels;
 }
 
 interface BranchBehindBaseDeps {
