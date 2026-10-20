@@ -2421,6 +2421,9 @@ challenge_materialize_challenger_arm() {
   # Step 7: save the challenger's task-state entry at phase=review.
   local linear_issue
   linear_issue="$(get_linear_issue_id "$primary_issue" 2>/dev/null || echo "$primary_issue")"
+  local arm_title
+  arm_title=$(pass_task_field "$primary_issue" title)
+  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
   # challengeModel names the varied stage's model (HOK-3156 fix #4): for a
   # review-stage pair that is the reviewer, not the shared coder.
   save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
@@ -2428,7 +2431,7 @@ challenge_materialize_challenger_arm() {
     "true" "$primary_issue" "challenger" "$reviewer_model" \
     "$planner_model" "$coder_model" "$reviewer_model" \
     "$plan_depth" "$code_depth" "$review_mode" \
-    "$varied_stage" "review"
+    "$varied_stage" "review" "" "$arm_title"
   challenge_set_varied_model "$arm_key" "$reviewer_model" "$reviewer_agent"
 
   # Register in monitor arrays so subsequent monitor_issue_state ticks find
@@ -2459,10 +2462,6 @@ challenge_materialize_challenger_arm() {
   set_task_phase "$arm_key" "review"
   write_stage_result_with_history "$challenger_feature_dir" "review" "running" \
     "$resolved_reviewer_agent" "$reviewer_launch_model"
-
-  local arm_title
-  arm_title=$(pass_task_field "$primary_issue" title)
-  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
 
   local launch_rc=0
   _run_phase_launch review launch_review_phase "$arm_key" "$arm_slug" "$arm_title" \
@@ -2751,12 +2750,15 @@ challenge_materialize_implementation_arm() {
   # Step 7: save the challenger's task-state entry at phase=coding.
   local linear_issue
   linear_issue="$(get_linear_issue_id "$primary_issue" 2>/dev/null || echo "$primary_issue")"
+  local arm_title
+  arm_title=$(pass_task_field "$primary_issue" title)
+  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
   save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
     "" "" "$coder_agent" "$linear_issue" \
     "true" "$primary_issue" "challenger" "$coder_model" \
     "$planner_model" "$coder_model" "$reviewer_model" \
     "$plan_depth" "$code_depth" "$review_mode" \
-    "implementation" "coding"
+    "implementation" "coding" "" "$arm_title"
   challenge_set_varied_model "$arm_key" "$coder_model" "$coder_agent"
   BRANCH_BY_ISSUE["$arm_key"]="$arm_branch"
   SLUG_BY_ISSUE["$arm_key"]="$arm_slug"
@@ -2783,10 +2785,6 @@ challenge_materialize_implementation_arm() {
   set_task_phase "$arm_key" "coding"
   write_stage_result_with_history "$challenger_feature_dir" "coding" "running" \
     "$resolved_coder_agent" "$coder_launch_model" "" "" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-
-  local arm_title
-  arm_title=$(pass_task_field "$primary_issue" title)
-  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
 
   local launch_rc=0
   _run_phase_launch coding launch_coding_phase "$arm_key" "$arm_slug" "$arm_title" \
@@ -3207,13 +3205,16 @@ challenge_materialize_expanded_route_arm() {
   local planner_agent="$challenger_planner_agent"
   [[ -n "$planner_agent" ]] || planner_agent="$(challenge_arm_read_field "$arm_json" '.agents.planner')"
   [[ -n "$planner_agent" ]] || planner_agent="${AGENT_CMD:-claude}"
+  local arm_title
+  arm_title=$(pass_task_field "$primary_issue" title)
+  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
   # challengeModel names the varied stage's model (HOK-3156): the planner here.
   save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
     "" "" "$planner_agent" "$linear_issue" \
     "true" "$primary_issue" "challenger" "$challenger_planner" \
     "$challenger_planner" "$shared_coder" "$shared_reviewer" \
     "$plan_depth" "$code_depth" "$review_mode" \
-    "$varied_stage"
+    "$varied_stage" "" "" "$arm_title"
   challenge_set_varied_model "$arm_key" "$challenger_planner" "$challenger_planner_agent"
 
   BRANCH_BY_ISSUE["$arm_key"]="$arm_branch"
@@ -3239,10 +3240,6 @@ challenge_materialize_expanded_route_arm() {
   set_task_phase "$arm_key" "planning"
   write_stage_result_with_history "$challenger_feature_dir" "planning" "running" \
     "$resolved_planner_agent" "$planner_launch_model"
-
-  local arm_title
-  arm_title=$(pass_task_field "$primary_issue" title)
-  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
 
   local launch_rc=0
   _run_phase_launch planning launch_planning_phase "$arm_key" "$arm_slug" "$arm_title" \
@@ -4544,7 +4541,8 @@ ready_watchdog_dispatch_findings() {
       base_branch="$(effective_task_base_branch "$issue" 2>/dev/null || pass_task_field "$issue" baseBranch)"
       [[ -n "$base_branch" ]] || base_branch="${BASE_BRANCH:-main}"
       pr_number=$(pass_task_field "$issue" pr)
-      title=$(read_state_value "" --arg i "$issue" '.tasks[$i].title // "Task"')
+      title=$(pass_task_field "$issue" title)
+      [[ -n "$title" ]] || title="Task"
       wt_dir=$(pass_task_field "$issue" worktree)
       [[ -z "$wt_dir" && -n "$slug" ]] && wt_dir="${WORKTREE_ROOT}/${slug}"
       if [[ -n "$slug" && -n "$branch" && -n "$base_branch" && -n "$pr_number" ]]; then
@@ -14577,10 +14575,9 @@ codex_has_pending_approval() {
   (( ${#pending_calls[@]} > 0 ))
 }
 
-get_task_meta() {
-  local issue="$1" field="$2"
-  read_state_value "" --arg issue "$issue" --arg field "$field" '.tasks[$issue][$field] // empty'
-}
+# get_task_meta is provided by shared/lib/wavemill-common.sh (sourced above).
+# The monitor-local override was removed in HOK-3221; both implementations had
+# the same semantics (`.tasks[$issue][$field]`) and the duplicate drifted.
 
 # Deprecated alias (HOK-3115), kept for one release so existing read-side
 # callers and test stubs keep working: resolves through task_identity_linear_id
@@ -15817,10 +15814,10 @@ cleanup_merged_primary_challenge_task() {
     --arg pair_id "$pair_id" \
     '
     (.tasks[$issue] // {}) as $task
-    | ($pr | tonumber? // $task.pr // $task.prNumber // null) as $merged_pr
+    | ($pr | tonumber? // $task.pr // null) as $merged_pr
     | {
         pr: $merged_pr,
-        prNumber: ($task.prNumber // $merged_pr),
+        prNumber: $merged_pr,
         branch: $task.branch,
         slug: ($task.slug // $slug),
         challengePairId: ($task.challengePairId // $pair_id),
@@ -16986,7 +16983,7 @@ find_pr_for_branch() {
   [[ -n "$base_branch" ]] || base_branch="${BASE_BRANCH:-}"
   attempt_json="$(read_state_value "" --arg i "$issue" '.tasks[$i].attempt // .tasks[$i].lifecycle.attempt // empty' 2>/dev/null || true)"
   attempt_id="$(jq -r '.attemptId // empty' <<<"${attempt_json:-{}}" 2>/dev/null || true)"
-  linear_state="$(read_state_value "" --arg i "$issue" '.tasks[$i].linearState // .tasks[$i].linear.state.name // empty' 2>/dev/null || true)"
+  linear_state="$(read_state_value "" --arg i "$issue" '.tasks[$i].linearState // empty' 2>/dev/null || true)"
   challenge_pair="$(pass_task_field "$issue" challengePairId 2>/dev/null || true)"
   challenge_role="$(pass_task_field "$issue" challengeRole 2>/dev/null || true)"
 
@@ -18377,6 +18374,7 @@ LAST_LAUNCHED_SLOTS=1
 
 launch_task() {
   local issue="$1" slug="$2" title="$3" remaining_slots="${4:-1}" override_base="${5:-}"
+  [[ -n "$title" ]] || title="Task"
   local branch="task/${slug}"
   local wt_dir="${WORKTREE_ROOT}/${slug}"
   local feature_dir="${wt_dir}/features/${slug}"
@@ -19157,7 +19155,7 @@ EOF
     primary_challenge_model="$(challenge_selection_health_varied_model "$varied_stage_for_state" "$planner_model" "$task_model" "$reviewer_model")"
     [[ -n "$primary_challenge_model" ]] || primary_challenge_model="$task_model"
   fi
-  save_task_state "$issue" "$slug" "$branch" "$wt_dir" "" "" "${planner_agent:-$task_agent_cmd}" "$linear_issue" "$effective_challenge" "$challenge_pair" "${challenge_role:-}" "$primary_challenge_model" "$planner_model" "$task_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "${challenge_stage:-}"
+  save_task_state "$issue" "$slug" "$branch" "$wt_dir" "" "" "${planner_agent:-$task_agent_cmd}" "$linear_issue" "$effective_challenge" "$challenge_pair" "${challenge_role:-}" "$primary_challenge_model" "$planner_model" "$task_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "${challenge_stage:-}" "" "" "$title"
   if [[ "$challenge_enabled_for_launch" == "true" ]]; then
     if [[ "${defer_challenger:-false}" == "true" ]]; then
       # HOK-2811: Review-stage — record the challenger as a pending arm on the
@@ -19185,7 +19183,7 @@ EOF
         "${WORKTREE_ROOT}/${slug}/features/${slug}" \
         "$challenge_execution_intent"
     else
-      save_task_state "$challenger_key" "$challenger_slug" "task/${challenger_slug}" "${WORKTREE_ROOT}/${challenger_slug}" "" "" "${challenger_planner_agent:-$challenger_agent}" "$linear_issue" "true" "$challenge_pair" "challenger" "$(challenge_selection_health_varied_model "$challenge_stage" "$challenger_planner" "$challenger_model" "$challenger_reviewer")" "$challenger_planner" "$challenger_model" "$challenger_reviewer" "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" "$challenge_stage"
+      save_task_state "$challenger_key" "$challenger_slug" "task/${challenger_slug}" "${WORKTREE_ROOT}/${challenger_slug}" "" "" "${challenger_planner_agent:-$challenger_agent}" "$linear_issue" "true" "$challenge_pair" "challenger" "$(challenge_selection_health_varied_model "$challenge_stage" "$challenger_planner" "$challenger_model" "$challenger_reviewer")" "$challenger_planner" "$challenger_model" "$challenger_reviewer" "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" "$challenge_stage" "" "" "$title"
       state_mutate "$STATE_FILE" '.tasks[$issue].challengeStage = $stage' --arg issue "$challenger_key" --arg stage "$challenge_stage" || true
       state_mutate "$STATE_FILE" \
         '.tasks[$issue].challengerLaunched = true
@@ -20258,7 +20256,7 @@ handle_re_review_command() {
     return 0
   fi
 
-  pr=$(read_state_value "" --arg issue "$issue" '.tasks[$issue].pr // .tasks[$issue].pullRequest // empty')
+  pr=$(read_state_value "" --arg issue "$issue" '.tasks[$issue].pr // empty')
   if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
     pr="$(find_pr_for_branch "$branch" 2>/dev/null || true)"
   fi

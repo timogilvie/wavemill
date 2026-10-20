@@ -86,6 +86,8 @@ export type TaskRecord = {
   updated?: string;
   traceId?: string;
   windowId?: string;
+  /** Linear issue title persisted at launch (HOK-3221). */
+  title?: string;
   /** Validated against `task-lifecycle-state.schema.json`; legacy rows may be partial. */
   lifecycle?: Partial<TaskLifecycleState>;
 

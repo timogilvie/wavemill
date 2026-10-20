@@ -424,6 +424,10 @@
           "type": "boolean",
           "description": "Terminal reconciler wrote the terminal record."
         },
+        "title": {
+          "type": "string",
+          "description": "Linear issue title persisted at launch (HOK-3221). save_task_state."
+        },
         "traceId": {
           "type": "string",
           "description": "Trace id resolved from features/<slug>/.trace-context.json. save_task_state."
