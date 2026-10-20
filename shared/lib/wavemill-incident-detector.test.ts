@@ -617,6 +617,8 @@ function writePrFixture(repo: string, pr: number, options: { head: string; base:
   }));
 }
 
+// Reproduces: HOK-3241 merge-label-withheld scenario - incident detector must correlate
+// the merge_label_withheld incident with idle stall on a stuck merge candidate
 function writeReadyResultFixture(taskDir: string, overrides: Record<string, unknown> = {}): void {
   mkdirSync(taskDir, { recursive: true });
   writeFileSync(join(taskDir, '.ready-result.json'), JSON.stringify({
@@ -633,6 +635,8 @@ function writeReadyResultFixture(taskDir: string, overrides: Record<string, unkn
   }));
 }
 
+// Reproduces: HOK-3241 merge-label-withheld scenario - provides a merge candidate fixture
+// with ready-pass verdict and merge-queue state to test the stuck-merge-candidate incident detector
 function writeMergeCandidateFixture(repo: string, options: {
   taskId?: string;
   pr?: number;
