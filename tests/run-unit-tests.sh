@@ -59,6 +59,7 @@ TESTS=(
   tests/llm-cli.test.ts
   shared/lib/linear-write-gate.test.ts
   shared/lib/session-adapters.test.ts
+  shared/lib/workflow-cost-pool-repair.test.ts
   shared/lib/executed-model-resolver.test.ts
   shared/lib/native-agent/models.test.ts
   shared/lib/native-agent/provider.test.ts

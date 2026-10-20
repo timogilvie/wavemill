@@ -20,6 +20,7 @@ import {
   getScoreBand,
 } from './eval-schema.ts';
 import { buildSdkTaskCostSummaries } from './sdk-task-cost/collect.ts';
+import { repairPooledWorkflowCost } from './workflow-cost-pool-repair.ts';
 import { listSdkTaskCostFixtures, loadSdkTaskCostFixture } from './sdk-task-cost/fixtures.ts';
 import { findTaskCostSchemaDrift } from './sdk-task-cost/schema-drift.ts';
 import {
@@ -1341,6 +1342,22 @@ test('Record with workflowCostStatus=skipped validates', () => {
       agentType: 'claude',
     },
   } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Record with workflowCostStatus=unreliable from the pooled-cost repair validates (HOK-3256)', () => {
+  const record = repairPooledWorkflowCost(
+    {
+      ...scenarios[0].record,
+      workflowCost: 44.9961,
+      workflowCostStatus: 'success',
+    } as EvalRecord,
+    null,
+    'Missing worktreePath or branchName in metadata',
+  ) as unknown as Record<string, unknown>;
+  assert.equal(record.workflowCostStatus, 'unreliable');
+  assert.ok(!('workflowCost' in record), 'Should drop the pooled workflowCost');
   const result = validateAgainstSchema(record);
   assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
 });
