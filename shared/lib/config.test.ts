@@ -70,6 +70,8 @@ import {
   getIncidentConfig,
   getPrePrVerificationConfig,
   getObserverLinearConfig,
+  getObserverAlertsConfig,
+  OBSERVER_ALERTS_DEFAULTS,
   resolveObserverLinearServiceMode,
   resolveObserverLinearModeSource,
   OBSERVER_LINEAR_ROLLOUT_DEFAULTS,
@@ -4474,6 +4476,80 @@ test('observer linear config normalizes partial policies and env project overrid
     else process.env.WAVEMILL_OBSERVER_LINEAR_PROJECT = previousProject;
     if (previousEnabled === undefined) delete process.env.WAVEMILL_OBSERVER_LINEAR_ENABLED;
     else process.env.WAVEMILL_OBSERVER_LINEAR_ENABLED = previousEnabled;
+    cleanUp(tmp);
+  }
+});
+
+function withObserverPushUrl(value: string | undefined, fn: () => void): void {
+  const previous = process.env.WAVEMILL_OBSERVER_PUSH_URL;
+  if (value === undefined) delete process.env.WAVEMILL_OBSERVER_PUSH_URL;
+  else process.env.WAVEMILL_OBSERVER_PUSH_URL = value;
+  try {
+    fn();
+  } finally {
+    if (previous === undefined) delete process.env.WAVEMILL_OBSERVER_PUSH_URL;
+    else process.env.WAVEMILL_OBSERVER_PUSH_URL = previous;
+  }
+}
+
+test('observer alerts stay disabled with no push URL and no config (HOK-3239)', () => {
+  const tmp = makeTempRepo();
+  try {
+    withObserverPushUrl(undefined, () => {
+      clearConfigCache();
+      const config = getObserverAlertsConfig(tmp);
+      assert.equal(config.enabled, false);
+      assert.equal(config.push.url, undefined);
+    });
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('observer alerts: WAVEMILL_OBSERVER_PUSH_URL enables alerts when alerts.enabled is absent (HOK-3239)', () => {
+  const tmp = makeTempRepo();
+  try {
+    withObserverPushUrl('https://ntfy.sh/wm-test-topic', () => {
+      clearConfigCache();
+      const config = getObserverAlertsConfig(tmp);
+      assert.equal(config.enabled, true);
+      assert.equal(config.push.url, 'https://ntfy.sh/wm-test-topic');
+      assert.equal(config.push.format, 'ntfy');
+      assert.equal(config.minSeverity, OBSERVER_ALERTS_DEFAULTS.minSeverity);
+      assert.equal(config.minSeverity, 'high');
+      assert.equal(config.persistMinutes, 15);
+      assert.equal(config.repeatMinutes, 240);
+      assert.equal(config.desktop, true);
+    });
+    // An empty env value is treated as unset.
+    withObserverPushUrl('', () => {
+      clearConfigCache();
+      assert.equal(getObserverAlertsConfig(tmp).enabled, false);
+    });
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('observer alerts: config push.url enables alerts; explicit enabled:false wins over env URL (HOK-3239)', () => {
+  const tmp = makeTempRepo();
+  try {
+    withObserverPushUrl(undefined, () => {
+      clearConfigCache();
+      writeConfig(tmp, JSON.stringify({ observer: { alerts: { push: { url: 'https://ntfy.sh/from-config' } } } }));
+      const config = getObserverAlertsConfig(tmp);
+      assert.equal(config.enabled, true);
+      assert.equal(config.push.url, 'https://ntfy.sh/from-config');
+    });
+    withObserverPushUrl('https://ntfy.sh/from-env', () => {
+      clearConfigCache();
+      writeConfig(tmp, JSON.stringify({ observer: { alerts: { enabled: false } } }));
+      const config = getObserverAlertsConfig(tmp);
+      assert.equal(config.enabled, false);
+      assert.equal(config.push.url, 'https://ntfy.sh/from-env');
+    });
+  } finally {
+    clearConfigCache();
     cleanUp(tmp);
   }
 });
