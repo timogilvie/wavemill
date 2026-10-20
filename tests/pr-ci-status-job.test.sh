@@ -9,7 +9,6 @@
 #   4. the PR head moved: the old result is pending, never consumed
 #   5. a read with no head is a job failure; exhaustion reports readError
 #   6. the reconciler expires the result when the PR head moves (remote)
-#   7. WAVEMILL_SYNC_READY_CHECKS=1 restores the inline reader
 
 set -euo pipefail
 
@@ -95,11 +94,5 @@ set_pr_cache_head "$HEAD_B"
 condition_reconcile_task "$ISSUE" "$WT" "$STATE"
 assert_eq "remote-stale result expired" "no" "$([[ -f "$STATE/.pr-ci-status-result.json" ]] && echo yes || echo no)"
 
-echo "=== 7. sync kill switch ==="
-ready_live_ci_json() { harness_record "inline_ci $2"; printf '{"conclusion":"pass"}\n'; }
-: > "$HARNESS_LOG"
-assert_eq "inline reader result" "pass" "$(WAVEMILL_SYNC_READY_CHECKS=1 read_ci | jq -r '.conclusion')"
-assert_eq "inline reader used" "1" "$(harness_count "inline_ci $PR")"
-assert_eq "no job in sync mode" "0" "$(harness_count "launch_tracked_job")"
 
 harness_finish

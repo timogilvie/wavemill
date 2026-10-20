@@ -235,7 +235,7 @@ export interface RouterConfig {
   backfilledEvalsPath?: string;
   stageBlendWeight?: number;
   rubricAware?: {
-    mode?: 'off' | 'shadow' | 'on';
+    mode?: 'off' | 'on';
     minCoverage?: number;
     weight?: number;
   };

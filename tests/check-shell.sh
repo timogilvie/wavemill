@@ -110,7 +110,6 @@ for f in \
   "$REPO_DIR"/tests/check-ledger-shadow-swallow.test.sh \
   "$REPO_DIR"/tests/monitor-side-effect-detector-tick.test.sh \
   "$REPO_DIR"/tests/deps-drift.test.sh \
-  "$REPO_DIR"/tests/ledger-recovery-tick.test.sh \
   "$REPO_DIR"/tests/check-marker-clear-sites.test.sh \
   "$REPO_DIR"/tests/check-state-surface-writes.test.sh \
   "$REPO_DIR"/tests/check-label-write-sites.test.sh \
@@ -278,6 +277,7 @@ for f in \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
   "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
   "$REPO_DIR"/tests/lib/state-fixtures.sh \
+  "$REPO_DIR"/tests/lib/inline-ready-checks.sh \
   "$REPO_DIR"/tests/tracked-tree-guard.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-matrix.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-restart.test.sh \

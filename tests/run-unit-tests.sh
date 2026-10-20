@@ -282,6 +282,7 @@ TESTS=(
   shared/lib/task-record-shape-checker.test.ts
   shared/lib/task-field-read-checker.test.ts
   shared/lib/test-task-literal-checker.test.ts
+  shared/lib/feature-flag-checker.test.ts
   tests/lib/task-builder.test.ts
   shared/lib/workflow-state.test.ts
   shared/lib/workflow-state.writer-coverage.test.ts

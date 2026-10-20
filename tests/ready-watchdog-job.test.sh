@@ -7,7 +7,6 @@
 #   3. a sweep is never dispatched twice across ticks
 #   4. findings older than 2x the sweep timeout are dropped
 #   5. a failed sweep logs once (rate-limited), never dispatches
-#   6. WAVEMILL_SYNC_READY_CHECKS=1 runs the sweep inline
 
 set -euo pipefail
 
@@ -21,7 +20,6 @@ source "$SCRIPT_DIR/lib/state-fixtures.sh"
 fixture_real_state_accessors
 eval "$(harness_extract_function ready_watchdog_config_json)"
 eval "$(harness_extract_function run_ready_watchdog_tick)"
-READY_WATCHDOG_FAILURE_LOG_INTERVAL=300
 READY_WATCHDOG_SWEEP_INTERVAL_SECONDS=0
 
 ISSUE="HOK-7003"
@@ -83,12 +81,5 @@ tick
 tick
 assert_eq "no sweep inside the interval" "0" "$(harness_count "tool ready-watchdog.ts")"
 READY_WATCHDOG_SWEEP_INTERVAL_SECONDS=0
-
-echo "=== 7. sync kill switch ==="
-: > "$HARNESS_LOG"
-harness_tool_set ready-watchdog.ts 0 "$FINDINGS"
-WAVEMILL_SYNC_READY_CHECKS=1 tick
-assert_eq "inline sweep dispatched immediately" "1" "$(harness_count "launch_ready_phase $ISSUE")"
-assert_eq "no job in sync mode" "0" "$(harness_count "launch_tracked_job")"
 
 harness_finish

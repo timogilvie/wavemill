@@ -431,7 +431,6 @@
       "launch-ready-phase.test.sh": 28521,
       "ledger-cli-shadow.test.sh": 6318,
       "ledger-hook-shadow.test.sh": 3861,
-      "ledger-recovery-tick.test.sh": 8351,
       "lifecycle-harness.test.sh": 61858,
       "lifecycle-scenarios.test.sh": 10871,
       "linear-state-canonicalization.test.sh": 4719,

@@ -1051,45 +1051,6 @@ test('rubric-aware: mode=on with sufficient coverage uses rubric scores', () => 
   }
 });
 
-test('rubric-aware: shadow mode emits scalar decision + side-channel', () => {
-  const records = [
-    ...Array.from({ length: 10 }, (_, index) => makeRubricEvalRecord(
-      `rubric-shadow-opus-${index}`,
-      'claude-opus-4-6',
-      { plan: 0.9, implementation: 0.9, review: 0.9 },
-      0.1,
-    )),
-    ...Array.from({ length: 10 }, (_, index) => makeRubricEvalRecord(
-      `rubric-shadow-codex-${index}`,
-      'gpt-5.6-terra',
-      { plan: 0.7, implementation: 0.7, review: 0.7 },
-      1,
-    )),
-  ];
-  const off = makeRepoWithStageAwareData(records, makeRouterConfigWithRubricAware({ mode: 'off' }));
-  const shadow = makeRepoWithStageAwareData(records, makeRouterConfigWithRubricAware({
-    mode: 'shadow',
-    minCoverage: 1,
-    weight: 0.5,
-  }));
-
-  try {
-    const offDecision = routeStageAware('Build a backend feature with tests and review.', { repoDir: off.repoDir, kNeighbors: 20 });
-    const shadowDecision = routeStageAware('Build a backend feature with tests and review.', { repoDir: shadow.repoDir, kNeighbors: 20 });
-    assert.ok(offDecision);
-    assert.ok(shadowDecision);
-    assert.equal(shadowDecision?.planner, offDecision?.planner);
-    assert.equal(shadowDecision?.coder, offDecision?.coder);
-    assert.equal(shadowDecision?.reviewer, offDecision?.reviewer);
-    assert.ok(shadowDecision?.shadowDecision);
-    assert.equal(shadowDecision?.shadowDecision?.planner, 'gpt-5.6-terra');
-    assert.match(shadowDecision?.reasoning[0] || '', /rubric-aware \(mode=shadow/);
-  } finally {
-    off.cleanup();
-    shadow.cleanup();
-  }
-});
-
 test('rubric-aware: schema config loads with partial rubricAware section', () => {
   const records = [
     makeRubricEvalRecord('rubric-partial-1', 'claude-opus-4-6', { plan: 0.9, implementation: 0.9, review: 0.9 }, 0.8),

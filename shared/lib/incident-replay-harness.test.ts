@@ -5,9 +5,8 @@
  * any fixture that does not converge within its tick budget.
  *
  * Uses the custom harness `process.exit(1)` style; each fixture is a
- * table-driven subtest. Every fixture runs in both harness modes (HOK-3185):
- * `recovery-loop` (the Ledger F loop decides) and `legacy` (the original
- * simulator). `--mode=recovery-loop|legacy` restricts the run to one.
+ * table-driven subtest. Every fixture is driven by the real recovery loop
+ * (HOK-3185). The `--mode=legacy` simulator was retired in HOK-3235.
  */
 
 import { readdirSync, statSync } from 'node:fs';
@@ -17,7 +16,6 @@ import { fileURLToPath } from 'node:url';
 import {
   INCIDENT_REPLAY_FAULTS,
   runFixture,
-  type HarnessMode,
   type IncidentReplayFault,
 } from './incident-replay-harness.ts';
 
@@ -52,19 +50,16 @@ function main(): void {
   const faultsCovered = new Set<IncidentReplayFault>();
   const failures: SubtestFailure[] = [];
   let passed = 0;
-
-  const modeArg = process.argv.find((arg) => arg.startsWith('--mode='))?.slice('--mode='.length);
-  const modes: HarnessMode[] = modeArg === 'legacy' || modeArg === 'recovery-loop' ? [modeArg] : ['recovery-loop', 'legacy'];
   let runs = 0;
 
-  for (const mode of modes) for (const fixturePath of fixtures) {
-    const label = `${mode}:${basename(fixturePath)}`;
+  for (const fixturePath of fixtures) {
+    const label = basename(fixturePath);
     runs += 1;
     try {
-      const { fixture, run, assertion } = runFixture(fixturePath, { mode });
+      const { fixture, run, assertion } = runFixture(fixturePath);
       faultsCovered.add(fixture.fault);
       // The no-fault control must never trigger recovery.
-      const controlReason = mode === 'recovery-loop' && fixture.fault === 'control_no_fault' && run.actions?.some((a) => a !== 'skip')
+      const controlReason = fixture.fault === 'control_no_fault' && run.actions?.some((a) => a !== 'skip')
         ? `control fixture triggered recovery: ${run.actions?.join(',')}`
         : undefined;
       if (!assertion.ok || controlReason) {
