@@ -12,10 +12,21 @@
 # approval and coding launch invalidates the plan; the stale plan is preserved
 # for diagnosis and planning is relaunched through the bounded-retry gate.
 #
+# HOK-3253: the binding is recorded when an approval REQUEST is published
+# (source "preparation", by the monitor's task-input gate), not when the
+# approval is accepted. Accepting an approval only annotates the existing
+# record (plan_packet_record_approval), so neither the operator accept nor the
+# plan->code handoff can re-bless a packet that changed after the request.
+#
 # Storage per feature dir:
 #   .plan-packet-hash   JSON: {"packetHash", "packetKind", "planHash",
-#                              "recordedAt", "source"} — source is "approval"
-#                       or "recovery". Absent = legacy plan (not yet bound).
+#                              "recordedAt", "source", "approvedAt"?} — source
+#                       is "preparation" (approval request published),
+#                       "divergence-review" (operator asked to review a
+#                       regenerated packet), or the legacy "approval" /
+#                       "recovery". Absent = legacy plan (not yet bound).
+#   .plan-reapproval-reason   one line: why the next approval request exists
+#                       (set when a divergence re-plans; cleared on approval).
 #   plan.stale-<epoch>.md   preserved copies of superseded plans.
 
 # Returns 0 iff a sha-256 implementation is available on PATH.
@@ -87,8 +98,8 @@ plan_packet_plan_hash() {
 
 # Record the plan<->packet binding for the current plan.md and packet.
 # Best-effort: absent plan/packet, missing hashing tools, or write failures
-# never fail the caller. source: "approval" (planning approved) or
-# "recovery" (packet regenerated in-band).
+# never fail the caller. source: "preparation" (approval request published),
+# "divergence-review", or the legacy "approval" / "recovery".
 # Usage: plan_packet_record_binding <feature_dir> [source]
 plan_packet_record_binding() {
   local feature_dir="$1" source="${2:-approval}"
@@ -124,6 +135,76 @@ plan_packet_record_binding() {
   fi
   mv "$tmp" "$marker" 2>/dev/null || rm -f "$tmp"
   return 0
+}
+
+# Annotate an accepted approval on the existing binding without touching
+# packetHash/planHash (HOK-3253): approval accepts what the request showed.
+# Falls back to recording a fresh "approval" binding only when no binding was
+# ever recorded (plans published before this gate existed). Best-effort.
+# Usage: plan_packet_record_approval <feature_dir>
+plan_packet_record_approval() {
+  local feature_dir="$1"
+  local marker="$feature_dir/.plan-packet-hash"
+  local approved_at tmp
+
+  [[ -d "$feature_dir" ]] || return 0
+  if [[ -z "$(plan_packet_recorded_packet_hash "$feature_dir")" ]]; then
+    plan_packet_record_binding "$feature_dir" "approval"
+    return 0
+  fi
+  command -v jq >/dev/null 2>&1 || return 0
+  approved_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")"
+  tmp="$(mktemp "$feature_dir/.plan-packet-hash.tmp.XXXXXX" 2>/dev/null)" || return 0
+  if jq -c --arg approvedAt "$approved_at" '. + {approvedAt: $approvedAt}' "$marker" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$marker" 2>/dev/null || rm -f "$tmp"
+  else
+    rm -f "$tmp"
+  fi
+  return 0
+}
+
+# Read the recorded binding source (empty when marker is missing).
+plan_packet_recorded_source() {
+  local feature_dir="$1"
+  local marker="$feature_dir/.plan-packet-hash"
+
+  [[ -f "$marker" ]] || { echo ""; return 0; }
+  jq -r '.source // ""' "$marker" 2>/dev/null || echo ""
+}
+
+# Exit 0 when the recorded binding exists and names the current packet bytes.
+plan_packet_binding_is_current() {
+  local feature_dir="$1" recorded current
+  recorded="$(plan_packet_recorded_packet_hash "$feature_dir")"
+  [[ -n "$recorded" ]] || return 1
+  current="$(plan_packet_current_hash "$feature_dir" 2>/dev/null | awk '{print $1}')"
+  [[ -n "$current" && "$recorded" == "$current" ]]
+}
+
+# Exit 0 when the packet files are strictly newer than plan.md (mtime): the
+# packet was (re)written after the plan was, so the plan was not made from it.
+plan_packet_packet_newer_than_plan() {
+  local feature_dir="$1" plan_mtime packet_mtime
+  plan_mtime="$(_plan_packet_mtime "$feature_dir/plan.md")"
+  packet_mtime="$(_plan_packet_packet_mtime "$feature_dir")"
+  [[ -n "$plan_mtime" && -n "$packet_mtime" ]] && (( packet_mtime > plan_mtime ))
+}
+
+# Why the next approval request exists (HOK-3253). Written when a divergence
+# re-plans, surfaced in the next request's notes, cleared on approval.
+plan_packet_set_reapproval_reason() {
+  local feature_dir="$1" reason="$2"
+  [[ -d "$feature_dir" && -n "$reason" ]] || return 0
+  printf '%s\n' "$reason" > "$feature_dir/.plan-reapproval-reason" 2>/dev/null || true
+}
+
+plan_packet_reapproval_reason() {
+  local feature_dir="$1"
+  head -n 1 "$feature_dir/.plan-reapproval-reason" 2>/dev/null || true
+}
+
+plan_packet_clear_reapproval_reason() {
+  rm -f "$1/.plan-reapproval-reason" 2>/dev/null || true
 }
 
 # Read the recorded packet hash (empty when marker is missing or malformed).

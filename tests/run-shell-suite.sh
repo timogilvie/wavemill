@@ -97,6 +97,7 @@ TESTS=(
   state-fixtures.test.sh
   ready-update-from-base.test.sh
   plan-packet-binding.test.sh
+  task-inputs-gate.test.sh
   task-progress.test.sh
   task-identity.test.sh
   tracked-tree-guard.test.sh

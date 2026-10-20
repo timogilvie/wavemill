@@ -9,6 +9,8 @@ setup_planning_late_migration_detected() {
   MONITOR_ITERATIONS=2
   write_stage_result "$FEATURE_DIR" "planning" "awaiting_user" "$CURRENT_AGENT"
   printf "plan\n" > "$FEATURE_DIR/plan.md"
+  # HOK-3253: approval is only offered once the inputs are a valid packet.
+  printf "## 1. Objective\nfixture\n" > "$FEATURE_DIR/task-packet.md"
   touch "$FEATURE_DIR/.plan-approved"
   touch "$FEATURE_DIR/.migration-detected"
   cat > "$STATE_FILE" <<JSON

@@ -1,0 +1,21 @@
+# shellcheck shell=bash
+# Fake planner for the HOK-3220 replay (sourced by tests/fakes/bin/claude).
+#
+# HOK-3220's planner saw a detailed task packet in the Linear description and
+# skipped expansion: it wrote plan.md only — no task-packet*.md and no
+# expansion handshake artifact. Record whether the controller had already
+# materialised the local packet when the planner ran.
+if [[ -f "$FEATURE_DIR/task-packet.md" ]]; then
+  printf '%s phase=planning issue=%s local-packet=present\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+else
+  printf '%s phase=planning issue=%s local-packet=absent\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+fi
+cat > "$FEATURE_DIR/plan.md" <<PLAN
+# Plan: $WAVEMILL_ISSUE
+
+## Files to Modify
+- journey-output.txt
+
+## Steps
+1. Write journey-output.txt.
+PLAN
