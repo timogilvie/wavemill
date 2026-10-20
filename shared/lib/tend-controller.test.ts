@@ -29,6 +29,7 @@ import {
   type TendCandidate,
   type TendDecision,
   reconcileWavemillPrLabels,
+  taskStateAuthorizesRemoteBranchDeletion,
 } from './tend-controller.ts';
 import { mergeLaneStateDir } from './merge-queue.ts';
 import {
@@ -179,6 +180,37 @@ function buildMergeTestOptions(overrides: {
   writeFileSync(
     join(repoDir, '.wavemill-config.json'),
     JSON.stringify({ integration: { integrationBranch: 'auto/integration', mergeMethod: 'squash' } }),
+  );
+  // HOK-3242: taskStateAuthorizesRemoteBranchDeletion now fails closed on
+  // a lookup miss. Seed workflow-state so the default candidate's branch
+  // (`task/merge-me`) carries a launchContract that authorizes deletion;
+  // tests overriding `candidate({ headBranch: ... })` to a different value
+  // can seed their own row and will otherwise observe fail-closed.
+  mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+  writeFileSync(
+    join(repoDir, '.wavemill', 'workflow-state.json'),
+    JSON.stringify({
+      tasks: {
+        'HOK-test-merge-me': {
+          pr: '42',
+          slug: 'merge-me',
+          worktree: repoDir,
+          branch: 'task/merge-me',
+          lifecycle: {
+            workflowOutcome: 'merged',
+            resourceDisposition: 'reaped',
+            launchContract: {
+              remoteBranchDeletionPolicy: {
+                allowed: true,
+                mode: 'test-authorized',
+                reason: 'test-fixture',
+                source: 'test',
+              },
+            },
+          },
+        },
+      },
+    }),
   );
 
   const calls: string[] = [];
@@ -5188,11 +5220,78 @@ describe('reconcileWavemillPrLabels', () => {
       body: '',
     }];
     let seen: unknown;
-    await reconcileWavemillPrLabels(prs, '/repo', async (views) => {
+    const report = await reconcileWavemillPrLabels(prs, '/repo', async (views) => {
       seen = structuredClone(views);
       views[0].labels.push('wm:ready');
+      return { decisionByPr: new Map([[7, { label: 'wm:ready' as const }]]), noTaskViewPrs: [] };
     });
     assert.deepEqual(seen, [{ number: 7, labels: ['wavemill'], headSha: 'abc123' }]);
     assert.deepEqual(prs[0].labels, [{ name: 'wavemill' }, { name: 'wm:ready' }]);
+    assert.deepEqual(report.decisionByPr.get(7), { label: 'wm:ready' });
+  });
+});
+
+// HOK-3242: fail-closed on a miss in the branch-deletion authorization lookup.
+describe('taskStateAuthorizesRemoteBranchDeletion fails closed on a miss', () => {
+  it('returns false when workflow-state is missing', () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-tsabrd-'));
+    try {
+      // No `.wavemill/workflow-state.json` written: the resolver emits a
+      // state-unavailable miss and the function returns false.
+      assert.equal(taskStateAuthorizesRemoteBranchDeletion(repoDir, 'task/anything'), false);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns false when no task row carries that branch', () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-tsabrd-'));
+    try {
+      mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+      writeFileSync(
+        join(repoDir, '.wavemill', 'workflow-state.json'),
+        JSON.stringify({ tasks: { 'HOK-1': { pr: '42', slug: 's', worktree: repoDir, branch: 'task/other' } } }),
+      );
+      assert.equal(taskStateAuthorizesRemoteBranchDeletion(repoDir, 'task/missing'), false);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns the lifecycle flag when the branch matches a task row', () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-tsabrd-'));
+    try {
+      mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+      // normalizeTaskLifecycle authorizes deletion when the task carries a
+      // valid launchContract.remoteBranchDeletionPolicy.
+      writeFileSync(
+        join(repoDir, '.wavemill', 'workflow-state.json'),
+        JSON.stringify({
+          tasks: {
+            'HOK-1': {
+              pr: '42',
+              slug: 's',
+              worktree: repoDir,
+              branch: 'task/match',
+              lifecycle: {
+                workflowOutcome: 'merged',
+                resourceDisposition: 'reaped',
+                launchContract: {
+                  remoteBranchDeletionPolicy: {
+                    allowed: true,
+                    mode: 'test-authorized',
+                    reason: 'test-fixture',
+                    source: 'test',
+                  },
+                },
+              },
+            },
+          },
+        }),
+      );
+      assert.equal(taskStateAuthorizesRemoteBranchDeletion(repoDir, 'task/match'), true);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
   });
 });

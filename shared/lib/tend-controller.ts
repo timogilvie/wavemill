@@ -24,6 +24,11 @@ import {
   recordTendPushedHead,
   type ClaimHandoffOutcome,
 } from './ready-tend-handoff.ts';
+import { readWorkflowState, workflowTaskEntries } from './workflow-state.ts';
+import {
+  resolveBranchTask,
+  resolvePrTask,
+} from './pr-task-resolver.ts';
 import { buildStaleMarkerFinding, type MarkerPayload, type MarkerValidation } from './transient-marker.ts';
 import { getIntegrationConfig, getIntegrationReadyPolicy, resolveSessionCapabilities } from './config.ts';
 import { appendObserverFinding as sharedAppendObserverFinding } from './observer-findings.ts';
@@ -4583,26 +4588,32 @@ function resolveReadyStateDir(
   pr: GhPrListEntry,
   metadata: PrMetadata | null,
 ): string | null {
+  // HOK-3242: ask the shared resolver first; it emits one structured warn
+  // on a miss so a wedged ready-result lookup is debuggable. The resolver
+  // returns a single featureDir match; this function has historically
+  // tried a few candidate paths on disk (`<worktree>/features/<slug>/ready`,
+  // `<repoDir>/features/<slug>`, `<repoDir>/features/<task>`) because
+  // several callers write results into different roots. Keep the full
+  // candidate accumulation; the resolver's main job here is to log the
+  // lookup result and surface the task row in a single place.
   const candidates: string[] = [];
-  const workflowEntries = readWorkflowTaskEntries(repoDir);
   const task = metadata?.task;
+  const state = readWorkflowState(join(repoDir, '.wavemill', 'workflow-state.json'));
+  const { location: prLocation } = resolvePrTask(pr.number, state, {
+    site: 'tend.resolveReadyStateDir',
+    fallbackTaskKey: typeof task === 'string' && task.length > 0 ? task : undefined,
+  });
 
-  for (const [key, value] of workflowEntries) {
-    const prNumber = typeof value.pr === 'number' ? value.pr : Number(value.pr);
-    const matchesPr = Number.isFinite(prNumber) && prNumber === pr.number;
-    const matchesTask = typeof task === 'string' && task.length > 0 && key === task;
-    if (!matchesPr && !matchesTask) {
-      continue;
-    }
-
-    const slug = typeof value.slug === 'string' ? value.slug : '';
-    const worktree = typeof value.worktree === 'string' ? value.worktree : '';
-    if (worktree && slug) {
-      candidates.push(join(worktree, 'features', slug), join(worktree, 'bugs', slug), join(worktree, 'features', slug, 'ready'));
-    }
-    if (slug) {
-      candidates.push(join(repoDir, 'features', slug), join(repoDir, 'bugs', slug));
-    }
+  if (prLocation) {
+    const slug = prLocation.slug;
+    const worktree = prLocation.worktree;
+    candidates.push(
+      join(worktree, 'features', slug),
+      join(worktree, 'bugs', slug),
+      join(worktree, 'features', slug, 'ready'),
+      join(repoDir, 'features', slug),
+      join(repoDir, 'bugs', slug),
+    );
   }
 
   if (task) {
@@ -4618,34 +4629,46 @@ function resolveReadyStateDir(
   return null;
 }
 
-function readWorkflowTaskEntries(repoDir: string): Array<[string, Record<string, unknown>]> {
-  const stateFile = join(repoDir, '.wavemill', 'workflow-state.json');
-  if (!existsSync(stateFile)) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(readFileSync(stateFile, 'utf-8')) as unknown;
-    if (!isRecord(parsed) || !isRecord(parsed.tasks)) {
-      return [];
-    }
-    return Object.entries(parsed.tasks).filter((entry): entry is [string, Record<string, unknown>] => isRecord(entry[1]));
-  } catch {
-    return [];
-  }
-}
-
 function resolveEffectiveBaseBranchForPr(repoDir: string, prNumber: number, headBranch: string, fallbackBase: string): string {
   const stateFile = join(repoDir, '.wavemill', 'workflow-state.json');
-  const matchingTask = readWorkflowTaskEntries(repoDir).find(([, task]) => {
-    const pr = task.pr ?? (isRecord(task.lifecycle) && isRecord(task.lifecycle.deliveryEvidence) ? task.lifecycle.deliveryEvidence.prNumber : undefined);
-    return String(pr ?? '') === String(prNumber) || task.branch === headBranch;
-  });
-  if (!matchingTask) return fallbackBase;
+  const state = readWorkflowState(stateFile);
+  // HOK-3242: route the lookup through the shared resolver. First try PR
+  // number (the primary key); fall back to branch match (the historical
+  // secondary) if that misses. Either hit returns the task record; both
+  // misses surface structured warn logs through the resolver and we fall
+  // back to the caller-provided base.
+  const prLookup = resolvePrTask(prNumber, state, { site: 'tend.resolveEffectiveBaseBranchForPr.pr' });
+  let matchingTaskId: string | null = prLookup.location?.taskId ?? null;
+  if (!matchingTaskId) {
+    const branchLookup = resolveBranchTask(headBranch, state, {
+      site: 'tend.resolveEffectiveBaseBranchForPr.branch',
+    });
+    matchingTaskId = branchLookup.location?.taskId ?? null;
+  }
+  // Preserve the HOK-3181/HOK-3212 lifecycle-based PR match: some rows
+  // store the PR under `lifecycle.deliveryEvidence.prNumber` rather than
+  // `.pr`. The resolver only reads `.pr`, so cover that case here before
+  // giving up.
+  if (!matchingTaskId) {
+    for (const [key, task] of workflowTaskEntries(state)) {
+      const lifecycle = task.lifecycle;
+      const deliveryEvidence = isRecord(lifecycle) && isRecord(lifecycle.deliveryEvidence)
+        ? lifecycle.deliveryEvidence
+        : null;
+      const lifecyclePr = deliveryEvidence ? deliveryEvidence.prNumber : undefined;
+      if (lifecyclePr !== undefined && String(lifecyclePr) === String(prNumber)) {
+        matchingTaskId = key;
+        break;
+      }
+    }
+  }
+  if (!matchingTaskId) {
+    return fallbackBase;
+  }
   try {
     return resolveEffectiveTaskConfig({
       repoDir,
-      issue: matchingTask[0],
+      issue: matchingTaskId,
       stateFile,
     }).baseBranch.value;
   } catch {
@@ -4653,10 +4676,22 @@ function resolveEffectiveBaseBranchForPr(repoDir: string, prNumber: number, head
   }
 }
 
-function taskStateAuthorizesRemoteBranchDeletion(repoDir: string, branch: string): boolean {
-  const matchingTask = readWorkflowTaskEntries(repoDir).find(([, task]) => task.branch === branch);
-  if (!matchingTask) return true;
-  const normalized = normalizeTaskLifecycle(matchingTask[1]);
+/** @internal exported for HOK-3242 test coverage of the fail-closed miss path. */
+export function taskStateAuthorizesRemoteBranchDeletion(repoDir: string, branch: string): boolean {
+  // HOK-3242: fail closed on a miss. deleteBranchAfterMerge is a cleanup
+  // optimisation that runs after a successful merge; the previous
+  // fail-open behaviour could remove a remote branch that another task
+  // still points at. One structured log line from the resolver names the
+  // miss, so a wedged post-merge cleanup is debuggable.
+  const stateFile = join(repoDir, '.wavemill', 'workflow-state.json');
+  const state = readWorkflowState(stateFile);
+  const { location, miss } = resolveBranchTask(branch, state, {
+    site: 'tend.deleteBranchAfterMerge',
+  });
+  if (!location || miss) {
+    return false;
+  }
+  const normalized = normalizeTaskLifecycle(location.task);
   return normalized.branchDeletionAuthorized;
 }
 
