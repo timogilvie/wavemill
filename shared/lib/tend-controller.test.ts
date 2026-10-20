@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
 import type { LinearIssueSummary } from './linear.ts';
 import { WM_LABELS, writePrStateMarker } from './pr-state-labels.ts';
 import {
@@ -189,28 +190,27 @@ function buildMergeTestOptions(overrides: {
   mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
   writeFileSync(
     join(repoDir, '.wavemill', 'workflow-state.json'),
-    JSON.stringify({
-      tasks: {
-        'HOK-test-merge-me': {
-          pr: '42',
-          slug: 'merge-me',
-          worktree: repoDir,
-          branch: 'task/merge-me',
-          lifecycle: {
-            workflowOutcome: 'merged',
-            resourceDisposition: 'reaped',
-            launchContract: {
-              remoteBranchDeletionPolicy: {
-                allowed: true,
-                mode: 'test-authorized',
-                reason: 'test-fixture',
-                source: 'test',
-              },
+    JSON.stringify(buildWorkflowState({
+      'HOK-test-merge-me': {
+        pr: '42',
+        slug: 'merge-me',
+        worktree: repoDir,
+        branch: 'task/merge-me',
+        lifecycle: {
+          schemaVersion: 1,
+          workflowOutcome: 'merged',
+          resourceDisposition: 'reaped',
+          launchContract: {
+            remoteBranchDeletionPolicy: {
+              allowed: true,
+              mode: 'test-authorized',
+              reason: 'test-fixture',
+              source: 'test',
             },
           },
         },
       },
-    }),
+    })),
   );
 
   const calls: string[] = [];
@@ -5250,7 +5250,9 @@ describe('taskStateAuthorizesRemoteBranchDeletion fails closed on a miss', () =>
       mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
       writeFileSync(
         join(repoDir, '.wavemill', 'workflow-state.json'),
-        JSON.stringify({ tasks: { 'HOK-1': { pr: '42', slug: 's', worktree: repoDir, branch: 'task/other' } } }),
+        JSON.stringify(buildWorkflowState({
+          'HOK-1': { pr: '42', slug: 's', worktree: repoDir, branch: 'task/other' },
+        })),
       );
       assert.equal(taskStateAuthorizesRemoteBranchDeletion(repoDir, 'task/missing'), false);
     } finally {
@@ -5266,28 +5268,27 @@ describe('taskStateAuthorizesRemoteBranchDeletion fails closed on a miss', () =>
       // valid launchContract.remoteBranchDeletionPolicy.
       writeFileSync(
         join(repoDir, '.wavemill', 'workflow-state.json'),
-        JSON.stringify({
-          tasks: {
-            'HOK-1': {
-              pr: '42',
-              slug: 's',
-              worktree: repoDir,
-              branch: 'task/match',
-              lifecycle: {
-                workflowOutcome: 'merged',
-                resourceDisposition: 'reaped',
-                launchContract: {
-                  remoteBranchDeletionPolicy: {
-                    allowed: true,
-                    mode: 'test-authorized',
-                    reason: 'test-fixture',
-                    source: 'test',
-                  },
+        JSON.stringify(buildWorkflowState({
+          'HOK-1': {
+            pr: '42',
+            slug: 's',
+            worktree: repoDir,
+            branch: 'task/match',
+            lifecycle: {
+              schemaVersion: 1,
+              workflowOutcome: 'merged',
+              resourceDisposition: 'reaped',
+              launchContract: {
+                remoteBranchDeletionPolicy: {
+                  allowed: true,
+                  mode: 'test-authorized',
+                  reason: 'test-fixture',
+                  source: 'test',
                 },
               },
             },
           },
-        }),
+        })),
       );
       assert.equal(taskStateAuthorizesRemoteBranchDeletion(repoDir, 'task/match'), true);
     } finally {

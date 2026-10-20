@@ -838,7 +838,7 @@ describe('reconcileMergeLabels: ReconcileReport round-trip', () => {
     // the reconciler then produces `no-task-view` for each PR.
     const tmpRepo = mkdtempSync(join(tmpdir(), 'reconcile-report-'));
     mkdirSync(join(tmpRepo, '.wavemill'), { recursive: true });
-    writeFileSync(join(tmpRepo, '.wavemill', 'workflow-state.json'), JSON.stringify({ tasks: {} }));
+    writeFileSync(join(tmpRepo, '.wavemill', 'workflow-state.json'), JSON.stringify(buildWorkflowState({})));
     const report = await reconcileMergeLabels(prs, tmpRepo);
     assert.equal(report.decisionByPr.size, 3);
     for (const pr of prs) {

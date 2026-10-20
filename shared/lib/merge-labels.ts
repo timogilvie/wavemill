@@ -365,7 +365,7 @@ export async function readMergeLabelEvidence(
   let handoffAtHead: MergeLabelLiveState['handoffAtHead'] | undefined;
 
   try {
-    const readyResult = await readStageResult(featureDir, 'ready');
+    const readyResult = await readStageResult({ featureDir, stage: 'ready' });
     if (readyResult) {
       const artifacts = readyResult.artifacts?.type === 'ready' ? readyResult.artifacts : undefined;
       let verdict: 'ready' | 'not-ready' | 'running' | 'errored';
