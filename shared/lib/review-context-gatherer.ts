@@ -13,6 +13,7 @@ import { join, resolve } from 'node:path';
 import { parsePackageJson } from './package-json-parser.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
 import { resolveOriginFirstRef } from './git-base-resolver.ts';
+import { getBlastRadius, type BlastRadius } from './blast-radius.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -55,6 +56,13 @@ export interface ReviewContext {
   designContext: DesignContext | null;
   /** Metadata about the changes */
   metadata: ReviewContextMetadata;
+  /**
+   * Blast radius of this PR's changed files, derived from
+   * `metadata.files` via `blast-radius.ts` (HOK-3238). `'high'` triggers the
+   * mill-core guidance block in the review prompt; absent is treated as
+   * `'normal'`. Not re-derived by callers.
+   */
+  blastRadius?: BlastRadius;
 }
 
 export interface GatherReviewContextOptions {
@@ -809,6 +817,7 @@ export function gatherReviewContext(
       lineCount,
       hasUiChanges,
     },
+    blastRadius: getBlastRadius(files),
   };
 }
 
@@ -845,6 +854,7 @@ export async function gatherReviewContextAsync(
       lineCount,
       hasUiChanges,
     },
+    blastRadius: getBlastRadius(files),
   };
 }
 

@@ -956,8 +956,26 @@ _detect_worktree_pm() {
     return 1
   fi
 
+  # HOK-3254: existing `node_modules/` only short-circuits the install when
+  # the drift primitive agrees it's fresh. On drift we want the caller to
+  # install so the mill never launches a worktree against a stale tree.
   if [[ -d "$wt_dir/node_modules" ]]; then
-    return 1
+    local _dw_drift_src="${BASH_SOURCE[0]%/*}/deps-drift.sh"
+    if [[ -z "${__WAVEMILL_DEPS_DRIFT_LOADED:-}" && -f "$_dw_drift_src" ]]; then
+      # shellcheck source=./deps-drift.sh
+      . "$_dw_drift_src"
+      __WAVEMILL_DEPS_DRIFT_LOADED=1
+    fi
+    if declare -F deps_drift_check >/dev/null 2>&1; then
+      local _dw_json _dw_status
+      _dw_json="$(deps_drift_check "$wt_dir" 2>/dev/null)" || true
+      _dw_status="$(printf '%s' "$_dw_json" | jq -r '.status // ""' 2>/dev/null)"
+      if [[ "$_dw_status" != "drift" ]]; then
+        return 1
+      fi
+    else
+      return 1
+    fi
   fi
 
   if ! command -v "$pm" >/dev/null 2>&1; then

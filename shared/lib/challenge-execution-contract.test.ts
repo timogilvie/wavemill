@@ -33,6 +33,7 @@ import {
   type InvalidChallengeReason,
   type ReviewExecutedIdentitySet,
 } from './challenge-execution-contract.ts';
+import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
 import { buildChallengeExecutionIntent as buildEnvelopeChallengeIntent } from './challenge-mode.ts';
 import { checkChallengeRoute } from './challenge-route-check.ts';
 import { attachChallengeExecutionMetadata } from './eval-record-builder.ts';
@@ -735,12 +736,10 @@ function seedPairState(repoDir: string): void {
   mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
   writeFileSync(
     join(repoDir, '.wavemill', 'workflow-state.json'),
-    JSON.stringify({
-      tasks: {
-        'HOK-2773': { challengePairId: 'HOK-2773', challengeRole: 'primary' },
-        'HOK-2773_c': { challengePairId: 'HOK-2773', challengeRole: 'challenger' },
-      },
-    }),
+    JSON.stringify(buildWorkflowState({
+      'HOK-2773': { challengePairId: 'HOK-2773', challengeRole: 'primary' },
+      'HOK-2773_c': { challengePairId: 'HOK-2773', challengeRole: 'challenger' },
+    }, { bare: true })),
   );
 }
 
@@ -802,28 +801,26 @@ test('resolveReviewStageChallengePin prefers the feature-dir intent when present
   try {
     const featureDir = join(repoDir, 'features', 'review-pin-challenger');
     mkdirSync(featureDir, { recursive: true });
-    writeWorkflowState(repoDir, {
-      tasks: {
-        'HOK-2958_c': {
-          slug: 'review-pin-challenger',
-          branch: 'task/review-pin-challenger',
-          challengePairId: 'HOK-2958',
-          challengeRole: 'challenger',
-          challengeStage: 'review',
-          challengeExecutionIntent: makeReviewIntent({
+    writeWorkflowState(repoDir, buildWorkflowState({
+      'HOK-2958_c': {
+        slug: 'review-pin-challenger',
+        branch: 'task/review-pin-challenger',
+        challengePairId: 'HOK-2958',
+        challengeRole: 'challenger',
+        challengeStage: 'review',
+        challengeExecutionIntent: makeReviewIntent({
+          pairId: 'HOK-2958',
+          issueId: 'HOK-2958',
+          challenger: {
             pairId: 'HOK-2958',
-            issueId: 'HOK-2958',
-            challenger: {
-              pairId: 'HOK-2958',
-              side: 'challenger',
-              challengeStage: 'review',
-              expectedStageModel: 'state-reviewer',
-              expectedRoute: { planner: '', coder: '', reviewer: 'state-reviewer', planDepth: '', codeDepth: '', reviewMode: '' },
-            },
-          }),
-        },
+            side: 'challenger',
+            challengeStage: 'review',
+            expectedStageModel: 'state-reviewer',
+            expectedRoute: { planner: '', coder: '', reviewer: 'state-reviewer', planDepth: '', codeDepth: '', reviewMode: '' },
+          },
+        }),
       },
-    });
+    }, { bare: true }));
     writeFileSync(join(featureDir, 'challenge-intent.json'), JSON.stringify(makeReviewIntent({
       pairId: 'HOK-2958',
       issueId: 'HOK-2958',
@@ -853,18 +850,16 @@ test('resolveReviewStageChallengePin falls back to canonical state intent for _c
   try {
     const featureDir = join(repoDir, 'features', 'external-harness-challenger');
     mkdirSync(featureDir, { recursive: true });
-    writeWorkflowState(repoDir, {
-      tasks: {
-        'HOK-2958_c': {
-          slug: 'external-harness-challenger',
-          branch: 'task/external-harness-challenger',
-          challengePairId: 'HOK-2958',
-          challengeRole: 'challenger',
-          challengeStage: 'review',
-          challengeExecutionIntent: makeReviewIntent({ pairId: 'HOK-2958', issueId: 'HOK-2958' }),
-        },
+    writeWorkflowState(repoDir, buildWorkflowState({
+      'HOK-2958_c': {
+        slug: 'external-harness-challenger',
+        branch: 'task/external-harness-challenger',
+        challengePairId: 'HOK-2958',
+        challengeRole: 'challenger',
+        challengeStage: 'review',
+        challengeExecutionIntent: makeReviewIntent({ pairId: 'HOK-2958', issueId: 'HOK-2958' }),
       },
-    });
+    }, { bare: true }));
 
     const pin = resolveReviewStageChallengePin({
       repoDir,
@@ -882,24 +877,22 @@ test('resolveReviewStageChallengePin resolves a -challenger arm record before ta
   try {
     const featureDir = join(repoDir, 'features', 'external-harness-challenger');
     mkdirSync(featureDir, { recursive: true });
-    writeWorkflowState(repoDir, {
-      tasks: {
-        'HOK-2958': {
-          slug: 'external-harness',
-          branch: 'task/external-harness',
-          challengePairId: 'HOK-2958',
-          challengeRole: 'primary',
-          challengeArms: [{
-            key: 'HOK-2958-challenger',
-            slug: 'external-harness-challenger',
-            branch: 'task/external-harness-challenger',
-            role: 'challenger',
-            variedStage: 'review',
-            executionIntent: makeReviewIntent({ pairId: 'HOK-2958', issueId: 'HOK-2958' }),
-          }],
-        },
+    writeWorkflowState(repoDir, buildWorkflowState({
+      'HOK-2958': {
+        slug: 'external-harness',
+        branch: 'task/external-harness',
+        challengePairId: 'HOK-2958',
+        challengeRole: 'primary',
+        challengeArms: [{
+          key: 'HOK-2958-challenger',
+          slug: 'external-harness-challenger',
+          branch: 'task/external-harness-challenger',
+          role: 'challenger',
+          variedStage: 'review',
+          executionIntent: makeReviewIntent({ pairId: 'HOK-2958', issueId: 'HOK-2958' }),
+        }],
       },
-    });
+    }, { bare: true }));
 
     const pin = resolveReviewStageChallengePin({
       repoDir,
@@ -917,18 +910,16 @@ test('resolveReviewStageChallengePin returns unresolvable for known review chall
   try {
     const featureDir = join(repoDir, 'features', 'external-harness-challenger');
     mkdirSync(featureDir, { recursive: true });
-    writeWorkflowState(repoDir, {
-      tasks: {
-        'HOK-2958_c': {
-          slug: 'external-harness-challenger',
-          branch: 'task/external-harness-challenger',
-          challengePairId: 'HOK-2958',
-          challengeRole: 'challenger',
-          challengeStage: 'review',
-          challengeExecutionIntent: { forkStage: 'review', forkCommit: 'c8c0f018', challenger: { inheritedStages: ['plan', 'implementation'] } },
-        },
+    writeWorkflowState(repoDir, buildWorkflowState({
+      'HOK-2958_c': {
+        slug: 'external-harness-challenger',
+        branch: 'task/external-harness-challenger',
+        challengePairId: 'HOK-2958',
+        challengeRole: 'challenger',
+        challengeStage: 'review',
+        challengeExecutionIntent: { forkStage: 'review', forkCommit: 'c8c0f018', challenger: { inheritedStages: ['plan', 'implementation'] } },
       },
-    });
+    }, { bare: true }));
 
     const pin = resolveReviewStageChallengePin({
       repoDir,
@@ -1099,14 +1090,12 @@ test('resolveReviewStageChallengePin ignores non-challenge directories', () => {
   try {
     const featureDir = join(repoDir, 'features', 'solo-task');
     mkdirSync(featureDir, { recursive: true });
-    writeWorkflowState(repoDir, {
-      tasks: {
-        'HOK-3000': {
-          slug: 'solo-task',
-          branch: 'task/solo-task',
-        },
+    writeWorkflowState(repoDir, buildWorkflowState({
+      'HOK-3000': {
+        slug: 'solo-task',
+        branch: 'task/solo-task',
       },
-    });
+    }, { bare: true }));
 
     const pin = resolveReviewStageChallengePin({
       repoDir,
@@ -1346,13 +1335,11 @@ test('loadChallengeDivergenceFromState reads a recorded route-drift cause for ei
   const repoDir = mkdtempSync(join(tmpdir(), 'challenge-divergence-'));
   try {
     mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
-    writeFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), JSON.stringify({
-      tasks: {
-        'HOK-3156': { challengeRole: 'primary', challengeDivergenceReason: 'route-drift' },
-        'HOK-3156_c': { challengeRole: 'challenger', challengeDivergenceReason: 'route-drift' },
-        'HOK-1': { challengeRole: 'primary', challengeDivergenceReason: 'not-a-reason' },
-      },
-    }));
+    writeFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), JSON.stringify(buildWorkflowState({
+      'HOK-3156': { challengeRole: 'primary', challengeDivergenceReason: 'route-drift' },
+      'HOK-3156_c': { challengeRole: 'challenger', challengeDivergenceReason: 'route-drift' },
+      'HOK-1': { challengeRole: 'primary', challengeDivergenceReason: 'not-a-reason' },
+    }, { bare: true })));
     assert.equal(loadChallengeDivergenceFromState(repoDir, 'HOK-3156', 'HOK-3156'), 'route-drift');
     assert.equal(loadChallengeDivergenceFromState(repoDir, 'HOK-3156_c', 'HOK-3156'), 'route-drift');
     // Unknown strings never become an invalid-challenge cause.

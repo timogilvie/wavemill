@@ -26,6 +26,13 @@ export interface AlertFinding {
   issue?: string;
   repoDir?: string;
   session?: string;
+  /**
+   * The finding is an event that is only present for one observer pass (e.g.
+   * ingested from `observer-findings.jsonl`). It can never satisfy
+   * `persistMinutes`, so it is due on first sight; `repeatMinutes` still
+   * applies if the same id is seen again while its journal entry survives.
+   */
+  oneShot?: boolean;
 }
 
 export interface AlertJournalEntry {
@@ -86,7 +93,7 @@ export function selectAlertsToSend(
     const ageMinutes = (nowMs - (Number.isFinite(firstMs) ? firstMs : nowMs)) / 60_000;
 
     let lastNotifiedAt = existing?.lastNotifiedAt;
-    if (ageMinutes >= config.persistMinutes) {
+    if (finding.oneShot || ageMinutes >= config.persistMinutes) {
       const lastMs = lastNotifiedAt ? Date.parse(lastNotifiedAt) : NaN;
       const sinceLastMinutes = Number.isFinite(lastMs) ? (nowMs - lastMs) / 60_000 : Number.POSITIVE_INFINITY;
       if (!Number.isFinite(lastMs) || sinceLastMinutes >= config.repeatMinutes) {

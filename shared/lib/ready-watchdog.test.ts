@@ -12,6 +12,7 @@ import {
   type GitHubPRTruth,
   type ReadyTaskSnapshot,
 } from './ready-watchdog.ts';
+import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
 
 function makeSnapshot(overrides: Partial<ReadyTaskSnapshot> = {}): ReadyTaskSnapshot {
   return {
@@ -95,21 +96,18 @@ function setupReadyTask(issueId = 'HOK-1579', prNumber = 528): {
       },
     },
   }, null, 2));
-  writeFileSync(stateFile, JSON.stringify({
-    tasks: {
-      [issueId]: {
-        slug: 'ready-watchdog-task',
-        branch: 'task/ready-watchdog-task',
-        worktree,
-        pr: prNumber,
-        phase: 'ready',
-        updated: '2026-05-05T12:00:00.000Z',
-        agent: 'codex',
-        model: 'gpt-5.5',
-      },
+  writeFileSync(stateFile, JSON.stringify(buildWorkflowState({
+    [issueId]: {
+      slug: 'ready-watchdog-task',
+      branch: 'task/ready-watchdog-task',
+      worktree,
+      pr: prNumber,
+      phase: 'ready',
+      updated: '2026-05-05T12:00:00.000Z',
+      agent: 'codex',
+      model: 'gpt-5.5',
     },
-    jobs: {},
-  }, null, 2));
+  }, { bare: true, topLevel: { jobs: {} } }), null, 2));
 
   writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
     stage: 'ready',
@@ -673,22 +671,18 @@ test('tick auto-recovers stale local state for clean green PRs', async () => {
   mkdirSync(featureDir, { recursive: true });
 
   const stateFile = path.join(stateDir, 'workflow-state.json');
-  writeFileSync(stateFile, JSON.stringify({
-    updated: '2026-05-05T12:00:00.000Z',
-    tasks: {
-      'HOK-1579': {
-        slug: 'ready-watchdog-task',
-        branch: 'task/ready-watchdog-task',
-        worktree,
-        pr: 528,
-        phase: 'ready',
-        updated: '2026-05-05T12:00:00.000Z',
-        agent: 'codex',
-        model: 'gpt-5.5',
-      },
+  writeFileSync(stateFile, JSON.stringify(buildWorkflowState({
+    'HOK-1579': {
+      slug: 'ready-watchdog-task',
+      branch: 'task/ready-watchdog-task',
+      worktree,
+      pr: 528,
+      phase: 'ready',
+      updated: '2026-05-05T12:00:00.000Z',
+      agent: 'codex',
+      model: 'gpt-5.5',
     },
-    jobs: {},
-  }, null, 2));
+  }, { bare: true, topLevel: { updated: '2026-05-05T12:00:00.000Z', jobs: {} } }), null, 2));
   writeFileSync(path.join(featureDir, '.needs-attention'), 'stale local state\n');
   writeFileSync(path.join(featureDir, '.conflict-detected'), '');
   writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
@@ -973,6 +967,7 @@ test('tick preserves recent prior state when GitHub truth is unreadable', async 
   let launchCalled = false;
   writeFileSync(path.join(stateDir, 'ready-watchdog-state.json'), JSON.stringify({
     updatedAt: '2030-05-05T12:00:00.000Z',
+    // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
     tasks: {
       'HOK-2604': {
         issueId: 'HOK-2604',
@@ -1032,6 +1027,7 @@ test('tick expires old unconfirmed prior state using legacy timestamps', async (
   const watchdogStatePath = path.join(stateDir, 'ready-watchdog-state.json');
   writeFileSync(watchdogStatePath, JSON.stringify({
     updatedAt: '2030-05-05T12:00:00.000Z',
+    // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
     tasks: {
       'HOK-2605': {
         issueId: 'HOK-2605',
@@ -1236,6 +1232,7 @@ test('tick respects same-head remediation in-flight guard', async () => {
   }, null, 2));
   writeFileSync(path.join(stateDir, 'ready-watchdog-state.json'), JSON.stringify({
     updatedAt: '2030-05-05T12:00:00.000Z',
+    // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
     tasks: {
       'HOK-2039': {
         issueId: 'HOK-2039',
@@ -1373,6 +1370,7 @@ test('tick respects remediation max attempts', async () => {
   }, null, 2));
   writeFileSync(path.join(stateDir, 'ready-watchdog-state.json'), JSON.stringify({
     updatedAt: '2030-05-05T12:00:00.000Z',
+    // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
     tasks: {
       'HOK-2039': {
         issueId: 'HOK-2039',
@@ -1429,6 +1427,7 @@ test('tick relaunches remediation when head advances past prior launch head', as
   }, null, 2));
   writeFileSync(path.join(stateDir, 'ready-watchdog-state.json'), JSON.stringify({
     updatedAt: '2030-05-05T12:00:00.000Z',
+    // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
     tasks: {
       'HOK-2039': {
         issueId: 'HOK-2039',
@@ -1484,6 +1483,7 @@ test('tick surfaces remediation launch failures', async () => {
   const { repoDir, stateDir, stateFile } = setupReadyTask('HOK-2039', 2039);
   writeFileSync(path.join(stateDir, 'ready-watchdog-state.json'), JSON.stringify({
     updatedAt: '2030-05-05T12:00:00.000Z',
+    // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
     tasks: {
       'HOK-2039': {
         issueId: 'HOK-2039',
@@ -1538,19 +1538,16 @@ test('tick suppresses repeated needs-user when classification and detail are unc
   mkdirSync(featureDir, { recursive: true });
 
   const stateFile = path.join(stateDir, 'workflow-state.json');
-  writeFileSync(stateFile, JSON.stringify({
-    tasks: {
-      'HOK-1581': {
-        slug: 'ready-watchdog-task',
-        branch: 'task/ready-watchdog-task',
-        worktree,
-        pr: 541,
-        phase: 'ready',
-        updated: '2026-05-05T12:00:00.000Z',
-      },
+  writeFileSync(stateFile, JSON.stringify(buildWorkflowState({
+    'HOK-1581': {
+      slug: 'ready-watchdog-task',
+      branch: 'task/ready-watchdog-task',
+      worktree,
+      pr: 541,
+      phase: 'ready',
+      updated: '2026-05-05T12:00:00.000Z',
     },
-    jobs: {},
-  }, null, 2));
+  }, { bare: true, topLevel: { jobs: {} } }), null, 2));
   writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
     stage: 'ready',
     status: 'running',
@@ -1612,6 +1609,7 @@ test('tick suppresses repeated stable-failure findings across N identical polls'
     ];
     writeFileSync(path.join(stateDir, 'ready-watchdog-state.json'), JSON.stringify({
       updatedAt: start.toISOString(),
+      // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
       tasks: {
         'HOK-2675': {
           issueId: 'HOK-2675',
@@ -1708,6 +1706,7 @@ test('tick emits when stable failure crosses escalation threshold', async () => 
     const start = new Date('2030-05-05T12:30:00.000Z');
     writeFileSync(path.join(stateDir, 'ready-watchdog-state.json'), JSON.stringify({
       updatedAt: start.toISOString(),
+      // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
       tasks: {
         'HOK-2676': {
           issueId: 'HOK-2676',
@@ -1772,19 +1771,16 @@ test('tick re-surfaces needs-user when detail changes', async () => {
   mkdirSync(featureDir, { recursive: true });
 
   const stateFile = path.join(stateDir, 'workflow-state.json');
-  writeFileSync(stateFile, JSON.stringify({
-    tasks: {
-      'HOK-1581': {
-        slug: 'ready-watchdog-task',
-        branch: 'task/ready-watchdog-task',
-        worktree,
-        pr: 541,
-        phase: 'ready',
-        updated: '2026-05-05T12:00:00.000Z',
-      },
+  writeFileSync(stateFile, JSON.stringify(buildWorkflowState({
+    'HOK-1581': {
+      slug: 'ready-watchdog-task',
+      branch: 'task/ready-watchdog-task',
+      worktree,
+      pr: 541,
+      phase: 'ready',
+      updated: '2026-05-05T12:00:00.000Z',
     },
-    jobs: {},
-  }, null, 2));
+  }, { bare: true, topLevel: { jobs: {} } }), null, 2));
   writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
     stage: 'ready',
     status: 'running',
@@ -1800,6 +1796,7 @@ test('tick re-surfaces needs-user when detail changes', async () => {
   const watchdogStatePath = path.join(stateDir, 'ready-watchdog-state.json');
   writeFileSync(watchdogStatePath, JSON.stringify({
     updatedAt: '2030-05-05T12:00:00.000Z',
+    // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
     tasks: {
       'HOK-1581': {
         issueId: 'HOK-1581',
@@ -1848,20 +1845,17 @@ test('tick ignores merged tasks still held in ready phase for review', async () 
   mkdirSync(featureDir, { recursive: true });
 
   const stateFile = path.join(stateDir, 'workflow-state.json');
-  writeFileSync(stateFile, JSON.stringify({
-    tasks: {
-      'HOK-1579': {
-        slug: 'ready-watchdog-task',
-        branch: 'task/ready-watchdog-task',
-        worktree,
-        pr: 528,
-        phase: 'ready',
-        status: 'merged',
-        updated: '2026-05-05T12:00:00.000Z',
-      },
+  writeFileSync(stateFile, JSON.stringify(buildWorkflowState({
+    'HOK-1579': {
+      slug: 'ready-watchdog-task',
+      branch: 'task/ready-watchdog-task',
+      worktree,
+      pr: 528,
+      phase: 'ready',
+      status: 'merged',
+      updated: '2026-05-05T12:00:00.000Z',
     },
-    jobs: {},
-  }, null, 2));
+  }, { bare: true, topLevel: { jobs: {} } }), null, 2));
   writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
     stage: 'ready',
     status: 'completed',
@@ -1910,19 +1904,16 @@ test('tick surfaces a manual recovery command when auto-recover is disabled', as
   mkdirSync(featureDir, { recursive: true });
 
   const stateFile = path.join(stateDir, 'workflow-state.json');
-  writeFileSync(stateFile, JSON.stringify({
-    tasks: {
-      'HOK-1579': {
-        slug: 'ready-watchdog-task',
-        branch: 'task/ready-watchdog-task',
-        worktree,
-        pr: 528,
-        phase: 'ready',
-        updated: '2026-05-05T12:00:00.000Z',
-      },
+  writeFileSync(stateFile, JSON.stringify(buildWorkflowState({
+    'HOK-1579': {
+      slug: 'ready-watchdog-task',
+      branch: 'task/ready-watchdog-task',
+      worktree,
+      pr: 528,
+      phase: 'ready',
+      updated: '2026-05-05T12:00:00.000Z',
     },
-    jobs: {},
-  }, null, 2));
+  }, { bare: true, topLevel: { jobs: {} } }), null, 2));
   writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
     stage: 'ready',
     status: 'running',
@@ -2053,6 +2044,7 @@ test('tick retries push failures, defaults missing attempts to zero, and exhaust
   const watchdogStatePath = path.join(stateDir, 'ready-watchdog-state.json');
   writeFileSync(watchdogStatePath, JSON.stringify({
     updatedAt: '2030-05-05T12:00:00.000Z',
+    // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
     tasks: {
       'HOK-1716': {
         issueId: 'HOK-1716',
@@ -2224,6 +2216,7 @@ test('tick prunes retained watchdog state when a task leaves ready', async () =>
   const watchdogStatePath = path.join(stateDir, 'ready-watchdog-state.json');
   writeFileSync(watchdogStatePath, JSON.stringify({
     updatedAt: '2030-05-05T12:00:00.000Z',
+    // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
     tasks: {
       'HOK-1716': {
         issueId: 'HOK-1716',
@@ -2240,19 +2233,16 @@ test('tick prunes retained watchdog state when a task leaves ready', async () =>
     },
   }, null, 2));
 
-  writeFileSync(stateFile, JSON.stringify({
-    tasks: {
-      'HOK-1716': {
-        slug: 'ready-watchdog-task',
-        branch: 'task/ready-watchdog-task',
-        worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task'),
-        pr: 716,
-        phase: 'review',
-        updated: '2026-05-05T12:00:00.000Z',
-      },
+  writeFileSync(stateFile, JSON.stringify(buildWorkflowState({
+    'HOK-1716': {
+      slug: 'ready-watchdog-task',
+      branch: 'task/ready-watchdog-task',
+      worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task'),
+      pr: 716,
+      phase: 'review',
+      updated: '2026-05-05T12:00:00.000Z',
     },
-    jobs: {},
-  }, null, 2));
+  }, { bare: true, topLevel: { jobs: {} } }), null, 2));
 
   try {
     const result = await tickReadyWatchdog({
@@ -2288,6 +2278,7 @@ test('tick prunes retained watchdog state when issue is absent from workflow sta
   const watchdogStatePath = path.join(stateDir, 'ready-watchdog-state.json');
   writeFileSync(watchdogStatePath, JSON.stringify({
     updatedAt: '2030-05-05T12:00:00.000Z',
+    // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
     tasks: {
       'HOK-9999': {
         issueId: 'HOK-9999',
@@ -2335,6 +2326,7 @@ test('issue-filtered tick preserves unrelated retained watchdog state', async ()
   const watchdogStatePath = path.join(stateDir, 'ready-watchdog-state.json');
   writeFileSync(watchdogStatePath, JSON.stringify({
     updatedAt: '2030-05-05T12:00:00.000Z',
+    // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
     tasks: {
       'HOK-9999': {
         issueId: 'HOK-9999',
@@ -2496,6 +2488,7 @@ test('tick preserves classificationSince when only detail fingerprint changes', 
   }, null, 2));
   writeFileSync(path.join(repoDir, '.wavemill', 'ready-watchdog-state.json'), JSON.stringify({
     updatedAt: '2030-06-23T12:00:00.000Z',
+    // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
     tasks: {
       'HOK-2677': {
         issueId: 'HOK-2677',
@@ -2550,6 +2543,7 @@ test('tick resets classificationSince when classification changes', async () => 
   }, null, 2));
   writeFileSync(path.join(repoDir, '.wavemill', 'ready-watchdog-state.json'), JSON.stringify({
     updatedAt: '2030-06-23T12:00:00.000Z',
+    // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
     tasks: {
       'HOK-2678': {
         issueId: 'HOK-2678',
@@ -2756,6 +2750,7 @@ test('classification or action change emits immediately regardless of report int
   const t0 = new Date('2030-06-23T10:00:00.000Z');
   writeFileSync(path.join(stateDir, 'ready-watchdog-state.json'), JSON.stringify({
     updatedAt: t0.toISOString(),
+    // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
     tasks: {
       'HOK-2300': {
         issueId: 'HOK-2300',
@@ -2812,6 +2807,7 @@ test('first tick on old state file without lastLogged* fields emits and backfill
   // Old-format state file: has detailFingerprint and lastReportedAction but no lastLogged* fields
   writeFileSync(path.join(stateDir, 'ready-watchdog-state.json'), JSON.stringify({
     updatedAt: '2030-06-23T10:00:00.000Z',
+    // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
     tasks: {
       'HOK-2300': {
         issueId: 'HOK-2300',
@@ -3095,35 +3091,32 @@ test('tick classifies challenge PR in merge lane as waiting-on-eval-comparison w
   const { repoDir, stateDir, stateFile, featureDir } = setupReadyTask('HOK-2358', 893);
 
   // Override workflow state with challenge task metadata
-  writeFileSync(stateFile, JSON.stringify({
-    tasks: {
-      'HOK-2358': {
-        slug: 'ready-watchdog-task',
-        branch: 'task/ready-watchdog-task',
-        worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task'),
-        pr: 893,
-        phase: 'ready',
-        updated: '2026-05-05T12:00:00.000Z',
-        agent: 'claude',
-        model: 'claude-sonnet-4-6',
-        challengePairId: 'HOK-2358',
-        challengeRole: 'primary',
-      },
-      'HOK-2358_c': {
-        slug: 'ready-watchdog-task-challenger',
-        branch: 'task/ready-watchdog-task-challenger',
-        worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task-challenger'),
-        pr: 894,
-        phase: 'coding',
-        updated: '2026-05-05T12:00:00.000Z',
-        agent: 'claude',
-        model: 'claude-opus-4-8',
-        challengePairId: 'HOK-2358',
-        challengeRole: 'challenger',
-      },
+  writeFileSync(stateFile, JSON.stringify(buildWorkflowState({
+    'HOK-2358': {
+      slug: 'ready-watchdog-task',
+      branch: 'task/ready-watchdog-task',
+      worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task'),
+      pr: 893,
+      phase: 'ready',
+      updated: '2026-05-05T12:00:00.000Z',
+      agent: 'claude',
+      model: 'claude-sonnet-4-6',
+      challengePairId: 'HOK-2358',
+      challengeRole: 'primary',
     },
-    jobs: {},
-  }, null, 2));
+    'HOK-2358_c': {
+      slug: 'ready-watchdog-task-challenger',
+      branch: 'task/ready-watchdog-task-challenger',
+      worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task-challenger'),
+      pr: 894,
+      phase: 'coding',
+      updated: '2026-05-05T12:00:00.000Z',
+      agent: 'claude',
+      model: 'claude-opus-4-8',
+      challengePairId: 'HOK-2358',
+      challengeRole: 'challenger',
+    },
+  }, { bare: true, topLevel: { jobs: {} } }), null, 2));
 
   // Ready artifacts indicate the PR is in the merge lane
   writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
@@ -3170,37 +3163,34 @@ test('tick classifies challenge PR in merge lane as waiting-on-eval-comparison w
 test('tick classifies a green challenge PR whose no-PR sibling stalled as sibling-stalled (HOK-3128)', async () => {
   const { repoDir, stateFile, featureDir } = setupReadyTask('HOK-2358', 893);
 
-  writeFileSync(stateFile, JSON.stringify({
-    tasks: {
-      'HOK-2358': {
-        slug: 'ready-watchdog-task',
-        branch: 'task/ready-watchdog-task',
-        worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task'),
-        pr: 893,
-        phase: 'ready',
-        updated: '2026-05-05T12:00:00.000Z',
-        agent: 'claude',
-        model: 'claude-sonnet-4-6',
-        challengePairId: 'HOK-2358',
-        challengeRole: 'primary',
-        evalCompleted: true,
-      },
-      'HOK-2358_c': {
-        // Parked on a dirty-tree coding handoff after its agent exited: tracked,
-        // no PR, no agent progress since.
-        slug: 'ready-watchdog-task-challenger',
-        branch: 'task/ready-watchdog-task-challenger',
-        worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task-challenger'),
-        phase: 'coding',
-        updated: '2026-05-05T12:00:00.000Z',
-        agent: 'native',
-        model: 'qwen-3-coder',
-        challengePairId: 'HOK-2358',
-        challengeRole: 'challenger',
-      },
+  writeFileSync(stateFile, JSON.stringify(buildWorkflowState({
+    'HOK-2358': {
+      slug: 'ready-watchdog-task',
+      branch: 'task/ready-watchdog-task',
+      worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task'),
+      pr: 893,
+      phase: 'ready',
+      updated: '2026-05-05T12:00:00.000Z',
+      agent: 'claude',
+      model: 'claude-sonnet-4-6',
+      challengePairId: 'HOK-2358',
+      challengeRole: 'primary',
+      evalCompleted: true,
     },
-    jobs: {},
-  }, null, 2));
+    'HOK-2358_c': {
+      // Parked on a dirty-tree coding handoff after its agent exited: tracked,
+      // no PR, no agent progress since.
+      slug: 'ready-watchdog-task-challenger',
+      branch: 'task/ready-watchdog-task-challenger',
+      worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task-challenger'),
+      phase: 'coding',
+      updated: '2026-05-05T12:00:00.000Z',
+      agent: 'native',
+      model: 'qwen-3-coder',
+      challengePairId: 'HOK-2358',
+      challengeRole: 'challenger',
+    },
+  }, { bare: true, topLevel: { jobs: {} } }), null, 2));
 
   writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
     stage: 'ready',
@@ -3266,38 +3256,35 @@ test('tick uses hard-failure retry config for challenge classification', async (
     challenge: { eval: { hardFailureRetryMaxAttempts: 3 } },
   }, null, 2));
 
-  writeFileSync(stateFile, JSON.stringify({
-    tasks: {
-      'HOK-2358': {
-        slug: 'ready-watchdog-task',
-        branch: 'task/ready-watchdog-task',
-        worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task'),
-        pr: 893,
-        phase: 'ready',
-        updated: '2026-05-05T12:00:00.000Z',
-        agent: 'claude',
-        model: 'claude-sonnet-4-6',
-        challengePairId: 'HOK-2358',
-        challengeRole: 'primary',
-        evalCompleted: true,
-      },
-      'HOK-2358_c': {
-        slug: 'ready-watchdog-task-challenger',
-        branch: 'task/ready-watchdog-task-challenger',
-        worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task-challenger'),
-        pr: 894,
-        phase: 'ready',
-        updated: '2026-05-05T12:00:00.000Z',
-        agent: 'claude',
-        model: 'claude-opus-4-8',
-        challengePairId: 'HOK-2358',
-        challengeRole: 'challenger',
-        evalFailed: true,
-        evalHardFailureRetryCount: 2,
-      },
+  writeFileSync(stateFile, JSON.stringify(buildWorkflowState({
+    'HOK-2358': {
+      slug: 'ready-watchdog-task',
+      branch: 'task/ready-watchdog-task',
+      worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task'),
+      pr: 893,
+      phase: 'ready',
+      updated: '2026-05-05T12:00:00.000Z',
+      agent: 'claude',
+      model: 'claude-sonnet-4-6',
+      challengePairId: 'HOK-2358',
+      challengeRole: 'primary',
+      evalCompleted: true,
     },
-    jobs: {},
-  }, null, 2));
+    'HOK-2358_c': {
+      slug: 'ready-watchdog-task-challenger',
+      branch: 'task/ready-watchdog-task-challenger',
+      worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task-challenger'),
+      pr: 894,
+      phase: 'ready',
+      updated: '2026-05-05T12:00:00.000Z',
+      agent: 'claude',
+      model: 'claude-opus-4-8',
+      challengePairId: 'HOK-2358',
+      challengeRole: 'challenger',
+      evalFailed: true,
+      evalHardFailureRetryCount: 2,
+    },
+  }, { bare: true, topLevel: { jobs: {} } }), null, 2));
 
   writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
     stage: 'ready',
@@ -3350,23 +3337,20 @@ test('tick uses hard-failure retry config for challenge classification', async (
 test('tick classifies orphaned challenge PR in merge lane as needs-user with recovery command', async () => {
   const { repoDir, stateFile, featureDir } = setupReadyTask('HOK-2358', 893);
 
-  writeFileSync(stateFile, JSON.stringify({
-    tasks: {
-      'HOK-2358': {
-        slug: 'ready-watchdog-task',
-        branch: 'task/ready-watchdog-task',
-        worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task'),
-        pr: 893,
-        phase: 'ready',
-        updated: '2026-05-05T12:00:00.000Z',
-        agent: 'claude',
-        model: 'claude-sonnet-4-6',
-        challengePairId: 'HOK-2358',
-        challengeRole: 'primary',
-      },
+  writeFileSync(stateFile, JSON.stringify(buildWorkflowState({
+    'HOK-2358': {
+      slug: 'ready-watchdog-task',
+      branch: 'task/ready-watchdog-task',
+      worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task'),
+      pr: 893,
+      phase: 'ready',
+      updated: '2026-05-05T12:00:00.000Z',
+      agent: 'claude',
+      model: 'claude-sonnet-4-6',
+      challengePairId: 'HOK-2358',
+      challengeRole: 'primary',
     },
-    jobs: {},
-  }, null, 2));
+  }, { bare: true, topLevel: { jobs: {} } }), null, 2));
 
   writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
     stage: 'ready',
@@ -3407,53 +3391,55 @@ test('tick classifies orphaned challenge PR in merge lane as needs-user with rec
 test('tick classifies running challenge comparison as waiting-on-eval-comparison', async () => {
   const { repoDir, stateFile, featureDir } = setupReadyTask('HOK-2358', 893);
 
-  writeFileSync(stateFile, JSON.stringify({
-    tasks: {
-      'HOK-2358': {
-        slug: 'ready-watchdog-task',
-        branch: 'task/ready-watchdog-task',
-        worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task'),
-        pr: 893,
-        phase: 'ready',
-        updated: '2026-05-05T12:00:00.000Z',
-        agent: 'claude',
-        model: 'claude-sonnet-4-6',
-        challengePairId: 'HOK-2358',
-        challengeRole: 'primary',
-      },
-      'HOK-2358_c': {
-        slug: 'ready-watchdog-task-challenger',
-        branch: 'task/ready-watchdog-task-challenger',
-        worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task-challenger'),
-        pr: 894,
-        phase: 'ready',
-        updated: '2026-05-05T12:00:00.000Z',
-        agent: 'claude',
-        model: 'claude-opus-4-8',
-        challengePairId: 'HOK-2358',
-        challengeRole: 'challenger',
+  writeFileSync(stateFile, JSON.stringify(buildWorkflowState({
+    'HOK-2358': {
+      slug: 'ready-watchdog-task',
+      branch: 'task/ready-watchdog-task',
+      worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task'),
+      pr: 893,
+      phase: 'ready',
+      updated: '2026-05-05T12:00:00.000Z',
+      agent: 'claude',
+      model: 'claude-sonnet-4-6',
+      challengePairId: 'HOK-2358',
+      challengeRole: 'primary',
+    },
+    'HOK-2358_c': {
+      slug: 'ready-watchdog-task-challenger',
+      branch: 'task/ready-watchdog-task-challenger',
+      worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task-challenger'),
+      pr: 894,
+      phase: 'ready',
+      updated: '2026-05-05T12:00:00.000Z',
+      agent: 'claude',
+      model: 'claude-opus-4-8',
+      challengePairId: 'HOK-2358',
+      challengeRole: 'challenger',
+    },
+  }, {
+    bare: true,
+    topLevel: {
+      jobs: {
+        'comparison-HOK-2358-893-894': {
+          id: 'comparison-HOK-2358-893-894',
+          kind: 'comparison',
+          pairId: 'HOK-2358',
+          prNumbers: [893, 894],
+          pid: 123,
+          startedAt: '2026-05-05T12:05:00.000Z',
+          timeoutSeconds: 240,
+          logPath: '/tmp/comparison.log',
+          resultPath: '/tmp/comparison.result.json',
+          status: 'running',
+          exitCode: null,
+          finishedAt: null,
+          reason: null,
+          excerpt: null,
+          settled: false,
+        },
       },
     },
-    jobs: {
-      'comparison-HOK-2358-893-894': {
-        id: 'comparison-HOK-2358-893-894',
-        kind: 'comparison',
-        pairId: 'HOK-2358',
-        prNumbers: [893, 894],
-        pid: 123,
-        startedAt: '2026-05-05T12:05:00.000Z',
-        timeoutSeconds: 240,
-        logPath: '/tmp/comparison.log',
-        resultPath: '/tmp/comparison.result.json',
-        status: 'running',
-        exitCode: null,
-        finishedAt: null,
-        reason: null,
-        excerpt: null,
-        settled: false,
-      },
-    },
-  }, null, 2));
+  }), null, 2));
 
   writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
     stage: 'ready',
@@ -3529,23 +3515,20 @@ test('tick classifies non-challenge clean green PR in merge lane as waiting-on-m
 test('tick classifies challenge PR in merge lane as waiting-on-merge-lane when comparison exists (winner)', async () => {
   const { repoDir, stateDir, stateFile, featureDir } = setupReadyTask('HOK-2358', 893);
 
-  writeFileSync(stateFile, JSON.stringify({
-    tasks: {
-      'HOK-2358': {
-        slug: 'ready-watchdog-task',
-        branch: 'task/ready-watchdog-task',
-        worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task'),
-        pr: 893,
-        phase: 'ready',
-        updated: '2026-05-05T12:00:00.000Z',
-        agent: 'claude',
-        model: 'claude-sonnet-4-6',
-        challengePairId: 'HOK-2358',
-        challengeRole: 'primary',
-      },
+  writeFileSync(stateFile, JSON.stringify(buildWorkflowState({
+    'HOK-2358': {
+      slug: 'ready-watchdog-task',
+      branch: 'task/ready-watchdog-task',
+      worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task'),
+      pr: 893,
+      phase: 'ready',
+      updated: '2026-05-05T12:00:00.000Z',
+      agent: 'claude',
+      model: 'claude-sonnet-4-6',
+      challengePairId: 'HOK-2358',
+      challengeRole: 'primary',
     },
-    jobs: {},
-  }, null, 2));
+  }, { bare: true, topLevel: { jobs: {} } }), null, 2));
 
   writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
     stage: 'ready',

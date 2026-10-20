@@ -3,8 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { resolveProviderForModel } from './llm-cli.ts';
-import { callHeadlessLLM } from './headless-llm.ts';
+import { callHeadlessLLM, headlessProviderForModel } from './headless-llm.ts';
 
 let tempRoot: string;
 
@@ -76,24 +75,22 @@ afterEach(() => {
   if (existsSync(tempRoot)) rmSync(tempRoot, { recursive: true, force: true });
 });
 
-describe('resolveProviderForModel', () => {
+describe('headlessProviderForModel', () => {
   it('routes registry OpenAI/gpt models to codex', () => {
-    assert.equal(resolveProviderForModel('gpt-5.6-terra'), 'codex');
-    assert.equal(resolveProviderForModel('gpt-5.4'), 'codex');
+    assert.equal(headlessProviderForModel('gpt-5.6-terra'), 'codex');
+    assert.equal(headlessProviderForModel('gpt-5.4'), 'codex');
   });
 
   it('routes anthropic models to claude', () => {
-    assert.equal(resolveProviderForModel('claude-sonnet-4-6'), 'claude');
+    assert.equal(headlessProviderForModel('claude-sonnet-4-6'), 'claude');
   });
 
   it('falls back to claude for an undefined model', () => {
-    assert.equal(resolveProviderForModel(undefined), 'claude');
+    assert.equal(headlessProviderForModel(undefined), 'claude');
   });
 
-  it('uses a name heuristic for ids not in the registry', () => {
-    assert.equal(resolveProviderForModel('gpt-6-experimental'), 'codex');
-    assert.equal(resolveProviderForModel('o5-preview'), 'codex');
-    assert.equal(resolveProviderForModel('some-random-model'), 'claude');
+  it('falls back to claude for ids the resolver cannot place', () => {
+    assert.equal(headlessProviderForModel('some-random-model'), 'claude');
   });
 });
 

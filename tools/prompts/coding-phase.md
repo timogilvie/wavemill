@@ -4,6 +4,16 @@ You are in the **CODING PHASE** of a multi-phase workflow (recommended depth: {{
 
 The implementation plan is ready at: {{PLAN_PATH}}
 
+### Pre-coding stance
+
+Before writing any code, state in your response:
+1. The success criterion for this task in one sentence.
+2. The specific test (file + line, or test name) that would fail if your
+   change were incorrect. If no existing test covers the criterion, say so
+   and either add one or justify why not.
+
+This is a one-shot statement, not a running commentary.
+
 ### Your Responsibilities
 
 1. **Read the plan**:
@@ -15,9 +25,12 @@ The implementation plan is ready at: {{PLAN_PATH}}
    - Make minimal, high-quality changes
    - Follow the architectural decisions from the plan
 
-3. **Run tests/lint between phases**:
-   - Pause if anything fails
-   - Fix issues before proceeding
+3. **Verify changes with:** `bash tests/run-related.sh` — selects transitive
+   dependents of your diff, under 60 s for a typical change, and prints only
+   failing tests. Agents MUST NOT run `npm test` or any unsharded
+   `tests/run-*.sh`; CI runs the full suite.
+   - Run it between phases, not just at the end.
+   - Pause if anything fails; fix before proceeding.
 
 4. **Mark completion**:
    - When implementation is complete and tests pass
@@ -42,7 +55,7 @@ The implementation plan is ready at: {{PLAN_PATH}}
 
 ### Success Criteria
 - [ ] Implementation matches the plan
-- [ ] All tests pass
+- [ ] `bash tests/run-related.sh` passes
 - [ ] Linting passes
 - [ ] No regressions in existing functionality
 - [ ] Completion marker created at {{FEATURE_DIR}}/.coding-complete, containing valid JSON with `"stage":"coding"` and `"confidence":"high|medium|low"`

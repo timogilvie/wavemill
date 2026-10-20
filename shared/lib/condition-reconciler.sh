@@ -136,10 +136,10 @@ condition_reconcile_task() {
   }
 
   # Helper to get the task's PR head OID from the PR cache (lazy). The task's
-  # PR number lives in `.pr` (`.prNumber` is accepted for older entries).
+  # PR number lives in `.pr` (HOK-3221).
   _get_pr_head_oid() {
     if [[ -z "$pr_head_oid" && -z "$pr_number" ]]; then
-      pr_number=$(jq -r --arg i "$issue" '.tasks[$i].pr // .tasks[$i].prNumber // empty | tostring' "$STATE_FILE" 2>/dev/null || echo "")
+      pr_number=$(jq -r --arg i "$issue" '.tasks[$i].pr // empty | tostring' "$STATE_FILE" 2>/dev/null || echo "")
       pr_head_oid=$(_condition_pr_head_oid "$pr_number")
     fi
     echo "$pr_head_oid"
@@ -490,6 +490,7 @@ condition_reconcile_task() {
   if [[ "$task_status" == "error" ]]; then
     # Check if there's an applicable operator event
     local status_condition
+    # allow-task-field: statusCondition is written by task_status_error_condition_record (wavemill-monitor.sh:3429)
     status_condition=$(jq -r --arg i "$issue" '.tasks[$i].statusCondition // null' "$STATE_FILE" 2>/dev/null || echo "null")
 
     local recorded_seq=0

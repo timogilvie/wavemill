@@ -27,6 +27,7 @@ import type {
 import type { CapabilityConstraints } from './model-registry.ts';
 import type { RoutingCompleteData } from './eval-context-gatherer.ts';
 import { classifyTaskPacket } from './task-packet-classifier.ts';
+import { estimateTokensDefault } from './model-adapters/token-estimator.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Input Types
@@ -103,16 +104,6 @@ export interface TaskDescriptorInput {
 // ────────────────────────────────────────────────────────────────
 // Heuristic Signal Derivation
 // ────────────────────────────────────────────────────────────────
-
-/**
- * Estimate token count from string.
- *
- * Uses rough heuristic: 1 token ≈ 4 characters.
- * Good enough for feature extraction; not for billing.
- */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
 
 /**
  * Detect migration keywords in prompt.
@@ -236,7 +227,7 @@ function deriveHeuristicSignals(input: TaskDescriptorInput): HeuristicSignals {
     framework_tags: frameworkTags,
     files_touched: difficultySignals?.filesTouched || packetClassification.evidence.declaredFileCount,
     repo_size_loc: repoContext?.repoSize?.loc || 0,
-    description_tokens: estimateTokens(originalPrompt),
+    description_tokens: estimateTokensDefault(originalPrompt),
     is_greenfield: taskContext?.changeKind === 'create_new' || packetClassification.riskFlags.includes('greenfield'),
     has_migration: hasMigration(originalPrompt),
     has_ui: hasUI(originalPrompt, languages),

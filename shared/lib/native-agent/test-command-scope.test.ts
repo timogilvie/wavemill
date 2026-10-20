@@ -131,6 +131,19 @@ describe('classifyTestCommandScope — focused', () => {
       assert.equal(scope.scope, 'focused');
     }
   });
+
+  it('always allows tests/run-related.sh (focused by construction)', () => {
+    const wt = makeWorktree();
+    for (const argv of [
+      ['bash', 'tests/run-related.sh'],
+      ['bash', 'tests/run-related.sh', '--base', 'origin/main'],
+      ['./tests/run-related.sh', 'shared/lib/foo.ts'],
+      ['tests/run-related.sh', '--list'],
+    ]) {
+      const scope = classifyTestCommandScope(argv, { cwd: wt, worktreePath: wt });
+      assert.equal(scope.scope, 'focused', `expected focused for ${argv.join(' ')}`);
+    }
+  });
 });
 
 describe('readScriptExpansion', () => {

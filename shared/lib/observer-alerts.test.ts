@@ -61,6 +61,21 @@ test('selectAlertsToSend: respects repeat interval', () => {
   assert.equal(d3.length, 1, 'resend after repeatMinutes');
 });
 
+test('selectAlertsToSend: oneShot findings skip persistMinutes but honor repeat interval (HOK-3239)', () => {
+  const now = new Date('2026-10-20T12:00:00Z');
+  const oneShot: AlertFinding = { ...base, id: 'one-shot', oneShot: true };
+  const first = selectAlertsToSend([oneShot], { findings: {} }, cfg({ persistMinutes: 15 }), now);
+  assert.equal(first.due.length, 1);
+  assert.equal(first.journal.findings?.['one-shot']?.lastNotifiedAt, now.toISOString());
+
+  const later = new Date(now.getTime() + 10 * 60_000);
+  const second = selectAlertsToSend([oneShot], first.journal, cfg({ persistMinutes: 15, repeatMinutes: 240 }), later);
+  assert.equal(second.due.length, 0);
+
+  const belowFloor = selectAlertsToSend([{ ...oneShot, severity: 'medium' }], { findings: {} }, cfg(), now);
+  assert.equal(belowFloor.due.length, 0);
+});
+
 test('selectAlertsToSend: medium findings never selected', () => {
   const config = cfg({ persistMinutes: 0, minSeverity: 'high' });
   const low: AlertFinding = { ...base, id: 'low-1', severity: 'medium' };

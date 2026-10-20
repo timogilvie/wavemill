@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
 import {
   deriveMergeLabel,
   reconcileMergeLabelsForPr,
@@ -600,16 +601,9 @@ describe('findTaskInState (real workflow-state shape)', () => {
       },
     }));
 
-    const state = {
-      tasks: {
-        'HOK-9999': {
-          pr: '9999',
-          slug,
-          worktree,
-          phase: 'ready',
-        },
-      },
-    };
+    const state = buildWorkflowState({
+      'HOK-9999': { pr: '9999', slug, worktree, phase: 'ready' },
+    });
 
     const result = findTaskInState(9999, state, tmpDir);
     assert.ok(result);
@@ -626,16 +620,9 @@ describe('findTaskInState (real workflow-state shape)', () => {
     const featuresDir = join(worktree, 'features', slug);
     mkdirSync(featuresDir, { recursive: true });
 
-    const state = {
-      tasks: {
-        'HOK-123_c': {
-          pr: '456',
-          slug,
-          worktree,
-          phase: 'ready',
-        },
-      },
-    };
+    const state = buildWorkflowState({
+      'HOK-123_c': { pr: '456', slug, worktree, phase: 'ready' },
+    });
 
     const result = findTaskInState(456, state, tmpDir);
     assert.ok(result);
@@ -649,16 +636,9 @@ describe('findTaskInState (real workflow-state shape)', () => {
     const featuresDir = join(worktree, 'features', slug);
     mkdirSync(featuresDir, { recursive: true });
 
-    const state = {
-      tasks: {
-        'HOK-789': {
-          pr: '',
-          slug,
-          worktree,
-          phase: 'planning',
-        },
-      },
-    };
+    const state = buildWorkflowState({
+      'HOK-789': { pr: '', slug, worktree, phase: 'planning' },
+    });
 
     const result = findTaskInState(789, state, tmpDir);
     assert.equal(result, null);
@@ -671,16 +651,9 @@ describe('findTaskInState (real workflow-state shape)', () => {
     const bugsDir = join(worktree, 'bugs', slug);
     mkdirSync(bugsDir, { recursive: true });
 
-    const state = {
-      tasks: {
-        'HOK-111': {
-          pr: '111',
-          slug,
-          worktree,
-          phase: 'ready',
-        },
-      },
-    };
+    const state = buildWorkflowState({
+      'HOK-111': { pr: '111', slug, worktree, phase: 'ready' },
+    });
 
     const result = findTaskInState(111, state, tmpDir);
     assert.ok(result);

@@ -145,6 +145,20 @@ if [[ "${WAVEMILL_READY_WATCHDOG_SOURCE_ONLY:-}" != "1" ]]; then
   fi
 fi
 
+# HOK-3254: on startup, run the deps-drift tick once so the mill never
+# launches against a stale install. Side effects (log, backstage health,
+# bounded-retry reinstall) match the periodic tick that runs every 10 min.
+# WAVEMILL_SKIP_DEPS_DRIFT_PREFLIGHT=1 skips this one-shot without disabling
+# the periodic tick (`WAVEMILL_DEPS_DRIFT_DISABLED` controls both).
+if [[ "${WAVEMILL_READY_WATCHDOG_SOURCE_ONLY:-}" != "1" \
+  && "${WAVEMILL_SKIP_DEPS_DRIFT_PREFLIGHT:-0}" != "1" \
+  && "${WAVEMILL_DEPS_DRIFT_DISABLED:-0}" != "1" ]]; then
+  if declare -F monitor_deps_drift_tick >/dev/null 2>&1; then
+    STATE_DIR="${STATE_DIR:-$REPO_DIR/.wavemill}" MILL_LOG_FILE="${MILL_LOG_FILE:-/dev/null}" \
+      monitor_deps_drift_tick || true
+  fi
+fi
+
 trim_outer_whitespace() {
   local value="${1-}"
   value="${value#"${value%%[![:space:]]*}"}"

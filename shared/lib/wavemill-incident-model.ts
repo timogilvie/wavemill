@@ -75,6 +75,9 @@ export const INCIDENT_ROOT_CAUSE_CLASSES = [
   // Captured only from a correlated task pane against a closed prompt-signature
   // catalog; evidence carries only the signature id, not raw prompt text.
   'agent_interactive_prompt_blocked',
+  // HOK-3254: node_modules has drifted from the lockfile; a bump landed but
+  // nothing reinstalled, so the mill is running against an older install.
+  'stale_dependency_install',
   'unclassified_local_failure',
 ] as const;
 

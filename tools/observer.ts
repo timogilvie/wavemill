@@ -82,6 +82,38 @@ import {
 import { readWorktreeDirtyStatus, type WorktreeDirtyStatus } from '../shared/lib/worktree-dirty-status.ts';
 
 type Severity = 'urgent' | 'high' | 'medium' | 'low';
+const SEVERITIES: readonly Severity[] = ['urgent', 'high', 'medium', 'low'];
+// Common non-canonical severities emitted by producers that predate the typed
+// union (HOK-3239: tend wrote 'warning'/'info', which fell out of
+// findingCounts and alert ranking).
+const SEVERITY_ALIASES: Readonly<Record<string, Severity>> = {
+  critical: 'urgent',
+  fatal: 'urgent',
+  error: 'high',
+  warning: 'medium',
+  warn: 'medium',
+  info: 'low',
+  informational: 'low',
+  debug: 'low',
+};
+
+/**
+ * Coerce an ingested (untyped) severity to a member of `Severity`.
+ *
+ * Canonical values pass through; known aliases map to their nearest rank
+ * (case-insensitive); missing or unknown values fall back to `'medium'` — the
+ * finding stays visible in `findingCounts` but does not trip alerts at the
+ * default `minSeverity: 'high'`. Never returns a value outside the union, so
+ * `Record<Severity, number>` counters and `SEVERITY_RANK` lookups stay total.
+ */
+export function normalizeFindingSeverity(raw: unknown): Severity {
+  if (typeof raw !== 'string') return 'medium';
+  const value = raw.trim().toLowerCase();
+  const canonical = SEVERITIES.find((severity) => severity === value);
+  if (canonical) return canonical;
+  return SEVERITY_ALIASES[value] ?? 'medium';
+}
+
 type Category = 'stuck' | 'crash' | 'warning' | 'ux' | 'operational';
 type Confidence = 'high' | 'medium' | 'low';
 const DEFAULT_OBSERVER_PANE_TITLE = 'Wavemill Observer';
@@ -197,6 +229,14 @@ interface Finding {
   linearIssueUrl?: string;
   occurrenceCount?: number;
   groupedUnder?: string;
+  /**
+   * Event-style finding that exists for exactly one observer pass (ingested
+   * from `observer-findings.jsonl`, which is truncated after reading; the
+   * producer dedups per condition). Alerts skip `persistMinutes` for these,
+   * since a one-pass finding can never satisfy a persistence window
+   * (HOK-3239).
+   */
+  oneShot?: boolean;
 }
 
 interface ReadyWatchdogLogEntry {
@@ -3748,7 +3788,7 @@ function readObserverFindingsJsonl(repos: RepoRow[]): Finding[] {
           const jsonFinding = JSON.parse(line);
           findings.push({
             id: `marker-${jsonFinding.context?.markerPath ?? 'unknown'}-${jsonFinding.context?.markerKind ?? 'unknown'}`,
-            severity: jsonFinding.severity || 'warning',
+            severity: normalizeFindingSeverity(jsonFinding.severity),
             category: jsonFinding.subsystem || 'marker-lifecycle',
             confidence: 'high',
             session: repo.session,
@@ -3761,6 +3801,7 @@ function readObserverFindingsJsonl(repos: RepoRow[]): Finding[] {
             recommendation: typeof jsonFinding.recommendation === 'string' && jsonFinding.recommendation.length > 0
               ? jsonFinding.recommendation
               : 'Marker was stale or contradicted and was cleared. This should not happen; check marker lifecycle on re-derivation paths.',
+            oneShot: true,
           });
         } catch {
           // Ignore malformed JSONL lines
@@ -4655,6 +4696,7 @@ export async function sendAlerts(
         issue: f.issue,
         repoDir: f.repoDir,
         session: f.session,
+        ...(f.oneShot ? { oneShot: true } : {}),
       }));
 
     try {

@@ -6,6 +6,8 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=lib/state-fixtures.sh
+source "$SCRIPT_DIR/lib/state-fixtures.sh"
 
 # Create temporary test directory
 readonly TMP_DIR="$(mktemp -d)"
@@ -22,19 +24,10 @@ test_task_found() {
   mkdir -p "$test_dir/.wavemill"
   mkdir -p "$test_dir/features/$slug"
 
-  # Write workflow state with real shape (pr as string, not prNumber)
-  cat > "$test_dir/.wavemill/workflow-state.json" <<EOF
-{
-  "tasks": {
-    "HOK-9999": {
-      "pr": "9999",
-      "slug": "$slug",
-      "worktree": "$test_dir",
-      "phase": "ready"
-    }
-  }
-}
-EOF
+  # Seed the row through the schema-validated builder (HOK-3223): pr is the
+  # string the shell writers store; a reader-only name like prNumber is rejected.
+  fixture_workflow_state "$test_dir/.wavemill/workflow-state.json" \
+    HOK-9999 pr=9999 slug="$slug" worktree="$test_dir" phase=ready
 
   # Write ready result for headSha derivation
   cat > "$test_dir/features/$slug/.ready-result.json" <<EOF
@@ -52,11 +45,13 @@ EOF
   local output
   output=$(cd "$REPO_ROOT" && npx tsx -e "(async () => {
     const { findTaskInState } = await import('./shared/lib/merge-labels.ts');
-    const { readFileSync } = await import('node:fs');
+    const { readWorkflowState } = await import('./shared/lib/workflow-state.ts');
     const { join } = await import('node:path');
 
     const repoDir = '$test_dir';
-    const state = JSON.parse(readFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), 'utf-8'));
+    const state = readWorkflowState(join(repoDir, '.wavemill', 'workflow-state.json'), {
+      onInvalid: (_path, issues) => { console.error('FAIL: schema violations', JSON.stringify(issues)); process.exit(1); },
+    });
     const task = findTaskInState(9999, state, repoDir);
 
     if (!task) {
@@ -99,27 +94,19 @@ test_challenger_role() {
   mkdir -p "$test_dir/.wavemill"
   mkdir -p "$test_dir/features/$slug"
 
-  cat > "$test_dir/.wavemill/workflow-state.json" <<EOF
-{
-  "tasks": {
-    "HOK-123_c": {
-      "pr": "456",
-      "slug": "$slug",
-      "worktree": "$test_dir",
-      "phase": "ready"
-    }
-  }
-}
-EOF
+  fixture_workflow_state "$test_dir/.wavemill/workflow-state.json" \
+    HOK-123_c pr=456 slug="$slug" worktree="$test_dir" phase=ready
 
   local output
   output=$(cd "$REPO_ROOT" && npx tsx -e "(async () => {
     const { findTaskInState } = await import('./shared/lib/merge-labels.ts');
-    const { readFileSync } = await import('node:fs');
+    const { readWorkflowState } = await import('./shared/lib/workflow-state.ts');
     const { join } = await import('node:path');
 
     const repoDir = '$test_dir';
-    const state = JSON.parse(readFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), 'utf-8'));
+    const state = readWorkflowState(join(repoDir, '.wavemill', 'workflow-state.json'), {
+      onInvalid: (_path, issues) => { console.error('FAIL: schema violations', JSON.stringify(issues)); process.exit(1); },
+    });
     const task = findTaskInState(456, state, repoDir);
 
     if (!task) {
@@ -150,27 +137,19 @@ test_blank_pr() {
   mkdir -p "$test_dir/.wavemill"
   mkdir -p "$test_dir/features/$slug"
 
-  cat > "$test_dir/.wavemill/workflow-state.json" <<EOF
-{
-  "tasks": {
-    "HOK-789": {
-      "pr": "",
-      "slug": "$slug",
-      "worktree": "$test_dir",
-      "phase": "planning"
-    }
-  }
-}
-EOF
+  fixture_workflow_state "$test_dir/.wavemill/workflow-state.json" \
+    HOK-789 pr= slug="$slug" worktree="$test_dir" phase=planning
 
   local output
   output=$(cd "$REPO_ROOT" && npx tsx -e "(async () => {
     const { findTaskInState } = await import('./shared/lib/merge-labels.ts');
-    const { readFileSync } = await import('node:fs');
+    const { readWorkflowState } = await import('./shared/lib/workflow-state.ts');
     const { join } = await import('node:path');
 
     const repoDir = '$test_dir';
-    const state = JSON.parse(readFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), 'utf-8'));
+    const state = readWorkflowState(join(repoDir, '.wavemill', 'workflow-state.json'), {
+      onInvalid: (_path, issues) => { console.error('FAIL: schema violations', JSON.stringify(issues)); process.exit(1); },
+    });
     const task = findTaskInState(789, state, repoDir);
 
     if (task !== null) {

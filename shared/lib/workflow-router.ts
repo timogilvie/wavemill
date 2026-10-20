@@ -55,6 +55,7 @@ import {
   type StageLaunchability,
   type StageLaunchRefusal,
 } from './stage-launchability.ts';
+import { getBlastRadius, type BlastRadius } from './blast-radius.ts';
 
 export type { RouterCertificationRejection } from './native-agent/certification/router-filter.ts';
 export { STAGE_PHASE_REQUIREMENT } from './native-agent/certification/router-filter.ts';
@@ -139,6 +140,13 @@ export interface WorkflowRouteDecision {
    * refusal path can terminalize the task with the certify command.
    */
   launchabilityBlocked?: LaunchabilityBlocked[];
+  /**
+   * Blast radius inferred from the task packet / description content
+   * (HOK-3238). Set when the router evaluated a blast-radius floor; absent
+   * when inference did not run. `'high'` triggers the stronger-reviewer floor
+   * via `applyBlastRadiusFloor` before `finalizeDecision`.
+   */
+  blastRadius?: BlastRadius;
 }
 
 export interface LaunchabilitySubstitution {
@@ -595,6 +603,113 @@ function applySuspiciousZeroEscalation<T extends WorkflowRouteDecision>(
       ...decision.reasoning,
       `Suspicious zero complexity (${decision.signals.suspiciousZeroReason ?? 'structural evidence'}); fast-economy models rejected for routing safety.`,
     ],
+  };
+}
+
+// ── Blast-radius router floor (HOK-3238) ────────────────────────────────────
+
+/**
+ * Path-like token used to seed `getBlastRadius` from packet/description text.
+ * Case-sensitive match of a path containing a known source extension, which
+ * matches how git prints repo-relative paths.
+ */
+const BLAST_RADIUS_PATH_TOKEN = /[\w./-]+\.(?:ts|tsx|js|sh|json|md|py|yml|yaml)/g;
+
+/**
+ * Infer a blast radius from the best signal available at routing time: the
+ * task packet (`packetContent`), the task title, and the task description.
+ * We don't yet know which files the PR will change, so we extract path-like
+ * tokens (e.g. the packet's `Key Files` section lists mill-core paths
+ * verbatim) and run them through `getBlastRadius`.
+ *
+ * A false `'normal'` reverts to current behaviour (no regression); a false
+ * `'high'` only picks a stronger reviewer (desirable). The post-promotion
+ * bake gate consults actual main-commit paths, so it is immune to this
+ * inference.
+ */
+function inferBlastRadius(options?: RouteWorkflowOptions): BlastRadius {
+  if (!options) return 'normal';
+  const parts = [options.packetContent, options.taskTitle, options.taskDescription]
+    .filter((v): v is string => typeof v === 'string' && v.length > 0);
+  if (parts.length === 0) return 'normal';
+  const text = parts.join('\n');
+  const tokens: string[] = [];
+  for (const match of text.matchAll(BLAST_RADIUS_PATH_TOKEN)) {
+    tokens.push(match[0]);
+  }
+  if (tokens.length === 0) return 'normal';
+  return getBlastRadius(tokens);
+}
+
+/**
+ * Floor the reviewer to `strong_generalist` (or `frontier` when available)
+ * when the inferred blast radius is `'high'`. Modelled on
+ * `applySuspiciousZeroEscalation` so the same `applyDifficultyFloor` +
+ * `ladderByClass` + `pickAvailableModel` primitives drive the upgrade. If the
+ * reviewer pool only has fast-economy models, `applyDifficultyFloor` returns
+ * the pick unchanged; we append one reasoning line so operators can see the
+ * trace, and `enforceLaunchableRoute` remains the terminal guard.
+ *
+ * `blastRadius` is always stamped on the decision (even for `'normal'`) so
+ * downstream consumers can read it without re-deriving.
+ */
+function applyBlastRadiusFloor<T extends WorkflowRouteDecision>(
+  decision: T,
+  pools: { reviewerPool?: string[] } = {},
+  options?: RouteWorkflowOptions,
+  repoDir?: string,
+): T {
+  const radius = inferBlastRadius(options);
+  if (radius !== 'high') {
+    return { ...decision, blastRadius: radius };
+  }
+  if (!decision.reviewer || decision.reviewRecommended === 'none') {
+    return { ...decision, blastRadius: radius };
+  }
+
+  const floor: DifficultyFloor = {
+    allowHaiku: false,
+    preferSonnet: true,
+    preferOpus: false,
+    neverHaikuAlone: true,
+  };
+  const fallbackPool = getModelPool(repoDir).models;
+  const reviewer = applyDifficultyFloor(
+    decision.reviewer,
+    floor,
+    pools.reviewerPool ?? fallbackPool,
+    'reviewer',
+    repoDir,
+  );
+
+  if (reviewer === decision.reviewer) {
+    // Fast-economy only pool, or already at or above the floor.
+    return {
+      ...decision,
+      blastRadius: radius,
+      reasoning: [
+        ...decision.reasoning,
+        'blast-radius=high: reviewer already at or above the stronger-reviewer floor, or no stronger reviewer available; falling back.',
+      ],
+    };
+  }
+
+  const upgraded = withPreEscalationRoute(decision);
+  return {
+    ...upgraded,
+    reviewer,
+    expectedCostReview: upgraded.reviewRecommended === 'none'
+      ? 0
+      : estimateStageCost(
+          reviewer,
+          REVIEW_TOKENS[upgraded.reviewRecommended as Exclude<ReviewMode, 'none'>],
+          repoDir,
+        ),
+    reasoning: [
+      ...upgraded.reasoning,
+      `blast-radius=high: reviewer upgraded to ${reviewer} (stronger-reviewer floor for mill-core changes).`,
+    ],
+    blastRadius: radius,
   };
 }
 
@@ -2249,7 +2364,8 @@ export function routeWorkflow(prompt: string, options?: RouteWorkflowOptions): W
     ...(modelExclusions.length > 0 ? { modelExclusions } : {}),
   }, signalContext.classification), { plannerPool, coderPool, reviewerPool }, repoDir);
   logRoutingSignalVector(decision);
-  return finalizeDecision(decision, options, { challenge: false });
+  const blastFloored = applyBlastRadiusFloor(decision, { reviewerPool }, options, repoDir);
+  return finalizeDecision(blastFloored, options, { challenge: false });
 }
 
 function routeWorkflowStageAwareInternal(
@@ -2402,7 +2518,13 @@ function routeWorkflowStageAwareInternal(
   const escalatedDecision = skipEscalation
     ? signalDecision
     : applyRouteEscalation(prompt, signalDecision, options, { stageAwareContext });
-  const finalDecision = finalizeDecision(escalatedDecision, options, { challenge: true });
+  const blastFloored = applyBlastRadiusFloor(
+    escalatedDecision,
+    { reviewerPool: signalFloorPool },
+    options,
+    repoDir,
+  );
+  const finalDecision = finalizeDecision(blastFloored, options, { challenge: true });
   logRoutingSignalVector(finalDecision);
   return finalDecision;
 }
@@ -2779,7 +2901,13 @@ export async function routeWorkflowHokusai(
     repoDir,
   );
   const escalatedDecision = applyRouteEscalation(prompt, signalDecision, options);
-  const finalDecision = finalizeDecision(escalatedDecision, options, { challenge: true });
+  const blastFloored = applyBlastRadiusFloor(
+    escalatedDecision,
+    { reviewerPool: floorPool },
+    options,
+    repoDir,
+  );
+  const finalDecision = finalizeDecision(blastFloored, options, { challenge: true });
   logRoutingSignalVector(finalDecision);
   return finalDecision;
 }
@@ -2821,7 +2949,13 @@ export async function routeWorkflowAutoWithContext(
   const policyDecision = tryPolicyResolution(prompt, options);
   if (policyDecision) {
     const escalatedDecision = applyRouteEscalation(prompt, policyDecision, options, context);
-    return finalizeDecision(escalatedDecision, options, { challenge: true });
+    const blastFloored = applyBlastRadiusFloor(
+      escalatedDecision,
+      {},
+      options,
+      options?.repoDir,
+    );
+    return finalizeDecision(blastFloored, options, { challenge: true });
   }
 
   const decision = context?.stageAwareContext

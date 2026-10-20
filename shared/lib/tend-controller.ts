@@ -47,6 +47,7 @@ import {
 import { isTransientErrorText, retryTransient, TransientError } from './transient-retry.ts';
 import { classifyFailure, DEFAULT_RETRY_ATTEMPTS, retryBucketFor, type FailureEvidence } from './failure-policy.ts';
 import { normalizeTaskLifecycle } from './task-lifecycle.ts';
+import type { AlertSeverity } from './observer-alerts.ts';
 import { resolveEffectiveTaskConfig } from './effective-task-config.ts';
 import {
   clearScratchPrepMarkerBestEffort,
@@ -218,18 +219,25 @@ export interface MergeExecutionDeps {
   prepRunnerFactory: (repoDir: string, options: { onHeartbeat?: () => void }) => ScratchPrepRunner;
 }
 
+/**
+ * Progress phases reported through `onPhaseProgress`: the scratch-prep phases,
+ * the prep runner's periodic `heartbeat`, and `checks-wait` while polling CI.
+ */
+export type MergeProgressPhase = ScratchPrepPhase | 'heartbeat' | 'checks-wait';
+
 export interface ExecuteMergeOptions {
   repoDir: string;
   deps?: Partial<MergeExecutionDeps>;
   /**
    * Optional phase-progress callback. Fires as `withScratchWorktree` advances
    * the scratch-prep phase, and periodically while a long prep command runs
-   * (via the runner's heartbeat). Used by the Tend loop to keep the
-   * backstage-health.json heartbeat fresh during otherwise-quiet prep steps.
+   * (via the runner's heartbeat), and on every poll while waiting for CI on
+   * the pushed head (`checks-wait`, HOK-3264). Used by the Tend loop to keep
+   * the backstage-health.json heartbeat fresh during otherwise-quiet steps.
    */
   onPhaseProgress?: (update: {
     prNumber: number;
-    phase: ScratchPrepPhase | 'heartbeat';
+    phase: MergeProgressPhase;
     at: string;
   }) => Promise<void> | void;
 }
@@ -949,7 +957,7 @@ export async function executeMerge(
     };
   }
 
-  const emitPhaseProgress = async (phase: ScratchPrepPhase | 'heartbeat'): Promise<void> => {
+  const emitPhaseProgress = async (phase: MergeProgressPhase): Promise<void> => {
     if (!options.onPhaseProgress) return;
     try {
       await options.onPhaseProgress({
@@ -1046,6 +1054,10 @@ export async function executeMerge(
             requiredChecks: integrationConfig.requiredChecks,
             retrySleep: deps.retrySleep,
             expectedHeadSha: pushedHeadSha,
+            // HOK-3264: CI on the pushed head routinely takes longer than the
+            // backstage heartbeat stale window; without this the monitor
+            // respawns tend mid-merge and the lane strands the rebased PR.
+            onPoll: () => emitPhaseProgress('checks-wait'),
           },
         );
         if (checks.outcome !== 'pass') {
@@ -2128,6 +2140,11 @@ export async function waitForChecks(
     expectedHeadSha?: string;
     /** Poll interval override for tests; production uses CHECK_POLL_INTERVAL_MS. */
     pollIntervalMs?: number;
+    /**
+     * Called once per poll, before the verdict is evaluated (HOK-3264).
+     * Best-effort liveness hook: a throw is logged and never ends the wait.
+     */
+    onPoll?: () => Promise<void> | void;
   } = {},
 ): Promise<CheckWaitResult> {
   const timeoutMs = options.timeoutMs ?? 30 * 60 * 1000;
@@ -2138,6 +2155,14 @@ export async function waitForChecks(
   let consecutiveHeadMismatches = 0;
 
   while (true) {
+    if (options.onPoll) {
+      try {
+        await options.onPoll();
+      } catch (error) {
+        console.warn(`tend: waitForChecks onPoll callback failed for PR #${prNumber}: ${errorMessage(error)}`);
+      }
+    }
+
     // Head-provenance guard: right after a force-push GitHub may briefly serve
     // the superseded head's checks — once superseded runs are cancelled
     // (HOK-2938 concurrency policy), those read as CANCELLED and would block
@@ -4327,7 +4352,9 @@ function emitMergeLaneFindingOnce(
   kind: string,
   headSha: string,
   reason: string,
-  finding: object,
+  // HOK-3239: severity must be a valid observer Severity; 'warning'/'info'
+  // fell out of findingCounts and alert ranking.
+  finding: { severity: AlertSeverity } & Record<string, unknown>,
 ): void {
   const sentinelPath = join(mergeLaneStateDir(prNumber, repoDir), `finding-${kind}.json`);
   try {
@@ -4361,7 +4388,7 @@ function emitBlockedLabelContradictionFinding(
     body: `PR #${pr.number} carries wm:blocked with a marker valid at head ${currentHeadSha}, but GitHub reports `
       + 'MERGEABLE/CLEAN with green required checks. If no wavemill-internal gate applies, the merge label reconciler '
       + 'should correct this automatically on the next monitor tick (HOK-3181).',
-    severity: 'warning',
+    severity: 'medium',
     context: {
       markerPath: `merge-lane/${pr.number}/blocked-label-contradiction`,
       markerKind: 'merge-lane-blocked-contradiction',
@@ -4390,7 +4417,7 @@ function emitTendHandoffSelfHealFinding(
     body: `PR #${pr.number} carried wm:blocked set by tend's own handoff-rebind refusal, but two consecutive `
       + `polls at head ${currentHeadSha} confirmed the PR is MERGEABLE/CLEAN with green required checks. `
       + 'Tend cleared the label in-band; the PR will be re-evaluated on the next merge-lane pass.',
-    severity: 'info',
+    severity: 'low',
     context: {
       markerPath: `merge-lane/${pr.number}/tend-handoff-self-heal`,
       markerKind: 'merge-lane-tend-handoff-self-heal',
@@ -4445,7 +4472,7 @@ function emitMillTendDisagreementFinding(
       + `${millCiSummary ? ` (live CI ${millCiSummary}${millCiHead ? ` @${millCiHead.slice(0, 7)}` : ''})` : ''}, `
       + `but tend blocks it with gate '${blockedCandidate.reason}'. One of the two views is stale; `
       + 'this disagreement must be reconciled, not silently resolved in favour of the block.',
-    severity: 'warning',
+    severity: 'high',
     context: {
       markerPath: `merge-lane/${pr.number}/mill-tend-disagreement`,
       markerKind: 'merge-lane-disagreement',

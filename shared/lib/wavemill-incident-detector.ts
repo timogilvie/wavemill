@@ -35,6 +35,7 @@ import {
 } from './wavemill-incident-model.ts';
 import { TEND_STALL_MARKER_KINDS } from './wavemill-incident-tend-candidates.ts';
 import { readIncidentLogExcerpt } from './incident-log-excerpt-reader.ts';
+import { checkDepsDrift, type DepsDriftResult } from './deps-drift.ts';
 
 const PLANNING_TERMINAL_REASONS = new Set([
   'turn_limit',
@@ -443,6 +444,55 @@ export class DependencyHealthDetector {
     }
 
     return incidents;
+  }
+}
+
+/**
+ * HOK-3254 — stale node_modules detector. Surfaces off-machine when a
+ * dependency bump landed but nothing reinstalled, so the mill is running
+ * against an older install. The monitor's deps-drift tick auto-fixes locally
+ * when `WAVEMILL_DEPS_DRIFT_AUTOFIX` is on; this detector exists so the
+ * condition is still raised when auto-fix is off, or when the monitor is not
+ * running.
+ */
+export class DepsDriftDetector {
+  detectRepo(repoDir: string, context: DetectorContext): IncidentRecord[] {
+    const now = context.now?.toISOString() ?? new Date().toISOString();
+    let result: DepsDriftResult;
+    try {
+      result = checkDepsDrift(repoDir);
+    } catch {
+      return [];
+    }
+    if (result.status !== 'drift') return [];
+    const names = result.packages.map((pkg) => pkg.name).filter(Boolean);
+    const packageLabel = names.length > 0
+      ? names.slice(0, 5).join(', ') + (names.length > 5 ? `, …+${names.length - 5}` : '')
+      : '(hidden lockfile unavailable)';
+    const detail = `reason=${result.reason} packages=${names.length > 0 ? names.join(',') : 'unknown'}`;
+    return [createIncidentDraft({
+      taskId: null,
+      session: context.session ?? null,
+      category: dependencyCategoryFor('stale_dependency_install'),
+      severity: 'medium',
+      confidence: 'high',
+      lifecycle: 'observed',
+      rootCauseClass: 'stale_dependency_install',
+      summary: `node_modules is stale against the lockfile (${result.reason}): ${packageLabel}.`,
+      operatorAction: 'Run `npm ci` in the repo, or set WAVEMILL_DEPS_DRIFT_AUTOFIX=1 to let the monitor repair it on its next tick.',
+      evidence: [{
+        type: 'backstage_health',
+        source: join(repoDir, 'package-lock.json'),
+        timestamp: now,
+        redactedData: redactIncidentData(boundedOneLine(detail, 240)),
+        key: `deps_drift:${result.reason}`,
+      }],
+      metadata: {
+        driftReason: result.reason,
+        driftedPackages: names,
+        driftedPackageCount: result.packages.length,
+      },
+    })];
   }
 }
 
@@ -971,6 +1021,7 @@ export function detectIncidentsForRepo(repoDir: string, context: DetectorContext
     ...new StalledLifecycleCorrelator().detect(repoDir, context),
     ...new JobFailureDetector().detect(repoDir, null, context),
     ...new DependencyHealthDetector({ thresholdConsecutiveFailures: dependencyThreshold }).detectRepo(repoDir, context),
+    ...new DepsDriftDetector().detectRepo(repoDir, context),
   ];
 }
 
@@ -1379,7 +1430,8 @@ function dependencyCategoryFor(rootCauseClass: IncidentRootCauseClass): Incident
   if (rootCauseClass === 'remote_auth_failure'
     || rootCauseClass === 'local_parse_failure'
     || rootCauseClass === 'local_config_failure'
-    || rootCauseClass === 'queue_planner_degraded') {
+    || rootCauseClass === 'queue_planner_degraded'
+    || rootCauseClass === 'stale_dependency_install') {
     return 'configuration_operator_condition';
   }
   if (isRemoteRootCauseClass(rootCauseClass)) return 'external_transient_dependency';

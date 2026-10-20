@@ -137,6 +137,7 @@ wavemill_terminal_marker_value() {
 wavemill_terminal_marker_field() {
   local issue="$1" key="$2" field="$3"
   [[ -n "${STATE_FILE:-}" && -r "${STATE_FILE:-}" ]] || return 0
+  # allow-task-field: terminalReconciliations is a nested-indexed map owned by this reconciler (writes below via [$key] assignment)
   jq -r --arg issue "$issue" --arg key "$key" --arg field "$field" \
     '.tasks[$issue].terminalReconciliations[$key][$field] // empty' "$STATE_FILE" 2>/dev/null || true
 }
@@ -144,6 +145,7 @@ wavemill_terminal_marker_field() {
 wavemill_terminal_mark_field() {
   local issue="$1" key="$2" field="$3" value="${4:-true}"
   [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE:-}" ]] || return 0
+  # allow-task-field: terminalReconciliations is a nested-indexed map owned by this reconciler (jq [$key] writes)
   state_mutate "$STATE_FILE" \
     '.tasks[$issue].terminalReconciliations[$key][$field] = $value
      | .tasks[$issue].terminalReconciliations[$key].updatedAt = (now | todateiso8601)
@@ -159,6 +161,7 @@ wavemill_terminal_apply_state() {
   workflow_outcome="$(wavemill_terminal_workflow_outcome_for_reason "$reason")"
   pr_payload="$(jq -c '.pr // null' <<<"$marker_json" 2>/dev/null || printf 'null')"
   [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE:-}" ]] || return 0
+  # allow-task-field: terminalReconciliations is a nested-indexed map owned by this reconciler
   state_mutate "$STATE_FILE" '
     (.tasks[$issue].terminalReconciliations[$key] // null) as $existing
     | if $existing == null then .tasks[$issue].terminalReconciliations[$key] = $marker else . end

@@ -14,6 +14,7 @@ import type {
   MergeLabelTaskView,
 } from '../shared/lib/merge-labels.ts';
 import type { WorkflowState } from '../shared/lib/workflow-state.ts';
+import { buildWorkflowState } from './lib/task-builder.ts';
 import {
   checkInvariant1Progress,
   checkInvariant2Slots,
@@ -22,6 +23,7 @@ import {
   checkInvariant5StaleMarker,
   checkInvariant6Schema,
   checkInvariant7MissingConditionCompanion,
+  checkInvariant8BakeGate,
   createEmptyCache,
   evaluateInvariants,
   expiredTriggerForSidecar,
@@ -34,6 +36,7 @@ import {
   type ConditionSidecarInfo,
   type RetrySentinelInfo,
   type WaitingOnEvidence,
+  type TendHeartbeat,
 } from '../shared/lib/state-invariants.ts';
 
 const NOW_MS = Date.parse('2026-10-19T14:00:00Z');
@@ -57,6 +60,8 @@ interface InputsOverrides {
   prNumberByTaskId?: Map<string, number>;
   nowMs?: number;
   config?: Partial<typeof DEFAULT_INVARIANT_CONFIG>;
+  recentMainCommits?: Array<{ sha: string; committedAtMs: number; files: string[] }>;
+  tendHeartbeat?: TendHeartbeat | null;
 }
 
 function makeInputs(overrides: InputsOverrides = {}): EvaluateInvariantsInputs {
@@ -78,6 +83,8 @@ function makeInputs(overrides: InputsOverrides = {}): EvaluateInvariantsInputs {
       nowMs: overrides.nowMs ?? NOW_MS,
     },
     config: overrides.config,
+    recentMainCommits: overrides.recentMainCommits,
+    tendHeartbeat: overrides.tendHeartbeat ?? null,
   };
 }
 
@@ -140,15 +147,13 @@ function makeLiveBlocked(sha = 'abc123'): MergeLabelLiveState {
 
 test('clean state produces no violations', () => {
   const inputs = makeInputs({
-    state: {
-      tasks: {
-        'HOK-1': {
-          phase: 'ready',
-          status: 'running',
-          slug: 'foo',
-        },
+    state: buildWorkflowState({
+      'HOK-1': {
+        phase: 'ready',
+        status: 'running',
+        slug: 'foo',
       },
-    },
+    }, { bare: true }),
     taskProgress: new Map([
       ['HOK-1', makeProgress({ issue: 'HOK-1', stalled: false })],
     ]),
@@ -162,11 +167,9 @@ test('clean state produces no violations', () => {
 
 test('I1 fires for a stalled non-terminal task with no waiting-on marker', () => {
   const inputs = makeInputs({
-    state: {
-      tasks: {
-        'HOK-2': { phase: 'coding', status: 'running', slug: 'bar' },
-      },
-    },
+    state: buildWorkflowState({
+      'HOK-2': { phase: 'coding', status: 'running', slug: 'bar' },
+    }, { bare: true }),
     taskProgress: new Map([
       ['HOK-2', makeProgress({ issue: 'HOK-2', stalled: true, stallMinutes: 30, progressAgeMinutes: 60 })],
     ]),
@@ -181,11 +184,9 @@ test('I1 fires for a stalled non-terminal task with no waiting-on marker', () =>
 
 test('I1 does not fire when a waiting-on marker is present', () => {
   const inputs = makeInputs({
-    state: {
-      tasks: {
-        'HOK-3': { phase: 'coding', status: 'running', slug: 'bar' },
-      },
-    },
+    state: buildWorkflowState({
+      'HOK-3': { phase: 'coding', status: 'running', slug: 'bar' },
+    }, { bare: true }),
     taskProgress: new Map([
       ['HOK-3', makeProgress({ issue: 'HOK-3', stalled: true, stallMinutes: 30 })],
     ]),
@@ -198,11 +199,9 @@ test('I1 does not fire when a waiting-on marker is present', () => {
 
 test('I1 skips terminal (phase=aborted) tasks', () => {
   const inputs = makeInputs({
-    state: {
-      tasks: {
-        'HOK-4': { phase: 'aborted', status: 'aborted', slug: 'bar' },
-      },
-    },
+    state: buildWorkflowState({
+      'HOK-4': { phase: 'aborted', status: 'aborted', slug: 'bar' },
+    }, { bare: true }),
     taskProgress: new Map([
       ['HOK-4', makeProgress({ issue: 'HOK-4', stalled: true, stallMinutes: 30 })],
     ]),
@@ -217,9 +216,7 @@ test('I1 signature is stable across ticks for the same stall (notification only 
   // lastProgressAt is unchanged. The signature must stay the same so the
   // JSONL + observer appender treat the second emission as a repeat.
   const base = {
-    state: {
-      tasks: { 'HOK-9': { phase: 'coding', status: 'running', slug: 'bar' } },
-    },
+    state: buildWorkflowState({ 'HOK-9': { phase: 'coding', status: 'running', slug: 'bar' } }, { bare: true }),
     waitingOnByTaskId: new Map([['HOK-9', { hasWaitingOnMarker: false }]]),
   };
   const first = evaluateInvariants(
@@ -272,12 +269,10 @@ test('I1 signature is stable across ticks for the same stall (notification only 
 
 test('I2 fires for an orphan stub row', () => {
   const inputs = makeInputs({
-    state: {
-      tasks: {
-        'HOK-9999': {}, // orphan stub (all fields missing)
-        'HOK-5': { phase: 'ready', status: 'running', slug: 'ok' },
-      },
-    },
+    state: buildWorkflowState({
+      'HOK-9999': {}, // orphan stub (all fields missing)
+      'HOK-5': { phase: 'ready', status: 'running', slug: 'ok' },
+    }, { bare: true }),
   });
   const out: InvariantViolation[] = [];
   checkInvariant2Slots(inputs, out);
@@ -579,6 +574,7 @@ test('I6 fires when a task record violates the A1 schema', () => {
   // phase must be a string per the schema; a number is a clean violation.
   const inputs = makeInputs({
     state: {
+      // allow-task-literal: deliberately schema-violating row (phase must be a string)
       tasks: {
         'HOK-7': { phase: 123, slug: 'ok' } as never,
       },
@@ -689,4 +685,218 @@ test('parseConditionSidecar accepts top-level condition shape', () => {
   const info = parseConditionSidecar('HOK-13', '/tmp/y.json', raw);
   assert.deepEqual(info.expiresOn, ['head']);
   assert.equal(info.recordedHead, 'topsha');
+});
+
+// ── I8: post-promotion bake gate (HOK-3238) ─────────────────────────────────
+
+function hoursAgoMs(hours: number): number {
+  return NOW_MS - hours * 60 * 60_000;
+}
+
+function minsAgoMs(mins: number): number {
+  return NOW_MS - mins * 60_000;
+}
+
+test('I8 fires for a mill-core commit + idle-blocked-stall after promotion (HOK-3212 replay)', () => {
+  const inputs = makeInputs({
+    recentMainCommits: [
+      {
+        sha: 'abc1234',
+        committedAtMs: hoursAgoMs(1), // committed 60 min ago
+        files: ['shared/lib/merge-labels.ts'],
+      },
+    ],
+    // Heartbeat 10 min ago is fresh (<15 min). Stall delta = 60-10 = 50 min
+    // after commit → > 30-min threshold → fires.
+    tendHeartbeat: {
+      laneCondition: 'idle-blocked-stall',
+      heartbeatAtMs: minsAgoMs(10),
+    },
+    prs: [{ number: 100, labels: [{ name: 'wm:ready' }] } as unknown as CachedPullRequest],
+  });
+  const out: InvariantViolation[] = [];
+  checkInvariant8BakeGate(inputs, out, DEFAULT_INVARIANT_CONFIG);
+  assert.equal(out.length, 1, `expected 1 I8 violation, got: ${JSON.stringify(out)}`);
+  assert.equal(out[0].invariantId, 'I8-bake-gate-stall');
+  assert.equal(out[0].signature, 'I8:abc1234');
+  assert.equal((out[0].evidence as { revertCommand: string }).revertCommand, 'git revert abc1234');
+  assert.deepEqual((out[0].evidence as { readyPrNumbers: number[] }).readyPrNumbers, [100]);
+});
+
+test('I8 does not fire when tend stall is only 10 min after promotion', () => {
+  const inputs = makeInputs({
+    recentMainCommits: [
+      {
+        sha: 'abc1234',
+        committedAtMs: minsAgoMs(20),
+        files: ['shared/lib/merge-labels.ts'],
+      },
+    ],
+    // Stall delta = (now - 10) - (now - 20) = 10 min; threshold is 30.
+    tendHeartbeat: {
+      laneCondition: 'idle-blocked-stall',
+      heartbeatAtMs: minsAgoMs(10),
+    },
+  });
+  const out: InvariantViolation[] = [];
+  checkInvariant8BakeGate(inputs, out, DEFAULT_INVARIANT_CONFIG);
+  assert.equal(out.length, 0);
+});
+
+test('I8 ignores commits older than the bake window', () => {
+  const inputs = makeInputs({
+    recentMainCommits: [
+      {
+        sha: 'oldsha',
+        committedAtMs: hoursAgoMs(3), // 3 h > 2 h window
+        files: ['shared/lib/merge-labels.ts'],
+      },
+    ],
+    tendHeartbeat: {
+      laneCondition: 'idle-blocked-stall',
+      heartbeatAtMs: minsAgoMs(25),
+    },
+  });
+  const out: InvariantViolation[] = [];
+  checkInvariant8BakeGate(inputs, out, DEFAULT_INVARIANT_CONFIG);
+  assert.equal(out.length, 0);
+});
+
+test('I8 does not fire for normal-radius commits', () => {
+  const inputs = makeInputs({
+    recentMainCommits: [
+      {
+        sha: 'readmesha',
+        committedAtMs: hoursAgoMs(1),
+        files: ['README.md'],
+      },
+    ],
+    tendHeartbeat: {
+      laneCondition: 'idle-blocked-stall',
+      heartbeatAtMs: minsAgoMs(25),
+    },
+  });
+  const out: InvariantViolation[] = [];
+  checkInvariant8BakeGate(inputs, out, DEFAULT_INVARIANT_CONFIG);
+  assert.equal(out.length, 0);
+});
+
+test('I8 does not fire when tend is progressing', () => {
+  const inputs = makeInputs({
+    recentMainCommits: [
+      {
+        sha: 'abc1234',
+        committedAtMs: hoursAgoMs(1),
+        files: ['shared/lib/merge-labels.ts'],
+      },
+    ],
+    tendHeartbeat: {
+      laneCondition: 'progressing',
+      heartbeatAtMs: minsAgoMs(1),
+    },
+  });
+  const out: InvariantViolation[] = [];
+  checkInvariant8BakeGate(inputs, out, DEFAULT_INVARIANT_CONFIG);
+  assert.equal(out.length, 0);
+});
+
+test('I8 picks the most recent of multiple mill-core commits in the window', () => {
+  const inputs = makeInputs({
+    recentMainCommits: [
+      {
+        sha: 'olderMillCore',
+        committedAtMs: hoursAgoMs(1.5),
+        files: ['shared/lib/tend-loop.ts'],
+      },
+      {
+        sha: 'newerMillCore',
+        committedAtMs: hoursAgoMs(1),
+        files: ['shared/lib/merge-labels.ts'],
+      },
+    ],
+    tendHeartbeat: {
+      laneCondition: 'idle-blocked-stall',
+      heartbeatAtMs: minsAgoMs(10),
+    },
+  });
+  const out: InvariantViolation[] = [];
+  checkInvariant8BakeGate(inputs, out, DEFAULT_INVARIANT_CONFIG);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].signature, 'I8:newerMillCore');
+});
+
+test('I8 does not fire when the heartbeat is stale (not reporting a lane right now)', () => {
+  const inputs = makeInputs({
+    recentMainCommits: [
+      {
+        sha: 'abc1234',
+        committedAtMs: hoursAgoMs(1),
+        files: ['shared/lib/merge-labels.ts'],
+      },
+    ],
+    // 20 min of stale heartbeat (TEND_BLOCKED_LANE_FRESH_MS is 15 min)
+    tendHeartbeat: {
+      laneCondition: 'idle-blocked-stall',
+      heartbeatAtMs: minsAgoMs(20),
+    },
+  });
+  const out: InvariantViolation[] = [];
+  // Note: setting a shorter tendIdleStallMinutes so the stall-threshold check
+  // would otherwise pass. The stale heartbeat guard still blocks the fire.
+  checkInvariant8BakeGate(inputs, out, { ...DEFAULT_INVARIANT_CONFIG, tendIdleStallMinutes: 5 });
+  assert.equal(out.length, 0);
+});
+
+test('I8 bakeWindowMinutes=0 disables the gate (kill switch)', () => {
+  const inputs = makeInputs({
+    recentMainCommits: [
+      {
+        sha: 'abc1234',
+        committedAtMs: hoursAgoMs(1),
+        files: ['shared/lib/merge-labels.ts'],
+      },
+    ],
+    tendHeartbeat: {
+      laneCondition: 'idle-blocked-stall',
+      heartbeatAtMs: minsAgoMs(25),
+    },
+  });
+  const out: InvariantViolation[] = [];
+  checkInvariant8BakeGate(inputs, out, { ...DEFAULT_INVARIANT_CONFIG, bakeWindowMinutes: 0 });
+  assert.equal(out.length, 0);
+});
+
+test('I8 signature persists across ticks (notification only on first)', () => {
+  const commit = {
+    sha: 'persist123',
+    committedAtMs: hoursAgoMs(1),
+    files: ['shared/lib/merge-labels.ts'],
+  };
+  const first = evaluateInvariants(
+    makeInputs({
+      recentMainCommits: [commit],
+      tendHeartbeat: {
+        laneCondition: 'idle-blocked-stall',
+        heartbeatAtMs: minsAgoMs(10),
+      },
+    }),
+  );
+  const i8 = first.violations.find((v) => v.invariantId === 'I8-bake-gate-stall');
+  assert.ok(i8);
+  const sig = i8!.signature;
+  assert.equal(sig, 'I8:persist123');
+  assert.ok(sig in first.nextCache.signatures);
+  const second = evaluateInvariants(
+    makeInputs({
+      recentMainCommits: [commit],
+      tendHeartbeat: {
+        laneCondition: 'idle-blocked-stall',
+        heartbeatAtMs: minsAgoMs(10),
+      },
+      cache: first.nextCache,
+    }),
+  );
+  // Same stall, same signature; cache tracks `timesSeen` so the alert pipeline
+  // can gate the OS notification on first occurrence only.
+  assert.equal(second.nextCache.signatures[sig].timesSeen, 2);
 });
