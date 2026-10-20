@@ -822,6 +822,7 @@ cleanup_episode_get() {
 cleanup_episode_ack_present() {
   local issue="$1"
   [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  # allow-task-field: legacy cleanupRecoveryAcknowledged fallback for pre-cleanupEpisode state files
   jq -e --arg issue "$issue" '
     (.tasks[$issue].lifecycle.cleanupEpisode.operatorAcknowledgedAt // "") != ""
   ' "$STATE_FILE" >/dev/null 2>&1
@@ -1881,6 +1882,7 @@ safe_remove_task_worktree_and_branch() {
       if [[ -z "$pr" ]]; then
         pr="$(jq -r --arg i "$issue" '.tasks[$i].pr // .tasks[$i].lifecycle.deliveryEvidence.prNumber // empty' "$STATE_FILE" 2>/dev/null || true)"
       fi
+      # allow-task-field: legacy baseBranch fallback for pre-lifecycle.launchContract state files
       contract_base_branch="$(jq -r --arg i "$issue" '.tasks[$i].lifecycle.launchContract.baseBranch // .tasks[$i].baseBranch // empty' "$STATE_FILE" 2>/dev/null || true)"
       configured_merge_method="$(jq -r --arg i "$issue" '.tasks[$i].lifecycle.launchContract.mergeMethod // empty' "$STATE_FILE" 2>/dev/null || true)"
       [[ -n "$contract_base_branch" ]] && base_branch="$contract_base_branch"
@@ -5592,8 +5594,10 @@ apply_expanded_route_if_present() {
     # Newer launches persist the canonical execution intent; startup launches
     # persist its projected challengeIntent.  Both carry expectedRoute and are
     # valid inputs for retaining the arm selected before expansion.
+    # allow-task-field: legacy challengeIntent fallback for pre-challengeExecutionIntent state files
     if jq -e --arg issue "$issue" '(.tasks[$issue].challengeIntent? // .tasks[$issue].challengeExecutionIntent? // empty)' "$state_file" >/dev/null 2>&1; then
       challenge_intent_tmp="$(mktemp "${TMPDIR:-/tmp}/wavemill-challenge-intent.XXXXXX")"
+      # allow-task-field: legacy challengeIntent fallback for pre-challengeExecutionIntent state files
       jq --arg issue "$issue" '(.tasks[$issue].challengeIntent? // .tasks[$issue].challengeExecutionIntent? // empty)' "$state_file" > "$challenge_intent_tmp" 2>/dev/null || true
       if [[ -s "$challenge_intent_tmp" ]] && jq -e . "$challenge_intent_tmp" >/dev/null 2>&1; then
         challenge_intent_file="$challenge_intent_tmp"

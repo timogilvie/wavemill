@@ -490,6 +490,7 @@ condition_reconcile_task() {
   if [[ "$task_status" == "error" ]]; then
     # Check if there's an applicable operator event
     local status_condition
+    # allow-task-field: statusCondition is written by task_status_error_condition_record (wavemill-monitor.sh:3429)
     status_condition=$(jq -r --arg i "$issue" '.tasks[$i].statusCondition // null' "$STATE_FILE" 2>/dev/null || echo "null")
 
     local recorded_seq=0
