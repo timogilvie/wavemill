@@ -4632,19 +4632,15 @@ function resolveReadyStateDir(
 function resolveEffectiveBaseBranchForPr(repoDir: string, prNumber: number, headBranch: string, fallbackBase: string): string {
   const stateFile = join(repoDir, '.wavemill', 'workflow-state.json');
   const state = readWorkflowState(stateFile);
-  // HOK-3242: route the lookup through the shared resolver. First try PR
-  // number (the primary key); fall back to branch match (the historical
-  // secondary) if that misses. Either hit returns the task record; both
-  // misses surface structured warn logs through the resolver and we fall
-  // back to the caller-provided base.
-  const prLookup = resolvePrTask(prNumber, state, { site: 'tend.resolveEffectiveBaseBranchForPr.pr' });
+  // HOK-3242: route the lookup through the shared resolver. PR number is
+  // the primary key, branch is the historical secondary; pass `fallbackBranch`
+  // so the resolver tries both in a single pass and emits at most one
+  // structured miss log instead of two.
+  const prLookup = resolvePrTask(prNumber, state, {
+    site: 'tend.resolveEffectiveBaseBranchForPr',
+    fallbackBranch: headBranch,
+  });
   let matchingTaskId: string | null = prLookup.location?.taskId ?? null;
-  if (!matchingTaskId) {
-    const branchLookup = resolveBranchTask(headBranch, state, {
-      site: 'tend.resolveEffectiveBaseBranchForPr.branch',
-    });
-    matchingTaskId = branchLookup.location?.taskId ?? null;
-  }
   // Preserve the HOK-3181/HOK-3212 lifecycle-based PR match: some rows
   // store the PR under `lifecycle.deliveryEvidence.prNumber` rather than
   // `.pr`. The resolver only reads `.pr`, so cover that case here before

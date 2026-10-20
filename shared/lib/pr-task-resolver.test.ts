@@ -164,6 +164,38 @@ describe('resolvePrTask', () => {
     assert.equal(result.miss?.reason, 'no-task-matched');
     assert.equal(warnings.length, 1);
   });
+
+  it('fallbackBranch matches a row whose PR number does not match', () => {
+    const { warnings, logger } = captureLogger();
+    const worktree = mkdtempSync(join(tmpdir(), 'pr-task-resolver-'));
+    const slug = 'branch-fallback';
+    mkdirSync(join(worktree, 'features', slug), { recursive: true });
+    const state = buildWorkflowState({
+      'HOK-1': { pr: '', slug, worktree, phase: 'ready', branch: 'task/branch-fallback' },
+    });
+    const result = resolvePrTask(42, state, {
+      site: 'test.site',
+      logger,
+      fallbackBranch: 'task/branch-fallback',
+    });
+    assert.ok(result.location);
+    assert.equal(result.location.taskId, 'HOK-1');
+    assert.equal(warnings.length, 0);
+  });
+
+  it('misses on both PR and fallbackBranch emit a single structured miss log', () => {
+    const { warnings, logger } = captureLogger();
+    const state = buildWorkflowState({
+      'HOK-1': { pr: '7', slug: 's', worktree: '/tmp/w', phase: 'planning', branch: 'task/other' },
+    });
+    const result = resolvePrTask(999, state, {
+      site: 'test.site',
+      logger,
+      fallbackBranch: 'task/missing',
+    });
+    assert.equal(result.miss?.reason, 'no-task-matched');
+    assert.equal(warnings.length, 1);
+  });
 });
 
 describe('resolveTaskLocation', () => {

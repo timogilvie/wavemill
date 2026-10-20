@@ -86,6 +86,13 @@ export interface ResolvePrOptions extends ResolveOptions {
    * id matches too.
    */
   fallbackTaskKey?: string;
+  /**
+   * Secondary branch match used by tend's `resolveEffectiveBaseBranchForPr`:
+   * when the PR number does not match any row but a row's `branch` field
+   * equals this value, that row matches too. Collapsing the cascade into one
+   * lookup keeps the miss log to a single structured line instead of two.
+   */
+  fallbackBranch?: string;
 }
 
 export type ResolveResult =
@@ -194,10 +201,15 @@ export function resolvePrTask(
   }
 
   const fallbackTaskKey = options.fallbackTaskKey;
+  const fallbackBranch = options.fallbackBranch;
   for (const [taskId, task] of workflowTaskEntries(state)) {
     const matchesPr = Number.isFinite(prNumber) && prNumber > 0 && parsePr(task) === prNumber;
     const matchesTaskKey = typeof fallbackTaskKey === 'string' && fallbackTaskKey.length > 0 && taskId === fallbackTaskKey;
-    if (!matchesPr && !matchesTaskKey) continue;
+    const matchesBranch = typeof fallbackBranch === 'string'
+      && fallbackBranch.length > 0
+      && typeof task.branch === 'string'
+      && task.branch === fallbackBranch;
+    if (!matchesPr && !matchesTaskKey && !matchesBranch) continue;
 
     const built = buildLocation(taskId, task);
     if ('missReason' in built) {
