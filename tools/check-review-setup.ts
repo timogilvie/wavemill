@@ -17,9 +17,9 @@ import { runTool } from '../shared/lib/tool-runner.ts';
 import {
   checkClaudeAvailability,
   checkCodexAvailability,
-  resolveProviderForModel,
   type LLMProvider,
 } from '../shared/lib/llm-cli.ts';
+import { headlessProviderForModel } from '../shared/lib/headless-llm.ts';
 import { execShellCommand } from '../shared/lib/shell-utils.ts';
 import { GREEN, RED, NC } from '../shared/lib/colors.ts';
 
@@ -31,7 +31,7 @@ import { GREEN, RED, NC } from '../shared/lib/colors.ts';
 export function getReviewProvider(): LLMProvider {
   const model =
     process.env.WAVEMILL_REVIEW_MODEL || process.env.WAVEMILL_HEADLESS_MODEL || 'gpt-5.6-terra';
-  return resolveProviderForModel(model, process.cwd());
+  return headlessProviderForModel(model, process.cwd());
 }
 
 interface CheckResult {

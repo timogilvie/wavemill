@@ -822,9 +822,9 @@ cleanup_episode_get() {
 cleanup_episode_ack_present() {
   local issue="$1"
   [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  # allow-task-field: legacy cleanupRecoveryAcknowledged fallback for pre-cleanupEpisode state files
   jq -e --arg issue "$issue" '
     (.tasks[$issue].lifecycle.cleanupEpisode.operatorAcknowledgedAt // "") != ""
-    or (.tasks[$issue].cleanupRecoveryAcknowledged == true)
   ' "$STATE_FILE" >/dev/null 2>&1
 }
 
@@ -1882,6 +1882,7 @@ safe_remove_task_worktree_and_branch() {
       if [[ -z "$pr" ]]; then
         pr="$(jq -r --arg i "$issue" '.tasks[$i].pr // .tasks[$i].lifecycle.deliveryEvidence.prNumber // empty' "$STATE_FILE" 2>/dev/null || true)"
       fi
+      # allow-task-field: legacy baseBranch fallback for pre-lifecycle.launchContract state files
       contract_base_branch="$(jq -r --arg i "$issue" '.tasks[$i].lifecycle.launchContract.baseBranch // .tasks[$i].baseBranch // empty' "$STATE_FILE" 2>/dev/null || true)"
       configured_merge_method="$(jq -r --arg i "$issue" '.tasks[$i].lifecycle.launchContract.mergeMethod // empty' "$STATE_FILE" 2>/dev/null || true)"
       [[ -n "$contract_base_branch" ]] && base_branch="$contract_base_branch"
@@ -5593,8 +5594,10 @@ apply_expanded_route_if_present() {
     # Newer launches persist the canonical execution intent; startup launches
     # persist its projected challengeIntent.  Both carry expectedRoute and are
     # valid inputs for retaining the arm selected before expansion.
+    # allow-task-field: legacy challengeIntent fallback for pre-challengeExecutionIntent state files
     if jq -e --arg issue "$issue" '(.tasks[$issue].challengeIntent? // .tasks[$issue].challengeExecutionIntent? // empty)' "$state_file" >/dev/null 2>&1; then
       challenge_intent_tmp="$(mktemp "${TMPDIR:-/tmp}/wavemill-challenge-intent.XXXXXX")"
+      # allow-task-field: legacy challengeIntent fallback for pre-challengeExecutionIntent state files
       jq --arg issue "$issue" '(.tasks[$issue].challengeIntent? // .tasks[$issue].challengeExecutionIntent? // empty)' "$state_file" > "$challenge_intent_tmp" 2>/dev/null || true
       if [[ -s "$challenge_intent_tmp" ]] && jq -e . "$challenge_intent_tmp" >/dev/null 2>&1; then
         challenge_intent_file="$challenge_intent_tmp"
@@ -7439,7 +7442,7 @@ write_terminal_task_tombstone() {
         slug: ($task.slug // ""),
         branch: ($task.branch // ""),
         worktree: ($task.worktree // ""),
-        prNumber: (($task.pr // $task.prNumber // $delivery.prNumber // "") | tostring),
+        prNumber: (($task.pr // $delivery.prNumber // "") | tostring),
         workflowOutcome: ($l.workflowOutcome // $task.status // ""),
         resourceDisposition: ($l.resourceDisposition // ""),
         challengePairId: ($task.challengePairId // ""),
@@ -7797,10 +7800,32 @@ drop_tombstoned_eval_stubs() {
   return 0
 }
 
+# Keep common-library consumers (startup and cleanup paths) on the same safe
+# state-read contract as the monitor, which replaces this fallback with its
+# pass-aware implementation after sourcing this file.
+if ! declare -F read_state_value >/dev/null 2>&1; then
+read_state_value() {
+  local default="$1"
+  shift
+  local value
+
+  if [[ ! -r "${STATE_FILE:-}" || ! -s "${STATE_FILE:-}" ]]; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+
+  if value=$(jq -r "$@" "${STATE_FILE:-}" 2>/dev/null); then
+    printf '%s\n' "$value"
+  else
+    printf '%s\n' "$default"
+  fi
+}
+fi
+
 get_task_meta() {
   local issue="$1" field="$2"
-  [[ -n "${STATE_FILE:-}" && -r "$STATE_FILE" ]] || return 0
-  jq -r --arg issue "$issue" --arg field "$field" '.tasks[$issue][$field] // empty' "$STATE_FILE" 2>/dev/null || true
+  read_state_value "" --arg issue "$issue" --arg field "$field" \
+    '.tasks[$issue][$field] // empty'
 }
 
 is_challenge_task() {
@@ -8082,11 +8107,13 @@ reconciliation_lease_acquire() {
 #     [linearIssue] [challenge] [challengePair] [challengeRole]
 #     [challengeModel] [plannerModel] [coderModel] [reviewerModel]
 #     [planDepth] [codeDepth] [reviewMode] [challengeStage] [phase]
-#     [windowId]
+#     [windowId] [title]
 #
-# Canonical positional tail: challengeStage (19), phase (20), windowId (21).
-# The monitor passes challengeStage at 19; startup callers pass phase and
-# windowId at 20/21 so both live layouts are unambiguous.
+# Canonical positional tail: challengeStage (19), phase (20), windowId (21),
+# title (22). The monitor passes challengeStage at 19; startup callers pass
+# phase and windowId at 20/21 so both live layouts are unambiguous. title at
+# 22 is the Linear issue title persisted at launch (HOK-3221); blank preserves
+# the existing stored title.
 #
 # Merge contract: the write is a single atomic state_mutate that overlays only
 # the supplied core fields onto the existing task object; every key the writer
@@ -8107,7 +8134,7 @@ save_task_state() {
   local issue="$1" slug="$2" branch="$3" worktree="$4" pr="${5:-}" status_arg="${6:-}" agent="${7:-}"
   local linear_issue="${8:-$issue}" challenge="${9:-}" challenge_pair="${10:-}" challenge_role="${11:-}" challenge_model="${12:-}"
   local planner_model="${13:-}" coder_model="${14:-}" reviewer_model="${15:-}" plan_depth="${16:-}" code_depth="${17:-}" review_mode="${18:-}"
-  local challenge_stage="${19:-}" phase="${20:-}" window_id="${21:-}"
+  local challenge_stage="${19:-}" phase="${20:-}" window_id="${21:-}" title="${22:-}"
   local status="${status_arg:-active}" effective_base_branch effective_base_sha integration_mode merge_method remote_deletion_allowed run_epoch
   local require_confirm base_branch_source require_confirm_source merge_method_source
   if [[ "$challenge" == "true" && -z "$challenge_role" && -n "$challenge_pair" && "$challenge_pair" == "$issue" ]]; then
@@ -8196,6 +8223,7 @@ save_task_state() {
       | if $reviewMode != "" then .tasks[$issue].reviewMode = $reviewMode else . end
       | if $phase != "" then .tasks[$issue].phase = $phase else . end
       | if $windowId != "" then .tasks[$issue].windowId = $windowId else . end
+      | if $title != "" then .tasks[$issue].title = $title else . end
       | if $traceId != "" then .tasks[$issue].traceId = $traceId else . end
       | .tasks[$issue].lifecycle = (.tasks[$issue] | wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeExecutor; $mergeMethod; $remoteDeletionAllowed; $challengeRole; $challengePair; $session; $runEpoch; (.windowId // ""); $requireConfirm; $baseBranchSource; $requireConfirmSource; $mergeMethodSource; "save_task_state"))
       | if ($existing.attempt // null) != null then .tasks[$issue].lifecycle.attempt = $existing.attempt else . end
@@ -8208,7 +8236,7 @@ save_task_state() {
      --arg challengeStage "$challenge_stage" \
      --arg plannerModel "$planner_model" --arg coderModel "$coder_model" --arg reviewerModel "$reviewer_model" \
      --arg planDepth "$plan_depth" --arg codeDepth "$code_depth" --arg reviewMode "$review_mode" \
-     --arg phase "$phase" --arg windowId "$window_id" \
+     --arg phase "$phase" --arg windowId "$window_id" --arg title "$title" \
      --arg traceId "$_trace_id_for_state" \
      --arg baseBranch "$effective_base_branch" --arg baseSha "$effective_base_sha" \
      --arg integrationMode "$integration_mode" --arg mergeExecutor "$_executor" --arg mergeMethod "$merge_method" \

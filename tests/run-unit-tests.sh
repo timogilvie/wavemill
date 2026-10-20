@@ -31,10 +31,12 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 TESTS=(
   tests/ledger.test.ts
+  shared/lib/deps-drift.test.ts
   shared/lib/ledger-shadow.test.ts
   shared/lib/view-workflow-state.test.ts
   shared/lib/ledger-consistency.test.ts
   tests/state-invariants.test.ts
+  shared/lib/blast-radius.test.ts
   shared/lib/ledger-replay-contract.test.ts
   shared/lib/ledger-pair-abort.test.ts
   shared/lib/ledger-recovery.test.ts
@@ -234,6 +236,7 @@ TESTS=(
   shared/lib/merge-labels.test.ts
   shared/lib/mill-clock.test.ts
   shared/lib/model-registry.test.ts
+  shared/lib/model-adapters/transport-adapter.test.ts
   shared/lib/model-registry-gpt55-inventory.test.ts
   shared/lib/model-registry-loader.test.ts
   shared/lib/schema-validators.test.ts
@@ -277,6 +280,9 @@ TESTS=(
   shared/lib/test-tracked-write-checker.test.ts
   shared/lib/task-identity-checker.test.ts
   shared/lib/task-record-shape-checker.test.ts
+  shared/lib/task-field-read-checker.test.ts
+  shared/lib/test-task-literal-checker.test.ts
+  tests/lib/task-builder.test.ts
   shared/lib/workflow-state.test.ts
   shared/lib/workflow-state.writer-coverage.test.ts
   shared/lib/transient-marker.test.ts

@@ -15,6 +15,7 @@ import {
   type WorkflowState,
   type WorkflowStateIssue,
 } from './workflow-state.ts';
+import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -69,6 +70,7 @@ describe('validator', () => {
   });
 
   it('stays permissive about fields it does not name (additionalProperties)', () => {
+    // allow-task-literal: an undeclared field is the point; the builder rejects it
     assert.equal(validateWorkflowState({ migrationReservations: {}, tasks: { 'HOK-1': { someFutureField: 1 } } }).valid, true);
   });
 
@@ -87,7 +89,10 @@ describe('readWorkflowState', () => {
   });
 
   it('returns a valid state without reporting', () => {
-    writeFileSync(statePath, JSON.stringify({ session: 's', tasks: { 'HOK-1': { slug: 'a', pr: '7', lifecycle: ACTIVE_LIFECYCLE } } }));
+    writeFileSync(statePath, JSON.stringify(buildWorkflowState(
+      { 'HOK-1': { slug: 'a', pr: '7', lifecycle: ACTIVE_LIFECYCLE } },
+      { bare: true, topLevel: { session: 's' } },
+    )));
     const { issues, onInvalid } = collect();
     const state = readWorkflowState(statePath, { onInvalid });
     assert.equal(state?.tasks?.['HOK-1']?.pr, '7');
@@ -95,6 +100,7 @@ describe('readWorkflowState', () => {
   });
 
   it('reports schema violations but still returns the parsed value', () => {
+    // allow-task-literal: deliberately schema-violating row (challenge must be boolean)
     writeFileSync(statePath, JSON.stringify({ tasks: { 'HOK-1': { slug: 'a', challenge: 'yes' } } }));
     const { issues, onInvalid } = collect();
     const state = readWorkflowState(statePath, { onInvalid });
@@ -103,6 +109,7 @@ describe('readWorkflowState', () => {
   });
 
   it('reports a given file to stderr once per process by default', () => {
+    // allow-task-literal: deliberately schema-violating row (challenge must be boolean)
     writeFileSync(statePath, JSON.stringify({ tasks: { 'HOK-1': { challenge: 'yes' } } }));
     const scriptPath = join(dir, 'read-twice.ts');
     writeFileSync(scriptPath, [
@@ -122,6 +129,7 @@ describe('workflowTaskEntries', () => {
   it('yields object rows only and tolerates a missing or malformed task map', () => {
     assert.deepEqual(workflowTaskEntries(null), []);
     assert.deepEqual(workflowTaskEntries({ tasks: [] as unknown as WorkflowState['tasks'] }), []);
+    // allow-task-literal: non-object rows (null, string) are the point; the builder only makes objects
     const entries = workflowTaskEntries({ tasks: { a: { slug: 'a' }, b: null as never, c: 'x' as never } });
     assert.deepEqual(entries, [['a', { slug: 'a' }]]);
   });
@@ -130,6 +138,7 @@ describe('workflowTaskEntries', () => {
 describe('mutateWorkflowState', () => {
   it('writes the transform result and validates only the rows it changed', async () => {
     writeFileSync(statePath, JSON.stringify({
+      // allow-task-literal: `untouched` is a deliberately schema-violating legacy row
       tasks: {
         untouched: { challenge: 'legacy-bad' },
         target: { slug: 't', status: 'active' },
@@ -145,7 +154,7 @@ describe('mutateWorkflowState', () => {
   });
 
   it('reports (never rejects) a write that produces an invalid row', async () => {
-    writeFileSync(statePath, JSON.stringify({ tasks: { target: { slug: 't' } } }));
+    writeFileSync(statePath, JSON.stringify(buildWorkflowState({ target: { slug: 't' } }, { bare: true })));
     const { issues, onInvalid } = collect();
     await mutateWorkflowState(statePath, (state) => {
       (state.tasks!.target as Record<string, unknown>).evalFailed = 'no';

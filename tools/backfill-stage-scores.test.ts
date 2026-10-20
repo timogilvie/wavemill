@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
-import { resolveProviderForModel } from '../shared/lib/llm-cli.ts';
+import { headlessProviderForModel } from '../shared/lib/headless-llm.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -14,15 +14,15 @@ const BACKFILL_DEFAULT_MODEL = 'gpt-5.6-terra';
 
 describe('backfill-stage-scores provider routing', () => {
   it('default model (gpt-5.6-terra) resolves to codex', () => {
-    assert.equal(resolveProviderForModel(BACKFILL_DEFAULT_MODEL, process.cwd()), 'codex');
+    assert.equal(headlessProviderForModel(BACKFILL_DEFAULT_MODEL, process.cwd()), 'codex');
   });
 
   it('claude-sonnet-4-6 override resolves to claude', () => {
-    assert.equal(resolveProviderForModel('claude-sonnet-4-6', process.cwd()), 'claude');
+    assert.equal(headlessProviderForModel('claude-sonnet-4-6', process.cwd()), 'claude');
   });
 
   it('claude-haiku-4-5-20251001 resolves to claude', () => {
-    assert.equal(resolveProviderForModel('claude-haiku-4-5-20251001', process.cwd()), 'claude');
+    assert.equal(headlessProviderForModel('claude-haiku-4-5-20251001', process.cwd()), 'claude');
   });
 });
 
@@ -35,11 +35,11 @@ describe('backfill-stage-scores.ts source', () => {
     );
   });
 
-  it('imports resolveProviderForModel from llm-cli', () => {
+  it('imports headlessProviderForModel from headless-llm', () => {
     assert.match(
       toolSource,
-      /resolveProviderForModel/,
-      'should import resolveProviderForModel',
+      /headlessProviderForModel/,
+      'should import headlessProviderForModel',
     );
   });
 

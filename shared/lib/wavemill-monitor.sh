@@ -13,6 +13,7 @@ if ! declare -F effective_task_base_branch >/dev/null 2>&1; then
 effective_task_base_branch() {
   local issue="$1" value=""
   if [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE:-}" ]]; then
+    # allow-task-field: legacy baseBranch fallback for pre-lifecycle.launchContract state files
     value="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.launchContract.baseBranch // .tasks[$issue].baseBranch // empty' "$STATE_FILE" 2>/dev/null || true)"
   fi
   printf '%s\n' "${value:-${BASE_BRANCH:-main}}"
@@ -1396,6 +1397,7 @@ finalize_challenge_execution_intent_before_coding() {
   # apply_expanded_route_if_present preserves the selected-stage fields from
   # this intent while applying every non-varied field from the expanded route.
   local existing_intent pinned_stage=""
+  # allow-task-field: legacy challengeIntent fallback for pre-challengeExecutionIntent state files
   existing_intent=$(read_state_value "" --arg i "$issue" '(.tasks[$i].challengeExecutionIntent // .tasks[$i].challengeIntent) // empty' 2>/dev/null || true)
   if [[ -n "$existing_intent" ]]; then
     pinned_stage=$(echo "$existing_intent" | jq -r '(.selectedStage // .challengeStage // "")' 2>/dev/null || true)
@@ -2421,6 +2423,9 @@ challenge_materialize_challenger_arm() {
   # Step 7: save the challenger's task-state entry at phase=review.
   local linear_issue
   linear_issue="$(get_linear_issue_id "$primary_issue" 2>/dev/null || echo "$primary_issue")"
+  local arm_title
+  arm_title=$(pass_task_field "$primary_issue" title)
+  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
   # challengeModel names the varied stage's model (HOK-3156 fix #4): for a
   # review-stage pair that is the reviewer, not the shared coder.
   save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
@@ -2428,7 +2433,7 @@ challenge_materialize_challenger_arm() {
     "true" "$primary_issue" "challenger" "$reviewer_model" \
     "$planner_model" "$coder_model" "$reviewer_model" \
     "$plan_depth" "$code_depth" "$review_mode" \
-    "$varied_stage" "review"
+    "$varied_stage" "review" "" "$arm_title"
   challenge_set_varied_model "$arm_key" "$reviewer_model" "$reviewer_agent"
 
   # Register in monitor arrays so subsequent monitor_issue_state ticks find
@@ -2459,10 +2464,6 @@ challenge_materialize_challenger_arm() {
   set_task_phase "$arm_key" "review"
   write_stage_result_with_history "$challenger_feature_dir" "review" "running" \
     "$resolved_reviewer_agent" "$reviewer_launch_model"
-
-  local arm_title
-  arm_title=$(pass_task_field "$primary_issue" title)
-  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
 
   local launch_rc=0
   _run_phase_launch review launch_review_phase "$arm_key" "$arm_slug" "$arm_title" \
@@ -2751,12 +2752,15 @@ challenge_materialize_implementation_arm() {
   # Step 7: save the challenger's task-state entry at phase=coding.
   local linear_issue
   linear_issue="$(get_linear_issue_id "$primary_issue" 2>/dev/null || echo "$primary_issue")"
+  local arm_title
+  arm_title=$(pass_task_field "$primary_issue" title)
+  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
   save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
     "" "" "$coder_agent" "$linear_issue" \
     "true" "$primary_issue" "challenger" "$coder_model" \
     "$planner_model" "$coder_model" "$reviewer_model" \
     "$plan_depth" "$code_depth" "$review_mode" \
-    "implementation" "coding"
+    "implementation" "coding" "" "$arm_title"
   challenge_set_varied_model "$arm_key" "$coder_model" "$coder_agent"
   BRANCH_BY_ISSUE["$arm_key"]="$arm_branch"
   SLUG_BY_ISSUE["$arm_key"]="$arm_slug"
@@ -2783,10 +2787,6 @@ challenge_materialize_implementation_arm() {
   set_task_phase "$arm_key" "coding"
   write_stage_result_with_history "$challenger_feature_dir" "coding" "running" \
     "$resolved_coder_agent" "$coder_launch_model" "" "" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-
-  local arm_title
-  arm_title=$(pass_task_field "$primary_issue" title)
-  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
 
   local launch_rc=0
   _run_phase_launch coding launch_coding_phase "$arm_key" "$arm_slug" "$arm_title" \
@@ -3207,13 +3207,16 @@ challenge_materialize_expanded_route_arm() {
   local planner_agent="$challenger_planner_agent"
   [[ -n "$planner_agent" ]] || planner_agent="$(challenge_arm_read_field "$arm_json" '.agents.planner')"
   [[ -n "$planner_agent" ]] || planner_agent="${AGENT_CMD:-claude}"
+  local arm_title
+  arm_title=$(pass_task_field "$primary_issue" title)
+  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
   # challengeModel names the varied stage's model (HOK-3156): the planner here.
   save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
     "" "" "$planner_agent" "$linear_issue" \
     "true" "$primary_issue" "challenger" "$challenger_planner" \
     "$challenger_planner" "$shared_coder" "$shared_reviewer" \
     "$plan_depth" "$code_depth" "$review_mode" \
-    "$varied_stage"
+    "$varied_stage" "" "" "$arm_title"
   challenge_set_varied_model "$arm_key" "$challenger_planner" "$challenger_planner_agent"
 
   BRANCH_BY_ISSUE["$arm_key"]="$arm_branch"
@@ -3239,10 +3242,6 @@ challenge_materialize_expanded_route_arm() {
   set_task_phase "$arm_key" "planning"
   write_stage_result_with_history "$challenger_feature_dir" "planning" "running" \
     "$resolved_planner_agent" "$planner_launch_model"
-
-  local arm_title
-  arm_title=$(pass_task_field "$primary_issue" title)
-  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
 
   local launch_rc=0
   _run_phase_launch planning launch_planning_phase "$arm_key" "$arm_slug" "$arm_title" \
@@ -4538,9 +4537,14 @@ ready_watchdog_dispatch_findings() {
     if [[ "$action" == "queue-remediation" ]]; then
       slug=$(pass_task_field "$issue" slug)
       branch=$(pass_task_field "$issue" branch)
-      base_branch=$(pass_task_field "$issue" baseBranch)
+      # No writer sets a top-level `.baseBranch` on a task row (HOK-3220); the
+      # base lives in the launch contract. Resolve it like the review relaunch
+      # does, else remediation never launches (found by HOK-3223's fixtures).
+      base_branch="$(effective_task_base_branch "$issue" 2>/dev/null || pass_task_field "$issue" baseBranch)"
+      [[ -n "$base_branch" ]] || base_branch="${BASE_BRANCH:-main}"
       pr_number=$(pass_task_field "$issue" pr)
-      title=$(read_state_value "" --arg i "$issue" '.tasks[$i].title // "Task"')
+      title=$(pass_task_field "$issue" title)
+      [[ -n "$title" ]] || title="Task"
       wt_dir=$(pass_task_field "$issue" worktree)
       [[ -z "$wt_dir" && -n "$slug" ]] && wt_dir="${WORKTREE_ROOT}/${slug}"
       if [[ -n "$slug" && -n "$branch" && -n "$base_branch" && -n "$pr_number" ]]; then
@@ -8400,6 +8404,7 @@ challenger_transient_retry_intent_json() {
   local intent_json path
 
   if [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
+    # allow-task-field: legacy challengeIntent fallback for pre-challengeExecutionIntent state files
     intent_json="$(jq -c --arg i "$issue" '(.tasks[$i].challengeExecutionIntent // .tasks[$i].challengeIntent // empty)' "$STATE_FILE" 2>/dev/null || true)"
     [[ "$intent_json" != "null" && -n "$intent_json" ]] && {
       printf '%s\n' "$intent_json"
@@ -10259,6 +10264,7 @@ ensure_review_scope_baseline() {
   fi
   if [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE:-}" ]]; then
     launch_base="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.launchContract.baseSha // empty' "$STATE_FILE" 2>/dev/null || true)"
+    # allow-task-field: legacy baseBranch fallback for pre-lifecycle.launchContract state files
     launch_base_branch="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.launchContract.baseBranch // .tasks[$issue].baseBranch // empty' "$STATE_FILE" 2>/dev/null || true)"
   fi
   if [[ "$launch_base" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
@@ -13309,6 +13315,7 @@ launch_review_for_missing_evidence() {
   local reviewer_agent reviewer_model review_mode rc=0
 
   reviewer_agent="$(read_phase_config "$feature_dir" "review" "agent" 2>/dev/null || true)"
+  # allow-task-field: legacy reviewerAgent fallback; current writers set only .agent
   [[ -n "$reviewer_agent" ]] || reviewer_agent="$(read_state_value "" --arg i "$issue" '.tasks[$i].reviewerAgent // .tasks[$i].agent // ""')"
   [[ -n "$reviewer_agent" ]] || reviewer_agent="${current_agent:-$AGENT_CMD}"
 
@@ -14573,10 +14580,9 @@ codex_has_pending_approval() {
   (( ${#pending_calls[@]} > 0 ))
 }
 
-get_task_meta() {
-  local issue="$1" field="$2"
-  read_state_value "" --arg issue "$issue" --arg field "$field" '.tasks[$issue][$field] // empty'
-}
+# get_task_meta is provided by shared/lib/wavemill-common.sh (sourced above).
+# The monitor-local override was removed in HOK-3221; both implementations had
+# the same semantics (`.tasks[$issue][$field]`) and the duplicate drifted.
 
 # Deprecated alias (HOK-3115), kept for one release so existing read-side
 # callers and test stubs keep working: resolves through task_identity_linear_id
@@ -15813,10 +15819,10 @@ cleanup_merged_primary_challenge_task() {
     --arg pair_id "$pair_id" \
     '
     (.tasks[$issue] // {}) as $task
-    | ($pr | tonumber? // $task.pr // $task.prNumber // null) as $merged_pr
+    | ($pr | tonumber? // $task.pr // null) as $merged_pr
     | {
         pr: $merged_pr,
-        prNumber: ($task.prNumber // $merged_pr),
+        prNumber: $merged_pr,
         branch: $task.branch,
         slug: ($task.slug // $slug),
         challengePairId: ($task.challengePairId // $pair_id),
@@ -16358,6 +16364,216 @@ monitor_ledger_recovery_tick() {
   return 0
 }
 
+# ─── Stale node_modules detector (HOK-3254) ─────────────────────────────────
+#
+# A slow-cadence check on REPO_DIR. Loads the HOK-3254 drift primitive from
+# shared/lib/deps-drift.sh; on drift logs `[deps-drift] ...`, degrades
+# backstage service health (status=degraded), and — when
+# WAVEMILL_DEPS_DRIFT_AUTOFIX != 0 — schedules `npm ci` via a bounded-retry
+# gate keyed on the current lockfile hash so a fresh dependency bump resets
+# the budget. The reinstall runs into a temp `node_modules.new/` and swaps
+# atomically with `mv` so a mid-pass TS tool spawn cannot land halfway.
+# Kill switches: WAVEMILL_DEPS_DRIFT_DISABLED=1 (no detection at all),
+# WAVEMILL_DEPS_DRIFT_AUTOFIX=0 (detect only, no install).
+monitor_deps_drift_interval() {
+  local value="${DEPS_DRIFT_INTERVAL_SECONDS:-600}"
+  [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]] || value=600
+  printf '%s\n' "$value"
+}
+
+_monitor_deps_drift_load_primitive() {
+  if declare -F deps_drift_check >/dev/null 2>&1; then
+    return 0
+  fi
+  local src="${BASH_SOURCE[0]%/*}/deps-drift.sh"
+  if [[ -f "$src" ]]; then
+    # shellcheck source=./deps-drift.sh
+    . "$src" || return 1
+    return 0
+  fi
+  return 1
+}
+
+_monitor_deps_drift_reinstall() {
+  local repo_dir="$1" log_file="$2" fingerprint="$3"
+  local ts; ts="$(date +%s)"
+  local staging="$repo_dir/.wavemill/deps-drift-staging.$ts.$$"
+  local new_nm_target="$staging/node_modules"
+  local final_nm="$repo_dir/node_modules"
+  local backup_nm="$repo_dir/node_modules.deps-drift.$ts.$$"
+
+  mkdir -p "$staging" 2>/dev/null || {
+    printf '[deps-drift] staging mkdir failed, leaving node_modules in place\n' \
+      >>"$log_file" 2>&1 || true
+    return 1
+  }
+  # Copy only the files npm ci needs; this is a one-time snapshot of the
+  # repo's package manifests so the install is reproducible.
+  cp "$repo_dir/package.json" "$staging/package.json" 2>/dev/null || {
+    rm -rf "$staging" 2>/dev/null || true
+    return 1
+  }
+  cp "$repo_dir/package-lock.json" "$staging/package-lock.json" 2>/dev/null || {
+    rm -rf "$staging" 2>/dev/null || true
+    return 1
+  }
+  if [[ -f "$repo_dir/.npmrc" ]]; then
+    cp "$repo_dir/.npmrc" "$staging/.npmrc" 2>/dev/null || true
+  fi
+
+  if ! (cd "$staging" && npm ci --no-audit --no-fund >>"$log_file" 2>&1); then
+    rm -rf "$staging" 2>/dev/null || true
+    printf '[deps-drift] npm ci failed (fingerprint=%s), leaving node_modules in place\n' \
+      "${fingerprint:0:12}" >>"$log_file" 2>&1 || true
+    return 1
+  fi
+  if [[ ! -d "$new_nm_target" ]]; then
+    rm -rf "$staging" 2>/dev/null || true
+    printf '[deps-drift] staging install produced no node_modules, aborting swap\n' \
+      >>"$log_file" 2>&1 || true
+    return 1
+  fi
+
+  # Rename the live tree aside (not deleted) so a crash leaves a recoverable
+  # .deps-drift directory; then move the fresh one in. The window between
+  # the two renames is the only moment a TS tool spawn can see no
+  # node_modules; keep it as small as a single mv.
+  if [[ -d "$final_nm" ]]; then
+    if ! mv "$final_nm" "$backup_nm" 2>/dev/null; then
+      rm -rf "$staging" 2>/dev/null || true
+      printf '[deps-drift] could not aside existing node_modules, aborting swap\n' \
+        >>"$log_file" 2>&1 || true
+      return 1
+    fi
+  fi
+  if ! mv "$new_nm_target" "$final_nm" 2>/dev/null; then
+    # Attempt to restore the backup so the repo is not left without deps.
+    if [[ -d "$backup_nm" ]]; then
+      mv "$backup_nm" "$final_nm" 2>/dev/null || true
+    fi
+    rm -rf "$staging" 2>/dev/null || true
+    printf '[deps-drift] atomic swap failed, restored prior node_modules\n' \
+      >>"$log_file" 2>&1 || true
+    return 1
+  fi
+
+  rm -rf "$staging" 2>/dev/null || true
+  rm -rf "$backup_nm" 2>/dev/null || true
+  printf '[deps-drift] reinstall + swap complete (fingerprint=%s)\n' "${fingerprint:0:12}" \
+    >>"$log_file" 2>&1 || true
+  return 0
+}
+
+monitor_deps_drift_tick() {
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
+  [[ "${WAVEMILL_DEPS_DRIFT_DISABLED:-0}" == "1" ]] && return 0
+  [[ -n "${STATE_DIR:-}" && -n "${REPO_DIR:-}" ]] || return 0
+
+  local interval last_at now stamp_file="$STATE_DIR/.deps-drift-last-at"
+  interval="$(monitor_deps_drift_interval)"
+  now="$(date +%s)"
+  if [[ -f "$stamp_file" ]]; then
+    last_at="$(cat "$stamp_file" 2>/dev/null || echo 0)"
+    [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
+    (( now - last_at < interval )) && return 0
+  fi
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  _monitor_terminal_cleanup_write "$stamp_file" "$now"
+
+  _monitor_deps_drift_load_primitive || return 0
+
+  local log_file="${MILL_LOG_FILE:-/dev/null}"
+  local json status reason packages
+  json="$(deps_drift_check "$REPO_DIR" 2>/dev/null)" || json=""
+  status="$(printf '%s' "$json" | jq -r '.status // ""' 2>/dev/null)"
+  reason="$(printf '%s' "$json" | jq -r '.reason // ""' 2>/dev/null)"
+  packages="$(printf '%s' "$json" | jq -r '[.packages[]?.name] | join(",")' 2>/dev/null)"
+
+  case "$status" in
+    ok|"")
+      return 0
+      ;;
+    unknown)
+      printf '[deps-drift] unknown status for %s (reason=%s), skipping\n' \
+        "$REPO_DIR" "${reason:-unknown}" >>"$log_file" 2>&1 || true
+      return 0
+      ;;
+  esac
+
+  # status=drift
+  printf '[deps-drift] drifted packages reason=%s packages=%s\n' \
+    "${reason:-unknown}" "${packages:-<none>}" >>"$log_file" 2>&1 || true
+
+  # Mark backstage service health as degraded so the dashboard surfaces it.
+  local health_file
+  if declare -F wavemill_backstage_health_file >/dev/null 2>&1 \
+    && declare -F wavemill_write_backstage_service_health >/dev/null 2>&1; then
+    health_file="$(wavemill_backstage_health_file "$STATE_DIR" 2>/dev/null || true)"
+    if [[ -n "$health_file" ]]; then
+      local detail="stale node_modules: ${reason}${packages:+ (${packages})}"
+      wavemill_write_backstage_service_health \
+        "$health_file" "deps" "degraded" "$detail" 0 "" "" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" 1 \
+        >/dev/null 2>&1 || true
+    fi
+  fi
+
+  if [[ "${WAVEMILL_DEPS_DRIFT_AUTOFIX:-1}" == "0" ]]; then
+    return 0
+  fi
+
+  # Only npm is auto-fixable today; the primitive refuses pnpm / yarn.
+  case "$reason" in
+    pnpm-not-supported|yarn-not-supported|hash-tool-missing)
+      return 0
+      ;;
+  esac
+
+  if ! command -v npm >/dev/null 2>&1; then
+    printf '[deps-drift] npm not on PATH, cannot auto-fix\n' >>"$log_file" 2>&1 || true
+    return 0
+  fi
+
+  # Bounded retry: key on the lockfile's hash so a new dependency bump
+  # resets the budget. Reuse the existing bounded_retry helper when
+  # available; fall back to a single attempt otherwise.
+  local fingerprint
+  if declare -F deps_lockfile_fingerprint >/dev/null 2>&1; then
+    fingerprint="$(deps_lockfile_fingerprint "$REPO_DIR" 2>/dev/null || true)"
+  fi
+  if [[ -z "$fingerprint" ]]; then
+    if command -v sha256sum >/dev/null 2>&1; then
+      fingerprint="$(sha256sum "$REPO_DIR/package-lock.json" 2>/dev/null | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+      fingerprint="$(shasum -a 256 "$REPO_DIR/package-lock.json" 2>/dev/null | awk '{print $1}')"
+    fi
+  fi
+  [[ -n "$fingerprint" ]] || fingerprint="unknown"
+
+  local gate_result="proceed"
+  if declare -F bounded_retry_gate >/dev/null 2>&1; then
+    gate_result="$(bounded_retry_gate "$STATE_DIR" "deps-drift-reinstall" "$fingerprint" 4 2>/dev/null || echo proceed)"
+  fi
+  case "$gate_result" in
+    exhausted|exhausted-quiet)
+      printf '[deps-drift] reinstall budget exhausted for fingerprint=%s, backstage left degraded\n' \
+        "${fingerprint:0:12}" >>"$log_file" 2>&1 || true
+      return 0
+      ;;
+    backoff)
+      return 0
+      ;;
+  esac
+  if declare -F bounded_retry_increment >/dev/null 2>&1; then
+    bounded_retry_increment "$STATE_DIR" "deps-drift-reinstall" "$fingerprint" "" >/dev/null 2>&1 || true
+  fi
+
+  (
+    _monitor_deps_drift_reinstall "$REPO_DIR" "$log_file" "$fingerprint" || true
+  ) >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  return 0
+}
+
 # ─── Live state-invariant checker (HOK-3229) ────────────────────────────────
 #
 # A tracked async job that evaluates the HOK-3229 structural invariants over
@@ -16768,11 +16984,12 @@ find_pr_for_branch() {
 
   worktree="$(pass_task_field "$issue" worktree 2>/dev/null || true)"
   [[ -n "$worktree" && -d "$worktree" ]] && head_sha="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  # allow-task-field: legacy baseBranch fallback for pre-lifecycle.launchContract state files
   base_branch="$(read_state_value "${BASE_BRANCH:-}" --arg i "$issue" '.tasks[$i].lifecycle.launchContract.baseBranch // .tasks[$i].baseBranch // empty' 2>/dev/null || true)"
   [[ -n "$base_branch" ]] || base_branch="${BASE_BRANCH:-}"
   attempt_json="$(read_state_value "" --arg i "$issue" '.tasks[$i].attempt // .tasks[$i].lifecycle.attempt // empty' 2>/dev/null || true)"
   attempt_id="$(jq -r '.attemptId // empty' <<<"${attempt_json:-{}}" 2>/dev/null || true)"
-  linear_state="$(read_state_value "" --arg i "$issue" '.tasks[$i].linearState // .tasks[$i].linear.state.name // empty' 2>/dev/null || true)"
+  linear_state="$(read_state_value "" --arg i "$issue" '.tasks[$i].linearState // empty' 2>/dev/null || true)"
   challenge_pair="$(pass_task_field "$issue" challengePairId 2>/dev/null || true)"
   challenge_role="$(pass_task_field "$issue" challengeRole 2>/dev/null || true)"
 
@@ -18163,6 +18380,7 @@ LAST_LAUNCHED_SLOTS=1
 
 launch_task() {
   local issue="$1" slug="$2" title="$3" remaining_slots="${4:-1}" override_base="${5:-}"
+  [[ -n "$title" ]] || title="Task"
   local branch="task/${slug}"
   local wt_dir="${WORKTREE_ROOT}/${slug}"
   local feature_dir="${wt_dir}/features/${slug}"
@@ -18943,7 +19161,7 @@ EOF
     primary_challenge_model="$(challenge_selection_health_varied_model "$varied_stage_for_state" "$planner_model" "$task_model" "$reviewer_model")"
     [[ -n "$primary_challenge_model" ]] || primary_challenge_model="$task_model"
   fi
-  save_task_state "$issue" "$slug" "$branch" "$wt_dir" "" "" "${planner_agent:-$task_agent_cmd}" "$linear_issue" "$effective_challenge" "$challenge_pair" "${challenge_role:-}" "$primary_challenge_model" "$planner_model" "$task_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "${challenge_stage:-}"
+  save_task_state "$issue" "$slug" "$branch" "$wt_dir" "" "" "${planner_agent:-$task_agent_cmd}" "$linear_issue" "$effective_challenge" "$challenge_pair" "${challenge_role:-}" "$primary_challenge_model" "$planner_model" "$task_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "${challenge_stage:-}" "" "" "$title"
   if [[ "$challenge_enabled_for_launch" == "true" ]]; then
     if [[ "${defer_challenger:-false}" == "true" ]]; then
       # HOK-2811: Review-stage — record the challenger as a pending arm on the
@@ -18971,7 +19189,7 @@ EOF
         "${WORKTREE_ROOT}/${slug}/features/${slug}" \
         "$challenge_execution_intent"
     else
-      save_task_state "$challenger_key" "$challenger_slug" "task/${challenger_slug}" "${WORKTREE_ROOT}/${challenger_slug}" "" "" "${challenger_planner_agent:-$challenger_agent}" "$linear_issue" "true" "$challenge_pair" "challenger" "$(challenge_selection_health_varied_model "$challenge_stage" "$challenger_planner" "$challenger_model" "$challenger_reviewer")" "$challenger_planner" "$challenger_model" "$challenger_reviewer" "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" "$challenge_stage"
+      save_task_state "$challenger_key" "$challenger_slug" "task/${challenger_slug}" "${WORKTREE_ROOT}/${challenger_slug}" "" "" "${challenger_planner_agent:-$challenger_agent}" "$linear_issue" "true" "$challenge_pair" "challenger" "$(challenge_selection_health_varied_model "$challenge_stage" "$challenger_planner" "$challenger_model" "$challenger_reviewer")" "$challenger_planner" "$challenger_model" "$challenger_reviewer" "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" "$challenge_stage" "" "" "$title"
       state_mutate "$STATE_FILE" '.tasks[$issue].challengeStage = $stage' --arg issue "$challenger_key" --arg stage "$challenge_stage" || true
       state_mutate "$STATE_FILE" \
         '.tasks[$issue].challengerLaunched = true
@@ -20044,7 +20262,7 @@ handle_re_review_command() {
     return 0
   fi
 
-  pr=$(read_state_value "" --arg issue "$issue" '.tasks[$issue].pr // .tasks[$issue].pullRequest // empty')
+  pr=$(read_state_value "" --arg issue "$issue" '.tasks[$issue].pr // empty')
   if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
     pr="$(find_pr_for_branch "$branch" 2>/dev/null || true)"
   fi
@@ -23731,6 +23949,10 @@ while :; do
   monitor_step_begin sideEffectDuplicateDetector
   monitor_side_effect_detector_tick || true
   monitor_step_end sideEffectDuplicateDetector
+  # HOK-3254: slow-cadence stale node_modules detector + auto-fix.
+  monitor_step_begin depsDrift
+  monitor_deps_drift_tick || true
+  monitor_step_end depsDrift
   # HOK-3185: the one recovery loop over ledger step rows (shadow by default).
   monitor_step_begin ledgerRecovery
   monitor_ledger_recovery_tick || true

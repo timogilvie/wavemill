@@ -114,6 +114,7 @@ run_launch_case() {
     ISSUE="HOK-1375"
     SLUG="suppress-output-in-task-selection-pane-when-starting-new-tasks"
     TITLE="Suppress output in task selection pane when starting new tasks"
+    [[ "$TEST_CASE" == "empty_title" ]] && TITLE=""
     REPO_DIR="$CASE_DIR/repo"
     WORKTREE_ROOT="$CASE_DIR/worktrees"
     STATE_FILE="$CASE_DIR/state.json"
@@ -157,7 +158,8 @@ EOF
     agent_is_native_cmd() { return 1; }
     agent_resolve_from_model() { printf "%s\n" "${1:-codex}"; }
     mark_task_needs_user_and_defer() { return 0; }
-    save_task_state() { :; }
+    SAVE_TITLE=""
+    save_task_state() { SAVE_TITLE="${@: -1}"; }
     set_task_phase() { :; }
     set_window_attention_state() { :; }
     get_model_operating_mode() { printf "%s\n" "normal"; }
@@ -211,8 +213,8 @@ EOF
     set -e
 
     mill_log="$(tr "\n" ";" < "$MILL_LOG_FILE")"
-    printf "rc=%s\nlaunch_planning_calls=%s\nmill_log=%s\nerror_logs=%s\nlogs=%s\n" \
-      "$rc" "$LAUNCH_PLANNING_CALLS" "$mill_log" "$LOG_ERROR_OUTPUT" "$LOG_OUTPUT"
+    printf "rc=%s\nlaunch_planning_calls=%s\nsaved_title=%s\nmill_log=%s\nerror_logs=%s\nlogs=%s\n" \
+      "$rc" "$LAUNCH_PLANNING_CALLS" "$SAVE_TITLE" "$mill_log" "$LOG_ERROR_OUTPUT" "$LOG_OUTPUT"
   ' 2>&1
 }
 
@@ -299,6 +301,9 @@ check_contains "create success logs worktree noise to mill log" "$output" "mill_
 check_not_contains "create success does not leak preparing line to pane" "$output" $'\nPreparing worktree (new branch '\''task/per-vendor-frontier-quota-telemetry'\'')'
 check_not_contains "create success does not leak tracking line to pane" "$output" $'\nbranch '\''task/per-vendor-frontier-quota-telemetry'\'' set up to track '\''origin/main'\''.'
 check_not_contains "create success does not leak head line to pane" "$output" $'\nHEAD is now at cb3e98d HOK-1367: Aggregate operating mode across all frontier models (#349)'
+
+output="$(run_launch_case empty_title)"
+check_contains "empty launch title persists an explicit fallback" "$output" "saved_title=Task"
 
 output="$(run_launch_case resume_success)"
 check_contains "resume success returns 0" "$output" "rc=0"

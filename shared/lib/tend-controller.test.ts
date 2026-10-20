@@ -2352,6 +2352,38 @@ describe('executeMerge', () => {
     assert.ok(calls.some((cmd) => cmd.includes('gh pr checks 42 --json name,state,bucket')));
   });
 
+  it('waitForChecks reports liveness on every poll while CI is pending (HOK-3264)', async () => {
+    // A long CI wait must keep tend's heartbeat fresh; otherwise the monitor
+    // respawns tend mid-merge and strands the rebased PR without wm:ready.
+    let checkPolls = 0;
+    let onPollCalls = 0;
+    const result = await waitForChecks(
+      42,
+      '/tmp/repo',
+      (cmd) => {
+        if (cmd.includes('--json headRefOid')) return JSON.stringify({ headRefOid: 'new000' });
+        checkPolls += 1;
+        return checkPolls < 4
+          ? JSON.stringify([{ name: 'Shell and Unit Tests', state: 'IN_PROGRESS', bucket: 'pending' }])
+          : JSON.stringify([{ name: 'Shell and Unit Tests', state: 'SUCCESS', bucket: 'pass' }]);
+      },
+      {
+        timeoutMs: 60_000,
+        pollIntervalMs: 0,
+        expectedHeadSha: 'new000',
+        requiredChecks: ['Shell and Unit Tests'],
+        onPoll: () => {
+          onPollCalls += 1;
+          if (onPollCalls === 2) throw new Error('heartbeat write failed');
+        },
+      },
+    );
+
+    assert.equal(result.outcome, 'pass');
+    assert.equal(checkPolls, 4);
+    assert.equal(onPollCalls, 4, 'expected one liveness callback per poll, including after a callback throw');
+  });
+
   it('waitForChecks passes when the head matches on every poll (regression)', async () => {
     const calls: string[] = [];
     const result = await waitForChecks(
@@ -4347,6 +4379,8 @@ describe('executeMerge worktree-prep timeout (HOK-3039)', () => {
         phases.filter((p) => p !== 'heartbeat').slice(0, 4),
         ['reap', 'fetch', 'add', 'ready'],
       );
+      // HOK-3264: the post-push CI wait reports progress too.
+      assert.ok(phases.includes('checks-wait'), `expected a checks-wait phase, got ${phases.join(',')}`);
     } finally {
       options.cleanup();
     }

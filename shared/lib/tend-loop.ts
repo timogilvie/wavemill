@@ -717,7 +717,9 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
             progressState: 'progressing',
             laneCondition: 'progressing',
             status: 'healthy',
-            detail: `merging-#${prNumber} worktree-prep:${phase}`,
+            detail: phase === 'checks-wait'
+              ? `merging-#${prNumber} checks-wait`
+              : `merging-#${prNumber} worktree-prep:${phase}`,
             integrationAdvisory: decision.integrationHealth.advisoryFailures ?? [],
             blockedLane: [],
           });
