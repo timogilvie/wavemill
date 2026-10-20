@@ -52,6 +52,8 @@ Rules:
 - Only *undismissed* blockers count toward the verdict: use `"not_ready"` when at least one undismissed blocker remains; if every blocker is dismissed (or none exist), use `"ready"`.
 - Dismiss only findings you actually disproved with specific reasoning or verification — never to lower the count.
 
+{{HIGH_BLAST_RADIUS_GUIDANCE}}
+
 ---
 
 # Scoped Review Instructions
