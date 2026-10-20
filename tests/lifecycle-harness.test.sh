@@ -324,8 +324,14 @@ harness_extract_real_functions() {
     recover_missing_expansion_artifact \
     handle_expanded_reroute_handoff_failure \
     enforce_plan_packet_binding \
+    plan_packet_replan_gate \
     _plan_packet_relaunch_planning \
-    _plan_packet_needs_user
+    _plan_packet_needs_user \
+    task_inputs_prepare \
+    task_inputs_failure_marker \
+    task_inputs_surface_failure \
+    task_inputs_demote_planning \
+    ensure_task_inputs_ready
   do
     local extracted source_file
     # trim_outer_whitespace is defined only in the parent mill script; every
@@ -919,7 +925,32 @@ EOF
   check_eq "expanded wins: initial route remains bootstrap-only" "$initial_before" "$(cat "$repo/features/$slug/.initial-route.json")"
 }
 
+# HOK-3253: expansion recovery now runs before approval, at the plan.md ->
+# awaiting_user publish point, as the tracked prepare-task-inputs job. These
+# tests run the job body inline (prepare_task_inputs_gate's sync shape) so the
+# real recover_missing_expansion_artifact runs within one tick.
+harness_inline_prepare_gate() {
+  cat <<'GATE'
+    prepare_task_inputs_gate() {
+      PREPARE_TASK_INPUTS_LAST_DETAIL=""
+      recover_missing_expansion_artifact "$@" && return 0
+      PREPARE_TASK_INPUTS_LAST_DETAIL="$(expansion_recovery_detail "$3")"
+      return 1
+    }
+GATE
+}
+
+# Planning `running` with a fresh plan.md and no approval yet: the publish point.
+harness_setup_publish_point() {
+  local repo="$1" slug="$2"
+  harness_setup_planning_state "$repo" "$slug" "running"
+  rm -f "$repo/features/$slug/.plan-approved"
+}
+
 test_missing_expansion_recovery_success_launches_with_expanded_route() {
+  # HOK-3253: an approved plan whose inputs were never prepared (approved
+  # before the gate existed) is taken back to planning: the expansion runs as
+  # a tracked job, not synchronously after approval, and coding waits.
   local slug="missing-expansion-recovery-success"
   local issue="HOK-1569-RECOVER-OK"
   local repo tick overrides
@@ -930,44 +961,25 @@ test_missing_expansion_recovery_success_launches_with_expanded_route() {
   printf 'raw issue text\n' > "$repo/features/$slug/task-packet.md"
 
   overrides="$(harness_common_route_overrides)
+    prepare_task_inputs_gate() {
+      printf 'x\\n' >> \"\$REPO_UNDER_TEST/.wavemill/prepare-gate-calls\"
+      return 4
+    }
     recover_missing_expansion_artifact() {
-      local issue=\"\$1\" slug=\"\$2\" feature_dir=\"\$3\"
-      local count_file=\"\$REPO_UNDER_TEST/.wavemill/recovery-count\"
-      local count
-      count=\$(cat \"\$count_file\" 2>/dev/null || echo 0)
-      printf '%s\n' \$((count + 1)) > \"\$count_file\"
-      expansion_recovery_mark_attempted \"\$feature_dir\" \"\$issue\" \"missing\"
-      cat > \"\$feature_dir/task-packet.md\" <<'EOF'
-## 1. Objective
-
-Recover the missing expanded routing artifact.
-EOF
-      cat > \"\$feature_dir/.post-expansion-route.json\" <<'EOF'
-{
-  \"planner\": \"expanded-planner\",
-  \"coder\": \"gpt-5.4\",
-  \"reviewer\": \"claude-sonnet-5\",
-  \"planDepth\": \"deep\",
-  \"codeDepth\": \"deep\",
-  \"reviewMode\": \"static+llm\",
-  \"provenance\": {
-    \"source\": \"expanded-test\"
-  }
-}
-EOF
-      expansion_recovery_mark_result \"\$feature_dir\" \"\$issue\" \"succeeded\" \"stub-success\" \"0\"
+      printf 'sync\\n' >> \"\$REPO_UNDER_TEST/.wavemill/sync-recovery\"
       return 0
     }
   "
   tick="$(harness_run_tick "$repo" "$slug" "$issue" "$overrides")"
 
-  check_eq "recover ok: coding launches" "true" "$(kv_value "$tick" coding_launched)"
-  check_eq "recover ok: coding model from expanded route" "gpt-5.4" "$(kv_value "$tick" coding_model)"
-  check_eq "recover ok: coding depth from expanded route" "deep" "$(kv_value "$tick" coding_depth)"
-  check_eq "recover ok: routing provenance expanded" "expanded" "$(jq -r '.provenance.source' "$repo/features/$slug/.routing-complete")"
-  check_eq "recover ok: recovery state succeeded" "succeeded" "$(jq -r '.status' "$repo/features/$slug/.expansion-recovery-state.json")"
-  check_eq "recover ok: recovery attempted once" "1" "$(cat "$repo/.wavemill/recovery-count")"
-  check_not_contains "recover ok: no blocked warning" "$(kv_value "$tick" warn_output)" "[expansion-handshake] BLOCKED"
+  check_eq "handoff prep: coding does not launch" "false" "$(kv_value "$tick" coding_launched)"
+  check_eq "handoff prep: planning back to running" "running" "$(harness_read_stage_status "$repo" "$slug" planning)"
+  check_eq "handoff prep: phase planning" "planning" "$(kv_value "$tick" phase)"
+  check_file_absent "handoff prep: pre-preparation approval discarded" "$repo/features/$slug/.plan-approved"
+  check_contains "handoff prep: discard is logged" "$(kv_value "$tick" warn_output)" "discarded a plan approval given before task inputs were ready"
+  check_eq "handoff prep: tracked preparation job requested once" "1" "$(grep -c . "$repo/.wavemill/prepare-gate-calls")"
+  check_file_absent "handoff prep: no synchronous recovery on the hot path" "$repo/.wavemill/sync-recovery"
+  check_eq "handoff prep: attention clear while preparing" "clear" "$(kv_value "$tick" attention)"
 }
 
 test_challenger_missing_expansion_recovery_uses_linear_issue_id() {
@@ -975,12 +987,13 @@ test_challenger_missing_expansion_recovery_uses_linear_issue_id() {
   local issue="HOK-2265_c"
   local repo tick overrides npx_args
   repo="$(harness_init_repo "$slug")"
-  harness_setup_planning_state "$repo" "$slug" "completed"
+  harness_setup_publish_point "$repo" "$slug"
   harness_setup_runtime_artifacts "$repo"
   harness_seed_bootstrap_route "$repo" "$slug"
   printf 'raw issue text\n' > "$repo/features/$slug/task-packet.md"
 
   overrides="$(harness_common_route_overrides)
+$(harness_inline_prepare_gate)
     source \"\$REAL_FUNC_FILE\"
     TOOLS_DIR=\"/tmp/\${SESSION}-\${ISSUE}-tools\"
     mkdir -p \"\$TOOLS_DIR\"
@@ -1030,8 +1043,9 @@ EOF
   tick="$(harness_run_tick "$repo" "$slug" "$issue" "$overrides")"
   npx_args="$(cat "$repo/.wavemill/npx-args.log")"
 
-  check_eq "challenger recover real id: coding launches" "true" "$(kv_value "$tick" coding_launched)"
-  check_eq "challenger recover real id: coding model from expanded route" "gpt-5.4" "$(kv_value "$tick" coding_model)"
+  # The npx stub also swallows the stage-result CLI, so read the publish log.
+  check_contains "challenger recover real id: plan offered once inputs are ready" "$(kv_value "$tick" log_output)" "marking planning as awaiting_user"
+  check_eq "challenger recover real id: recovery succeeded before approval" "succeeded" "$(jq -r '.status' "$repo/features/$slug/.expansion-recovery-state.json")"
   check_contains "challenger recover real id: uses real Linear issue id" "$npx_args" "expand-issue.ts HOK-2265 --output $repo/features/$slug/task-packet.md"
   check_not_contains "challenger recover real id: does not use synthetic issue id" "$npx_args" "expand-issue.ts HOK-2265_c --output"
   check_not_contains "challenger recover real id: no invalid identifier log" "$(kv_value "$tick" warn_output)" "Invalid issue identifier"
@@ -1042,12 +1056,13 @@ test_challenger_missing_expansion_recovery_extracts_linear_issue_id_from_url() {
   local issue="HOK-2265_c"
   local repo tick overrides npx_args
   repo="$(harness_init_repo "$slug")"
-  harness_setup_planning_state "$repo" "$slug" "completed"
+  harness_setup_publish_point "$repo" "$slug"
   harness_setup_runtime_artifacts "$repo"
   harness_seed_bootstrap_route "$repo" "$slug"
   printf 'raw issue text\n' > "$repo/features/$slug/task-packet.md"
 
   overrides="$(harness_common_route_overrides)
+$(harness_inline_prepare_gate)
     source \"\$REAL_FUNC_FILE\"
     TOOLS_DIR=\"/tmp/\${SESSION}-\${ISSUE}-tools\"
     mkdir -p \"\$TOOLS_DIR\"
@@ -1097,7 +1112,8 @@ EOF
   tick="$(harness_run_tick "$repo" "$slug" "$issue" "$overrides")"
   npx_args="$(cat "$repo/.wavemill/npx-args.log")"
 
-  check_eq "challenger recover url id: coding launches" "true" "$(kv_value "$tick" coding_launched)"
+  # The npx stub also swallows the stage-result CLI, so read the publish log.
+  check_contains "challenger recover url id: plan offered once inputs are ready" "$(kv_value "$tick" log_output)" "marking planning as awaiting_user"
   check_contains "challenger recover url id: extracts real Linear issue id" "$npx_args" "expand-issue.ts HOK-2265 --output $repo/features/$slug/task-packet.md"
   check_not_contains "challenger recover url id: does not pass Linear URL" "$npx_args" "expand-issue.ts https://linear.app/wavemill/issue/HOK-2265"
 }
@@ -1107,12 +1123,13 @@ test_challenger_missing_expansion_recovery_skips_without_linear_issue_id() {
   local issue="HOK-2265_c"
   local repo tick overrides
   repo="$(harness_init_repo "$slug")"
-  harness_setup_planning_state "$repo" "$slug" "completed"
+  harness_setup_publish_point "$repo" "$slug"
   harness_setup_runtime_artifacts "$repo"
   harness_seed_bootstrap_route "$repo" "$slug"
   printf 'raw issue text\n' > "$repo/features/$slug/task-packet.md"
 
   overrides="$(harness_common_route_overrides)
+$(harness_inline_prepare_gate)
     source \"\$REAL_FUNC_FILE\"
     TOOLS_DIR=\"/tmp/\${SESSION}-\${ISSUE}-tools\"
     mkdir -p \"\$TOOLS_DIR\"
@@ -1137,13 +1154,14 @@ test_challenger_missing_expansion_recovery_skips_without_linear_issue_id() {
   "
   tick="$(harness_run_tick "$repo" "$slug" "$issue" "$overrides")"
 
-  check_eq "challenger recover skip: coding launches" "true" "$(kv_value "$tick" coding_launched)"
-  check_eq "challenger recover skip: coding stays bootstrap" "bootstrap-coder" "$(kv_value "$tick" coding_model)"
+  check_eq "challenger recover skip: no approval offered without inputs" "running" "$(harness_read_stage_status "$repo" "$slug" planning)"
+  check_eq "challenger recover skip: needs-user attention" "needs-user" "$(kv_value "$tick" attention)"
   check_eq "challenger recover skip: recovery state skipped" "skipped" "$(jq -r '.status' "$repo/features/$slug/.expansion-recovery-state.json")"
   check_eq "challenger recover skip: skipped detail stable" "task-identity-linear-issue-id-unresolvable" "$(jq -r '.detail' "$repo/features/$slug/.expansion-recovery-state.json")"
   check_not_contains "challenger recover skip: expand tool not invoked" "$(cat "$repo/.wavemill/npx-args.log")" "expand-issue.ts"
   check_contains "challenger recover skip: warning includes skipped" "$(kv_value "$tick" warn_output)" "RECOVERY_SKIPPED"
-  check_contains "challenger recover skip: warning includes bootstrap fallback" "$(kv_value "$tick" warn_output)" "RECOVERY_FALLBACK_BOOTSTRAP"
+  check_contains "challenger recover skip: preparation failure surfaced" "$(kv_value "$tick" warn_output)" "task-input preparation failed before plan approval"
+  check_contains "challenger recover skip: evidence names the skip" "$(jq -r '.detail' "$repo/features/$slug/.task-inputs-failure.json")" "task-identity-linear-issue-id-unresolvable"
   check_not_contains "challenger recover skip: no invalid identifier log" "$(kv_value "$tick" warn_output)" "Invalid issue identifier"
 }
 
@@ -1152,12 +1170,13 @@ test_missing_expansion_recovery_non_challenger_uses_issue_key() {
   local issue="HOK-2300"
   local repo tick overrides npx_args
   repo="$(harness_init_repo "$slug")"
-  harness_setup_planning_state "$repo" "$slug" "completed"
+  harness_setup_publish_point "$repo" "$slug"
   harness_setup_runtime_artifacts "$repo"
   harness_seed_bootstrap_route "$repo" "$slug"
   printf 'raw issue text\n' > "$repo/features/$slug/task-packet.md"
 
   overrides="$(harness_common_route_overrides)
+$(harness_inline_prepare_gate)
     source \"\$REAL_FUNC_FILE\"
     TOOLS_DIR=\"/tmp/\${SESSION}-\${ISSUE}-tools\"
     mkdir -p \"\$TOOLS_DIR\"
@@ -1198,46 +1217,39 @@ EOF
   tick="$(harness_run_tick "$repo" "$slug" "$issue" "$overrides")"
   npx_args="$(cat "$repo/.wavemill/npx-args.log")"
 
-  check_eq "non-challenger recover: coding launches" "true" "$(kv_value "$tick" coding_launched)"
+  # The npx stub also swallows the stage-result CLI, so read the publish log.
+  check_contains "non-challenger recover: plan offered once inputs are ready" "$(kv_value "$tick" log_output)" "marking planning as awaiting_user"
   check_contains "non-challenger recover: uses original issue id" "$npx_args" "expand-issue.ts HOK-2300 --output $repo/features/$slug/task-packet.md"
 }
 
 test_missing_expansion_recovery_failure_launches_with_bootstrap() {
+  # HOK-3253: a failed preparation never offers the plan for approval (the
+  # old bootstrap fallback launched coding on the raw input after approval).
   local slug="missing-expansion-recovery-failure"
   local issue="HOK-1569-RECOVER-FAIL"
-  local repo tick overrides
+  local repo tick overrides marker
   repo="$(harness_init_repo "$slug")"
-  harness_setup_planning_state "$repo" "$slug" "completed"
+  harness_setup_publish_point "$repo" "$slug"
   harness_setup_runtime_artifacts "$repo"
   harness_seed_bootstrap_route "$repo" "$slug"
   printf 'raw issue text\n' > "$repo/features/$slug/task-packet.md"
 
   overrides="$(harness_common_route_overrides)
-    recover_missing_expansion_artifact() {
-      local issue=\"\$1\" feature_dir=\"\$3\"
-      local count_file=\"\$REPO_UNDER_TEST/.wavemill/recovery-count\"
-      local count
-      count=\$(cat \"\$count_file\" 2>/dev/null || echo 0)
-      printf '%s\n' \$((count + 1)) > \"\$count_file\"
-      if expansion_recovery_already_attempted \"\$feature_dir\"; then
-        log warn \"[expansion-handshake] RECOVERY_SKIPPED_ALREADY_ATTEMPTED issue=\$issue\"
-        return 1
-      fi
-      expansion_recovery_mark_attempted \"\$feature_dir\" \"\$issue\" \"missing\"
-      expansion_recovery_mark_result \"\$feature_dir\" \"\$issue\" \"failed\" \"stubbed-failure\" \"1\"
-      log warn \"[expansion-handshake] RECOVERY_FAILED issue=\$issue detail=stubbed-failure\"
+    prepare_task_inputs_gate() {
+      PREPARE_TASK_INPUTS_LAST_DETAIL=\"expansion recovery failed 3 time(s) (last: expand-issue-exited-non-zero)\"
       return 1
     }
   "
   tick="$(harness_run_tick "$repo" "$slug" "$issue" "$overrides")"
+  marker="$repo/features/$slug/.task-inputs-failure.json"
 
-  check_eq "recover fail: coding launches" "true" "$(kv_value "$tick" coding_launched)"
-  check_eq "recover fail: coding model stays bootstrap" "bootstrap-coder" "$(kv_value "$tick" coding_model)"
-  check_eq "recover fail: coding depth stays bootstrap" "shallow" "$(kv_value "$tick" coding_depth)"
-  check_eq "recover fail: recovery state failed" "failed" "$(jq -r '.status' "$repo/features/$slug/.expansion-recovery-state.json")"
-  check_file_exists "recover fail: plan approval preserved" "$repo/features/$slug/.plan-approved"
-  check_contains "recover fail: warning includes recovery failure" "$(kv_value "$tick" warn_output)" "RECOVERY_FAILED"
-  check_contains "recover fail: warning includes bootstrap fallback" "$(kv_value "$tick" warn_output)" "RECOVERY_FALLBACK_BOOTSTRAP"
+  check_eq "recover fail: coding does not launch" "false" "$(kv_value "$tick" coding_launched)"
+  check_eq "recover fail: plan not offered for approval" "running" "$(harness_read_stage_status "$repo" "$slug" planning)"
+  check_eq "recover fail: needs-user attention" "needs-user" "$(kv_value "$tick" attention)"
+  check_file_exists "recover fail: evidence marker written" "$marker"
+  check_contains "recover fail: evidence carries the recovery detail" "$(jq -r '.detail' "$marker")" "expand-issue-exited-non-zero"
+  check_contains "recover fail: next action names wavemill expand" "$(jq -r '.nextAction' "$marker")" "wavemill expand $issue"
+  check_contains "recover fail: warning surfaced" "$(kv_value "$tick" warn_output)" "task-input preparation failed before plan approval"
 }
 
 test_missing_expansion_recovery_not_repeated() {
@@ -1245,35 +1257,25 @@ test_missing_expansion_recovery_not_repeated() {
   local issue="HOK-1569-RECOVER-ONCE"
   local repo tick1 tick2 overrides
   repo="$(harness_init_repo "$slug")"
-  harness_setup_planning_state "$repo" "$slug" "completed"
+  harness_setup_publish_point "$repo" "$slug"
   harness_setup_runtime_artifacts "$repo"
   harness_seed_bootstrap_route "$repo" "$slug"
   printf 'raw issue text\n' > "$repo/features/$slug/task-packet.md"
 
   overrides="$(harness_common_route_overrides)
-    recover_missing_expansion_artifact() {
-      local issue=\"\$1\" feature_dir=\"\$3\"
-      local count_file=\"\$REPO_UNDER_TEST/.wavemill/recovery-count\"
-      local count
-      count=\$(cat \"\$count_file\" 2>/dev/null || echo 0)
-      if expansion_recovery_already_attempted \"\$feature_dir\"; then
-        log warn \"[expansion-handshake] RECOVERY_SKIPPED_ALREADY_ATTEMPTED issue=\$issue\"
-        return 1
-      fi
-      printf '%s\n' \$((count + 1)) > \"\$count_file\"
-      expansion_recovery_mark_attempted \"\$feature_dir\" \"\$issue\" \"missing\"
-      expansion_recovery_mark_result \"\$feature_dir\" \"\$issue\" \"failed\" \"stubbed-failure\" \"1\"
-      log warn \"[expansion-handshake] RECOVERY_FAILED issue=\$issue detail=stubbed-failure\"
+    prepare_task_inputs_gate() {
+      PREPARE_TASK_INPUTS_LAST_DETAIL=\"expansion recovery failed 3 time(s) (last: stubbed-failure)\"
       return 1
     }
   "
   tick1="$(harness_run_tick "$repo" "$slug" "$issue" "$overrides")"
   tick2="$(harness_run_tick "$repo" "$slug" "$issue" "$overrides")"
 
-  check_eq "recover once: first tick launches coding" "true" "$(kv_value "$tick1" coding_launched)"
-  check_eq "recover once: second tick also launches coding" "true" "$(kv_value "$tick2" coding_launched)"
-  check_eq "recover once: helper invoked only once" "1" "$(cat "$repo/.wavemill/recovery-count")"
-  check_contains "recover once: second tick reports skip" "$(kv_value "$tick2" warn_output)" "RECOVERY_SKIPPED_ALREADY_ATTEMPTED"
+  check_contains "recover once: first tick surfaces the failure" "$(kv_value "$tick1" warn_output)" "task-input preparation failed"
+  check_not_contains "recover once: second tick stays quiet" "$(kv_value "$tick2" warn_output)" "task-input preparation failed"
+  check_eq "recover once: second tick keeps needs-user attention" "needs-user" "$(kv_value "$tick2" attention)"
+  check_eq "recover once: still no approval offered" "running" "$(harness_read_stage_status "$repo" "$slug" planning)"
+  check_eq "recover once: no coding launch" "false" "$(kv_value "$tick2" coding_launched)"
 }
 
 test_invalid_expanded_route_blocks_lifecycle_handoff() {
@@ -1304,9 +1306,11 @@ EOF
 
     check_eq "invalid $case_name: coding does not launch" "false" "$(kv_value "$tick" coding_launched)"
     check_file_absent "invalid $case_name: plan approval removed" "$feature_dir/.plan-approved"
-    check_eq "invalid $case_name: planning awaits user" "awaiting_user" "$(harness_read_stage_status "$repo" "$slug" planning)"
-    check_contains "invalid $case_name: planning note names handshake" "$note" "Expansion handshake blocked"
-    check_contains "invalid $case_name: warning reports block" "$(kv_value "$tick" warn_output)" "[expansion-handshake] BLOCKED"
+    # HOK-3253: not offered for approval again until the inputs are fixed.
+    check_eq "invalid $case_name: planning held for preparation" "running" "$(harness_read_stage_status "$repo" "$slug" planning)"
+    check_contains "invalid $case_name: planning note names the invalid route" "$note" "invalid expanded routing artifact"
+    check_contains "invalid $case_name: warning reports the preparation failure" "$(kv_value "$tick" warn_output)" "task-input preparation failed before plan approval"
+    check_eq "invalid $case_name: needs-user attention" "needs-user" "$(kv_value "$tick" attention)"
     check_file_absent "invalid $case_name: no recovery state written" "$feature_dir/.expansion-recovery-state.json"
     if cmp -s "$feature_dir/.routing-complete" "$TEST_TMP/$slug-routing-before.json" \
       && cmp -s "$feature_dir/.phase-config.json" "$TEST_TMP/$slug-phase-before.json"; then

@@ -12,7 +12,9 @@
 # The harness plays only the roles a human or a backstage service plays in
 # production:
 #   - selects the task from the backlog (`select 1` on the command file),
-#   - approves the plan once plan.md exists (touch .plan-approved),
+#   - approves the plan whenever the mill requests approval (touch
+#     .plan-approved), recording each request episode and failing the journey
+#     once a configured approval budget is spent (journey_set_approval_budget),
 #   - runs one tend tick whenever the mill has published a Ready handoff.
 # Everything else is the mill's own behaviour.
 #
@@ -51,6 +53,17 @@ JOURNEY_BUDGET_SECONDS="${JOURNEY_BUDGET_SECONDS:-0}"
 # Optional function name a journey sets to inject faults right before the
 # first tend tick (e.g. move the integration branch, add gh read lag).
 JOURNEY_BEFORE_FIRST_TEND=""
+# Plan approvals the operator will give (-1 = unbounded). Every approval
+# request (planning awaiting_user without .plan-approved) is one episode in
+# $JOURNEY_TMP/approval-episodes.jsonl; a request beyond the budget fails the
+# journey instead of being silently approved (HOK-3253).
+JOURNEY_APPROVAL_BUDGET=-1
+JOURNEY_APPROVALS=0
+# Optional function name a journey sets to act right after each approval
+# (e.g. change the task packet to prove the HOK-3099 guard still fires).
+JOURNEY_AFTER_APPROVAL=""
+# Snapshot of the feature dir taken the first time the task is in coding.
+JOURNEY_CODING_SNAPSHOT=""
 
 journey_now() { date +%s; }
 
@@ -275,14 +288,80 @@ journey_record_timeline() {
   fi
 }
 
+# ── approval episodes (HOK-3253) ───────────────────────────────────────────
+
+journey_set_approval_budget() { JOURNEY_APPROVAL_BUDGET="$1"; }
+
+# Hash of the task packet files in the order the binding hashes them
+# (header, details, single). Computed here, not by the mill's helper, so the
+# oracle does not share the code under test. Empty when there is no packet.
+journey_packet_hash() {
+  local fd="$1" f
+  local -a files=()
+  [[ -f "$fd/task-packet-header.md" && -f "$fd/task-packet-details.md" ]] \
+    && files+=("$fd/task-packet-header.md" "$fd/task-packet-details.md")
+  [[ -f "$fd/task-packet.md" ]] && files+=("$fd/task-packet.md")
+  (( ${#files[@]} > 0 )) || { printf '\n'; return 0; }
+  for f in "${files[@]}"; do cat "$f"; done | shasum -a 256 | awk '{print $1}'
+}
+
+# The feature dir as the operator sees it at this instant, as one JSON line.
+journey_feature_snapshot() {
+  local issue="$1" fd="$2"
+  local stale_count
+  stale_count="$(find "$fd" -maxdepth 1 -name 'plan.stale-*.md' 2>/dev/null | wc -l | tr -d ' ')"
+  jq -cn \
+    --arg issue "$issue" \
+    --argjson tick "$(journey_tick)" \
+    --arg packetHash "$(journey_packet_hash "$fd")" \
+    --arg planHash "$( [[ -f "$fd/plan.md" ]] && shasum -a 256 < "$fd/plan.md" | awk '{print $1}')" \
+    --argjson binding "$(jq -c . "$fd/.plan-packet-hash" 2>/dev/null || echo null)" \
+    --argjson planning "$(jq -c '{status, notes}' "$fd/.planning-result.json" 2>/dev/null || echo null)" \
+    --argjson stalePlans "${stale_count:-0}" \
+    '{issue: $issue, tick: $tick, packetHash: $packetHash, planHash: $planHash,
+      binding: $binding, planning: $planning, stalePlans: $stalePlans}'
+}
+
+journey_record_approval_request() {
+  local issue="$1" fd="$2"
+  journey_feature_snapshot "$issue" "$fd" \
+    | jq -c --argjson n "$((JOURNEY_APPROVALS + 1))" '{episode: $n} + .' >> "$JOURNEY_TMP/approval-episodes.jsonl"
+}
+
+# Approval requests observed so far.
+journey_approval_count() {
+  [[ -f "$JOURNEY_TMP/approval-episodes.jsonl" ]] || { echo 0; return 0; }
+  grep -c . "$JOURNEY_TMP/approval-episodes.jsonl"
+}
+
+# jq -e over the approval episodes, slurped into an array.
+journey_episodes_jq() {
+  jq -e -s "$1" "$JOURNEY_TMP/approval-episodes.jsonl" >/dev/null 2>&1
+}
+
+# Phase launches the agent CLI actually received (independent of mill logs).
+journey_agent_launch_count() {
+  local issue="$1" phase="$2"
+  grep -c "phase=$phase issue=$issue wt=" "$FAKE_AGENT_LOG" 2>/dev/null || true
+}
+
 # Operator/backstage roles, run on every poll.
 journey_operator_tick() {
   local issue="$1" fd
   fd="$(journey_feature_dir "$issue" 2>/dev/null)" || return 0
   if [[ -f "$fd/plan.md" && ! -f "$fd/.plan-approved" ]] \
      && [[ "$(jq -r '.status // empty' "$fd/.planning-result.json" 2>/dev/null)" == "awaiting_user" ]]; then
+    journey_record_approval_request "$issue" "$fd"
+    if (( JOURNEY_APPROVAL_BUDGET >= 0 && JOURNEY_APPROVALS >= JOURNEY_APPROVAL_BUDGET )); then
+      journey_fail "approval budget exceeded: approval request #$((JOURNEY_APPROVALS + 1)) (budget $JOURNEY_APPROVAL_BUDGET; note: $(jq -r '.notes // ""' "$fd/.planning-result.json" 2>/dev/null))"
+    fi
     touch "$fd/.plan-approved"
-    journey_log "operator approved plan"
+    JOURNEY_APPROVALS=$((JOURNEY_APPROVALS + 1))
+    journey_log "operator approved plan (approval #$JOURNEY_APPROVALS)"
+    [[ -z "$JOURNEY_AFTER_APPROVAL" ]] || "$JOURNEY_AFTER_APPROVAL" "$fd" "$JOURNEY_APPROVALS"
+  fi
+  if [[ -z "$JOURNEY_CODING_SNAPSHOT" && "$(journey_task_field "$issue" phase)" == "coding" ]]; then
+    JOURNEY_CODING_SNAPSHOT="$(journey_feature_snapshot "$issue" "$fd")"
   fi
   if [[ "$(jq -r '.state // empty' "$fd/.ready-tend-handoff.json" 2>/dev/null)" == "ready-published" ]]; then
     journey_tend_tick
@@ -403,6 +482,9 @@ journey_trace() {
   fi
   if [[ -s "${FAKE_AGENT_UNHANDLED:-/dev/null}" ]]; then
     echo "unhandled agent CLI calls:"; sed 's/^/  /' "$FAKE_AGENT_UNHANDLED" | head -5
+  fi
+  if [[ -s "$JOURNEY_TMP/approval-episodes.jsonl" ]]; then
+    echo "approval requests:"; cut -c1-300 "$JOURNEY_TMP/approval-episodes.jsonl" | sed 's/^/  /'
   fi
   if [[ -s "$JOURNEY_TMP/logs/tend.log" ]]; then
     echo "tend: $JOURNEY_TEND_TICKS tick(s), last action $(grep -o 'action=[^ ]*' "$JOURNEY_TMP/logs/tend.log" | tail -1)"

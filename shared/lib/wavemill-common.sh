@@ -5159,6 +5159,48 @@ mill_expansion_handshake_reason() {
   return 0
 }
 
+# HOK-3253: materialise an already-detailed issue as the local task packet,
+# without an LLM. The controller (not the planning agent) owns local packet
+# persistence: HOK-3220's planner trusted a detailed Linear description and
+# wrote only plan.md, so the packet was regenerated after approval and the
+# HOK-3099 guard correctly voided the approval.
+#
+# Content mirrors the native planner's materializeTaskPacketFromSelectedTask
+# (shared/lib/native-agent/launch-planning.ts): "<title>\n\n<description>",
+# trimmed, from the durable selected-task.json the launcher wrote. A raw
+# (non-packet) description is left alone; it needs real expansion.
+#
+# Returns 0 when it wrote task-packet.md, 1 when nothing was written (packet
+# already present, no selected-task.json, or the description is raw).
+# Usage: task_inputs_materialize_detailed <feature_dir>
+task_inputs_materialize_detailed() {
+  local feature_dir="$1"
+  local packet_file="$feature_dir/task-packet.md"
+  local selected_task="$feature_dir/selected-task.json"
+  local existing="" content="" tmp
+
+  if [[ -f "$packet_file" ]]; then
+    existing="$(cat "$packet_file" 2>/dev/null || true)"
+    is_task_packet "$existing" && return 1
+  fi
+  [[ -f "$selected_task" ]] || return 1
+
+  content="$(jq -r '
+      [(.title // "" | tostring | gsub("^\\s+|\\s+$"; "")),
+       (.description // "" | tostring | gsub("^\\s+|\\s+$"; ""))]
+      | map(select(length > 0)) | join("\n\n")
+    ' "$selected_task" 2>/dev/null || true)"
+  [[ -n "$content" ]] || return 1
+  is_task_packet "$content" || return 1
+
+  tmp="$(mktemp "$feature_dir/.task-packet.md.tmp.XXXXXX" 2>/dev/null)" || return 1
+  if ! printf '%s\n' "$content" > "$tmp" 2>/dev/null || ! mv "$tmp" "$packet_file" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  return 0
+}
+
 route_lifecycle_route_id() {
   local route_file="$1"
   [[ -n "$route_file" && -f "$route_file" ]] || return 1
@@ -6021,6 +6063,34 @@ expansion_recovery_mark_result() {
     --arg status "$status" \
     --arg detail "$detail" \
     --arg exitCode "$exit_code"
+}
+
+# Status of the last expansion recovery ("" when none ran): pending,
+# succeeded, failed or skipped.
+expansion_recovery_status() {
+  local state_file
+  state_file="$(expansion_recovery_state_file "$1")"
+  [[ -f "$state_file" ]] || { echo ""; return 0; }
+  jq -r '.status // ""' "$state_file" 2>/dev/null || echo ""
+}
+
+# Detail recorded by the last expansion recovery ("" when none).
+expansion_recovery_detail() {
+  local state_file
+  state_file="$(expansion_recovery_state_file "$1")"
+  [[ -f "$state_file" ]] || { echo ""; return 0; }
+  jq -r '.detail // ""' "$state_file" 2>/dev/null || echo ""
+}
+
+# Re-arm recovery for another attempt (HOK-3253). The tracked
+# prepare-task-inputs job counts attempts in its bounded-retry bucket, so the
+# one-shot `attempted` latch would only turn a transient failure into a
+# permanent skip.
+expansion_recovery_rearm() {
+  local feature_dir="$1" state_file
+  state_file="$(expansion_recovery_state_file "$feature_dir")"
+  [[ -f "$state_file" ]] || return 0
+  state_mutate "$state_file" '.attempted = false | .status = "pending"'
 }
 
 wavemill_command_file_path() {
