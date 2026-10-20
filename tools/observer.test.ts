@@ -16,6 +16,7 @@ import {
   detectStuckMergeCandidates,
   detectSustainedSlowPasses,
   matchInteractivePromptSignature,
+  normalizeFindingSeverity,
   normalizeInteractivePromptText,
   parseArgs,
   parseLaunchRefusalLine,
@@ -2495,6 +2496,151 @@ test('merge-lane disagreement and stalled-lane JSONL findings survive ingestion 
   }
 });
 
+// ---------------------------------------------------------------------------
+// HOK-3239: invalid severities at ingest + off-machine alert delivery
+// ---------------------------------------------------------------------------
+
+function tendDisagreementFinding(severity: unknown, prNumber = 1265) {
+  return {
+    subsystem: 'merge-lane',
+    title: `Mill and tend disagree on PR #${prNumber} merge candidacy`,
+    body: `The mill merge queue holds PR #${prNumber} as a merge candidate, but tend blocks it.`,
+    ...(severity === undefined ? {} : { severity }),
+    context: {
+      markerPath: `merge-lane/${prNumber}/mill-tend-disagreement`,
+      markerKind: 'merge-lane-disagreement',
+      prNumber,
+      tendBlockReason: 'challenge:pair-unresolved:branch-pair',
+      millQueueState: 'merge-candidate',
+    },
+  };
+}
+
+function writeFindingsJsonl(repoDir: string, findings: unknown[]): void {
+  mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+  writeFileSync(
+    join(repoDir, '.wavemill', 'observer-findings.jsonl'),
+    findings.map((finding) => JSON.stringify(finding)).join('\n'),
+  );
+}
+
+test('HOK-3239 normalizeFindingSeverity maps aliases and unknowns into the Severity union', () => {
+  for (const canonical of ['urgent', 'high', 'medium', 'low']) {
+    assert.equal(normalizeFindingSeverity(canonical), canonical);
+  }
+  assert.equal(normalizeFindingSeverity('warning'), 'medium');
+  assert.equal(normalizeFindingSeverity('WARN'), 'medium');
+  assert.equal(normalizeFindingSeverity('info'), 'low');
+  assert.equal(normalizeFindingSeverity(' informational '), 'low');
+  assert.equal(normalizeFindingSeverity('critical'), 'urgent');
+  assert.equal(normalizeFindingSeverity('fatal'), 'urgent');
+  assert.equal(normalizeFindingSeverity('error'), 'high');
+  assert.equal(normalizeFindingSeverity('High'), 'high');
+  assert.equal(normalizeFindingSeverity(undefined), 'medium');
+  assert.equal(normalizeFindingSeverity(null), 'medium');
+  assert.equal(normalizeFindingSeverity(''), 'medium');
+  assert.equal(normalizeFindingSeverity(3), 'medium');
+  assert.equal(normalizeFindingSeverity('bogus'), 'medium');
+});
+
+test('HOK-3239 legacy warning/info/missing JSONL severities are normalized and counted in findingCounts', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-severity-ingest-'));
+  try {
+    writePermissiveSchema(repoDir);
+    writeFindingsJsonl(repoDir, [
+      tendDisagreementFinding('warning', 1),
+      tendDisagreementFinding('info', 2),
+      tendDisagreementFinding(undefined, 3),
+      tendDisagreementFinding('high', 4),
+    ]);
+
+    const findings = buildFindings(basicSnapshot(repoDir), defaultObserverOptions());
+    const bySeverity = (pr: number) => findings.find((finding) => finding.id === `marker-merge-lane/${pr}/mill-tend-disagreement-merge-lane-disagreement`)?.severity;
+    assert.equal(bySeverity(1), 'medium');
+    assert.equal(bySeverity(2), 'low');
+    assert.equal(bySeverity(3), 'medium');
+    assert.equal(bySeverity(4), 'high');
+    for (const finding of findings) {
+      assert.ok(['urgent', 'high', 'medium', 'low'].includes(finding.severity), `invalid severity ${finding.severity}`);
+    }
+
+    writeFileSync(join(repoDir, '.wavemill', 'backstage-health.json'), JSON.stringify({}));
+    await writeServiceHeartbeat({ ...basicSnapshot(repoDir), findings }, {
+      ...defaultObserverOptions(),
+      loop: true,
+      once: false,
+      repoDir,
+      session: 'wavemill',
+      serviceMode: true,
+    });
+    const counts = JSON.parse(readFileSync(join(repoDir, '.wavemill', 'backstage-health.json'), 'utf8'))
+      .services.observer.findingCounts as Record<string, number>;
+    assert.deepEqual(Object.keys(counts).sort(), ['high', 'low', 'medium', 'urgent']);
+    const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+    assert.ok(Number.isFinite(total), 'findingCounts total must not be NaN');
+    assert.equal(total, findings.length);
+    assert.ok(counts.medium >= 2 && counts.low >= 1 && counts.high >= 1);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3239 mill-tend-disagreement and a synthetic urgent finding push via ntfy within one observer pass', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-alerts-ntfy-'));
+  const previousPushUrl = process.env.WAVEMILL_OBSERVER_PUSH_URL;
+  const previousFetch = globalThis.fetch;
+  const pushes: Array<{ url: string; headers: Record<string, string>; body: string }> = [];
+  try {
+    writePermissiveSchema(repoDir);
+    // desktop:false keeps the test from invoking osascript/notify-send; no
+    // alerts.enabled key, so the env push URL alone turns alerts on.
+    writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
+      configVersion: '1.5.0',
+      observer: { alerts: { desktop: false } },
+    }));
+    process.env.WAVEMILL_OBSERVER_PUSH_URL = 'https://ntfy.sh/wm-hok-3239-test';
+    globalThis.fetch = (async (url: string, init: { headers: Record<string, string>; body: string }) => {
+      pushes.push({ url, headers: init.headers, body: init.body });
+      return { ok: true, status: 200, text: async () => '' };
+    }) as unknown as typeof fetch;
+
+    writeFindingsJsonl(repoDir, [
+      tendDisagreementFinding('high'),
+      {
+        subsystem: 'merge-lane',
+        title: 'Synthetic urgent observer finding',
+        severity: 'urgent',
+        context: { markerPath: 'synthetic/hok-3239', markerKind: 'synthetic-urgent' },
+      },
+      // Below minSeverity: high; must not push.
+      tendDisagreementFinding('warning', 99),
+    ]);
+    const findings = buildFindings(basicSnapshot(repoDir), defaultObserverOptions());
+    const alerted = await sendAlerts({ ...basicSnapshot(repoDir), findings }, defaultObserverOptions() as any);
+
+    assert.equal(pushes.length, 2, `expected two pushes, got ${pushes.map((push) => push.headers.Title).join(' | ')}`);
+    for (const push of pushes) assert.equal(push.url, 'https://ntfy.sh/wm-hok-3239-test');
+    const titles = pushes.map((push) => push.headers.Title);
+    assert.ok(titles.some((title) => title.includes('Mill and tend disagree on PR #1265')));
+    const urgent = pushes.find((push) => push.headers.Title.includes('Synthetic urgent'));
+    assert.equal(urgent?.headers.Priority, '5');
+    assert.ok(!alerted.findings.some((finding) => finding.id.startsWith('observer-alert-send-failed-')));
+
+    const journal = JSON.parse(readFileSync(join(repoDir, '.wavemill', 'observer', 'alert-state.json'), 'utf8'));
+    const ids = Object.keys(journal.findings).sort();
+    assert.deepEqual(ids, [
+      'marker-merge-lane/1265/mill-tend-disagreement-merge-lane-disagreement',
+      'marker-synthetic/hok-3239-synthetic-urgent',
+    ]);
+    for (const id of ids) assert.ok(journal.findings[id].lastNotifiedAt, `${id} should be marked notified`);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousPushUrl === undefined) delete process.env.WAVEMILL_OBSERVER_PUSH_URL;
+    else process.env.WAVEMILL_OBSERVER_PUSH_URL = previousPushUrl;
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
 test('incident reconciliation correlates stalled Tend markers into typed remediation proposals', async () => {
   const repoDir = mkdtempSync(join(tmpdir(), 'observer-stalled-lifecycle-'));
   const slug = 'observer-stalled-lifecycle';
@@ -4337,6 +4483,9 @@ test('HOK-3142: plan-approved arm parked by a coding launch refusal names the ca
 // and sendAlerts leave the snapshot unchanged and touch no files on disk.
 test('applyAutoFixes + sendAlerts are byte-identical no-ops when disabled', async () => {
   const repoDir = mkdtempSync(join(tmpdir(), 'observer-autofix-noop-'));
+  // HOK-3239: an exported push URL enables alerts, so isolate from the operator's shell.
+  const previousPushUrl = process.env.WAVEMILL_OBSERVER_PUSH_URL;
+  delete process.env.WAVEMILL_OBSERVER_PUSH_URL;
   try {
     const snapshot = {
       timestamp: new Date().toISOString(),
@@ -4358,6 +4507,7 @@ test('applyAutoFixes + sendAlerts are byte-identical no-ops when disabled', asyn
     assert.ok(!existsSync(join(repoDir, '.wavemill', 'incidents', 'actions.jsonl')), 'no action log written');
     assert.ok(!existsSync(join(repoDir, '.wavemill', 'observer', 'alert-state.json')), 'no alert journal written');
   } finally {
+    if (previousPushUrl !== undefined) process.env.WAVEMILL_OBSERVER_PUSH_URL = previousPushUrl;
     rmSync(repoDir, { recursive: true, force: true });
   }
 });
