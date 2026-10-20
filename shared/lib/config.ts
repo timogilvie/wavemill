@@ -2594,8 +2594,14 @@ export function getObserverAlertsConfig(repoDir?: string): ObserverAlertsConfig 
     ...(alerts.push ?? {}),
   };
   if (envPush && envPush.length > 0) push.url = envPush;
+  // HOK-3239: configuring a push destination (env or config) is an opt-in to
+  // alerts. Only an absent `alerts.enabled` is inferred; an explicit `false`
+  // still wins so an operator can silence alerts without unsetting the URL.
+  const enabled = alerts.enabled === undefined
+    ? Boolean(push.url) || OBSERVER_ALERTS_DEFAULTS.enabled
+    : alerts.enabled;
   return {
-    enabled: alerts.enabled ?? OBSERVER_ALERTS_DEFAULTS.enabled,
+    enabled,
     minSeverity: alerts.minSeverity ?? OBSERVER_ALERTS_DEFAULTS.minSeverity,
     persistMinutes: alerts.persistMinutes ?? OBSERVER_ALERTS_DEFAULTS.persistMinutes,
     repeatMinutes: alerts.repeatMinutes ?? OBSERVER_ALERTS_DEFAULTS.repeatMinutes,

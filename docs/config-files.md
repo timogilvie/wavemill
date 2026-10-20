@@ -217,6 +217,91 @@ unresolvable name degrades to comment-only rather than leaving an issue half-cha
 A degraded/incomplete detection cycle never resolves or closes an issue, and
 reconciliation must not still confirm the incident active before a close.
 
+#### `observer.alerts` — desktop and off-machine (ntfy) push alerts (HOK-3097, HOK-3239)
+
+The Observer can notify a person who is away from the terminal when an urgent or
+high finding persists. Each pass, findings at or above `minSeverity` are tracked
+in `.wavemill/observer/alert-state.json`; a finding alerts once it has been
+present for `persistMinutes`, then re-alerts every `repeatMinutes` while it is
+still present. Its entry is pruned as soon as the finding resolves. At most three
+notifications go out per pass; more due findings fold into one summary.
+
+Findings ingested from `.wavemill/observer-findings.jsonl` (tend merge-lane
+findings such as `mill-tend-disagreement` and `merge-lane-idle-stall`, marker
+lifecycle findings, state-invariant violations) are **one-shot events**: the file
+is consumed on read and the producer dedups per condition, so they are present
+for exactly one pass. They skip `persistMinutes` and alert on the pass that
+ingests them.
+
+```json
+{
+  "observer": {
+    "alerts": {
+      "enabled": true,
+      "minSeverity": "high",
+      "persistMinutes": 15,
+      "repeatMinutes": 240,
+      "desktop": true,
+      "push": {
+        "url": "https://ntfy.sh/<your-random-topic>",
+        "format": "ntfy"
+      }
+    }
+  }
+}
+```
+
+- `enabled` — defaults to `false`, **except** that configuring a push URL (in
+  config or via `WAVEMILL_OBSERVER_PUSH_URL`) turns alerts on when `enabled` is
+  not set. An explicit `"enabled": false` always wins, so alerts can be silenced
+  without removing the URL.
+- `minSeverity` (default `high`) — `urgent` or `high`. Ingested severities outside
+  the `urgent | high | medium | low` set are normalized (`warning` → `medium`,
+  `info` → `low`, `critical` → `urgent`, unknown/missing → `medium`), so they
+  still count in `findingCounts` in `.wavemill/backstage-health.json`.
+- `persistMinutes` (default `15`) / `repeatMinutes` (default `240`).
+- `desktop` (default `true`) — `osascript` on macOS, `notify-send` on Linux.
+- `push.url` — optional; `WAVEMILL_OBSERVER_PUSH_URL` overrides it.
+  `push.format` is `ntfy` (default; `Title`/`Priority` headers, urgent → priority
+  5, high → 4) or `json` (POST `{title, body, severity, tags}`).
+
+A failed push never breaks the pass; it surfaces as a `low` finding
+`observer-alert-send-failed-*`.
+
+**Setting up phone alerts with ntfy:**
+
+1. Install the ntfy app (iOS/Android) and subscribe to a long random topic, e.g.
+   `wm-$(openssl rand -hex 12)`. Topic names on `ntfy.sh` are the only access
+   control — treat the URL as a secret and keep it out of the tracked
+   `.wavemill-config.json`.
+2. Put the URL in the gitignored `.wavemill-config.local.json` of the milled repo
+   (recommended — the Observer pane reads it regardless of which shell started
+   tmux):
+
+   ```json
+   { "observer": { "alerts": { "push": { "url": "https://ntfy.sh/wm-<topic>" } } } }
+   ```
+
+   Alternatively export `WAVEMILL_OBSERVER_PUSH_URL=https://ntfy.sh/wm-<topic>`
+   before `wavemill mill`. Note that panes in an already-running tmux server
+   inherit the server's environment, not your shell's; use
+   `tmux set-environment -g WAVEMILL_OBSERVER_PUSH_URL …` and restart the Observer
+   pane, or prefer the config file.
+3. Verify with a synthetic urgent finding — one Observer pass should deliver it:
+
+   ```bash
+   cd <milled-repo>
+   echo '{"subsystem":"synthetic","title":"Synthetic urgent observer alert","severity":"urgent","context":{"markerPath":"synthetic/alert-test","markerKind":"synthetic-urgent"}}' \
+     >> .wavemill/observer-findings.jsonl
+   wavemill observer --once
+   cat .wavemill/observer/alert-state.json   # entry has lastNotifiedAt
+   ```
+
+   The phone should show "Synthetic urgent observer alert" at priority 5. If not,
+   check `wavemill observer --once` output for an `observer-alert-send-failed-*`
+   finding. (A running Observer pane may consume the JSONL line first; the push
+   still arrives on its next pass.)
+
 ### Harness Retention Replay
 
 `harness.retention` controls the fixed held-out replay suite used to detect

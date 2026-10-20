@@ -47,6 +47,7 @@ import {
 import { isTransientErrorText, retryTransient, TransientError } from './transient-retry.ts';
 import { classifyFailure, DEFAULT_RETRY_ATTEMPTS, retryBucketFor, type FailureEvidence } from './failure-policy.ts';
 import { normalizeTaskLifecycle } from './task-lifecycle.ts';
+import type { AlertSeverity } from './observer-alerts.ts';
 import { resolveEffectiveTaskConfig } from './effective-task-config.ts';
 import {
   clearScratchPrepMarkerBestEffort,
@@ -4351,7 +4352,9 @@ function emitMergeLaneFindingOnce(
   kind: string,
   headSha: string,
   reason: string,
-  finding: object,
+  // HOK-3239: severity must be a valid observer Severity; 'warning'/'info'
+  // fell out of findingCounts and alert ranking.
+  finding: { severity: AlertSeverity } & Record<string, unknown>,
 ): void {
   const sentinelPath = join(mergeLaneStateDir(prNumber, repoDir), `finding-${kind}.json`);
   try {
@@ -4385,7 +4388,7 @@ function emitBlockedLabelContradictionFinding(
     body: `PR #${pr.number} carries wm:blocked with a marker valid at head ${currentHeadSha}, but GitHub reports `
       + 'MERGEABLE/CLEAN with green required checks. If no wavemill-internal gate applies, the merge label reconciler '
       + 'should correct this automatically on the next monitor tick (HOK-3181).',
-    severity: 'warning',
+    severity: 'medium',
     context: {
       markerPath: `merge-lane/${pr.number}/blocked-label-contradiction`,
       markerKind: 'merge-lane-blocked-contradiction',
@@ -4414,7 +4417,7 @@ function emitTendHandoffSelfHealFinding(
     body: `PR #${pr.number} carried wm:blocked set by tend's own handoff-rebind refusal, but two consecutive `
       + `polls at head ${currentHeadSha} confirmed the PR is MERGEABLE/CLEAN with green required checks. `
       + 'Tend cleared the label in-band; the PR will be re-evaluated on the next merge-lane pass.',
-    severity: 'info',
+    severity: 'low',
     context: {
       markerPath: `merge-lane/${pr.number}/tend-handoff-self-heal`,
       markerKind: 'merge-lane-tend-handoff-self-heal',
@@ -4469,7 +4472,7 @@ function emitMillTendDisagreementFinding(
       + `${millCiSummary ? ` (live CI ${millCiSummary}${millCiHead ? ` @${millCiHead.slice(0, 7)}` : ''})` : ''}, `
       + `but tend blocks it with gate '${blockedCandidate.reason}'. One of the two views is stale; `
       + 'this disagreement must be reconciled, not silently resolved in favour of the block.',
-    severity: 'warning',
+    severity: 'high',
     context: {
       markerPath: `merge-lane/${pr.number}/mill-tend-disagreement`,
       markerKind: 'merge-lane-disagreement',
