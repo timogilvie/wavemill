@@ -19,9 +19,10 @@ import {
   clearWavemillState,
 } from './pr-state-labels.ts';
 import { parseTaskId } from './task-identity.ts';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readWorkflowState, workflowTaskEntries, type WorkflowState } from './workflow-state.ts';
+import { readWorkflowState, type WorkflowState } from './workflow-state.ts';
+import { resolvePrTask } from './pr-task-resolver.ts';
 
 export interface MergeLabelTaskView {
   prNumber: number;
@@ -275,70 +276,50 @@ export function findTaskInState(
   state: WorkflowState,
   repoDir: string,
 ): MergeLabelTaskView | null {
-  for (const [taskId, task] of workflowTaskEntries(state)) {
-    const taskPrNumber = Number(task.pr);
-    if (!Number.isFinite(taskPrNumber) || taskPrNumber !== prNumber || taskPrNumber <= 0) {
-      continue;
-    }
-
-    // Derive featureDir from worktree + slug
-    const worktree = typeof task.worktree === 'string' ? task.worktree : '';
-    const slug = typeof task.slug === 'string' ? task.slug : '';
-    let featureDir = '';
-
-    if (worktree && slug) {
-      const featuresPath = join(worktree, 'features', slug);
-      const bugsPath = join(worktree, 'bugs', slug);
-      if (existsSync(featuresPath)) {
-        featureDir = featuresPath;
-      } else if (existsSync(bugsPath)) {
-        featureDir = bugsPath;
-      } else {
-        // Fall back to features/<slug> even if it doesn't exist yet
-        // so downstream reads ENOENT cleanly
-        featureDir = featuresPath;
-      }
-    }
-
-    if (!featureDir) {
-      // Can't derive feature dir without worktree and slug
-      continue;
-    }
-
-    // Derive challengeRole from taskId using parseTaskId
-    const parsed = parseTaskId(taskId);
-    const challengeRole = parsed ? parsed.role : undefined;
-
-    // Derive headSha from the Ready artifact; empty when it is unavailable.
-    let headSha = '';
-    const readyResultPath = join(featureDir, '.ready-result.json');
-    try {
-      const readyResultContent = readFileSync(readyResultPath, 'utf-8');
-      const readyResult = JSON.parse(readyResultContent) as { artifacts?: { readyHeadSha?: string } };
-      if (readyResult.artifacts?.readyHeadSha) {
-        headSha = readyResult.artifacts.readyHeadSha;
-      }
-    } catch (err) {
-      // ENOENT is the expected "no Ready result yet" case; a parse/other
-      // error is the HOK-3242 case we want visible so a malformed artifact
-      // never silently reduces to an empty headSha.
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        console.warn(
-          `[merge-label] evidence-read-failed site=findTaskInState path=${readyResultPath} error=${String(err)}`,
-        );
-      }
-    }
-
-    return {
-      prNumber,
-      headSha,
-      phase: typeof task.phase === 'string' ? task.phase : 'unknown',
-      challengeRole,
-      linearIssueId: typeof task.linearIssueId === 'string' ? task.linearIssueId : undefined,
-      featureDir,
-    };
+  // HOK-3242: route the PR → task lookup through the shared resolver so
+  // every miss (empty state, no row with that PR, worktree/slug blank, no
+  // feature dir) emits one structured warn line. The resolver returns the
+  // task row + featureDir; local derivations below layer `headSha` and
+  // `challengeRole` on top.
+  const { location } = resolvePrTask(prNumber, state, {
+    site: 'merge-label.findTaskInState',
+  });
+  if (!location) {
+    return null;
   }
-  return null;
+
+  // Derive challengeRole from taskId using parseTaskId
+  const parsed = parseTaskId(location.taskId);
+  const challengeRole = parsed ? parsed.role : undefined;
+
+  // Derive headSha from the Ready artifact; empty when it is unavailable.
+  let headSha = '';
+  const readyResultPath = join(location.featureDir, '.ready-result.json');
+  try {
+    const readyResultContent = readFileSync(readyResultPath, 'utf-8');
+    const readyResult = JSON.parse(readyResultContent) as { artifacts?: { readyHeadSha?: string } };
+    if (readyResult.artifacts?.readyHeadSha) {
+      headSha = readyResult.artifacts.readyHeadSha;
+    }
+  } catch (err) {
+    // ENOENT is the expected "no Ready result yet" case; a parse/other
+    // error is the HOK-3242 case we want visible so a malformed artifact
+    // never silently reduces to an empty headSha.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.warn(
+        `[merge-label] evidence-read-failed site=findTaskInState path=${readyResultPath} error=${String(err)}`,
+      );
+    }
+  }
+
+  return {
+    prNumber,
+    headSha,
+    phase: typeof location.task.phase === 'string' ? location.task.phase : 'unknown',
+    challengeRole,
+    linearIssueId: typeof location.task.linearIssueId === 'string' ? location.task.linearIssueId : undefined,
+    featureDir: location.featureDir,
+  };
 }
 
 export async function buildTaskView(
