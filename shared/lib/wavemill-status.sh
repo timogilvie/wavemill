@@ -1172,6 +1172,7 @@ task_running_detail() {
   if [[ -n "$challenge_stage" ]]; then
     challenge_role=$(jq -r --arg issue "$issue" '.tasks[$issue].challengeRole // "primary"' "$STATE_FILE" 2>/dev/null || echo "primary")
     challenge_varied=$(jq -r --arg issue "$issue" '.tasks[$issue].challengeVariedModel // empty' "$STATE_FILE" 2>/dev/null || true)
+    # allow-task-field: legacy challengeIntent fallback for pre-challengeExecutionIntent state files
     challenge_other=$(jq -r --arg issue "$issue" --arg role "$challenge_role" '
       (.tasks[$issue].challengeExecutionIntent // .tasks[$issue].challengeIntent // {}) as $i
       | (if $role == "challenger" then $i.primary else $i.challenger end) // {}

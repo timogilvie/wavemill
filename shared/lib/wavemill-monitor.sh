@@ -13,6 +13,7 @@ if ! declare -F effective_task_base_branch >/dev/null 2>&1; then
 effective_task_base_branch() {
   local issue="$1" value=""
   if [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE:-}" ]]; then
+    # allow-task-field: legacy baseBranch fallback for pre-lifecycle.launchContract state files
     value="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.launchContract.baseBranch // .tasks[$issue].baseBranch // empty' "$STATE_FILE" 2>/dev/null || true)"
   fi
   printf '%s\n' "${value:-${BASE_BRANCH:-main}}"
@@ -1396,6 +1397,7 @@ finalize_challenge_execution_intent_before_coding() {
   # apply_expanded_route_if_present preserves the selected-stage fields from
   # this intent while applying every non-varied field from the expanded route.
   local existing_intent pinned_stage=""
+  # allow-task-field: legacy challengeIntent fallback for pre-challengeExecutionIntent state files
   existing_intent=$(read_state_value "" --arg i "$issue" '(.tasks[$i].challengeExecutionIntent // .tasks[$i].challengeIntent) // empty' 2>/dev/null || true)
   if [[ -n "$existing_intent" ]]; then
     pinned_stage=$(echo "$existing_intent" | jq -r '(.selectedStage // .challengeStage // "")' 2>/dev/null || true)
@@ -4544,6 +4546,7 @@ ready_watchdog_dispatch_findings() {
       base_branch="$(effective_task_base_branch "$issue" 2>/dev/null || pass_task_field "$issue" baseBranch)"
       [[ -n "$base_branch" ]] || base_branch="${BASE_BRANCH:-main}"
       pr_number=$(pass_task_field "$issue" pr)
+      # allow-task-field: title is a legacy fallback with a literal default; no task writer sets it today
       title=$(read_state_value "" --arg i "$issue" '.tasks[$i].title // "Task"')
       wt_dir=$(pass_task_field "$issue" worktree)
       [[ -z "$wt_dir" && -n "$slug" ]] && wt_dir="${WORKTREE_ROOT}/${slug}"
@@ -8404,6 +8407,7 @@ challenger_transient_retry_intent_json() {
   local intent_json path
 
   if [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
+    # allow-task-field: legacy challengeIntent fallback for pre-challengeExecutionIntent state files
     intent_json="$(jq -c --arg i "$issue" '(.tasks[$i].challengeExecutionIntent // .tasks[$i].challengeIntent // empty)' "$STATE_FILE" 2>/dev/null || true)"
     [[ "$intent_json" != "null" && -n "$intent_json" ]] && {
       printf '%s\n' "$intent_json"
@@ -10263,6 +10267,7 @@ ensure_review_scope_baseline() {
   fi
   if [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE:-}" ]]; then
     launch_base="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.launchContract.baseSha // empty' "$STATE_FILE" 2>/dev/null || true)"
+    # allow-task-field: legacy baseBranch fallback for pre-lifecycle.launchContract state files
     launch_base_branch="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.launchContract.baseBranch // .tasks[$issue].baseBranch // empty' "$STATE_FILE" 2>/dev/null || true)"
   fi
   if [[ "$launch_base" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
@@ -13313,6 +13318,7 @@ launch_review_for_missing_evidence() {
   local reviewer_agent reviewer_model review_mode rc=0
 
   reviewer_agent="$(read_phase_config "$feature_dir" "review" "agent" 2>/dev/null || true)"
+  # allow-task-field: legacy reviewerAgent fallback; current writers set only .agent
   [[ -n "$reviewer_agent" ]] || reviewer_agent="$(read_state_value "" --arg i "$issue" '.tasks[$i].reviewerAgent // .tasks[$i].agent // ""')"
   [[ -n "$reviewer_agent" ]] || reviewer_agent="${current_agent:-$AGENT_CMD}"
 
@@ -16982,10 +16988,12 @@ find_pr_for_branch() {
 
   worktree="$(pass_task_field "$issue" worktree 2>/dev/null || true)"
   [[ -n "$worktree" && -d "$worktree" ]] && head_sha="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  # allow-task-field: legacy baseBranch fallback for pre-lifecycle.launchContract state files
   base_branch="$(read_state_value "${BASE_BRANCH:-}" --arg i "$issue" '.tasks[$i].lifecycle.launchContract.baseBranch // .tasks[$i].baseBranch // empty' 2>/dev/null || true)"
   [[ -n "$base_branch" ]] || base_branch="${BASE_BRANCH:-}"
   attempt_json="$(read_state_value "" --arg i "$issue" '.tasks[$i].attempt // .tasks[$i].lifecycle.attempt // empty' 2>/dev/null || true)"
   attempt_id="$(jq -r '.attemptId // empty' <<<"${attempt_json:-{}}" 2>/dev/null || true)"
+  # allow-task-field: legacy linearState / linear-nested fallbacks for pre-schema state files
   linear_state="$(read_state_value "" --arg i "$issue" '.tasks[$i].linearState // .tasks[$i].linear.state.name // empty' 2>/dev/null || true)"
   challenge_pair="$(pass_task_field "$issue" challengePairId 2>/dev/null || true)"
   challenge_role="$(pass_task_field "$issue" challengeRole 2>/dev/null || true)"
@@ -20258,6 +20266,7 @@ handle_re_review_command() {
     return 0
   fi
 
+  # allow-task-field: defensive legacy pullRequest fallback for pre-HOK-3220 state files that used .pullRequest
   pr=$(read_state_value "" --arg issue "$issue" '.tasks[$issue].pr // .tasks[$issue].pullRequest // empty')
   if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
     pr="$(find_pr_for_branch "$branch" 2>/dev/null || true)"
