@@ -44,6 +44,7 @@ import {
   type StateInvariantsCache,
   type WaitingOnEvidence,
   type InvariantViolation,
+  type TendHeartbeat,
 } from '../shared/lib/state-invariants.ts';
 import { appendObserverFinding } from '../shared/lib/observer-findings.ts';
 import type { TaskProgress } from '../shared/lib/task-progress.ts';
@@ -249,6 +250,78 @@ function envNumber(name: string, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
+/**
+ * HOK-3238 bake-gate input: list recent `origin/main` commits with their
+ * changed files, bounded by `windowMs`. The read is bounded to 3 s and failure
+ * returns `[]` (I8 then has nothing to classify and cannot fire).
+ */
+function gatherRecentMainCommits(
+  repoDir: string,
+  windowMs: number,
+): Array<{ sha: string; committedAtMs: number; files: string[] }> {
+  if (windowMs <= 0) return [];
+  const nowSec = Math.floor(Date.now() / 1000);
+  const sinceSec = nowSec - Math.ceil(windowMs / 1000);
+  let stdout: string;
+  try {
+    stdout = execFileSync(
+      'git',
+      [
+        '-C', repoDir,
+        'log',
+        'origin/main',
+        `--since=@${sinceSec}`,
+        '--format=COMMIT %H %ct',
+        '--name-only',
+        '--no-renames',
+      ],
+      { encoding: 'utf-8', timeout: 3_000, stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+  } catch {
+    return [];
+  }
+  const commits: Array<{ sha: string; committedAtMs: number; files: string[] }> = [];
+  let current: { sha: string; committedAtMs: number; files: string[] } | null = null;
+  for (const rawLine of stdout.split('\n')) {
+    const line = rawLine.trimEnd();
+    if (line.startsWith('COMMIT ')) {
+      if (current) commits.push(current);
+      const parts = line.split(' ');
+      const sha = parts[1];
+      const committedAtSec = Number(parts[2]);
+      if (!sha || !Number.isFinite(committedAtSec)) {
+        current = null;
+        continue;
+      }
+      current = { sha, committedAtMs: committedAtSec * 1000, files: [] };
+    } else if (line && current) {
+      current.files.push(line);
+    }
+  }
+  if (current) commits.push(current);
+  return commits;
+}
+
+/**
+ * HOK-3238 bake-gate input: read tend's current heartbeat from
+ * `.wavemill/backstage-health.json`. Returns null when the file is missing or
+ * malformed; the gate treats that as "not reporting a stall".
+ */
+function readTendHeartbeat(repoDir: string): TendHeartbeat | null {
+  const path = join(repoDir, '.wavemill', 'backstage-health.json');
+  const raw = readJson<{ services?: { tend?: { laneCondition?: unknown; heartbeatAt?: unknown; blockedStreak?: unknown } } }>(path);
+  const tend = raw?.services?.tend;
+  if (!tend || typeof tend.laneCondition !== 'string') return null;
+  const heartbeatAt = typeof tend.heartbeatAt === 'string' ? Date.parse(tend.heartbeatAt) : NaN;
+  return {
+    laneCondition: tend.laneCondition,
+    heartbeatAtMs: Number.isFinite(heartbeatAt) ? heartbeatAt : null,
+    ...(typeof tend.blockedStreak === 'number' && Number.isFinite(tend.blockedStreak)
+      ? { blockedStreakMs: (tend.blockedStreak as number) * 1000 }
+      : {}),
+  };
+}
+
 // ── Main entry ───────────────────────────────────────────────────────────────
 
 interface ToolArgs {
@@ -330,6 +403,11 @@ async function runCheck(args: ToolArgs): Promise<void> {
 
   const previousCache = readStateInvariantsCache(repoDir);
 
+  const bakeWindowMinutes = envNumber('WAVEMILL_BAKE_GATE_MINUTES', 120);
+  const tendIdleStallMinutes = envNumber('WAVEMILL_BAKE_GATE_TEND_STALL_MINUTES', 30);
+  const recentMainCommits = gatherRecentMainCommits(repoDir, bakeWindowMinutes * 60_000);
+  const tendHeartbeat = readTendHeartbeat(repoDir);
+
   const inputs: EvaluateInvariantsInputs = {
     state,
     taskProgress,
@@ -347,10 +425,14 @@ async function runCheck(args: ToolArgs): Promise<void> {
       prNumberByTaskId,
       nowMs,
     },
+    recentMainCommits,
+    tendHeartbeat,
     config: {
       readyStuckMinutes: envNumber('WAVEMILL_STATE_INV_READY_STUCK_MINUTES', 15),
       labelMismatchGraceTicks: envNumber('WAVEMILL_STATE_INV_LABEL_GRACE_TICKS', 2),
       markerGraceTicks: envNumber('WAVEMILL_STATE_INV_MARKER_GRACE_TICKS', 2),
+      bakeWindowMinutes,
+      tendIdleStallMinutes,
     },
   };
 

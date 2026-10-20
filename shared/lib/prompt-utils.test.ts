@@ -138,9 +138,9 @@ describe('fillPromptSlots', () => {
     };
     const prompt = fillReviewPromptTemplate(template, context as never, true);
     const overhead = template.length + context.plan.length + context.taskPacket.length;
-    expect(prompt.length).toBe(overhead + diff.length - '{{DIFF}}{{PLAN_CONTEXT}}{{TASK_PACKET_CONTEXT}}{{DESIGN_CONTEXT}}'.length + 'null'.length);
+    expect(prompt.length).toBe(overhead + diff.length - '{{DIFF}}{{PLAN_CONTEXT}}{{TASK_PACKET_CONTEXT}}{{DESIGN_CONTEXT}}{{HIGH_BLAST_RADIUS_GUIDANCE}}'.length + 'null'.length);
     expect(prompt.split(diff).length - 1).toBe(1);
     expect(prompt).toContain('- **`{{DIFF}}`** (required)');
-    expect(prompt.indexOf(diff)).toBeGreaterThan(template.indexOf('\n{{DIFF}}\n') - 1);
+    expect(prompt.indexOf(diff)).toBeGreaterThan(template.indexOf('\n{{DIFF}}\n') - 1 - '{{HIGH_BLAST_RADIUS_GUIDANCE}}'.length);
   });
 });
