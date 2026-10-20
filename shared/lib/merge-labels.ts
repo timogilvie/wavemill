@@ -245,6 +245,15 @@ export async function reconcileMergeLabelsForPr(
     await deps.applyLabel.clear(pr.number);
     // Update in-memory labels
     updatedLabels = updatedLabels.filter(l => l !== 'wm:ready' && l !== 'wm:blocked');
+  } else {
+    // HOK-3242: always log the no-label reason so a reader can see which
+    // null branch (`head-mismatch`, `ready-evidence-stale`, `ready-pending`,
+    // `ready-unknown`, `checks-pending`, `no-handoff`) kept `wm:ready` off.
+    deps.logger.info('Merge label unchanged (not stable)', {
+      pr: pr.number,
+      labels: [...pr.labels],
+      reason: decision.reason,
+    });
   }
 
   return { decision, updatedLabels };
@@ -302,15 +311,22 @@ export function findTaskInState(
 
     // Derive headSha from the Ready artifact; empty when it is unavailable.
     let headSha = '';
+    const readyResultPath = join(featureDir, '.ready-result.json');
     try {
-      const readyResultPath = join(featureDir, '.ready-result.json');
       const readyResultContent = readFileSync(readyResultPath, 'utf-8');
       const readyResult = JSON.parse(readyResultContent) as { artifacts?: { readyHeadSha?: string } };
       if (readyResult.artifacts?.readyHeadSha) {
         headSha = readyResult.artifacts.readyHeadSha;
       }
-    } catch {
-      // Ready result not available, headSha stays empty
+    } catch (err) {
+      // ENOENT is the expected "no Ready result yet" case; a parse/other
+      // error is the HOK-3242 case we want visible so a malformed artifact
+      // never silently reduces to an empty headSha.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.warn(
+          `[merge-label] evidence-read-failed site=findTaskInState path=${readyResultPath} error=${String(err)}`,
+        );
+      }
     }
 
     return {
@@ -384,8 +400,13 @@ export async function readMergeLabelEvidence(
       }
       readyAtHead = { verdict, sha: artifacts?.readyHeadSha ?? '' };
     }
-  } catch {
-    // Ready result not available
+  } catch (err) {
+    // readStageResult already stderr-logs its own first-level failures and
+    // returns null on them, so a throw past it is a post-parse exception
+    // (e.g. derivation threw on a surprising artifact shape). Surface those.
+    console.warn(
+      `[merge-label] evidence-read-failed site=readMergeLabelEvidence.ready featureDir=${featureDir} error=${String(err)}`,
+    );
   }
 
   try {
@@ -397,8 +418,12 @@ export async function readMergeLabelEvidence(
         prNumber: handoffRecord.prNumber,
       };
     }
-  } catch {
-    // Handoff not available
+  } catch (err) {
+    // readReadyTendHandoff already returns null on malformed/missing files;
+    // a throw past it is unexpected. Surface rather than swallow.
+    console.warn(
+      `[merge-label] evidence-read-failed site=readMergeLabelEvidence.handoff featureDir=${featureDir} error=${String(err)}`,
+    );
   }
 
   return { readyAtHead, handoffAtHead };
@@ -454,13 +479,25 @@ export function createDefaultReconcilerDeps(
 }
 
 /**
+ * Report returned by {@link reconcileMergeLabels} so decision-level callers
+ * (tend `getInitialBlockReason`) can thread the reconciler's per-PR reason
+ * into their own output instead of the generic `ready-failed:not-ready`
+ * (HOK-3242).
+ */
+export interface ReconcileReport {
+  decisionByPr: Map<number, MergeLabelDecision>;
+  noTaskViewPrs: number[];
+}
+
+/**
  * Reconcile labels for all wavemill PRs. Called once per tend tick.
- * Updates the PR objects in-place with reconciled labels.
+ * Updates the PR objects in-place with reconciled labels and returns the
+ * per-PR decision so the caller can surface the specific no-label reason.
  */
 export async function reconcileMergeLabels(
   prs: Array<{ number: number; labels: string[]; headSha: string }>,
   repoDir: string,
-): Promise<void> {
+): Promise<ReconcileReport> {
   const prHeadShaByNumber = new Map(prs.map(pr => [pr.number, pr.headSha]));
 
   // Read workflow state once for all PRs
@@ -471,6 +508,7 @@ export async function reconcileMergeLabels(
   }
 
   const deps = createDefaultReconcilerDeps(repoDir, prHeadShaByNumber, workflowState ?? {});
+  const decisionByPr = new Map<number, MergeLabelDecision>();
   const noTaskViewPrs: number[] = [];
 
   for (const pr of prs) {
@@ -478,6 +516,10 @@ export async function reconcileMergeLabels(
       const result = await reconcileMergeLabelsForPr(pr, deps);
       // Update PR labels in-place so downstream code sees reconciled truth
       pr.labels = result.updatedLabels;
+
+      if (result.decision) {
+        decisionByPr.set(pr.number, result.decision);
+      }
 
       // Track PRs with no task view
       if (result.noTaskView) {
@@ -494,4 +536,6 @@ export async function reconcileMergeLabels(
     const prList = noTaskViewPrs.map(n => `#${n}`).join(', ');
     deps.logger.warn(`[merge-label] no task view for PRs: ${prList}`);
   }
+
+  return { decisionByPr, noTaskViewPrs };
 }

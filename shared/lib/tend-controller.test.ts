@@ -720,11 +720,14 @@ describe('selectNextCandidate filtering', () => {
     });
   });
 
-  it('reaches ready-failed:not-ready when metadata is valid but wm:ready absent', async () => {
+  it('reaches ready-failed:<reason> when metadata is valid but wm:ready absent', async () => {
+    // HOK-3242: tend surfaces the merge-label reconciler's specific no-label
+    // reason (`no-task-view` here, since no workflow-state is seeded for
+    // this PR) in place of the generic `ready-failed:not-ready`.
     await withDecision([
       pr({ labels: [label(WM_LABELS.wavemill)] }),
     ], (decision) => {
-      assert.equal(decision.blocked[0]?.reason, 'ready-failed:not-ready');
+      assert.equal(decision.blocked[0]?.reason, 'ready-failed:no-task-view');
     });
   });
 
@@ -732,7 +735,7 @@ describe('selectNextCandidate filtering', () => {
     await withDecision([
       pr({ labels: [label(WM_LABELS.wavemill)] }),
     ], (decision) => {
-      assert.equal(decision.blocked[0]?.reason, 'ready-failed:not-ready');
+      assert.equal(decision.blocked[0]?.reason, 'ready-failed:no-task-view');
     });
   });
 
@@ -771,6 +774,62 @@ describe('selectNextCandidate filtering', () => {
       assert.equal(decision.blocked.length, 0);
       assert.equal(decision.nextPR, null);
     });
+  });
+
+  // HOK-3242: when the merge-label reconciler produced a null decision for
+  // the PR this tick, surface its specific reason in place of the generic
+  // `ready-failed:not-ready` so a reader can see which null branch (missing
+  // Ready evidence, head-mismatch, etc.) kept wm:ready off.
+  it('surfaces the reconciler reason (ready-pending) via ready-failed:<reason>', async () => {
+    const options = buildTestOptions([
+      pr({ labels: [label(WM_LABELS.wavemill)], body: metadata(['task: HOK-1437']) }),
+    ]);
+    const slug = 'reason-threading';
+    const worktree = options.repoDir;
+    mkdirSync(join(worktree, 'features', slug), { recursive: true });
+    // Ready result reports the same head as the live PR but is still
+    // running: Rule 4 of deriveMergeLabel (`ready-pending`). The headSha in
+    // the artifact is what findTaskInState reads for `task.headSha`, so
+    // Rule 1 passes.
+    writeFileSync(join(worktree, 'features', slug, '.ready-result.json'), JSON.stringify({
+      stage: 'ready',
+      status: 'running',
+      artifacts: { type: 'ready', readyHeadSha: 'head-current' },
+    }));
+    writeWorkflowState(options.repoDir, {
+      'HOK-1437': { pr: '1', slug, worktree, phase: 'ready' },
+    });
+    try {
+      const decision = await selectNextCandidate(options);
+      assert.equal(decision.blocked[0]?.reason, 'ready-failed:ready-pending');
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('surfaces the reconciler reason (head-mismatch) via ready-failed:<reason>', async () => {
+    const options = buildTestOptions([
+      pr({ labels: [label(WM_LABELS.wavemill)], body: metadata(['task: HOK-1437']) }),
+    ]);
+    const slug = 'reason-head-mismatch';
+    const worktree = options.repoDir;
+    mkdirSync(join(worktree, 'features', slug), { recursive: true });
+    // Ready result reports a different head than the live PR head: Rule 1
+    // of deriveMergeLabel.
+    writeFileSync(join(worktree, 'features', slug, '.ready-result.json'), JSON.stringify({
+      stage: 'ready',
+      status: 'completed',
+      artifacts: { type: 'ready', verdict: 'pass', prNumber: 1, readyHeadSha: 'different-head' },
+    }));
+    writeWorkflowState(options.repoDir, {
+      'HOK-1437': { pr: '1', slug, worktree, phase: 'ready' },
+    });
+    try {
+      const decision = await selectNextCandidate(options);
+      assert.equal(decision.blocked[0]?.reason, 'ready-failed:head-mismatch');
+    } finally {
+      options.cleanup();
+    }
   });
 });
 
@@ -4237,11 +4296,14 @@ describe('wm:blocked reconciliation against live state (HOK-2919)', () => {
     try {
       const decision = await selectNextCandidate(options);
       // Blocked because wm:ready is missing — while the mill calls it a candidate.
-      assert.equal(decision.blocked[0]?.reason, 'ready-failed:not-ready');
+      // HOK-3242: the reason now carries the reconciler's specific no-label
+      // reason (`no-task-view` here, since no workflow-state is seeded)
+      // instead of the generic `not-ready`.
+      assert.equal(decision.blocked[0]?.reason, 'ready-failed:no-task-view');
       assert.deepEqual(decision.blocked[0]?.labels, ['wavemill']);
       const findings = readFileSync(join(options.repoDir, '.wavemill', 'observer-findings.jsonl'), 'utf-8');
       assert.match(findings, /Mill and tend disagree on PR #1 merge candidacy/);
-      assert.match(findings, /ready-failed:not-ready/);
+      assert.match(findings, /ready-failed:no-task-view/);
       assert.match(findings, /pass: 16\/3 checks/);
     } finally {
       options.cleanup();

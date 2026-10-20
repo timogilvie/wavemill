@@ -587,17 +587,34 @@ export interface ReconcilePrView {
 export async function reconcileWavemillPrLabels(
   prs: GhPrListEntry[],
   repoDir: string,
-  reconcile: (views: ReconcilePrView[], repoDir: string) => Promise<void>,
-): Promise<void> {
+  reconcile: (views: ReconcilePrView[], repoDir: string) => Promise<ReconcileReportLike>,
+): Promise<ReconcileReportLike> {
   const views = prs.map((pr) => ({
     number: pr.number,
     labels: pr.labels.map((label) => label.name),
     headSha: pr.headRefOid ?? '',
   }));
-  await reconcile(views, repoDir);
+  const report = await reconcile(views, repoDir);
   prs.forEach((pr, index) => {
     pr.labels = views[index].labels.map((name) => ({ name }));
   });
+  return report;
+}
+
+/**
+ * Mirror of `MergeLabelDecision` (shared/lib/merge-labels.ts) declared
+ * without importing the module so tend-controller's top-level typing does
+ * not drag `merge-labels.ts` in eagerly. The actual value is produced by
+ * `reconcileMergeLabels` through the dynamic import in `selectNextCandidate`.
+ */
+export type ReconcilerDecision =
+  | { label: 'wm:ready' }
+  | { label: 'wm:blocked'; reason: string }
+  | { label: null; reason?: string };
+
+export interface ReconcileReportLike {
+  decisionByPr: Map<number, ReconcilerDecision>;
+  noTaskViewPrs: number[];
 }
 
 export async function selectNextCandidate(options: SelectNextCandidateOptions): Promise<TendDecision> {
@@ -614,8 +631,10 @@ export async function selectNextCandidate(options: SelectNextCandidateOptions): 
   // satisfying the plan's requirement of "after selectNextCandidate fetches wavemillPrs"
   // and "before decisioning". The reconciler treats the GitHub label as stale,
   // derives the correct label from task state, and applies the difference.
+  // HOK-3242: capture the report so getInitialBlockReason can surface the
+  // specific no-label reason instead of the generic `ready-failed:not-ready`.
   const { reconcileMergeLabels } = await import('./merge-labels.ts');
-  await reconcileWavemillPrLabels(wavemillPrs, options.repoDir, reconcileMergeLabels);
+  const reconcileReport = await reconcileWavemillPrLabels(wavemillPrs, options.repoDir, reconcileMergeLabels);
 
   if (integrationHealth.state === 'unhealthy') {
     return {
@@ -653,6 +672,7 @@ export async function selectNextCandidate(options: SelectNextCandidateOptions): 
         prStateMarkerReader,
         prStateMarkerWriter,
         blockedPrLiveStateProber,
+        reconcilerDecision: reconcileReport.decisionByPr.get(pr.number),
       },
     );
 
@@ -3719,6 +3739,32 @@ function getValidMetadata(body: string): { metadata: PrMetadata | null; validati
   return { metadata: null, validation };
 }
 
+/**
+ * HOK-3242: translate a merge-label reconciler decision into the
+ * `ready-failed:<reason>` string surfaced through the blocked-candidate
+ * `reason` field. When no decision was recorded this tick (the PR was not
+ * seen by the reconciler), fall back to the previous generic string so the
+ * HOK-3181 behaviour is preserved for callers that bypass the reconciler.
+ */
+function formatReadyFailedReason(decision?: ReconcilerDecision): string {
+  if (!decision) {
+    return 'ready-failed:not-ready';
+  }
+  if (decision.label === null) {
+    const reason = decision.reason ?? 'unknown';
+    return `ready-failed:${reason}`;
+  }
+  if (decision.label === 'wm:blocked') {
+    const reason = decision.reason ?? 'unknown';
+    return `ready-failed:blocked:${reason}`;
+  }
+  // decision.label === 'wm:ready': getInitialBlockReason only runs this
+  // branch when the live PR does NOT carry wm:ready. If the reconciler said
+  // `wm:ready` the apply attempt either failed or has not yet taken effect;
+  // preserve the generic string so the operator-visible reason stays stable.
+  return 'ready-failed:not-ready';
+}
+
 async function getInitialBlockReason(
   pr: GhPrListEntry,
   metadata: PrMetadata | null,
@@ -3732,6 +3778,7 @@ async function getInitialBlockReason(
     prStateMarkerReader: PrStateMarkerReader;
     prStateMarkerWriter: PrStateMarkerWriter;
     blockedPrLiveStateProber: BlockedPrLiveStateProber;
+    reconcilerDecision?: ReconcilerDecision;
   },
 ): Promise<string | null> {
   const labels = labelSet(pr);
@@ -3756,7 +3803,11 @@ async function getInitialBlockReason(
   }
 
   if (!labels.has(WM_LABELS.ready)) {
-    return 'ready-failed:not-ready';
+    // HOK-3242: when the reconciler produced a decision for this PR this
+    // tick, surface its specific no-label reason instead of the generic
+    // `ready-failed:not-ready`, so an operator can see which null branch
+    // (head-mismatch, ready-pending, checks-pending, …) kept wm:ready off.
+    return formatReadyFailedReason(options.reconcilerDecision);
   }
 
   if ((metadata.depends_on_linear?.length ?? 0) > 0) {
