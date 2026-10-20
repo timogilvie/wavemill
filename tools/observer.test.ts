@@ -4052,7 +4052,7 @@ test('HOK-3240: stuck merge candidate fires when a consumer is active but the PR
     assert.ok(finding!.evidence.includes('gateReason=pr-lacks-wm-ready'));
     assert.ok(finding!.evidence.includes('prLacksReadyLabel=true'));
     assert.ok(finding!.evidence.includes('pr=#1632 state=OPEN base=auto/integration'));
-    assert.match(finding!.recommendation, /gh pr edit 1632 --add-label wm:ready/);
+    assert.match(finding!.recommendation, /deriveMergeLabel\(\) does not yield wm:ready/);
   });
 });
 

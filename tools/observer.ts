@@ -3426,7 +3426,7 @@ export function detectStuckMergeCandidates(
           prEvidence(),
         ],
         recommendation: hasConsumer
-          ? `Task is in merge-candidate but PR #${task.pr} has no wm:ready label, so the merge consumer will never pick it up. The merge-label reconciler (HOK-3181/HOK-3212) is responsible for setting it — investigate why it hasn't, or set it manually (gh pr edit ${task.pr} --add-label wm:ready).`
+          ? `Task is in merge-candidate but PR #${task.pr} has no wm:ready label, so the merge consumer will never pick it up. The merge-label reconciler (HOK-3181/HOK-3212) is responsible for setting it — investigate why deriveMergeLabel() does not yield wm:ready for this task (a manual label is overwritten by the reconciler).`
           : task.pr
             ? `Task is stuck in merge-candidate with no active merge consumer. Consider enabling integration (integration.enabled + useMillSession) or merging PR #${task.pr} manually.`
             : 'Task is stuck in merge-candidate with no active merge consumer. Consider enabling integration (integration.enabled + useMillSession) or merging manually.',
