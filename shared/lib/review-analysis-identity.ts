@@ -201,7 +201,7 @@ export const reviewAnalysisIdentityDeps = {
 export async function applyReviewAnalysisIdentity(featureDir: string): Promise<boolean> {
   const record = readReviewAnalysisIdentity(featureDir);
   if (!record) return false;
-  const result = await readStageResult(featureDir, 'review');
+  const result = await readStageResult({ featureDir, stage: 'review' });
   if (!result) return false;
   const merged = mergeReviewAnalysisIdentity(
     result,
