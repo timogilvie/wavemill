@@ -1,4 +1,4 @@
-import { TASK_ID_SUFFIX_RE } from './task-identity.ts';
+import { TASK_ID_EMBEDDED_GLOBAL_RE } from './task-identity.ts';
 /**
  * Session adapters — agent-specific session parsing for workflow cost
  * and intervention detection.
@@ -830,15 +830,23 @@ function readFirstLineBounded(filePath: string, maxBytes: number): string | null
  * cost absorbs every other task's tokens. Naming is not uniform across stages:
  * coding and planning use `<stage>-<ISSUE>.jsonl`, review uses
  * `<session>-review-<branch>.jsonl`, and expansion uses
- * `expansion-<sessionId>.jsonl` with no task identity at all.
+ * `expansion-expansion-<ISSUE>-<timestamp>.jsonl` inside a run dir of the same
+ * name, with the issue in the middle rather than at the end.
  *
  * So this excludes transcripts that demonstrably belong to a *different* task
  * rather than including only those that match a single naming convention —
  * filtering on the issue alone would silently drop the whole review phase from
- * a native run's cost. Unattributable files are kept, matching the previous
- * repo-wide behaviour.
+ * a native run's cost. A task ID anywhere in the filename or `runDirName`
+ * attributes the file; only files with no task or branch identity at all are
+ * kept unattributed (HOK-3256: the old end-anchored check missed every
+ * expansion transcript, charging each task the whole growing pool).
  */
-export function matchesIssue(fileName: string, issueId?: string, branchName?: string): boolean {
+export function matchesIssue(
+  fileName: string,
+  issueId?: string,
+  branchName?: string,
+  runDirName?: string,
+): boolean {
   if (!issueId && !branchName) return true;
   const sanitize = (value: string) => value.replace(/[^A-Za-z0-9._-]+/g, '-');
   const base = fileName.replace(/\.jsonl$/, '');
@@ -846,10 +854,17 @@ export function matchesIssue(fileName: string, issueId?: string, branchName?: st
   if (issueId && base.endsWith(`-${sanitize(issueId)}`)) return true;
   if (branchName && base.endsWith(`-${sanitize(branchName)}`)) return true;
 
-  // Names another issue (`coding-HOK-537_c`) — belongs to a different task.
-  if (issueId && TASK_ID_SUFFIX_RE.test(base)) return false;
-  // Names another branch (`gtm-backend-review-task-some-other-slug`).
-  if (branchName && /-(task|feature|bug|bugfix)-/.test(base)) return false;
+  if (issueId) {
+    // `coding-HOK-537_c`, `expansion-expansion-HOK-1309-1788901038378`. Exact
+    // token match, so a primary never claims its challenger's `_c` file.
+    const embeddedIds = [base, runDirName ?? '']
+      .flatMap((name) => name.match(TASK_ID_EMBEDDED_GLOBAL_RE) ?? []);
+    if (embeddedIds.includes(sanitize(issueId))) return true;
+    if (embeddedIds.length > 0) return false;
+  }
+  // Names another branch: every review transcript is `<session>-review-<branch>`
+  // (`manual-review-review-fix-glm-5-2-live-pricing`), whatever the branch prefix.
+  if (branchName && /-(review|task|feature|bug|bugfix)-/.test(base)) return false;
 
   return true;
 }
@@ -881,7 +896,7 @@ export class NativeSessionAdapter implements SessionAdapter {
           sessionFiles.push(
             ...readdirSync(nativeSessionsDir)
               .filter((fileName) => fileName.endsWith('.jsonl'))
-              .filter((fileName) => matchesIssue(fileName, opts.issueId, opts.branchName))
+              .filter((fileName) => matchesIssue(fileName, opts.issueId, opts.branchName, runEntry.name))
               .map((fileName) => join(nativeSessionsDir, fileName)),
           );
         }

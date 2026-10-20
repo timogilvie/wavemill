@@ -2243,8 +2243,12 @@ export interface EvalRecord {
     }
   >;
 
-  /** Status of workflow cost computation (HOK-883) */
-  workflowCostStatus?: 'success' | 'no_sessions' | 'no_branch' | 'adapter_error' | 'missing_worktree' | 'skipped';
+  /**
+   * Status of workflow cost computation (HOK-883). `unreliable` marks a
+   * historical record whose cost absorbed other tasks' native sessions and
+   * could not be recomputed (HOK-3256); its cost fields are removed.
+   */
+  workflowCostStatus?: 'success' | 'no_sessions' | 'no_branch' | 'adapter_error' | 'missing_worktree' | 'skipped' | 'unreliable';
 
   /** Diagnostic details when workflowCost is missing (HOK-883) */
   workflowCostDiagnostics?: {
