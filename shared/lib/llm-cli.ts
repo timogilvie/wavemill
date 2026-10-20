@@ -254,7 +254,6 @@ function classifyLLMError(error: unknown): ClassifiedLLMError {
 
   if (
     /\b(429|rate[_ -]?limit(?:[_ -]?(?:exceeded|error))?|quota|resource_exhausted|insufficient_quota|too many requests)\b/i.test(message)
-    || /exited with code 429/i.test(message)
   ) {
     return { kind: 'quota', reason: 'quota', resetAt, retryable: true };
   }
@@ -317,8 +316,8 @@ function shouldEnforceClassifierProviderCredentials(options: LLMCallOptions): bo
  * operator's subscription login or whatever key the CLI itself is configured
  * with). Requiring `ANTHROPIC_API_KEY` here skipped every Anthropic candidate
  * in the mill, where no such key exists (HOK-3130), so the claude transport
- * never gates on a credential. Transport/vendor mismatches are handled by
- * {@link transportIncompatibilityReason} instead.
+ * never gates on a credential. Transport/vendor mismatches are owned by the
+ * per-transport adapters (HOK-3248).
  */
 function credentialEnvForCandidate(provider: LLMProvider): string | null {
   if (provider === 'openai') {
@@ -592,10 +591,9 @@ export function claudeCliServableVendor(env: NodeJS.ProcessEnv = process.env): '
 /**
  * Explain why `provider`'s transport cannot serve `modelId`, or return `null`
  * when it can. Unknown ids and `vendor: custom` models are always permitted
- * (the operator opted into them explicitly).
- *
- * @param servableVendor - For the `claude` provider, the vendor the CLI can
- *   reach (see {@link claudeCliServableVendor}); ignored for other providers.
+ * (the operator opted into them explicitly). Internal to `llm-cli.ts`: the
+ * per-transport adapter is the public home for transport-compatibility
+ * decisions (HOK-3248).
  */
 function transportIncompatibilityReason(
   provider: LLMProvider,
@@ -622,33 +620,6 @@ function transportIncompatibilityReason(
   }
 
   return null;
-}
-
-/**
- * Resolve which CLI/provider should run a given model id, based on the model
- * registry. Codex runs OpenAI/`gpt-*` models (or anything tagged `agent: 'codex'`);
- * Claude runs everything else (anthropic, plus deepseek ids when the caller
- * already runs inside a claude-deepseek env — see {@link claudeCliServableVendor}).
- *
- * This is the seam that lets headless utility call sites follow their configured
- * model to the right CLI instead of hardcoding `provider: 'claude'`. An unknown
- * or undefined model falls back to 'claude' (with a `gpt-*`/`o<n>` name heuristic
- * for ids not present in the registry).
- */
-export function resolveProviderForModel(model?: string, repoDir?: string): LLMProvider {
-  if (!model) {
-    return 'claude';
-  }
-  const registry = getEffectiveRegistry(repoDir);
-  const entry = getModel(registry, model);
-  if (entry?.agent === 'codex' || entry?.vendor === 'openai') {
-    return 'codex';
-  }
-  if (entry) {
-    return 'claude';
-  }
-  // Not in the registry — fall back to a name heuristic.
-  return /^(gpt-|o\d|codex)/i.test(model) ? 'codex' : 'claude';
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -1261,7 +1232,40 @@ async function executeStream(
       cleanup(timeoutId, slowInterval, activityTimeoutId);
       const elapsedMs = Date.now() - startedAt;
       if (code !== 0) {
-        reject(withElapsed(new Error(`${provider} CLI exited with code ${code}: ${stderr}`), elapsedMs));
+        // HOK-3248: the claude CLI's `-p --output-format json` writes its
+        // real error into the JSON envelope on stdout on a non-zero exit.
+        // Previously we built the error from stderr alone and discarded the
+        // real reason. Prefer the parsed stdout envelope, else include both
+        // stdout and stderr so the real text is never lost.
+        let stdoutDetail = '';
+        if (stdout) {
+          try {
+            const parsed = JSON.parse(stdout) as { is_error?: boolean; error?: string } | unknown;
+            if (parsed && typeof parsed === 'object' && (parsed as { is_error?: boolean }).is_error === true) {
+              const envelopeError = (parsed as { error?: unknown }).error;
+              if (typeof envelopeError === 'string' && envelopeError.length > 0) {
+                stdoutDetail = envelopeError;
+              }
+            }
+          } catch {
+            // stdout not JSON — fall through to raw-text inclusion
+          }
+          if (!stdoutDetail) {
+            stdoutDetail = stdout.slice(0, 2000);
+          }
+        }
+        const detail = [
+          stdoutDetail ? `stdout=${stdoutDetail}` : '',
+          stderr ? `stderr=${stderr}` : '',
+        ]
+          .filter(Boolean)
+          .join('; ');
+        reject(
+          withElapsed(
+            new Error(`${provider} CLI exited with code ${code}${detail ? `: ${detail}` : ''}`),
+            elapsedMs,
+          ),
+        );
       } else {
         void options.observer?.onAttemptComplete?.({
           provider,

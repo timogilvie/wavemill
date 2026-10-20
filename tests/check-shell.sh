@@ -98,6 +98,8 @@ for f in \
   "$LIB_DIR"/deps-drift.sh \
   "$REPO_DIR"/shared/hooks/*.sh \
   "$REPO_DIR"/shared/agent-bin/tmux \
+  "$REPO_DIR"/tests/run-related.sh \
+  "$REPO_DIR"/tests/run-related.test.sh \
   "$REPO_DIR"/tests/ready-sync-github-head-lag.test.sh \
   "$REPO_DIR"/tests/check-install-paths.test.sh \
   "$REPO_DIR"/tests/check-common-guards.test.sh \

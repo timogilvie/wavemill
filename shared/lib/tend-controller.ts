@@ -218,18 +218,25 @@ export interface MergeExecutionDeps {
   prepRunnerFactory: (repoDir: string, options: { onHeartbeat?: () => void }) => ScratchPrepRunner;
 }
 
+/**
+ * Progress phases reported through `onPhaseProgress`: the scratch-prep phases,
+ * the prep runner's periodic `heartbeat`, and `checks-wait` while polling CI.
+ */
+export type MergeProgressPhase = ScratchPrepPhase | 'heartbeat' | 'checks-wait';
+
 export interface ExecuteMergeOptions {
   repoDir: string;
   deps?: Partial<MergeExecutionDeps>;
   /**
    * Optional phase-progress callback. Fires as `withScratchWorktree` advances
    * the scratch-prep phase, and periodically while a long prep command runs
-   * (via the runner's heartbeat). Used by the Tend loop to keep the
-   * backstage-health.json heartbeat fresh during otherwise-quiet prep steps.
+   * (via the runner's heartbeat), and on every poll while waiting for CI on
+   * the pushed head (`checks-wait`, HOK-3264). Used by the Tend loop to keep
+   * the backstage-health.json heartbeat fresh during otherwise-quiet steps.
    */
   onPhaseProgress?: (update: {
     prNumber: number;
-    phase: ScratchPrepPhase | 'heartbeat';
+    phase: MergeProgressPhase;
     at: string;
   }) => Promise<void> | void;
 }
@@ -949,7 +956,7 @@ export async function executeMerge(
     };
   }
 
-  const emitPhaseProgress = async (phase: ScratchPrepPhase | 'heartbeat'): Promise<void> => {
+  const emitPhaseProgress = async (phase: MergeProgressPhase): Promise<void> => {
     if (!options.onPhaseProgress) return;
     try {
       await options.onPhaseProgress({
@@ -1046,6 +1053,10 @@ export async function executeMerge(
             requiredChecks: integrationConfig.requiredChecks,
             retrySleep: deps.retrySleep,
             expectedHeadSha: pushedHeadSha,
+            // HOK-3264: CI on the pushed head routinely takes longer than the
+            // backstage heartbeat stale window; without this the monitor
+            // respawns tend mid-merge and the lane strands the rebased PR.
+            onPoll: () => emitPhaseProgress('checks-wait'),
           },
         );
         if (checks.outcome !== 'pass') {
@@ -2128,6 +2139,11 @@ export async function waitForChecks(
     expectedHeadSha?: string;
     /** Poll interval override for tests; production uses CHECK_POLL_INTERVAL_MS. */
     pollIntervalMs?: number;
+    /**
+     * Called once per poll, before the verdict is evaluated (HOK-3264).
+     * Best-effort liveness hook: a throw is logged and never ends the wait.
+     */
+    onPoll?: () => Promise<void> | void;
   } = {},
 ): Promise<CheckWaitResult> {
   const timeoutMs = options.timeoutMs ?? 30 * 60 * 1000;
@@ -2138,6 +2154,14 @@ export async function waitForChecks(
   let consecutiveHeadMismatches = 0;
 
   while (true) {
+    if (options.onPoll) {
+      try {
+        await options.onPoll();
+      } catch (error) {
+        console.warn(`tend: waitForChecks onPoll callback failed for PR #${prNumber}: ${errorMessage(error)}`);
+      }
+    }
+
     // Head-provenance guard: right after a force-push GitHub may briefly serve
     // the superseded head's checks — once superseded runs are cancelled
     // (HOK-2938 concurrency policy), those read as CANCELLED and would block

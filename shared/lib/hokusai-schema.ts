@@ -20,6 +20,7 @@ import type {
 } from './eval-schema.ts';
 import { isEvalSuccess } from './eval-success-policy.ts';
 import { evaluateEvidenceEligibility } from './model-evidence-policy.ts';
+import { estimateTokensDefault } from './model-adapters/token-estimator.ts';
 
 // ============================================================================
 // Input Schema Types
@@ -417,7 +418,7 @@ export function descriptionLengthToBucket(
   if (typeof value === 'number' && Number.isFinite(value)) {
     tokenCount = value;
   } else if (typeof value === 'string') {
-    tokenCount = Math.ceil(value.length / 4);
+    tokenCount = estimateTokensDefault(value);
   }
 
   if (typeof tokenCount !== 'number' || tokenCount < 0) {

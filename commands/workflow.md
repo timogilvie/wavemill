@@ -136,12 +136,16 @@ I'll execute the plan phase-by-phase with checkpoints.
 ### 3B. Execute Implementation
 **Phase Boundary**: Do not create PRs or run self-review during implementation. Only implement and test.
 
+**Before coding**, state the success criterion and the specific test that
+would fail if the change were wrong.
+
 Follow the `/implement-plan` workflow:
 1. Read plan from `features/<feature-name>/plan.md`
 2. Create todo list from plan phases
 3. For each phase:
    - Implement changes
-   - Run automated tests
+   - Run automated tests (use `bash tests/run-related.sh` for the focused
+     subset; full-suite commands are refused by `run_tests`)
    - **STOP and present results**
    - Get user verification
    - Proceed to next phase
