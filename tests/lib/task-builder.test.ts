@@ -54,9 +54,9 @@ describe('buildTask', () => {
 
   it('rejects an unknown override key and points at the schema', () => {
     assert.throws(
-      () => buildTask({ title: 'Fix CI' } as unknown as TaskRecord),
+      () => buildTask({ madeUpKey: 'Fix CI' } as unknown as TaskRecord),
       (error: Error) => error instanceof TaskFixtureError
-        && /unknown task field "title"/.test(error.message)
+        && /unknown task field "madeUpKey"/.test(error.message)
         && error.message.includes(WORKFLOW_STATE_SCHEMA_PATH),
     );
   });
