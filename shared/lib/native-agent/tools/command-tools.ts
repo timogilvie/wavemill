@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import type { CommandClass } from '../command-classifier.ts';
 import { classifyCommand } from '../command-classifier.ts';
 import { parseCommandArgv } from '../command-argv.ts';
+import { FOREGROUND_WAIT_REFUSAL_MESSAGE } from '../command-wait-guard.ts';
 import { buildTrustMetadata } from '../provenance.ts';
 import {
   runCommand,
@@ -21,6 +22,7 @@ import {
 } from '../test-command-scope.ts';
 import { defaultWorktreeFingerprint } from '../worktree-fingerprint.ts';
 import type { CleanupTracker } from '../cleanup.ts';
+import type { SessionStreamWriter } from '../session-stream.ts';
 import type { ToolDescriptor, WavemillToolResult } from './types.ts';
 
 const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024;
@@ -88,7 +90,8 @@ export interface RunCommandRejectedDetails {
     | 'unsupported_shell_syntax'
     | 'invalid_input'
     | 'full_suite_refused'
-    | 'repeat_after_timeout';
+    | 'repeat_after_timeout'
+    | 'foreground_wait_refused';
   commandClass: CommandClass;
   reason: string;
   command: string;
@@ -120,6 +123,11 @@ export interface CommandToolFactoryOptions {
   history?: CommandRunHistory;
   /** Test seam: override the worktree fingerprint used by the repeat guard. */
   fingerprintFn?: (worktreePath: string) => string;
+  /**
+   * HOK-3262: session stream that records `guard_refused` events when a
+   * substrate guard (e.g. foreground-wait) refuses a command.
+   */
+  sessionStreamWriter?: Pick<SessionStreamWriter, 'writeGuardRefused'>;
 }
 
 interface RunScopedCommandInput extends RunCommandParams {
@@ -135,6 +143,7 @@ interface RunScopedCommandInput extends RunCommandParams {
   allowFullSuite: boolean;
   history: CommandRunHistory;
   fingerprintFn: (worktreePath: string) => string;
+  sessionStreamWriter?: Pick<SessionStreamWriter, 'writeGuardRefused'>;
 }
 
 interface AfterToolCallContext {
@@ -202,7 +211,7 @@ export function createRunTestsTool(
     metadata: {
       name: 'run_tests',
       description:
-        'Run focused test commands inside the active worktree, returning capped output and structured execution metadata. Commands run without a shell: shell operators, redirects and $-expansion are rejected; quoting follows POSIX rules; use cwd to change directory. Full-suite commands (npm test, pnpm test, yarn test, and unsharded tests/run-*.sh) are refused — use a focused selection such as `node --test <files>` or `bash tests/run-unit-tests.sh --shard i/n`. An identical command is refused on the next attempt if the previous run timed out, until the worktree changes.',
+        'Run focused test commands inside the active worktree, returning capped output and structured execution metadata. Commands run without a shell: shell operators, redirects and $-expansion are rejected; quoting follows POSIX rules; use cwd to change directory. Full-suite commands (npm test, pnpm test, yarn test, and unsharded tests/run-*.sh) are refused — use a focused selection such as `node --test <files>` or `bash tests/run-unit-tests.sh --shard i/n`. An identical command is refused on the next attempt if the previous run timed out, until the worktree changes. Foreground waiting (sleep, watch, timeout … tail -f) is refused: run the command once with a timeoutMs instead of polling.',
       class: 'read-only',
       allowedPhases: ['coding'],
       executionMode: 'sequential',
@@ -224,6 +233,7 @@ export function createRunTestsTool(
         allowFullSuite,
         history,
         fingerprintFn,
+        sessionStreamWriter: options.sessionStreamWriter,
       });
     },
   };
@@ -268,6 +278,7 @@ export function createRunFormatTool(
         allowFullSuite: true, // run_format never classifies as "full suite"; this is a no-op for format.
         history,
         fingerprintFn,
+        sessionStreamWriter: options.sessionStreamWriter,
       });
     },
   };
@@ -488,6 +499,14 @@ export async function runScopedCommand(
   });
 
   if (result.approval === 'rejected') {
+    if (result.guard) {
+      input.sessionStreamWriter?.writeGuardRefused({
+        guard: result.guard,
+        toolName: input.tool,
+        reason: result.rejectionDetail ?? result.rejectionReason ?? result.guard,
+        ...(repeatKeyArgv?.[0] ? { commandSummary: repeatKeyArgv[0] } : {}),
+      });
+    }
     const details: RunCommandRejectedDetails = {
       ok: false,
       tool: input.tool,
@@ -608,6 +627,9 @@ function mapRejectionToError(
   if (rejectionReason === 'unsupported-shell-syntax') {
     return 'unsupported_shell_syntax';
   }
+  if (rejectionReason === 'foreground-wait-refused') {
+    return 'foreground_wait_refused';
+  }
   if (rejectionReason === 'empty-command') {
     return 'invalid_input';
   }
@@ -628,6 +650,9 @@ function rejectionMessage(rejectionReason: RejectionReason | string | undefined,
     const suffix = detail ? ` (offending token: "${detail}").` : '.';
     return `Command rejected: shell operators and expansions are not supported because commands run without a shell${suffix}`;
   }
+  if (rejectionReason === 'foreground-wait-refused') {
+    return detail ? `${FOREGROUND_WAIT_REFUSAL_MESSAGE} (${detail})` : FOREGROUND_WAIT_REFUSAL_MESSAGE;
+  }
   return 'Command could not be executed due to invalid input.';
 }
 
@@ -643,6 +668,9 @@ function rejectionRetryHint(rejectionReason: RejectionReason | string | undefine
   }
   if (rejectionReason === 'unsupported-shell-syntax') {
     return 'Run one program per call, pass the cwd parameter instead of "cd ... &&", and quote arguments as for a POSIX shell. Pipes, redirects, &&, ||, ;, $VAR and backticks are not supported.';
+  }
+  if (rejectionReason === 'foreground-wait-refused') {
+    return 'Run the slow command itself once with a bounded timeoutMs (run_tests allows up to 10 minutes) instead of sleeping or polling for it.';
   }
   return undefined;
 }

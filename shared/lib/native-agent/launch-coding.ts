@@ -340,6 +340,7 @@ export function renderCodingSystemPrompt(input: {
     '- Use run_tests/run_format for verification and formatting commands inside the worktree. Commands run without a shell: use one program per call, pass cwd instead of cd ... &&, and avoid pipes, redirects, &&/;, $VAR, and backticks; POSIX-style quoting is honored.',
     '- The preferred focused command is `bash tests/run-related.sh` (selects transitive dependents of the diff; typically <60 s; prints only failing tests).',
     '- run_tests runs focused tests on the changed code (`bash tests/run-related.sh`, `node --test <files>`, `npx tsx --test <files>`, `bash tests/<one>.test.sh`). Full-suite commands (`npm test`, `pnpm test`, `yarn test`, and unsharded `tests/run-*.sh` other than `tests/run-related.sh`) are refused — CI runs the full suite. A command identical to one that just timed out is refused on the next attempt until the worktree changes.',
+    '- To wait for a slow operation, run it once with a bounded timeoutMs instead of polling; foreground `sleep`, `watch` and `timeout … tail -f` are refused.',
     '- Use git_add/git_commit to commit intended changed files before completion.',
     `- Prefer .coding-complete when focused verification of the changed code passes; otherwise write ${input.blockedCompletionPath} only when implementation is complete, scoped checks passed, changes are committed, and remaining blockers are unrelated or environmental.`,
   ];
@@ -971,7 +972,10 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     const descriptors = [
       ...readOnlyDescriptors,
       ...createGitTools(options.wtDir),
-      ...createCommandTools(options.wtDir, { allowFullSuite: patchCodingConfig.allowFullSuiteTests }),
+      ...createCommandTools(options.wtDir, {
+        allowFullSuite: patchCodingConfig.allowFullSuiteTests,
+        sessionStreamWriter: options.persistentSessionStreamWriter,
+      }),
       ...createCodingMutationTools(options.wtDir, { phase: 'coding' }),
       ...createGitCommitTools(options.wtDir, { tracker }),
       ...codeSearchDescriptors,

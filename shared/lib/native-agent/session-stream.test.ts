@@ -26,6 +26,7 @@ import {
   type ModelRequestEvent,
   type ToolCallEvent,
   type SessionEndedEvent,
+  type GuardRefusedEvent,
 } from './session-stream.schema.ts';
 
 // ---------------------------------------------------------------------------
@@ -495,6 +496,37 @@ describe('SessionStreamWriter: event type coverage', () => {
       assert.equal(event.type, 'session_ended');
       assert.equal(event.totalTurns, 5);
       assert.equal(event.totalToolCalls, 10);
+    } finally {
+      cleanup(tempDir);
+    }
+  });
+
+  it('writes guard_refused event that round-trips through the parser (HOK-3262)', () => {
+    const tempDir = makeTempDir();
+    try {
+      const path = join(tempDir, 'session-events', 'test.jsonl');
+      const writer = new SessionStreamWriter(
+        { sessionId: TEST_SESSION_ID, traceId: TEST_TRACE_ID, phase: TEST_PHASE, path, clock },
+        tempDir,
+      );
+
+      const first = writer.writeGuardRefused({
+        guard: 'foreground-wait',
+        toolName: 'run_tests',
+        reason: 'sleep 60s (>= 5s floor)',
+        commandSummary: 'sleep',
+      });
+      const second = writer.writeGuardRefused({ guard: 'foreground-wait', toolName: 'run_format', reason: 'watch' });
+      assert.equal(second.seq, first.seq + 1);
+
+      const parsed = filterEventsByType(parseSessionEventJsonl(readFileSync(path, 'utf-8')), 'guard_refused');
+      assert.equal(parsed.length, 2);
+      const event: GuardRefusedEvent = parsed[0]!;
+      assert.equal(event.guard, 'foreground-wait');
+      assert.equal(event.toolName, 'run_tests');
+      assert.equal(event.reason, 'sleep 60s (>= 5s floor)');
+      assert.equal(event.commandSummary, 'sleep');
+      assert.equal('commandSummary' in parsed[1]!, false);
     } finally {
       cleanup(tempDir);
     }

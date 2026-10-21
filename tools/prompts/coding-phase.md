@@ -31,6 +31,9 @@ This is a one-shot statement, not a running commentary.
    `tests/run-*.sh`; CI runs the full suite.
    - Run it between phases, not just at the end.
    - Pause if anything fails; fix before proceeding.
+   - To wait for a slow operation, run it once with a bounded timeout instead
+     of polling or sleeping; the native command tools refuse foreground
+     `sleep`, `watch` and `timeout … tail -f`.
 
 4. **Mark completion**:
    - When implementation is complete and tests pass
