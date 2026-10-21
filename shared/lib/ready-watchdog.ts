@@ -1505,7 +1505,7 @@ async function buildSnapshot(
 
   const stateDir = readyStateDir(worktree, slug);
   const readyResultFile = path.join(stateDir, '.ready-result.json');
-  const readyResult = await readStageResult(stateDir, 'ready');
+  const readyResult = await readStageResult({ featureDir: stateDir, stage: 'ready' });
   const readyArtifacts = readyResult?.artifacts?.type === 'ready'
     ? readyResult.artifacts
     : null;

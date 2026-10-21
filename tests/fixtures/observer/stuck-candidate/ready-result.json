@@ -11,6 +11,7 @@
     "verdict": "pass",
     "queueState": "merge-candidate",
     "readyHeadSha": "{{HEAD_SHA}}",
+    "lastCiHeadSha": "{{HEAD_SHA}}",
     "targetBaseSha": "{{BASE_SHA}}",
     "candidatePromotedAt": "{{CANDIDATE_PROMOTED_AT}}",
     "candidateLastProgressAt": "{{CANDIDATE_LAST_PROGRESS_AT}}",

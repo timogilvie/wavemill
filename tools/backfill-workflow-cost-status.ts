@@ -5,6 +5,8 @@
  *
  * Adds workflowCostStatus and workflowCostDiagnostics fields to eval records
  * that don't have them, attempting to re-compute missing costs where possible.
+ * Also repairs costs that absorbed the cross-task native session pool
+ * (HOK-3256): recomputed when possible, otherwise marked `unreliable`.
  */
 
 import { runTool } from '../shared/lib/tool-runner.ts';
@@ -14,12 +16,19 @@ import { errorMessage } from '../shared/lib/error-utils.ts';
 import type { EvalRecord } from '../shared/lib/eval-schema.ts';
 import { computeWorkflowCost, loadPricingTable } from '../shared/lib/workflow-cost.ts';
 import { readJsonlFile, readTransformWrite } from '../shared/lib/jsonl-utils.ts';
+import {
+  POOLED_COST_MIN_SESSIONS,
+  isPooledWorkflowCost,
+  repairPooledWorkflowCost,
+} from '../shared/lib/workflow-cost-pool-repair.ts';
 
 interface BackfillStats {
   total: number;
   alreadyHadStatus: number;
   successfulBackfill: number;
   recoveredCost: number;
+  pooledRecomputed: number;
+  pooledUnreliable: number;
   statusSet: Record<string, number>;
 }
 
@@ -30,7 +39,7 @@ function attemptCostRecovery(
   record: EvalRecord,
   repoDir: string,
   pricingTable: any,
-): { cost?: number; tokenUsage?: any; reason?: string } {
+): { cost?: number; tokenUsage?: any; attribution?: EvalRecord['workflowCostAttribution']; reason?: string } {
   // Need metadata to attempt recovery
   const meta = record.metadata as any;
   if (!meta) {
@@ -59,6 +68,7 @@ function attemptCostRecovery(
       return {
         cost: costOutcome.totalCostUsd,
         tokenUsage: costOutcome.models,
+        attribution: costOutcome.attribution,
       };
     } else {
       return { reason: costOutcome.reason };
@@ -76,6 +86,10 @@ runTool({
     file: { type: 'string', short: 'f', description: 'Path to evals.jsonl file' },
     'repo-dir': { type: 'string', description: 'Repository directory for pricing config (default: current dir)' },
     'dry-run': { type: 'boolean', description: 'Preview changes without modifying the file' },
+    'pool-min-sessions': {
+      type: 'string',
+      description: `Native session count marking a HOK-3256 pooled cost (default: ${POOLED_COST_MIN_SESSIONS})`,
+    },
   },
   examples: [
     'npx tsx tools/backfill-workflow-cost-status.ts --dry-run',
@@ -91,6 +105,11 @@ For records WITHOUT workflowCost:
   - If recovery succeeds: sets workflowCost and status to 'success'
   - If recovery fails: sets status to best-guess reason (e.g., 'no_sessions')
 
+For records whose native cost spans >= --pool-min-sessions sessions (HOK-3256):
+  - Re-computes the cost with the fixed per-task session scan when possible
+  - Otherwise sets status to 'unreliable' and removes workflowCost,
+    workflowTokenUsage and workflowCostAttribution
+
 Uses atomic write (temp file + rename) to prevent data corruption.
 Uses shared JSONL rewrite helpers and writes a .backup file before live changes.`,
   run({ args }) {
@@ -98,6 +117,10 @@ Uses shared JSONL rewrite helpers and writes a .backup file before live changes.
     const defaultPath = join(repoDir, '.wavemill', 'evals', 'evals.jsonl');
     const filePath = args.file ? resolve(args.file) : defaultPath;
     const dryRun = !!args['dry-run'];
+    const poolMinSessions = args['pool-min-sessions'] ? Number(args['pool-min-sessions']) : POOLED_COST_MIN_SESSIONS;
+    if (!Number.isInteger(poolMinSessions) || poolMinSessions < 1) {
+      throw new Error(`--pool-min-sessions must be a positive integer, got: ${args['pool-min-sessions']}`);
+    }
 
     console.log(`Backfilling workflow cost status for: ${filePath}`);
     if (dryRun) {
@@ -117,11 +140,32 @@ Uses shared JSONL rewrite helpers and writes a .backup file before live changes.
       alreadyHadStatus: 0,
       successfulBackfill: 0,
       recoveredCost: 0,
+      pooledRecomputed: 0,
+      pooledUnreliable: 0,
       statusSet: {},
     };
 
     readTransformWrite<EvalRecord>(filePath, (record, context) => {
       const issueId = record.issueId || 'unknown';
+
+      if (isPooledWorkflowCost(record, poolMinSessions)) {
+        const recovery = attemptCostRecovery(record, repoDir, pricingTable);
+        const repaired = repairPooledWorkflowCost(
+          record,
+          recovery.cost !== undefined
+            ? { cost: recovery.cost, tokenUsage: recovery.tokenUsage, attribution: recovery.attribution }
+            : null,
+          recovery.reason || 'Unknown error',
+        );
+        if (repaired.workflowCostStatus === 'unreliable') {
+          stats.pooledUnreliable++;
+          console.log(`[${context.index + 1}/${records.length}] ${issueId}: pooled cost marked unreliable`);
+        } else {
+          stats.pooledRecomputed++;
+          console.log(`[${context.index + 1}/${records.length}] ${issueId}: pooled cost recomputed: $${recovery.cost!.toFixed(4)}`);
+        }
+        return { record: repaired, changed: true };
+      }
 
       if (record.workflowCostStatus) {
         stats.alreadyHadStatus++;
@@ -194,6 +238,9 @@ Uses shared JSONL rewrite helpers and writes a .backup file before live changes.
     console.log(`Already had status:     ${stats.alreadyHadStatus}`);
     console.log(`Backfilled:             ${stats.successfulBackfill}`);
     console.log(`  - Recovered costs:    ${stats.recoveredCost}`);
+    console.log(`Pooled costs (HOK-3256):`);
+    console.log(`  - Recomputed:         ${stats.pooledRecomputed}`);
+    console.log(`  - Marked unreliable:  ${stats.pooledUnreliable}`);
     console.log(`\nStatus distribution:`);
     for (const [status, count] of Object.entries(stats.statusSet).sort((a, b) => b[1] - a[1])) {
       const pct = ((count / stats.total) * 100).toFixed(1);

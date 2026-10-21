@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Monitor async ready-path checks (HOK-3206)
 #
-# The cross-PR revert guard, the PR CI status read, the ready watchdog and the
-# plan->code expanded reroute each used to run synchronously inside a monitor
-# pass (19 s, ~2.5 s per PR, ~5 s and 30-60 s respectively). They now run as
+# The cross-PR revert guard, the PR CI status read, the ready watchdog, the
+# plan->code expanded reroute and the pre-approval expansion recovery (HOK-3253)
+# each used to run synchronously inside a monitor pass (19 s, ~2.5 s per PR,
+# ~5 s, 30-60 s and up to 300 s respectively). They now run as
 # tracked background jobs (`launch_tracked_job` / job-tracker.ts) and publish a
 # condition-keyed result marker; the loop consumes the marker on a later pass.
 #
@@ -536,6 +537,76 @@ expanded_reroute_gate() {
   meta="$(jq -cn --arg s "$feature_dir" --arg b "$EXPANDED_REROUTE_JOB_BUCKET" --arg k "$packet_hash" '{stateDir: $s, bucket: $b, key: $k}')"
   monitor_async_job_launch route-task "$job_id" "$issue" "" "$(( ${API_TIMEOUT:-30} + 30 ))" "$meta" \
     expanded_reroute_job_run "$issue" "$slug" "$feature_dir" "$packet_hash"
+  return 4
+}
+
+# ── Task-input preparation before plan approval (HOK-3253) ──────────────────
+#
+# A raw issue whose planner wrote plan.md without expanding it needs the
+# expansion recovery (expand-issue.ts + expanded reroute, minutes of LLM time)
+# BEFORE the plan may be offered for approval. It used to run synchronously at
+# the plan->code handoff, after the approval, which is what made HOK-3220 ask
+# for approval twice. It now runs as a tracked job; the monitor holds planning
+# at `running` until the packet lands.
+#
+# Budget: every launch is one attempt in the `expansion-recovery-job` bucket,
+# keyed on the raw task input (selected-task.json). Counting at launch (not in
+# the poll arm) bounds the loop even when a job dies without a tracker result.
+# Exhaustion terminalizes with the recovery's recorded detail.
+
+PREPARE_TASK_INPUTS_JOB_BUCKET="expansion-recovery-job"
+
+# Content hash of the raw task input the expansion reads; "none" when absent.
+task_inputs_raw_input_hash() {
+  local feature_dir="$1" hash=""
+  if [[ -f "$feature_dir/selected-task.json" ]]; then
+    hash="$(jq -r '[(.title // ""), (.description // "")] | join("\n\n")' "$feature_dir/selected-task.json" 2>/dev/null \
+      | shasum -a 256 2>/dev/null | awk '{print $1}')"
+  fi
+  printf '%s\n' "${hash:-none}"
+}
+
+prepare_task_inputs_job_run() {
+  local issue="$1" slug="$2" feature_dir="$3"
+  expansion_recovery_rearm "$feature_dir" || true
+  recover_missing_expansion_artifact "$issue" "$slug" "$feature_dir"
+}
+
+# prepare_task_inputs_gate <issue> <slug> <feature_dir>
+# Returns 1 = failed for good (PREPARE_TASK_INPUTS_LAST_DETAIL set), 4 = pending
+# (job running or backing off; the caller holds planning).
+prepare_task_inputs_gate() {
+  local issue="$1" slug="$2" feature_dir="$3"
+  local key job_id decision meta detail
+  PREPARE_TASK_INPUTS_LAST_DETAIL=""
+
+
+  job_id="prepare-task-inputs-$(sanitize_job_token "$issue")"
+  monitor_async_job_stat prepare-task-inputs pending
+  monitor_async_job_running "$job_id" && return 4
+
+  key="$(task_inputs_raw_input_hash "$feature_dir")"
+  decision="$(_async_check_retry_gate "$feature_dir" "$PREPARE_TASK_INPUTS_JOB_BUCKET" "$key")"
+  case "$decision" in
+    exhausted|exhausted-quiet)
+      detail="$(expansion_recovery_detail "$feature_dir")"
+      PREPARE_TASK_INPUTS_LAST_DETAIL="expansion recovery failed ${ASYNC_CHECK_JOB_RETRY_LIMIT} time(s) (last: ${detail:-no result recorded})"
+      [[ "$decision" == "exhausted" ]] && bounded_retry_mark_exhausted "$feature_dir" "$PREPARE_TASK_INPUTS_JOB_BUCKET" \
+        "Task-input preparation: $PREPARE_TASK_INPUTS_LAST_DETAIL for input ${key:0:12}" || true
+      return 1
+      ;;
+    backoff)
+      return 4
+      ;;
+  esac
+
+  bounded_retry_increment "$feature_dir" "$PREPARE_TASK_INPUTS_JOB_BUCKET" "$key" >/dev/null
+  # No bucket in meta: attempts are charged here, not by handle_check_job_failure.
+  meta="$(jq -cn --arg s "$feature_dir" '{stateDir: $s}')"
+  monitor_async_job_launch prepare-task-inputs "$job_id" "$issue" "" \
+    "$(( $(get_expansion_handshake_timeout_seconds "$REPO_DIR") + ${API_TIMEOUT:-30} + 30 ))" "$meta" \
+    prepare_task_inputs_job_run "$issue" "$slug" "$feature_dir"
+  log "status" "$issue → preparing task inputs before plan approval (expansion recovery job, input ${key:0:12})"
   return 4
 }
 
