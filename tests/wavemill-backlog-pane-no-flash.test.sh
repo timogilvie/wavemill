@@ -69,6 +69,14 @@ if [[ ! -s "$FUNC_FILE" ]]; then
   exit 1
 fi
 
+PAINT_FUNC_FILE="$TMP_DIR/paint-task-list-frame.sh"
+extract_function "$MONITOR_SCRIPT_FILE" "paint_task_list_frame" > "$PAINT_FUNC_FILE"
+
+if [[ ! -s "$PAINT_FUNC_FILE" ]]; then
+  echo "Could not extract paint_task_list_frame"
+  exit 1
+fi
+
 render_with_helper() {
   local first_frame="$1" second_frame="$2"
   FUNCTIONS_FILE="$FUNC_FILE" bash -lc '
@@ -141,25 +149,31 @@ test_monitor_render_path_uses_helper() {
 # ---------------------------------------------------------------------------
 # Terminal buffer simulator
 #
-# apply_repaint_to_buffer <bytes>
+# apply_repaint_to_buffer <bytes> [pane_rows]
 #   Applies ANSI escape bytes to a virtual terminal buffer and prints the
 #   visible lines (non-empty rows only).  Handles the sequences emitted by
 #   wavemill_pane_repaint and the monitor cursor-anchor management:
 #     \n        — newline (advance row, reset column to 0)
 #     ESC[K     — erase current line from cursor to EOL
 #     ESC[J     — erase from cursor to end of buffer
-#     ESC[s     — save cursor position
+#     ESC[2J    — erase the whole buffer (cursor does not move)
+#     ESC[H     — move cursor home (row 0, column 0)
+#     ESC[s     — save cursor position (screen-relative, like a real tty)
 #     ESC[u     — restore cursor position
 #     other     — regular character written at current position
+#   With pane_rows set, the buffer is a fixed-height screen: a newline on the
+#   bottom row scrolls every row up by one and the top row is lost, exactly
+#   like a short tmux pane.  Without it the buffer grows without bound.
 # ---------------------------------------------------------------------------
 apply_repaint_to_buffer() {
-  local bytes="$1"
+  local bytes="$1" pane_rows="${2:-0}"
   # Sparse indexed array: unset elements accessed with ${buf[$r]+${buf[$r]}}
   # so that set -u is not triggered.
   local -a buf=()
   local row=0 col=0 sv_row=0 sv_col=0 max_row=0
   local i=0 len=${#bytes}
   local _line _cur
+  if (( pane_rows > 0 )); then max_row=$((pane_rows - 1)); fi
 
   while (( i < len )); do
     local c="${bytes:$i:1}"
@@ -175,16 +189,30 @@ apply_repaint_to_buffer() {
       _cur="${buf[$row]+${buf[$row]}}"
       case "${seq: -1}" in
         K) buf[$row]="${_cur:0:$col}" ;;
-        J) buf[$row]="${_cur:0:$col}"
-           local k
-           for (( k = row + 1; k <= max_row; k++ )); do buf[$k]=""; done ;;
+        J) local k
+           if [[ "$seq" == "2J" ]]; then
+             for (( k = 0; k <= max_row; k++ )); do buf[$k]=""; done
+           else
+             buf[$row]="${_cur:0:$col}"
+             for (( k = row + 1; k <= max_row; k++ )); do buf[$k]=""; done
+           fi ;;
+        H) row=0; col=0 ;;
         s) sv_row=$row; sv_col=$col ;;
         u) row=$sv_row; col=$sv_col ;;
       esac
       i=$j
     elif [[ "$c" == $'\n' ]]; then
-      row=$((row + 1)); col=0
-      if (( row > max_row )); then max_row=$row; fi
+      col=0
+      if (( pane_rows > 0 && row == pane_rows - 1 )); then
+        local k
+        for (( k = 0; k < pane_rows - 1; k++ )); do
+          buf[$k]="${buf[$((k + 1))]+${buf[$((k + 1))]}}"
+        done
+        buf[$row]=""
+      else
+        row=$((row + 1))
+        if (( row > max_row )); then max_row=$row; fi
+      fi
       i=$((i + 1))
     else
       _line="${buf[$row]+${buf[$row]}}"
@@ -204,29 +232,31 @@ apply_repaint_to_buffer() {
   done
 }
 
-# Render three frames through the full monitor flow (cursor save/restore +
-# wavemill_pane_repaint) in a single shell so WAVEMILL_PANE_REPAINT_LAST_LINES
-# accumulates across all three calls, exactly as it does in the live monitor.
-render_three_frames() {
-  local frame_a="$1" frame_b="$2" frame_c="$3"
-  FUNCTIONS_FILE="$FUNC_FILE" bash -c '
+# render_pane_sequence <step>...
+#   Drives the real paint_task_list_frame + wavemill_pane_repaint in a single
+#   shell so TASK_LIST_RENDERED and WAVEMILL_PANE_REPAINT_LAST_LINES carry
+#   across calls, exactly as they do in the live monitor.  A step prefixed
+#   with "RAW:" is written verbatim instead of painted, standing in for log
+#   lines or reader output that reach the pane between repaints.
+render_pane_sequence() {
+  FUNCTIONS_FILE="$FUNC_FILE" PAINT_FILE="$PAINT_FUNC_FILE" bash -c '
     set -euo pipefail
     source "$FUNCTIONS_FILE"
+    source "$PAINT_FILE"
+    TASK_LIST_RENDERED=0
     WAVEMILL_PANE_REPAINT_LAST_LINES=0
+    for step in "$@"; do
+      if [[ "$step" == RAW:* ]]; then
+        printf "%s" "${step#RAW:}"
+      else
+        paint_task_list_frame "$step"
+      fi
+    done
+  ' _ "$@"
+}
 
-    # Frame A: first paint — blank separator + save anchor
-    printf "\n"
-    printf "\033[s"
-    wavemill_pane_repaint "$1"
-
-    # Frame B: restore anchor and repaint
-    printf "\033[u"
-    wavemill_pane_repaint "$2"
-
-    # Frame C: restore anchor and repaint
-    printf "\033[u"
-    wavemill_pane_repaint "$3"
-  ' _ "$frame_a" "$frame_b" "$frame_c"
+render_three_frames() {
+  render_pane_sequence "$1" "$2" "$3"
 }
 
 # Three-frame visible-pane regression
@@ -328,6 +358,81 @@ test_fallback_regression() {
   check_contains     "fallback: flat task visible" "$visible" "flat fallback"
 }
 
+# Build a grouped "Next tasks:" frame listing <count> tasks with ids
+# <prefix>-1..<prefix>-<count>.
+make_task_frame() {
+  local prefix="$1" count="$2" frame n
+  frame=$'Next tasks:\n  Available Now - Parallel Wave 1\n'
+  for (( n = 1; n <= count; n++ )); do
+    frame+="  ${n}. ${prefix}-${n} - Task ${n} (score: 80)"$'\n'
+  done
+  frame+=$'\nEnter number(s) to start (e.g. 1 3), \'m\' for more, \'d\' for deps, \'q\' to quit, or wait 10s to refresh:'
+  printf '%s' "$frame"
+}
+
+count_next_tasks() {
+  local n
+  n=$(printf '%s\n' "$1" | grep -c "Next tasks:" || true)
+  printf '%s' "${n:-0}"
+}
+
+# HOK-3252: in a 24-row pane, a first paint that starts mid-pane scrolls the
+# frame up.  A screen-relative ESC[s anchor then points below the old frame,
+# so every later repaint stacked another "Next tasks:" frame under stale ones
+# and a launched task (HOK-3214 in the incident) still looked launchable.
+test_short_pane_scroll_no_stale_frame() {
+  local noise="" n raw visible count frame_a frame_b frame_c
+  for (( n = 1; n <= 16; n++ )); do noise+="startup line ${n}"$'\n'; done
+  frame_a="$(make_task_frame STALE 6)"
+  frame_b="$(make_task_frame MID 9)"
+  frame_c="$(make_task_frame LIVE 4)"
+
+  raw="$(render_pane_sequence "RAW:${noise}" "$frame_a" "$frame_b" "$frame_c")"
+  visible="$(apply_repaint_to_buffer "$raw" 24)"
+
+  count="$(count_next_tasks "$visible")"
+  if [[ "$count" == "1" ]]; then
+    pass "short pane scroll: exactly one 'Next tasks:' visible"
+  else
+    printf '    visible pane:\n'
+    printf '%s\n' "$visible" | sed 's/^/    | /'
+    fail "short pane scroll: expected 1 'Next tasks:', got $count"
+  fi
+
+  check_not_contains "short pane scroll: first-frame task gone (STALE-1)" "$visible" "STALE-1"
+  check_not_contains "short pane scroll: middle-frame task gone (MID-9)" "$visible" "MID-9"
+  check_contains     "short pane scroll: current task visible (LIVE-4)" "$visible" "LIVE-4"
+}
+
+# HOK-3252: log lines written to the pane between repaints (log fallback to
+# stdout, input-reader output) must not leave earlier frames on screen or sit
+# inside the current frame, even when they scroll the pane.
+test_interleaved_log_output_no_stale_frame() {
+  local logs="" n raw visible count frame_a frame_b frame_c
+  # Eleven lines after the 12-row first frame scroll the 24-row pane by one
+  # row: enough to move a screen-relative anchor below that frame's heading.
+  for (( n = 1; n <= 11; n++ )); do logs+="$(printf '12:00:%02d' "$n") log line ${n}"$'\n'; done
+  frame_a="$(make_task_frame OLD 8)"
+  frame_b="$(make_task_frame MID 3)"
+  frame_c="$(make_task_frame NEW 5)"
+
+  raw="$(render_pane_sequence "$frame_a" "RAW:${logs}" "$frame_b" "RAW:${logs}" "$frame_c")"
+  visible="$(apply_repaint_to_buffer "$raw" 24)"
+
+  count="$(count_next_tasks "$visible")"
+  if [[ "$count" == "1" ]]; then
+    pass "interleaved logs: exactly one 'Next tasks:' visible"
+  else
+    printf '    visible pane:\n'
+    printf '%s\n' "$visible" | sed 's/^/    | /'
+    fail "interleaved logs: expected 1 'Next tasks:', got $count"
+  fi
+
+  check_not_contains "interleaved logs: first-frame task gone (OLD-8)" "$visible" "OLD-8"
+  check_not_contains "interleaved logs: log lines not on screen" "$visible" "log line"
+  check_contains     "interleaved logs: current task visible (NEW-5)" "$visible" "NEW-5"
+}
+
 echo "=== Backlog Pane No Flash ==="
 test_repaint_never_uses_full_screen_clear
 test_repaint_starts_with_content
@@ -340,6 +445,11 @@ test_three_frame_regression
 test_shrink_regression
 test_grow_regression
 test_fallback_regression
+
+echo
+echo "=== Short Pane Scroll Regression (HOK-3252) ==="
+test_short_pane_scroll_no_stale_frame
+test_interleaved_log_output_no_stale_frame
 
 echo
 echo "Passed: $PASS"

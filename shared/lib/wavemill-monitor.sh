@@ -19790,7 +19790,7 @@ COMMAND_OFFSET_WARNED=false
 
 clear_task_list_display() {
   if (( TASK_LIST_RENDERED == 1 )); then
-    printf '\033[u'  # restore cursor to saved anchor
+    printf '\033[H'  # return to the pane-absolute frame anchor (0,0)
     printf '\033[J'  # clear from anchor to end of screen
     TASK_LIST_RENDERED=0
     WAVEMILL_PANE_REPAINT_LAST_LINES=0
@@ -19798,16 +19798,19 @@ clear_task_list_display() {
 }
 
 # Paint a task-list frame, managing the cursor anchor and repaint state.
-# On first call (TASK_LIST_RENDERED=0): emits a blank separator line and
-# saves the cursor as the anchor.  On subsequent calls (TASK_LIST_RENDERED=1):
-# restores the cursor to the saved anchor before repainting.
+# The anchor is the pane's home position (ESC[H), not a saved cursor: ESC[s/u
+# is screen-relative, so once log output or a frame taller than the remaining
+# rows scrolled the pane, repaints landed below the old frame and left stale
+# "Next tasks:" frames above it (HOK-3252).  On first call
+# (TASK_LIST_RENDERED=0) the pane is cleared once (it was just `clear`ed at
+# spawn, so this does not flash); later calls only home the cursor and let
+# wavemill_pane_repaint overwrite in place and ESC[J anything below.
 paint_task_list_frame() {
   local frame="$1"
   if (( TASK_LIST_RENDERED == 1 )); then
-    printf '\033[u'  # restore cursor to anchor
+    printf '\033[H'        # home cursor to the frame anchor
   else
-    printf '\n'      # blank separator before first paint
-    printf '\033[s'  # save cursor as anchor
+    printf '\033[H\033[2J'  # home and clear the pane once
   fi
   wavemill_pane_repaint "$frame"
   TASK_LIST_RENDERED=1
