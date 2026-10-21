@@ -237,6 +237,7 @@ TESTS=(
   shared/lib/merge-queue.test.ts
   shared/lib/merge-labels.test.ts
   shared/lib/pr-task-resolver.test.ts
+  shared/lib/pr-task-lookup-checker.test.ts
   shared/lib/mill-clock.test.ts
   shared/lib/model-registry.test.ts
   shared/lib/model-adapters/transport-adapter.test.ts

@@ -4635,30 +4635,21 @@ function resolveEffectiveBaseBranchForPr(repoDir: string, prNumber: number, head
   // HOK-3242: route the lookup through the shared resolver. PR number is
   // the primary key, branch is the historical secondary; pass `fallbackBranch`
   // so the resolver tries both in a single pass and emits at most one
-  // structured miss log instead of two.
+  // structured miss log instead of two. HOK-3271: also enable
+  // matchLifecycleDeliveryPr to cover the HOK-3181/HOK-3212 case where the PR
+  // is stored under `lifecycle.deliveryEvidence.prNumber`.
   const prLookup = resolvePrTask(prNumber, state, {
     site: 'tend.resolveEffectiveBaseBranchForPr',
     fallbackBranch: headBranch,
+    matchLifecycleDeliveryPr: true,
   });
-  let matchingTaskId: string | null = prLookup.location?.taskId ?? null;
-  // Preserve the HOK-3181/HOK-3212 lifecycle-based PR match: some rows
-  // store the PR under `lifecycle.deliveryEvidence.prNumber` rather than
-  // `.pr`. The resolver only reads `.pr`, so cover that case here before
-  // giving up.
+  const matchingTaskId = prLookup.location?.taskId ?? null;
   if (!matchingTaskId) {
-    for (const [key, task] of workflowTaskEntries(state)) {
-      const lifecycle = task.lifecycle;
-      const deliveryEvidence = isRecord(lifecycle) && isRecord(lifecycle.deliveryEvidence)
-        ? lifecycle.deliveryEvidence
-        : null;
-      const lifecyclePr = deliveryEvidence ? deliveryEvidence.prNumber : undefined;
-      if (lifecyclePr !== undefined && String(lifecyclePr) === String(prNumber)) {
-        matchingTaskId = key;
-        break;
-      }
+    if (prLookup.miss) {
+      console.trace(
+        `[tend] resolveEffectiveBaseBranchForPr fell back to default base due to: ${prLookup.miss.reason}`,
+      );
     }
-  }
-  if (!matchingTaskId) {
     return fallbackBase;
   }
   try {
