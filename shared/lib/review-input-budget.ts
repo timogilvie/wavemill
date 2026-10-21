@@ -142,7 +142,7 @@ const GENERATED = /(?:^|\/)(?:dist|build|generated|vendor|node_modules)\/|\.gene
 const DATA_EXTENSIONS = /\.(?:jsonl|ndjson|csv|tsv|parquet|bin|png|jpe?g|gif|webp|pdf|zip|gz)$/i;
 const FIXTURE_FILE = /\.fixtures?\.(?:json|ya?ml)$/i;
 const TEST_FILE = /(?:^|\/)(?:tests?|__tests__|spec)\/|\.(?:test|spec)\.[^/]+$|_test\.[^/]+$/;
-const DOCS_OR_CONFIG = /\.(?:md|mdx|rst|txt|adoc|json|ya?ml|toml|ini|cfg|conf|env|xml|html?|css|scss)$|(?:^|\/)(?:docs?)\/|(?:^|\/)\.[^/]+$/i;
+const DOCS_OR_CONFIG = /\.(?:md|mdx|rst|txt|adoc|json|ya?ml|toml|ini|cfg|conf|env|xml)$|(?:^|\/)(?:docs?)\/|(?:^|\/)\.[^/]+$/i;
 
 /** Priority tier of a changed path. Fixture-directory code counts as test code. */
 export function classifyTier(path: string): ReviewInputTier {

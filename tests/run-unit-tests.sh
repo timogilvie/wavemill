@@ -154,6 +154,7 @@ TESTS=(
   shared/lib/candidate-features.test.ts
   shared/lib/context-analyzer.test.ts
   shared/lib/review-engine.test.ts
+  shared/lib/review-input-budget.test.ts
   shared/lib/review-runner.test.ts
   shared/lib/review-analysis-identity.test.ts
   shared/lib/review-scope-guard.test.ts

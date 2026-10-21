@@ -77,6 +77,7 @@ describe('classifyTier (HOK-3249)', () => {
   it('orders source, tests, docs/config, then data/fixture/generated', () => {
     assert.equal(classifyTier('shared/lib/review-engine.ts'), 1);
     assert.equal(classifyTier('tools/wavemill'), 1);
+    assert.equal(classifyTier('app/styles/theme.css'), 1);
     assert.equal(classifyTier('shared/lib/review-engine.test.ts'), 2);
     assert.equal(classifyTier('tests/launch-ready-phase.test.sh'), 2);
     assert.equal(classifyTier('tests/fixtures/helper.ts'), 2);

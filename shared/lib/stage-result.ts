@@ -172,10 +172,10 @@ export const REVIEW_SCOPE_UNVERIFIABLE_FAILURE_CATEGORY = 'review-scope-unverifi
  */
 export const REVIEW_SCOPE_MISMATCH_FAILURE_CATEGORY = 'review-scope-mismatch';
 /**
- * The reviewed diff (at the current head/base) exceeds the reviewer's context
- * window. Bounded infrastructure recovery (HOK-2964): a stale-base rebuild or
- * a larger-context reroute may still resolve it, so it must never be treated
- * as a terminal code-defect solely because verdict=not_ready.
+ * Even the budgeted review input (HOK-3249) exceeds the reviewer's context
+ * window — the code alone is too large. Infrastructure, never a code defect
+ * (even with verdict=not_ready); the failure policy (HOK-3176) classifies it
+ * as terminal `context-window-exceeded`, so it escalates instead of retrying.
  */
 export const NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY = 'native-context-window-exceeded';
 /**

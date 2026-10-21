@@ -813,57 +813,52 @@ async function runReviewWithRetry(
     console.error('');
   }
 
+  // One stricter-prompt retry for a conversational or unparseable response.
+  const retryWithStricterPrompt = async (reporterMessage: string, consoleMessage: string, detail: string) => {
+    await options.reporter?.emit({
+      event: 'response_retry',
+      level: 'warn',
+      message: `${reporterMessage}; retrying with stricter prompt`,
+      reviewer: persona,
+      attempt,
+      maxAttempts,
+    });
+    console.error(`⚠️  ${consoleMessage} (attempt ${attempt}/${maxAttempts})`);
+    if (options.verbose) {
+      console.error(detail);
+    }
+    console.error('Retrying with stricter prompt...\n');
+    const strictPrompt =
+      'CRITICAL: Respond with ONLY valid JSON. No text before or after. Start with { and end with }.\n\n' +
+      prompt +
+      '\n\nREMINDER: Return ONLY the JSON object. No explanations.';
+    return runReviewWithRetry(
+      strictPrompt, context, repoDir, model, timeout, maxRetries, options, persona, attempt + 1, cli, adapter,
+    );
+  };
+
   // Pre-validate response format
   if (!looksLikeJson(responseText)) {
     if (attempt < maxAttempts) {
-      await options.reporter?.emit({
-        event: 'response_retry',
-        level: 'warn',
-        message: 'Claude returned non-JSON output; retrying with stricter prompt',
-        reviewer: persona,
-        attempt,
-        maxAttempts,
-      });
-      console.error(`⚠️  LLM returned conversational response (attempt ${attempt}/${maxAttempts})`);
-      if (options.verbose) {
-        console.error('Response preview:', responseText.substring(0, 200));
-      }
-      console.error('Retrying with stricter prompt...\n');
-
-      // Retry with stricter prompt
-      const strictPrompt =
-        'CRITICAL: Respond with ONLY valid JSON. No text before or after. Start with { and end with }.\n\n' +
-        prompt +
-        '\n\nREMINDER: Return ONLY the JSON object. No explanations.';
-
-      return runReviewWithRetry(
-        strictPrompt,
-        context,
-        repoDir,
-        model,
-        timeout,
-        maxRetries,
-        options,
-        persona,
-        attempt + 1,
-        cli,
-        adapter,
-      );
-    } else {
-      throw new Error(
-        'LLM returned conversational text instead of JSON after 2 attempts.\n' +
-        `Response preview: ${responseText.substring(0, 300)}\n\n` +
-        `Possible causes:\n` +
-        `  - Model is not following JSON format instructions\n` +
-        `  - Network issues caused incomplete response\n` +
-        `  - Context is too large for the model\n\n` +
-        `Troubleshooting:\n` +
-        `  - Run with --verbose to see full LLM response\n` +
-        `  - Try a different model: REVIEW_MODEL=claude-opus-4-8 npx tsx tools/review-changes.ts\n` +
-        `  - Break changes into smaller PRs if diff is very large\n` +
-        `  - Check your network connection and retry`
+      return retryWithStricterPrompt(
+        'Claude returned non-JSON output',
+        'LLM returned conversational response',
+        `Response preview: ${responseText.substring(0, 200)}`,
       );
     }
+    throw new Error(
+      'LLM returned conversational text instead of JSON after 2 attempts.\n' +
+      `Response preview: ${responseText.substring(0, 300)}\n\n` +
+      `Possible causes:\n` +
+      `  - Model is not following JSON format instructions\n` +
+      `  - Network issues caused incomplete response\n` +
+      `  - Context is too large for the model\n\n` +
+      `Troubleshooting:\n` +
+      `  - Run with --verbose to see full LLM response\n` +
+      `  - Try a different model: REVIEW_MODEL=claude-opus-4-8 npx tsx tools/review-changes.ts\n` +
+      `  - Break changes into smaller PRs if diff is very large\n` +
+      `  - Check your network connection and retry`
+    );
   }
 
   // Parse response
@@ -881,38 +876,10 @@ async function runReviewWithRetry(
     };
   } catch (error) {
     if (attempt < maxAttempts) {
-      await options.reporter?.emit({
-        event: 'response_retry',
-        level: 'warn',
-        message: 'Failed to parse Claude JSON response; retrying with stricter prompt',
-        reviewer: persona,
-        attempt,
-        maxAttempts,
-      });
-      console.error(`⚠️  Failed to parse JSON (attempt ${attempt}/${maxAttempts})`);
-      if (options.verbose) {
-        console.error('Error:', (error as Error).message);
-      }
-      console.error('Retrying with stricter prompt...\n');
-
-      // Retry with stricter prompt
-      const strictPrompt =
-        'CRITICAL: Respond with ONLY valid JSON. No text before or after. Start with { and end with }.\n\n' +
-        prompt +
-        '\n\nREMINDER: Return ONLY the JSON object. No explanations.';
-
-      return runReviewWithRetry(
-        strictPrompt,
-        context,
-        repoDir,
-        model,
-        timeout,
-        maxRetries,
-        options,
-        persona,
-        attempt + 1,
-        cli,
-        adapter,
+      return retryWithStricterPrompt(
+        'Failed to parse Claude JSON response',
+        'Failed to parse JSON',
+        `Error: ${(error as Error).message}`,
       );
     }
     throw error;
