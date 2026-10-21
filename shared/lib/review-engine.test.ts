@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { HIGH_BLAST_RADIUS_GUIDANCE, isBlockingFinding, isDismissedFinding, reviewEngineTestUtils } from './review-engine.ts';
 import type { ReviewContext } from './review-context-gatherer.ts';
+import type { callLLM } from './llm-cli.ts';
 
 describe('review-engine scoped mode', () => {
   afterEach(() => {
@@ -279,7 +280,7 @@ describe('review-engine per-model dispatch (HOK-3247)', () => {
     reviewEngineTestUtils.resetDeps();
   });
 
-  type CallLLM = Parameters<typeof reviewEngineTestUtils.setCallLLM>[0];
+  type CallLLM = typeof callLLM;
   type CallOptions = Parameters<CallLLM>[1];
 
   const READY_JSON = JSON.stringify({ verdict: 'ready', codeReviewFindings: [] });
@@ -309,7 +310,6 @@ describe('review-engine per-model dispatch (HOK-3247)', () => {
         ...(reportedModel ? { reportedModel } : {}),
       };
     };
-    reviewEngineTestUtils.setCallLLM(mockCallLLM);
     reviewEngineTestUtils.setBuildCliReviewAdapter((provider, model, _repoDir, failClosed) => ({
       kind: provider === 'codex' ? 'codex-cli' : 'claude-cli',
       model,
@@ -472,7 +472,38 @@ describe('review-engine per-model dispatch (HOK-3247)', () => {
     assert.equal(result.substantiveAnalysisIdentity?.fallbackReason, 'requested_model_unavailable');
   });
 
-  it('returns native-context-window-exceeded when the CLI prompt cannot fit', async () => {
+  it('budgets the diff to the adapter and summarises fixtures before invoking (HOK-3249)', async () => {
+    let invokedPrompt = '';
+    setup({ agents: { 'claude-opus-5-5': 'claude' } });
+    reviewEngineTestUtils.setBuildCliReviewAdapter((provider, model) => ({
+      kind: provider === 'codex' ? 'codex-cli' : 'claude-cli',
+      model,
+      limits: { contextWindowTokens: 200_000, maxOutputTokens: 8_000, cliHarnessOverheadTokens: 30_000 },
+      countTokens: (text) => Math.ceil(Buffer.byteLength(text) / 2.4),
+      preflight: () => undefined,
+      invoke: async (prompt) => {
+        invokedPrompt = prompt;
+        return { text: READY_JSON, reportedModel: model };
+      },
+      parseResult: () => ({ text: '', reportedModel: 'unverified' }),
+    }));
+    const fixture = `${JSON.stringify({ rows: Array.from({ length: 8_000 }, (_, i) => ({ i })) })}\n`;
+    const diff = [
+      'diff --git a/src/a.ts b/src/a.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/a.ts\n@@ -0,0 +1 @@\n+export const a = 1;\n',
+      `diff --git a/tests/fixtures/big.json b/tests/fixtures/big.json\nnew file mode 100644\n--- /dev/null\n+++ b/tests/fixtures/big.json\n@@ -0,0 +1 @@\n+${fixture}`,
+    ].join('');
+    const { runReview } = await import('./review-engine.ts');
+    const result = await runReview({ ...makeReviewContext(), diff }, process.cwd(), {
+      model: 'claude-opus-5-5',
+      skipClaudePreflight: true,
+    });
+    assert.equal(result.verdict, 'ready');
+    assert.ok(invokedPrompt.includes('+export const a = 1;'), 'source stays verbatim');
+    assert.ok(!invokedPrompt.includes(fixture.slice(0, 200)), 'fixture body is not sent');
+    assert.match(invokedPrompt, /summarised data\/fixture\/generated file: tests\/fixtures\/big\.json/);
+  });
+
+  it('returns a terminal context-window failure when even the budgeted input cannot fit', async () => {
     const { calls } = setup({ agents: { 'claude-opus-5-5': 'claude' } });
     reviewEngineTestUtils.setBuildCliReviewAdapter((provider, model) => ({
       kind: provider === 'codex' ? 'codex-cli' : 'claude-cli',
