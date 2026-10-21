@@ -12,6 +12,7 @@ import {
   createRunFormatTool,
   createRunTestsTool,
   MAX_TEST_TIMEOUT_MS,
+  type CommandToolFactoryOptions,
   type RunCommandDetails,
 } from './command-tools.ts';
 
@@ -569,6 +570,131 @@ describe('native-agent command tools', () => {
     });
     assert.equal((repeat.details as RunCommandDetails).ok, false);
     assert.equal((repeat.details as any).error, 'repeat_after_timeout');
+  });
+});
+
+describe('foreground-wait guard (HOK-3262)', () => {
+  const REFUSAL = /^Foreground waiting is refused\. Run the command once with a timeout, or start it in the background and read its output later\./;
+
+  type GuardWriter = NonNullable<CommandToolFactoryOptions['sessionStreamWriter']>;
+  type GuardRefusal = Parameters<GuardWriter['writeGuardRefused']>[0];
+
+  function recordingWriter(): { writer: GuardWriter; events: GuardRefusal[] } {
+    const events: GuardRefusal[] = [];
+    const writer: GuardWriter = {
+      writeGuardRefused: (opts) => {
+        events.push(opts);
+        return { type: 'guard_refused', ...opts } as ReturnType<GuardWriter['writeGuardRefused']>;
+      },
+    };
+    return { writer, events };
+  }
+
+  for (const [command, detail] of [
+    ['sleep 60', /sleep 60s/],
+    ['while ! curl -s localhost:3000; do sleep 2; done', null],
+    ['watch gh pr checks', /watch/],
+    ['timeout 60 tail -f log', /timeout \+ tail -f/],
+  ] as const) {
+    it(`refuses \`${command}\` without spawning`, async () => {
+      const repo = makeTempDir('command-tools-wait-');
+      let spawnCalls = 0;
+      const runTests = createRunTestsTool(repo, {
+        spawnFn(file, args, options) {
+          spawnCalls += 1;
+          return spawn(file, args, options);
+        },
+      });
+
+      const result = await runTests.execute('call-wait', { command });
+      const details = result.details as RunCommandDetails;
+
+      assert.equal(details.ok, false);
+      assert.equal(spawnCalls, 0);
+      assert.deepEqual(await commandToolsAfterToolCall({ toolCall: { name: 'run_tests' }, result }), { isError: true });
+      if (!details.ok) {
+        if (detail === null) {
+          // while/until loops need `;`, which the argv parser already rejects.
+          assert.equal(details.error, 'unsupported_shell_syntax');
+        } else {
+          assert.equal(details.error, 'foreground_wait_refused');
+          assert.equal(details.reason, 'foreground-wait-refused');
+          assert.match(details.message, REFUSAL);
+          assert.match(details.message, detail);
+          assert.match(details.retryHint ?? '', /timeoutMs/);
+          assert.equal(result.content[0]?.type === 'text' && result.content[0].text, details.message);
+        }
+      }
+    });
+  }
+
+  it('allows short sleeps, single-shot checks and the full suite when permitted', async () => {
+    const repo = makeTempDir('command-tools-wait-allowed-');
+    const spawned: string[][] = [];
+    const runTests = createRunTestsTool(repo, {
+      allowFullSuite: true,
+      spawnFn(file, args, options) {
+        spawned.push([file, ...args]);
+        // Run a harmless stand-in so external tools (gh, npm) are not needed.
+        return spawn('node', ['-e', 'process.exit(0)'], options);
+      },
+    });
+
+    for (const command of ['sleep 1', 'npm test', 'gh pr checks --watch=false']) {
+      const details = (await runTests.execute('call-allowed', { command })).details as RunCommandDetails;
+      assert.equal(details.ok, true, command);
+    }
+    assert.deepEqual(spawned, [['sleep', '1'], ['npm', 'test'], ['gh', 'pr', 'checks', '--watch=false']]);
+  });
+
+  it('records one guard_refused event per refusal in the session stream', async () => {
+    const repo = makeTempDir('command-tools-wait-stream-');
+    const { writer, events } = recordingWriter();
+    const [runTests, runFormat] = createCommandTools(repo, { sessionStreamWriter: writer });
+
+    await runTests!.execute('call-sleep', { command: 'sleep 60' });
+    await runFormat!.execute('call-watch', { command: 'watch npx prettier --check .' });
+    // Non-guard rejections and allowed runs are not recorded.
+    await runTests!.execute('call-shell', { command: 'echo a && echo b' });
+    await runTests!.execute('call-ok', { command: `node -e "process.exit(0)"` });
+
+    assert.deepEqual(events, [
+      { guard: 'foreground-wait', toolName: 'run_tests', reason: 'sleep 60s (>= 5s floor)', commandSummary: 'sleep' },
+      { guard: 'foreground-wait', toolName: 'run_format', reason: 'watch', commandSummary: 'watch' },
+    ]);
+  });
+
+  it('scripted poll: refused, then one synchronous bounded run completes', async () => {
+    const repo = makeTempDir('command-tools-wait-scripted-');
+    const { writer, events } = recordingWriter();
+    const [runTests] = createCommandTools(repo, { sessionStreamWriter: writer });
+    const turnBudget = 3;
+    // A model that polls first, then follows the refusal's advice.
+    const script = [
+      { command: 'sleep 30' },
+      { command: `node -e "setTimeout(()=>console.log('job done'),200)"`, timeoutMs: 5_000 },
+    ];
+
+    let turns = 0;
+    let finished: RunCommandDetails | undefined;
+    for (const params of script) {
+      turns += 1;
+      const details = (await runTests!.execute(`call-${turns}`, params)).details as RunCommandDetails;
+      if (details.ok) {
+        finished = details;
+        break;
+      }
+      assert.equal(details.error, 'foreground_wait_refused');
+    }
+
+    assert.ok(turns <= turnBudget);
+    assert.equal(finished?.ok, true);
+    if (finished?.ok) {
+      assert.equal(finished.status, 'completed');
+      assert.equal(finished.exitCode, 0);
+      assert.match(finished.stdout, /job done/);
+    }
+    assert.equal(events.length, 1);
   });
 });
 

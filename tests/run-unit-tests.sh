@@ -98,6 +98,7 @@ TESTS=(
   shared/lib/native-agent/command-transcript.test.ts
   shared/lib/native-agent/command-argv.test.ts
   shared/lib/native-agent/command-substrate.test.ts
+  shared/lib/native-agent/command-wait-guard.test.ts
   shared/lib/native-agent/test-command-scope.test.ts
   shared/lib/native-agent/coding-recovery-guard.test.ts
   shared/lib/native-agent/hok2081-gate.test.ts
