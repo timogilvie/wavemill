@@ -122,6 +122,9 @@ export interface PrIdentityDiagnostic {
   labels: string[];
   mergeStateStatus?: string;
   latestCheckRollup: string[];
+  /** PR state as reported by `gh pr view --json state` ('open'|'closed'|'merged'); normalized to lowercase. */
+  state?: 'open' | 'closed' | 'merged';
+  mergedAt?: string;
   source: string;
 }
 
@@ -323,7 +326,7 @@ export function readPrIdentity(prNumber: number, repoDir: string): PrIdentityDia
       'view',
       String(prNumber),
       '--json',
-      'number,headRefOid,baseRefOid,headRefName,baseRefName,changedFiles,files,labels,mergeStateStatus,statusCheckRollup',
+      'number,headRefOid,baseRefOid,headRefName,baseRefName,changedFiles,files,labels,mergeStateStatus,statusCheckRollup,state,mergedAt',
     ], {
       cwd: repoDir,
       encoding: 'utf-8',
@@ -708,8 +711,16 @@ function projectPrIdentity(prNumber: number, value: Record<string, unknown> | nu
     labels,
     mergeStateStatus: stringField(value.mergeStateStatus),
     latestCheckRollup: checks,
+    state: normalizePrState(stringField(value.state)),
+    mergedAt: stringField(value.mergedAt),
     source,
   };
+}
+
+function normalizePrState(value: string | undefined): 'open' | 'closed' | 'merged' | undefined {
+  if (!value) return undefined;
+  const lower = value.toLowerCase();
+  return lower === 'open' || lower === 'closed' || lower === 'merged' ? lower : undefined;
 }
 
 function normalizeArrayNodes(value: unknown): unknown[] {

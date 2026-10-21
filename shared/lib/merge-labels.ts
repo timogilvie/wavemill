@@ -23,6 +23,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readWorkflowState, type WorkflowState } from './workflow-state.ts';
 import { resolvePrTask } from './pr-task-resolver.ts';
+import { appendObserverFinding } from './observer-findings.ts';
 
 export interface MergeLabelTaskView {
   prNumber: number;
@@ -516,6 +517,22 @@ export async function reconcileMergeLabels(
   if (noTaskViewPrs.length > 0) {
     const prList = noTaskViewPrs.map(n => `#${n}`).join(', ');
     deps.logger.warn(`[merge-label] no task view for PRs: ${prList}`);
+    // HOK-3241: also route an aggregate observer finding so the condition is
+    // visible after one pass instead of only in the tend log. `appendObserverFinding`
+    // is capability-gated and best-effort; this never blocks reconciliation.
+    appendObserverFinding(repoDir, {
+      subsystem: 'merge-label-reconciler',
+      title: `Merge label reconciler found no task view for ${noTaskViewPrs.length} PR(s)`,
+      body: `Reconciler could not match a workflow task to PRs: ${prList}. `
+        + 'These PRs will not transition wm:ready / wm:blocked until the task view is restored. '
+        + 'Inspect workflow state and the PR→task mapping; `findTaskInState` matches by `task.pr`.',
+      severity: 'medium',
+      context: {
+        subsystem: 'merge-label-reconciler',
+        prNumbers: noTaskViewPrs,
+        prCount: noTaskViewPrs.length,
+      },
+    });
   }
 
   return { decisionByPr, noTaskViewPrs };

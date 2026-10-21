@@ -105,6 +105,14 @@ export function evaluateRecoveryPredicate(
       if (!pairId) return NOT_SATISFIED;
       return read.comparisonSucceeded(repoDir, pairId) ? satisfied(`comparison succeeded for ${pairId}`) : NOT_SATISFIED;
     }
+    case 'pr_merged': {
+      const prNumber = positiveInt(details.pr);
+      if (!prNumber) return NOT_SATISFIED;
+      const current = read.readPr(prNumber, repoDir);
+      // Missing/unreadable PR evidence is never proof of merge.
+      if (!current || current.state !== 'merged') return NOT_SATISFIED;
+      return satisfied(`pr=${prNumber} merged at ${current.mergedAt ?? 'unknown time'}`);
+    }
     default:
       return NOT_SATISFIED;
   }

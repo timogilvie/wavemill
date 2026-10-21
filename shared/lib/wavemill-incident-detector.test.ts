@@ -601,7 +601,7 @@ function writeEnvelope(featureDir: string, envelope: { cause: string; providerEr
   }));
 }
 
-function writePrFixture(repo: string, pr: number, options: { head: string; base: string; changedFiles?: number; labels?: string[] }): void {
+function writePrFixture(repo: string, pr: number, options: { head: string; base: string; changedFiles?: number; labels?: string[]; state?: string; mergedAt?: string }): void {
   mkdirSync(join(repo, '.wavemill', 'prs'), { recursive: true });
   writeFileSync(join(repo, '.wavemill', 'prs', `${pr}.json`), JSON.stringify({
     number: pr,
@@ -611,6 +611,8 @@ function writePrFixture(repo: string, pr: number, options: { head: string; base:
     baseRefName: 'auto/integration',
     ...(options.changedFiles !== undefined ? { changedFiles: options.changedFiles } : {}),
     labels: (options.labels ?? ['wavemill']).map((name) => ({ name })),
+    ...(options.state ? { state: options.state } : {}),
+    ...(options.mergedAt ? { mergedAt: options.mergedAt } : {}),
   }));
 }
 
@@ -1022,6 +1024,182 @@ test('pair with a missing arm is a low-confidence inspection', () => {
     assert.equal(incidents[0].confidence, 'low');
     assert.deepEqual(incidents[0].metadata.missingEvidence, ['pair_state']);
     assertValidProposals(incidents);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+/**
+ * HOK-3241: minimal fixture of the 2026-10-12 HOK-3212 lane state — Tend
+ * holds a PR at `ready-failed:not-ready` while the Ready artifact says
+ * queueState=merge-candidate (the merge-label reconciler never set wm:ready).
+ */
+function writeMergeLabelWithheldFixture(repo: string, options: { prState?: string; mergedAt?: string } = {}): string {
+  const featureDir = join(repo, 'features', 'hok-3212');
+  writeWorkflowTasks(repo, { 'HOK-3212': { issue: 'HOK-3212', slug: 'hok-3212', worktree: repo, phase: 'ready', pr: '1600' } });
+  mkdirSync(featureDir, { recursive: true });
+  // Successful Ready pass whose queueState promotes the PR to merge-candidate.
+  writeFileSync(join(featureDir, '.ready-result.json'), JSON.stringify({
+    stage: 'ready',
+    status: 'completed',
+    startedAt: '2026-10-12T22:00:00.000Z',
+    finishedAt: '2026-10-12T22:10:00.000Z',
+    artifacts: {
+      type: 'ready',
+      verdict: 'pass',
+      readyHeadSha: SHA('m'),
+      readyBaseSha: SHA('n'),
+      queueState: 'merge-candidate',
+    },
+  }));
+  // Clean review verdict ready at the same head.
+  writeRealReviewResult(featureDir, {
+    status: 'completed',
+    verdict: 'ready',
+    reviewHeadSha: SHA('m'),
+    prNumber: 1600,
+  });
+  writePrFixture(repo, 1600, {
+    head: SHA('m'),
+    base: SHA('n'),
+    changedFiles: 3,
+    // The HOK-3212 symptom: the PR carries wm:blocked (the reconciler never
+    // set wm:ready) even though the Ready artifact says merge-candidate.
+    labels: ['wavemill', 'wm:blocked'],
+    ...(options.prState ? { state: options.prState } : {}),
+    ...(options.mergedAt ? { mergedAt: options.mergedAt } : {}),
+  });
+  return featureDir;
+}
+
+test('HOK-3241: merge-candidate PR at ready-failed:not-ready yields a merge_label_withheld incident', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-merge-label-withheld-'));
+  try {
+    const featureDir = writeMergeLabelWithheldFixture(repo);
+    const incidents = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(1600, 'ready-failed:not-ready', { taskId: 'HOK-3212' })],
+    });
+    assert.equal(incidents.length, 1);
+    const [incident] = incidents;
+    assert.equal(incident.rootCauseClass, 'merge_label_withheld');
+    assert.equal(incident.category, 'product_defect');
+    assert.equal(incident.confidence, 'high');
+    assert.equal(incident.taskId, 'HOK-3212');
+    const metadata = incident.metadata;
+    assert.equal(metadata.prNumber, 1600);
+    assert.equal(metadata.tendGate, 'ready-failed:not-ready');
+    assert.equal(metadata.queueState, 'merge-candidate');
+    assert.equal(metadata.readyVerdict, 'pass');
+    assert.equal(metadata.readyHead, SHA('m'));
+    const paths = metadata.artifactPaths as string[];
+    assert.ok(paths.includes(join(featureDir, '.ready-result.json')));
+    assert.ok(paths.includes(join(repo, '.wavemill', 'prs', '1600.json')));
+    assert.deepEqual(metadata.causalChain?.map((entry) => entry.cause), [
+      'merge_candidate_without_wm_ready',
+      'wm_ready_label_missing',
+      'tend_blocked(ready-failed:not-ready)',
+    ]);
+    const proposal = metadata.proposal!;
+    assert.equal(proposal.kind, 'reconcile_merge_label');
+    assert.equal(proposal.recoveryPredicate?.kind, 'pr_merged');
+    assert.deepEqual(proposal.recoveryPredicate?.details, { pr: '1600' });
+    assert.ok(proposal.forbiddenActions.includes('add_ready_label'));
+    assert.ok(proposal.forbiddenActions.includes('merge'));
+    assertValidProposals(incidents);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3241: fingerprint is stable across passes with fresh observation timestamps', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-merge-label-fingerprint-'));
+  try {
+    writeMergeLabelWithheldFixture(repo);
+    const candidate = stallCandidate(1600, 'ready-failed:not-ready', { taskId: 'HOK-3212' });
+    const first = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now: new Date('2026-10-12T22:15:00.000Z'),
+      tendCandidates: [candidate],
+    });
+    const second = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now: new Date('2026-10-12T22:16:00.000Z'),
+      tendCandidates: [candidate],
+    });
+    const store = new IncidentStore(join(repo, '.wavemill', 'incidents'), { escalationThreshold: 3 });
+    const fp1 = first.map((incident) => store.computeFingerprint(incident));
+    const fp2 = second.map((incident) => store.computeFingerprint(incident));
+    assert.deepEqual(fp1, fp2);
+    // Different tend observation timestamps → different event keys so the
+    // store counts each pass as a fresh occurrence.
+    const ek1 = first.map((incident) => store.computeEventKey(incident));
+    const ek2 = second.map((incident) => store.computeEventKey(incident));
+    assert.notDeepEqual(ek1, ek2);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3241: a merged PR is not re-detected even when stale lane data points at it', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-merge-label-merged-'));
+  try {
+    writeMergeLabelWithheldFixture(repo, { prState: 'MERGED', mergedAt: '2026-10-13T00:30:00Z' });
+    const incidents = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(1600, 'ready-failed:not-ready', { taskId: 'HOK-3212' })],
+    });
+    assert.deepEqual(incidents, []);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3241: context-overflow stale-base diagnosis still wins over the merge-label branch', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-merge-label-precedence-'));
+  try {
+    // Build a stale-base-overflow fixture at the same ready-failed:not-ready gate.
+    // Give it a Ready artifact with queueState=merge-candidate too; the more
+    // specific context overflow should still win.
+    const featureDir = write1324Fixture(repo);
+    writeFileSync(join(featureDir, '.ready-result.json'), JSON.stringify({
+      stage: 'ready',
+      status: 'completed',
+      finishedAt: '2026-09-04T10:00:00.000Z',
+      artifacts: {
+        type: 'ready',
+        verdict: 'pass',
+        readyHeadSha: SHA('a'),
+        queueState: 'merge-candidate',
+      },
+    }));
+    const incidents = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(1324, 'ready-failed:not-ready', { taskId: 'HOK-1324' })],
+    });
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].rootCauseClass, 'review_context_overflow_stale_base');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3241: missing PR evidence downgrades to inspection, never claims merge-label-withheld', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-merge-label-nopr-'));
+  try {
+    writeMergeLabelWithheldFixture(repo);
+    rmSync(join(repo, '.wavemill', 'prs'), { recursive: true, force: true });
+    const incidents = new StalledLifecycleCorrelator().detect(repo, {
+      repoDir: repo,
+      now,
+      tendCandidates: [stallCandidate(1600, 'ready-failed:not-ready', { taskId: 'HOK-3212' })],
+    });
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].rootCauseClass, 'inspection_required');
+    assert.equal(incidents[0].metadata.inspectionReason, 'merge_label_withheld_evidence_missing');
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
