@@ -856,7 +856,7 @@ function resolveIdentity(opts: DiagnoseArtifactsOptions): ResolvedIdentity {
   // Explicit taskId — search workflow-state, then scan features/
   if (opts.taskId) {
     const state = readWorkflowState(repoDir);
-    const { location } = resolveTaskLocation(opts.taskId, state, {
+    const { location, miss } = resolveTaskLocation(opts.taskId, state, {
       site: 'artifact-diagnostics.resolveLocation',
     });
 
@@ -1036,14 +1036,11 @@ function checkFeatureOutcomeStateMismatch(
   }
 
   if (!taskEntry) {
-    // Only surface a finding when the resolver was consulted and missed —
-    // the slug/worktree fallback predicates don't go through the resolver,
-    // so a pure slug miss stays silent to preserve prior behaviour.
-    if (resolverMissReason) {
+    if (resolverMissReason || slug) {
       return [makeFinding(
         'coverage_gap',
         'info',
-        `Task not found in workflow state (resolver: ${resolverMissReason}${slug ? ` slug: ${slug}` : ''} worktree: ${featureDir})`,
+        `Task not found in workflow state (${taskId ? `resolver: ${resolverMissReason}` : ''} ${slug ? `slug: ${slug}` : ''} worktree: ${featureDir})`,
         { file: join(featureDir, 'feature-state.json') },
       )];
     }

@@ -4645,8 +4645,11 @@ function resolveEffectiveBaseBranchForPr(repoDir: string, prNumber: number, head
   });
   const matchingTaskId = prLookup.location?.taskId ?? null;
   if (!matchingTaskId) {
-    // Resolver already emits one structured miss log via its logger; no extra
-    // log needed here.
+    if (prLookup.miss) {
+      console.trace(
+        `[tend] resolveEffectiveBaseBranchForPr fell back to default base due to: ${prLookup.miss.reason}`,
+      );
+    }
     return fallbackBase;
   }
   try {
