@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { getPullRequest } from './github.ts';
 import { prStateLabelDeps, WM_LABELS } from './pr-state-labels.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
-import { mutateWorkflowState, readWorkflowState } from './workflow-state.ts';
+import { mutateWorkflowState } from './workflow-state.ts';
 import { resolvePrTask } from './pr-task-resolver.ts';
 
 export interface RecoverSupersededPrOptions {
@@ -142,7 +142,6 @@ function defaultCommentOnPr(prNumber: number, comment: string, repoDir: string):
 
 async function updateWorkflowStateToManualComparison(prNumber: number, repoDir: string): Promise<void> {
   const workflowStatePath = join(repoDir, '.wavemill', 'workflow-state.json');
-  const state = readWorkflowState(workflowStatePath);
 
   try {
     await mutateWorkflowState(workflowStatePath, (state) => {
