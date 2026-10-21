@@ -38,14 +38,19 @@ shadow_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$WORK_REPO" "$TOO
 live_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$WORK_REPO" "$TOOLS_DIR" 120 240 live)"
 
 assert_not_contains "off has no incident flag" "$off_cmd" "--file-incidents"
-assert_contains "off keeps legacy dry-run" "$off_cmd" "--dry-run"
+# HOK-3243: launcher no longer emits the legacy generic --dry-run flag; incident-sync
+# safety is in --incidents-mode, and auto-fix dry-run is on --autofix-dry-run.
+assert_not_contains "off does not force legacy --dry-run" "$off_cmd" "--dry-run"
+assert_not_contains "off does not force autofix dry-run" "$off_cmd" "--autofix-dry-run"
 
 assert_contains "shadow files incidents" "$shadow_cmd" "--file-incidents"
 assert_contains "shadow uses explicit shadow mode" "$shadow_cmd" "--incidents-mode=shadow"
 assert_not_contains "shadow is not live" "$shadow_cmd" "--incidents-mode=live"
+assert_not_contains "shadow does not force legacy --dry-run" "$shadow_cmd" "--dry-run"
 
 assert_contains "live files incidents" "$live_cmd" "--file-incidents"
 assert_contains "live uses explicit live mode" "$live_cmd" "--incidents-mode=live"
+assert_not_contains "live does not force legacy --dry-run" "$live_cmd" "--dry-run"
 
 # Default (no mode arg) is off — never silently live.
 default_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$WORK_REPO" "$TOOLS_DIR" 120 240)"

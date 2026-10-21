@@ -162,6 +162,7 @@ interface ObserverOptions {
   fileLinear: boolean;
   fileIncidents: boolean;
   dryRun: boolean;
+  autoFixDryRun: boolean;
   incidentsDryRun: boolean;
   incidentsShadow?: boolean;
   incidentsMode?: 'off' | 'offline' | 'shadow' | 'live';
@@ -365,6 +366,11 @@ interface IncidentSyncSnapshot {
   results: SyncResult[];
   errors: Array<{ fingerprint: string; action: string; reason: string; nextRetry?: string }>;
   shadow?: IncidentSyncShadowSnapshot;
+  /**
+   * HOK-3243: per-class incident counts dropped before Linear filing by
+   * `observer.linear.suppress.classes`. Still counted in `skipped`.
+   */
+  suppressedByClass?: Partial<Record<IncidentRootCauseClass, number>>;
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -397,7 +403,9 @@ Options:
   --linear-team <key>    Linear team key/name/id for filed issues
   --linear-project <id>  Optional Linear project id/name for filed issues
   --linear-label <name>  Optional Linear label name to attach
-  --dry-run              Do not create Linear issues
+  --dry-run              Suppress legacy --file-linear writes (does not gate
+                         auto-fix; use --autofix-dry-run for that).
+  --autofix-dry-run      Preview auto-fix actions without applying them.
   --stale-minutes <n>    State/log/marker stale threshold (default: ${DEFAULT_STALE_MINUTES})
   --hung-minutes <n>     Child process hung threshold (default: ${DEFAULT_HUNG_MINUTES})
   --max-log-lines <n>    Recent mill log lines to inspect (default: 240)
@@ -423,6 +431,7 @@ export function parseArgs(argv: string[]): ObserverOptions {
     fileLinear: false,
     fileIncidents: false,
     dryRun: false,
+    autoFixDryRun: false,
     incidentsDryRun: false,
     maxLogLines: 240,
     printPrompt: false,
@@ -484,6 +493,8 @@ export function parseArgs(argv: string[]): ObserverOptions {
       options.fileIncidents = true;
     } else if (arg === '--dry-run') {
       options.dryRun = true;
+    } else if (arg === '--autofix-dry-run') {
+      options.autoFixDryRun = true;
     } else if (arg === '--print-prompt') {
       options.printPrompt = true;
     } else if (arg === '--no-incident-detector') {
@@ -4473,9 +4484,38 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
       });
     }
 
-    const incidents = options.incidentsReplay
+    const incidentsRaw = options.incidentsReplay
       ? [await store.getIncident(options.incidentsReplay)].filter((incident): incident is IncidentRecord => incident !== null)
       : await store.getIncidents();
+    // HOK-3243: drop suppressed classes before cap/filing so noisy lifecycle
+    // classes never consume the per-pass budget. The incidents still land in
+    // `.wavemill/incidents/` for local analysis; only Linear filing is
+    // skipped. An explicit `--incidents-replay` on a suppressed fingerprint
+    // bypasses the filter so operators can still re-sync by hand.
+    const suppressedClasses = new Set(config.suppress.classes);
+    const perClassSuppressed: Partial<Record<IncidentRootCauseClass, number>> = {};
+    const incidents: IncidentRecord[] = [];
+    for (const incident of incidentsRaw) {
+      if (!options.incidentsReplay && suppressedClasses.has(incident.rootCauseClass)) {
+        perClassSuppressed[incident.rootCauseClass] =
+          (perClassSuppressed[incident.rootCauseClass] ?? 0) + 1;
+        continue;
+      }
+      incidents.push(incident);
+    }
+    const perClassSuppressedCount = Object.values(perClassSuppressed).reduce(
+      (sum, count) => sum + (count ?? 0),
+      0,
+    );
+    if (perClassSuppressedCount > 0) {
+      summary.skipped += perClassSuppressedCount;
+      summary.suppressedByClass = { ...(summary.suppressedByClass ?? {}) };
+      for (const [className, count] of Object.entries(perClassSuppressed)) {
+        const key = className as IncidentRootCauseClass;
+        summary.suppressedByClass[key] =
+          (summary.suppressedByClass[key] ?? 0) + (count ?? 0);
+      }
+    }
     // Per-pass cap fix: only the fully offline mode bypasses the cap; shadow
     // and live both honour maxIncidentsPerPass so a shadow trial cannot make
     // an unbounded number of correlation searches per pass.
@@ -4724,12 +4764,11 @@ export async function applyAutoFixes(
         config,
         deps,
         now,
-        dryRun: options.dryRun,
+        dryRun: options.autoFixDryRun,
       });
-      if (records.length > 0 && !options.dryRun) {
-        appendAutoFixActionRecords(incidentStoreDir, records);
-      } else if (records.length > 0) {
-        // Still log planned records in dry-run mode so operators can preview.
+      // Record planned records in dry-run mode too so operators can preview;
+      // either way the write happens via the same append path.
+      if (records.length > 0) {
         appendAutoFixActionRecords(incidentStoreDir, records);
       }
       snapshot.findings.push(...findings);
@@ -4937,6 +4976,7 @@ export async function writeServiceHeartbeat(snapshot: ObserverSnapshot, options:
         lifecycleSynced: snapshot.incidentSync.lifecycleSynced,
         lifecycleFailed: snapshot.incidentSync.lifecycleFailed,
         lifecycleRetried: snapshot.incidentSync.lifecycleRetried,
+        suppressedByClass: snapshot.incidentSync.suppressedByClass,
         shadow: snapshot.incidentSync.shadow ? {
           eligible: snapshot.incidentSync.shadow.eligible,
           proposedCreate: snapshot.incidentSync.shadow.proposedCreate,
