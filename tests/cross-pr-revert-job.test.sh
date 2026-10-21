@@ -9,7 +9,6 @@
 #   5. a head that moves mid-run publishes no verdict
 #   6. a base tip that moved invalidates the verdict
 #   7. the reconciler expires a head-stale verdict marker
-#   8. WAVEMILL_SYNC_READY_CHECKS=1 restores the inline gate
 
 set -euo pipefail
 
@@ -125,13 +124,5 @@ assert_eq "same-head verdict survives the reconciler" "yes" "$([[ -f "$STATE/.cr
 harness_commit "$WT" four >/dev/null
 condition_reconcile_task "$ISSUE" "$WT" "$STATE"
 assert_eq "head-stale verdict expired" "no" "$([[ -f "$STATE/.cross-pr-guard-result.json" ]] && echo yes || echo no)"
-
-echo "=== 8. sync kill switch runs the guard inline ==="
-new_case
-harness_tool_set check-cross-pr-reverts.ts 0 '{"unacknowledged":[]}'
-cross_pr_revert_gate_allows_merge() { harness_record "inline_gate $1"; return 0; }
-assert_eq "inline gate result" "0" "$(WAVEMILL_SYNC_READY_CHECKS=1 gate)"
-assert_eq "inline gate used" "1" "$(harness_count "inline_gate $ISSUE")"
-assert_eq "no tracked job in sync mode" "0" "$(harness_count "launch_tracked_job")"
 
 harness_finish

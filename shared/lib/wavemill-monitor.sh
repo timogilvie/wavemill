@@ -4476,7 +4476,7 @@ ready_watchdog_config_json() {
 }
 
 run_ready_watchdog_tick() {
-  local watchdog_json watchdog_enabled watchdog_timeout watchdog_stderr watchdog_error now
+  local watchdog_json watchdog_enabled watchdog_timeout
   watchdog_json=$(ready_watchdog_config_json "$REPO_DIR")
   watchdog_enabled=$(printf '%s' "$watchdog_json" | jq -r '.enabled | if . == null then true else . end' 2>/dev/null || echo "true")
   [[ "$watchdog_enabled" == "true" ]] || return 0
@@ -4486,44 +4486,17 @@ run_ready_watchdog_tick() {
 
   # HOK-3206: the sweep (~5 s) runs as a tracked job; this tick consumes the
   # previous sweep's findings and starts the next one.
-  if declare -F ready_watchdog_tick_async >/dev/null 2>&1 && ! ready_checks_sync; then
+  if declare -F ready_watchdog_tick_async >/dev/null 2>&1; then
     ready_watchdog_tick_async "$watchdog_timeout"
     return 0
   fi
-
-  watchdog_stderr="$(mktemp "${TMPDIR:-/tmp}/wavemill-ready-watchdog.XXXXXX")" || {
-    log_warn "ready watchdog tick failed: could not create diagnostic file"
-    return 0
-  }
-
-  local watchdog_output
-  if ! watchdog_output=$(_with_timeout "$watchdog_timeout" \
-    wavemill_run_tool "ready-watchdog.ts" \
-      --once \
-      --repo-dir "$REPO_DIR" \
-      --state-file "$STATE_FILE" \
-      --json 2>"$watchdog_stderr"); then
-    watchdog_error="$(tail -n 1 "$watchdog_stderr" 2>/dev/null | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
-    rm -f "$watchdog_stderr"
-    [[ -n "$watchdog_error" ]] || watchdog_error="command exited non-zero or timed out after ${watchdog_timeout}s"
-    now=$(date +%s)
-    if [[ "${LAST_READY_WATCHDOG_FAILURE_DETAIL:-}" != "$watchdog_error" || $(( now - ${LAST_READY_WATCHDOG_FAILURE_AT:-0} )) -ge "$READY_WATCHDOG_FAILURE_LOG_INTERVAL" ]]; then
-      log_warn "ready watchdog tick failed: $watchdog_error"
-      LAST_READY_WATCHDOG_FAILURE_DETAIL="$watchdog_error"
-      LAST_READY_WATCHDOG_FAILURE_AT=$now
-    fi
-    return 0
-  fi
-  rm -f "$watchdog_stderr"
-  LAST_READY_WATCHDOG_FAILURE_DETAIL=""
-  LAST_READY_WATCHDOG_FAILURE_AT=0
-
-  ready_watchdog_dispatch_findings "$watchdog_output"
+  log_warn "ready watchdog tick skipped: monitor-async-jobs.sh not loaded"
+  return 0
 }
 
 # Act on one ready-watchdog sweep's `--json` output: queue remediation for
-# stable failures and log every finding. Shared by the inline tick and the
-# async consumer (HOK-3206).
+# stable failures and log every finding. Called by the async consumer
+# (HOK-3206); the inline tick was retired in HOK-3235.
 ready_watchdog_dispatch_findings() {
   local watchdog_output="$1"
   while IFS= read -r finding; do
@@ -16548,56 +16521,6 @@ monitor_side_effect_detector_tick() {
 }
 
 # ─── Ledger F recovery loop (HOK-3185) ──────────────────────────────────────
-#
-# One recovery rule over ledger step rows: a step past its deadline with no
-# HOK-3101 progress gets the HOK-3176 failure policy (terminal → settle,
-# code-failure → remediation, retryable → bounded retry → fresh relaunch →
-# one waiting_on operator escalation). Shadow by default: decisions land in
-# .wavemill/ledger-recovery.jsonl and nothing else changes.
-# Live: WAVEMILL_LEDGER_RECOVERY_LIVE=1. Kill switch:
-# WAVEMILL_LEDGER_RECOVERY_DISABLED=1 (or the ledger-wide
-# WAVEMILL_LEDGER_SHADOW_DISABLED=1).
-ledger_recovery_tick_enabled() {
-  [[ "${DRY_RUN:-false}" == "true" ]] && return 1
-  [[ "${WAVEMILL_LEDGER_RECOVERY_DISABLED:-0}" == "1" ]] && return 1
-  [[ "${WAVEMILL_LEDGER_SHADOW_DISABLED:-0}" == "1" ]] && return 1
-  [[ -n "${STATE_DIR:-}" && -n "${REPO_DIR:-}" ]] || return 1
-  declare -F wavemill_run_tool >/dev/null 2>&1 || return 1
-  return 0
-}
-
-monitor_ledger_recovery_interval() {
-  local value="${LEDGER_RECOVERY_INTERVAL_SECONDS:-120}"
-  [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]] || value=120
-  printf '%s\n' "$value"
-}
-
-monitor_ledger_recovery_tick() {
-  ledger_recovery_tick_enabled || return 0
-
-  local interval last_at now stamp_file="$STATE_DIR/.ledger-recovery-last-at"
-  interval="$(monitor_ledger_recovery_interval)"
-  now="$(date +%s)"
-  if [[ -f "$stamp_file" ]]; then
-    last_at="$(cat "$stamp_file" 2>/dev/null || echo 0)"
-    [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
-    (( now - last_at < interval )) && return 0
-  fi
-  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
-  _monitor_terminal_cleanup_write "$stamp_file" "$now"
-
-  local -a cli=(ledger-recovery-tick.ts --repo-dir "$REPO_DIR")
-  [[ -n "${STATE_FILE:-}" ]] && cli+=(--state-file "$STATE_FILE")
-  [[ -n "${WORKTREE_ROOT:-}" ]] && cli+=(--worktree-root "$WORKTREE_ROOT")
-  local log_file="${MILL_LOG_FILE:-/dev/null}"
-  # Background so a slow ledger open never stalls the monitor pass.
-  (
-    wavemill_run_tool "${cli[@]}" >>"$log_file" 2>&1 || true
-  ) >/dev/null 2>&1 &
-  disown 2>/dev/null || true
-  return 0
-}
-
 # ─── Stale node_modules detector (HOK-3254) ─────────────────────────────────
 #
 # A slow-cadence check on REPO_DIR. Loads the HOK-3254 drift primitive from
@@ -22213,10 +22136,10 @@ monitor_issue_state() {
       # miss, not a missing PR (found by the golden journeys, HOK-3227). This
       # verdict is terminal, so confirm it with a live read rather than the
       # cache (HOK-3206: cached results never produce a definitive negative).
-      if check_pr_exists "$BRANCH" || WAVEMILL_DISABLE_GH_BATCH_CACHE=1 check_pr_exists "$BRANCH"; then
+      if check_pr_exists "$BRANCH" || wavemill_pr_live_read check_pr_exists "$BRANCH"; then
         local pr_number
         pr_number=$(find_pr_for_branch "$BRANCH")
-        [[ -n "$pr_number" ]] || pr_number=$(WAVEMILL_DISABLE_GH_BATCH_CACHE=1 find_pr_for_branch "$BRANCH")
+        [[ -n "$pr_number" ]] || pr_number=$(wavemill_pr_live_read find_pr_for_branch "$BRANCH")
         if [[ -n "$pr_number" ]]; then
           PR_BY_ISSUE["$ISSUE"]="$pr_number"
           log "status" "$ISSUE → Found PR #$pr_number (updating state)"
@@ -23474,6 +23397,8 @@ BACKSTAGE_RESTART_BACKOFF_MAX_SECONDS=900
 BACKSTAGE_RESTART_NEEDS_USER_AFTER_ATTEMPTS=3
 BACKSTAGE_TEND_RESTART_CONFIRM_SECONDS=20
 BACKSTAGE_TEND_RESTART_GRACE_SECONDS=120
+# Rate-limit the "ready watchdog tick failed" log line emitted by the async
+# consumer (ready_watchdog_tick_async in monitor-async-jobs.sh).
 READY_WATCHDOG_FAILURE_LOG_INTERVAL=60
 LAST_BACKSTAGE_HEALTH_STATUS=""
 LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS=""
@@ -24200,10 +24125,6 @@ while :; do
   monitor_step_begin depsDrift
   monitor_deps_drift_tick || true
   monitor_step_end depsDrift
-  # HOK-3185: the one recovery loop over ledger step rows (shadow by default).
-  monitor_step_begin ledgerRecovery
-  monitor_ledger_recovery_tick || true
-  monitor_step_end ledgerRecovery
   # HOK-3229: live workflow-state invariant checker (detection only).
   monitor_step_begin stateInvariants
   monitor_state_invariants_tick || true

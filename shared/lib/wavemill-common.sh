@@ -1695,17 +1695,13 @@ wavemill_pr_aware_cleanup_enabled() {
 }
 
 wavemill_branch_deletion_mode() {
-  local enabled mode
+  local enabled
   enabled="$(cleanup_episode_config_value '.cleanup.branchDeletion.enabled' 'true')"
   if [[ "$enabled" == "false" || "$enabled" == "0" ]]; then
     printf 'disabled\n'
-    return 0
+  else
+    printf 'enforce\n'
   fi
-  mode="$(cleanup_episode_config_value '.cleanup.branchDeletion.mode' 'shadow')"
-  case "$mode" in
-    enforce|shadow) printf '%s\n' "$mode" ;;
-    *) printf 'shadow\n' ;;
-  esac
 }
 
 # Build the canonical cleanup evidence JSON from the destructive classifier's
@@ -2371,10 +2367,10 @@ safe_remove_task_worktree_and_branch() {
     fi
   fi
 
-  if [[ "$local_branch_exists" == "true" && "$cleanup_decision_mode" != "enforce" ]]; then
-    log "debug" "Shadow branch cleanup retained branch: $task_branch (authorized classification: $classification)"
-    WAVEMILL_CLEANUP_OUTCOME="shadow_would_delete"
-    return 0
+  if [[ "$local_branch_exists" == "true" && "$cleanup_decision_mode" == "disabled" ]]; then
+    log "debug" "Branch cleanup disabled; retaining branch: $task_branch"
+    WAVEMILL_CLEANUP_OUTCOME="retain_unverifiable"
+    return 10
   fi
 
   if [[ "$local_branch_exists" == "true" ]]; then
@@ -4357,8 +4353,24 @@ wavemill_pr_cache_file() {
   printf '%s\n' "${MONITOR_PR_CACHE:-/tmp/${SESSION:-wavemill}-pr-cache.json}"
 }
 
-wavemill_gh_batch_cache_disabled() {
-  [[ "${WAVEMILL_DISABLE_GH_BATCH_CACHE:-0}" == "1" ]]
+# HOK-3235: internal, caller-scoped PR cache bypass. Only `wavemill_pr_live_read`
+# below (and tests that pin that contract) set it; it is NOT a user-facing env
+# var and must never appear outside this file's cache readers.
+# allow-feature-flag: internal variable, not operator-facing
+_PR_CACHE_BYPASS="${_PR_CACHE_BYPASS:-0}"
+
+_wavemill_pr_cache_bypass_active() {
+  [[ "${_PR_CACHE_BYPASS:-0}" == "1" ]]
+}
+
+# wavemill_pr_live_read <cmd> [args...]
+# Run a cached PR/repo reader in a subshell that bypasses the batched cache,
+# so a terminal "no PR" verdict is confirmed against live `gh`. Replaces the
+# retired batched-cache kill-switch prefix used at the monitor's NoPR sites
+# (HOK-3227).
+wavemill_pr_live_read() {
+  local _PR_CACHE_BYPASS=1
+  "$@"
 }
 
 # Append one marker byte to a per-cache counter file. Lookups usually run in
@@ -4386,7 +4398,7 @@ wavemill_pr_cache_refresh() {
   # the file before the other's mv runs.
   tmp_file="$(mktemp "${cache_file}.tmp.XXXXXX" 2>/dev/null)" || return 0
 
-  if (( ${#branches[@]} > 0 )) && ! wavemill_gh_batch_cache_disabled; then
+  if (( ${#branches[@]} > 0 )) && ! _wavemill_pr_cache_bypass_active; then
     search="$(printf 'head:%s\n' "${branches[@]}" | sort -u | tr '\n' ' ')"
     if _with_timeout "${API_TIMEOUT:-30}" gh pr list --state all --limit "$WAVEMILL_PR_CACHE_BATCH_LIMIT" \
          --search "${search% }" --json "$WAVEMILL_PR_CACHE_FIELDS" \
@@ -4431,7 +4443,7 @@ wavemill_pr_cache_refresh() {
 # WAVEMILL_PR_CACHE_MAX_AGE_SECONDS (default 180). Readers then trust it.
 wavemill_pr_cache_usable() {
   local cache_file meta_file written_at now
-  wavemill_gh_batch_cache_disabled && return 1
+  _wavemill_pr_cache_bypass_active && return 1
   cache_file="$(wavemill_pr_cache_file)"
   meta_file="${cache_file}.meta.json"
   [[ -f "$cache_file" && -f "$meta_file" ]] || return 1
@@ -4458,7 +4470,7 @@ wavemill_pr_cache_row_by_pr() {
   local pr="${1:-}" row
   [[ "$pr" =~ ^[0-9]+$ ]] || return 1
   if ! wavemill_pr_cache_usable; then
-    wavemill_gh_batch_cache_disabled || _wavemill_pr_cache_count misses
+    _wavemill_pr_cache_bypass_active || _wavemill_pr_cache_count misses
     return 1
   fi
   row="$(jq -c --argjson pr "$pr" '(if type == "array" then . else [] end) | map(select(.number == $pr)) | .[0] // empty' \
@@ -4477,7 +4489,7 @@ wavemill_pr_cache_row_by_pr() {
 wavemill_pr_cache_rows_for_branch() {
   local branch="${1:-}"
   if ! wavemill_pr_cache_covers_branch "$branch"; then
-    wavemill_gh_batch_cache_disabled || _wavemill_pr_cache_count misses
+    _wavemill_pr_cache_bypass_active || _wavemill_pr_cache_count misses
     return 1
   fi
   _wavemill_pr_cache_count hits
@@ -4534,7 +4546,7 @@ wavemill_session_repo_cache_repo_dir() {
 # Print the session repo cache only when it belongs to this session's repo.
 wavemill_session_repo_cache_read() {
   local cache_file expected
-  wavemill_gh_batch_cache_disabled && return 0
+  _wavemill_pr_cache_bypass_active && return 0
   cache_file="$(wavemill_session_repo_cache_file)"
   [[ -f "$cache_file" ]] || return 0
   expected="$(wavemill_session_repo_cache_repo_dir)"
@@ -4559,7 +4571,7 @@ wavemill_session_repo_cache_refresh() {
       [[ -n "$arg" ]] && bases+=("$arg")
     fi
   done
-  wavemill_gh_batch_cache_disabled && return 0
+  _wavemill_pr_cache_bypass_active && return 0
   cache_file="$(wavemill_session_repo_cache_file)"
   repo_id="$(wavemill_session_repo_cache_repo_dir "$repo_dir")"
   [[ -n "$repo_id" ]] || return 0

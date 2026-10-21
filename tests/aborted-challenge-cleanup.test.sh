@@ -135,7 +135,7 @@ run_cleanup_case() {
     AUTO_EVAL=true
     AGENT_CMD=codex
     mkdir -p "$WORKTREE_ROOT/$SLUG/features/$SLUG"
-    printf "%s\n" "{\"cleanup\":{\"branchDeletion\":{\"enabled\":true,\"mode\":\"enforce\"}}}" > "$REPO_DIR/.wavemill-config.json"
+    printf "%s\n" "{\"cleanup\":{\"branchDeletion\":{\"enabled\":true}}}" > "$REPO_DIR/.wavemill-config.json"
     printf "{\"reason\":\"failed\"}\n" > "$WORKTREE_ROOT/$SLUG/features/$SLUG/.challenge-aborted.json"
     printf "{\"transcriptPath\":\"native-session.jsonl\"}\n" > "$WORKTREE_ROOT/$SLUG/features/$SLUG/.coding-failure-handoff.json"
     printf "{}\n" > "$WORKTREE_ROOT/$SLUG/features/$SLUG/native-session.jsonl"

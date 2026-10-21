@@ -29,13 +29,13 @@ snapshot_state() {
 }
 
 run_control() {
-  cert_setup_delivery "restart-control-$1" "$1" "shadow"
+  cert_setup_delivery "restart-control-$1" "$1" "enforce"
   cert_run_release_and_cleanup
   snapshot_state
 }
 
 run_restarted() {
-  cert_setup_delivery "restart-replay-$1-$2" "$1" "shadow"
+  cert_setup_delivery "restart-replay-$1-$2" "$1" "enforce"
   case "$2" in
     after-pane-release)
       wavemill_release_terminal_pane "$SESSION" "$CERT_ISSUE" "$CERT_SLUG" "pr_merged" "$CERT_PR" >/dev/null 2>&1 || true

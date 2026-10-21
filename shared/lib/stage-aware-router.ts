@@ -1110,23 +1110,11 @@ export function routeStageAwareWithContext(
     partialDecision.routingMode = 'stage-aware-partial';
     partialDecision.confidence = Number((clamp(partialDecision.confidence * 0.8, 0.1, 0.95)).toFixed(2));
     prependCapabilityFallbackReasoning(partialDecision, rankings);
-    if (rubricAwareMode === 'on' || rubricAwareMode === 'shadow') {
+    if (rubricAwareMode === 'on') {
       prependRubricReasoning(
         partialDecision,
         rubricHasSufficientCoverage ? rubricActiveReason : rubricFallbackReason,
       );
-      if (rubricAwareMode === 'shadow') {
-        if (rubricHasSufficientCoverage) {
-          const { selection: shadowUnconstrainedSelection } = rankModelsPerStage(neighbors, {
-            maxCostUsd: options.maxCostUsd,
-          }, stageBlendWeight, rubricAwareWeight, repoDir);
-          partialDecision.shadowDecision = shadowUnconstrainedSelection
-            ? buildStageAwareDecision(shadowUnconstrainedSelection, neighbors, kNeighbors, repoDir)
-            : null;
-        } else {
-          partialDecision.shadowDecision = null;
-        }
-      }
     }
     return partialDecision;
   }
@@ -1175,31 +1163,11 @@ export function routeStageAwareWithContext(
     decision.confidence = Number((clamp(decision.confidence * 0.8, 0.1, 0.95)).toFixed(2));
   }
 
-  if (rubricAwareMode === 'on' || rubricAwareMode === 'shadow') {
+  if (rubricAwareMode === 'on') {
     prependRubricReasoning(
       decision,
       rubricHasSufficientCoverage ? rubricActiveReason : rubricFallbackReason,
     );
-    if (rubricAwareMode === 'shadow') {
-      if (rubricHasSufficientCoverage) {
-        const { selection: shadowSelection } = rankModelsPerStage(neighbors, {
-          modelsAvailable: filteredModelsAvailable,
-          plannerModelsAvailable: filteredPlannerOptions.length > 0 ? filteredPlannerOptions : plannerModels,
-          coderModelsAvailable: filteredCoderOptions.length > 0 ? filteredCoderOptions : coderModels,
-          reviewerModelsAvailable: filteredReviewerOptions.length > 0 ? filteredReviewerOptions : reviewerModels,
-          capabilityConstraints: options.capabilityConstraints,
-          plannerCapabilityConstraints: options.plannerCapabilityConstraints,
-          coderCapabilityConstraints: options.coderCapabilityConstraints,
-          reviewerCapabilityConstraints: options.reviewerCapabilityConstraints,
-          maxCostUsd: options.maxCostUsd,
-        }, stageBlendWeight, rubricAwareWeight, repoDir, explorationConfig);
-        decision.shadowDecision = shadowSelection
-          ? buildStageAwareDecision(shadowSelection, neighbors, kNeighbors, repoDir)
-          : null;
-      } else {
-        decision.shadowDecision = null;
-      }
-    }
   }
 
   return decision;

@@ -58,7 +58,6 @@ tests/fixtures/lifecycle/parent_pr_triggers_child_launch.sh  # seeded from HOK-3
 tests/fixtures/lifecycle/tend_challenge_winner_merges_loser_cleanup.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/launch-cleanup-safety.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/launch-ready-phase.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
-tests/ledger-recovery-tick.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/lifecycle-harness.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/lifecycle-scenarios.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/monitor-pass-budget.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
