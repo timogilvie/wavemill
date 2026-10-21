@@ -574,6 +574,19 @@
                                 "markFormat": { "type": "string", "default": "[REDACTED: {type}]" }
                             },
                             "additionalProperties": false
+                        },
+                        "suppress": {
+                            "type": "object",
+                            "description": "Per-class suppression for Linear filing (HOK-3243). Classes listed here are dropped from both shadow and live Linear sync; they still land in .wavemill/incidents/ for local analysis.",
+                            "properties": {
+                                "classes": {
+                                    "type": "array",
+                                    "items": { "type": "string" },
+                                    "default": ["cleanup_dirty_worktree", "arm_died_with_unpushed_work"],
+                                    "description": "Root cause classes that are dropped before Linear filing (shadow and live). Still recorded in .wavemill/incidents/ for local analysis."
+                                }
+                            },
+                            "additionalProperties": false
                         }
                     },
                     "additionalProperties": false

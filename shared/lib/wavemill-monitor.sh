@@ -23818,7 +23818,7 @@ check_backstage_observer_health() {
     return 0
   fi
 
-  detail="Backstage window '$WAVEMILL_WINDOW_BACKSTAGE' observer service needs user attention. Restart 'npx tsx $TOOLS_DIR/observer.ts --loop --json --dry-run --repo-dir $REPO_DIR --session $SESSION' in tmux."
+  detail="Backstage window '$WAVEMILL_WINDOW_BACKSTAGE' observer service needs user attention. Restart 'npx tsx $TOOLS_DIR/observer.ts --loop --json --repo-dir $REPO_DIR --session $SESSION' in tmux."
   [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "needs-user" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$observer_pane_id" "$heartbeat_at" "$observer_count"
   if [[ "$LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS" != "needs-user" ]]; then
     log_warn "$detail"

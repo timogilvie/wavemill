@@ -306,10 +306,15 @@ wavemill_capture_tend_pane_output() {
 
 # Build the managed Backstage Observer service command.
 #
-# The generic --dry-run flag protects the legacy --file-linear path ONLY; it is
-# never the incident-synchronizer safety control. The incident sync mode is
-# selected deterministically here via an explicit --incidents-mode flag so that
-# neither a bare --file-incidents nor --dry-run can ever silently select live:
+# Incident-sync safety is deterministic and lives entirely in --incidents-mode;
+# the managed launcher never passes --file-linear, so the legacy --dry-run
+# guard is not needed here. (HOK-3243: auto-fix dry-run is now driven by its
+# own --autofix-dry-run flag — not emitted by default — so a generic --dry-run
+# cannot silently gate observer self-repair.)
+#
+# The incident sync mode is selected deterministically here via an explicit
+# --incidents-mode flag so that a bare --file-incidents can never silently
+# select live:
 #   off    → no incident-sync flag at all
 #   shadow → --file-incidents --incidents-mode=shadow  (bounded reads, zero mutations)
 #   live   → --file-incidents --incidents-mode=live    (only after full validation)
@@ -333,7 +338,7 @@ wavemill_build_observer_loop_command() {
     off|*)  incident_flags='' ;;
   esac
 
-  printf -v command 'exec env WAVEMILL_SESSION=%q WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE=%q WAVEMILL_OBSERVER_SERVICE=1 npx tsx %q --loop --compact --dry-run --repo-dir %q --session %q --interval %q --max-log-lines %q%s' \
+  printf -v command 'exec env WAVEMILL_SESSION=%q WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE=%q WAVEMILL_OBSERVER_SERVICE=1 npx tsx %q --loop --compact --repo-dir %q --session %q --interval %q --max-log-lines %q%s' \
     "$session_name" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE" "$tools_dir/observer.ts" "$repo_dir" "$session_name" "$interval_seconds" "$max_log_lines" "$incident_flags"
   printf '%s\n' "$command"
 }

@@ -75,6 +75,7 @@ import {
   resolveObserverLinearServiceMode,
   resolveObserverLinearModeSource,
   OBSERVER_LINEAR_ROLLOUT_DEFAULTS,
+  OBSERVER_LINEAR_SUPPRESS_DEFAULTS,
   getChallengeEvalHardFailureRetryMaxAttempts,
   getNativeReviewTimeoutConfig,
   resolveSessionCapabilities,
@@ -4613,6 +4614,56 @@ test('observer linear config rejects invalid mode', () => {
     clearConfigCache();
     writeConfig(tmp, JSON.stringify({ observer: { linear: { mode: 'writes-please' } } }));
     assert.throws(() => getObserverLinearConfig(tmp), /observer\/linear\/mode|allowed values|mode must be/i);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+// ────────────────────────────────────────────────────────────────
+// HOK-3243: observer.linear.suppress.classes
+// ────────────────────────────────────────────────────────────────
+
+test('observer linear suppress defaults are the two noisy classes', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    const config = getObserverLinearConfig(tmp);
+    assert.deepEqual(
+      [...config.suppress.classes].sort(),
+      ['arm_died_with_unpushed_work', 'cleanup_dirty_worktree'],
+    );
+    assert.deepEqual(
+      [...OBSERVER_LINEAR_SUPPRESS_DEFAULTS.classes].sort(),
+      ['arm_died_with_unpushed_work', 'cleanup_dirty_worktree'],
+    );
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('observer linear suppress classes: empty array disables suppression', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      observer: { linear: { suppress: { classes: [] } } },
+    }));
+    const config = getObserverLinearConfig(tmp);
+    assert.deepEqual(config.suppress.classes, []);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('observer linear suppress classes: caller list replaces defaults', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      observer: { linear: { suppress: { classes: ['stage_marker_not_advanced'] } } },
+    }));
+    const config = getObserverLinearConfig(tmp);
+    assert.deepEqual(config.suppress.classes, ['stage_marker_not_advanced']);
   } finally {
     cleanUp(tmp);
   }

@@ -796,6 +796,17 @@ export interface ObserverLinearRedactionConfig {
   markFormat: string;
 }
 
+/**
+ * Per-class suppression for Linear filing (HOK-3243). Classes listed here are
+ * dropped from both shadow and live Linear sync; they still land in
+ * `.wavemill/incidents/` for local analysis and dashboards. The default list
+ * folds the two high-volume lifecycle classes that would otherwise push
+ * shadow volume above the 10/day acceptance budget.
+ */
+export interface ObserverLinearSuppressConfig {
+  classes: string[];
+}
+
 export type ObserverLinearMode = 'off' | 'offline' | 'shadow' | 'live';
 
 export interface ObserverLinearShadowConfig {
@@ -868,6 +879,7 @@ export interface ObserverLinearConfig {
   shadow: ObserverLinearShadowConfig;
   lifecycle: ObserverLinearLifecycleConfig;
   rollout: ObserverLinearRolloutConfig;
+  suppress: ObserverLinearSuppressConfig;
 }
 
 /** Runtime inputs the service-mode resolver validates against, beyond config. */
@@ -1287,6 +1299,16 @@ export const OBSERVER_LINEAR_ROLLOUT_DEFAULTS: ObserverLinearRolloutConfig = {
   maxProposedPerPass: 5,
 };
 
+/**
+ * HOK-3243: default Linear-filing suppression list. These two classes dominate
+ * the backlog as high-volume, well-understood lifecycle events already covered
+ * by local cleanup machinery; filing one Linear issue per occurrence would push
+ * shadow volume above the 10/day acceptance budget.
+ */
+export const OBSERVER_LINEAR_SUPPRESS_DEFAULTS: ObserverLinearSuppressConfig = {
+  classes: ['cleanup_dirty_worktree', 'arm_died_with_unpushed_work'],
+};
+
 export const OBSERVER_LINEAR_DEFAULTS: ObserverLinearConfig = {
   enabled: false,
   detectionOnly: false,
@@ -1316,6 +1338,7 @@ export const OBSERVER_LINEAR_DEFAULTS: ObserverLinearConfig = {
   shadow: OBSERVER_LINEAR_SHADOW_DEFAULTS,
   lifecycle: OBSERVER_LINEAR_LIFECYCLE_DEFAULTS,
   rollout: OBSERVER_LINEAR_ROLLOUT_DEFAULTS,
+  suppress: OBSERVER_LINEAR_SUPPRESS_DEFAULTS,
 };
 
 export const PROMOTION_DEFAULTS: PromotionConfig = {
@@ -2663,6 +2686,11 @@ export function getObserverLinearConfig(repoDir?: string): ObserverLinearConfig 
     rollout: {
       ...OBSERVER_LINEAR_ROLLOUT_DEFAULTS,
       ...(linear.rollout ?? {}),
+    },
+    suppress: {
+      ...OBSERVER_LINEAR_SUPPRESS_DEFAULTS,
+      ...(linear.suppress ?? {}),
+      classes: linear.suppress?.classes ?? OBSERVER_LINEAR_SUPPRESS_DEFAULTS.classes,
     },
   };
 }

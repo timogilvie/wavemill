@@ -74,7 +74,7 @@ that date to be retired.
 | `WAVEMILL_SKIP_RELIABILITY_METRIC` | 0 | Skip the reliability metric emission. | HOK-3235 | 2026-10-20 | Reliability metric covered by observer / monitor. | HOK-3278 | 2026-11-19 |
 | `WAVEMILL_SKIP_STATE_ARCHIVE` | 0 | Skip the periodic workflow-state archive. | HOK-3235 | 2026-10-20 | Archive strategy decided (ledger-backed or deleted). | HOK-3278 | 2026-11-19 |
 | `WAVEMILL_CLEANUP_EPISODES_ENABLED` | 0 | Opt-in gate for the episodic cleanup path. | HOK-3235 | 2026-10-20 | Decide on episodic cleanup or delete the path. | HOK-3278 | 2026-11-19 |
-| `WAVEMILL_OBSERVER_LINEAR_ENABLED` | 0 | Opt-in gate for the observer→Linear sync (dormant per `project_observer_enabled_linear_sync_off`). | HOK-2846 | 2026-10-20 | HOK-2846 lands the observer Linear writer. | HOK-3243 | 2026-11-19 |
+| `WAVEMILL_OBSERVER_LINEAR_ENABLED` | 0 | Legacy env override for `observer.linear.enabled`. HOK-2846 landed the Linear writer and HOK-3243 moved filing to shadow mode: operators now set `observer.linear.mode: shadow` in `.wavemill-config.local.json` instead. | HOK-3243 | 2026-10-20 | Shadow trial clean for a release cycle and no operator uses the env override. | HOK-3278 | 2026-11-19 |
 | `WAVEMILL_UNATTENDED_CLEANUP_ENABLED` | 0 | Opt-in gate for the unattended cleanup path. | HOK-3235 | 2026-10-20 | Decide on unattended cleanup or delete the path. | HOK-3278 | 2026-11-19 |
 
 ## Permanent operator settings

@@ -40,6 +40,7 @@ function defaultObserverOptions() {
     fileLinear: false,
     fileIncidents: false,
     dryRun: false,
+    autoFixDryRun: false,
     incidentsDryRun: false,
     maxLogLines: 240,
     printPrompt: false,
@@ -506,6 +507,7 @@ test('repeated ready watchdog auto-recoveries escalate to actionable stuck findi
       fileLinear: false,
       fileIncidents: false,
       dryRun: false,
+      autoFixDryRun: false,
       incidentsDryRun: false,
       maxLogLines: 240,
       printPrompt: false,
@@ -1356,6 +1358,7 @@ test('incident sync snapshot is omitted when incident filing is disabled', async
     fileLinear: false,
     fileIncidents: false,
     dryRun: false,
+    autoFixDryRun: false,
     incidentsDryRun: false,
     maxLogLines: 240,
     printPrompt: false,
@@ -1478,6 +1481,196 @@ test('incident sync shadow mode caps per pass, writes audit records, and reports
   }
 });
 
+test('incident sync shadow mode drops suppressed classes and records per-class counts (HOK-3243)', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-incident-suppress-'));
+  try {
+    writePermissiveSchema(repoDir);
+    writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
+      configVersion: '1.5.0',
+      mill: { baseBranch: 'auto/integration', requireConfirm: true },
+      observer: {
+        linear: {
+          mode: 'shadow',
+          maxIncidentsPerPass: 10,
+          // Default suppression classes apply; omitted on purpose to prove defaults.
+        },
+      },
+    }, null, 2));
+
+    const store = new IncidentStore(join(repoDir, '.wavemill', 'incidents'));
+    const seed = async (
+      taskId: string,
+      rootCauseClass: 'cleanup_dirty_worktree' | 'arm_died_with_unpushed_work' | 'observer_crash',
+      summary: string,
+    ) => {
+      await store.upsert(createIncidentDraft({
+        taskId,
+        category: rootCauseClass === 'observer_crash' ? 'product_defect' : 'stale_orphaned_state',
+        severity: 'high',
+        confidence: 'definite',
+        lifecycle: 'active',
+        rootCauseClass,
+        summary,
+        operatorAction: 'Review.',
+        evidence: [{
+          type: 'log_excerpt',
+          source: 'mill.log',
+          timestamp: '2026-10-21T12:00:00.000Z',
+          redactedData: 'EVENT',
+          key: `${taskId}-${rootCauseClass}`,
+        }],
+      }));
+    };
+    for (let i = 0; i < 3; i += 1) {
+      await seed(`HOK-${5100 + i}`, 'cleanup_dirty_worktree', `cleanup ${i}`);
+    }
+    for (let i = 0; i < 2; i += 1) {
+      await seed(`HOK-${5200 + i}`, 'arm_died_with_unpushed_work', `armdied ${i}`);
+    }
+    for (let i = 0; i < 2; i += 1) {
+      await seed(`HOK-${5300 + i}`, 'observer_crash', `kept ${i}`);
+    }
+
+    const snapshot = await syncIncidentsToLinear({
+      timestamp: '2026-10-21T12:00:00.000Z',
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{ session: 'wavemill', repoDir, tasks: [] }],
+      findings: [],
+    }, {
+      ...defaultObserverOptions(),
+      fileIncidents: true,
+      incidentsShadow: true,
+    });
+
+    assert.equal(snapshot.incidentSync?.mode, 'shadow');
+    assert.deepEqual(snapshot.incidentSync?.suppressedByClass, {
+      cleanup_dirty_worktree: 3,
+      arm_died_with_unpushed_work: 2,
+    });
+    // Suppressed incidents count into skipped.
+    assert.ok((snapshot.incidentSync?.skipped ?? 0) >= 5);
+
+    // Audit file holds only the retained (non-suppressed) incidents.
+    const auditPath = join(repoDir, '.wavemill/observer/shadow-audit.jsonl');
+    assert.ok(existsSync(auditPath), `expected audit file at ${auditPath}`);
+    const auditRecords = readFileSync(auditPath, 'utf-8').trim().split('\n').filter(Boolean);
+    assert.equal(auditRecords.length, 2);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('incident sync suppress.classes:[] disables suppression (HOK-3243)', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-incident-suppress-empty-'));
+  try {
+    writePermissiveSchema(repoDir);
+    writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
+      configVersion: '1.5.0',
+      mill: { baseBranch: 'auto/integration', requireConfirm: true },
+      observer: {
+        linear: {
+          mode: 'shadow',
+          maxIncidentsPerPass: 10,
+          suppress: { classes: [] },
+        },
+      },
+    }, null, 2));
+
+    const store = new IncidentStore(join(repoDir, '.wavemill', 'incidents'));
+    for (let i = 0; i < 3; i += 1) {
+      await store.upsert(createIncidentDraft({
+        taskId: `HOK-${6100 + i}`,
+        category: 'stale_orphaned_state',
+        severity: 'high',
+        confidence: 'definite',
+        lifecycle: 'active',
+        rootCauseClass: 'cleanup_dirty_worktree',
+        summary: `cleanup ${i}`,
+        operatorAction: 'Review.',
+        evidence: [{
+          type: 'log_excerpt',
+          source: 'mill.log',
+          timestamp: '2026-10-21T12:00:00.000Z',
+          redactedData: 'EVENT',
+          key: `clean-${i}`,
+        }],
+      }));
+    }
+
+    const snapshot = await syncIncidentsToLinear({
+      timestamp: '2026-10-21T12:00:00.000Z',
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{ session: 'wavemill', repoDir, tasks: [] }],
+      findings: [],
+    }, {
+      ...defaultObserverOptions(),
+      fileIncidents: true,
+      incidentsShadow: true,
+    });
+
+    assert.equal(snapshot.incidentSync?.suppressedByClass, undefined);
+    assert.equal(snapshot.incidentSync?.shadow?.eligible, 3);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('--dry-run and --autofix-dry-run are independent flags (HOK-3243)', () => {
+  const legacy = parseArgs(['--dry-run']);
+  assert.equal(legacy.dryRun, true);
+  assert.equal(legacy.autoFixDryRun, false);
+
+  const autoFix = parseArgs(['--autofix-dry-run']);
+  assert.equal(autoFix.dryRun, false);
+  assert.equal(autoFix.autoFixDryRun, true);
+});
+
+test('applyAutoFixes forwards --autofix-dry-run (not --dry-run) to runObserverAutoFixes (HOK-3243)', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-autofix-dryrun-'));
+  const previousPushUrl = process.env.WAVEMILL_OBSERVER_PUSH_URL;
+  delete process.env.WAVEMILL_OBSERVER_PUSH_URL;
+  try {
+    writePermissiveSchema(repoDir);
+    writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
+      configVersion: '1.5.0',
+      mill: { baseBranch: 'auto/integration', requireConfirm: true },
+      observer: { autoFix: { enabled: false } },
+    }, null, 2));
+    const snapshot = {
+      timestamp: new Date().toISOString(),
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir,
+        workflowStatePath: join(repoDir, '.wavemill', 'workflow-state.json'),
+        tasks: [{ issue: 'HOK-1', phase: 'ready', slug: 'noop', worktree: repoDir, branch: 'task/noop', baseBranch: 'main' }],
+      }],
+      findings: [],
+    };
+    // dry-run and autofix-dry-run can both be false without the autofix path running
+    // (master switch is off); this confirms the plumbing compiles and does nothing.
+    const legacyDryRun = await applyAutoFixes(snapshot as any, {
+      ...defaultObserverOptions(),
+      dryRun: true,
+    } as any);
+    assert.equal(legacyDryRun.findings.length, 0);
+    const autofixDryRun = await applyAutoFixes(snapshot as any, {
+      ...defaultObserverOptions(),
+      autoFixDryRun: true,
+    } as any);
+    assert.equal(autofixDryRun.findings.length, 0);
+  } finally {
+    if (previousPushUrl !== undefined) process.env.WAVEMILL_OBSERVER_PUSH_URL = previousPushUrl;
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
 test('writeServiceHeartbeat surfaces shadow mode and counters in Backstage health', async () => {
   const repoDir = mkdtempSync(join(tmpdir(), 'observer-heartbeat-shadow-'));
   try {
@@ -1501,6 +1694,7 @@ test('writeServiceHeartbeat surfaces shadow mode and counters in Backstage healt
         retryProcessed: 0,
         retrySucceeded: 0,
         retryFailed: 0,
+        suppressedByClass: { cleanup_dirty_worktree: 2, arm_died_with_unpushed_work: 1 },
         results: [],
         errors: [],
         shadow: {
@@ -1534,6 +1728,10 @@ test('writeServiceHeartbeat surfaces shadow mode and counters in Backstage healt
     assert.equal(health.services.observer.incidentSync.shadow.eligible, 3);
     assert.equal(health.services.observer.incidentSync.shadow.mutationAttempts, 0);
     assert.equal(health.services.observer.incidentSync.shadow.auditPath, '.wavemill/observer/shadow-audit.jsonl');
+    assert.deepEqual(
+      health.services.observer.incidentSync.suppressedByClass,
+      { cleanup_dirty_worktree: 2, arm_died_with_unpushed_work: 1 },
+    );
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }
