@@ -290,6 +290,42 @@ The dashboard supports immediate updates via `USR1` in addition to polling:
 
 This architecture ensures complete agent coverage without coupling hook configuration to PID injection.
 
+### OSC 7501 Program Status mirror
+
+Every successful `wavemill_hook_write` also emits a best-effort [OSC 7501
+Program Status](https://www.superlogical.com/rex/docs/build/program-status)
+report to the agent's pane TTY. Terminals that understand the sequence (e.g.
+Rex) show agent state natively; terminals that don't ignore it.
+
+Mapping:
+
+| wavemill state | OSC 7501 |
+|---|---|
+| `working` | `state=working` |
+| `idle` | `state=idle` |
+| `waiting` | `state=blocked:kind=question` |
+| `approval-needed` | `state=blocked:kind=permission` |
+| `blocked` | `state=blocked` |
+| `policy-denied` | `state=error` |
+| `error` | `state=error` |
+
+- `app=wavemill-<agent>` on every report; an agent string that fails the
+  `[A-Za-z0-9_.+-]{1,32}` validation falls back to `wavemill`.
+- `msg` is base64-encoded `next_action` if set, otherwise `detail` (truncated
+  to 2048 bytes before encoding, control chars stripped).
+- `title` is base64-encoded `WAVEMILL_ISSUE` (truncated to 192 bytes before
+  encoding).
+- Writes go to the resolved pane TTY (`tmux display-message -p '#{pane_tty}'`
+  under tmux, else the controlling `tty`), never to stdout or stderr.
+- Under tmux, the sequence is wrapped in DCS passthrough and only reaches the
+  outer terminal when tmux's `allow-passthrough` option is on. The hook does
+  not change this option globally.
+- Kill switch: set `hooks.programStatus: false` in `.wavemill-config.json`.
+  Reads share the single `jq` invocation that already resolves
+  `hooks.emitOsc`, so adding this does not cost an extra process per write.
+- Separate from the existing OSC 777 notification path (`hooks.emitOsc`),
+  which keeps its narrower emission rules (phase gate + actionable states).
+
 ### Dependencies
 
 - `jq` (required for all adapters) - JSON parsing and creation
