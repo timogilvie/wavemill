@@ -195,7 +195,8 @@ TESTS=(
   shared/lib/arm-failure-taxonomy.test.ts
   shared/lib/failure-policy.test.ts
   shared/lib/failure-policy.fixtures.test.ts
-  shared/lib/failure-policy.random.test.ts
+  shared/lib/failure-policy.property.test.ts
+  shared/lib/condition-reconciler.property.test.ts
   shared/lib/eval-skip-guard.test.ts
   shared/lib/arm-reliability.test.ts
   shared/lib/stale-task-branches.test.ts
@@ -237,6 +238,7 @@ TESTS=(
   shared/lib/manual-edit-attribution-audit.test.ts
   shared/lib/merge-queue.test.ts
   shared/lib/merge-labels.test.ts
+  shared/lib/merge-labels.property.test.ts
   shared/lib/pr-task-resolver.test.ts
   shared/lib/pr-task-lookup-checker.test.ts
   shared/lib/mill-clock.test.ts
@@ -512,6 +514,7 @@ TESTS=(
   shared/lib/task-residue-archive.test.ts
   shared/lib/worktree-manager.test.ts
   shared/lib/bounded-retry.test.ts
+  shared/lib/bounded-retry.property.test.ts
   shared/lib/observer-auto-fix.test.ts
   shared/lib/observer-alerts.test.ts
   tools/backfill-stage-scores.test.ts
