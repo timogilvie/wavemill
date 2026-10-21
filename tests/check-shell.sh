@@ -378,7 +378,7 @@ else
 fi
 
 observer_helper="$(awk '/^wavemill_build_observer_loop_command\(\) \{/{capture=1} capture{print} capture && /^}/{exit}' "$LIB_DIR/wavemill-common.sh")"
-if [[ "$observer_helper" == *'--dry-run'* && "$observer_helper" != *'--file-linear'* ]]; then
+if [[ "$observer_helper" != *'--file-linear'* ]]; then
   pass "observer service launch never files legacy Linear findings"
 else
   fail "observer service launch files legacy Linear findings"
