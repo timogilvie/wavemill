@@ -591,6 +591,10 @@ agent_write_native_launcher() {
       phase_exports="export WAVEMILL_CODE_DEPTH='${WAVEMILL_CODE_DEPTH:-}'"$'\n'"export WAVEMILL_OPERATING_MODE='${WAVEMILL_OPERATING_MODE:-}'"
       [[ -n "$prompt_file" ]] && phase_args=" --prompt-file '$prompt_file'"
       ;;
+    review)
+      phase_exports="export WAVEMILL_REVIEW_DEPTH='${WAVEMILL_REVIEW_DEPTH:-}'"$'\n'"export WAVEMILL_OPERATING_MODE='${WAVEMILL_OPERATING_MODE:-}'"
+      [[ -n "$prompt_file" ]] && phase_args=" --prompt-file '$prompt_file'"
+      ;;
   esac
   cat > "$launcher" <<LAUNCHEOF
 #!/bin/bash

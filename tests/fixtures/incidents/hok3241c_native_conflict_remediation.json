@@ -1,6 +1,7 @@
 {
   "incident": "HOK-3272",
   "source": "HOK-3241_c Ready conflict, 2026-10-20 15:48:38 -> 15:50:38 (PR timogilvie/wavemill#1690 vs #1688)",
+  "provenance": "reproduction from actual incident logs: 2026-10-20 monitor session captured native launch preflight failure with unsupported-native-stage reason",
   "task": {
     "issue": "HOK-3241_c",
     "slug": "hok-3241-c-persist-tend-merge-lane-idle-stall-as-incident",
