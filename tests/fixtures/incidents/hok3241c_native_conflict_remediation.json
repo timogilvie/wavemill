@@ -19,7 +19,8 @@
     "monitorLog": [
       "15:48:38 ⚠ Merge conflict detected for HOK-3241_c (PR #1690)",
       "15:49:04 ERROR: Failed to launch conflict-resolution agent for HOK-3241_c",
-      "15:50:38 ERROR: Merge conflicts persist for HOK-3241_c after remediation attempt"
+      "15:50:38 ERROR: Merge conflicts persist for HOK-3241_c after remediation attempt",
+      "10-21 10:03 operator retry: fresh base key; Ready launched and deferred on the cross-PR revert guard, and the budget charged at Ready launch exhausted 90 s later with no resolver launched (HOK-3273)"
     ],
     "lostStderr": "Error: native launch preflight failed: route=HOK-3241_c stage=(empty) agent=native-openrouter provider=openrouter model=gemini-3.8-flash reason=unsupported-native-stage",
     "promptFile": "/tmp/<session>-HOK-3241_c-conflict-prompt.txt"
@@ -28,6 +29,8 @@
     "nativeLauncher": "tools/launch-native-coding.ts",
     "phase": "coding",
     "promptDriven": true,
-    "needsUser": false
+    "needsUser": false,
+    "deferralChargesBudget": false,
+    "launchChargesBudget": true
   }
 }

@@ -1,0 +1,28 @@
+# shellcheck shell=bash
+# Fake coder for the mid-flight base conflict journey (HOK-3273).
+#
+# The first coding launch implements the task. Any later coding launch is the
+# Ready conflict resolver (post-PR remediation runs the coding phase, HOK-3272):
+# it merges the integration branch keeping the task's side, pushes the
+# resolution, and GitHub stops reporting the conflict.
+# shellcheck source=lib.sh
+source "$FAKE_AGENT_SCRIPT_DIR/lib.sh"
+coding_runs_file="$FAKE_ROOT/coding-runs-$WAVEMILL_ISSUE"
+coding_run=$(( $(cat "$coding_runs_file" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$coding_run" > "$coding_runs_file"
+
+if (( coding_run == 1 )); then
+  default_coding
+else
+  printf '%s phase=coding issue=%s role=conflict-resolver\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+  git fetch -q origin "$BASE_BRANCH"
+  if ! git -c user.name=fake-agent -c user.email=fake-agent@example.invalid \
+      merge -q --no-edit "origin/$BASE_BRANCH" >/dev/null 2>&1; then
+    git checkout -q --ours journey-output.txt
+    git add journey-output.txt
+    git -c user.name=fake-agent -c user.email=fake-agent@example.invalid \
+      commit -q --no-edit -m "Resolve merge conflicts with $BASE_BRANCH"
+  fi
+  hok3273_gh_state 'del(.prs["1"].overrides)'
+  git push -q origin HEAD
+fi

@@ -1,0 +1,23 @@
+# shellcheck shell=bash
+# Fake reviewer for the mid-flight base conflict journey (HOK-3273).
+#
+# Opens the PR as usual, then another contributor lands a change to the same
+# file on the integration branch: a real add/add conflict against the PR, which
+# GitHub reports as CONFLICTING/DIRTY from then on.
+# shellcheck source=lib.sh
+source "$FAKE_AGENT_SCRIPT_DIR/lib.sh"
+default_review
+
+contender="$FAKE_ROOT/contender-clone"
+[[ -d "$contender/.git" ]] || git clone -q "$FAKE_GH_ORIGIN" "$contender"
+(
+  cd "$contender"
+  git fetch -q origin
+  git checkout -q -B "$BASE_BRANCH" "origin/$BASE_BRANCH"
+  printf 'contending change landed mid-flight\n' > journey-output.txt
+  git add journey-output.txt
+  git -c user.name=contender -c user.email=contender@example.invalid commit -q -m "contending change to journey-output.txt"
+  git push -q origin "$BASE_BRANCH"
+)
+hok3273_gh_state '.prs["1"].overrides = {mergeable: "CONFLICTING", mergeStateStatus: "DIRTY"}'
+printf '%s phase=review issue=%s fault=base-conflict\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
