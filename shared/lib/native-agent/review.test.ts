@@ -787,6 +787,52 @@ describe('native review', () => {
     }
   });
 
+  it('budgets the review input to the reviewer adapter (HOK-3249)', async () => {
+    const repoDir = makeTempRepo();
+    setReadyProvider();
+    nativeReviewTestUtils.setResolveNativeReviewAdapter((model) => ({
+      kind: 'native-openai',
+      model,
+      limits: { contextWindowTokens: 400_000, maxOutputTokens: 8_192, cliHarnessOverheadTokens: 0 },
+      countTokens: (text) => Math.ceil(Buffer.byteLength(text) / 4),
+      preflight: () => undefined,
+      invoke: async () => { throw new Error('native adapters do not invoke'); },
+      parseResult: () => { throw new Error('native adapters do not parse'); },
+    }));
+    const fixtureBody = JSON.stringify({ rows: Array.from({ length: 8_000 }, (_, i) => ({ i })) });
+    const diff = [
+      'diff --git a/src/a.ts b/src/a.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/a.ts\n@@ -0,0 +1 @@\n+export const a = 1;\n',
+      `diff --git a/tests/fixtures/big.json b/tests/fixtures/big.json\nnew file mode 100644\n--- /dev/null\n+++ b/tests/fixtures/big.json\n@@ -0,0 +1 @@\n+${fixtureBody}\n`,
+    ].join('');
+    let userPrompt = '';
+    nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
+      userPrompt = String(config.context.messages[0]?.content ?? '');
+      const message = assistantMessage(JSON.stringify({ verdict: 'ready', codeReviewFindings: [] }));
+      emitCommonEvents(config, message);
+      return {
+        messages: [message],
+        stopReason: 'stop',
+        turnsCompleted: 1,
+        toolCallsExecuted: 0,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0,
+        wallClockMs: 5,
+      };
+    });
+
+    try {
+      const result = await runNativeReview({ ...makeReviewContext(), diff }, repoDir, {});
+      assert.equal(result.verdict, 'ready');
+      assert.ok(userPrompt.includes('+export const a = 1;'));
+      assert.ok(!userPrompt.includes(fixtureBody.slice(0, 200)));
+      assert.match(userPrompt, /summarised data\/fixture\/generated file: tests\/fixtures\/big\.json/);
+      assert.ok((result.metadata?.reviewInputDiffBytes ?? Infinity) < Buffer.byteLength(diff));
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('maps in-session context exhaustion to a distinct review blocker', async () => {
     const repoDir = makeTempRepo();
     setReadyProvider();

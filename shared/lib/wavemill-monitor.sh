@@ -12795,9 +12795,6 @@ review_infra_recovery_category_label() {
 # distinguishing genuinely bounded conditions (HOK-2964) from the generic case.
 review_infra_recovery_next_action() {
   case "${1:-}" in
-    native-context-window-exceeded)
-      printf 'the reviewed diff still exceeds the reviewer context window at the current head; a larger-context reviewer or manual scope reduction is required, manual re-review required'
-      ;;
     provider-credit-exhausted)
       printf 'provider credits were exhausted and did not recover within the retry budget. Top up credits, then manual re-review required'
       ;;
@@ -12883,59 +12880,6 @@ review_recovery_native_timeout_repeat() {
   [[ "$prior_category" == "native-review-timeout" ]] || return 1
   [[ -n "$prior_head" && "$prior_head" == "$current_head" ]] || return 1
   return 0
-}
-
-select_context_window_recovery_reviewer() {
-  local reviewer_model="$1" wt_dir="$2"
-  local selector_script selection stderr_file rc=0 selected_model
-  stderr_file="$(mktemp "${TMPDIR:-/tmp}/wavemill-review-reroute-stderr.XXXXXX" 2>/dev/null)" || return 1
-
-  selector_script='
-    import { getConfiguredModelsForDescriptorStage, getEffectiveRegistry } from "./shared/lib/model-registry.ts";
-    import { filterNativeModels } from "./shared/lib/native-agent/certification/router-filter.ts";
-    const failedModel = process.argv[1];
-    const repoDir = process.argv[2] || process.cwd();
-    const registry = getEffectiveRegistry(repoDir);
-    const failed = registry.models[failedModel];
-    if (!failed) throw new Error(`Unknown failed review model: ${failedModel}`);
-    const candidates = getConfiguredModelsForDescriptorStage(repoDir, "reviewer").filter((modelId) => {
-      const capabilities = registry.models[modelId];
-      return modelId !== failedModel
-        && capabilities !== undefined
-        && (capabilities.qualityScores.review ?? 0) > 0
-        && capabilities.contextWindowTokens > failed.contextWindowTokens;
-    });
-    const filtered = filterNativeModels(candidates, "reviewer", registry, repoDir);
-    const selectedModel = filtered.eligible[0];
-    if (!selectedModel) {
-      throw new Error(`No certified reviewer with context window larger than ${failedModel} (${failed.contextWindowTokens} tokens)`);
-    }
-    const selected = registry.models[selectedModel];
-    console.log(JSON.stringify({
-      selectedModel,
-      previousModel: failedModel,
-      previousContextWindowTokens: failed.contextWindowTokens,
-      selectedContextWindowTokens: selected?.contextWindowTokens,
-      reason: "native-context-window-exceeded",
-      rejected: filtered.rejected,
-    }));
-  '
-
-  selection="$(cd "$REPO_DIR" 2>/dev/null && npx tsx -e "$selector_script" "$reviewer_model" "$wt_dir" 2>"$stderr_file")" || rc=$?
-  if (( rc != 0 )); then
-    REVIEW_CONTEXT_REROUTE_LAST_ERROR="$(cat "$stderr_file" 2>/dev/null || true)"
-    rm -f "$stderr_file"
-    return 1
-  fi
-  rm -f "$stderr_file"
-
-  selected_model="$(printf '%s\n' "$selection" | jq -r '.selectedModel // empty' 2>/dev/null || echo "")"
-  [[ -n "$selected_model" ]] || {
-    REVIEW_CONTEXT_REROUTE_LAST_ERROR="reroute selector returned no selectedModel"
-    return 1
-  }
-  REVIEW_CONTEXT_REROUTE_LAST_JSON="$selection"
-  printf '%s\n' "$selected_model"
 }
 
 review_recovery_contract_payload() {
@@ -13119,15 +13063,15 @@ review_recovery_window_observable() {
 }
 
 review_recovery_coordinator() {
-  local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" feature_dir="$8" reason="$9" source="${10}" category="${11:-manual}" retry_identity="${12:-}" retry_limit="${13:-0}" allow_context_reroute="${14:-false}"
+  local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" feature_dir="$8" reason="$9" source="${10}" category="${11:-manual}" retry_identity="${12:-}" retry_limit="${13:-0}"
   wavemill_lock_run "review-recovery-${issue}" \
-    review_recovery_coordinator_locked "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" "$pr_number" "$feature_dir" "$reason" "$source" "$category" "$retry_identity" "$retry_limit" "$allow_context_reroute"
+    review_recovery_coordinator_locked "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" "$pr_number" "$feature_dir" "$reason" "$source" "$category" "$retry_identity" "$retry_limit"
 }
 
 review_recovery_coordinator_locked() {
-  local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" feature_dir="$8" reason="$9" source="${10}" category="${11}" retry_identity="${12}" retry_limit="${13}" allow_context_reroute="${14}"
+  local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" feature_dir="$8" reason="$9" source="${10}" category="${11}" retry_identity="${12}" retry_limit="${13}"
   local prior_json="null" review_status contract_payload reviewer_model reviewer_agent provider review_mode
-  local disposition retry_number="0" rc=0 rerouted_model="" reroute_json="" failure_reason
+  local disposition retry_number="0" rc=0 failure_reason policy_json
 
   review_status="$(read_stage_status "$feature_dir" "review" 2>/dev/null || true)"
   if [[ "$review_status" == "running" ]]; then
@@ -13155,6 +13099,22 @@ review_recovery_coordinator_locked() {
   fi
 
   if [[ "$retry_limit" =~ ^[0-9]+$ && "$retry_limit" -gt 0 ]]; then
+    # HOK-3176 / HOK-3249: a typed category the failure policy allowlists as
+    # terminal (e.g. the budgeted review input still exceeds the reviewer's
+    # context window) cannot succeed on relaunch, so it escalates with the
+    # recorded evidence without consuming the retry budget.
+    policy_json="$(failure_policy_decide "review" "$category" \
+      "$(jq -r '(.artifacts // {}) as $a | (if ($a.type // "") == "review" then $a else ($a.review // {}) end).reviewToolError // ""' \
+        "$feature_dir/.review-result.json" 2>/dev/null || true)")"
+    if [[ "$(jq -r '.class // ""' <<<"$policy_json" 2>/dev/null)" == "terminal" ]]; then
+      failure_reason="Review failed terminally (${category}) for PR #$pr_number; $(jq -r '.nextAction // "manual re-review required"' <<<"$policy_json")"
+      bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" \
+        --head "$retry_identity" --expires-on "head,operator-event,review-artifact-substantive" --review-artifact || true
+      write_ready_attention_file "$feature_dir" "$failure_reason" \
+        --head "$retry_identity" --expires-on "head,operator-event,review-artifact" --review-artifact
+      review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+      return 1
+    fi
     # HOK-3146 / HOK-3103: a repeat native-review-timeout at the same head is
     # deterministic; the prior attempt already escalated the wall-clock
     # budget, so another retry at the same head cannot succeed. Short-circuit
@@ -13233,28 +13193,6 @@ review_recovery_coordinator_locked() {
     review_recovery_write_timeout_state "$feature_dir" "$retry_number" "$category" || true
   fi
 
-  if [[ "$allow_context_reroute" == "true" ]]; then
-    if ! rerouted_model="$(select_context_window_recovery_reviewer "$reviewer_model" "$wt_dir")"; then
-      failure_reason="Review context-window recovery cannot find a certified larger-context reviewer for PR #$pr_number (category=${category}); $(review_infra_recovery_next_action "$category")"
-      bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" \
-        --head "$retry_identity" --expires-on "head,operator-event,review-artifact-substantive" --review-artifact || true
-      write_ready_attention_file "$feature_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, $(review_infra_recovery_next_action "$category"). ${REVIEW_CONTEXT_REROUTE_LAST_ERROR:-No larger-context reviewer available.}" \
-        --head "$retry_identity" --expires-on "head,operator-event,review-artifact" --review-artifact
-      review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
-      return 1
-    fi
-    reroute_json="${REVIEW_CONTEXT_REROUTE_LAST_JSON:-}"
-    reviewer_model="$rerouted_model"
-    if ! reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review")"; then
-      failure_reason="Review context-window recovery selected $reviewer_model, but its review agent could not be resolved"
-      review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
-      return 1
-    fi
-    provider="$(wavemill_run_tool "recovery-contract.ts" provider --model "$reviewer_model" --json 2>/dev/null | jq -r '.provider // empty' 2>/dev/null || true)"
-    contract_payload="$(printf '%s' "$contract_payload" | jq -c --arg agent "$reviewer_agent" --arg model "$reviewer_model" --arg provider "$provider" --argjson reroute "${reroute_json:-null}" \
-      '.agent = $agent | .model = $model | .provider = $provider | .contextWindowReroute = $reroute')"
-  fi
-
   if ! agent_validate_phase_launch "$reviewer_agent" "review" "$reviewer_model" "$REPO_DIR"; then
     failure_reason="${AGENT_RESOLVE_LAST_DIAGNOSTIC:-review recovery launch validation failed for agent=$reviewer_agent model=$reviewer_model}"
     if [[ "$source" == "infra" ]]; then
@@ -13318,9 +13256,8 @@ review_recovery_coordinator_locked() {
 relaunch_review_after_infra_recovery() {
   local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" state_dir="$8"
   local category recorded_head current_head identity timeout_identity reviewer_identity
-  local retry_limit effective_retry_limit rc=0
-  local scope_note="" reroute_note=""
-  local context_overflow_current_scope="false"
+  local retry_limit rc=0
+  local scope_note=""
 
   # Bounded-retry identity (HOK-2964 REQ-F2/F4): keyed to the current head and
   # the failure category, not a path-specific counter. A new commit or a
@@ -13342,24 +13279,16 @@ relaunch_review_after_infra_recovery() {
 
   retry_limit="${WAVEMILL_REVIEW_INFRA_RETRY_MAX:-2}"
   [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
-  effective_retry_limit="$retry_limit"
-  if [[ "$category" == "native-context-window-exceeded" && ( -z "$recorded_head" || "$recorded_head" == "$current_head" ) ]]; then
-    context_overflow_current_scope="true"
-    effective_retry_limit=1
-  fi
 
   if [[ -n "$recorded_head" && -n "$current_head" && "$recorded_head" != "$current_head" ]]; then
     scope_note=" (scope refreshed: head ${recorded_head:0:7}→${current_head:0:7})"
   fi
 
   review_recovery_coordinator "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" "$pr_number" "$state_dir" \
-    "infrastructure review recovery for PR #$pr_number" "infra" "$category" "$identity" "$effective_retry_limit" "$context_overflow_current_scope" || rc=$?
+    "infrastructure review recovery for PR #$pr_number" "infra" "$category" "$identity" "$retry_limit" || rc=$?
   if [[ "$rc" -eq 0 ]]; then
     marker_clear "$state_dir/.needs-attention"
-    if [[ "$context_overflow_current_scope" == "true" ]]; then
-      reroute_note=" (rerouted to larger-context reviewer)"
-    fi
-    log "status" "♻ $issue → review relaunched after infrastructure recovery (category=${category})${scope_note}${reroute_note}"
+    log "status" "♻ $issue → review relaunched after infrastructure recovery (category=${category})${scope_note}"
     return 6
   fi
   if [[ "$rc" -eq 2 ]] && check_stage_aborted "$state_dir"; then
@@ -20569,7 +20498,7 @@ handle_re_review_command() {
   fi
 
   review_recovery_coordinator "$issue" "$slug" "$title" "$worktree" "$branch" "$base_branch" "$pr" "$feature_dir" \
-    "manual re-review via mill input" "manual" "manual-rereview" "" 0 "false" || rc=$?
+    "manual re-review via mill input" "manual" "manual-rereview" "" 0 || rc=$?
   if [[ "$rc" -eq 0 ]]; then
     log "status" "$issue -> re-review launched for PR #$pr"
     operator_event_record "$feature_dir" "re-review" "$issue" "PR #$pr" 2>/dev/null || true
