@@ -36,6 +36,14 @@ export const ISSUE_ID_GLOBAL_RE = new RegExp(`\\b${issueIdSource}\\b`, 'g');
 export const ISSUE_ID_WORD_RE = new RegExp(`\\b${issueIdSource}(?:_c)?\\b`);
 /** Match a task ID at the end of a session filename. */
 export const TASK_ID_SUFFIX_RE = new RegExp(`-${issueIdSource}(?:_c)?$`);
+/**
+ * Find every task ID embedded anywhere in a session filename or run-dir name
+ * (`expansion-expansion-HOK-1309-1788901038378`), not just at the end.
+ */
+export const TASK_ID_EMBEDDED_GLOBAL_RE = new RegExp(
+  `(?<![A-Za-z0-9])${issueIdSource}(?:_c)?(?![A-Za-z0-9])`,
+  'g',
+);
 
 /** Match a Linear issue URL, optionally allowing lowercase pasted IDs. */
 export function linearIssueUrlRe(flags = ''): RegExp {

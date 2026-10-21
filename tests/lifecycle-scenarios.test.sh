@@ -97,9 +97,9 @@ trap 'rm -rf "$TEST_TMP"' EXIT
 
 MONITOR_FUNC_FILE="$TEST_TMP/lifecycle-controller-functions.sh"
 cat "$REPO_DIR/shared/lib/transient-marker.sh" > "$MONITOR_FUNC_FILE"
-# HOK-3206: pin the inline Ready/routing contract (async lib in sync mode).
+# HOK-3206: pin the inline Ready/routing contract via the HOK-3235 shim.
 cat "$REPO_DIR/shared/lib/monitor-async-jobs.sh" >> "$MONITOR_FUNC_FILE"
-export WAVEMILL_SYNC_READY_CHECKS=1 WAVEMILL_SYNC_ROUTING=1
+cat "$REPO_DIR/tests/lib/inline-ready-checks.sh" >> "$MONITOR_FUNC_FILE"
 for fn in \
   approve_plan \
   capture_planning_baseline \
@@ -160,8 +160,14 @@ for fn in \
   handle_expanded_reroute_handoff_failure \
   recover_missing_expansion_artifact \
   enforce_plan_packet_binding \
+  plan_packet_replan_gate \
   _plan_packet_relaunch_planning \
   _plan_packet_needs_user \
+  task_inputs_prepare \
+  task_inputs_failure_marker \
+  task_inputs_surface_failure \
+  task_inputs_demote_planning \
+  ensure_task_inputs_ready \
   recover_misplaced_coding_complete_marker \
   seam_artifact_cli_path \
   seam_validate_artifact \

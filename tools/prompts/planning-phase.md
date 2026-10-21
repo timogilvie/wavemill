@@ -7,6 +7,7 @@ Task context is pre-seeded at: {{TASK_CONTEXT_PATH}}
 ### Your Responsibilities
 
 1. **Expand task packet** (if needed):
+   - The controller already persists an issue whose description is a detailed task packet to `{{FEATURE_DIR}}/task-packet.md`, and will not offer your plan for approval until a valid local packet exists. Plan from that file when it is present.
    - Check if a detailed task packet exists in the Linear issue description
    - If not, expand it using:
      npx tsx {{TOOLS_DIR}}/expand-issue.ts {{ISSUE}} --output "{{FEATURE_DIR}}/task-packet.md"

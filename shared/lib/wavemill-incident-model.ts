@@ -47,6 +47,10 @@ export const INCIDENT_ROOT_CAUSE_CLASSES = [
   'review_context_overflow_stale_base',
   'provider_quota_exhaustion_blocking_review',
   'challenge_arm_missing_current_head_eval',
+  // Tend holds a merge-candidate PR at `ready-failed:not-ready` because the
+  // wm:ready label is missing even though the Ready artifact says the PR is a
+  // merge candidate (HOK-3241 fixture of the HOK-3212 label-reconciler stall).
+  'merge_label_withheld',
   // A challenge arm's review failed without provider evidence and its pair is
   // blocked on the missing comparison (HOK-2595 / HOK-2934 fixture).
   'challenge_arm_review_failed_blocking_pair',
@@ -224,6 +228,9 @@ export const REMEDIATION_PROPOSAL_KINDS = [
   'provider_retry_or_forfeit_inspection',
   // The failed challenge arm's review must be rerun; no provider evidence.
   'rereview_failed_challenge_arm',
+  // The merge label reconciler should set wm:ready on a merge-candidate PR
+  // whose task state is otherwise correct (HOK-3241).
+  'reconcile_merge_label',
   'inspection_only',
 ] as const;
 export type RemediationProposalKind = typeof REMEDIATION_PROPOSAL_KINDS[number];
@@ -252,6 +259,9 @@ export const REMEDIATION_ALLOWED_ACTIONS = [
   'rerun_review',
   'retry_same_reviewer_after_provider_recovery',
   'terminalize_forfeit_after_policy_exhaustion',
+  // HOK-3241: ask the merge-label reconciler to retry setting wm:ready on a
+  // merge-candidate PR whose task state is otherwise correct.
+  'reconcile_merge_label',
   'inspect',
 ] as const;
 export type RemediationAllowedAction = typeof REMEDIATION_ALLOWED_ACTIONS[number];
@@ -265,6 +275,9 @@ export const RECOVERY_PREDICATE_KINDS = [
   'comparison_present',
   // The failed arm's review produced a new attempt (new head/finishedAt) or is running.
   'review_attempt_progressed',
+  // The authoritative PR state is `merged` (HOK-3241). Missing/unreadable PR
+  // evidence is never treated as proof of merge.
+  'pr_merged',
 ] as const;
 export type RecoveryPredicateKind = typeof RECOVERY_PREDICATE_KINDS[number];
 

@@ -61,7 +61,7 @@ run_changed_after_review_case() {
   scenario_enabled "$name" || return 0
   printf '\n=== %s ===\n' "$name"
   start_ms="$(incident_now_ms)"
-  cert_setup_changed_after_review_head "shadow"
+  cert_setup_changed_after_review_head "enforce"
   cert_run_release_and_cleanup || true
   cert_assert_pane_converged || passed=false
   cert_assert_eq "retain_unpublished" "$CERT_CLEANUP_OUTCOME" "changed_after_review_outcome" || passed=false
@@ -80,9 +80,9 @@ run_changed_after_review_case() {
   cert_record_matrix_result "$name" "squash" "$passed" "$((end_ms - start_ms))"
 }
 
-run_delivery_case "merge-commit-delivery" cert_setup_merge_commit_delivery "merge" "shadow"
-run_delivery_case "squash-delivery" cert_setup_squash_delivery "squash" "shadow"
-run_delivery_case "rebase-delivery" cert_setup_rebase_delivery "rebase" "shadow"
+run_delivery_case "merge-commit-delivery" cert_setup_merge_commit_delivery "merge" "enforce"
+run_delivery_case "squash-delivery" cert_setup_squash_delivery "squash" "enforce"
+run_delivery_case "rebase-delivery" cert_setup_rebase_delivery "rebase" "enforce"
 run_delivery_case "merged-pr-plain" cert_setup_merged_pr_plain "merge" "enforce"
 run_changed_after_review_case
 

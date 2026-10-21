@@ -109,41 +109,12 @@ do
 done
 source "$FUNCS_FILE"
 
-WATCHDOG_FUNCS_FILE="$TMP_DIR/watchdog-funcs.sh"
-: > "$WATCHDOG_FUNCS_FILE"
-for fn in ready_watchdog_config_json run_ready_watchdog_tick; do
-  extracted="$(extract_function "$MONITOR_SCRIPT_FILE" "$fn")"
-  if [[ -z "$extracted" ]]; then
-    echo "FAIL: missing extracted function $fn"
-    exit 1
-  fi
-  printf '%s\n\n' "$extracted" >> "$WATCHDOG_FUNCS_FILE"
-done
-source "$WATCHDOG_FUNCS_FILE"
-
 log() { :; }
 log_warn() { :; }
 clear_task_list_display() { :; }
 batch_route_selected_tasks() { return 0; }
 launch_task() { LAST_LAUNCHED_SLOTS=0; }
 invoke_first_wave_helper() { return 1; }
-ready_watchdog_config_json() { echo '{"enabled":true,"timeoutSeconds":30}'; }
-_with_timeout() { return 1; }
-TOOLS_DIR="$REPO_DIR/tools"
-REPO_DIR="$REPO_DIR"
-watchdog_warned=0
-watchdog_warning=""
-READY_WATCHDOG_FAILURE_LOG_INTERVAL=60
-LAST_READY_WATCHDOG_FAILURE_DETAIL=""
-LAST_READY_WATCHDOG_FAILURE_AT=0
-log_warn() { watchdog_warned=$((watchdog_warned + 1)); watchdog_warning="$*"; }
-
-run_ready_watchdog_tick
-run_ready_watchdog_tick
-assert_eq "failed watchdog tick is diagnosed and rate-limited" "1" "$watchdog_warned"
-assert_true "failed watchdog warning includes a reason" "[[ \"$watchdog_warning\" == *'command exited non-zero'* ]]"
-
-log_warn() { :; }
 
 POLL_SECONDS=10
 COMMAND_QUEUE=()

@@ -129,7 +129,7 @@ run_operator_abort_case() {
     STATE_FILE="$CASE_DIR/state.json"
     MILL_LOG_FILE="$CASE_DIR/mill.log"
     mkdir -p "$REPO_DIR"
-    printf "%s\n" "{\"cleanup\":{\"branchDeletion\":{\"enabled\":true,\"mode\":\"enforce\"}}}" > "$REPO_DIR/.wavemill-config.json"
+    printf "%s\n" "{\"cleanup\":{\"branchDeletion\":{\"enabled\":true}}}" > "$REPO_DIR/.wavemill-config.json"
     mkdir -p "$WORKTREE_ROOT/$SLUG/features/$SLUG"
     cat > "$STATE_FILE" <<EOF
 {"tasks":{"$ISSUE":{"slug":"$SLUG","branch":"task/$SLUG","worktree":"$WORKTREE_ROOT/$SLUG","status":"active","phase":"planning","pr":"$TEST_PR","challengeAborted":""}}}

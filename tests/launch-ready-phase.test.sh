@@ -74,9 +74,10 @@ extract_function "$MONITOR_SCRIPT_FILE" "clear_cross_pr_guard_ready_evidence" >>
 extract_function "$MONITOR_SCRIPT_FILE" "cross_pr_revert_gate_allows_merge" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "cross_pr_revert_gate_apply_result" >> "$LAUNCH_FUNC_FILE"
 # HOK-3206: launch_ready_phase reaches the guard through the async gate; these
-# cases pin the inline contract via WAVEMILL_SYNC_READY_CHECKS=1 (the async
-# path is covered by tests/cross-pr-revert-job.test.sh).
+# cases pin the inline contract via the HOK-3235 shim (the async path is
+# covered by tests/cross-pr-revert-job.test.sh).
 cat "$REPO_DIR/shared/lib/monitor-async-jobs.sh" >> "$LAUNCH_FUNC_FILE"
+cat "$REPO_DIR/tests/lib/inline-ready-checks.sh" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "write_transient_ready_attention_file" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_count" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "clear_failed_ready_recheck_state" >> "$LAUNCH_FUNC_FILE"
@@ -167,7 +168,6 @@ run_launch_case() {
     REPO_DIR="$CASE_DIR/repo"
     AGENT_CMD="codex"
     READY_TRANSIENT_MAX_ATTEMPTS=6
-    export WAVEMILL_SYNC_READY_CHECKS=1
     mkdir -p "$TOOLS_DIR" "$REPO_DIR"
 
     STATE_DIR="$CASE_DIR/feature/ready"
@@ -232,6 +232,18 @@ run_launch_case() {
           ;;
         head_sync_head_moved_during_ready)
           printf "%s\n%s\n" "$SHA_NEW" "newer999" > "$GH_HEADS_FILE"
+          ;;
+        head_sync_github_lag)
+          # HOK-3171: the agent pushed a fix and origin/<branch> holds it, but
+          # the GitHub API still reports the parent as the PR head.
+          command git -C "$WT_DIR" fetch -q origin
+          command git -C "$WT_DIR" reset -q --hard "origin/task/fix-failing-ci-tests"
+          printf "fix\n" > "$WT_DIR/fix.txt"
+          command git -C "$WT_DIR" add fix.txt
+          command git -C "$WT_DIR" commit -q -m "pushed fix"
+          command git -C "$WT_DIR" push -q origin task/fix-failing-ci-tests
+          SHA_LOCAL=$(command git -C "$WT_DIR" rev-parse HEAD)
+          printf "%s\n" "$SHA_NEW" > "$GH_HEADS_FILE"
           ;;
       esac
     fi
@@ -808,6 +820,7 @@ EOF
     if [[ "$TEST_CASE" == head_sync_* ]]; then
       printf "sha_old=%s\nsha_new=%s\nsha_local=%s\n" "$SHA_OLD" "$SHA_NEW" "$SHA_LOCAL"
       printf "worktree_head_after=%s\n" "$(command git -C "$WT_DIR" rev-parse HEAD)"
+      printf "lag_retry_head=%s\n" "$(head -n 1 "$STATE_DIR/.retry-ready-pr-head-lag-head" 2>/dev/null || echo none)"
       tend_marker="absent"
       [[ -f "$STATE_DIR/.tend-pushed-head.json" ]] && tend_marker="present"
       printf "tend_marker=%s\n" "$tend_marker"
@@ -1623,6 +1636,21 @@ check_contains "head moved during Ready: typed head-changed" "$output" "\"pendin
 check_contains "head moved during Ready: pending names the new head" "$output" "\"readyHeadSha\":\"newer999\""
 check_contains "head moved during Ready: nothing published" "$output" "handoff_heads=[]"
 check_not_contains "head moved during Ready: no needs-user failure" "$output" "|ready|failed|"
+
+# The caller's lag branch runs under set -u; it once read the sync helper's
+# private `local_head` and killed the monitor on the first lagging PR.
+if ! output="$(run_launch_case head_sync_github_lag)"; then
+  printf 'head_sync_github_lag fixture failed:\n%s\n' "$output" >&2
+  exit 1
+fi
+sha_local="$(field "$output" sha_local)"
+check_contains "GitHub head lag: Ready deferred as pending" "$output" "rc=4"
+check_contains "GitHub head lag: typed pending reason" "$output" "\"pendingReason\":\"pr-head-lag\""
+check_not_contains "GitHub head lag: no unbound variable" "$output" "unbound variable"
+check_contains "GitHub head lag: pushed fix kept" "$output" "worktree_head_after=$sha_local"
+check_contains "GitHub head lag: lag retry keyed on pushed head" "$output" "lag_retry_head=$sha_local"
+check_contains "GitHub head lag: Ready not run" "$output" "ready_checked_head=none"
+check_contains "GitHub head lag: nothing published" "$output" "handoff_heads=[]"
 
 output="$(run_launch_case clean_after_unknown)"
 check_contains "clean after unknown returns success" "$output" "rc=0"

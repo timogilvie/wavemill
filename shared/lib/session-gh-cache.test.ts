@@ -54,11 +54,10 @@ function fixture(): { dir: string; env: NodeJS.ProcessEnv; cleanup: () => void }
   };
 }
 
-test('readSessionPrCache drops malformed rows and honours disable / unset / age', () => {
+test('readSessionPrCache drops malformed rows and honours unset / age', () => {
   const { env, cleanup } = fixture();
   try {
     assert.equal(readSessionPrCache({ env })?.length, 2);
-    assert.equal(readSessionPrCache({ env: { ...env, WAVEMILL_DISABLE_GH_BATCH_CACHE: '1' } }), null);
     assert.equal(readSessionPrCache({ env: {} }), null);
     const old = new Date(Date.now() - 600_000);
     utimesSync(env.WAVEMILL_SESSION_PR_CACHE as string, old, old);
@@ -100,7 +99,6 @@ test('session repo cache serves nameWithOwner and per-base required checks', () 
     assert.deepEqual(cachedRequiredChecks('main', { env }), ['CI']);
     assert.deepEqual(cachedRequiredChecks('dev', { env }), [], 'a recorded unprotected base is an empty list');
     assert.equal(cachedRequiredChecks('other', { env }), undefined, 'an unrecorded base is a miss');
-    assert.equal(cachedNameWithOwner({ env: { ...env, WAVEMILL_DISABLE_GH_BATCH_CACHE: '1' } }), undefined);
   } finally {
     cleanup();
   }

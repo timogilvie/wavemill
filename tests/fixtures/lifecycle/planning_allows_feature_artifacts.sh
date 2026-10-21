@@ -9,7 +9,8 @@ setup_planning_allows_feature_artifacts() {
   MONITOR_ITERATIONS=2
   write_stage_result "$FEATURE_DIR" "planning" "awaiting_user" "$CURRENT_AGENT"
   printf "plan\n" > "$FEATURE_DIR/plan.md"
-  printf "packet\n" > "$FEATURE_DIR/task-packet.md"
+  # HOK-3253: approval is only offered once the inputs are a valid packet.
+  printf "## 1. Objective\npacket\n" > "$FEATURE_DIR/task-packet.md"
   printf "header\n" > "$FEATURE_DIR/task-packet-header.md"
   printf "{}\n" > "$FEATURE_DIR/.initial-route.json"
   touch "$FEATURE_DIR/.plan-approved"

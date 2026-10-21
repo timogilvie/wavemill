@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Monitor async ready-path checks (HOK-3206)
 #
-# The cross-PR revert guard, the PR CI status read, the ready watchdog and the
-# plan->code expanded reroute each used to run synchronously inside a monitor
-# pass (19 s, ~2.5 s per PR, ~5 s and 30-60 s respectively). They now run as
+# The cross-PR revert guard, the PR CI status read, the ready watchdog, the
+# plan->code expanded reroute and the pre-approval expansion recovery (HOK-3253)
+# each used to run synchronously inside a monitor pass (19 s, ~2.5 s per PR,
+# ~5 s, 30-60 s and up to 300 s respectively). They now run as
 # tracked background jobs (`launch_tracked_job` / job-tracker.ts) and publish a
 # condition-keyed result marker; the loop consumes the marker on a later pass.
 #
@@ -18,13 +19,13 @@
 #     bounded-retry bucket (HOK-2924) keyed on the same condition. Exhaustion
 #     terminalizes with a recorded reason instead of holding forever.
 #
-# Kill switches (debug / rollback only, not config):
-#   WAVEMILL_SYNC_READY_CHECKS=1  — cross-PR guard, CI status and watchdog inline
-#   WAVEMILL_SYNC_ROUTING=1       — expanded reroute and live launch routing inline
-#
 # Sourced by wavemill-monitor.sh after wavemill-common.sh, transient-marker.sh
 # and bounded-retry.sh. Every function here resolves monitor helpers
 # (launch_tracked_job, write_ready_attention_file, log, …) at call time.
+#
+# The sync fallbacks that let the pre-HOK-3206 inline paths run were retired
+# in HOK-3235. Tests source `tests/lib/inline-ready-checks.sh` to pin the
+# inline contract where they need it.
 
 WAVEMILL_MONITOR_ASYNC_JOBS_LOADED=1
 
@@ -33,9 +34,6 @@ ASYNC_CHECK_JOB_RETRY_LIMIT="${WAVEMILL_ASYNC_CHECK_JOB_RETRY_LIMIT:-3}"
 PR_CI_STATUS_REFRESH_SECONDS="${WAVEMILL_PR_CI_STATUS_REFRESH_SECONDS:-30}"
 # A CI result with no live PR head to compare against is trusted this long.
 PR_CI_STATUS_MAX_AGE_SECONDS="${WAVEMILL_PR_CI_STATUS_MAX_AGE_SECONDS:-600}"
-
-ready_checks_sync() { [[ "${WAVEMILL_SYNC_READY_CHECKS:-0}" == "1" ]]; }
-routing_sync() { [[ "${WAVEMILL_SYNC_ROUTING:-0}" == "1" ]]; }
 
 # Per-pass diagnostics for monitor-timing.json `.jobs` (launched / consumed /
 # pending per kind). Reset by monitor_async_job_stats_reset each pass.
@@ -227,11 +225,6 @@ ready_cross_pr_revert_gate() {
   local issue="$1" state_dir="$2" wt_dir="$3" pr_number="$4" base_branch="${5-}"
   local head_sha base_sha marker detail rc decision job_id meta failure
 
-  if ready_checks_sync; then
-    cross_pr_revert_gate_allows_merge "$issue" "$state_dir" "$wt_dir" "$pr_number" "$base_branch"
-    return $?
-  fi
-
   head_sha="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
   if [[ -z "$head_sha" ]]; then
     cross_pr_revert_gate_allows_merge "$issue" "$state_dir" "$wt_dir" "$pr_number" "$base_branch"
@@ -331,11 +324,6 @@ _pr_ci_read_error_json() {
 ready_ci_json_cached() {
   local wt_dir="$1" pr_number="$2" base_branch="$3" issue="$4" state_dir="$5"
   local marker live_head="" result_head="" observed_at age now detail job_id meta decision key valid="false"
-
-  if ready_checks_sync; then
-    ready_live_ci_json "$wt_dir" "$pr_number" "$base_branch"
-    return 0
-  fi
 
   marker="$state_dir/$PR_CI_STATUS_RESULT_MARKER"
   live_head="$(wavemill_pr_cache_lookup_pr "$pr_number" headRefOid 2>/dev/null || true)"
@@ -514,7 +502,7 @@ expanded_reroute_gate() {
   fi
 
   packet_hash="$(expanded_reroute_packet_hash "$feature_dir")"
-  if routing_sync || [[ -z "$packet_hash" ]]; then
+  if [[ -z "$packet_hash" ]]; then
     reroute_expanded_packets_for_coding_handoff "$issue" "$slug" "$feature_dir"
     return $?
   fi
@@ -549,6 +537,76 @@ expanded_reroute_gate() {
   meta="$(jq -cn --arg s "$feature_dir" --arg b "$EXPANDED_REROUTE_JOB_BUCKET" --arg k "$packet_hash" '{stateDir: $s, bucket: $b, key: $k}')"
   monitor_async_job_launch route-task "$job_id" "$issue" "" "$(( ${API_TIMEOUT:-30} + 30 ))" "$meta" \
     expanded_reroute_job_run "$issue" "$slug" "$feature_dir" "$packet_hash"
+  return 4
+}
+
+# ── Task-input preparation before plan approval (HOK-3253) ──────────────────
+#
+# A raw issue whose planner wrote plan.md without expanding it needs the
+# expansion recovery (expand-issue.ts + expanded reroute, minutes of LLM time)
+# BEFORE the plan may be offered for approval. It used to run synchronously at
+# the plan->code handoff, after the approval, which is what made HOK-3220 ask
+# for approval twice. It now runs as a tracked job; the monitor holds planning
+# at `running` until the packet lands.
+#
+# Budget: every launch is one attempt in the `expansion-recovery-job` bucket,
+# keyed on the raw task input (selected-task.json). Counting at launch (not in
+# the poll arm) bounds the loop even when a job dies without a tracker result.
+# Exhaustion terminalizes with the recovery's recorded detail.
+
+PREPARE_TASK_INPUTS_JOB_BUCKET="expansion-recovery-job"
+
+# Content hash of the raw task input the expansion reads; "none" when absent.
+task_inputs_raw_input_hash() {
+  local feature_dir="$1" hash=""
+  if [[ -f "$feature_dir/selected-task.json" ]]; then
+    hash="$(jq -r '[(.title // ""), (.description // "")] | join("\n\n")' "$feature_dir/selected-task.json" 2>/dev/null \
+      | shasum -a 256 2>/dev/null | awk '{print $1}')"
+  fi
+  printf '%s\n' "${hash:-none}"
+}
+
+prepare_task_inputs_job_run() {
+  local issue="$1" slug="$2" feature_dir="$3"
+  expansion_recovery_rearm "$feature_dir" || true
+  recover_missing_expansion_artifact "$issue" "$slug" "$feature_dir"
+}
+
+# prepare_task_inputs_gate <issue> <slug> <feature_dir>
+# Returns 1 = failed for good (PREPARE_TASK_INPUTS_LAST_DETAIL set), 4 = pending
+# (job running or backing off; the caller holds planning).
+prepare_task_inputs_gate() {
+  local issue="$1" slug="$2" feature_dir="$3"
+  local key job_id decision meta detail
+  PREPARE_TASK_INPUTS_LAST_DETAIL=""
+
+
+  job_id="prepare-task-inputs-$(sanitize_job_token "$issue")"
+  monitor_async_job_stat prepare-task-inputs pending
+  monitor_async_job_running "$job_id" && return 4
+
+  key="$(task_inputs_raw_input_hash "$feature_dir")"
+  decision="$(_async_check_retry_gate "$feature_dir" "$PREPARE_TASK_INPUTS_JOB_BUCKET" "$key")"
+  case "$decision" in
+    exhausted|exhausted-quiet)
+      detail="$(expansion_recovery_detail "$feature_dir")"
+      PREPARE_TASK_INPUTS_LAST_DETAIL="expansion recovery failed ${ASYNC_CHECK_JOB_RETRY_LIMIT} time(s) (last: ${detail:-no result recorded})"
+      [[ "$decision" == "exhausted" ]] && bounded_retry_mark_exhausted "$feature_dir" "$PREPARE_TASK_INPUTS_JOB_BUCKET" \
+        "Task-input preparation: $PREPARE_TASK_INPUTS_LAST_DETAIL for input ${key:0:12}" || true
+      return 1
+      ;;
+    backoff)
+      return 4
+      ;;
+  esac
+
+  bounded_retry_increment "$feature_dir" "$PREPARE_TASK_INPUTS_JOB_BUCKET" "$key" >/dev/null
+  # No bucket in meta: attempts are charged here, not by handle_check_job_failure.
+  meta="$(jq -cn --arg s "$feature_dir" '{stateDir: $s}')"
+  monitor_async_job_launch prepare-task-inputs "$job_id" "$issue" "" \
+    "$(( $(get_expansion_handshake_timeout_seconds "$REPO_DIR") + ${API_TIMEOUT:-30} + 30 ))" "$meta" \
+    prepare_task_inputs_job_run "$issue" "$slug" "$feature_dir"
+  log "status" "$issue → preparing task inputs before plan approval (expansion recovery job, input ${key:0:12})"
   return 4
 }
 
@@ -625,7 +683,6 @@ launch_task_route_prefetch() {
   local source_file="/tmp/${SESSION}-${issue}-route-source.txt"
   local packet_hash job_id job_dir decision meta
 
-  routing_sync && return 0
   [[ -s "$packet_file" ]] || return 0
   packet_hash="$(shasum -a 256 "$packet_file" 2>/dev/null | awk '{print $1}')"
   [[ -n "$packet_hash" ]] || return 0

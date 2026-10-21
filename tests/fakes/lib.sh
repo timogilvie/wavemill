@@ -11,6 +11,7 @@
 #   source tests/fakes/lib.sh
 #   fakes_setup "$TMP"            # builds the world, exports env, prepends PATH
 #   fakes_linear_add_issue JRN-1 "Title" Todo
+#   fakes_linear_add_issue_from_file fixture-issue.json
 #   ... run production code ...
 #   fakes_teardown
 #
@@ -147,6 +148,19 @@ fakes_linear_add_issue() {
   jq --arg id "$identifier" --arg title "$title" --arg state "$state" --arg project "$project" \
     '.issues[$id] = {identifier:$id, title:$title, description:("Journey fixture issue " + $id), state:$state}
      + (if $project == "" then {} else {project:$project} end)' \
+    "$FAKE_LINEAR_STATE" > "$tmp" && mv "$tmp" "$FAKE_LINEAR_STATE"
+}
+
+# Seed an issue from a JSON file ({identifier, title, description, state?,
+# project?}) — e.g. a sanitised incident fixture whose description is already
+# a detailed task packet.
+fakes_linear_add_issue_from_file() {
+  local file="$1"
+  local tmp="$FAKE_LINEAR_STATE.tmp.$$"
+  jq --slurpfile issue "$file" '
+      ($issue[0]) as $i
+      | .issues[$i.identifier] = ({identifier: $i.identifier, title: $i.title, description: ($i.description // ""), state: ($i.state // "Todo")}
+          + (if ($i.project // "") == "" then {} else {project: $i.project} end))' \
     "$FAKE_LINEAR_STATE" > "$tmp" && mv "$tmp" "$FAKE_LINEAR_STATE"
 }
 
