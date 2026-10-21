@@ -13,7 +13,7 @@ import type { NoComparisonReason } from './challenge-comparison.ts';
  * canonical output is a condition-keyed result marker the job writes itself;
  * the tracker only supervises the process (timeout, exit classification).
  */
-export const CHECK_JOB_KINDS = ['cross-pr-guard', 'pr-ci-status', 'ready-watchdog', 'route-task'] as const;
+export const CHECK_JOB_KINDS = ['cross-pr-guard', 'pr-ci-status', 'ready-watchdog', 'route-task', 'prepare-task-inputs'] as const;
 export type CheckJobKind = typeof CHECK_JOB_KINDS[number];
 export type MillJobKind = 'eval' | 'comparison' | CheckJobKind;
 

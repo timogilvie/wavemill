@@ -1,0 +1,6 @@
+{
+  "identifier": "JRN-3220",
+  "title": "Reduced HOK-3220 replay: detailed description, no local packet",
+  "state": "Todo",
+  "description": "## 1. Objective & Scope\nAdd journey-output.txt recording that the reduced HOK-3220 replay was implemented.\n\n## 2. Technical Context\nFixture repository. The Linear description is already a detailed task packet, exactly as HOK-3220's was; the planner therefore trusts it and writes only plan.md.\n\n## 3. Implementation Approach\nAppend one line to journey-output.txt.\n\n## 4. Success Criteria\n- [REQ-F1] journey-output.txt exists on the integration branch.\n\n## 5. Implementation Constraints\nNone.\n\n## 6. Validation Steps\ncat journey-output.txt\n\n## 7. Definition of Done\nMerged.\n\n## 8. Rollback Plan\nRevert the commit.\n\n## 9. Proposed Labels\njourney"
+}

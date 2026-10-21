@@ -5613,16 +5613,25 @@ phase_should_remain_active_without_pr() {
 }
 
 # Approve a plan: transition planning from awaiting_user to completed.
-# Usage: approve_plan <feature_dir> [agent] [model]
+# Usage: approve_plan <feature_dir> [agent] [model] [binding]
+#   binding: "approval" (default) annotates the operator's accept on the
+#            plan<->packet binding; "none" only writes the stage result (the
+#            plan->code handoff re-asserting completed must never touch the
+#            binding — HOK-3253).
 approve_plan() {
   local feature_dir="$1"
-  local agent="${2:-}" model="${3:-}"
+  local agent="${2:-}" model="${3:-}" binding="${4:-approval}"
   write_stage_result "$feature_dir" "planning" "completed" "$agent" "$model" "Plan approved by user" '{"type":"planning","planFile":"plan.md"}'
-  # HOK-3099: bind the approved plan to the packet bytes present at approval so
-  # the handoff can detect a packet regenerated in-band (recovery, reroute) and
-  # refuse to launch coding against a stale plan. Best-effort; never blocks
-  # approval.
-  if declare -F plan_packet_record_binding >/dev/null 2>&1; then
+  [[ "$binding" == "approval" ]] || return 0
+  # HOK-3099 / HOK-3253: the binding was recorded when the approval request was
+  # published (ensure_task_inputs_ready); accepting only annotates it, so an
+  # approval can never re-bless a packet regenerated after the request. Plans
+  # published before the gate existed get a binding here as before.
+  # Best-effort; never blocks approval.
+  if declare -F plan_packet_record_approval >/dev/null 2>&1; then
+    plan_packet_record_approval "$feature_dir" || true
+    plan_packet_clear_reapproval_reason "$feature_dir"
+  elif declare -F plan_packet_record_binding >/dev/null 2>&1; then
     plan_packet_record_binding "$feature_dir" "approval" || true
   fi
 }
@@ -5642,9 +5651,8 @@ approve_plan() {
 # Usage: enforce_plan_packet_binding <issue> <feature_dir> <win> <current_agent>
 enforce_plan_packet_binding() {
   local issue="$1" feature_dir="$2" win="$3" current_agent="${4:-}"
-  local decision recorded current disposition
+  local decision recorded current
   local -r bucket="plan-packet-replan"
-  local -r ceiling=1
 
   if ! declare -F plan_packet_check_binding >/dev/null 2>&1; then
     return 0
@@ -5672,6 +5680,22 @@ enforce_plan_packet_binding() {
       ;;
   esac
 
+  plan_packet_replan_gate "$issue" "$feature_dir" "$win" "$current_agent" "$decision" "$recorded" "$current"
+  return 1
+}
+
+# Re-plan a plan the current packet no longer matches (HOK-3099): preserve the
+# stale plan and relaunch planning once per packet; a second divergence for
+# the same packet escalates to needs-user. Shared by the handoff guard and the
+# HOK-3253 input gate (a packet recovered after the planner wrote plan.md).
+# Usage: plan_packet_replan_gate <issue> <feature_dir> <win> <agent> <decision> <recorded> <current>
+plan_packet_replan_gate() {
+  local issue="$1" feature_dir="$2" win="$3" current_agent="${4:-}"
+  local decision="$5" recorded="$6" current="$7"
+  local disposition
+  local -r bucket="plan-packet-replan"
+  local -r ceiling=1
+
   # Head input for the bounded-retry bucket: the current packet hash. A fresh
   # packet regeneration resets the budget (a new head).
   disposition=$(bounded_retry_gate "$feature_dir" "$bucket" "${current:-none}" "$ceiling")
@@ -5697,11 +5721,12 @@ enforce_plan_packet_binding() {
 _plan_packet_relaunch_planning() {
   local issue="$1" feature_dir="$2" win="$3" current_agent="${4:-}"
   local decision="$5" recorded="$6" current="$7"
-  local note
+  local note had_approval="false"
 
   if declare -F plan_packet_preserve_stale_plan >/dev/null 2>&1; then
     plan_packet_preserve_stale_plan "$feature_dir" || true
   fi
+  [[ -f "$feature_dir/.plan-approved" ]] && had_approval="true"
   rm -f "$feature_dir/.plan-approved" 2>/dev/null || true
   # Clear the completed planning stage so the routing → planning launcher
   # re-fires on the next monitor tick. The pre-existing .routing-complete
@@ -5713,8 +5738,18 @@ _plan_packet_relaunch_planning() {
   # planning (with a fresh plan) against the current packet.
   set_task_phase "$issue" "routing"
 
-  note="Plan/packet divergence ($decision): packet regenerated after approval (recorded=${recorded:-none} current=${current:-none}), preserving stale plan and re-planning"
+  if [[ "$decision" == "packet_after_plan" ]]; then
+    note="Task packet prepared after plan.md was written (current=${current:-none}), preserving stale plan and re-planning against it before approval"
+  else
+    note="Plan/packet divergence ($decision): packet regenerated after approval (recorded=${recorded:-none} current=${current:-none}), preserving stale plan and re-planning"
+  fi
   log "status" "$issue → $note"
+  # HOK-3253: a re-plan that voids an approval must say so in the next
+  # approval request. Before any approval there is nothing to re-approve.
+  if [[ "$had_approval" == "true" ]] && declare -F plan_packet_set_reapproval_reason >/dev/null 2>&1; then
+    plan_packet_set_reapproval_reason "$feature_dir" \
+      "task inputs changed after the previous plan was approved ($decision: packet ${recorded:0:12}→${current:0:12}); the previous plan was preserved and re-planned"
+  fi
   set_window_attention_state "$win" "clear"
 }
 
@@ -5726,6 +5761,11 @@ _plan_packet_needs_user() {
   detail="Plan/packet divergence ($decision) after re-plan budget exhausted (recorded=${recorded:-none} current=${current:-none})"
   next_action="Review the regenerated packet in $feature_dir and re-plan manually before approving."
 
+  # HOK-3253: this request asks the operator to review the regenerated packet,
+  # so bind it now; the accept then annotates instead of re-binding.
+  if declare -F plan_packet_record_binding >/dev/null 2>&1; then
+    plan_packet_record_binding "$feature_dir" "divergence-review" || true
+  fi
   write_stage_result "$feature_dir" "planning" "awaiting_user" "$current_agent" "" "$detail"
   set_window_attention_state "$win" "needs-user"
 
@@ -5740,6 +5780,196 @@ _plan_packet_needs_user() {
   fi
 
   log_warn "$issue → $detail"
+}
+
+# ── Task inputs are prepared and bound before plan approval (HOK-3253) ──────
+#
+# Invariant: planning is never offered for approval (awaiting_user) until the
+# local task packet exists, the expansion handshake passes, and the
+# plan<->packet binding names the packet bytes the request shows. HOK-3220
+# was offered for approval with no local packet; the handoff then recovered
+# the packet and HOK-3099 correctly voided the approval, so the operator
+# approved an identical plan twice.
+#
+#   * An already-detailed issue is materialised locally without an LLM
+#     (task_inputs_materialize_detailed), at launch and again here.
+#   * A raw issue is expanded by the tracked prepare-task-inputs job
+#     (prepare_task_inputs_gate), never on the monitor hot path; planning
+#     holds at `running` meanwhile. A packet the controller regenerated after
+#     the planner wrote plan.md re-plans (HOK-3099) instead of being offered.
+#   * Failure is bounded (expansion-recovery-job bucket) and surfaced as a
+#     needs-user `inputs_preparation_failed` hook — never as awaiting_user.
+#
+# HOK-3099's handoff guard (enforce_plan_packet_binding) stays armed: a packet
+# that changes after the request still voids the approval and re-plans.
+
+# Evidence of a surfaced preparation failure (detail + next action).
+task_inputs_failure_marker() { printf '%s/.task-inputs-failure.json\n' "$1"; }
+
+# task_inputs_prepare <issue> <slug> <feature_dir>
+# Make the local packet + expansion handshake ready. Sets TASK_INPUTS_VIA
+# (existing | materialized | warn) on success and TASK_INPUTS_DETAIL on
+# failure. Returns 0 = ready, 4 = pending (tracked expansion in flight or
+# backing off), 1 = failed (policy blocks, invalid route artifact, or the
+# bounded expansion budget is spent).
+task_inputs_prepare() {
+  local issue="$1" slug="$2" feature_dir="$3"
+  local reason policy rc=0
+  TASK_INPUTS_VIA=""
+  TASK_INPUTS_DETAIL=""
+
+  reason="$(mill_expansion_handshake_reason "$feature_dir")"
+  if [[ "$reason" == "missing" ]] && task_inputs_materialize_detailed "$feature_dir"; then
+    TASK_INPUTS_VIA="materialized"
+    log "info" "  $issue: [task-inputs] materialized task-packet.md from the detailed issue description (no LLM)"
+    reason="$(mill_expansion_handshake_reason "$feature_dir")"
+  fi
+  case "$reason" in
+    already-expanded|expanded-route-present)
+      TASK_INPUTS_VIA="${TASK_INPUTS_VIA:-existing}"
+      return 0
+      ;;
+  esac
+
+  policy="$(get_expansion_handshake_policy "$REPO_DIR")"
+  if [[ "$policy" == "warn" ]]; then
+    # The handoff's mill_check_expansion_handshake logs the WARN.
+    TASK_INPUTS_VIA="warn"
+    return 0
+  fi
+  if [[ "$reason" != "missing" ]]; then
+    TASK_INPUTS_DETAIL="invalid expanded routing artifact ($reason)"
+    return 1
+  fi
+  if [[ "$policy" == "block" ]]; then
+    TASK_INPUTS_DETAIL="raw input requires wavemill expand $issue (expansionHandshake.policy=block)"
+    return 1
+  fi
+
+  prepare_task_inputs_gate "$issue" "$slug" "$feature_dir" || rc=$?
+  case "$rc" in
+    0)
+      reason="$(mill_expansion_handshake_reason "$feature_dir")"
+      if [[ "$reason" == "already-expanded" || "$reason" == "expanded-route-present" ]]; then
+        TASK_INPUTS_VIA="existing"
+        return 0
+      fi
+      TASK_INPUTS_DETAIL="expansion recovery finished without a valid task packet ($reason)"
+      return 1
+      ;;
+    4)
+      return 4
+      ;;
+    *)
+      TASK_INPUTS_DETAIL="${PREPARE_TASK_INPUTS_LAST_DETAIL:-expansion recovery failed}"
+      return 1
+      ;;
+  esac
+}
+
+# Surface a preparation failure once per distinct detail: needs-user attention
+# every pass, one warn line and one `inputs_preparation_failed` hook with the
+# operator's next action. Planning stays `running`: no approval is offered.
+task_inputs_surface_failure() {
+  local issue="$1" feature_dir="$2" win="$3" current_agent="${4:-}" detail="$5"
+  local marker next_action hook_protocol
+  marker="$(task_inputs_failure_marker "$feature_dir")"
+
+  set_window_attention_state "$win" "needs-user"
+  if [[ -f "$marker" ]] && [[ "$(jq -r '.detail // ""' "$marker" 2>/dev/null)" == "$detail" ]]; then
+    return 0
+  fi
+  next_action="Run: wavemill expand $issue (writes $feature_dir/task-packet.md); the plan is offered for approval once inputs are ready."
+  jq -cn --arg issue "$issue" --arg detail "$detail" --arg next "$next_action" \
+    '{issue: $issue, detail: $detail, nextAction: $next, at: (now | todateiso8601)}' \
+    | write_json_artifact "$marker" || true
+  log_warn "$issue → task-input preparation failed before plan approval: $detail"
+
+  hook_protocol="$LIB_DIR/../hooks/wavemill-hook-protocol.sh"
+  if [[ -f "$hook_protocol" ]]; then
+    # shellcheck disable=SC1090
+    source "$hook_protocol" || true
+    if declare -F wavemill_hook_write >/dev/null 2>&1; then
+      WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
+        wavemill_hook_write "blocked" "inputs_preparation_failed" "$detail" "${current_agent:-unknown}" "$next_action" "monitor" || true
+    fi
+  fi
+}
+
+# Take back an approval-ready (or approved) planning stage whose inputs are
+# not ready: planning returns to `running` so the publish gate owns it, and an
+# approval given before the inputs existed is discarded — it approved inputs
+# the operator never saw.
+task_inputs_demote_planning() {
+  local issue="$1" feature_dir="$2" current_agent="${3:-}" detail="$4"
+  if [[ -f "$feature_dir/.plan-approved" ]]; then
+    rm -f "$feature_dir/.plan-approved"
+    log_warn "$issue → discarded a plan approval given before task inputs were ready ($detail)"
+  fi
+  write_stage_result "$feature_dir" "planning" "running" "$current_agent" "" "Preparing task inputs before approval: $detail"
+  set_task_phase "$issue" "planning"
+  log "status" "$issue → planning held until task inputs are ready ($detail)"
+}
+
+# ensure_task_inputs_ready <issue> <slug> <feature_dir> <win> <agent> <mode>
+#   publish  plan.md just appeared while planning is `running`: on ready, bind
+#            the plan to the current packet (source "preparation") — unless
+#            the controller regenerated the packet after plan.md was written,
+#            which re-plans (HOK-3099) instead of offering a stale plan.
+#   accept   planning is already awaiting_user (an agent path such as native
+#            planning publishes it, or a pre-gate monitor did): bind only when
+#            nothing is bound yet; a changed packet is never re-bound here.
+#   handoff  the plan was approved and coding is about to launch: bind only a
+#            packet just materialised from the description the planner saw.
+# Returns 0 = proceed; 1 = hold this pass (preparing, failed, re-planning or
+# demoted — state and attention already written).
+ensure_task_inputs_ready() {
+  local issue="$1" slug="$2" feature_dir="$3" win="$4" current_agent="${5:-}" mode="$6"
+  local rc=0 recorded current
+
+  task_inputs_prepare "$issue" "$slug" "$feature_dir" || rc=$?
+  if (( rc != 0 )); then
+    local detail="${TASK_INPUTS_DETAIL:-expansion recovery in flight}"
+    if [[ "$mode" != "publish" ]]; then
+      task_inputs_demote_planning "$issue" "$feature_dir" "$current_agent" "$detail"
+    fi
+    if (( rc == 4 )); then
+      log "debug" "  $issue: [task-inputs] preparation pending, holding the approval request"
+      set_window_attention_state "$win" "clear"
+    else
+      task_inputs_surface_failure "$issue" "$feature_dir" "$win" "$current_agent" "$detail"
+    fi
+    return 1
+  fi
+  rm -f "$(task_inputs_failure_marker "$feature_dir")" 2>/dev/null || true
+
+  declare -F plan_packet_record_binding >/dev/null 2>&1 || return 0
+  recorded="$(plan_packet_recorded_packet_hash "$feature_dir")"
+  case "$mode" in
+    publish)
+      if [[ "$TASK_INPUTS_VIA" == "existing" && "$(expansion_recovery_status "$feature_dir")" == "succeeded" ]] \
+        && ! plan_packet_binding_is_current "$feature_dir" \
+        && plan_packet_packet_newer_than_plan "$feature_dir"; then
+        current="$(plan_packet_current_hash "$feature_dir" 2>/dev/null | awk '{print $1}')"
+        log "info" "  $issue: [task-inputs] packet recovered after plan.md was written; re-planning against it"
+        plan_packet_replan_gate "$issue" "$feature_dir" "$win" "$current_agent" "packet_after_plan" "$recorded" "$current"
+        return 1
+      fi
+      plan_packet_record_binding "$feature_dir" "preparation"
+      log "info" "  $issue: [task-inputs] ready (via=$TASK_INPUTS_VIA) packet=$(plan_packet_recorded_packet_hash "$feature_dir" | cut -c1-12) bound before approval"
+      ;;
+    accept)
+      if [[ -z "$recorded" ]] && { [[ "$TASK_INPUTS_VIA" == "materialized" ]] || ! plan_packet_packet_newer_than_plan "$feature_dir"; }; then
+        plan_packet_record_binding "$feature_dir" "preparation"
+      fi
+      ;;
+    handoff)
+      if [[ -z "$recorded" && "$TASK_INPUTS_VIA" == "materialized" ]]; then
+        plan_packet_record_binding "$feature_dir" "preparation"
+      fi
+      ;;
+  esac
+  return 0
 }
 
 resolve_stage_result_model() {
@@ -13452,12 +13682,14 @@ ready_current_github_head() {
 #   2: refusal (terminal for this head)
 #   3: GitHub PR head lag (waiting on PR cache to catch up) - HOK-3171
 # Sets READY_SYNC_HEAD, READY_SYNC_DETAIL, and (for rc 3) READY_SYNC_OBSERVED_PR_HEAD
+# and READY_SYNC_LOCAL_HEAD
 ready_sync_worktree_to_github_head() {
   local wt_dir="$1" branch="$2" pr_number="$3" state_dir="$4"
   local gh_head local_head pre_fetch_origin current_branch tend_marker tend_pushed tend_previous sync_reason
   READY_SYNC_HEAD=""
   READY_SYNC_DETAIL=""
   READY_SYNC_OBSERVED_PR_HEAD=""
+  READY_SYNC_LOCAL_HEAD=""
 
   gh_head=$(ready_current_github_head "$wt_dir" "$pr_number")
   if [[ -z "$gh_head" ]]; then
@@ -13522,6 +13754,7 @@ ready_sync_worktree_to_github_head() {
       if [[ "$remote_branch_head" == "$local_head" ]]; then
         # GitHub PR head lags pushed branch head
         READY_SYNC_OBSERVED_PR_HEAD="$gh_head"
+        READY_SYNC_LOCAL_HEAD="$local_head"
         READY_SYNC_DETAIL="PR #$pr_number head ${gh_head:0:7} lags pushed branch head ${local_head:0:7} (GitHub head lag)"
         return 3
       fi
@@ -13921,6 +14154,7 @@ launch_ready_phase() {
       ;;
     3)
       # HOK-3171: GitHub PR head lags pushed branch head - bounded wait
+      local local_head="$READY_SYNC_LOCAL_HEAD"
       bounded_retry_reset_if_new_head "$state_dir" "ready-pr-head-lag" "$local_head"
       local lag_count
       lag_count=$(bounded_retry_increment "$state_dir" "ready-pr-head-lag" "$local_head")
@@ -14896,8 +15130,8 @@ handle_comparison_job_success() {
 
 # Poll every tracked job once per pass: challenge eval/comparison jobs and the
 # HOK-3206 check jobs (cross-pr-guard, pr-ci-status, ready-watchdog,
-# route-task). Succeeded check jobs are settled by job-tracker.ts itself;
-# their result marker is the output.
+# route-task, prepare-task-inputs). Succeeded check jobs are settled by
+# job-tracker.ts itself; their result marker is the output.
 poll_tracked_jobs() {
   local poll_json
   if ! poll_json=$(wavemill_run_tool "job-tracker.ts" poll --state-file "$STATE_FILE" 2>/dev/null); then
@@ -14921,7 +15155,7 @@ poll_tracked_jobs() {
     side=$(echo "$job_json" | jq -r '.side // empty')
 
     case "$kind" in
-      cross-pr-guard|pr-ci-status|ready-watchdog|route-task|state-invariants)
+      cross-pr-guard|pr-ci-status|ready-watchdog|route-task|prepare-task-inputs|state-invariants)
         [[ "$status" == "succeeded" ]] || handle_check_job_failure "$job_id" "$kind" "$status" "$reason" "$result_path" "$excerpt"
         settle_tracked_job "$job_id"
         continue
@@ -19356,6 +19590,13 @@ Implement from the issue description plus direct codebase analysis."
       selectedAt: (now | todate)
     }' > "$feature_dir/selected-task.json"
 
+  # HOK-3253: an already-detailed issue is the task packet; persist it locally
+  # before planning launches (no LLM), as native planning does, instead of
+  # relying on the planner to write it.
+  if task_inputs_materialize_detailed "$feature_dir"; then
+    log "info" "  $issue: [task-inputs] materialized task-packet.md from the detailed issue description"
+  fi
+
   # Write routing results directly (no LLM needed — routing is deterministic)
   # The routing tool was already called at lines above (route-task.ts).
   # We just need to write the .routing-complete file and launch planning.
@@ -21017,8 +21258,10 @@ monitor_issue_state() {
               return 0
             fi
 
-            # Record approval via approve_plan (HOK-1193: controller-owned stage result)
-            approve_plan "$FEATURE_DIR" "$current_agent" ""
+            # Re-assert the controller-owned completed stage result (HOK-1193).
+            # "none": the handoff must never touch the plan<->packet binding,
+            # which was recorded when the approval was requested (HOK-3253).
+            approve_plan "$FEATURE_DIR" "$current_agent" "" "none"
 
             if (( reroute_rc != 0 )); then
               handle_expanded_reroute_handoff_failure "$ISSUE" "$FEATURE_DIR"
@@ -21038,35 +21281,19 @@ monitor_issue_state() {
             fi
             emit_execution_active_route "$FEATURE_DIR" "$ISSUE"
 
-            local handshake_reason handshake_policy handshake_block_note
-            handshake_reason="$(mill_expansion_handshake_reason "$FEATURE_DIR")"
-            handshake_policy="$(get_expansion_handshake_policy "$REPO_DIR")"
-
-            if [[ "$handshake_reason" == "missing" && "$handshake_policy" == "recover" ]]; then
-              if recover_missing_expansion_artifact "$ISSUE" "$SLUG" "$FEATURE_DIR"; then
-                apply_route_rc=0
-                apply_expanded_route_if_present "$FEATURE_DIR" "$ISSUE" "$SLUG" "$WT_DIR" "$STATE_FILE" || apply_route_rc=$?
-                if (( apply_route_rc == 3 )); then
-                  challenge_collapse_route_drift "$ISSUE" "$FEATURE_DIR" "${APPLY_EXPANDED_ROUTE_DRIFT_DETAIL:-}" || true
-                  [[ "$CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF" == "true" ]] && return 0
-                  apply_route_rc=0
-                fi
-                if (( apply_route_rc != 0 )); then
-                  expansion_recovery_mark_result "$FEATURE_DIR" "$ISSUE" "failed" "expanded-route-promotion-failed" "1" || true
-                  log_warn "$ISSUE → recovered expanded route was invalid during promotion; using bootstrap execution route for coding"
-                  handshake_reason="recovery-fallback-bootstrap"
-                else
-                  handshake_reason="$(mill_expansion_handshake_reason "$FEATURE_DIR")"
-                fi
-                emit_execution_active_route "$FEATURE_DIR" "$ISSUE"
-              else
-                log_warn "$ISSUE → expansion recovery failed; RECOVERY_FALLBACK_BOOTSTRAP"
-                emit_execution_active_route "$FEATURE_DIR" "$ISSUE"
-                handshake_reason="recovery-fallback-bootstrap"
-              fi
+            # HOK-3253: inputs are prepared before approval, so they are ready
+            # here. A plan approved before the gate existed (or an input that
+            # vanished since) is taken back to planning for preparation: the
+            # expansion recovery no longer runs synchronously after approval.
+            if ! ensure_task_inputs_ready "$ISSUE" "$SLUG" "$FEATURE_DIR" "$WIN" "$current_agent" "handoff"; then
+              active_count=$((active_count + 1))
+              return 0
             fi
 
-            if [[ "$handshake_reason" != "recovery-fallback-bootstrap" ]] && ! mill_check_expansion_handshake "$FEATURE_DIR" "$ISSUE" "$REPO_DIR"; then
+            local handshake_reason handshake_block_note
+            handshake_reason="$(mill_expansion_handshake_reason "$FEATURE_DIR")"
+
+            if ! mill_check_expansion_handshake "$FEATURE_DIR" "$ISSUE" "$REPO_DIR"; then
               rm -f "$FEATURE_DIR/.plan-approved"
               if [[ "$handshake_reason" == "missing" ]]; then
                 handshake_block_note="Expansion handshake blocked: raw input requires wavemill expand $ISSUE"
@@ -21230,9 +21457,19 @@ monitor_issue_state() {
           if [[ "$planning_status" == "running" ]]; then
             recover_misplaced_plan_md "$ISSUE" "$WT_DIR" "$FEATURE_DIR" "$SLUG" || true
             if [[ -f "$FEATURE_DIR/plan.md" ]]; then
+              # HOK-3253: no approval request until the task inputs are
+              # prepared, validated and bound to this plan.
+              if ! ensure_task_inputs_ready "$ISSUE" "$SLUG" "$FEATURE_DIR" "$WIN" "$current_agent" "publish"; then
+                active_count=$((active_count + 1))
+                return 0
+              fi
               unset "$approval_wait_var" 2>/dev/null || true
+              local approval_note="Plan ready for review" reapproval_reason=""
+              declare -F plan_packet_reapproval_reason >/dev/null 2>&1 \
+                && reapproval_reason="$(plan_packet_reapproval_reason "$FEATURE_DIR")"
+              [[ -n "$reapproval_reason" ]] && approval_note="Plan ready for review — re-approval required: $reapproval_reason"
               log "status" "$ISSUE → plan.md detected, marking planning as awaiting_user"
-              write_stage_result "$FEATURE_DIR" "planning" "awaiting_user" "$current_agent" "" "Plan ready for review"
+              write_stage_result "$FEATURE_DIR" "planning" "awaiting_user" "$current_agent" "" "$approval_note"
               set_window_attention_state "$WIN" "needs-user"
               active_count=$((active_count + 1))
               return 0
@@ -21250,6 +21487,12 @@ monitor_issue_state() {
             # late .coding-complete written while the operator was deciding
             # must be accepted instead of silently waiting on the plan gate.
             if planning_late_coding_complete_reconcile "$ISSUE" "$FEATURE_DIR" "$WT_DIR" "$WIN" "$current_agent"; then
+              active_count=$((active_count + 1))
+              return 0
+            fi
+            # HOK-3253: an agent-published request (native planning) is held
+            # to the same contract as the monitor's own publish.
+            if ! ensure_task_inputs_ready "$ISSUE" "$SLUG" "$FEATURE_DIR" "$WIN" "$current_agent" "accept"; then
               active_count=$((active_count + 1))
               return 0
             fi
@@ -21286,6 +21529,10 @@ monitor_issue_state() {
             # place of waiting on an approval that would archive the valid
             # marker.
             if planning_late_coding_complete_reconcile "$ISSUE" "$FEATURE_DIR" "$WT_DIR" "$WIN" "$current_agent"; then
+              active_count=$((active_count + 1))
+              return 0
+            fi
+            if ! ensure_task_inputs_ready "$ISSUE" "$SLUG" "$FEATURE_DIR" "$WIN" "$current_agent" "accept"; then
               active_count=$((active_count + 1))
               return 0
             fi

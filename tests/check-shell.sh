@@ -199,6 +199,7 @@ for f in \
   "$REPO_DIR"/tests/bounded-retry.test.sh \
   "$REPO_DIR"/tests/ready-update-from-base.test.sh \
   "$REPO_DIR"/tests/plan-packet-binding.test.sh \
+  "$REPO_DIR"/tests/task-inputs-gate.test.sh \
   "$REPO_DIR"/tests/task-progress.test.sh \
   "$REPO_DIR"/tests/task-identity.test.sh \
   "$REPO_DIR"/tests/handle-phase-launch-result.test.sh \
@@ -276,6 +277,8 @@ for f in \
   "$REPO_DIR"/tests/journeys/happy-path.journey.sh \
   "$REPO_DIR"/tests/journeys/gh-lag-after-push.journey.sh \
   "$REPO_DIR"/tests/journeys/errored-with-pr.journey.sh \
+  "$REPO_DIR"/tests/journeys/inputs-ready-before-approval.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/hok-3220/fake-agent/planning \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
   "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
   "$REPO_DIR"/tests/lib/state-fixtures.sh \
