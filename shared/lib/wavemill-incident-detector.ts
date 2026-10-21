@@ -622,6 +622,22 @@ export class StalledLifecycleCorrelator {
         continue;
       }
 
+      // Merge-label withheld (HOK-3241 fixture of HOK-3212): tend holds the
+      // candidate at `ready-failed:not-ready` while the Ready artifact names
+      // the PR a merge candidate. Authoritative merged PRs skip emission so
+      // stale lane data cannot resurrect a cleared incident; missing or
+      // unreadable PR evidence is never treated as proof of merge, and never
+      // enough to diagnose the label-withhold either.
+      if (gate === 'ready-failed:not-ready' && ready?.queueState === 'merge-candidate') {
+        if (pr?.state === 'merged') continue;
+        if (!pr) {
+          incidents.push(this.inspectionIncident({ ...evidenceSet, reason: 'merge_label_withheld_evidence_missing', missing }));
+          continue;
+        }
+        incidents.push(this.mergeLabelWithheldIncident({ ...evidenceSet, pr, review, ready }));
+        continue;
+      }
+
       // No structured causal chain applies. With complete evidence the
       // generic stale-task detectors remain in charge; with missing evidence
       // record an inspection incident so the gap is visible.
@@ -630,6 +646,90 @@ export class StalledLifecycleCorrelator {
       }
     }
     return incidents;
+  }
+
+  private mergeLabelWithheldIncident(input: {
+    repoDir: string;
+    taskId: string | null;
+    taskDir: string | null;
+    candidate: TendCandidateDiagnostic;
+    pr: PrIdentityDiagnostic;
+    review: ReviewResultDiagnostic | null;
+    envelope: ReviewFailureEnvelopeDiagnostic | null;
+    ready: ReadyResultDiagnostic;
+    timestamp: string;
+  }): IncidentRecord {
+    const { pr, review, ready, candidate } = input;
+    const evidence: IncidentEvidence[] = [
+      prEvidence(pr, input.timestamp),
+      ...(review ? [reviewEvidence(review, input.timestamp)] : []),
+      readyEvidence(ready, input.timestamp),
+      tendEvidence(candidate, input.repoDir, input.timestamp),
+    ];
+    const readyEvidenceIndex = review ? 2 : 1;
+    const tendEvidenceIndex = review ? 3 : 2;
+    const gate = candidate.firstBlockedGate ?? candidate.blockedReason ?? 'ready-failed:not-ready';
+    const headSha = pr.headSha ?? 'unknown';
+    const hasReady = pr.labels.includes('wm:ready');
+    const hasBlocked = pr.labels.includes('wm:blocked');
+    const causalChain: CausalChainEntry[] = [
+      { cause: 'merge_candidate_without_wm_ready', evidenceIndex: readyEvidenceIndex, detail: `queueState=${ready.queueState}` },
+      {
+        cause: 'wm_ready_label_missing',
+        evidenceIndex: 0,
+        detail: `labels=${pr.labels.join(',')} hasReady=${hasReady} hasBlocked=${hasBlocked}`,
+      },
+      { cause: `tend_blocked(${gate})`, evidenceIndex: tendEvidenceIndex },
+    ];
+    const proposal = remediationProposal({
+      kind: 'reconcile_merge_label',
+      recommendationId: 'reconcile_merge_label_wm_ready',
+      retryKey: `reconcile-merge-label:pr:${pr.number}:head:${headSha}`,
+      safetyLevel: 'operator_only',
+      prerequisites: [
+        'Confirm the Ready artifact\'s queueState is still merge-candidate at the current head.',
+        'Confirm no later Ready failure contradicts the merge-candidate state.',
+        'Let the merge-label reconciler run; it is the single wm:ready/wm:blocked writer (HOK-3181).',
+      ],
+      evidence,
+      allowedActions: ['reconcile_merge_label'],
+      forbiddenActions: FORBIDDEN_REMEDIATION_ACTIONS,
+      target: { issueId: input.taskId ?? undefined, prNumber: pr.number, headSha: pr.headSha, baseSha: pr.baseSha },
+      recoveryPredicate: {
+        kind: 'pr_merged',
+        details: { pr: String(pr.number) },
+      },
+    });
+    return createIncidentDraft({
+      taskId: input.taskId,
+      session: null,
+      category: 'product_defect',
+      severity: 'high',
+      confidence: 'high',
+      lifecycle: 'observed',
+      rootCauseClass: 'merge_label_withheld',
+      summary: `PR #${pr.number} is a merge candidate (queueState=merge-candidate) but carries no wm:ready label; `
+        + `Tend holds it at ${gate}.`,
+      operatorAction: `Inspect the merge-label reconciler path for PR #${pr.number}; the Ready artifact already names it a merge candidate. ${DO_NOT_CLAUSE}`,
+      evidence,
+      metadata: {
+        proposal,
+        causalChain,
+        prNumber: pr.number,
+        taskId: input.taskId,
+        tendGate: gate,
+        tendLabels: candidate.labels ?? pr.labels,
+        queueState: ready.queueState,
+        readyVerdict: ready.verdict,
+        readyHead: ready.readyHeadSha,
+        readyBase: ready.readyBaseSha,
+        authoritativeHead: pr.headSha,
+        authoritativeBase: pr.baseSha,
+        prState: pr.state,
+        artifactPaths: artifactPaths(input),
+        knownIssueIds: input.taskId ? [input.taskId] : [],
+      },
+    });
   }
 
   private staleBaseOverflowIncident(input: {
