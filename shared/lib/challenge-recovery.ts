@@ -150,10 +150,10 @@ async function updateWorkflowStateToManualComparison(prNumber: number, repoDir: 
       });
 
       if (location && state.tasks) {
-        const taskEntry = state.tasks[location.taskId];
+        const entry = state.tasks[location.taskId];
         // Only update if there's a challenge pair (indicating this is a comparison-related PR)
-        if (taskEntry && taskEntry.challengePairId) {
-          taskEntry.comparisonState = 'manual_comparison_needed';
+        if (entry && entry.challengePairId) {
+          entry.comparisonState = 'manual_comparison_needed';
         }
       } else if (miss) {
         console.warn(
