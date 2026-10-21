@@ -14263,7 +14263,7 @@ launch_ready_phase() {
         log_error "  Merge conflicts persist for $issue after remediation attempt"
         return 1
         ;;
-      exhausted-quiet|backoff)
+      backoff|exhausted-quiet)
         return 1
         ;;
     esac

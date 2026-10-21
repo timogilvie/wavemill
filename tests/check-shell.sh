@@ -283,7 +283,6 @@ for f in \
   "$REPO_DIR"/tests/journeys/inputs-ready-before-approval.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3220/fake-agent/planning \
   "$REPO_DIR"/tests/journeys/mid-flight-base-conflict.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/hok-3273/fake-agent/lib.sh \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3273/fake-agent/review \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3273/fake-agent/coding \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \

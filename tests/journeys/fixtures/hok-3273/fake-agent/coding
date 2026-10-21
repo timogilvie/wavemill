@@ -3,10 +3,8 @@
 #
 # The first coding launch implements the task. Any later coding launch is the
 # Ready conflict resolver (post-PR remediation runs the coding phase, HOK-3272):
-# it merges the integration branch keeping the task's side, pushes the
-# resolution, and GitHub stops reporting the conflict.
-# shellcheck source=lib.sh
-source "$FAKE_AGENT_SCRIPT_DIR/lib.sh"
+# it merges the integration branch keeping the task's side and pushes the
+# resolution, after which the PR merges cleanly again.
 coding_runs_file="$FAKE_ROOT/coding-runs-$WAVEMILL_ISSUE"
 coding_run=$(( $(cat "$coding_runs_file" 2>/dev/null || echo 0) + 1 ))
 printf '%s\n' "$coding_run" > "$coding_runs_file"
@@ -23,6 +21,5 @@ else
     git -c user.name=fake-agent -c user.email=fake-agent@example.invalid \
       commit -q --no-edit -m "Resolve merge conflicts with $BASE_BRANCH"
   fi
-  hok3273_gh_state 'del(.prs["1"].overrides)'
   git push -q origin HEAD
 fi

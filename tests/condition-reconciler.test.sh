@@ -199,6 +199,34 @@ reconcile
 assert_eq "operator event: terminal sentinel cleared" "no" "$(exists "$STATE_DIR/.retry-coding-launch-refused-exhausted")"
 assert_eq "two-argument mark_exhausted does not abort" "ok" "$(bounded_retry_mark_exhausted "$STATE_DIR" "two-arg" >/dev/null && echo ok)"
 
+echo "=== HOK-3273: in-flight conflict resolver marker expires on its condition ==="
+write_conflict_marker() { # launch-head observed-pr-head
+  marker_write "$STATE_DIR/.conflict-remediation.json" --kind conflict-remediation --head "$1" \
+    --observed "prHeadRefOid=$2" --expires-on "head,remote,operator-event" \
+    --detail-json "$(jq -cn --arg h "$1" '{head: $h, base: "auto/integration", launchHead: $h, prNumber: 1591}')"
+}
+new_fixture
+write_conflict_marker "$HEAD_SHA" "$HEAD_SHA"
+pr_cache 1591 "$HEAD_SHA"
+reconcile
+assert_eq "resolver still at its launch head: marker kept" "yes" "$(exists "$STATE_DIR/.conflict-remediation.json")"
+git -C "$WT" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "Resolve merge conflicts"
+reconcile
+assert_eq "resolver pushed (head moved): marker cleared" "no" "$(exists "$STATE_DIR/.conflict-remediation.json")"
+
+new_fixture
+write_conflict_marker "$HEAD_SHA" "$HEAD_SHA"
+pr_cache 1591 "$OLD_HEAD"
+reconcile
+assert_eq "PR head moved on GitHub (remote): marker cleared" "no" "$(exists "$STATE_DIR/.conflict-remediation.json")"
+
+new_fixture
+write_conflict_marker "$HEAD_SHA" "$HEAD_SHA"
+pr_cache 1591 "$HEAD_SHA"
+operator_event_record "$STATE_DIR" "re-review" "$ISSUE"
+reconcile
+assert_eq "operator event: marker cleared" "no" "$(exists "$STATE_DIR/.conflict-remediation.json")"
+
 echo ""
 echo "=== Totals ==="
 echo "pass=$PASS fail=$FAIL"
