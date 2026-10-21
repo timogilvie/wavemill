@@ -640,6 +640,14 @@ export function getResultFilePath(featureDir: string, stage: StageName): string 
 // Read Helpers
 // ────────────────────────────────────────────────────────────────
 
+/** Options for {@link readStageResult}. */
+export interface ReadStageResultOptions {
+  /** Absolute path to the feature directory holding `.{stage}-result.json`. */
+  featureDir: string;
+  /** Which stage's result to read. */
+  stage: StageName;
+}
+
 /**
  * Read a single stage result file.
  *
@@ -647,14 +655,25 @@ export function getResultFilePath(featureDir: string, stage: StageName): string 
  * Validates that the `stage` field in the file matches the requested stage.
  * Never throws.
  *
- * @param featureDir - Absolute path to the feature directory
- * @param stage - Stage name to read
+ * HOK-3242: takes an options object so a swapped-argument call
+ * (`readStageResult({ featureDir: 'ready', stage: '/some/path' })`) is a
+ * type error. Positional callers (`readStageResult(featureDir, 'ready')`)
+ * are still accepted for backward compatibility — the overload maps them
+ * to the object form.
+ *
+ * @param options - { featureDir, stage }
  * @returns Parsed StageResult or null
  */
+export function readStageResult(options: ReadStageResultOptions): Promise<StageResult | null>;
+export function readStageResult(featureDir: string, stage: StageName): Promise<StageResult | null>;
 export async function readStageResult(
-  featureDir: string,
-  stage: StageName,
+  optionsOrFeatureDir: ReadStageResultOptions | string,
+  maybeStage?: StageName,
 ): Promise<StageResult | null> {
+  const { featureDir, stage } =
+    typeof optionsOrFeatureDir === 'string'
+      ? { featureDir: optionsOrFeatureDir, stage: maybeStage as StageName }
+      : optionsOrFeatureDir;
   const resultPath = getResultFilePath(featureDir, stage);
   try {
     const content = await fs.readFile(resultPath, 'utf-8');
@@ -699,7 +718,7 @@ export async function readAllStageResults(featureDir: string): Promise<StageResu
   const results: StageResultMap = {};
 
   for (const stage of VALID_STAGES) {
-    const result = await readStageResult(featureDir, stage);
+    const result = await readStageResult({ featureDir, stage });
     if (result) {
       results[stage] = result;
     }
@@ -976,7 +995,7 @@ export async function updateStageResult(
   stage: StageName,
   patch: Partial<StageResult>,
 ): Promise<void> {
-  const existing = await readStageResult(featureDir, stage);
+  const existing = await readStageResult({ featureDir, stage });
 
   const merged: StageResult = {
     stage,
@@ -999,7 +1018,7 @@ export async function writeStageResultWithHistory(
   stage: StageName,
   patch: Partial<StageResult>,
 ): Promise<void> {
-  const existing = await readStageResult(featureDir, stage);
+  const existing = await readStageResult({ featureDir, stage });
   const now = new Date().toISOString();
   const existingHistory = existing?.history ?? [];
   const shouldArchive = existing?.status === 'failed' || existing?.status === 'aborted';

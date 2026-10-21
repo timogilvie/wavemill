@@ -249,6 +249,11 @@ export function withShadowSuppressing<T>(
   fn: () => T,
   options: SuppressingOptions = {},
 ): T | null {
+  // HOK-3235: the ledger shadow kill switch covers every shadow writer,
+  // including the pair/arm copy wrapped here. The step/retry/marker shadow
+  // path already honoured this flag; without this guard a pair row still
+  // landed in the ledger when the operator asked for no shadow writes.
+  if (process.env.WAVEMILL_LEDGER_SHADOW_DISABLED === '1') return null;
   try {
     return fn();
   } catch (error) {

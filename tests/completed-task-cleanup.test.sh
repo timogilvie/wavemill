@@ -254,7 +254,7 @@ run_cleanup_case() {
     MILL_LOG_FILE="$CASE_DIR/mill.log"
     API_TIMEOUT=5
     BASE_BRANCH="auto/integration"
-    printf "%s\n" "{\"cleanup\":{\"branchDeletion\":{\"enabled\":true,\"mode\":\"enforce\"}}}" > "$REPO_DIR/.wavemill-config.json"
+    printf "%s\n" "{\"cleanup\":{\"branchDeletion\":{\"enabled\":true}}}" > "$REPO_DIR/.wavemill-config.json"
 
     state_pr_json=",\"pr\":4242"
     workflow_outcome="merged"
@@ -569,7 +569,7 @@ run_common_dry_run_case() {
     MILL_LOG_FILE="$CASE_DIR/mill.log"
     API_TIMEOUT=5
     DRY_RUN=true
-    printf "%s\n" "{\"cleanup\":{\"branchDeletion\":{\"enabled\":true,\"mode\":\"enforce\"}}}" > "$REPO_DIR/.wavemill-config.json"
+    printf "%s\n" "{\"cleanup\":{\"branchDeletion\":{\"enabled\":true}}}" > "$REPO_DIR/.wavemill-config.json"
 
     cat > "$STATE_FILE" <<EOF
 {"tasks":{"$ISSUE":{"windowId":"@31","pr":4242,"lifecycle":{"schemaVersion":1,"workflowOutcome":"merged","resourceDisposition":"reaping","launchContract":{"remoteBranchDeletionPolicy":{"allowed":true,"mode":"merged-pr-task-branch","source":"test"}}}}}}

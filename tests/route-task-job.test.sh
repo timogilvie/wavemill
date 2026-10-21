@@ -5,7 +5,7 @@
 #   1. first read is pending + launches the reroute job; next read consumes it
 #   2. a changed packet invalidates the result (keyed on packet content)
 #   3. a failed reroute surfaces its reason to the handoff failure path
-#   4. no packet / WAVEMILL_SYNC_ROUTING=1 run the reroute inline
+#   4. no packet runs the reroute inline (cheap "not eligible" path)
 #   4b. router.enabled=false (ROUTER_ENABLED) skips the reroute entirely
 # Launch routing (launch_task):
 #   5. a live-route miss defers the launch and runs route-task.ts in the
@@ -62,15 +62,12 @@ assert_eq "failed reroute returns 1" "1" "$rc"
 assert_eq "failure reason preserved" "routing_error" "$REROUTE_EXPANDED_LAST_REASON"
 REROUTE_RC=0 REROUTE_REASON=""
 
-echo "=== 4. inline paths ==="
+echo "=== 4. no packet runs the reroute inline (cheap not_eligible path) ==="
 : > "$HARNESS_LOG"
 EMPTY="$HARNESS_DIR/empty-feature"
 mkdir -p "$EMPTY"
 rc=0; expanded_reroute_gate "$ISSUE" "slug" "$EMPTY" || rc=$?
 assert_eq "no packet runs inline (cheap not_eligible path)" "1" "$(harness_count "reroute $ISSUE")"
-printf '\nSync.\n' >> "$FEATURE/task-packet.md"
-assert_eq "sync routing runs inline" "0" "$(WAVEMILL_SYNC_ROUTING=1 gate)"
-assert_eq "no job in sync mode" "0" "$(harness_count "launch_tracked_job")"
 
 echo "=== 4b. router disabled skips the expanded reroute ==="
 # protects: router.enabled=false being ignored after expansion — the reroute

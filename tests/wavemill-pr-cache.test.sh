@@ -93,8 +93,8 @@ WAVEMILL_PR_CACHE_BATCH_LIMIT="$saved_limit"
 echo "=== 4. fallbacks ==="
 wavemill_pr_cache_refresh "${BRANCHES[@]}"
 reset_calls
-WAVEMILL_DISABLE_GH_BATCH_CACHE=1 pr_state 4501 >/dev/null
-assert_eq "kill switch reads GitHub directly" "1" "$(gh_calls)"
+wavemill_pr_live_read pr_state 4501 >/dev/null
+assert_eq "live-read wrapper bypasses the cache" "1" "$(gh_calls)"
 reset_calls
 jq '.writtenAt -= 3600' "$MONITOR_PR_CACHE.meta.json" > "$TMP_DIR/m" && mv "$TMP_DIR/m" "$MONITOR_PR_CACHE.meta.json"
 pr_state 4501 >/dev/null

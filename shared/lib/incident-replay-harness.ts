@@ -7,15 +7,11 @@
  *   - a fault (one of six environmental classes),
  *   - a convergence contract (`mustMerge | mustEscalate`, tick budget).
  *
- * Two modes (HOK-3185):
- *   - `recovery-loop` (default): each tick feeds the fixture's stalled step
- *     to the real Ledger F `decideRecovery`, so recovery is driven only by the
- *     one loop (failure policy + bounded retry + one escalation). The fault
- *     model says what failure the stage reports and how many relaunches it
- *     survives; the loop decides everything else.
- *   - `legacy`: the original simulator, which applies faults as state
- *     transformations with a hard-coded outcome. Kept for one cycle while the
- *     per-stage recovery branches are retired, then deleted.
+ * Every fixture is driven through `runWithRecoveryLoop`, which feeds the
+ * stalled step to the real Ledger F `decideRecovery`. The fault model
+ * (`faultModelFor`) is the only fixture-specific knowledge; the recovery
+ * outcome itself (failure policy, bounded retry, one escalation) is the
+ * production loop. The `--mode=legacy` simulator was retired in HOK-3235.
  *
  * The assertion is simply "converges within the budget" — one of:
  *   - `lifecycle.workflowOutcome ∈ {merged, aborted}` AND evidence file exists;
@@ -100,14 +96,6 @@ export interface SandboxContext {
   stateFile: string;
   hookFile: string;
   clock: HarnessClock;
-  faultState: {
-    /** How many monitor ticks remain for the fault to resolve. */
-    ticksRemaining: number;
-    /** Faults that cause unconditional escalation flip this. */
-    forceEscalate: boolean;
-    /** Faults that let the system merge after N ticks flip this. */
-    canMergeAfterTicks?: number;
-  };
 }
 
 export interface ConvergenceEvidence {
@@ -165,6 +153,7 @@ export function createSandbox(fixture: IncidentReplayFixture, clock: HarnessCloc
   }
 
   const stateFile = join(dir, 'workflow-state.json');
+  // allow-task-literal: synthetic sandbox state for a single-task fixture, not workflow-state read by production code
   writeFileSync(stateFile, JSON.stringify({
     tasks: {
       [fixture.initialState.task.issue]: {
@@ -184,116 +173,7 @@ export function createSandbox(fixture: IncidentReplayFixture, clock: HarnessCloc
     timestamp: fixture.initialState.hook.timestamp,
   }));
 
-  const faultState = computeInitialFaultState(fixture);
-
-  return { dir, featureDir, stateFile, hookFile, clock, faultState };
-}
-
-function computeInitialFaultState(fixture: IncidentReplayFixture): SandboxContext['faultState'] {
-  switch (fixture.fault) {
-    case 'host_sleep':
-      // Clock gap recovers; merge after one recovery tick.
-      return { ticksRemaining: 1, forceEscalate: false, canMergeAfterTicks: 2 };
-    case 'github_head_lag':
-      // Handoff rebind refuses for N ticks, then republishes and merges.
-      return {
-        ticksRemaining: Math.min(Number(fixture.faultParams?.lagSeconds ?? 180) / 60, 10),
-        forceEscalate: false,
-        canMergeAfterTicks: 3,
-      };
-    case 'dropped_connection_push_rebase':
-      return { ticksRemaining: Number(fixture.faultParams?.throwCount ?? 2), forceEscalate: false, canMergeAfterTicks: 4 };
-    case 'malformed_model_response':
-      return { ticksRemaining: 1, forceEscalate: true };
-    case 'provider_402_or_429':
-      return {
-        ticksRemaining: 1,
-        forceEscalate: Boolean(fixture.faultParams?.exhausted),
-        canMergeAfterTicks: 2,
-      };
-    case 'agent_sigkill_mid_stage':
-      return {
-        ticksRemaining: Number(fixture.faultParams?.retryBudget ?? 1),
-        forceEscalate: Number(fixture.faultParams?.retryBudget ?? 1) <= 0,
-        canMergeAfterTicks: 3,
-      };
-    case 'control_no_fault':
-    default:
-      return { ticksRemaining: 0, forceEscalate: false, canMergeAfterTicks: 1 };
-  }
-}
-
-/**
- * Simulate one monitor tick. Returns the current convergence state.
- *
- * The simulator honours three invariants:
- *   - a fault with `forceEscalate=true` always produces a typed
- *     `.needs-attention` + evidence file after its initial tick budget;
- *   - a fault that can recover does so after `canMergeAfterTicks` ticks;
- *   - a task that reaches its budget without converging is `pending` — the
- *     harness assertion then fails.
- */
-export function tick(ctx: SandboxContext, fixture: IncidentReplayFixture): ConvergenceEvidence {
-  const stateDir = ctx.featureDir;
-
-  // Advance clock by the tick interval.
-  ctx.clock.advance(fixture.convergence.tickIntervalSeconds * 1000);
-
-  // Already converged? Short-circuit.
-  const already = detectConvergence(ctx);
-  if (already.outcome !== 'pending') return already;
-
-  if (ctx.faultState.ticksRemaining > 0) {
-    ctx.faultState.ticksRemaining -= 1;
-    // During the fault's active ticks, nothing converges.
-    return { outcome: 'pending' };
-  }
-
-  // Fault resolved: either escalate or merge.
-  if (ctx.faultState.forceEscalate) {
-    const needsAttention = join(stateDir, '.needs-attention');
-    writeFileSync(needsAttention, 'reason=' + fixture.fault + '\n');
-    const evidence = join(stateDir, '.needs-attention.evidence.json');
-    writeFileSync(evidence, JSON.stringify({
-      schemaVersion: '1.0',
-      reason: fixture.fault,
-      recordedAt: new Date(ctx.clock.nowMs).toISOString(),
-      conditionJson: fixture.faultParams ?? {},
-    }));
-    writeFileSync(ctx.stateFile, JSON.stringify({
-      tasks: {
-        [fixture.initialState.task.issue]: {
-          slug: fixture.initialState.task.slug,
-          phase: fixture.initialState.task.phase,
-          status: 'blocked',
-          lifecycle: { workflowOutcome: 'aborted' },
-        },
-      },
-    }));
-    return { outcome: 'escalated', evidencePath: evidence };
-  }
-
-  // Merging path: wait canMergeAfterTicks before marking merged.
-  if (typeof ctx.faultState.canMergeAfterTicks === 'number' && ctx.faultState.canMergeAfterTicks > 0) {
-    ctx.faultState.canMergeAfterTicks -= 1;
-    return { outcome: 'pending' };
-  }
-  const mergedEvidence = join(stateDir, '.merged.evidence.json');
-  writeFileSync(mergedEvidence, JSON.stringify({
-    prNumber: 999_999,
-    mergedAt: new Date(ctx.clock.nowMs).toISOString(),
-  }));
-  writeFileSync(ctx.stateFile, JSON.stringify({
-    tasks: {
-      [fixture.initialState.task.issue]: {
-        slug: fixture.initialState.task.slug,
-        phase: 'merged',
-        status: 'idle',
-        lifecycle: { workflowOutcome: 'merged', deliveryEvidence: { prState: 'MERGED', prNumber: 999_999 } },
-      },
-    },
-  }));
-  return { outcome: 'merged', evidencePath: mergedEvidence };
+  return { dir, featureDir, stateFile, hookFile, clock };
 }
 
 /**
@@ -317,24 +197,8 @@ export interface RunResult {
   outcome: 'merged' | 'escalated' | 'pending';
   ticks: number;
   evidencePath?: string;
-  /** `recovery-loop` mode: the loop's action on each tick, in order. */
+  /** The recovery loop's action on each tick, in order. */
   actions?: RecoveryActionKind[];
-}
-
-/**
- * Drive the simulator until convergence, hitting the tick budget, or
- * exceeding wall-clock seconds (safety net).
- */
-export function runUntilConverged(ctx: SandboxContext, fixture: IncidentReplayFixture): RunResult {
-  const budget = fixture.convergence.maxTickCount;
-  for (let i = 0; i < budget; i++) {
-    const result = tick(ctx, fixture);
-    if (result.outcome !== 'pending') {
-      return { converged: true, outcome: result.outcome, ticks: i + 1, evidencePath: result.evidencePath };
-    }
-  }
-  const last = detectConvergence(ctx);
-  return { converged: last.outcome !== 'pending', outcome: last.outcome, ticks: budget, evidencePath: last.evidencePath };
 }
 
 export interface AssertionResult {
@@ -364,7 +228,7 @@ export function assertConverged(result: RunResult, fixture: IncidentReplayFixtur
   return { ok: true };
 }
 
-// ── recovery-loop mode (HOK-3185) ───────────────────────────────────────────
+// ── recovery-loop (HOK-3185) ────────────────────────────────────────────────
 
 /** What the stage reports for a fault, and how many relaunches the fault survives. */
 export interface FaultModel {
@@ -378,8 +242,8 @@ export interface FaultModel {
 
 /**
  * Translate a fixture's environmental fault into the failure evidence a real
- * stage would report. This is the only fixture-specific knowledge in
- * `recovery-loop` mode — the outcome itself comes from `decideRecovery`.
+ * stage would report. This is the only fixture-specific knowledge; the
+ * outcome itself comes from `decideRecovery`.
  */
 export function faultModelFor(fixture: IncidentReplayFixture): FaultModel {
   const params = fixture.faultParams ?? {};
@@ -524,8 +388,6 @@ export function runWithRecoveryLoop(ctx: SandboxContext, fixture: IncidentReplay
   return { converged: last.outcome !== 'pending', outcome: last.outcome, ticks: fixture.convergence.maxTickCount, evidencePath: last.evidencePath, actions };
 }
 
-export type HarnessMode = 'recovery-loop' | 'legacy';
-
 /**
  * One-shot: load → sandbox → run → assert → cleanup. Returns the assertion
  * result and the discovered RunResult. Cleanup runs in a finally so
@@ -533,15 +395,12 @@ export type HarnessMode = 'recovery-loop' | 'legacy';
  */
 export function runFixture(
   fixturePath: string,
-  options: { mode?: HarnessMode } = {},
 ): { fixture: IncidentReplayFixture; run: RunResult; assertion: AssertionResult } {
   const fixture = loadFixture(fixturePath);
   const clock = createInjectableClock();
   const ctx = createSandbox(fixture, clock);
   try {
-    const run = (options.mode ?? 'recovery-loop') === 'legacy'
-      ? runUntilConverged(ctx, fixture)
-      : runWithRecoveryLoop(ctx, fixture);
+    const run = runWithRecoveryLoop(ctx, fixture);
     const assertion = assertConverged(run, fixture);
     return { fixture, run, assertion };
   } finally {

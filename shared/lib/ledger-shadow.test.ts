@@ -213,6 +213,20 @@ test('withShadowSuppressing rethrows when strict', () => {
   assert.throws(() => withShadowSuppressing(() => { throw new Error('boom'); }, { strict: true }));
 });
 
+test('withShadowSuppressing short-circuits when WAVEMILL_LEDGER_SHADOW_DISABLED=1 (HOK-3235)', () => {
+  const prev = process.env.WAVEMILL_LEDGER_SHADOW_DISABLED;
+  process.env.WAVEMILL_LEDGER_SHADOW_DISABLED = '1';
+  let called = false;
+  try {
+    const result = withShadowSuppressing(() => { called = true; return 42; });
+    assert.equal(result, null);
+    assert.equal(called, false, 'the shadow fn must not run when the kill switch is set');
+  } finally {
+    if (prev === undefined) delete process.env.WAVEMILL_LEDGER_SHADOW_DISABLED;
+    else process.env.WAVEMILL_LEDGER_SHADOW_DISABLED = prev;
+  }
+});
+
 test('stepInputsFromCliArgs parses CLI string inputs', () => {
   const inputs = stepInputsFromCliArgs({
     head: 'abc',

@@ -1,11 +1,13 @@
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
+import { clearConfigCache } from './config.ts';
 import {
   deriveMergeLabel,
+  reconcileMergeLabels,
   reconcileMergeLabelsForPr,
   buildMergeLabelLiveState,
   readMergeLabelEvidence,
@@ -722,7 +724,176 @@ describe('readMergeLabelEvidence (real Ready artifacts)', () => {
   });
 
   it('maps a failed Ready result to not-ready and a running one to running', async () => {
+    assert.equal((await readMergeLabelEvidence(featureDirWithReady('completed', 'pass'))).readyAtHead?.verdict, 'ready');
     assert.equal((await readMergeLabelEvidence(featureDirWithReady('completed', 'fail'))).readyAtHead?.verdict, 'not-ready');
     assert.equal((await readMergeLabelEvidence(featureDirWithReady('running', 'pass'))).readyAtHead?.verdict, 'running');
+  });
+});
+
+describe('reconcileMergeLabels: aggregate observer finding (HOK-3241)', () => {
+  function makeRepo(overlay: Record<string, unknown>): string {
+    const dir = mkdtempSync(join(tmpdir(), 'reconcile-merge-labels-'));
+    writeFileSync(join(dir, '.wavemill-config.json'), JSON.stringify(overlay), 'utf-8');
+    mkdirSync(join(dir, '.wavemill'), { recursive: true });
+    // Empty workflow state so no PR matches a task → every PR is a noTaskView.
+    writeFileSync(join(dir, '.wavemill', 'workflow-state.json'), JSON.stringify({ tasks: {} }), 'utf-8');
+    clearConfigCache(dir);
+    return dir;
+  }
+
+  it('appends one aggregate finding to observer-findings.jsonl when PRs have no task view', async () => {
+    const repo = makeRepo({ integration: { enabled: true, useMillSession: true }, observer: { enabled: true } });
+    try {
+      const prs = [
+        { number: 101, labels: [] as string[], headSha: 'h1' },
+        { number: 202, labels: [] as string[], headSha: 'h2' },
+      ];
+      await reconcileMergeLabels(prs, repo);
+      const findingsPath = join(repo, '.wavemill', 'observer-findings.jsonl');
+      assert.ok(existsSync(findingsPath), 'expected observer-findings.jsonl to be created');
+      const lines = readFileSync(findingsPath, 'utf-8').trim().split('\n').filter(Boolean);
+      assert.equal(lines.length, 1);
+      const parsed = JSON.parse(lines[0]);
+      assert.equal(parsed.subsystem, 'merge-label-reconciler');
+      assert.match(parsed.title, /no task view for 2 PR/);
+      assert.equal(parsed.severity, 'medium');
+      assert.deepEqual(parsed.context.prNumbers, [101, 202]);
+      assert.equal(parsed.context.prCount, 2);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('observer-disabled: no finding is appended even when PRs lack task view', async () => {
+    const repo = makeRepo({ integration: { enabled: false }, observer: { enabled: false } });
+    try {
+      const prs = [{ number: 303, labels: [] as string[], headSha: 'h3' }];
+      await reconcileMergeLabels(prs, repo);
+      assert.equal(existsSync(join(repo, '.wavemill', 'observer-findings.jsonl')), false);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+// HOK-3242: every null decision path emits a log line with its reason.
+describe('reconcileMergeLabelsForPr: every null decision is logged with a reason', () => {
+  const baseTask: MergeLabelTaskView = {
+    prNumber: 123,
+    headSha: 'abc123',
+    phase: 'ready',
+    featureDir: '/path/to/feature',
+  };
+
+  const greenLive: MergeLabelLiveState = {
+    prHeadSha: 'abc123',
+    mergeable: 'MERGEABLE',
+    mergeStateStatus: 'CLEAN',
+    statusCheckRollup: [{ name: 'ci', conclusion: 'SUCCESS', status: 'COMPLETED' }],
+    readyAtHead: { verdict: 'ready', sha: 'abc123' },
+    handoffAtHead: { state: 'ready-published', headSha: 'abc123', prNumber: 123 },
+  };
+
+  function depsWithLive(liveState: MergeLabelLiveState): {
+    deps: ReconcileMergeLabelsDeps;
+    infos: Array<{ msg: string; meta?: unknown }>;
+  } {
+    const infos: Array<{ msg: string; meta?: unknown }> = [];
+    const deps: ReconcileMergeLabelsDeps = {
+      readTaskView: async () => baseTask,
+      probeLiveState: async () => liveState,
+      applyLabel: {
+        setReady: async () => {},
+        setBlocked: async () => {},
+        clear: async () => {},
+      },
+      logger: {
+        info: (msg, meta) => infos.push({ msg, meta }),
+        warn: () => {},
+      },
+    };
+    return { deps, infos };
+  }
+
+  const cases: Array<{ name: string; reason: string; live: MergeLabelLiveState }> = [
+    {
+      name: 'head-mismatch',
+      reason: 'head-mismatch',
+      live: { ...greenLive, prHeadSha: 'different' },
+    },
+    {
+      name: 'ready-evidence-stale',
+      reason: 'ready-evidence-stale',
+      live: { ...greenLive, readyAtHead: { verdict: 'ready', sha: 'other' } },
+    },
+    {
+      name: 'ready-pending (missing readyAtHead)',
+      reason: 'ready-pending',
+      live: { ...greenLive, readyAtHead: undefined },
+    },
+    {
+      name: 'ready-pending (running)',
+      reason: 'ready-pending',
+      live: { ...greenLive, readyAtHead: { verdict: 'running', sha: 'abc123' } },
+    },
+    {
+      name: 'ready-unknown (defensive branch via cast verdict)',
+      reason: 'ready-unknown',
+      live: {
+        ...greenLive,
+        readyAtHead: { verdict: 'bogus' as unknown as 'ready', sha: 'abc123' },
+      },
+    },
+    {
+      name: 'checks-pending',
+      reason: 'checks-pending',
+      live: {
+        ...greenLive,
+        statusCheckRollup: [{ name: 'ci', conclusion: '', status: 'IN_PROGRESS' }],
+      },
+    },
+    {
+      name: 'no-handoff',
+      reason: 'no-handoff',
+      live: { ...greenLive, handoffAtHead: undefined },
+    },
+  ];
+
+  for (const c of cases) {
+    it(`logs reason=${c.reason} when live state hits ${c.name}`, async () => {
+      const { deps, infos } = depsWithLive(c.live);
+      const pr = { number: 123, labels: [] as string[], headSha: 'abc123' };
+      const result = await reconcileMergeLabelsForPr(pr, deps);
+      assert.equal(result.decision?.label, null);
+      assert.equal((result.decision as { reason?: string }).reason, c.reason);
+      const match = infos.find((entry) => /Merge label unchanged/.test(entry.msg));
+      assert.ok(match, `expected a Merge label unchanged info log; got: ${JSON.stringify(infos)}`);
+      assert.equal((match.meta as { reason?: string }).reason, c.reason);
+      assert.equal((match.meta as { pr?: number }).pr, 123);
+    });
+  }
+});
+
+// HOK-3242: reconcileMergeLabels returns a ReconcileReport with per-PR decisions.
+describe('reconcileMergeLabels: ReconcileReport round-trip', () => {
+  it('populates decisionByPr for every PR seen', async () => {
+    const prs = [
+      { number: 1, labels: [] as string[], headSha: 'sha-1' },
+      { number: 2, labels: [] as string[], headSha: 'sha-2' },
+      { number: 3, labels: [] as string[], headSha: 'sha-3' },
+    ];
+    // Point repoDir at an empty tmp dir so readWorkflowState returns null;
+    // the reconciler then produces `no-task-view` for each PR.
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'reconcile-report-'));
+    mkdirSync(join(tmpRepo, '.wavemill'), { recursive: true });
+    writeFileSync(join(tmpRepo, '.wavemill', 'workflow-state.json'), JSON.stringify(buildWorkflowState({})));
+    const report = await reconcileMergeLabels(prs, tmpRepo);
+    assert.equal(report.decisionByPr.size, 3);
+    for (const pr of prs) {
+      const decision = report.decisionByPr.get(pr.number);
+      assert.ok(decision, `expected a decision for PR #${pr.number}`);
+      assert.deepEqual(decision, { label: null, reason: 'no-task-view' });
+    }
+    assert.deepEqual(report.noTaskViewPrs, [1, 2, 3]);
   });
 });

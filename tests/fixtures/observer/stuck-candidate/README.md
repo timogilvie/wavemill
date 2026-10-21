@@ -14,3 +14,10 @@ Set `CANDIDATE_PROMOTED_AT` to a fresh distinct value across repeated
 `CANDIDATE_CHURN_WINDOW_MINUTES` on the same `HEAD_SHA` trip the churn
 finding via the observer's own `.wavemill/observer-candidate-churn.json`
 journal.
+
+`merge-queue-transitions.json` is a template for the monitor's HOK-3111
+`<repoDir>/.wavemill/merge-queue-transitions.json` journal, keyed
+`${PR}:${HEAD_SHA}`. With `ESCALATED=true` it reproduces the HOK-3240 durable
+churn gate: the churn finding fires even when fewer than three promotions fall
+inside the observer's 30-minute window (the mill's real 16-21 min
+promote/demote cadence).

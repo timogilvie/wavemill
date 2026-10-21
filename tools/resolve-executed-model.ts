@@ -40,7 +40,7 @@ runTool({
     const featureDir = typeof args['feature-dir'] === 'string' ? resolve(args['feature-dir']) : undefined;
     const stageArg = typeof args.stage === 'string' ? args.stage : undefined;
     const stage = stageArg && isValidStage(stageArg) ? stageArg as StageName : undefined;
-    const existing = featureDir && stage ? await readStageResult(featureDir, stage) : null;
+    const existing = featureDir && stage ? await readStageResult({ featureDir, stage }) : null;
 
     const agent = resolverAgent(args.agent) ?? resolverAgent(existing?.agent);
     const worktreePath = typeof args.worktree === 'string'

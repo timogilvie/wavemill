@@ -736,9 +736,10 @@
         "no_branch",
         "adapter_error",
         "missing_worktree",
-        "skipped"
+        "skipped",
+        "unreliable"
       ],
-      "description": "Status of workflow cost computation."
+      "description": "Status of workflow cost computation. 'unreliable' marks a historical record whose cost absorbed other tasks' native sessions and could not be recomputed (HOK-3256)."
     },
     "workflowCostDiagnostics": {
       "type": "object",

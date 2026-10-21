@@ -16,8 +16,10 @@
  * verdict on its own — head-sensitive callers must pass `expectedHeadSha` so a
  * row for another head reads as a miss.
  *
- * Kill switch: `WAVEMILL_DISABLE_GH_BATCH_CACHE=1` makes every reader return
- * `null` (restores the pre-HOK-3206 direct `gh` call pattern at every site).
+ * The batched-cache kill switch was retired in HOK-3235; the two monitor
+ * sites that forced a live read now call `wavemill_pr_live_read` in
+ * `wavemill-common.sh`, which sets a shell-local `_PR_CACHE_BYPASS` the cache
+ * readers honour.
  */
 
 import { readFileSync, statSync } from 'node:fs';
@@ -63,10 +65,6 @@ export interface CacheReadOptions {
   maxAgeMs?: number;
 }
 
-export function ghBatchCacheDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.WAVEMILL_DISABLE_GH_BATCH_CACHE === '1';
-}
-
 function readJsonFile(path: string): unknown {
   try {
     return JSON.parse(readFileSync(path, 'utf-8')) as unknown;
@@ -93,7 +91,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export function readSessionPrCache(options: CacheReadOptions = {}): CachedPullRequest[] | null {
   const env = options.env ?? process.env;
-  if (ghBatchCacheDisabled(env)) return null;
   const path = env.WAVEMILL_SESSION_PR_CACHE;
   if (!path) return null;
 
@@ -144,7 +141,6 @@ export function findCachedPullRequestsForBranch(
  */
 export function readSessionRepoCache(options: Omit<CacheReadOptions, 'maxAgeMs'> = {}): SessionRepoCache | null {
   const env = options.env ?? process.env;
-  if (ghBatchCacheDisabled(env)) return null;
   const path = env.WAVEMILL_SESSION_REPO_CACHE;
   const expectedRepoDir = env.WAVEMILL_SESSION_REPO_DIR?.trim();
   if (!path || !expectedRepoDir) return null;

@@ -82,7 +82,7 @@ The cross-PR revert guard (~19 s), the live CI read (~2.5 s per PR), the ready-w
 - DON'T consume a guard verdict whose run saw the head move: the job publishes nothing and the next pass relaunches.
 - DON'T read GitHub per task in the hot pass: `monitor_refresh_pr_cache` makes one `gh pr list --state all --search 'head:<b1> head:<b2> …'` per pass (`<cache>.meta.json` records which branches were covered and whether the page was complete). `pr_state`, `validate_pr_merge`, `wavemill_pr_candidates_for_branch`, `check_pr_exists`, `pr_live_labels_json` and the TS readers (`probePrLiveState`, `fetchPrCiStatus`, the watchdog's GitHub truth) read it first; `probePrLiveState` and expected-head CI reads use a row only for the matching head. `gh repo view` and branch protection live in the session repo cache (`/tmp/<session>-repo.json`).
 
-Rollback switches (debug only, not config): `WAVEMILL_SYNC_READY_CHECKS=1` (guard, CI, watchdog inline), `WAVEMILL_SYNC_ROUTING=1` (routing inline), `WAVEMILL_DISABLE_GH_BATCH_CACHE=1` (every PR/repo read goes to `gh` directly).
+The `WAVEMILL_SYNC_READY_CHECKS` / `WAVEMILL_SYNC_ROUTING` / `WAVEMILL_DISABLE_GH_BATCH_CACHE` rollback switches were retired in HOK-3235. Tests that still pin the inline contract source `tests/lib/inline-ready-checks.sh`.
 
 `monitor-timing.json` carries `github: {ghCalls, prCacheHits, prCacheMisses}` (shell `gh` spawns this pass) and `jobs: {<kind>: {launched, consumed, pending}}`.
 

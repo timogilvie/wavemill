@@ -59,6 +59,7 @@ TESTS=(
   tests/llm-cli.test.ts
   shared/lib/linear-write-gate.test.ts
   shared/lib/session-adapters.test.ts
+  shared/lib/workflow-cost-pool-repair.test.ts
   shared/lib/executed-model-resolver.test.ts
   shared/lib/native-agent/models.test.ts
   shared/lib/native-agent/provider.test.ts
@@ -234,6 +235,7 @@ TESTS=(
   shared/lib/manual-edit-attribution-audit.test.ts
   shared/lib/merge-queue.test.ts
   shared/lib/merge-labels.test.ts
+  shared/lib/pr-task-resolver.test.ts
   shared/lib/mill-clock.test.ts
   shared/lib/model-registry.test.ts
   shared/lib/model-adapters/transport-adapter.test.ts
@@ -282,6 +284,7 @@ TESTS=(
   shared/lib/task-record-shape-checker.test.ts
   shared/lib/task-field-read-checker.test.ts
   shared/lib/test-task-literal-checker.test.ts
+  shared/lib/feature-flag-checker.test.ts
   tests/lib/task-builder.test.ts
   shared/lib/workflow-state.test.ts
   shared/lib/workflow-state.writer-coverage.test.ts

@@ -28,13 +28,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # over every shell script, not a per-shard test, and runs once via `npm run lint`.
 TESTS=(
   run-related.test.sh
+  run-typecheck.test.sh
   check-direct-ledger-access.test.sh
   ledger-cli-shadow.test.sh
   ledger-hook-shadow.test.sh
   check-ledger-shadow-swallow.test.sh
   monitor-side-effect-detector-tick.test.sh
   deps-drift.test.sh
-  ledger-recovery-tick.test.sh
   aborted-challenge-cleanup.test.sh
   safe-branch-cleanup.test.sh
   preserved-branch-record-long-slug.test.sh
@@ -96,6 +96,7 @@ TESTS=(
   state-fixtures.test.sh
   ready-update-from-base.test.sh
   plan-packet-binding.test.sh
+  task-inputs-gate.test.sh
   task-progress.test.sh
   task-identity.test.sh
   tracked-tree-guard.test.sh

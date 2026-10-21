@@ -8,6 +8,8 @@ setup_planning_rejects_source_edit() {
   CURRENT_PHASE="planning"
   write_stage_result "$FEATURE_DIR" "planning" "awaiting_user" "$CURRENT_AGENT"
   printf "plan\n" > "$FEATURE_DIR/plan.md"
+  # HOK-3253: approval is only offered once the inputs are a valid packet.
+  printf "## 1. Objective\nfixture\n" > "$FEATURE_DIR/task-packet.md"
   touch "$FEATURE_DIR/.plan-approved"
   mkdir -p "$WT_DIR/src"
   printf "export const value = 1;\n" > "$WT_DIR/src/new-feature.ts"

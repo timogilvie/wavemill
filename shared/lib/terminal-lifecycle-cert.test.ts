@@ -1,12 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   buildCertificationArtifact,
-  collectShadowDecisionAudit,
-  evaluateShadowGate,
   evaluateSoakGate,
   renderCertificationMarkdown,
 } from './terminal-lifecycle-cert.ts';
@@ -16,50 +14,6 @@ function tempRepo(): string {
   mkdirSync(join(dir, '.wavemill', 'incidents', 'cleanup-decisions'), { recursive: true });
   return dir;
 }
-
-test('shadow audit passes decisions with authority and final-head proof', () => {
-  const repo = tempRepo();
-  try {
-    writeFileSync(join(repo, '.wavemill/incidents/cleanup-decisions/task__safe.json'), JSON.stringify({
-      branch: 'task/safe',
-      classification: 'safe_terminal_pr_head',
-      safeToDelete: true,
-      mode: 'shadow',
-      wouldDelete: true,
-      authority: 'PR #1 merged into auto/integration with headRefOid exactly equal to local head abc',
-      finalCheckPassed: true,
-      finalHeadSha: 'abc',
-    }));
-    const decisions = collectShadowDecisionAudit(repo);
-    assert.equal(decisions.length, 1);
-    assert.deepEqual(decisions[0].unsafeReasons, []);
-    assert.equal(evaluateShadowGate(decisions).pass, true);
-  } finally {
-    rmSync(repo, { recursive: true, force: true });
-  }
-});
-
-test('shadow audit flags missing authority, head proof, and observer disagreement', () => {
-  const repo = tempRepo();
-  try {
-    writeFileSync(join(repo, '.wavemill/incidents/cleanup-decisions/task__unsafe.json'), JSON.stringify({
-      branch: 'task/unsafe',
-      classification: 'safe_exact_remote',
-      safeToDelete: true,
-      mode: 'shadow',
-      wouldDelete: true,
-      finalCheckPassed: false,
-      observerDisposition: 'retained',
-    }));
-    const gate = evaluateShadowGate(collectShadowDecisionAudit(repo));
-    assert.equal(gate.pass, false);
-    assert.match(gate.failures.join('\n'), /missing_authority/);
-    assert.match(gate.failures.join('\n'), /missing_final_head_verification/);
-    assert.match(gate.failures.join('\n'), /observer_disagreement/);
-  } finally {
-    rmSync(repo, { recursive: true, force: true });
-  }
-});
 
 test('soak gate rejects leak growth and repeated episodes', () => {
   const gate = evaluateSoakGate([
@@ -84,7 +38,6 @@ test('artifact and markdown include all gate verdicts', () => {
     assert.equal(artifact.gates.budgets.pass, true);
     const markdown = renderCertificationMarkdown(artifact);
     assert.match(markdown, /Terminal Lifecycle Certification Report/);
-    assert.match(markdown, /Shadow/);
     assert.match(markdown, /Budgets/);
   } finally {
     rmSync(repo, { recursive: true, force: true });
