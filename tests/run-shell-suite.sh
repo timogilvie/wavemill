@@ -116,6 +116,7 @@ TESTS=(
   archive-stage-artifacts.test.sh
   operator-touch-record.test.sh
   report-reliability-cli.test.sh
+  reliability-dashboard-repo.test.sh
   cleanup-branch.test.sh
   cleanup-episodes.test.sh
   completed-task-cleanup.test.sh

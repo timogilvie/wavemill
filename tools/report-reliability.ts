@@ -51,6 +51,10 @@ runTool({
       type: 'string',
       description: 'Comma-separated PR numbers to spot-check (merged or closed, in or out of the window).',
     },
+    'cache-dir': {
+      type: 'string',
+      description: 'PR timeline cache directory, or "none" to write nothing (read-only run). Default: .wavemill/cache/pr-timeline/.',
+    },
     'no-github': {
       type: 'boolean',
       description: 'Skip GitHub PR timelines (label edits, manual pushes); report local evidence only.',
@@ -70,6 +74,7 @@ runTool({
     'wavemill report reliability --since 7d --bucket daily --include-tasks',
     'wavemill report reliability --since 2026-09-25 --pr 1594,1598,1601,1603',
     'wavemill report reliability --json',
+    'wavemill report reliability --since 7d --cache-dir none',
   ],
   async run({ args }) {
     const sinceSpec = (args.since as string) ?? '14d';
@@ -80,6 +85,8 @@ runTool({
     const branches = branchesRaw ? branchesRaw.split(',').map((b) => b.trim()).filter(Boolean) : undefined;
     const stallMinutesRaw = args['stall-minutes'] as string | undefined;
     const stallMinutes = stallMinutesRaw ? Number.parseInt(stallMinutesRaw, 10) : undefined;
+    const cacheDirRaw = args['cache-dir'] as string | undefined;
+    const cacheDir = cacheDirRaw === undefined ? undefined : cacheDirRaw === 'none' ? null : cacheDirRaw;
     const prRaw = args.pr as string | undefined;
     const spotCheckPrs = prRaw ? prRaw.split(',').map((p) => p.trim().replace(/^#/, '')).filter(Boolean) : undefined;
 
@@ -92,6 +99,7 @@ runTool({
       branches,
       stallMinutes: stallMinutes && Number.isFinite(stallMinutes) ? stallMinutes : undefined,
       github: args['no-github'] ? false : undefined,
+      ...(cacheDir !== undefined ? { cacheDir } : {}),
       spotCheckPrs,
     });
 

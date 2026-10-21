@@ -6,13 +6,15 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 import {
   aggregateReliability,
   buildEvalsIndex,
+  buildReliabilityContext,
   collectOperatorTouches,
   computeReliability,
   computeTimeStuck,
@@ -193,6 +195,7 @@ describe('reliability-metrics', () => {
       stuckMs: number;
       coverage?: 'full' | 'partial' | 'none';
       classes?: Array<'O' | 'L' | 'S' | 'R'>;
+      isMillTask?: boolean;
     }): TaskReliability {
       const task: MergedTaskRef = {
         issue: opts.issue,
@@ -214,6 +217,7 @@ describe('reliability-metrics', () => {
         stuckMs: opts.stuckMs,
         stuckCoverage: opts.coverage ?? 'full',
         stallIntervals: [],
+        isMillTask: opts.isMillTask ?? true,
       };
     }
 
@@ -275,6 +279,33 @@ describe('reliability-metrics', () => {
       assert.equal(summary.buckets[1].merged, 1);
       assert.equal(summary.buckets[1].unattendedRate, 0);
     });
+
+    it('reports mill-only rates alongside the all-PR rates (HOK-3245)', () => {
+      const tasks = [
+        fakeTask({ issue: 'HOK-1', mergedAt: '2026-10-05T00:00:00Z', touchCount: 0, stuckMs: 0 }),
+        fakeTask({ issue: 'HOK-2', mergedAt: '2026-10-05T00:00:00Z', touchCount: 1, stuckMs: 20 * 60_000 }),
+        fakeTask({ issue: 'fix', mergedAt: '2026-10-05T00:00:00Z', touchCount: 1, stuckMs: 0, coverage: 'none', isMillTask: false }),
+        fakeTask({ issue: 'docs', mergedAt: '2026-10-05T00:00:00Z', touchCount: 1, stuckMs: 0, coverage: 'none', isMillTask: false }),
+      ];
+      const summary = aggregateReliability(tasks, {
+        sinceIso: '2026-10-01T00:00:00Z', untilIso: '2026-10-08T00:00:00Z', bucket: 'rolling7d',
+      });
+      for (const b of [summary.overall, summary.buckets[0]]) {
+        assert.equal(b.merged, 4);
+        assert.equal(b.unattendedRate, 0.25);
+        assert.equal(b.millMerged, 2);
+        assert.equal(b.millUnattended, 1);
+        assert.equal(b.millUnattendedRate, 0.5);
+        assert.equal(b.millStuckP50Ms, 10 * 60_000);
+        assert.equal(b.millStuckP90Ms, 18 * 60_000);
+      }
+
+      const text = renderReliabilitySummary(summary);
+      assert.match(text, /Merged tasks \(all PRs\):\s+4/);
+      assert.match(text, /Mill tasks:\s+2 · unattended 50\.0% \(1\/2\)/);
+      assert.match(text, /Rolling 7-day:\s+all 25\.0% · mill 50\.0%/);
+      assert.match(renderReliabilityDashboardLine(summary), /^7d unattended: mill 50\.0% · all 25\.0% .*\(2\/4 merged\)$/);
+    });
   });
 
   describe('rendering', () => {
@@ -285,7 +316,8 @@ describe('reliability-metrics', () => {
         bucket: 'rolling7d',
       });
       const text = renderReliabilitySummary(summary);
-      assert.match(text, /Merged tasks:\s+0/);
+      assert.match(text, /Merged tasks \(all PRs\):\s+0/);
+      assert.match(text, /Mill tasks:\s+0 · unattended N\/A/);
       assert.match(text, /Unattended rate:\s+N\/A/);
     });
 
@@ -750,7 +782,7 @@ describe('reliability-metrics', () => {
         for (const t of touches) touchClasses[t.class] += 1;
         return {
           task: { issue, title: issue, mergedAt: '2026-10-05T00:00:00Z' },
-          touches, touchCount: touches.length, touchClasses, stuckMs: 0, stuckCoverage: 'none', stallIntervals: [],
+          touches, touchCount: touches.length, touchClasses, stuckMs: 0, stuckCoverage: 'none', stallIntervals: [], isMillTask: true,
         };
       };
       const summary = aggregateReliability(
@@ -803,6 +835,80 @@ describe('reliability-metrics', () => {
         assert.deepEqual(spot.touches.map((t) => [t.kind, t.class]), [['label-edit', 'S']]);
         assert.match(renderReliabilitySummary(summary), /#1598\s+touched/);
         assert.equal(summary.sources?.githubTimelines, 1);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('mill-only classification (HOK-3245)', () => {
+    function gitCommit(repo: string, at: string, subject: string): void {
+      execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', subject], {
+        env: { ...process.env, GIT_COMMITTER_DATE: at, GIT_AUTHOR_DATE: at },
+      });
+    }
+
+    it('splits mill tasks from operator PRs and keeps reaped mill tasks', () => {
+      const tmp = makeTmpDir();
+      try {
+        execFileSync('git', ['-C', tmp, 'init', '-q', '-b', 'main']);
+        gitCommit(tmp, '2026-10-02T00:00:00Z', 'base');
+        gitCommit(tmp, '2026-10-05T10:00:00Z', 'HOK-999: mill task (#101)');
+        gitCommit(tmp, '2026-10-05T11:00:00Z', 'fix: operator cleanup (#102)');
+        gitCommit(tmp, '2026-10-05T12:00:00Z', 'HOK-998: reaped mill task (#103)');
+
+        // HOK-999 still has its live feature dir with a stage result.
+        const featureDir = join(tmp, 'features', 'hok-999-mill-task');
+        mkdirSync(featureDir, { recursive: true });
+        writeFileSync(join(featureDir, '.coding-result.json'), JSON.stringify({
+          stage: 'coding', status: 'completed', startedAt: '2026-10-05T09:00:00Z', finishedAt: '2026-10-05T09:30:00Z',
+        }));
+        // HOK-998 was reaped: only its terminal record remains.
+        const archiveDir = join(tmp, '.wavemill', 'evals', 'artifacts', 'HOK-998');
+        mkdirSync(archiveDir, { recursive: true });
+        writeFileSync(join(archiveDir, 'terminal-record.json'), JSON.stringify({ issue: 'HOK-998', prNumber: 103 }));
+
+        const summary = computeReliability({
+          repoDir: tmp,
+          sinceIso: '2026-10-01T00:00:00Z',
+          untilIso: '2026-10-08T00:00:00Z',
+          bucket: 'rolling7d',
+          branches: ['main'],
+          github: false,
+        });
+        const byPr = new Map(summary.tasks.map((t) => [t.task.prNumber, t.isMillTask]));
+        assert.deepEqual([...byPr.entries()].sort(), [['101', true], ['102', false], ['103', true]]);
+        assert.equal(summary.overall.merged, 3);
+        assert.equal(summary.overall.millMerged, 2);
+        assert.equal(summary.buckets[0].millMerged, 2);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it('cacheDir: null keeps the run read-only; a path redirects the PR timeline cache', () => {
+      const tmp = makeTmpDir();
+      try {
+        execFileSync('git', ['-C', tmp, 'init', '-q', '-b', 'main']);
+        gitCommit(tmp, '2026-10-05T10:00:00Z', 'fix: operator cleanup (#102)');
+        const gh = () => JSON.stringify({ event: 'merged', at: '2026-10-05T10:00:00Z', actor: 'tim' });
+        const run = (cacheDir: string | null) => {
+          const context = buildReliabilityContext({ repoDir: tmp, github: true, gh, cacheDir });
+          context.github!.nwo = 'acme/widgets';
+          return computeReliability({
+            repoDir: tmp, sinceIso: '2026-10-01T00:00:00Z', untilIso: '2026-10-08T00:00:00Z',
+            bucket: 'rolling7d', branches: ['main'], context,
+          });
+        };
+
+        assert.equal(run(null).sources?.githubTimelines, 1);
+        assert.ok(!existsSync(join(tmp, '.wavemill', 'cache')), 'read-only run wrote the default cache');
+
+        const cacheDir = join(tmp, 'pr-cache');
+        run(cacheDir);
+        assert.ok(existsSync(join(cacheDir, '102.json')));
+        assert.ok(!existsSync(join(tmp, '.wavemill', 'cache')));
+        assert.ok(!('cacheDir' in buildReliabilityContext({ repoDir: tmp, github: false }).github!));
       } finally {
         rmSync(tmp, { recursive: true, force: true });
       }
