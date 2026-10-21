@@ -58,7 +58,7 @@ const EXCLUDED_FILE_PATTERNS = [
 const AUTO_EXCLUDED_PATHS = new Set([
   'shared/lib/feature-flag-checker.ts',
   'shared/lib/feature-flag-checker.test.ts',
-  'tools/check-feature-flags.ts',
+  'tools/check-feature-flags.ts', // install-paths: allow repo-relative scan-exclusion key, not an invocation
   FEATURE_FLAGS_DOC,
   FEATURE_FLAGS_BASELINE_FILE,
 ]);
