@@ -500,11 +500,12 @@ export async function runScopedCommand(
 
   if (result.approval === 'rejected') {
     if (result.guard) {
+      const cmdSummary = parsed.ok ? parsed.argv[0] : undefined;
       input.sessionStreamWriter?.writeGuardRefused({
         guard: result.guard,
         toolName: input.tool,
         reason: result.rejectionDetail ?? result.rejectionReason ?? result.guard,
-        ...(repeatKeyArgv?.[0] ? { commandSummary: repeatKeyArgv[0] } : {}),
+        ...(cmdSummary ? { commandSummary: cmdSummary } : {}),
       });
     }
     const details: RunCommandRejectedDetails = {
