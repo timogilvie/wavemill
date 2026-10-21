@@ -36,6 +36,8 @@ tests/fixtures/incidents/
   control_divergent_local_ahead.sh                 # local ahead of what was actually pushed
   control_missing_network.sh                       # origin remote unreachable
   control_never_pushed.sh                          # branch never pushed to origin
+  hok3241c_native_conflict_remediation.json        # HOK-3272 replay: native arm's conflict
+                                                   # remediation (tests/launch-ready-phase.test.sh)
 ```
 
 ## Local invocation

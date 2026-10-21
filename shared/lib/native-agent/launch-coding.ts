@@ -153,6 +153,12 @@ export interface LaunchNativeCodingOptions {
   title?: string;
   issueContext?: string;
   resolvedModel?: string;
+  /**
+   * HOK-3272: prompt-driven launch (post-PR remediation). The file's text is
+   * the task — a CI-fix or merge-conflict instruction — and replaces the
+   * plan/packet-driven body. Certification stays the `coding` phase.
+   */
+  promptFile?: string;
   featureDir?: string;
   taskPacketPath?: string;
   planPath?: string;
@@ -374,14 +380,33 @@ function buildUserPrompt(options: {
   taskPacketPath: string;
   taskPacket?: string;
   planText?: string;
+  remediationPrompt?: string;
 }): string {
-  return [
+  const identity = [
     `Issue: ${options.issue}`,
     `Slug: ${options.slug}`,
     `Title: ${options.title || options.issue}`,
     `Branch: ${options.branch || ''}`,
     `Base branch: ${options.baseBranch || ''}`,
     '',
+  ];
+  if (options.remediationPrompt) {
+    // Plan and packet stay reachable by path but are not inlined, so the agent
+    // fixes the PR instead of re-running the original implementation.
+    return [
+      ...identity,
+      `Plan path: ${options.planPath}`,
+      `Task packet path: ${options.taskPacketPath}`,
+      '',
+      options.remediationPrompt.trim(),
+      '',
+      // The remediation prompts are shared with CLI agents, which can run gh and
+      // push; this session cannot, and must still end with its completion artifact.
+      'Native runtime: steps above that need tools this session lacks (gh, git fetch/merge/push) are unavailable. Commit your fix, then write the coding completion artifact; it is the one marker this run must write.',
+    ].join('\n');
+  }
+  return [
+    ...identity,
     options.issueContext ? `Issue Context:\n${options.issueContext.trim()}\n` : '',
     `Plan path: ${options.planPath}`,
     options.planText ? `Plan:\n${options.planText.trim()}\n` : '',
@@ -410,6 +435,18 @@ export function withCodingRecoveryInstruction(featureDir: string, issueContext?:
   }
   const block = `## Recovery instruction\n${instruction}\n`;
   return issueContext?.trim() ? `${block}\n${issueContext}` : block;
+}
+
+/** Read a prompt-driven launch's instruction; a missing or empty file fails the launch. */
+export function readRemediationPrompt(promptFile: string): string {
+  if (!existsSync(promptFile)) {
+    throw new Error(`native coding --prompt-file not found: ${promptFile}`);
+  }
+  const text = readFileSync(promptFile, 'utf-8').trim();
+  if (!text) {
+    throw new Error(`native coding --prompt-file is empty: ${promptFile}`);
+  }
+  return text;
 }
 
 function readOptional(path: string): string | undefined {
@@ -918,6 +955,8 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
   const hookPath = options.hookPath ?? defaultHookPath(options.session, options.issue);
   const codeDepth = options.codeDepth ?? 'medium';
   const operatingMode = options.operatingMode ?? 'normal';
+  // Before any artifact sweep: a bad prompt file must not disturb the feature dir.
+  const remediationPrompt = options.promptFile ? readRemediationPrompt(options.promptFile) : undefined;
 
   mkdirSync(featureDir, { recursive: true });
   const archivedStaleArtifacts = archiveStaleCodingArtifacts(featureDir);
@@ -1203,6 +1242,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
           taskPacketPath,
           planText: readOptional(planPath),
           taskPacket: readOptional(taskPacketPath),
+          remediationPrompt,
         }),
         timestamp: 0,
       }],
