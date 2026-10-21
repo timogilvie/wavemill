@@ -507,6 +507,7 @@ test('repeated ready watchdog auto-recoveries escalate to actionable stuck findi
       fileLinear: false,
       fileIncidents: false,
       dryRun: false,
+      autoFixDryRun: false,
       incidentsDryRun: false,
       maxLogLines: 240,
       printPrompt: false,
