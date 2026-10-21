@@ -43,4 +43,15 @@ grep -q "Unattended rate: *50.0% (1/2)" <<<"$text" || fail "missing unattended l
 grep -q "Touches by class: *O=1  L=0  S=0  R=2" <<<"$text" || fail "missing per-class line: $text"
 grep -q "P90 time stuck:" <<<"$text" || fail "missing p90 line"
 
+# HOK-3245: mill-only split (neither HOK-1's archive nor HOK-2 is enough for
+# HOK-2 to count as mill-run) and the human summary shows both scopes.
+[[ "$(jq -r '.overall.millMerged' <<<"$out")" == "1" ]] || fail "millMerged: $(jq -c '.overall' <<<"$out")"
+grep -q "Mill tasks: *1 · unattended 0.0% (0/1)" <<<"$text" || fail "missing mill line: $text"
+
+# HOK-3245: --cache-dir none is accepted and leaves no cache behind.
+rm -rf "$repo/.wavemill/cache"
+(cd "$repo" && npx tsx "$TOOL" --since 2026-10-01 --branches main --no-github --cache-dir none --json --repo-dir "$repo" >/dev/null 2>&1) \
+  || fail "--cache-dir none run failed"
+[[ ! -e "$repo/.wavemill/cache" ]] || fail "--cache-dir none wrote $repo/.wavemill/cache"
+
 echo "report-reliability-cli test passed"
