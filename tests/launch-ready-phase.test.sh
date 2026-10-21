@@ -136,6 +136,8 @@ extract_function "$MONITOR_SCRIPT_FILE" "reconciliation_record_attempt" >> "$LAU
 extract_function "$MONITOR_SCRIPT_FILE" "reconciliation_review_invalidated_by_commit" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "reconciliation_mark_review_stale" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "task_launch_model" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "log_coding_launch_refusal" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "launch_remediation_agent" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "_launch_ready_remediation_attempt" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "launch_ready_watchdog_remediation" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_pending_reason" >> "$LAUNCH_FUNC_FILE"
@@ -149,6 +151,84 @@ if [[ ! -s "$LAUNCH_FUNC_FILE" ]]; then
   exit 1
 fi
 
+# HOK-3272: native remediation cases run the REAL launch chain —
+# launch_remediation_agent → _launch_agent_in_pane → agent_launch_interactive →
+# agent_native_launch_preflight — and stub only tmux, the native launch probe,
+# and the native launcher binary (npx on PATH, run from the generated launcher
+# script). HOK-2879's cases mock _launch_agent_in_pane and so never saw that
+# the conflict / CI-fix prompt filenames normalized to an empty phase.
+REPLAY_FIXTURE="$REPO_DIR/tests/fixtures/incidents/hok3241c_native_conflict_remediation.json"
+NATIVE_HARNESS_FILE="$TEST_TMP/native-remediation-harness.sh"
+{
+  printf 'source %q\n' "$REPO_DIR/shared/lib/agent-adapters.sh"
+  extract_function "$MONITOR_SCRIPT_FILE" "_launch_agent_in_pane"
+  cat <<'HARNESS'
+REPLAY_AGENT="$(jq -r '.task.agent' "$REPLAY_FIXTURE")"
+REPLAY_MODEL="$(jq -r '.task.model' "$REPLAY_FIXTURE")"
+WORKTREE_ROOT="$CASE_DIR/worktrees"
+NATIVE_PROBE_PHASES="$CASE_DIR/native-probe-phases"
+NATIVE_DISPATCHED="$CASE_DIR/native-dispatched"
+pass_task_field() {
+  case "$2" in
+    agent) printf "%s\n" "$REPLAY_AGENT" ;;
+    model) printf "%s\n" "$REPLAY_MODEL" ;;
+    *) printf "\n" ;;
+  esac
+}
+get_task_meta() { [[ "$2" == "challenge" ]] && jq -r '.task.challenge' "$REPLAY_FIXTURE"; return 0; }
+build_ready_remediation_prompt() { printf "FIX CI: %s on PR #%s\n" "$8" "$1"; }
+build_conflict_resolution_prompt() {
+  printf "RESOLVE CONFLICT on PR #%s against %s: %s\n" "$1" "$5" "$(jq -r '.pr.conflictingFiles | join(", ")' "$REPLAY_FIXTURE")"
+}
+challenge_stage_for_launch_env() { printf "implementation\n"; }
+challenge_varied_stage_model() { printf "\n"; }
+tmux() { printf "%s\n" "$*" >> "$CASE_DIR/tmux.log"; }
+agent_prepare_pane_for_launch() { return 0; }
+agent_resolve_dashboard_pid() { printf "0\n"; }
+agent_validate_model() { return 0; }
+agent_resolve_model() { printf "%s\n" "$2"; }
+agent_model_launch_preflight() { printf "%s\n" "$1"; }
+agent_resolve_from_model() { printf "%s\n" "$REPLAY_AGENT"; }
+# The native launch probe: the only certification seam. A *_refused case is an
+# uncertified model — a deterministic refusal the arm must not be charged for.
+agent_validate_phase_launch() {
+  printf "%s\n" "$2" >> "$NATIVE_PROBE_PHASES"
+  if [[ "$TEST_CASE" == *_refused ]]; then
+    AGENT_NATIVE_LAUNCH_LAST_JSON="{\"ok\":false,\"code\":\"uncertified\",\"surface\":\"certification\",\"reason\":\"$3 has no current coding certificate\"}"
+    AGENT_NATIVE_LAUNCH_LAST_REASON="$3 has no current coding certificate"
+    return 1
+  fi
+  AGENT_NATIVE_LAUNCH_LAST_JSON="{\"ok\":true,\"model\":\"$3\"}"
+  return 0
+}
+agent_tmux_target() { printf "%s:%s\n" "$1" "$2"; }
+agent_tmux_guard_export_command() { printf "\n"; }
+agent_hydrate_repo_env_in_pane() { :; }
+agent_write_initial_status() { :; }
+agent_supersede_terminal_hook() { :; }
+routing_emit_phase() { :; }
+agent_pane_is_ready() { return 0; }
+_pane_current_command() { printf "bash\n"; }
+_pane_child_count() { printf "0\n"; }
+agent_send_tmux_guarded_command() { printf "%s\n" "$2" >> "$NATIVE_DISPATCHED"; }
+agent_verify_launch() { return 0; }
+AGENT_LAUNCH_SETTLE_DELAY=0 AGENT_LAUNCH_ENTER_DELAY=0
+mkdir -p "$CASE_DIR/bin"
+cat > "$CASE_DIR/bin/npx" <<NPX
+#!/bin/bash
+out="$CASE_DIR/native-launcher-argv"
+printf "phase=%s\\n" "\$WAVEMILL_PHASE" > "\$out"
+printf "model=%s\\n" "\$WAVEMILL_RESOLVED_MODEL" >> "\$out"
+printf "arg=%s\\n" "\$@" >> "\$out"
+while [[ \$# -gt 0 ]]; do
+  [[ "\$1" == "--prompt-file" ]] && cat "\$2" > "$CASE_DIR/native-prompt-seen"
+  shift
+done
+NPX
+chmod +x "$CASE_DIR/bin/npx"
+HARNESS
+} > "$NATIVE_HARNESS_FILE"
+
 run_launch_case() {
   local test_case="$1"
   local case_dir="$TEST_TMP/$test_case"
@@ -158,7 +238,8 @@ run_launch_case() {
   rm -rf "$case_dir"
   mkdir -p "$case_dir"
 
-  CASE_DIR="$case_dir" LAUNCH_FUNC_FILE="$LAUNCH_FUNC_FILE" COMMON_SCRIPT="$COMMON_SCRIPT" TEST_CASE="$test_case" bash -lc '
+  CASE_DIR="$case_dir" LAUNCH_FUNC_FILE="$LAUNCH_FUNC_FILE" COMMON_SCRIPT="$COMMON_SCRIPT" TEST_CASE="$test_case" \
+    NATIVE_HARNESS_FILE="$NATIVE_HARNESS_FILE" REPLAY_FIXTURE="$REPLAY_FIXTURE" bash -lc '
     set -euo pipefail
     source "$COMMON_SCRIPT"
     source "$LAUNCH_FUNC_FILE"
@@ -743,7 +824,7 @@ EOF
           printf "%s\n" "TypeError: ready crashed" >&2
           return 1
           ;;
-        remediation_disabled|remediation_launch|second_remediation_launch|remediation_exhausted|remediation_launch_failure|already_inflight_same_head|sequential_failing_launch_1|sequential_failing_launch_2|sequential_failing_launch_3|native_route_coder_model|no_model_available|remediation_backoff_hold|remediation_head_reset)
+        remediation_disabled|remediation_launch|second_remediation_launch|remediation_exhausted|remediation_launch_failure|already_inflight_same_head|sequential_failing_launch_1|sequential_failing_launch_2|sequential_failing_launch_3|native_route_coder_model|no_model_available|remediation_backoff_hold|remediation_head_reset|native_remediation_ci|native_remediation_ci_refused)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"fail\",\"checks\":[{\"name\":\"ci-status\",\"status\":\"fail\",\"message\":\"1 CI check(s) failing\",\"details\":{\"failedChecks\":[{\"name\":\"Shell and Unit Tests\",\"state\":\"FAILURE\"}],\"pendingChecks\":[],\"totalChecks\":3}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"One or more checks failed - not safe to merge\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"UNSTABLE\",\"attempts\":1}}"
           return 1
           ;;
@@ -759,7 +840,7 @@ EOF
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"fail\",\"checks\":[{\"name\":\"ci-suite\",\"status\":\"fail\",\"message\":\"Shell and Unit Tests failed\",\"details\":{}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"CI suite failed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"UNSTABLE\",\"attempts\":1}}"
           return 1
           ;;
-        conflict_persists_after_remediation)
+        conflict_persists_after_remediation|native_remediation_conflict|native_remediation_conflict_refused)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"fail\",\"checks\":[{\"name\":\"merge-conflict\",\"status\":\"fail\",\"message\":\"PR has conflicts\",\"details\":{}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"Merge conflicts detected\",\"mergeConflict\":{\"status\":\"CONFLICTED\",\"message\":\"PR #304 has conflicts with main\",\"mergeable\":\"CONFLICTING\",\"mergeStateStatus\":\"DIRTY\",\"attempts\":1}}"
           printf "%s\n" "⚠️  MERGE CONFLICT: PR #304 has conflicts with main" >&2
           return 1
@@ -774,10 +855,31 @@ EOF
       esac
     }
 
+    ISSUE_ID="HOK-1300"
+    if [[ "$TEST_CASE" == native_remediation_* ]]; then
+      source "$NATIVE_HARNESS_FILE"
+      ISSUE_ID="$(jq -r ".task.issue" "$REPLAY_FIXTURE")"
+    fi
     set +e
-    launch_ready_phase "HOK-1300" "fix-failing-ci-tests" "Fix failing CI tests" "$WT_DIR" "task/fix-failing-ci-tests" "main" "304"
+    launch_ready_phase "$ISSUE_ID" "fix-failing-ci-tests" "Fix failing CI tests" "$WT_DIR" "task/fix-failing-ci-tests" "main" "304"
     rc=$?
     set -e
+    if [[ "$TEST_CASE" == native_remediation_* ]]; then
+      # Run what the pane would have run: the generated launcher script, with
+      # the stub native launcher binary first on PATH.
+      native_launcher_script=""
+      [[ -s "$NATIVE_DISPATCHED" ]] && native_launcher_script="$(head -n 1 "$NATIVE_DISPATCHED")"
+      if [[ -n "$native_launcher_script" ]]; then
+        PATH="$CASE_DIR/bin:$PATH" bash "$native_launcher_script" >/dev/null 2>&1 || true
+        rm -f "$native_launcher_script" "/tmp/win-1-${ISSUE_ID}-status.txt"
+      fi
+      printf "native_dispatched=%s\n" "$([[ -n "$native_launcher_script" ]] && echo yes || echo no)"
+      printf "native_probe_phases=%s\n" "$(tr "\n" " " < "$NATIVE_PROBE_PHASES" 2>/dev/null || true)"
+      printf "native_launcher_argv=%s\n" "$(tr "\n" " " < "$CASE_DIR/native-launcher-argv" 2>/dev/null || true)"
+      printf "native_prompt_seen=%s\n" "$(cat "$CASE_DIR/native-prompt-seen" 2>/dev/null || true)"
+      printf "needs_attention_text=%s\n" "$(cat "$STATE_DIR/.needs-attention" 2>/dev/null || true)"
+      rm -f "/tmp/${SESSION}-${ISSUE_ID}-ready-remediation-prompt.txt" "/tmp/${SESSION}-${ISSUE_ID}-conflict-prompt.txt"
+    fi
 
     stage_summary=$(printf "%s" "$WRITE_STAGE_CALLS" | tr "\n" ";")
     attention_summary=$(printf "%s" "$READY_ATTENTION_CALLS" | tr "\n" ";")
@@ -1824,6 +1926,55 @@ echo "=== Launch Phase Propagation ==="
 
 output="$(run_launch_case remediation_launch)"
 check_contains "remediation passes explicit phase" "$output" "phase_used=coding"
+
+echo "=== Native Remediation Launch, unmocked (HOK-3272) ==="
+
+# Replay of HOK-3241_c: a native-openrouter challenger with a real merge
+# conflict. Before HOK-3272 the conflict prompt filename normalized to an empty
+# phase, the native preflight refused (reason=unsupported-native-stage), the
+# reason was lost on stderr, and the arm parked at needs-user untried.
+output="$(run_launch_case native_remediation_conflict)"
+check_contains "native conflict: remediation launched" "$output" "rc=3"
+check_contains "native conflict: launcher dispatched to the pane" "$output" "native_dispatched=yes"
+check_contains "native conflict: preflight certifies the coding phase" "$output" "native_probe_phases=coding "
+check_contains "native conflict: native launcher runs phase coding" "$output" "native_launcher_argv=phase=coding "
+check_contains "native conflict: runs on the arm's own model" "$output" "model=gemini-3.8-flash "
+check_contains "native conflict: invokes the native coding launcher" "$output" "tools/launch-native-coding.ts"
+check_contains "native conflict: passes --prompt-file" "$output" "arg=--prompt-file arg=/tmp/ready-phase-test-native_remediation_conflict-HOK-3241_c-conflict-prompt.txt "
+check_contains "native conflict: launcher receives the conflict prompt" "$output" "native_prompt_seen=RESOLVE CONFLICT on PR #304 against main: shared/lib/merge-labels.ts"
+check_contains "native conflict: no needs-user written" "$output" "needs_attention=absent"
+check_contains "native conflict: single-attempt token recorded" "$output" "conflict_detected=present"
+check_not_contains "native conflict: no launch failure logged" "$output" "Failed to launch conflict-resolution agent"
+
+output="$(run_launch_case native_remediation_ci)"
+check_contains "native CI fix: remediation launched" "$output" "rc=5"
+check_contains "native CI fix: preflight certifies the coding phase" "$output" "native_probe_phases=coding "
+check_contains "native CI fix: native launcher runs phase coding" "$output" "native_launcher_argv=phase=coding "
+check_contains "native CI fix: passes --prompt-file" "$output" "arg=--prompt-file arg=/tmp/ready-phase-test-native_remediation_ci-HOK-3241_c-ready-remediation-prompt.txt "
+check_contains "native CI fix: launcher receives the CI-fix prompt" "$output" "native_prompt_seen=FIX CI: ci-status: 1 CI check(s) failing (Shell and Unit Tests) on PR #304"
+check_contains "native CI fix: launch charges one attempt" "$output" "remediation_retry_count=1"
+check_contains "native CI fix: no needs-user written" "$output" "needs_attention=absent"
+
+# A deterministic refusal (uncertified model) never started an agent: it is a
+# harness fault, escalated with its reason, and never charged to the arm.
+output="$(run_launch_case native_remediation_ci_refused)"
+check_contains "refused CI fix: returns failure" "$output" "rc=1"
+check_contains "refused CI fix: nothing dispatched to the pane" "$output" "native_dispatched=no"
+check_contains "refused CI fix: remediation budget untouched" "$output" "remediation_retry_count="$'\n'"remediation_retry_exhausted=absent"
+check_contains "refused CI fix: needs-attention names the refusal" "$output" "budget is untouched): Error: native launch preflight failed: route=HOK-3241_c stage=coding"
+check_contains "refused CI fix: needs-attention carries the typed code" "$output" "code=uncertified surface=certification"
+check_contains "refused CI fix: status log records the reason" "$output" "reason=gemini-3.8-flash has no current coding certificate"
+check_contains "refused CI fix: typed launch-refusal line for the observer" "$output" "[launch-refusal] issue=HOK-3241_c phase=coding model=gemini-3.8-flash provider=native-openrouter reason=uncertified"
+check_contains "refused CI fix: stage result says not an attempt" "$output" "refused before an agent started (not an attempt)"
+check_contains "refused CI fix: stage result records the policy decision" "$output" '"launchRefusal":{"class":'
+check_not_contains "refused CI fix: no generic launch failure" "$output" "Could not launch remediation agent"
+
+output="$(run_launch_case native_remediation_conflict_refused)"
+check_contains "refused conflict: returns failure" "$output" "rc=1"
+check_contains "refused conflict: nothing dispatched to the pane" "$output" "native_dispatched=no"
+check_contains "refused conflict: escalates with the reason" "$output" "Merge-conflict remediation launch for PR #304 was refused before an agent started"
+check_contains "refused conflict: does not consume the single attempt" "$output" "conflict_detected=absent"
+check_not_contains "refused conflict: no generic launch failure" "$output" "Automatic merge-conflict resolution could not be launched"
 
 echo "=== Post-PR Reconciliation Capsule (HOK-2936) ==="
 

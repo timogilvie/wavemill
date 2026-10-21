@@ -10311,8 +10311,13 @@ _run_phase_launch() {
 #   $4 = path to prompt file
 #   $5 = slug (optional)
 #   $6 = issue ID (optional)
+#   $7 = phase (planning|coding|review) — the one phase source, handed to
+#        agent_launch_interactive (HOK-3272)
+#   $8 = prompt-driven ("true" for post-PR remediation: a native agent runs
+#        the prompt file instead of rebuilding the coding packet)
+# Returns agent_launch_interactive's code (3 = route refused before launch).
 _launch_agent_in_pane() {
-  local target="$1" agent_cmd="$2" model="$3" prompt_file="$4" slug="${5:-}" issue="${6:-}" semantic_phase="${7:-}"
+  local target="$1" agent_cmd="$2" model="$3" prompt_file="$4" slug="${5:-}" issue="${6:-}" launch_phase="${7:-}" prompt_driven="${8:-}"
   local session window
   if [[ "$target" == @* ]]; then
     session="$SESSION"
@@ -10325,17 +10330,13 @@ _launch_agent_in_pane() {
   local abort_check_cmd=""
   local feature_dir=""
   local esc_session esc_issue esc_slug esc_linear_issue linear_issue=""
-  local launch_phase="" varied_launch_stage="" varied_launch_model=""
+  local varied_launch_stage="" varied_launch_model=""
   local esc_varied_stage="" esc_varied_model=""
 
   [[ "$agent_cmd" == "codex" ]] && agent_flags="--dangerously-bypass-approvals-and-sandbox"
   if [[ -n "$slug" ]]; then
     feature_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
     abort_check_cmd="check_stage_aborted '$feature_dir'"
-  fi
-  launch_phase="$semantic_phase"
-  if [[ -z "$launch_phase" ]] && declare -F agent_normalize_launch_phase >/dev/null 2>&1; then
-    launch_phase="$(agent_normalize_launch_phase "$window" "$prompt_file" 2>/dev/null || true)"
   fi
   if [[ -n "$launch_phase" ]]; then
     varied_launch_stage="$(challenge_stage_for_launch_env "$launch_phase")"
@@ -10372,7 +10373,8 @@ _launch_agent_in_pane() {
   export WAVEMILL_CHALLENGE_VARIED_STAGE="$varied_launch_stage"
   export WAVEMILL_CHALLENGE_VARIED_MODEL="$varied_launch_model"
 
-  agent_launch_interactive "$session" "$window" "$prompt_file" "$agent_cmd" "$model" "$agent_flags" "$abort_check_cmd" "$issue"
+  agent_launch_interactive "$session" "$window" "$prompt_file" "$agent_cmd" "$model" "$agent_flags" "$abort_check_cmd" "$issue" \
+    "$launch_phase" "$prompt_driven"
 }
 
 # Launch the planning phase in an existing tmux window
@@ -10408,7 +10410,7 @@ $issue_desc
     "$issue_context" "$status_file" "$TOOLS_DIR" "$slug" "$plan_depth" "$planner_agent" "$operating_mode" > "$prompt_file"
 
   log_task "status" "$issue" "Launching planning phase for $issue (model: $planner_model, depth: $plan_depth, mode: $operating_mode)"
-  _launch_agent_in_pane "$win" "$planner_agent" "$planner_model" "$prompt_file" "$slug" "$issue"
+  _launch_agent_in_pane "$win" "$planner_agent" "$planner_model" "$prompt_file" "$slug" "$issue" "planning"
   return $?
 }
 
@@ -10448,7 +10450,7 @@ $issue_context"
     "$issue_context" "$status_file" "$TOOLS_DIR" "$slug" "$code_depth" "$coder_agent" "$operating_mode" > "$prompt_file"
 
   log_task "status" "$issue" "Launching coding phase for $issue (model: $coder_model, depth: $code_depth, mode: $operating_mode)"
-  _launch_agent_in_pane "$win" "$coder_agent" "$coder_model" "$prompt_file" "$slug" "$issue"
+  _launch_agent_in_pane "$win" "$coder_agent" "$coder_model" "$prompt_file" "$slug" "$issue" "coding"
   return $?
 }
 
@@ -10541,7 +10543,7 @@ $issue_desc
       --max-attempts 2 >/dev/null 2>&1 || true
   fi
 
-  _launch_agent_in_pane "$win" "$reviewer_agent" "$reviewer_model" "$prompt_file" "$slug" "$issue"
+  _launch_agent_in_pane "$win" "$reviewer_agent" "$reviewer_model" "$prompt_file" "$slug" "$issue" "review"
   return $?
 }
 
@@ -13758,6 +13760,46 @@ ready_sync_worktree_to_github_head() {
   return 0
 }
 
+# Post-PR remediation launch (HOK-3272). CI-fix and conflict prompts run as a
+# prompt-driven coding launch on the arm's own agent and model: a native arm
+# receives the prompt via --prompt-file and is certified against the existing
+# coding phase, never re-homed to another CLI. A launch the adapter refused
+# (rc 3) never started an agent, so it is not an attempt and the caller must
+# not charge the remediation budget. The refusal reason (the adapter's stderr,
+# previously lost) is classified by the failure policy and escalated to the
+# status log and .needs-attention; REMEDIATION_LAUNCH_REFUSAL and
+# REMEDIATION_LAUNCH_REFUSAL_DECISION carry it to the caller's stage result.
+# Usage: launch_remediation_agent <win> <agent> <model> <prompt_file> <slug> <issue> <state_dir> <pr> <what>
+# Returns: the launch rc
+launch_remediation_agent() {
+  local win="$1" agent="$2" model="$3" prompt_file="$4" slug="$5" issue="$6" state_dir="$7" pr="$8" what="$9"
+  local launch_stderr rc=0 kind="" challenge_arm="false"
+  local code_re='(^|[[:space:]])code=([^[:space:]]+)' reason_re='(^|[[:space:]])reason=([a-z0-9_-]+)($|[[:space:]][a-z]+=)'
+  REMEDIATION_LAUNCH_REFUSAL="" REMEDIATION_LAUNCH_REFUSAL_DECISION=""
+  launch_stderr="$(mktemp -t "wavemill-remediation-launch-XXXXXX" 2>/dev/null || echo /dev/null)"
+  _launch_agent_in_pane "$win" "$agent" "$model" "$prompt_file" "$slug" "$issue" "coding" "true" 2>"$launch_stderr" || rc=$?
+  if [[ "$launch_stderr" != /dev/null ]]; then
+    [[ -s "$launch_stderr" ]] && cat "$launch_stderr" >&2
+    if (( rc == 3 )); then
+      REMEDIATION_LAUNCH_REFUSAL="$(grep -v '^[[:space:]]*$' "$launch_stderr" | tail -n 1 || true)"
+    fi
+    rm -f "$launch_stderr"
+  fi
+  (( rc == 3 )) || return "$rc"
+
+  [[ -n "$REMEDIATION_LAUNCH_REFUSAL" ]] || REMEDIATION_LAUNCH_REFUSAL="$agent/$model launch refused without a recorded reason"
+  if [[ "$REMEDIATION_LAUNCH_REFUSAL" =~ $code_re || "$REMEDIATION_LAUNCH_REFUSAL" =~ $reason_re ]]; then
+    kind="${BASH_REMATCH[2]}"
+  fi
+  [[ "$(get_task_meta "$issue" "challenge" 2>/dev/null || true)" == "true" ]] && challenge_arm="true"
+  REMEDIATION_LAUNCH_REFUSAL_DECISION="$(failure_policy_decide "ready" "$kind" "$REMEDIATION_LAUNCH_REFUSAL" "" "$challenge_arm" \
+    | jq -c --arg reason "$REMEDIATION_LAUNCH_REFUSAL" '. + {refusal: $reason, attempt: false}')"
+  write_ready_attention_file "$state_dir" "$what launch for PR #$pr was refused before an agent started (harness fault; the remediation budget is untouched): $REMEDIATION_LAUNCH_REFUSAL"
+  log_coding_launch_refusal "$issue" "$model" "$agent" "${kind:-unclassified}" "" "needs-user" "" ""
+  log_error "  $issue: $what launch refused for PR #$pr (not an attempt): $REMEDIATION_LAUNCH_REFUSAL"
+  return 3
+}
+
 _launch_ready_remediation_attempt() {
   local issue="$1" slug="$2" wt_dir="$3" branch="$4" base_branch="$5" pr_number="$6"
   local state_dir="$7" win="$8" status_file="$9" current_agent="${10}" current_model="${11}"
@@ -13798,11 +13840,6 @@ _launch_ready_remediation_attempt() {
     reconciliation_reset_retry_if_new_fingerprint "$state_dir" "ready-remediation" "$recon_fingerprint"
   fi
 
-  # Bounded-retry bucket (HOK-2924): every launch attempt counts, keyed to the
-  # head it launched from; the JSON remediationAttempts mirror below stays for
-  # dashboards and downstream tools.
-  bounded_retry_increment "$state_dir" "ready-remediation" "$current_head" >/dev/null
-
   remediation_agent=$(ready_remediation_agent_cmd "$wt_dir")
   [[ -z "$remediation_agent" ]] && remediation_agent="$current_agent"
   [[ -z "$remediation_agent" ]] && remediation_agent="$AGENT_CMD"
@@ -13819,6 +13856,7 @@ _launch_ready_remediation_attempt() {
       "$no_model_artifacts_json"
     write_ready_attention_file "$state_dir" "Ready remediation cannot proceed without a configured model for PR #$pr_number."
     log_error "  Failed to launch ready remediation agent for $issue (no model configured)"
+    bounded_retry_increment "$state_dir" "ready-remediation" "$current_head" >/dev/null
     return 1
   fi
 
@@ -13839,14 +13877,21 @@ _launch_ready_remediation_attempt() {
     # incident), followed by the narrow remediation process instructions.
     if ! reconciliation_project_prompt "$state_dir" "$pr_number" "$prompt_file.capsule"; then
       log_error "  $issue: reconciliation capsule projection failed - refusing ready remediation launch for PR #$pr_number"
+      bounded_retry_increment "$state_dir" "ready-remediation" "$current_head" >/dev/null
       return 1
     fi
     cat "$prompt_file" >> "$prompt_file.capsule"
     mv "$prompt_file.capsule" "$prompt_file"
   fi
 
-  _launch_agent_in_pane "$win" "$remediation_agent" "$resolved_model" "$prompt_file" "$slug" "$issue" "coding"
+  launch_remediation_agent "$win" "$remediation_agent" "$resolved_model" "$prompt_file" "$slug" "$issue" \
+    "$state_dir" "$pr_number" "Ready remediation"
   launch_rc=$?
+  # Bounded-retry bucket (HOK-2924): every launch attempt counts, keyed to the
+  # head it launched from; the JSON remediationAttempts mirror below stays for
+  # dashboards and downstream tools. A refused route (rc 3) never ran the arm's
+  # model, so it is not an attempt (HOK-3272).
+  (( launch_rc == 3 )) || bounded_retry_increment "$state_dir" "ready-remediation" "$current_head" >/dev/null
 
   if [[ "$launch_rc" -eq 0 ]]; then
     if [[ "$recon_enabled" == "true" ]]; then
@@ -13889,8 +13934,14 @@ _launch_ready_remediation_attempt() {
   reconciliation_lease_release "$state_dir"
   set_task_task_owned "$issue" "active" || true
   remediation_failed_artifacts_json=$(merge_queue_enrich_ready_artifacts "$state_dir" \
-    "{\"type\":\"ready\",\"verdict\":\"fail\",\"checksRun\":${checks_run:-0},\"checksPassed\":${checks_passed:-0},\"mergeConflict\":\"${merge_status:-UNKNOWN}\",\"prNumber\":${pr_number},\"remediationAttempts\":${remediation_attempt_number},\"remediationFailures\":${failed_check_names_json}}" \
+    "{\"type\":\"ready\",\"verdict\":\"fail\",\"checksRun\":${checks_run:-0},\"checksPassed\":${checks_passed:-0},\"mergeConflict\":\"${merge_status:-UNKNOWN}\",\"prNumber\":${pr_number},\"remediationAttempts\":${remediation_attempt_number},\"remediationFailures\":${failed_check_names_json},\"launchRefusal\":${REMEDIATION_LAUNCH_REFUSAL_DECISION:-null}}" \
     "candidate-progress")
+  if (( launch_rc == 3 )); then
+    write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$resolved_model" \
+      "Ready remediation launch refused before an agent started (not an attempt): $REMEDIATION_LAUNCH_REFUSAL" \
+      "$remediation_failed_artifacts_json"
+    return 1
+  fi
   write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$resolved_model" \
     "Could not launch ready remediation agent" \
     "$remediation_failed_artifacts_json"
@@ -14292,7 +14343,8 @@ launch_ready_phase() {
       log "debug" "  $issue: conflict reconciliation launch skipped because ownership is already held"
       return 5
     fi
-    _launch_agent_in_pane "$win" "$current_agent" "$current_model" "$prompt_file" "$slug" "$issue" "coding"
+    launch_remediation_agent "$win" "$current_agent" "$current_model" "$prompt_file" "$slug" "$issue" \
+      "$state_dir" "$pr_number" "Merge-conflict remediation"
     launch_rc=$?
 
     if [[ "$launch_rc" -eq 0 ]]; then
@@ -14317,6 +14369,13 @@ launch_ready_phase() {
 
     reconciliation_lease_release "$state_dir"
     set_task_task_owned "$issue" "active" || true
+    if (( launch_rc == 3 )); then
+      # The refused route never ran the arm's model: drop the single-attempt
+      # token so the next tick is not reported as a conflict that survived
+      # remediation.
+      rm -f "$state_dir/.conflict-detected"
+      return 1
+    fi
     write_ready_attention_file "$state_dir" "Automatic merge-conflict resolution could not be launched for PR #$pr_number."
     log_error "  Failed to launch conflict-resolution agent for $issue"
     return 1

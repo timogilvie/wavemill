@@ -23,6 +23,7 @@ async function main(): Promise<void> {
   const slug = firstNonEmpty(readOption('slug'), process.env.WAVEMILL_FEATURE_SLUG, process.env.WAVEMILL_SLUG) ?? '';
   const wtDir = resolve(firstNonEmpty(readOption('wt-dir'), process.env.WAVEMILL_WT_DIR) ?? process.cwd());
   const repoDir = resolve(firstNonEmpty(readOption('repo-dir'), process.env.WAVEMILL_MILLED_REPO_DIR) ?? process.cwd());
+  const promptFile = readOption('prompt-file');
 
   if (!session || !issue || !slug) {
     throw new Error('session, issue, and slug are required');
@@ -41,6 +42,8 @@ async function main(): Promise<void> {
     title: firstNonEmpty(readOption('title'), process.env.WAVEMILL_TITLE),
     issueContext: firstNonEmpty(readOption('issue-context'), process.env.WAVEMILL_ISSUE_CONTEXT),
     resolvedModel: firstNonEmpty(readOption('model'), process.env.WAVEMILL_RESOLVED_MODEL),
+    // HOK-3272: post-PR remediation runs this prompt instead of the coding packet.
+    promptFile: promptFile ? resolve(promptFile) : undefined,
   });
 }
 

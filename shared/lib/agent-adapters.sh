@@ -569,6 +569,61 @@ agent_native_launcher_path() {
   esac
 }
 
+# Write the launcher script for a native phase. One copy serves the autonomous
+# and interactive launch paths; only the phase's own exports and launcher
+# arguments differ. A prompt file makes a coding launch prompt-driven (post-PR
+# remediation, HOK-3272): the native runtime runs that instruction instead of
+# rebuilding the coding packet.
+# Usage: agent_write_native_launcher <launcher> <phase> <session> <issue> <linear_issue>
+#          <dashboard_pid> <model> <repo_dir> <worktree_dir> <feature_slug> [prompt_file]
+# Returns 1, writing nothing, for a phase without a native launcher.
+agent_write_native_launcher() {
+  local launcher="$1" phase="$2" session="$3" issue="$4" linear_issue="$5" dashboard_pid="$6"
+  local model="$7" repo_dir="$8" worktree_dir="$9" feature_slug="${10}" prompt_file="${11:-}"
+  local native_launcher phase_exports="" phase_args=""
+  native_launcher="$(agent_native_launcher_path "$phase" 2>/dev/null)" || return 1
+  case "$phase" in
+    planning)
+      phase_exports="export WAVEMILL_PLAN_DEPTH='${WAVEMILL_PLAN_DEPTH:-}'"$'\n'"export WAVEMILL_OPERATING_MODE='${WAVEMILL_OPERATING_MODE:-}'"
+      phase_args=" --linear-issue '$linear_issue'"
+      ;;
+    coding)
+      phase_exports="export WAVEMILL_CODE_DEPTH='${WAVEMILL_CODE_DEPTH:-}'"$'\n'"export WAVEMILL_OPERATING_MODE='${WAVEMILL_OPERATING_MODE:-}'"
+      [[ -n "$prompt_file" ]] && phase_args=" --prompt-file '$prompt_file'"
+      ;;
+  esac
+  cat > "$launcher" <<LAUNCHEOF
+#!/bin/bash
+set -euo pipefail
+export WAVEMILL_SESSION='$session'
+export WAVEMILL_ISSUE='$issue'
+export WAVEMILL_LINEAR_ISSUE='$linear_issue'
+export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
+export WAVEMILL_PHASE='$phase'
+export WAVEMILL_RESOLVED_MODEL='$model'
+export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
+export WAVEMILL_WT_DIR='$worktree_dir'
+export WAVEMILL_FEATURE_SLUG='$feature_slug'
+export WAVEMILL_SLUG='$feature_slug'
+${phase_exports}
+export WAVEMILL_BRANCH='${WAVEMILL_BRANCH:-}'
+export WAVEMILL_BASE_BRANCH='${WAVEMILL_BASE_BRANCH:-}'
+export WAVEMILL_TITLE='${WAVEMILL_TITLE:-}'
+if [[ -n '$issue' ]]; then
+  printf '%s\n' "working" > "/tmp/${session}-${issue}-status.txt"
+fi
+set +e
+npx tsx '$native_launcher' --session '$session' --issue '$issue'${phase_args} --slug '$feature_slug' --wt-dir '$worktree_dir' --repo-dir '$repo_dir'
+native_rc=\$?
+set -e
+if [[ -n "\${STATUS_LOG_FILE:-}" ]]; then
+  printf '%s\n' "[wavemill] native $phase exit code native=\${native_rc} issue='$issue'" >> "\$STATUS_LOG_FILE" 2>/dev/null || true
+fi
+echo "[wavemill] Agent exited (native=\${native_rc})"
+exit "\$native_rc"
+LAUNCHEOF
+}
+
 agent_runtime_resource_selection_enabled() {
   local repo_dir="$1"
   local surface="$2"
@@ -2263,113 +2318,11 @@ agent_launch_autonomous() {
   case "$agent_cmd" in
     native-openai|native-openrouter)
       local launcher="/tmp/${session}-${issue}-autonomous-launcher.sh"
-      # Resolved once here; the unknown-phase branch below still owns its own
-      # error, so this stays empty rather than failing for unsupported phases.
-      local native_launcher
-      native_launcher="$(agent_native_launcher_path "$native_phase" 2>/dev/null || true)"
-      case "$native_phase" in
-        planning)
-          cat > "$launcher" <<LAUNCHEOF
-#!/bin/bash
-set -euo pipefail
-export WAVEMILL_SESSION='$session'
-export WAVEMILL_ISSUE='$issue'
-export WAVEMILL_LINEAR_ISSUE='$linear_issue'
-export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
-export WAVEMILL_PHASE='planning'
-export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
-export WAVEMILL_WT_DIR='$worktree_dir'
-export WAVEMILL_FEATURE_SLUG='$feature_slug'
-export WAVEMILL_SLUG='$feature_slug'
-export WAVEMILL_PLAN_DEPTH='${WAVEMILL_PLAN_DEPTH:-}'
-export WAVEMILL_OPERATING_MODE='${WAVEMILL_OPERATING_MODE:-}'
-export WAVEMILL_BRANCH='${WAVEMILL_BRANCH:-}'
-export WAVEMILL_BASE_BRANCH='${WAVEMILL_BASE_BRANCH:-}'
-export WAVEMILL_TITLE='${WAVEMILL_TITLE:-}'
-if [[ -n '$issue' ]]; then
-  printf '%s\n' "working" > "/tmp/${session}-${issue}-status.txt"
-fi
-set +e
-npx tsx '$native_launcher' --session '$session' --issue '$issue' --linear-issue '$linear_issue' --slug '$feature_slug' --wt-dir '$worktree_dir' --repo-dir '$repo_dir'
-native_rc=\$?
-set -e
-if [[ -n "\${STATUS_LOG_FILE:-}" ]]; then
-  printf '%s\n' "[wavemill] native planning exit code native=\${native_rc} issue='$issue'" >> "\$STATUS_LOG_FILE" 2>/dev/null || true
-fi
-echo "[wavemill] Agent exited (native=\${native_rc})"
-exit "\$native_rc"
-LAUNCHEOF
-          ;;
-        review)
-          cat > "$launcher" <<LAUNCHEOF
-#!/bin/bash
-set -euo pipefail
-export WAVEMILL_SESSION='$session'
-export WAVEMILL_ISSUE='$issue'
-export WAVEMILL_LINEAR_ISSUE='$linear_issue'
-export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
-export WAVEMILL_PHASE='review'
-export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
-export WAVEMILL_WT_DIR='$worktree_dir'
-export WAVEMILL_FEATURE_SLUG='$feature_slug'
-export WAVEMILL_SLUG='$feature_slug'
-export WAVEMILL_BRANCH='${WAVEMILL_BRANCH:-}'
-export WAVEMILL_BASE_BRANCH='${WAVEMILL_BASE_BRANCH:-}'
-export WAVEMILL_TITLE='${WAVEMILL_TITLE:-}'
-if [[ -n '$issue' ]]; then
-  printf '%s\n' "working" > "/tmp/${session}-${issue}-status.txt"
-fi
-set +e
-npx tsx '$native_launcher' --session '$session' --issue '$issue' --slug '$feature_slug' --wt-dir '$worktree_dir' --repo-dir '$repo_dir'
-native_rc=\$?
-set -e
-if [[ -n "\${STATUS_LOG_FILE:-}" ]]; then
-  printf '%s\n' "[wavemill] native review exit code native=\${native_rc} issue='$issue'" >> "\$STATUS_LOG_FILE" 2>/dev/null || true
-fi
-echo "[wavemill] Agent exited (native=\${native_rc})"
-exit "\$native_rc"
-LAUNCHEOF
-          ;;
-        coding)
-          cat > "$launcher" <<LAUNCHEOF
-#!/bin/bash
-set -euo pipefail
-export WAVEMILL_SESSION='$session'
-export WAVEMILL_ISSUE='$issue'
-export WAVEMILL_LINEAR_ISSUE='$linear_issue'
-export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
-export WAVEMILL_PHASE='coding'
-export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
-export WAVEMILL_WT_DIR='$worktree_dir'
-export WAVEMILL_FEATURE_SLUG='$feature_slug'
-export WAVEMILL_SLUG='$feature_slug'
-export WAVEMILL_CODE_DEPTH='${WAVEMILL_CODE_DEPTH:-}'
-export WAVEMILL_OPERATING_MODE='${WAVEMILL_OPERATING_MODE:-}'
-export WAVEMILL_BRANCH='${WAVEMILL_BRANCH:-}'
-export WAVEMILL_BASE_BRANCH='${WAVEMILL_BASE_BRANCH:-}'
-export WAVEMILL_TITLE='${WAVEMILL_TITLE:-}'
-if [[ -n '$issue' ]]; then
-  printf '%s\n' "working" > "/tmp/${session}-${issue}-status.txt"
-fi
-set +e
-npx tsx '$native_launcher' --session '$session' --issue '$issue' --slug '$feature_slug' --wt-dir '$worktree_dir' --repo-dir '$repo_dir'
-native_rc=\$?
-set -e
-if [[ -n "\${STATUS_LOG_FILE:-}" ]]; then
-  printf '%s\n' "[wavemill] native coding exit code native=\${native_rc} issue='$issue'" >> "\$STATUS_LOG_FILE" 2>/dev/null || true
-fi
-echo "[wavemill] Agent exited (native=\${native_rc})"
-exit "\$native_rc"
-LAUNCHEOF
-          ;;
-        *)
-          echo "Error: native agent '$agent_cmd' does not support autonomous phase '$native_phase'" >&2
-          return 1
-          ;;
-      esac
+      if ! agent_write_native_launcher "$launcher" "$native_phase" "$session" "$issue" "$linear_issue" \
+        "$dashboard_pid" "${native_model:-$model}" "$repo_dir" "$worktree_dir" "$feature_slug"; then
+        echo "Error: native agent '$agent_cmd' does not support autonomous phase '$native_phase'" >&2
+        return 1
+      fi
       chmod +x "$launcher"
       local launcher_cmd
       printf -v launcher_cmd '%q' "$launcher"
@@ -2642,22 +2595,6 @@ agent_resume_after_error() {
   return 0
 }
 
-# ============================================================================
-# AGENT LAUNCH — INTERACTIVE (PLANNING) MODE
-# ============================================================================
-
-# Launch an agent interactively in a tmux window for user-guided planning.
-# Creates a small launcher script that execs the agent with the prompt.
-#
-# Args:
-#   $1 = tmux session name
-#   $2 = tmux window name
-#   $3 = path to prompt file
-#   $4 = agent command name
-#   $5 = model ID (optional — when set, passes --model flag to the agent CLI)
-#   $6 = agent flags (optional)
-#   $7 = abort check command (optional)
-#   $8 = issue ID (optional — enables lifecycle status tracking)
 # True when the installed codex CLI accepts --no-daemon (added alongside the
 # shared app-server daemon). Probed once per process; older CLIs reject the
 # unknown flag, so it is only passed when advertised. WAVEMILL_CODEX_NO_DAEMON
@@ -2677,6 +2614,32 @@ agent_codex_supports_no_daemon() {
   [[ "$_WAVEMILL_CODEX_NO_DAEMON_PROBE" == "1" ]]
 }
 
+# ============================================================================
+# AGENT LAUNCH — INTERACTIVE (PLANNING) MODE
+# ============================================================================
+
+# Launch an agent interactively in a tmux window for user-guided planning.
+# Creates a small launcher script that execs the agent with the prompt.
+#
+# Args:
+#   $1 = tmux session name
+#   $2 = tmux window name
+#   $3 = path to prompt file
+#   $4 = agent command name
+#   $5 = model ID (optional — when set, passes --model flag to the agent CLI)
+#   $6 = agent flags (optional)
+#   $7 = abort check command (optional)
+#   $8 = issue ID (optional — enables lifecycle status tracking)
+#   $9 = launch phase (optional — planning|coding|review). The caller's phase
+#        is authoritative; the window/prompt-filename sniff is only the
+#        fallback for callers that pass none (HOK-3272: remediation prompts
+#        are *-conflict-prompt.txt / *-ready-remediation-prompt.txt).
+#   $10 = prompt-driven (optional, "true"): a native coding launch runs $3 as
+#        its task instead of rebuilding the coding packet (post-PR
+#        remediation). CLI agents always run $3, so it changes nothing there.
+# Returns 0 on launch, 2 when the pane prep saw an abort, 3 when the route was
+# refused before any agent started (model/agent resolution or native
+# preflight; the reason is on stderr), 1 for any other failure.
 agent_launch_interactive() {
   local session="$1"
   local window="$2"
@@ -2686,11 +2649,12 @@ agent_launch_interactive() {
   local agent_flags="${6:-}"
   local abort_check_cmd="${7:-}"
   local issue="${8:-}"
+  local prompt_driven="${10:-false}"
   local dashboard_pid
   dashboard_pid="$(agent_resolve_dashboard_pid "$session")"
   local repo_dir="${REPO_DIR:-$(pwd)}"
   local role feature_dir launch_phase phase_env
-  launch_phase="$(agent_normalize_launch_phase "$window" "$prompt_file" 2>/dev/null || true)"
+  launch_phase="$(agent_normalize_launch_phase "${9:-}" "$window" "$prompt_file" 2>/dev/null || true)"
   role="$(agent_role_from_phase "$launch_phase" 2>/dev/null || true)"
   feature_dir="${WAVEMILL_FEATURE_DIR:-}"
   if [[ -z "$feature_dir" && -n "${WAVEMILL_FEATURE_SLUG:-}" ]]; then
@@ -2739,17 +2703,17 @@ agent_launch_interactive() {
     local resolved_model=""
     if ! resolved_model="$(agent_resolve_model "${role:-coder}" "$requested_model" "$repo_dir" 2>/dev/null)"; then
       _agent_log_warn "Failed to resolve model selector '$requested_model' for $agent_cmd"
-      return 1
+      return 3
     fi
 
     # Preflight check: ensure the model is launchable (handles retired models with successors)
     if ! model="$(agent_model_launch_preflight "$resolved_model" "${launch_phase:-coding}" "$repo_dir")"; then
-      return 1
+      return 3
     fi
 
     local resolved_agent
     if ! resolved_agent="$(agent_resolve_from_model "$model" "${launch_phase:-coding}")"; then
-      return 1
+      return 3
     fi
     if [[ "$resolved_agent" != "$agent_cmd" ]]; then
       echo "Error: launch agent mismatch for model $model: route resolved $resolved_agent, requested $agent_cmd" >&2
@@ -2794,7 +2758,7 @@ agent_launch_interactive() {
 
   if agent_is_native_cmd "$agent_cmd"; then
     if ! agent_native_launch_preflight "$issue" "$agent_cmd" "$native_phase" "$model" "$repo_dir"; then
-      return 1
+      return 3
     fi
     native_model="$(printf '%s' "$AGENT_NATIVE_LAUNCH_LAST_JSON" | jq -r '.model // empty' 2>/dev/null)"
   fi
@@ -2820,113 +2784,15 @@ agent_launch_interactive() {
   # Don't use exec — keep the shell alive so the window persists after agent exit
   case "$agent_cmd" in
     native-openai|native-openrouter)
-      # Resolved once here; the unknown-phase branch below still owns its own
-      # error, so this stays empty rather than failing for unsupported phases.
-      local native_launcher
-      native_launcher="$(agent_native_launcher_path "$native_phase" 2>/dev/null || true)"
-      case "$native_phase" in
-        planning)
-          cat > "$launcher" <<LAUNCHEOF
-#!/bin/bash
-set -euo pipefail
-export WAVEMILL_SESSION='$session'
-export WAVEMILL_ISSUE='$issue'
-export WAVEMILL_LINEAR_ISSUE='$linear_issue'
-export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
-export WAVEMILL_PHASE='planning'
-export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
-export WAVEMILL_WT_DIR='$worktree_dir'
-export WAVEMILL_FEATURE_SLUG='$feature_slug'
-export WAVEMILL_SLUG='$feature_slug'
-export WAVEMILL_PLAN_DEPTH='${WAVEMILL_PLAN_DEPTH:-}'
-export WAVEMILL_OPERATING_MODE='${WAVEMILL_OPERATING_MODE:-}'
-export WAVEMILL_BRANCH='${WAVEMILL_BRANCH:-}'
-export WAVEMILL_BASE_BRANCH='${WAVEMILL_BASE_BRANCH:-}'
-export WAVEMILL_TITLE='${WAVEMILL_TITLE:-}'
-if [[ -n '$issue' ]]; then
-  printf '%s\n' "working" > "/tmp/${session}-${issue}-status.txt"
-fi
-set +e
-npx tsx '$native_launcher' --session '$session' --issue '$issue' --linear-issue '$linear_issue' --slug '$feature_slug' --wt-dir '$worktree_dir' --repo-dir '$repo_dir'
-native_rc=\$?
-set -e
-if [[ -n "\${STATUS_LOG_FILE:-}" ]]; then
-  printf '%s\n' "[wavemill] native planning exit code native=\${native_rc} issue='$issue'" >> "\$STATUS_LOG_FILE" 2>/dev/null || true
-fi
-echo "[wavemill] Agent exited (native=\${native_rc})"
-exit "\$native_rc"
-LAUNCHEOF
-          ;;
-        review)
-          cat > "$launcher" <<LAUNCHEOF
-#!/bin/bash
-set -euo pipefail
-export WAVEMILL_SESSION='$session'
-export WAVEMILL_ISSUE='$issue'
-export WAVEMILL_LINEAR_ISSUE='$linear_issue'
-export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
-export WAVEMILL_PHASE='review'
-export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
-export WAVEMILL_WT_DIR='$worktree_dir'
-export WAVEMILL_FEATURE_SLUG='$feature_slug'
-export WAVEMILL_SLUG='$feature_slug'
-export WAVEMILL_BRANCH='${WAVEMILL_BRANCH:-}'
-export WAVEMILL_BASE_BRANCH='${WAVEMILL_BASE_BRANCH:-}'
-export WAVEMILL_TITLE='${WAVEMILL_TITLE:-}'
-if [[ -n '$issue' ]]; then
-  printf '%s\n' "working" > "/tmp/${session}-${issue}-status.txt"
-fi
-set +e
-npx tsx '$native_launcher' --session '$session' --issue '$issue' --slug '$feature_slug' --wt-dir '$worktree_dir' --repo-dir '$repo_dir'
-native_rc=\$?
-set -e
-if [[ -n "\${STATUS_LOG_FILE:-}" ]]; then
-  printf '%s\n' "[wavemill] native review exit code native=\${native_rc} issue='$issue'" >> "\$STATUS_LOG_FILE" 2>/dev/null || true
-fi
-echo "[wavemill] Agent exited (native=\${native_rc})"
-exit "\$native_rc"
-LAUNCHEOF
-          ;;
-        coding)
-          cat > "$launcher" <<LAUNCHEOF
-#!/bin/bash
-set -euo pipefail
-export WAVEMILL_SESSION='$session'
-export WAVEMILL_ISSUE='$issue'
-export WAVEMILL_LINEAR_ISSUE='$linear_issue'
-export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
-export WAVEMILL_PHASE='coding'
-export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
-export WAVEMILL_WT_DIR='$worktree_dir'
-export WAVEMILL_FEATURE_SLUG='$feature_slug'
-export WAVEMILL_SLUG='$feature_slug'
-export WAVEMILL_CODE_DEPTH='${WAVEMILL_CODE_DEPTH:-}'
-export WAVEMILL_OPERATING_MODE='${WAVEMILL_OPERATING_MODE:-}'
-export WAVEMILL_BRANCH='${WAVEMILL_BRANCH:-}'
-export WAVEMILL_BASE_BRANCH='${WAVEMILL_BASE_BRANCH:-}'
-export WAVEMILL_TITLE='${WAVEMILL_TITLE:-}'
-if [[ -n '$issue' ]]; then
-  printf '%s\n' "working" > "/tmp/${session}-${issue}-status.txt"
-fi
-set +e
-npx tsx '$native_launcher' --session '$session' --issue '$issue' --slug '$feature_slug' --wt-dir '$worktree_dir' --repo-dir '$repo_dir'
-native_rc=\$?
-set -e
-if [[ -n "\${STATUS_LOG_FILE:-}" ]]; then
-  printf '%s\n' "[wavemill] native coding exit code native=\${native_rc} issue='$issue'" >> "\$STATUS_LOG_FILE" 2>/dev/null || true
-fi
-echo "[wavemill] Agent exited (native=\${native_rc})"
-exit "\$native_rc"
-LAUNCHEOF
-          ;;
-        *)
-          echo "Error: native agent '$agent_cmd' does not support interactive phase '$native_phase'" >&2
-          return 1
-          ;;
-      esac
+      # A prompt-driven launch (post-PR remediation, HOK-3272) hands the
+      # prompt file to the native runtime instead of the rebuilt coding packet.
+      local native_prompt_file=""
+      [[ "$prompt_driven" == "true" ]] && native_prompt_file="$prompt_file"
+      if ! agent_write_native_launcher "$launcher" "$native_phase" "$session" "$issue" "$linear_issue" \
+        "$dashboard_pid" "${native_model:-$model}" "$repo_dir" "$worktree_dir" "$feature_slug" "$native_prompt_file"; then
+        echo "Error: native agent '$agent_cmd' does not support interactive phase '$native_phase'" >&2
+        return 1
+      fi
       ;;
     claude-deepseek)
       local tools_dir="${TOOLS_DIR:-$(agent_wavemill_tools_dir)}"
