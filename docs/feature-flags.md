@@ -40,11 +40,11 @@ that date to be retired.
 
 | Shadow | Switch(es) | Owner issue | Added | Removal criterion | Removal issue | Remove by |
 |---|---|---|---|---|---|---|
-| `WAVEMILL_LEDGER_SHADOW_DISABLED` | `WAVEMILL_LEDGER_SHADOW_DISABLED` | HOK-3183 | 2026-10-20 | Ledger side-effect / step / pair rows settle for 7 days with no duplicates recorded. Flip the gate per design §4b and delete the shadow writers. | HOK-3235 | 2026-11-19 |
+| `WAVEMILL_LEDGER_SHADOW_DISABLED`, `WAVEMILL_SIDE_EFFECT_DETECTOR_DISABLED`, `WAVEMILL_LEDGER_SHADOW_DEBUG` | These three switches control the same ledger shadow | HOK-3183 | 2026-10-20 | Ledger side-effect / step / pair rows settle for 7 days with no duplicates recorded. Flip the gate per design §4b and delete the shadow writers. | HOK-3235 | 2026-11-19 |
 | `WAVEMILL_HARNESS_RETENTION_SHADOW` | `WAVEMILL_HARNESS_RETENTION_SHADOW` | HOK-3235 | 2026-10-20 | Retention mode decided; shadow comparator deleted along with its sidecar artifact. | HOK-3235 | 2026-11-19 |
 | `WAVEMILL_SDK_COST_METERING_SHADOW` | `WAVEMILL_SDK_COST_METERING_SHADOW` | HOK-3235 | 2026-10-20 | SDK cost metering parity confirmed vs. OpenRouter price snapshot. Reclassify as offline eval or delete. | HOK-3235 | 2026-11-19 |
-| `WAVEMILL_SIDE_EFFECT_DETECTOR_DISABLED` | `WAVEMILL_SIDE_EFFECT_DETECTOR_DISABLED` | HOK-3183 | 2026-10-20 | Covered by the Ledger D/E/pair shadow retirement; delete alongside the shadow writers. | HOK-3235 | 2026-11-19 |
-| `WAVEMILL_LEDGER_SHADOW_DEBUG` | `WAVEMILL_LEDGER_SHADOW_DEBUG` | HOK-3183 | 2026-10-20 | Delete with the ledger shadow writers (debug sibling of `WAVEMILL_LEDGER_SHADOW_DISABLED`). | HOK-3235 | 2026-11-19 |
+| `WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE` | `WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE` | HOK-3187 | 2026-10-20 | Confirm renderer parity and retire the opt-in when ledger authority is live. | HOK-3235 | 2026-11-19 |
+| `cleanup.branchDeletion.mode` | cleanup.branchDeletion.mode | HOK-2953 | 2026-10-20 | Validate deletion authority and retire the shadow branch cleanup mode. | HOK-3235 | 2026-11-19 |
 
 ## Kill switches, rollbacks, skips and legacy paths
 

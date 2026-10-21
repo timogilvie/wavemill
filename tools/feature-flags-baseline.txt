@@ -113,7 +113,6 @@ WAVEMILL_ISSUE_CONTEXT  # plumbing: internal mill variable (HOK-3235 baseline se
 WAVEMILL_ISSUE_ID  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_LAST_ROUTE_SUMMARY_KEY  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_LAUNCH_PLAN  # plumbing: internal mill variable (HOK-3235 baseline seed)
-WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_LEDGER_STEP_TTL_  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_LEDGER_STEP_TTL_MINUTES  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_LEDGER_SURFACES_SHIM  # plumbing: internal mill variable (HOK-3235 baseline seed)

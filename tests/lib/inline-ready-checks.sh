@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Inline ready-checks shim (HOK-3235).
+# Provenance: hand-authored test helper preserving the pre-HOK-3206 inline contract.
 #
 # Pre-HOK-3206 the cross-PR revert guard, PR CI status read, ready-watchdog
 # sweep and plan->code expanded reroute ran synchronously inside each monitor
