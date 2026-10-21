@@ -19,6 +19,8 @@ describe('challenge-recovery', () => {
               HOK_1: {
                 pr: 101,
                 challengePairId: 'pair-1',
+                slug: 'test-slug',
+                worktree: '/test/worktree',
               },
             },
           }),
@@ -66,7 +68,7 @@ describe('challenge-recovery', () => {
         mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
         writeFileSync(
           join(repoDir, '.wavemill', 'workflow-state.json'),
-          JSON.stringify({ tasks: { HOK_1: { pr: 101, challengePairId: 'pair-1' } } }),
+          JSON.stringify({ tasks: { HOK_1: { pr: 101, challengePairId: 'pair-1', slug: 'test-slug', worktree: '/test/worktree' } } }),
         );
 
         const operations: Array<{ op: string }> = [];
@@ -159,7 +161,7 @@ describe('challenge-recovery', () => {
         mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
         writeFileSync(
           join(repoDir, '.wavemill', 'workflow-state.json'),
-          JSON.stringify({ tasks: { HOK_1: { pr: 101, challengePairId: 'pair-1' } } }),
+          JSON.stringify({ tasks: { HOK_1: { pr: 101, challengePairId: 'pair-1', slug: 'test-slug', worktree: '/test/worktree' } } }),
         );
 
         const operations: string[] = [];
