@@ -13682,12 +13682,14 @@ ready_current_github_head() {
 #   2: refusal (terminal for this head)
 #   3: GitHub PR head lag (waiting on PR cache to catch up) - HOK-3171
 # Sets READY_SYNC_HEAD, READY_SYNC_DETAIL, and (for rc 3) READY_SYNC_OBSERVED_PR_HEAD
+# and READY_SYNC_LOCAL_HEAD
 ready_sync_worktree_to_github_head() {
   local wt_dir="$1" branch="$2" pr_number="$3" state_dir="$4"
   local gh_head local_head pre_fetch_origin current_branch tend_marker tend_pushed tend_previous sync_reason
   READY_SYNC_HEAD=""
   READY_SYNC_DETAIL=""
   READY_SYNC_OBSERVED_PR_HEAD=""
+  READY_SYNC_LOCAL_HEAD=""
 
   gh_head=$(ready_current_github_head "$wt_dir" "$pr_number")
   if [[ -z "$gh_head" ]]; then
@@ -13752,6 +13754,7 @@ ready_sync_worktree_to_github_head() {
       if [[ "$remote_branch_head" == "$local_head" ]]; then
         # GitHub PR head lags pushed branch head
         READY_SYNC_OBSERVED_PR_HEAD="$gh_head"
+        READY_SYNC_LOCAL_HEAD="$local_head"
         READY_SYNC_DETAIL="PR #$pr_number head ${gh_head:0:7} lags pushed branch head ${local_head:0:7} (GitHub head lag)"
         return 3
       fi
@@ -14151,6 +14154,7 @@ launch_ready_phase() {
       ;;
     3)
       # HOK-3171: GitHub PR head lags pushed branch head - bounded wait
+      local local_head="$READY_SYNC_LOCAL_HEAD"
       bounded_retry_reset_if_new_head "$state_dir" "ready-pr-head-lag" "$local_head"
       local lag_count
       lag_count=$(bounded_retry_increment "$state_dir" "ready-pr-head-lag" "$local_head")
