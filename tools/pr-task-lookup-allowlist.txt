@@ -1,0 +1,8 @@
+# Allowlist for ad-hoc PR-task / task-location lookups that are not resolver-shape.
+# Each line names a file path relative to the repo root.
+# A file on this list will not trigger the pr-task-lookup guard.
+# For individual-line suppressions, use: // allow-pr-task-lookup: <reason>
+# See tools/check-pr-task-lookup-sites.ts for details.
+# These iterate all tasks but filter on properties other than pr/branch/taskId:
+shared/lib/stale-task-branches.ts
+shared/lib/tend-challenge-gate.ts
