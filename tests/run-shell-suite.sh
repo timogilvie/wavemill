@@ -78,6 +78,7 @@ TESTS=(
   native-agent-shell-operators.test.sh
   native-coding-commit.test.sh
   hook-write-context-guard.test.sh
+  osc7501-status.test.sh
   claude-tmux-server-guard.test.sh
   agent-tmux-runtime-guard.test.sh
   expansion-handshake.test.sh
