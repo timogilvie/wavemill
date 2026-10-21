@@ -17,7 +17,7 @@ const ALLOWLIST_FILE = join(REPO_ROOT, 'tools', 'pr-task-lookup-allowlist.txt');
 const AUTO_EXCLUDED_PATHS = [
   'shared/lib/pr-task-resolver.ts',
   'shared/lib/pr-task-lookup-checker.ts',
-  'tools/check-pr-task-lookup-sites.ts',
+  'tools/check-pr-task-lookup-sites.ts', // install-paths: allow file-path comparison for exclusion list
 ];
 
 const TEST_FILE_PATTERN = /\.test\.(ts|tsx|js|jsx)$/;
