@@ -15,8 +15,9 @@
 #
 # Guarded by sourcing: a test opts in with
 #     source "$REPO_DIR/tests/lib/inline-ready-checks.sh"
-# and gets inline cross-PR guard, inline live CI, inline expanded reroute, and
-# a no-op launch-task route prefetch. The watchdog tick becomes a no-op by
+# and gets inline cross-PR guard, inline live CI, inline expanded reroute,
+# inline pre-approval task-input preparation, and a no-op launch-task route
+# prefetch. The watchdog tick becomes a no-op by
 # removing the async consumer `ready_watchdog_tick_async` — `run_ready_watchdog_tick`
 # then logs a warn and returns 0 without touching the job infrastructure.
 # A pass-through stub of `sanitize_job_token` is also defined so any residual
@@ -51,6 +52,17 @@ expanded_reroute_gate() {
 # route-task.ts.
 launch_task_route_prefetch() {
   return 0
+}
+
+# Pre-approval task-input preparation (HOK-3253), inline. Mirrors the sync
+# branch the gate had before HOK-3235: run the expansion recovery directly and
+# never touch the prepare-task-inputs job or its retry bucket.
+prepare_task_inputs_gate() {
+  local issue="$1" slug="$2" feature_dir="$3"
+  PREPARE_TASK_INPUTS_LAST_DETAIL=""
+  recover_missing_expansion_artifact "$issue" "$slug" "$feature_dir" && return 0
+  PREPARE_TASK_INPUTS_LAST_DETAIL="$(expansion_recovery_detail "$feature_dir")"
+  return 1
 }
 
 # Pass-through stub so residual async-job entry points that are still reachable
