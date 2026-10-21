@@ -97,9 +97,9 @@ test_pane_release_flag_independent() {
   local repo
   repo="$(setup_repo pane-release)"
   REPO_DIR="$repo"
-  write_repo_config "$repo" '{"terminal":{"paneRelease":{"enabled":false}},"cleanup":{"branchDeletion":{"mode":"enforce"}}}'
+  write_repo_config "$repo" '{"terminal":{"paneRelease":{"enabled":false}},"cleanup":{"branchDeletion":{"enabled":true}}}'
   assert_eq "metadata-only" "$(wavemill_terminal_pane_policy_for_reason pr_merged)" "pane release config gate"
-  write_repo_config "$repo" '{"terminal":{"paneRelease":{"enabled":true}},"cleanup":{"branchDeletion":{"mode":"enforce"}}}'
+  write_repo_config "$repo" '{"terminal":{"paneRelease":{"enabled":true}},"cleanup":{"branchDeletion":{"enabled":true}}}'
   assert_eq "metadata-only" "$(WAVEMILL_TERMINAL_PANE_RELEASE=0 wavemill_terminal_pane_policy_for_reason pr_merged)" "pane release env kill-switch"
   assert_eq "enforce" "$(wavemill_branch_deletion_mode)" "pane release config does not affect branch deletion"
 }
@@ -108,9 +108,9 @@ test_startup_preflight_flag_independent() {
   local repo
   repo="$(setup_repo startup-preflight)"
   REPO_DIR="$repo"
-  write_repo_config "$repo" '{"startup":{"terminalPreflight":{"enabled":false}},"cleanup":{"branchDeletion":{"mode":"enforce"}}}'
+  write_repo_config "$repo" '{"startup":{"terminalPreflight":{"enabled":false}},"cleanup":{"branchDeletion":{"enabled":true}}}'
   assert_eq "false" "$(startup_preflight_enabled)" "startup preflight config gate"
-  write_repo_config "$repo" '{"startup":{"terminalPreflight":{"enabled":true}},"cleanup":{"branchDeletion":{"mode":"enforce"}}}'
+  write_repo_config "$repo" '{"startup":{"terminalPreflight":{"enabled":true}},"cleanup":{"branchDeletion":{"enabled":true}}}'
   assert_eq "false" "$(WAVEMILL_STARTUP_TERMINAL_PREFLIGHT=0 startup_preflight_enabled)" "startup preflight env kill-switch"
   assert_eq "enforce" "$(wavemill_branch_deletion_mode)" "startup preflight config does not affect branch deletion"
 }
@@ -119,34 +119,19 @@ test_cleanup_episode_flag_independent() {
   local repo
   repo="$(setup_repo cleanup-episodes)"
   REPO_DIR="$repo"
-  write_repo_config "$repo" '{"cleanup":{"episodes":{"enabled":false},"branchDeletion":{"mode":"enforce"}}}'
+  write_repo_config "$repo" '{"cleanup":{"episodes":{"enabled":false},"branchDeletion":{"enabled":true}}}'
   if cleanup_episode_enabled; then
     fail "cleanup episode config gate stayed enabled"
   fi
   assert_eq "enforce" "$(wavemill_branch_deletion_mode)" "cleanup episodes do not affect branch deletion"
 }
 
-test_branch_deletion_shadow_and_enforce() {
-  local repo branch wt out decision
-  repo="$(setup_repo branch-shadow)"
-  branch="task/branch-shadow"
-  wt="$TMP_ROOT/branch-shadow/wt"
-  add_pushed_worktree "$repo" "$branch" "$wt"
-
-  out="$(run_safe_cleanup "$repo" "$wt" "$branch")"
-  decision="$(decision_path "$repo" "$branch")"
-  assert_eq "0" "$(printf '%s\n' "$out" | awk -F= '$1=="rc"{print $2}')" "shadow cleanup rc"
-  assert_eq "shadow_would_delete" "$(printf '%s\n' "$out" | awk -F= '$1=="outcome"{print $2}')" "shadow cleanup outcome"
-  assert_true "shadow mode retains local branch" branch_exists "$repo" "$branch"
-  [[ ! -d "$wt" ]] || fail "shadow mode should still remove the worktree"
-  assert_true "shadow mode records decision" test -f "$decision"
-  assert_eq "shadow" "$(jq -r '.mode' "$decision")" "shadow decision mode"
-  assert_eq "true" "$(jq -r '.wouldDelete' "$decision")" "shadow decision wouldDelete"
-
+test_branch_deletion_enforce() {
+  local repo branch wt out
   repo="$(setup_repo branch-enforce)"
   branch="task/branch-enforce"
   wt="$TMP_ROOT/branch-enforce/wt"
-  write_repo_config "$repo" '{"cleanup":{"branchDeletion":{"enabled":true,"mode":"enforce"}}}'
+  write_repo_config "$repo" '{"cleanup":{"branchDeletion":{"enabled":true}}}'
   add_pushed_worktree "$repo" "$branch" "$wt"
   out="$(run_safe_cleanup "$repo" "$wt" "$branch")"
   assert_eq "safe_exact_remote" "$(printf '%s\n' "$out" | awk -F= '$1=="outcome"{print $2}')" "enforce cleanup outcome"
@@ -164,7 +149,7 @@ test_pr_aware_deletion_gate_preserves_contradictory_work() {
   add_pushed_worktree "$repo" "$branch" "$wt"
   head="$(git -C "$wt" rev-parse HEAD)"
   git -C "$origin" update-ref -d "refs/heads/$branch"
-  write_repo_config "$repo" '{"cleanup":{"branchDeletion":{"enabled":false,"mode":"enforce"}}}'
+  write_repo_config "$repo" '{"cleanup":{"branchDeletion":{"enabled":false}}}'
   fixture="$TMP_ROOT/pr-aware-disabled/pr.json"
   jq -cn --arg head "$head" '{number:4242,state:"MERGED",mergedAt:"2026-09-04T12:00:00Z",headRefOid:$head,headRefName:"task/pr-aware-disabled",baseRefName:"auto/integration",mergeCommit:null}' > "$fixture"
   gh() { cat "$fixture"; }
@@ -181,7 +166,7 @@ test_pr_aware_deletion_gate_preserves_contradictory_work() {
 test_pane_release_flag_independent
 test_startup_preflight_flag_independent
 test_cleanup_episode_flag_independent
-test_branch_deletion_shadow_and_enforce
+test_branch_deletion_enforce
 test_pr_aware_deletion_gate_preserves_contradictory_work
 
 echo "terminal-lifecycle-flags test passed"

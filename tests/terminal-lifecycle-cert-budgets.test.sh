@@ -44,7 +44,7 @@ write_budgets() {
 
 printf '\n=== terminal lifecycle budgets ===\n'
 start_ms="$(incident_now_ms)"
-cert_setup_delivery "budget-smoke" "squash" "shadow"
+cert_setup_delivery "budget-smoke" "squash" "enforce"
 slots_before="$(incident_slot_consuming_count)"
 cert_run_release_and_cleanup
 end_ms="$(incident_now_ms)"
@@ -72,10 +72,10 @@ else
   fail_budget "deletion-authority-recorded" 1 0
 fi
 
-if [[ "$CERT_CLEANUP_OUTCOME" == "shadow_would_delete" ]] && git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$CERT_BRANCH"; then
-  pass_budget "shadow-deletion-disabled" 0 0
+if ! git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$CERT_BRANCH"; then
+  pass_budget "enforced-deletion" 0 0
 else
-  fail_budget "shadow-deletion-disabled" 1 0
+  fail_budget "enforced-deletion" 1 0
 fi
 
 write_budgets

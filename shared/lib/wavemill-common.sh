@@ -1695,17 +1695,13 @@ wavemill_pr_aware_cleanup_enabled() {
 }
 
 wavemill_branch_deletion_mode() {
-  local enabled mode
+  local enabled
   enabled="$(cleanup_episode_config_value '.cleanup.branchDeletion.enabled' 'true')"
   if [[ "$enabled" == "false" || "$enabled" == "0" ]]; then
     printf 'disabled\n'
-    return 0
+  else
+    printf 'enforce\n'
   fi
-  mode="$(cleanup_episode_config_value '.cleanup.branchDeletion.mode' 'shadow')"
-  case "$mode" in
-    enforce|shadow) printf '%s\n' "$mode" ;;
-    *) printf 'shadow\n' ;;
-  esac
 }
 
 # Build the canonical cleanup evidence JSON from the destructive classifier's
@@ -2371,10 +2367,10 @@ safe_remove_task_worktree_and_branch() {
     fi
   fi
 
-  if [[ "$local_branch_exists" == "true" && "$cleanup_decision_mode" != "enforce" ]]; then
-    log "debug" "Shadow branch cleanup retained branch: $task_branch (authorized classification: $classification)"
-    WAVEMILL_CLEANUP_OUTCOME="shadow_would_delete"
-    return 0
+  if [[ "$local_branch_exists" == "true" && "$cleanup_decision_mode" == "disabled" ]]; then
+    log "debug" "Branch cleanup disabled; retaining branch: $task_branch"
+    WAVEMILL_CLEANUP_OUTCOME="retain_unverifiable"
+    return 10
   fi
 
   if [[ "$local_branch_exists" == "true" ]]; then

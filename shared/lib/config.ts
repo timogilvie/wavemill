@@ -358,7 +358,6 @@ export interface CleanupEpisodesConfig {
 
 export interface CleanupBranchDeletionConfig {
   enabled?: boolean;
-  mode?: 'shadow' | 'enforce';
 }
 
 export interface CleanupConfig {
@@ -2058,7 +2057,6 @@ export function getCleanupConfig(repoDir?: string): Required<CleanupConfig> {
   return {
     branchDeletion: {
       enabled: config.branchDeletion?.enabled ?? true,
-      mode: config.branchDeletion?.mode ?? 'shadow',
     },
     episodes: {
       enabled: config.episodes?.enabled ?? true,

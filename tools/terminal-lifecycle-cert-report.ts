@@ -22,7 +22,7 @@ const artifact = buildCertificationArtifact({ repoDir, runId });
 const written = writeCertificationReport(artifact, outDir);
 
 console.log(JSON.stringify({
-  ok: artifact.gates.shadow.pass && artifact.gates.soak.pass && artifact.gates.budgets.pass,
+  ok: artifact.gates.soak.pass && artifact.gates.budgets.pass,
   jsonPath: written.jsonPath,
   markdownPath: written.markdownPath,
   gates: artifact.gates,

@@ -68,11 +68,11 @@ cert_assert_eq() {
 
 cert_config_branch_deletion() {
   local mode="$1"
-  jq -n --arg mode "$mode" '{cleanup:{branchDeletion:{enabled:true,mode:$mode}}}' > "$REPO_DIR/.wavemill-config.json"
+  jq -n '{cleanup:{branchDeletion:{enabled:true}}}' > "$REPO_DIR/.wavemill-config.json"
 }
 
 cert_setup_delivery() {
-  local name="$1" merge_method="$2" mode="${3:-shadow}"
+  local name="$1" merge_method="$2" mode="${3:-enforce}"
   incident_scenario_new "$name"
   incident_scenario_start_tmux
   cert_config_branch_deletion "$mode"
@@ -156,13 +156,6 @@ cert_assert_pane_converged() {
 cert_assert_branch_shadow_or_enforced() {
   local mode="$1"
   case "$mode" in
-    shadow)
-      cert_assert_eq "shadow_would_delete" "$CERT_CLEANUP_OUTCOME" "cleanup_outcome"
-      git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$CERT_BRANCH" || {
-        cert_write_evidence "shadow_branch_retained" "present" "absent"
-        return 1
-      }
-      ;;
     enforce)
       if git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$CERT_BRANCH"; then
         cert_write_evidence "enforce_branch_deleted" "absent" "present"
