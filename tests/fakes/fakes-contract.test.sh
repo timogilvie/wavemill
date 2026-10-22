@@ -104,6 +104,22 @@ check "read 3 reports the pushed head" test "$(gh pr view 3 --json headRefOid --
 fakes_gh_state '.faults = [{cmd:"pr view", remaining:1, exit:1, stderr:"HTTP 502: Bad Gateway"}]'
 check "an injected fault fails exactly once" bash -c '! gh pr view 3 --json number'
 check "and the next call succeeds" gh pr view 3 --json number
+
+echo "gh: CI as a function of the head (checks.redWhileHeadHas)"
+git checkout -q main && git pull -q
+git checkout -q -b task/red && printf 'broken\n' > ci-broken.txt && git add ci-broken.txt && git commit -qm red && git push -q -u origin task/red
+gh pr create --head task/red --base main --title R --body r >/dev/null
+fakes_gh_state '.checks.redWhileHeadHas = "ci-broken.txt"'
+set +e; gh pr checks 4 --json name >/dev/null; rc=$?; set -e
+check "pr checks fails while the head contains the path" test "$rc" = 1
+check "statusCheckRollup reports FAILURE while the head contains the path" \
+  test "$(gh pr view 4 --json statusCheckRollup --jq '.statusCheckRollup[0].conclusion')" = FAILURE
+git rm -q ci-broken.txt && git commit -qm fix && git push -q
+check "a fix commit that removes the path turns pr checks green" gh pr checks 4 --json name
+check "and statusCheckRollup SUCCESS" \
+  test "$(gh pr view 4 --json statusCheckRollup --jq '.statusCheckRollup[0].conclusion')" = SUCCESS
+fakes_gh_state 'del(.checks.redWhileHeadHas)'
+
 : > "$FAKE_GH_UNHANDLED"
 check "an unmodelled command fails" bash -c '! gh release list'
 check "and is recorded as unhandled" test -s "$FAKE_GH_UNHANDLED"

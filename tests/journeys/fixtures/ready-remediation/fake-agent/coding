@@ -1,0 +1,22 @@
+# shellcheck shell=bash
+# Fake coder for the Ready remediation journey (HOK-3228, HOK-3092 class).
+#
+# The first coding launch implements the task but also commits ci-broken.txt,
+# which the fake GitHub's CI treats as a red build (checks.redWhileHeadHas).
+# Any later coding launch is the Ready remediator (post-PR remediation runs
+# the coding phase): it removes the breakage and pushes the fix, after which
+# CI on the new head is green.
+coding_runs_file="$FAKE_ROOT/coding-runs-$WAVEMILL_ISSUE"
+coding_run=$(( $(cat "$coding_runs_file" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$coding_run" > "$coding_runs_file"
+
+if (( coding_run == 1 )); then
+  printf 'this commit breaks CI\n' > ci-broken.txt
+  git add ci-broken.txt
+  default_coding
+else
+  printf '%s phase=coding issue=%s role=ready-remediator\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+  git rm -q ci-broken.txt
+  git -c user.name=fake-agent -c user.email=fake-agent@example.invalid commit -q -m "$WAVEMILL_ISSUE: fix CI"
+  git push -q origin HEAD
+fi

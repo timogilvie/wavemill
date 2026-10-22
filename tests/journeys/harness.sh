@@ -345,6 +345,20 @@ journey_agent_launch_count() {
   grep -c "phase=$phase issue=$issue wt=" "$FAKE_AGENT_LOG" 2>/dev/null || true
 }
 
+# Remediation launches a fixture's fake agent tagged with a role (e.g.
+# role=conflict-resolver, role=ready-remediator) in $FAKE_AGENT_LOG.
+journey_agent_role_launches() {
+  local issue="$1" role="$2"
+  grep -c "phase=coding issue=$issue role=$role" "$FAKE_AGENT_LOG" 2>/dev/null || true
+}
+
+# Lines of the mill's own logs (dashboard frame + status.log, ANSI stripped)
+# matching a basic regex.
+journey_mill_log_count() {
+  sed 's/\x1b\[[0-9;]*[A-Za-z]//g' "$JOURNEY_TMP/logs/monitor.out" "$JOURNEY_TMP/logs/status.log" 2>/dev/null \
+    | grep -c "$1" || true
+}
+
 # Operator/backstage roles, run on every poll.
 journey_operator_tick() {
   local issue="$1" fd

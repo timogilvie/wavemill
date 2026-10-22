@@ -13723,6 +13723,11 @@ _launch_ready_remediation_attempt() {
   [[ -z "$remediation_agent" ]] && remediation_agent="$AGENT_CMD"
 
   resolved_model="$current_model"
+  # A task launched on a bootstrap route carries no model on its row; the
+  # remediator re-runs the coding role, so fall back to the model the coding
+  # stage actually ran with, then the coding route (HOK-3228).
+  [[ -n "$resolved_model" ]] || resolved_model="$(stage_result_field "$state_dir" "coding" "model")"
+  [[ -n "$resolved_model" ]] || resolved_model="$(read_phase_config "$state_dir" "coding" "model")"
 
   if [[ -z "$resolved_model" ]]; then
     local no_model_artifacts_json

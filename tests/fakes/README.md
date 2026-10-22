@@ -34,6 +34,7 @@ gh state file (`$FAKE_GH_STATE`):
 | Key | Effect |
 |-----|--------|
 | `checks.default` / `checks.byPr[n]` / `prs[n].checks` | Check runs, e.g. `[{name:"ci",conclusion:"PENDING"}]`. Drives `pr checks` (exit 8 pending / 1 failed), `statusCheckRollup`, `mergeStateStatus`. |
+| `checks.redWhileHeadHas` | A path: every PR check reads `FAILURE` while the PR head's tree contains it (CI as a function of the code), so a fix commit that deletes it turns CI green with no mid-run state flip. |
 | `checks.integration` | Check runs reported for integration-branch commits (`commits/<sha>/check-runs`). |
 | `requiredChecks` | Branch protection: `pr merge` refuses until these are green. |
 | `headLag[n]` | After PR n's head moves, the next N reads still report the old head (GitHub read-after-write lag). |

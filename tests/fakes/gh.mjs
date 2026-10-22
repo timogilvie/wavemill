@@ -215,11 +215,17 @@ function cwdBranch() {
 
 // ── PR model ────────────────────────────────────────────────────────────────
 
-function checksFor(state, pr) {
+function checksFor(state, pr, head = pr.headRefOid) {
   const spec = pr.checks ?? state.checks.byPr?.[pr.number] ?? state.checks.default ?? [];
+  // CI as a function of the code (`checks.redWhileHeadHas`): every check fails
+  // while the PR head's tree contains the path, so a fix commit that removes
+  // it turns CI green on the next read — no test flips state mid-run.
+  const broken = state.checks.redWhileHeadHas && head
+    ? git(['cat-file', '-e', `${head}:${state.checks.redWhileHeadHas}`], { allowFail: true }) !== null
+    : false;
   return spec.map((check) => ({
     name: check.name,
-    conclusion: check.conclusion ?? 'SUCCESS',
+    conclusion: broken ? 'FAILURE' : check.conclusion ?? 'SUCCESS',
   }));
 }
 
@@ -245,7 +251,7 @@ function liveHead(state, pr, { observe }) {
 
 function view(state, pr, { observe = true } = {}) {
   const head = liveHead(state, pr, { observe });
-  const checks = checksFor(state, pr);
+  const checks = checksFor(state, pr, head);
   const buckets = checks.map((c) => checkState(c.conclusion));
   const baseSha = refSha(pr.baseRefName) ?? '';
   const behind = pr.state === 'OPEN' && baseSha && head
@@ -420,7 +426,7 @@ function dispatch(state, now) {
     }
     case 'pr checks': {
       const pr = findPr(state, rest[0]);
-      const checks = checksFor(state, pr).map((c) => ({
+      const checks = checksFor(state, pr, liveHead(state, pr, { observe: false })).map((c) => ({
         name: c.name,
         state: c.conclusion,
         bucket: checkState(c.conclusion),

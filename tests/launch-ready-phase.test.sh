@@ -133,6 +133,8 @@ extract_function "$MONITOR_SCRIPT_FILE" "reconciliation_record_attempt" >> "$LAU
 extract_function "$MONITOR_SCRIPT_FILE" "reconciliation_review_invalidated_by_commit" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "reconciliation_mark_review_stale" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "task_launch_model" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "stage_result_field" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "read_phase_config" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "log_coding_launch_refusal" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "launch_remediation_agent" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "_launch_ready_remediation_attempt" >> "$LAUNCH_FUNC_FILE"
@@ -264,6 +266,9 @@ run_launch_case() {
     STATE_DIR="$CASE_DIR/feature/ready"
     WT_DIR="$CASE_DIR/worktree"
     mkdir -p "$STATE_DIR" "$WT_DIR"
+    if [[ "$TEST_CASE" == coding_stage_model_fallback ]]; then
+      printf "%s\n" "{\"stage\":\"coding\",\"status\":\"completed\",\"agent\":\"claude\",\"model\":\"claude-opus-4-7\"}" > "$STATE_DIR/.coding-result.json"
+    fi
     HANDOFF_CLAIM_COUNT_FILE="$CASE_DIR/handoff-claim-count"
     # Every --head the handoff/label tools receive (HOK-3112).
     HANDOFF_HEADS_FILE="$CASE_DIR/handoff-heads"
@@ -508,7 +513,7 @@ EOF
       local filter="${5:-}${4:-}"
       if [[ "$filter" == *".tasks["*".model"* ]]; then
         case "$TEST_CASE" in
-          no_model_available) printf "\n" ;;
+          no_model_available|coding_stage_model_fallback) printf "\n" ;;
           *) printf "%s\n" "gpt-5.4" ;;
         esac
         return 0
@@ -516,21 +521,21 @@ EOF
       if [[ "$filter" == *".tasks["*".coderModel"* ]]; then
         case "$TEST_CASE" in
           native_route_coder_model) printf "%s\n" "kimi-k2-thinking" ;;
-          no_model_available) printf "\n" ;;
+          no_model_available|coding_stage_model_fallback) printf "\n" ;;
           *) printf "\n" ;;
         esac
         return 0
       fi
       if [[ "$filter" == *".tasks["*".reviewerModel"* ]]; then
         case "$TEST_CASE" in
-          no_model_available) printf "\n" ;;
+          no_model_available|coding_stage_model_fallback) printf "\n" ;;
           *) printf "\n" ;;
         esac
         return 0
       fi
       if [[ "$filter" == *".tasks["*".plannerModel"* ]]; then
         case "$TEST_CASE" in
-          no_model_available) printf "\n" ;;
+          no_model_available|coding_stage_model_fallback) printf "\n" ;;
           *) printf "\n" ;;
         esac
         return 0
@@ -587,8 +592,10 @@ EOF
       printf "prompt\n"
     }
     LAUNCH_AGENT_PHASE=""
+    LAUNCH_AGENT_MODEL=""
     _launch_agent_in_pane() {
       LAUNCH_AGENT_CALLS=$((LAUNCH_AGENT_CALLS + 1))
+      LAUNCH_AGENT_MODEL="${3:-}"
       LAUNCH_AGENT_PHASE="${7:-}"
       case "$TEST_CASE" in
         remediation_launch_failure) return 1 ;;
@@ -816,7 +823,7 @@ EOF
           printf "%s\n" "TypeError: ready crashed" >&2
           return 1
           ;;
-        remediation_disabled|remediation_launch|second_remediation_launch|remediation_exhausted|remediation_launch_failure|already_inflight_same_head|sequential_failing_launch_1|sequential_failing_launch_2|sequential_failing_launch_3|native_route_coder_model|no_model_available|remediation_backoff_hold|remediation_head_reset|native_remediation_ci|native_remediation_ci_refused)
+        remediation_disabled|remediation_launch|second_remediation_launch|remediation_exhausted|remediation_launch_failure|already_inflight_same_head|sequential_failing_launch_1|sequential_failing_launch_2|sequential_failing_launch_3|native_route_coder_model|no_model_available|coding_stage_model_fallback|remediation_backoff_hold|remediation_head_reset|native_remediation_ci|native_remediation_ci_refused)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"fail\",\"checks\":[{\"name\":\"ci-status\",\"status\":\"fail\",\"message\":\"1 CI check(s) failing\",\"details\":{\"failedChecks\":[{\"name\":\"Shell and Unit Tests\",\"state\":\"FAILURE\"}],\"pendingChecks\":[],\"totalChecks\":3}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"One or more checks failed - not safe to merge\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"UNSTABLE\",\"attempts\":1}}"
           return 1
           ;;
@@ -948,6 +955,7 @@ EOF
       printf "tend_marker=%s\n" "$tend_marker"
     fi
     printf "phase_used=%s\n" "$LAUNCH_AGENT_PHASE"
+    printf "model_used=%s\n" "$LAUNCH_AGENT_MODEL"
     remediation_retry_count="$(cat "$STATE_DIR/.retry-ready-remediation-count" 2>/dev/null || echo "")"
     remediation_retry_exhausted="absent"
     [[ -f "$STATE_DIR/.retry-ready-remediation-exhausted" ]] && remediation_retry_exhausted="present"
@@ -1923,6 +1931,15 @@ check_contains "no model scenario fails" "$output" "rc=1"
 check_contains "no model scenario records attempt 1" "$output" "\"remediationAttempts\":1"
 check_contains "no model scenario does not invoke agent" "$output" "launch_calls=0"
 check_contains "no model scenario writes clear reason" "$output" "No model configured for ready remediation"
+
+echo "=== Coding Stage Model Fallback (HOK-3228) ==="
+
+# A bootstrap-routed task has no model on its row; the remediator re-runs the
+# coding role with the model the coding stage recorded.
+output="$(run_launch_case coding_stage_model_fallback)"
+check_contains "row-less model falls back to the coding stage model" "$output" "model_used=claude-opus-4-7"
+check_contains "and launches the remediator" "$output" "launch_calls=1"
+check_not_contains "and never reports a missing model" "$output" "No model configured for ready remediation"
 
 echo "=== Launch Phase Propagation ==="
 
