@@ -19,6 +19,8 @@ fail() { echo "not ok $1"; echo "  $2" >&2; FAIL=$((FAIL + 1)); }
 
 # shellcheck source=../shared/lib/terminal-backend.sh
 source "$REPO_DIR/shared/lib/terminal-backend.sh"
+# shellcheck source=lib/state-fixtures.sh
+source "$REPO_DIR/tests/lib/state-fixtures.sh"
 
 TMUX_LOG="$TEST_TMP/tmux.log"
 TMUX_STDOUT=""
@@ -186,7 +188,7 @@ assert_argv "legacy wavemill_set_tmux_pane_title" "[select-pane][-t][@3][-T][t]"
 
 # Task window resolution: the recorded windowId wins when it is live.
 STATE_FILE_FIXTURE="$TEST_TMP/state.json"
-printf '{"tasks":{"HOK-1":{"windowId":"@9"}}}\n' > "$STATE_FILE_FIXTURE"
+fixture_workflow_state "$STATE_FILE_FIXTURE" HOK-1 windowId=@9
 reset_stub; TMUX_STDOUT="wm"
 resolved="$(_tmux_task_window_target wm HOK-1 slug "$STATE_FILE_FIXTURE")"
 [[ "$resolved" == "@9" ]] && pass "task_window_target prefers the recorded windowId" || fail "task_window_target prefers the recorded windowId" "$resolved"
