@@ -1,0 +1,746 @@
+{
+  "$fixture": {
+    "capturedAt": "2026-10-22T13:09:22.223Z",
+    "phase": "merged",
+    "notes": "terminal task, PR merged, workflowOutcome=merged"
+  },
+  "workflowState": {
+    "session": "wavemill-fixture",
+    "started": "2026-09-08T20:43:12Z",
+    "updated": "2026-10-22T13:09:22Z",
+    "tasks": {
+      "FIXTURE-1": {
+        "slug": "emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes",
+        "branch": "task/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes",
+        "worktree": "/workspace/wavemill-fixture/worktrees/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes",
+        "pr": "1702",
+        "status": "merged",
+        "linearIssueId": "FIXTURE-1",
+        "updated": "2026-10-22T12:48:02Z",
+        "agent": "claude",
+        "challenge": false,
+        "challengeModel": "claude-haiku-4-5-20251001",
+        "plannerModel": "claude-opus-4-7",
+        "coderModel": "claude-opus-4-7",
+        "reviewerModel": "claude-opus-4-7",
+        "planDepth": "medium",
+        "codeDepth": "medium",
+        "reviewMode": "llm",
+        "title": "Emit OSC 7501 Program Status reports alongside wavemill-fixture hook writes",
+        "traceId": "trc_6ad92924_652602db95b69127",
+        "lifecycle": {
+          "schemaVersion": 1,
+          "workflowOutcome": "merged",
+          "resourceDisposition": "retained",
+          "launchContract": {
+            "baseBranch": "auto/integration",
+            "baseSha": "5050ff3f1862ae0ce9366447db4a23e15d507bc7",
+            "integrationMode": "merge-queue",
+            "mergeExecutor": "tend",
+            "mergeMethod": "squash",
+            "requireConfirm": false,
+            "remoteBranchDeletionPolicy": {
+              "allowed": true,
+              "mode": "merged-pr-task-branch",
+              "source": "cleanup_remote_task_branch"
+            },
+            "challengeRole": "",
+            "challengePairId": "",
+            "session": "wavemill-fixture",
+            "runEpoch": "20261021T171111Z.64052",
+            "windowId": "",
+            "provenance": {
+              "baseBranch": "repo-config",
+              "requireConfirm": "repo-config",
+              "mergeMethod": "repo-config",
+              "remoteBranchDeletionPolicy": "launch-contract"
+            }
+          },
+          "deliveryEvidence": {
+            "prNumber": "1702",
+            "prState": "MERGED",
+            "prBaseBranch": "auto/integration",
+            "prHeadSha": "f4571970e4457056fad90661e446b66d758d56a6",
+            "mergeSha": "183b429e057d56b62bfc8bdc115bb2907a18e44b"
+          },
+          "attempt": null,
+          "prReconciliation": {
+            "schemaVersion": 1,
+            "classification": "current-open",
+            "issue": "FIXTURE-1",
+            "branch": "task/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes",
+            "baseBranch": "auto/integration",
+            "attemptId": null,
+            "linearState": null,
+            "reason": "open_current_pr",
+            "checkedAt": "2026-10-21T23:01:40Z",
+            "selectedCandidate": {
+              "baseRefName": "auto/integration",
+              "body": "## Summary\n\n- Mirror every successful `wavemill_hook_write` to the agent pane's TTY as a best-effort OSC 7501 Program Status report, so terminals that speak the protocol (e.g. Rex) show agent state natively without a wavemill-fixture-side change.\n- Map the seven hook states to spec per the issue table (`working`→`working`, `idle`→`idle`, `waiting`→`blocked:kind=question`, `approval-needed`→`blocked:kind=permission`, `blocked`→`blocked`, `policy-denied`/`error`→`error`); emit `app=wavemill-fixture-<agent>` (sanitized to `[A-Za-z0-9_.+-]{1,32}`, falling back to `wavemill-fixture`), base64 `msg` from `next_action` or `detail` with control chars stripped and truncated to 2048 decoded bytes, and base64 `title` from `WAVEMILL_ISSUE` truncated to 192 bytes.\n- Resolve the pane TTY once (`tmux display-message -p '#{pane_tty}'` or the controlling tty), wrap in DCS passthrough under tmux, and no-op silently on resolution failure — the hook never writes to its own stdout/stderr (which Claude Code parses) and never fails the hook write.\n- Add a config kill switch (`hooks.programStatus` in `.wavemill-fixture-config.json`, default on) sharing the single `jq` invocation that already resolves `hooks.emitOsc`, so there is zero new per-write process cost and no new `WAVEMILL_*` env var (FIXTURE-2 guard stays clean).\n\n## Changes\n\n- `shared/hooks/wavemill-fixture-hook-protocol.sh` — add `wavemill_osc7501_*` helpers (state map, msg/title base64 with truncation + control stripping, app sanitization, DCS-wrapped sequence builder, TTY resolution, best-effort writer); call it from `wavemill_hook_write` after the atomic hook file is in place; combine the `programStatus` and `emitOsc` config reads into one `jq` call.\n- `wavemill-fixture-config.schema.json` — document `hooks.programStatus` (boolean, default true).\n- `CLAUDE.md` — document the OSC 7501 mirror, state mapping, size limits, tmux passthrough caveat, and the config kill switch, under \"Hook-Based Status Tracking\".\n- `tests/osc7501-status.test.sh` — new shell test covering exact byte sequences per state, base64 of `msg`/`title`, truncation at 2048 / 192 bytes, control-character stripping, `app` sanitization and length cap, no-tty no-op, tmux DCS passthrough wrapping, and that no bytes land on hook stdout/stderr; registered in `tests/run-shell-suite.sh` and `tests/check-shell.sh`.\n- `tools/feature-flags-baseline.txt` — minor baseline bump for the new config read.\n\n## Test plan\n\n- `bash tests/osc7501-status.test.sh` — covers every state's full sequence, encoded fields, size limits, control stripping, kill switch, non-tty no-op, tmux DCS wrap, and the \"nothing leaks to stdout/stderr\" guarantee.\n- `bash tests/check-shell.sh` continues to pass with the new test file in the syntax-check list.\n- Verified existing hook tests remain green (the OSC emit happens *after* the atomic status write, so the hook file's semantics and ordering are unchanged).\n\n## Self-review\n\n- Verdict: **ready** (iteration 1 of 1).\n- Blockers: 0. Warnings: 0. Model: `claude-opus-4-7` (pinned).\n- Diff base: `origin/auto/integration` at `a2b00cd3` (local `auto/integration` ref was stale; fast-forwarded to origin before review so scope was evaluated against the real base). 7 files reviewed.\n\n## Routing\n\n**Non-authoritative routing context.** Wavemill stamps the authoritative executed route into `wavemill-fixture-meta` before `wm:ready`.\n\nRuntime execution telemetry from `features/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes/routing.jsonl` (most recent decision):\n\n- Planner: `claude-opus-4-7`\n- Coder: `claude-opus-4-7`\n- Reviewer: `claude-opus-4-7`\n- Source layer: `hokusai` (policy_version `production`)\n- No fallback reason recorded.\n\nAn earlier decision had `coder=claude-haiku-4-5-20251001`; it was superseded.\n\n<!-- wavemill-fixture-meta\ntask: FIXTURE-1\n-->",
+              "createdAt": "2026-10-21T22:59:29Z",
+              "headRefName": "task/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes",
+              "headRefOid": "89d01d2cadb7b9c2f94ce16b1356062eed32b23e",
+              "mergedAt": null,
+              "number": 1702,
+              "state": "OPEN",
+              "title": "FIXTURE-1: Emit OSC 7501 Program Status reports alongside wavemill-fixture hook writes",
+              "updatedAt": "2026-10-21T22:59:30Z",
+              "url": "https://github.com/timogilvie/wavemill-fixture/pull/1702",
+              "normalizedState": "OPEN",
+              "branchMatches": true,
+              "baseMatches": true,
+              "headMatches": true,
+              "issueMatches": true,
+              "attemptMatches": false,
+              "challengeMatches": false,
+              "currentEvidence": true,
+              "mismatchReason": ""
+            },
+            "candidates": [
+              {
+                "baseRefName": "auto/integration",
+                "body": "## Summary\n\n- Mirror every successful `wavemill_hook_write` to the agent pane's TTY as a best-effort OSC 7501 Program Status report, so terminals that speak the protocol (e.g. Rex) show agent state natively without a wavemill-fixture-side change.\n- Map the seven hook states to spec per the issue table (`working`→`working`, `idle`→`idle`, `waiting`→`blocked:kind=question`, `approval-needed`→`blocked:kind=permission`, `blocked`→`blocked`, `policy-denied`/`error`→`error`); emit `app=wavemill-fixture-<agent>` (sanitized to `[A-Za-z0-9_.+-]{1,32}`, falling back to `wavemill-fixture`), base64 `msg` from `next_action` or `detail` with control chars stripped and truncated to 2048 decoded bytes, and base64 `title` from `WAVEMILL_ISSUE` truncated to 192 bytes.\n- Resolve the pane TTY once (`tmux display-message -p '#{pane_tty}'` or the controlling tty), wrap in DCS passthrough under tmux, and no-op silently on resolution failure — the hook never writes to its own stdout/stderr (which Claude Code parses) and never fails the hook write.\n- Add a config kill switch (`hooks.programStatus` in `.wavemill-fixture-config.json`, default on) sharing the single `jq` invocation that already resolves `hooks.emitOsc`, so there is zero new per-write process cost and no new `WAVEMILL_*` env var (FIXTURE-2 guard stays clean).\n\n## Changes\n\n- `shared/hooks/wavemill-fixture-hook-protocol.sh` — add `wavemill_osc7501_*` helpers (state map, msg/title base64 with truncation + control stripping, app sanitization, DCS-wrapped sequence builder, TTY resolution, best-effort writer); call it from `wavemill_hook_write` after the atomic hook file is in place; combine the `programStatus` and `emitOsc` config reads into one `jq` call.\n- `wavemill-fixture-config.schema.json` — document `hooks.programStatus` (boolean, default true).\n- `CLAUDE.md` — document the OSC 7501 mirror, state mapping, size limits, tmux passthrough caveat, and the config kill switch, under \"Hook-Based Status Tracking\".\n- `tests/osc7501-status.test.sh` — new shell test covering exact byte sequences per state, base64 of `msg`/`title`, truncation at 2048 / 192 bytes, control-character stripping, `app` sanitization and length cap, no-tty no-op, tmux DCS passthrough wrapping, and that no bytes land on hook stdout/stderr; registered in `tests/run-shell-suite.sh` and `tests/check-shell.sh`.\n- `tools/feature-flags-baseline.txt` — minor baseline bump for the new config read.\n\n## Test plan\n\n- `bash tests/osc7501-status.test.sh` — covers every state's full sequence, encoded fields, size limits, control stripping, kill switch, non-tty no-op, tmux DCS wrap, and the \"nothing leaks to stdout/stderr\" guarantee.\n- `bash tests/check-shell.sh` continues to pass with the new test file in the syntax-check list.\n- Verified existing hook tests remain green (the OSC emit happens *after* the atomic status write, so the hook file's semantics and ordering are unchanged).\n\n## Self-review\n\n- Verdict: **ready** (iteration 1 of 1).\n- Blockers: 0. Warnings: 0. Model: `claude-opus-4-7` (pinned).\n- Diff base: `origin/auto/integration` at `a2b00cd3` (local `auto/integration` ref was stale; fast-forwarded to origin before review so scope was evaluated against the real base). 7 files reviewed.\n\n## Routing\n\n**Non-authoritative routing context.** Wavemill stamps the authoritative executed route into `wavemill-fixture-meta` before `wm:ready`.\n\nRuntime execution telemetry from `features/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes/routing.jsonl` (most recent decision):\n\n- Planner: `claude-opus-4-7`\n- Coder: `claude-opus-4-7`\n- Reviewer: `claude-opus-4-7`\n- Source layer: `hokusai` (policy_version `production`)\n- No fallback reason recorded.\n\nAn earlier decision had `coder=claude-haiku-4-5-20251001`; it was superseded.\n\n<!-- wavemill-fixture-meta\ntask: FIXTURE-1\n-->",
+                "createdAt": "2026-10-21T22:59:29Z",
+                "headRefName": "task/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes",
+                "headRefOid": "89d01d2cadb7b9c2f94ce16b1356062eed32b23e",
+                "mergedAt": null,
+                "number": 1702,
+                "state": "OPEN",
+                "title": "FIXTURE-1: Emit OSC 7501 Program Status reports alongside wavemill-fixture hook writes",
+                "updatedAt": "2026-10-21T22:59:30Z",
+                "url": "https://github.com/timogilvie/wavemill-fixture/pull/1702",
+                "normalizedState": "OPEN",
+                "branchMatches": true,
+                "baseMatches": true,
+                "headMatches": true,
+                "issueMatches": true,
+                "attemptMatches": false,
+                "challengeMatches": false,
+                "currentEvidence": true,
+                "mismatchReason": ""
+              }
+            ]
+          },
+          "lastAttemptReconciledBy": "monitor-pr-discovery",
+          "lastAttemptReconciledAt": "2026-10-21T23:01:40Z",
+          "retention": {
+            "reason": "live-agent-process",
+            "policy": "manual-verification-required",
+            "actor": "cleanup_completed_task",
+            "timestamp": "2026-10-22T12:48:02Z"
+          },
+          "cleanupEpisode": {
+            "schemaVersion": 1,
+            "episodeId": "FIXTURE-1:cleanup:2b861aa375605c7a8ebfd7bce6db18b50915355791663b403db92488109a697c",
+            "fingerprint": "2b861aa375605c7a8ebfd7bce6db18b50915355791663b403db92488109a697c",
+            "fingerprintInputs": {
+              "issue": "FIXTURE-1",
+              "branch": "task/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes",
+              "worktree": "/workspace/wavemill-fixture/worktrees/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes",
+              "worktreeExists": true,
+              "localBranchExists": true,
+              "localHeadSha": "f4571970e4457056fad90661e446b66d758d56a6",
+              "baseBranch": "auto/integration",
+              "baseSha": "da6c78e13dd7d2be70e3ffd96e3543aa8044f3ad",
+              "remoteTrackingHeadSha": "",
+              "dirtyStatusHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "dirtyStatus": "",
+              "worktreeIdentity": "valid",
+              "prNumber": "1702",
+              "prState": "MERGED",
+              "prHeadRefOid": "f4571970e4457056fad90661e446b66d758d56a6",
+              "prBaseBranch": "auto/integration",
+              "verificationReason": ""
+            },
+            "disposition": "transient",
+            "failureClass": "operational",
+            "firstAttemptAt": "2026-10-22T12:48:02Z",
+            "lastAttemptAt": "2026-10-22T12:48:02Z",
+            "attemptCount": 1,
+            "maxAttempts": 5,
+            "nextRetryAt": "2026-10-22T12:48:29Z",
+            "requiredOperatorAction": "Inspect local worktree, branch, and tmux cleanup failure, then run wavemill-fixture cleanup <issue> --dry-run.",
+            "lastOutcome": "live-agent-process",
+            "updatedAt": "2026-10-22T12:48:02Z"
+          }
+        },
+        "phase": "done",
+        "windowId": "@133",
+        "attempt": null,
+        "prReconciliation": {
+          "schemaVersion": 1,
+          "classification": "current-open",
+          "issue": "FIXTURE-1",
+          "branch": "task/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes",
+          "baseBranch": "auto/integration",
+          "attemptId": null,
+          "linearState": null,
+          "reason": "open_current_pr",
+          "checkedAt": "2026-10-21T23:01:40Z",
+          "selectedCandidate": {
+            "baseRefName": "auto/integration",
+            "body": "## Summary\n\n- Mirror every successful `wavemill_hook_write` to the agent pane's TTY as a best-effort OSC 7501 Program Status report, so terminals that speak the protocol (e.g. Rex) show agent state natively without a wavemill-fixture-side change.\n- Map the seven hook states to spec per the issue table (`working`→`working`, `idle`→`idle`, `waiting`→`blocked:kind=question`, `approval-needed`→`blocked:kind=permission`, `blocked`→`blocked`, `policy-denied`/`error`→`error`); emit `app=wavemill-fixture-<agent>` (sanitized to `[A-Za-z0-9_.+-]{1,32}`, falling back to `wavemill-fixture`), base64 `msg` from `next_action` or `detail` with control chars stripped and truncated to 2048 decoded bytes, and base64 `title` from `WAVEMILL_ISSUE` truncated to 192 bytes.\n- Resolve the pane TTY once (`tmux display-message -p '#{pane_tty}'` or the controlling tty), wrap in DCS passthrough under tmux, and no-op silently on resolution failure — the hook never writes to its own stdout/stderr (which Claude Code parses) and never fails the hook write.\n- Add a config kill switch (`hooks.programStatus` in `.wavemill-fixture-config.json`, default on) sharing the single `jq` invocation that already resolves `hooks.emitOsc`, so there is zero new per-write process cost and no new `WAVEMILL_*` env var (FIXTURE-2 guard stays clean).\n\n## Changes\n\n- `shared/hooks/wavemill-fixture-hook-protocol.sh` — add `wavemill_osc7501_*` helpers (state map, msg/title base64 with truncation + control stripping, app sanitization, DCS-wrapped sequence builder, TTY resolution, best-effort writer); call it from `wavemill_hook_write` after the atomic hook file is in place; combine the `programStatus` and `emitOsc` config reads into one `jq` call.\n- `wavemill-fixture-config.schema.json` — document `hooks.programStatus` (boolean, default true).\n- `CLAUDE.md` — document the OSC 7501 mirror, state mapping, size limits, tmux passthrough caveat, and the config kill switch, under \"Hook-Based Status Tracking\".\n- `tests/osc7501-status.test.sh` — new shell test covering exact byte sequences per state, base64 of `msg`/`title`, truncation at 2048 / 192 bytes, control-character stripping, `app` sanitization and length cap, no-tty no-op, tmux DCS passthrough wrapping, and that no bytes land on hook stdout/stderr; registered in `tests/run-shell-suite.sh` and `tests/check-shell.sh`.\n- `tools/feature-flags-baseline.txt` — minor baseline bump for the new config read.\n\n## Test plan\n\n- `bash tests/osc7501-status.test.sh` — covers every state's full sequence, encoded fields, size limits, control stripping, kill switch, non-tty no-op, tmux DCS wrap, and the \"nothing leaks to stdout/stderr\" guarantee.\n- `bash tests/check-shell.sh` continues to pass with the new test file in the syntax-check list.\n- Verified existing hook tests remain green (the OSC emit happens *after* the atomic status write, so the hook file's semantics and ordering are unchanged).\n\n## Self-review\n\n- Verdict: **ready** (iteration 1 of 1).\n- Blockers: 0. Warnings: 0. Model: `claude-opus-4-7` (pinned).\n- Diff base: `origin/auto/integration` at `a2b00cd3` (local `auto/integration` ref was stale; fast-forwarded to origin before review so scope was evaluated against the real base). 7 files reviewed.\n\n## Routing\n\n**Non-authoritative routing context.** Wavemill stamps the authoritative executed route into `wavemill-fixture-meta` before `wm:ready`.\n\nRuntime execution telemetry from `features/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes/routing.jsonl` (most recent decision):\n\n- Planner: `claude-opus-4-7`\n- Coder: `claude-opus-4-7`\n- Reviewer: `claude-opus-4-7`\n- Source layer: `hokusai` (policy_version `production`)\n- No fallback reason recorded.\n\nAn earlier decision had `coder=claude-haiku-4-5-20251001`; it was superseded.\n\n<!-- wavemill-fixture-meta\ntask: FIXTURE-1\n-->",
+            "createdAt": "2026-10-21T22:59:29Z",
+            "headRefName": "task/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes",
+            "headRefOid": "89d01d2cadb7b9c2f94ce16b1356062eed32b23e",
+            "mergedAt": null,
+            "number": 1702,
+            "state": "OPEN",
+            "title": "FIXTURE-1: Emit OSC 7501 Program Status reports alongside wavemill-fixture hook writes",
+            "updatedAt": "2026-10-21T22:59:30Z",
+            "url": "https://github.com/timogilvie/wavemill-fixture/pull/1702",
+            "normalizedState": "OPEN",
+            "branchMatches": true,
+            "baseMatches": true,
+            "headMatches": true,
+            "issueMatches": true,
+            "attemptMatches": false,
+            "challengeMatches": false,
+            "currentEvidence": true,
+            "mismatchReason": ""
+          },
+          "candidates": [
+            {
+              "baseRefName": "auto/integration",
+              "body": "## Summary\n\n- Mirror every successful `wavemill_hook_write` to the agent pane's TTY as a best-effort OSC 7501 Program Status report, so terminals that speak the protocol (e.g. Rex) show agent state natively without a wavemill-fixture-side change.\n- Map the seven hook states to spec per the issue table (`working`→`working`, `idle`→`idle`, `waiting`→`blocked:kind=question`, `approval-needed`→`blocked:kind=permission`, `blocked`→`blocked`, `policy-denied`/`error`→`error`); emit `app=wavemill-fixture-<agent>` (sanitized to `[A-Za-z0-9_.+-]{1,32}`, falling back to `wavemill-fixture`), base64 `msg` from `next_action` or `detail` with control chars stripped and truncated to 2048 decoded bytes, and base64 `title` from `WAVEMILL_ISSUE` truncated to 192 bytes.\n- Resolve the pane TTY once (`tmux display-message -p '#{pane_tty}'` or the controlling tty), wrap in DCS passthrough under tmux, and no-op silently on resolution failure — the hook never writes to its own stdout/stderr (which Claude Code parses) and never fails the hook write.\n- Add a config kill switch (`hooks.programStatus` in `.wavemill-fixture-config.json`, default on) sharing the single `jq` invocation that already resolves `hooks.emitOsc`, so there is zero new per-write process cost and no new `WAVEMILL_*` env var (FIXTURE-2 guard stays clean).\n\n## Changes\n\n- `shared/hooks/wavemill-fixture-hook-protocol.sh` — add `wavemill_osc7501_*` helpers (state map, msg/title base64 with truncation + control stripping, app sanitization, DCS-wrapped sequence builder, TTY resolution, best-effort writer); call it from `wavemill_hook_write` after the atomic hook file is in place; combine the `programStatus` and `emitOsc` config reads into one `jq` call.\n- `wavemill-fixture-config.schema.json` — document `hooks.programStatus` (boolean, default true).\n- `CLAUDE.md` — document the OSC 7501 mirror, state mapping, size limits, tmux passthrough caveat, and the config kill switch, under \"Hook-Based Status Tracking\".\n- `tests/osc7501-status.test.sh` — new shell test covering exact byte sequences per state, base64 of `msg`/`title`, truncation at 2048 / 192 bytes, control-character stripping, `app` sanitization and length cap, no-tty no-op, tmux DCS passthrough wrapping, and that no bytes land on hook stdout/stderr; registered in `tests/run-shell-suite.sh` and `tests/check-shell.sh`.\n- `tools/feature-flags-baseline.txt` — minor baseline bump for the new config read.\n\n## Test plan\n\n- `bash tests/osc7501-status.test.sh` — covers every state's full sequence, encoded fields, size limits, control stripping, kill switch, non-tty no-op, tmux DCS wrap, and the \"nothing leaks to stdout/stderr\" guarantee.\n- `bash tests/check-shell.sh` continues to pass with the new test file in the syntax-check list.\n- Verified existing hook tests remain green (the OSC emit happens *after* the atomic status write, so the hook file's semantics and ordering are unchanged).\n\n## Self-review\n\n- Verdict: **ready** (iteration 1 of 1).\n- Blockers: 0. Warnings: 0. Model: `claude-opus-4-7` (pinned).\n- Diff base: `origin/auto/integration` at `a2b00cd3` (local `auto/integration` ref was stale; fast-forwarded to origin before review so scope was evaluated against the real base). 7 files reviewed.\n\n## Routing\n\n**Non-authoritative routing context.** Wavemill stamps the authoritative executed route into `wavemill-fixture-meta` before `wm:ready`.\n\nRuntime execution telemetry from `features/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes/routing.jsonl` (most recent decision):\n\n- Planner: `claude-opus-4-7`\n- Coder: `claude-opus-4-7`\n- Reviewer: `claude-opus-4-7`\n- Source layer: `hokusai` (policy_version `production`)\n- No fallback reason recorded.\n\nAn earlier decision had `coder=claude-haiku-4-5-20251001`; it was superseded.\n\n<!-- wavemill-fixture-meta\ntask: FIXTURE-1\n-->",
+              "createdAt": "2026-10-21T22:59:29Z",
+              "headRefName": "task/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes",
+              "headRefOid": "89d01d2cadb7b9c2f94ce16b1356062eed32b23e",
+              "mergedAt": null,
+              "number": 1702,
+              "state": "OPEN",
+              "title": "FIXTURE-1: Emit OSC 7501 Program Status reports alongside wavemill-fixture hook writes",
+              "updatedAt": "2026-10-21T22:59:30Z",
+              "url": "https://github.com/timogilvie/wavemill-fixture/pull/1702",
+              "normalizedState": "OPEN",
+              "branchMatches": true,
+              "baseMatches": true,
+              "headMatches": true,
+              "issueMatches": true,
+              "attemptMatches": false,
+              "challengeMatches": false,
+              "currentEvidence": true,
+              "mismatchReason": ""
+            }
+          ]
+        },
+        "challengeExecutionIntent": {
+          "schemaVersion": 1,
+          "pairId": "FIXTURE-1",
+          "issueId": "FIXTURE-1",
+          "createdAt": "2026-10-21T21:25:53.802Z",
+          "decisionSource": "expanded",
+          "selectedStage": "plan",
+          "challengeStage": "plan",
+          "selectionPath": "recommendation-driven",
+          "selectionReason": "tie-break-family-rotation",
+          "selectionEvidence": {
+            "coverageCount": 0,
+            "attemptCount": 0,
+            "cooldownActive": false,
+            "priorityTier": 1
+          },
+          "challengerSource": "tie-break-family-rotation",
+          "challengeRecommendation": {
+            "reason": "new-model",
+            "challengerModel": "deepseek-v3",
+            "defaultModel": "claude-opus-5-5",
+            "stage": "plan"
+          },
+          "routeContext": {
+            "decisionSource": "expanded",
+            "bootstrapRoute": {
+              "coder": "claude-haiku-4-5-20251001",
+              "codeDepth": "medium",
+              "reviewer": "claude-opus-4-7",
+              "reviewMode": "llm",
+              "planDepth": "medium",
+              "planner": "claude-opus-4-7",
+              "artifactPath": "worktrees/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes/features/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes/.initial-route.json",
+              "artifactHash": "76beb13397243880549983f15a92361bbc21c924096205569d296c690029d651",
+              "inputHash": "278dc095777730a0a9eb279bf2429b3b2dc346fef553f4841690c9552d051039",
+              "source": "bootstrap",
+              "routerMode": "normal",
+              "routingMode": "hokusai",
+              "expectedMetrics": {
+                "expectedSuccess": 0.697843,
+                "expectedCost": 7.99,
+                "confidence": 0.444944,
+                "expectedCostPlan": 2.51,
+                "expectedCostCode": 3.11,
+                "expectedCostReview": 2.37,
+                "neighborCount": 40,
+                "neighborSimilarityRange": [
+                  0,
+                  0
+                ],
+                "maxCostUsd": 25,
+                "challengeRecommendation": {
+                  "shouldChallenge": true,
+                  "reason": "new-model",
+                  "defaultModel": "claude-opus-5-5",
+                  "challengerModel": "deepseek-v3",
+                  "stage": "plan",
+                  "priority": 300
+                },
+                "signals": {
+                  "taskType": "test",
+                  "promptLength": "long",
+                  "complexityScore": 5,
+                  "complexityBand": "xl",
+                  "riskFlags": [
+                    "large-scope-refactor"
+                  ],
+                  "fileTypes": [
+                    ".sh",
+                    ".md"
+                  ],
+                  "riskScore": 10
+                },
+                "reasoning": [
+                  "Adapted from Hokusai Model 30 recommended_strategy.",
+                  "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics."
+                ]
+              },
+              "challengeRecommendation": {
+                "shouldChallenge": true,
+                "reason": "new-model",
+                "defaultModel": "claude-opus-5-5",
+                "challengerModel": "deepseek-v3",
+                "stage": "plan",
+                "priority": 300
+              }
+            },
+            "expandedRoute": {
+              "coder": "claude-opus-4-7",
+              "codeDepth": "medium",
+              "reviewer": "claude-opus-4-7",
+              "reviewMode": "llm",
+              "planDepth": "medium",
+              "planner": "claude-opus-4-7",
+              "cache_hit": false,
+              "route_source": "single",
+              "packet_hash": "35534da8badd96515411d021ea815d3fc2694207df2d59ebd3bf72c953bfe12e",
+              "artifactPath": "worktrees/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes/features/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes/.post-expansion-route.json",
+              "artifactHash": "673ebc8eb5a417c8482ebe2abff9a458cfa88db65880e70c0383c604eca14282",
+              "inputHash": "737a2463d67022b7a69b4884da9e67a316cf782bf5c6e46d836a118d1440d697",
+              "source": "expanded",
+              "routerMode": "normal",
+              "routingMode": "hokusai",
+              "expectedMetrics": {
+                "expectedSuccess": 0.755371,
+                "expectedCost": 7.61,
+                "confidence": 0.594328,
+                "expectedCostPlan": 0.79,
+                "expectedCostCode": 6.08,
+                "expectedCostReview": 0.74,
+                "neighborCount": 40,
+                "neighborSimilarityRange": [
+                  0,
+                  0
+                ],
+                "maxCostUsd": 25,
+                "challengeRecommendation": {
+                  "shouldChallenge": true,
+                  "reason": "new-model",
+                  "defaultModel": "claude-opus-5-5",
+                  "challengerModel": "deepseek-v3",
+                  "stage": "plan",
+                  "priority": 300
+                },
+                "signals": {
+                  "taskType": "test",
+                  "promptLength": "long",
+                  "complexityScore": 5,
+                  "complexityBand": "xl",
+                  "riskFlags": [
+                    "large-scope-refactor"
+                  ],
+                  "fileTypes": [
+                    ".sh",
+                    ".md"
+                  ],
+                  "riskScore": 12
+                },
+                "reasoning": [
+                  "Adapted from Hokusai Model 30 recommended_strategy.",
+                  "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics."
+                ]
+              },
+              "challengeRecommendation": {
+                "shouldChallenge": true,
+                "reason": "new-model",
+                "defaultModel": "claude-opus-5-5",
+                "challengerModel": "deepseek-v3",
+                "stage": "plan",
+                "priority": 300
+              }
+            }
+          },
+          "primary": {
+            "key": "FIXTURE-1",
+            "role": "primary",
+            "planner": {
+              "model": "claude-opus-4-7",
+              "agent": "claude"
+            },
+            "coder": {
+              "model": "claude-opus-4-7",
+              "agent": "claude"
+            },
+            "reviewer": {
+              "model": "claude-opus-4-7",
+              "agent": "claude"
+            },
+            "pairId": "FIXTURE-1",
+            "side": "primary",
+            "challengeStage": "plan",
+            "expectedStageModel": "claude-opus-4-7",
+            "expectedStageAgent": "claude",
+            "expectedRoute": {
+              "planner": "claude-opus-4-7",
+              "coder": "claude-opus-4-7",
+              "reviewer": "claude-opus-4-7",
+              "planDepth": "medium",
+              "codeDepth": "medium",
+              "reviewMode": "llm"
+            },
+            "inheritedStages": []
+          },
+          "nativeCertificationRejections": [
+            {
+              "modelId": "glm-5.2",
+              "role": "coder",
+              "requestedLaunchPhase": "coding",
+              "requestedPhase": "patch",
+              "certifiedPhase": "workflow",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "missing-live-canary",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/z-ai/glm-5.2/v3.json"
+            },
+            {
+              "modelId": "kimi-k2.7-code",
+              "role": "coder",
+              "requestedLaunchPhase": "coding",
+              "requestedPhase": "patch",
+              "certifiedPhase": "workflow",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "missing-live-canary",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/moonshotai/kimi-k2.7-code/v3.json"
+            },
+            {
+              "modelId": "kimi-k2-thinking",
+              "role": "coder",
+              "requestedLaunchPhase": "coding",
+              "requestedPhase": "patch",
+              "certifiedPhase": "workflow",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "missing-live-canary",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/moonshotai/kimi-k2-thinking/v3.json"
+            },
+            {
+              "modelId": "qwen-3-235b",
+              "role": "planner",
+              "requestedLaunchPhase": "planning",
+              "requestedPhase": "workflow",
+              "certifiedPhase": "patch",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "insufficient-phase",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/qwen/qwen3-235b-a22b-2507/v3.json"
+            },
+            {
+              "modelId": "glm-5.3",
+              "role": "planner",
+              "requestedLaunchPhase": "planning",
+              "requestedPhase": "workflow",
+              "certifiedPhase": "patch",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "insufficient-phase",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/z-ai/glm-5.3/v3.json"
+            },
+            {
+              "modelId": "kimi-k3",
+              "role": "planner",
+              "requestedLaunchPhase": "planning",
+              "requestedPhase": "workflow",
+              "certifiedPhase": "patch",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "insufficient-phase",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/moonshotai/kimi-k3/v3.json"
+            },
+            {
+              "modelId": "glm-5.3-flash",
+              "role": "planner",
+              "requestedLaunchPhase": "planning",
+              "requestedPhase": "workflow",
+              "certifiedPhase": "patch",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "insufficient-phase",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/z-ai/glm-5.3-flash/v3.json"
+            }
+          ],
+          "forkStage": null,
+          "forkCommit": null,
+          "sharedPrefix": false,
+          "noChallengeReason": "challenger_never_launched",
+          "challengeCollapseReason": "challenger_never_launched"
+        },
+        "challengeStage": "plan",
+        "challengeVariedModel": "claude-opus-4-7",
+        "challengeVariedAgent": "claude",
+        "challengeCollapseReason": "challenger_never_launched",
+        "challengeCollapseDetail": "Finalization selected a pair but no challenger arm was launched; staying single-model",
+        "terminalReconciliations": {
+          "review_complete:1702": {
+            "issue": "FIXTURE-1",
+            "reason": "review_complete",
+            "prNumber": "1702",
+            "appliedAt": "2026-10-21T23:01:58Z",
+            "stateApplied": true,
+            "stageApplied": true,
+            "hookApplied": true,
+            "paneMetadataApplied": true,
+            "paneReleased": false,
+            "linearApplied": false,
+            "pr": {
+              "baseRefName": "auto/integration",
+              "headRefName": "task/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes",
+              "headRefOid": "89d01d2cadb7b9c2f94ce16b1356062eed32b23e",
+              "mergeCommit": null,
+              "mergedAt": null,
+              "number": 1702,
+              "state": "OPEN",
+              "terminalState": "OPEN"
+            },
+            "updatedAt": "2026-10-21T23:02:06Z"
+          },
+          "ready_complete:1702": {
+            "issue": "FIXTURE-1",
+            "reason": "ready_complete",
+            "prNumber": "1702",
+            "appliedAt": "2026-10-21T23:14:34Z",
+            "stateApplied": true,
+            "stageApplied": true,
+            "hookApplied": true,
+            "paneMetadataApplied": true,
+            "paneReleased": false,
+            "linearApplied": false,
+            "pr": {
+              "baseRefName": "auto/integration",
+              "headRefName": "task/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes",
+              "headRefOid": "f4571970e4457056fad90661e446b66d758d56a6",
+              "mergeCommit": null,
+              "mergedAt": null,
+              "number": 1702,
+              "state": "OPEN",
+              "terminalState": "OPEN"
+            },
+            "updatedAt": "2026-10-21T23:14:39Z"
+          },
+          "pr_merged:1702": {
+            "issue": "FIXTURE-1",
+            "reason": "pr_merged",
+            "prNumber": "1702",
+            "appliedAt": "2026-10-21T23:16:41Z",
+            "stateApplied": true,
+            "stageApplied": true,
+            "hookApplied": true,
+            "paneMetadataApplied": true,
+            "paneReleased": false,
+            "linearApplied": true,
+            "pr": {
+              "baseRefName": "auto/integration",
+              "headRefName": "task/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes",
+              "headRefOid": "f4571970e4457056fad90661e446b66d758d56a6",
+              "mergeCommit": {
+                "oid": "183b429e057d56b62bfc8bdc115bb2907a18e44b"
+              },
+              "mergedAt": "2026-10-21T23:16:00Z",
+              "number": 1702,
+              "state": "MERGED",
+              "terminalState": "MERGED"
+            },
+            "updatedAt": "2026-10-21T23:16:50Z"
+          }
+        },
+        "evalCompleted": true,
+        "evalFailed": false,
+        "evalHardFailureRetryCount": 0
+      }
+    }
+  },
+  "hooks": {
+    "FIXTURE-1": {
+      "state": "idle",
+      "event": "pr_merged",
+      "agent": "codex",
+      "timestamp": 1792624606,
+      "writer": "monitor",
+      "agentRecord": {
+        "state": "waiting",
+        "event": "Notification",
+        "agent": "claude",
+        "timestamp": 1792624170,
+        "detail": "Claude is waiting for your input"
+      },
+      "detail": "PR #1702 merged",
+      "pr_state": {
+        "number": 1702,
+        "state": "MERGED",
+        "fetched_at": 1792624561
+      }
+    }
+  },
+  "stageResults": {
+    "FIXTURE-1": {
+      "planning": {
+        "stage": "planning",
+        "status": "completed",
+        "startedAt": "2026-10-21T21:05:55.271Z",
+        "finishedAt": "2026-10-21T21:25:47Z",
+        "agent": "claude",
+        "model": "claude-opus-4-7",
+        "intendedModel": "claude-opus-4-7",
+        "executedModel": "claude-opus-4-7",
+        "executionEvidence": {
+          "status": "direct",
+          "source": "claude-session",
+          "detail": "models=claude-opus-4-7:40; sessions=1; turns=40",
+          "recordedAt": "2026-10-21T21:25:48.329Z"
+        },
+        "modelAttributionEligible": true,
+        "notes": "Plan approved by user",
+        "artifacts": {
+          "type": "planning",
+          "planFile": "plan.md"
+        }
+      },
+      "coding": {
+        "stage": "coding",
+        "status": "completed",
+        "startedAt": "2026-10-21T21:26:00Z",
+        "finishedAt": "2026-10-21T22:45:00Z",
+        "agent": "claude",
+        "model": "claude-opus-4-7",
+        "intendedModel": "claude-opus-4-7",
+        "executedModel": "claude-opus-4-7",
+        "executionEvidence": {
+          "status": "direct",
+          "source": "claude-session",
+          "detail": "models=claude-opus-4-7:157; sessions=1; turns=157",
+          "recordedAt": "2026-10-21T22:45:09.061Z"
+        },
+        "modelAttributionEligible": true,
+        "notes": ""
+      },
+      "review": {
+        "stage": "review",
+        "status": "completed",
+        "startedAt": "2026-10-21T22:45:47.653Z",
+        "finishedAt": "2026-10-21T23:01:58Z",
+        "agent": "codex",
+        "model": "claude-opus-4-7",
+        "intendedModel": "claude-opus-4-7",
+        "executedModel": null,
+        "executionEvidence": {
+          "status": "missing",
+          "source": "codex-session",
+          "detail": "no matching codex session telemetry for branch=task/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes",
+          "recordedAt": "2026-10-21T23:02:05.005Z"
+        },
+        "modelAttributionEligible": false,
+        "modelAttributionIneligibleReason": "missing_execution_evidence",
+        "notes": "PR #1702 created",
+        "artifacts": {
+          "type": "review",
+          "prNumber": 1702,
+          "exitCode": 0,
+          "verdict": "ready",
+          "iterations": 1,
+          "blockerCount": 0,
+          "warningCount": 0,
+          "reviewHeadSha": "89d01d2cadb7b9c2f94ce16b1356062eed32b23e",
+          "reviewExecutedIdentity": {
+            "orchestrator": {
+              "role": "review_orchestrator",
+              "requestedModel": "claude-opus-4-7",
+              "resolvedModel": "claude-opus-4-7",
+              "agent": "codex",
+              "source": "derived",
+              "pinned": false
+            },
+            "substantiveAnalysis": {
+              "role": "substantive_analysis",
+              "requestedModel": "claude-opus-4-7",
+              "resolvedModel": "claude-opus-4-7",
+              "agent": "claude-cli",
+              "source": "artifact",
+              "pinned": true
+            },
+            "remediation": null
+          },
+          "terminalReason": "review_complete"
+        }
+      },
+      "ready": {
+        "stage": "ready",
+        "status": "completed",
+        "startedAt": "2026-10-21T23:02:14.377Z",
+        "finishedAt": "2026-10-21T23:16:41Z",
+        "agent": "codex",
+        "model": "claude-opus-4-7",
+        "intendedModel": "claude-opus-4-7",
+        "executedModel": null,
+        "executionEvidence": {
+          "status": "missing",
+          "source": "codex-session",
+          "detail": "no matching codex session telemetry for branch=task/emit-osc-7501-program-status-reports-alongside-wavemill-fixture-hook-writes",
+          "recordedAt": "2026-10-21T23:16:45.807Z"
+        },
+        "modelAttributionEligible": false,
+        "modelAttributionIneligibleReason": "missing_execution_evidence",
+        "notes": "PR #1702 merged",
+        "artifacts": {
+          "type": "ready",
+          "verdict": "pass",
+          "checksRun": 3,
+          "checksPassed": 3,
+          "mergeConflict": "CLEAN",
+          "prNumber": 1702,
+          "readyLabelsUpdated": true,
+          "readyBaseSha": "a2b00cd31175027d30a7eb05084e603ea1c4d981",
+          "readyHeadSha": "f4571970e4457056fad90661e446b66d758d56a6",
+          "ciConclusion": "pass",
+          "requiredSource": "none",
+          "requiredContexts": [],
+          "readyTendHandoff": "ready-published",
+          "queueState": "merge-candidate",
+          "terminalReason": "pr_merged",
+          "lastCiConclusion": "pass",
+          "lastCiHeadSha": "f4571970e4457056fad90661e446b66d758d56a6",
+          "lastCiObservedAt": "2026-10-21T23:15:22Z",
+          "lastCiSummary": "pass: 26/4 checks",
+          "candidateLastProgressAt": "2026-10-21T23:15:55Z",
+          "candidatePromotedAt": "2026-10-21T23:15:55Z",
+          "laneWaitSeconds": 80,
+          "lastProgressAt": "2026-10-21T23:15:55Z",
+          "targetBaseSha": "a2b00cd31175027d30a7eb05084e603ea1c4d981"
+        }
+      }
+    }
+  }
+}

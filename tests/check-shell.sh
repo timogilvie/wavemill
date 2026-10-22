@@ -210,6 +210,7 @@ for f in \
   "$REPO_DIR"/tests/re-review-no-pr.test.sh \
   "$REPO_DIR"/tests/monitor-command-routing.test.sh \
   "$REPO_DIR"/tests/condition-reconciler.test.sh \
+  "$REPO_DIR"/tests/condition-reconciler-realstate.test.sh \
   "$REPO_DIR"/tests/wavemill-pr-cache.test.sh \
   "$REPO_DIR"/tests/cross-pr-revert-job.test.sh \
   "$REPO_DIR"/tests/pr-ci-status-job.test.sh \

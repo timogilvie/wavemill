@@ -237,6 +237,10 @@ TESTS=(
   shared/lib/manual-edit-attribution-audit.test.ts
   shared/lib/merge-queue.test.ts
   shared/lib/merge-labels.test.ts
+  shared/lib/merge-labels.realstate.test.ts
+  shared/lib/ready-watchdog.realstate.test.ts
+  shared/lib/tend-challenge-gate.realstate.test.ts
+  tests/real-state-schema.test.ts
   shared/lib/pr-task-resolver.test.ts
   shared/lib/pr-task-lookup-checker.test.ts
   shared/lib/mill-clock.test.ts
