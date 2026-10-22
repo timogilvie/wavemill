@@ -1265,3 +1265,117 @@ describe('launchNativePlanning', () => {
     }
   });
 });
+
+// HOK-3260: the planning stage result carries the prompt-cache numbers
+// projected from the run's per-turn usage, and a run that stops hitting the
+// cache is flagged once per (model, route, stage, day).
+describe('launchNativePlanning — prompt-cache hit rate', () => {
+  type TurnUsage = { input: number; output: number; cacheRead: number; cacheWrite: number };
+
+  function readTurn(id: string, usage: TurnUsage) {
+    return {
+      content: [{ type: 'tool_call' as const, id, name: 'read_file', arguments: { path: 'src.ts' } }],
+      usage,
+      stopReason: 'tool_calls' as const,
+    };
+  }
+
+  function planTurn(usage: TurnUsage) {
+    return { content: [{ type: 'text' as const, text: validPlan() }], usage, stopReason: 'stop' as const };
+  }
+
+  async function runPlanning(wtDir: string, api: string) {
+    return launchNativePlanning({
+      session: 'prompt-cache',
+      issue: 'HOK-3260',
+      slug: 'demo',
+      wtDir,
+      repoDir: wtDir,
+      loopModelOverride: scriptedModel(api),
+      runTsxCommand: stubRunTsxCommand(),
+    });
+  }
+
+  function planningUsage(featureDir: string): Record<string, unknown> {
+    const stageResult = JSON.parse(readFileSync(join(featureDir, '.planning-result.json'), 'utf-8')) as Record<string, any>;
+    return stageResult.artifacts.usage;
+  }
+
+  function promptCacheFindings(wtDir: string): Array<Record<string, any>> {
+    const path = join(wtDir, '.wavemill', 'observer-findings.jsonl');
+    if (!existsSync(path)) return [];
+    return readFileSync(path, 'utf-8').trim().split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, any>)
+      .filter((row) => row.subsystem === 'native-prompt-cache');
+  }
+
+  it('records the expected hit rate on the stage result for a warm cache', async (t) => {
+    const { wtDir, featureDir } = setupWorktree();
+    writeNativeConfig(wtDir, { integration: { enabled: false } });
+    const warns: string[] = [];
+    t.mock.method(console, 'warn', (line: unknown) => { warns.push(String(line)); });
+    const api = uniqueApi('cache-warm');
+    try {
+      registerScriptedPiProvider({
+        api,
+        turns: [
+          readTurn('r1', { input: 1000, output: 10, cacheRead: 0, cacheWrite: 4000 }),
+          readTurn('r2', { input: 100, output: 10, cacheRead: 4000, cacheWrite: 200 }),
+          readTurn('r3', { input: 100, output: 10, cacheRead: 4200, cacheWrite: 300 }),
+          planTurn({ input: 200, output: 50, cacheRead: 4500, cacheWrite: 0 }),
+        ],
+      });
+
+      await runPlanning(wtDir, api);
+
+      const usage = planningUsage(featureDir);
+      assert.equal(usage.turnsCompleted, 4);
+      assert.equal(usage.totalInputTokens, 1400);
+      assert.equal(usage.cacheReadTokens, 12_700);
+      assert.equal(usage.cacheWriteTokens, 4500);
+      assert.equal(usage.cacheHitRate, 12_700 / 13_600);
+      assert.equal(usage.providerRoute, 'scripted');
+      assert.deepEqual(warns.filter((line) => /low prompt-cache hit rate/.test(line)), []);
+      assert.deepEqual(promptCacheFindings(wtDir), []);
+    } finally {
+      cleanup(wtDir);
+    }
+  });
+
+  it('warns and emits one finding when turn 3 reads nothing, and dedupes the finding on a re-run', async (t) => {
+    const { wtDir, featureDir } = setupWorktree();
+    writeNativeConfig(wtDir, { integration: { enabled: false } });
+    const warns: string[] = [];
+    t.mock.method(console, 'warn', (line: unknown) => { warns.push(String(line)); });
+    const coldTurns = [
+      readTurn('r1', { input: 1000, output: 10, cacheRead: 0, cacheWrite: 4000 }),
+      readTurn('r2', { input: 100, output: 10, cacheRead: 4000, cacheWrite: 200 }),
+      planTurn({ input: 4500, output: 50, cacheRead: 0, cacheWrite: 0 }),
+    ];
+    try {
+      const firstApi = uniqueApi('cache-cold');
+      registerScriptedPiProvider({ api: firstApi, turns: coldTurns });
+      await runPlanning(wtDir, firstApi);
+
+      assert.equal(planningUsage(featureDir).cacheHitRate, 4000 / 8800);
+      const lowLines = () => warns.filter((line) => /^\[native-planning\] low prompt-cache hit rate/.test(line));
+      assert.equal(lowLines().length, 1);
+      const rows = promptCacheFindings(wtDir);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].context.stage, 'planning');
+      assert.equal(rows[0].context.model, `scripted:${firstApi}`);
+      assert.equal(rows[0].context.providerRoute, 'scripted');
+
+      // Re-run the same fixture under the same model id: the warn repeats in
+      // the stage log, the day's finding does not.
+      rmSync(join(featureDir, 'plan.md'), { force: true });
+      registerScriptedPiProvider({ api: firstApi, turns: coldTurns });
+      await runPlanning(wtDir, firstApi);
+
+      assert.equal(lowLines().length, 2);
+      assert.equal(promptCacheFindings(wtDir).length, 1);
+    } finally {
+      cleanup(wtDir);
+    }
+  });
+});

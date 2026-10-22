@@ -26,6 +26,7 @@ import { REVIEW_MAX_OUTPUT_TOKENS } from './native-agent/output-limits.ts';
 import {
   NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
   REVIEW_MODEL_UNLAUNCHABLE_FAILURE_CATEGORY,
+  type StageExecutionUsage,
 } from './stage-result.ts';
 import { ClaudeCliAdapter, claudeCliReportedModelMatches } from './model-adapters/claude-cli-adapter.ts';
 import { CodexCliAdapter } from './model-adapters/codex-cli-adapter.ts';
@@ -111,6 +112,11 @@ export interface ReviewResult {
    * results, where the requested model is always what ran directly.
    */
   substantiveAnalysisIdentity?: ExecutedIdentity;
+  /**
+   * Native substantive-analysis loop usage, including prompt-cache fields
+   * (HOK-3260). Absent for non-native reviewers.
+   */
+  usage?: StageExecutionUsage;
   metadata?: {
     branch: string;
     files: string[];

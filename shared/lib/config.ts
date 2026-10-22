@@ -2022,6 +2022,13 @@ export interface ReliabilityConfig {
   millActorLogins?: string[];
   stallMinutes?: number;
   github?: boolean;
+  /** HOK-3260: native prompt-cache hit-rate detection. */
+  promptCache?: PromptCacheConfig;
+}
+
+export interface PromptCacheConfig {
+  /** Hit rate (turns 2..n) below which a native run is flagged. Default 0.5. */
+  minHitRate?: number;
 }
 
 /**
@@ -2029,7 +2036,10 @@ export interface ReliabilityConfig {
  * `WAVEMILL_RELIABILITY_MILL_ACTOR_LOGINS` (comma-separated) overrides
  * `millActorLogins`.
  */
-export function getReliabilityConfig(repoDir?: string, env: NodeJS.ProcessEnv = process.env): Required<ReliabilityConfig> {
+export function getReliabilityConfig(
+  repoDir?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Required<Omit<ReliabilityConfig, 'promptCache'>> & { promptCache: Required<PromptCacheConfig> } {
   const config = loadWavemillConfig(repoDir).reliability ?? {};
   const envLogins = env.WAVEMILL_RELIABILITY_MILL_ACTOR_LOGINS;
   return {
@@ -2038,6 +2048,9 @@ export function getReliabilityConfig(repoDir?: string, env: NodeJS.ProcessEnv = 
       : config.millActorLogins ?? [],
     stallMinutes: config.stallMinutes ?? 30,
     github: config.github ?? true,
+    promptCache: {
+      minHitRate: config.promptCache?.minHitRate ?? 0.5,
+    },
   };
 }
 

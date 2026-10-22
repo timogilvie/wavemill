@@ -35,6 +35,7 @@ export type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { computeModelCost, type ModelPricing } from '../workflow-cost.ts';
 import type { ModelRegistry } from '../model-registry.ts';
 import { appendPromptSizeSample, type PromptSizeSample } from './prompt-size-log.ts';
+import { EMPTY_PROMPT_CACHE_SUMMARY, summarizePromptCache, type PromptCacheSummary, type TurnCacheUsage } from './prompt-cache.ts';
 import { assertToolCompat } from './tool-compat-validator.ts';
 import {
   assertPromptFitsContextWindow,
@@ -356,6 +357,11 @@ export interface LoopResult {
   totalOutputTokens: number;
   totalCostUsd: number;
   wallClockMs: number;
+  /**
+   * Prompt-cache usage over this run's turns (HOK-3260), projected from the
+   * same per-turn provider usage that feeds `totalCostUsd`.
+   */
+  promptCache: PromptCacheSummary;
   providerError?: {
     kind: ProviderErrorKind;
     retryable: boolean;
@@ -728,6 +734,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       totalOutputTokens: 0,
       totalCostUsd: 0,
       wallClockMs: 0,
+      promptCache: EMPTY_PROMPT_CACHE_SUMMARY,
     };
   }
 
@@ -746,6 +753,8 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   const providerErrorSleep = config.providerErrorRetry?.sleep ?? sleepAbortable;
   // Track peak tokens for prompt size logging
   let peakInputTokens = 0;
+  // Per-turn prompt-cache usage, in turn order (HOK-3260).
+  const turnCacheUsage: TurnCacheUsage[] = [];
 
   // Per-turn batch failure tracking for fail-fast semantics.
   // Key: the Pi AssistantMessage object for the current turn.
@@ -899,6 +908,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         if (totalTokens > peakInputTokens) {
           peakInputTokens = totalTokens;
         }
+        turnCacheUsage.push({ input, cacheRead, cacheWrite });
       }
       turnsCompleted++;
 
@@ -1714,6 +1724,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     totalOutputTokens,
     totalCostUsd,
     wallClockMs,
+    promptCache: summarizePromptCache(turnCacheUsage),
     ...(finalProviderError ? { providerError: finalProviderError } : {}),
     ...(providerIdentitySummary ? { providerIdentity: providerIdentitySummary } : {}),
   };

@@ -182,3 +182,34 @@ describe('review analysis identity hand-off (HOK-3247)', () => {
     }
   });
 });
+
+// HOK-3260: the hand-off also carries the native analysis loop usage so the
+// review stage result keeps its prompt-cache numbers.
+describe('review analysis identity hand-off — usage (HOK-3260)', () => {
+  const usage = { turnsCompleted: 6, cacheReadTokens: 9000, cacheWriteTokens: 1200, cacheHitRate: 0.81, providerRoute: 'anthropic' };
+  const record = { schemaVersion: 1, headSha: HEAD_A, recordedAt: 'now', substantiveAnalysis: analysis, usage };
+
+  it('round-trips usage through the side file', () => {
+    const featureDir = tempFeatureDir();
+    try {
+      writeReviewAnalysisIdentity(featureDir, { headSha: HEAD_A, substantiveAnalysis: analysis, usage });
+      assert.deepEqual(readReviewAnalysisIdentity(featureDir)?.usage, usage);
+    } finally {
+      rmSync(featureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('merges usage at the reviewed head and strips it once the head moves', () => {
+    const merged = mergeReviewAnalysisIdentity(reviewResult(), record, HEAD_A);
+    assert.deepEqual((merged.artifacts as Record<string, any>).usage, usage);
+
+    const afterNewCommit = mergeReviewAnalysisIdentity(merged, record, HEAD_B);
+    assert.equal((afterNewCommit.artifacts as Record<string, any>).usage, undefined);
+  });
+
+  it('leaves usage absent for a record without it', () => {
+    const { usage: _usage, ...withoutUsage } = record;
+    const merged = mergeReviewAnalysisIdentity(reviewResult(), withoutUsage, HEAD_A);
+    assert.equal('usage' in (merged.artifacts as Record<string, unknown>), false);
+  });
+});

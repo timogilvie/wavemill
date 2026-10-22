@@ -333,6 +333,20 @@
                     "type": "boolean",
                     "default": true,
                     "description": "When false, skip the GitHub PR-timeline touch sources (label edits, manual pushes) and report only local evidence."
+                },
+                "promptCache": {
+                    "type": "object",
+                    "description": "Native prompt-cache hit-rate detection (HOK-3260). A quality signal only: it never parks or fails a run.",
+                    "properties": {
+                        "minHitRate": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1,
+                            "default": 0.5,
+                            "description": "A native run with at least 3 turns whose cache hit rate over turns 2..n is below this value logs a warn line and emits one observer finding per (model, provider route, stage) per UTC day."
+                        }
+                    },
+                    "additionalProperties": false
                 }
             },
             "additionalProperties": false

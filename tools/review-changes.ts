@@ -240,6 +240,7 @@ Use the relative path: npx tsx tools/review-changes.ts ${targetBranch} --json
         writeReviewAnalysisIdentity(featureDir, {
           headSha: identityHead,
           substantiveAnalysis: result.substantiveAnalysisIdentity,
+          ...(result.usage ? { usage: result.usage } : {}),
         });
       }
 

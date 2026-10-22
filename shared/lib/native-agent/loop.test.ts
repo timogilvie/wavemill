@@ -2338,3 +2338,94 @@ describe('loop — provider-identity verification', () => {
     assert.equal(result.providerIdentity, undefined);
   });
 });
+
+// HOK-3260: the loop projects prompt-cache usage from the same per-turn
+// provider usage it prices, so the stage result carries a hit rate.
+describe('loop — prompt-cache projection', () => {
+  function toolTurn(id: string, usage: { input: number; output: number; cacheRead: number; cacheWrite: number }) {
+    return {
+      content: [{ type: 'tool_call' as const, id, name: 'noop', arguments: {} }],
+      usage,
+      stopReason: 'tool_calls' as const,
+    };
+  }
+
+  it('reports cache totals over every turn and the hit rate over turns 2..n', async () => {
+    const tool = makeTool('noop', 'parallel', async () => 'ok');
+    const api = uniqueApi('prompt-cache-hit');
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        toolTurn('tc1', { input: 1000, output: 10, cacheRead: 0, cacheWrite: 4000 }),
+        toolTurn('tc2', { input: 100, output: 10, cacheRead: 4000, cacheWrite: 200 }),
+        toolTurn('tc3', { input: 100, output: 10, cacheRead: 4200, cacheWrite: 300 }),
+        {
+          content: [{ type: 'text', text: 'done' }],
+          usage: { input: 200, output: 20, cacheRead: 4500, cacheWrite: 0 },
+          stopReason: 'stop',
+        },
+      ],
+    });
+
+    const result = await runWavemillLoop(baseConfig(api, [tool]));
+
+    assert.equal(result.turnsCompleted, 4);
+    // totalInputTokens stays uncached input only.
+    assert.equal(result.totalInputTokens, 1400);
+    assert.equal(result.promptCache.cacheReadTokens, 12_700);
+    assert.equal(result.promptCache.cacheWriteTokens, 4500);
+    assert.equal(result.promptCache.cacheHitRate, 12_700 / 13_600);
+  });
+
+  it('reports a low hit rate when turn 3 reads nothing from cache', async () => {
+    const tool = makeTool('noop', 'parallel', async () => 'ok');
+    const api = uniqueApi('prompt-cache-miss');
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        toolTurn('tc1', { input: 1000, output: 10, cacheRead: 0, cacheWrite: 4000 }),
+        toolTurn('tc2', { input: 100, output: 10, cacheRead: 4000, cacheWrite: 200 }),
+        {
+          content: [{ type: 'text', text: 'done' }],
+          usage: { input: 4500, output: 20, cacheRead: 0, cacheWrite: 0 },
+          stopReason: 'stop',
+        },
+      ],
+    });
+
+    const result = await runWavemillLoop(baseConfig(api, [tool]));
+
+    assert.equal(result.turnsCompleted, 3);
+    assert.equal(result.promptCache.cacheHitRate, 4000 / 8800);
+  });
+
+  it('reports a null hit rate for a single-turn run', async () => {
+    const api = uniqueApi('prompt-cache-single');
+    registerScriptedPiProvider({
+      api,
+      turns: [{ content: [{ type: 'text', text: 'done' }], usage: { input: 10, output: 1, cacheRead: 300 }, stopReason: 'stop' }],
+    });
+
+    const result = await runWavemillLoop(baseConfig(api));
+
+    assert.equal(result.promptCache.cacheReadTokens, 300);
+    assert.equal(result.promptCache.cacheHitRate, null);
+  });
+
+  it('returns an empty cache summary when aborted before the first turn', async () => {
+    const api = uniqueApi('prompt-cache-aborted');
+    registerScriptedPiProvider({ api, turns: [{ content: [{ type: 'text', text: 'never' }], stopReason: 'stop' }] });
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await runWavemillLoop({ ...baseConfig(api), signal: controller.signal });
+
+    assert.equal(result.stopReason, 'aborted');
+    assert.deepEqual(result.promptCache, {
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      cacheHitRate: null,
+      turnsWithUsage: 0,
+    });
+  });
+});
