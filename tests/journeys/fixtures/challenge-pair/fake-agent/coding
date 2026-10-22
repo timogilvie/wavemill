@@ -1,0 +1,21 @@
+# shellcheck shell=bash
+# Fake coder for the challenge-pair journey (HOK-3228; HOK-3128 class).
+#
+# The primary arm implements and commits. The challenger arm writes the
+# change and .coding-complete but never commits, then its REPL goes idle (the
+# agent's own idle Stop record, fake_agent_hook_idle): the HOK-3128
+# shape of an agent that exited believing it was done with a dirty tree. The
+# mill's recovery relaunch runs this script again and it behaves the same, so
+# the coding-dirty-handoff bucket exhausts and the challenger forfeits.
+# shellcheck source=../../../../../shared/lib/task-identity.sh
+source "$FAKE_AGENT_TOOLS_DIR/../shared/lib/task-identity.sh"
+if task_identity_is_challenger "$WAVEMILL_ISSUE"; then
+  printf '%s phase=coding issue=%s role=dirty-challenger\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+  # journey-output.txt is the plan's own file, so the scratch quarantine
+  # leaves it in place: the tree stays dirty.
+  printf 'challenger draft of %s (never committed)\n' "$WAVEMILL_ISSUE" >> journey-output.txt
+  jq -n '{stage:"coding",confidence:"low"}' > "$FEATURE_DIR/.coding-complete"
+  fake_agent_hook_idle
+else
+  default_coding
+fi

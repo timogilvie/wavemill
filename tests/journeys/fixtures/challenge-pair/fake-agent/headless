@@ -1,0 +1,10 @@
+# shellcheck shell=bash
+# Fake headless judge for the challenge-pair journey (HOK-3228).
+#
+# The primary's challenge eval (run-eval-hook.ts → eval.ts) asks the eval
+# judge (eval.judge.model, a claude-* id in the journey config) to score the
+# task; the forfeit record that releases the primary needs that eval
+# completed. Answer only the eval-judge prompt; anything else stays an
+# unmodelled call.
+[[ "$FAKE_PROMPT" == *"Eval Judge — Task Execution Scoring"* ]] || return 1
+jq -cn '{score: 0.9, rationale: "Fake judge: the task landed with no human intervention.", interventionFlags: []}'

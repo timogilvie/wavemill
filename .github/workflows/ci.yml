@@ -369,6 +369,8 @@ jobs:
               - 'tools/tend.ts'
               - 'tools/ready.ts'
               - 'tools/stage-result-cli.ts'
+              - 'tools/abort-task.ts'
+              - 'tools/task-progress.ts'
               - 'tools/prompts/**'
               - 'tests/journeys/**'
               - 'tests/fakes/**'
@@ -400,7 +402,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        journey: [happy-path, gh-lag-after-push, errored-with-pr, inputs-ready-before-approval, mid-flight-base-conflict]
+        journey: [happy-path, gh-lag-after-push, errored-with-pr, inputs-ready-before-approval, mid-flight-base-conflict, challenge-pair, ready-remediation, operator-abort-mid-coding]
     env:
       RUN_JOURNEYS: ${{ needs.check-paths.outputs.journeys == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.head_ref == 'auto/integration' && github.base_ref == 'main') }}
 
