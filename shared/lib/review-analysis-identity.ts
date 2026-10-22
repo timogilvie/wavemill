@@ -10,6 +10,9 @@
  * stage-result writer (`stage-result-cli.ts`, also used by the monitor's
  * `write_stage_result`) merges it into `artifacts.reviewExecutedIdentity`.
  *
+ * The record also carries the native analysis loop's usage (HOK-3260), merged
+ * into `artifacts.usage` so the stage result has the prompt-cache numbers.
+ *
  * Staleness: the record carries the reviewed head SHA. It is merged only
  * while the worktree is still at that head; a record from an earlier head is
  * ignored, and an identity previously merged from it is stripped, so an old
@@ -30,6 +33,7 @@ import {
   readStageResult,
   writeStageResult,
   type ReviewArtifacts,
+  type StageExecutionUsage,
   type StageResult,
 } from './stage-result.ts';
 
@@ -42,6 +46,8 @@ export interface ReviewAnalysisIdentityRecord {
   headSha: string;
   recordedAt: string;
   substantiveAnalysis: ExecutedIdentity;
+  /** Native substantive-analysis loop usage (HOK-3260); absent for non-native reviewers. */
+  usage?: StageExecutionUsage;
 }
 
 export function reviewAnalysisIdentityPath(featureDir: string): string {
@@ -55,13 +61,14 @@ export function clearReviewAnalysisIdentity(featureDir: string): void {
 
 export function writeReviewAnalysisIdentity(
   featureDir: string,
-  input: { headSha: string; substantiveAnalysis: ExecutedIdentity; now?: Date },
+  input: { headSha: string; substantiveAnalysis: ExecutedIdentity; usage?: StageExecutionUsage; now?: Date },
 ): ReviewAnalysisIdentityRecord {
   const record: ReviewAnalysisIdentityRecord = {
     schemaVersion: REVIEW_ANALYSIS_IDENTITY_SCHEMA_VERSION,
     headSha: input.headSha,
     recordedAt: (input.now ?? new Date()).toISOString(),
     substantiveAnalysis: input.substantiveAnalysis,
+    ...(input.usage ? { usage: input.usage } : {}),
   };
   const path = reviewAnalysisIdentityPath(featureDir);
   const tmp = `${path}.${process.pid}.tmp`;
@@ -155,7 +162,7 @@ export function mergeReviewAnalysisIdentity(
     // Only an identity this hand-off merged (tagged by reviewHeadSha = the
     // record's head) is stripped; a native review's own identity is untouched.
     if (artifacts.reviewExecutedIdentity && artifacts.reviewHeadSha === record.headSha) {
-      const { reviewExecutedIdentity: _stale, ...rest } = artifacts;
+      const { reviewExecutedIdentity: _stale, usage: _staleUsage, ...rest } = artifacts;
       return { ...result, artifacts: rest as ReviewArtifacts };
     }
     return result;
@@ -172,6 +179,7 @@ export function mergeReviewAnalysisIdentity(
       ...artifacts,
       reviewHeadSha: record.headSha,
       reviewExecutedIdentity: identity,
+      ...(record.usage ? { usage: record.usage } : {}),
     },
   };
 }

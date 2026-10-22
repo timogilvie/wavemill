@@ -38,6 +38,7 @@ import {
   getExpansionHandshakeConfig,
   getMaxCostUsd,
   getUiConfig,
+  getReliabilityConfig,
   getPermissionsConfig,
   getDashboardConfig,
   getProjectContextConfig,
@@ -5079,3 +5080,42 @@ setTimeout(() => {
     process.exit(1);
   }
 }, 100);
+
+// HOK-3260: the prompt-cache detection threshold lives in config, not a flag.
+test('reliability.promptCache.minHitRate defaults to 0.5', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({}));
+    assert.equal(getReliabilityConfig(tmp, {}).promptCache.minHitRate, 0.5);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('reliability.promptCache.minHitRate honours the configured value', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ reliability: { promptCache: { minHitRate: 0.25 } } }));
+    assert.equal(getReliabilityConfig(tmp, {}).promptCache.minHitRate, 0.25);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('reliability.promptCache.minHitRate outside [0, 1] is rejected by schema validation', () => {
+  if (!hasAjv) {
+    console.log('        SKIP  Ajv not installed');
+    return;
+  }
+
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ reliability: { promptCache: { minHitRate: 1.5 } } }));
+    assert.throws(() => loadWavemillConfig(tmp), /Config validation failed/);
+  } finally {
+    cleanUp(tmp);
+  }
+});

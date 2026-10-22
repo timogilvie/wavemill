@@ -55,7 +55,9 @@ import { getNativeCodeSearchConfig, loadWavemillConfig } from '../config.ts';
 import { loadNativePhasePrompt, registerAndRecordNativeProvenance } from './prompts.ts';
 import { isTaskPacketContent } from '../task-packet-utils.ts';
 import { createCleanupTracker, runCleanup, type CleanupReason } from './cleanup.ts';
-import { updateStageResult } from '../stage-result.ts';
+import { updateStageResult, type StageExecutionUsage } from '../stage-result.ts';
+import { buildStageExecutionUsage, EMPTY_PROMPT_CACHE_SUMMARY, type LoopUsageSource } from './prompt-cache.ts';
+import { reportPromptCacheHitRate } from './prompt-cache-detector.ts';
 import {
   equivalentOpenRouterModelIds,
   type NormalizedPricing,
@@ -81,14 +83,7 @@ interface PlanningOutcomeArtifacts {
     maxToolCalls: number;
     maxWallClockMs: number;
   };
-  usage: {
-    turnsCompleted: number;
-    toolCallsExecuted: number;
-    wallClockMs: number;
-    totalInputTokens: number;
-    totalOutputTokens: number;
-    totalCostUsd?: number;
-  };
+  usage: StageExecutionUsage;
   promptRef: {
     id: string;
     version: string;
@@ -489,16 +484,12 @@ function planningFailureReasonForStopReason(stopReason: string): PlanningFailure
 function buildPlanningOutcomeArtifacts(input: {
   repoDir: string;
   modelId: string;
+  providerRoute: string;
   planningLimits: ReturnType<typeof resolveNativePlanningLimits>;
-  result: {
-    turnsCompleted: number;
-    toolCallsExecuted: number;
-    wallClockMs: number;
-    totalInputTokens: number;
-    totalOutputTokens: number;
-  };
+  result: LoopUsageSource;
   promptRef: { id: string; version: string };
 }): PlanningOutcomeArtifacts {
+  const cache = input.result.promptCache ?? EMPTY_PROMPT_CACHE_SUMMARY;
   let totalCostUsd: number | undefined;
   try {
     const pricing = loadPricingTable(input.repoDir)[input.modelId];
@@ -506,8 +497,8 @@ function buildPlanningOutcomeArtifacts(input: {
       totalCostUsd = computeModelCost({
         inputTokens: input.result.totalInputTokens,
         outputTokens: input.result.totalOutputTokens,
-        cacheCreationTokens: 0,
-        cacheReadTokens: 0,
+        cacheCreationTokens: cache.cacheWriteTokens,
+        cacheReadTokens: cache.cacheReadTokens,
       }, pricing);
     }
   } catch {
@@ -520,14 +511,7 @@ function buildPlanningOutcomeArtifacts(input: {
       maxToolCalls: input.planningLimits.maxToolCalls,
       maxWallClockMs: input.planningLimits.maxWallClockMs,
     },
-    usage: {
-      turnsCompleted: input.result.turnsCompleted,
-      toolCallsExecuted: input.result.toolCallsExecuted,
-      wallClockMs: input.result.wallClockMs,
-      totalInputTokens: input.result.totalInputTokens,
-      totalOutputTokens: input.result.totalOutputTokens,
-      ...(typeof totalCostUsd === 'number' && Number.isFinite(totalCostUsd) ? { totalCostUsd } : {}),
-    },
+    usage: buildStageExecutionUsage(input.result, input.providerRoute, { totalCostUsd }),
     promptRef: {
       id: input.promptRef.id,
       version: input.promptRef.version,
@@ -833,9 +817,16 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
     const planningOutcomeArtifacts = buildPlanningOutcomeArtifacts({
       repoDir: options.repoDir,
       modelId: modelName,
+      providerRoute: model.provider,
       planningLimits,
       result,
       promptRef,
+    });
+    reportPromptCacheHitRate({
+      repoDir: options.repoDir,
+      stage: 'planning',
+      model: modelName,
+      usage: planningOutcomeArtifacts.usage,
     });
     // HOK-3129: a plan written in one assistant turn with zero tool calls is a
     // quality signal — the model never read the repo. Observed on HOK-3125_c

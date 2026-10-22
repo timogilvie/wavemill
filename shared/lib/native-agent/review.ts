@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import type { AgentMessage, Message } from './messages.ts';
 import type { AgentContext, LoopStopReason, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
+import { buildStageExecutionUsage } from './prompt-cache.ts';
+import { reportPromptCacheHitRate } from './prompt-cache-detector.ts';
 import { createNativeModelsCollection } from './models.ts';
 import {
   ProviderIdentityMismatchError,
@@ -1104,6 +1106,16 @@ export async function runNativeReview(
 
   const deniedTools = nativeReviewDeps.extractDeniedTools(transcriptEvents);
 
+  // HOK-3260: project prompt-cache usage and flag a run that stopped hitting
+  // the cache. Detection only; never changes the review outcome.
+  const reviewUsage = buildStageExecutionUsage(loopResult, String(modelConfig.provider));
+  reportPromptCacheHitRate({
+    repoDir: options.repoDir,
+    stage: 'review',
+    model: modelConfig.name ?? modelConfig.id,
+    usage: reviewUsage,
+  });
+
   // Classify the terminal cause and record the typed failure envelope BEFORE
   // cleanup runs — cleanup can erase process/session context, so the transcript
   // path and loop state must be captured first (HOK-3064). Ordering:
@@ -1169,6 +1181,7 @@ export async function runNativeReview(
           missingReviewEvidence: true,
           evidence: 'missing-review-verdict',
           ...nativeReviewMetadata,
+          usage: reviewUsage,
         },
         finalTreeState: cleanupReport.finalTreeState,
         cleanupDecision: cleanupReport.cleanupDecision,
@@ -1235,6 +1248,7 @@ export async function runNativeReview(
       ...nativeReviewMetadata,
     };
     result.substantiveAnalysisIdentity = substantiveAnalysisIdentity;
+    result.usage = reviewUsage;
     return result;
   } catch (error) {
     const description = `Native review returned malformed response: ${(error as Error).message}`;

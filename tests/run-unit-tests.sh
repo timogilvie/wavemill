@@ -72,6 +72,8 @@ TESTS=(
   shared/lib/native-agent/transcript-compactor.test.ts
   shared/lib/native-agent/context-window-guard.test.ts
   shared/lib/native-agent/prompt-size-log.test.ts
+  shared/lib/native-agent/prompt-cache.test.ts
+  shared/lib/native-agent/prompt-cache-detector.test.ts
   shared/lib/native-agent/prompts.test.ts
   shared/lib/native-agent/pi-usage-cost.test.ts
   shared/lib/native-agent/provenance.test.ts

@@ -15,6 +15,7 @@ import {
   aggregateReliability,
   buildEvalsIndex,
   buildReliabilityContext,
+  collectPromptCacheHitRates,
   collectOperatorTouches,
   computeReliability,
   computeTimeStuck,
@@ -913,5 +914,79 @@ describe('reliability-metrics', () => {
         rmSync(tmp, { recursive: true, force: true });
       }
     });
+  });
+});
+
+// HOK-3260: median native prompt-cache hit rate per (model, provider route).
+describe('prompt-cache hit rate section', () => {
+  function stageResult(stage: string, model: string, usage: Record<string, unknown> | undefined): string {
+    return JSON.stringify({
+      stage,
+      status: 'completed',
+      model,
+      executedModel: model,
+      artifacts: { type: stage, ...(usage ? { usage } : {}) },
+    });
+  }
+
+  it('takes the median per (model, route) across live and archived stage results', () => {
+    const root = makeTmpDir();
+    try {
+      const tasks: MergedTaskRef[] = [];
+      const rates = [0.9, 0.2, 0.8, 0.7, 0.95];
+      rates.forEach((rate, i) => {
+        const featureDir = join(root, `task-${i}`);
+        mkdirSync(featureDir, { recursive: true });
+        writeFileSync(join(featureDir, '.coding-result.json'),
+          stageResult('coding', 'claude-sonnet-5-5', { cacheHitRate: rate, providerRoute: 'anthropic' }));
+        tasks.push({ issue: `HOK-${i}`, title: `t${i}`, mergedAt: '2026-10-05T00:00:00Z', featureDir });
+      });
+      // A reaped task: dotless names in the archive.
+      const archiveDir = join(root, 'archive');
+      mkdirSync(archiveDir, { recursive: true });
+      writeFileSync(join(archiveDir, 'planning-result.json'),
+        stageResult('planning', 'gemini-3-pro', { cacheHitRate: 0.1, providerRoute: 'openrouter' }));
+      writeFileSync(join(archiveDir, 'review-result.json'),
+        stageResult('review', 'gemini-3-pro', { cacheHitRate: 0.3, providerRoute: 'openrouter' }));
+      tasks.push({ issue: 'HOK-9', title: 'archived', mergedAt: '2026-10-05T00:00:00Z', archiveDir });
+
+      assert.deepEqual(collectPromptCacheHitRates(tasks), [
+        { model: 'claude-sonnet-5-5', providerRoute: 'anthropic', medianHitRate: 0.8, samples: 5 },
+        { model: 'gemini-3-pro', providerRoute: 'openrouter', medianHitRate: 0.2, samples: 2 },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('skips stage results without a numeric hit rate', () => {
+    const root = makeTmpDir();
+    try {
+      const featureDir = join(root, 'task');
+      mkdirSync(featureDir, { recursive: true });
+      writeFileSync(join(featureDir, '.planning-result.json'), stageResult('planning', 'm', { turnsCompleted: 1 }));
+      writeFileSync(join(featureDir, '.coding-result.json'), stageResult('coding', 'm', { cacheHitRate: null }));
+      writeFileSync(join(featureDir, '.review-result.json'), '{not json');
+      const tasks: MergedTaskRef[] = [{ title: 't', mergedAt: '2026-10-05T00:00:00Z', featureDir }];
+      assert.deepEqual(collectPromptCacheHitRates(tasks), []);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('renders the section only when there are rows', () => {
+    const base = aggregateReliability([], {
+      sinceIso: '2026-10-01T00:00:00Z',
+      untilIso: '2026-10-08T00:00:00Z',
+      bucket: 'rolling7d',
+    });
+    assert.doesNotMatch(renderReliabilitySummary(base), /Prompt-cache hit rate/);
+
+    const text = renderReliabilitySummary({
+      ...base,
+      promptCache: [{ model: 'claude-sonnet-5-5', providerRoute: 'anthropic', medianHitRate: 0.8, samples: 5 }],
+    });
+    assert.match(text, /Prompt-cache hit rate \(median, turns 2\.\.n\):/);
+    assert.match(text, /claude-sonnet-5-5\s+anthropic\s+80\.0%\s+\(5 runs\)/);
   });
 });
