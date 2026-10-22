@@ -785,6 +785,7 @@ function buildCompletionAttribution(input: {
   }
 
   // Fallback: scripted/test runs or loop-model-override — keep legacy behaviour.
+  // allow-provider-identity: no verified provider identity on this path; attribution stays gated on intendedModel === model below.
   const executedModel = input.model;
   const attributionEligible = input.stageCompleted && input.intendedModel === input.model;
   return {

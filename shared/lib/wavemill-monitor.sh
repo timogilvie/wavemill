@@ -11233,8 +11233,10 @@ refresh_ready_merge_queue_tick() {
     fi
   done
 
+  # Forwards the merge-queue tool's own config; producers gate on wavemill_session_has.
+  local merge_queue_enabled="${MERGE_QUEUE_ENABLED:-true}"  # allow-session-capabilities: config passthrough, not a producer gate
   config_json=$(jq -cn \
-    --arg enabled "${MERGE_QUEUE_ENABLED:-true}" \
+    --arg enabled "$merge_queue_enabled" \
     --argjson max_concurrent "${MERGE_QUEUE_MAX_CONCURRENT:-2}" \
     --argjson stuck_timeout "${MERGE_QUEUE_STUCK_TIMEOUT_SECONDS:-900}" \
     --arg conflict_grouping "${MERGE_QUEUE_CONFLICT_GROUPING_ENABLED:-true}" \

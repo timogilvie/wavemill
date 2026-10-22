@@ -807,6 +807,7 @@ spawn_integration_window() {
     fi
     observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines" "$observer_service_mode")"
   else
+    # allow-session-capabilities: log text naming the config key, not a capability read.
     startup_log "Observer: disabled by .observer.enabled=false"
   fi
   WORKTREE_ROOT="${WORKTREE_ROOT:-$REPO_DIR}"

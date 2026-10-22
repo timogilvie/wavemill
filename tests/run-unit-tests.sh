@@ -288,6 +288,13 @@ TESTS=(
   shared/lib/test-tracked-write-checker.test.ts
   shared/lib/task-identity-checker.test.ts
   shared/lib/task-record-shape-checker.test.ts
+  shared/lib/retry-sentinel-guard.test.ts
+  shared/lib/session-capabilities-guard.test.ts
+  shared/lib/hook-ttl-guard.test.ts
+  shared/lib/stage-launchability-guard.test.ts
+  shared/lib/provider-identity-guard.test.ts
+  shared/lib/side-effect-ledger-guard.test.ts
+  shared/lib/failure-policy-guard.test.ts
   shared/lib/task-field-read-checker.test.ts
   shared/lib/test-task-literal-checker.test.ts
   shared/lib/feature-flag-checker.test.ts
@@ -370,6 +377,7 @@ TESTS=(
   tools/check-pi-version.test.ts
   tools/check-ci-command-map-drift.test.ts
   tools/check-ci-concurrency.test.ts
+  tools/lib/source-guard.test.ts
   tools/check-openrouter-alias-audit-ci.test.ts
   tools/check-cross-pr-reverts.test.ts
   tools/hok2423-verify-native-provider-gate.test.ts

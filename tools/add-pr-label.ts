@@ -78,6 +78,7 @@ const config = {
   additionalHelp: [
     'Notes:',
     '  - Uses `gh api` against the REST labels endpoint to avoid the deprecated',
+    // allow-side-effect-ledger: help text naming the avoided command.
     '    GraphQL path behind `gh pr edit --add-label`.',
     '  - GitHub may auto-create repository labels that do not already exist.',
   ].join('\n'),
