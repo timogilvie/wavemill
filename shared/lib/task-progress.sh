@@ -172,6 +172,12 @@ task_progress_json() {
   local script="$tools_dir/task-progress.ts"
   [[ -f "$script" ]] || { printf '{}\n'; return 0; }
 
+  # The tool runs from the install dir (below): anchor relative paths to the
+  # caller's CWD first.
+  [[ -n "$state_file" && "$state_file" != /* ]] && state_file="$PWD/$state_file"
+  [[ -n "$worktree" && "$worktree" != /* ]] && worktree="$PWD/$worktree"
+  [[ -n "$feature_dir" && "$feature_dir" != /* ]] && feature_dir="$PWD/$feature_dir"
+
   local -a cli_args=(--issue "$issue" --session "$session")
   [[ -n "$state_file" ]] && cli_args+=(--state-file "$state_file")
   [[ -n "$phase" ]] && cli_args+=(--phase "$phase")
@@ -191,18 +197,26 @@ task_progress_json() {
     runner=""
   fi
 
+  # `node --import tsx` resolves tsx from the CWD (HOK-3204). The monitor runs
+  # from the milled repo, which need not depend on tsx, so run from the
+  # wavemill install that owns the tool; from a consumer repo this silently
+  # returned {} and every progress-gated decision saw "no evidence"
+  # (HOK-3228).
+  local install_dir
+  install_dir="$(cd "$tools_dir/.." 2>/dev/null && pwd || printf '%s' "$PWD")"
+
   local out=""
-  if command -v node >/dev/null 2>&1 && node --import tsx --version >/dev/null 2>&1; then
+  if command -v node >/dev/null 2>&1 && (cd "$install_dir" && node --import tsx --version >/dev/null 2>&1); then
     if [[ -n "$runner" ]]; then
-      out=$("$runner" "$timeout_secs" node --import tsx "$script" "${cli_args[@]}" 2>/dev/null || true)
+      out=$(cd "$install_dir" && "$runner" "$timeout_secs" node --import tsx "$script" "${cli_args[@]}" 2>/dev/null || true)
     else
-      out=$(node --import tsx "$script" "${cli_args[@]}" 2>/dev/null || true)
+      out=$(cd "$install_dir" && node --import tsx "$script" "${cli_args[@]}" 2>/dev/null || true)
     fi
   else
     if [[ -n "$runner" ]]; then
-      out=$("$runner" "$timeout_secs" npx tsx "$script" "${cli_args[@]}" 2>/dev/null || true)
+      out=$(cd "$install_dir" && "$runner" "$timeout_secs" npx tsx "$script" "${cli_args[@]}" 2>/dev/null || true)
     else
-      out=$(npx tsx "$script" "${cli_args[@]}" 2>/dev/null || true)
+      out=$(cd "$install_dir" && npx tsx "$script" "${cli_args[@]}" 2>/dev/null || true)
     fi
   fi
 

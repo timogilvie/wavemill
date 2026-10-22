@@ -150,6 +150,22 @@ else
   _fail "shell=$shell_agent_state:$shell_agent_event cli=$cli_agent_state:$cli_agent_event"
 fi
 
+_case "task_progress_json works from a milled repo with no local tsx (HOK-3228)"
+# The monitor's CWD is the milled repo, which need not depend on tsx. The
+# wrapper must resolve the tool's runtime from the wavemill install, not CWD;
+# before HOK-3228 it silently returned {} there, so every progress-gated
+# decision (HOK-3128 dirty handoff, owner-lost) saw "no evidence".
+wavemill_hook_write "idle" "Stop" "" "claude" "" "agent"
+consumer_repo="$tmpdir/consumer-repo"
+mkdir -p "$consumer_repo"
+consumer_json="$(cd "$consumer_repo" && unset TOOLS_DIR && task_progress_json TP-1 --session hok3101test)"
+consumer_state="$(printf '%s' "$consumer_json" | jq -r '.agentRecord.state // empty' 2>/dev/null || true)"
+if [[ "$consumer_state" == "idle" ]]; then
+  _pass
+else
+  _fail "got: $(printf '%s' "$consumer_json" | cut -c1-200)"
+fi
+
 echo ""
 echo "task-progress shell tests: $pass passed, $fail failed"
 if (( fail > 0 )); then
