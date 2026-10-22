@@ -46,6 +46,19 @@ gh state file (`$FAKE_GH_STATE`):
 Agent: put a bash snippet at `$FAKE_AGENT_SCRIPT_DIR/<phase>` (planning, coding,
 review) to replace that phase's default behaviour — e.g. exit with a dirty
 tree, never write `.coding-complete`, report review blockers.
+Snippets run inside the fake and can call its helpers: `default_<phase>`,
+`run_tool <tools/…ts> …`, and `fake_agent_hook_idle` (writes the agent's own
+idle `Stop` record through the hook protocol, as Claude's Stop hook does —
+the signal the dirty-handoff guard and the HOK-3101 progress primitive read).
+
+Headless `claude -p` helper calls (the eval judge, classifiers) are
+unmodelled unless `$FAKE_AGENT_SCRIPT_DIR/headless` exists: it gets the prompt
+in `$FAKE_PROMPT` and prints the model's reply (wrapped in the
+`--output-format json` envelope for the caller), or returns non-zero to leave
+that call unmodelled. Example: `tests/journeys/fixtures/challenge-pair/`.
+
+tmux: `bin/tmux` refuses to run when `$FAKE_TMUX_REAL` resolves back to the
+wrapper itself, which would otherwise exec itself forever.
 
 ## Unmodelled calls are failures, not silence
 

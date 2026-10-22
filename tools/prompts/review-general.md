@@ -180,6 +180,18 @@ Note: Internal function calls within the codebase generally don't need defensive
 - ✅ Report: "Line 67: Business logic in React component violates codebase pattern of using service layer"
 - ✅ Report: "Line 89: Breaking change to public API without deprecation notice"
 
+#### 6. Mill-core Journey Coverage (repos with `tests/journeys/`)
+Golden journeys are the definition of done for mill-core changes: paths in the
+`journeys` filter of `.github/workflows/ci.yml` (monitor/startup shell, tend,
+Ready, labels, task identity/progress, bounded retry, workflow state, hooks,
+prompts, `tests/journeys/`, `tests/fakes/`).
+- **Incident fix without a journey** - The diff fixes an incident on the plan → code → review → ready → merge → reap chain but adds or extends no `tests/journeys/*.journey.sh` that would fail without the fix (a unit test alone is not enough). Report as a `blocker` with category `requirements`.
+- **Retired coverage without replacement** - The diff deletes a lifecycle/journey test whose scenario no journey still exercises.
+
+**Examples**:
+- ✅ Report: "wavemill-monitor.sh:6870: fixes the dirty-tree relaunch exhaustion path but no journey replays it; extend a journey (see each journey's header for the classes it covers)"
+- ❌ Don't report: a refactor of a mill-core file that changes no behaviour, or a change outside the `journeys` filter
+
 ---
 
 ## Plan Compliance Review

@@ -60,7 +60,11 @@ The implementation is complete. Your job is to review and create a PR.
    The PR body MUST include:
    - A "## Summary" section with 2-4 bullet points describing what changed and why
    - A "## Changes" section listing the key files/modules modified
-   - A "## Test plan" section describing how the changes were validated
+   - A "## Test plan" section describing how the changes were validated. In repos with
+     `tests/journeys/`, when the diff touches a mill-core path (the `journeys` filter in
+     `.github/workflows/ci.yml`), name the journeys run and which journey replays the
+     incident being fixed; the **Golden Journeys** check is required, and an incident fix
+     with no journey change is a review blocker, not a follow-up
    - A "## Self-review" section noting the review verdict and iterations run
    - An optional "## Routing" section when route artifacts or `{{FEATURE_DIR}}/routing.jsonl` exist.
      Label it **Non-authoritative routing context**. Wavemill stamps the authoritative

@@ -86,6 +86,7 @@ Review the diff against the plan and task packet (if provided), but evaluate ONL
    - New public functions with no test exercising them
    - New control-flow branches with no coverage
    - Removed tests without replacement
+   - In repos with `tests/journeys/`: a fix for an incident on the mill's plan → code → review → ready → merge → reap chain (paths in the `journeys` filter of `.github/workflows/ci.yml`) that adds or extends no `tests/journeys/*.journey.sh` is a `blocker` (category `requirements`); a unit test alone is not enough
 
 Predicted test failures must stay scoped: if you infer "this will fail tests" from code inspection alone, label it `Hypothesis (not reproduced):` and keep it at `warning` until you have failing output, CI evidence, or a literal fixture mismatch.
 

@@ -518,6 +518,8 @@ mill_pane_has_live_blocking_process() {
 EOF
 }
 
+# Each tick is a plain (non-login) bash: it inherits the caller's PATH and
+# skips sourcing a login profile on every tick (HOK-3228).
 harness_run_tick() {
   local repo="$1" slug="$2" issue="$3" extra_setup="${4:-}"
   local tick_setup_file="$TEST_TMP/${issue}-${slug}-extra-$$.sh"
@@ -529,7 +531,7 @@ harness_run_tick() {
   TEST_ISSUE="$issue" \
   REAL_FUNC_FILE="$REAL_FUNC_FILE" \
   EXTRA_SETUP_FILE="$tick_setup_file" \
-  env -u npm_config_prefix bash -lc '
+  bash -c '
     set -euo pipefail
     source "$REPO_DIR/shared/lib/wavemill-common.sh"
     source "$REAL_FUNC_FILE"
@@ -704,28 +706,6 @@ harness_run_tick() {
     printf "log_output=%s\n" "$(printf "%s" "$LOG_OUTPUT" | tr "\n" "|")"
     printf "warn_output=%s\n" "$(printf "%s" "$WARN_OUTPUT" | tr "\n" "|")"
   '
-}
-
-test_positive_handoff_two_ticks() {
-  local slug="planning-approval-positive"
-  local issue="HOK-1293-POS"
-  local repo tick1 tick2
-  repo="$(harness_init_repo "$slug")"
-  harness_setup_planning_state "$repo" "$slug" "awaiting_user"
-  harness_setup_runtime_artifacts "$repo"
-
-  tick1="$(harness_run_tick "$repo" "$slug" "$issue")"
-  check_eq "tick 1: planning transitions to completed" "completed" "$(harness_read_stage_status "$repo" "$slug" planning)"
-  check_file_exists "tick 1: .plan-approved preserved" "$repo/features/$slug/.plan-approved"
-  check_eq "tick 1: no coding launch yet" "false" "$(kv_value "$tick1" coding_launched)"
-  check_eq "tick 1: no source-overreach warning" "" "$(kv_value "$tick1" warn_output)"
-
-  tick2="$(harness_run_tick "$repo" "$slug" "$issue")"
-  check_eq "tick 2: controller phase becomes coding" "coding" "$(kv_value "$tick2" phase)"
-  check_eq "tick 2: coding stage becomes running" "running" "$(harness_read_stage_status "$repo" "$slug" coding)"
-  check_eq "tick 2: coding launch stub invoked" "true" "$(kv_value "$tick2" coding_launched)"
-  check_file_exists "tick 2: .plan-approved still preserved" "$repo/features/$slug/.plan-approved"
-  check_eq "tick 2: no source-overreach warning" "" "$(kv_value "$tick2" warn_output)"
 }
 
 test_source_edit_blocks_handoff() {
@@ -1688,7 +1668,7 @@ test_reconciliation_rehydration_acquires_single_owner() {
     REAL_FUNC_FILE="$REAL_FUNC_FILE" \
     ISSUE="$issue" \
     SLUG="$slug" \
-    bash -lc '
+    bash -c '
       set -euo pipefail
       source "$REPO_DIR/shared/lib/wavemill-common.sh"
       source "$REAL_FUNC_FILE"
@@ -2453,43 +2433,6 @@ test_coding_complete_dirty_worktree_without_commits_needs_attention() {
   check_file_exists "uncommitted output: dedupe marker written" "$feature_dir/.coding-uncommitted-output-announced"
 }
 
-# HOK-3128: once the coding agent has exited, a dirty-tree handoff is relaunched
-# once (bounded-retry bucket coding-dirty-handoff) and then terminalized; a
-# primary stays needs-user with a recorded sentinel.
-test_coding_complete_dirty_tree_agent_exited_relaunches_then_terminalizes() {
-  local slug="coding-complete-dirty-agent-exited"
-  local issue="HOK-3128-EXITED"
-  local repo tick1 tick2 feature_dir setup
-  repo="$(harness_init_repo "$slug")"
-  harness_setup_runtime_artifacts "$repo"
-  harness_setup_coding_state "$repo" "$slug" "running"
-  feature_dir="$repo/features/$slug"
-
-  printf '{"stage":"coding","confidence":"high"}\n' > "$feature_dir/.coding-complete"
-  printf 'uncommitted edit\n' >> "$repo/README.md"
-
-  setup='CURRENT_PHASE="coding"
-task_progress_json() { printf "%s\n" "{\"agentIdle\":true,\"agentState\":null,\"blockingPrompt\":null,\"agentRecord\":{\"state\":\"idle\",\"event\":\"process_exit\",\"timestamp\":1},\"progressAgeMinutes\":90}"; }
-agent_validate_phase_launch() { return 0; }
-_prepare_recovery_phase_launch() { return 0; }'
-
-  tick1="$(harness_run_tick "$repo" "$slug" "$issue" "$setup")"
-  check_eq "agent exited: tick 1 relaunches coding" "true" "$(kv_value "$tick1" coding_launched)"
-  check_eq "agent exited: tick 1 keeps the task active" "1" "$(kv_value "$tick1" active_count)"
-  check_eq "agent exited: tick 1 clears attention" "clear" "$(kv_value "$tick1" attention)"
-  check_contains "agent exited: tick 1 logs the relaunch" "$(kv_value "$tick1" log_output)" "coding-dirty-handoff relaunch"
-  check_file_exists "agent exited: recovery instruction written" "$feature_dir/.coding-recovery-instruction.md"
-  check_not_contains "agent exited: review does not launch" "$(kv_value "$tick1" log_output)" "Launching review phase"
-
-  printf '{"stage":"coding","confidence":"high"}\n' > "$feature_dir/.coding-complete"
-  tick2="$(harness_run_tick "$repo" "$slug" "$issue" "$setup")"
-  check_eq "agent exited: tick 2 does not relaunch again" "false" "$(kv_value "$tick2" coding_launched)"
-  check_eq "agent exited: primary stays needs-user" "needs-user" "$(kv_value "$tick2" attention)"
-  check_eq "agent exited: phase stays coding" "coding" "$(kv_value "$tick2" phase)"
-  check_file_exists "agent exited: exhaustion sentinel recorded" "$feature_dir/.retry-coding-dirty-handoff-exhausted"
-  check_contains "agent exited: sentinel names the reason" "$(cat "$feature_dir/.retry-coding-dirty-handoff-exhausted" 2>/dev/null)" "dirty-handoff relaunch exhausted after 1 attempt(s)"
-}
-
 test_coding_complete_uncommitted_output_dedupes_stable_condition() {
   local slug="coding-complete-uncommitted-output-dedupe"
   local issue="HOK-2405-DEDUP"
@@ -2856,50 +2799,6 @@ test_stage_result_trace_events_are_idempotent() {
   completions="$(grep -c 'phase_completed' "$repo/trace-events.log")"
   check_eq "trace events: one running transition" "1" "$starts"
   check_eq "trace events: one completion transition" "1" "$completions"
-}
-
-test_completed_coding_pane_is_quarantined_best_effort() {
-  local slug="coding-complete-pane-quarantine"
-  local issue="HOK-2454-PANE"
-  local repo tick tick_review feature_dir review_setup
-  repo="$(harness_init_repo "$slug")"
-  harness_setup_runtime_artifacts "$repo"
-  harness_setup_coding_state "$repo" "$slug" "running"
-  feature_dir="$repo/features/$slug"
-  printf '{"stage":"coding","confidence":"high"}\n' > "$feature_dir/.coding-complete"
-
-  tick="$(harness_run_tick "$repo" "$slug" "$issue" '
-    CURRENT_PHASE="coding"
-    _tmux_task_window_target() { printf "%s\\n" "@7"; }
-    tmux() { printf "%s\\n" "$*" >> "$REPO_UNDER_TEST/tmux.log"; return 0; }
-  ')"
-
-  check_eq "pane quarantine: coding stage becomes completed" "completed" "$(harness_read_stage_status "$repo" "$slug" coding)"
-  check_contains "pane quarantine: completed window is killed" "$(cat "$repo/tmux.log")" "kill-window -t @7"
-  check_file_exists "pane quarantine: expected replacement marker written" "$repo/features/$slug/.coding-pane-expected-replacement.json"
-  check_eq "pane quarantine: state advances despite cleanup" "" "$(kv_value "$tick" attention)"
-
-  review_setup='
-CURRENT_PHASE="coding"
-log() { printf "%s\n" "$*" >> "$REPO_UNDER_TEST/review-log-output"; }
-log_warn() { printf "%s\n" "$*" >> "$REPO_UNDER_TEST/review-warn-output"; }
-_tmux_task_window_target() { return 1; }
-tmux() {
-  printf "%s\n" "$*" >> "$REPO_UNDER_TEST/tmux-review.log"
-  if [[ "${1:-}" == "display-message" ]]; then
-    printf "%s\n" "@8"
-  fi
-  return 0
-}
-review_win="$(_ensure_task_window_exists "$SESSION" "$ISSUE" "$SLUG" "$REPO_UNDER_TEST")"
-printf "%s\n" "$review_win" > "$REPO_UNDER_TEST/review-window-target"
-'
-  tick_review="$(harness_run_tick "$repo" "$slug" "$issue" "$review_setup")"
-  check_eq "pane quarantine review: fresh window target returned" "@8" "$(cat "$repo/review-window-target")"
-  check_contains "pane quarantine review: replacement window created" "$(cat "$repo/tmux-review.log")" "new-window -d -t lifecycle-harness -n $issue-$slug -c $repo"
-  check_contains "pane quarantine review: informational lifecycle log emitted" "$(cat "$repo/review-log-output")" "intentionally quarantined after coding"
-  check_not_contains "pane quarantine review: no missing-window warning" "$(cat "$repo/review-warn-output" 2>/dev/null || true)" "missing, recreating"
-  check_file_absent "pane quarantine review: expected replacement consumed" "$repo/features/$slug/.coding-pane-expected-replacement.json"
 }
 
 test_coding_blocked_completion_malformed_json_falls_back() {
@@ -4113,7 +4012,6 @@ test_terminal_cleanup_queue_owned_closed_unmerged_preserves_unsafe_work() {
 echo "=== Mill Lifecycle: Planning to Coding Handoff ==="
 harness_extract_real_functions
 
-test_positive_handoff_two_ticks
 test_source_edit_blocks_handoff
 test_regression_without_wavemill_allowance
 test_mixed_artifacts_source_edit_wins
@@ -4157,7 +4055,6 @@ test_coding_blocked_completion_dedupes_same_artifact
 test_coding_blocked_completion_reannounces_on_mtime_change
 test_coding_complete_wins_over_blocked_completion
 test_coding_complete_dirty_worktree_without_commits_needs_attention
-test_coding_complete_dirty_tree_agent_exited_relaunches_then_terminalizes
 test_coding_complete_uncommitted_output_dedupes_stable_condition
 test_coding_complete_uncommitted_output_reannounces_on_dirty_path_change
 test_coding_complete_uncommitted_output_reannounces_on_ahead_count_change
@@ -4168,7 +4065,6 @@ test_coding_complete_trace_only_dirty_worktree_advances
 test_coding_complete_tracked_claude_settings_advances
 test_coding_complete_trace_and_source_dirty_worktree_needs_attention
 test_stage_result_trace_events_are_idempotent
-test_completed_coding_pane_is_quarantined_best_effort
 test_coding_complete_metadata_only_routing_advances_to_review
 test_coding_complete_source_dirty_still_blocks
 test_coding_blocked_completion_malformed_json_falls_back

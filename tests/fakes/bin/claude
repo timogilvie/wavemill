@@ -16,6 +16,23 @@ case "${1:-}" in
   --version|-v) echo "0.0.0 (fake claude)"; exit 0 ;;
 esac
 
+if [[ -z "${WAVEMILL_PHASE:-}" && " $* " == *" -p "* && -f "${FAKE_AGENT_SCRIPT_DIR:-/nonexistent}/headless" ]]; then
+  # A headless `claude -p` helper call (eval judge, classifiers). The prompt
+  # arrives on stdin; a journey's `headless` script answers it by writing the
+  # model's reply text to stdout (wrapped below in the `--output-format json`
+  # envelope) or returns non-zero to leave the call unmodelled.
+  FAKE_PROMPT="$(cat)"
+  if reply="$(source "$FAKE_AGENT_SCRIPT_DIR/headless")"; then
+    printf '%s phase=headless issue=%s\n' "$(date -u +%FT%TZ)" "${WAVEMILL_ISSUE:-}" >> "${FAKE_AGENT_LOG:-/dev/null}"
+    if [[ " $* " == *" --output-format json "* ]]; then
+      jq -cn --arg r "$reply" '{type:"result", is_error:false, result:$r, usage:{input_tokens:0, output_tokens:0}}'
+    else
+      printf '%s\n' "$reply"
+    fi
+    exit 0
+  fi
+fi
+
 if [[ -z "${WAVEMILL_PHASE:-}" ]]; then
   # Not a phase launch (e.g. a `claude -p` helper call). Record it as an
   # unmodelled call so a journey can see it, and fail like an unavailable CLI.
@@ -112,6 +129,15 @@ default_review() {
   artifacts="$(jq -cn --argjson pr "$pr_number" --arg head "$(git rev-parse HEAD)" \
     '{type:"review",prNumber:$pr,exitCode:0,verdict:"ready",iterations:1,blockerCount:0,warningCount:0,reviewHeadSha:$head}')"
   run_tool stage-result-cli.ts update "$FEATURE_DIR" review --status completed --notes "PR #$pr_number created" --artifacts "$artifacts"
+}
+
+# The agent's own idle record, as Claude's Stop hook writes it (writer=agent),
+# through the shared hook protocol. TMUX is dropped for the write: the OSC
+# Program Status mirror only targets the pane tty, which journeys never read.
+fake_agent_hook_idle() {
+  env -u TMUX bash -c 'source "$1/shared/hooks/wavemill-hook-protocol.sh" \
+    && wavemill_hook_check && wavemill_hook_write idle Stop "" claude' _ "$FAKE_AGENT_TOOLS_DIR/.." \
+    >/dev/null 2>&1 || true
 }
 
 # A real agent runs for minutes. Stay alive long enough for the mill's launch

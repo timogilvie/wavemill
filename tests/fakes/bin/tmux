@@ -7,6 +7,12 @@
 set -euo pipefail
 : "${FAKE_TMUX_REAL:?FAKE_TMUX_REAL must name the real tmux binary}"
 : "${FAKE_TMUX_SOCK:?FAKE_TMUX_SOCK must name the private tmux socket}"
+# A FAKE_TMUX_REAL that resolves back to this wrapper would exec itself
+# forever, each hop prepending another -S; fail loudly instead of hanging.
+if [[ "$FAKE_TMUX_REAL" -ef "${BASH_SOURCE[0]}" ]]; then
+  echo "fake tmux: FAKE_TMUX_REAL ($FAKE_TMUX_REAL) is this wrapper, not the real tmux" >&2
+  exit 127
+fi
 if [[ -n "${FAKE_TMUX_LOG:-}" ]]; then
   printf '%s\n' "$*" >> "$FAKE_TMUX_LOG"
 fi

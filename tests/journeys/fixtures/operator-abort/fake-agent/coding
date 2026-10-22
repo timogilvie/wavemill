@@ -1,0 +1,20 @@
+# shellcheck shell=bash
+# Fake coder for the operator-abort journey (HOK-3228; HOK-3137 + HOK-3210).
+#
+# Plays a Claude REPL that started a long background task (a test suite via
+# run_in_background) and went idle waiting on it: the agent's own idle Stop
+# record is written (fake_agent_hook_idle), the REPL process stays alive, and
+# its background child keeps running. It never writes .coding-complete; the
+# operator aborts the task while it waits.
+#
+# The REPL execs under the name `claude`: the background-work probe only
+# counts a child of a substantive process, and a real Claude CLI is one (node)
+# where this fake, as `bash …/claude`, would read as a plain shell.
+fake_agent_hook_idle
+exec -a claude bash -c '
+  sleep 600 &
+  printf "%s\n" "$!" > "$1/bg-pid-$2"
+  printf "%s phase=coding issue=%s role=idle-on-background-job bg=%s\n" \
+    "$(date -u +%FT%TZ)" "$2" "$!" >> "$3"
+  wait
+' _ "$FAKE_ROOT" "$WAVEMILL_ISSUE" "$FAKE_AGENT_LOG"

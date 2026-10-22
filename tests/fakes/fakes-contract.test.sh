@@ -142,6 +142,26 @@ check "no unmodelled Linear queries" test ! -s "$FAKE_LINEAR_UNHANDLED"
 check "non-Linear network access is refused" \
   bash -c 'node -e "fetch(\"https://example.com\").then(()=>process.exit(0),()=>process.exit(1))" && exit 1 || exit 0'
 
+echo "Agent CLI: headless helper calls"
+headless_dir="$(mktemp -d)"
+cat > "$headless_dir/headless" <<'EOF'
+[[ "$FAKE_PROMPT" == *"score this"* ]] || return 1
+printf '{"score":0.9}'
+EOF
+: > "$FAKE_AGENT_UNHANDLED"
+check "a scripted headless prompt is answered in the json envelope" \
+  test "$(echo 'please score this' | FAKE_AGENT_SCRIPT_DIR="$headless_dir" claude -p --output-format json | jq -r '.result | fromjson | .score')" = "0.9"
+check "a prompt the script declines stays an unmodelled failure" \
+  bash -c '! echo "something else" | FAKE_AGENT_SCRIPT_DIR="$1" claude -p --output-format json' _ "$headless_dir"
+check "and is recorded as unhandled" test -s "$FAKE_AGENT_UNHANDLED"
+: > "$FAKE_AGENT_UNHANDLED"
+rm -rf "$headless_dir"
+
+echo "tmux: the wrapper never execs itself"
+check "FAKE_TMUX_REAL pointing at the wrapper fails fast" \
+  bash -c '! FAKE_TMUX_REAL="$(command -v tmux)" tmux list-sessions 2>/dev/null'
+
+
 echo ""
 echo "--- fakes-contract: $PASS passed, $FAIL failed ---"
 (( FAIL == 0 ))

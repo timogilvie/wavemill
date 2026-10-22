@@ -48,6 +48,13 @@ fakes_setup() {
 
   # tmux sockets must stay under the ~104-byte sun_path limit, so the socket
   # lives in a short /tmp path rather than the (often long) scratch dir.
+  # Inside a live mill agent pane `tmux` on PATH is the mill's own guard shim
+  # (shared/agent-bin/tmux), which delegates to $WAVEMILL_REAL_TMUX; a journey
+  # pane re-points that at this fake, so taking the shim as "real" loops
+  # fake → shim → fake forever. Prefer the binary the mill already resolved.
+  if [[ -z "${FAKE_TMUX_REAL:-}" && -n "${WAVEMILL_REAL_TMUX:-}" && -x "$WAVEMILL_REAL_TMUX" ]]; then
+    FAKE_TMUX_REAL="$WAVEMILL_REAL_TMUX"
+  fi
   if [[ -z "${FAKE_TMUX_REAL:-}" ]]; then
     FAKE_TMUX_REAL="$(PATH="$(fakes_path_without_fakes)" command -v tmux || true)"
   fi
@@ -91,6 +98,11 @@ EOF
   export NODE_OPTIONS="--import=$FAKES_DIR/linear-fetch-preload.mjs${NODE_OPTIONS:+ $NODE_OPTIONS}"
   export PATH="$FAKES_DIR/bin:$PATH"
   unset TMUX TMUX_PANE GH_TOKEN GITHUB_TOKEN 2>/dev/null || true
+  # Run from inside a live mill agent pane, the caller's own agent identity
+  # would leak into the fakes (the fake claude reads WAVEMILL_PHASE as "this
+  # is a phase launch" and would act on the caller's worktree). The mill
+  # under test exports its own per launch.
+  unset WAVEMILL_PHASE WAVEMILL_ISSUE WAVEMILL_SLUG 2>/dev/null || true
 }
 
 # PATH with tests/fakes/bin removed (to find the real binaries).

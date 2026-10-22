@@ -5,6 +5,13 @@
 # → reap chain across real module boundaries — e.g. a reader that expects a
 # field the writer never produces (HOK-3212), or a hand-off whose two sides
 # disagree on shape (the reconciler never applying wm:ready).
+#
+# Formerly covered by lifecycle-harness tests retired per HOK-3228:
+# test_positive_handoff_two_ticks (approved plan → coding launch, no
+# source-overreach warning) and
+# test_completed_coding_pane_is_quarantined_best_effort (the coding window is
+# killed after .coding-complete and review gets a fresh window, never a
+# "missing, recreating" fallback).
 set -euo pipefail
 source "$(dirname "$0")/harness.sh"
 
@@ -34,6 +41,14 @@ journey_wait_until "$ISSUE" 8  "task reaped after merge"     journey_task_reaped
 
 echo ""
 echo "assertions:"
+journey_assert "one plan approval led to exactly one coding launch" \
+  test "$(journey_approval_count)/$(journey_agent_launch_count "$ISSUE" coding)" = "1/1"
+journey_assert "the plan→code handoff saw no planning source overreach" \
+  test "$(journey_mill_log_count "Planning phase modified source code")" = "0"
+journey_assert "the coding window was quarantined and review got a fresh window" \
+  bash -c '(( $1 >= 1 ))' _ "$(journey_mill_log_count "intentionally quarantined after coding, creating fresh review window")"
+journey_assert "no task window was ever recreated as missing" \
+  test "$(journey_mill_log_count "missing, recreating")" = "0"
 journey_assert_landed "$ISSUE"
 
 journey_finish

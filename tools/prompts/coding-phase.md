@@ -14,6 +14,23 @@ Before writing any code, state in your response:
 
 This is a one-shot statement, not a running commentary.
 
+### Mill-core changes: golden journeys are the definition of done
+
+Applies when the repo has `tests/journeys/` (wavemill itself). A change to a
+mill-core path (the `journeys` filter in `.github/workflows/ci.yml`: the
+monitor/startup shell, tend, Ready, labels, task identity/progress, bounded
+retry, workflow state, hooks, prompts, `tests/journeys/`, `tests/fakes/`) is
+done only when the **Golden Journeys** check passes. Run the journeys your
+change can affect with `bash tests/journeys/run-journeys.sh <name>`
+(`--list` prints them; each journey's header names the incident classes it
+replays).
+
+A fix for an incident in a class a journey covers must add or extend a
+journey that fails without the fix, not only a unit test. A new incident
+class on the plan → code → review → ready → merge → reap chain gets a new
+journey built on `tests/journeys/harness.sh` and the shared fakes in
+`tests/fakes/`.
+
 ### Your Responsibilities
 
 1. **Read the plan**:

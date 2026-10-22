@@ -286,6 +286,13 @@ for f in \
   "$REPO_DIR"/tests/journeys/mid-flight-base-conflict.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3273/fake-agent/review \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3273/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/challenge-pair.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/challenge-pair/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/fixtures/challenge-pair/fake-agent/headless \
+  "$REPO_DIR"/tests/journeys/ready-remediation.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/ready-remediation/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/operator-abort-mid-coding.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/operator-abort/fake-agent/coding \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
   "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
   "$REPO_DIR"/tests/lib/state-fixtures.sh \
