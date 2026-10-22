@@ -23714,12 +23714,20 @@ restart_backstage_observer_loop() {
 
 check_backstage_observer_health() {
   local now health_file merged stale_seconds pane_probe pane_summary pane_status detail pane_count observer_pane_id heartbeat_at observer_count
-  local prior_attempt_at prior_attempt_count elapsed restart_pane_id observer_cmd observer_interval observer_max_log_lines
+  local prior_attempt_at prior_attempt_count prior_attempt_epoch elapsed restart_pane_id observer_cmd observer_interval observer_max_log_lines
   local reconcile_result _reconcile_pane _reconcile_action _reconcile_killed
+  local bucket retry_limit identity disposition backoff remaining reason marked_exhausted legacy_count
 
   now=$(date +%s)
   (( now - LAST_BACKSTAGE_OBSERVER_HEALTH_CHECK < BACKSTAGE_HEALTH_INTERVAL )) && return 0
   LAST_BACKSTAGE_OBSERVER_HEALTH_CHECK=$now
+  # HOK-3244 REQ-F1: route restart attempts through bounded-retry.sh (3
+  # attempts with backoff) before latching needs-user, mirroring the tend
+  # watchdog's `backstage-tend-restart` bucket.
+  bucket="backstage-observer-restart"
+  retry_limit="$BACKSTAGE_RESTART_NEEDS_USER_AFTER_ATTEMPTS"
+  [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=3
+  (( retry_limit > 0 )) || retry_limit=3
 
   if ! observer_health_enabled; then
     LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="disabled"
@@ -23753,6 +23761,7 @@ check_backstage_observer_health() {
 
   case "$pane_status" in
     healthy)
+      bounded_retry_clear "$STATE_DIR" "$bucket"
       [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "healthy" "$detail" 0 "" "$observer_pane_id" "$heartbeat_at" "$observer_count"
       LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="healthy"
       return 0
@@ -23760,7 +23769,7 @@ check_backstage_observer_health() {
     'backstage-missing')
       # HOK-3094: with tend on, tend's own health check owns window recovery.
       # With tend off the observer owns the window, so it goes through the
-      # normal one-restart / cooldown / needs-user flow, which recreates it.
+      # normal bounded-retry restart flow below, which recreates it.
       if backstage_health_enabled; then
         [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "backstage-missing" "$detail" 0 "" "" "" 0
         LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="backstage-missing"
@@ -23769,49 +23778,96 @@ check_backstage_observer_health() {
       ;;
   esac
 
-  prior_attempt_at="$(read_backstage_service_health_field "observer" '.lastRestartAttemptAt' || true)"
-  prior_attempt_count="$(read_backstage_service_health_field "observer" '.restartAttemptCount' || true)"
+  identity="${pane_status}:${observer_pane_id:-missing}"
+  bounded_retry_reset_if_new_head "$STATE_DIR" "$bucket" "$identity"
+  prior_attempt_count="$(bounded_retry_count "$STATE_DIR" "$bucket")"
   [[ "$prior_attempt_count" =~ ^[0-9]+$ ]] || prior_attempt_count=0
-  elapsed=$BACKSTAGE_RESTART_COOLDOWN
-  if [[ -n "$prior_attempt_at" ]]; then
-    local prior_attempt_epoch=0
-    prior_attempt_epoch="$(wavemill_iso8601_to_epoch "$prior_attempt_at" 2>/dev/null || echo 0)"
+  # Fresh-upgrade continuity: the first tick after HOK-3244 sees an empty
+  # bucket but a non-zero `restartAttemptCount` in the health file written by
+  # the pre-bounded-retry code path. Seed the counter from it so an in-flight
+  # restart episode does not reset to zero mid-climb.
+  if (( prior_attempt_count == 0 )); then
+    legacy_count="$(read_backstage_service_health_field "observer" '.restartAttemptCount' || true)"
+    if [[ "$legacy_count" =~ ^[0-9]+$ ]] && (( legacy_count > 0 )); then
+      prior_attempt_count="$legacy_count"
+    fi
+  fi
+  prior_attempt_epoch="$(bounded_retry_last_at "$STATE_DIR" "$bucket")"
+  [[ "$prior_attempt_epoch" =~ ^[0-9]+$ ]] || prior_attempt_epoch=0
+  prior_attempt_at=""
+  if (( prior_attempt_epoch > 0 )); then
+    prior_attempt_at="$(cleanup_episode_iso_from_epoch "$prior_attempt_epoch" 2>/dev/null || true)"
     elapsed=$(( now - prior_attempt_epoch ))
+  else
+    elapsed="$BACKSTAGE_RESTART_COOLDOWN"
+  fi
+  if [[ -z "$prior_attempt_at" ]]; then
+    prior_attempt_at="$(read_backstage_service_health_field "observer" '.lastRestartAttemptAt' || true)"
+  fi
+
+  disposition="$(bounded_retry_gate "$STATE_DIR" "$bucket" "$identity" "$retry_limit" "$BACKSTAGE_RESTART_COOLDOWN" "$BACKSTAGE_RESTART_BACKOFF_MAX_SECONDS")"
+  case "$disposition" in
+    backoff)
+      backoff="$(bounded_retry_backoff_seconds "$prior_attempt_count" "$BACKSTAGE_RESTART_COOLDOWN" "$BACKSTAGE_RESTART_BACKOFF_MAX_SECONDS")"
+      remaining=$(( backoff - elapsed ))
+      (( remaining < 0 )) && remaining=0
+      detail="Backstage observer loop is ${pane_status} (restart attempt ${prior_attempt_count} unconfirmed: $detail); next automatic restart in ${remaining}s. Restart 'npx tsx $TOOLS_DIR/observer.ts --loop --json --repo-dir $REPO_DIR --session $SESSION' in tmux."
+      [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "$pane_status" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$observer_pane_id" "$heartbeat_at" "$observer_count"
+      LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="$pane_status"
+      return 0
+      ;;
+    exhausted|exhausted-quiet)
+      reason="observer-restart-exhausted evidence=${identity} attempts=${prior_attempt_count}"
+      detail="Backstage window '$WAVEMILL_WINDOW_BACKSTAGE' observer loop restart attempts are exhausted for ${identity} after ${prior_attempt_count}/${retry_limit} attempt(s). Restart 'npx tsx $TOOLS_DIR/observer.ts --loop --json --repo-dir $REPO_DIR --session $SESSION' in tmux after fixing the underlying process evidence."
+      [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "needs-user" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$observer_pane_id" "$heartbeat_at" "$observer_count"
+      marked_exhausted=1
+      if [[ "$disposition" == "exhausted" ]]; then
+        bounded_retry_mark_exhausted "$STATE_DIR" "$bucket" "$reason" && marked_exhausted=0 || marked_exhausted=1
+      fi
+      if (( marked_exhausted == 0 )) || [[ "$LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS" != "needs-user" ]]; then
+        log_warn "$detail"
+      fi
+      LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="needs-user"
+      return 0
+      ;;
+  esac
+
+  if [[ "$disposition" != "proceed" ]]; then
+    LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="$pane_status"
+    return 0
   fi
 
   if (( prior_attempt_count == 0 )); then
     if [[ "$LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS" != "$pane_status" ]]; then
-      log_warn "Backstage health check detected an unhealthy observer ($pane_status). Attempting one restart in '$WAVEMILL_WINDOW_BACKSTAGE'."
+      log_warn "Backstage health check detected an unhealthy observer ($pane_status). Attempting restart in '$WAVEMILL_WINDOW_BACKSTAGE'."
     fi
-    restart_pane_id="$(restart_backstage_observer_loop || true)"
-    sleep 0.3
-    pane_probe="$(probe_backstage_panes 2>/dev/null || true)"
-    pane_summary="$(classify_backstage_observer_health "$pane_probe" "$(date +%s)" "$stale_seconds")"
-    IFS=$'\t' read -r pane_status detail pane_count observer_pane_id heartbeat_at observer_count <<< "$pane_summary"
-    [[ "$observer_count" =~ ^[0-9]+$ ]] || observer_count=0
-    if [[ "$pane_status" == "healthy" ]]; then
-      [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "healthy" "backstage observer loop was restarted automatically" 0 "" "${observer_pane_id:-$restart_pane_id}" "$heartbeat_at" "$observer_count"
-      log "status" "Backstage observer loop restarted"
-      LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="healthy"
-      return 0
-    fi
-    [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "$pane_status" "$detail" 1 "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "${observer_pane_id:-$restart_pane_id}" "$heartbeat_at" "$observer_count"
-    LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="$pane_status"
+  else
+    log_warn "Backstage health check detected an unhealthy observer ($pane_status). Attempting restart (attempt $(( prior_attempt_count + 1 ))) in '$WAVEMILL_WINDOW_BACKSTAGE'."
+  fi
+  bounded_retry_increment "$STATE_DIR" "$bucket" "$identity" >/dev/null
+  restart_pane_id="$(restart_backstage_observer_loop || true)"
+  sleep 0.3
+  pane_probe="$(probe_backstage_panes 2>/dev/null || true)"
+  pane_summary="$(classify_backstage_observer_health "$pane_probe" "$(date +%s)" "$stale_seconds")"
+  IFS=$'\t' read -r pane_status detail pane_count observer_pane_id heartbeat_at observer_count <<< "$pane_summary"
+  [[ "$observer_count" =~ ^[0-9]+$ ]] || observer_count=0
+  if [[ "$pane_status" == "healthy" ]]; then
+    bounded_retry_clear "$STATE_DIR" "$bucket"
+    [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "healthy" "backstage observer loop was restarted automatically" 0 "" "${observer_pane_id:-$restart_pane_id}" "$heartbeat_at" "$observer_count"
+    log "status" "Backstage observer loop restarted"
+    LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="healthy"
     return 0
   fi
 
-  if (( elapsed < BACKSTAGE_RESTART_COOLDOWN )); then
-    [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "$pane_status" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$observer_pane_id" "$heartbeat_at" "$observer_count"
-    LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="$pane_status"
-    return 0
+  prior_attempt_count="$(bounded_retry_count "$STATE_DIR" "$bucket")"
+  [[ "$prior_attempt_count" =~ ^[0-9]+$ ]] || prior_attempt_count=0
+  prior_attempt_epoch="$(bounded_retry_last_at "$STATE_DIR" "$bucket")"
+  prior_attempt_at=""
+  if [[ "$prior_attempt_epoch" =~ ^[0-9]+$ ]] && (( prior_attempt_epoch > 0 )); then
+    prior_attempt_at="$(cleanup_episode_iso_from_epoch "$prior_attempt_epoch" 2>/dev/null || true)"
   fi
-
-  detail="Backstage window '$WAVEMILL_WINDOW_BACKSTAGE' observer service needs user attention. Restart 'npx tsx $TOOLS_DIR/observer.ts --loop --json --repo-dir $REPO_DIR --session $SESSION' in tmux."
-  [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "needs-user" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$observer_pane_id" "$heartbeat_at" "$observer_count"
-  if [[ "$LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS" != "needs-user" ]]; then
-    log_warn "$detail"
-  fi
-  LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="needs-user"
+  [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "$pane_status" "$detail" "$prior_attempt_count" "$prior_attempt_at" "${observer_pane_id:-$restart_pane_id}" "$heartbeat_at" "$observer_count"
+  LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="$pane_status"
 }
 
 check_backstage_health() {
