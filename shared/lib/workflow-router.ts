@@ -2676,6 +2676,7 @@ export function routeWorkflowDegradedWithContext(
   return routeWorkflowDegradedInternal(prompt, options, mode, stageAwareContext);
 }
 
+// allow-stage-launchability: intermediate policy decision; its only caller (routeWorkflowAutoWithContext) finalizes it.
 export function tryPolicyResolution(
   prompt: string,
   options?: RouteWorkflowOptions,

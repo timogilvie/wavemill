@@ -105,7 +105,9 @@ import {
   assertOpenRouterBalanceSufficient,
   capOpenRouterMaxTokensForBalance,
 } from './openrouter-credits-guard.ts';
-import { updateStageResult, type ModelAttributionIneligibleReason } from '../stage-result.ts';
+import { updateStageResult, type ModelAttributionIneligibleReason, type StageExecutionUsage } from '../stage-result.ts';
+import { buildStageExecutionUsage } from './prompt-cache.ts';
+import { reportPromptCacheHitRate } from './prompt-cache-detector.ts';
 import { getNativeContextManagementConfig } from '../config.ts';
 import { equivalentOpenRouterModelIds, type NormalizedPricing } from '../openrouter-catalog.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
@@ -720,6 +722,11 @@ function loadCodingArtifacts(featureDir: string, trackerCommitCount: number): Co
   };
 }
 
+/** Attach the launcher-measured loop usage; it supersedes any agent-written `usage`. */
+function withLoopUsage(artifacts: CodingArtifacts, usage: StageExecutionUsage | undefined): CodingArtifacts {
+  return usage ? { ...artifacts, usage } : artifacts;
+}
+
 function removeAgentCodingArtifactBeforeStageResult(featureDir: string): void {
   const resultPath = join(featureDir, '.coding-result.json');
   const existing = readOptional(resultPath);
@@ -785,6 +792,7 @@ function buildCompletionAttribution(input: {
   }
 
   // Fallback: scripted/test runs or loop-model-override — keep legacy behaviour.
+  // allow-provider-identity: no verified provider identity on this path; attribution stays gated on intendedModel === model below.
   const executedModel = input.model;
   const attributionEligible = input.stageCompleted && input.intendedModel === input.model;
   return {
@@ -817,6 +825,8 @@ async function inspectCompletion(input: {
   coerceUnverifiedCompletionClaim: boolean;
   providerIdentity?: ProviderIdentitySummary;
   providerExpectation?: { expectedModel: string; requestedWireId: string; isAlias: boolean };
+  /** Usage of the loop run whose completion is being inspected (HOK-3260). */
+  usage?: StageExecutionUsage;
 }): Promise<CompletionInspectionResult> {
   const markerPath = join(input.featureDir, '.coding-complete');
   if (existsSync(markerPath)) {
@@ -833,7 +843,7 @@ async function inspectCompletion(input: {
     if (normalized.changed) {
       atomicWriteText(markerPath, normalized.canonicalContent);
     }
-    const artifacts = loadCodingArtifacts(input.featureDir, input.trackerCommitCount);
+    const artifacts = withLoopUsage(loadCodingArtifacts(input.featureDir, input.trackerCommitCount), input.usage);
     removeAgentCodingArtifactBeforeStageResult(input.featureDir);
     const attribution = buildCompletionAttribution({
       intendedModel: input.intendedModel,
@@ -887,7 +897,7 @@ async function inspectCompletion(input: {
     if (normalized.changed) {
       atomicWriteText(blockedPath, normalized.canonicalContent);
     }
-    const artifacts = loadCodingArtifacts(input.featureDir, input.trackerCommitCount);
+    const artifacts = withLoopUsage(loadCodingArtifacts(input.featureDir, input.trackerCommitCount), input.usage);
     removeAgentCodingArtifactBeforeStageResult(input.featureDir);
     const attribution = buildCompletionAttribution({
       intendedModel: input.intendedModel,
@@ -1268,7 +1278,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       });
     }
 
-    const runCodingLoop = () => runWavemillLoop({
+    const runCodingLoopOnce = () => runWavemillLoop({
       model,
       ...(nativeModels ? { models: nativeModels } : {}),
       context,
@@ -1384,6 +1394,21 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       },
     });
 
+    // HOK-3260: every loop run (initial, recovery, artifact retry) is judged
+    // for prompt-cache hit rate; the latest run's usage lands on the stage result.
+    let lastLoopUsage: StageExecutionUsage | undefined;
+    const runCodingLoop = async (): Promise<LoopResult> => {
+      const loopResult = await runCodingLoopOnce();
+      lastLoopUsage = buildStageExecutionUsage(loopResult, model.provider);
+      reportPromptCacheHitRate({
+        repoDir: options.repoDir,
+        stage: 'coding',
+        model: modelName,
+        usage: lastLoopUsage,
+      });
+      return loopResult;
+    };
+
     writeHookStatus(hookPath, 'working', 'run_native_model', modelName, 'native');
     let result = await runCodingLoop();
     let recoveryAttempted = false;
@@ -1467,6 +1492,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       coerceUnverifiedCompletionClaim: false,
       providerIdentity: providerIdentitySummarySnapshot(),
       providerExpectation: providerExpectationSnapshot,
+      usage: lastLoopUsage,
     });
     let artifactRetryAttempt = 0;
     const quarantinedArtifacts: string[] = [];
@@ -1530,6 +1556,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         coerceUnverifiedCompletionClaim: false,
         providerIdentity: providerIdentitySummarySnapshot(),
         providerExpectation: providerExpectationSnapshot,
+        usage: lastLoopUsage,
       });
     }
 
@@ -1552,6 +1579,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
           coerceUnverifiedCompletionClaim: true,
           providerIdentity: providerIdentitySummarySnapshot(),
           providerExpectation: providerExpectationSnapshot,
+          usage: lastLoopUsage,
         });
       }
       if (inspection.kind === 'invalid') {

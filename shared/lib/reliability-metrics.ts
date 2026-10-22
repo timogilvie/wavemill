@@ -201,6 +201,18 @@ export interface ReliabilitySummary {
   sources?: SourceCoverage;
   /** Spot-checked PRs (`--pr`), computed whether or not they merged. */
   spotChecks?: TaskReliability[];
+  /** Median native prompt-cache hit rate per (model, provider route) (HOK-3260). */
+  promptCache?: PromptCacheRouteMedian[];
+}
+
+/** One (model, provider route) row of the prompt-cache section (HOK-3260). */
+export interface PromptCacheRouteMedian {
+  model: string;
+  providerRoute: string;
+  /** Median of per-run `cacheHitRate` (turns 2..n) across native stage results. */
+  medianHitRate: number;
+  /** Stage results that contributed a hit rate. */
+  samples: number;
 }
 
 // ── Config / tunables ────────────────────────────────────────────────────────
@@ -739,6 +751,57 @@ export function resolveTaskSource(task: MergedTaskRef, name: string): string | u
     if (existsSync(archived)) return archived;
   }
   return undefined;
+}
+
+// ── IO: native prompt-cache hit rate (HOK-3260) ──────────────────────────────
+
+const PROMPT_CACHE_STAGES = ['planning', 'coding', 'review'] as const;
+
+interface StageResultUsageView {
+  model?: string;
+  executedModel?: string | null;
+  artifacts?: { usage?: { cacheHitRate?: unknown; providerRoute?: unknown } };
+}
+
+/**
+ * Median prompt-cache hit rate per (model, provider route) over the native
+ * planning / coding / review stage results of `tasks`. Stage results without a
+ * numeric `artifacts.usage.cacheHitRate` (legacy, non-native, or runs of fewer
+ * than two turns) are skipped. Rows are sorted by model, then route.
+ */
+export function collectPromptCacheHitRates(tasks: MergedTaskRef[]): PromptCacheRouteMedian[] {
+  const rates = new Map<string, { model: string; providerRoute: string; values: number[] }>();
+  for (const task of tasks) {
+    for (const stage of PROMPT_CACHE_STAGES) {
+      const path = resolveTaskSource(task, `${stage}-result.json`);
+      if (!path) continue;
+      let result: StageResultUsageView;
+      try {
+        result = JSON.parse(readFileSync(path, 'utf-8')) as StageResultUsageView;
+      } catch {
+        continue;
+      }
+      const usage = result?.artifacts?.usage;
+      const rate = usage?.cacheHitRate;
+      if (typeof rate !== 'number' || !Number.isFinite(rate)) continue;
+      const model = (result.executedModel || result.model || 'unknown').trim() || 'unknown';
+      const providerRoute = typeof usage.providerRoute === 'string' && usage.providerRoute
+        ? usage.providerRoute
+        : 'unknown';
+      const key = `${model}\u0000${providerRoute}`;
+      const entry = rates.get(key) ?? { model, providerRoute, values: [] };
+      entry.values.push(rate);
+      rates.set(key, entry);
+    }
+  }
+  return [...rates.values()]
+    .map(({ model, providerRoute, values }) => ({
+      model,
+      providerRoute,
+      medianHitRate: percentile(values.slice().sort((a, b) => a - b), 50)!,
+      samples: values.length,
+    }))
+    .sort((a, b) => a.model.localeCompare(b.model) || a.providerRoute.localeCompare(b.providerRoute));
 }
 
 // ── IO: operator touches ─────────────────────────────────────────────────────
@@ -1544,6 +1607,14 @@ export function renderReliabilitySummary(summary: ReliabilitySummary, opts: Rend
     }
   }
 
+  if (summary.promptCache && summary.promptCache.length > 0) {
+    lines.push('');
+    lines.push('Prompt-cache hit rate (median, turns 2..n):');
+    for (const row of summary.promptCache) {
+      lines.push(`  ${row.model.padEnd(36)} ${row.providerRoute.padEnd(12)} ${fmtRate(row.medianHitRate).padStart(6)}  (${row.samples} run${row.samples === 1 ? '' : 's'})`);
+    }
+  }
+
   if (summary.spotChecks && summary.spotChecks.length > 0) {
     lines.push('');
     lines.push('Spot check:');
@@ -1693,6 +1764,8 @@ export function computeReliability(opts: ComputeReliabilityOptions): Reliability
     mergeLaneSince: ctx.mergeLaneSinceMs != null ? iso(ctx.mergeLaneSinceMs) : null,
     archivedTasks: tasks.filter((t) => !t.task.featureDir && t.task.archiveDir).length,
   };
+  const promptCache = collectPromptCacheHitRates(tasks.map((t) => t.task));
+  if (promptCache.length > 0) summary.promptCache = promptCache;
   return summary;
 }
 

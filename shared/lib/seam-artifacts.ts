@@ -576,10 +576,18 @@ function getValidator(schemaId: string): ValidateFunction {
   const cached = validatorCache.get(schemaId);
   if (cached) return cached;
   const [schemaFile, pointer] = schemaId.split('#');
-  const schema = pointer ? resolveJsonPointer(getSchema(schemaFile), pointer) : getSchema(schemaFile);
+  const root = getSchema(schemaFile);
+  const schema = pointer ? withRootDefs(resolveJsonPointer(root, pointer), root) : root;
   const validate = ajv.compile(schema);
   validatorCache.set(schemaId, validate);
   return validate;
+}
+
+// A subschema compiled on its own loses the root, so carry the root $defs along
+// for its local `#/$defs/...` refs to resolve.
+function withRootDefs(subschema: unknown, root: unknown): unknown {
+  if (!isRecord(subschema) || !isRecord(root) || !isRecord(root.$defs)) return subschema;
+  return { ...subschema, $defs: root.$defs };
 }
 
 function getSchema(schemaFile: string): unknown {

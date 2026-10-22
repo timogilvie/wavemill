@@ -9482,82 +9482,6 @@ _ensure_window_exists() {
   fi
 }
 
-_tmux_window_target_exists() {
-  local session="$1" target="$2" expected_path="${3:-}"
-  local target_session target_path expected_real target_real pane_dead
-
-  [[ -n "$session" && -n "$target" ]] || return 1
-  target_session="$(tmux display-message -p -t "$target" '#{session_name}' 2>/dev/null || true)"
-  [[ "$target_session" == "$session" ]] || return 1
-  if [[ -n "$expected_path" ]]; then
-    target_path="$(tmux display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)"
-    if [[ -z "$target_path" ]]; then
-      pane_dead="$(tmux list-panes -t "$target" -F '#{pane_dead}' 2>/dev/null | head -1 || true)"
-      [[ "$pane_dead" == "1" ]] && return 0
-      return 1
-    fi
-    expected_real="$(cd -P "$expected_path" 2>/dev/null && printf '%s\n' "$PWD" || printf '%s\n' "$expected_path")"
-    target_real="$(cd -P "$target_path" 2>/dev/null && printf '%s\n' "$PWD" || printf '%s\n' "$target_path")"
-    [[ "$target_real" == "$expected_real" ]] || return 1
-  fi
-  return 0
-}
-
-_tmux_target_join() {
-  local session="$1" target="$2"
-  [[ -n "$target" ]] || return 1
-  case "$target" in
-    @*|*:*) printf '%s\n' "$target" ;;
-    *) printf '%s:%s\n' "$session" "$target" ;;
-  esac
-}
-
-_tmux_task_window_target() {
-  local session="$1" issue="$2" slug="$3" state_file="${4:-${STATE_FILE:-}}" wt_dir="${5:-}"
-  local stored_target="" canonical target issue_number renamed_target
-
-  if [[ -n "$state_file" && -f "$state_file" ]]; then
-    stored_target="$(jq -r --arg issue "$issue" '.tasks[$issue].windowId // empty' "$state_file" 2>/dev/null || true)"
-  fi
-  if _tmux_window_target_exists "$session" "$stored_target" "$wt_dir"; then
-    printf '%s\n' "$stored_target"
-    return 0
-  fi
-
-  issue_number="${issue##*-}"
-  renamed_target="$(tmux list-windows -t "$session" -F '#{window_id}|#{window_name}' 2>/dev/null \
-    | awk -F'|' -v issue="$issue" -v issue_number="$issue_number" -v slug="$slug" '
-        index($2, issue_number " · " slug " ·") == 1 { print $1; exit }
-        index($2, issue_number " · " slug) == 1 { print $1; exit }
-        index($2, issue " · " slug " ·") == 1 { print $1; exit }
-        index($2, issue " · " slug) == 1 { print $1; exit }
-      ')"
-  if _tmux_window_target_exists "$session" "$renamed_target" "$wt_dir"; then
-    printf '%s\n' "$renamed_target"
-    return 0
-  fi
-
-  canonical="${issue}-${slug}"
-  target="$(tmux list-windows -t "$session" -F '#{window_id}|#{window_name}' 2>/dev/null \
-    | awk -F'|' -v name="$canonical" '$2 == name { print $1; exit }')"
-  if _tmux_window_target_exists "$session" "$target" "$wt_dir"; then
-    printf '%s\n' "$target"
-    return 0
-  fi
-
-  if [[ -n "$wt_dir" ]]; then
-    while IFS='|' read -r target _name; do
-      [[ -n "$target" ]] || continue
-      if _tmux_window_target_exists "$session" "$target" "$wt_dir"; then
-        printf '%s\n' "$target"
-        return 0
-      fi
-    done < <(tmux list-windows -t "$session" -F '#{window_id}|#{window_name}' 2>/dev/null || true)
-  fi
-
-  return 1
-}
-
 coding_pane_expected_replacement_path() {
   local feature_dir="$1"
   printf '%s\n' "$feature_dir/.coding-pane-expected-replacement.json"
@@ -11309,8 +11233,10 @@ refresh_ready_merge_queue_tick() {
     fi
   done
 
+  # Forwards the merge-queue tool's own config; producers gate on wavemill_session_has.
+  local merge_queue_enabled="${MERGE_QUEUE_ENABLED:-true}"  # allow-session-capabilities: config passthrough, not a producer gate
   config_json=$(jq -cn \
-    --arg enabled "${MERGE_QUEUE_ENABLED:-true}" \
+    --arg enabled "$merge_queue_enabled" \
     --argjson max_concurrent "${MERGE_QUEUE_MAX_CONCURRENT:-2}" \
     --argjson stuck_timeout "${MERGE_QUEUE_STUCK_TIMEOUT_SECONDS:-900}" \
     --arg conflict_grouping "${MERGE_QUEUE_CONFLICT_GROUPING_ENABLED:-true}" \

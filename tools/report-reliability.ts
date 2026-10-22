@@ -2,8 +2,9 @@
 /**
  * HOK-3177 / HOK-3182 — `wavemill report reliability` CLI.
  *
- * Prints the unattended-rate, time-stuck p50/p90 and per-class (O/L/S/R)
- * operator touch summary over a configurable window. Pure wrapper over
+ * Prints the unattended-rate, time-stuck p50/p90, per-class (O/L/S/R)
+ * operator touch summary and median native prompt-cache hit rate per model
+ * and provider route (HOK-3260) over a configurable window. Pure wrapper over
  * `shared/lib/reliability-metrics.ts`.
  */
 

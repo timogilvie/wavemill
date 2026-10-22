@@ -1,0 +1,23 @@
+# side-effect-ledger-allowlist.txt — justified exceptions to the side-effect ledger (HOK-3183) guard (tools/check-side-effect-ledger.ts).
+#
+# Format (tools/lib/source-guard.ts): `<repo-relative path> [<count>]  # <reason>`.
+# Every entry needs a same-line `# reason`. Without a count the file is exempt
+# entirely; with a count the file is still scanned and fails once it has more
+# findings than that, so a new site in a listed file still fires. The list is a
+# ratchet: an entry that over-allows (fewer findings than its count, none, or a
+# missing file) fails until it is lowered or removed. The invariant source and
+# the guard itself are excluded automatically and must NOT be listed here.
+#
+# Prefer a one-line `// allow-side-effect-ledger: <reason>` (`#` in shell) suppression over an
+# entry whenever only a line or two is involved.
+shared/lib/agent-adapters.sh 2  # reviewer prompt text asking the agent to apply/remove needs-stronger-reviewer; the agent performs it, unrecorded since before HOK-3183
+shared/lib/branch-publication.ts 2  # recorded seam: the reviewed-SHA push shadow-records gitPushKey; the other site is the operator recovery-command string
+shared/lib/incident-to-linear-synchronizer.ts 1  # observer incident-issue state sync, not a task lifecycle transition; unrecorded since before HOK-3183
+shared/lib/linear.ts 3  # recorded seam: Linear state transitions shadow-record linearTransitionKey
+shared/lib/permission-patterns.ts  # auto-approve permission pattern strings (`git push*`, `gh pr merge*`), not effects
+shared/lib/promotion-controller.ts 1  # integration-branch promotion push; unrecorded since before HOK-3183 — record via gitPushKey before adding more
+shared/lib/ready-watchdog.ts 1  # operator next-action command string; never executed by the mill
+shared/lib/stale-task-branches.ts 2  # remote task-branch deletion for reaped tasks (push --delete); not one of the Ledger D effect kinds
+shared/lib/tend-controller.ts 3  # recorded seam: tend rebase push and merge shadow-record gitPushKey / prMergeKey; plus post-merge remote branch delete
+shared/lib/wavemill-common.sh 1  # remote task-branch deletion during cleanup (push --delete); not one of the Ledger D effect kinds
+shared/lib/wavemill-mill.sh 1  # remote task-branch deletion during reap (push --delete); not one of the Ledger D effect kinds

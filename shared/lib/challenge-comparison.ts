@@ -1087,6 +1087,7 @@ function addStageValidationIssue(
     role: stageProvenance.role,
     reason,
     intendedModel,
+    // allow-provider-identity: stage provenance records the executed model; this copies it into the issue.
     executedModel: stageProvenance.model,
     executedAgent: stageProvenance.agent,
     status: stageProvenance.status,

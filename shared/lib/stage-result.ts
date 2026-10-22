@@ -109,15 +109,37 @@ export interface PlanningExecutionBounds {
   maxWallClockMs?: number;
 }
 
-/** Observed execution usage for native planning. */
-export interface PlanningExecutionUsage {
+/**
+ * Observed execution usage for a native stage run (planning, coding, review).
+ *
+ * The cache fields (HOK-3260) are projected from the per-turn provider usage
+ * the native loop already reads for cost — not a second counter. They are the
+ * cache numbers the SDK cost summaries (HOK-3076 / HOK-3077) read; legacy
+ * `workflowCost` gets no parallel copy.
+ */
+export interface StageExecutionUsage {
   turnsCompleted?: number;
   toolCallsExecuted?: number;
   wallClockMs?: number;
+  /** Uncached input tokens (excludes cache reads and writes). */
   totalInputTokens?: number;
   totalOutputTokens?: number;
   totalCostUsd?: number;
+  /** Cache-read tokens summed over every turn. */
+  cacheReadTokens?: number;
+  /** Cache-write (creation) tokens summed over every turn. */
+  cacheWriteTokens?: number;
+  /**
+   * `cacheRead / (input + cacheRead + cacheWrite)` over turns 2..n; null when
+   * the run had fewer than two turns with usage. Absent on legacy artifacts.
+   */
+  cacheHitRate?: number | null;
+  /** Transport provider the loop called (e.g. `anthropic`, `openrouter`). */
+  providerRoute?: string;
 }
+
+/** @deprecated Use {@link StageExecutionUsage}; kept for one release (HOK-3260). */
+export type PlanningExecutionUsage = StageExecutionUsage;
 
 /** Prompt registry reference used by native planning. */
 export interface PlanningPromptRef {
@@ -135,7 +157,7 @@ export interface PlanningArtifacts {
   /** Configured native planning bounds, when available. */
   bounds?: PlanningExecutionBounds;
   /** Observed native planning usage, when available. */
-  usage?: PlanningExecutionUsage;
+  usage?: StageExecutionUsage;
   /** True when native planning produced a valid final plan artifact. */
   planArtifactValid?: boolean;
   /** True when native planning reached the approval-ready state. */
@@ -357,6 +379,8 @@ export interface ReviewArtifacts {
    * for this review stage, including fallback/conflict status (HOK-2969).
    */
   reviewExecutedIdentity?: ReviewExecutedIdentitySet;
+  /** Native substantive-analysis loop usage, when a native reviewer ran (HOK-3260). */
+  usage?: StageExecutionUsage;
 }
 
 export interface ReviewOutcome {

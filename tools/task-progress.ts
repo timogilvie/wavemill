@@ -19,7 +19,6 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import {
   getTaskProgress,
@@ -27,6 +26,7 @@ import {
   type TaskProgress,
 } from '../shared/lib/task-progress.ts';
 import { readWorkflowState, type TaskRecord } from '../shared/lib/workflow-state.ts';
+import { termCapture, termListPanes } from '../shared/lib/terminal-backend.ts';
 
 function loadTaskFromState(stateFile: string | undefined, issue: string): TaskRecord | undefined {
   if (!stateFile) return undefined;
@@ -35,31 +35,13 @@ function loadTaskFromState(stateFile: string | undefined, issue: string): TaskRe
 }
 
 function capturePaneText(target: string): string | undefined {
-  try {
-    const stdout = execFileSync('tmux', ['capture-pane', '-p', '-t', target, '-S', '-200'], {
-      encoding: 'utf-8',
-      timeout: 3000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    return stdout;
-  } catch {
-    return undefined;
-  }
+  return termCapture(target, { lines: 200, timeoutMs: 3000 }) ?? undefined;
 }
 
-/** HOK-3137: resolve a tmux pane target to its pid for the background-work probe. */
+/** HOK-3137: resolve a pane handle to its pid for the background-work probe. */
 function resolvePanePid(target: string): number | undefined {
-  try {
-    const stdout = execFileSync('tmux', ['list-panes', '-t', target, '-F', '#{pane_pid}'], {
-      encoding: 'utf-8',
-      timeout: 3000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    const pid = Number.parseInt(stdout.trim().split('\n')[0] ?? '', 10);
-    return Number.isFinite(pid) && pid > 0 ? pid : undefined;
-  } catch {
-    return undefined;
-  }
+  const pid = termListPanes({ target, timeoutMs: 3000 })[0]?.pid;
+  return pid && pid > 0 ? pid : undefined;
 }
 
 function atomicWrite(destPath: string, contents: string): boolean {
