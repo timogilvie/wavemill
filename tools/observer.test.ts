@@ -22,6 +22,7 @@ import {
   parseLaunchRefusalLine,
   reconcileIncidents,
   redactObserverText,
+  runDetector,
   sendAlerts,
   syncIncidentsToLinear,
   writeServiceHeartbeat,
@@ -4396,13 +4397,17 @@ function writeExhaustedRetrySentinel(
   bucket: string,
   { mtime, reason = 'Failed to become ready after 3 attempts.\n', headSha }: { mtime: Date; reason?: string; headSha?: string },
 ): void {
-  const sentinelPath = join(featureDir, `.retry-${bucket}-exhausted`);
+  // Mirror `_bounded_retry_prefix` in shared/lib/bounded-retry.sh: all buckets
+  // use `.retry-<bucket>-` except `failed-ready-recheck`, which keeps its
+  // pre-HOK-2924 naming (`.failed-ready-recheck-*`) for upgrade compatibility.
+  const filePrefix = bucket === 'failed-ready-recheck' ? '.failed-ready-recheck-' : `.retry-${bucket}-`;
+  const sentinelPath = join(featureDir, `${filePrefix}exhausted`);
   writeFileSync(sentinelPath, reason);
   utimesSync(sentinelPath, mtime, mtime);
   if (headSha !== undefined) {
     materializeTemplateFile(
       join(OBSERVER_FIXTURES_DIR, 'exhausted-retry', 'retry-head.txt'),
-      join(featureDir, `.retry-${bucket}-head`),
+      join(featureDir, `${filePrefix}head`),
       { HEAD_SHA: headSha },
     );
   }
@@ -5097,5 +5102,276 @@ test('HOK-3207 buildFindings integration: both HOK-3207 detectors fire and dedup
     );
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// HOK-3244 REQ-F2: runDetector surfaces swallowed detector exceptions.
+// ---------------------------------------------------------------------------
+
+test('HOK-3244 REQ-F2: a throwing detector produces an observer-detector-error finding', () => {
+  const findings: Array<Record<string, unknown>> = [];
+  runDetector(
+    'queue-inference-stuck',
+    { session: 'wavemill', repoDir: '/tmp/some-repo' },
+    () => { throw new Error('boom from fake detector'); },
+    findings as never,
+  );
+  assert.equal(findings.length, 1);
+  const finding = findings[0] as Record<string, unknown>;
+  assert.match(finding.id as string, /^observer-detector-error-queue-inference-stuck-wavemill-/);
+  assert.equal(finding.severity, 'medium');
+  assert.equal(finding.category, 'operational');
+  assert.equal(finding.confidence, 'high');
+  assert.equal(finding.session, 'wavemill');
+  assert.equal(finding.repoDir, '/tmp/some-repo');
+  assert.match(finding.title as string, /Observer detector queue-inference-stuck threw Error/);
+  assert.ok((finding.evidence as string[]).includes('detector=queue-inference-stuck'));
+  assert.ok((finding.evidence as string[]).some((line) => line.startsWith('message=boom from fake detector')));
+  assert.match(finding.recommendation as string, /HOK-3244/);
+});
+
+test('HOK-3244 REQ-F2: a successful detector contributes its findings unchanged', () => {
+  const sentinel = {
+    id: 'synthetic-ok',
+    severity: 'low' as const,
+    category: 'operational' as const,
+    confidence: 'high' as const,
+    title: 'ok',
+    evidence: [],
+    recommendation: 'none',
+  };
+  const findings: Array<Record<string, unknown>> = [];
+  runDetector(
+    'does-not-throw',
+    { session: 'wavemill', repoDir: '/tmp/ok-repo' },
+    () => [sentinel as never],
+    findings as never,
+  );
+  assert.equal(findings.length, 1);
+  assert.equal((findings[0] as Record<string, unknown>).id, 'synthetic-ok');
+});
+
+// ---------------------------------------------------------------------------
+// HOK-3244 REQ-F3: .failed-ready-recheck-exhausted sentinel coverage.
+// ---------------------------------------------------------------------------
+
+test('HOK-3244 REQ-F3: legacy .failed-ready-recheck-exhausted sentinel yields exhausted-retry finding', () => {
+  const fixture = createResidueGitFixture({
+    commits: 1,
+    slug: 'exhausted-retry-fixture',
+    commitAgeMinutes: 20,
+  });
+  const featureDir = join(fixture.repoDir, 'features', fixture.slug);
+  mkdirSync(featureDir, { recursive: true });
+  // The real production sentinel for this bucket drops the `.retry-` prefix
+  // (bounded-retry.sh:44) — before HOK-3244 the regex missed it entirely.
+  const sentinelPath = join(featureDir, '.failed-ready-recheck-exhausted');
+  const mtime = new Date(Date.now() - 15 * 60_000);
+  writeFileSync(sentinelPath, 'Failed to become ready after 3 attempts.\n');
+  utimesSync(sentinelPath, mtime, mtime);
+
+  try {
+    const repo = exhaustedRetryRepo(fixture.repoDir, fixture.branch);
+    const findings = detectExhaustedRetries(repo as never, Date.now(), noProgress as never);
+    const finding = findings.find((f) => f.id === 'exhausted-retry-abandoned-wavemill-HOK-9200-failed-ready-recheck');
+    assert.ok(finding, `expected the legacy-sentinel finding, got: ${findings.map((f) => f.id).join(', ')}`);
+    assert.equal(finding?.severity, 'high');
+    assert.ok(finding!.evidence.includes(`bucket=failed-ready-recheck`));
+    assert.ok(finding!.evidence.includes(`sentinel=${sentinelPath}`));
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3244 REQ-F3: legacy sentinel reads head key from .failed-ready-recheck-head', () => {
+  const fixture = createResidueGitFixture({
+    commits: 1,
+    slug: 'exhausted-retry-fixture',
+    commitAgeMinutes: 20,
+  });
+  const featureDir = join(fixture.repoDir, 'features', fixture.slug);
+  mkdirSync(featureDir, { recursive: true });
+  // Legacy sentinel + legacy head key naming new tip no longer matches.
+  const sentinelPath = join(featureDir, '.failed-ready-recheck-exhausted');
+  const mtime = new Date(Date.now() - 15 * 60_000);
+  writeFileSync(sentinelPath, 'Failed to become ready after 3 attempts.\n');
+  utimesSync(sentinelPath, mtime, mtime);
+  writeFileSync(
+    join(featureDir, '.failed-ready-recheck-head'),
+    '0000000000000000000000000000000000dead\n',
+  );
+
+  try {
+    const repo = exhaustedRetryRepo(fixture.repoDir, fixture.branch);
+    const findings = detectExhaustedRetries(repo as never, Date.now(), noProgress as never);
+    // Head key no longer matches branch tip → sentinel is considered stale,
+    // so the detector suppresses it (same semantics as the standard shape).
+    assert.equal(
+      findings.find((f) => f.id === 'exhausted-retry-abandoned-wavemill-HOK-9200-failed-ready-recheck'),
+      undefined,
+    );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// HOK-3244 REQ-F4: repeated [status]-line detector.
+// ---------------------------------------------------------------------------
+
+test('HOK-3244 REQ-F4: ten identical [status] lines fire a repeated-status finding', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-status-loop-'));
+  const logPath = join(repoDir, 'mill-wavemill.log');
+  try {
+    writePermissiveSchema(repoDir);
+    const lines = Array.from({ length: 12 }, (_, i) =>
+      `12:00:${String(i).padStart(2, '0')} [status] Recreated tmux window for HOK-9999`,
+    );
+    writeFileSync(logPath, lines.join('\n'));
+
+    const findings = buildFindings(basicSnapshot(repoDir, logPath), defaultObserverOptions());
+    const repeated = findings.find((f) => f.id.startsWith('repeated-status-'));
+    assert.ok(repeated, `expected a repeated-status finding, got: ${findings.map((f) => f.id).join(', ')}`);
+    assert.equal(repeated!.severity, 'medium');
+    assert.equal(repeated!.category, 'stuck');
+    assert.equal(repeated!.confidence, 'high');
+    assert.equal(repeated!.occurrenceCount, 12);
+    assert.ok(repeated!.evidence.includes('occurrences=12'));
+    assert.ok(repeated!.evidence.some((line) => line.includes('Recreated tmux window for HOK-9999')));
+    assert.match(repeated!.recommendation, /monitor-level loop/);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3244 REQ-F4: twenty repeated [status] lines escalate to high severity', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-status-loop-urgent-'));
+  const logPath = join(repoDir, 'mill-wavemill.log');
+  try {
+    writePermissiveSchema(repoDir);
+    const lines = Array.from({ length: 22 }, (_, i) =>
+      `12:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')} [status] Reaping tmux window for HOK-9999`,
+    );
+    writeFileSync(logPath, lines.join('\n'));
+
+    const findings = buildFindings(basicSnapshot(repoDir, logPath), defaultObserverOptions());
+    const repeated = findings.find((f) => f.id.startsWith('repeated-status-'));
+    assert.ok(repeated);
+    assert.equal(repeated!.severity, 'high');
+    assert.equal(repeated!.occurrenceCount, 22);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3244 REQ-F4: nine identical [status] lines stay below threshold', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-status-loop-low-'));
+  const logPath = join(repoDir, 'mill-wavemill.log');
+  try {
+    writePermissiveSchema(repoDir);
+    const lines = Array.from({ length: 9 }, (_, i) =>
+      `12:00:${String(i).padStart(2, '0')} [status] Recreated tmux window for HOK-9999`,
+    );
+    writeFileSync(logPath, lines.join('\n'));
+
+    const findings = buildFindings(basicSnapshot(repoDir, logPath), defaultObserverOptions());
+    assert.equal(findings.some((f) => f.id.startsWith('repeated-status-')), false);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3244 REQ-F4: interleaved [status] lines group by normalized message independently', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-status-interleaved-'));
+  const logPath = join(repoDir, 'mill-wavemill.log');
+  try {
+    writePermissiveSchema(repoDir);
+    // Ten A-lines and five B-lines interleaved: A grouping fires, B does not.
+    const lines: string[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      lines.push(`12:00:${String(i).padStart(2, '0')} [status] Recreated tmux window for HOK-A`);
+      if (i < 5) {
+        lines.push(`12:00:${String(i).padStart(2, '0')} [status] Different status line for HOK-B`);
+      }
+    }
+    writeFileSync(logPath, lines.join('\n'));
+
+    const findings = buildFindings(basicSnapshot(repoDir, logPath), defaultObserverOptions());
+    const repeatedForA = findings.filter((f) => f.id.startsWith('repeated-status-')
+      && f.evidence.some((line) => line.includes('HOK-A')));
+    const repeatedForB = findings.filter((f) => f.id.startsWith('repeated-status-')
+      && f.evidence.some((line) => line.includes('HOK-B')));
+    assert.equal(repeatedForA.length, 1);
+    assert.equal(repeatedForB.length, 0);
+    assert.equal(repeatedForA[0].occurrenceCount, 10);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// HOK-3244 REQ-F5: .coding-complete present during planning phase.
+// ---------------------------------------------------------------------------
+
+test('HOK-3244 REQ-F5: stale .coding-complete during planning fires coding-complete-in-planning finding', () => {
+  const markerMtime = new Date(Date.now() - 30 * 60_000);
+  const fixture = createMarkerFixture('.coding-complete', markerMtime);
+
+  try {
+    const findings = buildFindings(markerSnapshot({
+      repoDir: fixture.repoDir,
+      slug: fixture.slug,
+      phase: 'planning',
+    }), defaultObserverOptions());
+
+    const finding = findings.find((f) => f.id === 'coding-complete-in-planning-HOK-2848');
+    assert.ok(finding, `expected the planning-leaked-marker finding, got: ${findings.map((f) => f.id).join(', ')}`);
+    assert.equal(finding!.severity, 'urgent');
+    assert.equal(finding!.category, 'stuck');
+    assert.equal(finding!.confidence, 'high');
+    assert.ok(finding!.evidence.includes('statePhase=planning'));
+    assert.ok(finding!.evidence.includes(`marker=${fixture.markerPath}`));
+    assert.match(finding!.recommendation, /HOK-3211/);
+    // The ordinary coding-marker-ignored id is NOT fired for the planning
+    // phase — otherwise an operator would get two findings for one condition.
+    assert.equal(findings.some((f) => f.id === 'coding-marker-ignored-HOK-2848'), false);
+  } finally {
+    rmSync(fixture.repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3244 REQ-F5: a .coding-complete during coding keeps the ordinary marker-ignored finding and does not fire the planning variant', () => {
+  const markerMtime = new Date(Date.now() - 30 * 60_000);
+  const fixture = createMarkerFixture('.coding-complete', markerMtime);
+
+  try {
+    const findings = buildFindings(markerSnapshot({
+      repoDir: fixture.repoDir,
+      slug: fixture.slug,
+      phase: 'coding',
+    }), defaultObserverOptions());
+
+    assert.ok(findings.some((f) => f.id === 'coding-marker-ignored-HOK-2848'));
+    assert.equal(findings.some((f) => f.id === 'coding-complete-in-planning-HOK-2848'), false);
+  } finally {
+    rmSync(fixture.repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3244 REQ-F5: a fresh .coding-complete during planning stays below the stale threshold', () => {
+  const markerMtime = new Date(Date.now() - 30_000);
+  const fixture = createMarkerFixture('.coding-complete', markerMtime);
+
+  try {
+    const findings = buildFindings(markerSnapshot({
+      repoDir: fixture.repoDir,
+      slug: fixture.slug,
+      phase: 'planning',
+    }), defaultObserverOptions());
+
+    assert.equal(findings.some((f) => f.id === 'coding-complete-in-planning-HOK-2848'), false);
+  } finally {
+    rmSync(fixture.repoDir, { recursive: true, force: true });
   }
 });

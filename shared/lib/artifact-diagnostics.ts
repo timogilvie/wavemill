@@ -25,6 +25,7 @@ import {
   type WorkflowState,
 } from './workflow-state.ts';
 import { getStageFailureEnvelopePath, validateStageFailureEnvelope } from './native-agent/stage-failure-envelope.ts';
+import { resolveTaskLocation } from './pr-task-resolver.ts';
 
 // ── Public Types ──────────────────────────────────────────────────────────────
 
@@ -854,18 +855,20 @@ function resolveIdentity(opts: DiagnoseArtifactsOptions): ResolvedIdentity {
 
   // Explicit taskId — search workflow-state, then scan features/
   if (opts.taskId) {
-    for (const [id, t] of workflowTaskEntries(readWorkflowState(repoDir))) {
-      if (id !== opts.taskId) continue;
+    const state = readWorkflowState(repoDir);
+    const { location, miss } = resolveTaskLocation(opts.taskId, state, {
+      site: 'artifact-diagnostics.resolveLocation',
+    });
+
+    if (location) {
       // Try worktree path first
-      if (typeof t.worktree === 'string' && existsSync(t.worktree)) {
-        const slug = typeof t.slug === 'string' ? t.slug : readSlugFromFeatureDir(t.worktree);
-        return { featureDir: t.worktree, taskId: opts.taskId, slug };
+      if (existsSync(location.worktree)) {
+        const slug = typeof location.task.slug === 'string' ? location.task.slug : readSlugFromFeatureDir(location.worktree);
+        return { featureDir: location.worktree, taskId: opts.taskId, slug };
       }
-      // Try slug-based path
-      if (typeof t.slug === 'string') {
-        const featureDir = join(repoDir, 'features', t.slug);
-        return { featureDir, taskId: opts.taskId, slug: t.slug };
-      }
+      // Fall back to slug-based path
+      const featureDir = join(repoDir, 'features', location.slug);
+      return { featureDir, taskId: opts.taskId, slug: location.slug };
     }
 
     // Fall back to scanning features/ directories
@@ -1003,23 +1006,46 @@ function checkFeatureOutcomeStateMismatch(
 ): ArtifactDiagnosticFinding[] {
   // Find the matching task entry
   let taskEntry: TaskRecord | null = null;
-  for (const [id, task] of workflowTaskEntries(workflowState)) {
-    if (taskId && id === taskId) {
-      taskEntry = task;
-      break;
-    }
-    // Match by slug or worktree
-    if (slug && typeof task.slug === 'string' && task.slug === slug) {
-      taskEntry = task;
-      break;
-    }
-    if (typeof task.worktree === 'string' && task.worktree === featureDir) {
-      taskEntry = task;
-      break;
+  let resolverMissReason: string | null = null;
+
+  // Try taskId lookup first via the resolver
+  if (taskId) {
+    const { location, miss } = resolveTaskLocation(taskId, workflowState, {
+      site: 'artifact-diagnostics.checkFeatureOutcomeStateMismatch',
+    });
+    if (location) {
+      taskEntry = location.task;
+    } else if (miss) {
+      resolverMissReason = miss.reason;
     }
   }
 
-  if (!taskEntry) return [];
+  // Fall back to slug/worktree matching (no resolver option for these predicates)
+  if (!taskEntry) {
+    for (const [, task] of workflowTaskEntries(workflowState)) {
+      // allow-pr-task-lookup: slug/worktree hybrid; no resolver option for slug lookups
+      if (slug && typeof task.slug === 'string' && task.slug === slug) {
+        taskEntry = task;
+        break;
+      }
+      if (typeof task.worktree === 'string' && task.worktree === featureDir) {
+        taskEntry = task;
+        break;
+      }
+    }
+  }
+
+  if (!taskEntry) {
+    if (resolverMissReason || slug) {
+      return [makeFinding(
+        'coverage_gap',
+        'info',
+        `Task not found in workflow state (${taskId ? `resolver: ${resolverMissReason}` : ''} ${slug ? `slug: ${slug}` : ''} worktree: ${featureDir})`,
+        { file: join(featureDir, 'feature-state.json') },
+      )];
+    }
+    return [];
+  }
 
   const workflowPhase = typeof taskEntry.phase === 'string' ? taskEntry.phase : null;
   const workflowStatus = typeof taskEntry.status === 'string' ? taskEntry.status : null;

@@ -101,6 +101,8 @@ WAVEMILL_GIT_REMOTE_TIMEOUT_SECONDS  # plumbing: internal mill variable (HOK-323
 WAVEMILL_HARNESS_ID  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_HEADLESS_MODEL  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_HOK2080_GATE_PATH  # plumbing: internal mill variable (HOK-3235 baseline seed)
+WAVEMILL_HOOK_OSC7501_TTY_CACHE  # plumbing: per-process TTY resolver cache for OSC 7501 emission (HOK-3292)
+WAVEMILL_HOOK_OSC_FLAGS_CACHE  # plumbing: per-process cache of hooks.emitOsc/programStatus flags (HOK-3292)
 WAVEMILL_HOOK_PROTOCOL  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_HOOK_TTL_SECONDS  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_HOT_STATE_BYTE_CAP  # plumbing: internal mill variable (HOK-3235 baseline seed)

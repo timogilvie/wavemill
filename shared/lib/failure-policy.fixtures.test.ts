@@ -39,6 +39,12 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     expectedKind: 'context-window-exceeded',
   },
   {
+    name: 'HOK-3249: review input still over the reviewer context window after budgeting',
+    evidence: { stage: 'review', failureKind: 'native-context-window-exceeded', detail: 'Prompt exceeds codex 1048576-char input cap (actual_chars=1160000)' },
+    expectedClass: 'terminal',
+    expectedKind: 'native-context-window-exceeded',
+  },
+  {
     name: 'invalid model id',
     evidence: { stage: 'coding', detail: 'Native coding failed: 400 qwen-2.5-coder-32b is not a valid model ID' },
     expectedClass: 'terminal',

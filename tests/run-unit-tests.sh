@@ -154,6 +154,7 @@ TESTS=(
   shared/lib/candidate-features.test.ts
   shared/lib/context-analyzer.test.ts
   shared/lib/review-engine.test.ts
+  shared/lib/review-input-budget.test.ts
   shared/lib/review-runner.test.ts
   shared/lib/review-analysis-identity.test.ts
   shared/lib/review-scope-guard.test.ts
@@ -237,6 +238,7 @@ TESTS=(
   shared/lib/merge-queue.test.ts
   shared/lib/merge-labels.test.ts
   shared/lib/pr-task-resolver.test.ts
+  shared/lib/pr-task-lookup-checker.test.ts
   shared/lib/mill-clock.test.ts
   shared/lib/model-registry.test.ts
   shared/lib/model-adapters/transport-adapter.test.ts

@@ -100,7 +100,6 @@ extract_function "$MONITOR_SCRIPT_FILE" "review_result_failure_category" >> "$LA
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_review_head_sha" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_infra_recovery_category_label" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_infra_recovery_next_action" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "select_context_window_recovery_reviewer" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_contract_payload" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_claim_path" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_write_claim" >> "$LAUNCH_FUNC_FILE"
@@ -413,35 +412,9 @@ EOF
 {"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-runtime-unavailable"}}
 EOF
         ;;
-      # HOK-2964: native-context-window-exceeded enters bounded infra
-      # recovery instead of terminal code-defect handling (REQ-F1).
+      # HOK-3249: a context-window overflow of the budgeted review input is
+      # terminal under the failure policy (HOK-3176) — no reroute, no retry.
       infra_retry_context_window)
-        cat > "$STATE_DIR/.review-result.json" <<EOF
-{"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-context-window-exceeded","reviewHeadSha":"stalehead"}}
-EOF
-        ;;
-      # HOK-2964: a new head at the same failure category resets the bounded
-      # budget instead of inheriting the exhausted attempt count (REQ-F2/F4).
-      infra_retry_context_window_scope_refreshed)
-        printf "%s\n" "2" > "$STATE_DIR/.retry-review-infra-recovery-count"
-        printf "%s\n" "stalehead:native-context-window-exceeded" > "$STATE_DIR/.retry-review-infra-recovery-head"
-        cat > "$STATE_DIR/.review-result.json" <<EOF
-{"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-context-window-exceeded","reviewHeadSha":"stalehead"}}
-EOF
-        ;;
-      # HOK-2964 REQ-F3: a genuine current-head context-window overflow
-      # reroutes to a certified larger-context reviewer instead of relaunching
-      # the unchanged model/input pair.
-      infra_retry_context_window_reroute)
-        cat > "$STATE_DIR/.review-result.json" <<EOF
-{"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-context-window-exceeded","reviewHeadSha":"abc123"}}
-EOF
-        ;;
-      # HOK-2964: an unchanged context-window overflow at the same head
-      # eventually exhausts with an actionable capacity diagnostic (REQ-F3).
-      infra_retry_context_window_exhausted)
-        printf "%s\n" "2" > "$STATE_DIR/.retry-review-infra-recovery-count"
-        printf "%s\n" "abc123:native-context-window-exceeded" > "$STATE_DIR/.retry-review-infra-recovery-head"
         cat > "$STATE_DIR/.review-result.json" <<EOF
 {"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-context-window-exceeded","reviewHeadSha":"abc123"}}
 EOF
@@ -786,17 +759,14 @@ EOF
         esac
       fi
 
-      if [[ "${2:-}" == "-e" && "${3:-}" == *"getConfiguredModelsForDescriptorStage"* ]]; then
-        case "$TEST_CASE" in
-          infra_retry_context_window_reroute)
-            printf "%s\n" "{\"selectedModel\":\"glm-5.2\",\"previousModel\":\"qwen-3-coder\",\"previousContextWindowTokens\":262144,\"selectedContextWindowTokens\":1048576,\"reason\":\"native-context-window-exceeded\",\"rejected\":[]}"
-            return 0
-            ;;
-          *)
-            printf "%s\n" "No certified reviewer with a larger context window" >&2
-            return 1
-            ;;
-        esac
+      # Failure policy (HOK-3176): only the context-window kind is terminal
+      # here; anything else falls back to the bridge default (retryable).
+      if [[ "${2:-}" == "$TOOLS_DIR/failure-policy-cli.ts" ]]; then
+        if [[ " $* " == *" --failure-kind=native-context-window-exceeded "* ]]; then
+          printf "%s\n" "{\"class\":\"terminal\",\"failureKind\":\"native-context-window-exceeded\",\"terminalCode\":\"context-window-exceeded\",\"nextAction\":\"relaunch with compressed context or a larger-context model; the prompt exceeded the model context window\"}"
+          return 0
+        fi
+        return 1
       fi
 
       case "$TEST_CASE" in
@@ -1618,33 +1588,15 @@ check_contains "infra retry capped does not probe" "$output" "agent_validate_cal
 check_contains "infra retry capped keeps counter" "$output" "infra_retry_count=2"
 check_contains "infra retry capped writes manual attention" "$output" "manual re-review required"
 
-# HOK-2964 REQ-F1: native-context-window-exceeded enters bounded infra
-# recovery instead of terminal code-defect handling.
+# HOK-3249: the failure policy classifies a context-window overflow as
+# terminal, so it escalates without a relaunch, a reroute or a retry.
 output="$(run_launch_case infra_retry_context_window)"
-check_contains "context window retries review" "$output" "rc=6"
-check_contains "context window launches review" "$output" "review_launch_calls=1"
-check_contains "context window increments infra retry" "$output" "infra_retry_count=1"
-
-# HOK-2964 REQ-F2/F4: a new head at the same failure category resets the
-# bounded budget instead of inheriting the exhausted attempt count.
-output="$(run_launch_case infra_retry_context_window_scope_refreshed)"
-check_contains "context window scope refresh retries review" "$output" "rc=6"
-check_contains "context window scope refresh resets counter" "$output" "infra_retry_count=1"
-
-# HOK-2964 REQ-F3: unchanged context-window overflow at the same head
-# reroutes once, then eventually exhausts with an actionable capacity
-# diagnostic, never a synthesized pass.
-output="$(run_launch_case infra_retry_context_window_reroute)"
-check_contains "context window reroute retries review" "$output" "rc=6"
-check_contains "context window reroute launches review" "$output" "review_launch_calls=1"
-check_contains "context window reroute uses larger reviewer" "$output" "review_launch_model=glm-5.2"
-check_contains "context window reroute increments infra retry" "$output" "infra_retry_count=1"
-
-output="$(run_launch_case infra_retry_context_window_exhausted)"
-check_contains "context window exhausted refuses ready" "$output" "rc=1"
-check_contains "context window exhausted does not launch review" "$output" "review_launch_calls=0"
-check_contains "context window exhausted names the category" "$output" "native-context-window-exceeded"
-check_contains "context window exhausted gives actionable diagnostic" "$output" "larger-context reviewer or manual scope reduction"
+check_contains "context window refuses ready" "$output" "rc=1"
+check_contains "context window does not launch review" "$output" "review_launch_calls=0"
+check_contains "context window does not consume the retry budget" "$output" "infra_retry_count="$'\n'
+check_contains "context window escalates with attention" "$output" "needs_attention=present"
+check_contains "context window names the category" "$output" "native-context-window-exceeded"
+check_contains "context window carries the policy next action" "$output" "compressed context or a larger-context model"
 
 # HOK-2964 REQ-F5: typed OpenRouter 402/credit failures recover within the
 # bounded budget, keeping the same intended reviewer identity.

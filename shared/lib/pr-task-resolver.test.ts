@@ -196,6 +196,85 @@ describe('resolvePrTask', () => {
     assert.equal(result.miss?.reason, 'no-task-matched');
     assert.equal(warnings.length, 1);
   });
+
+  it('matchLifecycleDeliveryPr matches a row with task.lifecycle.deliveryEvidence.prNumber', () => {
+    const { warnings, logger } = captureLogger();
+    const worktree = mkdtempSync(join(tmpdir(), 'pr-task-resolver-'));
+    const slug = 'lifecycle-pr';
+    mkdirSync(join(worktree, 'features', slug), { recursive: true });
+    const state = buildWorkflowState({
+      'HOK-1': {
+        pr: '',
+        slug,
+        worktree,
+        phase: 'ready',
+        lifecycle: {
+          schemaVersion: 1,
+          workflowOutcome: 'active',
+          resourceDisposition: 'allocated',
+          deliveryEvidence: { prNumber: '42' },
+        },
+      },
+    });
+    const result = resolvePrTask(42, state, {
+      site: 'test.site',
+      logger,
+      matchLifecycleDeliveryPr: true,
+    });
+    assert.ok(result.location);
+    assert.equal(result.location.taskId, 'HOK-1');
+    assert.equal(warnings.length, 0);
+  });
+
+  it('matchLifecycleDeliveryPr disabled does not match lifecycle PR', () => {
+    const { warnings, logger } = captureLogger();
+    const state = buildWorkflowState({
+      'HOK-1': {
+        pr: '',
+        slug: 's',
+        worktree: '/tmp/w',
+        phase: 'ready',
+        lifecycle: {
+          schemaVersion: 1,
+          workflowOutcome: 'active',
+          resourceDisposition: 'allocated',
+          deliveryEvidence: { prNumber: '42' },
+        },
+      },
+    });
+    const result = resolvePrTask(42, state, {
+      site: 'test.site',
+      logger,
+      matchLifecycleDeliveryPr: false,
+    });
+    assert.equal(result.miss?.reason, 'no-task-matched');
+    assert.equal(warnings.length, 1);
+  });
+
+  it('matchLifecycleDeliveryPr defaults to false (backwards compatible)', () => {
+    const { warnings, logger } = captureLogger();
+    const state = buildWorkflowState({
+      'HOK-1': {
+        pr: '',
+        slug: 's',
+        worktree: '/tmp/w',
+        phase: 'ready',
+        lifecycle: {
+          schemaVersion: 1,
+          workflowOutcome: 'active',
+          resourceDisposition: 'allocated',
+          deliveryEvidence: { prNumber: '42' },
+        },
+      },
+    });
+    const result = resolvePrTask(42, state, {
+      site: 'test.site',
+      logger,
+      // matchLifecycleDeliveryPr not set, should default to false
+    });
+    assert.equal(result.miss?.reason, 'no-task-matched');
+    assert.equal(warnings.length, 1);
+  });
 });
 
 describe('resolveTaskLocation', () => {

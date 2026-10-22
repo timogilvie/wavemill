@@ -14,11 +14,9 @@ import {
 } from './review-context-gatherer.ts';
 import type { BlastRadius } from './blast-radius.ts';
 import {
-  callLLM,
   ensureClaudeAvailable,
   ensureCodexAvailable,
   parseJsonFromLLM,
-  type LLMCallOptions,
   type LLMCallResult,
 } from './llm-cli.ts';
 import { fillPromptSlots } from './prompt-utils.ts';
@@ -32,6 +30,13 @@ import {
 import { ClaudeCliAdapter, claudeCliReportedModelMatches } from './model-adapters/claude-cli-adapter.ts';
 import { CodexCliAdapter } from './model-adapters/codex-cli-adapter.ts';
 import type { AdapterError, TransportAdapter } from './model-adapters/transport-adapter.ts';
+import { estimateTokensDefault } from './model-adapters/token-estimator.ts';
+import {
+  buildReviewInput,
+  reviewInputBudgetFromAdapter,
+  worktreeFileReader,
+  type ReviewInputResult,
+} from './review-input-budget.ts';
 import type { ReviewProgressReporter } from './review-progress.ts';
 import type { OperatingMode } from './operating-mode.ts';
 import { loadPromptResourceSync, resolveRuntimeResource } from './resource-retrieval.ts';
@@ -422,20 +427,46 @@ export function fillReviewPromptTemplate(
   });
 }
 
+/**
+ * Fill a review template with the diff budgeted to the reviewer (HOK-3249).
+ *
+ * The budget is what the reviewer's adapter leaves after the template, plan,
+ * task packet and guidance (the prompt filled with an empty diff) plus
+ * `reservedTokens` the transport adds on top (the native system prompt and
+ * tool turns). Data/fixture/generated files that do not fit are summarised
+ * deterministically; source and tests stay verbatim. With no adapter (a model
+ * the registry cannot place) the diff is unbounded, but oversized data files
+ * are still summarised. A diff whose code alone cannot fit is returned over
+ * budget for the adapter's preflight to refuse as `context-exceeded`.
+ */
+export function buildBudgetedReviewPrompt(input: {
+  template: string;
+  context: ReviewContext;
+  skipDesignContext: boolean;
+  adapter: TransportAdapter | null;
+  repoDir: string;
+  reservedTokens?: number;
+}): { prompt: string; reviewInput: ReviewInputResult } {
+  const { template, context, skipDesignContext, adapter } = input;
+  const reservedPrompt = fillReviewPromptTemplate(template, { ...context, diff: '' }, skipDesignContext);
+  const budget = adapter
+    ? reviewInputBudgetFromAdapter(adapter, reservedPrompt, input.reservedTokens)
+    : { countTokens: estimateTokensDefault };
+  const reviewInput = buildReviewInput(context.diff ?? '', budget, { readFile: worktreeFileReader(input.repoDir) });
+  return {
+    prompt: fillReviewPromptTemplate(template, { ...context, diff: reviewInput.text }, skipDesignContext),
+    reviewInput,
+  };
+}
+
 // ────────────────────────────────────────────────────────────────
 // LLM Invocation
 // ────────────────────────────────────────────────────────────────
 
 /**
- * How the CLI analysis call is made (HOK-3247).
- *
- * `failClosed` is set when a specific reviewer was requested: the call then
- * runs only that model on its own executable. Leaving `taskType` unset and
- * passing an empty `fallbackModels` keeps `callLLM` off the quota fallback
- * ladder, which would otherwise walk to other models (and drop ones the
- * transport cannot serve). `taskType: 'review'` drives nothing else in
- * `llm-cli.ts` — classifier isolation keys on `classify` only — so omitting it
- * loses no non-ladder behaviour.
+ * How the CLI analysis call is made (HOK-3247). `failClosed` is set when a
+ * specific reviewer was requested: the adapter then runs only that model on
+ * its own executable, with no quota fallback ladder.
  */
 export interface ReviewCliCall {
   provider: 'claude' | 'codex';
@@ -454,136 +485,30 @@ interface ReviewLLMResponse {
 }
 
 /**
- * Invoke LLM with retry logic.
+ * Invoke the reviewer through its transport adapter (HOK-3248). A typed
+ * context/input-size refusal surfaces as `ReviewCliContextWindowExceededError`;
+ * every other adapter error is a plain review-tool error.
  */
 async function invokeLLMWithRetry(
   prompt: string,
   model: string,
   timeout: number,
   maxRetries: number,
-  options: ReviewEngineOptions,
-  reviewer: ReviewerPersona,
-  llmAttempt: number,
-  cli: ReviewCliCall = { provider: 'claude', failClosed: false },
-  adapter?: TransportAdapter,
+  cli: ReviewCliCall,
+  adapter: TransportAdapter,
 ): Promise<ReviewLLMResponse> {
-  // If adapter is provided, use it for invocation (HOK-3248)
-  if (adapter) {
-    const adapterResult = await adapter.invoke(prompt, {
-      timeout,
-      maxRetries,
-      signal: options.signal,
-    });
-
-    if (adapterResult.error) {
+  const adapterResult = await adapter.invoke(prompt, { timeout, maxRetries });
+  if (adapterResult.error) {
+    if (adapterResult.error.kind === 'context-exceeded' || adapterResult.error.kind === 'input-too-large') {
       throw new ReviewCliContextWindowExceededError(adapterResult.error.message);
     }
-
-    return {
-      text: adapterResult.text,
-      provider: cli.provider,
-      invokedModel: model,
-      ...(adapterResult.reportedModel !== 'unverified' ? { reportedModel: adapterResult.reportedModel } : {}),
-    };
+    throw new Error(adapterResult.error.message);
   }
-
-  // Fallback: use callLLM directly (for backward compatibility)
-  const ladder: Pick<LLMCallOptions, 'taskType' | 'fallbackModels'> = cli.failClosed
-    ? { fallbackModels: [] }
-    : { taskType: 'review' };
-  const result = await reviewEngineDeps.callLLM(prompt, {
-    provider: cli.provider,
-    mode: 'stream',
-    model,
-    ...ladder,
-    timeout,
-    maxBuffer: 50 * 1024 * 1024, // 50MB for large diffs
-    retry: true,
-    maxRetries,
-    observer: {
-      onAttemptStart: async (event) => {
-        await options.reporter?.emit({
-          event: 'llm_call_start',
-          message: 'Calling Claude API',
-          reviewer,
-          attempt: llmAttempt,
-          maxAttempts: 2,
-          provider: event.provider,
-          model: event.model,
-          details: { transportAttempt: event.attempt, transportMaxAttempts: event.maxAttempts },
-        });
-      },
-      onAttemptSlow: async (event) => {
-        await options.reporter?.emit({
-          event: 'llm_call_slow',
-          level: 'warn',
-          message: 'Claude API call is still running',
-          reviewer,
-          attempt: llmAttempt,
-          maxAttempts: 2,
-          provider: event.provider,
-          model: event.model,
-          elapsedMs: event.elapsedMs,
-          details: { transportAttempt: event.attempt, transportMaxAttempts: event.maxAttempts },
-        });
-      },
-      onAttemptError: async (event) => {
-        await options.reporter?.emit({
-          event: 'llm_call_error',
-          level: event.willRetry ? 'warn' : 'error',
-          message: 'Claude API call failed',
-          reviewer,
-          attempt: llmAttempt,
-          maxAttempts: 2,
-          provider: event.provider,
-          model: event.model,
-          elapsedMs: event.elapsedMs,
-          details: {
-            error: event.error,
-            transportAttempt: event.attempt,
-            transportMaxAttempts: event.maxAttempts,
-          },
-        });
-      },
-      onRetry: async (event) => {
-        await options.reporter?.emit({
-          event: 'llm_call_retry',
-          level: 'warn',
-          message: `Retrying Claude API call after ${event.delayMs}ms`,
-          reviewer,
-          attempt: llmAttempt,
-          maxAttempts: 2,
-          provider: event.provider,
-          model: event.model,
-          details: {
-            previousError: event.error,
-            nextTransportAttempt: event.nextAttempt,
-            transportMaxAttempts: event.maxAttempts,
-          },
-        });
-      },
-      onAttemptComplete: async (event) => {
-        await options.reporter?.emit({
-          event: 'llm_call_complete',
-          message: 'Claude API call completed',
-          reviewer,
-          attempt: llmAttempt,
-          maxAttempts: 2,
-          provider: event.provider,
-          model: event.model,
-          elapsedMs: event.elapsedMs,
-          details: { transportAttempt: event.attempt, transportMaxAttempts: event.maxAttempts },
-        });
-      },
-    },
-  });
-
   return {
-    text: result.text,
-    provider: result.provider,
-    invokedModel: result.model && result.model !== '(default)' ? result.model : model,
-    ...(result.reportedModel ? { reportedModel: result.reportedModel } : {}),
-    ...(result.fallbackChain?.length ? { fallbackChain: result.fallbackChain } : {}),
+    text: adapterResult.text,
+    provider: cli.provider,
+    invokedModel: model,
+    ...(adapterResult.reportedModel !== 'unverified' ? { reportedModel: adapterResult.reportedModel } : {}),
   };
 }
 
@@ -869,24 +794,13 @@ async function runReviewWithRetry(
   maxRetries: number,
   options: ReviewEngineOptions,
   persona: ReviewerPersona,
-  attempt: number = 1,
-  cli: ReviewCliCall = { provider: 'claude', failClosed: false },
-  adapter?: TransportAdapter,
+  attempt: number,
+  cli: ReviewCliCall,
+  adapter: TransportAdapter,
 ): Promise<ReviewResult> {
   const maxAttempts = 2;
 
-  // Invoke LLM
-  const response = await invokeLLMWithRetry(
-    prompt,
-    model,
-    timeout,
-    maxRetries,
-    options,
-    persona,
-    attempt,
-    cli,
-    adapter,
-  );
+  const response = await invokeLLMWithRetry(prompt, model, timeout, maxRetries, cli, adapter);
   const responseText = response.text;
 
   // Show raw response in verbose mode
@@ -899,57 +813,52 @@ async function runReviewWithRetry(
     console.error('');
   }
 
+  // One stricter-prompt retry for a conversational or unparseable response.
+  const retryWithStricterPrompt = async (reporterMessage: string, consoleMessage: string, detail: string) => {
+    await options.reporter?.emit({
+      event: 'response_retry',
+      level: 'warn',
+      message: `${reporterMessage}; retrying with stricter prompt`,
+      reviewer: persona,
+      attempt,
+      maxAttempts,
+    });
+    console.error(`⚠️  ${consoleMessage} (attempt ${attempt}/${maxAttempts})`);
+    if (options.verbose) {
+      console.error(detail);
+    }
+    console.error('Retrying with stricter prompt...\n');
+    const strictPrompt =
+      'CRITICAL: Respond with ONLY valid JSON. No text before or after. Start with { and end with }.\n\n' +
+      prompt +
+      '\n\nREMINDER: Return ONLY the JSON object. No explanations.';
+    return runReviewWithRetry(
+      strictPrompt, context, repoDir, model, timeout, maxRetries, options, persona, attempt + 1, cli, adapter,
+    );
+  };
+
   // Pre-validate response format
   if (!looksLikeJson(responseText)) {
     if (attempt < maxAttempts) {
-      await options.reporter?.emit({
-        event: 'response_retry',
-        level: 'warn',
-        message: 'Claude returned non-JSON output; retrying with stricter prompt',
-        reviewer: persona,
-        attempt,
-        maxAttempts,
-      });
-      console.error(`⚠️  LLM returned conversational response (attempt ${attempt}/${maxAttempts})`);
-      if (options.verbose) {
-        console.error('Response preview:', responseText.substring(0, 200));
-      }
-      console.error('Retrying with stricter prompt...\n');
-
-      // Retry with stricter prompt
-      const strictPrompt =
-        'CRITICAL: Respond with ONLY valid JSON. No text before or after. Start with { and end with }.\n\n' +
-        prompt +
-        '\n\nREMINDER: Return ONLY the JSON object. No explanations.';
-
-      return runReviewWithRetry(
-        strictPrompt,
-        context,
-        repoDir,
-        model,
-        timeout,
-        maxRetries,
-        options,
-        persona,
-        attempt + 1,
-        cli,
-        adapter,
-      );
-    } else {
-      throw new Error(
-        'LLM returned conversational text instead of JSON after 2 attempts.\n' +
-        `Response preview: ${responseText.substring(0, 300)}\n\n` +
-        `Possible causes:\n` +
-        `  - Model is not following JSON format instructions\n` +
-        `  - Network issues caused incomplete response\n` +
-        `  - Context is too large for the model\n\n` +
-        `Troubleshooting:\n` +
-        `  - Run with --verbose to see full LLM response\n` +
-        `  - Try a different model: REVIEW_MODEL=claude-opus-4-8 npx tsx tools/review-changes.ts\n` +
-        `  - Break changes into smaller PRs if diff is very large\n` +
-        `  - Check your network connection and retry`
+      return retryWithStricterPrompt(
+        'Claude returned non-JSON output',
+        'LLM returned conversational response',
+        `Response preview: ${responseText.substring(0, 200)}`,
       );
     }
+    throw new Error(
+      'LLM returned conversational text instead of JSON after 2 attempts.\n' +
+      `Response preview: ${responseText.substring(0, 300)}\n\n` +
+      `Possible causes:\n` +
+      `  - Model is not following JSON format instructions\n` +
+      `  - Network issues caused incomplete response\n` +
+      `  - Context is too large for the model\n\n` +
+      `Troubleshooting:\n` +
+      `  - Run with --verbose to see full LLM response\n` +
+      `  - Try a different model: REVIEW_MODEL=claude-opus-4-8 npx tsx tools/review-changes.ts\n` +
+      `  - Break changes into smaller PRs if diff is very large\n` +
+      `  - Check your network connection and retry`
+    );
   }
 
   // Parse response
@@ -967,38 +876,10 @@ async function runReviewWithRetry(
     };
   } catch (error) {
     if (attempt < maxAttempts) {
-      await options.reporter?.emit({
-        event: 'response_retry',
-        level: 'warn',
-        message: 'Failed to parse Claude JSON response; retrying with stricter prompt',
-        reviewer: persona,
-        attempt,
-        maxAttempts,
-      });
-      console.error(`⚠️  Failed to parse JSON (attempt ${attempt}/${maxAttempts})`);
-      if (options.verbose) {
-        console.error('Error:', (error as Error).message);
-      }
-      console.error('Retrying with stricter prompt...\n');
-
-      // Retry with stricter prompt
-      const strictPrompt =
-        'CRITICAL: Respond with ONLY valid JSON. No text before or after. Start with { and end with }.\n\n' +
-        prompt +
-        '\n\nREMINDER: Return ONLY the JSON object. No explanations.';
-
-      return runReviewWithRetry(
-        strictPrompt,
-        context,
-        repoDir,
-        model,
-        timeout,
-        maxRetries,
-        options,
-        persona,
-        attempt + 1,
-        cli,
-        adapter,
+      return retryWithStricterPrompt(
+        'Failed to parse Claude JSON response',
+        'Failed to parse JSON',
+        `Error: ${(error as Error).message}`,
       );
     }
     throw error;
@@ -1107,11 +988,16 @@ async function runPersonaReview(
   // Load persona-specific template
   const template = loadPersonaPromptTemplate(persona, options.operatingMode ?? 'normal');
 
-  // Design persona needs design context, others skip it
-  const skipDesignContext = persona !== 'design';
-  const prompt = fillReviewPromptTemplate(template, context, skipDesignContext);
-
   const adapter = reviewEngineDeps.buildCliReviewAdapter(cli.provider, model, repoDir, cli.failClosed);
+  // Design persona needs design context, others skip it
+  const { prompt } = buildBudgetedReviewPrompt({
+    template,
+    context,
+    skipDesignContext: persona !== 'design',
+    adapter,
+    repoDir,
+  });
+  // Safety net: only a diff whose code alone exceeds the budget is refused.
   const refusal: AdapterError | undefined = adapter.preflight(prompt);
   if (refusal) {
     throw new ReviewCliContextWindowExceededError(refusal.message);
@@ -1171,7 +1057,6 @@ function resolveReviewAgent(model: string, repoDir: string): StageLaunchability 
 }
 
 const reviewEngineDeps = {
-  callLLM,
   buildCliReviewAdapter,
   ensureClaudeAvailable,
   ensureCodexAvailable,
@@ -1424,10 +1309,10 @@ export async function runReview(
       );
     } catch (error) {
       if (error instanceof ReviewCliContextWindowExceededError) {
-        // Reuses the native category so the monitor's HOK-2964 context-window
-        // recovery (stale-base rebuild / larger-context reroute) applies. The
-        // `native-` prefix is a naming wart: the category now covers CLI
-        // reviewers too; it is not renamed because recovery keys on it.
+        // Even the budgeted input (HOK-3249) cannot fit: the code alone is
+        // larger than the reviewer. The failure policy (HOK-3176) classifies
+        // this as terminal `context-window-exceeded`; there is no dedicated
+        // recovery. The category name predates CLI reviewers.
         return {
           verdict: 'error',
           codeReviewFindings: [],
@@ -1576,10 +1461,7 @@ export const reviewEngineTestUtils = {
   setRunPersonaReview(fn: typeof reviewEngineDeps.runPersonaReview) {
     reviewEngineDeps.runPersonaReview = fn;
   },
-  /** HOK-3247 seams: the CLI transport, the review-phase resolver, and native opt-in. */
-  setCallLLM(fn: typeof reviewEngineDeps.callLLM) {
-    reviewEngineDeps.callLLM = fn;
-  },
+  /** HOK-3247 seams: the review-phase resolver and native opt-in. */
   setResolveReviewAgent(fn: typeof reviewEngineDeps.resolveReviewAgent) {
     reviewEngineDeps.resolveReviewAgent = fn;
   },
@@ -1590,7 +1472,6 @@ export const reviewEngineTestUtils = {
     reviewEngineDeps.buildCliReviewAdapter = fn;
   },
   resetDeps() {
-    reviewEngineDeps.callLLM = callLLM;
     reviewEngineDeps.buildCliReviewAdapter = buildCliReviewAdapter;
     reviewEngineDeps.isNativeReviewOptedIn = isNativeReviewOptedIn;
     reviewEngineDeps.loadNativeReviewModule = async () => import('./native-agent/review.ts');

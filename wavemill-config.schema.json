@@ -754,6 +754,11 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Opt out of OSC 777 terminal notifications emitted by hook status writes."
+                },
+                "programStatus": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Opt out of the OSC 7501 Program Status mirror emitted to the agent's pane TTY alongside each hook status write. Separate from emitOsc (OSC 777 notifications)."
                 }
             },
             "additionalProperties": false
