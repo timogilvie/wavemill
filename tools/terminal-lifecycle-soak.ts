@@ -7,6 +7,7 @@ import {
   buildCertificationArtifact,
   writeCertificationReport,
 } from '../shared/lib/terminal-lifecycle-cert.ts';
+import { termListPanes } from '../shared/lib/terminal-backend.ts';
 
 function argValue(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -29,8 +30,7 @@ function countDirEntries(dir: string, predicate: (name: string) => boolean = () 
 }
 
 function sample(repoDir: string, cycle: number): SoakSample {
-  const tmux = spawnSync('tmux', ['list-panes', '-a'], { encoding: 'utf-8' });
-  const tmuxPanes = tmux.status === 0 ? tmux.stdout.trim().split('\n').filter(Boolean).length : 0;
+  const tmuxPanes = termListPanes().length;
   const worktree = spawnSync('git', ['-C', repoDir, 'worktree', 'list', '--porcelain'], { encoding: 'utf-8' });
   const worktrees = worktree.status === 0
     ? worktree.stdout.split('\n').filter((line) => line.startsWith('worktree ')).length
