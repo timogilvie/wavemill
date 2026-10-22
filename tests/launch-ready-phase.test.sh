@@ -61,9 +61,7 @@ extract_function() {
 
 LAUNCH_FUNC_FILE="$TEST_TMP/launch_ready_phase.sh"
 cat "$REPO_DIR/shared/lib/transient-marker.sh" > "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "ready_conflict_attention_head" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "record_ready_conflict_attention" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "clear_ready_conflict_attention" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_marker_path" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "transient_mergeability_count" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "increment_transient_mergeability_count" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "clear_transient_mergeability_state" >> "$LAUNCH_FUNC_FILE"
@@ -157,6 +155,9 @@ fi
 # script). HOK-2879's cases mock _launch_agent_in_pane and so never saw that
 # the conflict / CI-fix prompt filenames normalized to an empty phase.
 REPLAY_FIXTURE="$REPO_DIR/tests/fixtures/incidents/hok3241c_native_conflict_remediation.json"
+# HOK-3273: the HOK-3241 primary arm, whose resolver pushed a clean fix before
+# a guard-deferred Ready spent the one-shot conflict budget.
+PRIMARY_REPLAY_FIXTURE="$REPO_DIR/tests/fixtures/incidents/hok3241_conflict_remediation_latch.json"
 NATIVE_HARNESS_FILE="$TEST_TMP/native-remediation-harness.sh"
 {
   printf 'source %q\n' "$REPO_DIR/shared/lib/agent-adapters.sh"
@@ -238,10 +239,20 @@ run_launch_case() {
   mkdir -p "$case_dir"
 
   CASE_DIR="$case_dir" LAUNCH_FUNC_FILE="$LAUNCH_FUNC_FILE" COMMON_SCRIPT="$COMMON_SCRIPT" TEST_CASE="$test_case" \
-    NATIVE_HARNESS_FILE="$NATIVE_HARNESS_FILE" REPLAY_FIXTURE="$REPLAY_FIXTURE" bash -lc '
+    NATIVE_HARNESS_FILE="$NATIVE_HARNESS_FILE" REPLAY_FIXTURE="$REPLAY_FIXTURE" \
+    PRIMARY_REPLAY_FIXTURE="$PRIMARY_REPLAY_FIXTURE" RECONCILER_SCRIPT="$REPO_DIR/shared/lib/condition-reconciler.sh" bash -lc '
     set -euo pipefail
     source "$COMMON_SCRIPT"
     source "$LAUNCH_FUNC_FILE"
+
+    # HOK-3273 replays drive real-looking SHAs so the condition reconciler can
+    # expire the conflict marker on the resolver push; every other case keeps
+    # the abc123/main456 placeholders.
+    REPLAY_HEAD="abc123" REPLAY_BASE="main456"
+    if [[ "$TEST_CASE" == replay_primary_* ]]; then
+      REPLAY_HEAD="$(jq -r ".replay.resolverPushHead" "$PRIMARY_REPLAY_FIXTURE")"
+      REPLAY_BASE="$(jq -r ".replay.baseSha" "$PRIMARY_REPLAY_FIXTURE")"
+    fi
 
     SESSION="ready-phase-test-$TEST_CASE"
     TOOLS_DIR="$CASE_DIR/tools"
@@ -259,7 +270,7 @@ run_launch_case() {
     # Queue of heads the gh stub reports, one per call; the last line sticks,
     # and a FAIL line makes that read fail.
     GH_HEADS_FILE="$CASE_DIR/gh-heads"
-    printf "%s\n" "abc123" > "$GH_HEADS_FILE"
+    printf "%s\n" "$REPLAY_HEAD" > "$GH_HEADS_FILE"
     SHA_OLD="" SHA_NEW="" SHA_LOCAL=""
     if [[ "$TEST_CASE" == head_sync_* ]]; then
       # Real git topology for HOK-3112: the PR branch was pushed at OLD and the
@@ -335,13 +346,24 @@ EOF
     trap '\''rm -f "$DEBUG_FILE"'\'' EXIT
 
     case "$TEST_CASE" in
+      # The one resolver for (abc123, base) already launched and Ready still
+      # sees the conflict: the budget terminalizes.
       conflict_persists_after_remediation)
-        touch "$STATE_DIR/.conflict-detected"
+        bounded_retry_increment "$STATE_DIR" "conflict-remediation-relaunch" "abc123" "main456" >/dev/null
         ;;
       pass_after_remediation)
-        touch "$STATE_DIR/.conflict-detected" "$STATE_DIR/.conflict-attention-reported"
-        printf "%s\n" "abc123" > "$STATE_DIR/.conflict-attention-head"
+        marker_write "$STATE_DIR/.conflict-remediation.json" --kind conflict-remediation --head abc123 \
+          --expires-on "head,remote,operator-event" --detail-json "{\"launchHead\":\"abc123\"}"
         printf "%s\n" "stale attention" > "$STATE_DIR/.needs-attention"
+        ;;
+      # HOK-3241 primary: a resolver launched at resolverLaunchHead (charged,
+      # marker written) and pushed resolverPushHead, the checkout now.
+      replay_primary_guard_deferral)
+        replay_launch_head="$(jq -r ".replay.resolverLaunchHead" "$PRIMARY_REPLAY_FIXTURE")"
+        bounded_retry_increment "$STATE_DIR" "conflict-remediation-relaunch" "$replay_launch_head" "$REPLAY_BASE" >/dev/null
+        marker_write "$STATE_DIR/.conflict-remediation.json" --kind conflict-remediation \
+          --head "$replay_launch_head" --expires-on "head,remote,operator-event" \
+          --detail-json "$(jq -cn --arg h "$replay_launch_head" --arg b "$REPLAY_BASE" "{head:\$h,base:\$b,launchHead:\$h,prNumber:304}")"
         ;;
       pass_clears_recheck)
         printf "%s\n" "3" > "$STATE_DIR/.failed-ready-recheck-count"
@@ -617,12 +639,12 @@ EOF
         return 0
       fi
       if [[ "${1:-}" == "-C" && "${3:-}" == "rev-parse" && "${4:-}" == "HEAD" ]]; then
-        printf "%s\n" "abc123"
+        printf "%s\n" "$REPLAY_HEAD"
         return 0
       fi
       return 1
     }
-    get_main_head_sha() { printf "%s\n" "main456"; }
+    get_main_head_sha() { printf "%s\n" "$REPLAY_BASE"; }
     merge_queue_enabled() { return 1; }
     merge_queue_enrich_ready_artifacts() { printf "%s\n" "$2"; }
     # HOK-3102/HOK-3093: TEST_EXECUTOR env (default tend) picks the session
@@ -765,7 +787,7 @@ EOF
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pass\",\"checks\":[{\"name\":\"ready-policy\",\"status\":\"pass\",\"message\":\"Ready policy satisfied\",\"details\":{}}],\"timestamp\":\"2026-09-29T12:26:42.000Z\",\"summary\":\"All checks passed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"attempts\":1}}"
           return 0
           ;;
-        pass_after_remediation|pass_clears_recheck|dismissed_blockers_pass|route_stamp_failure|tend_claims_during_ready_label|pass_operator_merge_needed|pass_operator_merge_needed_second_tick)
+        pass_after_remediation|replay_primary_guard_deferral|pass_clears_recheck|dismissed_blockers_pass|route_stamp_failure|tend_claims_during_ready_label|pass_operator_merge_needed|pass_operator_merge_needed_second_tick)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pass\",\"checks\":[{\"name\":\"ci-status\",\"status\":\"pass\",\"message\":\"All CI checks passing\",\"details\":{\"totalChecks\":3}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"All checks passed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"attempts\":1}}"
           return 0
           ;;
@@ -810,7 +832,7 @@ EOF
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"fail\",\"checks\":[{\"name\":\"ci-suite\",\"status\":\"fail\",\"message\":\"Shell and Unit Tests failed\",\"details\":{}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"CI suite failed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"UNSTABLE\",\"attempts\":1}}"
           return 1
           ;;
-        conflict_persists_after_remediation|native_remediation_conflict|native_remediation_conflict_refused)
+        conflict_persists_after_remediation|native_remediation_conflict|native_remediation_conflict_refused|native_remediation_conflict_guard_deferral)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"fail\",\"checks\":[{\"name\":\"merge-conflict\",\"status\":\"fail\",\"message\":\"PR has conflicts\",\"details\":{}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"Merge conflicts detected\",\"mergeConflict\":{\"status\":\"CONFLICTED\",\"message\":\"PR #304 has conflicts with main\",\"mergeable\":\"CONFLICTING\",\"mergeStateStatus\":\"DIRTY\",\"attempts\":1}}"
           printf "%s\n" "⚠️  MERGE CONFLICT: PR #304 has conflicts with main" >&2
           return 1
@@ -830,10 +852,33 @@ EOF
       source "$NATIVE_HARNESS_FILE"
       ISSUE_ID="$(jq -r ".task.issue" "$REPLAY_FIXTURE")"
     fi
-    set +e
-    launch_ready_phase "$ISSUE_ID" "fix-failing-ci-tests" "Fix failing CI tests" "$WT_DIR" "task/fix-failing-ci-tests" "main" "304"
-    rc=$?
-    set -e
+    # HOK-3273 replays run two monitor passes: on the first the cross-PR
+    # revert guard job is still running (the HOK-3206 deferral), then the
+    # condition reconciler ticks as it does between passes, and on the second
+    # the guard result is clean.
+    LAUNCH_PASSES=1
+    if [[ "$TEST_CASE" == *_guard_deferral ]]; then
+      LAUNCH_PASSES=2
+      STATE_FILE="$CASE_DIR/workflow-state.json"
+      printf "%s\n" "{\"tasks\":{}}" > "$STATE_FILE"
+      source "$RECONCILER_SCRIPT"
+      ready_cross_pr_revert_gate() { (( LAUNCH_PASS > 1 )) || return 4; return 0; }
+    fi
+    LAUNCH_PASS=0
+    RC_BY_PASS=""
+    BUDGET_BY_PASS=""
+    while (( LAUNCH_PASS < LAUNCH_PASSES )); do
+      LAUNCH_PASS=$((LAUNCH_PASS + 1))
+      set +e
+      launch_ready_phase "$ISSUE_ID" "fix-failing-ci-tests" "Fix failing CI tests" "$WT_DIR" "task/fix-failing-ci-tests" "main" "304"
+      rc=$?
+      set -e
+      RC_BY_PASS+="pass${LAUNCH_PASS}:${rc} "
+      BUDGET_BY_PASS+="pass${LAUNCH_PASS}:$(bounded_retry_count "$STATE_DIR" "conflict-remediation-relaunch") "
+      if (( LAUNCH_PASS < LAUNCH_PASSES )); then
+        condition_reconcile_task "$ISSUE_ID" "$WT_DIR" "$STATE_DIR"
+      fi
+    done
     if [[ "$TEST_CASE" == native_remediation_* ]]; then
       # Run what the pane would have run: the generated launcher script, with
       # the stub native launcher binary first on PATH.
@@ -857,12 +902,15 @@ EOF
     [[ -n "$READY_ATTENTION_CALLS" ]] && attention_count=$(printf "%s" "$READY_ATTENTION_CALLS" | grep -c .)
     error_count=0
     [[ -n "$LOG_ERROR_OUTPUT" ]] && error_count=$(printf "%s" "$LOG_ERROR_OUTPUT" | grep -c .)
-    conflict_attention_head=""
-    [[ -f "$STATE_DIR/.conflict-attention-head" ]] && conflict_attention_head=$(cat "$STATE_DIR/.conflict-attention-head")
-    conflict_attention_reported="absent"
-    [[ -f "$STATE_DIR/.conflict-attention-reported" ]] && conflict_attention_reported="present"
-    conflict_detected="absent"
-    [[ -f "$STATE_DIR/.conflict-detected" ]] && conflict_detected="present"
+    conflict_marker="absent"
+    [[ -f "$STATE_DIR/.conflict-remediation.json" ]] && conflict_marker="present"
+    conflict_marker_json=""
+    [[ -f "$STATE_DIR/.conflict-remediation.json" ]] && conflict_marker_json=$(jq -c "{kind, headSha, detail, expiresOn: .condition.expiresOn}" "$STATE_DIR/.conflict-remediation.json")
+    conflict_retry_count="$(cat "$STATE_DIR/.retry-conflict-remediation-relaunch-count" 2>/dev/null || echo "")"
+    conflict_retry_key="$(tr "\n" " " < "$STATE_DIR/.retry-conflict-remediation-relaunch-head" 2>/dev/null || echo "")"
+    conflict_retry_exhausted="absent"
+    [[ -f "$STATE_DIR/.retry-conflict-remediation-relaunch-exhausted" ]] && conflict_retry_exhausted="present"
+    legacy_conflict_files="$(cd "$STATE_DIR" && ls -A | grep -E "conflict-detected|conflict-attention|conflict-recheck" | tr "\n" " " || true)"
     needs_attention="absent"
     [[ -f "$STATE_DIR/.needs-attention" ]] && needs_attention="present"
     transient_attention="absent"
@@ -878,9 +926,11 @@ EOF
     debug_payload=""
     [[ -f "$DEBUG_FILE" ]] && debug_payload=$(cat "$DEBUG_FILE")
 
-    printf "rc=%s\nstage_calls=%s\nattention_calls=%s\nattention_count=%s\nlaunch_calls=%s\nreview_launch_calls=%s\nreview_launch_model=%s\nprepare_recovery_calls=%s\nagent_validate_calls=%s\nprompt_calls=%s\nerror_count=%s\nlogs=%s\nwarn_logs=%s\nerror_payload=%s\ndebug_file=%s\ndebug_lines=%s\ndebug_payload=%s\nconflict_attention_head=%s\nconflict_attention_reported=%s\nconflict_detected=%s\nneeds_attention=%s\ntransient_attention=%s\ntransient_count=%s\ninfra_retry_count=%s\nready_result_payload=%s\n" \
-      "$rc" "$stage_summary" "$attention_summary" "$attention_count" "$LAUNCH_AGENT_CALLS" "$REVIEW_LAUNCH_CALLS" "${REVIEW_LAUNCH_MODEL:-}" "$PREPARE_RECOVERY_CALLS" "$AGENT_VALIDATE_CALLS" "$READY_PROMPT_CALLS" "$error_count" "$LOG_OUTPUT" "$LOG_WARN_OUTPUT" "$LOG_ERROR_OUTPUT" "$DEBUG_FILE" "$debug_line_count" "$debug_payload" "$conflict_attention_head" "$conflict_attention_reported" "$conflict_detected" "$needs_attention" "$transient_attention" "$transient_count" "$infra_retry_count" "$ready_result_payload"
+    printf "rc=%s\nstage_calls=%s\nattention_calls=%s\nattention_count=%s\nlaunch_calls=%s\nreview_launch_calls=%s\nreview_launch_model=%s\nprepare_recovery_calls=%s\nagent_validate_calls=%s\nprompt_calls=%s\nerror_count=%s\nlogs=%s\nwarn_logs=%s\nerror_payload=%s\ndebug_file=%s\ndebug_lines=%s\ndebug_payload=%s\nconflict_marker=%s\nconflict_marker_json=%s\nconflict_retry_count=%s\nconflict_retry_key=%s\nconflict_retry_exhausted=%s\nlegacy_conflict_files=%s\nneeds_attention=%s\ntransient_attention=%s\ntransient_count=%s\ninfra_retry_count=%s\nready_result_payload=%s\n" \
+      "$rc" "$stage_summary" "$attention_summary" "$attention_count" "$LAUNCH_AGENT_CALLS" "$REVIEW_LAUNCH_CALLS" "${REVIEW_LAUNCH_MODEL:-}" "$PREPARE_RECOVERY_CALLS" "$AGENT_VALIDATE_CALLS" "$READY_PROMPT_CALLS" "$error_count" "$LOG_OUTPUT" "$LOG_WARN_OUTPUT" "$LOG_ERROR_OUTPUT" "$DEBUG_FILE" "$debug_line_count" "$debug_payload" "$conflict_marker" "$conflict_marker_json" "$conflict_retry_count" "$conflict_retry_key" "$conflict_retry_exhausted" "$legacy_conflict_files" "$needs_attention" "$transient_attention" "$transient_count" "$infra_retry_count" "$ready_result_payload"
     printf "handoff_claims=%s\n" "$handoff_claims"
+    printf "rc_by_pass=%s\n" "$RC_BY_PASS"
+    printf "budget_by_pass=%s\n" "$BUDGET_BY_PASS"
     printf "surface_merge_needed_calls=%s\n" "$SURFACE_MERGE_NEEDED_CALLS"
     printf "surface_merge_needed_log=%s\n" "$(printf "%s" "$SURFACE_MERGE_NEEDED_LOG" | tr "\n" ";")"
     printf "challenge_orch_calls=%s\n" "$CHALLENGE_ORCH_CALLS"
@@ -1479,10 +1529,10 @@ check_contains "inflight same head does not rewrite stage" "$output" "stage_call
 
 output="$(run_launch_case conflict_persists_after_remediation)"
 check_contains "persistent conflict returns failure" "$output" "rc=1"
-check_contains "persistent conflict writes attention" "$output" "PR #304 still has merge conflicts after automatic remediation."
-check_contains "persistent conflict records attention head" "$output" "conflict_attention_head=abc123"
-check_contains "persistent conflict records reported marker" "$output" "conflict_attention_reported=present"
-check_contains "persistent conflict keeps detected marker" "$output" "conflict_detected=present"
+check_contains "persistent conflict writes attention" "$output" "Conflict remediation exhausted on identical (head=abc123, base=main456) for PR #304"
+check_contains "persistent conflict terminalizes the bucket" "$output" "conflict_retry_exhausted=present"
+check_contains "persistent conflict launches no second resolver" "$output" "launch_calls=0"
+check_contains "persistent conflict writes no new marker" "$output" "conflict_marker=absent"
 check_contains "persistent conflict logs one terse error" "$output" "Merge conflicts persist for HOK-1300 after remediation attempt"
 
 output="$(run_launch_case pass_after_remediation)"
@@ -1490,9 +1540,9 @@ check_contains "pass after remediation returns success" "$output" "rc=0"
 check_contains "pass after remediation writes completed stage" "$output" "|ready|completed|"
 check_contains "pass after remediation records ready label update" "$output" "\"readyLabelsUpdated\":true"
 check_not_contains "pass after remediation clears remediation artifacts" "$output" "\"remediationAttempts\":"
-check_contains "pass after remediation clears conflict marker" "$output" "conflict_detected=absent"
-check_contains "pass after remediation clears attention head" "$output" "conflict_attention_head="
-check_contains "pass after remediation clears reported marker" "$output" "conflict_attention_reported=absent"
+# HOK-3172: the gate never clears the conflict marker; the reconciler expires it.
+check_contains "pass after remediation leaves the marker to the reconciler" "$output" "conflict_marker=present"
+check_contains "pass after remediation charges no conflict attempt" "$output" "conflict_retry_count="$'\n'
 check_contains "pass after remediation clears needs attention" "$output" "needs_attention=absent"
 check_contains "pass after remediation demotes label canonicalization to debug" "$output" "debug   HOK-1300: Canonicalized ready labels for PR #304"
 check_contains "pass after remediation demotes ready completion to debug" "$output" "debug   HOK-1300: Ready checks completed (verdict: pass)"
@@ -1895,7 +1945,12 @@ check_contains "native conflict: invokes the native coding launcher" "$output" "
 check_contains "native conflict: passes --prompt-file" "$output" "arg=--prompt-file arg=/tmp/ready-phase-test-native_remediation_conflict-HOK-3241_c-conflict-prompt.txt "
 check_contains "native conflict: launcher receives the conflict prompt" "$output" "native_prompt_seen=RESOLVE CONFLICT on PR #304 against main: shared/lib/merge-labels.ts"
 check_contains "native conflict: no needs-user written" "$output" "needs_attention=absent"
-check_contains "native conflict: single-attempt token recorded" "$output" "conflict_detected=present"
+check_contains "native conflict: in-flight marker recorded" "$output" "conflict_marker=present"
+check_contains "native conflict: marker carries head, base, launchHead and PR" "$output" '"detail":{"head":"abc123","base":"main","launchHead":"abc123","prNumber":304}'
+check_contains "native conflict: marker is condition-keyed" "$output" '"expiresOn":["head","remote","operator-event"]'
+check_contains "native conflict: launch charges exactly one attempt" "$output" "conflict_retry_count=1"$'\n'
+check_contains "native conflict: attempt keyed on (head, base)" "$output" "conflict_retry_key=abc123 main456 "
+check_contains "native conflict: no legacy conflict files" "$output" "legacy_conflict_files="$'\n'
 check_not_contains "native conflict: no launch failure logged" "$output" "Failed to launch conflict-resolution agent"
 
 output="$(run_launch_case native_remediation_ci)"
@@ -1925,8 +1980,37 @@ output="$(run_launch_case native_remediation_conflict_refused)"
 check_contains "refused conflict: returns failure" "$output" "rc=1"
 check_contains "refused conflict: nothing dispatched to the pane" "$output" "native_dispatched=no"
 check_contains "refused conflict: escalates with the reason" "$output" "Merge-conflict remediation launch for PR #304 was refused before an agent started"
-check_contains "refused conflict: does not consume the single attempt" "$output" "conflict_detected=absent"
+check_contains "refused conflict: writes no in-flight marker" "$output" "conflict_marker=absent"
+check_contains "refused conflict: does not consume the single attempt" "$output" "conflict_retry_count="$'\n'
+check_contains "refused conflict: never terminalizes the bucket" "$output" "conflict_retry_exhausted=absent"
 check_not_contains "refused conflict: no generic launch failure" "$output" "Automatic merge-conflict resolution could not be launched"
+
+echo "=== Conflict Remediation Budget Charged Only on Launch (HOK-3273) ==="
+
+# Replay of the HOK-3241 primary arm: the resolver pushed a clean fix, then the
+# first Ready at the new head deferred on the pending cross-PR revert guard.
+# Before HOK-3273 that deferral had spent the one-shot budget and the next pass
+# wrote "Conflict remediation exhausted" over a MERGEABLE PR for 19 hours.
+output="$(run_launch_case replay_primary_guard_deferral)"
+check_contains "HOK-3241 replay: first Ready defers on the guard, second passes" "$output" "rc_by_pass=pass1:4 pass2:0 "
+check_contains "HOK-3241 replay: the deferral charges nothing" "$output" "budget_by_pass=pass1:1 pass2:1 "
+check_contains "HOK-3241 replay: no resolver relaunched" "$output" "launch_calls=0"
+check_contains "HOK-3241 replay: nothing written as exhausted" "$output" "conflict_retry_exhausted=absent"
+check_not_contains "HOK-3241 replay: no exhaustion message" "$output" "Conflict remediation exhausted"
+check_contains "HOK-3241 replay: reconciler expired the marker on the resolver push" "$output" "conflict_marker=absent"
+check_contains "HOK-3241 replay: Ready pass recorded" "$output" "|ready|completed|"
+check_contains "HOK-3241 replay: no needs-user written" "$output" "needs_attention=absent"
+check_contains "HOK-3241 replay: no legacy conflict files" "$output" "legacy_conflict_files="$'\n'
+
+# Replay of HOK-3241_c: a fresh (head, base) where Ready deferred on the guard.
+# The deferral leaves the budget at 0; the next pass launches the resolver and
+# charges exactly one attempt.
+output="$(run_launch_case native_remediation_conflict_guard_deferral)"
+check_contains "HOK-3241_c replay: defer, then launch the resolver" "$output" "rc_by_pass=pass1:4 pass2:3 "
+check_contains "HOK-3241_c replay: the deferral leaves the budget at 0" "$output" "budget_by_pass=pass1:0 pass2:1 "
+check_contains "HOK-3241_c replay: resolver dispatched to the pane" "$output" "native_dispatched=yes"
+check_contains "HOK-3241_c replay: in-flight marker written after the launch" "$output" "conflict_marker=present"
+check_contains "HOK-3241_c replay: nothing written as exhausted" "$output" "conflict_retry_exhausted=absent"
 
 echo "=== Post-PR Reconciliation Capsule (HOK-2936) ==="
 

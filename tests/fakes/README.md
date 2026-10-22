@@ -39,7 +39,7 @@ gh state file (`$FAKE_GH_STATE`):
 | `headLag[n]` | After PR n's head moves, the next N reads still report the old head (GitHub read-after-write lag). |
 | `faults` | `[{cmd:"pr view", remaining:1, exit:1, stderr:"HTTP 502"}]` — fail the next matching calls. |
 | `strictBehind` | Report `BEHIND` when the base is not an ancestor of the head. |
-| `prs[n].overrides` | Force `mergeable` / `mergeStateStatus`. |
+| `prs[n].overrides` | Force `mergeable` / `mergeStateStatus`. Without one, a PR whose head does not merge cleanly into its base (real `git merge-tree`) reads `CONFLICTING` / `DIRTY`. |
 | `prs[n].history` | Written by the fake: ordered `{at, event: labeled\|unlabeled\|merged, label?}` entries, for asserting label/merge ordering. |
 
 Agent: put a bash snippet at `$FAKE_AGENT_SCRIPT_DIR/<phase>` (planning, coding,

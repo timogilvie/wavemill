@@ -1,0 +1,36 @@
+{
+  "incident": "HOK-3273",
+  "source": "HOK-3241 primary Ready conflict, 2026-10-20 15:25 -> 2026-10-21 10:03 (PR timogilvie/wavemill#1689)",
+  "provenance": "reconstructed from the HOK-3273 incident timeline: the resolver pushed f82f74a and GitHub reported the PR MERGEABLE, but the first Ready at the new (head, base) deferred on the HOK-3206 cross-PR revert guard job, and the next pass found .conflict-detected still present with the one-shot budget spent",
+  "task": {
+    "issue": "HOK-3241",
+    "challenge": false
+  },
+  "pr": {
+    "number": 1689,
+    "mergeConflictAfterResolverPush": "MERGEABLE"
+  },
+  "replay": {
+    "resolverLaunchHead": "6d1c0b9e4a7f3c2d8b5e1a0f9c7d6e5b4a3f2e1d",
+    "resolverPushHead": "f82f74a0c3b9d8e7f6a5b4c3d2e1f0a9b8c7d6e5",
+    "baseSha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+  },
+  "observed": {
+    "monitorLog": [
+      "10-20 15:25 Merge conflict detected for HOK-3241 (PR #1689); resolver launched",
+      "10-20 15:4x resolver pushed f82f74a (\"Resolve merge conflicts\"); PR MERGEABLE, git merge-tree clean",
+      "10-20 18:28 HOK-3241: cross-PR revert guard pending - deferring Ready (PR #1689)",
+      "10-20 18:29 ⛔ HOK-3241 → Conflict remediation exhausted on identical (head, base)",
+      "10-21 09:56:42 same exhaustion, six seconds before the guard result came back clean (13:56:48 UTC)"
+    ],
+    "operatorTouches": 1,
+    "needsUserHours": 19
+  },
+  "expected": {
+    "operatorTouches": 0,
+    "exhaustionWritten": false,
+    "deferralChargesBudget": false,
+    "markerExpiresOnResolverPush": true,
+    "readyPassesAfterDeferral": true
+  }
+}

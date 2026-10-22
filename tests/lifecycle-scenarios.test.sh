@@ -138,14 +138,10 @@ for fn in \
   ready_stage_allows_merge \
   ready_stage_warn_bypass_once \
   ready_stage_pending_verdict \
-  ready_conflict_launch_head \
-  ready_conflict_attention_head \
-  clear_ready_conflict_attention \
-  clear_ready_conflict_markers \
-  ready_conflict_recheck_interval_seconds \
-  ready_conflict_recheck_due \
-  write_ready_conflict_recheck_at \
-  ready_conflict_pr_is_clean \
+  conflict_remediation_marker_path \
+  conflict_remediation_in_flight \
+  conflict_remediation_awaiting_ready \
+  conflict_remediation_exhausted_hold \
   ready_remediation_launch_head \
   inject_depends_on_pr_block \
   dispatch_queued_children_for_parent \

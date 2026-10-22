@@ -301,20 +301,21 @@ get_ready_queue_state() {
   fi
 }
 
+# A conflict resolver is in flight for the task (HOK-3273): the monitor writes
+# one condition-keyed .conflict-remediation.json when it launches the resolver
+# and the reconciler expires it once the resolver pushes.
 is_ready_conflicted() {
   local worktree="$1" slug="$2"
-  local feature_dir=""
   local dir
 
   for dir in features bugs; do
     if [[ -d "$worktree/$dir/$slug" ]]; then
-      feature_dir="$worktree/$dir/$slug"
-      [[ -f "$feature_dir/.conflict-detected" ]] && return 0
-      return 1
+      [[ -f "$worktree/$dir/$slug/.conflict-remediation.json" ]]
+      return
     fi
   done
 
-  [[ -f "$worktree/features/$slug/.conflict-detected" ]]
+  [[ -f "$worktree/features/$slug/.conflict-remediation.json" ]]
 }
 
 is_stale_ready_gate_detail_for_phase() {

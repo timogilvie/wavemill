@@ -1,4 +1,4 @@
-import { appendFile, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { loadTraceContext, appendTraceEvent } from './trace-event.ts';
@@ -108,6 +108,7 @@ export interface ReadyTaskSnapshot {
   readyVerdict: ReadyArtifacts['verdict'] | null;
   readyAttentionDetail: string | null;
   hasNeedsAttention: boolean;
+  /** A conflict resolver is in flight: `.conflict-remediation.json` (HOK-3273). */
   hasConflictMarker: boolean;
   remediationLaunchHead: string | null;
   currentHead: string | null;
@@ -1563,7 +1564,7 @@ async function buildSnapshot(
     readyVerdict: readyArtifacts?.verdict ?? null,
     readyAttentionDetail: readAttentionDetail(stateDir),
     hasNeedsAttention: existsSync(path.join(stateDir, '.needs-attention')),
-    hasConflictMarker: existsSync(path.join(stateDir, '.conflict-detected')),
+    hasConflictMarker: existsSync(path.join(stateDir, '.conflict-remediation.json')),
     remediationLaunchHead: readyArtifacts?.remediationLaunchHead ?? readyArtifacts?.launchHead ?? null,
     currentHead: await deps.getCurrentHead(worktree),
     remediationPaneActive: paneActive,
@@ -1583,9 +1584,7 @@ async function recoverReadyState(
   note = 'Ready watchdog cleared stale local state and queued a re-check.',
 ): Promise<void> {
   clearMarker({ path: path.join(snapshot.readyStateDir, '.needs-attention'), kind: 'ready-attention' });
-  clearMarker({ path: path.join(snapshot.readyStateDir, '.conflict-detected'), kind: 'ready-conflict' });
-  await rm(path.join(snapshot.readyStateDir, '.conflict-attention-head'), { force: true });
-  await rm(path.join(snapshot.readyStateDir, '.conflict-attention-reported'), { force: true });
+  clearMarker({ path: path.join(snapshot.readyStateDir, '.conflict-remediation.json'), kind: 'conflict-remediation' });
 
   const priorArtifacts = snapshot.readyArtifacts ?? { type: 'ready' } as ReadyArtifacts;
   const nextArtifacts: ReadyArtifacts = {

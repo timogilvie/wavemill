@@ -265,6 +265,9 @@ for f in \
   "$REPO_DIR"/tests/fixtures/lifecycle/closed_sibling_merged_restart_silence.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/coding_agent_exit_interrupted.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/integration_window_observer_only.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/ready_conflict_resolver_pushed_reruns_ready.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/ready_conflict_resolver_in_flight_holds.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/ready_conflict_exhausted_holds_needs_user.sh \
   "$REPO_DIR"/tests/incident-fixtures-terminal-panes.test.sh \
   "$REPO_DIR"/tests/incident-fixtures-safety-controls.test.sh \
   "$REPO_DIR"/tests/lib/incident-fixture-harness.sh \
@@ -280,6 +283,9 @@ for f in \
   "$REPO_DIR"/tests/journeys/errored-with-pr.journey.sh \
   "$REPO_DIR"/tests/journeys/inputs-ready-before-approval.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3220/fake-agent/planning \
+  "$REPO_DIR"/tests/journeys/mid-flight-base-conflict.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/hok-3273/fake-agent/review \
+  "$REPO_DIR"/tests/journeys/fixtures/hok-3273/fake-agent/coding \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
   "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
   "$REPO_DIR"/tests/lib/state-fixtures.sh \
@@ -1249,7 +1255,7 @@ else
 
   if grep -Fq 'elif [[ "$current_phase" == "ready" ]]; then' <<< "$MONITOR_ISSUE_BLOCK" \
     && grep -Fq 'ready_state_dir_path="$(ready_state_dir "${WORKTREE_ROOT}/${SLUG}" "$SLUG")"' <<< "$MONITOR_ISSUE_BLOCK" \
-    && grep -Fq '.conflict-detected' <<< "$MONITOR_ISSUE_BLOCK" \
+    && grep -Fq 'conflict_remediation_awaiting_ready "$ready_state_dir_path"' <<< "$MONITOR_ISSUE_BLOCK" \
     && grep -Fq 'Conflict remediation complete, ready checks rerun' <<< "$MONITOR_ISSUE_BLOCK"; then
     pass "monitor handles PR-backed ready tasks in the PR lifecycle path"
   else

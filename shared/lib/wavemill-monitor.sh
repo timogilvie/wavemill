@@ -4318,104 +4318,53 @@ stage_result_is_in_progress() {
   return 1
 }
 
-ready_conflict_launch_head() {
-  local feature_dir="$1"
-  local result_file="$feature_dir/.ready-result.json"
-  if [[ -f "$result_file" ]]; then
-    jq -r '.artifacts.launchHead // empty' "$result_file" 2>/dev/null || echo ""
-  else
-    echo ""
-  fi
+# Conflict remediation (HOK-3273). One condition-keyed marker,
+# .conflict-remediation.json, records "a resolver is in flight for head X".
+# Whether the PR is conflicted is never latched: every Ready run reads it from
+# GitHub. The marker is written only after a resolver launches, and the
+# condition reconciler expires it when the worktree head, the PR's remote head
+# or an operator event moves on, so it cannot outlive the resolver's push.
+# The `conflict-remediation-relaunch` bucket (limit 1 per (head, base)) is
+# charged in the same launch tail, so a deferred or refused Ready never spends
+# the attempt (HOK-2924).
+conflict_remediation_marker_path() {
+  printf '%s\n' "$1/.conflict-remediation.json"
 }
 
-ready_conflict_attention_head() {
-  local feature_dir="$1"
-  local attention_head_file="$feature_dir/.conflict-attention-head"
-  if [[ -f "$attention_head_file" ]]; then
-    cat "$attention_head_file" 2>/dev/null || echo ""
-  else
-    echo ""
-  fi
+# conflict_remediation_in_flight <state_dir> <current_head>
+# True while the resolver launched at <current_head> is still Ready's work in
+# progress. A resolver push moves the head, so this turns false at once even
+# before the reconciler has expired the marker.
+conflict_remediation_in_flight() {
+  local state_dir="$1" current_head="$2" launch_head
+  [[ -n "$current_head" ]] || return 1
+  [[ "$(read_stage_status "$state_dir" "ready")" == "running" ]] || return 1
+  launch_head=$(jq -r '.detail.launchHead // empty' "$(conflict_remediation_marker_path "$state_dir")" 2>/dev/null || echo "")
+  [[ -n "$launch_head" && "$launch_head" == "$current_head" ]]
 }
 
-record_ready_conflict_attention() {
-  local feature_dir="$1" head="$2"
-  mkdir -p "$feature_dir"
-  printf '%s\n' "$head" > "$feature_dir/.conflict-attention-head"
-  touch "$feature_dir/.conflict-attention-reported"
+# conflict_remediation_awaiting_ready <state_dir>
+# True while Ready's result is still the "conflict remediation in progress"
+# record written when the resolver launched. That is a stage result, not a
+# latch: the next Ready run overwrites it.
+conflict_remediation_awaiting_ready() {
+  local result_file="$1/.ready-result.json"
+  [[ -f "$result_file" ]] || return 1
+  [[ "$(jq -r 'select(.status == "running") | .artifacts.mergeConflict // empty' "$result_file" 2>/dev/null || echo "")" == "CONFLICTED" ]]
 }
 
-clear_ready_conflict_attention() {
-  local feature_dir="$1"
-  rm -f "$feature_dir/.conflict-attention-head" "$feature_dir/.conflict-attention-reported"
-}
-
-clear_ready_conflict_markers() {
-  local feature_dir="$1"
-  rm -f "$feature_dir/.conflict-detected" "$feature_dir/.conflict-recheck-at"
-  marker_clear "$feature_dir/.needs-attention"
-  clear_ready_conflict_attention "$feature_dir"
-}
-
-ready_conflict_recheck_interval_seconds() {
-  local configured="${WAVEMILL_READY_CONFLICT_RECHECK_SECONDS:-}"
-  if [[ "$configured" =~ ^[0-9]+$ ]] && (( configured >= 10 )); then
-    printf '%s\n' "$configured"
-  else
-    printf '60\n'
-  fi
-}
-
-ready_conflict_recheck_due() {
-  local feature_dir="$1"
-  local recheck_file="$feature_dir/.conflict-recheck-at"
-  local last_recheck interval now
-  if [[ ! -f "$recheck_file" ]]; then
-    return 0
-  fi
-
-  last_recheck="$(cat "$recheck_file" 2>/dev/null || echo "")"
-  if [[ ! "$last_recheck" =~ ^[0-9]+$ ]]; then
-    return 0
-  fi
-
-  interval="$(ready_conflict_recheck_interval_seconds)"
-  now="$(date +%s)"
-  (( now - last_recheck >= interval ))
-}
-
-write_ready_conflict_recheck_at() {
-  local feature_dir="$1"
-  local recheck_file="$feature_dir/.conflict-recheck-at"
-  local tmp_file
-  mkdir -p "$feature_dir"
-  tmp_file="$(mktemp "$feature_dir/.conflict-recheck-at.tmp.XXXXXX")"
-  printf '%s\n' "$(date +%s)" > "$tmp_file"
-  mv "$tmp_file" "$recheck_file"
-}
-
-ready_conflict_pr_is_clean() {
-  local feature_dir="$1" pr_number="$2" issue="$3"
-  local pr_json mergeable merge_state
-
-  if pr_json=$(_with_timeout "$API_TIMEOUT" gh pr view "$pr_number" --json mergeable,mergeStateStatus 2>/dev/null); then
-    write_ready_conflict_recheck_at "$feature_dir"
-  else
-    write_ready_conflict_recheck_at "$feature_dir"
-    log "debug" "ready conflict recheck for $issue PR #$pr_number failed"
-    return 1
-  fi
-
-  mergeable="$(printf '%s' "$pr_json" | jq -r '.mergeable // ""' 2>/dev/null || echo "")"
-  merge_state="$(printf '%s' "$pr_json" | jq -r '.mergeStateStatus // ""' 2>/dev/null || echo "")"
-
-  if [[ "$mergeable" == "MERGEABLE" && "$merge_state" == "CLEAN" ]]; then
-    log "status" "ready conflict recheck for $issue PR #$pr_number: MERGEABLE/CLEAN (clearing stale markers)"
-    return 0
-  fi
-
-  log "debug" "ready conflict recheck for $issue PR #$pr_number: ${mergeable:-empty}/${merge_state:-empty}"
-  return 1
+# conflict_remediation_exhausted_hold <state_dir> <wt_dir> <base_branch> <current_head>
+# True when the one resolver attempt for the current (head, base) was spent
+# and the PR stayed conflicted, so the arm is held for a new commit, a new
+# base or an operator. The base is only resolved when the sentinel exists.
+conflict_remediation_exhausted_hold() {
+  local state_dir="$1" wt_dir="$2" base_branch="$3" current_head="$4" base_sha
+  bounded_retry_is_exhausted "$state_dir" "conflict-remediation-relaunch" || return 1
+  [[ -n "$current_head" ]] || return 0
+  base_sha=$(get_main_head_sha "$wt_dir" "$base_branch")
+  [[ "$base_sha" =~ ^[0-9a-fA-F]{7,64}$ ]] || base_sha=""
+  bounded_retry_reset_if_new_key "$state_dir" "conflict-remediation-relaunch" "$current_head" "$base_sha"
+  bounded_retry_is_exhausted "$state_dir" "conflict-remediation-relaunch"
 }
 
 # Source of truth is the bounded-retry bucket (HOK-2924); the JSON
@@ -14224,14 +14173,29 @@ launch_ready_phase() {
 
   if [[ "$merge_status" == "CONFLICTED" ]]; then
     mkdir -p "$state_dir"
-    if [[ -f "$state_dir/.conflict-detected" ]]; then
-      current_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
-      write_ready_attention_file "$state_dir" "PR #$pr_number still has merge conflicts after automatic remediation."
-      record_ready_conflict_attention "$state_dir" "$current_head"
-      log_error "  Merge conflicts persist for $issue after remediation attempt"
-      return 1
-    fi
-    touch "$state_dir/.conflict-detected"
+    # HOK-3092/HOK-3273: one resolver per (head, base). The gate only reads
+    # the budget here; the attempt is charged in the launch tail below, so a
+    # Ready that deferred (guard pending, ownership held) or a refused launch
+    # never spends it. A resolver push moves the head and resets the key.
+    local conflict_base_sha conflict_disp conflict_reason
+    current_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
+    conflict_base_sha=$(get_main_head_sha "$wt_dir" "$base_branch")
+    conflict_disp=$(bounded_retry_gate "$state_dir" "conflict-remediation-relaunch" \
+      "$current_head" 1 "" "" "$conflict_base_sha")
+    case "$conflict_disp" in
+      exhausted)
+        conflict_reason="Conflict remediation exhausted on identical (head=$current_head, base=$conflict_base_sha) for PR #$pr_number"
+        if bounded_retry_mark_exhausted "$state_dir" "conflict-remediation-relaunch" "$conflict_reason"; then
+          log "status" "⛔ $issue → $conflict_reason"
+          write_ready_attention_file "$state_dir" "$conflict_reason"
+        fi
+        log_error "  Merge conflicts persist for $issue after remediation attempt"
+        return 1
+        ;;
+      backoff|exhausted-quiet)
+        return 1
+        ;;
+    esac
     marker_clear "$state_dir/.needs-attention"
     log "status" "  ⚠ Merge conflict detected for $issue (PR #$pr_number)"
 
@@ -14288,6 +14252,26 @@ launch_ready_phase() {
       write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
         "Conflict remediation in progress for PR #$pr_number" \
         "$conflict_artifacts_json"
+      # Only a launched resolver is an attempt (HOK-2924): record it and
+      # charge the budget here, never before the launch.
+      local conflict_pr_head_oid conflict_marker_detail
+      conflict_pr_head_oid=$(wavemill_pr_cache_row_by_pr "$pr_number" 2>/dev/null \
+        | jq -r '.headRefOid // empty' 2>/dev/null || echo "")
+      conflict_marker_detail=$(jq -cn \
+        --arg head "$current_head" \
+        --arg base "$base_branch" \
+        --arg launchHead "$launch_head" \
+        --argjson prNumber "$pr_number" \
+        '{head: $head, base: $base, launchHead: $launchHead, prNumber: $prNumber}')
+      marker_write "$(conflict_remediation_marker_path "$state_dir")" \
+        --kind conflict-remediation \
+        --head "$launch_head" \
+        ${conflict_pr_head_oid:+--observed "prHeadRefOid=$conflict_pr_head_oid"} \
+        --expires-on "head,remote,operator-event" \
+        --reason "Conflict remediation in flight for PR #$pr_number" \
+        --detail-json "$conflict_marker_detail"
+      bounded_retry_increment "$state_dir" "conflict-remediation-relaunch" \
+        "$current_head" "$conflict_base_sha" >/dev/null
       return 3
     fi
     if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$state_dir"; then
@@ -14299,10 +14283,8 @@ launch_ready_phase() {
     reconciliation_lease_release "$state_dir"
     set_task_task_owned "$issue" "active" || true
     if (( launch_rc == 3 )); then
-      # The refused route never ran the arm's model: drop the single-attempt
-      # token so the next tick is not reported as a conflict that survived
-      # remediation.
-      rm -f "$state_dir/.conflict-detected"
+      # The refused route never ran the arm's model: no marker was written
+      # and the budget was not charged, so the next pass may still launch.
       return 1
     fi
     write_ready_attention_file "$state_dir" "Automatic merge-conflict resolution could not be launched for PR #$pr_number."
@@ -14347,10 +14329,8 @@ launch_ready_phase() {
     return 1
   fi
 
-  rm -f "$state_dir/.conflict-detected" "$state_dir/.conflict-recheck-at"
   marker_clear "$state_dir/.needs-attention"
   marker_clear "$state_dir/.needs-attention-transient"
-  clear_ready_conflict_attention "$state_dir"
   clear_transient_mergeability_state "$state_dir"
 
   if [[ "$ready_rc" -eq 0 ]]; then
@@ -21959,79 +21939,63 @@ monitor_issue_state() {
           local ready_state_dir_path
           ready_state_dir_path="$(ready_state_dir "${WORKTREE_ROOT}/${SLUG}" "$SLUG")"
 
-          if [[ -f "$ready_state_dir_path/.conflict-detected" ]]; then
-            local ready_status launch_head current_head attention_head
-            ready_status=$(read_stage_status "$ready_state_dir_path" "ready")
-            launch_head=$(ready_conflict_launch_head "$ready_state_dir_path")
+          # HOK-3273: Ready launched a conflict resolver. Hold while it is in
+          # flight at the launched head; once it pushes (or exits), re-run
+          # Ready, which reads mergeability from GitHub afresh.
+          if conflict_remediation_awaiting_ready "$ready_state_dir_path"; then
+            local current_head
             current_head=$(git -C "${WORKTREE_ROOT}/${SLUG}" rev-parse HEAD 2>/dev/null || echo "")
-            attention_head=$(ready_conflict_attention_head "$ready_state_dir_path")
 
-            if [[ "$ready_status" == "running" ]] && [[ -n "$launch_head" ]] && [[ "$launch_head" == "$current_head" ]]; then
+            if conflict_remediation_in_flight "$ready_state_dir_path" "$current_head"; then
               set_window_attention_state "$WIN" "clear"
               active_count=$((active_count + 1))
               return 0
             fi
 
-            if [[ "$ready_status" != "running" || -z "$launch_head" || "$launch_head" != "$current_head" ]]; then
-              local pr_number
-              pr_number=$(find_pr_for_branch "$BRANCH")
-              if [[ -z "$pr_number" ]]; then
-                write_ready_attention_file "$ready_state_dir_path" "Unable to find open PR for branch $BRANCH after conflict remediation."
-                set_window_attention_state "$WIN" "needs-user"
-                return 0
-              fi
-
-              if [[ -n "$attention_head" && -n "$current_head" && "$attention_head" == "$current_head" ]]; then
-                if ready_conflict_recheck_due "$ready_state_dir_path" && ready_conflict_pr_is_clean "$ready_state_dir_path" "$pr_number" "$ISSUE"; then
-                  clear_ready_conflict_markers "$ready_state_dir_path"
-                else
-                  set_window_attention_state "$WIN" "needs-user"
-                  return 0
-                fi
-              fi
-
-              title=$(pass_task_field "$ISSUE" title)
-              if [[ -z "$title" ]]; then
-                issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
-                title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
-              fi
-
-              if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$pr_number"; then
-                local launch_rc=0
-              else
-                local launch_rc=$?
-              fi
-              if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
-                log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during conflict remediation"
-                set_task_phase "$ISSUE" "aborted"
-                set_window_attention_state "$WIN" "needs-user"
-                return 0
-              fi
-              if [[ "$launch_rc" -eq 3 ]]; then
-                set_window_attention_state "$WIN" "clear"
-                active_count=$((active_count + 1))
-                return 0
-              fi
-              if [[ "$launch_rc" -eq 5 ]]; then
-                set_window_attention_state "$WIN" "clear"
-                active_count=$((active_count + 1))
-                return 0
-              fi
-              if [[ "$launch_rc" -eq 4 || "$launch_rc" -eq 6 ]]; then
-                set_window_attention_state "$WIN" "clear"
-                active_count=$((active_count + 1))
-                return 0
-              fi
-              if [[ "$launch_rc" -ne 0 ]]; then
-                log "⚠ $ISSUE → Conflict remediation still needs attention"
-                set_window_attention_state "$WIN" "needs-user"
-                return 0
-              fi
-
-              log "$ISSUE → Conflict remediation complete, ready checks rerun"
+            if conflict_remediation_exhausted_hold "$ready_state_dir_path" "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH" "$current_head"; then
               set_window_attention_state "$WIN" "needs-user"
               return 0
             fi
+
+            local pr_number
+            pr_number=$(find_pr_for_branch "$BRANCH")
+            if [[ -z "$pr_number" ]]; then
+              write_ready_attention_file "$ready_state_dir_path" "Unable to find open PR for branch $BRANCH after conflict remediation."
+              set_window_attention_state "$WIN" "needs-user"
+              return 0
+            fi
+
+            title=$(pass_task_field "$ISSUE" title)
+            if [[ -z "$title" ]]; then
+              issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
+              title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
+            fi
+
+            if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$pr_number"; then
+              local launch_rc=0
+            else
+              local launch_rc=$?
+            fi
+            if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
+              log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during conflict remediation"
+              set_task_phase "$ISSUE" "aborted"
+              set_window_attention_state "$WIN" "needs-user"
+              return 0
+            fi
+            if [[ "$launch_rc" -eq 3 || "$launch_rc" -eq 4 || "$launch_rc" -eq 5 || "$launch_rc" -eq 6 ]]; then
+              set_window_attention_state "$WIN" "clear"
+              active_count=$((active_count + 1))
+              return 0
+            fi
+            if [[ "$launch_rc" -ne 0 ]]; then
+              log "⚠ $ISSUE → Conflict remediation still needs attention"
+              set_window_attention_state "$WIN" "needs-user"
+              return 0
+            fi
+
+            log "$ISSUE → Conflict remediation complete, ready checks rerun"
+            set_window_attention_state "$WIN" "needs-user"
+            return 0
           fi
           set_window_attention_state "$WIN" "needs-user"
           return 0
@@ -22542,11 +22506,10 @@ monitor_issue_state() {
     fi
   elif [[ "$current_phase" == "ready" ]]; then
     local resolved_phase ready_state_dir_path ready_status ready_verdict
-    local launch_head current_head title launch_rc _conflict_cleared
+    local launch_head current_head title launch_rc
     local recheck_disposition recheck_attempt recheck_limit
     local pending_recheck_disposition pending_recheck_limit pending_recheck_reason
     local challenge_pending_rc
-    _conflict_cleared=false
     resolved_phase=$(resolve_phase "$FEATURE_DIR")
     if [[ "$resolved_phase" == "aborted" ]]; then
       log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted by user during ready phase"
@@ -22557,103 +22520,55 @@ monitor_issue_state() {
     fi
 
     ready_state_dir_path="$(ready_state_dir "${WORKTREE_ROOT}/${SLUG}" "$SLUG")"
-    if [[ -f "$ready_state_dir_path/.conflict-detected" ]]; then
-      ready_status=$(read_stage_status "$ready_state_dir_path" "ready")
-      launch_head=$(ready_conflict_launch_head "$ready_state_dir_path")
+    # HOK-3273: Ready launched a conflict resolver. Hold while it is in flight
+    # at the launched head; once it pushes (or exits), re-run Ready, which
+    # reads mergeability from GitHub afresh and charges the one attempt per
+    # (head, base) only if it launches another resolver.
+    if conflict_remediation_awaiting_ready "$ready_state_dir_path"; then
       current_head=$(git -C "${WORKTREE_ROOT}/${SLUG}" rev-parse HEAD 2>/dev/null || echo "")
-      local attention_head
-      attention_head=$(ready_conflict_attention_head "$ready_state_dir_path")
 
-      if [[ "$ready_status" == "running" ]] && [[ -n "$launch_head" ]] && [[ "$launch_head" == "$current_head" ]]; then
+      if conflict_remediation_in_flight "$ready_state_dir_path" "$current_head"; then
         set_window_attention_state "$WIN" "clear"
         active_count=$((active_count + 1))
         return 0
       fi
 
-      if [[ "$ready_status" != "running" || -z "$launch_head" || "$launch_head" != "$current_head" ]]; then
-        if [[ -n "$attention_head" && -n "$current_head" && "$attention_head" == "$current_head" ]]; then
-          if ready_conflict_recheck_due "$ready_state_dir_path" && ready_conflict_pr_is_clean "$ready_state_dir_path" "$PR" "$ISSUE"; then
-            clear_ready_conflict_markers "$ready_state_dir_path"
-            _conflict_cleared=true
-          else
-            set_window_attention_state "$WIN" "needs-user"
-            return 0
-          fi
-        fi
-
-        # HOK-3092: bound the conflict-remediation relaunch loop on (head,
-        # base). Without this the guard-block → remediation → ready-relaunch
-        # path relaunched forever on identical inputs (2026-09-27 hokusai-sdk
-        # PR #97 relaunched 1,253 times in ~19h). Limit=1 → one attempt per
-        # unique (head, base); a repeated identical result terminalizes.
-        local conflict_base_sha conflict_disp
-        conflict_base_sha=$(get_main_head_sha "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH")
-        conflict_disp=$(bounded_retry_gate "$ready_state_dir_path" "conflict-remediation-relaunch" \
-          "$current_head" 1 "" "" "$conflict_base_sha")
-        case "$conflict_disp" in
-          exhausted)
-            local conflict_reason="Conflict remediation exhausted on identical (head=$current_head, base=$conflict_base_sha) for PR #$PR"
-            if bounded_retry_mark_exhausted "$ready_state_dir_path" "conflict-remediation-relaunch" "$conflict_reason"; then
-              log "status" "⛔ $ISSUE → $conflict_reason"
-              write_ready_attention_file "$ready_state_dir_path" "$conflict_reason"
-            fi
-            set_window_attention_state "$WIN" "needs-user"
-            return 0
-            ;;
-          backoff|exhausted-quiet)
-            set_window_attention_state "$WIN" "needs-user"
-            return 0
-            ;;
-        esac
-        bounded_retry_increment "$ready_state_dir_path" "conflict-remediation-relaunch" \
-          "$current_head" "$conflict_base_sha" >/dev/null
-
-        title=$(pass_task_field "$ISSUE" title)
-        if [[ -z "$title" ]]; then
-          issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
-          title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
-        fi
-
-        if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
-          launch_rc=0
-        else
-          launch_rc=$?
-        fi
-        if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
-          log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during conflict remediation"
-          set_task_phase "$ISSUE" "aborted"
-          set_window_attention_state "$WIN" "needs-user"
-          return 0
-        fi
-        if [[ "$launch_rc" -eq 3 ]]; then
-          set_window_attention_state "$WIN" "clear"
-          active_count=$((active_count + 1))
-          return 0
-        fi
-        if [[ "$launch_rc" -eq 5 ]]; then
-          set_window_attention_state "$WIN" "clear"
-          active_count=$((active_count + 1))
-          return 0
-        fi
-        if [[ "$launch_rc" -eq 4 || "$launch_rc" -eq 6 ]]; then
-          set_window_attention_state "$WIN" "clear"
-          active_count=$((active_count + 1))
-          return 0
-        fi
-        if [[ "$launch_rc" -ne 0 ]]; then
-          log "status" "⚠ $ISSUE → Conflict remediation still needs attention"
-          set_window_attention_state "$WIN" "needs-user"
-          return 0
-        fi
-
-        log "status" "$ISSUE → Conflict remediation complete, ready checks rerun"
-        if [[ "$_conflict_cleared" == "true" ]]; then
-          set_window_attention_state "$WIN" "clear"
-        else
-          set_window_attention_state "$WIN" "needs-user"
-        fi
+      if conflict_remediation_exhausted_hold "$ready_state_dir_path" "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH" "$current_head"; then
+        set_window_attention_state "$WIN" "needs-user"
         return 0
       fi
+
+      title=$(pass_task_field "$ISSUE" title)
+      if [[ -z "$title" ]]; then
+        issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
+        title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
+      fi
+
+      if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
+        launch_rc=0
+      else
+        launch_rc=$?
+      fi
+      if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
+        log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during conflict remediation"
+        set_task_phase "$ISSUE" "aborted"
+        set_window_attention_state "$WIN" "needs-user"
+        return 0
+      fi
+      if [[ "$launch_rc" -eq 3 || "$launch_rc" -eq 4 || "$launch_rc" -eq 5 || "$launch_rc" -eq 6 ]]; then
+        set_window_attention_state "$WIN" "clear"
+        active_count=$((active_count + 1))
+        return 0
+      fi
+      if [[ "$launch_rc" -ne 0 ]]; then
+        log "status" "⚠ $ISSUE → Conflict remediation still needs attention"
+        set_window_attention_state "$WIN" "needs-user"
+        return 0
+      fi
+
+      log "status" "$ISSUE → Conflict remediation complete, ready checks rerun"
+      set_window_attention_state "$WIN" "clear"
+      return 0
     fi
 
     ready_status=$(read_stage_status "$ready_state_dir_path" "ready")

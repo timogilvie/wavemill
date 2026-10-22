@@ -320,7 +320,10 @@ harness_extract_real_functions() {
     finalize_challenge_execution_intent_before_coding \
     phase_should_remain_active_without_pr \
     stage_result_is_in_progress \
-    ready_conflict_launch_head \
+    conflict_remediation_marker_path \
+    conflict_remediation_in_flight \
+    conflict_remediation_awaiting_ready \
+    conflict_remediation_exhausted_hold \
     _persist_phase \
     recover_missing_expansion_artifact \
     handle_expanded_reroute_handoff_failure \

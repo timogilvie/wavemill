@@ -371,6 +371,7 @@
     "Golden Journey (gh-lag-after-push)": "bash tests/journeys/run-journeys.sh gh-lag-after-push",
     "Golden Journey (errored-with-pr)": "bash tests/journeys/run-journeys.sh errored-with-pr",
     "Golden Journey (inputs-ready-before-approval)": "bash tests/journeys/run-journeys.sh inputs-ready-before-approval",
+    "Golden Journey (mid-flight-base-conflict)": "bash tests/journeys/run-journeys.sh mid-flight-base-conflict",
     "Golden Journeys": "npm run test:journeys"
     },
     "postPrReconciliation": {
