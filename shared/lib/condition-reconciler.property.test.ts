@@ -25,6 +25,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertProperty } from './fast-check-utils.ts';
 import { arbitraryHexSha } from './property-generators.ts';
+import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const LIB_DIR = dirname(__filename);
@@ -63,7 +64,7 @@ before(() => {
   execFileSync('git', ['-C', worktree, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'two']);
   const head = execFileSync('git', ['-C', worktree, 'rev-parse', 'HEAD'], { encoding: 'utf-8' }).trim();
   mkdirSync(stateDir, { recursive: true });
-  writeFileSync(stateFile, JSON.stringify({ tasks: { 'HOK-9999': { status: 'active', phase: 'ready', pr: '1591' } } }));
+  writeFileSync(stateFile, JSON.stringify(buildWorkflowState({ 'HOK-9999': { pr: '1591', phase: 'ready' } })));
   writeFileSync(prCache, '[]');
   shared = { dir, worktree, stateDir, stateFile, prCache, oldHead, head };
 });
@@ -91,7 +92,7 @@ function resetFixtureState(fixture: Fixture): void {
   mkdirSync(fixture.stateDir, { recursive: true });
   // Clean worktree HEAD back to the baseline (second commit).
   execFileSync('git', ['-C', fixture.worktree, 'reset', '-q', '--hard', fixture.head]);
-  writeFileSync(fixture.stateFile, JSON.stringify({ tasks: { 'HOK-9999': { status: 'active', phase: 'ready', pr: '1591' } } }));
+  writeFileSync(fixture.stateFile, JSON.stringify(buildWorkflowState({ 'HOK-9999': { pr: '1591', phase: 'ready' } })));
   writeFileSync(fixture.prCache, '[]');
 }
 
