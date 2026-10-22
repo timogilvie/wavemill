@@ -568,5 +568,11 @@
       "lint": 900,
       "complexity": 120
     }
+  },
+  "taskSelection": {
+    "enterAction": "wave"
+  },
+  "queuePlanner": {
+    "mode": "grounded"
   }
 }
