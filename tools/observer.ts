@@ -7,6 +7,13 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mutateJsonState, mutateJsonStateSync } from '../shared/lib/state-mutex.ts';
 import {
+  termCapture,
+  termListPanes,
+  termListSessions,
+  termPaneHandle,
+  termSessionEnv,
+} from '../shared/lib/terminal-backend.ts';
+import {
   getIncidentConfig,
   getMillConfig,
   getObserverAlertsConfig,
@@ -197,7 +204,7 @@ interface Pane {
   pid: number;
   command: string;
   title: string;
-  /** Test seam: pre-captured pane text. When absent, tmux capture-pane is used. */
+  /** Test seam: pre-captured pane text. When absent, the terminal backend's capture is used. */
   capturedText?: string;
 }
 
@@ -616,56 +623,24 @@ function parseElapsed(value: string): number {
 }
 
 function listSessions(): string[] {
-  const result = run('tmux', ['list-sessions', '-F', '#{session_name}'], 5_000);
-  if (!result.ok) {
-    return [];
-  }
-  return result.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+  return termListSessions({ timeoutMs: 5_000 });
 }
 
 function listPanes(): Pane[] {
-  const format = [
-    '#{session_name}',
-    '#{window_index}',
-    '#{pane_index}',
-    '#{window_name}',
-    '#{pane_active}',
-    '#{pane_pid}',
-    '#{pane_current_command}',
-    '#{pane_title}',
-  ].join('\t');
-  const result = run('tmux', ['list-panes', '-a', '-F', format], 5_000);
-  if (!result.ok) {
-    return [];
-  }
-  return result.stdout.split('\n').filter(Boolean).map((line) => {
-    const [session, windowIndex, paneIndex, windowName, active, pid, command, title] = line.split('\t');
-    return {
-      session,
-      windowIndex,
-      paneIndex,
-      windowName,
-      active: active === '1',
-      pid: Number.parseInt(pid, 10) || 0,
-      command: command || '',
-      title: title || '',
-    };
-  });
+  return termListPanes({ timeoutMs: 5_000 }).map((row) => ({
+    session: row.session,
+    windowIndex: row.windowIndex,
+    paneIndex: row.paneIndex,
+    windowName: row.windowName,
+    active: row.active,
+    pid: row.pid,
+    command: row.currentCommand,
+    title: row.title,
+  }));
 }
 
 function sessionEnv(session: string): Record<string, string> {
-  const result = run('tmux', ['show-environment', '-t', session], 5_000);
-  const env: Record<string, string> = {};
-  if (!result.ok) {
-    return env;
-  }
-  for (const line of result.stdout.split('\n')) {
-    if (!line || line.startsWith('-')) continue;
-    const index = line.indexOf('=');
-    if (index === -1) continue;
-    env[line.slice(0, index)] = line.slice(index + 1);
-  }
-  return env;
+  return termSessionEnv(session, { timeoutMs: 5_000 });
 }
 
 function processRows(): ProcessRow[] {
@@ -3808,9 +3783,8 @@ function matchTaskIssueInText(repo: RepoSnapshot, text: string): string | undefi
 
 function capturePaneText(pane: Pane): string | undefined {
   if (pane.capturedText !== undefined) return pane.capturedText;
-  const target = `${pane.session}:${pane.windowIndex}.${pane.paneIndex}`;
-  const result = run('tmux', ['capture-pane', '-p', '-S', '-200', '-t', target], 5_000);
-  return result.ok ? result.stdout : undefined;
+  const target = termPaneHandle(pane.session, pane.windowIndex, pane.paneIndex);
+  return termCapture(target, { lines: 200, timeoutMs: 5_000 }) ?? undefined;
 }
 
 /**

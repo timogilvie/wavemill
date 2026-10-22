@@ -157,6 +157,8 @@ harness_extract_real_functions() {
   # the async wrappers to their inline equivalents.
   cat "$REPO_DIR/shared/lib/monitor-async-jobs.sh" >> "$REAL_FUNC_FILE"
   cat "$REPO_DIR/tests/lib/inline-ready-checks.sh" >> "$REAL_FUNC_FILE"
+  # HOK-3293: the task-window helpers live in the terminal backend seam.
+  cat "$REPO_DIR/shared/lib/terminal-backend.sh" >> "$REAL_FUNC_FILE"
   for func in \
     trim_outer_whitespace \
     merge_retry_marker_until \
@@ -280,9 +282,6 @@ harness_extract_real_functions() {
     emit_pane_divergence_attention \
     coding_pane_replacement_intent_path \
     record_coding_pane_replacement_intent \
-    _tmux_window_target_exists \
-    _tmux_target_join \
-    _tmux_task_window_target \
     coding_pane_expected_replacement_path \
     mark_coding_pane_expected_replacement \
     clear_coding_pane_expected_replacement \
