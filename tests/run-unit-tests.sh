@@ -515,6 +515,7 @@ TESTS=(
   shared/lib/worktree-manager.test.ts
   shared/lib/bounded-retry.test.ts
   shared/lib/bounded-retry.property.test.ts
+  shared/lib/plan-queue-utils.property.test.ts
   shared/lib/observer-auto-fix.test.ts
   shared/lib/observer-alerts.test.ts
   tools/backfill-stage-scores.test.ts

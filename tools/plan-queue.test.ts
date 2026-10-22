@@ -28,6 +28,7 @@ function parseJson(stdout: string) {
     availableNow: string[];
     queuedAfterDependencies: Array<{ taskId: string; ancestors: string[] }>;
     avoidRunningTogether: string[][];
+    sharedSurfaceConflicts: Array<{ a: string; b: string; files: string[]; evidence?: string; source?: string }>;
     needsTriage: Array<{ reason: string; edge: { type: string; from: string; to: string; source: string } }>;
   };
 }
@@ -137,6 +138,7 @@ describe('plan-queue CLI', () => {
       'availableNow',
       'queuedAfterDependencies',
       'avoidRunningTogether',
+      'sharedSurfaceConflicts',
       'needsTriage',
     ]);
     assert.deepEqual(result.availableNow, ['HOK-10', 'HOK-13']);
@@ -256,6 +258,7 @@ describe('plan-queue CLI', () => {
       availableNow: [],
       queuedAfterDependencies: [],
       avoidRunningTogether: [],
+      sharedSurfaceConflicts: [],
       needsTriage: [],
     });
 
@@ -376,6 +379,7 @@ describe('plan-queue CLI', () => {
         availableNow: ['HOK-1'],
         queuedAfterDependencies: [{ taskId: 'HOK-2', ancestors: ['HOK-1'] }],
         avoidRunningTogether: [],
+        sharedSurfaceConflicts: [],
         needsTriage: [],
       });
       assert.match(result.stderr, /initial refresh failed, falling back to cached edges/);
@@ -674,6 +678,7 @@ describe('plan-queue CLI', () => {
         availableNow: ['HOK-1'],
         queuedAfterDependencies: [{ taskId: 'HOK-2', ancestors: ['HOK-1'] }],
         avoidRunningTogether: [],
+        sharedSurfaceConflicts: [],
         needsTriage: [],
       });
       assert.deepEqual(readInvokedModels(logPath), [], 'classifier must not be invoked');
@@ -781,6 +786,7 @@ describe('plan-queue CLI', () => {
         availableNow: ['HOK-1'],
         queuedAfterDependencies: [{ taskId: 'HOK-2', ancestors: ['HOK-1'] }],
         avoidRunningTogether: [],
+        sharedSurfaceConflicts: [],
         needsTriage: [],
       });
     } finally {
@@ -835,6 +841,15 @@ describe('plan-queue CLI', () => {
           availableNow: ['HOK-1', 'HOK-2', 'HOK-3'],
           queuedAfterDependencies: [],
           avoidRunningTogether: [['HOK-1', 'HOK-2']],
+          sharedSurfaceConflicts: [
+            {
+              a: 'HOK-1',
+              b: 'HOK-2',
+              files: [],
+              evidence: 'grounded:conflict: Both modify shared/lib/wavemill-monitor.sh',
+              source: 'inferred',
+            },
+          ],
           needsTriage: [],
         });
         assert.match(first.stderr, /plan-queue: grounded planner: tasks=3 pairsScored=1 pairsSentToLlm=1 edges=1 waves=2/);
