@@ -257,6 +257,7 @@ export function faultModelFor(fixture: IncidentReplayFixture): FaultModel {
         survivesRelaunches: Math.max(0, Math.ceil(Number(params.lagSeconds ?? 180) / 120) - 1),
       };
     case 'dropped_connection_push_rebase':
+      // allow-side-effect-ledger: replayed failure text, not a push.
       return { detail: 'git push failed: ECONNRESET (connection reset by peer)', survivesRelaunches: Math.max(0, Number(params.throwCount ?? 2) - 1) };
     case 'malformed_model_response':
       return { failureKind: 'review-malformed-response', detail: `reviewer returned ${String(params.responseKind ?? 'non-json')} output`, survivesRelaunches: Infinity };
