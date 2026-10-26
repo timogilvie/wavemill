@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import type { AgentMessage, Message } from './messages.ts';
 import type { AgentContext, LoopStopReason, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
+import { snapshotPayloadsForFailure } from './payload-capture.ts';
 import { buildStageExecutionUsage } from './prompt-cache.ts';
 import { reportPromptCacheHitRate } from './prompt-cache-detector.ts';
 import { createNativeModelsCollection } from './models.ts';
@@ -87,7 +88,7 @@ import {
   updateStageResult,
 } from '../stage-result.ts';
 import { equivalentOpenRouterModelIds } from '../openrouter-catalog.ts';
-import { getNativeContextManagementConfig, getNativeReviewTimeoutConfig } from '../config.ts';
+import { getNativeContextManagementConfig, getNativePayloadCaptureConfig, getNativeReviewTimeoutConfig } from '../config.ts';
 import type { NormalizedPricing } from '../openrouter-catalog.ts';
 import {
   buildExecutedIdentity,
@@ -895,6 +896,13 @@ export async function runNativeReview(
     if (!options.featureDir) {
       return;
     }
+    // HOK-3261: keep the last request bodies beside the session transcript,
+    // outside the feature dir, so they survive reaping.
+    const payloadCaptureDir = snapshotPayloadsForFailure(
+      options.featureDir,
+      'review',
+      transcriptPath.replace(/\.jsonl$/, '.native-payloads'),
+    );
     const envelope: StageFailureEnvelope = {
       schemaVersion: STAGE_FAILURE_ENVELOPE_SCHEMA_VERSION,
       stage: 'review',
@@ -911,6 +919,7 @@ export async function runNativeReview(
         source: 'native-runtime',
         detail,
         transcriptPath,
+        ...(payloadCaptureDir ? { payloadCaptureDir } : {}),
       },
       createdAt: new Date().toISOString(),
     };
@@ -1006,6 +1015,7 @@ export async function runNativeReview(
       context: loopContext,
       maxTokens: effectiveMaxTokens,
       contextManagement: getNativeContextManagementConfig(options.repoDir),
+      ...(options.featureDir ? { payloadCapture: { featureDir: options.featureDir, stage: 'review', ...getNativePayloadCaptureConfig(options.repoDir) } } : {}),
       promptSizeLog: options.repoDir ? {
         repoDir: options.repoDir,
         stage: 'review',

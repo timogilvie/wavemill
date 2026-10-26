@@ -36,6 +36,11 @@ import {
 import { TEND_STALL_MARKER_KINDS } from './wavemill-incident-tend-candidates.ts';
 import { readIncidentLogExcerpt } from './incident-log-excerpt-reader.ts';
 import { checkDepsDrift, type DepsDriftResult } from './deps-drift.ts';
+import {
+  deriveQueueAlertProjection,
+  type QueueAlertProjection,
+  type QueueAlertSeverity,
+} from './queue-inference-status.ts';
 
 const PLANNING_TERMINAL_REASONS = new Set([
   'turn_limit',
@@ -348,41 +353,54 @@ export class DependencyHealthDetector {
     const queueHealthPath = join(repoDir, '.wavemill', 'queue-health.json');
     const queueHealth = readObjectFile(queueHealthPath);
     if (queueHealth?.status === 'degraded') {
+      // HOK-3314: route through the single projection so evidence identity
+      // (key + timestamp) is stable within an episode. Before this fix,
+      // `timestamp: queueHealth.lastAttemptAt` was rewritten on every ~60s
+      // poll, producing a fresh event key per poll and inflating
+      // occurrenceCount to the lifetime 157 observed on 2026-10-22.
+      const projection: QueueAlertProjection = deriveQueueAlertProjection({
+        queueHealth,
+        nowMs: context.now?.getTime() ?? Date.now(),
+      });
+      const episode = projection.episode;
       const reason = stringField(queueHealth.degradationReason) ?? 'dependency_planning_failed';
-      // HOK-3130: inference_unavailable is recorded on a *successful* planner
-      // run, so the planner failureCount stays 0; repetition lives in the
-      // inference block instead.
       const inferenceUnavailable = reason === 'inference_unavailable';
       const inference = objectField(queueHealth.inference);
       const planner = queueFailurePlanner(queueHealth);
       const diagnostic = inferenceUnavailable
         ? stringField(inference?.error) ?? `inference_${stringField(queueHealth.inferenceStatus) ?? 'unknown'}`
         : diagnosticReason(queueHealth) ?? reason;
-      const failureCount = inferenceUnavailable
-        ? Math.max(1, numberField(inference?.consecutiveFailures) ?? 1)
-        : numberField(queueHealth.failureCount) ?? 1;
       const rootCauseClass = inferenceUnavailable
         ? queuePlannerClass(canonicalizeRootCauseClass(diagnostic))
         : queueDegradationRootCause(reason, diagnostic, planner.step);
       const plannerDetail = formatQueuePlannerDetail(planner);
+      const failureCount = episode?.consecutiveFailedAttempts ?? 1;
+      const severity: QueueAlertSeverity = episode?.severity ?? 'low';
+      const stableTimestamp = episode?.latestFailureAt
+        ?? (episode && episode.startedAt !== 'unknown' ? episode.startedAt : null)
+        ?? stringField(queueHealth.episodeStartedAt)
+        ?? timestamp;
+      const stableKey = episode
+        ? `queue_alert:${projection.status}:${episode.id}`
+        : `queue_alert:${projection.status}:unknown`;
       incidents.push(createIncidentDraft({
         taskId: null,
         session: context.session ?? null,
         category: dependencyCategoryFor(rootCauseClass),
-        severity: failureCount >= threshold ? 'medium' : 'low',
+        severity,
         confidence: failureCount >= threshold ? 'high' : 'medium',
         lifecycle: 'observed',
         rootCauseClass,
         summary: `Queue planner fallback is active: ${reason}${plannerDetail ? ` (${plannerDetail})` : ''}.`,
         operatorAction: inferenceUnavailable
-          ? 'Queue dependency inference is not answering; the wave uses explicit Linear relations only. Check the [classifier] lines in the mill log and the Claude CLI login, then the inference block in queue-health.json.'
+          ? 'Queue dependency inference is not answering; cached inferred edges remain in use. Check the [classifier] lines in the mill log and the Claude CLI login, then the inference block in queue-health.json.'
           : 'Inspect queue-health diagnostics and dependency planner inputs; fallback is acceptable briefly but should not persist.',
         evidence: [{
           type: 'backstage_health',
           source: queueHealthPath,
-          timestamp: stringField(queueHealth.lastAttemptAt) ?? stringField(queueHealth.updatedAt) ?? timestamp,
-          redactedData: redactIncidentData(`reason=${reason} step=${planner.step ?? 'unknown'} exit=${planner.exitCode ?? 'unknown'} signal=${planner.signal ?? 'none'} diagnostic=${diagnostic} failureCount=${failureCount}`),
-          key: 'queue_planner_fallback',
+          timestamp: stableTimestamp,
+          redactedData: redactIncidentData(`reason=${reason} step=${planner.step ?? 'unknown'} exit=${planner.exitCode ?? 'unknown'} signal=${planner.signal ?? 'none'} diagnostic=${diagnostic} failureCount=${failureCount} episodeId=${episode?.id ?? 'none'}`),
+          key: stableKey,
         }],
         metadata: {
           threshold,
@@ -393,6 +411,10 @@ export class DependencyHealthDetector {
           plannerExitCode: planner.exitCode,
           plannerSignal: planner.signal,
           cancellationOwner: planner.cancellationOwner,
+          currentEpisode: episode ?? undefined,
+          projectionStatus: projection.status,
+          projectionNextAction: projection.nextAction,
+          projectionSummary: projection.summary,
         },
       }));
     }

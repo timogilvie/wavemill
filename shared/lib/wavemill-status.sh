@@ -1755,6 +1755,12 @@ render_incidents_section() {
 
   [[ $- == *e* ]] && had_errexit=1
   set +e
+  # HOK-3314: emit the current-episode fields (consecutiveFailedAttempts,
+  # episode severity, episode startedAt, latest*At, projection next-action)
+  # for queue-alert rows alongside the lifetime counts. The dashboard still
+  # shows the historical occurrence count — labelled — but the primary line
+  # tracks the current episode so a 157-lifetime/1-current incident does not
+  # look like a 157-event medium.
   incident_lines="$(jq -r --argjson cap "$cap" '
     def sev: {critical:0, high:1, medium:2, low:3, info:4}[.severity] // 9;
     def occ: if (.occurrenceCount | type) == "number" then .occurrenceCount else 0 end;
@@ -1770,10 +1776,15 @@ render_incidents_section() {
         ($active[:$cap][] | [
           (.fingerprint // ""),
           (.category // "unknown"),
-          (.severity // "unknown"),
+          (.metadata.currentEpisode.severity // .severity // "unknown"),
           (occ | tostring),
           (.summary // ""),
-          (.firstObservedAt // .createdAt // "")
+          (.firstObservedAt // .createdAt // ""),
+          (.metadata.currentEpisode.consecutiveFailedAttempts // "-"),
+          (.metadata.currentEpisode.startedAt // "-"),
+          (.metadata.currentEpisode.latestSuccessAt // "-"),
+          (.metadata.currentEpisode.latestFailureAt // "-"),
+          (.metadata.recurrence.count // 0 | tostring)
         ] | @tsv),
         (if $total > $cap then "__MORE__\t\($total - $cap)" else empty end)
       end
@@ -1786,10 +1797,18 @@ render_incidents_section() {
   [[ -n "$incident_lines" ]] || return 0
 
   local line fp category severity occ summary first total_count more_count
+  local current_count current_started current_success current_failure recurrence_count
   local since severity_label severity_color short_fp rendered_count=0
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
-    IFS=$'\t' read -r fp category severity occ summary first <<<"$line"
+    IFS=$'\t' read -r fp category severity occ summary first current_count current_started current_success current_failure recurrence_count <<<"$line"
+    # Bash collapses consecutive IFS=$'\t' separators, so jq emits "-" as a
+    # sentinel to keep absent currentEpisode fields distinguishable. Normalize
+    # back to empty before the existing presence checks.
+    [[ "$current_count" == "-" ]] && current_count=""
+    [[ "$current_started" == "-" ]] && current_started=""
+    [[ "$current_success" == "-" ]] && current_success=""
+    [[ "$current_failure" == "-" ]] && current_failure=""
     if [[ "$fp" == "__TOTAL__" ]]; then
       total_count="$category"
       printf "${EL}\n${B}%s${N} ${D}(%s)${N}${EL}\n" "🔥 INCIDENTS" "$total_count" >> "$FRAME"
@@ -1811,11 +1830,32 @@ render_incidents_section() {
     short_fp="${fp:0:8}"
     [[ -n "$short_fp" ]] || short_fp="????????"
 
-    printf "%b🔥  %-30s%b  occ=%s  since %s${EL}\n" \
-      "$severity_color" "$severity_label" "$N" "$occ" "$since" >> "$FRAME"
-    printf "    %s${EL}\n" "$summary" >> "$FRAME"
-    printf "    ${D}└─ fingerprint %s…  (wavemill observer --once --json to inspect)${N}${EL}\n" \
-      "$short_fp" >> "$FRAME"
+    # HOK-3314: when currentEpisode metadata is present, lead with it; the
+    # lifetime occurrenceCount and firstObservedAt move to a history line.
+    if [[ -n "$current_count" ]]; then
+      local current_detail=""
+      if [[ -n "$current_success" && "$current_success" != "null" ]]; then
+        current_detail+=" · last success ${current_success}"
+      fi
+      if [[ -n "$current_failure" && "$current_failure" != "null" ]]; then
+        current_detail+=" · last failure ${current_failure}"
+      fi
+      local started_label="$current_started"
+      [[ -z "$started_label" || "$started_label" == "null" ]] && started_label="unknown"
+      printf "%b🔥  %-30s%b  current=%s failed attempt(s)  since %s%s${EL}\n" \
+        "$severity_color" "$severity_label" "$N" "$current_count" "$started_label" "$current_detail" >> "$FRAME"
+      printf "    %s${EL}\n" "$summary" >> "$FRAME"
+      printf "    ${D}history: %s event(s) across %s recurrence(s) since %s${N}${EL}\n" \
+        "$occ" "${recurrence_count:-0}" "$since" >> "$FRAME"
+      printf "    ${D}└─ fingerprint %s…  (wavemill observer --once --json to inspect)${N}${EL}\n" \
+        "$short_fp" >> "$FRAME"
+    else
+      printf "%b🔥  %-30s%b  occ=%s  since %s${EL}\n" \
+        "$severity_color" "$severity_label" "$N" "$occ" "$since" >> "$FRAME"
+      printf "    %s${EL}\n" "$summary" >> "$FRAME"
+      printf "    ${D}└─ fingerprint %s…  (wavemill observer --once --json to inspect)${N}${EL}\n" \
+        "$short_fp" >> "$FRAME"
+    fi
   done <<<"$incident_lines"
 }
 
@@ -2159,40 +2199,34 @@ malformed_challenge_state_warning() {
   return 0
 }
 
-# Render queue-health degradation warning if active.
-# Returns 0 and prints warning if degraded, 1 if healthy/missing.
+# HOK-3314: render queue-health degradation from the single projection. The
+# projection's `summary` is the one authoritative wording; no private
+# reason/backoff/next-action classification here.
 queue_health_dashboard_warning() {
-  local state_file="${1:-}" state_dir reason backoff_secs next_action
+  local state_file="${1:-}" state_dir
   [[ -n "$state_file" ]] || return 1
   state_dir="$(dirname "$state_file" 2>/dev/null || echo '')"
   [[ -n "$state_dir" ]] || return 1
-
   local health_file="${state_dir}/queue-health.json"
   [[ -r "$health_file" ]] || return 1
 
-  local status="$(jq -r '.status // "healthy"' "$health_file" 2>/dev/null || echo 'healthy')"
-  [[ "$status" == "healthy" ]] && return 1
-
-  reason="$(jq -r '.degradationReason // "unknown"' "$health_file" 2>/dev/null || echo 'unknown')"
-  backoff_secs="$(jq -r '.retryBackoffSeconds // 0' "$health_file" 2>/dev/null || echo '0')"
-  next_action="$(jq -r '.nextAction // "retry"' "$health_file" 2>/dev/null || echo 'retry')"
-
-  # HOK-3130: the planner ran, but dependency inference did not; the queue is
-  # usable with explicit Linear relations only.
-  if [[ "$reason" == "inference_unavailable" ]]; then
-    local inference_status inference_error
-    inference_status="$(jq -r '.inferenceStatus // "unknown"' "$health_file" 2>/dev/null || echo 'unknown')"
-    inference_error="$(jq -r '.inference.error // empty' "$health_file" 2>/dev/null | head -c 120 || true)"
-    printf 'queue inference unavailable (%s); planning with explicit edges only' "$inference_status"
-    [[ -n "$inference_error" ]] && printf '; last error: %s' "$inference_error"
+  local projection status summary
+  projection="$(jq -c '.currentAlertProjection // empty' "$health_file" 2>/dev/null || true)"
+  if [[ -z "$projection" ]]; then
+    # Legacy queue-health.json without a projection block: fall back to the
+    # top-level status so we still render something on a degraded machine.
+    local legacy_status reason
+    legacy_status="$(jq -r '.status // "healthy"' "$health_file" 2>/dev/null || echo 'healthy')"
+    [[ "$legacy_status" == "healthy" ]] && return 1
+    reason="$(jq -r '.degradationReason // "unknown"' "$health_file" 2>/dev/null || echo 'unknown')"
+    printf 'queue planning degraded: %s (projection unavailable)' "$reason"
     return 0
   fi
-
-  if [[ "$backoff_secs" -gt 0 ]]; then
-    printf 'queue planning degraded: %s; flat fallback active; retry in %ds' "$reason" "$backoff_secs"
-  else
-    printf 'queue planning degraded: %s; %s' "$reason" "$next_action"
-  fi
+  status="$(printf '%s' "$projection" | jq -r '.status // "unknown"' 2>/dev/null || echo 'unknown')"
+  [[ "$status" != "healthy" ]] || return 1
+  summary="$(printf '%s' "$projection" | jq -r '.summary // ""' 2>/dev/null || echo '')"
+  [[ -n "$summary" ]] || return 1
+  printf '%s' "$summary"
   return 0
 }
 
@@ -2260,26 +2294,39 @@ format_backstage_heartbeat_age() {
   return 1
 }
 
+# HOK-3314: single-line queue status for the backstage header, reads from the
+# projection. Severity label comes from `projection.episode.severity`, never
+# from the historical maximum stored on the incident record.
 queue_health_dashboard_status() {
-  local state_file="${1:-}" state_dir health_file status reason
+  local state_file="${1:-}" state_dir health_file
   [[ -n "$state_file" ]] || return 1
   state_dir="$(dirname "$state_file" 2>/dev/null || echo '')"
   [[ -n "$state_dir" ]] || return 1
   health_file="${state_dir}/queue-health.json"
   [[ -r "$health_file" ]] || return 1
 
-  status="$(jq -r '.status // "healthy"' "$health_file" 2>/dev/null || echo 'healthy')"
-  [[ -n "$status" ]] || status="healthy"
-  printf 'Queue: %b' "$(format_backstage_service_status "$status")"
+  local projection status rendered
+  projection="$(jq -c '.currentAlertProjection // empty' "$health_file" 2>/dev/null || true)"
+  if [[ -z "$projection" ]]; then
+    local legacy_status
+    legacy_status="$(jq -r '.status // "healthy"' "$health_file" 2>/dev/null || echo 'healthy')"
+    printf 'Queue: %b' "$(format_backstage_service_status "$legacy_status")"
+    return 0
+  fi
+  status="$(printf '%s' "$projection" | jq -r '.status // "unknown"' 2>/dev/null || echo 'unknown')"
+  case "$status" in
+    healthy) rendered='healthy' ;;
+    degraded-inference|degraded-planner) rendered='degraded' ;;
+    unknown) rendered='needs-user' ;;
+    *) rendered='unknown' ;;
+  esac
+  printf 'Queue: %b' "$(format_backstage_service_status "$rendered")"
   if [[ "$status" != "healthy" ]]; then
-    reason="$(jq -r '.degradationReason // .failureStep // empty' "$health_file" 2>/dev/null || true)"
-    if [[ "$reason" == "inference_unavailable" ]]; then
-      printf ' (%s: %s)' "$reason" "$(jq -r '.inferenceStatus // "unknown"' "$health_file" 2>/dev/null || echo unknown)"
-    elif [[ -n "$reason" ]]; then
-      printf ' (%s)' "$reason"
-    fi
+    local count severity
+    count="$(printf '%s' "$projection" | jq -r '.episode.consecutiveFailedAttempts // 0' 2>/dev/null || echo '0')"
+    severity="$(printf '%s' "$projection" | jq -r '.episode.severity // "low"' 2>/dev/null || echo 'low')"
+    printf ' (%s/%s/%s)' "$status" "$severity" "$count"
   else
-    # HOK-3130: show that inference actually produced the edges in use.
     local inferred_edge_count
     inferred_edge_count="$(jq -r '.inferredEdgeCount // empty' "$health_file" 2>/dev/null || true)"
     [[ "$inferred_edge_count" =~ ^[0-9]+$ ]] && printf ' (inferred %s)' "$inferred_edge_count"

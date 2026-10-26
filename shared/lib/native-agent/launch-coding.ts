@@ -108,7 +108,7 @@ import {
 import { updateStageResult, type ModelAttributionIneligibleReason, type StageExecutionUsage } from '../stage-result.ts';
 import { buildStageExecutionUsage } from './prompt-cache.ts';
 import { reportPromptCacheHitRate } from './prompt-cache-detector.ts';
-import { getNativeContextManagementConfig } from '../config.ts';
+import { getNativeContextManagementConfig, getNativePayloadCaptureConfig } from '../config.ts';
 import { equivalentOpenRouterModelIds, type NormalizedPricing } from '../openrouter-catalog.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
 import type { ResourceRef } from '../resource-registry.ts';
@@ -1284,6 +1284,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       context,
       maxTokens: effectiveMaxTokens,
       contextManagement: getNativeContextManagementConfig(options.repoDir),
+      payloadCapture: { featureDir, stage: 'coding', ...getNativePayloadCaptureConfig(options.repoDir) },
       convertToLlm: (messages) => messages as unknown as Message[],
       signal: options.signal,
       promptSizeLog: options.repoDir ? {
