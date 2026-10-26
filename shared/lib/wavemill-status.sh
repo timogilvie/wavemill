@@ -454,33 +454,6 @@ planning_rejection_detail() {
   printf 'Planning needs attention: edited %s; reverted. Review plan.md and re-approve.%s\n' "$files" "$notify_suffix"
 }
 
-native_launch_failure_detail() {
-  local worktree="$1" slug="$2"
-  local feature_dir="$worktree/features/$slug"
-  local artifact="$feature_dir/.native-launch-failure.json"
-  local issue stage model pane_target failure_kind exit_code action
-
-  [[ -f "$artifact" ]] || return 0
-
-  issue=$(jq -r '.issue // empty' "$artifact" 2>/dev/null || true)
-  stage=$(jq -r '.stage // "native"' "$artifact" 2>/dev/null || echo "native")
-  model=$(jq -r '.model // empty' "$artifact" 2>/dev/null || true)
-  pane_target=$(jq -r '.paneTarget // empty' "$artifact" 2>/dev/null || true)
-  failure_kind=$(jq -r '.failureKind // "native-launch-failure"' "$artifact" 2>/dev/null || echo "native-launch-failure")
-  exit_code=$(jq -r '.exitCode // empty' "$artifact" 2>/dev/null || true)
-  action=$(jq -r '.recommendedAction // "Inspect the pane transcript and route config before relaunching."' "$artifact" 2>/dev/null || true)
-
-  if [[ -n "$exit_code" ]]; then
-    printf 'Native %s launch failed: %s exit=%s\n' "$stage" "$failure_kind" "$exit_code"
-  else
-    printf 'Native %s launch failed: %s\n' "$stage" "$failure_kind"
-  fi
-  if [[ -n "$model" || -n "$pane_target" ]]; then
-    printf 'model=%s pane=%s\n' "${model:-unknown}" "${pane_target:-unknown}"
-  fi
-  [[ -n "$action" ]] && printf '%s\n' "$action"
-}
-
 ready_watchdog_state_file() {
   [[ -n "$STATE_FILE" ]] || return 0
   printf '%s\n' "$(dirname "$STATE_FILE")/ready-watchdog-state.json"
@@ -1224,13 +1197,7 @@ is_actionable_state() {
   local worktree="${3:-}"
   local slug="${4:-}"
   local issue="${5:-}"
-  local ready_status attention_detail planning_detail watchdog_classification coding_detail launch_failure_detail
-
-  launch_failure_detail=$(native_launch_failure_detail "$worktree" "$slug")
-  if [[ -n "$launch_failure_detail" ]]; then
-    echo "actionable"
-    return
-  fi
+  local ready_status attention_detail planning_detail watchdog_classification coding_detail
 
   if [[ "$task_phase" == "coding" ]]; then
     coding_detail=$(coding_blocked_completion_detail "$worktree" "$slug" "$issue")
@@ -1369,7 +1336,7 @@ is_stale_planning_detail_for_phase() {
 render_task_row() {
   local issue="$1" slug="$2" branch="$3" worktree="$4" win="$5"
   local task_status="$6" task_phase="$7" state_pr="$8" agent_state="$9"
-  local t st_str pr_str pr_info checks phase_str plan_status ready_status ready_queue_state attention_detail planning_detail launch_failure_detail reported ds pane watchdog_classification watchdog_detail running_detail coding_blocked_detail coding_auto_detail
+  local t st_str pr_str pr_info checks phase_str plan_status ready_status ready_queue_state attention_detail planning_detail reported ds pane watchdog_classification watchdog_detail running_detail coding_blocked_detail coding_auto_detail
   local execution_owner pane_state resource_disposition workflow_outcome lifecycle_retention_reason queue_handoff_at queue_wait_age queue_gate queue_head
   local cleanup_disposition cleanup_attempt_count cleanup_next_retry cleanup_outcome cleanup_fingerprint cleanup_action
   local effective_config_json effective_base_branch effective_base_source repo_base_drift effective_require_confirm effective_confirm_source repo_confirm_drift
@@ -1426,8 +1393,6 @@ render_task_row() {
   watchdog_detail=""
   coding_blocked_detail=""
   coding_auto_detail=""
-  launch_failure_detail=""
-  [[ -n "$worktree" && -n "$slug" ]] && launch_failure_detail=$(native_launch_failure_detail "$worktree" "$slug")
 
   if [[ "$task_status" == "merged" ]]; then
     st_str="${G}✓ merged${N}"
@@ -1499,22 +1464,18 @@ render_task_row() {
       plan_status=""
       [[ -n "$worktree" && -n "$slug" ]] && plan_status=$(get_planning_display_status "$worktree" "$slug")
       planning_detail=$(planning_rejection_detail "$worktree" "$slug")
-      if [[ -n "$launch_failure_detail" ]]; then
-        phase_str="${R}⚠ planning${N}"
-      else
-        case "$plan_status" in
-          awaiting_approval)
-            if [[ -n "$planning_detail" ]]; then
-              phase_str="${R}⚠ planning${N}"
-            else
-              phase_str="${Y}⏳ awaiting${N}"
-            fi
-            ;;
-          approved)          phase_str="${G}✅ approved${N}" ;;
-          rejected)          phase_str="${R}❌ rejected${N}" ;;
-          *)                 phase_str="${Y}📋 planning${N}" ;;
-        esac
-      fi
+      case "$plan_status" in
+        awaiting_approval)
+          if [[ -n "$planning_detail" ]]; then
+            phase_str="${R}⚠ planning${N}"
+          else
+            phase_str="${Y}⏳ awaiting${N}"
+          fi
+          ;;
+        approved)          phase_str="${G}✅ approved${N}" ;;
+        rejected)          phase_str="${R}❌ rejected${N}" ;;
+        *)                 phase_str="${Y}📋 planning${N}" ;;
+      esac
       ;;
     executing) phase_str="${G}🔨 executing${N}" ;;
     coding)
@@ -1522,9 +1483,7 @@ render_task_row() {
       coding_blocked_detail=$(coding_blocked_completion_detail "$worktree" "$slug" "$issue")
       coding_approval_status=""
       [[ -n "$worktree" && -n "$slug" ]] && coding_approval_status=$(get_coding_approval_status "$worktree" "$slug")
-      if [[ -n "$launch_failure_detail" ]]; then
-        phase_str="${R}⚠ coding${N}"
-      elif [[ -n "$coding_auto_detail" ]]; then
+      if [[ -n "$coding_auto_detail" ]]; then
         phase_str="${G}auto review${N}"
       elif [[ -n "$coding_blocked_detail" ]]; then
         phase_str="${R}⚠ coding${N}"
@@ -1535,11 +1494,7 @@ render_task_row() {
       fi
       ;;
     review)
-      if [[ -n "$launch_failure_detail" ]]; then
-        phase_str="${R}⚠ review${N}"
-      else
-        phase_str="${Y}🔍 review${N}"
-      fi
+      phase_str="${Y}🔍 review${N}"
       ;;
     ready)
       watchdog_classification=$(ready_watchdog_field "$issue" "classification")
@@ -1595,8 +1550,6 @@ render_task_row() {
     reported="$coding_auto_detail"
   elif [[ -n "$coding_blocked_detail" ]]; then
     reported="$coding_blocked_detail"
-  elif [[ -n "$launch_failure_detail" ]]; then
-    reported="$launch_failure_detail"
   fi
   planning_detail=$(planning_rejection_detail "$worktree" "$slug")
   if [[ -z "$reported" && -n "$planning_detail" ]]; then

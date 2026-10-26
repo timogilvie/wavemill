@@ -2403,67 +2403,10 @@ else
   fail "policy-denied and blocked labels are not both present"
 fi
 
-# ── Native launch failures surface recovery detail ─────────────────────────
-
-cat > "$WORKTREES_DIR/native-failed-task/features/native-failed-task/.native-launch-failure.json" <<'EOF'
-{
-  "type": "native-launch-failure",
-  "issue": "HOK-2539",
-  "stage": "planning",
-  "agent": "native-openrouter",
-  "model": "qwen-3-coder",
-  "paneTarget": "@96",
-  "failureKind": "bare-model-command",
-  "exitCode": 127,
-  "detectedAt": "2026-07-18T13:00:00Z",
-  "recommendedAction": "Inspect the pane transcript and route config, then relaunch after fixing native provider/model eligibility."
-}
-EOF
-
-STATE_FILE_NATIVE_FAILURE="$TMP_DIR/state-native-failure.json"
-cat > "$STATE_FILE_NATIVE_FAILURE" <<EOF
-{
-  "tasks": {
-    "HOK-2539": {
-      "slug": "native-failed-task",
-      "branch": "task/native-failed-task",
-      "worktree": "$WORKTREES_DIR/native-failed-task",
-      "status": "",
-      "phase": "planning",
-      "pr": ""
-    }
-  }
-}
-EOF
-
-BEHAVIOR_NATIVE_FAILURE="$TMP_DIR/behavior-native-failure.json"
-cat > "$BEHAVIOR_NATIVE_FAILURE" <<'EOF'
-{
-  "pane": {
-    "HOK-2539-native-failed-task": "96"
-  },
-  "hook": {},
-  "next_action": {},
-  "reported": {},
-  "planning": {},
-  "pr": {},
-  "checks": {}
-}
-EOF
-
-OUTPUT_NATIVE_FAILURE="$TMP_DIR/output-native-failure.txt"
-run_render_with_agent_states "$STATE_FILE_NATIVE_FAILURE" "$WORKTREES_DIR" "$BEHAVIOR_NATIVE_FAILURE" "$OUTPUT_NATIVE_FAILURE" \
-  "" "" ""
-
-if grep -q '📥 INBOX (1)' "$OUTPUT_NATIVE_FAILURE" \
-  && grep -q 'HOK-2539.*native-failed-task.*⚠ planning' "$OUTPUT_NATIVE_FAILURE" \
-  && grep -q 'Native planning launch failed: bare-model-command exit=127' "$OUTPUT_NATIVE_FAILURE" \
-  && grep -q 'model=qwen-3-coder pane=@96' "$OUTPUT_NATIVE_FAILURE" \
-  && grep -q 'Inspect the pane transcript and route config' "$OUTPUT_NATIVE_FAILURE"; then
-  pass "native launch failure renders actionable recovery detail"
-else
-  fail "native launch failure detail missing from dashboard"
-fi
+# HOK-3313: the dedicated .native-launch-failure.json dashboard path is gone;
+# a dead launch pane now writes a .<stage>-result.json failed row that the
+# failure policy classifies, so the recovery detail surfaces through the
+# standard stage result / attention detail instead of a bespoke artifact.
 
 # ── Baseline states unchanged ───────────────────────────────────────────────
 

@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "createdAt": "2026-10-26T16:16:13.845Z",
+  "source": "git diff --name-only ee54e2a291477577a845d0831ab6f72ce53ebd43 HEAD",
+  "sinceCommit": "ee54e2a291477577a845d0831ab6f72ce53ebd43",
+  "headRef": "HEAD",
+  "paths": [
+    "package.json",
+    "shared/lib/failure-policy.fixtures.test.ts",
+    "shared/lib/stage-exit-identity-guard.ts",
+    "shared/lib/wavemill-monitor.sh",
+    "shared/lib/wavemill-status.sh",
+    "tests/fixtures/lifecycle/native_coding_launch_failure_recovered.sh",
+    "tests/fixtures/lifecycle/native_planning_launch_failure_recovered.sh",
+    "tests/journeys/agent-killed-mid-stage.journey.sh",
+    "tests/journeys/fixtures/hok-3313/fake-agent/coding",
+    "tests/lifecycle-harness.test.sh",
+    "tests/lifecycle-scenarios.test.sh",
+    "tests/native-failure-classification.test.sh",
+    "tests/native-terminal-failure.test.sh",
+    "tests/wavemill-status.test.sh",
+    "tools/check-stage-exit-identity.ts",
+    "tools/stage-exit-identity-allowlist.txt"
+  ],
+  "provenance": "launch-base",
+  "baseRef": "ee54e2a291477577a845d0831ab6f72ce53ebd43"
+}
