@@ -213,6 +213,47 @@ test('resolution sweep resolves records missing for N cycles and keeps fresh one
   }
 });
 
+test('HOK-3314: observed-but-not-fresh keeps a continuing condition active across 10+ cycles', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incident-sweep-observed-'));
+  try {
+    const store = new IncidentStore(dir, { escalationThreshold: 3, resolutionAfterCycles: 5 });
+    const first = await store.upsert(incidentEvent('2026-10-22T14:03:54.249Z'));
+
+    // Simulate 12 observer cycles where the queue-health failure is still
+    // present (same evidence/key/timestamp) but is not a new distinct event.
+    // Pre-HOK-3314: freshFingerprints didn't include it → missedCycles grew
+    // → auto-resolved after 5. With {fresh, observed}, the observed-but-not
+    // -fresh record stays active and never auto-resolves.
+    for (let cycle = 0; cycle < 12; cycle += 1) {
+      const resolved = await store.runResolutionSweep({ fresh: new Set<string>(), observed: new Set([first.fingerprint]) });
+      assert.equal(resolved.length, 0, `cycle ${cycle} must not auto-resolve the still-present condition`);
+    }
+
+    const [stillOpen] = await store.getIncidents();
+    assert.equal(stillOpen.fingerprint, first.fingerprint);
+    assert.equal(stillOpen.lifecycle, 'observed');
+    assert.equal(stillOpen.occurrenceCount, 1, 'unchanged presence must not inflate occurrence count');
+    assert.equal(stillOpen.metadata.missedCycles, 0, 'observed presence keeps missedCycles at 0');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3314: a fresh authoritative absence (not fresh and not observed) still auto-resolves', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incident-sweep-absence-'));
+  try {
+    const store = new IncidentStore(dir, { escalationThreshold: 3, resolutionAfterCycles: 2 });
+    const stale = await store.upsert(incidentEvent('2026-10-22T14:03:54.249Z'));
+    const empty = new Set<string>();
+    await store.runResolutionSweep({ fresh: empty, observed: empty });
+    const [resolved] = await store.runResolutionSweep({ fresh: empty, observed: empty });
+    assert.equal(resolved.fingerprint, stale.fingerprint);
+    assert.equal(resolved.lifecycle, 'resolved');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('operator resolve and archive transition lifecycle with audit metadata', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'incident-operator-'));
   try {
