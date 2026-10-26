@@ -56,6 +56,7 @@ TESTS=(
   challenge-record-decisive.test.sh
   native-terminal-failure.test.sh
   native-failure-classification.test.sh
+  incident-2026-10-22-replay.test.sh
   stage-failure-retry.test.sh
   coding-dirty-handoff.test.sh
   ready-exhausted-challenge.test.sh

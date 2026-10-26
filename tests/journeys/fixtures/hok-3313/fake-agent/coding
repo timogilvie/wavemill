@@ -1,0 +1,39 @@
+# shellcheck shell=bash
+# Fake coder for the HOK-3313 "agent killed mid-stage" journey.
+#
+# First coding launch: simulate a mid-stage SIGTERM. Write an error hook that
+# claims exit_code:143 and mentions "OpenRouter" in the detail (the exact
+# shape of the 2026-10-22 incident the old pane-text sniff would have
+# mis-identified as a native/OpenRouter provider failure). Exit non-zero
+# without recording .coding-complete.
+#
+# The monitor's next tick sees the error hook on a running coding stage,
+# runs it through emit_native_terminal_failure_attention. HOK-3313 makes
+# that call read agent='claude' from the launch record (NOT 'codex' from
+# pane sniff), classify the unrecognised exit as retryable through the
+# single failure policy, and relaunch under stage-failure-coding.
+#
+# Second coding launch: default_coding completes normally and the task
+# merges without operator intervention.
+coding_runs_file="$FAKE_ROOT/coding-runs-$WAVEMILL_ISSUE"
+coding_run=$(( $(cat "$coding_runs_file" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$coding_run" > "$coding_runs_file"
+
+if (( coding_run == 1 )); then
+  hook_file="/tmp/wavemill-${WAVEMILL_SESSION}-${WAVEMILL_ISSUE}.hook"
+  tmp_file="${hook_file}.tmp.$$"
+  timestamp="$(date +%s)"
+  jq -n \
+    --arg state "error" \
+    --arg event "process_exit_failure" \
+    --arg agent "claude" \
+    --arg detail "exit_code:143 (SIGTERM; agent process killed mid-stage; pane scrollback mentions OpenRouter from an earlier helper call)" \
+    --argjson timestamp "$timestamp" \
+    '{state:$state, event:$event, agent:$agent, timestamp:$timestamp, writer:"agent", detail:$detail,
+      agentRecord:{state:$state, event:$event, agent:$agent, timestamp:$timestamp, detail:$detail}}' \
+    > "$tmp_file" && mv "$tmp_file" "$hook_file"
+  printf '%s phase=coding issue=%s role=sigterm-simulator\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+  exit 143
+fi
+
+default_coding
