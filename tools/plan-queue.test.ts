@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -13,8 +13,14 @@ const fixture = resolve(repoDir, 'fixtures/plan-queue/backlog-basic.json');
 // Resolve tsx from the repo, not the spawn cwd: `npx tsx` from a temp dir
 // falls back to the npm registry and flakes in CI.
 const tsxLoader = import.meta.resolve('tsx');
+// plan-queue reads `queuePlanner.mode` from the cwd's config. Default to a
+// temp dir pinned to legacy so these tests don't follow the repo's own
+// setting (grounded mode calls the classifier, which CI doesn't have).
+const legacyCwd = mkdtempSync(join(tmpdir(), 'plan-queue-legacy-test-'));
+writeFileSync(join(legacyCwd, '.wavemill-config.json'), `${JSON.stringify({ queuePlanner: { mode: 'legacy' } })}\n`, 'utf8');
+after(() => rmSync(legacyCwd, { recursive: true, force: true }));
 
-function runPlanQueue(args: string[], input?: string, cwd = repoDir, env: NodeJS.ProcessEnv = {}) {
+function runPlanQueue(args: string[], input?: string, cwd = legacyCwd, env: NodeJS.ProcessEnv = {}) {
   return spawnSync(process.execPath, ['--import', tsxLoader, planQueueTool, ...args], {
     cwd,
     encoding: 'utf-8',
@@ -127,8 +133,8 @@ function millPlanArgs(backlogPath: string, cacheKey: string, reportPath: string,
 
 describe('plan-queue CLI', () => {
   it('emits queuePlan JSON from a backlog file', () => {
-    const stdout = execFileSync('npx', ['tsx', planQueueTool, '--backlog-file', fixture, '--json'], {
-      cwd: repoDir,
+    const stdout = execFileSync(process.execPath, ['--import', tsxLoader, planQueueTool, '--backlog-file', fixture, '--json'], {
+      cwd: legacyCwd,
       encoding: 'utf-8',
       env: { ...process.env },
     });
