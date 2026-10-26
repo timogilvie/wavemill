@@ -58,6 +58,11 @@ export interface StageFailureEvidence {
   source: string;
   detail: string;
   transcriptPath?: string;
+  /**
+   * Snapshot of the stage's last captured request bodies (HOK-3261), copied
+   * out of the feature dir so it survives reaping. See `payload-capture.ts`.
+   */
+  payloadCaptureDir?: string;
 }
 
 export interface StageFailureEnvelope {
@@ -285,6 +290,13 @@ function validateEvidence(value: unknown): StageFailureEnvelopeValidationResult 
     && typeof value.transcriptPath !== 'string'
   ) {
     return err('INVALID_FIELD_TYPE', 'Stage failure envelope evidence.transcriptPath must be a string when present.', 'evidence.transcriptPath');
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(value, 'payloadCaptureDir')
+    && value.payloadCaptureDir !== undefined
+    && typeof value.payloadCaptureDir !== 'string'
+  ) {
+    return err('INVALID_FIELD_TYPE', 'Stage failure envelope evidence.payloadCaptureDir must be a string when present.', 'evidence.payloadCaptureDir');
   }
   return { ok: true, value: undefined as unknown as StageFailureEnvelope };
 }

@@ -1775,6 +1775,23 @@
                     },
                     "additionalProperties": false
                 },
+                "payloadCapture": {
+                    "type": "object",
+                    "description": "Bounded capture of the last native request bodies per stage under <featureDir>/native-payloads/<stage>/ (HOK-3261). Always on; these caps are the only knobs. The oldest body is dropped when either cap is exceeded; the newest is always kept.",
+                    "properties": {
+                        "maxFiles": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 3
+                        },
+                        "maxBytes": {
+                            "type": "integer",
+                            "minimum": 1024,
+                            "default": 5242880
+                        }
+                    },
+                    "additionalProperties": false
+                },
                 "providers": {
                     "type": "object",
                     "properties": {
