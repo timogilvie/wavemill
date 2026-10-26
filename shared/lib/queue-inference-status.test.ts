@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   buildInferenceReport,
   deriveInferenceStatus,
+  deriveQueueAlertProjection,
   emptyInferenceState,
   INFERENCE_ERROR_MAX_CHARS,
   isInferredEdgeStale,
@@ -10,8 +14,11 @@ import {
   planInferenceRefresh,
   QUEUE_INFERENCE_FAILURE_COOLDOWN_MS,
   QUEUE_INFERENCE_STALE_AFTER_MS,
+  queueAlertSeverityForCount,
+  recordInferenceAttempt,
   recordInferenceFailure,
   recordInferenceSuccess,
+  type QueueAlertEpisode,
   type QueueInferenceState,
 } from './queue-inference-status.ts';
 
@@ -207,5 +214,243 @@ describe('buildInferenceReport', () => {
     assert.equal(report.attempted, false);
     assert.equal(report.skipReason, 'cache_disabled');
     assert.equal(report.error, null);
+  });
+});
+
+describe('deriveQueueAlertProjection (HOK-3314)', () => {
+  const PROJECTION_NOW = Date.parse('2026-10-22T14:03:54.000Z');
+
+  it('healthy status when queue-health and inference block agree', () => {
+    const projection = deriveQueueAlertProjection({
+      queueHealth: {
+        status: 'healthy',
+        inferenceStatus: 'ok',
+        inferredEdgeCount: 49,
+        inference: { consecutiveFailures: 0, lastSuccessAt: '2026-10-22T13:59:14.469Z' },
+      },
+      nowMs: PROJECTION_NOW,
+    });
+    assert.equal(projection.status, 'healthy');
+    assert.equal(projection.episode, null);
+    assert.equal(projection.nextAction, 'use_dependency_queue');
+    assert.deepEqual(projection.evidenceWarnings, []);
+  });
+
+  it('degraded-inference projection carries current episode fields, not lifetime counts', () => {
+    const projection = deriveQueueAlertProjection({
+      queueHealth: {
+        status: 'degraded',
+        degradationReason: 'inference_unavailable',
+        inferenceStatus: 'failed',
+        inferredEdgeCount: 49,
+        inference: {
+          consecutiveFailures: 1,
+          lastAttemptAt: '2026-10-22T14:03:54.249Z',
+          lastSuccessAt: '2026-10-22T13:59:14.469Z',
+          error: 'LLM fallback deadline exhausted before claude-sonnet-5',
+        },
+      },
+      nowMs: PROJECTION_NOW,
+    });
+    assert.equal(projection.status, 'degraded-inference');
+    assert.ok(projection.episode);
+    assert.equal(projection.episode!.consecutiveFailedAttempts, 1);
+    assert.equal(projection.episode!.severity, 'low');
+    assert.equal(projection.episode!.startedAt, '2026-10-22T14:03:54.249Z');
+    assert.equal(projection.episode!.kind, 'inference');
+    assert.equal(projection.nextAction, 'use_cached_and_explicit_edges');
+    assert.match(projection.summary, /1 consecutive failed attempt/);
+    assert.match(projection.summary, /cached inferred edges still in use/);
+  });
+
+  it('severity ladder is 1→low, 3→medium, 5→high', () => {
+    assert.equal(queueAlertSeverityForCount(0), 'low');
+    assert.equal(queueAlertSeverityForCount(1), 'low');
+    assert.equal(queueAlertSeverityForCount(2), 'low');
+    assert.equal(queueAlertSeverityForCount(3), 'medium');
+    assert.equal(queueAlertSeverityForCount(4), 'medium');
+    assert.equal(queueAlertSeverityForCount(5), 'high');
+    assert.equal(queueAlertSeverityForCount(10), 'high');
+  });
+
+  it('episode id is stable across polls of the same unchanged failure', () => {
+    const health = {
+      status: 'degraded',
+      degradationReason: 'inference_unavailable',
+      inferenceStatus: 'failed',
+      inference: {
+        consecutiveFailures: 1,
+        lastAttemptAt: '2026-10-22T14:03:54.249Z',
+      },
+    };
+    const first = deriveQueueAlertProjection({ queueHealth: health, nowMs: PROJECTION_NOW });
+    // Simulate the planner updating only its own lastAttemptAt on a cache-only poll — the inference block is unchanged.
+    const laterHealth = { ...health, lastAttemptAt: '2026-10-22T14:05:00.000Z' };
+    const second = deriveQueueAlertProjection({
+      queueHealth: laterHealth,
+      previousEpisode: first.episode,
+      nowMs: PROJECTION_NOW + 60_000,
+    });
+    assert.equal(second.episode?.id, first.episode?.id);
+    assert.equal(second.episode?.startedAt, first.episode?.startedAt);
+    assert.equal(second.episode?.consecutiveFailedAttempts, 1);
+  });
+
+  it('episode resets on recovery; a subsequent failure starts at count=1', () => {
+    const failed = deriveQueueAlertProjection({
+      queueHealth: {
+        status: 'degraded',
+        degradationReason: 'inference_unavailable',
+        inferenceStatus: 'failed',
+        inference: {
+          consecutiveFailures: 2,
+          lastAttemptAt: '2026-10-22T14:03:54.249Z',
+          lastSuccessAt: '2026-10-22T13:59:14.469Z',
+        },
+      },
+      nowMs: PROJECTION_NOW,
+    });
+    assert.equal(failed.episode?.consecutiveFailedAttempts, 2);
+
+    const recovered = deriveQueueAlertProjection({
+      queueHealth: {
+        status: 'healthy',
+        inferenceStatus: 'ok',
+        inference: { consecutiveFailures: 0, lastSuccessAt: '2026-10-22T14:10:00.000Z' },
+      },
+      previousEpisode: failed.episode,
+      nowMs: PROJECTION_NOW + 10 * 60_000,
+    });
+    assert.equal(recovered.status, 'healthy');
+    assert.equal(recovered.episode, null);
+
+    const newFailure = deriveQueueAlertProjection({
+      queueHealth: {
+        status: 'degraded',
+        degradationReason: 'inference_unavailable',
+        inferenceStatus: 'failed',
+        inference: {
+          consecutiveFailures: 1,
+          lastAttemptAt: '2026-10-22T14:30:00.000Z',
+          lastSuccessAt: '2026-10-22T14:10:00.000Z',
+        },
+      },
+      previousEpisode: recovered.episode,
+      nowMs: PROJECTION_NOW + 30 * 60_000,
+    });
+    assert.equal(newFailure.episode?.consecutiveFailedAttempts, 1);
+    assert.equal(newFailure.episode?.severity, 'low');
+    assert.equal(newFailure.episode?.startedAt, '2026-10-22T14:30:00.000Z');
+    assert.notEqual(newFailure.episode?.id, failed.episode?.id);
+  });
+
+  it('missing queue-health is unknown, never healthy', () => {
+    const projection = deriveQueueAlertProjection({ queueHealth: undefined, nowMs: PROJECTION_NOW });
+    assert.equal(projection.status, 'unknown');
+    assert.ok(projection.evidenceWarnings.length > 0);
+    assert.notEqual(projection.nextAction, 'use_dependency_queue');
+  });
+
+  it('observerCycleComplete=false forces unknown even when queueHealth looks healthy', () => {
+    const projection = deriveQueueAlertProjection({
+      queueHealth: {
+        status: 'healthy',
+        inferenceStatus: 'ok',
+        inference: { consecutiveFailures: 0, lastSuccessAt: '2026-10-22T13:59:14.469Z' },
+      },
+      observerCycleComplete: false,
+      nowMs: PROJECTION_NOW,
+    });
+    assert.equal(projection.status, 'unknown');
+    assert.ok(projection.evidenceWarnings.some((warning) => /observer cycle/i.test(warning)));
+  });
+
+  it('legacy data without an episode startedAt reports unknown, never substitutes firstObservedAt', () => {
+    const projection = deriveQueueAlertProjection({
+      queueHealth: {
+        status: 'degraded',
+        degradationReason: 'inference_unavailable',
+        inferenceStatus: 'failed',
+        inference: { consecutiveFailures: 1 },
+      },
+      nowMs: PROJECTION_NOW,
+    });
+    assert.equal(projection.episode?.startedAt, 'unknown');
+    assert.equal(projection.episode?.consecutiveFailedAttempts, 1);
+  });
+
+  it('planner degradation uses planner failureCount and episodeStartedAt', () => {
+    const projection = deriveQueueAlertProjection({
+      queueHealth: {
+        status: 'degraded',
+        degradationReason: 'timeout',
+        failureCount: 3,
+        episodeStartedAt: '2026-10-22T13:00:00.000Z',
+        lastFailureAt: '2026-10-22T14:03:07.000Z',
+        inference: { consecutiveFailures: 0 },
+      },
+      nowMs: PROJECTION_NOW,
+    });
+    assert.equal(projection.status, 'degraded-planner');
+    assert.equal(projection.episode?.kind, 'planner');
+    assert.equal(projection.episode?.consecutiveFailedAttempts, 3);
+    assert.equal(projection.episode?.severity, 'medium');
+    assert.equal(projection.episode?.startedAt, '2026-10-22T13:00:00.000Z');
+  });
+});
+
+describe('HOK-3314 replay: Oct-22 snapshot (157 lifetime, 1 current)', () => {
+  const fixturePath = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'tests', 'fixtures', 'queue-inference', 'legacy-157-current-1.json');
+  const fixture = JSON.parse(readFileSync(fixturePath, 'utf-8')) as {
+    queueHealth: Record<string, unknown>;
+    incident: {
+      occurrenceCount: number;
+      firstObservedAt: string;
+      metadata: { recurrence: { count: number } };
+    };
+  };
+
+  it('projection returns 1 current failed attempt and timing — not the lifetime 157', () => {
+    const projection = deriveQueueAlertProjection({
+      queueHealth: fixture.queueHealth as never,
+      nowMs: Date.parse('2026-10-22T14:03:54.249Z'),
+    });
+    assert.equal(projection.status, 'degraded-inference');
+    assert.equal(projection.episode?.consecutiveFailedAttempts, 1);
+    assert.equal(projection.episode?.severity, 'low');
+    assert.equal(projection.episode?.latestFailureAt, '2026-10-22T14:03:54.249Z');
+    assert.equal(projection.episode?.latestSuccessAt, '2026-10-22T13:59:14.469Z');
+    assert.equal(projection.nextAction, 'use_cached_and_explicit_edges', 'inferredEdgeCount=49 → cached edges still in use');
+    assert.match(projection.summary, /1 consecutive failed attempt/);
+    assert.match(projection.summary, /cached inferred edges still in use/);
+    // Deliberately NOT in the current-episode summary:
+    assert.doesNotMatch(projection.summary, /157/);
+    assert.doesNotMatch(projection.summary, /2026-10-01/);
+  });
+
+  it('lifetime history (157 events, 19 recurrences, first observed 10-01) remains readable on the incident record', () => {
+    // The fixture's incident object is the sanitized snapshot the operator
+    // saw. HOK-3314 preserves these fields on the stored record so the
+    // dashboard history row can still show them — the projection just does
+    // not consume them.
+    assert.equal(fixture.incident.occurrenceCount, 157);
+    assert.equal(fixture.incident.metadata.recurrence.count, 19);
+    assert.equal(fixture.incident.firstObservedAt, '2026-10-01T17:07:26.006Z');
+  });
+});
+
+describe('recordInferenceAttempt (HOK-3314)', () => {
+  it('is a thin wrapper around recordInferenceSuccess / recordInferenceFailure', () => {
+    const ok = recordInferenceAttempt(undefined, { outcome: 'ok', model: 'claude-haiku-4-5-20251001', nowIso: '2026-10-22T13:59:14.469Z' });
+    assert.equal(ok.lastOutcome, 'ok');
+    assert.equal(ok.lastModel, 'claude-haiku-4-5-20251001');
+
+    const failed = recordInferenceAttempt(ok, { outcome: 'failed', error: new Error('boom'), nowIso: '2026-10-22T14:03:54.249Z' });
+    assert.equal(failed.lastOutcome, 'failed');
+    assert.equal(failed.consecutiveFailures, 1);
+    assert.equal(failed.lastError, 'boom');
+    assert.equal(failed.lastSuccessAt, ok.lastSuccessAt, 'failure must keep last success timestamp');
+    const _unused: QueueAlertEpisode | null = null;
+    void _unused;
   });
 });
