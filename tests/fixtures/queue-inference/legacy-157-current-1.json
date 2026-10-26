@@ -1,0 +1,68 @@
+{
+  "comment": "HOK-3314 sanitized replay snapshot captured 2026-10-22. Lifetime occurrence=157 since 2026-10-01 but current inference.consecutiveFailures=1. Fingerprint 4eec777e… was the alert the operator saw. See the issue body for full chain-of-custody.",
+  "fingerprint": "4eec777e1678a7eab3fce6685c2703fc42b595d734905ba81efdc1e7bc5d5d26",
+  "capturedAt": "2026-10-22T14:03:54.249Z",
+  "queueHealth": {
+    "schemaVersion": 1,
+    "status": "degraded",
+    "degradationReason": "inference_unavailable",
+    "failureStep": "queue_inference",
+    "failureCount": 0,
+    "retryBackoffSeconds": 0,
+    "nextRetryAt": null,
+    "nextAction": "use_explicit_edges_only",
+    "episodeStartedAt": null,
+    "lastSuccessfulPlanAt": "2026-10-22T14:03:07.000Z",
+    "lastAttemptAt": "2026-10-22T14:03:54.249Z",
+    "lastFailureAt": null,
+    "inferenceStatus": "failed",
+    "inferredEdgeCount": 49,
+    "inference": {
+      "model": "claude-haiku-4-5-20251001",
+      "lastAttemptAt": "2026-10-22T14:03:54.249Z",
+      "lastSuccessAt": "2026-10-22T13:59:14.469Z",
+      "consecutiveFailures": 1,
+      "error": "LLM fallback deadline exhausted before claude-sonnet-5",
+      "refreshKind": "partial",
+      "skipReason": null
+    },
+    "planner": {
+      "pid": 71234,
+      "pgid": 71234,
+      "timeoutSeconds": 52,
+      "startedAt": "2026-10-22T14:03:00.000Z",
+      "endedAt": "2026-10-22T14:03:07.000Z",
+      "durationMs": 7000,
+      "exitCode": 0,
+      "signal": null,
+      "cancellationOwner": null
+    },
+    "diagnostics": {
+      "inputSnapshot": {"taskCount": 42},
+      "stdoutExcerpt": "",
+      "stderrExcerpt": ""
+    }
+  },
+  "incident": {
+    "fingerprint": "4eec777e1678a7eab3fce6685c2703fc42b595d734905ba81efdc1e7bc5d5d26",
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "queue_planner_degraded",
+    "severity": "medium",
+    "lifecycle": "active",
+    "firstObservedAt": "2026-10-01T17:07:26.006Z",
+    "createdAt": "2026-10-01T17:07:26.006Z",
+    "lastObservedAt": "2026-10-22T14:03:54.249Z",
+    "occurrenceCount": 157,
+    "metadata": {
+      "recurrence": {
+        "count": 19,
+        "lastRecurredAt": "2026-10-22T14:03:37.654Z"
+      },
+      "lastResolutionBeforeThisEvent": {
+        "action": "auto_resolved",
+        "at": "2026-10-22T13:20:26.935Z",
+        "reason": "not re-observed for 5 consecutive observer cycles"
+      }
+    }
+  }
+}
