@@ -27,8 +27,8 @@ export const QUEUE_ALERT_GUARD: GuardSpec = {
   invariantPaths: [
     'shared/lib/queue-inference-status.ts',
     'shared/lib/queue-alert-guard.ts',
-    'tools/queue-alert-projection.ts',
-    'tools/check-queue-alert.ts',
+    'tools/queue-alert-projection.ts', // install-paths: allow invariantPaths list, not an argv target
+    'tools/check-queue-alert.ts', // install-paths: allow invariantPaths list, not an argv target
   ],
   patterns: [
     {

@@ -1780,10 +1780,10 @@ render_incidents_section() {
           (occ | tostring),
           (.summary // ""),
           (.firstObservedAt // .createdAt // ""),
-          (.metadata.currentEpisode.consecutiveFailedAttempts // ""),
-          (.metadata.currentEpisode.startedAt // ""),
-          (.metadata.currentEpisode.latestSuccessAt // ""),
-          (.metadata.currentEpisode.latestFailureAt // ""),
+          (.metadata.currentEpisode.consecutiveFailedAttempts // "-"),
+          (.metadata.currentEpisode.startedAt // "-"),
+          (.metadata.currentEpisode.latestSuccessAt // "-"),
+          (.metadata.currentEpisode.latestFailureAt // "-"),
           (.metadata.recurrence.count // 0 | tostring)
         ] | @tsv),
         (if $total > $cap then "__MORE__\t\($total - $cap)" else empty end)
@@ -1802,6 +1802,13 @@ render_incidents_section() {
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
     IFS=$'\t' read -r fp category severity occ summary first current_count current_started current_success current_failure recurrence_count <<<"$line"
+    # Bash collapses consecutive IFS=$'\t' separators, so jq emits "-" as a
+    # sentinel to keep absent currentEpisode fields distinguishable. Normalize
+    # back to empty before the existing presence checks.
+    [[ "$current_count" == "-" ]] && current_count=""
+    [[ "$current_started" == "-" ]] && current_started=""
+    [[ "$current_success" == "-" ]] && current_success=""
+    [[ "$current_failure" == "-" ]] && current_failure=""
     if [[ "$fp" == "__TOTAL__" ]]; then
       total_count="$category"
       printf "${EL}\n${B}%s${N} ${D}(%s)${N}${EL}\n" "🔥 INCIDENTS" "$total_count" >> "$FRAME"
