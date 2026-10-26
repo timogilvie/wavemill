@@ -247,12 +247,7 @@ harness_extract_real_functions() {
     complete_coding_advance \
     auto_advance_blocked_completion \
     emit_blocked_completion_attention \
-    native_launch_failure_artifact_path \
     stage_result_field \
-    agent_or_model_is_native_for_recovery \
-    native_launch_failure_kind \
-    write_native_launch_failure_artifact \
-    emit_native_launch_failure_attention \
     native_hook_terminal_failure_detail \
     native_coding_failure_handoff_reason \
     native_terminal_failure_kind \

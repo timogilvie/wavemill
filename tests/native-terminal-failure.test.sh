@@ -37,7 +37,6 @@ eval "$(extract_function native_terminal_failure_kind)"
 eval "$(extract_function native_terminal_failure_next_action)"
 eval "$(extract_function stage_failure_decision)"
 eval "$(extract_function native_stage_failure_envelope_json)"
-eval "$(extract_function agent_or_model_is_native_for_recovery)"
 eval "$(extract_function emit_native_terminal_failure_attention)"
 eval "$(extract_function emit_challenge_stage_failure_quarantine)"
 eval "$(extract_function write_openrouter_warning_cache)"
@@ -326,14 +325,24 @@ else
   pass "non-error hook states are ignored"
 fi
 
+# HOK-3313: a non-native (claude/codex) terminal error hook now goes through
+# the single failure policy and is retried like any other retryable stage
+# failure — the old pane-text/agent-name gate (agent_or_model_is_native_for_recovery)
+# has been deleted so identity is sourced from the launch record only.
 seed "PAIR-1_c"
 fd="$TMP_ROOT/f-non-native"
 write_stage_result "$fd" "coding" "running" "codex" "claude-opus-4-7"
 write_hook "PAIR-1_c" "error" "model_at_capacity: Selected model is at capacity. Please try a different model."
 if emit_native_terminal_failure_attention "PAIR-1_c" "$fd" "coding" "win-non-native" "%4" "codex" "claude-opus-4-7"; then
-  fail "a non-native terminal hook was treated as a native provider failure"
+  if [[ "$(jq -r '.status' "$fd/.coding-result.json")" == "failed" ]] \
+    && [[ "$(jq -r '.artifacts.failureClass' "$fd/.coding-result.json")" == "retryable" ]] \
+    && [[ "$(jq -r '.tasks | map(has("challengeAborted")) | any' "$STATE_FILE")" == "false" ]]; then
+    pass "non-native terminal hook routes through the single failure policy"
+  else
+    fail "non-native terminal hook did not route cleanly through the policy"
+  fi
 else
-  pass "non-native terminal hooks are ignored by native recovery"
+  fail "non-native terminal hook was not classified by the single failure policy"
 fi
 
 seed "PAIR-1_c"

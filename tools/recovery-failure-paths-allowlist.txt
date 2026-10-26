@@ -1,0 +1,14 @@
+# Allowlist for check-recovery-failure-paths.ts (HOK-3313).
+#
+# Format: <repo-relative path> [<max findings>]  # <reason>
+#
+# A path without a count is exempt entirely. A path with a count is still
+# scanned and fails once it exceeds that many findings, so a new occurrence
+# in an already-listed file still fires. The ratchet means an entry whose
+# count exceeds its current finding count is itself a failure.
+#
+# The two allowed sites for wavemill_reconcile_terminal ... recovery_failure
+# are maybe_retry_failed_stage and phase_launch_gate; both live in
+# shared/lib/wavemill-monitor.sh.
+
+shared/lib/wavemill-monitor.sh 1  # phase_launch_gate terminalizes on launch-budget exhaustion (HOK-2924)

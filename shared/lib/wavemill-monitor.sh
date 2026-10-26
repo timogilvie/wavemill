@@ -7894,11 +7894,6 @@ emit_pane_divergence_attention() {
   return 0
 }
 
-native_launch_failure_artifact_path() {
-  local feature_dir="$1"
-  printf '%s\n' "$feature_dir/.native-launch-failure.json"
-}
-
 stage_result_field() {
   local feature_dir="$1" stage="$2" field="$3"
   local result_file="$feature_dir/.${stage}-result.json"
@@ -7906,192 +7901,23 @@ stage_result_field() {
   jq -r --arg field "$field" '.[$field] // empty' "$result_file" 2>/dev/null || true
 }
 
-agent_or_model_is_native_for_recovery() {
-  local agent="${1:-}" model="${2:-}" tail="${3:-}"
+# HOK-3313: the pane-text identity sniffing path
+# (agent_or_model_is_native_for_recovery, emit_native_launch_failure_attention,
+# native_launch_failure_kind, write_native_launch_failure_artifact,
+# native_launch_failure_artifact_path) has been deleted. Stage identity now
+# comes from the launch record (.<stage>-result.json), every exit is
+# classified by the single failure policy (HOK-3176), and retryable exits
+# relaunch under stage-failure-<stage> instead of being terminalized
+# directly via wavemill_reconcile_terminal recovery_failure.
 
-  case "$agent" in
-    native|native-*) return 0 ;;
-  esac
-
-  case "$model" in
-    native:*|openrouter/*|qwen-*|kimi-*|glm-*) return 0 ;;
-  esac
-
-  if printf '%s\n' "$tail" | grep -Eiq '(native-openrouter|native-openai|launch-native-(planning|review|coding)|OpenRouter|wavemill native-agent)'; then
-    return 0
-  fi
-
-  return 1
-}
-
-native_launch_failure_kind() {
-  local tail="${1:-}"
-
-  if printf '%s\n' "$tail" | grep -Eiq -- '--model[[:space:]]+[^[:space:]]'; then
-    printf 'bare-model-command\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Eiq -- 'command not found.*--model'; then
-    printf 'bare-model-command\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Eiq -- '--model.*command not found'; then
-    printf 'bare-model-command\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Fq 'Agent exited (127)'; then
-    printf 'agent-exited-127\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Fq 'exited with status 127'; then
-    printf 'agent-exited-127\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Fq 'exited with code 127'; then
-    printf 'agent-exited-127\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Fq 'exit status 127'; then
-    printf 'agent-exited-127\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Fq 'native launch probe failed'; then
-    printf 'native-route-rejected\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Eiq -- 'native agent .*cannot launch'; then
-    printf 'native-route-rejected\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Eiq -- 'native agent .*does not support'; then
-    printf 'native-route-rejected\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Eiq -- 'not eligible for planning'; then
-    printf 'native-route-rejected\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Eiq -- 'not eligible for coding'; then
-    printf 'native-route-rejected\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Eiq -- 'not eligible for review'; then
-    printf 'native-route-rejected\n'
-    return 0
-  fi
-
-  return 1
-}
-
-write_native_launch_failure_artifact() {
-  local issue="$1" feature_dir="$2" stage="$3" agent="$4" model="$5" pane_target="$6" failure_kind="$7" exit_code="$8"
-  local artifact tmp detected_at recommended_action
-
-  artifact="$(native_launch_failure_artifact_path "$feature_dir")"
-  detected_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  recommended_action="Inspect the pane transcript and route config, then relaunch after fixing native provider/model eligibility."
-  mkdir -p "$feature_dir"
-  tmp="$(mktemp "$artifact.tmp.XXXXXX" 2>/dev/null)" || return 0
-
-  jq -n \
-    --arg issue "$issue" \
-    --arg stage "$stage" \
-    --arg agent "$agent" \
-    --arg model "$model" \
-    --arg paneTarget "$pane_target" \
-    --arg failureKind "$failure_kind" \
-    --arg exitCode "$exit_code" \
-    --arg detectedAt "$detected_at" \
-    --arg recommendedAction "$recommended_action" \
-    '{
-      type: "native-launch-failure",
-      issue: $issue,
-      stage: $stage,
-      agent: $agent,
-      model: $model,
-      paneTarget: $paneTarget,
-      failureKind: $failureKind,
-      exitCode: (if $exitCode == "" then null else ($exitCode | tonumber) end),
-      detectedAt: $detectedAt,
-      recommendedAction: $recommendedAction
-    }' > "$tmp" 2>/dev/null \
-    && mv "$tmp" "$artifact" 2>/dev/null \
-    || rm -f "$tmp"
-}
-
-# Convert dead native launch panes into failed controller-owned stage results.
-# This prevents malformed launchers from leaving stages in "running" forever.
-emit_native_launch_failure_attention() {
-  local issue="$1" feature_dir="$2" stage="$3" win="$4" win_target="$5" fallback_agent="${6:-}" fallback_model="${7:-}"
-  local stage_status agent model pane_tail failure_kind exit_code notes artifacts_json
-
-  stage_status="$(read_stage_status "$feature_dir" "$stage")"
-  [[ "$stage_status" == "running" ]] || return 1
-  [[ -n "$win_target" ]] || return 1
-  _pane_is_dead_or_idle "$win_target" 2>/dev/null || return 1
-
-  pane_tail="$(tmux capture-pane -p -t "$win_target" -S -200 2>/dev/null || true)"
-  agent="$(stage_result_field "$feature_dir" "$stage" "agent")"
-  model="$(stage_result_field "$feature_dir" "$stage" "model")"
-  [[ -n "$agent" ]] || agent="$fallback_agent"
-  [[ -n "$model" ]] || model="$fallback_model"
-
-  agent_or_model_is_native_for_recovery "$agent" "$model" "$pane_tail" || return 1
-
-  failure_kind="$(native_launch_failure_kind "$pane_tail" || true)"
-  [[ -n "$failure_kind" ]] || failure_kind="native-agent-exited-without-artifacts"
-
-  exit_code=""
-  if printf '%s\n' "$pane_tail" | grep -Eq '(^|[^0-9])127([^0-9]|$)'; then
-    exit_code="127"
-  fi
-
-  write_native_launch_failure_artifact "$issue" "$feature_dir" "$stage" "$agent" "$model" "$win_target" "$failure_kind" "$exit_code"
-
-  notes="Native ${stage} launch failed: ${failure_kind}"
-  [[ -n "$exit_code" ]] && notes+=" (exit $exit_code)"
-  notes+=". Pane $win_target needs attention"
-
-  artifacts_json="$(jq -cn \
-    --arg paneTarget "$win_target" \
-    --arg failureKind "$failure_kind" \
-    --arg exitCode "$exit_code" \
-    '{type:"nativeLaunchFailure", paneTarget:$paneTarget, failureKind:$failureKind, exitCode:(if $exitCode == "" then null else ($exitCode | tonumber) end)}' 2>/dev/null || printf '{}')"
-  write_stage_result "$feature_dir" "$stage" "failed" "$agent" "$model" "$notes" "$artifacts_json"
-  if [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
-    wavemill_reconcile_terminal "$SESSION" "$issue" "recovery_failure" || true
-  fi
-  set_window_attention_state "$win" "needs-user"
-  log_warn "$issue → Native ${stage} launcher failed (${failure_kind}) in pane $win_target"
-  active_count=$((active_count + 1))
-  return 0
-}
-
-# ── Terminal native failure detection (hook-driven) ──────────────────
-# The pane-scraping heuristics above only recognise *exec-level* failures:
-# exit 127, bare `--model` invocations, probe failures. A provider that accepts
-# the launch and then rejects the request — an unrecognised model ID, or a
-# prompt larger than the model's context window — produces none of those
-# signatures, and `_pane_is_dead_or_idle` may not hold either. Such arms stayed
-# parked in `phase: coding` indefinitely, blocking the merge lane.
-#
-# The agent's own status hook already records these as a terminal
-# {"state":"error","event":"process_exit"} write. Unlike the liveness reads in
+# ── Terminal failure detection (hook-driven) ─────────────────────────
+# The agent's own status hook records a terminal exit as
+# {"state":"error","event":"process_exit"}. Unlike the liveness reads in
 # wavemill-status.sh, a terminal state is deliberately NOT TTL-gated: a dead
 # process never refreshes its hook, so staleness corroborates the failure
-# instead of invalidating it.
+# instead of invalidating it. HOK-3313: every such exit is now classified by
+# the single failure policy regardless of agent kind, with identity taken from
+# the launch record (.<stage>-result.json), never from pane text.
 
 native_hook_terminal_failure_detail() {
   local issue="$1"
@@ -8220,11 +8046,14 @@ emit_native_terminal_failure_attention() {
   # Never override a run that actually produced its completion artifact.
   [[ ! -f "$feature_dir/.${stage}-complete" ]] || return 1
 
+  # HOK-3313: agent identity comes from the launch record only. The old gate
+  # (agent_or_model_is_native_for_recovery) read agent/model names and the
+  # pane_tail to decide whether to proceed; we now classify every stage with
+  # a terminal hook via the single failure policy regardless of agent kind.
   agent="$(stage_result_field "$feature_dir" "$stage" "agent")"
   model="$(stage_result_field "$feature_dir" "$stage" "model")"
   [[ -n "$agent" ]] || agent="$fallback_agent"
   [[ -n "$model" ]] || model="$fallback_model"
-  agent_or_model_is_native_for_recovery "$agent" "$model" "" || return 1
 
   native_hook_terminal_failure_detail "$issue" >/dev/null || return 1
   decision="$(stage_failure_decision "$issue" "$feature_dir" "$stage")"
@@ -8276,9 +8105,11 @@ emit_native_terminal_failure_attention() {
 
   write_stage_result "$feature_dir" "$stage" "failed" "$agent" "$model" "$notes" "$artifacts_json"
 
-  if [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
-    wavemill_reconcile_terminal "$SESSION" "$issue" "recovery_failure" || true
-  fi
+  # HOK-3313: wavemill_reconcile_terminal recovery_failure is reserved for
+  # maybe_retry_failed_stage (bounded-retry exhaustion) and phase_launch_gate
+  # (launch budget exhaustion). A terminal-class stage failure is quarantined
+  # here through challenge_abort_pair above and set_window_attention_state
+  # below; terminalization is the quarantine's own responsibility.
   if [[ "$is_challenge" == "true" ]]; then
     if cleanup_quarantined_no_pr_challenge_arm "$issue" "$feature_dir" "$stage" "native terminal failure" 2>/dev/null; then
       log_warn "$issue → Native ${stage} failed (${failure_kind}). Pair quarantined. ${next_action}"
@@ -21337,9 +21168,6 @@ monitor_issue_state() {
           if emit_native_terminal_failure_attention "$ISSUE" "$FEATURE_DIR" "planning" "$WIN" "$WIN_TARGET" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "planning" "")"; then
             return 0
           fi
-          if emit_native_launch_failure_attention "$ISSUE" "$FEATURE_DIR" "planning" "$WIN" "$WIN_TARGET" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "planning" "")"; then
-            return 0
-          fi
 
           # Check if plan exists but not yet approved (awaiting_user)
           if [[ "$resolved_phase" == "awaiting_user" ]]; then
@@ -21595,9 +21423,6 @@ monitor_issue_state() {
             if emit_native_terminal_failure_attention "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" "$WIN_TARGET" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")"; then
               return 0
             fi
-            if emit_native_launch_failure_attention "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" "$WIN_TARGET" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")"; then
-              return 0
-            fi
             if emit_terminal_blocked_completion_attention "$ISSUE" "$SLUG" "$FEATURE_DIR" "$WIN" "$WIN_TARGET"; then
               return 0
             fi
@@ -21732,8 +21557,6 @@ monitor_issue_state() {
                 return 0
               fi
             elif emit_native_terminal_failure_attention "$ISSUE" "$FEATURE_DIR" "review" "$WIN" "$WIN_TARGET" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "review" "claude-sonnet-5")"; then
-              return 0
-            elif emit_native_launch_failure_attention "$ISSUE" "$FEATURE_DIR" "review" "$WIN" "$WIN_TARGET" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "review" "claude-sonnet-5")"; then
               return 0
             else
               set_window_attention_state "$WIN" "clear"
