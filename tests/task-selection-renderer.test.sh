@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# HOK-3305: set -e disabled so a single failing check_eq doesn't abort the
+# whole suite. bash 5.3 propagates errexit through command substitution by
+# default, which kills the harness on the first subshell non-zero. Each test
+# subshell is self-contained; failures are reported via FAIL via check_eq.
+set -uo pipefail
 
 # Stay hermetic inside a mill session: an inherited PROJECT_NAME switches
 # build_queue_plan_once to the cached/classifier path (HOK-3130), which would
@@ -123,6 +127,34 @@ FUNCTIONS_FILE="$TEST_TMP/task-selection-renderer-funcs.sh"
   extract_function "$MONITOR_BODY" "maybe_launch_queue_inference_refresh"
   echo
   extract_function "$MONITOR_BODY" "render_grouped_task_list"
+  echo
+  # HOK-3305: pull in the shared picker file so render_launch_set_picker and
+  # its helpers are available to the extracted render_grouped_task_list wrapper.
+  cat "$REPO_DIR/shared/lib/wavemill-picker.sh"
+  echo
+  # Provide a minimal fallback for queue_inference_degraded_banner so the
+  # picker body does not fall over when queue-health isn't sourced.
+  # Also initialize module-scope variables the extracted monitor functions
+  # expect — the extractor pulls function bodies only, so bare `[[ -n "$X" ]]`
+  # fires `set -u` when X was declared outside the function.
+  cat <<'STUB'
+if ! declare -F queue_inference_degraded_banner >/dev/null 2>&1; then
+  queue_inference_degraded_banner() { return 0; }
+fi
+: "${QUEUE_INFERENCE_REFRESH_PID:=}"
+: "${QUEUE_INFERENCE_REFRESH_TTL:=180}"
+: "${LAST_QUEUE_INFERENCE_REFRESH:=0}"
+: "${FETCH_QUEUE_PLAN_DIAGNOSTICS_FILE:=}"
+: "${LAST_QUEUE_PLAN_FETCH:=0}"
+: "${QUEUE_PLAN_CACHE:=}"
+: "${BACKLOG_JSON_CACHE:=}"
+: "${BACKLOG_CACHE_TTL:=60}"
+: "${BACKLOG_CACHE:=}"
+: "${LAST_BACKLOG_FETCH:=0}"
+: "${PROJECT_NAME:=}"
+: "${BACKLOG_LAST_TIER:=}"
+: "${BACKLOG_DEFAULT_AVAILABLE_CAP:=12}"
+STUB
 } > "$FUNCTIONS_FILE"
 
 if [[ ! -s "$FUNCTIONS_FILE" ]]; then
@@ -504,7 +536,7 @@ test_invoke_first_wave_helper_packs_priority_without_violating_dependencies() {
 }
 
 test_grouped_render_with_fixture_output() {
-  local queue_plan output line3 line5 line7
+  local queue_plan output first_select third_select
   queue_plan=$(cd "$REPO_DIR" && npx tsx tools/plan-queue.ts --backlog-file fixtures/plan-queue/backlog-basic.json --json)
   output=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" CANDIDATES="$CANDIDATES" QUEUE_PLAN="$queue_plan" bash -lc '
     set -euo pipefail
@@ -512,6 +544,7 @@ test_grouped_render_with_fixture_output() {
     source "$FUNCTIONS_FILE"
     GROUPED_DISPLAY=""
     GROUPED_SELECT_FROM=""
+    _with_timeout() { shift; "$@"; }
     render_grouped_task_list "$QUEUE_PLAN" "$CANDIDATES"
     echo "$GROUPED_DISPLAY"
     echo
@@ -519,20 +552,22 @@ test_grouped_render_with_fixture_output() {
     printf "%s\n" "$GROUPED_SELECT_FROM"
   ')
 
-  check_contains "render prints available section" "$output" "Available Now - Parallel Wave 1"
-  check_contains "render prints queued section" "$output" "Queued After Dependencies"
-  check_not_contains "render skips avoid section after de-dup precedence" "$output" "Avoid Running Together"
+  # HOK-3305: section labels replace the legacy "Available Now - Parallel Wave 1"
+  # and "Queued After Dependencies" headings.
+  check_contains "render prints launch next section" "$output" "Launch next (safe together,"
+  check_contains "render prints held waiting section" "$output" "Held: waiting on"
+  check_not_contains "render omits legacy available section header" "$output" "Available Now - Parallel Wave 1"
+  check_not_contains "render omits legacy queued section header" "$output" "Queued After Dependencies"
   check_not_contains "render hides external blockers from triage section" "$output" "Needs Triage"
-  check_contains "render annotates blockers" "$output" "3. HOK-11 - Depends on foundation (blocked by: HOK-10)"
+  # Blocker line sits below the title row in the new format.
+  check_contains "render annotates blockers" "$output" "blocked by: HOK-10"
   check_not_contains "render omits conflict cluster after de-dup precedence" "$output" "[conflict cluster 1]"
-  check_not_contains "render hides off-deck external blocker from queued section" "$output" "HOK-14 - Broken dependency (blocked by: HOK-99)"
+  check_not_contains "render hides off-deck external blocker from queued section" "$output" "HOK-14 - Broken dependency"
 
-  line3=$(awk '/---SELECT---/{flag=1; next} flag {print; exit}' <<<"$output")
-  line5=$(awk '/---SELECT---/{flag=1; next} flag {count++; if (count == 3) { print; exit }}' <<<"$output")
-  line7=$(awk '/---SELECT---/{flag=1; next} flag {count++; if (count == 5) { print; exit }}' <<<"$output")
-  check_eq "selection line 1 matches first rendered task" "HOK-10|foundation-task|Foundation task|core|98|0" "$line3"
-  check_eq "selection line 3 matches queued task order" "HOK-11|depends-on-foundation|Depends on foundation|core|95|1" "$line5"
-  check_eq "selection line 5 omits off-deck external dependency task" "" "$line7"
+  first_select=$(awk '/---SELECT---/{flag=1; next} flag {print; exit}' <<<"$output")
+  third_select=$(awk '/---SELECT---/{flag=1; next} flag {count++; if (count == 3) { print; exit }}' <<<"$output")
+  check_eq "selection first record is the launch-next task" "HOK-10|foundation-task|Foundation task|core|98|0" "$first_select"
+  check_contains "selection list contains queued task HOK-11" "$output" "HOK-11|depends-on-foundation|Depends on foundation|core|95|1"
 }
 
 test_grouped_render_orders_available_by_score() {
@@ -546,6 +581,7 @@ test_grouped_render_orders_available_by_score() {
     source "$FUNCTIONS_FILE"
     GROUPED_DISPLAY=""
     GROUPED_SELECT_FROM=""
+    _with_timeout() { shift; "$@"; }
     render_grouped_task_list "$QUEUE_PLAN" "$CANDIDATES"
     echo "$GROUPED_DISPLAY"
     echo
@@ -553,9 +589,152 @@ test_grouped_render_orders_available_by_score() {
     printf "%s\n" "$GROUPED_SELECT_FROM"
   ')
 
+  check_contains "render prints launch next header" "$output" "Launch next (safe together,"
   check_contains "render promotes highest scored available task" "$output" "1. HOK-2 - Focus score"
   check_contains "render keeps second scored available task next" "$output" "2. HOK-3 - Medium score"
   check_contains "render demotes low scored available task" "$output" "3. HOK-1 - Low score"
+}
+
+test_render_launch_set_splits_conflicting_pair() {
+  local output candidates queue_plan
+  candidates=$'HOK-A|a-slug|Task A|core|90|0\nHOK-B|b-slug|Task B|core|85|0\nHOK-C|c-slug|Task C|core|80|0'
+  queue_plan='{"availableNow":["HOK-A","HOK-B","HOK-C"],"queuedAfterDependencies":[],"avoidRunningTogether":[],"sharedSurfaceConflicts":[{"a":"HOK-A","b":"HOK-B","files":["shared/lib/observer.ts"]}],"needsTriage":[]}'
+
+  output=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" CANDIDATES="$candidates" QUEUE_PLAN="$queue_plan" bash -lc '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$FUNCTIONS_FILE"
+    GROUPED_DISPLAY=""
+    GROUPED_SELECT_FROM=""
+    _with_timeout() { shift; "$@"; }
+    render_launch_set_picker "$QUEUE_PLAN" "$CANDIDATES" 2 "[]" 999 false false "" true
+    echo "$GROUPED_DISPLAY"
+    echo
+    echo "---SELECT---"
+    printf "%s\n" "$GROUPED_SELECT_FROM"
+  ')
+
+  check_contains "launch-next header shows free slots" "$output" "Launch next (safe together, 2 slots free)"
+  check_contains "launch next contains HOK-A" "$output" "HOK-A - Task A"
+  check_contains "launch next contains HOK-C" "$output" "HOK-C - Task C"
+  check_contains "held shares files section rendered" "$output" "Held: shares files"
+  check_contains "held entry names peer and file" "$output" "holds: shares shared/lib/observer.ts with HOK-A"
+  check_contains "held entry title line present" "$output" "HOK-B - Task B"
+
+  local first_select second_select
+  first_select=$(awk '/---SELECT---/{flag=1; next} flag {print; exit}' <<<"$output")
+  second_select=$(awk '/---SELECT---/{flag=1; next} flag {count++; if (count == 2) { print; exit }}' <<<"$output")
+  check_eq "first launch slot is HOK-A" "HOK-A|a-slug|Task A|core|90|0" "$first_select"
+  check_eq "second launch slot is HOK-C" "HOK-C|c-slug|Task C|core|80|0" "$second_select"
+}
+
+test_render_launch_set_names_in_flight_pr() {
+  local output candidates queue_plan
+  candidates=$'HOK-100|surface-touch|Touches surface|core|90|0'
+  queue_plan='{"availableNow":["HOK-100"],"queuedAfterDependencies":[],"avoidRunningTogether":[],"sharedSurfaceConflicts":[{"a":"HOK-100","b":"HOK-900","files":["shared/lib/x.ts"]}],"needsTriage":[]}'
+
+  output=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" CANDIDATES="$candidates" QUEUE_PLAN="$queue_plan" bash -lc '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$FUNCTIONS_FILE"
+    GROUPED_DISPLAY=""
+    GROUPED_SELECT_FROM=""
+    _with_timeout() { shift; "$@"; }
+    render_launch_set_picker "$QUEUE_PLAN" "$CANDIDATES" 1 "[{\"id\":\"HOK-900\",\"prNumber\":1703}]" 999 false false "" true
+    echo "$GROUPED_DISPLAY"
+  ')
+
+  check_contains "in-flight hold names the peer PR" "$output" "holds: shares shared/lib/x.ts with HOK-900 (PR #1703, in flight)"
+}
+
+test_render_launch_set_marks_touch_set_unknown() {
+  local output candidates queue_plan
+  candidates=$'HOK-200|unscored|Unscored task|core|50|0'
+  queue_plan='{"availableNow":["HOK-200"],"queuedAfterDependencies":[],"avoidRunningTogether":[],"sharedSurfaceConflicts":[],"needsTriage":[]}'
+
+  # Pass touchSetKnown=false via a direct inFlight-free launch-set call.
+  output=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" CANDIDATES="$candidates" QUEUE_PLAN="$queue_plan" REPO_DIR="$REPO_DIR" bash -lc '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$FUNCTIONS_FILE"
+    _with_timeout() { shift; "$@"; }
+    # Shadow _picker_select_wave so we can inject touchSetKnown=false for the one
+    # candidate (plan-queue-utils unit tests already cover the predicate itself).
+    _picker_select_wave() {
+      local plan="$1"
+      jq -n --argjson p "$plan" '"'"'
+        {
+          launchNext: [],
+          held: ($p.availableNow // [] | map({id: ., reason: "touch_set_unknown", detail: {kind: "touch_set_unknown"}})),
+          slotsFull: []
+        }
+      '"'"'
+    }
+    GROUPED_DISPLAY=""
+    GROUPED_SELECT_FROM=""
+    render_launch_set_picker "$QUEUE_PLAN" "$CANDIDATES" 1 "[]" 999 false false "" true
+    echo "$GROUPED_DISPLAY"
+  ')
+
+  check_contains "touch-set-unknown section rendered" "$output" "Not yet analysed"
+  check_contains "touch-set-unknown reason line rendered" "$output" "holds: scoring not yet available"
+}
+
+test_render_launch_set_height_budget_drops_held_before_launch() {
+  local output candidates queue_plan avail_ids
+  # One launch task (HOK-A) plus a long chain of held pairs. Each held entry
+  # pairs HOK-A with a peer so selectLaunchSet classifies each peer as
+  # conflicts_with_selected after HOK-A takes the sole launch slot.
+  avail_ids='["HOK-A","HOK-B","HOK-C","HOK-D","HOK-E","HOK-F","HOK-G"]'
+  candidates=$'HOK-A|a|Task A|core|99|0\nHOK-B|b|Task B|core|90|0\nHOK-C|c|Task C|core|80|0\nHOK-D|d|Task D|core|70|0\nHOK-E|e|Task E|core|60|0\nHOK-F|f|Task F|core|50|0\nHOK-G|g|Task G|core|40|0'
+  queue_plan=$(jq -nc --argjson a "$avail_ids" '{availableNow: $a, queuedAfterDependencies: [], avoidRunningTogether: [], sharedSurfaceConflicts: [{"a":"HOK-A","b":"HOK-B",files:["shared/x.ts"]},{"a":"HOK-A","b":"HOK-C",files:["shared/x.ts"]},{"a":"HOK-A","b":"HOK-D",files:["shared/x.ts"]},{"a":"HOK-A","b":"HOK-E",files:["shared/x.ts"]},{"a":"HOK-A","b":"HOK-F",files:["shared/x.ts"]},{"a":"HOK-A","b":"HOK-G",files:["shared/x.ts"]}], needsTriage: []}')
+
+  output=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" CANDIDATES="$candidates" QUEUE_PLAN="$queue_plan" bash -lc '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$FUNCTIONS_FILE"
+    GROUPED_DISPLAY=""
+    GROUPED_SELECT_FROM=""
+    _with_timeout() { shift; "$@"; }
+    # Budget tight enough (6 lines) to force held truncation to a single row
+    # while keeping the single launch row visible, exercising the Held tier.
+    render_launch_set_picker "$QUEUE_PLAN" "$CANDIDATES" 1 "[]" 6 false false "" true
+    echo "$GROUPED_DISPLAY"
+  ')
+
+  check_contains "launch next row survives tight budget" "$output" "HOK-A - Task A"
+  check_contains "held section renders under budget" "$output" "Held: shares files"
+  check_contains "hidden indicator shows when sections truncated" "$output" "m to expand"
+}
+
+test_render_launch_set_header_emitted_once() {
+  local output_with output_without candidates queue_plan
+  candidates=$'HOK-A|a|Task A|core|90|0'
+  queue_plan='{"availableNow":["HOK-A"],"queuedAfterDependencies":[],"avoidRunningTogether":[],"sharedSurfaceConflicts":[],"needsTriage":[]}'
+
+  output_with=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" CANDIDATES="$candidates" QUEUE_PLAN="$queue_plan" bash -lc '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$FUNCTIONS_FILE"
+    GROUPED_DISPLAY=""
+    GROUPED_SELECT_FROM=""
+    _with_timeout() { shift; "$@"; }
+    render_launch_set_picker "$QUEUE_PLAN" "$CANDIDATES" 1 "[]" 999 false false "" true
+    echo "$GROUPED_DISPLAY"
+  ')
+  output_without=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" CANDIDATES="$candidates" QUEUE_PLAN="$queue_plan" bash -lc '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$FUNCTIONS_FILE"
+    GROUPED_DISPLAY=""
+    GROUPED_SELECT_FROM=""
+    _with_timeout() { shift; "$@"; }
+    render_launch_set_picker "$QUEUE_PLAN" "$CANDIDATES" 1 "[]" 999 false false "" false
+    echo "$GROUPED_DISPLAY"
+  ')
+
+  check_eq "Next tasks header emitted exactly once with include_header=true" "1" "$(grep -c '^Next tasks:' <<<"$output_with" || true)"
+  check_eq "Next tasks header suppressed with include_header=false" "0" "$(grep -c '^Next tasks:' <<<"$output_without" || true)"
 }
 
 test_scoring_boosts_focus_and_near_milestones() {
@@ -611,6 +790,7 @@ test_grouped_render_deduplicates_and_keeps_one_item_per_line() {
     source "$FUNCTIONS_FILE"
     GROUPED_DISPLAY=""
     GROUPED_SELECT_FROM=""
+    _with_timeout() { shift; "$@"; }
     render_grouped_task_list "$QUEUE_PLAN" "$CANDIDATES"
     echo "$GROUPED_DISPLAY"
   ')
@@ -967,6 +1147,11 @@ test_filter_active_parents_stay_quiet_across_refreshes
 test_invoke_first_wave_helper_packs_priority_without_violating_dependencies
 test_grouped_render_with_fixture_output
 test_grouped_render_orders_available_by_score
+test_render_launch_set_splits_conflicting_pair
+test_render_launch_set_names_in_flight_pr
+test_render_launch_set_marks_touch_set_unknown
+test_render_launch_set_height_budget_drops_held_before_launch
+test_render_launch_set_header_emitted_once
 test_scoring_boosts_focus_and_near_milestones
 test_grouped_render_deduplicates_and_keeps_one_item_per_line
 test_render_rejects_malformed_json
