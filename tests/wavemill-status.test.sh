@@ -2710,8 +2710,10 @@ else
   fail "backstage health summary did not render degraded queue health"
 fi
 
-# HOK-3130: a successful planner run whose inference failed must not read as
-# healthy; a healthy run surfaces how many inferred edges are in use.
+# HOK-3130/HOK-3314: a successful planner run whose inference failed must not
+# read as healthy; a healthy run surfaces how many inferred edges are in use.
+# Dashboard renderers read `.currentAlertProjection` (the single HOK-3314
+# decider) for status label, severity, episode count, and the warning summary.
 cat > "$TMP_DIR/queue-health.json" <<'JSON'
 {
   "status": "degraded",
@@ -2721,18 +2723,35 @@ cat > "$TMP_DIR/queue-health.json" <<'JSON'
   "nextAction": "use_explicit_edges_only",
   "inferenceStatus": "failed",
   "inferredEdgeCount": 0,
-  "inference": { "error": "LLM fallback deadline exhausted before claude-sonnet-5" }
+  "inference": { "error": "LLM fallback deadline exhausted before claude-sonnet-5" },
+  "currentAlertProjection": {
+    "schemaVersion": 1,
+    "status": "degraded-inference",
+    "episode": {
+      "id": "queue-alert:inference:2026-10-22T00:00:00Z",
+      "kind": "inference",
+      "startedAt": "2026-10-22T00:00:00Z",
+      "consecutiveFailedAttempts": 1,
+      "latestFailureAt": "2026-10-22T00:00:00Z",
+      "severity": "low"
+    },
+    "summary": "Queue inference unavailable · 1 consecutive failed attempt · last failure 2026-10-22T00:00:00Z · explicit relations only",
+    "nextAction": "use_explicit_edges_only",
+    "evidenceWarnings": []
+  }
 }
 JSON
 run_render "$backstage_state" "$WORKTREES_DIR" "$backstage_behavior" "$backstage_output"
 queue_inference_render="$(cat "$backstage_output")"
-if [[ "$queue_inference_render" == *"Queue: degraded (inference_unavailable: failed)"* ]]; then
+if [[ "$queue_inference_render" == *"Queue: degraded (degraded-inference/low/1)"* ]]; then
   pass "backstage health summary renders inference_unavailable with its status"
 else
   fail "backstage health summary did not render inference_unavailable status"
 fi
-if [[ "$queue_inference_render" == *"queue inference unavailable (failed); planning with explicit edges only; last error: LLM fallback deadline exhausted"* ]]; then
-  pass "queue inference warning renders status and last error"
+if [[ "$queue_inference_render" == *"Queue inference unavailable"* \
+   && "$queue_inference_render" == *"1 consecutive failed attempt"* \
+   && "$queue_inference_render" == *"explicit relations only"* ]]; then
+  pass "queue inference warning renders projection summary"
 else
   fail "queue inference warning missing from dashboard"
 fi
@@ -2742,7 +2761,14 @@ cat > "$TMP_DIR/queue-health.json" <<'JSON'
   "status": "healthy",
   "nextAction": "use_dependency_queue",
   "inferenceStatus": "ok",
-  "inferredEdgeCount": 3
+  "inferredEdgeCount": 3,
+  "currentAlertProjection": {
+    "schemaVersion": 1,
+    "status": "healthy",
+    "summary": "Queue inference and planner healthy.",
+    "nextAction": "use_dependency_queue",
+    "evidenceWarnings": []
+  }
 }
 JSON
 run_render "$backstage_state" "$WORKTREES_DIR" "$backstage_behavior" "$backstage_output"
@@ -2752,7 +2778,8 @@ if [[ "$queue_inferred_render" == *"Queue: healthy (inferred 3)"* ]]; then
 else
   fail "backstage health summary did not render inferred edge count"
 fi
-if [[ "$queue_inferred_render" != *"queue inference unavailable"* ]]; then
+if [[ "$queue_inferred_render" != *"queue inference unavailable"* \
+   && "$queue_inferred_render" != *"Queue inference unavailable"* ]]; then
   pass "healthy inference renders no queue warning"
 else
   fail "healthy inference rendered a queue warning"

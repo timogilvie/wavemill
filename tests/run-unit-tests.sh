@@ -74,6 +74,8 @@ TESTS=(
   shared/lib/native-agent/prompt-size-log.test.ts
   shared/lib/native-agent/prompt-cache.test.ts
   shared/lib/native-agent/prompt-cache-detector.test.ts
+  shared/lib/native-agent/payload-capture.test.ts
+  shared/lib/native-agent/prefix-stability.test.ts
   shared/lib/native-agent/prompts.test.ts
   shared/lib/native-agent/pi-usage-cost.test.ts
   shared/lib/native-agent/provenance.test.ts
@@ -374,6 +376,7 @@ TESTS=(
   src/evaluation/scorers/wavemill/success-rate-under-budget.test.ts
   src/evaluation/adapters/wavemill-router-adapter.test.ts
   tools/abort-task.test.ts
+  tools/replay-native-request.test.ts
   tools/add-pr-label.test.ts
   tools/backfill-challenge-stage.test.ts
   tools/backfill-stage-executed-model.test.ts
