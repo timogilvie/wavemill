@@ -7916,13 +7916,13 @@ stage_launch_identity() {
   printf '%s\t%s\n' "$agent" "$model"
 }
 
-# ── Terminal native failure detection (hook-driven) ──────────────────
-# The pane-scraping heuristics above only recognise *exec-level* failures:
-# exit 127, bare `--model` invocations, probe failures. A provider that accepts
-# the launch and then rejects the request — an unrecognised model ID, or a
-# prompt larger than the model's context window — produces none of those
-# signatures, and `_pane_is_dead_or_idle` may not hold either. Such arms stayed
-# parked in `phase: coding` indefinitely, blocking the merge lane.
+# ── Terminal stage failure detection (hook-driven) ──────────────────
+# HOK-3313: identity for a running stage comes from the launch record only,
+# never from pane text. A provider that accepts the launch and then rejects
+# the request (an unrecognised model ID, a prompt larger than the context
+# window, exit-127 wrapper failures, bare `--model` shells, native probe
+# refusals) records a terminal hook event; the single policy decides whether
+# to retry or park.
 #
 # The agent's own status hook already records these as a terminal
 # {"state":"error","event":"process_exit"} write. Unlike the liveness reads in
