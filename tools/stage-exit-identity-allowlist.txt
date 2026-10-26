@@ -10,4 +10,4 @@
 #
 # Prefer a one-line `// allow-stage-exit-identity: <reason>` (`#` in shell)
 # suppression over an entry whenever only a line or two is involved.
-shared/lib/wavemill-monitor.sh 2  # phase_launch_gate exhausted branch + emit_native_terminal_failure_attention terminal-class allowlist branch
+shared/lib/wavemill-monitor.sh 2  # :8117 emit_native_terminal_failure_attention (terminal-failure handler) + :8684 phase_launch_gate exhausted (bounded-retry exhaustion)
