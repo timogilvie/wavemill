@@ -1,4 +1,4 @@
-import { appendFile, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { loadTraceContext, appendTraceEvent } from './trace-event.ts';
@@ -27,6 +27,7 @@ import {
 import { normalizeJobs, type MillJob } from './job-tracker.ts';
 import { updateBranchWithBase, type BranchBaseUpdateResult } from './promotion-controller.ts';
 import { escapeShellArg } from './shell-utils.ts';
+import { termPaneFieldsAsync } from './terminal-backend.ts';
 import { findCachedPullRequest } from './session-gh-cache.ts';
 import { mutateJsonState } from './state-mutex.ts';
 import { mutateWorkflowState, readWorkflowState as readWorkflowStateFile, type WorkflowState } from './workflow-state.ts';
@@ -108,6 +109,7 @@ export interface ReadyTaskSnapshot {
   readyVerdict: ReadyArtifacts['verdict'] | null;
   readyAttentionDetail: string | null;
   hasNeedsAttention: boolean;
+  /** A conflict resolver is in flight: `.conflict-remediation.json` (HOK-3273). */
   hasConflictMarker: boolean;
   remediationLaunchHead: string | null;
   currentHead: string | null;
@@ -455,15 +457,13 @@ const defaultDeps: ReadyWatchdogDeps = {
     }
 
     try {
-      const { stdout } = await execFileAsync(
-        'tmux',
-        ['display-message', '-p', '-t', target, '#{pane_dead}|#{pane_current_command}|#{pane_pid}'],
-        {
-          encoding: 'utf-8',
-          maxBuffer: 1024 * 1024,
-        },
-      );
-      const [paneDead, command, panePid] = stdout.trim().split('|');
+      const fields = await termPaneFieldsAsync(target, ['dead', 'current_command', 'pid']);
+      if (!fields) {
+        return null;
+      }
+      const paneDead = fields.dead.trim();
+      const command = fields.current_command;
+      const panePid = fields.pid.trim();
       if (paneDead === '1') {
         return false;
       }
@@ -1563,7 +1563,7 @@ async function buildSnapshot(
     readyVerdict: readyArtifacts?.verdict ?? null,
     readyAttentionDetail: readAttentionDetail(stateDir),
     hasNeedsAttention: existsSync(path.join(stateDir, '.needs-attention')),
-    hasConflictMarker: existsSync(path.join(stateDir, '.conflict-detected')),
+    hasConflictMarker: existsSync(path.join(stateDir, '.conflict-remediation.json')),
     remediationLaunchHead: readyArtifacts?.remediationLaunchHead ?? readyArtifacts?.launchHead ?? null,
     currentHead: await deps.getCurrentHead(worktree),
     remediationPaneActive: paneActive,
@@ -1583,9 +1583,7 @@ async function recoverReadyState(
   note = 'Ready watchdog cleared stale local state and queued a re-check.',
 ): Promise<void> {
   clearMarker({ path: path.join(snapshot.readyStateDir, '.needs-attention'), kind: 'ready-attention' });
-  clearMarker({ path: path.join(snapshot.readyStateDir, '.conflict-detected'), kind: 'ready-conflict' });
-  await rm(path.join(snapshot.readyStateDir, '.conflict-attention-head'), { force: true });
-  await rm(path.join(snapshot.readyStateDir, '.conflict-attention-reported'), { force: true });
+  clearMarker({ path: path.join(snapshot.readyStateDir, '.conflict-remediation.json'), kind: 'conflict-remediation' });
 
   const priorArtifacts = snapshot.readyArtifacts ?? { type: 'ready' } as ReadyArtifacts;
   const nextArtifacts: ReadyArtifacts = {

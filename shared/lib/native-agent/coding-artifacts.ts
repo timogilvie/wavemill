@@ -4,6 +4,7 @@ import {
   validateSeamSubschemaValue,
   type SeamValidationError,
 } from '../seam-artifacts.ts';
+import type { StageExecutionUsage } from '../stage-result.ts';
 
 export type CodingCompleteConfidence = 'high' | 'medium' | 'low';
 
@@ -23,6 +24,8 @@ export interface CodingArtifacts {
   linesAdded: number;
   linesRemoved: number;
   commitCount: number;
+  /** Native coding loop usage, including prompt-cache fields (HOK-3260). */
+  usage?: StageExecutionUsage;
   [futureField: string]: unknown;
 }
 

@@ -64,11 +64,10 @@ extract_function "$MONITOR_SCRIPT_FILE" "pane_release_reason_actionable" >> "$MO
 extract_function "$MONITOR_SCRIPT_FILE" "clear_stale_pane_release_blocked_marker" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "release_task_pane_window_only" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_remediation_launch_head" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "ready_conflict_attention_head" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "ready_conflict_recheck_interval_seconds" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "ready_conflict_recheck_due" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "ready_conflict_pr_is_clean" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "write_ready_conflict_recheck_at" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_marker_path" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_in_flight" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_awaiting_ready" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_exhausted_hold" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "clear_transient_mergeability_state" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_count" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "clear_failed_ready_recheck_state" >> "$MONITOR_FUNC_FILE"
@@ -176,22 +175,28 @@ JSON
     case "$CASE_NAME" in
       review_to_ready)
         ;;
+      # HOK-3273: Ready launched a resolver at old-head (its marker records
+      # the launch head); HEAD is now current-head.
       ready_conflict_rerun)
         CURRENT_PHASE="ready"
-        READY_STATUS="completed"
-        touch "$READY_DIR/.conflict-detected"
+        READY_STATUS="running"
+        printf "%s\n" "{\"stage\":\"ready\",\"status\":\"running\",\"artifacts\":{\"mergeConflict\":\"CONFLICTED\",\"launchHead\":\"old-head\"}}" > "$READY_DIR/.ready-result.json"
+        marker_write "$READY_DIR/.conflict-remediation.json" --kind conflict-remediation --head old-head \
+          --expires-on "head,remote,operator-event" --detail-json "{\"launchHead\":\"old-head\"}"
         ;;
-      ready_conflict_attention_already_reported)
+      ready_conflict_in_flight)
         CURRENT_PHASE="ready"
-        READY_STATUS="completed"
-        touch "$READY_DIR/.conflict-detected" "$READY_DIR/.conflict-attention-reported"
-        printf "%s\n" "current-head" > "$READY_DIR/.conflict-attention-head"
+        READY_STATUS="running"
+        printf "%s\n" "{\"stage\":\"ready\",\"status\":\"running\",\"artifacts\":{\"mergeConflict\":\"CONFLICTED\",\"launchHead\":\"current-head\"}}" > "$READY_DIR/.ready-result.json"
+        marker_write "$READY_DIR/.conflict-remediation.json" --kind conflict-remediation --head current-head \
+          --expires-on "head,remote,operator-event" --detail-json "{\"launchHead\":\"current-head\"}"
         ;;
-      ready_conflict_attention_different_head)
+      ready_conflict_exhausted)
         CURRENT_PHASE="ready"
-        READY_STATUS="completed"
-        touch "$READY_DIR/.conflict-detected" "$READY_DIR/.conflict-attention-reported"
-        printf "%s\n" "old-head" > "$READY_DIR/.conflict-attention-head"
+        READY_STATUS="running"
+        printf "%s\n" "{\"stage\":\"ready\",\"status\":\"running\",\"artifacts\":{\"mergeConflict\":\"CONFLICTED\",\"launchHead\":\"old-head\"}}" > "$READY_DIR/.ready-result.json"
+        bounded_retry_increment "$READY_DIR" "conflict-remediation-relaunch" "current-head" >/dev/null
+        bounded_retry_mark_exhausted "$READY_DIR" "conflict-remediation-relaunch" "Conflict remediation exhausted"
         ;;
       ready_pending_repolls_ci)
         CURRENT_PHASE="ready"
@@ -397,7 +402,8 @@ JSON
         READY_STATUS="completed"
         PR_STATUS="MERGED"
         VALIDATE_MERGED="true"
-        touch "$READY_DIR/.conflict-detected"
+        marker_write "$READY_DIR/.conflict-remediation.json" --kind conflict-remediation --head old-head \
+          --expires-on "head,remote,operator-event" --detail-json "{\"launchHead\":\"old-head\"}"
         printf "%s\n" "{\"status\":\"completed\",\"artifacts\":{\"verdict\":\"pass\"}}" > "$READY_DIR/.ready-result.json"
         ;;
       ready_closed_cleanup)
@@ -634,11 +640,6 @@ JSON
       printf -v WRITE_READY_ATTENTION_CALLS '%s%s\n' "$WRITE_READY_ATTENTION_CALLS" "$*"
     }
     ready_state_dir() { printf "%s\n" "$READY_DIR"; }
-    ready_conflict_launch_head() {
-      if [[ "$CASE_NAME" == "ready_conflict_rerun" ]]; then
-        printf "%s\n" "old-head"
-      fi
-    }
     git() {
       if [[ "${1:-}" == "-C" && "${3:-}" == "rev-parse" && "${4:-}" == "HEAD" ]]; then
         printf "%s\n" "current-head"
@@ -736,19 +737,21 @@ check_contains "review with open PR launches ready checks" "$review_to_ready_out
 check_contains "review with open PR does not only restore review window" "$review_to_ready_output" "restore_calls=0"
 check_contains "review with open PR records completed review stage" "$review_to_ready_output" "|review|completed|"
 
+# HOK-3273: the resolver pushed (HEAD moved past its launch head), so Ready
+# re-runs at once; a pass clears attention.
 ready_conflict_output="$(run_monitor_case ready_conflict_rerun)"
 check_contains "ready conflict rerun keeps task in ready" "$ready_conflict_output" "phase=ready"
 check_contains "ready conflict rerun launches ready checks again" "$ready_conflict_output" "ready_launches=1"
-check_contains "ready conflict rerun leaves attention on task" "$ready_conflict_output" "attention=needs-user"
+check_contains "ready conflict rerun clears attention after a pass" "$ready_conflict_output" "attention=clear"
 
-ready_conflict_reported_output="$(run_monitor_case ready_conflict_attention_already_reported)"
-check_contains "reported conflict keeps task in ready" "$ready_conflict_reported_output" "phase=ready"
-check_contains "reported conflict does not relaunch ready" "$ready_conflict_reported_output" "ready_launches=0"
-check_contains "reported conflict leaves attention on task" "$ready_conflict_reported_output" "attention=needs-user"
+ready_conflict_in_flight_output="$(run_monitor_case ready_conflict_in_flight)"
+check_contains "in-flight resolver keeps task in ready" "$ready_conflict_in_flight_output" "phase=ready"
+check_contains "in-flight resolver does not relaunch ready" "$ready_conflict_in_flight_output" "ready_launches=0"
+check_contains "in-flight resolver keeps the arm active" "$ready_conflict_in_flight_output" "attention=clear"
 
-ready_conflict_different_head_output="$(run_monitor_case ready_conflict_attention_different_head)"
-check_contains "different-head conflict relaunches ready" "$ready_conflict_different_head_output" "ready_launches=1"
-check_contains "different-head conflict leaves attention on task" "$ready_conflict_different_head_output" "attention=needs-user"
+ready_conflict_exhausted_output="$(run_monitor_case ready_conflict_exhausted)"
+check_contains "exhausted conflict budget does not relaunch ready" "$ready_conflict_exhausted_output" "ready_launches=0"
+check_contains "exhausted conflict budget leaves attention on task" "$ready_conflict_exhausted_output" "attention=needs-user"
 
 ready_pending_repolls_ci_output="$(run_monitor_case ready_pending_repolls_ci)"
 check_contains "pending ready re-polls CI" "$ready_pending_repolls_ci_output" "ready_launches=1"

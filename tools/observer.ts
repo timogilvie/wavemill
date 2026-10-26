@@ -7,6 +7,13 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mutateJsonState, mutateJsonStateSync } from '../shared/lib/state-mutex.ts';
 import {
+  termCapture,
+  termListPanes,
+  termListSessions,
+  termPaneHandle,
+  termSessionEnv,
+} from '../shared/lib/terminal-backend.ts';
+import {
   getIncidentConfig,
   getMillConfig,
   getObserverAlertsConfig,
@@ -120,6 +127,14 @@ const DEFAULT_OBSERVER_PANE_TITLE = 'Wavemill Observer';
 const READY_RECHECK_LOOP_THRESHOLD = 3;
 const READY_RECHECK_LOOP_URGENT_THRESHOLD = 6;
 const MODEL_DOWNGRADE_THRESHOLD = 3;
+// HOK-3244 REQ-F4 / HOK-3210: the mill log tends to repeat a single [status]
+// line when a monitor-level loop is spinning without state change (the HOK-3210
+// pattern was 67 recreated-window status lines for one task). The generic log
+// scan only reads error/warn, so these loops are invisible. Threshold picked
+// to clear ordinary startup chatter — a healthy session has 1–2 copies of any
+// given status line in a 240-line window.
+const REPEATED_STATUS_THRESHOLD = 10;
+const REPEATED_STATUS_URGENT_THRESHOLD = 20;
 // terminal-task-parked severity floors: age escalation never triggers below these,
 // even with a very small --stale-minutes.
 const TERMINAL_PARKED_HIGH_FLOOR_MINUTES = 60;
@@ -162,6 +177,7 @@ interface ObserverOptions {
   fileLinear: boolean;
   fileIncidents: boolean;
   dryRun: boolean;
+  autoFixDryRun: boolean;
   incidentsDryRun: boolean;
   incidentsShadow?: boolean;
   incidentsMode?: 'off' | 'offline' | 'shadow' | 'live';
@@ -188,7 +204,7 @@ interface Pane {
   pid: number;
   command: string;
   title: string;
-  /** Test seam: pre-captured pane text. When absent, tmux capture-pane is used. */
+  /** Test seam: pre-captured pane text. When absent, the terminal backend's capture is used. */
   capturedText?: string;
 }
 
@@ -365,6 +381,11 @@ interface IncidentSyncSnapshot {
   results: SyncResult[];
   errors: Array<{ fingerprint: string; action: string; reason: string; nextRetry?: string }>;
   shadow?: IncidentSyncShadowSnapshot;
+  /**
+   * HOK-3243: per-class incident counts dropped before Linear filing by
+   * `observer.linear.suppress.classes`. Still counted in `skipped`.
+   */
+  suppressedByClass?: Partial<Record<IncidentRootCauseClass, number>>;
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -397,7 +418,9 @@ Options:
   --linear-team <key>    Linear team key/name/id for filed issues
   --linear-project <id>  Optional Linear project id/name for filed issues
   --linear-label <name>  Optional Linear label name to attach
-  --dry-run              Do not create Linear issues
+  --dry-run              Suppress legacy --file-linear writes (does not gate
+                         auto-fix; use --autofix-dry-run for that).
+  --autofix-dry-run      Preview auto-fix actions without applying them.
   --stale-minutes <n>    State/log/marker stale threshold (default: ${DEFAULT_STALE_MINUTES})
   --hung-minutes <n>     Child process hung threshold (default: ${DEFAULT_HUNG_MINUTES})
   --max-log-lines <n>    Recent mill log lines to inspect (default: 240)
@@ -423,6 +446,7 @@ export function parseArgs(argv: string[]): ObserverOptions {
     fileLinear: false,
     fileIncidents: false,
     dryRun: false,
+    autoFixDryRun: false,
     incidentsDryRun: false,
     maxLogLines: 240,
     printPrompt: false,
@@ -484,6 +508,8 @@ export function parseArgs(argv: string[]): ObserverOptions {
       options.fileIncidents = true;
     } else if (arg === '--dry-run') {
       options.dryRun = true;
+    } else if (arg === '--autofix-dry-run') {
+      options.autoFixDryRun = true;
     } else if (arg === '--print-prompt') {
       options.printPrompt = true;
     } else if (arg === '--no-incident-detector') {
@@ -597,56 +623,24 @@ function parseElapsed(value: string): number {
 }
 
 function listSessions(): string[] {
-  const result = run('tmux', ['list-sessions', '-F', '#{session_name}'], 5_000);
-  if (!result.ok) {
-    return [];
-  }
-  return result.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+  return termListSessions({ timeoutMs: 5_000 });
 }
 
 function listPanes(): Pane[] {
-  const format = [
-    '#{session_name}',
-    '#{window_index}',
-    '#{pane_index}',
-    '#{window_name}',
-    '#{pane_active}',
-    '#{pane_pid}',
-    '#{pane_current_command}',
-    '#{pane_title}',
-  ].join('\t');
-  const result = run('tmux', ['list-panes', '-a', '-F', format], 5_000);
-  if (!result.ok) {
-    return [];
-  }
-  return result.stdout.split('\n').filter(Boolean).map((line) => {
-    const [session, windowIndex, paneIndex, windowName, active, pid, command, title] = line.split('\t');
-    return {
-      session,
-      windowIndex,
-      paneIndex,
-      windowName,
-      active: active === '1',
-      pid: Number.parseInt(pid, 10) || 0,
-      command: command || '',
-      title: title || '',
-    };
-  });
+  return termListPanes({ timeoutMs: 5_000 }).map((row) => ({
+    session: row.session,
+    windowIndex: row.windowIndex,
+    paneIndex: row.paneIndex,
+    windowName: row.windowName,
+    active: row.active,
+    pid: row.pid,
+    command: row.currentCommand,
+    title: row.title,
+  }));
 }
 
 function sessionEnv(session: string): Record<string, string> {
-  const result = run('tmux', ['show-environment', '-t', session], 5_000);
-  const env: Record<string, string> = {};
-  if (!result.ok) {
-    return env;
-  }
-  for (const line of result.stdout.split('\n')) {
-    if (!line || line.startsWith('-')) continue;
-    const index = line.indexOf('=');
-    if (index === -1) continue;
-    env[line.slice(0, index)] = line.slice(index + 1);
-  }
-  return env;
+  return termSessionEnv(session, { timeoutMs: 5_000 });
 }
 
 function processRows(): ProcessRow[] {
@@ -1599,7 +1593,7 @@ function tailLines(path: string, count: number): string[] {
 interface MarkerIgnoredConfig {
   phase: 'coding' | 'planning';
   markerName: '.coding-complete' | '.plan-approved';
-  idPrefix: 'coding-marker-ignored' | 'plan-marker-ignored';
+  idPrefix: 'coding-marker-ignored' | 'plan-marker-ignored' | 'coding-complete-in-planning';
   titlePhase: string;
   /** Used when the mill has not written state since the marker appeared. */
   staleRecommendation: string;
@@ -1825,6 +1819,42 @@ export function detectQueueInferenceStuck(
   }];
 }
 
+/**
+ * HOK-3244 (REQ-F2): run a best-effort detector, converting any throw into a
+ * surfaced finding instead of silently dropping the detector's output. Empty
+ * catches used to hide a broken detector until an operator spot-checked why
+ * the observer stopped reporting a class of condition. The finding names the
+ * detector so the fix target is unambiguous.
+ */
+export function runDetector(
+  name: string,
+  repo: Pick<RepoSnapshot, 'session' | 'repoDir'>,
+  fn: () => Finding[],
+  findings: Finding[],
+): void {
+  try {
+    findings.push(...fn());
+  } catch (err) {
+    const errorName = err instanceof Error ? err.name : 'Error';
+    const message = err instanceof Error ? err.message : String(err);
+    findings.push({
+      id: `observer-detector-error-${name}-${repo.session}-${hashText(repo.repoDir ?? 'unknown')}`,
+      severity: 'medium',
+      category: 'operational',
+      confidence: 'high',
+      session: repo.session,
+      repoDir: repo.repoDir,
+      title: `Observer detector ${name} threw ${errorName}`,
+      evidence: [
+        `detector=${name}`,
+        `errorName=${errorName}`,
+        `message=${message.slice(0, 500)}`,
+      ],
+      recommendation: `Inspect tools/observer.ts ${name}; a throwing detector hides the rest of its findings until repaired. See HOK-3244.`,
+    });
+  }
+}
+
 export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, options: ObserverOptions): Finding[] {
   const findings: Finding[] = [];
   const now = Date.now();
@@ -1855,26 +1885,21 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
     // HOK-3096: state-based detectors. Each is independently best-effort —
     // one throwing (e.g. a git/gh call blowing up in an unexpected way) must
     // never drop findings from the other detectors or the rest of the pass.
-    try {
+    // HOK-3244: a throw now surfaces an `observer-detector-error-<name>`
+    // finding instead of a silent empty catch, so a broken detector is
+    // visible instead of silently withholding its class of findings.
+    runDetector('stuck-merge-candidates', repo, () => {
       const sessionCapabilities = resolveSessionCapabilities(repo.repoDir);
-      findings.push(...detectStuckMergeCandidates(repo, now, sessionCapabilities));
-    } catch { /* best-effort: advisory detector, never blocks the pass */ }
-    try {
-      findings.push(...detectExhaustedRetries(repo, now, progressLookup));
-    } catch { /* best-effort: advisory detector, never blocks the pass */ }
-    try {
-      findings.push(...detectBranchBehindBase(repo, now));
-    } catch { /* best-effort: advisory detector, never blocks the pass */ }
+      return detectStuckMergeCandidates(repo, now, sessionCapabilities);
+    }, findings);
+    runDetector('exhausted-retries', repo, () => detectExhaustedRetries(repo, now, progressLookup), findings);
+    runDetector('branch-behind-base', repo, () => detectBranchBehindBase(repo, now), findings);
     // HOK-3207: sustained slow passes (p50 > warnMs for ≥ 1 h) and
     // stuck queue inference (consecutiveFailures ≥ 5). Each has a stable
     // `id`, so `selectAlertsToSend` dedupes repeat findings and recovery
     // (slowSinceAt cleared, failures reset) naturally retracts them.
-    try {
-      findings.push(...detectSustainedSlowPasses(repo, now));
-    } catch { /* best-effort: advisory detector, never blocks the pass */ }
-    try {
-      findings.push(...detectQueueInferenceStuck(repo, now));
-    } catch { /* best-effort: advisory detector, never blocks the pass */ }
+    runDetector('sustained-slow-passes', repo, () => detectSustainedSlowPasses(repo, now), findings);
+    runDetector('queue-inference-stuck', repo, () => detectQueueInferenceStuck(repo, now), findings);
 
     const rejectedEvalCount = countRejectedEvalRecords(repo.repoDir);
     if (rejectedEvalCount > 0) {
@@ -2137,6 +2162,20 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
           titlePhase: 'planning',
           staleRecommendation: 'The monitor should launch coding. Check for a hung monitor child process or blocking external command before restarting the session.',
           stateAliveRecommendation: 'The monitor should launch coding. It is still writing workflow state but has not advanced this task — inspect its poll branch and this task\'s hook file before restarting anything.',
+        }),
+        // HOK-3244 REQ-F5 / HOK-3211: a `.coding-complete` marker while the
+        // task's phase is still `planning` is a leaked marker — plan
+        // re-approval archived the agent's prior `.coding-complete` and the
+        // mill failed to clear it on the relaunch. The healthy plan→code
+        // transition flips `phase` to `coding` within one tick, so the
+        // staleMinutes gate keeps that brief window from firing.
+        buildMarkerIgnoredFinding(repo, task, featureDir, now, options, {
+          phase: 'planning',
+          markerName: '.coding-complete',
+          idPrefix: 'coding-complete-in-planning',
+          titlePhase: 'planning',
+          staleRecommendation: 'A .coding-complete marker is present while the task is still in planning (HOK-3211 symptom). Archive the leaked marker (`mv <feature_dir>/.coding-complete <feature_dir>/.coding-complete.archived-<timestamp>`) and let the mill re-plan, or touch `.plan-approved` to restore the handoff — whichever matches the current intent.',
+          stateAliveRecommendation: 'A .coding-complete marker is present while the task is still in planning (HOK-3211 symptom). The mill is still writing state but has not acted on this stage transition — archive the leaked marker (`mv <feature_dir>/.coding-complete <feature_dir>/.coding-complete.archived-<timestamp>`) before relaunching planning, or touch `.plan-approved` to restore the handoff.',
         }),
       ];
       for (const finding of markerFindings) {
@@ -2445,6 +2484,44 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
         ));
         break;
       }
+    }
+
+    // HOK-3244 REQ-F4 / HOK-3210: repeated-[status]-line detector. The generic
+    // log scan below only reads error/warn, so a monitor-level status loop
+    // (e.g. "Recreated tmux window for HOK-9999" repeated 67 times) is
+    // otherwise invisible. Grouping key is the normalized message, not
+    // consecutive position — one looping writer repeats the same line whether
+    // or not other sources interleave with it.
+    const repeatedStatusGroups = new Map<string, { normalizedMessage: string; lines: string[] }>();
+    for (const line of logLines) {
+      const parsed = parseMillLogLine(line);
+      if (!parsed || parsed.level !== 'status') continue;
+      if (isAgentBoxOutputMessage(parsed.message)) continue;
+      const normalizedMessage = normalizeMillLogFingerprintMessage(parsed.message);
+      if (!normalizedMessage) continue;
+      const group = repeatedStatusGroups.get(normalizedMessage) ?? { normalizedMessage, lines: [] };
+      group.lines.push(line);
+      repeatedStatusGroups.set(normalizedMessage, group);
+    }
+    for (const group of repeatedStatusGroups.values()) {
+      if (group.lines.length < REPEATED_STATUS_THRESHOLD) continue;
+      const latestLine = group.lines[group.lines.length - 1];
+      findings.push({
+        id: `repeated-status-${repo.session}-${hashText(group.normalizedMessage)}`,
+        severity: group.lines.length >= REPEATED_STATUS_URGENT_THRESHOLD ? 'high' : 'medium',
+        category: 'stuck',
+        confidence: 'high',
+        session: repo.session,
+        repoDir: repo.repoDir,
+        title: 'Mill log repeats a status line without state change',
+        evidence: [
+          `occurrences=${group.lines.length}`,
+          `normalizedMessage=${group.normalizedMessage}`,
+          ...group.lines.slice(-4),
+        ],
+        recommendation: 'A repeated [status] line usually means a monitor-level loop is firing on every pass without state change. Inspect the mill log and the relevant task state; a repeated line that names a task is often a window/pane/reap loop.',
+        occurrenceCount: group.lines.length,
+      });
     }
 
     const genericLogFindings = new Map<string, AggregatedMillLogFinding>();
@@ -3443,7 +3520,14 @@ interface RetryExhaustionSentinel {
   reason: string;
 }
 
-/** Scan a task state directory for `.retry-<bucket>-exhausted` sentinels (HOK-2924). Never throws. */
+/**
+ * Scan a task state directory for retry-exhausted sentinels (HOK-2924). Never
+ * throws. Matches both the standard `.retry-<bucket>-exhausted` shape and the
+ * legacy `.failed-ready-recheck-exhausted` shape — `_bounded_retry_prefix`
+ * drops the `.retry-` prefix for that single bucket for upgrade compatibility
+ * (bounded-retry.sh:44). Without the extra match, the detector silently misses
+ * every failed-ready-recheck exhaustion (HOK-3244 REQ-F3).
+ */
 function listExhaustedRetrySentinels(stateDir: string): RetryExhaustionSentinel[] {
   let entries: string[];
   try {
@@ -3453,18 +3537,34 @@ function listExhaustedRetrySentinels(stateDir: string): RetryExhaustionSentinel[
   }
   const sentinels: RetryExhaustionSentinel[] = [];
   for (const name of entries) {
-    const match = /^\.retry-(.+)-exhausted$/.exec(name);
-    if (!match) continue;
+    let bucket: string | undefined;
+    if (name === '.failed-ready-recheck-exhausted') {
+      bucket = 'failed-ready-recheck';
+    } else {
+      const match = /^\.retry-(.+)-exhausted$/.exec(name);
+      if (match) bucket = match[1];
+    }
+    if (!bucket) continue;
     const path = join(stateDir, name);
     try {
       const stat = statSync(path);
       const reason = readFileSync(path, 'utf8').trim();
-      sentinels.push({ bucket: match[1], path, mtimeMs: stat.mtimeMs, reason });
+      sentinels.push({ bucket, path, mtimeMs: stat.mtimeMs, reason });
     } catch {
       // Unreadable sentinel: skip rather than report on data we cannot verify.
     }
   }
   return sentinels;
+}
+
+/**
+ * Resolve the per-bucket file prefix used by `shared/lib/bounded-retry.sh`:
+ * `.retry-<bucket>-` for every bucket, with the sole exception of
+ * `failed-ready-recheck`, whose storage keeps its pre-HOK-2924 names
+ * (`.failed-ready-recheck-*`) for upgrade compatibility.
+ */
+function retryBucketPrefix(bucket: string): string {
+  return bucket === 'failed-ready-recheck' ? '.failed-ready-recheck-' : `.retry-${bucket}-`;
 }
 
 /**
@@ -3477,7 +3577,7 @@ function listExhaustedRetrySentinels(stateDir: string): RetryExhaustionSentinel[
  * suppresses on information it cannot verify.
  */
 function exhaustedRetryStillKeyed(stateDir: string, bucket: string, repoDir: string, branch: string | undefined): boolean {
-  const headFile = join(stateDir, `.retry-${bucket}-head`);
+  const headFile = join(stateDir, `${retryBucketPrefix(bucket)}head`);
   if (!existsSync(headFile)) return true;
   let storedHead: string | undefined;
   try {
@@ -3683,9 +3783,8 @@ function matchTaskIssueInText(repo: RepoSnapshot, text: string): string | undefi
 
 function capturePaneText(pane: Pane): string | undefined {
   if (pane.capturedText !== undefined) return pane.capturedText;
-  const target = `${pane.session}:${pane.windowIndex}.${pane.paneIndex}`;
-  const result = run('tmux', ['capture-pane', '-p', '-S', '-200', '-t', target], 5_000);
-  return result.ok ? result.stdout : undefined;
+  const target = termPaneHandle(pane.session, pane.windowIndex, pane.paneIndex);
+  return termCapture(target, { lines: 200, timeoutMs: 5_000 }) ?? undefined;
 }
 
 /**
@@ -4473,9 +4572,38 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
       });
     }
 
-    const incidents = options.incidentsReplay
+    const incidentsRaw = options.incidentsReplay
       ? [await store.getIncident(options.incidentsReplay)].filter((incident): incident is IncidentRecord => incident !== null)
       : await store.getIncidents();
+    // HOK-3243: drop suppressed classes before cap/filing so noisy lifecycle
+    // classes never consume the per-pass budget. The incidents still land in
+    // `.wavemill/incidents/` for local analysis; only Linear filing is
+    // skipped. An explicit `--incidents-replay` on a suppressed fingerprint
+    // bypasses the filter so operators can still re-sync by hand.
+    const suppressedClasses = new Set(config.suppress.classes);
+    const perClassSuppressed: Partial<Record<IncidentRootCauseClass, number>> = {};
+    const incidents: IncidentRecord[] = [];
+    for (const incident of incidentsRaw) {
+      if (!options.incidentsReplay && suppressedClasses.has(incident.rootCauseClass)) {
+        perClassSuppressed[incident.rootCauseClass] =
+          (perClassSuppressed[incident.rootCauseClass] ?? 0) + 1;
+        continue;
+      }
+      incidents.push(incident);
+    }
+    const perClassSuppressedCount = Object.values(perClassSuppressed).reduce(
+      (sum, count) => sum + (count ?? 0),
+      0,
+    );
+    if (perClassSuppressedCount > 0) {
+      summary.skipped += perClassSuppressedCount;
+      summary.suppressedByClass = { ...(summary.suppressedByClass ?? {}) };
+      for (const [className, count] of Object.entries(perClassSuppressed)) {
+        const key = className as IncidentRootCauseClass;
+        summary.suppressedByClass[key] =
+          (summary.suppressedByClass[key] ?? 0) + (count ?? 0);
+      }
+    }
     // Per-pass cap fix: only the fully offline mode bypasses the cap; shadow
     // and live both honour maxIncidentsPerPass so a shadow trial cannot make
     // an unbounded number of correlation searches per pass.
@@ -4724,12 +4852,11 @@ export async function applyAutoFixes(
         config,
         deps,
         now,
-        dryRun: options.dryRun,
+        dryRun: options.autoFixDryRun,
       });
-      if (records.length > 0 && !options.dryRun) {
-        appendAutoFixActionRecords(incidentStoreDir, records);
-      } else if (records.length > 0) {
-        // Still log planned records in dry-run mode so operators can preview.
+      // Record planned records in dry-run mode too so operators can preview;
+      // either way the write happens via the same append path.
+      if (records.length > 0) {
         appendAutoFixActionRecords(incidentStoreDir, records);
       }
       snapshot.findings.push(...findings);
@@ -4937,6 +5064,7 @@ export async function writeServiceHeartbeat(snapshot: ObserverSnapshot, options:
         lifecycleSynced: snapshot.incidentSync.lifecycleSynced,
         lifecycleFailed: snapshot.incidentSync.lifecycleFailed,
         lifecycleRetried: snapshot.incidentSync.lifecycleRetried,
+        suppressedByClass: snapshot.incidentSync.suppressedByClass,
         shadow: snapshot.incidentSync.shadow ? {
           eligible: snapshot.incidentSync.shadow.eligible,
           proposedCreate: snapshot.incidentSync.shadow.proposedCreate,

@@ -78,6 +78,7 @@ TESTS=(
   native-agent-shell-operators.test.sh
   native-coding-commit.test.sh
   hook-write-context-guard.test.sh
+  osc7501-status.test.sh
   claude-tmux-server-guard.test.sh
   agent-tmux-runtime-guard.test.sh
   expansion-handshake.test.sh
@@ -99,6 +100,7 @@ TESTS=(
   task-inputs-gate.test.sh
   task-progress.test.sh
   task-identity.test.sh
+  terminal-backend.test.sh
   tracked-tree-guard.test.sh
   handle-phase-launch-result.test.sh
   coding-launch-refusal.test.sh
@@ -116,6 +118,7 @@ TESTS=(
   archive-stage-artifacts.test.sh
   operator-touch-record.test.sh
   report-reliability-cli.test.sh
+  reliability-dashboard-repo.test.sh
   cleanup-branch.test.sh
   cleanup-episodes.test.sh
   completed-task-cleanup.test.sh
@@ -183,6 +186,7 @@ TESTS=(
   re-review-no-pr.test.sh
   monitor-command-routing.test.sh
   condition-reconciler.test.sh
+  condition-reconciler-realstate.test.sh
   wavemill-pr-cache.test.sh
   cross-pr-revert-job.test.sh
   pr-ci-status-job.test.sh

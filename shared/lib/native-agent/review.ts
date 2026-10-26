@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import type { AgentMessage, Message } from './messages.ts';
 import type { AgentContext, LoopStopReason, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
+import { buildStageExecutionUsage } from './prompt-cache.ts';
+import { reportPromptCacheHitRate } from './prompt-cache-detector.ts';
 import { createNativeModelsCollection } from './models.ts';
 import {
   ProviderIdentityMismatchError,
@@ -63,9 +65,11 @@ import { recordUse } from '../resource-manifest.ts';
 import { registerNativeRuntime } from '../resource-adapters/native-runtime-adapter.ts';
 import type { ReviewEngineOptions, ReviewFinding, ReviewResult } from '../review-engine.ts';
 import {
-  fillReviewPromptTemplate,
+  buildBudgetedReviewPrompt,
   parseNativeReviewResponse,
 } from '../review-engine.ts';
+import { resolveModelAdapter } from '../model-adapters/resolve-adapter.ts';
+import type { TransportAdapter } from '../model-adapters/transport-adapter.ts';
 import { loadPromptResourceSync } from '../resource-retrieval.ts';
 import { createCleanupTracker, runCleanup, type CleanupReason } from './cleanup.ts';
 import {
@@ -612,12 +616,24 @@ function reviewInputMetadata(context: ReviewContext): Pick<NonNullable<ReviewRes
   };
 }
 
+/**
+ * Share of the reviewer's context window kept free of review input for the
+ * native loop's own tool calls and results (HOK-3249).
+ */
+const NATIVE_REVIEW_TOOL_TURN_SHARE = 0.25;
+
+/** The review-phase adapter for a native model; null when the resolver cannot place it. */
+function resolveNativeReviewAdapter(model: string, repoDir: string): TransportAdapter | null {
+  return resolveModelAdapter({ model, phase: 'review', repoDir, reservedOutputTokens: REVIEW_MAX_OUTPUT_TOKENS }).adapter;
+}
+
 const nativeReviewDeps: {
   extractDeniedTools: typeof extractDeniedTools;
   extractFinalAssistantText: typeof extractFinalAssistantText;
   getNativeProviderApiKey: typeof getNativeProviderApiKey;
   loadNativeReviewPrompt: typeof loadNativeReviewPrompt;
   registerNativeReviewRuntime: typeof registerNativeReviewRuntime;
+  resolveNativeReviewAdapter: typeof resolveNativeReviewAdapter;
   runWavemillLoop: typeof runWavemillLoop;
   selectReviewProvider: typeof selectReviewProvider;
   browserAdapterFactory: Parameters<typeof createBrowserTools>[0]['adapterFactory'];
@@ -627,6 +643,7 @@ const nativeReviewDeps: {
   getNativeProviderApiKey,
   loadNativeReviewPrompt,
   registerNativeReviewRuntime,
+  resolveNativeReviewAdapter,
   runWavemillLoop,
   selectReviewProvider,
   browserAdapterFactory: () => {
@@ -745,7 +762,6 @@ export async function runNativeReview(
     );
   }
 
-  const userPrompt = fillReviewPromptTemplate(template, context, true);
   const wavemillConfig = loadWavemillConfig(repoDir);
   const browserConfig = getNativeBrowserConfig(repoDir);
   const {
@@ -787,6 +803,23 @@ export async function runNativeReview(
     tools: phaseMetadata,
     promptRef,
   });
+
+  // Budget the diff to the reviewer (HOK-3249), leaving room for the system
+  // prompt and the loop's tool turns. A diff whose code alone cannot fit is
+  // refused by the loop's own context-window preflight below.
+  const reviewAdapter = nativeReviewDeps.resolveNativeReviewAdapter(resolvedModelId, repoDir);
+  const { prompt: userPrompt, reviewInput } = buildBudgetedReviewPrompt({
+    template,
+    context,
+    skipDesignContext: true,
+    adapter: reviewAdapter,
+    repoDir,
+    reservedTokens: reviewAdapter
+      ? reviewAdapter.countTokens(systemPrompt)
+        + Math.floor((reviewAdapter.limits.contextWindowTokens ?? 0) * NATIVE_REVIEW_TOOL_TURN_SHARE)
+      : 0,
+  });
+  nativeReviewMetadata.reviewInputDiffBytes = Buffer.byteLength(reviewInput.text, 'utf8');
 
   const apiKey = nativeReviewDeps.getNativeProviderApiKey(provider.entry);
   if (!apiKey) {
@@ -1073,6 +1106,16 @@ export async function runNativeReview(
 
   const deniedTools = nativeReviewDeps.extractDeniedTools(transcriptEvents);
 
+  // HOK-3260: project prompt-cache usage and flag a run that stopped hitting
+  // the cache. Detection only; never changes the review outcome.
+  const reviewUsage = buildStageExecutionUsage(loopResult, String(modelConfig.provider));
+  reportPromptCacheHitRate({
+    repoDir: options.repoDir,
+    stage: 'review',
+    model: modelConfig.name ?? modelConfig.id,
+    usage: reviewUsage,
+  });
+
   // Classify the terminal cause and record the typed failure envelope BEFORE
   // cleanup runs — cleanup can erase process/session context, so the transcript
   // path and loop state must be captured first (HOK-3064). Ordering:
@@ -1138,6 +1181,7 @@ export async function runNativeReview(
           missingReviewEvidence: true,
           evidence: 'missing-review-verdict',
           ...nativeReviewMetadata,
+          usage: reviewUsage,
         },
         finalTreeState: cleanupReport.finalTreeState,
         cleanupDecision: cleanupReport.cleanupDecision,
@@ -1204,6 +1248,7 @@ export async function runNativeReview(
       ...nativeReviewMetadata,
     };
     result.substantiveAnalysisIdentity = substantiveAnalysisIdentity;
+    result.usage = reviewUsage;
     return result;
   } catch (error) {
     const description = `Native review returned malformed response: ${(error as Error).message}`;
@@ -1238,12 +1283,16 @@ export const nativeReviewTestUtils = {
   setSelectReviewProvider(fn: typeof nativeReviewDeps.selectReviewProvider) {
     nativeReviewDeps.selectReviewProvider = fn;
   },
+  setResolveNativeReviewAdapter(fn: typeof nativeReviewDeps.resolveNativeReviewAdapter) {
+    nativeReviewDeps.resolveNativeReviewAdapter = fn;
+  },
   resetDeps() {
     nativeReviewDeps.extractDeniedTools = extractDeniedTools;
     nativeReviewDeps.extractFinalAssistantText = extractFinalAssistantText;
     nativeReviewDeps.getNativeProviderApiKey = getNativeProviderApiKey;
     nativeReviewDeps.loadNativeReviewPrompt = loadNativeReviewPrompt;
     nativeReviewDeps.registerNativeReviewRuntime = registerNativeReviewRuntime;
+    nativeReviewDeps.resolveNativeReviewAdapter = resolveNativeReviewAdapter;
     nativeReviewDeps.runWavemillLoop = runWavemillLoop;
     nativeReviewDeps.selectReviewProvider = selectReviewProvider;
   },

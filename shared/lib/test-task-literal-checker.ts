@@ -54,7 +54,18 @@ const AUTO_EXCLUDED_PATHS = new Set([
   'tests/lib/state-fixtures.sh',
 ]);
 
-const AUTO_EXCLUDED_PREFIXES = ['node_modules/', 'features/', '.wavemill/', 'spike/', 'worktrees/'];
+const AUTO_EXCLUDED_PREFIXES = [
+  'node_modules/',
+  'features/',
+  '.wavemill/',
+  'spike/',
+  'worktrees/',
+  // HOK-3225 (A5): sanitised real-state captures live in this directory. They
+  // ARE workflow-state (the point of the fixtures), so the literal is
+  // inherent, not hand-written. Add a comparable prefix only for other
+  // writer-produced captures — never for anything hand-authored.
+  'tests/fixtures/real-state/',
+];
 
 /**
  * `tasks` (optionally quoted, optionally with escaped quotes) followed by `:`

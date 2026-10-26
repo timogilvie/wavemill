@@ -61,9 +61,7 @@ extract_function() {
 
 LAUNCH_FUNC_FILE="$TEST_TMP/launch_ready_phase.sh"
 cat "$REPO_DIR/shared/lib/transient-marker.sh" > "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "ready_conflict_attention_head" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "record_ready_conflict_attention" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "clear_ready_conflict_attention" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_marker_path" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "transient_mergeability_count" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "increment_transient_mergeability_count" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "clear_transient_mergeability_state" >> "$LAUNCH_FUNC_FILE"
@@ -102,7 +100,6 @@ extract_function "$MONITOR_SCRIPT_FILE" "review_result_failure_category" >> "$LA
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_review_head_sha" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_infra_recovery_category_label" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_infra_recovery_next_action" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "select_context_window_recovery_reviewer" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_contract_payload" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_claim_path" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_write_claim" >> "$LAUNCH_FUNC_FILE"
@@ -136,6 +133,8 @@ extract_function "$MONITOR_SCRIPT_FILE" "reconciliation_record_attempt" >> "$LAU
 extract_function "$MONITOR_SCRIPT_FILE" "reconciliation_review_invalidated_by_commit" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "reconciliation_mark_review_stale" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "task_launch_model" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "log_coding_launch_refusal" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "launch_remediation_agent" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "_launch_ready_remediation_attempt" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "launch_ready_watchdog_remediation" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_pending_reason" >> "$LAUNCH_FUNC_FILE"
@@ -149,6 +148,87 @@ if [[ ! -s "$LAUNCH_FUNC_FILE" ]]; then
   exit 1
 fi
 
+# HOK-3272: native remediation cases run the REAL launch chain —
+# launch_remediation_agent → _launch_agent_in_pane → agent_launch_interactive →
+# agent_native_launch_preflight — and stub only tmux, the native launch probe,
+# and the native launcher binary (npx on PATH, run from the generated launcher
+# script). HOK-2879's cases mock _launch_agent_in_pane and so never saw that
+# the conflict / CI-fix prompt filenames normalized to an empty phase.
+REPLAY_FIXTURE="$REPO_DIR/tests/fixtures/incidents/hok3241c_native_conflict_remediation.json"
+# HOK-3273: the HOK-3241 primary arm, whose resolver pushed a clean fix before
+# a guard-deferred Ready spent the one-shot conflict budget.
+PRIMARY_REPLAY_FIXTURE="$REPO_DIR/tests/fixtures/incidents/hok3241_conflict_remediation_latch.json"
+NATIVE_HARNESS_FILE="$TEST_TMP/native-remediation-harness.sh"
+{
+  printf 'source %q\n' "$REPO_DIR/shared/lib/agent-adapters.sh"
+  extract_function "$MONITOR_SCRIPT_FILE" "_launch_agent_in_pane"
+  cat <<'HARNESS'
+REPLAY_AGENT="$(jq -r '.task.agent' "$REPLAY_FIXTURE")"
+REPLAY_MODEL="$(jq -r '.task.model' "$REPLAY_FIXTURE")"
+WORKTREE_ROOT="$CASE_DIR/worktrees"
+NATIVE_PROBE_PHASES="$CASE_DIR/native-probe-phases"
+NATIVE_DISPATCHED="$CASE_DIR/native-dispatched"
+pass_task_field() {
+  case "$2" in
+    agent) printf "%s\n" "$REPLAY_AGENT" ;;
+    model) printf "%s\n" "$REPLAY_MODEL" ;;
+    *) printf "\n" ;;
+  esac
+}
+get_task_meta() { [[ "$2" == "challenge" ]] && jq -r '.task.challenge' "$REPLAY_FIXTURE"; return 0; }
+build_ready_remediation_prompt() { printf "FIX CI: %s on PR #%s\n" "$8" "$1"; }
+build_conflict_resolution_prompt() {
+  printf "RESOLVE CONFLICT on PR #%s against %s: %s\n" "$1" "$5" "$(jq -r '.pr.conflictingFiles | join(", ")' "$REPLAY_FIXTURE")"
+}
+challenge_stage_for_launch_env() { printf "implementation\n"; }
+challenge_varied_stage_model() { printf "\n"; }
+tmux() { printf "%s\n" "$*" >> "$CASE_DIR/tmux.log"; }
+agent_prepare_pane_for_launch() { return 0; }
+agent_resolve_dashboard_pid() { printf "0\n"; }
+agent_validate_model() { return 0; }
+agent_resolve_model() { printf "%s\n" "$2"; }
+agent_model_launch_preflight() { printf "%s\n" "$1"; }
+agent_resolve_from_model() { printf "%s\n" "$REPLAY_AGENT"; }
+# The native launch probe: the only certification seam. A *_refused case is an
+# uncertified model — a deterministic refusal the arm must not be charged for.
+agent_validate_phase_launch() {
+  printf "%s\n" "$2" >> "$NATIVE_PROBE_PHASES"
+  if [[ "$TEST_CASE" == *_refused ]]; then
+    AGENT_NATIVE_LAUNCH_LAST_JSON="{\"ok\":false,\"code\":\"uncertified\",\"surface\":\"certification\",\"reason\":\"$3 has no current coding certificate\"}"
+    AGENT_NATIVE_LAUNCH_LAST_REASON="$3 has no current coding certificate"
+    return 1
+  fi
+  AGENT_NATIVE_LAUNCH_LAST_JSON="{\"ok\":true,\"model\":\"$3\"}"
+  return 0
+}
+agent_tmux_target() { printf "%s:%s\n" "$1" "$2"; }
+agent_tmux_guard_export_command() { printf "\n"; }
+agent_hydrate_repo_env_in_pane() { :; }
+agent_write_initial_status() { :; }
+agent_supersede_terminal_hook() { :; }
+routing_emit_phase() { :; }
+agent_pane_is_ready() { return 0; }
+_pane_current_command() { printf "bash\n"; }
+_pane_child_count() { printf "0\n"; }
+agent_send_tmux_guarded_command() { printf "%s\n" "$2" >> "$NATIVE_DISPATCHED"; }
+agent_verify_launch() { return 0; }
+AGENT_LAUNCH_SETTLE_DELAY=0 AGENT_LAUNCH_ENTER_DELAY=0
+mkdir -p "$CASE_DIR/bin"
+cat > "$CASE_DIR/bin/npx" <<NPX
+#!/bin/bash
+out="$CASE_DIR/native-launcher-argv"
+printf "phase=%s\\n" "\$WAVEMILL_PHASE" > "\$out"
+printf "model=%s\\n" "\$WAVEMILL_RESOLVED_MODEL" >> "\$out"
+printf "arg=%s\\n" "\$@" >> "\$out"
+while [[ \$# -gt 0 ]]; do
+  [[ "\$1" == "--prompt-file" ]] && cat "\$2" > "$CASE_DIR/native-prompt-seen"
+  shift
+done
+NPX
+chmod +x "$CASE_DIR/bin/npx"
+HARNESS
+} > "$NATIVE_HARNESS_FILE"
+
 run_launch_case() {
   local test_case="$1"
   local case_dir="$TEST_TMP/$test_case"
@@ -158,10 +238,21 @@ run_launch_case() {
   rm -rf "$case_dir"
   mkdir -p "$case_dir"
 
-  CASE_DIR="$case_dir" LAUNCH_FUNC_FILE="$LAUNCH_FUNC_FILE" COMMON_SCRIPT="$COMMON_SCRIPT" TEST_CASE="$test_case" bash -lc '
+  CASE_DIR="$case_dir" LAUNCH_FUNC_FILE="$LAUNCH_FUNC_FILE" COMMON_SCRIPT="$COMMON_SCRIPT" TEST_CASE="$test_case" \
+    NATIVE_HARNESS_FILE="$NATIVE_HARNESS_FILE" REPLAY_FIXTURE="$REPLAY_FIXTURE" \
+    PRIMARY_REPLAY_FIXTURE="$PRIMARY_REPLAY_FIXTURE" RECONCILER_SCRIPT="$REPO_DIR/shared/lib/condition-reconciler.sh" bash -lc '
     set -euo pipefail
     source "$COMMON_SCRIPT"
     source "$LAUNCH_FUNC_FILE"
+
+    # HOK-3273 replays drive real-looking SHAs so the condition reconciler can
+    # expire the conflict marker on the resolver push; every other case keeps
+    # the abc123/main456 placeholders.
+    REPLAY_HEAD="abc123" REPLAY_BASE="main456"
+    if [[ "$TEST_CASE" == replay_primary_* ]]; then
+      REPLAY_HEAD="$(jq -r ".replay.resolverPushHead" "$PRIMARY_REPLAY_FIXTURE")"
+      REPLAY_BASE="$(jq -r ".replay.baseSha" "$PRIMARY_REPLAY_FIXTURE")"
+    fi
 
     SESSION="ready-phase-test-$TEST_CASE"
     TOOLS_DIR="$CASE_DIR/tools"
@@ -179,7 +270,7 @@ run_launch_case() {
     # Queue of heads the gh stub reports, one per call; the last line sticks,
     # and a FAIL line makes that read fail.
     GH_HEADS_FILE="$CASE_DIR/gh-heads"
-    printf "%s\n" "abc123" > "$GH_HEADS_FILE"
+    printf "%s\n" "$REPLAY_HEAD" > "$GH_HEADS_FILE"
     SHA_OLD="" SHA_NEW="" SHA_LOCAL=""
     if [[ "$TEST_CASE" == head_sync_* ]]; then
       # Real git topology for HOK-3112: the PR branch was pushed at OLD and the
@@ -255,13 +346,24 @@ EOF
     trap '\''rm -f "$DEBUG_FILE"'\'' EXIT
 
     case "$TEST_CASE" in
+      # The one resolver for (abc123, base) already launched and Ready still
+      # sees the conflict: the budget terminalizes.
       conflict_persists_after_remediation)
-        touch "$STATE_DIR/.conflict-detected"
+        bounded_retry_increment "$STATE_DIR" "conflict-remediation-relaunch" "abc123" "main456" >/dev/null
         ;;
       pass_after_remediation)
-        touch "$STATE_DIR/.conflict-detected" "$STATE_DIR/.conflict-attention-reported"
-        printf "%s\n" "abc123" > "$STATE_DIR/.conflict-attention-head"
+        marker_write "$STATE_DIR/.conflict-remediation.json" --kind conflict-remediation --head abc123 \
+          --expires-on "head,remote,operator-event" --detail-json "{\"launchHead\":\"abc123\"}"
         printf "%s\n" "stale attention" > "$STATE_DIR/.needs-attention"
+        ;;
+      # HOK-3241 primary: a resolver launched at resolverLaunchHead (charged,
+      # marker written) and pushed resolverPushHead, the checkout now.
+      replay_primary_guard_deferral)
+        replay_launch_head="$(jq -r ".replay.resolverLaunchHead" "$PRIMARY_REPLAY_FIXTURE")"
+        bounded_retry_increment "$STATE_DIR" "conflict-remediation-relaunch" "$replay_launch_head" "$REPLAY_BASE" >/dev/null
+        marker_write "$STATE_DIR/.conflict-remediation.json" --kind conflict-remediation \
+          --head "$replay_launch_head" --expires-on "head,remote,operator-event" \
+          --detail-json "$(jq -cn --arg h "$replay_launch_head" --arg b "$REPLAY_BASE" "{head:\$h,base:\$b,launchHead:\$h,prNumber:304}")"
         ;;
       pass_clears_recheck)
         printf "%s\n" "3" > "$STATE_DIR/.failed-ready-recheck-count"
@@ -310,35 +412,9 @@ EOF
 {"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-runtime-unavailable"}}
 EOF
         ;;
-      # HOK-2964: native-context-window-exceeded enters bounded infra
-      # recovery instead of terminal code-defect handling (REQ-F1).
+      # HOK-3249: a context-window overflow of the budgeted review input is
+      # terminal under the failure policy (HOK-3176) — no reroute, no retry.
       infra_retry_context_window)
-        cat > "$STATE_DIR/.review-result.json" <<EOF
-{"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-context-window-exceeded","reviewHeadSha":"stalehead"}}
-EOF
-        ;;
-      # HOK-2964: a new head at the same failure category resets the bounded
-      # budget instead of inheriting the exhausted attempt count (REQ-F2/F4).
-      infra_retry_context_window_scope_refreshed)
-        printf "%s\n" "2" > "$STATE_DIR/.retry-review-infra-recovery-count"
-        printf "%s\n" "stalehead:native-context-window-exceeded" > "$STATE_DIR/.retry-review-infra-recovery-head"
-        cat > "$STATE_DIR/.review-result.json" <<EOF
-{"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-context-window-exceeded","reviewHeadSha":"stalehead"}}
-EOF
-        ;;
-      # HOK-2964 REQ-F3: a genuine current-head context-window overflow
-      # reroutes to a certified larger-context reviewer instead of relaunching
-      # the unchanged model/input pair.
-      infra_retry_context_window_reroute)
-        cat > "$STATE_DIR/.review-result.json" <<EOF
-{"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-context-window-exceeded","reviewHeadSha":"abc123"}}
-EOF
-        ;;
-      # HOK-2964: an unchanged context-window overflow at the same head
-      # eventually exhausts with an actionable capacity diagnostic (REQ-F3).
-      infra_retry_context_window_exhausted)
-        printf "%s\n" "2" > "$STATE_DIR/.retry-review-infra-recovery-count"
-        printf "%s\n" "abc123:native-context-window-exceeded" > "$STATE_DIR/.retry-review-infra-recovery-head"
         cat > "$STATE_DIR/.review-result.json" <<EOF
 {"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-context-window-exceeded","reviewHeadSha":"abc123"}}
 EOF
@@ -563,12 +639,12 @@ EOF
         return 0
       fi
       if [[ "${1:-}" == "-C" && "${3:-}" == "rev-parse" && "${4:-}" == "HEAD" ]]; then
-        printf "%s\n" "abc123"
+        printf "%s\n" "$REPLAY_HEAD"
         return 0
       fi
       return 1
     }
-    get_main_head_sha() { printf "%s\n" "main456"; }
+    get_main_head_sha() { printf "%s\n" "$REPLAY_BASE"; }
     merge_queue_enabled() { return 1; }
     merge_queue_enrich_ready_artifacts() { printf "%s\n" "$2"; }
     # HOK-3102/HOK-3093: TEST_EXECUTOR env (default tend) picks the session
@@ -683,17 +759,14 @@ EOF
         esac
       fi
 
-      if [[ "${2:-}" == "-e" && "${3:-}" == *"getConfiguredModelsForDescriptorStage"* ]]; then
-        case "$TEST_CASE" in
-          infra_retry_context_window_reroute)
-            printf "%s\n" "{\"selectedModel\":\"glm-5.2\",\"previousModel\":\"qwen-3-coder\",\"previousContextWindowTokens\":262144,\"selectedContextWindowTokens\":1048576,\"reason\":\"native-context-window-exceeded\",\"rejected\":[]}"
-            return 0
-            ;;
-          *)
-            printf "%s\n" "No certified reviewer with a larger context window" >&2
-            return 1
-            ;;
-        esac
+      # Failure policy (HOK-3176): only the context-window kind is terminal
+      # here; anything else falls back to the bridge default (retryable).
+      if [[ "${2:-}" == "$TOOLS_DIR/failure-policy-cli.ts" ]]; then
+        if [[ " $* " == *" --failure-kind=native-context-window-exceeded "* ]]; then
+          printf "%s\n" "{\"class\":\"terminal\",\"failureKind\":\"native-context-window-exceeded\",\"terminalCode\":\"context-window-exceeded\",\"nextAction\":\"relaunch with compressed context or a larger-context model; the prompt exceeded the model context window\"}"
+          return 0
+        fi
+        return 1
       fi
 
       case "$TEST_CASE" in
@@ -714,7 +787,7 @@ EOF
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pass\",\"checks\":[{\"name\":\"ready-policy\",\"status\":\"pass\",\"message\":\"Ready policy satisfied\",\"details\":{}}],\"timestamp\":\"2026-09-29T12:26:42.000Z\",\"summary\":\"All checks passed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"attempts\":1}}"
           return 0
           ;;
-        pass_after_remediation|pass_clears_recheck|dismissed_blockers_pass|route_stamp_failure|tend_claims_during_ready_label|pass_operator_merge_needed|pass_operator_merge_needed_second_tick)
+        pass_after_remediation|replay_primary_guard_deferral|pass_clears_recheck|dismissed_blockers_pass|route_stamp_failure|tend_claims_during_ready_label|pass_operator_merge_needed|pass_operator_merge_needed_second_tick)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pass\",\"checks\":[{\"name\":\"ci-status\",\"status\":\"pass\",\"message\":\"All CI checks passing\",\"details\":{\"totalChecks\":3}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"All checks passed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"attempts\":1}}"
           return 0
           ;;
@@ -743,7 +816,7 @@ EOF
           printf "%s\n" "TypeError: ready crashed" >&2
           return 1
           ;;
-        remediation_disabled|remediation_launch|second_remediation_launch|remediation_exhausted|remediation_launch_failure|already_inflight_same_head|sequential_failing_launch_1|sequential_failing_launch_2|sequential_failing_launch_3|native_route_coder_model|no_model_available|remediation_backoff_hold|remediation_head_reset)
+        remediation_disabled|remediation_launch|second_remediation_launch|remediation_exhausted|remediation_launch_failure|already_inflight_same_head|sequential_failing_launch_1|sequential_failing_launch_2|sequential_failing_launch_3|native_route_coder_model|no_model_available|remediation_backoff_hold|remediation_head_reset|native_remediation_ci|native_remediation_ci_refused)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"fail\",\"checks\":[{\"name\":\"ci-status\",\"status\":\"fail\",\"message\":\"1 CI check(s) failing\",\"details\":{\"failedChecks\":[{\"name\":\"Shell and Unit Tests\",\"state\":\"FAILURE\"}],\"pendingChecks\":[],\"totalChecks\":3}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"One or more checks failed - not safe to merge\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"UNSTABLE\",\"attempts\":1}}"
           return 1
           ;;
@@ -759,7 +832,7 @@ EOF
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"fail\",\"checks\":[{\"name\":\"ci-suite\",\"status\":\"fail\",\"message\":\"Shell and Unit Tests failed\",\"details\":{}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"CI suite failed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"UNSTABLE\",\"attempts\":1}}"
           return 1
           ;;
-        conflict_persists_after_remediation)
+        conflict_persists_after_remediation|native_remediation_conflict|native_remediation_conflict_refused|native_remediation_conflict_guard_deferral)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"fail\",\"checks\":[{\"name\":\"merge-conflict\",\"status\":\"fail\",\"message\":\"PR has conflicts\",\"details\":{}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"Merge conflicts detected\",\"mergeConflict\":{\"status\":\"CONFLICTED\",\"message\":\"PR #304 has conflicts with main\",\"mergeable\":\"CONFLICTING\",\"mergeStateStatus\":\"DIRTY\",\"attempts\":1}}"
           printf "%s\n" "⚠️  MERGE CONFLICT: PR #304 has conflicts with main" >&2
           return 1
@@ -774,10 +847,54 @@ EOF
       esac
     }
 
-    set +e
-    launch_ready_phase "HOK-1300" "fix-failing-ci-tests" "Fix failing CI tests" "$WT_DIR" "task/fix-failing-ci-tests" "main" "304"
-    rc=$?
-    set -e
+    ISSUE_ID="HOK-1300"
+    if [[ "$TEST_CASE" == native_remediation_* ]]; then
+      source "$NATIVE_HARNESS_FILE"
+      ISSUE_ID="$(jq -r ".task.issue" "$REPLAY_FIXTURE")"
+    fi
+    # HOK-3273 replays run two monitor passes: on the first the cross-PR
+    # revert guard job is still running (the HOK-3206 deferral), then the
+    # condition reconciler ticks as it does between passes, and on the second
+    # the guard result is clean.
+    LAUNCH_PASSES=1
+    if [[ "$TEST_CASE" == *_guard_deferral ]]; then
+      LAUNCH_PASSES=2
+      STATE_FILE="$CASE_DIR/workflow-state.json"
+      printf "%s\n" "{\"tasks\":{}}" > "$STATE_FILE"
+      source "$RECONCILER_SCRIPT"
+      ready_cross_pr_revert_gate() { (( LAUNCH_PASS > 1 )) || return 4; return 0; }
+    fi
+    LAUNCH_PASS=0
+    RC_BY_PASS=""
+    BUDGET_BY_PASS=""
+    while (( LAUNCH_PASS < LAUNCH_PASSES )); do
+      LAUNCH_PASS=$((LAUNCH_PASS + 1))
+      set +e
+      launch_ready_phase "$ISSUE_ID" "fix-failing-ci-tests" "Fix failing CI tests" "$WT_DIR" "task/fix-failing-ci-tests" "main" "304"
+      rc=$?
+      set -e
+      RC_BY_PASS+="pass${LAUNCH_PASS}:${rc} "
+      BUDGET_BY_PASS+="pass${LAUNCH_PASS}:$(bounded_retry_count "$STATE_DIR" "conflict-remediation-relaunch") "
+      if (( LAUNCH_PASS < LAUNCH_PASSES )); then
+        condition_reconcile_task "$ISSUE_ID" "$WT_DIR" "$STATE_DIR"
+      fi
+    done
+    if [[ "$TEST_CASE" == native_remediation_* ]]; then
+      # Run what the pane would have run: the generated launcher script, with
+      # the stub native launcher binary first on PATH.
+      native_launcher_script=""
+      [[ -s "$NATIVE_DISPATCHED" ]] && native_launcher_script="$(head -n 1 "$NATIVE_DISPATCHED")"
+      if [[ -n "$native_launcher_script" ]]; then
+        PATH="$CASE_DIR/bin:$PATH" bash "$native_launcher_script" >/dev/null 2>&1 || true
+        rm -f "$native_launcher_script" "/tmp/win-1-${ISSUE_ID}-status.txt"
+      fi
+      printf "native_dispatched=%s\n" "$([[ -n "$native_launcher_script" ]] && echo yes || echo no)"
+      printf "native_probe_phases=%s\n" "$(tr "\n" " " < "$NATIVE_PROBE_PHASES" 2>/dev/null || true)"
+      printf "native_launcher_argv=%s\n" "$(tr "\n" " " < "$CASE_DIR/native-launcher-argv" 2>/dev/null || true)"
+      printf "native_prompt_seen=%s\n" "$(cat "$CASE_DIR/native-prompt-seen" 2>/dev/null || true)"
+      printf "needs_attention_text=%s\n" "$(cat "$STATE_DIR/.needs-attention" 2>/dev/null || true)"
+      rm -f "/tmp/${SESSION}-${ISSUE_ID}-ready-remediation-prompt.txt" "/tmp/${SESSION}-${ISSUE_ID}-conflict-prompt.txt"
+    fi
 
     stage_summary=$(printf "%s" "$WRITE_STAGE_CALLS" | tr "\n" ";")
     attention_summary=$(printf "%s" "$READY_ATTENTION_CALLS" | tr "\n" ";")
@@ -785,12 +902,15 @@ EOF
     [[ -n "$READY_ATTENTION_CALLS" ]] && attention_count=$(printf "%s" "$READY_ATTENTION_CALLS" | grep -c .)
     error_count=0
     [[ -n "$LOG_ERROR_OUTPUT" ]] && error_count=$(printf "%s" "$LOG_ERROR_OUTPUT" | grep -c .)
-    conflict_attention_head=""
-    [[ -f "$STATE_DIR/.conflict-attention-head" ]] && conflict_attention_head=$(cat "$STATE_DIR/.conflict-attention-head")
-    conflict_attention_reported="absent"
-    [[ -f "$STATE_DIR/.conflict-attention-reported" ]] && conflict_attention_reported="present"
-    conflict_detected="absent"
-    [[ -f "$STATE_DIR/.conflict-detected" ]] && conflict_detected="present"
+    conflict_marker="absent"
+    [[ -f "$STATE_DIR/.conflict-remediation.json" ]] && conflict_marker="present"
+    conflict_marker_json=""
+    [[ -f "$STATE_DIR/.conflict-remediation.json" ]] && conflict_marker_json=$(jq -c "{kind, headSha, detail, expiresOn: .condition.expiresOn}" "$STATE_DIR/.conflict-remediation.json")
+    conflict_retry_count="$(cat "$STATE_DIR/.retry-conflict-remediation-relaunch-count" 2>/dev/null || echo "")"
+    conflict_retry_key="$(tr "\n" " " < "$STATE_DIR/.retry-conflict-remediation-relaunch-head" 2>/dev/null || echo "")"
+    conflict_retry_exhausted="absent"
+    [[ -f "$STATE_DIR/.retry-conflict-remediation-relaunch-exhausted" ]] && conflict_retry_exhausted="present"
+    legacy_conflict_files="$(cd "$STATE_DIR" && ls -A | grep -E "conflict-detected|conflict-attention|conflict-recheck" | tr "\n" " " || true)"
     needs_attention="absent"
     [[ -f "$STATE_DIR/.needs-attention" ]] && needs_attention="present"
     transient_attention="absent"
@@ -806,9 +926,11 @@ EOF
     debug_payload=""
     [[ -f "$DEBUG_FILE" ]] && debug_payload=$(cat "$DEBUG_FILE")
 
-    printf "rc=%s\nstage_calls=%s\nattention_calls=%s\nattention_count=%s\nlaunch_calls=%s\nreview_launch_calls=%s\nreview_launch_model=%s\nprepare_recovery_calls=%s\nagent_validate_calls=%s\nprompt_calls=%s\nerror_count=%s\nlogs=%s\nwarn_logs=%s\nerror_payload=%s\ndebug_file=%s\ndebug_lines=%s\ndebug_payload=%s\nconflict_attention_head=%s\nconflict_attention_reported=%s\nconflict_detected=%s\nneeds_attention=%s\ntransient_attention=%s\ntransient_count=%s\ninfra_retry_count=%s\nready_result_payload=%s\n" \
-      "$rc" "$stage_summary" "$attention_summary" "$attention_count" "$LAUNCH_AGENT_CALLS" "$REVIEW_LAUNCH_CALLS" "${REVIEW_LAUNCH_MODEL:-}" "$PREPARE_RECOVERY_CALLS" "$AGENT_VALIDATE_CALLS" "$READY_PROMPT_CALLS" "$error_count" "$LOG_OUTPUT" "$LOG_WARN_OUTPUT" "$LOG_ERROR_OUTPUT" "$DEBUG_FILE" "$debug_line_count" "$debug_payload" "$conflict_attention_head" "$conflict_attention_reported" "$conflict_detected" "$needs_attention" "$transient_attention" "$transient_count" "$infra_retry_count" "$ready_result_payload"
+    printf "rc=%s\nstage_calls=%s\nattention_calls=%s\nattention_count=%s\nlaunch_calls=%s\nreview_launch_calls=%s\nreview_launch_model=%s\nprepare_recovery_calls=%s\nagent_validate_calls=%s\nprompt_calls=%s\nerror_count=%s\nlogs=%s\nwarn_logs=%s\nerror_payload=%s\ndebug_file=%s\ndebug_lines=%s\ndebug_payload=%s\nconflict_marker=%s\nconflict_marker_json=%s\nconflict_retry_count=%s\nconflict_retry_key=%s\nconflict_retry_exhausted=%s\nlegacy_conflict_files=%s\nneeds_attention=%s\ntransient_attention=%s\ntransient_count=%s\ninfra_retry_count=%s\nready_result_payload=%s\n" \
+      "$rc" "$stage_summary" "$attention_summary" "$attention_count" "$LAUNCH_AGENT_CALLS" "$REVIEW_LAUNCH_CALLS" "${REVIEW_LAUNCH_MODEL:-}" "$PREPARE_RECOVERY_CALLS" "$AGENT_VALIDATE_CALLS" "$READY_PROMPT_CALLS" "$error_count" "$LOG_OUTPUT" "$LOG_WARN_OUTPUT" "$LOG_ERROR_OUTPUT" "$DEBUG_FILE" "$debug_line_count" "$debug_payload" "$conflict_marker" "$conflict_marker_json" "$conflict_retry_count" "$conflict_retry_key" "$conflict_retry_exhausted" "$legacy_conflict_files" "$needs_attention" "$transient_attention" "$transient_count" "$infra_retry_count" "$ready_result_payload"
     printf "handoff_claims=%s\n" "$handoff_claims"
+    printf "rc_by_pass=%s\n" "$RC_BY_PASS"
+    printf "budget_by_pass=%s\n" "$BUDGET_BY_PASS"
     printf "surface_merge_needed_calls=%s\n" "$SURFACE_MERGE_NEEDED_CALLS"
     printf "surface_merge_needed_log=%s\n" "$(printf "%s" "$SURFACE_MERGE_NEEDED_LOG" | tr "\n" ";")"
     printf "challenge_orch_calls=%s\n" "$CHALLENGE_ORCH_CALLS"
@@ -1407,10 +1529,10 @@ check_contains "inflight same head does not rewrite stage" "$output" "stage_call
 
 output="$(run_launch_case conflict_persists_after_remediation)"
 check_contains "persistent conflict returns failure" "$output" "rc=1"
-check_contains "persistent conflict writes attention" "$output" "PR #304 still has merge conflicts after automatic remediation."
-check_contains "persistent conflict records attention head" "$output" "conflict_attention_head=abc123"
-check_contains "persistent conflict records reported marker" "$output" "conflict_attention_reported=present"
-check_contains "persistent conflict keeps detected marker" "$output" "conflict_detected=present"
+check_contains "persistent conflict writes attention" "$output" "Conflict remediation exhausted on identical (head=abc123, base=main456) for PR #304"
+check_contains "persistent conflict terminalizes the bucket" "$output" "conflict_retry_exhausted=present"
+check_contains "persistent conflict launches no second resolver" "$output" "launch_calls=0"
+check_contains "persistent conflict writes no new marker" "$output" "conflict_marker=absent"
 check_contains "persistent conflict logs one terse error" "$output" "Merge conflicts persist for HOK-1300 after remediation attempt"
 
 output="$(run_launch_case pass_after_remediation)"
@@ -1418,9 +1540,9 @@ check_contains "pass after remediation returns success" "$output" "rc=0"
 check_contains "pass after remediation writes completed stage" "$output" "|ready|completed|"
 check_contains "pass after remediation records ready label update" "$output" "\"readyLabelsUpdated\":true"
 check_not_contains "pass after remediation clears remediation artifacts" "$output" "\"remediationAttempts\":"
-check_contains "pass after remediation clears conflict marker" "$output" "conflict_detected=absent"
-check_contains "pass after remediation clears attention head" "$output" "conflict_attention_head="
-check_contains "pass after remediation clears reported marker" "$output" "conflict_attention_reported=absent"
+# HOK-3172: the gate never clears the conflict marker; the reconciler expires it.
+check_contains "pass after remediation leaves the marker to the reconciler" "$output" "conflict_marker=present"
+check_contains "pass after remediation charges no conflict attempt" "$output" "conflict_retry_count="$'\n'
 check_contains "pass after remediation clears needs attention" "$output" "needs_attention=absent"
 check_contains "pass after remediation demotes label canonicalization to debug" "$output" "debug   HOK-1300: Canonicalized ready labels for PR #304"
 check_contains "pass after remediation demotes ready completion to debug" "$output" "debug   HOK-1300: Ready checks completed (verdict: pass)"
@@ -1466,33 +1588,15 @@ check_contains "infra retry capped does not probe" "$output" "agent_validate_cal
 check_contains "infra retry capped keeps counter" "$output" "infra_retry_count=2"
 check_contains "infra retry capped writes manual attention" "$output" "manual re-review required"
 
-# HOK-2964 REQ-F1: native-context-window-exceeded enters bounded infra
-# recovery instead of terminal code-defect handling.
+# HOK-3249: the failure policy classifies a context-window overflow as
+# terminal, so it escalates without a relaunch, a reroute or a retry.
 output="$(run_launch_case infra_retry_context_window)"
-check_contains "context window retries review" "$output" "rc=6"
-check_contains "context window launches review" "$output" "review_launch_calls=1"
-check_contains "context window increments infra retry" "$output" "infra_retry_count=1"
-
-# HOK-2964 REQ-F2/F4: a new head at the same failure category resets the
-# bounded budget instead of inheriting the exhausted attempt count.
-output="$(run_launch_case infra_retry_context_window_scope_refreshed)"
-check_contains "context window scope refresh retries review" "$output" "rc=6"
-check_contains "context window scope refresh resets counter" "$output" "infra_retry_count=1"
-
-# HOK-2964 REQ-F3: unchanged context-window overflow at the same head
-# reroutes once, then eventually exhausts with an actionable capacity
-# diagnostic, never a synthesized pass.
-output="$(run_launch_case infra_retry_context_window_reroute)"
-check_contains "context window reroute retries review" "$output" "rc=6"
-check_contains "context window reroute launches review" "$output" "review_launch_calls=1"
-check_contains "context window reroute uses larger reviewer" "$output" "review_launch_model=glm-5.2"
-check_contains "context window reroute increments infra retry" "$output" "infra_retry_count=1"
-
-output="$(run_launch_case infra_retry_context_window_exhausted)"
-check_contains "context window exhausted refuses ready" "$output" "rc=1"
-check_contains "context window exhausted does not launch review" "$output" "review_launch_calls=0"
-check_contains "context window exhausted names the category" "$output" "native-context-window-exceeded"
-check_contains "context window exhausted gives actionable diagnostic" "$output" "larger-context reviewer or manual scope reduction"
+check_contains "context window refuses ready" "$output" "rc=1"
+check_contains "context window does not launch review" "$output" "review_launch_calls=0"
+check_contains "context window does not consume the retry budget" "$output" "infra_retry_count="$'\n'
+check_contains "context window escalates with attention" "$output" "needs_attention=present"
+check_contains "context window names the category" "$output" "native-context-window-exceeded"
+check_contains "context window carries the policy next action" "$output" "compressed context or a larger-context model"
 
 # HOK-2964 REQ-F5: typed OpenRouter 402/credit failures recover within the
 # bounded budget, keeping the same intended reviewer identity.
@@ -1824,6 +1928,89 @@ echo "=== Launch Phase Propagation ==="
 
 output="$(run_launch_case remediation_launch)"
 check_contains "remediation passes explicit phase" "$output" "phase_used=coding"
+
+echo "=== Native Remediation Launch, unmocked (HOK-3272) ==="
+
+# Replay of HOK-3241_c: a native-openrouter challenger with a real merge
+# conflict. Before HOK-3272 the conflict prompt filename normalized to an empty
+# phase, the native preflight refused (reason=unsupported-native-stage), the
+# reason was lost on stderr, and the arm parked at needs-user untried.
+output="$(run_launch_case native_remediation_conflict)"
+check_contains "native conflict: remediation launched" "$output" "rc=3"
+check_contains "native conflict: launcher dispatched to the pane" "$output" "native_dispatched=yes"
+check_contains "native conflict: preflight certifies the coding phase" "$output" "native_probe_phases=coding "
+check_contains "native conflict: native launcher runs phase coding" "$output" "native_launcher_argv=phase=coding "
+check_contains "native conflict: runs on the arm's own model" "$output" "model=gemini-3.8-flash "
+check_contains "native conflict: invokes the native coding launcher" "$output" "tools/launch-native-coding.ts"
+check_contains "native conflict: passes --prompt-file" "$output" "arg=--prompt-file arg=/tmp/ready-phase-test-native_remediation_conflict-HOK-3241_c-conflict-prompt.txt "
+check_contains "native conflict: launcher receives the conflict prompt" "$output" "native_prompt_seen=RESOLVE CONFLICT on PR #304 against main: shared/lib/merge-labels.ts"
+check_contains "native conflict: no needs-user written" "$output" "needs_attention=absent"
+check_contains "native conflict: in-flight marker recorded" "$output" "conflict_marker=present"
+check_contains "native conflict: marker carries head, base, launchHead and PR" "$output" '"detail":{"head":"abc123","base":"main","launchHead":"abc123","prNumber":304}'
+check_contains "native conflict: marker is condition-keyed" "$output" '"expiresOn":["head","remote","operator-event"]'
+check_contains "native conflict: launch charges exactly one attempt" "$output" "conflict_retry_count=1"$'\n'
+check_contains "native conflict: attempt keyed on (head, base)" "$output" "conflict_retry_key=abc123 main456 "
+check_contains "native conflict: no legacy conflict files" "$output" "legacy_conflict_files="$'\n'
+check_not_contains "native conflict: no launch failure logged" "$output" "Failed to launch conflict-resolution agent"
+
+output="$(run_launch_case native_remediation_ci)"
+check_contains "native CI fix: remediation launched" "$output" "rc=5"
+check_contains "native CI fix: preflight certifies the coding phase" "$output" "native_probe_phases=coding "
+check_contains "native CI fix: native launcher runs phase coding" "$output" "native_launcher_argv=phase=coding "
+check_contains "native CI fix: passes --prompt-file" "$output" "arg=--prompt-file arg=/tmp/ready-phase-test-native_remediation_ci-HOK-3241_c-ready-remediation-prompt.txt "
+check_contains "native CI fix: launcher receives the CI-fix prompt" "$output" "native_prompt_seen=FIX CI: ci-status: 1 CI check(s) failing (Shell and Unit Tests) on PR #304"
+check_contains "native CI fix: launch charges one attempt" "$output" "remediation_retry_count=1"
+check_contains "native CI fix: no needs-user written" "$output" "needs_attention=absent"
+
+# A deterministic refusal (uncertified model) never started an agent: it is a
+# harness fault, escalated with its reason, and never charged to the arm.
+output="$(run_launch_case native_remediation_ci_refused)"
+check_contains "refused CI fix: returns failure" "$output" "rc=1"
+check_contains "refused CI fix: nothing dispatched to the pane" "$output" "native_dispatched=no"
+check_contains "refused CI fix: remediation budget untouched" "$output" "remediation_retry_count="$'\n'"remediation_retry_exhausted=absent"
+check_contains "refused CI fix: needs-attention names the refusal" "$output" "budget is untouched): Error: native launch preflight failed: route=HOK-3241_c stage=coding"
+check_contains "refused CI fix: needs-attention carries the typed code" "$output" "code=uncertified surface=certification"
+check_contains "refused CI fix: status log records the reason" "$output" "reason=gemini-3.8-flash has no current coding certificate"
+check_contains "refused CI fix: typed launch-refusal line for the observer" "$output" "[launch-refusal] issue=HOK-3241_c phase=coding model=gemini-3.8-flash provider=native-openrouter reason=uncertified"
+check_contains "refused CI fix: stage result says not an attempt" "$output" "refused before an agent started (not an attempt)"
+check_contains "refused CI fix: stage result records the policy decision" "$output" '"launchRefusal":{"class":'
+check_not_contains "refused CI fix: no generic launch failure" "$output" "Could not launch remediation agent"
+
+output="$(run_launch_case native_remediation_conflict_refused)"
+check_contains "refused conflict: returns failure" "$output" "rc=1"
+check_contains "refused conflict: nothing dispatched to the pane" "$output" "native_dispatched=no"
+check_contains "refused conflict: escalates with the reason" "$output" "Merge-conflict remediation launch for PR #304 was refused before an agent started"
+check_contains "refused conflict: writes no in-flight marker" "$output" "conflict_marker=absent"
+check_contains "refused conflict: does not consume the single attempt" "$output" "conflict_retry_count="$'\n'
+check_contains "refused conflict: never terminalizes the bucket" "$output" "conflict_retry_exhausted=absent"
+check_not_contains "refused conflict: no generic launch failure" "$output" "Automatic merge-conflict resolution could not be launched"
+
+echo "=== Conflict Remediation Budget Charged Only on Launch (HOK-3273) ==="
+
+# Replay of the HOK-3241 primary arm: the resolver pushed a clean fix, then the
+# first Ready at the new head deferred on the pending cross-PR revert guard.
+# Before HOK-3273 that deferral had spent the one-shot budget and the next pass
+# wrote "Conflict remediation exhausted" over a MERGEABLE PR for 19 hours.
+output="$(run_launch_case replay_primary_guard_deferral)"
+check_contains "HOK-3241 replay: first Ready defers on the guard, second passes" "$output" "rc_by_pass=pass1:4 pass2:0 "
+check_contains "HOK-3241 replay: the deferral charges nothing" "$output" "budget_by_pass=pass1:1 pass2:1 "
+check_contains "HOK-3241 replay: no resolver relaunched" "$output" "launch_calls=0"
+check_contains "HOK-3241 replay: nothing written as exhausted" "$output" "conflict_retry_exhausted=absent"
+check_not_contains "HOK-3241 replay: no exhaustion message" "$output" "Conflict remediation exhausted"
+check_contains "HOK-3241 replay: reconciler expired the marker on the resolver push" "$output" "conflict_marker=absent"
+check_contains "HOK-3241 replay: Ready pass recorded" "$output" "|ready|completed|"
+check_contains "HOK-3241 replay: no needs-user written" "$output" "needs_attention=absent"
+check_contains "HOK-3241 replay: no legacy conflict files" "$output" "legacy_conflict_files="$'\n'
+
+# Replay of HOK-3241_c: a fresh (head, base) where Ready deferred on the guard.
+# The deferral leaves the budget at 0; the next pass launches the resolver and
+# charges exactly one attempt.
+output="$(run_launch_case native_remediation_conflict_guard_deferral)"
+check_contains "HOK-3241_c replay: defer, then launch the resolver" "$output" "rc_by_pass=pass1:4 pass2:3 "
+check_contains "HOK-3241_c replay: the deferral leaves the budget at 0" "$output" "budget_by_pass=pass1:0 pass2:1 "
+check_contains "HOK-3241_c replay: resolver dispatched to the pane" "$output" "native_dispatched=yes"
+check_contains "HOK-3241_c replay: in-flight marker written after the launch" "$output" "conflict_marker=present"
+check_contains "HOK-3241_c replay: nothing written as exhausted" "$output" "conflict_retry_exhausted=absent"
 
 echo "=== Post-PR Reconciliation Capsule (HOK-2936) ==="
 

@@ -78,7 +78,9 @@ PANE_FILE="$TMP_DIR/panes.txt"
 : > "$PANE_FILE"
 
 BACKSTAGE_HEALTH_INTERVAL=0
-BACKSTAGE_RESTART_COOLDOWN=60
+BACKSTAGE_RESTART_COOLDOWN=0
+BACKSTAGE_RESTART_BACKOFF_MAX_SECONDS=900
+BACKSTAGE_RESTART_NEEDS_USER_AFTER_ATTEMPTS=3
 LAST_BACKSTAGE_OBSERVER_HEALTH_CHECK=0
 LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS=""
 
@@ -170,5 +172,68 @@ assert_contains "tend-off new window runs observer" "$(cat "$TMUX_LOG")" "tools/
 assert_eq "tend-off restart does not split" "0" "$(wc -l < "$RECONCILE_LOG" | tr -d ' ')"
 assert_eq "tend-off observer healthy after restart" "healthy" "$(jq -r '.services.observer.status' "$HEALTH_FILE")"
 assert_eq "tend-off observer pane recorded" "%9" "$(jq -r '.services.observer.paneId' "$HEALTH_FILE")"
+
+# HOK-3244 REQ-F1: three unhealthy ticks drive attempts 1 → 2 → 3; the next
+# tick writes needs-user and the bounded-retry exhausted sentinel is present.
+# `restart_backstage_observer_loop` is overridden so the pane never recovers,
+# so each tick exercises the bounded-retry increment/gate path.
+TEND_ENABLED=true
+rm -rf "$STATE_DIR" "$HEALTH_FILE"
+mkdir -p "$STATE_DIR"
+LAST_BACKSTAGE_OBSERVER_HEALTH_CHECK=0
+LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS=""
+: > "$LOG_FILE"
+: > "$RECONCILE_LOG"
+: > "$PANE_FILE"
+# Non-observer pane present so classify_backstage_observer_health reports
+# `missing-observer-loop`, which is a retryable unhealthy state.
+printf '%%7\tOther Pane\t0\tbash\tbash\n' > "$PANE_FILE"
+restart_backstage_observer_loop() { printf '%%1\n'; return 0; }
+classify_backstage_observer_health() {
+  printf 'missing-observer-loop\tbackstage window is missing the %s pane\t1\t\t\t0\n' "${WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE:-Wavemill Observer}"
+}
+
+for attempt in 1 2 3; do
+  LAST_BACKSTAGE_OBSERVER_HEALTH_CHECK=0
+  check_backstage_observer_health
+  attempt_count="$(jq -r '.services.observer.restartAttemptCount' "$HEALTH_FILE")"
+  assert_eq "attempt $attempt restartAttemptCount" "$attempt" "$attempt_count"
+  current_status="$(jq -r '.services.observer.status' "$HEALTH_FILE")"
+  if [[ "$current_status" == "needs-user" ]]; then
+    echo "FAIL: observer latched needs-user prematurely after attempt $attempt"
+    exit 1
+  fi
+done
+# After the budget is spent, the next tick's gate returns `exhausted`, writes
+# needs-user and drops the bounded-retry exhausted sentinel.
+LAST_BACKSTAGE_OBSERVER_HEALTH_CHECK=0
+check_backstage_observer_health
+assert_eq "exhausted status" "needs-user" "$(jq -r '.services.observer.status' "$HEALTH_FILE")"
+if [[ ! -f "$STATE_DIR/.retry-backstage-observer-restart-exhausted" ]]; then
+  echo "FAIL: bounded-retry exhausted sentinel missing"
+  exit 1
+fi
+
+# HOK-3244 REQ-F1: once an unhealthy episode succeeds, the counter is wiped
+# and the exhausted sentinel is cleared. New identity (pane id change) also
+# resets the budget via bounded_retry_reset_if_new_head.
+rm -rf "$STATE_DIR"/*
+LAST_BACKSTAGE_OBSERVER_HEALTH_CHECK=0
+LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS=""
+# One failing tick to seed a non-zero counter under identity "missing:A"
+restart_backstage_observer_loop() { printf '%%1\n'; return 0; }
+classify_backstage_observer_health() {
+  printf 'missing-observer-loop\tdetail\t1\t%%A\t\t0\n'
+}
+check_backstage_observer_health
+assert_eq "seed counter is 1" "1" "$(cat "$STATE_DIR/.retry-backstage-observer-restart-count" 2>/dev/null || echo 0)"
+# Identity changes (pane id %A → %B) — bounded_retry_reset_if_new_head wipes
+# the budget, so the next tick starts from zero again.
+LAST_BACKSTAGE_OBSERVER_HEALTH_CHECK=0
+classify_backstage_observer_health() {
+  printf 'missing-observer-loop\tdetail\t1\t%%B\t\t0\n'
+}
+check_backstage_observer_health
+assert_eq "identity change resets to 1" "1" "$(cat "$STATE_DIR/.retry-backstage-observer-restart-count" 2>/dev/null || echo 0)"
 
 echo "backstage observer watchdog tests passed"

@@ -132,26 +132,53 @@ _wavemill_hook_config_file() {
   return 1
 }
 
-_wavemill_hook_osc_enabled() {
+_wavemill_hook_osc_flags() {
+  # Return "<emitOsc> <programStatus>" (true/false tokens). Cached per-process.
+  if [[ -n "${_WAVEMILL_HOOK_OSC_FLAGS_CACHE:-}" ]]; then
+    printf '%s' "$_WAVEMILL_HOOK_OSC_FLAGS_CACHE"
+    return 0
+  fi
+
+  local emit_osc="true"
+  local program_status="true"
   local config_file=""
-  local enabled="true"
 
-  command -v jq >/dev/null 2>&1 || return 0
-  config_file="$(_wavemill_hook_config_file)" || return 0
+  if command -v jq >/dev/null 2>&1; then
+    config_file="$(_wavemill_hook_config_file 2>/dev/null || true)"
+    if [[ -n "$config_file" ]]; then
+      local flags
+      flags="$(
+        jq -r '
+          (if (.hooks? | type == "object")
+             and (.hooks | has("emitOsc"))
+             and .hooks.emitOsc == false then "false" else "true" end) as $osc |
+          (if (.hooks? | type == "object")
+             and (.hooks | has("programStatus"))
+             and .hooks.programStatus == false then "false" else "true" end) as $ps |
+          "\($osc) \($ps)"
+        ' "$config_file" 2>/dev/null || true
+      )"
+      if [[ "$flags" =~ ^(true|false)\ (true|false)$ ]]; then
+        emit_osc="${flags%% *}"
+        program_status="${flags##* }"
+      fi
+    fi
+  fi
 
-  enabled="$(
-    jq -r '
-      if (.hooks? | type == "object")
-         and (.hooks | has("emitOsc"))
-         and .hooks.emitOsc == false then
-        "false"
-      else
-        "true"
-      end
-    ' "$config_file" 2>/dev/null || printf 'true'
-  )"
+  _WAVEMILL_HOOK_OSC_FLAGS_CACHE="${emit_osc} ${program_status}"
+  printf '%s' "$_WAVEMILL_HOOK_OSC_FLAGS_CACHE"
+}
 
-  [[ "$enabled" != "false" ]]
+_wavemill_hook_osc_enabled() {
+  local flags
+  flags="$(_wavemill_hook_osc_flags)"
+  [[ "${flags%% *}" != "false" ]]
+}
+
+_wavemill_hook_osc7501_enabled() {
+  local flags
+  flags="$(_wavemill_hook_osc_flags)"
+  [[ "${flags##* }" != "false" ]]
 }
 
 _wavemill_hook_osc_sanitize() {
@@ -249,6 +276,148 @@ _wavemill_hook_emit_osc() {
   wrapped="$(_wavemill_hook_osc_wrap "$sequence")"
 
   printf '%s' "$wrapped" >&2 2>/dev/null || true
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# OSC 7501 Program Status (rev 0.4, 2026-10-10)
+#
+# A continuous-state mirror emitted alongside every successful hook write.
+# Writes go to the resolved pane TTY (never stdout/stderr) and are best-effort:
+# every error path returns 0 so the hook write budget is unaffected.
+# ---------------------------------------------------------------------------
+
+_wavemill_hook_osc7501_state() {
+  case "${1:-}" in
+    working) printf 'state=working' ;;
+    idle) printf 'state=idle' ;;
+    waiting) printf 'state=blocked:kind=question' ;;
+    approval-needed) printf 'state=blocked:kind=permission' ;;
+    blocked) printf 'state=blocked' ;;
+    policy-denied|error) printf 'state=error' ;;
+    *) return 0 ;;
+  esac
+}
+
+_wavemill_hook_osc7501_strip_cc() {
+  printf '%s' "${1:-}" | LC_ALL=C tr -d '[:cntrl:]'
+}
+
+# Truncate to the specified byte count BEFORE base64 encoding, then base64
+# the result and strip any newline wrapping (some base64 implementations wrap
+# at 76 chars). Caller is responsible for stripping control chars.
+_wavemill_hook_osc7501_b64() {
+  local value="${1:-}"
+  local max_bytes="${2:-2048}"
+  [[ -n "$value" ]] || { printf ''; return 0; }
+  printf '%s' "$value" \
+    | LC_ALL=C head -c "$max_bytes" \
+    | base64 2>/dev/null \
+    | LC_ALL=C tr -d '\n\r'
+}
+
+_wavemill_hook_osc7501_sanitize_app() {
+  local agent="${1:-}"
+  local candidate="wavemill"
+  if [[ -n "$agent" ]]; then
+    candidate="wavemill-${agent}"
+  fi
+  if [[ "$candidate" =~ ^[A-Za-z0-9_.+-]{1,32}$ ]]; then
+    printf '%s' "$candidate"
+  else
+    printf 'wavemill'
+  fi
+}
+
+# Resolve the pane TTY once per process. The result is a writable character
+# device, or the sentinel "__none__" if resolution fails. Both outcomes are
+# cached so subsequent writes don't re-run `tmux display-message`.
+_wavemill_hook_osc7501_tty() {
+  if [[ -n "${_WAVEMILL_HOOK_OSC7501_TTY_CACHE:-}" ]]; then
+    printf '%s' "$_WAVEMILL_HOOK_OSC7501_TTY_CACHE"
+    return 0
+  fi
+  local tty=""
+  if [[ -n "${TMUX:-}" ]] && command -v tmux >/dev/null 2>&1; then
+    tty="$(tmux display-message -p '#{pane_tty}' 2>/dev/null || true)"
+  fi
+  if [[ -z "$tty" ]]; then
+    tty="$(tty 2>/dev/null || true)"
+  fi
+  if [[ -n "$tty" && -w "$tty" && -c "$tty" ]]; then
+    _WAVEMILL_HOOK_OSC7501_TTY_CACHE="$tty"
+  else
+    _WAVEMILL_HOOK_OSC7501_TTY_CACHE="__none__"
+  fi
+  printf '%s' "$_WAVEMILL_HOOK_OSC7501_TTY_CACHE"
+}
+
+_wavemill_hook_osc7501_sequence() {
+  local app="$1"
+  local state_frag="$2"
+  local msg_b64="${3:-}"
+  local title_b64="${4:-}"
+  local body="app=${app}:${state_frag}"
+  [[ -n "$msg_b64" ]] && body="${body}:msg=${msg_b64}"
+  [[ -n "$title_b64" ]] && body="${body}:title=${title_b64}"
+  printf '\033]7501;%s\033\\' "$body"
+}
+
+_wavemill_hook_osc7501_wrap() {
+  local payload="${1:-}"
+  if [[ -n "${TMUX:-}" ]]; then
+    local escaped="${payload//$'\033'/$'\033\033'}"
+    printf '\033Ptmux;%s\033\\' "$escaped"
+    return 0
+  fi
+  printf '%s' "$payload"
+}
+
+_wavemill_hook_emit_osc7501() {
+  local state="$1"
+  local event="$2"
+  local detail="${3:-}"
+  local agent="${4:-}"
+  local next_action="${5:-}"
+
+  _wavemill_hook_osc7501_enabled || return 0
+
+  local state_frag
+  state_frag="$(_wavemill_hook_osc7501_state "$state")"
+  [[ -n "$state_frag" ]] || return 0
+
+  local tty
+  tty="$(_wavemill_hook_osc7501_tty)"
+  [[ "$tty" != "__none__" ]] || return 0
+
+  local app
+  app="$(_wavemill_hook_osc7501_sanitize_app "$agent")"
+
+  local msg_source
+  if [[ -n "$next_action" ]]; then
+    msg_source="$next_action"
+  else
+    msg_source="$detail"
+  fi
+  msg_source="$(_wavemill_hook_osc7501_strip_cc "$msg_source")"
+  local msg_b64=""
+  if [[ -n "$msg_source" ]]; then
+    msg_b64="$(_wavemill_hook_osc7501_b64 "$msg_source" 2048)"
+  fi
+
+  local title_source
+  title_source="$(_wavemill_hook_osc7501_strip_cc "${WAVEMILL_ISSUE:-}")"
+  local title_b64=""
+  if [[ -n "$title_source" ]]; then
+    title_b64="$(_wavemill_hook_osc7501_b64 "$title_source" 192)"
+  fi
+
+  local sequence wrapped
+  sequence="$(_wavemill_hook_osc7501_sequence "$app" "$state_frag" "$msg_b64" "$title_b64")"
+  wrapped="$(_wavemill_hook_osc7501_wrap "$sequence")"
+
+  # Best-effort: never fail or slow the hook write.
+  printf '%s' "$wrapped" > "$tty" 2>/dev/null || true
   return 0
 }
 
@@ -375,6 +544,7 @@ wavemill_hook_write() {
     if mv "$tmp_file" "$hook_file" 2>/dev/null; then
       wavemill_hook_notify
       _wavemill_hook_emit_osc "$state" "$event" "$detail" "$agent" || true
+      _wavemill_hook_emit_osc7501 "$state" "$event" "$detail" "$agent" "$next_action" || true
       # HOK-3184: mirror the agent record as an evidence row. Monitor writes
       # return immediately inside the helper (writer-field enforcement).
       if declare -F wavemill_hook_shadow_evidence >/dev/null 2>&1; then

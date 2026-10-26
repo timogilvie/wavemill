@@ -867,6 +867,68 @@ describe('launchNativeCoding', () => {
     assert.equal(archivedArtifactPath(featureDir, CODING_RECOVERY_INSTRUCTION_FILE), undefined);
   });
 
+  it('runs a --prompt-file remediation instruction instead of the coding packet (HOK-3272)', async () => {
+    const { repoDir, featureDir, slug } = makeRepo();
+    const promptDir = mkdtempSync(join(tmpdir(), 'native-coding-prompt-'));
+    repos.push(promptDir);
+    const promptFile = join(promptDir, 'sess-HOK-3241_c-conflict-prompt.txt');
+    writeFileSync(promptFile, 'FIX CONFLICT X: resolve shared/lib/merge-labels.ts against main, then commit and push.\n', 'utf-8');
+    const seen: ScriptedProviderContext[] = [];
+    const api = `native-coding-remediation-${process.pid}-${Date.now()}`;
+    registerScriptedPiProvider({
+      api,
+      provider: 'scripted',
+      turns: (context) => {
+        seen.push(context);
+        return finalTurn('Stopped without writing a marker.');
+      },
+    });
+
+    await assert.rejects(
+      () => launchNativeCoding({
+        session: 'sess',
+        issue: 'HOK-3241_c',
+        slug,
+        wtDir: repoDir,
+        repoDir,
+        issueContext: 'Issue Description:\noriginal coding task',
+        promptFile,
+        loopModelOverride: { id: `scripted:${api}`, name: `scripted:${api}`, api, provider: 'scripted' },
+      }),
+      /without \.coding-complete or \.coding-blocked-completion\.json/,
+    );
+
+    assert.ok(seen.length > 0);
+    const firstUser = JSON.stringify(seen[0].messages[0]);
+    assert.match(firstUser, /FIX CONFLICT X/);
+    assert.match(firstUser, /Issue: HOK-3241_c/);
+    assert.match(firstUser, /Plan path: /);
+    assert.match(firstUser, /write the coding completion artifact/);
+    // The packet-driven body and its trailer are replaced, not appended to.
+    assert.doesNotMatch(firstUser, /State the success criterion/);
+    assert.doesNotMatch(firstUser, /original coding task/);
+    assert.doesNotMatch(firstUser, /Update src\/app\.ts/);
+    assert.ok(existsSync(featureDir));
+  });
+
+  for (const [label, content] of [['missing', undefined], ['empty', '  \n']] as const) {
+    it(`fails ${label === 'missing' ? 'a' : 'an'} ${label} --prompt-file before sweeping coding artifacts (HOK-3272)`, async () => {
+      const { repoDir, featureDir, slug } = makeRepo();
+      const promptDir = mkdtempSync(join(tmpdir(), 'native-coding-prompt-'));
+      repos.push(promptDir);
+      const promptFile = join(promptDir, 'remediation-prompt.txt');
+      if (content !== undefined) writeFileSync(promptFile, content, 'utf-8');
+      writeFileSync(join(featureDir, '.coding-complete'), '{"stage":"coding","confidence":"high"}\n', 'utf-8');
+
+      await assert.rejects(
+        () => launchNativeCoding({ session: 'sess', issue: 'HOK-3272', slug, wtDir: repoDir, repoDir, promptFile }),
+        new RegExp(`--prompt-file ${label === 'missing' ? 'not found' : 'is empty'}`),
+      );
+      assert.ok(existsSync(join(featureDir, '.coding-complete')));
+      assert.equal(archivedArtifactPath(featureDir, '.coding-complete'), undefined);
+    });
+  }
+
   it('sweeps a pre-existing .coding-complete before classifying native completion', async () => {
     const { repoDir, featureDir, slug } = makeRepo();
     writeFileSync(join(featureDir, '.coding-complete'), '{"stage":"coding","confidence":"high","producer":"stale"}\n', 'utf-8');

@@ -313,6 +313,23 @@ export interface RetryEvent extends EventBase {
   retryCount: number;
 }
 
+/**
+ * Guard refused event: a deterministic harness guard refused a tool call
+ * before it ran (HOK-3262). Counted by the tool-decision corpus so a refusal
+ * is attributable to the harness, not the model.
+ */
+export interface GuardRefusedEvent extends EventBase {
+  type: 'guard_refused';
+  /** Guard identifier (currently 'foreground-wait'). */
+  guard: string;
+  /** Tool whose call was refused (e.g. 'run_tests'). */
+  toolName: string;
+  /** Short, argv-free reason, e.g. 'sleep 60s (>= 5s floor)'. */
+  reason: string;
+  /** Program name (argv[0]) of the refused command; no arguments. */
+  commandSummary?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Menu and provider schemas
 // ---------------------------------------------------------------------------
@@ -357,6 +374,7 @@ export type SessionEvent =
   | MutationOutcomeEvent
   | ApprovalEvent
   | RetryEvent
+  | GuardRefusedEvent
   | ToolMenuEvent
   | ProviderToolsEvent;
 

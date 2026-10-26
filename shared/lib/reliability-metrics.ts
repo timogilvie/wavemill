@@ -128,6 +128,12 @@ export interface TaskReliability {
   stuckMs: number;
   stuckCoverage: MetricCoverage;
   stallIntervals: StallInterval[];
+  /**
+   * True when the mill ran this task (a live or archived feature dir, hook
+   * history or a stage launch). False for an operator PR (fix/, docs/, …),
+   * which counts toward the all-PR rate but not the mill-only rate.
+   */
+  isMillTask: boolean;
 }
 
 export interface StallInterval {
@@ -158,6 +164,12 @@ export interface ReliabilityBucket {
   touchClasses: Record<InterventionClass, number>;
   /** Tasks with at least one touch of each class. */
   touchedTasksByClass: Record<InterventionClass, number>;
+  /** Mill-run tasks only (`TaskReliability.isMillTask`); the fields above cover every merged PR. */
+  millMerged: number;
+  millUnattended: number;
+  millUnattendedRate: number | null;
+  millStuckP50Ms: number | null;
+  millStuckP90Ms: number | null;
 }
 
 /** How much of the touch evidence each run could actually see. */
@@ -178,6 +190,8 @@ export interface SourceCoverage {
 
 export interface ReliabilitySummary {
   generatedAt: string;
+  /** Absolute repo the figures were computed for (HOK-3245: the dashboard labels it). */
+  repoDir?: string;
   since: string;
   until: string;
   bucket: 'daily' | 'rolling7d';
@@ -187,6 +201,18 @@ export interface ReliabilitySummary {
   sources?: SourceCoverage;
   /** Spot-checked PRs (`--pr`), computed whether or not they merged. */
   spotChecks?: TaskReliability[];
+  /** Median native prompt-cache hit rate per (model, provider route) (HOK-3260). */
+  promptCache?: PromptCacheRouteMedian[];
+}
+
+/** One (model, provider route) row of the prompt-cache section (HOK-3260). */
+export interface PromptCacheRouteMedian {
+  model: string;
+  providerRoute: string;
+  /** Median of per-run `cacheHitRate` (turns 2..n) across native stage results. */
+  medianHitRate: number;
+  /** Stage results that contributed a hit rate. */
+  samples: number;
 }
 
 // ── Config / tunables ────────────────────────────────────────────────────────
@@ -537,6 +563,11 @@ export interface BuildContextOptions {
   evalsPath?: string;
   github?: boolean;
   gh?: GhRunner;
+  /**
+   * PR timeline cache directory: omitted = `.wavemill/cache/pr-timeline/`,
+   * `null` = no cache (read-only run), string = that directory.
+   */
+  cacheDir?: string | null;
 }
 
 /** Read every repo-wide evidence feed once. */
@@ -549,7 +580,11 @@ export function buildReliabilityContext(opts: BuildContextOptions): ReliabilityC
     touchLog: readOperatorTouchLog(opts.repoDir),
     labelWrites: indexMillLabelWrites(readMillLabelWrites(opts.repoDir)),
     mergeLaneSinceMs: earliestMergeLaneMs(opts.repoDir),
-    github: { enabled: opts.github ?? config.github, ...(opts.gh ? { gh: opts.gh } : {}) },
+    github: {
+      enabled: opts.github ?? config.github,
+      ...(opts.gh ? { gh: opts.gh } : {}),
+      ...(opts.cacheDir !== undefined ? { cacheDir: opts.cacheDir } : {}),
+    },
     millActorLogins: new Set(config.millActorLogins),
     stats: { githubTimelines: 0, githubUnavailable: 0 },
   };
@@ -716,6 +751,57 @@ export function resolveTaskSource(task: MergedTaskRef, name: string): string | u
     if (existsSync(archived)) return archived;
   }
   return undefined;
+}
+
+// ── IO: native prompt-cache hit rate (HOK-3260) ──────────────────────────────
+
+const PROMPT_CACHE_STAGES = ['planning', 'coding', 'review'] as const;
+
+interface StageResultUsageView {
+  model?: string;
+  executedModel?: string | null;
+  artifacts?: { usage?: { cacheHitRate?: unknown; providerRoute?: unknown } };
+}
+
+/**
+ * Median prompt-cache hit rate per (model, provider route) over the native
+ * planning / coding / review stage results of `tasks`. Stage results without a
+ * numeric `artifacts.usage.cacheHitRate` (legacy, non-native, or runs of fewer
+ * than two turns) are skipped. Rows are sorted by model, then route.
+ */
+export function collectPromptCacheHitRates(tasks: MergedTaskRef[]): PromptCacheRouteMedian[] {
+  const rates = new Map<string, { model: string; providerRoute: string; values: number[] }>();
+  for (const task of tasks) {
+    for (const stage of PROMPT_CACHE_STAGES) {
+      const path = resolveTaskSource(task, `${stage}-result.json`);
+      if (!path) continue;
+      let result: StageResultUsageView;
+      try {
+        result = JSON.parse(readFileSync(path, 'utf-8')) as StageResultUsageView;
+      } catch {
+        continue;
+      }
+      const usage = result?.artifacts?.usage;
+      const rate = usage?.cacheHitRate;
+      if (typeof rate !== 'number' || !Number.isFinite(rate)) continue;
+      const model = (result.executedModel || result.model || 'unknown').trim() || 'unknown';
+      const providerRoute = typeof usage.providerRoute === 'string' && usage.providerRoute
+        ? usage.providerRoute
+        : 'unknown';
+      const key = `${model}\u0000${providerRoute}`;
+      const entry = rates.get(key) ?? { model, providerRoute, values: [] };
+      entry.values.push(rate);
+      rates.set(key, entry);
+    }
+  }
+  return [...rates.values()]
+    .map(({ model, providerRoute, values }) => ({
+      model,
+      providerRoute,
+      medianHitRate: percentile(values.slice().sort((a, b) => a - b), 50)!,
+      samples: values.length,
+    }))
+    .sort((a, b) => a.model.localeCompare(b.model) || a.providerRoute.localeCompare(b.providerRoute));
 }
 
 // ── IO: operator touches ─────────────────────────────────────────────────────
@@ -1390,14 +1476,25 @@ function aggregateRolling7d(tasks: TaskReliability[], sinceIso: string, untilIso
   return aggregateBucket(windowTasks, key, '7d rolling');
 }
 
-function aggregateBucket(tasks: TaskReliability[], key: string, label: string): ReliabilityBucket {
+function unattendedAndStuck(tasks: TaskReliability[]) {
   const merged = tasks.length;
   const unattended = tasks.filter((t) => t.touchCount === 0).length;
-  const unattendedRate = merged > 0 ? unattended / merged : null;
   const stuckSeries = tasks
     .filter((t) => t.stuckCoverage !== 'none')
     .map((t) => t.stuckMs)
     .sort((a, b) => a - b);
+  return {
+    merged,
+    unattended,
+    unattendedRate: merged > 0 ? unattended / merged : null,
+    stuckP50Ms: percentile(stuckSeries, 50),
+    stuckP90Ms: percentile(stuckSeries, 90),
+  };
+}
+
+function aggregateBucket(tasks: TaskReliability[], key: string, label: string): ReliabilityBucket {
+  const all = unattendedAndStuck(tasks);
+  const mill = unattendedAndStuck(tasks.filter((t) => t.isMillTask));
   const coverage = {
     full: tasks.filter((t) => t.stuckCoverage === 'full').length,
     partial: tasks.filter((t) => t.stuckCoverage === 'partial').length,
@@ -1415,14 +1512,15 @@ function aggregateBucket(tasks: TaskReliability[], key: string, label: string): 
   return {
     key,
     label,
-    merged,
-    unattended,
-    unattendedRate,
-    stuckP50Ms: percentile(stuckSeries, 50),
-    stuckP90Ms: percentile(stuckSeries, 90),
+    ...all,
     coverage,
     touchClasses,
     touchedTasksByClass,
+    millMerged: mill.merged,
+    millUnattended: mill.unattended,
+    millUnattendedRate: mill.unattendedRate,
+    millStuckP50Ms: mill.stuckP50Ms,
+    millStuckP90Ms: mill.stuckP90Ms,
   };
 }
 
@@ -1470,10 +1568,11 @@ export function renderReliabilitySummary(summary: ReliabilitySummary, opts: Rend
   lines.push('─'.repeat(Math.min(80, title.length)));
 
   const o = summary.overall;
-  lines.push(`Merged tasks:                 ${o.merged}`);
+  lines.push(`Merged tasks (all PRs):       ${o.merged}`);
   lines.push(`Unattended rate:              ${fmtRate(o.unattendedRate)} (${o.unattended}/${o.merged})`);
   lines.push(`Median time stuck:            ${fmtMs(o.stuckP50Ms)}`);
   lines.push(`P90 time stuck:               ${fmtMs(o.stuckP90Ms)}`);
+  lines.push(`Mill tasks:                   ${o.millMerged} · unattended ${fmtRate(o.millUnattendedRate)} (${o.millUnattended}/${o.millMerged}) · p50 ${fmtMs(o.millStuckP50Ms)} · p90 ${fmtMs(o.millStuckP90Ms)}`);
   lines.push(`Coverage: full=${o.coverage.full}, partial=${o.coverage.partial}, none=${o.coverage.none}`);
   lines.push(`Touches by class:             ${fmtClasses(o.touchClasses)}`);
   lines.push(`Tasks touched by class:       ${fmtClasses(o.touchedTasksByClass)}`);
@@ -1482,7 +1581,7 @@ export function renderReliabilitySummary(summary: ReliabilitySummary, opts: Rend
 
   if (summary.bucket === 'rolling7d') {
     for (const b of summary.buckets) {
-      lines.push(`Rolling 7-day:                ${fmtRate(b.unattendedRate)} · p50 ${fmtMs(b.stuckP50Ms)} · p90 ${fmtMs(b.stuckP90Ms)}  (${b.merged} merged)`);
+      lines.push(`Rolling 7-day:                all ${fmtRate(b.unattendedRate)} · mill ${fmtRate(b.millUnattendedRate)} · p50 ${fmtMs(b.stuckP50Ms)} · p90 ${fmtMs(b.stuckP90Ms)}  (${b.millMerged}/${b.merged} mill/all merged)`);
     }
   } else if (summary.buckets.length > 0) {
     lines.push('Daily breakdown:');
@@ -1505,6 +1604,14 @@ export function renderReliabilitySummary(summary: ReliabilitySummary, opts: Rend
     lines.push('Per-task:');
     for (const t of summary.tasks.slice().sort((a, b) => parseMs(b.task.mergedAt)! - parseMs(a.task.mergedAt)!)) {
       lines.push(renderTaskLine(t, Boolean(opts.includeClasses)));
+    }
+  }
+
+  if (summary.promptCache && summary.promptCache.length > 0) {
+    lines.push('');
+    lines.push('Prompt-cache hit rate (median, turns 2..n):');
+    for (const row of summary.promptCache) {
+      lines.push(`  ${row.model.padEnd(36)} ${row.providerRoute.padEnd(12)} ${fmtRate(row.medianHitRate).padStart(6)}  (${row.samples} run${row.samples === 1 ? '' : 's'})`);
     }
   }
 
@@ -1549,7 +1656,7 @@ export function renderReliabilityDashboardLine(summary: ReliabilitySummary): str
     : null;
   const b = rolling ?? summary.overall;
   if (b.merged === 0) return '';
-  return `7d unattended: ${fmtRate(b.unattendedRate)} · stuck p50 ${fmtMs(b.stuckP50Ms)} · p90 ${fmtMs(b.stuckP90Ms)} (${b.merged} merged)`;
+  return `7d unattended: mill ${fmtRate(b.millUnattendedRate)} · all ${fmtRate(b.unattendedRate)} · stuck p50 ${fmtMs(b.stuckP50Ms)} · p90 ${fmtMs(b.stuckP90Ms)} (${b.millMerged}/${b.merged} merged)`;
 }
 
 // ── Top-level orchestrator ───────────────────────────────────────────────────
@@ -1564,6 +1671,8 @@ export interface ComputeReliabilityOptions {
   stallMinutes?: number;
   /** Read GitHub PR timelines (default: `reliability.github`, true). */
   github?: boolean;
+  /** PR timeline cache directory (`BuildContextOptions.cacheDir`). */
+  cacheDir?: string | null;
   /** PR numbers to spot-check whether or not they merged in the window. */
   spotCheckPrs?: string[];
   /** Pre-built evidence context (tests); built from the repo when omitted. */
@@ -1593,6 +1702,7 @@ export function computeTaskReliability(
     stuckMs: stuck.stuckMs,
     stuckCoverage: stuck.coverage,
     stallIntervals: stuck.stallIntervals,
+    isMillTask: Boolean(task.featureDir || task.archiveDir) || stuck.coverage !== 'none',
   };
 }
 
@@ -1619,7 +1729,11 @@ function spotCheckTask(prNumber: string, ctx: ReliabilityContext): MergedTaskRef
 }
 
 export function computeReliability(opts: ComputeReliabilityOptions): ReliabilitySummary {
-  const ctx = opts.context ?? buildReliabilityContext({ repoDir: opts.repoDir, github: opts.github });
+  const ctx = opts.context ?? buildReliabilityContext({
+    repoDir: opts.repoDir,
+    github: opts.github,
+    ...(opts.cacheDir !== undefined ? { cacheDir: opts.cacheDir } : {}),
+  });
   const stallMinutes = opts.stallMinutes ?? getReliabilityConfig(opts.repoDir).stallMinutes;
   const merged = collectMergedTasks({
     repoDir: opts.repoDir,
@@ -1641,6 +1755,7 @@ export function computeReliability(opts: ComputeReliabilityOptions): Reliability
     summary.spotChecks = opts.spotCheckPrs.map((pr) =>
       tasks.find((t) => t.task.prNumber === pr) ?? computeTaskReliability(spotCheckTask(pr, ctx), ctx, taskOpts));
   }
+  summary.repoDir = resolve(opts.repoDir);
   summary.sources = {
     githubEnabled: Boolean(ctx.github?.enabled),
     githubTimelines: ctx.stats?.githubTimelines ?? 0,
@@ -1649,6 +1764,8 @@ export function computeReliability(opts: ComputeReliabilityOptions): Reliability
     mergeLaneSince: ctx.mergeLaneSinceMs != null ? iso(ctx.mergeLaneSinceMs) : null,
     archivedTasks: tasks.filter((t) => !t.task.featureDir && t.task.archiveDir).length,
   };
+  const promptCache = collectPromptCacheHitRates(tasks.map((t) => t.task));
+  if (promptCache.length > 0) summary.promptCache = promptCache;
   return summary;
 }
 

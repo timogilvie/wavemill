@@ -17,7 +17,9 @@ setup_ready_conflict_then_merge_runs_eval() {
   local ready_dir
   ready_dir="$(ready_state_dir "${WORKTREE_ROOT}/${SLUG}" "$SLUG")"
   mkdir -p "$ready_dir"
-  touch "$ready_dir/.conflict-detected"
+  marker_write "$ready_dir/.conflict-remediation.json" --kind conflict-remediation \
+    --head "stale-head" --expires-on "head,remote,operator-event" \
+    --detail-json '{"head":"stale-head","base":"main","launchHead":"stale-head","prNumber":856}'
   cat > "$ready_dir/.ready-result.json" <<JSON
 {"stage":"ready","status":"completed","artifacts":{"verdict":"pass"}}
 JSON

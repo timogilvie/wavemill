@@ -1,0 +1,754 @@
+{
+  "$fixture": {
+    "capturedAt": "2026-10-22T13:09:25.682Z",
+    "phase": "review",
+    "notes": "review-result present (verdict ready); captured during post-merge window"
+  },
+  "workflowState": {
+    "session": "wavemill-fixture",
+    "started": "2026-09-08T20:43:12Z",
+    "updated": "2026-10-22T13:09:22Z",
+    "tasks": {
+      "FIXTURE-1": {
+        "slug": "c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry",
+        "branch": "task/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry",
+        "worktree": "/workspace/wavemill-fixture/worktrees/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry",
+        "pr": "1703",
+        "status": "merged",
+        "linearIssueId": "FIXTURE-1",
+        "updated": "2026-10-22T13:09:21Z",
+        "agent": "claude",
+        "challenge": false,
+        "challengeModel": "claude-opus-5-5",
+        "plannerModel": "claude-opus-4-7",
+        "coderModel": "claude-opus-4-7",
+        "reviewerModel": "claude-haiku-4-5-20251001",
+        "planDepth": "deep",
+        "codeDepth": "medium",
+        "reviewMode": "llm",
+        "title": "C2: Property-based tests (fast-check) for failure policy, condition reconciler, bounded retry",
+        "traceId": "trc_6ad92957_f29f4c65b660d949",
+        "lifecycle": {
+          "schemaVersion": 1,
+          "workflowOutcome": "merged",
+          "resourceDisposition": "retained",
+          "launchContract": {
+            "baseBranch": "auto/integration",
+            "baseSha": "5050ff3f1862ae0ce9366447db4a23e15d507bc7",
+            "integrationMode": "merge-queue",
+            "mergeExecutor": "tend",
+            "mergeMethod": "squash",
+            "requireConfirm": false,
+            "remoteBranchDeletionPolicy": {
+              "allowed": true,
+              "mode": "merged-pr-task-branch",
+              "source": "cleanup_remote_task_branch"
+            },
+            "challengeRole": "",
+            "challengePairId": "",
+            "session": "wavemill-fixture",
+            "runEpoch": "20261021T171111Z.64052",
+            "windowId": "",
+            "provenance": {
+              "baseBranch": "repo-config",
+              "requireConfirm": "repo-config",
+              "mergeMethod": "repo-config",
+              "remoteBranchDeletionPolicy": "launch-contract"
+            }
+          },
+          "deliveryEvidence": {
+            "prNumber": "1703",
+            "prState": "MERGED",
+            "prBaseBranch": "auto/integration",
+            "prHeadSha": "f415e2b8d6d7e63ad09c550630c8eca9e2705865",
+            "mergeSha": "1a5d5d9eda6dcf30cc530c91c7757167812c70d7"
+          },
+          "attempt": null,
+          "prReconciliation": {
+            "schemaVersion": 1,
+            "classification": "current-open",
+            "issue": "FIXTURE-1",
+            "branch": "task/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry",
+            "baseBranch": "auto/integration",
+            "attemptId": null,
+            "linearState": null,
+            "reason": "open_current_pr",
+            "checkedAt": "2026-10-21T23:09:41Z",
+            "selectedCandidate": {
+              "baseRefName": "auto/integration",
+              "body": "## Summary\n\nImplements comprehensive property-based testing for core mill invariants using fast-check:\n\n- **Failure Policy**: Validates that any unrecognized failure strings classify as non-terminal and classification is deterministic\n- **Condition Reconciler**: Verifies markers don't outlive their conditions and reconciliation is idempotent\n- **Bounded Retry**: Ensures attempts respect the ceiling, new heads reset buckets, and exhausted states carry companions\n- **Merge Labels**: Confirms deriveMergeLabel is pure and reconciliation converges within one tick\n\nAll 4 property suites run in <5s each with reproducible seeded execution. Replaces the unseeded random test with deterministic property generators.\n\n## Changes\n\n- `shared/lib/fast-check-utils.ts` - Shared seed resolver and reproducibility harness\n- `shared/lib/property-generators.ts` - Event sequence and state generators\n- `shared/lib/failure-policy.property.test.ts` - Failure classification properties (4 props)\n- `shared/lib/bounded-retry.property.test.ts` - Bounded retry invariants (5 props)\n- `shared/lib/condition-reconciler.property.test.ts` - Marker lifetime properties (4 props)\n- `shared/lib/merge-labels.property.test.ts` - Label derivation and reconciliation properties (5 props)\n- `package.json` - Added fast-check@^3.23.0 as devDependency\n- `tests/run-unit-tests.sh` - Registered 4 new property suites\n- `tests/ci-test-weights.json` - Updated test weights manifest\n- Deleted `shared/lib/failure-policy.random.test.ts` (subsumed by property suite)\n\n## Test plan\n\n- All 4 property suites run via `npm test` and register in CI\n- Seeds are announced to stderr and embedded in failure headers for replay\n- `FAST_CHECK_SEED` environment variable overrides seed (default 0x30303017 in CI, random locally)\n- Reproduction: `FAST_CHECK_SEED=<reported seed> npm test -- <suite name>`\n\n## Self-review\n\n- Review verdict: **ready** (iteration 2)\n- Blockers: 0\n- Warnings: 0\n- Fixed cross-PR revert acknowledgement in commit message per PR #1614\n\n<!-- wavemill-fixture-meta\ntask: FIXTURE-1\n-->",
+              "createdAt": "2026-10-21T23:07:42Z",
+              "headRefName": "task/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry",
+              "headRefOid": "2fc60a1e99e10449e3bc731ac0a5536fae0d6d8c",
+              "mergedAt": null,
+              "number": 1703,
+              "state": "OPEN",
+              "title": "FIXTURE-1: Property-based tests for failure policy, condition reconciler, and bounded retry",
+              "updatedAt": "2026-10-21T23:07:42Z",
+              "url": "https://github.com/timogilvie/wavemill-fixture/pull/1703",
+              "normalizedState": "OPEN",
+              "branchMatches": true,
+              "baseMatches": true,
+              "headMatches": true,
+              "issueMatches": true,
+              "attemptMatches": false,
+              "challengeMatches": false,
+              "currentEvidence": true,
+              "mismatchReason": ""
+            },
+            "candidates": [
+              {
+                "baseRefName": "auto/integration",
+                "body": "## Summary\n\nImplements comprehensive property-based testing for core mill invariants using fast-check:\n\n- **Failure Policy**: Validates that any unrecognized failure strings classify as non-terminal and classification is deterministic\n- **Condition Reconciler**: Verifies markers don't outlive their conditions and reconciliation is idempotent\n- **Bounded Retry**: Ensures attempts respect the ceiling, new heads reset buckets, and exhausted states carry companions\n- **Merge Labels**: Confirms deriveMergeLabel is pure and reconciliation converges within one tick\n\nAll 4 property suites run in <5s each with reproducible seeded execution. Replaces the unseeded random test with deterministic property generators.\n\n## Changes\n\n- `shared/lib/fast-check-utils.ts` - Shared seed resolver and reproducibility harness\n- `shared/lib/property-generators.ts` - Event sequence and state generators\n- `shared/lib/failure-policy.property.test.ts` - Failure classification properties (4 props)\n- `shared/lib/bounded-retry.property.test.ts` - Bounded retry invariants (5 props)\n- `shared/lib/condition-reconciler.property.test.ts` - Marker lifetime properties (4 props)\n- `shared/lib/merge-labels.property.test.ts` - Label derivation and reconciliation properties (5 props)\n- `package.json` - Added fast-check@^3.23.0 as devDependency\n- `tests/run-unit-tests.sh` - Registered 4 new property suites\n- `tests/ci-test-weights.json` - Updated test weights manifest\n- Deleted `shared/lib/failure-policy.random.test.ts` (subsumed by property suite)\n\n## Test plan\n\n- All 4 property suites run via `npm test` and register in CI\n- Seeds are announced to stderr and embedded in failure headers for replay\n- `FAST_CHECK_SEED` environment variable overrides seed (default 0x30303017 in CI, random locally)\n- Reproduction: `FAST_CHECK_SEED=<reported seed> npm test -- <suite name>`\n\n## Self-review\n\n- Review verdict: **ready** (iteration 2)\n- Blockers: 0\n- Warnings: 0\n- Fixed cross-PR revert acknowledgement in commit message per PR #1614\n\n<!-- wavemill-fixture-meta\ntask: FIXTURE-1\n-->",
+                "createdAt": "2026-10-21T23:07:42Z",
+                "headRefName": "task/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry",
+                "headRefOid": "2fc60a1e99e10449e3bc731ac0a5536fae0d6d8c",
+                "mergedAt": null,
+                "number": 1703,
+                "state": "OPEN",
+                "title": "FIXTURE-1: Property-based tests for failure policy, condition reconciler, and bounded retry",
+                "updatedAt": "2026-10-21T23:07:42Z",
+                "url": "https://github.com/timogilvie/wavemill-fixture/pull/1703",
+                "normalizedState": "OPEN",
+                "branchMatches": true,
+                "baseMatches": true,
+                "headMatches": true,
+                "issueMatches": true,
+                "attemptMatches": false,
+                "challengeMatches": false,
+                "currentEvidence": true,
+                "mismatchReason": ""
+              }
+            ]
+          },
+          "lastAttemptReconciledBy": "monitor-pr-discovery",
+          "lastAttemptReconciledAt": "2026-10-21T23:09:41Z",
+          "retention": {
+            "reason": "live-agent-process",
+            "policy": "manual-verification-required",
+            "actor": "cleanup_completed_task",
+            "timestamp": "2026-10-22T13:09:21Z"
+          },
+          "cleanupEpisode": {
+            "schemaVersion": 1,
+            "episodeId": "FIXTURE-1:cleanup:bf5b7a7ad16649afcd8243aa890122683c42df28ad908df8dc72fb512dddc048",
+            "fingerprint": "bf5b7a7ad16649afcd8243aa890122683c42df28ad908df8dc72fb512dddc048",
+            "fingerprintInputs": {
+              "issue": "FIXTURE-1",
+              "branch": "task/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry",
+              "worktree": "/workspace/wavemill-fixture/worktrees/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry",
+              "worktreeExists": true,
+              "localBranchExists": true,
+              "localHeadSha": "9c499dd57e74a1c4e73b37f5c15cfc3f683759ab",
+              "baseBranch": "auto/integration",
+              "baseSha": "1a5d5d9eda6dcf30cc530c91c7757167812c70d7",
+              "remoteTrackingHeadSha": "",
+              "dirtyStatusHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "dirtyStatus": "",
+              "worktreeIdentity": "valid",
+              "prNumber": "1703",
+              "prState": "MERGED",
+              "prHeadRefOid": "f415e2b8d6d7e63ad09c550630c8eca9e2705865",
+              "prBaseBranch": "auto/integration",
+              "verificationReason": ""
+            },
+            "disposition": "transient",
+            "failureClass": "operational",
+            "firstAttemptAt": "2026-10-22T12:51:07Z",
+            "lastAttemptAt": "2026-10-22T13:09:20Z",
+            "attemptCount": 3,
+            "maxAttempts": 5,
+            "nextRetryAt": "2026-10-22T13:11:00Z",
+            "requiredOperatorAction": "Inspect local worktree, branch, and tmux cleanup failure, then run wavemill-fixture cleanup <issue> --dry-run.",
+            "lastOutcome": "live-agent-process",
+            "updatedAt": "2026-10-22T13:09:20Z"
+          }
+        },
+        "phase": "done",
+        "windowId": "@143",
+        "attempt": null,
+        "prReconciliation": {
+          "schemaVersion": 1,
+          "classification": "current-open",
+          "issue": "FIXTURE-1",
+          "branch": "task/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry",
+          "baseBranch": "auto/integration",
+          "attemptId": null,
+          "linearState": null,
+          "reason": "open_current_pr",
+          "checkedAt": "2026-10-21T23:09:41Z",
+          "selectedCandidate": {
+            "baseRefName": "auto/integration",
+            "body": "## Summary\n\nImplements comprehensive property-based testing for core mill invariants using fast-check:\n\n- **Failure Policy**: Validates that any unrecognized failure strings classify as non-terminal and classification is deterministic\n- **Condition Reconciler**: Verifies markers don't outlive their conditions and reconciliation is idempotent\n- **Bounded Retry**: Ensures attempts respect the ceiling, new heads reset buckets, and exhausted states carry companions\n- **Merge Labels**: Confirms deriveMergeLabel is pure and reconciliation converges within one tick\n\nAll 4 property suites run in <5s each with reproducible seeded execution. Replaces the unseeded random test with deterministic property generators.\n\n## Changes\n\n- `shared/lib/fast-check-utils.ts` - Shared seed resolver and reproducibility harness\n- `shared/lib/property-generators.ts` - Event sequence and state generators\n- `shared/lib/failure-policy.property.test.ts` - Failure classification properties (4 props)\n- `shared/lib/bounded-retry.property.test.ts` - Bounded retry invariants (5 props)\n- `shared/lib/condition-reconciler.property.test.ts` - Marker lifetime properties (4 props)\n- `shared/lib/merge-labels.property.test.ts` - Label derivation and reconciliation properties (5 props)\n- `package.json` - Added fast-check@^3.23.0 as devDependency\n- `tests/run-unit-tests.sh` - Registered 4 new property suites\n- `tests/ci-test-weights.json` - Updated test weights manifest\n- Deleted `shared/lib/failure-policy.random.test.ts` (subsumed by property suite)\n\n## Test plan\n\n- All 4 property suites run via `npm test` and register in CI\n- Seeds are announced to stderr and embedded in failure headers for replay\n- `FAST_CHECK_SEED` environment variable overrides seed (default 0x30303017 in CI, random locally)\n- Reproduction: `FAST_CHECK_SEED=<reported seed> npm test -- <suite name>`\n\n## Self-review\n\n- Review verdict: **ready** (iteration 2)\n- Blockers: 0\n- Warnings: 0\n- Fixed cross-PR revert acknowledgement in commit message per PR #1614\n\n<!-- wavemill-fixture-meta\ntask: FIXTURE-1\n-->",
+            "createdAt": "2026-10-21T23:07:42Z",
+            "headRefName": "task/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry",
+            "headRefOid": "2fc60a1e99e10449e3bc731ac0a5536fae0d6d8c",
+            "mergedAt": null,
+            "number": 1703,
+            "state": "OPEN",
+            "title": "FIXTURE-1: Property-based tests for failure policy, condition reconciler, and bounded retry",
+            "updatedAt": "2026-10-21T23:07:42Z",
+            "url": "https://github.com/timogilvie/wavemill-fixture/pull/1703",
+            "normalizedState": "OPEN",
+            "branchMatches": true,
+            "baseMatches": true,
+            "headMatches": true,
+            "issueMatches": true,
+            "attemptMatches": false,
+            "challengeMatches": false,
+            "currentEvidence": true,
+            "mismatchReason": ""
+          },
+          "candidates": [
+            {
+              "baseRefName": "auto/integration",
+              "body": "## Summary\n\nImplements comprehensive property-based testing for core mill invariants using fast-check:\n\n- **Failure Policy**: Validates that any unrecognized failure strings classify as non-terminal and classification is deterministic\n- **Condition Reconciler**: Verifies markers don't outlive their conditions and reconciliation is idempotent\n- **Bounded Retry**: Ensures attempts respect the ceiling, new heads reset buckets, and exhausted states carry companions\n- **Merge Labels**: Confirms deriveMergeLabel is pure and reconciliation converges within one tick\n\nAll 4 property suites run in <5s each with reproducible seeded execution. Replaces the unseeded random test with deterministic property generators.\n\n## Changes\n\n- `shared/lib/fast-check-utils.ts` - Shared seed resolver and reproducibility harness\n- `shared/lib/property-generators.ts` - Event sequence and state generators\n- `shared/lib/failure-policy.property.test.ts` - Failure classification properties (4 props)\n- `shared/lib/bounded-retry.property.test.ts` - Bounded retry invariants (5 props)\n- `shared/lib/condition-reconciler.property.test.ts` - Marker lifetime properties (4 props)\n- `shared/lib/merge-labels.property.test.ts` - Label derivation and reconciliation properties (5 props)\n- `package.json` - Added fast-check@^3.23.0 as devDependency\n- `tests/run-unit-tests.sh` - Registered 4 new property suites\n- `tests/ci-test-weights.json` - Updated test weights manifest\n- Deleted `shared/lib/failure-policy.random.test.ts` (subsumed by property suite)\n\n## Test plan\n\n- All 4 property suites run via `npm test` and register in CI\n- Seeds are announced to stderr and embedded in failure headers for replay\n- `FAST_CHECK_SEED` environment variable overrides seed (default 0x30303017 in CI, random locally)\n- Reproduction: `FAST_CHECK_SEED=<reported seed> npm test -- <suite name>`\n\n## Self-review\n\n- Review verdict: **ready** (iteration 2)\n- Blockers: 0\n- Warnings: 0\n- Fixed cross-PR revert acknowledgement in commit message per PR #1614\n\n<!-- wavemill-fixture-meta\ntask: FIXTURE-1\n-->",
+              "createdAt": "2026-10-21T23:07:42Z",
+              "headRefName": "task/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry",
+              "headRefOid": "2fc60a1e99e10449e3bc731ac0a5536fae0d6d8c",
+              "mergedAt": null,
+              "number": 1703,
+              "state": "OPEN",
+              "title": "FIXTURE-1: Property-based tests for failure policy, condition reconciler, and bounded retry",
+              "updatedAt": "2026-10-21T23:07:42Z",
+              "url": "https://github.com/timogilvie/wavemill-fixture/pull/1703",
+              "normalizedState": "OPEN",
+              "branchMatches": true,
+              "baseMatches": true,
+              "headMatches": true,
+              "issueMatches": true,
+              "attemptMatches": false,
+              "challengeMatches": false,
+              "currentEvidence": true,
+              "mismatchReason": ""
+            }
+          ]
+        },
+        "challengeExecutionIntent": {
+          "schemaVersion": 1,
+          "pairId": "FIXTURE-1",
+          "issueId": "FIXTURE-1",
+          "createdAt": "2026-10-21T21:27:49.284Z",
+          "decisionSource": "expanded",
+          "selectedStage": "plan",
+          "challengeStage": "plan",
+          "selectionPath": "recommendation-driven",
+          "selectionReason": "least-used-zero-record",
+          "selectionEvidence": {
+            "coverageCount": 0,
+            "attemptCount": 0,
+            "cooldownActive": false,
+            "priorityTier": 2
+          },
+          "challengerSource": "least-used-zero-record",
+          "challengeRecommendation": {
+            "reason": "new-model",
+            "challengerModel": "deepseek-v3",
+            "defaultModel": "claude-opus-5-5",
+            "stage": "plan"
+          },
+          "routeContext": {
+            "decisionSource": "expanded",
+            "bootstrapRoute": {
+              "coder": "claude-opus-5-5",
+              "codeDepth": "deep",
+              "reviewer": "claude-haiku-4-5-20251001",
+              "reviewMode": "static+llm",
+              "planDepth": "deep",
+              "planner": "claude-opus-4-7",
+              "artifactPath": "worktrees/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry/features/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry/.initial-route.json",
+              "artifactHash": "0143656c3e2fbf5faf91eb93d833e34341c0efad3af16731208a4c84442d3e73",
+              "inputHash": "3e9acf675a5392e94d48f9ed647665ded88478173b0a80422152dcc98fffd88c",
+              "source": "bootstrap",
+              "routerMode": "normal",
+              "routingMode": "heuristic-fallback",
+              "expectedMetrics": {
+                "expectedSuccess": 0.65,
+                "expectedCost": 20.65,
+                "confidence": 0.55,
+                "expectedCostPlan": 1.8,
+                "expectedCostCode": 18.61,
+                "expectedCostReview": 0.24,
+                "neighborCount": 0,
+                "neighborSimilarityRange": [
+                  0,
+                  0
+                ],
+                "maxCostUsd": 25,
+                "challengeRecommendation": {
+                  "shouldChallenge": true,
+                  "reason": "new-model",
+                  "defaultModel": "claude-opus-5-5",
+                  "challengerModel": "deepseek-v3",
+                  "stage": "plan",
+                  "priority": 300
+                },
+                "signals": {
+                  "taskType": "bugfix",
+                  "promptLength": "long",
+                  "complexityScore": 4,
+                  "complexityBand": "l",
+                  "riskFlags": [
+                    "large-scope-refactor",
+                    "test-infrastructure"
+                  ],
+                  "fileTypes": [
+                    ".ts"
+                  ],
+                  "riskScore": 10
+                },
+                "reasoning": [
+                  "Task classified as bugfix with long prompt length.",
+                  "Risk score 10 from complexity, scope, and repo-surface keywords.",
+                  "Coder baseline uses claude-opus-5-5 from heuristic eval routing.",
+                  "Review mode static+llm chosen to match expected change risk.",
+                  "DeepSeek models were ignored because providers.deepseek.enabled is not true.",
+                  "Excluded mistral-large-2: global model projection declares it ineligible for routing.",
+                  "Excluded devstral-medium: global model projection declares it ineligible for routing.",
+                  "Excluded gpt-5.5: global model projection declares it ineligible for routing.",
+                  "Excluded gemini-2.5-pro: global model projection declares it ineligible for routing.",
+                  "Excluded ox-alpha: global model projection declares it ineligible for routing.",
+                  "Excluded gpt-5.4: global model projection declares it ineligible for the codex-chatgpt launch surface.",
+                  "Excluded gpt-5.6-sol: global model projection declares it ineligible for the codex-chatgpt launch surface.",
+                  "Excluded gpt-5.6-luna: global model projection declares it ineligible for the codex-chatgpt launch surface.",
+                  "Excluded gpt-5: global model projection declares it ineligible for the codex-chatgpt launch surface.",
+                  "Excluded gpt-5-mini: global model projection declares it ineligible for the codex-chatgpt launch surface.",
+                  "Excluded gpt-4.1: global model projection declares it ineligible for the codex-chatgpt launch surface.",
+                  "Router escalation selected stronger coder claude-opus-5-5 after confidence trigger."
+                ]
+              },
+              "challengeRecommendation": {
+                "shouldChallenge": true,
+                "reason": "new-model",
+                "defaultModel": "claude-opus-5-5",
+                "challengerModel": "deepseek-v3",
+                "stage": "plan",
+                "priority": 300
+              }
+            },
+            "expandedRoute": {
+              "coder": "claude-opus-4-7",
+              "codeDepth": "medium",
+              "reviewer": "claude-haiku-4-5-20251001",
+              "reviewMode": "llm",
+              "planDepth": "medium",
+              "planner": "claude-opus-4-7",
+              "cache_hit": false,
+              "route_source": "single",
+              "packet_hash": "56bb2371c7d6c5cad73d1ce5560442faa2798b331158850057115c93590eb4c8",
+              "artifactPath": "worktrees/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry/features/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry/.post-expansion-route.json",
+              "artifactHash": "06d2be032dd10c6f3b16e8012e29c1b390a098ca30a991256ee4d2f567be3cb7",
+              "inputHash": "471b6dab383e12164a4b0c4fed1cfc61dbc8689bd8789023b372eab5b4afd9ef",
+              "source": "expanded",
+              "routerMode": "normal",
+              "routingMode": "hokusai",
+              "expectedMetrics": {
+                "expectedSuccess": 0.797527,
+                "expectedCost": 10.4,
+                "confidence": 0.591498,
+                "expectedCostPlan": 1.17,
+                "expectedCostCode": 9.05,
+                "expectedCostReview": 0.18,
+                "neighborCount": 40,
+                "neighborSimilarityRange": [
+                  0,
+                  0
+                ],
+                "maxCostUsd": 25,
+                "challengeRecommendation": {
+                  "shouldChallenge": true,
+                  "reason": "new-model",
+                  "defaultModel": "claude-opus-5-5",
+                  "challengerModel": "deepseek-v3",
+                  "stage": "plan",
+                  "priority": 300
+                },
+                "signals": {
+                  "taskType": "bugfix",
+                  "promptLength": "long",
+                  "complexityScore": 5,
+                  "complexityBand": "xl",
+                  "riskFlags": [
+                    "large-scope-refactor",
+                    "test-infrastructure"
+                  ],
+                  "fileTypes": [
+                    ".json",
+                    ".sh",
+                    ".ts",
+                    ".md"
+                  ],
+                  "riskScore": 17
+                },
+                "reasoning": [
+                  "Adapted from Hokusai Model 30 recommended_strategy.",
+                  "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics."
+                ]
+              },
+              "challengeRecommendation": {
+                "shouldChallenge": true,
+                "reason": "new-model",
+                "defaultModel": "claude-opus-5-5",
+                "challengerModel": "deepseek-v3",
+                "stage": "plan",
+                "priority": 300
+              }
+            }
+          },
+          "primary": {
+            "key": "FIXTURE-1",
+            "role": "primary",
+            "planner": {
+              "model": "claude-opus-4-7",
+              "agent": "claude"
+            },
+            "coder": {
+              "model": "claude-opus-4-7",
+              "agent": "claude"
+            },
+            "reviewer": {
+              "model": "claude-haiku-4-5-20251001",
+              "agent": "claude"
+            },
+            "pairId": "FIXTURE-1",
+            "side": "primary",
+            "challengeStage": "plan",
+            "expectedStageModel": "claude-opus-4-7",
+            "expectedStageAgent": "claude",
+            "expectedRoute": {
+              "planner": "claude-opus-4-7",
+              "coder": "claude-opus-4-7",
+              "reviewer": "claude-haiku-4-5-20251001",
+              "planDepth": "medium",
+              "codeDepth": "medium",
+              "reviewMode": "llm"
+            },
+            "inheritedStages": []
+          },
+          "nativeCertificationRejections": [
+            {
+              "modelId": "glm-5.2",
+              "role": "coder",
+              "requestedLaunchPhase": "coding",
+              "requestedPhase": "patch",
+              "certifiedPhase": "workflow",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "missing-live-canary",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/z-ai/glm-5.2/v3.json"
+            },
+            {
+              "modelId": "kimi-k2-thinking",
+              "role": "coder",
+              "requestedLaunchPhase": "coding",
+              "requestedPhase": "patch",
+              "certifiedPhase": "workflow",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "missing-live-canary",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/moonshotai/kimi-k2-thinking/v3.json"
+            },
+            {
+              "modelId": "qwen-3-235b",
+              "role": "planner",
+              "requestedLaunchPhase": "planning",
+              "requestedPhase": "workflow",
+              "certifiedPhase": "patch",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "insufficient-phase",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/qwen/qwen3-235b-a22b-2507/v3.json"
+            },
+            {
+              "modelId": "glm-5.3",
+              "role": "planner",
+              "requestedLaunchPhase": "planning",
+              "requestedPhase": "workflow",
+              "certifiedPhase": "patch",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "insufficient-phase",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/z-ai/glm-5.3/v3.json"
+            },
+            {
+              "modelId": "kimi-k3",
+              "role": "planner",
+              "requestedLaunchPhase": "planning",
+              "requestedPhase": "workflow",
+              "certifiedPhase": "patch",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "insufficient-phase",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/moonshotai/kimi-k3/v3.json"
+            },
+            {
+              "modelId": "glm-5.3-flash",
+              "role": "planner",
+              "requestedLaunchPhase": "planning",
+              "requestedPhase": "workflow",
+              "certifiedPhase": "patch",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "insufficient-phase",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/z-ai/glm-5.3-flash/v3.json"
+            }
+          ],
+          "forkStage": null,
+          "forkCommit": null,
+          "sharedPrefix": false,
+          "noChallengeReason": "challenger_never_launched",
+          "challengeCollapseReason": "challenger_never_launched"
+        },
+        "challengeStage": "plan",
+        "challengeVariedModel": "claude-opus-4-7",
+        "challengeVariedAgent": "claude",
+        "challengeCollapseReason": "challenger_never_launched",
+        "challengeCollapseDetail": "Finalization selected a pair but no challenger arm was launched; staying single-model",
+        "terminalReconciliations": {
+          "review_complete:1703": {
+            "issue": "FIXTURE-1",
+            "reason": "review_complete",
+            "prNumber": "1703",
+            "appliedAt": "2026-10-21T23:09:55Z",
+            "stateApplied": true,
+            "stageApplied": true,
+            "hookApplied": true,
+            "paneMetadataApplied": true,
+            "paneReleased": false,
+            "linearApplied": false,
+            "pr": {
+              "baseRefName": "auto/integration",
+              "headRefName": "task/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry",
+              "headRefOid": "2fc60a1e99e10449e3bc731ac0a5536fae0d6d8c",
+              "mergeCommit": null,
+              "mergedAt": null,
+              "number": 1703,
+              "state": "OPEN",
+              "terminalState": "OPEN"
+            },
+            "updatedAt": "2026-10-21T23:10:01Z"
+          },
+          "ready_complete:1703": {
+            "issue": "FIXTURE-1",
+            "reason": "ready_complete",
+            "prNumber": "1703",
+            "appliedAt": "2026-10-22T12:43:59Z",
+            "stateApplied": true,
+            "stageApplied": true,
+            "hookApplied": true,
+            "paneMetadataApplied": true,
+            "paneReleased": false,
+            "linearApplied": false,
+            "pr": {
+              "baseRefName": "auto/integration",
+              "headRefName": "task/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry",
+              "headRefOid": "9c499dd57e74a1c4e73b37f5c15cfc3f683759ab",
+              "mergeCommit": null,
+              "mergedAt": null,
+              "number": 1703,
+              "state": "OPEN",
+              "terminalState": "OPEN"
+            },
+            "updatedAt": "2026-10-22T12:44:02Z"
+          },
+          "pr_merged:1703": {
+            "issue": "FIXTURE-1",
+            "reason": "pr_merged",
+            "prNumber": "1703",
+            "appliedAt": "2026-10-22T12:51:02Z",
+            "stateApplied": true,
+            "stageApplied": true,
+            "hookApplied": true,
+            "paneMetadataApplied": true,
+            "paneReleased": false,
+            "linearApplied": true,
+            "pr": {
+              "baseRefName": "auto/integration",
+              "headRefName": "task/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry",
+              "headRefOid": "f415e2b8d6d7e63ad09c550630c8eca9e2705865",
+              "mergeCommit": {
+                "oid": "1a5d5d9eda6dcf30cc530c91c7757167812c70d7"
+              },
+              "mergedAt": "2026-10-22T12:49:41Z",
+              "number": 1703,
+              "state": "MERGED",
+              "terminalState": "MERGED"
+            },
+            "updatedAt": "2026-10-22T12:51:05Z"
+          }
+        },
+        "evalCompleted": true,
+        "evalFailed": false,
+        "evalHardFailureRetryCount": 0
+      }
+    }
+  },
+  "hooks": {
+    "FIXTURE-1": {
+      "state": "idle",
+      "event": "pr_merged",
+      "agent": "codex",
+      "timestamp": 1792673463,
+      "writer": "monitor",
+      "agentRecord": {
+        "state": "waiting",
+        "event": "Notification",
+        "agent": "claude",
+        "timestamp": 1792672943,
+        "detail": "Claude is waiting for your input"
+      },
+      "detail": "PR #1703 merged",
+      "pr_state": {
+        "number": 1703,
+        "state": "MERGED",
+        "fetched_at": 1792673462
+      }
+    }
+  },
+  "stageResults": {
+    "FIXTURE-1": {
+      "planning": {
+        "stage": "planning",
+        "status": "completed",
+        "startedAt": "2026-10-21T21:07:06.175Z",
+        "finishedAt": "2026-10-21T21:27:40Z",
+        "agent": "claude",
+        "model": "claude-opus-4-7",
+        "intendedModel": "claude-opus-4-7",
+        "executedModel": "claude-opus-4-7",
+        "executionEvidence": {
+          "status": "direct",
+          "source": "claude-session",
+          "detail": "models=claude-opus-4-7:52; sessions=1; turns=52",
+          "recordedAt": "2026-10-21T21:27:41.955Z"
+        },
+        "modelAttributionEligible": true,
+        "notes": "Plan approved by user",
+        "artifacts": {
+          "type": "planning",
+          "planFile": "plan.md"
+        }
+      },
+      "coding": {
+        "stage": "coding",
+        "status": "completed",
+        "startedAt": "2026-10-21T21:27:56Z",
+        "finishedAt": "2026-10-21T22:53:20Z",
+        "agent": "claude",
+        "model": "claude-opus-4-7",
+        "intendedModel": "claude-opus-4-7",
+        "executedModel": "claude-opus-4-7",
+        "executionEvidence": {
+          "status": "direct",
+          "source": "claude-session",
+          "detail": "models=claude-opus-4-7:195; sessions=1; turns=195",
+          "recordedAt": "2026-10-21T22:53:28.612Z"
+        },
+        "modelAttributionEligible": true,
+        "notes": ""
+      },
+      "review": {
+        "stage": "review",
+        "status": "completed",
+        "startedAt": "2026-10-21T22:54:03.655Z",
+        "finishedAt": "2026-10-22T12:41:12.292Z",
+        "agent": "codex",
+        "model": "claude-haiku-4-5-20251001",
+        "notes": "PR #1703 created with test literal fixes",
+        "intendedModel": "claude-haiku-4-5-20251001",
+        "executedModel": null,
+        "executionEvidence": {
+          "status": "missing",
+          "source": "codex-session",
+          "detail": "no matching codex session telemetry for branch=task/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry",
+          "recordedAt": "2026-10-21T23:10:00.177Z"
+        },
+        "modelAttributionEligible": false,
+        "modelAttributionIneligibleReason": "missing_execution_evidence",
+        "artifacts": {
+          "type": "review",
+          "prNumber": 1703,
+          "exitCode": 0,
+          "verdict": "ready",
+          "iterations": 3,
+          "blockerCount": 0,
+          "warningCount": 0,
+          "reviewHeadSha": "9c499dd57e74a1c4e73b37f5c15cfc3f683759ab",
+          "reviewExecutedIdentity": {
+            "orchestrator": {
+              "role": "review_orchestrator",
+              "requestedModel": "claude-haiku-4-5-20251001",
+              "resolvedModel": "claude-haiku-4-5-20251001",
+              "agent": "codex",
+              "source": "derived",
+              "pinned": false
+            },
+            "substantiveAnalysis": {
+              "role": "substantive_analysis",
+              "requestedModel": "claude-haiku-4-5-20251001",
+              "resolvedModel": "claude-haiku-4-5-20251001",
+              "agent": "claude-cli",
+              "source": "artifact",
+              "pinned": true
+            },
+            "remediation": null
+          }
+        }
+      },
+      "ready": {
+        "stage": "ready",
+        "status": "completed",
+        "startedAt": "2026-10-22T01:06:18Z",
+        "finishedAt": "2026-10-22T12:51:02Z",
+        "agent": "codex",
+        "model": "claude-opus-4-7",
+        "intendedModel": "claude-opus-4-7",
+        "executedModel": null,
+        "executionEvidence": {
+          "status": "missing",
+          "source": "codex-session",
+          "detail": "no matching codex session telemetry for branch=task/c2-property-based-tests-fast-check-for-failure-policy-condition-reconciler-bounded-retry",
+          "recordedAt": "2026-10-22T12:51:03.461Z"
+        },
+        "modelAttributionEligible": false,
+        "modelAttributionIneligibleReason": "missing_execution_evidence",
+        "notes": "PR #1703 merged",
+        "artifacts": {
+          "type": "ready",
+          "verdict": "pass",
+          "checksRun": 3,
+          "checksPassed": 3,
+          "mergeConflict": "CLEAN",
+          "prNumber": 1703,
+          "readyLabelsUpdated": true,
+          "readyBaseSha": "da6c78e13dd7d2be70e3ffd96e3543aa8044f3ad",
+          "readyHeadSha": "9c499dd57e74a1c4e73b37f5c15cfc3f683759ab",
+          "ciConclusion": "pass",
+          "requiredSource": "none",
+          "requiredContexts": [],
+          "readyTendHandoff": "ready-published",
+          "queueState": "merge-candidate",
+          "terminalReason": "pr_merged",
+          "lastCiConclusion": "pass",
+          "lastCiHeadSha": "f415e2b8d6d7e63ad09c550630c8eca9e2705865",
+          "lastCiObservedAt": "2026-10-22T12:50:39Z",
+          "lastCiSummary": "pass: 27/4 checks",
+          "candidateLastProgressAt": "2026-10-22T12:44:38Z",
+          "candidatePromotedAt": "2026-10-22T12:44:38Z",
+          "laneWaitSeconds": 39,
+          "lastProgressAt": "2026-10-22T12:49:42.804Z",
+          "targetBaseSha": "da6c78e13dd7d2be70e3ffd96e3543aa8044f3ad",
+          "ciRestartCount": 1,
+          "laneHoldSeconds": 267,
+          "rebaseCount": 1
+        }
+      }
+    }
+  }
+}

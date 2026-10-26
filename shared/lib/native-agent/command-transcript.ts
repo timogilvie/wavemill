@@ -36,6 +36,8 @@ export interface CommandTranscriptEventData {
   signal: NodeJS.Signals | null;
   timedOut: boolean;
   rejectionReason?: string;
+  /** Named guard that refused the command (e.g. 'foreground-wait'). */
+  guard?: string;
   stdout: string;
   stderr: string;
   truncation: {
@@ -58,6 +60,7 @@ export interface BuildCommandTranscriptInput {
   signal: NodeJS.Signals | null;
   timedOut: boolean;
   rejectionReason?: string;
+  guard?: string;
   stdout?: string;
   stderr?: string;
   maxOutputBytes: number;
@@ -104,6 +107,9 @@ export function buildCommandTranscript(input: BuildCommandTranscriptInput): Buil
   };
   if (input.rejectionReason !== undefined) {
     event.rejectionReason = input.rejectionReason;
+  }
+  if (input.guard !== undefined) {
+    event.guard = input.guard;
   }
 
   return {

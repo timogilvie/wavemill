@@ -93,6 +93,8 @@ gh pr create --head task/a --base main --title A --body a >/dev/null
 gh pr create --head task/b --base main --title B --body b >/dev/null
 gh pr merge 2 --squash
 check "a conflicting PR cannot be merged" bash -c '! gh pr merge 3 --squash'
+check "a conflicting PR reads CONFLICTING/DIRTY (real merge, as on GitHub)" \
+  test "$(gh pr view 3 --json mergeable,mergeStateStatus --jq '.mergeable + "/" + .mergeStateStatus')" = CONFLICTING/DIRTY
 old_head="$(gh pr view 3 --json headRefOid --jq .headRefOid)"
 fakes_gh_state '.headLag["3"] = 2'
 git checkout -q task/b && printf 'b2\n' >> clash.txt && git commit -qam b2 && git push -q

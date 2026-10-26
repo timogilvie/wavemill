@@ -105,7 +105,9 @@ import {
   assertOpenRouterBalanceSufficient,
   capOpenRouterMaxTokensForBalance,
 } from './openrouter-credits-guard.ts';
-import { updateStageResult, type ModelAttributionIneligibleReason } from '../stage-result.ts';
+import { updateStageResult, type ModelAttributionIneligibleReason, type StageExecutionUsage } from '../stage-result.ts';
+import { buildStageExecutionUsage } from './prompt-cache.ts';
+import { reportPromptCacheHitRate } from './prompt-cache-detector.ts';
 import { getNativeContextManagementConfig } from '../config.ts';
 import { equivalentOpenRouterModelIds, type NormalizedPricing } from '../openrouter-catalog.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
@@ -153,6 +155,12 @@ export interface LaunchNativeCodingOptions {
   title?: string;
   issueContext?: string;
   resolvedModel?: string;
+  /**
+   * HOK-3272: prompt-driven launch (post-PR remediation). The file's text is
+   * the task — a CI-fix or merge-conflict instruction — and replaces the
+   * plan/packet-driven body. Certification stays the `coding` phase.
+   */
+  promptFile?: string;
   featureDir?: string;
   taskPacketPath?: string;
   planPath?: string;
@@ -340,6 +348,7 @@ export function renderCodingSystemPrompt(input: {
     '- Use run_tests/run_format for verification and formatting commands inside the worktree. Commands run without a shell: use one program per call, pass cwd instead of cd ... &&, and avoid pipes, redirects, &&/;, $VAR, and backticks; POSIX-style quoting is honored.',
     '- The preferred focused command is `bash tests/run-related.sh` (selects transitive dependents of the diff; typically <60 s; prints only failing tests).',
     '- run_tests runs focused tests on the changed code (`bash tests/run-related.sh`, `node --test <files>`, `npx tsx --test <files>`, `bash tests/<one>.test.sh`). Full-suite commands (`npm test`, `pnpm test`, `yarn test`, and unsharded `tests/run-*.sh` other than `tests/run-related.sh`) are refused — CI runs the full suite. A command identical to one that just timed out is refused on the next attempt until the worktree changes.',
+    '- To wait for a slow operation, run it once with a bounded timeoutMs instead of polling; foreground `sleep`, `watch` and `timeout … tail -f` are refused.',
     '- Use git_add/git_commit to commit intended changed files before completion.',
     `- Prefer .coding-complete when focused verification of the changed code passes; otherwise write ${input.blockedCompletionPath} only when implementation is complete, scoped checks passed, changes are committed, and remaining blockers are unrelated or environmental.`,
   ];
@@ -373,14 +382,33 @@ function buildUserPrompt(options: {
   taskPacketPath: string;
   taskPacket?: string;
   planText?: string;
+  remediationPrompt?: string;
 }): string {
-  return [
+  const identity = [
     `Issue: ${options.issue}`,
     `Slug: ${options.slug}`,
     `Title: ${options.title || options.issue}`,
     `Branch: ${options.branch || ''}`,
     `Base branch: ${options.baseBranch || ''}`,
     '',
+  ];
+  if (options.remediationPrompt) {
+    // Plan and packet stay reachable by path but are not inlined, so the agent
+    // fixes the PR instead of re-running the original implementation.
+    return [
+      ...identity,
+      `Plan path: ${options.planPath}`,
+      `Task packet path: ${options.taskPacketPath}`,
+      '',
+      options.remediationPrompt.trim(),
+      '',
+      // The remediation prompts are shared with CLI agents, which can run gh and
+      // push; this session cannot, and must still end with its completion artifact.
+      'Native runtime: steps above that need tools this session lacks (gh, git fetch/merge/push) are unavailable. Commit your fix, then write the coding completion artifact; it is the one marker this run must write.',
+    ].join('\n');
+  }
+  return [
+    ...identity,
     options.issueContext ? `Issue Context:\n${options.issueContext.trim()}\n` : '',
     `Plan path: ${options.planPath}`,
     options.planText ? `Plan:\n${options.planText.trim()}\n` : '',
@@ -409,6 +437,18 @@ export function withCodingRecoveryInstruction(featureDir: string, issueContext?:
   }
   const block = `## Recovery instruction\n${instruction}\n`;
   return issueContext?.trim() ? `${block}\n${issueContext}` : block;
+}
+
+/** Read a prompt-driven launch's instruction; a missing or empty file fails the launch. */
+export function readRemediationPrompt(promptFile: string): string {
+  if (!existsSync(promptFile)) {
+    throw new Error(`native coding --prompt-file not found: ${promptFile}`);
+  }
+  const text = readFileSync(promptFile, 'utf-8').trim();
+  if (!text) {
+    throw new Error(`native coding --prompt-file is empty: ${promptFile}`);
+  }
+  return text;
 }
 
 function readOptional(path: string): string | undefined {
@@ -682,6 +722,11 @@ function loadCodingArtifacts(featureDir: string, trackerCommitCount: number): Co
   };
 }
 
+/** Attach the launcher-measured loop usage; it supersedes any agent-written `usage`. */
+function withLoopUsage(artifacts: CodingArtifacts, usage: StageExecutionUsage | undefined): CodingArtifacts {
+  return usage ? { ...artifacts, usage } : artifacts;
+}
+
 function removeAgentCodingArtifactBeforeStageResult(featureDir: string): void {
   const resultPath = join(featureDir, '.coding-result.json');
   const existing = readOptional(resultPath);
@@ -747,6 +792,7 @@ function buildCompletionAttribution(input: {
   }
 
   // Fallback: scripted/test runs or loop-model-override — keep legacy behaviour.
+  // allow-provider-identity: no verified provider identity on this path; attribution stays gated on intendedModel === model below.
   const executedModel = input.model;
   const attributionEligible = input.stageCompleted && input.intendedModel === input.model;
   return {
@@ -779,6 +825,8 @@ async function inspectCompletion(input: {
   coerceUnverifiedCompletionClaim: boolean;
   providerIdentity?: ProviderIdentitySummary;
   providerExpectation?: { expectedModel: string; requestedWireId: string; isAlias: boolean };
+  /** Usage of the loop run whose completion is being inspected (HOK-3260). */
+  usage?: StageExecutionUsage;
 }): Promise<CompletionInspectionResult> {
   const markerPath = join(input.featureDir, '.coding-complete');
   if (existsSync(markerPath)) {
@@ -795,7 +843,7 @@ async function inspectCompletion(input: {
     if (normalized.changed) {
       atomicWriteText(markerPath, normalized.canonicalContent);
     }
-    const artifacts = loadCodingArtifacts(input.featureDir, input.trackerCommitCount);
+    const artifacts = withLoopUsage(loadCodingArtifacts(input.featureDir, input.trackerCommitCount), input.usage);
     removeAgentCodingArtifactBeforeStageResult(input.featureDir);
     const attribution = buildCompletionAttribution({
       intendedModel: input.intendedModel,
@@ -849,7 +897,7 @@ async function inspectCompletion(input: {
     if (normalized.changed) {
       atomicWriteText(blockedPath, normalized.canonicalContent);
     }
-    const artifacts = loadCodingArtifacts(input.featureDir, input.trackerCommitCount);
+    const artifacts = withLoopUsage(loadCodingArtifacts(input.featureDir, input.trackerCommitCount), input.usage);
     removeAgentCodingArtifactBeforeStageResult(input.featureDir);
     const attribution = buildCompletionAttribution({
       intendedModel: input.intendedModel,
@@ -917,6 +965,8 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
   const hookPath = options.hookPath ?? defaultHookPath(options.session, options.issue);
   const codeDepth = options.codeDepth ?? 'medium';
   const operatingMode = options.operatingMode ?? 'normal';
+  // Before any artifact sweep: a bad prompt file must not disturb the feature dir.
+  const remediationPrompt = options.promptFile ? readRemediationPrompt(options.promptFile) : undefined;
 
   mkdirSync(featureDir, { recursive: true });
   const archivedStaleArtifacts = archiveStaleCodingArtifacts(featureDir);
@@ -971,7 +1021,10 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     const descriptors = [
       ...readOnlyDescriptors,
       ...createGitTools(options.wtDir),
-      ...createCommandTools(options.wtDir, { allowFullSuite: patchCodingConfig.allowFullSuiteTests }),
+      ...createCommandTools(options.wtDir, {
+        allowFullSuite: patchCodingConfig.allowFullSuiteTests,
+        sessionStreamWriter: options.persistentSessionStreamWriter,
+      }),
       ...createCodingMutationTools(options.wtDir, { phase: 'coding' }),
       ...createGitCommitTools(options.wtDir, { tracker }),
       ...codeSearchDescriptors,
@@ -1199,6 +1252,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
           taskPacketPath,
           planText: readOptional(planPath),
           taskPacket: readOptional(taskPacketPath),
+          remediationPrompt,
         }),
         timestamp: 0,
       }],
@@ -1224,7 +1278,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       });
     }
 
-    const runCodingLoop = () => runWavemillLoop({
+    const runCodingLoopOnce = () => runWavemillLoop({
       model,
       ...(nativeModels ? { models: nativeModels } : {}),
       context,
@@ -1340,6 +1394,21 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       },
     });
 
+    // HOK-3260: every loop run (initial, recovery, artifact retry) is judged
+    // for prompt-cache hit rate; the latest run's usage lands on the stage result.
+    let lastLoopUsage: StageExecutionUsage | undefined;
+    const runCodingLoop = async (): Promise<LoopResult> => {
+      const loopResult = await runCodingLoopOnce();
+      lastLoopUsage = buildStageExecutionUsage(loopResult, model.provider);
+      reportPromptCacheHitRate({
+        repoDir: options.repoDir,
+        stage: 'coding',
+        model: modelName,
+        usage: lastLoopUsage,
+      });
+      return loopResult;
+    };
+
     writeHookStatus(hookPath, 'working', 'run_native_model', modelName, 'native');
     let result = await runCodingLoop();
     let recoveryAttempted = false;
@@ -1423,6 +1492,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       coerceUnverifiedCompletionClaim: false,
       providerIdentity: providerIdentitySummarySnapshot(),
       providerExpectation: providerExpectationSnapshot,
+      usage: lastLoopUsage,
     });
     let artifactRetryAttempt = 0;
     const quarantinedArtifacts: string[] = [];
@@ -1486,6 +1556,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         coerceUnverifiedCompletionClaim: false,
         providerIdentity: providerIdentitySummarySnapshot(),
         providerExpectation: providerExpectationSnapshot,
+        usage: lastLoopUsage,
       });
     }
 
@@ -1508,6 +1579,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
           coerceUnverifiedCompletionClaim: true,
           providerIdentity: providerIdentitySummarySnapshot(),
           providerExpectation: providerExpectationSnapshot,
+          usage: lastLoopUsage,
         });
       }
       if (inspection.kind === 'invalid') {

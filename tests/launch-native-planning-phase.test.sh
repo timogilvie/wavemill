@@ -130,6 +130,43 @@ check_contains "interactive native planning invokes launch-native-planning tool"
 check_not_contains "interactive native planning launcher has no bare model command" "$(cat "$INTERACTIVE_NATIVE_LAUNCHER")" $'\n --model'
 check_not_contains "interactive native planning launcher does not execute logical provider" "$(cat "$INTERACTIVE_NATIVE_LAUNCHER")" "native-openrouter --model"
 
+# HOK-3272: the caller's phase is the one phase source. A remediation prompt
+# filename names no phase, so without it the native preflight refuses the route
+# (exit 3: refused before any agent started); with it, a prompt-driven coding
+# launch hands the prompt to the native coding launcher. A normal coding launch
+# keeps rebuilding its packet (no --prompt-file).
+TMUX_LOG="$TMPDIR_TEST/tmux-interactive-native-coding.log"
+INTERACTIVE_CODING_PROMPT="/tmp/HOK-3272-coding-prompt.txt"
+INTERACTIVE_CODING_LAUNCHER="/tmp/sess-HOK-3272-coding-prompt-launcher.sh"
+printf '%s\n' "coding prompt" > "$INTERACTIVE_CODING_PROMPT"
+rm -f "$INTERACTIVE_CODING_LAUNCHER"
+WAVEMILL_FEATURE_DIR="$TMPDIR_TEST/repo/features/demo" WAVEMILL_FEATURE_SLUG="demo" REPO_DIR="$REPO_DIR" \
+agent_launch_interactive "sess" "@97" "$INTERACTIVE_CODING_PROMPT" "native-openrouter" "kimi-k2.7-code" "" "" "HOK-3272"
+check_contains "interactive native coding falls back to the prompt-name phase" "$(cat "$INTERACTIVE_CODING_LAUNCHER")" "export WAVEMILL_PHASE='coding'"
+check_contains "interactive native coding invokes launch-native-coding tool" "$(cat "$INTERACTIVE_CODING_LAUNCHER")" "tools/launch-native-coding.ts"
+check_not_contains "packet-driven native coding passes no --prompt-file" "$(cat "$INTERACTIVE_CODING_LAUNCHER")" "--prompt-file"
+
+REMEDIATION_PROMPT="/tmp/HOK-3272_c-conflict-prompt.txt"
+REMEDIATION_LAUNCHER="/tmp/sess-HOK-3272_c-conflict-prompt-launcher.sh"
+printf '%s\n' "resolve the conflict" > "$REMEDIATION_PROMPT"
+rm -f "$REMEDIATION_LAUNCHER"
+remediation_rc=0
+WAVEMILL_FEATURE_DIR="$TMPDIR_TEST/repo/features/demo" WAVEMILL_FEATURE_SLUG="demo" REPO_DIR="$REPO_DIR" \
+agent_launch_interactive "sess" "@98" "$REMEDIATION_PROMPT" "native-openrouter" "kimi-k2.7-code" "" "" "HOK-3272_c" \
+  2>"$TMPDIR_TEST/remediation-nophase.stderr" || remediation_rc=$?
+if [[ "$remediation_rc" -eq 3 && ! -f "$REMEDIATION_LAUNCHER" ]] \
+  && grep -q "reason=unsupported-native-stage" "$TMPDIR_TEST/remediation-nophase.stderr"; then
+  pass "phase-less remediation prompt is refused (rc 3) before any launcher is written"
+else
+  fail "phase-less remediation prompt is refused (rc 3) before any launcher is written (rc=$remediation_rc)"
+fi
+WAVEMILL_FEATURE_DIR="$TMPDIR_TEST/repo/features/demo" WAVEMILL_FEATURE_SLUG="demo" REPO_DIR="$REPO_DIR" \
+agent_launch_interactive "sess" "@98" "$REMEDIATION_PROMPT" "native-openrouter" "kimi-k2.7-code" "" "" "HOK-3272_c" "coding" "true"
+check_contains "explicit phase drives the native remediation launcher" "$(cat "$REMEDIATION_LAUNCHER")" "export WAVEMILL_PHASE='coding'"
+check_contains "prompt-driven native coding passes the remediation prompt" "$(cat "$REMEDIATION_LAUNCHER")" "--prompt-file '$REMEDIATION_PROMPT'"
+check_contains "prompt-driven native remediation uses the coding launcher" "$(cat "$REMEDIATION_LAUNCHER")" "tools/launch-native-coding.ts"
+rm -f "$INTERACTIVE_CODING_PROMPT" "$INTERACTIVE_CODING_LAUNCHER" "$REMEDIATION_PROMPT" "$REMEDIATION_LAUNCHER"
+
 TMUX_LOG="$TMPDIR_TEST/tmux-review.log"
 tmux() {
   printf '%s\n' "$*" >> "$TMUX_LOG"
