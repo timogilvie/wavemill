@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMMON_SCRIPT="$REPO_DIR/shared/lib/wavemill-common.sh"
 MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
+PICKER_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-picker.sh"
 
 PASS=0
 FAIL=0
@@ -118,16 +119,27 @@ render_case() {
   queue_plan="$(make_queue_plan "$available_count" "$queued_count")"
   available="$(make_available "$((available_count + queued_count))" "Visible")"
 
-  FUNCTIONS_FILE="$RENDER_FUNC_FILE" QUEUE_PLAN="$queue_plan" AVAILABLE="$available" BUDGET="$budget" EXPANDED="$expanded" CASE_DIR="$case_dir" bash -lc '
+  # HOK-3305: the extracted render_grouped_task_list forwards to the shared
+  # launch-set picker. Source the picker here and stub _picker_select_wave to
+  # keep the test hermetic (the real tool would invoke select-wave.ts).
+  FUNCTIONS_FILE="$RENDER_FUNC_FILE" PICKER_FILE="$PICKER_SCRIPT_FILE" \
+  QUEUE_PLAN="$queue_plan" AVAILABLE="$available" BUDGET="$budget" EXPANDED="$expanded" \
+  CASE_DIR="$case_dir" bash -lc '
     set -euo pipefail
     log() { :; }
     wavemill_config_annotation() { printf " (%s=%s)" "$1" "$2"; }
     wavemill_load_config() { cat "$1/.wavemill-config.json"; }
+    queue_inference_degraded_banner() { return 0; }
     REPO_DIR="$CASE_DIR"
     BACKLOG_LAST_TIER=""
     BACKLOG_DEFAULT_AVAILABLE_CAP=12
     GROUPED_SELECT_FROM=""
     GROUPED_DISPLAY=""
+    # shellcheck source=/dev/null
+    source "$PICKER_FILE"
+    _picker_select_wave() {
+      jq -n --argjson p "$1" "{launchNext: (\$p.availableNow // []), held: [], slotsFull: []}"
+    }
     # shellcheck source=/dev/null
     source "$FUNCTIONS_FILE"
     render_grouped_task_list "$QUEUE_PLAN" "$AVAILABLE" "$BUDGET" "$EXPANDED"
@@ -163,7 +175,8 @@ EOF
 test_under_budget_renders_full_list() {
   local output
   output="$(render_case 5 2 40)"
-  check_contains "under budget shows queued section" "$output" "Queued After Dependencies"
+  # HOK-3305: picker renames the queued section to "Held: waiting on".
+  check_contains "under budget shows held-waiting section" "$output" "Held: waiting on"
   check_not_contains "under budget no hidden indicator" "$output" "tasks hidden"
   check_contains "under budget includes last queued task" "$output" "HOK-7 - Visible Task 7"
 }
@@ -171,17 +184,20 @@ test_under_budget_renders_full_list() {
 test_tier_one_trims_queued_entries() {
   local output
   output="$(render_case 8 20 16)"
-  check_contains "tier 1 keeps queued header" "$output" "Queued After Dependencies"
-  check_contains "tier 1 shows hidden indicator" "$output" "... 18 tasks hidden (m to expand)"
+  check_contains "tier 1 keeps held-waiting header" "$output" "Held: waiting on"
+  # Each held entry costs two lines (title + "blocked by:"), so a 16-line
+  # budget with 9 lines of launch-next leaves room for ~3 held entries,
+  # hiding the remaining 17.
+  check_contains "tier 1 shows hidden indicator" "$output" "... 17 tasks hidden (m to expand)"
   check_contains "tier 1 keeps first queued task" "$output" "HOK-9 - Visible Task 9"
   check_contains "tier 1 keeps second queued task" "$output" "HOK-10 - Visible Task 10"
-  check_not_contains "tier 1 hides deep queued task" "$output" "HOK-11 - Visible Task 11"
+  check_not_contains "tier 1 hides deep queued task" "$output" "HOK-12 - Visible Task 12"
 }
 
 test_tier_two_drops_queued_section() {
   local output
   output="$(render_case 8 20 10)"
-  check_not_contains "tier 2 removes queued header" "$output" "Queued After Dependencies"
+  check_not_contains "tier 2 removes held-waiting header" "$output" "Held: waiting on"
   check_contains "tier 2 shows indicator" "$output" "... 20 tasks hidden (m to expand)"
   check_contains "tier 2 keeps available list" "$output" "HOK-8 - Visible Task 8"
 }
@@ -191,7 +207,7 @@ test_tier_three_caps_available_now() {
   output="$(render_case 25 10 14)"
   check_contains "tier 3 shows twelfth task" "$output" "HOK-12 - Visible Task 12"
   check_not_contains "tier 3 hides thirteenth task" "$output" "HOK-13 - Visible Task 13"
-  check_not_contains "tier 3 removes queued section" "$output" "Queued After Dependencies"
+  check_not_contains "tier 3 removes held-waiting section" "$output" "Held: waiting on"
   check_contains "tier 3 shows total hidden count" "$output" "... 23 tasks hidden (m to expand)"
 }
 
@@ -199,7 +215,7 @@ test_expanded_mode_shows_full_content() {
   local output
   output="$(render_case 25 10 14 true)"
   check_contains "expanded shows deep available task" "$output" "HOK-25 - Visible Task 25"
-  check_contains "expanded shows queued section" "$output" "Queued After Dependencies"
+  check_contains "expanded shows held-waiting section" "$output" "Held: waiting on"
   check_contains "expanded shows collapse hint" "$output" "(m to collapse)"
   check_not_contains "expanded omits hidden indicator" "$output" "tasks hidden"
 }
