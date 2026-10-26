@@ -123,9 +123,9 @@ contribution schema and privacy audit explicitly allow it.
 
 ## Workflow-cost interaction
 
-`computeWorkflowCost` for Claude/Codex now always emits `attribution`; unpriced
-models carry no `costUsd` in attribution rows (`coverage: unavailable` when
-nothing is priced, `partial` when mixed) while the legacy
+Workflow cost (the SDK engine since HOK-3077) for Claude/Codex always emits
+`attribution`; unpriced models carry no `costUsd` in attribution rows
+(`coverage: partial` whenever usage was observed but not fully priced) while the legacy
 `models[...].costUsd`/`totalCostUsd` numeric view is preserved for old readers.
 When per-session detail exists, `attribution.sessions`/`attribution.turns` are
 real observed records (Codex no longer reports one turn per session there), and

@@ -1,0 +1,57 @@
+# cost-ownership-allowlist.txt — authorized consumers of the Wavemill cost
+# primitives (HOK-3077 guard, tools/check-cost-ownership.ts).
+#
+# Format (tools/lib/source-guard.ts): `<repo-relative path> [<count>]  # <reason>`.
+# Every entry needs a same-line `# reason`. Counts are findings per file, so a
+# listed file that adds a second primitive import, a retired engine call, or a
+# private price formula still fails. The list is a ratchet: an entry that
+# over-allows fails until it is lowered or removed. The primitives themselves
+# (pricing/model-pricing.ts, pricing/openrouter-exact-pricing.ts,
+# wavemill-session-paths.ts) and the guard spec are excluded automatically.
+#
+# A new consumer of *workflow cost* does not belong here: it reads the SDK
+# bridge (sdk-task-cost/meter.ts, sdk-task-cost/recompute.ts) or the persisted
+# WorkflowCost* shape (workflow-cost.ts). Classifications mirror
+# shared/fixtures/cost-parity/consumer-inventory.json.
+
+# ── SDK bridge (measurement): prices TaskCostEventV1 events, the one engine ──
+shared/lib/sdk-task-cost/collect.ts 1  # measurement: loads the pricing table for the SDK collector
+shared/lib/sdk-task-cost/events-from-session.ts 1  # measurement: prices each SDK event with computeModelCost
+shared/lib/sdk-task-cost/project.ts 1  # measurement: rebuilds the pricingUsed snapshot on projection
+shared/lib/sdk-task-cost/resolve.ts 1  # measurement: passes the pricing table to the projection
+shared/lib/sdk-task-cost/meter.ts 1  # measurement: live metering runner takes the caller's pricing table
+shared/lib/sdk-task-cost/recompute.ts 1  # backfill: offline recompute takes the caller's pricing table
+shared/lib/sdk-task-cost/fixtures.ts 1  # measurement: bridge fixture loader (PricingTable type)
+shared/lib/workflow-cost.ts 1  # schema: persisted WorkflowCostResult names ModelPricing / ModelTokenUsage
+
+# ── Eval entrypoints: choose which pricing config the meter prices with ──
+shared/lib/post-completion-hook.ts 1  # measurement: loads the wavemill-install pricing table for meterWorkflowCost
+shared/lib/eval-orchestrator.ts 1  # measurement: loads the repo pricing table for meterWorkflowCost
+shared/lib/execution-economics.ts 1  # measurement: per-stage economics (observation-only) price sessions per call
+
+# ── Wavemill-only decision policy (retained by HOK-3077) ──
+shared/lib/workflow-router.ts 1  # pricing_policy: router model selection and pool bounds
+shared/lib/stage-aware-router.ts 1  # pricing_policy: stage-aware budget estimates
+shared/lib/challenge-scheduler.ts 1  # pricing_policy: challenge model pool configuration
+shared/lib/eval.ts 1  # pricing_policy: judge-call cost
+shared/lib/native-agent/loop.ts 1  # pricing_policy: native per-turn cost for budget enforcement
+shared/lib/native-agent/launch-planning.ts 1  # pricing_policy: native launch budget estimate
+shared/lib/native-agent/certification/live-coding-canary.ts 1  # pricing_policy: canary cost estimate (type)
+shared/lib/model-promotion.ts 1  # backfill: normalized evaluation cost for model promotion
+shared/lib/eval-schema.ts 1  # schema: pricing snapshot type on the eval record
+
+# ── Backfills / recosts (offline, per-model under a chosen price table) ──
+tools/backfill-workflow-cost.ts 1  # backfill: per-model recost of historical records
+tools/backfill-workflow-cost-status.ts 1  # backfill: loads the pricing table for SDK recompute
+tools/recost-opus-4-6.ts 1  # backfill: one-off recost for a model price change
+tools/backfill-pricing-snapshot.ts 1  # backfill: pricing snapshot type
+
+# ── Session discovery (wavemill_only_join) ──
+shared/lib/session-adapters.ts 1  # wavemill_only_join: session file discovery for every adapter
+shared/lib/intervention-detector.ts 1  # wavemill_only_join: session discovery for intervention detection
+shared/lib/outcome-collectors.ts 1  # wavemill_only_join: session discovery for outcome collection
+shared/lib/reliability-metrics.ts 1  # wavemill_only_join: session discovery for operator-touch counting
+shared/lib/deepseek-smoke.ts 1  # wavemill_only_join: DeepSeek smoke test locates its transcript dir
+
+# ── Regression harness ──
+shared/lib/cost-parity.ts 2  # measurement: parity harness materializes sessions (path) and types its pricing table

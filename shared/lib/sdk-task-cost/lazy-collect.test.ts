@@ -5,9 +5,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { COST_METERING_LEGACY_ENV, SDK_TASK_COST_SHADOW_ENV } from './feature-switch.ts';
 import { collectSdkTaskCostSummariesLazy } from './lazy-collect.ts';
-import { runSdkTaskCostCollection } from './shadow.ts';
+import { meterWorkflowCost } from './meter.ts';
 
 const libDir = join(dirname(fileURLToPath(import.meta.url)), '..');
 const input = { worktreePath: '/nonexistent', branchName: 'task/x' };
@@ -32,44 +31,25 @@ describe('collectSdkTaskCostSummariesLazy', () => {
     assert.equal(result, null);
   });
 
-  it('never loads the SDK under the legacy engine with the shadow switch off', async () => {
-    let loads = 0;
-    const result = await runSdkTaskCostCollection(
-      () => collectSdkTaskCostSummariesLazy(input, async () => {
-        loads += 1;
-        return staleSdk();
-      }),
-      { label: 'Eval', env: { [COST_METERING_LEGACY_ENV]: '1' }, logger: silentLogger() },
-    );
-    assert.equal(result, null);
-    assert.equal(loads, 0);
-  });
-
-  it('swallows a stale-SDK load failure under the default SDK engine', async () => {
+  it('a stale-SDK load failure becomes an adapter_error cost, never a thrown eval', async () => {
     const warnings: string[] = [];
-    const result = await runSdkTaskCostCollection(
-      () => collectSdkTaskCostSummariesLazy(input, staleSdk),
-      { label: 'Eval', env: {}, logger: silentLogger(warnings) },
-    );
-    assert.equal(result, null);
+    const metered = await meterWorkflowCost({
+      ...input,
+      label: 'Eval',
+      collect: (received) => collectSdkTaskCostSummariesLazy(received, staleSdk),
+      logger: silentLogger(warnings),
+    });
+    assert.equal(metered.summaries, null);
+    assert.equal(metered.outcome.status, 'adapter_error');
+    assert.equal(metered.reason, 'collection_failed');
     assert.ok(warnings.some((warning) => warning.includes("export named 'aggregateTaskCost'")));
-  });
-
-  it('rethrows a stale-SDK load failure in strict mode', async () => {
-    await assert.rejects(
-      runSdkTaskCostCollection(
-        () => collectSdkTaskCostSummariesLazy(input, staleSdk),
-        { label: 'Eval', env: { [SDK_TASK_COST_SHADOW_ENV]: 'strict' }, logger: silentLogger() },
-      ),
-      SyntaxError,
-    );
   });
 });
 
 describe('eval entrypoints load when the SDK task-cost exports are unavailable', () => {
   // protects: a value import of the SDK barrel/collector/contract from an eval
-  // entrypoint, which turns a stale @hokusai/core install into a module-load
-  // SyntaxError for every eval even with the shadow switch off.
+  // entrypoint (or the metering runner they share), which turns a stale
+  // @hokusai/core install into a module-load SyntaxError for every eval.
   //
   // A loader hook fails `sdk-task-cost/contract.ts` (the one module that
   // imports the SDK's task-cost names) the way a stale install does, then a
@@ -107,7 +87,7 @@ describe('eval entrypoints load when the SDK task-cost exports are unavailable',
     assert.match(result.stderr, /export named 'aggregateTaskCost'/);
   });
 
-  for (const file of ['eval-orchestrator.ts', 'post-completion-hook.ts']) {
+  for (const file of ['eval-orchestrator.ts', 'post-completion-hook.ts', 'sdk-task-cost/meter.ts']) {
     it(file, () => {
       const result = importUnderStaleSdk(file);
       assert.equal(result.status, 0, result.stderr);

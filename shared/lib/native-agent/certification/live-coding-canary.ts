@@ -46,7 +46,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { getOpenRouterRouting, type ModelRegistry, type NativeProviderName } from '../../model-registry.ts';
-import type { ModelPricing } from '../../workflow-cost.ts';
+import type { ModelPricing } from '../../pricing/model-pricing.ts';
 import { getNativeAgentConfig } from '../../config.ts';
 import { resolveEnvValue } from '../../env-file.ts';
 import { runWavemillLoop, type LoopResult, type WavemillLoopConfig } from '../loop.ts';

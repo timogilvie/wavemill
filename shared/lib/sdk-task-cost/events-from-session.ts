@@ -3,10 +3,9 @@
  * `TaskCostEventV1` records (HOK-3075).
  *
  * The SDK reducer (`aggregateTaskCost`) never prices: prices arrive on the
- * events. During shadow rollout the price on each event is the *legacy*
- * local estimate (`computeModelCost` over the Wavemill pricing table), so the
- * SDK summary carries the same dollars the legacy engine already produces and
- * any shadow-compare difference is a semantics difference, not a pricing one.
+ * events. The price on each event is Wavemill's local estimate
+ * (`computeModelCost` over the Wavemill pricing table, `pricing/`), or a
+ * provider-reported charge when one exists.
  *
  * Event shape rules:
  * - External (Claude Code / Codex): one `delta` event per turn when the
@@ -15,10 +14,10 @@
  *   totals, because the legacy engine treats session totals as authoritative
  *   (HOK-2958) and per-turn deltas that disagree would change the dollars.
  * - Native: one `delta` event per turn (session-level event when the
- *   transcript exposes no turns). A trustworthy provider-reported cost wins
- *   over the local estimate, with exactly the legacy trust rule from
- *   `computeNativeWorkflowCost`: a reported zero is only accepted when there is
- *   nothing better to price from.
+ *   transcript exposes no turns). An OpenRouter exact generation charge for
+ *   the turn's response id (`exactGenerationCosts`) wins; else a trustworthy
+ *   provider-reported cost wins over the local estimate — a reported zero is
+ *   only accepted when there is nothing better to price from.
  * - Missing values stay `null`; nothing is coerced to `0`.
  * - Identifiers are constrained by the SDK validators (no paths, no free
  *   text). Anything that does not already satisfy them is pseudonymized with
@@ -37,7 +36,12 @@ import type {
   NativeSessionUsageRecord,
   SessionUsageResult,
 } from '../session-adapters.ts';
-import { computeModelCost, type ModelPricing, type PricingTable } from '../workflow-cost.ts';
+import {
+  computeModelCost,
+  isExplicitZeroPricing,
+  type ModelPricing,
+  type PricingTable,
+} from '../pricing/model-pricing.ts';
 import {
   SDK_PROVIDER_CONTRACT_VERSIONS,
   TASK_COST_EVENT_SCHEMA_VERSION,
@@ -85,6 +89,12 @@ export interface TaskCostEventContext {
   pricingRevision?: string | null;
   /** ISO-8601 timestamp for observations the source did not time-stamp. */
   observedAtFallback: string;
+  /**
+   * OpenRouter billed charge per native response id
+   * (`pricing/openrouter-exact-pricing.ts`). A native turn whose response id
+   * is present is emitted as that provider-reported charge.
+   */
+  exactGenerationCosts?: ReadonlyMap<string, number>;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -223,13 +233,6 @@ function fromNativeUsage(usage: {
     cache_write_tokens: tokenCount(usage.cacheCreationTokens),
     reasoning_tokens: null,
   };
-}
-
-function isExplicitZeroPricing(pricing: ModelPricing): boolean {
-  return pricing.inputCostPerMTok === 0
-    && pricing.outputCostPerMTok === 0
-    && (pricing.cacheWriteCostPerMTok ?? 0) === 0
-    && (pricing.cacheReadCostPerMTok ?? 0) === 0;
 }
 
 function pricingFor(model: string | null, ctx: TaskCostEventContext): ModelPricing | undefined {
@@ -446,20 +449,24 @@ type NativeUsageFields = Pick<
 >;
 
 /**
- * Price one native usage observation with the legacy precedence: a
+ * Price one native usage observation: an OpenRouter exact charge, else a
  * trustworthy provider-reported cost, else a local estimate, else nothing
- * (with the reason the legacy engine would record).
+ * (with the diagnostic naming why).
  */
 function priceNative(
   observation: NativeUsageFields,
   pricing: ModelPricing | undefined,
+  exactCostUsd: number | null = null,
 ): { usage: TaskCostTokenUsage; actual: number | null; estimated: number | null; diagnostics: TaskCostDiagnosticCode[] } {
   const usage = observation.invalidUsage || !observation.usageAvailable
     ? emptyUsage()
     : fromNativeUsage(observation);
+  if (exactCostUsd !== null) {
+    return { usage, actual: exactCostUsd, estimated: null, diagnostics: [] };
+  }
   const providerCost = finiteNonNegative(observation.providerReportedCostUsd);
   // A provider that omits cost reports 0; only trust a zero when there is
-  // nothing better to price from (computeNativeWorkflowCost, workflow-cost.ts).
+  // nothing better to price from.
   const providerCostIsTrustworthy = providerCost !== null
     && (providerCost > 0
       || !observation.usageAvailable
@@ -525,7 +532,8 @@ export function eventsFromNativeSessions(
       : [{ turnId: 'session-total', fields: session }];
 
     observations.forEach(({ turnId, fields }, index) => {
-      const priced = priceNative(fields, pricing);
+      const exact = turnId ? finiteNonNegative(ctx.exactGenerationCosts?.get(turnId)) : null;
+      const priced = priceNative(fields, pricing, exact);
       events.push(buildEvent({
         ...common,
         turnId,

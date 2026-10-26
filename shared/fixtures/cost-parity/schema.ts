@@ -1,9 +1,10 @@
 /**
  * Wavemill Cost Parity Corpus Schema
  *
- * This schema defines the structure for cost-engine parity testing between the legacy
- * workflow-cost.ts engine and the Hokusai SDK. Each case contains sanitized, synthetic
- * session files that exercise specific scenarios (mixed models, caching, provider costs, etc).
+ * This schema defines the structure of the cost regression corpus for the SDK cost
+ * engine (the HOK-3075 bridge, sole engine since HOK-3077). Each case contains sanitized,
+ * synthetic session files that exercise specific scenarios (mixed models, caching,
+ * provider costs, etc); `baseline.json` pins the engine's output for each.
  *
  * Privacy: No transcript text is stored. Session lines carry only usage metrics and a
  * "secret-token-should-not-persist" canary in structured fields.
@@ -33,22 +34,11 @@ export interface ExactPricingResponse {
 }
 
 /**
- * A single expected fix, mapping a defect to its treatment.
- */
-export interface ExpectedFix {
-  id: string; // EF-1, EF-2, etc
-  path: string; // JSON path in the snapshot, e.g., "evalRecord.workflowCost" or "sync.coverage"
-  legacy: unknown; // the value from the baseline (captured during --write)
-  expected?: unknown; // corrected value, or { "decision": "HOK-3075" } if awaiting SDK decision
-  rationale: string; // why this fix is needed
-}
-
-/**
- * Expectations for a case: which aspects must match strictly vs which allow fixes.
+ * Expectations for a case. Every path must match the baseline strictly; the
+ * list only highlights the paths a case exists to pin.
  */
 export interface CostParityCaseExpectations {
   strictParity?: string[]; // informational: highlight list of paths that must match
-  expectedFixes?: ExpectedFix[]; // defects allowed to differ in migration mode
 }
 
 /**
@@ -80,25 +70,12 @@ export interface CostParityCase {
 }
 
 /**
- * Function-level pricing test case (for computeModelCost, computeNormalizedEvaluationCost, etc).
- */
-export interface PricingFunctionCase {
-  id: string;
-  description: string;
-  functionName: "computeModelCost" | "computeNormalizedEvaluationCost" | "recalculateWorkflowCost";
-  args: Record<string, unknown>;
-  expectedResult: unknown;
-  expectedFixes?: ExpectedFix[];
-}
-
-/**
  * Top-level manifest for the cost-parity corpus.
  */
 export interface CostParityManifest {
   schemaVersion: "cost_parity_manifest/v1";
-  capturedFrom: "wavemill workflow-cost.ts (legacy engine)";
+  capturedFrom: string; // engine that produced baseline.json
   cases: CostParityCase[];
-  pricingCases?: PricingFunctionCase[]; // function-level test cases
 }
 
 /**
@@ -116,7 +93,6 @@ export interface ValidationResult {
  * - Unique case ids
  * - Known session locations
  * - Known tags
- * - ExpectedFix ids match /^EF-\d+$/
  * - No absolute paths or forbidden keys in session lines
  */
 export function validateManifest(manifest: CostParityManifest): ValidationResult {
@@ -250,20 +226,6 @@ export function validateManifest(manifest: CostParityManifest): ValidationResult
       }
     }
 
-    // Validate expectations
-    if (caseItem.expectations && Array.isArray(caseItem.expectations.expectedFixes)) {
-      for (const fix of caseItem.expectations.expectedFixes) {
-        if (!fix.id || !/^EF-\d+$/.test(fix.id)) {
-          errors.push(`Case ${caseItem.id}: expectedFix has invalid id "${fix.id}". Must match /^EF-\\d+$/`);
-        }
-        if (!fix.path || typeof fix.path !== "string") {
-          errors.push(`Case ${caseItem.id}: expectedFix ${fix.id} has invalid path`);
-        }
-        if (!fix.rationale || typeof fix.rationale !== "string") {
-          errors.push(`Case ${caseItem.id}: expectedFix ${fix.id} missing rationale`);
-        }
-      }
-    }
   }
 
   // Check required tag coverage

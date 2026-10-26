@@ -3,12 +3,11 @@
  *
  * The eval entrypoints (post-completion hook and eval orchestrator) must load
  * even when the installed `@hokusai/core` predates the task-cost contract —
- * a stale `node_modules` once turned a shadow-only feature into a module-load
- * `SyntaxError` that failed every eval with the switch off. This module has
- * no runtime dependency on `@hokusai/core`: the collector (and the SDK) are
- * imported only when `runSdkTaskCostCollection` actually invokes it, so a load
- * failure surfaces inside the collection runner and gets its
- * logged-and-swallowed (or shadow `strict` rethrown) semantics.
+ * a stale `node_modules` once turned a cost feature into a module-load
+ * `SyntaxError` that failed every eval. This module has no runtime dependency
+ * on `@hokusai/core`: the collector (and the SDK) are imported only when
+ * `meterWorkflowCost` actually invokes it, so a load failure surfaces inside
+ * the metering runner, which logs it and records an `adapter_error` cost.
  *
  * @module sdk-task-cost/lazy-collect
  */

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveExecutedModelFromSessions } from './executed-model-resolver.ts';
-import { encodeProjectDir } from './workflow-cost.ts';
+import { encodeProjectDir } from './wavemill-session-paths.ts';
 
 const cleanups: Array<() => void> = [];
 

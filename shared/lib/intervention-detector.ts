@@ -11,7 +11,7 @@
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { resolveProjectsDirs } from './workflow-cost.ts';
+import { resolveProjectsDirs } from './wavemill-session-paths.ts';
 import { loadWavemillConfig } from './config.ts';
 import { errorMessage } from './error-utils.ts';
 import { fetchPrReviews, resolveOwnerRepo } from './github.ts';

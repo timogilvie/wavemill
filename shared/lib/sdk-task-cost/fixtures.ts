@@ -11,7 +11,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { SessionUsageResult } from '../session-adapters.ts';
-import type { PricingTable } from '../workflow-cost.ts';
+import type { PricingTable } from '../pricing/model-pricing.ts';
 import type { TaskCostSummaryV1 } from './contract.ts';
 
 export const SDK_TASK_COST_FIXTURES_DIR = join(

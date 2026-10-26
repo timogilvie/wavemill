@@ -76,7 +76,7 @@ import {
 } from './label-write-ledger.ts';
 import { fetchPrTimeline, type GhRunner, type PrTimelineEvent } from './pr-timeline.ts';
 import { readLaneProgress, mergeLaneStateDir } from './merge-queue.ts';
-import { resolveProjectsDirs } from './workflow-cost.ts';
+import { resolveProjectsDirs } from './wavemill-session-paths.ts';
 import { parseTaskId } from './task-identity.ts';
 
 export type { InterventionClass } from './operator-intervention.ts';

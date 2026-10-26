@@ -14,8 +14,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { readTransformWrite } from '../shared/lib/jsonl-utils.ts';
-import { computeModelCost } from '../shared/lib/workflow-cost.ts';
-import type { ModelPricing, ModelTokenUsage } from '../shared/lib/workflow-cost.ts';
+import { computeModelCost, type ModelPricing, type ModelTokenUsage } from '../shared/lib/pricing/model-pricing.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Constants
