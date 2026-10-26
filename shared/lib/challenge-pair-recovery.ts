@@ -33,6 +33,7 @@ import { resolvePrIdentityMetadata } from './pr-comparison.ts';
 import { taskHasPendingChallengeArm } from './tend-challenge-gate.ts';
 import { challengerTaskKey, parseTaskId } from './task-identity.ts';
 import { readWorkflowState, type TaskRecord } from './workflow-state.ts';
+import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
 
 export type ChallengeRecoveryVerdict = 'supersedable' | 'quarantine-upheld' | 'pair-not-found';
 
@@ -383,9 +384,14 @@ export function assessChallengePair(
   // ── Gate 3: the challenge stage genuinely varied ───────────────────
   const [primaryArm, challengerArm] = assessment.arms;
   if (primaryArm.stageModel && challengerArm.stageModel) {
-    if (primaryArm.stageModel === challengerArm.stageModel) {
+    // HOK-3321: the one model-identity decision — registry-equivalent spellings
+    // of the same model are the same control, not two different models.
+    if (challengeModelIdsEquivalent(primaryArm.stageModel, challengerArm.stageModel, repoDir)) {
       assessment.blockers.push(
-        `both arms ran ${primaryArm.stageModel} at the challenge stage — identical control, not a challenge`,
+        // allow-model-equivalence: message wording only; identity is decided by the call above.
+        primaryArm.stageModel === challengerArm.stageModel
+          ? `both arms ran ${primaryArm.stageModel} at the challenge stage — identical control, not a challenge`
+          : `both arms ran ${primaryArm.stageModel} (and ${challengerArm.stageModel} — same model) at the challenge stage — identical control, not a challenge`,
       );
     }
   }
@@ -397,31 +403,97 @@ export function assessChallengePair(
 }
 
 /**
- * Build the superseding comparison record. Only ever called for a
- * `supersedable` assessment; the winner is decided by eval score, and the
- * models come from execution evidence rather than from the prior record's
- * (incorrectly derived) attestation.
+ * Inputs for building a superseding comparison record (HOK-2934/HOK-3321).
+ * Shared by `challenge-recovery` and `recover-hok-3313` so there is exactly
+ * one superseding-record shape.
  */
-function buildSupersedingRecord(
-  assessment: ChallengeRecoveryAssessment,
-  previous: Record<string, unknown> | undefined,
-): Record<string, unknown> {
-  const [primaryArm, challengerArm] = assessment.arms;
-  const primaryScore = primaryArm.evalScore ?? 0;
-  const challengerScore = challengerArm.evalScore ?? 0;
+export interface SupersedingComparisonInput {
+  pairId: string;
+  challengeStage?: string;
+  primaryModel?: string;
+  challengerModel?: string;
+  primaryPrUrl?: string;
+  challengerPrUrl?: string;
+  primaryEvalScore?: number;
+  challengerEvalScore?: number;
+  selectedEvalEvidence?: {
+    primary?: { evalId?: string; evaluatedPrHeadSha?: string };
+    challenger?: { evalId?: string; evaluatedPrHeadSha?: string };
+  };
+  intentCreatedAt?: string;
+  evidence?: Array<Record<string, unknown>>;
+  previous?: Record<string, unknown> | undefined;
+  assessedAt?: string;
+  /** Recovery provenance tool name; defaults to the generic recovery tool. */
+  toolName?: string;
+}
+
+/**
+ * Build the superseding comparison record. The winner is decided by eval
+ * score, and the models come from execution evidence rather than from the
+ * prior record's (incorrectly derived) attestation. A tie must NOT name a
+ * winner: resolving it arbitrarily would send a PR of equal measured quality
+ * to the destructive loser path, so it is reported as inconclusive.
+ */
+export function buildSupersedingComparisonRecord(input: SupersedingComparisonInput): Record<string, unknown> {
+  const primaryScore = input.primaryEvalScore ?? 0;
+  const challengerScore = input.challengerEvalScore ?? 0;
 
   // `winner` — not `comparisonOutcome` — is what the merge gate keys off when it
   // decides which PR merges and which goes to loser cleanup. A record without it
   // makes the gate silently treat the primary as the winner.
-  // A tie must NOT name a winner: resolving it arbitrarily would send a PR of
-  // equal measured quality to the destructive loser path.
   const winner: 'primary' | 'challenger' | undefined =
     challengerScore > primaryScore ? 'challenger'
       : primaryScore > challengerScore ? 'primary'
         : undefined;
 
   return {
-    challengePairId: assessment.pairId,
+    challengePairId: input.pairId,
+    challengeStage: input.challengeStage,
+    primaryModel: input.primaryModel,
+    challengerModel: input.challengerModel,
+    primaryPrUrl: input.primaryPrUrl,
+    challengerPrUrl: input.challengerPrUrl,
+    primaryEvalScore: input.primaryEvalScore,
+    challengerEvalScore: input.challengerEvalScore,
+    ...(input.selectedEvalEvidence ? { selectedEvalEvidence: input.selectedEvalEvidence } : {}),
+    // A tie has no decisive winner, so it is reported as inconclusive rather
+    // than as a comparison the gate would act on.
+    comparisonOutcome: winner ? 'compared' : 'inconclusive',
+    ...(winner ? { winner } : {}),
+    ...(winner ? {} : { noComparisonReason: 'recovery_tie' }),
+    invalidChallenge: false,
+    rationale: winner
+      ? `Recovered comparison from execution evidence: ${winner} wins (${input.primaryModel} ${primaryScore} vs ${input.challengerModel} ${challengerScore}).`
+      : `Recovered comparison from execution evidence: tie at ${primaryScore}; no decisive winner.`,
+    timestamp: input.assessedAt ?? new Date().toISOString(),
+    // Provenance: this record replaces an invalid one and says so explicitly,
+    // so the original stays auditable rather than being silently dropped.
+    recordKind: 'superseding-comparison',
+    supersedes: {
+      timestamp: input.previous?.timestamp,
+      comparisonOutcome: input.previous?.comparisonOutcome,
+      invalidChallengeReason: input.previous?.invalidChallengeReason,
+    },
+    recoveryProvenance: {
+      tool: input.toolName ?? 'challenge-recovery',
+      ...(input.intentCreatedAt ? { intentCreatedAt: input.intentCreatedAt } : {}),
+      ...(input.evidence ? { evidence: input.evidence } : {}),
+    },
+  };
+}
+
+/**
+ * Build the superseding comparison record from a recovery assessment (the
+ * `challenge-recovery` path). Only ever called for a `supersedable` assessment.
+ */
+function buildSupersedingRecord(
+  assessment: ChallengeRecoveryAssessment,
+  previous: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const [primaryArm, challengerArm] = assessment.arms;
+  return buildSupersedingComparisonRecord({
+    pairId: assessment.pairId,
     challengeStage: assessment.challengeStage,
     primaryModel: primaryArm.stageModel,
     challengerModel: challengerArm.stageModel,
@@ -433,38 +505,19 @@ function buildSupersedingRecord(
       primary: { evalId: primaryArm.selectedEvalId!, evaluatedPrHeadSha: primaryArm.evaluatedPrHeadSha! },
       challenger: { evalId: challengerArm.selectedEvalId!, evaluatedPrHeadSha: challengerArm.evaluatedPrHeadSha! },
     },
-    // A tie has no decisive winner, so it is reported as inconclusive rather
-    // than as a comparison the gate would act on.
-    comparisonOutcome: winner ? 'compared' : 'inconclusive',
-    ...(winner ? { winner } : {}),
-    ...(winner ? {} : { noComparisonReason: 'recovery_tie' }),
-    invalidChallenge: false,
-    rationale: winner
-      ? `Recovered comparison from execution evidence: ${winner} wins (${primaryArm.stageModel} ${primaryScore} vs ${challengerArm.stageModel} ${challengerScore}).`
-      : `Recovered comparison from execution evidence: tie at ${primaryScore}; no decisive winner.`,
-    timestamp: assessment.assessedAt,
-    // Provenance: this record replaces an invalid one and says so explicitly,
-    // so the original stays auditable rather than being silently dropped.
-    recordKind: 'superseding-comparison',
-    supersedes: {
-      timestamp: previous?.timestamp,
-      comparisonOutcome: previous?.comparisonOutcome,
-      invalidChallengeReason: previous?.invalidChallengeReason,
-    },
-    recoveryProvenance: {
-      tool: 'challenge-recovery',
-      intentCreatedAt: primaryArm.intentCreatedAt,
-      evidence: assessment.arms.map((arm) => ({
-        side: arm.side,
-        issueId: arm.issueId,
-        stageModel: arm.stageModel,
-        stageResultPath: arm.stageResultPath,
-        selectedEvalId: arm.selectedEvalId,
-        evaluatedPrHeadSha: arm.evaluatedPrHeadSha,
-        currentPrHeadSha: arm.currentPrHeadSha,
-      })),
-    },
-  };
+    intentCreatedAt: primaryArm.intentCreatedAt,
+    evidence: assessment.arms.map((arm) => ({
+      side: arm.side,
+      issueId: arm.issueId,
+      stageModel: arm.stageModel,
+      stageResultPath: arm.stageResultPath,
+      selectedEvalId: arm.selectedEvalId,
+      evaluatedPrHeadSha: arm.evaluatedPrHeadSha,
+      currentPrHeadSha: arm.currentPrHeadSha,
+    })),
+    previous,
+    assessedAt: assessment.assessedAt,
+  });
 }
 
 export function runChallengeRecovery(options: ChallengeRecoveryOptions): ChallengeRecoveryResult {

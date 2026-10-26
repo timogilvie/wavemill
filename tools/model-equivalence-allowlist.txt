@@ -1,0 +1,8 @@
+# Ratcheting allowlist for the model-equivalence guard (HOK-3321).
+#
+# Format: <repo-relative path> [<max findings>]  # <reason>
+#
+# The invariant is that challenge code decides model identity exclusively
+# through challengeModelIdsEquivalent (shared/lib/challenge-comparison.ts).
+# This list starts empty on purpose; add an entry only for a justified
+# exception and delete it as soon as the call site is migrated.

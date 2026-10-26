@@ -42,6 +42,8 @@ export interface ChallengeAttestationBackfillSummary {
 export interface ChallengeAttestationBackfillOptions {
   file: string;
   apply?: boolean;
+  /** Repo root used for scoped model-registry lookups (HOK-3321). */
+  repoDir?: string;
 }
 
 function cloneRecord(record: EvalRecord): EvalRecord {
@@ -74,7 +76,10 @@ function clearStaleChallengeDivergence(record: EvalRecord): void {
   }
 }
 
-function processRecord(record: EvalRecord): {
+function processRecord(
+  record: EvalRecord,
+  repoDir?: string,
+): {
   record: EvalRecord;
   changed: boolean;
   summary: ChallengeAttestationBackfillRecordSummary;
@@ -83,7 +88,7 @@ function processRecord(record: EvalRecord): {
   const before = cloneRecord(record);
 
   if (record.challengeIntent && record.challengeSide) {
-    const attestation = attestEvalRecordChallengeExecution(record);
+    const attestation = attestEvalRecordChallengeExecution(record, repoDir);
     if (attestation?.invalidReason) {
       attachChallengeExecutionMetadata(record, {
         side: record.challengeSide,
@@ -196,7 +201,7 @@ export function backfillChallengeAttestation(
     }
 
     summary.scanned += 1;
-    const result = processRecord(record);
+    const result = processRecord(record, options.repoDir);
     if (result.attested) summary.attested += 1;
     if (result.changed) summary.changed += 1;
     if (result.summary.action === 'quarantined') summary.quarantined += 1;

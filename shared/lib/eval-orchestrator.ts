@@ -813,7 +813,7 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
       }
     }
   }
-  const attestation = attestEvalRecordChallengeExecution(record);
+  const attestation = attestEvalRecordChallengeExecution(record, repoDir);
   if (attestation && challengeEvidenceInvalid) {
     attestation.validity = 'invalid_challenge';
     attestation.invalidReason = challengeEvidenceInvalid.reason === 'operator_reroute'

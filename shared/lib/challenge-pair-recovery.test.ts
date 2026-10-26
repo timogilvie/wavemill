@@ -263,6 +263,35 @@ describe('challenge recovery assessment', () => {
     }
   });
 
+  it('refuses to supersede two spellings of the same model (HOK-3321)', () => {
+    const spec = provenFixture();
+    spec.primary!.stageModel = 'qwen-3-coder';
+    spec.challenger!.stageModel = 'qwen/qwen3-coder';
+    const repoDir = makeRepo(spec);
+    try {
+      const assessment = assess(repoDir, 'PAIR-1');
+      assert.equal(assessment.verdict, 'quarantine-upheld');
+      assert.ok(assessment.blockers.some((b) => b.includes('identical control, not a challenge')));
+      assert.ok(assessment.blockers.some((b) => b.includes('qwen-3-coder (and qwen/qwen3-coder — same model)')));
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('still supersedes two genuinely different models (HOK-3321)', () => {
+    const spec = provenFixture();
+    spec.primary!.stageModel = 'qwen-3-coder';
+    spec.challenger!.stageModel = 'glm-5.2';
+    const repoDir = makeRepo(spec);
+    try {
+      const assessment = assess(repoDir, 'PAIR-1');
+      assert.equal(assessment.verdict, 'supersedable');
+      assert.deepEqual(assessment.blockers, []);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('upholds quarantine when the challenge stage never completed', () => {
     const spec = provenFixture();
     spec.challenger!.stageStatus = 'failed';

@@ -1061,7 +1061,10 @@ function stageRole(stage: ChallengeStage): keyof EvalRouting {
   return stage === 'plan' ? 'planner' : stage === 'review' ? 'reviewer' : 'coder';
 }
 
-export function attestEvalRecordChallengeExecution(record: EvalRecord): ChallengeExecutionAttestation | undefined {
+export function attestEvalRecordChallengeExecution(
+  record: EvalRecord,
+  repoDir?: string,
+): ChallengeExecutionAttestation | undefined {
   const sideIntent = sideIntentFromRecord(record);
   if (!sideIntent) return undefined;
 
@@ -1107,7 +1110,7 @@ export function attestEvalRecordChallengeExecution(record: EvalRecord): Challeng
   const routeModel = modelForChallengeStage(effectiveRoute, sideIntent.challengeStage);
   let invalidReason: InvalidChallengeReason | undefined;
   let invalidDetails: string | undefined;
-  if (expected && routeModel && expected !== routeModel) {
+  if (expected && routeModel && !challengeModelIdsEquivalent(expected, routeModel, repoDir)) {
     invalidReason = 'stage_override_lost';
     invalidDetails = `Expected ${sideIntent.challengeStage} model ${expected}, effective route has ${routeModel}.`;
   }
@@ -1116,8 +1119,13 @@ export function attestEvalRecordChallengeExecution(record: EvalRecord): Challeng
     ?? evidence.find((item) => item.resolvedModel)?.resolvedModel;
   const requestedModel = evidence.find((item) => item.requestedModel)?.requestedModel;
   const fallbackReason = evidence.find((item) => item.fallbackReason)?.fallbackReason;
-  if (!invalidReason && expected && actualModel && actualModel !== expected) {
-    invalidReason = requestedModel === expected || fallbackReason ? 'native_launch_fallback' : 'stage_override_lost';
+  if (!invalidReason && expected && actualModel && !challengeModelIdsEquivalent(actualModel, expected, repoDir)) {
+    // HOK-3321: alias-aware on both sides — an equivalent spelling of the same
+    // registry entry (e.g. `qwen/qwen3-coder` vs `qwen-3-coder`) is not evidence
+    // of a lost override, so only a genuinely different model invalidates.
+    invalidReason = challengeModelIdsEquivalent(requestedModel, expected, repoDir) || fallbackReason
+      ? 'native_launch_fallback'
+      : 'stage_override_lost';
     invalidDetails = `Expected ${sideIntent.challengeStage} model ${expected}, launch evidence has ${actualModel}.`;
   }
 
@@ -1527,6 +1535,7 @@ export function sealedSelectionViolations(
   const violations: string[] = [];
   if (candidateSeal.pairId !== sealed.pairId) violations.push('pairId');
   if (candidateSeal.selectedStage !== sealed.selectedStage) violations.push('selectedStage');
+  // allow-model-equivalence: seal-identity invariance, not route equivalence.
   if (candidateSeal.challengerVariedModel !== sealed.challengerVariedModel) {
     violations.push('challengerVariedModel');
   }
