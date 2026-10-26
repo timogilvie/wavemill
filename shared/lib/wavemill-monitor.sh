@@ -7927,12 +7927,24 @@ stage_result_field() {
 native_hook_terminal_failure_detail() {
   local issue="$1"
   local hook_file="/tmp/wavemill-${SESSION}-${issue}.hook"
-  local state detail
+  local state event detail
   [[ -n "$issue" ]] || return 1
   [[ -f "$hook_file" ]] || return 1
 
   state="$(jq -r '.state // empty' "$hook_file" 2>/dev/null || true)"
   [[ "$state" == "error" ]] || return 1
+
+  # Only real terminal-exit events feed the failure policy here. Mid-run error
+  # events (codex `model_capacity`, claude `Notification`, monitor-written
+  # `NoPR` / `worktree-setup` / recovery notifications) have dedicated handlers
+  # upstream and must not be reclassified as a terminal exit — otherwise a
+  # stale capacity hook that `codex_capacity_hook_status` ignored by TTL would
+  # fall through here and park the task.
+  event="$(jq -r '.event // empty' "$hook_file" 2>/dev/null || true)"
+  case "$event" in
+    process_exit|process_exit_failure|unexpected_eof|StopFailure) ;;
+    *) return 1 ;;
+  esac
 
   detail="$(jq -r '.detail // empty' "$hook_file" 2>/dev/null || true)"
   [[ -n "$detail" ]] || return 1
