@@ -1,0 +1,683 @@
+{
+  "$fixture": {
+    "capturedAt": "2026-10-22T13:09:11.294Z",
+    "phase": "ready",
+    "notes": "ready phase, PR open, Ready verdict pass"
+  },
+  "workflowState": {
+    "session": "wavemill-fixture",
+    "started": "2026-09-08T20:43:12Z",
+    "updated": "2026-10-22T13:09:08Z",
+    "tasks": {
+      "FIXTURE-1": {
+        "slug": "native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache",
+        "branch": "task/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache",
+        "worktree": "/workspace/wavemill-fixture/worktrees/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache",
+        "pr": "1697",
+        "status": "active",
+        "linearIssueId": "FIXTURE-1",
+        "updated": "2026-10-22T12:49:46Z",
+        "agent": "claude",
+        "challenge": false,
+        "plannerModel": "claude-opus-4-7",
+        "coderModel": "claude-opus-5-5",
+        "reviewerModel": "claude-opus-4-7",
+        "planDepth": "deep",
+        "codeDepth": "deep",
+        "reviewMode": "llm",
+        "phase": "ready",
+        "windowId": "@47",
+        "lifecycle": {
+          "schemaVersion": 1,
+          "workflowOutcome": "active",
+          "resourceDisposition": "allocated",
+          "launchContract": {
+            "baseBranch": "auto/integration",
+            "baseSha": "5050ff3f1862ae0ce9366447db4a23e15d507bc7",
+            "integrationMode": "merge-queue",
+            "mergeExecutor": "tend",
+            "mergeMethod": "squash",
+            "requireConfirm": false,
+            "remoteBranchDeletionPolicy": {
+              "allowed": true,
+              "mode": "merged-pr-task-branch",
+              "source": "cleanup_remote_task_branch"
+            },
+            "challengeRole": "",
+            "challengePairId": "",
+            "session": "wavemill-fixture",
+            "runEpoch": "20261021T171111Z.64052",
+            "windowId": "@4",
+            "provenance": {
+              "baseBranch": "repo-config",
+              "requireConfirm": "repo-config",
+              "mergeMethod": "repo-config",
+              "remoteBranchDeletionPolicy": "launch-contract"
+            }
+          },
+          "deliveryEvidence": {
+            "prNumber": "1697",
+            "prState": "OPEN",
+            "prBaseBranch": "auto/integration",
+            "prHeadSha": "94e64700e96ec777e7ec194836dae841f79f2029",
+            "mergeSha": ""
+          },
+          "attempt": {
+            "schemaVersion": 1,
+            "issue": "FIXTURE-1",
+            "attemptId": "FIXTURE-1-a1",
+            "originalBranch": "task/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache",
+            "effectiveBranch": "task/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache",
+            "baseBranch": "auto/integration",
+            "source": "launch-plan",
+            "runEpoch": "20261021T171111Z.64052"
+          },
+          "prReconciliation": {
+            "schemaVersion": 1,
+            "classification": "current-open",
+            "issue": "FIXTURE-1",
+            "branch": "task/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache",
+            "baseBranch": "auto/integration",
+            "attemptId": "FIXTURE-1-a1",
+            "linearState": null,
+            "reason": "open_current_pr",
+            "checkedAt": "2026-10-21T19:06:51Z",
+            "selectedCandidate": {
+              "baseRefName": "auto/integration",
+              "body": "## Summary\n\n- Project per-turn prompt-cache signal (already captured in the session stream) onto the native stage result as `cacheReadTokens`, `cacheWriteTokens`, and `cacheHitRate` (reads over turns 2..n of total prompt input), so a route or prompt change that silently stops hitting the cache becomes visible instead of just showing up as a higher bill.\n- Flag low-hit runs as a quality signal (no new env flag; threshold defaults to 0.5 and lives in config under `nativeAgent.promptCache`): each stage prints one warn line, and the observer path emits one deduplicated finding per `(model, provider, stage)` per UTC day. Never parks or fails a run.\n- Add median prompt-cache hit rate per model/provider route to the reliability report.\n- No new accounting path outside the stage result — SDK cost summaries read these fields, legacy `workflowCost` does not get a parallel copy (per FIXTURE-2's single accounting path).\n\n## Changes\n\n- `shared/lib/native-agent/prompt-cache.ts` (+ test) — projects per-turn `cache_read_input_tokens` / `cache_creation_input_tokens` / `input_tokens` from the session stream (turns 2..n) into `{ cacheReadTokens, cacheWriteTokens, cacheHitRate }`.\n- `shared/lib/native-agent/prompt-cache-detector.ts` (+ test) — threshold check (configurable, default 0.5) that emits one warn log line and (via the observer finding path) one deduped finding per model/provider/stage per day using a sentinel file under the task's `.wavemill-fixture` dir.\n- `shared/lib/native-agent/launch-planning.ts`, `launch-coding.ts`, `review.ts`, `loop.ts` (+ tests) — plumb per-turn usage through each native stage, call the projection+detector when writing the stage result.\n- `shared/lib/stage-result.ts` + `shared/schemas/stage-result.schema.json` — new optional `cacheReadTokens`, `cacheWriteTokens`, `cacheHitRate` fields on native stage result.\n- `shared/lib/reliability-metrics.ts` (+ test) and `tools/report-reliability.ts` — surface the median hit rate per `(model, provider)` in the reliability report.\n- `shared/lib/config.ts` (+ test) and `wavemill-fixture-config.schema.json` — `nativeAgent.promptCache.hitRateThreshold` and `minTurnsToDetect`.\n- `shared/validators/wavemill-fixture-config.validator.cjs` + meta regenerated to match the schema.\n- `shared/lib/native-agent/coding-artifacts.ts`, `shared/lib/review-analysis-identity.ts` (+ test), `shared/lib/review-engine.ts`, `tools/review-changes.ts` — minor plumbing wired to the new fields.\n- `tests/run-unit-tests.sh` — registers the four new test files.\n\n## Test plan\n\n- `node --test` against the new tests (registered in `tests/run-unit-tests.sh`):\n  - `shared/lib/native-agent/prompt-cache.test.ts` — fixture session stream with known per-turn usage produces the expected `cacheHitRate` on turns 2..n (including the <3-turn skip rule and malformed-usage rows).\n  - `shared/lib/native-agent/prompt-cache-detector.test.ts` — turn 3 reads zero from cache produces exactly one warn line and one observer finding; re-run with the same `(model, provider, stage, day)` emits zero further findings; different stage on the same day emits one more.\n  - `shared/lib/native-agent/loop.test.ts` + `launch-planning.test.ts` — stage-result wiring across native stages.\n  - `shared/lib/reliability-metrics.test.ts` — median hit rate per `(model, provider)` surfaced in the report.\n  - `shared/lib/config.test.ts` — config threshold round-trips through the schema validator.\n  - `shared/lib/review-analysis-identity.test.ts` — review stage-result plumbing unchanged by this change.\n- Self-review (`review-changes.ts` against `auto/integration`) ran once, verdict `ready`, 0 blockers, 2 warnings (both documented as intentional by the reviewer itself).\n\n## Self-review\n\n- Verdict: `ready`\n- Iterations: 1\n- Blockers: 0\n- Warnings: 2 (both acknowledged by the reviewer as intentional/non-issues: a comment in `runCodingLoop` noting that `lastLoopUsage` is reset per call by design, and an `rmSync` fall-through in `prompt-cache-detector.ts` that is correctly caught by the outer try/catch)\n\n## Non-authoritative routing context\n\nRouting from `features/.../routing.jsonl` (bootstrap, no post-expansion route artifact present):\n- Planner: `claude-opus-4-7` (requested) → `claude-opus-4-7` (resolved)\n- Coder: `claude-opus-4-7` (requested) → `claude-opus-4-7` (resolved)\n- Reviewer: `claude-opus-4-7` (requested) → `claude-opus-4-7` (resolved)\n- Source layer: `hokusai` (policy_version=`production`)\n- No fallback was recorded. Wavemill stamps the authoritative executed route into `wavemill-fixture-meta` before `wm:ready`.\n\n<!-- wavemill-fixture-meta\ntask: FIXTURE-1\n-->",
+              "createdAt": "2026-10-21T19:06:17Z",
+              "headRefName": "task/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache",
+              "headRefOid": "94e64700e96ec777e7ec194836dae841f79f2029",
+              "mergedAt": null,
+              "number": 1697,
+              "state": "OPEN",
+              "title": "FIXTURE-1: Report prompt-cache hit rate per native stage and flag low-hit runs",
+              "updatedAt": "2026-10-21T19:06:18Z",
+              "url": "https://github.com/timogilvie/wavemill-fixture/pull/1697",
+              "normalizedState": "OPEN",
+              "branchMatches": true,
+              "baseMatches": true,
+              "headMatches": true,
+              "issueMatches": true,
+              "attemptMatches": false,
+              "challengeMatches": false,
+              "currentEvidence": true,
+              "mismatchReason": ""
+            },
+            "candidates": [
+              {
+                "baseRefName": "auto/integration",
+                "body": "## Summary\n\n- Project per-turn prompt-cache signal (already captured in the session stream) onto the native stage result as `cacheReadTokens`, `cacheWriteTokens`, and `cacheHitRate` (reads over turns 2..n of total prompt input), so a route or prompt change that silently stops hitting the cache becomes visible instead of just showing up as a higher bill.\n- Flag low-hit runs as a quality signal (no new env flag; threshold defaults to 0.5 and lives in config under `nativeAgent.promptCache`): each stage prints one warn line, and the observer path emits one deduplicated finding per `(model, provider, stage)` per UTC day. Never parks or fails a run.\n- Add median prompt-cache hit rate per model/provider route to the reliability report.\n- No new accounting path outside the stage result — SDK cost summaries read these fields, legacy `workflowCost` does not get a parallel copy (per FIXTURE-2's single accounting path).\n\n## Changes\n\n- `shared/lib/native-agent/prompt-cache.ts` (+ test) — projects per-turn `cache_read_input_tokens` / `cache_creation_input_tokens` / `input_tokens` from the session stream (turns 2..n) into `{ cacheReadTokens, cacheWriteTokens, cacheHitRate }`.\n- `shared/lib/native-agent/prompt-cache-detector.ts` (+ test) — threshold check (configurable, default 0.5) that emits one warn log line and (via the observer finding path) one deduped finding per model/provider/stage per day using a sentinel file under the task's `.wavemill-fixture` dir.\n- `shared/lib/native-agent/launch-planning.ts`, `launch-coding.ts`, `review.ts`, `loop.ts` (+ tests) — plumb per-turn usage through each native stage, call the projection+detector when writing the stage result.\n- `shared/lib/stage-result.ts` + `shared/schemas/stage-result.schema.json` — new optional `cacheReadTokens`, `cacheWriteTokens`, `cacheHitRate` fields on native stage result.\n- `shared/lib/reliability-metrics.ts` (+ test) and `tools/report-reliability.ts` — surface the median hit rate per `(model, provider)` in the reliability report.\n- `shared/lib/config.ts` (+ test) and `wavemill-fixture-config.schema.json` — `nativeAgent.promptCache.hitRateThreshold` and `minTurnsToDetect`.\n- `shared/validators/wavemill-fixture-config.validator.cjs` + meta regenerated to match the schema.\n- `shared/lib/native-agent/coding-artifacts.ts`, `shared/lib/review-analysis-identity.ts` (+ test), `shared/lib/review-engine.ts`, `tools/review-changes.ts` — minor plumbing wired to the new fields.\n- `tests/run-unit-tests.sh` — registers the four new test files.\n\n## Test plan\n\n- `node --test` against the new tests (registered in `tests/run-unit-tests.sh`):\n  - `shared/lib/native-agent/prompt-cache.test.ts` — fixture session stream with known per-turn usage produces the expected `cacheHitRate` on turns 2..n (including the <3-turn skip rule and malformed-usage rows).\n  - `shared/lib/native-agent/prompt-cache-detector.test.ts` — turn 3 reads zero from cache produces exactly one warn line and one observer finding; re-run with the same `(model, provider, stage, day)` emits zero further findings; different stage on the same day emits one more.\n  - `shared/lib/native-agent/loop.test.ts` + `launch-planning.test.ts` — stage-result wiring across native stages.\n  - `shared/lib/reliability-metrics.test.ts` — median hit rate per `(model, provider)` surfaced in the report.\n  - `shared/lib/config.test.ts` — config threshold round-trips through the schema validator.\n  - `shared/lib/review-analysis-identity.test.ts` — review stage-result plumbing unchanged by this change.\n- Self-review (`review-changes.ts` against `auto/integration`) ran once, verdict `ready`, 0 blockers, 2 warnings (both documented as intentional by the reviewer itself).\n\n## Self-review\n\n- Verdict: `ready`\n- Iterations: 1\n- Blockers: 0\n- Warnings: 2 (both acknowledged by the reviewer as intentional/non-issues: a comment in `runCodingLoop` noting that `lastLoopUsage` is reset per call by design, and an `rmSync` fall-through in `prompt-cache-detector.ts` that is correctly caught by the outer try/catch)\n\n## Non-authoritative routing context\n\nRouting from `features/.../routing.jsonl` (bootstrap, no post-expansion route artifact present):\n- Planner: `claude-opus-4-7` (requested) → `claude-opus-4-7` (resolved)\n- Coder: `claude-opus-4-7` (requested) → `claude-opus-4-7` (resolved)\n- Reviewer: `claude-opus-4-7` (requested) → `claude-opus-4-7` (resolved)\n- Source layer: `hokusai` (policy_version=`production`)\n- No fallback was recorded. Wavemill stamps the authoritative executed route into `wavemill-fixture-meta` before `wm:ready`.\n\n<!-- wavemill-fixture-meta\ntask: FIXTURE-1\n-->",
+                "createdAt": "2026-10-21T19:06:17Z",
+                "headRefName": "task/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache",
+                "headRefOid": "94e64700e96ec777e7ec194836dae841f79f2029",
+                "mergedAt": null,
+                "number": 1697,
+                "state": "OPEN",
+                "title": "FIXTURE-1: Report prompt-cache hit rate per native stage and flag low-hit runs",
+                "updatedAt": "2026-10-21T19:06:18Z",
+                "url": "https://github.com/timogilvie/wavemill-fixture/pull/1697",
+                "normalizedState": "OPEN",
+                "branchMatches": true,
+                "baseMatches": true,
+                "headMatches": true,
+                "issueMatches": true,
+                "attemptMatches": false,
+                "challengeMatches": false,
+                "currentEvidence": true,
+                "mismatchReason": ""
+              }
+            ]
+          },
+          "lastAttemptReconciledBy": "monitor-pr-discovery",
+          "lastAttemptReconciledAt": "2026-10-21T19:06:51Z"
+        },
+        "attempt": {
+          "schemaVersion": 1,
+          "issue": "FIXTURE-1",
+          "attemptId": "FIXTURE-1-a1",
+          "originalBranch": "task/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache",
+          "effectiveBranch": "task/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache",
+          "baseBranch": "auto/integration",
+          "source": "launch-plan",
+          "runEpoch": "20261021T171111Z.64052"
+        },
+        "prReconciliation": {
+          "schemaVersion": 1,
+          "classification": "current-open",
+          "issue": "FIXTURE-1",
+          "branch": "task/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache",
+          "baseBranch": "auto/integration",
+          "attemptId": "FIXTURE-1-a1",
+          "linearState": null,
+          "reason": "open_current_pr",
+          "checkedAt": "2026-10-21T19:06:51Z",
+          "selectedCandidate": {
+            "baseRefName": "auto/integration",
+            "body": "## Summary\n\n- Project per-turn prompt-cache signal (already captured in the session stream) onto the native stage result as `cacheReadTokens`, `cacheWriteTokens`, and `cacheHitRate` (reads over turns 2..n of total prompt input), so a route or prompt change that silently stops hitting the cache becomes visible instead of just showing up as a higher bill.\n- Flag low-hit runs as a quality signal (no new env flag; threshold defaults to 0.5 and lives in config under `nativeAgent.promptCache`): each stage prints one warn line, and the observer path emits one deduplicated finding per `(model, provider, stage)` per UTC day. Never parks or fails a run.\n- Add median prompt-cache hit rate per model/provider route to the reliability report.\n- No new accounting path outside the stage result — SDK cost summaries read these fields, legacy `workflowCost` does not get a parallel copy (per FIXTURE-2's single accounting path).\n\n## Changes\n\n- `shared/lib/native-agent/prompt-cache.ts` (+ test) — projects per-turn `cache_read_input_tokens` / `cache_creation_input_tokens` / `input_tokens` from the session stream (turns 2..n) into `{ cacheReadTokens, cacheWriteTokens, cacheHitRate }`.\n- `shared/lib/native-agent/prompt-cache-detector.ts` (+ test) — threshold check (configurable, default 0.5) that emits one warn log line and (via the observer finding path) one deduped finding per model/provider/stage per day using a sentinel file under the task's `.wavemill-fixture` dir.\n- `shared/lib/native-agent/launch-planning.ts`, `launch-coding.ts`, `review.ts`, `loop.ts` (+ tests) — plumb per-turn usage through each native stage, call the projection+detector when writing the stage result.\n- `shared/lib/stage-result.ts` + `shared/schemas/stage-result.schema.json` — new optional `cacheReadTokens`, `cacheWriteTokens`, `cacheHitRate` fields on native stage result.\n- `shared/lib/reliability-metrics.ts` (+ test) and `tools/report-reliability.ts` — surface the median hit rate per `(model, provider)` in the reliability report.\n- `shared/lib/config.ts` (+ test) and `wavemill-fixture-config.schema.json` — `nativeAgent.promptCache.hitRateThreshold` and `minTurnsToDetect`.\n- `shared/validators/wavemill-fixture-config.validator.cjs` + meta regenerated to match the schema.\n- `shared/lib/native-agent/coding-artifacts.ts`, `shared/lib/review-analysis-identity.ts` (+ test), `shared/lib/review-engine.ts`, `tools/review-changes.ts` — minor plumbing wired to the new fields.\n- `tests/run-unit-tests.sh` — registers the four new test files.\n\n## Test plan\n\n- `node --test` against the new tests (registered in `tests/run-unit-tests.sh`):\n  - `shared/lib/native-agent/prompt-cache.test.ts` — fixture session stream with known per-turn usage produces the expected `cacheHitRate` on turns 2..n (including the <3-turn skip rule and malformed-usage rows).\n  - `shared/lib/native-agent/prompt-cache-detector.test.ts` — turn 3 reads zero from cache produces exactly one warn line and one observer finding; re-run with the same `(model, provider, stage, day)` emits zero further findings; different stage on the same day emits one more.\n  - `shared/lib/native-agent/loop.test.ts` + `launch-planning.test.ts` — stage-result wiring across native stages.\n  - `shared/lib/reliability-metrics.test.ts` — median hit rate per `(model, provider)` surfaced in the report.\n  - `shared/lib/config.test.ts` — config threshold round-trips through the schema validator.\n  - `shared/lib/review-analysis-identity.test.ts` — review stage-result plumbing unchanged by this change.\n- Self-review (`review-changes.ts` against `auto/integration`) ran once, verdict `ready`, 0 blockers, 2 warnings (both documented as intentional by the reviewer itself).\n\n## Self-review\n\n- Verdict: `ready`\n- Iterations: 1\n- Blockers: 0\n- Warnings: 2 (both acknowledged by the reviewer as intentional/non-issues: a comment in `runCodingLoop` noting that `lastLoopUsage` is reset per call by design, and an `rmSync` fall-through in `prompt-cache-detector.ts` that is correctly caught by the outer try/catch)\n\n## Non-authoritative routing context\n\nRouting from `features/.../routing.jsonl` (bootstrap, no post-expansion route artifact present):\n- Planner: `claude-opus-4-7` (requested) → `claude-opus-4-7` (resolved)\n- Coder: `claude-opus-4-7` (requested) → `claude-opus-4-7` (resolved)\n- Reviewer: `claude-opus-4-7` (requested) → `claude-opus-4-7` (resolved)\n- Source layer: `hokusai` (policy_version=`production`)\n- No fallback was recorded. Wavemill stamps the authoritative executed route into `wavemill-fixture-meta` before `wm:ready`.\n\n<!-- wavemill-fixture-meta\ntask: FIXTURE-1\n-->",
+            "createdAt": "2026-10-21T19:06:17Z",
+            "headRefName": "task/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache",
+            "headRefOid": "94e64700e96ec777e7ec194836dae841f79f2029",
+            "mergedAt": null,
+            "number": 1697,
+            "state": "OPEN",
+            "title": "FIXTURE-1: Report prompt-cache hit rate per native stage and flag low-hit runs",
+            "updatedAt": "2026-10-21T19:06:18Z",
+            "url": "https://github.com/timogilvie/wavemill-fixture/pull/1697",
+            "normalizedState": "OPEN",
+            "branchMatches": true,
+            "baseMatches": true,
+            "headMatches": true,
+            "issueMatches": true,
+            "attemptMatches": false,
+            "challengeMatches": false,
+            "currentEvidence": true,
+            "mismatchReason": ""
+          },
+          "candidates": [
+            {
+              "baseRefName": "auto/integration",
+              "body": "## Summary\n\n- Project per-turn prompt-cache signal (already captured in the session stream) onto the native stage result as `cacheReadTokens`, `cacheWriteTokens`, and `cacheHitRate` (reads over turns 2..n of total prompt input), so a route or prompt change that silently stops hitting the cache becomes visible instead of just showing up as a higher bill.\n- Flag low-hit runs as a quality signal (no new env flag; threshold defaults to 0.5 and lives in config under `nativeAgent.promptCache`): each stage prints one warn line, and the observer path emits one deduplicated finding per `(model, provider, stage)` per UTC day. Never parks or fails a run.\n- Add median prompt-cache hit rate per model/provider route to the reliability report.\n- No new accounting path outside the stage result — SDK cost summaries read these fields, legacy `workflowCost` does not get a parallel copy (per FIXTURE-2's single accounting path).\n\n## Changes\n\n- `shared/lib/native-agent/prompt-cache.ts` (+ test) — projects per-turn `cache_read_input_tokens` / `cache_creation_input_tokens` / `input_tokens` from the session stream (turns 2..n) into `{ cacheReadTokens, cacheWriteTokens, cacheHitRate }`.\n- `shared/lib/native-agent/prompt-cache-detector.ts` (+ test) — threshold check (configurable, default 0.5) that emits one warn log line and (via the observer finding path) one deduped finding per model/provider/stage per day using a sentinel file under the task's `.wavemill-fixture` dir.\n- `shared/lib/native-agent/launch-planning.ts`, `launch-coding.ts`, `review.ts`, `loop.ts` (+ tests) — plumb per-turn usage through each native stage, call the projection+detector when writing the stage result.\n- `shared/lib/stage-result.ts` + `shared/schemas/stage-result.schema.json` — new optional `cacheReadTokens`, `cacheWriteTokens`, `cacheHitRate` fields on native stage result.\n- `shared/lib/reliability-metrics.ts` (+ test) and `tools/report-reliability.ts` — surface the median hit rate per `(model, provider)` in the reliability report.\n- `shared/lib/config.ts` (+ test) and `wavemill-fixture-config.schema.json` — `nativeAgent.promptCache.hitRateThreshold` and `minTurnsToDetect`.\n- `shared/validators/wavemill-fixture-config.validator.cjs` + meta regenerated to match the schema.\n- `shared/lib/native-agent/coding-artifacts.ts`, `shared/lib/review-analysis-identity.ts` (+ test), `shared/lib/review-engine.ts`, `tools/review-changes.ts` — minor plumbing wired to the new fields.\n- `tests/run-unit-tests.sh` — registers the four new test files.\n\n## Test plan\n\n- `node --test` against the new tests (registered in `tests/run-unit-tests.sh`):\n  - `shared/lib/native-agent/prompt-cache.test.ts` — fixture session stream with known per-turn usage produces the expected `cacheHitRate` on turns 2..n (including the <3-turn skip rule and malformed-usage rows).\n  - `shared/lib/native-agent/prompt-cache-detector.test.ts` — turn 3 reads zero from cache produces exactly one warn line and one observer finding; re-run with the same `(model, provider, stage, day)` emits zero further findings; different stage on the same day emits one more.\n  - `shared/lib/native-agent/loop.test.ts` + `launch-planning.test.ts` — stage-result wiring across native stages.\n  - `shared/lib/reliability-metrics.test.ts` — median hit rate per `(model, provider)` surfaced in the report.\n  - `shared/lib/config.test.ts` — config threshold round-trips through the schema validator.\n  - `shared/lib/review-analysis-identity.test.ts` — review stage-result plumbing unchanged by this change.\n- Self-review (`review-changes.ts` against `auto/integration`) ran once, verdict `ready`, 0 blockers, 2 warnings (both documented as intentional by the reviewer itself).\n\n## Self-review\n\n- Verdict: `ready`\n- Iterations: 1\n- Blockers: 0\n- Warnings: 2 (both acknowledged by the reviewer as intentional/non-issues: a comment in `runCodingLoop` noting that `lastLoopUsage` is reset per call by design, and an `rmSync` fall-through in `prompt-cache-detector.ts` that is correctly caught by the outer try/catch)\n\n## Non-authoritative routing context\n\nRouting from `features/.../routing.jsonl` (bootstrap, no post-expansion route artifact present):\n- Planner: `claude-opus-4-7` (requested) → `claude-opus-4-7` (resolved)\n- Coder: `claude-opus-4-7` (requested) → `claude-opus-4-7` (resolved)\n- Reviewer: `claude-opus-4-7` (requested) → `claude-opus-4-7` (resolved)\n- Source layer: `hokusai` (policy_version=`production`)\n- No fallback was recorded. Wavemill stamps the authoritative executed route into `wavemill-fixture-meta` before `wm:ready`.\n\n<!-- wavemill-fixture-meta\ntask: FIXTURE-1\n-->",
+              "createdAt": "2026-10-21T19:06:17Z",
+              "headRefName": "task/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache",
+              "headRefOid": "94e64700e96ec777e7ec194836dae841f79f2029",
+              "mergedAt": null,
+              "number": 1697,
+              "state": "OPEN",
+              "title": "FIXTURE-1: Report prompt-cache hit rate per native stage and flag low-hit runs",
+              "updatedAt": "2026-10-21T19:06:18Z",
+              "url": "https://github.com/timogilvie/wavemill-fixture/pull/1697",
+              "normalizedState": "OPEN",
+              "branchMatches": true,
+              "baseMatches": true,
+              "headMatches": true,
+              "issueMatches": true,
+              "attemptMatches": false,
+              "challengeMatches": false,
+              "currentEvidence": true,
+              "mismatchReason": ""
+            }
+          ]
+        },
+        "challengeExecutionIntent": {
+          "schemaVersion": 1,
+          "pairId": "FIXTURE-1",
+          "issueId": "FIXTURE-1",
+          "createdAt": "2026-10-21T17:59:23.081Z",
+          "decisionSource": "expanded",
+          "selectedStage": "plan",
+          "challengeStage": "plan",
+          "selectionPath": "recommendation-driven",
+          "selectionReason": "least-used-zero-record",
+          "selectionEvidence": {
+            "coverageCount": 0,
+            "attemptCount": 0,
+            "cooldownActive": false,
+            "priorityTier": 1
+          },
+          "challengerSource": "least-used-zero-record",
+          "challengeRecommendation": {
+            "reason": "new-model",
+            "challengerModel": "deepseek-v3",
+            "defaultModel": "claude-opus-5-5",
+            "stage": "plan"
+          },
+          "routeContext": {
+            "decisionSource": "expanded",
+            "bootstrapRoute": {
+              "coder": "claude-opus-5-5",
+              "codeDepth": "deep",
+              "reviewer": "claude-opus-4-7",
+              "reviewMode": "static+llm",
+              "planDepth": "deep",
+              "planner": "claude-opus-4-7",
+              "artifactPath": "worktrees/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache/features/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache/.initial-route.json",
+              "artifactHash": "d97bd47902d294d5b80ac64dfa55227aefe4e9d8afb2ced7e94317ab16f0a96a",
+              "inputHash": "cd1abd0601e1ad627139106e1bfc59fad66973f6f8c68b551620932e2279a9ff",
+              "source": "bootstrap",
+              "routerMode": "normal",
+              "routingMode": "stage-aware-partial",
+              "expectedMetrics": {
+                "expectedSuccess": 0.89,
+                "expectedCost": 15.79,
+                "confidence": 0.65,
+                "expectedCostPlan": 0.74,
+                "expectedCostCode": 14.88,
+                "expectedCostReview": 0.17,
+                "neighborCount": 20,
+                "neighborSimilarityRange": [
+                  0.66,
+                  0.7
+                ],
+                "maxCostUsd": 25,
+                "challengeRecommendation": {
+                  "shouldChallenge": true,
+                  "reason": "new-model",
+                  "defaultModel": "claude-opus-5-5",
+                  "challengerModel": "deepseek-v3",
+                  "stage": "plan",
+                  "priority": 300
+                },
+                "signals": {
+                  "taskType": "bugfix",
+                  "promptLength": "long",
+                  "complexityScore": 5,
+                  "complexityBand": "xl",
+                  "riskFlags": [
+                    "large-scope-refactor",
+                    "test-infrastructure"
+                  ],
+                  "fileTypes": [
+                    ".ts"
+                  ],
+                  "riskScore": 12
+                },
+                "reasoning": [
+                  "Stage-aware routing used 20 similar historical tasks.",
+                  "Similarity range 0.66-0.70 across nearest neighbors.",
+                  "Planner=claude-fable-5, coder=gpt-5.6-terra, reviewer=kimi-k2 maximize weighted per-stage scores.",
+                  "Expected success 89% with estimated workflow cost $15.79.",
+                  "Router escalation selected stronger coder claude-opus-5-5 after confidence trigger."
+                ]
+              },
+              "challengeRecommendation": {
+                "shouldChallenge": true,
+                "reason": "new-model",
+                "defaultModel": "claude-opus-5-5",
+                "challengerModel": "deepseek-v3",
+                "stage": "plan",
+                "priority": 300
+              }
+            },
+            "expandedRoute": {
+              "coder": "claude-opus-5-5",
+              "codeDepth": "deep",
+              "reviewer": "claude-opus-4-7",
+              "reviewMode": "llm",
+              "planDepth": "light",
+              "planner": "claude-opus-4-7",
+              "cache_hit": false,
+              "route_source": "single",
+              "packet_hash": "3f02af9d1a41cbc22fad415096409857e24785ce3287d0470a24fb60cb1b6f2e",
+              "artifactPath": "worktrees/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache/features/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache/.post-expansion-route.json",
+              "artifactHash": "7249b03d726abb05e8527ae58f11782b416c5ee7d1abd8a9c7ba4095a614d24c",
+              "inputHash": "a0b155e8b840275612152ef7d49638a07c74d16dadda621459b59ec86cc83c46",
+              "source": "expanded",
+              "routerMode": "normal",
+              "routingMode": "stage-aware-partial",
+              "expectedMetrics": {
+                "expectedSuccess": 0.81,
+                "expectedCost": 21.74,
+                "confidence": 0.62,
+                "expectedCostPlan": 8.72,
+                "expectedCostCode": 3.23,
+                "expectedCostReview": 9.79,
+                "neighborCount": 20,
+                "neighborSimilarityRange": [
+                  0.58,
+                  0.64
+                ],
+                "maxCostUsd": 25,
+                "challengeRecommendation": {
+                  "shouldChallenge": true,
+                  "reason": "new-model",
+                  "defaultModel": "claude-opus-5-5",
+                  "challengerModel": "deepseek-v3",
+                  "stage": "plan",
+                  "priority": 300
+                },
+                "signals": {
+                  "taskType": "feature",
+                  "promptLength": "long",
+                  "complexityScore": 5,
+                  "complexityBand": "xl",
+                  "riskFlags": [
+                    "greenfield",
+                    "large-scope-refactor",
+                    "test-infrastructure"
+                  ],
+                  "fileTypes": [
+                    ".ts",
+                    ".json",
+                    ".sh"
+                  ],
+                  "riskScore": 14
+                },
+                "reasoning": [
+                  "Stage-aware routing used 20 similar historical tasks.",
+                  "Similarity range 0.58-0.64 across nearest neighbors.",
+                  "Planner=gpt-5.5, coder=glm-5.2, reviewer=gpt-5.5 maximize weighted per-stage scores.",
+                  "Expected success 81% with estimated workflow cost $21.74.",
+                  "Router escalation selected stronger coder claude-opus-5-5 after confidence trigger."
+                ]
+              },
+              "challengeRecommendation": {
+                "shouldChallenge": true,
+                "reason": "new-model",
+                "defaultModel": "claude-opus-5-5",
+                "challengerModel": "deepseek-v3",
+                "stage": "plan",
+                "priority": 300
+              }
+            }
+          },
+          "primary": {
+            "key": "FIXTURE-1",
+            "role": "primary",
+            "planner": {
+              "model": "claude-opus-4-7",
+              "agent": "claude"
+            },
+            "coder": {
+              "model": "claude-opus-5-5",
+              "agent": "claude"
+            },
+            "reviewer": {
+              "model": "claude-opus-4-7",
+              "agent": "claude"
+            },
+            "pairId": "FIXTURE-1",
+            "side": "primary",
+            "challengeStage": "plan",
+            "expectedStageModel": "claude-opus-4-7",
+            "expectedStageAgent": "claude",
+            "expectedRoute": {
+              "planner": "claude-opus-4-7",
+              "coder": "claude-opus-5-5",
+              "reviewer": "claude-opus-4-7",
+              "planDepth": "light",
+              "codeDepth": "deep",
+              "reviewMode": "llm"
+            },
+            "inheritedStages": []
+          },
+          "nativeCertificationRejections": [
+            {
+              "modelId": "glm-5.2",
+              "role": "coder",
+              "requestedLaunchPhase": "coding",
+              "requestedPhase": "patch",
+              "certifiedPhase": "workflow",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "missing-live-canary",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/z-ai/glm-5.2/v3.json"
+            },
+            {
+              "modelId": "kimi-k2.7-code",
+              "role": "coder",
+              "requestedLaunchPhase": "coding",
+              "requestedPhase": "patch",
+              "certifiedPhase": "workflow",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "missing-live-canary",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/moonshotai/kimi-k2.7-code/v3.json"
+            },
+            {
+              "modelId": "kimi-k2-thinking",
+              "role": "coder",
+              "requestedLaunchPhase": "coding",
+              "requestedPhase": "patch",
+              "certifiedPhase": "workflow",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "missing-live-canary",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/moonshotai/kimi-k2-thinking/v3.json"
+            },
+            {
+              "modelId": "qwen-3-235b",
+              "role": "planner",
+              "requestedLaunchPhase": "planning",
+              "requestedPhase": "workflow",
+              "certifiedPhase": "patch",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "insufficient-phase",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/qwen/qwen3-235b-a22b-2507/v3.json"
+            },
+            {
+              "modelId": "glm-5.3",
+              "role": "planner",
+              "requestedLaunchPhase": "planning",
+              "requestedPhase": "workflow",
+              "certifiedPhase": "patch",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "insufficient-phase",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/z-ai/glm-5.3/v3.json"
+            },
+            {
+              "modelId": "kimi-k3",
+              "role": "planner",
+              "requestedLaunchPhase": "planning",
+              "requestedPhase": "workflow",
+              "certifiedPhase": "patch",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "insufficient-phase",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/moonshotai/kimi-k3/v3.json"
+            },
+            {
+              "modelId": "glm-5.3-flash",
+              "role": "planner",
+              "requestedLaunchPhase": "planning",
+              "requestedPhase": "workflow",
+              "certifiedPhase": "patch",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "insufficient-phase",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/z-ai/glm-5.3-flash/v3.json"
+            }
+          ],
+          "forkStage": null,
+          "forkCommit": null,
+          "sharedPrefix": false,
+          "noChallengeReason": "challenger_never_launched",
+          "challengeCollapseReason": "challenger_never_launched"
+        },
+        "challengeStage": "plan",
+        "challengeVariedModel": "claude-opus-4-7",
+        "challengeVariedAgent": "claude",
+        "challengeCollapseReason": "challenger_never_launched",
+        "challengeCollapseDetail": "Finalization selected a pair but no challenger arm was launched; staying single-model",
+        "terminalReconciliations": {
+          "review_complete:1697": {
+            "issue": "FIXTURE-1",
+            "reason": "review_complete",
+            "prNumber": "1697",
+            "appliedAt": "2026-10-21T19:08:02Z",
+            "stateApplied": true,
+            "stageApplied": true,
+            "hookApplied": true,
+            "paneMetadataApplied": true,
+            "paneReleased": false,
+            "linearApplied": false,
+            "pr": {
+              "baseRefName": "auto/integration",
+              "headRefName": "task/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache",
+              "headRefOid": "94e64700e96ec777e7ec194836dae841f79f2029",
+              "mergeCommit": null,
+              "mergedAt": null,
+              "number": 1697,
+              "state": "OPEN",
+              "terminalState": "OPEN"
+            },
+            "updatedAt": "2026-10-21T19:08:04Z"
+          }
+        }
+      }
+    }
+  },
+  "hooks": {
+    "FIXTURE-1": {
+      "state": "waiting",
+      "event": "Notification",
+      "agent": "claude",
+      "timestamp": 1792672757,
+      "writer": "agent",
+      "agentRecord": {
+        "state": "waiting",
+        "event": "Notification",
+        "agent": "claude",
+        "timestamp": 1792672757,
+        "detail": "Claude is waiting for your input"
+      },
+      "pr_state": {
+        "number": 1697,
+        "state": "OPEN",
+        "fetched_at": 1792674535
+      },
+      "detail": "Claude is waiting for your input"
+    }
+  },
+  "stageResults": {
+    "FIXTURE-1": {
+      "planning": {
+        "stage": "planning",
+        "status": "completed",
+        "startedAt": "2026-10-21T17:16:39Z",
+        "finishedAt": "2026-10-21T17:59:15Z",
+        "agent": "claude",
+        "model": "claude-opus-4-7",
+        "intendedModel": "claude-opus-4-7",
+        "executedModel": "claude-opus-4-7",
+        "executionEvidence": {
+          "status": "direct",
+          "source": "claude-session",
+          "detail": "models=claude-opus-4-7:66; sessions=1; turns=66",
+          "recordedAt": "2026-10-21T17:59:16.982Z"
+        },
+        "modelAttributionEligible": true,
+        "notes": "Plan approved by user",
+        "artifacts": {
+          "type": "planning",
+          "planFile": "plan.md"
+        }
+      },
+      "coding": {
+        "stage": "coding",
+        "status": "completed",
+        "startedAt": "2026-10-21T17:59:28Z",
+        "finishedAt": "2026-10-21T19:02:43Z",
+        "agent": "claude",
+        "model": "claude-opus-5-5",
+        "intendedModel": "claude-opus-5-5",
+        "executedModel": "claude-opus-5-5",
+        "executionEvidence": {
+          "status": "direct",
+          "source": "claude-session",
+          "detail": "models=claude-opus-5-5:224; sessions=1; turns=224",
+          "recordedAt": "2026-10-21T19:02:45.163Z"
+        },
+        "modelAttributionEligible": true,
+        "notes": ""
+      },
+      "review": {
+        "stage": "review",
+        "status": "completed",
+        "startedAt": "2026-10-21T19:02:49.159Z",
+        "finishedAt": "2026-10-21T19:08:02Z",
+        "agent": "codex",
+        "model": "claude-opus-4-7",
+        "intendedModel": "claude-opus-4-7",
+        "executedModel": null,
+        "executionEvidence": {
+          "status": "missing",
+          "source": "codex-session",
+          "detail": "no matching codex session telemetry for branch=task/native-runs-report-prompt-cache-hit-rate-per-stage-and-flag-runs-that-stop-hitting-the-cache",
+          "recordedAt": "2026-10-21T19:08:03.502Z"
+        },
+        "modelAttributionEligible": false,
+        "modelAttributionIneligibleReason": "missing_execution_evidence",
+        "notes": "PR #1697 created",
+        "artifacts": {
+          "type": "review",
+          "prNumber": 1697,
+          "exitCode": 0,
+          "verdict": "ready",
+          "iterations": 1,
+          "blockerCount": 0,
+          "warningCount": 2,
+          "reviewHeadSha": "94e64700e96ec777e7ec194836dae841f79f2029",
+          "reviewExecutedIdentity": {
+            "orchestrator": {
+              "role": "review_orchestrator",
+              "requestedModel": "claude-opus-4-7",
+              "resolvedModel": "claude-opus-4-7",
+              "agent": "codex",
+              "source": "derived",
+              "pinned": false
+            },
+            "substantiveAnalysis": {
+              "role": "substantive_analysis",
+              "requestedModel": "claude-opus-4-7",
+              "resolvedModel": "claude-opus-4-7",
+              "agent": "claude-cli",
+              "source": "artifact",
+              "pinned": true
+            },
+            "remediation": null
+          },
+          "terminalReason": "review_complete"
+        }
+      },
+      "ready": {
+        "stage": "ready",
+        "status": "completed",
+        "startedAt": "2026-10-21T19:08:06.933Z",
+        "finishedAt": "2026-10-22T12:50:01Z",
+        "agent": "claude",
+        "model": "claude-opus-5-5",
+        "notes": "verdict: pass",
+        "intendedModel": "claude-opus-5-5",
+        "executedModel": "claude-opus-5-5",
+        "executionEvidence": {
+          "status": "direct",
+          "source": "claude-session",
+          "detail": "models=claude-opus-5-5:76; sessions=2; turns=76",
+          "recordedAt": "2026-10-22T12:50:03.416Z"
+        },
+        "modelAttributionEligible": true,
+        "artifacts": {
+          "type": "ready",
+          "verdict": "pass",
+          "checksRun": 2,
+          "checksPassed": 2,
+          "mergeConflict": "CLEAN",
+          "prNumber": 1697,
+          "readyLabelsUpdated": true,
+          "readyBaseSha": "1a5d5d9eda6dcf30cc530c91c7757167812c70d7",
+          "readyHeadSha": "be9d290e156694f9675eeaeed5a7882939d4b3b6",
+          "ciConclusion": "pass",
+          "requiredSource": "branch-protection",
+          "requiredContexts": [
+            "Check Lifecycle Paths",
+            "Golden Journeys",
+            "Lifecycle Integration Tests",
+            "Shell and Unit Tests"
+          ],
+          "readyTendHandoff": "ready-published",
+          "queueState": "merge-candidate",
+          "lastCiConclusion": "pass",
+          "lastCiHeadSha": "be9d290e156694f9675eeaeed5a7882939d4b3b6",
+          "lastCiObservedAt": "2026-10-22T13:08:55Z",
+          "lastCiSummary": "pass: 26/4 checks",
+          "laneHoldSeconds": 1025,
+          "lastProgressAt": "2026-10-22T13:08:12.788Z",
+          "candidateLastProgressAt": "2026-10-22T12:53:18Z",
+          "candidatePromotedAt": "2026-10-22T12:53:18Z",
+          "laneWaitSeconds": 197,
+          "targetBaseSha": "1a5d5d9eda6dcf30cc530c91c7757167812c70d7"
+        }
+      }
+    }
+  }
+}
