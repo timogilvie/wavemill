@@ -59,6 +59,11 @@ SCRIPT_DIR="${WAVEMILL_MILL_LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pw
 WAVEMILL_MILL_SOURCE_LIB_DIR="$SCRIPT_DIR"
 WAVEMILL_COMMON_LIB_PATH="$SCRIPT_DIR/wavemill-common.sh"
 source "$SCRIPT_DIR/wavemill-common.sh"
+# HOK-3305: shared launch-set picker renderer (sourced after wavemill-common.sh
+# so wavemill_load_config / wavemill_run_tool / _with_timeout are available).
+if [[ -f "$SCRIPT_DIR/wavemill-picker.sh" ]]; then
+source "$SCRIPT_DIR/wavemill-picker.sh"
+fi
 source "$SCRIPT_DIR/agent-adapters.sh"
 source "$SCRIPT_DIR/queue-health.sh"
 if [[ -f "$SCRIPT_DIR/terminal-reconciler.sh" ]]; then
@@ -1959,10 +1964,33 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
       done <<<"$CANDIDATES"
     else
       log "status" "Available tasks (ranked by priority):"
-      if [[ -n "$UNBLOCKED" ]]; then
-        echo "$UNBLOCKED" | head -9 | awk -F'|' '{printf "  %s. %s - %s (score: %.0f)\n", NR, $1, $3, $5}'
-      else
-        echo "  (no unblocked tasks)"
+      # HOK-3305: route the startup picker through the same shared renderer
+      # that the monitor uses so startup and monitor display identical
+      # Launch next / Held sections for identical input.
+      startup_picker_rendered=false
+      GROUPED_DISPLAY=""
+      GROUPED_SELECT_FROM=""
+      if declare -F render_launch_set_picker >/dev/null 2>&1 && [[ -n "$UNBLOCKED" ]]; then
+        startup_queue_plan=""
+        if [[ -n "$BACKLOG" && "$BACKLOG" != "[]" ]]; then
+          startup_queue_plan="$(printf '%s' "$BACKLOG" | _with_timeout 10 wavemill_run_tool "plan-queue.ts" --backlog-json=- --json 2>/dev/null || true)"
+        fi
+        if [[ -n "$startup_queue_plan" ]] && jq -e . >/dev/null 2>&1 <<<"$startup_queue_plan"; then
+          render_launch_set_picker "$startup_queue_plan" "$UNBLOCKED" "${STARTUP_SLOT_LIMIT:-$MAX_PARALLEL}" "[]" 999 false false "" true 2>/dev/null || true
+          if [[ -n "$GROUPED_DISPLAY" ]]; then
+            # Drop the leading "Next tasks:" header the picker emits (startup
+            # already prints its own "Available tasks" status line above).
+            printf '%s\n' "$GROUPED_DISPLAY" | sed -e '1{/^Next tasks:$/d;}' -e '1{/^Next tasks (slots full):$/d;}'
+            startup_picker_rendered=true
+          fi
+        fi
+      fi
+      if [[ "$startup_picker_rendered" != "true" ]]; then
+        if [[ -n "$UNBLOCKED" ]]; then
+          echo "$UNBLOCKED" | head -9 | awk -F'|' '{printf "  %s. %s - %s (score: %.0f)\n", NR, $1, $3, $5}'
+        else
+          echo "  (no unblocked tasks)"
+        fi
       fi
     fi
 

@@ -9,7 +9,7 @@ export type TaskKind = 'issue' | 'pair' | 'arm' | 'phase' | 'step' | 'side-effec
 export type TaskState = 'pending' | 'running' | 'waiting' | 'background' | 'done' | 'aborted' | 'interrupted';
 export type SettledAs = 'done' | 'aborted' | 'interrupted';
 export type Replay = 'safe' | 'unsafe' | 'atomic';
-export type SideEffectKind = 'git-push' | 'pr-label' | 'pr-merge' | 'linear-transition';
+export type SideEffectKind = 'git-push' | 'pr-label' | 'pr-merge' | 'linear-transition' | 'pr-comment';
 export type WaitingTrigger = 'head' | 'operator-event' | 'review-artifact' | 'review-artifact-substantive' | 'ready-artifact' | 'remote' | 'waiting-on' | 'deadline';
 export type EvidenceSource = 'agent-hook' | 'monitor' | 'controller' | 'operator';
 export interface LedgerOpenOptions { repoDir?: string; dbPath?: string; readOnly?: boolean }
@@ -35,6 +35,24 @@ function translate(error: unknown, id = ''): never {
   if (message.includes('CHECK constraint failed')) throw new CheckConstraintError(message);
   throw error;
 }
+// v2 (HOK-3316) adds the 'pr-comment' kind. SQLite cannot alter a CHECK, so
+// an existing v1 ledger rebuilds the table (MIGRATE_V2); a fresh one is v2.
+const LEDGER_SCHEMA_VERSION = 2;
+function sideEffectTable(name: string): string {
+  return `CREATE TABLE IF NOT EXISTS ${name} (
+ id TEXT PRIMARY KEY, step_id TEXT NOT NULL REFERENCES task(id) ON DELETE RESTRICT,
+ kind TEXT NOT NULL CHECK(kind IN ('git-push','pr-label','pr-merge','linear-transition','pr-comment')),
+ idempotency_key TEXT NOT NULL, requested_at TEXT NOT NULL, applied_at TEXT,
+ attempt INTEGER NOT NULL DEFAULT 0, result TEXT, error TEXT, UNIQUE(kind,idempotency_key));`;
+}
+const MIGRATE_V2 = `
+${sideEffectTable('side_effect_v2')}
+INSERT INTO side_effect_v2(id,step_id,kind,idempotency_key,requested_at,applied_at,attempt,result,error)
+ SELECT id,step_id,kind,idempotency_key,requested_at,applied_at,attempt,result,error FROM side_effect;
+DROP TABLE side_effect;
+ALTER TABLE side_effect_v2 RENAME TO side_effect;
+CREATE INDEX IF NOT EXISTS idx_side_effect_step ON side_effect(step_id);
+`;
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS task (
  id TEXT PRIMARY KEY, parent_id TEXT REFERENCES task(id) ON DELETE RESTRICT,
@@ -74,11 +92,7 @@ CREATE TABLE IF NOT EXISTS evidence (
  source TEXT NOT NULL CHECK(source IN ('agent-hook','monitor','controller','operator')),
  event TEXT NOT NULL, detail TEXT, recorded_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_evidence_step_recorded ON evidence(step_id,recorded_at);
-CREATE TABLE IF NOT EXISTS side_effect (
- id TEXT PRIMARY KEY, step_id TEXT NOT NULL REFERENCES task(id) ON DELETE RESTRICT,
- kind TEXT NOT NULL CHECK(kind IN ('git-push','pr-label','pr-merge','linear-transition')),
- idempotency_key TEXT NOT NULL, requested_at TEXT NOT NULL, applied_at TEXT,
- attempt INTEGER NOT NULL DEFAULT 0, result TEXT, error TEXT, UNIQUE(kind,idempotency_key));
+${sideEffectTable('side_effect')}
 CREATE INDEX IF NOT EXISTS idx_side_effect_step ON side_effect(step_id);
 CREATE TABLE IF NOT EXISTS operator_event (
  task_id TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE, seq INTEGER NOT NULL,
@@ -113,8 +127,9 @@ export class Ledger {
         try {
           db.exec('CREATE TABLE IF NOT EXISTS schema_version(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');
           const version = one<{ version: number }>(db, 'SELECT MAX(version) AS version FROM schema_version')?.version ?? 0;
-          if (version > 1) throw new Error(`unsupported ledger schema version: ${version}`);
-          if (version < 1) { db.exec(SCHEMA); db.prepare('INSERT INTO schema_version VALUES(1,?)').run(now()); }
+          if (version > LEDGER_SCHEMA_VERSION) throw new Error(`unsupported ledger schema version: ${version}`);
+          if (version < 1) { db.exec(SCHEMA); db.prepare('INSERT INTO schema_version VALUES(?,?)').run(LEDGER_SCHEMA_VERSION, now()); }
+          else if (version < 2) { db.exec(MIGRATE_V2); db.prepare('INSERT INTO schema_version VALUES(2,?)').run(now()); }
           db.exec('COMMIT');
         } catch (error) { db.exec('ROLLBACK'); throw error; }
       }

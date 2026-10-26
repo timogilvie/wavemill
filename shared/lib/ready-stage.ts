@@ -36,6 +36,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { refreshBaseForMigration } from './ready-migration-base.ts';
+import { readValidTendAttemptFact, resolveIntegrationBaseSha } from './tend-attempt-fact.ts';
 import {
   evaluateCiChecks,
   normalizeStatusCheckRollup,
@@ -2177,25 +2178,49 @@ export function ciStatusToReadyCheck(ci: PrCiStatus): ReadyCheck {
  */
 export async function checkMergeConflicts(
   prNumber: number,
-  repoDir: string
+  repoDir: string,
+  options: { stateDir?: string } = {},
 ): Promise<MergeConflictResult> {
   let lastError: string | undefined;
 
   for (let attempt = 1; attempt <= MAX_TRANSIENT_ATTEMPTS; attempt += 1) {
     try {
       const mergeabilityJson = readyStageDeps.execShellCommand(
-        `gh pr view ${escapeShellArg(String(prNumber))} --json mergeable,mergeStateStatus`,
+        `gh pr view ${escapeShellArg(String(prNumber))} --json mergeable,mergeStateStatus,headRefOid`,
         { encoding: 'utf-8', cwd: repoDir }
       );
       const mergeability = JSON.parse(mergeabilityJson.toString()) as {
         mergeable?: string | null;
         mergeStateStatus?: string | null;
+        headRefOid?: string | null;
       };
 
       const mergeable = mergeability.mergeable ?? null;
       const mergeStateStatus = mergeability.mergeStateStatus ?? null;
 
       if (mergeable === 'MERGEABLE' || mergeStateStatus === 'CLEAN' || mergeStateStatus === 'HAS_HOOKS') {
+        // HOK-3316: GitHub's 3-way merge can be clean while tend's per-commit
+        // rebase onto the same base conflicts. Tend's recorded rebase failure
+        // for this head and base is the conflict that matters for merging,
+        // so it routes to the same conflict remediation as a GitHub conflict.
+        const tendConflict = options.stateDir && mergeability.headRefOid
+          ? readValidTendAttemptFact(options.stateDir, {
+              prHeadSha: mergeability.headRefOid,
+              integrationBaseSha: resolveIntegrationBaseSha(repoDir),
+            })
+          : null;
+        if (tendConflict?.phase === 'rebase') {
+          return {
+            status: 'CONFLICTED',
+            message: 'Tend could not rebase this PR onto the integration branch commit by commit '
+              + `(GitHub reports ${mergeable ?? mergeStateStatus}): rebase onto `
+              + `${tendConflict.baseSha ? tendConflict.baseSha.slice(0, 12) : 'the integration branch'} and resolve each conflicting commit.\n`
+              + tendConflict.excerpt,
+            mergeable,
+            mergeStateStatus,
+            attempts: attempt,
+          };
+        }
         return {
           status: 'CLEAN',
           message: 'No merge conflicts detected',
@@ -2341,6 +2366,8 @@ export function computeVerdict(
 export async function runReadyStage(options: {
   prNumber: number;
   repoDir: string;
+  /** Task state dir; lets the merge-conflict check see tend's rebase fact (HOK-3316). */
+  stateDir?: string;
 }): Promise<ReadyResult> {
   const { prNumber, repoDir } = options;
 
@@ -2387,7 +2414,7 @@ export async function runReadyStage(options: {
   let ciStatus: PrCiStatus | undefined;
   let migrationBaseRefreshCheck: ReadyCheck | null = null;
   if (policy.checks.includes('merge-conflict')) {
-    mergeConflict = await checkMergeConflicts(prNumber, repoDir);
+    mergeConflict = await checkMergeConflicts(prNumber, repoDir, { stateDir: options.stateDir });
     checks.push({
       name: 'merge-conflict',
       status:

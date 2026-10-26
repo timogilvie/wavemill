@@ -3,23 +3,16 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeLaneStateDir, recordLaneProgress, type LaneProgressEvent } from './merge-queue.ts';
 import {
-  setWavemillBlocked,
   setWavemillMerged,
   setWavemillMerging,
   setWavemillReady,
   setWavemillSuperseded,
-  clearPrStateMarker,
-  getPrStateMarkerHandle,
-  readPrStateMarker,
-  writePrStateMarker,
   WM_LABELS,
 } from './pr-state-labels.ts';
 import {
   claimReadyHandoff,
   describeClaimRejection,
-  publishReadyHandoff,
   readReadyTendHandoff,
-  readTendPushedHead,
   rebindTendHandoff,
   recordTendPushedHead,
   type ClaimHandoffOutcome,
@@ -29,14 +22,14 @@ import {
   resolveBranchTask,
   resolvePrTask,
 } from './pr-task-resolver.ts';
-import { buildStaleMarkerFinding, type MarkerPayload, type MarkerValidation } from './transient-marker.ts';
 import { getIntegrationConfig, getIntegrationReadyPolicy, resolveSessionCapabilities } from './config.ts';
 import { appendObserverFinding as sharedAppendObserverFinding } from './observer-findings.ts';
 import { millClockNowMs, millClockSleep } from './mill-clock.ts';
 import { readChallengeComparisons } from './challenge-comparison.ts';
 import { getPullRequest, removeLabelFromPullRequest } from './github.ts';
 import { gitPushKey, prMergeKey, shadowRecordSideEffect } from './side-effect-ledger.ts';
-import { resolveWavemillToolPath } from './native-agent/install-paths.ts';
+import { postMergeStatusComment } from './merge-status-comment.ts';
+import { normalizeTendAttemptPhase, writeTendAttemptFact } from './tend-attempt-fact.ts';
 import { getIssueCompletionState } from './linear.ts';
 import { validatePrMetadata, type PrMetadata, type MetadataValidation } from './pr-metadata.ts';
 import { evaluateReady } from './ready-engine.ts';
@@ -50,7 +43,13 @@ import {
   type ChallengeLoserCleanupCandidate,
 } from './tend-challenge-gate.ts';
 import { isTransientErrorText, retryTransient, TransientError } from './transient-retry.ts';
-import { classifyFailure, DEFAULT_RETRY_ATTEMPTS, retryBucketFor, type FailureEvidence } from './failure-policy.ts';
+import {
+  classifyFailure,
+  DEFAULT_RETRY_ATTEMPTS,
+  retryBucketFor,
+  type FailureClass,
+  type FailureEvidence,
+} from './failure-policy.ts';
 import { normalizeTaskLifecycle } from './task-lifecycle.ts';
 import type { AlertSeverity } from './observer-alerts.ts';
 import { resolveEffectiveTaskConfig } from './effective-task-config.ts';
@@ -166,7 +165,12 @@ export interface MergeExecutionDeps {
   readyChecker: (prNumber: number, repoDir: string) => Promise<{ ready: boolean; reason?: string }>;
   healthChecker: HealthChecker;
   acquireMerging: (prNumber: number) => void;
-  releaseToBlocked: (prNumber: number) => void;
+  /**
+   * Lane-progression release after a failed attempt: strip `wm:merging` only.
+   * Whether the PR is `wm:blocked` is `deriveMergeLabel`'s decision, made from
+   * the recorded attempt fact (HOK-3316).
+   */
+  releaseMerging: (prNumber: number) => void;
   releaseMerged: (prNumber: number) => void;
   restoreReady: (prNumber: number) => void;
   reclaimStaleMerging: (prNumber: number) => void;
@@ -194,8 +198,8 @@ export interface MergeExecutionDeps {
    * Handoff-rebind bounded-retry ops (HOK-3105). Records deferrals of a
    * post-push handoff rebind when GitHub read-after-write lag keeps returning
    * the pre-push head. Keyed on the pushed head SHA — a fresh push resets the
-   * budget. When the budget is exhausted the terminal handoff block path runs
-   * (posts the failure comment and moves the PR to wm:blocked).
+   * budget. When the budget is exhausted the block path records a `handoff`
+   * attempt fact (HOK-3316), which the reconciler renders as wm:blocked.
    */
   handoffRebindRetry: StrictBaseRetryOps;
   /**
@@ -203,7 +207,7 @@ export interface MergeExecutionDeps {
    * pre-lane Tend claims for a `wm:ready` PR whose Ready handoff file is
    * missing/not-published/mismatched at the live head. Keyed on the live PR
    * head — a fresh push resets the budget. When the budget is exhausted tend
-   * takes the terminal block path (comment + wm:blocked) so the same PR does
+   * takes the block path (a `handoff` attempt fact, HOK-3316) so the same PR does
    * not starve the lane forever. Backoff base is 0 (no starvation from
    * exponential waits).
    */
@@ -213,7 +217,7 @@ export interface MergeExecutionDeps {
    * not allowlist as terminal or recognise as a code failure (dropped
    * connection during push, a checks wait that timed out, a ready checker that
    * threw). Keyed on (PR head, integration tip): while the budget lasts the PR
-   * returns to wm:ready instead of being labelled wm:blocked.
+   * returns to wm:ready instead of recording a blocking attempt fact.
    */
   transientRetry: StrictBaseRetryOps;
   /**
@@ -269,49 +273,10 @@ export interface SelectNextCandidateOptions {
   repoDir: string;
   prFetcher?: PrFetcher;
   healthChecker?: HealthChecker;
-  crossPrGuardChecker?: CrossPrGuardChecker;
-  blockedLabelClearer?: BlockedLabelClearer;
-  prStateMarkerReader?: PrStateMarkerReader;
-  prStateMarkerWriter?: PrStateMarkerWriter;
-  blockedPrLiveStateProber?: BlockedPrLiveStateProber;
   loserCleanup?: (candidate: ChallengeLoserCleanupCandidate, repoDir: string) => void;
   challengeGateDeps?: ChallengeGateDeps;
   challengeGateOptions?: ChallengeGateOptions;
 }
-
-/**
- * Live GitHub truth for a PR carrying wm:blocked, read before the label is
- * honoured. `available: false` means the probe failed — callers must treat
- * that as "gate unverifiable", never as evidence in either direction.
- */
-export interface BlockedPrLiveState {
-  available: boolean;
-  mergeable?: string;
-  mergeStateStatus?: string;
-  failingChecks?: string[];
-  pendingChecks?: string[];
-}
-
-export type BlockedPrLiveStateProber = (prNumber: number, repoDir: string) => Promise<BlockedPrLiveState>;
-
-export interface CrossPrGuardCheckResult {
-  status: 'pass' | 'blocked' | 'tool-error';
-  checkedHeadSha: string;
-  detail?: string;
-}
-
-export type CrossPrGuardChecker = (input: {
-  pr: GhPrListEntry;
-  integrationBranch: string;
-  repoDir: string;
-}) => Promise<CrossPrGuardCheckResult>;
-
-export type BlockedLabelClearer = (prNumber: number, repoDir: string) => void;
-export type PrStateMarkerReader = (
-  prNumber: number,
-  args: { currentHead: string; markerRoot: string; deriveCondition: (payload: MarkerPayload) => Promise<boolean> | boolean },
-) => Promise<MarkerValidation<boolean>>;
-export type PrStateMarkerWriter = typeof writePrStateMarker;
 
 interface EligibleWorkItem {
   pr: GhPrListEntry;
@@ -344,13 +309,6 @@ const GIT_COMMAND_TIMEOUT_MS = 180_000;
 const GIT_MUTATION_TIMEOUT_MS = 300_000;
 const MERGE_COMMAND_TIMEOUT_MS = 180_000;
 const DEFAULT_EXTERNAL_COMMAND_TIMEOUT_MS = 120_000;
-const CROSS_PR_GUARD_TOOL_TIMEOUT_MS = 180_000;
-const CROSS_PR_GUARD_PROVENANCE_TEXT = [
-  'Cross-PR revert guard',
-  'removes files from',
-  'without explicit acknowledgement',
-];
-
 export interface PrMergeDiagnostics {
   mergeStateStatus?: string;
   mergeable?: string;
@@ -365,13 +323,6 @@ interface ReadyResultSnapshot {
   artifacts?: Record<string, unknown>;
   crossPrDiagnostic?: unknown;
   attention?: string;
-}
-
-interface CrossPrGuardEvidence {
-  provenance: boolean;
-  checkedHeadSha?: string;
-  status?: string;
-  detail?: string;
 }
 
 export function createPrFetcher(deps: {
@@ -592,14 +543,19 @@ export interface ReconcilePrView {
 export async function reconcileWavemillPrLabels(
   prs: GhPrListEntry[],
   repoDir: string,
-  reconcile: (views: ReconcilePrView[], repoDir: string) => Promise<ReconcileReportLike>,
+  reconcile: (
+    views: ReconcilePrView[],
+    repoDir: string,
+    options?: { integrationBranch?: string },
+  ) => Promise<ReconcileReportLike>,
+  options: { integrationBranch?: string } = {},
 ): Promise<ReconcileReportLike> {
   const views = prs.map((pr) => ({
     number: pr.number,
     labels: pr.labels.map((label) => label.name),
     headSha: pr.headRefOid ?? '',
   }));
-  const report = await reconcile(views, repoDir);
+  const report = await reconcile(views, repoDir, options);
   prs.forEach((pr, index) => {
     pr.labels = views[index].labels.map((name) => ({ name }));
   });
@@ -639,7 +595,12 @@ export async function selectNextCandidate(options: SelectNextCandidateOptions): 
   // HOK-3242: capture the report so getInitialBlockReason can surface the
   // specific no-label reason instead of the generic `ready-failed:not-ready`.
   const { reconcileMergeLabels } = await import('./merge-labels.ts');
-  const reconcileReport = await reconcileWavemillPrLabels(wavemillPrs, options.repoDir, reconcileMergeLabels);
+  const reconcileReport = await reconcileWavemillPrLabels(
+    wavemillPrs,
+    options.repoDir,
+    reconcileMergeLabels,
+    { integrationBranch },
+  );
 
   if (integrationHealth.state === 'unhealthy') {
     return {
@@ -654,31 +615,17 @@ export async function selectNextCandidate(options: SelectNextCandidateOptions): 
   const openPrNumbers = new Set(wavemillPrs.map((pr) => pr.number));
   const blocked: BlockedCandidate[] = [];
   let eligibleWorkItems: EligibleWorkItem[] = [];
-  const crossPrGuardChecker = options.crossPrGuardChecker ?? defaultCrossPrGuardChecker;
-  const blockedLabelClearer = options.blockedLabelClearer ?? defaultBlockedLabelClearer;
-  const prStateMarkerReader = options.prStateMarkerReader ?? readPrStateMarker;
-  const prStateMarkerWriter = options.prStateMarkerWriter ?? writePrStateMarker;
-  const blockedPrLiveStateProber = options.blockedPrLiveStateProber ?? defaultBlockedPrLiveStateProber;
   const workItemByNumber = new Map<number, { pr: GhPrListEntry; metadata: PrMetadata | null }>();
 
   for (const pr of wavemillPrs) {
     const metadataResult = getValidMetadata(pr.body);
     workItemByNumber.set(pr.number, { pr, metadata: metadataResult.metadata });
-    const reason = await getInitialBlockReason(
+    const reason = getInitialBlockReason(
       pr,
       metadataResult.metadata,
       metadataResult.validation,
       openPrNumbers,
-      {
-        repoDir: options.repoDir,
-        integrationBranch,
-        crossPrGuardChecker,
-        blockedLabelClearer,
-        prStateMarkerReader,
-        prStateMarkerWriter,
-        blockedPrLiveStateProber,
-        reconcilerDecision: reconcileReport.decisionByPr.get(pr.number),
-      },
+      reconcileReport.decisionByPr.get(pr.number),
     );
 
     if (reason) {
@@ -835,38 +782,36 @@ export async function executeMerge(
     // Every holder's lock was stale and reclaimed — the lane is free, proceed.
   }
 
-  // The block closure is hoisted above the handoff check (HOK-3108) so the
-  // handoff-claim rejection path can drive `wm:blocked` when the budget is
-  // exhausted. It depends only on `candidate`, `options`, and `deps`, so
-  // moving it above `acquireMerging` is safe: `releaseToBlocked` (which is
-  // `setWavemillBlocked`) removes both wm:ready and wm:merging, so a block
-  // before wm:merging is applied is valid.
-  const block = async (phase: string, output: string): Promise<MergeExecutionResult> => {
+  // PR head the attempt is running against: the selected head until tend
+  // pushes a rebased head, then the pushed head. Keys the attempt fact.
+  let attemptHeadSha = candidate.headSha ?? '';
+
+  // HOK-3316: a failed attempt is recorded as a fact, never written as a
+  // label. The closure is hoisted above the handoff check (HOK-3108) so the
+  // handoff-claim rejection path records its outcome the same way.
+  const block = async (
+    phase: string,
+    output: string,
+    evidence: Partial<FailureEvidence> = {},
+  ): Promise<MergeExecutionResult> => {
     const failureExcerpt = truncateOutput(output);
-    try {
-      postFailureComment(candidate.number, buildFailureComment(phase, failureExcerpt), options.repoDir, deps.shellRunner);
-    } catch {
-      // Comment posting failure is non-fatal; always release the PR from merging state.
-    }
-    try {
-      await retryTransient(() => deps.releaseToBlocked(candidate.number), {
-        label: 'set blocked label',
-        sleep: deps.retrySleep,
-      });
-    } catch (error) {
-      // Non-fatal, but never silent: a failed release leaves wm:merging applied,
-      // deadlocking the lane until the stale-lock timeout reclaims it.
-      console.warn(
-        `tend: failed to release PR #${candidate.number} from merging to blocked; `
-        + `wm:merging may be leaked until the stale-lock timeout reclaims it: ${errorMessage(error)}`,
-      );
-    }
+    await recordTendAttemptFailure({
+      prNumber: candidate.number,
+      featureDir: candidate.featureDir,
+      phase,
+      headSha: attemptHeadSha,
+      output: failureExcerpt,
+      evidence,
+      integrationBranch,
+      repoDir: options.repoDir,
+      deps,
+    });
     return { status: 'blocked', prNumber: candidate.number, phase, failureExcerpt, haltLoop: false };
   };
 
-  // HOK-3176: label wm:blocked only for a failure the policy allowlists as
-  // terminal or recognises as a code failure. Anything else — a dropped
-  // connection, an unrecognised error — retries under the bounded
+  // HOK-3176: record a blocking attempt fact only for a failure the policy
+  // allowlists as terminal or recognises as a code failure. Anything else — a
+  // dropped connection, an unrecognised error — retries under the bounded
   // tend-transient-recovery budget first.
   const blockUnlessRetryable = async (
     worktreePath: string,
@@ -876,7 +821,7 @@ export async function executeMerge(
   ): Promise<MergeExecutionResult> => {
     const decision = classifyFailure({ ...evidence, stage: 'tend', detail: output });
     if (decision.class !== 'retryable') {
-      return block(phase, output);
+      return block(phase, output, evidence);
     }
     return deferRetryableTendFailure({
       candidate,
@@ -944,8 +889,8 @@ export async function executeMerge(
       });
     }
     // Successful (or already-claimed) claim: clear the handoff-claim budget.
-    // A relabel wm:ready at the same head after a self-heal or a legitimate
-    // re-publish then starts a fresh budget. New heads reset automatically.
+    // A relabel wm:ready at the same head after a legitimate re-publish then
+    // starts a fresh budget. New heads reset automatically.
     try {
       deps.handoffClaimRetry.clear(candidate.number, options.repoDir);
     } catch (error) {
@@ -1050,6 +995,9 @@ export async function executeMerge(
             },
           });
           pushedHeadSha = rebaseResult.headSha || undefined;
+          if (pushedHeadSha) {
+            attemptHeadSha = pushedHeadSha;
+          }
           if (rebaseResult.rebased) {
             try {
               await rebindPushedTendHead(candidate.number, candidate.featureDir, candidate.headSha, rebaseResult.headSha, options.repoDir, deps);
@@ -1165,8 +1113,6 @@ export async function executeMerge(
         } catch (error) {
           console.warn(`tend: failed to clear ${TEND_TRANSIENT_RECOVERY_BUCKET} budget for PR #${candidate.number}: ${errorMessage(error)}`);
         }
-        clearTendHandoffBlockSentinel(options.repoDir, candidate.number);
-        clearTendHandoffContradictionObserved(options.repoDir, candidate.number);
 
         if (integrationConfig.deleteBranchAfterMerge && taskStateAuthorizesRemoteBranchDeletion(options.repoDir, candidate.headBranch)) {
           try {
@@ -1227,16 +1173,15 @@ export async function executeMerge(
 
   if (health.state === 'unhealthy') {
     const reason = health.reason || 'integration branch is unhealthy after merge';
-    try {
-      postFailureComment(
-        candidate.number,
-        buildFailureComment('integration', `Integration branch \`${integrationBranch}\` is unhealthy after merge: ${reason}`),
-        options.repoDir,
-        deps.shellRunner,
-      );
-    } catch (error) {
-      console.warn(`tend: failed to post integration halt comment for PR #${candidate.number}: ${errorMessage(error)}`);
-    }
+    postMergeStatusCommentBestEffort({
+      prNumber: candidate.number,
+      phase: 'integration',
+      headSha: attemptHeadSha,
+      baseSha: readRemoteBranchShaBestEffort(options.repoDir, integrationBranch, deps.shellRunner),
+      body: buildFailureComment('integration', `Integration branch \`${integrationBranch}\` is unhealthy after merge: ${reason}`),
+      repoDir: options.repoDir,
+      shellRunner: deps.shellRunner,
+    });
     return {
       status: 'halted',
       prNumber: candidate.number,
@@ -1258,7 +1203,107 @@ export function truncateOutput(output: string, maxLines = 30): string {
   return ['... (truncated)', ...lines.slice(-maxLines)].join('\n').trim();
 }
 
-export function buildFailureComment(phase: string, excerpt: string): string {
+/**
+ * Record a failed tend merge attempt (HOK-3316). The outcome is one
+ * condition-keyed fact for `deriveMergeLabel` — tend never writes `wm:blocked`
+ * itself — plus the side effects of that fact:
+ *
+ * 1. `.tend-attempt-result.json` in the task's state dir, keyed on
+ *    (PR head, integration base) and classified by the HOK-3176 failure
+ *    policy. The reconciler renders it as `wm:blocked tend-<phase>-failed`
+ *    on the next poll and keeps it until the head or the base moves, so tend
+ *    makes one attempt per (head, base) instead of one every poll. A rebase
+ *    conflict (`code-failure`) is also Ready's merge-conflict signal, which
+ *    launches the existing one-per-(head, base) conflict resolver.
+ * 2. The standing merge-status comment, written once per condition.
+ * 3. The lane-progression release of `wm:merging` (out of reconciler scope).
+ *
+ * Never throws: every step is best-effort and logged.
+ */
+async function recordTendAttemptFailure(args: {
+  prNumber: number;
+  featureDir: string | undefined;
+  phase: string;
+  headSha: string;
+  output: string;
+  evidence: Partial<FailureEvidence>;
+  integrationBranch: string;
+  repoDir: string;
+  deps: MergeExecutionDeps;
+}): Promise<void> {
+  const { prNumber, featureDir, headSha, output, repoDir, deps } = args;
+  const phase = normalizeTendAttemptPhase(args.phase);
+  const baseSha = args.integrationBranch
+    ? readRemoteBranchShaBestEffort(repoDir, args.integrationBranch, deps.shellRunner)
+    : '';
+  const decision = classifyFailure({ ...args.evidence, stage: 'tend', detail: output });
+
+  if (!featureDir || !headSha) {
+    console.warn(
+      `tend: cannot record ${phase} failure fact for PR #${prNumber} `
+      + `(featureDir=${featureDir ?? '(none)'}, head=${headSha || '(none)'}); the reconciler will not see it`,
+    );
+  } else {
+    try {
+      writeTendAttemptFact(featureDir, {
+        phase,
+        prNumber,
+        headSha,
+        baseSha,
+        excerpt: output,
+        failureClass: decision.class,
+      });
+    } catch (error) {
+      console.warn(`tend: failed to record ${phase} failure fact for PR #${prNumber}: ${errorMessage(error)}`);
+    }
+  }
+  console.warn(
+    `tend: PR #${prNumber} ${phase} failed (${decision.class}: ${decision.rationale}) at head=${headSha.slice(0, 12) || '(unknown)'} `
+    + `base=${baseSha.slice(0, 12) || '(unknown)'}; recorded as tend-${phase}-failed`,
+  );
+
+  postMergeStatusCommentBestEffort({
+    prNumber,
+    phase,
+    headSha,
+    baseSha,
+    body: buildFailureComment(args.phase, output, decision.class),
+    repoDir,
+    shellRunner: deps.shellRunner,
+  });
+
+  try {
+    await retryTransient(() => deps.releaseMerging(prNumber), {
+      label: 'release merging label',
+      sleep: deps.retrySleep,
+    });
+  } catch (error) {
+    // Non-fatal, but never silent: a failed release leaves wm:merging applied,
+    // deadlocking the lane until the stale-lock timeout reclaims it.
+    console.warn(
+      `tend: failed to release PR #${prNumber} from merging after a failed attempt; `
+      + `wm:merging may be leaked until the stale-lock timeout reclaims it: ${errorMessage(error)}`,
+    );
+  }
+}
+
+/** {@link postMergeStatusComment}, logged instead of thrown. */
+function postMergeStatusCommentBestEffort(input: Parameters<typeof postMergeStatusComment>[0]): void {
+  try {
+    postMergeStatusComment(input);
+  } catch (error) {
+    console.warn(`tend: failed to post merge-status comment on PR #${input.prNumber}: ${errorMessage(error)}`);
+  }
+}
+
+const FAILURE_CLASS_NOTES: Record<FailureClass, string> = {
+  'code-failure': 'Wavemill holds this PR at `wm:blocked` until a new commit is pushed or the base branch moves; '
+    + 'a rebase conflict is handed to the task\'s conflict remediation.',
+  retryable: 'Wavemill exhausted its retries for this head and base; it retries once the head or the base branch moves.',
+  terminal: 'This failure needs an operator: push a fix or record an operator event (`wavemill advance`).',
+};
+
+export function buildFailureComment(phase: string, excerpt: string, failureClass?: FailureClass): string {
   const title = phase.charAt(0).toUpperCase() + phase.slice(1);
   const escaped = (excerpt || '(no output)').replace(/```/g, '`  `');
   return [
@@ -1267,6 +1312,7 @@ export function buildFailureComment(phase: string, excerpt: string): string {
     '```text',
     escaped,
     '```',
+    ...(failureClass ? ['', FAILURE_CLASS_NOTES[failureClass]] : []),
   ].join('\n');
 }
 
@@ -1477,23 +1523,24 @@ async function reclaimStaleMergeLocks(
     console.warn(
       `tend: reclaimed stale wm:merging lock from PR #${holder} (held ~${heldMinutes}m > ${mergeLockTimeoutMinutes}m timeout)`,
     );
-    try {
-      postFailureComment(
-        holder,
-        [
-          '### Wavemill merge-lane lock reclaimed',
-          '',
-          `This PR held \`${WM_LABELS.merging}\` for ~${heldMinutes} minutes without merging `
-          + `(timeout: ${mergeLockTimeoutMinutes} minutes), blocking the merge lane. `
-          + `The lock was reclaimed and the PR returned to \`${WM_LABELS.ready}\`; `
-          + 'it will be re-evaluated on a future tend poll.',
-        ].join('\n'),
-        repoDir,
-        deps.shellRunner,
-      );
-    } catch {
-      // The audit comment is best-effort; the reclaim itself already succeeded.
-    }
+    // The audit comment is best-effort; the reclaim itself already succeeded.
+    // Keyed on the lock instance (when it was applied), so one reclaim posts once.
+    postMergeStatusCommentBestEffort({
+      prNumber: holder,
+      phase: 'lane-reclaim',
+      headSha: '',
+      baseSha: String(appliedAtMs),
+      body: [
+        '### Wavemill merge-lane lock reclaimed',
+        '',
+        `This PR held \`${WM_LABELS.merging}\` for ~${heldMinutes} minutes without merging `
+        + `(timeout: ${mergeLockTimeoutMinutes} minutes), blocking the merge lane. `
+        + `The lock was reclaimed and the PR returned to \`${WM_LABELS.ready}\`; `
+        + 'it will be re-evaluated on a future tend poll.',
+      ].join('\n'),
+      repoDir,
+      shellRunner: deps.shellRunner,
+    });
   }
 
   return remaining;
@@ -1673,16 +1720,23 @@ async function recoverSafePhaseMarker(
     };
   }
   if (!retry.defer) {
+    let integrationBranch = '';
     try {
-      await retryTransient(() => deps.releaseToBlocked(marker.prNumber), {
-        label: 'set blocked label after scratch-prep-recovery exhaustion',
-        sleep: deps.retrySleep,
-      });
-    } catch (error) {
-      console.warn(
-        `tend: failed to set blocked label for PR #${marker.prNumber} after scratch-prep-recovery exhaustion: ${errorMessage(error)}`,
-      );
+      integrationBranch = getConfiguredIntegrationBranch(repoDir);
+    } catch {
+      // Unconfigured branch: the fact records no base and holds on head alone.
     }
+    await recordTendAttemptFailure({
+      prNumber: marker.prNumber,
+      featureDir: marker.featureDir,
+      phase: 'worktree',
+      headSha: marker.headSha ?? '',
+      output: `scratch-prep-recovery exhausted at head=${headSha} (interrupted ${marker.phase} phase)`,
+      evidence: {},
+      integrationBranch,
+      repoDir,
+      deps,
+    });
     clearScratchPrepMarkerBestEffort(repoDir, marker.prNumber);
     return { kind: 'exhausted', prNumber: marker.prNumber };
   }
@@ -2376,18 +2430,6 @@ async function defaultRunReadyCheck(
   };
 }
 
-function postFailureComment(
-  prNumber: number,
-  body: string,
-  repoDir: string,
-  shellRunner: MergeExecutionDeps['shellRunner'],
-): void {
-  shellRunner(
-    `gh pr comment ${prNumber} --body ${escapeShellArg(body)}`,
-    { encoding: 'utf-8', cwd: repoDir, timeout: GH_COMMAND_TIMEOUT_MS },
-  );
-}
-
 async function mergeWithTransientRetry(
   prNumber: number,
   mergeMethod: string,
@@ -2738,9 +2780,9 @@ async function handleWorktreePrepTimeout(args: {
  * Handle a `HandoffRebindRefusalError` from `rebindPushedTendHead` (HOK-3105).
  *
  * A `third-head` refusal is unrecoverable — someone else pushed on top of us,
- * so we take the terminal block path (comment + wm:blocked) and record the
- * handoff sentinel so `resolveBlockedLabelReason` can self-heal later if the
- * live state contradicts.
+ * so we take the block path: a `handoff` attempt fact for the pushed head
+ * (HOK-3316). The third head itself expires the fact, so no self-heal is
+ * needed.
  *
  * A `timeout` refusal (GitHub read-after-write lag) consults the handoff
  * rebind bounded-retry budget keyed on (pr, pushedHead). While the budget has
@@ -2763,13 +2805,7 @@ async function handleHandoffRebindFailure(args: {
 }): Promise<MergeExecutionResult> {
   const { candidate, repoDir, pushedHeadSha, error, deps, block } = args;
 
-  const terminalBlock = async (output: string): Promise<MergeExecutionResult> => {
-    writeTendHandoffBlockSentinel(repoDir, candidate.number, pushedHeadSha, {
-      previousHeadSha: candidate.headSha,
-      featureDir: candidate.featureDir,
-    });
-    return block('handoff', output);
-  };
+  const terminalBlock = (output: string): Promise<MergeExecutionResult> => block('handoff', output);
 
   if (!(error instanceof HandoffRebindRefusalError)) {
     // The rebindTendHandoff call itself refused (e.g. no matching claim). No
@@ -2835,13 +2871,9 @@ async function handleHandoffRebindFailure(args: {
  * rejected-claim count, and a remedy line pointing to Ready re-run or a
  * fresh push.
  *
- * Crucially, this path does NOT write the `tend-handoff-block` sentinel. If
- * it did, the HOK-3105 self-heal would clear `wm:blocked` two polls later on
- * a green PR, the PR would get `wm:ready` again, and the loop would come
- * back. Without the sentinel, the block follows HOK-2883 semantics: it
- * stays put and surfaces as `blocked-label:contradicted-by-live-state`
- * with the operator's contradiction finding until Ready re-runs or a new
- * head is pushed.
+ * Exhaustion records a `handoff` attempt fact (HOK-3316), so the reconciler
+ * holds `wm:blocked tend-handoff-failed` until a new head, a moved base, or
+ * an operator event (`re-review` / `advance`, which re-runs Ready) expires it.
  *
  * A gate that throws is fail-closed: we block with the gate error appended,
  * matching the scratch-prep and handoff-rebind conventions.
@@ -2926,8 +2958,8 @@ function currentHandoffClaimCount(
 }
 
 /**
- * Defer a retryable in-lane failure (HOK-3176) instead of labelling
- * wm:blocked. Consults the tend-transient-recovery budget keyed on (PR head,
+ * Defer a retryable in-lane failure (HOK-3176) instead of recording a blocking
+ * attempt fact. Consults the tend-transient-recovery budget keyed on (PR head,
  * integration tip): while it has room the PR returns to wm:ready without a
  * failure comment, so the next tend cycle retries; once exhausted, tend takes
  * the terminal block path with the failure evidence and the recorded reason.
@@ -3393,8 +3425,8 @@ function mergeExecutionDeps(deps: Partial<MergeExecutionDeps> | undefined, marke
     acquireMerging: (prNumber) => {
       setWavemillMerging(prNumber, { markerRoot });
     },
-    releaseToBlocked: (prNumber) => {
-      setWavemillBlocked(prNumber, { markerRoot });
+    releaseMerging: (prNumber) => {
+      removeLabelFromPullRequest(prNumber, WM_LABELS.merging);
     },
     releaseMerged: (prNumber) => {
       setWavemillMerged(prNumber, { markerRoot });
@@ -3521,81 +3553,6 @@ function defaultLoserCleanup(candidate: ChallengeLoserCleanupCandidate, repoDir:
   }
 }
 
-async function defaultCrossPrGuardChecker(input: {
-  pr: GhPrListEntry;
-  integrationBranch: string;
-  repoDir: string;
-}): Promise<CrossPrGuardCheckResult> {
-  if (!input.pr.headRefOid) {
-    return {
-      status: 'tool-error',
-      checkedHeadSha: '',
-      detail: 'missing PR head SHA',
-    };
-  }
-
-  const fetchResult = execArgvCommand(
-    'git',
-    ['fetch', 'origin', input.pr.headRefName],
-    { cwd: input.repoDir, encoding: 'utf-8', timeout: GIT_MUTATION_TIMEOUT_MS },
-  );
-  if (fetchResult.exitCode !== 0) {
-    return {
-      status: 'tool-error',
-      checkedHeadSha: input.pr.headRefOid,
-      detail: `git fetch failed: ${truncateReason(fetchResult.stderr || fetchResult.stdout || 'unknown error')}`,
-    };
-  }
-
-  const result = execArgvCommand(
-    'npx',
-    [
-      'tsx',
-      resolveWavemillToolPath('check-cross-pr-reverts.ts'),
-      '--repo-dir',
-      input.repoDir,
-      '--head-ref',
-      input.pr.headRefOid,
-      '--integration-ref',
-      input.integrationBranch,
-    ],
-    { cwd: input.repoDir, encoding: 'utf-8', timeout: CROSS_PR_GUARD_TOOL_TIMEOUT_MS },
-  );
-  const parsed = parseCrossPrGuardToolOutput(result.stdout);
-
-  if (parsed.toolError) {
-    return {
-      status: 'tool-error',
-      checkedHeadSha: input.pr.headRefOid,
-      detail: summarizeCrossPrGuardToolError(parsed.toolError),
-    };
-  }
-
-  if (result.exitCode === 0 && parsed.blocked === false) {
-    return { status: 'pass', checkedHeadSha: input.pr.headRefOid };
-  }
-
-  if (result.exitCode === 1 || parsed.blocked === true) {
-    return { status: 'blocked', checkedHeadSha: input.pr.headRefOid };
-  }
-
-  return {
-    status: 'tool-error',
-    checkedHeadSha: input.pr.headRefOid,
-    detail: truncateReason(result.stderr || result.stdout || `exit ${result.exitCode}`),
-  };
-}
-
-function defaultBlockedLabelClearer(prNumber: number, repoDir: string): void {
-  let repo: string | undefined;
-  try {
-    repo = resolveOwnerRepoFromRemote(repoDir) ?? undefined;
-  } catch {
-    repo = undefined;
-  }
-  removeLabelFromPullRequest(prNumber, WM_LABELS.blocked, repo ? { repo } : {});
-}
-
 /**
  * Best-effort strip of an untrusted `wm:ready` label (HOK-3107). Failure is
  * swallowed with a warning so tend never halts the loop when GitHub returns a
@@ -3616,30 +3573,6 @@ function defaultUntrustedReadyLabelStripper(prNumber: number, repoDir: string): 
       + `(no ready-published handoff for live head): ${errorMessage(error)}`,
     );
   }
-}
-
-function parseCrossPrGuardToolOutput(output: string): {
-  blocked?: boolean;
-  toolError?: Record<string, unknown>;
-} {
-  try {
-    const parsed = JSON.parse(output) as unknown;
-    if (!isRecord(parsed)) {
-      return {};
-    }
-    return {
-      blocked: typeof parsed.blocked === 'boolean' ? parsed.blocked : undefined,
-      toolError: isRecord(parsed.toolError) ? parsed.toolError : undefined,
-    };
-  } catch {
-    return {};
-  }
-}
-
-function summarizeCrossPrGuardToolError(toolError: Record<string, unknown>): string {
-  const commandClass = stringField(toolError, 'commandClass') ?? 'tool';
-  const ref = stringField(toolError, 'ref') ?? 'unknown ref';
-  return `${commandClass} failed on ${ref}`;
 }
 
 interface PrCheckRun {
@@ -3770,33 +3703,27 @@ function formatReadyFailedReason(decision?: ReconcilerDecision): string {
   return 'ready-failed:not-ready';
 }
 
-async function getInitialBlockReason(
+function getInitialBlockReason(
   pr: GhPrListEntry,
   metadata: PrMetadata | null,
   validation: MetadataValidation,
   openPrNumbers: Set<number>,
-  options: {
-    repoDir: string;
-    integrationBranch: string;
-    crossPrGuardChecker: CrossPrGuardChecker;
-    blockedLabelClearer: BlockedLabelClearer;
-    prStateMarkerReader: PrStateMarkerReader;
-    prStateMarkerWriter: PrStateMarkerWriter;
-    blockedPrLiveStateProber: BlockedPrLiveStateProber;
-    reconcilerDecision?: ReconcilerDecision;
-  },
-): Promise<string | null> {
+  reconcilerDecision?: ReconcilerDecision,
+): string | null {
   const labels = labelSet(pr);
 
   if (pr.isDraft) {
     return 'draft';
   }
 
+  // HOK-3316: wm:blocked is the reconciler's render — deriveMergeLabel ran
+  // over this PR at the top of the poll and the labels here are its result.
+  // Tend never re-derives or clears it; it skips with the reconciler's reason.
   if (labels.has(WM_LABELS.blocked)) {
-    const blockedReason = await resolveBlockedLabelReason(pr, metadata, labels, options);
-    if (blockedReason) {
-      return blockedReason;
-    }
+    const blockedReason = reconcilerDecision?.label === 'wm:blocked'
+      ? (reconcilerDecision as { reason?: string }).reason ?? ''
+      : '';
+    return blockedReason ? `blocked-label:${blockedReason}` : 'blocked-label';
   }
 
   if (!metadata) {
@@ -3812,7 +3739,7 @@ async function getInitialBlockReason(
     // tick, surface its specific no-label reason instead of the generic
     // `ready-failed:not-ready`, so an operator can see which null branch
     // (head-mismatch, ready-pending, checks-pending, …) kept wm:ready off.
-    return formatReadyFailedReason(options.reconcilerDecision);
+    return formatReadyFailedReason(reconcilerDecision);
   }
 
   if ((metadata.depends_on_linear?.length ?? 0) > 0) {
@@ -3833,568 +3760,11 @@ async function getInitialBlockReason(
   return null;
 }
 
-async function resolveBlockedLabelReason(
-  pr: GhPrListEntry,
-  metadata: PrMetadata | null,
-  labels: Set<string>,
-  options: {
-    repoDir: string;
-    integrationBranch: string;
-    crossPrGuardChecker: CrossPrGuardChecker;
-    blockedLabelClearer: BlockedLabelClearer;
-    prStateMarkerReader: PrStateMarkerReader;
-    prStateMarkerWriter: PrStateMarkerWriter;
-    blockedPrLiveStateProber: BlockedPrLiveStateProber;
-  },
-): Promise<string | null> {
-  const readyResult = readReadyResultSnapshot(options.repoDir, pr, metadata);
-  const currentHeadSha = pr.headRefOid ?? '';
-  if (!currentHeadSha) {
-    return 'blocked-label:cross-pr-guard-missing-head';
-  }
-
-  let markerNeedsReconciliation = false;
-  try {
-    const markerValidation = await options.prStateMarkerReader(pr.number, {
-      currentHead: currentHeadSha,
-      markerRoot: options.repoDir,
-      deriveCondition: (payload) => {
-        const activeLabels = payload.detail?.activeLabels;
-        return Array.isArray(activeLabels)
-          && activeLabels.includes(WM_LABELS.blocked)
-          && labels.has(WM_LABELS.blocked);
-      },
-    });
-    markerNeedsReconciliation = markerValidation.status !== 'valid';
-    emitPrStateMarkerFinding(options.repoDir, pr.number, markerValidation);
-  } catch (error) {
-    return `blocked-label:marker-read-error:${truncateReason(errorMessage(error))}`;
-  }
-
-  if (metadata && currentHeadSha && labels.has(WM_LABELS.ready) && readyResultIsCurrentPass(readyResult, currentHeadSha)) {
-    return clearGuardBlockedLabel(pr, labels, currentHeadSha, options, 'blocked-label:clear-failed');
-  }
-
-  const evidence = extractCrossPrGuardEvidence(readyResult);
-  if (!evidence.provenance) {
-    let liveState: BlockedPrLiveState;
-    try {
-      liveState = await options.blockedPrLiveStateProber(pr.number, options.repoDir);
-    } catch {
-      liveState = { available: false };
-    }
-
-    if (markerNeedsReconciliation) {
-      // REQ-F3: the marker no longer validates (head changed, marker absent,
-      // or condition contradicted). Only a positively confirmed gate at the
-      // current head may re-establish the block; otherwise the stale label is
-      // cleared in this same selection cycle (REQ-F4).
-      const confirmedGate = confirmedLiveBlockingGate(liveState);
-      if (confirmedGate) {
-        const markerWriteError = refreshPrStateMarker(pr, labels, currentHeadSha, options);
-        if (markerWriteError) {
-          return markerWriteError;
-        }
-        return `blocked-label:${confirmedGate}`;
-      }
-      return clearGuardBlockedLabel(pr, labels, currentHeadSha, options, 'blocked-label:clear-failed');
-    }
-
-    // The marker validates at the current head, so the block was written
-    // against exactly this state. Still re-derive before honouring it: a
-    // MERGEABLE/CLEAN PR with green required checks contradicts every
-    // GitHub-visible gate. A wavemill-internal gate (e.g. a failed in-lane
-    // ready re-check) may legitimately remain, so the block stays fail-closed
-    // — but the contradiction is surfaced instead of silently held (REQ-F5).
-    if (isLiveStateCleanGreen(liveState)) {
-      // HOK-3105: if tend itself set this wm:blocked via a handoff-rebind
-      // refusal AND the same-head live state confirms the block is a lie for
-      // two consecutive polls, tend clears its own label in-band. Guard-set
-      // blocks (cross-PR revert guard, review) are on a different branch of
-      // this function, so HOK-2883 semantics remain intact.
-      const selfHealed = await attemptTendHandoffSelfHeal(pr, metadata, labels, currentHeadSha, options);
-      if (selfHealed) {
-        return null;
-      }
-      emitBlockedLabelContradictionFinding(options.repoDir, pr, currentHeadSha, liveState);
-      return 'blocked-label:contradicted-by-live-state';
-    }
-    const gate = describeLiveBlockedGate(liveState);
-    return gate ? `blocked-label:${gate}` : 'blocked-label';
-  }
-
-  if (
-    evidence.checkedHeadSha === currentHeadSha
-    && (evidence.status === 'blocked' || evidence.status === 'tool-error')
-  ) {
-    if (markerNeedsReconciliation && evidence.status === 'blocked') {
-      const markerWriteError = refreshPrStateMarker(pr, labels, currentHeadSha, options);
-      if (markerWriteError) {
-        return markerWriteError;
-      }
-    }
-    return evidence.status === 'tool-error'
-      ? 'blocked-label:cross-pr-guard-tool-error'
-      : 'blocked-label:cross-pr-guard';
-  }
-
-  let recheck: CrossPrGuardCheckResult;
-  try {
-    recheck = await options.crossPrGuardChecker({
-      pr,
-      integrationBranch: options.integrationBranch,
-      repoDir: options.repoDir,
-    });
-  } catch (error) {
-    return `blocked-label:cross-pr-guard-recheck-error:${truncateReason(errorMessage(error))}`;
-  }
-
-  if (recheck.status === 'blocked') {
-    const markerWriteError = refreshPrStateMarker(pr, labels, currentHeadSha, options);
-    if (markerWriteError) {
-      return markerWriteError;
-    }
-    return 'blocked-label:cross-pr-guard';
-  }
-  if (recheck.status === 'tool-error') {
-    return 'blocked-label:cross-pr-guard-tool-error';
-  }
-
-  return clearGuardBlockedLabel(pr, labels, currentHeadSha, options, 'blocked-label:clear-failed');
-}
-
-/**
- * Attempt HOK-3105 self-heal: clear a wm:blocked label that tend itself set
- * via a handoff-rebind refusal, once two consecutive polls confirm the live
- * PR state contradicts the block at the same head.
- *
- * Returns true when the label was cleared; false when the block should stay.
- * Only fires when the tend-handoff-block sentinel matches `currentHeadSha`;
- * blocks set by any other subsystem (cross-PR revert guard, review, missing
- * sentinel from an old block) are never touched, preserving HOK-2883.
- *
- * HOK-3112: restoring wm:ready alone is not enough. After a refused rebind the
- * `.ready-tend-handoff.json` record is still at the pre-push head, so the next
- * claim at the live head is rejected and tend skips the PR every poll. Before
- * the label is cleared, the handoff record is moved to the live head (which
- * must be tend's own push) and the task worktree is marked stale so the next
- * Ready re-run does not overwrite the record at the old checkout HEAD.
- */
-async function attemptTendHandoffSelfHeal(
-  pr: GhPrListEntry,
-  metadata: PrMetadata | null,
-  labels: Set<string>,
-  currentHeadSha: string,
-  options: {
-    repoDir: string;
-    blockedLabelClearer: BlockedLabelClearer;
-    prStateMarkerWriter: PrStateMarkerWriter;
-  },
-): Promise<boolean> {
-  const sentinel = readTendHandoffBlockSentinel(options.repoDir, pr.number);
-  if (!sentinel || sentinel.headSha !== currentHeadSha) {
-    // Block was not attributed to tend's handoff refusal at this head. Keep
-    // HOK-2883 semantics: no self-heal.
-    return false;
-  }
-
-  // HOK-3112: the sentinel records the head tend pushed; the stale-worktree
-  // marker (written by the same push) must agree when present. Any other head
-  // is a third-party push and tend must not republish the handoff for it.
-  const featureDir = sentinel.featureDir ?? resolveReadyStateDir(options.repoDir, pr, metadata) ?? undefined;
-  const pushedMarker = featureDir ? readTendPushedHead(featureDir) : null;
-  if (pushedMarker && (pushedMarker.prNumber !== pr.number || pushedMarker.pushedHeadSha !== currentHeadSha)) {
-    return false;
-  }
-
-  const observed = readTendHandoffContradictionObserved(options.repoDir, pr.number);
-  if (!observed || observed.headSha !== currentHeadSha) {
-    // First same-head observation: record it and keep the block for one more
-    // poll before self-healing.
-    writeTendHandoffContradictionObserved(options.repoDir, pr.number, {
-      headSha: currentHeadSha,
-      count: 1,
-      firstObservedAt: new Date().toISOString(),
-    });
-    return false;
-  }
-
-  // observed.count >= 1 and head matches: this is the second consecutive
-  // same-head observation. Make the handoff claimable at the live head first
-  // so wm:ready is never restored without a record tend can claim. Legacy
-  // Ready artifacts (no featureDir) have no handoff claim check.
-  if (featureDir) {
-    const republished = await republishHandoffAtTendHead(
-      featureDir,
-      pr.number,
-      sentinel.previousHeadSha ?? pushedMarker?.previousHeadSha,
-      currentHeadSha,
-    );
-    if (!republished) {
-      // Keep the block and sidecars; the next poll retries.
-      return false;
-    }
-  }
-
-  const clearResult = clearGuardBlockedLabel(pr, labels, currentHeadSha, options, 'blocked-label:clear-failed');
-  if (clearResult !== null) {
-    // Clear failed — leave sidecars in place so the next poll retries.
-    return false;
-  }
-  clearTendHandoffBlockSentinel(options.repoDir, pr.number);
-  clearTendHandoffContradictionObserved(options.repoDir, pr.number);
-  emitTendHandoffSelfHealFinding(options.repoDir, pr, currentHeadSha);
-  return true;
-}
-
-/**
- * Move the Ready→Tend handoff to `liveHeadSha`, a head tend itself pushed
- * (HOK-3112). Prefers carrying tend's existing claim across with
- * `rebindTendHandoff`; if the record is no longer tend's claim at the previous
- * head (e.g. a Ready re-run republished it at the stale checkout HEAD), it
- * publishes a fresh handoff at the live head for the next poll to claim.
- *
- * Also (re)marks the task worktree stale so the monitor syncs it to the live
- * head before its next Ready run. Returns false when the record could not be
- * made claimable (terminal record, or an I/O failure).
- */
-async function republishHandoffAtTendHead(
-  featureDir: string,
-  prNumber: number,
-  previousHeadSha: string | undefined,
-  liveHeadSha: string,
-): Promise<boolean> {
-  try {
-    let claimable = false;
-    if (previousHeadSha && previousHeadSha !== liveHeadSha) {
-      const rebound = await rebindTendHandoff(featureDir, prNumber, previousHeadSha, liveHeadSha);
-      claimable = rebound.outcome === 'claimed' || rebound.outcome === 'already-claimed';
-    }
-    if (!claimable) {
-      const published = await publishReadyHandoff(featureDir, prNumber, liveHeadSha);
-      claimable = published.outcome !== 'rejected';
-    }
-    if (!claimable) {
-      console.warn(
-        `tend: self-heal cannot republish handoff for PR #${prNumber} at ${liveHeadSha}: `
-        + `record is ${readReadyTendHandoff(featureDir)?.state ?? 'missing'}`,
-      );
-      return false;
-    }
-    const marker = readTendPushedHead(featureDir);
-    if (!marker || marker.prNumber !== prNumber || marker.pushedHeadSha !== liveHeadSha) {
-      await recordTendPushedHead(featureDir, prNumber, previousHeadSha ?? '', liveHeadSha);
-    }
-    return true;
-  } catch (error) {
-    console.warn(
-      `tend: self-heal failed to republish handoff for PR #${prNumber} at ${liveHeadSha}: ${errorMessage(error)}`,
-    );
-    return false;
-  }
-}
-
-function clearGuardBlockedLabel(
-  pr: GhPrListEntry,
-  labels: Set<string>,
-  currentHeadSha: string,
-  options: {
-    repoDir: string;
-    blockedLabelClearer: BlockedLabelClearer;
-    prStateMarkerWriter: PrStateMarkerWriter;
-  },
-  failureReason: string,
-): string | null {
-  try {
-    options.blockedLabelClearer(pr.number, options.repoDir);
-    const remainingActiveLabels = [WM_LABELS.ready, WM_LABELS.merging]
-      .filter((label) => labels.has(label));
-    if (remainingActiveLabels.length > 0) {
-      options.prStateMarkerWriter(pr.number, {
-        headSha: currentHeadSha,
-        activeLabels: remainingActiveLabels,
-        reason: 'wm:blocked cleared after marker revalidation',
-        markerRoot: options.repoDir,
-      });
-    } else {
-      clearPrStateMarker(pr.number, options.repoDir);
-    }
-    return null;
-  } catch (error) {
-    return `${failureReason}:${truncateReason(errorMessage(error))}`;
-  }
-}
-
-function refreshPrStateMarker(
-  pr: GhPrListEntry,
-  labels: Set<string>,
-  currentHeadSha: string,
-  options: { repoDir: string; prStateMarkerWriter: PrStateMarkerWriter },
-): string | null {
-  try {
-    options.prStateMarkerWriter(pr.number, {
-      headSha: currentHeadSha,
-      activeLabels: [WM_LABELS.ready, WM_LABELS.blocked, WM_LABELS.merging]
-        .filter((label) => labels.has(label)),
-      reason: 'wm:blocked condition revalidated by tend',
-      markerRoot: options.repoDir,
-    });
-    return null;
-  } catch (error) {
-    return `blocked-label:marker-write-error:${truncateReason(errorMessage(error))}`;
-  }
-}
-
-function emitPrStateMarkerFinding(
-  repoDir: string,
-  prNumber: number,
-  validation: MarkerValidation<boolean>,
-): void {
-  const finding = buildStaleMarkerFinding(
-    getPrStateMarkerHandle(prNumber, repoDir),
-    validation,
-    { repo: repoDir, prNumber },
-  );
-  if (!finding) {
-    return;
-  }
-  appendObserverFinding(repoDir, finding);
-}
-
 // HOK-3102: keep the local name `appendObserverFinding` to avoid churning the
 // two other call sites here, but route through the shared helper so writes
 // are gated on `resolveSessionCapabilities(repoDir).observer`.
 function appendObserverFinding(repoDir: string, finding: object): void {
   sharedAppendObserverFinding(repoDir, finding);
-}
-
-async function defaultBlockedPrLiveStateProber(prNumber: number, repoDir: string): Promise<BlockedPrLiveState> {
-  try {
-    const output = String(execShellCommand(
-      `gh pr view ${prNumber} --json mergeable,mergeStateStatus,statusCheckRollup`,
-      { encoding: 'utf-8', cwd: repoDir, timeout: GH_COMMAND_TIMEOUT_MS },
-    ));
-    const parsed = JSON.parse(output) as unknown;
-    if (!isRecord(parsed)) {
-      return { available: false };
-    }
-    return {
-      available: true,
-      mergeable: typeof parsed.mergeable === 'string' ? parsed.mergeable : undefined,
-      mergeStateStatus: typeof parsed.mergeStateStatus === 'string' ? parsed.mergeStateStatus : undefined,
-      failingChecks: failingRollupCheckNames(parsed.statusCheckRollup),
-      pendingChecks: pendingRollupCheckNames(parsed.statusCheckRollup),
-    };
-  } catch {
-    return { available: false };
-  }
-}
-
-function pendingRollupCheckNames(rollup: unknown): string[] {
-  return extractStatusCheckRollupEntries(rollup)
-    .filter((entry) => {
-      const conclusion = (stringField(entry, 'conclusion') ?? '').toLowerCase();
-      const state = (stringField(entry, 'state') ?? '').toLowerCase();
-      if (FAILING_CHECK_CONCLUSIONS.has(conclusion) || FAILING_CHECK_CONCLUSIONS.has(state)) {
-        return false;
-      }
-      if (PASSING_CHECK_CONCLUSIONS.has(conclusion) || PASSING_CHECK_CONCLUSIONS.has(state)) {
-        return false;
-      }
-      return true;
-    })
-    .map((entry) => stringField(entry, 'name') ?? stringField(entry, 'context') ?? 'check');
-}
-
-export function isLiveStateCleanGreen(live: BlockedPrLiveState): boolean {
-  return live.available
-    && (live.mergeable ?? '').toUpperCase() === 'MERGEABLE'
-    && (live.mergeStateStatus ?? '').toUpperCase() === 'CLEAN'
-    && (live.failingChecks?.length ?? 0) === 0
-    && (live.pendingChecks?.length ?? 0) === 0;
-}
-
-/**
- * A gate that positively confirms the PR cannot merge right now. Only these
- * gates may re-establish a block whose marker no longer validates; anything
- * weaker (pending checks, behind base, unreadable state) is not confirmation.
- */
-function confirmedLiveBlockingGate(live: BlockedPrLiveState): string | null {
-  if (!live.available) {
-    return null;
-  }
-  if ((live.failingChecks?.length ?? 0) > 0) {
-    return `checks-failing:${truncateReason((live.failingChecks ?? []).join(','), 80)}`;
-  }
-  const mergeable = (live.mergeable ?? '').toUpperCase();
-  const status = (live.mergeStateStatus ?? '').toUpperCase();
-  if (mergeable === 'CONFLICTING' || status === 'DIRTY') {
-    return 'merge-conflict';
-  }
-  return null;
-}
-
-/** Best-effort human-readable gate name for a block that stays parked. */
-function describeLiveBlockedGate(live: BlockedPrLiveState): string | null {
-  const confirmed = confirmedLiveBlockingGate(live);
-  if (confirmed) {
-    return confirmed;
-  }
-  if (!live.available) {
-    return null;
-  }
-  if ((live.pendingChecks?.length ?? 0) > 0) {
-    return 'checks-pending';
-  }
-  if ((live.mergeStateStatus ?? '').toUpperCase() === 'BEHIND') {
-    return 'behind-base';
-  }
-  return null;
-}
-
-/**
- * Sidecar recording that a wm:blocked label was set by this tend process's
- * handoff-rebind refusal path (HOK-3105). Only that path writes it. Any
- * subsequent successful merge, self-heal, or fresh handoff attempt clears it.
- * The presence + matching head SHA is the "block is attributable to tend's
- * handoff refusal" signal for `resolveBlockedLabelReason`.
- */
-interface TendHandoffBlockSentinel {
-  /** Head tend pushed (the head the refused rebind targeted). */
-  headSha: string;
-  reason: string;
-  at: string;
-  /**
-   * HOK-3112: head the handoff record was claimed at before tend's push, so
-   * the self-heal can move tend's claim with `rebindTendHandoff`.
-   */
-  previousHeadSha?: string;
-  /** HOK-3112: Ready artifact dir holding `.ready-tend-handoff.json`. */
-  featureDir?: string;
-}
-
-function tendHandoffBlockSentinelPath(repoDir: string, prNumber: number): string {
-  return join(mergeLaneStateDir(prNumber, repoDir), 'tend-handoff-block.json');
-}
-
-function writeTendHandoffBlockSentinel(
-  repoDir: string,
-  prNumber: number,
-  headSha: string,
-  handoff: { previousHeadSha?: string; featureDir?: string } = {},
-): void {
-  const sentinel: TendHandoffBlockSentinel = {
-    headSha,
-    reason: 'handoff-rebind-refused',
-    at: new Date().toISOString(),
-    ...(handoff.previousHeadSha ? { previousHeadSha: handoff.previousHeadSha } : {}),
-    ...(handoff.featureDir ? { featureDir: handoff.featureDir } : {}),
-  };
-  try {
-    mkdirSync(mergeLaneStateDir(prNumber, repoDir), { recursive: true });
-    writeFileSync(tendHandoffBlockSentinelPath(repoDir, prNumber), `${JSON.stringify(sentinel)}\n`, 'utf-8');
-  } catch (error) {
-    console.warn(
-      `tend: failed to write handoff-block sentinel for PR #${prNumber}: ${errorMessage(error)}`,
-    );
-  }
-}
-
-function readTendHandoffBlockSentinel(repoDir: string, prNumber: number): TendHandoffBlockSentinel | null {
-  const path = tendHandoffBlockSentinelPath(repoDir, prNumber);
-  if (!existsSync(path)) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as unknown;
-    if (!isRecord(parsed) || typeof parsed.headSha !== 'string') {
-      return null;
-    }
-    return {
-      headSha: parsed.headSha,
-      reason: typeof parsed.reason === 'string' ? parsed.reason : '',
-      at: typeof parsed.at === 'string' ? parsed.at : '',
-      ...(typeof parsed.previousHeadSha === 'string' && parsed.previousHeadSha
-        ? { previousHeadSha: parsed.previousHeadSha } : {}),
-      ...(typeof parsed.featureDir === 'string' && parsed.featureDir ? { featureDir: parsed.featureDir } : {}),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function clearTendHandoffBlockSentinel(repoDir: string, prNumber: number): void {
-  try {
-    rmSync(tendHandoffBlockSentinelPath(repoDir, prNumber), { force: true });
-  } catch {
-    // Best-effort cleanup.
-  }
-}
-
-/**
- * Sidecar counting consecutive polls that classified the tend-handoff block
- * as `contradicted-by-live-state` at the same head. Written and read only by
- * `resolveBlockedLabelReason`; the count-of-two rule matches the ticket's
- * "two consecutive polls" self-heal criterion.
- */
-interface TendHandoffContradictionObserved {
-  headSha: string;
-  count: number;
-  firstObservedAt: string;
-}
-
-function tendHandoffContradictionObservedPath(repoDir: string, prNumber: number): string {
-  return join(mergeLaneStateDir(prNumber, repoDir), 'tend-handoff-contradiction-observed.json');
-}
-
-function readTendHandoffContradictionObserved(
-  repoDir: string,
-  prNumber: number,
-): TendHandoffContradictionObserved | null {
-  const path = tendHandoffContradictionObservedPath(repoDir, prNumber);
-  if (!existsSync(path)) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as unknown;
-    if (!isRecord(parsed) || typeof parsed.headSha !== 'string' || typeof parsed.count !== 'number') {
-      return null;
-    }
-    return {
-      headSha: parsed.headSha,
-      count: parsed.count,
-      firstObservedAt: typeof parsed.firstObservedAt === 'string' ? parsed.firstObservedAt : '',
-    };
-  } catch {
-    return null;
-  }
-}
-
-function writeTendHandoffContradictionObserved(
-  repoDir: string,
-  prNumber: number,
-  record: TendHandoffContradictionObserved,
-): void {
-  try {
-    mkdirSync(mergeLaneStateDir(prNumber, repoDir), { recursive: true });
-    writeFileSync(
-      tendHandoffContradictionObservedPath(repoDir, prNumber),
-      `${JSON.stringify(record)}\n`,
-      'utf-8',
-    );
-  } catch (error) {
-    console.warn(
-      `tend: failed to write handoff-contradiction observation for PR #${prNumber}: ${errorMessage(error)}`,
-    );
-  }
-}
-
-function clearTendHandoffContradictionObserved(repoDir: string, prNumber: number): void {
-  try {
-    rmSync(tendHandoffContradictionObservedPath(repoDir, prNumber), { force: true });
-  } catch {
-    // Best-effort cleanup.
-  }
 }
 
 /**
@@ -4430,58 +3800,6 @@ function emitMergeLaneFindingOnce(
   } catch {
     // Best-effort dedup only.
   }
-}
-
-function emitBlockedLabelContradictionFinding(
-  repoDir: string,
-  pr: GhPrListEntry,
-  currentHeadSha: string,
-  live: BlockedPrLiveState,
-): void {
-  emitMergeLaneFindingOnce(repoDir, pr.number, 'blocked-label-contradiction', currentHeadSha, 'clean-green', {
-    subsystem: 'merge-lane',
-    title: `wm:blocked on PR #${pr.number} contradicted by live state`,
-    body: `PR #${pr.number} carries wm:blocked with a marker valid at head ${currentHeadSha}, but GitHub reports `
-      + 'MERGEABLE/CLEAN with green required checks. If no wavemill-internal gate applies, the merge label reconciler '
-      + 'should correct this automatically on the next monitor tick (HOK-3181).',
-    severity: 'medium',
-    context: {
-      markerPath: `merge-lane/${pr.number}/blocked-label-contradiction`,
-      markerKind: 'merge-lane-blocked-contradiction',
-      prNumber: pr.number,
-      currentHead: currentHeadSha,
-      labels: [...labelSet(pr)].join(','),
-      mergeable: live.mergeable ?? '',
-      mergeStateStatus: live.mergeStateStatus ?? '',
-    },
-  });
-}
-
-/**
- * Surface that tend self-healed its own handoff-refusal `wm:blocked` label
- * (HOK-3105). The operator gets one entry per (pr, head) so a resolved lag
- * incident is visible in the observer log without spamming.
- */
-function emitTendHandoffSelfHealFinding(
-  repoDir: string,
-  pr: GhPrListEntry,
-  currentHeadSha: string,
-): void {
-  emitMergeLaneFindingOnce(repoDir, pr.number, 'tend-handoff-self-heal', currentHeadSha, 'self-healed', {
-    subsystem: 'merge-lane',
-    title: `Tend cleared its own handoff-refusal wm:blocked on PR #${pr.number}`,
-    body: `PR #${pr.number} carried wm:blocked set by tend's own handoff-rebind refusal, but two consecutive `
-      + `polls at head ${currentHeadSha} confirmed the PR is MERGEABLE/CLEAN with green required checks. `
-      + 'Tend cleared the label in-band; the PR will be re-evaluated on the next merge-lane pass.',
-    severity: 'low',
-    context: {
-      markerPath: `merge-lane/${pr.number}/tend-handoff-self-heal`,
-      markerKind: 'merge-lane-tend-handoff-self-heal',
-      prNumber: pr.number,
-      currentHead: currentHeadSha,
-      labels: [...labelSet(pr)].join(','),
-    },
-  });
 }
 
 /**
@@ -4684,51 +4002,6 @@ export function taskStateAuthorizesRemoteBranchDeletion(repoDir: string, branch:
 
 function normalizeTaskSlug(task: string): string {
   return task.toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
-}
-
-function readyResultIsCurrentPass(snapshot: ReadyResultSnapshot | null, currentHeadSha: string): boolean {
-  const artifacts = snapshot?.artifacts;
-  if (!artifacts) {
-    return false;
-  }
-
-  const verdict = artifacts.verdict;
-  const readyHeadSha = artifacts.readyHeadSha;
-  return (
-    snapshot?.status === 'completed'
-    && (verdict === 'pass' || verdict === 'warn')
-    && readyHeadSha === currentHeadSha
-    && artifacts.readyLabelsUpdated === true
-  );
-}
-
-function extractCrossPrGuardEvidence(snapshot: ReadyResultSnapshot | null): CrossPrGuardEvidence {
-  if (!snapshot) {
-    return { provenance: false };
-  }
-
-  const guard = isRecord(snapshot.artifacts?.crossPrGuard) ? snapshot.artifacts.crossPrGuard : null;
-  if (guard) {
-    return {
-      provenance: true,
-      checkedHeadSha: stringField(guard, 'checkedHeadSha') ?? stringField(guard, 'headSha') ?? undefined,
-      status: stringField(guard, 'status') ?? undefined,
-      detail: stringField(guard, 'detail') ?? stringField(guard, 'reason') ?? undefined,
-    };
-  }
-
-  if (snapshot.crossPrDiagnostic !== undefined || attentionHasCrossPrGuardProvenance(snapshot.attention)) {
-    return { provenance: true };
-  }
-
-  return { provenance: false };
-}
-
-function attentionHasCrossPrGuardProvenance(attention: string | undefined): boolean {
-  if (!attention) {
-    return false;
-  }
-  return CROSS_PR_GUARD_PROVENANCE_TEXT.some((text) => attention.includes(text));
 }
 
 function uniqueStrings(values: string[]): string[] {

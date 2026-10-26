@@ -2,7 +2,7 @@
  * Side-effect ledger shadow writes (HOK-3183 — Ledger D Phase 1).
  *
  * Every external effect the mill produces — a git push, a PR label write, a
- * Linear state transition, a PR merge — records one `side_effect` row keyed
+ * Linear state transition, a PR merge, a tend merge-status comment — records one `side_effect` row keyed
  * as in design §4b (`docs/mill-task-ledger-design.md`). Phase 1 is shadow
  * only: rows are written alongside the existing ad-hoc guards and nothing
  * reads them on the decision path. A second request for an already-recorded
@@ -76,6 +76,15 @@ export function prLabelKeyPrefix(prNumber: number | string, label: string, actio
 /** `pr-merge` key: `(pr_number, merge_commit_target_oid)`. */
 export function prMergeKey(prNumber: number | string, mergeCommitTargetOid: string): string {
   return joinKey([prNumber, mergeCommitTargetOid]);
+}
+
+/**
+ * `pr-comment` key: `(pr_number, phase, head_oid, base_oid)` (HOK-3316). One
+ * merge-status comment per tend failure condition; the same condition seen
+ * again is an observation, never a second comment.
+ */
+export function prCommentKey(prNumber: number | string, phase: string, headOid: string | null | undefined, baseOid: string | null | undefined): string {
+  return joinKey([prNumber, phase, headOid ?? '', baseOid ?? '']);
 }
 
 /** `linear-transition` key: `(issue_key, from_state, to_state, trigger_event_id)`. */
