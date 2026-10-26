@@ -15,6 +15,13 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MILL_SCRIPT="$REPO_DIR/shared/lib/wavemill-mill.sh"
 MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 COMMON_SCRIPT="$REPO_DIR/shared/lib/wavemill-common.sh"
+# HOK-3305: the extracted picker calls wavemill_run_tool, which resolves
+# select-wave.ts through TOOLS_DIR / WAVEMILL_INSTALL_DIR. CI shells have
+# neither set, so every bash -lc subshell must inherit a repo-relative path
+# or _picker_select_wave returns empty and the picker emits nothing.
+export REPO_DIR
+export TOOLS_DIR="${TOOLS_DIR:-$REPO_DIR/tools}"
+export WAVEMILL_INSTALL_DIR="${WAVEMILL_INSTALL_DIR:-$REPO_DIR}"
 
 PASS=0
 FAIL=0
