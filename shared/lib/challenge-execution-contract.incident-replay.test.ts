@@ -2,7 +2,7 @@
  * HOK-3313 incident replay (fixed by HOK-3321).
  *
  * Replays the sanitized fixture at
- * tests/fixtures/incident-replay/hok-3313-attestation-cases.json through the
+ * tests/fixtures/challenge-replay/hok-3313-attestation-cases.json through the
  * real attestation and recovery code paths. Each eval record is first
  * validated against the EvalRecord schema (same Ajv setup as
  * challenge-execution-contract.test.ts) so the fixture cannot silently drift
@@ -45,7 +45,7 @@ interface FixtureCase {
 }
 
 const fixture = JSON.parse(
-  readFileSync(join(__dirname, '..', '..', 'tests', 'fixtures', 'incident-replay', 'hok-3313-attestation-cases.json'), 'utf-8'),
+  readFileSync(join(__dirname, '..', '..', 'tests', 'fixtures', 'challenge-replay', 'hok-3313-attestation-cases.json'), 'utf-8'),
 ) as { incident: string; cases: FixtureCase[] };
 
 const evalSchema = JSON.parse(readFileSync(join(__dirname, 'eval-schema.json'), 'utf-8'));

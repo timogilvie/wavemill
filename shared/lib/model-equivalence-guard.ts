@@ -72,7 +72,7 @@ export const MODEL_EQUIVALENCE_GUARD: GuardSpec = {
   invariantPaths: [
     'shared/lib/challenge-comparison.ts',
     'shared/lib/model-equivalence-guard.ts',
-    'tools/check-model-equivalence.ts',
+    'tools/check-model-equivalence.ts', // install-paths: allow invariantPaths list, not an argv target
   ],
   structuralChecks: [
     {
