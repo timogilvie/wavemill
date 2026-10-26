@@ -194,12 +194,8 @@ for fn in \
   coding_uncommitted_output_should_announce \
   mark_coding_uncommitted_output_announced \
   write_coding_uncommitted_output_artifact \
-  native_launch_failure_artifact_path \
   stage_result_field \
-  agent_or_model_is_native_for_recovery \
-  native_launch_failure_kind \
-  write_native_launch_failure_artifact \
-  emit_native_launch_failure_attention \
+  stage_launch_identity \
   native_hook_terminal_failure_detail \
   native_coding_failure_handoff_reason \
   native_terminal_failure_kind \

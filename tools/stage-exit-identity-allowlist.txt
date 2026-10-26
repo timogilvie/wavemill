@@ -1,0 +1,13 @@
+# stage-exit-identity-allowlist.txt — justified exceptions to the HOK-3313 single stage-exit observation guard (tools/check-stage-exit-identity.ts).
+#
+# Format (tools/lib/source-guard.ts): `<repo-relative path> [<count>]  # <reason>`.
+# Every entry needs a same-line `# reason`. Without a count the file is exempt
+# entirely; with a count the file is still scanned and fails once it has more
+# findings than that, so a new site in a listed file still fires. The list is a
+# ratchet: an entry that over-allows (fewer findings than its count, none, or a
+# missing file) fails until it is lowered or removed. The invariant source and
+# the guard itself are excluded automatically and must NOT be listed here.
+#
+# Prefer a one-line `// allow-stage-exit-identity: <reason>` (`#` in shell)
+# suppression over an entry whenever only a line or two is involved.
+shared/lib/wavemill-monitor.sh 2  # phase_launch_gate exhausted branch + emit_native_terminal_failure_attention terminal-class allowlist branch
