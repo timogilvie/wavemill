@@ -186,6 +186,7 @@ TESTS=(
   re-review-no-pr.test.sh
   monitor-command-routing.test.sh
   condition-reconciler.test.sh
+  condition-reconciler-realstate.test.sh
   wavemill-pr-cache.test.sh
   cross-pr-revert-job.test.sh
   pr-ci-status-job.test.sh

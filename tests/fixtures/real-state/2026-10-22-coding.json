@@ -1,0 +1,439 @@
+{
+  "$fixture": {
+    "capturedAt": "2026-10-22T13:09:06.963Z",
+    "phase": "coding",
+    "notes": "coding stage active, no PR yet; agent working"
+  },
+  "workflowState": {
+    "session": "wavemill-fixture",
+    "started": "2026-09-08T20:43:12Z",
+    "updated": "2026-10-22T13:08:56.892Z",
+    "tasks": {
+      "FIXTURE-1": {
+        "slug": "a5-sanitised-golden-fixtures-captured-from-real-workflow-state-json-and-hook-files",
+        "branch": "task/a5-sanitised-golden-fixtures-captured-from-real-workflow-state-json-and-hook-files",
+        "worktree": "/workspace/wavemill-fixture/worktrees/a5-sanitised-golden-fixtures-captured-from-real-workflow-state-json-and-hook-files",
+        "pr": "",
+        "status": "active",
+        "linearIssueId": "FIXTURE-1",
+        "updated": "2026-10-22T13:01:57Z",
+        "agent": "claude",
+        "challenge": false,
+        "challengeModel": "claude-opus-4-7",
+        "plannerModel": "claude-opus-4-7",
+        "coderModel": "claude-opus-4-7",
+        "reviewerModel": "claude-haiku-4-5-20251001",
+        "planDepth": "medium",
+        "codeDepth": "medium",
+        "reviewMode": "llm",
+        "title": "A5: Sanitised golden fixtures captured from real workflow-state.json and hook files",
+        "traceId": "trc_6ada057a_e6952a22abb985ee",
+        "lifecycle": {
+          "schemaVersion": 1,
+          "workflowOutcome": "active",
+          "resourceDisposition": "allocated",
+          "launchContract": {
+            "baseBranch": "auto/integration",
+            "baseSha": "5050ff3f1862ae0ce9366447db4a23e15d507bc7",
+            "integrationMode": "merge-queue",
+            "mergeExecutor": "tend",
+            "mergeMethod": "squash",
+            "requireConfirm": false,
+            "remoteBranchDeletionPolicy": {
+              "allowed": true,
+              "mode": "merged-pr-task-branch",
+              "source": "cleanup_remote_task_branch"
+            },
+            "challengeRole": "",
+            "challengePairId": "",
+            "session": "wavemill-fixture",
+            "runEpoch": "20261021T171111Z.64052",
+            "windowId": "",
+            "provenance": {
+              "baseBranch": "repo-config",
+              "requireConfirm": "repo-config",
+              "mergeMethod": "repo-config",
+              "remoteBranchDeletionPolicy": "launch-contract"
+            }
+          },
+          "deliveryEvidence": {},
+          "attempt": null,
+          "prReconciliation": {
+            "schemaVersion": 1,
+            "classification": "none",
+            "issue": "FIXTURE-1",
+            "branch": "task/a5-sanitised-golden-fixtures-captured-from-real-workflow-state-json-and-hook-files",
+            "baseBranch": "auto/integration",
+            "attemptId": null,
+            "reason": "no_pr_candidates",
+            "checkedAt": "2026-10-22T13:08:21Z",
+            "candidates": []
+          },
+          "lastAttemptReconciledBy": "monitor-pr-discovery",
+          "lastAttemptReconciledAt": "2026-10-22T13:08:21Z"
+        },
+        "phase": "coding",
+        "windowId": "@230",
+        "attempt": null,
+        "prReconciliation": {
+          "schemaVersion": 1,
+          "classification": "none",
+          "issue": "FIXTURE-1",
+          "branch": "task/a5-sanitised-golden-fixtures-captured-from-real-workflow-state-json-and-hook-files",
+          "baseBranch": "auto/integration",
+          "attemptId": null,
+          "reason": "no_pr_candidates",
+          "checkedAt": "2026-10-22T13:08:21Z",
+          "candidates": []
+        },
+        "challengeExecutionIntent": {
+          "schemaVersion": 1,
+          "pairId": "FIXTURE-1",
+          "issueId": "FIXTURE-1",
+          "createdAt": "2026-10-22T13:01:50.366Z",
+          "decisionSource": "expanded",
+          "selectedStage": "plan",
+          "challengeStage": "plan",
+          "selectionPath": "recommendation-driven",
+          "selectionReason": "least-used-zero-record",
+          "selectionEvidence": {
+            "coverageCount": 0,
+            "attemptCount": 0,
+            "cooldownActive": false,
+            "priorityTier": 1
+          },
+          "challengerSource": "least-used-zero-record",
+          "challengeRecommendation": {
+            "reason": "new-model",
+            "challengerModel": "deepseek-v3",
+            "defaultModel": "claude-opus-5-5",
+            "stage": "plan"
+          },
+          "routeContext": {
+            "decisionSource": "expanded",
+            "bootstrapRoute": {
+              "coder": "claude-opus-4-7",
+              "codeDepth": "medium",
+              "reviewer": "claude-opus-4-7",
+              "reviewMode": "llm",
+              "planDepth": "medium",
+              "planner": "claude-opus-4-7",
+              "artifactPath": "worktrees/a5-sanitised-golden-fixtures-captured-from-real-workflow-state-json-and-hook-files/features/a5-sanitised-golden-fixtures-captured-from-real-workflow-state-json-and-hook-files/.initial-route.json",
+              "artifactHash": "3efe49e8bbd2262ad0a3b73785736f1d10e6bf27a39cca1bf78e72dae03fa120",
+              "inputHash": "70a90ad150749db91b7c1c46e33d9f3e3e8c3b6d2ca00bbf133692bfd3aaaa96",
+              "source": "bootstrap",
+              "routerMode": "normal",
+              "routingMode": "hokusai",
+              "expectedMetrics": {
+                "expectedSuccess": 0.696176,
+                "expectedCost": 12.03,
+                "confidence": 0.439903,
+                "expectedCostPlan": 1.25,
+                "expectedCostCode": 9.61,
+                "expectedCostReview": 1.17,
+                "neighborCount": 40,
+                "neighborSimilarityRange": [
+                  0,
+                  0
+                ],
+                "maxCostUsd": 25,
+                "challengeRecommendation": {
+                  "shouldChallenge": true,
+                  "reason": "new-model",
+                  "defaultModel": "claude-opus-5-5",
+                  "challengerModel": "deepseek-v3",
+                  "stage": "plan",
+                  "priority": 300
+                },
+                "signals": {
+                  "taskType": "feature",
+                  "promptLength": "long",
+                  "complexityScore": 5,
+                  "complexityBand": "xl",
+                  "riskFlags": [
+                    "large-scope-refactor"
+                  ],
+                  "fileTypes": [
+                    ".json",
+                    ".ts"
+                  ],
+                  "riskScore": 10
+                },
+                "reasoning": [
+                  "Adapted from Hokusai Model 30 recommended_strategy.",
+                  "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics."
+                ]
+              },
+              "challengeRecommendation": {
+                "shouldChallenge": true,
+                "reason": "new-model",
+                "defaultModel": "claude-opus-5-5",
+                "challengerModel": "deepseek-v3",
+                "stage": "plan",
+                "priority": 300
+              }
+            },
+            "expandedRoute": {
+              "coder": "claude-opus-4-7",
+              "codeDepth": "medium",
+              "reviewer": "claude-haiku-4-5-20251001",
+              "reviewMode": "llm",
+              "planDepth": "medium",
+              "planner": "claude-opus-4-7",
+              "cache_hit": false,
+              "route_source": "single",
+              "packet_hash": "f6084b6842810917670d8ece29a70a4dd017d47c3515c494a121a506000471d6",
+              "artifactPath": "worktrees/a5-sanitised-golden-fixtures-captured-from-real-workflow-state-json-and-hook-files/features/a5-sanitised-golden-fixtures-captured-from-real-workflow-state-json-and-hook-files/.post-expansion-route.json",
+              "artifactHash": "c98c92253d5ded8dcd556652ebc370c94f84e36fa1653a3d55061f9d8ffbb8fa",
+              "inputHash": "ae80f5ca6d09ec97a0b61ea0894b592a72636d22924abbe063279c1f707ef606",
+              "source": "expanded",
+              "routerMode": "normal",
+              "routingMode": "hokusai",
+              "expectedMetrics": {
+                "expectedSuccess": 0.800861,
+                "expectedCost": 6.34,
+                "confidence": 0.599588,
+                "expectedCostPlan": 0.72,
+                "expectedCostCode": 5.52,
+                "expectedCostReview": 0.1,
+                "neighborCount": 40,
+                "neighborSimilarityRange": [
+                  0,
+                  0
+                ],
+                "maxCostUsd": 25,
+                "challengeRecommendation": {
+                  "shouldChallenge": true,
+                  "reason": "new-model",
+                  "defaultModel": "claude-opus-5-5",
+                  "challengerModel": "deepseek-v3",
+                  "stage": "plan",
+                  "priority": 300
+                },
+                "signals": {
+                  "taskType": "feature",
+                  "promptLength": "long",
+                  "complexityScore": 5,
+                  "complexityBand": "xl",
+                  "riskFlags": [
+                    "large-scope-refactor",
+                    "test-infrastructure"
+                  ],
+                  "fileTypes": [
+                    ".ts",
+                    ".sh",
+                    ".json",
+                    ".md"
+                  ],
+                  "riskScore": 15
+                },
+                "reasoning": [
+                  "Adapted from Hokusai Model 30 recommended_strategy.",
+                  "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics."
+                ]
+              },
+              "challengeRecommendation": {
+                "shouldChallenge": true,
+                "reason": "new-model",
+                "defaultModel": "claude-opus-5-5",
+                "challengerModel": "deepseek-v3",
+                "stage": "plan",
+                "priority": 300
+              }
+            }
+          },
+          "primary": {
+            "key": "FIXTURE-1",
+            "role": "primary",
+            "planner": {
+              "model": "claude-opus-4-7",
+              "agent": "claude"
+            },
+            "coder": {
+              "model": "claude-opus-4-7",
+              "agent": "claude"
+            },
+            "reviewer": {
+              "model": "claude-haiku-4-5-20251001",
+              "agent": "claude"
+            },
+            "pairId": "FIXTURE-1",
+            "side": "primary",
+            "challengeStage": "plan",
+            "expectedStageModel": "claude-opus-4-7",
+            "expectedStageAgent": "claude",
+            "expectedRoute": {
+              "planner": "claude-opus-4-7",
+              "coder": "claude-opus-4-7",
+              "reviewer": "claude-haiku-4-5-20251001",
+              "planDepth": "medium",
+              "codeDepth": "medium",
+              "reviewMode": "llm"
+            },
+            "inheritedStages": []
+          },
+          "nativeCertificationRejections": [
+            {
+              "modelId": "glm-5.2",
+              "role": "coder",
+              "requestedLaunchPhase": "coding",
+              "requestedPhase": "patch",
+              "certifiedPhase": "workflow",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "missing-live-canary",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/z-ai/glm-5.2/v3.json"
+            },
+            {
+              "modelId": "kimi-k2.7-code",
+              "role": "coder",
+              "requestedLaunchPhase": "coding",
+              "requestedPhase": "patch",
+              "certifiedPhase": "workflow",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "missing-live-canary",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/moonshotai/kimi-k2.7-code/v3.json"
+            },
+            {
+              "modelId": "kimi-k2-thinking",
+              "role": "coder",
+              "requestedLaunchPhase": "coding",
+              "requestedPhase": "patch",
+              "certifiedPhase": "workflow",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "missing-live-canary",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/moonshotai/kimi-k2-thinking/v3.json"
+            },
+            {
+              "modelId": "qwen-3-235b",
+              "role": "planner",
+              "requestedLaunchPhase": "planning",
+              "requestedPhase": "workflow",
+              "certifiedPhase": "patch",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "insufficient-phase",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/qwen/qwen3-235b-a22b-2507/v3.json"
+            },
+            {
+              "modelId": "glm-5.3",
+              "role": "planner",
+              "requestedLaunchPhase": "planning",
+              "requestedPhase": "workflow",
+              "certifiedPhase": "patch",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "insufficient-phase",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/z-ai/glm-5.3/v3.json"
+            },
+            {
+              "modelId": "kimi-k3",
+              "role": "planner",
+              "requestedLaunchPhase": "planning",
+              "requestedPhase": "workflow",
+              "certifiedPhase": "patch",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "insufficient-phase",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/moonshotai/kimi-k3/v3.json"
+            },
+            {
+              "modelId": "glm-5.3-flash",
+              "role": "planner",
+              "requestedLaunchPhase": "planning",
+              "requestedPhase": "workflow",
+              "certifiedPhase": "patch",
+              "nativeCapability": "certified",
+              "nativeProvider": "openrouter",
+              "requiredSuiteVersion": "v3",
+              "reason": "insufficient-phase",
+              "artifactPath": "~/.wavemill-fixture/native-agent-certifications/z-ai/glm-5.3-flash/v3.json"
+            }
+          ],
+          "forkStage": null,
+          "forkCommit": null,
+          "sharedPrefix": false,
+          "noChallengeReason": "challenger_never_launched",
+          "challengeCollapseReason": "challenger_never_launched"
+        },
+        "challengeStage": "plan",
+        "challengeVariedModel": "claude-opus-4-7",
+        "challengeVariedAgent": "claude",
+        "challengeCollapseReason": "challenger_never_launched",
+        "challengeCollapseDetail": "Finalization selected a pair but no challenger arm was launched; staying single-model"
+      }
+    }
+  },
+  "hooks": {
+    "FIXTURE-1": {
+      "state": "working",
+      "event": "PreToolUse",
+      "agent": "claude",
+      "timestamp": 1792674540,
+      "writer": "agent",
+      "agentRecord": {
+        "state": "working",
+        "event": "PreToolUse",
+        "agent": "claude",
+        "timestamp": 1792674540,
+        "detail": "Bash"
+      },
+      "detail": "Bash"
+    }
+  },
+  "stageResults": {
+    "FIXTURE-1": {
+      "planning": {
+        "stage": "planning",
+        "status": "completed",
+        "startedAt": "2026-10-22T12:46:03.236Z",
+        "finishedAt": "2026-10-22T13:01:44Z",
+        "agent": "claude",
+        "model": "claude-opus-4-7",
+        "intendedModel": "claude-opus-4-7",
+        "executedModel": "claude-opus-4-7",
+        "executionEvidence": {
+          "status": "direct",
+          "source": "claude-session",
+          "detail": "models=claude-opus-4-7:68; sessions=1; turns=68",
+          "recordedAt": "2026-10-22T13:01:45.155Z"
+        },
+        "modelAttributionEligible": true,
+        "notes": "Plan approved by user",
+        "artifacts": {
+          "type": "planning",
+          "planFile": "plan.md"
+        }
+      },
+      "coding": {
+        "stage": "coding",
+        "status": "running",
+        "startedAt": "2026-10-22T13:01:57Z",
+        "finishedAt": null,
+        "agent": "claude",
+        "model": "claude-opus-4-7",
+        "notes": "",
+        "intendedModel": "claude-opus-4-7",
+        "executedModel": null,
+        "executionEvidence": {
+          "status": "missing",
+          "source": "unknown",
+          "recordedAt": "2026-10-22T13:01:57.623Z"
+        },
+        "modelAttributionEligible": false,
+        "modelAttributionIneligibleReason": "stage_not_completed",
+        "history": []
+      },
+      "review": null,
+      "ready": null
+    }
+  }
+}

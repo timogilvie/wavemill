@@ -1,0 +1,259 @@
+{
+  "$fixture": {
+    "capturedAt": "2026-10-22T13:09:34.144Z",
+    "phase": "aborted",
+    "notes": "aborted challenger (primary already merged)"
+  },
+  "workflowState": {
+    "session": "wavemill-fixture",
+    "started": "2026-09-08T20:43:12Z",
+    "updated": "2026-10-22T13:09:30Z",
+    "tasks": {
+      "FIXTURE-1_c": {
+        "slug": "b2-golden-journey-harness-run-the-real-monitor-tend-loop-for-n-ticks-against-a-temp-repo-challenger",
+        "branch": "task/b2-golden-journey-harness-run-the-real-monitor-tend-loop-for-n-ticks-against-a-temp-repo-challenger",
+        "worktree": "/workspace/wavemill-fixture/worktrees/b2-golden-journey-harness-run-the-real-monitor-tend-loop-for-n-ticks-against-a-temp-repo-challenger",
+        "pr": "",
+        "status": "aborted",
+        "linearIssueId": "FIXTURE-1",
+        "updated": "2026-10-22T13:00:52Z",
+        "agent": "native-openrouter",
+        "challenge": true,
+        "challengePairId": "FIXTURE-1",
+        "challengeRole": "challenger",
+        "challengeModel": "qwen-3-coder",
+        "challengeStage": "implementation",
+        "plannerModel": "gpt-5.6-terra",
+        "coderModel": "qwen-3-coder",
+        "reviewerModel": "claude-haiku-4-5-20251001",
+        "planDepth": "light",
+        "codeDepth": "light",
+        "reviewMode": "static",
+        "phase": "aborted",
+        "traceId": "trc_6ad6232f_fc30bd72c889c8cc",
+        "lifecycle": {
+          "schemaVersion": 1,
+          "workflowOutcome": "error",
+          "resourceDisposition": "retained",
+          "launchContract": {
+            "baseBranch": "auto/integration",
+            "baseSha": "9936d36ef0398611c7ca1fa07a9889f59f2952d3",
+            "integrationMode": "merge-queue",
+            "mergeExecutor": "tend",
+            "mergeMethod": "squash",
+            "requireConfirm": false,
+            "remoteBranchDeletionPolicy": {
+              "allowed": true,
+              "mode": "merged-pr-task-branch",
+              "source": "cleanup_remote_task_branch"
+            },
+            "challengeRole": "challenger",
+            "challengePairId": "FIXTURE-1",
+            "session": "wavemill-fixture",
+            "runEpoch": "20261019T124358Z.76983",
+            "windowId": "",
+            "provenance": {
+              "baseBranch": "repo-config",
+              "requireConfirm": "repo-config",
+              "mergeMethod": "repo-config",
+              "remoteBranchDeletionPolicy": "launch-contract"
+            }
+          },
+          "deliveryEvidence": {},
+          "attempt": null,
+          "prReconciliation": {
+            "schemaVersion": 1,
+            "classification": "none",
+            "issue": "FIXTURE-1_c",
+            "branch": "task/b2-golden-journey-harness-run-the-real-monitor-tend-loop-for-n-ticks-against-a-temp-repo-challenger",
+            "baseBranch": "auto/integration",
+            "attemptId": null,
+            "reason": "no_pr_candidates",
+            "checkedAt": "2026-10-21T17:17:52Z",
+            "candidates": []
+          },
+          "lastAttemptReconciledBy": "monitor-pr-discovery",
+          "lastAttemptReconciledAt": "2026-10-21T17:17:52Z",
+          "retention": {
+            "reason": "dirty_worktree",
+            "policy": "cleanup-episode-retained",
+            "actor": "cleanup_completed_task",
+            "timestamp": "2026-10-22T13:00:52Z",
+            "evidence": {
+              "issue": "FIXTURE-1_c",
+              "branch": "task/b2-golden-journey-harness-run-the-real-monitor-tend-loop-for-n-ticks-against-a-temp-repo-challenger",
+              "worktree": "/workspace/wavemill-fixture/worktrees/b2-golden-journey-harness-run-the-real-monitor-tend-loop-for-n-ticks-against-a-temp-repo-challenger",
+              "worktreeExists": true,
+              "localBranchExists": true,
+              "localHeadSha": "d99be84a303358311178e99be17b05f5f73f1f2d",
+              "baseBranch": "auto/integration",
+              "baseSha": "1a5d5d9eda6dcf30cc530c91c7757167812c70d7",
+              "remoteTrackingHeadSha": "",
+              "dirtyStatusHash": "01750f71bfa618f778e580e529a71be6681624930ab2cd3915da176797861fe9",
+              "dirtyStatus": " M shared/lib/wavemill-fixture-monitor.sh",
+              "worktreeIdentity": "valid",
+              "prNumber": "",
+              "prState": "",
+              "prHeadRefOid": "",
+              "prBaseBranch": "",
+              "verificationReason": ""
+            }
+          },
+          "cleanupEpisode": {
+            "schemaVersion": 1,
+            "episodeId": "FIXTURE-1_c:cleanup:f32e5f4b41c85c0e885ed997158ae2472e0f78074cfaa0902f9c1ce6bc412bd3",
+            "fingerprint": "f32e5f4b41c85c0e885ed997158ae2472e0f78074cfaa0902f9c1ce6bc412bd3",
+            "fingerprintInputs": {
+              "issue": "FIXTURE-1_c",
+              "branch": "task/b2-golden-journey-harness-run-the-real-monitor-tend-loop-for-n-ticks-against-a-temp-repo-challenger",
+              "worktree": "/workspace/wavemill-fixture/worktrees/b2-golden-journey-harness-run-the-real-monitor-tend-loop-for-n-ticks-against-a-temp-repo-challenger",
+              "worktreeExists": true,
+              "localBranchExists": true,
+              "localHeadSha": "d99be84a303358311178e99be17b05f5f73f1f2d",
+              "baseBranch": "auto/integration",
+              "baseSha": "1a5d5d9eda6dcf30cc530c91c7757167812c70d7",
+              "remoteTrackingHeadSha": "",
+              "dirtyStatusHash": "01750f71bfa618f778e580e529a71be6681624930ab2cd3915da176797861fe9",
+              "dirtyStatus": " M shared/lib/wavemill-fixture-monitor.sh",
+              "worktreeIdentity": "valid",
+              "prNumber": "",
+              "prState": "",
+              "prHeadRefOid": "",
+              "prBaseBranch": "",
+              "verificationReason": ""
+            },
+            "disposition": "retained",
+            "failureClass": "expected-preservation",
+            "firstAttemptAt": "2026-10-22T13:00:52Z",
+            "lastAttemptAt": "2026-10-22T13:00:52Z",
+            "attemptCount": 1,
+            "maxAttempts": 5,
+            "nextRetryAt": null,
+            "requiredOperatorAction": "Commit, stash, or discard the retained worktree changes, then run wavemill-fixture cleanup <issue> --dry-run.",
+            "lastOutcome": "dirty_worktree",
+            "updatedAt": "2026-10-22T13:00:52Z"
+          }
+        },
+        "challengeVariedModel": "qwen-3-coder",
+        "challengeVariedAgent": "native-openrouter",
+        "windowId": "@69",
+        "attempt": null,
+        "prReconciliation": {
+          "schemaVersion": 1,
+          "classification": "none",
+          "issue": "FIXTURE-1_c",
+          "branch": "task/b2-golden-journey-harness-run-the-real-monitor-tend-loop-for-n-ticks-against-a-temp-repo-challenger",
+          "baseBranch": "auto/integration",
+          "attemptId": null,
+          "reason": "no_pr_candidates",
+          "checkedAt": "2026-10-21T17:17:52Z",
+          "candidates": []
+        },
+        "terminalReconciliations": {
+          "recovery_failure": {
+            "issue": "FIXTURE-1_c",
+            "reason": "recovery_failure",
+            "prNumber": null,
+            "appliedAt": "2026-10-19T14:17:32Z",
+            "stateApplied": true,
+            "stageApplied": true,
+            "hookApplied": true,
+            "paneMetadataApplied": true,
+            "paneReleased": false,
+            "linearApplied": true,
+            "pr": null,
+            "updatedAt": "2026-10-19T14:17:33Z"
+          }
+        },
+        "abortReason": "operator: challenger errored without a PR (recovery_failure); FIXTURE-2 unstick",
+        "abortedCleanupReason": "aborted challenge retry",
+        "abortedCleanupAt": "2026-10-22T13:00:50Z",
+        "challengeAborted": "Primary already merged as PR #1668",
+        "challengeAbortedDetail": "The challenger arm (qwen-3-coder) showed no agent progress in phase aborted past the stall grace and never opened a PR; retired so its sibling is released.",
+        "challengeAbortedStage": "aborted",
+        "challengeCompared": true,
+        "challengeComparedSource": "record",
+        "supersededReason": "Primary already merged as PR #1668",
+        "supersededAt": "2026-10-19T16:51:08.257Z",
+        "rehydration": {
+          "eligibility": "terminal",
+          "reason": "recovery_failure",
+          "checkedAt": "2026-10-21T17:12:14Z",
+          "runEpoch": "20261021T171111Z.64052",
+          "actor": "startup-terminal-preflight"
+        }
+      }
+    }
+  },
+  "hooks": {
+    "FIXTURE-1_c": {
+      "state": "error",
+      "event": "recovery_failure",
+      "agent": "codex",
+      "timestamp": 1792419453,
+      "detail": "Recovery failed",
+      "writer": "monitor",
+      "agentRecord": {
+        "state": "working",
+        "event": "run_native_model",
+        "agent": "native",
+        "timestamp": 1792418927,
+        "detail": "qwen/qwen3-coder"
+      }
+    }
+  },
+  "stageResults": {
+    "FIXTURE-1_c": {
+      "planning": {
+        "stage": "planning",
+        "status": "completed",
+        "startedAt": "2026-10-19T14:03:45.861Z",
+        "finishedAt": "2026-10-19T14:08:22Z",
+        "agent": "codex",
+        "model": "gpt-5.6-terra",
+        "intendedModel": "gpt-5.6-terra",
+        "executedModel": "gpt-5.6-terra",
+        "executionEvidence": {
+          "status": "direct",
+          "source": "codex-session",
+          "detail": "models=gpt-5.6-terra:2; sessions=1; turns=2",
+          "recordedAt": "2026-10-19T14:08:23.543Z"
+        },
+        "modelAttributionEligible": true,
+        "notes": "Plan approved by user",
+        "artifacts": {
+          "type": "planning",
+          "planFile": "plan.md"
+        },
+        "source": "inherited"
+      },
+      "coding": {
+        "stage": "coding",
+        "status": "failed",
+        "startedAt": "2026-10-19T14:08:36Z",
+        "finishedAt": "2026-10-19T14:17:33.076Z",
+        "agent": "codex",
+        "model": "qwen-3-coder",
+        "intendedModel": "qwen-3-coder",
+        "executedModel": null,
+        "executionEvidence": {
+          "status": "missing",
+          "source": "unknown",
+          "recordedAt": "2026-10-19T14:17:33.076Z"
+        },
+        "modelAttributionEligible": false,
+        "modelAttributionIneligibleReason": "stage_not_completed",
+        "notes": "Recovery failed",
+        "artifacts": {
+          "type": "coding",
+          "paneTarget": "@69",
+          "failureKind": "native-agent-exited-without-artifacts",
+          "exitCode": 127,
+          "terminalReason": "recovery_failure"
+        }
+      },
+      "review": null,
+      "ready": null
+    }
+  }
+}

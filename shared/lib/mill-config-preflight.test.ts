@@ -212,6 +212,7 @@ test('runMillConfigPreflight accepts clean config', async () => {
       const result = await runMillConfigPreflight(repoDir, {
         registry,
         certificationRoot: root,
+        now: () => new Date('2026-08-24T12:00:00.000Z'),
       });
       assert.equal(result.ok, true);
       assert.equal(result.report.removedFields.length, 0);
