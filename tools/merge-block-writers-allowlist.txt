@@ -1,0 +1,10 @@
+# merge-block-writers-allowlist.txt — justified exceptions to the one-merge-block-decision guard (tools/check-merge-block-writers.ts, HOK-3316).
+#
+# Format (tools/lib/source-guard.ts): `<repo-relative path> [<count>]  # <reason>`.
+# Every entry needs a same-line `# reason`. With a count the file is still
+# scanned and fails once it has more findings than that. The list is a
+# ratchet: an entry that over-allows fails until it is lowered or removed.
+# The invariant source and the guard itself are excluded automatically.
+#
+shared/lib/challenge-recovery.ts 1  # pre-HOK-3316 challenge-recovery notice; not a merge-status comment — migrate to postMergeStatusComment
+tools/compare-prs.ts 6  # pre-HOK-3316 challenge comparison verdict comments; one per comparison, not per tend poll

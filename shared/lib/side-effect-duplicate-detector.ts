@@ -28,7 +28,7 @@ import { DUPLICATE_ATTEMPT_EVENT, prLabelKeyPrefix } from './side-effect-ledger.
 
 export const SIDE_EFFECT_DUPLICATE_LOG_FILENAME = 'side-effect-duplicates.jsonl';
 const LOG_ROTATE_BYTES = 10 * 1024 * 1024;
-const SIDE_EFFECT_KINDS: SideEffectKind[] = ['git-push', 'pr-label', 'pr-merge', 'linear-transition'];
+const SIDE_EFFECT_KINDS: SideEffectKind[] = ['git-push', 'pr-label', 'pr-merge', 'linear-transition', 'pr-comment'];
 
 export interface DuplicateFinding {
   category: 'duplicate';

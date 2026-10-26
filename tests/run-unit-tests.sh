@@ -295,6 +295,9 @@ TESTS=(
   shared/lib/task-identity-checker.test.ts
   shared/lib/task-record-shape-checker.test.ts
   shared/lib/retry-sentinel-guard.test.ts
+  shared/lib/merge-block-writers-guard.test.ts
+  shared/lib/merge-status-comment.test.ts
+  shared/lib/tend-attempt-fact.test.ts
   shared/lib/session-capabilities-guard.test.ts
   shared/lib/hook-ttl-guard.test.ts
   shared/lib/stage-launchability-guard.test.ts

@@ -69,6 +69,16 @@ check "POST adds and DELETE (url-encoded) removes labels" \
 check "DELETE of an absent label fails like GitHub (404)" \
   bash -c '! gh api --method DELETE repos/acme/contract/issues/1/labels/nope'
 
+echo "gh: PR comments carry REST ids and edit in place (HOK-3316)"
+gh pr comment 1 --body "first status" >/dev/null
+comment_id="$(gh pr view 1 --json comments --jq '.comments[0].url' | sed 's/.*issuecomment-//')"
+check "a comment URL carries its numeric REST id" bash -c '[[ "$1" =~ ^[0-9]+$ ]]' _ "$comment_id"
+gh api --method PATCH "repos/{owner}/{repo}/issues/comments/$comment_id" -f "body=edited status" >/dev/null
+check "PATCH edits the comment in place" \
+  test "$(gh pr view 1 --json comments --jq '[.comments[].body] | join("|")')" = "edited status"
+check "PATCH of an unknown comment fails like GitHub (404)" \
+  bash -c '! gh api --method PATCH "repos/{owner}/{repo}/issues/comments/1" -f body=x'
+
 echo "gh: checks, required checks and merge"
 fakes_gh_state '.checks.byPr["1"] = [{name:"ci",conclusion:"PENDING"}]'
 set +e; gh pr checks 1 --json name >/dev/null; rc=$?; set -e

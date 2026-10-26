@@ -4367,6 +4367,59 @@ conflict_remediation_exhausted_hold() {
   bounded_retry_is_exhausted "$state_dir" "conflict-remediation-relaunch"
 }
 
+# Tend merge-attempt fact (HOK-3316). Tend records a failed merge attempt as
+# one condition-keyed marker, .tend-attempt-result.json, keyed on (PR head,
+# integration base); deriveMergeLabel renders it as wm:blocked. GitHub's 3-way
+# mergeability can be clean while tend's per-commit rebase conflicts, so a
+# rebase failure is also a merge conflict for this task: Ready's
+# merge-conflict check reads the same fact and reports CONFLICTED, which
+# launches the one-per-(head, base) conflict resolver above.
+tend_attempt_fact_path() {
+  printf '%s\n' "$1/.tend-attempt-result.json"
+}
+
+# tend_attempt_conflict_needs_ready <state_dir> <pr_number> <base_sha>
+# True when tend recorded a rebase failure for the PR's current head against
+# <base_sha> after the last Ready run finished, so Ready has not yet seen it.
+# Each fact therefore re-runs Ready once; Ready's own result then carries the
+# conflict (and the resolver it launched), never this marker.
+tend_attempt_conflict_needs_ready() {
+  local state_dir="$1" pr_number="$2" base_sha="$3" fact pr_head written_at ready_at
+  fact="$(tend_attempt_fact_path "$state_dir")"
+  [[ -f "$fact" && -n "$base_sha" && -n "$pr_number" ]] || return 1
+  [[ "$(jq -r '.detail.phase // empty' "$fact" 2>/dev/null || echo "")" == "rebase" ]] || return 1
+  [[ "$(jq -r '.detail.baseSha // empty' "$fact" 2>/dev/null || echo "")" == "$base_sha" ]] || return 1
+  pr_head=$(wavemill_pr_cache_row_by_pr "$pr_number" 2>/dev/null | jq -r '.headRefOid // empty' 2>/dev/null || echo "")
+  [[ -n "$pr_head" && "$(jq -r '.headSha // empty' "$fact" 2>/dev/null || echo "")" == "$pr_head" ]] || return 1
+  written_at=$(jq -r '.writtenAt // empty' "$fact" 2>/dev/null || echo "")
+  ready_at=$(jq -r '.finishedAt // .startedAt // empty' "$state_dir/.ready-result.json" 2>/dev/null || echo "")
+  [[ -n "$written_at" && ( -z "$ready_at" || "$written_at" > "$ready_at" ) ]]
+}
+
+# tend_attempt_conflict_prompt_note <state_dir> <base_branch>
+# Extra resolver instructions when the conflict is tend's per-commit rebase
+# rather than a GitHub-visible conflict: a merge commit would leave GitHub
+# clean and tend's rebase still conflicting. Prints nothing otherwise.
+tend_attempt_conflict_prompt_note() {
+  local state_dir="$1" base_branch="$2" fact excerpt
+  fact="$(tend_attempt_fact_path "$state_dir")"
+  [[ -f "$fact" ]] || return 0
+  [[ "$(jq -r '.detail.phase // empty' "$fact" 2>/dev/null || echo "")" == "rebase" ]] || return 0
+  excerpt=$(jq -r '.detail.excerpt // empty' "$fact" 2>/dev/null || echo "")
+  cat <<_WVML_PROMPT_
+
+Merge-lane note (HOK-3316):
+GitHub reports this PR mergeable, but that does not make it mergeable in the merge lane.
+Tend rebases it onto origin/$base_branch one commit at a time, and that rebase conflicts.
+A merge commit does not fix this.
+Instead of step 3, rebase the branch onto origin/$base_branch (git rebase origin/$base_branch).
+Resolve each conflicting commit, and regenerate generated files rather than hand-merging them.
+Then update the PR branch with a --force-with-lease push.
+Tend's rebase output:
+$excerpt
+_WVML_PROMPT_
+}
+
 # Source of truth is the bounded-retry bucket (HOK-2924); the JSON
 # remediationAttempts / remediationLaunchHead mirrors in .ready-result.json
 # are still written for dashboards and downstream tools but are no longer
@@ -14127,6 +14180,7 @@ launch_ready_phase() {
 
     prompt_file="/tmp/${SESSION}-${issue}-conflict-prompt.txt"
     build_conflict_resolution_prompt "$pr_number" "$branch" "$wt_dir" "$status_file" "$base_branch" > "$prompt_file"
+    tend_attempt_conflict_prompt_note "$state_dir" "$base_branch" >> "$prompt_file"
     if [[ "$(post_pr_reconciliation_enabled "$wt_dir")" == "true" ]]; then
       # Fresh-agent conflict reconciliation from the durable capsule
       # (HOK-2936): stable foundation projection first, current incident and
@@ -22558,6 +22612,36 @@ monitor_issue_state() {
           active_count=$((active_count + 1))
           return 0
         fi
+      fi
+
+      # HOK-3316: tend's rebase onto the current base conflicted although
+      # GitHub reports the PR mergeable. Re-run Ready once for that fact: its
+      # merge-conflict check reads the fact and launches the conflict
+      # resolver (one per (head, base)); the label stays wm:blocked meanwhile.
+      if tend_attempt_conflict_needs_ready "$ready_state_dir_path" "$PR" "$current_main_sha" \
+        && ! conflict_remediation_exhausted_hold "$ready_state_dir_path" "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH" "$current_head"; then
+        log "status" "⚠ $ISSUE → tend could not rebase PR #$PR onto $BASE_BRANCH; re-running Ready to request conflict remediation"
+        title=$(pass_task_field "$ISSUE" title)
+        [[ -n "$title" ]] || title="Task"
+        if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
+          launch_rc=0
+        else
+          launch_rc=$?
+        fi
+        if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
+          log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during tend-conflict re-check"
+          set_task_phase "$ISSUE" "aborted"
+          set_window_attention_state "$WIN" "needs-user"
+          return 0
+        fi
+        if [[ "$launch_rc" -eq 0 || "$launch_rc" -eq 3 || "$launch_rc" -eq 4 || "$launch_rc" -eq 5 || "$launch_rc" -eq 6 ]]; then
+          set_window_attention_state "$WIN" "clear"
+          active_count=$((active_count + 1))
+          return 0
+        fi
+        log "status" "⚠ $ISSUE → conflict remediation for tend's rebase failure could not launch (PR #$PR, rc=$launch_rc)"
+        set_window_attention_state "$WIN" "needs-user"
+        return 0
       fi
 
       if [[ -n "$current_main_sha" && "$stored_base_sha" != "$current_main_sha" ]]; then

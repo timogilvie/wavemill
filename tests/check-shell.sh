@@ -289,6 +289,9 @@ for f in \
   "$REPO_DIR"/tests/journeys/mid-flight-base-conflict.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3273/fake-agent/review \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3273/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/tend-rebase-conflict-single-comment.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/hok-3316/fake-agent/review \
+  "$REPO_DIR"/tests/journeys/fixtures/hok-3316/fake-agent/coding \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
   "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
   "$REPO_DIR"/tests/lib/state-fixtures.sh \
