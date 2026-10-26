@@ -65,6 +65,21 @@ function makeTruth(overrides: Partial<GitHubPRTruth> = {}): GitHubPRTruth {
   };
 }
 
+// The in-flight conflict resolver record the monitor writes through
+// marker_write after a resolver launches (HOK-3273).
+const CONFLICT_REMEDIATION_MARKER = '.conflict-remediation.json';
+function writeConflictRemediationMarker(featureDir: string, head = 'head-1', prNumber = 2268): void {
+  writeFileSync(path.join(featureDir, CONFLICT_REMEDIATION_MARKER), JSON.stringify({
+    schemaVersion: 1,
+    kind: 'conflict-remediation',
+    headSha: head,
+    writtenAt: '2026-05-05T11:55:00Z',
+    reason: `Conflict remediation in flight for PR #${prNumber}`,
+    detail: { head, base: 'main', launchHead: head, prNumber },
+    condition: { head, expiresOn: ['head', 'remote', 'operator-event'], operatorEventSeq: 0 },
+  }, null, 2));
+}
+
 function setupReadyTask(issueId = 'HOK-1579', prNumber = 528): {
   repoDir: string;
   stateDir: string;
@@ -684,7 +699,7 @@ test('tick auto-recovers stale local state for clean green PRs', async () => {
     },
   }, { bare: true, topLevel: { updated: '2026-05-05T12:00:00.000Z', jobs: {} } }), null, 2));
   writeFileSync(path.join(featureDir, '.needs-attention'), 'stale local state\n');
-  writeFileSync(path.join(featureDir, '.conflict-detected'), '');
+  writeConflictRemediationMarker(featureDir, 'old-head', 528);
   writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
     stage: 'ready',
     status: 'running',
@@ -721,7 +736,7 @@ test('tick auto-recovers stale local state for clean green PRs', async () => {
   assert.equal(result.findings[0].classification, 'stuck');
   assert.equal(result.findings[0].action, 'auto-recovered');
   assert.equal(existsSync(path.join(featureDir, '.needs-attention')), false);
-  assert.equal(existsSync(path.join(featureDir, '.conflict-detected')), false);
+  assert.equal(existsSync(path.join(featureDir, CONFLICT_REMEDIATION_MARKER)), false);
 
   const readyResult = JSON.parse(readFileSync(path.join(featureDir, '.ready-result.json'), 'utf-8')) as {
     status: string;
@@ -741,7 +756,7 @@ test('tick auto-recovers stale local state for clean green PRs', async () => {
 
 test('tick completes disconnected resolved conflict remediation', async () => {
   const { repoDir, stateDir, stateFile, featureDir } = setupReadyTask('HOK-2268', 2268);
-  writeFileSync(path.join(featureDir, '.conflict-detected'), '');
+  writeConflictRemediationMarker(featureDir);
   writeFileSync(path.join(featureDir, '.needs-attention'), 'stale conflict detail\n');
   writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
     stage: 'ready',
@@ -790,7 +805,7 @@ test('tick completes disconnected resolved conflict remediation', async () => {
     assert.equal(result.findings.length, 1);
     assert.equal(result.findings[0].classification, 'disconnected-remediation');
     assert.equal(result.findings[0].action, 'completed-conflict-remediation');
-    assert.equal(existsSync(path.join(featureDir, '.conflict-detected')), false);
+    assert.equal(existsSync(path.join(featureDir, CONFLICT_REMEDIATION_MARKER)), false);
     assert.equal(existsSync(path.join(featureDir, '.needs-attention')), false);
 
     const readyResult = JSON.parse(readFileSync(path.join(featureDir, '.ready-result.json'), 'utf-8')) as {
@@ -812,7 +827,7 @@ test('tick completes disconnected resolved conflict remediation', async () => {
 
 test('tick writes needs-attention for disconnected unsafe merge remediation', async () => {
   const { repoDir, stateFile, featureDir } = setupReadyTask('HOK-2268', 2268);
-  writeFileSync(path.join(featureDir, '.conflict-detected'), '');
+  writeConflictRemediationMarker(featureDir);
   writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
     stage: 'ready',
     status: 'running',

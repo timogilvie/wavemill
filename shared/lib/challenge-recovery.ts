@@ -2,7 +2,8 @@ import { join } from 'node:path';
 import { getPullRequest } from './github.ts';
 import { prStateLabelDeps, WM_LABELS } from './pr-state-labels.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
-import { mutateWorkflowState, workflowTaskEntries } from './workflow-state.ts';
+import { mutateWorkflowState } from './workflow-state.ts';
+import { resolvePrTask } from './pr-task-resolver.ts';
 
 export interface RecoverSupersededPrOptions {
   prNumber: number;
@@ -144,12 +145,20 @@ async function updateWorkflowStateToManualComparison(prNumber: number, repoDir: 
 
   try {
     await mutateWorkflowState(workflowStatePath, (state) => {
-      // Find the task with this PR number
-      for (const [, taskObj] of workflowTaskEntries(state)) {
+      const { location, miss } = resolvePrTask(prNumber, state, {
+        site: 'challenge-recovery.updateWorkflowStateToManualComparison',
+      });
+
+      if (location && state.tasks) {
+        const entry = state.tasks[location.taskId];
         // Only update if there's a challenge pair (indicating this is a comparison-related PR)
-        if (String(taskObj.pr) === String(prNumber) && taskObj.challengePairId) {
-          taskObj.comparisonState = 'manual_comparison_needed';
+        if (entry && entry.challengePairId) {
+          entry.comparisonState = 'manual_comparison_needed';
         }
+      } else if (miss) {
+        console.warn(
+          `[challenge-recovery] Failed to resolve PR ${prNumber} for manual comparison: ${miss.reason}`,
+        );
       }
 
       return state;

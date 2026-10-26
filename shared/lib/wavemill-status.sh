@@ -301,20 +301,21 @@ get_ready_queue_state() {
   fi
 }
 
+# A conflict resolver is in flight for the task (HOK-3273): the monitor writes
+# one condition-keyed .conflict-remediation.json when it launches the resolver
+# and the reconciler expires it once the resolver pushes.
 is_ready_conflicted() {
   local worktree="$1" slug="$2"
-  local feature_dir=""
   local dir
 
   for dir in features bugs; do
     if [[ -d "$worktree/$dir/$slug" ]]; then
-      feature_dir="$worktree/$dir/$slug"
-      [[ -f "$feature_dir/.conflict-detected" ]] && return 0
-      return 1
+      [[ -f "$worktree/$dir/$slug/.conflict-remediation.json" ]]
+      return
     fi
   done
 
-  [[ -f "$worktree/features/$slug/.conflict-detected" ]]
+  [[ -f "$worktree/features/$slug/.conflict-remediation.json" ]]
 }
 
 is_stale_ready_gate_detail_for_phase() {
@@ -2347,31 +2348,49 @@ backstage_health_dashboard_line() {
 # only; the cache may be stale or missing, in which case this returns 1 so
 # the renderer can show a "…" placeholder (or omit the row entirely when
 # WAVEMILL_SKIP_RELIABILITY_METRIC=1).
+#
+# HOK-3245: labels the repo the figure was computed for (`.repoDir`, stamped
+# by the tool) and shows the mill-only rate beside the all-PR rate. Stuck
+# p50/p90 need no split: operator PRs have no stuck coverage. A cache written
+# before HOK-3245 renders "mill N/A" and no label.
 reliability_dashboard_line() {
   local cache_file="/tmp/wavemill-${SESSION:-}-reliability.json"
   [[ "${WAVEMILL_SKIP_RELIABILITY_METRIC:-0}" != "1" ]] || return 1
   [[ -r "$cache_file" ]] || return 1
   command -v jq >/dev/null 2>&1 || return 1
 
-  local merged rate_json p50_ms p90_ms rate_pct p50_m p90_m
+  local merged mill_merged rate_json mill_rate_json p50_ms p90_ms repo_dir repo_label
+  local rate_pct mill_rate_pct p50_m p90_m
   merged="$(jq -r '(.buckets[0].merged // .overall.merged // 0)' "$cache_file" 2>/dev/null || echo 0)"
   [[ "$merged" =~ ^[0-9]+$ ]] && (( merged > 0 )) || return 1
 
+  mill_merged="$(jq -r '(.buckets[0].millMerged // .overall.millMerged // 0)' "$cache_file" 2>/dev/null || echo 0)"
+  [[ "$mill_merged" =~ ^[0-9]+$ ]] || mill_merged=0
   rate_json="$(jq -r '(.buckets[0].unattendedRate // .overall.unattendedRate)' "$cache_file" 2>/dev/null || echo null)"
+  mill_rate_json="$(jq -r '(.buckets[0].millUnattendedRate // .overall.millUnattendedRate)' "$cache_file" 2>/dev/null || echo null)"
   p50_ms="$(jq -r '(.buckets[0].stuckP50Ms // .overall.stuckP50Ms // 0)' "$cache_file" 2>/dev/null || echo 0)"
   p90_ms="$(jq -r '(.buckets[0].stuckP90Ms // .overall.stuckP90Ms // 0)' "$cache_file" 2>/dev/null || echo 0)"
+  repo_dir="$(jq -r '.repoDir // empty' "$cache_file" 2>/dev/null || true)"
 
-  if [[ "$rate_json" == "null" || -z "$rate_json" ]]; then
-    rate_pct="N/A"
-  else
-    rate_pct="$(awk -v r="$rate_json" 'BEGIN{printf "%.1f%%", r*100}')"
-  fi
-
+  rate_pct="$(_reliability_fmt_rate "$rate_json")"
+  mill_rate_pct="$(_reliability_fmt_rate "$mill_rate_json")"
   p50_m="$(awk -v v="$p50_ms" 'BEGIN{printf "%dm", (v/60000)}')"
   p90_m="$(awk -v v="$p90_ms" 'BEGIN{printf "%dm", (v/60000)}')"
 
-  printf '7d unattended: %s · stuck p50 %s · p90 %s (%s merged)' "$rate_pct" "$p50_m" "$p90_m" "$merged"
+  repo_label=""
+  [[ -n "$repo_dir" ]] && repo_label=" (${repo_dir##*/})"
+
+  printf '7d unattended%s: mill %s · all %s · stuck p50 %s · p90 %s (%s/%s merged)' \
+    "$repo_label" "$mill_rate_pct" "$rate_pct" "$p50_m" "$p90_m" "$mill_merged" "$merged"
   return 0
+}
+
+_reliability_fmt_rate() {
+  if [[ "${1:-null}" == "null" || -z "${1:-}" ]]; then
+    printf 'N/A'
+  else
+    awk -v r="$1" 'BEGIN{printf "%.1f%%", r*100}'
+  fi
 }
 
 # HOK-3177: trigger a background refresh of the reliability cache at most
@@ -2392,10 +2411,13 @@ reliability_schedule_refresh() {
     return 0
   fi
   _RELIABILITY_LAST_REFRESH_AT=$SECONDS
+  # HOK-3245: pass the repo env through unresolved — the refresher falls back
+  # to the session repo cache before REPO_DIR/$PWD.
   (
     WAVEMILL_SESSION="${SESSION:-}" \
       WAVEMILL_INSTALL_DIR="${WAVEMILL_INSTALL_DIR:-}" \
-      WAVEMILL_MILLED_REPO_DIR="${WAVEMILL_MILLED_REPO_DIR:-${REPO_DIR:-$PWD}}" \
+      WAVEMILL_MILLED_REPO_DIR="${WAVEMILL_MILLED_REPO_DIR:-}" \
+      REPO_DIR="${REPO_DIR:-}" \
       bash "$refresh_script" >/dev/null 2>&1 &
   ) >/dev/null 2>&1 &
 }

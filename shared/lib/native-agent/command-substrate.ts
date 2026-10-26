@@ -6,6 +6,11 @@ import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import type { CommandClass } from './command-classifier.ts';
 import { classifyCommand } from './command-classifier.ts';
 import { parseCommandArgv } from './command-argv.ts';
+import {
+  FOREGROUND_WAIT_GUARD,
+  classifyForegroundWait,
+  describeWaitGuardRefusal,
+} from './command-wait-guard.ts';
 import { buildCommandTranscript } from './command-transcript.ts';
 import type { TranscriptWriter } from './transcript.ts';
 import type { ApprovalGateFn } from './workflow-tools/approval-gate.ts';
@@ -23,7 +28,8 @@ export type RejectionReason =
   | 'dangerous-command-pattern'
   | 'cwd-outside-allowed-roots'
   | 'approval-denied'
-  | 'approval-expired';
+  | 'approval-expired'
+  | 'foreground-wait-refused';
 
 export interface CommandApprovalNeededMetadata {
   requestId: string;
@@ -65,6 +71,8 @@ export interface CommandResult {
   approval: ApprovalOutcome;
   rejectionReason?: RejectionReason | string;
   rejectionDetail?: string;
+  /** Named guard that refused the command (e.g. 'foreground-wait'). */
+  guard?: string;
   /** Present when approval === 'approval_needed'. */
   approvalNeeded?: CommandApprovalNeededMetadata;
   exitCode: number | null;
@@ -177,6 +185,23 @@ export async function runCommand(options: RunCommandOptions): Promise<CommandRes
     spawnCommand = parsed.argv;
   }
 
+  // HOK-3262: refuse foreground waits (sleep/watch/timeout tail -f) on the
+  // exec argv. Shell-mode strings are not tokenized and are not guarded.
+  if (typeof spawnCommand !== 'string') {
+    const waitDecision = classifyForegroundWait(spawnCommand);
+    if (waitDecision.refused) {
+      return rejectionResult(
+        options,
+        commandClass,
+        'foreground-wait-refused',
+        startedAt,
+        classification.normalizedCommand,
+        describeWaitGuardRefusal(waitDecision),
+        FOREGROUND_WAIT_GUARD,
+      );
+    }
+  }
+
   const cwdResolution = resolveAllowedCwd(options.cwd, options.allowedRoots);
   if (cwdResolution.kind === 'outside') {
     return rejectionResult(
@@ -275,6 +300,7 @@ function rejectionResult(
   startedAt: number,
   normalizedCommand: string,
   rejectionDetail?: string,
+  guard?: string,
 ): CommandResult {
   const durationMs = Date.now() - startedAt;
   const built = buildCommandTranscript({
@@ -290,6 +316,7 @@ function rejectionResult(
     signal: null,
     timedOut: false,
     rejectionReason,
+    guard,
     stdout: '',
     stderr: '',
     maxOutputBytes: validatePositiveInteger(options.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES, 'maxOutputBytes'),
@@ -300,6 +327,7 @@ function rejectionResult(
     approval: 'rejected',
     rejectionReason,
     rejectionDetail,
+    ...(guard ? { guard } : {}),
     exitCode: null,
     signal: null,
     stdout: built.stdout,

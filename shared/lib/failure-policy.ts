@@ -213,6 +213,8 @@ const KIND_ALIASES: Readonly<Record<string, string>> = {
   'provider-quota-exhausted': 'provider-credit-exhausted',
   'provider-rate-limited': 'provider-transient-error',
   'native-review-timeout': 'native-stage-timeout',
+  // HOK-3249: the typed review category for an overflow of the budgeted input.
+  'native-context-window-exceeded': 'context-window-exceeded',
   operator_abort: 'cancelled',
   'operator-cancelled': 'cancelled',
 };

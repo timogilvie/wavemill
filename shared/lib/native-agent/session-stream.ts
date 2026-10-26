@@ -534,6 +534,26 @@ export class SessionStreamWriter {
   }
 
   /**
+   * Write a guard_refused event (HOK-3262).
+   */
+  writeGuardRefused(opts: {
+    guard: string;
+    toolName: string;
+    reason: string;
+    commandSummary?: string;
+  }): SessionEvent {
+    const event = this.createEvent({
+      type: 'guard_refused',
+      guard: opts.guard,
+      toolName: opts.toolName,
+      reason: opts.reason,
+      ...(opts.commandSummary && { commandSummary: opts.commandSummary }),
+    });
+    this.append(event);
+    return event;
+  }
+
+  /**
    * Write a session_resume event.
    */
   writeSessionResume(opts: {

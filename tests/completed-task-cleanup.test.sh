@@ -63,11 +63,7 @@ trap 'rm -rf "$TEST_TMP"' EXIT
 
 HELPERS_FILE="$TEST_TMP/tmux_helpers.sh"
 {
-  extract_function "$COMMON_SCRIPT" "_tmux_window_target_exists"
-  printf '\n'
-  extract_function "$COMMON_SCRIPT" "_tmux_target_join"
-  printf '\n'
-  extract_function "$COMMON_SCRIPT" "_tmux_task_window_target"
+  cat "$REPO_DIR/shared/lib/terminal-backend.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_cleanup_run"
 } > "$HELPERS_FILE"

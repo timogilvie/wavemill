@@ -50,6 +50,7 @@ ALLOW_SUBSTRINGS=(
   # Operator-facing restart hints (strings printed to users).
   'detail="Backstage window'
   "detail=\"Backstage tend"
+  'detail="Backstage observer loop is'
   '1. Inspect \`npx tsx $TOOLS_DIR/challenge-eval-evidence.ts'
   '2. Or assess/supersede the pair with \`npx tsx $TOOLS_DIR/challenge-pair-recovery.ts'
   # fetch_queue_plan builds the planner command as a string for eval. Phase 5

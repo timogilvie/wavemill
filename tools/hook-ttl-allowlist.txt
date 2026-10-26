@@ -1,0 +1,16 @@
+# hook-ttl-allowlist.txt — justified exceptions to the task-progress liveness (HOK-3101) guard (tools/check-hook-ttl.ts).
+#
+# Format (tools/lib/source-guard.ts): `<repo-relative path> [<count>]  # <reason>`.
+# Every entry needs a same-line `# reason`. Without a count the file is exempt
+# entirely; with a count the file is still scanned and fails once it has more
+# findings than that, so a new site in a listed file still fires. The list is a
+# ratchet: an entry that over-allows (fewer findings than its count, none, or a
+# missing file) fails until it is lowered or removed. The invariant source and
+# the guard itself are excluded automatically and must NOT be listed here.
+#
+# Prefer a one-line `// allow-hook-ttl: <reason>` (`#` in shell) suppression over an
+# entry whenever only a line or two is involved.
+shared/lib/terminal-reconciler.sh 2  # fallback freshness check used only when wavemill_hook_read is not loaded (standalone callers)
+shared/lib/wavemill-monitor.sh 11  # pre-guard private TTL checks (stage-owner, divergence, pane-release paths); migrate to wavemill_hook_read --fresh and lower the count
+shared/lib/wavemill-next-done.sh 2  # standalone next-done helper sourced without task-progress.sh; shares the primitive's WAVEMILL_HOOK_TTL_SECONDS override
+shared/lib/wavemill-status.sh 4  # dashboard status fallback: TTL-checked hook read before pane-liveness fallback (documented 300s hook contract)

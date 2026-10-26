@@ -93,6 +93,15 @@ export interface ResolvePrOptions extends ResolveOptions {
    * lookup keeps the miss log to a single structured line instead of two.
    */
   fallbackBranch?: string;
+  /**
+   * Tertiary PR match for lifecycle-based delivery evidence. When the PR
+   * number does not match `.pr` but a row has
+   * `task.lifecycle.deliveryEvidence.prNumber` equal to the lookup PR,
+   * that row matches too. Defaults to false to preserve existing semantics.
+   * Enabled by tend's `resolveEffectiveBaseBranchForPr` to cover
+   * HOK-3181/3212 cases where the PR is stored in lifecycle metadata.
+   */
+  matchLifecycleDeliveryPr?: boolean;
 }
 
 export type ResolveResult =
@@ -141,6 +150,24 @@ function parsePr(task: TaskRecord): number {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.length > 0) {
     const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseLifecycleDeliveryPr(task: TaskRecord): number {
+  const lifecycle = task.lifecycle;
+  if (!isRecord(lifecycle)) return 0;
+  const deliveryEvidence = lifecycle.deliveryEvidence;
+  if (!isRecord(deliveryEvidence)) return 0;
+  const prNumber = deliveryEvidence.prNumber;
+  if (typeof prNumber === 'number' && Number.isFinite(prNumber)) return prNumber;
+  if (typeof prNumber === 'string' && prNumber.length > 0) {
+    const parsed = Number(prNumber);
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
@@ -202,6 +229,7 @@ export function resolvePrTask(
 
   const fallbackTaskKey = options.fallbackTaskKey;
   const fallbackBranch = options.fallbackBranch;
+  const matchLifecycleDeliveryPr = options.matchLifecycleDeliveryPr ?? false;
   for (const [taskId, task] of workflowTaskEntries(state)) {
     const matchesPr = Number.isFinite(prNumber) && prNumber > 0 && parsePr(task) === prNumber;
     const matchesTaskKey = typeof fallbackTaskKey === 'string' && fallbackTaskKey.length > 0 && taskId === fallbackTaskKey;
@@ -209,7 +237,11 @@ export function resolvePrTask(
       && fallbackBranch.length > 0
       && typeof task.branch === 'string'
       && task.branch === fallbackBranch;
-    if (!matchesPr && !matchesTaskKey && !matchesBranch) continue;
+    const matchesLifecyclePr = matchLifecycleDeliveryPr
+      && Number.isFinite(prNumber)
+      && prNumber > 0
+      && parseLifecycleDeliveryPr(task) === prNumber;
+    if (!matchesPr && !matchesTaskKey && !matchesBranch && !matchesLifecyclePr) continue;
 
     const built = buildLocation(taskId, task);
     if ('missReason' in built) {

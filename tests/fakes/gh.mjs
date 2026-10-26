@@ -251,12 +251,16 @@ function view(state, pr, { observe = true } = {}) {
   const behind = pr.state === 'OPEN' && baseSha && head
     ? git(['merge-base', '--is-ancestor', baseSha, head], { allowFail: true }) === null
     : false;
+  // Mergeability is the real merge, as on GitHub: a head that cannot merge
+  // cleanly into its base reads CONFLICTING / DIRTY until someone resolves it.
+  const conflicted = behind && !mergeTree(baseSha, head);
   const mergeStateStatus = pr.overrides?.mergeStateStatus
     ?? (pr.state !== 'OPEN' ? 'UNKNOWN'
-      : buckets.includes('fail') ? 'BLOCKED'
-        : buckets.includes('pending') ? 'BLOCKED'
-          : behind && state.strictBehind ? 'BEHIND'
-            : 'CLEAN');
+      : conflicted ? 'DIRTY'
+        : buckets.includes('fail') ? 'BLOCKED'
+          : buckets.includes('pending') ? 'BLOCKED'
+            : behind && state.strictBehind ? 'BEHIND'
+              : 'CLEAN');
   return {
     number: pr.number,
     title: pr.title,
@@ -275,7 +279,7 @@ function view(state, pr, { observe = true } = {}) {
     mergedAt: pr.mergedAt ?? null,
     closedAt: pr.closedAt ?? null,
     mergeCommit: pr.mergeCommitOid ? { oid: pr.mergeCommitOid } : null,
-    mergeable: pr.overrides?.mergeable ?? (pr.state === 'OPEN' ? 'MERGEABLE' : 'UNKNOWN'),
+    mergeable: pr.overrides?.mergeable ?? (pr.state !== 'OPEN' ? 'UNKNOWN' : conflicted ? 'CONFLICTING' : 'MERGEABLE'),
     mergeStateStatus,
     statusCheckRollup: checks.map((c) => ({
       __typename: 'CheckRun',

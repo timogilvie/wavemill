@@ -235,11 +235,12 @@ else
   pass "mill avoids workflow-state and Linear mutations before tmux startup"
 fi
 
+# HOK-3293: task window resolution lives in the terminal backend seam.
 WINDOW_RESOLUTION_BLOCK="$(awk '
-  /^_tmux_window_target_exists\(\) \{/ { capture=1 }
-  /^_ensure_task_window_exists\(\) \{/ { capture=0 }
+  /^_term_tmux_window_exists\(\) \{/ { capture=1 }
+  /^_term_tmux_is_dead\(\) \{/ { capture=0 }
   capture { print }
-' "$MONITOR_SCRIPT_FILE")"
+' "$REPO_DIR/shared/lib/terminal-backend.sh")"
 
 ENSURE_WINDOW_BLOCK="$(awk '
   /^_ensure_task_window_exists\(\) \{/ { capture=1 }
@@ -284,7 +285,7 @@ LAUNCH_READY_BLOCK="$(awk '
 ' "$MONITOR_SCRIPT_FILE")"
 
 if [[ "$WINDOW_RESOLUTION_BLOCK" == *'.tasks[$issue].windowId'* ]] \
-  && [[ "$WINDOW_RESOLUTION_BLOCK" == *'_tmux_window_target_exists "$session" "$stored_target" "$wt_dir"'* ]] \
+  && [[ "$WINDOW_RESOLUTION_BLOCK" == *'_term_tmux_window_exists "$session" "$stored_target" "$wt_dir"'* ]] \
   && [[ "$WINDOW_RESOLUTION_BLOCK" == *'pane_current_path'* ]]; then
   pass "task window resolution checks persisted windowId and worktree before canonical name"
 else
@@ -384,15 +385,12 @@ TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 INTENT_FUNCS="$TMP_ROOT/intent-funcs.sh"
-: > "$INTENT_FUNCS"
+cat "$REPO_DIR/shared/lib/terminal-backend.sh" > "$INTENT_FUNCS"
 for fn in \
   coding_pane_replacement_intent_path \
   record_coding_pane_replacement_intent \
   coding_pane_replacement_intent_matches \
   clear_coding_pane_replacement_intent \
-  _tmux_window_target_exists \
-  _tmux_target_join \
-  _tmux_task_window_target \
   _ensure_task_window_exists
 do
   extract_function() {
@@ -494,6 +492,7 @@ cp "$REPO_DIR/shared/lib/bounded-retry.sh" "$TEST_REPO/shared/lib/"
 cp "$REPO_DIR/shared/lib/task-progress.sh" "$TEST_REPO/shared/lib/"
 cp "$REPO_DIR/shared/lib/challenge-arms.sh" "$TEST_REPO/shared/lib/"
 cp "$REPO_DIR/shared/lib/task-identity.sh" "$TEST_REPO/shared/lib/"
+cp "$REPO_DIR/shared/lib/terminal-backend.sh" "$TEST_REPO/shared/lib/"
 cp "$REPO_DIR/shared/lib/wavemill-input-reader.sh" "$TEST_REPO/shared/lib/"
 cp "$REPO_DIR/shared/lib/agent-adapters.sh" "$TEST_REPO/shared/lib/"
 cp "$REPO_DIR/shared/lib/routing-emitter.sh" "$TEST_REPO/shared/lib/"

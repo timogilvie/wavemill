@@ -56,6 +56,7 @@ TESTS=(
   shared/lib/stage-result.test.ts
   shared/lib/task-progress.test.ts
   shared/lib/task-identity.test.ts
+  shared/lib/terminal-backend.test.ts
   tests/llm-cli.test.ts
   shared/lib/linear-write-gate.test.ts
   shared/lib/session-adapters.test.ts
@@ -71,6 +72,8 @@ TESTS=(
   shared/lib/native-agent/transcript-compactor.test.ts
   shared/lib/native-agent/context-window-guard.test.ts
   shared/lib/native-agent/prompt-size-log.test.ts
+  shared/lib/native-agent/prompt-cache.test.ts
+  shared/lib/native-agent/prompt-cache-detector.test.ts
   shared/lib/native-agent/prompts.test.ts
   shared/lib/native-agent/pi-usage-cost.test.ts
   shared/lib/native-agent/provenance.test.ts
@@ -98,6 +101,7 @@ TESTS=(
   shared/lib/native-agent/command-transcript.test.ts
   shared/lib/native-agent/command-argv.test.ts
   shared/lib/native-agent/command-substrate.test.ts
+  shared/lib/native-agent/command-wait-guard.test.ts
   shared/lib/native-agent/test-command-scope.test.ts
   shared/lib/native-agent/coding-recovery-guard.test.ts
   shared/lib/native-agent/hok2081-gate.test.ts
@@ -153,6 +157,7 @@ TESTS=(
   shared/lib/candidate-features.test.ts
   shared/lib/context-analyzer.test.ts
   shared/lib/review-engine.test.ts
+  shared/lib/review-input-budget.test.ts
   shared/lib/review-runner.test.ts
   shared/lib/review-analysis-identity.test.ts
   shared/lib/review-scope-guard.test.ts
@@ -193,7 +198,8 @@ TESTS=(
   shared/lib/arm-failure-taxonomy.test.ts
   shared/lib/failure-policy.test.ts
   shared/lib/failure-policy.fixtures.test.ts
-  shared/lib/failure-policy.random.test.ts
+  shared/lib/failure-policy.property.test.ts
+  shared/lib/condition-reconciler.property.test.ts
   shared/lib/eval-skip-guard.test.ts
   shared/lib/arm-reliability.test.ts
   shared/lib/stale-task-branches.test.ts
@@ -235,7 +241,13 @@ TESTS=(
   shared/lib/manual-edit-attribution-audit.test.ts
   shared/lib/merge-queue.test.ts
   shared/lib/merge-labels.test.ts
+  shared/lib/merge-labels.realstate.test.ts
+  shared/lib/ready-watchdog.realstate.test.ts
+  shared/lib/tend-challenge-gate.realstate.test.ts
+  tests/real-state-schema.test.ts
+  shared/lib/merge-labels.property.test.ts
   shared/lib/pr-task-resolver.test.ts
+  shared/lib/pr-task-lookup-checker.test.ts
   shared/lib/mill-clock.test.ts
   shared/lib/model-registry.test.ts
   shared/lib/model-adapters/transport-adapter.test.ts
@@ -282,6 +294,13 @@ TESTS=(
   shared/lib/test-tracked-write-checker.test.ts
   shared/lib/task-identity-checker.test.ts
   shared/lib/task-record-shape-checker.test.ts
+  shared/lib/retry-sentinel-guard.test.ts
+  shared/lib/session-capabilities-guard.test.ts
+  shared/lib/hook-ttl-guard.test.ts
+  shared/lib/stage-launchability-guard.test.ts
+  shared/lib/provider-identity-guard.test.ts
+  shared/lib/side-effect-ledger-guard.test.ts
+  shared/lib/failure-policy-guard.test.ts
   shared/lib/task-field-read-checker.test.ts
   shared/lib/test-task-literal-checker.test.ts
   shared/lib/feature-flag-checker.test.ts
@@ -364,6 +383,7 @@ TESTS=(
   tools/check-pi-version.test.ts
   tools/check-ci-command-map-drift.test.ts
   tools/check-ci-concurrency.test.ts
+  tools/lib/source-guard.test.ts
   tools/check-openrouter-alias-audit-ci.test.ts
   tools/check-cross-pr-reverts.test.ts
   tools/hok2423-verify-native-provider-gate.test.ts
@@ -509,6 +529,8 @@ TESTS=(
   shared/lib/task-residue-archive.test.ts
   shared/lib/worktree-manager.test.ts
   shared/lib/bounded-retry.test.ts
+  shared/lib/bounded-retry.property.test.ts
+  shared/lib/plan-queue-utils.property.test.ts
   shared/lib/observer-auto-fix.test.ts
   shared/lib/observer-alerts.test.ts
   tools/backfill-stage-scores.test.ts

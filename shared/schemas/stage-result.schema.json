@@ -150,6 +150,9 @@
       "properties": {
         "failureCategory": {
           "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/stageExecutionUsage"
         }
       }
     },
@@ -197,6 +200,64 @@
         "commitCount": {
           "type": "integer",
           "minimum": 0
+        },
+        "usage": {
+          "$ref": "#/$defs/stageExecutionUsage"
+        }
+      }
+    },
+    "stageExecutionUsage": {
+      "description": "Observed native loop usage for a planning, coding or review run. Cache fields (HOK-3260) are projected from the loop's per-turn provider usage.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "turnsCompleted": {
+          "type": "number",
+          "minimum": 0
+        },
+        "toolCallsExecuted": {
+          "type": "number",
+          "minimum": 0
+        },
+        "wallClockMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "totalInputTokens": {
+          "description": "Uncached input tokens (excludes cache reads and writes).",
+          "type": "number",
+          "minimum": 0
+        },
+        "totalOutputTokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "totalCostUsd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cacheReadTokens": {
+          "description": "Cache-read tokens summed over every turn.",
+          "type": "number",
+          "minimum": 0
+        },
+        "cacheWriteTokens": {
+          "description": "Cache-write (creation) tokens summed over every turn.",
+          "type": "number",
+          "minimum": 0
+        },
+        "cacheHitRate": {
+          "description": "cacheRead / (input + cacheRead + cacheWrite) over turns 2..n; null with fewer than two turns of usage.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "providerRoute": {
+          "description": "Transport provider the loop called (e.g. anthropic, openrouter).",
+          "type": "string"
         }
       }
     }

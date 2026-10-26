@@ -6,7 +6,7 @@ import { after, describe, it } from 'node:test';
 import { spawn } from 'node:child_process';
 
 import { classifyCommand } from './command-classifier.ts';
-import { runCommand } from './command-substrate.ts';
+import { runCommand, type RunCommandOptions } from './command-substrate.ts';
 import { TranscriptWriter, parseTranscriptJsonl } from './transcript.ts';
 import { ApprovalStore, createApprovalGate } from './workflow-tools/approval-gate.ts';
 
@@ -326,6 +326,95 @@ describe('env filtering', () => {
 
     const env = JSON.parse(result.stdout) as Record<string, string | undefined>;
     assert.equal(env[TEST_SECRET_KEY], 'supersecret');
+  });
+});
+
+describe('foreground-wait guard (HOK-3262)', () => {
+  function countingSpawn(): { spawnFn: RunCommandOptions['spawnFn']; calls: () => number } {
+    let calls = 0;
+    return {
+      spawnFn(file, args, options) {
+        calls += 1;
+        return spawn(file, args, options);
+      },
+      calls: () => calls,
+    } as { spawnFn: RunCommandOptions['spawnFn']; calls: () => number };
+  }
+
+  it('refuses sleep above the floor before spawn and tags the transcript', async () => {
+    const cwd = makeTempDir('command-substrate-wait-sleep-');
+    const transcriptPath = path.join(cwd, 'native-transcript.jsonl');
+    const writer = new TranscriptWriter({ ...TRANSCRIPT_BASE_OPTS, path: transcriptPath });
+    const counter = countingSpawn();
+
+    const result = await runCommand({
+      command: 'sleep 60',
+      cwd,
+      allowedRoots: [cwd],
+      transcriptWriter: writer,
+      spawnFn: counter.spawnFn,
+    });
+
+    assert.equal(result.approval, 'rejected');
+    assert.equal(result.rejectionReason, 'foreground-wait-refused');
+    assert.equal(result.rejectionDetail, 'sleep 60s (>= 5s floor)');
+    assert.equal(result.guard, 'foreground-wait');
+    assert.equal(counter.calls(), 0);
+
+    const parsed = parseTranscriptJsonl(readFileSync(transcriptPath, 'utf-8'));
+    assert.equal(parsed[0]?.type, 'command_result');
+    if (parsed[0]?.type === 'command_result') {
+      assert.equal(parsed[0].rejectionReason, 'foreground-wait-refused');
+      assert.equal(parsed[0].guard, 'foreground-wait');
+    }
+  });
+
+  it('refuses array-form watch without parsing', async () => {
+    const cwd = makeTempDir('command-substrate-wait-watch-');
+    const counter = countingSpawn();
+
+    const result = await runCommand({
+      command: ['watch', 'gh', 'pr', 'checks'],
+      cwd,
+      allowedRoots: [cwd],
+      spawnFn: counter.spawnFn,
+    });
+
+    assert.equal(result.rejectionReason, 'foreground-wait-refused');
+    assert.equal(result.rejectionDetail, 'watch');
+    assert.equal(counter.calls(), 0);
+  });
+
+  it('does not refuse a quoted "sleep 60" argument', async () => {
+    const cwd = makeTempDir('command-substrate-wait-echo-');
+    const result = await runCommand({ command: 'echo "sleep 60"', cwd, allowedRoots: [cwd] });
+
+    assert.equal(result.approval, 'approved');
+    assert.equal(result.guard, undefined);
+    assert.equal(result.stdout.trim(), 'sleep 60');
+  });
+
+  it('allows a short sleep below the floor', async () => {
+    const cwd = makeTempDir('command-substrate-wait-short-');
+    const result = await runCommand({ command: 'sleep 0.1', cwd, allowedRoots: [cwd] });
+
+    assert.equal(result.approval, 'approved');
+    assert.equal(result.exitCode, 0);
+  });
+
+  it('keeps rejecting while/until loops as unsupported shell syntax', async () => {
+    const cwd = makeTempDir('command-substrate-wait-loop-');
+    for (const command of [
+      'while ! curl -s localhost:3000; do sleep 2; done',
+      'until gh pr checks; do sleep 30; done',
+    ]) {
+      const counter = countingSpawn();
+      const result = await runCommand({ command, cwd, allowedRoots: [cwd], spawnFn: counter.spawnFn });
+
+      assert.equal(result.approval, 'rejected');
+      assert.equal(result.rejectionReason, 'unsupported-shell-syntax');
+      assert.equal(counter.calls(), 0);
+    }
   });
 });
 

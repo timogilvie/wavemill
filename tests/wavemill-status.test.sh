@@ -1164,7 +1164,8 @@ cat > "$BEHAVIOR_READY_CONFLICT" <<'EOF'
 }
 EOF
 
-touch "$WORKTREES_DIR/ready-conflict-task/features/ready-conflict-task/.conflict-detected"
+printf '{"schemaVersion":1,"kind":"conflict-remediation","headSha":"abc1234","detail":{"launchHead":"abc1234","prNumber":413}}\n' \
+  > "$WORKTREES_DIR/ready-conflict-task/features/ready-conflict-task/.conflict-remediation.json"
 
 OUTPUT_READY_CONFLICT="$TMP_DIR/output-ready-conflict.txt"
 run_render "$STATE_FILE_READY_CONFLICT" "$WORKTREES_DIR" "$BEHAVIOR_READY_CONFLICT" "$OUTPUT_READY_CONFLICT"
@@ -1176,7 +1177,7 @@ else
   fail "conflicted ready task still looks mergeable"
 fi
 
-rm -f "$WORKTREES_DIR/ready-conflict-task/features/ready-conflict-task/.conflict-detected"
+rm -f "$WORKTREES_DIR/ready-conflict-task/features/ready-conflict-task/.conflict-remediation.json"
 OUTPUT_READY_RECOVERED="$TMP_DIR/output-ready-recovered.txt"
 run_render "$STATE_FILE_READY_CONFLICT" "$WORKTREES_DIR" "$BEHAVIOR_READY_CONFLICT" "$OUTPUT_READY_RECOVERED"
 

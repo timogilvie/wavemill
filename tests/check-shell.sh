@@ -88,6 +88,7 @@ for f in \
   "$LIB_DIR"/task-progress.sh \
   "$LIB_DIR"/wavemill-reliability-refresh.sh \
   "$LIB_DIR"/task-identity.sh \
+  "$LIB_DIR"/terminal-backend.sh \
   "$LIB_DIR"/challenge-arms.sh \
   "$LIB_DIR"/transient-marker.sh \
   "$LIB_DIR"/monitor-async-jobs.sh \
@@ -152,6 +153,7 @@ for f in \
   "$REPO_DIR"/tests/notification-waiting.test.sh \
   "$REPO_DIR"/tests/hook-osc-emit.test.sh \
   "$REPO_DIR"/tests/hook-write-context-guard.test.sh \
+  "$REPO_DIR"/tests/osc7501-status.test.sh \
   "$REPO_DIR"/tests/claude-tmux-server-guard.test.sh \
   "$REPO_DIR"/tests/agent-tmux-runtime-guard.test.sh \
   "$REPO_DIR"/tests/terminal-reconciler.test.sh \
@@ -191,6 +193,7 @@ for f in \
   "$REPO_DIR"/tests/archive-stage-artifacts.test.sh \
   "$REPO_DIR"/tests/operator-touch-record.test.sh \
   "$REPO_DIR"/tests/report-reliability-cli.test.sh \
+  "$REPO_DIR"/tests/reliability-dashboard-repo.test.sh \
   "$REPO_DIR"/tests/completed-task-cleanup.test.sh \
   "$REPO_DIR"/tests/native-agent-shell-operators.test.sh \
   "$REPO_DIR"/tests/hokusai-test-registration.test.sh \
@@ -201,6 +204,7 @@ for f in \
   "$REPO_DIR"/tests/task-inputs-gate.test.sh \
   "$REPO_DIR"/tests/task-progress.test.sh \
   "$REPO_DIR"/tests/task-identity.test.sh \
+  "$REPO_DIR"/tests/terminal-backend.test.sh \
   "$REPO_DIR"/tests/handle-phase-launch-result.test.sh \
   "$REPO_DIR"/tests/coding-launch-refusal.test.sh \
   "$REPO_DIR"/tests/review-capacity-detection.test.sh \
@@ -208,6 +212,7 @@ for f in \
   "$REPO_DIR"/tests/re-review-no-pr.test.sh \
   "$REPO_DIR"/tests/monitor-command-routing.test.sh \
   "$REPO_DIR"/tests/condition-reconciler.test.sh \
+  "$REPO_DIR"/tests/condition-reconciler-realstate.test.sh \
   "$REPO_DIR"/tests/wavemill-pr-cache.test.sh \
   "$REPO_DIR"/tests/cross-pr-revert-job.test.sh \
   "$REPO_DIR"/tests/pr-ci-status-job.test.sh \
@@ -263,6 +268,9 @@ for f in \
   "$REPO_DIR"/tests/fixtures/lifecycle/closed_sibling_merged_restart_silence.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/coding_agent_exit_interrupted.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/integration_window_observer_only.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/ready_conflict_resolver_pushed_reruns_ready.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/ready_conflict_resolver_in_flight_holds.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/ready_conflict_exhausted_holds_needs_user.sh \
   "$REPO_DIR"/tests/incident-fixtures-terminal-panes.test.sh \
   "$REPO_DIR"/tests/incident-fixtures-safety-controls.test.sh \
   "$REPO_DIR"/tests/lib/incident-fixture-harness.sh \
@@ -278,6 +286,9 @@ for f in \
   "$REPO_DIR"/tests/journeys/errored-with-pr.journey.sh \
   "$REPO_DIR"/tests/journeys/inputs-ready-before-approval.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3220/fake-agent/planning \
+  "$REPO_DIR"/tests/journeys/mid-flight-base-conflict.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/hok-3273/fake-agent/review \
+  "$REPO_DIR"/tests/journeys/fixtures/hok-3273/fake-agent/coding \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
   "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
   "$REPO_DIR"/tests/lib/state-fixtures.sh \
@@ -377,7 +388,7 @@ else
 fi
 
 observer_helper="$(awk '/^wavemill_build_observer_loop_command\(\) \{/{capture=1} capture{print} capture && /^}/{exit}' "$LIB_DIR/wavemill-common.sh")"
-if [[ "$observer_helper" == *'--dry-run'* && "$observer_helper" != *'--file-linear'* ]]; then
+if [[ "$observer_helper" != *'--file-linear'* ]]; then
   pass "observer service launch never files legacy Linear findings"
 else
   fail "observer service launch files legacy Linear findings"
@@ -629,6 +640,9 @@ else
     # Extract function definitions from task-identity.sh (sourced by wavemill-common.sh, HOK-3114)
     TASK_IDENTITY_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/task-identity.sh" | sed 's/()//' | sort -u)
 
+    # Extract function definitions from terminal-backend.sh (sourced by wavemill-common.sh, HOK-3293)
+    TERMINAL_BACKEND_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/terminal-backend.sh" | sed 's/()//' | sort -u)
+
     # Extract function definitions from challenge-arms.sh (also sourced by wavemill-common.sh, HOK-2811)
     CHALLENGE_ARMS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/challenge-arms.sh" | sed 's/()//' | sort -u)
 
@@ -657,7 +671,7 @@ else
     DEPS_DRIFT_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/deps-drift.sh" | sed 's/()//' | sort -u)
 
     # Combine all available function definitions
-    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$ASYNC_JOBS_FUNCS" "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$MILL_CLOCK_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$CONDITION_RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" "$DEPS_DRIFT_FUNCS" | sort -u)
+    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$ASYNC_JOBS_FUNCS" "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$MILL_CLOCK_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$TERMINAL_BACKEND_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$CONDITION_RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" "$DEPS_DRIFT_FUNCS" | sort -u)
 
     # Known external commands and bash builtins that are NOT custom functions
     # This list covers standard utilities, coreutils, and tools used by wavemill
@@ -1247,7 +1261,7 @@ else
 
   if grep -Fq 'elif [[ "$current_phase" == "ready" ]]; then' <<< "$MONITOR_ISSUE_BLOCK" \
     && grep -Fq 'ready_state_dir_path="$(ready_state_dir "${WORKTREE_ROOT}/${SLUG}" "$SLUG")"' <<< "$MONITOR_ISSUE_BLOCK" \
-    && grep -Fq '.conflict-detected' <<< "$MONITOR_ISSUE_BLOCK" \
+    && grep -Fq 'conflict_remediation_awaiting_ready "$ready_state_dir_path"' <<< "$MONITOR_ISSUE_BLOCK" \
     && grep -Fq 'Conflict remediation complete, ready checks rerun' <<< "$MONITOR_ISSUE_BLOCK"; then
     pass "monitor handles PR-backed ready tasks in the PR lifecycle path"
   else

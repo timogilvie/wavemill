@@ -91,7 +91,7 @@ describe('evaluateSuiteCoverage', () => {
     try {
       writeArtifact(root, makeArtifact('vOLD', registry));
 
-      const coverage = evaluateSuiteCoverage({ registry, root });
+      const coverage = evaluateSuiteCoverage({ registry, root, now: NOW });
       assert.equal(coverage.status, 'bump-without-publish');
       assert.equal(coverage.requiredSuiteVersion, 'vNEW');
       assert.equal(coverage.artifactCountForRequiredSuite, 0);
@@ -101,7 +101,7 @@ describe('evaluateSuiteCoverage', () => {
       assert.match(coverage.remediationCommand, /certify --all/);
 
       writeArtifact(root, makeArtifact('vNEW', registry));
-      const recovered = evaluateSuiteCoverage({ registry, root });
+      const recovered = evaluateSuiteCoverage({ registry, root, now: NOW });
       assert.equal(recovered.status, 'ok');
       assert.equal(recovered.artifactCountForRequiredSuite, 1);
 
@@ -127,7 +127,7 @@ describe('evaluateSuiteCoverage', () => {
     try {
       // A healthy store: right suite, right subject.
       writeArtifact(root, makeArtifact('vNEW', registry));
-      assert.equal(evaluateSuiteCoverage({ registry, root }).status, 'ok');
+      assert.equal(evaluateSuiteCoverage({ registry, root, now: NOW }).status, 'ok');
 
       // Now simulate the launch-priority fixture changing underneath it. The
       // artifact count and suite version are untouched — only catalogHash moves,
@@ -136,7 +136,7 @@ describe('evaluateSuiteCoverage', () => {
       drifted.subject = { ...drifted.subject!, catalogHash: 'hash-from-a-previous-fixture' };
       writeArtifact(root, drifted);
 
-      const coverage = evaluateSuiteCoverage({ registry, root });
+      const coverage = evaluateSuiteCoverage({ registry, root, now: NOW });
       assert.equal(coverage.status, 'identity-drift');
       assert.equal(coverage.artifactCountForRequiredSuite, 1, 'count signal is unchanged');
       assert.equal(coverage.eligibleModelCount, 0);
@@ -150,7 +150,7 @@ describe('evaluateSuiteCoverage', () => {
 
       // Re-certifying restores eligibility.
       writeArtifact(root, makeArtifact('vNEW', registry));
-      assert.equal(evaluateSuiteCoverage({ registry, root }).status, 'ok');
+      assert.equal(evaluateSuiteCoverage({ registry, root, now: NOW }).status, 'ok');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -206,7 +206,7 @@ describe('evaluateSuiteCoverage', () => {
       legacy.subject = { ...legacy.subject!, catalogHash: hashLaunchPriorityFixture() };
       writeArtifact(root, legacy);
 
-      const coverage = evaluateSuiteCoverage({ registry, root });
+      const coverage = evaluateSuiteCoverage({ registry, root, now: NOW });
       const causes = Object.fromEntries(coverage.ineligibleModels.map((m) => [m.registryKey, m.cause]));
       assert.deepEqual(causes, {
         'gpt-4o': 'launch-priority-catalog',
@@ -232,7 +232,7 @@ describe('evaluateSuiteCoverage', () => {
       orphan.model = 'removed-model';
       writeArtifact(root, orphan);
 
-      const coverage = evaluateSuiteCoverage({ registry, root });
+      const coverage = evaluateSuiteCoverage({ registry, root, now: NOW });
       assert.equal(coverage.status, 'ok');
       assert.equal(coverage.eligibleModelCount, 1);
       assert.equal(coverage.identityDriftCount, 0);
@@ -323,7 +323,7 @@ describe('evaluateSuiteCoverage', () => {
   it('treats an empty store as a warning state, not a bump failure', () => {
     const root = mkdtempSync(join(tmpdir(), 'suite-coverage-empty-'));
     try {
-      const coverage = evaluateSuiteCoverage({ registry: makeRegistry('vNEW'), root });
+      const coverage = evaluateSuiteCoverage({ registry: makeRegistry('vNEW'), root, now: NOW });
       assert.equal(coverage.status, 'empty-store');
       assert.equal(coverage.artifactCountForRequiredSuite, 0);
     } finally {

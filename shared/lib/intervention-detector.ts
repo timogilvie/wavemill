@@ -58,6 +58,8 @@ export interface InterventionEvent {
   details: string[];
   timestamps?: string[]; // ISO 8601 timestamps parallel to details array
   severities?: InterventionSeverity[]; // Structured severity parallel to details array
+  /** post_pr_commit only: agent-authored commits excluded from `count` (informational, never scored). */
+  agentCount?: number;
 }
 
 export interface InterventionSummary {
@@ -236,24 +238,37 @@ export function detectPostPrCommits(prNumber: string, repoDir?: string, prCommit
     const prCreatedAt = new Date(prData.createdAt);
 
     const commits = prCommits ?? fetchPrCommits(prNumber, repoDir);
-
-    // The first commit(s) are part of the initial PR; commits after creation are post-PR fixes.
-    // We consider any commit with a date after the PR creation as a post-PR commit.
-    const postPrCommits = commits.filter((c) => {
-      const commitDate = new Date(c.date);
-      return commitDate > prCreatedAt;
-    });
-
-    for (const c of postPrCommits) {
-      event.details.push(`${c.sha.slice(0, 7)}: ${c.message.split('\n')[0].slice(0, 200)}`);
-      event.timestamps!.push(c.date);
-    }
-    event.count = postPrCommits.length;
+    return buildPostPrCommitEvent(commits, prCreatedAt);
   } catch (err: unknown) {
     const message = errorMessage(err);
     console.warn(`[intervention-detector] Failed to fetch PR commits: ${message}`);
   }
 
+  return event;
+}
+
+/**
+ * Classify a PR's commits against its creation time. A commit dated after
+ * creation is a post-PR commit; agent-authored ones (`isAgentCommit`: review
+ * remediation, ready-check fixes) are not operator touches, so they are kept
+ * out of `count`/`details` and reported as `agentCount` instead (HOK-3245).
+ *
+ * The commit body is not returned separately by the PR commits API, so the
+ * full message is passed as both subject and body — the trailer check still
+ * fires on it.
+ */
+export function buildPostPrCommitEvent(commits: PrCommit[], prCreatedAt: Date): InterventionEvent {
+  const event: InterventionEvent = { type: 'post_pr_commit', count: 0, details: [], timestamps: [], agentCount: 0 };
+  for (const c of commits) {
+    if (!(new Date(c.date) > prCreatedAt)) continue;
+    if (isAgentCommit(c.message, c.author, c.message)) {
+      event.agentCount! += 1;
+      continue;
+    }
+    event.details.push(`${c.sha.slice(0, 7)}: ${c.message.split('\n')[0].slice(0, 200)}`);
+    event.timestamps!.push(c.date);
+  }
+  event.count = event.details.length;
   return event;
 }
 

@@ -65,7 +65,7 @@ extract_function() {
 FUNC_FILE="$TEST_TMP/pane_liveness_funcs.sh"
 extract_function "$MONITOR_SCRIPT_FILE" "_launch_agent_in_pane" > "$FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "reap_completed_planning_pane" >> "$FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "_tmux_target_join" >> "$FUNC_FILE"
+cat "$REPO_DIR/shared/lib/terminal-backend.sh" >> "$FUNC_FILE"
 extract_function "$ADAPTERS_SCRIPT_FILE" "_pane_command_is_shell" >> "$FUNC_FILE"
 
 for fn in _launch_agent_in_pane reap_completed_planning_pane _tmux_target_join _pane_command_is_shell; do

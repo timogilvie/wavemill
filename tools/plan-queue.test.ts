@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -13,8 +13,14 @@ const fixture = resolve(repoDir, 'fixtures/plan-queue/backlog-basic.json');
 // Resolve tsx from the repo, not the spawn cwd: `npx tsx` from a temp dir
 // falls back to the npm registry and flakes in CI.
 const tsxLoader = import.meta.resolve('tsx');
+// plan-queue reads `queuePlanner.mode` from the cwd's config. Default to a
+// temp dir pinned to legacy so these tests don't follow the repo's own
+// setting (grounded mode calls the classifier, which CI doesn't have).
+const legacyCwd = mkdtempSync(join(tmpdir(), 'plan-queue-legacy-test-'));
+writeFileSync(join(legacyCwd, '.wavemill-config.json'), `${JSON.stringify({ queuePlanner: { mode: 'legacy' } })}\n`, 'utf8');
+after(() => rmSync(legacyCwd, { recursive: true, force: true }));
 
-function runPlanQueue(args: string[], input?: string, cwd = repoDir, env: NodeJS.ProcessEnv = {}) {
+function runPlanQueue(args: string[], input?: string, cwd = legacyCwd, env: NodeJS.ProcessEnv = {}) {
   return spawnSync(process.execPath, ['--import', tsxLoader, planQueueTool, ...args], {
     cwd,
     encoding: 'utf-8',
@@ -28,6 +34,7 @@ function parseJson(stdout: string) {
     availableNow: string[];
     queuedAfterDependencies: Array<{ taskId: string; ancestors: string[] }>;
     avoidRunningTogether: string[][];
+    sharedSurfaceConflicts: Array<{ a: string; b: string; files: string[]; evidence?: string; source?: string }>;
     needsTriage: Array<{ reason: string; edge: { type: string; from: string; to: string; source: string } }>;
   };
 }
@@ -126,8 +133,8 @@ function millPlanArgs(backlogPath: string, cacheKey: string, reportPath: string,
 
 describe('plan-queue CLI', () => {
   it('emits queuePlan JSON from a backlog file', () => {
-    const stdout = execFileSync('npx', ['tsx', planQueueTool, '--backlog-file', fixture, '--json'], {
-      cwd: repoDir,
+    const stdout = execFileSync(process.execPath, ['--import', tsxLoader, planQueueTool, '--backlog-file', fixture, '--json'], {
+      cwd: legacyCwd,
       encoding: 'utf-8',
       env: { ...process.env },
     });
@@ -137,6 +144,7 @@ describe('plan-queue CLI', () => {
       'availableNow',
       'queuedAfterDependencies',
       'avoidRunningTogether',
+      'sharedSurfaceConflicts',
       'needsTriage',
     ]);
     assert.deepEqual(result.availableNow, ['HOK-10', 'HOK-13']);
@@ -256,6 +264,7 @@ describe('plan-queue CLI', () => {
       availableNow: [],
       queuedAfterDependencies: [],
       avoidRunningTogether: [],
+      sharedSurfaceConflicts: [],
       needsTriage: [],
     });
 
@@ -376,6 +385,7 @@ describe('plan-queue CLI', () => {
         availableNow: ['HOK-1'],
         queuedAfterDependencies: [{ taskId: 'HOK-2', ancestors: ['HOK-1'] }],
         avoidRunningTogether: [],
+        sharedSurfaceConflicts: [],
         needsTriage: [],
       });
       assert.match(result.stderr, /initial refresh failed, falling back to cached edges/);
@@ -674,6 +684,7 @@ describe('plan-queue CLI', () => {
         availableNow: ['HOK-1'],
         queuedAfterDependencies: [{ taskId: 'HOK-2', ancestors: ['HOK-1'] }],
         avoidRunningTogether: [],
+        sharedSurfaceConflicts: [],
         needsTriage: [],
       });
       assert.deepEqual(readInvokedModels(logPath), [], 'classifier must not be invoked');
@@ -781,6 +792,7 @@ describe('plan-queue CLI', () => {
         availableNow: ['HOK-1'],
         queuedAfterDependencies: [{ taskId: 'HOK-2', ancestors: ['HOK-1'] }],
         avoidRunningTogether: [],
+        sharedSurfaceConflicts: [],
         needsTriage: [],
       });
     } finally {
@@ -835,6 +847,15 @@ describe('plan-queue CLI', () => {
           availableNow: ['HOK-1', 'HOK-2', 'HOK-3'],
           queuedAfterDependencies: [],
           avoidRunningTogether: [['HOK-1', 'HOK-2']],
+          sharedSurfaceConflicts: [
+            {
+              a: 'HOK-1',
+              b: 'HOK-2',
+              files: [],
+              evidence: 'grounded:conflict: Both modify shared/lib/wavemill-monitor.sh',
+              source: 'inferred',
+            },
+          ],
           needsTriage: [],
         });
         assert.match(first.stderr, /plan-queue: grounded planner: tasks=3 pairsScored=1 pairsSentToLlm=1 edges=1 waves=2/);

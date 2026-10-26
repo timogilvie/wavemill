@@ -13,6 +13,7 @@ import {
   isWorkflowAutomationMessage,
   isWavemillManagedBranch,
   agentCommitsAsUser,
+  buildPostPrCommitEvent,
   deduplicatePostPrAndManualEdits,
   detectManualEdits,
   detectTestFixes,
@@ -957,6 +958,22 @@ describe('intervention-detector', () => {
       } finally {
         rmSync(tmpDir, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe('buildPostPrCommitEvent (HOK-3245)', () => {
+    it('counts operator commits after PR creation and reports agent commits separately', () => {
+      const commits: PrCommit[] = [
+        { sha: 'aaaaaaa1111', message: 'initial work', author: 'Tim', date: '2026-10-08T09:00:00Z' },
+        { sha: 'bbbbbbb2222', message: 'fix: review remediation\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>', author: 'Tim', date: '2026-10-08T11:00:00Z' },
+        { sha: 'ccccccc3333', message: 'fix: hand patch', author: 'Tim', date: '2026-10-08T12:00:00Z' },
+      ];
+      const event = buildPostPrCommitEvent(commits, new Date('2026-10-08T10:00:00Z'));
+      assert.equal(event.type, 'post_pr_commit');
+      assert.equal(event.count, 1);
+      assert.equal(event.agentCount, 1);
+      assert.deepEqual(event.details, ['ccccccc: fix: hand patch']);
+      assert.deepEqual(event.timestamps, ['2026-10-08T12:00:00Z']);
     });
   });
 

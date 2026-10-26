@@ -452,12 +452,12 @@ That means a PR can be individually ready and still remain unmerged because the 
 
 When `wavemill mill` runs the ready stage and sees `mergeConflict.status = "CONFLICTED"`:
 
-1. It writes `features/<slug>/.conflict-detected` in the existing worktree.
-2. It relaunches the task agent in that same worktree with a conflict-resolution-only prompt.
+1. It relaunches the task agent in that same worktree with a conflict-resolution-only prompt.
+2. Only once that launch succeeds, it writes one condition-keyed marker, `features/<slug>/.conflict-remediation.json` (`{head, base, launchHead, prNumber}`, `--expires-on head,remote,operator-event`), and charges the `conflict-remediation-relaunch` bounded-retry bucket (one attempt per `(head, base)`). A Ready that defers (cross-PR guard pending, ownership held) or a refused launch charges nothing (HOK-3273).
 3. The agent fetches the base branch, merges it, resolves conflicts, validates, commits, and pushes.
-4. After the agent exits, the monitor reruns `wavemill ready <pr>`.
+4. The push moves the head: the condition reconciler expires the marker, the budget key resets, and the monitor reruns `wavemill ready <pr>`, which reads mergeability from GitHub again. Conflict state is never latched locally.
 
-If conflicts persist, or mergeability comes back `UNKNOWN` or `ERROR`, the monitor writes `features/<slug>/.needs-attention` and marks the task for operator follow-up.
+If the PR is still conflicted at a `(head, base)` whose one resolver already ran, the bucket terminalizes ("Conflict remediation exhausted on identical (head, base)") and the task holds at needs-user until a new commit, a new base, or an operator event. If mergeability comes back `UNKNOWN` or `ERROR`, the monitor writes `features/<slug>/.needs-attention` and marks the task for operator follow-up.
 
 ## Monitor Behavior
 

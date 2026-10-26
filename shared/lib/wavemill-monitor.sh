@@ -4318,104 +4318,53 @@ stage_result_is_in_progress() {
   return 1
 }
 
-ready_conflict_launch_head() {
-  local feature_dir="$1"
-  local result_file="$feature_dir/.ready-result.json"
-  if [[ -f "$result_file" ]]; then
-    jq -r '.artifacts.launchHead // empty' "$result_file" 2>/dev/null || echo ""
-  else
-    echo ""
-  fi
+# Conflict remediation (HOK-3273). One condition-keyed marker,
+# .conflict-remediation.json, records "a resolver is in flight for head X".
+# Whether the PR is conflicted is never latched: every Ready run reads it from
+# GitHub. The marker is written only after a resolver launches, and the
+# condition reconciler expires it when the worktree head, the PR's remote head
+# or an operator event moves on, so it cannot outlive the resolver's push.
+# The `conflict-remediation-relaunch` bucket (limit 1 per (head, base)) is
+# charged in the same launch tail, so a deferred or refused Ready never spends
+# the attempt (HOK-2924).
+conflict_remediation_marker_path() {
+  printf '%s\n' "$1/.conflict-remediation.json"
 }
 
-ready_conflict_attention_head() {
-  local feature_dir="$1"
-  local attention_head_file="$feature_dir/.conflict-attention-head"
-  if [[ -f "$attention_head_file" ]]; then
-    cat "$attention_head_file" 2>/dev/null || echo ""
-  else
-    echo ""
-  fi
+# conflict_remediation_in_flight <state_dir> <current_head>
+# True while the resolver launched at <current_head> is still Ready's work in
+# progress. A resolver push moves the head, so this turns false at once even
+# before the reconciler has expired the marker.
+conflict_remediation_in_flight() {
+  local state_dir="$1" current_head="$2" launch_head
+  [[ -n "$current_head" ]] || return 1
+  [[ "$(read_stage_status "$state_dir" "ready")" == "running" ]] || return 1
+  launch_head=$(jq -r '.detail.launchHead // empty' "$(conflict_remediation_marker_path "$state_dir")" 2>/dev/null || echo "")
+  [[ -n "$launch_head" && "$launch_head" == "$current_head" ]]
 }
 
-record_ready_conflict_attention() {
-  local feature_dir="$1" head="$2"
-  mkdir -p "$feature_dir"
-  printf '%s\n' "$head" > "$feature_dir/.conflict-attention-head"
-  touch "$feature_dir/.conflict-attention-reported"
+# conflict_remediation_awaiting_ready <state_dir>
+# True while Ready's result is still the "conflict remediation in progress"
+# record written when the resolver launched. That is a stage result, not a
+# latch: the next Ready run overwrites it.
+conflict_remediation_awaiting_ready() {
+  local result_file="$1/.ready-result.json"
+  [[ -f "$result_file" ]] || return 1
+  [[ "$(jq -r 'select(.status == "running") | .artifacts.mergeConflict // empty' "$result_file" 2>/dev/null || echo "")" == "CONFLICTED" ]]
 }
 
-clear_ready_conflict_attention() {
-  local feature_dir="$1"
-  rm -f "$feature_dir/.conflict-attention-head" "$feature_dir/.conflict-attention-reported"
-}
-
-clear_ready_conflict_markers() {
-  local feature_dir="$1"
-  rm -f "$feature_dir/.conflict-detected" "$feature_dir/.conflict-recheck-at"
-  marker_clear "$feature_dir/.needs-attention"
-  clear_ready_conflict_attention "$feature_dir"
-}
-
-ready_conflict_recheck_interval_seconds() {
-  local configured="${WAVEMILL_READY_CONFLICT_RECHECK_SECONDS:-}"
-  if [[ "$configured" =~ ^[0-9]+$ ]] && (( configured >= 10 )); then
-    printf '%s\n' "$configured"
-  else
-    printf '60\n'
-  fi
-}
-
-ready_conflict_recheck_due() {
-  local feature_dir="$1"
-  local recheck_file="$feature_dir/.conflict-recheck-at"
-  local last_recheck interval now
-  if [[ ! -f "$recheck_file" ]]; then
-    return 0
-  fi
-
-  last_recheck="$(cat "$recheck_file" 2>/dev/null || echo "")"
-  if [[ ! "$last_recheck" =~ ^[0-9]+$ ]]; then
-    return 0
-  fi
-
-  interval="$(ready_conflict_recheck_interval_seconds)"
-  now="$(date +%s)"
-  (( now - last_recheck >= interval ))
-}
-
-write_ready_conflict_recheck_at() {
-  local feature_dir="$1"
-  local recheck_file="$feature_dir/.conflict-recheck-at"
-  local tmp_file
-  mkdir -p "$feature_dir"
-  tmp_file="$(mktemp "$feature_dir/.conflict-recheck-at.tmp.XXXXXX")"
-  printf '%s\n' "$(date +%s)" > "$tmp_file"
-  mv "$tmp_file" "$recheck_file"
-}
-
-ready_conflict_pr_is_clean() {
-  local feature_dir="$1" pr_number="$2" issue="$3"
-  local pr_json mergeable merge_state
-
-  if pr_json=$(_with_timeout "$API_TIMEOUT" gh pr view "$pr_number" --json mergeable,mergeStateStatus 2>/dev/null); then
-    write_ready_conflict_recheck_at "$feature_dir"
-  else
-    write_ready_conflict_recheck_at "$feature_dir"
-    log "debug" "ready conflict recheck for $issue PR #$pr_number failed"
-    return 1
-  fi
-
-  mergeable="$(printf '%s' "$pr_json" | jq -r '.mergeable // ""' 2>/dev/null || echo "")"
-  merge_state="$(printf '%s' "$pr_json" | jq -r '.mergeStateStatus // ""' 2>/dev/null || echo "")"
-
-  if [[ "$mergeable" == "MERGEABLE" && "$merge_state" == "CLEAN" ]]; then
-    log "status" "ready conflict recheck for $issue PR #$pr_number: MERGEABLE/CLEAN (clearing stale markers)"
-    return 0
-  fi
-
-  log "debug" "ready conflict recheck for $issue PR #$pr_number: ${mergeable:-empty}/${merge_state:-empty}"
-  return 1
+# conflict_remediation_exhausted_hold <state_dir> <wt_dir> <base_branch> <current_head>
+# True when the one resolver attempt for the current (head, base) was spent
+# and the PR stayed conflicted, so the arm is held for a new commit, a new
+# base or an operator. The base is only resolved when the sentinel exists.
+conflict_remediation_exhausted_hold() {
+  local state_dir="$1" wt_dir="$2" base_branch="$3" current_head="$4" base_sha
+  bounded_retry_is_exhausted "$state_dir" "conflict-remediation-relaunch" || return 1
+  [[ -n "$current_head" ]] || return 0
+  base_sha=$(get_main_head_sha "$wt_dir" "$base_branch")
+  [[ "$base_sha" =~ ^[0-9a-fA-F]{7,64}$ ]] || base_sha=""
+  bounded_retry_reset_if_new_key "$state_dir" "conflict-remediation-relaunch" "$current_head" "$base_sha"
+  bounded_retry_is_exhausted "$state_dir" "conflict-remediation-relaunch"
 }
 
 # Source of truth is the bounded-retry bucket (HOK-2924); the JSON
@@ -9533,82 +9482,6 @@ _ensure_window_exists() {
   fi
 }
 
-_tmux_window_target_exists() {
-  local session="$1" target="$2" expected_path="${3:-}"
-  local target_session target_path expected_real target_real pane_dead
-
-  [[ -n "$session" && -n "$target" ]] || return 1
-  target_session="$(tmux display-message -p -t "$target" '#{session_name}' 2>/dev/null || true)"
-  [[ "$target_session" == "$session" ]] || return 1
-  if [[ -n "$expected_path" ]]; then
-    target_path="$(tmux display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)"
-    if [[ -z "$target_path" ]]; then
-      pane_dead="$(tmux list-panes -t "$target" -F '#{pane_dead}' 2>/dev/null | head -1 || true)"
-      [[ "$pane_dead" == "1" ]] && return 0
-      return 1
-    fi
-    expected_real="$(cd -P "$expected_path" 2>/dev/null && printf '%s\n' "$PWD" || printf '%s\n' "$expected_path")"
-    target_real="$(cd -P "$target_path" 2>/dev/null && printf '%s\n' "$PWD" || printf '%s\n' "$target_path")"
-    [[ "$target_real" == "$expected_real" ]] || return 1
-  fi
-  return 0
-}
-
-_tmux_target_join() {
-  local session="$1" target="$2"
-  [[ -n "$target" ]] || return 1
-  case "$target" in
-    @*|*:*) printf '%s\n' "$target" ;;
-    *) printf '%s:%s\n' "$session" "$target" ;;
-  esac
-}
-
-_tmux_task_window_target() {
-  local session="$1" issue="$2" slug="$3" state_file="${4:-${STATE_FILE:-}}" wt_dir="${5:-}"
-  local stored_target="" canonical target issue_number renamed_target
-
-  if [[ -n "$state_file" && -f "$state_file" ]]; then
-    stored_target="$(jq -r --arg issue "$issue" '.tasks[$issue].windowId // empty' "$state_file" 2>/dev/null || true)"
-  fi
-  if _tmux_window_target_exists "$session" "$stored_target" "$wt_dir"; then
-    printf '%s\n' "$stored_target"
-    return 0
-  fi
-
-  issue_number="${issue##*-}"
-  renamed_target="$(tmux list-windows -t "$session" -F '#{window_id}|#{window_name}' 2>/dev/null \
-    | awk -F'|' -v issue="$issue" -v issue_number="$issue_number" -v slug="$slug" '
-        index($2, issue_number " · " slug " ·") == 1 { print $1; exit }
-        index($2, issue_number " · " slug) == 1 { print $1; exit }
-        index($2, issue " · " slug " ·") == 1 { print $1; exit }
-        index($2, issue " · " slug) == 1 { print $1; exit }
-      ')"
-  if _tmux_window_target_exists "$session" "$renamed_target" "$wt_dir"; then
-    printf '%s\n' "$renamed_target"
-    return 0
-  fi
-
-  canonical="${issue}-${slug}"
-  target="$(tmux list-windows -t "$session" -F '#{window_id}|#{window_name}' 2>/dev/null \
-    | awk -F'|' -v name="$canonical" '$2 == name { print $1; exit }')"
-  if _tmux_window_target_exists "$session" "$target" "$wt_dir"; then
-    printf '%s\n' "$target"
-    return 0
-  fi
-
-  if [[ -n "$wt_dir" ]]; then
-    while IFS='|' read -r target _name; do
-      [[ -n "$target" ]] || continue
-      if _tmux_window_target_exists "$session" "$target" "$wt_dir"; then
-        printf '%s\n' "$target"
-        return 0
-      fi
-    done < <(tmux list-windows -t "$session" -F '#{window_id}|#{window_name}' 2>/dev/null || true)
-  fi
-
-  return 1
-}
-
 coding_pane_expected_replacement_path() {
   local feature_dir="$1"
   printf '%s\n' "$feature_dir/.coding-pane-expected-replacement.json"
@@ -10311,8 +10184,13 @@ _run_phase_launch() {
 #   $4 = path to prompt file
 #   $5 = slug (optional)
 #   $6 = issue ID (optional)
+#   $7 = phase (planning|coding|review) — the one phase source, handed to
+#        agent_launch_interactive (HOK-3272)
+#   $8 = prompt-driven ("true" for post-PR remediation: a native agent runs
+#        the prompt file instead of rebuilding the coding packet)
+# Returns agent_launch_interactive's code (3 = route refused before launch).
 _launch_agent_in_pane() {
-  local target="$1" agent_cmd="$2" model="$3" prompt_file="$4" slug="${5:-}" issue="${6:-}" semantic_phase="${7:-}"
+  local target="$1" agent_cmd="$2" model="$3" prompt_file="$4" slug="${5:-}" issue="${6:-}" launch_phase="${7:-}" prompt_driven="${8:-}"
   local session window
   if [[ "$target" == @* ]]; then
     session="$SESSION"
@@ -10325,17 +10203,13 @@ _launch_agent_in_pane() {
   local abort_check_cmd=""
   local feature_dir=""
   local esc_session esc_issue esc_slug esc_linear_issue linear_issue=""
-  local launch_phase="" varied_launch_stage="" varied_launch_model=""
+  local varied_launch_stage="" varied_launch_model=""
   local esc_varied_stage="" esc_varied_model=""
 
   [[ "$agent_cmd" == "codex" ]] && agent_flags="--dangerously-bypass-approvals-and-sandbox"
   if [[ -n "$slug" ]]; then
     feature_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
     abort_check_cmd="check_stage_aborted '$feature_dir'"
-  fi
-  launch_phase="$semantic_phase"
-  if [[ -z "$launch_phase" ]] && declare -F agent_normalize_launch_phase >/dev/null 2>&1; then
-    launch_phase="$(agent_normalize_launch_phase "$window" "$prompt_file" 2>/dev/null || true)"
   fi
   if [[ -n "$launch_phase" ]]; then
     varied_launch_stage="$(challenge_stage_for_launch_env "$launch_phase")"
@@ -10372,7 +10246,8 @@ _launch_agent_in_pane() {
   export WAVEMILL_CHALLENGE_VARIED_STAGE="$varied_launch_stage"
   export WAVEMILL_CHALLENGE_VARIED_MODEL="$varied_launch_model"
 
-  agent_launch_interactive "$session" "$window" "$prompt_file" "$agent_cmd" "$model" "$agent_flags" "$abort_check_cmd" "$issue"
+  agent_launch_interactive "$session" "$window" "$prompt_file" "$agent_cmd" "$model" "$agent_flags" "$abort_check_cmd" "$issue" \
+    "$launch_phase" "$prompt_driven"
 }
 
 # Launch the planning phase in an existing tmux window
@@ -10408,7 +10283,7 @@ $issue_desc
     "$issue_context" "$status_file" "$TOOLS_DIR" "$slug" "$plan_depth" "$planner_agent" "$operating_mode" > "$prompt_file"
 
   log_task "status" "$issue" "Launching planning phase for $issue (model: $planner_model, depth: $plan_depth, mode: $operating_mode)"
-  _launch_agent_in_pane "$win" "$planner_agent" "$planner_model" "$prompt_file" "$slug" "$issue"
+  _launch_agent_in_pane "$win" "$planner_agent" "$planner_model" "$prompt_file" "$slug" "$issue" "planning"
   return $?
 }
 
@@ -10448,7 +10323,7 @@ $issue_context"
     "$issue_context" "$status_file" "$TOOLS_DIR" "$slug" "$code_depth" "$coder_agent" "$operating_mode" > "$prompt_file"
 
   log_task "status" "$issue" "Launching coding phase for $issue (model: $coder_model, depth: $code_depth, mode: $operating_mode)"
-  _launch_agent_in_pane "$win" "$coder_agent" "$coder_model" "$prompt_file" "$slug" "$issue"
+  _launch_agent_in_pane "$win" "$coder_agent" "$coder_model" "$prompt_file" "$slug" "$issue" "coding"
   return $?
 }
 
@@ -10541,7 +10416,7 @@ $issue_desc
       --max-attempts 2 >/dev/null 2>&1 || true
   fi
 
-  _launch_agent_in_pane "$win" "$reviewer_agent" "$reviewer_model" "$prompt_file" "$slug" "$issue"
+  _launch_agent_in_pane "$win" "$reviewer_agent" "$reviewer_model" "$prompt_file" "$slug" "$issue" "review"
   return $?
 }
 
@@ -11358,8 +11233,10 @@ refresh_ready_merge_queue_tick() {
     fi
   done
 
+  # Forwards the merge-queue tool's own config; producers gate on wavemill_session_has.
+  local merge_queue_enabled="${MERGE_QUEUE_ENABLED:-true}"  # allow-session-capabilities: config passthrough, not a producer gate
   config_json=$(jq -cn \
-    --arg enabled "${MERGE_QUEUE_ENABLED:-true}" \
+    --arg enabled "$merge_queue_enabled" \
     --argjson max_concurrent "${MERGE_QUEUE_MAX_CONCURRENT:-2}" \
     --argjson stuck_timeout "${MERGE_QUEUE_STUCK_TIMEOUT_SECONDS:-900}" \
     --arg conflict_grouping "${MERGE_QUEUE_CONFLICT_GROUPING_ENABLED:-true}" \
@@ -12793,9 +12670,6 @@ review_infra_recovery_category_label() {
 # distinguishing genuinely bounded conditions (HOK-2964) from the generic case.
 review_infra_recovery_next_action() {
   case "${1:-}" in
-    native-context-window-exceeded)
-      printf 'the reviewed diff still exceeds the reviewer context window at the current head; a larger-context reviewer or manual scope reduction is required, manual re-review required'
-      ;;
     provider-credit-exhausted)
       printf 'provider credits were exhausted and did not recover within the retry budget. Top up credits, then manual re-review required'
       ;;
@@ -12881,59 +12755,6 @@ review_recovery_native_timeout_repeat() {
   [[ "$prior_category" == "native-review-timeout" ]] || return 1
   [[ -n "$prior_head" && "$prior_head" == "$current_head" ]] || return 1
   return 0
-}
-
-select_context_window_recovery_reviewer() {
-  local reviewer_model="$1" wt_dir="$2"
-  local selector_script selection stderr_file rc=0 selected_model
-  stderr_file="$(mktemp "${TMPDIR:-/tmp}/wavemill-review-reroute-stderr.XXXXXX" 2>/dev/null)" || return 1
-
-  selector_script='
-    import { getConfiguredModelsForDescriptorStage, getEffectiveRegistry } from "./shared/lib/model-registry.ts";
-    import { filterNativeModels } from "./shared/lib/native-agent/certification/router-filter.ts";
-    const failedModel = process.argv[1];
-    const repoDir = process.argv[2] || process.cwd();
-    const registry = getEffectiveRegistry(repoDir);
-    const failed = registry.models[failedModel];
-    if (!failed) throw new Error(`Unknown failed review model: ${failedModel}`);
-    const candidates = getConfiguredModelsForDescriptorStage(repoDir, "reviewer").filter((modelId) => {
-      const capabilities = registry.models[modelId];
-      return modelId !== failedModel
-        && capabilities !== undefined
-        && (capabilities.qualityScores.review ?? 0) > 0
-        && capabilities.contextWindowTokens > failed.contextWindowTokens;
-    });
-    const filtered = filterNativeModels(candidates, "reviewer", registry, repoDir);
-    const selectedModel = filtered.eligible[0];
-    if (!selectedModel) {
-      throw new Error(`No certified reviewer with context window larger than ${failedModel} (${failed.contextWindowTokens} tokens)`);
-    }
-    const selected = registry.models[selectedModel];
-    console.log(JSON.stringify({
-      selectedModel,
-      previousModel: failedModel,
-      previousContextWindowTokens: failed.contextWindowTokens,
-      selectedContextWindowTokens: selected?.contextWindowTokens,
-      reason: "native-context-window-exceeded",
-      rejected: filtered.rejected,
-    }));
-  '
-
-  selection="$(cd "$REPO_DIR" 2>/dev/null && npx tsx -e "$selector_script" "$reviewer_model" "$wt_dir" 2>"$stderr_file")" || rc=$?
-  if (( rc != 0 )); then
-    REVIEW_CONTEXT_REROUTE_LAST_ERROR="$(cat "$stderr_file" 2>/dev/null || true)"
-    rm -f "$stderr_file"
-    return 1
-  fi
-  rm -f "$stderr_file"
-
-  selected_model="$(printf '%s\n' "$selection" | jq -r '.selectedModel // empty' 2>/dev/null || echo "")"
-  [[ -n "$selected_model" ]] || {
-    REVIEW_CONTEXT_REROUTE_LAST_ERROR="reroute selector returned no selectedModel"
-    return 1
-  }
-  REVIEW_CONTEXT_REROUTE_LAST_JSON="$selection"
-  printf '%s\n' "$selected_model"
 }
 
 review_recovery_contract_payload() {
@@ -13117,15 +12938,15 @@ review_recovery_window_observable() {
 }
 
 review_recovery_coordinator() {
-  local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" feature_dir="$8" reason="$9" source="${10}" category="${11:-manual}" retry_identity="${12:-}" retry_limit="${13:-0}" allow_context_reroute="${14:-false}"
+  local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" feature_dir="$8" reason="$9" source="${10}" category="${11:-manual}" retry_identity="${12:-}" retry_limit="${13:-0}"
   wavemill_lock_run "review-recovery-${issue}" \
-    review_recovery_coordinator_locked "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" "$pr_number" "$feature_dir" "$reason" "$source" "$category" "$retry_identity" "$retry_limit" "$allow_context_reroute"
+    review_recovery_coordinator_locked "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" "$pr_number" "$feature_dir" "$reason" "$source" "$category" "$retry_identity" "$retry_limit"
 }
 
 review_recovery_coordinator_locked() {
-  local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" feature_dir="$8" reason="$9" source="${10}" category="${11}" retry_identity="${12}" retry_limit="${13}" allow_context_reroute="${14}"
+  local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" feature_dir="$8" reason="$9" source="${10}" category="${11}" retry_identity="${12}" retry_limit="${13}"
   local prior_json="null" review_status contract_payload reviewer_model reviewer_agent provider review_mode
-  local disposition retry_number="0" rc=0 rerouted_model="" reroute_json="" failure_reason
+  local disposition retry_number="0" rc=0 failure_reason policy_json
 
   review_status="$(read_stage_status "$feature_dir" "review" 2>/dev/null || true)"
   if [[ "$review_status" == "running" ]]; then
@@ -13153,6 +12974,22 @@ review_recovery_coordinator_locked() {
   fi
 
   if [[ "$retry_limit" =~ ^[0-9]+$ && "$retry_limit" -gt 0 ]]; then
+    # HOK-3176 / HOK-3249: a typed category the failure policy allowlists as
+    # terminal (e.g. the budgeted review input still exceeds the reviewer's
+    # context window) cannot succeed on relaunch, so it escalates with the
+    # recorded evidence without consuming the retry budget.
+    policy_json="$(failure_policy_decide "review" "$category" \
+      "$(jq -r '(.artifacts // {}) as $a | (if ($a.type // "") == "review" then $a else ($a.review // {}) end).reviewToolError // ""' \
+        "$feature_dir/.review-result.json" 2>/dev/null || true)")"
+    if [[ "$(jq -r '.class // ""' <<<"$policy_json" 2>/dev/null)" == "terminal" ]]; then
+      failure_reason="Review failed terminally (${category}) for PR #$pr_number; $(jq -r '.nextAction // "manual re-review required"' <<<"$policy_json")"
+      bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" \
+        --head "$retry_identity" --expires-on "head,operator-event,review-artifact-substantive" --review-artifact || true
+      write_ready_attention_file "$feature_dir" "$failure_reason" \
+        --head "$retry_identity" --expires-on "head,operator-event,review-artifact" --review-artifact
+      review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+      return 1
+    fi
     # HOK-3146 / HOK-3103: a repeat native-review-timeout at the same head is
     # deterministic; the prior attempt already escalated the wall-clock
     # budget, so another retry at the same head cannot succeed. Short-circuit
@@ -13231,28 +13068,6 @@ review_recovery_coordinator_locked() {
     review_recovery_write_timeout_state "$feature_dir" "$retry_number" "$category" || true
   fi
 
-  if [[ "$allow_context_reroute" == "true" ]]; then
-    if ! rerouted_model="$(select_context_window_recovery_reviewer "$reviewer_model" "$wt_dir")"; then
-      failure_reason="Review context-window recovery cannot find a certified larger-context reviewer for PR #$pr_number (category=${category}); $(review_infra_recovery_next_action "$category")"
-      bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" \
-        --head "$retry_identity" --expires-on "head,operator-event,review-artifact-substantive" --review-artifact || true
-      write_ready_attention_file "$feature_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, $(review_infra_recovery_next_action "$category"). ${REVIEW_CONTEXT_REROUTE_LAST_ERROR:-No larger-context reviewer available.}" \
-        --head "$retry_identity" --expires-on "head,operator-event,review-artifact" --review-artifact
-      review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
-      return 1
-    fi
-    reroute_json="${REVIEW_CONTEXT_REROUTE_LAST_JSON:-}"
-    reviewer_model="$rerouted_model"
-    if ! reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review")"; then
-      failure_reason="Review context-window recovery selected $reviewer_model, but its review agent could not be resolved"
-      review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
-      return 1
-    fi
-    provider="$(wavemill_run_tool "recovery-contract.ts" provider --model "$reviewer_model" --json 2>/dev/null | jq -r '.provider // empty' 2>/dev/null || true)"
-    contract_payload="$(printf '%s' "$contract_payload" | jq -c --arg agent "$reviewer_agent" --arg model "$reviewer_model" --arg provider "$provider" --argjson reroute "${reroute_json:-null}" \
-      '.agent = $agent | .model = $model | .provider = $provider | .contextWindowReroute = $reroute')"
-  fi
-
   if ! agent_validate_phase_launch "$reviewer_agent" "review" "$reviewer_model" "$REPO_DIR"; then
     failure_reason="${AGENT_RESOLVE_LAST_DIAGNOSTIC:-review recovery launch validation failed for agent=$reviewer_agent model=$reviewer_model}"
     if [[ "$source" == "infra" ]]; then
@@ -13316,9 +13131,8 @@ review_recovery_coordinator_locked() {
 relaunch_review_after_infra_recovery() {
   local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" state_dir="$8"
   local category recorded_head current_head identity timeout_identity reviewer_identity
-  local retry_limit effective_retry_limit rc=0
-  local scope_note="" reroute_note=""
-  local context_overflow_current_scope="false"
+  local retry_limit rc=0
+  local scope_note=""
 
   # Bounded-retry identity (HOK-2964 REQ-F2/F4): keyed to the current head and
   # the failure category, not a path-specific counter. A new commit or a
@@ -13340,24 +13154,16 @@ relaunch_review_after_infra_recovery() {
 
   retry_limit="${WAVEMILL_REVIEW_INFRA_RETRY_MAX:-2}"
   [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
-  effective_retry_limit="$retry_limit"
-  if [[ "$category" == "native-context-window-exceeded" && ( -z "$recorded_head" || "$recorded_head" == "$current_head" ) ]]; then
-    context_overflow_current_scope="true"
-    effective_retry_limit=1
-  fi
 
   if [[ -n "$recorded_head" && -n "$current_head" && "$recorded_head" != "$current_head" ]]; then
     scope_note=" (scope refreshed: head ${recorded_head:0:7}→${current_head:0:7})"
   fi
 
   review_recovery_coordinator "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" "$pr_number" "$state_dir" \
-    "infrastructure review recovery for PR #$pr_number" "infra" "$category" "$identity" "$effective_retry_limit" "$context_overflow_current_scope" || rc=$?
+    "infrastructure review recovery for PR #$pr_number" "infra" "$category" "$identity" "$retry_limit" || rc=$?
   if [[ "$rc" -eq 0 ]]; then
     marker_clear "$state_dir/.needs-attention"
-    if [[ "$context_overflow_current_scope" == "true" ]]; then
-      reroute_note=" (rerouted to larger-context reviewer)"
-    fi
-    log "status" "♻ $issue → review relaunched after infrastructure recovery (category=${category})${scope_note}${reroute_note}"
+    log "status" "♻ $issue → review relaunched after infrastructure recovery (category=${category})${scope_note}"
     return 6
   fi
   if [[ "$rc" -eq 2 ]] && check_stage_aborted "$state_dir"; then
@@ -13758,6 +13564,46 @@ ready_sync_worktree_to_github_head() {
   return 0
 }
 
+# Post-PR remediation launch (HOK-3272). CI-fix and conflict prompts run as a
+# prompt-driven coding launch on the arm's own agent and model: a native arm
+# receives the prompt via --prompt-file and is certified against the existing
+# coding phase, never re-homed to another CLI. A launch the adapter refused
+# (rc 3) never started an agent, so it is not an attempt and the caller must
+# not charge the remediation budget. The refusal reason (the adapter's stderr,
+# previously lost) is classified by the failure policy and escalated to the
+# status log and .needs-attention; REMEDIATION_LAUNCH_REFUSAL and
+# REMEDIATION_LAUNCH_REFUSAL_DECISION carry it to the caller's stage result.
+# Usage: launch_remediation_agent <win> <agent> <model> <prompt_file> <slug> <issue> <state_dir> <pr> <what>
+# Returns: the launch rc
+launch_remediation_agent() {
+  local win="$1" agent="$2" model="$3" prompt_file="$4" slug="$5" issue="$6" state_dir="$7" pr="$8" what="$9"
+  local launch_stderr rc=0 kind="" challenge_arm="false"
+  local code_re='(^|[[:space:]])code=([^[:space:]]+)' reason_re='(^|[[:space:]])reason=([a-z0-9_-]+)($|[[:space:]][a-z]+=)'
+  REMEDIATION_LAUNCH_REFUSAL="" REMEDIATION_LAUNCH_REFUSAL_DECISION=""
+  launch_stderr="$(mktemp -t "wavemill-remediation-launch-XXXXXX" 2>/dev/null || echo /dev/null)"
+  _launch_agent_in_pane "$win" "$agent" "$model" "$prompt_file" "$slug" "$issue" "coding" "true" 2>"$launch_stderr" || rc=$?
+  if [[ "$launch_stderr" != /dev/null ]]; then
+    [[ -s "$launch_stderr" ]] && cat "$launch_stderr" >&2
+    if (( rc == 3 )); then
+      REMEDIATION_LAUNCH_REFUSAL="$(grep -v '^[[:space:]]*$' "$launch_stderr" | tail -n 1 || true)"
+    fi
+    rm -f "$launch_stderr"
+  fi
+  (( rc == 3 )) || return "$rc"
+
+  [[ -n "$REMEDIATION_LAUNCH_REFUSAL" ]] || REMEDIATION_LAUNCH_REFUSAL="$agent/$model launch refused without a recorded reason"
+  if [[ "$REMEDIATION_LAUNCH_REFUSAL" =~ $code_re || "$REMEDIATION_LAUNCH_REFUSAL" =~ $reason_re ]]; then
+    kind="${BASH_REMATCH[2]}"
+  fi
+  [[ "$(get_task_meta "$issue" "challenge" 2>/dev/null || true)" == "true" ]] && challenge_arm="true"
+  REMEDIATION_LAUNCH_REFUSAL_DECISION="$(failure_policy_decide "ready" "$kind" "$REMEDIATION_LAUNCH_REFUSAL" "" "$challenge_arm" \
+    | jq -c --arg reason "$REMEDIATION_LAUNCH_REFUSAL" '. + {refusal: $reason, attempt: false}')"
+  write_ready_attention_file "$state_dir" "$what launch for PR #$pr was refused before an agent started (harness fault; the remediation budget is untouched): $REMEDIATION_LAUNCH_REFUSAL"
+  log_coding_launch_refusal "$issue" "$model" "$agent" "${kind:-unclassified}" "" "needs-user" "" ""
+  log_error "  $issue: $what launch refused for PR #$pr (not an attempt): $REMEDIATION_LAUNCH_REFUSAL"
+  return 3
+}
+
 _launch_ready_remediation_attempt() {
   local issue="$1" slug="$2" wt_dir="$3" branch="$4" base_branch="$5" pr_number="$6"
   local state_dir="$7" win="$8" status_file="$9" current_agent="${10}" current_model="${11}"
@@ -13798,11 +13644,6 @@ _launch_ready_remediation_attempt() {
     reconciliation_reset_retry_if_new_fingerprint "$state_dir" "ready-remediation" "$recon_fingerprint"
   fi
 
-  # Bounded-retry bucket (HOK-2924): every launch attempt counts, keyed to the
-  # head it launched from; the JSON remediationAttempts mirror below stays for
-  # dashboards and downstream tools.
-  bounded_retry_increment "$state_dir" "ready-remediation" "$current_head" >/dev/null
-
   remediation_agent=$(ready_remediation_agent_cmd "$wt_dir")
   [[ -z "$remediation_agent" ]] && remediation_agent="$current_agent"
   [[ -z "$remediation_agent" ]] && remediation_agent="$AGENT_CMD"
@@ -13819,6 +13660,7 @@ _launch_ready_remediation_attempt() {
       "$no_model_artifacts_json"
     write_ready_attention_file "$state_dir" "Ready remediation cannot proceed without a configured model for PR #$pr_number."
     log_error "  Failed to launch ready remediation agent for $issue (no model configured)"
+    bounded_retry_increment "$state_dir" "ready-remediation" "$current_head" >/dev/null
     return 1
   fi
 
@@ -13839,14 +13681,21 @@ _launch_ready_remediation_attempt() {
     # incident), followed by the narrow remediation process instructions.
     if ! reconciliation_project_prompt "$state_dir" "$pr_number" "$prompt_file.capsule"; then
       log_error "  $issue: reconciliation capsule projection failed - refusing ready remediation launch for PR #$pr_number"
+      bounded_retry_increment "$state_dir" "ready-remediation" "$current_head" >/dev/null
       return 1
     fi
     cat "$prompt_file" >> "$prompt_file.capsule"
     mv "$prompt_file.capsule" "$prompt_file"
   fi
 
-  _launch_agent_in_pane "$win" "$remediation_agent" "$resolved_model" "$prompt_file" "$slug" "$issue" "coding"
+  launch_remediation_agent "$win" "$remediation_agent" "$resolved_model" "$prompt_file" "$slug" "$issue" \
+    "$state_dir" "$pr_number" "Ready remediation"
   launch_rc=$?
+  # Bounded-retry bucket (HOK-2924): every launch attempt counts, keyed to the
+  # head it launched from; the JSON remediationAttempts mirror below stays for
+  # dashboards and downstream tools. A refused route (rc 3) never ran the arm's
+  # model, so it is not an attempt (HOK-3272).
+  (( launch_rc == 3 )) || bounded_retry_increment "$state_dir" "ready-remediation" "$current_head" >/dev/null
 
   if [[ "$launch_rc" -eq 0 ]]; then
     if [[ "$recon_enabled" == "true" ]]; then
@@ -13889,8 +13738,14 @@ _launch_ready_remediation_attempt() {
   reconciliation_lease_release "$state_dir"
   set_task_task_owned "$issue" "active" || true
   remediation_failed_artifacts_json=$(merge_queue_enrich_ready_artifacts "$state_dir" \
-    "{\"type\":\"ready\",\"verdict\":\"fail\",\"checksRun\":${checks_run:-0},\"checksPassed\":${checks_passed:-0},\"mergeConflict\":\"${merge_status:-UNKNOWN}\",\"prNumber\":${pr_number},\"remediationAttempts\":${remediation_attempt_number},\"remediationFailures\":${failed_check_names_json}}" \
+    "{\"type\":\"ready\",\"verdict\":\"fail\",\"checksRun\":${checks_run:-0},\"checksPassed\":${checks_passed:-0},\"mergeConflict\":\"${merge_status:-UNKNOWN}\",\"prNumber\":${pr_number},\"remediationAttempts\":${remediation_attempt_number},\"remediationFailures\":${failed_check_names_json},\"launchRefusal\":${REMEDIATION_LAUNCH_REFUSAL_DECISION:-null}}" \
     "candidate-progress")
+  if (( launch_rc == 3 )); then
+    write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$resolved_model" \
+      "Ready remediation launch refused before an agent started (not an attempt): $REMEDIATION_LAUNCH_REFUSAL" \
+      "$remediation_failed_artifacts_json"
+    return 1
+  fi
   write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$resolved_model" \
     "Could not launch ready remediation agent" \
     "$remediation_failed_artifacts_json"
@@ -14244,14 +14099,29 @@ launch_ready_phase() {
 
   if [[ "$merge_status" == "CONFLICTED" ]]; then
     mkdir -p "$state_dir"
-    if [[ -f "$state_dir/.conflict-detected" ]]; then
-      current_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
-      write_ready_attention_file "$state_dir" "PR #$pr_number still has merge conflicts after automatic remediation."
-      record_ready_conflict_attention "$state_dir" "$current_head"
-      log_error "  Merge conflicts persist for $issue after remediation attempt"
-      return 1
-    fi
-    touch "$state_dir/.conflict-detected"
+    # HOK-3092/HOK-3273: one resolver per (head, base). The gate only reads
+    # the budget here; the attempt is charged in the launch tail below, so a
+    # Ready that deferred (guard pending, ownership held) or a refused launch
+    # never spends it. A resolver push moves the head and resets the key.
+    local conflict_base_sha conflict_disp conflict_reason
+    current_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
+    conflict_base_sha=$(get_main_head_sha "$wt_dir" "$base_branch")
+    conflict_disp=$(bounded_retry_gate "$state_dir" "conflict-remediation-relaunch" \
+      "$current_head" 1 "" "" "$conflict_base_sha")
+    case "$conflict_disp" in
+      exhausted)
+        conflict_reason="Conflict remediation exhausted on identical (head=$current_head, base=$conflict_base_sha) for PR #$pr_number"
+        if bounded_retry_mark_exhausted "$state_dir" "conflict-remediation-relaunch" "$conflict_reason"; then
+          log "status" "⛔ $issue → $conflict_reason"
+          write_ready_attention_file "$state_dir" "$conflict_reason"
+        fi
+        log_error "  Merge conflicts persist for $issue after remediation attempt"
+        return 1
+        ;;
+      backoff|exhausted-quiet)
+        return 1
+        ;;
+    esac
     marker_clear "$state_dir/.needs-attention"
     log "status" "  ⚠ Merge conflict detected for $issue (PR #$pr_number)"
 
@@ -14292,7 +14162,8 @@ launch_ready_phase() {
       log "debug" "  $issue: conflict reconciliation launch skipped because ownership is already held"
       return 5
     fi
-    _launch_agent_in_pane "$win" "$current_agent" "$current_model" "$prompt_file" "$slug" "$issue" "coding"
+    launch_remediation_agent "$win" "$current_agent" "$current_model" "$prompt_file" "$slug" "$issue" \
+      "$state_dir" "$pr_number" "Merge-conflict remediation"
     launch_rc=$?
 
     if [[ "$launch_rc" -eq 0 ]]; then
@@ -14307,6 +14178,26 @@ launch_ready_phase() {
       write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
         "Conflict remediation in progress for PR #$pr_number" \
         "$conflict_artifacts_json"
+      # Only a launched resolver is an attempt (HOK-2924): record it and
+      # charge the budget here, never before the launch.
+      local conflict_pr_head_oid conflict_marker_detail
+      conflict_pr_head_oid=$(wavemill_pr_cache_row_by_pr "$pr_number" 2>/dev/null \
+        | jq -r '.headRefOid // empty' 2>/dev/null || echo "")
+      conflict_marker_detail=$(jq -cn \
+        --arg head "$current_head" \
+        --arg base "$base_branch" \
+        --arg launchHead "$launch_head" \
+        --argjson prNumber "$pr_number" \
+        '{head: $head, base: $base, launchHead: $launchHead, prNumber: $prNumber}')
+      marker_write "$(conflict_remediation_marker_path "$state_dir")" \
+        --kind conflict-remediation \
+        --head "$launch_head" \
+        ${conflict_pr_head_oid:+--observed "prHeadRefOid=$conflict_pr_head_oid"} \
+        --expires-on "head,remote,operator-event" \
+        --reason "Conflict remediation in flight for PR #$pr_number" \
+        --detail-json "$conflict_marker_detail"
+      bounded_retry_increment "$state_dir" "conflict-remediation-relaunch" \
+        "$current_head" "$conflict_base_sha" >/dev/null
       return 3
     fi
     if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$state_dir"; then
@@ -14317,6 +14208,11 @@ launch_ready_phase() {
 
     reconciliation_lease_release "$state_dir"
     set_task_task_owned "$issue" "active" || true
+    if (( launch_rc == 3 )); then
+      # The refused route never ran the arm's model: no marker was written
+      # and the budget was not charged, so the next pass may still launch.
+      return 1
+    fi
     write_ready_attention_file "$state_dir" "Automatic merge-conflict resolution could not be launched for PR #$pr_number."
     log_error "  Failed to launch conflict-resolution agent for $issue"
     return 1
@@ -14359,10 +14255,8 @@ launch_ready_phase() {
     return 1
   fi
 
-  rm -f "$state_dir/.conflict-detected" "$state_dir/.conflict-recheck-at"
   marker_clear "$state_dir/.needs-attention"
   marker_clear "$state_dir/.needs-attention-transient"
-  clear_ready_conflict_attention "$state_dir"
   clear_transient_mergeability_state "$state_dir"
 
   if [[ "$ready_rc" -eq 0 ]]; then
@@ -19790,7 +19684,7 @@ COMMAND_OFFSET_WARNED=false
 
 clear_task_list_display() {
   if (( TASK_LIST_RENDERED == 1 )); then
-    printf '\033[u'  # restore cursor to saved anchor
+    printf '\033[H'  # return to the pane-absolute frame anchor (0,0)
     printf '\033[J'  # clear from anchor to end of screen
     TASK_LIST_RENDERED=0
     WAVEMILL_PANE_REPAINT_LAST_LINES=0
@@ -19798,16 +19692,19 @@ clear_task_list_display() {
 }
 
 # Paint a task-list frame, managing the cursor anchor and repaint state.
-# On first call (TASK_LIST_RENDERED=0): emits a blank separator line and
-# saves the cursor as the anchor.  On subsequent calls (TASK_LIST_RENDERED=1):
-# restores the cursor to the saved anchor before repainting.
+# The anchor is the pane's home position (ESC[H), not a saved cursor: ESC[s/u
+# is screen-relative, so once log output or a frame taller than the remaining
+# rows scrolled the pane, repaints landed below the old frame and left stale
+# "Next tasks:" frames above it (HOK-3252).  On first call
+# (TASK_LIST_RENDERED=0) the pane is cleared once (it was just `clear`ed at
+# spawn, so this does not flash); later calls only home the cursor and let
+# wavemill_pane_repaint overwrite in place and ESC[J anything below.
 paint_task_list_frame() {
   local frame="$1"
   if (( TASK_LIST_RENDERED == 1 )); then
-    printf '\033[u'  # restore cursor to anchor
+    printf '\033[H'        # home cursor to the frame anchor
   else
-    printf '\n'      # blank separator before first paint
-    printf '\033[s'  # save cursor as anchor
+    printf '\033[H\033[2J'  # home and clear the pane once
   fi
   wavemill_pane_repaint "$frame"
   TASK_LIST_RENDERED=1
@@ -20507,7 +20404,7 @@ handle_re_review_command() {
   fi
 
   review_recovery_coordinator "$issue" "$slug" "$title" "$worktree" "$branch" "$base_branch" "$pr" "$feature_dir" \
-    "manual re-review via mill input" "manual" "manual-rereview" "" 0 "false" || rc=$?
+    "manual re-review via mill input" "manual" "manual-rereview" "" 0 || rc=$?
   if [[ "$rc" -eq 0 ]]; then
     log "status" "$issue -> re-review launched for PR #$pr"
     operator_event_record "$feature_dir" "re-review" "$issue" "PR #$pr" 2>/dev/null || true
@@ -21968,79 +21865,63 @@ monitor_issue_state() {
           local ready_state_dir_path
           ready_state_dir_path="$(ready_state_dir "${WORKTREE_ROOT}/${SLUG}" "$SLUG")"
 
-          if [[ -f "$ready_state_dir_path/.conflict-detected" ]]; then
-            local ready_status launch_head current_head attention_head
-            ready_status=$(read_stage_status "$ready_state_dir_path" "ready")
-            launch_head=$(ready_conflict_launch_head "$ready_state_dir_path")
+          # HOK-3273: Ready launched a conflict resolver. Hold while it is in
+          # flight at the launched head; once it pushes (or exits), re-run
+          # Ready, which reads mergeability from GitHub afresh.
+          if conflict_remediation_awaiting_ready "$ready_state_dir_path"; then
+            local current_head
             current_head=$(git -C "${WORKTREE_ROOT}/${SLUG}" rev-parse HEAD 2>/dev/null || echo "")
-            attention_head=$(ready_conflict_attention_head "$ready_state_dir_path")
 
-            if [[ "$ready_status" == "running" ]] && [[ -n "$launch_head" ]] && [[ "$launch_head" == "$current_head" ]]; then
+            if conflict_remediation_in_flight "$ready_state_dir_path" "$current_head"; then
               set_window_attention_state "$WIN" "clear"
               active_count=$((active_count + 1))
               return 0
             fi
 
-            if [[ "$ready_status" != "running" || -z "$launch_head" || "$launch_head" != "$current_head" ]]; then
-              local pr_number
-              pr_number=$(find_pr_for_branch "$BRANCH")
-              if [[ -z "$pr_number" ]]; then
-                write_ready_attention_file "$ready_state_dir_path" "Unable to find open PR for branch $BRANCH after conflict remediation."
-                set_window_attention_state "$WIN" "needs-user"
-                return 0
-              fi
-
-              if [[ -n "$attention_head" && -n "$current_head" && "$attention_head" == "$current_head" ]]; then
-                if ready_conflict_recheck_due "$ready_state_dir_path" && ready_conflict_pr_is_clean "$ready_state_dir_path" "$pr_number" "$ISSUE"; then
-                  clear_ready_conflict_markers "$ready_state_dir_path"
-                else
-                  set_window_attention_state "$WIN" "needs-user"
-                  return 0
-                fi
-              fi
-
-              title=$(pass_task_field "$ISSUE" title)
-              if [[ -z "$title" ]]; then
-                issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
-                title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
-              fi
-
-              if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$pr_number"; then
-                local launch_rc=0
-              else
-                local launch_rc=$?
-              fi
-              if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
-                log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during conflict remediation"
-                set_task_phase "$ISSUE" "aborted"
-                set_window_attention_state "$WIN" "needs-user"
-                return 0
-              fi
-              if [[ "$launch_rc" -eq 3 ]]; then
-                set_window_attention_state "$WIN" "clear"
-                active_count=$((active_count + 1))
-                return 0
-              fi
-              if [[ "$launch_rc" -eq 5 ]]; then
-                set_window_attention_state "$WIN" "clear"
-                active_count=$((active_count + 1))
-                return 0
-              fi
-              if [[ "$launch_rc" -eq 4 || "$launch_rc" -eq 6 ]]; then
-                set_window_attention_state "$WIN" "clear"
-                active_count=$((active_count + 1))
-                return 0
-              fi
-              if [[ "$launch_rc" -ne 0 ]]; then
-                log "⚠ $ISSUE → Conflict remediation still needs attention"
-                set_window_attention_state "$WIN" "needs-user"
-                return 0
-              fi
-
-              log "$ISSUE → Conflict remediation complete, ready checks rerun"
+            if conflict_remediation_exhausted_hold "$ready_state_dir_path" "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH" "$current_head"; then
               set_window_attention_state "$WIN" "needs-user"
               return 0
             fi
+
+            local pr_number
+            pr_number=$(find_pr_for_branch "$BRANCH")
+            if [[ -z "$pr_number" ]]; then
+              write_ready_attention_file "$ready_state_dir_path" "Unable to find open PR for branch $BRANCH after conflict remediation."
+              set_window_attention_state "$WIN" "needs-user"
+              return 0
+            fi
+
+            title=$(pass_task_field "$ISSUE" title)
+            if [[ -z "$title" ]]; then
+              issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
+              title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
+            fi
+
+            if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$pr_number"; then
+              local launch_rc=0
+            else
+              local launch_rc=$?
+            fi
+            if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
+              log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during conflict remediation"
+              set_task_phase "$ISSUE" "aborted"
+              set_window_attention_state "$WIN" "needs-user"
+              return 0
+            fi
+            if [[ "$launch_rc" -eq 3 || "$launch_rc" -eq 4 || "$launch_rc" -eq 5 || "$launch_rc" -eq 6 ]]; then
+              set_window_attention_state "$WIN" "clear"
+              active_count=$((active_count + 1))
+              return 0
+            fi
+            if [[ "$launch_rc" -ne 0 ]]; then
+              log "⚠ $ISSUE → Conflict remediation still needs attention"
+              set_window_attention_state "$WIN" "needs-user"
+              return 0
+            fi
+
+            log "$ISSUE → Conflict remediation complete, ready checks rerun"
+            set_window_attention_state "$WIN" "needs-user"
+            return 0
           fi
           set_window_attention_state "$WIN" "needs-user"
           return 0
@@ -22551,11 +22432,10 @@ monitor_issue_state() {
     fi
   elif [[ "$current_phase" == "ready" ]]; then
     local resolved_phase ready_state_dir_path ready_status ready_verdict
-    local launch_head current_head title launch_rc _conflict_cleared
+    local launch_head current_head title launch_rc
     local recheck_disposition recheck_attempt recheck_limit
     local pending_recheck_disposition pending_recheck_limit pending_recheck_reason
     local challenge_pending_rc
-    _conflict_cleared=false
     resolved_phase=$(resolve_phase "$FEATURE_DIR")
     if [[ "$resolved_phase" == "aborted" ]]; then
       log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted by user during ready phase"
@@ -22566,103 +22446,55 @@ monitor_issue_state() {
     fi
 
     ready_state_dir_path="$(ready_state_dir "${WORKTREE_ROOT}/${SLUG}" "$SLUG")"
-    if [[ -f "$ready_state_dir_path/.conflict-detected" ]]; then
-      ready_status=$(read_stage_status "$ready_state_dir_path" "ready")
-      launch_head=$(ready_conflict_launch_head "$ready_state_dir_path")
+    # HOK-3273: Ready launched a conflict resolver. Hold while it is in flight
+    # at the launched head; once it pushes (or exits), re-run Ready, which
+    # reads mergeability from GitHub afresh and charges the one attempt per
+    # (head, base) only if it launches another resolver.
+    if conflict_remediation_awaiting_ready "$ready_state_dir_path"; then
       current_head=$(git -C "${WORKTREE_ROOT}/${SLUG}" rev-parse HEAD 2>/dev/null || echo "")
-      local attention_head
-      attention_head=$(ready_conflict_attention_head "$ready_state_dir_path")
 
-      if [[ "$ready_status" == "running" ]] && [[ -n "$launch_head" ]] && [[ "$launch_head" == "$current_head" ]]; then
+      if conflict_remediation_in_flight "$ready_state_dir_path" "$current_head"; then
         set_window_attention_state "$WIN" "clear"
         active_count=$((active_count + 1))
         return 0
       fi
 
-      if [[ "$ready_status" != "running" || -z "$launch_head" || "$launch_head" != "$current_head" ]]; then
-        if [[ -n "$attention_head" && -n "$current_head" && "$attention_head" == "$current_head" ]]; then
-          if ready_conflict_recheck_due "$ready_state_dir_path" && ready_conflict_pr_is_clean "$ready_state_dir_path" "$PR" "$ISSUE"; then
-            clear_ready_conflict_markers "$ready_state_dir_path"
-            _conflict_cleared=true
-          else
-            set_window_attention_state "$WIN" "needs-user"
-            return 0
-          fi
-        fi
-
-        # HOK-3092: bound the conflict-remediation relaunch loop on (head,
-        # base). Without this the guard-block → remediation → ready-relaunch
-        # path relaunched forever on identical inputs (2026-09-27 hokusai-sdk
-        # PR #97 relaunched 1,253 times in ~19h). Limit=1 → one attempt per
-        # unique (head, base); a repeated identical result terminalizes.
-        local conflict_base_sha conflict_disp
-        conflict_base_sha=$(get_main_head_sha "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH")
-        conflict_disp=$(bounded_retry_gate "$ready_state_dir_path" "conflict-remediation-relaunch" \
-          "$current_head" 1 "" "" "$conflict_base_sha")
-        case "$conflict_disp" in
-          exhausted)
-            local conflict_reason="Conflict remediation exhausted on identical (head=$current_head, base=$conflict_base_sha) for PR #$PR"
-            if bounded_retry_mark_exhausted "$ready_state_dir_path" "conflict-remediation-relaunch" "$conflict_reason"; then
-              log "status" "⛔ $ISSUE → $conflict_reason"
-              write_ready_attention_file "$ready_state_dir_path" "$conflict_reason"
-            fi
-            set_window_attention_state "$WIN" "needs-user"
-            return 0
-            ;;
-          backoff|exhausted-quiet)
-            set_window_attention_state "$WIN" "needs-user"
-            return 0
-            ;;
-        esac
-        bounded_retry_increment "$ready_state_dir_path" "conflict-remediation-relaunch" \
-          "$current_head" "$conflict_base_sha" >/dev/null
-
-        title=$(pass_task_field "$ISSUE" title)
-        if [[ -z "$title" ]]; then
-          issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
-          title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
-        fi
-
-        if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
-          launch_rc=0
-        else
-          launch_rc=$?
-        fi
-        if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
-          log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during conflict remediation"
-          set_task_phase "$ISSUE" "aborted"
-          set_window_attention_state "$WIN" "needs-user"
-          return 0
-        fi
-        if [[ "$launch_rc" -eq 3 ]]; then
-          set_window_attention_state "$WIN" "clear"
-          active_count=$((active_count + 1))
-          return 0
-        fi
-        if [[ "$launch_rc" -eq 5 ]]; then
-          set_window_attention_state "$WIN" "clear"
-          active_count=$((active_count + 1))
-          return 0
-        fi
-        if [[ "$launch_rc" -eq 4 || "$launch_rc" -eq 6 ]]; then
-          set_window_attention_state "$WIN" "clear"
-          active_count=$((active_count + 1))
-          return 0
-        fi
-        if [[ "$launch_rc" -ne 0 ]]; then
-          log "status" "⚠ $ISSUE → Conflict remediation still needs attention"
-          set_window_attention_state "$WIN" "needs-user"
-          return 0
-        fi
-
-        log "status" "$ISSUE → Conflict remediation complete, ready checks rerun"
-        if [[ "$_conflict_cleared" == "true" ]]; then
-          set_window_attention_state "$WIN" "clear"
-        else
-          set_window_attention_state "$WIN" "needs-user"
-        fi
+      if conflict_remediation_exhausted_hold "$ready_state_dir_path" "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH" "$current_head"; then
+        set_window_attention_state "$WIN" "needs-user"
         return 0
       fi
+
+      title=$(pass_task_field "$ISSUE" title)
+      if [[ -z "$title" ]]; then
+        issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
+        title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
+      fi
+
+      if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
+        launch_rc=0
+      else
+        launch_rc=$?
+      fi
+      if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
+        log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during conflict remediation"
+        set_task_phase "$ISSUE" "aborted"
+        set_window_attention_state "$WIN" "needs-user"
+        return 0
+      fi
+      if [[ "$launch_rc" -eq 3 || "$launch_rc" -eq 4 || "$launch_rc" -eq 5 || "$launch_rc" -eq 6 ]]; then
+        set_window_attention_state "$WIN" "clear"
+        active_count=$((active_count + 1))
+        return 0
+      fi
+      if [[ "$launch_rc" -ne 0 ]]; then
+        log "status" "⚠ $ISSUE → Conflict remediation still needs attention"
+        set_window_attention_state "$WIN" "needs-user"
+        return 0
+      fi
+
+      log "status" "$ISSUE → Conflict remediation complete, ready checks rerun"
+      set_window_attention_state "$WIN" "clear"
+      return 0
     fi
 
     ready_status=$(read_stage_status "$ready_state_dir_path" "ready")
@@ -23723,12 +23555,20 @@ restart_backstage_observer_loop() {
 
 check_backstage_observer_health() {
   local now health_file merged stale_seconds pane_probe pane_summary pane_status detail pane_count observer_pane_id heartbeat_at observer_count
-  local prior_attempt_at prior_attempt_count elapsed restart_pane_id observer_cmd observer_interval observer_max_log_lines
+  local prior_attempt_at prior_attempt_count prior_attempt_epoch elapsed restart_pane_id observer_cmd observer_interval observer_max_log_lines
   local reconcile_result _reconcile_pane _reconcile_action _reconcile_killed
+  local bucket retry_limit identity disposition backoff remaining reason marked_exhausted legacy_count
 
   now=$(date +%s)
   (( now - LAST_BACKSTAGE_OBSERVER_HEALTH_CHECK < BACKSTAGE_HEALTH_INTERVAL )) && return 0
   LAST_BACKSTAGE_OBSERVER_HEALTH_CHECK=$now
+  # HOK-3244 REQ-F1: route restart attempts through bounded-retry.sh (3
+  # attempts with backoff) before latching needs-user, mirroring the tend
+  # watchdog's `backstage-tend-restart` bucket.
+  bucket="backstage-observer-restart"
+  retry_limit="$BACKSTAGE_RESTART_NEEDS_USER_AFTER_ATTEMPTS"
+  [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=3
+  (( retry_limit > 0 )) || retry_limit=3
 
   if ! observer_health_enabled; then
     LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="disabled"
@@ -23762,6 +23602,7 @@ check_backstage_observer_health() {
 
   case "$pane_status" in
     healthy)
+      bounded_retry_clear "$STATE_DIR" "$bucket"
       [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "healthy" "$detail" 0 "" "$observer_pane_id" "$heartbeat_at" "$observer_count"
       LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="healthy"
       return 0
@@ -23769,7 +23610,7 @@ check_backstage_observer_health() {
     'backstage-missing')
       # HOK-3094: with tend on, tend's own health check owns window recovery.
       # With tend off the observer owns the window, so it goes through the
-      # normal one-restart / cooldown / needs-user flow, which recreates it.
+      # normal bounded-retry restart flow below, which recreates it.
       if backstage_health_enabled; then
         [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "backstage-missing" "$detail" 0 "" "" "" 0
         LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="backstage-missing"
@@ -23778,49 +23619,96 @@ check_backstage_observer_health() {
       ;;
   esac
 
-  prior_attempt_at="$(read_backstage_service_health_field "observer" '.lastRestartAttemptAt' || true)"
-  prior_attempt_count="$(read_backstage_service_health_field "observer" '.restartAttemptCount' || true)"
+  identity="${pane_status}:${observer_pane_id:-missing}"
+  bounded_retry_reset_if_new_head "$STATE_DIR" "$bucket" "$identity"
+  prior_attempt_count="$(bounded_retry_count "$STATE_DIR" "$bucket")"
   [[ "$prior_attempt_count" =~ ^[0-9]+$ ]] || prior_attempt_count=0
-  elapsed=$BACKSTAGE_RESTART_COOLDOWN
-  if [[ -n "$prior_attempt_at" ]]; then
-    local prior_attempt_epoch=0
-    prior_attempt_epoch="$(wavemill_iso8601_to_epoch "$prior_attempt_at" 2>/dev/null || echo 0)"
+  # Fresh-upgrade continuity: the first tick after HOK-3244 sees an empty
+  # bucket but a non-zero `restartAttemptCount` in the health file written by
+  # the pre-bounded-retry code path. Seed the counter from it so an in-flight
+  # restart episode does not reset to zero mid-climb.
+  if (( prior_attempt_count == 0 )); then
+    legacy_count="$(read_backstage_service_health_field "observer" '.restartAttemptCount' || true)"
+    if [[ "$legacy_count" =~ ^[0-9]+$ ]] && (( legacy_count > 0 )); then
+      prior_attempt_count="$legacy_count"
+    fi
+  fi
+  prior_attempt_epoch="$(bounded_retry_last_at "$STATE_DIR" "$bucket")"
+  [[ "$prior_attempt_epoch" =~ ^[0-9]+$ ]] || prior_attempt_epoch=0
+  prior_attempt_at=""
+  if (( prior_attempt_epoch > 0 )); then
+    prior_attempt_at="$(cleanup_episode_iso_from_epoch "$prior_attempt_epoch" 2>/dev/null || true)"
     elapsed=$(( now - prior_attempt_epoch ))
+  else
+    elapsed="$BACKSTAGE_RESTART_COOLDOWN"
+  fi
+  if [[ -z "$prior_attempt_at" ]]; then
+    prior_attempt_at="$(read_backstage_service_health_field "observer" '.lastRestartAttemptAt' || true)"
+  fi
+
+  disposition="$(bounded_retry_gate "$STATE_DIR" "$bucket" "$identity" "$retry_limit" "$BACKSTAGE_RESTART_COOLDOWN" "$BACKSTAGE_RESTART_BACKOFF_MAX_SECONDS")"
+  case "$disposition" in
+    backoff)
+      backoff="$(bounded_retry_backoff_seconds "$prior_attempt_count" "$BACKSTAGE_RESTART_COOLDOWN" "$BACKSTAGE_RESTART_BACKOFF_MAX_SECONDS")"
+      remaining=$(( backoff - elapsed ))
+      (( remaining < 0 )) && remaining=0
+      detail="Backstage observer loop is ${pane_status} (restart attempt ${prior_attempt_count} unconfirmed: $detail); next automatic restart in ${remaining}s. Restart 'npx tsx $TOOLS_DIR/observer.ts --loop --json --repo-dir $REPO_DIR --session $SESSION' in tmux."
+      [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "$pane_status" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$observer_pane_id" "$heartbeat_at" "$observer_count"
+      LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="$pane_status"
+      return 0
+      ;;
+    exhausted|exhausted-quiet)
+      reason="observer-restart-exhausted evidence=${identity} attempts=${prior_attempt_count}"
+      detail="Backstage window '$WAVEMILL_WINDOW_BACKSTAGE' observer loop restart attempts are exhausted for ${identity} after ${prior_attempt_count}/${retry_limit} attempt(s). Restart 'npx tsx $TOOLS_DIR/observer.ts --loop --json --repo-dir $REPO_DIR --session $SESSION' in tmux after fixing the underlying process evidence."
+      [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "needs-user" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$observer_pane_id" "$heartbeat_at" "$observer_count"
+      marked_exhausted=1
+      if [[ "$disposition" == "exhausted" ]]; then
+        bounded_retry_mark_exhausted "$STATE_DIR" "$bucket" "$reason" && marked_exhausted=0 || marked_exhausted=1
+      fi
+      if (( marked_exhausted == 0 )) || [[ "$LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS" != "needs-user" ]]; then
+        log_warn "$detail"
+      fi
+      LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="needs-user"
+      return 0
+      ;;
+  esac
+
+  if [[ "$disposition" != "proceed" ]]; then
+    LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="$pane_status"
+    return 0
   fi
 
   if (( prior_attempt_count == 0 )); then
     if [[ "$LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS" != "$pane_status" ]]; then
-      log_warn "Backstage health check detected an unhealthy observer ($pane_status). Attempting one restart in '$WAVEMILL_WINDOW_BACKSTAGE'."
+      log_warn "Backstage health check detected an unhealthy observer ($pane_status). Attempting restart in '$WAVEMILL_WINDOW_BACKSTAGE'."
     fi
-    restart_pane_id="$(restart_backstage_observer_loop || true)"
-    sleep 0.3
-    pane_probe="$(probe_backstage_panes 2>/dev/null || true)"
-    pane_summary="$(classify_backstage_observer_health "$pane_probe" "$(date +%s)" "$stale_seconds")"
-    IFS=$'\t' read -r pane_status detail pane_count observer_pane_id heartbeat_at observer_count <<< "$pane_summary"
-    [[ "$observer_count" =~ ^[0-9]+$ ]] || observer_count=0
-    if [[ "$pane_status" == "healthy" ]]; then
-      [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "healthy" "backstage observer loop was restarted automatically" 0 "" "${observer_pane_id:-$restart_pane_id}" "$heartbeat_at" "$observer_count"
-      log "status" "Backstage observer loop restarted"
-      LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="healthy"
-      return 0
-    fi
-    [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "$pane_status" "$detail" 1 "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "${observer_pane_id:-$restart_pane_id}" "$heartbeat_at" "$observer_count"
-    LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="$pane_status"
+  else
+    log_warn "Backstage health check detected an unhealthy observer ($pane_status). Attempting restart (attempt $(( prior_attempt_count + 1 ))) in '$WAVEMILL_WINDOW_BACKSTAGE'."
+  fi
+  bounded_retry_increment "$STATE_DIR" "$bucket" "$identity" >/dev/null
+  restart_pane_id="$(restart_backstage_observer_loop || true)"
+  sleep 0.3
+  pane_probe="$(probe_backstage_panes 2>/dev/null || true)"
+  pane_summary="$(classify_backstage_observer_health "$pane_probe" "$(date +%s)" "$stale_seconds")"
+  IFS=$'\t' read -r pane_status detail pane_count observer_pane_id heartbeat_at observer_count <<< "$pane_summary"
+  [[ "$observer_count" =~ ^[0-9]+$ ]] || observer_count=0
+  if [[ "$pane_status" == "healthy" ]]; then
+    bounded_retry_clear "$STATE_DIR" "$bucket"
+    [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "healthy" "backstage observer loop was restarted automatically" 0 "" "${observer_pane_id:-$restart_pane_id}" "$heartbeat_at" "$observer_count"
+    log "status" "Backstage observer loop restarted"
+    LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="healthy"
     return 0
   fi
 
-  if (( elapsed < BACKSTAGE_RESTART_COOLDOWN )); then
-    [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "$pane_status" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$observer_pane_id" "$heartbeat_at" "$observer_count"
-    LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="$pane_status"
-    return 0
+  prior_attempt_count="$(bounded_retry_count "$STATE_DIR" "$bucket")"
+  [[ "$prior_attempt_count" =~ ^[0-9]+$ ]] || prior_attempt_count=0
+  prior_attempt_epoch="$(bounded_retry_last_at "$STATE_DIR" "$bucket")"
+  prior_attempt_at=""
+  if [[ "$prior_attempt_epoch" =~ ^[0-9]+$ ]] && (( prior_attempt_epoch > 0 )); then
+    prior_attempt_at="$(cleanup_episode_iso_from_epoch "$prior_attempt_epoch" 2>/dev/null || true)"
   fi
-
-  detail="Backstage window '$WAVEMILL_WINDOW_BACKSTAGE' observer service needs user attention. Restart 'npx tsx $TOOLS_DIR/observer.ts --loop --json --dry-run --repo-dir $REPO_DIR --session $SESSION' in tmux."
-  [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "needs-user" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$observer_pane_id" "$heartbeat_at" "$observer_count"
-  if [[ "$LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS" != "needs-user" ]]; then
-    log_warn "$detail"
-  fi
-  LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="needs-user"
+  [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "$pane_status" "$detail" "$prior_attempt_count" "$prior_attempt_at" "${observer_pane_id:-$restart_pane_id}" "$heartbeat_at" "$observer_count"
+  LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="$pane_status"
 }
 
 check_backstage_health() {
