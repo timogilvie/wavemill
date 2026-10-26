@@ -96,8 +96,11 @@ export function readCapturedPayload(filePath: string): CapturedPayloadRecord {
 /** Apply a jq expression to a request body. The expression must yield one JSON object. */
 export function applyJqPatch(body: unknown, expression: string): Record<string, unknown> {
   const result = spawnSync('jq', ['-c', expression], { input: JSON.stringify(body), encoding: 'utf-8' });
-  if (result.error) {
-    throw new ReplayInputError(`cannot run jq: ${result.error.message}`);
+  // jq rejecting the filter exits before reading all of stdin, so spawnSync surfaces EPIPE
+  // alongside the real exit status; trust the status when the process actually ran.
+  const spawnError = result.error as NodeJS.ErrnoException | undefined;
+  if (spawnError && !(spawnError.code === 'EPIPE' && result.status !== null)) {
+    throw new ReplayInputError(`cannot run jq: ${spawnError.message}`);
   }
   if (result.status !== 0) {
     throw new ReplayInputError(`jq rejected --patch ${JSON.stringify(expression)}: ${result.stderr.trim()}`);
