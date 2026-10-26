@@ -116,6 +116,7 @@ write_stage_result() {
 # model='claude-opus-4-7', stage status='running'.
 seed_from_fixture() {
   local issue="$1"
+  # allow-task-literal: reshaping the real-state fixture verbatim pins the exact 2026-10-22 shape; the builder would re-encode it
   jq --arg issue "$issue" '{tasks:{($issue):.workflowState.tasks."FIXTURE-1"}}' "$FIXTURE_FILE" > "$STATE_FILE"
 }
 
