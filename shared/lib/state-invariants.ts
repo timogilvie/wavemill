@@ -148,6 +148,14 @@ export interface StateInvariantsCache {
       lastHeadSha?: string;
       /** Count of consecutive ticks the label mismatch has been seen. */
       labelMismatchStreak: number;
+      /** wm:ready / wm:blocked / none label seen last tick (HOK-3316). */
+      lastLabel?: 'wm:ready' | 'wm:blocked' | null;
+      /**
+       * Ticks at this head whose label changed while it disagreed with
+       * deriveMergeLabel (HOK-3316): a label that flips back and forth never
+       * builds a consecutive streak, so it is counted separately.
+       */
+      labelFlipsAgainstDerived?: number;
     }
   >;
   marker: Record<
@@ -418,9 +426,24 @@ export function checkInvariant3LabelMismatch(
     let streak = matches ? 0 : (prevEntry?.labelMismatchStreak ?? 0) + 1;
     if (headChanged) streak = matches ? 0 : 1;
 
-    nextCache.pr[prKey] = { lastHeadSha: curHead, labelMismatchStreak: streak };
+    // HOK-3316: a writer outside deriveMergeLabel fighting the reconciler
+    // flips the label every poll (PR #1697: wm:blocked ↔ wm:ready ~90s), so
+    // the consecutive streak keeps resetting. Count flips at this head where
+    // either side of the flip disagreed with the derived label.
+    const labelChanged = prevEntry !== undefined && !headChanged && prevEntry.lastLabel !== undefined
+      && prevEntry.lastLabel !== currentLabel;
+    const flippedAgainstDerived = labelChanged && (!matches || prevEntry?.lastLabel !== derivedLabel);
+    const flips = headChanged ? 0 : (prevEntry?.labelFlipsAgainstDerived ?? 0) + (flippedAgainstDerived ? 1 : 0);
+    const flapping = flips >= graceTicks + 1;
 
-    if (!matches && streak >= graceTicks + 1) {
+    nextCache.pr[prKey] = {
+      lastHeadSha: curHead,
+      labelMismatchStreak: streak,
+      lastLabel: currentLabel,
+      labelFlipsAgainstDerived: flips,
+    };
+
+    if (!matches && (streak >= graceTicks + 1 || flapping)) {
       out.push({
         invariantId: 'I3-label-mismatch',
         prNumber: pr.number,
@@ -432,6 +455,7 @@ export function checkInvariant3LabelMismatch(
           derivedLabel,
           reason: decision.label === 'wm:ready' ? undefined : decision.reason,
           streak,
+          labelFlips: flips,
           headSha: curHead,
           taskId: task.linearIssueId,
         },

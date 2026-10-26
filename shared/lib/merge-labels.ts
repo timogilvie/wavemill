@@ -19,11 +19,21 @@ import {
   clearWavemillState,
 } from './pr-state-labels.ts';
 import { parseTaskId } from './task-identity.ts';
+import {
+  readTendAttemptFact,
+  resolveIntegrationBaseSha,
+  tendAttemptBlockReason,
+  tendAttemptFactHolds,
+  type TendAttemptPhase,
+} from './tend-attempt-fact.ts';
+import { readMarker } from './transient-marker.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readWorkflowState, type WorkflowState } from './workflow-state.ts';
 import { resolvePrTask } from './pr-task-resolver.ts';
 import { appendObserverFinding } from './observer-findings.ts';
+
+export { resolveIntegrationBaseSha };
 
 export interface MergeLabelTaskView {
   prNumber: number;
@@ -48,6 +58,29 @@ export interface MergeLabelLiveState {
     headSha: string;
     prNumber: number;
   };
+  /**
+   * Integration branch tip this pass (HOK-3316). Keys the tend-attempt fact:
+   * a fact recorded against another base no longer holds.
+   */
+  integrationBaseSha?: string;
+  /**
+   * Tend's recorded merge-attempt failure (`.tend-attempt-result.json`,
+   * HOK-3316). Tend's own rebase / checks / merge verdict, which GitHub's
+   * 3-way `mergeable` cannot see.
+   */
+  tendAttempt?: {
+    phase: TendAttemptPhase;
+    headSha: string;
+    baseSha: string;
+  };
+  /**
+   * Cross-PR revert guard verdict (`.cross-pr-guard-result.json`, the
+   * HOK-3206 tracked job), for the head it diffed.
+   */
+  crossPrGuard?: {
+    status: 'pass' | 'blocked' | 'tool-error';
+    headSha: string;
+  };
 }
 
 export type MergeLabelDecision =
@@ -59,6 +92,13 @@ export type MergeLabelDecision =
  * Pure function to derive the correct merge label for a PR.
  *
  * Rules (exhaustive, ordered - first match wins):
+ * 0. Recorded facts about the live PR head (HOK-3316):
+ *    a. tend's merge attempt failed at this head and integration base
+ *       → wm:blocked `tend-<phase>-failed`
+ *    b. the cross-PR revert guard blocked this head → wm:blocked `cross-pr-guard`
+ *    Both are keyed on the live PR head, not the task head, so they hold
+ *    across a tend push (checks failing on the rebased head) and lapse as
+ *    soon as the PR head (or, for tend, the base) moves.
  * 1. Live PR head ≠ task head → null (not stable)
  * 2. Live PR head ≠ readyAtHead.sha → null (Ready evidence for different head)
  * 3. Ready verdict is errored/not-ready → wm:blocked
@@ -73,6 +113,18 @@ export function deriveMergeLabel(
   pr: { number: number; labels: readonly string[]; headSha: string },
   liveState: MergeLabelLiveState,
 ): MergeLabelDecision {
+  // Rule 0a: tend's own merge attempt is an input, never reversed by GitHub's
+  // 3-way mergeability (HOK-3316: tend's per-commit rebase conflicted while
+  // GitHub reported MERGEABLE, and the two flipped the label every poll).
+  if (liveState.tendAttempt && tendAttemptFactHolds(liveState.tendAttempt, liveState)) {
+    return { label: 'wm:blocked', reason: tendAttemptBlockReason(liveState.tendAttempt.phase) };
+  }
+
+  // Rule 0b: the cross-PR revert guard's verdict for this head.
+  if (liveState.crossPrGuard?.status === 'blocked' && liveState.crossPrGuard.headSha === liveState.prHeadSha) {
+    return { label: 'wm:blocked', reason: 'cross-pr-guard' };
+  }
+
   // Rule 1: Live PR head ≠ task head → not stable
   if (liveState.prHeadSha !== task.headSha) {
     return { label: null, reason: 'head-mismatch' };
@@ -340,6 +392,7 @@ export async function buildMergeLabelLiveState(
   prHeadSha: string,
   featureDir: string | undefined,
   repoDir: string,
+  integrationBaseSha: string | undefined = resolveIntegrationBaseSha(repoDir),
 ): Promise<MergeLabelLiveState | null> {
   const prLiveState = await probePrLiveState(prNumber, repoDir);
   if (!prLiveState.available) {
@@ -351,17 +404,20 @@ export async function buildMergeLabelLiveState(
     mergeable: (prLiveState.mergeable?.toUpperCase() as 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN') ?? 'UNKNOWN',
     mergeStateStatus: prLiveState.mergeStateStatus ?? 'UNKNOWN',
     statusCheckRollup: prLiveState.statusCheckRollup ?? [],
+    ...(integrationBaseSha ? { integrationBaseSha } : {}),
     ...(featureDir ? await readMergeLabelEvidence(featureDir) : {}),
   };
 }
 
 /**
  * Read the task-side evidence the label is derived from: the Ready stage
- * result (verdict + the head it was computed at) and the Ready→tend handoff.
+ * result (verdict + the head it was computed at), the Ready→tend handoff, and
+ * the recorded merge-blocking facts (tend's last merge attempt, the cross-PR
+ * revert guard verdict).
  */
 export async function readMergeLabelEvidence(
   featureDir: string,
-): Promise<Pick<MergeLabelLiveState, 'readyAtHead' | 'handoffAtHead'>> {
+): Promise<Pick<MergeLabelLiveState, 'readyAtHead' | 'handoffAtHead' | 'tendAttempt' | 'crossPrGuard'>> {
   let readyAtHead: MergeLabelLiveState['readyAtHead'] | undefined;
   let handoffAtHead: MergeLabelLiveState['handoffAtHead'] | undefined;
 
@@ -408,7 +464,41 @@ export async function readMergeLabelEvidence(
     );
   }
 
-  return { readyAtHead, handoffAtHead };
+  const fact = readTendAttemptFact(featureDir);
+  const tendAttempt = fact ? { phase: fact.phase, headSha: fact.headSha, baseSha: fact.baseSha } : undefined;
+
+  return {
+    readyAtHead,
+    handoffAtHead,
+    ...(tendAttempt ? { tendAttempt } : {}),
+    ...readCrossPrGuardEvidence(featureDir),
+  };
+}
+
+/**
+ * The cross-PR revert guard verdict recorded by the monitor's tracked job
+ * (`.cross-pr-guard-result.json`, HOK-3206): exit 0 = pass, 1 = unacknowledged
+ * reverts, anything else = tool error. Absent/malformed → no evidence.
+ */
+function readCrossPrGuardEvidence(featureDir: string): Pick<MergeLabelLiveState, 'crossPrGuard'> {
+  try {
+    const status = readMarker({ path: join(featureDir, '.cross-pr-guard-result.json'), kind: 'cross-pr-guard' });
+    if (status.status !== 'present' || !status.payload.headSha) {
+      return {};
+    }
+    const rc = status.payload.detail?.rc;
+    return {
+      crossPrGuard: {
+        status: rc === 0 ? 'pass' : rc === 1 ? 'blocked' : 'tool-error',
+        headSha: status.payload.headSha,
+      },
+    };
+  } catch (err) {
+    console.warn(
+      `[merge-label] evidence-read-failed site=readMergeLabelEvidence.crossPrGuard featureDir=${featureDir} error=${String(err)}`,
+    );
+    return {};
+  }
 }
 
 /**
@@ -420,6 +510,7 @@ export function createDefaultReconcilerDeps(
   repoDir: string,
   prHeadShaByNumber: Map<number, string>,
   workflowState: WorkflowState,
+  integrationBaseSha?: string,
 ): ReconcileMergeLabelsDeps {
   return {
     readTaskView: async (prNumber) => findTaskInState(prNumber, workflowState, repoDir),
@@ -434,12 +525,23 @@ export function createDefaultReconcilerDeps(
           statusCheckRollup: [],
         };
       }
-      const liveState = await buildMergeLabelLiveState(prNumber, prHeadSha, task.featureDir, repoDir);
-      return liveState ?? {
+      const liveState = await buildMergeLabelLiveState(prNumber, prHeadSha, task.featureDir, repoDir, integrationBaseSha);
+      if (liveState) {
+        return liveState;
+      }
+      // GitHub probe unavailable: Ready evidence is withheld (it is only
+      // judged against live GitHub truth), but the recorded merge-blocking
+      // facts are keyed on the PR head alone and still hold (HOK-3316) — a
+      // gh hiccup must not drop a tend-attempt block for a single poll.
+      const { tendAttempt, crossPrGuard } = await readMergeLabelEvidence(task.featureDir);
+      return {
         prHeadSha,
         mergeable: 'UNKNOWN',
         mergeStateStatus: 'UNKNOWN',
         statusCheckRollup: [],
+        ...(integrationBaseSha ? { integrationBaseSha } : {}),
+        ...(tendAttempt ? { tendAttempt } : {}),
+        ...(crossPrGuard ? { crossPrGuard } : {}),
       };
     },
     applyLabel: {
@@ -479,8 +581,11 @@ export interface ReconcileReport {
 export async function reconcileMergeLabels(
   prs: Array<{ number: number; labels: string[]; headSha: string }>,
   repoDir: string,
+  options: { integrationBranch?: string } = {},
 ): Promise<ReconcileReport> {
   const prHeadShaByNumber = new Map(prs.map(pr => [pr.number, pr.headSha]));
+  // One integration tip for the whole pass (HOK-3316): keys tend-attempt facts.
+  const integrationBaseSha = resolveIntegrationBaseSha(repoDir, options.integrationBranch);
 
   // Read workflow state once for all PRs
   const stateFile = join(repoDir, '.wavemill', 'workflow-state.json');
@@ -489,7 +594,7 @@ export async function reconcileMergeLabels(
     console.warn('Failed to read workflow state', { stateFile });
   }
 
-  const deps = createDefaultReconcilerDeps(repoDir, prHeadShaByNumber, workflowState ?? {});
+  const deps = createDefaultReconcilerDeps(repoDir, prHeadShaByNumber, workflowState ?? {}, integrationBaseSha);
   const decisionByPr = new Map<number, MergeLabelDecision>();
   const noTaskViewPrs: number[] = [];
 

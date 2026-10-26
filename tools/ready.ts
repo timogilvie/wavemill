@@ -218,7 +218,7 @@ runTool({
         checks: [ciStatusToReadyCheck(ciStatus), ...buildPolicyChecks(verdict)],
         summary: verdict.reasons[0] ?? summarizeVerdict(verdict.status),
         timestamp: new Date().toISOString(),
-        mergeConflict: await checkMergeConflicts(prNumber, repoDir),
+        mergeConflict: await checkMergeConflicts(prNumber, repoDir, { stateDir }),
         headSha: ciStatus.headSha,
         ciConclusion: ciStatus.conclusion,
         mergeStateStatus: ciStatus.mergeStateStatus,
@@ -236,7 +236,7 @@ runTool({
       };
     } else {
       try {
-        output = await runReadyStage({ prNumber, repoDir });
+        output = await runReadyStage({ prNumber, repoDir, stateDir });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await maybeWriteReadyDiagnostic(repoDir, {

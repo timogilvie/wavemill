@@ -24,6 +24,8 @@ import {
   type ReadyStageConfig,
 } from './ready-stage.ts';
 import * as readyStage from './ready-stage.ts';
+import { writeTendAttemptFact } from './tend-attempt-fact.ts';
+import { mkdtempSync, rmSync } from 'node:fs';
 
 const migrationFixturesDir = path.resolve(process.cwd(), 'tests/fixtures/migrations');
 
@@ -1795,6 +1797,57 @@ describe('ready-stage', () => {
   });
 
   describe('checkMergeConflicts', () => {
+    it('reports tend\'s per-commit rebase conflict at the live head as CONFLICTED even when GitHub says MERGEABLE (HOK-3316)', async () => {
+      const stateDir = mkdtempSync(path.join(os.tmpdir(), 'ready-tend-fact-'));
+      writeTendAttemptFact(stateDir, {
+        phase: 'rebase',
+        prNumber: 42,
+        headSha: 'head-42',
+        // No recorded base: the fact holds on the head alone.
+        baseSha: '',
+        excerpt: 'CONFLICT (content): Merge conflict in shared/validators/wavemill-config.validator.cjs',
+        failureClass: 'code-failure',
+      });
+      const execMock = mock.method(readyStage.readyStageDeps, 'execShellCommand', () =>
+        JSON.stringify({ mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', headRefOid: 'head-42' })
+      );
+
+      try {
+        const conflicted = await checkMergeConflicts(42, stateDir, { stateDir });
+        assert.equal(conflicted.status, 'CONFLICTED');
+        assert.match(conflicted.message, /commit by commit/);
+        assert.match(conflicted.message, /wavemill-config\.validator\.cjs/);
+        // Without the state dir (tend's own in-lane re-check) the GitHub view stands.
+        assert.equal((await checkMergeConflicts(42, stateDir)).status, 'CLEAN');
+      } finally {
+        execMock.mock.restore();
+        rmSync(stateDir, { recursive: true, force: true });
+      }
+    });
+
+    it('ignores a tend rebase fact for another head or an unverifiable base (HOK-3316)', async () => {
+      const stateDir = mkdtempSync(path.join(os.tmpdir(), 'ready-tend-fact-'));
+      writeTendAttemptFact(stateDir, {
+        phase: 'rebase',
+        prNumber: 42,
+        headSha: 'head-42',
+        baseSha: 'base-recorded',
+        excerpt: 'CONFLICT',
+        failureClass: 'code-failure',
+      });
+      const execMock = mock.method(readyStage.readyStageDeps, 'execShellCommand', () =>
+        JSON.stringify({ mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', headRefOid: 'head-42' })
+      );
+
+      try {
+        // stateDir is not a git checkout, so the live base cannot be proven equal.
+        assert.equal((await checkMergeConflicts(42, stateDir, { stateDir })).status, 'CLEAN');
+      } finally {
+        execMock.mock.restore();
+        rmSync(stateDir, { recursive: true, force: true });
+      }
+    });
+
     it('returns CLEAN when GitHub reports a mergeable PR', async () => {
       const execMock = mock.method(readyStage.readyStageDeps, 'execShellCommand', () =>
         JSON.stringify({ mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' })

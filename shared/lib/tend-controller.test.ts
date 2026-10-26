@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
 import type { LinearIssueSummary } from './linear.ts';
-import { WM_LABELS, writePrStateMarker } from './pr-state-labels.ts';
+import { WM_LABELS } from './pr-state-labels.ts';
 import {
   classifyBasePolicyRejection,
   createPrFetcher,
@@ -33,6 +33,7 @@ import {
   taskStateAuthorizesRemoteBranchDeletion,
 } from './tend-controller.ts';
 import { mergeLaneStateDir } from './merge-queue.ts';
+import { readTendAttemptFact, writeTendAttemptFact } from './tend-attempt-fact.ts';
 import {
   readScratchPrepMarker,
   scratchPrepMarkerPath,
@@ -255,8 +256,8 @@ function buildMergeTestOptions(overrides: {
       acquireMerging: (prNumber) => {
         labels.push(`merging:${prNumber}`);
       },
-      releaseToBlocked: (prNumber) => {
-        labels.push(`blocked:${prNumber}`);
+      releaseMerging: (prNumber) => {
+        labels.push(`release-merging:${prNumber}`);
       },
       releaseMerged: (prNumber) => {
         labels.push(`merged:${prNumber}`);
@@ -281,6 +282,9 @@ function buildMergeTestOptions(overrides: {
 /** What `git rebase` prints on a real conflict — a recognised code failure (HOK-3176). */
 const GIT_REBASE_CONFLICT_OUTPUT = 'Auto-merging file.ts\nCONFLICT (content): Merge conflict in file.ts\n'
   + 'error: could not apply 1a2b3c4... change\nhint: Resolve all conflicts manually';
+
+/** A shell-level wm:blocked label add/remove (the comment body may name the label). */
+const WM_BLOCKED_LABEL_WRITE = /labels\/wm(?:%3A|:)blocked|--(?:add|remove)-label[\s=]+['"]?wm:blocked/;
 
 function hasCall(calls: string[], pattern: RegExp): boolean {
   return calls.some((call) => pattern.test(call));
@@ -455,278 +459,51 @@ describe('selectNextCandidate filtering', () => {
     });
   });
 
-  it('re-derives and clears a blocked label that has no marker sidecar', async () => {
+  it('honours wm:blocked without re-deriving or clearing it (HOK-3316)', async () => {
+    // No workflow task: the reconciler has no decision, the label stays put,
+    // and tend skips the PR instead of running a private clearer.
     const options = buildTestOptions([
       pr({ labels: [label(WM_LABELS.wavemill), label(WM_LABELS.ready), label(WM_LABELS.blocked)] }),
     ]);
-    const cleared: number[] = [];
-    options.blockedLabelClearer = (prNumber) => { cleared.push(prNumber); };
-    try {
-      const decision = await selectNextCandidate(options);
-      assert.deepEqual(decision.eligible.map((candidate) => candidate.number), [1]);
-      assert.deepEqual(decision.blocked, []);
-      assert.deepEqual(cleared, [1]);
-    } finally {
-      options.cleanup();
-    }
-  });
-
-  it('keeps a current cross-PR guard block parked without rechecking', async () => {
-    const options = buildTestOptions([
-      pr({ labels: [label(WM_LABELS.wavemill), label(WM_LABELS.ready), label(WM_LABELS.blocked)] }),
-    ]);
-    let recheckCalls = 0;
-    options.crossPrGuardChecker = async () => {
-      recheckCalls += 1;
-      return { status: 'pass', checkedHeadSha: 'head-current' };
-    };
-    writeReadyResult(options.repoDir, 'HOK-1437', {
-      stage: 'ready',
-      status: 'failed',
-      artifacts: {
-        type: 'ready',
-        verdict: 'fail',
-        prNumber: 1,
-        readyHeadSha: 'head-current',
-        crossPrGuard: {
-          source: 'cross-pr-revert-guard',
-          status: 'blocked',
-          checkedHeadSha: 'head-current',
-        },
-      },
-    });
-    writePrStateMarker(1, {
-      headSha: 'head-current',
-      activeLabels: [WM_LABELS.ready, WM_LABELS.blocked],
-      markerRoot: options.repoDir,
-    });
-
     try {
       const decision = await selectNextCandidate(options);
       assert.equal(decision.eligible.length, 0);
-      assert.equal(decision.blocked[0]?.reason, 'blocked-label:cross-pr-guard');
-      assert.equal(recheckCalls, 0);
+      assert.equal(decision.blocked[0]?.reason, 'blocked-label');
     } finally {
       options.cleanup();
     }
   });
 
-  it('rechecks stale cross-PR guard evidence, clears the label, and keeps the PR eligible in the same cycle', async () => {
+  it('names the reconciler reason for a tend-attempt block (HOK-3316)', async () => {
     const options = buildTestOptions([
-      pr({ labels: [label(WM_LABELS.wavemill), label(WM_LABELS.ready), label(WM_LABELS.blocked)] }),
+      pr({ labels: [label(WM_LABELS.wavemill), label(WM_LABELS.blocked)], body: metadata(['task: HOK-1437']) }),
     ]);
-    const cleared: number[] = [];
-    options.crossPrGuardChecker = async ({ pr: checkedPr }) => ({
-      status: 'pass',
-      checkedHeadSha: checkedPr.headRefOid ?? '',
-    });
-    options.blockedLabelClearer = (prNumber) => {
-      cleared.push(prNumber);
-    };
-    writeReadyResult(options.repoDir, 'HOK-1437', {
-      stage: 'ready',
-      status: 'failed',
-      artifacts: {
-        type: 'ready',
-        verdict: 'fail',
-        prNumber: 1,
-        readyHeadSha: 'head-old',
-        crossPrGuard: {
-          source: 'cross-pr-revert-guard',
-          status: 'blocked',
-          checkedHeadSha: 'head-old',
-        },
-      },
-    });
-    writePrStateMarker(1, {
-      headSha: 'head-old',
-      activeLabels: [WM_LABELS.ready, WM_LABELS.blocked],
-      markerRoot: options.repoDir,
-    });
-
-    try {
-      const decision = await selectNextCandidate(options);
-      assert.deepEqual(decision.eligible.map((candidate) => candidate.number), [1]);
-      assert.deepEqual(decision.blocked, []);
-      assert.equal(decision.nextPR, 1);
-      assert.deepEqual(cleared, [1]);
-      assert.match(
-        readFileSync(join(options.repoDir, '.wavemill', 'observer-findings.jsonl'), 'utf-8'),
-        /Stale marker: pr-label/,
-      );
-    } finally {
-      options.cleanup();
-    }
-  });
-
-  it('keeps a stale guard block when the current-head recheck still blocks', async () => {
-    const options = buildTestOptions([
-      pr({ labels: [label(WM_LABELS.wavemill), label(WM_LABELS.ready), label(WM_LABELS.blocked)] }),
-    ]);
-    options.crossPrGuardChecker = async ({ pr: checkedPr }) => ({
-      status: 'blocked',
-      checkedHeadSha: checkedPr.headRefOid ?? '',
-    });
-    writeReadyResult(options.repoDir, 'HOK-1437', {
-      stage: 'ready',
-      status: 'failed',
-      artifacts: {
-        type: 'ready',
-        verdict: 'fail',
-        prNumber: 1,
-        crossPrGuard: {
-          source: 'cross-pr-revert-guard',
-          status: 'blocked',
-          checkedHeadSha: 'head-old',
-        },
-      },
-    });
-
-    try {
-      const decision = await selectNextCandidate(options);
-      assert.equal(decision.eligible.length, 0);
-      assert.equal(decision.blocked[0]?.reason, 'blocked-label:cross-pr-guard');
-    } finally {
-      options.cleanup();
-    }
-  });
-
-  it('fails closed when a revalidated block cannot refresh its marker sidecar', async () => {
-    const options = buildTestOptions([
-      pr({ labels: [label(WM_LABELS.wavemill), label(WM_LABELS.ready), label(WM_LABELS.blocked)] }),
-    ]);
-    options.crossPrGuardChecker = async ({ pr: checkedPr }) => ({
-      status: 'blocked',
-      checkedHeadSha: checkedPr.headRefOid ?? '',
-    });
-    options.prStateMarkerWriter = () => {
-      throw new Error('sidecar disk unavailable');
-    };
-    writeReadyResult(options.repoDir, 'HOK-1437', {
-      stage: 'ready',
-      status: 'failed',
-      artifacts: {
-        type: 'ready',
-        verdict: 'fail',
-        prNumber: 1,
-        crossPrGuard: {
-          source: 'cross-pr-revert-guard',
-          status: 'blocked',
-          checkedHeadSha: 'head-old',
-        },
-      },
-    });
-
-    try {
-      const decision = await selectNextCandidate(options);
-      assert.equal(decision.eligible.length, 0);
-      assert.equal(
-        decision.blocked[0]?.reason,
-        'blocked-label:marker-write-error:sidecar disk unavailable',
-      );
-    } finally {
-      options.cleanup();
-    }
-  });
-
-  it('fails closed with a distinct reason when stale guard evidence recheck hits a tool error', async () => {
-    const options = buildTestOptions([
-      pr({ labels: [label(WM_LABELS.wavemill), label(WM_LABELS.ready), label(WM_LABELS.blocked)] }),
-    ]);
-    options.crossPrGuardChecker = async ({ pr: checkedPr }) => ({
-      status: 'tool-error',
-      checkedHeadSha: checkedPr.headRefOid ?? '',
-      detail: 'git merge-base failed',
-    });
-    writeReadyResult(options.repoDir, 'HOK-1437', {
-      stage: 'ready',
-      status: 'failed',
-      artifacts: {
-        type: 'ready',
-        verdict: 'fail',
-        prNumber: 1,
-        crossPrGuard: {
-          source: 'cross-pr-revert-guard',
-          status: 'blocked',
-          checkedHeadSha: 'head-old',
-        },
-      },
-    });
-
-    try {
-      const decision = await selectNextCandidate(options);
-      assert.equal(decision.eligible.length, 0);
-      assert.equal(decision.blocked[0]?.reason, 'blocked-label:cross-pr-guard-tool-error');
-    } finally {
-      options.cleanup();
-    }
-  });
-
-  it('fails closed when stale guard evidence rechecks clean but blocked-label removal fails', async () => {
-    const options = buildTestOptions([
-      pr({ labels: [label(WM_LABELS.wavemill), label(WM_LABELS.ready), label(WM_LABELS.blocked)] }),
-    ]);
-    options.crossPrGuardChecker = async ({ pr: checkedPr }) => ({
-      status: 'pass',
-      checkedHeadSha: checkedPr.headRefOid ?? '',
-    });
-    options.blockedLabelClearer = () => {
-      throw new Error('GitHub label API unavailable');
-    };
-    writeReadyResult(options.repoDir, 'HOK-1437', {
-      stage: 'ready',
-      status: 'failed',
-      artifacts: {
-        type: 'ready',
-        verdict: 'fail',
-        prNumber: 1,
-        crossPrGuard: {
-          source: 'cross-pr-revert-guard',
-          status: 'blocked',
-          checkedHeadSha: 'head-old',
-        },
-      },
-    });
-
-    try {
-      const decision = await selectNextCandidate(options);
-      assert.equal(decision.eligible.length, 0);
-      assert.match(decision.blocked[0]?.reason ?? '', /^blocked-label:clear-failed:GitHub label API unavailable/);
-    } finally {
-      options.cleanup();
-    }
-  });
-
-  it('clears a contradictory blocked label when current ready-pass evidence already supersedes it', async () => {
-    const options = buildTestOptions([
-      pr({ labels: [label(WM_LABELS.wavemill), label(WM_LABELS.ready), label(WM_LABELS.blocked)] }),
-    ]);
-    let recheckCalls = 0;
-    const cleared: number[] = [];
-    options.crossPrGuardChecker = async () => {
-      recheckCalls += 1;
-      return { status: 'blocked', checkedHeadSha: 'head-current' };
-    };
-    options.blockedLabelClearer = (prNumber) => {
-      cleared.push(prNumber);
-    };
-    writeReadyResult(options.repoDir, 'HOK-1437', {
+    const slug = 'tend-attempt-block';
+    const worktree = options.repoDir;
+    const featureDir = join(worktree, 'features', slug);
+    mkdirSync(featureDir, { recursive: true });
+    writeFileSync(join(featureDir, '.ready-result.json'), JSON.stringify({
       stage: 'ready',
       status: 'completed',
-      artifacts: {
-        type: 'ready',
-        verdict: 'pass',
-        prNumber: 1,
-        readyHeadSha: 'head-current',
-        readyLabelsUpdated: true,
-      },
+      artifacts: { type: 'ready', verdict: 'pass', prNumber: 1, readyHeadSha: 'head-current' },
+    }));
+    // Tend's rebase failed at the live head; no base recorded, so the fact
+    // holds on the head alone (the test repo has no integration ref).
+    writeTendAttemptFact(featureDir, {
+      phase: 'rebase',
+      prNumber: 1,
+      headSha: 'head-current',
+      baseSha: '',
+      excerpt: GIT_REBASE_CONFLICT_OUTPUT,
+      failureClass: 'code-failure',
     });
-
+    writeWorkflowState(options.repoDir, {
+      'HOK-1437': { pr: '1', slug, worktree, phase: 'ready' },
+    });
     try {
       const decision = await selectNextCandidate(options);
-      assert.deepEqual(decision.eligible.map((candidate) => candidate.number), [1]);
-      assert.deepEqual(cleared, [1]);
-      assert.equal(recheckCalls, 0);
+      assert.equal(decision.eligible.length, 0);
+      assert.equal(decision.blocked[0]?.reason, 'blocked-label:tend-rebase-failed');
     } finally {
       options.cleanup();
     }
@@ -2287,7 +2064,7 @@ describe('executeMerge', () => {
       assert.deepEqual(result, { status: 'merged', prNumber: 42, haltLoop: false });
       assert.ok(hasCall(options.calls, /git merge-base --is-ancestor 'origin\/auto\/integration' 'mergecommit630'/));
       assert.ok(!hasCall(options.calls, /git rebase 'origin\/auto\/integration'/));
-      assert.equal(options.labels.includes('blocked:42'), false);
+      assert.equal(options.labels.includes('release-merging:42'), false);
       assert.deepEqual(options.labels, ['merging:42', 'merged:42']);
     } finally {
       options.cleanup();
@@ -2623,7 +2400,131 @@ describe('executeMerge', () => {
       assert.ok(hasCall(options.calls, /gh pr comment 42 --body/));
       assert.ok(hasCall(options.calls, /Wavemill Rebase failed/));
       assert.ok(hasCall(options.calls, /git worktree remove --force/));
-      assert.deepEqual(options.labels, ['merging:42', 'blocked:42']);
+      assert.deepEqual(options.labels, ['merging:42', 'release-merging:42']);
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('records a rebase failure as a fact for deriveMergeLabel, never a wm:blocked write (HOK-3316)', async () => {
+    const options = buildMergeTestOptions();
+    const featureDir = join(options.repoDir, 'features', 'merge-me');
+    const shellRunner: MergeExecutionDeps['shellRunner'] = (cmd, opts) => {
+      options.calls.push(cmd);
+      if (cmd.includes('git rebase')) {
+        throw new Error(GIT_REBASE_CONFLICT_OUTPUT);
+      }
+      return (options.deps.shellRunner as MergeExecutionDeps['shellRunner'])(cmd, opts);
+    };
+
+    try {
+      await publishReadyHandoff(featureDir, 42, 'head-sha');
+      const result = await executeMerge(candidate({ headSha: 'head-sha', featureDir }), {
+        repoDir: options.repoDir,
+        deps: { ...options.deps, shellRunner },
+      });
+
+      assert.equal(result.status, 'blocked');
+      const fact = readTendAttemptFact(featureDir);
+      assert.equal(fact?.phase, 'rebase');
+      assert.equal(fact?.headSha, 'head-sha');
+      assert.equal(fact?.baseSha, 'abc123def456');
+      assert.equal(fact?.failureClass, 'code-failure');
+      assert.match(fact?.excerpt ?? '', /CONFLICT \(content\)/);
+      // Lane progression only: wm:merging released, no label decision taken.
+      assert.deepEqual(options.labels, ['merging:42', 'release-merging:42']);
+      assert.ok(!hasCall(options.calls, WM_BLOCKED_LABEL_WRITE), 'tend must not touch wm:blocked');
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('replays PR #1697: one attempt, one comment and a stable tend-rebase-failed block per (head, base) (HOK-3316)', async () => {
+    const { deriveMergeLabel, readMergeLabelEvidence } = await import('./merge-labels.ts');
+    const options = buildMergeTestOptions();
+    const featureDir = join(options.repoDir, 'features', 'merge-me');
+    let integrationTip = 'base-1';
+    let rebaseAttempts = 0;
+    // One PR comment thread on GitHub: created once, then edited in place.
+    const thread: Array<{ id: number; body: string }> = [];
+    const unquote = (arg: string) => arg.replace(/^'/, '').replace(/'$/, '').replace(/'\\''/g, "'");
+    const shellRunner: MergeExecutionDeps['shellRunner'] = (cmd, opts) => {
+      options.calls.push(cmd);
+      if (cmd.includes('git rebase') && !cmd.includes('--abort')) {
+        rebaseAttempts += 1;
+        throw new Error(GIT_REBASE_CONFLICT_OUTPUT);
+      }
+      if (cmd.includes('git rev-parse') && cmd.includes('origin/auto/integration')) return integrationTip;
+      if (cmd.startsWith('gh pr view 42 --json comments')) {
+        return JSON.stringify({ comments: thread.map((c) => ({ id: c.id, body: c.body, createdAt: '2026-10-22T12:51:00Z' })) });
+      }
+      if (cmd.startsWith('gh pr comment 42 --body ')) {
+        thread.push({ id: thread.length + 1, body: unquote(cmd.slice('gh pr comment 42 --body '.length)) });
+        return '';
+      }
+      const patch = cmd.match(/issues\/comments\/(\d+)' -f (.*)$/s);
+      if (patch) {
+        thread.find((c) => String(c.id) === patch[1])!.body = unquote(patch[2]).replace(/^body=/, '');
+        return '';
+      }
+      return (options.deps.shellRunner as MergeExecutionDeps['shellRunner'])(cmd, opts);
+    };
+    // The incident's reconciler view: Ready passed at head, CI green, GitHub
+    // says MERGEABLE (its 3-way merge is clean), handoff at head.
+    const task = { prNumber: 42, headSha: 'head-sha', phase: 'ready', featureDir };
+    const prView = { number: 42, labels: [] as string[], headSha: 'head-sha' };
+    const derive = async () => deriveMergeLabel(task, prView, {
+      prHeadSha: 'head-sha',
+      mergeable: 'MERGEABLE',
+      mergeStateStatus: 'CLEAN',
+      statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+      integrationBaseSha: integrationTip,
+      ...(await readMergeLabelEvidence(featureDir)),
+    });
+    const poll = async () => {
+      const decision = await derive();
+      if (decision.label === 'wm:ready') {
+        await executeMerge(candidate({ headSha: 'head-sha', featureDir }), {
+          repoDir: options.repoDir,
+          deps: { ...options.deps, shellRunner },
+        });
+      }
+      return decision;
+    };
+
+    try {
+      mkdirSync(featureDir, { recursive: true });
+      writeFileSync(join(featureDir, '.ready-result.json'), JSON.stringify({
+        stage: 'ready',
+        status: 'completed',
+        artifacts: { type: 'ready', verdict: 'pass', prNumber: 42, readyHeadSha: 'head-sha' },
+      }));
+      await publishReadyHandoff(featureDir, 42, 'head-sha');
+
+      const decisions = [];
+      for (let tick = 0; tick < 10; tick += 1) decisions.push(await poll());
+      assert.deepEqual(decisions[0], { label: 'wm:ready' });
+      for (const decision of decisions.slice(1)) {
+        assert.deepEqual(decision, { label: 'wm:blocked', reason: 'tend-rebase-failed' });
+      }
+      assert.equal(rebaseAttempts, 1, 'tend retries the same rebase against the same base exactly zero times');
+      assert.equal(thread.length, 1, 'one comment, not one per poll');
+      assert.equal(options.calls.filter((cmd) => cmd.startsWith('gh pr comment')).length, 1);
+      // The remediation request: Ready's merge-conflict check reads the same fact.
+      assert.equal(readTendAttemptFact(featureDir)?.failureClass, 'code-failure');
+
+      // The base moves: the fact lapses, exactly one new attempt runs, and the
+      // standing comment is edited in place for the new condition.
+      integrationTip = 'base-2';
+      const afterMove = [];
+      for (let tick = 0; tick < 5; tick += 1) afterMove.push(await poll());
+      assert.deepEqual(afterMove[0], { label: 'wm:ready' });
+      assert.ok(afterMove.slice(1).every((decision) => decision.label === 'wm:blocked'));
+      assert.equal(rebaseAttempts, 2);
+      assert.equal(readTendAttemptFact(featureDir)?.baseSha, 'base-2');
+      assert.equal(thread.length, 1);
+      assert.match(thread[0].body, /42\|rebase\|head-sha\|base-2/);
+      assert.ok(!hasCall(options.calls, WM_BLOCKED_LABEL_WRITE));
     } finally {
       options.cleanup();
     }
@@ -2703,7 +2604,7 @@ describe('executeMerge', () => {
 
         assert.equal(fixture.convergence.mustMerge, true);
         assert.equal(result?.status, 'merged');
-        assert.ok(!options.labels.some((label) => label.startsWith('blocked:')), `labels: ${options.labels.join(', ')}`);
+        assert.ok(!options.labels.some((label) => label.startsWith('release-merging:')), `labels: ${options.labels.join(', ')}`);
         assert.equal(retry.state.exhaustedReason, '');
       } finally {
         options.cleanup();
@@ -2765,7 +2666,7 @@ describe('executeMerge', () => {
         assert.match(result?.failureExcerpt ?? '', /Connection reset by peer/);
         assert.match(result?.failureExcerpt ?? '', /deferred retries/);
         assert.match(retry.state.exhaustedReason, /rebase failure kept recurring after 3 deferred retries/);
-        assert.equal(options.labels.filter((label) => label === 'blocked:42').length, 1);
+        assert.equal(options.labels.filter((label) => label === 'release-merging:42').length, 1);
       } finally {
         options.cleanup();
       }
@@ -2806,7 +2707,7 @@ describe('executeMerge', () => {
 
         assert.equal(result.status, 'skipped');
         assert.equal(result.phase, 'ready-retry-deferred');
-        assert.ok(!options.labels.includes('blocked:42'));
+        assert.ok(!options.labels.includes('release-merging:42'));
       } finally {
         options.cleanup();
       }
@@ -2830,7 +2731,7 @@ describe('executeMerge', () => {
       assert.equal(result.status, 'blocked');
       assert.equal(result.phase, 'checks');
       assert.ok(!hasCall(options.calls, /gh pr merge/));
-      assert.deepEqual(options.labels, ['merging:42', 'blocked:42']);
+      assert.deepEqual(options.labels, ['merging:42', 'release-merging:42']);
     } finally {
       options.cleanup();
     }
@@ -2853,7 +2754,7 @@ describe('executeMerge', () => {
       assert.equal(result.status, 'blocked');
       assert.equal(result.phase, 'checks');
       assert.ok(!hasCall(options.calls, /gh pr merge/));
-      assert.deepEqual(options.labels, ['merging:42', 'blocked:42']);
+      assert.deepEqual(options.labels, ['merging:42', 'release-merging:42']);
     } finally {
       options.cleanup();
     }
@@ -2871,7 +2772,7 @@ describe('executeMerge', () => {
       assert.equal(result.phase, 'ready');
       assert.ok(hasCall(options.calls, /missing risk field/));
       assert.ok(!hasCall(options.calls, /gh pr merge/));
-      assert.deepEqual(options.labels, ['merging:42', 'blocked:42']);
+      assert.deepEqual(options.labels, ['merging:42', 'release-merging:42']);
     } finally {
       options.cleanup();
     }
@@ -2948,7 +2849,7 @@ describe('executeMerge', () => {
       assert.ok(hasCall(options.calls, /gh pr merge 42 --squash/));
       assert.ok(hasCall(options.calls, /git push origin --delete 'task\/merge-me'/));
       assert.deepEqual(options.labels, ['merging:42', 'merged:42']);
-      assert.ok(!options.labels.includes('blocked:42'));
+      assert.ok(!options.labels.includes('release-merging:42'));
       assert.ok(warnings.some((warning) => warning.includes('post-merge remote branch cleanup failed')));
     } finally {
       console.warn = originalWarn;
@@ -3132,7 +3033,7 @@ describe('executeMerge', () => {
       assert.equal(result.phase, 'merge');
       assert.equal(mergeAttempts, 8);
       assert.equal(sleeps.length, 7);
-      assert.deepEqual(options.labels, ['merging:42', 'blocked:42']);
+      assert.deepEqual(options.labels, ['merging:42', 'release-merging:42']);
       assert.ok(hasCall(options.calls, /gh pr comment 42 --body/));
       assert.ok(hasCall(options.calls, /Exact GitHub error:/));
       assert.ok(hasCall(options.calls, /required status checks are expected/));
@@ -3178,7 +3079,7 @@ describe('executeMerge', () => {
       assert.equal(mergeAttempts, 1);
       assert.deepEqual(sleeps, []);
       assert.ok(!hasCall(options.calls, /gh pr view 42 --json mergeStateStatus/));
-      assert.deepEqual(options.labels, ['merging:42', 'blocked:42']);
+      assert.deepEqual(options.labels, ['merging:42', 'release-merging:42']);
     } finally {
       options.cleanup();
     }
@@ -3302,7 +3203,7 @@ describe('executeMerge', () => {
 
       assert.equal(result.status, 'merged');
       assert.equal(checkAttempts, 2);
-      assert.equal(options.labels.includes('blocked:42'), false);
+      assert.equal(options.labels.includes('release-merging:42'), false);
       assert.equal(sleeps.length, 1);
     } finally {
       options.cleanup();
@@ -3371,7 +3272,7 @@ describe('executeMerge', () => {
     }
   });
 
-  it('retries a transient blocked-label release on the rebase failure path', async () => {
+  it('retries a transient wm:merging release on the rebase failure path', async () => {
     const options = buildMergeTestOptions();
     const sleeps: number[] = [];
     let releaseAttempts = 0;
@@ -3390,12 +3291,12 @@ describe('executeMerge', () => {
         deps: {
           ...options.deps,
           shellRunner,
-          releaseToBlocked: (prNumber) => {
+          releaseMerging: (prNumber) => {
             releaseAttempts += 1;
             if (releaseAttempts === 1) {
               throw Object.assign(new Error('HTTP 503 Service Unavailable'), { stderr: 'HTTP 503 Service Unavailable' });
             }
-            options.labels.push(`blocked:${prNumber}`);
+            options.labels.push(`release-merging:${prNumber}`);
           },
           retrySleep: async (ms) => { sleeps.push(ms); },
         },
@@ -3405,13 +3306,13 @@ describe('executeMerge', () => {
       assert.equal(result.phase, 'rebase');
       assert.equal(releaseAttempts, 2);
       assert.equal(sleeps.length, 1);
-      assert.deepEqual(options.labels, ['merging:42', 'blocked:42']);
+      assert.deepEqual(options.labels, ['merging:42', 'release-merging:42']);
     } finally {
       options.cleanup();
     }
   });
 
-  it('still returns blocked and warns when the blocked-label release persistently fails', async () => {
+  it('still returns blocked and warns when the wm:merging release persistently fails', async () => {
     const warnings: string[] = [];
     const originalWarn = console.warn;
     const options = buildMergeTestOptions();
@@ -3434,7 +3335,7 @@ describe('executeMerge', () => {
         deps: {
           ...options.deps,
           shellRunner,
-          releaseToBlocked: () => {
+          releaseMerging: () => {
             throw new Error('label update failed');
           },
         },
@@ -3444,7 +3345,7 @@ describe('executeMerge', () => {
       assert.equal(result.phase, 'rebase');
       assert.ok(
         warnings.some((warning) => warning.includes('wm:merging may be leaked')),
-        'expected a leak warning when the blocked-label release exhausts retries',
+        'expected a leak warning when the wm:merging release exhausts retries',
       );
     } finally {
       console.warn = originalWarn;
@@ -3928,7 +3829,7 @@ describe('executeMerge strict-base refresh-and-retry (HOK-2919)', () => {
       assert.equal(result.status, 'blocked');
       assert.equal(result.phase, 'merge');
       assert.match(result.failureExcerpt ?? '', /strict-base-refresh budget exhausted/);
-      assert.deepEqual(options.labels, ['merging:42', 'blocked:42']);
+      assert.deepEqual(options.labels, ['merging:42', 'release-merging:42']);
       assert.ok(retry.events.some((event) => event.startsWith('exhausted:42:')));
       assert.ok(hasCall(options.calls, /gh pr comment 42/));
     } finally {
@@ -3962,7 +3863,7 @@ describe('executeMerge strict-base refresh-and-retry (HOK-2919)', () => {
       assert.match(result.failureExcerpt ?? '', /failingChecks=Shell and Unit Tests/);
       // The retry machinery is never consulted for a genuine policy failure.
       assert.deepEqual(retry.events, []);
-      assert.deepEqual(options.labels, ['merging:42', 'blocked:42']);
+      assert.deepEqual(options.labels, ['merging:42', 'release-merging:42']);
       assert.ok(hasCall(options.calls, /gh pr comment 42/));
       assert.ok(hasCall(options.calls, /policy-failure/));
     } finally {
@@ -4072,7 +3973,7 @@ describe('executeMerge handoff-claim budget (HOK-3108)', () => {
       assert.equal(result.phase, 'handoff');
       assert.match(result.failureExcerpt ?? '', /wm:ready without a published Ready handoff for head head-sha/);
       // Labels: block only. wm:merging is never applied.
-      assert.deepEqual(options.labels, ['blocked:42']);
+      assert.deepEqual(options.labels, ['release-merging:42']);
       assert.ok(events.some((event) => event.startsWith('exhausted:42:')));
       // A failure comment is posted with the diagnostic text.
       assert.ok(options.calls.some((cmd) => /gh pr comment 42/.test(cmd)));
@@ -4100,7 +4001,7 @@ describe('executeMerge handoff-claim budget (HOK-3108)', () => {
       assert.equal(result.status, 'blocked');
       assert.equal(result.phase, 'handoff');
       assert.ok(!events.some((event) => event.startsWith('exhausted:42:')));
-      assert.deepEqual(options.labels, ['blocked:42']);
+      assert.deepEqual(options.labels, ['release-merging:42']);
     } finally {
       options.cleanup();
     }
@@ -4192,122 +4093,7 @@ describe('executeMerge handoff-claim budget (HOK-3108)', () => {
   });
 });
 
-describe('wm:blocked reconciliation against live state (HOK-2919)', () => {
-  function blockedPr(): GhPrListEntry {
-    return pr({ labels: [label(WM_LABELS.wavemill), label(WM_LABELS.ready), label(WM_LABELS.blocked)] });
-  }
-
-  it('invalidates a block written against a prior head when no live gate remains (REQ-F3/REQ-F4)', async () => {
-    const options = buildTestOptions([blockedPr()]);
-    const cleared: number[] = [];
-    options.blockedLabelClearer = (prNumber) => { cleared.push(prNumber); };
-    options.blockedPrLiveStateProber = async () => ({
-      available: true,
-      mergeable: 'MERGEABLE',
-      mergeStateStatus: 'CLEAN',
-      failingChecks: [],
-      pendingChecks: [],
-    });
-    writePrStateMarker(1, {
-      headSha: 'head-old',
-      activeLabels: [WM_LABELS.ready, WM_LABELS.blocked],
-      markerRoot: options.repoDir,
-    });
-
-    try {
-      const decision = await selectNextCandidate(options);
-      assert.deepEqual(decision.eligible.map((item) => item.number), [1]);
-      assert.deepEqual(decision.blocked, []);
-      assert.deepEqual(cleared, [1]);
-    } finally {
-      options.cleanup();
-    }
-  });
-
-  it('keeps a stale-marker block when live truth confirms failing checks, with a named gate', async () => {
-    const options = buildTestOptions([blockedPr()]);
-    const cleared: number[] = [];
-    options.blockedLabelClearer = (prNumber) => { cleared.push(prNumber); };
-    options.blockedPrLiveStateProber = async () => ({
-      available: true,
-      mergeable: 'MERGEABLE',
-      mergeStateStatus: 'BLOCKED',
-      failingChecks: ['Shell and Unit Tests'],
-      pendingChecks: [],
-    });
-    writePrStateMarker(1, {
-      headSha: 'head-old',
-      activeLabels: [WM_LABELS.ready, WM_LABELS.blocked],
-      markerRoot: options.repoDir,
-    });
-
-    try {
-      const decision = await selectNextCandidate(options);
-      assert.equal(decision.eligible.length, 0);
-      assert.match(decision.blocked[0]?.reason ?? '', /^blocked-label:checks-failing:Shell and Unit Tests/);
-      assert.deepEqual(cleared, []);
-    } finally {
-      options.cleanup();
-    }
-  });
-
-  it('surfaces a contradiction finding for a valid same-head block on a CLEAN green PR (REQ-F5)', async () => {
-    const options = buildTestOptions([blockedPr()]);
-    options.blockedPrLiveStateProber = async () => ({
-      available: true,
-      mergeable: 'MERGEABLE',
-      mergeStateStatus: 'CLEAN',
-      failingChecks: [],
-      pendingChecks: [],
-    });
-    writePrStateMarker(1, {
-      headSha: 'head-current',
-      activeLabels: [WM_LABELS.ready, WM_LABELS.blocked],
-      markerRoot: options.repoDir,
-    });
-
-    try {
-      const decision = await selectNextCandidate(options);
-      assert.equal(decision.blocked[0]?.reason, 'blocked-label:contradicted-by-live-state');
-      const findings = readFileSync(join(options.repoDir, '.wavemill', 'observer-findings.jsonl'), 'utf-8');
-      assert.match(findings, /contradicted by live state/);
-      assert.match(findings, /merge-lane-blocked-contradiction/);
-      // A second poll with unchanged state does not re-emit the finding.
-      const findingCount = findings.split('\n').filter((line) => line.includes('merge-lane-blocked-contradiction')).length;
-      await selectNextCandidate(options);
-      const findingsAfter = readFileSync(join(options.repoDir, '.wavemill', 'observer-findings.jsonl'), 'utf-8');
-      assert.equal(
-        findingsAfter.split('\n').filter((line) => line.includes('merge-lane-blocked-contradiction')).length,
-        findingCount,
-      );
-    } finally {
-      options.cleanup();
-    }
-  });
-
-  it('names the behind-base gate for a valid same-head block that is merely stale', async () => {
-    const options = buildTestOptions([blockedPr()]);
-    options.blockedPrLiveStateProber = async () => ({
-      available: true,
-      mergeable: 'MERGEABLE',
-      mergeStateStatus: 'BEHIND',
-      failingChecks: [],
-      pendingChecks: [],
-    });
-    writePrStateMarker(1, {
-      headSha: 'head-current',
-      activeLabels: [WM_LABELS.ready, WM_LABELS.blocked],
-      markerRoot: options.repoDir,
-    });
-
-    try {
-      const decision = await selectNextCandidate(options);
-      assert.equal(decision.blocked[0]?.reason, 'blocked-label:behind-base');
-    } finally {
-      options.cleanup();
-    }
-  });
-
+describe('mill/tend disagreement (HOK-2919)', () => {
   it('emits a mill/tend disagreement finding when the mill holds a blocked PR as a merge candidate (REQ-F5)', async () => {
     const options = buildTestOptions([
       pr({ labels: [label(WM_LABELS.wavemill)] }),
@@ -4398,7 +4184,7 @@ describe('executeMerge worktree-prep timeout (HOK-3039)', () => {
       assert.match(String(result.failureExcerpt), /worktree-prep-timeout phase=add/);
       // Ready restored on the way out — the incident should NOT terminally block.
       assert.ok(options.labels.includes('ready:42'), `labels=${options.labels.join(',')}`);
-      assert.ok(!options.labels.includes('blocked:42'));
+      assert.ok(!options.labels.includes('release-merging:42'));
       assert.equal(gateCalls, 1);
       // Marker cleared on the recovery path so the next Tend loop starts clean.
       assert.ok(!existsSync(scratchPrepMarkerPath(42, options.repoDir)));
@@ -4440,7 +4226,7 @@ describe('executeMerge worktree-prep timeout (HOK-3039)', () => {
       assert.equal(result.status, 'blocked');
       assert.equal(result.phase, 'worktree-timeout');
       assert.match(String(result.failureExcerpt), /scratch-prep-recovery budget exhausted/);
-      assert.ok(options.labels.includes('blocked:42'), `labels=${options.labels.join(',')}`);
+      assert.ok(options.labels.includes('release-merging:42'), `labels=${options.labels.join(',')}`);
       assert.ok(markExhaustedCalled);
     } finally {
       options.cleanup();
@@ -4683,10 +4469,6 @@ describe('reconcileScratchPrepState (HOK-3039)', () => {
 });
 
 describe('executeMerge handoff-rebind lag (HOK-3105)', () => {
-  function tendHandoffBlockSentinelPathForTest(repoDir: string, prNumber: number): string {
-    return join(repoDir, '.wavemill', 'merge-lane', String(prNumber), 'tend-handoff-block.json');
-  }
-
   /**
    * Build a shell runner that behaves like the default one but lets the test
    * control what `gh pr view` returns on the *post-push* poll — the read that
@@ -4775,7 +4557,7 @@ describe('executeMerge handoff-rebind lag (HOK-3105)', () => {
       assert.ok(backoffSleeps.length >= 2, `expected at least 2 backoff sleeps, got ${backoffSleeps.length}`);
       assert.equal(backoffSleeps[0], 1000);
       assert.equal(backoffSleeps[1], 2000);
-      assert.ok(!options.labels.includes('blocked:42'), `labels=${options.labels.join(',')}`);
+      assert.ok(!options.labels.includes('release-merging:42'), `labels=${options.labels.join(',')}`);
     } finally {
       options.cleanup();
     }
@@ -4809,16 +4591,13 @@ describe('executeMerge handoff-rebind lag (HOK-3105)', () => {
       assert.equal(result.status, 'blocked');
       assert.equal(result.phase, 'handoff');
       assert.match(String(result.failureExcerpt), /diverged/);
-      assert.ok(options.labels.includes('blocked:42'), `labels=${options.labels.join(',')}`);
-      assert.ok(
-        existsSync(tendHandoffBlockSentinelPathForTest(options.repoDir, 42)),
-        'expected tend-handoff-block sentinel to be written on the terminal path',
-      );
-      const sentinel = JSON.parse(readFileSync(tendHandoffBlockSentinelPathForTest(options.repoDir, 42), 'utf-8'));
-      assert.equal(sentinel.headSha, pushedSha);
-      // HOK-3112: the sentinel carries what the self-heal needs to move the claim.
-      assert.equal(sentinel.previousHeadSha, initialHeadSha);
-      assert.equal(sentinel.featureDir, featureDir);
+      assert.ok(options.labels.includes('release-merging:42'), `labels=${options.labels.join(',')}`);
+      // HOK-3316: the outcome is a handoff fact for the pushed head, which the
+      // reconciler renders as wm:blocked until the third head expires it.
+      const fact = readTendAttemptFact(featureDir);
+      assert.equal(fact?.phase, 'handoff');
+      assert.equal(fact?.headSha, pushedSha);
+      assert.ok(fact?.baseSha, 'the fact is keyed on the integration tip tend rebased onto');
       // HOK-3112: the push happened even though the rebind was refused, so the
       // task worktree is marked stale for the monitor to resync.
       const pushedMarker = readTendPushedHead(featureDir);
@@ -4876,8 +4655,8 @@ describe('executeMerge handoff-rebind lag (HOK-3105)', () => {
       assert.ok(incrementCalled, 'expected handoff-rebind budget increment on deferred path');
       assert.equal(commentCalls, 0, 'no failure comment should be posted on the deferred path');
       assert.ok(options.labels.includes('ready:42'), `labels=${options.labels.join(',')}`);
-      assert.ok(!options.labels.includes('blocked:42'));
-      assert.ok(!existsSync(tendHandoffBlockSentinelPathForTest(options.repoDir, 42)));
+      assert.ok(!options.labels.includes('release-merging:42'));
+      assert.equal(readTendAttemptFact(featureDir), null, 'a deferral records no attempt fact');
       // HOK-3112: a lag-deferred rebind still marks the task worktree stale.
       assert.equal(readTendPushedHead(featureDir)?.pushedHeadSha, pushedSha);
     } finally {
@@ -4921,282 +4700,9 @@ describe('executeMerge handoff-rebind lag (HOK-3105)', () => {
       assert.equal(result.status, 'blocked');
       assert.equal(result.phase, 'handoff');
       assert.match(String(result.failureExcerpt), /handoff-rebind budget exhausted/);
-      assert.ok(options.labels.includes('blocked:42'));
+      assert.ok(options.labels.includes('release-merging:42'));
       assert.ok(markExhaustedCalled);
-      assert.ok(existsSync(tendHandoffBlockSentinelPathForTest(options.repoDir, 42)));
-    } finally {
-      options.cleanup();
-    }
-  });
-
-  it('self-heals a tend-set wm:blocked on the second poll of a CLEAN green head', async () => {
-    const options = buildTestOptions([
-      pr({ labels: [label(WM_LABELS.wavemill), label(WM_LABELS.ready), label(WM_LABELS.blocked)] }),
-    ]);
-    const cleared: number[] = [];
-    options.blockedLabelClearer = (prNumber) => { cleared.push(prNumber); };
-    options.blockedPrLiveStateProber = async () => ({
-      available: true,
-      mergeable: 'MERGEABLE',
-      mergeStateStatus: 'CLEAN',
-      failingChecks: [],
-      pendingChecks: [],
-    });
-    writePrStateMarker(1, {
-      headSha: 'head-current',
-      activeLabels: [WM_LABELS.ready, WM_LABELS.blocked],
-      markerRoot: options.repoDir,
-    });
-    // Seed the tend-handoff-block sentinel at the current head.
-    const sentinelDir = join(options.repoDir, '.wavemill', 'merge-lane', '1');
-    mkdirSync(sentinelDir, { recursive: true });
-    writeFileSync(
-      join(sentinelDir, 'tend-handoff-block.json'),
-      JSON.stringify({ headSha: 'head-current', reason: 'handoff-rebind-refused', at: '2026-09-28T00:00:00Z' }),
-    );
-
-    try {
-      // First poll: records the first observation, keeps the block.
-      const first = await selectNextCandidate(options);
-      assert.equal(first.blocked[0]?.reason, 'blocked-label:contradicted-by-live-state');
-      assert.deepEqual(cleared, []);
-      assert.ok(existsSync(join(sentinelDir, 'tend-handoff-contradiction-observed.json')));
-
-      // Second poll: consecutive observation at the same head — self-heal.
-      const second = await selectNextCandidate(options);
-      assert.deepEqual(second.eligible.map((c) => c.number), [1]);
-      assert.deepEqual(second.blocked, []);
-      assert.deepEqual(cleared, [1]);
-      // Both sidecars cleared after self-heal.
-      assert.ok(!existsSync(join(sentinelDir, 'tend-handoff-block.json')));
-      assert.ok(!existsSync(join(sentinelDir, 'tend-handoff-contradiction-observed.json')));
-      // Self-heal finding recorded.
-      const findings = readFileSync(join(options.repoDir, '.wavemill', 'observer-findings.jsonl'), 'utf-8');
-      assert.match(findings, /Tend cleared its own handoff-refusal wm:blocked/);
-    } finally {
-      options.cleanup();
-    }
-  });
-
-  it('does not self-heal a wm:blocked without the tend-handoff sentinel (HOK-2883 preserved)', async () => {
-    const options = buildTestOptions([
-      pr({ labels: [label(WM_LABELS.wavemill), label(WM_LABELS.ready), label(WM_LABELS.blocked)] }),
-    ]);
-    const cleared: number[] = [];
-    options.blockedLabelClearer = (prNumber) => { cleared.push(prNumber); };
-    options.blockedPrLiveStateProber = async () => ({
-      available: true,
-      mergeable: 'MERGEABLE',
-      mergeStateStatus: 'CLEAN',
-      failingChecks: [],
-      pendingChecks: [],
-    });
-    writePrStateMarker(1, {
-      headSha: 'head-current',
-      activeLabels: [WM_LABELS.ready, WM_LABELS.blocked],
-      markerRoot: options.repoDir,
-    });
-    // Deliberately do NOT write the tend-handoff-block sentinel: the block
-    // was set by some other subsystem (cross-PR revert guard, review).
-
-    try {
-      const first = await selectNextCandidate(options);
-      assert.equal(first.blocked[0]?.reason, 'blocked-label:contradicted-by-live-state');
-      const second = await selectNextCandidate(options);
-      assert.equal(second.blocked[0]?.reason, 'blocked-label:contradicted-by-live-state');
-      // Never cleared — HOK-2883 semantics preserved.
-      assert.deepEqual(cleared, []);
-      assert.ok(!existsSync(
-        join(options.repoDir, '.wavemill', 'merge-lane', '1', 'tend-handoff-contradiction-observed.json'),
-      ));
-    } finally {
-      options.cleanup();
-    }
-  });
-
-  /**
-   * HOK-3112 fixture: PR #1 sits at `liveHead` with a tend-set wm:blocked,
-   * a CLEAN/green live state, and a Ready artifact dir (resolved from the
-   * `task: HOK-1437` metadata) whose last Ready pass was at the stale head.
-   */
-  function buildSelfHealFixture(liveHead: string) {
-    const options = buildTestOptions([
-      pr({
-        headRefOid: liveHead,
-        labels: [label(WM_LABELS.wavemill), label(WM_LABELS.ready), label(WM_LABELS.blocked)],
-      }),
-    ]);
-    const cleared: number[] = [];
-    options.blockedLabelClearer = (prNumber) => { cleared.push(prNumber); };
-    options.blockedPrLiveStateProber = async () => ({
-      available: true,
-      mergeable: 'MERGEABLE',
-      mergeStateStatus: 'CLEAN',
-      failingChecks: [],
-      pendingChecks: [],
-    });
-    writePrStateMarker(1, {
-      headSha: liveHead,
-      activeLabels: [WM_LABELS.ready, WM_LABELS.blocked],
-      markerRoot: options.repoDir,
-    });
-    writeReadyResult(options.repoDir, 'HOK-1437', {
-      stage: 'ready',
-      status: 'completed',
-      artifacts: { type: 'ready', verdict: 'pass', readyHeadSha: 'head-prev', readyLabelsUpdated: true },
-    });
-    const featureDir = join(options.repoDir, 'features', 'HOK-1437');
-    const sentinelDir = join(options.repoDir, '.wavemill', 'merge-lane', '1');
-    const writeSentinel = (sentinel: Record<string, unknown>) => {
-      mkdirSync(sentinelDir, { recursive: true });
-      writeFileSync(
-        join(sentinelDir, 'tend-handoff-block.json'),
-        JSON.stringify({ reason: 'handoff-rebind-refused', at: '2026-09-29T12:25:00Z', ...sentinel }),
-      );
-    };
-    return { options, cleared, featureDir, sentinelDir, writeSentinel };
-  }
-
-  /** executeMerge deps where GitHub reports `liveHead` and no rebase is needed. */
-  function buildClaimMergeOptions(liveHead: string) {
-    const merge = buildMergeTestOptions();
-    const shellRunner: MergeExecutionDeps['shellRunner'] = (cmd) => {
-      merge.calls.push(cmd);
-      if (cmd.includes('gh pr list --label')) return '[]';
-      if (cmd.includes('git rev-parse --git-common-dir')) return join(merge.repoDir, '.git');
-      if (cmd.includes('git rev-parse') && cmd.includes('origin/')) return 'abc123def456';
-      if (cmd.includes('git merge-base --is-ancestor')) return '';
-      if (cmd.includes('gh pr checks')) return JSON.stringify([{ name: 'ci', state: 'COMPLETED', conclusion: 'success' }]);
-      if (cmd.includes('gh pr view')) {
-        return JSON.stringify({
-          mergeStateStatus: 'CLEAN',
-          headRefOid: liveHead,
-          baseRefOid: 'base-sha',
-          statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
-        });
-      }
-      return '';
-    };
-    return { merge, deps: { ...merge.deps, shellRunner, retrySleep: async () => {} } };
-  }
-
-  for (const shape of [
-    { name: 'tend claim still at the pre-push head', staleState: 'tend-claimed' },
-    { name: 'Ready re-run republished at the stale checkout head (PR #1520)', staleState: 'ready-published' },
-  ] as const) {
-    it(`self-heal moves the handoff to the live head so the next poll claims it — ${shape.name} (HOK-3112)`, async () => {
-      const { options, cleared, featureDir, sentinelDir, writeSentinel } = buildSelfHealFixture('head-current');
-      const claimOptions = buildClaimMergeOptions('head-current');
-      try {
-        // Record left behind by the refused rebind: still at the pre-push head.
-        await publishReadyHandoff(featureDir, 1, 'head-prev');
-        if (shape.staleState === 'tend-claimed') await claimReadyHandoff(featureDir, 1, 'head-prev');
-        await recordTendPushedHead(featureDir, 1, 'head-prev', 'head-current');
-        writeSentinel({ headSha: 'head-current', previousHeadSha: 'head-prev', featureDir });
-
-        const first = await selectNextCandidate(options);
-        assert.equal(first.blocked[0]?.reason, 'blocked-label:contradicted-by-live-state');
-        assert.equal(readReadyTendHandoff(featureDir)?.headSha, 'head-prev', 'first poll must not move the record');
-
-        const second = await selectNextCandidate(options);
-        assert.deepEqual(cleared, [1]);
-        assert.deepEqual(second.eligible.map((c) => c.number), [1]);
-        assert.ok(!existsSync(join(sentinelDir, 'tend-handoff-block.json')));
-
-        const record = readReadyTendHandoff(featureDir);
-        assert.equal(record?.headSha, 'head-current');
-        assert.equal(record?.state, shape.staleState === 'tend-claimed' ? 'tend-claimed' : 'ready-published');
-        // The task worktree stays marked stale so the monitor resyncs it
-        // before any Ready re-run can overwrite the healed record.
-        assert.equal(readTendPushedHead(featureDir)?.pushedHeadSha, 'head-current');
-
-        // Next tend poll: the candidate is claimable at the live head.
-        const next = second.eligible[0]!;
-        assert.equal(next.featureDir, featureDir);
-        assert.equal(next.headSha, 'head-current');
-        const result = await executeMerge(next, { repoDir: claimOptions.merge.repoDir, deps: claimOptions.deps });
-        // Past the ownership claim (later merge phases are out of scope here).
-        assert.notEqual(result.phase, 'handoff', `claim rejected: ${result.failureExcerpt}`);
-        // A later-phase retry deferral (HOK-3176, e.g. `checks-retry-deferred`)
-        // is still past the claim; only a claim-level skip would fail here.
-        assert.ok(
-          result.status !== 'skipped' || /-retry-deferred$/.test(result.phase ?? ''),
-          `unexpected skip at ${result.phase}: ${result.failureExcerpt}`,
-        );
-        assert.ok(hasCall(claimOptions.merge.calls, /gh pr view/));
-        const claimed = readReadyTendHandoff(featureDir);
-        assert.equal(claimed?.headSha, 'head-current');
-        assert.equal(claimed?.state, 'tend-claimed');
-        assert.equal(claimed?.tendOwner, 'tend');
-      } finally {
-        options.cleanup();
-        claimOptions.merge.cleanup();
-      }
-    });
-  }
-
-  it('self-heal never republishes for a head tend did not push (HOK-3112)', async () => {
-    const { options, cleared, featureDir, sentinelDir, writeSentinel } = buildSelfHealFixture('head-current');
-    try {
-      await publishReadyHandoff(featureDir, 1, 'head-prev');
-      await claimReadyHandoff(featureDir, 1, 'head-prev');
-      // The sentinel says head-current, but tend's own push record says it
-      // pushed head-other: head-current came from someone else.
-      await recordTendPushedHead(featureDir, 1, 'head-prev', 'head-other');
-      writeSentinel({ headSha: 'head-current', previousHeadSha: 'head-prev', featureDir });
-
-      for (let poll = 0; poll < 3; poll += 1) {
-        const decision = await selectNextCandidate(options);
-        assert.equal(decision.blocked[0]?.reason, 'blocked-label:contradicted-by-live-state');
-      }
-      assert.deepEqual(cleared, []);
-      const record = readReadyTendHandoff(featureDir);
-      assert.equal(record?.headSha, 'head-prev');
-      assert.equal(record?.state, 'tend-claimed');
-      assert.ok(existsSync(join(sentinelDir, 'tend-handoff-block.json')), 'block evidence is kept');
-      assert.ok(!existsSync(join(sentinelDir, 'tend-handoff-contradiction-observed.json')));
-    } finally {
-      options.cleanup();
-    }
-  });
-
-  it('self-heal ignores a third-party head on top of tend\'s push (HOK-3112)', async () => {
-    const { options, cleared, featureDir, writeSentinel } = buildSelfHealFixture('head-third-party');
-    try {
-      await publishReadyHandoff(featureDir, 1, 'head-prev');
-      await claimReadyHandoff(featureDir, 1, 'head-prev');
-      await recordTendPushedHead(featureDir, 1, 'head-prev', 'head-tend');
-      writeSentinel({ headSha: 'head-tend', previousHeadSha: 'head-prev', featureDir });
-
-      for (let poll = 0; poll < 3; poll += 1) {
-        const decision = await selectNextCandidate(options);
-        assert.equal(decision.blocked[0]?.reason, 'blocked-label:contradicted-by-live-state');
-      }
-      assert.deepEqual(cleared, []);
-      assert.equal(readReadyTendHandoff(featureDir)?.headSha, 'head-prev');
-      assert.equal(readTendPushedHead(featureDir)?.pushedHeadSha, 'head-tend');
-    } finally {
-      options.cleanup();
-    }
-  });
-
-  it('self-heal keeps the block when the handoff record is terminal at the live head (HOK-3112)', async () => {
-    const { options, cleared, featureDir, sentinelDir, writeSentinel } = buildSelfHealFixture('head-current');
-    try {
-      mkdirSync(featureDir, { recursive: true });
-      writeFileSync(join(featureDir, '.ready-tend-handoff.json'), JSON.stringify({
-        ...(await publishReadyHandoff(featureDir, 1, 'head-current')).record,
-        state: 'terminal',
-        terminalAt: '2026-09-29T12:00:00Z',
-      }));
-      writeSentinel({ headSha: 'head-current', featureDir });
-
-      await selectNextCandidate(options);
-      const second = await selectNextCandidate(options);
-      assert.equal(second.blocked[0]?.reason, 'blocked-label:contradicted-by-live-state');
-      assert.deepEqual(cleared, []);
-      assert.equal(readReadyTendHandoff(featureDir)?.state, 'terminal');
-      assert.ok(existsSync(join(sentinelDir, 'tend-handoff-block.json')));
+      assert.equal(readTendAttemptFact(featureDir)?.phase, 'handoff');
     } finally {
       options.cleanup();
     }

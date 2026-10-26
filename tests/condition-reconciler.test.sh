@@ -227,6 +227,56 @@ operator_event_record "$STATE_DIR" "re-review" "$ISSUE"
 reconcile
 assert_eq "operator event: marker cleared" "no" "$(exists "$STATE_DIR/.conflict-remediation.json")"
 
+echo "=== HOK-3316: tend merge-attempt fact expires on the PR head or an operator event ==="
+write_tend_fact() { # head base [writtenAt]
+  jq -n --arg h "$1" --arg b "$2" --arg at "${3:-2026-10-22T17:12:29.000Z}" '{
+    schemaVersion: 1, kind: "tend-attempt", headSha: $h, writtenAt: $at, reason: "tend-rebase-failed",
+    detail: {phase: "rebase", prNumber: 1591, baseSha: $b, excerpt: "CONFLICT (content)", failureClass: "code-failure"},
+    condition: {expiresOn: ["remote", "operator-event"], operatorEventSeq: 0,
+                observed: {prHeadRefOid: $h, integrationBaseSha: $b}}}' > "$STATE_DIR/.tend-attempt-result.json"
+}
+new_fixture
+write_tend_fact "$HEAD_SHA" "base-1"
+pr_cache 1591 "$HEAD_SHA"
+reconcile
+assert_eq "fact at the live PR head: kept" "yes" "$(exists "$STATE_DIR/.tend-attempt-result.json")"
+git -C "$WT" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "local only"
+reconcile
+assert_eq "task worktree HEAD alone moving (tend pushed from scratch): kept" "yes" "$(exists "$STATE_DIR/.tend-attempt-result.json")"
+
+new_fixture
+write_tend_fact "$HEAD_SHA" "base-1"
+pr_cache 1591 "$OLD_HEAD"
+reconcile
+assert_eq "PR head moved on GitHub (remote): fact cleared" "no" "$(exists "$STATE_DIR/.tend-attempt-result.json")"
+
+new_fixture
+write_tend_fact "$HEAD_SHA" "base-1"
+pr_cache 1591 "$HEAD_SHA"
+operator_event_record "$STATE_DIR" "advance" "$ISSUE"
+reconcile
+assert_eq "operator event: fact cleared" "no" "$(exists "$STATE_DIR/.tend-attempt-result.json")"
+
+echo "=== HOK-3316: a tend rebase fact re-runs Ready exactly once ==="
+for fn in tend_attempt_fact_path tend_attempt_conflict_needs_ready; do
+  eval "$(sed -n "/^${fn}() {/,/^}/p" "$REPO_DIR/shared/lib/wavemill-monitor.sh")"
+  declare -F "$fn" >/dev/null || { echo "could not extract $fn" >&2; exit 1; }
+done
+wavemill_pr_cache_row_by_pr() { jq -c --argjson pr "$1" '.[] | select(.number == $pr)' "$MONITOR_PR_CACHE"; }
+needs_ready() { tend_attempt_conflict_needs_ready "$STATE_DIR" 1591 "$1" && echo yes || echo no; }
+new_fixture
+pr_cache 1591 "$HEAD_SHA"
+assert_eq "no fact: no Ready re-run" "no" "$(needs_ready base-1)"
+write_tend_fact "$HEAD_SHA" "base-1" "2026-10-22T17:12:29.000Z"
+jq -n '{stage: "ready", status: "completed", startedAt: "2026-10-22T12:00:00Z", finishedAt: "2026-10-22T12:05:00Z"}' > "$STATE_DIR/.ready-result.json"
+assert_eq "fact newer than the Ready pass: re-run Ready" "yes" "$(needs_ready base-1)"
+assert_eq "base moved since the attempt: no re-run (tend retries instead)" "no" "$(needs_ready base-2)"
+pr_cache 1591 "$OLD_HEAD"
+assert_eq "PR head moved: no re-run" "no" "$(needs_ready base-1)"
+pr_cache 1591 "$HEAD_SHA"
+jq -n '{stage: "ready", status: "running", startedAt: "2026-10-22T17:13:00Z", finishedAt: null}' > "$STATE_DIR/.ready-result.json"
+assert_eq "Ready already ran after the fact: no second re-run" "no" "$(needs_ready base-1)"
+
 echo ""
 echo "=== Totals ==="
 echo "pass=$PASS fail=$FAIL"

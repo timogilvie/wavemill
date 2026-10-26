@@ -339,6 +339,65 @@ test('I3 fires only after 3 consecutive ticks of mismatch', () => {
   assert.ok(out.every((v) => v.invariantId !== 'I3-label-mismatch'));
 });
 
+test('I3 sees the PR #1697 oscillation: a tend-attempt fact derives wm:blocked while the label flips every tick (HOK-3316)', () => {
+  const sha = 'head-1697';
+  // The same inputs the tend-side reconciler uses: Ready passed, GitHub says
+  // MERGEABLE, and tend's rebase failed at this head and base.
+  const live: MergeLabelLiveState = {
+    ...makeLiveReady(sha),
+    integrationBaseSha: 'base-1',
+    tendAttempt: { phase: 'rebase', headSha: sha, baseSha: 'base-1' },
+  };
+  const prAt = (label: string): CachedPullRequest => ({
+    number: 100,
+    state: 'OPEN',
+    headRefOid: sha,
+    labels: [{ name: label }],
+    updatedAt: NOW_ISO,
+    statusCheckRollup: [{ name: 'ci', conclusion: 'SUCCESS', status: 'COMPLETED' }],
+  });
+  let cache = createEmptyCache();
+  const fired: number[] = [];
+  // wm:blocked → wm:ready → wm:blocked → wm:ready …: never 3 consecutive mismatches.
+  ['wm:blocked', 'wm:ready', 'wm:blocked', 'wm:ready', 'wm:blocked', 'wm:ready'].forEach((label, tick) => {
+    const result = evaluateInvariants(makeInputs({
+      prs: [prAt(label)],
+      taskViews: new Map([[100, makeTaskView(100, { headSha: sha })]]),
+      liveStates: new Map([[100, live]]),
+      cache,
+    }));
+    cache = result.nextCache;
+    const i3 = result.violations.filter((v) => v.invariantId === 'I3-label-mismatch');
+    if (i3.length > 0) {
+      fired.push(tick);
+      assert.equal(i3[0].evidence.derivedLabel, 'wm:blocked');
+      assert.equal(i3[0].evidence.reason, 'tend-rebase-failed');
+    }
+  });
+  assert.ok(fired.length > 0, 'a label flipping against deriveMergeLabel must surface as I3');
+  assert.ok(fired.every((tick) => tick >= 3), `fired too early: ${fired.join(',')}`);
+});
+
+test('I3 does not count a single legitimate label transition as flapping (HOK-3316)', () => {
+  const sha = 'steady';
+  let cache = createEmptyCache();
+  for (const [label, live] of [
+    ['wm:blocked', makeLiveBlocked(sha)],
+    ['wm:ready', makeLiveReady(sha)],
+    ['wm:ready', makeLiveReady(sha)],
+    ['wm:ready', makeLiveReady(sha)],
+  ] as const) {
+    const result = evaluateInvariants(makeInputs({
+      prs: [{ number: 100, state: 'OPEN', headRefOid: sha, labels: [{ name: label }], updatedAt: NOW_ISO, statusCheckRollup: [{ name: 'ci', conclusion: 'SUCCESS', status: 'COMPLETED' }] }],
+      taskViews: new Map([[100, makeTaskView(100, { headSha: sha })]]),
+      liveStates: new Map([[100, live]]),
+      cache,
+    }));
+    cache = result.nextCache;
+    assert.equal(result.violations.filter((v) => v.invariantId === 'I3-label-mismatch').length, 0);
+  }
+});
+
 test('I3 streak resets when headSha changes', () => {
   const basePr: CachedPullRequest = {
     number: 100,
