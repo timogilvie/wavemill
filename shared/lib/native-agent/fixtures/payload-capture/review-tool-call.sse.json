@@ -1,0 +1,23 @@
+[
+  {
+    "id": "gen-review-1",
+    "model": "moonshotai/kimi-k2-0905",
+    "choices": [
+      {
+        "index": 0,
+        "delta": {
+          "tool_calls": [
+            { "index": 0, "id": "call_read_file", "type": "function", "function": { "name": "read_file", "arguments": "{\"path\":\"src/index.ts\"}" } }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "gen-review-1",
+    "model": "moonshotai/kimi-k2-0905",
+    "choices": [{ "index": 0, "delta": {}, "finish_reason": "tool_calls" }],
+    "usage": { "prompt_tokens": 120, "completion_tokens": 18, "total_tokens": 138 }
+  },
+  "[DONE]"
+]

@@ -62,7 +62,7 @@ import {
   equivalentOpenRouterModelIds,
   type NormalizedPricing,
 } from '../openrouter-catalog.ts';
-import { getNativeAgentConfig, getNativeContextManagementConfig } from '../config.ts';
+import { getNativeAgentConfig, getNativeContextManagementConfig, getNativePayloadCaptureConfig } from '../config.ts';
 import {
   isRepairablePlanValidationReason,
   resolveNativePlanningLimits,
@@ -796,6 +796,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       context,
       maxTokens: effectiveMaxTokens,
       contextManagement: getNativeContextManagementConfig(options.repoDir),
+      payloadCapture: { featureDir, stage: 'planning', ...getNativePayloadCaptureConfig(options.repoDir) },
       convertToLlm: (messages) => messages as unknown as Message[],
       afterToolCall: gitAfterToolCall,
       signal: options.signal,
@@ -963,6 +964,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         context: repairContext,
         maxTokens: effectiveMaxTokens,
         contextManagement: getNativeContextManagementConfig(options.repoDir),
+        payloadCapture: { featureDir, stage: 'planning', ...getNativePayloadCaptureConfig(options.repoDir) },
         convertToLlm: (messages) => messages as unknown as Message[],
         afterToolCall: gitAfterToolCall,
         signal: options.signal,

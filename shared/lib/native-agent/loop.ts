@@ -52,6 +52,11 @@ import {
   type ReplayCompactionOptions,
 } from './compaction.ts';
 import { buildTrustMetadata } from './provenance.ts';
+import {
+  PayloadRingBuffer,
+  wrapStreamFnWithPayloadCapture,
+  type PayloadCaptureConfig,
+} from './payload-capture.ts';
 import { computeDynamicMaxTokens, DEFAULT_MAX_OUTPUT_TOKENS } from './output-limits.ts';
 import { compactTranscript } from './transcript-compactor.ts';
 import { toProviderRequestModelId, type ProviderModelConfig } from './provider.ts';
@@ -247,6 +252,13 @@ export interface WavemillLoopConfig {
     session?: string;
     issue?: string;
   };
+  /**
+   * Keep the last request bodies this run sends, with their response usage,
+   * stop reason and provider-reported model, under
+   * `<featureDir>/native-payloads/<stage>/` (HOK-3261). Launchers always pass
+   * it when they have a feature dir; omitted, nothing is captured.
+   */
+  payloadCapture?: PayloadCaptureConfig;
   /** Invoked on Pi progress events so the dashboard sees a live agent. */
   onHeartbeat?: (event: HeartbeatEvent) => void;
   /** Optional sink for all Pi AgentEvents. Used for transcript writing and monitoring. */
@@ -668,7 +680,10 @@ function composeAbortSignal(
  */
 export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopResult> {
   const { context, convertToLlm, budget, signal: callerSignal, onHeartbeat, modelPricing, temperature } = config;
-  const streamFn = resolveStreamFn(config);
+  const payloadRing = config.payloadCapture ? new PayloadRingBuffer(config.payloadCapture) : undefined;
+  const streamFn = payloadRing
+    ? wrapStreamFnWithPayloadCapture(resolveStreamFn(config), payloadRing)
+    : resolveStreamFn(config);
   const phaseMaxTokens = resolveMaxOutputTokens(config);
   let currentMaxTokens = phaseMaxTokens;
   const contextManagement = resolveContextManagementConfig(config.contextManagement);
@@ -1425,6 +1440,9 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         onHeartbeat?.({ state: 'working', event: 'message_update', agent: HEARTBEAT_AGENT });
         break;
       case 'message_end': {
+        if (payloadRing && event.message?.role === 'assistant') {
+          payloadRing.recordResponse(event.message as AssistantMessage);
+        }
         // Provider-identity verification (HOK-3143). We check every assistant
         // turn whose stopReason is non-error, before any of its tools run.
         // User and tool-result messages reach this branch too (pi-agent-core
@@ -1536,10 +1554,14 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         handleAgentEvent(event, !(continuationRunIndex > 0 && event.type === 'agent_start'));
       };
 
+      // Pi returns only the messages this run added, and appends to
+      // loopContext.messages in place. A retry or continuation must resend the
+      // whole history exactly once, initial prompt included, or the task
+      // instruction silently drops out of every later request (HOK-3261).
+      const priorMessages = [...loopContext.messages];
       const runMessages = await runAgentLoopContinue(loopContext, piConfig, emit, composed.signal, streamFn);
-      finalMessages = continuationRunIndex > 0
-        ? [...loopContext.messages, ...runMessages]
-        : runMessages;
+      const runHistory = [...priorMessages, ...runMessages];
+      finalMessages = continuationRunIndex > 0 ? runHistory : runMessages;
       const emptyAssistantTurn =
         !budgetStopReason
         && !composed.signal.aborted
@@ -1568,7 +1590,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         } catch (error) {
           console.warn(`Failed to log provider retry event: ${(error as Error).message}`);
         }
-        const retainedMessages = stripTrailingAssistantErrorTurn(finalMessages, providerError.message);
+        const retainedMessages = stripTrailingAssistantErrorTurn(runHistory, providerError.message);
         const delayMs = providerRetryDelayMs(providerErrorRetryDelays, providerErrorRetryAttempts - 1);
         await providerErrorSleep(delayMs, composed.signal);
         if (composed.signal.aborted) {
@@ -1601,7 +1623,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         loopContext = {
           ...context,
           messages: [
-            ...finalMessages,
+            ...runHistory,
             buildEmptyAssistantContinuationMessage(),
           ],
         };
@@ -1639,6 +1661,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         // Ignore errors - logging should never break a run
       });
     }
+    payloadRing?.flushPending();
     composed.cleanup();
   }
 

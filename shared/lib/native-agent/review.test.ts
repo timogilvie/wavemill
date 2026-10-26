@@ -13,6 +13,7 @@ import {
   readStageFailureEnvelope,
   type StageFailureEnvelope,
 } from './stage-failure-envelope.ts';
+import { PayloadRingBuffer } from './payload-capture.ts';
 
 describe('native review', () => {
   const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
@@ -649,6 +650,54 @@ describe('native review', () => {
       assert.ok((result.reviewToolError ?? '').length > 0);
       const envelope = await readEnvelope(featureDir);
       assert.equal(envelope.cause, 'model-protocol');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(featureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('snapshots the last captured request bodies into the failure evidence (HOK-3261)', async () => {
+    const repoDir = makeTempRepo();
+    const featureDir = mkdtempSync(join(tmpdir(), 'native-review-feature-'));
+    setReadyProvider();
+
+    nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
+      assert.equal(config.payloadCapture?.featureDir, featureDir);
+      assert.equal(config.payloadCapture?.stage, 'review');
+      // Stand in for the loop's capture hook: five requests through the ring.
+      const ring = new PayloadRingBuffer(config.payloadCapture!);
+      for (let turn = 0; turn < 5; turn++) {
+        ring.recordRequest({ messages: [{ role: 'user', content: `turn ${turn}` }] }, { id: 'kimi-k2', provider: 'openrouter', api: 'openai-completions' });
+        ring.recordResponse(assistantMessage(`reply ${turn}`) as never);
+      }
+      const message = assistantMessage('   ');
+      emitCommonEvents(config, message);
+      return {
+        messages: [message],
+        stopReason: 'stop',
+        turnsCompleted: 5,
+        toolCallsExecuted: 0,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0,
+        wallClockMs: 5,
+      };
+    });
+
+    try {
+      await runNativeReview(makeReviewContext(), repoDir, { featureDir });
+      const envelope = await readEnvelope(featureDir);
+      assert.equal(envelope.cause, 'model-protocol');
+      const evidenceDir = envelope.evidence.payloadCaptureDir;
+      assert.ok(evidenceDir, 'the envelope points at the payload snapshot');
+      assert.ok(!evidenceDir.startsWith(featureDir), 'the snapshot lives outside the reaped feature dir');
+
+      // Reaping removes the feature dir and its ring buffer; the evidence stays.
+      rmSync(featureDir, { recursive: true, force: true });
+      const files = readdirSync(evidenceDir);
+      assert.equal(files.length, 3);
+      const newest = JSON.parse(readFileSync(join(evidenceDir, files.sort().at(-1)!), 'utf-8'));
+      assert.deepEqual(newest.payload, { messages: [{ role: 'user', content: 'turn 4' }] });
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
       rmSync(featureDir, { recursive: true, force: true });

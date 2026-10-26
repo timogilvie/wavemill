@@ -493,6 +493,12 @@ export interface NativeContextManagementConfig {
   packetBudgetFraction?: number;
 }
 
+/** Size caps for native request-body capture (HOK-3261). */
+export interface NativePayloadCaptureConfig {
+  maxFiles?: number;
+  maxBytes?: number;
+}
+
 export interface NativePlanningConfig {
   maxTurns?: number;
   maxToolCalls?: number;
@@ -678,6 +684,7 @@ export interface NativeAgentConfig {
   patchCoding?: NativePatchCodingConfig;
   certification?: NativeCertificationConfig;
   contextManagement?: NativeContextManagementConfig;
+  payloadCapture?: NativePayloadCaptureConfig;
   providers?: NativeAgentProvidersConfig;
   /**
    * Advanced-tool family opt-ins (Epic 10). Every family defaults off; a
@@ -2874,6 +2881,14 @@ export function getNativeContextManagementConfig(repoDir?: string): Required<Nat
     minRetainedToolResults: config.minRetainedToolResults ?? 4,
     minOutputTokens: config.minOutputTokens ?? 1_024,
     packetBudgetFraction: config.packetBudgetFraction ?? 0.5,
+  };
+}
+
+export function getNativePayloadCaptureConfig(repoDir?: string): Required<NativePayloadCaptureConfig> {
+  const config = getNativeAgentConfig(repoDir).payloadCapture || {};
+  return {
+    maxFiles: config.maxFiles ?? 3,
+    maxBytes: config.maxBytes ?? 5 * 1024 * 1024,
   };
 }
 
