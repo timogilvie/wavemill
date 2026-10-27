@@ -38,7 +38,7 @@ export const SOURCE_TEXT_ASSERTIONS_GUARD: GuardSpec = {
   allowlistFile: 'tools/source-text-assertions-allowlist.txt',
   invariantPaths: [
     'shared/lib/source-text-assertions-guard.ts',
-    'tools/check-source-text-assertions.ts',
+    'tools/check-source-text-assertions.ts', // install-paths: allow invariantPaths list, not an argv target
   ],
   testsOnly: true,
   excludedPrefixes: [

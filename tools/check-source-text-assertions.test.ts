@@ -76,9 +76,11 @@ describe('SOURCE_TEXT_ASSERTIONS_GUARD', () => {
   // protects: the ts-readfile-sibling-source pattern catches the
   // readFileSync(new URL('./x.ts', import.meta.url)) sibling-source read that
   // is the usual TS flavour of a source-text assertion.
+  // allow-source-text-assertion: the it() name below intentionally spells the pattern.
   it('reports a TS test that readFileSync(..., import.meta.url) a sibling source', () => {
     write(repo, 'shared/lib/widget.test.ts', [
       "import { readFileSync } from 'node:fs';",
+      // allow-source-text-assertion: fixture — the next line IS the pattern the guard must detect.
       "const src = readFileSync(new URL('./widget.ts', import.meta.url), 'utf8');",
       "if (src.includes('foo')) throw new Error('ok');",
       '',
@@ -92,10 +94,12 @@ describe('SOURCE_TEXT_ASSERTIONS_GUARD', () => {
 
   // protects: the ts-hash-source pattern catches a sha256 of a .ts file —
   // using source bytes as a stamp/oracle instead of calling the function.
+  // allow-source-text-assertion: the it() name below intentionally spells the pattern.
   it('reports a TS test that sha256(readFileSync(... .ts))', () => {
     write(repo, 'shared/lib/widget.test.ts', [
       "import { readFileSync } from 'node:fs';",
       "import { sha256 } from './schema-validators.ts';",
+      // allow-source-text-assertion: fixture — hashing a .ts source file is the pattern the guard must detect.
       "const stamp = sha256(readFileSync('shared/lib/widget.ts'));",
       "if (stamp.length !== 64) throw new Error('bad');",
       '',
@@ -144,6 +148,7 @@ describe('SOURCE_TEXT_ASSERTIONS_GUARD', () => {
     write(repo, 'shared/lib/loader.ts', [
       "import { readFileSync } from 'node:fs';",
       "import { fileURLToPath } from 'node:url';",
+      // allow-source-text-assertion: fixture — a production file that reads its own source, to prove the guard does NOT fire here.
       "export const srcHash = readFileSync(fileURLToPath(import.meta.url));",
       '',
     ].join('\n'));
