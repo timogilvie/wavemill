@@ -354,6 +354,7 @@ TESTS=(
   shared/lib/task-dependency-planner.test.ts
   shared/lib/plan-queue-utils.test.ts
   shared/lib/touch-set-predictor.test.ts
+  shared/lib/in-flight-touch-sets.test.ts
   shared/lib/conflict-scorer.test.ts
   shared/lib/grounded-planner.test.ts
   shared/lib/planner-backtest.test.ts

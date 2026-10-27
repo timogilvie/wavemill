@@ -75,6 +75,8 @@ WAVEMILL_CONTROL_TMUX_SOCKET  # plumbing: internal mill variable (HOK-3235 basel
 WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_CONTROLLER_PROCESS_REGEX  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_CROSS_PR_GUARD_TIMEOUT_SECONDS  # plumbing: internal mill variable (HOK-3235 baseline seed)
+WAVEMILL_IN_FLIGHT_FILE  # plumbing: picker->plan-queue payload path (HOK-3306)
+WAVEMILL_IN_FLIGHT_TOUCH_SET_TIMEOUT_SECONDS  # plumbing: in-flight touch-set job timeout (HOK-3306)
 WAVEMILL_DASHBOARD_PID  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_DASHBOARD_REFRESH_SECONDS  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_DASHBOARD_REFRESH_WARNED  # plumbing: internal mill variable (HOK-3235 baseline seed)
