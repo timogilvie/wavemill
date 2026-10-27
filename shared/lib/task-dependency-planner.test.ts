@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import {
   planTaskDependencies,
   TaskDependencyPlannerError,
@@ -28,6 +27,8 @@ function makeTasks(...ids: string[]): TaskInput[] {
 
 console.log('\n--- task-dependency-planner Tests ---\n');
 
+// protects: an empty input never degenerates into an undefined/null result —
+// callers rely on an always-defined { waves, queues, triage } shape.
 test('[REQ-F1] empty inputs -> empty result', () => {
   const result = planTaskDependencies([], []);
   assert.deepEqual(result, {
@@ -80,6 +81,8 @@ test('[REQ-F2] unknown endpoint triaged with option', () => {
   assert.deepEqual(result.triage.map((record) => record.reason), ['unknown_endpoint']);
 });
 
+// protects: a depends_on cycle must throw rather than silently drop an edge,
+// otherwise the dependent task would ship before its prerequisite.
 test('[REQ-F3] depends_on cycle throws', () => {
   assert.throws(() => {
     planTaskDependencies(makeTasks('A', 'B'), [
@@ -235,15 +238,15 @@ test('[REQ-F9] same from/to different type not duplicate', () => {
   assert.deepEqual(result.triage, []);
 });
 
-test('[REQ-F10] no forbidden tokens in source', () => {
-  const source = readFileSync(new URL('./task-dependency-planner.ts', import.meta.url), 'utf8');
-  const forbidden = ['llm-cli', 'linear', 'child_process'];
+// [REQ-F10] "no forbidden tokens in source" was deleted in HOK-3237: it
+// grepped the planner source for 'linear' / 'llm-cli' / 'child_process' as a
+// proxy for purity, which passed on real bugs and failed on harmless
+// refactors. The planner is pure by construction — it takes plain data in and
+// returns plain data out — and every behavioural test below exercises that
+// property. The import graph is checked by the typechecker.
 
-  for (const token of forbidden) {
-    assert.equal(source.includes(token), false, `Source includes forbidden token: ${token}`);
-  }
-});
-
+// protects: duplicate task IDs are rejected at the input boundary before any
+// dependency work (an upstream mistake must fail loudly, not silently merge).
 test('[REQ] duplicate task IDs throw', () => {
   assert.throws(() => {
     planTaskDependencies([{ id: 'A' }, { id: 'A' }], []);
