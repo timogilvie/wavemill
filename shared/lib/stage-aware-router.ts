@@ -13,7 +13,7 @@ import type { EvalRecord, TaskDescriptor, StageOutcomes } from './eval-schema.ts
 import { buildTaskDescriptor, type TaskDescriptorInput } from './task-descriptor-builder.ts';
 import { readJsonlFile } from './jsonl-utils.ts';
 import { resolveFromMainRepo } from './git-utils.ts';
-import { computeModelCost, loadPricingTable } from './workflow-cost.ts';
+import { computeModelCost, loadPricingTable } from './pricing/model-pricing.ts';
 import type { WorkflowRouteDecision, PlanDepth, CodeDepth, ReviewMode } from './workflow-router.ts';
 import { getRouterConfig } from './config.ts';
 import { listEffectiveModelsForStage } from './effective-models.ts';

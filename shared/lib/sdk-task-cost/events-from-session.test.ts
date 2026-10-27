@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ExternalSessionUsageRecord, NativeSessionUsageRecord } from '../session-adapters.ts';
-import type { PricingTable } from '../workflow-cost.ts';
+import type { PricingTable } from '../pricing/model-pricing.ts';
 import { validateTaskCostEventV1 } from './contract.ts';
 import {
   eventsFromExternalSession,
@@ -372,6 +372,48 @@ describe('eventsFromNativeSessions', () => {
     assert.equal(event.observed_model, 'deepseek-chat');
     // Pricing still resolves through the raw id fallback.
     assert.notEqual(event.estimated_cost_usd, null);
+  });
+
+  describe('OpenRouter exact generation costs (HOK-3077)', () => {
+    const twoTurns = () => nativeSession({
+      responseIds: ['gen-1', 'gen-2'],
+      turns: ['gen-1', 'gen-2'].map((responseId) => ({
+        responseId, inputTokens: 1000, cacheCreationTokens: 0, cacheReadTokens: 0, outputTokens: 100,
+        usageAvailable: true, invalidUsage: false, providerReportedCostUsd: 0.5,
+      })),
+    });
+
+    it('emits a fetched charge as the provider-reported cost, over transcript cost and local estimate', () => {
+      const events = eventsFromNativeSessions([twoTurns()], ctx(DEEPSEEK, {
+        exactGenerationCosts: new Map([['gen-1', 0.0123]]),
+      }));
+      for (const event of events) validateTaskCostEventV1(event);
+      assert.equal(events[0].actual_cost_usd, 0.0123);
+      assert.equal(events[0].estimated_cost_usd, null);
+      assert.equal(events[0].cost_source, 'provider_reported');
+      // Usage is still recorded from the transcript.
+      assert.equal(events[0].usage.input_tokens, 1000);
+      // A turn whose charge was not fetched keeps its own precedence.
+      assert.equal(events[1].actual_cost_usd, 0.5);
+    });
+
+    it('accepts a fetched zero even when a local price exists', () => {
+      const [event] = eventsFromNativeSessions([nativeSession()], ctx(DEEPSEEK, {
+        exactGenerationCosts: new Map([['gen-1', 0]]),
+      }));
+      assert.equal(event.actual_cost_usd, 0);
+      assert.equal(event.estimated_cost_usd, null);
+    });
+
+    it('ignores non-finite or negative charges', () => {
+      for (const bad of [Number.NaN, -1, Number.POSITIVE_INFINITY]) {
+        const [event] = eventsFromNativeSessions([nativeSession()], ctx(DEEPSEEK, {
+          exactGenerationCosts: new Map([['gen-1', bad]]),
+        }));
+        assert.equal(event.actual_cost_usd, null, String(bad));
+        assert.notEqual(event.estimated_cost_usd, null, String(bad));
+      }
+    });
   });
 });
 

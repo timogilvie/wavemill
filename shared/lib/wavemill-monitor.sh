@@ -242,6 +242,11 @@ if [[ ! -f "$LIB_DIR/wavemill-common.sh" ]]; then
   exit 1
 fi
 source "$LIB_DIR/wavemill-common.sh"
+# HOK-3305: shared launch-set picker renderer (sourced after wavemill-common.sh
+# so wavemill_load_config / wavemill_run_tool / _with_timeout are available).
+if [[ -f "$LIB_DIR/wavemill-picker.sh" ]]; then
+source "$LIB_DIR/wavemill-picker.sh"
+fi
 if [[ -f "$LIB_DIR/terminal-reconciler.sh" ]]; then
 source "$LIB_DIR/terminal-reconciler.sh"
 fi
@@ -4367,6 +4372,59 @@ conflict_remediation_exhausted_hold() {
   bounded_retry_is_exhausted "$state_dir" "conflict-remediation-relaunch"
 }
 
+# Tend merge-attempt fact (HOK-3316). Tend records a failed merge attempt as
+# one condition-keyed marker, .tend-attempt-result.json, keyed on (PR head,
+# integration base); deriveMergeLabel renders it as wm:blocked. GitHub's 3-way
+# mergeability can be clean while tend's per-commit rebase conflicts, so a
+# rebase failure is also a merge conflict for this task: Ready's
+# merge-conflict check reads the same fact and reports CONFLICTED, which
+# launches the one-per-(head, base) conflict resolver above.
+tend_attempt_fact_path() {
+  printf '%s\n' "$1/.tend-attempt-result.json"
+}
+
+# tend_attempt_conflict_needs_ready <state_dir> <pr_number> <base_sha>
+# True when tend recorded a rebase failure for the PR's current head against
+# <base_sha> after the last Ready run finished, so Ready has not yet seen it.
+# Each fact therefore re-runs Ready once; Ready's own result then carries the
+# conflict (and the resolver it launched), never this marker.
+tend_attempt_conflict_needs_ready() {
+  local state_dir="$1" pr_number="$2" base_sha="$3" fact pr_head written_at ready_at
+  fact="$(tend_attempt_fact_path "$state_dir")"
+  [[ -f "$fact" && -n "$base_sha" && -n "$pr_number" ]] || return 1
+  [[ "$(jq -r '.detail.phase // empty' "$fact" 2>/dev/null || echo "")" == "rebase" ]] || return 1
+  [[ "$(jq -r '.detail.baseSha // empty' "$fact" 2>/dev/null || echo "")" == "$base_sha" ]] || return 1
+  pr_head=$(wavemill_pr_cache_row_by_pr "$pr_number" 2>/dev/null | jq -r '.headRefOid // empty' 2>/dev/null || echo "")
+  [[ -n "$pr_head" && "$(jq -r '.headSha // empty' "$fact" 2>/dev/null || echo "")" == "$pr_head" ]] || return 1
+  written_at=$(jq -r '.writtenAt // empty' "$fact" 2>/dev/null || echo "")
+  ready_at=$(jq -r '.finishedAt // .startedAt // empty' "$state_dir/.ready-result.json" 2>/dev/null || echo "")
+  [[ -n "$written_at" && ( -z "$ready_at" || "$written_at" > "$ready_at" ) ]]
+}
+
+# tend_attempt_conflict_prompt_note <state_dir> <base_branch>
+# Extra resolver instructions when the conflict is tend's per-commit rebase
+# rather than a GitHub-visible conflict: a merge commit would leave GitHub
+# clean and tend's rebase still conflicting. Prints nothing otherwise.
+tend_attempt_conflict_prompt_note() {
+  local state_dir="$1" base_branch="$2" fact excerpt
+  fact="$(tend_attempt_fact_path "$state_dir")"
+  [[ -f "$fact" ]] || return 0
+  [[ "$(jq -r '.detail.phase // empty' "$fact" 2>/dev/null || echo "")" == "rebase" ]] || return 0
+  excerpt=$(jq -r '.detail.excerpt // empty' "$fact" 2>/dev/null || echo "")
+  cat <<_WVML_PROMPT_
+
+Merge-lane note (HOK-3316):
+GitHub reports this PR mergeable, but that does not make it mergeable in the merge lane.
+Tend rebases it onto origin/$base_branch one commit at a time, and that rebase conflicts.
+A merge commit does not fix this.
+Instead of step 3, rebase the branch onto origin/$base_branch (git rebase origin/$base_branch).
+Resolve each conflicting commit, and regenerate generated files rather than hand-merging them.
+Then update the PR branch with a --force-with-lease push.
+Tend's rebase output:
+$excerpt
+_WVML_PROMPT_
+}
+
 # Source of truth is the bounded-retry bucket (HOK-2924); the JSON
 # remediationAttempts / remediationLaunchHead mirrors in .ready-result.json
 # are still written for dashboards and downstream tools but are no longer
@@ -7894,11 +7952,6 @@ emit_pane_divergence_attention() {
   return 0
 }
 
-native_launch_failure_artifact_path() {
-  local feature_dir="$1"
-  printf '%s\n' "$feature_dir/.native-launch-failure.json"
-}
-
 stage_result_field() {
   local feature_dir="$1" stage="$2" field="$3"
   local result_file="$feature_dir/.${stage}-result.json"
@@ -7906,186 +7959,28 @@ stage_result_field() {
   jq -r --arg field "$field" '.[$field] // empty' "$result_file" 2>/dev/null || true
 }
 
-agent_or_model_is_native_for_recovery() {
-  local agent="${1:-}" model="${2:-}" tail="${3:-}"
-
-  case "$agent" in
-    native|native-*) return 0 ;;
-  esac
-
-  case "$model" in
-    native:*|openrouter/*|qwen-*|kimi-*|glm-*) return 0 ;;
-  esac
-
-  if printf '%s\n' "$tail" | grep -Eiq '(native-openrouter|native-openai|launch-native-(planning|review|coding)|OpenRouter|wavemill native-agent)'; then
-    return 0
-  fi
-
-  return 1
-}
-
-native_launch_failure_kind() {
-  local tail="${1:-}"
-
-  if printf '%s\n' "$tail" | grep -Eiq -- '--model[[:space:]]+[^[:space:]]'; then
-    printf 'bare-model-command\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Eiq -- 'command not found.*--model'; then
-    printf 'bare-model-command\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Eiq -- '--model.*command not found'; then
-    printf 'bare-model-command\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Fq 'Agent exited (127)'; then
-    printf 'agent-exited-127\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Fq 'exited with status 127'; then
-    printf 'agent-exited-127\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Fq 'exited with code 127'; then
-    printf 'agent-exited-127\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Fq 'exit status 127'; then
-    printf 'agent-exited-127\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Fq 'native launch probe failed'; then
-    printf 'native-route-rejected\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Eiq -- 'native agent .*cannot launch'; then
-    printf 'native-route-rejected\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Eiq -- 'native agent .*does not support'; then
-    printf 'native-route-rejected\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Eiq -- 'not eligible for planning'; then
-    printf 'native-route-rejected\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Eiq -- 'not eligible for coding'; then
-    printf 'native-route-rejected\n'
-    return 0
-  fi
-
-  if printf '%s\n' "$tail" | grep -Eiq -- 'not eligible for review'; then
-    printf 'native-route-rejected\n'
-    return 0
-  fi
-
-  return 1
-}
-
-write_native_launch_failure_artifact() {
-  local issue="$1" feature_dir="$2" stage="$3" agent="$4" model="$5" pane_target="$6" failure_kind="$7" exit_code="$8"
-  local artifact tmp detected_at recommended_action
-
-  artifact="$(native_launch_failure_artifact_path "$feature_dir")"
-  detected_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  recommended_action="Inspect the pane transcript and route config, then relaunch after fixing native provider/model eligibility."
-  mkdir -p "$feature_dir"
-  tmp="$(mktemp "$artifact.tmp.XXXXXX" 2>/dev/null)" || return 0
-
-  jq -n \
-    --arg issue "$issue" \
-    --arg stage "$stage" \
-    --arg agent "$agent" \
-    --arg model "$model" \
-    --arg paneTarget "$pane_target" \
-    --arg failureKind "$failure_kind" \
-    --arg exitCode "$exit_code" \
-    --arg detectedAt "$detected_at" \
-    --arg recommendedAction "$recommended_action" \
-    '{
-      type: "native-launch-failure",
-      issue: $issue,
-      stage: $stage,
-      agent: $agent,
-      model: $model,
-      paneTarget: $paneTarget,
-      failureKind: $failureKind,
-      exitCode: (if $exitCode == "" then null else ($exitCode | tonumber) end),
-      detectedAt: $detectedAt,
-      recommendedAction: $recommendedAction
-    }' > "$tmp" 2>/dev/null \
-    && mv "$tmp" "$artifact" 2>/dev/null \
-    || rm -f "$tmp"
-}
-
-# Convert dead native launch panes into failed controller-owned stage results.
-# This prevents malformed launchers from leaving stages in "running" forever.
-emit_native_launch_failure_attention() {
-  local issue="$1" feature_dir="$2" stage="$3" win="$4" win_target="$5" fallback_agent="${6:-}" fallback_model="${7:-}"
-  local stage_status agent model pane_tail failure_kind exit_code notes artifacts_json
-
-  stage_status="$(read_stage_status "$feature_dir" "$stage")"
-  [[ "$stage_status" == "running" ]] || return 1
-  [[ -n "$win_target" ]] || return 1
-  _pane_is_dead_or_idle "$win_target" 2>/dev/null || return 1
-
-  pane_tail="$(tmux capture-pane -p -t "$win_target" -S -200 2>/dev/null || true)"
+# HOK-3313: identity for a running stage comes from the launch record only.
+# The task row records `agent` at launch (via write_stage_result_with_history);
+# the stage result's agent/model is the canonical source for every exit
+# observation. Fallbacks are the caller-supplied launch-site identity.
+# Pane text is never consulted to decide identity.
+stage_launch_identity() {
+  local feature_dir="$1" stage="$2" fallback_agent="${3:-}" fallback_model="${4:-}"
+  local agent model
   agent="$(stage_result_field "$feature_dir" "$stage" "agent")"
   model="$(stage_result_field "$feature_dir" "$stage" "model")"
   [[ -n "$agent" ]] || agent="$fallback_agent"
   [[ -n "$model" ]] || model="$fallback_model"
-
-  agent_or_model_is_native_for_recovery "$agent" "$model" "$pane_tail" || return 1
-
-  failure_kind="$(native_launch_failure_kind "$pane_tail" || true)"
-  [[ -n "$failure_kind" ]] || failure_kind="native-agent-exited-without-artifacts"
-
-  exit_code=""
-  if printf '%s\n' "$pane_tail" | grep -Eq '(^|[^0-9])127([^0-9]|$)'; then
-    exit_code="127"
-  fi
-
-  write_native_launch_failure_artifact "$issue" "$feature_dir" "$stage" "$agent" "$model" "$win_target" "$failure_kind" "$exit_code"
-
-  notes="Native ${stage} launch failed: ${failure_kind}"
-  [[ -n "$exit_code" ]] && notes+=" (exit $exit_code)"
-  notes+=". Pane $win_target needs attention"
-
-  artifacts_json="$(jq -cn \
-    --arg paneTarget "$win_target" \
-    --arg failureKind "$failure_kind" \
-    --arg exitCode "$exit_code" \
-    '{type:"nativeLaunchFailure", paneTarget:$paneTarget, failureKind:$failureKind, exitCode:(if $exitCode == "" then null else ($exitCode | tonumber) end)}' 2>/dev/null || printf '{}')"
-  write_stage_result "$feature_dir" "$stage" "failed" "$agent" "$model" "$notes" "$artifacts_json"
-  if [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
-    wavemill_reconcile_terminal "$SESSION" "$issue" "recovery_failure" || true
-  fi
-  set_window_attention_state "$win" "needs-user"
-  log_warn "$issue → Native ${stage} launcher failed (${failure_kind}) in pane $win_target"
-  active_count=$((active_count + 1))
-  return 0
+  printf '%s\t%s\n' "$agent" "$model"
 }
 
-# ── Terminal native failure detection (hook-driven) ──────────────────
-# The pane-scraping heuristics above only recognise *exec-level* failures:
-# exit 127, bare `--model` invocations, probe failures. A provider that accepts
-# the launch and then rejects the request — an unrecognised model ID, or a
-# prompt larger than the model's context window — produces none of those
-# signatures, and `_pane_is_dead_or_idle` may not hold either. Such arms stayed
-# parked in `phase: coding` indefinitely, blocking the merge lane.
+# ── Terminal stage failure detection (hook-driven) ──────────────────
+# HOK-3313: identity for a running stage comes from the launch record only,
+# never from pane text. A provider that accepts the launch and then rejects
+# the request (an unrecognised model ID, a prompt larger than the context
+# window, exit-127 wrapper failures, bare `--model` shells, native probe
+# refusals) records a terminal hook event; the single policy decides whether
+# to retry or park.
 #
 # The agent's own status hook already records these as a terminal
 # {"state":"error","event":"process_exit"} write. Unlike the liveness reads in
@@ -8202,17 +8097,19 @@ stage_failure_decision() {
   printf '%s\n' "$decision"
 }
 
-# Turn a terminal hook error into a failed stage. Only a failure the policy
-# allowlists as terminal (HOK-3176) parks the task here — quarantining a
-# challenge pair and raising needs-user. Every other failure, including an
-# unrecognised one, is recorded as a failed stage and left for the stage's
-# failed branch, where maybe_retry_failed_stage relaunches it under the
-# stage-failure-<stage> bounded-retry budget. Returns 0 when it handled the
-# issue (caller should stop).
+# Turn a terminal hook error into a failed stage. Identity comes from the
+# launch record only (HOK-3313: `stage_launch_identity` reads the task row's
+# agent/model, never pane text). Only a failure the policy allowlists as
+# terminal (HOK-3176) parks the task here — quarantining a challenge pair and
+# raising needs-user. Every other failure, including an unrecognised one, is
+# recorded as a failed stage and left for the stage's failed branch, where
+# maybe_retry_failed_stage relaunches it under the stage-failure-<stage>
+# bounded-retry budget. Returns 0 when it handled the issue (caller should
+# stop).
 emit_native_terminal_failure_attention() {
   local issue="$1" feature_dir="$2" stage="$3" win="$4" win_target="$5" fallback_agent="${6:-}" fallback_model="${7:-}"
   local stage_status detail handoff_reason failure_kind failure_class next_action agent model notes artifacts_json
-  local decision envelope_cause envelope_model is_challenge
+  local decision envelope_cause envelope_model is_challenge identity
 
   stage_status="$(read_stage_status "$feature_dir" "$stage")"
   [[ "$stage_status" == "running" ]] || return 1
@@ -8220,11 +8117,9 @@ emit_native_terminal_failure_attention() {
   # Never override a run that actually produced its completion artifact.
   [[ ! -f "$feature_dir/.${stage}-complete" ]] || return 1
 
-  agent="$(stage_result_field "$feature_dir" "$stage" "agent")"
-  model="$(stage_result_field "$feature_dir" "$stage" "model")"
-  [[ -n "$agent" ]] || agent="$fallback_agent"
-  [[ -n "$model" ]] || model="$fallback_model"
-  agent_or_model_is_native_for_recovery "$agent" "$model" "" || return 1
+  identity="$(stage_launch_identity "$feature_dir" "$stage" "$fallback_agent" "$fallback_model")"
+  agent="${identity%%$'\t'*}"
+  model="${identity#*$'\t'}"
 
   native_hook_terminal_failure_detail "$issue" >/dev/null || return 1
   decision="$(stage_failure_decision "$issue" "$feature_dir" "$stage")"
@@ -14127,6 +14022,7 @@ launch_ready_phase() {
 
     prompt_file="/tmp/${SESSION}-${issue}-conflict-prompt.txt"
     build_conflict_resolution_prompt "$pr_number" "$branch" "$wt_dir" "$status_file" "$base_branch" > "$prompt_file"
+    tend_attempt_conflict_prompt_note "$state_dir" "$base_branch" >> "$prompt_file"
     if [[ "$(post_pr_reconciliation_enabled "$wt_dir")" == "true" ]]; then
       # Fresh-agent conflict reconciliation from the durable capsule
       # (HOK-2936): stable foundation projection first, current incident and
@@ -18138,271 +18034,16 @@ BACKLOG_LAST_TIER=""
 BACKLOG_DEFAULT_AVAILABLE_CAP=12
 
 render_grouped_task_list() {
+  # HOK-3305: thin wrapper that forwards to the shared launch-set picker.
+  # Callers that pass only (queue_plan, available) get a legacy-compatible
+  # view where every unblocked task appears under "Launch next" (freeSlots
+  # defaults to a large sentinel so no conflict is held for slot pressure).
   local queue_plan="$1" available="$2" budget="${3:-999}" expanded="${4:-false}"
   local deps_expanded="${5:-false}" active_issue_ids="${6:-}"
-  local counter=0 output="" select_lines="" section_body="" line rec group_index task_id blockers triage_id task_key
-  local backlog_cap="${BACKLOG_DEFAULT_AVAILABLE_CAP:-12}"
-  local tier=0 hidden_count=0 config_max="" indicator_label="expand"
-  local deps_hidden_count=0 available_limit=0 queued_line_budget=0 max_queued_entries=0
-  local -a available_entries=() queued_entries=() on_deck_queued=() off_deck_queued=()
-  local available_section_lines=0 queued_section_lines=0 total_lines=0
-  declare -A id_to_record=()
-  declare -A rendered_ids=()
-  declare -A on_deck_set=()
-
-  jq -e . >/dev/null 2>&1 <<<"$queue_plan" || return 1
-
-  # HOK-3179: when queue-health reports inference_unavailable, surface it in
-  # the picker body so operators see that waves are being drawn from cached
-  # (plus explicit) edges — not from a fresh classifier pass.
-  local _qh_banner
-  _qh_banner="$(queue_inference_degraded_banner 2>/dev/null || true)"
-  if [[ -n "$_qh_banner" ]]; then
-    output+="${_qh_banner}"$'\n\n'
-  fi
-
-  if [[ -n "${REPO_DIR:-}" ]] && declare -F wavemill_load_config >/dev/null 2>&1; then
-    backlog_cap="$(wavemill_load_config "$REPO_DIR" | jq -r '.backlog.defaultAvailableNowCap // 12' 2>/dev/null || printf '12')"
-    config_max="$(wavemill_load_config "$REPO_DIR" | jq -r '.backlog.maxLines // empty' 2>/dev/null || true)"
-  fi
-  if ! [[ "$backlog_cap" =~ ^[0-9]+$ ]] || (( backlog_cap < 1 )); then
-    backlog_cap=12
-  fi
-  if ! [[ "$budget" =~ ^[0-9]+$ ]]; then
-    budget=999
-  fi
-
-  while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    task_id=${line%%|*}
-    if [[ -n "$task_id" ]]; then
-      id_to_record["$task_id"]="$line"
-      task_key="$(printf '%s' "$task_id" | tr '[:lower:]' '[:upper:]')"
-      id_to_record["$task_key"]="$line"
-    fi
-  done <<<"$available"
-
-  section_body=""
-  while IFS= read -r task_id; do
-    [[ -n "$task_id" ]] || continue
-    task_key="$(printf '%s' "$task_id" | tr '[:lower:]' '[:upper:]')"
-    [[ -n "${rendered_ids[$task_key]:-}" ]] && continue
-    rec="${id_to_record[$task_id]:-${id_to_record[$task_key]:-}}"
-    [[ -n "$rec" ]] || continue
-    IFS='|' read -r task_id _slug title _area _score _blocked <<<"$rec"
-    available_entries+=("$rec")
-    rendered_ids["$task_key"]=1
-  done < <(jq -r '.availableNow[]?' <<<"$queue_plan" 2>/dev/null)
-
-  section_body=""
-  while IFS=$'\t' read -r task_id blockers; do
-    [[ -n "$task_id" ]] || continue
-    task_key="$(printf '%s' "$task_id" | tr '[:lower:]' '[:upper:]')"
-    [[ -n "${rendered_ids[$task_key]:-}" ]] && continue
-    rec="${id_to_record[$task_id]:-${id_to_record[$task_key]:-}}"
-    [[ -n "$rec" ]] || continue
-    IFS='|' read -r task_id _slug title _area _score _blocked <<<"$rec"
-    queued_entries+=("${rec}"$'\t'"$blockers")
-    rendered_ids["$task_key"]=1
-  done < <(jq -r '.queuedAfterDependencies[]? | [.taskId, (.ancestors | join(", "))] | @tsv' <<<"$queue_plan" 2>/dev/null)
-
-  while IFS= read -r line; do
-    [[ -n "$line" ]] || continue
-    local avail_id="${line%%|*}"
-    [[ -n "$avail_id" ]] && on_deck_set["$(printf '%s' "$avail_id" | tr '[:lower:]' '[:upper:]')"]=1
-  done <<<"$available"
-  while IFS= read -r line; do
-    [[ -n "$line" ]] || continue
-    on_deck_set["$(printf '%s' "$line" | tr '[:lower:]' '[:upper:]')"]=1
-  done <<<"$active_issue_ids"
-
-  for line in "${queued_entries[@]}"; do
-    IFS=$'\t' read -r rec blockers <<<"$line"
-    local is_on_deck=true blocker bkey
-    if [[ -z "$blockers" ]]; then
-      is_on_deck=true
-    else
-      while IFS= read -r blocker; do
-        [[ -n "$blocker" ]] || continue
-        bkey="$(printf '%s' "${blocker// /}" | tr '[:lower:]' '[:upper:]')"
-        if [[ -z "${on_deck_set[$bkey]:-}" ]]; then
-          is_on_deck=false
-          break
-        fi
-      done < <(printf '%s\n' "$blockers" | tr ',' '\n')
-    fi
-    if [[ "$is_on_deck" == "true" ]]; then
-      on_deck_queued+=("$line")
-    else
-      off_deck_queued+=("$line")
-    fi
-  done
-  deps_hidden_count=${#off_deck_queued[@]}
-  if [[ "$deps_expanded" == "true" ]]; then
-    queued_entries=("${on_deck_queued[@]+"${on_deck_queued[@]}"}" "${off_deck_queued[@]+"${off_deck_queued[@]}"}")
-  else
-    queued_entries=("${on_deck_queued[@]+"${on_deck_queued[@]}"}")
-  fi
-
-  if (( ${#available_entries[@]} > 1 )); then
-    local -a sorted_available_entries=()
-    while IFS= read -r rec; do
-      [[ -n "$rec" ]] && sorted_available_entries+=("$rec")
-    done < <(printf '%s\n' "${available_entries[@]}" | sort -t'|' -k5,5nr -k1,1)
-    available_entries=("${sorted_available_entries[@]}")
-  fi
-  if (( ${#queued_entries[@]} > 1 )); then
-    local -a sorted_queued_entries=()
-    while IFS= read -r rec; do
-      [[ -n "$rec" ]] && sorted_queued_entries+=("$rec")
-    done < <(printf '%s\n' "${queued_entries[@]}" | sort -t'|' -k5,5nr -k1,1)
-    queued_entries=("${sorted_queued_entries[@]}")
-  fi
-
-  available_section_lines=0
-  if (( ${#available_entries[@]} > 0 )); then
-    available_section_lines=$((1 + ${#available_entries[@]}))
-  fi
-  queued_section_lines=0
-  if (( ${#queued_entries[@]} > 0 )); then
-    queued_section_lines=$((2 + ${#queued_entries[@]} * 2))
-  fi
-  total_lines=$((available_section_lines + queued_section_lines))
-
-  if [[ "$expanded" != "true" ]] && (( total_lines > budget )); then
-    if (( ${#queued_entries[@]} > 0 )); then
-      queued_line_budget=$((budget - available_section_lines - 2))
-      max_queued_entries=$((queued_line_budget / 2))
-      if (( max_queued_entries > 0 )); then
-        tier=1
-        if (( max_queued_entries < ${#queued_entries[@]} )); then
-          hidden_count=$((hidden_count + ${#queued_entries[@]} - max_queued_entries))
-          queued_entries=("${queued_entries[@]:0:max_queued_entries}")
-        else
-          tier=0
-        fi
-      else
-        hidden_count=$((hidden_count + ${#queued_entries[@]}))
-        queued_entries=()
-        tier=2
-      fi
-    fi
-
-    if (( available_section_lines > budget )); then
-      tier=3
-      hidden_count=$((hidden_count + ${#queued_entries[@]}))
-      queued_entries=()
-      local min_visible=$((budget - 1))
-      (( min_visible < 10 )) && min_visible=10
-      available_limit=$min_visible
-      if (( backlog_cap < available_limit )); then
-        available_limit=$backlog_cap
-      fi
-      if (( available_limit > budget - 1 )); then
-        available_limit=$((budget - 1))
-      fi
-      if (( ${#available_entries[@]} > available_limit )); then
-        hidden_count=$((hidden_count + ${#available_entries[@]} - available_limit))
-        available_entries=("${available_entries[@]:0:available_limit}")
-      fi
-    fi
-  fi
-
-  if (( ${#available_entries[@]} > 0 )); then
-    output+="Available Now - Parallel Wave 1"$'\n'
-    for rec in "${available_entries[@]}"; do
-      IFS='|' read -r task_id _slug title _area _score _blocked <<<"$rec"
-      counter=$((counter + 1))
-      output+="$(printf '  %s. %s - %s' "$counter" "$task_id" "$title")"$'\n'
-      select_lines+="${rec}"$'\n'
-    done
-  fi
-
-  if (( ${#queued_entries[@]} > 0 )); then
-    [[ -n "$output" ]] && output+=$'\n'
-    output+="Queued After Dependencies"$'\n'
-    for line in "${queued_entries[@]}"; do
-      IFS=$'\t' read -r rec blockers <<<"$line"
-      IFS='|' read -r task_id _slug title _area _score _blocked <<<"$rec"
-      counter=$((counter + 1))
-      output+="$(printf '  %s. %s - %s (blocked by: %s)' "$counter" "$task_id" "$title" "$blockers")"$'\n'
-      select_lines+="${rec}"$'\n'
-    done
-    if [[ "$deps_expanded" != "true" ]] && (( deps_hidden_count > 0 )); then
-      output+="$(printf '  +%s hidden - d to expand' "$deps_hidden_count")"$'\n'
-    elif [[ "$deps_expanded" == "true" ]] && (( deps_hidden_count > 0 )); then
-      output+="  (d to collapse)"$'\n'
-    fi
-  fi
-
-  section_body=""
-  group_index=0
-  while IFS= read -r blockers; do
-    [[ -n "$blockers" ]] || continue
-    group_index=$((group_index + 1))
-    local cluster_body=""
-    while IFS= read -r task_id; do
-      [[ -n "$task_id" ]] || continue
-      task_key="$(printf '%s' "$task_id" | tr '[:lower:]' '[:upper:]')"
-      [[ -n "${rendered_ids[$task_key]:-}" ]] && continue
-      rec="${id_to_record[$task_id]:-${id_to_record[$task_key]:-}}"
-      [[ -n "$rec" ]] || continue
-      IFS='|' read -r task_id _slug title _area _score _blocked <<<"$rec"
-      counter=$((counter + 1))
-      cluster_body+="$(printf '    %s. %s - %s' "$counter" "$task_id" "$title")"$'\n'
-      select_lines+="${rec}"$'\n'
-      rendered_ids["$task_key"]=1
-    done < <(jq -r '.[]' <<<"$blockers" 2>/dev/null)
-    if [[ -n "$cluster_body" ]]; then
-      section_body+="$(printf '  [conflict cluster %s]' "$group_index")"$'\n'
-      section_body+="$cluster_body"
-    fi
-  done < <(jq -c '.avoidRunningTogether[]?' <<<"$queue_plan" 2>/dev/null)
-  if [[ -n "$section_body" ]]; then
-    [[ -n "$output" ]] && output+=$'\n'
-    output+="Avoid Running Together"$'\n'
-    output+="${section_body}"
-  fi
-
-  section_body=""
-  while IFS= read -r triage_id; do
-    [[ -n "$triage_id" ]] || continue
-    task_key="$(printf '%s' "$triage_id" | tr '[:lower:]' '[:upper:]')"
-    [[ -n "${rendered_ids[$task_key]:-}" ]] && continue
-    rec="${id_to_record[$triage_id]:-${id_to_record[$task_key]:-}}"
-    [[ -n "$rec" ]] || continue
-    IFS='|' read -r task_id _slug title _area _score _blocked <<<"$rec"
-    counter=$((counter + 1))
-    section_body+="$(printf '  %s. %s - %s [triage]' "$counter" "$task_id" "$title")"$'\n'
-    select_lines+="${rec}"$'\n'
-    rendered_ids["$task_key"]=1
-  done < <(jq -r '.needsTriage[]? | .edge.to' <<<"$queue_plan" 2>/dev/null)
-  if [[ -n "$section_body" ]]; then
-    [[ -n "$output" ]] && output+=$'\n'
-    output+="Needs Triage"$'\n'
-    output+="${section_body}"
-  fi
-
-  if [[ "$expanded" != "true" ]] && (( tier > 0 )) && (( hidden_count > 0 )); then
-    output+="$(printf '... %s tasks hidden (m to expand)' "$hidden_count")"$'\n'
-  elif [[ "$expanded" == "true" ]] && (( total_lines > budget )); then
-    output+="(m to collapse)"$'\n'
-    indicator_label="collapse"
-  fi
-
-  (( counter > 0 )) || return 1
-
-  if [[ "$tier" != "${BACKLOG_LAST_TIER:-}" ]] && declare -F log >/dev/null 2>&1; then
-    local backlog_annotation=" (backlog.maxLines=${config_max:-auto})"
-    if declare -F wavemill_config_annotation >/dev/null 2>&1; then
-      backlog_annotation="$(wavemill_config_annotation "backlog.maxLines" "${config_max:-auto}")"
-    fi
-    log "info" "[backlog] tier=$tier budget=$budget${backlog_annotation}"
-    BACKLOG_LAST_TIER="$tier"
-  fi
-
-  GROUPED_SELECT_FROM="${select_lines%$'\n'}"
-  GROUPED_DISPLAY="${output%$'\n'}"
+  local free_slots="${BACKLOG_WRAPPER_FREE_SLOTS:-999}"
+  render_launch_set_picker \
+    "$queue_plan" "$available" "$free_slots" "[]" \
+    "$budget" "$expanded" "$deps_expanded" "$active_issue_ids" false
 }
 
 
@@ -21337,9 +20978,6 @@ monitor_issue_state() {
           if emit_native_terminal_failure_attention "$ISSUE" "$FEATURE_DIR" "planning" "$WIN" "$WIN_TARGET" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "planning" "")"; then
             return 0
           fi
-          if emit_native_launch_failure_attention "$ISSUE" "$FEATURE_DIR" "planning" "$WIN" "$WIN_TARGET" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "planning" "")"; then
-            return 0
-          fi
 
           # Check if plan exists but not yet approved (awaiting_user)
           if [[ "$resolved_phase" == "awaiting_user" ]]; then
@@ -21595,9 +21233,6 @@ monitor_issue_state() {
             if emit_native_terminal_failure_attention "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" "$WIN_TARGET" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")"; then
               return 0
             fi
-            if emit_native_launch_failure_attention "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" "$WIN_TARGET" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")"; then
-              return 0
-            fi
             if emit_terminal_blocked_completion_attention "$ISSUE" "$SLUG" "$FEATURE_DIR" "$WIN" "$WIN_TARGET"; then
               return 0
             fi
@@ -21732,8 +21367,6 @@ monitor_issue_state() {
                 return 0
               fi
             elif emit_native_terminal_failure_attention "$ISSUE" "$FEATURE_DIR" "review" "$WIN" "$WIN_TARGET" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "review" "claude-sonnet-5")"; then
-              return 0
-            elif emit_native_launch_failure_attention "$ISSUE" "$FEATURE_DIR" "review" "$WIN" "$WIN_TARGET" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "review" "claude-sonnet-5")"; then
               return 0
             else
               set_window_attention_state "$WIN" "clear"
@@ -22558,6 +22191,36 @@ monitor_issue_state() {
           active_count=$((active_count + 1))
           return 0
         fi
+      fi
+
+      # HOK-3316: tend's rebase onto the current base conflicted although
+      # GitHub reports the PR mergeable. Re-run Ready once for that fact: its
+      # merge-conflict check reads the fact and launches the conflict
+      # resolver (one per (head, base)); the label stays wm:blocked meanwhile.
+      if tend_attempt_conflict_needs_ready "$ready_state_dir_path" "$PR" "$current_main_sha" \
+        && ! conflict_remediation_exhausted_hold "$ready_state_dir_path" "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH" "$current_head"; then
+        log "status" "⚠ $ISSUE → tend could not rebase PR #$PR onto $BASE_BRANCH; re-running Ready to request conflict remediation"
+        title=$(pass_task_field "$ISSUE" title)
+        [[ -n "$title" ]] || title="Task"
+        if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
+          launch_rc=0
+        else
+          launch_rc=$?
+        fi
+        if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
+          log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during tend-conflict re-check"
+          set_task_phase "$ISSUE" "aborted"
+          set_window_attention_state "$WIN" "needs-user"
+          return 0
+        fi
+        if [[ "$launch_rc" -eq 0 || "$launch_rc" -eq 3 || "$launch_rc" -eq 4 || "$launch_rc" -eq 5 || "$launch_rc" -eq 6 ]]; then
+          set_window_attention_state "$WIN" "clear"
+          active_count=$((active_count + 1))
+          return 0
+        fi
+        log "status" "⚠ $ISSUE → conflict remediation for tend's rebase failure could not launch (PR #$PR, rc=$launch_rc)"
+        set_window_attention_state "$WIN" "needs-user"
+        return 0
       fi
 
       if [[ -n "$current_main_sha" && "$stored_base_sha" != "$current_main_sha" ]]; then
@@ -24140,13 +23803,33 @@ while :; do
 
     display_fingerprint="slots-full|${active_count}|${available}"
     if [[ "$display_fingerprint" != "$LAST_DISPLAY" ]] || (( active_count != LAST_ACTIVE_COUNT )); then
-      _task_frame="Next tasks (slots full):"$'\n'
-      if [[ -n "$available" ]]; then
-        _task_frame+="$(echo "$available" | head -9 | awk -F'|' '{printf "  %s. %s - %s (score: %.0f)\n", NR, $1, $3, $5}')"
-      elif [[ -n "$candidates" ]]; then
-        _task_frame+="  (all listed backlog tasks are already active)"$'\n'
+      # HOK-3305: build the slots-full picker view through the shared renderer
+      # with free_slots=0 so the header reads "Next tasks (slots full):" and
+      # the body collapses to the backlog list without a Launch next section.
+      _task_frame=""
+      _slots_full_in_flight="[]"
+      _slots_full_active_ids=""
+      for _ai in "${!BRANCH_BY_ISSUE[@]}"; do
+        [[ -n "${CLEANED[$_ai]:-}" ]] && continue
+        _slots_full_active_ids+="${_ai}"$'\n'
+      done
+      _slots_full_queue_plan="${QUEUE_PLAN_CACHE:-}"
+      GROUPED_DISPLAY=""
+      GROUPED_SELECT_FROM=""
+      if [[ -n "$_slots_full_queue_plan" ]] && [[ -n "$available" ]]; then
+        render_launch_set_picker "$_slots_full_queue_plan" "$available" 0 "$_slots_full_in_flight" 999 false false "$_slots_full_active_ids" true 2>/dev/null || true
+      fi
+      if [[ -n "$GROUPED_DISPLAY" ]]; then
+        _task_frame="${GROUPED_DISPLAY}"$'\n'
       else
-        _task_frame+="  (backlog empty)"$'\n'
+        _task_frame="Next tasks (slots full):"$'\n'
+        if [[ -n "$available" ]]; then
+          _task_frame+="$(echo "$available" | head -9 | awk -F'|' '{printf "  %s. %s - %s (score: %.0f)\n", NR, $1, $3, $5}')"
+        elif [[ -n "$candidates" ]]; then
+          _task_frame+="  (all listed backlog tasks are already active)"$'\n'
+        else
+          _task_frame+="  (backlog empty)"$'\n'
+        fi
       fi
       _task_frame+=$'\n'"0 slots available; waiting for active tasks to finish. Press 'q' to quit or wait ${POLL_SECONDS}s to refresh."$'\n'
 
@@ -24194,10 +23877,23 @@ while :; do
           _deps_expanded="$(jq -r --arg def "false" '.depsExpanded // $def' "$STATE_FILE" 2>/dev/null || echo "false")"
           _backlog_budget="$(wavemill_backlog_compute_budget "$SESSION" "$WAVEMILL_WINDOW_MILL.0" "$REPO_DIR/.wavemill-config.json" 2>/dev/null || echo 20)"
           _active_issue_ids=""
+          # HOK-3305: build an in-flight payload the picker uses to annotate
+          # "Held: shares files" entries with the live PR number of the peer.
+          _in_flight_json="[]"
+          _in_flight_rows=""
           for _ai in "${!BRANCH_BY_ISSUE[@]}"; do
             [[ -n "${CLEANED[$_ai]:-}" ]] && continue
             _active_issue_ids+="${_ai}"$'\n'
+            _ai_pr="$(pass_task_field "$_ai" pr 2>/dev/null || true)"
+            if [[ -n "$_ai_pr" && "$_ai_pr" != "null" ]]; then
+              _in_flight_rows+="$(jq -cn --arg id "$_ai" --argjson pr "$_ai_pr" '{id:$id, prNumber:$pr}')"$'\n'
+            else
+              _in_flight_rows+="$(jq -cn --arg id "$_ai" '{id:$id}')"$'\n'
+            fi
           done
+          if [[ -n "$_in_flight_rows" ]]; then
+            _in_flight_json="$(printf '%s' "$_in_flight_rows" | jq -s '.' 2>/dev/null || echo '[]')"
+          fi
 
           # Check queue-health backoff before attempting planner
           queue_health_init 2>/dev/null || true
@@ -24209,7 +23905,9 @@ while :; do
               QUEUE_PLAN_CACHE="$queue_plan_json"
               LAST_QUEUE_PLAN_FETCH=$(date +%s)
             fi
-            render_grouped_task_list "$queue_plan_json" "$available" "$_backlog_budget" "$_backlog_expanded" "$_deps_expanded" "$_active_issue_ids" || true
+            # HOK-3305: pass free_slots so the picker can show "Launch next
+            # (safe together, N slots free)" and apply conflict-aware holds.
+            render_launch_set_picker "$queue_plan_json" "$available" "$free_slots" "$_in_flight_json" "$_backlog_budget" "$_backlog_expanded" "$_deps_expanded" "$_active_issue_ids" true || true
             if [[ -n "$GROUPED_DISPLAY" ]]; then
               select_from="$GROUPED_SELECT_FROM"
               USING_GROUPED_VIEW=true
@@ -24237,10 +23935,13 @@ while :; do
           rm -f "$queue_plan_diag_file"
           FETCH_QUEUE_PLAN_DIAGNOSTICS_FILE="$queue_plan_diag_previous"
 
-          _task_frame="Next tasks:"$'\n'
+          # HOK-3305: when the picker rendered, its own output includes the
+          # "Next tasks:" header; otherwise fall back to the flat list with a
+          # local header. Keeps the header to a single emission site.
           if [[ -n "$GROUPED_DISPLAY" ]]; then
-            _task_frame+="${GROUPED_DISPLAY}"$'\n'
+            _task_frame="${GROUPED_DISPLAY}"$'\n'
           else
+            _task_frame="Next tasks:"$'\n'
             if [[ -n "$avail_unblocked" ]]; then
               _task_frame+="$(echo "$avail_unblocked" | head -9 | awk -F'|' '{printf "  %s. %s - %s (score: %.0f)\n", NR, $1, $3, $5}')"
             else

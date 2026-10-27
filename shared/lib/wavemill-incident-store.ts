@@ -243,6 +243,12 @@ export class IncidentStore {
    * for the repository failed or was disabled — absence of data is not absence
    * of the incident.
    *
+   * HOK-3314: pass `{ fresh, observed }` to separate distinct new events from
+   * ongoing presence of the same condition. `observed-but-not-fresh` keeps the
+   * record active (no missed-cycle growth, no false auto-resolve) — distinct-
+   * event dedup still bounds counting and notifications. A positional iterable
+   * is accepted as a compat shim for one release.
+   *
    * An optional `canResolveByAbsence` gate lets the caller keep specific
    * records active despite absence — for example, an interactive-prompt block
    * (HOK-3045) that must not auto-resolve until its correlated task advances
@@ -250,10 +256,13 @@ export class IncidentStore {
    * still accrue for audit but the record stays active.
    */
   async runResolutionSweep(
-    freshFingerprints: Iterable<string>,
+    fingerprints: Iterable<string> | { fresh: Iterable<string>; observed: Iterable<string> },
     canResolveByAbsence?: (record: IncidentRecord) => boolean,
   ): Promise<IncidentRecord[]> {
-    const fresh = new Set(freshFingerprints);
+    // allow-queue-alert: compat shim for the pre-HOK-3314 positional iterable; retire once all callers pass {fresh, observed}
+    const normalized = isSweepObject(fingerprints)
+      ? { fresh: new Set(fingerprints.fresh), observed: new Set(fingerprints.observed) }
+      : { fresh: new Set(fingerprints), observed: new Set(fingerprints) };
     const indexPath = join(this.incidentsDir, 'index.json');
     if (!existsSync(indexPath)) return [];
     const sweptAt = this.now().toISOString();
@@ -261,7 +270,10 @@ export class IncidentStore {
     await this.mutateIndex(indexPath, (index) => {
       for (const [fingerprint, record] of Object.entries(index)) {
         if (record.lifecycle !== 'observed' && record.lifecycle !== 'active') continue;
-        if (fresh.has(fingerprint)) {
+        if (normalized.fresh.has(fingerprint) || normalized.observed.has(fingerprint)) {
+          // Fresh = new distinct event this cycle; observed = unchanged
+          // condition still present. Either resets the missed-cycle counter;
+          // only fresh events are counted toward occurrenceCount upstream.
           index[fingerprint] = { ...record, metadata: { ...(record.metadata ?? {}), missedCycles: 0 } };
           continue;
         }
@@ -768,6 +780,13 @@ function earlierIso(a: unknown, b: unknown): string {
   if (!aString) return bString;
   if (!bString) return aString;
   return Date.parse(aString) <= Date.parse(bString) ? aString : bString;
+}
+
+function isSweepObject(value: unknown): value is { fresh: Iterable<string>; observed: Iterable<string> } {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && typeof (value as Record<string, unknown>)[Symbol.iterator as unknown as string] !== 'function'
+    && 'fresh' in (value as Record<string, unknown>)
+    && 'observed' in (value as Record<string, unknown>);
 }
 
 function laterIso(a: unknown, b: unknown): string | undefined {

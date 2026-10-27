@@ -790,7 +790,7 @@ function validPromptSizeDiagnostic() {
 }
 
 test('SCHEMA_VERSION is bumped for eval schema updates', () => {
-  assert.equal(SCHEMA_VERSION, '1.54.0');
+  assert.equal(SCHEMA_VERSION, '1.55.0');
 });
 
 function validReviewIdentitySet() {
@@ -2492,8 +2492,38 @@ test('Wavemill router fields validate and schema stays in parity', () => {
   assert.equal(properties.wavemill_router_scoring?.$ref, '#/$defs/WavemillRouterScoringMetadata');
 });
 
-test('Schema version constant is 1.54.0', () => {
-  assert.equal(SCHEMA_VERSION, '1.54.0');
+test('Schema version constant is 1.55.0', () => {
+  assert.equal(SCHEMA_VERSION, '1.55.0');
+});
+
+test('correctionProvenance validates when present and is rejected when malformed (HOK-3321)', () => {
+  const valid = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    correctionProvenance: {
+      supersedes: {
+        evalId: '8731fea1-ee09-4f30-aec9-00ac06011f4d',
+        reason: 'hok-3321-registry-equivalence',
+        correctedAt: '2026-10-26T18:00:00.000Z',
+        correctedBy: 'tools/recover-hok-3313.ts',
+      },
+    },
+  } as unknown as Record<string, unknown>;
+  assert.ok(validateAgainstSchema(valid).valid);
+
+  const missingReason = {
+    ...valid,
+    correctionProvenance: { supersedes: { evalId: 'x' } },
+  } as unknown as Record<string, unknown>;
+  assert.equal(validateAgainstSchema(missingReason).valid, false);
+
+  const unknownField = {
+    ...valid,
+    correctionProvenance: {
+      supersedes: { evalId: 'x', reason: 'y', note: 'extra' },
+    },
+  } as unknown as Record<string, unknown>;
+  assert.equal(validateAgainstSchema(unknownField).valid, false);
 });
 
 test('Record with an unknown_attribution intervention validates (HOK-2894)', () => {
@@ -3043,8 +3073,8 @@ test('Malformed subagent_model_economics_policy is rejected', () => {
 // HOK-2081: Counterfactual/replay lineage fields
 // ────────────────────────────────────────────────────────────────
 
-test('SCHEMA_VERSION bumped to 1.54.0 for HOK-3075 taskCostSummary', () => {
-  assert.equal(SCHEMA_VERSION, '1.54.0');
+test('SCHEMA_VERSION bumped to 1.55.0 for HOK-3321 correctionProvenance', () => {
+  assert.equal(SCHEMA_VERSION, '1.55.0');
 });
 
 test('Legacy record without HOK-2081 fields still validates', () => {

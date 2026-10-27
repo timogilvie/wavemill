@@ -28,7 +28,7 @@ import {
   type PrCommit,
 } from './intervention-detector.ts';
 import { clearConfigCache } from './config.ts';
-import { encodeProjectDir } from './workflow-cost.ts';
+import { encodeProjectDir } from './wavemill-session-paths.ts';
 
 // ── Helpers for session JSONL fixtures ──────────────────────────
 

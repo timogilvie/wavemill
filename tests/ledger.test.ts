@@ -104,3 +104,39 @@ test('parent settlement retries after child settlement', () => {
   assert.equal(ledger.getTask(parent.id)?.settled_as, 'aborted');
   ledger.close();
 });
+test('v1 ledgers migrate to v2 in place: rows kept, pr-comment accepted (HOK-3316)', async () => {
+  const { DatabaseSync } = await import('../shared/lib/ledger-sqlite.ts');
+  const seeded = Ledger.open({ dbPath });
+  const root = seeded.transaction(tx => tx.insertTask({ kind: 'issue', slug: 'HOK-3316' }));
+  seeded.transaction(tx => tx.recordSideEffect({ stepId: root.id, kind: 'pr-label', idempotencyKey: '1697|wm:blocked|labeled|h1' }));
+  seeded.close();
+  // Rewind the file to the v1 shape: the old CHECK and a single version row.
+  const raw = new DatabaseSync(dbPath);
+  raw.exec(`PRAGMA foreign_keys=OFF;
+CREATE TABLE side_effect_v1 (
+ id TEXT PRIMARY KEY, step_id TEXT NOT NULL REFERENCES task(id) ON DELETE RESTRICT,
+ kind TEXT NOT NULL CHECK(kind IN ('git-push','pr-label','pr-merge','linear-transition')),
+ idempotency_key TEXT NOT NULL, requested_at TEXT NOT NULL, applied_at TEXT,
+ attempt INTEGER NOT NULL DEFAULT 0, result TEXT, error TEXT, UNIQUE(kind,idempotency_key));
+INSERT INTO side_effect_v1 SELECT * FROM side_effect;
+DROP TABLE side_effect;
+ALTER TABLE side_effect_v1 RENAME TO side_effect;
+DELETE FROM schema_version;
+INSERT INTO schema_version VALUES(1, '2026-10-01T00:00:00Z');`);
+  assert.throws(() => raw.prepare("INSERT INTO side_effect(id,step_id,kind,idempotency_key,requested_at) VALUES('x',?, 'pr-comment','k','t')").run(root.id), /CHECK/);
+  raw.close();
+
+  const migrated = Ledger.open({ dbPath });
+  try {
+    assert.ok(migrated.findSideEffect('pr-label', '1697|wm:blocked|labeled|h1'), 'existing rows survive the rebuild');
+    const { isNew } = migrated.transaction(tx => tx.recordSideEffect({ stepId: root.id, kind: 'pr-comment', idempotencyKey: '1697|rebase|h1|b1' }));
+    assert.equal(isNew, true);
+    assert.equal(migrated.listSideEffectsByKind('pr-comment').length, 1);
+  } finally {
+    migrated.close();
+  }
+  // Re-opening a v2 ledger is a no-op.
+  const reopened = Ledger.open({ dbPath });
+  assert.equal(reopened.listSideEffectsByKind('pr-comment').length, 1);
+  reopened.close();
+});

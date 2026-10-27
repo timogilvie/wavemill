@@ -74,6 +74,8 @@ TESTS=(
   shared/lib/native-agent/prompt-size-log.test.ts
   shared/lib/native-agent/prompt-cache.test.ts
   shared/lib/native-agent/prompt-cache-detector.test.ts
+  shared/lib/native-agent/payload-capture.test.ts
+  shared/lib/native-agent/prefix-stability.test.ts
   shared/lib/native-agent/prompts.test.ts
   shared/lib/native-agent/pi-usage-cost.test.ts
   shared/lib/native-agent/provenance.test.ts
@@ -233,6 +235,7 @@ TESTS=(
   shared/lib/cross-repo-parity.stale.test.ts
   shared/lib/cross-repo-parity.partial.test.ts
   shared/lib/challenge-execution-contract.test.ts
+  shared/lib/challenge-execution-contract.incident-replay.test.ts
   shared/lib/challenge-pairing-repair.test.ts
   shared/lib/config.test.ts
   shared/lib/config-integrity.test.ts
@@ -295,10 +298,15 @@ TESTS=(
   shared/lib/task-identity-checker.test.ts
   shared/lib/task-record-shape-checker.test.ts
   shared/lib/retry-sentinel-guard.test.ts
+  shared/lib/merge-block-writers-guard.test.ts
+  shared/lib/merge-status-comment.test.ts
+  shared/lib/tend-attempt-fact.test.ts
   shared/lib/session-capabilities-guard.test.ts
+  shared/lib/cost-ownership-guard.test.ts
   shared/lib/hook-ttl-guard.test.ts
   shared/lib/stage-launchability-guard.test.ts
   shared/lib/provider-identity-guard.test.ts
+  shared/lib/model-equivalence-guard.test.ts
   shared/lib/side-effect-ledger-guard.test.ts
   shared/lib/failure-policy-guard.test.ts
   shared/lib/task-field-read-checker.test.ts
@@ -371,8 +379,10 @@ TESTS=(
   src/evaluation/scorers/wavemill/success-rate-under-budget.test.ts
   src/evaluation/adapters/wavemill-router-adapter.test.ts
   tools/abort-task.test.ts
+  tools/replay-native-request.test.ts
   tools/add-pr-label.test.ts
   tools/backfill-challenge-stage.test.ts
+  tools/recover-hok-3313.test.ts
   tools/backfill-stage-executed-model.test.ts
   tools/backfill-tool-decisions.test.ts
   tools/backfill-hokusai-submissions.test.ts
@@ -456,9 +466,13 @@ TESTS=(
   shared/lib/sdk-task-cost/events-from-session.test.ts
   shared/lib/sdk-task-cost/collect.test.ts
   shared/lib/sdk-task-cost/project.test.ts
-  shared/lib/sdk-task-cost/feature-switch.test.ts
   shared/lib/sdk-task-cost/resolve.test.ts
   shared/lib/sdk-task-cost/lazy-collect.test.ts
+  shared/lib/sdk-task-cost/meter.test.ts
+  shared/lib/sdk-task-cost/recompute.test.ts
+  shared/lib/pricing/model-pricing.test.ts
+  shared/lib/pricing/openrouter-exact-pricing.test.ts
+  shared/lib/wavemill-session-paths.test.ts
   shared/lib/eval-summary-printer.test.ts
   shared/lib/evals-paths.test.ts
   shared/lib/execution-contract.test.ts
@@ -555,7 +569,6 @@ TESTS=(
   shared/lib/challenge-replay-capture.test.ts
   spike/pi-native-agent/mcp-proxy-spike.test.ts
   shared/lib/cost-parity.test.ts
-  shared/lib/cost-migration.test.ts
   shared/lib/observer-findings.test.ts
   shared/lib/pr-comparison-actions.test.ts
   tests/state-archive-roundtrip.test.ts

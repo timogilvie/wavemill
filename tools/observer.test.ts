@@ -12,7 +12,8 @@ import {
   compactSnapshotForRender,
   detectBranchBehindBase,
   detectExhaustedRetries,
-  detectQueueInferenceStuck,
+  // HOK-3314: detectQueueInferenceStuck retired — the queue-health finding
+  // built from the projection fires the same high-severity alert at ≥5.
   detectStuckMergeCandidates,
   detectSustainedSlowPasses,
   matchInteractivePromptSignature,
@@ -558,7 +559,11 @@ test('degraded queue health returns structured finding without throwing', () => 
     assert.equal(degraded.severity, 'medium');
     assert.equal(degraded.category, 'warning');
     assert.match(degraded.title, /dependency_planning_failed/);
-    assert.ok(degraded.evidence.includes('failureCount=3'));
+    // HOK-3314: evidence rows are projection-driven (consecutiveFailedAttempts,
+    // episodeId, projectionStatus); the old `failureCount=3` and raw stderr
+    // excerpt live on the record metadata, not the finding evidence lines.
+    assert.ok(degraded.evidence.some((line: string) => line === 'consecutiveFailedAttempts=3'));
+    assert.ok(degraded.evidence.some((line: string) => line === 'projectionStatus=degraded-planner'));
     assert.ok(degraded.evidence.includes('stderr=plan_queue_failed exit 143'));
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
@@ -594,10 +599,13 @@ test('inference_unavailable queue health reports missing inference, not a flat f
     assert.ok(degraded);
     assert.equal(degraded.severity, 'medium');
     assert.match(degraded.title, /inference_unavailable/);
-    assert.ok(degraded.evidence.includes('failureCount=3'));
+    // HOK-3314: current-episode attempt count (3) comes from the projection.
+    assert.ok(degraded.evidence.some((line: string) => line === 'consecutiveFailedAttempts=3'));
     assert.ok(degraded.evidence.includes('inferenceStatus=failed'));
     assert.ok(degraded.evidence.includes('inferenceError=classifier timeout'));
-    assert.match(degraded.recommendation, /explicit Linear relations only/);
+    // HOK-3314: `[classifier]` wording is the projection summary annotated by
+    // observer; "Flat fallback" / "explicit Linear relations only" are gone.
+    assert.match(degraded.recommendation, /\[classifier\]/);
     assert.doesNotMatch(degraded.recommendation, /Flat fallback/);
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
@@ -2937,9 +2945,11 @@ test('incident reconciliation correlates stalled Tend markers into typed remedia
     const stalled = stored.filter((item) => item.rootCauseClass === 'review_context_overflow_stale_base');
     assert.equal(stalled.length, 1);
     assert.equal(stalled[0].occurrenceCount, 1);
-    // A repeat of the same stored source event is not fresh observation. It
-    // must therefore accrue a missed cycle and eventually auto-resolve.
-    assert.equal(stalled[0].metadata.missedCycles, 1);
+    // HOK-3314: a repeat of the same stored source event is observed-presence,
+    // not absence. missedCycles stays 0; recovery flows through the predicate
+    // (new review attempt, head change, …), never through a 5-cycle absence
+    // timeout for a condition still actively observed every poll.
+    assert.equal(stalled[0].metadata.missedCycles, 0);
     assert.equal(second.incidents?.filter((item) => item.rootCauseClass === 'review_context_overflow_stale_base').length, 1);
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
@@ -5009,53 +5019,14 @@ function stuckQueueRepo(inference: Record<string, unknown> | undefined, override
   };
 }
 
-test('HOK-3207 detectQueueInferenceStuck: no queueHealth produces no finding', () => {
-  const findings = detectQueueInferenceStuck(stuckQueueRepo(undefined) as never, Date.now());
-  assert.deepEqual(findings, []);
-});
+// HOK-3314: `detectQueueInferenceStuck` was retired. The queue-health finding
+// below (built from `deriveQueueAlertProjection`) emits the same high-severity
+// alert at ≥5 consecutive failures. See the "queue-health degraded finding
+// uses projection" tests above (around queue-health-degraded-*).
 
-test('HOK-3207 detectQueueInferenceStuck: consecutiveFailures=4 is below threshold', () => {
-  const findings = detectQueueInferenceStuck(
-    stuckQueueRepo({ consecutiveFailures: 4, lastError: 'classifier timeout' }) as never,
-    Date.now(),
-  );
-  assert.deepEqual(findings, []);
-});
-
-test('HOK-3207 detectQueueInferenceStuck: consecutiveFailures=5 raises one high finding', () => {
-  const findings = detectQueueInferenceStuck(
-    stuckQueueRepo({
-      consecutiveFailures: 5,
-      lastError: 'classifier timeout after 5s',
-      lastAttemptAt: '2026-10-13T10:00:00Z',
-      lastSuccessAt: '2026-10-12T09:00:00Z',
-    }) as never,
-    Date.now(),
-  );
-  assert.equal(findings.length, 1);
-  const [finding] = findings;
-  assert.equal(finding.id, 'monitor-queue-inference-stuck-wavemill');
-  assert.equal(finding.severity, 'high');
-  assert.match(finding.title, /5 consecutive failures/);
-  assert.ok(finding.evidence.includes('consecutiveFailures=5'));
-  assert.ok(finding.evidence.includes('lastError=classifier timeout after 5s'));
-  assert.ok(finding.evidence.includes('lastSuccessAt=2026-10-12T09:00:00Z'));
-});
-
-test('HOK-3207 detectQueueInferenceStuck: consecutiveFailures=40 shares the same stable id as =5', () => {
-  const atFive = detectQueueInferenceStuck(
-    stuckQueueRepo({ consecutiveFailures: 5 }) as never, Date.now(),
-  );
-  const atForty = detectQueueInferenceStuck(
-    stuckQueueRepo({ consecutiveFailures: 40 }) as never, Date.now(),
-  );
-  assert.equal(atFive[0]?.id, atForty[0]?.id);
-});
-
-test('HOK-3207 buildFindings integration: both HOK-3207 detectors fire and dedupe across calls', () => {
+test('HOK-3314 queue-health finding at consecutiveFailures=5 fires high severity', () => {
   const now = Date.now();
-  const slowSinceAt = new Date(now - 90 * 60 * 1000).toISOString();
-  const repoDir = mkdtempSync(join(tmpdir(), 'observer-hok3207-integration-'));
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-queue-stuck-high-'));
   try {
     writePermissiveSchema(repoDir);
     const snapshot = {
@@ -5067,42 +5038,63 @@ test('HOK-3207 buildFindings integration: both HOK-3207 detectors fire and dedup
         session: 'wavemill',
         repoDir,
         tasks: [],
-        monitorTimingPath: '/fake/path/monitor-timing.json',
-        monitorTiming: {
-          slowSinceAt,
-          p50Ms: 44_000,
-          warnMs: 15_000,
-          slowestSteps: [{ name: 'issueMonitorLoop', ms: 22_000 }],
-        },
         queueHealthPath: '/fake/path/queue-health.json',
         queueHealth: {
+          status: 'degraded',
+          degradationReason: 'inference_unavailable',
+          inferenceStatus: 'failed',
+          inferredEdgeCount: 49,
           inference: {
-            consecutiveFailures: 7,
-            lastError: 'classifier timeout',
+            consecutiveFailures: 5,
+            lastAttemptAt: '2026-10-22T14:03:54.249Z',
+            lastSuccessAt: '2026-10-22T13:59:14.469Z',
+            error: 'classifier timeout after 5s',
           },
         },
       }],
     };
-    const firstFindings = buildFindings(snapshot as never, defaultObserverOptions() as never);
-    const slowFinding = firstFindings.find((f) => f.id === 'monitor-sustained-slow-pass-wavemill');
-    const queueFinding = firstFindings.find((f) => f.id === 'monitor-queue-inference-stuck-wavemill');
-    assert.ok(slowFinding, 'sustained slow-pass finding must be surfaced through buildFindings');
-    assert.ok(queueFinding, 'queue inference stuck finding must be surfaced through buildFindings');
-    // Dedup: a second call with the same state produces the same stable ids.
+    const findings = buildFindings(snapshot as never, defaultObserverOptions() as never);
+    const queueFinding = findings.find((f) => f.id.startsWith('queue-health-degraded-'));
+    assert.ok(queueFinding, 'queue-health finding must be surfaced through buildFindings');
+    assert.equal(queueFinding!.severity, 'high', '≥5 consecutive failed attempts → high severity through the projection ladder');
+    assert.ok(queueFinding!.evidence.some((line: string) => line === 'consecutiveFailedAttempts=5'));
+    assert.ok(queueFinding!.evidence.some((line: string) => line === 'projectionStatus=degraded-inference'));
+    // Dedup: a second call with the same state produces the same stable id.
     const secondFindings = buildFindings(snapshot as never, defaultObserverOptions() as never);
-    assert.equal(
-      secondFindings.filter((f) => f.id === 'monitor-sustained-slow-pass-wavemill').length,
-      1,
-      'repeated buildFindings must not duplicate the slow-pass finding id',
-    );
-    assert.equal(
-      secondFindings.filter((f) => f.id === 'monitor-queue-inference-stuck-wavemill').length,
-      1,
-      'repeated buildFindings must not duplicate the queue-stuck finding id',
-    );
+    const dupes = secondFindings.filter((f) => f.id === queueFinding!.id);
+    assert.equal(dupes.length, 1, 'repeated buildFindings must not duplicate the queue-health finding id');
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }
+});
+
+test('HOK-3314 queue-health finding below the medium threshold reports low severity', () => {
+  const findings = buildFindings({
+    timestamp: '2026-10-22T14:00:00Z',
+    sessions: ['wavemill'],
+    panes: [],
+    processes: [],
+    repos: [{
+      session: 'wavemill',
+      repoDir: '/tmp/fake',
+      tasks: [],
+      queueHealthPath: '/fake/path/queue-health.json',
+      queueHealth: {
+        status: 'degraded',
+        degradationReason: 'inference_unavailable',
+        inferenceStatus: 'failed',
+        inferredEdgeCount: 49,
+        inference: {
+          consecutiveFailures: 1,
+          lastAttemptAt: '2026-10-22T14:03:54.249Z',
+          lastSuccessAt: '2026-10-22T13:59:14.469Z',
+        },
+      },
+    }],
+  } as never, defaultObserverOptions() as never);
+  const queueFinding = findings.find((f) => f.id.startsWith('queue-health-degraded-'));
+  assert.ok(queueFinding);
+  assert.equal(queueFinding!.severity, 'low');
 });
 
 // ---------------------------------------------------------------------------

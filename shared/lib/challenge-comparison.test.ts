@@ -892,6 +892,13 @@ test('challengeModelIdsEquivalent treats a registry alias and its provider-nativ
   assert.equal(challengeModelIdsEquivalent(undefined, undefined), false);
 });
 
+test('challengeModelIdsEquivalent is symmetric for the OpenRouter qwen alias (HOK-3321 regression)', () => {
+  // The attestation may see either spelling first: expected vs executed, and
+  // executed vs expected. Both orderings must resolve to the same model.
+  assert.equal(challengeModelIdsEquivalent('qwen/qwen3-coder', 'qwen-3-coder'), true);
+  assert.equal(challengeModelIdsEquivalent('qwen-3-coder', 'qwen/qwen3-coder'), true);
+});
+
 test('executing the dated snapshot of the intended alias is not an executed-model mismatch', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'challenge-alias-snapshot-test-'));
   try {

@@ -11,7 +11,7 @@ import {
   type DeepSeekLauncherEnv,
 } from './deepseek-launcher.ts';
 import { getDeepSeekLauncherConfig, getDeepSeekProviderConfig } from './config.ts';
-import { encodeProjectDir } from './workflow-cost.ts';
+import { encodeProjectDir } from './wavemill-session-paths.ts';
 
 const DEFAULT_SESSION = 'smoke';
 const DEFAULT_ISSUE = 'HOK-1489';

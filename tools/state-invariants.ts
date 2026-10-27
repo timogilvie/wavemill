@@ -31,6 +31,7 @@ import { resolveWavemillToolPath } from '../shared/lib/native-agent/install-path
 import {
   findTaskInState,
   buildMergeLabelLiveState,
+  resolveIntegrationBaseSha,
   type MergeLabelTaskView,
   type MergeLabelLiveState,
 } from '../shared/lib/merge-labels.ts';
@@ -383,6 +384,9 @@ async function runCheck(args: ToolArgs): Promise<void> {
   const taskViews = new Map<number, MergeLabelTaskView | null>();
   const liveStates = new Map<number, MergeLabelLiveState | null>();
   const prHeadByNumber = new Map<number, string>();
+  // HOK-3316: same integration tip input the tend-side reconciler uses, so I3
+  // compares the label against exactly what deriveMergeLabel decides.
+  const integrationBaseSha = resolveIntegrationBaseSha(repoDir);
   for (const pr of prs) {
     if (typeof pr.headRefOid === 'string' && pr.headRefOid) {
       prHeadByNumber.set(pr.number, pr.headRefOid);
@@ -391,7 +395,7 @@ async function runCheck(args: ToolArgs): Promise<void> {
     taskViews.set(pr.number, view);
     if (view) {
       try {
-        const live = await buildMergeLabelLiveState(pr.number, pr.headRefOid ?? '', view.featureDir, repoDir);
+        const live = await buildMergeLabelLiveState(pr.number, pr.headRefOid ?? '', view.featureDir, repoDir, integrationBaseSha);
         liveStates.set(pr.number, live);
       } catch {
         liveStates.set(pr.number, null);

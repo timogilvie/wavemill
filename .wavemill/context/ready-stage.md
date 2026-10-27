@@ -48,20 +48,20 @@ Ready publishes `.ready-tend-handoff.json` at the head it checked. Tend claims i
 
 | Artifact | Writer | Meaning |
 |---|---|---|
-| `<featureDir>/.ready-tend-handoff.json` | monitor (`set_ready_pass_labels`), tend (claim/rebind/self-heal) | Head-bound ownership record: `checked → ready-published → tend-claimed → terminal` |
-| `<featureDir>/.tend-pushed-head.json` | tend (`rebindPushedTendHead`, self-heal) | Tend pushed `pushedHeadSha` over `previousHeadSha`; the task worktree is stale until the monitor syncs it |
-| `.wavemill/merge-lane/<pr>/tend-handoff-block.json` | tend (refused rebind) | Tend's own `wm:blocked`, with the pushed head, previous head, and featureDir for the self-heal |
+| `<featureDir>/.ready-tend-handoff.json` | monitor (`set_ready_pass_labels`), tend (claim/rebind) | Head-bound ownership record: `checked → ready-published → tend-claimed → terminal` |
+| `<featureDir>/.tend-pushed-head.json` | tend (`rebindPushedTendHead`) | Tend pushed `pushedHeadSha` over `previousHeadSha`; the task worktree is stale until the monitor syncs it |
+| `<featureDir>/.tend-attempt-result.json` | tend (`recordTendAttemptFailure`, HOK-3316) | Tend's failed merge attempt for (PR head, integration base). `deriveMergeLabel` renders it as `wm:blocked tend-<phase>-failed`; a `rebase` fact also makes Ready's merge-conflict check report CONFLICTED. Expires on a new PR head (`remote`), an operator event, or (readers) a moved base |
 
 - DO sync the task worktree to GitHub's head before Ready runs (`ready_sync_worktree_to_github_head` in `launch_ready_phase`, via `fetch` + `reset --keep`). Ready's checks and the cross-PR guard read the checkout, so a mismatch means Ready did not check the head it would publish.
 - DO publish the handoff only at `ready_current_github_head`, and only when the checkout (and Ready's `headSha`, if reported) still equals it. GitHub unreadable → `ownership-changed`; head moved during Ready → pending `head-changed` (rc 4).
-- DO move the handoff record to the live head (`rebindTendHandoff`, else `publishReadyHandoff`) before a tend self-heal restores `wm:ready`, and only when the live head is tend's own push (sentinel head and `.tend-pushed-head.json` agree).
+- DON'T write or clear `wm:blocked` from tend (HOK-3316): a failed attempt is a fact for `deriveMergeLabel`; the HOK-3105/3112 self-heal and its `tend-handoff-block.json` sentinel are gone because nothing latches a block the fact does not hold.
 - DON'T fall back to `git rev-parse HEAD` of the task worktree for the handoff head.
 - DON'T reset a worktree with unpushed local commits: sync only when local HEAD is an ancestor of the PR head, is the head tend recorded replacing, or was already on `origin/<branch>` before the fetch. Otherwise Ready refuses with a needs-attention reason.
 
 | Symptom | Root Cause | Fix |
 |---|---|---|
 | Tend skips a green `wm:ready` PR every poll with `phase: handoff`; `.ready-tend-handoff.json` head ≠ PR head | Ready re-check ran in a task worktree still at the pre-rebase commit after a tend force-push, and published there (PR #1520, 2026-09-29) | Fixed by the preflight sync + GitHub-only publish head. Manual unstick: sync the worktree, then republish at the live head |
-| Healed PR (HOK-3105) still skipped by tend | Self-heal cleared `wm:blocked` but left the record at the pre-push head | Self-heal now rebinds/republishes at the live head first |
+| ~90 s `wm:blocked` ↔ `wm:ready` flip and a "Rebase failed" comment every poll (PR #1697, 158 comments) | Tend's per-commit rebase conflicted while GitHub's 3-way merge was clean; tend labelled `wm:blocked`, the reconciler relabelled `wm:ready` | Fixed by HOK-3316: one `.tend-attempt-result.json` fact per (head, base), one edited-in-place merge-status comment, conflict remediation launched once. Unstick: rebase onto the integration branch, regenerate generated files, force-push |
 | Ready refuses with "unpushed local work" | Task worktree has commits not on the PR head (e.g. remediation fix never pushed) | Push or discard the local commits; the next Ready tick syncs |
 
 ## Async Ready-Path Checks (HOK-3206)

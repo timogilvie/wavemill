@@ -17,6 +17,7 @@ import {
   type MergeLabelDecision,
   type ReconcileMergeLabelsDeps,
 } from './merge-labels.ts';
+import { writeTendAttemptFact } from './tend-attempt-fact.ts';
 
 describe('deriveMergeLabel', () => {
   const baseTask: MergeLabelTaskView = {
@@ -49,6 +50,82 @@ describe('deriveMergeLabel', () => {
       prNumber: 123,
     },
   };
+
+  describe('Rule 0: recorded merge-blocking facts (HOK-3316)', () => {
+    const tendAttempt = { phase: 'rebase' as const, headSha: 'abc123', baseSha: 'base-1' };
+
+    it('blocks with tend-<phase>-failed while the attempt fact holds for this head and base', () => {
+      for (const phase of ['rebase', 'checks', 'ready', 'merge', 'handoff', 'worktree'] as const) {
+        const result = deriveMergeLabel(baseTask, basePr, {
+          ...baseLiveState,
+          integrationBaseSha: 'base-1',
+          tendAttempt: { ...tendAttempt, phase },
+        });
+        assert.deepEqual(result, { label: 'wm:blocked', reason: `tend-${phase}-failed` });
+      }
+    });
+
+    it('wins over GitHub MERGEABLE + green CI (the PR #1697 disagreement)', () => {
+      // Without the fact this exact state is Rule 7 wm:ready.
+      assert.deepEqual(deriveMergeLabel(baseTask, basePr, baseLiveState), { label: 'wm:ready' });
+      const result = deriveMergeLabel(baseTask, basePr, { ...baseLiveState, integrationBaseSha: 'base-1', tendAttempt });
+      assert.deepEqual(result, { label: 'wm:blocked', reason: 'tend-rebase-failed' });
+    });
+
+    it('wins over a mergeable=UNKNOWN or failing-CI verdict', () => {
+      const unknown = deriveMergeLabel(baseTask, basePr, { ...baseLiveState, mergeable: 'UNKNOWN', integrationBaseSha: 'base-1', tendAttempt });
+      assert.deepEqual(unknown, { label: 'wm:blocked', reason: 'tend-rebase-failed' });
+      const red = deriveMergeLabel(baseTask, basePr, {
+        ...baseLiveState,
+        statusCheckRollup: [{ name: 'ci', conclusion: 'FAILURE', status: 'COMPLETED' }],
+        integrationBaseSha: 'base-1',
+        tendAttempt: { ...tendAttempt, phase: 'checks' },
+      });
+      assert.deepEqual(red, { label: 'wm:blocked', reason: 'tend-checks-failed' });
+    });
+
+    it('holds for the pushed head even before Ready re-runs there (keyed on the live PR head)', () => {
+      const result = deriveMergeLabel(baseTask, { ...basePr, headSha: 'pushed' }, {
+        ...baseLiveState,
+        prHeadSha: 'pushed',
+        integrationBaseSha: 'base-1',
+        tendAttempt: { ...tendAttempt, phase: 'checks', headSha: 'pushed' },
+      });
+      assert.deepEqual(result, { label: 'wm:blocked', reason: 'tend-checks-failed' });
+    });
+
+    it('lapses on a new PR head', () => {
+      const result = deriveMergeLabel(baseTask, basePr, {
+        ...baseLiveState,
+        integrationBaseSha: 'base-1',
+        tendAttempt: { ...tendAttempt, headSha: 'older-head' },
+      });
+      assert.deepEqual(result, { label: 'wm:ready' });
+    });
+
+    it('lapses when the integration base moves, or cannot be resolved', () => {
+      assert.deepEqual(
+        deriveMergeLabel(baseTask, basePr, { ...baseLiveState, integrationBaseSha: 'base-2', tendAttempt }),
+        { label: 'wm:ready' },
+      );
+      assert.deepEqual(deriveMergeLabel(baseTask, basePr, { ...baseLiveState, tendAttempt }), { label: 'wm:ready' });
+    });
+
+    it('blocks on a cross-PR revert guard verdict for this head only', () => {
+      assert.deepEqual(
+        deriveMergeLabel(baseTask, basePr, { ...baseLiveState, crossPrGuard: { status: 'blocked', headSha: 'abc123' } }),
+        { label: 'wm:blocked', reason: 'cross-pr-guard' },
+      );
+      assert.deepEqual(
+        deriveMergeLabel(baseTask, basePr, { ...baseLiveState, crossPrGuard: { status: 'blocked', headSha: 'older' } }),
+        { label: 'wm:ready' },
+      );
+      assert.deepEqual(
+        deriveMergeLabel(baseTask, basePr, { ...baseLiveState, crossPrGuard: { status: 'pass', headSha: 'abc123' } }),
+        { label: 'wm:ready' },
+      );
+    });
+  });
 
   describe('Rule 1: Live PR head ≠ task head', () => {
     it('returns null when PR head does not match task head', () => {
@@ -727,6 +804,45 @@ describe('readMergeLabelEvidence (real Ready artifacts)', () => {
     assert.equal((await readMergeLabelEvidence(featureDirWithReady('completed', 'pass'))).readyAtHead?.verdict, 'ready');
     assert.equal((await readMergeLabelEvidence(featureDirWithReady('completed', 'fail'))).readyAtHead?.verdict, 'not-ready');
     assert.equal((await readMergeLabelEvidence(featureDirWithReady('running', 'pass'))).readyAtHead?.verdict, 'running');
+  });
+});
+
+describe('readMergeLabelEvidence (recorded facts, HOK-3316)', () => {
+  it('reads the tend-attempt fact and the cross-PR guard verdict from the state dir', async () => {
+    const featureDir = mkdtempSync(join(tmpdir(), 'merge-labels-facts-'));
+    try {
+      writeTendAttemptFact(featureDir, {
+        phase: 'rebase',
+        prNumber: 1697,
+        headSha: 'head-1697',
+        baseSha: 'base-1',
+        excerpt: 'CONFLICT (content): Merge conflict in shared/validators/wavemill-config.validator.cjs',
+        failureClass: 'code-failure',
+      });
+      writeFileSync(join(featureDir, '.cross-pr-guard-result.json'), JSON.stringify({
+        schemaVersion: 1,
+        kind: 'cross-pr-guard',
+        headSha: 'head-1697',
+        writtenAt: '2026-10-22T12:00:00Z',
+        detail: { rc: 1, stdout: '{}', stderr: '', baseSha: 'base-1' },
+      }));
+      const evidence = await readMergeLabelEvidence(featureDir);
+      assert.deepEqual(evidence.tendAttempt, { phase: 'rebase', headSha: 'head-1697', baseSha: 'base-1' });
+      assert.deepEqual(evidence.crossPrGuard, { status: 'blocked', headSha: 'head-1697' });
+    } finally {
+      rmSync(featureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads no facts from a state dir without markers', async () => {
+    const featureDir = mkdtempSync(join(tmpdir(), 'merge-labels-facts-'));
+    try {
+      const evidence = await readMergeLabelEvidence(featureDir);
+      assert.equal(evidence.tendAttempt, undefined);
+      assert.equal(evidence.crossPrGuard, undefined);
+    } finally {
+      rmSync(featureDir, { recursive: true, force: true });
+    }
   });
 });
 

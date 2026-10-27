@@ -15,6 +15,7 @@ import {
   resolveReviewStageChallengePin,
   buildChallengeExecutionIntent,
   enforceChallengeIntentPresence,
+  attestEvalRecordChallengeExecution,
   projectChallengeIntentForPersistence,
   CHALLENGE_ARM_LIFECYCLE_STATES,
   CHALLENGE_ARM_PENDING_STATES,
@@ -693,6 +694,95 @@ test('a non-challenge record is never touched by the intent guard', () => {
   assert.equal(enforceChallengeIntentPresence(record, undefined), false);
   assert.equal(record.invalidChallenge, undefined);
   assert.equal(record.trainingEligible, true);
+});
+
+// --- model identity is registry-equivalence, not string equality (HOK-3321) ---
+//
+// HOK-3313: a valid Qwen planning experiment was stamped stage_override_lost
+// because the intent recorded the Wavemill alias (qwen-3-coder) while the
+// provider reported the OpenRouter id (qwen/qwen3-coder). Both name the same
+// registry entry, so the attestation must accept either spelling — and must
+// still reject a genuinely different model.
+
+function makePlanChallengeRecord(overrides: {
+  expectedStageModel?: string;
+  executedModel?: string;
+  requestedSelector?: string;
+  intentionallyIdentical?: boolean;
+} = {}): EvalRecord {
+  const expectedStageModel = overrides.expectedStageModel ?? 'qwen-3-coder';
+  const intent = projectChallengeIntentForPersistence(makeRuntimeIntent({
+    pairId: 'pair-3313',
+    issueId: 'HOK-3313',
+    selectedStage: 'plan',
+    ...(overrides.intentionallyIdentical ? { intentionallyIdentical: true } : {}),
+    primary: {
+      pairId: 'pair-3313',
+      side: 'primary',
+      challengeStage: 'plan',
+      expectedStageModel: 'claude-opus-4-6',
+      expectedRoute: { planner: 'claude-opus-4-6', coder: 'claude-opus-4-6', reviewer: 'claude-opus-4-6', planDepth: '', codeDepth: '', reviewMode: '' },
+    },
+    challenger: {
+      pairId: 'pair-3313',
+      side: 'challenger',
+      challengeStage: 'plan',
+      expectedStageModel,
+      expectedRoute: { planner: expectedStageModel, coder: 'claude-opus-4-6', reviewer: 'claude-opus-4-6', planDepth: '', codeDepth: '', reviewMode: '' },
+    },
+  }));
+  assert.ok(intent);
+  const record = makeRecord();
+  record.challengePairId = 'pair-3313';
+  record.challengeSide = 'challenger';
+  record.challengeStage = 'plan';
+  record.challengeIntent = intent!;
+  record.challengeExecutionRoute = intent!.challenger.expectedRoute;
+  record.executedPlanning = {
+    agent: 'codex',
+    model: overrides.executedModel ?? 'qwen-3-coder',
+    status: 'completed',
+    source: '.planning-result.json',
+  };
+  return record;
+}
+
+test('attestation accepts the provider-reported alias of the intended model (HOK-3321)', () => {
+  const record = makePlanChallengeRecord({ executedModel: 'qwen/qwen3-coder' });
+
+  const attestation = attestEvalRecordChallengeExecution(record);
+
+  assert.ok(attestation);
+  assert.equal(attestation.validity, 'valid');
+  assert.equal(attestation.invalidReason, undefined);
+});
+
+test('attestation accepts the dated provider-native id of the intended alias (HOK-3321)', () => {
+  const record = makePlanChallengeRecord({ expectedStageModel: 'claude-haiku-4-5', executedModel: 'claude-haiku-4-5-20251001' });
+
+  const attestation = attestEvalRecordChallengeExecution(record);
+
+  assert.ok(attestation);
+  assert.equal(attestation.validity, 'valid');
+});
+
+test('attestation still rejects a genuinely different executed model', () => {
+  const record = makePlanChallengeRecord({ executedModel: 'claude-haiku-4-5' });
+
+  const attestation = attestEvalRecordChallengeExecution(record);
+
+  assert.ok(attestation);
+  assert.equal(attestation.validity, 'invalid_challenge');
+  assert.equal(attestation.invalidReason, 'stage_override_lost');
+});
+
+test('attestation classifies an identical-control intent with alias execution', () => {
+  const record = makePlanChallengeRecord({ executedModel: 'qwen/qwen3-coder', intentionallyIdentical: true });
+
+  const attestation = attestEvalRecordChallengeExecution(record);
+
+  assert.ok(attestation);
+  assert.equal(attestation.validity, 'identical_control');
 });
 
 test('every TypeScript divergence reason is accepted by the eval JSON schema', () => {

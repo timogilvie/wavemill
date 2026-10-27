@@ -247,12 +247,8 @@ harness_extract_real_functions() {
     complete_coding_advance \
     auto_advance_blocked_completion \
     emit_blocked_completion_attention \
-    native_launch_failure_artifact_path \
     stage_result_field \
-    agent_or_model_is_native_for_recovery \
-    native_launch_failure_kind \
-    write_native_launch_failure_artifact \
-    emit_native_launch_failure_attention \
+    stage_launch_identity \
     native_hook_terminal_failure_detail \
     native_coding_failure_handoff_reason \
     native_terminal_failure_kind \
@@ -3346,8 +3342,13 @@ EOF
 
   tick="$(harness_run_tick "$repo" "$slug" "$issue" 'CURRENT_PHASE="coding"; WAVEMILL_CAPACITY_STALL_SECONDS=0')"
 
+  # HOK-3313: an "error" hook is deliberately NOT TTL-gated — a dead process
+  # never refreshes its hook, so a stale terminal event still routes through
+  # the single failure policy. model_at_capacity has no terminal-allowlist
+  # entry, so the stage is marked failed for retry (not parked by this handler).
   check_file_absent "capacity stale hook: no blocked completion written" "$feature_dir/.coding-blocked-completion.json"
-  check_eq "capacity stale hook: attention remains clear" "clear" "$(kv_value "$tick" attention)"
+  check_eq "capacity stale hook: stage marked failed for retry" "failed" \
+    "$(jq -r '.status // empty' "$feature_dir/.coding-result.json" 2>/dev/null || true)"
 }
 
 test_misplaced_coding_complete_marker_is_recovered() {

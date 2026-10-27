@@ -2403,67 +2403,10 @@ else
   fail "policy-denied and blocked labels are not both present"
 fi
 
-# ── Native launch failures surface recovery detail ─────────────────────────
-
-cat > "$WORKTREES_DIR/native-failed-task/features/native-failed-task/.native-launch-failure.json" <<'EOF'
-{
-  "type": "native-launch-failure",
-  "issue": "HOK-2539",
-  "stage": "planning",
-  "agent": "native-openrouter",
-  "model": "qwen-3-coder",
-  "paneTarget": "@96",
-  "failureKind": "bare-model-command",
-  "exitCode": 127,
-  "detectedAt": "2026-07-18T13:00:00Z",
-  "recommendedAction": "Inspect the pane transcript and route config, then relaunch after fixing native provider/model eligibility."
-}
-EOF
-
-STATE_FILE_NATIVE_FAILURE="$TMP_DIR/state-native-failure.json"
-cat > "$STATE_FILE_NATIVE_FAILURE" <<EOF
-{
-  "tasks": {
-    "HOK-2539": {
-      "slug": "native-failed-task",
-      "branch": "task/native-failed-task",
-      "worktree": "$WORKTREES_DIR/native-failed-task",
-      "status": "",
-      "phase": "planning",
-      "pr": ""
-    }
-  }
-}
-EOF
-
-BEHAVIOR_NATIVE_FAILURE="$TMP_DIR/behavior-native-failure.json"
-cat > "$BEHAVIOR_NATIVE_FAILURE" <<'EOF'
-{
-  "pane": {
-    "HOK-2539-native-failed-task": "96"
-  },
-  "hook": {},
-  "next_action": {},
-  "reported": {},
-  "planning": {},
-  "pr": {},
-  "checks": {}
-}
-EOF
-
-OUTPUT_NATIVE_FAILURE="$TMP_DIR/output-native-failure.txt"
-run_render_with_agent_states "$STATE_FILE_NATIVE_FAILURE" "$WORKTREES_DIR" "$BEHAVIOR_NATIVE_FAILURE" "$OUTPUT_NATIVE_FAILURE" \
-  "" "" ""
-
-if grep -q '📥 INBOX (1)' "$OUTPUT_NATIVE_FAILURE" \
-  && grep -q 'HOK-2539.*native-failed-task.*⚠ planning' "$OUTPUT_NATIVE_FAILURE" \
-  && grep -q 'Native planning launch failed: bare-model-command exit=127' "$OUTPUT_NATIVE_FAILURE" \
-  && grep -q 'model=qwen-3-coder pane=@96' "$OUTPUT_NATIVE_FAILURE" \
-  && grep -q 'Inspect the pane transcript and route config' "$OUTPUT_NATIVE_FAILURE"; then
-  pass "native launch failure renders actionable recovery detail"
-else
-  fail "native launch failure detail missing from dashboard"
-fi
+# HOK-3313: the dedicated .native-launch-failure.json dashboard path is gone;
+# a dead launch pane now writes a .<stage>-result.json failed row that the
+# failure policy classifies, so the recovery detail surfaces through the
+# standard stage result / attention detail instead of a bespoke artifact.
 
 # ── Baseline states unchanged ───────────────────────────────────────────────
 
@@ -2710,8 +2653,10 @@ else
   fail "backstage health summary did not render degraded queue health"
 fi
 
-# HOK-3130: a successful planner run whose inference failed must not read as
-# healthy; a healthy run surfaces how many inferred edges are in use.
+# HOK-3130/HOK-3314: a successful planner run whose inference failed must not
+# read as healthy; a healthy run surfaces how many inferred edges are in use.
+# Dashboard renderers read `.currentAlertProjection` (the single HOK-3314
+# decider) for status label, severity, episode count, and the warning summary.
 cat > "$TMP_DIR/queue-health.json" <<'JSON'
 {
   "status": "degraded",
@@ -2721,18 +2666,35 @@ cat > "$TMP_DIR/queue-health.json" <<'JSON'
   "nextAction": "use_explicit_edges_only",
   "inferenceStatus": "failed",
   "inferredEdgeCount": 0,
-  "inference": { "error": "LLM fallback deadline exhausted before claude-sonnet-5" }
+  "inference": { "error": "LLM fallback deadline exhausted before claude-sonnet-5" },
+  "currentAlertProjection": {
+    "schemaVersion": 1,
+    "status": "degraded-inference",
+    "episode": {
+      "id": "queue-alert:inference:2026-10-22T00:00:00Z",
+      "kind": "inference",
+      "startedAt": "2026-10-22T00:00:00Z",
+      "consecutiveFailedAttempts": 1,
+      "latestFailureAt": "2026-10-22T00:00:00Z",
+      "severity": "low"
+    },
+    "summary": "Queue inference unavailable · 1 consecutive failed attempt · last failure 2026-10-22T00:00:00Z · explicit relations only",
+    "nextAction": "use_explicit_edges_only",
+    "evidenceWarnings": []
+  }
 }
 JSON
 run_render "$backstage_state" "$WORKTREES_DIR" "$backstage_behavior" "$backstage_output"
 queue_inference_render="$(cat "$backstage_output")"
-if [[ "$queue_inference_render" == *"Queue: degraded (inference_unavailable: failed)"* ]]; then
+if [[ "$queue_inference_render" == *"Queue: degraded (degraded-inference/low/1)"* ]]; then
   pass "backstage health summary renders inference_unavailable with its status"
 else
   fail "backstage health summary did not render inference_unavailable status"
 fi
-if [[ "$queue_inference_render" == *"queue inference unavailable (failed); planning with explicit edges only; last error: LLM fallback deadline exhausted"* ]]; then
-  pass "queue inference warning renders status and last error"
+if [[ "$queue_inference_render" == *"Queue inference unavailable"* \
+   && "$queue_inference_render" == *"1 consecutive failed attempt"* \
+   && "$queue_inference_render" == *"explicit relations only"* ]]; then
+  pass "queue inference warning renders projection summary"
 else
   fail "queue inference warning missing from dashboard"
 fi
@@ -2742,7 +2704,14 @@ cat > "$TMP_DIR/queue-health.json" <<'JSON'
   "status": "healthy",
   "nextAction": "use_dependency_queue",
   "inferenceStatus": "ok",
-  "inferredEdgeCount": 3
+  "inferredEdgeCount": 3,
+  "currentAlertProjection": {
+    "schemaVersion": 1,
+    "status": "healthy",
+    "summary": "Queue inference and planner healthy.",
+    "nextAction": "use_dependency_queue",
+    "evidenceWarnings": []
+  }
 }
 JSON
 run_render "$backstage_state" "$WORKTREES_DIR" "$backstage_behavior" "$backstage_output"
@@ -2752,7 +2721,8 @@ if [[ "$queue_inferred_render" == *"Queue: healthy (inferred 3)"* ]]; then
 else
   fail "backstage health summary did not render inferred edge count"
 fi
-if [[ "$queue_inferred_render" != *"queue inference unavailable"* ]]; then
+if [[ "$queue_inferred_render" != *"queue inference unavailable"* \
+   && "$queue_inferred_render" != *"Queue inference unavailable"* ]]; then
   pass "healthy inference renders no queue warning"
 else
   fail "healthy inference rendered a queue warning"

@@ -1,0 +1,34 @@
+# shellcheck shell=bash
+# Fake coder for the tend rebase conflict journey (HOK-3316).
+#
+# The first coding launch implements the task in three commits: one that
+# regenerates generated.txt, one that restores it, then the usual change. The
+# branch's net diff never touches generated.txt, so GitHub's 3-way merge stays
+# clean after the integration branch regenerates it too; tend's per-commit
+# rebase replays the first commit and conflicts (the PR #1697 shape).
+#
+# Any later coding launch is the Ready conflict resolver. Following the
+# merge-lane note in its prompt, it rebases instead of merging (a merge commit
+# would leave tend's per-commit replay conflicting): squash the task onto its
+# merge base, rebase that one commit, and force-push.
+coding_runs_file="$FAKE_ROOT/coding-runs-$WAVEMILL_ISSUE"
+coding_run=$(( $(cat "$coding_runs_file" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$coding_run" > "$coding_runs_file"
+fake_git() { git -c user.name=fake-agent -c user.email=fake-agent@example.invalid "$@"; }
+
+if (( coding_run == 1 )); then
+  printf 'generated: task draft\n' > generated.txt
+  git add generated.txt
+  fake_git commit -q -m "$WAVEMILL_ISSUE: regenerate generated.txt"
+  printf 'generated: v0\n' > generated.txt
+  git add generated.txt
+  fake_git commit -q -m "$WAVEMILL_ISSUE: restore generated.txt"
+  default_coding
+else
+  printf '%s phase=coding issue=%s role=conflict-resolver\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+  git fetch -q origin "$BASE_BRANCH"
+  git reset -q --soft "$(git merge-base HEAD "origin/$BASE_BRANCH")"
+  fake_git commit -q -m "$WAVEMILL_ISSUE: implement (rebased onto $BASE_BRANCH)"
+  fake_git rebase -q "origin/$BASE_BRANCH"
+  git push -q --force-with-lease origin HEAD
+fi

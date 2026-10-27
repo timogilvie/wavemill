@@ -75,6 +75,10 @@ import {
   type ConfigIntegrityIssue,
 } from '../shared/lib/config-integrity.ts';
 import { normalizeTaskLifecycle, type CleanupEpisode } from '../shared/lib/task-lifecycle.ts';
+import {
+  deriveQueueAlertProjection,
+  type QueueAlertProjection,
+} from '../shared/lib/queue-inference-status.ts';
 import { readWorkflowState, workflowTaskEntries, type TaskRecord } from '../shared/lib/workflow-state.ts';
 import { resolveEffectiveTaskConfig, type EffectiveTaskConfig } from '../shared/lib/effective-task-config.ts';
 import {
@@ -1734,12 +1738,8 @@ const SUSTAINED_SLOW_PASS_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
 // WAVEMILL_MONITOR_PASS_WARN_MS in shared/lib/wavemill-monitor.sh (currently 15000 ms).
 const DEFAULT_MONITOR_WARN_MS = 15_000;
 
-// HOK-3207: raise a stuck-queue-inference incident when the queue
-// classifier has been failing for ≥ 5 consecutive runs. The existing
-// DependencyHealthDetector trips at 3 at low/medium severity; this is a
-// distinct, higher-severity signal bound to a single deduplicated alert
-// so the operator sees one line, not interleaved generic incidents.
-const QUEUE_INFERENCE_STUCK_THRESHOLD = 5;
+// HOK-3314: the former `QUEUE_INFERENCE_STUCK_THRESHOLD=5` lives in
+// `queueAlertSeverityForCount` now. One severity ladder, one finding path.
 
 export function detectSustainedSlowPasses(
   repo: RepoSnapshot,
@@ -1787,37 +1787,10 @@ export function detectSustainedSlowPasses(
   }];
 }
 
-export function detectQueueInferenceStuck(
-  repo: RepoSnapshot,
-  _now: number,
-): Finding[] {
-  const inference = repo.queueHealth?.inference;
-  if (!inference || typeof inference !== 'object') return [];
-  const failures = typeof inference.consecutiveFailures === 'number' ? inference.consecutiveFailures : 0;
-  if (failures < QUEUE_INFERENCE_STUCK_THRESHOLD) return [];
-  const lastError = typeof inference.lastError === 'string'
-    ? inference.lastError
-    : (typeof inference.error === 'string' ? inference.error : null);
-  const lastAttempt = typeof inference.lastAttemptAt === 'string' ? inference.lastAttemptAt : null;
-  const lastSuccess = typeof inference.lastSuccessAt === 'string' ? inference.lastSuccessAt : null;
-  return [{
-    id: `monitor-queue-inference-stuck-${repo.session}`,
-    severity: 'high',
-    category: 'operational',
-    confidence: 'high',
-    session: repo.session,
-    repoDir: repo.repoDir,
-    title: `Queue inference stuck: ${failures} consecutive failures`,
-    evidence: [
-      `consecutiveFailures=${failures}`,
-      `lastError=${lastError ?? 'unknown'}`,
-      `lastAttemptAt=${lastAttempt ?? 'unknown'}`,
-      `lastSuccessAt=${lastSuccess ?? 'never'}`,
-      `source=${repo.queueHealthPath ?? 'unknown'}`,
-    ],
-    recommendation: 'Inspect the [classifier] lines in the mill log and the Claude CLI login; the mill is running on explicit Linear relations only until classification recovers.',
-  }];
-}
+// HOK-3314: `detectQueueInferenceStuck` is retired. The queue-health finding
+// emitted below is severity-ladder-driven by `deriveQueueAlertProjection`,
+// which fires `high` on the same ≥5 consecutive-failure threshold the old
+// stuck-detector enforced — one id, one deduplicated alert.
 
 /**
  * HOK-3244 (REQ-F2): run a best-effort detector, converting any throw into a
@@ -1899,7 +1872,9 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
     // `id`, so `selectAlertsToSend` dedupes repeat findings and recovery
     // (slowSinceAt cleared, failures reset) naturally retracts them.
     runDetector('sustained-slow-passes', repo, () => detectSustainedSlowPasses(repo, now), findings);
-    runDetector('queue-inference-stuck', repo, () => detectQueueInferenceStuck(repo, now), findings);
+    // HOK-3314: the former `queue-inference-stuck` detector is retired; the
+    // single queue-health finding below (built from `deriveQueueAlertProjection`)
+    // emits the same high-severity alert at ≥5 consecutive failures.
 
     const rejectedEvalCount = countRejectedEvalRecords(repo.repoDir);
     if (rejectedEvalCount > 0) {
@@ -2590,35 +2565,37 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       }
     }
 
-    // Analyze queue-health degradation
+    // HOK-3314: single queue-alert projection replaces the four private
+    // severity/episode derivations (observer queue-health finding, stuck
+    // detector, DependencyHealthDetector queue arm, and shell renderers).
     if (queueHealthDegraded) {
+      const projection: QueueAlertProjection = deriveQueueAlertProjection({
+        queueHealth: repo.queueHealth,
+        nowMs: now,
+        observerCycleComplete: true,
+      });
       const reason = repo.queueHealth.degradationReason || 'unknown';
-      // HOK-3130: inference_unavailable is recorded on a successful planner
-      // run (no planner episode or failure count); the dependency queue is
-      // still in use, just with explicit Linear relations only.
-      const inferenceUnavailable = reason === 'inference_unavailable';
-      const episodeStartedAt = inferenceUnavailable
-        ? `inference:${repo.queueHealth.inference?.lastSuccessAt || 'never'}`
-        : repo.queueHealth.episodeStartedAt || 'unknown';
-      const failureCount = inferenceUnavailable
-        ? repo.queueHealth.inference?.consecutiveFailures || 1
-        : repo.queueHealth.failureCount || 1;
-      const severity = failureCount >= 5 ? 'high' : failureCount >= 3 ? 'medium' : 'low';
-
+      const inferenceUnavailable = projection.status === 'degraded-inference';
+      const episode = projection.episode;
+      const episodeKey = episode?.id ?? 'unknown';
       findings.push({
-        id: `queue-health-degraded-${repo.session}-${hashText(episodeStartedAt)}`,
-        severity,
+        id: `queue-health-degraded-${repo.session}-${hashText(episodeKey)}`,
+        severity: episode?.severity ?? 'low',
         category: 'warning',
         confidence: 'high',
         session: repo.session,
         repoDir: repo.repoDir,
         title: `Queue planning degraded: ${reason}`,
         evidence: [
-          `episodeStartedAt=${episodeStartedAt}`,
+          `episodeId=${episodeKey}`,
+          `episodeStartedAt=${episode?.startedAt ?? 'unknown'}`,
+          `projectionStatus=${projection.status}`,
           `reason=${reason}`,
-          `failureCount=${failureCount}`,
+          `consecutiveFailedAttempts=${episode?.consecutiveFailedAttempts ?? 0}`,
+          `latestFailureAt=${episode?.latestFailureAt ?? 'unknown'}`,
+          `latestSuccessAt=${episode?.latestSuccessAt ?? 'unknown'}`,
+          `nextAction=${projection.nextAction}`,
           `backoffSeconds=${repo.queueHealth.retryBackoffSeconds || 0}`,
-          `lastAttemptAt=${repo.queueHealth.lastAttemptAt || 'unknown'}`,
           ...(repo.queueHealth.planner ? [
             `plannerPid=${repo.queueHealth.planner.pid || 'unknown'}`,
             `plannerOwner=${repo.queueHealth.planner.cancellationOwner || 'unknown'}`,
@@ -2631,10 +2608,11 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
             `inferredEdgeCount=${repo.queueHealth.inferredEdgeCount ?? 'unknown'}`,
             ...(repo.queueHealth.inference?.error ? [`inferenceError=${repo.queueHealth.inference.error}`] : []),
           ] : []),
+          ...projection.evidenceWarnings.map((warning) => `evidenceWarning=${warning}`),
         ],
-        recommendation: inferenceUnavailable
-          ? `Queue dependency inference is unavailable; the wave is planned from explicit Linear relations only, so inferred dependencies are missing. Check the [classifier] lines in the mill log and the Claude CLI login.`
-          : `Dependency-aware queue planning is unavailable. Flat fallback is active. Inspect the queue planner lifecycle and dependency graph. If this persists, file a diagnostic ticket with the queue-health snapshot.`,
+        recommendation: projection.summary + (inferenceUnavailable
+          ? ' — check the [classifier] lines in the mill log and the Claude CLI login.'
+          : ' — inspect queue-health diagnostics and dependency planner inputs.'),
       });
     }
 
@@ -4203,8 +4181,12 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
         });
       }
       try {
+        // HOK-3314: separate observed-presence from fresh-event. An unchanged
+        // condition observed every cycle used to accrue missedCycles and
+        // auto-resolve after 5 polls (hence `recurrence.count=19` with
+        // nothing structural changed). Passing `observed` keeps it active.
         await store.runResolutionSweep(
-          freshFingerprints,
+          { fresh: freshFingerprints, observed: observedFingerprints },
           (record) => canResolveInteractivePromptByAbsence(record, repo),
         );
       } catch (error) {

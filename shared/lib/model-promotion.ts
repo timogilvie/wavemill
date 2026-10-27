@@ -23,7 +23,7 @@ import {
   projectModelRegistryCatalog,
   type ModelRegistryCatalog,
 } from './model-registry-loader.ts';
-import { computeNormalizedEvaluationCost, type ModelPricing } from './workflow-cost.ts';
+import { computeNormalizedEvaluationCost, type ModelPricing } from './pricing/model-pricing.ts';
 import { deduplicateByHash } from './eval-aggregator.ts';
 import {
   CERTIFICATION_SCHEMA_VERSION,

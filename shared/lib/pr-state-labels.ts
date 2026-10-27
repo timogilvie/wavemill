@@ -13,14 +13,18 @@
 
 import { type PullRequest, addLabelsToPullRequest, getPullRequest, removeLabelFromPullRequest, resolveOwnerRepo } from './github.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
-import { writeMarker, clearMarker, validateMarker, type MarkerHandle, type MarkerValidation, type MarkerPayload } from './transient-marker.ts';
-import { join } from 'node:path';
 
 export interface PrStateLabelOptions {
   repo?: string;
+  /**
+   * Accepted for call-site compatibility. HOK-3316 removed the `pr-label`
+   * marker (`.wavemill/pr-state/<pr>.json`) that used to live under it: the
+   * label is a render of `deriveMergeLabel()`, so nothing records why it was set.
+   */
   markerRoot?: string;
 }
 
+/** Accepted for call-site compatibility; the reconciler logs the reason (HOK-3316). */
 export interface PrLabelWriteArgs {
   headSha?: string;
   reason?: string;
@@ -116,8 +120,8 @@ export function setWavemillReady(
   argsOrOptions: PrLabelWriteArgs | PrStateLabelOptions = {},
   maybeOptions: PrStateLabelOptions = {},
 ): PullRequest {
-  const { args, options } = normalizeWriteArgs(argsOrOptions, maybeOptions);
-  return transitionPullRequestLabels(prNumber, [WM_LABELS.ready], [WM_LABELS.blocked, WM_LABELS.merging], args, options);
+  const options = normalizeWriteOptions(argsOrOptions, maybeOptions);
+  return transitionPullRequestLabels(prNumber, [WM_LABELS.ready], [WM_LABELS.blocked, WM_LABELS.merging], options);
 }
 
 export function setWavemillBlocked(
@@ -125,8 +129,8 @@ export function setWavemillBlocked(
   argsOrOptions: PrLabelWriteArgs | PrStateLabelOptions = {},
   maybeOptions: PrStateLabelOptions = {},
 ): PullRequest {
-  const { args, options } = normalizeWriteArgs(argsOrOptions, maybeOptions);
-  return transitionPullRequestLabels(prNumber, [WM_LABELS.blocked], [WM_LABELS.ready, WM_LABELS.merging], args, options);
+  const options = normalizeWriteOptions(argsOrOptions, maybeOptions);
+  return transitionPullRequestLabels(prNumber, [WM_LABELS.blocked], [WM_LABELS.ready, WM_LABELS.merging], options);
 }
 
 export function setWavemillMerging(
@@ -134,8 +138,8 @@ export function setWavemillMerging(
   argsOrOptions: PrLabelWriteArgs | PrStateLabelOptions = {},
   maybeOptions: PrStateLabelOptions = {},
 ): PullRequest {
-  const { args, options } = normalizeWriteArgs(argsOrOptions, maybeOptions);
-  return transitionPullRequestLabels(prNumber, [WM_LABELS.merging], [WM_LABELS.ready, WM_LABELS.blocked], args, options);
+  const options = normalizeWriteOptions(argsOrOptions, maybeOptions);
+  return transitionPullRequestLabels(prNumber, [WM_LABELS.merging], [WM_LABELS.ready, WM_LABELS.blocked], options);
 }
 
 export function setWavemillMerged(
@@ -143,8 +147,8 @@ export function setWavemillMerged(
   argsOrOptions: PrLabelWriteArgs | PrStateLabelOptions = {},
   maybeOptions: PrStateLabelOptions = {},
 ): PullRequest {
-  const { args, options } = normalizeWriteArgs(argsOrOptions, maybeOptions);
-  return transitionPullRequestLabels(prNumber, [WM_LABELS.merged], ACTIVE_STATE_LABELS, args, options);
+  const options = normalizeWriteOptions(argsOrOptions, maybeOptions);
+  return transitionPullRequestLabels(prNumber, [WM_LABELS.merged], ACTIVE_STATE_LABELS, options);
 }
 
 export function setWavemillSuperseded(
@@ -152,41 +156,35 @@ export function setWavemillSuperseded(
   argsOrOptions: PrLabelWriteArgs | PrStateLabelOptions = {},
   maybeOptions: PrStateLabelOptions = {},
 ): PullRequest {
-  const { args, options } = normalizeWriteArgs(argsOrOptions, maybeOptions);
-  return transitionPullRequestLabels(prNumber, [WM_LABELS.superseded], ACTIVE_STATE_LABELS, args, options);
+  const options = normalizeWriteOptions(argsOrOptions, maybeOptions);
+  return transitionPullRequestLabels(prNumber, [WM_LABELS.superseded], ACTIVE_STATE_LABELS, options);
 }
 
 export function addWavemillBase(prNumber: number | string, options: PrStateLabelOptions = {}): PullRequest {
-  return transitionPullRequestLabels(prNumber, [WM_LABELS.wavemill], [], {}, options);
+  return transitionPullRequestLabels(prNumber, [WM_LABELS.wavemill], [], options);
 }
 
 export function addWavemillRisky(prNumber: number | string, options: PrStateLabelOptions = {}): PullRequest {
-  return transitionPullRequestLabels(prNumber, [WM_LABELS.risky], [], {}, options);
+  return transitionPullRequestLabels(prNumber, [WM_LABELS.risky], [], options);
 }
 
 export function addWavemillMigration(prNumber: number | string, options: PrStateLabelOptions = {}): PullRequest {
-  return transitionPullRequestLabels(prNumber, [WM_LABELS.migration], [], {}, options);
+  return transitionPullRequestLabels(prNumber, [WM_LABELS.migration], [], options);
 }
 
 export function addWavemillApproved(prNumber: number | string, options: PrStateLabelOptions = {}): PullRequest {
-  return transitionPullRequestLabels(prNumber, [WM_LABELS.approved], [], {}, options);
+  return transitionPullRequestLabels(prNumber, [WM_LABELS.approved], [], options);
 }
 
 export function clearWavemillState(prNumber: number | string, options: PrStateLabelOptions = {}): PullRequest {
-  const pr = prStateLabelDeps.getPullRequest(prNumber, options);
-  clearPrStateMarker(pr.number, options.markerRoot);
-  return transitionPullRequestLabels(prNumber, [], ALL_WM_LABELS, {}, options, pr);
+  return transitionPullRequestLabels(prNumber, [], ALL_WM_LABELS, options);
 }
 
-function normalizeWriteArgs(
+function normalizeWriteOptions(
   argsOrOptions: PrLabelWriteArgs | PrStateLabelOptions,
   maybeOptions: PrStateLabelOptions,
-): { args: PrLabelWriteArgs; options: PrStateLabelOptions } {
-  if (isPrStateLabelOptions(argsOrOptions)) {
-    return { args: {}, options: argsOrOptions };
-  }
-
-  return { args: argsOrOptions, options: maybeOptions };
+): PrStateLabelOptions {
+  return isPrStateLabelOptions(argsOrOptions) ? argsOrOptions : maybeOptions;
 }
 
 function isPrStateLabelOptions(value: PrLabelWriteArgs | PrStateLabelOptions): value is PrStateLabelOptions {
@@ -198,11 +196,9 @@ function transitionPullRequestLabels(
   prNumber: number | string,
   labelsToEnsure: string[],
   labelsToClear: string[],
-  args: PrLabelWriteArgs,
   options: PrStateLabelOptions,
-  initialPr?: PullRequest,
 ): PullRequest {
-  const pr = initialPr ?? prStateLabelDeps.getPullRequest(prNumber, options);
+  const pr = prStateLabelDeps.getPullRequest(prNumber, options);
   const existingLabels = new Set(pr.labels.map((label) => label.name));
   const labelsToAdd = labelsToEnsure.filter((label, index, all) => all.indexOf(label) === index && !existingLabels.has(label));
   const labelsToRemove = labelsToClear.filter((label, index, all) => all.indexOf(label) === index && existingLabels.has(label));
@@ -217,90 +213,7 @@ function transitionPullRequestLabels(
     currentPr = prStateLabelDeps.addLabelsToPullRequest(pr.number, labelsToAdd, options);
   }
 
-  const writesTransientState = labelsToEnsure.some((label) => ACTIVE_STATE_LABELS.includes(label));
-  const clearsTransientState = labelsToClear.some((label) => ACTIVE_STATE_LABELS.includes(label));
-
-  if (clearsTransientState && !writesTransientState) {
-    clearPrStateMarker(pr.number, options.markerRoot);
-    return currentPr;
-  }
-
-  if (writesTransientState || clearsTransientState || args.headSha) {
-    const headSha = args.headSha?.trim() || resolvePullRequestHeadSha(pr, options);
-    if (!headSha) {
-      return currentPr;
-    }
-    const activeLabels = currentPr.labels.map((label) => label.name);
-    writePrStateMarker(pr.number, {
-      headSha,
-      reason: args.reason,
-      activeLabels,
-      markerRoot: options.markerRoot,
-    });
-  }
-
   return currentPr;
-}
-
-function resolvePullRequestHeadSha(pr: PullRequest, options: PrStateLabelOptions): string {
-  const embeddedSha = (pr as PullRequest & { headRefOid?: string }).headRefOid?.trim();
-  if (embeddedSha) {
-    return embeddedSha;
-  }
-
-  try {
-    const command = [
-      'gh',
-      'pr',
-      'view',
-      escapeShellArg(String(pr.number)),
-      '--json',
-      'headRefOid',
-      '--jq',
-      escapeShellArg('.headRefOid'),
-      ...(options.repo ? ['--repo', escapeShellArg(options.repo)] : []),
-    ].join(' ');
-    return prStateLabelDeps.execShellCommand(command, { encoding: 'utf-8' }).trim();
-  } catch {
-    return '';
-  }
-}
-
-export async function readPrStateMarker(
-  prNumber: number | string,
-  args: {
-    currentHead: string;
-    deriveCondition: (payload: MarkerPayload) => Promise<boolean> | boolean;
-    markerRoot?: string;
-  },
-): Promise<MarkerValidation<boolean>> {
-  const markerHandle = getPrStateMarkerHandle(prNumber, args.markerRoot);
-  return validateMarker(markerHandle, {
-    currentHead: args.currentHead,
-    deriveCondition: args.deriveCondition,
-  });
-}
-
-export function writePrStateMarker(
-  prNumber: number | string,
-  args: { headSha: string; activeLabels: string[]; reason?: string; markerRoot?: string },
-): void {
-  writeMarker(getPrStateMarkerHandle(prNumber, args.markerRoot), {
-    headSha: args.headSha,
-    reason: args.reason,
-    detail: { activeLabels: args.activeLabels },
-  });
-}
-
-export function clearPrStateMarker(prNumber: number | string, markerRoot?: string): void {
-  clearMarker(getPrStateMarkerHandle(prNumber, markerRoot));
-}
-
-export function getPrStateMarkerHandle(prNumber: number | string, markerRoot = process.cwd()): MarkerHandle {
-  return {
-    path: join(markerRoot, '.wavemill', 'pr-state', `${prNumber}.json`),
-    kind: 'pr-label',
-  };
 }
 
 function listRepositoryLabels(repo: string): string[] {

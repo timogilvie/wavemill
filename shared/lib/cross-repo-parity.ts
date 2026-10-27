@@ -210,6 +210,6 @@ export function buildParityFixture(opts: {
   return {
     global: { root: globalRoot, artifacts },
     consumers,
-    cleanup: () => rmSync(fixtureRoot, { recursive: true, force: true }),
+    cleanup: () => rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }),
   };
 }

@@ -16,7 +16,7 @@ import { getEffectiveRegistry } from './model-registry.ts';
 import { listEffectiveModelsForStage } from './effective-models.ts';
 import { isWithinRecencyWindow, resolveExplorationConfig } from './router-exploration.ts';
 import { getLaunchPriorityByAlias } from './challenge-coverage-selector.ts';
-import { loadConfiguredPricingTable } from './workflow-cost.ts';
+import { loadConfiguredPricingTable } from './pricing/model-pricing.ts';
 import type { StageAwareDecision } from './stage-aware-router.ts';
 import type { WorkflowRouteDecision } from './workflow-router.ts';
 import { filterDisabledModels } from './disabled-models.ts';

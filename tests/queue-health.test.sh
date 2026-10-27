@@ -143,8 +143,14 @@ check_equals "failed inference leaves planner failure count at zero" "0" "$(heal
 check_equals "failed inference still advances last successful plan" "true" \
   "$(health_field '.lastSuccessfulPlanAt != null')"
 check_skip_result "failed inference never backs off the planner" "proceed"
-check_equals "status summary names inference status" "degraded (inference_unavailable: failed); use_explicit_edges_only" \
-  "$(queue_health_status_summary)"
+# HOK-3314: `queue_health_status_summary` reads the projection; the exact
+# wording comes from `projection.summary`. Assert the pieces callers rely on
+# (status token, current failure count, next action) rather than pin to the
+# literal string, since the projection shape owns phrasing.
+status_summary_actual="$(queue_health_status_summary)"
+check_equals "status summary names projection status" "true" "$([[ "$status_summary_actual" == *"degraded-inference"* ]] && echo true || echo false)"
+check_equals "status summary names current failure count" "true" "$([[ "$status_summary_actual" == *"2 consecutive failed attempts"* ]] && echo true || echo false)"
+check_equals "status summary names next action" "true" "$([[ "$status_summary_actual" == *"use_explicit_edges_only"* ]] && echo true || echo false)"
 
 for degraded_status in stale never; do
   queue_health_record_success "202" "202" "120" "planner command" "$(inference_report "$degraded_status" 0)" \
@@ -192,6 +198,36 @@ queue_health_record_success "212" "212" "120" "planner command" "$(inference_rep
 queue_health_warn_inference_transition
 check_equals "recovery clears the warn marker" "false" "$([[ -e "$STATE_DIR/.queue-inference-warn" ]] && echo true || echo false)"
 unset -f log_warn
+
+echo ""
+echo "=== HOK-3314: preserve inference-failed state on cache-only / skipped runs ==="
+printf '{}\n' > "$STATE_DIR/queue-health.json"
+queue_health_record_success "220" "220" "120" "cmd" "$(inference_report failed 0 'LLM fallback deadline exhausted')" \
+  || fail "seed degraded inference state"
+check_equals "degraded after failed inference" "failed" "$(health_field '.inferenceStatus')"
+check_equals "episode started on failed inference" "true" "$([[ "$(health_field '.inference.consecutiveFailures')" != "0" ]] && echo true || echo false)"
+
+# Cache-only poll: planner exits 0 but no inference report attached. Must
+# preserve the degraded state and inference block instead of silently clearing it.
+queue_health_record_success "221" "221" "120" "cmd" '' \
+  || fail "cache-only poll with no report"
+check_equals "cache-only poll preserves inferenceStatus=failed" "failed" "$(health_field '.inferenceStatus')"
+check_equals "cache-only poll preserves degraded status" "degraded" "$(health_field '.status')"
+check_equals "cache-only poll preserves degradation reason" "inference_unavailable" "$(health_field '.degradationReason')"
+check_equals "cache-only poll preserves inference.consecutiveFailures" "2" "$(health_field '.inference.consecutiveFailures')"
+
+# Skipped run (cooldown skipReason): still not inference-recovery evidence.
+queue_health_record_success "222" "222" "120" "cmd" '{"inferenceStatus":"failed","inferredEdgeCount":0,"attempted":false,"refreshKind":"none","skipReason":"cooldown","model":null,"lastAttemptAt":null,"lastSuccessAt":null,"consecutiveFailures":1,"error":null}' \
+  || fail "cooldown skipped poll"
+check_equals "cooldown-skipped poll preserves inferenceStatus=failed" "failed" "$(health_field '.inferenceStatus')"
+check_equals "cooldown-skipped poll preserves degraded status" "degraded" "$(health_field '.status')"
+
+# Authoritative successful inference clears the episode.
+queue_health_record_success "223" "223" "120" "cmd" "$(inference_report ok 2)" \
+  || fail "authoritative ok clears"
+check_equals "authoritative ok resolves to healthy" "healthy" "$(health_field '.status')"
+check_equals "authoritative ok clears inferenceStatus" "ok" "$(health_field '.inferenceStatus')"
+check_equals "authoritative ok clears degradation reason" "null" "$(health_field '.degradationReason')"
 
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"

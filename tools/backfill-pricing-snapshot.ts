@@ -14,7 +14,7 @@ import { runTool } from '../shared/lib/tool-runner.ts';
 import { loadWavemillConfig } from '../shared/lib/config.ts';
 import type { EvalRecord } from '../shared/lib/eval-schema.ts';
 import { errorMessage } from '../shared/lib/error-utils.ts';
-import type { ModelPricing } from '../shared/lib/workflow-cost.ts';
+import type { ModelPricing } from '../shared/lib/pricing/model-pricing.ts';
 import { readTransformWrite } from '../shared/lib/jsonl-utils.ts';
 
 // ────────────────────────────────────────────────────────────────
