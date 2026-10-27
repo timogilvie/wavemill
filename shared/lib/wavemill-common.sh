@@ -2536,16 +2536,37 @@ cleanup_completed_task() {
     return 1
   elif [[ "$cleanup_rc" -ne 0 ]] || cleanup_outcome_is_retain "$cleanup_outcome"; then
     local verification_reason="${SAFE_CLEANUP_VERIFICATION_REASON:-}"
+    local preservation_reason="${SAFE_CLEANUP_PRESERVATION_REASON:-}"
     local episode_outcome="${cleanup_outcome:-local-work-preserved}"
+    if [[ -n "$verification_reason" ]]; then
+      episode_outcome="$verification_reason"
+    elif [[ -n "$preservation_reason" ]]; then
+      episode_outcome="$preservation_reason"
+    fi
+    # A physical-step preservation that is a legitimate "keep local work"
+    # outcome (retain_dirty / retain_unpublished / retain_closed_unmerged /
+    # retain_unverifiable) is `retained`, not `transient`: no retry can turn
+    # dirty or unpushed work into deletable work. Only reasons that reflect a
+    # transient inability to verify (network/remote lookup) are `transient`.
+    local episode_disposition="retained"
+    local episode_failure_class="expected-preservation"
+    local lifecycle_resource_disposition="retained"
+    case "$verification_reason" in
+      base_fetch_failed:*|remote_head_lookup_failed:*|remote_task_fetch_failed:*|origin_base_unresolvable)
+        episode_disposition="transient"
+        episode_failure_class="transient"
+        lifecycle_resource_disposition="verification-required"
+        ;;
+    esac
     local log_detail="$episode_outcome"
     [[ -n "$verification_reason" ]] && log_detail="${episode_outcome}: ${verification_reason}"
     if cleanup_episode_enabled; then
       cleanup_candidate_json="$(cleanup_episode_candidate_json "$issue" "$slug" "" "$pr" 2>/dev/null || printf '%s' "$cleanup_candidate_json")"
     fi
     if [[ -n "$cleanup_candidate_json" ]]; then
-      cleanup_episode_record_outcome "$issue" "transient" "transient" "$episode_outcome" "$cleanup_candidate_json" "" 2>/dev/null || true
+      cleanup_episode_record_outcome "$issue" "$episode_disposition" "$episode_failure_class" "$episode_outcome" "$cleanup_candidate_json" "" 2>/dev/null || true
     fi
-    set_task_lifecycle_disposition "$issue" "" "verification-required" "$episode_outcome" "cleanup_completed_task" 2>/dev/null || true
+    set_task_lifecycle_disposition "$issue" "" "$lifecycle_resource_disposition" "$episode_outcome" "cleanup_completed_task" 2>/dev/null || true
     declare -F set_window_attention_state >/dev/null 2>&1 && set_window_attention_state "$win" "needs-user"
     log_warn "  $issue cleanup deferred by physical step (${log_detail}); will retry"
     return 1
