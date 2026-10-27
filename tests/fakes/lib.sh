@@ -23,6 +23,19 @@
 FAKES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FAKES_INSTALL_DIR="$(cd "$FAKES_DIR/../.." && pwd)"
 
+# The world must not inherit the caller's mill context. Run from inside a mill
+# agent pane, WAVEMILL_PHASE / WAVEMILL_ISSUE / WAVEMILL_SESSION and the pane's
+# TOOLS_DIR / LIB_DIR (the install, not this checkout) would leak into every
+# child: the fake agent CLI would treat an eval judge `claude -p` call as that
+# pane's phase launch (no verdict → timeout), and shell helpers would run the
+# install's tools. Scrubbed once, at source time, so the WAVEMILL_* a test
+# exports after sourcing this file (e.g. a journey's grace override before
+# journey_init) survive.
+while read -r _fakes_inherited; do
+  unset "$_fakes_inherited"
+done < <(compgen -e WAVEMILL_ || true)
+unset _fakes_inherited TOOLS_DIR LIB_DIR 2>/dev/null || true
+
 fakes_setup() {
   local root="${1:?fakes_setup: scratch dir required}"
   local slug="${2:-acme/journey}"
@@ -30,16 +43,6 @@ fakes_setup() {
   mkdir -p "$root"/{home,logs,bin}
   root="$(cd "$root" && pwd -P)"
 
-  # The world must not inherit the caller's mill context. Run from inside a
-  # mill agent pane, WAVEMILL_PHASE / WAVEMILL_ISSUE / WAVEMILL_SESSION etc.
-  # would leak into every child: the fake agent CLI would treat an eval
-  # judge `claude -p` call as that pane's phase launch (no verdict → timeout),
-  # and tools would read the outer session's state. Callers set their own
-  # WAVEMILL_* after this point.
-  local inherited
-  while read -r inherited; do
-    unset "$inherited"
-  done < <(compgen -e WAVEMILL_ || true)
 
   export FAKE_ROOT="$root"
   export FAKE_REPO_SLUG="$slug"
