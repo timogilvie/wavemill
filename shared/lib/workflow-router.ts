@@ -25,8 +25,7 @@ import {
 } from './router-exploration.ts';
 import { resolveModel, viableCandidatesInPool } from './routing-policy.ts';
 import { classifyTaskDifficulty, getAllowedModelFloor, type DifficultyFloor, type RoutingDifficulty } from './task-difficulty-classifier.ts';
-import { loadPricingTable, computeModelCost } from './workflow-cost.ts';
-import { loadConfiguredPricingTable } from './workflow-cost.ts';
+import { computeModelCost, loadConfiguredPricingTable, loadPricingTable } from './pricing/model-pricing.ts';
 import {
   routeStageAware,
   routeStageAwareWithContext,

@@ -204,8 +204,9 @@
  *   fields still validate.
  * - **1.54.0**: Added optional `taskCostSummary` — shadow `@hokusai/core`
  *   `TaskCostSummaryV1` records (one per harness) computed by the SDK
- *   task-cost bridge when `WAVEMILL_SDK_COST_METERING_SHADOW` is on
- *   (HOK-3075). Legacy `workflowCost` / `workflowCostAttribution` /
+ *   task-cost bridge behind a shadow switch (HOK-3075; the switch was retired
+ *   in HOK-3077, when the SDK became the only cost engine). Legacy
+ *   `workflowCost` / `workflowCostAttribution` /
  *   `executionEconomics` / `pricingSnapshot` are unchanged and stay
  *   authoritative. Local-only: not projected to Hokusai submissions.
  *   Additive; legacy records without this field still validate.
@@ -218,7 +219,7 @@
  * @module eval-schema
  */
 
-import type { ModelPricing } from './workflow-cost.ts';
+import type { ModelPricing } from './pricing/model-pricing.ts';
 import type { ModelEvidencePolicy, ModelIdentityStatus, ModelSelector, RegistryTaskType } from './model-registry.ts';
 import type { RuntimeResourceSelection } from './resource-selection.ts';
 import type {
@@ -2181,11 +2182,13 @@ export interface EvalRecord {
   executionEconomics?: EvalExecutionEconomics[];
 
   /**
-   * Shadow SDK task-cost summaries (`@hokusai/core` `TaskCostSummaryV1`), one
-   * per harness that produced sessions, emitted only while
-   * `WAVEMILL_SDK_COST_METERING_SHADOW` is on (HOK-3075). Candidate source for
-   * cost reporting; nothing reads it until the HOK-3076 cutover. Local-only;
-   * not projected to Hokusai submissions. Readers must tolerate absence.
+   * SDK task-cost summaries (`@hokusai/core` `TaskCostSummaryV1`), one per
+   * harness that produced sessions (HOK-3075). Raw evidence behind
+   * `workflowCost*`, which is the projection of the primary summary (the SDK
+   * is the only cost engine since HOK-3077). Absent when no session produced
+   * a cost event, on records written before the bridge, and on records whose
+   * collection failed. Local-only; not projected to Hokusai submissions.
+   * Readers must tolerate absence.
    *
    * @since 1.54.0
    */

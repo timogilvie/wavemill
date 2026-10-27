@@ -10,7 +10,7 @@ import type { EvalContext } from './eval-context-gatherer.ts';
 import type { WorkflowCostOutcome } from './workflow-cost.ts';
 import { buildSdkTaskCostSummaries } from './sdk-task-cost/collect.ts';
 import { loadSdkTaskCostFixture } from './sdk-task-cost/fixtures.ts';
-import { COST_METERING_LEGACY_ENV, SDK_TASK_COST_SHADOW_ENV } from './sdk-task-cost/feature-switch.ts';
+import { meterWorkflowCost } from './sdk-task-cost/meter.ts';
 
 function fixtureTaskCostSummaries() {
   const fixture = loadSdkTaskCostFixture('claude-success');
@@ -210,9 +210,13 @@ describe('eval-orchestrator', () => {
         outputCostPerMTok: 2,
       },
     }));
-    mock.method(evalOrchestratorDeps, 'computeWorkflowCost', () => costOutcome);
-    // No SDK evidence by default, so the legacy stub above is what the SDK
-    // engine falls back to; SDK cutover tests override this.
+    // Metering is stubbed to a fixed outcome; the SDK metering tests below
+    // restore the real runner and stub only the collector.
+    mock.method(evalOrchestratorDeps, 'meterWorkflowCost', async () => ({
+      outcome: costOutcome,
+      summaries: null,
+      reason: 'sdk_summary' as const,
+    }));
     mock.method(evalOrchestratorDeps, 'collectSdkTaskCostSummaries', () => null);
     mock.method(evalOrchestratorDeps, 'appendEvalRecord', () => undefined);
     mock.method(evalOrchestratorDeps, 'triggerHokusaiSubmission', async () => ({
@@ -235,21 +239,12 @@ describe('eval-orchestrator', () => {
     });
   });
 
-  const savedCostEnv = {
-    [SDK_TASK_COST_SHADOW_ENV]: process.env[SDK_TASK_COST_SHADOW_ENV],
-    [COST_METERING_LEGACY_ENV]: process.env[COST_METERING_LEGACY_ENV],
-  };
-
   afterEach(() => {
     mock.restoreAll();
     rmSync(repoDir, { recursive: true, force: true });
-    for (const [key, value] of Object.entries(savedCostEnv)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
   });
 
-  describe('SDK task-cost cutover (HOK-3075, HOK-3076)', () => {
+  describe('SDK task-cost metering (HOK-3075, HOK-3076, HOK-3077)', () => {
     const runInput = () => ({
       issueId: 'HOK-1495',
       prNumber: '1495',
@@ -259,11 +254,10 @@ describe('eval-orchestrator', () => {
     });
 
     beforeEach(() => {
-      delete process.env[SDK_TASK_COST_SHADOW_ENV];
-      delete process.env[COST_METERING_LEGACY_ENV];
+      mock.method(evalOrchestratorDeps, 'meterWorkflowCost', meterWorkflowCost);
     });
 
-    it('makes the SDK projection authoritative by default', async () => {
+    it('records the SDK projection as the workflow cost', async () => {
       const summaries = fixtureTaskCostSummaries();
       let collectInput: Record<string, unknown> | undefined;
       mock.method(evalOrchestratorDeps, 'collectSdkTaskCostSummaries', (input) => {
@@ -275,43 +269,37 @@ describe('eval-orchestrator', () => {
 
       assert.deepEqual(record.taskCostSummary, summaries);
       assert.ok(Math.abs((record.workflowCost ?? 0) - summaries[0].total_cost_usd!) < 1e-9);
-      assert.notEqual(record.workflowCost, 3.75);
       assert.equal(record.workflowCostStatus, 'success');
       assert.equal(record.workflowCostAttribution?.source, 'claude');
       assert.equal(collectInput?.worktreePath, repoDir);
       assert.equal(collectInput?.branchName, 'task/unified-eval');
       assert.equal(collectInput?.issueId, 'HOK-1495');
-      // Same pricing table as the legacy engine, so the dollars match.
+      // The collector prices with the eval's own pricing table.
       assert.deepEqual(collectInput?.pricingTable, { 'gpt-5.4': { inputCostPerMTok: 1, outputCostPerMTok: 2 } });
     });
 
-    it('never runs the SDK collector under the legacy rollback with the shadow off', async () => {
-      process.env[COST_METERING_LEGACY_ENV] = '1';
-      const collector = mock.method(evalOrchestratorDeps, 'collectSdkTaskCostSummaries', () => {
-        throw new Error('must not be called');
+    it('opts in to OpenRouter exact pricing for native turns', async () => {
+      let exactPricing: unknown;
+      mock.method(evalOrchestratorDeps, 'meterWorkflowCost', async (input: Parameters<typeof meterWorkflowCost>[0]) => {
+        exactPricing = input.exactPricing;
+        return meterWorkflowCost({ ...input, exactPricing: { ...input.exactPricing, enabled: false } });
       });
 
+      await runEvaluation(runInput());
+
+      assert.ok(exactPricing && typeof exactPricing === 'object', 'eval orchestrator passes exactPricing options');
+      assert.equal((exactPricing as { enabled?: boolean }).enabled, undefined, 'enabled defaults to OPENROUTER_API_KEY presence');
+    });
+
+    it('records no_sessions — never a zero — when no session produced a cost event', async () => {
       const record = await runEvaluation(runInput());
 
-      assert.equal(collector.mock.callCount(), 0);
       assert.equal('taskCostSummary' in record, false);
-      assert.equal(record.workflowCost, 3.75);
+      assert.equal(record.workflowCost, undefined);
+      assert.equal(record.workflowCostStatus, 'no_sessions');
     });
 
-    it('attaches SDK summaries beside the untouched legacy cost under rollback with the shadow on', async () => {
-      process.env[COST_METERING_LEGACY_ENV] = 'on';
-      process.env[SDK_TASK_COST_SHADOW_ENV] = '1';
-      const summaries = fixtureTaskCostSummaries();
-      mock.method(evalOrchestratorDeps, 'collectSdkTaskCostSummaries', () => summaries);
-
-      const record = await runEvaluation(runInput());
-
-      assert.deepEqual(record.taskCostSummary, summaries);
-      assert.equal(record.workflowCost, 3.75);
-      assert.equal(record.workflowCostStatus, 'success');
-    });
-
-    it('falls back to the legacy outcome when the SDK collector throws', async () => {
+    it('records an adapter_error when the SDK collector throws', async () => {
       mock.method(evalOrchestratorDeps, 'collectSdkTaskCostSummaries', () => {
         throw new Error('sdk exploded');
       });
@@ -321,17 +309,9 @@ describe('eval-orchestrator', () => {
       const record = await runEvaluation(runInput());
 
       assert.equal('taskCostSummary' in record, false);
-      assert.equal(record.workflowCost, 3.75);
+      assert.equal(record.workflowCost, undefined);
+      assert.equal(record.workflowCostStatus, 'adapter_error');
       assert.ok(warnings.some((warning) => warning.includes('SDK task cost collection failed — sdk exploded')));
-    });
-
-    it('rethrows collector failures in strict mode', async () => {
-      process.env[SDK_TASK_COST_SHADOW_ENV] = 'strict';
-      mock.method(evalOrchestratorDeps, 'collectSdkTaskCostSummaries', () => {
-        throw new Error('sdk exploded');
-      });
-
-      await assert.rejects(runEvaluation(runInput()), /sdk exploded/);
     });
   });
 
@@ -618,7 +598,7 @@ describe('eval-orchestrator', () => {
   });
 
   it('diagnoses skipped workflow cost instead of omitting it silently', async () => {
-    mock.method(evalOrchestratorDeps, 'computeWorkflowCost', () => {
+    mock.method(evalOrchestratorDeps, 'meterWorkflowCost', async () => {
       throw new Error('should not run without worktreePath');
     });
     const warn = mock.method(console, 'warn', () => undefined);

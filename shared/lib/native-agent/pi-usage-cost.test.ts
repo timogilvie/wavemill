@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { computeModelCost } from '../workflow-cost.ts';
+import { computeModelCost } from '../pricing/model-pricing.ts';
 import { piUsageToSessionModelUsage } from './pi-usage-cost.ts';
 
 describe('piUsageToSessionModelUsage', () => {

@@ -8,8 +8,9 @@
  * stage-window / route / PR joins remain on `executionEconomics` and the eval
  * record itself. The SDK summary carries no branch, path, or route data.
  *
- * Shadow only: nothing here is read by routing, reports, or Hokusai
- * submission until the HOK-3076 cutover.
+ * This is the only workflow/eval cost engine (HOK-3076 made it authoritative,
+ * HOK-3077 retired the legacy one); eval entrypoints reach it through
+ * `meter.ts`.
  *
  * @module sdk-task-cost/collect
  */
@@ -22,7 +23,7 @@ import {
   type SessionScanOptions,
   type SessionUsageResult,
 } from '../session-adapters.ts';
-import { loadPricingTable, type PricingTable } from '../workflow-cost.ts';
+import { loadPricingTable, type PricingTable } from '../pricing/model-pricing.ts';
 import {
   aggregateTaskCost,
   validateTaskCostSummaryV1,
@@ -31,7 +32,7 @@ import {
 } from './contract.ts';
 import { eventsFromScanResult, scanResultHarness, toTaskCostId } from './events-from-session.ts';
 
-/** Summary order: matches the legacy engine's source precedence. */
+/** Summary order: native first, as `selectPrimaryTaskCostSummary` prefers it. */
 const HARNESS_ORDER = ['native', 'claude-code', 'codex'] as const;
 
 export interface BuildSdkTaskCostSummariesInput {
@@ -44,6 +45,8 @@ export interface BuildSdkTaskCostSummariesInput {
   repoDir?: string;
   /** Price-table revision label for priced events, when the caller has one. */
   pricingRevision?: string | null;
+  /** OpenRouter billed charge per native response id; see `TaskCostEventContext`. */
+  exactGenerationCosts?: ReadonlyMap<string, number>;
   now?: () => Date;
 }
 
@@ -54,6 +57,7 @@ export interface CollectSdkTaskCostSummariesInput {
   issueId?: string;
   pricingTable?: PricingTable;
   pricingRevision?: string | null;
+  exactGenerationCosts?: ReadonlyMap<string, number>;
   now?: () => Date;
 }
 
@@ -62,8 +66,8 @@ export interface CollectSdkTaskCostSummariesInput {
  *
  * Returns `null` when no session produced an event, so callers can treat
  * "no evidence" as "attach nothing". Throws `TaskCostValidationError` when an
- * event or summary violates the SDK contract — that is a bridge bug, and the
- * shadow-mode caller decides whether to log or rethrow it.
+ * event or summary violates the SDK contract — that is a bridge bug; the
+ * metering runner logs it and records the cost as `adapter_error`.
  */
 export function buildSdkTaskCostSummaries(input: BuildSdkTaskCostSummariesInput): TaskCostSummaryV1[] | null {
   const pricingTable = input.pricingTable && Object.keys(input.pricingTable).length > 0
@@ -77,6 +81,7 @@ export function buildSdkTaskCostSummaries(input: BuildSdkTaskCostSummariesInput)
     registryLookup: (modelId: string) => resolveModelRegistryKey(registry, modelId),
     pricingRevision: input.pricingRevision,
     observedAtFallback: collectedAt,
+    exactGenerationCosts: input.exactGenerationCosts,
   };
 
   const eventsByHarness = new Map<string, TaskCostEventV1[]>();
@@ -107,10 +112,8 @@ export function buildSdkTaskCostSummaries(input: BuildSdkTaskCostSummariesInput)
 
 /**
  * Scan native, Claude Code and Codex sessions for a completed workflow and
- * summarize them with the SDK. Re-scans the session files rather than
- * sharing the legacy engine's scan: the adapters are synchronous and
- * idempotent, and keeping the shadow path independent means a bridge failure
- * can never perturb the legacy outcome.
+ * summarize them with the SDK. Every harness is scanned; the projection
+ * picks the primary one (`selectPrimaryTaskCostSummary`).
  */
 export function collectSdkTaskCostSummaries(input: CollectSdkTaskCostSummariesInput): TaskCostSummaryV1[] | null {
   const scanOpts: SessionScanOptions = {
@@ -129,6 +132,7 @@ export function collectSdkTaskCostSummaries(input: CollectSdkTaskCostSummariesIn
     pricingTable: input.pricingTable,
     repoDir: input.repoDir,
     pricingRevision: input.pricingRevision,
+    exactGenerationCosts: input.exactGenerationCosts,
     now: input.now,
   });
 }

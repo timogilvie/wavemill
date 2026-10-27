@@ -17,7 +17,7 @@ import { homedir } from 'node:os';
 import { readJsonlFile } from './jsonl-utils.ts';
 import { piUsageToSessionModelUsage } from './native-agent/pi-usage-cost.ts';
 import type { TranscriptEvent } from './native-agent/transcript.ts';
-import { resolveProjectsDirs } from './workflow-cost.ts';
+import { resolveProjectsDirs } from './wavemill-session-paths.ts';
 
 const CODEX_SESSION_META_READ_BYTES = 64 * 1024;
 

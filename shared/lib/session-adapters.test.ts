@@ -19,7 +19,7 @@ import {
   getNativeProviderMetadata,
   matchesIssue,
 } from './session-adapters.ts';
-import { encodeProjectDir } from './workflow-cost.ts';
+import { encodeProjectDir } from './wavemill-session-paths.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────
 

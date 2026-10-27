@@ -70,7 +70,7 @@ import {
   validateFinalPlanningArtifact,
   type PlanningFailureReason,
 } from './planning-guards.ts';
-import { computeModelCost, loadPricingTable } from '../workflow-cost.ts';
+import { computeModelCost, loadPricingTable } from '../pricing/model-pricing.ts';
 
 const DEFAULT_HELPER_TIMEOUT_MS = 12 * 60 * 1000;
 const HELPER_STDERR_TAIL_CHARS = 2000;

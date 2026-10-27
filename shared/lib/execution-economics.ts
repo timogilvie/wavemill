@@ -43,7 +43,7 @@ import {
   loadPricingTable,
   type ModelPricing,
   type PricingTable,
-} from './workflow-cost.ts';
+} from './pricing/model-pricing.ts';
 import { readAllStageResults, type StageResultMap } from './stage-result.ts';
 import { getEffectiveRegistry, resolveModelRegistryKey, type ModelSelector } from './model-registry.ts';
 
