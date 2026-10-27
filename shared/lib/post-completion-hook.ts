@@ -726,7 +726,7 @@ export function enrichPostCompletionRecord(
       console.warn(`Post-completion eval: stage execution identity failed — ${errorMessage(err)}`);
     }
   }
-  const attestation = attestEvalRecordChallengeExecution(record);
+  const attestation = attestEvalRecordChallengeExecution(record, input.repoDir);
   attachChallengeExecutionMetadata(record, {
     side: record.challengeSide,
     intent: record.challengeIntent,

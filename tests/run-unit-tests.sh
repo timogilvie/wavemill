@@ -235,6 +235,7 @@ TESTS=(
   shared/lib/cross-repo-parity.stale.test.ts
   shared/lib/cross-repo-parity.partial.test.ts
   shared/lib/challenge-execution-contract.test.ts
+  shared/lib/challenge-execution-contract.incident-replay.test.ts
   shared/lib/challenge-pairing-repair.test.ts
   shared/lib/config.test.ts
   shared/lib/config-integrity.test.ts
@@ -305,6 +306,7 @@ TESTS=(
   shared/lib/hook-ttl-guard.test.ts
   shared/lib/stage-launchability-guard.test.ts
   shared/lib/provider-identity-guard.test.ts
+  shared/lib/model-equivalence-guard.test.ts
   shared/lib/side-effect-ledger-guard.test.ts
   shared/lib/failure-policy-guard.test.ts
   shared/lib/task-field-read-checker.test.ts
@@ -380,6 +382,7 @@ TESTS=(
   tools/replay-native-request.test.ts
   tools/add-pr-label.test.ts
   tools/backfill-challenge-stage.test.ts
+  tools/recover-hok-3313.test.ts
   tools/backfill-stage-executed-model.test.ts
   tools/backfill-tool-decisions.test.ts
   tools/backfill-hokusai-submissions.test.ts

@@ -210,6 +210,11 @@
  *   `executionEconomics` / `pricingSnapshot` are unchanged and stay
  *   authoritative. Local-only: not projected to Hokusai submissions.
  *   Additive; legacy records without this field still validate.
+ * - **1.55.0**: Added optional `correctionProvenance` (HOK-3321) so an
+ *   explicit recovery tool can append a re-attested copy of an invalid eval
+ *   record that names the original row via `supersedes.evalId`. The original
+ *   invalid row is never rewritten or deleted. Additive; legacy records
+ *   without this field still validate.
  *
  * @module eval-schema
  */
@@ -235,7 +240,7 @@ import type { TaskCostSummaryV1 } from './sdk-task-cost/contract.ts';
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.54.0';
+export const SCHEMA_VERSION = '1.55.0';
 
 /**
  * Machine-readable exploration source for an eval row.
@@ -2219,6 +2224,24 @@ export interface EvalRecord {
 
   /** Provenance for records quarantined during corpus hygiene migration. */
   quarantine_reason?: string;
+
+  /**
+   * Provenance for a record re-attested by an explicit recovery tool
+   * (HOK-3321). The corrected record is appended to evals.jsonl; the original
+   * invalid row is never rewritten or deleted.
+   *
+   * @since 1.55.0
+   */
+  correctionProvenance?: {
+    supersedes: {
+      /** id of the original invalid record this row corrects. */
+      evalId: string;
+      /** Stable reason code, e.g. `hok-3321-registry-equivalence`. */
+      reason: string;
+      correctedAt?: string;
+      correctedBy?: string;
+    };
+  };
 
   /** Stable machine-readable eval failure reason for fast-fail records. */
   failureReason?: EvalFailureReason;

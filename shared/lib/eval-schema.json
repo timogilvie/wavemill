@@ -519,6 +519,36 @@
       "type": "string",
       "description": "Provenance for records quarantined during corpus hygiene migration."
     },
+    "correctionProvenance": {
+      "type": "object",
+      "description": "HOK-3321: provenance for a record re-attested by an explicit recovery tool; the corrected row is appended to evals.jsonl and the original invalid row is never rewritten.",
+      "required": ["supersedes"],
+      "additionalProperties": false,
+      "properties": {
+        "supersedes": {
+          "type": "object",
+          "required": ["evalId", "reason"],
+          "additionalProperties": false,
+          "properties": {
+            "evalId": {
+              "type": "string",
+              "description": "id of the original invalid record this row corrects."
+            },
+            "reason": {
+              "type": "string",
+              "description": "Stable reason code, e.g. hok-3321-registry-equivalence."
+            },
+            "correctedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "correctedBy": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
     "failureReason": {
       "type": "string",
       "enum": [

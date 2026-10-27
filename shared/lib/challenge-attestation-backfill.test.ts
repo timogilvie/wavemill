@@ -137,6 +137,26 @@ test('backfill leaves consistent records byte-for-byte unchanged', () => {
   });
 });
 
+test('backfill accepts a repoDir for scoped registry lookups (HOK-3321) and behaves identically on the default registry', () => {
+  const line = JSON.stringify(makeRecord({
+    modelId: 'glm-5.2',
+    modelVersion: 'glm-5.2',
+    challengeExecutionRoute: {
+      planner: 'claude-opus-4-7',
+      coder: 'glm-5.2',
+      reviewer: 'claude-opus-4-7',
+    },
+  }));
+
+  withTempFile(`${line}\n`, (file) => {
+    const summary = backfillChallengeAttestation({ file, apply: true, repoDir: tmpdir() });
+    const record = JSON.parse(readFileSync(file, 'utf-8').trim()) as EvalRecord;
+
+    assert.equal(summary.unchanged, 1);
+    assert.equal(record.invalidChallenge, undefined);
+  });
+});
+
 test('backfill clears stale divergence when evidence now agrees', () => {
   const record = makeRecord({
     modelId: 'glm-5.2',
