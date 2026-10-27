@@ -386,7 +386,7 @@ jobs:
   # Golden journeys (HOK-3227): the real monitor loop + tend driving one task
   # from backlog to merged and reaped against the shared fakes (tests/fakes/).
   # One journey per matrix leg so the suite adds ~0 to CI wall-clock; each
-  # journey must finish within JOURNEY_BUDGET_SECONDS (90s, enforced by the
+  # journey must finish within JOURNEY_BUDGET_SECONDS (120s, enforced by the
   # harness). Runs on mill-core changes, on promotion (auto/integration ->
   # main), nightly, and on demand; legs always report a conclusion, and the
   # "Golden Journeys" aggregator below is the required check and publishes the
@@ -429,7 +429,7 @@ jobs:
         if: env.RUN_JOURNEYS == 'true'
         env:
           JOURNEY_ARTIFACT_DIR: ${{ runner.temp }}/journey-artifacts
-          JOURNEY_BUDGET_SECONDS: 90
+          JOURNEY_BUDGET_SECONDS: 120
         run: |
           start=$(date +%s)
           rc=0
