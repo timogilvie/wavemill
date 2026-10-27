@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Journey-local gate in front of the shared fake agent CLI (post-merge eval
+# journey, HOK-3125).
+#
+# The judge call (`claude -p`, no WAVEMILL_PHASE) is held until the task row
+# is gone from workflow-state, so the eval's completion bookkeeping always
+# lands AFTER the reap — the race HOK-3125 lost in production, made
+# deterministic. Bounded so a reap that never happens fails the journey on
+# its own assertions rather than hanging the eval. Every other invocation
+# (agent phase launches, --version) goes straight to the shared fake.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+shared_fake="$(cd "$here/../../../../fakes/bin" && pwd)/claude"
+
+if [[ -z "${WAVEMILL_PHASE:-}" && "${1:-}" == "-p" && -n "${JOURNEY_EVAL_GATE_STATE:-}" ]]; then
+  deadline=$(( $(date +%s) + ${JOURNEY_EVAL_GATE_SECONDS:-60} ))
+  while (( $(date +%s) < deadline )); do
+    if ! jq -e --arg id "$JOURNEY_EVAL_GATE_ISSUE" '.tasks[$id] != null' "$JOURNEY_EVAL_GATE_STATE" >/dev/null 2>&1; then
+      printf '%s judge gate released: %s reaped\n' "$(date -u +%FT%TZ)" "$JOURNEY_EVAL_GATE_ISSUE" >> "${FAKE_AGENT_LOG:-/dev/null}"
+      break
+    fi
+    sleep 0.2
+  done
+fi
+exec "$shared_fake" "$@"

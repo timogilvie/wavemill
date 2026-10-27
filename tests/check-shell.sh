@@ -293,6 +293,20 @@ for f in \
   "$REPO_DIR"/tests/journeys/tend-rebase-conflict-single-comment.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3316/fake-agent/review \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3316/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/challenge-pair-eval.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/bin/claude \
+  "$REPO_DIR"/tests/journeys/ready-fail-remediate.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/ready-fail-remediate/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/dirty-tree-coding-complete.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/dirty-tree-coding-complete/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/fixtures/dirty-tree-coding-complete/fake-agent/review \
+  "$REPO_DIR"/tests/journeys/post-merge-eval-reap.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/post-merge-eval-reap/bin/claude \
+  "$REPO_DIR"/tests/journeys/agent-idle-background-job.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/agent-idle-background-job/agent-session.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/agent-idle-background-job/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/operator-abort-mid-coding.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/operator-abort-mid-coding/fake-agent/coding \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
   "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
   "$REPO_DIR"/tests/lib/state-fixtures.sh \
@@ -1716,6 +1730,16 @@ if grep -q 'touch "{{FEATURE_DIR}}/.workflow-aborted"' "$REPO_DIR/tools/prompts/
   pass "review template documents abort marker flow"
 else
   fail "review template is missing abort marker guidance"
+fi
+
+# HOK-3228: golden journeys are the definition of done for mill-core PRs, for
+# shell coders and for both review checklists (native: launch-coding.test.ts).
+if grep -q 'must pass the journey job' "$REPO_DIR/tools/prompts/coding-phase.md" \
+  && grep -q 'must pass the journey job' "$REPO_DIR/tools/prompts/review-general.md" \
+  && grep -q 'must pass the journey job' "$REPO_DIR/tools/prompts/review-general-scoped.md"; then
+  pass "coding and review templates require the journey job for mill-core PRs"
+else
+  fail "coding/review templates are missing the mill-core journey requirement"
 fi
 
 if ! grep -q '/exit command' "$REPO_DIR/tools/prompts/planning-phase.md" \
