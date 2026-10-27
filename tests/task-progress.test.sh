@@ -150,6 +150,20 @@ else
   _fail "shell=$shell_agent_state:$shell_agent_event cli=$cli_agent_state:$cli_agent_event"
 fi
 
+_case "task_progress_json reads the hook when called from a repo without tsx (HOK-3228)"
+# The monitor's cwd is the milled repo. `--import tsx` resolved from there used
+# to fail, so the primitive returned {} and every exited agent read as live.
+rm -f "$hook_file"
+wavemill_hook_write "idle" "Stop" "" "claude" "" "agent"
+no_tsx_dir="$(mktemp -d)"
+result="$(cd "$no_tsx_dir" && task_progress_json TP-1 --session hok3101test --phase coding 2>/dev/null | jq -r '.agentIdle // empty' 2>/dev/null || true)"
+rm -rf "$no_tsx_dir"
+if [[ "$result" == "true" ]]; then
+  _pass
+else
+  _fail "expected agentIdle=true from a tsx-less cwd, got '$result'"
+fi
+
 echo ""
 echo "task-progress shell tests: $pass passed, $fail failed"
 if (( fail > 0 )); then
