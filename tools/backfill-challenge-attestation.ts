@@ -28,6 +28,7 @@ runTool({
     const summary = backfillChallengeAttestation({
       file,
       apply: args.apply === true,
+      repoDir,
     });
     console.log(JSON.stringify(summary, null, 2));
   },

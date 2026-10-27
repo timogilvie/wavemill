@@ -1,30 +1,28 @@
 /**
  * Wavemill Cost Parity Harness
  *
- * Core logic for materializing test cases, running cost engines, capturing outputs,
- * and comparing results against baselines. Supports both regression testing (legacy vs baseline)
- * and migration testing (SDK vs baseline with expected fixes).
+ * Core logic for materializing test cases, running the cost engine, capturing
+ * outputs, and comparing them against the committed baseline. Since HOK-3077
+ * the SDK bridge is the only engine, so this is a strict regression harness:
+ * any difference from `baseline.json` (beyond USD rounding) is a drift in the
+ * SDK bridge's cost semantics and fails until the baseline is regenerated on
+ * purpose (`npx tsx tools/cost-parity.ts --write`).
  */
 
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { homedir, tmpdir } from 'node:os';
-import {
-  computeWorkflowCost,
-  computeWorkflowCostWithExactPricing,
-  encodeProjectDir,
-  type WorkflowCostOutcome,
-  type PricingTable,
-} from './workflow-cost.ts';
-import { ClaudeSessionAdapter, CodexSessionAdapter, NativeSessionAdapter } from './session-adapters.ts';
-import { getEffectiveRegistry, resolveModelRegistryKey } from './model-registry.ts';
-import {
-  collectSdkTaskCostSummaries,
-  projectTaskCostSummaryToWorkflowCost,
-  selectPrimaryTaskCostSummary,
-  type TaskCostSummaryV1,
-} from './sdk-task-cost/index.ts';
-import type { CostParityCase, CostParityManifest, ExpectedFix, ValidationResult } from '../fixtures/cost-parity/schema.ts';
+import { tmpdir } from 'node:os';
+import type { WorkflowCostOutcome } from './workflow-cost.ts';
+import type { PricingTable } from './pricing/model-pricing.ts';
+import { encodeProjectDir } from './wavemill-session-paths.ts';
+import { collectSdkTaskCostSummaries } from './sdk-task-cost/collect.ts';
+import { meterWorkflowCost } from './sdk-task-cost/meter.ts';
+import type {
+  CostParityCase,
+  CostParityManifest,
+  ExactPricingResponse,
+  ValidationResult,
+} from '../fixtures/cost-parity/schema.ts';
 import { validateManifest } from '../fixtures/cost-parity/schema.ts';
 
 // ────────────────────────────────────────────────────────────────
@@ -57,12 +55,7 @@ export interface CorpusSnapshot {
 // Comparison Types
 // ────────────────────────────────────────────────────────────────
 
-export type ComparisonClassification =
-  | 'strict_violation'
-  | 'expected_fix_applied'
-  | 'expected_fix_missing'
-  | 'expected_fix_wrong_value'
-  | 'stale_expected_fix';
+export type ComparisonClassification = 'strict_violation';
 
 export interface ComparisonDifference {
   caseId: string;
@@ -259,7 +252,7 @@ export function materializeCase(caseItem: CostParityCase): MaterializationContex
     // Write session files to appropriate locations. Claude Code encodes the
     // worktree absolute path into the projects directory name, so we must
     // resolve the encoded name from the ephemeral sandbox worktree — not use
-    // a hardcoded placeholder that the legacy engine will never find.
+    // a hardcoded placeholder that the session adapters will never find.
     const encoded = encodeProjectDir(worktree);
     for (const session of caseItem.sessions) {
       let targetDir: string;
@@ -294,7 +287,7 @@ export function materializeCase(caseItem: CostParityCase): MaterializationContex
       // human-readable "logical" form (camelCase, per-case branch alias, etc);
       // this step is the sole boundary between that form and the real
       // ClaudeSessionAdapter / CodexSessionAdapter / NativeSessionAdapter
-      // formats. Without it the legacy engine would silently see zero
+      // formats. Without it the engine would silently see zero
       // discoverable turns and every baseline entry would collapse to
       // `no_sessions`.
       const branch = caseItem.branch || 'task/parity';
@@ -313,12 +306,10 @@ export function materializeCase(caseItem: CostParityCase): MaterializationContex
     // Save and override environment
     savedEnv['HOME'] = process.env.HOME;
     savedEnv['OPENROUTER_API_KEY'] = process.env.OPENROUTER_API_KEY;
-    savedEnv['WAVEMILL_DISABLE_OPENROUTER_COST'] = process.env.WAVEMILL_DISABLE_OPENROUTER_COST;
     savedEnv['DEBUG_COST'] = process.env.DEBUG_COST;
 
     process.env.HOME = home;
     delete process.env.OPENROUTER_API_KEY;
-    delete process.env.WAVEMILL_DISABLE_OPENROUTER_COST;
     delete process.env.DEBUG_COST;
 
     return { sandbox, home, worktree, repoDir, savedEnv };
@@ -342,9 +333,6 @@ export function cleanupMaterialization(ctx: MaterializationContext): void {
     if (ctx.savedEnv['OPENROUTER_API_KEY'] !== undefined) {
       process.env.OPENROUTER_API_KEY = ctx.savedEnv['OPENROUTER_API_KEY'];
     }
-    if (ctx.savedEnv['WAVEMILL_DISABLE_OPENROUTER_COST'] !== undefined) {
-      process.env.WAVEMILL_DISABLE_OPENROUTER_COST = ctx.savedEnv['WAVEMILL_DISABLE_OPENROUTER_COST'];
-    }
     if (ctx.savedEnv['DEBUG_COST'] !== undefined) {
       process.env.DEBUG_COST = ctx.savedEnv['DEBUG_COST'];
     }
@@ -359,7 +347,7 @@ export function cleanupMaterialization(ctx: MaterializationContext): void {
 }
 
 // ────────────────────────────────────────────────────────────────
-// Engine Implementations
+// Engine
 // ────────────────────────────────────────────────────────────────
 
 export type CostEngine = (ctx: {
@@ -369,74 +357,44 @@ export type CostEngine = (ctx: {
   pricingTable: PricingTable;
   agentType: string;
   issueId: string;
-  exact?: boolean;
-}) => Promise<{ outcome: WorkflowCostOutcome; warnings: string[]; summary?: TaskCostSummaryV1 }>;
-
-export const legacyEngine: CostEngine = async (ctx) => {
-  const warnings: string[] = [];
-  const originalWarn = console.warn;
-  console.warn = (...args: unknown[]) => {
-    warnings.push(args.map((arg) => String(arg)).join(' '));
-  };
-
-  try {
-    const outcome = computeWorkflowCost({
-      worktreePath: ctx.worktreePath,
-      branchName: ctx.branchName,
-      repoDir: ctx.repoDir,
-      pricingTable: ctx.pricingTable,
-      agentType: ctx.agentType,
-      issueId: ctx.issueId,
-    });
-
-    return { outcome, warnings };
-  } finally {
-    console.warn = originalWarn;
-  }
-};
+  /** Injected OpenRouter `/generation` responses; present only for the exact run. */
+  exact?: ExactPricingResponse;
+}) => Promise<{ outcome: WorkflowCostOutcome; warnings: string[] }>;
 
 /**
- * SDK engine (HOK-3076): the HOK-3075 bridge — adapter scan → SDK
- * `TaskCostSummaryV1` → projection back into the legacy outcome shape — so it
- * can be diffed like-for-like against {@link legacyEngine} on the same
- * materialized sessions and the same pricing table. No summary is the SDK's
- * "no evidence" and maps to the legacy `no_sessions` failure.
+ * The production metering path (`meterWorkflowCost`, HOK-3077) over the
+ * materialized sessions: adapter scan → SDK `TaskCostSummaryV1` → projection.
+ * The exact run injects the case's stubbed OpenRouter responses, so the
+ * exact-pricing fold into SDK events is covered without network access.
  */
 export const sdkEngine: CostEngine = async (ctx) => {
   const warnings: string[] = [];
-  const originalWarn = console.warn;
-  console.warn = (...args: unknown[]) => {
-    warnings.push(args.map((arg) => String(arg)).join(' '));
+  const logger = {
+    log: () => {},
+    warn: (...args: unknown[]) => warnings.push(args.map((arg) => String(arg)).join(' ')),
   };
-
-  try {
-    const summaries = collectSdkTaskCostSummaries({
-      worktreePath: ctx.worktreePath,
-      branchName: ctx.branchName,
-      repoDir: ctx.repoDir,
-      issueId: ctx.issueId,
-      pricingTable: ctx.pricingTable,
-    });
-    const primary = selectPrimaryTaskCostSummary(summaries, ctx.agentType);
-    if (!primary) {
-      return {
-        outcome: {
-          status: 'no_sessions',
-          reason: 'SDK bridge produced no task-cost summary',
-          diagnostics: { agentType: ctx.agentType },
+  const responses = ctx.exact?.responses;
+  const { outcome } = await meterWorkflowCost({
+    worktreePath: ctx.worktreePath,
+    branchName: ctx.branchName,
+    repoDir: ctx.repoDir,
+    issueId: ctx.issueId,
+    agentType: ctx.agentType,
+    pricingTable: ctx.pricingTable,
+    label: 'cost-parity',
+    collect: collectSdkTaskCostSummaries,
+    ...(responses
+      ? {
+        exactPricing: {
+          enabled: true,
+          fetchGenerationCost: async (id: string) => responses[id] ?? null,
+          logger,
         },
-        warnings,
-      };
-    }
-    const registry = getEffectiveRegistry(ctx.repoDir);
-    const outcome = projectTaskCostSummaryToWorkflowCost(primary, {
-      pricingTable: ctx.pricingTable,
-      registryLookup: (modelId) => resolveModelRegistryKey(registry, modelId),
-    });
-    return { outcome, warnings, summary: primary };
-  } finally {
-    console.warn = originalWarn;
-  }
+      }
+      : {}),
+    logger,
+  });
+  return { outcome, warnings };
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -445,61 +403,10 @@ export const sdkEngine: CostEngine = async (ctx) => {
 
 export async function captureCase(
   caseItem: CostParityCase,
-  engine: CostEngine = legacyEngine
+  engine: CostEngine = sdkEngine
 ): Promise<CaseSnapshot> {
   const ctx = materializeCase(caseItem);
 
-  try {
-    // Run sync engine
-    const syncResult = await engine({
-      worktreePath: ctx.worktree,
-      branchName: caseItem.branch || 'task/parity',
-      repoDir: ctx.repoDir,
-      pricingTable: caseItem.pricingTable,
-      agentType: caseItem.agentType,
-      issueId: caseItem.issueId,
-      exact: false,
-    });
-
-    // Run exact engine if available
-    let exactResult;
-    if (caseItem.exact) {
-      try {
-        exactResult = await engine({
-          worktreePath: ctx.worktree,
-          branchName: caseItem.branch || 'task/parity',
-          repoDir: ctx.repoDir,
-          pricingTable: caseItem.pricingTable,
-          agentType: caseItem.agentType,
-          issueId: caseItem.issueId,
-          exact: true,
-        });
-      } catch {
-        // Exact pricing may fail; that's okay
-      }
-    }
-
-    return {
-      caseId: caseItem.id,
-      sync: syncResult,
-      exact: exactResult,
-    };
-  } finally {
-    cleanupMaterialization(ctx);
-  }
-}
-
-export interface CostParityCaseOutcomes {
-  legacy: Awaited<ReturnType<CostEngine>>;
-  sdk: Awaited<ReturnType<CostEngine>>;
-}
-
-/**
- * Run the legacy and SDK engines on one materialization of a case, with the
- * case's own pricing table on both sides (HOK-3076 migration compare).
- */
-export async function captureCaseOutcomes(caseItem: CostParityCase): Promise<CostParityCaseOutcomes> {
-  const ctx = materializeCase(caseItem);
   try {
     const args = {
       worktreePath: ctx.worktree,
@@ -509,7 +416,15 @@ export async function captureCaseOutcomes(caseItem: CostParityCase): Promise<Cos
       agentType: caseItem.agentType,
       issueId: caseItem.issueId,
     };
-    return { legacy: await legacyEngine(args), sdk: await sdkEngine(args) };
+    const syncResult = await engine(args);
+    // The exact run only exists for cases that stub OpenRouter responses.
+    const exactResult = caseItem.exact ? await engine({ ...args, exact: caseItem.exact }) : undefined;
+
+    return {
+      caseId: caseItem.id,
+      sync: syncResult,
+      ...(exactResult ? { exact: exactResult } : {}),
+    };
   } finally {
     cleanupMaterialization(ctx);
   }
@@ -653,27 +568,17 @@ export function deepDiff(baseline: unknown, candidate: unknown, path: string = '
   return differences;
 }
 
+/**
+ * Strict regression compare: every difference between the baseline and the
+ * candidate (USD fields within {@link USD_TOLERANCE}) is a violation, and so
+ * is a baseline case the candidate lacks.
+ */
 export function compareSnapshots(
   baseline: CorpusSnapshot,
   candidate: CorpusSnapshot,
-  manifest: CostParityManifest,
-  options: { mode: 'regression' | 'migration' } = { mode: 'regression' }
 ): ComparisonResult {
   const differences: ComparisonDifference[] = [];
-  const expectedFixesByCase = new Map<string, Map<string, ExpectedFix>>();
 
-  // Index expected fixes
-  for (const caseItem of manifest.cases) {
-    const caseExpectedFixes = new Map<string, ExpectedFix>();
-    if (caseItem.expectations.expectedFixes) {
-      for (const fix of caseItem.expectations.expectedFixes) {
-        caseExpectedFixes.set(fix.path, fix);
-      }
-    }
-    expectedFixesByCase.set(caseItem.id, caseExpectedFixes);
-  }
-
-  // Compare each case
   for (const caseId of Object.keys(baseline.cases)) {
     const baselineCase = baseline.cases[caseId];
     const candidateCase = candidate.cases[caseId];
@@ -689,90 +594,15 @@ export function compareSnapshots(
       continue;
     }
 
-    const diffs = deepDiff(baselineCase, candidateCase);
-    const expectedFixes = expectedFixesByCase.get(caseId) || new Map();
-
-    for (const diff of diffs) {
-      const expectedFix = expectedFixes.get(diff.path);
-
-      if (!expectedFix) {
-        differences.push({
-          caseId,
-          path: diff.path,
-          baseline: diff.baseline,
-          candidate: diff.candidate,
-          classification: 'strict_violation',
-        });
-      } else {
-        if (options.mode === 'regression') {
-          // Regression mode: no fixes allowed
-          differences.push({
-            caseId,
-            path: diff.path,
-            baseline: diff.baseline,
-            candidate: diff.candidate,
-            classification: 'strict_violation',
-          });
-        } else {
-          // Migration mode: check if fix is applied correctly
-          if (expectedFix.expected !== undefined) {
-            if (JSON.stringify(diff.candidate) === JSON.stringify(expectedFix.expected)) {
-              differences.push({
-                caseId,
-                path: diff.path,
-                baseline: diff.baseline,
-                candidate: diff.candidate,
-                classification: 'expected_fix_applied',
-              });
-            } else {
-              differences.push({
-                caseId,
-                path: diff.path,
-                baseline: diff.baseline,
-                candidate: diff.candidate,
-                classification: 'expected_fix_wrong_value',
-              });
-            }
-          } else if (JSON.stringify(diff.candidate) === JSON.stringify(diff.baseline)) {
-            differences.push({
-              caseId,
-              path: diff.path,
-              baseline: diff.baseline,
-              candidate: diff.candidate,
-              classification: 'expected_fix_missing',
-            });
-          } else {
-            differences.push({
-              caseId,
-              path: diff.path,
-              baseline: diff.baseline,
-              candidate: diff.candidate,
-              classification: 'expected_fix_applied',
-            });
-          }
-        }
-      }
+    for (const diff of deepDiff(baselineCase, candidateCase)) {
+      differences.push({ caseId, ...diff, classification: 'strict_violation' });
     }
   }
 
-  // Filter based on mode
-  const relevantDifferences = differences.filter((diff) => {
-    if (options.mode === 'regression') {
-      return true;
-    }
-    return diff.classification !== 'expected_fix_applied';
-  });
-
-  const hasProblems = relevantDifferences.some((d) =>
-    d.classification === 'strict_violation' ||
-    d.classification === 'expected_fix_missing' ||
-    d.classification === 'expected_fix_wrong_value'
-  );
-
   return {
     differences,
-    exitCode: hasProblems ? 1 : 0,
-    message: hasProblems ? `Found ${relevantDifferences.length} differences` : 'All tests passed',
+    exitCode: differences.length > 0 ? 1 : 0,
+    message: differences.length > 0 ? `Found ${differences.length} differences` : 'All tests passed',
   };
 }
 

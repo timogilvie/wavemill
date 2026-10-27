@@ -432,7 +432,7 @@
     },
     "taskCostSummary": {
       "type": ["array", "null"],
-      "description": "Shadow SDK task-cost summaries (@hokusai/core TaskCostSummaryV1), one per harness that produced sessions (HOK-3075). Written only when WAVEMILL_SDK_COST_METERING_SHADOW is on; legacy workflowCost/workflowCostAttribution/executionEconomics stay authoritative. Local-only; excluded from Hokusai submissions.",
+      "description": "SDK task-cost summaries (@hokusai/core TaskCostSummaryV1), one per harness that produced sessions (HOK-3075). Raw evidence behind workflowCost*, the projection of the primary summary; the SDK is the only cost engine since HOK-3077. Local-only; excluded from Hokusai submissions.",
       "items": {
         "$ref": "#/$defs/TaskCostSummary"
       }
@@ -518,6 +518,36 @@
     "quarantine_reason": {
       "type": "string",
       "description": "Provenance for records quarantined during corpus hygiene migration."
+    },
+    "correctionProvenance": {
+      "type": "object",
+      "description": "HOK-3321: provenance for a record re-attested by an explicit recovery tool; the corrected row is appended to evals.jsonl and the original invalid row is never rewritten.",
+      "required": ["supersedes"],
+      "additionalProperties": false,
+      "properties": {
+        "supersedes": {
+          "type": "object",
+          "required": ["evalId", "reason"],
+          "additionalProperties": false,
+          "properties": {
+            "evalId": {
+              "type": "string",
+              "description": "id of the original invalid record this row corrects."
+            },
+            "reason": {
+              "type": "string",
+              "description": "Stable reason code, e.g. hok-3321-registry-equivalence."
+            },
+            "correctedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "correctedBy": {
+              "type": "string"
+            }
+          }
+        }
+      }
     },
     "failureReason": {
       "type": "string",

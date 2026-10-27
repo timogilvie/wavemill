@@ -1,0 +1,350 @@
+{
+  "incident": "HOK-3313",
+  "fixedBy": "HOK-3321",
+  "description": "Sanitized replay of the HOK-3313 attestation false-positive: a valid planning challenge was stamped invalid_challenge/stage_override_lost because the intent recorded the Wavemill alias (qwen-3-coder) while the provider reported the OpenRouter id (qwen/qwen3-coder). Both spellings resolve to the same registry entry, so post-fix the attestation is valid. Case 4 drives the recovery assessor with the same alias pair.",
+  "cases": [
+    {
+      "name": "qwen-expected-provider-returns-wavemill-alias-inverse",
+      "record": {
+        "id": "8731fea1-ee09-4f30-aec9-00ac06011f4d",
+        "schemaVersion": "1.0.0",
+        "originalPrompt": "One-stage agent exit identity comes from the launch record.",
+        "modelId": "qwen-3-coder",
+        "modelVersion": "qwen-3-coder",
+        "score": 1,
+        "scoreBand": "Full Success",
+        "timeSeconds": 245,
+        "timestamp": "2026-10-26T15:00:00.000Z",
+        "interventionRequired": false,
+        "interventionCount": 0,
+        "interventionDetails": [],
+        "rationale": "Planning challenge arm completed.",
+        "issueId": "HOK-3313",
+        "challengePairId": "pair-3313",
+        "challengeSide": "challenger",
+        "challengeStage": "plan",
+        "agentType": "codex",
+        "challengeIntent": {
+          "pairId": "pair-3313",
+          "issueId": "HOK-3313",
+          "createdAt": "2026-10-26T14:10:00.000Z",
+          "selectedStage": "plan",
+          "decisionSource": "expanded",
+          "selectionPath": "recommendation-driven",
+          "selectionReason": "stage_coverage_gap",
+          "challengerSource": "recommendation",
+          "primary": {
+            "pairId": "pair-3313",
+            "side": "primary",
+            "challengeStage": "plan",
+            "expectedStageModel": "claude-opus-4-6",
+            "expectedRoute": {
+              "planner": "claude-opus-4-6",
+              "coder": "claude-opus-4-6",
+              "reviewer": "claude-opus-4-6",
+              "planDepth": "",
+              "codeDepth": "",
+              "reviewMode": ""
+            }
+          },
+          "challenger": {
+            "pairId": "pair-3313",
+            "side": "challenger",
+            "challengeStage": "plan",
+            "expectedStageModel": "qwen-3-coder",
+            "expectedRoute": {
+              "planner": "qwen-3-coder",
+              "coder": "claude-opus-4-6",
+              "reviewer": "claude-opus-4-6",
+              "planDepth": "",
+              "codeDepth": "",
+              "reviewMode": ""
+            }
+          }
+        },
+        "challengeExecutionRoute": {
+          "planner": "qwen-3-coder",
+          "coder": "claude-opus-4-6",
+          "reviewer": "claude-opus-4-6",
+          "planDepth": "",
+          "codeDepth": "",
+          "reviewMode": ""
+        },
+        "executedPlanning": {
+          "agent": "codex",
+          "model": "qwen/qwen3-coder",
+          "status": "completed",
+          "source": ".planning-result.json"
+        },
+        "taskDescriptor": {
+          "schema_version": "1.0",
+          "signals": {
+            "heuristic": {
+              "task_type": "feature",
+              "languages": ["typescript"],
+              "framework_tags": [],
+              "files_touched": 2,
+              "repo_size_loc": 1000,
+              "description_tokens": 20,
+              "is_greenfield": false,
+              "has_migration": false,
+              "has_ui": false,
+              "has_tests": true,
+              "cross_service": false
+            },
+            "learned": {
+              "complexity": 4,
+              "domain": "eval",
+              "risk_flags": []
+            }
+          },
+          "constraints": {
+            "models_available": ["qwen-3-coder", "claude-opus-4-6"],
+            "objective": "balanced"
+          },
+          "stages": {
+            "planner": { "model": "qwen-3-coder" },
+            "coder": { "model": "claude-opus-4-6" },
+            "reviewer": { "model": "claude-opus-4-6" }
+          }
+        }
+      },
+      "expected": {
+        "validity": "valid"
+      }
+    },
+    {
+      "name": "qwen-provider-returns-different-model",
+      "record": {
+        "id": "8731fea1-ee09-4f30-aec9-00ac06011f4e",
+        "schemaVersion": "1.0.0",
+        "originalPrompt": "One-stage agent exit identity comes from the launch record.",
+        "modelId": "qwen-3-coder",
+        "modelVersion": "qwen-3-coder",
+        "score": 1,
+        "scoreBand": "Full Success",
+        "timeSeconds": 245,
+        "timestamp": "2026-10-26T15:00:00.000Z",
+        "interventionRequired": false,
+        "interventionCount": 0,
+        "interventionDetails": [],
+        "rationale": "Planning challenge arm completed with a substituted planner.",
+        "issueId": "HOK-3313",
+        "challengePairId": "pair-3313",
+        "challengeSide": "challenger",
+        "challengeStage": "plan",
+        "agentType": "codex",
+        "challengeIntent": {
+          "pairId": "pair-3313",
+          "issueId": "HOK-3313",
+          "createdAt": "2026-10-26T14:10:00.000Z",
+          "selectedStage": "plan",
+          "decisionSource": "expanded",
+          "selectionPath": "recommendation-driven",
+          "selectionReason": "stage_coverage_gap",
+          "challengerSource": "recommendation",
+          "primary": {
+            "pairId": "pair-3313",
+            "side": "primary",
+            "challengeStage": "plan",
+            "expectedStageModel": "claude-opus-4-6",
+            "expectedRoute": {
+              "planner": "claude-opus-4-6",
+              "coder": "claude-opus-4-6",
+              "reviewer": "claude-opus-4-6",
+              "planDepth": "",
+              "codeDepth": "",
+              "reviewMode": ""
+            }
+          },
+          "challenger": {
+            "pairId": "pair-3313",
+            "side": "challenger",
+            "challengeStage": "plan",
+            "expectedStageModel": "qwen-3-coder",
+            "expectedRoute": {
+              "planner": "qwen-3-coder",
+              "coder": "claude-opus-4-6",
+              "reviewer": "claude-opus-4-6",
+              "planDepth": "",
+              "codeDepth": "",
+              "reviewMode": ""
+            }
+          }
+        },
+        "challengeExecutionRoute": {
+          "planner": "qwen-3-coder",
+          "coder": "claude-opus-4-6",
+          "reviewer": "claude-opus-4-6",
+          "planDepth": "",
+          "codeDepth": "",
+          "reviewMode": ""
+        },
+        "executedPlanning": {
+          "agent": "codex",
+          "model": "claude-haiku-4-5",
+          "status": "completed",
+          "source": ".planning-result.json"
+        },
+        "taskDescriptor": {
+          "schema_version": "1.0",
+          "signals": {
+            "heuristic": {
+              "task_type": "feature",
+              "languages": ["typescript"],
+              "framework_tags": [],
+              "files_touched": 2,
+              "repo_size_loc": 1000,
+              "description_tokens": 20,
+              "is_greenfield": false,
+              "has_migration": false,
+              "has_ui": false,
+              "has_tests": true,
+              "cross_service": false
+            },
+            "learned": {
+              "complexity": 4,
+              "domain": "eval",
+              "risk_flags": []
+            }
+          },
+          "constraints": {
+            "models_available": ["qwen-3-coder", "claude-opus-4-6"],
+            "objective": "balanced"
+          },
+          "stages": {
+            "planner": { "model": "qwen-3-coder" },
+            "coder": { "model": "claude-opus-4-6" },
+            "reviewer": { "model": "claude-opus-4-6" }
+          }
+        }
+      },
+      "expected": {
+        "validity": "invalid_challenge",
+        "invalidReason": "stage_override_lost"
+      }
+    },
+    {
+      "name": "claude-datestamp-vs-alias",
+      "record": {
+        "id": "8731fea1-ee09-4f30-aec9-00ac06011f4f",
+        "schemaVersion": "1.0.0",
+        "originalPrompt": "One-stage agent exit identity comes from the launch record.",
+        "modelId": "claude-haiku-4-5",
+        "modelVersion": "claude-haiku-4-5",
+        "score": 1,
+        "scoreBand": "Full Success",
+        "timeSeconds": 245,
+        "timestamp": "2026-10-26T15:00:00.000Z",
+        "interventionRequired": false,
+        "interventionCount": 0,
+        "interventionDetails": [],
+        "rationale": "Planning challenge arm completed with the dated snapshot.",
+        "issueId": "HOK-3313",
+        "challengePairId": "pair-3313",
+        "challengeSide": "challenger",
+        "challengeStage": "plan",
+        "agentType": "codex",
+        "challengeIntent": {
+          "pairId": "pair-3313",
+          "issueId": "HOK-3313",
+          "createdAt": "2026-10-26T14:10:00.000Z",
+          "selectedStage": "plan",
+          "decisionSource": "expanded",
+          "selectionPath": "recommendation-driven",
+          "selectionReason": "stage_coverage_gap",
+          "challengerSource": "recommendation",
+          "primary": {
+            "pairId": "pair-3313",
+            "side": "primary",
+            "challengeStage": "plan",
+            "expectedStageModel": "claude-opus-4-6",
+            "expectedRoute": {
+              "planner": "claude-opus-4-6",
+              "coder": "claude-opus-4-6",
+              "reviewer": "claude-opus-4-6",
+              "planDepth": "",
+              "codeDepth": "",
+              "reviewMode": ""
+            }
+          },
+          "challenger": {
+            "pairId": "pair-3313",
+            "side": "challenger",
+            "challengeStage": "plan",
+            "expectedStageModel": "claude-haiku-4-5",
+            "expectedRoute": {
+              "planner": "claude-haiku-4-5",
+              "coder": "claude-opus-4-6",
+              "reviewer": "claude-opus-4-6",
+              "planDepth": "",
+              "codeDepth": "",
+              "reviewMode": ""
+            }
+          }
+        },
+        "challengeExecutionRoute": {
+          "planner": "claude-haiku-4-5",
+          "coder": "claude-opus-4-6",
+          "reviewer": "claude-opus-4-6",
+          "planDepth": "",
+          "codeDepth": "",
+          "reviewMode": ""
+        },
+        "executedPlanning": {
+          "agent": "codex",
+          "model": "claude-haiku-4-5-20251001",
+          "status": "completed",
+          "source": ".planning-result.json"
+        },
+        "taskDescriptor": {
+          "schema_version": "1.0",
+          "signals": {
+            "heuristic": {
+              "task_type": "feature",
+              "languages": ["typescript"],
+              "framework_tags": [],
+              "files_touched": 2,
+              "repo_size_loc": 1000,
+              "description_tokens": 20,
+              "is_greenfield": false,
+              "has_migration": false,
+              "has_ui": false,
+              "has_tests": true,
+              "cross_service": false
+            },
+            "learned": {
+              "complexity": 4,
+              "domain": "eval",
+              "risk_flags": []
+            }
+          },
+          "constraints": {
+            "models_available": ["claude-haiku-4-5", "claude-opus-4-6"],
+            "objective": "balanced"
+          },
+          "stages": {
+            "planner": { "model": "claude-haiku-4-5" },
+            "coder": { "model": "claude-opus-4-6" },
+            "reviewer": { "model": "claude-opus-4-6" }
+          }
+        }
+      },
+      "expected": {
+        "validity": "valid"
+      }
+    },
+    {
+      "name": "recovery-same-model-under-aliases",
+      "recovery": {
+        "pairId": "PAIR-3313",
+        "primary": { "slug": "hok-3313", "stageModel": "qwen-3-coder" },
+        "challenger": { "slug": "hok-3313_c", "stageModel": "qwen/qwen3-coder" }
+      },
+      "expected": {
+        "verdict": "quarantine-upheld",
+        "blockerIncludes": "identical control, not a challenge"
+      }
+    }
+  ]
+}

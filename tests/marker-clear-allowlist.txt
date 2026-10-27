@@ -8,4 +8,3 @@
 shared/lib/wavemill-monitor.sh 44
 shared/lib/ready-watchdog.ts 3
 shared/lib/tend-controller.ts 1
-shared/lib/pr-state-labels.ts 1

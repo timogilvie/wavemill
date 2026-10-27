@@ -37,7 +37,7 @@ eval "$(extract_function native_terminal_failure_kind)"
 eval "$(extract_function native_terminal_failure_next_action)"
 eval "$(extract_function stage_failure_decision)"
 eval "$(extract_function native_stage_failure_envelope_json)"
-eval "$(extract_function agent_or_model_is_native_for_recovery)"
+eval "$(extract_function stage_launch_identity)"
 eval "$(extract_function emit_native_terminal_failure_attention)"
 eval "$(extract_function emit_challenge_stage_failure_quarantine)"
 eval "$(extract_function write_openrouter_warning_cache)"
@@ -326,14 +326,25 @@ else
   pass "non-error hook states are ignored"
 fi
 
+# HOK-3313: identity comes from the launch record (agent=codex) and the
+# failure routes through the single policy. A codex "model_at_capacity"
+# hook is retryable — the stage is failed for retry, never parked.
 seed "PAIR-1_c"
-fd="$TMP_ROOT/f-non-native"
+fd="$TMP_ROOT/f-codex-capacity"
 write_stage_result "$fd" "coding" "running" "codex" "claude-opus-4-7"
 write_hook "PAIR-1_c" "error" "model_at_capacity: Selected model is at capacity. Please try a different model."
-if emit_native_terminal_failure_attention "PAIR-1_c" "$fd" "coding" "win-non-native" "%4" "codex" "claude-opus-4-7"; then
-  fail "a non-native terminal hook was treated as a native provider failure"
+if emit_native_terminal_failure_attention "PAIR-1_c" "$fd" "coding" "win-codex-cap" "%4" "codex" "claude-opus-4-7"; then
+  if [[ "$(jq -r '.status' "$fd/.coding-result.json")" == "failed" ]] \
+    && [[ "$(jq -r '.agent' "$fd/.coding-result.json")" == "codex" ]] \
+    && [[ "$(jq -r '.artifacts.failureClass' "$fd/.coding-result.json")" == "retryable" ]] \
+    && [[ "$(jq -r '.tasks | map(has("challengeAborted")) | any' "$STATE_FILE")" == "false" ]] \
+    && ! grep -q "win-codex-cap=needs-user" "$ATTENTION_FILE"; then
+    pass "codex terminal hook is handled universally and classified retryable"
+  else
+    fail "codex terminal hook side effects incomplete"
+  fi
 else
-  pass "non-native terminal hooks are ignored by native recovery"
+  fail "codex terminal hook was not handled"
 fi
 
 seed "PAIR-1_c"
@@ -344,6 +355,30 @@ if emit_native_terminal_failure_attention "PAIR-1_c" "$fd" "coding" "win-5" "%5"
   fail "missing hook was treated as terminal"
 else
   pass "missing hook file is a no-op"
+fi
+
+# HOK-3313 replay: a Claude coder whose task packet mentions OpenRouter in its
+# instructions must not be reclassified as native by any identity-sniffing;
+# identity comes only from the launch record. An out-of-band kill becomes a
+# retryable terminal exit, never a parking recovery_failure.
+seed "PAIR-1_c"
+fd="$TMP_ROOT/f-hok3313"
+write_stage_result "$fd" "coding" "running" "claude" "claude-opus-5-5"
+# The hook detail intentionally mentions OpenRouter so a historical pane-text
+# sniff would misclassify the agent. The policy must still see claude.
+write_hook "PAIR-1_c" "error" "Agent exited (143) after OpenRouter credits review (SIGTERM)"
+if emit_native_terminal_failure_attention "PAIR-1_c" "$fd" "coding" "win-3313" "%3313" "claude" "claude-opus-5-5"; then
+  if [[ "$(jq -r '.status' "$fd/.coding-result.json")" == "failed" ]] \
+    && [[ "$(jq -r '.agent' "$fd/.coding-result.json")" == "claude" ]] \
+    && [[ "$(jq -r '.model' "$fd/.coding-result.json")" == "claude-opus-5-5" ]] \
+    && [[ "$(jq -r '.artifacts.failureClass' "$fd/.coding-result.json")" == "retryable" ]] \
+    && ! grep -q "win-3313=needs-user" "$ATTENTION_FILE"; then
+    pass "HOK-3313 replay: Claude coder exits with OpenRouter in detail → retryable, identity=claude"
+  else
+    fail "HOK-3313 replay side effects incomplete: identity=$(jq -r '.agent' "$fd/.coding-result.json") class=$(jq -r '.artifacts.failureClass' "$fd/.coding-result.json")"
+  fi
+else
+  fail "HOK-3313 replay was not handled"
 fi
 
 # Non-challenge tasks fail the stage but must not write challenge quarantine state.

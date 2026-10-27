@@ -186,12 +186,102 @@ test('queue detector escalates repeated inference_unavailable by consecutive inf
     assert.equal(repeated.length, 1);
     assert.equal(repeated[0].severity, 'medium');
     assert.match(repeated[0].summary, /inference_unavailable/);
-    assert.match(repeated[0].operatorAction, /explicit Linear relations only/);
+    assert.match(repeated[0].operatorAction, /cached inferred edges/);
     assert.equal(repeated[0].metadata?.failureCount, 3);
 
     writeHealth(1);
     const first = new DependencyHealthDetector({ thresholdConsecutiveFailures: 3 }).detectRepo(repo, { repoDir: repo, now });
     assert.equal(first[0].severity, 'low');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3314: queue detector produces a stable evidence key/timestamp across polls of the same episode', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-deps-stable-'));
+  try {
+    mkdirSync(join(repo, '.wavemill'), { recursive: true });
+    const writeHealth = (lastAttemptAt: string) => writeFileSync(join(repo, '.wavemill', 'queue-health.json'), JSON.stringify({
+      status: 'degraded',
+      degradationReason: 'inference_unavailable',
+      failureStep: 'queue_inference',
+      failureCount: 0,
+      inferenceStatus: 'failed',
+      inferredEdgeCount: 49,
+      inference: {
+        consecutiveFailures: 1,
+        error: 'LLM fallback deadline exhausted before claude-sonnet-5',
+        lastAttemptAt: '2026-10-22T14:03:54.249Z',
+        lastSuccessAt: '2026-10-22T13:59:14.469Z',
+      },
+      diagnostics: { inputSnapshot: {}, stdoutExcerpt: '', stderrExcerpt: '' },
+      // The planner rewrites `lastAttemptAt` on every poll including
+      // cache-only runs — that is the pre-fix bug that inflated occ to 157.
+      lastAttemptAt,
+    }));
+
+    const detector = new DependencyHealthDetector({ thresholdConsecutiveFailures: 3 });
+
+    // Poll 1 — 14:03:54Z
+    writeHealth('2026-10-22T14:03:54.249Z');
+    const first = detector.detectRepo(repo, { repoDir: repo, now });
+    const firstEvidence = first[0].evidence[0];
+    const firstKey = firstEvidence.key;
+    const firstTimestamp = firstEvidence.timestamp;
+    assert.ok(firstKey);
+    assert.ok(firstTimestamp);
+
+    // Poll 2 — 14:04:54Z (one minute later, same episode)
+    writeHealth('2026-10-22T14:04:54.249Z');
+    const second = detector.detectRepo(repo, { repoDir: repo, now });
+    const secondEvidence = second[0].evidence[0];
+    assert.equal(secondEvidence.key, firstKey, 'evidence.key must stay stable within an unchanged episode');
+    assert.equal(secondEvidence.timestamp, firstTimestamp, 'evidence.timestamp must stay stable (not track queueHealth.lastAttemptAt)');
+
+    // Replay through the store — occurrenceCount must stay at 1.
+    const indexDir = mkdtempSync(join(tmpdir(), 'incident-deps-store-'));
+    try {
+      const store = new IncidentStore(indexDir, { escalationThreshold: 3 });
+      await store.upsert(first[0]);
+      const repoll = await store.upsertDetailed(second[0]);
+      assert.equal(repoll.freshEvent, false, 'identical polls must NOT register as fresh events');
+      assert.equal(repoll.record.occurrenceCount, 1, 'occurrenceCount must stay 1 across polls of the same episode');
+    } finally {
+      rmSync(indexDir, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3314: current queue episode severity decreases to low after a new episode starts at count 1', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-deps-reset-'));
+  try {
+    mkdirSync(join(repo, '.wavemill'), { recursive: true });
+    const writeHealth = (consecutiveFailures: number) => writeFileSync(join(repo, '.wavemill', 'queue-health.json'), JSON.stringify({
+      status: 'degraded',
+      degradationReason: 'inference_unavailable',
+      failureStep: 'queue_inference',
+      failureCount: 0,
+      inferenceStatus: 'failed',
+      inference: {
+        consecutiveFailures,
+        error: 'LLM fallback deadline exhausted before claude-sonnet-5',
+        lastAttemptAt: '2026-10-22T14:03:54.249Z',
+      },
+      diagnostics: { inputSnapshot: {}, stdoutExcerpt: '', stderrExcerpt: '' },
+      lastAttemptAt: now.toISOString(),
+    }));
+
+    const detector = new DependencyHealthDetector({ thresholdConsecutiveFailures: 3 });
+    writeHealth(5);
+    const high = detector.detectRepo(repo, { repoDir: repo, now });
+    assert.equal(high[0].severity, 'high');
+
+    // After recovery and a fresh single failure, severity drops to low.
+    writeHealth(1);
+    const low = detector.detectRepo(repo, { repoDir: repo, now });
+    assert.equal(low[0].severity, 'low');
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

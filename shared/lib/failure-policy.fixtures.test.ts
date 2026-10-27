@@ -261,6 +261,31 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     evidence: { stage: 'coding', failureKind: 'cancelled' },
     expectedClass: 'terminal',
   },
+  // ── HOK-3313: exec-level launcher signatures the deleted monitor branches
+  //    used to classify by scraping pane text (exit 127, bare `--model`,
+  //    native probe failure). After HOK-3313 these are observed through the
+  //    stage result + hook pipeline and classified by the single policy, so
+  //    they must land as retryable instead of parking the task.
+  {
+    name: 'HOK-3313: Agent exited (127) in pane tail',
+    evidence: { stage: 'coding', detail: 'Native OpenRouter coding launcher\nError: native agent native-openrouter does not support interactive phase coding\nAgent exited (127)' },
+    expectedClass: 'retryable',
+  },
+  {
+    name: 'HOK-3313: bare --model shell invocation ("command not found: --model")',
+    evidence: { stage: 'planning', detail: 'Native OpenRouter planning launcher\n --model qwen-3-coder\nzsh: command not found: --model\nAgent exited (127)' },
+    expectedClass: 'retryable',
+  },
+  {
+    name: 'HOK-3313: native launch probe rejected',
+    evidence: { stage: 'coding', detail: 'native launch probe failed: not eligible for coding' },
+    expectedClass: 'retryable',
+  },
+  {
+    name: 'HOK-3313: SIGTERM mid-run with OpenRouter in pane tail (incident replay)',
+    evidence: { stage: 'coding', detail: 'Agent exited (143) after OpenRouter credits review (SIGTERM)' },
+    expectedClass: 'retryable',
+  },
 ];
 
 /** Recorded `challengeAborted` reasons from the window, parsed the way the resolver does. */

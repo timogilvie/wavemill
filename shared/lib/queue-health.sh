@@ -194,32 +194,50 @@ queue_health_record_success() {
 
   # Build update filter: reset planner failure state, mark success, then
   # degrade on inference_unavailable when the report says so.
+  #
+  # HOK-3314: a cache-only / skipped / cooldown planner run (no inference
+  # report, attempted=false, or skipReason set) is not inference-recovery
+  # evidence. Preserve the inference block, degradationReason/episode/
+  # failureCount fields instead of clearing them — only authoritative
+  # inferenceStatus=ok clears a failed-inference episode.
   local filter='
-    (($inference // {}).inferenceStatus // null) as $inference_status |
+    (($inference // {}) | if type == "object" then . else {} end) as $report |
+    ($report.inferenceStatus // null) as $inference_status |
+    (($report.attempted // null) == false
+      or ($report.skipReason // null) != null
+      or ($report | length) == 0
+    ) as $no_inference_attempt |
     ($inference_status == "failed" or $inference_status == "stale" or $inference_status == "never") as $inference_degraded |
+    ((.inferenceStatus // null) == "failed" or (.inferenceStatus // null) == "stale") as $previously_degraded |
+    (if $no_inference_attempt and $previously_degraded then true
+     elif $no_inference_attempt then false
+     else $inference_degraded end) as $effective_degraded |
     .schemaVersion = 1 |
-    .status = (if $inference_degraded then "degraded" else "healthy" end) |
+    .status = (if $effective_degraded then "degraded" else "healthy" end) |
     .lastSuccessfulPlanAt = $now |
     .lastAttemptAt = $now |
-    .lastFailureAt = null |
-    .episodeStartedAt = null |
-    .degradationReason = (if $inference_degraded then "inference_unavailable" else null end) |
-    .failureStep = (if $inference_degraded then "queue_inference" else null end) |
-    .failureCount = 0 |
+    .lastFailureAt = (if $no_inference_attempt and $previously_degraded then .lastFailureAt else null end) |
+    .episodeStartedAt = (if $no_inference_attempt and $previously_degraded then .episodeStartedAt else null end) |
+    .degradationReason = (if $effective_degraded then (if $no_inference_attempt then (.degradationReason // "inference_unavailable") else "inference_unavailable" end) else null end) |
+    .failureStep = (if $effective_degraded then (if $no_inference_attempt then (.failureStep // "queue_inference") else "queue_inference" end) else null end) |
+    .failureCount = (if $no_inference_attempt and $previously_degraded then (.failureCount // 0) else 0 end) |
     .retryBackoffSeconds = 0 |
     .nextRetryAt = null |
-    .nextAction = (if $inference_degraded then "use_explicit_edges_only" else "use_dependency_queue" end) |
-    .inferenceStatus = $inference_status |
-    .inferredEdgeCount = (($inference // {}).inferredEdgeCount // null) |
-    .inference = (if $inference == null then null else {
-      model: ($inference.model // null),
-      lastAttemptAt: ($inference.lastAttemptAt // null),
-      lastSuccessAt: ($inference.lastSuccessAt // null),
-      consecutiveFailures: ($inference.consecutiveFailures // 0),
-      error: ($inference.error // null),
-      refreshKind: ($inference.refreshKind // null),
-      skipReason: ($inference.skipReason // null)
-    } end) |
+    .nextAction = (if $effective_degraded then "use_explicit_edges_only" else "use_dependency_queue" end) |
+    .inferenceStatus = (if $no_inference_attempt and $previously_degraded then (.inferenceStatus // null) elif $no_inference_attempt then null else $inference_status end) |
+    .inferredEdgeCount = ($report.inferredEdgeCount // .inferredEdgeCount // null) |
+    .inference = (if $no_inference_attempt and $previously_degraded then (.inference // null)
+                  elif $no_inference_attempt then null
+                  elif ($report | length) == 0 then null
+                  else {
+                    model: ($report.model // null),
+                    lastAttemptAt: ($report.lastAttemptAt // null),
+                    lastSuccessAt: ($report.lastSuccessAt // null),
+                    consecutiveFailures: ($report.consecutiveFailures // 0),
+                    error: ($report.error // null),
+                    refreshKind: ($report.refreshKind // null),
+                    skipReason: ($report.skipReason // null)
+                  } end) |
     .planner = {
       pid: ($pid | tonumber),
       pgid: (if $pgid == "unknown" then null else ($pgid | tonumber) end),
@@ -258,6 +276,9 @@ queue_health_record_success() {
       "$health_file" > "${health_file}.tmp" 2>/dev/null || return 1
     mv -f "${health_file}.tmp" "$health_file" || return 1
   fi
+
+  # HOK-3314: stamp the single queue-alert projection so renderers read one field.
+  queue_alert_projection_stamp 2>/dev/null || true
 
   return 0
 }
@@ -450,6 +471,9 @@ queue_health_record_failure() {
     mv -f "${health_file}.tmp" "$health_file" || return 1
   fi
 
+  # HOK-3314: stamp the single queue-alert projection so renderers read one field.
+  queue_alert_projection_stamp 2>/dev/null || true
+
   return 0
 }
 
@@ -469,57 +493,99 @@ queue_health_should_skip_attempt() {
   (( current_epoch < next_retry_epoch ))
 }
 
-# HOK-3179: one-line banner for the picker body when queue inference is
-# degraded. Prints the inference-unavailable notice with a since-timestamp
-# (lastSuccessAt or episodeStartedAt). Empty output means do not render a
-# banner.
-queue_inference_degraded_banner() {
-  local health reason since
-  health="$(queue_health_read 2>/dev/null || echo '{}')"
-  reason="$(printf '%s' "$health" | jq -r '.degradationReason // ""' 2>/dev/null || echo '')"
-  [[ "$reason" == "inference_unavailable" ]] || return 0
-
-  since="$(printf '%s' "$health" | jq -r '
-    .inference.lastSuccessAt
-    // .episodeStartedAt
-    // .lastFailureAt
-    // ""
-  ' 2>/dev/null || echo '')"
-
-  if [[ -n "$since" && "$since" != "null" ]]; then
-    printf 'dependency inference degraded since %s — showing explicit + cached edges' "$since"
-  else
-    printf 'dependency inference degraded — showing explicit + cached edges'
+# HOK-3314: resolve the queue-alert-projection CLI path. Prefers the install
+# dir set by wavemill-common.sh at source time (WAVEMILL_INSTALL_DIR), which
+# is pinned to this file's worktree; falls back to TOOLS_DIR for callers
+# that override. This ordering keeps the CLI colocated with the shell helper
+# across worktrees (fixing drift when TOOLS_DIR points at a different worktree).
+queue_alert_projection_cli() {
+  local tool_dir=""
+  if [[ -n "${WAVEMILL_INSTALL_DIR:-}" ]]; then
+    tool_dir="${WAVEMILL_INSTALL_DIR%/}/tools"
+  elif [[ -n "${WAVEMILL_TOOLS_DIR:-}" ]]; then
+    tool_dir="$WAVEMILL_TOOLS_DIR"
+  elif [[ -n "${TOOLS_DIR:-}" ]]; then
+    tool_dir="$TOOLS_DIR"
   fi
+  [[ -n "$tool_dir" ]] || return 1
+  printf '%s/queue-alert-projection.ts' "${tool_dir%/}"
 }
 
-# Get a human-readable degradation status. Useful for logging/UI.
-# Output: one-line string describing current status, e.g.:
-#   "healthy" / "degraded (timeout); backoff 14s" / "degraded (external_cancellation); retry available"
-queue_health_status_summary() {
-  local health_file
-  health_file="$(queue_health_file_path)" || return 1
+# HOK-3314: stamp the single queue-alert projection into
+# .wavemill/queue-health.json. Called once per planner cycle so the shell
+# renderers can read `.currentAlertProjection` with a single jq call instead
+# of each re-deriving status / severity / wording. Silent on failure — the
+# derived projection is additive and consumers tolerate it missing.
+queue_alert_projection_stamp() {
+  local state_dir="${STATE_DIR:-}"
+  if [[ -z "$state_dir" && -n "${STATE_FILE:-}" ]]; then
+    state_dir="$(dirname "$STATE_FILE")"
+  fi
+  [[ -n "$state_dir" ]] || return 0
+  local cli
+  cli="$(queue_alert_projection_cli)" || return 0
+  [[ -r "$cli" ]] || return 0
+  command -v npx >/dev/null 2>&1 || return 0
+  (npx tsx "$cli" --state-dir "$state_dir" >/dev/null 2>&1) || true
+}
 
-  local health status reason backoff next_action
+# HOK-3314: project `.currentAlertProjection` fields. Readers call this
+# instead of re-deriving from raw queue-health.json. If the stamped block is
+# missing, falls back to deriving once from queue-health.json via the CLI.
+# Output: JSON object or 'null' when inference evidence is missing.
+queue_alert_projection_read() {
+  local health
   health="$(queue_health_read 2>/dev/null || echo '{}')"
-  status="$(printf '%s' "$health" | jq -r '.status // "unknown"' 2>/dev/null || echo 'unknown')"
+  local projection
+  projection="$(printf '%s' "$health" | jq -c '.currentAlertProjection // empty' 2>/dev/null || true)"
+  if [[ -n "$projection" ]]; then
+    printf '%s' "$projection"
+    return 0
+  fi
+  local cli
+  cli="$(queue_alert_projection_cli)" || { printf 'null'; return 0; }
+  if [[ -r "$cli" ]] && command -v npx >/dev/null 2>&1; then
+    projection="$(printf '%s' "$health" | npx tsx "$cli" --stdin 2>/dev/null | jq -c '.' 2>/dev/null || true)"
+    if [[ -n "$projection" ]]; then
+      printf '%s' "$projection"
+      return 0
+    fi
+  fi
+  printf 'null'
+}
 
+# HOK-3314: one-line picker banner for an inference-unavailable episode.
+# Reads `.currentAlertProjection.summary` directly — the single source of
+# truth for wording. Empty output means do not render a banner (healthy /
+# planner-only degradation / unknown-but-no-reason-to-alert); the planner
+# fallback banner is rendered by `queue_health_dashboard_warning` instead.
+queue_inference_degraded_banner() {
+  local projection status summary
+  projection="$(queue_alert_projection_read 2>/dev/null || echo 'null')"
+  [[ "$projection" != "null" && -n "$projection" ]] || return 0
+  status="$(printf '%s' "$projection" | jq -r '.status // "unknown"' 2>/dev/null || echo 'unknown')"
+  [[ "$status" == "degraded-inference" ]] || return 0
+  summary="$(printf '%s' "$projection" | jq -r '.summary // ""' 2>/dev/null || echo '')"
+  [[ -n "$summary" ]] || return 0
+  printf '%s' "$summary"
+}
+
+# Get a human-readable degradation status. Reads from the single projection.
+queue_health_status_summary() {
+  local projection status nextAction count severity summary
+  projection="$(queue_alert_projection_read 2>/dev/null || echo 'null')"
+  if [[ "$projection" == "null" || -z "$projection" ]]; then
+    echo "unknown"
+    return 0
+  fi
+  status="$(printf '%s' "$projection" | jq -r '.status // "unknown"' 2>/dev/null || echo 'unknown')"
   if [[ "$status" == "healthy" ]]; then
     echo "healthy"
     return 0
   fi
-
-  reason="$(printf '%s' "$health" | jq -r '.degradationReason // ""' 2>/dev/null || echo '')"
-  backoff="$(printf '%s' "$health" | jq -r '.retryBackoffSeconds // 0' 2>/dev/null || echo '0')"
-  next_action="$(printf '%s' "$health" | jq -r '.nextAction // ""' 2>/dev/null || echo '')"
-
-  if [[ "$reason" == "inference_unavailable" ]]; then
-    local inference_status
-    inference_status="$(printf '%s' "$health" | jq -r '.inferenceStatus // "unknown"' 2>/dev/null || echo 'unknown')"
-    printf 'degraded (%s: %s); %s' "$reason" "$inference_status" "$next_action"
-  elif [[ "$backoff" -gt 0 ]]; then
-    printf 'degraded (%s); backoff %ds' "$reason" "$backoff"
-  else
-    printf 'degraded (%s); %s' "$reason" "$next_action"
-  fi
+  nextAction="$(printf '%s' "$projection" | jq -r '.nextAction // ""' 2>/dev/null || echo '')"
+  count="$(printf '%s' "$projection" | jq -r '.episode.consecutiveFailedAttempts // 0' 2>/dev/null || echo '0')"
+  severity="$(printf '%s' "$projection" | jq -r '.episode.severity // "low"' 2>/dev/null || echo 'low')"
+  summary="$(printf '%s' "$projection" | jq -r '.summary // ""' 2>/dev/null || echo '')"
+  printf '%s (%s/%s/%s); %s' "$status" "$severity" "$count" "${summary}" "$nextAction"
 }

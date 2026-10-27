@@ -17,6 +17,18 @@ case "${1:-}" in
 esac
 
 if [[ -z "${WAVEMILL_PHASE:-}" ]]; then
+  # `claude -p` helper call. The LLM (judge) edge is modelled only when the
+  # test seeds a canned verdict: the shim answers the real CLI contract
+  # (`--output-format json` envelope carrying `result`) without touching the
+  # network. Without a seeded verdict it stays an unmodelled call so new
+  # production LLM calls are noticed, not silently answered.
+  if [[ "${1:-}" == "-p" && -n "${FAKE_JUDGE_VERDICT_FILE:-}" && -f "${FAKE_JUDGE_VERDICT_FILE}" ]]; then
+    cat >/dev/null
+    jq -cn --rawfile result "$FAKE_JUDGE_VERDICT_FILE" \
+      '{result:$result, usage:{input_tokens:10, cache_creation_input_tokens:0, cache_read_input_tokens:0, output_tokens:5}, total_cost_usd:0.01}'
+    printf '%s judge verdict served\n' "$(date -u +%FT%TZ)" >> "${FAKE_AGENT_LOG:-/dev/null}"
+    exit 0
+  fi
   # Not a phase launch (e.g. a `claude -p` helper call). Record it as an
   # unmodelled call so a journey can see it, and fail like an unavailable CLI.
   if [[ -n "${FAKE_AGENT_UNHANDLED:-}" ]]; then

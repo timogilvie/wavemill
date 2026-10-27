@@ -52,7 +52,7 @@ import type {
   DeliveryOutcome,
 } from './eval-schema.ts';
 import type { InterventionSummary } from './intervention-detector.ts';
-import { resolveProjectsDirs } from './workflow-cost.ts';
+import { resolveProjectsDirs } from './wavemill-session-paths.ts';
 
 // ────────────────────────────────────────────────────────────────
 // PR Checks Cache

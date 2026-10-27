@@ -63,7 +63,26 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 RENDER_FUNC_FILE="$TMP_DIR/render-grouped.sh"
-extract_function "$MONITOR_SCRIPT_FILE" "render_grouped_task_list" > "$RENDER_FUNC_FILE"
+{
+  extract_function "$MONITOR_SCRIPT_FILE" "render_grouped_task_list"
+  echo
+  # HOK-3305: render_grouped_task_list is a thin wrapper that forwards to
+  # render_launch_set_picker (defined in wavemill-picker.sh). Source the
+  # picker file so the extracted wrapper can resolve its forward target.
+  cat "$REPO_DIR/shared/lib/wavemill-picker.sh"
+  echo
+  cat <<'STUB'
+if ! declare -F queue_inference_degraded_banner >/dev/null 2>&1; then
+  queue_inference_degraded_banner() { return 0; }
+fi
+if ! declare -F wavemill_run_tool >/dev/null 2>&1; then
+  wavemill_run_tool() { return 1; }
+fi
+if ! declare -F _with_timeout >/dev/null 2>&1; then
+  _with_timeout() { shift; "$@"; }
+fi
+STUB
+} > "$RENDER_FUNC_FILE"
 
 if [[ ! -s "$RENDER_FUNC_FILE" ]]; then
   echo "Could not extract render_grouped_task_list()"
@@ -92,6 +111,12 @@ render_backlog_case() {
     printf "%s\n" "{}" > "$CASE_DIR/.wavemill-config.json"
     # shellcheck source=/dev/null
     source "$FUNCTIONS_FILE"
+    # HOK-3305: stub select-wave so the picker renders without the TS tool.
+    # The log-hygiene assertion only cares that the backlog tier log fires at
+    # info level, which requires the picker to emit at least one entry.
+    _picker_select_wave() {
+      jq -n --argjson p "$1" '"'"'{launchNext: ($p.availableNow // []), held: [], slotsFull: []}'"'"'
+    }
     render_grouped_task_list "$QUEUE_PLAN" "$AVAILABLE" 16 false
     printf "logs=%s\n" "$LOG_OUTPUT"
   '

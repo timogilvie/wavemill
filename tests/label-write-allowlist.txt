@@ -9,5 +9,8 @@
 #   // allow-label-write: <reason> (TypeScript)
 
 # Lane progression writes (tend lifecycle) + imports/comments
-# Count includes import lines and in-comment mentions due to grep pattern
-shared/lib/tend-controller.ts 7
+# Count includes import lines and in-comment mentions due to grep pattern.
+# HOK-3316: 7 → 4 — tend's private wm:blocked writer (releaseToBlocked /
+# setWavemillBlocked) is gone; the remaining sites are the wm:ready restore
+# after a deferred retry and the stale-lock reclaim.
+shared/lib/tend-controller.ts 4

@@ -17,18 +17,13 @@ import { appendEvalRecord } from './eval-persistence.ts';
 import { resolveEvalsDir, resolveRouteArtifactArchiveDir } from './evals-paths.ts';
 import { execShellCommand } from './shell-utils.ts';
 import { detectAndFormatInterventions } from './intervention-detector.ts';
-import {
-  computeWorkflowCost,
-  loadPricingTable,
-  reportableWorkflowCostUsd,
-  type PricingTable,
-} from './workflow-cost.ts';
+import { reportableWorkflowCostUsd } from './workflow-cost.ts';
+import { loadPricingTable, type PricingTable } from './pricing/model-pricing.ts';
 import { collectExecutionEconomics } from './execution-economics.ts';
-// Lazy: the SDK loads only when the collection runner invokes the collector,
+// Lazy: the SDK loads only when the metering runner invokes the collector,
 // so a stale @hokusai/core cannot fail module load for every eval.
 import { collectSdkTaskCostSummariesLazy } from './sdk-task-cost/lazy-collect.ts';
-import { resolveAuthoritativeWorkflowCost } from './sdk-task-cost/resolve.ts';
-import { runSdkTaskCostCollection } from './sdk-task-cost/shadow.ts';
+import { meterWorkflowCost } from './sdk-task-cost/meter.ts';
 import { getDeepSeekProviderMetadata } from './deepseek-provider.ts';
 import { runEvalAnalysis } from './eval-analysis.ts';
 import { callHeadlessLLM } from './headless-llm.ts';
@@ -731,7 +726,7 @@ export function enrichPostCompletionRecord(
       console.warn(`Post-completion eval: stage execution identity failed — ${errorMessage(err)}`);
     }
   }
-  const attestation = attestEvalRecordChallengeExecution(record);
+  const attestation = attestEvalRecordChallengeExecution(record, input.repoDir);
   attachChallengeExecutionMetadata(record, {
     side: record.challengeSide,
     intent: record.challengeIntent,
@@ -945,79 +940,60 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
         if (debug) {
           console.log(`[DEBUG_COST]   Loaded pricing for ${Object.keys(pricingTable).length} model(s)`);
         }
+      } catch (pricingErr: unknown) {
+        console.warn(`Post-completion eval: pricing table unavailable — ${errorMessage(pricingErr)}`);
+      }
 
-        costOutcome = computeWorkflowCost({
+      // Normalized execution-economics collection (HOK-2958): fail-soft,
+      // observation-only — never influences routing or the workflow.
+      try {
+        executionEconomics = await postCompletionHookDeps.collectExecutionEconomics({
           worktreePath: ctx.worktreePath,
           branchName,
           repoDir,
           issueId: ctx.issueId,
+          routing: stageArtifacts.routing ?? null,
+          stageResultsDir: stageArtifacts.stageResultsDir ?? null,
           pricingTable,
-          agentType: ctx.agentType,
         });
-
-        // Normalized execution-economics collection (HOK-2958): fail-soft,
-        // observation-only — never influences routing or the workflow.
-        try {
-          executionEconomics = await postCompletionHookDeps.collectExecutionEconomics({
-            worktreePath: ctx.worktreePath,
-            branchName,
-            repoDir,
-            issueId: ctx.issueId,
-            routing: stageArtifacts.routing ?? null,
-            stageResultsDir: stageArtifacts.stageResultsDir ?? null,
-            pricingTable,
-          });
-          if (executionEconomics.length > 0) {
-            const summary = executionEconomics
-              .map((block) => `${block.harness}: ${block.sessionCount} session(s), ${block.turnCount} turn(s), coverage ${block.coverage}`)
-              .join('; ');
-            console.log(`Post-completion eval: execution economics — ${summary}`);
-          }
-        } catch (economicsErr: unknown) {
-          console.warn(`Post-completion eval: execution economics collection failed — ${errorMessage(economicsErr)}`);
+        if (executionEconomics.length > 0) {
+          const summary = executionEconomics
+            .map((block) => `${block.harness}: ${block.sessionCount} session(s), ${block.turnCount} turn(s), coverage ${block.coverage}`)
+            .join('; ');
+          console.log(`Post-completion eval: execution economics — ${summary}`);
         }
-      } catch (costErr: unknown) {
-        const costMsg = errorMessage(costErr);
-        console.warn(`Post-completion eval: workflow cost computation failed — ${costMsg}`);
+      } catch (economicsErr: unknown) {
+        console.warn(`Post-completion eval: execution economics collection failed — ${errorMessage(economicsErr)}`);
       }
 
-      // SDK task-cost metering (HOK-3075/HOK-3076): authoritative by default,
-      // collected independently of the legacy outcome with the same pricing
-      // table. The legacy outcome stays the fallback (no SDK summary) and the
-      // WAVEMILL_COST_METERING_LEGACY rollback.
-      const worktreePath = ctx.worktreePath;
-      taskCostSummary = await runSdkTaskCostCollection(
-        () => postCompletionHookDeps.collectSdkTaskCostSummaries({
-          worktreePath,
-          branchName,
-          repoDir,
-          issueId: ctx.issueId,
-          pricingTable,
-        }),
-        { label: 'Post-completion eval' },
-      );
-      const costSelection = resolveAuthoritativeWorkflowCost({
-        legacyOutcome: costOutcome,
-        summaries: taskCostSummary,
+      // SDK task-cost metering (HOK-3075/HOK-3076/HOK-3077): the one cost
+      // engine. Fail-soft — a collector failure becomes an `adapter_error`
+      // outcome, never a thrown eval.
+      const metered = await meterWorkflowCost({
+        worktreePath: ctx.worktreePath,
+        branchName,
+        repoDir,
+        issueId: ctx.issueId,
         agentType: ctx.agentType,
         pricingTable,
-        repoDir,
+        label: 'Post-completion eval',
+        collect: (input) => postCompletionHookDeps.collectSdkTaskCostSummaries(input),
       });
-      costOutcome = costSelection.outcome;
+      costOutcome = metered.outcome;
+      taskCostSummary = metered.summaries;
 
-      if (costOutcome?.status === 'success') {
+      if (costOutcome.status === 'success') {
         const coverage = costOutcome.attribution
           ? `, coverage ${costOutcome.attribution.coverage}`
           : '';
         const reportable = reportableWorkflowCostUsd(costOutcome);
         console.log(
           `Post-completion eval: workflow cost ${formatWorkflowCostAmount(reportable, costOutcome.attribution)} ` +
-          `(${costOutcome.turnCount} turns across ${costOutcome.sessionCount} session(s)${coverage}; ` +
-          `${costSelection.engine} engine, ${costSelection.reason})`
+          `(${costOutcome.turnCount} turns across ${costOutcome.sessionCount} session(s)${coverage}; ${metered.reason})`
         );
-      } else if (costOutcome) {
+      } else {
         console.warn(
-          `Post-completion eval: workflow cost computation failed (${costOutcome.status}) — ${costOutcome.reason}`
+          `Post-completion eval: workflow cost unavailable (${costOutcome.status}) — ${costOutcome.reason}`
         );
         if (!debug) {
           console.log('Post-completion eval: run with DEBUG_COST=1 for detailed diagnostics');

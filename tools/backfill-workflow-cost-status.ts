@@ -7,14 +7,16 @@
  * that don't have them, attempting to re-compute missing costs where possible.
  * Also repairs costs that absorbed the cross-task native session pool
  * (HOK-3256): recomputed when possible, otherwise marked `unreliable`.
+ * Recomputation uses the SDK cost engine (`recomputeRecordWorkflowCost`,
+ * HOK-3077), the same path live evals meter with.
  */
 
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import { errorMessage } from '../shared/lib/error-utils.ts';
 import type { EvalRecord } from '../shared/lib/eval-schema.ts';
-import { computeWorkflowCost, loadPricingTable } from '../shared/lib/workflow-cost.ts';
+import { loadPricingTable, type PricingTable } from '../shared/lib/pricing/model-pricing.ts';
+import { recomputeRecordWorkflowCost } from '../shared/lib/sdk-task-cost/recompute.ts';
 import { readJsonlFile, readTransformWrite } from '../shared/lib/jsonl-utils.ts';
 import {
   POOLED_COST_MIN_SESSIONS,
@@ -32,51 +34,21 @@ interface BackfillStats {
   statusSet: Record<string, number>;
 }
 
-/**
- * Attempt to recover workflow cost for a record that doesn't have it.
- */
+/** Recover a record's cost from its sessions, in the shape the backfill below reads. */
 function attemptCostRecovery(
   record: EvalRecord,
   repoDir: string,
-  pricingTable: any,
-): { cost?: number; tokenUsage?: any; attribution?: EvalRecord['workflowCostAttribution']; reason?: string } {
-  // Need metadata to attempt recovery
-  const meta = record.metadata as any;
-  if (!meta) {
-    return { reason: 'No metadata available for recovery' };
+  pricingTable: PricingTable,
+): { cost?: number; tokenUsage?: EvalRecord['workflowTokenUsage']; attribution?: EvalRecord['workflowCostAttribution']; reason?: string } {
+  const recovery = recomputeRecordWorkflowCost(record, { repoDir, pricingTable });
+  if (!recovery.recomputed) {
+    return { reason: recovery.reason };
   }
-
-  // Extract worktree path and branch from metadata
-  const worktreePath = meta.worktreePath;
-  const branchName = meta.branchName;
-
-  if (!worktreePath || !branchName) {
-    return { reason: 'Missing worktreePath or branchName in metadata' };
-  }
-
-  try {
-    const costOutcome = computeWorkflowCost({
-      worktreePath,
-      branchName,
-      repoDir,
-      issueId: record.issueId,
-      pricingTable,
-      agentType: record.agentType,
-    });
-
-    if (costOutcome.status === 'success') {
-      return {
-        cost: costOutcome.totalCostUsd,
-        tokenUsage: costOutcome.models,
-        attribution: costOutcome.attribution,
-      };
-    } else {
-      return { reason: costOutcome.reason };
-    }
-  } catch (err: unknown) {
-    const msg = errorMessage(err);
-    return { reason: `Recovery failed: ${msg}` };
-  }
+  return {
+    cost: recovery.recomputed.cost,
+    tokenUsage: recovery.recomputed.tokenUsage,
+    attribution: recovery.recomputed.attribution,
+  };
 }
 
 runTool({

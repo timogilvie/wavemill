@@ -4,8 +4,12 @@ import { readdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { computeModelCost, loadPricingTable } from '../shared/lib/workflow-cost.ts';
-import type { ModelPricing, ModelTokenUsage } from '../shared/lib/workflow-cost.ts';
+import {
+  computeModelCost,
+  loadPricingTable,
+  type ModelPricing,
+  type ModelTokenUsage,
+} from '../shared/lib/pricing/model-pricing.ts';
 import { getEvalConfig } from '../shared/lib/config.ts';
 import { readJsonlFile, readTransformWrite } from '../shared/lib/jsonl-utils.ts';
 

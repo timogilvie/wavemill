@@ -491,7 +491,7 @@ function dispatch(state, now) {
     }
     case 'pr comment': {
       const pr = findPr(state, rest[0]);
-      (pr.comments ??= []).push({ body: one(flags, '--body', '-b') ?? '', createdAt: now });
+      (pr.comments ??= []).push(newComment(state, pr, one(flags, '--body', '-b') ?? '', now));
       return () => process.exit(0);
     }
     case 'pr close': {
@@ -501,7 +501,7 @@ function dispatch(state, now) {
       pr.closedAt = now;
       pr.headRefOid = liveHead(state, pr, { observe: true });
       const comment = one(flags, '--comment', '-c');
-      if (comment) (pr.comments ??= []).push({ body: comment, createdAt: now });
+      if (comment) (pr.comments ??= []).push(newComment(state, pr, comment, now));
       return () => process.exit(0);
     }
     case 'pr merge': {
@@ -561,6 +561,14 @@ function dispatch(state, now) {
   }
 }
 
+// Issue comments carry the numeric REST id and the URL gh returns, so a
+// caller can edit one in place (HOK-3316's standing merge-status comment).
+function newComment(state, pr, body, now) {
+  state.nextCommentId = (state.nextCommentId ?? 1000) + 1;
+  const id = state.nextCommentId;
+  return { id, url: `https://github.com/${state.repo}/pull/${pr.number}#issuecomment-${id}`, body, createdAt: now, updatedAt: now };
+}
+
 function api(state, now) {
   const endpoint = (sub ?? '').replace(/^\//, '');
   const method = String(one(flags, '--method', '-X') ?? (flags['--input'] || flags['-f'] || flags['-F'] ? 'POST' : 'GET')).toUpperCase();
@@ -603,6 +611,18 @@ function api(state, now) {
     const sha = refSha(decodeURIComponent(branch[1]));
     if (!sha) fail('gh: Branch not found (HTTP 404)');
     return () => emit({ name: branch[1], commit: { sha }, protected: state.requiredChecks.length > 0 }, flags, { projectFields: false });
+  }
+  const issueComment = endpoint.match(/^repos\/[^/]+\/[^/]+\/issues\/comments\/(\d+)$/);
+  if (issueComment) {
+    const comment = Object.values(state.prs).flatMap((pr) => pr.comments ?? []).find((c) => String(c.id) === issueComment[1]);
+    if (!comment) fail('gh: Not Found (HTTP 404)');
+    if (method === 'PATCH') {
+      const field = many(flags, '-f', '--field', '--raw-field').map(String).find((f) => f.startsWith('body='));
+      if (field === undefined) fail('gh: body is required (HTTP 422)');
+      comment.body = field.slice('body='.length);
+      comment.updatedAt = now;
+    }
+    return () => emit(comment, flags, { projectFields: false });
   }
   if (/^repos\/[^/]+\/[^/]+\/issues\/\d+\/(events|timeline|comments)$/.test(endpoint)) {
     return () => emit([], flags, { projectFields: false });

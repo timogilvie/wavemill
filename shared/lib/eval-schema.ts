@@ -204,16 +204,22 @@
  *   fields still validate.
  * - **1.54.0**: Added optional `taskCostSummary` — shadow `@hokusai/core`
  *   `TaskCostSummaryV1` records (one per harness) computed by the SDK
- *   task-cost bridge when `WAVEMILL_SDK_COST_METERING_SHADOW` is on
- *   (HOK-3075). Legacy `workflowCost` / `workflowCostAttribution` /
+ *   task-cost bridge behind a shadow switch (HOK-3075; the switch was retired
+ *   in HOK-3077, when the SDK became the only cost engine). Legacy
+ *   `workflowCost` / `workflowCostAttribution` /
  *   `executionEconomics` / `pricingSnapshot` are unchanged and stay
  *   authoritative. Local-only: not projected to Hokusai submissions.
  *   Additive; legacy records without this field still validate.
+ * - **1.55.0**: Added optional `correctionProvenance` (HOK-3321) so an
+ *   explicit recovery tool can append a re-attested copy of an invalid eval
+ *   record that names the original row via `supersedes.evalId`. The original
+ *   invalid row is never rewritten or deleted. Additive; legacy records
+ *   without this field still validate.
  *
  * @module eval-schema
  */
 
-import type { ModelPricing } from './workflow-cost.ts';
+import type { ModelPricing } from './pricing/model-pricing.ts';
 import type { ModelEvidencePolicy, ModelIdentityStatus, ModelSelector, RegistryTaskType } from './model-registry.ts';
 import type { RuntimeResourceSelection } from './resource-selection.ts';
 import type {
@@ -234,7 +240,7 @@ import type { TaskCostSummaryV1 } from './sdk-task-cost/contract.ts';
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.54.0';
+export const SCHEMA_VERSION = '1.55.0';
 
 /**
  * Machine-readable exploration source for an eval row.
@@ -2176,11 +2182,13 @@ export interface EvalRecord {
   executionEconomics?: EvalExecutionEconomics[];
 
   /**
-   * Shadow SDK task-cost summaries (`@hokusai/core` `TaskCostSummaryV1`), one
-   * per harness that produced sessions, emitted only while
-   * `WAVEMILL_SDK_COST_METERING_SHADOW` is on (HOK-3075). Candidate source for
-   * cost reporting; nothing reads it until the HOK-3076 cutover. Local-only;
-   * not projected to Hokusai submissions. Readers must tolerate absence.
+   * SDK task-cost summaries (`@hokusai/core` `TaskCostSummaryV1`), one per
+   * harness that produced sessions (HOK-3075). Raw evidence behind
+   * `workflowCost*`, which is the projection of the primary summary (the SDK
+   * is the only cost engine since HOK-3077). Absent when no session produced
+   * a cost event, on records written before the bridge, and on records whose
+   * collection failed. Local-only; not projected to Hokusai submissions.
+   * Readers must tolerate absence.
    *
    * @since 1.54.0
    */
@@ -2216,6 +2224,24 @@ export interface EvalRecord {
 
   /** Provenance for records quarantined during corpus hygiene migration. */
   quarantine_reason?: string;
+
+  /**
+   * Provenance for a record re-attested by an explicit recovery tool
+   * (HOK-3321). The corrected record is appended to evals.jsonl; the original
+   * invalid row is never rewritten or deleted.
+   *
+   * @since 1.55.0
+   */
+  correctionProvenance?: {
+    supersedes: {
+      /** id of the original invalid record this row corrects. */
+      evalId: string;
+      /** Stable reason code, e.g. `hok-3321-registry-equivalence`. */
+      reason: string;
+      correctedAt?: string;
+      correctedBy?: string;
+    };
+  };
 
   /** Stable machine-readable eval failure reason for fast-fail records. */
   failureReason?: EvalFailureReason;

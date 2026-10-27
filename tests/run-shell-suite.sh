@@ -138,6 +138,7 @@ TESTS=(
   challenge-running-state.test.sh
   challenge-eval-hard-failure.test.sh
   challenge-eval-invalid-challenge.test.sh
+  challenge-planning-equivalence.test.sh
   challenge-eval-timeout.test.sh
   challenge-job-monitor-loop.test.sh
   task-selection-renderer.test.sh

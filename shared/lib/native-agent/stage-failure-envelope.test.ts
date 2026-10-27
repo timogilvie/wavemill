@@ -136,6 +136,21 @@ test('validation fails closed on a malformed evidence sub-object', () => {
   }
 });
 
+test('accepts a payload snapshot path and fails closed on a non-string one (HOK-3261)', () => {
+  const withSnapshot = validateStageFailureEnvelope(makeEnvelope({
+    evidence: { source: 'native-runtime', detail: 'empty response', payloadCaptureDir: '/tmp/native.native-payloads' },
+  }));
+  assert.equal(withSnapshot.ok, true);
+
+  const result = validateStageFailureEnvelope(makeEnvelope({
+    evidence: { source: 'native-runtime', detail: 'empty response', payloadCaptureDir: 3 as unknown as string },
+  }));
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.field, 'evidence.payloadCaptureDir');
+  }
+});
+
 test('validation fails closed on a negative retryAttempt', () => {
   const result = validateStageFailureEnvelope(makeEnvelope({ retryAttempt: -1 }));
   assert.equal(result.ok, false);

@@ -4,7 +4,7 @@
     "sync": {
       "outcome": {
         "attribution": {
-          "coverage": "unavailable",
+          "coverage": "partial",
           "models": [
             {
               "cacheCreationTokens": 0,
@@ -48,7 +48,7 @@
     "sync": {
       "outcome": {
         "attribution": {
-          "coverage": "unavailable",
+          "coverage": "partial",
           "models": [
             {
               "cacheCreationTokens": 0,
@@ -92,7 +92,7 @@
     "sync": {
       "outcome": {
         "attribution": {
-          "coverage": "unavailable",
+          "coverage": "partial",
           "models": [
             {
               "cacheCreationTokens": 2000,
@@ -136,7 +136,7 @@
     "sync": {
       "outcome": {
         "attribution": {
-          "coverage": "unavailable",
+          "coverage": "partial",
           "models": [
             {
               "cacheCreationTokens": 0,
@@ -154,7 +154,7 @@
           "reason": "unpriced_model",
           "sessions": 1,
           "source": "claude",
-          "turns": 3,
+          "turns": 1,
           "unpricedSessions": 1
         },
         "models": {
@@ -170,7 +170,7 @@
         "sessionCount": 1,
         "status": "success",
         "totalCostUsd": 0,
-        "turnCount": 3
+        "turnCount": 1
       },
       "warnings": []
     }
@@ -180,7 +180,7 @@
     "sync": {
       "outcome": {
         "attribution": {
-          "coverage": "unavailable",
+          "coverage": "partial",
           "models": [
             {
               "cacheCreationTokens": 0,
@@ -292,7 +292,7 @@
     "sync": {
       "outcome": {
         "attribution": {
-          "coverage": "unavailable",
+          "coverage": "partial",
           "models": [
             {
               "cacheCreationTokens": 500,
@@ -385,7 +385,7 @@
     "sync": {
       "outcome": {
         "attribution": {
-          "coverage": "unavailable",
+          "coverage": "partial",
           "models": [
             {
               "cacheCreationTokens": 0,
@@ -435,7 +435,7 @@
           "sessionFilesFound": 0,
           "worktreePath": "<SANDBOX>/worktree"
         },
-        "reason": "No session files found in expected location",
+        "reason": "No session on this branch produced a task-cost event",
         "status": "no_sessions"
       },
       "warnings": []
@@ -446,7 +446,7 @@
     "sync": {
       "outcome": {
         "attribution": {
-          "coverage": "known_zero",
+          "coverage": "partial",
           "models": [
             {
               "cacheCreationTokens": 0,
@@ -457,11 +457,12 @@
               "outputTokens": 100,
               "priced": true,
               "pricingSource": "local_estimate",
-              "provider": "test",
+              "provider": "native",
               "totalTokens": 1100
             }
           ],
           "pricedSessions": 1,
+          "reason": "mixed_coverage",
           "sessions": 1,
           "source": "native",
           "turns": 1,
@@ -495,7 +496,7 @@
     "sync": {
       "outcome": {
         "attribution": {
-          "coverage": "complete",
+          "coverage": "partial",
           "models": [
             {
               "cacheCreationTokens": 0,
@@ -506,11 +507,12 @@
               "outputTokens": 100,
               "priced": true,
               "pricingSource": "local_estimate",
-              "provider": "openai",
+              "provider": "native",
               "totalTokens": 100
             }
           ],
           "pricedSessions": 1,
+          "reason": "mixed_coverage",
           "sessions": 1,
           "source": "native",
           "turns": 1,
@@ -544,7 +546,7 @@
     "sync": {
       "outcome": {
         "attribution": {
-          "coverage": "complete",
+          "coverage": "partial",
           "models": [
             {
               "cacheCreationTokens": 0,
@@ -555,13 +557,13 @@
               "outputTokens": 100,
               "priced": true,
               "pricingSource": "openrouter_api",
-              "provider": "openai",
+              "provider": "native",
               "providerReportedCostUsd": 0.0095,
               "totalTokens": 1100
             }
           ],
           "pricedSessions": 1,
-          "reason": "provider_reported_cost",
+          "reason": "mixed_coverage",
           "sessions": 1,
           "source": "native",
           "turns": 1,
@@ -590,7 +592,7 @@
     "exact": {
       "outcome": {
         "attribution": {
-          "coverage": "complete",
+          "coverage": "partial",
           "models": [
             {
               "cacheCreationTokens": 0,
@@ -601,13 +603,13 @@
               "outputTokens": 100,
               "priced": true,
               "pricingSource": "openrouter_api",
-              "provider": "openai",
+              "provider": "native",
               "providerReportedCostUsd": 0.0095,
               "totalTokens": 1100
             }
           ],
           "pricedSessions": 1,
-          "reason": "provider_reported_cost",
+          "reason": "mixed_coverage",
           "sessions": 1,
           "source": "native",
           "turns": 1,
@@ -633,7 +635,7 @@
     "sync": {
       "outcome": {
         "attribution": {
-          "coverage": "complete",
+          "coverage": "partial",
           "models": [
             {
               "cacheCreationTokens": 0,
@@ -644,13 +646,13 @@
               "outputTokens": 100,
               "priced": true,
               "pricingSource": "openrouter_api",
-              "provider": "openai",
+              "provider": "native",
               "providerReportedCostUsd": 0.0095,
               "totalTokens": 1100
             }
           ],
           "pricedSessions": 1,
-          "reason": "provider_reported_cost",
+          "reason": "mixed_coverage",
           "sessions": 1,
           "source": "native",
           "turns": 1,
@@ -679,7 +681,7 @@
     "sync": {
       "outcome": {
         "attribution": {
-          "coverage": "unavailable",
+          "coverage": "partial",
           "models": [
             {
               "cacheCreationTokens": 0,
@@ -688,7 +690,7 @@
               "modelId": "unknown-model",
               "outputTokens": 100,
               "priced": false,
-              "provider": "anthropic",
+              "provider": "native",
               "reason": "unpriced_model",
               "totalTokens": 1100
             }

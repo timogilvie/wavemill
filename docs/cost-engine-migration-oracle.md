@@ -11,10 +11,14 @@ A migration oracle for replacing Wavemill's cost engine with the Hokusai SDK, ma
 
 ## Production Entrypoints
 
+Since HOK-3077 both entrypoints meter through the SDK engine
+(`shared/lib/sdk-task-cost/meter.ts`); the legacy engine named in the defect
+write-ups below was deleted.
+
 | Entrypoint | Call | Pricing Source | Exact OpenRouter |
 |---|---|---|---|
-| `post-completion-hook.ts:883-918` (mill/monitor) | `computeWorkflowCost` (sync) | `loadPricingTable(<wavemill install dir>)` | **no** |
-| `eval-orchestrator.ts:494-535` (`wavemill eval`) | `computeWorkflowCostWithExactPricing` | `loadPricingTable(repoDir)` | yes, when `OPENROUTER_API_KEY` |
+| `post-completion-hook.ts` (mill/monitor) | `meterWorkflowCost` | `loadPricingTable(<wavemill install dir>)` | **no** |
+| `eval-orchestrator.ts` (`wavemill eval`) | `meterWorkflowCost` with `exactPricing` | `loadPricingTable(repoDir)` | yes, when `OPENROUTER_API_KEY` |
 | Both → `collectExecutionEconomics` | Claude + Codex adapters → `buildExecutionEconomics` | `computeModelCost`/`loadPricingTable` | n/a |
 | Both → `eval-record-builder.attachWorkflowCostMetadata` | writes `workflowCost`, `workflowTokenUsage`, `workflowCostStatus`, `pricingSnapshot`, `workflowCostAttribution`, `workflowCostDiagnostics` | — | — |
 
@@ -303,14 +307,42 @@ Found by the HOK-3076 local historical sample (not reachable from the synthetic 
 
 ## SDK Cutover (HOK-3076)
 
-The SDK bridge (`shared/lib/sdk-task-cost/`) is the authoritative workflow/eval cost source. `npx tsx tools/compare-task-costs.ts` is the release gate; difference rules and the rollback switch are documented in `shared/fixtures/cost-parity/README.md` ("SDK migration gate").
+The SDK bridge (`shared/lib/sdk-task-cost/`) became the authoritative workflow/eval cost source behind a release gate (legacy vs SDK, with reviewed difference rules — `shared/fixtures/cost-parity/README.md`, "SDK migration gate").
 
 Resolved decisions:
 
 1. **EF-1**: A run that priced nothing (unpriced models, missing usage) records no `workflowCost` — never `$0.00` — while `workflowCostAttribution` carries the coverage. A partial run keeps the priced lower bound with `coverage: partial`. Only an explicit known zero records `$0`.
-2. **EF-8**: Not unified. The eval orchestrator keeps the legacy outcome when its OpenRouter exact generation charges exceed what the transcripts recorded (`legacy_exact_pricing`); otherwise both entrypoints report the SDK projection.
+2. **EF-8**: Not unified in HOK-3076 (the eval orchestrator kept the legacy outcome when OpenRouter exact charges exceeded the transcripts); resolved in HOK-3077 — see below.
 3. **EF-2 / EF-5**: The SDK de-duplicates replayed Claude Code turns and counts priced/unpriced model segments.
 4. **EF-3 / EF-10**: Still open — the bridge prices Codex with the legacy `codex/1` parse, so Codex totals match legacy exactly.
+
+## Legacy Engine Retired (HOK-3077)
+
+The SDK is the only cost engine. `computeWorkflowCost`,
+`computeWorkflowCostWithExactPricing`, `recalculateWorkflowCost`, the HOK-3076
+release gate and the `WAVEMILL_*` rollback/shadow switches are deleted;
+`tools/check-cost-ownership.ts` keeps them from coming back. Rollback is a
+revert of the retirement change.
+
+- **Ownership split**: `shared/lib/workflow-cost.ts` holds only the persisted
+  record shape and `reportableWorkflowCostUsd`; per-call pricing lives in
+  `shared/lib/pricing/model-pricing.ts` and session discovery in
+  `shared/lib/wavemill-session-paths.ts`. Only the SDK bridge and named
+  Wavemill decision-policy sites (router budgets, judge pricing, native
+  budgets, backfills) may import the primitives
+  (`tools/cost-ownership-allowlist.txt`).
+- **EF-8 resolved**: OpenRouter exact charges are fetched for native response
+  ids (`shared/lib/pricing/openrouter-exact-pricing.ts`) and emitted as each
+  turn's provider-reported `actual_cost_usd`, so the exact figure flows
+  through the SDK reducer. Only the eval orchestrator opts in (the
+  post-completion hook stays network-free), as before.
+- **Primary summary**: native is primary only when the run was native or its
+  transcripts carry usable evidence — the legacy engine's rule — so an empty
+  native transcript never masks the Claude Code / Codex cost.
+- **Backfills**: `tools/backfill-workflow-cost-status.ts` recomputes through
+  `shared/lib/sdk-task-cost/recompute.ts` (same engine as live metering).
+- **Absence**: no summary is a `no_sessions` outcome, a collector failure an
+  `adapter_error` outcome — never a zero.
 
 ---
 
@@ -338,7 +370,7 @@ These must hold for the SDK bridge in all non-expected-fix cases:
 ## Running the Harness
 
 ```bash
-# Regenerate baseline (after legacy engine changes)
+# Regenerate baseline (after an intentional SDK bridge change)
 npx tsx tools/cost-parity.ts --write
 
 # Regression test (default)
@@ -367,5 +399,5 @@ Resolved in HOK-3076 — see "SDK Cutover (HOK-3076)" above.
 - `shared/fixtures/cost-parity/consumer-inventory.json` — Machine-readable consumer list
 - `shared/lib/cost-parity.ts` — Harness implementation
 - `tools/cost-parity.ts` — CLI tool
-- `tools/compare-task-costs.ts` / `shared/lib/cost-migration.ts` — HOK-3076 SDK release gate
+- `tools/check-cost-ownership.ts` / `tools/cost-ownership-allowlist.txt` — HOK-3077 cost-ownership guard
 - `shared/lib/cost-parity.test.ts` — Validation tests

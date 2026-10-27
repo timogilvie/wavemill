@@ -1,0 +1,17 @@
+# shellcheck shell=bash
+# Fake coder for the HOK-3313 replay (sourced by tests/fakes/bin/claude).
+#
+# HOK-3313 coder exited with SIGTERM (exit code 143) mid-run. It had already
+# committed changes but not written .coding-complete. The monitor should:
+# 1. Detect the agent is gone (no live process per HOK-3101)
+# 2. Record the exit in a single exit-observation
+# 3. Use identity from the launch record (not pane text)
+# 4. Pass through failure_policy_decide (not terminal bypass)
+# 5. Relaunch from the last durable commit
+#
+# Simulate this by starting work, committing, then exiting before completion.
+printf 'implemented %s\n' "$WAVEMILL_ISSUE" >> journey-output.txt
+git add journey-output.txt
+git -c user.name=fake-agent -c user.email=fake-agent@example.invalid commit -q -m "$WAVEMILL_ISSUE: work in progress"
+printf 'Made partial commit but exiting before .coding-complete\n'
+exit 143

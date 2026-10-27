@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Test: wm:ready/wm:blocked label write sites are allowed (HOK-3181)
+# Test: wm:ready/wm:blocked label write sites are allowed (HOK-3181, HOK-3316)
 #
 # Enforces the invariant that no wm:ready / wm:blocked write may exist outside
-# the reconciler. Lane progression labels (wm:merging, wm:merged, wm:superseded)
+# the reconciler. The source-guard twin, tools/check-merge-block-writers.ts,
+# enforces the stricter wm:blocked rule (no write, no clear, no raw
+# `gh pr comment`) in test:preflight. Lane progression labels (wm:merging, wm:merged, wm:superseded)
 # are OUT OF SCOPE. Sites are tracked in a ratcheting allowlist so the count
 # shrinks over time as sites migrate to the reconciler.
 
@@ -22,6 +24,7 @@ EXEMPT_FILES=(
   "shared/lib/pr-state-labels.ts"
   "shared/lib/merge-labels.ts"
   "shared/lib/merge-labels.test.ts"
+  "shared/lib/merge-block-writers-guard.ts"
 )
 
 # check_label_write_sites <root> <allowlist>
@@ -37,12 +40,18 @@ check_label_write_sites() {
     [[ -d "$root/$dir" ]] && scan_dirs+=("$dir")
   done
   if (( ${#scan_dirs[@]} > 0 )); then
-    # Grep for setWavemillReady, setWavemillBlocked, clearWavemillState, and
-    # gh pr edit --add-label/--remove-label wm:ready/wm:blocked
+    # Grep for setWavemillReady, setWavemillBlocked, clearWavemillState,
+    # gh pr edit --add-label/--remove-label wm:ready/wm:blocked, and (HOK-3316)
+    # tend's retired private block writer/clearer shapes: releaseToBlocked,
+    # writePrStateMarker, and a direct wm:blocked label removal.
     raw_matches=$(cd "$root" && grep -rn \
       -e 'setWavemillReady' \
       -e 'setWavemillBlocked' \
       -e 'clearWavemillState' \
+      -e 'releaseToBlocked' \
+      -e 'writePrStateMarker' \
+      -e 'removeLabelFromPullRequest([^)]*WM_LABELS\.blocked' \
+      -e "removeLabelFromPullRequest([^)]*['\"]wm:blocked" \
       -e '--add-label[[:space:]]\+["'"'"']\?wm:ready' \
       -e '--add-label[[:space:]]\+["'"'"']\?wm:blocked' \
       -e '--remove-label[[:space:]]\+["'"'"']\?wm:ready' \
