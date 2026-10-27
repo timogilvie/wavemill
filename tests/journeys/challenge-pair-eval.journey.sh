@@ -35,6 +35,10 @@
 # "not Done"; flip it to "= Done" in the same PR that closes the gap.
 set -euo pipefail
 source "$(dirname "$0")/harness.sh"
+# Two arms run the whole plan→ready chain, each eval'd, then compared: the
+# journey does about twice a single-task journey's work, so it gets twice the
+# wall-clock budget (a full run takes ~170s).
+JOURNEY_BUDGET_SECONDS=$(( JOURNEY_BUDGET_SECONDS * 2 ))
 
 reason="$(journey_skip_reason)"
 if [[ -n "$reason" ]]; then
