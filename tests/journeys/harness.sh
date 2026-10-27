@@ -21,7 +21,7 @@
 # Time is a tick counter, not the wall clock: the monitor runs with
 # POLL_SECONDS=0 and the tick clock seam (shared/lib/mill-clock.sh / .ts) on,
 # so deadlines, retry backoff and tend's retry sleeps advance per monitor pass.
-# Waits are bounded in monitor ticks; JOURNEY_BUDGET_SECONDS (CI: 90) is the
+# Waits are bounded in monitor ticks; JOURNEY_BUDGET_SECONDS (CI: 120) is the
 # wall-clock ceiling for the whole journey.
 #
 # On failure it prints a compact trace (tick-by-tick phase/marker/label table,

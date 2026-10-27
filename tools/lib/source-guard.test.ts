@@ -182,6 +182,21 @@ describe('runSourceGuard', () => {
     assert.equal(result.ok, false);
   });
 
+  it('includeTests: true scans *.test.* files; testsOnly: true scans ONLY *.test.*', () => {
+    // protects: HOK-3237 — a guard whose target is test code must be able to
+    // scan test files (includeTests), and conversely a tests-only guard must
+    // skip every production source so it never flags its own invariant target.
+    write('shared/lib/a.test.ts', 'forbidden();\n');
+    write('shared/lib/b.ts', 'forbidden();\n');
+    track('.');
+    const defaultSummary = runSourceGuard(SPEC, repo).findings.map((f) => f.file).sort();
+    assert.deepEqual(defaultSummary, ['shared/lib/b.ts']);
+    const includeSummary = runSourceGuard({ ...SPEC, includeTests: true }, repo).findings.map((f) => f.file).sort();
+    assert.deepEqual(includeSummary, ['shared/lib/a.test.ts', 'shared/lib/b.ts']);
+    const onlySummary = runSourceGuard({ ...SPEC, testsOnly: true }, repo).findings.map((f) => f.file).sort();
+    assert.deepEqual(onlySummary, ['shared/lib/a.test.ts']);
+  });
+
   it('honours custom excluded prefixes', () => {
     write('tests/helper.sh', 'forbidden_cmd\n');
     track('.');
