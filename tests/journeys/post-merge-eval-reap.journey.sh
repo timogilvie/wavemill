@@ -35,7 +35,7 @@ fakes_linear_add_issue "$ISSUE" "Add journey output file" Todo
 # Pin the judge to the Claude CLI. The built-in default judge model is a GPT
 # model served by the codex CLI, which has no shared fake and would reach the
 # real network.
-journey_write_config '{"eval": {"judge": {"model": "claude-sonnet-5", "provider": "claude-cli"}}}'
+journey_write_config '{"eval": {"judge": {"model": "claude-sonnet-5", "provider": "anthropic"}}}'
 # Post-merge auto eval on (the harness default is off). MONITOR_ENV is sourced
 # by the monitor, so the last assignment wins.
 printf 'AUTO_EVAL=true\n' >> "$MONITOR_ENV"
