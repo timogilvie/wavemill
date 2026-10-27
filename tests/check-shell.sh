@@ -215,6 +215,7 @@ for f in \
   "$REPO_DIR"/tests/condition-reconciler-realstate.test.sh \
   "$REPO_DIR"/tests/wavemill-pr-cache.test.sh \
   "$REPO_DIR"/tests/cross-pr-revert-job.test.sh \
+  "$REPO_DIR"/tests/async-in-flight-touch-set.test.sh \
   "$REPO_DIR"/tests/pr-ci-status-job.test.sh \
   "$REPO_DIR"/tests/ready-watchdog-job.test.sh \
   "$REPO_DIR"/tests/route-task-job.test.sh \

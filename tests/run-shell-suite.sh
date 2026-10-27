@@ -190,6 +190,7 @@ TESTS=(
   condition-reconciler-realstate.test.sh
   wavemill-pr-cache.test.sh
   cross-pr-revert-job.test.sh
+  async-in-flight-touch-set.test.sh
   pr-ci-status-job.test.sh
   ready-watchdog-job.test.sh
   route-task-job.test.sh
