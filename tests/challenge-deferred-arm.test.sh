@@ -233,30 +233,18 @@ check_contains "fork trigger emits invalid intent lifecycle event" "$FORK_TRIGGE
 echo ""
 echo "=== HOK-3065 launch-site seal + materialise wiring ==="
 
-# The mill and monitor must SEAL a plan-stage challenge rather than coerce it to
-# single mode; the pending arm is recorded in awaiting_expanded_route.
-check_contains "mill seals plan-stage instead of coercing to single" \
-  "$(cat "$MILL_SCRIPT")" \
-  'plan_awaits_expanded_route="true"'
-check_contains "mill no longer coerces plan-stage challenge to single" \
-  "$([[ $(grep -c 'plan_stage_expanded_route_unavailable' "$MILL_SCRIPT") == "0" ]] && echo absent || echo present)" \
-  'absent'
-check_contains "mill passes awaiting_expanded_route pending state to arm builder" \
-  "$(grep -B2 -A2 'pending_arm_state="awaiting_expanded_route"' "$MILL_SCRIPT")" \
-  'pending_arm_state="awaiting_expanded_route"'
-check_contains "mill forwards pending_arm_state to challenge_arm_json_build" \
-  "$(cat "$MILL_SCRIPT")" \
-  '"$pending_arm_state")"'
-
-check_contains "monitor seals plan-stage instead of retargeting" \
-  "$(cat "$MONITOR_SCRIPT_FILE")" \
-  'plan_awaits_expanded_route="true"'
-check_contains "monitor no longer retargets plan-stage to implementation" \
-  "$([[ $(grep -c 'retargeted to implementation stage' "$MONITOR_SCRIPT_FILE") == "0" ]] && echo absent || echo present)" \
-  'absent'
-check_contains "monitor forwards pending_arm_state to challenge_arm_json_build" \
-  "$(cat "$MONITOR_SCRIPT_FILE")" \
-  '"${pending_arm_state:-awaiting_fork}")"'
+# HOK-3237: the eight `check_contains` calls that greped the mill and monitor
+# scripts for `plan_awaits_expanded_route="true"`,
+# `plan_stage_expanded_route_unavailable`, `pending_arm_state="…"`, and the
+# `retargeted to implementation stage` string were deleted. They passed on
+# real bugs (behaviour broke, text still matched) and failed on harmless
+# refactors (variable renames, line reshuffles). The behavioural equivalent
+# — a plan-stage arm sealed in `awaiting_expanded_route` with the varied
+# planner retained — is directly tested in `Test 4c: HOK-3065
+# awaiting_expanded_route planner-stage arms` below. The remaining
+# behavioural gap (mill *actually* calls `challenge_arms_record_pending`
+# with that state at launch time, not just that the builder accepts it)
+# belongs in a journey test that drives the mill end-to-end.
 
 # finalize (plan→code handoff) must materialise awaiting_expanded_route arms.
 FINALIZE_BLOCK=$(awk '
@@ -497,10 +485,15 @@ else
   pass "collapse never creates a challenger task"
 fi
 
-# Source checks: the monitor wires the pieces at the right seams.
-check_contains "rehydrate loop recovers interrupted arms" \
-  "$(sed -n '/Rehydrate tracked tasks from persisted state/,/^fi$/p' "$MONITOR_SCRIPT_FILE")" \
-  'challenge_arms_recover_interrupted "$ISSUE"'
+# HOK-3237: the single-line sed/grep assertions that confirmed the
+# rehydrate loop calls `challenge_arms_recover_interrupted "$ISSUE"` and
+# that `NO_COMPARISON_REASONS` in challenge-comparison.ts carries
+# `pre_fork_primary_failure` were deleted. The behavioural equivalents are:
+#   - rehydrate: covered by the pending-arm restart assertions above
+#     (`REHYDRATE_ROWS` reflects state after cleanup_aborted_challenge_arm).
+#   - taxonomy: a cross-file "same literal appears in both the TS enum and
+#     the JSON schema" check belongs in a dedicated preflight guard, not a
+#     test grep.
 CLEANUP_BLOCK=$(awk '/^cleanup_aborted_challenge_arm\(\) \{/{capture=1} capture{print} /^}/ && capture{exit}' "$MONITOR_SCRIPT_FILE")
 check_contains "pre-fork cleanup cancels with typed reason" "$CLEANUP_BLOCK" 'challenge_arms_cancel_pending "$issue" "pre_fork_primary_failure" "$reason"'
 PR_OPEN_BLOCK=$(awk '
@@ -509,14 +502,6 @@ PR_OPEN_BLOCK=$(awk '
   capture && lines >= 20 { exit }
 ' "$MONITOR_SCRIPT_FILE")
 check_contains "PR-open tick re-enters the fork trigger" "$PR_OPEN_BLOCK" 'challenge_maybe_materialize_deferred_arms "$ISSUE"'
-
-# Taxonomy: pre_fork_primary_failure is a registered no-comparison reason.
-check_contains "NO_COMPARISON_REASONS carries pre_fork_primary_failure" \
-  "$(grep -A 30 'NO_COMPARISON_REASONS = \[' "$REPO_DIR/shared/lib/challenge-comparison.ts")" \
-  "'pre_fork_primary_failure'"
-check_contains "eval-schema.json carries pre_fork_primary_failure" \
-  "$(cat "$REPO_DIR/shared/lib/eval-schema.json")" \
-  '"pre_fork_primary_failure"'
 
 # ────────────────────────────────────────────────────────────────
 # Test 4c (HOK-3065): awaiting_expanded_route planner-stage arms

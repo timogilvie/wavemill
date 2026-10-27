@@ -673,6 +673,19 @@ Return your review as a JSON object with this exact structure:
 
 ---
 
+## Test quality — behavioural, not a mirror of the source (HOK-3237)
+
+For each test added or modified in the diff, ask:
+
+- **Would this test fail against a plausible wrong implementation?** Or does it mirror the implementation back at itself (grep the source, hash the file, assert the exact literal the writer used)? AI-written tests often restate the writer; those pass on real bugs and fail on harmless refactors.
+- **Were its fixtures derived from the writer or from the author's assumptions?** A fixture that was captured from the current output of the function under test cannot catch a bug in that function. An independent oracle (a hand-authored expected value, a different implementation, a protocol-level spec) can.
+- **Can you say in one sentence what this test protects against?** Each new `test(...)` / `test_*` should carry a one-line `// protects: <failure scenario>` comment (or encode the scenario in the test name). If the test cannot answer this question, flag it.
+- **Does it read, grep, or hash `shared/lib/**` or `tools/**` source as the oracle?** The `tools/check-source-text-assertions.ts` preflight already fails on new occurrences, but a disguised variant (`eval "$(sed -n …)"` extraction + text match, a `readFileSync` of a path assembled at runtime) can slip past. Flag any such pattern you see in the diff.
+
+Flag violations with `severity: "warning"` and `category: "logic"`. Blocker only if a mirror-of-source test is replacing coverage the diff removed — then the regression is the loss of real coverage.
+
+---
+
 **FINAL REMINDER**: Your entire response must be valid JSON that can be parsed by JSON.parse(). Start your response with `{` and end with `}`. Do not include any text before or after the JSON object.
 
 Now review the diff provided in the Context Documents section and return your findings in the JSON format specified above.
