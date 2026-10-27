@@ -53,7 +53,7 @@ type FixtureInputs = {
   // workflow-state lifecycle shape — role=aborted-arm maps to allowAbandon=true.
   role?: 'primary' | 'challenger';
   pairId?: string;
-  workflowOutcome?: 'merged' | 'aborted' | 'closed';
+  workflowOutcome?: 'merged' | 'aborted' | 'closed' | 'running';
   // Git evidence the fake runner reports when asked.
   gitStatus?: string;           // porcelain output; empty = clean
   commitsAhead?: string;        // rev-list --count output
@@ -317,7 +317,13 @@ describe('HOK-3312 replay — 2026-10-22 Backstage retained rows', () => {
     });
   }
 
-  it('negative: aborted arm without a merged sibling stays retain-eligible', () => {
+  it('terminal-lifecycle aborted arm with dirt never fails with dirty_worktree', () => {
+    // HOK-3312 invariant: for the monitor consumer, a terminal-lifecycle task
+    // with real dirt collapses into `would-archive-and-reap` instead of
+    // producing the pre-HOK-3312 `refused:dirty_worktree` wedge. The sibling
+    // is NOT merged here (no sibling in state), so `isDelivered` is false and
+    // the HOK-3160 archive path does not apply — the ONLY path that keeps
+    // this out of `dirty_worktree` is the HOK-3312 lifecycle collapse.
     const inputs: FixtureInputs = {
       issue: 'HOK-9999_c',
       slug: 'hok-9999-challenger',
@@ -345,12 +351,41 @@ describe('HOK-3312 replay — 2026-10-22 Backstage retained rows', () => {
       monitorConsumer: true,
       allowAbandon: true,
     });
-    // Dirty tree + not-delivered sibling means we don't auto-archive.
-    // (monitorConsumer collapses dirty-into-archive for a *terminal lifecycle*
-    // task; our lifecycle is 'aborted', which qualifies, so even a bare arm
-    // archives.) Actually `isTerminalLifecycle` returns true here, so this
-    // becomes `would-archive-and-reap`. Guard the HOK-3312 intent instead:
-    // whatever the status, it must NOT be a `dirty_worktree` refusal.
+    assert.equal(decision.status, 'would-archive-and-reap');
     assert.notEqual(decision.refusalReason, 'dirty_worktree');
+    assert.notEqual(decision.refusalReason, 'live-agent-process');
+  });
+
+  it('non-terminal lifecycle with dirt still refuses dirty_worktree (lifecycle gate)', () => {
+    // HOK-3312 defense-in-depth: `isTerminalLifecycle`'s allowlist means an
+    // unexpected `workflowOutcome` value never collapses dirt into archive-
+    // and-reap. A `running` outcome keeps the pre-HOK-3312 `dirty_worktree`
+    // refusal so a mislabelled task is not prematurely archived.
+    const inputs: FixtureInputs = {
+      issue: 'HOK-8888',
+      slug: 'hok-8888-primary',
+      branch: 'task/hok-8888-primary',
+      worktree: TEST_DIR,
+      pr: {
+        number: '8888',
+        state: 'CLOSED',
+        headRefOid: '5555555555555555555555555555555555555555',
+        baseRefName: 'auto/integration',
+      },
+      workflowOutcome: 'running',
+      gitStatus: ' M real.ts\n',
+      commitsAhead: '1',
+      cherryEquivalent: false,
+      localHead: '5555555555555555555555555555555555555555',
+      remoteHead: '5555555555555555555555555555555555555555',
+      remoteContainsHead: true,
+    };
+    const state = fixtureState(inputs);
+    const decision = decideTerminalTask(state, inputs.issue, TEST_DIR, 'auto/integration', {
+      deps: fixtureDeps(inputs),
+      monitorConsumer: true,
+      allowAbandon: true,
+    });
+    assert.equal(decision.refusalReason, 'dirty_worktree');
   });
 });

@@ -742,12 +742,23 @@ function isDelivered(pr: PrEvidence, siblingPrState: string, challengeRole: stri
  * HOK-3312: a task's lifecycle is terminal when no stage still owns it. For
  * terminal lifecycles the pane is finished by definition, and delivered
  * residue (dirt or an extra unmerged commit on top of a MERGED PR) is
- * archived instead of retained.
+ * archived instead of retained. The allowlist matches the plan's enumeration
+ * ('merged | closed | completed | aborted | error | superseded'); unknown
+ * values are treated as non-terminal so a mislabelled task never triggers
+ * premature archive-and-reap.
  */
+const TERMINAL_WORKFLOW_OUTCOMES = new Set([
+  'merged',
+  'closed',
+  'completed',
+  'aborted',
+  'error',
+  'superseded',
+]);
 function isTerminalLifecycle(task: JsonRecord | undefined, pr: PrEvidence): boolean {
   if (pr.state === 'MERGED') return true;
   const outcome = workflowOutcome(task);
-  return outcome !== 'active' && outcome !== undefined;
+  return outcome !== undefined && TERMINAL_WORKFLOW_OUTCOMES.has(outcome);
 }
 
 export interface DecideTerminalTaskOptions {
