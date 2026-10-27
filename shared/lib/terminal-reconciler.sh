@@ -334,91 +334,11 @@ wavemill_terminal_fresh_hook_state() {
   jq -r '.state // empty' "$hook_file" 2>/dev/null || true
 }
 
-# HOK-2972 / HOK-3089 pt 3 / HOK-3101: proof that the pane's surviving
-# process is an idle agent REPL. The agent's own settled-idle event (Stop /
-# process_exit / stream_end / process_idle) counts, read from the preserved
-# .agentRecord — never from a monitor-written hook (writer=monitor or a
-# controller event like pr_merged/pr_closed_unmerged/challenge_*). A task
-# whose agent died mid-work (last agent state "working") stays protected.
-#
-# When the top-level hook is a monitor write and there is no .agentRecord
-# (legacy hooks pre-HOK-3101), the archived .terminal-history.jsonl is the
-# fallback: the terminalize path archives the agent's own Stop before it
-# overwrites the top level, so the idle proof is always recoverable.
-wavemill_terminal_agent_idle_evidence() {
-  local session="$1" issue="$2" hook_file feature_dir history_file agent_state agent_event
-  command -v jq >/dev/null 2>&1 || return 1
-  hook_file="/tmp/wavemill-${session}-${issue}.hook"
-  if [[ -f "$hook_file" ]]; then
-    # HOK-3101: read from .agentRecord if present (never from a monitor top
-    # level); fall through when no agent record is available.
-    if jq -e '.agentRecord != null' "$hook_file" >/dev/null 2>&1; then
-      agent_state="$(jq -r '.agentRecord.state // ""' "$hook_file" 2>/dev/null || true)"
-      agent_event="$(jq -r '.agentRecord.event // ""' "$hook_file" 2>/dev/null || true)"
-      case "${agent_state}:${agent_event}" in
-        idle:Stop|idle:process_exit|idle:stream_end|idle:process_idle|idle:) return 0 ;;
-        waiting:Notification|waiting:) ;;
-        working:*) return 1 ;;
-        error:*) return 1 ;;
-        *)
-          # Any other agent record is not proof of idle-REPL; do not return 0.
-          ;;
-      esac
-    else
-      # Legacy hook classification: only trust an agent-written top-level.
-      local top_writer top_event
-      top_writer="$(jq -r '.writer // ""' "$hook_file" 2>/dev/null || echo "")"
-      top_event="$(jq -r '.event // ""' "$hook_file" 2>/dev/null || echo "")"
-      if [[ -z "$top_writer" ]]; then
-        case "$top_event" in
-          pr_merged|pr_closed_unmerged|operator_abort|recovery_failure|review_complete|ready_complete|pr_opened|blocked_completion_liveness|premature_plan_approval|recovery_contract_unavailable|planning_rejection_notify_failed|NoPR|worktree-setup|challenge_resolved_winner|challenge_invalid|challenge_no_comparison|challenge_stale_evidence|challenge_pair_recovery)
-            top_writer="monitor" ;;
-        esac
-      fi
-      if [[ "$top_writer" != "monitor" ]]; then
-        agent_state="$(jq -r '.state // ""' "$hook_file" 2>/dev/null || true)"
-        agent_event="$(jq -r '.event // ""' "$hook_file" 2>/dev/null || true)"
-        case "${agent_state}:${agent_event}" in
-          idle:Stop|idle:process_exit|idle:stream_end|idle:process_idle|idle:) return 0 ;;
-          waiting:Notification|waiting:) ;;
-          working:*) return 1 ;;
-          error:*) return 1 ;;
-          *) ;;
-        esac
-      fi
-    fi
-  fi
-  feature_dir="$(wavemill_terminal_feature_dir "$issue" 2>/dev/null || true)"
-  [[ -n "$feature_dir" ]] || return 1
-  history_file="$feature_dir/.terminal-history.jsonl"
-  [[ -f "$history_file" ]] || return 1
-  # HOK-3101: drop the .agent=="claude" hard-code (any agent may Stop) and
-  # skip monitor-written archived entries; fold across any settled-idle event.
-  jq -se '
-    def controller_events:
-      ["pr_merged","pr_closed_unmerged","operator_abort","recovery_failure",
-       "review_complete","ready_complete","pr_opened","blocked_completion_liveness",
-       "premature_plan_approval","recovery_contract_unavailable",
-       "planning_rejection_notify_failed","NoPR","worktree-setup",
-       "challenge_resolved_winner","challenge_invalid","challenge_no_comparison",
-       "challenge_stale_evidence","challenge_pair_recovery"];
-    def is_controller_event($e): (controller_events | index($e)) != null;
-    reduce (
-      .[]
-      | .payload
-      | select(type == "object")
-      | select((.writer // "") != "monitor")
-      | select(is_controller_event(.event // "") | not)
-    ) as $event (false;
-       if ($event.state == "idle")
-          and (($event.event // "") | IN("Stop","process_exit","stream_end","process_idle","")) then true
-       elif $event.state == "waiting" then .
-       elif $event.state == "working" then false
-       elif $event.state == "error" then false
-       else .
-       end)
-  ' "$history_file" >/dev/null 2>&1
-}
+# HOK-3312: `wavemill_terminal_agent_idle_evidence` is deleted. Terminal
+# release is decided by lifecycle (shared/lib/terminal-inbox-cleanup.ts),
+# not by pane liveness. The HOK-3101 primitive (shared/lib/task-progress.*)
+# is the single source for any residual liveness question; it never counts
+# monitor writes as agent evidence.
 
 # wavemill_release_terminal_pane <session> <issue> [slug] [reason] [pr]
 #
@@ -459,35 +379,14 @@ wavemill_release_terminal_pane() {
   if [[ -n "$target" ]]; then
     window_exists="true"
     joined_target="$(_tmux_target_join "$session" "$target" 2>/dev/null || printf '%s' "$target")"
-    if declare -F mill_pane_has_live_blocking_process >/dev/null 2>&1; then
-      pane_pid="$(tmux list-panes -t "$joined_target" -F '#{pane_pid}' 2>/dev/null | head -n 1 || true)"
-      live_rc=0
-      mill_pane_has_live_blocking_process "$pane_pid" || live_rc=$?
-      if [[ "$live_rc" -eq 0 ]]; then
-        # Phase-aware liveness (HOK-2972): a descendant process at an idle
-        # prompt after its stage evidence is complete must not block terminal
-        # release forever. The agent's own Stop hook recording idle is that
-        # proof; anything else (working/stale-working/missing hook) keeps the
-        # conservative live-agent-process retention.
-        if wavemill_terminal_agent_idle_evidence "$session" "$issue" 2>/dev/null; then
-          declare -F log >/dev/null 2>&1 && log "debug" "  $issue pane holds an idle agent REPL (agent Stop recorded); releasing" || true
-        else
-          WAVEMILL_PANE_RELEASE_BLOCK_REASON="live-agent-process"
-          return 1
-        fi
-      elif [[ "$live_rc" -eq 2 ]]; then
-        WAVEMILL_PANE_RELEASE_BLOCK_REASON="liveness-indeterminate"
-        return 1
-      fi
-    fi
   fi
-  hook_state="$(wavemill_terminal_fresh_hook_state "$session" "$issue" 2>/dev/null || true)"
-  case "$hook_state" in
-    working|waiting|approval-needed|blocked)
-      WAVEMILL_PANE_RELEASE_BLOCK_REASON="hook-${hook_state}"
-      return 1
-      ;;
-  esac
+  # HOK-3312: pane liveness is NOT an input for a terminal task. The caller
+  # (the TS decider via the cleanup consumer, or wavemill_reconcile_terminal
+  # for a terminal reason) has already proven the task is terminal; any
+  # process in the pane is finished by lifecycle, so we kill the window
+  # unconditionally. A tmux failure that is not caused by live-process
+  # evidence (e.g. a window that is already gone) is already treated as
+  # success below.
 
   # 2. Archive diagnostics before any kill. Failures are logged but never
   # block release (a restart replay may find no tmux server at all).

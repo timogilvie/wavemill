@@ -738,15 +738,53 @@ function isDelivered(pr: PrEvidence, siblingPrState: string, challengeRole: stri
   return false;
 }
 
+/**
+ * HOK-3312: a task's lifecycle is terminal when no stage still owns it. For
+ * terminal lifecycles the pane is finished by definition, and delivered
+ * residue (dirt or an extra unmerged commit on top of a MERGED PR) is
+ * archived instead of retained.
+ */
+function isTerminalLifecycle(task: JsonRecord | undefined, pr: PrEvidence): boolean {
+  if (pr.state === 'MERGED') return true;
+  const outcome = workflowOutcome(task);
+  return outcome !== 'active' && outcome !== undefined;
+}
+
+export interface DecideTerminalTaskOptions {
+  deps?: CleanupDeps;
+  allowAbandon?: boolean;
+  archiveAndReap?: boolean;
+  /**
+   * HOK-3312: the monitor's terminal-cleanup caller sets this. It forces
+   * `archiveAndReap=true` and collapses the "live_agent" / "dirty_worktree"
+   * refusals a terminal-lifecycle task cannot reach by construction into
+   * `would-archive-and-reap`.
+   */
+  monitorConsumer?: boolean;
+}
+
 export function decideTerminalTask(
   state: WorkflowState,
   issue: string,
   repoDir: string,
   baseBranch: string,
-  deps: CleanupDeps = defaultCleanupDeps,
-  allowAbandon = false,
-  archiveAndReap = false,
+  depsOrOptions: CleanupDeps | DecideTerminalTaskOptions = defaultCleanupDeps,
+  allowAbandonArg = false,
+  archiveAndReapArg = false,
 ): TerminalInboxDecision {
+  // Back-compat: the positional (deps, allowAbandon, archiveAndReap) signature
+  // and the options-bag signature are both accepted. The deps shape carries
+  // `git` as a function; the options bag never does.
+  const hasDepsShape = depsOrOptions !== undefined
+    && typeof (depsOrOptions as CleanupDeps).git === 'function'
+    && typeof (depsOrOptions as CleanupDeps).gh === 'function';
+  const options: DecideTerminalTaskOptions = hasDepsShape
+    ? { deps: depsOrOptions as CleanupDeps, allowAbandon: allowAbandonArg, archiveAndReap: archiveAndReapArg }
+    : (depsOrOptions as DecideTerminalTaskOptions);
+  const deps = options.deps ?? defaultCleanupDeps;
+  const monitorConsumer = options.monitorConsumer === true;
+  const allowAbandon = options.allowAbandon ?? false;
+  const archiveAndReap = monitorConsumer || (options.archiveAndReap ?? false);
   const task = state.tasks?.[issue];
   if (!task) {
     throw new Error(`task ${issue} is not present in workflow state`);
@@ -886,6 +924,15 @@ export function decideTerminalTask(
     // retired-arm-residue/ before any destructive step. Unreadable status
     // stays fail-closed: we cannot archive what we cannot inspect.
     if (archiveAndReap && git.worktreeDirty === true && isDelivered(pr, sibEvidence.state, challengeRole, allowAbandon)) {
+      decision.status = 'would-archive-and-reap';
+      decision.refusalReason = '';
+      decision.intendedActions = ['archive-residue', 'archive-artifacts', 'release-pane', 'write-tombstone', 'remove-local-worktree', 'remove-local-branch', 'remove-active-task-row'];
+      return decision;
+    }
+    // HOK-3312: for the monitor consumer, a terminal-lifecycle task with real
+    // dirt is already delivered by lifecycle — archive residue and reap. A
+    // worktree whose status is unreadable still fails closed.
+    if (monitorConsumer && git.worktreeDirty === true && isTerminalLifecycle(task, pr)) {
       decision.status = 'would-archive-and-reap';
       decision.refusalReason = '';
       decision.intendedActions = ['archive-residue', 'archive-artifacts', 'release-pane', 'write-tombstone', 'remove-local-worktree', 'remove-local-branch', 'remove-active-task-row'];

@@ -2341,6 +2341,32 @@ monitor_deregister_terminal_task() {
   return 0
 }
 
+# HOK-3312: thin runner that calls the TS archive-task-residue tool. Writes
+# residue under `.wavemill/evals/artifacts/<ISSUE>/retired-arm-residue/<ISO>/`
+# BEFORE any destructive cleanup. Returns non-zero when the archive is
+# incomplete; the caller must then retain the task rather than reap it.
+cleanup_archive_residue_step() {
+  local issue="$1" worktree="$2" branch="${3:-}" pr_number="${4:-}"
+  local base_branch rc=0 output
+  base_branch="$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s\n' "${BASE_BRANCH:-main}")"
+  if ! declare -F wavemill_run_tool >/dev/null 2>&1; then
+    # Standalone/legacy context: cannot run the TS tool; retain and let the
+    # async-job path pick it up next time.
+    log_warn "  $issue archive-residue skipped: wavemill_run_tool unavailable"
+    return 1
+  fi
+  local -a cmd=(archive-task-residue.ts --issue "$issue" --worktree "$worktree" --repo-dir "$REPO_DIR")
+  [[ -n "$branch" ]] && cmd+=(--branch "$branch")
+  [[ -n "$base_branch" ]] && cmd+=(--base-branch "$base_branch")
+  [[ -n "$pr_number" ]] && cmd+=(--pr-number "$pr_number")
+  output="$(wavemill_run_tool "${cmd[@]}" 2>/dev/null)" || rc=$?
+  if (( rc != 0 )); then
+    log_warn "  $issue archive-residue failed: $(printf '%s' "$output" | jq -r '.failureReason // "unknown"' 2>/dev/null || echo "unknown")"
+    return 1
+  fi
+  return 0
+}
+
 # Canonical completed-task cleanup order:
 # 1. archive artifacts, 2. close pane/window, 3. remove worktree,
 # 4. remove local branch, 5. remove eligible remote branch,
@@ -2354,23 +2380,95 @@ cleanup_completed_task() {
   local release_rc=0
   local pr=""
   local cleanup_candidate_json=""
-  local cleanup_decision=""
+  local cleanup_decision_action=""
+  local decision_rc=0
 
   pr=$(jq -r --arg i "$issue" '.tasks[$i].pr // empty' "$STATE_FILE" 2>/dev/null || true)
   if [[ -z "$pr" ]] && declare -p PR_BY_ISSUE >/dev/null 2>&1; then
     pr="${PR_BY_ISSUE[$issue]:-}"
   fi
 
-  if cleanup_episode_enabled; then
-    cleanup_decision="$(cleanup_episode_should_attempt "$issue" "$slug" "" "$pr" 2>/dev/null || printf 'attempt')"
-    if [[ "$cleanup_decision" == "skip" ]]; then
-      log "debug" "$issue cleanup episode unchanged; skipping cleanup attempt"
+  local wt_dir="${WORKTREE_ROOT}/${slug}"
+  local task_branch="task/${slug}"
+  local feature_dir="${wt_dir}/features/${slug}"
+
+  # HOK-3312: the TS decider owns the reap / archive-and-reap / retain / kept
+  # decision. The monitor runs it as a tracked async job (HOK-3206) and
+  # consumes its condition-keyed verdict; this call site is a thin executor.
+  # Pane liveness is NOT an input: lifecycle decides release for terminal tasks.
+  if [[ -n "${WAVEMILL_TERMINAL_INBOX_CLEANUP:-}" ]]; then
+    # Standalone `wavemill cleanup <issue> --execute` entry: the TS decider
+    # already ran in the CLI and decided to execute, so bypass the async job.
+    cleanup_decision_action="reap"
+  elif declare -F cleanup_decision_launch_job >/dev/null 2>&1; then
+    cleanup_decision_action="$(cleanup_decision_launch_job "$feature_dir" "$issue" "primary" "$feature_dir" "$wt_dir")" || decision_rc=$?
+    case "$decision_rc" in
+      0) : ;;
+      4)
+        # Decision still pending (async job running or backing off).
+        return 0
+        ;;
+      *)
+        set_task_lifecycle_disposition "$issue" "" "verification-required" "cleanup-decision-exhausted" "cleanup_completed_task" 2>/dev/null || true
+        declare -F set_window_attention_state >/dev/null 2>&1 && set_window_attention_state "$win" "needs-user"
+        log_warn "  $issue cleanup decision retries exhausted; keeping task state"
+        return 1
+        ;;
+    esac
+  else
+    # Legacy direct-call contexts (older tests): default to reap.
+    cleanup_decision_action="reap"
+  fi
+
+  case "$cleanup_decision_action" in
+    kept|not-terminal|'')
+      log "debug" "$issue cleanup verdict '${cleanup_decision_action:-none}'; skipping reap"
       return 0
-    fi
+      ;;
+    retain)
+      set_task_lifecycle_disposition "$issue" "" "retained" "cleanup-decision-retain" "cleanup_completed_task" 2>/dev/null || true
+      declare -F set_window_attention_state >/dev/null 2>&1 && set_window_attention_state "$win" "needs-user"
+      log_warn "  $issue cleanup verdict 'retain' (non-delivered residue); keeping task state"
+      return 1
+      ;;
+    archive-and-reap|reap) : ;;
+    *)
+      log_warn "  $issue cleanup verdict '${cleanup_decision_action}' unexpected; treating as retain"
+      return 1
+      ;;
+  esac
+
+  if cleanup_episode_enabled; then
     cleanup_candidate_json="$(cleanup_episode_candidate_json "$issue" "$slug" "" "$pr" 2>/dev/null || true)"
   fi
 
   set_task_lifecycle_disposition "$issue" "" "reaping" "" "cleanup_completed_task" 2>/dev/null || true
+
+  # HOK-3312: for archive-and-reap verdicts, snapshot the residue BEFORE any
+  # destructive step. A failure retains the task; the destructive cleanup
+  # and tombstone are skipped. The archive directory on disk still carries
+  # the inspectable partial residue for operator inspection.
+  if [[ "$cleanup_decision_action" == "archive-and-reap" ]]; then
+    if declare -F cleanup_archive_residue_step >/dev/null 2>&1; then
+      if ! cleanup_archive_residue_step "$issue" "$wt_dir" "$task_branch" "$pr"; then
+        set_task_lifecycle_disposition "$issue" "" "verification-required" "archive-residue-failed" "cleanup_completed_task" 2>/dev/null || true
+        declare -F set_window_attention_state >/dev/null 2>&1 && set_window_attention_state "$win" "needs-user"
+        log_warn "  $issue cleanup archive-residue failed; keeping task state"
+        return 1
+      fi
+      # Reset the worktree so the destructive cleanup below sees a clean tree.
+      # The residue was already archived under .wavemill/evals/artifacts/<ID>/.
+      if [[ -d "$wt_dir" ]]; then
+        git -C "$wt_dir" reset --hard HEAD >/dev/null 2>&1 || true
+        git -C "$wt_dir" clean -fdx >/dev/null 2>&1 || true
+      fi
+    fi
+    # Archive-and-reap on a PR-less arm needs abandon authority to delete
+    # the unpublished head; the residue bundle carries the discarded tip.
+    if [[ -z "$pr" ]]; then
+      export WAVEMILL_CLEANUP_ABANDON_ISSUE="$issue"
+    fi
+  fi
 
   if ! archive_stage_artifacts "$issue" "$slug"; then
     if [[ -n "$cleanup_candidate_json" ]]; then
@@ -2381,9 +2479,10 @@ cleanup_completed_task() {
     return 1
   fi
 
-  # HOK-2952: pane release is a shared primitive (archive -> durable record
-  # -> verified kill -> truthful state) and is decoupled from the git steps
-  # below - a later git failure or preservation never re-couples the pane.
+  # HOK-3312: pane release is unconditional for terminal tasks. The TS
+  # decider's verdict proves the task is terminal; any process in the pane
+  # is finished by lifecycle. The shared primitive still returns non-zero on
+  # genuine tmux failures (not live-process signals); we log and defer.
   if declare -F wavemill_release_terminal_pane >/dev/null 2>&1; then
     wavemill_release_terminal_pane "$SESSION" "$issue" "$slug" "${completion_reason:-completed}" "$pr" || release_rc=$?
   else
@@ -2406,18 +2505,14 @@ cleanup_completed_task() {
     if [[ -n "$cleanup_candidate_json" ]]; then
       cleanup_episode_record_outcome "$issue" "transient" "operational" "$release_reason" "$cleanup_candidate_json" "" 2>/dev/null || true
     fi
-    set_task_lifecycle_disposition "$issue" "" "retained" "$release_reason" "cleanup_completed_task" 2>/dev/null || true
-    # HOK-3100: set_window_attention_state lives in terminal-reconciler.sh; it
-    # may not be sourced for standalone CLI tools like `wavemill cleanup`.
+    set_task_lifecycle_disposition "$issue" "" "verification-required" "$release_reason" "cleanup_completed_task" 2>/dev/null || true
     declare -F set_window_attention_state >/dev/null 2>&1 && set_window_attention_state "$win" "needs-user"
-    log_warn "  $issue cleanup could not close tmux window; keeping task state"
+    log_warn "  $issue cleanup could not close tmux window (${release_reason}); keeping task state"
     return 1
   fi
 
   log "debug" "Closed window: $win"
 
-  local wt_dir="${WORKTREE_ROOT}/${slug}"
-  local task_branch="task/${slug}"
   local cleanup_rc=0
   local cleanup_outcome=""
   local cleanup_remote_status=0
@@ -2429,41 +2524,30 @@ cleanup_completed_task() {
   safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s\n' "${BASE_BRANCH:-main}")" "cleanup_completed_task" "$issue" "$pr" || cleanup_rc=$?
   cleanup_outcome="${WAVEMILL_CLEANUP_OUTCOME:-}"
   CLEANUP_EPISODE_CURRENT_FINGERPRINT=""
+  # HOK-3312: safe_remove_* operates on the physical steps the TS decider
+  # already blessed. A non-zero rc here is a physical/environment failure
+  # (git corruption, tmux crash, remote failure), not a cleanup decision.
+  # The task is preserved so the next monitor tick retries.
   if [[ "$cleanup_rc" -eq 20 ]] || cleanup_outcome_is_failed "$cleanup_outcome"; then
     if [[ -n "$cleanup_candidate_json" ]]; then
       cleanup_episode_record_outcome "$issue" "transient" "operational" "worktree-or-local-branch-cleanup-failed" "$cleanup_candidate_json" "" 2>/dev/null || true
     fi
-    set_task_lifecycle_disposition "$issue" "" "retained" "worktree-or-local-branch-cleanup-failed" "cleanup_completed_task" 2>/dev/null || true
+    set_task_lifecycle_disposition "$issue" "" "verification-required" "worktree-or-local-branch-cleanup-failed" "cleanup_completed_task" 2>/dev/null || true
     return 1
   elif [[ "$cleanup_rc" -ne 0 ]] || cleanup_outcome_is_retain "$cleanup_outcome"; then
-    local preservation_reason="${SAFE_CLEANUP_PRESERVATION_REASON:-}"
     local verification_reason="${SAFE_CLEANUP_VERIFICATION_REASON:-}"
     local episode_outcome="${cleanup_outcome:-local-work-preserved}"
-    local episode_disposition="retained"
-    local episode_failure_class="expected-preservation"
-    local lifecycle_resource_disposition="retained"
-    if [[ -n "$verification_reason" ]]; then
-      episode_outcome="$verification_reason"
-    elif [[ -n "$preservation_reason" ]]; then
-      episode_outcome="$preservation_reason"
-    fi
-    case "$verification_reason" in
-      base_fetch_failed:*|remote_head_lookup_failed:*|remote_task_fetch_failed:*|origin_base_unresolvable)
-        episode_disposition="transient"
-        episode_failure_class="transient"
-        lifecycle_resource_disposition="verification-required"
-        ;;
-    esac
+    local log_detail="$episode_outcome"
+    [[ -n "$verification_reason" ]] && log_detail="${episode_outcome}: ${verification_reason}"
     if cleanup_episode_enabled; then
       cleanup_candidate_json="$(cleanup_episode_candidate_json "$issue" "$slug" "" "$pr" 2>/dev/null || printf '%s' "$cleanup_candidate_json")"
     fi
     if [[ -n "$cleanup_candidate_json" ]]; then
-      cleanup_episode_record_outcome "$issue" "$episode_disposition" "$episode_failure_class" "$episode_outcome" "$cleanup_candidate_json" "" 2>/dev/null || true
+      cleanup_episode_record_outcome "$issue" "transient" "transient" "$episode_outcome" "$cleanup_candidate_json" "" 2>/dev/null || true
     fi
-    set_task_lifecycle_disposition "$issue" "" "$lifecycle_resource_disposition" "${cleanup_outcome:-local-work-preserved}" "cleanup_completed_task" 2>/dev/null || true
-    # HOK-3100: see note above re: set_window_attention_state availability.
+    set_task_lifecycle_disposition "$issue" "" "verification-required" "$episode_outcome" "cleanup_completed_task" 2>/dev/null || true
     declare -F set_window_attention_state >/dev/null 2>&1 && set_window_attention_state "$win" "needs-user"
-    log_warn "  $issue cleanup preserved local work (${cleanup_outcome:-unclassified}); keeping task state"
+    log_warn "  $issue cleanup deferred by physical step (${log_detail}); will retry"
     return 1
   fi
 
