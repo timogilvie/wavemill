@@ -94,6 +94,18 @@ export interface GuardSpec {
   requireAllowlistReason?: boolean;
   /** Report over-allowing allowlist entries so the list only shrinks. Default true. */
   ratchet?: boolean;
+  /**
+   * Scan test files (`*.test.*`) too. Default false — a guard that protects a
+   * production invariant has no reason to look at tests. Set alongside
+   * `testsOnly` for a test-code-only guard (HOK-3237).
+   */
+  includeTests?: boolean;
+  /**
+   * When true, only test files (`*.test.*`) are scanned; every production
+   * source is skipped regardless of path prefixes. Use for a guard whose
+   * target is strictly test code (HOK-3237).
+   */
+  testsOnly?: boolean;
 }
 
 export interface GuardFinding {
@@ -151,6 +163,8 @@ interface ResolvedSpec {
   invariantPaths: ReadonlySet<string>;
   requireReason: boolean;
   ratchet: boolean;
+  includeTests: boolean;
+  testsOnly: boolean;
 }
 
 function resolveSpec(spec: GuardSpec): ResolvedSpec {
@@ -162,6 +176,8 @@ function resolveSpec(spec: GuardSpec): ResolvedSpec {
     invariantPaths: new Set(spec.invariantPaths.map(normalizePath)),
     requireReason: spec.requireAllowlistReason ?? true,
     ratchet: spec.ratchet ?? true,
+    includeTests: spec.includeTests ?? spec.testsOnly ?? false,
+    testsOnly: spec.testsOnly ?? false,
   };
 }
 
@@ -303,7 +319,9 @@ function scanSource(resolved: ResolvedSpec, file: string, sourceText: string): G
 
 function isExcluded(resolved: ResolvedSpec, file: string): boolean {
   if (resolved.invariantPaths.has(file)) return true;
-  if (isTestFile(file)) return true;
+  const testFile = isTestFile(file);
+  if (resolved.testsOnly && !testFile) return true;
+  if (!resolved.includeTests && testFile) return true;
   return resolved.excludedPrefixes.some((prefix) => file.startsWith(prefix));
 }
 
