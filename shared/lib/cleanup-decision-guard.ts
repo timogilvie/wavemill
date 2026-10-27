@@ -32,8 +32,8 @@ export const CLEANUP_DECISION_GUARD: GuardSpec = {
     'shared/lib/wavemill-common.sh',
     'shared/lib/wavemill-monitor.sh',
     'shared/lib/cleanup-decision-guard.ts',
-    'tools/check-cleanup-decision.ts',
-    'tools/decide-terminal-cleanup.ts',
+    'tools/check-cleanup-decision.ts', // install-paths: allow invariant self-reference list
+    'tools/decide-terminal-cleanup.ts', // install-paths: allow invariant self-reference list
   ],
   patterns: [
     {
