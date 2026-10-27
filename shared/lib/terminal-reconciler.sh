@@ -351,7 +351,7 @@ wavemill_release_terminal_pane() {
   local session="$1" issue="$2" slug="${3:-}" reason="${4:-terminal}" pr_number="${5:-}"
   local branch="" wt_dir="" head_sha="" target="" joined_target="" window_exists="false"
   local archive_dir record_path transcript_archived="false" transcript_path=""
-  local pane_pid live_rc hook_state released_at reason_slug record_existed="false"
+  local released_at reason_slug record_existed="false"
   local wt_present="false"
 
   WAVEMILL_PANE_RELEASE_BLOCK_REASON=""
