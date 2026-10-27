@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import {
   cleanupMaterialization,
-  legacyEngine,
+  loadCostParityBaseline,
   loadCostParityManifest,
   materializeCase,
 } from '../cost-parity.ts';
@@ -146,9 +146,12 @@ describe('buildSdkTaskCostSummaries — F fixtures', () => {
 
 describe('collectSdkTaskCostSummaries — HOK-3074 cost-parity corpus', () => {
   const { manifest } = loadCostParityManifest(COST_PARITY_MANIFEST);
+  // The committed baseline: dollars identical to the retired legacy engine's
+  // on every case (HOK-3076 gate), now pinned as the SDK output (HOK-3077).
+  const baseline = loadCostParityBaseline(join(dirname(COST_PARITY_MANIFEST), 'baseline.json'));
 
   for (const caseItem of manifest.cases) {
-    it(`${caseItem.id}: bridge runs, validates, and keeps the legacy dollars`, async () => {
+    it(`${caseItem.id}: bridge runs, validates, and keeps the baseline dollars`, async () => {
       const ctx = materializeCase(caseItem);
       const originalWarn = console.warn;
       console.warn = () => {};
@@ -161,26 +164,27 @@ describe('collectSdkTaskCostSummaries — HOK-3074 cost-parity corpus', () => {
           agentType: caseItem.agentType,
           issueId: caseItem.issueId,
         };
-        const { outcome: legacy } = await legacyEngine(args);
+        const expected = baseline[caseItem.id]?.sync.outcome;
+        assert.ok(expected, `${caseItem.id} missing from baseline.json`);
         const summaries = collectSdkTaskCostSummaries(args);
 
-        if (legacy.status !== 'success') {
-          assert.equal(summaries, null, 'no legacy sessions → no SDK summary');
+        if (expected.status !== 'success') {
+          assert.equal(summaries, null, 'no baseline sessions → no SDK summary');
           return;
         }
-        assert.ok(summaries, 'legacy found sessions, so the bridge must too');
+        assert.ok(summaries, 'the baseline found sessions, so the bridge must too');
         for (const summary of summaries) validateTaskCostSummaryV1(summary);
 
-        // The legacy numeric view (unpriced contributes 0) must equal the
-        // projected SDK lower bound: same events, same prices.
+        // The numeric view (unpriced contributes 0) is the projected SDK
+        // lower bound: same events, same prices.
         const primary = selectPrimaryTaskCostSummary(summaries, caseItem.agentType)!;
         const projected = projectTaskCostSummaryToWorkflowCost(primary);
         assert.ok(
-          Math.abs(projected.totalCostUsd - legacy.totalCostUsd) <= USD_TOLERANCE,
-          `sdk ${projected.totalCostUsd} vs legacy ${legacy.totalCostUsd}`,
+          Math.abs(projected.totalCostUsd - expected.totalCostUsd) <= USD_TOLERANCE,
+          `sdk ${projected.totalCostUsd} vs baseline ${expected.totalCostUsd}`,
         );
-        // Where the legacy engine claims a complete total, the SDK resolves one too.
-        if (legacy.attribution?.coverage === 'complete') {
+        // Where the baseline claims a complete total, the SDK resolves one too.
+        if (expected.attribution?.coverage === 'complete') {
           assert.notEqual(primary.total_cost_usd, null);
         }
       } finally {

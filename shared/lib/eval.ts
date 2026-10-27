@@ -30,7 +30,7 @@ import { parseJsonFromLLM } from './llm-cli.ts';
 import { fillPromptSlots } from './prompt-utils.ts';
 import { callHeadlessLLM } from './headless-llm.ts';
 import { getEvalConfig } from './config.ts';
-import { loadPricingTable } from './workflow-cost.ts';
+import { computeModelCost, loadPricingTable, type PricingTable } from './pricing/model-pricing.ts';
 import { createPromptArtifact, type PromptArtifact } from './prompt-hash.ts';
 import { errorMessage } from './error-utils.ts';
 import { getLatestSession } from './session.ts';
@@ -150,14 +150,6 @@ interface LLMCallResult {
   text: string;
   usage?: TokenUsage;
   costUsd?: number;
-}
-
-/**
- * Pricing table entry.
- */
-interface PricingEntry {
-  inputCostPerMTok: number;
-  outputCostPerMTok: number;
 }
 
 interface JudgeResponsePayload {
@@ -415,16 +407,20 @@ async function callJudgeLLM(prompt: string, model: string): Promise<LLMCallResul
 function computeCost(
   modelId: string,
   usage: TokenUsage | undefined,
-  pricingTable: Record<string, PricingEntry>
+  pricingTable: PricingTable
 ): number | undefined {
   if (!usage || !pricingTable) return undefined;
 
   const pricing = pricingTable[modelId];
   if (!pricing) return undefined;
 
-  const inputCost = (usage.inputTokens * pricing.inputCostPerMTok) / 1_000_000;
-  const outputCost = (usage.outputTokens * pricing.outputCostPerMTok) / 1_000_000;
-  return inputCost + outputCost;
+  // Judge calls report no cache usage; the shared formula prices them as zero.
+  return computeModelCost({
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+  }, pricing);
 }
 
 const PLAN_CRITIQUE_DIMENSIONS = [
@@ -754,7 +750,7 @@ function combineTokenUsage(
 function computeCombinedCost(
   responses: LLMCallResult[],
   modelId: string,
-  pricingTable: Record<string, PricingEntry>,
+  pricingTable: PricingTable,
 ): number | undefined {
   let total = 0;
   let sawCost = false;

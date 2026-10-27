@@ -4,11 +4,10 @@
  *
  * This is the read-side half of the bridge: it lets an SDK-backed record flow
  * through `attachWorkflowCostMetadata` and every existing workflow-cost
- * reader unchanged. It is pure and is NOT wired into any eval entrypoint yet —
- * the HOK-3076 cutover decides when (and whether) it replaces the legacy
- * engine's outcome. Shadow compare uses it to diff like-for-like.
+ * reader unchanged. It is pure; `resolve.ts` applies it to every eval's
+ * primary summary (HOK-3076, sole engine since HOK-3077).
  *
- * Mapping notes (semantics HOK-3076 must review before cutover):
+ * Mapping notes:
  * - `totalCostUsd` is the summary's `total_cost_usd`; when that is `null` (an
  *   unresolved event) the legacy numeric view's lower bound
  *   `actual + estimated` is used, matching the legacy convention that an
@@ -24,15 +23,13 @@
  */
 
 import type {
-  ModelPricing,
-  ModelTokenUsage,
-  PricingTable,
   WorkflowCostAttribution,
   WorkflowCostAttributionModel,
   WorkflowCostAttributionReason,
   WorkflowCostPricingSource,
   WorkflowCostResult,
 } from '../workflow-cost.ts';
+import type { ModelPricing, ModelTokenUsage, PricingTable } from '../pricing/model-pricing.ts';
 import type { TaskCostModelSegment, TaskCostSummaryV1 } from './contract.ts';
 
 const ATTRIBUTION_SOURCE: Record<string, WorkflowCostAttribution['source']> = {
@@ -64,9 +61,18 @@ export interface ProjectTaskCostOptions {
 }
 
 /**
- * Pick the summary the legacy engine would have costed: native first (it is
- * preferred whenever it has usable data), else the harness matching the
- * workflow's agent type, else the first summary.
+ * Pick the summary that is the workflow's cost:
+ *
+ * 1. native, when the workflow ran natively or the native transcripts carry
+ *    usable evidence (usage or a reported charge — coverage not
+ *    `unavailable`);
+ * 2. else the harness matching the workflow's agent type;
+ * 3. else the first non-native summary;
+ * 4. else the native one (unusable evidence beats none).
+ *
+ * Rule 1's evidence check keeps an empty native transcript (e.g. a native
+ * expansion that recorded no usage) from masking the Claude Code / Codex
+ * sessions that actually did the work and carry the cost.
  */
 export function selectPrimaryTaskCostSummary(
   summaries: readonly TaskCostSummaryV1[] | null | undefined,
@@ -74,9 +80,10 @@ export function selectPrimaryTaskCostSummary(
 ): TaskCostSummaryV1 | null {
   if (!summaries || summaries.length === 0) return null;
   const native = summaries.find((summary) => summary.harness === 'native');
-  if (native) return native;
+  if (native && (agentType === 'native' || native.coverage !== 'unavailable')) return native;
+  const others = summaries.filter((summary) => summary.harness !== 'native');
   const preferred = agentType ? AGENT_TYPE_HARNESS[agentType] : undefined;
-  return summaries.find((summary) => summary.harness === preferred) ?? summaries[0];
+  return others.find((summary) => summary.harness === preferred) ?? others[0] ?? native ?? null;
 }
 
 function segmentCost(segment: TaskCostModelSegment): number | null {

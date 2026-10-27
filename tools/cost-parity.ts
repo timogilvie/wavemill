@@ -2,7 +2,7 @@
  * Cost Parity CLI Tool
  *
  * Commands:
- *   --write      Regenerate baseline.json from current engine
+ *   --write      Regenerate baseline.json from the SDK engine
  *   --case <id>  Show snapshot for a specific case
  *   --json       Output results as JSON
  *   (default)    Compare current engine against baseline
@@ -18,8 +18,6 @@ import {
   sanitizeSnapshot,
   compareSnapshots,
   formatComparison,
-  type CostEngine,
-  legacyEngine,
 } from '../shared/lib/cost-parity.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -56,7 +54,7 @@ async function main() {
   try {
     // Capture corpus from current engine
     console.error('[cost-parity] Capturing corpus...');
-    const corpus = await captureCorpus(manifest, legacyEngine);
+    const corpus = await captureCorpus(manifest);
     const sanitized = sanitizeSnapshot(corpus);
 
     if (mode === 'write') {
@@ -99,7 +97,7 @@ async function main() {
     }
 
     const baselineCases = loadCostParityBaseline(baselinePath);
-    const comparison = compareSnapshots({ cases: baselineCases }, sanitized, manifest, { mode: 'regression' });
+    const comparison = compareSnapshots({ cases: baselineCases }, sanitized);
 
     console.log(formatComparison(comparison, false));
 

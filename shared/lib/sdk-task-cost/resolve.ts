@@ -1,75 +1,76 @@
 /**
- * Authoritative workflow-cost selection (HOK-3076): decide whether the eval
- * record's `workflowCost*` fields come from the SDK projection or the legacy
- * engine.
+ * Workflow-cost outcome from SDK summaries (HOK-3076, HOK-3077): turn the
+ * collected `TaskCostSummaryV1[]` into the `WorkflowCostOutcome` an eval
+ * record persists.
  *
- * The SDK projection is used only when a valid SDK summary exists for the
- * run. Absence (no summary, or a bridge failure the runner swallowed) keeps
- * the legacy outcome — usually a `no_sessions` / `skipped` / `adapter_error`
- * failure that already says "no cost", never a zero. Partial, unavailable and
- * known-zero summaries keep their coverage through the projection, so none of
- * them can become a complete cost.
+ * The SDK is the only engine. A valid summary is projected; partial,
+ * unavailable and known-zero summaries keep their coverage through the
+ * projection, so none of them can become a complete cost. Absence is never a
+ * zero: no summary is a `no_sessions` failure, and a collection that threw is
+ * an `adapter_error` failure — both carry diagnostics and no dollar figure.
+ *
+ * Pure: no IO, no SDK runtime import (`project.ts` only imports SDK types),
+ * so eval entrypoints can load it under a stale `@hokusai/core`.
  *
  * @module sdk-task-cost/resolve
  */
 
 import { getEffectiveRegistry, resolveModelRegistryKey } from '../model-registry.ts';
-import type { PricingTable, WorkflowCostOutcome } from '../workflow-cost.ts';
+import type { PricingTable } from '../pricing/model-pricing.ts';
+import type { WorkflowCostFailure, WorkflowCostOutcome } from '../workflow-cost.ts';
 import type { TaskCostSummaryV1 } from './contract.ts';
-import { resolveCostMeteringEngine, type CostMeteringEngine } from './feature-switch.ts';
 import { projectTaskCostSummaryToWorkflowCost, selectPrimaryTaskCostSummary } from './project.ts';
 
-const USD_TOLERANCE = 1e-9;
-
 export type WorkflowCostSelectionReason =
-  /** SDK engine, valid summary: the projection is authoritative. */
+  /** A valid summary exists: the projection is the outcome. */
   | 'sdk_summary'
-  /** `WAVEMILL_COST_METERING_LEGACY` rollback is set. */
-  | 'rollback'
-  /** SDK engine, but no summary (no sessions, or collection failed). */
+  /** Collection ran but no session produced a cost event. */
   | 'no_sdk_summary'
-  /** Legacy carries OpenRouter exact generation costs the bridge cannot fetch. */
-  | 'legacy_exact_pricing';
+  /** Collection threw (stale SDK, contract violation, unreadable session). */
+  | 'collection_failed';
 
 export interface ResolveWorkflowCostInput {
-  legacyOutcome: WorkflowCostOutcome | null;
   summaries: readonly TaskCostSummaryV1[] | null | undefined;
+  /** Message of the error the collector threw, when it threw. */
+  collectionError?: string | null;
   agentType?: string | null;
-  /** Pricing table both engines used; rebuilds the projection's `pricingUsed`. */
+  /** Pricing table the summaries were priced with; rebuilds `pricingUsed`. */
   pricingTable?: PricingTable;
   repoDir?: string;
-  /** Defaults to {@link resolveCostMeteringEngine} on `process.env`. */
-  engine?: CostMeteringEngine;
+  /** Join inputs, echoed into a failure outcome's diagnostics. */
+  diagnostics?: WorkflowCostFailure['diagnostics'];
 }
 
 export interface ResolvedWorkflowCost {
-  outcome: WorkflowCostOutcome | null;
-  engine: CostMeteringEngine;
+  outcome: WorkflowCostOutcome;
   reason: WorkflowCostSelectionReason;
 }
 
-function providerReportedUsd(outcome: WorkflowCostOutcome | null): number {
-  if (outcome?.status !== 'success' || !outcome.attribution) return 0;
-  return outcome.attribution.models.reduce((sum, model) => sum + (model.providerReportedCostUsd ?? 0), 0);
-}
-
-export function resolveAuthoritativeWorkflowCost(input: ResolveWorkflowCostInput): ResolvedWorkflowCost {
-  const engine = input.engine ?? resolveCostMeteringEngine();
-  if (engine === 'legacy') {
-    return { outcome: input.legacyOutcome, engine: 'legacy', reason: 'rollback' };
+export function resolveWorkflowCost(input: ResolveWorkflowCostInput): ResolvedWorkflowCost {
+  const diagnostics: WorkflowCostFailure['diagnostics'] = {
+    ...input.diagnostics,
+    ...(input.agentType ? { agentType: input.agentType } : {}),
+  };
+  if (input.collectionError) {
+    return {
+      outcome: {
+        status: 'adapter_error',
+        reason: `SDK task-cost collection failed: ${input.collectionError}`,
+        diagnostics,
+      },
+      reason: 'collection_failed',
+    };
   }
   const primary = selectPrimaryTaskCostSummary(input.summaries, input.agentType);
   if (!primary) {
-    return { outcome: input.legacyOutcome, engine: 'legacy', reason: 'no_sdk_summary' };
-  }
-  // The exact-pricing path (eval orchestrator, OPENROUTER_API_KEY) replaces
-  // native estimates with fetched generation charges; the bridge only sees
-  // charges the transcript recorded. Keep the more exact legacy figure.
-  if (
-    primary.harness === 'native'
-    && providerReportedUsd(input.legacyOutcome) > (primary.actual_cost_usd ?? 0) + USD_TOLERANCE
-  ) {
-    return { outcome: input.legacyOutcome, engine: 'legacy', reason: 'legacy_exact_pricing' };
+    return {
+      outcome: {
+        status: 'no_sessions',
+        reason: 'No session on this branch produced a task-cost event',
+        diagnostics: { ...diagnostics, sessionFilesFound: 0, matchingTurns: 0 },
+      },
+      reason: 'no_sdk_summary',
+    };
   }
   const registry = getEffectiveRegistry(input.repoDir);
   return {
@@ -77,7 +78,6 @@ export function resolveAuthoritativeWorkflowCost(input: ResolveWorkflowCostInput
       pricingTable: input.pricingTable,
       registryLookup: (modelId) => resolveModelRegistryKey(registry, modelId),
     }),
-    engine: 'sdk',
     reason: 'sdk_summary',
   };
 }

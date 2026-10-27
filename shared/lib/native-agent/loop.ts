@@ -32,7 +32,7 @@ export interface AgentContext extends PiAgentContext {
   systemPrompt?: string;
 }
 export type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { computeModelCost, type ModelPricing } from '../workflow-cost.ts';
+import { computeModelCost, type ModelPricing } from '../pricing/model-pricing.ts';
 import type { ModelRegistry } from '../model-registry.ts';
 import { appendPromptSizeSample, type PromptSizeSample } from './prompt-size-log.ts';
 import { EMPTY_PROMPT_CACHE_SUMMARY, summarizePromptCache, type PromptCacheSummary, type TurnCacheUsage } from './prompt-cache.ts';

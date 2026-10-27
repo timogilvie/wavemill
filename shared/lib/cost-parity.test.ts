@@ -3,8 +3,8 @@
  *
  * Validates:
  * - Manifest structure and validation
- * - Legacy engine reproduces baseline
- * - Comparator semantics (regression and migration modes)
+ * - The SDK engine reproduces the baseline (HOK-3077: sole engine)
+ * - Comparator semantics (strict regression)
  * - Snapshot sanitization (privacy, determinism)
  * - USD tolerance
  * - Environment cleanup
@@ -24,14 +24,18 @@ import {
   captureCorpus,
   sanitizeSnapshot,
   compareSnapshots,
-  type CostEngine,
-  legacyEngine,
+  sdkEngine,
 } from './cost-parity.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixtureDir = join(__dirname, '..', 'fixtures', 'cost-parity');
 const manifestPath = join(fixtureDir, 'manifest.json');
 const baselinePath = join(fixtureDir, 'baseline.json');
+const COST_MODULES = [
+  'shared/lib/workflow-cost.ts',
+  'shared/lib/pricing/model-pricing.ts',
+  'shared/lib/wavemill-session-paths.ts',
+];
 
 test('Manifest validation passes', () => {
   const { manifest, validation } = loadCostParityManifest(manifestPath);
@@ -75,7 +79,7 @@ test('Baseline loads correctly', () => {
   assert(typeof baseline === 'object', 'Baseline should be an object');
 });
 
-test('Legacy engine reproduces baseline exactly', async () => {
+test('SDK engine reproduces baseline exactly', async () => {
   const { manifest } = loadCostParityManifest(manifestPath);
   const baselineCases = loadCostParityBaseline(baselinePath);
   assert(Object.keys(baselineCases).length > 0, 'Baseline should have cases');
@@ -85,15 +89,10 @@ test('Legacy engine reproduces baseline exactly', async () => {
     'Baseline should cover every case in the manifest'
   );
 
-  const capturedCorpus = await captureCorpus(manifest, legacyEngine);
+  const capturedCorpus = await captureCorpus(manifest, sdkEngine);
   const sanitized = sanitizeSnapshot(capturedCorpus);
 
-  const comparison = compareSnapshots(
-    { cases: baselineCases },
-    sanitized,
-    manifest,
-    { mode: 'regression' }
-  );
+  const comparison = compareSnapshots({ cases: baselineCases }, sanitized);
 
   if (comparison.exitCode !== 0) {
     const preview = comparison.differences
@@ -101,14 +100,14 @@ test('Legacy engine reproduces baseline exactly', async () => {
       .map((d) => `  ${d.caseId} @ ${d.path}: ${d.classification}`)
       .join('\n');
     assert.fail(
-      `Legacy engine drifted from baseline (${comparison.differences.length} differences):\n${preview}\n` +
+      `SDK engine drifted from baseline (${comparison.differences.length} differences):\n${preview}\n` +
         `\nRegenerate with: npx tsx tools/cost-parity.ts --write`
     );
   }
   assert.strictEqual(comparison.exitCode, 0, comparison.message);
 });
 
-test('Comparator detects mutations (regression mode)', () => {
+test('Comparator detects mutations', () => {
   const baseline = {
     cases: {
       'test-case': {
@@ -133,13 +132,8 @@ test('Comparator detects mutations (regression mode)', () => {
     },
   };
 
-  const manifest = {
-    schemaVersion: 'cost_parity_manifest/v1' as const,
-    capturedFrom: 'test',
-    cases: [{ id: 'test-case', description: 'test', tags: [], agentType: 'claude' as const, branch: 'test', issueId: 'TEST-1', pricingTable: {}, sessions: [], expectations: {} }],
-  };
 
-  const result = compareSnapshots(baseline, mutated, manifest, { mode: 'regression' });
+  const result = compareSnapshots(baseline, mutated);
   assert(result.exitCode === 1, 'Should detect mutation');
   assert(result.differences.length > 0, 'Should have differences');
   assert(result.differences.some((d) => d.classification === 'strict_violation'), 'Should classify as violation');
@@ -170,13 +164,8 @@ test('USD tolerance allows small differences', () => {
     },
   };
 
-  const manifest = {
-    schemaVersion: 'cost_parity_manifest/v1' as const,
-    capturedFrom: 'test',
-    cases: [{ id: 'test-case', description: 'test', tags: [], agentType: 'claude' as const, branch: 'test', issueId: 'TEST-1', pricingTable: {}, sessions: [], expectations: {} }],
-  };
 
-  const result = compareSnapshots(baseline, withinTolerance, manifest, { mode: 'regression' });
+  const result = compareSnapshots(baseline, withinTolerance);
   assert(result.exitCode === 0, 'Difference within USD tolerance should pass');
   assert(result.differences.length === 0, 'Should have no differences within tolerance');
 });
@@ -206,68 +195,10 @@ test('USD tolerance rejects large differences', () => {
     },
   };
 
-  const manifest = {
-    schemaVersion: 'cost_parity_manifest/v1' as const,
-    capturedFrom: 'test',
-    cases: [{ id: 'test-case', description: 'test', tags: [], agentType: 'claude' as const, branch: 'test', issueId: 'TEST-1', pricingTable: {}, sessions: [], expectations: {} }],
-  };
 
-  const result = compareSnapshots(baseline, beyondTolerance, manifest, { mode: 'regression' });
+  const result = compareSnapshots(baseline, beyondTolerance);
   assert(result.exitCode === 1, 'Difference beyond USD tolerance should fail');
   assert(result.differences.length > 0, 'Should have differences');
-});
-
-test('Expected fixes in migration mode', () => {
-  const baseline = {
-    cases: {
-      'test-case': {
-        caseId: 'test-case',
-        sync: {
-          outcome: { status: 'success' as const, totalCostUsd: 1.0, models: {}, sessionCount: 1, turnCount: 1, pricingUsed: {} },
-          warnings: [],
-        },
-      },
-    },
-  };
-
-  const fixed = {
-    cases: {
-      'test-case': {
-        caseId: 'test-case',
-        sync: {
-          outcome: { status: 'success' as const, totalCostUsd: 0.5, models: {}, sessionCount: 1, turnCount: 1, pricingUsed: {} },
-          warnings: [],
-        },
-      },
-    },
-  };
-
-  const manifest = {
-    schemaVersion: 'cost_parity_manifest/v1' as const,
-    capturedFrom: 'test',
-    cases: [{
-      id: 'test-case',
-      description: 'test',
-      tags: [],
-      agentType: 'claude' as const,
-      branch: 'test',
-      issueId: 'TEST-1',
-      pricingTable: {},
-      sessions: [],
-      expectations: {
-        expectedFixes: [{
-          id: 'EF-1',
-          path: 'sync.outcome.totalCostUsd',
-          legacy: 1.0,
-          expected: 0.5,
-          rationale: 'test fix',
-        }],
-      },
-    }],
-  };
-
-  const result = compareSnapshots(baseline, fixed, manifest, { mode: 'migration' });
-  assert(result.exitCode === 0, 'Expected fix should pass in migration mode');
 });
 
 test('Privacy: canaries are stripped from baseline', () => {
@@ -306,45 +237,6 @@ test('Snapshot keys are sorted for determinism', () => {
   assert(keys.length > 0, 'Should have cases');
 });
 
-test('Expected-fix legacy values match baseline', () => {
-  // Every expectedFix.legacy in the manifest declares "the current engine
-  // produces this value at this path". If it drifts from what baseline.json
-  // actually contains, the migration oracle is lying about the starting
-  // point of the SDK swap and reviewers cannot trust the "expected" side
-  // either. This is the guard the reviewer flagged when we forgot to
-  // refresh the manifest after regenerating the baseline.
-  const { manifest } = loadCostParityManifest(manifestPath);
-  const baselineCases = loadCostParityBaseline(baselinePath);
-
-  const get = (obj: unknown, path: string): unknown =>
-    path.split('.').reduce<unknown>(
-      (acc, key) => (acc != null && typeof acc === 'object' ? (acc as Record<string, unknown>)[key] : undefined),
-      obj
-    );
-
-  const mismatches: string[] = [];
-  for (const caseItem of manifest.cases) {
-    const fixes = caseItem.expectations?.expectedFixes ?? [];
-    if (fixes.length === 0) continue;
-    const baseline = baselineCases[caseItem.id];
-    assert(baseline, `Manifest case ${caseItem.id} missing from baseline`);
-    for (const fix of fixes) {
-      const actual = get(baseline, fix.path);
-      if (JSON.stringify(actual) !== JSON.stringify(fix.legacy)) {
-        mismatches.push(
-          `  ${caseItem.id} ${fix.path} (${fix.id}): manifest.legacy=${JSON.stringify(fix.legacy)} baseline=${JSON.stringify(actual)}`
-        );
-      }
-    }
-  }
-
-  if (mismatches.length > 0) {
-    assert.fail(
-      `expectedFix.legacy values do not match baseline.json (regenerate baseline or refresh manifest):\n${mismatches.join('\n')}`
-    );
-  }
-});
-
 test('Baseline captures models attribution when pricing is known', async () => {
   const baselineCases = loadCostParityBaseline(baselinePath);
   const priced = baselineCases['codex-cached-and-reasoning'];
@@ -367,7 +259,7 @@ test('Harness mirrors production session-adapter output shape', async () => {
   const { manifest } = loadCostParityManifest(manifestPath);
   const codexCase = manifest.cases.find((c) => c.id === 'codex-cached-and-reasoning');
   assert(codexCase, 'Mirror check requires codex-cached-and-reasoning fixture');
-  const snapshot = await captureCase(codexCase, legacyEngine);
+  const snapshot = await captureCase(codexCase, sdkEngine);
   const outcome = snapshot.sync.outcome as Record<string, unknown>;
   for (const field of ['status', 'totalCostUsd', 'models', 'sessionCount', 'turnCount', 'pricingUsed']) {
     assert(field in outcome, `Snapshot missing required field: ${field}`);
@@ -391,15 +283,18 @@ test('Consumer inventory is well-formed', () => {
     assert(consumer.file, `Consumer missing file: ${JSON.stringify(consumer)}`);
     assert(consumer.class, `Consumer ${consumer.file} missing class`);
     assert(Array.isArray(consumer.symbols), `Consumer ${consumer.file} symbols not an array`);
+    for (const symbol of consumer.symbols) {
+      assert(COST_MODULES.includes(symbol.module), `Consumer ${consumer.file} symbol ${symbol.name} names unknown module ${symbol.module}`);
+    }
   }
 });
 
-test('Consumer inventory covers every workflow-cost importer on disk', () => {
-  // Dynamic guard: scan the repo for files that import workflow-cost.ts and
-  // assert every one is classified in the inventory. Without this the
-  // inventory silently rots the moment someone adds a new importer, and the
-  // downstream SDK migration tickets (HOK-3075/3076/3077) inherit a
-  // hand-maintained list with unknown gaps.
+test('Consumer inventory covers every cost-module importer on disk', () => {
+  // Dynamic guard: scan the repo for files that import any cost module
+  // (record shape, pricing primitive, session discovery) and assert every one
+  // is classified in the inventory. Without this the inventory silently rots
+  // the moment someone adds a new importer. Who may import the primitives is
+  // enforced separately by tools/check-cost-ownership.ts (HOK-3077).
   const repoRoot = join(fixtureDir, '..', '..', '..');
   const inventoryPath = join(fixtureDir, 'consumer-inventory.json');
   const inventory = JSON.parse(readFileSync(inventoryPath, 'utf-8'));
@@ -409,7 +304,7 @@ test('Consumer inventory covers every workflow-cost importer on disk', () => {
   let importerList: string[];
   try {
     const out = execSync(
-      `git grep -lE "from ['\\"](.*/)?(workflow-cost|workflow-cost\\.ts)['\\"]" -- '*.ts' '*.js'`,
+      `git grep -lE "from ['\\"](.*/)?(workflow-cost|pricing/model-pricing|wavemill-session-paths)(\\.ts)?['\\"]" -- '*.ts' '*.js'`,
       { cwd: repoRoot, encoding: 'utf-8' }
     );
     importerList = out.split('\n').filter((line) => line.trim().length > 0);
@@ -417,14 +312,16 @@ test('Consumer inventory covers every workflow-cost importer on disk', () => {
     // git grep exits 1 when nothing matches; treat as empty.
     importerList = [];
   }
-  const importers = new Set(importerList.filter((f) => f !== 'shared/lib/workflow-cost.ts'));
+  // The cost modules themselves (and the exact-pricing sibling) own the shapes they import.
+  const owners = new Set([...COST_MODULES, 'shared/lib/pricing/openrouter-exact-pricing.ts']);
+  const importers = new Set(importerList.filter((f) => !owners.has(f)));
 
   const knownFiles = new Set<string>();
   for (const c of inventory.productionConsumers) knownFiles.add(c.file);
   for (const t of inventory.testOnlyConsumers) {
     knownFiles.add(typeof t === 'string' ? t : t.file);
   }
-  // Indirect consumers don't import workflow-cost.ts directly; they read the
+  // Indirect consumers don't import a cost module directly; they read the
   // downstream cost fields. Excluding them here means a file that starts as
   // an indirect consumer and later adds a direct import will surface as
   // unclassified, which is the failure mode we want.
@@ -449,7 +346,7 @@ test('Consumer inventory covers every workflow-cost importer on disk', () => {
     }
     if (stale.length > 0) {
       lines.push(
-        `\nEntries in consumer-inventory.json that no longer import workflow-cost.ts (remove them):`
+        `\nEntries in consumer-inventory.json that no longer import a cost module (remove them):`
       );
       lines.push(...stale.map((f) => `  - ${f}`));
     }

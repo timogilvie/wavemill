@@ -42,7 +42,6 @@ that date to be retired.
 |---|---|---|---|---|---|---|
 | `WAVEMILL_LEDGER_SHADOW_DISABLED`, `WAVEMILL_SIDE_EFFECT_DETECTOR_DISABLED`, `WAVEMILL_LEDGER_SHADOW_DEBUG` | These three switches control the same ledger shadow | HOK-3183 | 2026-10-20 | Ledger side-effect / step / pair rows settle for 7 days with no duplicates recorded. Flip the gate per design §4b and delete the shadow writers. | HOK-3274 | 2026-11-19 |
 | `WAVEMILL_HARNESS_RETENTION_SHADOW` | `WAVEMILL_HARNESS_RETENTION_SHADOW` | HOK-3235 | 2026-10-20 | Retention mode decided; shadow comparator deleted along with its sidecar artifact. | HOK-3276 | 2026-11-19 |
-| `WAVEMILL_SDK_COST_METERING_SHADOW` | `WAVEMILL_SDK_COST_METERING_SHADOW` | HOK-3235 | 2026-10-20 | SDK cost metering parity confirmed vs. OpenRouter price snapshot. Reclassify as offline eval or delete. | HOK-3077 | 2026-11-19 |
 | `WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE` | `WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE` | HOK-3187 | 2026-10-20 | Confirm renderer parity and retire the opt-in when ledger authority is live. | HOK-3275 | 2026-11-19 |
 
 ## Kill switches, rollbacks, skips and legacy paths
@@ -56,11 +55,9 @@ that date to be retired.
 | `WAVEMILL_BLOCKED_COMPLETION_LIVE_PROCESS_MODE` | — | Debug toggle for the HOK-2882 blocked-completion liveness primitive. | HOK-2882 | 2026-10-20 | Retire once the primitive is uncontroversial for a full release cycle. | HOK-3278 | 2026-11-19 |
 | `WAVEMILL_CODEX_NO_DAEMON` | 0 | Force Codex to run without its shared app-server daemon (workaround for stale-cwd daemons). | HOK-3137 | 2026-10-20 | Codex daemon handles reaped-cwd cleanly across versions. | HOK-3278 | 2026-11-19 |
 | `WAVEMILL_CODEX_NO_DAEMON_PROBE` | 0 | Probe variant of `WAVEMILL_CODEX_NO_DAEMON`; one-shot bypass. | HOK-3137 | 2026-10-20 | Retire with `WAVEMILL_CODEX_NO_DAEMON`. | HOK-3278 | 2026-11-19 |
-| `WAVEMILL_COST_METERING_LEGACY` | 0 | Keeps the pre-HOK-3256 cost metering path for a rollback window. | HOK-3256 | 2026-10-20 | HOK-3256 shipped across environments and the legacy path is unused for a full release cycle. | HOK-3077 | 2026-11-19 |
 | `WAVEMILL_EFFECTIVE_CONFIG_LEGACY` | 0 | Rollback path to the pre-effective-config loader. | HOK-3235 | 2026-10-20 | Effective-config path stable across hosts for a release cycle. | HOK-3278 | 2026-11-19 |
 | `WAVEMILL_DISABLE_AJV_VALIDATION` | 0 | Debug: disable Ajv schema validation (never set in production). | HOK-3235 | 2026-10-20 | Delete once no bug has needed this flag in a release cycle. | HOK-3278 | 2026-11-19 |
 | `WAVEMILL_DISABLE_CHALLENGE` | 0 | Operator kill-switch for the whole challenge program. | HOK-3235 | 2026-10-20 | Challenge program leaves bake and the kill switch is unused for a release cycle. | HOK-3278 | 2026-11-19 |
-| `WAVEMILL_DISABLE_OPENROUTER_COST` | 0 | Debug: skip OpenRouter price lookups when metering. | HOK-3235 | 2026-10-20 | Delete alongside `WAVEMILL_COST_METERING_LEGACY`. | HOK-3077 | 2026-11-19 |
 | `WAVEMILL_DISABLE_SCHEMA_STAMP` | 0 | Debug: skip the ledger schema stamp. | HOK-3183 | 2026-10-20 | Delete alongside the ledger shadow writers. | HOK-3274 | 2026-11-19 |
 | `WAVEMILL_OBSERVER_AUTOFIX` | 0 | Opt-in observer self-repair actions (HOK-3097). | HOK-3097 | 2026-10-20 | Observer autofix stable or deprecated. | HOK-3278 | 2026-11-19 |
 | `WAVEMILL_REVIEW_SKIP_FETCH` | 0 | Debug: skip the pre-review git fetch. | HOK-3235 | 2026-10-20 | Delete once no incident has needed it for a release cycle. | HOK-3278 | 2026-11-19 |
@@ -108,9 +105,26 @@ are listed here for historical traceability. The guard rejects any new use.
 - `router.rubricAware.mode = "shadow"` — the dormant shadow tier of the
   rubric-aware router. Only `off` and `on` remain.
 
+## Retired in HOK-3077
+
+The SDK cost engine (`shared/lib/sdk-task-cost/`) became the only workflow
+cost engine and the legacy `workflow-cost.ts` engine was deleted. Its
+switches went with it; `tools/check-cost-ownership.ts` rejects any new use.
+Rollback is a revert of the retirement change, not a runtime flag.
+
+- `WAVEMILL_SDK_COST_METERING_SHADOW` — the HOK-3075 shadow switch. With no
+  legacy engine there is nothing to shadow: SDK summaries are always
+  collected and persisted as `taskCostSummary`. The offline comparison it
+  stood for lives on as the cost-parity regression corpus
+  (`npx tsx tools/cost-parity.ts`).
+- `WAVEMILL_COST_METERING_LEGACY` — the HOK-3076 rollback to the legacy
+  engine.
+- `WAVEMILL_DISABLE_OPENROUTER_COST` — debug switch that skipped OpenRouter
+  exact-price lookups. Exact pricing now runs only when `OPENROUTER_API_KEY`
+  is set (eval orchestrator) and folds each charge into the SDK events.
+
 ## Not shadow modes
 
 - `subagent_model_economics` (reclassified in HOK-3235): the offline SDK
-  cost-metering evaluator policy. Its runtime shadow flag
-  `WAVEMILL_SDK_COST_METERING_SHADOW` is still listed above pending a
-  reclassify-or-delete call under HOK-3235.
+  cost-metering evaluator policy. Its runtime shadow flag was deleted in
+  HOK-3077 (see above).

@@ -1,6 +1,6 @@
 {
   "schemaVersion": "cost_parity_manifest/v1",
-  "capturedFrom": "wavemill workflow-cost.ts (legacy engine)",
+  "capturedFrom": "wavemill sdk-task-cost bridge (HOK-3077)",
   "cases": [
     {
       "id": "claude-simple-explicit-cache",
@@ -180,24 +180,7 @@
           ]
         }
       ],
-      "expectations": {
-        "expectedFixes": [
-          {
-            "id": "EF-1",
-            "path": "sync.outcome.totalCostUsd",
-            "legacy": 0.0225,
-            "expected": null,
-            "rationale": "Unpriced model should not contribute to total; partial coverage should be flagged. Legacy value reflects only the priced session because the fixture's second turn has no message.model — SDK should surface an explicit unpriced signal instead of silently omitting it."
-          },
-          {
-            "id": "EF-5",
-            "path": "sync.outcome.attribution.unpricedSessions",
-            "legacy": 1,
-            "expected": null,
-            "rationale": "Count should be sessions, not models; this case has 2 sessions but 1 model is unpriced"
-          }
-        ]
-      }
+      "expectations": {}
     },
     {
       "id": "claude-all-unpriced",
@@ -229,17 +212,7 @@
           ]
         }
       ],
-      "expectations": {
-        "expectedFixes": [
-          {
-            "id": "EF-1",
-            "path": "sync.outcome.status",
-            "legacy": "success",
-            "expected": "unavailable",
-            "rationale": "Legacy returns success even when every session is unpriced (cost silently 0); SDK should surface an explicit unavailable status so callers can distinguish 'no cost' from 'unknown cost'."
-          }
-        ]
-      }
+      "expectations": {}
     },
     {
       "id": "claude-explicit-zero-pricing",
@@ -344,17 +317,7 @@
           ]
         }
       ],
-      "expectations": {
-        "expectedFixes": [
-          {
-            "id": "EF-2",
-            "path": "sync.outcome.totalCostUsd",
-            "legacy": 0,
-            "expected": 1.05,
-            "rationale": "Duplicates should be deduplicated to 1.05. Legacy currently reports 0 because the fixture omits message.model — once the SDK enforces model attribution the same deduplication defect will produce 3.15 unless deduplicated. Both zero and 3.15 are wrong for different reasons."
-          }
-        ]
-      }
+      "expectations": {}
     },
     {
       "id": "codex-cached-and-reasoning",
@@ -395,24 +358,7 @@
           ]
         }
       ],
-      "expectations": {
-        "expectedFixes": [
-          {
-            "id": "EF-3",
-            "path": "sync.outcome.totalCostUsd",
-            "legacy": 9.9214746,
-            "expected": 44.92,
-            "rationale": "Legacy captures 9.92 because the harness's Codex translator maps cached_input_tokens to cache-read only; production Codex sessions in real deployments show the ~56.67 double-billing defect described here (cached tokens counted both as input and as cache-read). SDK should attribute cached tokens once and land near 44.92."
-          },
-          {
-            "id": "EF-10",
-            "path": "sync.outcome.models.codexa-latest.cacheCreationTokens",
-            "legacy": 0,
-            "expected": 100000,
-            "rationale": "cache_write_input_tokens should be captured"
-          }
-        ]
-      }
+      "expectations": {}
     },
     {
       "id": "codex-unpriced",
@@ -448,17 +394,7 @@
           ]
         }
       ],
-      "expectations": {
-        "expectedFixes": [
-          {
-            "id": "EF-1",
-            "path": "sync.outcome.status",
-            "legacy": "success",
-            "expected": "unavailable",
-            "rationale": "Legacy reports success even though the model 'unknown-model' has no pricing entry (cost silently 0); SDK should surface an explicit unavailable status."
-          }
-        ]
-      }
+      "expectations": {}
     },
     {
       "id": "native-priced-complete",
@@ -541,17 +477,7 @@
           ]
         }
       ],
-      "expectations": {
-        "expectedFixes": [
-          {
-            "id": "EF-1",
-            "path": "sync.outcome.attribution.coverage",
-            "legacy": "complete",
-            "expected": "partial",
-            "rationale": "Legacy reports coverage=complete even when a native turn has null input_tokens (missing usage silently coerced to 0); SDK should mark this partial so downstream consumers see the gap."
-          }
-        ]
-      }
+      "expectations": {}
     },
     {
       "id": "native-unpriced",
@@ -587,17 +513,7 @@
           ]
         }
       ],
-      "expectations": {
-        "expectedFixes": [
-          {
-            "id": "EF-1",
-            "path": "sync.outcome.status",
-            "legacy": "success",
-            "expected": "unavailable",
-            "rationale": "Legacy reports success even when the native model has no pricing entry (cost silently 0); SDK should surface an explicit unavailable status."
-          }
-        ]
-      }
+      "expectations": {}
     },
     {
       "id": "native-explicit-zero",

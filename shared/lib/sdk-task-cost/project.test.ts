@@ -124,6 +124,18 @@ describe('selectPrimaryTaskCostSummary', () => {
     assert.equal(selectPrimaryTaskCostSummary(null), null);
     assert.equal(selectPrimaryTaskCostSummary([]), null);
   });
+
+  it('never lets a native summary without usable evidence mask the sessions that carry the cost', () => {
+    const multi = summaries('multi-harness');
+    const emptyNative = summaries('native-missing-usage');
+    assert.equal(emptyNative[0].coverage, 'unavailable');
+    assert.equal(selectPrimaryTaskCostSummary([...multi, ...emptyNative], 'claude')?.harness, 'claude-code');
+    assert.equal(selectPrimaryTaskCostSummary([...emptyNative, ...multi], 'codex')?.harness, 'codex');
+    // A native run is costed natively even when its evidence is unusable.
+    assert.equal(selectPrimaryTaskCostSummary([...multi, ...emptyNative], 'native')?.harness, 'native');
+    // Unusable native evidence still beats no evidence at all.
+    assert.equal(selectPrimaryTaskCostSummary(emptyNative, 'claude')?.harness, 'native');
+  });
 });
 
 describe('SDK-backed eval records through existing readers', () => {
