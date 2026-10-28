@@ -303,27 +303,12 @@ check_eq "policy: operator_abort retains" "retain" "$(wavemill_terminal_pane_pol
 check_eq "policy: REQUIRE_CONFIRM holds merged pane open" "metadata-only" "$(REQUIRE_CONFIRM=true wavemill_terminal_pane_policy_for_reason pr_merged)"
 check_eq "policy: env kill-switch downgrades release" "metadata-only" "$(WAVEMILL_TERMINAL_PANE_RELEASE=0 wavemill_terminal_pane_policy_for_reason pr_merged)"
 
-# Controller terminalization archives the agent hook and then writes its own
-# state. A later waiting notification must not hide a recorded Stop, while a
-# later work event must revoke it.
-reset_case "HOK-2618" "idle-agent-history" "118"
-idle_history="$WORKTREE_ROOT/idle-agent-history/features/idle-agent-history/.terminal-history.jsonl"
-idle_hook="/tmp/wavemill-${SESSION}-HOK-2618.hook"
-jq -cn '{payload:{agent:"claude",state:"idle",event:"Stop"}}' > "$idle_history"
-jq -cn '{payload:{agent:"claude",state:"waiting",event:"Notification"}}' >> "$idle_history"
-jq -cn '{payload:{agent:"codex",state:"idle",event:"pr_merged"}}' >> "$idle_history"
-jq -cn '{agent:"codex",state:"idle",event:"pr_merged"}' > "$idle_hook"
-idle_evidence="blocked"
-wavemill_terminal_agent_idle_evidence "$SESSION" "HOK-2618" && idle_evidence="idle"
-check_eq "archived Stop survives waiting and controller events" "idle" "$idle_evidence"
-jq -cn '{payload:{agent:"claude",state:"working",event:"PreToolUse"}}' >> "$idle_history"
-idle_evidence="blocked"
-wavemill_terminal_agent_idle_evidence "$SESSION" "HOK-2618" && idle_evidence="idle"
-check_eq "later agent work revokes archived Stop" "blocked" "$idle_evidence"
-jq -cn '{payload:{agent:"claude",state:"idle",event:"Stop"}}' >> "$idle_history"
-idle_evidence="blocked"
-wavemill_terminal_agent_idle_evidence "$SESSION" "HOK-2618" && idle_evidence="idle"
-check_eq "new Stop restores idle evidence" "idle" "$idle_evidence"
+# HOK-3312: the private hook reader `wavemill_terminal_agent_idle_evidence`
+# is deleted. Pane liveness is no longer an input for terminal release — the
+# TS decider (shared/lib/terminal-inbox-cleanup.ts) decides reap/archive-and-
+# reap/retain, and `wavemill_release_terminal_pane` releases unconditionally.
+# The archived agent-hook history is still written by the reconciler
+# (verified below), but is not read back as a release gate.
 
 # Release via reconciliation: archive -> record -> kill, exactly once.
 reset_case "HOK-2610" "release-order" "110"
@@ -377,7 +362,9 @@ check_eq "missing window keeps git-owned disposition" "verification-required" "$
 kill_after_missing="$(kill_count)"
 check_eq "missing window never calls kill-window" "0" "$kill_after_missing"
 
-# Live agent child in the pane blocks release (marker stays unset, no error).
+# HOK-3312: a terminal task's lifecycle (not its pane) decides release. A
+# live agent child in the pane no longer blocks the kill — the task is
+# already done; the pane is residue.
 reset_case "HOK-2612" "release-live-agent" "112"
 write_pr_state "112" "CLOSED"
 setup_fake_window "HOK-2612" "release-live-agent"
@@ -386,22 +373,24 @@ LIVE_PARENT_PID=$!
 printf '%s\n' "$LIVE_PARENT_PID" > "$FAKE_TMUX_STATE/pane-pid"
 sleep 0.2
 wavemill_reconcile_terminal "$SESSION" "HOK-2612" "pr_closed_unmerged" "112"
-check_eq "live agent child blocks kill" "0" "$(kill_count)"
-check_eq "live agent child leaves paneReleased unset" "false" "$(jq -r '.tasks["HOK-2612"].paneReleased // false' "$STATE_FILE")"
-check_eq "blocked window stays alive" "present" "$([[ -f "$FAKE_TMUX_STATE/alive" ]] && echo present || echo absent)"
+check_eq "live agent child no longer blocks kill" "1" "$(kill_count)"
+check_eq "live agent child still releases pane" "true" "$(jq -r '.tasks["HOK-2612"].paneReleased // false' "$STATE_FILE")"
+check_eq "live agent pane gone" "absent" "$([[ -f "$FAKE_TMUX_STATE/alive" ]] && echo present || echo absent)"
 kill "$LIVE_PARENT_PID" 2>/dev/null || true
 wait "$LIVE_PARENT_PID" 2>/dev/null || true
 
-# Fresh 'working' hook blocks the primitive directly.
+# HOK-3312: a fresh 'working' hook no longer blocks release of a terminal
+# task's pane. The HOK-3101 primitive still reads the hook, but the terminal
+# reconciler ignores its state — pane release is unconditional.
 reset_case "HOK-2613" "release-hook-working" "113"
 write_pr_state "113" "CLOSED"
 setup_fake_window "HOK-2613" "release-hook-working"
 jq -cn --argjson ts "$(date +%s)" '{state:"working",event:"PreToolUse",detail:"Edit",agent:"claude",timestamp:$ts}' > "/tmp/wavemill-${SESSION}-HOK-2613.hook"
 release_rc=0
 wavemill_release_terminal_pane "$SESSION" "HOK-2613" "release-hook-working" "pr_closed_unmerged" "113" || release_rc=$?
-check_eq "fresh working hook blocks release" "1" "$release_rc"
-check_eq "hook block reports reason" "hook-working" "${WAVEMILL_PANE_RELEASE_BLOCK_REASON:-}"
-check_eq "hook block does not kill" "0" "$(kill_count)"
+check_eq "working hook no longer blocks release" "0" "$release_rc"
+check_eq "working hook pane gets killed" "1" "$(kill_count)"
+check_eq "working hook pane gone" "absent" "$([[ -f "$FAKE_TMUX_STATE/alive" ]] && echo present || echo absent)"
 rm -f "/tmp/wavemill-${SESSION}-HOK-2613.hook"
 
 # Feature gate off: metadata-only, but truthful lifecycle fields still land.

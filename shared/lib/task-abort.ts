@@ -92,6 +92,15 @@ export async function abortTaskInState(
     task.challengeAbortedDetail = reason;
     task.abortedAt = now;
     task.updated = now;
+    // HOK-3312: the shared decider in `decideTerminalTask` reads
+    // `lifecycle.workflowOutcome` as the terminal signal. Without flipping it
+    // here the row stays `workflowOutcome: 'active'` while status/phase say
+    // 'aborted', and the decider returns `not-terminal` so the monitor never
+    // closes the pane or reaps the arm.
+    const existingLifecycle = (task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle))
+      ? task.lifecycle
+      : {};
+    task.lifecycle = { ...existingLifecycle, schemaVersion: 1, workflowOutcome: 'aborted' };
     return current;
   });
 

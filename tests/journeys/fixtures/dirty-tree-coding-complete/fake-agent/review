@@ -1,0 +1,12 @@
+# shellcheck shell=bash
+# Fake reviewer for the dirty-tree coding-complete journey (HOK-3128).
+#
+# Records the worktree's git status at the moment review was launched, so the
+# journey can assert (from the agent's side, not the mill's logs) that the mill
+# never handed a dirty tree to review. Then review as usual.
+if [[ -z "$(git status --porcelain --untracked-files=all)" ]]; then
+  printf '%s phase=review issue=%s tree-at-launch=clean\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+else
+  printf '%s phase=review issue=%s tree-at-launch=dirty\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+fi
+default_review

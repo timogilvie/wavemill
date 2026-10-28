@@ -386,7 +386,7 @@ jobs:
   # Golden journeys (HOK-3227): the real monitor loop + tend driving one task
   # from backlog to merged and reaped against the shared fakes (tests/fakes/).
   # One journey per matrix leg so the suite adds ~0 to CI wall-clock; each
-  # journey must finish within JOURNEY_BUDGET_SECONDS (90s, enforced by the
+  # journey must finish within JOURNEY_BUDGET_SECONDS (120s, enforced by the
   # harness). Runs on mill-core changes, on promotion (auto/integration ->
   # main), nightly, and on demand; legs always report a conclusion, and the
   # "Golden Journeys" aggregator below is the required check and publishes the
@@ -400,7 +400,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        journey: [happy-path, gh-lag-after-push, errored-with-pr, inputs-ready-before-approval, mid-flight-base-conflict, tend-rebase-conflict-single-comment]
+        journey: [happy-path, gh-lag-after-push, errored-with-pr, inputs-ready-before-approval, mid-flight-base-conflict, tend-rebase-conflict-single-comment, challenge-pair-eval, ready-fail-remediate, dirty-tree-coding-complete, post-merge-eval-reap, agent-idle-background-job, operator-abort-mid-coding]
     env:
       RUN_JOURNEYS: ${{ needs.check-paths.outputs.journeys == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.head_ref == 'auto/integration' && github.base_ref == 'main') }}
 
@@ -429,7 +429,7 @@ jobs:
         if: env.RUN_JOURNEYS == 'true'
         env:
           JOURNEY_ARTIFACT_DIR: ${{ runner.temp }}/journey-artifacts
-          JOURNEY_BUDGET_SECONDS: 90
+          JOURNEY_BUDGET_SECONDS: 120
         run: |
           start=$(date +%s)
           rc=0

@@ -1,0 +1,10 @@
+# HOK-3312 cleanup-decision guard allowlist.
+#
+# Entries are `<path> [<max-findings>]  # reason`. A line without a count
+# exempts the whole file; a count ratchets — new occurrences past the count
+# fail the guard. Allowlist entries that no longer apply (file missing, zero
+# findings, over-count) are themselves findings.
+#
+# The invariant source (shared/lib/terminal-inbox-cleanup.ts, the two canonical
+# shell libraries, this file, and the guard) is auto-excluded; nothing listed
+# here currently.

@@ -710,6 +710,239 @@ launch_task_route_prefetch() {
   return "$LAUNCH_TASK_DEFERRED_RC"
 }
 
+# ── Terminal cleanup decision (HOK-3312) ────────────────────────────────────
+#
+# The monitor's terminal-cleanup callers (cleanup_completed_task,
+# cleanup_aborted_challenge_arm) delegate the reap / archive-and-reap /
+# retain decision to shared/lib/terminal-inbox-cleanup.ts::decideTerminalTask.
+# The TS tool runs as a tracked async job; the shell callers consume the
+# condition-keyed result marker on a later pass.
+
+CLEANUP_DECISION_RESULT_MARKER=".cleanup-decision.json"
+CLEANUP_DECISION_JOB_BUCKET="cleanup-decision-job"
+
+# cleanup_decision_job_run <state_dir> <issue> <head_sha> <marker_path> <role>
+# Invokes `tools/decide-terminal-cleanup.ts` and writes a condition-keyed
+# marker containing the TS decider's {action, decision} JSON.
+cleanup_decision_job_run() {
+  local state_dir="$1" issue="$2" head_sha="$3" marker="$4" role="${5:-primary}"
+  local tmp_out output rc=0 detail
+  tmp_out="$(mktemp 2>/dev/null)" || tmp_out=""
+  if [[ -z "$tmp_out" ]]; then
+    echo "cleanup-decision: could not create temp file for $issue"
+    return 1
+  fi
+  local -a cmd=(decide-terminal-cleanup.ts --issue "$issue" --repo-dir "$REPO_DIR" --role "$role" --out "$tmp_out")
+  [[ -n "${BASE_BRANCH:-}" ]] && cmd+=(--base-branch "$BASE_BRANCH")
+  wavemill_run_tool "${cmd[@]}" >/dev/null 2>&1 || rc=$?
+  if (( rc != 0 )); then
+    rm -f "$tmp_out"
+    echo "cleanup-decision: tool exited $rc for $issue"
+    return 1
+  fi
+  output="$(cat "$tmp_out" 2>/dev/null || true)"
+  rm -f "$tmp_out"
+  if ! printf '%s' "$output" | jq -e '.action' >/dev/null 2>&1; then
+    echo "cleanup-decision: unparseable output for $issue"
+    return 1
+  fi
+  detail="$output"
+  marker_write "$marker" \
+    --kind cleanup-decision \
+    --head "$head_sha" \
+    --expires-on "head,operator-event,remote" \
+    --reason "cleanup decision role=$role" \
+    --detail-json "$detail"
+}
+
+# cleanup_decision_marker_action <marker>
+# Prints the TS decider's `action` from the marker (reap|archive-and-reap|
+# retain|kept|not-terminal) or an empty string.
+cleanup_decision_marker_action() {
+  local marker="$1"
+  [[ -f "$marker" ]] || { printf '\n'; return 0; }
+  jq -r '.detail.action // empty' "$marker" 2>/dev/null || printf '\n'
+}
+
+# cleanup_decision_marker_retention_reason <marker>
+# Maps the TS decider's `refusalReason` to the shell retention classification
+# (retain_dirty / retain_unpublished / retain_closed_unmerged /
+# retain_unverifiable) used by set_task_lifecycle_disposition. This preserves
+# the lifecycle.retention.reason categories operators and tests read.
+cleanup_decision_marker_retention_reason() {
+  local marker="$1" refusal
+  [[ -f "$marker" ]] || { printf '\n'; return 0; }
+  refusal="$(jq -r '.detail.decision.refusalReason // empty' "$marker" 2>/dev/null || true)"
+  case "$refusal" in
+    closed_loser_requires_abandon|closed_loser_head_unpublished|closed_loser_sibling_not_merged)
+      printf 'retain_closed_unmerged\n' ;;
+    aborted_pr_less_requires_abandon|unique_local_patch|changed_after_pr_head)
+      printf 'retain_unpublished\n' ;;
+    dirty_worktree)
+      printf 'retain_dirty\n' ;;
+    worktree_status_unreadable|merged_delivery_unverified|pr_state_unverifiable|pr_base_mismatch)
+      printf 'retain_unverifiable\n' ;;
+    '')
+      printf '\n' ;;
+    *)
+      printf 'retain_unverifiable\n' ;;
+  esac
+}
+
+# cleanup_decision_launch_job <state_dir> <issue> <role> <feature_dir>
+# Common fast-path block for the cleanup consumers: consume a non-stale
+# marker's action, or (bounded-retry gated) launch the async decision job
+# and return 4 to signal "pending".
+#
+# Prints the action on success (reap|archive-and-reap|retain|kept|not-terminal)
+# and returns 0; prints empty and returns 4 while the decision is pending;
+# prints empty and returns 1 when the budget is spent for this head.
+cleanup_decision_launch_job() {
+  local state_dir="$1" issue="$2" role="${3:-primary}" feature_dir="${4:-}" wt_dir="${5:-}"
+  local marker head_sha job_id decision meta action
+  marker="$state_dir/$CLEANUP_DECISION_RESULT_MARKER"
+  # Head is the task worktree's HEAD; falls back to the repo head when the
+  # worktree is already gone. An empty head still condition-keys the marker
+  # for the operator-event / remote reconcilers.
+  head_sha=""
+  if [[ -n "$wt_dir" && -d "$wt_dir" ]]; then
+    head_sha="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+  fi
+  [[ -n "$head_sha" ]] || head_sha="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
+  [[ -n "$head_sha" ]] || head_sha="no-head"
+
+  if ! marker_is_stale "$marker" "$head_sha"; then
+    action="$(cleanup_decision_marker_action "$marker")"
+    if [[ -n "$action" ]]; then
+      monitor_async_job_stat cleanup-decision consumed
+      printf '%s\n' "$action"
+      return 0
+    fi
+  fi
+
+  job_id="cleanup-decision-$(sanitize_job_token "$issue")"
+  monitor_async_job_stat cleanup-decision pending
+  monitor_async_job_running "$job_id" && { printf '\n'; return 4; }
+
+  decision="$(_async_check_retry_gate "$state_dir" "$CLEANUP_DECISION_JOB_BUCKET" "$head_sha")"
+  case "$decision" in
+    exhausted|exhausted-quiet)
+      if [[ "$decision" == "exhausted" ]]; then
+        bounded_retry_mark_exhausted "$state_dir" "$CLEANUP_DECISION_JOB_BUCKET" \
+          "Cleanup-decision job failed ${ASYNC_CHECK_JOB_RETRY_LIMIT} time(s) at ${head_sha:0:12}" || true
+      fi
+      printf '\n'
+      return 1
+      ;;
+    backoff)
+      printf '\n'
+      return 4
+      ;;
+  esac
+
+  meta="$(jq -cn --arg s "$state_dir" --arg b "$CLEANUP_DECISION_JOB_BUCKET" --arg k "$head_sha" '{stateDir: $s, bucket: $b, key: $k}')"
+  monitor_async_job_launch cleanup-decision "$job_id" "$issue" "" 120 "$meta" \
+    cleanup_decision_job_run "$state_dir" "$issue" "$head_sha" "$marker" "$role"
+  printf '\n'
+  return 4
+}
+
+# ── In-flight touch set (HOK-3306, picker 3/9) ───────────────────────────────
+#
+# The picker needs each in-flight task's actual-diff touch set so it can hold
+# a backlog candidate whose predicted touch set overlaps. `git diff` on the
+# monitor hot pass would violate HOK-3206, so we compute it inside a tracked
+# async job keyed on the worktree HEAD. The result lives in a condition-keyed
+# marker (`--expires-on head,operator-event`): a new head reads as pending
+# and relaunches; the monitor hot pass reads only the cached marker.
+
+IN_FLIGHT_TOUCH_SET_RESULT_MARKER=".in-flight-touch-set-result.json"
+IN_FLIGHT_TOUCH_SET_JOB_BUCKET="in-flight-touch-set-job"
+
+in_flight_touch_set_job_run() {
+  local issue="$1" wt_dir="$2" state_dir="$3" head_sha="$4" base_branch="$5" phase="${6:-}" feature_dir="${7:-}"
+  local files_json head_after rc=0
+  local -a tool_args=(--worktree-dir "$wt_dir" --base-branch "$base_branch" --head-sha "$head_sha" --task-id "$issue")
+  [[ -n "$phase" ]] && tool_args+=(--phase "$phase")
+  [[ -n "$feature_dir" ]] && tool_args+=(--feature-dir "$feature_dir")
+
+  files_json=$(wavemill_run_tsx_tool "$TOOLS_DIR/compute-in-flight-touch-set.ts" "${tool_args[@]}") || rc=$?
+
+  head_after="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+  if [[ -n "$head_after" && "$head_after" != "$head_sha" ]]; then
+    echo "in-flight-touch-set: head moved ${head_sha:0:7} -> ${head_after:0:7} during run; discarding verdict"
+    return 0
+  fi
+
+  if (( rc != 0 )); then
+    echo "in-flight-touch-set: compute failed (exit $rc)"
+    return 1
+  fi
+  if ! printf '%s' "$files_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    echo "in-flight-touch-set: non-array output"
+    return 1
+  fi
+
+  local detail
+  detail="$(jq -cn --argjson files "$files_json" --arg phase "$phase" \
+    '{files: $files, phase: $phase}')"
+  marker_write "$state_dir/$IN_FLIGHT_TOUCH_SET_RESULT_MARKER" \
+    --kind in-flight-touch-set \
+    --head "$head_sha" \
+    --expires-on "head,operator-event" \
+    --reason "touch set at ${head_sha:0:12}" \
+    --detail-json "$detail"
+}
+
+# in_flight_touch_set_gate <issue> <state_dir> <wt_dir> <head_sha> <base_branch> [<phase>] [<feature_dir>]
+# Prints a JSON array of in-flight files to stdout and returns 0 when a
+# verdict for the current head is cached; otherwise prints `[]`, launches the
+# job (bounded) and returns 1 so the caller can proceed without files.
+in_flight_touch_set_gate() {
+  local issue="$1" state_dir="$2" wt_dir="$3" head_sha="$4" base_branch="${5-}" phase="${6-}" feature_dir="${7-}"
+  local marker="$state_dir/$IN_FLIGHT_TOUCH_SET_RESULT_MARKER"
+  local job_id="in-flight-touch-set-$(sanitize_job_token "$issue")"
+  local decision meta
+
+  if [[ -f "$marker" ]] && ! marker_is_stale "$marker" "$head_sha"; then
+    monitor_async_job_stat in-flight-touch-set consumed
+    jq -c '.detail.files // []' "$marker" 2>/dev/null || echo '[]'
+    return 0
+  fi
+
+  monitor_async_job_stat in-flight-touch-set pending
+  if monitor_async_job_running "$job_id"; then
+    echo '[]'
+    return 1
+  fi
+
+  decision="$(_async_check_retry_gate "$state_dir" "$IN_FLIGHT_TOUCH_SET_JOB_BUCKET" "$head_sha")"
+  case "$decision" in
+    exhausted|exhausted-quiet)
+      # No touch set for this head within the budget. The picker continues
+      # without an in-flight overlap for this task; the next head resets.
+      [[ "$decision" == "exhausted" ]] && bounded_retry_mark_exhausted "$state_dir" "$IN_FLIGHT_TOUCH_SET_JOB_BUCKET" \
+        "In-flight touch-set job failed ${ASYNC_CHECK_JOB_RETRY_LIMIT} time(s) at ${head_sha:0:12}" || true
+      echo '[]'
+      return 1
+      ;;
+    backoff)
+      echo '[]'
+      return 1
+      ;;
+  esac
+
+  meta="$(jq -cn --arg s "$state_dir" --arg b "$IN_FLIGHT_TOUCH_SET_JOB_BUCKET" --arg k "$head_sha" \
+    '{stateDir: $s, bucket: $b, key: $k}')"
+  monitor_async_job_launch in-flight-touch-set "$job_id" "$issue" "" \
+    "${WAVEMILL_IN_FLIGHT_TOUCH_SET_TIMEOUT_SECONDS:-30}" "$meta" \
+    in_flight_touch_set_job_run "$issue" "$wt_dir" "$state_dir" "$head_sha" "$base_branch" "$phase" "$feature_dir"
+  echo '[]'
+  return 1
+}
+
+# ── Deferred launch queue ────────────────────────────────────────────────────
+
 # Queue a deferred launch (idempotent per issue).
 enqueue_deferred_launch() {
   local issue="$1" slug="$2" title="$3" remaining="${4:-1}" override_base="${5:-}" file

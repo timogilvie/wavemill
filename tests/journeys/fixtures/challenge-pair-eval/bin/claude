@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Judge shim for the challenge-pair journey (sourced into PATH ahead of the
+# shared fake agent CLI, for the monitor's children only).
+#
+# compare-prs randomises which arm the judge sees as Candidate A/B, so a fixed
+# "winner":"A" verdict would make the winning arm a coin flip. This shim reads
+# the blind judge prompt and names, as the winner, whichever candidate's diff
+# carries $JOURNEY_WINNER_LINE (the line the intended winner's coder wrote).
+# Every other call — agent phase launches, eval judge calls — goes to the
+# shared fake unchanged, with a verdict that satisfies both judge schemas.
+set -euo pipefail
+# Resolved from this file, not the environment: the mill may hand agent panes
+# (which do not inherit the journey's exports) this shim's absolute path.
+JOURNEY_FAKE_CLAUDE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../fakes/bin" && pwd)/claude"
+
+if [[ -n "${WAVEMILL_PHASE:-}" || "${1:-}" != "-p" ]]; then
+  exec "$JOURNEY_FAKE_CLAUDE" "$@"
+fi
+
+prompt="$(cat)"
+letter="A"
+if [[ "$prompt" == *"Candidate B diff:"* ]]; then
+  candidate_b="${prompt##*Candidate B diff:}"
+  if grep -qxF -- "+${JOURNEY_WINNER_LINE:-}" <<<"$candidate_b"; then
+    letter="B"
+  fi
+  printf '%s judge picked candidate %s\n' "$(date -u +%FT%TZ)" "$letter" >> "${FAKE_AGENT_LOG:-/dev/null}"
+fi
+
+verdict="$(mktemp "${TMPDIR:-/tmp}/journey-verdict.XXXXXX")"
+trap 'rm -f "$verdict"' EXIT
+jq -n --arg w "$letter" '{
+  winner: $w,
+  rationale: "Journey verdict: the scripted winning arm is preferred.",
+  score: 0.8,
+  interventionFlags: [],
+  dimensions: {
+    completeness: {A: 8, B: 8}, correctness: {A: 8, B: 8}, code_quality: {A: 8, B: 8},
+    intervention_impact: {A: 8, B: 8}, autonomy: {A: 8, B: 8}
+  },
+  criterionRationales: {
+    completeness: {rationale: "Both arms cover the scope."},
+    correctness: {rationale: "No correctness gaps."},
+    code_quality: {rationale: "Both changes are minimal."},
+    intervention_impact: {rationale: "No interventions."},
+    autonomy: {rationale: "Both arms ran unattended."}
+  }
+}' > "$verdict"
+printf '%s' "$prompt" | FAKE_JUDGE_VERDICT_FILE="$verdict" "$JOURNEY_FAKE_CLAUDE" "$@"

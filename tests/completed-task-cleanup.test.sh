@@ -142,12 +142,13 @@ extract_function "$COMMON_SCRIPT" "cleanup_remote_task_branch" > "$REMOTE_CLEANU
 # is exercised rather than stubbed.
 RECONCILER_SCRIPT="$REPO_DIR/shared/lib/terminal-reconciler.sh"
 RELEASE_FILE="$TEST_TMP/release_terminal_pane.sh"
+# HOK-3312: `wavemill_terminal_agent_idle_evidence` is deleted; the release
+# primitive is unconditional for terminal tasks (lifecycle decides release,
+# not pane liveness).
 {
   extract_function "$RECONCILER_SCRIPT" "wavemill_terminal_fresh_hook_state"
   printf '\n'
   extract_function "$RECONCILER_SCRIPT" "wavemill_terminal_feature_dir"
-  printf '\n'
-  extract_function "$RECONCILER_SCRIPT" "wavemill_terminal_agent_idle_evidence"
   printf '\n'
   extract_function "$RECONCILER_SCRIPT" "wavemill_release_terminal_pane"
 } > "$RELEASE_FILE"
@@ -664,11 +665,13 @@ check_contains "preserved local work records unique patch evidence" "$output" "u
 check_contains "preserved local work keeps state" "$output" "remove_state_calls=0"
 check_contains "preserved local work preserves retry state" "$output" "reset_retry_calls=0"
 check_contains "preserved local work requests attention" "$output" "attention=needs-user"
-check_contains "preserved local work logs retention" "$output" "cleanup preserved local work"
+check_contains "preserved local work logs deferral" "$output" "cleanup deferred by physical step"
 check_not_contains "preserved local work skips remote cleanup" "$output" "push origin --delete"
 check_contains "preserved local work still released the pane" "$output" "order=archive;tmux-kill;"
 check_contains "preserved local work keeps terminal record for recovery" "$output" "record=present"
-check_contains "preserved local work records retained disposition" "$output" "retained:retain_unpublished;"
+# HOK-3312: physical-step preservation now records verification-required —
+# `retained` is reserved for the TS decider's explicit retain verdict.
+check_contains "preserved local work records verification-required disposition" "$output" "verification-required:retain_unpublished;"
 
 output="$(run_cleanup_case patch-equivalent-rebased)"
 check_contains "patch-equivalent cleanup returns zero" "$output" "rc=0"
@@ -736,7 +739,7 @@ check_not_contains "worktree failure skips branch deletion" "$output" "branch -D
 check_not_contains "worktree failure skips dynamic branch deletion" "$output" "branch -d"
 check_contains "worktree failure still released the pane first" "$output" "order=archive;tmux-kill;worktree-remove;"
 check_contains "worktree failure keeps terminal record" "$output" "record=present"
-check_contains "worktree failure records retained disposition" "$output" "retained:worktree-or-local-branch-cleanup-failed;"
+check_contains "worktree failure records verification-required disposition" "$output" "verification-required:worktree-or-local-branch-cleanup-failed;"
 
 output="$(run_cleanup_case local-branch-fails)"
 check_contains "local branch failure returns non-zero" "$output" "rc=1"
@@ -778,16 +781,20 @@ check_contains "cleanup failure does not mark issue cleaned" "$output" "cleaned=
 check_contains "cleanup failure requests attention" "$output" "attention=needs-user"
 check_contains "cleanup failure warns about persistent window" "$output" "keeping task state"
 check_contains "cleanup failure wrote terminal record before kill attempt" "$output" "record=present"
-check_contains "cleanup failure records truthful retention reason" "$output" "retained:tmux-window-close-failed;"
+# HOK-3312: physical-step failures (tmux kill fails, worktree remove fails)
+# now record `verification-required`, not `retained` — `retained` is reserved
+# for the TS decider's retain verdict.
+check_contains "cleanup failure records truthful retention reason" "$output" "verification-required:tmux-window-close-failed;"
 check_not_contains "cleanup failure never touches git work" "$output" "worktree-remove"
 
+# HOK-3312: `live-agent-blocks` is no longer a reachable case. Pane release
+# is unconditional for terminal tasks — a live child in the pane does not
+# refuse release. The private hook reader `wavemill_terminal_agent_idle_evidence`
+# that produced the `live-agent-process` block reason has been deleted.
 output="$(run_cleanup_case live-agent-blocks)"
-check_contains "live agent blocks cleanup with non-zero rc" "$output" "rc=1"
-check_not_contains "live agent block never kills the window" "$output" "tmux-kill"
-check_not_contains "live agent block never touches git work" "$output" "worktree-remove"
-check_contains "live agent block skips terminal record" "$output" "record=absent"
-check_contains "live agent block records truthful reason" "$output" "retained:live-agent-process;"
-check_contains "live agent block requests attention" "$output" "attention=needs-user"
+check_contains "live agent no longer blocks terminal release (HOK-3312)" "$output" "rc=0"
+check_contains "live agent terminal release kills the window" "$output" "tmux-kill"
+check_contains "live agent terminal release removes git work" "$output" "worktree-remove"
 
 echo
 if [[ "$FAIL" -eq 0 ]]; then

@@ -120,6 +120,11 @@ Focus your review on these categories:
 - Use `severity: "blocker"` when the default path makes the headline assertion unreachable.
 - Use `severity: "warning"` only for documented debug or operator-only escape hatches that do not affect the default gate path.
 
+#### Golden journeys for mill-core PRs
+
+- A PR touching mill-core paths (the plan → code → review → ready → tend merge → reap chain: the `journeys` path filter in `.github/workflows/ci.yml`, e.g. `shared/lib/wavemill-*.sh`, `shared/lib/tend-*.ts`, `shared/lib/ready-*.ts`, `shared/hooks/`, `tools/tend.ts`, `tests/journeys/`, `tests/fakes/`) must pass the journey job (the required **Golden Journeys** check). Use `severity: "blocker"` when the diff removes, skips or weakens a journey, or drops one from the CI matrix, without a replacement.
+- A fix for an incident on that chain, or for a class a journey already covers (challenge pairs, Ready fail → remediate, dirty-tree `.coding-complete`, post-merge eval + reap, agent idle on its own background job, operator abort), must add or extend a journey in `tests/journeys/` that uses the shared fakes (`tests/fakes/lib.sh`). Report a missing journey as `severity: "blocker"`, category `requirements`.
+
 #### 1. Logical Errors and Edge Cases
 - **Off-by-one errors** - Array indexing, loop boundaries
 - **Null/undefined handling** - Missing checks that will cause runtime errors
@@ -670,6 +675,19 @@ Return your review as a JSON object with this exact structure:
 5. **Use your expertise** - You know common bug patterns and security issues - flag those
 6. **Stay in scope** - Review the diff, not the entire codebase
 7. **Provide value** - Every finding should help prevent a real problem
+
+---
+
+## Test quality — behavioural, not a mirror of the source (HOK-3237)
+
+For each test added or modified in the diff, ask:
+
+- **Would this test fail against a plausible wrong implementation?** Or does it mirror the implementation back at itself (grep the source, hash the file, assert the exact literal the writer used)? AI-written tests often restate the writer; those pass on real bugs and fail on harmless refactors.
+- **Were its fixtures derived from the writer or from the author's assumptions?** A fixture that was captured from the current output of the function under test cannot catch a bug in that function. An independent oracle (a hand-authored expected value, a different implementation, a protocol-level spec) can.
+- **Can you say in one sentence what this test protects against?** Each new `test(...)` / `test_*` should carry a one-line `// protects: <failure scenario>` comment (or encode the scenario in the test name). If the test cannot answer this question, flag it.
+- **Does it read, grep, or hash `shared/lib/**` or `tools/**` source as the oracle?** The `tools/check-source-text-assertions.ts` preflight already fails on new occurrences, but a disguised variant (`eval "$(sed -n …)"` extraction + text match, a `readFileSync` of a path assembled at runtime) can slip past. Flag any such pattern you see in the diff.
+
+Flag violations with `severity: "warning"` and `category: "logic"`. Blocker only if a mirror-of-source test is replacing coverage the diff removed — then the regression is the loss of real coverage.
 
 ---
 

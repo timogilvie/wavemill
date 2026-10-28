@@ -265,6 +265,7 @@ runTool({
     'queue-classifier-deadline-ms': { type: 'string', description: 'Internal: absolute classifier deadline in epoch milliseconds (deprecated, use --queue-classifier-budget-ms)' },
     'queue-classifier-budget-ms': { type: 'string', description: 'Internal: relative classifier budget in milliseconds from now (HOK-3202)' },
     'inference-report-file': { type: 'string', description: 'Internal: write a queue inference status JSON report to this path' },
+    'in-flight-file': { type: 'string', description: 'Read in-flight tasks + touch sets from a JSON file (HOK-3306)' },
     json: { type: 'boolean', description: 'Emit queuePlan JSON' },
     preview: { type: 'boolean', description: 'Emit human-readable preview' },
   },
@@ -479,10 +480,36 @@ runTool({
     }
 
     const queuePlan = buildQueuePlan(edges, result);
+    // HOK-3306: augment the plan with synthesized shared-surface edges between
+    // backlog candidates (via the cached grounded touch sets) and in-flight
+    // tasks (actual diffs computed off the monitor hot path). Soft-fail on
+    // malformed input — a broken in-flight file must not take down the picker.
+    let planToEmit: QueuePlan = queuePlan;
+    const inFlightPath = args['in-flight-file'];
+    if (typeof inFlightPath === 'string' && inFlightPath.length > 0) {
+      try {
+        const { parseInFlightFile, augmentPlanWithInFlight } = await import(
+          '../shared/lib/in-flight-touch-sets.ts'
+        );
+        const inFlight = parseInFlightFile(inFlightPath);
+        const candidateTouchSets = new Map<string, readonly string[]>();
+        for (const [taskId, cached] of Object.entries(cacheAfterPrune?.touchSets ?? {})) {
+          candidateTouchSets.set(
+            taskId,
+            (cached.entries ?? []).map((entry) => entry.path),
+          );
+        }
+        planToEmit = augmentPlanWithInFlight(queuePlan, inFlight, candidateTouchSets);
+      } catch (error) {
+        process.stderr.write(
+          `plan-queue: ignoring malformed in-flight file ${inFlightPath}: ${(error as Error).message}\n`,
+        );
+      }
+    }
     const emitJson = args.json || !args.preview;
-    if (emitJson) process.stdout.write(`${JSON.stringify(queuePlan, null, 2)}\n`);
+    if (emitJson) process.stdout.write(`${JSON.stringify(planToEmit, null, 2)}\n`);
     if (args.preview) {
-      (emitJson ? process.stderr : process.stdout).write(`${renderPreview(queuePlan, records)}\n`);
+      (emitJson ? process.stderr : process.stdout).write(`${renderPreview(planToEmit, records)}\n`);
       if (grounded) {
         (emitJson ? process.stderr : process.stdout).write(`\n${renderGroundedPreview(grounded)}\n`);
       }

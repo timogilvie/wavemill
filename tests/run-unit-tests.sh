@@ -354,6 +354,7 @@ TESTS=(
   shared/lib/task-dependency-planner.test.ts
   shared/lib/plan-queue-utils.test.ts
   shared/lib/touch-set-predictor.test.ts
+  shared/lib/in-flight-touch-sets.test.ts
   shared/lib/conflict-scorer.test.ts
   shared/lib/grounded-planner.test.ts
   shared/lib/planner-backtest.test.ts
@@ -394,6 +395,7 @@ TESTS=(
   tools/check-ci-command-map-drift.test.ts
   tools/check-ci-concurrency.test.ts
   tools/lib/source-guard.test.ts
+  tools/check-source-text-assertions.test.ts
   tools/check-openrouter-alias-audit-ci.test.ts
   tools/check-cross-pr-reverts.test.ts
   tools/hok2423-verify-native-provider-gate.test.ts
@@ -417,6 +419,7 @@ TESTS=(
   tools/resolve-orphan-challenge-pair.test.ts
   tools/resolve-primary-merged-pair.test.ts
   tests/drift-detector.test.ts
+  tests/terminal-inbox-cleanup.replay.test.ts
   shared/lib/parent-monitor-drift.test.ts
   tests/check-drift-tool.test.ts
   tests/jq-filter-smoke.test.ts

@@ -181,6 +181,22 @@ describe('launchNativeCoding', () => {
     assert.doesNotMatch(prompt, /full verification passes/);
   });
 
+  it('states the mill-core golden-journey definition of done (HOK-3228)', () => {
+    const prompt = renderCodingSystemPrompt({
+      template: 'Implement {{SLUG}}.',
+      codeDepth: 'medium',
+      operatingMode: 'normal',
+      featureDir: '/repo/features/demo',
+      planPath: '/repo/features/demo/plan.md',
+      slug: 'demo',
+      blockedCompletionPath: 'features/demo/.coding-blocked-completion.json',
+    });
+
+    assert.match(prompt, /must pass the journey job/);
+    assert.match(prompt, /bash tests\/journeys\/run-journeys\.sh <name>/);
+    assert.match(prompt, /must add or extend a journey in `tests\/journeys\/`/);
+  });
+
   it('appends a Recovery Mode section when recoveryMode is set (HOK-3145)', () => {
     const prompt = renderCodingSystemPrompt({
       template: 'Implement {{SLUG}}.',

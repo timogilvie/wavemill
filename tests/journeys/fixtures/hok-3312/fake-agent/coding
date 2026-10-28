@@ -1,0 +1,17 @@
+# shellcheck shell=bash
+# HOK-3312 fake coder: does the default coding work, then writes a fresh
+# `waiting:Notification` hook before exiting. Previously that hook plus a
+# live-looking pane would block terminal cleanup; after HOK-3312, lifecycle
+# (not pane state) decides release and the task still reaps.
+printf 'implemented %s\n' "$WAVEMILL_ISSUE" >> journey-output.txt
+git add journey-output.txt
+git -c user.name=fake-agent -c user.email=fake-agent@example.invalid \
+  commit -q -m "$WAVEMILL_ISSUE: implement"
+jq -n --arg commit "$(git rev-parse HEAD)" \
+  '{stage:"coding",confidence:"high",commit:$commit}' > "$FEATURE_DIR/.coding-complete"
+
+# Stamp a hook that would previously have refused pane release.
+hook_file="/tmp/wavemill-${WAVEMILL_SESSION}-${WAVEMILL_ISSUE}.hook"
+jq -cn --argjson ts "$(date +%s)" \
+  '{state:"waiting",event:"Notification",detail:"awaiting operator",agent:"claude",timestamp:$ts,writer:"agent",agentRecord:{state:"waiting",event:"Notification",agent:"claude",timestamp:$ts,detail:"awaiting operator"}}' \
+  > "$hook_file"
