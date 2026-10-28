@@ -11,6 +11,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AgentContext, LoopResult, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
+import { DEFAULT_NATIVE_PLANNING_LIMITS } from './planning-guards.ts';
 import { createNativeModelsCollection } from './models.ts';
 import {
   ProviderIdentityMismatchError,
@@ -1284,6 +1285,13 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       ...(nativeModels ? { models: nativeModels } : {}),
       context,
       maxTokens: effectiveMaxTokens,
+      // Coding uses the loop's existing admission and stagnation controls, as planning does.
+      budget: {
+        maxTurns: 200,
+        maxToolCalls: 1200,
+        maxWallClockMs: 60 * 60 * 1000,
+        stagnation: DEFAULT_NATIVE_PLANNING_LIMITS.toolStagnation,
+      },
       contextManagement: getNativeContextManagementConfig(options.repoDir),
       payloadCapture: { featureDir, stage: 'coding', ...getNativePayloadCaptureConfig(options.repoDir) },
       convertToLlm: (messages) => messages as unknown as Message[],

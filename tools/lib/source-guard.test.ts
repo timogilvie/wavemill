@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { STAGE_EXIT_IDENTITY_GUARD } from '../../shared/lib/stage-exit-identity-guard.ts';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -311,4 +312,14 @@ describe('runGuardCli (via a tools/check-* wrapper)', () => {
       rmSync(repo, { recursive: true, force: true });
     }
   });
+});
+
+// protects: new stage readers/launchers cannot bypass the primitives that recover native crashes.
+it('guards native execution against private timestamp/statistics and unbounded coding', () => {
+  const check = (file: string, source: string) => checkGuardSource(STAGE_EXIT_IDENTITY_GUARD, file, source);
+  assert.equal(check('stage.sh', 'started_epoch="$(date -d "$started_at" +%s)"')[0]?.pattern, 'private-stage-timestamp');
+  assert.equal(check('patch.ts', 'const table = buildLcsTable(before, after);')[0]?.pattern, 'quadratic-patch-statistics');
+  assert.equal(check('shared/lib/native-agent/launch-coding.ts', 'runWavemillLoop({ model, convertToLlm: convert });')[0]?.pattern, 'unbounded-native-coding');
+  assert.deepEqual(check('stage.sh', 'started_epoch="$(wavemill_iso8601_to_epoch "$started_at")"'), []);
+  assert.deepEqual(check('shared/lib/native-agent/launch-coding.ts', 'runWavemillLoop({ model, budget: limits, convertToLlm: convert });'), []);
 });

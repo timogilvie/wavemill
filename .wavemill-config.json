@@ -367,6 +367,7 @@
       "Smoke and Config Tests": "npm run test:smoke && npm run test:config",
       "Native Launch Certification": "npm run test:native-launch-certification",
       "Lifecycle Integration Tests": "npm run test:lifecycle",
+    "Golden Journey (agent-killed-mid-stage)": "bash tests/journeys/run-journeys.sh agent-killed-mid-stage",
     "Golden Journey (picker-pending-touch-set)": "bash tests/journeys/run-journeys.sh picker-pending-touch-set",
     "Golden Journey (happy-path)": "bash tests/journeys/run-journeys.sh happy-path",
     "Golden Journey (gh-lag-after-push)": "bash tests/journeys/run-journeys.sh gh-lag-after-push",
