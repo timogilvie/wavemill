@@ -28,11 +28,10 @@
 # (retention retain_closed_unmerged) until the operator abandons it — the same
 # "never delete undelivered work" policy operator-abort-mid-coding pins.
 #
-# KNOWN GAP (pinned, not endorsed): when the challenger wins, nothing moves the
-# Linear issue to Done — the challenger may not write Linear and the retired
-# primary never does (it ends In Progress or In Review, depending on whether
-# the primary opened its PR before it was retired). The assertion below pins
-# "not Done"; flip it to "= Done" in the same PR that closes the gap.
+# HOK-3312 closed the earlier KNOWN GAP: with the primary no longer stuck on a
+# retained live-pane after its PR is closed-unmerged, the primary's own
+# pr_closed_unmerged terminal reconciliation runs to completion and (because
+# the challenger sibling is MERGED) moves the shared Linear issue to Done.
 set -euo pipefail
 source "$(dirname "$0")/harness.sh"
 # Two arms run the whole plan→ready chain, each eval'd, then compared: the
@@ -176,8 +175,8 @@ journey_assert "loser PR #$LOSER_PR closed, not merged" test "$(pr_state "$LOSER
 journey_assert "the winner's change is on $JOURNEY_INTEGRATION_BRANCH" \
   bash -c 'git --git-dir "$1" show "refs/heads/$2:journey-output.txt" | grep -qxF "$3"' \
     _ "$FAKE_GH_ORIGIN" "$JOURNEY_INTEGRATION_BRANCH" "$JOURNEY_WINNER_LINE"
-journey_assert "KNOWN GAP: a challenger win never reaches Linear Done (see header)" \
-  test "$(fakes_linear_state_of "$ISSUE")" != "Done"
+journey_assert "a challenger win reaches Linear Done through the primary's reconciliation (HOK-3312)" \
+  test "$(fakes_linear_state_of "$ISSUE")" = "Done"
 journey_assert "winner $WINNER reaped: no row, no worktree" \
   bash -c '! jq -e --arg w "$2" ".tasks | has(\$w)" "$1" >/dev/null && [[ ! -d "$3" ]]' _ "$STATE_FILE" "$WINNER" "$WORKTREE_ROOT/$WINNER_SLUG"
 journey_assert "loser $LOSER retired: the original row (slug kept), terminal closed, not a stub" \

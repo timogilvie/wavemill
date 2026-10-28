@@ -764,6 +764,31 @@ cleanup_decision_marker_action() {
   jq -r '.detail.action // empty' "$marker" 2>/dev/null || printf '\n'
 }
 
+# cleanup_decision_marker_retention_reason <marker>
+# Maps the TS decider's `refusalReason` to the shell retention classification
+# (retain_dirty / retain_unpublished / retain_closed_unmerged /
+# retain_unverifiable) used by set_task_lifecycle_disposition. This preserves
+# the lifecycle.retention.reason categories operators and tests read.
+cleanup_decision_marker_retention_reason() {
+  local marker="$1" refusal
+  [[ -f "$marker" ]] || { printf '\n'; return 0; }
+  refusal="$(jq -r '.detail.decision.refusalReason // empty' "$marker" 2>/dev/null || true)"
+  case "$refusal" in
+    closed_loser_requires_abandon|closed_loser_head_unpublished|closed_loser_sibling_not_merged)
+      printf 'retain_closed_unmerged\n' ;;
+    aborted_pr_less_requires_abandon|unique_local_patch|changed_after_pr_head)
+      printf 'retain_unpublished\n' ;;
+    dirty_worktree)
+      printf 'retain_dirty\n' ;;
+    worktree_status_unreadable|merged_delivery_unverified|pr_state_unverifiable|pr_base_mismatch)
+      printf 'retain_unverifiable\n' ;;
+    '')
+      printf '\n' ;;
+    *)
+      printf 'retain_unverifiable\n' ;;
+  esac
+}
+
 # cleanup_decision_launch_job <state_dir> <issue> <role> <feature_dir>
 # Common fast-path block for the cleanup consumers: consume a non-stale
 # marker's action, or (bounded-retry gated) launch the async decision job

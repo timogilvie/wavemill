@@ -2426,9 +2426,14 @@ cleanup_completed_task() {
       return 0
       ;;
     retain)
-      set_task_lifecycle_disposition "$issue" "" "retained" "cleanup-decision-retain" "cleanup_completed_task" 2>/dev/null || true
+      local retention_reason=""
+      if declare -F cleanup_decision_marker_retention_reason >/dev/null 2>&1; then
+        retention_reason="$(cleanup_decision_marker_retention_reason "$feature_dir/$CLEANUP_DECISION_RESULT_MARKER" 2>/dev/null || true)"
+      fi
+      [[ -n "$retention_reason" ]] || retention_reason="cleanup-decision-retain"
+      set_task_lifecycle_disposition "$issue" "" "retained" "$retention_reason" "cleanup_completed_task" 2>/dev/null || true
       declare -F set_window_attention_state >/dev/null 2>&1 && set_window_attention_state "$win" "needs-user"
-      log_warn "  $issue cleanup verdict 'retain' (non-delivered residue); keeping task state"
+      log_warn "  $issue cleanup verdict 'retain' (${retention_reason}); keeping task state"
       return 1
       ;;
     archive-and-reap|reap) : ;;
