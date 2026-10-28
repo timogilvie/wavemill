@@ -55,7 +55,7 @@ export interface MeasureOwnedSessionsInput {
   claudeRoots: readonly string[];
   /** Directories holding Codex rollouts. */
   codexRoots: readonly string[];
-  /** Native transcript telemetry already narrowed to the owned native refs. */
+  /** Native transcript telemetry; only sessions the rows name are measured. */
   nativeSessions: readonly NativeSessionUsageRecord[];
   priceOverrides: readonly HostPriceOverride[];
   /** Inclusive attribution window: the task's lifetime. */
@@ -92,10 +92,15 @@ function nativeProviderCost(
   return priceable ? undefined : reported;
 }
 
-/** One `recordUsage` per native transcript turn (session totals when turn-less). */
+/**
+ * One `recordUsage` per native transcript turn (session totals when
+ * turn-less), for the native sessions the measured rows name.
+ */
 export function nativeUsageRecords(input: MeasureOwnedSessionsInput): TaskUsageRecord[] {
+  const measured = new Set(sessionIdsFor(input.rows, 'native'));
   const records: TaskUsageRecord[] = [];
   for (const session of input.nativeSessions) {
+    if (!measured.has(session.sessionId)) continue;
     const model = toSdkId(input.registryLookup?.(session.modelId) ?? session.modelId, 'unknown');
     const sessionId = toSdkId(session.sessionId);
     const observations = session.turns.length > 0 ? session.turns : [session];
