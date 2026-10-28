@@ -25,7 +25,7 @@ shared/lib/workflow-cost.ts 1  # schema: persisted WorkflowCostResult names Mode
 shared/lib/post-completion-hook.ts 1  # measurement: loads the wavemill-install pricing table for meterWorkflowCost
 shared/lib/eval-orchestrator.ts 1  # measurement: loads the repo pricing table for meterWorkflowCost
 
-# ── Wavemill-only decision policy (retained by HOK-3077) ──
+# ── Wavemill-only decision policy: loads rates; @hokusai/costs prices them (priceUsageUsd, HOK-3328) ──
 shared/lib/workflow-router.ts 1  # pricing_policy: router model selection and pool bounds
 shared/lib/stage-aware-router.ts 1  # pricing_policy: stage-aware budget estimates
 shared/lib/challenge-scheduler.ts 1  # pricing_policy: challenge model pool configuration
@@ -36,9 +36,7 @@ shared/lib/native-agent/certification/live-coding-canary.ts 1  # pricing_policy:
 shared/lib/model-promotion.ts 1  # backfill: normalized evaluation cost for model promotion
 shared/lib/eval-schema.ts 1  # schema: pricing snapshot type on the eval record
 
-# ── Backfills / recosts (offline, per-model under a chosen price table) ──
-tools/backfill-workflow-cost.ts 1  # backfill: per-model recost of historical records
-tools/recost-opus-4-6.ts 1  # backfill: one-off recost for a model price change
+# ── Backfills (offline; read stored SDK summaries, never re-price) ──
 tools/backfill-pricing-snapshot.ts 1  # backfill: pricing snapshot type
 
 # ── Session discovery (wavemill_only_join) ──

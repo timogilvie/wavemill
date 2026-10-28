@@ -70,7 +70,8 @@ import {
   validateFinalPlanningArtifact,
   type PlanningFailureReason,
 } from './planning-guards.ts';
-import { computeModelCost, loadPricingTable } from '../pricing/model-pricing.ts';
+import { loadPricingTable } from '../pricing/model-pricing.ts';
+import { priceUsageUsd } from '../sdk-task-cost/price-overrides.ts';
 import { nativeLaunchKind, recordLaunch } from '../session-ownership.ts';
 
 const DEFAULT_HELPER_TIMEOUT_MS = 12 * 60 * 1000;
@@ -495,12 +496,12 @@ function buildPlanningOutcomeArtifacts(input: {
   try {
     const pricing = loadPricingTable(input.repoDir)[input.modelId];
     if (pricing) {
-      totalCostUsd = computeModelCost({
+      totalCostUsd = priceUsageUsd(pricing, {
         inputTokens: input.result.totalInputTokens,
         outputTokens: input.result.totalOutputTokens,
         cacheCreationTokens: cache.cacheWriteTokens,
         cacheReadTokens: cache.cacheReadTokens,
-      }, pricing);
+      }) ?? undefined;
     }
   } catch {
     totalCostUsd = undefined;

@@ -124,11 +124,6 @@
       "symbols": [
         {
           "module": "shared/lib/pricing/model-pricing.ts",
-          "name": "computeModelCost",
-          "kind": "value"
-        },
-        {
-          "module": "shared/lib/pricing/model-pricing.ts",
           "name": "loadPricingTable",
           "kind": "value"
         },
@@ -191,11 +186,6 @@
       "symbols": [
         {
           "module": "shared/lib/pricing/model-pricing.ts",
-          "name": "computeModelCost",
-          "kind": "value"
-        },
-        {
-          "module": "shared/lib/pricing/model-pricing.ts",
           "name": "loadPricingTable",
           "kind": "value"
         }
@@ -207,11 +197,6 @@
     {
       "file": "shared/lib/native-agent/loop.ts",
       "symbols": [
-        {
-          "module": "shared/lib/pricing/model-pricing.ts",
-          "name": "computeModelCost",
-          "kind": "value"
-        },
         {
           "module": "shared/lib/pricing/model-pricing.ts",
           "name": "ModelPricing",
@@ -386,11 +371,6 @@
       "symbols": [
         {
           "module": "shared/lib/pricing/model-pricing.ts",
-          "name": "computeModelCost",
-          "kind": "value"
-        },
-        {
-          "module": "shared/lib/pricing/model-pricing.ts",
           "name": "loadPricingTable",
           "kind": "value"
         }
@@ -402,11 +382,6 @@
     {
       "file": "shared/lib/workflow-router.ts",
       "symbols": [
-        {
-          "module": "shared/lib/pricing/model-pricing.ts",
-          "name": "computeModelCost",
-          "kind": "value"
-        },
         {
           "module": "shared/lib/pricing/model-pricing.ts",
           "name": "loadConfiguredPricingTable",
@@ -434,57 +409,6 @@
       "class": "backfill",
       "production": false,
       "notes": "Type-only reference for pricing snapshots"
-    },
-    {
-      "file": "tools/backfill-workflow-cost.ts",
-      "symbols": [
-        {
-          "module": "shared/lib/pricing/model-pricing.ts",
-          "name": "computeModelCost",
-          "kind": "value"
-        },
-        {
-          "module": "shared/lib/pricing/model-pricing.ts",
-          "name": "loadPricingTable",
-          "kind": "value"
-        },
-        {
-          "module": "shared/lib/pricing/model-pricing.ts",
-          "name": "ModelPricing",
-          "kind": "type"
-        },
-        {
-          "module": "shared/lib/pricing/model-pricing.ts",
-          "name": "ModelTokenUsage",
-          "kind": "type"
-        }
-      ],
-      "class": "backfill",
-      "production": false,
-      "notes": "Per-model recost of historical records under a new pricing table"
-    },
-    {
-      "file": "tools/recost-opus-4-6.ts",
-      "symbols": [
-        {
-          "module": "shared/lib/pricing/model-pricing.ts",
-          "name": "computeModelCost",
-          "kind": "value"
-        },
-        {
-          "module": "shared/lib/pricing/model-pricing.ts",
-          "name": "ModelPricing",
-          "kind": "type"
-        },
-        {
-          "module": "shared/lib/pricing/model-pricing.ts",
-          "name": "ModelTokenUsage",
-          "kind": "type"
-        }
-      ],
-      "class": "backfill",
-      "production": false,
-      "notes": "One-off recost tool for model pricing changes"
     },
     {
       "file": "shared/lib/sdk-task-cost/price-overrides.ts",
@@ -533,7 +457,7 @@
     "shared/lib/eval-orchestrator.test.ts",
     "shared/lib/executed-model-resolver.test.ts",
     "shared/lib/intervention-detector.test.ts",
-    "shared/lib/native-agent/pi-usage-cost.test.ts",
+    "shared/lib/sdk-task-cost/price-overrides.test.ts",
     "shared/lib/sdk-task-cost/project.test.ts",
     "shared/lib/session-adapters.test.ts",
     "shared/lib/wavemill-session-paths.test.ts",

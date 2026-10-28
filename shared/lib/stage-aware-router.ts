@@ -13,7 +13,8 @@ import type { EvalRecord, TaskDescriptor, StageOutcomes } from './eval-schema.ts
 import { buildTaskDescriptor, type TaskDescriptorInput } from './task-descriptor-builder.ts';
 import { readJsonlFile } from './jsonl-utils.ts';
 import { resolveFromMainRepo } from './git-utils.ts';
-import { computeModelCost, loadPricingTable } from './pricing/model-pricing.ts';
+import { loadPricingTable } from './pricing/model-pricing.ts';
+import { priceUsageUsd } from './sdk-task-cost/price-overrides.ts';
 import type { WorkflowRouteDecision, PlanDepth, CodeDepth, ReviewMode } from './workflow-router.ts';
 import { getRouterConfig } from './config.ts';
 import { listEffectiveModelsForStage } from './effective-models.ts';
@@ -905,7 +906,7 @@ function estimateFallbackStageCost(
     review: { inputTokens: 95_000, cacheCreationTokens: 25_000, cacheReadTokens: 80_000, outputTokens: 8_000 },
   } as const;
 
-  return computeModelCost(profiles[stage], pricing);
+  return priceUsageUsd(pricing, profiles[stage]) ?? 0;
 }
 
 function buildStageAwareDecision(

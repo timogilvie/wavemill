@@ -12,12 +12,13 @@
  * @module sdk-task-cost/price-overrides
  */
 
-import type { HostPriceOverride } from '@hokusai/costs';
+import { resolveEventPrice, type HostPriceOverride } from '@hokusai/costs';
 import { normalizeModelId } from '@hokusai/core';
 import {
   CACHE_READ_MULTIPLIER,
   CACHE_WRITE_MULTIPLIER,
   type ModelPricing,
+  type ModelTokenUsage,
   type PricingTable,
 } from '../pricing/model-pricing.ts';
 
@@ -71,4 +72,42 @@ export function buildHostPriceOverrides(
     overrides.push(override);
   }
   return overrides;
+}
+
+/** One key for the single override and the priced event, so model-id normalization never misses. */
+const PRICED_MODEL_KEY = 'priced-model';
+
+/**
+ * Price one usage record at one model's rates through `@hokusai/costs`
+ * (`resolveEventPrice` over a single host override) — the only per-token
+ * pricing in Wavemill, and the SDK does the arithmetic.
+ *
+ * For Wavemill decision policy that needs a dollar figure outside task
+ * measurement: the native loop's live `maxCostUsd` budget, judge calls,
+ * native planning artifacts and promotion evaluations. Task / workflow cost
+ * never comes from here — it is the `@hokusai/costs` report in `meter.ts`.
+ *
+ * Returns `null` when the rates are unusable (non-finite or negative), never
+ * a fabricated `0`.
+ */
+export function priceUsageUsd(
+  pricing: ModelPricing,
+  usage: Omit<ModelTokenUsage, 'costUsd'>,
+): number | null {
+  const override = toOverride(PRICED_MODEL_KEY, pricing, undefined);
+  if (!override) return null;
+  const resolved = resolveEventPrice(
+    {
+      observedModel: PRICED_MODEL_KEY,
+      usage: {
+        input_tokens: usage.inputTokens,
+        output_tokens: usage.outputTokens,
+        cache_write_tokens: usage.cacheCreationTokens,
+        cache_read_tokens: usage.cacheReadTokens,
+        reasoning_tokens: null,
+      },
+    },
+    { overrides: [override] },
+  );
+  return resolved.estimatedCostUsd;
 }

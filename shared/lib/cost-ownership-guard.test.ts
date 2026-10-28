@@ -48,7 +48,7 @@ describe('cost-ownership guard — forbidden shapes', () => {
   });
 
   it('flags primitive imports (static, multi-line tail, and dynamic)', () => {
-    assert.deepEqual(patternsOf('a.ts', "import { computeModelCost } from './pricing/model-pricing.ts';\n"), ['pricing-primitive-import']);
+    assert.deepEqual(patternsOf('a.ts', "import { loadPricingTable } from './pricing/model-pricing.ts';\n"), ['pricing-primitive-import']);
     assert.deepEqual(patternsOf('a.ts', "  type PricingTable,\n} from '../shared/lib/pricing/model-pricing.ts';\n"), ['pricing-primitive-import']);
     assert.deepEqual(patternsOf('a.ts', "const m = await import('../pricing/model-pricing.ts');\n"), ['pricing-primitive-import']);
     assert.deepEqual(patternsOf('a.ts', "import { resolveProjectsDirs } from './wavemill-session-paths.ts';\n"), ['session-path-import']);
@@ -77,7 +77,7 @@ describe('cost-ownership guard — clean shapes', () => {
     assert.deepEqual(patternsOf('a.ts', '// computeWorkflowCost was retired in HOK-3077\n'), []);
     assert.deepEqual(patternsOf('a.ts', ' * WAVEMILL_COST_METERING_LEGACY is gone\n'), []);
     assert.deepEqual(
-      patternsOf('a.ts', "import { computeModelCost } from './pricing/model-pricing.ts'; // allow-cost-ownership: test seam\n"),
+      patternsOf('a.ts', "import { loadPricingTable } from './pricing/model-pricing.ts'; // allow-cost-ownership: test seam\n"),
       [],
     );
   });
@@ -105,7 +105,7 @@ describe('cost-ownership guard — allowlist semantics', () => {
       rmSync(repo, { recursive: true, force: true });
     }
   }
-  const importLine = "import { computeModelCost } from './pricing/model-pricing.ts';\n";
+  const importLine = "import { loadPricingTable } from './pricing/model-pricing.ts';\n";
 
   it('fails an unlisted primitive consumer and passes a listed one', () => {
     withRepo({ 'shared/lib/router.ts': importLine }, '', (repo) => {

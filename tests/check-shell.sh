@@ -2153,8 +2153,9 @@ for captured in "${TMUX_CAPTURE[@]}"; do
 done
 
 if [[ -f "$CODEX_LAUNCHER_PATH" ]] \
-  && grep -q 'codex --model gpt-5\.6-terra --dangerously-bypass-approvals-and-sandbox --no-daemon --no-alt-screen "\$(cat ' "$CODEX_LAUNCHER_PATH"; then
-  pass "interactive Codex launcher uses interactive codex with bypass and no-daemon flags"
+  && grep -q 'codex --model gpt-5\.6-terra --dangerously-bypass-approvals-and-sandbox --no-daemon --no-alt-screen "\$WM_LAUNCH_NONCE_LINE$' "$CODEX_LAUNCHER_PATH" \
+  && grep -q '^\$(cat ' "$CODEX_LAUNCHER_PATH"; then
+  pass "interactive Codex launcher uses interactive codex with bypass and no-daemon flags (prompt led by the launch nonce)"
 else
   fail "interactive Codex launcher is missing interactive codex flags"
 fi

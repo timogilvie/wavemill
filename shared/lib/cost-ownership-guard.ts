@@ -8,8 +8,9 @@
  * task's owned sessions through `shared/lib/sdk-task-cost/meter.ts` (HOK-3328)
  * — plus two Wavemill-only primitives:
  *
- * - the per-call pricing primitive `shared/lib/pricing/model-pricing.ts`
- *   (and OpenRouter exact lookups in `pricing/openrouter-exact-pricing.ts`);
+ * - the rate table `shared/lib/pricing/model-pricing.ts` (and OpenRouter
+ *   exact lookups in `pricing/openrouter-exact-pricing.ts`); per-call dollar
+ *   figures are `@hokusai/costs` arithmetic via `priceUsageUsd`;
  * - the session-file join `shared/lib/wavemill-session-paths.ts`.
  *
  * This guard keeps it that way:
@@ -55,7 +56,7 @@ export const COST_OWNERSHIP_GUARD: GuardSpec = {
     },
     {
       name: 'per-token-arithmetic',
-      description: 'private per-token price formula — call computeModelCost() from shared/lib/pricing/model-pricing.ts',
+      description: 'private per-token price formula — price through @hokusai/costs with priceUsageUsd() from shared/lib/sdk-task-cost/price-overrides.ts',
       lang: 'ts',
       re: /CostPerMTok\b[^;]*\/\s*1_?000_?000\b|\b1_?000_?000\b[^;]*CostPerMTok\b/,
     },
@@ -82,8 +83,8 @@ export const COST_OWNERSHIP_GUARD: GuardSpec = {
     'Wavemill has one cost engine: @hokusai/costs over the task\'s owned sessions (HOK-3077,',
     'HOK-3328). Live evals meter through sdk-task-cost/meter.ts, backfills recompute through',
     'sdk-task-cost/recompute.ts, and readers use the persisted WorkflowCost* shape in',
-    'shared/lib/workflow-cost.ts. Per-call pricing (computeModelCost, loadPricingTable) and',
-    'session discovery (resolveProjectsDirs) are primitives: the SDK adapter only hands rates and',
+    'shared/lib/workflow-cost.ts. Rates (loadPricingTable) and session discovery',
+    '(resolveProjectsDirs) are primitives: the SDK adapter only hands rates and',
     'transcript locations to @hokusai/costs; the rest are reserved for',
     'Wavemill-only decision policy (router budgets, judge pricing, native budgets, backfills).',
   ],

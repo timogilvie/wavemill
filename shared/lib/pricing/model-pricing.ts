@@ -1,11 +1,12 @@
 /**
  * Wavemill's per-call pricing primitive (HOK-3077).
  *
- * The Hokusai SDK reducer (`aggregateTaskCost`) never prices: events arrive
- * carrying a dollar figure their producer computed. This module is how
- * Wavemill computes that figure — one price table, one formula. It is NOT a
- * cost engine: it never reads sessions, aggregates a task, or decides
- * coverage. Workflow/eval cost is the SDK bridge in `shared/lib/sdk-task-cost/`.
+ * Wavemill owns *rates* (one price table: the model registry overlaid by
+ * `eval.pricing`); `@hokusai/costs` owns the arithmetic (HOK-3328). This
+ * module never multiplies a token count by a rate — per-call dollar figures
+ * go through `priceUsageUsd` in `sdk-task-cost/price-overrides.ts`, which
+ * hands the rates to the SDK. It is NOT a cost engine: workflow/eval cost is
+ * the `@hokusai/costs` report in `shared/lib/sdk-task-cost/meter.ts`.
  *
  * Authorized consumers are the SDK bridge and the Wavemill-only decision
  * policy sites (router budgets, judge-call pricing, backfills) listed in
@@ -17,6 +18,7 @@
 
 import { loadWavemillConfig } from '../config.ts';
 import { getEffectiveRegistry } from '../model-registry.ts';
+import { priceUsageUsd } from '../sdk-task-cost/price-overrides.ts';
 
 /** Per-model token usage breakdown. */
 export interface ModelTokenUsage {
@@ -78,29 +80,6 @@ export function loadConfiguredPricingTable(repoDir?: string): PricingTable {
 }
 
 /**
- * Compute cost for a set of tokens using cache-aware pricing.
- *
- * If cache-specific rates aren't configured, derives them from
- * the base input rate using standard multipliers (1.25x write, 0.1x read).
- */
-export function computeModelCost(
-  usage: Omit<ModelTokenUsage, 'costUsd'>,
-  pricing: ModelPricing,
-): number {
-  const inputRate = pricing.inputCostPerMTok;
-  const outputRate = pricing.outputCostPerMTok;
-  const cacheWriteRate = pricing.cacheWriteCostPerMTok ?? inputRate * CACHE_WRITE_MULTIPLIER;
-  const cacheReadRate = pricing.cacheReadCostPerMTok ?? inputRate * CACHE_READ_MULTIPLIER;
-
-  const inputCost = (usage.inputTokens * inputRate) / 1_000_000;
-  const cacheWriteCost = (usage.cacheCreationTokens * cacheWriteRate) / 1_000_000;
-  const cacheReadCost = (usage.cacheReadTokens * cacheReadRate) / 1_000_000;
-  const outputCost = (usage.outputTokens * outputRate) / 1_000_000;
-
-  return inputCost + cacheWriteCost + cacheReadCost + outputCost;
-}
-
-/**
  * True when every rate in the entry is zero — the model is genuinely free, so
  * a reported or computed `$0` is a known zero rather than a missing price.
  */
@@ -158,13 +137,15 @@ export function computeNormalizedEvaluationCost(
   ) {
     return incomplete('missing_cache_usage');
   }
+  const costUsd = priceUsageUsd(pricing, {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cacheCreationTokens: usage.cacheCreationTokens,
+    cacheReadTokens: usage.cacheReadTokens,
+  });
+  if (costUsd === null) return incomplete('missing_cache_pricing');
   return {
-    costUsd: computeModelCost({
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      cacheCreationTokens: usage.cacheCreationTokens,
-      cacheReadTokens: usage.cacheReadTokens,
-    }, pricing),
+    costUsd,
     basis: 'explicit_pricing',
     coverage: 'complete',
     pricingRevision: options.pricingRevision,
