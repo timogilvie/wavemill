@@ -24,6 +24,7 @@ export FAKE_AGENT_SCRIPT_DIR="$FIXTURE_DIR/fake-agent"
 journey_init agent-killed-mid-stage
 fakes_linear_add_issue "$ISSUE" "Test agent killed mid-stage" Todo
 
+export WAVEMILL_CODING_OWNER_GRACE_SECONDS=0
 journey_start_monitor
 journey_wait_until "$ISSUE" 30  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
@@ -45,7 +46,8 @@ journey_wait_until "$ISSUE" 8  "coding launched"             phase_is coding
 # should detect the exit, classify it as retryable (not terminal), and relaunch.
 # This wait gives enough ticks for the monitor to detect the dead agent.
 journey_log "waiting for agent to exit and recovery to launch..."
-journey_wait_until "$ISSUE" 20 "coding relaunched after agent exit" phase_is coding
+coding_relaunched() { [[ "$(journey_agent_launch_count "$ISSUE" coding)" -ge 2 ]]; }
+journey_wait_until "$ISSUE" 20 "coding relaunched after millisecond-timestamp agent exit" coding_relaunched
 
 # Once relaunched, the task should complete the workflow normally.
 journey_wait_until "$ISSUE" 8  "review launched"             phase_is review
@@ -56,6 +58,7 @@ echo ""
 echo "assertions:"
 journey_assert "PR #1 merged into $JOURNEY_INTEGRATION_BRANCH" \
   test "$(fakes_gh_pr_field 1 baseRefName)" = "$JOURNEY_INTEGRATION_BRANCH"
+journey_assert "exactly two coding launches, with automatic crash recovery" test "$(journey_agent_launch_count "$ISSUE" coding)" = "2"
 journey_assert "Linear issue ended Done" test "$(fakes_linear_state_of "$ISSUE")" = "Done"
 journey_assert_no_unhandled_fake_calls
 
