@@ -14887,6 +14887,15 @@ handle_comparison_job_success() {
             --comment "Closing: lost challenge comparison to ${winner} side." 2>/dev/null || true
           log "status" "Closed losing PR #$loser_pr"
         fi
+        # Transition the loser to terminal (workflowOutcome=closed) BEFORE
+        # cleanup launches the TS decider async job. Without this step the
+        # decider reads workflowOutcome=active, returns `not-terminal`, and
+        # that verdict is cached on the same head SHA, so later passes
+        # consume the stale answer and skip the retain branch that sets
+        # lifecycle.retention.reason=retain_closed_unmerged (HOK-3312).
+        if [[ -n "$loser_pr" ]] && [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
+          wavemill_reconcile_terminal "$SESSION" "$loser_key" "pr_closed_unmerged" "$loser_pr" || true
+        fi
         if ! cleanup_completed_task "$loser_key" "$loser_slug" "challenge loser"; then
           log_warn "Challenge comparison recorded; losing-side cleanup deferred for $loser_key"
         fi
