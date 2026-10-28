@@ -34,6 +34,7 @@ JOURNEY_INSTALL_DIR="$(cd "$JOURNEY_HARNESS_DIR/../.." && pwd)"
 # shellcheck source=../fakes/lib.sh
 source "$JOURNEY_INSTALL_DIR/tests/fakes/lib.sh"
 
+JOURNEY_MAX_PARALLEL=1
 JOURNEY_NAME=""
 JOURNEY_TMP=""
 JOURNEY_MONITOR_PID=""
@@ -177,7 +178,7 @@ journey_write_monitor_env() {
     printf 'AGENT_CMD=claude\n'
     printf 'AGENT_CMD_EXPLICIT=true\n'
     printf 'ROUTER_ENABLED=false\n'
-    printf 'MAX_PARALLEL=1\n'
+    printf 'MAX_PARALLEL=%s\n' "$JOURNEY_MAX_PARALLEL"
     printf 'AUTO_EVAL=false\n'
     printf 'ENTER_ACTION=none\n'
     printf 'ENTER_LAUNCHES_WAVE=false\n'
@@ -427,14 +428,14 @@ journey_pr_merged() {
 }
 
 # Reaped: the row is gone (or terminal) and so is the worktree, and the mill
-# has released the slot (freeSlots back to MAX_PARALLEL=1).
+# has released the slot (freeSlots back to JOURNEY_MAX_PARALLEL).
 journey_task_reaped() {
   local issue="$1" status slug
   status="$(journey_task_field "$issue" status)"
   slug="$(jq -r --arg id "$issue" '.tasks[$id].slug // "__none__"' "$STATE_FILE" 2>/dev/null)"
   [[ -z "$(journey_task_field "$issue" phase)" || "$status" == "merged" || "$status" == "completed" ]] \
     && [[ ! -d "$WORKTREE_ROOT/$slug" ]] \
-    && [[ "$(jq -r '.freeSlots // empty' "$STATE_FILE" 2>/dev/null)" == "1" ]]
+    && [[ "$(jq -r '.freeSlots // empty' "$STATE_FILE" 2>/dev/null)" == "$JOURNEY_MAX_PARALLEL" ]]
 }
 
 # Shared end-state assertions for a task that should have landed.
@@ -454,7 +455,7 @@ journey_assert_landed() {
     bash -c 'jq -e --arg id "$2" "[.transitions[] | select(.identifier==\$id) | .to] | (index(\"In Progress\") // 99) < (index(\"Done\") // -1)" "$1" >/dev/null' _ "$FAKE_LINEAR_STATE" "$issue"
   journey_assert "task row and worktree reaped" journey_task_reaped "$issue"
   journey_assert "slot count back to 0 (freeSlots == MAX_PARALLEL)" \
-    test "$(jq -r '.freeSlots // empty' "$STATE_FILE")" = "1"
+    test "$(jq -r '.freeSlots // empty' "$STATE_FILE")" = "$JOURNEY_MAX_PARALLEL"
   case "$JOURNEY_EXPECT_ATTENTION" in
     1) journey_assert "task raised .needs-attention (expected)" test "$JOURNEY_SAW_ATTENTION" = "1" ;;
     any) ;;

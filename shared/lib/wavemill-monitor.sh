@@ -14933,7 +14933,7 @@ poll_tracked_jobs() {
     side=$(echo "$job_json" | jq -r '.side // empty')
 
     case "$kind" in
-      cross-pr-guard|pr-ci-status|ready-watchdog|route-task|prepare-task-inputs|state-invariants)
+      cross-pr-guard|pr-ci-status|ready-watchdog|route-task|prepare-task-inputs|in-flight-touch-set|state-invariants)
         [[ "$status" == "succeeded" ]] || handle_check_job_failure "$job_id" "$kind" "$status" "$reason" "$result_path" "$excerpt"
         settle_tracked_job "$job_id"
         continue
@@ -23952,7 +23952,9 @@ while :; do
               # cached files for this head when available, or `[]` while a
               # relaunch runs.
               if [[ -n "$_ai_head" && -d "$_ai_sd" ]]; then
-                _ai_files="$(in_flight_touch_set_gate "$_ai" "$_ai_sd" "$_ai_wt" "$_ai_head" "$_ai_base" "$_ai_phase" "$_ai_sd" 2>/dev/null || echo '[]')"
+                # Pending already prints []; preserve it despite status 1.
+                # Appending another fallback makes --argjson reject the row.
+                _ai_files="$(in_flight_touch_set_gate "$_ai" "$_ai_sd" "$_ai_wt" "$_ai_head" "$_ai_base" "$_ai_phase" "$_ai_sd" 2>/dev/null || true)"
                 [[ -n "$_ai_files" ]] || _ai_files="[]"
               fi
             fi
