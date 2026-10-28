@@ -537,7 +537,6 @@
     "shared/lib/sdk-task-cost/meter.test.ts",
     "shared/lib/session-adapters.test.ts",
     "shared/lib/wavemill-session-paths.test.ts",
-    "shared/lib/workflow-cost.test.ts",
     "tools/backfill-stage-executed-model.test.ts"
   ],
   "indirectConsumers": [

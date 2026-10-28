@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { backfillStageExecutedModel } from './backfill-stage-executed-model.ts';
 import { encodeProjectDir } from '../shared/lib/wavemill-session-paths.ts';
+import { appendOwnershipRow } from '../shared/lib/session-ownership.ts';
 
 const cleanupFns: Array<() => void> = [];
 
@@ -89,6 +90,8 @@ function setupArtifactWithClaudeSession() {
     branch: 'task/HOK-3017',
   });
   writeJson(join(artifactDir, 'coding-result.json'), stageResult());
+  // The archived ownership record sits beside the stage result (HOK-3328).
+  appendOwnershipRow(artifactDir, { sessionRef: 'session', harness: 'claude-code', kind: 'coding', model: 'claude-haiku-4-5' });
   return { artifactDir, worktreePath };
 }
 

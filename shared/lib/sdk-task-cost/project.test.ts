@@ -8,6 +8,7 @@ import { describe, it } from 'node:test';
 import { createTaskCostTracker } from '@hokusai/costs';
 import { buildHostPriceOverrides } from './price-overrides.ts';
 import { projectReportToWorkflowCost, reportByHarness } from './project.ts';
+import { reportableWorkflowCostUsd } from '../workflow-cost.ts';
 
 function report(records: Parameters<ReturnType<typeof createTaskCostTracker>['recordUsage']>[0][]) {
   const tracker = createTaskCostTracker({
@@ -69,5 +70,19 @@ describe('projectReportToWorkflowCost (HOK-3328)', () => {
   it('stores the caller-supplied pricing snapshot verbatim', () => {
     const snapshot = { 'claude-opus-4-7': { inputCostPerMTok: 15, outputCostPerMTok: 75 } };
     assert.deepEqual(projectReportToWorkflowCost(report([CLAUDE]), snapshot).pricingUsed, snapshot);
+  });
+
+  // protects: an unpriced run reported as $0, or a genuinely free run hidden
+  it('reports a figure only for priced or known-zero outcomes', () => {
+    const unpriced = projectReportToWorkflowCost(report([{ ...NATIVE, providerCostUsd: undefined, model: 'mystery-model' }]));
+    assert.equal(reportableWorkflowCostUsd(unpriced), undefined);
+    const tracker = createTaskCostTracker({
+      taskId: 'HOK-1',
+      priceOverrides: buildHostPriceOverrides({ 'free-model': { inputCostPerMTok: 0, outputCostPerMTok: 0, cacheReadCostPerMTok: 0, cacheWriteCostPerMTok: 0 } }),
+    });
+    tracker.recordUsage({ ...CLAUDE, model: 'free-model' });
+    const free = projectReportToWorkflowCost(tracker.summary());
+    assert.equal(reportableWorkflowCostUsd(free), 0);
+    assert.equal(reportableWorkflowCostUsd(projectReportToWorkflowCost(report([CLAUDE]))), 7.5);
   });
 });
