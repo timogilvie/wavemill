@@ -534,7 +534,7 @@
     "shared/lib/executed-model-resolver.test.ts",
     "shared/lib/intervention-detector.test.ts",
     "shared/lib/native-agent/pi-usage-cost.test.ts",
-    "shared/lib/sdk-task-cost/meter.test.ts",
+    "shared/lib/sdk-task-cost/project.test.ts",
     "shared/lib/session-adapters.test.ts",
     "shared/lib/wavemill-session-paths.test.ts",
     "tools/backfill-stage-executed-model.test.ts"
