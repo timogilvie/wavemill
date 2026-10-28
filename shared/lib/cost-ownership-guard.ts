@@ -44,9 +44,9 @@ export const COST_OWNERSHIP_GUARD: GuardSpec = {
   patterns: [
     {
       name: 'retired-cost-engine',
-      description: 'retired legacy cost engine (HOK-3077) — meter workflow cost with sdk-task-cost/meter.ts (live) or sdk-task-cost/recompute.ts (backfill)',
+      description: 'retired Wavemill cost engine (HOK-3077) or per-token pricer (HOK-3328) — meter workflow cost with sdk-task-cost/meter.ts (live) or sdk-task-cost/recompute.ts (backfill); price one call with priceUsageUsd()',
       lang: 'ts',
-      re: /\b(?:computeWorkflowCost(?:WithExactPricing)?|recalculateWorkflowCost|computeNativeWorkflowCost|resolveAuthoritativeWorkflowCost)\b/,
+      re: /\b(?:computeWorkflowCost(?:WithExactPricing)?|recalculateWorkflowCost|computeNativeWorkflowCost|resolveAuthoritativeWorkflowCost|computeModelCost)\b/,
     },
     {
       name: 'retired-cost-switch',

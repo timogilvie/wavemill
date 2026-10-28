@@ -21,6 +21,8 @@ describe('cost-ownership guard — forbidden shapes', () => {
       'recalculateWorkflowCost',
       'computeNativeWorkflowCost',
       'resolveAuthoritativeWorkflowCost',
+      // HOK-3328: the Wavemill per-token formula; @hokusai/costs prices now.
+      'computeModelCost',
     ]) {
       assert.deepEqual(patternsOf('shared/lib/a.ts', `const outcome = ${name}(opts);\n`), ['retired-cost-engine'], name);
     }
