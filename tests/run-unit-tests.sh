@@ -419,6 +419,7 @@ TESTS=(
   tools/resolve-orphan-challenge-pair.test.ts
   tools/resolve-primary-merged-pair.test.ts
   tests/drift-detector.test.ts
+  tests/terminal-inbox-cleanup.replay.test.ts
   shared/lib/parent-monitor-drift.test.ts
   tests/check-drift-tool.test.ts
   tests/jq-filter-smoke.test.ts

@@ -240,7 +240,12 @@ output="$(run_operator_abort_case with-pr 1234)"
 [[ "$output" == *"present=false"* ]] || { echo "$output"; echo "operator-aborted PR task state was not removed" >&2; exit 1; }
 [[ "$output" == *"cleaned=1"* ]] || { echo "$output"; echo "operator-aborted PR task not marked cleaned" >&2; exit 1; }
 [[ "$output" == *"tmux;"* ]] || { echo "$output"; echo "operator-aborted PR task window was not closed" >&2; exit 1; }
-[[ "$output" != *"git-worktree"* && "$output" != *"git-branch"* ]] || { echo "$output"; echo "operator-aborted PR task should preserve worktree and local branch" >&2; exit 1; }
-[[ "$output" == *"PR #1234 exists - preserving worktree and local branch"* ]] || { echo "$output"; echo "operator-aborted PR task did not explain preservation" >&2; exit 1; }
+# HOK-3312: the shell cleanup no longer special-cases PR-exists; the TS
+# decider (decideTerminalTask) owns the preserve-vs-reap call. When the
+# decider says reap, local worktree and local branch are both deleted;
+# only the remote branch is retained to keep the PR alive.
+[[ "$output" == *"git-worktree"* ]] || { echo "$output"; echo "operator-aborted PR task worktree should be removed when decider says reap" >&2; exit 1; }
+[[ "$output" == *"git-branch"* ]] || { echo "$output"; echo "operator-aborted PR task local branch should be removed when decider says reap" >&2; exit 1; }
+[[ "$output" == *"retaining remote branch task/operator-abort-demo (aborted cleanup does not delete PR branches)"* ]] || { echo "$output"; echo "operator-aborted PR task did not log remote-branch retention" >&2; exit 1; }
 
 echo "operator-abort-cleanup test passed"

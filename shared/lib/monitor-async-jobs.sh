@@ -710,6 +710,143 @@ launch_task_route_prefetch() {
   return "$LAUNCH_TASK_DEFERRED_RC"
 }
 
+# ── Terminal cleanup decision (HOK-3312) ────────────────────────────────────
+#
+# The monitor's terminal-cleanup callers (cleanup_completed_task,
+# cleanup_aborted_challenge_arm) delegate the reap / archive-and-reap /
+# retain decision to shared/lib/terminal-inbox-cleanup.ts::decideTerminalTask.
+# The TS tool runs as a tracked async job; the shell callers consume the
+# condition-keyed result marker on a later pass.
+
+CLEANUP_DECISION_RESULT_MARKER=".cleanup-decision.json"
+CLEANUP_DECISION_JOB_BUCKET="cleanup-decision-job"
+
+# cleanup_decision_job_run <state_dir> <issue> <head_sha> <marker_path> <role>
+# Invokes `tools/decide-terminal-cleanup.ts` and writes a condition-keyed
+# marker containing the TS decider's {action, decision} JSON.
+cleanup_decision_job_run() {
+  local state_dir="$1" issue="$2" head_sha="$3" marker="$4" role="${5:-primary}"
+  local tmp_out output rc=0 detail
+  tmp_out="$(mktemp 2>/dev/null)" || tmp_out=""
+  if [[ -z "$tmp_out" ]]; then
+    echo "cleanup-decision: could not create temp file for $issue"
+    return 1
+  fi
+  local -a cmd=(decide-terminal-cleanup.ts --issue "$issue" --repo-dir "$REPO_DIR" --role "$role" --out "$tmp_out")
+  [[ -n "${BASE_BRANCH:-}" ]] && cmd+=(--base-branch "$BASE_BRANCH")
+  wavemill_run_tool "${cmd[@]}" >/dev/null 2>&1 || rc=$?
+  if (( rc != 0 )); then
+    rm -f "$tmp_out"
+    echo "cleanup-decision: tool exited $rc for $issue"
+    return 1
+  fi
+  output="$(cat "$tmp_out" 2>/dev/null || true)"
+  rm -f "$tmp_out"
+  if ! printf '%s' "$output" | jq -e '.action' >/dev/null 2>&1; then
+    echo "cleanup-decision: unparseable output for $issue"
+    return 1
+  fi
+  detail="$output"
+  marker_write "$marker" \
+    --kind cleanup-decision \
+    --head "$head_sha" \
+    --expires-on "head,operator-event,remote" \
+    --reason "cleanup decision role=$role" \
+    --detail-json "$detail"
+}
+
+# cleanup_decision_marker_action <marker>
+# Prints the TS decider's `action` from the marker (reap|archive-and-reap|
+# retain|kept|not-terminal) or an empty string.
+cleanup_decision_marker_action() {
+  local marker="$1"
+  [[ -f "$marker" ]] || { printf '\n'; return 0; }
+  jq -r '.detail.action // empty' "$marker" 2>/dev/null || printf '\n'
+}
+
+# cleanup_decision_marker_retention_reason <marker>
+# Maps the TS decider's `refusalReason` to the shell retention classification
+# (retain_dirty / retain_unpublished / retain_closed_unmerged /
+# retain_unverifiable) used by set_task_lifecycle_disposition. This preserves
+# the lifecycle.retention.reason categories operators and tests read.
+cleanup_decision_marker_retention_reason() {
+  local marker="$1" refusal
+  [[ -f "$marker" ]] || { printf '\n'; return 0; }
+  refusal="$(jq -r '.detail.decision.refusalReason // empty' "$marker" 2>/dev/null || true)"
+  case "$refusal" in
+    closed_loser_requires_abandon|closed_loser_head_unpublished|closed_loser_sibling_not_merged)
+      printf 'retain_closed_unmerged\n' ;;
+    aborted_pr_less_requires_abandon|unique_local_patch|changed_after_pr_head)
+      printf 'retain_unpublished\n' ;;
+    dirty_worktree)
+      printf 'retain_dirty\n' ;;
+    worktree_status_unreadable|merged_delivery_unverified|pr_state_unverifiable|pr_base_mismatch)
+      printf 'retain_unverifiable\n' ;;
+    '')
+      printf '\n' ;;
+    *)
+      printf 'retain_unverifiable\n' ;;
+  esac
+}
+
+# cleanup_decision_launch_job <state_dir> <issue> <role> <feature_dir>
+# Common fast-path block for the cleanup consumers: consume a non-stale
+# marker's action, or (bounded-retry gated) launch the async decision job
+# and return 4 to signal "pending".
+#
+# Prints the action on success (reap|archive-and-reap|retain|kept|not-terminal)
+# and returns 0; prints empty and returns 4 while the decision is pending;
+# prints empty and returns 1 when the budget is spent for this head.
+cleanup_decision_launch_job() {
+  local state_dir="$1" issue="$2" role="${3:-primary}" feature_dir="${4:-}" wt_dir="${5:-}"
+  local marker head_sha job_id decision meta action
+  marker="$state_dir/$CLEANUP_DECISION_RESULT_MARKER"
+  # Head is the task worktree's HEAD; falls back to the repo head when the
+  # worktree is already gone. An empty head still condition-keys the marker
+  # for the operator-event / remote reconcilers.
+  head_sha=""
+  if [[ -n "$wt_dir" && -d "$wt_dir" ]]; then
+    head_sha="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+  fi
+  [[ -n "$head_sha" ]] || head_sha="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
+  [[ -n "$head_sha" ]] || head_sha="no-head"
+
+  if ! marker_is_stale "$marker" "$head_sha"; then
+    action="$(cleanup_decision_marker_action "$marker")"
+    if [[ -n "$action" ]]; then
+      monitor_async_job_stat cleanup-decision consumed
+      printf '%s\n' "$action"
+      return 0
+    fi
+  fi
+
+  job_id="cleanup-decision-$(sanitize_job_token "$issue")"
+  monitor_async_job_stat cleanup-decision pending
+  monitor_async_job_running "$job_id" && { printf '\n'; return 4; }
+
+  decision="$(_async_check_retry_gate "$state_dir" "$CLEANUP_DECISION_JOB_BUCKET" "$head_sha")"
+  case "$decision" in
+    exhausted|exhausted-quiet)
+      if [[ "$decision" == "exhausted" ]]; then
+        bounded_retry_mark_exhausted "$state_dir" "$CLEANUP_DECISION_JOB_BUCKET" \
+          "Cleanup-decision job failed ${ASYNC_CHECK_JOB_RETRY_LIMIT} time(s) at ${head_sha:0:12}" || true
+      fi
+      printf '\n'
+      return 1
+      ;;
+    backoff)
+      printf '\n'
+      return 4
+      ;;
+  esac
+
+  meta="$(jq -cn --arg s "$state_dir" --arg b "$CLEANUP_DECISION_JOB_BUCKET" --arg k "$head_sha" '{stateDir: $s, bucket: $b, key: $k}')"
+  monitor_async_job_launch cleanup-decision "$job_id" "$issue" "" 120 "$meta" \
+    cleanup_decision_job_run "$state_dir" "$issue" "$head_sha" "$marker" "$role"
+  printf '\n'
+  return 4
+}
+
 # ── In-flight touch set (HOK-3306, picker 3/9) ───────────────────────────────
 #
 # The picker needs each in-flight task's actual-diff touch set so it can hold

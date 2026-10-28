@@ -5338,14 +5338,13 @@ pane_release_preflight() {
     live_rc="${live_rc:-0}"
     case "$live_rc" in
       0)
-        # Phase-aware liveness (HOK-2972): the stage evidence gates above have
-        # already passed, so an agent whose own Stop hook recorded idle is an
-        # idle REPL, not active work; anything else keeps blocking.
-        if ! declare -F wavemill_terminal_agent_idle_evidence >/dev/null 2>&1 \
-          || ! wavemill_terminal_agent_idle_evidence "$SESSION" "$issue" 2>/dev/null; then
-          printf '%s\n' "live-agent-child"
-          return 1
-        fi
+        # HOK-3312: the private hook reader `wavemill_terminal_agent_idle_evidence`
+        # is deleted. Any residual liveness question for a pre-merge stage goes
+        # through the HOK-3101 progress primitive. Until that is wired here,
+        # a live child in the pane holds the queue's release — the next tick
+        # retries when the agent exits.
+        printf '%s\n' "live-agent-child"
+        return 1
         ;;
       2) printf '%s\n' "liveness-indeterminate"; return 1 ;;
     esac
@@ -14888,6 +14887,15 @@ handle_comparison_job_success() {
             --comment "Closing: lost challenge comparison to ${winner} side." 2>/dev/null || true
           log "status" "Closed losing PR #$loser_pr"
         fi
+        # Transition the loser to terminal (workflowOutcome=closed) BEFORE
+        # cleanup launches the TS decider async job. Without this step the
+        # decider reads workflowOutcome=active, returns `not-terminal`, and
+        # that verdict is cached on the same head SHA, so later passes
+        # consume the stale answer and skip the retain branch that sets
+        # lifecycle.retention.reason=retain_closed_unmerged (HOK-3312).
+        if [[ -n "$loser_pr" ]] && [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
+          wavemill_reconcile_terminal "$SESSION" "$loser_key" "pr_closed_unmerged" "$loser_pr" || true
+        fi
         if ! cleanup_completed_task "$loser_key" "$loser_slug" "challenge loser"; then
           log_warn "Challenge comparison recorded; losing-side cleanup deferred for $loser_key"
         fi
@@ -15900,8 +15908,9 @@ cleanup_quarantined_no_pr_challenge_arm() {
 
 cleanup_aborted_challenge_arm() {
   local issue="$1" slug="${2:-}" reason="${3:-challenge aborted}"
-  local win target target_gone wt_dir task_branch state_branch pr
-  local cleanup_candidate_json cleanup_decision
+  local win target target_gone wt_dir task_branch state_branch pr feature_dir
+  local cleanup_candidate_json cleanup_decision_action=""
+  local decision_rc=0
 
   [[ -z "$slug" ]] && slug=$(pass_task_field "$issue" slug)
   [[ -n "$slug" ]] || {
@@ -15930,20 +15939,70 @@ cleanup_aborted_challenge_arm() {
   state_branch=$(pass_task_field "$issue" branch)
   task_branch="${state_branch:-task/${slug}}"
   pr=$(pass_task_field "$issue" pr)
+  feature_dir="${wt_dir}/features/${slug}"
+
+  # HOK-3312: the aborted-arm cleanup also goes through the single decider.
+  # `role=aborted-arm` grants abandon authority (archives the unpublished
+  # head to refs/archive/wavemill/<issue> before deleting the branch) when
+  # the TS decider sees a delivered sibling.
+  if ! mark_task_aborted_for_cleanup "$issue" "$reason"; then
+    return 1
+  fi
+
+  if declare -F cleanup_decision_launch_job >/dev/null 2>&1; then
+    cleanup_decision_action="$(cleanup_decision_launch_job "$feature_dir" "$issue" "aborted-arm" "$feature_dir" "$wt_dir")" || decision_rc=$?
+    case "$decision_rc" in
+      0) : ;;
+      4) return 0 ;;
+      *)
+        set_window_attention_state "$win" "needs-user"
+        log_warn "  $issue aborted challenge cleanup decision retries exhausted; keeping task state"
+        return 1
+        ;;
+    esac
+  else
+    cleanup_decision_action="reap"
+  fi
+
+  case "$cleanup_decision_action" in
+    kept|not-terminal|'')
+      log "debug" "$issue aborted cleanup verdict '${cleanup_decision_action:-none}'; skipping reap"
+      return 0
+      ;;
+    retain)
+      set_window_attention_state "$win" "needs-user"
+      log_warn "  $issue aborted challenge cleanup verdict 'retain' (non-delivered residue); keeping task state"
+      return 1
+      ;;
+    reap) : ;;
+    archive-and-reap) : ;;
+    *)
+      log_warn "  $issue aborted challenge cleanup verdict '${cleanup_decision_action}' unexpected (keeping task state)"
+      return 1
+      ;;
+  esac
 
   if declare -F cleanup_episode_enabled >/dev/null 2>&1 && cleanup_episode_enabled; then
-    cleanup_decision="$(cleanup_episode_should_attempt "$issue" "$slug" "" "$pr" 2>/dev/null || printf 'attempt')"
-    if [[ "$cleanup_decision" == "skip" ]]; then
-      log "debug" "$issue aborted cleanup episode unchanged; skipping cleanup attempt"
-      return 0
-    fi
     cleanup_candidate_json="$(cleanup_episode_candidate_json "$issue" "$slug" "" "$pr" 2>/dev/null || true)"
   fi
 
   archive_stage_artifacts "$issue" "$slug"
 
-  if ! mark_task_aborted_for_cleanup "$issue" "$reason"; then
-    return 1
+  # HOK-3312: archive-and-reap residue BEFORE any destructive step. The
+  # archive carries the dirt and any unpublished commits for operator
+  # inspection; the reset below leaves the shell cleanup a clean tree.
+  if [[ "$cleanup_decision_action" == "archive-and-reap" ]]; then
+    if declare -F cleanup_archive_residue_step >/dev/null 2>&1; then
+      if ! cleanup_archive_residue_step "$issue" "$wt_dir" "$task_branch" "$pr"; then
+        set_window_attention_state "$win" "needs-user"
+        log_warn "  $issue aborted challenge cleanup could not archive residue; keeping task state"
+        return 1
+      fi
+      if [[ -d "$wt_dir" ]]; then
+        git -C "$wt_dir" reset --hard HEAD >/dev/null 2>&1 || true
+        git -C "$wt_dir" clean -fdx >/dev/null 2>&1 || true
+      fi
+    fi
   fi
 
   target_gone="false"
@@ -15968,17 +16027,6 @@ cleanup_aborted_challenge_arm() {
 
   log "debug" "Closed window: $win"
 
-  if [[ -n "$pr" ]]; then
-    log_warn "  $issue: PR #$pr exists - preserving worktree and local branch (aborted task)"
-    set_window_attention_state "$win" "needs-user"
-    rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
-    reset_retry_count "$SESSION" "$issue" 2>/dev/null || true
-    remove_task_state "$issue"
-    monitor_deregister_terminal_task "$issue"
-    log "$issue: Complete (aborted cleanup, worktree preserved due to PR #$pr)"
-    return 0
-  fi
-
   local cleanup_rc=0
   local cleanup_outcome=""
   if [[ -n "${cleanup_candidate_json:-}" ]]; then
@@ -15986,12 +16034,11 @@ cleanup_aborted_challenge_arm() {
   else
     CLEANUP_EPISODE_CURRENT_FINGERPRINT=""
   fi
-  # HOK-3089: a PR-less aborted arm whose sibling PR merged may be archived
-  # (refs/archive/wavemill/<issue>) and reaped, matching the operator's
-  # `wavemill cleanup <issue> --abandon`. The authority is scoped to this one
-  # call; without a verified merged sibling the unpublished head is retained.
+  # HOK-3312: abandon authority follows the TS decider. A delivered aborted
+  # arm (sibling merged) is granted abandon so the unpublished head goes to
+  # refs/archive/wavemill/<issue> instead of being discarded.
   local abandon_issue=""
-  if declare -F check_challenge_sibling_merged >/dev/null 2>&1 \
+  if [[ -z "$pr" ]] && declare -F check_challenge_sibling_merged >/dev/null 2>&1 \
     && check_challenge_sibling_merged "$issue"; then
     abandon_issue="$issue"
   fi
@@ -16000,31 +16047,17 @@ cleanup_aborted_challenge_arm() {
   cleanup_outcome="${WAVEMILL_CLEANUP_OUTCOME:-}"
   CLEANUP_EPISODE_CURRENT_FINGERPRINT=""
   if [[ "$cleanup_rc" -eq 10 ]] || cleanup_outcome_is_retain "$cleanup_outcome"; then
-    local preservation_reason="${SAFE_CLEANUP_PRESERVATION_REASON:-}"
     local verification_reason="${SAFE_CLEANUP_VERIFICATION_REASON:-}"
     local episode_outcome="${cleanup_outcome:-local-work-preserved}"
-    local episode_disposition="retained"
-    local episode_failure_class="expected-preservation"
-    if [[ -n "$verification_reason" ]]; then
-      episode_outcome="$verification_reason"
-    elif [[ -n "$preservation_reason" ]]; then
-      episode_outcome="$preservation_reason"
-    fi
-    if [[ "$verification_reason" == base_fetch_failed:* \
-      || "$verification_reason" == remote_head_lookup_failed:* \
-      || "$verification_reason" == remote_task_fetch_failed:* \
-      || "$verification_reason" == "origin_base_unresolvable" ]]; then
-      episode_disposition="transient"
-      episode_failure_class="transient"
-    fi
+    [[ -n "$verification_reason" ]] && episode_outcome="$verification_reason"
     if declare -F cleanup_episode_enabled >/dev/null 2>&1 && cleanup_episode_enabled; then
       cleanup_candidate_json="$(cleanup_episode_candidate_json "$issue" "$slug" "" "$pr" 2>/dev/null || printf '%s' "$cleanup_candidate_json")"
     fi
     set_window_attention_state "$win" "needs-user"
     if [[ -n "${cleanup_candidate_json:-}" ]]; then
-      cleanup_episode_record_outcome "$issue" "$episode_disposition" "$episode_failure_class" "$episode_outcome" "$cleanup_candidate_json" "" 2>/dev/null || true
+      cleanup_episode_record_outcome "$issue" "transient" "transient" "$episode_outcome" "$cleanup_candidate_json" "" 2>/dev/null || true
     fi
-    log_warn "  $issue aborted challenge cleanup preserved local work (${cleanup_outcome:-unclassified}); keeping task state"
+    log_warn "  $issue aborted challenge cleanup deferred by physical step (${episode_outcome}); next tick retries"
     return 1
   elif [[ "$cleanup_rc" -ne 0 ]] || cleanup_outcome_is_failed "$cleanup_outcome"; then
     set_window_attention_state "$win" "needs-user"

@@ -254,7 +254,7 @@ EOF
 }
 
 output="$(run_cleanup_case success)"
-[[ "$output" == *"order=archive;state;tmux;git-worktree;git-branch;state;"* ]] || { echo "$output"; echo "cleanup order wrong" >&2; exit 1; }
+[[ "$output" == *"order=state;archive;tmux;git-worktree;git-branch;state;"* ]] || { echo "$output"; echo "cleanup order wrong" >&2; exit 1; }
 [[ "$output" == *"present=false"* ]] || { echo "$output"; echo "task state was not removed" >&2; exit 1; }
 [[ "$output" == *"cleaned=1"* ]] || { echo "$output"; echo "task not marked cleaned" >&2; exit 1; }
 [[ "$output" == *"skip_eval=yes"* ]] || { echo "$output"; echo "eval guard did not skip" >&2; exit 1; }
