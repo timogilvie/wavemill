@@ -461,6 +461,7 @@ test('buildJobId gives check kinds one stable id per subject', () => {
   assert.equal(buildJobId({ kind: 'pr-ci-status', issueId: 'HOK-7_c', prNumbers: [13] }), 'pr-ci-status-HOK-7_c');
   assert.equal(buildJobId({ kind: 'ready-watchdog', prNumbers: [] }), 'ready-watchdog');
   assert.equal(isCheckJobKind('route-task'), true);
+  assert.equal(isCheckJobKind('in-flight-touch-set'), true);
   assert.equal(isCheckJobKind('eval'), false);
 });
 
