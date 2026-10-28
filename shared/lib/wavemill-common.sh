@@ -2538,11 +2538,6 @@ cleanup_completed_task() {
     local verification_reason="${SAFE_CLEANUP_VERIFICATION_REASON:-}"
     local preservation_reason="${SAFE_CLEANUP_PRESERVATION_REASON:-}"
     local episode_outcome="${cleanup_outcome:-local-work-preserved}"
-    if [[ -n "$verification_reason" ]]; then
-      episode_outcome="$verification_reason"
-    elif [[ -n "$preservation_reason" ]]; then
-      episode_outcome="$preservation_reason"
-    fi
     # A physical-step preservation that is a legitimate "keep local work"
     # outcome (retain_dirty / retain_unpublished / retain_closed_unmerged /
     # retain_unverifiable) is `retained`, not `transient`: no retry can turn
@@ -2556,6 +2551,23 @@ cleanup_completed_task() {
         episode_disposition="transient"
         episode_failure_class="transient"
         lifecycle_resource_disposition="verification-required"
+        # Transient reasons keep the raw lookup-failure string as the
+        # outcome so operators see what network step failed.
+        episode_outcome="$verification_reason"
+        ;;
+      unique_local_patch|changed_after_pr_head)
+        # HOK-3312: a merged PR whose local branch carries commits the PR
+        # head doesn't is ambiguous — the operator must verify whether the
+        # extra work is safe to drop before anything is deleted. Record
+        # `verification-required`; keep the physical-step classification
+        # ($cleanup_outcome, e.g. retain_unpublished) as the reason so the
+        # terminal inbox surfaces the right remediation.
+        lifecycle_resource_disposition="verification-required"
+        ;;
+      *)
+        if [[ -n "$preservation_reason" ]]; then
+          episode_outcome="$preservation_reason"
+        fi
         ;;
     esac
     local log_detail="$episode_outcome"
