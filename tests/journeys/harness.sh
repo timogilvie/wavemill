@@ -480,15 +480,18 @@ journey_assert_session_ownership() {
   journey_assert "every session the agent CLI started has an ownership row (and no other)" \
     test -n "$launched" -a "$launched" = "$owned"
   journey_assert "ownership kinds are [$expected_kinds]" test "${kinds% }" = "$expected_kinds"
-  # Each fake session is one claude-opus-4-7 turn: 1000 input + 100 output
-  # tokens at $15/$75 per MTok = $0.0225.
+  # Each fake session is one turn of its launched model: 1000 input + 100
+  # output tokens. Every launched model gets the same test rates ($15/$75 per
+  # MTok), so each owned session costs exactly $0.0225.
   metered="$(cd "$JOURNEY_INSTALL_DIR" && node --import tsx --input-type=module -e "
     const { meterWorkflowCost } = await import('./shared/lib/sdk-task-cost/meter.ts');
+    const models = process.argv[3].split(' ').filter(Boolean);
+    const pricingTable = Object.fromEntries(models.map((model) => [model, { inputCostPerMTok: 15, outputCostPerMTok: 75 }]));
     const m = await meterWorkflowCost({ worktreePath: process.argv[1], branchName: 'journey', repoDir: process.argv[1], issueId: process.argv[2],
-      pricingTable: { 'claude-opus-4-7': { inputCostPerMTok: 15, outputCostPerMTok: 75 } }, label: 'journey', logger: { log() {}, warn() {} } });
+      pricingTable, label: 'journey', logger: { log() {}, warn() {} } });
     const o = m.outcome;
     process.stdout.write(o.status === 'success' ? o.sessionCount + ' ' + o.totalCostUsd.toFixed(4) : o.status);
-  " "$REPO_DIR" "$issue" 2>/dev/null)"
+  " "$REPO_DIR" "$issue" "$(jq -r 'select(.type == "launch") | .model' "$record" 2>/dev/null | sort -u | tr '\n' ' ')" 2>/dev/null)"
   local count
   count="$(wc -w <<<"$owned" | tr -d ' ')"
   journey_assert "workflow cost is the SDK total over the $count owned session(s)" \
