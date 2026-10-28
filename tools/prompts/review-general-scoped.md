@@ -86,6 +86,7 @@ Review the diff against the plan and task packet (if provided), but evaluate ONL
    - New public functions with no test exercising them
    - New control-flow branches with no coverage
    - Removed tests without replacement
+   - Mill-core PRs (the `journeys` path filter in `.github/workflows/ci.yml`, e.g. `shared/lib/wavemill-*.sh`, `shared/lib/tend-*.ts`, `shared/lib/ready-*.ts`, `tests/journeys/`, `tests/fakes/`) must pass the journey job (the required Golden Journeys check); a fix for an incident on the plan → merge chain, or for a class a journey already covers, must add or extend a journey in `tests/journeys/`. A missing journey, or a journey removed/skipped without replacement, is a `blocker`.
 
 Predicted test failures must stay scoped: if you infer "this will fail tests" from code inspection alone, label it `Hypothesis (not reproduced):` and keep it at `warning` until you have failing output, CI evidence, or a literal fixture mismatch.
 
@@ -107,6 +108,17 @@ Set `needs_stronger_reviewer` to `true` when ANY of these apply:
 When `needs_stronger_reviewer` is `true`, include `stronger_reviewer_reason` with a short concrete explanation. Omit the field when the flag is `false`.
 
 Use the same finding format as standard review. Report only findings supported by the diff and provided context.
+
+### Test quality — behavioural, not a mirror of the source (HOK-3237)
+
+In addition to the four buckets above, for each test added or modified in the diff:
+
+- **Would this test fail against a plausible wrong implementation?** Or does it mirror the implementation back at itself (grep the source, hash the file, assert the exact literal the writer used)? AI-written tests often restate the writer; those pass on real bugs and fail on harmless refactors.
+- **Were its fixtures derived from the writer or from the author's assumptions?** A fixture captured from the current output of the function under test cannot catch a bug in that function. An independent oracle (hand-authored expected value, different implementation, protocol-level spec) can.
+- **Does it carry a one-line `// protects: <failure scenario>` comment (or encode the scenario in the test name)?** If you cannot say in one sentence what the test protects against, flag it.
+- **Does it read, grep, or hash `shared/lib/**` or `tools/**` source as the oracle?** The `tools/check-source-text-assertions.ts` preflight already fails on new occurrences, but a disguised variant (`eval "$(sed -n …)"` extraction + text match, `readFileSync` of a path assembled at runtime) can slip past.
+
+Flag these as `warning` under `category: "logic"`. Blocker only if a mirror-of-source test is replacing coverage the diff removed.
 
 ## Template Parameters
 

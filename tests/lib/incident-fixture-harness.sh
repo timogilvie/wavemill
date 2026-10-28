@@ -16,6 +16,18 @@ set -euo pipefail
 INCIDENT_HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INCIDENT_REPO_DIR="$(cd "$INCIDENT_HARNESS_DIR/../.." && pwd)"
 
+# Pin the cleanup-episode retry backoff well beyond any plausible 10-tick
+# wall-clock window so transient-disposition fixtures (e.g. HOK-4003 missing
+# network) assert the "unchanged evidence → one cleanup attempt" invariant
+# without being flaked by slower hosts. The production default is 30s; on a
+# fast CI runner 10 ticks finish inside that window and the retry never
+# fires, but on a slower developer laptop the same 10 ticks can exceed it.
+# The invariant under test is fingerprint-stable skip for the same evidence,
+# not the exact backoff schedule, so hoisting the base here is a test seam,
+# not a behavior change. Scenarios that specifically exercise the backoff
+# schedule still override this (see tests/cleanup-episodes.test.sh).
+export WAVEMILL_CLEANUP_EPISODE_BACKOFF_BASE_SECONDS="${WAVEMILL_CLEANUP_EPISODE_BACKOFF_BASE_SECONDS:-86400}"
+
 INCIDENT_COMMON_SCRIPT="$INCIDENT_REPO_DIR/shared/lib/wavemill-common.sh"
 INCIDENT_MONITOR_SCRIPT="$INCIDENT_REPO_DIR/shared/lib/wavemill-monitor.sh"
 INCIDENT_MILL_SCRIPT="$INCIDENT_REPO_DIR/shared/lib/wavemill-mill.sh"

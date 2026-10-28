@@ -9,11 +9,15 @@
 #   - task_progress_cached_json returns {} for a stale cache and the
 #     payload for a fresh one;
 #   - CLI output on the same hook fixture agrees with the shell accessor.
+#   - a --max-age cache older than the hook file is recomputed.
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PATH="$REPO_DIR:$PATH"
+# task_progress_json prefers $TOOLS_DIR; a mill pane exports the install's,
+# which would test that CLI instead of this checkout's.
+export TOOLS_DIR="$REPO_DIR/tools"
 
 pass=0
 fail=0
@@ -148,6 +152,36 @@ if [[ "$shell_agent_state" == "$cli_agent_state" && "$shell_agent_event" == "$cl
   _pass "shell=$shell_agent_state:$shell_agent_event cli=$cli_agent_state:$cli_agent_event"
 else
   _fail "shell=$shell_agent_state:$shell_agent_event cli=$cli_agent_state:$cli_agent_event"
+fi
+
+_case "task_progress_json reads the hook when called from a repo without tsx (HOK-3228)"
+# The monitor's cwd is the milled repo. `--import tsx` resolved from there used
+# to fail, so the primitive returned {} and every exited agent read as live.
+rm -f "$hook_file"
+wavemill_hook_write "idle" "Stop" "" "claude" "" "agent"
+no_tsx_dir="$(mktemp -d)"
+result="$(cd "$no_tsx_dir" && task_progress_json TP-1 --session hok3101test --phase coding 2>/dev/null | jq -r '.agentIdle // empty' 2>/dev/null || true)"
+rm -rf "$no_tsx_dir"
+if [[ "$result" == "true" ]]; then
+  _pass
+else
+  _fail "expected agentIdle=true from a tsx-less cwd, got '$result'"
+fi
+
+_case "a --max-age cache computed before the agent's Stop is not served (HOK-3228)"
+# The dirty-handoff guard polls with --max-age 60. A cache written while the
+# agent was working must not hide its later Stop for the rest of the window.
+rm -f "$hook_file" "$cache_file"
+wavemill_hook_write "working" "PreToolUse" "Bash" "claude" "" "agent"
+task_progress_json TP-1 --session hok3101test --phase coding --write-cache >/dev/null 2>&1 || true
+before="$(jq -r '.agentIdle' "$cache_file" 2>/dev/null || true)"
+sleep 1
+wavemill_hook_write "idle" "Stop" "" "claude" "" "agent"
+result="$(task_progress_json TP-1 --session hok3101test --phase coding --max-age 60 2>/dev/null | jq -r '.agentIdle // empty' 2>/dev/null || true)"
+if [[ "$before" == "false" && "$result" == "true" ]]; then
+  _pass
+else
+  _fail "cache agentIdle=$before, after Stop got '$result' (expected false → true)"
 fi
 
 echo ""

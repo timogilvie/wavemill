@@ -1129,10 +1129,21 @@ export function getTaskProgress(
  * Verify a cached progress payload is not older than `maxAgeSeconds`. This is
  * cheap (one Date.parse and one comparison) so the dashboard can call it
  * on every refresh.
+ *
+ * `inputsChangedAtMs` (the hook file's mtime) invalidates a cache computed
+ * before the agent's latest event: an agent that wrote `Stop` after the cache
+ * was computed must not read as `working` for the rest of the window — the
+ * HOK-3128 dirty-handoff relaunch waited out the full 60s on exactly that.
  */
-export function progressCacheIsFresh(payload: TaskProgress, maxAgeSeconds: number, now: Date = new Date()): boolean {
+export function progressCacheIsFresh(
+  payload: TaskProgress,
+  maxAgeSeconds: number,
+  now: Date = new Date(),
+  inputsChangedAtMs?: number | null,
+): boolean {
   const computedAtMs = parseIsoToMs(payload.computedAt);
   if (computedAtMs === null) return false;
+  if (typeof inputsChangedAtMs === 'number' && inputsChangedAtMs > computedAtMs) return false;
   return (now.getTime() - computedAtMs) / 1000 < maxAgeSeconds;
 }
 

@@ -4777,6 +4777,13 @@ coding_stage_owner_lost() {
   now_epoch="$(date +%s)"
   (( now_epoch - started_epoch >= grace )) || return 1
 
+  # A completion marker written since this launch means the agent finished,
+  # not that it was lost: the pass may have checked for it just before the
+  # agent wrote it and exited.
+  local marker_epoch
+  marker_epoch="$(portable_file_mtime_epoch "$feature_dir/.coding-complete" 2>/dev/null || true)"
+  [[ "$marker_epoch" =~ ^[0-9]+$ ]] && (( marker_epoch >= started_epoch )) && return 1
+
   # HOK-3101: read agent-only, so a monitor-written recovery replay
   # (`working` at :7632, `writer=monitor`) no longer protects a lost coding
   # owner. The agent's own fresh state still protects.
@@ -5331,14 +5338,13 @@ pane_release_preflight() {
     live_rc="${live_rc:-0}"
     case "$live_rc" in
       0)
-        # Phase-aware liveness (HOK-2972): the stage evidence gates above have
-        # already passed, so an agent whose own Stop hook recorded idle is an
-        # idle REPL, not active work; anything else keeps blocking.
-        if ! declare -F wavemill_terminal_agent_idle_evidence >/dev/null 2>&1 \
-          || ! wavemill_terminal_agent_idle_evidence "$SESSION" "$issue" 2>/dev/null; then
-          printf '%s\n' "live-agent-child"
-          return 1
-        fi
+        # HOK-3312: the private hook reader `wavemill_terminal_agent_idle_evidence`
+        # is deleted. Any residual liveness question for a pre-merge stage goes
+        # through the HOK-3101 progress primitive. Until that is wired here,
+        # a live child in the pane holds the queue's release — the next tick
+        # retries when the agent exits.
+        printf '%s\n' "live-agent-child"
+        return 1
         ;;
       2) printf '%s\n' "liveness-indeterminate"; return 1 ;;
     esac
@@ -14881,6 +14887,15 @@ handle_comparison_job_success() {
             --comment "Closing: lost challenge comparison to ${winner} side." 2>/dev/null || true
           log "status" "Closed losing PR #$loser_pr"
         fi
+        # Transition the loser to terminal (workflowOutcome=closed) BEFORE
+        # cleanup launches the TS decider async job. Without this step the
+        # decider reads workflowOutcome=active, returns `not-terminal`, and
+        # that verdict is cached on the same head SHA, so later passes
+        # consume the stale answer and skip the retain branch that sets
+        # lifecycle.retention.reason=retain_closed_unmerged (HOK-3312).
+        if [[ -n "$loser_pr" ]] && [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
+          wavemill_reconcile_terminal "$SESSION" "$loser_key" "pr_closed_unmerged" "$loser_pr" || true
+        fi
         if ! cleanup_completed_task "$loser_key" "$loser_slug" "challenge loser"; then
           log_warn "Challenge comparison recorded; losing-side cleanup deferred for $loser_key"
         fi
@@ -15893,8 +15908,9 @@ cleanup_quarantined_no_pr_challenge_arm() {
 
 cleanup_aborted_challenge_arm() {
   local issue="$1" slug="${2:-}" reason="${3:-challenge aborted}"
-  local win target target_gone wt_dir task_branch state_branch pr
-  local cleanup_candidate_json cleanup_decision
+  local win target target_gone wt_dir task_branch state_branch pr feature_dir
+  local cleanup_candidate_json cleanup_decision_action=""
+  local decision_rc=0
 
   [[ -z "$slug" ]] && slug=$(pass_task_field "$issue" slug)
   [[ -n "$slug" ]] || {
@@ -15923,20 +15939,70 @@ cleanup_aborted_challenge_arm() {
   state_branch=$(pass_task_field "$issue" branch)
   task_branch="${state_branch:-task/${slug}}"
   pr=$(pass_task_field "$issue" pr)
+  feature_dir="${wt_dir}/features/${slug}"
+
+  # HOK-3312: the aborted-arm cleanup also goes through the single decider.
+  # `role=aborted-arm` grants abandon authority (archives the unpublished
+  # head to refs/archive/wavemill/<issue> before deleting the branch) when
+  # the TS decider sees a delivered sibling.
+  if ! mark_task_aborted_for_cleanup "$issue" "$reason"; then
+    return 1
+  fi
+
+  if declare -F cleanup_decision_launch_job >/dev/null 2>&1; then
+    cleanup_decision_action="$(cleanup_decision_launch_job "$feature_dir" "$issue" "aborted-arm" "$feature_dir" "$wt_dir")" || decision_rc=$?
+    case "$decision_rc" in
+      0) : ;;
+      4) return 0 ;;
+      *)
+        set_window_attention_state "$win" "needs-user"
+        log_warn "  $issue aborted challenge cleanup decision retries exhausted; keeping task state"
+        return 1
+        ;;
+    esac
+  else
+    cleanup_decision_action="reap"
+  fi
+
+  case "$cleanup_decision_action" in
+    kept|not-terminal|'')
+      log "debug" "$issue aborted cleanup verdict '${cleanup_decision_action:-none}'; skipping reap"
+      return 0
+      ;;
+    retain)
+      set_window_attention_state "$win" "needs-user"
+      log_warn "  $issue aborted challenge cleanup verdict 'retain' (non-delivered residue); keeping task state"
+      return 1
+      ;;
+    reap) : ;;
+    archive-and-reap) : ;;
+    *)
+      log_warn "  $issue aborted challenge cleanup verdict '${cleanup_decision_action}' unexpected (keeping task state)"
+      return 1
+      ;;
+  esac
 
   if declare -F cleanup_episode_enabled >/dev/null 2>&1 && cleanup_episode_enabled; then
-    cleanup_decision="$(cleanup_episode_should_attempt "$issue" "$slug" "" "$pr" 2>/dev/null || printf 'attempt')"
-    if [[ "$cleanup_decision" == "skip" ]]; then
-      log "debug" "$issue aborted cleanup episode unchanged; skipping cleanup attempt"
-      return 0
-    fi
     cleanup_candidate_json="$(cleanup_episode_candidate_json "$issue" "$slug" "" "$pr" 2>/dev/null || true)"
   fi
 
   archive_stage_artifacts "$issue" "$slug"
 
-  if ! mark_task_aborted_for_cleanup "$issue" "$reason"; then
-    return 1
+  # HOK-3312: archive-and-reap residue BEFORE any destructive step. The
+  # archive carries the dirt and any unpublished commits for operator
+  # inspection; the reset below leaves the shell cleanup a clean tree.
+  if [[ "$cleanup_decision_action" == "archive-and-reap" ]]; then
+    if declare -F cleanup_archive_residue_step >/dev/null 2>&1; then
+      if ! cleanup_archive_residue_step "$issue" "$wt_dir" "$task_branch" "$pr"; then
+        set_window_attention_state "$win" "needs-user"
+        log_warn "  $issue aborted challenge cleanup could not archive residue; keeping task state"
+        return 1
+      fi
+      if [[ -d "$wt_dir" ]]; then
+        git -C "$wt_dir" reset --hard HEAD >/dev/null 2>&1 || true
+        git -C "$wt_dir" clean -fdx >/dev/null 2>&1 || true
+      fi
+    fi
   fi
 
   target_gone="false"
@@ -15961,17 +16027,6 @@ cleanup_aborted_challenge_arm() {
 
   log "debug" "Closed window: $win"
 
-  if [[ -n "$pr" ]]; then
-    log_warn "  $issue: PR #$pr exists - preserving worktree and local branch (aborted task)"
-    set_window_attention_state "$win" "needs-user"
-    rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
-    reset_retry_count "$SESSION" "$issue" 2>/dev/null || true
-    remove_task_state "$issue"
-    monitor_deregister_terminal_task "$issue"
-    log "$issue: Complete (aborted cleanup, worktree preserved due to PR #$pr)"
-    return 0
-  fi
-
   local cleanup_rc=0
   local cleanup_outcome=""
   if [[ -n "${cleanup_candidate_json:-}" ]]; then
@@ -15979,12 +16034,11 @@ cleanup_aborted_challenge_arm() {
   else
     CLEANUP_EPISODE_CURRENT_FINGERPRINT=""
   fi
-  # HOK-3089: a PR-less aborted arm whose sibling PR merged may be archived
-  # (refs/archive/wavemill/<issue>) and reaped, matching the operator's
-  # `wavemill cleanup <issue> --abandon`. The authority is scoped to this one
-  # call; without a verified merged sibling the unpublished head is retained.
+  # HOK-3312: abandon authority follows the TS decider. A delivered aborted
+  # arm (sibling merged) is granted abandon so the unpublished head goes to
+  # refs/archive/wavemill/<issue> instead of being discarded.
   local abandon_issue=""
-  if declare -F check_challenge_sibling_merged >/dev/null 2>&1 \
+  if [[ -z "$pr" ]] && declare -F check_challenge_sibling_merged >/dev/null 2>&1 \
     && check_challenge_sibling_merged "$issue"; then
     abandon_issue="$issue"
   fi
@@ -15993,31 +16047,17 @@ cleanup_aborted_challenge_arm() {
   cleanup_outcome="${WAVEMILL_CLEANUP_OUTCOME:-}"
   CLEANUP_EPISODE_CURRENT_FINGERPRINT=""
   if [[ "$cleanup_rc" -eq 10 ]] || cleanup_outcome_is_retain "$cleanup_outcome"; then
-    local preservation_reason="${SAFE_CLEANUP_PRESERVATION_REASON:-}"
     local verification_reason="${SAFE_CLEANUP_VERIFICATION_REASON:-}"
     local episode_outcome="${cleanup_outcome:-local-work-preserved}"
-    local episode_disposition="retained"
-    local episode_failure_class="expected-preservation"
-    if [[ -n "$verification_reason" ]]; then
-      episode_outcome="$verification_reason"
-    elif [[ -n "$preservation_reason" ]]; then
-      episode_outcome="$preservation_reason"
-    fi
-    if [[ "$verification_reason" == base_fetch_failed:* \
-      || "$verification_reason" == remote_head_lookup_failed:* \
-      || "$verification_reason" == remote_task_fetch_failed:* \
-      || "$verification_reason" == "origin_base_unresolvable" ]]; then
-      episode_disposition="transient"
-      episode_failure_class="transient"
-    fi
+    [[ -n "$verification_reason" ]] && episode_outcome="$verification_reason"
     if declare -F cleanup_episode_enabled >/dev/null 2>&1 && cleanup_episode_enabled; then
       cleanup_candidate_json="$(cleanup_episode_candidate_json "$issue" "$slug" "" "$pr" 2>/dev/null || printf '%s' "$cleanup_candidate_json")"
     fi
     set_window_attention_state "$win" "needs-user"
     if [[ -n "${cleanup_candidate_json:-}" ]]; then
-      cleanup_episode_record_outcome "$issue" "$episode_disposition" "$episode_failure_class" "$episode_outcome" "$cleanup_candidate_json" "" 2>/dev/null || true
+      cleanup_episode_record_outcome "$issue" "transient" "transient" "$episode_outcome" "$cleanup_candidate_json" "" 2>/dev/null || true
     fi
-    log_warn "  $issue aborted challenge cleanup preserved local work (${cleanup_outcome:-unclassified}); keeping task state"
+    log_warn "  $issue aborted challenge cleanup deferred by physical step (${episode_outcome}); next tick retries"
     return 1
   elif [[ "$cleanup_rc" -ne 0 ]] || cleanup_outcome_is_failed "$cleanup_outcome"; then
     set_window_attention_state "$win" "needs-user"
@@ -17888,6 +17928,13 @@ build_queue_plan_once() {
   else
     timeout_secs="${QUEUE_PICKER_TIMEOUT_SECS:-5}"
     planner_cmd="$(_wavemill_tsx_invoker) \"$TOOLS_DIR/plan-queue.ts\" --stdin --json"
+  fi
+  # HOK-3306: the monitor builds an in-flight touch-set file before fetch; the
+  # planner reads it to synthesize `sharedSurfaceConflicts` edges between each
+  # backlog candidate and the in-flight tasks whose diffs overlap. Missing or
+  # malformed files are soft-fail inside plan-queue.ts.
+  if [[ -n "${WAVEMILL_IN_FLIGHT_FILE:-}" && -s "$WAVEMILL_IN_FLIGHT_FILE" ]]; then
+    planner_cmd="${planner_cmd} --in-flight-file \"${WAVEMILL_IN_FLIGHT_FILE}\""
   fi
 
   # Initialize queue-health file only for background refresh (when inference is enabled).
@@ -23879,21 +23926,57 @@ while :; do
           _active_issue_ids=""
           # HOK-3305: build an in-flight payload the picker uses to annotate
           # "Held: shares files" entries with the live PR number of the peer.
+          # HOK-3306: enrich each row with the task's actual-diff touch set
+          # (computed off the hot path by the in-flight-touch-set async job)
+          # so plan-queue.ts can synthesize sharedSurfaceConflicts edges and
+          # the picker renders file-level hold reasons.
           _in_flight_json="[]"
           _in_flight_rows=""
+          _in_flight_file=""
           for _ai in "${!BRANCH_BY_ISSUE[@]}"; do
             [[ -n "${CLEANED[$_ai]:-}" ]] && continue
             _active_issue_ids+="${_ai}"$'\n'
             _ai_pr="$(pass_task_field "$_ai" pr 2>/dev/null || true)"
+            _ai_wt="$(pass_task_field "$_ai" worktree 2>/dev/null || true)"
+            _ai_slug="$(pass_task_field "$_ai" slug 2>/dev/null || true)"
+            _ai_phase="$(pass_task_field "$_ai" phase 2>/dev/null || true)"
+            _ai_base="$(effective_task_base_branch "$_ai" 2>/dev/null || pass_task_field "$_ai" baseBranch 2>/dev/null || echo "${BASE_BRANCH:-main}")"
+            _ai_files="[]"
+            if [[ -n "$_ai_wt" && -d "$_ai_wt" && -n "$_ai_slug" ]]; then
+              _ai_sd="${_ai_wt}/features/${_ai_slug}"
+              _ai_head="$(git -C "$_ai_wt" rev-parse HEAD 2>/dev/null || true)"
+              # HOK-3206: `git rev-parse HEAD` is a local object-dir read
+              # comparable to a file stat; the slow operation (`git diff`
+              # against merge-base, prediction) lives inside the tracked
+              # async job (`in_flight_touch_set_gate`). The gate echoes the
+              # cached files for this head when available, or `[]` while a
+              # relaunch runs.
+              if [[ -n "$_ai_head" && -d "$_ai_sd" ]]; then
+                _ai_files="$(in_flight_touch_set_gate "$_ai" "$_ai_sd" "$_ai_wt" "$_ai_head" "$_ai_base" "$_ai_phase" "$_ai_sd" 2>/dev/null || echo '[]')"
+                [[ -n "$_ai_files" ]] || _ai_files="[]"
+              fi
+            fi
             if [[ -n "$_ai_pr" && "$_ai_pr" != "null" ]]; then
-              _in_flight_rows+="$(jq -cn --arg id "$_ai" --argjson pr "$_ai_pr" '{id:$id, prNumber:$pr}')"$'\n'
+              _in_flight_rows+="$(jq -cn --arg id "$_ai" --argjson pr "$_ai_pr" --argjson files "$_ai_files" \
+                '{id:$id, prNumber:$pr, files:$files}')"$'\n'
             else
-              _in_flight_rows+="$(jq -cn --arg id "$_ai" '{id:$id}')"$'\n'
+              _in_flight_rows+="$(jq -cn --arg id "$_ai" --argjson files "$_ai_files" \
+                '{id:$id, files:$files}')"$'\n'
             fi
           done
           if [[ -n "$_in_flight_rows" ]]; then
             _in_flight_json="$(printf '%s' "$_in_flight_rows" | jq -s '.' 2>/dev/null || echo '[]')"
           fi
+          # HOK-3306: thread the in-flight payload into plan-queue.ts via an
+          # env var so run_queue_planner_with_policy's eval'd command picks it
+          # up without a new positional argument.
+          if [[ "$_in_flight_json" != "[]" ]]; then
+            _in_flight_file="$(mktemp -t wavemill-in-flight.XXXXXX.json 2>/dev/null || true)"
+            if [[ -n "$_in_flight_file" ]]; then
+              printf '%s' "$_in_flight_json" > "$_in_flight_file" 2>/dev/null || _in_flight_file=""
+            fi
+          fi
+          export WAVEMILL_IN_FLIGHT_FILE="${_in_flight_file:-}"
 
           # Check queue-health backoff before attempting planner
           queue_health_init 2>/dev/null || true
@@ -23934,6 +24017,9 @@ while :; do
           display_fingerprint="${free_slots}|${avail_unblocked}|${avail_blocked_count}|${queue_fp}|${_backlog_budget}|${_backlog_expanded}|${_deps_expanded}"
           rm -f "$queue_plan_diag_file"
           FETCH_QUEUE_PLAN_DIAGNOSTICS_FILE="$queue_plan_diag_previous"
+          # HOK-3306: in-flight temp file lives only as long as this pass.
+          [[ -n "${_in_flight_file:-}" ]] && rm -f "$_in_flight_file"
+          unset WAVEMILL_IN_FLIGHT_FILE
 
           # HOK-3305: when the picker rendered, its own output includes the
           # "Next tasks:" header; otherwise fall back to the flat list with a

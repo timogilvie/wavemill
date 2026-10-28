@@ -1,0 +1,19 @@
+# shellcheck shell=bash
+# Fake coder for the operator-abort-mid-coding journey (sourced by
+# tests/fakes/bin/claude).
+#
+# A real coder is mid-run when the operator aborts it: it has committed some
+# work locally (not pushed, no PR) and is still busy. Commit a partial change,
+# announce that the abort may land, then stay alive until the mill kills the
+# pane. It never writes .coding-complete. Every launch is logged with a role
+# so the journey can prove the mill never relaunched coding after the abort.
+printf '%s phase=coding issue=%s role=mid-coding pid=%s\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" "$$" >> "$FAKE_AGENT_LOG"
+printf 'partial work on %s\n' "$WAVEMILL_ISSUE" >> journey-output.txt
+git add journey-output.txt
+git -c user.name=fake-agent -c user.email=fake-agent@example.invalid commit -q -m "$WAVEMILL_ISSUE: work in progress"
+: > "$FAKE_ROOT/coding-busy-$WAVEMILL_ISSUE"
+# Busy, bounded so a harness bug can never leave it running forever. The
+# journey asserts the mill's pane kill ended it long before this cap.
+for _ in $(seq 1 600); do sleep 0.5; done
+printf '%s phase=coding issue=%s role=mid-coding outlived-abort\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+exit 1
