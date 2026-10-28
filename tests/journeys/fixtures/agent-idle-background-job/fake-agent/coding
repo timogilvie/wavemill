@@ -1,0 +1,10 @@
+# shellcheck shell=bash
+# Fake coder for the agent-idle-background-job journey (HOK-3137).
+#
+# Sourced by tests/fakes/bin/claude. The fake CLI itself runs as `bash …/claude`,
+# which the HOK-3137 background-work probe classifies as a neutral shell, not
+# an agent. A real Claude Code agent is a substantive process (`claude`), so
+# re-exec the rest of the session under a substantive process name: the pane
+# subtree then has the production shape (agent → its own background task).
+export FEATURE_DIR
+exec -a claude-agent bash "$FAKE_AGENT_SCRIPT_DIR/../agent-session.sh"

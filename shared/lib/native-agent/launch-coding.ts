@@ -351,6 +351,7 @@ export function renderCodingSystemPrompt(input: {
     '- To wait for a slow operation, run it once with a bounded timeoutMs instead of polling; foreground `sleep`, `watch` and `timeout … tail -f` are refused.',
     '- Use git_add/git_commit to commit intended changed files before completion.',
     `- Prefer .coding-complete when focused verification of the changed code passes; otherwise write ${input.blockedCompletionPath} only when implementation is complete, scoped checks passed, changes are committed, and remaining blockers are unrelated or environmental.`,
+    '- Mill-core definition of done: a change to the plan → code → review → ready → tend merge → reap chain (the `journeys` path filter in `.github/workflows/ci.yml`, e.g. `shared/lib/wavemill-*.sh`, `shared/lib/tend-*.ts`, `shared/lib/ready-*.ts`, `tests/journeys/`, `tests/fakes/`) must pass the journey job (the required Golden Journeys CI check); run affected journeys with `bash tests/journeys/run-journeys.sh <name>`. A fix for an incident on that chain, or for a class a journey already covers, must add or extend a journey in `tests/journeys/` using the shared fakes (`tests/fakes/lib.sh`).',
   ];
 
   if (input.recoveryMode) {

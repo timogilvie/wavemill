@@ -1,0 +1,41 @@
+# shellcheck shell=bash
+# Fake coder for the ready-fail-remediate journey (sourced by tests/fakes/bin/claude).
+#
+# The first coding launch implements the task the usual way; that head fails
+# CI (the journey's fake CI fails any head whose journey-output.txt lacks the
+# fix line). Any later coding launch is Ready remediation (post-PR remediation
+# runs as a prompt-driven coding launch, HOK-3272): keep the prompt the mill
+# handed over for the journey's assertions, commit the fix and push it to the
+# PR branch. It never writes .coding-complete: Ready re-checks the new head.
+coding_runs_file="$FAKE_ROOT/coding-runs-$WAVEMILL_ISSUE"
+coding_run=$(( $(cat "$coding_runs_file" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$coding_run" > "$coding_runs_file"
+
+if (( coding_run == 1 )); then
+  default_coding
+else
+  printf '%s phase=coding issue=%s role=ready-remediation\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+  # The launcher passes the prompt as the CLI argument (sourced, so "$*" is
+  # the fake claude's own argv).
+  printf '%s\n' "$*" > "$FAKE_ROOT/remediation-prompt-$coding_run.txt"
+  # A push restarts CI: the fake's checks are keyed by PR, not head, so flip
+  # PR #1 to PENDING before the new head lands. Otherwise a slow journey poll
+  # leaves the red head's FAILURE attached to the fix head, and Ready charges
+  # a second remediation against a green commit. The journey's fake CI then
+  # settles the new head to SUCCESS. Same lock as the journey's ci_set_pr1.
+  # Done before the commit so commit and push stay back to back: Ready
+  # refuses a worktree HEAD that is ahead of the PR head (unpushed work).
+  for _ in $(seq 1 500); do
+    mkdir "$FAKE_GH_STATE.lock" 2>/dev/null && break
+    sleep 0.01
+  done
+  printf '%s' "$$" > "$FAKE_GH_STATE.lock/pid"
+  jq '.checks.byPr["1"] = [{name: "unit-tests", conclusion: "PENDING"}]' "$FAKE_GH_STATE" > "$FAKE_GH_STATE.tmp.$$" \
+    && mv "$FAKE_GH_STATE.tmp.$$" "$FAKE_GH_STATE"
+  rm -rf "$FAKE_GH_STATE.lock"
+  printf 'fixed: unit-tests green\n' >> journey-output.txt
+  git add journey-output.txt
+  git -c user.name=fake-agent -c user.email=fake-agent@example.invalid \
+    commit -q -m "$WAVEMILL_ISSUE: fix failing unit-tests"
+  git push -q origin HEAD
+fi

@@ -10,15 +10,15 @@
  *   - Exits 0 on any input mode.
  *   - `--write-cache` writes an atomic tmp+rename to
  *     `/tmp/wavemill-${session}-${issue}.progress.json`.
- *   - `--max-age <s>` short-circuits the compute if the cache is fresh; the
- *     cache is printed instead. This is how the monitor stall check keeps
+ *   - `--max-age <s>` short-circuits the compute if the cache is fresh (and
+ *     not older than the task's hook file); the cache is printed instead. This is how the monitor stall check keeps
  *     under ~1 compute per running coding task per 60s.
  *
  * Fail-safe direction: any thrown error prints `{}` and exits 0 so shell
  * `jq` consumers never explode on stderr output.
  */
 
-import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, statSync } from 'node:fs';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import {
   getTaskProgress,
@@ -55,12 +55,22 @@ function atomicWrite(destPath: string, contents: string): boolean {
   }
 }
 
-function tryPrintCache(cachePath: string, maxAgeSeconds: number): TaskProgress | null {
+/** mtime of the task's hook file; null when absent. */
+function hookChangedAtMs(hookPath: string): number | null {
+  try {
+    return statSync(hookPath).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+function tryPrintCache(cachePath: string, maxAgeSeconds: number, hookPath: string): TaskProgress | null {
   if (!existsSync(cachePath)) return null;
   try {
     const raw = readFileSync(cachePath, 'utf-8');
     const parsed = JSON.parse(raw) as TaskProgress;
-    if (progressCacheIsFresh(parsed, maxAgeSeconds)) {
+    // A hook written after the cache (e.g. the agent's Stop) makes it stale.
+    if (progressCacheIsFresh(parsed, maxAgeSeconds, new Date(), hookChangedAtMs(hookPath))) {
       return parsed;
     }
   } catch {
@@ -104,7 +114,7 @@ runTool({
     if (args['max-age']) {
       const seconds = Number.parseInt(args['max-age'], 10);
       if (Number.isFinite(seconds) && seconds > 0) {
-        const cached = tryPrintCache(cachePath, seconds);
+        const cached = tryPrintCache(cachePath, seconds, `/tmp/wavemill-${session}-${issue}.hook`);
         if (cached) {
           console.log(JSON.stringify(cached));
           return;

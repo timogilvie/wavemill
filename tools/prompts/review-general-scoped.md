@@ -86,6 +86,7 @@ Review the diff against the plan and task packet (if provided), but evaluate ONL
    - New public functions with no test exercising them
    - New control-flow branches with no coverage
    - Removed tests without replacement
+   - Mill-core PRs (the `journeys` path filter in `.github/workflows/ci.yml`, e.g. `shared/lib/wavemill-*.sh`, `shared/lib/tend-*.ts`, `shared/lib/ready-*.ts`, `tests/journeys/`, `tests/fakes/`) must pass the journey job (the required Golden Journeys check); a fix for an incident on the plan → merge chain, or for a class a journey already covers, must add or extend a journey in `tests/journeys/`. A missing journey, or a journey removed/skipped without replacement, is a `blocker`.
 
 Predicted test failures must stay scoped: if you infer "this will fail tests" from code inspection alone, label it `Hypothesis (not reproduced):` and keep it at `warning` until you have failing output, CI evidence, or a literal fixture mismatch.
 

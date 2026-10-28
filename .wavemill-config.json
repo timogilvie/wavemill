@@ -373,6 +373,12 @@
     "Golden Journey (inputs-ready-before-approval)": "bash tests/journeys/run-journeys.sh inputs-ready-before-approval",
     "Golden Journey (mid-flight-base-conflict)": "bash tests/journeys/run-journeys.sh mid-flight-base-conflict",
     "Golden Journey (tend-rebase-conflict-single-comment)": "bash tests/journeys/run-journeys.sh tend-rebase-conflict-single-comment",
+    "Golden Journey (challenge-pair-eval)": "bash tests/journeys/run-journeys.sh challenge-pair-eval",
+    "Golden Journey (ready-fail-remediate)": "bash tests/journeys/run-journeys.sh ready-fail-remediate",
+    "Golden Journey (dirty-tree-coding-complete)": "bash tests/journeys/run-journeys.sh dirty-tree-coding-complete",
+    "Golden Journey (post-merge-eval-reap)": "bash tests/journeys/run-journeys.sh post-merge-eval-reap",
+    "Golden Journey (agent-idle-background-job)": "bash tests/journeys/run-journeys.sh agent-idle-background-job",
+    "Golden Journey (operator-abort-mid-coding)": "bash tests/journeys/run-journeys.sh operator-abort-mid-coding",
     "Golden Journeys": "npm run test:journeys"
     },
     "postPrReconciliation": {

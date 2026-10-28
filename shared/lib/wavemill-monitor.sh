@@ -4777,6 +4777,13 @@ coding_stage_owner_lost() {
   now_epoch="$(date +%s)"
   (( now_epoch - started_epoch >= grace )) || return 1
 
+  # A completion marker written since this launch means the agent finished,
+  # not that it was lost: the pass may have checked for it just before the
+  # agent wrote it and exited.
+  local marker_epoch
+  marker_epoch="$(portable_file_mtime_epoch "$feature_dir/.coding-complete" 2>/dev/null || true)"
+  [[ "$marker_epoch" =~ ^[0-9]+$ ]] && (( marker_epoch >= started_epoch )) && return 1
+
   # HOK-3101: read agent-only, so a monitor-written recovery replay
   # (`working` at :7632, `writer=monitor`) no longer protects a lost coding
   # owner. The agent's own fresh state still protects.
@@ -17913,6 +17920,13 @@ build_queue_plan_once() {
     timeout_secs="${QUEUE_PICKER_TIMEOUT_SECS:-5}"
     planner_cmd="$(_wavemill_tsx_invoker) \"$TOOLS_DIR/plan-queue.ts\" --stdin --json"
   fi
+  # HOK-3306: the monitor builds an in-flight touch-set file before fetch; the
+  # planner reads it to synthesize `sharedSurfaceConflicts` edges between each
+  # backlog candidate and the in-flight tasks whose diffs overlap. Missing or
+  # malformed files are soft-fail inside plan-queue.ts.
+  if [[ -n "${WAVEMILL_IN_FLIGHT_FILE:-}" && -s "$WAVEMILL_IN_FLIGHT_FILE" ]]; then
+    planner_cmd="${planner_cmd} --in-flight-file \"${WAVEMILL_IN_FLIGHT_FILE}\""
+  fi
 
   # Initialize queue-health file only for background refresh (when inference is enabled).
   # Picker-synchronous --no-infer runs never touch queue-health.
@@ -23903,21 +23917,57 @@ while :; do
           _active_issue_ids=""
           # HOK-3305: build an in-flight payload the picker uses to annotate
           # "Held: shares files" entries with the live PR number of the peer.
+          # HOK-3306: enrich each row with the task's actual-diff touch set
+          # (computed off the hot path by the in-flight-touch-set async job)
+          # so plan-queue.ts can synthesize sharedSurfaceConflicts edges and
+          # the picker renders file-level hold reasons.
           _in_flight_json="[]"
           _in_flight_rows=""
+          _in_flight_file=""
           for _ai in "${!BRANCH_BY_ISSUE[@]}"; do
             [[ -n "${CLEANED[$_ai]:-}" ]] && continue
             _active_issue_ids+="${_ai}"$'\n'
             _ai_pr="$(pass_task_field "$_ai" pr 2>/dev/null || true)"
+            _ai_wt="$(pass_task_field "$_ai" worktree 2>/dev/null || true)"
+            _ai_slug="$(pass_task_field "$_ai" slug 2>/dev/null || true)"
+            _ai_phase="$(pass_task_field "$_ai" phase 2>/dev/null || true)"
+            _ai_base="$(effective_task_base_branch "$_ai" 2>/dev/null || pass_task_field "$_ai" baseBranch 2>/dev/null || echo "${BASE_BRANCH:-main}")"
+            _ai_files="[]"
+            if [[ -n "$_ai_wt" && -d "$_ai_wt" && -n "$_ai_slug" ]]; then
+              _ai_sd="${_ai_wt}/features/${_ai_slug}"
+              _ai_head="$(git -C "$_ai_wt" rev-parse HEAD 2>/dev/null || true)"
+              # HOK-3206: `git rev-parse HEAD` is a local object-dir read
+              # comparable to a file stat; the slow operation (`git diff`
+              # against merge-base, prediction) lives inside the tracked
+              # async job (`in_flight_touch_set_gate`). The gate echoes the
+              # cached files for this head when available, or `[]` while a
+              # relaunch runs.
+              if [[ -n "$_ai_head" && -d "$_ai_sd" ]]; then
+                _ai_files="$(in_flight_touch_set_gate "$_ai" "$_ai_sd" "$_ai_wt" "$_ai_head" "$_ai_base" "$_ai_phase" "$_ai_sd" 2>/dev/null || echo '[]')"
+                [[ -n "$_ai_files" ]] || _ai_files="[]"
+              fi
+            fi
             if [[ -n "$_ai_pr" && "$_ai_pr" != "null" ]]; then
-              _in_flight_rows+="$(jq -cn --arg id "$_ai" --argjson pr "$_ai_pr" '{id:$id, prNumber:$pr}')"$'\n'
+              _in_flight_rows+="$(jq -cn --arg id "$_ai" --argjson pr "$_ai_pr" --argjson files "$_ai_files" \
+                '{id:$id, prNumber:$pr, files:$files}')"$'\n'
             else
-              _in_flight_rows+="$(jq -cn --arg id "$_ai" '{id:$id}')"$'\n'
+              _in_flight_rows+="$(jq -cn --arg id "$_ai" --argjson files "$_ai_files" \
+                '{id:$id, files:$files}')"$'\n'
             fi
           done
           if [[ -n "$_in_flight_rows" ]]; then
             _in_flight_json="$(printf '%s' "$_in_flight_rows" | jq -s '.' 2>/dev/null || echo '[]')"
           fi
+          # HOK-3306: thread the in-flight payload into plan-queue.ts via an
+          # env var so run_queue_planner_with_policy's eval'd command picks it
+          # up without a new positional argument.
+          if [[ "$_in_flight_json" != "[]" ]]; then
+            _in_flight_file="$(mktemp -t wavemill-in-flight.XXXXXX.json 2>/dev/null || true)"
+            if [[ -n "$_in_flight_file" ]]; then
+              printf '%s' "$_in_flight_json" > "$_in_flight_file" 2>/dev/null || _in_flight_file=""
+            fi
+          fi
+          export WAVEMILL_IN_FLIGHT_FILE="${_in_flight_file:-}"
 
           # Check queue-health backoff before attempting planner
           queue_health_init 2>/dev/null || true
@@ -23958,6 +24008,9 @@ while :; do
           display_fingerprint="${free_slots}|${avail_unblocked}|${avail_blocked_count}|${queue_fp}|${_backlog_budget}|${_backlog_expanded}|${_deps_expanded}"
           rm -f "$queue_plan_diag_file"
           FETCH_QUEUE_PLAN_DIAGNOSTICS_FILE="$queue_plan_diag_previous"
+          # HOK-3306: in-flight temp file lives only as long as this pass.
+          [[ -n "${_in_flight_file:-}" ]] && rm -f "$_in_flight_file"
+          unset WAVEMILL_IN_FLIGHT_FILE
 
           # HOK-3305: when the picker rendered, its own output includes the
           # "Next tasks:" header; otherwise fall back to the flat list with a

@@ -63,6 +63,25 @@ This is a one-shot statement, not a running commentary.
 - [ ] No regressions in existing functionality
 - [ ] Completion marker created at {{FEATURE_DIR}}/.coding-complete, containing valid JSON with `"stage":"coding"` and `"confidence":"high|medium|low"`
 
+### Mill-Core Definition of Done (Golden Journeys)
+
+If your change touches mill-core paths — the plan → code → review → ready →
+tend merge → reap chain (`shared/lib/wavemill-*.sh`, `agent-adapters.sh`,
+`condition-reconciler.sh`, `monitor-async-jobs.sh`, `bounded-retry.*`,
+`task-progress.*`, `shared/lib/tend-*.ts`, `ready-*.ts`, `merge-labels.ts`,
+`workflow-state*.ts`, `shared/hooks/`, `tools/tend.ts`, `tools/ready.ts`,
+`tests/journeys/`, `tests/fakes/`; the full list is the `journeys` path filter
+in `.github/workflows/ci.yml`):
+- The PR must pass the journey job (the required **Golden Journeys** CI check).
+  Run the journeys your change can affect with
+  `bash tests/journeys/run-journeys.sh <name>` (one bounded call each).
+- A fix for an incident on that chain — or for a class a journey already
+  covers (challenge pairs, Ready fail → remediate, dirty-tree
+  `.coding-complete`, post-merge eval + reap, agent idle on its own background
+  job, operator abort) — must add a new journey or extend the covering one in
+  `tests/journeys/`, using the shared fakes (`tests/fakes/lib.sh`), never a
+  private stub.
+
 ### Important Notes
 - Follow the plan - don't deviate without good reason
 - If you need to change the approach, document why in commit messages

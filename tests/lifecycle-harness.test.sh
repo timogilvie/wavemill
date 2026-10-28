@@ -29,6 +29,13 @@ set -euo pipefail
 #
 # Run standalone:
 #   bash tests/lifecycle-harness.test.sh
+#
+# End-to-end chains belong in the golden journeys (tests/journeys/), not here
+# (HOK-3228). Retired in favour of a journey: the plan → coding two-tick
+# handoff (happy-path, inputs-ready-before-approval) and the exited-agent
+# dirty-tree relaunch plus the committed-and-dirty hold
+# (dirty-tree-coding-complete; tests/coding-dirty-handoff.test.sh keeps the
+# exhaustion and live-agent hold branches).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -699,28 +706,6 @@ harness_run_tick() {
     printf "log_output=%s\n" "$(printf "%s" "$LOG_OUTPUT" | tr "\n" "|")"
     printf "warn_output=%s\n" "$(printf "%s" "$WARN_OUTPUT" | tr "\n" "|")"
   '
-}
-
-test_positive_handoff_two_ticks() {
-  local slug="planning-approval-positive"
-  local issue="HOK-1293-POS"
-  local repo tick1 tick2
-  repo="$(harness_init_repo "$slug")"
-  harness_setup_planning_state "$repo" "$slug" "awaiting_user"
-  harness_setup_runtime_artifacts "$repo"
-
-  tick1="$(harness_run_tick "$repo" "$slug" "$issue")"
-  check_eq "tick 1: planning transitions to completed" "completed" "$(harness_read_stage_status "$repo" "$slug" planning)"
-  check_file_exists "tick 1: .plan-approved preserved" "$repo/features/$slug/.plan-approved"
-  check_eq "tick 1: no coding launch yet" "false" "$(kv_value "$tick1" coding_launched)"
-  check_eq "tick 1: no source-overreach warning" "" "$(kv_value "$tick1" warn_output)"
-
-  tick2="$(harness_run_tick "$repo" "$slug" "$issue")"
-  check_eq "tick 2: controller phase becomes coding" "coding" "$(kv_value "$tick2" phase)"
-  check_eq "tick 2: coding stage becomes running" "running" "$(harness_read_stage_status "$repo" "$slug" coding)"
-  check_eq "tick 2: coding launch stub invoked" "true" "$(kv_value "$tick2" coding_launched)"
-  check_file_exists "tick 2: .plan-approved still preserved" "$repo/features/$slug/.plan-approved"
-  check_eq "tick 2: no source-overreach warning" "" "$(kv_value "$tick2" warn_output)"
 }
 
 test_source_edit_blocks_handoff() {
@@ -2448,43 +2433,6 @@ test_coding_complete_dirty_worktree_without_commits_needs_attention() {
   check_file_exists "uncommitted output: dedupe marker written" "$feature_dir/.coding-uncommitted-output-announced"
 }
 
-# HOK-3128: once the coding agent has exited, a dirty-tree handoff is relaunched
-# once (bounded-retry bucket coding-dirty-handoff) and then terminalized; a
-# primary stays needs-user with a recorded sentinel.
-test_coding_complete_dirty_tree_agent_exited_relaunches_then_terminalizes() {
-  local slug="coding-complete-dirty-agent-exited"
-  local issue="HOK-3128-EXITED"
-  local repo tick1 tick2 feature_dir setup
-  repo="$(harness_init_repo "$slug")"
-  harness_setup_runtime_artifacts "$repo"
-  harness_setup_coding_state "$repo" "$slug" "running"
-  feature_dir="$repo/features/$slug"
-
-  printf '{"stage":"coding","confidence":"high"}\n' > "$feature_dir/.coding-complete"
-  printf 'uncommitted edit\n' >> "$repo/README.md"
-
-  setup='CURRENT_PHASE="coding"
-task_progress_json() { printf "%s\n" "{\"agentIdle\":true,\"agentState\":null,\"blockingPrompt\":null,\"agentRecord\":{\"state\":\"idle\",\"event\":\"process_exit\",\"timestamp\":1},\"progressAgeMinutes\":90}"; }
-agent_validate_phase_launch() { return 0; }
-_prepare_recovery_phase_launch() { return 0; }'
-
-  tick1="$(harness_run_tick "$repo" "$slug" "$issue" "$setup")"
-  check_eq "agent exited: tick 1 relaunches coding" "true" "$(kv_value "$tick1" coding_launched)"
-  check_eq "agent exited: tick 1 keeps the task active" "1" "$(kv_value "$tick1" active_count)"
-  check_eq "agent exited: tick 1 clears attention" "clear" "$(kv_value "$tick1" attention)"
-  check_contains "agent exited: tick 1 logs the relaunch" "$(kv_value "$tick1" log_output)" "coding-dirty-handoff relaunch"
-  check_file_exists "agent exited: recovery instruction written" "$feature_dir/.coding-recovery-instruction.md"
-  check_not_contains "agent exited: review does not launch" "$(kv_value "$tick1" log_output)" "Launching review phase"
-
-  printf '{"stage":"coding","confidence":"high"}\n' > "$feature_dir/.coding-complete"
-  tick2="$(harness_run_tick "$repo" "$slug" "$issue" "$setup")"
-  check_eq "agent exited: tick 2 does not relaunch again" "false" "$(kv_value "$tick2" coding_launched)"
-  check_eq "agent exited: primary stays needs-user" "needs-user" "$(kv_value "$tick2" attention)"
-  check_eq "agent exited: phase stays coding" "coding" "$(kv_value "$tick2" phase)"
-  check_file_exists "agent exited: exhaustion sentinel recorded" "$feature_dir/.retry-coding-dirty-handoff-exhausted"
-  check_contains "agent exited: sentinel names the reason" "$(cat "$feature_dir/.retry-coding-dirty-handoff-exhausted" 2>/dev/null)" "dirty-handoff relaunch exhausted after 1 attempt(s)"
-}
-
 test_coding_complete_uncommitted_output_dedupes_stable_condition() {
   local slug="coding-complete-uncommitted-output-dedupe"
   local issue="HOK-2405-DEDUP"
@@ -2654,34 +2602,6 @@ test_write_coding_uncommitted_output_artifact_idempotent() {
   write_coding_uncommitted_output_artifact "HOK-2405-DIRECT" "$feature_dir" "main" "0" "0" "$dirty_paths" "summary" "action" "coding_output_not_committed"
   check_ne "direct idempotent: corrupt artifact is replaced" "$healed_mtime" "$(harness_file_mtime_epoch "$artifact")"
   check_eq "direct idempotent: corrupt artifact heals to valid json" "coding_output_not_committed" "$(jq -r '.reason' "$artifact")"
-}
-
-test_coding_complete_dirty_worktree_with_commits_needs_attention() {
-  local slug="coding-complete-dirty-tree"
-  local issue="HOK-2345-DIRTY"
-  local repo tick feature_dir
-  repo="$(harness_init_repo "$slug")"
-  harness_setup_runtime_artifacts "$repo"
-  harness_setup_coding_state "$repo" "$slug" "running"
-  feature_dir="$repo/features/$slug"
-
-  printf 'committed change\n' >> "$repo/README.md"
-  git -C "$repo" add README.md
-  git -C "$repo" commit -m "feat: committed coding output" >/dev/null 2>&1
-
-  printf '{"stage":"coding","confidence":"high"}\n' > "$feature_dir/.coding-complete"
-  printf 'still dirty\n' >> "$repo/src-dirty.ts"
-
-  tick="$(harness_run_tick "$repo" "$slug" "$issue" 'CURRENT_PHASE="coding"')"
-
-  check_eq "dirty tree: phase stays coding" "coding" "$(kv_value "$tick" phase)"
-  check_eq "dirty tree: coding stage stays running" "running" "$(harness_read_stage_status "$repo" "$slug" coding)"
-  check_eq "dirty tree: needs-user attention set" "needs-user" "$(kv_value "$tick" attention)"
-  check_eq "dirty tree: task remains active" "1" "$(kv_value "$tick" active_count)"
-  check_not_contains "dirty tree: review does not launch" "$(kv_value "$tick" log_output)" "Launching review phase"
-  check_contains "dirty tree: actionable log emitted" "$(kv_value "$tick" log_output)" "worktree still contains uncommitted coding output"
-  check_file_exists "dirty tree: artifact written" "$feature_dir/.coding-uncommitted-output.json"
-  check_file_exists "dirty tree: dedupe marker written" "$feature_dir/.coding-uncommitted-output-announced"
 }
 
 test_coding_complete_trace_only_dirty_worktree_advances() {
@@ -4113,7 +4033,6 @@ test_terminal_cleanup_queue_owned_closed_unmerged_preserves_unsafe_work() {
 echo "=== Mill Lifecycle: Planning to Coding Handoff ==="
 harness_extract_real_functions
 
-test_positive_handoff_two_ticks
 test_source_edit_blocks_handoff
 test_regression_without_wavemill_allowance
 test_mixed_artifacts_source_edit_wins
@@ -4157,13 +4076,11 @@ test_coding_blocked_completion_dedupes_same_artifact
 test_coding_blocked_completion_reannounces_on_mtime_change
 test_coding_complete_wins_over_blocked_completion
 test_coding_complete_dirty_worktree_without_commits_needs_attention
-test_coding_complete_dirty_tree_agent_exited_relaunches_then_terminalizes
 test_coding_complete_uncommitted_output_dedupes_stable_condition
 test_coding_complete_uncommitted_output_reannounces_on_dirty_path_change
 test_coding_complete_uncommitted_output_reannounces_on_ahead_count_change
 test_coding_complete_uncommitted_output_resolves_to_jsonl_log
 test_write_coding_uncommitted_output_artifact_idempotent
-test_coding_complete_dirty_worktree_with_commits_needs_attention
 test_coding_complete_trace_only_dirty_worktree_advances
 test_coding_complete_tracked_claude_settings_advances
 test_coding_complete_trace_and_source_dirty_worktree_needs_attention
