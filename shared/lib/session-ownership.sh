@@ -128,13 +128,18 @@ session_ownership_launch_snippet() {
 source $q_lib
 WM_SESSION_REF="\$(session_ownership_new_ref)"
 WM_LAUNCH_NONCE_LINE=""
-if [[ $q_harness == codex ]]; then
-  WM_LAUNCH_NONCE_LINE="<!-- wavemill-launch-nonce: \$WM_SESSION_REF -->"
-  WM_SESSION_REF="pending:\$WM_SESSION_REF"
-fi
-if [[ -n $q_dir ]]; then
-  session_ownership_append $q_dir "\$WM_SESSION_REF" $q_harness $q_kind $q_model "" "\$PWD" \\
-    || echo "[wavemill] warning: session ownership row not recorded" >&2
-fi
+SNIPPET
+  # Codex picks its own thread id: record pending:<nonce> and put the nonce in
+  # the prompt so codex-rollout-resolver.ts can prove which rollout it was.
+  if [[ "$harness" == "codex" ]]; then
+    cat <<'SNIPPET'
+WM_LAUNCH_NONCE_LINE="<!-- wavemill-launch-nonce: $WM_SESSION_REF -->"
+WM_SESSION_REF="pending:$WM_SESSION_REF"
+SNIPPET
+  fi
+  [[ -n "$state_dir" ]] || return 0
+  cat <<SNIPPET
+session_ownership_append $q_dir "\$WM_SESSION_REF" $q_harness $q_kind $q_model "" "\$PWD" \\
+  || echo "[wavemill] warning: session ownership row not recorded" >&2
 SNIPPET
 }
