@@ -502,8 +502,14 @@ async function invokeLLMWithRetry(
   maxRetries: number,
   cli: ReviewCliCall,
   adapter: TransportAdapter,
+  featureDir?: string,
 ): Promise<ReviewLLMResponse> {
-  const adapterResult = await adapter.invoke(prompt, { timeout, maxRetries });
+  const adapterResult = await adapter.invoke(prompt, {
+    timeout,
+    maxRetries,
+    // HOK-3328: the review's CLI call is a helper of the task, never a stage session.
+    ...(featureDir ? { ownership: { featureDir, helperPurpose: 'json-code-review' } } : {}),
+  });
   if (adapterResult.error) {
     if (adapterResult.error.kind === 'context-exceeded' || adapterResult.error.kind === 'input-too-large') {
       throw new ReviewCliContextWindowExceededError(adapterResult.error.message);
@@ -806,7 +812,7 @@ async function runReviewWithRetry(
 ): Promise<ReviewResult> {
   const maxAttempts = 2;
 
-  const response = await invokeLLMWithRetry(prompt, model, timeout, maxRetries, cli, adapter);
+  const response = await invokeLLMWithRetry(prompt, model, timeout, maxRetries, cli, adapter, options.featureDir);
   const responseText = response.text;
 
   // Show raw response in verbose mode

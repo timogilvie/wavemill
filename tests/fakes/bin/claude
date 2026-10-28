@@ -44,7 +44,29 @@ SLUG="${WAVEMILL_SLUG:-$(basename "$WT")}"
 FEATURE_DIR="$WT/features/$SLUG"
 BASE_BRANCH="${FAKE_AGENT_BASE_BRANCH:-${WAVEMILL_BASE_BRANCH:-main}}"
 mkdir -p "$FEATURE_DIR"
-printf '%s phase=%s issue=%s wt=%s\n' "$(date -u +%FT%TZ)" "$WAVEMILL_PHASE" "$WAVEMILL_ISSUE" "$WT" >> "$FAKE_AGENT_LOG"
+
+# The launcher pins the session id (HOK-3328 session ownership). Like the real
+# CLI, write this session's transcript under $HOME/.claude/projects/<cwd>/
+# with one deterministic assistant turn (FAKE_AGENT_OUTPUT_TOKENS output
+# tokens of claude-opus-4-7), so a journey can meter it with @hokusai/costs.
+FAKE_SESSION_ID=""
+for ((i = 1; i < $#; i++)); do
+  if [[ "${!i}" == "--session-id" ]]; then
+    j=$((i + 1))
+    FAKE_SESSION_ID="${!j}"
+  fi
+done
+if [[ -n "$FAKE_SESSION_ID" ]]; then
+  projects_dir="$(cd "$FAKE_AGENT_TOOLS_DIR/.." && node --import tsx --input-type=module -e \
+    "const m = await import('./shared/lib/wavemill-session-paths.ts'); process.stdout.write(m.resolveProjectsDir(process.argv[1]));" "$WT")"
+  mkdir -p "$projects_dir"
+  jq -cn --arg sid "$FAKE_SESSION_ID" --arg ts "$(date -u +%FT%TZ)" --argjson out "${FAKE_AGENT_OUTPUT_TOKENS:-100}" \
+    '{type:"assistant", sessionId:$sid, uuid:($sid + "-u1"), timestamp:$ts,
+      message:{id:($sid + "-m1"), model:"claude-opus-4-7",
+        usage:{input_tokens:1000, output_tokens:$out, cache_read_input_tokens:0, cache_creation_input_tokens:0}}}' \
+    >> "$projects_dir/$FAKE_SESSION_ID.jsonl"
+fi
+printf '%s phase=%s issue=%s wt=%s session=%s\n' "$(date -u +%FT%TZ)" "$WAVEMILL_PHASE" "$WAVEMILL_ISSUE" "$WT" "$FAKE_SESSION_ID" >> "$FAKE_AGENT_LOG"
 
 run_tool() {
   # tsx resolves from the wavemill install, not the milled worktree.

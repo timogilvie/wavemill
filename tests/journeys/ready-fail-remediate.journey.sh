@@ -3,6 +3,10 @@
 # one Ready remediation carrying the failure, the fix commit turns CI green,
 # and the task merges with no operator touch.
 #
+# Also protects (HOK-3328): a launch path that starts a session without an
+# ownership row, a Ready remediation recorded as coding, and workflow cost
+# drifting from the @hokusai/costs total over the owned sessions.
+#
 # Protects against: the Ready failure → remediation → re-check chain breaking
 # across module boundaries — a red check not classified as actionable (the
 # task parks at needs-user instead of remediating), the remediation budget
@@ -121,5 +125,6 @@ journey_assert "the red head never merged (merge commit carries the fix)" \
 journey_assert "the PR merged at a head other than the red one" \
   bash -c '[[ -n "$1" && "$(jq -r ".prs[\"1\"].headRefOid // empty" "$2")" != "$1" ]]' _ "$RED_HEAD" "$FAKE_GH_STATE"
 journey_assert_landed "$ISSUE"
+journey_assert_session_ownership "$ISSUE" planning coding review ready-remediation
 
 journey_finish

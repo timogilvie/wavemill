@@ -141,6 +141,7 @@ export class CodexCliAdapter implements TransportAdapter {
         cwd: opts.cwd,
         retry: (opts.maxRetries ?? 0) > 0,
         maxRetries: opts.maxRetries,
+        ...(opts.ownership ? { featureDir: opts.ownership.featureDir, helperPurpose: opts.ownership.helperPurpose } : {}),
         ...(this.failClosed ? { fallbackModels: [] } : { taskType: 'review' as const }),
       });
       const invokeResult: AdapterInvokeResult = {

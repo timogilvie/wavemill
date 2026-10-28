@@ -165,6 +165,9 @@ agent_launch_interactive "sess" "@98" "$REMEDIATION_PROMPT" "native-openrouter" 
 check_contains "explicit phase drives the native remediation launcher" "$(cat "$REMEDIATION_LAUNCHER")" "export WAVEMILL_PHASE='coding'"
 check_contains "prompt-driven native coding passes the remediation prompt" "$(cat "$REMEDIATION_LAUNCHER")" "--prompt-file '$REMEDIATION_PROMPT'"
 check_contains "prompt-driven native remediation uses the coding launcher" "$(cat "$REMEDIATION_LAUNCHER")" "tools/launch-native-coding.ts"
+WAVEMILL_FEATURE_DIR="$TMPDIR_TEST/repo/features/demo" WAVEMILL_FEATURE_SLUG="demo" WAVEMILL_SESSION_KIND="conflict-resolution" REPO_DIR="$REPO_DIR" \
+agent_launch_interactive "sess" "@98" "$REMEDIATION_PROMPT" "native-openrouter" "kimi-k2.7-code" "" "" "HOK-3272_c" "coding" "true"
+check_contains "native remediation launcher hands its kind to the native ownership row (HOK-3328)" "$(cat "$REMEDIATION_LAUNCHER")" "export WAVEMILL_SESSION_KIND='conflict-resolution'"
 rm -f "$INTERACTIVE_CODING_PROMPT" "$INTERACTIVE_CODING_LAUNCHER" "$REMEDIATION_PROMPT" "$REMEDIATION_LAUNCHER"
 
 TMUX_LOG="$TMPDIR_TEST/tmux-review.log"
@@ -213,6 +216,65 @@ check_contains "tmux id coding prompt dispatches codex launcher" "$(cat "$TMUX_L
 check_contains "coding launcher normalizes phase from prompt" "$(cat "$CODING_LAUNCHER")" "export WAVEMILL_PHASE='coding'"
 check_contains "coding launcher uses effective coder route" "$(cat "$CODING_LAUNCHER")" "codex exec --model gpt-5.6-terra"
 check_not_contains "coding launcher does not execute native provider" "$(cat "$CODING_LAUNCHER")" "native-openrouter --model"
+
+# HOK-3328: a launcher records its session in the task's ownership record
+# before the harness starts. Run the generated launchers against fake CLIs
+# and check the row they wrote names the session the CLI was started with.
+OWN_DIR="$TMPDIR_TEST/own-repo/features/own"
+OWN_BIN="$TMPDIR_TEST/own-bin"
+mkdir -p "$OWN_DIR" "$OWN_BIN"
+cat > "$OWN_BIN/codex" <<'FAKE'
+#!/usr/bin/env bash
+cat > "$OWN_PROMPT_LOG"
+FAKE
+cat > "$OWN_BIN/claude" <<'FAKE'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '%s\n' "$*" > "$OWN_ARGV_LOG"
+FAKE
+chmod +x "$OWN_BIN/codex" "$OWN_BIN/claude"
+
+TMUX_LOG="$TMPDIR_TEST/tmux-own-codex.log"
+OWN_CODEX_LAUNCHER="/tmp/sess-HOK-3328-autonomous-launcher.sh"
+printf 'implement it\n' > "$TMPDIR_TEST/own-instr.txt"
+rm -f "$OWN_CODEX_LAUNCHER"
+WAVEMILL_FEATURE_DIR="$OWN_DIR" REPO_DIR="$REPO_DIR" \
+agent_launch_autonomous "sess" "coding" "$TMPDIR_TEST/own-instr.txt" "codex" "gpt-5.6-terra" "HOK-3328"
+OWN_PROMPT_LOG="$TMPDIR_TEST/own-codex-prompt.txt" PATH="$OWN_BIN:$PATH" bash "$OWN_CODEX_LAUNCHER" >/dev/null 2>&1 || true
+own_codex_ref="$(jq -r 'select(.type == "launch") | .sessionRef' "$OWN_DIR/.session-ownership.jsonl" 2>/dev/null | tail -1)"
+own_codex_kind="$(jq -r 'select(.type == "launch") | .kind' "$OWN_DIR/.session-ownership.jsonl" 2>/dev/null | tail -1)"
+check_contains "codex launch records a pending ownership row" "$own_codex_ref" "pending:"
+check_contains "codex launch row is a coding launch" "$own_codex_kind" "coding"
+check_contains "codex prompt carries the row's launch nonce" "$(cat "$TMPDIR_TEST/own-codex-prompt.txt" 2>/dev/null)" "wavemill-launch-nonce: ${own_codex_ref#pending:}"
+check_contains "codex prompt still carries the instructions" "$(cat "$TMPDIR_TEST/own-codex-prompt.txt" 2>/dev/null)" "implement it"
+
+TMUX_LOG="$TMPDIR_TEST/tmux-own-claude.log"
+OWN_CLAUDE_LAUNCHER="/tmp/sess-HOK-3329-autonomous-launcher.sh"
+rm -f "$OWN_CLAUDE_LAUNCHER"
+agent_resolve_from_model() { printf '%s\n' "claude"; }
+WAVEMILL_FEATURE_DIR="$OWN_DIR" WAVEMILL_SESSION_KIND="ready-remediation" REPO_DIR="$REPO_DIR" \
+agent_launch_autonomous "sess" "coding" "$TMPDIR_TEST/own-instr.txt" "claude" "claude-opus-4-7" "HOK-3329"
+for _ in 1 2; do
+  OWN_ARGV_LOG="$TMPDIR_TEST/own-claude-argv.txt" PATH="$OWN_BIN:$PATH" bash "$OWN_CLAUDE_LAUNCHER" >/dev/null 2>&1 || true
+done
+own_claude_refs="$(jq -r 'select(.type == "launch" and .harness == "claude-code") | .sessionRef' "$OWN_DIR/.session-ownership.jsonl" 2>/dev/null)"
+own_claude_last="$(tail -1 <<<"$own_claude_refs")"
+check_contains "claude launch passes the recorded --session-id" "$(cat "$TMPDIR_TEST/own-claude-argv.txt" 2>/dev/null)" "--session-id $own_claude_last"
+if [[ "$(wc -l <<<"$own_claude_refs" | tr -d ' ')" == "2" && "$(sort -u <<<"$own_claude_refs" | wc -l | tr -d ' ')" == "2" ]]; then
+  pass "each claude relaunch records its own fresh session id"
+else
+  fail "each claude relaunch records its own fresh session id (refs: $own_claude_refs)"
+fi
+check_contains "remediation kind reaches the claude launch row" \
+  "$(jq -r 'select(.harness == "claude-code") | .kind' "$OWN_DIR/.session-ownership.jsonl" | sort -u)" "ready-remediation"
+rm -f "$OWN_CODEX_LAUNCHER" "$OWN_CLAUDE_LAUNCHER"
+agent_resolve_from_model() {
+  if [[ "$1" == "gpt-5.6-terra" ]]; then
+    printf '%s\n' "codex"
+  else
+    printf '%s\n' "native-openrouter"
+  fi
+}
 
 BAD_NATIVE_LAUNCHER="/tmp/sess-HOK-2517-autonomous-launcher.sh"
 rm -f "$BAD_NATIVE_LAUNCHER"

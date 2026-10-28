@@ -472,6 +472,7 @@ TESTS=(
   shared/lib/sdk-task-cost/meter.test.ts
   shared/lib/sdk-task-cost/recompute.test.ts
   shared/lib/session-ownership.test.ts
+  shared/lib/llm-cli-ownership.test.ts
   shared/lib/codex-rollout-resolver.test.ts
   shared/lib/pricing/model-pricing.test.ts
   shared/lib/pricing/openrouter-exact-pricing.test.ts

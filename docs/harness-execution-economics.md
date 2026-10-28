@@ -17,6 +17,8 @@ behavior, and the record is **local-only** (excluded from Hokusai submissions).
 | Contract types + `EXECUTION_ECONOMICS_SCHEMA_VERSION` | `shared/lib/eval-schema.ts` / `$defs` in `shared/lib/eval-schema.json` |
 | Parsing (per-session/turn detail) | `ClaudeSessionAdapter` / `CodexSessionAdapter` in `shared/lib/session-adapters.ts` (`SessionUsageResult.externalSessions`) |
 | Normalization + joins | `shared/lib/execution-economics.ts` |
+| Session ownership (stage labels, cost scope) | `shared/lib/session-ownership.ts` / `session-ownership.sh` (`<state_dir>/.session-ownership.jsonl`, HOK-3328) |
+| Per-session cost | `@hokusai/costs` report per owned session (`sdk-task-cost/meter.ts` `sessionCosts`) |
 | Persistence | `executionEconomics` on the eval record (`evals.jsonl`), attached via `attachExecutionEconomics` in `shared/lib/eval-record-builder.ts` |
 | Collection | fail-soft collectors in `shared/lib/post-completion-hook.ts` and `shared/lib/eval-orchestrator.ts` |
 | Corpus-quality report | `npx tsx tools/execution-economics-report.ts [--json]` |
@@ -79,28 +81,41 @@ Missing fields are **availability diagnostics, never parser failures**:
   **never a fabricated `0`**. A literal zero cost appears only as `known_zero`,
   which requires explicit zero pricing for every model involved.
 
-## Join semantics and confidence tiers
+## Launch ownership (HOK-3328)
 
-1. **`branch_worktree`** (discovery): sessions are selected by `gitBranch` /
-   `cwd` match; the block's `joinEvidence` records the issue and branch.
-2. **`timestamp_window`** (stage attribution): a session whose timestamps
-   overlap exactly one `.{stage}-result.json` window gets that `stageRole`;
-   route intent (`routing.jsonl` requested/resolved per role) is joined only
-   for attributed sessions.
-3. **`unattributed`**: zero or ambiguous window overlaps. The session is still
-   persisted, with evidence describing the ambiguity.
+Which sessions belong to a task, and under which kind of work, is recorded
+once — by the launcher, before the child starts — in
+`<state_dir>/.session-ownership.jsonl` (archived with the task under the same
+name). Each row is `{sessionRef, harness, kind, stage?, model, launchedAt,
+attemptId}`; `kind` is `planning | coding | review | ready-remediation |
+conflict-resolution | ci-fix | native-arm | helper:<purpose>`.
+
+1. **`launch_record`**: the session is named by a launch row. `stageRole.value`
+   is the row's stage (`null` for helpers and remediation), `stageRole.kind`
+   is the row's kind, and route intent (`routing.jsonl` requested/resolved per
+   role) is joined only for stage sessions.
+2. **`unowned`**: a session found in the worktree that no launch recorded
+   (operator-typed work). It is persisted as `kind: operator` and excluded from
+   task cost.
+
+The block-level `joinEvidence` (issue, branch) still records how the harness
+transcripts were located. Records written before HOK-3328 keep their
+`timestamp_window` / `unattributed` labels; nothing new is labelled by
+timestamp overlap.
 
 When the resolved route model was never observed executing, the disagreement is
 recorded in `models.conflict` (`{otherSource, otherResolvedModel, detail}`,
-mirroring `ExecutedIdentity.conflict`) — both values stay visible, and
-first-party stage evidence outranks route intent in the conflict detail. No
-causal or off-policy claim may be made from this telemetry alone.
+mirroring `ExecutedIdentity.conflict`) — both values stay visible, and the
+launch row's model outranks route intent in the conflict detail. No causal or
+off-policy claim may be made from this telemetry alone.
 
 ## Stage-result execution evidence
 
 Completed Claude Code and Codex planning/coding/review stage results also use
 the normalized session/turn telemetry above to populate `executedModel`.
-`write_stage_result` resolves turns inside the stage window and passes direct
+`write_stage_result` resolves the turns of the sessions the ownership record
+names for that stage (`resolveExecutedModelFromSessions`, HOK-3328 — a helper
+call that ran while the stage was open never counts) and passes direct
 evidence to `stage-result-cli.ts`; the persisted `executionEvidence.source` is
 `claude-session` or `codex-session`.
 
@@ -123,14 +138,14 @@ contribution schema and privacy audit explicitly allow it.
 
 ## Workflow-cost interaction
 
-Workflow cost (the SDK engine since HOK-3077) for Claude/Codex always emits
-`attribution`; unpriced models carry no `costUsd` in attribution rows
-(`coverage: partial` whenever usage was observed but not fully priced) while the legacy
+Workflow cost is `@hokusai/costs` over the task's owned sessions (HOK-3328):
+`workflowCost` is the report's cross-harness `totalUsd`,
+`workflowCostByHarness` its per-harness slices, and each session's
+`actualCostUsd` / `estimatedCostUsd` / `costSource` / `coverage` here is copied
+from the SDK report for that session — this module prices nothing. Unpriced
+models carry no `costUsd` in attribution rows (`coverage: partial` whenever
+usage was observed but not fully priced) while the legacy
 `models[...].costUsd`/`totalCostUsd` numeric view is preserved for old readers.
-When per-session detail exists, `attribution.sessions`/`attribution.turns` are
-real observed records (Codex no longer reports one turn per session there), and
-provider-reported session cost — when a future harness version supplies it — is
-retained as `providerReportedCostUsd` alongside the local estimate.
 
 ## Rollback
 
