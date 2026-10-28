@@ -10,8 +10,18 @@
 # 5. Relaunch from the last durable commit
 #
 # Simulate this by starting work, committing, then exiting before completion.
+# The recovery launch completes through the shared fake's normal coding contract.
+if [[ -f "$FEATURE_DIR/owner-crash-injected" ]]; then
+  default_coding
+  return
+fi
+touch "$FEATURE_DIR/owner-crash-injected"
 printf 'implemented %s\n' "$WAVEMILL_ISSUE" >> journey-output.txt
 git add journey-output.txt
 git -c user.name=fake-agent -c user.email=fake-agent@example.invalid commit -q -m "$WAVEMILL_ISSUE: work in progress"
+# Replay the native launcher's millisecond startedAt, without impersonating a provider.
+result="$FEATURE_DIR/.coding-result.json"
+jq '.startedAt |= sub("Z$"; ".270Z")' "$result" > "$result.tmp"
+mv "$result.tmp" "$result"
 printf 'Made partial commit but exiting before .coding-complete\n'
 exit 143
