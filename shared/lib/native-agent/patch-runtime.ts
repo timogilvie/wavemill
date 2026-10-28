@@ -8,6 +8,7 @@
 
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
+import { countGitTextChanges } from './tools/git.ts';
 
 import type {
   NativePatch,
@@ -136,16 +137,17 @@ export async function applyNativePatch(
     .filter((file) => file.currentDiskText !== file.originalDiskText)
     .sort((left, right) => left.relativePath.localeCompare(right.relativePath));
 
-  await flushStagedFiles(worktreeAbsolute, changedFiles, options.logger);
-
-  const fileChanges = changedFiles.map((file) => {
-    const counts = countLineChanges(file.normalizedOriginalText, file.normalizedCurrentText);
+  const fileChanges = await Promise.all(changedFiles.map(async (file) => {
+    const counts = await countGitTextChanges(file.normalizedOriginalText, file.normalizedCurrentText);
     return {
       path: file.relativePath,
       linesAdded: counts.linesAdded,
       linesRemoved: counts.linesRemoved,
     };
-  });
+  }));
+
+  // Derive all metadata before committing the crash-atomic write transaction.
+  await flushStagedFiles(worktreeAbsolute, changedFiles, options.logger);
 
   return {
     ok: true,
@@ -588,50 +590,6 @@ function joinLines(lines: string[]): string {
     return '';
   }
   return lines.join('\n');
-}
-
-function countLineChanges(originalText: string, updatedText: string): { linesAdded: number; linesRemoved: number } {
-  const originalLines = splitTextIntoLines(originalText);
-  const updatedLines = splitTextIntoLines(updatedText);
-  const lcs = buildLcsTable(originalLines, updatedLines);
-  let i = 0;
-  let j = 0;
-  let linesAdded = 0;
-  let linesRemoved = 0;
-
-  while (i < originalLines.length && j < updatedLines.length) {
-    if (originalLines[i] === updatedLines[j]) {
-      i += 1;
-      j += 1;
-      continue;
-    }
-
-    if (lcs[i + 1]![j] >= lcs[i]![j + 1]) {
-      linesRemoved += 1;
-      i += 1;
-    } else {
-      linesAdded += 1;
-      j += 1;
-    }
-  }
-
-  linesRemoved += originalLines.length - i;
-  linesAdded += updatedLines.length - j;
-  return { linesAdded, linesRemoved };
-}
-
-function buildLcsTable(left: string[], right: string[]): number[][] {
-  const table = Array.from({ length: left.length + 1 }, () => Array<number>(right.length + 1).fill(0));
-
-  for (let i = left.length - 1; i >= 0; i -= 1) {
-    for (let j = right.length - 1; j >= 0; j -= 1) {
-      table[i]![j] = left[i] === right[j]
-        ? table[i + 1]![j + 1]! + 1
-        : Math.max(table[i + 1]![j]!, table[i]![j + 1]!);
-    }
-  }
-
-  return table;
 }
 
 function containsLineSequence(lines: string[], sequence: string[]): boolean {

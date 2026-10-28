@@ -4771,8 +4771,7 @@ coding_stage_owner_lost() {
   [[ -f "$feature_dir/.coding-result.json" ]] || return 1
   started_at="$(jq -r '.startedAt // empty' "$feature_dir/.coding-result.json" 2>/dev/null || true)"
   [[ -n "$started_at" ]] || return 1
-  started_epoch="$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null \
-    || date -u -d "$started_at" +%s 2>/dev/null || true)"
+  started_epoch="$(wavemill_iso8601_to_epoch "$started_at" 2>/dev/null || true)"
   [[ "$started_epoch" =~ ^[0-9]+$ ]] || return 1
   now_epoch="$(date +%s)"
   (( now_epoch - started_epoch >= grace )) || return 1
@@ -5093,8 +5092,7 @@ coding_stage_stalled() {
   local started_at started_epoch now_epoch
   started_at="$(jq -r '.startedAt // empty' "$feature_dir/.coding-result.json" 2>/dev/null || true)"
   [[ -n "$started_at" ]] || return 1
-  started_epoch="$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null \
-    || date -u -d "$started_at" +%s 2>/dev/null || true)"
+  started_epoch="$(wavemill_iso8601_to_epoch "$started_at" 2>/dev/null || true)"
   [[ "$started_epoch" =~ ^[0-9]+$ ]] || return 1
   now_epoch="$(date +%s)"
   local owner_grace="${WAVEMILL_CODING_OWNER_GRACE_SECONDS:-300}"

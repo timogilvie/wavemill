@@ -215,6 +215,30 @@ describe('launchNativeCoding', () => {
     assert.match(prompt, /recovery_mode_denied/);
   });
 
+  // protects: native coding must actually supply the loop budget instead of leaving it opt-in.
+  it('bounds a coding response containing thousands of invalid patches', async () => {
+    const { repoDir, featureDir, slug } = makeRepo();
+    const model = scriptedModel([{
+      content: Array.from({ length: 3260 }, (_, i) => ({
+        type: 'tool_call' as const, id: `invalid-${i}`, name: 'apply_patch', arguments: {},
+      })),
+      stopReason: 'tool_calls',
+    }], 'oversized-coding-batch');
+    await assert.rejects(() => launchNativeCoding({
+      session: 'sess', issue: 'HOK-3304', slug, wtDir: repoDir, repoDir, loopModelOverride: model,
+    }));
+    const stage = await readStageResult(featureDir, 'coding');
+    assert.equal(stage?.status, 'failed');
+    const handoff = await readCodingFailureHandoff(getCodingFailureHandoffPath(featureDir));
+    assert.equal(handoff.ok, true);
+    if (handoff.ok) {
+      assert.equal(handoff.value.stopReason, 'tool_call_limit');
+      assert.equal(handoff.value.mutationFailures, 0);
+    }
+    assert.equal(readFileSync(join(repoDir, 'src/app.ts'), 'utf8'), "export const message = 'before';\n");
+    assert.ok(!existsSync(join(featureDir, '.coding-complete')));
+  });
+
   it('runs a scripted native coding loop, commits a scoped patch, and records completion', async () => {
     const { repoDir, featureDir, slug } = makeRepo();
     const model = scriptedModel([
