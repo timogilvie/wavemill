@@ -25,6 +25,12 @@
           "turns": 1,
           "unpricedSessions": 1
         },
+        "byHarness": {
+          "claude-code": null
+        },
+        "byKind": {
+          "coding": null
+        },
         "models": {
           "unknown": {
             "cacheCreationTokens": 0,
@@ -68,6 +74,12 @@
           "source": "claude",
           "turns": 1,
           "unpricedSessions": 1
+        },
+        "byHarness": {
+          "claude-code": null
+        },
+        "byKind": {
+          "coding": null
         },
         "models": {
           "unknown": {
@@ -113,6 +125,12 @@
           "turns": 1,
           "unpricedSessions": 1
         },
+        "byHarness": {
+          "claude-code": null
+        },
+        "byKind": {
+          "coding": null
+        },
         "models": {
           "unknown": {
             "cacheCreationTokens": 2000,
@@ -141,13 +159,13 @@
             {
               "cacheCreationTokens": 0,
               "cacheReadTokens": 0,
-              "inputTokens": 3000,
+              "inputTokens": 1000,
               "modelId": "unknown",
-              "outputTokens": 300,
+              "outputTokens": 100,
               "priced": false,
               "provider": "claude",
               "reason": "unpriced_model",
-              "totalTokens": 3300
+              "totalTokens": 1100
             }
           ],
           "pricedSessions": 0,
@@ -157,13 +175,19 @@
           "turns": 1,
           "unpricedSessions": 1
         },
+        "byHarness": {
+          "claude-code": null
+        },
+        "byKind": {
+          "coding": null
+        },
         "models": {
           "unknown": {
             "cacheCreationTokens": 0,
             "cacheReadTokens": 0,
             "costUsd": 0,
-            "inputTokens": 3000,
-            "outputTokens": 300
+            "inputTokens": 1000,
+            "outputTokens": 100
           }
         },
         "pricingUsed": {},
@@ -200,6 +224,12 @@
           "source": "claude",
           "turns": 1,
           "unpricedSessions": 1
+        },
+        "byHarness": {
+          "claude-code": null
+        },
+        "byKind": {
+          "coding": null
         },
         "models": {
           "unknown": {
@@ -257,6 +287,12 @@
           "turns": 2,
           "unpricedSessions": 1
         },
+        "byHarness": {
+          "claude-code": null
+        },
+        "byKind": {
+          "coding": null
+        },
         "models": {
           "claude-opus-4": {
             "cacheCreationTokens": 0,
@@ -313,6 +349,12 @@
           "turns": 1,
           "unpricedSessions": 1
         },
+        "byHarness": {
+          "claude-code": null
+        },
+        "byKind": {
+          "coding": null
+        },
         "models": {
           "unknown": {
             "cacheCreationTokens": 500,
@@ -336,34 +378,41 @@
     "sync": {
       "outcome": {
         "attribution": {
-          "coverage": "complete",
+          "coverage": "partial",
           "models": [
             {
               "cacheCreationTokens": 0,
               "cacheReadTokens": 2844672,
-              "costUsd": 9.9214746,
-              "inputTokens": 2978251,
+              "costUsd": 1.379284,
+              "inputTokens": 133579,
               "modelId": "codexa-latest",
-              "outputTokens": 8888,
+              "outputTokens": 8343,
               "priced": true,
               "pricingSource": "local_estimate",
               "provider": "codex",
-              "totalTokens": 5831811
+              "totalTokens": 2986594
             }
           ],
           "pricedSessions": 1,
+          "reason": "mixed_coverage",
           "sessions": 1,
           "source": "codex",
           "turns": 1,
           "unpricedSessions": 0
         },
+        "byHarness": {
+          "codex": 1.379284
+        },
+        "byKind": {
+          "coding": 1.379284
+        },
         "models": {
           "codexa-latest": {
             "cacheCreationTokens": 0,
             "cacheReadTokens": 2844672,
-            "costUsd": 9.9214746,
-            "inputTokens": 2978251,
-            "outputTokens": 8888
+            "costUsd": 1.379284,
+            "inputTokens": 133579,
+            "outputTokens": 8343
           }
         },
         "pricingUsed": {
@@ -374,7 +423,7 @@
         },
         "sessionCount": 1,
         "status": "success",
-        "totalCostUsd": 9.9214746,
+        "totalCostUsd": 1.379284,
         "turnCount": 1
       },
       "warnings": []
@@ -406,6 +455,12 @@
           "turns": 1,
           "unpricedSessions": 1
         },
+        "byHarness": {
+          "codex": null
+        },
+        "byKind": {
+          "coding": null
+        },
         "models": {
           "unknown-model": {
             "cacheCreationTokens": 0,
@@ -424,18 +479,95 @@
       "warnings": []
     }
   },
+  "hok-3237-cross-harness": {
+    "caseId": "hok-3237-cross-harness",
+    "sync": {
+      "outcome": {
+        "attribution": {
+          "coverage": "partial",
+          "models": [
+            {
+              "cacheCreationTokens": 0,
+              "cacheReadTokens": 0,
+              "costUsd": 4.93,
+              "inputTokens": 100000,
+              "modelId": "qwen-3-coder",
+              "outputTokens": 20000,
+              "priced": true,
+              "pricingSource": "openrouter_api",
+              "provider": "native",
+              "providerReportedCostUsd": 4.93,
+              "totalTokens": 120000
+            },
+            {
+              "cacheCreationTokens": 0,
+              "cacheReadTokens": 0,
+              "costUsd": 43.71,
+              "inputTokens": 0,
+              "modelId": "claude-opus-4-7",
+              "outputTokens": 582800,
+              "priced": true,
+              "pricingSource": "local_estimate",
+              "provider": "claude",
+              "totalTokens": 582800
+            }
+          ],
+          "pricedSessions": 2,
+          "reason": "unpriced_model",
+          "sessions": 8,
+          "source": "multi",
+          "turns": 8,
+          "unpricedSessions": 0
+        },
+        "byHarness": {
+          "claude-code": 43.71,
+          "native": 4.93
+        },
+        "byKind": {
+          "coding": 48.64,
+          "native-arm": 4.93
+        },
+        "models": {
+          "claude-opus-4-7": {
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 0,
+            "costUsd": 43.71,
+            "inputTokens": 0,
+            "outputTokens": 582800
+          },
+          "qwen-3-coder": {
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 0,
+            "costUsd": 4.93,
+            "inputTokens": 100000,
+            "outputTokens": 20000
+          }
+        },
+        "pricingUsed": {
+          "claude-opus-4-7": {
+            "inputCostPerMTok": 15,
+            "outputCostPerMTok": 75
+          }
+        },
+        "sessionCount": 8,
+        "status": "success",
+        "totalCostUsd": 48.64,
+        "turnCount": 8
+      },
+      "warnings": []
+    }
+  },
   "missing-sessions": {
     "caseId": "missing-sessions",
     "sync": {
       "outcome": {
         "diagnostics": {
-          "agentType": "claude",
           "branchName": "task/nonexistent",
           "matchingTurns": 0,
           "sessionFilesFound": 0,
           "worktreePath": "<SANDBOX>/worktree"
         },
-        "reason": "No session on this branch produced a task-cost event",
+        "reason": "No session-ownership row names a session for this task",
         "status": "no_sessions"
       },
       "warnings": []
@@ -467,6 +599,12 @@
           "source": "native",
           "turns": 1,
           "unpricedSessions": 0
+        },
+        "byHarness": {
+          "native": 0
+        },
+        "byKind": {
+          "native-arm": 0
         },
         "models": {
           "test-model": {
@@ -518,6 +656,12 @@
           "turns": 1,
           "unpricedSessions": 0
         },
+        "byHarness": {
+          "native": 0.0015
+        },
+        "byKind": {
+          "native-arm": 0.0015
+        },
         "models": {
           "gpt-4o": {
             "cacheCreationTokens": 0,
@@ -551,12 +695,12 @@
             {
               "cacheCreationTokens": 0,
               "cacheReadTokens": 0,
-              "costUsd": 0.0095,
+              "costUsd": 0.016,
               "inputTokens": 1000,
               "modelId": "gpt-4o",
               "outputTokens": 100,
               "priced": true,
-              "pricingSource": "openrouter_api",
+              "pricingSource": "mixed",
               "provider": "native",
               "providerReportedCostUsd": 0.0095,
               "totalTokens": 1100
@@ -569,16 +713,27 @@
           "turns": 1,
           "unpricedSessions": 0
         },
+        "byHarness": {
+          "native": 0.0095
+        },
+        "byKind": {
+          "native-arm": 0.0095
+        },
         "models": {
           "gpt-4o": {
             "cacheCreationTokens": 0,
             "cacheReadTokens": 0,
-            "costUsd": 0.0095,
+            "costUsd": 0.016,
             "inputTokens": 1000,
             "outputTokens": 100
           }
         },
-        "pricingUsed": {},
+        "pricingUsed": {
+          "gpt-4o": {
+            "inputCostPerMTok": 5,
+            "outputCostPerMTok": 15
+          }
+        },
         "sessionCount": 1,
         "status": "success",
         "totalCostUsd": 0.0095,
@@ -597,12 +752,12 @@
             {
               "cacheCreationTokens": 0,
               "cacheReadTokens": 0,
-              "costUsd": 0.0095,
+              "costUsd": 0.016,
               "inputTokens": 1000,
               "modelId": "gpt-4o",
               "outputTokens": 100,
               "priced": true,
-              "pricingSource": "openrouter_api",
+              "pricingSource": "mixed",
               "provider": "native",
               "providerReportedCostUsd": 0.0095,
               "totalTokens": 1100
@@ -615,16 +770,27 @@
           "turns": 1,
           "unpricedSessions": 0
         },
+        "byHarness": {
+          "native": 0.0095
+        },
+        "byKind": {
+          "native-arm": 0.0095
+        },
         "models": {
           "gpt-4o": {
             "cacheCreationTokens": 0,
             "cacheReadTokens": 0,
-            "costUsd": 0.0095,
+            "costUsd": 0.016,
             "inputTokens": 1000,
             "outputTokens": 100
           }
         },
-        "pricingUsed": {},
+        "pricingUsed": {
+          "gpt-4o": {
+            "inputCostPerMTok": 5,
+            "outputCostPerMTok": 15
+          }
+        },
         "sessionCount": 1,
         "status": "success",
         "totalCostUsd": 0.0095,
@@ -640,12 +806,12 @@
             {
               "cacheCreationTokens": 0,
               "cacheReadTokens": 0,
-              "costUsd": 0.0095,
+              "costUsd": 0.016,
               "inputTokens": 1000,
               "modelId": "gpt-4o",
               "outputTokens": 100,
               "priced": true,
-              "pricingSource": "openrouter_api",
+              "pricingSource": "mixed",
               "provider": "native",
               "providerReportedCostUsd": 0.0095,
               "totalTokens": 1100
@@ -658,16 +824,27 @@
           "turns": 1,
           "unpricedSessions": 0
         },
+        "byHarness": {
+          "native": 0.0095
+        },
+        "byKind": {
+          "native-arm": 0.0095
+        },
         "models": {
           "gpt-4o": {
             "cacheCreationTokens": 0,
             "cacheReadTokens": 0,
-            "costUsd": 0.0095,
+            "costUsd": 0.016,
             "inputTokens": 1000,
             "outputTokens": 100
           }
         },
-        "pricingUsed": {},
+        "pricingUsed": {
+          "gpt-4o": {
+            "inputCostPerMTok": 5,
+            "outputCostPerMTok": 15
+          }
+        },
         "sessionCount": 1,
         "status": "success",
         "totalCostUsd": 0.0095,
@@ -701,6 +878,12 @@
           "source": "native",
           "turns": 1,
           "unpricedSessions": 1
+        },
+        "byHarness": {
+          "native": null
+        },
+        "byKind": {
+          "native-arm": null
         },
         "models": {
           "unknown-model": {

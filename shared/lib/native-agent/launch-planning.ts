@@ -71,6 +71,7 @@ import {
   type PlanningFailureReason,
 } from './planning-guards.ts';
 import { computeModelCost, loadPricingTable } from '../pricing/model-pricing.ts';
+import { nativeLaunchKind, recordLaunch } from '../session-ownership.ts';
 
 const DEFAULT_HELPER_TIMEOUT_MS = 12 * 60 * 1000;
 const HELPER_STDERR_TAIL_CHARS = 2000;
@@ -701,6 +702,15 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
 
     // Construct session stream configuration
     const planningNativeSessionId = `${options.session}-planning-${options.issue}`;
+    // HOK-3328: own the transcript's session before the loop starts.
+    recordLaunch(featureDir, {
+      sessionRef: planningNativeSessionId,
+      harness: 'native',
+      kind: nativeLaunchKind(),
+      stage: 'planning',
+      model: modelName,
+      cwd: options.wtDir,
+    });
     const eventStreamPath = resolveSessionEventStreamPath(planningNativeSessionId, options.repoDir);
     const sessionStreamConfig: SessionStreamConfig = {
       sessionId: planningNativeSessionId,

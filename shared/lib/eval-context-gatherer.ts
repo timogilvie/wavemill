@@ -1057,6 +1057,8 @@ export function gatherStageArtifacts(
   executionModel?: string;
   /** Directory containing `.{stage}-result.json` files, when found (HOK-2958). */
   stageResultsDir?: string;
+  /** Feature slug; locates the live `.session-ownership.jsonl` (HOK-3328). */
+  featureSlug?: string;
 } {
   // Derive feature slug
   const slug = deriveFeatureSlug(branch, issueId, repoDir);
@@ -1103,6 +1105,7 @@ export function gatherStageArtifacts(
     phaseDurations: computePhaseDurations(repoDir, slug, worktreePath),
     executionModel: loadStageExecutionModel(repoDir, slug, worktreePath),
     stageResultsDir: findStageResultsDir(repoDir, slug, worktreePath),
+    featureSlug: slug,
   };
 }
 

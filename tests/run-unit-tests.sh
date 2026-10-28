@@ -303,6 +303,7 @@ TESTS=(
   shared/lib/tend-attempt-fact.test.ts
   shared/lib/session-capabilities-guard.test.ts
   shared/lib/cost-ownership-guard.test.ts
+  shared/lib/session-ownership-guard.test.ts
   shared/lib/hook-ttl-guard.test.ts
   shared/lib/stage-launchability-guard.test.ts
   shared/lib/provider-identity-guard.test.ts
@@ -466,13 +467,12 @@ TESTS=(
   shared/lib/eval-deduplication.test.ts
   shared/lib/execution-economics.test.ts
   shared/lib/execution-economics-report.test.ts
-  shared/lib/sdk-task-cost/events-from-session.test.ts
-  shared/lib/sdk-task-cost/collect.test.ts
   shared/lib/sdk-task-cost/project.test.ts
-  shared/lib/sdk-task-cost/resolve.test.ts
-  shared/lib/sdk-task-cost/lazy-collect.test.ts
+  shared/lib/sdk-task-cost/price-overrides.test.ts
   shared/lib/sdk-task-cost/meter.test.ts
   shared/lib/sdk-task-cost/recompute.test.ts
+  shared/lib/session-ownership.test.ts
+  shared/lib/codex-rollout-resolver.test.ts
   shared/lib/pricing/model-pricing.test.ts
   shared/lib/pricing/openrouter-exact-pricing.test.ts
   shared/lib/wavemill-session-paths.test.ts

@@ -1,35 +1,33 @@
 /**
- * Projection from SDK `TaskCostSummaryV1` to Wavemill's legacy
- * `WorkflowCostResult` / `WorkflowCostAttribution` shape (HOK-3075).
+ * Projection from the `@hokusai/costs` task report to Wavemill's persisted
+ * `WorkflowCostResult` / `WorkflowCostAttribution` shape (HOK-3328).
  *
- * This is the read-side half of the bridge: it lets an SDK-backed record flow
- * through `attachWorkflowCostMetadata` and every existing workflow-cost
- * reader unchanged. It is pure; `resolve.ts` applies it to every eval's
- * primary summary (HOK-3076, sole engine since HOK-3077).
+ * The report is the cost: `totalCostUsd` is its cross-harness `totalUsd`,
+ * `byHarness` its per-harness slices. Nothing here picks a harness, prices a
+ * token, or adds summaries up — the per-model rows are a view of the SDK's
+ * model segments so the dozen `workflowTokenUsage` / attribution readers keep
+ * working unchanged.
  *
  * Mapping notes:
- * - `totalCostUsd` is the summary's `total_cost_usd`; when that is `null` (an
- *   unresolved event) the legacy numeric view's lower bound
- *   `actual + estimated` is used, matching the legacy convention that an
- *   unpriced model contributes `0` to the number while attribution carries the
- *   truth. Bridge-emitted events never carry both figures, so the sum is exact
- *   for them.
- * - Codex `outputTokens` re-folds reasoning tokens, matching the legacy
- *   `models` view (`codex/1`).
- * - `pricedSessions` / `unpricedSessions` count model segments: the SDK
- *   summary does not retain per-session pricing.
+ * - When the report's total is `null` (an unresolved event), the numeric view
+ *   is the SDK's lower bound `actual + estimated`, matching the legacy
+ *   convention; attribution carries the truth (`coverage`, `reason`).
+ * - `outputTokens` is the contract's `output_tokens`, which already includes
+ *   reasoning (Codex reports `reasoning_tokens` as a breakdown of it).
+ * - `pricedSessions` / `unpricedSessions` count model segments.
  *
  * @module sdk-task-cost/project
  */
 
+import type { TaskCostReport } from '@hokusai/costs';
 import type {
   WorkflowCostAttribution,
   WorkflowCostAttributionModel,
   WorkflowCostAttributionReason,
+  WorkflowCostByHarness,
   WorkflowCostPricingSource,
   WorkflowCostResult,
 } from '../workflow-cost.ts';
-import type { ModelPricing, ModelTokenUsage, PricingTable } from '../pricing/model-pricing.ts';
 import type { TaskCostModelSegment, TaskCostSummaryV1 } from './contract.ts';
 
 const ATTRIBUTION_SOURCE: Record<string, WorkflowCostAttribution['source']> = {
@@ -38,53 +36,13 @@ const ATTRIBUTION_SOURCE: Record<string, WorkflowCostAttribution['source']> = {
   codex: 'codex',
 };
 
-const AGENT_TYPE_HARNESS: Record<string, TaskCostSummaryV1['harness']> = {
-  native: 'native',
-  claude: 'claude-code',
-  'claude-deepseek': 'claude-code',
-  codex: 'codex',
-};
-
-/** Reasons the legacy engine reports for an unavailable record, in its priority order. */
-const UNAVAILABLE_REASONS: readonly WorkflowCostAttributionReason[] = [
+/** Reasons recorded for an unavailable/partial record, in priority order. */
+const GAP_REASONS: readonly WorkflowCostAttributionReason[] = [
   'invalid_token_usage',
   'missing_token_usage',
   'unpriced_model',
   'no_priced_sessions',
 ];
-
-export interface ProjectTaskCostOptions {
-  /** Pricing table used to rebuild the `pricingUsed` snapshot. */
-  pricingTable?: PricingTable;
-  /** Canonical registry key lookup for pricing-table hits. */
-  registryLookup?: (modelId: string) => string;
-}
-
-/**
- * Pick the summary that is the workflow's cost:
- *
- * 1. native, when the workflow ran natively or the native transcripts carry
- *    usable evidence (usage or a reported charge — coverage not
- *    `unavailable`);
- * 2. else the harness matching the workflow's agent type;
- * 3. else the first non-native summary;
- * 4. else the native one (unusable evidence beats none).
- *
- * Rule 1's evidence check keeps an empty native transcript (e.g. a native
- * expansion that recorded no usage) from masking the Claude Code / Codex
- * sessions that actually did the work and carry the cost.
- */
-export function selectPrimaryTaskCostSummary(
-  summaries: readonly TaskCostSummaryV1[] | null | undefined,
-  agentType?: string | null,
-): TaskCostSummaryV1 | null {
-  if (!summaries || summaries.length === 0) return null;
-  const native = summaries.find((summary) => summary.harness === 'native');
-  if (native && (agentType === 'native' || native.coverage !== 'unavailable')) return native;
-  const others = summaries.filter((summary) => summary.harness !== 'native');
-  const preferred = agentType ? AGENT_TYPE_HARNESS[agentType] : undefined;
-  return others.find((summary) => summary.harness === preferred) ?? others[0] ?? native ?? null;
-}
 
 function segmentCost(segment: TaskCostModelSegment): number | null {
   if (segment.actual_cost_usd === null && segment.estimated_cost_usd === null) return null;
@@ -106,93 +64,109 @@ function mergePricingSource(
   return current === undefined || current === next ? next : 'mixed';
 }
 
-function attributionReason(summary: TaskCostSummaryV1): WorkflowCostAttributionReason | undefined {
-  switch (summary.coverage) {
+function attributionReason(report: TaskCostReport): WorkflowCostAttributionReason | undefined {
+  const codes = new Set<string>(report.diagnostics.map((diagnostic) => diagnostic.code));
+  switch (report.coverage.status) {
     case 'partial':
-      // Name the gap when the SDK recorded one (an unpriced model, missing
-      // usage), matching the legacy partial reason; else a mixed record.
-      return UNAVAILABLE_REASONS.find((reason) => reason !== 'no_priced_sessions' && summary.diagnostics.includes(reason))
-        ?? 'mixed_coverage';
+      return GAP_REASONS.find((reason) => reason !== 'no_priced_sessions' && codes.has(reason)) ?? 'mixed_coverage';
     case 'known_zero':
       return undefined;
     case 'unavailable':
-      return UNAVAILABLE_REASONS.find((reason) => summary.diagnostics.includes(reason)) ?? 'no_priced_sessions';
+      return GAP_REASONS.find((reason) => codes.has(reason)) ?? 'no_priced_sessions';
     case 'complete':
-      return summary.diagnostics.includes('provider_reported_cost') ? 'provider_reported_cost' : undefined;
+      return codes.has('provider_reported_cost') ? 'provider_reported_cost' : undefined;
   }
 }
 
-/** Project one SDK summary into a legacy `WorkflowCostResult` with attribution. */
-export function projectTaskCostSummaryToWorkflowCost(
-  summary: TaskCostSummaryV1,
-  options: ProjectTaskCostOptions = {},
+/** The report's per-harness totals (`null` where a harness left an event unresolved). */
+export function reportByHarness(report: TaskCostReport): WorkflowCostByHarness {
+  const byHarness: WorkflowCostByHarness = {};
+  for (const [harness, breakdown] of Object.entries(report.byHarness)) {
+    if (breakdown) byHarness[harness] = breakdown.totalUsd;
+  }
+  return byHarness;
+}
+
+/** The numeric figure for a report: its total, else the SDK's lower bound. */
+export function reportCostUsd(report: Pick<TaskCostReport, 'totalUsd' | 'actualUsd' | 'estimatedUsd'>): number {
+  return report.totalUsd ?? (report.actualUsd ?? 0) + (report.estimatedUsd ?? 0);
+}
+
+/**
+ * Project a `@hokusai/costs` report into the persisted workflow-cost shape.
+ * `pricingUsed` is the caller's rate snapshot for the priced models (the
+ * overrides it handed the SDK), never recomputed here.
+ */
+export function projectReportToWorkflowCost(
+  report: TaskCostReport,
+  pricingUsed: WorkflowCostResult['pricingUsed'] = {},
 ): WorkflowCostResult {
-  const foldReasoning = summary.harness === 'codex';
-  const models: Record<string, ModelTokenUsage> = {};
+  const models: WorkflowCostResult['models'] = {};
   const attributionModels = new Map<string, WorkflowCostAttributionModel>();
-  const pricingUsed: Record<string, ModelPricing> = {};
   let pricedSegments = 0;
   let unpricedSegments = 0;
+  const sessionIds = new Set<string>();
 
-  for (const segment of summary.model_segments) {
-    const usage = segment.usage;
-    const outputTokens = (usage.output_tokens ?? 0) + (foldReasoning ? usage.reasoning_tokens ?? 0 : 0);
-    const cost = segmentCost(segment);
-    const legacy = models[segment.model] ??= {
-      inputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, outputTokens: 0, costUsd: 0,
-    };
-    legacy.inputTokens += usage.input_tokens ?? 0;
-    legacy.cacheCreationTokens += usage.cache_write_tokens ?? 0;
-    legacy.cacheReadTokens += usage.cache_read_tokens ?? 0;
-    legacy.outputTokens += outputTokens;
-    legacy.costUsd += cost ?? 0;
+  for (const summary of report.summaries as readonly TaskCostSummaryV1[]) {
+    for (const sessionId of summary.session_ids) sessionIds.add(`${summary.harness}\0${sessionId}`);
+    const provider = ATTRIBUTION_SOURCE[summary.harness] ?? summary.harness;
+    for (const segment of summary.model_segments) {
+      const usage = segment.usage;
+      const outputTokens = usage.output_tokens ?? 0;
+      const cost = segmentCost(segment);
+      const legacy = models[segment.model] ??= {
+        inputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, outputTokens: 0, costUsd: 0,
+      };
+      legacy.inputTokens += usage.input_tokens ?? 0;
+      legacy.cacheCreationTokens += usage.cache_write_tokens ?? 0;
+      legacy.cacheReadTokens += usage.cache_read_tokens ?? 0;
+      legacy.outputTokens += outputTokens;
+      legacy.costUsd += cost ?? 0;
 
-    let model = attributionModels.get(segment.model);
-    if (!model) {
-      model = { provider: ATTRIBUTION_SOURCE[summary.harness] ?? summary.harness, modelId: segment.model, priced: false };
-      attributionModels.set(segment.model, model);
-    }
-    model.inputTokens = (model.inputTokens ?? 0) + (usage.input_tokens ?? 0);
-    model.outputTokens = (model.outputTokens ?? 0) + outputTokens;
-    model.cacheReadTokens = (model.cacheReadTokens ?? 0) + (usage.cache_read_tokens ?? 0);
-    model.cacheCreationTokens = (model.cacheCreationTokens ?? 0) + (usage.cache_write_tokens ?? 0);
-    model.totalTokens = model.inputTokens + model.outputTokens + model.cacheReadTokens + model.cacheCreationTokens;
+      const key = `${provider}\0${segment.model}`;
+      let model = attributionModels.get(key);
+      if (!model) {
+        model = { provider, modelId: segment.model, priced: false };
+        attributionModels.set(key, model);
+      }
+      model.inputTokens = (model.inputTokens ?? 0) + (usage.input_tokens ?? 0);
+      model.outputTokens = (model.outputTokens ?? 0) + outputTokens;
+      model.cacheReadTokens = (model.cacheReadTokens ?? 0) + (usage.cache_read_tokens ?? 0);
+      model.cacheCreationTokens = (model.cacheCreationTokens ?? 0) + (usage.cache_write_tokens ?? 0);
+      model.totalTokens = model.inputTokens + model.outputTokens + model.cacheReadTokens + model.cacheCreationTokens;
 
-    if (cost === null) {
-      unpricedSegments++;
-      if (!model.priced) model.reason = 'unpriced_model';
-      continue;
-    }
-    pricedSegments++;
-    model.priced = true;
-    delete model.reason;
-    model.costUsd = (model.costUsd ?? 0) + cost;
-    if (segment.actual_cost_usd !== null) {
-      model.providerReportedCostUsd = (model.providerReportedCostUsd ?? 0) + segment.actual_cost_usd;
-    }
-    model.pricingSource = mergePricingSource(model.pricingSource, segmentPricingSource(segment));
-    if (segment.estimated_cost_usd !== null && options.pricingTable) {
-      const pricing = options.pricingTable[options.registryLookup?.(segment.model) ?? segment.model]
-        ?? options.pricingTable[segment.model];
-      if (pricing) pricingUsed[segment.model] = pricing;
+      if (cost === null) {
+        unpricedSegments++;
+        if (!model.priced) model.reason = 'unpriced_model';
+        continue;
+      }
+      pricedSegments++;
+      model.priced = true;
+      delete model.reason;
+      model.costUsd = (model.costUsd ?? 0) + cost;
+      if (segment.actual_cost_usd !== null) {
+        model.providerReportedCostUsd = (model.providerReportedCostUsd ?? 0) + segment.actual_cost_usd;
+      }
+      model.pricingSource = mergePricingSource(model.pricingSource, segmentPricingSource(segment));
     }
   }
 
-  const reason = attributionReason(summary);
+  const harnesses = [...new Set(report.summaries.map((summary) => summary.harness))];
+  const reason = attributionReason(report);
   return {
-    totalCostUsd: summary.total_cost_usd
-      ?? (summary.actual_cost_usd ?? 0) + (summary.estimated_cost_usd ?? 0),
+    totalCostUsd: reportCostUsd(report),
     models,
-    sessionCount: summary.session_ids.length,
-    turnCount: summary.turn_count,
+    sessionCount: sessionIds.size,
+    turnCount: report.turnCount,
     status: 'success',
     pricingUsed,
+    byHarness: reportByHarness(report),
     attribution: {
-      source: ATTRIBUTION_SOURCE[summary.harness] ?? 'claude',
-      coverage: summary.coverage,
+      source: harnesses.length === 1 ? ATTRIBUTION_SOURCE[harnesses[0]] ?? 'claude' : 'multi',
+      coverage: report.coverage.status,
       ...(reason ? { reason } : {}),
-      sessions: summary.session_ids.length,
-      turns: summary.turn_count,
+      sessions: sessionIds.size,
+      turns: report.turnCount,
       pricedSessions: pricedSegments,
       unpricedSessions: unpricedSegments,
       models: [...attributionModels.values()],

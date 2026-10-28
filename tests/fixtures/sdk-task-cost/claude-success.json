@@ -3,67 +3,43 @@
   "taskId": "HOK-0001",
   "now": "2026-10-01T00:00:00.000Z",
   "pricingTable": {
-    "claude-opus-4": { "inputCostPerMTok": 15, "outputCostPerMTok": 75, "cacheWriteCostPerMTok": 18.75, "cacheReadCostPerMTok": 1.5 }
-  },
-  "scanResults": [
-    {
-      "models": { "claude-opus-4": { "inputTokens": 3000, "cacheCreationTokens": 100, "cacheReadTokens": 500, "outputTokens": 500 } },
-      "sessionCount": 1,
-      "turnCount": 2,
-      "source": "claude",
-      "externalSessions": [
-        {
-          "sessionId": "0b9c6a52-claude-session",
-          "harness": "claude-code",
-          "harnessVersion": "2.1.270",
-          "triggerSource": "sdk",
-          "triggerProvenance": "claude_code.promptSource",
-          "startedAt": "2026-09-30T10:00:00.000Z",
-          "endedAt": "2026-09-30T10:05:00.000Z",
-          "turnCount": 2,
-          "turns": [
-            {
-              "turnId": "turn-a", "parentId": null, "isSubagent": false, "model": "claude-opus-4",
-              "timestamp": "2026-09-30T10:00:00.000Z",
-              "usage": { "inputTokens": 1000, "outputTokens": 200, "cacheReadTokens": 500, "cacheWriteTokens": 100, "reasoningTokens": 50 },
-              "usageAvailable": true, "actualCostUsd": null
-            },
-            {
-              "turnId": "turn-b", "parentId": "turn-a", "isSubagent": true, "model": "claude-opus-4",
-              "timestamp": "2026-09-30T10:05:00.000Z",
-              "usage": { "inputTokens": 2000, "outputTokens": 300, "cacheReadTokens": 0, "cacheWriteTokens": 0, "reasoningTokens": 0 },
-              "usageAvailable": true, "actualCostUsd": null
-            }
-          ],
-          "usage": { "inputTokens": 3000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 100, "reasoningTokens": 50 },
-          "actualCostUsd": null,
-          "diagnostics": []
-        }
-      ]
+    "claude-opus-4": {
+      "inputCostPerMTok": 15,
+      "outputCostPerMTok": 75,
+      "cacheWriteCostPerMTok": 18.75,
+      "cacheReadCostPerMTok": 1.5
     }
-  ],
-  "expected": [
+  },
+  "records": [
     {
       "harness": "claude-code",
-      "harness_version": "2.1.270",
-      "provider_contract_version": "claude-code/1",
-      "task_id": "HOK-0001",
-      "session_ids": ["0b9c6a52-claude-session"],
-      "models": ["claude-opus-4"],
-      "turn_count": 2,
-      "event_count": 2,
-      "usage": { "input_tokens": 3000, "output_tokens": 500, "cache_read_tokens": 500, "cache_write_tokens": 100, "reasoning_tokens": 50 },
-      "actual_cost_usd": null,
-      "estimated_cost_usd": 0.085125,
-      "total_cost_usd": 0.085125,
-      "cost_source": "local_estimate",
-      "cost_basis": "unknown",
-      "coverage": "complete",
-      "field_availability": { "usage": "available", "actual_cost": "unavailable", "estimated_cost": "available", "pricing": "available" },
-      "pricing_source": "local_estimate",
-      "join_confidence": "branch_worktree",
-      "collected_at": "2026-10-01T00:00:00.000Z",
-      "diagnostics": []
+      "model": "claude-opus-4",
+      "usage": {
+        "inputTokens": 1000,
+        "outputTokens": 200,
+        "cacheReadTokens": 500,
+        "cacheWriteTokens": 100,
+        "reasoningTokens": 50
+      },
+      "sessionId": "0b9c6a52-claude-session",
+      "turnId": "turn-a",
+      "eventId": "0b9c6a52-claude-session:0",
+      "occurredAt": "2026-09-30T10:00:00.000Z"
+    },
+    {
+      "harness": "claude-code",
+      "model": "claude-opus-4",
+      "usage": {
+        "inputTokens": 2000,
+        "outputTokens": 300,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0
+      },
+      "sessionId": "0b9c6a52-claude-session",
+      "turnId": "turn-b",
+      "eventId": "0b9c6a52-claude-session:1",
+      "occurredAt": "2026-09-30T10:05:00.000Z"
     }
   ]
 }

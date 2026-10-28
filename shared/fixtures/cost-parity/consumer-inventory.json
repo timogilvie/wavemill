@@ -1,10 +1,14 @@
 {
-  "description": "Inventory of every file that imports a Wavemill cost module (HOK-3077 ownership split): the persisted record shape (shared/lib/workflow-cost.ts), the per-call pricing primitive (shared/lib/pricing/model-pricing.ts), and session discovery (shared/lib/wavemill-session-paths.ts). The single cost engine is the SDK bridge (shared/lib/sdk-task-cost/); tools/check-cost-ownership.ts enforces who may import the primitives.",
+  "description": "Inventory of every file that imports a Wavemill cost module (HOK-3077 ownership split): the persisted record shape (shared/lib/workflow-cost.ts), the per-call pricing primitive (shared/lib/pricing/model-pricing.ts), and session discovery (shared/lib/wavemill-session-paths.ts). The single cost engine is @hokusai/costs over the task's owned sessions (shared/lib/sdk-task-cost/meter.ts, HOK-3328); tools/check-cost-ownership.ts enforces who may import the primitives.",
   "productionConsumers": [
     {
       "file": "shared/lib/challenge-scheduler.ts",
       "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "loadConfiguredPricingTable", "kind": "value" }
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "loadConfiguredPricingTable",
+          "kind": "value"
+        }
       ],
       "class": "pricing_policy",
       "production": true,
@@ -13,9 +17,21 @@
     {
       "file": "shared/lib/cost-parity.ts",
       "symbols": [
-        { "module": "shared/lib/workflow-cost.ts", "name": "WorkflowCostOutcome", "kind": "type" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "PricingTable", "kind": "type" },
-        { "module": "shared/lib/wavemill-session-paths.ts", "name": "encodeProjectDir", "kind": "value" }
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "WorkflowCostOutcome",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "PricingTable",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/wavemill-session-paths.ts",
+          "name": "encodeProjectDir",
+          "kind": "value"
+        }
       ],
       "class": "measurement",
       "production": false,
@@ -24,7 +40,11 @@
     {
       "file": "shared/lib/deepseek-smoke.ts",
       "symbols": [
-        { "module": "shared/lib/wavemill-session-paths.ts", "name": "encodeProjectDir", "kind": "value" }
+        {
+          "module": "shared/lib/wavemill-session-paths.ts",
+          "name": "encodeProjectDir",
+          "kind": "value"
+        }
       ],
       "class": "wavemill_only_join",
       "production": false,
@@ -33,22 +53,54 @@
     {
       "file": "shared/lib/eval-orchestrator.ts",
       "symbols": [
-        { "module": "shared/lib/workflow-cost.ts", "name": "reportableWorkflowCostUsd", "kind": "value" },
-        { "module": "shared/lib/workflow-cost.ts", "name": "WorkflowCostOutcome", "kind": "type" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "loadPricingTable", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "PricingTable", "kind": "type" }
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "reportableWorkflowCostUsd",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "WorkflowCostOutcome",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "loadPricingTable",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "PricingTable",
+          "kind": "type"
+        }
       ],
       "class": "measurement",
       "production": true,
-      "notes": "Measurement entrypoint: wavemill eval → tools/eval-workflow.ts; meters through sdk-task-cost/meter.ts with OpenRouter exact pricing folded into SDK events (HOK-3077)"
+      "notes": "Measurement entrypoint: wavemill eval \u2192 tools/eval-workflow.ts; meters through sdk-task-cost/meter.ts with OpenRouter exact pricing folded into SDK events (HOK-3077)"
     },
     {
       "file": "shared/lib/eval-record-builder.ts",
       "symbols": [
-        { "module": "shared/lib/workflow-cost.ts", "name": "reportableWorkflowCostUsd", "kind": "value" },
-        { "module": "shared/lib/workflow-cost.ts", "name": "WorkflowCostOutcome", "kind": "type" },
-        { "module": "shared/lib/workflow-cost.ts", "name": "WorkflowCostResult", "kind": "type" },
-        { "module": "shared/lib/workflow-cost.ts", "name": "WorkflowCostFailure", "kind": "type" }
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "reportableWorkflowCostUsd",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "WorkflowCostOutcome",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "WorkflowCostResult",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "WorkflowCostFailure",
+          "kind": "type"
+        }
       ],
       "class": "measurement",
       "production": true,
@@ -57,7 +109,11 @@
     {
       "file": "shared/lib/eval-schema.ts",
       "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "ModelPricing", "kind": "type" }
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "ModelPricing",
+          "kind": "type"
+        }
       ],
       "class": "schema",
       "production": false,
@@ -66,30 +122,34 @@
     {
       "file": "shared/lib/eval.ts",
       "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "computeModelCost", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "loadPricingTable", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "PricingTable", "kind": "type" }
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "computeModelCost",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "loadPricingTable",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "PricingTable",
+          "kind": "type"
+        }
       ],
       "class": "pricing_policy",
       "production": true,
       "notes": "Judge-call cost computation (shared computeModelCost formula)"
     },
     {
-      "file": "shared/lib/execution-economics.ts",
-      "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "computeModelCost", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "loadPricingTable", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "ModelPricing", "kind": "type" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "PricingTable", "kind": "type" }
-      ],
-      "class": "measurement",
-      "production": true,
-      "notes": "Per-stage execution economics (observation-only); prices sessions with the shared primitive"
-    },
-    {
       "file": "shared/lib/intervention-detector.ts",
       "symbols": [
-        { "module": "shared/lib/wavemill-session-paths.ts", "name": "resolveProjectsDirs", "kind": "value" }
+        {
+          "module": "shared/lib/wavemill-session-paths.ts",
+          "name": "resolveProjectsDirs",
+          "kind": "value"
+        }
       ],
       "class": "wavemill_only_join",
       "production": true,
@@ -98,8 +158,16 @@
     {
       "file": "shared/lib/model-promotion.ts",
       "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "computeNormalizedEvaluationCost", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "ModelPricing", "kind": "type" }
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "computeNormalizedEvaluationCost",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "ModelPricing",
+          "kind": "type"
+        }
       ],
       "class": "backfill",
       "production": false,
@@ -108,7 +176,11 @@
     {
       "file": "shared/lib/native-agent/certification/live-coding-canary.ts",
       "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "ModelPricing", "kind": "type" }
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "ModelPricing",
+          "kind": "type"
+        }
       ],
       "class": "pricing_policy",
       "production": false,
@@ -117,8 +189,16 @@
     {
       "file": "shared/lib/native-agent/launch-planning.ts",
       "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "computeModelCost", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "loadPricingTable", "kind": "value" }
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "computeModelCost",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "loadPricingTable",
+          "kind": "value"
+        }
       ],
       "class": "pricing_policy",
       "production": true,
@@ -127,8 +207,16 @@
     {
       "file": "shared/lib/native-agent/loop.ts",
       "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "computeModelCost", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "ModelPricing", "kind": "type" }
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "computeModelCost",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "ModelPricing",
+          "kind": "type"
+        }
       ],
       "class": "pricing_policy",
       "production": true,
@@ -137,7 +225,11 @@
     {
       "file": "shared/lib/outcome-collectors.ts",
       "symbols": [
-        { "module": "shared/lib/wavemill-session-paths.ts", "name": "resolveProjectsDirs", "kind": "value" }
+        {
+          "module": "shared/lib/wavemill-session-paths.ts",
+          "name": "resolveProjectsDirs",
+          "kind": "value"
+        }
       ],
       "class": "wavemill_only_join",
       "production": true,
@@ -146,50 +238,52 @@
     {
       "file": "shared/lib/post-completion-hook.ts",
       "symbols": [
-        { "module": "shared/lib/workflow-cost.ts", "name": "reportableWorkflowCostUsd", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "loadPricingTable", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "PricingTable", "kind": "type" },
-        { "module": "shared/lib/workflow-cost.ts", "name": "WorkflowCostOutcome", "kind": "type" }
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "reportableWorkflowCostUsd",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "loadPricingTable",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "PricingTable",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "WorkflowCostOutcome",
+          "kind": "type"
+        }
       ],
       "class": "measurement",
       "production": true,
-      "notes": "Measurement entrypoint: mill/monitor → tools/run-eval-hook.ts; meters through sdk-task-cost/meter.ts (SDK sole engine, HOK-3077)"
+      "notes": "Measurement entrypoint: mill/monitor \u2192 tools/run-eval-hook.ts; meters through sdk-task-cost/meter.ts (SDK sole engine, HOK-3077)"
     },
     {
       "file": "shared/lib/reliability-metrics.ts",
       "symbols": [
-        { "module": "shared/lib/wavemill-session-paths.ts", "name": "resolveProjectsDirs", "kind": "value" }
+        {
+          "module": "shared/lib/wavemill-session-paths.ts",
+          "name": "resolveProjectsDirs",
+          "kind": "value"
+        }
       ],
       "class": "wavemill_only_join",
       "production": true,
       "notes": "Session file discovery for operator-touch counting"
     },
     {
-      "file": "shared/lib/sdk-task-cost/collect.ts",
-      "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "loadPricingTable", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "PricingTable", "kind": "type" }
-      ],
-      "class": "measurement",
-      "production": true,
-      "notes": "SDK bridge: scans sessions and reduces them with aggregateTaskCost"
-    },
-    {
-      "file": "shared/lib/sdk-task-cost/events-from-session.ts",
-      "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "computeModelCost", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "isExplicitZeroPricing", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "ModelPricing", "kind": "type" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "PricingTable", "kind": "type" }
-      ],
-      "class": "measurement",
-      "production": true,
-      "notes": "SDK bridge: prices TaskCostEventV1 events (local estimate, provider-reported, or OpenRouter exact)"
-    },
-    {
       "file": "shared/lib/sdk-task-cost/fixtures.ts",
       "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "PricingTable", "kind": "type" }
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "PricingTable",
+          "kind": "type"
+        }
       ],
       "class": "measurement",
       "production": false,
@@ -198,53 +292,90 @@
     {
       "file": "shared/lib/sdk-task-cost/meter.ts",
       "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "PricingTable", "kind": "type" }
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "PricingTable",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/wavemill-session-paths.ts",
+          "name": "resolveProjectsDirs",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "WorkflowCostFailure",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "WorkflowCostOutcome",
+          "kind": "type"
+        }
       ],
       "class": "measurement",
       "production": true,
-      "notes": "The one live metering path for both eval entrypoints"
+      "notes": "The one live metering path for both eval entrypoints: owned session ids \u2192 @hokusai/costs report (HOK-3328)"
     },
     {
       "file": "shared/lib/sdk-task-cost/project.ts",
       "symbols": [
-        { "module": "shared/lib/workflow-cost.ts", "name": "WorkflowCostAttribution", "kind": "type" },
-        { "module": "shared/lib/workflow-cost.ts", "name": "WorkflowCostAttributionModel", "kind": "type" },
-        { "module": "shared/lib/workflow-cost.ts", "name": "WorkflowCostAttributionReason", "kind": "type" },
-        { "module": "shared/lib/workflow-cost.ts", "name": "WorkflowCostPricingSource", "kind": "type" },
-        { "module": "shared/lib/workflow-cost.ts", "name": "WorkflowCostResult", "kind": "type" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "ModelPricing", "kind": "type" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "ModelTokenUsage", "kind": "type" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "PricingTable", "kind": "type" }
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "WorkflowCostAttribution",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "WorkflowCostAttributionModel",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "WorkflowCostAttributionReason",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "WorkflowCostPricingSource",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "WorkflowCostResult",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "WorkflowCostByHarness",
+          "kind": "type"
+        }
       ],
       "class": "measurement",
       "production": true,
-      "notes": "SDK bridge read side: projects TaskCostSummaryV1 into the persisted WorkflowCostResult shape"
+      "notes": "Projects the @hokusai/costs TaskCostReport into the persisted WorkflowCostResult shape (HOK-3328)"
     },
     {
       "file": "shared/lib/sdk-task-cost/recompute.ts",
       "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "PricingTable", "kind": "type" },
-        { "module": "shared/lib/workflow-cost.ts", "name": "reportableWorkflowCostUsd", "kind": "value" }
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "reportableWorkflowCostUsd",
+          "kind": "value"
+        }
       ],
       "class": "backfill",
       "production": false,
-      "notes": "Offline recompute of a stored record through the SDK engine"
-    },
-    {
-      "file": "shared/lib/sdk-task-cost/resolve.ts",
-      "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "PricingTable", "kind": "type" },
-        { "module": "shared/lib/workflow-cost.ts", "name": "WorkflowCostFailure", "kind": "type" },
-        { "module": "shared/lib/workflow-cost.ts", "name": "WorkflowCostOutcome", "kind": "type" }
-      ],
-      "class": "measurement",
-      "production": true,
-      "notes": "SDK summaries → WorkflowCostOutcome (projection, or a no_sessions / adapter_error failure)"
+      "notes": "Offline recompute: @hokusai/costs total over a record's stored per-harness summaries (HOK-3328)"
     },
     {
       "file": "shared/lib/session-adapters.ts",
       "symbols": [
-        { "module": "shared/lib/wavemill-session-paths.ts", "name": "resolveProjectsDirs", "kind": "value" }
+        {
+          "module": "shared/lib/wavemill-session-paths.ts",
+          "name": "resolveProjectsDirs",
+          "kind": "value"
+        }
       ],
       "class": "wavemill_only_join",
       "production": true,
@@ -253,8 +384,16 @@
     {
       "file": "shared/lib/stage-aware-router.ts",
       "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "computeModelCost", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "loadPricingTable", "kind": "value" }
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "computeModelCost",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "loadPricingTable",
+          "kind": "value"
+        }
       ],
       "class": "pricing_policy",
       "production": true,
@@ -263,9 +402,21 @@
     {
       "file": "shared/lib/workflow-router.ts",
       "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "computeModelCost", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "loadConfiguredPricingTable", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "loadPricingTable", "kind": "value" }
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "computeModelCost",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "loadConfiguredPricingTable",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "loadPricingTable",
+          "kind": "value"
+        }
       ],
       "class": "pricing_policy",
       "production": true,
@@ -274,29 +425,39 @@
     {
       "file": "tools/backfill-pricing-snapshot.ts",
       "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "ModelPricing", "kind": "type" }
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "ModelPricing",
+          "kind": "type"
+        }
       ],
       "class": "backfill",
       "production": false,
       "notes": "Type-only reference for pricing snapshots"
     },
     {
-      "file": "tools/backfill-workflow-cost-status.ts",
-      "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "loadPricingTable", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "PricingTable", "kind": "type" }
-      ],
-      "class": "backfill",
-      "production": false,
-      "notes": "Status backfill; recomputes costs through sdk-task-cost/recompute.ts (SDK engine)"
-    },
-    {
       "file": "tools/backfill-workflow-cost.ts",
       "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "computeModelCost", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "loadPricingTable", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "ModelPricing", "kind": "type" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "ModelTokenUsage", "kind": "type" }
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "computeModelCost",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "loadPricingTable",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "ModelPricing",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "ModelTokenUsage",
+          "kind": "type"
+        }
       ],
       "class": "backfill",
       "production": false,
@@ -305,13 +466,66 @@
     {
       "file": "tools/recost-opus-4-6.ts",
       "symbols": [
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "computeModelCost", "kind": "value" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "ModelPricing", "kind": "type" },
-        { "module": "shared/lib/pricing/model-pricing.ts", "name": "ModelTokenUsage", "kind": "type" }
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "computeModelCost",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "ModelPricing",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "ModelTokenUsage",
+          "kind": "type"
+        }
       ],
       "class": "backfill",
       "production": false,
       "notes": "One-off recost tool for model pricing changes"
+    },
+    {
+      "file": "shared/lib/sdk-task-cost/price-overrides.ts",
+      "symbols": [
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "CACHE_READ_MULTIPLIER",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "CACHE_WRITE_MULTIPLIER",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "ModelPricing",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "PricingTable",
+          "kind": "type"
+        }
+      ],
+      "class": "measurement",
+      "production": true,
+      "notes": "Registry rate table \u2192 @hokusai/costs HostPriceOverride[] (rates only, HOK-3328)"
+    },
+    {
+      "file": "shared/lib/sdk-task-cost/measure.ts",
+      "symbols": [
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "WorkflowCostResult",
+          "kind": "type"
+        }
+      ],
+      "class": "measurement",
+      "production": true,
+      "notes": "The @hokusai/costs measureTask call over a task's owned session ids (HOK-3328)"
     }
   ],
   "testOnlyConsumers": [
@@ -320,9 +534,7 @@
     "shared/lib/executed-model-resolver.test.ts",
     "shared/lib/intervention-detector.test.ts",
     "shared/lib/native-agent/pi-usage-cost.test.ts",
-    "shared/lib/sdk-task-cost/events-from-session.test.ts",
     "shared/lib/sdk-task-cost/meter.test.ts",
-    "shared/lib/sdk-task-cost/resolve.test.ts",
     "shared/lib/session-adapters.test.ts",
     "shared/lib/wavemill-session-paths.test.ts",
     "shared/lib/workflow-cost.test.ts",
@@ -332,21 +544,29 @@
     {
       "file": "shared/lib/eval-aggregator.ts",
       "lines": "389-462",
-      "fields": ["workflowCost", "workflowTokenUsage"],
+      "fields": [
+        "workflowCost",
+        "workflowTokenUsage"
+      ],
       "class": "report",
       "notes": "Reads cost fields for aggregation"
     },
     {
       "file": "shared/lib/eval-export.ts",
       "lines": "318-370",
-      "fields": ["workflowCost", "workflowTokenUsage"],
+      "fields": [
+        "workflowCost",
+        "workflowTokenUsage"
+      ],
       "class": "report",
       "notes": "Exports cost fields for external analysis"
     },
     {
       "file": "shared/lib/eval-summary-printer.ts",
       "lines": "34, 118-160",
-      "fields": ["workflowCost"],
+      "fields": [
+        "workflowCost"
+      ],
       "class": "report",
       "notes": "Production log line formatting",
       "production": true
@@ -354,49 +574,64 @@
     {
       "file": "shared/lib/challenge-analyzer.ts",
       "lines": "242",
-      "fields": ["workflowCost"],
+      "fields": [
+        "workflowCost"
+      ],
       "class": "report",
       "notes": "Challenge result analysis"
     },
     {
       "file": "shared/lib/arbiter-r6-report.ts",
       "lines": "348",
-      "fields": ["workflowCost"],
+      "fields": [
+        "workflowCost"
+      ],
       "class": "report",
       "notes": "R6 evaluation report"
     },
     {
       "file": "shared/lib/execution-economics-report.ts",
       "lines": "all",
-      "fields": ["workflowCost", "workflowTokenUsage"],
+      "fields": [
+        "workflowCost",
+        "workflowTokenUsage"
+      ],
       "class": "report",
       "notes": "Economics report generation"
     },
     {
       "file": "tools/compare-prs.ts",
       "lines": "918",
-      "fields": ["workflowCost"],
+      "fields": [
+        "workflowCost"
+      ],
       "class": "report",
       "notes": "PR comparison tool"
     },
     {
       "file": "shared/lib/feature-state.ts",
       "lines": "268, 703",
-      "fields": ["workflowCost"],
+      "fields": [
+        "workflowCost"
+      ],
       "class": "report",
       "notes": "Feature state tracking"
     },
     {
       "file": "src/evaluation/router-eval-adapter.ts",
       "lines": "all",
-      "fields": ["workflowCost"],
+      "fields": [
+        "workflowCost"
+      ],
       "class": "pricing_policy",
       "notes": "Historical cost learning for routing"
     },
     {
       "file": "shared/lib/hokusai-schema.ts",
       "lines": "806-812",
-      "fields": ["workflowCost"],
+      "fields": [
+        "workflowCost"
+      ],
       "class": "report",
       "notes": "Hokusai schema submission; external boundary",
       "production": true
@@ -404,7 +639,9 @@
     {
       "file": "shared/lib/llm-cli.ts",
       "lines": "456",
-      "fields": ["workflowCost"],
+      "fields": [
+        "workflowCost"
+      ],
       "class": "report",
       "notes": "Separate producer of cost field; CLI-only"
     }

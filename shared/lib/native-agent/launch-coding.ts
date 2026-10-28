@@ -112,6 +112,7 @@ import { reportPromptCacheHitRate } from './prompt-cache-detector.ts';
 import { getNativeContextManagementConfig, getNativePayloadCaptureConfig } from '../config.ts';
 import { equivalentOpenRouterModelIds, type NormalizedPricing } from '../openrouter-catalog.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
+import { nativeLaunchKind, recordLaunch } from '../session-ownership.ts';
 import type { ResourceRef } from '../resource-registry.ts';
 import {
   getBlockedCompletionPath,
@@ -1148,6 +1149,15 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
 
     // Construct session stream configuration and create persistent writer
     const codingNativeSessionId = `${options.session}-coding-${options.issue}`;
+    // HOK-3328: own the transcript's session before the loop starts.
+    recordLaunch(featureDir, {
+      sessionRef: codingNativeSessionId,
+      harness: 'native',
+      kind: nativeLaunchKind(),
+      stage: 'coding',
+      model: requestedModelName,
+      cwd: options.wtDir,
+    });
     const eventStreamPath = resolveSessionEventStreamPath(codingNativeSessionId, options.repoDir);
 
     // Create a persistent session stream writer for the entire launch lifecycle

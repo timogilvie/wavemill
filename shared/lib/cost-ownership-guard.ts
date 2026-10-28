@@ -4,8 +4,9 @@
 /**
  * Preflight guard for the cost-ownership split (HOK-3077).
  *
- * Wavemill has exactly one cost engine — the Hokusai SDK reducer behind
- * `shared/lib/sdk-task-cost/` — plus two Wavemill-only primitives:
+ * Wavemill has exactly one cost engine — `@hokusai/costs`, measured over a
+ * task's owned sessions through `shared/lib/sdk-task-cost/meter.ts` (HOK-3328)
+ * — plus two Wavemill-only primitives:
  *
  * - the per-call pricing primitive `shared/lib/pricing/model-pricing.ts`
  *   (and OpenRouter exact lookups in `pricing/openrouter-exact-pricing.ts`);
@@ -78,11 +79,12 @@ export const COST_OWNERSHIP_GUARD: GuardSpec = {
     },
   ],
   remediation: [
-    'Wavemill has one cost engine: the Hokusai SDK reducer behind shared/lib/sdk-task-cost/',
-    '(HOK-3077). Live evals meter through sdk-task-cost/meter.ts, backfills recompute through',
+    'Wavemill has one cost engine: @hokusai/costs over the task\'s owned sessions (HOK-3077,',
+    'HOK-3328). Live evals meter through sdk-task-cost/meter.ts, backfills recompute through',
     'sdk-task-cost/recompute.ts, and readers use the persisted WorkflowCost* shape in',
     'shared/lib/workflow-cost.ts. Per-call pricing (computeModelCost, loadPricingTable) and',
-    'session discovery (resolveProjectsDirs) are primitives reserved for the SDK bridge and',
+    'session discovery (resolveProjectsDirs) are primitives: the SDK adapter only hands rates and',
+    'transcript locations to @hokusai/costs; the rest are reserved for',
     'Wavemill-only decision policy (router budgets, judge pricing, native budgets, backfills).',
   ],
 };

@@ -4088,8 +4088,8 @@ write_stage_result() {
     fi
     if [[ "$effective_agent" == "claude" || "$effective_agent" == "codex" ]]; then
       now_for_write="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-      local resolver_args=(--feature-dir "$feature_dir" --stage "$stage" --agent "$effective_agent" --finished-at "$now_for_write")
-      [[ -n "$started_at_override" ]] && resolver_args+=(--started-at "$started_at_override")
+      # HOK-3328: the resolver reads the stage's owned sessions, not a time window.
+      local resolver_args=(--feature-dir "$feature_dir" --stage "$stage" --agent "$effective_agent")
       local resolver_json
       resolver_json="$(wavemill_run_tool "resolve-executed-model.ts" "${resolver_args[@]}" 2>/dev/null || true)"
       if [[ -n "$resolver_json" ]] && jq -e . >/dev/null 2>&1 <<<"$resolver_json"; then
@@ -13480,7 +13480,11 @@ launch_remediation_agent() {
   local code_re='(^|[[:space:]])code=([^[:space:]]+)' reason_re='(^|[[:space:]])reason=([a-z0-9_-]+)($|[[:space:]][a-z]+=)'
   REMEDIATION_LAUNCH_REFUSAL="" REMEDIATION_LAUNCH_REFUSAL_DECISION=""
   launch_stderr="$(mktemp -t "wavemill-remediation-launch-XXXXXX" 2>/dev/null || echo /dev/null)"
-  _launch_agent_in_pane "$win" "$agent" "$model" "$prompt_file" "$slug" "$issue" "coding" "true" 2>"$launch_stderr" || rc=$?
+  # HOK-3328: the session-ownership row names the work this launch does.
+  local session_kind="ready-remediation"
+  [[ "$what" == *onflict* ]] && session_kind="conflict-resolution"
+  WAVEMILL_SESSION_KIND="$session_kind" \
+    _launch_agent_in_pane "$win" "$agent" "$model" "$prompt_file" "$slug" "$issue" "coding" "true" 2>"$launch_stderr" || rc=$?
   if [[ "$launch_stderr" != /dev/null ]]; then
     [[ -s "$launch_stderr" ]] && cat "$launch_stderr" >&2
     if (( rc == 3 )); then

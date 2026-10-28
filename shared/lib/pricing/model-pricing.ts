@@ -38,8 +38,8 @@ export interface ModelPricing {
 export type PricingTable = Record<string, ModelPricing>;
 
 /** Default cache pricing multipliers (relative to input cost). */
-const CACHE_WRITE_MULTIPLIER = 1.25;
-const CACHE_READ_MULTIPLIER = 0.1;
+export const CACHE_WRITE_MULTIPLIER = 1.25;
+export const CACHE_READ_MULTIPLIER = 0.1;
 
 /**
  * Load the effective pricing table: model-registry pricing, overlaid by

@@ -19,9 +19,8 @@ import {
   SCORE_BANDS,
   getScoreBand,
 } from './eval-schema.ts';
-import { buildSdkTaskCostSummaries } from './sdk-task-cost/collect.ts';
 import { repairPooledWorkflowCost } from './workflow-cost-pool-repair.ts';
-import { listSdkTaskCostFixtures, loadSdkTaskCostFixture } from './sdk-task-cost/fixtures.ts';
+import { fixtureTaskCostSummaries, listSdkTaskCostFixtures } from './sdk-task-cost/fixtures.ts';
 import { findTaskCostSchemaDrift } from './sdk-task-cost/schema-drift.ts';
 import {
   buildChallengeExecutionIntent,
@@ -3133,16 +3132,6 @@ test('replay_fidelity out of range fails validation', () => {
 // ────────────────────────────────────────────────────────────────
 // HOK-3075: shadow SDK task-cost summaries
 // ────────────────────────────────────────────────────────────────
-
-function fixtureTaskCostSummaries(name: string) {
-  const fixture = loadSdkTaskCostFixture(name);
-  return buildSdkTaskCostSummaries({
-    scanResults: fixture.scanResults,
-    taskId: fixture.taskId,
-    pricingTable: fixture.pricingTable,
-    now: () => new Date(fixture.now),
-  });
-}
 
 test('taskCostSummary schema enums match the pinned @hokusai/core contract', () => {
   assert.deepEqual(findTaskCostSchemaDrift(schema), []);
