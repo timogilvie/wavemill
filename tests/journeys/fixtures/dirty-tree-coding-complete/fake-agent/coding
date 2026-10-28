@@ -1,0 +1,39 @@
+# shellcheck shell=bash
+# Fake coder for the dirty-tree coding-complete journey (HOK-3128).
+#
+# The first coding launch commits part of the task, writes a valid
+# .coding-complete, then appends a planned line to journey-output.txt WITHOUT
+# committing it and stops — exactly the incident shape: the marker claims done
+# while the tree still holds tracked output nobody will ever commit.
+#
+# Any later coding launch is the mill's coding-dirty-handoff relaunch. It must
+# have been given the recovery instruction naming the dirty path; it commits
+# the leftover and re-writes .coding-complete.
+#
+# Every run ends the way a Claude Code session does: the Stop hook fires
+# through the real claude-status-hook.sh adapter, which is the agent-exit
+# evidence the mill's HOK-3101 progress primitive reads.
+coding_runs_file="$FAKE_ROOT/coding-runs-$WAVEMILL_ISSUE"
+coding_run=$(( $(cat "$coding_runs_file" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$coding_run" > "$coding_runs_file"
+fake_git() { git -c user.name=fake-agent -c user.email=fake-agent@example.invalid "$@"; }
+fake_stop_hook() {
+  printf '{"hook_event_name":"Stop"}' | bash "$FAKE_AGENT_TOOLS_DIR/../shared/hooks/claude-status-hook.sh" || true
+}
+
+if (( coding_run == 1 )); then
+  default_coding
+  printf 'leftover %s: written after .coding-complete, never committed\n' "$WAVEMILL_ISSUE" >> journey-output.txt
+  printf '%s phase=coding issue=%s fault=dirty-tree-after-complete\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+else
+  instruction="$FEATURE_DIR/.coding-recovery-instruction.md"
+  if grep -q 'journey-output.txt' "$instruction" 2>/dev/null; then
+    printf '%s phase=coding issue=%s role=dirty-handoff recovery-instruction=present\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+  else
+    printf '%s phase=coding issue=%s role=dirty-handoff recovery-instruction=absent\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+  fi
+  git add journey-output.txt
+  fake_git commit -q -m "$WAVEMILL_ISSUE: commit leftover output"
+  jq -n --arg commit "$(git rev-parse HEAD)" '{stage:"coding",confidence:"high",commit:$commit}' > "$FEATURE_DIR/.coding-complete"
+fi
+fake_stop_hook

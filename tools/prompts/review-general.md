@@ -120,6 +120,11 @@ Focus your review on these categories:
 - Use `severity: "blocker"` when the default path makes the headline assertion unreachable.
 - Use `severity: "warning"` only for documented debug or operator-only escape hatches that do not affect the default gate path.
 
+#### Golden journeys for mill-core PRs
+
+- A PR touching mill-core paths (the plan → code → review → ready → tend merge → reap chain: the `journeys` path filter in `.github/workflows/ci.yml`, e.g. `shared/lib/wavemill-*.sh`, `shared/lib/tend-*.ts`, `shared/lib/ready-*.ts`, `shared/hooks/`, `tools/tend.ts`, `tests/journeys/`, `tests/fakes/`) must pass the journey job (the required **Golden Journeys** check). Use `severity: "blocker"` when the diff removes, skips or weakens a journey, or drops one from the CI matrix, without a replacement.
+- A fix for an incident on that chain, or for a class a journey already covers (challenge pairs, Ready fail → remediate, dirty-tree `.coding-complete`, post-merge eval + reap, agent idle on its own background job, operator abort), must add or extend a journey in `tests/journeys/` that uses the shared fakes (`tests/fakes/lib.sh`). Report a missing journey as `severity: "blocker"`, category `requirements`.
+
 #### 1. Logical Errors and Edge Cases
 - **Off-by-one errors** - Array indexing, loop boundaries
 - **Null/undefined handling** - Missing checks that will cause runtime errors

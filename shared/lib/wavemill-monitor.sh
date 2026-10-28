@@ -4777,6 +4777,13 @@ coding_stage_owner_lost() {
   now_epoch="$(date +%s)"
   (( now_epoch - started_epoch >= grace )) || return 1
 
+  # A completion marker written since this launch means the agent finished,
+  # not that it was lost: the pass may have checked for it just before the
+  # agent wrote it and exited.
+  local marker_epoch
+  marker_epoch="$(portable_file_mtime_epoch "$feature_dir/.coding-complete" 2>/dev/null || true)"
+  [[ "$marker_epoch" =~ ^[0-9]+$ ]] && (( marker_epoch >= started_epoch )) && return 1
+
   # HOK-3101: read agent-only, so a monitor-written recovery replay
   # (`working` at :7632, `writer=monitor`) no longer protects a lost coding
   # owner. The agent's own fresh state still protects.

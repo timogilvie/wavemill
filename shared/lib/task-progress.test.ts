@@ -406,6 +406,33 @@ test('progressCacheIsFresh returns true only when computedAt is within the windo
   assert.equal(progressCacheIsFresh(stale, 300, now), false);
 });
 
+test('progressCacheIsFresh treats a cache older than the hook file as stale', () => {
+  const now = new Date('2026-09-28T16:00:00Z');
+  const cached = {
+    issue: 'x',
+    computedAt: '2026-09-28T15:59:00Z',
+    lastProgressAt: null,
+    progressAgeMinutes: null,
+    sources: [],
+    agentState: 'working',
+    agentRecord: null,
+    controllerState: null,
+    agentIdle: false,
+    terminal: false,
+    terminalIdle: false,
+    agentProcessLive: null,
+    stalled: false,
+    stallMinutes: 30,
+    blockingPrompt: null,
+  } as const;
+  const computedAtMs = Date.parse(cached.computedAt);
+  // The agent's Stop landed after the cache was computed: recompute.
+  assert.equal(progressCacheIsFresh(cached, 300, now, computedAtMs + 1_000), false);
+  // A hook written before the cache leaves it fresh; an absent hook is ignored.
+  assert.equal(progressCacheIsFresh(cached, 300, now, computedAtMs - 1_000), true);
+  assert.equal(progressCacheIsFresh(cached, 300, now, null), true);
+});
+
 // ── Gather IO: history-file fallback + worktree filter ───────────────────────
 
 test('gather: history file with agent Stop provides terminalHistoryIdleAt', () => {
