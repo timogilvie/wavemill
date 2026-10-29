@@ -6339,7 +6339,7 @@ emit_blocked_completion_attention() {
     && coding_dirty_handoff_agent_exited "$issue" "$feature_dir" "${feature_dir%/features/*}"; then
     write_stage_result "$feature_dir" "coding" "failed" "${current_agent:-unknown}" \
       "$(resolve_stage_result_model "$feature_dir" coding "")" \
-      "${summary}: ${reason}. Structured completion requests coding recovery; exited owner confirmed."
+      "${summary}: ${reason}. Structured completion requests coding recovery with confirmed owner exit."
     log "status" "$issue → blocked completion handed to failed-stage recovery"
     active_count=$((active_count + 1))
     return 0
