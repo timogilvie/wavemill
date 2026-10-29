@@ -35,5 +35,6 @@ journey_wait_until "$ISSUE" 8  "task reaped after merge"     journey_task_reaped
 echo ""
 echo "assertions:"
 journey_assert_landed "$ISSUE"
+journey_assert_session_ownership "$ISSUE" planning coding review
 
 journey_finish

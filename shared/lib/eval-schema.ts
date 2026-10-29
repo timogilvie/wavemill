@@ -215,6 +215,12 @@
  *   record that names the original row via `supersedes.evalId`. The original
  *   invalid row is never rewritten or deleted. Additive; legacy records
  *   without this field still validate.
+ * - **1.56.0**: HOK-3328 — `workflowCost` is the `@hokusai/costs` cross-harness
+ *   total over the sessions recorded in `.session-ownership.jsonl`. Added
+ *   optional `workflowCostByHarness`, `workflowCostByKind`,
+ *   `workflowCostUnreliable`, attribution source `multi`, and
+ *   `executionEconomics[].sessions[].stageRole.kind` with confidences
+ *   `launch_record` / `unowned`. Additive; legacy records still validate.
  *
  * @module eval-schema
  */
@@ -240,7 +246,7 @@ import type { TaskCostSummaryV1 } from './sdk-task-cost/contract.ts';
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.55.0';
+export const SCHEMA_VERSION = '1.56.0';
 
 /**
  * Machine-readable exploration source for an eval row.
@@ -502,7 +508,8 @@ export interface WorkflowCostAttributionModel {
 }
 
 export interface WorkflowCostAttribution {
-  source: 'native' | 'codex' | 'claude';
+  /** The one harness that contributed, or `multi` when several did (HOK-3328). */
+  source: 'native' | 'codex' | 'claude' | 'multi';
   coverage: WorkflowCostAttributionCoverage;
   reason?: WorkflowCostAttributionReason;
   sessions: number;
@@ -546,11 +553,21 @@ export type ExecutionEconomicsHarness = 'claude-code' | 'codex';
  */
 export type FieldAvailability = 'available' | 'partial' | 'unavailable' | 'known_zero';
 
-/** Where a session's cost figure came from. */
-export type ExecutionEconomicsCostSource = 'provider_reported' | 'local_estimate' | 'none';
+/** Where a session's cost figure came from (the `@hokusai/costs` report's cost source). */
+export type ExecutionEconomicsCostSource = 'provider_reported' | 'local_estimate' | 'mixed' | 'none';
 
-/** Confidence tier for joining a session to Wavemill workflow evidence. */
-export type ExecutionJoinConfidence = 'branch_worktree' | 'timestamp_window' | 'unattributed';
+/**
+ * Confidence tier for joining a session to Wavemill workflow evidence.
+ * Since HOK-3328 writers emit only `launch_record` (the launch row named the
+ * session) or `unowned` (a worktree session no launch recorded);
+ * `timestamp_window` / `unattributed` survive on historical records.
+ */
+export type ExecutionJoinConfidence =
+  | 'launch_record'
+  | 'unowned'
+  | 'branch_worktree'
+  | 'timestamp_window'
+  | 'unattributed';
 
 /** Token usage where every unavailable dimension is `null`, never `0`. */
 export interface ExecutionEconomicsTokenUsage {
@@ -605,7 +622,17 @@ export interface ExecutionEconomicsTriggerSource {
 
 /** Stage/subagent role join evidence with explicit confidence. */
 export interface ExecutionEconomicsStageRole {
+  /** Canonical stage the session worked for; `null` for non-stage kinds. */
   value: 'planning' | 'coding' | 'review' | null;
+  /**
+   * Launch kind from `.session-ownership.jsonl` (`planning`, `coding`,
+   * `review`, `ready-remediation`, `conflict-resolution`, `ci-fix`,
+   * `native-arm`, `helper:<purpose>`), or `operator` for an unowned session.
+   * Absent on records written before HOK-3328.
+   *
+   * @since 1.56.0
+   */
+  kind?: string;
   confidence: ExecutionJoinConfidence;
   evidence: string | null;
 }
@@ -2193,6 +2220,32 @@ export interface EvalRecord {
    * @since 1.54.0
    */
   taskCostSummary?: EvalTaskCostSummary[] | null;
+
+  /**
+   * `@hokusai/costs` per-harness totals behind `workflowCost`; `null` marks a
+   * harness with an unresolved event.
+   *
+   * @since 1.56.0
+   */
+  workflowCostByHarness?: Record<string, number | null>;
+
+  /**
+   * `@hokusai/costs` totals per session-ownership kind (`planning`, `coding`,
+   * `review`, `ready-remediation`, `helper:<purpose>`, …), each the SDK report
+   * over that kind's owned sessions.
+   *
+   * @since 1.56.0
+   */
+  workflowCostByKind?: Record<string, number | null>;
+
+  /**
+   * Set on a historical record whose `workflowCost` came from the retired
+   * native-first harness selection and could not be recomputed from stored
+   * per-harness summaries. The value is kept; readers should not aggregate it.
+   *
+   * @since 1.56.0
+   */
+  workflowCostUnreliable?: { reason: string; markedAt: string };
 
   /**
    * HOK-3143: per-stage provider-identity attribution assembled from stage

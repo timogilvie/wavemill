@@ -34,6 +34,7 @@ JOURNEY_INSTALL_DIR="$(cd "$JOURNEY_HARNESS_DIR/../.." && pwd)"
 # shellcheck source=../fakes/lib.sh
 source "$JOURNEY_INSTALL_DIR/tests/fakes/lib.sh"
 
+JOURNEY_MAX_PARALLEL=1
 JOURNEY_NAME=""
 JOURNEY_TMP=""
 JOURNEY_MONITOR_PID=""
@@ -177,7 +178,7 @@ journey_write_monitor_env() {
     printf 'AGENT_CMD=claude\n'
     printf 'AGENT_CMD_EXPLICIT=true\n'
     printf 'ROUTER_ENABLED=false\n'
-    printf 'MAX_PARALLEL=1\n'
+    printf 'MAX_PARALLEL=%s\n' "$JOURNEY_MAX_PARALLEL"
     printf 'AUTO_EVAL=false\n'
     printf 'ENTER_ACTION=none\n'
     printf 'ENTER_LAUNCHES_WAVE=false\n'
@@ -427,14 +428,14 @@ journey_pr_merged() {
 }
 
 # Reaped: the row is gone (or terminal) and so is the worktree, and the mill
-# has released the slot (freeSlots back to MAX_PARALLEL=1).
+# has released the slot (freeSlots back to JOURNEY_MAX_PARALLEL).
 journey_task_reaped() {
   local issue="$1" status slug
   status="$(journey_task_field "$issue" status)"
   slug="$(jq -r --arg id "$issue" '.tasks[$id].slug // "__none__"' "$STATE_FILE" 2>/dev/null)"
   [[ -z "$(journey_task_field "$issue" phase)" || "$status" == "merged" || "$status" == "completed" ]] \
     && [[ ! -d "$WORKTREE_ROOT/$slug" ]] \
-    && [[ "$(jq -r '.freeSlots // empty' "$STATE_FILE" 2>/dev/null)" == "1" ]]
+    && [[ "$(jq -r '.freeSlots // empty' "$STATE_FILE" 2>/dev/null)" == "$JOURNEY_MAX_PARALLEL" ]]
 }
 
 # Shared end-state assertions for a task that should have landed.
@@ -454,13 +455,47 @@ journey_assert_landed() {
     bash -c 'jq -e --arg id "$2" "[.transitions[] | select(.identifier==\$id) | .to] | (index(\"In Progress\") // 99) < (index(\"Done\") // -1)" "$1" >/dev/null' _ "$FAKE_LINEAR_STATE" "$issue"
   journey_assert "task row and worktree reaped" journey_task_reaped "$issue"
   journey_assert "slot count back to 0 (freeSlots == MAX_PARALLEL)" \
-    test "$(jq -r '.freeSlots // empty' "$STATE_FILE")" = "1"
+    test "$(jq -r '.freeSlots // empty' "$STATE_FILE")" = "$JOURNEY_MAX_PARALLEL"
   case "$JOURNEY_EXPECT_ATTENTION" in
     1) journey_assert "task raised .needs-attention (expected)" test "$JOURNEY_SAW_ATTENTION" = "1" ;;
     any) ;;
     *) journey_assert "no .needs-attention at any tick" test "$JOURNEY_SAW_ATTENTION" = "0" ;;
   esac
   journey_assert_no_unhandled_fake_calls
+}
+
+# HOK-3328: every session the fake agent CLI started has a launch row in the
+# task's (archived) .session-ownership.jsonl with the expected kinds, in
+# order, and workflow cost is the @hokusai/costs total over exactly those
+# owned sessions. $2.. are the expected kinds, e.g. planning coding review.
+journey_assert_session_ownership() {
+  local issue="$1"; shift
+  local expected_kinds="$*"
+  local record="$REPO_DIR/.wavemill/evals/artifacts/$issue/.session-ownership.jsonl"
+  local launched owned kinds metered
+  launched="$(grep "issue=$issue wt=" "$FAKE_AGENT_LOG" 2>/dev/null | sed -n 's/.* session=\([^ ]*\)$/\1/p' | sort | tr '\n' ' ')"
+  owned="$(jq -r 'select(.type == "launch") | .sessionRef' "$record" 2>/dev/null | sort | tr '\n' ' ')"
+  kinds="$(jq -r 'select(.type == "launch") | .kind' "$record" 2>/dev/null | tr '\n' ' ')"
+  journey_assert "session-ownership record archived with the task" test -s "$record"
+  journey_assert "every session the agent CLI started has an ownership row (and no other)" \
+    test -n "$launched" -a "$launched" = "$owned"
+  journey_assert "ownership kinds are [$expected_kinds]" test "${kinds% }" = "$expected_kinds"
+  # Each fake session is one turn of its launched model: 1000 input + 100
+  # output tokens. Every launched model gets the same test rates ($15/$75 per
+  # MTok), so each owned session costs exactly $0.0225.
+  metered="$(cd "$JOURNEY_INSTALL_DIR" && node --import tsx --input-type=module -e "
+    const { meterWorkflowCost } = await import('./shared/lib/sdk-task-cost/meter.ts');
+    const models = process.argv[3].split(' ').filter(Boolean);
+    const pricingTable = Object.fromEntries(models.map((model) => [model, { inputCostPerMTok: 15, outputCostPerMTok: 75 }]));
+    const m = await meterWorkflowCost({ worktreePath: process.argv[1], branchName: 'journey', repoDir: process.argv[1], issueId: process.argv[2],
+      pricingTable, label: 'journey', logger: { log() {}, warn() {} } });
+    const o = m.outcome;
+    process.stdout.write(o.status === 'success' ? o.sessionCount + ' ' + o.totalCostUsd.toFixed(4) : o.status);
+  " "$REPO_DIR" "$issue" "$(jq -r 'select(.type == "launch") | .model' "$record" 2>/dev/null | sort -u | tr '\n' ' ')" 2>/dev/null)"
+  local count
+  count="$(wc -w <<<"$owned" | tr -d ' ')"
+  journey_assert "workflow cost is the SDK total over the $count owned session(s)" \
+    test "$metered" = "$count $(awk -v n="$count" 'BEGIN { printf "%.4f", n * 0.0225 }')"
 }
 
 journey_assert_no_unhandled_fake_calls() {

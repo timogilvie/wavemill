@@ -1,0 +1,9 @@
+# session-ownership-allowlist.txt — sites allowed to match the HOK-3328
+# session-ownership guard (tools/check-session-ownership.ts).
+#
+# Format (tools/lib/source-guard.ts): `<repo-relative path> [<count>]  # <reason>`.
+# Every entry needs a same-line `# reason`. The list is a ratchet: it only
+# shrinks. A session's stage label, the executed model's stage sessions and a
+# task's cost all come from shared/lib/session-ownership.ts and the
+# @hokusai/costs report (shared/lib/sdk-task-cost/meter.ts) — a new site reads
+# those instead of being listed here.

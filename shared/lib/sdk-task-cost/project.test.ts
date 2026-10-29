@@ -1,171 +1,88 @@
+/**
+ * Projection of the `@hokusai/costs` report into the persisted workflow-cost
+ * shape (HOK-3328): the total is the report's cross-harness total, never one
+ * harness's summary.
+ */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { computeCostStatistics } from '../eval-aggregator.ts';
-import { attachTaskCostSummaries, attachWorkflowCostMetadata } from '../eval-record-builder.ts';
-import { SCHEMA_VERSION, type EvalRecord } from '../eval-schema.ts';
-import { formatCostDisplay, formatWorkflowCostOutcome } from '../eval-summary-printer.ts';
-import { validateEvalRecord } from '../eval-validator.ts';
-import { toHokusaiSubmission } from '../hokusai-schema.ts';
-import { buildSdkTaskCostSummaries } from './collect.ts';
-import type { TaskCostSummaryV1 } from './contract.ts';
-import { loadSdkTaskCostFixture } from './fixtures.ts';
-import { projectTaskCostSummaryToWorkflowCost, selectPrimaryTaskCostSummary } from './project.ts';
+import { createTaskCostTracker } from '@hokusai/costs';
+import { buildHostPriceOverrides } from './price-overrides.ts';
+import { projectReportToWorkflowCost, reportByHarness } from './project.ts';
+import { reportableWorkflowCostUsd } from '../workflow-cost.ts';
 
-function summaries(name: string): TaskCostSummaryV1[] {
-  const fixture = loadSdkTaskCostFixture(name);
-  const result = buildSdkTaskCostSummaries({
-    scanResults: fixture.scanResults,
-    taskId: fixture.taskId,
-    pricingTable: fixture.pricingTable,
-    now: () => new Date(fixture.now),
+function report(records: Parameters<ReturnType<typeof createTaskCostTracker>['recordUsage']>[0][]) {
+  const tracker = createTaskCostTracker({
+    taskId: 'HOK-1',
+    priceOverrides: buildHostPriceOverrides({ 'claude-opus-4-7': { inputCostPerMTok: 15, outputCostPerMTok: 75 } }),
+    now: () => new Date('2026-10-27T00:00:00.000Z'),
   });
-  assert.ok(result, `${name} produced no summaries`);
-  return result;
+  for (const record of records) tracker.recordUsage(record);
+  return tracker.summary();
 }
 
-function project(name: string) {
-  const fixture = loadSdkTaskCostFixture(name);
-  return projectTaskCostSummaryToWorkflowCost(summaries(name)[0], { pricingTable: fixture.pricingTable });
-}
+const CLAUDE = {
+  harness: 'claude-code' as const,
+  model: 'claude-opus-4-7',
+  usage: { inputTokens: 0, outputTokens: 100_000, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 },
+  sessionId: 'claude-1',
+};
+const NATIVE = {
+  harness: 'native' as const,
+  model: 'qwen-3-coder',
+  usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 },
+  providerCostUsd: 2,
+  sessionId: 'native-1',
+};
 
-function baseRecord(): EvalRecord {
-  return {
-    id: 'eval-sdk-projection',
-    schemaVersion: SCHEMA_VERSION,
-    originalPrompt: 'Implement the change',
-    modelId: 'claude-opus-4',
-    modelVersion: 'claude-opus-4',
-    score: 0.9,
-    scoreBand: 'Minor Feedback',
-    timeSeconds: 60,
-    timestamp: '2026-10-01T00:00:00.000Z',
-    interventionRequired: false,
-    interventionCount: 0,
-    interventionDetails: [],
-    rationale: 'ok',
-  } as EvalRecord;
-}
+describe('projectReportToWorkflowCost (HOK-3328)', () => {
+  // protects: the native-first rule — a native summary masking the Claude Code cost
+  it('totals every harness and attributes the record to `multi`', () => {
+    const projected = projectReportToWorkflowCost(report([CLAUDE, NATIVE]));
+    assert.equal(projected.totalCostUsd, 9.5);
+    assert.deepEqual(projected.byHarness, { 'claude-code': 7.5, native: 2 });
+    assert.equal(projected.attribution?.source, 'multi');
+    assert.equal(projected.sessionCount, 2);
+    assert.deepEqual(Object.keys(projected.models).sort(), ['claude-opus-4-7', 'qwen-3-coder']);
+    assert.equal(projected.models['claude-opus-4-7'].costUsd, 7.5);
+    assert.equal(projected.attribution?.models.find((model) => model.provider === 'native')?.providerReportedCostUsd, 2);
+  });
 
-describe('projectTaskCostSummaryToWorkflowCost', () => {
-  it('projects a complete Claude Code summary into the legacy shape', () => {
-    const outcome = project('claude-success');
-    assert.equal(outcome.status, 'success');
-    assert.equal(outcome.totalCostUsd, 0.085125);
-    assert.equal(outcome.sessionCount, 1);
-    assert.equal(outcome.turnCount, 2);
-    assert.deepEqual(outcome.models['claude-opus-4'], {
-      inputTokens: 3000, cacheCreationTokens: 100, cacheReadTokens: 500, outputTokens: 500, costUsd: 0.085125,
+  // protects: single-harness records changing their persisted attribution source
+  it('keeps the harness name when one harness contributed', () => {
+    const projected = projectReportToWorkflowCost(report([CLAUDE]));
+    assert.equal(projected.attribution?.source, 'claude');
+    assert.equal(projected.attribution?.coverage, 'complete');
+    assert.equal(projected.totalCostUsd, 7.5);
+  });
+
+  // protects: an unpriced model presented as a complete $0 cost
+  it('keeps an unresolved harness as null in byHarness and marks the record partial', () => {
+    const unpriced = { ...NATIVE, providerCostUsd: undefined, model: 'mystery-model' };
+    const projected = projectReportToWorkflowCost(report([CLAUDE, unpriced]));
+    assert.deepEqual(projected.byHarness, { 'claude-code': 7.5, native: null });
+    assert.equal(projected.attribution?.coverage, 'partial');
+    assert.equal(projected.attribution?.reason, 'unpriced_model');
+    assert.equal(projected.attribution?.unpricedSessions, 1);
+    assert.deepEqual(reportByHarness(report([unpriced])), { native: null });
+  });
+
+  // protects: the persisted pricing snapshot being recomputed instead of copied
+  it('stores the caller-supplied pricing snapshot verbatim', () => {
+    const snapshot = { 'claude-opus-4-7': { inputCostPerMTok: 15, outputCostPerMTok: 75 } };
+    assert.deepEqual(projectReportToWorkflowCost(report([CLAUDE]), snapshot).pricingUsed, snapshot);
+  });
+
+  // protects: an unpriced run reported as $0, or a genuinely free run hidden
+  it('reports a figure only for priced or known-zero outcomes', () => {
+    const unpriced = projectReportToWorkflowCost(report([{ ...NATIVE, providerCostUsd: undefined, model: 'mystery-model' }]));
+    assert.equal(reportableWorkflowCostUsd(unpriced), undefined);
+    const tracker = createTaskCostTracker({
+      taskId: 'HOK-1',
+      priceOverrides: buildHostPriceOverrides({ 'free-model': { inputCostPerMTok: 0, outputCostPerMTok: 0, cacheReadCostPerMTok: 0, cacheWriteCostPerMTok: 0 } }),
     });
-    assert.deepEqual(Object.keys(outcome.pricingUsed), ['claude-opus-4']);
-    assert.equal(outcome.attribution?.source, 'claude');
-    assert.equal(outcome.attribution?.coverage, 'complete');
-    assert.equal(outcome.attribution?.reason, undefined);
-    assert.equal(outcome.attribution?.models[0].pricingSource, 'local_estimate');
-    assert.equal(outcome.attribution?.models[0].priced, true);
-  });
-
-  it('re-folds Codex reasoning into output tokens like the legacy models view', () => {
-    const outcome = project('codex-reasoning-and-cache');
-    assert.equal(outcome.models['gpt-5-codex'].outputTokens, 225);
-    assert.equal(outcome.attribution?.source, 'codex');
-    // Codex has no cache-write category: a structural 0, not a gap.
-    assert.equal(outcome.attribution?.coverage, 'complete');
-    assert.equal(outcome.attribution?.reason, undefined);
-  });
-
-  it('names the gap on a partial record instead of a bare mixed_coverage', () => {
-    const outcome = project('native-unpriced-model');
-    assert.equal(outcome.attribution?.coverage, 'partial');
-    assert.equal(outcome.attribution?.reason, 'unpriced_model');
-  });
-
-  it('keeps provider-reported cost distinguishable from the estimate', () => {
-    const outcome = project('native-provider-reported');
-    const [model] = outcome.attribution!.models;
-    assert.equal(outcome.totalCostUsd, 0.005);
-    assert.equal(model.providerReportedCostUsd, 0.005);
-    assert.equal(model.pricingSource, 'openrouter_api');
-    assert.deepEqual(outcome.pricingUsed, {}, 'no estimate → no pricing snapshot');
-
-    const mixed = project('native-untrusted-zero-cost');
-    assert.equal(mixed.attribution!.models[0].pricingSource, 'mixed');
-    assert.ok(Math.abs(mixed.totalCostUsd - 0.00238) < 1e-12);
-  });
-
-  it('reports unpriced work as a zero lower bound with truthful attribution', () => {
-    const outcome = project('native-unpriced-model');
-    assert.equal(outcome.totalCostUsd, 0);
-    assert.equal(outcome.attribution?.models[0].priced, false);
-    assert.equal(outcome.attribution?.models[0].reason, 'unpriced_model');
-    assert.equal(outcome.attribution?.models[0].costUsd, undefined);
-    assert.equal(outcome.attribution?.unpricedSessions, 1);
-  });
-
-  it('carries the legacy reason for unavailable and known-zero coverage', () => {
-    const unavailable = project('native-missing-usage');
-    assert.equal(unavailable.attribution?.coverage, 'unavailable');
-    assert.equal(unavailable.attribution?.reason, 'invalid_token_usage');
-
-    const knownZero = project('native-known-zero');
-    assert.equal(knownZero.attribution?.coverage, 'known_zero');
-    assert.equal(knownZero.attribution?.reason, undefined);
-    assert.equal(knownZero.totalCostUsd, 0);
-  });
-});
-
-describe('selectPrimaryTaskCostSummary', () => {
-  it('prefers native, then the agent type harness, then the first summary', () => {
-    const multi = summaries('multi-harness');
-    const native = summaries('native-provider-reported');
-    assert.equal(selectPrimaryTaskCostSummary([...multi, ...native], 'claude')?.harness, 'native');
-    assert.equal(selectPrimaryTaskCostSummary(multi, 'codex')?.harness, 'codex');
-    assert.equal(selectPrimaryTaskCostSummary(multi, 'claude-deepseek')?.harness, 'claude-code');
-    assert.equal(selectPrimaryTaskCostSummary(multi, undefined)?.harness, 'claude-code');
-    assert.equal(selectPrimaryTaskCostSummary(null), null);
-    assert.equal(selectPrimaryTaskCostSummary([]), null);
-  });
-
-  it('never lets a native summary without usable evidence mask the sessions that carry the cost', () => {
-    const multi = summaries('multi-harness');
-    const emptyNative = summaries('native-missing-usage');
-    assert.equal(emptyNative[0].coverage, 'unavailable');
-    assert.equal(selectPrimaryTaskCostSummary([...multi, ...emptyNative], 'claude')?.harness, 'claude-code');
-    assert.equal(selectPrimaryTaskCostSummary([...emptyNative, ...multi], 'codex')?.harness, 'codex');
-    // A native run is costed natively even when its evidence is unusable.
-    assert.equal(selectPrimaryTaskCostSummary([...multi, ...emptyNative], 'native')?.harness, 'native');
-    // Unusable native evidence still beats no evidence at all.
-    assert.equal(selectPrimaryTaskCostSummary(emptyNative, 'claude')?.harness, 'native');
-  });
-});
-
-describe('SDK-backed eval records through existing readers', () => {
-  it('validates, renders, aggregates, and never reaches the Hokusai submission', () => {
-    const fixture = loadSdkTaskCostFixture('claude-success');
-    const taskCostSummary = summaries('claude-success');
-    const record = baseRecord();
-    attachWorkflowCostMetadata(record, projectTaskCostSummaryToWorkflowCost(taskCostSummary[0], {
-      pricingTable: fixture.pricingTable,
-    }));
-    attachTaskCostSummaries(record, taskCostSummary);
-
-    const schemaIssues = validateEvalRecord(record, { file: 'test', line: 1 })
-      .filter((issue) => issue.code === 'SCHEMA_VIOLATION');
-    assert.deepEqual(schemaIssues, []);
-
-    // Claude Code runs on a subscription: the dollars are an estimate (HOK-3076).
-    assert.equal(formatCostDisplay(record.workflowCost, record.workflowCostAttribution), ', workflow cost: ~$0.0851 (estimate)');
-    assert.equal(
-      formatWorkflowCostOutcome(record.workflowCost!, 2, 1, record.workflowCostAttribution),
-      'workflow cost ~$0.0851 (estimate) (2 turns across 1 session(s))',
-    );
-    const stats = computeCostStatistics([record, baseRecord()]);
-    assert.equal(stats.recordsWithCost, 1);
-    assert.equal(stats.workflowCostStatusDistribution.success, 1);
-
-    const submission = toHokusaiSubmission(record);
-    const serialized = JSON.stringify(submission);
-    assert.equal(serialized.includes('taskCostSummary'), false);
-    assert.equal(serialized.includes('task_cost_summary/v1'), false);
-    assert.equal(serialized.includes(taskCostSummary[0].event_ids[0]), false);
+    tracker.recordUsage({ ...CLAUDE, model: 'free-model' });
+    const free = projectReportToWorkflowCost(tracker.summary());
+    assert.equal(reportableWorkflowCostUsd(free), 0);
+    assert.equal(reportableWorkflowCostUsd(projectReportToWorkflowCost(report([CLAUDE]))), 7.5);
   });
 });

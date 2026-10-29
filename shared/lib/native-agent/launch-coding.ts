@@ -11,6 +11,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AgentContext, LoopResult, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
+import { DEFAULT_NATIVE_PLANNING_LIMITS } from './planning-guards.ts';
 import { createNativeModelsCollection } from './models.ts';
 import {
   ProviderIdentityMismatchError,
@@ -111,6 +112,7 @@ import { reportPromptCacheHitRate } from './prompt-cache-detector.ts';
 import { getNativeContextManagementConfig, getNativePayloadCaptureConfig } from '../config.ts';
 import { equivalentOpenRouterModelIds, type NormalizedPricing } from '../openrouter-catalog.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
+import { nativeLaunchKind, recordLaunch } from '../session-ownership.ts';
 import type { ResourceRef } from '../resource-registry.ts';
 import {
   getBlockedCompletionPath,
@@ -1147,6 +1149,15 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
 
     // Construct session stream configuration and create persistent writer
     const codingNativeSessionId = `${options.session}-coding-${options.issue}`;
+    // HOK-3328: own the transcript's session before the loop starts.
+    recordLaunch(featureDir, {
+      sessionRef: codingNativeSessionId,
+      harness: 'native',
+      kind: nativeLaunchKind(),
+      stage: 'coding',
+      model: requestedModelName,
+      cwd: options.wtDir,
+    });
     const eventStreamPath = resolveSessionEventStreamPath(codingNativeSessionId, options.repoDir);
 
     // Create a persistent session stream writer for the entire launch lifecycle
@@ -1284,6 +1295,13 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       ...(nativeModels ? { models: nativeModels } : {}),
       context,
       maxTokens: effectiveMaxTokens,
+      // Coding uses the loop's existing admission and stagnation controls, as planning does.
+      budget: {
+        maxTurns: 200,
+        maxToolCalls: 1200,
+        maxWallClockMs: 60 * 60 * 1000,
+        stagnation: DEFAULT_NATIVE_PLANNING_LIMITS.toolStagnation,
+      },
       contextManagement: getNativeContextManagementConfig(options.repoDir),
       payloadCapture: { featureDir, stage: 'coding', ...getNativePayloadCaptureConfig(options.repoDir) },
       convertToLlm: (messages) => messages as unknown as Message[],

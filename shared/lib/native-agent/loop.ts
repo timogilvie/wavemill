@@ -32,7 +32,8 @@ export interface AgentContext extends PiAgentContext {
   systemPrompt?: string;
 }
 export type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { computeModelCost, type ModelPricing } from '../pricing/model-pricing.ts';
+import type { ModelPricing } from '../pricing/model-pricing.ts';
+import { priceUsageUsd } from '../sdk-task-cost/price-overrides.ts';
 import type { ModelRegistry } from '../model-registry.ts';
 import { appendPromptSizeSample, type PromptSizeSample } from './prompt-size-log.ts';
 import { EMPTY_PROMPT_CACHE_SUMMARY, summarizePromptCache, type PromptCacheSummary, type TurnCacheUsage } from './prompt-cache.ts';
@@ -755,6 +756,8 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
 
   let turnsCompleted = 0;
   let toolCallsExecuted = 0;
+  let toolCallsAdmitted = 0;
+  const batchBudgetStop = new Error('tool_call_limit: response exceeds remaining tool-call budget');
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCostUsd = 0;
@@ -845,7 +848,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         limit: contextWindowLimit,
         safetyMargin: contextManagement.safetyMarginPct / 100,
       });
-      
+
       // Log the preflight estimate if prompt size logging is configured
       if (config.promptSizeLog && !Array.isArray(estimateResult) && estimateResult.diagnostic?.estimate) {
         const estimate = estimateResult.diagnostic.estimate;
@@ -883,6 +886,32 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   // and continuation paths see the same messages as before (HOK-3161).
   const systemPromptMessage = createInitialSystemMessage(context.systemPrompt, undefined);
 
+  const recordTurnUsage = (msg: AssistantMessage) => {
+    const usage = msg.usage;
+    if (usage) {
+      const input = usage.input ?? 0;
+      const output = usage.output ?? 0;
+      const cacheWrite = usage.cacheWrite ?? 0;
+      const cacheRead = usage.cacheRead ?? 0;
+      totalInputTokens += input;
+      totalOutputTokens += output;
+      if (modelPricing) {
+        totalCostUsd += priceUsageUsd(
+          modelPricing,
+          { inputTokens: input, outputTokens: output, cacheCreationTokens: cacheWrite, cacheReadTokens: cacheRead },
+        ) ?? 0;
+      }
+
+      // Track peak input tokens (what must fit in context window)
+      const totalTokens = input + cacheRead + cacheWrite;
+      if (totalTokens > peakInputTokens) {
+        peakInputTokens = totalTokens;
+      }
+      turnCacheUsage.push({ input, cacheRead, cacheWrite });
+    }
+    turnsCompleted++;
+  };
+
   const piConfig: AgentLoopConfig = {
     model: toPiModel(config.model, currentMaxTokens, contextWindowLimit?.limit),
     convertToLlm: async (messages) => {
@@ -903,29 +932,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       plannedNextTurn = await planNextTurn?.(ctx);
 
       const msg = ctx.message as AssistantMessage;
-      const usage = msg.usage;
-      if (usage) {
-        const input = usage.input ?? 0;
-        const output = usage.output ?? 0;
-        const cacheWrite = usage.cacheWrite ?? 0;
-        const cacheRead = usage.cacheRead ?? 0;
-        totalInputTokens += input;
-        totalOutputTokens += output;
-        if (modelPricing) {
-          totalCostUsd += computeModelCost(
-            { inputTokens: input, outputTokens: output, cacheCreationTokens: cacheWrite, cacheReadTokens: cacheRead },
-            modelPricing,
-          );
-        }
-      
-        // Track peak input tokens (what must fit in context window)
-        const totalTokens = input + cacheRead + cacheWrite;
-        if (totalTokens > peakInputTokens) {
-          peakInputTokens = totalTokens;
-        }
-        turnCacheUsage.push({ input, cacheRead, cacheWrite });
-      }
-      turnsCompleted++;
+      recordTurnUsage(msg);
 
       // Evaluate budget limits in deterministic order.
       // A pending terminal synthesis is the single graceful exception to the
@@ -961,7 +968,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         !terminalSynthesisPromptPending
         && !terminalSynthesisCompleted
         && budget?.maxToolCalls !== undefined
-        && toolCallsExecuted >= budget.maxToolCalls
+        && toolCallsAdmitted >= budget.maxToolCalls
       ) {
         budgetStopReason = 'tool_call_limit';
         return { action: 'end' };
@@ -1210,7 +1217,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       const reachedTurnBoundary = budget?.maxTurns !== undefined
         && currentTurn >= budget.maxTurns - 1;
       const reachedToolBoundary = budget?.maxToolCalls !== undefined
-        && toolCallsExecuted >= budget.maxToolCalls;
+        && toolCallsAdmitted >= budget.maxToolCalls;
       if (
         config.terminalSynthesis
         && !terminalSynthesisActive
@@ -1408,7 +1415,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
               ? budget.maxTurns - turnsCompleted
               : undefined;
             const toolCallBudgetRemaining = budget?.maxToolCalls !== undefined
-              ? budget.maxToolCalls - toolCallsExecuted
+              ? budget.maxToolCalls - toolCallsAdmitted
               : undefined;
             const tokensUsedSoFar = totalInputTokens + totalOutputTokens;
             const modelRequestEvent = sessionStreamWriter.writeModelRequest({
@@ -1440,6 +1447,17 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         onHeartbeat?.({ state: 'working', event: 'message_update', agent: HEARTBEAT_AGENT });
         break;
       case 'message_end': {
+        if (event.message?.role === 'assistant' && budget?.maxToolCalls !== undefined) {
+          const requested = event.message.content.filter((block) => block.type === 'toolCall').length;
+          // Pi's finishTurn runs AFTER dispatch. Gate the complete response here,
+          // including invalid/skipped calls, before it can flood the transcript.
+          if (requested > budget.maxToolCalls - toolCallsAdmitted) {
+            recordTurnUsage(event.message as AssistantMessage);
+            budgetStopReason = 'tool_call_limit';
+            throw batchBudgetStop;
+          }
+          toolCallsAdmitted += requested;
+        }
         if (payloadRing && event.message?.role === 'assistant') {
           payloadRing.recordResponse(event.message as AssistantMessage);
         }
@@ -1642,7 +1660,12 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       break;
     }
   } catch (err) {
-    loopError = err;
+    if (err === batchBudgetStop) {
+      finalMessages = [...context.messages];
+      handleAgentEvent({ type: 'agent_end', messages: finalMessages });
+    } else {
+      loopError = err;
+    }
   } finally {
     // Log the run peak if prompt size logging is configured
     if (config.promptSizeLog && peakInputTokens > 0) {

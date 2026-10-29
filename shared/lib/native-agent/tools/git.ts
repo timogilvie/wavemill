@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { buildTrustMetadata } from '../provenance.ts';
 import type { IntendedFileTracker } from './intended-files.ts';
@@ -497,6 +499,34 @@ async function runGitDiff(
       }),
     },
   };
+}
+
+/** Count a patch's pre/post images through the same Git numstat authority as git_diff_stat. */
+export async function countGitTextChanges(
+  originalText: string,
+  updatedText: string,
+): Promise<{ linesAdded: number; linesRemoved: number }> {
+  const dir = await mkdtemp(path.join(tmpdir(), 'wavemill-patch-stat-'));
+  try {
+    const before = path.join(dir, 'before');
+    const after = path.join(dir, 'after');
+    await Promise.all([writeFile(before, originalText), writeFile(after, updatedText)]);
+    const result = await runGit(dir, [
+      'diff', '--no-index', '--no-ext-diff', '--no-textconv', '--no-color',
+      '--no-renames', '--text', '--numstat', '--', before, after,
+    ]);
+    // Git diff --no-index exits 1 when differences exist, rather than on an error.
+    if (!result.ok && result.exitCode !== 1) {
+      throw new Error(`Cannot count patch changes: ${result.stderr}`);
+    }
+    const files = parseGitDiffStatOutput(result.stdout ?? '');
+    return {
+      linesAdded: files.reduce((sum, file) => sum + (file.additions ?? 0), 0),
+      linesRemoved: files.reduce((sum, file) => sum + (file.deletions ?? 0), 0),
+    };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 async function runGitDiffStat(

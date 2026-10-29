@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -39,6 +40,35 @@ function makePatch(operations: NativePatch['operations']): NativePatch {
 }
 
 describe('patch-runtime', () => {
+  // protects: HOK-3255's 24k-line patch must finish under a small heap, with Git's counts.
+  it('patches a large file under a 64 MiB heap and reports Git numstat', () => {
+    const runtimeUrl = new URL('./patch-runtime.ts', import.meta.url).href;
+    const script = `
+      import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+      import { tmpdir } from 'node:os';
+      import { join } from 'node:path';
+      import { applyNativePatch } from ${JSON.stringify(runtimeUrl)};
+      const dir = mkdtempSync(join(tmpdir(), 'large-patch-replay-'));
+      try {
+        const text = Array.from({ length: 24238 }, (_, i) => 'line ' + i).join('\\n') + '\\n';
+        writeFileSync(join(dir, 'large.sh'), text);
+        const result = await applyNativePatch(dir, {
+          version: 1, atomic: true,
+          operations: [{ op: 'edit', path: 'large.sh', oldText: 'line 12000', newText: 'changed\\ninserted' }],
+        });
+        if (!result.ok) throw new Error(JSON.stringify(result));
+        if (readFileSync(join(dir, 'large.sh'), 'utf8') !== text.replace('line 12000', 'changed\\ninserted')) {
+          throw new Error('incorrect post image');
+        }
+        console.log(JSON.stringify(result.fileChanges));
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    `;
+    const output = execFileSync(process.execPath, ['--max-old-space-size=64', '--input-type=module', '-e', script], {
+      encoding: 'utf8', timeout: 15000,
+    });
+    assert.deepEqual(JSON.parse(output), [{ path: 'large.sh', linesAdded: 2, linesRemoved: 1 }]);
+  });
+
   it('applies a single edit and reports file and line deltas', async () => {
     const worktree = makeTempDir('patch-runtime-single-');
     writeFixture(worktree, 'src/file.ts', 'const value = 1;\n');

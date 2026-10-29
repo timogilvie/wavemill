@@ -1,227 +1,222 @@
+/**
+ * `meterWorkflowCost` over owned sessions (HOK-3328): the HOK-3237 replay and
+ * the ownership edges — unowned sessions excluded, no owned session is
+ * `no_sessions` (never `$0`), a stale SDK install is an `adapter_error`, and a
+ * pending Codex ref is resolved from its rollout's launch nonce.
+ */
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, it } from 'node:test';
-import { reportableWorkflowCostUsd, type WorkflowCostResult } from '../workflow-cost.ts';
-import { buildSdkTaskCostSummaries, collectSdkTaskCostSummaries } from './collect.ts';
-import type { CollectSdkTaskCostSummariesInput } from './collect.ts';
-import { loadSdkTaskCostFixture } from './fixtures.ts';
+import { afterEach, describe, it } from 'node:test';
+import type { NativeSessionUsageRecord } from '../session-adapters.ts';
+import {
+  appendOwnershipRow,
+  launchNonceLine,
+  pendingSessionRef,
+  readOwnershipRows,
+  type SessionOwnershipRow,
+} from '../session-ownership.ts';
 import { meterWorkflowCost } from './meter.ts';
 
-const PRICING = { 'priced-native': { inputCostPerMTok: 2, outputCostPerMTok: 8 } };
+const cleanups: Array<() => void> = [];
+afterEach(() => {
+  while (cleanups.length > 0) cleanups.pop()?.();
+});
 
-function silentLogger(warnings: string[] = [], logs: string[] = []) {
+function tempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'meter-test-'));
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+const LAUNCHED_AT = '2026-10-27T13:00:00.000Z';
+const NOW = () => new Date('2026-10-27T16:00:00.000Z');
+const PRICING = { 'claude-opus-4-7': { inputCostPerMTok: 15, outputCostPerMTok: 75 } };
+const silent = { log: () => {}, warn: () => {} };
+
+function row(sessionRef: string, harness: SessionOwnershipRow['harness'], kind: SessionOwnershipRow['kind'], stage?: SessionOwnershipRow['stage']): SessionOwnershipRow {
+  return { sessionRef, harness, kind, ...(stage ? { stage } : {}), model: '', launchedAt: LAUNCHED_AT, attemptId: `${kind}@nohead#1` };
+}
+
+/** A Claude Code transcript with one assistant turn of `outputTokens` output tokens. */
+function writeClaudeSession(dir: string, sessionId: string, outputTokens: number, timestamp = '2026-10-27T14:00:00.000Z'): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${sessionId}.jsonl`), `${JSON.stringify({
+    type: 'assistant',
+    sessionId,
+    uuid: `${sessionId}-u1`,
+    timestamp,
+    message: {
+      id: `${sessionId}-m1`,
+      model: 'claude-opus-4-7',
+      usage: { input_tokens: 0, output_tokens: outputTokens, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    },
+  })}\n`);
+}
+
+function nativeSession(sessionId: string, costUsd: number): NativeSessionUsageRecord {
   return {
-    log: (message: unknown) => logs.push(String(message)),
-    warn: (message: unknown) => warnings.push(String(message)),
+    sessionId,
+    filePath: `/runs/${sessionId}.jsonl`,
+    provider: 'openrouter',
+    modelId: 'qwen-3-coder',
+    turnCount: 1,
+    responseIds: ['gen-1'],
+    turns: [{ responseId: 'gen-1', inputTokens: 100_000, outputTokens: 20_000, cacheReadTokens: 0, cacheCreationTokens: 0, providerReportedCostUsd: costUsd, usageAvailable: true, invalidUsage: false }],
+    usageAvailable: true,
+    invalidUsage: false,
   };
 }
 
-function fixtureSummaries(name = 'claude-success') {
-  const fixture = loadSdkTaskCostFixture(name);
-  return buildSdkTaskCostSummaries({
-    scanResults: fixture.scanResults,
-    taskId: fixture.taskId,
-    pricingTable: fixture.pricingTable,
-    now: () => new Date(fixture.now),
-  })!;
+/** HOK-3237 (2026-10-27): 7 Claude Code sessions ($43.71) + 1 native session ($4.93). */
+function hok3237(claudeDir: string): SessionOwnershipRow[] {
+  // $75/MTok output: 6 × 83,000 → $37.35, 1 × 84,800 → $6.36; total $43.71.
+  const outputs = [83_000, 83_000, 83_000, 83_000, 83_000, 83_000, 84_800];
+  const rows = outputs.map((output, index) => {
+    const id = `3237c0de-0000-4000-8000-00000000000${index}`;
+    writeClaudeSession(claudeDir, id, output);
+    return row(id, 'claude-code', index === 6 ? 'review' : 'coding', index === 6 ? 'review' : 'coding');
+  });
+  return [...rows, row('wm-coding-HOK-3237', 'native', 'native-arm', 'coding')];
 }
 
-function nativeAssistant(sessionId: string, usage: { responseId?: string; input: number; output: number }): string {
-  return JSON.stringify({
-    seq: 2,
-    sessionId,
-    timestamp: 2,
-    type: 'assistant_message',
-    model: 'priced-native',
-    ...(usage.responseId ? { responseId: usage.responseId } : {}),
-    stopReason: 'end_turn',
-    usage: {
-      input: usage.input,
-      output: usage.output,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: usage.input + usage.output,
-    },
-    rawContent: [],
-    replayContent: [],
-    redacted: false,
-  });
-}
-
-describe('meterWorkflowCost', () => {
-  let base: string;
-  let worktreePath: string;
-
-  beforeEach(() => {
-    base = join(tmpdir(), `wavemill-meter-${randomUUID()}`);
-    worktreePath = join(base, 'worktree');
-    mkdirSync(worktreePath, { recursive: true });
-  });
-  afterEach(() => rmSync(base, { recursive: true, force: true }));
-
-  function writeNativeSession(lines: string[]): void {
-    const dir = join(worktreePath, '.wavemill', 'runs', 'run-1', 'native-sessions');
-    mkdirSync(dir, { recursive: true });
-    const started = JSON.stringify({
-      seq: 1, sessionId: 'session-1', timestamp: 1, type: 'session_started', model: 'priced-native', api: 'responses', provider: 'pi',
-    });
-    writeFileSync(join(dir, 'session-1.jsonl'), [started, ...lines].join('\n'));
-  }
-
-  function meterNative(exactPricing?: Parameters<typeof meterWorkflowCost>[0]['exactPricing'], logger = silentLogger()) {
-    return meterWorkflowCost({
-      worktreePath,
-      branchName: 'task/native',
-      agentType: 'native',
-      pricingTable: PRICING,
-      label: 'test',
-      collect: collectSdkTaskCostSummaries,
-      ...(exactPricing ? { exactPricing } : {}),
-      logger,
-    });
-  }
-
-  it('hands the collector the join inputs and pricing table, and projects its summary', async () => {
-    const summaries = fixtureSummaries();
-    let received: CollectSdkTaskCostSummariesInput | undefined;
-    const logs: string[] = [];
+describe('meterWorkflowCost over owned sessions (HOK-3328)', () => {
+  // protects: the HOK-3237 incident — workflowCost recorded $4.93 (native only) instead of $48.64
+  it('HOK-3237 replay: workflowCost is the cross-harness @hokusai/costs total', async () => {
+    const claudeDir = tempDir();
     const metered = await meterWorkflowCost({
-      worktreePath: '/w',
-      branchName: 'task/x',
-      repoDir: '/r',
-      issueId: 'HOK-1',
-      agentType: 'claude',
+      worktreePath: '/wt/hok-3237',
+      branchName: 'task/hok-3237',
+      issueId: 'HOK-3237',
+      ownership: hok3237(claudeDir),
+      nativeSessions: [nativeSession('wm-coding-HOK-3237', 4.93), nativeSession('wm-coding-HOK-9999', 99)],
       pricingTable: PRICING,
-      label: 'Eval',
-      collect: (input) => {
-        received = input;
-        return summaries;
-      },
-      logger: silentLogger([], logs),
+      roots: { claude: [claudeDir], codex: [] },
+      label: 'test',
+      now: NOW,
+      logger: silent,
     });
-    assert.deepEqual(received, {
-      worktreePath: '/w', branchName: 'task/x', repoDir: '/r', issueId: 'HOK-1', pricingTable: PRICING,
-    });
-    assert.equal(metered.summaries, summaries);
-    assert.equal(metered.reason, 'sdk_summary');
-    assert.ok(Math.abs(reportableWorkflowCostUsd(metered.outcome)! - summaries[0].total_cost_usd!) < 1e-9);
-    assert.ok(logs.some((line) => line.startsWith('Eval: SDK task cost — claude-code:')));
+
+    assert.equal(metered.reason, 'sdk_report');
+    assert.equal(metered.outcome.status, 'success');
+    if (metered.outcome.status !== 'success') return;
+    assert.ok(Math.abs(metered.outcome.totalCostUsd - 48.64) < 1e-9, `total ${metered.outcome.totalCostUsd}`);
+    assert.deepEqual(metered.outcome.byHarness, { 'claude-code': 43.71, native: 4.93 });
+    assert.equal(metered.outcome.attribution?.source, 'multi');
+    assert.equal(metered.outcome.sessionCount, 8);
+    assert.deepEqual(metered.summaries?.map((summary) => summary.harness).sort(), ['claude-code', 'native']);
+    // Per kind: the same SDK report over each kind's owned sessions.
+    assert.deepEqual(
+      Object.fromEntries(Object.entries(metered.outcome.byKind ?? {}).map(([kind, usd]) => [kind, usd === null ? null : Math.round(usd * 100) / 100])),
+      { coding: 37.35, review: 6.36, 'native-arm': 4.93 },
+    );
+    // Per session: the SDK's figure for each owned session.
+    assert.equal(metered.sessionCosts.get('3237c0de-0000-4000-8000-000000000006')?.totalUsd, 6.36);
+    assert.equal(metered.sessionCosts.get('wm-coding-HOK-3237')?.actualUsd, 4.93);
+    assert.equal(metered.sessionCosts.has('wm-coding-HOK-9999'), false, 'another task\'s native session is never charged');
   });
 
-  it('records a no_sessions failure (never a zero) when nothing was collected', async () => {
-    const metered = await meterWorkflowCost({ worktreePath, branchName: 'task/x', label: 'test', collect: () => null, logger: silentLogger() });
+  // protects: an operator-typed session in the worktree silently added to task cost
+  it('measures only owned session ids; an unowned transcript in the same dir is excluded', async () => {
+    const claudeDir = tempDir();
+    writeClaudeSession(claudeDir, 'owned-session', 10_000);
+    writeClaudeSession(claudeDir, 'operator-session', 900_000);
+    const metered = await meterWorkflowCost({
+      worktreePath: '/wt',
+      branchName: 'task/x',
+      issueId: 'HOK-1',
+      ownership: [row('owned-session', 'claude-code', 'coding', 'coding')],
+      pricingTable: PRICING,
+      roots: { claude: [claudeDir], codex: [] },
+      label: 'test',
+      now: NOW,
+      logger: silent,
+    });
+    assert.equal(metered.outcome.status, 'success');
+    if (metered.outcome.status === 'success') assert.equal(metered.outcome.totalCostUsd, 0.75);
+  });
+
+  // protects: "no ownership" being reported as a $0 task
+  it('no owned session is no_sessions, never $0', async () => {
+    const metered = await meterWorkflowCost({
+      worktreePath: '/wt',
+      branchName: 'task/x',
+      issueId: 'HOK-1',
+      ownership: [],
+      label: 'test',
+      logger: silent,
+    });
+    assert.equal(metered.reason, 'no_owned_sessions');
     assert.equal(metered.outcome.status, 'no_sessions');
-    assert.equal(metered.reason, 'no_sdk_summary');
-    assert.equal(reportableWorkflowCostUsd(metered.outcome), undefined);
+    assert.equal('totalCostUsd' in metered.outcome, false);
   });
 
-  it('records an adapter_error and warns when the collector throws', async () => {
+  // protects: owned sessions whose transcripts are gone reported as $0
+  it('owned sessions with no usage on disk are no_sessions', async () => {
+    const metered = await meterWorkflowCost({
+      worktreePath: '/wt',
+      branchName: 'task/x',
+      issueId: 'HOK-1',
+      ownership: [row('vanished', 'claude-code', 'coding', 'coding')],
+      roots: { claude: [tempDir()], codex: [] },
+      label: 'test',
+      now: NOW,
+      logger: silent,
+    });
+    assert.equal(metered.outcome.status, 'no_sessions');
+    assert.match(metered.outcome.status === 'no_sessions' ? metered.outcome.reason : '', /1 owned session\(s\) left no usage/);
+  });
+
+  // protects: a stale @hokusai/costs install failing the whole eval
+  it('a measurement load failure is an adapter_error outcome', async () => {
     const warnings: string[] = [];
     const metered = await meterWorkflowCost({
-      worktreePath,
+      worktreePath: '/wt',
       branchName: 'task/x',
-      label: 'Eval',
-      collect: () => {
-        throw new Error('sdk exploded');
-      },
-      logger: silentLogger(warnings),
+      issueId: 'HOK-1',
+      ownership: [row('s', 'claude-code', 'coding', 'coding')],
+      label: 'test',
+      loadMeasure: async () => { throw new SyntaxError("does not provide an export named 'measureTask'"); },
+      logger: { log: () => {}, warn: (message: string) => warnings.push(message) },
     });
-    assert.equal(metered.summaries, null);
+    assert.equal(metered.reason, 'collection_failed');
     assert.equal(metered.outcome.status, 'adapter_error');
-    assert.ok(warnings.some((warning) => warning.includes('SDK task cost collection failed — sdk exploded')));
+    assert.ok(warnings.some((warning) => warning.includes('@hokusai/costs measurement failed')));
   });
 
-  describe('OpenRouter exact pricing', () => {
-    it('emits each fetched generation charge as a provider-reported SDK cost', async () => {
-      writeNativeSession([
-        nativeAssistant('session-1', { responseId: 'gen-one', input: 1_000_000, output: 0 }),
-        nativeAssistant('session-1', { responseId: 'gen-two', input: 1_000_000, output: 0 }),
-      ]);
-      const metered = await meterNative({
-        enabled: true,
-        fetchGenerationCost: async (id) => ({ totalCostUsd: id === 'gen-one' ? 0.5 : 0.75 }),
-      });
-
-      assert.equal(metered.outcome.status, 'success');
-      const outcome = metered.outcome as WorkflowCostResult;
-      assert.equal(outcome.totalCostUsd, 1.25);
-      assert.equal(outcome.models['priced-native'].costUsd, 1.25);
-      assert.deepEqual(outcome.pricingUsed, {});
-      assert.equal(outcome.attribution?.models[0].providerReportedCostUsd, 1.25);
-      assert.equal(outcome.attribution?.models[0].pricingSource, 'openrouter_api');
-      assert.equal(metered.summaries?.[0].cost_source, 'provider_reported');
+  // protects: Codex TUI sessions staying uncosted although their rollout proves the launch
+  it('resolves a pending Codex ref from the rollout carrying its launch nonce, once', async () => {
+    const repo = tempDir();
+    const stateDir = join(repo, 'features', 'slug');
+    const codexRoot = join(tempDir(), 'sessions');
+    const nonce = 'c0dec0de-0000-4000-8000-000000000001';
+    appendOwnershipRow(stateDir, {
+      sessionRef: pendingSessionRef(nonce),
+      harness: 'codex',
+      kind: 'coding',
+      model: 'gpt-5.6-terra',
+      launchedAt: new Date(Date.now() - 60_000),
+      cwd: '/wt/slug',
     });
+    const threadId = '019a1234-5678-7abc-8def-000000000001';
+    mkdirSync(join(codexRoot, '2026', '10', '27'), { recursive: true });
+    writeFileSync(join(codexRoot, '2026', '10', '27', `rollout-2026-10-27T13-00-00-${threadId}.jsonl`), [
+      { type: 'session_meta', timestamp: new Date().toISOString(), payload: { id: threadId, cwd: '/wt/slug' } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `${launchNonceLine(nonce)}\nImplement it.` }] } },
+    ].map((line) => JSON.stringify(line)).join('\n') + '\n');
 
-    it('falls back to the local estimate per missing generation and warns once', async () => {
-      writeNativeSession([
-        nativeAssistant('session-1', { responseId: 'gen-one', input: 1_000_000, output: 0 }),
-        nativeAssistant('session-1', { responseId: 'gen-two', input: 2_000_000, output: 0 }),
-      ]);
-      const warnings: string[] = [];
-      const metered = await meterNative({
-        enabled: true,
-        fetchGenerationCost: async (id) => (id === 'gen-one' ? { totalCostUsd: 0.5 } : null),
-      }, silentLogger(warnings));
-
-      const outcome = metered.outcome as WorkflowCostResult;
-      // $0.50 exact + 2M input tokens at $2/MTok estimated.
-      assert.equal(outcome.totalCostUsd, 4.5);
-      assert.equal(outcome.attribution?.models[0].providerReportedCostUsd, 0.5);
-      assert.equal(outcome.attribution?.models[0].pricingSource, 'mixed');
-      assert.equal(outcome.pricingUsed['priced-native'].inputCostPerMTok, 2);
-      assert.ok(warnings.some((message) => message.includes('1 generation')));
+    const metered = await meterWorkflowCost({
+      worktreePath: join(repo),
+      branchName: 'task/x',
+      repoDir: repo,
+      issueId: 'HOK-1',
+      slug: 'slug',
+      roots: { claude: [], codex: [codexRoot] },
+      label: 'test',
+      logger: silent,
     });
-
-    it('never calls OpenRouter for turns without a response id', async () => {
-      writeNativeSession([nativeAssistant('session-1', { input: 1_000_000, output: 0 })]);
-      let calls = 0;
-      const metered = await meterNative({
-        enabled: true,
-        fetchGenerationCost: async () => {
-          calls++;
-          return { totalCostUsd: 99 };
-        },
-      });
-      const outcome = metered.outcome as WorkflowCostResult;
-      assert.equal(calls, 0);
-      assert.equal(outcome.totalCostUsd, 2);
-      assert.equal(outcome.attribution?.models[0].pricingSource, 'local_estimate');
-    });
-
-    it('disabled exact pricing is byte-identical to no exact pricing', async () => {
-      writeNativeSession([nativeAssistant('session-1', { responseId: 'gen-one', input: 1_000_000, output: 0 })]);
-      let calls = 0;
-      const disabled = await meterNative({
-        enabled: false,
-        fetchGenerationCost: async () => {
-          calls++;
-          return { totalCostUsd: 99 };
-        },
-      });
-      const plain = await meterNative();
-      assert.equal(calls, 0);
-      assert.deepEqual(
-        { ...disabled, summaries: disabled.summaries?.map(({ collected_at: _, ...rest }) => rest) },
-        { ...plain, summaries: plain.summaries?.map(({ collected_at: _, ...rest }) => rest) },
-      );
-    });
-
-    it('keeps local estimates when the exact lookup itself throws', async () => {
-      writeNativeSession([nativeAssistant('session-1', { responseId: 'gen-one', input: 1_000_000, output: 0 })]);
-      const warnings: string[] = [];
-      const metered = await meterNative({
-        enabled: true,
-        fetchGenerationCost: async () => {
-          throw new Error('network down');
-        },
-      }, silentLogger(warnings));
-      const outcome = metered.outcome as WorkflowCostResult;
-      assert.equal(outcome.totalCostUsd, 2);
-      assert.equal(outcome.attribution?.models[0].pricingSource, 'local_estimate');
-      assert.ok(warnings.some((message) => message.includes('1 generation')));
-    });
+    assert.deepEqual(metered.owned.map((owned) => owned.sessionRef), [threadId]);
+    assert.deepEqual(readOwnershipRows(stateDir).map((owned) => owned.sessionRef), [threadId], 'resolution recorded in the record');
   });
 });

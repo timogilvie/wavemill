@@ -36,6 +36,18 @@ export const STAGE_EXIT_IDENTITY_GUARD: GuardSpec = {
   ],
   patterns: [
     {
+      name: 'private-stage-timestamp',
+      description: 'stage age must use wavemill_iso8601_to_epoch, including native millisecond timestamps',
+      lang: 'sh',
+      re: /started_epoch=.*date.*started_at/,
+    },
+    {
+      name: 'quadratic-patch-statistics',
+      description: 'patch statistics must use the Git numstat authority instead of a private LCS table',
+      lang: 'ts',
+      re: /\bbuildLcsTable\s*\(/,
+    },
+    {
       name: 'direct-recovery-failure-reconcile',
       description:
         '`wavemill_reconcile_terminal … recovery_failure` outside bounded-retry exhaustion — route the failure through failure_policy_decide / maybe_retry_failed_stage',
@@ -55,6 +67,16 @@ export const STAGE_EXIT_IDENTITY_GUARD: GuardSpec = {
       re: /grep[^|\n]*(?:native-openrouter|native-openai|launch-native-(?:planning|coding|review)|wavemill[\s_-]native[\s_-]agent)/i,
     },
   ],
+  structuralChecks: [{
+    name: 'unbounded-native-coding',
+    description: 'native coding must supply the shared loop budget',
+    paths: ['shared/lib/native-agent/launch-coding.ts'],
+    find(source) {
+      return [...source.matchAll(/runWavemillLoop\(\{([\s\S]*?)convertToLlm:/g)]
+        .filter((match) => !/\bbudget\s*:/.test(match[1]))
+        .map((match) => ({ line: source.slice(0, match.index).split('\n').length }));
+    },
+  }],
   remediation: [
     'HOK-3313: there is one exit observation. Identity for a running stage comes',
     'from the launch record only (`stage_launch_identity` reads the `.<stage>-result.json`',

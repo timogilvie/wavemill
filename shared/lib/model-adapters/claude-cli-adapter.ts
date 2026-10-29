@@ -153,6 +153,7 @@ export class ClaudeCliAdapter implements TransportAdapter {
         cwd: opts.cwd,
         retry: (opts.maxRetries ?? 0) > 0,
         maxRetries: opts.maxRetries,
+        ...(opts.ownership ? { featureDir: opts.ownership.featureDir, helperPurpose: opts.ownership.helperPurpose } : {}),
         // Fail-closed by default: no ladder.
         ...(this.failClosed ? { fallbackModels: [] } : { taskType: 'review' as const }),
       });

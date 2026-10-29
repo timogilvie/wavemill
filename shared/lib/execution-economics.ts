@@ -2,15 +2,18 @@
  * Execution economics — normalize external harness (Claude Code / Codex)
  * session telemetry into the versioned, provider-independent
  * `EvalExecutionEconomics` contract and join it to Wavemill route intent
- * and executed-stage evidence (HOK-2958).
+ * (HOK-2958).
  *
  * Invariants:
  * - A missing or unpriced value is `null` + an availability marker, never `0`.
- *   A literal zero requires `known_zero` evidence (explicit zero pricing).
  * - Route intent and executed telemetry disagreements are surfaced as an
  *   explicit `conflict`, never coerced.
- * - First-party stage evidence (stage-result windows) is joined with explicit
- *   confidence; unattributable sessions are still persisted.
+ * - A session's stage label and kind are read from the launch row in
+ *   `.session-ownership.jsonl` that names it (`ownershipStageRole`); a worktree
+ *   session no launch recorded is `operator` / `unowned` and carries no cost
+ *   (HOK-3328). No timestamp window decides ownership.
+ * - Per-session cost is copied from the `@hokusai/costs` report for that
+ *   session (`meterWorkflowCost` → `sessionCosts`); this module prices nothing.
  * - Raw source entries are never spread into records; the adapters copy only
  *   allowlisted fields, and this module only consumes those.
  *
@@ -38,13 +41,8 @@ import {
   type ExternalTurnUsage,
   type SessionUsageResult,
 } from './session-adapters.ts';
-import {
-  computeModelCost,
-  loadPricingTable,
-  type ModelPricing,
-  type PricingTable,
-} from './pricing/model-pricing.ts';
-import { readAllStageResults, type StageResultMap } from './stage-result.ts';
+import { indexBySessionRef, ownershipStageRole, type SessionOwnershipRow } from './session-ownership.ts';
+import type { OwnedSessionCost } from './sdk-task-cost/meter.ts';
 import { getEffectiveRegistry, resolveModelRegistryKey, type ModelSelector } from './model-registry.ts';
 
 /** Contract version implemented per harness parser. */
@@ -69,12 +67,11 @@ export interface BuildExecutionEconomicsInput {
   branch?: string | null;
   /** Resolved per-role route intent from routing.jsonl. */
   routing?: EvalRouting | null;
-  /** Stage results providing executed-stage windows and identity. */
-  stageResults?: StageResultMap | null;
-  pricingTable?: PricingTable;
+  /** The task's launch rows (`.session-ownership.jsonl`). */
+  ownership?: readonly SessionOwnershipRow[] | null;
+  /** `@hokusai/costs` figures per owned sessionRef (`meterWorkflowCost`). */
+  sessionCosts?: ReadonlyMap<string, OwnedSessionCost> | null;
   repoDir?: string;
-  /** Pricing table provenance label, when the caller has one. */
-  pricingRevision?: string | null;
   turnCap?: number;
   now?: () => Date;
 }
@@ -85,16 +82,8 @@ export interface CollectExecutionEconomicsInput {
   repoDir?: string;
   issueId?: string;
   routing?: EvalRouting | null;
-  /** Directory holding `.{stage}-result.json` files, when known. */
-  stageResultsDir?: string | null;
-  pricingTable?: PricingTable;
-}
-
-function isExplicitZeroPricing(pricing: ModelPricing): boolean {
-  return pricing.inputCostPerMTok === 0
-    && pricing.outputCostPerMTok === 0
-    && (pricing.cacheWriteCostPerMTok ?? 0) === 0
-    && (pricing.cacheReadCostPerMTok ?? 0) === 0;
+  ownership?: readonly SessionOwnershipRow[] | null;
+  sessionCosts?: ReadonlyMap<string, OwnedSessionCost> | null;
 }
 
 function renderModelSelector(selector: ModelSelector | undefined): string | null {
@@ -162,63 +151,6 @@ function computeModelSegments(turns: readonly ExternalSessionTurn[]): Array<{ mo
   return segments;
 }
 
-interface StageWindow {
-  stage: 'planning' | 'coding' | 'review';
-  startedAt: number;
-  finishedAt: number | null;
-  model: string | null;
-}
-
-function buildStageWindows(stageResults: StageResultMap | null | undefined): StageWindow[] {
-  if (!stageResults) return [];
-  const windows: StageWindow[] = [];
-  for (const stage of ['planning', 'coding', 'review'] as const) {
-    const result = stageResults[stage];
-    if (!result) continue;
-    const startedAt = Date.parse(result.startedAt);
-    if (!Number.isFinite(startedAt)) continue;
-    const finishedAt = result.finishedAt ? Date.parse(result.finishedAt) : NaN;
-    windows.push({
-      stage,
-      startedAt,
-      finishedAt: Number.isFinite(finishedAt) ? finishedAt : null,
-      model: typeof result.model === 'string' && result.model.trim() !== '' ? result.model : null,
-    });
-  }
-  return windows;
-}
-
-function attributeStage(
-  session: ExternalSessionUsageRecord,
-  windows: readonly StageWindow[],
-): ExecutionEconomicsSession['stageRole'] {
-  const start = session.startedAt ? Date.parse(session.startedAt) : NaN;
-  const end = session.endedAt ? Date.parse(session.endedAt) : NaN;
-  if (!Number.isFinite(start) || !Number.isFinite(end) || windows.length === 0) {
-    return { value: null, confidence: 'unattributed', evidence: null };
-  }
-
-  const overlapping = windows.filter((window) => {
-    const windowEnd = window.finishedAt ?? Number.POSITIVE_INFINITY;
-    return start <= windowEnd && end >= window.startedAt;
-  });
-  if (overlapping.length === 1) {
-    return {
-      value: overlapping[0].stage,
-      confidence: 'timestamp_window',
-      evidence: `session window overlaps .${overlapping[0].stage}-result.json window`,
-    };
-  }
-  if (overlapping.length > 1) {
-    return {
-      value: null,
-      confidence: 'unattributed',
-      evidence: `ambiguous overlap with stage windows: ${overlapping.map((w) => w.stage).join(', ')}`,
-    };
-  }
-  return { value: null, confidence: 'unattributed', evidence: null };
-}
-
 function dominantModel(turns: readonly ExternalSessionTurn[]): string | null {
   const counts = new Map<string, number>();
   for (const turn of turns) {
@@ -240,7 +172,7 @@ function buildModelIdentity(
   session: ExternalSessionUsageRecord,
   stageRole: ExecutionEconomicsSession['stageRole'],
   routing: EvalRouting | null | undefined,
-  stageWindows: readonly StageWindow[],
+  launchModel: string | null,
   repoDir: string | undefined,
 ): ExecutionEconomicsModelIdentity {
   const executed = dominantModel(session.turns);
@@ -274,9 +206,8 @@ function buildModelIdentity(
   if (identity.resolved) provenance.resolved = 'routing.jsonl';
 
   // Conflict: the resolved route model was never observed executing in this
-  // session's telemetry. First-party stage evidence outranks the heuristic:
-  // when the stage result names the same model the session observed, record
-  // the disagreement against the route, not the telemetry.
+  // session's telemetry. When the launch row asked for the model the session
+  // observed, record the disagreement against the route, not the telemetry.
   if (identity.resolved) {
     const registry = getEffectiveRegistry(repoDir);
     const canonical = (modelId: string) => resolveModelRegistryKey(registry, modelId);
@@ -284,114 +215,18 @@ function buildModelIdentity(
       session.turns.map((turn) => turn.model).filter((m): m is string => !!m).map(canonical),
     );
     if (executedModels.size > 0 && !executedModels.has(canonical(identity.resolved))) {
-      const stageWindow = stageWindows.find((window) => window.stage === stageRole.value);
-      const stageModelAgrees = stageWindow?.model
-        ? executedModels.has(canonical(stageWindow.model))
-        : false;
+      const stageModelAgrees = launchModel ? executedModels.has(canonical(launchModel)) : false;
       identity.conflict = {
         otherSource: 'session_telemetry',
         ...(executed ? { otherResolvedModel: executed } : {}),
         detail: stageModelAgrees
-          ? `resolved route model ${identity.resolved} never observed in session telemetry; stage result agrees with telemetry`
+          ? `resolved route model ${identity.resolved} never observed in session telemetry; launch row agrees with telemetry`
           : `resolved route model ${identity.resolved} never observed in session telemetry`,
       };
     }
   }
 
   return identity;
-}
-
-interface SessionCostEstimate {
-  estimatedCostUsd: number | null;
-  knownZero: boolean;
-  pricingTimestamp: string | null;
-  diagnostics: string[];
-}
-
-/**
- * Estimate a session's cost from its usage and the pricing table.
- *
- * Never fabricates zero: an unpriced model or unavailable usage yields
- * `null` plus a diagnostic. A zero estimate is only produced from explicit
- * zero pricing (`knownZero`).
- */
-function estimateSessionCost(
-  session: ExternalSessionUsageRecord,
-  pricingTable: PricingTable,
-  registryLookup: (modelId: string) => string,
-  nowIso: string,
-): SessionCostEstimate {
-  const diagnostics: string[] = [];
-  const models = [...new Set(
-    session.turns.map((turn) => turn.model).filter((m): m is string => !!m),
-  )];
-
-  // Codex bills reasoning tokens as output; Claude Code's thinking tokens are
-  // already included in output_tokens (output_tokens_details is a breakdown).
-  const effectiveOutput = (usage: ExternalTurnUsage): number | null => {
-    if (usage.outputTokens === null) return null;
-    return session.harness === 'codex'
-      ? usage.outputTokens + (usage.reasoningTokens ?? 0)
-      : usage.outputTokens;
-  };
-
-  const pricingFor = (modelId: string): ModelPricing | undefined =>
-    pricingTable[registryLookup(modelId)] ?? pricingTable[modelId];
-
-  const priceUsage = (usage: ExternalTurnUsage, pricing: ModelPricing): number | null => {
-    const outputTokens = effectiveOutput(usage);
-    if (usage.inputTokens === null || outputTokens === null) return null;
-    return computeModelCost({
-      inputTokens: usage.inputTokens,
-      cacheCreationTokens: usage.cacheWriteTokens ?? 0,
-      cacheReadTokens: usage.cacheReadTokens ?? 0,
-      outputTokens,
-    }, pricing);
-  };
-
-  if (models.length === 0) {
-    diagnostics.push('no executed model observed; cost cannot be estimated');
-    return { estimatedCostUsd: null, knownZero: false, pricingTimestamp: null, diagnostics };
-  }
-
-  const unpriced = models.filter((model) => !pricingFor(model));
-  if (unpriced.length > 0) {
-    diagnostics.push(`unpriced model(s): ${unpriced.join(', ')}; estimated cost unavailable`);
-    return { estimatedCostUsd: null, knownZero: false, pricingTimestamp: null, diagnostics };
-  }
-
-  let estimate: number | null = null;
-  if (models.length === 1) {
-    // Single-model session: price the authoritative session totals.
-    estimate = priceUsage(session.usage, pricingFor(models[0])!);
-    if (estimate === null) {
-      diagnostics.push('session usage totals unavailable; estimated cost unavailable');
-    }
-  } else {
-    // Multi-model session: price per turn; incomplete turn usage makes the
-    // whole estimate unavailable rather than silently undercounting.
-    let sum = 0;
-    for (const turn of session.turns) {
-      if (!turn.model) continue;
-      const turnCost = priceUsage(turn.usage, pricingFor(turn.model)!);
-      if (turnCost === null) {
-        diagnostics.push('per-turn usage incomplete for multi-model session; estimated cost unavailable');
-        return { estimatedCostUsd: null, knownZero: false, pricingTimestamp: null, diagnostics };
-      }
-      sum += turnCost;
-    }
-    estimate = sum;
-  }
-
-  if (estimate === null) {
-    return { estimatedCostUsd: null, knownZero: false, pricingTimestamp: null, diagnostics };
-  }
-
-  // known_zero requires explicit zero-price evidence; a zero computed from
-  // non-zero rates (zero usage) stays a plain estimate.
-  const knownZero = estimate === 0
-    && models.every((model) => isExplicitZeroPricing(pricingFor(model)!));
-  return { estimatedCostUsd: estimate, knownZero, pricingTimestamp: nowIso, diagnostics };
 }
 
 function aggregateCoverage(
@@ -407,43 +242,31 @@ function aggregateCoverage(
 function normalizeSession(
   session: ExternalSessionUsageRecord,
   input: BuildExecutionEconomicsInput,
-  stageWindows: readonly StageWindow[],
-  pricingTable: PricingTable,
-  registryLookup: (modelId: string) => string,
+  owners: ReadonlyMap<string, SessionOwnershipRow>,
   nowIso: string,
   turnCap: number,
 ): ExecutionEconomicsSession {
   const diagnostics = [...session.diagnostics];
-  const stageRole = attributeStage(session, stageWindows);
-  if (stageRole.confidence === 'unattributed' && stageRole.evidence) {
-    diagnostics.push(stageRole.evidence);
+  const owner = owners.get(session.sessionId);
+  const stageRole = ownershipStageRole(owner);
+  const models = buildModelIdentity(session, stageRole, input.routing, owner?.model || null, input.repoDir);
+  // Unowned sessions are reported, never charged to the task.
+  const cost = owner ? input.sessionCosts?.get(session.sessionId) : undefined;
+  if (!owner) {
+    diagnostics.push('unowned session: excluded from task cost');
+  } else if (!cost) {
+    diagnostics.push('no @hokusai/costs report for this owned session');
   }
-  const models = buildModelIdentity(session, stageRole, input.routing, stageWindows, input.repoDir);
-  const cost = estimateSessionCost(session, pricingTable, registryLookup, nowIso);
-  diagnostics.push(...cost.diagnostics);
 
   const turnsTruncated = session.turns.length > turnCap;
   if (turnsTruncated) {
     diagnostics.push(`per-turn detail truncated to ${turnCap} of ${session.turns.length} turns`);
   }
 
-  const actualCostUsd = session.actualCostUsd;
-  const estimatedCostUsd = cost.estimatedCostUsd;
-  const costSource: ExecutionEconomicsSession['costSource'] = actualCostUsd !== null
-    ? 'provider_reported'
-    : estimatedCostUsd !== null
-      ? 'local_estimate'
-      : 'none';
-
-  const sessionUsageAvailability = usageAvailability(session.usage);
-  const hasCost = actualCostUsd !== null || estimatedCostUsd !== null;
-  const coverage: WorkflowCostAttributionCoverage = !hasCost
-    ? sessionUsageAvailability === 'unavailable' ? 'unavailable' : 'partial'
-    : cost.knownZero && actualCostUsd === null
-      ? 'known_zero'
-      : sessionUsageAvailability === 'available'
-        ? 'complete'
-        : 'partial';
+  const actualCostUsd = cost?.actualUsd ?? null;
+  const estimatedCostUsd = cost?.estimatedUsd ?? null;
+  const costSource: ExecutionEconomicsSession['costSource'] = cost?.costSource ?? 'none';
+  const coverage: WorkflowCostAttributionCoverage = cost?.coverage ?? 'unavailable';
 
   const fieldAvailability: Record<string, FieldAvailability> = {
     harnessVersion: session.harnessVersion !== null ? 'available' : 'unavailable',
@@ -489,8 +312,8 @@ function normalizeSession(
     actualCostUsd,
     estimatedCostUsd,
     costSource,
-    pricingRevision: estimatedCostUsd !== null ? input.pricingRevision ?? null : null,
-    pricingTimestamp: estimatedCostUsd !== null ? cost.pricingTimestamp : null,
+    pricingRevision: estimatedCostUsd !== null ? cost?.pricingRevision ?? null : null,
+    pricingTimestamp: estimatedCostUsd !== null ? nowIso : null,
     coverage,
     fieldAvailability,
     diagnostics,
@@ -499,15 +322,12 @@ function normalizeSession(
 
 /**
  * Build normalized execution-economics blocks (one per harness) from adapter
- * scan results plus route/stage join evidence. Pure aside from registry and
- * pricing-table loading; never throws on missing evidence — degraded inputs
- * become availability diagnostics.
+ * scan results, the task's ownership rows and the SDK's per-session costs.
+ * Pure aside from registry loading; never throws on missing evidence —
+ * degraded inputs become availability diagnostics.
  */
 export function buildExecutionEconomics(input: BuildExecutionEconomicsInput): EvalExecutionEconomics[] {
-  const pricingTable = input.pricingTable ?? loadPricingTable(input.repoDir);
-  const registry = getEffectiveRegistry(input.repoDir);
-  const registryLookup = (modelId: string) => resolveModelRegistryKey(registry, modelId);
-  const stageWindows = buildStageWindows(input.stageResults);
+  const owners = indexBySessionRef(input.ownership ?? []);
   const nowIso = (input.now?.() ?? new Date()).toISOString();
   const turnCap = input.turnCap ?? DEFAULT_TURN_CAP;
 
@@ -517,8 +337,7 @@ export function buildExecutionEconomics(input: BuildExecutionEconomicsInput): Ev
     if (!externalSessions || externalSessions.length === 0) continue;
 
     const harness = externalSessions[0].harness;
-    const sessions = externalSessions.map((session) =>
-      normalizeSession(session, input, stageWindows, pricingTable, registryLookup, nowIso, turnCap));
+    const sessions = externalSessions.map((session) => normalizeSession(session, input, owners, nowIso, turnCap));
 
     blocks.push({
       schemaVersion: EXECUTION_ECONOMICS_SCHEMA_VERSION,
@@ -540,9 +359,9 @@ export function buildExecutionEconomics(input: BuildExecutionEconomicsInput): Ev
 
 /**
  * Collect execution-economics blocks for a completed workflow: scans Claude
- * Code and Codex sessions for the branch/worktree, reads stage-result windows
- * through the stage-result readers, and joins route intent. Fail-soft by
- * design — callers wrap it, and every missing input degrades to diagnostics.
+ * Code and Codex sessions for the branch/worktree and labels each from the
+ * task's ownership rows. Fail-soft by design — callers wrap it, and every
+ * missing input degrades to diagnostics.
  */
 export async function collectExecutionEconomics(
   input: CollectExecutionEconomicsInput,
@@ -553,22 +372,16 @@ export async function collectExecutionEconomics(
     repoDir: input.repoDir,
     issueId: input.issueId,
   };
-  const scanResults = [
-    new ClaudeSessionAdapter().scan(scanOpts),
-    new CodexSessionAdapter().scan(scanOpts),
-  ];
-
-  const stageResults = input.stageResultsDir
-    ? await readAllStageResults(input.stageResultsDir)
-    : null;
-
   return buildExecutionEconomics({
-    scanResults,
+    scanResults: [
+      new ClaudeSessionAdapter().scan(scanOpts),
+      new CodexSessionAdapter().scan(scanOpts),
+    ],
     issueId: input.issueId ?? null,
     branch: input.branchName ?? null,
     routing: input.routing,
-    stageResults,
-    pricingTable: input.pricingTable,
+    ownership: input.ownership,
+    sessionCosts: input.sessionCosts,
     repoDir: input.repoDir,
   });
 }

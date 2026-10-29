@@ -25,7 +25,8 @@ import {
 } from './router-exploration.ts';
 import { resolveModel, viableCandidatesInPool } from './routing-policy.ts';
 import { classifyTaskDifficulty, getAllowedModelFloor, type DifficultyFloor, type RoutingDifficulty } from './task-difficulty-classifier.ts';
-import { computeModelCost, loadConfiguredPricingTable, loadPricingTable } from './pricing/model-pricing.ts';
+import { loadConfiguredPricingTable, loadPricingTable } from './pricing/model-pricing.ts';
+import { priceUsageUsd } from './sdk-task-cost/price-overrides.ts';
 import {
   routeStageAware,
   routeStageAwareWithContext,
@@ -1868,7 +1869,7 @@ export function estimateStageCost(
   if (!profile) return 0;
   const pricing = loadPricingTable(repoDir)[modelId];
   if (!pricing) return 0;
-  return roundMoney(computeModelCost(profile, pricing));
+  return roundMoney(priceUsageUsd(pricing, profile) ?? 0);
 }
 
 /**
