@@ -144,7 +144,7 @@ describe('task-dependency-plan-cache', () => {
       b,
       aFingerprint,
       bFingerprint,
-      verdict: 'conflict',
+      verdict: 'should_precede',
       evidence: 'Both modify shared/lib/wavemill-monitor.sh',
       classifiedAt: '2026-10-01T00:00:00.000Z',
     });
@@ -184,6 +184,46 @@ describe('task-dependency-plan-cache', () => {
       assert.equal(cache.groundedVerdicts?.length, 1);
       assert.deepEqual(cache.fingerprints, fingerprints);
       assert.equal(warn.mock.callCount(), 2);
+    });
+
+    it('drops stale grounded entries with retired verdict kinds (HOK-3304)', () => {
+      // protects: a pre-HOK-3304 cache cannot resurrect judge-decided conflicts after the upgrade
+      const cachePath = getTaskDependencyCachePath(repoDir, 'sample-project');
+      mkdirSync(join(repoDir, '.wavemill', 'cache', 'task-dependency-plans'), { recursive: true });
+      writeFileSync(cachePath, `${JSON.stringify({
+        ...createCache(),
+        groundedVerdicts: [
+          { a: 'HOK-1', b: 'HOK-2', aFingerprint: 'fp-1', bFingerprint: 'fp-2', verdict: 'conflict', evidence: 'Both modify shared/lib/wavemill-monitor.sh', classifiedAt: '2026-10-01T00:00:00.000Z' },
+          { a: 'HOK-1', b: 'HOK-3', aFingerprint: 'fp-1', bFingerprint: 'fp-3', verdict: 'independent', classifiedAt: '2026-10-01T00:00:00.000Z' },
+        ],
+      })}\n`, 'utf8');
+      const warn = mock.method(console, 'warn', () => undefined);
+
+      const cache = loadCache(repoDir, 'sample-project');
+
+      assert.deepEqual(cache.groundedVerdicts, []);
+      assert.equal(warn.mock.callCount(), 1);
+      assert.match(String(warn.mock.calls[0]?.arguments[0]), /dropping malformed groundedVerdicts entries/);
+    });
+
+    it('drops stale grounded entries with retired verdict kinds (HOK-3304)', () => {
+      // protects: a pre-HOK-3304 cache cannot resurrect judge-decided conflicts after the upgrade
+      const cachePath = getTaskDependencyCachePath(repoDir, 'sample-project');
+      mkdirSync(join(repoDir, '.wavemill', 'cache', 'task-dependency-plans'), { recursive: true });
+      writeFileSync(cachePath, `${JSON.stringify({
+        ...createCache(),
+        groundedVerdicts: [
+          { a: 'HOK-1', b: 'HOK-2', aFingerprint: 'fp-1', bFingerprint: 'fp-2', verdict: 'conflict', evidence: 'Both modify shared/lib/wavemill-monitor.sh', classifiedAt: '2026-10-01T00:00:00.000Z' },
+          { a: 'HOK-1', b: 'HOK-3', aFingerprint: 'fp-1', bFingerprint: 'fp-3', verdict: 'independent', classifiedAt: '2026-10-01T00:00:00.000Z' },
+        ],
+      })}\n`, 'utf8');
+      const warn = mock.method(console, 'warn', () => undefined);
+
+      const cache = loadCache(repoDir, 'sample-project');
+
+      assert.deepEqual(cache.groundedVerdicts, []);
+      assert.equal(warn.mock.callCount(), 1);
+      assert.match(String(warn.mock.calls[0]?.arguments[0]), /dropping malformed groundedVerdicts entries/);
     });
 
     it('drops a malformed grounded container without discarding the cache', () => {
