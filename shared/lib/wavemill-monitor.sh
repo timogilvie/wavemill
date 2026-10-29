@@ -15320,7 +15320,8 @@ maybe_run_challenge_eval() {
         decision_next_action=$(jq -r '.nextAction // ""' <<<"$decision_json" 2>/dev/null || echo "")
         hard_retry_count=$(bounded_retry_count "$hard_retry_state_dir" "challenge-eval-hard")
         bounded_retry_mark_exhausted "$hard_retry_state_dir" "challenge-eval-hard" \
-          "Challenge eval stopped for $issue (pair ${pair_id:-unknown}): class=${decision_class:-retryable}, kind=${decision_kind}, ${hard_retry_count}/${eval_hard_retry_max} attempt(s); next: ${decision_next_action:-re-run the eval or push a new head}" || true
+          "Challenge eval stopped for $issue (pair ${pair_id:-unknown}): class=${decision_class:-retryable}, kind=${decision_kind}, ${hard_retry_count}/${eval_hard_retry_max} attempt(s); next: ${decision_next_action:-re-run the eval or push a new head}" \
+          --head "$hard_retry_head" --expires-on head,operator-event || true
         if [[ -n "$pair_id" ]]; then
           challenger_key="$(task_identity_challenger_key "$pair_id")"
           eval_side=$(get_task_meta "$issue" "challengeRole")
