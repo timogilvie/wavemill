@@ -10,7 +10,8 @@
  * Planners compared:
  * - `legacy`        — explicit Linear relations + the legacy queue-analysis classifier
  *                     (or explicit relations only when no LLM is configured).
- * - `grounded`      — explicit relations + non-`independent` grounded verdicts.
+ * - `grounded`      — explicit relations + non-`independent-order` grounded verdicts
+ *                     + deterministic file conflicts (HOK-3304).
  * - `deterministic` — explicit relations + any grounded pair score > 0 (no LLM judge),
  *                     reported to show what the judge adds.
  *
@@ -66,6 +67,8 @@ export interface PairOutcome {
   grounded: boolean;
   groundedVerdict?: GroundedVerdict['verdict'];
   groundedEvidence?: string;
+  /** Files the scorer used for a deterministic conflict (HOK-3304), when one fired. */
+  deterministicFiles?: string[];
   deterministic: boolean;
   score: number;
 }
@@ -154,7 +157,7 @@ function linked(a: BacktestIssue, b: BacktestIssue): boolean {
 export function evaluatePairs(
   pairs: Array<[BacktestTask, BacktestTask]>,
   legacyEdges: DependencyEdge[],
-  grounded: Pick<GroundedPlanResult, 'verdicts' | 'scores'>,
+  grounded: Pick<GroundedPlanResult, 'verdicts' | 'scores' | 'deterministicConflicts'>,
   opts: { judged?: boolean } = {},
 ): PairOutcome[] {
   // Without an ordering judge the grounded planner's prediction is its score.
@@ -162,6 +165,10 @@ export function evaluatePairs(
   const key = (x: string, y: string) => (compareTaskIds(x, y) <= 0 ? `${x}\u0000${y}` : `${y}\u0000${x}`);
   const verdictByPair = new Map(grounded.verdicts.map((verdict) => [key(verdict.a, verdict.b), verdict]));
   const scoreByPair = new Map<string, PairScore>(grounded.scores.map((score) => [key(score.taskA, score.taskB), score]));
+  // HOK-3304: deterministic conflicts carry their own files; the judge never saw those pairs.
+  const deterministicByPair = new Map(
+    (grounded.deterministicConflicts ?? []).map((conflict) => [key(conflict.a, conflict.b), conflict.files]),
+  );
 
   return pairs.map(([a, b]) => {
     const truthFiles = groundTruthOverlap(a.files, b.files);
@@ -169,7 +176,9 @@ export function evaluatePairs(
     const legacyEdge = edgeBetween(legacyEdges, a.id, b.id);
     const verdict = verdictByPair.get(key(a.id, b.id));
     const score = scoreByPair.get(key(a.id, b.id))?.score ?? 0;
-    const groundedConflict = verdict !== undefined && verdict.verdict !== 'independent';
+    const deterministicFiles = deterministicByPair.get(key(a.id, b.id));
+    const groundedConflict =
+      (verdict !== undefined && verdict.verdict !== 'independent-order') || (deterministicFiles?.length ?? 0) > 0;
     return {
       a: a.id,
       b: b.id,
@@ -183,6 +192,7 @@ export function evaluatePairs(
       grounded: explicit || (judged ? groundedConflict : score > 0),
       ...(verdict ? { groundedVerdict: verdict.verdict } : {}),
       ...(verdict?.evidence ? { groundedEvidence: verdict.evidence } : {}),
+      ...(deterministicFiles && deterministicFiles.length > 0 ? { deterministicFiles } : {}),
       deterministic: explicit || score > 0,
       score,
     };
@@ -276,8 +286,11 @@ export function renderBacktestReport(input: BacktestReportInput): string {
       .map((o) => {
         const truth = o.truth ? `yes: ${o.truthFiles.slice(0, 3).map((f) => `\`${f}\``).join(', ')}${o.truthFiles.length > 3 ? ` +${o.truthFiles.length - 3}` : ''}` : 'no';
         const legacy = `${mark(o.legacy, o.truth)} ${o.legacy ? (o.explicit ? 'explicit' : cell(o.legacyReason ?? 'edge')) : 'independent'}`;
-        const grounded = `${mark(o.grounded, o.truth)} ${o.explicit && o.groundedVerdict === undefined ? 'explicit' : (o.groundedVerdict ?? 'independent')}` +
-          `${o.groundedEvidence ? `: ${cell(o.groundedEvidence)}` : ''}${o.score > 0 ? ` (score ${o.score})` : ''}`;
+        // HOK-3304: a deterministic conflict renders with its files; an ordering verdict may sit on top.
+        const conflictPart = o.deterministicFiles?.length ? `shared_surface: ${o.deterministicFiles.map((file) => `\`${cell(file)}\``).join(', ')}` : '';
+        const verdictPart = o.groundedVerdict ? `${o.groundedVerdict}${o.groundedEvidence ? `: ${cell(o.groundedEvidence)}` : ''}` : '';
+        const prediction = o.explicit && !conflictPart && !verdictPart ? 'explicit' : [conflictPart, verdictPart].filter(Boolean).join(' + ') || 'independent-order';
+        const grounded = `${mark(o.grounded, o.truth)} ${prediction}${o.score > 0 ? ` (score ${o.score})` : ''}`;
         return `| ${o.a} / ${o.b} | #${o.prA} / #${o.prB} | ${truth} | ${legacy} | ${grounded} | ${correctness(o)} |`;
       }),
     '',

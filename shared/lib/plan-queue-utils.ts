@@ -154,12 +154,13 @@ export function buildSharedSurfaceConflicts(edges: DependencyEdge[]): ConflictEd
     const key = `${a}\u0000${b}`;
     const existing = byKey.get(key);
     if (existing) {
+      existing.files = [...new Set([...existing.files, ...(edge.files ?? [])])].sort();
       // Prefer explicit source over inferred when deduplicating.
       if (!existing.source && edge.source) existing.source = edge.source;
       if (!existing.evidence && edge.reason) existing.evidence = edge.reason;
       continue;
     }
-    const conflict: ConflictEdge = { a, b, files: [] };
+    const conflict: ConflictEdge = { a, b, files: [...new Set(edge.files ?? [])].sort() };
     if (edge.reason) conflict.evidence = edge.reason;
     if (edge.source) conflict.source = edge.source;
     byKey.set(key, conflict);

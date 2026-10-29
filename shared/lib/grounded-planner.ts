@@ -6,20 +6,25 @@
  * 1. {@link predictTouchSets} — which files will each task modify? (deterministic
  *    first, one batched LLM call only for vague tasks)
  * 2. {@link scorePairConflicts} — which pairs can collide? (pure scoring)
- * 3. LLM ordering judge — for the scored pairs only, classify
- *    `must_precede | should_precede | conflict | independent`, with mandatory
- *    evidence for anything but `independent`.
+ * 3. LLM ordering judge — for the scored pairs that are not deterministic
+ *    conflicts, classify `must_precede | should_precede | independent-order`,
+ *    with mandatory evidence for anything but `independent-order`.
  *
- * Verdicts become {@link DependencyEdge}s (`depends_on` for ordering,
- * `shared_surface` for conflicts) that feed the unchanged
- * `planTaskDependencies → buildQueuePlan` pipeline in `tools/plan-queue.ts`,
- * and {@link packGroundedWaves} packs them into conflict-free waves for
- * preview and backtesting.
+ * Pairs the scorer flags as deterministic conflicts (touch sets share a
+ * non-append-only file, or a hot file with overlapping or unknown regions —
+ * HOK-3304) never reach the judge: their {@link PairScore.conflictFiles}
+ * become `shared_surface` edges directly, so the judge cannot veto a file
+ * overlap.
+ *
+ * Verdicts become {@link DependencyEdge}s (`depends_on` for ordering) that
+ * feed the unchanged `planTaskDependencies → buildQueuePlan` pipeline in
+ * `tools/plan-queue.ts`, and {@link packGroundedWaves} packs them into
+ * conflict-free waves for preview and backtesting.
  *
  * Failure policy: the grounded planner never fails the queue plan. A failed
  * touch-set prediction leaves an empty touch set; a failed or malformed
- * ordering response leaves every unjudged pair `independent` (and uncached,
- * so the next run retries).
+ * ordering response leaves every unjudged pair `independent-order` (and
+ * uncached, so the next run retries).
  *
  * Gated behind `queuePlanner.mode = 'grounded'` (see `getQueuePlannerConfig`).
  */
@@ -61,7 +66,7 @@ export type { GroundedVerdictKind } from './task-dependency-plan-cache.ts';
 export const GROUNDED_ORDERING_PROMPT_PATH = fileURLToPath(new URL('../../tools/prompts/grounded-queue-ordering.md', import.meta.url));
 export const TOUCH_SET_PREDICTION_PROMPT_PATH = fileURLToPath(new URL('../../tools/prompts/touch-set-prediction.md', import.meta.url));
 
-/** Pairs judged in one ordering call; lower-scored pairs beyond this default to `independent`. */
+/** Pairs judged in one ordering call; lower-scored pairs beyond this default to `independent-order`. */
 export const MAX_PAIRS_PER_LLM_CALL = 40;
 /** Evidence shorter than this is not "specific" and the verdict is discarded. */
 export const MIN_EVIDENCE_CHARS = 10;
@@ -160,11 +165,13 @@ function pairKey(x: string, y: string): string {
  * Validate the ordering judge's answer against the pairs that were asked.
  *
  * - Throws when the payload is not `{ "verdicts": [...] }` JSON (caller treats
- *   every pair as `independent` and does not cache).
+ *   every pair as `independent-order` and does not cache).
  * - Unknown pairs and duplicates are ignored.
- * - Unknown verdict kinds, and non-`independent` verdicts without specific
- *   evidence, are downgraded to `independent` with a warning.
- * - Asked pairs the model omitted come back `independent`.
+ * - Unknown verdict kinds (including the retired `conflict` / `independent`
+ *   kinds from stale caches or old prompts), and non-`independent-order`
+ *   verdicts without specific evidence, are downgraded to `independent-order`
+ *   with a warning.
+ * - Asked pairs the model omitted come back `independent-order`.
  *
  * Returns exactly one verdict per asked pair, sorted by pair.
  */
@@ -197,27 +204,27 @@ export function parseOrderingVerdicts(
     if (answered.has(key)) continue;
     const evidenceText = typeof evidence === 'string' ? evidence.trim() : '';
     if (!(GROUNDED_VERDICT_KINDS as readonly unknown[]).includes(verdict)) {
-      warn(`[grounded-planner] unknown verdict ${JSON.stringify(verdict)} for ${a}/${b}; treating as independent`);
-      answered.set(key, { a, b, verdict: 'independent', source: 'llm' });
+      warn(`[grounded-planner] unknown verdict ${JSON.stringify(verdict)} for ${a}/${b}; treating as independent-order`);
+      answered.set(key, { a, b, verdict: 'independent-order', source: 'llm' });
       continue;
     }
     const kind = verdict as GroundedVerdictKind;
-    if (kind !== 'independent' && evidenceText.length < MIN_EVIDENCE_CHARS) {
-      warn(`[grounded-planner] ${kind} for ${a}/${b} has no specific evidence; treating as independent`);
-      answered.set(key, { a, b, verdict: 'independent', source: 'llm' });
+    if (kind !== 'independent-order' && evidenceText.length < MIN_EVIDENCE_CHARS) {
+      warn(`[grounded-planner] ${kind} for ${a}/${b} has no specific evidence; treating as independent-order`);
+      answered.set(key, { a, b, verdict: 'independent-order', source: 'llm' });
       continue;
     }
     answered.set(key, {
       a,
       b,
       verdict: kind,
-      ...(kind !== 'independent' && evidenceText ? { evidence: evidenceText } : {}),
+      ...(kind !== 'independent-order' && evidenceText ? { evidence: evidenceText } : {}),
       source: 'llm',
     });
   }
 
   return [...asked.entries()]
-    .map(([key, pair]) => answered.get(key) ?? { a: pair.taskA, b: pair.taskB, verdict: 'independent' as const, source: 'llm' as const })
+    .map(([key, pair]) => answered.get(key) ?? { a: pair.taskA, b: pair.taskB, verdict: 'independent-order' as const, source: 'llm' as const })
     .sort((x, y) => compareTaskIds(pairKey(x.a, x.b), pairKey(y.a, y.b)));
 }
 
@@ -236,6 +243,8 @@ export interface DeferralReason {
   taskId: string;
   verdict?: GroundedVerdictKind | 'explicit';
   evidence?: string;
+  /** For `kind: 'conflict'`: the files both tasks touch (deterministic conflicts). */
+  files?: string[];
 }
 
 export interface WaveDeferral {
@@ -262,6 +271,8 @@ export interface GroundedWavePlan {
 export interface PackOptions {
   /** Explicit `depends_on` edges (Linear) — always honored, checked first. */
   fixedEdges?: DependencyEdge[];
+  /** Deterministic conflict pairs (HOK-3304): never placed in the same wave. */
+  conflictEdges?: Array<{ a: string; b: string; files: string[] }>;
   /** Cap on tasks per wave (unbounded by default). */
   maxWaveSize?: number;
 }
@@ -288,11 +299,13 @@ function reaches(adjacency: Map<string, Set<string>>, start: string, target: str
 
 /**
  * Pack tasks into waves that respect ordering verdicts and never place two
- * `conflict` tasks in the same wave. Pure and deterministic.
+ * deterministic-conflict tasks in the same wave. Pure and deterministic.
  *
  * - `taskIds` are given in priority order; that order breaks ties.
  * - Explicit edges are added first, then `must_precede`, then `should_precede`;
  *   an edge that would close a cycle is dropped (soft edges lose first).
+ * - `conflictEdges` (deterministic shared-surface conflicts) keep their pair
+ *   out of the same wave; they are facts, not verdicts, and are never dropped.
  * - Tasks are placed in priority-aware topological order at the earliest wave
  *   after all predecessors that holds no conflicting task (greedy colouring).
  */
@@ -301,7 +314,7 @@ export function packGroundedWaves(taskIds: string[], verdicts: GroundedVerdict[]
   const rank = new Map(taskIds.map((id, index) => [id, index]));
   const adjacency = new Map<string, Set<string>>(taskIds.map((id) => [id, new Set<string>()]));
   const incoming = new Map<string, OrderingEdge[]>(taskIds.map((id) => [id, []]));
-  const conflicts = new Map<string, Map<string, GroundedVerdict>>(taskIds.map((id) => [id, new Map()]));
+  const conflicts = new Map<string, Map<string, string[]>>(taskIds.map((id) => [id, new Map()]));
   const dropped: DroppedVerdict[] = [];
   const keptOrdering: GroundedVerdict[] = [];
 
@@ -334,14 +347,10 @@ export function packGroundedWaves(taskIds: string[], verdicts: GroundedVerdict[]
     }
   }
 
-  for (const verdict of sortedVerdicts) {
-    if (verdict.verdict !== 'conflict') continue;
-    if (!known.has(verdict.a) || !known.has(verdict.b)) {
-      dropped.push({ verdict, reason: 'unknown_task' });
-      continue;
-    }
-    conflicts.get(verdict.a)!.set(verdict.b, verdict);
-    conflicts.get(verdict.b)!.set(verdict.a, verdict);
+  for (const edge of opts.conflictEdges ?? []) {
+    if (edge.a === edge.b || !known.has(edge.a) || !known.has(edge.b)) continue;
+    conflicts.get(edge.a)!.set(edge.b, edge.files);
+    conflicts.get(edge.b)!.set(edge.a, edge.files);
   }
 
   // Priority-aware Kahn: always place the highest-priority ready task next.
@@ -364,8 +373,7 @@ export function packGroundedWaves(taskIds: string[], verdicts: GroundedVerdict[]
       const clashing = occupants.filter((other) => conflicts.get(taskId)!.has(other));
       if (clashing.length === 0 && occupants.length < maxWaveSize) break;
       for (const other of clashing) {
-        const verdict = conflicts.get(taskId)!.get(other)!;
-        conflictReasons.push({ kind: 'conflict', taskId: other, verdict: 'conflict', ...(verdict.evidence ? { evidence: verdict.evidence } : {}) });
+        conflictReasons.push({ kind: 'conflict', taskId: other, files: conflicts.get(taskId)!.get(other)! });
       }
       wave++;
     }
@@ -399,21 +407,18 @@ export function packGroundedWaves(taskIds: string[], verdicts: GroundedVerdict[]
 
 /**
  * Convert verdicts into planner edges. Pure.
- * `must_precede`/`should_precede` → `depends_on` (a → b); `conflict` → `shared_surface`.
- * Pass {@link GroundedWavePlan.keptOrdering} plus conflicts so cycle-dropped
- * ordering never reaches `planTaskDependencies`.
+ * `must_precede`/`should_precede` → `depends_on` (a → b). Deterministic
+ * conflicts never arrive here as verdicts: the scorer emits their
+ * `shared_surface` edges directly (HOK-3304). Pass
+ * {@link GroundedWavePlan.keptOrdering} so cycle-dropped ordering never
+ * reaches `planTaskDependencies`.
  */
 export function verdictsToEdges(verdicts: GroundedVerdict[]): DependencyEdge[] {
   const edges: DependencyEdge[] = [];
   for (const verdict of verdicts) {
-    if (verdict.verdict === 'independent') continue;
+    if (verdict.verdict === 'independent-order') continue;
     const reason = `grounded:${verdict.verdict}${verdict.evidence ? `: ${verdict.evidence}` : ''}`;
-    if (verdict.verdict === 'conflict') {
-      const [from, to] = compareTaskIds(verdict.a, verdict.b) <= 0 ? [verdict.a, verdict.b] : [verdict.b, verdict.a];
-      edges.push({ type: 'shared_surface', from, to, source: 'inferred', reason });
-    } else {
-      edges.push({ type: 'depends_on', from: verdict.a, to: verdict.b, source: 'inferred', reason });
-    }
+    edges.push({ type: 'depends_on', from: verdict.a, to: verdict.b, source: 'inferred', reason });
   }
   return edges;
 }
@@ -480,8 +485,17 @@ export interface GroundedPlanResult {
   edges: DependencyEdge[];
   touchSets: TouchSet[];
   scores: PairScore[];
-  /** One verdict per scored, non-explicit pair (that passes `pairFilter`). */
+  /**
+   * One verdict per scored pair that is neither a deterministic conflict nor
+   * explicitly linked (and passes `pairFilter`). Deterministic-conflict pairs
+   * never get verdicts: the scorer decided them (HOK-3304).
+   */
   verdicts: GroundedVerdict[];
+  /**
+   * Pairs the scorer flagged as deterministic conflicts; these were never sent
+   * to the judge. `a`/`b` are lower-ID first, files sorted.
+   */
+  deterministicConflicts: Array<{ a: string; b: string; files: string[] }>;
   waves: GroundedWavePlan;
   /** Cache blocks to persist (pruned + fresh entries). */
   cache: Required<GroundedCacheState>;
@@ -586,9 +600,17 @@ export async function runGroundedPlanning(tasks: GroundedTask[], opts: GroundedP
     }
   }
   const scores = scorePairConflicts(tasks, touchSets, { ...opts.scoreOptions, coChange });
+  // Pairs with a deterministic file conflict never reach the judge (HOK-3304):
+  // the scorer already decided, and the judge must not be able to veto it.
+  const deterministicConflicts = scores
+    .filter((pair) => pair.conflictFiles.length > 0)
+    .map((pair) => ({ a: pair.taskA, b: pair.taskB, files: [...pair.conflictFiles] }));
   // Pairs Linear already links are explicit edges; the judge has nothing to add.
   const judgeable = scores.filter(
-    (pair) => !pair.signals.includes('explicit_dependency') && (opts.pairFilter?.(pair.taskA, pair.taskB) ?? true),
+    (pair) =>
+      pair.conflictFiles.length === 0 &&
+      !pair.signals.includes('explicit_dependency') &&
+      (opts.pairFilter?.(pair.taskA, pair.taskB) ?? true),
   );
 
   // 3. Verdicts: cache first, one batched LLM call for the rest.
@@ -617,7 +639,7 @@ export async function runGroundedPlanning(tasks: GroundedTask[], opts: GroundedP
   const maxLlmCalls = Math.max(1, opts.maxLlmCalls ?? 1);
   const sent = toJudge.slice(0, MAX_PAIRS_PER_LLM_CALL * maxLlmCalls);
   if (toJudge.length > sent.length) {
-    warn(`[grounded-planner] ${toJudge.length - sent.length} low-score pair(s) over the ${sent.length}-pair cap default to independent this run`);
+    warn(`[grounded-planner] ${toJudge.length - sent.length} low-score pair(s) over the ${sent.length}-pair cap default to independent-order this run`);
   }
   if (sent.length > 0 && opts.llm) {
     llmOutcome.orderingAttempted = true;
@@ -645,27 +667,33 @@ export async function runGroundedPlanning(tasks: GroundedTask[], opts: GroundedP
       } catch (error) {
         llmOutcome.orderingOk = false;
         llmOutcome.error = (error as Error).message;
-        warn(`[grounded-planner] ordering judge failed; ${chunk.length} pair(s) default to independent: ${(error as Error).message}`);
+        warn(`[grounded-planner] ordering judge failed; ${chunk.length} pair(s) default to independent-order: ${(error as Error).message}`);
       }
     }
   }
 
   const verdicts = judgeable.map((pair) =>
-    verdictByPair.get(pairKey(pair.taskA, pair.taskB)) ?? { a: pair.taskA, b: pair.taskB, verdict: 'independent' as const, source: 'default' as const });
+    verdictByPair.get(pairKey(pair.taskA, pair.taskB)) ??
+    { a: pair.taskA, b: pair.taskB, verdict: 'independent-order' as const, source: 'default' as const });
 
   // 4. Pack waves and derive edges (cycle-dropped ordering never becomes an edge).
   const ordered = sortByPriority(tasks).map((task) => task.id);
-  const waves = packGroundedWaves(ordered, verdicts, { fixedEdges: opts.explicitEdges ?? [] });
+  const waves = packGroundedWaves(ordered, verdicts, { fixedEdges: opts.explicitEdges ?? [], conflictEdges: deterministicConflicts });
   for (const { verdict, reason } of waves.dropped) {
     warn(`[grounded-planner] dropping ${verdict.verdict} ${verdict.a}->${verdict.b} (${reason})`);
   }
-  const edges = verdictsToEdges([...waves.keptOrdering, ...verdicts.filter((verdict) => verdict.verdict === 'conflict')]);
+  const deterministicEdges: DependencyEdge[] = deterministicConflicts.map(({ a, b, files }) => {
+    const [from, to] = compareTaskIds(a, b) <= 0 ? [a, b] : [b, a];
+    return { type: 'shared_surface', from, to, source: 'inferred', files: [...files], reason: `grounded:deterministic shared files: ${files.join(', ')}` };
+  });
+  const edges = [...deterministicEdges, ...verdictsToEdges(waves.keptOrdering)];
 
   return {
     edges,
     touchSets,
     scores,
     verdicts,
+    deterministicConflicts,
     waves,
     cache: {
       touchSets: touchSetCache,
