@@ -70,7 +70,9 @@ import {
   validateFinalPlanningArtifact,
   type PlanningFailureReason,
 } from './planning-guards.ts';
-import { computeModelCost, loadPricingTable } from '../pricing/model-pricing.ts';
+import { loadPricingTable } from '../pricing/model-pricing.ts';
+import { priceUsageUsd } from '../sdk-task-cost/price-overrides.ts';
+import { nativeLaunchKind, recordLaunch } from '../session-ownership.ts';
 
 const DEFAULT_HELPER_TIMEOUT_MS = 12 * 60 * 1000;
 const HELPER_STDERR_TAIL_CHARS = 2000;
@@ -494,12 +496,12 @@ function buildPlanningOutcomeArtifacts(input: {
   try {
     const pricing = loadPricingTable(input.repoDir)[input.modelId];
     if (pricing) {
-      totalCostUsd = computeModelCost({
+      totalCostUsd = priceUsageUsd(pricing, {
         inputTokens: input.result.totalInputTokens,
         outputTokens: input.result.totalOutputTokens,
         cacheCreationTokens: cache.cacheWriteTokens,
         cacheReadTokens: cache.cacheReadTokens,
-      }, pricing);
+      }) ?? undefined;
     }
   } catch {
     totalCostUsd = undefined;
@@ -701,6 +703,15 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
 
     // Construct session stream configuration
     const planningNativeSessionId = `${options.session}-planning-${options.issue}`;
+    // HOK-3328: own the transcript's session before the loop starts.
+    recordLaunch(featureDir, {
+      sessionRef: planningNativeSessionId,
+      harness: 'native',
+      kind: nativeLaunchKind(),
+      stage: 'planning',
+      model: modelName,
+      cwd: options.wtDir,
+    });
     const eventStreamPath = resolveSessionEventStreamPath(planningNativeSessionId, options.repoDir);
     const sessionStreamConfig: SessionStreamConfig = {
       sessionId: planningNativeSessionId,

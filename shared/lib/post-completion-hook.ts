@@ -20,9 +20,8 @@ import { detectAndFormatInterventions } from './intervention-detector.ts';
 import { reportableWorkflowCostUsd } from './workflow-cost.ts';
 import { loadPricingTable, type PricingTable } from './pricing/model-pricing.ts';
 import { collectExecutionEconomics } from './execution-economics.ts';
-// Lazy: the SDK loads only when the metering runner invokes the collector,
-// so a stale @hokusai/core cannot fail module load for every eval.
-import { collectSdkTaskCostSummariesLazy } from './sdk-task-cost/lazy-collect.ts';
+// meter.ts loads @hokusai/costs lazily, so a stale install cannot fail module
+// load for every eval.
 import { meterWorkflowCost } from './sdk-task-cost/meter.ts';
 import { getDeepSeekProviderMetadata } from './deepseek-provider.ts';
 import { runEvalAnalysis } from './eval-analysis.ts';
@@ -262,7 +261,7 @@ export const postCompletionHookDeps = {
   gatherEvalContext,
   gatherStageArtifacts,
   collectExecutionEconomics,
-  collectSdkTaskCostSummaries: collectSdkTaskCostSummariesLazy,
+  meterWorkflowCost,
   execShellCommand,
   detectAndFormatInterventions,
   runEvalAnalysis,
@@ -944,8 +943,22 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
         console.warn(`Post-completion eval: pricing table unavailable — ${errorMessage(pricingErr)}`);
       }
 
+      // `@hokusai/costs` over the task's owned sessions (HOK-3328): the one
+      // cost engine. Fail-soft — a measurement failure becomes an
+      // `adapter_error` outcome, never a thrown eval.
+      const metered = await postCompletionHookDeps.meterWorkflowCost({
+        worktreePath: ctx.worktreePath,
+        branchName,
+        repoDir,
+        issueId: ctx.issueId,
+        slug: stageArtifacts.featureSlug,
+        pricingTable,
+        label: 'Post-completion eval',
+      });
+
       // Normalized execution-economics collection (HOK-2958): fail-soft,
-      // observation-only — never influences routing or the workflow.
+      // observation-only — never influences routing or the workflow. Stage
+      // labels and per-session cost come from the metered ownership rows.
       try {
         executionEconomics = await postCompletionHookDeps.collectExecutionEconomics({
           worktreePath: ctx.worktreePath,
@@ -953,8 +966,8 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
           repoDir,
           issueId: ctx.issueId,
           routing: stageArtifacts.routing ?? null,
-          stageResultsDir: stageArtifacts.stageResultsDir ?? null,
-          pricingTable,
+          ownership: metered.owned,
+          sessionCosts: metered.sessionCosts,
         });
         if (executionEconomics.length > 0) {
           const summary = executionEconomics
@@ -966,19 +979,6 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
         console.warn(`Post-completion eval: execution economics collection failed — ${errorMessage(economicsErr)}`);
       }
 
-      // SDK task-cost metering (HOK-3075/HOK-3076/HOK-3077): the one cost
-      // engine. Fail-soft — a collector failure becomes an `adapter_error`
-      // outcome, never a thrown eval.
-      const metered = await meterWorkflowCost({
-        worktreePath: ctx.worktreePath,
-        branchName,
-        repoDir,
-        issueId: ctx.issueId,
-        agentType: ctx.agentType,
-        pricingTable,
-        label: 'Post-completion eval',
-        collect: (input) => postCompletionHookDeps.collectSdkTaskCostSummaries(input),
-      });
       costOutcome = metered.outcome;
       taskCostSummary = metered.summaries;
 

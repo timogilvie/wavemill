@@ -90,6 +90,7 @@ import {
 import { equivalentOpenRouterModelIds } from '../openrouter-catalog.ts';
 import { getNativeContextManagementConfig, getNativePayloadCaptureConfig, getNativeReviewTimeoutConfig } from '../config.ts';
 import type { NormalizedPricing } from '../openrouter-catalog.ts';
+import { nativeLaunchKind, recordLaunch } from '../session-ownership.ts';
 import {
   buildExecutedIdentity,
   type ExecutedIdentity,
@@ -837,6 +838,14 @@ export async function runNativeReview(
   }
 
   const sessionId = makeSessionId(context.metadata.branch);
+  // HOK-3328: own the transcript's session before the loop starts.
+  recordLaunch(options.featureDir, {
+    sessionRef: sessionId,
+    harness: 'native',
+    kind: nativeLaunchKind(),
+    stage: 'review',
+    model: resolvedModelId,
+  });
   const transcriptPath = makeTranscriptPath(repoDir, sessionId);
   const transcriptWriter = new TranscriptWriter({
     sessionId,

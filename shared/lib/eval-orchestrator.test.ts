@@ -8,19 +8,8 @@ import { enrichPostCompletionRecord } from './post-completion-hook.ts';
 import type { EvalRecord, InterventionRecord, RoutingDecision } from './eval-schema.ts';
 import type { EvalContext } from './eval-context-gatherer.ts';
 import type { WorkflowCostOutcome } from './workflow-cost.ts';
-import { buildSdkTaskCostSummaries } from './sdk-task-cost/collect.ts';
-import { loadSdkTaskCostFixture } from './sdk-task-cost/fixtures.ts';
 import { meterWorkflowCost } from './sdk-task-cost/meter.ts';
-
-function fixtureTaskCostSummaries() {
-  const fixture = loadSdkTaskCostFixture('claude-success');
-  return buildSdkTaskCostSummaries({
-    scanResults: fixture.scanResults,
-    taskId: fixture.taskId,
-    pricingTable: fixture.pricingTable,
-    now: () => new Date(fixture.now),
-  })!;
-}
+import { appendOwnershipRow } from './session-ownership.ts';
 
 function makeJudgeRecord(): EvalRecord {
   return {
@@ -210,14 +199,15 @@ describe('eval-orchestrator', () => {
         outputCostPerMTok: 2,
       },
     }));
-    // Metering is stubbed to a fixed outcome; the SDK metering tests below
-    // restore the real runner and stub only the collector.
+    // Metering is stubbed to a fixed outcome; the metering tests below
+    // restore the real runner over an injected ownership record.
     mock.method(evalOrchestratorDeps, 'meterWorkflowCost', async () => ({
       outcome: costOutcome,
       summaries: null,
-      reason: 'sdk_summary' as const,
+      reason: 'sdk_report' as const,
+      owned: [],
+      sessionCosts: new Map(),
     }));
-    mock.method(evalOrchestratorDeps, 'collectSdkTaskCostSummaries', () => null);
     mock.method(evalOrchestratorDeps, 'appendEvalRecord', () => undefined);
     mock.method(evalOrchestratorDeps, 'triggerHokusaiSubmission', async () => ({
       status: 'disabled',
@@ -244,7 +234,7 @@ describe('eval-orchestrator', () => {
     rmSync(repoDir, { recursive: true, force: true });
   });
 
-  describe('SDK task-cost metering (HOK-3075, HOK-3076, HOK-3077)', () => {
+  describe('@hokusai/costs metering over owned sessions (HOK-3328)', () => {
     const runInput = () => ({
       issueId: 'HOK-1495',
       prNumber: '1495',
@@ -257,27 +247,31 @@ describe('eval-orchestrator', () => {
       mock.method(evalOrchestratorDeps, 'meterWorkflowCost', meterWorkflowCost);
     });
 
-    it('records the SDK projection as the workflow cost', async () => {
-      const summaries = fixtureTaskCostSummaries();
-      let collectInput: Record<string, unknown> | undefined;
-      mock.method(evalOrchestratorDeps, 'collectSdkTaskCostSummaries', (input) => {
-        collectInput = input as unknown as Record<string, unknown>;
-        return summaries;
+    // protects: the eval entrypoint metering anything but the task's ownership record
+    it('meters the task\'s owned sessions located from the eval archive', async () => {
+      let meterInput: Parameters<typeof meterWorkflowCost>[0] | undefined;
+      mock.method(evalOrchestratorDeps, 'meterWorkflowCost', async (input: Parameters<typeof meterWorkflowCost>[0]) => {
+        meterInput = input;
+        return meterWorkflowCost({ ...input, exactPricing: { ...input.exactPricing, enabled: false } });
+      });
+      appendOwnershipRow(join(repoDir, '.wavemill', 'evals', 'artifacts', 'HOK-1495'), {
+        sessionRef: 'never-written-session', harness: 'claude-code', kind: 'coding', model: 'gpt-5.4',
       });
 
       const record = await runEvaluation(runInput());
 
-      assert.deepEqual(record.taskCostSummary, summaries);
-      assert.ok(Math.abs((record.workflowCost ?? 0) - summaries[0].total_cost_usd!) < 1e-9);
-      assert.equal(record.workflowCostStatus, 'success');
-      assert.equal(record.workflowCostAttribution?.source, 'claude');
-      assert.equal(collectInput?.worktreePath, repoDir);
-      assert.equal(collectInput?.branchName, 'task/unified-eval');
-      assert.equal(collectInput?.issueId, 'HOK-1495');
-      // The collector prices with the eval's own pricing table.
-      assert.deepEqual(collectInput?.pricingTable, { 'gpt-5.4': { inputCostPerMTok: 1, outputCostPerMTok: 2 } });
+      assert.equal(meterInput?.worktreePath, repoDir);
+      assert.equal(meterInput?.branchName, 'task/unified-eval');
+      assert.equal(meterInput?.issueId, 'HOK-1495');
+      // The meter prices with the eval's own rate table.
+      assert.deepEqual(meterInput?.pricingTable, { 'gpt-5.4': { inputCostPerMTok: 1, outputCostPerMTok: 2 } });
+      // The owned session left no transcript: no_sessions, never $0.
+      assert.equal(record.workflowCostStatus, 'no_sessions');
+      assert.equal(record.workflowCost, undefined);
+      assert.match(record.workflowCostDiagnostics?.reason ?? '', /1 owned session\(s\) left no usage/);
     });
 
+    // protects: exact OpenRouter charges silently dropped from native task cost
     it('opts in to OpenRouter exact pricing for native turns', async () => {
       let exactPricing: unknown;
       mock.method(evalOrchestratorDeps, 'meterWorkflowCost', async (input: Parameters<typeof meterWorkflowCost>[0]) => {
@@ -291,7 +285,8 @@ describe('eval-orchestrator', () => {
       assert.equal((exactPricing as { enabled?: boolean }).enabled, undefined, 'enabled defaults to OPENROUTER_API_KEY presence');
     });
 
-    it('records no_sessions — never a zero — when no session produced a cost event', async () => {
+    // protects: a task with no ownership record reported as costing $0
+    it('records no_sessions — never a zero — when no launch row names a session', async () => {
       const record = await runEvaluation(runInput());
 
       assert.equal('taskCostSummary' in record, false);
@@ -299,10 +294,13 @@ describe('eval-orchestrator', () => {
       assert.equal(record.workflowCostStatus, 'no_sessions');
     });
 
-    it('records an adapter_error when the SDK collector throws', async () => {
-      mock.method(evalOrchestratorDeps, 'collectSdkTaskCostSummaries', () => {
-        throw new Error('sdk exploded');
-      });
+    // protects: a measurement failure failing the eval instead of recording adapter_error
+    it('records an adapter_error when measurement fails', async () => {
+      mock.method(evalOrchestratorDeps, 'meterWorkflowCost', async (input: Parameters<typeof meterWorkflowCost>[0]) => meterWorkflowCost({
+        ...input,
+        ownership: [{ sessionRef: 's', harness: 'claude-code', kind: 'coding', stage: 'coding', model: '', launchedAt: '2026-10-27T00:00:00.000Z', attemptId: 'a' }],
+        loadMeasure: async () => { throw new Error('sdk exploded'); },
+      }));
       const warnings: string[] = [];
       mock.method(console, 'warn', (message: string) => warnings.push(String(message)));
 
@@ -311,7 +309,7 @@ describe('eval-orchestrator', () => {
       assert.equal('taskCostSummary' in record, false);
       assert.equal(record.workflowCost, undefined);
       assert.equal(record.workflowCostStatus, 'adapter_error');
-      assert.ok(warnings.some((warning) => warning.includes('SDK task cost collection failed — sdk exploded')));
+      assert.ok(warnings.some((warning) => warning.includes('@hokusai/costs measurement failed — sdk exploded')));
     });
   });
 

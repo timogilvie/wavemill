@@ -2,11 +2,16 @@
  * Wavemill Cost Parity Harness
  *
  * Core logic for materializing test cases, running the cost engine, capturing
- * outputs, and comparing them against the committed baseline. Since HOK-3077
- * the SDK bridge is the only engine, so this is a strict regression harness:
- * any difference from `baseline.json` (beyond USD rounding) is a drift in the
- * SDK bridge's cost semantics and fails until the baseline is regenerated on
- * purpose (`npx tsx tools/cost-parity.ts --write`).
+ * outputs, and comparing them against the committed baseline. The engine is
+ * `@hokusai/costs` over the task's owned sessions (`meterWorkflowCost`,
+ * HOK-3328), so this is a strict regression harness: any difference from
+ * `baseline.json` (beyond USD rounding) is a drift in cost semantics and fails
+ * until the baseline is regenerated on purpose
+ * (`npx tsx tools/cost-parity.ts --write`).
+ *
+ * Each materialized session is owned by the task unless the case marks it
+ * `owned: false` — exactly what a launcher's `.session-ownership.jsonl` row
+ * would say. Ownership, not branch or harness preference, decides what counts.
  */
 
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync, mkdirSync } from 'node:fs';
@@ -15,8 +20,8 @@ import { tmpdir } from 'node:os';
 import type { WorkflowCostOutcome } from './workflow-cost.ts';
 import type { PricingTable } from './pricing/model-pricing.ts';
 import { encodeProjectDir } from './wavemill-session-paths.ts';
-import { collectSdkTaskCostSummaries } from './sdk-task-cost/collect.ts';
 import { meterWorkflowCost } from './sdk-task-cost/meter.ts';
+import type { SessionHarness, SessionOwnershipRow } from './session-ownership.ts';
 import type {
   CostParityCase,
   CostParityManifest,
@@ -102,7 +107,39 @@ interface MaterializationContext {
   home: string;
   worktree: string;
   repoDir: string;
+  /** The launch rows a launcher would have written for the case's owned sessions. */
+  ownership: SessionOwnershipRow[];
   savedEnv: Record<string, string | undefined>;
+}
+
+/** Launch time recorded for every parity session: before any fixture turn. */
+const PARITY_LAUNCHED_AT = '2025-01-01T00:00:00.000Z';
+
+const LOCATION_HARNESS: Record<string, SessionHarness> = {
+  'claude-projects': 'claude-code',
+  'claude-deepseek-provider': 'claude-code',
+  'codex-sessions': 'codex',
+  'native-sessions': 'native',
+};
+
+/** The exact session id a launcher would have recorded for a fixture session. */
+function fixtureSessionRef(location: string, fileName: string, lines: LogicalLine[]): string {
+  const first = (keys: string[]) => {
+    for (const line of lines) {
+      for (const key of keys) {
+        const holder = key === 'session_meta' ? line.session_meta : line;
+        const value = key === 'session_meta'
+          ? (isRecord(holder) ? holder.session_id ?? holder.id : undefined)
+          : line[key];
+        if (typeof value === 'string' && value) return value;
+      }
+    }
+    return undefined;
+  };
+  const fallback = fileName.replace(/\.jsonl$/, '');
+  if (location === 'codex-sessions') return first(['session_meta']) ?? fallback;
+  if (location === 'native-sessions') return first(['session_id', 'sessionId']) ?? 'native-session';
+  return first(['sessionId']) ?? fallback;
 }
 
 type LogicalLine = Record<string, unknown>;
@@ -114,11 +151,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function translateFixtureLine(
   location: string,
   line: LogicalLine,
-  ctx: { branch: string; worktree: string }
+  ctx: { branch: string; worktree: string; sessionRef: string }
 ): LogicalLine[] {
   if (location === 'claude-projects' || location === 'claude-deepseek-provider') {
     if (line.type === 'assistant' || line.type === 'user') {
-      return [line];
+      return [{ sessionId: ctx.sessionRef, ...line }];
     }
     const message = isRecord(line.message) ? line.message : {};
     const usage = isRecord(line.usage) ? line.usage : {};
@@ -144,7 +181,7 @@ function translateFixtureLine(
       timestamp: line.timestamp ?? '2026-01-01T00:00:00.000Z',
       message: messageOut,
     };
-    if (line.sessionId !== undefined) translated.sessionId = line.sessionId;
+    translated.sessionId = line.sessionId ?? ctx.sessionRef;
     if (line.parentUuid !== undefined) translated.parentUuid = line.parentUuid;
     if (line.isSidechain !== undefined) translated.isSidechain = line.isSidechain;
     if (line.costUSD !== undefined) translated.costUSD = line.costUSD;
@@ -162,7 +199,7 @@ function translateFixtureLine(
         type: 'session_meta',
         timestamp: line.timestamp ?? '2026-01-01T00:00:00.000Z',
         payload: {
-          id: meta.session_id ?? meta.id ?? 'codex-session',
+          id: meta.session_id ?? meta.id ?? ctx.sessionRef,
           cwd: meta.cwd ?? ctx.worktree,
           originator: meta.originator ?? null,
         },
@@ -172,10 +209,12 @@ function translateFixtureLine(
       const turn = line.turn;
       out.push({
         type: 'turn_context',
+        timestamp: line.timestamp ?? '2026-01-01T00:00:00.000Z',
         payload: { model: turn.model ?? 'unknown' },
       });
       out.push({
         type: 'event_msg',
+        timestamp: line.timestamp ?? '2026-01-01T00:00:00.000Z',
         payload: {
           type: 'token_count',
           info: {
@@ -198,7 +237,7 @@ function translateFixtureLine(
       return [{
         type: 'session_started',
         timestamp: line.timestamp ?? '2026-01-01T00:00:00.000Z',
-        sessionId: line.session_id ?? line.sessionId ?? 'native-session',
+        sessionId: line.session_id ?? line.sessionId ?? ctx.sessionRef,
         provider: line.provider ?? 'unknown',
         model: line.model ?? 'unknown',
       }];
@@ -207,7 +246,7 @@ function translateFixtureLine(
       const translated: Record<string, unknown> = {
         type: 'assistant_message',
         timestamp: line.timestamp ?? '2026-01-01T00:00:00.000Z',
-        sessionId: line.session_id ?? line.sessionId,
+        sessionId: line.session_id ?? line.sessionId ?? ctx.sessionRef,
       };
       if (line.response_id !== undefined) translated.responseId = line.response_id;
       if (line.model !== undefined) translated.model = line.model;
@@ -254,6 +293,7 @@ export function materializeCase(caseItem: CostParityCase): MaterializationContex
     // resolve the encoded name from the ephemeral sandbox worktree — not use
     // a hardcoded placeholder that the session adapters will never find.
     const encoded = encodeProjectDir(worktree);
+    const ownership: SessionOwnershipRow[] = [];
     for (const session of caseItem.sessions) {
       let targetDir: string;
 
@@ -291,16 +331,33 @@ export function materializeCase(caseItem: CostParityCase): MaterializationContex
       // discoverable turns and every baseline entry would collapse to
       // `no_sessions`.
       const branch = caseItem.branch || 'task/parity';
-      const translated = session.lines.flatMap((line) => {
-        const substituted = JSON.parse(
-          JSON.stringify(line).replace(/\$\{WORKTREE\}/g, worktree)
-        );
-        return translateFixtureLine(session.location, substituted, { branch, worktree });
-      });
+      const substitutedLines: LogicalLine[] = session.lines.map((line) => JSON.parse(
+        JSON.stringify(line).replace(/\$\{WORKTREE\}/g, worktree)
+      ));
+      const sessionRef = fixtureSessionRef(session.location, session.fileName, substitutedLines);
+      const translated = substitutedLines.flatMap((line) =>
+        translateFixtureLine(session.location, line, { branch, worktree, sessionRef }));
       const sessionContent = translated.map((line) => JSON.stringify(line)).join('\n');
 
-      const sessionPath = join(targetDir, session.fileName);
-      writeFileSync(sessionPath, sessionContent + '\n');
+      // File names carry the session id, as Claude Code / Codex name them, so
+      // the SDK's explicit-id discovery finds them.
+      const fileName = session.location === 'codex-sessions'
+        ? `rollout-2026-01-01T00-00-00-${sessionRef}.jsonl`
+        : session.location === 'native-sessions' ? session.fileName : `${sessionRef}.jsonl`;
+      writeFileSync(join(targetDir, fileName), sessionContent + '\n');
+
+      if (session.owned !== false) {
+        ownership.push({
+          sessionRef,
+          harness: LOCATION_HARNESS[session.location],
+          kind: session.location === 'native-sessions' ? 'native-arm' : 'coding',
+          stage: 'coding',
+          model: '',
+          launchedAt: PARITY_LAUNCHED_AT,
+          attemptId: `coding@nohead#${Date.parse(PARITY_LAUNCHED_AT) / 1000}`,
+          cwd: worktree,
+        });
+      }
     }
 
     // Save and override environment
@@ -312,7 +369,7 @@ export function materializeCase(caseItem: CostParityCase): MaterializationContex
     delete process.env.OPENROUTER_API_KEY;
     delete process.env.DEBUG_COST;
 
-    return { sandbox, home, worktree, repoDir, savedEnv };
+    return { sandbox, home, worktree, repoDir, ownership, savedEnv };
   } catch (error) {
     // Cleanup on error
     if (existsSync(sandbox)) {
@@ -357,15 +414,18 @@ export type CostEngine = (ctx: {
   pricingTable: PricingTable;
   agentType: string;
   issueId: string;
+  /** The case's launch rows. */
+  ownership: SessionOwnershipRow[];
   /** Injected OpenRouter `/generation` responses; present only for the exact run. */
   exact?: ExactPricingResponse;
 }) => Promise<{ outcome: WorkflowCostOutcome; warnings: string[] }>;
 
 /**
- * The production metering path (`meterWorkflowCost`, HOK-3077) over the
- * materialized sessions: adapter scan → SDK `TaskCostSummaryV1` → projection.
- * The exact run injects the case's stubbed OpenRouter responses, so the
- * exact-pricing fold into SDK events is covered without network access.
+ * The production metering path (`meterWorkflowCost`, HOK-3328) over the
+ * materialized sessions: owned session ids → `@hokusai/costs` report →
+ * projection. The exact run injects the case's stubbed OpenRouter responses,
+ * so OpenRouter charges reaching the SDK as provider-reported cost is covered
+ * without network access.
  */
 export const sdkEngine: CostEngine = async (ctx) => {
   const warnings: string[] = [];
@@ -379,10 +439,9 @@ export const sdkEngine: CostEngine = async (ctx) => {
     branchName: ctx.branchName,
     repoDir: ctx.repoDir,
     issueId: ctx.issueId,
-    agentType: ctx.agentType,
+    ownership: ctx.ownership,
     pricingTable: ctx.pricingTable,
     label: 'cost-parity',
-    collect: collectSdkTaskCostSummaries,
     ...(responses
       ? {
         exactPricing: {
@@ -415,6 +474,7 @@ export async function captureCase(
       pricingTable: caseItem.pricingTable,
       agentType: caseItem.agentType,
       issueId: caseItem.issueId,
+      ownership: ctx.ownership,
     };
     const syncResult = await engine(args);
     // The exact run only exists for cases that stub OpenRouter responses.

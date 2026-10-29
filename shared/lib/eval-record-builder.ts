@@ -883,6 +883,12 @@ export function attachWorkflowCostMetadata(
     if (success.attribution) {
       record.workflowCostAttribution = success.attribution;
     }
+    if (success.byHarness && Object.keys(success.byHarness).length > 0) {
+      record.workflowCostByHarness = success.byHarness;
+    }
+    if (success.byKind && Object.keys(success.byKind).length > 0) {
+      record.workflowCostByKind = success.byKind;
+    }
   } else {
     const failure = costOutcome as WorkflowCostFailure;
     record.workflowCostStatus = failure.status;

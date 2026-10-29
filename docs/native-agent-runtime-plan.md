@@ -199,7 +199,7 @@ export interface ProviderTurnResult {
 }
 ```
 
-`costUsd` is optional diagnostic data only. Native sessions must record normalized token counts compatible with `SessionModelUsage`; workflow cost remains computed by `computeModelCost()` using registry/config pricing and cache-rate fallbacks.
+`costUsd` is optional diagnostic data only. Native sessions must record normalized token counts compatible with `SessionModelUsage`; workflow cost is the `@hokusai/costs` report over the task's owned sessions, priced from registry/config rates passed as host price overrides (HOK-3328).
 
 Canonical session event:
 
