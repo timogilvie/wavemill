@@ -30,7 +30,8 @@ import { parseJsonFromLLM } from './llm-cli.ts';
 import { fillPromptSlots } from './prompt-utils.ts';
 import { callHeadlessLLM } from './headless-llm.ts';
 import { getEvalConfig } from './config.ts';
-import { computeModelCost, loadPricingTable, type PricingTable } from './pricing/model-pricing.ts';
+import { loadPricingTable, type PricingTable } from './pricing/model-pricing.ts';
+import { priceUsageUsd } from './sdk-task-cost/price-overrides.ts';
 import { createPromptArtifact, type PromptArtifact } from './prompt-hash.ts';
 import { errorMessage } from './error-utils.ts';
 import { getLatestSession } from './session.ts';
@@ -414,13 +415,13 @@ function computeCost(
   const pricing = pricingTable[modelId];
   if (!pricing) return undefined;
 
-  // Judge calls report no cache usage; the shared formula prices them as zero.
-  return computeModelCost({
+  // Judge calls report no cache usage; @hokusai/costs prices them as zero.
+  return priceUsageUsd(pricing, {
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     cacheCreationTokens: 0,
     cacheReadTokens: 0,
-  }, pricing);
+  }) ?? undefined;
 }
 
 const PLAN_CRITIQUE_DIMENSIONS = [

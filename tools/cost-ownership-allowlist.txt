@@ -9,27 +9,23 @@
 # (pricing/model-pricing.ts, pricing/openrouter-exact-pricing.ts,
 # wavemill-session-paths.ts) and the guard spec are excluded automatically.
 #
-# A new consumer of *workflow cost* does not belong here: it reads the SDK
-# bridge (sdk-task-cost/meter.ts, sdk-task-cost/recompute.ts) or the persisted
-# WorkflowCost* shape (workflow-cost.ts). Classifications mirror
+# A new consumer of *workflow cost* does not belong here: it reads the
+# @hokusai/costs report through sdk-task-cost/meter.ts (live) or
+# sdk-task-cost/recompute.ts (backfill), or the persisted WorkflowCost* shape
+# (workflow-cost.ts). Classifications mirror
 # shared/fixtures/cost-parity/consumer-inventory.json.
 
-# ── SDK bridge (measurement): prices TaskCostEventV1 events, the one engine ──
-shared/lib/sdk-task-cost/collect.ts 1  # measurement: loads the pricing table for the SDK collector
-shared/lib/sdk-task-cost/events-from-session.ts 1  # measurement: prices each SDK event with computeModelCost
-shared/lib/sdk-task-cost/project.ts 1  # measurement: rebuilds the pricingUsed snapshot on projection
-shared/lib/sdk-task-cost/resolve.ts 1  # measurement: passes the pricing table to the projection
-shared/lib/sdk-task-cost/meter.ts 1  # measurement: live metering runner takes the caller's pricing table
-shared/lib/sdk-task-cost/recompute.ts 1  # backfill: offline recompute takes the caller's pricing table
-shared/lib/sdk-task-cost/fixtures.ts 1  # measurement: bridge fixture loader (PricingTable type)
+# ── @hokusai/costs adapter (HOK-3328): Wavemill supplies rates and transcript locations, never prices ──
+shared/lib/sdk-task-cost/price-overrides.ts 1  # measurement: reshapes the registry rate table into @hokusai/costs priceOverrides (rates only, no arithmetic)
+shared/lib/sdk-task-cost/meter.ts 2  # measurement: takes the caller's rate table; locates Claude transcript dirs for owned session ids
+shared/lib/sdk-task-cost/fixtures.ts 1  # measurement: task-cost fixture loader (PricingTable type)
 shared/lib/workflow-cost.ts 1  # schema: persisted WorkflowCostResult names ModelPricing / ModelTokenUsage
 
 # ── Eval entrypoints: choose which pricing config the meter prices with ──
 shared/lib/post-completion-hook.ts 1  # measurement: loads the wavemill-install pricing table for meterWorkflowCost
 shared/lib/eval-orchestrator.ts 1  # measurement: loads the repo pricing table for meterWorkflowCost
-shared/lib/execution-economics.ts 1  # measurement: per-stage economics (observation-only) price sessions per call
 
-# ── Wavemill-only decision policy (retained by HOK-3077) ──
+# ── Wavemill-only decision policy: loads rates; @hokusai/costs prices them (priceUsageUsd, HOK-3328) ──
 shared/lib/workflow-router.ts 1  # pricing_policy: router model selection and pool bounds
 shared/lib/stage-aware-router.ts 1  # pricing_policy: stage-aware budget estimates
 shared/lib/challenge-scheduler.ts 1  # pricing_policy: challenge model pool configuration
@@ -40,10 +36,7 @@ shared/lib/native-agent/certification/live-coding-canary.ts 1  # pricing_policy:
 shared/lib/model-promotion.ts 1  # backfill: normalized evaluation cost for model promotion
 shared/lib/eval-schema.ts 1  # schema: pricing snapshot type on the eval record
 
-# ── Backfills / recosts (offline, per-model under a chosen price table) ──
-tools/backfill-workflow-cost.ts 1  # backfill: per-model recost of historical records
-tools/backfill-workflow-cost-status.ts 1  # backfill: loads the pricing table for SDK recompute
-tools/recost-opus-4-6.ts 1  # backfill: one-off recost for a model price change
+# ── Backfills (offline; read stored SDK summaries, never re-price) ──
 tools/backfill-pricing-snapshot.ts 1  # backfill: pricing snapshot type
 
 # ── Session discovery (wavemill_only_join) ──

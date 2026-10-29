@@ -20,10 +20,15 @@ export interface CachedEdge {
   classifiedAt: string;
 }
 
-/** Grounded-planner pair verdict (HOK-3131). `must_precede`/`should_precede` mean `a` before `b`. */
-export type GroundedVerdictKind = 'must_precede' | 'should_precede' | 'conflict' | 'independent';
+/**
+ * Grounded-planner pair verdict (HOK-3131). `must_precede`/`should_precede` mean
+ * `a` before `b`. Ordering-only since HOK-3304: deterministic file conflicts are
+ * decided by the scorer and never become verdicts. Cached entries with the old
+ * `conflict` / `independent` kinds fail the per-entry validator and are dropped.
+ */
+export type GroundedVerdictKind = 'must_precede' | 'should_precede' | 'independent-order';
 
-export const GROUNDED_VERDICT_KINDS: readonly GroundedVerdictKind[] = ['must_precede', 'should_precede', 'conflict', 'independent'];
+export const GROUNDED_VERDICT_KINDS: readonly GroundedVerdictKind[] = ['must_precede', 'should_precede', 'independent-order'];
 
 /** Cached touch set for one task, valid while the task fingerprint matches. */
 export interface CachedTouchSet {

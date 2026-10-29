@@ -9,6 +9,8 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/routing-emitter.sh"
 # shellcheck source=task-identity.sh
 source "$script_dir/task-identity.sh"
+# shellcheck source=session-ownership.sh
+source "$script_dir/session-ownership.sh"
 
 agent_tmux_target() {
   local session="$1" window="$2"
@@ -609,6 +611,7 @@ export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
 export WAVEMILL_WT_DIR='$worktree_dir'
 export WAVEMILL_FEATURE_SLUG='$feature_slug'
 export WAVEMILL_SLUG='$feature_slug'
+export WAVEMILL_SESSION_KIND='${WAVEMILL_SESSION_KIND:-}'
 ${phase_exports}
 export WAVEMILL_BRANCH='${WAVEMILL_BRANCH:-}'
 export WAVEMILL_BASE_BRANCH='${WAVEMILL_BASE_BRANCH:-}'
@@ -2264,6 +2267,8 @@ agent_launch_autonomous() {
     feature_dir="$repo_dir/features/$WAVEMILL_FEATURE_SLUG"
   fi
   phase_env="${launch_phase:-$window}"
+  local ownership_kind
+  ownership_kind="$(session_ownership_kind_for_launch "$launch_phase")"
 
   if [[ -n "$model" ]] && ! agent_validate_model "$model" "${REPO_DIR:-$(pwd)}" >/dev/null 2>&1; then
     echo "Error: invalid model selector '$model' for $agent_cmd" >&2
@@ -2380,7 +2385,8 @@ elif [[ "\$launch_rc" -ne 0 ]]; then
   exit 1
 fi
 eval "\$env_block"
-cat '$instr_file' | claude${effective_model_flag} --dangerously-skip-permissions
+$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "${resolved_model:-$model}")
+cat '$instr_file' | claude${effective_model_flag} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions
 echo "[wavemill] Agent exited (\$?)"
 LAUNCHEOF
       chmod +x "$launcher"
@@ -2440,7 +2446,8 @@ export ANTHROPIC_DEFAULT_SONNET_MODEL='$model'
 export ANTHROPIC_DEFAULT_HAIKU_MODEL='$model'
 export CLAUDE_CODE_SUBAGENT_MODEL='$model'
 export CLAUDE_CODE_EFFORT_LEVEL='${effort_level:-medium}'
-cat '$instr_file' | claude${model_flag} --dangerously-skip-permissions
+$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "$model")
+cat '$instr_file' | claude${model_flag} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions
 echo "[wavemill] Agent exited (\$?)"
 LAUNCHEOF
         chmod +x "$launcher"
@@ -2448,7 +2455,22 @@ LAUNCHEOF
         printf -v launcher_cmd '%q' "$launcher"
         agent_send_tmux_guarded_command "$target" "$launcher_cmd" "$tmux_guard_exports"
       else
-        agent_send_tmux_guarded_command "$target" "export WAVEMILL_SESSION='$session' WAVEMILL_ISSUE='$issue' WAVEMILL_DASHBOARD_PID='$dashboard_pid' WAVEMILL_PHASE='$phase_env' WAVEMILL_RESOLVED_MODEL='$model'; cat '$instr_file' | claude${model_flag} --dangerously-skip-permissions; echo '[wavemill] Agent exited (\$?)'" "$tmux_guard_exports"
+        local launcher="/tmp/${session}-${issue}-autonomous-launcher.sh"
+        cat > "$launcher" <<LAUNCHEOF
+#!/bin/bash
+export WAVEMILL_SESSION='$session'
+export WAVEMILL_ISSUE='$issue'
+export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
+export WAVEMILL_PHASE='$phase_env'
+export WAVEMILL_RESOLVED_MODEL='$model'
+$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "$model")
+cat '$instr_file' | claude${model_flag} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions
+echo "[wavemill] Agent exited (\$?)"
+LAUNCHEOF
+        chmod +x "$launcher"
+        local launcher_cmd
+        printf -v launcher_cmd '%q' "$launcher"
+        agent_send_tmux_guarded_command "$target" "$launcher_cmd" "$tmux_guard_exports"
       fi
       ;;
     codex)
@@ -2464,7 +2486,8 @@ export WAVEMILL_RESOLVED_MODEL='$model'
 if [[ -n '$issue' ]]; then
   printf '%s\n' "working" > "/tmp/${session}-${issue}-status.txt"
 fi
-codex exec${model_flag} --dangerously-bypass-approvals-and-sandbox - < '$instr_file'
+$(session_ownership_launch_snippet "$feature_dir" codex "$ownership_kind" "$model")
+codex exec${model_flag} --dangerously-bypass-approvals-and-sandbox - < <(printf '%s\n' "\$WM_LAUNCH_NONCE_LINE"; cat '$instr_file')
 codex_rc=\$?
 if [[ -n "\${STATUS_LOG_FILE:-}" ]]; then
   printf '%s\n' "[wavemill] codex exit code codex=\${codex_rc} issue='$issue'" >> "\$STATUS_LOG_FILE" 2>/dev/null || true
@@ -2669,6 +2692,8 @@ agent_launch_interactive() {
     feature_dir="$repo_dir/features/$WAVEMILL_FEATURE_SLUG"
   fi
   phase_env="${launch_phase:-$window}"
+  local ownership_kind
+  ownership_kind="$(session_ownership_kind_for_launch "$launch_phase")"
 
   if [[ -n "$model" ]] && ! agent_validate_model "$model" "${REPO_DIR:-$(pwd)}" >/dev/null 2>&1; then
     local challenge_launch_stage=""
@@ -2854,7 +2879,8 @@ elif [[ "\$launch_rc" -ne 0 ]]; then
   exit 1
 fi
 eval "\$env_block"
-claude${effective_model_flag}${agent_flags} --dangerously-skip-permissions "\$(cat '$prompt_file')"
+$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "${resolved_model:-$model}")
+claude${effective_model_flag}${agent_flags} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions "\$(cat '$prompt_file')"
       echo "[wavemill] Agent exited (\$?)"
 LAUNCHEOF
       ;;
@@ -2906,7 +2932,8 @@ export ANTHROPIC_DEFAULT_SONNET_MODEL='$model'
 export ANTHROPIC_DEFAULT_HAIKU_MODEL='$model'
 export CLAUDE_CODE_SUBAGENT_MODEL='$model'
 export CLAUDE_CODE_EFFORT_LEVEL='${effort_level:-medium}'
-claude${model_flag}${agent_flags} --dangerously-skip-permissions "\$(cat '$prompt_file')"
+$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "$model")
+claude${model_flag}${agent_flags} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions "\$(cat '$prompt_file')"
 echo "[wavemill] Agent exited (\$?)"
 LAUNCHEOF
       else
@@ -2920,7 +2947,8 @@ export WAVEMILL_RESOLVED_MODEL='$model'
 if [[ -n '$issue' ]]; then
   printf '%s\n' "working" > "/tmp/${session}-${issue}-status.txt"
 fi
-claude${model_flag}${agent_flags} --dangerously-skip-permissions "\$(cat '$prompt_file')"
+$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "$model")
+claude${model_flag}${agent_flags} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions "\$(cat '$prompt_file')"
 echo "[wavemill] Agent exited (\$?)"
 LAUNCHEOF
       fi
@@ -2936,7 +2964,9 @@ export WAVEMILL_RESOLVED_MODEL='$model'
 if [[ -n '$issue' ]]; then
   printf '%s\n' "working" > "/tmp/${session}-${issue}-status.txt"
 fi
-codex${model_flag}${agent_flags} --no-alt-screen "\$(cat '$prompt_file')"
+$(session_ownership_launch_snippet "$feature_dir" codex "$ownership_kind" "$model")
+codex${model_flag}${agent_flags} --no-alt-screen "\$WM_LAUNCH_NONCE_LINE
+\$(cat '$prompt_file')"
 echo "[wavemill] Agent exited (\$?)"
 LAUNCHEOF
       ;;

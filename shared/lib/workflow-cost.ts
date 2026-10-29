@@ -4,9 +4,11 @@
  * Eval records carry `workflowCost`, `workflowTokenUsage`,
  * `workflowCostAttribution` and `workflowCostStatus` in this shape, and a
  * dozen readers (aggregator, exports, reports) depend on it, so it stays here
- * unchanged. This module computes nothing: the one cost engine is the
- * Hokusai SDK reducer behind `sdk-task-cost/` (whose projection produces a
- * `WorkflowCostResult`), and per-call pricing is `pricing/model-pricing.ts`.
+ * unchanged. This module computes nothing: the one cost engine is
+ * `@hokusai/costs`, measured over the task's owned sessions by
+ * `sdk-task-cost/meter.ts` (whose projection produces a `WorkflowCostResult`).
+ * Wavemill supplies only rates (`pricing/model-pricing.ts`) and ownership
+ * (`session-ownership.ts`).
  * `tools/check-cost-ownership.ts` keeps a second engine from coming back.
  *
  * @module workflow-cost
@@ -42,7 +44,8 @@ export interface WorkflowCostAttributionModel {
 }
 
 export interface WorkflowCostAttribution {
-  source: 'native' | 'codex' | 'claude';
+  /** The one harness that contributed, or `multi` when several did (HOK-3328). */
+  source: 'native' | 'codex' | 'claude' | 'multi';
   coverage: WorkflowCostAttributionCoverage;
   reason?: WorkflowCostAttributionReason;
   sessions: number;
@@ -51,6 +54,12 @@ export interface WorkflowCostAttribution {
   unpricedSessions: number;
   models: WorkflowCostAttributionModel[];
 }
+
+/**
+ * `@hokusai/costs` per-harness totals (`claude-code`, `codex`, `native`); a
+ * `null` value is a harness whose cost is unresolved (HOK-3328).
+ */
+export type WorkflowCostByHarness = Record<string, number | null>;
 
 /** Result from scanning workflow sessions. */
 export interface WorkflowCostResult {
@@ -68,6 +77,10 @@ export interface WorkflowCostResult {
   pricingUsed: Record<string, ModelPricing>;
   /** Optional additive attribution metadata for native workflow cost coverage. */
   attribution?: WorkflowCostAttribution;
+  /** Per-harness slices of `totalCostUsd`, from the SDK report (HOK-3328). */
+  byHarness?: WorkflowCostByHarness;
+  /** SDK totals per session-ownership kind (planning, coding, helper:*, …). */
+  byKind?: Record<string, number | null>;
 }
 
 /** Failure result with diagnostic information (HOK-883). */

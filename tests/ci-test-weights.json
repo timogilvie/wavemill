@@ -354,7 +354,6 @@
       "shared/lib/task-context-analyzer.test.ts": 207,
       "shared/lib/task-descriptor-backfill.test.ts": 214,
       "shared/lib/task-packet-validator.test.ts": 366,
-      "shared/lib/workflow-cost.test.ts": 339,
       "shared/lib/workflow-router-decision.test.ts": 5919,
       "shared/lib/workflow-router-difficulty-budget.test.ts": 4816,
       "shared/lib/workflow-router-heuristic.test.ts": 3966,

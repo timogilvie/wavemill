@@ -1,0 +1,10 @@
+{
+  "hotFiles": [
+    "shared/lib/wavemill-monitor.sh",
+    "shared/lib/wavemill-common.sh",
+    "shared/lib/wavemill-mill.sh",
+    "shared/lib/agent-adapters.sh",
+    "shared/lib/config.ts",
+    "wavemill-config.schema.json"
+  ]
+}

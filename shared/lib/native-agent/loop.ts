@@ -32,7 +32,8 @@ export interface AgentContext extends PiAgentContext {
   systemPrompt?: string;
 }
 export type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { computeModelCost, type ModelPricing } from '../pricing/model-pricing.ts';
+import type { ModelPricing } from '../pricing/model-pricing.ts';
+import { priceUsageUsd } from '../sdk-task-cost/price-overrides.ts';
 import type { ModelRegistry } from '../model-registry.ts';
 import { appendPromptSizeSample, type PromptSizeSample } from './prompt-size-log.ts';
 import { EMPTY_PROMPT_CACHE_SUMMARY, summarizePromptCache, type PromptCacheSummary, type TurnCacheUsage } from './prompt-cache.ts';
@@ -895,10 +896,10 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       totalInputTokens += input;
       totalOutputTokens += output;
       if (modelPricing) {
-        totalCostUsd += computeModelCost(
-          { inputTokens: input, outputTokens: output, cacheCreationTokens: cacheWrite, cacheReadTokens: cacheRead },
+        totalCostUsd += priceUsageUsd(
           modelPricing,
-        );
+          { inputTokens: input, outputTokens: output, cacheCreationTokens: cacheWrite, cacheReadTokens: cacheRead },
+        ) ?? 0;
       }
 
       // Track peak input tokens (what must fit in context window)

@@ -2,13 +2,17 @@
  * Resolve execution identity for Claude Code / Codex CLI stages from retained
  * session telemetry.
  *
- * The resolver consumes the normalized HOK-2958 session detail exposed by
- * `session-adapters.ts`; it never reads launch intent and never fabricates an
- * executed model from the requested model.
+ * Which sessions did a stage's work is read from the task's
+ * `.session-ownership.jsonl` (HOK-3328): only turns of the sessions a launch
+ * row names for that stage count, so a helper call that ran while the stage
+ * was open can never set the stage's executed model. The resolver never reads
+ * launch intent as the answer and never fabricates an executed model from the
+ * requested model.
  */
 
 import { getSessionAdapter } from './session-adapters.ts';
 import type { ExternalSessionTurn } from './session-adapters.ts';
+import { rowsForStage, type OwnershipStage, type SessionOwnershipRow } from './session-ownership.ts';
 
 export type ExecutedModelResolverAgent = 'claude' | 'codex';
 export type ExecutedModelEvidenceSource = 'claude-session' | 'codex-session';
@@ -18,10 +22,9 @@ export interface ResolveExecutedModelFromSessionsInput {
   worktreePath: string;
   branchName: string;
   agent: ExecutedModelResolverAgent;
-  startedAt: string;
-  finishedAt: string;
-  /** Backward-only clock-skew allowance in milliseconds. Defaults to 60s. */
-  skewMs?: number;
+  stage: OwnershipStage;
+  /** The task's launch rows; only sessions owned for `stage` are read. */
+  ownership: readonly SessionOwnershipRow[];
 }
 
 export interface ResolvedExecutedModelEvidence {
@@ -39,7 +42,10 @@ interface CandidateTurn {
   index: number;
 }
 
-const DEFAULT_SKEW_MS = 60_000;
+const AGENT_HARNESS: Record<ExecutedModelResolverAgent, SessionOwnershipRow['harness']> = {
+  claude: 'claude-code',
+  codex: 'codex',
+};
 
 function sourceForAgent(agent: ExecutedModelResolverAgent): ExecutedModelEvidenceSource {
   return agent === 'claude' ? 'claude-session' : 'codex-session';
@@ -58,26 +64,23 @@ function formatModelCounts(counts: Map<string, { count: number }>): string {
 }
 
 /**
- * Resolve the executed model from session turns that overlap a stage window.
- *
- * Turns are included when their timestamp falls in
- * `[startedAt - skewMs, finishedAt]`; no forward slack is applied so the next
- * stage cannot bleed into the current stage's attribution. When a stage has
- * both Claude main-loop and sidechain turns, sidechain turns are ignored for
- * model dominance.
+ * Resolve the executed model from the turns of the sessions owned for a
+ * stage. When a stage has both Claude main-loop and sidechain turns, sidechain
+ * turns are ignored for model dominance.
  */
 export function resolveExecutedModelFromSessions(
   input: ResolveExecutedModelFromSessionsInput,
 ): ResolvedExecutedModelEvidence {
   const evidenceSource = sourceForAgent(input.agent);
-  const startedMs = parseTimestampMs(input.startedAt);
-  const finishedMs = parseTimestampMs(input.finishedAt);
-  if (startedMs === null || finishedMs === null || finishedMs < startedMs) {
+  const owned = new Set(rowsForStage(input.ownership, input.stage)
+    .filter((row) => row.harness === AGENT_HARNESS[input.agent])
+    .map((row) => row.sessionRef));
+  if (owned.size === 0) {
     return {
       executedModel: null,
       evidenceStatus: 'missing',
       evidenceSource,
-      evidenceDetail: `invalid-window startedAt=${input.startedAt} finishedAt=${input.finishedAt}`,
+      evidenceDetail: `no ${input.agent} session owned for stage=${input.stage}`,
     };
   }
 
@@ -86,33 +89,23 @@ export function resolveExecutedModelFromSessions(
     worktreePath: input.worktreePath,
     branchName: input.branchName,
   });
-  if (!result?.externalSessions?.length) {
+  const sessions = (result?.externalSessions ?? []).filter((session) => owned.has(session.sessionId));
+  if (sessions.length === 0) {
     return {
       executedModel: null,
       evidenceStatus: 'missing',
       evidenceSource,
-      evidenceDetail: `no matching ${input.agent} session telemetry for branch=${input.branchName}`,
+      evidenceDetail: `owned ${input.agent} sessions=${owned.size}; none found in telemetry for branch=${input.branchName}`,
     };
   }
 
-  const windowStartMs = startedMs - (input.skewMs ?? DEFAULT_SKEW_MS);
-  const windowEndMs = finishedMs;
   const candidates: CandidateTurn[] = [];
-  let timestampedTurns = 0;
-  let inWindowTurns = 0;
   let index = 0;
-
-  for (const session of result.externalSessions) {
+  for (const session of sessions) {
     for (const turn of session.turns) {
       index++;
       const candidate = candidateFromTurn(turn, session.sessionId, index);
-      if (!candidate) continue;
-      timestampedTurns++;
-      if (candidate.timestampMs < windowStartMs || candidate.timestampMs > windowEndMs) {
-        continue;
-      }
-      inWindowTurns++;
-      candidates.push(candidate);
+      if (candidate) candidates.push(candidate);
     }
   }
 
@@ -121,7 +114,7 @@ export function resolveExecutedModelFromSessions(
       executedModel: null,
       evidenceStatus: 'missing',
       evidenceSource,
-      evidenceDetail: `sessions=${result.externalSessions.length}; timestampedTurns=${timestampedTurns}; inWindowTurns=${inWindowTurns}`,
+      evidenceDetail: `sessions=${sessions.length}; modelTurns=0`,
     };
   }
 
@@ -169,9 +162,8 @@ function candidateFromTurn(
   sessionId: string,
   index: number,
 ): CandidateTurn | null {
-  if (!turn.model || !turn.timestamp) return null;
-  const timestampMs = parseTimestampMs(turn.timestamp);
-  if (timestampMs === null) return null;
+  if (!turn.model) return null;
+  const timestampMs = (turn.timestamp ? parseTimestampMs(turn.timestamp) : null) ?? Number.NEGATIVE_INFINITY;
   return {
     model: turn.model,
     timestampMs,

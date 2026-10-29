@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   CO_CHANGE_MIN_STRENGTH,
+  DEFAULT_HOT_FILES,
   buildCoChangeIndex,
   detectSeries,
   findCrossReference,
@@ -36,6 +37,7 @@ describe('scorePair — file overlap', () => {
     assert.equal(pair.score, 1);
     assert.deepEqual(pair.signals, ['file_overlap']);
     assert.deepEqual(pair.overlappingFiles, ['a.ts', 'b.ts']);
+    assert.deepEqual(pair.conflictFiles, ['a.ts', 'b.ts']);
   });
 
   it('partial overlap is normalized by the smaller touch set', () => {
@@ -75,6 +77,7 @@ describe('scorePair — hot files and regions', () => {
   it('flags overlap on a default hot file', () => {
     const pair = scorePair({ id: 'HOK-1' }, { id: 'HOK-2' }, touch('HOK-1', monitor), touch('HOK-2', monitor));
     assert.deepEqual(pair.signals, ['file_overlap', 'hot_file']);
+    assert.deepEqual(pair.conflictFiles, [monitor]);
     assert.equal(pair.score, 1);
   });
 
@@ -86,6 +89,7 @@ describe('scorePair — hot files and regions', () => {
       touch('HOK-2', { path: monitor, source: 'resolved', symbols: ['reap_tasks'] }),
     );
     assert.ok(pair.signals.includes('disjoint_regions'));
+    assert.deepEqual(pair.conflictFiles, []);
     assert.equal(pair.score, 0.5);
   });
 
@@ -97,12 +101,81 @@ describe('scorePair — hot files and regions', () => {
       touch('HOK-2', { path: monitor, source: 'resolved', symbols: ['poll_loop', 'other'] }),
     );
     assert.ok(pair.signals.includes('region_overlap'));
+    assert.deepEqual(pair.conflictFiles, [monitor]);
     assert.equal(pair.score, 1);
   });
 
   it('honors custom hot files', () => {
     const pair = scorePair({ id: 'HOK-1' }, { id: 'HOK-2' }, touch('HOK-1', 'x.ts'), touch('HOK-2', 'x.ts'), { hotFiles: ['x.ts'] });
     assert.ok(pair.signals.includes('hot_file'));
+    assert.deepEqual(pair.conflictFiles, ['x.ts']);
+  });
+});
+
+describe('deterministic conflictFiles (HOK-3304)', () => {
+  it('emits conflictFiles for a non-hot overlap', () => {
+    // protects: a direct overlap on a non-hot, non-append-only file does not reach the LLM judge
+    const pair = scorePair(
+      { id: 'HOK-3036' },
+      { id: 'HOK-3066' },
+      touch('HOK-3036', 'shared/lib/foo-config.ts'),
+      touch('HOK-3066', 'shared/lib/foo-config.ts', 'shared/lib/bar.ts'),
+      { hotFiles: [] }, // the file is on no hot list (HOK-3304)
+    );
+    assert.deepEqual(pair.conflictFiles, ['shared/lib/foo-config.ts']);
+    assert.deepEqual(pair.overlappingFiles, ['shared/lib/foo-config.ts']);
+  });
+
+  it('hot-file: disjoint regions produce no deterministic conflict', () => {
+    // protects: hot-file disjoint regions are not a conflict; same region or missing region is
+    const pair = scorePair(
+      { id: 'A' },
+      { id: 'B' },
+      touch('A', { path: 'shared/lib/wavemill-monitor.sh', source: 'resolved', symbols: ['poll_loop'] }),
+      touch('B', { path: 'shared/lib/wavemill-monitor.sh', source: 'resolved', symbols: ['reap_tasks'] }),
+    );
+    assert.deepEqual(pair.conflictFiles, []);
+  });
+
+  it('hot-file: same region is a deterministic conflict', () => {
+    // protects: two tasks naming the same symbol in a hot file conflict without the judge
+    const pair = scorePair(
+      { id: 'A' },
+      { id: 'B' },
+      touch('A', { path: 'shared/lib/wavemill-monitor.sh', source: 'resolved', symbols: ['poll_loop'] }),
+      touch('B', { path: 'shared/lib/wavemill-monitor.sh', source: 'resolved', symbols: ['poll_loop', 'reap_tasks'] }),
+    );
+    assert.deepEqual(pair.conflictFiles, ['shared/lib/wavemill-monitor.sh']);
+  });
+
+  it('hot-file: missing region on one side is a deterministic conflict (conservative)', () => {
+    // protects: unknown regions fall back to file-level conflict, not to trust
+    const pair = scorePair(
+      { id: 'A' },
+      { id: 'B' },
+      touch('A', { path: 'shared/lib/wavemill-monitor.sh', source: 'resolved', symbols: ['poll_loop'] }),
+      touch('B', 'shared/lib/wavemill-monitor.sh'), // no symbols
+    );
+    assert.deepEqual(pair.conflictFiles, ['shared/lib/wavemill-monitor.sh']);
+  });
+
+  it('no deterministic conflict for append-only-only overlap', () => {
+    // protects: a pair whose only overlap is on the append-only registry does not conflict
+    const pair = scorePair(
+      { id: 'A' },
+      { id: 'B' },
+      touch('A', 'tests/run-unit-tests.sh', 'src/a.ts'),
+      touch('B', 'tests/run-unit-tests.sh', 'src/b.ts'),
+    );
+    assert.deepEqual(pair.conflictFiles, []);
+    assert.equal(pair.score, 0);
+  });
+
+  it('loads hot files from the data file', () => {
+    // protects: planner-hot-files.json is the canonical list; DEFAULT_HOT_FILES mirrors it
+    assert.ok(DEFAULT_HOT_FILES.includes('shared/lib/wavemill-monitor.sh'));
+    assert.ok(DEFAULT_HOT_FILES.includes('shared/lib/wavemill-mill.sh'));
+    assert.ok(DEFAULT_HOT_FILES.every((file) => typeof file === 'string'));
   });
 });
 

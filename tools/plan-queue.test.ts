@@ -804,10 +804,13 @@ describe('plan-queue CLI', () => {
     const groundedBacklog = [
       { id: 'HOK-1', title: 'Monitor reap loop', description: 'Edit `shared/lib/wavemill-monitor.sh` reap loop.', state: 'Todo', priority: 1, blocks: [] },
       { id: 'HOK-2', title: 'Monitor merge lane', description: 'Edit `shared/lib/wavemill-monitor.sh` merge lane.', state: 'Todo', priority: 2, blocks: [] },
-      { id: 'HOK-3', title: 'Observer docs', description: 'Document `docs/observer.md`.', state: 'Todo', priority: 3, blocks: [] },
+      { id: 'HOK-3', title: 'Observer docs', description: 'Document `docs/observer.md`. Builds on HOK-1.', state: 'Todo', priority: 3, blocks: [] },
     ];
-    const conflictVerdicts = JSON.stringify({
-      verdicts: [{ a: 'HOK-1', b: 'HOK-2', verdict: 'conflict', evidence: 'Both modify shared/lib/wavemill-monitor.sh' }],
+    // HOK-3304: HOK-1/HOK-2 is a deterministic conflict (shared hot file) and
+    // never reaches the judge; the judge only ever sees ordering pairs such as
+    // the HOK-1 → HOK-3 cross-reference pair.
+    const orderingVerdicts = JSON.stringify({
+      verdicts: [{ a: 'HOK-1', b: 'HOK-3', verdict: 'must_precede', evidence: 'HOK-3 documents the monitor merge lane that HOK-1 adds.' }],
     });
 
     function setupGroundedRepo(mode: 'grounded' | 'legacy' = 'grounded'): { tempDir: string; backlogPath: string; reportPath: string } {
@@ -837,42 +840,42 @@ describe('plan-queue CLI', () => {
     it('plans from touch sets and the ordering judge, then serves the next run from cache', () => {
       const { tempDir, backlogPath, reportPath } = setupGroundedRepo();
       try {
-        const { cliPath, logPath } = writeMockClassifier(tempDir, { default: { text: conflictVerdicts } });
+        const { cliPath, logPath } = writeMockClassifier(tempDir, { default: { text: orderingVerdicts } });
         const env = { ...MILL_ENV, CLAUDE_CMD: cliPath };
 
         const first = runPlanQueue([...millPlanArgs(backlogPath, 'grounded', reportPath), '--preview'], undefined, tempDir, env);
 
         assert.equal(first.status, 0, first.stderr);
         assert.deepEqual(parseJson(first.stdout), {
-          availableNow: ['HOK-1', 'HOK-2', 'HOK-3'],
-          queuedAfterDependencies: [],
+          availableNow: ['HOK-1', 'HOK-2'],
+          queuedAfterDependencies: [{ taskId: 'HOK-3', ancestors: ['HOK-1'] }],
           avoidRunningTogether: [['HOK-1', 'HOK-2']],
           sharedSurfaceConflicts: [
             {
               a: 'HOK-1',
               b: 'HOK-2',
-              files: [],
-              evidence: 'grounded:conflict: Both modify shared/lib/wavemill-monitor.sh',
+              files: ['shared/lib/wavemill-monitor.sh'],
+              evidence: 'grounded:deterministic shared files: shared/lib/wavemill-monitor.sh',
               source: 'inferred',
             },
           ],
           needsTriage: [],
         });
-        assert.match(first.stderr, /plan-queue: grounded planner: tasks=3 pairsScored=1 pairsSentToLlm=1 edges=1 waves=2/);
-        assert.match(first.stderr, /Grounded Waves\n- wave 0: HOK-1, HOK-3\n- wave 1: HOK-2/);
-        assert.match(first.stderr, /- HOK-2 → wave 1 \(conflicts with HOK-1: Both modify shared\/lib\/wavemill-monitor\.sh\)/);
+        assert.match(first.stderr, /plan-queue: grounded planner: tasks=3 pairsScored=2 pairsSentToLlm=1 edges=2 waves=2/);
+        assert.match(first.stderr, /Grounded Waves\n- wave 0: HOK-1\n- wave 1: HOK-2, HOK-3/);
+        assert.match(first.stderr, /- HOK-2 → wave 1 \(conflicts with HOK-1 \(shared: shared\/lib\/wavemill-monitor\.sh\)\)/);
         assert.equal(readInvokedModels(logPath).length, 1, 'one ordering call, no touch-set prediction call');
 
         const cache = readGroundedCache(tempDir, 'grounded');
         assert.deepEqual(cache.touchSets?.['HOK-1'].entries, [{ path: 'shared/lib/wavemill-monitor.sh', source: 'explicit' }]);
-        assert.deepEqual(cache.groundedVerdicts?.map((v) => [v.a, v.b, v.verdict]), [['HOK-1', 'HOK-2', 'conflict']]);
+        assert.deepEqual(cache.groundedVerdicts?.map((v) => [v.a, v.b, v.verdict]), [['HOK-1', 'HOK-3', 'must_precede']]);
         assert.deepEqual(cache.fingerprints, {}, 'legacy fingerprints are not advanced by grounded runs');
         assert.deepEqual(cache.edges, []);
         assert.equal(cache.inference?.lastOutcome, 'ok');
 
         const report = readReport(reportPath);
         assert.equal(report.inferenceStatus, 'ok');
-        assert.equal(report.inferredEdgeCount, 1);
+        assert.equal(report.inferredEdgeCount, 2);
         assert.equal(report.refreshKind, 'full');
 
         const second = runPlanQueue(millPlanArgs(backlogPath, 'grounded', reportPath), undefined, tempDir, env);
@@ -894,7 +897,9 @@ describe('plan-queue CLI', () => {
         const result = runPlanQueue(millPlanArgs(backlogPath, 'grounded', reportPath), undefined, tempDir, { ...MILL_ENV, CLAUDE_CMD: cliPath });
 
         assert.equal(result.status, 0, result.stderr);
-        assert.deepEqual(parseJson(result.stdout).avoidRunningTogether, []);
+        // The deterministic HOK-1/HOK-2 conflict holds regardless of the judge;
+        // only the ordering pair is affected by the malformed judge output.
+        assert.deepEqual(parseJson(result.stdout).avoidRunningTogether, [['HOK-1', 'HOK-2']]);
         assert.match(result.stderr, /ordering judge failed/);
         const cache = readGroundedCache(tempDir, 'grounded');
         assert.deepEqual(cache.groundedVerdicts, [], 'failed verdicts are not cached');

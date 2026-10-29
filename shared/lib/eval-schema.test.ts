@@ -19,10 +19,10 @@ import {
   SCORE_BANDS,
   getScoreBand,
 } from './eval-schema.ts';
-import { buildSdkTaskCostSummaries } from './sdk-task-cost/collect.ts';
 import { repairPooledWorkflowCost } from './workflow-cost-pool-repair.ts';
-import { listSdkTaskCostFixtures, loadSdkTaskCostFixture } from './sdk-task-cost/fixtures.ts';
+import { fixtureTaskCostSummaries, listSdkTaskCostFixtures } from './sdk-task-cost/fixtures.ts';
 import { findTaskCostSchemaDrift } from './sdk-task-cost/schema-drift.ts';
+import { validateEvalRecord } from './eval-validator.ts';
 import {
   buildChallengeExecutionIntent,
   INVALID_CHALLENGE_REASONS,
@@ -790,7 +790,7 @@ function validPromptSizeDiagnostic() {
 }
 
 test('SCHEMA_VERSION is bumped for eval schema updates', () => {
-  assert.equal(SCHEMA_VERSION, '1.55.0');
+  assert.equal(SCHEMA_VERSION, '1.56.0');
 });
 
 function validReviewIdentitySet() {
@@ -2492,8 +2492,8 @@ test('Wavemill router fields validate and schema stays in parity', () => {
   assert.equal(properties.wavemill_router_scoring?.$ref, '#/$defs/WavemillRouterScoringMetadata');
 });
 
-test('Schema version constant is 1.55.0', () => {
-  assert.equal(SCHEMA_VERSION, '1.55.0');
+test('Schema version constant is 1.56.0', () => {
+  assert.equal(SCHEMA_VERSION, '1.56.0');
 });
 
 test('correctionProvenance validates when present and is rejected when malformed (HOK-3321)', () => {
@@ -2960,6 +2960,7 @@ test('Execution economics enums match the schema definitions', () => {
   assert.deepEqual(session.properties?.costSource?.enum, [
     'provider_reported',
     'local_estimate',
+    'mixed',
     'none',
   ]);
 });
@@ -3073,8 +3074,29 @@ test('Malformed subagent_model_economics_policy is rejected', () => {
 // HOK-2081: Counterfactual/replay lineage fields
 // ────────────────────────────────────────────────────────────────
 
-test('SCHEMA_VERSION bumped to 1.55.0 for HOK-3321 correctionProvenance', () => {
-  assert.equal(SCHEMA_VERSION, '1.55.0');
+// protects: HOK-3328 cost fields being rejected by the validator (records dropped) or accepted malformed
+test('HOK-3328 session-ownership cost fields validate and stay optional', () => {
+  const base = { ...scenarios[0].record, schemaVersion: SCHEMA_VERSION } as unknown as Record<string, unknown>;
+  const withCost = {
+    ...base,
+    workflowCost: 48.64,
+    workflowCostByHarness: { 'claude-code': 43.71, native: 4.93, codex: null },
+    workflowCostByKind: { coding: 37.35, review: 6.36, 'native-arm': 4.93, 'helper:judge': null },
+    workflowCostAttribution: {
+      source: 'multi', coverage: 'partial', sessions: 8, turns: 8, pricedSessions: 2, unpricedSessions: 0, models: [],
+    },
+    workflowCostUnreliable: { reason: 'native_first_harness_selection', markedAt: '2026-10-28T00:00:00.000Z' },
+  };
+  const schemaIssues = (record: Record<string, unknown>) =>
+    validateEvalRecord(record, { file: 'evals.jsonl', line: 1 }).filter((issue) => issue.code === 'SCHEMA_VIOLATION');
+  assert.deepEqual(schemaIssues(withCost), []);
+  assert.notDeepEqual(schemaIssues({ ...withCost, workflowCostByHarness: { native: 'lots' } }), []);
+  assert.notDeepEqual(schemaIssues({ ...withCost, workflowCostUnreliable: { ...withCost.workflowCostUnreliable, guessedCost: 4.93 } }), []);
+  assert.notDeepEqual(schemaIssues({ ...withCost, workflowCostAttribution: { ...withCost.workflowCostAttribution, source: 'native-first' } }), []);
+  const defs = schema.$defs as Record<string, { properties?: Record<string, { properties?: Record<string, { enum?: unknown[] }> }> }>;
+  const stageRole = defs.ExecutionEconomicsSession?.properties?.stageRole?.properties;
+  assert.deepEqual(stageRole?.confidence?.enum, ['launch_record', 'unowned', 'branch_worktree', 'timestamp_window', 'unattributed']);
+  assert.ok(stageRole?.kind, 'stageRole.kind is declared');
 });
 
 test('Legacy record without HOK-2081 fields still validates', () => {
@@ -3133,16 +3155,6 @@ test('replay_fidelity out of range fails validation', () => {
 // ────────────────────────────────────────────────────────────────
 // HOK-3075: shadow SDK task-cost summaries
 // ────────────────────────────────────────────────────────────────
-
-function fixtureTaskCostSummaries(name: string) {
-  const fixture = loadSdkTaskCostFixture(name);
-  return buildSdkTaskCostSummaries({
-    scanResults: fixture.scanResults,
-    taskId: fixture.taskId,
-    pricingTable: fixture.pricingTable,
-    now: () => new Date(fixture.now),
-  });
-}
 
 test('taskCostSummary schema enums match the pinned @hokusai/core contract', () => {
   assert.deepEqual(findTaskCostSchemaDrift(schema), []);

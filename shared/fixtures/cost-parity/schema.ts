@@ -24,6 +24,7 @@ export interface CostParityCaseSession {
   fileName: string;
   runId?: string; // required for native-sessions and claude-deepseek-provider
   lines: Record<string, unknown>[]; // raw JSONL objects; ${WORKTREE} placeholder substituted at materialization
+  owned?: boolean; // default true: a launch row names this session (HOK-3328); false = operator/unowned session
 }
 
 /**

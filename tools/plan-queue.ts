@@ -79,7 +79,7 @@ function renderPreview(queuePlan: QueuePlan, records: BacklogRecord[]): string {
 function renderGroundedPreview(grounded: GroundedPlanResult): string {
   const { waves, stats } = grounded;
   const reason = (r: GroundedPlanResult['waves']['deferrals'][number]['reasons'][number]) =>
-    `${r.kind === 'after' ? 'after' : 'conflicts with'} ${r.taskId}${r.verdict && r.verdict !== 'conflict' ? ` [${r.verdict}]` : ''}${r.evidence ? `: ${r.evidence}` : ''}`;
+    `${r.kind === 'after' ? 'after' : 'conflicts with'} ${r.taskId}${r.verdict ? ` [${r.verdict}]` : ''}${r.evidence ? `: ${r.evidence}` : ''}${r.files?.length ? ` (shared: ${r.files.join(', ')})` : ''}`;
   return [
     'Grounded Waves',
     ...(waves.waves.length === 0 ? ['(none)'] : waves.waves.map((wave) => `- wave ${wave.index}: ${wave.taskIds.join(', ')}`)),
