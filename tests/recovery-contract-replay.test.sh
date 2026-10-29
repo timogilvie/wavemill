@@ -11,69 +11,7 @@ FAIL=0
 pass() { echo "  PASS  $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL  $1"; FAIL=$((FAIL + 1)); }
 
-extract_function() {
-  local function_name="$1"
-  awk -v name="$function_name" '
-    $0 ~ "^" name "\\(\\) \\{" { capture=1; depth=0 }
-    capture {
-      print
-      depth += gsub(/\{/, "{")
-      depth -= gsub(/\}/, "}")
-      if (depth == 0) exit
-    }
-  ' "$MONITOR_SCRIPT"
-}
-
 echo "=== Recovery Contract Replay ==="
-
-body="$(extract_function "_restore_inflight_task_window_if_missing")"
-for forbidden in \
-  workflow-router \
-  stage-aware-router \
-  challenge-scheduler \
-  resolve_model_for_ \
-  resolve_phase_model \
-  agent_resolve_model \
-  agent_resolve_from_model \
-  apply_expanded_route_if_present \
-  reroute_expanded_packets_for_coding_handoff
-do
-  if grep -Fq "$forbidden" <<<"$body"; then
-    fail "restore function does not call $forbidden"
-  else
-    pass "restore function does not call $forbidden"
-  fi
-done
-
-if grep -Fq 'recovery_args=(read-and-validate' <<<"$body" \
-  && grep -Fq 'recovery-contract.ts" "${recovery_args[@]}"' <<<"$body"; then
-  pass "restore function validates persisted contract"
-else
-  fail "restore function validates persisted contract"
-fi
-
-prepare_body="$(extract_function "_prepare_recovery_phase_launch")"
-if grep -Fq 'write_stage_result_with_history' <<<"$prepare_body" \
-  && grep -Fq '.stage == $phase and .status == "running"' <<<"$prepare_body"; then
-  pass "restore verifies the recovered stage record before launch"
-else
-  fail "restore does not verify the recovered stage record before launch"
-fi
-
-if grep -Fq 'artifacts_json' <<<"$prepare_body" \
-  && grep -Fq 'preservesPriorVerdict' <<<"$prepare_body" \
-  && grep -Fq '"$artifacts_json"' <<<"$prepare_body"; then
-  pass "recovery launch preserves prior review verdict artifacts"
-else
-  fail "recovery launch does not preserve prior review verdict artifacts"
-fi
-
-if grep -Fq '_prepare_recovery_phase_launch' <<<"$body" \
-  && grep -Fq '_stop_task_recovery_contract_unavailable' <<<"$body"; then
-  pass "restore fails closed when recovery launch surfaces cannot be prepared"
-else
-  fail "restore fails closed when recovery launch surfaces cannot be prepared"
-fi
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT

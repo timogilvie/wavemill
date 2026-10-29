@@ -36,6 +36,12 @@ export const STAGE_EXIT_IDENTITY_GUARD: GuardSpec = {
   ],
   patterns: [
     {
+      name: 'private-recovery-contract',
+      description: 'replay persisted contracts through recovery_contract_json; delete challenger-only identity readers',
+      lang: 'sh',
+      re: /\b(?:challenger_transient_retry_intent_json|resolve_challenger_transient_retry_launch_intent)\b|\bretry_phase=["']planning["']/,
+    },
+    {
       name: 'private-stage-timestamp',
       description: 'stage age must use wavemill_iso8601_to_epoch, including native millisecond timestamps',
       lang: 'sh',

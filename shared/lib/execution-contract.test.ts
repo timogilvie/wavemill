@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import {
   readPersistedContract,
+  readValidatedContract,
   serializeContract,
   writePersistedContract,
   providerForModel,
@@ -124,6 +125,26 @@ describe('execution contract persistence', () => {
     assert.equal(read.ok, true);
     assert.equal(read.ok ? read.contract.model : '', 'claude-haiku-4-5-20251001');
     assert.equal(read.ok ? read.contract.agent : '', 'claude');
+  });
+
+  it('replays the complete coding contract without an arm-local intent', async () => {
+    const expected = contract({ model: 'claude-sonnet-4-6', agent: 'claude', provider: 'anthropic', challengeSide: 'challenger' });
+    await writePersistedContract({ featureDir: testDir, contract: expected });
+    const result = readValidatedContract({ featureDir: testDir, stageRole: 'coding', challengeSide: 'challenger' });
+    assert.deepEqual(result, { ok: true, contract: expected });
+  });
+
+  it('fails closed for an incompatible persisted executor', async () => {
+    await writePersistedContract({ featureDir: testDir, contract: contract({ model: 'claude-sonnet-4-6' }) });
+    const result = readValidatedContract({ featureDir: testDir, stageRole: 'coding' });
+    assert.equal(result.ok, false);
+  });
+
+  it('rejects a persisted contract naming another stage', async () => {
+    await fs.writeFile(path.join(testDir, '.phase-config.json'), JSON.stringify({ coding: contract({ stageRole: 'planning' }) }));
+    const result = readValidatedContract({ featureDir: testDir, stageRole: 'coding' });
+    assert.equal(result.ok, false);
+    assert.equal(result.ok ? '' : result.reason, 'contract_malformed');
   });
 
   it('serializes as stable one-line JSON', () => {

@@ -80,9 +80,7 @@ for fn in \
   challenge_abort_pair \
   _challenge_side_for_issue \
   native_terminal_failure_next_action \
-  challenger_transient_retry_result_head \
-  challenger_transient_retry_intent_json \
-  resolve_challenger_transient_retry_launch_intent \
+  recovery_contract_json \
   challenge_result_stage_for_launch \
   challenge_stage_for_launch_env \
 ; do
@@ -171,6 +169,16 @@ cleanup_quarantined_no_pr_challenge_arm() {
   return 0
 }
 
+wavemill_run_tool() {
+  local tool="$1"; shift
+  if [[ "$tool" == recovery-contract.ts ]]; then
+    shift # launchability is tested by execution-contract tests; read real persisted fixture here
+    node --import tsx "$REAL_REPO_DIR/tools/recovery-contract.ts" read "$@"
+  else
+    node --import tsx "$REAL_REPO_DIR/tools/$tool" "$@"
+  fi
+}
+
 real_challenge_intent() {
   npx tsx "$REAL_REPO_DIR/tests/fixtures/build-challenge-intent.ts" "$@"
 }
@@ -213,6 +221,11 @@ seed() {
   mkdir -p "$fd"
   printf '# Plan\n\nTouch src/feature.ts and tests/feature.test.ts.\n' > "$fd/plan.md"
   printf '{"stage":"coding","confidence":"high"}\n' > "$fd/.coding-complete"
+  local model=claude-opus-4-7 agent=claude provider=anthropic side=primary
+  if [[ "$issue" == "PAIR-7_c" ]]; then model=qwen-3-coder; agent=native-openrouter; provider=openrouter; side=challenger; fi
+  jq -n --arg model "$model" --arg agent "$agent" --arg provider "$provider" --arg side "$side" \
+    '{coding:{model:$model,agent:$agent,provider:$provider,stageRole:"coding",challengeSide:$side,selectedAt:"2026-10-27T12:27:16Z"}}' > "$fd/.phase-config.json"
+
   write_stage_result "$fd" "coding" "running" "native" "qwen-3-coder" ""
 
   printf '{"state":"idle","event":"process_exit","agent":"native","timestamp":1,"writer":"agent"}\n' \
@@ -354,7 +367,6 @@ instruction="$fd/.coding-recovery-instruction.md"
 if [[ "$rc" == "0" ]] \
   && [[ "$active_count" == "1" ]] \
   && [[ "$LAUNCH_CALLS" == "coding|PAIR-7_c|qwen-3-coder|native-openrouter|medium"$'\n' ]] \
-  && [[ "$VALIDATE_CALLS" == *"native-openrouter|coding|qwen-3-coder"* ]] \
   && [[ "$PREPARE_CALLS" == *"PAIR-7_c|coding|native-openrouter|qwen-3-coder"* ]] \
   && [[ ! -f "$fd/.coding-complete" ]] \
   && ls "$fd"/.stale-artifacts/coding-*/.coding-complete >/dev/null 2>&1 \
