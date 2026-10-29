@@ -4,7 +4,7 @@ import {
   providerForModel,
   readPersistedContract,
   serializeContract,
-  validateContractLaunchable,
+  readValidatedContract,
   type ChallengeSide,
   type StageRole,
 } from '../shared/lib/execution-contract.ts';
@@ -59,6 +59,10 @@ await runTool({
     if (!featureDir) throw new Error('--feature-dir is required');
     const stageRole = requireStage(args.stage);
     const challengeSide = parseSide(args['challenge-side']);
+    if (command === 'validate' || command === 'read-and-validate') {
+      printJson(readValidatedContract({ featureDir, stageRole, challengeSide, repoDir: args.repo }));
+      return;
+    }
     const read = readPersistedContract({ featureDir, stageRole, challengeSide });
 
     if (command === 'read') {
@@ -72,20 +76,6 @@ await runTool({
         return;
       }
       printJson({ ok: true, serialized: serializeContract(read.contract) });
-      return;
-    }
-
-    if (command === 'validate' || command === 'read-and-validate') {
-      if (!read.ok) {
-        printJson(read);
-        return;
-      }
-      const validation = validateContractLaunchable({ contract: read.contract, repoDir: args.repo });
-      if (!validation.ok) {
-        printJson({ ok: false, reason: validation.reason, detail: validation.detail, contract: read.contract });
-        return;
-      }
-      printJson({ ok: true, contract: read.contract });
       return;
     }
 

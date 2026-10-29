@@ -57,6 +57,7 @@ for fn in \
   stage_failure_owned_by_bucket \
   maybe_retry_failed_stage \
   _stage_failure_coding_relaunch \
+  recovery_contract_json \
   emit_challenge_stage_failure_quarantine \
   challenge_abort_scope_for_failure \
   challenge_abort_pair \
@@ -122,6 +123,8 @@ new_worktree() {
   git -C "$wt" update-ref "refs/remotes/origin/$BASE_BRANCH" HEAD
   git -C "$wt" commit -q --allow-empty -m c2
   mkdir -p "$wt/features/$name"
+  printf '%s\n' '{"coding":{"model":"claude-opus-4-7","provider":"anthropic","agent":"claude","stageRole":"coding","challengeSide":null,"selectedAt":"2026-10-27T12:27:16Z"}}' > "$wt/features/$name/.phase-config.json"
+
   printf '%s\n' "$wt/features/$name"
 }
 
@@ -134,6 +137,19 @@ seed() {
   : > "$ATTENTION_FILE"; : > "$STATUS_LOG"; : > "$PHASE_LOG"
   CLEANUP_CALLS=""
 }
+
+pass_task_field() {
+  case "$2" in
+    worktree) printf '%s\n' "${fd%/features/*}" ;;
+    branch) printf 'task/recovery\n' ;;
+    title) printf 'Recovery test\n' ;;
+    *) get_task_meta "$1" "$2" ;;
+  esac
+}
+read_phase_config() { printf ''; }
+resolve_stage_result_model() { stage_result_field "$1" "$2" model; }
+_prepare_recovery_phase_launch() { return 0; }
+launch_coding_phase() { return 0; }
 
 unknown_detail="Native coding failed: zstd decoder mismatch on shard 7 (never seen before)"
 bucket="stage-failure-coding"
@@ -148,13 +164,13 @@ write_hook T-1 "$unknown_detail"
 printf '{"failureKind":"native-unclassified"}\n' > "$fd/.coding-failure-envelope.json"
 rc=0; maybe_retry_failed_stage T-1 "$fd" coding win-1 || rc=$?
 if [[ "$rc" -eq 0 ]] \
-  && [[ ! -f "$fd/.coding-result.json" ]] \
+  && [[ -f "$fd/.coding-result.json" ]] \
   && [[ ! -f "/tmp/wavemill-${SESSION}-T-1.hook" ]] \
-  && grep -q '^T-1=planning$' "$PHASE_LOG" \
+  && grep -q '^T-1=coding$' "$PHASE_LOG" \
   && grep -q '^win-1=clear$' "$ATTENTION_FILE" \
   && [[ "$(bounded_retry_count "$fd" "$bucket")" == "1" ]] \
-  && grep -q 'relaunch 1/3 via planning' "$STATUS_LOG"; then
-  pass "unknown failure relaunches the stage through the previous phase (attempt 1)"
+  && grep -q 'relaunch 1/3.*directly via coding' "$STATUS_LOG"; then
+  pass "unknown failure replays its persisted coding contract (attempt 1)"
 else
   fail "unknown failure was not relaunched (rc=$rc)"
 fi

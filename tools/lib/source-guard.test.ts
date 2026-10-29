@@ -332,3 +332,11 @@ it('rejects private job readers and observed-presence recovery bypasses', () => 
   assert.equal(check('if (observedFingerprints.has(record.fingerprint)) continue;')[0]?.pattern, 'observed-skips-recovery');
   assert.deepEqual(check('const current = reconcileIncidentForFiling(record, repoDir);'), []);
 });
+
+// protects: coding recovery cannot regain the planning fallback or private challenger identity selection.
+it('rejects private recovery identity and coding-to-planning fallback', () => {
+  for (const source of ['resolve_challenger_transient_retry_launch_intent() {', 'retry_phase="planning"']) {
+    assert.ok(checkGuardSource(STAGE_EXIT_IDENTITY_GUARD, 'shared/lib/wavemill-monitor.sh', source)
+      .some(finding => finding.pattern === 'private-recovery-contract'));
+  }
+});

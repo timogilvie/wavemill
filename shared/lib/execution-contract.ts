@@ -422,3 +422,20 @@ export async function readChallengeEvidenceInvalid(featureDir: string): Promise<
     return null;
   }
 }
+
+/** Canonical read/validate seam used by every recovery caller and future ledger scheduling. */
+export function readValidatedContract(input: {
+  featureDir: string;
+  stageRole: StageRole;
+  challengeSide?: ChallengeSide;
+  repoDir?: string;
+  registry?: ModelRegistry;
+}): { ok: true; contract: ExecutionContract } | { ok: false; reason: RecoveryUnavailableReason; detail: string; contract?: ExecutionContract } {
+  const read = readPersistedContract(input);
+  if (!read.ok) return read;
+  if (read.contract.stageRole !== input.stageRole) {
+    return { ok: false, reason: 'contract_malformed', detail: `Persisted ${input.stageRole} contract names stage ${read.contract.stageRole}`, contract: read.contract };
+  }
+  const validation = validateContractLaunchable({ contract: read.contract, repoDir: input.repoDir, registry: input.registry });
+  return validation.ok ? read : { ...validation, contract: read.contract };
+}
