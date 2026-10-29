@@ -15314,7 +15314,7 @@ maybe_run_challenge_eval() {
         return 0
         ;;
       exhausted-quiet)
-        log "debug" "challenge eval hard-failure retries exhausted for $issue; holding silently until a new head"
+        log "debug" "challenge eval hard-failure retries exhausted for $issue and will hold silently until a new head"
         return 0
         ;;
       exhausted)
