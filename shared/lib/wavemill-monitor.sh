@@ -15287,16 +15287,17 @@ maybe_run_challenge_eval() {
     if [[ -f "$decision_path" ]]; then
       decision_json=$(cat "$decision_path" 2>/dev/null || echo "")
       decision_class=$(jq -r '.class // "retryable"' <<<"$decision_json" 2>/dev/null || echo "retryable")
-      if [[ "$decision_class" == "terminal" ]]; then
-        decision_kind=$(jq -r '.failureKind // "native-unclassified"' <<<"$decision_json" 2>/dev/null || echo "native-unclassified")
-        log "debug" "challenge eval for $issue not relaunched: terminal failure decision ($decision_kind)"
-        return 0
-      fi
     fi
     hard_retry_head=$(git -C "${WORKTREE_ROOT}/${slug}" rev-parse HEAD 2>/dev/null || echo "")
     eval_hard_retry_max=$(challenge_eval_hard_failure_max_retries)
     local disposition
-    disposition=$(bounded_retry_gate "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_head" "$eval_hard_retry_max" "" "" "")
+    if [[ "${decision_class:-retryable}" == "terminal" ]]; then
+      bounded_retry_reset_if_new_head "$hard_retry_state_dir" challenge-eval-hard "$hard_retry_head"
+      bounded_retry_is_exhausted "$hard_retry_state_dir" challenge-eval-hard && return 0
+      disposition=exhausted
+    else
+      disposition=$(bounded_retry_gate "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_head" "$eval_hard_retry_max" "" "" "")
+    fi
     case "$disposition" in
       backoff)
         log "debug" "challenge eval hard-failure retry for $issue holding (backoff)"
@@ -15319,7 +15320,7 @@ maybe_run_challenge_eval() {
         decision_next_action=$(jq -r '.nextAction // ""' <<<"$decision_json" 2>/dev/null || echo "")
         hard_retry_count=$(bounded_retry_count "$hard_retry_state_dir" "challenge-eval-hard")
         bounded_retry_mark_exhausted "$hard_retry_state_dir" "challenge-eval-hard" \
-          "Challenge eval hard-failure retries exhausted for $issue (pair ${pair_id:-unknown}): kind=${decision_kind}, ${hard_retry_count}/${eval_hard_retry_max} attempt(s); next: ${decision_next_action:-re-run the eval or push a new head}" || true
+          "Challenge eval stopped for $issue (pair ${pair_id:-unknown}): class=${decision_class:-retryable}, kind=${decision_kind}, ${hard_retry_count}/${eval_hard_retry_max} attempt(s); next: ${decision_next_action:-re-run the eval or push a new head}" || true
         if [[ -n "$pair_id" ]]; then
           challenger_key="$(task_identity_challenger_key "$pair_id")"
           eval_side=$(get_task_meta "$issue" "challengeRole")
