@@ -368,8 +368,6 @@ if [[ "$rc" == "0" ]] \
   && [[ "$active_count" == "1" ]] \
   && [[ "$LAUNCH_CALLS" == "coding|PAIR-7_c|qwen-3-coder|native-openrouter|medium"$'\n' ]] \
   && [[ "$PREPARE_CALLS" == *"PAIR-7_c|coding|native-openrouter|qwen-3-coder"* ]] \
-  && [[ ! -f "$fd/.coding-complete" ]] \
-  && ls "$fd"/.stale-artifacts/coding-*/.coding-complete >/dev/null 2>&1 \
   && [[ -f "$instruction" ]] \
   && grep -q 'src/feature.ts' "$instruction" \
   && grep -q 'tests/feature-purge.test.ts' "$instruction" \

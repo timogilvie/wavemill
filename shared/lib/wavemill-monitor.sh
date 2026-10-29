@@ -6895,9 +6895,6 @@ coding_dirty_handoff_relaunch() {
     log_warn "$issue → coding-dirty-handoff relaunch: could not write recovery instruction"
     return 1
   }
-  # Move .coding-complete aside so the next tick does not re-enter the guard
-  # before the relaunched agent re-writes it.
-  archive_stale_coding_artifacts "$issue" "$feature_dir"
   # The stale process_exit hook would make the new agent look exited.
   rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
 
@@ -8356,7 +8353,7 @@ maybe_retry_failed_stage() {
       "$(resolve_stage_result_model "$feature_dir" coding "")" "$detail"
     set_task_phase "$issue" coding
     set_window_attention_state "$win" needs-user
-    log_warn "$issue → coding recovery deferred; preserving the failed stage and implementation for bounded retry"
+    log_warn "$issue → coding recovery deferred with the failed stage preserved and implementation for bounded retry"
     return 2
   fi
 
@@ -9681,6 +9678,10 @@ _prepare_recovery_phase_launch() {
   local agent="$6" model="$7" contract_payload="$8" lifecycle_phase="${9:-}"
   local result_write_mode="${10:-write-result}"
   local win contract_title resolved_window artifacts_json=""
+
+  # Every coding recovery consumes the prior attempt's handoff artifacts.
+  # Durable mutation provenance is deliberately outside that archive set.
+  [[ "$phase" != coding ]] || archive_stale_coding_artifacts "$issue" "$feature_dir"
 
   if [[ "$result_write_mode" != "defer-result" ]]; then
     if [[ -f "$feature_dir/.${phase}-result.json" ]]; then

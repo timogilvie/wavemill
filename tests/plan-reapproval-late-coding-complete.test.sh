@@ -80,6 +80,7 @@ for fn in \
   stage_failure_owned_by_bucket \
   maybe_retry_failed_stage \
   _stage_failure_coding_relaunch \
+  recovery_contract_json \
   _challenge_side_for_issue \
   challenge_result_stage_for_launch \
   write_openrouter_warning_cache \
@@ -95,6 +96,8 @@ done
 
 TMP_ROOT="$(mktemp -d)"
 SESSION="hok3211$$"
+LIB_DIR="$REPO_DIR/shared/lib"
+TOOLS_DIR="$REPO_DIR/tools"
 BASE_BRANCH="auto/integration"
 WAVEMILL_STATE_DIR="$TMP_ROOT/wavemill-state"
 STATE_FILE="$TMP_ROOT/state.json"
@@ -365,6 +368,7 @@ fi
 fd="$(seed_worktree "f5-coding-retry")"
 wt="$TMP_ROOT/f5-coding-retry"
 export WORKTREE_ROOT="$TMP_ROOT"
+jq -n '{coding:{model:"claude-opus-4-7",agent:"claude",provider:"anthropic",stageRole:"coding",challengeSide:null,selectedAt:"2026-10-28T00:00:00Z"}}' > "$fd/.phase-config.json"
 jq -n '{tasks:{"HOK-3211-F5":{worktree:"'"$wt"'", challenge:false}}}' > "$STATE_FILE"
 # Seed a retryable native coding failure.
 jq -n '{stage:"coding", status:"failed", startedAt:"2026-01-01T00:00:00Z", finishedAt:"2026-01-01T01:00:00Z", agent:"native", model:"claude-opus-4-7", notes:"Native coding failed: zstd decoder mismatch on shard 7"}' \
