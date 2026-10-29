@@ -437,7 +437,7 @@ test('resolver suppresses a non-decisive orphan record when no side completed ev
   }
 });
 
-test('resolver writes a forfeit when one side exhausted eval hard-failure retries', async () => {
+test('resolver skips an eval-exhausted sibling instead of forfeiting', async () => {
   const { repoDir, cleanup } = setupRepoDir();
   try {
     writeWorkflowState(repoDir, {
@@ -469,16 +469,18 @@ test('resolver writes a forfeit when one side exhausted eval hard-failure retrie
       now: () => new Date('2026-07-17T12:00:00Z'),
     });
 
-    assert.equal(result.status, 'resolved');
-    assert.equal(result.outcome, 'forfeit');
-    assert.equal(result.record.winner, 'primary');
-    assert.equal(result.record.terminalReason, 'challenger_eval_hard_failed');
+    // HOK-3255: eval-hard-failed exhaustion is unattributed infrastructure —
+    // it can never establish that a model lost, so the resolver skips and
+    // writes no comparison record.
+    assert.equal(result.status, 'skipped');
+    assert.match(result.reason, /unattributed infrastructure/);
+    assert.equal(readChallengeComparisons(join(repoDir, '.wavemill', 'evals')).length, 0);
   } finally {
     cleanup();
   }
 });
 
-test('resolver writes a double-forfeit when both sides exhausted eval hard-failure retries', async () => {
+test('resolver skips an eval-exhausted pair (both sides) instead of double-forfeiting', async () => {
   const { repoDir, cleanup } = setupRepoDir();
   try {
     writeWorkflowState(repoDir, {
@@ -511,9 +513,11 @@ test('resolver writes a double-forfeit when both sides exhausted eval hard-failu
       now: () => new Date('2026-07-17T12:00:00Z'),
     });
 
-    assert.equal(result.status, 'resolved');
-    assert.equal(result.outcome, 'double-forfeit');
-    assert.equal(result.record.terminalReason, 'both_eval_hard_failed');
+    // HOK-3255: retry exhaustion is unattributed infrastructure — no winner,
+    // no comparison record, both sides stay blocked until an eval re-runs.
+    assert.equal(result.status, 'skipped');
+    assert.match(result.reason, /unattributed infrastructure/);
+    assert.equal(readChallengeComparisons(join(repoDir, '.wavemill', 'evals')).length, 0);
   } finally {
     cleanup();
   }
@@ -560,7 +564,7 @@ test('resolver waits for hard-failure config before resolving exhausted retries'
   }
 });
 
-test('resolver ignores soft retry config for hard-failure exhaustion', async () => {
+test('resolver skips an eval-exhausted sibling regardless of soft retry config', async () => {
   const { repoDir, cleanup } = setupRepoDir({
     challenge: { eval: { retryMaxAttempts: 3 } },
   });
@@ -594,15 +598,17 @@ test('resolver ignores soft retry config for hard-failure exhaustion', async () 
       now: () => new Date('2026-07-17T12:00:00Z'),
     });
 
-    assert.equal(result.status, 'resolved');
-    assert.equal(result.reason, 'sibling-eval-hard-failed');
-    assert.equal(result.outcome, 'forfeit');
+    // HOK-3255: retry exhaustion is unattributed infrastructure regardless of
+    // which retry ceiling applies; the resolver never forfeits from it.
+    assert.equal(result.status, 'skipped');
+    assert.match(result.reason, /unattributed infrastructure/);
+    assert.equal(readChallengeComparisons(join(repoDir, '.wavemill', 'evals')).length, 0);
   } finally {
     cleanup();
   }
 });
 
-test('resolver lets hard-failure env override repo config', async () => {
+test('resolver skips an eval-exhausted sibling regardless of hard-failure retry config', async () => {
   const { repoDir, cleanup } = setupRepoDir({
     challenge: { eval: { hardFailureRetryMaxAttempts: 5 } },
   });
@@ -638,9 +644,11 @@ test('resolver lets hard-failure env override repo config', async () => {
       now: () => new Date('2026-07-17T12:00:00Z'),
     });
 
-    assert.equal(result.status, 'resolved');
-    assert.equal(result.reason, 'sibling-eval-hard-failed');
-    assert.equal(result.outcome, 'forfeit');
+    // The env var still decides whether the pair is *detected* as escalated
+    // (the gate needs that), but the resolver never resolves a forfeit from it.
+    assert.equal(result.status, 'skipped');
+    assert.match(result.reason, /unattributed infrastructure/);
+    assert.equal(readChallengeComparisons(join(repoDir, '.wavemill', 'evals')).length, 0);
   } finally {
     if (previous === undefined) {
       delete process.env.WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES;

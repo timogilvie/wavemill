@@ -227,7 +227,6 @@ WAVEMILL_RETAINED_CHECK_INTERVAL_SECONDS  # plumbing: internal mill variable (HO
 WAVEMILL_RETRY_BACKOFF_  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_RETRY_BACKOFF_BASE_SECONDS  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_RETRY_BACKOFF_CAP_SECONDS  # plumbing: internal mill variable (HOK-3235 baseline seed)
-WAVEMILL_RETRY_BACKOFF_CHALLENGE_EVAL_HARD_BASE_SECONDS  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_REVIEW_BASE_BRANCH  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_REVIEW_CAPACITY_MAX_ATTEMPTS  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_REVIEW_DEPTH  # plumbing: review-phase depth hint forwarded to native launcher (HOK-3272)

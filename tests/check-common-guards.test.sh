@@ -47,9 +47,6 @@ if (
     log info "guard-test log"
     tool_path="$(wavemill_tool_path route-task.ts)"
     [[ -f "$tool_path" ]] || { echo "wavemill_tool_path did not resolve to a real file: $tool_path" >&2; exit 2; }
-    # exercises the challenge-pair guard: all helpers are undefined here, so
-    # the function must noop (and should not raise).
-    resolve_challenge_pair_hard_failure "p1" >/dev/null || true
   '
 ) 2>"$STDERR_LOG"; then
   if grep -q 'command not found' "$STDERR_LOG"; then
@@ -117,8 +114,6 @@ REQUIRED_TOKENS=(
   'declare -F log_error >/dev/null 2>&1 || log_error()'
   # set_window_attention_state gets per-call guards.
   'declare -F set_window_attention_state >/dev/null 2>&1 && set_window_attention_state'
-  # challenge-pair resolver gets an entry guard.
-  'declare -F "$_fn" >/dev/null 2>&1'
 )
 
 MISSING=()

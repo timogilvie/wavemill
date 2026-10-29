@@ -1427,11 +1427,16 @@ function classifyMergeLaneChallengeBlocker(
     };
   }
   if (baseReason === 'sibling-eval-hard-failed') {
-    const recoveryCommand = buildChallengePairRecoveryCommand(snapshot, challengeGate.pairId, baseReason);
+    // HOK-3255: exhaustion is unattributed infrastructure, escalated — not
+    // a forfeitable state, and the resolver skips this reason now. The
+    // recovery is the eval relaunch path: an operator `re-review` event on
+    // the failing arm (operator_event_record) expires the exhausted
+    // sentinel through the HOK-3172 condition reconciler and the monitor
+    // relaunches the eval.
     return {
       kind: 'needs-user',
-      detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} cannot produce a comparison because one side exhausted challenge eval hard-failure retries.`,
-      recoveryCommand,
+      detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} cannot produce a comparison because one side's eval failed repeatedly and is escalated — unattributed infrastructure, not a model forfeit. Re-run the eval or push a new head.`,
+      recoveryCommand: `re-review the failing arm's issue at the backlog prompt (e.g. 're-review <ISSUE-ID>') to expire the exhausted eval sentinel and relaunch the eval`,
     };
   }
   if (baseReason === 'sibling-challenge-aborted') {

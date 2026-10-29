@@ -28,7 +28,6 @@ tests/apply-expanded-route.test.sh  # seeded from HOK-3223; migrate to buildTask
 tests/backstage-tend-watchdog.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/challenge-comparison-state.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/challenge-deferred-arm.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
-tests/challenge-eval-hard-failure.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/challenge-eval-invalid-challenge.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/challenge-eval-soft-retry.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/challenge-eval-timeout.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task

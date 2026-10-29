@@ -3,6 +3,9 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { readActiveChallengeComparisons, type StoredChallengeComparison } from './challenge-comparison.ts';
 import { getChallengeConfig, getChallengeEvalHardFailureRetryMaxAttempts, getChallengeGateConfig } from './config.ts';
+// HOK-3255: the escalated-eval projection predicate lives in the failure
+// policy, so the gate and the ready watchdog share one definition.
+import { isEscalatedEvalFailure } from './failure-policy.ts';
 import { errorMessage } from './error-utils.ts';
 import { normalizeJobs, type MillJob } from './job-tracker.ts';
 import { readWorkflowState, workflowTaskEntries, type TaskRecord } from './workflow-state.ts';
@@ -928,8 +931,11 @@ export function classifyPairUnresolvableState(
   if (!pairState) {
     return null;
   }
-  const primaryExhausted = isHardFailureExhausted(pairState.primary, retryMax);
-  const challengerExhausted = isHardFailureExhausted(pairState.challenger, retryMax);
+  // HOK-3255: one shared escalated-eval projection predicate (failure-policy).
+  // This is a gate status — the pair really is blocked — not a resolution
+  // input: the resolver skips these reasons and never forfeits from them.
+  const primaryExhausted = isEscalatedEvalFailure(pairState.primary, retryMax);
+  const challengerExhausted = isEscalatedEvalFailure(pairState.challenger, retryMax);
 
   if (primaryExhausted && challengerExhausted) {
     return 'both-eval-hard-failed';
@@ -949,10 +955,6 @@ export function classifyPairUnresolvableState(
     return 'sibling-challenge-aborted';
   }
   return null;
-}
-
-function isHardFailureExhausted(task: TaskEvalState | undefined, retryMax: number): boolean {
-  return Boolean(task?.evalFailed && task.evalHardFailureRetryCount >= retryMax);
 }
 
 /**

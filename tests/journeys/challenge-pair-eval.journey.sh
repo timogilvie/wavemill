@@ -92,6 +92,8 @@ printf 'CHALLENGE_AUTO_MERGE=true\n' >> "$MONITOR_ENV"
 export JOURNEY_WINNER_LINE="implemented $WINNER"
 export PATH="$FIXTURE_DIR/bin:$PATH"
 
+export JOURNEY_EVAL_FAULT="$JOURNEY_TMP/eval-fault"
+: > "$JOURNEY_EVAL_FAULT"
 journey_start_monitor
 journey_wait_until "$ISSUE" 5 "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
@@ -151,6 +153,9 @@ journey_wait_until "$ISSUE" 10 "challenger forked after the plan"   challenger_l
 PRIMARY_SLUG="$(field "$ISSUE" slug)"
 CHALLENGER_SLUG="$(field "$CHALLENGER" slug)"
 journey_wait_until "$ISSUE" 15 "both arms opened a PR"              both_prs_open
+eval_failure_observed() { pair_tick; grep -q 'challenge eval failed for' "$JOURNEY_TMP/logs/status.log"; }
+journey_wait_until "$ISSUE" 20 "eval harness fault detected" eval_failure_observed
+rm -f "$JOURNEY_EVAL_FAULT"
 journey_wait_until "$ISSUE" 25 "the mill compared the pair"         comparison_recorded
 WINNER_PR="$(arm_pr "$WINNER")"
 LOSER_PR="$(arm_pr "$LOSER")"
@@ -161,6 +166,7 @@ journey_wait_until "$ISSUE" 10 "winner reaped, loser retired"       pair_settled
 
 echo ""
 echo "assertions:"
+journey_assert "eval harness retried without operator recovery" grep -q 'challenge eval retrying for' "$JOURNEY_TMP/logs/status.log"
 journey_assert "the pair was rolled as a challenge (role recorded on both arms)" \
   test "$(grep -c "phase=coding issue=" "$FAKE_AGENT_LOG")" -ge 2
 journey_assert "both arms were evaluated before the comparison" \

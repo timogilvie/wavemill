@@ -69,8 +69,50 @@ failure_policy_decide() {
   fi
   jq -cn --arg stage "$stage" --arg kind "${failure_kind:-native-unclassified}" \
     '{class:"retryable", failureKind:$kind, terminalCode:null, retryBucket:("stage-failure-" + $stage),
+      attribution:"unattributed",
       nextAction:"failure policy unavailable; retrying by default. Inspect the recorded detail if it escalates",
       rationale:"failure-policy bridge unavailable: retry by default (HOK-3176)"}'
+}
+
+# The one eval-failure disposition (HOK-3255). Every eval job outcome — the
+# challenge-eval poll in wavemill-monitor.sh and the post-merge eval — becomes
+# a decision here and nowhere else: the single failure policy classifies the
+# job evidence (reason/exit code/excerpt), and the decision JSON carries the
+# raw job reason plus attempt=true so callers and operators can audit it.
+# Callers branch only on .class / .attribution — never on reason strings.
+#
+# An eval failure is never attributed to a model: the harness runs the judge,
+# not the arm's model, so no execution evidence is passed and `attribution`
+# stays `unattributed` (the policy's single rule). Retryable-by-default is
+# the HOK-3176 behaviour; `no_result_file`, `timed_out`, `eval_not_persisted`
+# and unknown strings all land there.
+#
+# Usage: eval_failure_disposition <issue> <job_reason> <exit_code> <excerpt> [challenge_arm]
+# Prints one JSON line: the classifyFailure decision extended with
+# {jobReason, attempt}. Always returns 0: when the bridge cannot run the
+# decision is the policy default (retryable / unattributed).
+eval_failure_disposition() {
+  local issue="$1" job_reason="${2:-}" exit_code="${3:-}" excerpt="${4:-}" challenge_arm="${5:-false}"
+  local -a args=(
+    --stage eval
+    "--job-reason=$job_reason"
+    "--job-exit-code=$exit_code"
+    "--job-excerpt=$excerpt"
+  )
+  [[ "$challenge_arm" != "true" ]] || args+=(--challenge-arm)
+  local out=""
+  out="$(_failure_policy_cli "${args[@]}")" || out=""
+  if [[ -n "$out" ]] && jq -e '.class' <<<"$out" >/dev/null 2>&1; then
+    jq -c --arg jobReason "$job_reason" '. + {jobReason: $jobReason, attempt: true}' <<<"$out"
+    return 0
+  fi
+  jq -cn --arg jobReason "$job_reason" \
+    '{class:"retryable", failureKind:(if ($jobReason | trim) == "" then "native-unclassified" else $jobReason end),
+      terminalCode:null, retryBucket:"stage-failure-eval", attribution:"unattributed",
+      nextAction:"failure policy unavailable; retrying by default. Inspect the recorded detail if it escalates",
+      rationale:"failure-policy bridge unavailable: retry by default (HOK-3176)",
+      jobReason:$jobReason, attempt:true}'
+  return 0
 }
 
 # Operator hint for a failure kind, from the same policy table.
@@ -2630,18 +2672,6 @@ cleanup_completed_task() {
   fi
 }
 
-# Canonical challenge-eval retry ceilings (HOK-2924). Formerly duplicated in
-# wavemill-mill.sh and the monitor; both scopes source this file.
-challenge_eval_retry_max_attempts() {
-  local max_attempts
-  max_attempts=$(wavemill_load_config "$REPO_DIR" | jq -r '.challenge.eval.retryMaxAttempts // 1' 2>/dev/null || echo "1")
-  if [[ "$max_attempts" =~ ^[0-9]+$ ]]; then
-    printf '%s\n' "$max_attempts"
-  else
-    printf '1\n'
-  fi
-}
-
 challenge_eval_hard_failure_max_retries() {
   local max_retries
   if [[ -n "${WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES+x}" && "$WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES" =~ ^[0-9]+$ ]]; then
@@ -2655,158 +2685,6 @@ challenge_eval_hard_failure_max_retries() {
   else
     printf '2\n'
   fi
-}
-
-# Canonical hard-failure resolution uses the monitor's live behavior: record
-# only concrete terminal evidence and never perform loser cleanup from this path.
-resolve_challenge_pair_hard_failure() {
-  local pair_id="$1"
-  local primary_key="$pair_id" challenger_key
-  challenger_key="$(task_identity_challenger_key "$pair_id")"
-  local primary_exists challenger_exists resolve_output resolve_status resolve_reason
-  local retry_max primary_failed challenger_failed primary_completed challenger_completed
-  local primary_retry_count challenger_retry_count failed_sides_csv terminal_reason outcome
-  local primary_pr challenger_pr primary_model challenger_model primary_pr_url challenger_pr_url
-  local winner winner_model rationale timestamp record_json
-
-  [[ -n "$pair_id" ]] || return 1
-
-  # HOK-3100: this function depends on functions defined in the mill/monitor
-  # context (read_state_value, challenge_pair_record_exists,
-  # mark_challenge_compared, challenge_pair_hard_failure_reason,
-  # challenge_pr_url_from_number). A standalone CLI tool that sources common
-  # without the monitor can't resolve pairs anyway; fail soft so loggers and
-  # unrelated flows keep working.
-  local _fn
-  for _fn in read_state_value challenge_pair_record_exists mark_challenge_compared \
-             challenge_pair_hard_failure_reason challenge_pr_url_from_number; do
-    if ! declare -F "$_fn" >/dev/null 2>&1; then
-      log_warn "resolve_challenge_pair_hard_failure: $_fn is undefined; skipping"
-      return 0
-    fi
-  done
-
-  if challenge_pair_record_exists "$pair_id"; then
-    mark_challenge_compared "$pair_id" "record"
-    return 0
-  fi
-
-  retry_max=$(challenge_eval_hard_failure_max_retries)
-  primary_exists=$(read_state_value "false" --arg i "$primary_key" '.tasks[$i] != null')
-  challenger_exists=$(read_state_value "false" --arg i "$challenger_key" '.tasks[$i] != null')
-  primary_failed=$(read_state_value "false" --arg i "$primary_key" '.tasks[$i].evalFailed // false')
-  challenger_failed=$(read_state_value "false" --arg i "$challenger_key" '.tasks[$i].evalFailed // false')
-  primary_completed=$(read_state_value "false" --arg i "$primary_key" '.tasks[$i].evalCompleted // false')
-  challenger_completed=$(read_state_value "false" --arg i "$challenger_key" '.tasks[$i].evalCompleted // false')
-  primary_retry_count=$(read_state_value "0" --arg i "$primary_key" '.tasks[$i].evalHardFailureRetryCount // 0')
-  challenger_retry_count=$(read_state_value "0" --arg i "$challenger_key" '.tasks[$i].evalHardFailureRetryCount // 0')
-
-  if [[ "$primary_exists" != "true" || "$challenger_exists" != "true" ]]; then
-    resolve_output=$(wavemill_run_tool "resolve-orphan-challenge-pair.ts" \
-      --pair-id "$pair_id" \
-      --reason orphan-sibling \
-      --repo-dir "$REPO_DIR" 2>/dev/null || true)
-    resolve_status=$(jq -r '.status // empty' <<<"$resolve_output" 2>/dev/null || true)
-    if [[ "$resolve_status" == "resolved" || "$resolve_status" == "already-resolved" ]]; then
-      mark_challenge_compared "$pair_id" "record"
-      if [[ "$resolve_status" == "resolved" ]]; then
-        resolve_reason=$(jq -r '.reason // "orphan-sibling"' <<<"$resolve_output" 2>/dev/null || echo "orphan-sibling")
-        log_warn "challenge pair $pair_id resolved via $resolve_reason"
-      fi
-      return 0
-    fi
-  fi
-
-  failed_sides_csv=""
-  [[ "$primary_failed" == "true" ]] && failed_sides_csv="primary"
-  if [[ "$challenger_failed" == "true" ]]; then
-    if [[ -n "$failed_sides_csv" ]]; then
-      failed_sides_csv="${failed_sides_csv},challenger"
-    else
-      failed_sides_csv="challenger"
-    fi
-  fi
-  [[ -n "$failed_sides_csv" ]] || return 1
-
-  if [[ "$primary_failed" == "true" && "$challenger_failed" == "true" ]]; then
-    if (( primary_retry_count < retry_max )); then
-      return 1
-    fi
-    if (( challenger_retry_count < retry_max )); then
-      return 1
-    fi
-    outcome="double-forfeit"
-    winner="primary"
-    rationale="Both sides exhausted hard eval retries without persisting an eval record."
-  elif [[ "$primary_failed" == "true" ]]; then
-    [[ "$challenger_completed" == "true" ]] || return 1
-    outcome="forfeit"
-    winner="challenger"
-    rationale="Primary exhausted hard eval retries without persisting an eval record."
-  elif [[ "$challenger_failed" == "true" ]]; then
-    [[ "$primary_completed" == "true" ]] || return 1
-    outcome="forfeit"
-    winner="primary"
-    rationale="Challenger exhausted hard eval retries without persisting an eval record."
-  else
-    return 1
-  fi
-
-  terminal_reason=$(challenge_pair_hard_failure_reason "$failed_sides_csv")
-  primary_pr=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].pr // empty')
-  challenger_pr=$(read_state_value "" --arg i "$challenger_key" '.tasks[$i].pr // empty')
-  [[ -n "$primary_pr" && -n "$challenger_pr" ]] || return 1
-  primary_model=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].challengeModel // .tasks[$i].coderModel // empty')
-  challenger_model=$(read_state_value "" --arg i "$challenger_key" '.tasks[$i].challengeModel // .tasks[$i].coderModel // empty')
-  primary_pr_url=$(challenge_pr_url_from_number "$primary_pr")
-  challenger_pr_url=$(challenge_pr_url_from_number "$challenger_pr")
-  if [[ "$winner" == "primary" ]]; then
-    winner_model="$primary_model"
-  else
-    winner_model="$challenger_model"
-  fi
-  [[ -n "$winner_model" ]] || winner_model="unknown"
-  timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  record_json=$(jq -cn \
-    --arg challengePairId "$pair_id" \
-    --arg primaryModel "$primary_model" \
-    --arg challengerModel "$challenger_model" \
-    --arg primaryPrUrl "$primary_pr_url" \
-    --arg challengerPrUrl "$challenger_pr_url" \
-    --arg winner "$winner" \
-    --arg winnerModel "$winner_model" \
-    --arg rationale "$rationale" \
-    --arg timestamp "$timestamp" \
-    --arg comparisonOutcome "$outcome" \
-    --arg terminalReason "$terminal_reason" \
-    '{
-      challengePairId: $challengePairId,
-      primaryModel: $primaryModel,
-      challengerModel: $challengerModel,
-      primaryPrUrl: $primaryPrUrl,
-      challengerPrUrl: $challengerPrUrl,
-      primaryEvalScore: 0,
-      challengerEvalScore: 0,
-      winner: $winner,
-      winnerModel: $winnerModel,
-      rationale: $rationale,
-      dimensions: {
-        completeness: { primary: 0, challenger: 0 },
-        correctness: { primary: 0, challenger: 0 },
-        code_quality: { primary: 0, challenger: 0 },
-        intervention_impact: { primary: 0, challenger: 0 },
-        autonomy: { primary: 0, challenger: 0 }
-      },
-      timestamp: $timestamp,
-      comparisonOutcome: $comparisonOutcome,
-      terminalReason: $terminalReason,
-      noComparisonReason: $terminalReason
-    }')
-  if ! challenge_pair_record_exists "$pair_id"; then
-    printf '%s\n' "$record_json" >> "$(challenge_pair_records_file)"
-  fi
-  mark_challenge_compared "$pair_id"
-  log_warn "challenge pair $pair_id resolved via $terminal_reason"
 }
 
 # The observer's findings are the highest-signal output in the backstage window,
@@ -7858,25 +7736,42 @@ task_state_mutate_existing() {
 # ever creating an entry. Nothing currently reads postReapEval; it exists so
 # operators can trace why a merged/aborted task saw a late eval race.
 record_post_reap_eval_outcome() {
-  local issue="$1" outcome="${2:-completed}"
+  local issue="$1" outcome="${2:-completed}" decision_json="${3:-}"
   [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
   case "$outcome" in completed|failed) ;; *) return 0 ;; esac
+  local failure_kind="" decision_class="" decision_attribution="" decision_next_action=""
+  if [[ -n "$decision_json" ]] && jq -e '.failureKind' <<<"$decision_json" >/dev/null 2>&1; then
+    # HOK-3255: carry the failure-policy decision (kind/class/attribution/
+    # next action) into the post-reap audit so a reaped task's late eval
+    # failure stays unattributed-but-visible with its operator hint.
+    failure_kind="$(jq -r '.failureKind' <<<"$decision_json")"
+    decision_class="$(jq -r '.class' <<<"$decision_json")"
+    decision_attribution="$(jq -r '.attribution' <<<"$decision_json")"
+    decision_next_action="$(jq -r '.nextAction // ""' <<<"$decision_json")"
+  fi
   state_mutate "$STATE_FILE" '
     if .terminalTaskHistory.tasks[$issue] then
-      .terminalTaskHistory.tasks[$issue].postReapEval = {
-        outcome: $outcome,
-        recordedAt: (now | todateiso8601)
-      }
+      .terminalTaskHistory.tasks[$issue].postReapEval = (
+        { outcome: $outcome, recordedAt: (now | todateiso8601) }
+        | if $failureKind != "" then
+            .decision = { failureKind: $failureKind, class: $decisionClass, attribution: $decisionAttribution, nextAction: $decisionNextAction }
+          else . end
+      )
       | (.terminalTaskHistory.tasks[$issue].challengePairId // "") as $pair
       | (.terminalTaskHistory.tasks[$issue].challengeRole // "") as $role
       | if $pair != "" and $role != "" and .terminalTaskHistory.challengePairs[$pair][$role] then
-          .terminalTaskHistory.challengePairs[$pair][$role].postReapEval = {
-            outcome: $outcome,
-            recordedAt: (now | todateiso8601)
-          }
+          .terminalTaskHistory.challengePairs[$pair][$role].postReapEval = (
+            { outcome: $outcome, recordedAt: (now | todateiso8601) }
+            | if $failureKind != "" then
+                .decision = { failureKind: $failureKind, class: $decisionClass, attribution: $decisionAttribution, nextAction: $decisionNextAction }
+              else . end
+          )
         else . end
     else . end
-  ' --arg issue "$issue" --arg outcome "$outcome" >/dev/null 2>&1 || true
+  ' --arg issue "$issue" --arg outcome "$outcome" \
+    --arg failureKind "$failure_kind" --arg decisionClass "$decision_class" \
+    --arg decisionAttribution "$decision_attribution" --arg decisionNextAction "$decision_next_action" \
+    >/dev/null 2>&1 || true
 
   # Shadow write: attempt to settle the eval step in the ledger. The step
   # should already be settled (the task was reaped), so this will throw

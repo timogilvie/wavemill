@@ -7,9 +7,10 @@
 #
 # State is file-based, keyed by a <state_dir, bucket> pair. Buckets are stable
 # kebab-case slugs (e.g. phase-launch-coding, ready-remediation,
-# pending-ready-recheck, failed-ready-recheck, challenge-eval-soft-<pair>-<side>).
-# Bucket names must not be prefixes of one another within a state dir: clear
-# removes every file under the bucket's prefix.
+# pending-ready-recheck, failed-ready-recheck, challenge-eval-hard-<pair>-<side>;
+# HOK-3255 retired the challenge-eval-soft bucket). Bucket names must not be
+# prefixes of one another within a state dir: clear removes every file under
+# the bucket's prefix.
 #
 # Storage per bucket, under $state_dir:
 #   .retry-<bucket>-count               attempt counter (positive integer)

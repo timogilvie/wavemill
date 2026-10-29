@@ -4,8 +4,10 @@
  *
  * `failure_policy_decide` (shared/lib/wavemill-common.sh) calls this so the
  * monitor classifies stage failures with the same module the TS gates use.
+ * `eval_failure_disposition` passes async job evidence through --job-* and
+ * model-attribution proof through --execution-evidence-*.
  * Prints one JSON line:
- *   {"class":…,"failureKind":…,"terminalCode":…,"retryBucket":…,"nextAction":…,"rationale":…}
+ *   {"class":…,"failureKind":…,"attribution":…,"terminalCode":…,"retryBucket":…,"nextAction":…,"rationale":…}
  * With --next-action-only, prints just the operator hint for --failure-kind.
  */
 import { runTool } from '../shared/lib/tool-runner.ts';
@@ -25,6 +27,11 @@ runTool({
     'handoff-reason': { type: 'string', description: 'Typed coding handoff reason' },
     'ci-category': { type: 'string', description: 'ci-failure-classifier category' },
     'challenge-arm': { type: 'boolean', description: 'The task is a tracked challenge arm' },
+    'job-reason': { type: 'string', description: 'Async job settlement reason (eval_failure_disposition)' },
+    'job-exit-code': { type: 'string', description: 'Async job exit code (integer or empty)' },
+    'job-excerpt': { type: 'string', description: 'Bounded async job log tail (pass as --job-excerpt=<text>)' },
+    'execution-evidence-source': { type: 'string', description: 'provider-response | attested (HOK-3143)' },
+    'execution-evidence-model': { type: 'string', description: 'Model the execution evidence names' },
     'next-action-only': { type: 'boolean', description: 'Print only the next-action hint for --failure-kind' },
   },
   examples: [
@@ -41,6 +48,11 @@ runTool({
       throw new Error(`--stage must be one of: ${[...STAGES].join(', ')} (got "${stage}")`);
     }
     const ciCategory = args['ci-category'];
+    const jobReason = args['job-reason'];
+    const jobExitRaw = args['job-exit-code'];
+    const jobExcerpt = args['job-excerpt'];
+    const evidenceSource = args['execution-evidence-source'];
+    const evidenceModel = args['execution-evidence-model'];
     const decision = classifyFailure({
       stage: stage as FailureStage,
       failureKind: args['failure-kind'],
@@ -48,10 +60,21 @@ runTool({
       handoffReason: args['handoff-reason'],
       ciCategory: ciCategory && CI_CATEGORIES.has(ciCategory) ? (ciCategory as CiFailureCategory) : undefined,
       challengeArm: args['challenge-arm'] === true,
+      job: jobReason != null || jobExitRaw != null || jobExcerpt != null
+        ? {
+          reason: jobReason ?? null,
+          exitCode: jobExitRaw != null && /^-?\d+$/.test(jobExitRaw.trim()) ? Number(jobExitRaw.trim()) : null,
+          excerpt: jobExcerpt ?? null,
+        }
+        : undefined,
+      executionEvidence: evidenceSource === 'provider-response' || evidenceSource === 'attested'
+        ? { source: evidenceSource, model: evidenceModel ?? '' }
+        : undefined,
     });
     console.log(JSON.stringify({
       class: decision.class,
       failureKind: decision.failureKind,
+      attribution: decision.attribution,
       terminalCode: decision.cause?.code ?? null,
       retryBucket: decision.retryBucket ?? null,
       nextAction: decision.nextAction,

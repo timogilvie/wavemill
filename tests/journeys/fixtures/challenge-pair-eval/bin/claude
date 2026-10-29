@@ -18,6 +18,10 @@ if [[ -n "${WAVEMILL_PHASE:-}" || "${1:-}" != "-p" ]]; then
 fi
 
 prompt="$(cat)"
+if [[ "$prompt" != *"Candidate B diff:"* && -n "${JOURNEY_EVAL_FAULT:-}" && -f "$JOURNEY_EVAL_FAULT" ]]; then
+  echo 'scripted eval harness unavailable' >&2
+  exit 1
+fi
 letter="A"
 if [[ "$prompt" == *"Candidate B diff:"* ]]; then
   candidate_b="${prompt##*Candidate B diff:}"

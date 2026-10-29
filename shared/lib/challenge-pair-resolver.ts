@@ -134,6 +134,13 @@ export async function resolveUnresolvablePair(input: UnresolvablePairInput): Pro
     return { status: 'skipped', reason: `Pair ${input.pairId} is not currently unresolvable.` };
   }
 
+  // HOK-3255: eval-hard-failed exhaustion is unattributed infrastructure.
+  // The pair stays blocked (gate status) and needs-user; the eval must be
+  // re-run or a new head pushed. No forfeit record, detected or explicit.
+  if (resolvedReason === 'both-eval-hard-failed' || resolvedReason === 'sibling-eval-hard-failed') {
+    return { status: 'skipped', reason: 'eval failure is unattributed infrastructure (escalated); re-run the eval or push a new head' };
+  }
+
   // HOK-3128: a stalled no-PR arm is retired exactly like a quarantined one.
   // Stamp it (in memory now, durably below) and reuse the
   // `sibling-challenge-aborted` forfeit path so no new terminal reason or
@@ -169,7 +176,6 @@ export async function resolveUnresolvablePair(input: UnresolvablePairInput): Pro
     challengePairMap: workflow.challengePairMap,
     reason: resolvedReason === 'sibling-stalled' ? 'sibling-challenge-aborted' : resolvedReason,
     timestamp: (input.now ?? (() => new Date()))().toISOString(),
-    retryMax,
     evalsDir,
   });
   if (!resolution) {
@@ -602,10 +608,6 @@ function isPastOrphanGrace(task: TaskEvalState, now: () => Date): boolean {
   return now().getTime() - task.updatedAt >= ORPHAN_PAIR_GRACE_MS;
 }
 
-function isHardFailureExhausted(task: TaskEvalState | undefined, retryMax: number): boolean {
-  return Boolean(task?.evalFailed && task.evalHardFailureRetryCount >= retryMax);
-}
-
 /**
  * HOK-2970: look up the aborted arm's latest persisted eval so the resolver
  * can distinguish a "real" abort (arm ran, produced valid eval, then aborted
@@ -664,75 +666,17 @@ function buildResolutionRecord(input: {
   challengePairMap: Map<number, { pairId: string }>;
   reason: UnresolvableReason;
   timestamp: string;
-  retryMax: number;
   evalsDir?: string;
 }): { record: ChallengeComparison; outcome: 'forfeit' | 'double-forfeit' | 'invalid_challenge' } | null {
   const primary = input.pairState.primary;
   const challenger = input.pairState.challenger;
   const forkDescriptor = forkDescriptorForPair(primary, challenger);
 
-  if (input.reason === 'both-eval-hard-failed') {
-    return {
-      outcome: 'double-forfeit',
-      record: buildDoubleForfeitComparison({
-        challengePairId: input.pairId,
-        primaryModel: getTaskModel(primary),
-        challengerModel: getTaskModel(challenger),
-        primaryPrUrl: getTaskPrUrl(primary),
-        challengerPrUrl: getTaskPrUrl(challenger),
-        rationale: 'Both sides exhausted challenge eval hard-failure retries before a comparison could be launched.',
-        primaryCompleted: primary?.evalCompleted === true,
-        challengerCompleted: challenger?.evalCompleted === true,
-        terminalReason: 'both_eval_hard_failed',
-        timestamp: input.timestamp,
-        ...forkDescriptor,
-      }),
-    };
-  }
-
-  if (input.reason === 'sibling-eval-hard-failed') {
-    const primaryExhausted = isHardFailureExhausted(primary, input.retryMax);
-    const challengerExhausted = isHardFailureExhausted(challenger, input.retryMax);
-    if (primaryExhausted && challenger?.evalCompleted) {
-      return {
-        outcome: 'forfeit',
-        record: buildForfeitComparison({
-          challengePairId: input.pairId,
-          primaryModel: getTaskModel(primary),
-          challengerModel: getTaskModel(challenger),
-          primaryPrUrl: getTaskPrUrl(primary),
-          challengerPrUrl: getTaskPrUrl(challenger),
-          winner: 'challenger',
-          rationale: 'Primary exhausted challenge eval hard-failure retries before persisting an eval record.',
-          primaryCompleted: false,
-          challengerCompleted: true,
-          terminalReason: 'primary_eval_hard_failed',
-          timestamp: input.timestamp,
-          ...forkDescriptor,
-        }),
-      };
-    }
-    if (challengerExhausted && primary?.evalCompleted) {
-      return {
-        outcome: 'forfeit',
-        record: buildForfeitComparison({
-          challengePairId: input.pairId,
-          primaryModel: getTaskModel(primary),
-          challengerModel: getTaskModel(challenger),
-          primaryPrUrl: getTaskPrUrl(primary),
-          challengerPrUrl: getTaskPrUrl(challenger),
-          winner: 'primary',
-          rationale: 'Challenger exhausted challenge eval hard-failure retries before persisting an eval record.',
-          primaryCompleted: true,
-          challengerCompleted: false,
-          terminalReason: 'challenger_eval_hard_failed',
-          timestamp: input.timestamp,
-          ...forkDescriptor,
-        }),
-      };
-    }
-    return null;
-  }
+  // HOK-3255: the eval-hard-failed reasons never reach a terminal record.
+  // Retry-count exhaustion is unattributed infrastructure evidence — it can
+  // never establish that a model lost — so `resolveUnresolvablePair` skips
+  // those reasons upstream (see the skipped return below). These branches
+  // were the second automatic forfeit path and are deleted.
 
   if (input.reason === 'sibling-challenge-aborted') {
     const aborted = primary?.challengeAborted ? primary : challenger?.challengeAborted ? challenger : undefined;

@@ -30,7 +30,24 @@ export const FAILURE_POLICY_GUARD: GuardSpec = {
     'shared/lib/failure-policy.ts',
     'shared/lib/failure-policy-guard.ts',
   ],
+  structuralChecks: [{
+    name: 'eval-retry-forfeit',
+    description: 'eval retry exhaustion cannot create a model forfeit; use failure-policy',
+    paths: ['shared/lib/challenge-pair-resolver.ts', 'shared/lib/wavemill-common.sh', 'shared/lib/wavemill-monitor.sh'],
+    find(source) {
+      const lines = source.split('\n');
+      return lines.flatMap((line, index) => /(?:evalFailed|evalHardFailureRetryCount|isHardFailureExhausted)/.test(line)
+        && /(?:buildForfeitComparison|buildDoubleForfeitComparison|write_challenge_pair_record)/.test(lines.slice(index, index + 12).join('\n'))
+        ? [{ line: index + 1 }] : []);
+    },
+  }],
   patterns: [
+    {
+      name: 'retired-eval-forfeit-resolver',
+      description: 'eval exhaustion must not resolve a pair; use failure_policy_decide and bounded retry',
+      lang: 'both',
+      re: /\bresolve_challenge_pair_hard_failure\s*(?:\(|["' ])|\bfunction\s+isHardFailureExhausted\s*\(/,
+    },
     {
       name: 'terminal-decision-literal',
       description: '`class: \'terminal\'` decision built outside failure-policy.ts — call classifyFailure() / failure_policy_decide',

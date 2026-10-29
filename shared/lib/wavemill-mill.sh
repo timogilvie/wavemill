@@ -912,8 +912,8 @@ clear_challenge_eval_running() {
   task_state_mutate_existing "$issue" 'del(.evalRunning) | .updated = (now | todateiso8601)'
 }
 
-# challenge_eval_retry_max_attempts() and challenge_eval_hard_failure_max_retries()
-# are provided by wavemill-common.sh (HOK-2924), sourced above.
+# challenge_eval_hard_failure_max_retries() is provided by wavemill-common.sh
+# (HOK-2924); the retired challenge-eval-soft ceiling is gone (HOK-3255).
 
 clear_challenge_pair_state() {
   local pair_id="$1"
@@ -984,16 +984,6 @@ challenge_pair_timeout_reason() {
     *,primary,*) printf 'primary_eval_timed_out\n' ;;
     *,challenger,*) printf 'challenger_eval_timed_out\n' ;;
     *) printf 'eval_timed_out\n' ;;
-  esac
-}
-
-challenge_pair_hard_failure_reason() {
-  local failed_sides_csv="$1"
-  case ",$failed_sides_csv," in
-    *,primary,challenger,*|*,challenger,primary,*) printf 'both_eval_hard_failed\n' ;;
-    *,primary,*) printf 'primary_eval_hard_failed\n' ;;
-    *,challenger,*) printf 'challenger_eval_hard_failed\n' ;;
-    *) printf 'eval_hard_failed\n' ;;
   esac
 }
 

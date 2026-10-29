@@ -51,3 +51,9 @@ describe('failure-policy guard — repository', () => {
     assert.deepEqual(result.findings, [], formatGuardResult(FAILURE_POLICY_GUARD, result));
   });
 });
+
+// protects: retry-count-based eval forfeits cannot re-enter the pair resolver.
+it('rejects eval exhaustion followed by a model forfeit', () => {
+  assert.deepEqual(patternsOf('shared/lib/challenge-pair-resolver.ts',
+    'if (task.evalFailed && task.evalHardFailureRetryCount >= max) {\n  return buildForfeitComparison({});\n}'), ['eval-retry-forfeit']);
+});
