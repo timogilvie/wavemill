@@ -2959,10 +2959,14 @@ test('classify challenge PR with exhausted sibling eval as needs-user with recov
     },
   );
 
+  // HOK-3255: exhaustion is unattributed infrastructure and escalated — not
+  // forfeitable. The recovery command is the eval relaunch path (operator
+  // `re-review` expires the exhausted sentinel), not a resolver invocation.
   assert.equal(classification.kind, 'needs-user');
-  assert.match(classification.detail, /exhausted challenge eval hard-failure retries/i);
+  assert.match(classification.detail, /unattributed infrastructure, not a model forfeit/i);
   assert.match(classification.detail, /pair PR #900/);
-  assert.match(classification.recoveryCommand ?? '', /--reason 'sibling-eval-hard-failed'/);
+  assert.match(classification.recoveryCommand ?? '', /re-review/i);
+  assert.doesNotMatch(classification.recoveryCommand ?? '', /resolve-orphan-challenge-pair/);
 });
 
 test('classify challenge PR with aborted sibling as needs-user with recovery command', () => {
@@ -3343,7 +3347,9 @@ test('tick uses hard-failure retry config for challenge classification', async (
       deps,
     });
     assert.equal(exhausted.findings[0].classification, 'needs-user');
-    assert.match(exhausted.findings[0].detail, /exhausted challenge eval hard-failure retries/i);
+    // HOK-3255: exhaustion is unattributed infrastructure and escalated —
+    // not forfeitable; the detail surfaces the re-run/relaunch path.
+    assert.match(exhausted.findings[0].detail, /unattributed infrastructure, not a model forfeit/i);
   } finally {
     await rm(repoDir, { recursive: true, force: true });
   }
