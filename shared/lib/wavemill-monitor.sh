@@ -15292,9 +15292,13 @@ maybe_run_challenge_eval() {
     eval_hard_retry_max=$(challenge_eval_hard_failure_max_retries)
     local disposition
     if [[ "${decision_class:-retryable}" == "terminal" ]]; then
-      bounded_retry_reset_if_new_head "$hard_retry_state_dir" challenge-eval-hard "$hard_retry_head"
-      bounded_retry_is_exhausted "$hard_retry_state_dir" challenge-eval-hard && return 0
-      disposition=exhausted
+      decision_kind=$(jq -r '.failureKind' <<<"$decision_json")
+      decision_next_action=$(jq -r '.nextAction // ""' <<<"$decision_json")
+      challenge_abort_pair "$issue" "$hard_retry_state_dir" "$issue-$slug" eval \
+        "$(challenge_coder_model_for_task "$issue")" "terminal_stage_failure:${decision_kind}" \
+        "$(jq -r '.detail // .nextAction // "terminal eval failure"' <<<"$decision_json")" "$decision_next_action" \
+        "$(challenge_abort_scope_for_failure "$issue" "$decision_kind")" || true
+      return 0
     else
       disposition=$(bounded_retry_gate "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_head" "$eval_hard_retry_max" "" "" "")
     fi
