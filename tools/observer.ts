@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+import { isJobBackedIncident, readAuthoritativeWorkflowJobs, reconcileIncidentForFiling } from '../shared/lib/incident-filing-reconciler.ts';
 import { ISSUE_ID_RE } from '../shared/lib/task-identity.ts';
 
 import { execFileSync } from 'node:child_process';
@@ -743,43 +744,6 @@ function taskCleanupEpisode(task: ObservedTask): CleanupEpisode | undefined {
   return record as CleanupEpisode;
 }
 
-function cleanupEpisodeFinding(repo: RepoSnapshot, task: ObservedTask): Finding | undefined {
-  const episode = taskCleanupEpisode(task);
-  if (!episode || episode.disposition === 'reaped') return undefined;
-
-  const fingerprint = episode.fingerprint;
-  const nextRetry = episode.nextRetryAt ? `nextRetryAt=${episode.nextRetryAt}` : 'nextRetryAt=none';
-  const action = typeof episode.requiredOperatorAction === 'string' && episode.requiredOperatorAction.length > 0
-    ? episode.requiredOperatorAction
-    : `Inspect cleanup evidence with wavemill cleanup ${task.issue} --dry-run; finalize with --execute only after the decision is safe.`;
-  const titleDisposition = episode.disposition === 'transient'
-    ? 'waiting for cleanup retry'
-    : `cleanup ${episode.disposition}`;
-  const severity: Severity = episode.disposition === 'transient' ? 'medium' : 'high';
-
-  return {
-    id: `cleanup-episode-${repo.session}-${task.issue}-${fingerprint.slice(0, 12)}`,
-    severity,
-    category: 'operational',
-    confidence: 'high',
-    session: repo.session,
-    repoDir: repo.repoDir,
-    issue: task.issue,
-    title: `${task.issue} ${titleDisposition}`,
-    evidence: [
-      `disposition=${episode.disposition}`,
-      `failureClass=${episode.failureClass}`,
-      `lastOutcome=${episode.lastOutcome ?? 'unknown'}`,
-      `attempts=${episode.attemptCount}`,
-      `fingerprint=${fingerprint}`,
-      nextRetry,
-      `branch=${task.branch ?? episode.fingerprintInputs?.branch ?? 'unknown'}`,
-      `worktree=${task.worktree ?? episode.fingerprintInputs?.worktree ?? 'unknown'}`,
-    ],
-    recommendation: action,
-  };
-}
-
 type ResidueDisposition =
   | 'retained-by-policy'
   | 'unpublished-at-risk'
@@ -1013,8 +977,10 @@ function effectiveConfigDriftFinding(repo: RepoSnapshot, task: ObservedTask, con
 
 function cleanupRootCause(disposition: ResidueDisposition): IncidentRootCauseClass | undefined {
   switch (disposition) {
+    case 'residue-retained':
     case 'retained-by-policy': return 'cleanup_retained_by_policy';
     case 'unpublished-at-risk': return 'cleanup_unpublished_at_risk';
+    case 'transient':
     case 'verification-unavailable': return 'cleanup_verification_unavailable';
     case 'dirty-worktree': return 'cleanup_dirty_worktree';
     default: return undefined;
@@ -1104,8 +1070,8 @@ function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string, pr
         evidence: [{
           type: 'workflow_state',
           source: repo.workflowStatePath ?? join(repo.repoDir, '.wavemill', 'workflow-state.json'),
-          timestamp,
-          redactedData: classified.evidence.join(' '),
+          timestamp: taskCleanupEpisode(task)?.firstAttemptAt ?? task.updated ?? repo.stateMtime ?? timestamp,
+          redactedData: [...classified.evidence, ...(residue ? [`unpushedCommits=${residue.unpushedCommits ?? 'unknown'}`, ...residue.commitSubjects.map((subject) => `commit=${subject}`)] : []), ...dirtyWorktreeEvidence(worktreeDirty)].join(' '),
           key,
         }],
         metadata: {
@@ -1289,97 +1255,7 @@ function detectParkedArmIncidents(
       }
     }
 
-    // Terminal-parked and died-with-unpushed-work (mirrors the residue finding gates).
-    const ageMinutes = taskAgeMinutes(task, repo, now, progressLookup);
-    if (ageMinutes === undefined || !Number.isFinite(ageMinutes) || ageMinutes <= options.staleMinutes) continue;
-    const effectiveConfig = resolveObserverTaskConfig(repo, task.issue, task);
-    const isTerminal = taskHasTerminalResidueStatus(task);
-    const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes, progressLookup);
-    if (!isTerminal && liveEvidence) continue;
 
-    const branch = taskBranch(task);
-    const baseBranch = effectiveConfig.baseBranch.value;
-    const paneResidue = taskPaneResidue(repo, task, snapshot.panes);
-    const residue = branch ? inspectTaskBranchResidue(repo.repoDir, branch, baseBranch) : undefined;
-    const worktreeDirty = inspectTaskWorktreeDirty(task.worktree);
-    const classified = classifyResidue(task, effectiveConfig, residue, worktreeDirty);
-    if (classified.suppressResidueFinding && !isTerminal) continue;
-    const worktreePresent = task.worktree ? existsSync(task.worktree) : false;
-    const unpushedCommits = residue?.unpushedCommits;
-    const confirmedWorkAtRisk = classified.disposition === 'unpublished-at-risk';
-    const worktreeAtRisk = worktreeDirty.state === 'dirty' || worktreeDirty.state === 'unreadable';
-
-    const firesUnpushed = !liveEvidence && residue !== undefined && confirmedWorkAtRisk && !classified.suppressResidueFinding;
-    const terminalResiduePresent = worktreePresent || paneResidue.present || (residue?.localBranchExists ?? false);
-    const firesTerminalParked = isTerminal && terminalResiduePresent && !classified.suppressResidueFinding;
-
-    if (firesUnpushed && residue) {
-      incidents.push(createIncidentDraft({
-        taskId: task.issue,
-        session: repo.session,
-        category: 'stale_orphaned_state',
-        severity: 'critical',
-        confidence: 'high',
-        lifecycle: 'observed',
-        rootCauseClass: 'arm_died_with_unpushed_work',
-        summary: `${task.issue} arm exited with ${unpushedCommits} unpushed commit${unpushedCommits === 1 ? '' : 's'} on ${residue.branch}.`,
-        operatorAction: `These commits exist only locally and are unrecoverable once the worktree and branch are reaped. Push ${residue.branch} to origin and open a PR against ${baseBranch}, or explicitly abandon the branch, before terminalizing cleanup.`,
-        evidence: [{
-          type: 'workflow_state',
-          source: repo.workflowStatePath ?? join(repo.repoDir, '.wavemill', 'workflow-state.json'),
-          timestamp,
-          redactedData: [
-            `branch=${residue.branch}`,
-            `baseBranch=${baseBranch}`,
-            `unpushedCommits=${unpushedCommits}`,
-            'remoteBranch=absent',
-            ...residue.commitSubjects.map((subject) => `commit=${subject}`),
-          ].join(' '),
-          key: `unpushed:${task.issue}:${residue.branch}`,
-        }],
-        metadata: { branch: residue.branch, baseBranch, unpushedCommits },
-      }));
-    }
-
-    if (firesTerminalParked) {
-      // HOK-3088: never append the abort/reap action when the worktree is
-      // dirty or unreadable - that action deletes the very files at risk.
-      const operatorAction = worktreeAtRisk
-        ? classified.recommendation
-        : (unpushedCommits ?? 0) > 0
-          ? `${classified.recommendation} Then set ${task.issue} phase=aborted (or run \`wavemill mill abort ${task.issue}\`) and let the mill reap the worktree and window.`
-          : `Nothing on the branch is at risk; set ${task.issue} phase=aborted (or run \`wavemill mill abort ${task.issue}\`) and let the mill reap the worktree and window - never remove the worktree manually while the mill loop is live.`;
-      incidents.push(createIncidentDraft({
-        taskId: task.issue,
-        session: repo.session,
-        category: 'stale_orphaned_state',
-        severity: findingSeverityToIncidentSeverity(terminalParkedSeverity(ageMinutes, options.staleMinutes, residue, worktreeDirty)),
-        confidence: 'high',
-        lifecycle: 'observed',
-        rootCauseClass: 'terminal_arm_parked_with_residue',
-        summary: worktreeAtRisk
-          ? `${task.issue} terminal task is parked with a dirty worktree; recover files before reaping.`
-          : `${task.issue} terminal task is parked with allocated residue.`,
-        operatorAction,
-        evidence: [{
-          type: 'workflow_state',
-          source: repo.workflowStatePath ?? join(repo.repoDir, '.wavemill', 'workflow-state.json'),
-          timestamp,
-          redactedData: [
-            `status=${task.status ?? 'unknown'}`,
-            `phase=${task.phase ?? 'unknown'}`,
-            `ageMinutes=${Math.round(ageMinutes)}`,
-            `worktree=${worktreePresent ? 'present' : 'absent'}`,
-            `tmuxWindow=${paneResidue.present ? 'present' : 'absent'}`,
-            `localBranch=${residue?.localBranchExists ? 'present' : 'absent'}`,
-            `unpushedCommits=${unpushedCommits ?? 'unknown'}`,
-            ...dirtyWorktreeEvidence(worktreeDirty),
-          ].join(' '),
-          key: `terminal-parked:${task.issue}:${branch ?? 'unknown'}`,
-        }],
-        metadata: { branch, baseBranch, disposition: classified.disposition, worktreeDirty: worktreeDirty.state },
-      }));
-    }
   }
 
   // pr-create-failed diagnostics (mirrors the finding sources: mill log first,
@@ -2167,8 +2043,6 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       const driftFinding = effectiveConfigDriftFinding(repo, task, effectiveConfig);
       if (driftFinding) findings.push(driftFinding);
 
-      const cleanupFinding = cleanupEpisodeFinding(repo, task);
-      if (cleanupFinding) findings.push(cleanupFinding);
 
       const ageMinutes = taskAgeMinutes(task, repo, now, progressLookup);
       // The stale age gate doubles as protection against phase-handoff false
@@ -2178,6 +2052,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
 
       const normalized = normalizedLifecycle(task);
       const isTerminal = taskHasTerminalResidueStatus(task);
+      if (isTerminal) continue; // The cleanup disposition above is the terminal resource authority.
       const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes, progressLookup);
       // Active tasks with a live agent are healthy; terminal tasks are inspected
       // even when their window still holds a live (abandoned) agent session.
@@ -2235,59 +2110,13 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
         });
       }
 
-      if (firesTerminalParked) {
-        const ageLabel = formatParkedAge(ageMinutes);
-        const workLoss = (unpushedCommits ?? 0) > 0;
-        const reapAction = `set ${task.issue} phase=aborted (or run \`wavemill mill abort ${task.issue}\`) and let the mill reap the worktree and window - never remove the worktree manually while the mill loop is live`;
-        // HOK-3088: a dirty (or unreadable) worktree escalates the finding
-        // regardless of what the branch says. The reap action is never
-        // appended in that case - it would delete the very files at risk -
-        // and the title/recommendation tell the operator to preserve first.
-        const dirtyPathCount = worktreeDirty.state === 'dirty' ? worktreeDirty.lines.length : 0;
-        const title = worktreeAtRisk
-          ? worktreeDirty.state === 'unreadable'
-            ? `${task.issue} terminal task parked for ${ageLabel} with unreadable worktree status`
-            : `${task.issue} terminal task parked for ${ageLabel} with ${dirtyPathCount} dirty file${dirtyPathCount === 1 ? '' : 's'} at risk`
-          : workLoss
-            ? `${task.issue} terminal task parked for ${ageLabel} with ${unpushedCommits} unpushed commit${unpushedCommits === 1 ? '' : 's'} at risk`
-            : `${task.issue} terminal task parked for ${ageLabel} with allocated residue`;
-        const recommendation = worktreeAtRisk
-          ? classified.recommendation
-          : workLoss
-            ? `${classified.recommendation} Then ${reapAction}.`
-            : `Nothing on the branch is at risk; ${reapAction}.`;
-        findings.push({
-          id: `terminal-task-parked-${repo.session}-${task.issue}`,
-          severity: terminalParkedSeverity(ageMinutes, options.staleMinutes, residue, worktreeDirty),
-          category: 'operational',
-          confidence: 'high',
-          session: repo.session,
-          repoDir: repo.repoDir,
-          issue: task.issue,
-          title,
-          evidence: [
-            ...stateEvidence,
-            ...classified.evidence,
-            `updated=${task.updated ?? repo.stateMtime ?? 'unknown'}`,
-            `ageMinutes=${Math.round(ageMinutes)}`,
-            paneResidue.present
-              ? `tmuxWindow=present(${paneResidue.live ? 'live' : 'exited'}) targets=${paneResidue.targets.join(',')}`
-              : 'tmuxWindow=absent',
-            task.worktree ? `worktree=${worktreePresent ? 'present' : 'absent'}:${task.worktree}` : 'worktree=none',
-            branch ? `branch=${branch} localBranch=${residue?.localBranchExists ? 'present' : 'absent'}` : 'branch=unknown',
-            `baseBranch=${baseBranch}`,
-            `aheadOfBase=${residue?.aheadOfBase ?? 'unknown'}`,
-            `remoteBranch=${residue?.remoteBranch ?? 'unknown'}`,
-            `unpushedCommits=${unpushedCommits ?? 'unknown'}`,
-            ...(worktreeAtRisk ? ['potentialWorkLoss=true'] : workLoss ? ['potentialWorkLoss=true'] : []),
-            ...(residue?.commitSubjects.map((subject) => `commit=${subject}`) ?? []),
-            prEvidence,
-          ],
-          recommendation,
-        });
-      }
+
     }
 
+    for (const incident of detectCleanupIncidentsForRepo(repo, new Date(now).toISOString(), progressLookup)) {
+      if (!incident.rootCauseClass.startsWith('cleanup_')) continue;
+      findings.push(convertIncidentToFinding(incident));
+    }
     const logLines = repo.millLogPath ? tailLines(repo.millLogPath, options.maxLogLines) : [];
     const queueHealthDegraded = repo.queueHealth?.status === 'degraded';
     const repeatedReadyWatchdogLines = new Set<string>();
@@ -3716,37 +3545,6 @@ export function detectBranchBehindBase(
   return findings;
 }
 
-function terminalParkedSeverity(ageMinutes: number, staleMinutes: number, residue: BranchResidue | undefined, worktreeDirty?: WorktreeDirtyStatus): Severity {
-  let severity: Severity = 'medium';
-  if (ageMinutes > Math.max(TERMINAL_PARKED_HIGH_FLOOR_MINUTES, staleMinutes * 6)) severity = 'high';
-  if (ageMinutes > Math.max(TERMINAL_PARKED_URGENT_FLOOR_MINUTES, staleMinutes * 24)) severity = 'urgent';
-  if (worktreeDirty?.state === 'dirty') {
-    // HOK-3088: uncommitted or untracked work exists only in this worktree;
-    // reaping would delete it. Always urgent.
-    return 'urgent';
-  }
-  if (worktreeDirty?.state === 'unreadable') {
-    // Fail closed: without a status read we cannot say the tree is safe.
-    if (severity === 'medium') return 'high';
-  }
-  if ((residue?.unpushedCommits ?? 0) > 0) {
-    // Unpushed work turns housekeeping into potential work loss: at least high,
-    // urgent when the remote branch is confirmed absent (nothing else holds the commits).
-    if (residue?.remoteBranch === 'absent') return 'urgent';
-    if (severity === 'medium') return 'high';
-  }
-  return severity;
-}
-
-function formatParkedAge(ageMinutes: number): string {
-  const rounded = Math.round(ageMinutes);
-  if (rounded < 120) return `${rounded}m`;
-  const hours = Math.floor(rounded / 60);
-  const minutes = rounded % 60;
-  return minutes > 0 ? `${hours}h${minutes}m` : `${hours}h`;
-}
-
-/** Match a raw diagnostic line to a task by branch, slug, or issue key. */
 function matchTaskIssueInText(repo: RepoSnapshot, text: string): string | undefined {
   // Longest issue key first so HOK-1234_c lines never match HOK-1234.
   const tasks = [...repo.tasks].sort((a, b) => b.issue.length - a.issue.length);
@@ -4153,9 +3951,19 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
       // condition holds (new review attempt, head change, comparison), rather
       // than waiting out the absence sweep. Missing evidence never resolves.
       try {
+        const jobs = readAuthoritativeWorkflowJobs(repo.repoDir);
         for (const record of await store.getIncidents()) {
-          if (observedFingerprints.has(record.fingerprint)) continue;
-          const recovery = evaluateRecoveryPredicate(record, repo.repoDir);
+          const current = reconcileIncidentForFiling(record, repo.repoDir, jobs);
+          const jobBacked = isJobBackedIncident(record);
+          if (!jobBacked && observedFingerprints.has(record.fingerprint)) continue;
+          const recovery = jobBacked
+            ? { satisfied: current.outcome === 'recovered' || current.outcome === 'superseded', reason: `current_disposition:${current.outcome}`, evidence: JSON.stringify(current.evidence) }
+            : evaluateRecoveryPredicate(record, repo.repoDir);
+          if (jobBacked && !recovery.satisfied && !observedFingerprints.has(record.fingerprint)) {
+            incidents.push(record);
+            repoIncidents.push(record);
+            observedFingerprints.add(record.fingerprint);
+          }
           if (!recovery.satisfied || !recovery.reason) continue;
           const resolved = await store.autoResolve(record.fingerprint, { reason: recovery.reason });
           if (resolved) {
@@ -4187,7 +3995,7 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
         // nothing structural changed). Passing `observed` keeps it active.
         await store.runResolutionSweep(
           { fresh: freshFingerprints, observed: observedFingerprints },
-          (record) => canResolveInteractivePromptByAbsence(record, repo),
+          (record) => !isJobBackedIncident(record) && canResolveInteractivePromptByAbsence(record, repo),
         );
       } catch (error) {
         snapshot.findings.push({
@@ -4205,7 +4013,13 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
     }
   }
 
-  const uniqueIncidents = dedupeIncidents(incidents);
+  const uniqueIncidents = dedupeIncidents(incidents).filter((record) => {
+    if (!isJobBackedIncident(record)) return true;
+    const repoDir = snapshot.repos.find((repo) => repo.session === record.session)?.repoDir;
+    if (!repoDir) return true;
+    const current = reconcileIncidentForFiling(record, repoDir);
+    return current.outcome === 'confirmed_active' || current.outcome === 'needs_inspection';
+  });
   // A specific causal chain supersedes the generic stale-task advice for the
   // same repo/issue; without one the generic finding is untouched.
   let findings = snapshot.findings;

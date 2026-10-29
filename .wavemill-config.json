@@ -376,6 +376,7 @@
     "Golden Journey (mid-flight-base-conflict)": "bash tests/journeys/run-journeys.sh mid-flight-base-conflict",
     "Golden Journey (tend-rebase-conflict-single-comment)": "bash tests/journeys/run-journeys.sh tend-rebase-conflict-single-comment",
     "Golden Journey (native-ownership-recovery)": "bash tests/journeys/run-journeys.sh native-ownership-recovery",
+    "Golden Journey (incident-currentness)": "bash tests/journeys/run-journeys.sh incident-currentness",
     "Golden Journey (challenge-pair-eval)": "bash tests/journeys/run-journeys.sh challenge-pair-eval",
     "Golden Journey (ready-fail-remediate)": "bash tests/journeys/run-journeys.sh ready-fail-remediate",
     "Golden Journey (dirty-tree-coding-complete)": "bash tests/journeys/run-journeys.sh dirty-tree-coding-complete",

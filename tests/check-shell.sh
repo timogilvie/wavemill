@@ -295,6 +295,7 @@ for f in \
   "$REPO_DIR"/tests/journeys/tend-rebase-conflict-single-comment.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3316/fake-agent/review \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3316/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/incident-currentness.journey.sh \
   "$REPO_DIR"/tests/journeys/challenge-pair-eval.journey.sh \
   "$REPO_DIR"/tests/journeys/native-ownership-recovery.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/native-ownership/fake-agent/coding \

@@ -18,6 +18,10 @@ if [[ -n "${WAVEMILL_PHASE:-}" || "${1:-}" != "-p" ]]; then
 fi
 
 prompt="$(cat)"
+if [[ "${JOURNEY_INCIDENT_CURRENTNESS:-0}" == 1 && "$prompt" != *"Candidate B diff:"* && ! -f "${JOURNEY_INCIDENT_OBSERVED:?}" ]]; then
+  echo 'scripted judge transport failure before authoritative observation' >&2
+  exit 1
+fi
 letter="A"
 if [[ "$prompt" == *"Candidate B diff:"* ]]; then
   candidate_b="${prompt##*Candidate B diff:}"
