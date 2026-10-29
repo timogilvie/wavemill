@@ -133,6 +133,7 @@ LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS=""
 BACKSTAGE_HEALTH_INTERVAL=0
 BACKSTAGE_RESTART_COOLDOWN=60
 BACKSTAGE_RESTART_NEEDS_USER_AFTER_ATTEMPTS=2
+BACKSTAGE_RESTART_BACKOFF_MAX_SECONDS=900
 check_backstage_observer_health
 
 recovered_observer_pane="$(wait_for_pane_title "Wavemill Observer")" || {
@@ -150,7 +151,14 @@ if [[ "$tend_status" != "healthy" || "$observer_status" != "healthy" || "$observ
 fi
 
 tmux kill-pane -t "$recovered_observer_pane"
-wavemill_write_backstage_service_health "$STATE_DIR/backstage-health.json" "observer" "missing-observer-loop" "forced retry state" 1 "2026-01-01T00:00:00Z"
+bounded_retry_clear "$STATE_DIR" backstage-observer-restart
+observer_probe="$(probe_backstage_panes)"
+observer_summary="$(classify_backstage_observer_health "$observer_probe" "$(date +%s)" "$(wavemill_observer_heartbeat_stale_seconds "$(wavemill_load_config "$REPO_DIR")")")"
+IFS=$'\t' read -r observed_status _detail _pane_count observed_pane _heartbeat _instances <<< "$observer_summary"
+observer_identity="${observed_status}:${observed_pane:-missing}"
+for ((attempt=0; attempt<BACKSTAGE_RESTART_NEEDS_USER_AFTER_ATTEMPTS; attempt++)); do
+  bounded_retry_increment "$STATE_DIR" backstage-observer-restart "$observer_identity" >/dev/null
+done
 LAST_BACKSTAGE_OBSERVER_HEALTH_CHECK=0
 BACKSTAGE_RESTART_COOLDOWN=0
 check_backstage_observer_health
