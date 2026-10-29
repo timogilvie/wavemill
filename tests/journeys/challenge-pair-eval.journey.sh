@@ -198,6 +198,7 @@ journey_wait_until "$ISSUE" 10 "winner reaped, loser retired"       pair_settled
 
 echo ""
 echo "assertions:"
+journey_assert "eval harness retried without operator recovery" grep -q 'challenge eval retrying for' "$JOURNEY_TMP/logs/status.log"
 journey_assert "the pair was rolled as a challenge (role recorded on both arms)" \
   test "$(grep -c "phase=coding issue=" "$FAKE_AGENT_LOG")" -ge 2
 journey_assert "both arms were evaluated before the comparison" \
