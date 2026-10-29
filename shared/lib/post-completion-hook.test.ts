@@ -13,8 +13,9 @@ import {
 } from './post-completion-hook.ts';
 import { evaluateTask, JudgeResponseRecoveryError } from './eval.ts';
 import { buildChallengeExecutionIntent } from './challenge-execution-contract.ts';
-import { buildSdkTaskCostSummaries } from './sdk-task-cost/collect.ts';
-import { loadSdkTaskCostFixture } from './sdk-task-cost/fixtures.ts';
+import { meterWorkflowCost } from './sdk-task-cost/meter.ts';
+import type { NativeSessionUsageRecord } from './session-adapters.ts';
+import type { SessionOwnershipRow } from './session-ownership.ts';
 
 let passed = 0;
 let failed = 0;
@@ -274,7 +275,7 @@ async function withMockedPostCompletionDeps(fn: () => Promise<void> | void): Pro
     postCompletionHookDeps.gatherEvalContext = evalContextGatherer.gatherEvalContext;
     postCompletionHookDeps.gatherStageArtifacts = evalContextGatherer.gatherStageArtifacts;
     postCompletionHookDeps.collectExecutionEconomics = defaultPostCompletionHookDeps.collectExecutionEconomics;
-    postCompletionHookDeps.collectSdkTaskCostSummaries = defaultPostCompletionHookDeps.collectSdkTaskCostSummaries;
+    postCompletionHookDeps.meterWorkflowCost = defaultPostCompletionHookDeps.meterWorkflowCost;
     postCompletionHookDeps.execShellCommand = shellUtils.execShellCommand;
     postCompletionHookDeps.detectAndFormatInterventions = interventionDetector.detectAndFormatInterventions;
     postCompletionHookDeps.runEvalAnalysis = evalAnalysis.runEvalAnalysis;
@@ -595,28 +596,34 @@ await test('runPostCompletionEval collects and persists execution economics (HOK
   }
 });
 
+type MeterOverrides = Partial<Parameters<typeof meterWorkflowCost>[0]>;
+
 async function runMeteredEval(
-  collect: typeof postCompletionHookDeps.collectSdkTaskCostSummaries,
-): Promise<{ ok: boolean; record: EvalRecord | undefined }> {
+  overrides: (repoDir: string) => MeterOverrides,
+): Promise<{ ok: boolean; record: EvalRecord | undefined; meterInput: Parameters<typeof meterWorkflowCost>[0] | undefined }> {
   const repoDir = mkdtempSync(join(tmpdir(), 'post-completion-hook-sdk-cost-'));
   let record: EvalRecord | undefined;
+  let meterInput: Parameters<typeof meterWorkflowCost>[0] | undefined;
   let ok = false;
   try {
     await withMockedPostCompletionDeps(async () => {
       stubBaseEvalDeps();
       postCompletionHookDeps.collectExecutionEconomics = async () => [];
-      postCompletionHookDeps.collectSdkTaskCostSummaries = collect;
+      postCompletionHookDeps.meterWorkflowCost = async (input) => {
+        meterInput = input;
+        return meterWorkflowCost({ ...input, ...overrides(repoDir), logger: { log: () => {}, warn: () => {} } });
+      };
       postCompletionHookDeps.appendEvalRecord = (persisted) => {
         record = persisted;
       };
       postCompletionHookDeps.runContextUpdateWork = async () => {};
       ok = await runPostCompletionEval({
-        issueId: 'HOK-3075',
-        prNumber: '3075',
-        prUrl: 'https://example.test/pr/3075',
+        issueId: 'HOK-3237',
+        prNumber: '3237',
+        prUrl: 'https://example.test/pr/3237',
         workflowType: 'mill',
         repoDir,
-        branchName: 'task/sdk-shadow',
+        branchName: 'task/e3-ban-source-text-assertions',
         worktreePath: repoDir,
         agentType: 'claude',
       });
@@ -624,42 +631,71 @@ async function runMeteredEval(
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }
-  return { ok, record };
+  return { ok, record, meterInput };
 }
 
-function fixtureTaskCostSummaries(name = 'claude-success') {
-  const fixture = loadSdkTaskCostFixture(name);
-  return buildSdkTaskCostSummaries({
-    scanResults: fixture.scanResults,
-    taskId: fixture.taskId,
-    pricingTable: fixture.pricingTable,
-    now: () => new Date(fixture.now),
-  })!;
+function ownedRow(sessionRef: string, harness: SessionOwnershipRow['harness'], kind: SessionOwnershipRow['kind']): SessionOwnershipRow {
+  return { sessionRef, harness, kind, stage: 'coding', model: '', launchedAt: '2026-10-27T13:00:00.000Z', attemptId: `${kind}@nohead#1` };
 }
 
-await test('runPostCompletionEval reports SDK-backed workflow cost (HOK-3076, HOK-3077)', async () => {
-  const summaries = fixtureTaskCostSummaries();
-  let collectInput: Record<string, unknown> | undefined;
-  const { ok, record } = await runMeteredEval((input) => {
-    collectInput = input as unknown as Record<string, unknown>;
-    return summaries;
+/** One Claude Code transcript turn with `outputTokens` output tokens of claude-opus-4-7. */
+function writeClaudeTranscript(dir: string, sessionId: string, outputTokens: number): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${sessionId}.jsonl`), `${JSON.stringify({
+    type: 'assistant',
+    sessionId,
+    uuid: `${sessionId}-u1`,
+    timestamp: '2026-10-27T14:00:00.000Z',
+    message: { id: `${sessionId}-m1`, model: 'claude-opus-4-7', usage: { input_tokens: 0, output_tokens: outputTokens, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+  })}\n`);
+}
+
+const HOK_3237_NATIVE: NativeSessionUsageRecord = {
+  sessionId: 'wm-coding-HOK-3237',
+  filePath: '/runs/coding-HOK-3237.jsonl',
+  provider: 'openrouter',
+  modelId: 'qwen-3-coder',
+  turnCount: 1,
+  responseIds: ['gen-3237'],
+  turns: [{ responseId: 'gen-3237', inputTokens: 100_000, outputTokens: 20_000, cacheReadTokens: 0, cacheCreationTokens: 0, providerReportedCostUsd: 4.93, usageAvailable: true, invalidUsage: false }],
+  usageAvailable: true,
+  invalidUsage: false,
+};
+
+// protects: HOK-3237 persisting workflowCost $4.93 (native-first) instead of the $48.64 cross-harness total
+await test('runPostCompletionEval persists the @hokusai/costs cross-harness total and byHarness (HOK-3237 replay)', async () => {
+  const { ok, record, meterInput } = await runMeteredEval((repoDir) => {
+    const claudeDir = join(repoDir, 'claude-projects');
+    // 582,800 output tokens at $75/MTok = $43.71 across the task's Claude Code sessions.
+    writeClaudeTranscript(claudeDir, 'hok-3237-claude', 582_800);
+    return {
+      ownership: [ownedRow('hok-3237-claude', 'claude-code', 'coding'), ownedRow('wm-coding-HOK-3237', 'native', 'native-arm')],
+      nativeSessions: [HOK_3237_NATIVE],
+      roots: { claude: [claudeDir], codex: [] },
+      pricingTable: { 'claude-opus-4-7': { inputCostPerMTok: 15, outputCostPerMTok: 75 } },
+      now: () => new Date('2026-10-27T16:00:00.000Z'),
+    };
   });
   assert.equal(ok, true);
-  assert.deepEqual(record?.taskCostSummary, summaries);
   assert.equal(record?.workflowCostStatus, 'success');
-  assert.ok(Math.abs((record?.workflowCost ?? 0) - summaries[0].total_cost_usd!) < 1e-9);
-  assert.equal(record?.workflowCostAttribution?.source, 'claude');
-  assert.equal(record?.workflowCostAttribution?.coverage, 'complete');
-  assert.equal(collectInput?.branchName, 'task/sdk-shadow');
-  assert.equal(collectInput?.issueId, 'HOK-3075');
-  // The post-completion hook prices with the wavemill install's table and
-  // never fetches OpenRouter exact charges.
-  assert.ok(collectInput?.pricingTable && typeof collectInput.pricingTable === 'object');
-  assert.equal('exactGenerationCosts' in (collectInput ?? {}), false);
+  assert.ok(Math.abs((record?.workflowCost ?? 0) - 48.64) < 1e-9, `workflowCost ${record?.workflowCost}`);
+  assert.deepEqual(record?.workflowCostByHarness, { 'claude-code': 43.71, native: 4.93 });
+  assert.deepEqual(record?.workflowCostByKind, { coding: 43.71, 'native-arm': 4.93 });
+  assert.equal(record?.workflowCostAttribution?.source, 'multi');
+  assert.deepEqual(record?.taskCostSummary?.map((summary) => summary.harness).sort(), ['claude-code', 'native']);
+  // The post-completion hook never fetches OpenRouter exact charges.
+  assert.equal(meterInput?.exactPricing, undefined);
+  assert.equal(meterInput?.issueId, 'HOK-3237');
 });
 
-await test('runPostCompletionEval never reports an unpriced SDK cost as $0 (HOK-3076)', async () => {
-  const { ok, record } = await runMeteredEval(() => fixtureTaskCostSummaries('native-unpriced-model'));
+// protects: an unpriced owned session reported as a $0 task
+await test('runPostCompletionEval never reports an unpriced SDK cost as $0', async () => {
+  const { ok, record } = await runMeteredEval(() => ({
+    ownership: [ownedRow('wm-coding-HOK-3237', 'native', 'native-arm')],
+    nativeSessions: [{ ...HOK_3237_NATIVE, modelId: 'mystery-model', turns: [{ ...HOK_3237_NATIVE.turns[0], providerReportedCostUsd: undefined }] }],
+    roots: { claude: [], codex: [] },
+    pricingTable: {},
+  }));
   assert.equal(ok, true);
   assert.equal(record?.workflowCostStatus, 'success');
   assert.equal(record?.workflowCost, undefined);
@@ -667,8 +703,9 @@ await test('runPostCompletionEval never reports an unpriced SDK cost as $0 (HOK-
   assert.equal(record?.workflowCostAttribution?.reason, 'unpriced_model');
 });
 
-await test('runPostCompletionEval records no_sessions — never a zero — without SDK evidence (HOK-3077)', async () => {
-  const { ok, record } = await runMeteredEval(() => null);
+// protects: a task with no ownership record reported as costing $0
+await test('runPostCompletionEval records no_sessions — never a zero — without owned sessions', async () => {
+  const { ok, record } = await runMeteredEval(() => ({ ownership: [] }));
   assert.equal(ok, true);
   assert.ok(record);
   assert.equal('taskCostSummary' in record!, false);
@@ -676,10 +713,12 @@ await test('runPostCompletionEval records no_sessions — never a zero — witho
   assert.equal(record!.workflowCostAttribution, undefined);
 });
 
-await test('runPostCompletionEval records an adapter_error when the SDK collector throws (HOK-3077)', async () => {
-  const { ok, record } = await runMeteredEval(() => {
-    throw new Error('sdk exploded');
-  });
+// protects: a broken @hokusai/costs install failing the eval instead of recording adapter_error
+await test('runPostCompletionEval records an adapter_error when measurement fails', async () => {
+  const { ok, record } = await runMeteredEval(() => ({
+    ownership: [ownedRow('s', 'claude-code', 'coding')],
+    loadMeasure: async () => { throw new Error('sdk exploded'); },
+  }));
   assert.equal(ok, true);
   assert.ok(record);
   assert.equal('taskCostSummary' in record!, false);

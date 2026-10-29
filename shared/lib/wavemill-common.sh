@@ -484,6 +484,9 @@ archive_stage_artifacts() {
     # HOK-3182: reliability-report evidence (time-stuck replay, operator touches).
     _wavemill_archive_copy "$feature_dir/.terminal-history.jsonl" "$archive_dir/terminal-history.jsonl" || status=1
     _wavemill_archive_copy "$feature_dir/.operator-events.jsonl" "$archive_dir/operator-events.jsonl" || status=1
+    # HOK-3328: the session-ownership record keeps its name in the archive, so
+    # post-reap evals read it exactly like live ones (locateOwnershipRows).
+    _wavemill_archive_copy "$feature_dir/.session-ownership.jsonl" "$archive_dir/.session-ownership.jsonl" || status=1
 
     local stage result_file sidecar sidecar_name
     for stage in planning coding review; do

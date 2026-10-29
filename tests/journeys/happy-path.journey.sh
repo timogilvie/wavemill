@@ -37,5 +37,6 @@ echo "assertions:"
 journey_assert_landed "$ISSUE"
 journey_assert "post-merge eval completed without operator attention" \
   test "$JOURNEY_SAW_ATTENTION" = "0"
+journey_assert_session_ownership "$ISSUE" planning coding review
 
 journey_finish

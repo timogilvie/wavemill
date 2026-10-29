@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { computeModelCost } from '../pricing/model-pricing.ts';
+import { priceUsageUsd } from '../sdk-task-cost/price-overrides.ts';
 import { piUsageToSessionModelUsage } from './pi-usage-cost.ts';
 
 describe('piUsageToSessionModelUsage', () => {
@@ -59,7 +59,7 @@ describe('piUsageToSessionModelUsage', () => {
     assert.equal(piUsageToSessionModelUsage(undefined), undefined);
   });
 
-  it('produces data consumable by computeModelCost', () => {
+  it('produces data @hokusai/costs can price (priceUsageUsd)', () => {
     const usage = piUsageToSessionModelUsage({
       input: 1_000_000,
       output: 500_000,
@@ -68,12 +68,12 @@ describe('piUsageToSessionModelUsage', () => {
       totalTokens: 1_875_000,
     });
 
-    const cost = computeModelCost(usage, {
+    const cost = priceUsageUsd({
       inputCostPerMTok: 2,
       outputCostPerMTok: 8,
       cacheReadCostPerMTok: 0.2,
       cacheWriteCostPerMTok: 2.5,
-    });
+    }, usage!);
 
     assert.equal(cost, 6.3625);
   });

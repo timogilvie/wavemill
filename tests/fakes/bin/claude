@@ -44,7 +44,36 @@ SLUG="${WAVEMILL_SLUG:-$(basename "$WT")}"
 FEATURE_DIR="$WT/features/$SLUG"
 BASE_BRANCH="${FAKE_AGENT_BASE_BRANCH:-${WAVEMILL_BASE_BRANCH:-main}}"
 mkdir -p "$FEATURE_DIR"
-printf '%s phase=%s issue=%s wt=%s\n' "$(date -u +%FT%TZ)" "$WAVEMILL_PHASE" "$WAVEMILL_ISSUE" "$WT" >> "$FAKE_AGENT_LOG"
+
+# The launcher pins the session id (HOK-3328 session ownership). Like the real
+# CLI, write this session's transcript under $HOME/.claude/projects/<cwd>/
+# with one deterministic assistant turn of the launched `--model` (default
+# claude-opus-4-7): 1000 input + FAKE_AGENT_OUTPUT_TOKENS output tokens, on
+# this branch. That is the execution evidence the executed-model resolver and
+# the PR route stamp read, and what a journey meters with @hokusai/costs.
+FAKE_SESSION_ID=""
+FAKE_LAUNCH_MODEL="claude-opus-4-7"
+for ((i = 1; i < $#; i++)); do
+  j=$((i + 1))
+  case "${!i}" in
+    --session-id) FAKE_SESSION_ID="${!j}" ;;
+    --model) FAKE_LAUNCH_MODEL="${!j}" ;;
+  esac
+done
+if [[ -n "$FAKE_SESSION_ID" ]]; then
+  projects_dir="$(cd "$FAKE_AGENT_TOOLS_DIR/.." && node --import tsx --input-type=module -e \
+    "const m = await import('./shared/lib/wavemill-session-paths.ts'); process.stdout.write(m.resolveProjectsDir(process.argv[1]));" "$WT")"
+  mkdir -p "$projects_dir"
+  jq -cn --arg sid "$FAKE_SESSION_ID" --arg model "$FAKE_LAUNCH_MODEL" --arg ts "$(date -u +%FT%TZ)" \
+    --arg branch "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" --arg cwd "$WT" \
+    --argjson out "${FAKE_AGENT_OUTPUT_TOKENS:-100}" \
+    '{type:"assistant", sessionId:$sid, uuid:($sid + "-u1"), isSidechain:false, timestamp:$ts,
+      gitBranch:$branch, cwd:$cwd,
+      message:{id:($sid + "-m1"), model:$model,
+        usage:{input_tokens:1000, output_tokens:$out, cache_read_input_tokens:0, cache_creation_input_tokens:0}}}' \
+    >> "$projects_dir/$FAKE_SESSION_ID.jsonl"
+fi
+printf '%s phase=%s issue=%s wt=%s session=%s\n' "$(date -u +%FT%TZ)" "$WAVEMILL_PHASE" "$WAVEMILL_ISSUE" "$WT" "$FAKE_SESSION_ID" >> "$FAKE_AGENT_LOG"
 
 run_tool() {
   # tsx resolves from the wavemill install, not the milled worktree.

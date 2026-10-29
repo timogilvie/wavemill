@@ -1,5 +1,5 @@
 {
-  "description": "Native session on a model absent from the pricing table with no provider cost: usage is observed but nothing can be priced. The SDK reports partial coverage (usage without cost), cost_source none and a null total \u2014 never a fabricated $0.",
+  "description": "Native session on a model absent from the pricing table with no provider cost: usage is observed but nothing can be priced. The SDK reports partial coverage (usage without cost), cost_source none and a null total — never a fabricated $0.",
   "taskId": "HOK-0006",
   "now": "2026-10-01T00:00:00.000Z",
   "pricingTable": {
@@ -8,72 +8,21 @@
       "outputCostPerMTok": 1.1
     }
   },
-  "scanResults": [
-    {
-      "models": {
-        "acme/unpriced-model": {
-          "inputTokens": 500,
-          "cacheCreationTokens": 0,
-          "cacheReadTokens": 0,
-          "outputTokens": 50
-        }
-      },
-      "sessionCount": 1,
-      "turnCount": 1,
-      "source": "native",
-      "nativeSessions": [
-        {
-          "sessionId": "native-session-6",
-          "filePath": "/repo/.wavemill/runs/run-1/native-sessions/HOK-0006.jsonl",
-          "provider": "acme",
-          "modelId": "acme/unpriced-model",
-          "turnCount": 1,
-          "responseIds": [],
-          "turns": [
-            {
-              "inputTokens": 500,
-              "cacheCreationTokens": 0,
-              "cacheReadTokens": 0,
-              "outputTokens": 50,
-              "totalTokens": 550,
-              "usageAvailable": true,
-              "invalidUsage": false
-            }
-          ],
-          "inputTokens": 500,
-          "cacheCreationTokens": 0,
-          "cacheReadTokens": 0,
-          "outputTokens": 50,
-          "totalTokens": 550,
-          "usageAvailable": true,
-          "invalidUsage": false
-        }
-      ]
-    }
-  ],
-  "expected": [
+  "records": [
     {
       "harness": "native",
-      "models": [
-        "acme/unpriced-model"
-      ],
-      "actual_cost_usd": null,
-      "estimated_cost_usd": null,
-      "total_cost_usd": null,
-      "cost_source": "none",
-      "coverage": "partial",
-      "pricing_source": "none",
-      "field_availability": {
-        "usage": "partial",
-        "actual_cost": "unavailable",
-        "estimated_cost": "unavailable",
-        "pricing": "unavailable"
+      "model": "acme/unpriced-model",
+      "usage": {
+        "inputTokens": 500,
+        "outputTokens": 50,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": null
       },
-      "diagnostics": [
-        "unpriced_model",
-        "mixed_coverage",
-        "no_priced_sessions"
-      ]
+      "costBasis": "per_token_api",
+      "sessionId": "native-session-6",
+      "eventId": "native-session-6:acme-unpriced-model:0",
+      "occurredAt": "2026-10-01T00:00:00.000Z"
     }
   ]
 }

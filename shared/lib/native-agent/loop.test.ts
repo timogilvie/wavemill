@@ -437,6 +437,24 @@ describe('loop — budget stops', () => {
     assert.equal(result.totalInputTokens + result.totalOutputTokens, 800);
   });
 
+  // protects: a provider's 3,260-call response cannot flood the transcript with rejected results.
+  it('rejects an oversized batch before any tool runs or tool results accumulate', async () => {
+    const executed: string[] = [];
+    const tool = makeTool('read_notes', 'parallel', async (id) => { executed.push(id); return 'notes'; });
+    const api = uniqueApi('oversized-batch-replay');
+    registerScriptedPiProvider({ api, turns: [{
+      content: Array.from({ length: 3260 }, (_, i) => ({
+        type: 'tool_call' as const, id: `call-${i}`, name: 'read_notes', arguments: {},
+      })),
+      stopReason: 'tool_calls',
+    }] });
+    const result = await runWavemillLoop({ ...baseConfig(api, [tool]), budget: { maxToolCalls: 1200 } });
+    assert.equal(result.stopReason, 'tool_call_limit');
+    assert.deepEqual(executed, []);
+    assert.equal(result.turnsCompleted, 1);
+    assert.equal(result.messages.filter((message) => message.role === 'toolResult').length, 0);
+  });
+
   it('stops when maxToolCalls is reached after one tool execution', async () => {
     const executionLog: string[] = [];
     const tool = makeTool('read_notes', 'parallel', async (id) => {

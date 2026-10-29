@@ -108,6 +108,11 @@ export interface AdapterInvokeOptions {
   observer?: AdapterObserver;
   /** Max retries on transient failures (default: 0 — fail-closed). */
   maxRetries?: number;
+  /**
+   * The task this call works for (HOK-3328): CLI transports record the
+   * session in `<featureDir>/.session-ownership.jsonl` as `helper:<purpose>`.
+   */
+  ownership?: { featureDir: string; helperPurpose: string };
 }
 
 export interface TransportAdapter {

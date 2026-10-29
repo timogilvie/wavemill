@@ -4077,8 +4077,8 @@ write_stage_result() {
     fi
     if [[ "$effective_agent" == "claude" || "$effective_agent" == "codex" ]]; then
       now_for_write="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-      local resolver_args=(--feature-dir "$feature_dir" --stage "$stage" --agent "$effective_agent" --finished-at "$now_for_write")
-      [[ -n "$started_at_override" ]] && resolver_args+=(--started-at "$started_at_override")
+      # HOK-3328: the resolver reads the stage's owned sessions, not a time window.
+      local resolver_args=(--feature-dir "$feature_dir" --stage "$stage" --agent "$effective_agent")
       local resolver_json
       resolver_json="$(wavemill_run_tool "resolve-executed-model.ts" "${resolver_args[@]}" 2>/dev/null || true)"
       if [[ -n "$resolver_json" ]] && jq -e . >/dev/null 2>&1 <<<"$resolver_json"; then
@@ -4760,8 +4760,7 @@ coding_stage_owner_lost() {
   [[ -f "$feature_dir/.coding-result.json" ]] || return 1
   started_at="$(jq -r '.startedAt // empty' "$feature_dir/.coding-result.json" 2>/dev/null || true)"
   [[ -n "$started_at" ]] || return 1
-  started_epoch="$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null \
-    || date -u -d "$started_at" +%s 2>/dev/null || true)"
+  started_epoch="$(wavemill_iso8601_to_epoch "$started_at" 2>/dev/null || true)"
   [[ "$started_epoch" =~ ^[0-9]+$ ]] || return 1
   now_epoch="$(date +%s)"
   (( now_epoch - started_epoch >= grace )) || return 1
@@ -5082,8 +5081,7 @@ coding_stage_stalled() {
   local started_at started_epoch now_epoch
   started_at="$(jq -r '.startedAt // empty' "$feature_dir/.coding-result.json" 2>/dev/null || true)"
   [[ -n "$started_at" ]] || return 1
-  started_epoch="$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null \
-    || date -u -d "$started_at" +%s 2>/dev/null || true)"
+  started_epoch="$(wavemill_iso8601_to_epoch "$started_at" 2>/dev/null || true)"
   [[ "$started_epoch" =~ ^[0-9]+$ ]] || return 1
   now_epoch="$(date +%s)"
   local owner_grace="${WAVEMILL_CODING_OWNER_GRACE_SECONDS:-300}"
@@ -13471,7 +13469,11 @@ launch_remediation_agent() {
   local code_re='(^|[[:space:]])code=([^[:space:]]+)' reason_re='(^|[[:space:]])reason=([a-z0-9_-]+)($|[[:space:]][a-z]+=)'
   REMEDIATION_LAUNCH_REFUSAL="" REMEDIATION_LAUNCH_REFUSAL_DECISION=""
   launch_stderr="$(mktemp -t "wavemill-remediation-launch-XXXXXX" 2>/dev/null || echo /dev/null)"
-  _launch_agent_in_pane "$win" "$agent" "$model" "$prompt_file" "$slug" "$issue" "coding" "true" 2>"$launch_stderr" || rc=$?
+  # HOK-3328: the session-ownership row names the work this launch does.
+  local session_kind="ready-remediation"
+  [[ "$what" == *onflict* ]] && session_kind="conflict-resolution"
+  WAVEMILL_SESSION_KIND="$session_kind" \
+    _launch_agent_in_pane "$win" "$agent" "$model" "$prompt_file" "$slug" "$issue" "coding" "true" 2>"$launch_stderr" || rc=$?
   if [[ "$launch_stderr" != /dev/null ]]; then
     [[ -s "$launch_stderr" ]] && cat "$launch_stderr" >&2
     if (( rc == 3 )); then
@@ -14922,7 +14924,7 @@ poll_tracked_jobs() {
     side=$(echo "$job_json" | jq -r '.side // empty')
 
     case "$kind" in
-      cross-pr-guard|pr-ci-status|ready-watchdog|route-task|prepare-task-inputs|state-invariants)
+      cross-pr-guard|pr-ci-status|ready-watchdog|route-task|prepare-task-inputs|in-flight-touch-set|state-invariants)
         [[ "$status" == "succeeded" ]] || handle_check_job_failure "$job_id" "$kind" "$status" "$reason" "$result_path" "$excerpt"
         settle_tracked_job "$job_id"
         continue
@@ -23955,7 +23957,9 @@ while :; do
               # cached files for this head when available, or `[]` while a
               # relaunch runs.
               if [[ -n "$_ai_head" && -d "$_ai_sd" ]]; then
-                _ai_files="$(in_flight_touch_set_gate "$_ai" "$_ai_sd" "$_ai_wt" "$_ai_head" "$_ai_base" "$_ai_phase" "$_ai_sd" 2>/dev/null || echo '[]')"
+                # Pending already prints []; preserve it despite status 1.
+                # Appending another fallback makes --argjson reject the row.
+                _ai_files="$(in_flight_touch_set_gate "$_ai" "$_ai_sd" "$_ai_wt" "$_ai_head" "$_ai_base" "$_ai_phase" "$_ai_sd" 2>/dev/null || true)"
                 [[ -n "$_ai_files" ]] || _ai_files="[]"
               fi
             fi

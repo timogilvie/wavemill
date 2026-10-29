@@ -26,6 +26,7 @@ function groundedResult(partial: Partial<GroundedPlanResult>): GroundedPlanResul
     touchSets: [],
     scores: [],
     verdicts: [],
+    deterministicConflicts: [],
     waves: { waves: [], deferrals: [], dropped: [], keptOrdering: [] },
     cache: { touchSets: {}, groundedVerdicts: [] },
     llm: { touchSetAttempted: false, orderingAttempted: false, orderingOk: true, model: null, error: null },
@@ -96,13 +97,13 @@ describe('evaluatePairs', () => {
       [[a, b], [a, c], [b, c]],
       [{ type: 'shared_surface', from: 'HOK-3', to: 'HOK-2', source: 'inferred', reason: 'same area' }],
       {
-        verdicts: [{ a: 'HOK-2', b: 'HOK-1', verdict: 'conflict', evidence: 'Both modify the monitor', source: 'llm' }],
-        scores: [{ taskA: 'HOK-1', taskB: 'HOK-2', score: 1, signals: ['file_overlap'], overlappingFiles: [] }],
+        verdicts: [{ a: 'HOK-2', b: 'HOK-1', verdict: 'must_precede', evidence: 'HOK-1 lands before HOK-2', source: 'llm' }],
+        scores: [{ taskA: 'HOK-1', taskB: 'HOK-2', score: 1, signals: ['file_overlap'], overlappingFiles: [], conflictFiles: [] }],
       },
     );
     assert.deepEqual(outcomes[0], {
       a: 'HOK-1', b: 'HOK-2', prA: 1, prB: 2, truthFiles: ['shared/lib/wavemill-monitor.sh'], truth: true, explicit: false,
-      legacy: false, grounded: true, groundedVerdict: 'conflict', groundedEvidence: 'Both modify the monitor', deterministic: true, score: 1,
+      legacy: false, grounded: true, groundedVerdict: 'must_precede', groundedEvidence: 'HOK-1 lands before HOK-2', deterministic: true, score: 1,
     });
     assert.equal(outcomes[1].explicit, true);
     assert.equal(outcomes[1].legacy, true);
@@ -113,10 +114,55 @@ describe('evaluatePairs', () => {
   });
 
   it('uses the score as the grounded prediction when no judge ran', () => {
-    const [judged] = evaluatePairs([[a, b]], [], { verdicts: [], scores: [{ taskA: 'HOK-1', taskB: 'HOK-2', score: 0.2, signals: [], overlappingFiles: [] }] });
-    const [unjudged] = evaluatePairs([[a, b]], [], { verdicts: [], scores: [{ taskA: 'HOK-1', taskB: 'HOK-2', score: 0.2, signals: [], overlappingFiles: [] }] }, { judged: false });
+    const [judged] = evaluatePairs([[a, b]], [], { verdicts: [], scores: [{ taskA: 'HOK-1', taskB: 'HOK-2', score: 0.2, signals: [], overlappingFiles: [], conflictFiles: [] }], deterministicConflicts: [] });
+    const [unjudged] = evaluatePairs([[a, b]], [], { verdicts: [], scores: [{ taskA: 'HOK-1', taskB: 'HOK-2', score: 0.2, signals: [], overlappingFiles: [], conflictFiles: [] }], deterministicConflicts: [] }, { judged: false });
     assert.equal(judged.grounded, false);
     assert.equal(unjudged.grounded, true);
+  });
+
+  it('counts deterministic conflicts in the grounded column and renders them with their files', () => {
+    // protects: the grounded column must credit the scorer's deterministic conflicts, not only judge verdicts
+    const outcomes = evaluatePairs([[a, b]], [], {
+      verdicts: [],
+      scores: [{ taskA: 'HOK-1', taskB: 'HOK-2', score: 1, signals: ['file_overlap'], overlappingFiles: [], conflictFiles: [] }],
+      deterministicConflicts: [{ a: 'HOK-1', b: 'HOK-2', files: ['shared/lib/wavemill-monitor.sh'] }],
+    });
+    assert.equal(outcomes[0].grounded, true);
+    assert.equal(outcomes[0].groundedVerdict, undefined);
+    assert.deepEqual(outcomes[0].deterministicFiles, ['shared/lib/wavemill-monitor.sh']);
+
+    const report = renderBacktestReport({
+      generatedAt: '2026-10-01T00:00:00Z',
+      repo: 'auto/integration',
+      prsFetched: 2,
+      tasks: [a, b],
+      outcomes,
+      legacyMode: 'explicit-only',
+      groundedMode: 'llm',
+      probeRef: null,
+    });
+    assert.match(report, /✓ shared_surface: `shared\/lib\/wavemill-monitor\.sh` \(score 1\)/);
+  });
+
+  it('renders a deterministic conflict plus an ordering verdict separated by a plus', () => {
+    const outcomes = evaluatePairs([[a, b]], [], {
+      verdicts: [{ a: 'HOK-1', b: 'HOK-2', verdict: 'should_precede', evidence: 'series 1/2 before 2/2', source: 'llm' }],
+      scores: [{ taskA: 'HOK-1', taskB: 'HOK-2', score: 1, signals: ['file_overlap'], overlappingFiles: [], conflictFiles: [] }],
+      deterministicConflicts: [{ a: 'HOK-1', b: 'HOK-2', files: ['shared/lib/wavemill-monitor.sh'] }],
+    });
+    assert.equal(outcomes[0].grounded, true);
+
+    const report = renderBacktestReport({
+      generatedAt: '2026-10-01T00:00:00Z',
+      repo: 'auto/integration',
+      prsFetched: 2,
+      tasks: [a, b],
+      outcomes,
+      legacyMode: 'explicit-only',
+      groundedMode: 'llm',
+      probeRef: null,
+    });
+    assert.match(report, /shared_surface: `shared\/lib\/wavemill-monitor\.sh` \+ should_precede/);
   });
 });
 
@@ -180,8 +226,9 @@ describe('runPlannerBacktest', () => {
         assert.deepEqual(tasks.map((task) => [task.id, task.fingerprint]), [['HOK-1', 'fp-HOK-1'], ['HOK-2', 'fp-HOK-2'], ['HOK-3', 'fp-HOK-3']]);
         concurrentSeen = [['HOK-1', 'HOK-2', isConcurrent('HOK-2', 'HOK-1')], ['HOK-1', 'HOK-3', isConcurrent('HOK-1', 'HOK-3')]];
         return groundedResult({
-          verdicts: [{ a: 'HOK-1', b: 'HOK-2', verdict: 'conflict', evidence: 'Both modify the monitor', source: 'llm' }],
-          scores: [{ taskA: 'HOK-1', taskB: 'HOK-2', score: 1, signals: ['file_overlap'], overlappingFiles: [] }],
+          verdicts: [],
+          deterministicConflicts: [{ a: 'HOK-1', b: 'HOK-2', files: ['shared/lib/wavemill-monitor.sh'] }],
+          scores: [{ taskA: 'HOK-1', taskB: 'HOK-2', score: 1, signals: ['file_overlap'], overlappingFiles: [], conflictFiles: [] }],
         });
       },
     });
@@ -214,7 +261,7 @@ describe('runPlannerBacktest', () => {
     assert.match(report, /\| Task Pair \| PRs \| Ground Truth Overlap \| Legacy Prediction \| Grounded Prediction \| Correct \|/);
     assert.match(report, /\| Legacy \| 0 \| 0 \| 1 \| 2 \| n\/a \| 0\.0% \| n\/a \| 66\.7% \|/);
     assert.match(report, /\| Grounded \| 1 \| 0 \| 0 \| 2 \| 100\.0% \| 100\.0% \| 100\.0% \| 100\.0% \|/);
-    assert.match(report, /\| HOK-1 \/ HOK-2 \| #11 \/ #12 \| yes: `shared\/lib\/wavemill-monitor\.sh` \| ✗ independent \| ✓ conflict: Both modify the monitor \(score 1\) \| grounded \|/);
+    assert.match(report, /\| HOK-1 \/ HOK-2 \| #11 \/ #12 \| yes: `shared\/lib\/wavemill-monitor\.sh` \| ✗ independent \| ✓ shared_surface: `shared\/lib\/wavemill-monitor\.sh` \(score 1\) \| grounded \|/);
     assert.match(report, /2 pairs that every planner and the ground truth call independent are omitted/);
     assert.match(report, /`abc123`/);
   });

@@ -33,6 +33,13 @@ import { fallbackLog } from './router-log.ts';
 import { buildTaskDescriptor } from './task-descriptor-builder.ts';
 import { resolveEnvValue } from './env-file.ts';
 import { DEEPSEEK_BASE_URL } from './deepseek-provider.ts';
+import {
+  appendSessionRefResolution,
+  helperKind,
+  newSessionRef,
+  pendingSessionRef,
+  recordLaunch,
+} from './session-ownership.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -97,8 +104,15 @@ export interface LLMCallOptions {
   fallbackDeadlineGraceMs?: number;
   /** Disable best-effort eval emission for fallback events */
   logFallbackEvents?: boolean;
-  /** Feature directory for trace event emission (HOK-2259) */
+  /**
+   * Feature directory for trace event emission (HOK-2259). When set, the call
+   * also records its Claude Code / Codex session in the task's
+   * `.session-ownership.jsonl` as `helper:<helperPurpose>` (HOK-3328), so its
+   * cost is the task's and it is never mislabelled as a stage session.
+   */
   featureDir?: string;
+  /** Helper purpose for the ownership row; defaults to `taskType`, else `llm-call`. */
+  helperPurpose?: string;
   /** Lifecycle hooks for progress reporting */
   observer?: LLMCallObserver;
   /** Optional abort signal to terminate the spawned CLI process. */
@@ -782,6 +796,70 @@ function unwrapJsonEnvelope(raw: string): {
  *
  * Falls back to the raw text if no agent_message events are present.
  */
+/** Codex thread id from the `codex exec --json` stream (`thread.started`). */
+export function codexThreadIdFromJsonl(raw: string): string | undefined {
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{')) continue;
+    try {
+      const event = JSON.parse(trimmed);
+      if (event?.type === 'thread.started' && typeof event.thread_id === 'string' && event.thread_id) {
+        return event.thread_id;
+      }
+    } catch {
+      // Non-JSON line; keep looking.
+    }
+  }
+  return undefined;
+}
+
+/** CLI flags that already pin or resume a session; ownership never overrides them. */
+const SESSION_SELECTION_FLAGS = new Set(['--session-id', '--resume', '-r', '--continue', '-c', '--no-session-persistence']);
+
+interface HelperOwnership {
+  stateDir: string;
+  pendingRef?: string;
+}
+
+/**
+ * Record a helper call's session before it spawns (HOK-3328). Claude gets a
+ * minted `--session-id`; Codex records `pending:<nonce>` and is resolved from
+ * the `thread.started` event after the call. Calls outside a task, OpenAI
+ * calls (no transcript) and calls whose flags already select or suppress a
+ * session record nothing.
+ */
+function recordHelperLaunch(
+  provider: LLMProvider,
+  options: LLMCallOptions,
+  cliArgs: string[],
+  cwd: string,
+): HelperOwnership | null {
+  if (!options.featureDir || provider === 'openai') return null;
+  if (cliArgs.some((arg) => SESSION_SELECTION_FLAGS.has(arg))) return null;
+  const kind = helperKind(options.helperPurpose ?? options.taskType ?? 'llm-call');
+  const base = { kind, model: options.model ?? '', cwd } as const;
+  if (provider === 'claude') {
+    const sessionRef = newSessionRef();
+    if (!recordLaunch(options.featureDir, { ...base, sessionRef, harness: 'claude-code' })) return null;
+    cliArgs.push('--session-id', sessionRef);
+    return { stateDir: options.featureDir };
+  }
+  const pendingRef = pendingSessionRef(newSessionRef());
+  if (!recordLaunch(options.featureDir, { ...base, sessionRef: pendingRef, harness: 'codex' })) return null;
+  return { stateDir: options.featureDir, pendingRef };
+}
+
+function resolveHelperOwnership(ownership: HelperOwnership | null, rawOutput: string): void {
+  if (!ownership?.pendingRef) return;
+  const threadId = codexThreadIdFromJsonl(rawOutput);
+  if (!threadId) return;
+  try {
+    appendSessionRefResolution(ownership.stateDir, ownership.pendingRef, threadId);
+  } catch (error) {
+    console.warn(`[session-ownership] codex thread id not recorded: ${(error as Error).message}`);
+  }
+}
+
 function unwrapCodexJsonl(raw: string): {
   text: string;
   usage?: LLMCallResult['usage'];
@@ -1762,6 +1840,8 @@ async function callLLMOnce(
       cliArgs.push(...options.cliFlags);
     }
 
+    const ownership = recordHelperLaunch(provider, options, cliArgs, isolatedCwd || options.cwd || process.cwd());
+
     // Execute based on mode
     let rawOutput: string;
     if (mode === 'sync') {
@@ -1783,6 +1863,8 @@ async function callLLMOnce(
     } else {
       rawOutput = await executeStream(tmpFile, cliArgs, options, provider, attempt, maxAttempts, isolatedCwd);
     }
+
+    resolveHelperOwnership(ownership, rawOutput);
 
     // Unwrap provider output: Claude/OpenAI emit a single JSON envelope; Codex
     // emits a JSONL event stream.

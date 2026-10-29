@@ -3,8 +3,10 @@
   "taskId": "HOK-0009",
   "now": "2026-10-01T00:00:00.000Z",
   "pricingTable": {
-    "claude-opus-4": { "inputCostPerMTok": 15, "outputCostPerMTok": 75 }
+    "claude-opus-4": {
+      "inputCostPerMTok": 15,
+      "outputCostPerMTok": 75
+    }
   },
-  "scanResults": [null, { "models": {}, "sessionCount": 0, "turnCount": 0, "source": "claude", "externalSessions": [] }],
-  "expected": null
+  "records": []
 }

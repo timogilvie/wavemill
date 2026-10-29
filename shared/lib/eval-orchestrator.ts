@@ -74,9 +74,8 @@ import { getConfiguredModelsForDescriptor } from './model-registry.ts';
 import { reportableWorkflowCostUsd, type WorkflowCostOutcome } from './workflow-cost.ts';
 import { loadPricingTable, type PricingTable } from './pricing/model-pricing.ts';
 import { collectExecutionEconomics } from './execution-economics.ts';
-// Lazy: the SDK loads only when the metering runner invokes the collector,
-// so a stale @hokusai/core cannot fail module load for every eval.
-import { collectSdkTaskCostSummariesLazy } from './sdk-task-cost/lazy-collect.ts';
+// meter.ts loads @hokusai/costs lazily, so a stale install cannot fail module
+// load for every eval.
 import { meterWorkflowCost, type MeteredWorkflowCost } from './sdk-task-cost/meter.ts';
 import {
   buildStageExecutionIdentity,
@@ -116,7 +115,6 @@ export const evalOrchestratorDeps = {
   triggerHokusaiSubmission,
   meterWorkflowCost,
   collectExecutionEconomics,
-  collectSdkTaskCostSummaries: collectSdkTaskCostSummariesLazy,
   loadPricingTable,
   execShellCommand,
 };
@@ -502,11 +500,12 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
 
   // 9b. Compute workflow cost metadata before building the descriptor so both
   // eval entrypoints describe the same run with the same cost context.
-  // SDK task-cost metering (HOK-3075/HOK-3076/HOK-3077) is the one engine;
-  // this entrypoint also folds in OpenRouter exact charges for native turns
-  // when OPENROUTER_API_KEY is set.
+  // `@hokusai/costs` over the task's owned sessions (HOK-3328) is the one
+  // engine; this entrypoint also folds in OpenRouter exact charges for native
+  // turns when OPENROUTER_API_KEY is set.
   let workflowCostOutcome: WorkflowCostOutcome | null = null;
   let taskCostSummary: MeteredWorkflowCost['summaries'] = null;
+  let metered: MeteredWorkflowCost | null = null;
   if (worktreePath && branch) {
     let pricingTable: PricingTable | undefined;
     try {
@@ -515,15 +514,14 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
       console.warn(`Warning: pricing table unavailable: ${errorMessage(err)}`);
     }
     try {
-      const metered = await evalOrchestratorDeps.meterWorkflowCost({
+      metered = await evalOrchestratorDeps.meterWorkflowCost({
         worktreePath,
         branchName: branch,
         repoDir,
         issueId,
-        agentType,
+        slug: stageArtifacts.featureSlug,
         pricingTable,
         label: 'Eval',
-        collect: (input) => evalOrchestratorDeps.collectSdkTaskCostSummaries(input),
         exactPricing: { logger: console },
       });
       workflowCostOutcome = metered.outcome;
@@ -572,7 +570,8 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
         repoDir,
         issueId,
         routing: stageArtifacts.routing ?? null,
-        stageResultsDir: stageArtifacts.stageResultsDir ?? null,
+        ownership: metered?.owned ?? null,
+        sessionCosts: metered?.sessionCosts ?? null,
       });
     } catch (err) {
       console.warn(`Warning: failed to collect execution economics: ${errorMessage(err)}`);

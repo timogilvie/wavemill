@@ -3,47 +3,28 @@
   "taskId": "HOK-0008",
   "now": "2026-10-01T00:00:00.000Z",
   "pricingTable": {
-    "acme/free-model": { "inputCostPerMTok": 0, "outputCostPerMTok": 0, "cacheWriteCostPerMTok": 0, "cacheReadCostPerMTok": 0 }
-  },
-  "scanResults": [
-    {
-      "models": { "acme/free-model": { "inputTokens": 400, "cacheCreationTokens": 0, "cacheReadTokens": 0, "outputTokens": 40 } },
-      "sessionCount": 1,
-      "turnCount": 1,
-      "source": "native",
-      "nativeSessions": [
-        {
-          "sessionId": "native-session-8",
-          "filePath": "/repo/.wavemill/runs/run-1/native-sessions/HOK-0008.jsonl",
-          "provider": "acme",
-          "modelId": "acme/free-model",
-          "turnCount": 1,
-          "responseIds": ["gen-free"],
-          "turns": [
-            { "responseId": "gen-free", "inputTokens": 400, "cacheCreationTokens": 0, "cacheReadTokens": 0, "outputTokens": 40, "totalTokens": 440, "providerReportedCostUsd": 0, "usageAvailable": true, "invalidUsage": false }
-          ],
-          "inputTokens": 400,
-          "cacheCreationTokens": 0,
-          "cacheReadTokens": 0,
-          "outputTokens": 40,
-          "totalTokens": 440,
-          "providerReportedCostUsd": 0,
-          "usageAvailable": true,
-          "invalidUsage": false
-        }
-      ]
+    "acme/free-model": {
+      "inputCostPerMTok": 0,
+      "outputCostPerMTok": 0,
+      "cacheWriteCostPerMTok": 0,
+      "cacheReadCostPerMTok": 0
     }
-  ],
-  "expected": [
+  },
+  "records": [
     {
       "harness": "native",
-      "actual_cost_usd": 0,
-      "estimated_cost_usd": null,
-      "total_cost_usd": 0,
-      "cost_source": "provider_reported",
-      "coverage": "known_zero",
-      "field_availability": { "usage": "partial", "actual_cost": "known_zero", "estimated_cost": "unavailable", "pricing": "unavailable" },
-      "diagnostics": ["provider_reported_cost"]
+      "model": "acme/free-model",
+      "usage": {
+        "inputTokens": 400,
+        "outputTokens": 40,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": null
+      },
+      "costBasis": "per_token_api",
+      "sessionId": "native-session-8",
+      "eventId": "native-session-8:acme-free-model:0",
+      "occurredAt": "2026-10-01T00:00:00.000Z"
     }
   ]
 }

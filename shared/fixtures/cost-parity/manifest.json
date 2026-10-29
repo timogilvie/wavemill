@@ -5,7 +5,10 @@
     {
       "id": "claude-simple-explicit-cache",
       "description": "Claude Code with simple session and explicit cache tokens",
-      "tags": ["claude-code", "cache-explicit"],
+      "tags": [
+        "claude-code",
+        "cache-explicit"
+      ],
       "branch": "task/parity-case",
       "issueId": "HOK-0000",
       "agentType": "claude",
@@ -38,13 +41,19 @@
         }
       ],
       "expectations": {
-        "strictParity": ["sync.outcome.totalCostUsd", "sync.outcome.models"]
+        "strictParity": [
+          "sync.outcome.totalCostUsd",
+          "sync.outcome.models"
+        ]
       }
     },
     {
       "id": "claude-cache-derived-multipliers",
       "description": "Cache rates derived from input rate (1.25x/0.1x)",
-      "tags": ["claude-code", "cache-derived"],
+      "tags": [
+        "claude-code",
+        "cache-derived"
+      ],
       "branch": "task/parity-case",
       "issueId": "HOK-0001",
       "agentType": "claude",
@@ -80,8 +89,10 @@
     },
     {
       "id": "claude-branch-filter",
-      "description": "Sessions on other branches are ignored",
-      "tags": ["claude-code"],
+      "description": "A worktree session no launch row names is ignored (HOK-3328: ownership, not branch, decides)",
+      "tags": [
+        "claude-code"
+      ],
       "branch": "task/parity-case",
       "issueId": "HOK-0002",
       "agentType": "claude",
@@ -109,7 +120,14 @@
                 "outputTokens": 100
               },
               "branch": "task/parity-case"
-            },
+            }
+          ]
+        },
+        {
+          "location": "claude-projects",
+          "fileName": "operator.jsonl",
+          "owned": false,
+          "lines": [
             {
               "message": {
                 "id": "msg-2",
@@ -122,7 +140,8 @@
                 "cacheReadTokens": 0,
                 "outputTokens": 500
               },
-              "branch": "main"
+              "branch": "main",
+              "sessionId": "operator-session"
             }
           ]
         }
@@ -132,7 +151,11 @@
     {
       "id": "claude-mixed-one-unpriced",
       "description": "Mixed models with one unpriced model",
-      "tags": ["claude-code", "mixed-models", "unknown-price"],
+      "tags": [
+        "claude-code",
+        "mixed-models",
+        "unknown-price"
+      ],
       "branch": "task/parity-case",
       "issueId": "HOK-0003",
       "agentType": "claude",
@@ -185,7 +208,10 @@
     {
       "id": "claude-all-unpriced",
       "description": "All models unpriced",
-      "tags": ["claude-code", "unknown-price"],
+      "tags": [
+        "claude-code",
+        "unknown-price"
+      ],
       "branch": "task/parity-case",
       "issueId": "HOK-0004",
       "agentType": "claude",
@@ -217,7 +243,10 @@
     {
       "id": "claude-explicit-zero-pricing",
       "description": "Model with explicit zero pricing",
-      "tags": ["claude-code", "known-zero"],
+      "tags": [
+        "claude-code",
+        "known-zero"
+      ],
       "branch": "task/parity-case",
       "issueId": "HOK-0005",
       "agentType": "claude",
@@ -254,7 +283,10 @@
     {
       "id": "claude-duplicate-message-id",
       "description": "Three lines with same message id (EF-2: double-counting)",
-      "tags": ["claude-code", "replay/dedupe"],
+      "tags": [
+        "claude-code",
+        "replay/dedupe"
+      ],
       "branch": "task/parity-case",
       "issueId": "HOK-0006",
       "agentType": "claude",
@@ -322,7 +354,10 @@
     {
       "id": "codex-cached-and-reasoning",
       "description": "Codex with cached and reasoning tokens (EF-3: double-billing)",
-      "tags": ["codex", "cache-read"],
+      "tags": [
+        "codex",
+        "cache-read"
+      ],
       "branch": "task/parity-case",
       "issueId": "HOK-0007",
       "agentType": "codex",
@@ -363,7 +398,10 @@
     {
       "id": "codex-unpriced",
       "description": "Codex model without pricing",
-      "tags": ["codex", "unknown-price"],
+      "tags": [
+        "codex",
+        "unknown-price"
+      ],
       "branch": "task/parity-case",
       "issueId": "HOK-0008",
       "agentType": "codex",
@@ -399,7 +437,9 @@
     {
       "id": "native-priced-complete",
       "description": "Native Pi session with complete pricing",
-      "tags": ["native-pi"],
+      "tags": [
+        "native-pi"
+      ],
       "branch": "task/parity-case",
       "issueId": "HOK-0009",
       "agentType": "native-pi",
@@ -441,7 +481,10 @@
     {
       "id": "native-missing-usage-partial",
       "description": "Native Pi session missing some usage data (partial coverage)",
-      "tags": ["native-pi", "partial"],
+      "tags": [
+        "native-pi",
+        "partial"
+      ],
       "branch": "task/parity-case",
       "issueId": "HOK-0010",
       "agentType": "native-pi",
@@ -482,7 +525,10 @@
     {
       "id": "native-unpriced",
       "description": "Native Pi session with unpriced model",
-      "tags": ["native-pi", "unknown-price"],
+      "tags": [
+        "native-pi",
+        "unknown-price"
+      ],
       "branch": "task/parity-case",
       "issueId": "HOK-0011",
       "agentType": "native-pi",
@@ -518,7 +564,10 @@
     {
       "id": "native-explicit-zero",
       "description": "Native Pi with explicit zero pricing",
-      "tags": ["native-pi", "known-zero"],
+      "tags": [
+        "native-pi",
+        "known-zero"
+      ],
       "branch": "task/parity-case",
       "issueId": "HOK-0012",
       "agentType": "native-pi",
@@ -558,8 +607,10 @@
     },
     {
       "id": "missing-sessions",
-      "description": "No sessions found for branch",
-      "tags": ["missing-session"],
+      "description": "No launch row names a session: no_sessions, never $0 (HOK-3328)",
+      "tags": [
+        "missing-session"
+      ],
       "branch": "task/nonexistent",
       "issueId": "HOK-0013",
       "agentType": "claude",
@@ -588,7 +639,8 @@
               },
               "branch": "main"
             }
-          ]
+          ],
+          "owned": false
         }
       ],
       "expectations": {}
@@ -596,7 +648,11 @@
     {
       "id": "native-provider-reported-cost",
       "description": "Native Pi with provider-reported cost (OpenRouter)",
-      "tags": ["native-pi", "openrouter-exact", "partial"],
+      "tags": [
+        "native-pi",
+        "openrouter-exact",
+        "partial"
+      ],
       "branch": "task/parity-case",
       "issueId": "HOK-0014",
       "agentType": "native-pi",
@@ -640,6 +696,206 @@
           }
         }
       },
+      "expectations": {}
+    },
+    {
+      "id": "hok-3237-cross-harness",
+      "description": "HOK-3237 replay (HOK-3328): 7 owned Claude Code sessions ($43.71) + 1 owned native session ($4.93 provider-reported). workflowCost is the @hokusai/costs cross-harness total $48.64; the retired native-first rule recorded $4.93.",
+      "tags": [
+        "claude-code",
+        "native-pi",
+        "mixed-models",
+        "partial"
+      ],
+      "branch": "task/parity-case",
+      "issueId": "HOK-3237",
+      "agentType": "claude",
+      "pricingTable": {
+        "claude-opus-4-7": {
+          "inputCostPerMTok": 15,
+          "outputCostPerMTok": 75
+        }
+      },
+      "sessions": [
+        {
+          "location": "claude-projects",
+          "fileName": "hok3237-claude-0.jsonl",
+          "lines": [
+            {
+              "sessionId": "hok3237-claude-0",
+              "timestamp": "2026-10-27T13:00:00.000Z",
+              "message": {
+                "id": "msg-0",
+                "model": "claude-opus-4-7",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 0,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 83000
+              },
+              "branch": "task/parity-case"
+            }
+          ]
+        },
+        {
+          "location": "claude-projects",
+          "fileName": "hok3237-claude-1.jsonl",
+          "lines": [
+            {
+              "sessionId": "hok3237-claude-1",
+              "timestamp": "2026-10-27T13:00:00.000Z",
+              "message": {
+                "id": "msg-1",
+                "model": "claude-opus-4-7",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 0,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 83000
+              },
+              "branch": "task/parity-case"
+            }
+          ]
+        },
+        {
+          "location": "claude-projects",
+          "fileName": "hok3237-claude-2.jsonl",
+          "lines": [
+            {
+              "sessionId": "hok3237-claude-2",
+              "timestamp": "2026-10-27T13:00:00.000Z",
+              "message": {
+                "id": "msg-2",
+                "model": "claude-opus-4-7",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 0,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 83000
+              },
+              "branch": "task/parity-case"
+            }
+          ]
+        },
+        {
+          "location": "claude-projects",
+          "fileName": "hok3237-claude-3.jsonl",
+          "lines": [
+            {
+              "sessionId": "hok3237-claude-3",
+              "timestamp": "2026-10-27T13:00:00.000Z",
+              "message": {
+                "id": "msg-3",
+                "model": "claude-opus-4-7",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 0,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 83000
+              },
+              "branch": "task/parity-case"
+            }
+          ]
+        },
+        {
+          "location": "claude-projects",
+          "fileName": "hok3237-claude-4.jsonl",
+          "lines": [
+            {
+              "sessionId": "hok3237-claude-4",
+              "timestamp": "2026-10-27T13:00:00.000Z",
+              "message": {
+                "id": "msg-4",
+                "model": "claude-opus-4-7",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 0,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 83000
+              },
+              "branch": "task/parity-case"
+            }
+          ]
+        },
+        {
+          "location": "claude-projects",
+          "fileName": "hok3237-claude-5.jsonl",
+          "lines": [
+            {
+              "sessionId": "hok3237-claude-5",
+              "timestamp": "2026-10-27T13:00:00.000Z",
+              "message": {
+                "id": "msg-5",
+                "model": "claude-opus-4-7",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 0,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 83000
+              },
+              "branch": "task/parity-case"
+            }
+          ]
+        },
+        {
+          "location": "claude-projects",
+          "fileName": "hok3237-claude-6.jsonl",
+          "lines": [
+            {
+              "sessionId": "hok3237-claude-6",
+              "timestamp": "2026-10-27T13:00:00.000Z",
+              "message": {
+                "id": "msg-6",
+                "model": "claude-opus-4-7",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 0,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 84800
+              },
+              "branch": "task/parity-case"
+            }
+          ]
+        },
+        {
+          "location": "native-sessions",
+          "fileName": "coding-HOK-3237.jsonl",
+          "runId": "run-1",
+          "lines": [
+            {
+              "type": "session_meta",
+              "session_id": "wm-coding-HOK-3237",
+              "provider": "openrouter",
+              "model": "qwen-3-coder",
+              "branch": "task/parity-case"
+            },
+            {
+              "type": "turn_complete",
+              "session_id": "wm-coding-HOK-3237",
+              "response_id": "gen-3237",
+              "input_tokens": 100000,
+              "output_tokens": 20000,
+              "cache_creation_tokens": 0,
+              "cache_read_tokens": 0,
+              "cost_usd": 4.93
+            }
+          ]
+        }
+      ],
       "expectations": {}
     }
   ]

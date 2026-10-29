@@ -310,7 +310,8 @@
           "enum": [
             "native",
             "codex",
-            "claude"
+            "claude",
+            "multi"
           ]
         },
         "coverage": {
@@ -428,6 +429,26 @@
       "description": "Normalized external-harness execution-economics records (HOK-2958), one entry per harness that produced sessions. Local-only; excluded from Hokusai submissions.",
       "items": {
         "$ref": "#/$defs/EvalExecutionEconomics"
+      }
+    },
+    "workflowCostByHarness": {
+      "type": "object",
+      "description": "@hokusai/costs per-harness totals behind workflowCost (HOK-3328); null marks a harness with an unresolved event.",
+      "additionalProperties": { "type": ["number", "null"] }
+    },
+    "workflowCostByKind": {
+      "type": "object",
+      "description": "@hokusai/costs totals per session-ownership kind (planning, coding, review, ready-remediation, helper:*, ...) over the task's owned sessions (HOK-3328).",
+      "additionalProperties": { "type": ["number", "null"] }
+    },
+    "workflowCostUnreliable": {
+      "type": "object",
+      "description": "Marks a historical workflowCost computed by the retired native-first harness selection that could not be recomputed from stored per-harness summaries (HOK-3328). The value is kept; readers should not aggregate it.",
+      "required": ["reason", "markedAt"],
+      "additionalProperties": false,
+      "properties": {
+        "reason": { "type": "string" },
+        "markedAt": { "type": "string" }
       }
     },
     "taskCostSummary": {
@@ -3401,9 +3422,15 @@
                 null
               ]
             },
+            "kind": {
+              "type": "string",
+              "description": "Launch kind from .session-ownership.jsonl (HOK-3328), or 'operator' for a session no launch recorded."
+            },
             "confidence": {
               "type": "string",
               "enum": [
+                "launch_record",
+                "unowned",
                 "branch_worktree",
                 "timestamp_window",
                 "unattributed"
@@ -3475,6 +3502,7 @@
           "enum": [
             "provider_reported",
             "local_estimate",
+            "mixed",
             "none"
           ]
         },

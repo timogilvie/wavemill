@@ -5,7 +5,9 @@
  * unordered pair of tasks from 0 (independent) to 1 (certain conflict) and
  * record *why* as {@link ConflictSignal}s. Only pairs with a non-zero score are
  * shown to the LLM ordering judge, so this module is what keeps the LLM call
- * small and grounded.
+ * small and grounded. Pairs whose touch sets share a non-append-only file also
+ * get {@link PairScore.conflictFiles}: the planner turns those into
+ * `shared_surface` edges deterministically, without asking the judge (HOK-3304).
  *
  * Signals:
  * - `file_overlap`      — both touch sets contain the same file.
@@ -23,6 +25,8 @@
  * {@link CoChangeIndex} (see {@link buildCoChangeIndex}).
  */
 
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import type { TouchSet } from './touch-set-predictor.ts';
 
 export type ConflictSignal =
@@ -60,6 +64,12 @@ export interface PairScore {
   signals: ConflictSignal[];
   /** Conflict-relevant files present in both touch sets (low-conflict files excluded). */
   overlappingFiles: string[];
+  /**
+   * Files that make this pair a deterministic conflict (hot-file region overlap,
+   * or any non-hot, non-append-only overlap). Empty = no deterministic conflict;
+   * such pairs may still be judged for ordering (HOK-3304).
+   */
+  conflictFiles: string[];
   /** Strongest historically co-changed file pair, when `co_change` fired. */
   coChangedFiles?: [string, string];
   hint?: OrderingHint;
@@ -86,14 +96,21 @@ export interface ScoreOptions {
   sweepFileThreshold?: number;
 }
 
-/** Files known to be merge-conflict hotspots regardless of recent history. */
-export const DEFAULT_HOT_FILES: readonly string[] = [
-  'shared/lib/wavemill-monitor.sh',
-  'shared/lib/wavemill-common.sh',
-  'shared/lib/agent-adapters.sh',
-  'shared/lib/config.ts',
-  'wavemill-config.schema.json',
-];
+const HOT_FILES_PATH = fileURLToPath(new URL('./planner-hot-files.json', import.meta.url));
+
+/**
+ * Files known to be merge-conflict hotspots regardless of recent history,
+ * loaded from `planner-hot-files.json` (HOK-3304: hot files are data, not code).
+ */
+function loadDefaultHotFiles(): readonly string[] {
+  const parsed = JSON.parse(readFileSync(HOT_FILES_PATH, 'utf8')) as { hotFiles?: unknown };
+  if (!Array.isArray(parsed.hotFiles) || !parsed.hotFiles.every((file): file is string => typeof file === 'string')) {
+    throw new Error('planner-hot-files.json: expected { hotFiles: string[] }');
+  }
+  return Object.freeze([...parsed.hotFiles]);
+}
+
+export const DEFAULT_HOT_FILES: readonly string[] = loadDefaultHotFiles();
 
 /**
  * Registries where concurrent edits are one-line appends that rebase cleanly
@@ -258,6 +275,7 @@ function scoreOne(
   const entriesB = (touchB?.entries ?? []).filter((entry) => !opts.lowConflict.has(entry.path));
   const byPathB = new Map(entriesB.map((entry) => [entry.path, entry]));
   const overlappingFiles: string[] = [];
+  const conflictFiles: string[] = [];
   let overlapWeight = 0;
 
   for (const entryA of entriesA) {
@@ -273,15 +291,24 @@ function scoreOne(
       if (symbolsA.length > 0 && symbolsB.size > 0) {
         if (symbolsA.some((symbol) => symbolsB.has(symbol))) {
           signals.add('region_overlap');
+          conflictFiles.push(entryA.path);
         } else {
           signals.add('disjoint_regions');
           weight = WEIGHT.disjointRegionFile;
+          // Both sides name disjoint regions: the hot file alone is not a conflict.
         }
+      } else {
+        // Region data missing on one side: treat conservatively as a conflict (HOK-3304).
+        conflictFiles.push(entryA.path);
       }
+    } else {
+      // Any non-hot overlap is a deterministic conflict; the judge is not asked (HOK-3304).
+      conflictFiles.push(entryA.path);
     }
     overlapWeight += weight;
   }
   overlappingFiles.sort();
+  conflictFiles.sort();
 
   if (overlappingFiles.length > 0) {
     score += overlapWeight / Math.min(entriesA.length, entriesB.length);
@@ -345,6 +372,7 @@ function scoreOne(
     score: round(Math.min(1, score)),
     signals: [...signals],
     overlappingFiles,
+    conflictFiles,
     ...(coChangedFiles ? { coChangedFiles } : {}),
     ...(hint ? { hint } : {}),
   };

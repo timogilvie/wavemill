@@ -25,8 +25,7 @@ import {
   validateHokusaiSubmission,
 } from './hokusai-schema.ts';
 import { buildChallengeExecutionIntent } from './challenge-execution-contract.ts';
-import { buildSdkTaskCostSummaries } from './sdk-task-cost/collect.ts';
-import { loadSdkTaskCostFixture } from './sdk-task-cost/fixtures.ts';
+import { fixtureTaskCostSummaries } from './sdk-task-cost/fixtures.ts';
 
 function makeDescriptor(overrides: Partial<TaskDescriptor> = {}): TaskDescriptor {
   return {
@@ -1141,13 +1140,7 @@ describe('hokusai-schema', () => {
     });
 
     it('omits shadow SDK task-cost summaries from Hokusai submissions (HOK-3075)', () => {
-      const fixture = loadSdkTaskCostFixture('multi-harness');
-      const taskCostSummary = buildSdkTaskCostSummaries({
-        scanResults: fixture.scanResults,
-        taskId: fixture.taskId,
-        pricingTable: fixture.pricingTable,
-        now: () => new Date(fixture.now),
-      })!;
+      const taskCostSummary = fixtureTaskCostSummaries('multi-harness')!;
       assert.equal(taskCostSummary.length, 2);
 
       const baseline = expectSuccess(toHokusaiSubmission(makeRecord()));

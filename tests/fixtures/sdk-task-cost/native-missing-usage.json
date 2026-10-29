@@ -3,44 +3,29 @@
   "taskId": "HOK-0007",
   "now": "2026-10-01T00:00:00.000Z",
   "pricingTable": {
-    "deepseek/deepseek-chat": { "inputCostPerMTok": 0.27, "outputCostPerMTok": 1.1 }
-  },
-  "scanResults": [
-    {
-      "models": {},
-      "sessionCount": 1,
-      "turnCount": 2,
-      "source": "native",
-      "nativeSessions": [
-        {
-          "sessionId": "native-session-7",
-          "filePath": "/repo/.wavemill/runs/run-1/native-sessions/HOK-0007.jsonl",
-          "provider": "openrouter",
-          "modelId": "deepseek/deepseek-chat",
-          "turnCount": 2,
-          "responseIds": [],
-          "turns": [
-            { "usageAvailable": false, "invalidUsage": false },
-            { "usageAvailable": false, "invalidUsage": true }
-          ],
-          "usageAvailable": false,
-          "invalidUsage": true
-        }
-      ]
+    "deepseek/deepseek-chat": {
+      "inputCostPerMTok": 0.27,
+      "outputCostPerMTok": 1.1
     }
-  ],
-  "expected": [
+  },
+  "records": [
     {
       "harness": "native",
-      "turn_count": 2,
-      "usage": { "input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "reasoning_tokens": null },
-      "actual_cost_usd": null,
-      "estimated_cost_usd": null,
-      "total_cost_usd": null,
-      "cost_source": "none",
-      "coverage": "unavailable",
-      "field_availability": { "usage": "unavailable", "actual_cost": "unavailable", "estimated_cost": "unavailable", "pricing": "unavailable" },
-      "diagnostics": ["missing_token_usage", "invalid_token_usage", "no_priced_sessions"]
+      "model": "deepseek/deepseek-chat",
+      "usage": {},
+      "costBasis": "per_token_api",
+      "sessionId": "native-session-7",
+      "eventId": "native-session-7:deepseek-deepseek-chat:0",
+      "occurredAt": "2026-10-01T00:00:00.000Z"
+    },
+    {
+      "harness": "native",
+      "model": "deepseek/deepseek-chat",
+      "usage": {},
+      "costBasis": "per_token_api",
+      "sessionId": "native-session-7",
+      "eventId": "native-session-7:deepseek-deepseek-chat:1",
+      "occurredAt": "2026-10-01T00:00:00.000Z"
     }
   ]
 }
