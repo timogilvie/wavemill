@@ -34,6 +34,33 @@ import { classifyProviderError } from './native-agent/provider-error-classifier.
 
 export type FailureClass = 'terminal' | 'code-failure' | 'retryable';
 
+/**
+ * Where a model-attributed failure is proven from (HOK-3143 shape).
+ * `provider-response` — the provider reported the model behind the failing
+ * turn; `attested` — a certification identity attests it. Eval failures
+ * never carry this: the eval harness runs the judge, not the arm's model.
+ */
+export interface ExecutionEvidence {
+  source: 'provider-response' | 'attested';
+  model: string;
+}
+
+/** Typed evidence from the async job layer (`job-tracker.ts` / monitor poll). */
+export interface JobEvidence {
+  /** The job's settlement reason (e.g. `no_result_file`, `timed_out`). */
+  reason: string | null;
+  exitCode: number | null;
+  /** Bounded log tail; appended to the detail used for kind detection. */
+  excerpt: string | null;
+}
+
+/**
+ * Whether the failure may be charged to a model at all (HOK-3255).
+ * `model` requires proof; `unattributed` is the default and the only value an
+ * infrastructure signal (missing file, timeout, retry exhaustion) can produce.
+ */
+export type FailureAttribution = 'model' | 'unattributed';
+
 export type FailureStage = 'planning' | 'coding' | 'review' | 'ready' | 'tend' | 'eval';
 
 /** An allowlisted cause. Only entries in {@link TERMINAL_ALLOWLIST} may map to `terminal`. */
@@ -66,6 +93,10 @@ export interface FailureEvidence {
   ciCategory?: CiFailureCategory | null;
   /** The failing task is a tracked challenge arm. */
   challengeArm?: boolean;
+  /** Typed evidence from an async job settlement; used when no typed kind exists. */
+  job?: JobEvidence | null;
+  /** Proof of which model's output the failure belongs to (HOK-3143 shape). */
+  executionEvidence?: ExecutionEvidence | null;
 }
 
 export interface FailureDecision {
@@ -81,6 +112,8 @@ export interface FailureDecision {
   rationale: string;
   /** Operator hint recorded with the failure and on escalation. */
   nextAction: string;
+  /** Whether the failure may be charged to a model (HOK-3255 rule below). */
+  attribution: FailureAttribution;
 }
 
 /**
@@ -405,14 +438,33 @@ export function retryBucketFor(stage: FailureStage): string {
 export const DEFAULT_RETRY_ATTEMPTS = 3;
 
 /**
+ * The one attribution rule (HOK-3255): a failure may be charged to a model
+ * only when it is terminal, the allowlisted cause is a `model-fault`, and
+ * execution evidence proves which model produced the failing output. Retry
+ * counts are not an input, so exhaustion cannot change attribution by
+ * construction; absent or contradictory evidence stays unattributed.
+ */
+function attributionFor(
+  klass: FailureClass,
+  cause: TerminalCause | undefined,
+  executionEvidence: ExecutionEvidence | null | undefined,
+): FailureAttribution {
+  return klass === 'terminal' && cause?.faultClass === 'model-fault' && Boolean(executionEvidence?.model.trim())
+    ? 'model'
+    : 'unattributed';
+}
+
+/**
  * Decide what to do with one failure. Total: never throws, and anything not
  * explicitly allowlisted or recognised as a code failure is retryable.
  */
 export function classifyFailure(evidence: FailureEvidence): FailureDecision {
-  const detail = evidence.detail ?? '';
+  const job = evidence.job ?? null;
+  const jobExcerpt = job?.excerpt?.trim() ? `\n${job.excerpt}` : '';
+  const detail = `${evidence.detail ?? ''}${jobExcerpt}`;
   const failureKind = evidence.failureKind?.trim()
     ? evidence.failureKind.trim()
-    : detectFailureKind(detail, evidence.handoffReason);
+    : job?.reason?.trim() || detectFailureKind(detail, evidence.handoffReason);
   const challengeArm = evidence.challengeArm === true;
 
   const cause = terminalCauseFor(failureKind, challengeArm);
@@ -423,6 +475,7 @@ export function classifyFailure(evidence: FailureEvidence): FailureDecision {
       cause,
       rationale: `allowlisted terminal cause ${cause.code}: ${cause.reason}`,
       nextAction: nextActionFor(failureKind),
+      attribution: attributionFor('terminal', cause, evidence.executionEvidence),
     };
   }
 
@@ -442,6 +495,7 @@ export function classifyFailure(evidence: FailureEvidence): FailureDecision {
             ? 'CI classified the failure as locally replayable'
             : `${failureKind} is a recognised code failure`,
         nextAction: 'remediate the failing change from the recorded excerpt, then push a new head',
+        attribution: attributionFor('code-failure', undefined, evidence.executionEvidence),
       };
     }
   }
@@ -456,5 +510,30 @@ export function classifyFailure(evidence: FailureEvidence): FailureDecision {
         ? 'unrecognised failure: retry by default (HOK-3176)'
         : `${failureKind} is not on the terminal allowlist: retry by default (HOK-3176)`,
     nextAction: nextActionFor(failureKind),
+    attribution: attributionFor('retryable', undefined, evidence.executionEvidence),
   };
+}
+
+/** Minimal projection shape the shared eval-escalation predicate reads. */
+export interface EvalEscalationProjection {
+  evalFailed?: boolean | null;
+  evalHardFailureRetryCount?: number | null;
+}
+
+/**
+ * The single escalated-eval projection predicate (HOK-3255): the arm's
+ * `evalFailed` projection is set and its `evalHardFailureRetryCount`
+ * projection has reached the ceiling.
+ *
+ * This is a GATE STATUS — "pair blocked, escalated, unattributed" — never a
+ * resolution input: retry-count exhaustion is infrastructure evidence and
+ * cannot establish that a model lost, so no pair-resolution or comparison
+ * record may be decided from it. Consumers: `tend-challenge-gate.ts`
+ * (gate reason) and the ready watchdog (needs-user detail).
+ */
+export function isEscalatedEvalFailure(
+  task: EvalEscalationProjection | null | undefined,
+  retryMax: number,
+): boolean {
+  return Boolean(task?.evalFailed && (task.evalHardFailureRetryCount ?? 0) >= retryMax);
 }

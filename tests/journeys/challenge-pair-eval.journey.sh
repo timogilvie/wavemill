@@ -67,6 +67,7 @@ if [[ "${JOURNEY_INCIDENT_CURRENTNESS:-0}" == 1 ]]; then
   export JOURNEY_INCIDENT_OBSERVED="$JOURNEY_TMP/incident-failure-observed"
 fi
 if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 ]]; then journey_set_approval_budget 2; fi
+if [[ "${JOURNEY_EVAL_EXHAUSTION:-0}" == 1 ]]; then JOURNEY_EXPECT_ATTENTION=1; fi
 fakes_linear_add_issue "$ISSUE" "Challenge pair journey change" Todo
 
 # Challenge on: every task rolls an implementation-stage pair, the winner
@@ -94,11 +95,15 @@ journey_write_config "$(jq -cn --argjson ex "$exclusions" --arg stage "${JOURNEY
 unset WAVEMILL_DISABLE_CHALLENGE
 printf 'CHALLENGE_AUTO_MERGE=true\n' >> "$MONITOR_ENV"
 
+if [[ "${JOURNEY_EVAL_EXHAUSTION:-0}" == 1 ]]; then printf 'WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES=1\n' >> "$MONITOR_ENV"; fi
+
 # The judge shim sits ahead of the shared fake for the monitor's children
 # (eval and comparison jobs); agent panes keep the plain fake.
 export JOURNEY_WINNER_LINE="implemented $WINNER"
 export PATH="$FIXTURE_DIR/bin:$PATH"
 
+export JOURNEY_EVAL_FAULT="$JOURNEY_TMP/eval-fault"
+: > "$JOURNEY_EVAL_FAULT"
 journey_start_monitor
 journey_wait_until "$ISSUE" 5 "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
@@ -165,6 +170,24 @@ journey_wait_until "$ISSUE" 10 "challenger forked after the plan"   challenger_l
 PRIMARY_SLUG="$(field "$ISSUE" slug)"
 CHALLENGER_SLUG="$(field "$CHALLENGER" slug)"
 journey_wait_until "$ISSUE" 25 "both arms opened a PR"              both_prs_open
+eval_failure_observed() { pair_tick; grep -q 'challenge eval failed for' "$JOURNEY_TMP/logs/status.log"; }
+journey_wait_until "$ISSUE" 20 "eval harness fault detected" eval_failure_observed
+if [[ "${JOURNEY_EVAL_EXHAUSTION:-0}" == 1 ]]; then
+  exhausted() { [[ "$(field "$ISSUE" comparisonState)" == manual_comparison_needed ]]; }
+  journey_wait_until "$ISSUE" 30 "repeated harness fault exhausted its existing budget" exhausted
+  attempts_before="$(grep -c 'challenge eval retrying for' "$JOURNEY_TMP/logs/status.log")"
+  quiet_until=$(( $(journey_tick) + 5 ))
+  quiet_ticks() { (( $(journey_tick) >= quiet_until )); }
+  journey_wait_until "$ISSUE" 8 "five quiet escalation ticks" quiet_ticks
+  journey_assert "exhaustion has no retry storm" test "$(grep -c 'challenge eval retrying for' "$JOURNEY_TMP/logs/status.log")" = "$attempts_before"
+  journey_assert "no model winner was manufactured" test -z "$(comparison_winner)"
+  journey_assert "both PRs remain open with work preserved" both_prs_open
+  journey_assert "pair requests manual comparison" exhausted
+  journey_assert_no_unhandled_fake_calls
+  journey_finish
+  exit 0
+fi
+rm -f "$JOURNEY_EVAL_FAULT"
 journey_wait_until "$ISSUE" 25 "the mill compared the pair"         comparison_recorded
 WINNER_PR="$(arm_pr "$WINNER")"
 LOSER_PR="$(arm_pr "$LOSER")"

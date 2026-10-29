@@ -15,7 +15,6 @@ runTool({
   },
   examples: [
     'npx tsx tools/resolve-orphan-challenge-pair.ts --pair-id HOK-2350 --repo-dir . --dry-run',
-    'npx tsx tools/resolve-orphan-challenge-pair.ts --pair-id HOK-2351 --reason sibling-eval-hard-failed --repo-dir .',
     'npx tsx tools/resolve-orphan-challenge-pair.ts --pair-id HOK-2352 --reason both-challenge-aborted --repo-dir . --dry-run',
   ],
   async run({ args }) {

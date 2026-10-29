@@ -3718,23 +3718,22 @@ mark_eval_completed() {
       | .updated = (now | todateiso8601)'; then
     log_warn "mark_eval_completed: failed to update $issue"
   fi
-  # Successful eval wipes the arm's bounded-retry eval budgets (HOK-2924).
+  # Successful eval wipes the arm's bounded-retry eval budget (HOK-2924).
   slug=$(pass_task_field "$issue" slug)
   if [[ -n "$slug" && -n "${WORKTREE_ROOT:-}" ]]; then
-    bounded_retry_clear "${WORKTREE_ROOT}/${slug}/features/${slug}" "challenge-eval-soft"
     bounded_retry_clear "${WORKTREE_ROOT}/${slug}/features/${slug}" "challenge-eval-hard"
-    # challenge-eval-stale is deliberately NOT cleared here: a successful eval
-    # run does not prove the persisted record satisfies the current-head
-    # selector, and clearing on success would let a persistently-refused
-    # record refill its own relaunch budget (HOK-2963). A new head resets it.
+    # challenge-eval-soft is not cleared here: HOK-3255 retired that bucket
+    # (the hard bucket owns every eval failure), and challenge-eval-stale is
+    # deliberately NOT cleared: a successful eval run does not prove the
+    # persisted record satisfies the current-head selector (HOK-2963).
   fi
 }
 
 mark_eval_failed() {
-  local issue="$1"
+  local issue="$1" decision_json="${2:-}"
   # HOK-3125: guard against recreating a stub entry after reap.
   if ! task_state_entry_exists "$issue"; then
-    record_post_reap_eval_outcome "$issue" failed
+    record_post_reap_eval_outcome "$issue" failed "$decision_json"
     log "debug" "eval failed for reaped task $issue; not recreating state entry"
     return 0
   fi
@@ -3794,8 +3793,8 @@ mark_challenge_comparison_running() {
     --arg challengerPr "$challenger_pr"
 }
 
-# challenge_eval_retry_max_attempts() and challenge_eval_hard_failure_max_retries()
-# are provided by wavemill-common.sh (HOK-2924), sourced above.
+# challenge_eval_hard_failure_max_retries() is provided by wavemill-common.sh
+# (HOK-2924); the retired challenge-eval-soft ceiling is gone (HOK-3255).
 
 clear_challenge_pair_state() {
   local pair_id="$1"
@@ -3866,16 +3865,6 @@ challenge_pair_timeout_reason() {
     *,primary,*) printf 'primary_eval_timed_out\n' ;;
     *,challenger,*) printf 'challenger_eval_timed_out\n' ;;
     *) printf 'eval_timed_out\n' ;;
-  esac
-}
-
-challenge_pair_hard_failure_reason() {
-  local failed_sides_csv="$1"
-  case ",$failed_sides_csv," in
-    *,primary,challenger,*|*,challenger,primary,*) printf 'both_eval_hard_failed\n' ;;
-    *,primary,*) printf 'primary_eval_hard_failed\n' ;;
-    *,challenger,*) printf 'challenger_eval_hard_failed\n' ;;
-    *) printf 'eval_hard_failed\n' ;;
   esac
 }
 
@@ -14824,97 +14813,46 @@ poll_tracked_jobs() {
       continue
     fi
 
-    if [[ "$kind" == "eval" && ( "$reason" == "no_result_file" || "$reason" == "timed_out" ) && -n "$issue_id" ]]; then
-      local pr_num
+    # HOK-3255: one eval settlement. Every failed/timed-out eval job becomes a
+    # decision through the single failure policy (`eval_failure_disposition`);
+    # callers branch on .class/.attribution, never on job reason strings. The
+    # relaunch budget and any escalation are owned by the challenge-eval-hard
+    # bucket inside maybe_run_challenge_eval.
+    if [[ "$kind" == "eval" && "$status" != "succeeded" && -n "$issue_id" ]]; then
+      local pr_num job_exit_code issue_slug feature_dir decision_json
+      local decision_class decision_kind decision_attribution decision_next_action
       pr_num=$(echo "$job_json" | jq -r '.prNumbers[0] // empty')
-      if [[ -n "$result_path" ]] && [[ -f "$result_path" ]] \
-        && [[ "$(jq -r '.ok // .persisted // false' "$result_path" 2>/dev/null || echo "false")" == "true" ]]; then
-        log_warn "challenge eval for $issue_id ${reason}: result was persisted, marking completed"
-        mark_eval_completed "$issue_id"
-        settle_tracked_job "$job_id"
-        continue
-      fi
+      job_exit_code=$(echo "$job_json" | jq -r '.exitCode // empty')
+      # HOK-3324 seam: the one authoritative pre-check — a persisted eval
+      # record for this issue+PR means the outcome already landed. The old
+      # result-file re-read duplicated classifyJobCompletion and is gone;
+      # HOK-3324 will replace this lookup with its currentness contract.
       if [[ -n "$pr_num" ]] && eval_record_exists_for_issue_pr "$issue_id" "$pr_num"; then
-        log_warn "challenge eval for $issue_id ${reason}: eval record was persisted, marking completed"
+        log_warn "challenge eval for $issue_id ${reason:-$status}: eval record was persisted, marking completed"
         mark_eval_completed "$issue_id"
         settle_tracked_job "$job_id"
         continue
       fi
-    fi
-    if [[ "$kind" == "eval" && "$reason" == "timed_out" && -n "$issue_id" && -n "$pair_id" ]]; then
-      local retry_max retry_count timed_out_sides_csv timeout_reason primary_key challenger_key artifact_path
-      local issue_pr issue_branch issue_slug soft_retry_state_dir soft_retry_head
-      primary_key="$pair_id"
-      challenger_key="$(task_identity_challenger_key "$pair_id")"
+      # evalFailed projection (job-tracker mark-settled), then one policy
+      # disposition cached for the relaunch site and operators.
       settle_tracked_job "$job_id"
-      retry_max=$(challenge_eval_retry_max_attempts)
-      issue_pr=$(pass_task_field "$issue_id" pr)
-      issue_branch=$(pass_task_field "$issue_id" branch)
+      decision_json="$(eval_failure_disposition "$issue_id" "$reason" "$job_exit_code" "$excerpt" true)"
+      decision_class=$(jq -r '.class // "retryable"' <<<"$decision_json")
+      decision_kind=$(jq -r '.failureKind // "native-unclassified"' <<<"$decision_json")
+      decision_attribution=$(jq -r '.attribution // "unattributed"' <<<"$decision_json")
+      decision_next_action=$(jq -r '.nextAction // ""' <<<"$decision_json")
       issue_slug=$(pass_task_field "$issue_id" slug)
-      # Bounded-retry bucket in the arm's feature dir (HOK-2924). Effective
-      # count is max(bucket, comparisonRetryCount mirror) so pre-existing
-      # state keeps its budget; a fresh commit on the arm zeroes both. The
-      # mirror keeps being written for external consumers.
-      soft_retry_state_dir=""
-      soft_retry_head=""
-      local soft_retry_prior_head soft_retry_mirror
-      if [[ -n "$issue_slug" ]]; then
-        soft_retry_state_dir="${WORKTREE_ROOT}/${issue_slug}/features/${issue_slug}"
-        soft_retry_head=$(git -C "${WORKTREE_ROOT}/${issue_slug}" rev-parse HEAD 2>/dev/null || echo "")
-        soft_retry_prior_head=$(bounded_retry_head "$soft_retry_state_dir" "challenge-eval-soft")
-        bounded_retry_reset_if_new_head "$soft_retry_state_dir" "challenge-eval-soft" "$soft_retry_head"
-        if [[ -n "$soft_retry_prior_head" && -n "$soft_retry_head" && "$soft_retry_prior_head" != "$soft_retry_head" ]]; then
-          task_state_mutate_existing "$primary_key" '
-            .comparisonRetryCount = 0
-            | .updated = (now | todateiso8601)
-          ' >/dev/null || true
-        fi
-        retry_count=$(bounded_retry_count "$soft_retry_state_dir" "challenge-eval-soft")
-      else
-        retry_count=0
+      if [[ -n "$issue_slug" && -n "${WORKTREE_ROOT:-}" ]]; then
+        feature_dir="${WORKTREE_ROOT}/${issue_slug}/features/${issue_slug}"
+        mkdir -p "$feature_dir" 2>/dev/null || true
+        printf '%s\n' "$decision_json" > "$feature_dir/.eval-failure-decision.json" 2>/dev/null || true
       fi
-      soft_retry_mirror=$(read_state_value "0" --arg i "$primary_key" '.tasks[$i].comparisonRetryCount // 0')
-      [[ "$soft_retry_mirror" =~ ^[0-9]+$ ]] || soft_retry_mirror=0
-      (( soft_retry_mirror > retry_count )) && retry_count="$soft_retry_mirror"
-      timed_out_sides_csv=$(challenge_pair_timed_out_sides_csv "$primary_key")
-      if [[ -n "$timed_out_sides_csv" ]]; then
-        case ",$timed_out_sides_csv," in
-          *,"$side",*) ;;
-          *) timed_out_sides_csv="${timed_out_sides_csv},${side}" ;;
-        esac
-      else
-        timed_out_sides_csv="$side"
+      log_warn "challenge eval failed for $issue_id (kind=$decision_kind class=$decision_class attribution=$decision_attribution; log: $log_path)${decision_next_action:+; next: $decision_next_action}"
+      if [[ -n "$excerpt" ]]; then
+        while IFS= read -r line; do
+          [[ -n "$line" ]] && log_warn "  $line"
+        done <<<"$excerpt"
       fi
-      timed_out_sides_csv="${timed_out_sides_csv#,}"
-      timeout_reason=$(challenge_pair_timeout_reason "$timed_out_sides_csv")
-
-      if (( retry_count < retry_max )); then
-        if [[ -n "$soft_retry_state_dir" ]]; then
-          bounded_retry_increment "$soft_retry_state_dir" "challenge-eval-soft" "$soft_retry_head" >/dev/null
-        fi
-        retry_count=$((retry_count + 1))
-        write_challenge_pair_state "$pair_id" "retrying_eval" "$timeout_reason" "$retry_count" "$retry_max" "$issue_id" "$timed_out_sides_csv" ""
-        task_state_mutate_existing "$issue_id" '
-          .evalFailed = false
-          | .evalCompleted = false
-          | .updated = (now | todateiso8601)
-        ' >/dev/null || true
-        log "status" "challenge comparison retrying for $pair_id: $side eval timed out (attempt $retry_count/$retry_max)"
-        if [[ -n "$issue_pr" && -n "$issue_branch" && -n "$issue_slug" ]]; then
-          maybe_run_challenge_eval "$issue_id" "$issue_pr" "$issue_branch" "$issue_slug"
-        else
-          log_warn "challenge eval retry launch skipped for $issue_id: missing PR/branch/slug"
-        fi
-        continue
-      fi
-
-      if [[ -n "$soft_retry_state_dir" ]]; then
-        bounded_retry_mark_exhausted "$soft_retry_state_dir" "challenge-eval-soft" \
-          "Challenge eval soft retries exhausted for $issue_id (pair $pair_id): ${timed_out_sides_csv} eval timed out after ${retry_count}/${retry_max} attempt(s) - manual comparison needed" || true
-      fi
-      artifact_path=$(write_manual_challenge_comparison_artifact "$pair_id" "$primary_key" "$challenger_key" "$timed_out_sides_csv" "$retry_count" "$retry_max" || true)
-      write_challenge_pair_state "$pair_id" "manual_comparison_needed" "$timeout_reason" "$retry_count" "$retry_max" "" "$timed_out_sides_csv" "$artifact_path"
-      log_warn "challenge comparison blocked for $pair_id: ${timed_out_sides_csv} eval timed out. manual comparison needed${artifact_path:+ ($artifact_path)}"
       continue
     fi
 
@@ -15198,51 +15136,94 @@ maybe_run_challenge_eval() {
   fi
   eval_failed=$(read_state_value "false" --arg i "$issue" '.tasks[$i].evalFailed // false')
   if [[ "$eval_failed" == "true" ]]; then
-    # Bounded-retry bucket in the arm's feature dir (HOK-2924). The effective
-    # count is max(bucket, state mirror): the evalHardFailureRetryCount mirror
-    # stays authoritative for pre-existing state (and for
-    # resolve_challenge_pair_hard_failure, which reads it), while the bucket
-    # adds the head-keyed reset — a fresh commit zeroes both. The backoff base
-    # defaults to 0 (today's cadence); raise it via
-    # WAVEMILL_RETRY_BACKOFF_CHALLENGE_EVAL_HARD_BASE_SECONDS.
-    local hard_retry_state_dir hard_retry_head hard_retry_prior_head hard_retry_mirror hard_retry_base
+    # HOK-3255: one eval-failure budget. The poll settles every failed eval
+    # job through eval_failure_disposition and caches the decision in
+    # .eval-failure-decision.json; this site consumes it. Only an allowlisted
+    # terminal decision stops the relaunch — every retryable/unattributed
+    # decision (timeouts included) goes through the existing
+    # challenge-eval-hard bounded-retry bucket (HOK-2924), whose default
+    # backoff applies (the old forced 0s base is gone). The
+    # evalHardFailureRetryCount state field is a projection written FROM the
+    # bucket; it is never read back into the budget. Exhaustion escalates to
+    # the existing manual-comparison state — no pair resolution, no
+    # comparison record, no forfeit.
+    local hard_retry_state_dir hard_retry_head
+    local decision_path decision_json decision_class decision_kind decision_next_action
     hard_retry_state_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
-    hard_retry_head=$(git -C "${WORKTREE_ROOT}/${slug}" rev-parse HEAD 2>/dev/null || echo "")
-    hard_retry_prior_head=$(bounded_retry_head "$hard_retry_state_dir" "challenge-eval-hard")
-    bounded_retry_reset_if_new_head "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_head"
-    if [[ -n "$hard_retry_prior_head" && -n "$hard_retry_head" && "$hard_retry_prior_head" != "$hard_retry_head" ]]; then
-      task_state_mutate_existing "$issue" '
-        .evalHardFailureRetryCount = 0
-        | .updated = (now | todateiso8601)
-      ' >/dev/null || true
+    decision_path="$hard_retry_state_dir/.eval-failure-decision.json"
+    decision_json=""
+    if [[ -f "$decision_path" ]]; then
+      decision_json=$(cat "$decision_path" 2>/dev/null || echo "")
+      decision_class=$(jq -r '.class // "retryable"' <<<"$decision_json" 2>/dev/null || echo "retryable")
     fi
-    eval_hard_retry_count=$(bounded_retry_count "$hard_retry_state_dir" "challenge-eval-hard")
-    hard_retry_mirror=$(read_state_value "0" --arg i "$issue" '.tasks[$i].evalHardFailureRetryCount // 0')
-    [[ "$hard_retry_mirror" =~ ^[0-9]+$ ]] || hard_retry_mirror=0
-    (( hard_retry_mirror > eval_hard_retry_count )) && eval_hard_retry_count="$hard_retry_mirror"
+    hard_retry_head=$(git -C "${WORKTREE_ROOT}/${slug}" rev-parse HEAD 2>/dev/null || echo "")
     eval_hard_retry_max=$(challenge_eval_hard_failure_max_retries)
-    if (( eval_hard_retry_count < eval_hard_retry_max )); then
-      hard_retry_base="${WAVEMILL_RETRY_BACKOFF_CHALLENGE_EVAL_HARD_BASE_SECONDS:-0}"
-      [[ "$hard_retry_base" =~ ^[0-9]+$ ]] || hard_retry_base=0
-      if ! bounded_retry_due "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_base"; then
+    local disposition
+    if [[ "${decision_class:-retryable}" == "terminal" ]]; then
+      decision_kind=$(jq -r '.failureKind' <<<"$decision_json")
+      decision_next_action=$(jq -r '.nextAction // ""' <<<"$decision_json")
+      local terminal_abort_reason="invalid_challenge:${decision_kind}"
+      if jq -e '.attribution == "model"' <<<"$decision_json" >/dev/null 2>&1; then
+        terminal_abort_reason="terminal_stage_failure:${decision_kind}"
+      fi
+      challenge_abort_pair "$issue" "$hard_retry_state_dir" "$issue-$slug" eval \
+        "$(challenge_coder_model_for_task "$issue")" "$terminal_abort_reason" \
+        "$(jq -r '.detail // .nextAction // "terminal eval failure"' <<<"$decision_json")" "$decision_next_action" \
+        "$(challenge_abort_scope_for_failure "$issue" "$decision_kind")" || true
+      return 0
+    else
+      disposition=$(bounded_retry_gate "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_head" "$eval_hard_retry_max" "" "" "")
+    fi
+    case "$disposition" in
+      backoff)
         log "debug" "challenge eval hard-failure retry for $issue holding (backoff)"
         return 0
-      fi
-      bounded_retry_increment "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_head" >/dev/null
-      eval_hard_retry_count=$((eval_hard_retry_count + 1))
-      task_state_mutate_existing "$issue" '
-        .evalFailed = false
-        | .evalCompleted = false
-        | .evalHardFailureRetryCount = $retryCount
-        | .updated = (now | todateiso8601)
-      ' --argjson retryCount "$eval_hard_retry_count" >/dev/null || true
-      log "status" "challenge eval retrying for $issue: hard failure (attempt $eval_hard_retry_count/$eval_hard_retry_max)"
-    else
-      bounded_retry_mark_exhausted "$hard_retry_state_dir" "challenge-eval-hard" \
-        "Challenge eval hard-failure retries exhausted for $issue (${eval_hard_retry_count}/${eval_hard_retry_max}) - resolving pair ${pair_id:-unknown}" || true
-      resolve_challenge_pair_hard_failure "$pair_id" >/dev/null || true
-      return 0
-    fi
+        ;;
+      exhausted-quiet)
+        log "debug" "challenge eval hard-failure retries exhausted for $issue and will hold silently until a new head"
+        return 0
+        ;;
+      exhausted)
+        # Escalation, not resolution (HOK-3255): retry exhaustion is
+        # unattributed infrastructure evidence and cannot establish that a
+        # model lost, so there is no pair resolution and no comparison
+        # record. The pair stays visibly blocked (manual_comparison_needed +
+        # needs-user) until the eval is re-run or a new head lands; the
+        # head-keyed condition companion (HOK-3172) resets the sentinel so
+        # it never latches.
+        local hard_retry_count challenger_key artifact_path timed_out_sides_csv timeout_reason eval_side
+        decision_kind=$(jq -r '.failureKind // "native-unclassified"' <<<"$decision_json" 2>/dev/null || echo "native-unclassified")
+        decision_next_action=$(jq -r '.nextAction // ""' <<<"$decision_json" 2>/dev/null || echo "")
+        hard_retry_count=$(bounded_retry_count "$hard_retry_state_dir" "challenge-eval-hard")
+        bounded_retry_mark_exhausted "$hard_retry_state_dir" "challenge-eval-hard" \
+          "Challenge eval stopped for $issue (pair ${pair_id:-unknown}): class=${decision_class:-retryable}, kind=${decision_kind}, ${hard_retry_count}/${eval_hard_retry_max} attempt(s); next: ${decision_next_action:-re-run the eval or push a new head}" \
+          --head "$hard_retry_head" --expires-on head,operator-event || true
+        if [[ -n "$pair_id" ]]; then
+          challenger_key="$(task_identity_challenger_key "$pair_id")"
+          eval_side=$(get_task_meta "$issue" "challengeRole")
+          [[ -z "$eval_side" ]] && eval_side="primary"
+          timed_out_sides_csv=$(challenge_pair_timed_out_sides_csv "$pair_id")
+          if [[ -n "$timed_out_sides_csv" ]]; then
+            case ",$timed_out_sides_csv," in
+              *,"$eval_side",*) ;;
+              *) timed_out_sides_csv="${timed_out_sides_csv},${eval_side}" ;;
+            esac
+          else
+            timed_out_sides_csv="$eval_side"
+          fi
+          timed_out_sides_csv="${timed_out_sides_csv#,}"
+          timeout_reason=$(challenge_pair_timeout_reason "$timed_out_sides_csv")
+          artifact_path=$(write_manual_challenge_comparison_artifact "$pair_id" "$pair_id" "$challenger_key" "$timed_out_sides_csv" \
+            "$hard_retry_count" "$eval_hard_retry_max" "eval_hard_failure" || true)
+          write_challenge_pair_state "$pair_id" "manual_comparison_needed" "$timeout_reason" \
+            "$hard_retry_count" "$eval_hard_retry_max" "" "$timed_out_sides_csv" "$artifact_path" >/dev/null || true
+        fi
+        set_window_attention_state "${issue}-${slug}" "needs-user" 2>/dev/null || true
+        log_warn "challenge eval for $issue exhausted (${hard_retry_count}/${eval_hard_retry_max}, kind=${decision_kind}): unattributed infrastructure failure - manual comparison needed, no forfeit${decision_next_action:+; next: $decision_next_action}"
+        return 0
+        ;;
+    esac
+    # Charge only after the tracked launch succeeds below.
   fi
   # The eval's solution model has always been the coder; keep that meaning now
   # that challengeModel names the varied stage's model (HOK-3156).
@@ -15294,12 +15275,15 @@ maybe_run_challenge_eval() {
 
   # HOK-3184: mirror the eval launch as a shadow step row. The bucket name
   # mirrors the pair/side so the retry sentinel is attributed to this arm.
+  # HOK-3255: it mirrors the one bounded-retry budget that owns all eval
+  # failures (challenge-eval-hard); the retired challenge-eval-soft ceiling
+  # no longer feeds this shadow call.
   if declare -F wavemill_ledger_step_upsert >/dev/null 2>&1; then
     local _eval_head _eval_state_dir _eval_bucket _eval_max_attempts
     _eval_head="$(git -C "${WORKTREE_ROOT}/${slug}" rev-parse HEAD 2>/dev/null || true)"
     _eval_state_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
-    _eval_bucket="challenge-eval-soft-${pair_id}-${side}"
-    _eval_max_attempts=$(challenge_eval_retry_max_attempts)
+    _eval_bucket="challenge-eval-hard-${pair_id}-${side}"
+    _eval_max_attempts=$(challenge_eval_hard_failure_max_retries)
     wavemill_ledger_step_upsert "$issue" eval "$_eval_state_dir" "$_eval_bucket" \
       --head "$_eval_head" --pr "$pr" --pair "$pair_id" --side "$side" \
       --prompt "run-eval-hook@${challenge_stage:-eval}" \
@@ -15323,6 +15307,13 @@ maybe_run_challenge_eval() {
 
   eval_timeout="$(post_merge_eval_timeout_seconds)"
   launch_tracked_job "eval" "$job_id" "$issue" "$side" "$pair_id" "$pr" "$pid" "$eval_timeout" "$log_path" "$result_path"
+  if [[ "$eval_failed" == "true" ]]; then
+    bounded_retry_increment "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_head" >/dev/null
+    eval_hard_retry_count=$(bounded_retry_count "$hard_retry_state_dir" "challenge-eval-hard")
+    task_state_mutate_existing "$issue" '.evalFailed = false | .evalCompleted = false | .evalHardFailureRetryCount = $retryCount' \
+      --argjson retryCount "$eval_hard_retry_count" >/dev/null || true
+    log "status" "challenge eval retrying for $issue: hard failure (attempt $eval_hard_retry_count/$eval_hard_retry_max)"
+  fi
   log "status" "  📊 Challenge eval running in background for $issue (pid $pid)"
 }
 
@@ -15392,8 +15383,24 @@ launch_background_post_merge_eval() {
       if [[ "$persisted" == "true" ]]; then
         mark_eval_completed "$issue"
       else
-        printf 'WARN: Eval not persisted for %s (rc=%s); setting evalFailed=true\n' "$issue" "$rc"
-        mark_eval_failed "$issue"
+        # HOK-3255: the post-merge eval consumes the same one eval-failure
+        # disposition (eval_failure_disposition → the single failure policy).
+        # It has no pair and no relaunch loop — the task is usually already
+        # reaped — so the decision stays unattributed and visible in the
+        # eval log and the post-reap audit instead of relaunching anything.
+        local _reason="eval_not_persisted" _tail decision_json
+        local decision_class decision_kind decision_attribution decision_next_action
+        [[ "$rc" == "124" ]] && _reason="timed_out"
+        _tail=$(tail -c 2000 "$eval_log" 2>/dev/null || echo "")
+        decision_json="$(eval_failure_disposition "$issue" "$_reason" "$rc" "$_tail" false)"
+        decision_class=$(jq -r '.class // "retryable"' <<<"$decision_json")
+        decision_kind=$(jq -r '.failureKind // "native-unclassified"' <<<"$decision_json")
+        decision_attribution=$(jq -r '.attribution // "unattributed"' <<<"$decision_json")
+        decision_next_action=$(jq -r '.nextAction // ""' <<<"$decision_json")
+        printf 'WARN: Eval not persisted for %s (rc=%s): kind=%s class=%s attribution=%s%s; setting evalFailed=true\n' \
+          "$issue" "$rc" "$decision_kind" "$decision_class" "$decision_attribution" \
+          "${decision_next_action:+; next: $decision_next_action}"
+        mark_eval_failed "$issue" "$decision_json"
       fi
     } >>"$eval_log" 2>&1
   ) >/dev/null 2>&1 &
