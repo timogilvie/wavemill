@@ -54,6 +54,7 @@ const PLANNING_TERMINAL_REASONS = new Set([
 
 export interface DetectorContext {
   repoDir: string;
+  jobTruth?: ReturnType<typeof readAuthoritativeWorkflowJobs>;
   session?: string;
   now?: Date;
   tendCandidates?: TendCandidateDiagnostic[];
@@ -202,7 +203,7 @@ export class JobFailureDetector {
     const seen = new Set<string>();
     const timestamp = context.now?.toISOString() ?? new Date().toISOString();
 
-    const jobTruth = readAuthoritativeWorkflowJobs(repoDir);
+    const jobTruth = context.jobTruth ?? readAuthoritativeWorkflowJobs(repoDir);
     for (const job of jobTruth.jobs) {
       const key = job.id ?? `${job.kind}:${job.issueId}:${job.startedAt}`;
       if (seen.has(key)) continue;

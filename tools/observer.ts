@@ -3857,6 +3857,7 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
     return { ...snapshot, incidents };
   }
   const incidentsByRepo = new Map<string, IncidentRecord[]>();
+  const jobsByRepo = new Map<string, ReturnType<typeof readAuthoritativeWorkflowJobs>>();
   const recoveredIncidents: NonNullable<ObserverSnapshot['recoveredIncidents']> = [];
 
   for (const repo of snapshot.repos) {
@@ -3868,6 +3869,8 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
       continue;
     }
     if (incidentConfig.enabled === false) continue;
+    const jobTruth = readAuthoritativeWorkflowJobs(repo.repoDir);
+    jobsByRepo.set(repo.repoDir, jobTruth);
     const storeDir = incidentConfig.store?.directory ?? '.wavemill/incidents';
     const store = new IncidentStore(
       isAbsolute(storeDir) ? storeDir : join(repo.repoDir, storeDir),
@@ -3889,7 +3892,7 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
       tasks: repo.tasks,
     });
     try {
-      const detectorContext = { repoDir: repo.repoDir, session: repo.session, now: new Date(snapshot.timestamp), tendCandidates };
+      const detectorContext = { repoDir: repo.repoDir, session: repo.session, now: new Date(snapshot.timestamp), tendCandidates, jobTruth };
       for (const task of repo.tasks) {
         if (!task.issue || taskWorkflowIsTerminal(task)) continue;
         const taskPath = resolveTaskArtifactDir(repo.repoDir, task);
@@ -3951,7 +3954,7 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
       // condition holds (new review attempt, head change, comparison), rather
       // than waiting out the absence sweep. Missing evidence never resolves.
       try {
-        const jobs = readAuthoritativeWorkflowJobs(repo.repoDir);
+        const jobs = jobTruth;
         for (const record of await store.getIncidents()) {
           const current = reconcileIncidentForFiling(record, repo.repoDir, jobs);
           const jobBacked = isJobBackedIncident(record);
@@ -4017,7 +4020,7 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
     if (!isJobBackedIncident(record)) return true;
     const repoDir = snapshot.repos.find((repo) => repo.session === record.session)?.repoDir;
     if (!repoDir) return true;
-    const current = reconcileIncidentForFiling(record, repoDir);
+    const current = reconcileIncidentForFiling(record, repoDir, jobsByRepo.get(repoDir));
     return current.outcome === 'confirmed_active' || current.outcome === 'needs_inspection';
   });
   // A specific causal chain supersedes the generic stale-task advice for the
