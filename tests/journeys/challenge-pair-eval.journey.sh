@@ -49,7 +49,7 @@ FIXTURE_DIR="$(cd "$(dirname "$0")/fixtures/challenge-pair-eval" && pwd)"
 # shellcheck source=../../shared/lib/task-identity.sh
 source "$JOURNEY_INSTALL_DIR/shared/lib/task-identity.sh"
 
-ISSUE="JRN-5"
+ISSUE="${JOURNEY_PAIR_ISSUE:-JRN-5}"
 CHALLENGER="$(task_identity_challenger_id "$ISSUE")"
 # The arm the scripted judge prefers. The challenger winning is the harder
 # path: the primary (the only Linear writer) is the one retired.

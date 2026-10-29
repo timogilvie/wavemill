@@ -43,6 +43,12 @@ export const FAILURE_POLICY_GUARD: GuardSpec = {
   }],
   patterns: [
     {
+      name: 'private-eval-retry-decision',
+      description: 'An eval failure plus a retry counter cannot decide a model outcome; consume failure-policy.',
+      lang: 'both',
+      re: /\bif\b(?=[^\n]*(?:evalFailed|eval_failed))(?=[^\n]*(?:[Rr]etryCount|retry_count|[Rr]etries))[^\n]*/,
+    },
+    {
       name: 'retired-eval-forfeit-resolver',
       description: 'eval exhaustion must not resolve a pair; use failure_policy_decide and bounded retry',
       lang: 'both',

@@ -1,3 +1,6 @@
+import historicalEvalFailure from '../../tests/fixtures/incidents/hok-3076-eval-failure.json' with {type:'json'};
+import {buildWorkflowState} from '../../tests/lib/task-builder.ts';
+import {classifyFailure} from './failure-policy.ts';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1702,3 +1705,47 @@ for (const [label, abort, expectedOutcome] of [
     }
   });
 }
+
+// protects: captured HOK-3076_c repeated module-load faults never manufacture a model loss.
+test('schema-validated HOK-3076_c replay keeps repeated harness failures unattributed', async () => {
+  const {repoDir,cleanup} = setupRepoDir();
+  try {
+    for (const [attempt,reason] of historicalEvalFailure.attemptReasons.entries()) {
+      const decision = classifyFailure({stage:'eval',challengeArm:true,job:{reason,exitCode:1,excerpt:historicalEvalFailure.excerpt}});
+      assert.equal(decision.class,'retryable');
+      assert.equal(decision.attribution,'unattributed');
+      const pair = historicalEvalFailure.pairId;
+      const state = buildWorkflowState({
+        [pair]:{phase:'ready',pr:101,challenge:true,challengePairId:pair,challengeRole:'primary',challengeModel:'claude-sonnet-4-6',evalCompleted:true},
+        [historicalEvalFailure.taskId]:{phase:'ready',pr:102,challenge:true,challengePairId:pair,challengeRole:'challenger',challengeModel:'claude-haiku-4-5-20251001',evalFailed:true,evalHardFailureRetryCount:attempt+1},
+      });
+      writeFileSync(join(repoDir,'.wavemill/workflow-state.json'),JSON.stringify(state));
+      const result = await resolveUnresolvablePair({pairId:pair,repoDir,reason:'sibling-eval-hard-failed'});
+      assert.equal(result.status,'skipped');
+      assert.equal(readChallengeComparisons(join(repoDir,'.wavemill/evals')).length,0);
+    }
+  } finally {cleanup();}
+});
+
+// protects: a terminal eval without execution attribution cannot turn into a model win.
+test('unattributed terminal eval abort resolves neutrally through the existing invalid-challenge path', async () => {
+  const {repoDir,cleanup} = setupRepoDir();
+  try {
+    const decision = classifyFailure({stage:'eval',failureKind:'ready-exhausted',challengeArm:true});
+    assert.equal(decision.class,'terminal');
+    assert.equal(decision.attribution,'unattributed');
+    const pair = 'HOK-3076';
+    const state = buildWorkflowState({
+      [pair]:{phase:'ready',pr:101,challenge:true,challengePairId:pair,challengeRole:'primary',challengeModel:'claude-sonnet-4-6',evalCompleted:true},
+      [pair+'_c']:{phase:'ready',pr:102,challenge:true,challengePairId:pair,challengeRole:'challenger',challengeModel:'claude-haiku-4-5-20251001',challengeAborted:'invalid_challenge:'+decision.failureKind},
+    });
+    writeFileSync(join(repoDir,'.wavemill/workflow-state.json'),JSON.stringify(state));
+    const result = await resolveUnresolvablePair({pairId:pair,repoDir,reason:'sibling-challenge-aborted'});
+    assert.equal(result.status,'resolved');
+    if (result.status === 'resolved') assert.equal(result.outcome,'invalid_challenge');
+    const records = readChallengeComparisons(join(repoDir,'.wavemill/evals'));
+    assert.equal(records.length,1);
+    assert.equal(records[0].comparisonOutcome,'invalid_challenge');
+    assert.equal(records[0].winner,undefined);
+  } finally {cleanup();}
+});

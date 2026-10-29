@@ -19,7 +19,8 @@ fi
 
 prompt="$(cat)"
 if [[ "$prompt" != *"Candidate B diff:"* && -n "${JOURNEY_EVAL_FAULT:-}" && -f "$JOURNEY_EVAL_FAULT" ]]; then
-  echo 'scripted eval harness unavailable' >&2
+  if [[ -n "${JOURNEY_EVAL_FAILURE_FIXTURE:-}" ]]; then jq -r .excerpt "$JOURNEY_EVAL_FAILURE_FIXTURE" >&2
+  else echo 'scripted eval harness unavailable' >&2; fi
   exit 1
 fi
 letter="A"

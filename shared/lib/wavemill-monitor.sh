@@ -15296,8 +15296,12 @@ maybe_run_challenge_eval() {
     if [[ "${decision_class:-retryable}" == "terminal" ]]; then
       decision_kind=$(jq -r '.failureKind' <<<"$decision_json")
       decision_next_action=$(jq -r '.nextAction // ""' <<<"$decision_json")
+      local terminal_abort_reason="invalid_challenge:${decision_kind}"
+      if jq -e '.attribution == "model"' <<<"$decision_json" >/dev/null 2>&1; then
+        terminal_abort_reason="terminal_stage_failure:${decision_kind}"
+      fi
       challenge_abort_pair "$issue" "$hard_retry_state_dir" "$issue-$slug" eval \
-        "$(challenge_coder_model_for_task "$issue")" "terminal_stage_failure:${decision_kind}" \
+        "$(challenge_coder_model_for_task "$issue")" "$terminal_abort_reason" \
         "$(jq -r '.detail // .nextAction // "terminal eval failure"' <<<"$decision_json")" "$decision_next_action" \
         "$(challenge_abort_scope_for_failure "$issue" "$decision_kind")" || true
       return 0

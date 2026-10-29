@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/shared/lib/wavemill-common.sh"
 source "$ROOT/shared/lib/bounded-retry.sh"
+source "$ROOT/shared/lib/transient-marker.sh"
+source "$ROOT/shared/lib/condition-reconciler.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 export LIB_DIR="$ROOT/shared/lib" TOOLS_DIR="$ROOT/tools"
@@ -24,6 +26,17 @@ bounded_retry_mark_exhausted "$TMP" challenge-eval-hard 'unattributed eval harne
 [[ "$(bounded_retry_gate "$TMP" challenge-eval-hard head-a 1 0 0)" == exhausted-quiet ]]
 [[ "$(bounded_retry_gate "$TMP" challenge-eval-hard head-b 1 0 0)" == proceed ]]
 [[ "$(bounded_retry_count "$TMP" challenge-eval-hard)" == 0 ]]
+
+# The existing condition reconciler consumes an operator event and releases
+# the same exhausted bucket; no private recovery marker is introduced.
+bounded_retry_increment "$TMP" challenge-eval-hard head-b >/dev/null
+bounded_retry_mark_exhausted "$TMP" challenge-eval-hard 'captured module-load failure' --expires-on operator-event
+STATE_FILE="$TMP/workflow-state.json"
+source "$ROOT/tests/lib/state-fixtures.sh"
+fixture_workflow_state "$STATE_FILE" HOK-3076_c phase=ready
+operator_event_record "$TMP" advance HOK-3076_c 'operator repaired node_modules'
+condition_reconcile_task HOK-3076_c "$TMP" "$TMP"
+[[ "$(bounded_retry_gate "$TMP" challenge-eval-hard head-b 1 0 0)" == proceed ]]
 
 # Challenge monitor settlement and recovery are exercised only through the
 # real loop in challenge-pair-eval.journey.sh; this unit test deliberately
