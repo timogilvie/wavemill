@@ -6318,6 +6318,22 @@ emit_blocked_completion_attention() {
   slug="$(basename "$feature_dir")"
   win="$issue-$slug"
 
+  # A structured request to resume coding belongs to the existing failed-stage
+  # policy, not the operator-only advance hold. Shared exit evidence prevents
+  # racing an agent that is still completing its commit.
+  local recovery_validation
+  recovery_validation="$(blocked_completion_validate_for_advance "$issue" "$feature_dir" auto 2>/dev/null)" || true
+  if jq -e '.recommendedAction == "relaunch_coding"' "$feature_dir/.coding-blocked-completion.json" >/dev/null 2>&1 \
+    && jq -e '.guardrails.schemaValid == true and .guardrails.artifactFresh == true' <<<"$recovery_validation" >/dev/null 2>&1 \
+    && coding_dirty_handoff_agent_exited "$issue" "$feature_dir" "${feature_dir%/features/*}"; then
+    write_stage_result "$feature_dir" "coding" "failed" "${current_agent:-unknown}" \
+      "$(resolve_stage_result_model "$feature_dir" coding "")" \
+      "${summary}: ${reason}. Structured completion requests coding recovery with confirmed owner exit."
+    log "status" "$issue → blocked completion handed to failed-stage recovery"
+    active_count=$((active_count + 1))
+    return 0
+  fi
+
   if blocked_completion_should_announce "$feature_dir" "$artifact_mtime"; then
     log "status" "$issue needs attention: $summary. Type \"advance $issue\" to launch review."
     mark_blocked_completion_announced "$feature_dir" "$artifact_mtime"
@@ -6717,8 +6733,9 @@ coding_dirty_handoff_grace_seconds() {
 # sibling-stalled rule is the backstop for arms with no evidence at all.
 coding_dirty_handoff_agent_exited() {
   local issue="$1" feature_dir="$2" worktree="${3:-}"
-  local progress grace now
-  local -a progress_args=(--phase coding --max-age 60 --feature-dir "$feature_dir")
+  local progress grace now pane_target="${4:-${WIN_TARGET:-}}"
+  local -a progress_args=(--phase coding --max-age 0 --feature-dir "$feature_dir")
+  [[ -n "$pane_target" ]] && progress_args+=(--pane-target "$pane_target")
 
   declare -F task_progress_json >/dev/null 2>&1 || return 1
   command -v jq >/dev/null 2>&1 || return 1
@@ -6731,6 +6748,7 @@ coding_dirty_handoff_agent_exited() {
   # Hook timestamps are epoch seconds; tolerate a millisecond writer.
   printf '%s' "$progress" | jq -e --argjson now "$now" --argjson grace "$grace" '
     (.agentIdle == true or .terminalIdle == true) and
+    (.agentBackgroundLive != true and .agentProcessLive != true) and
     ((.agentState // "") as $s | ["working", "waiting", "approval-needed", "blocked", "policy-denied"] | any(.[]; . == $s) == false) and
     (.blockingPrompt == null) and
     (if ((.agentRecord.state // "") == "idle") and ((.agentRecord.timestamp | type) == "number") and (.agentRecord.timestamp > 0)

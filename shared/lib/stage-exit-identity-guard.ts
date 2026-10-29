@@ -68,6 +68,15 @@ export const STAGE_EXIT_IDENTITY_GUARD: GuardSpec = {
     },
   ],
   structuralChecks: [{
+    name: 'ephemeral-native-ownership',
+    description: 'native coding must bind intended-file provenance to its task, worktree and persisted state',
+    paths: ['shared/lib/native-agent/launch-coding.ts'],
+    find(source) {
+      return [...source.matchAll(/createIntendedFileTracker\(([^;]*)\)/g)]
+        .filter(match => !['worktreePath:', 'taskId:', 'statePath:'].every(field => match[1].includes(field)))
+        .map(match => ({ line: source.slice(0, match.index).split('\n').length }));
+    },
+  }, {
     name: 'unbounded-native-coding',
     description: 'native coding must supply the shared loop budget',
     paths: ['shared/lib/native-agent/launch-coding.ts'],

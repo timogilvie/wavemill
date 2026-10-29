@@ -1,3 +1,7 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { validateCodingArtifacts } from '../coding-artifacts.ts';
@@ -88,4 +92,34 @@ describe('intended file tracker', () => {
 
     assert.equal(validation.ok, true);
   });
+});
+
+// protects: native process replacement retains only verified task-owned mutations.
+it('recovers content-bound ownership and refuses unrelated, changed, stale and escaping files', () => {
+  const root = mkdtempSync(join(tmpdir(), 'native-ownership-'));
+  try {
+    const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' });
+    git('init', '-q'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Test');
+    writeFileSync(join(root, 'owned.txt'), 'base'); git('add', 'owned.txt'); git('commit', '-qm', 'base');
+    const context = { worktreePath: root, taskId: 'HOK-3255', statePath: join(root, '.git', 'ownership.json') };
+    const original = createIntendedFileTracker(context);
+    writeFileSync(join(root, 'owned.txt'), 'native edit');
+    writeFileSync(join(root, 'unrelated.txt'), 'operator edit');
+    original.record(['owned.txt']);
+    const replacement = createIntendedFileTracker(context);
+    assert.equal(replacement.isIntended('owned.txt'), true);
+    assert.equal(replacement.isIntended('unrelated.txt'), false);
+    assert.equal(createIntendedFileTracker({ ...context, taskId: 'other' }).isIntended('owned.txt'), false);
+    writeFileSync(join(root, 'owned.txt'), 'operator changed the native edit');
+    assert.equal(replacement.isIntended('owned.txt'), false);
+    assert.equal(createIntendedFileTracker(context).isIntended('owned.txt'), false);
+    writeFileSync(join(root, 'owned.txt'), 'native edit');
+    git('add', 'owned.txt'); git('commit', '-qm', 'changed head');
+    assert.equal(createIntendedFileTracker(context).isIntended('owned.txt'), false);
+    symlinkSync('/missing/outside', join(root, 'escape'));
+    replacement.record(['escape', '../outside']);
+    assert.equal(replacement.isIntended('escape'), false);
+    writeFileSync(context.statePath, '{broken');
+    assert.deepEqual(createIntendedFileTracker(context).list(), []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

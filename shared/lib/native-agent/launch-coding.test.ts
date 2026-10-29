@@ -418,9 +418,12 @@ describe('launchNativeCoding', () => {
       wtDir: repoDir,
       repoDir,
       loopModelOverride: model,
+      hookPath: join(featureDir, 'blocked-exit.hook'),
     });
 
     assert.equal(result.completion, 'blocked');
+    // protects: an exited blocked coder must not advertise a live working owner.
+    assert.equal(JSON.parse(readFileSync(join(featureDir, 'blocked-exit.hook'), 'utf8')).state, 'idle');
     assert.equal(existsSync(join(featureDir, '.coding-complete')), false);
     assert.ok(existsSync(join(featureDir, '.coding-blocked-completion.json')));
     const stageResult = await readStageResult(featureDir, 'coding');
