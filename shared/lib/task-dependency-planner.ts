@@ -11,6 +11,7 @@ export interface DependencyEdge {
   to: string;
   source?: 'inferred' | 'explicit';
   reason?: string;
+  files?: string[];
 }
 
 export type TriageReason = 'unknown_endpoint' | 'self_loop' | 'duplicate' | 'cycle_participant';
