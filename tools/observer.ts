@@ -840,11 +840,12 @@ function inspectTaskWorktreeDirty(worktree: string | undefined): WorktreeDirtySt
 function dirtyWorktreeEvidence(worktreeDirty: WorktreeDirtyStatus): string[] {
   if (worktreeDirty.state === 'clean' || worktreeDirty.state === 'absent') return [];
   if (worktreeDirty.state === 'unreadable') {
-    return ['worktreeDirty=unreadable'];
+    return ['worktreeDirty=unreadable', 'potentialWorkLoss=true'];
   }
   const shown = worktreeDirty.lines.slice(0, DIRTY_WORKTREE_PATH_LIMIT);
   const evidence: string[] = [
     'worktreeDirty=true',
+    'potentialWorkLoss=true',
     `dirtyPathCount=${worktreeDirty.lines.length}`,
     ...shown.map((line) => `dirtyPath=${line}`),
   ];
@@ -987,12 +988,6 @@ function cleanupRootCause(disposition: ResidueDisposition): IncidentRootCauseCla
   }
 }
 
-function cleanupIncidentSeverity(disposition: ResidueDisposition): IncidentRecord['severity'] {
-  if (disposition === 'unpublished-at-risk') return 'critical';
-  if (disposition === 'dirty-worktree') return 'high';
-  return 'info';
-}
-
 function cleanupEvidenceKey(task: ObservedTask, config: EffectiveTaskConfig, residue?: BranchResidue): string {
   const delivery = taskDeliveryEvidence(task);
   const episode = taskCleanupEpisode(task);
@@ -1061,7 +1056,7 @@ function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string, pr
         category: classified.disposition === 'verification-unavailable'
           ? 'configuration_operator_condition'
           : 'stale_orphaned_state',
-        severity: cleanupIncidentSeverity(classified.disposition),
+        severity: findingSeverityToIncidentSeverity(classified.severity ?? 'low'),
         confidence: 'high',
         lifecycle: 'observed',
         rootCauseClass,
@@ -2113,9 +2108,10 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
 
     }
 
+    const cleanupStore = new IncidentStore(join(repo.repoDir, '.wavemill', 'incidents'));
     for (const incident of detectCleanupIncidentsForRepo(repo, new Date(now).toISOString(), progressLookup)) {
       if (!incident.rootCauseClass.startsWith('cleanup_')) continue;
-      findings.push(convertIncidentToFinding(incident));
+      findings.push(convertIncidentToFinding({ ...incident, fingerprint: cleanupStore.computeFingerprint(incident) }));
     }
     const logLines = repo.millLogPath ? tailLines(repo.millLogPath, options.maxLogLines) : [];
     const queueHealthDegraded = repo.queueHealth?.status === 'degraded';

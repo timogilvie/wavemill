@@ -2319,6 +2319,10 @@ test('status error and phase error are treated as terminal residue', () => {
 
     assert.ok(findings.some((finding) => finding.issue === 'HOK-2866' && finding.evidence.includes('rootCause=cleanup_dirty_worktree')));
     assert.ok(findings.some((finding) => finding.issue === 'HOK-2867' && finding.evidence.includes('rootCause=cleanup_dirty_worktree')));
+    const cleanup = findings.filter((finding) => finding.evidence.includes('rootCause=cleanup_dirty_worktree'));
+    assert.equal(cleanup.length, 2);
+    assert.notEqual(cleanup[0].id, cleanup[1].id);
+    assert.ok(cleanup.every((finding) => finding.id !== 'incident-' && finding.severity === 'urgent'));
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }
