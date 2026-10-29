@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Fake review for the challenge-pair journey: leave session telemetry and the
+# Fake review for the challenge-pair journey: leave the
 # reviewer's analysis identity, then the shared default (push, PR, result).
 source "$FAKE_AGENT_SCRIPT_DIR/session-telemetry.sh"
 fake_review_analysis_identity "$FAKE_MODEL"

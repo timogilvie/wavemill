@@ -1,13 +1,18 @@
 /**
  * Tests for the execution-economics normalization and join module (HOK-2958).
  *
- * Covers: both-harness normalization into one schema, join-confidence tiers,
- * route/executed conflict emission, turn truncation, and the
- * null-vs-known_zero cost invariant.
+ * Covers: both-harness normalization into one schema, stage labels read from
+ * the session-ownership record (HOK-3328 replays: a post-reap coding session,
+ * a helper inside the review window, a Ready remediation, an unowned operator
+ * session), route/executed conflict emission, turn truncation, and per-session
+ * cost copied from the `@hokusai/costs` report.
  */
 
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildExecutionEconomics,
   DEFAULT_TURN_CAP,
@@ -19,7 +24,8 @@ import type {
   ExternalSessionUsageRecord,
   SessionUsageResult,
 } from './session-adapters.ts';
-import type { StageResultMap } from './stage-result.ts';
+import { appendOwnershipRow, helperKind, locateOwnershipRows, type SessionOwnershipRow } from './session-ownership.ts';
+import type { OwnedSessionCost } from './sdk-task-cost/meter.ts';
 
 function makeTurn(overrides: Partial<ExternalSessionTurn> = {}): ExternalSessionTurn {
   return {
@@ -76,17 +82,19 @@ function scanResult(sessions: ExternalSessionUsageRecord[], source: 'claude' | '
   };
 }
 
-const codingStageResults: StageResultMap = {
-  coding: {
-    stage: 'coding',
-    status: 'completed',
-    startedAt: '2026-09-01T09:55:00Z',
-    finishedAt: '2026-09-01T11:00:00Z',
-    agent: 'claude',
-    model: 'claude-opus-4-6',
-    notes: '',
-  },
-};
+function owner(sessionRef: string, kind: SessionOwnershipRow['kind'], model = 'claude-opus-4-6'): SessionOwnershipRow {
+  const stage = kind === 'planning' || kind === 'coding' || kind === 'review' ? kind : undefined;
+  return { sessionRef, harness: 'claude-code', kind, ...(stage ? { stage } : {}), model, launchedAt: '2026-09-01T09:55:00.000Z', attemptId: `${kind}@abc1234#1`, cwd: '/wt' };
+}
+
+function sdkCost(overrides: Partial<OwnedSessionCost> = {}): OwnedSessionCost {
+  return { totalUsd: 22.5, actualUsd: null, estimatedUsd: 22.5, coverage: 'complete', costSource: 'local_estimate', pricingRevision: '2026-10-01', ...overrides };
+}
+
+const cleanups: Array<() => void> = [];
+afterEach(() => {
+  while (cleanups.length > 0) cleanups.pop()?.();
+});
 
 const routing: EvalRouting = {
   coder: {
@@ -95,11 +103,6 @@ const routing: EvalRouting = {
     resolvedModelId: 'claude-opus-4-6',
     sourceLayer: 'config',
   },
-};
-
-const PRICING = {
-  'claude-opus-4-6': { inputCostPerMTok: 15, outputCostPerMTok: 75 },
-  'free-model': { inputCostPerMTok: 0, outputCostPerMTok: 0 },
 };
 
 describe('buildExecutionEconomics', () => {
@@ -118,7 +121,6 @@ describe('buildExecutionEconomics', () => {
       scanResults: [scanResult([claudeSession], 'claude'), scanResult([codexSession], 'codex')],
       issueId: 'HOK-2958',
       branch: 'task/slug',
-      pricingTable: PRICING,
     });
 
     assert.equal(blocks.length, 2);
@@ -141,20 +143,23 @@ describe('buildExecutionEconomics', () => {
     }
   });
 
-  it('joins a session to its stage window with timestamp_window confidence and route intent', () => {
+  // protects: stage labels guessed from timestamps instead of read from the launch row
+  it('labels a session from its launch row and joins that stage\'s route intent', () => {
     const blocks = buildExecutionEconomics({
       scanResults: [scanResult([makeSession()])],
       issueId: 'HOK-2958',
       branch: 'task/slug',
       routing,
-      stageResults: codingStageResults,
-      pricingTable: PRICING,
+      ownership: [owner('session-1', 'coding')],
     });
 
     const session = blocks[0].sessions[0];
-    assert.equal(session.stageRole.value, 'coding');
-    assert.equal(session.stageRole.confidence, 'timestamp_window');
-    assert.ok(session.stageRole.evidence?.includes('.coding-result.json'));
+    assert.deepEqual(session.stageRole, {
+      value: 'coding',
+      kind: 'coding',
+      confidence: 'launch_record',
+      evidence: 'launch coding@abc1234#1 at 2026-09-01T09:55:00.000Z',
+    });
     assert.equal(session.models.requested, 'alias:opus');
     assert.equal(session.models.resolved, 'claude-opus-4-6');
     assert.equal(session.models.executed, 'claude-opus-4-6');
@@ -163,56 +168,91 @@ describe('buildExecutionEconomics', () => {
     assert.equal(session.models.conflict, undefined);
   });
 
-  it('leaves sessions unattributed when stage windows are missing, and still persists them', () => {
+  // protects: HOK-3114 — a reaped task's coding session reported unlabelled because no live stage result existed
+  it('HOK-3114 replay: an archived ownership row labels the post-reap coding session', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'economics-archive-'));
+    cleanups.push(() => rmSync(repo, { recursive: true, force: true }));
+    const archive = join(repo, '.wavemill', 'evals', 'artifacts', 'HOK-3114');
+    mkdirSync(archive, { recursive: true });
+    appendOwnershipRow(archive, {
+      sessionRef: 'hok-3114-coding',
+      harness: 'claude-code',
+      kind: 'coding',
+      model: 'claude-opus-4-6',
+      launchedAt: '2026-10-14T13:25:39.000Z',
+    });
+    // Live feature dir is gone after reap; only the archive remains.
+    const { rows } = locateOwnershipRows({ repoDir: repo, issueId: 'HOK-3114', slug: 'task-identity', worktreePath: join(repo, 'reaped') });
     const blocks = buildExecutionEconomics({
-      scanResults: [scanResult([makeSession()])],
+      scanResults: [scanResult([makeSession({
+        sessionId: 'hok-3114-coding',
+        turns: [makeTurn({ timestamp: '2026-10-14T13:26:00Z' }), makeTurn({ turnId: 't2', timestamp: '2026-10-14T13:38:00Z' })],
+      })])],
+      ownership: rows,
+    });
+    assert.equal(blocks[0].sessions[0].stageRole.value, 'coding');
+    assert.equal(blocks[0].sessions[0].stageRole.confidence, 'launch_record');
+  });
+
+  // protects: helper calls that ran while review was open being labelled review (858 sessions in Oct 2026)
+  it('labels a helper inside the review window as its helper kind, with its own cost', () => {
+    const blocks = buildExecutionEconomics({
+      scanResults: [scanResult([
+        makeSession({ sessionId: 'review-session' }),
+        makeSession({ sessionId: 'helper-session', turns: [makeTurn({ model: 'claude-haiku-4-5' })] }),
+      ])],
       routing,
-      pricingTable: PRICING,
+      ownership: [owner('review-session', 'review'), owner('helper-session', helperKind('task-packet-validation'), 'claude-haiku-4-5')],
+      sessionCosts: new Map([
+        ['review-session', sdkCost()],
+        ['helper-session', sdkCost({ totalUsd: 0.06, estimatedUsd: 0.06 })],
+      ]),
     });
-
-    const session = blocks[0].sessions[0];
-    assert.equal(session.stageRole.value, null);
-    assert.equal(session.stageRole.confidence, 'unattributed');
-    // Without a stage there is no role whose route applies — no coerced join.
-    assert.equal(session.models.requested, null);
-    assert.equal(session.models.resolved, null);
-    assert.equal(session.models.executed, 'claude-opus-4-6');
+    const [review, helper] = blocks[0].sessions;
+    assert.equal(review.stageRole.value, 'review');
+    assert.deepEqual([helper.stageRole.value, helper.stageRole.kind], [null, 'helper:task-packet-validation']);
+    // A helper has no stage, so no route intent is joined to it.
+    assert.equal(helper.models.resolved, null);
+    assert.equal(helper.estimatedCostUsd, 0.06);
   });
 
-  it('marks ambiguous multi-stage overlap as unattributed with evidence', () => {
-    const overlappingStages: StageResultMap = {
-      ...codingStageResults,
-      review: {
-        stage: 'review',
-        status: 'completed',
-        startedAt: '2026-09-01T09:50:00Z',
-        finishedAt: '2026-09-01T11:30:00Z',
-        agent: 'claude',
-        model: 'claude-opus-4-6',
-        notes: '',
-      },
-    };
+  // protects: Ready remediation spend ($387 in Oct 2026) staying unlabelled — it has no stage result
+  it('labels a Ready remediation session ready-remediation', () => {
     const blocks = buildExecutionEconomics({
-      scanResults: [scanResult([makeSession()])],
-      stageResults: overlappingStages,
-      pricingTable: PRICING,
+      scanResults: [scanResult([makeSession({ sessionId: 'ready-fix' })])],
+      ownership: [owner('ready-fix', 'ready-remediation')],
     });
-
-    const session = blocks[0].sessions[0];
-    assert.equal(session.stageRole.value, null);
-    assert.equal(session.stageRole.confidence, 'unattributed');
-    assert.ok(session.stageRole.evidence?.includes('ambiguous'));
-    assert.ok(session.diagnostics.some((d) => d.includes('ambiguous')));
+    assert.deepEqual(
+      [blocks[0].sessions[0].stageRole.value, blocks[0].sessions[0].stageRole.kind, blocks[0].sessions[0].stageRole.confidence],
+      [null, 'ready-remediation', 'launch_record'],
+    );
   });
 
+  // protects: an operator-typed session in the worktree silently charged to the task
+  it('reports a session no launch recorded as operator/unowned with no cost', () => {
+    const blocks = buildExecutionEconomics({
+      scanResults: [scanResult([makeSession({ sessionId: 'typed-by-hand' })])],
+      routing,
+      ownership: [owner('some-other-session', 'coding')],
+      sessionCosts: new Map([['typed-by-hand', sdkCost()]]),
+    });
+    const session = blocks[0].sessions[0];
+    assert.deepEqual([session.stageRole.value, session.stageRole.kind, session.stageRole.confidence], [null, 'operator', 'unowned']);
+    assert.equal(session.estimatedCostUsd, null);
+    assert.equal(session.costSource, 'none');
+    assert.equal(session.coverage, 'unavailable');
+    assert.ok(session.diagnostics.includes('unowned session: excluded from task cost'));
+    assert.equal(session.models.resolved, null);
+  });
+
+  // protects: a route/telemetry disagreement being coerced away
   it('emits a visible conflict when the resolved route model was never executed', () => {
     const blocks = buildExecutionEconomics({
       scanResults: [scanResult([
         makeSession({ turns: [makeTurn({ model: 'claude-sonnet-5' })] }),
       ])],
       routing,
-      stageResults: codingStageResults,
-      pricingTable: { ...PRICING, 'claude-sonnet-5': { inputCostPerMTok: 3, outputCostPerMTok: 15 } },
+      ownership: [owner('session-1', 'coding', 'claude-sonnet-5')],
     });
 
     const session = blocks[0].sessions[0];
@@ -223,50 +263,41 @@ describe('buildExecutionEconomics', () => {
     assert.equal(session.models.conflict?.otherResolvedModel, 'claude-sonnet-5');
     // Both values remain visible — nothing is coerced.
     assert.ok(session.models.conflict?.detail.includes('claude-opus-4-6'));
+    assert.ok(session.models.conflict?.detail.includes('launch row agrees with telemetry'));
   });
 
-  it('estimates cost from the pricing table and stamps provenance', () => {
+  // protects: per-session cost diverging from the SDK report (HOK-3237: claude-code $43.71 from both)
+  it('copies per-session cost from the @hokusai/costs report', () => {
     const now = () => new Date('2026-09-02T00:00:00Z');
     const blocks = buildExecutionEconomics({
       scanResults: [scanResult([makeSession()])],
-      pricingTable: PRICING,
-      pricingRevision: 'registry-2026-09',
+      ownership: [owner('session-1', 'coding')],
+      sessionCosts: new Map([['session-1', sdkCost({ totalUsd: 43.71, estimatedUsd: 43.71 })]]),
       now,
     });
 
     const session = blocks[0].sessions[0];
-    // 1M input @ $15/MTok + 100K output @ $75/MTok = 15 + 7.5
-    assert.equal(session.estimatedCostUsd, 22.5);
+    assert.equal(session.estimatedCostUsd, 43.71);
     assert.equal(session.actualCostUsd, null);
     assert.equal(session.costSource, 'local_estimate');
-    assert.equal(session.pricingRevision, 'registry-2026-09');
+    assert.equal(session.coverage, 'complete');
+    assert.equal(session.pricingRevision, '2026-10-01');
     assert.equal(session.pricingTimestamp, '2026-09-02T00:00:00.000Z');
     assert.equal(session.fieldAvailability.actualCost, 'unavailable');
     assert.equal(blocks[0].collectedAt, '2026-09-02T00:00:00.000Z');
   });
 
-  it('never fabricates zero for unpriced models, but allows known_zero with evidence', () => {
-    const unpricedBlocks = buildExecutionEconomics({
-      scanResults: [scanResult([
-        makeSession({ turns: [makeTurn({ model: 'mystery-model' })] }),
-      ])],
-      pricingTable: PRICING,
+  // protects: an owned session the SDK could not cost being presented as $0
+  it('never fabricates zero for an owned session the SDK report left unpriced', () => {
+    const blocks = buildExecutionEconomics({
+      scanResults: [scanResult([makeSession({ turns: [makeTurn({ model: 'mystery-model' })] })])],
+      ownership: [owner('session-1', 'coding')],
+      sessionCosts: new Map([['session-1', sdkCost({ totalUsd: null, estimatedUsd: null, coverage: 'partial', costSource: 'none' })]]),
     });
-    const unpricedSession = unpricedBlocks[0].sessions[0];
-    assert.equal(unpricedSession.estimatedCostUsd, null);
-    assert.equal(unpricedSession.costSource, 'none');
-    assert.equal(unpricedSession.coverage, 'partial');
-    assert.ok(unpricedSession.diagnostics.some((d) => d.includes('unpriced')));
-
-    const zeroBlocks = buildExecutionEconomics({
-      scanResults: [scanResult([
-        makeSession({ turns: [makeTurn({ model: 'free-model' })] }),
-      ])],
-      pricingTable: PRICING,
-    });
-    const zeroSession = zeroBlocks[0].sessions[0];
-    assert.equal(zeroSession.estimatedCostUsd, 0);
-    assert.equal(zeroSession.coverage, 'known_zero');
+    const session = blocks[0].sessions[0];
+    assert.equal(session.estimatedCostUsd, null);
+    assert.equal(session.costSource, 'none');
+    assert.equal(session.coverage, 'partial');
   });
 
   it('caps per-turn detail while preserving model segments and real counts', () => {
@@ -278,7 +309,6 @@ describe('buildExecutionEconomics', () => {
       }));
     const blocks = buildExecutionEconomics({
       scanResults: [scanResult([makeSession({ turns: manyTurns })])],
-      pricingTable: { ...PRICING, 'claude-sonnet-5': { inputCostPerMTok: 3, outputCostPerMTok: 15 } },
       turnCap: 4,
     });
 
@@ -312,7 +342,6 @@ describe('buildExecutionEconomics', () => {
           usage: { inputTokens: 100, outputTokens: 10, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null },
         }),
       ])],
-      pricingTable: PRICING,
     });
 
     const session = blocks[0].sessions[0];
@@ -327,7 +356,6 @@ describe('buildExecutionEconomics', () => {
   it('skips scan results without external sessions', () => {
     const blocks = buildExecutionEconomics({
       scanResults: [null, undefined, { models: {}, sessionCount: 1, turnCount: 1, source: 'claude' }],
-      pricingTable: PRICING,
     });
     assert.deepEqual(blocks, []);
   });

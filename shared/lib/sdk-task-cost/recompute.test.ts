@@ -1,101 +1,94 @@
+/**
+ * Backfill recomputation from stored per-harness summaries (HOK-3328): the
+ * `@hokusai/costs` total over every stored summary, passed through verbatim.
+ */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { createTaskCostTracker } from '@hokusai/costs';
 import type { EvalRecord } from '../eval-schema.ts';
-import { repairPooledWorkflowCost } from '../workflow-cost-pool-repair.ts';
-import { buildSdkTaskCostSummaries, type CollectSdkTaskCostSummariesInput } from './collect.ts';
-import { loadSdkTaskCostFixture } from './fixtures.ts';
-import { recomputeRecordWorkflowCost } from './recompute.ts';
+import { fixtureTaskCostSummaries } from './fixtures.ts';
+import { isUnrecomputableNativeFirstCost, recomputeRecordWorkflowCost } from './recompute.ts';
 
-function fixtureSummaries(name: string) {
-  const fixture = loadSdkTaskCostFixture(name);
-  return buildSdkTaskCostSummaries({
-    scanResults: fixture.scanResults,
-    taskId: fixture.taskId,
-    pricingTable: fixture.pricingTable,
-    now: () => new Date(fixture.now),
+/** HOK-3237's stored summaries: claude-code $43.71 (complete), native $4.93 (provider-reported). */
+function hok3237Summaries() {
+  const tracker = createTaskCostTracker({
+    taskId: 'HOK-3237',
+    priceOverrides: [{ model: 'claude-opus-4-7', inputPerMTokUsd: 15, outputPerMTokUsd: 75, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25 }],
+    now: () => new Date('2026-10-27T14:43:00.000Z'),
   });
+  tracker.recordUsage({
+    harness: 'claude-code',
+    model: 'claude-opus-4-7',
+    usage: { inputTokens: 0, outputTokens: 582_800, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 },
+    sessionId: 'claude-1',
+  });
+  tracker.recordUsage({
+    harness: 'native',
+    model: 'qwen-3-coder',
+    usage: { inputTokens: 100_000, outputTokens: 20_000, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: null },
+    providerCostUsd: 4.93,
+    sessionId: 'wm-coding-HOK-3237',
+  });
+  return [...tracker.summary().summaries];
 }
 
-function record(metadata?: Record<string, unknown>): EvalRecord {
+function record(overrides: Partial<EvalRecord>): EvalRecord {
   return {
-    issueId: 'HOK-42',
-    agentType: 'claude',
-    ...(metadata ? { metadata } : {}),
-  } as unknown as EvalRecord;
+    id: 'eval-1',
+    schemaVersion: '1.55.0',
+    originalPrompt: 'p',
+    modelId: 'm',
+    modelVersion: 'm',
+    score: 1,
+    scoreBand: 'Full Success',
+    timeSeconds: 1,
+    timestamp: '2026-10-27T14:43:00.000Z',
+    interventionRequired: false,
+    interventionCount: 0,
+    interventionDetails: [],
+    rationale: 'r',
+    issueId: 'HOK-3237',
+    ...overrides,
+  } as EvalRecord;
 }
 
-const JOINED = { worktreePath: '/w/task', branchName: 'task/x' };
-
-describe('recomputeRecordWorkflowCost', () => {
-  it('needs the worktree/branch join from the record metadata', () => {
-    const collect = () => {
-      throw new Error('must not collect without a join');
-    };
-    assert.deepEqual(recomputeRecordWorkflowCost(record(), { repoDir: '/r', collect }), {
-      recomputed: null,
-      reason: 'No metadata available for recovery',
-    });
-    assert.deepEqual(recomputeRecordWorkflowCost(record({ worktreePath: '/w' }), { repoDir: '/r', collect }), {
-      recomputed: null,
-      reason: 'Missing worktreePath or branchName in metadata',
-    });
+describe('recomputeRecordWorkflowCost (HOK-3328)', () => {
+  // protects: HOK-3237's stored $4.93 (native-first) never being corrected to the $48.64 total
+  it('recomputes the native-first cost as the SDK total over every stored summary', () => {
+    const recovery = recomputeRecordWorkflowCost(record({ workflowCost: 4.93, taskCostSummary: hok3237Summaries() }));
+    assert.ok(recovery.recomputed, recovery.reason);
+    assert.ok(Math.abs(recovery.recomputed.cost - 48.64) < 1e-9, String(recovery.recomputed.cost));
+    assert.deepEqual(recovery.recomputed.byHarness, { 'claude-code': 43.71, native: 4.93 });
+    assert.equal(recovery.recomputed.attribution?.source, 'multi');
   });
 
-  it('recomputes with the SDK engine from the joined sessions', () => {
-    const summaries = fixtureSummaries('claude-success')!;
-    let received: CollectSdkTaskCostSummariesInput | undefined;
-    const pricingTable = { 'claude-opus-4': { inputCostPerMTok: 15, outputCostPerMTok: 75 } };
-    const recovery = recomputeRecordWorkflowCost(record(JOINED), {
-      repoDir: '/r',
-      pricingTable,
-      collect: (input) => {
-        received = input;
-        return summaries;
-      },
-    });
-    assert.deepEqual(received, { ...JOINED, repoDir: '/r', issueId: 'HOK-42', pricingTable });
+  // protects: the backfill re-pricing stored figures (a second engine) instead of passing them through
+  it('passes stored charges and estimates through verbatim', () => {
+    const summaries = fixtureTaskCostSummaries('multi-harness')!;
+    const recovery = recomputeRecordWorkflowCost(record({ taskCostSummary: summaries }));
     assert.ok(recovery.recomputed);
-    assert.ok(Math.abs(recovery.recomputed.cost - summaries[0].total_cost_usd!) < 1e-9);
-    assert.equal(recovery.recomputed.attribution?.source, 'claude');
-    assert.ok(recovery.recomputed.tokenUsage && Object.keys(recovery.recomputed.tokenUsage).length > 0);
+    const stored = Object.fromEntries(summaries.map((summary) => [summary.harness, summary.total_cost_usd]));
+    assert.deepEqual(recovery.recomputed.byHarness, stored);
   });
 
-  it('never recovers an unpriced run as $0', () => {
-    const recovery = recomputeRecordWorkflowCost(record(JOINED), {
-      repoDir: '/r',
-      collect: () => fixtureSummaries('native-unpriced-model'),
-    });
-    assert.equal(recovery.recomputed, null);
-    assert.match(recovery.reason ?? '', /No priced sessions \(coverage partial\)/);
+  // protects: a record with nothing to recompute from being rewritten to $0
+  it('reports records without stored summaries or without a priced total', () => {
+    assert.match(recomputeRecordWorkflowCost(record({ workflowCost: 3 })).reason ?? '', /No stored taskCostSummary/);
+    const unpriced = recomputeRecordWorkflowCost(record({ taskCostSummary: fixtureTaskCostSummaries('native-missing-usage')! }));
+    assert.equal(unpriced.recomputed, null);
+    assert.match(unpriced.reason ?? '', /No priced sessions/);
   });
 
-  it('reports no-session and collector failures as reasons the backfill maps to a status', () => {
-    const none = recomputeRecordWorkflowCost(record(JOINED), { repoDir: '/r', collect: () => null });
-    assert.equal(none.recomputed, null);
-    // tools/backfill-workflow-cost-status.ts maps "No session" → no_sessions.
-    assert.match(none.reason ?? '', /No session/);
-
-    const failed = recomputeRecordWorkflowCost(record(JOINED), {
-      repoDir: '/r',
-      collect: () => {
-        throw new Error('unreadable transcript');
-      },
-    });
-    assert.equal(failed.recomputed, null);
-    assert.match(failed.reason ?? '', /SDK task-cost collection failed: unreadable transcript/);
-  });
-
-  it('feeds the HOK-3256 pooled-cost repair', () => {
-    const pooled = {
-      ...record(JOINED),
-      workflowCost: 99,
-      workflowCostStatus: 'success',
-      workflowCostAttribution: { source: 'native', coverage: 'complete', sessions: 200, turns: 400, pricedSessions: 200, unpricedSessions: 0, models: [] },
-    } as unknown as EvalRecord;
-    const recovery = recomputeRecordWorkflowCost(pooled, { repoDir: '/r', collect: () => fixtureSummaries('claude-success') });
-    const repaired = repairPooledWorkflowCost(pooled, recovery.recomputed, recovery.reason ?? 'unknown');
-    assert.equal(repaired.workflowCostStatus, 'success');
-    assert.notEqual(repaired.workflowCost, 99);
-    assert.equal(repaired.workflowCostAttribution?.source, 'claude');
+  // protects: pre-August costs (before native-first turned destructive) being flagged, or later ones missed
+  it('flags costed records since 2026-08 that cannot be recomputed', () => {
+    assert.equal(isUnrecomputableNativeFirstCost(record({ workflowCost: 4, timestamp: '2026-09-01T00:00:00.000Z' })), true);
+    assert.equal(isUnrecomputableNativeFirstCost(record({ workflowCost: 4, timestamp: '2026-07-31T23:59:59.000Z' })), false);
+    assert.equal(isUnrecomputableNativeFirstCost(record({ timestamp: '2026-09-01T00:00:00.000Z' })), false);
+    assert.equal(isUnrecomputableNativeFirstCost(record({ workflowCost: 4, taskCostSummary: hok3237Summaries() })), false);
+    assert.equal(isUnrecomputableNativeFirstCost(record({
+      workflowCost: 4,
+      timestamp: '2026-09-01T00:00:00.000Z',
+      workflowCostUnreliable: { reason: 'native_first_harness_selection', markedAt: '2026-10-28T00:00:00.000Z' },
+    })), false);
   });
 });

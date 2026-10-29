@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { resolveExecutedModelFromSessions, type ExecutedModelResolverAgent } from '../shared/lib/executed-model-resolver.ts';
 import { executionTruthFields, isValidStage, type StageName, type StageResult } from '../shared/lib/stage-result.ts';
+import { readOwnershipRows, type OwnershipStage } from '../shared/lib/session-ownership.ts';
 
 type BackfillAction =
   | 're-derived'
@@ -130,16 +131,18 @@ function processStageFile(input: {
   if (!agent) {
     return { file: input.filePath, stage: input.stage, action: 'skipped', applied: false, reason: 'unsupported_agent' };
   }
-  if (!input.worktreePath || !input.branchName || !result.startedAt || !result.finishedAt) {
-    return { file: input.filePath, stage: input.stage, action: 'missing-input', applied: false, reason: 'missing_worktree_branch_or_window' };
+  if (!input.worktreePath || !input.branchName) {
+    return { file: input.filePath, stage: input.stage, action: 'missing-input', applied: false, reason: 'missing_worktree_or_branch' };
   }
 
+  // The stage result and its ownership record live side by side, live and
+  // archived alike (HOK-3328).
   const resolved = resolveExecutedModelFromSessions({
     worktreePath: input.worktreePath,
     branchName: input.branchName,
     agent,
-    startedAt: result.startedAt,
-    finishedAt: result.finishedAt,
+    stage: input.stage as OwnershipStage,
+    ownership: readOwnershipRows(dirname(input.filePath)),
   });
   if (!resolved.executedModel || resolved.evidenceStatus !== 'direct') {
     return {

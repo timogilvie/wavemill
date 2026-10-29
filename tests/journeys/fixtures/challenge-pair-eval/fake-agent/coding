@@ -1,5 +1,0 @@
-# shellcheck shell=bash
-# Fake coding for the challenge-pair journey: leave session telemetry, then the
-# shared default. See session-telemetry.sh.
-source "$FAKE_AGENT_SCRIPT_DIR/session-telemetry.sh"
-default_coding

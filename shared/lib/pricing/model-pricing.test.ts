@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { clearConfigCache } from '../config.ts';
 import {
-  computeModelCost,
   computeNormalizedEvaluationCost,
   isExplicitZeroPricing,
   loadConfiguredPricingTable,
@@ -14,49 +13,6 @@ import {
 } from './model-pricing.ts';
 
 const MTOK = 1_000_000;
-
-describe('computeModelCost', () => {
-  it('prices every dimension with explicit cache rates', () => {
-    const pricing: ModelPricing = {
-      inputCostPerMTok: 15,
-      outputCostPerMTok: 75,
-      cacheWriteCostPerMTok: 18.75,
-      cacheReadCostPerMTok: 1.5,
-    };
-    const cost = computeModelCost(
-      { inputTokens: MTOK, cacheCreationTokens: 500_000, cacheReadTokens: 2 * MTOK, outputTokens: 100_000 },
-      pricing,
-    );
-    // 15 input + 9.375 cache write + 3 cache read + 7.5 output
-    assert.ok(Math.abs(cost - 34.875) < 1e-9, `Expected 34.875, got ${cost}`);
-  });
-
-  it('honours explicit zero cache rates instead of the multipliers', () => {
-    const pricing: ModelPricing = { inputCostPerMTok: 10, outputCostPerMTok: 50, cacheWriteCostPerMTok: 0, cacheReadCostPerMTok: 0 };
-    const cost = computeModelCost(
-      { inputTokens: MTOK, cacheCreationTokens: MTOK, cacheReadTokens: MTOK, outputTokens: MTOK },
-      pricing,
-    );
-    assert.equal(cost, 60);
-  });
-
-  it('derives cache rates from the input rate (1.25x write, 0.1x read) when unset', () => {
-    const cost = computeModelCost(
-      { inputTokens: MTOK, cacheCreationTokens: MTOK, cacheReadTokens: MTOK, outputTokens: MTOK },
-      { inputCostPerMTok: 10, outputCostPerMTok: 50 },
-    );
-    // 10 input + 12.5 cache write + 1 cache read + 50 output
-    assert.ok(Math.abs(cost - 73.5) < 1e-9, `Expected 73.50, got ${cost}`);
-  });
-
-  it('returns 0 for zero tokens', () => {
-    const cost = computeModelCost(
-      { inputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, outputTokens: 0 },
-      { inputCostPerMTok: 15, outputCostPerMTok: 75 },
-    );
-    assert.equal(cost, 0);
-  });
-});
 
 describe('isExplicitZeroPricing', () => {
   it('is true only when every configured rate is zero', () => {
@@ -107,11 +63,13 @@ describe('computeNormalizedEvaluationCost', () => {
     assert.equal(result.basis, 'incomplete');
   });
 
-  it('prices complete usage with the shared formula', () => {
+  // protects: promotion evaluations priced with a different formula than @hokusai/costs
+  it('prices complete usage through @hokusai/costs', () => {
     const usage = { inputTokens: MTOK, outputTokens: MTOK, cacheCreationTokens: MTOK, cacheReadTokens: MTOK };
     const result = computeNormalizedEvaluationCost(usage, pricing, { requireExplicitCache: true, pricingRevision: 'r1' });
     assert.deepEqual(result, {
-      costUsd: computeModelCost(usage, pricing),
+      // 10 input + 50 output + 12.5 cache write + 1 cache read
+      costUsd: 73.5,
       basis: 'explicit_pricing',
       coverage: 'complete',
       pricingRevision: 'r1',

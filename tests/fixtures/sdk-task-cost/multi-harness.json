@@ -1,5 +1,5 @@
 {
-  "description": "One Claude Code and one Codex session joined to the same task: one SDK summary per harness (aggregateTaskCost never mixes harnesses or provider contracts), ordered native \u2192 claude-code \u2192 codex.",
+  "description": "One Claude Code and one Codex session joined to the same task: one SDK summary per harness (aggregateTaskCost never mixes harnesses or provider contracts), ordered native → claude-code → codex.",
   "taskId": "HOK-0010",
   "now": "2026-10-01T00:00:00.000Z",
   "pricingTable": {
@@ -15,156 +15,66 @@
       "cacheReadCostPerMTok": 0.125
     }
   },
-  "scanResults": [
+  "records": [
     {
-      "models": {
-        "gpt-5-codex": {
-          "inputTokens": 1500,
-          "cacheCreationTokens": 0,
-          "cacheReadTokens": 400,
-          "outputTokens": 225
-        }
+      "harness": "codex",
+      "model": "gpt-5-codex",
+      "usage": {
+        "inputTokens": 1000,
+        "outputTokens": 100,
+        "cacheReadTokens": 400,
+        "cacheWriteTokens": null,
+        "reasoningTokens": 50
       },
-      "sessionCount": 1,
-      "turnCount": 1,
-      "source": "codex",
-      "externalSessions": [
-        {
-          "sessionId": "019a-codex-session",
-          "harness": "codex",
-          "harnessVersion": "0.46.0",
-          "triggerSource": "codex_exec",
-          "triggerProvenance": "codex.session_meta.originator",
-          "startedAt": "2026-09-30T09:00:00.000Z",
-          "endedAt": "2026-09-30T09:10:00.000Z",
-          "turnCount": 2,
-          "turns": [
-            {
-              "turnId": "codex-turn-1",
-              "parentId": null,
-              "isSubagent": null,
-              "model": "gpt-5-codex",
-              "timestamp": "2026-09-30T09:00:00.000Z",
-              "usage": {
-                "inputTokens": 1000,
-                "outputTokens": 100,
-                "cacheReadTokens": 400,
-                "cacheWriteTokens": null,
-                "reasoningTokens": 50
-              },
-              "usageAvailable": true,
-              "actualCostUsd": null
-            },
-            {
-              "turnId": "codex-turn-2",
-              "parentId": "codex-turn-1",
-              "isSubagent": null,
-              "model": "gpt-5-codex",
-              "timestamp": "2026-09-30T09:10:00.000Z",
-              "usage": {
-                "inputTokens": 500,
-                "outputTokens": 50,
-                "cacheReadTokens": 0,
-                "cacheWriteTokens": null,
-                "reasoningTokens": 25
-              },
-              "usageAvailable": true,
-              "actualCostUsd": null
-            }
-          ],
-          "usage": {
-            "inputTokens": 1500,
-            "outputTokens": 150,
-            "cacheReadTokens": 400,
-            "cacheWriteTokens": null,
-            "reasoningTokens": 75
-          },
-          "actualCostUsd": null,
-          "diagnostics": []
-        }
-      ]
-    },
-    {
-      "models": {
-        "claude-opus-4": {
-          "inputTokens": 3000,
-          "cacheCreationTokens": 100,
-          "cacheReadTokens": 500,
-          "outputTokens": 500
-        }
-      },
-      "sessionCount": 1,
-      "turnCount": 2,
-      "source": "claude",
-      "externalSessions": [
-        {
-          "sessionId": "0b9c6a52-claude-session",
-          "harness": "claude-code",
-          "harnessVersion": "2.1.270",
-          "triggerSource": "sdk",
-          "triggerProvenance": "claude_code.promptSource",
-          "startedAt": "2026-09-30T10:00:00.000Z",
-          "endedAt": "2026-09-30T10:05:00.000Z",
-          "turnCount": 2,
-          "turns": [
-            {
-              "turnId": "turn-a",
-              "parentId": null,
-              "isSubagent": false,
-              "model": "claude-opus-4",
-              "timestamp": "2026-09-30T10:00:00.000Z",
-              "usage": {
-                "inputTokens": 1000,
-                "outputTokens": 200,
-                "cacheReadTokens": 500,
-                "cacheWriteTokens": 100,
-                "reasoningTokens": 50
-              },
-              "usageAvailable": true,
-              "actualCostUsd": null
-            },
-            {
-              "turnId": "turn-b",
-              "parentId": "turn-a",
-              "isSubagent": true,
-              "model": "claude-opus-4",
-              "timestamp": "2026-09-30T10:05:00.000Z",
-              "usage": {
-                "inputTokens": 2000,
-                "outputTokens": 300,
-                "cacheReadTokens": 0,
-                "cacheWriteTokens": 0,
-                "reasoningTokens": 0
-              },
-              "usageAvailable": true,
-              "actualCostUsd": null
-            }
-          ],
-          "usage": {
-            "inputTokens": 3000,
-            "outputTokens": 500,
-            "cacheReadTokens": 500,
-            "cacheWriteTokens": 100,
-            "reasoningTokens": 50
-          },
-          "actualCostUsd": null,
-          "diagnostics": []
-        }
-      ]
-    }
-  ],
-  "expected": [
-    {
-      "harness": "claude-code",
-      "task_id": "HOK-0010",
-      "total_cost_usd": 0.085125,
-      "coverage": "complete"
+      "sessionId": "019a-codex-session",
+      "turnId": "codex-turn-1",
+      "eventId": "019a-codex-session:0",
+      "occurredAt": "2026-09-30T09:00:00.000Z"
     },
     {
       "harness": "codex",
-      "task_id": "HOK-0010",
-      "total_cost_usd": 0.004175,
-      "coverage": "complete"
+      "model": "gpt-5-codex",
+      "usage": {
+        "inputTokens": 500,
+        "outputTokens": 50,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": null,
+        "reasoningTokens": 25
+      },
+      "sessionId": "019a-codex-session",
+      "turnId": "codex-turn-2",
+      "eventId": "019a-codex-session:1",
+      "occurredAt": "2026-09-30T09:10:00.000Z"
+    },
+    {
+      "harness": "claude-code",
+      "model": "claude-opus-4",
+      "usage": {
+        "inputTokens": 1000,
+        "outputTokens": 200,
+        "cacheReadTokens": 500,
+        "cacheWriteTokens": 100,
+        "reasoningTokens": 50
+      },
+      "sessionId": "0b9c6a52-claude-session",
+      "turnId": "turn-a",
+      "eventId": "0b9c6a52-claude-session:0",
+      "occurredAt": "2026-09-30T10:00:00.000Z"
+    },
+    {
+      "harness": "claude-code",
+      "model": "claude-opus-4",
+      "usage": {
+        "inputTokens": 2000,
+        "outputTokens": 300,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0
+      },
+      "sessionId": "0b9c6a52-claude-session",
+      "turnId": "turn-b",
+      "eventId": "0b9c6a52-claude-session:1",
+      "occurredAt": "2026-09-30T10:05:00.000Z"
     }
   ]
 }

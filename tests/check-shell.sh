@@ -88,6 +88,7 @@ for f in \
   "$LIB_DIR"/task-progress.sh \
   "$LIB_DIR"/wavemill-reliability-refresh.sh \
   "$LIB_DIR"/task-identity.sh \
+  "$LIB_DIR"/session-ownership.sh \
   "$LIB_DIR"/terminal-backend.sh \
   "$LIB_DIR"/challenge-arms.sh \
   "$LIB_DIR"/transient-marker.sh \
@@ -295,10 +296,9 @@ for f in \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3316/fake-agent/review \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3316/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/challenge-pair-eval.journey.sh \
+  "$REPO_DIR"/tests/journeys/grounded-overlap.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/bin/claude \
   "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/fake-agent/session-telemetry.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/fake-agent/planning \
-  "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/fake-agent/review \
   "$REPO_DIR"/tests/journeys/ready-fail-remediate.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/ready-fail-remediate/fake-agent/coding \
@@ -2152,8 +2152,9 @@ for captured in "${TMUX_CAPTURE[@]}"; do
 done
 
 if [[ -f "$CODEX_LAUNCHER_PATH" ]] \
-  && grep -q 'codex --model gpt-5\.6-terra --dangerously-bypass-approvals-and-sandbox --no-daemon --no-alt-screen "\$(cat ' "$CODEX_LAUNCHER_PATH"; then
-  pass "interactive Codex launcher uses interactive codex with bypass and no-daemon flags"
+  && grep -q 'codex --model gpt-5\.6-terra --dangerously-bypass-approvals-and-sandbox --no-daemon --no-alt-screen "\$WM_LAUNCH_NONCE_LINE$' "$CODEX_LAUNCHER_PATH" \
+  && grep -q '^\$(cat ' "$CODEX_LAUNCHER_PATH"; then
+  pass "interactive Codex launcher uses interactive codex with bypass and no-daemon flags (prompt led by the launch nonce)"
 else
   fail "interactive Codex launcher is missing interactive codex flags"
 fi

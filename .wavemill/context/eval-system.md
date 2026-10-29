@@ -39,11 +39,13 @@ Provisional model-identity holds are enforced at read time through `shared/lib/m
 - Keep `shared/lib/eval-validator.ts` as the single authoritative source of eval validation error codes; tolerant readers may continue skipping malformed rows silently, but explicit validation must flow through that module.
 - Route fallback telemetry through `appendEvalRecord()` so prompt-registry and aggregation tooling continue to observe a single eval pipeline.
 - Treat telemetry writes as best-effort metadata. Fallback logging must never change the success or failure semantics of the LLM call itself.
+- Read session attribution from `.session-ownership.jsonl` (`shared/lib/session-ownership.ts`, HOK-3328), not from timestamp windows: `workflowCost` is the `@hokusai/costs` total over the owned sessions, and `executionEconomics` stage labels and stage `executedModel` read the launch row that names a session.
 
 ### DON'T
 
 - Do not introduce required fields for new training metadata.
 - Do not create a parallel fallback-event store unless aggregation consumers are intentionally being split.
+- Do not pick one harness's `taskCostSummary` as a task's cost or sum summaries in Wavemill; the SDK report is the total (`tools/check-session-ownership.ts`).
 - Do not make eval persistence failures fatal to workflow execution or `llm-cli` request handling.
 - Do not raw-write `.tasks[$issue].x = …` from post-reap-capable paths (background eval, job-poll completions, retry bookkeeping). Route them through `task_state_mutate_existing` in `wavemill-common.sh` so a late completion cannot recreate a reaped task as a slot-consuming stub (HOK-3125).
 

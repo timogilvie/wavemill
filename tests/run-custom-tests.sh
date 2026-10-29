@@ -74,7 +74,6 @@ CUSTOM_TS_TESTS=(
   shared/lib/workflow-router-hokusai.test.ts
   shared/lib/workflow-router-native-certification.test.ts
   shared/lib/workflow-router-quota-policy.test.ts
-  shared/lib/workflow-cost.test.ts
   shared/lib/native-agent/certification/router-filter.test.ts
   shared/lib/native-agent/patch-runtime-crash.test.ts
   shared/lib/incident-replay-harness.test.ts
