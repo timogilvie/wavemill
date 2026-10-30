@@ -17,6 +17,7 @@ describe('ready-remediation-disposition guard — retired holds', () => {
       patternsOf('a.sh', 'if [[ "$ready_status" == "running" ]] && [[ -n "$launch_head" ]] && [[ "$launch_head" == "$current_head" ]]; then\n'),
       ['same-head-hold'],
     );
+    // allow-template-curly: shell source text, not a template.
     assert.deepEqual(patternsOf('a.sh', '[[ "$current_head" != "${remediation_launch_head}" ]]\n'), ['same-head-hold']);
     assert.deepEqual(patternsOf('a.sh', 'launch_head=$(ready_remediation_launch_head "$dir")\n'), ['retired-shell-predicate']);
     assert.deepEqual(patternsOf('a.sh', 'if conflict_remediation_in_flight "$dir" "$head"; then\n'), ['retired-shell-predicate']);

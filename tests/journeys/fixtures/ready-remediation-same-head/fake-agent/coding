@@ -1,0 +1,60 @@
+# shellcheck shell=bash
+# Fake coder for the ready-remediation-same-head journey (HOK-3322), sourced
+# by tests/fakes/bin/claude.
+#
+# The first coding launch implements the task; that head fails CI (a flaky
+# check). Any later coding launch is Ready remediation (HOK-3272): like the
+# 2026-10-26 HOK-3316 agent, it diagnoses a flake and reruns CI instead of
+# committing, so the PR head never moves. The rerun goes green under the gh
+# fake's own state lock (same lock as the journey's ci_set_pr1), and the
+# rerun marker tells the journey's fake CI that this head now passes. The
+# agent watches the rerun go green, then ends its turn the way Claude Code
+# does — UserPromptSubmit, PreToolUse, Stop through the real hook adapter
+# (shared/hooks/claude-status-hook.sh) — and exits. It never writes .coding-complete and never prompts anyone: Ready must
+# notice on its own that the remediation settled at the launch head.
+coding_runs_file="$FAKE_ROOT/coding-runs-$WAVEMILL_ISSUE"
+coding_run=$(( $(cat "$coding_runs_file" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$coding_run" > "$coding_runs_file"
+
+if (( coding_run == 1 )); then
+  default_coding
+else
+  hook_adapter="$FAKE_AGENT_TOOLS_DIR/../shared/hooks/claude-status-hook.sh"
+  claude_hook() {
+    jq -cn --arg event "$1" '{hook_event_name: $event}' \
+      | WAVEMILL_DASHBOARD_PID="" bash "$hook_adapter" >/dev/null 2>&1 || true
+  }
+  printf '%s phase=coding issue=%s role=ready-remediation\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+  claude_hook UserPromptSubmit
+  printf '%s\n' "$*" > "$FAKE_ROOT/remediation-prompt-$coding_run.txt"
+
+  head="$(git rev-parse HEAD)"
+  for _ in $(seq 1 500); do
+    mkdir "$FAKE_GH_STATE.lock" 2>/dev/null && break
+    sleep 0.01
+  done
+  printf '%s' "$$" > "$FAKE_GH_STATE.lock/pid"
+  : > "$FAKE_ROOT/ci-rerun-$head"
+  jq '.checks.byPr["1"] = [{name: "unit-tests", conclusion: "SUCCESS"}]' "$FAKE_GH_STATE" > "$FAKE_GH_STATE.tmp.$$" \
+    && mv "$FAKE_GH_STATE.tmp.$$" "$FAKE_GH_STATE"
+  rm -rf "$FAKE_GH_STATE.lock"
+  printf '%s phase=coding issue=%s role=ready-remediation rerun-ci head=%s\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" "$head" >> "$FAKE_AGENT_LOG"
+
+  # Like the incident's agent, watch the rerun until it is green before ending
+  # the turn: wait until the mill has made two more passes, so its per-pass PR
+  # cache (HOK-3206) has observed the green rerun when Ready runs again.
+  mill_tick() {
+    local tick=0 _epoch
+    read -r tick _epoch < "$WAVEMILL_TICK_CLOCK_FILE" 2>/dev/null || true
+    [[ "$tick" =~ ^[0-9]+$ ]] || tick=0
+    printf '%s\n' "$tick"
+  }
+  claude_hook PreToolUse
+  watch_until=$(( $(mill_tick) + 2 ))
+  for _ in $(seq 1 1200); do
+    (( $(mill_tick) >= watch_until )) && break
+    sleep 0.25
+  done
+
+  claude_hook Stop
+fi

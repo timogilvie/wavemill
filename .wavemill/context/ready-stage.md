@@ -64,6 +64,25 @@ Ready publishes `.ready-tend-handoff.json` at the head it checked. Tend claims i
 | ~90 s `wm:blocked` ↔ `wm:ready` flip and a "Rebase failed" comment every poll (PR #1697, 158 comments) | Tend's per-commit rebase conflicted while GitHub's 3-way merge was clean; tend labelled `wm:blocked`, the reconciler relabelled `wm:ready` | Fixed by HOK-3316: one `.tend-attempt-result.json` fact per (head, base), one edited-in-place merge-status comment, conflict remediation launched once. Unstick: rebase onto the integration branch, regenerate generated files, force-push |
 | Ready refuses with "unpushed local work" | Task worktree has commits not on the PR head (e.g. remediation fix never pushed) | Push or discard the local commits; the next Ready tick syncs |
 
+## Ready Remediation Disposition (HOK-3322)
+
+"Is Ready remediation still in flight?" is one decision: `shared/lib/ready-remediation-disposition.ts`, read by the monitor through `ready_remediation_disposition` (spawns `tools/ready-remediation-disposition.ts`) and by the watchdog snapshot in process (`ReadyTaskSnapshot.remediationDisposition`).
+
+| Kind | When | Monitor | Watchdog |
+|---|---|---|---|
+| `inactive` | Ready not running, or nothing launched | normal Ready branches | normal classification |
+| `advanced` | launch head ≠ HEAD | pending re-check (`pending-ready-recheck` bucket) | verification-artifact gate |
+| `in-flight` | agent's own live record after launch, blocking prompt, background work, no evidence yet, probe failed | hold (active slot) | `remediation-in-flight`; `stuck` not auto-recoverable |
+| `settled` | agent idle/errored after launch, exited, or stalled | log `Ready remediation settled at <head> (<reason>)`, re-run Ready via the pending re-check | launch path / conflict resume / `stuck` recovery allowed |
+
+- DO read launch identity only through `readReadyRemediationLaunch` (conflict marker, else the `ready-remediation` bucket head; launch time from the session-ownership row, because a pending rewrite restamps `.ready-result.json` `startedAt`).
+- DON'T compare a remediation launch head with HEAD, or use pane activity, to hold Ready (guard: `tools/check-ready-remediation-disposition.ts`).
+- `settled` never passes Ready: `launch_ready_phase` still requires green current-head checks to publish the handoff; red checks go through the `ready-remediation` bucket (new-head reset, backoff, ceiling, exhaustion sentinel).
+
+| Symptom | Root Cause | Fix |
+|---|---|---|
+| Green PR stays in Ready; `.ready-result.json` `running` with `remediationLaunchHead` = HEAD; remediation agent idle; tend `ready-failed:head-mismatch` (PR #1720, 2026-10-26) | Remediation reran flaky CI without committing; the monitor's unconditional same-head running hold never consulted liveness | Fixed by HOK-3322 (`settled` → controller re-runs Ready). Journey: `ready-remediation-same-head` |
+
 ## Async Ready-Path Checks (HOK-3206)
 
 The cross-PR revert guard (~19 s), the live CI read (~2.5 s per PR), the ready-watchdog sweep (~5 s) and routing (30-60 s) run as tracked jobs (`launch_tracked_job` → `job-tracker.ts`, kinds `cross-pr-guard`, `pr-ci-status`, `ready-watchdog`, `route-task`). Each job writes a condition-keyed result marker; the monitor consumes it on a later pass. Implementation: `shared/lib/monitor-async-jobs.sh`.

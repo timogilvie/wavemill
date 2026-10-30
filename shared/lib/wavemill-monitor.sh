@@ -22284,7 +22284,7 @@ monitor_issue_state() {
       return 0
     fi
     if [[ "$remediation_disposition" == "settled" ]]; then
-      log "status" "$ISSUE → Ready remediation settled at ${current_head:0:7} ($remediation_disposition_reason); re-running Ready"
+      log "info" "$ISSUE → Ready remediation settled at ${current_head:0:7} ($remediation_disposition_reason); re-running Ready"
     fi
 
     ready_verdict=$(ready_stage_pending_verdict "$ready_state_dir_path")

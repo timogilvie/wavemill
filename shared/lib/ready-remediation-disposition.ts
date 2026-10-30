@@ -224,6 +224,7 @@ export function decideReadyRemediationDisposition(
   if (!progress) return result('in-flight', 'progress-unavailable');
   if (progress.blockingPrompt) return result('in-flight', 'blocking-prompt');
   if (progress.agentBackgroundLive === true) return result('in-flight', 'background-work');
+
   const record = progress.agentRecord;
   const launchedEpoch = isoToEpochSeconds(launch.launchedAt);
   if (record?.state && launchedEpoch !== null && record.timestamp >= launchedEpoch) {
