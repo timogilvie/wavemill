@@ -61,8 +61,8 @@ function writeRouteArtifacts(repoDir: string, slug: string, issueId: string): vo
   writeFileSync(join(featureDir, '.routing-complete'), JSON.stringify(routingComplete));
   writeFileSync(join(featureDir, '.initial-route.json'), JSON.stringify(bootstrapRoute));
   writeFileSync(join(featureDir, '.post-expansion-route.json'), JSON.stringify(bootstrapRoute));
-  writeFileSync(join(archiveDir, 'routing-complete.json'), JSON.stringify(routingComplete));
-  writeFileSync(join(archiveDir, 'initial-route.json'), JSON.stringify(bootstrapRoute));
+  writeFileSync(join(archiveDir, '.routing-complete'), JSON.stringify(routingComplete));
+  writeFileSync(join(archiveDir, '.initial-route.json'), JSON.stringify(bootstrapRoute));
 }
 
 describe('eval-orchestrator', () => {

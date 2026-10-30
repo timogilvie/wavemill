@@ -2036,7 +2036,7 @@ await test('enrichPostCompletionRecord falls back to archived routing-complete d
   const archiveDir = join(repoDir, '.wavemill', 'evals', 'artifacts', 'HOK-1123');
   mkdirSync(archiveDir, { recursive: true });
   writeFileSync(
-    join(archiveDir, 'routing-complete.json'),
+    join(archiveDir, '.routing-complete'),
     JSON.stringify({
       planner: 'claude-opus-4-6',
       coder: 'gpt-5.3-codex',

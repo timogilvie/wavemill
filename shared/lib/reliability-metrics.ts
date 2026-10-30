@@ -738,16 +738,18 @@ function resolveTaskPathsForMerged(
 }
 
 /**
- * Locate one task evidence file: the live feature dir (dotted name) first,
- * then the reap archive (dotless name).
+ * Locate one task evidence file: the live feature dir first, then the reap
+ * archive. HOK-2891: both carry the same dotted basename, so there is no
+ * dual-name reader.
  */
 export function resolveTaskSource(task: MergedTaskRef, name: string): string | undefined {
+  const dotted = `.${name}`;
   if (task.featureDir) {
-    const live = join(task.featureDir, `.${name}`);
+    const live = join(task.featureDir, dotted);
     if (existsSync(live)) return live;
   }
   if (task.archiveDir) {
-    const archived = join(task.archiveDir, name);
+    const archived = join(task.archiveDir, dotted);
     if (existsSync(archived)) return archived;
   }
   return undefined;
