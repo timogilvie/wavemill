@@ -77,7 +77,7 @@ CYCLE_OUT="$JOURNEY_TMP/cycle.out"
 mkfifo "$CYCLE_IN" "$CYCLE_OUT"
 
 OBS_HEALTH="$HEALTH_FILE" OBS_INCIDENTS="$INCIDENTS_DIR" \
-  npx tsx "$REPO_ROOT/tests/journeys/fixtures/queue-inference-cycle.ts" \
+  node "$REPO_ROOT/tests/journeys/fixtures/queue-inference-cycle.ts" \
     < "$CYCLE_IN" > "$CYCLE_OUT" &
 CYCLE_PID=$!
 

@@ -56,6 +56,8 @@ TESTS=(
   shared/lib/stage-result.test.ts
   shared/lib/task-progress.test.ts
   shared/lib/task-identity.test.ts
+  shared/lib/task-artifact-lookup.test.ts
+  tests/migrate-archived-stage-artifacts.test.ts
   shared/lib/terminal-backend.test.ts
   tests/llm-cli.test.ts
   shared/lib/linear-write-gate.test.ts
@@ -627,7 +629,7 @@ else
   # matrix if one leg fell back while others did not.
   if ! SELECTION="$(
     printf '%s\n' "${TESTS[@]}" |
-      npx tsx "$REPO_DIR/tools/partition-tests.ts" --suite unit --shard "${SHARD_INDEX}/${SHARD_TOTAL}"
+      node "$REPO_DIR/tools/partition-tests.ts" --suite unit --shard "${SHARD_INDEX}/${SHARD_TOTAL}"
   )"; then
     echo "run-unit-tests.sh: partitioner failed for shard ${SHARD_INDEX}/${SHARD_TOTAL}" >&2
     exit 2

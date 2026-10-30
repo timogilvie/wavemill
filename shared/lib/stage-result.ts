@@ -20,6 +20,7 @@ import os from 'node:os';
 import type { CodingArtifacts } from './native-agent/coding-artifacts.ts';
 export type { CodingArtifacts } from './native-agent/coding-artifacts.ts';
 import { validateSeamArtifactValue } from './seam-artifacts.ts';
+import { resolveTaskArtifact } from './task-artifact-lookup.ts';
 import type { CleanupDecision, CleanupReport, TreeState } from './native-agent/cleanup.ts';
 import type { PiRuntimeVersions } from './native-agent/pi-runtime-version.ts';
 export type { CleanupDecision, CleanupReport, TreeState } from './native-agent/cleanup.ts';
@@ -673,6 +674,32 @@ export interface ReadStageResultOptions {
 }
 
 /**
+ * Options for the task-identity form of {@link readStageResult} / {@link readAllStageResults}.
+ *
+ * Lets the invariant resolver `task-artifact-lookup.ts` decide live-vs-archive
+ * (HOK-2891). Callers that already have a resolved `featureDir` keep using the
+ * {@link ReadStageResultOptions} shape.
+ */
+export interface ReadStageResultByTaskOptions {
+  /** Linear issue id (`HOK-2891`, `HOK-2891_c`); required for the archive branch. */
+  issueId: string;
+  /** Feature slug; required for the live branch. */
+  slug?: string;
+  /** Which stage's result to read. */
+  stage: StageName;
+  /** The active worktree directory, when the caller already has it. */
+  worktreeDir?: string;
+  /** Main-repo root; defaults to `resolveFromMainRepo` from CWD. */
+  repoDir?: string;
+}
+
+function isTaskIdentityOptions(
+  value: ReadStageResultOptions | ReadStageResultByTaskOptions | string,
+): value is ReadStageResultByTaskOptions {
+  return typeof value === 'object' && value !== null && 'issueId' in value;
+}
+
+/**
  * Read a single stage result file.
  *
  * Returns `null` when the file is missing, empty, or contains invalid JSON.
@@ -689,16 +716,32 @@ export interface ReadStageResultOptions {
  * @returns Parsed StageResult or null
  */
 export function readStageResult(options: ReadStageResultOptions): Promise<StageResult | null>;
+export function readStageResult(options: ReadStageResultByTaskOptions): Promise<StageResult | null>;
 export function readStageResult(featureDir: string, stage: StageName): Promise<StageResult | null>;
 export async function readStageResult(
-  optionsOrFeatureDir: ReadStageResultOptions | string,
+  optionsOrFeatureDir: ReadStageResultOptions | ReadStageResultByTaskOptions | string,
   maybeStage?: StageName,
 ): Promise<StageResult | null> {
-  const { featureDir, stage } =
-    typeof optionsOrFeatureDir === 'string'
-      ? { featureDir: optionsOrFeatureDir, stage: maybeStage as StageName }
-      : optionsOrFeatureDir;
-  const resultPath = getResultFilePath(featureDir, stage);
+  let resultPath: string;
+  let stage: StageName;
+  if (typeof optionsOrFeatureDir === 'string') {
+    stage = maybeStage as StageName;
+    resultPath = getResultFilePath(optionsOrFeatureDir, stage);
+  } else if (isTaskIdentityOptions(optionsOrFeatureDir)) {
+    stage = optionsOrFeatureDir.stage;
+    const resolved = resolveTaskArtifact({
+      issueId: optionsOrFeatureDir.issueId,
+      slug: optionsOrFeatureDir.slug,
+      artifactName: `.${stage}-result.json`,
+      worktreeDir: optionsOrFeatureDir.worktreeDir,
+      repoDir: optionsOrFeatureDir.repoDir,
+    });
+    if (!resolved) return null;
+    resultPath = resolved.path;
+  } else {
+    stage = optionsOrFeatureDir.stage;
+    resultPath = getResultFilePath(optionsOrFeatureDir.featureDir, stage);
+  }
   try {
     const content = await fs.readFile(resultPath, 'utf-8');
     if (!content.trim()) {
@@ -738,11 +781,20 @@ export async function readStageResult(
  * @param featureDir - Absolute path to the feature directory
  * @returns Map of stage name to result (only populated stages included)
  */
-export async function readAllStageResults(featureDir: string): Promise<StageResultMap> {
+export async function readAllStageResults(featureDir: string): Promise<StageResultMap>;
+export async function readAllStageResults(
+  options: Omit<ReadStageResultByTaskOptions, 'stage'>,
+): Promise<StageResultMap>;
+export async function readAllStageResults(
+  featureDirOrOptions: string | Omit<ReadStageResultByTaskOptions, 'stage'>,
+): Promise<StageResultMap> {
   const results: StageResultMap = {};
+  const isByTask = typeof featureDirOrOptions !== 'string';
 
   for (const stage of VALID_STAGES) {
-    const result = await readStageResult({ featureDir, stage });
+    const result = isByTask
+      ? await readStageResult({ ...(featureDirOrOptions as Omit<ReadStageResultByTaskOptions, 'stage'>), stage })
+      : await readStageResult({ featureDir: featureDirOrOptions as string, stage });
     if (result) {
       results[stage] = result;
     }

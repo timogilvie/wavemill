@@ -173,14 +173,14 @@ wavemill_run_tool() {
   local tool="$1"; shift
   if [[ "$tool" == recovery-contract.ts ]]; then
     shift # launchability is tested by execution-contract tests; read real persisted fixture here
-    node --import tsx "$REAL_REPO_DIR/tools/recovery-contract.ts" read "$@"
+    node "$REAL_REPO_DIR/tools/recovery-contract.ts" read "$@"
   else
-    node --import tsx "$REAL_REPO_DIR/tools/$tool" "$@"
+    node "$REAL_REPO_DIR/tools/$tool" "$@"
   fi
 }
 
 real_challenge_intent() {
-  npx tsx "$REAL_REPO_DIR/tests/fixtures/build-challenge-intent.ts" "$@"
+  node "$REAL_REPO_DIR/tests/fixtures/build-challenge-intent.ts" "$@"
 }
 
 CHALLENGE_INTENT="$(real_challenge_intent --stage implementation --pair-id PAIR-7 --slug pair-seven-challenger \

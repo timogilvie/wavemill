@@ -299,8 +299,7 @@ describe('hokusai-audit', () => {
         })),
       ]);
 
-      const result = spawnSync('npx', [
-        'tsx',
+      const result = spawnSync(process.execPath, [
         hokusaiManageTool,
         'audit',
         '--input',

@@ -34,6 +34,7 @@ import {
   buildRoutePrediction,
   resolveRouterPolicyVersion,
 } from './route-artifact.ts';
+import { resolveTaskArtifact } from './task-artifact-lookup.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -608,7 +609,8 @@ function loadRoutingCompleteRawFromArchive(
   repoDir: string,
   issueId: string,
 ): RoutingCompleteData | null {
-  const content = loadFromArchive(repoDir, issueId, 'routing-complete.json');
+  // HOK-2891: archive keeps the live basename `.routing-complete`.
+  const content = loadFromArchive(repoDir, issueId, '.routing-complete');
   if (!content) {
     return null;
   }
@@ -967,38 +969,41 @@ export function computePhaseDurations(
   repoDir: string,
   slug: string,
   worktreePath?: string,
+  issueId?: string,
 ): EvalPhaseDurations | undefined {
-  const searchRoots = [worktreePath, repoDir].filter((root): root is string => Boolean(root));
-  const phaseFiles: Array<{ phase: Exclude<keyof EvalPhaseDurations, 'total'>; file: string }> = [
-    { phase: 'planning', file: '.planning-result.json' },
-    { phase: 'coding', file: '.coding-result.json' },
-    { phase: 'review', file: '.review-result.json' },
-  ];
-
+  // HOK-2891: resolve each stage result live-or-archived, so a reaped task
+  // keeps its planning/coding/review windows (HOK-3114 replay case).
+  const phases = ['planning', 'coding', 'review'] as const;
   const durations: EvalPhaseDurations = {};
 
-  for (const { phase, file } of phaseFiles) {
-    let duration: number | undefined;
-
-    for (const root of searchRoots) {
-      for (const dir of ['features', 'bugs']) {
-        const resultPath = path.join(root, dir, slug, file);
-        if (!existsSync(resultPath)) {
-          continue;
+  for (const phase of phases) {
+    let resultPath: string | undefined;
+    if (issueId) {
+      const resolved = resolveTaskArtifact({
+        issueId,
+        slug,
+        artifactName: `.${phase}-result.json`,
+        worktreeDir: worktreePath,
+        repoDir,
+      });
+      resultPath = resolved?.path;
+    } else {
+      // Legacy call without issueId — probe only live dirs.
+      for (const root of [worktreePath, repoDir].filter((r): r is string => Boolean(r))) {
+        for (const dir of ['features', 'bugs']) {
+          const candidate = path.join(root, dir, slug, `.${phase}-result.json`);
+          if (existsSync(candidate)) {
+            resultPath = candidate;
+            break;
+          }
         }
-
-        duration = readPhaseDurationSeconds(resultPath);
-        break;
-      }
-
-      if (duration !== undefined) {
-        break;
+        if (resultPath) break;
       }
     }
 
-    if (duration !== undefined) {
-      durations[phase] = duration;
-    }
+    if (!resultPath) continue;
+    const duration = readPhaseDurationSeconds(resultPath);
+    if (duration !== undefined) durations[phase] = duration;
   }
 
   const total = [durations.planning, durations.coding, durations.review]
@@ -1015,25 +1020,25 @@ export function computePhaseDurations(
 
 /**
  * Locate the directory holding `.{stage}-result.json` files for a task
- * (HOK-2958). Returns the first candidate (worktree first, then repo;
- * features before bugs) containing at least one stage result file, so
- * downstream consumers can read windows via the stage-result readers
- * instead of re-deriving paths.
+ * (HOK-2958, HOK-2891). Returns the directory the first stage result
+ * resolved from — live-or-archived through the one lookup.
  */
 function findStageResultsDir(
   repoDir: string,
   slug: string,
-  worktreePath?: string,
+  worktreePath: string | undefined,
+  issueId: string,
 ): string | undefined {
-  const searchRoots = [worktreePath, repoDir].filter((root): root is string => Boolean(root));
-  for (const root of searchRoots) {
-    for (const dir of ['features', 'bugs']) {
-      const candidate = path.join(root, dir, slug);
-      const hasStageResult = ['planning', 'coding', 'review'].some((stage) =>
-        existsSync(path.join(candidate, `.${stage}-result.json`)));
-      if (hasStageResult) {
-        return candidate;
-      }
+  for (const stage of ['planning', 'coding', 'review'] as const) {
+    const resolved = resolveTaskArtifact({
+      issueId,
+      slug,
+      artifactName: `.${stage}-result.json`,
+      worktreeDir: worktreePath,
+      repoDir,
+    });
+    if (resolved) {
+      return path.dirname(resolved.path);
     }
   }
   return undefined;
@@ -1102,9 +1107,9 @@ export function gatherStageArtifacts(
     routePrediction: buildRoutePrediction(routingCompleteRaw),
     executedPlanning: loadExecutedPlanning(repoDir, slug, issueId, worktreePath),
     planningExecutionOutcome: loadPlanningExecutionOutcome(repoDir, slug, issueId, worktreePath),
-    phaseDurations: computePhaseDurations(repoDir, slug, worktreePath),
+    phaseDurations: computePhaseDurations(repoDir, slug, worktreePath, issueId),
     executionModel: loadStageExecutionModel(repoDir, slug, worktreePath),
-    stageResultsDir: findStageResultsDir(repoDir, slug, worktreePath),
+    stageResultsDir: findStageResultsDir(repoDir, slug, worktreePath, issueId),
     featureSlug: slug,
   };
 }
@@ -1198,7 +1203,8 @@ function loadPlanningExecutionOutcomeFromArchive(
   repoDir: string,
   issueId: string,
 ): PlanningExecutionOutcome | undefined {
-  const archivedPlanning = loadFromArchive(repoDir, issueId, 'planning-result.json');
+  // HOK-2891: archive keeps the live basename `.planning-result.json`.
+  const archivedPlanning = loadFromArchive(repoDir, issueId, '.planning-result.json');
   return archivedPlanning ? parsePlanningExecutionOutcomeText(archivedPlanning) : undefined;
 }
 
@@ -1282,7 +1288,8 @@ function loadExecutedPlanning(
     }
   }
 
-  const archivedPlanning = loadFromArchive(repoDir, issueId, 'planning-result.json');
+  // HOK-2891: archive keeps the live basename `.planning-result.json`.
+  const archivedPlanning = loadFromArchive(repoDir, issueId, '.planning-result.json');
   if (!archivedPlanning) {
     return undefined;
   }

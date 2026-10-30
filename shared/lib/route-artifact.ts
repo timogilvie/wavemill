@@ -735,18 +735,20 @@ export function readRouteLifecycleArtifacts(
   featureDir?: string,
   archiveDir?: string,
 ): RouteLifecycleArtifacts {
+  // HOK-2891: archive keeps live basenames (dot prefix), so one name per
+  // artifact class is probed in both branches. The live branch is first.
   const bootstrap = firstSnapshot([
-    () => archiveDir ? loadBootstrapRouteArtifact(join(archiveDir, 'initial-route.json')) : null,
     () => featureDir ? loadBootstrapRouteArtifact(join(featureDir, '.initial-route.json')) : null,
+    () => archiveDir ? loadBootstrapRouteArtifact(join(archiveDir, '.initial-route.json')) : null,
   ]);
   const expanded = firstSnapshot([
-    () => archiveDir ? loadExpandedRouteArtifact(join(archiveDir, 'post-expansion-route.json')) : null,
     () => featureDir ? loadExpandedRouteArtifact(join(featureDir, '.post-expansion-route.json')) : null,
     () => featureDir ? loadExpandedRouteArtifact(join(featureDir, '.expanded-route.json')) : null,
+    () => archiveDir ? loadExpandedRouteArtifact(join(archiveDir, '.post-expansion-route.json')) : null,
   ]);
   const active = firstSnapshot([
-    () => archiveDir ? loadBootstrapRouteArtifact(join(archiveDir, 'routing-complete.json')) : null,
     () => featureDir ? loadBootstrapRouteArtifact(join(featureDir, '.routing-complete')) : null,
+    () => archiveDir ? loadBootstrapRouteArtifact(join(archiveDir, '.routing-complete')) : null,
   ]);
   const planningLaunch = firstSnapshot([
     () => featureDir ? loadPlanningLaunchRouteArtifact(join(featureDir, '.phase-config.json')) : null,

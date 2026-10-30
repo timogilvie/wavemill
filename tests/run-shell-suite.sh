@@ -100,6 +100,8 @@ TESTS=(
   task-inputs-gate.test.sh
   task-progress.test.sh
   task-identity.test.sh
+  task-artifact-lookup.test.sh
+  archive-naming.test.sh
   terminal-backend.test.sh
   tracked-tree-guard.test.sh
   handle-phase-launch-result.test.sh
@@ -255,7 +257,7 @@ else
   # matrix if one leg fell back while others did not.
   if ! SELECTION="$(
     printf '%s\n' "${TESTS[@]}" |
-      (cd "$SCRIPT_DIR/.." && npx tsx tools/partition-tests.ts --suite shell --shard "${SHARD_INDEX}/${SHARD_TOTAL}")
+      (cd "$SCRIPT_DIR/.." && node tools/partition-tests.ts --suite shell --shard "${SHARD_INDEX}/${SHARD_TOTAL}")
   )"; then
     echo "run-shell-suite.sh: partitioner failed for shard ${SHARD_INDEX}/${SHARD_TOTAL}" >&2
     exit 2

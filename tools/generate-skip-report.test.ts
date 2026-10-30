@@ -64,7 +64,7 @@ describe('generate-skip-report CLI', () => {
     ];
     writeFileSync(recordsFile, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf-8');
 
-    const result = spawnSync('npx', ['tsx', toolPath, '--file', recordsFile, '--no-evals', '--json'], {
+    const result = spawnSync(process.execPath, [toolPath, '--file', recordsFile, '--no-evals', '--json'], {
       cwd: repoDir,
       encoding: 'utf-8',
       env: { ...process.env },

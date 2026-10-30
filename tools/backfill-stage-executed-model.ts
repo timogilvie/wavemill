@@ -201,8 +201,9 @@ export function backfillStageExecutedModel(options: BackfillStageExecutedModelOp
     const artifactDir = resolve(artifactDirRaw);
     const context = artifactContext(artifactDir, options);
     for (const stage of STAGES) {
+      // HOK-2891: archive keeps the live basename.
       results.push(processStageFile({
-        filePath: join(artifactDir, `${stage}-result.json`),
+        filePath: join(artifactDir, `.${stage}-result.json`),
         stage,
         worktreePath: context.worktreePath,
         branchName: context.branchName,

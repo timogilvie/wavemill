@@ -738,7 +738,7 @@ tick_field() {
 # 10-minute threshold in real time.
 run_observer_pass() {
   local output
-  output="$(PATH="$(incident_scenario_path)" TMUX_TMPDIR="$TMUX_TMPDIR" TMUX_SOCK="$TMUX_SOCK" npx tsx "$INCIDENT_REPO_DIR/tools/observer.ts" \
+  output="$(PATH="$(incident_scenario_path)" TMUX_TMPDIR="$TMUX_TMPDIR" TMUX_SOCK="$TMUX_SOCK" node "$INCIDENT_REPO_DIR/tools/observer.ts" \
     --once --json --dry-run --repo-dir "$REPO_DIR" --session "$SESSION" --stale-minutes 1 2>"$SCENARIO_DIR/observer-stderr.log")" || true
   printf '%s\n' "$output"
 }

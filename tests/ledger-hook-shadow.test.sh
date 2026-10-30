@@ -23,7 +23,7 @@ mkdir -p "$LEDGER_DIR/.wavemill"
 
 run_ledger() {
   WAVEMILL_MILLED_REPO_DIR="$LEDGER_DIR" \
-    npx tsx "$REPO_DIR/tools/ledger.ts" --strict --json "$@"
+    node "$REPO_DIR/tools/ledger.ts" --strict --json "$@"
 }
 
 # Seed a running step row so the evidence writer has a target.
@@ -36,7 +36,7 @@ wavemill_run_tool() {
   local tool="$1"
   shift
   WAVEMILL_MILLED_REPO_DIR="$LEDGER_DIR" \
-    npx tsx "$REPO_DIR/tools/$tool" "$@"
+    node "$REPO_DIR/tools/$tool" "$@"
 }
 export -f wavemill_run_tool || true
 
@@ -49,7 +49,7 @@ WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$ISSUE" \
     source "'"$REPO_DIR"'/shared/hooks/wavemill-hook-protocol.sh"
     wavemill_run_tool() {
       local tool="$1"; shift
-      WAVEMILL_MILLED_REPO_DIR="'"$LEDGER_DIR"'" npx tsx "'"$REPO_DIR"'/tools/$tool" "$@"
+      WAVEMILL_MILLED_REPO_DIR="'"$LEDGER_DIR"'" node "'"$REPO_DIR"'/tools/$tool" "$@"
     }
     # Writer=agent — produces an evidence row (synchronously via the helper).
     wavemill_hook_shadow_evidence working PreToolUse Read agent claude
@@ -85,7 +85,7 @@ WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$ISSUE" \
     source "'"$REPO_DIR"'/shared/hooks/wavemill-hook-protocol.sh"
     wavemill_run_tool() {
       local tool="$1"; shift
-      WAVEMILL_MILLED_REPO_DIR="'"$LEDGER_DIR"'" npx tsx "'"$REPO_DIR"'/tools/$tool" "$@"
+      WAVEMILL_MILLED_REPO_DIR="'"$LEDGER_DIR"'" node "'"$REPO_DIR"'/tools/$tool" "$@"
     }
     wavemill_hook_shadow_evidence working PreToolUse Edit agent claude
     sleep 1

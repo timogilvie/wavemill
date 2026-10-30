@@ -283,7 +283,7 @@ path.write_text(path.read_text().replace('__REPO_DIR__', repo_dir))
 PY
 
 HAPPY_JSON="$TMP_ROOT/happy.json"
-npx tsx "$HARNESS" happy "$TEST_REPO" "$FEATURE_SLUG" > "$HAPPY_JSON"
+node "$HARNESS" happy "$TEST_REPO" "$FEATURE_SLUG" > "$HAPPY_JSON"
 
 if jq -e '.stopReason == "stop"' "$HAPPY_JSON" >/dev/null; then
   pass "happy path stops cleanly"
@@ -330,7 +330,7 @@ fi
 printf 'export const stray = 1;\n' > "$TEST_REPO/stray.ts"
 git -C "$TEST_REPO" add stray.ts
 OUT_OF_SCOPE_JSON="$TMP_ROOT/out-of-scope.json"
-npx tsx "$HARNESS" out_of_scope "$TEST_REPO" "$FEATURE_SLUG" > "$OUT_OF_SCOPE_JSON"
+node "$HARNESS" out_of_scope "$TEST_REPO" "$FEATURE_SLUG" > "$OUT_OF_SCOPE_JSON"
 
 if jq -e '.lastToolEvent.toolName == "git_commit" and .lastToolEvent.isError == true and .lastToolEvent.details.ok == false and .lastToolEvent.details.error.code == "out_of_scope"' "$OUT_OF_SCOPE_JSON" >/dev/null; then
   pass "out-of-scope commit is rejected"
@@ -342,7 +342,7 @@ git -C "$TEST_REPO" reset HEAD stray.ts >/dev/null 2>&1
 rm -f "$TEST_REPO/stray.ts"
 
 DANGEROUS_JSON="$TMP_ROOT/dangerous.json"
-npx tsx "$HARNESS" dangerous_tests "$TEST_REPO" "$FEATURE_SLUG" > "$DANGEROUS_JSON"
+node "$HARNESS" dangerous_tests "$TEST_REPO" "$FEATURE_SLUG" > "$DANGEROUS_JSON"
 
 if jq -e '.lastToolEvent.toolName == "run_tests" and .lastToolEvent.isError == true and .lastToolEvent.details.ok == false and .lastToolEvent.details.error == "unsafe_command"' "$DANGEROUS_JSON" >/dev/null; then
   pass "dangerous run_tests command is rejected"

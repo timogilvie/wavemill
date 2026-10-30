@@ -46,8 +46,7 @@ after(() => {
 describe('resolve-orphan-challenge-pair CLI', () => {
   it('accepts challenge-aborted unresolvable reasons', async () => {
     const repoDir = makeTempRepo();
-    const { stdout } = await execFileAsync('npx', [
-      'tsx',
+    const { stdout } = await execFileAsync(process.execPath, [
       'tools/resolve-orphan-challenge-pair.ts',
       '--pair-id',
       'pair-abort',
@@ -66,8 +65,7 @@ describe('resolve-orphan-challenge-pair CLI', () => {
   it('rejects unsupported reasons and lists every supported value', async () => {
     const repoDir = makeTempRepo();
     await assert.rejects(
-      execFileAsync('npx', [
-        'tsx',
+      execFileAsync(process.execPath, [
         'tools/resolve-orphan-challenge-pair.ts',
         '--pair-id',
         'pair-abort',

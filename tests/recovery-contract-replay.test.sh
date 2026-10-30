@@ -28,7 +28,7 @@ cat > "$tmpdir/.phase-config.json" <<'EOF'
 }
 EOF
 
-contract_json="$(npx tsx "$REPO_DIR/tools/recovery-contract.ts" read --feature-dir "$tmpdir" --stage coding --challenge-side challenger --json)"
+contract_json="$(node "$REPO_DIR/tools/recovery-contract.ts" read --feature-dir "$tmpdir" --stage coding --challenge-side challenger --json)"
 if jq -e '
   .ok == true
   and .contract.model == "gpt-5.3-codex"
@@ -80,7 +80,7 @@ cat > "$tmpdir/challenge-intent.json" <<'EOF'
 }
 EOF
 
-review_contract_json="$(npx tsx "$REPO_DIR/tools/recovery-contract.ts" read --feature-dir "$tmpdir" --stage review --challenge-side challenger --json)"
+review_contract_json="$(node "$REPO_DIR/tools/recovery-contract.ts" read --feature-dir "$tmpdir" --stage review --challenge-side challenger --json)"
 if jq -e '
   .ok == true
   and .contract.model == "kimi-k3"
@@ -94,7 +94,7 @@ else
 fi
 
 rm "$tmpdir/.phase-config.json"
-missing_json="$(npx tsx "$REPO_DIR/tools/recovery-contract.ts" read --feature-dir "$tmpdir" --stage coding --json)"
+missing_json="$(node "$REPO_DIR/tools/recovery-contract.ts" read --feature-dir "$tmpdir" --stage coding --json)"
 if jq -e '.ok == false and .reason == "contract_missing"' <<<"$missing_json" >/dev/null 2>&1; then
   pass "recovery CLI refuses to recover without a persisted contract"
 else

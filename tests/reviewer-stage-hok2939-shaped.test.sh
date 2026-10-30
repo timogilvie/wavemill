@@ -73,7 +73,7 @@ process.stdout.write(JSON.stringify(result));
 PY
 
 cd "$REPO_ROOT"
-output="$(npx tsx "$driver")"
+output="$(node "$driver")"
 python3 - "$output" "$fixture_dir/.wavemill/evals/challenge-records.jsonl" <<'PY'
 import json, sys
 result = json.loads(sys.argv[1])

@@ -50,7 +50,7 @@ run_case() {
   fi
   timeout=30
 
-  npx tsx "$REPO_DIR/tools/job-tracker.ts" launch \
+  node "$REPO_DIR/tools/job-tracker.ts" launch \
     --state-file "$state_file" \
     --kind "$kind" \
     --job-id "$job_id" \
@@ -66,7 +66,7 @@ run_case() {
   drains=0
   while [[ "$status" == "running" && $cycles -lt 10 ]]; do
     drains=$((drains + 1))
-    npx tsx "$REPO_DIR/tools/job-tracker.ts" poll --state-file "$state_file" >/dev/null
+    node "$REPO_DIR/tools/job-tracker.ts" poll --state-file "$state_file" >/dev/null
     if (( cycles == 1 )); then
       cat > "$result_path" <<'JSON'
 {"ok":true,"exitCode":0}
@@ -124,7 +124,7 @@ JSON
   ) &
   pid=$!
 
-  npx tsx "$REPO_DIR/tools/job-tracker.ts" launch \
+  node "$REPO_DIR/tools/job-tracker.ts" launch \
     --state-file "$state_file" \
     --kind comparison \
     --job-id "$job_id" \
@@ -136,7 +136,7 @@ JSON
     --result-path "$result_path" >/dev/null
 
   sleep 0.4
-  npx tsx "$REPO_DIR/tools/job-tracker.ts" poll --state-file "$state_file" >/dev/null
+  node "$REPO_DIR/tools/job-tracker.ts" poll --state-file "$state_file" >/dev/null
   status=$(jq -r --arg id "$job_id" '.jobs[$id].status // "running"' "$state_file")
 
   if [[ "$status" == "failed" ]]; then
@@ -151,7 +151,7 @@ JSON
     fail "comparison worker exited before live-pid poll check"
   fi
 
-  npx tsx "$REPO_DIR/tools/job-tracker.ts" mark-settled --state-file "$state_file" --job-id "$job_id" >/dev/null
+  node "$REPO_DIR/tools/job-tracker.ts" mark-settled --state-file "$state_file" --job-id "$job_id" >/dev/null
   blocked_primary=$(jq -r '.tasks["HOK-1564"].comparisonState // ""' "$state_file")
   blocked_challenger=$(jq -r '.tasks["HOK-1564_c"].comparisonState // ""' "$state_file")
 
