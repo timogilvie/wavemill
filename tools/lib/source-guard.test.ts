@@ -323,3 +323,11 @@ it('guards native execution against private timestamp/statistics and unbounded c
   assert.deepEqual(check('stage.sh', 'started_epoch="$(wavemill_iso8601_to_epoch "$started_at")"'), []);
   assert.deepEqual(check('shared/lib/native-agent/launch-coding.ts', 'runWavemillLoop({ model, budget: limits, convertToLlm: convert });'), []);
 });
+
+// protects: coding recovery cannot regain the planning fallback or private challenger identity selection.
+it('rejects private recovery identity and coding-to-planning fallback', () => {
+  for (const source of ['resolve_challenger_transient_retry_launch_intent() {', 'retry_phase="planning"']) {
+    assert.ok(checkGuardSource(STAGE_EXIT_IDENTITY_GUARD, 'shared/lib/wavemill-monitor.sh', source)
+      .some(finding => finding.pattern === 'private-recovery-contract'));
+  }
+});
