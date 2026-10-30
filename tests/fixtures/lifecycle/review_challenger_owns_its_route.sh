@@ -91,7 +91,7 @@ eval "$(extract_function "$COMMON_SCRIPT_FILE" pass_task_field)"
 wavemill_run_tool() {
   local tool="${1:?wavemill_run_tool requires a tool basename}"
   shift
-  npx tsx "$TOOLS_DIR/$tool" "$@"
+  node "$TOOLS_DIR/$tool" "$@"
 }
 # The real helper seeds a default file through a heredoc (not extractable by
 # brace matching); the fork always copies a phase config, so seed minimally.
@@ -184,7 +184,7 @@ seed_primary() {
     executionEvidence: {status: "direct", source: "provider-response"}}' > "$feature/.coding-result.json"
   # The primary's review ran with ITS reviewer. A fork must never inherit it.
   write_completed_review "$feature" "gpt-5.6-terra" "codex"
-  npx tsx "$REPO_ROOT/tests/fixtures/build-challenge-intent.ts" --stage review \
+  node "$REPO_ROOT/tests/fixtures/build-challenge-intent.ts" --stage review \
     --pair-id "$key" --slug "$slug" \
     --primary-planner claude-opus-5-5 --challenger-planner claude-opus-5-5 \
     --primary-coder claude-opus-4-7 --challenger-coder claude-opus-4-7 \
@@ -256,7 +256,7 @@ ISSUE="HOK-9101"
 check_eq "primary completion-time stage-result model stays its own reviewer" "gpt-5.6-terra" \
   "$(resolve_stage_result_model "$PRIMARY_FEATURE" "review" "claude-sonnet-5")"
 set +e
-npx tsx "$TOOLS_DIR/check-challenge-route.ts" --stage review --repo-dir "$REPO_ROOT" \
+node "$TOOLS_DIR/check-challenge-route.ts" --stage review --repo-dir "$REPO_ROOT" \
   --primary-feature-dir "$PRIMARY_FEATURE" --challenger-feature-dir "$CH_FEATURE" > "$TMP_DIR/check.json" 2>/dev/null
 check_rc=$?
 set -e
@@ -312,7 +312,7 @@ console.log(JSON.stringify({
   coder: reconciliation.route.coder.status,
 }));
 TS
-E2E="$(npx tsx "$TMP_DIR/e2e.mts" 2>"$TMP_DIR/e2e.err" || true)"
+E2E="$(node "$TMP_DIR/e2e.mts" 2>"$TMP_DIR/e2e.err" || true)"
 [[ -n "$E2E" ]] || { echo "e2e script failed:"; cat "$TMP_DIR/e2e.err"; }
 check_eq "comparison routing varies only the reviewer" "reviewer-only" "$(jq -r '.challengeType' <<<"$E2E" 2>/dev/null || echo "error: $(cat "$TMP_DIR/e2e.err")")"
 check_eq "provenance validation accepts the pair" "true" "$(jq -r '.valid' <<<"$E2E" 2>/dev/null || echo error)"

@@ -46,13 +46,13 @@ trap 'rm -rf "$work_dir"' EXIT
 run_json() {
   local parent="$1"
   local monitor="$2"
-  npx tsx "$CLI" --parent "$parent" --monitor "$monitor" --json
+  node "$CLI" --parent "$parent" --monitor "$monitor" --json
 }
 
 print_human_report() {
   local parent="$1"
   local monitor="$2"
-  npx tsx "$CLI" --parent "$parent" --monitor "$monitor" || true
+  node "$CLI" --parent "$parent" --monitor "$monitor" || true
 }
 
 assert_eq() {

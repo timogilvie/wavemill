@@ -72,7 +72,7 @@ describe('arbiter-r6-analysis CLI', () => {
       }),
     ]);
 
-    const result = spawnSync('npx', ['tsx', toolPath, '--repo-dir', dir, '--json'], {
+    const result = spawnSync(process.execPath, [toolPath, '--repo-dir', dir, '--json'], {
       cwd: repoDir,
       encoding: 'utf-8',
       env: { ...process.env },
@@ -92,7 +92,7 @@ describe('arbiter-r6-analysis CLI', () => {
     tempDirs.push(dir);
     writeCorpus(dir, [makeRecord({ challengePairId: 'pre1', sharedPrefix: false })]);
 
-    const result = spawnSync('npx', ['tsx', toolPath, '--repo-dir', dir], {
+    const result = spawnSync(process.execPath, [toolPath, '--repo-dir', dir], {
       cwd: repoDir,
       encoding: 'utf-8',
       env: { ...process.env },
@@ -111,7 +111,7 @@ describe('arbiter-r6-analysis CLI', () => {
       makeRecord({ challengePairId: 'amb1', forkStage: 'plan' }),
     ]);
 
-    const result = spawnSync('npx', ['tsx', toolPath, '--repo-dir', dir, '--strict-cohort', '--json'], {
+    const result = spawnSync(process.execPath, [toolPath, '--repo-dir', dir, '--strict-cohort', '--json'], {
       cwd: repoDir,
       encoding: 'utf-8',
       env: { ...process.env },

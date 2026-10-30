@@ -9,7 +9,7 @@ const repoDir = resolve(__dirname, '..');
 const toolPath = resolve(__dirname, 'select-wave.ts');
 
 function runSelectWave(input: unknown) {
-  return spawnSync('npx', ['tsx', toolPath], {
+  return spawnSync(process.execPath, [toolPath], {
     cwd: repoDir,
     encoding: 'utf-8',
     env: { ...process.env },
@@ -78,7 +78,7 @@ describe('select-wave CLI', () => {
   });
 
   it('fails clearly for invalid input', () => {
-    const result = spawnSync('npx', ['tsx', toolPath], {
+    const result = spawnSync(process.execPath, [toolPath], {
       cwd: repoDir,
       encoding: 'utf-8',
       env: { ...process.env },

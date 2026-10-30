@@ -33,7 +33,7 @@ awk '
 {
   printf '%s\n' '# Test harness stubs'
   printf '%s\n' 'startup_log() { :; }'
-  printf '%s\n' 'wavemill_run_tool() { local cli="$1"; shift; npx tsx "$cli" "$@"; }'
+  printf '%s\n' 'wavemill_run_tool() { local cli="$1"; shift; node "$cli" "$@"; }'
   cat "$helper_file"
 } > "$tmp/lib.sh"
 

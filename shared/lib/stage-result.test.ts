@@ -169,11 +169,11 @@ describe('writeStageResult and readStageResult', () => {
     });
     await writeStageResult(testDir, failed);
 
-    execFileSync('npx', ['tsx', 'tools/stage-result-cli.ts', 'write-with-history', testDir, 'coding', 'running', '--agent', 'native', '--model', 'glm-5.2'], {
+    execFileSync(process.execPath, ['tools/stage-result-cli.ts', 'write-with-history', testDir, 'coding', 'running', '--agent', 'native', '--model', 'glm-5.2'], {
       cwd: process.cwd(),
       encoding: 'utf-8',
     });
-    execFileSync('npx', ['tsx', 'tools/stage-result-cli.ts', 'write', testDir, 'coding', 'completed', '--agent', 'native', '--model', 'glm-5.2'], {
+    execFileSync(process.execPath, ['tools/stage-result-cli.ts', 'write', testDir, 'coding', 'completed', '--agent', 'native', '--model', 'glm-5.2'], {
       cwd: process.cwd(),
       encoding: 'utf-8',
     });
@@ -185,8 +185,7 @@ describe('writeStageResult and readStageResult', () => {
   });
 
   it('stage-result-cli separates intended and executed model evidence', async () => {
-    execFileSync('npx', [
-      'tsx',
+    execFileSync(process.execPath, [
       'tools/stage-result-cli.ts',
       'write',
       testDir,
@@ -207,8 +206,7 @@ describe('writeStageResult and readStageResult', () => {
     assert.equal(shellOnly?.modelAttributionEligible, false);
     assert.equal(shellOnly?.modelAttributionIneligibleReason, 'missing_execution_evidence');
 
-    execFileSync('npx', [
-      'tsx',
+    execFileSync(process.execPath, [
       'tools/stage-result-cli.ts',
       'write-with-history',
       testDir,
@@ -230,8 +228,7 @@ describe('writeStageResult and readStageResult', () => {
       cwd: process.cwd(),
       encoding: 'utf-8',
     });
-    execFileSync('npx', [
-      'tsx',
+    execFileSync(process.execPath, [
       'tools/stage-result-cli.ts',
       'write',
       testDir,
@@ -252,8 +249,7 @@ describe('writeStageResult and readStageResult', () => {
     assert.equal(nativeCompleted?.executionEvidence?.source, 'native-runtime');
     assert.equal(nativeCompleted?.modelAttributionEligible, true);
 
-    execFileSync('npx', [
-      'tsx',
+    execFileSync(process.execPath, [
       'tools/stage-result-cli.ts',
       'write',
       testDir,

@@ -114,7 +114,7 @@ EOF
 chmod +x "$FAKE_BIN/git"
 write_fake_npx
 
-output="$(cd "$REPO_ROOT" && PATH="$FAKE_BIN:$PATH" npx tsx tools/tend.ts --once --repo-dir "$WORK_DIR" 2>&1)"
+output="$(cd "$REPO_ROOT" && PATH="$FAKE_BIN:$PATH" node tools/tend.ts --once --repo-dir "$WORK_DIR" 2>&1)"
 
 if [[ "$output" != *"action=blocked-#61"* ]]; then
   echo "expected blocked-#61 action, got: $output"

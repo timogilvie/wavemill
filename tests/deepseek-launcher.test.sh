@@ -122,7 +122,7 @@ else
   tmp="$(make_temp_repo)"
   rc=0
   unset DEEPSEEK_API_KEY 2>/dev/null || true
-  DEEPSEEK_API_KEY="" npx tsx "$TOOLS_DIR/launch-claude-deepseek.ts" \
+  DEEPSEEK_API_KEY="" node "$TOOLS_DIR/launch-claude-deepseek.ts" \
     --repo "$tmp" \
     --session "testsess" \
     --issue "HOK-001" \
@@ -148,7 +148,7 @@ else
   tmp="$(make_temp_repo)"
   rc=0
   output=""
-  output="$(DEEPSEEK_API_KEY=sk-test-key npx tsx "$TOOLS_DIR/launch-claude-deepseek.ts" \
+  output="$(DEEPSEEK_API_KEY=sk-test-key node "$TOOLS_DIR/launch-claude-deepseek.ts" \
     --repo "$tmp" \
     --session "testsess" \
     --issue "HOK-001" 2>/dev/null)" || rc=$?
@@ -211,7 +211,7 @@ if ! command -v npx >/dev/null 2>&1; then
 else
   tmp="$(make_temp_repo)"
   stderr_output=""
-  stderr_output="$(DEEPSEEK_API_KEY="" npx tsx "$TOOLS_DIR/launch-claude-deepseek.ts" \
+  stderr_output="$(DEEPSEEK_API_KEY="" node "$TOOLS_DIR/launch-claude-deepseek.ts" \
     --repo "$tmp" \
     --session "testsess" \
     --issue "HOK-002" 2>&1 >/dev/null)" || true

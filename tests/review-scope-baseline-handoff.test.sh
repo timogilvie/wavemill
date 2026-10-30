@@ -57,7 +57,7 @@ TOOLS_DIR="$REPO_DIR/tools"
 WARNINGS=""
 log_warn() { WARNINGS+="$*"$'\n'; }
 # Run tsx from the repo so node module resolution works for the tool.
-wavemill_run_tsx_tool() { (cd "$REPO_DIR" && npx tsx "$@"); }
+wavemill_run_tsx_tool() { (cd "$REPO_DIR" && node "$@"); }
 
 # Build a worktree-shaped repo: integration base, task branch, committed work.
 WT="$TEST_TMP/worktree"
