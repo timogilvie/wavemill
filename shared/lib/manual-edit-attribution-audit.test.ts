@@ -19,7 +19,7 @@ function writeEvalsJsonl(repoDir: string, records: unknown[]): void {
 function writeArchivedCodingResult(repoDir: string, issueId: string, startedAt: string, finishedAt: string | null): void {
   const archiveDir = join(repoDir, '.wavemill', 'evals', 'artifacts', issueId);
   mkdirSync(archiveDir, { recursive: true });
-  writeFileSync(join(archiveDir, 'coding-result.json'), JSON.stringify({
+  writeFileSync(join(archiveDir, '.coding-result.json'), JSON.stringify({
     stage: 'coding',
     status: finishedAt ? 'completed' : 'running',
     startedAt,

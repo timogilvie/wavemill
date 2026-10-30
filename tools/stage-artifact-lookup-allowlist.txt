@@ -1,0 +1,32 @@
+# HOK-2891 stage-artifact-lookup guard allowlist.
+# Format: <repo-relative path> [<max findings>]  # <reason>
+# A missing count exempts the whole file; a count ratchets, so the only move is
+# to shrink. Each entry owes its row a one-line reason — the guard refuses rows
+# without one.
+
+# ── Live-only writers and in-stage readers (ratcheted) ───────────────────────
+# Each entry below is a legitimate live-only site (stage writer, in-stage
+# reader, dashboard live-only query) that must only see the live file.
+shared/lib/wavemill-monitor.sh 75  # in-stage writers and live-only inspections (monitor loop)
+shared/lib/wavemill-status.sh 6  # live-only dashboard reads
+shared/lib/wavemill-startup-runner.sh 4  # stage writers at mill launch
+shared/lib/eval-context-gatherer.ts 9  # legacy ad-hoc stage-result joins kept for backward compat; shrink as callers migrate to the resolver
+shared/lib/stage-eval-evidence.ts 8  # evidence source labels (strings), not readers
+shared/lib/failure-policy.ts 4  # prose in human-readable failure explanations
+shared/lib/artifact-diagnostics.ts 4  # live-only stage-result diagnostic reads (direct featureDir probes)
+shared/lib/challenge-comparison.ts 6  # type alias literals and challenge comparison helpers
+shared/lib/native-agent/launch-coding.ts 3  # stage-result writer during coding launch
+shared/lib/wavemill-incident-detector.ts 2  # in-stage incident detection on the live file
+shared/lib/tend-controller.ts 2  # live `.ready-result.json` reader for the tend lane
+shared/lib/eval-schema.ts 2  # source type-literal `.planning-result.json`
+shared/lib/soft-gates.ts 1  # live `.ready-result.json` reader
+shared/lib/ready-watchdog.ts 1  # live `.ready-result.json` reader
+shared/lib/post-completion-hook.ts 1  # live post-completion stage-result reader
+shared/lib/native-agent/planning-canary.ts 1  # planning canary stage-result writer
+shared/lib/merge-labels.ts 1  # live `.ready-result.json` reader
+shared/lib/eval-record-builder.ts 1  # source label literal in eval record
+shared/lib/reliability-metrics.ts 1  # legitimate `operator-intervention.json` string in diagnostic docstring/code
+shared/lib/terminal-reconciler.sh 1  # writes diagnostic transcripts into the per-issue archive dir
+tools/observer.ts 3  # observer live-only stage-result inspection
+tools/launch-native-review.ts 1  # review stage-result writer
+tools/hok2415-verify-native-planning.ts 1  # verification tool for native planning stage-result

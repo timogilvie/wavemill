@@ -21,11 +21,12 @@ GIT_COMMITTER_DATE="2026-10-08T13:00:00Z" git -C "$repo" -c user.name=t -c user.
   commit -q --allow-empty -m "HOK-2: untouched task (#6)"
 
 # HOK-1 was reaped: only its archive remains.
+# HOK-2891: archive keeps the live basename (leading dot) so readers resolve one name.
 archive="$repo/.wavemill/evals/artifacts/HOK-1"
 mkdir -p "$archive"
 printf '%s\n' '{"seq":1,"command":"advance","at":"2026-10-08T10:30:00Z"}' \
-  '{"seq":2,"command":"challenge-void","at":"2026-10-08T11:30:00Z"}' > "$archive/operator-events.jsonl"
-printf '%s\n' '{"stage":"coding","status":"completed","startedAt":"2026-10-08T09:00:00Z","finishedAt":"2026-10-08T09:20:00Z"}' > "$archive/coding-result.json"
+  '{"seq":2,"command":"challenge-void","at":"2026-10-08T11:30:00Z"}' > "$archive/.operator-events.jsonl"
+printf '%s\n' '{"stage":"coding","status":"completed","startedAt":"2026-10-08T09:00:00Z","finishedAt":"2026-10-08T09:20:00Z"}' > "$archive/.coding-result.json"
 # HOK-1 also has an interactive state edit in the repo touch log.
 printf '%s\n' '{"at":"2026-10-08T11:00:00Z","kind":"state-edit","issue":"HOK-1"}' > "$repo/.wavemill/operator-touches.jsonl"
 

@@ -638,19 +638,20 @@ test('readRouteLifecycleArtifacts falls back to archived bootstrap and active ro
   const archiveDir = join(dirname(featureDir), 'archive');
   mkdirSync(archiveDir, { recursive: true });
 
-  writeFileSync(join(archiveDir, 'initial-route.json'), JSON.stringify({
+  // HOK-2891: archive keeps the live basename.
+  writeFileSync(join(archiveDir, '.initial-route.json'), JSON.stringify({
     coder: 'bootstrap-coder',
     reviewer: 'bootstrap-reviewer',
     codeDepth: 'medium',
     reviewMode: 'static',
   }));
-  writeFileSync(join(archiveDir, 'routing-complete.json'), JSON.stringify({
+  writeFileSync(join(archiveDir, '.routing-complete'), JSON.stringify({
     coder: 'active-coder',
     reviewer: 'active-reviewer',
     codeDepth: 'deep',
     reviewMode: 'llm',
   }));
-  writeFileSync(join(archiveDir, 'post-expansion-route.json'), JSON.stringify({
+  writeFileSync(join(archiveDir, '.post-expansion-route.json'), JSON.stringify({
     coder: 'expanded-coder',
     reviewer: 'expanded-reviewer',
     codeDepth: 'deep',
