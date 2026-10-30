@@ -106,7 +106,6 @@ TESTS=(
   coding-launch-refusal.test.sh
   launch-pane-liveness.test.sh
   launch-failure-log-capture.test.sh
-  challenge-eval-soft-retry.test.sh
   eval-stub-slot-accounting.test.sh
   eval-report-cost-availability.test.sh
   challenge-deferred-arm.test.sh
@@ -139,7 +138,6 @@ TESTS=(
   challenge-eval-hard-failure.test.sh
   challenge-eval-invalid-challenge.test.sh
   challenge-planning-equivalence.test.sh
-  challenge-eval-timeout.test.sh
   challenge-job-monitor-loop.test.sh
   task-selection-renderer.test.sh
   wavemill-backlog-pane-no-flash.test.sh

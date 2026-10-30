@@ -1,0 +1,12 @@
+{
+  "source": "HOK-3255 task packet: HOK-3076_c stale node_modules/module-load incident. Summary excerpt is normalized, not a verbatim stack; PR and route context in replay are synthetic.",
+  "pairId": "HOK-3076",
+  "taskId": "HOK-3076_c",
+  "attemptReasons": [
+    "no_result_file",
+    "timed_out",
+    "no_result_file"
+  ],
+  "excerpt": "stale node_modules: eval harness module-load failure before result persistence",
+  "failedAt": "2026-10-27T12:00:00Z"
+}
