@@ -99,9 +99,9 @@ journey_assert "eval record appended for $ISSUE" \
 # stageRole sessions are populated instead of silently empty.
 journey_assert "post-reap eval record has phaseDurations for all three stages" \
   bash -c 'rec=$(grep -h "$2" "$1"/evals/*.jsonl | tail -1); \
-    [[ "$(printf %s "$rec" | jq -r ".phaseDurations.planning | type")"  = "number" ]] && \
-    [[ "$(printf %s "$rec" | jq -r ".phaseDurations.coding | type")"    = "number" ]] && \
-    [[ "$(printf %s "$rec" | jq -r ".phaseDurations.review | type")"    = "number" ]]' \
+    [[ "$(printf %s "$rec" | jq -r ".phaseDurationsSeconds.planning | type")" = "number" ]] && \
+    [[ "$(printf %s "$rec" | jq -r ".phaseDurationsSeconds.coding | type")"   = "number" ]] && \
+    [[ "$(printf %s "$rec" | jq -r ".phaseDurationsSeconds.review | type")"   = "number" ]]' \
     _ "$STATE_DIR" "$ISSUE"
 journey_assert "post-reap eval record carries at least one stageRole session" \
   bash -c 'rec=$(grep -h "$2" "$1"/evals/*.jsonl | tail -1); \
