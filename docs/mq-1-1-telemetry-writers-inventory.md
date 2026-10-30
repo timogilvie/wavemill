@@ -1,8 +1,9 @@
 # MQ-1.1 — Inventory of task lifecycle, queue, CI and cost telemetry writers
 
-**Linear:** [HOK-3337](https://linear.app/hokusai/issue/HOK-3337)
+**Linear:** [HOK-3337](https://linear.app/hokusai/issue/HOK-3337) · [attached snapshot comment](https://linear.app/hokusai/issue/HOK-3337#comment-66948705)
 **Captured at commit:** `faa798b6` (`faa798b6 HOK-3322: Share Ready remediation disposition (#1744)`)
 **Captured on:** 2026-10-30
+**One-line summary:** Seven axes, ~195 writer rows, 25 CLAUDE.md-anchored canonical owners + 14 unguarded duplicate groups + 12 gaps + 24 sharp edges — the input MQ-1.2 derives the queue contract from (HOK-3220 rule: writers, not readers).
 **Scope:** every site that creates, overwrites, appends to, labels, comments on, or submits a lifecycle / queue / CI / merge / recovery / cost fact. Observations do not count as writers; persisted *projections* of observations do.
 **Non-goal:** this is not a reader inventory. Readers appear only in column 5 as pointers.
 
