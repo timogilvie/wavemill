@@ -56,13 +56,18 @@ CHALLENGER="$(task_identity_challenger_id "$ISSUE")"
 WINNER="$CHALLENGER"
 LOSER="$ISSUE"
 # The two coder models the pair may draw (both resolve to the claude CLI).
-POOL_MODELS=(claude-sonnet-4-6 claude-haiku-4-5)
+POOL_MODELS=(claude-sonnet-4-6 claude-haiku-4-5-20251001)
 
 # Before journey_init: the tmux server (and so every agent pane) inherits the
 # environment at init. The arms leave the session telemetry and review
 # identity a real Claude run does, so their PR route stamp is complete.
 export FAKE_AGENT_SCRIPT_DIR="$FIXTURE_DIR/fake-agent"
-journey_init challenge-pair-eval
+journey_init "${JOURNEY_PAIR_NAME:-challenge-pair-eval}"
+if [[ "${JOURNEY_INCIDENT_CURRENTNESS:-0}" == 1 ]]; then
+  export JOURNEY_INCIDENT_OBSERVED="$JOURNEY_TMP/incident-failure-observed"
+fi
+if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 ]]; then journey_set_approval_budget 2; fi
+if [[ "${JOURNEY_EVAL_EXHAUSTION:-0}" == 1 ]]; then JOURNEY_EXPECT_ATTENTION=1; fi
 fakes_linear_add_issue "$ISSUE" "Challenge pair journey change" Todo
 
 # Challenge on: every task rolls an implementation-stage pair, the winner
@@ -71,7 +76,10 @@ fakes_linear_add_issue "$ISSUE" "Challenge pair journey change" Todo
 exclusions="$(cd "$JOURNEY_INSTALL_DIR" && node --import tsx -e '
   const { listEffectiveModelsForStage } = await import("./shared/lib/effective-models.ts");
   const keep = new Set(process.argv.slice(1));
-  const out = listEffectiveModelsForStage("coding").models
+  const out = [...new Set([
+    ...listEffectiveModelsForStage("coding").models,
+    ...listEffectiveModelsForStage("planning").models,
+  ])]
     .filter((m) => !keep.has(m))
     .map((model) => ({ model, reason: "challenge-pair journey: keep the pair on the fake claude CLI" }));
   console.log(JSON.stringify(out));
@@ -79,19 +87,23 @@ exclusions="$(cd "$JOURNEY_INSTALL_DIR" && node --import tsx -e '
 # The eval judge is pinned to a Claude model (served by the judge shim): the
 # built-in default judge runs on the codex CLI, which has no shared fake and
 # would reach the real network.
-journey_write_config "$(jq -cn --argjson ex "$exclusions" '{
-  challenge: {enabled: true, rate: 1, stageWeights: {implementation: 1}, autoMergeWinner: true},
+journey_write_config "$(jq -cn --argjson ex "$exclusions" --arg stage "${JOURNEY_PAIR_STAGE:-implementation}" '{
+  challenge: {enabled: true, rate: 1, stageWeights: {($stage): 1}, autoMergeWinner: true},
   modelExclusions: $ex,
   eval: {judge: {model: "claude-sonnet-5", provider: "anthropic"}}
 }')"
 unset WAVEMILL_DISABLE_CHALLENGE
 printf 'CHALLENGE_AUTO_MERGE=true\n' >> "$MONITOR_ENV"
 
+if [[ "${JOURNEY_EVAL_EXHAUSTION:-0}" == 1 ]]; then printf 'WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES=1\n' >> "$MONITOR_ENV"; fi
+
 # The judge shim sits ahead of the shared fake for the monitor's children
 # (eval and comparison jobs); agent panes keep the plain fake.
 export JOURNEY_WINNER_LINE="implemented $WINNER"
 export PATH="$FIXTURE_DIR/bin:$PATH"
 
+export JOURNEY_EVAL_FAULT="$JOURNEY_TMP/eval-fault"
+: > "$JOURNEY_EVAL_FAULT"
 journey_start_monitor
 journey_wait_until "$ISSUE" 5 "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
@@ -109,6 +121,10 @@ pr_state() { fakes_gh_pr_field "$1" state; }
 # The harness only plays tend for $ISSUE's handoff; play it for the
 # challenger's too (the winner's lane once the primary is retired).
 pair_tick() {
+  if [[ "${JOURNEY_INCIDENT_CURRENTNESS:-0}" == 1 ]]; then
+    node --import tsx "$JOURNEY_INSTALL_DIR/tests/journeys/fixtures/incident-currentness-step.ts" observe "$REPO_DIR" "$JOURNEY_INCIDENT_OBSERVED"
+  fi
+  if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 ]]; then journey_operator_tick "$CHALLENGER"; fi
   if [[ "$(arm_handoff_state "$CHALLENGER")" == "ready-published" \
         && "$(arm_handoff_state "$ISSUE")" != "ready-published" ]]; then
     journey_tend_tick
@@ -147,10 +163,31 @@ loser_retention() {
 
 # Budgets are monitor ticks (passes), not seconds.
 journey_wait_until "$ISSUE" 5  "task launched into planning"        phase_is planning
+if [[ "${JOURNEY_INCIDENT_CURRENTNESS:-0}" == 1 ]]; then
+  node --import tsx "$JOURNEY_INSTALL_DIR/tests/journeys/fixtures/incident-currentness-step.ts" init "$REPO_DIR" "$JOURNEY_INCIDENT_OBSERVED"
+fi
 journey_wait_until "$ISSUE" 10 "challenger forked after the plan"   challenger_launched
 PRIMARY_SLUG="$(field "$ISSUE" slug)"
 CHALLENGER_SLUG="$(field "$CHALLENGER" slug)"
-journey_wait_until "$ISSUE" 15 "both arms opened a PR"              both_prs_open
+journey_wait_until "$ISSUE" 25 "both arms opened a PR"              both_prs_open
+eval_failure_observed() { pair_tick; grep -q 'challenge eval failed for' "$JOURNEY_TMP/logs/status.log"; }
+journey_wait_until "$ISSUE" 20 "eval harness fault detected" eval_failure_observed
+if [[ "${JOURNEY_EVAL_EXHAUSTION:-0}" == 1 ]]; then
+  exhausted() { [[ "$(field "$ISSUE" comparisonState)" == manual_comparison_needed ]]; }
+  journey_wait_until "$ISSUE" 30 "repeated harness fault exhausted its existing budget" exhausted
+  attempts_before="$(grep -c 'challenge eval retrying for' "$JOURNEY_TMP/logs/status.log")"
+  quiet_until=$(( $(journey_tick) + 5 ))
+  quiet_ticks() { (( $(journey_tick) >= quiet_until )); }
+  journey_wait_until "$ISSUE" 8 "five quiet escalation ticks" quiet_ticks
+  journey_assert "exhaustion has no retry storm" test "$(grep -c 'challenge eval retrying for' "$JOURNEY_TMP/logs/status.log")" = "$attempts_before"
+  journey_assert "no model winner was manufactured" test -z "$(comparison_winner)"
+  journey_assert "both PRs remain open with work preserved" both_prs_open
+  journey_assert "pair requests manual comparison" exhausted
+  journey_assert_no_unhandled_fake_calls
+  journey_finish
+  exit 0
+fi
+rm -f "$JOURNEY_EVAL_FAULT"
 journey_wait_until "$ISSUE" 25 "the mill compared the pair"         comparison_recorded
 WINNER_PR="$(arm_pr "$WINNER")"
 LOSER_PR="$(arm_pr "$LOSER")"
@@ -161,6 +198,7 @@ journey_wait_until "$ISSUE" 10 "winner reaped, loser retired"       pair_settled
 
 echo ""
 echo "assertions:"
+journey_assert "eval harness retried without operator recovery" grep -q 'challenge eval retrying for' "$JOURNEY_TMP/logs/status.log"
 journey_assert "the pair was rolled as a challenge (role recorded on both arms)" \
   test "$(grep -c "phase=coding issue=" "$FAKE_AGENT_LOG")" -ge 2
 journey_assert "both arms were evaluated before the comparison" \
@@ -188,6 +226,18 @@ journey_assert "only the loser's row remains (no stub recreated)" \
 journey_assert "slot count back to 0 (freeSlots == MAX_PARALLEL)" \
   test "$(jq -r '.freeSlots // empty' "$STATE_FILE")" = "1"
 journey_assert "no .needs-attention at any tick" test "$JOURNEY_SAW_ATTENTION" = "0"
+if [[ "${JOURNEY_INCIDENT_CURRENTNESS:-0}" == 1 ]]; then
+  for _poll in 1 2 3 4 5 6; do
+    journey_assert "resolved eval stays cleared and the failed control stays visible (poll $_poll)" node --import tsx "$JOURNEY_INSTALL_DIR/tests/journeys/fixtures/incident-currentness-step.ts" assert "$REPO_DIR" "$JOURNEY_INCIDENT_OBSERVED"
+  done
+fi
+if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 ]]; then
+  journey_assert "both approved plans were reused without a third approval" test "$(journey_approval_count)" = 2
+  journey_assert "the interrupted challenger replayed its coding contract" grep -q 'HOK-3326 injected coding exit' "$FAKE_AGENT_LOG"
+  journey_assert "the interrupted implementation was merged intact" \
+    bash -c 'git --git-dir "$1" show "refs/heads/$2:recovery-preserved.txt" | grep -qx "preserved interrupted challenger work"' _ "$FAKE_GH_ORIGIN" "$JOURNEY_INTEGRATION_BRANCH"
+  journey_assert "coding recovery did not fall back to planning" bash -c '! grep -q "Retrying coding via planning" "$1"' _ "$JOURNEY_TMP/logs/status.log"
+fi
 journey_assert_no_unhandled_fake_calls
 
 journey_finish

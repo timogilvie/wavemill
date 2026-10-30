@@ -367,3 +367,16 @@ test('incident-replay fixtures: every fault has a classified failure string', ()
     assert.equal(classifyFailure(entry.evidence).class, entry.expectedClass, fault);
   }
 });
+
+// protects: missing eval output and empty attribution never become model losses.
+test('eval job evidence remains unattributed and genuine model faults require identity', () => {
+  for (const reason of ['no_result_file', 'timed_out', 'eval_not_persisted']) {
+    const decision = classifyFailure({ stage: 'eval', job: { reason, exitCode: 1, excerpt: 'module load failed' } });
+    assert.equal(decision.class, 'retryable');
+    assert.equal(decision.attribution, 'unattributed');
+  }
+  const fault = { stage: 'ready', failureKind: 'ready-exhausted', challengeArm: true } as const;
+  assert.equal(classifyFailure(fault).attribution, 'unattributed');
+  assert.equal(classifyFailure({ ...fault, executionEvidence: { source: 'provider-response', model: '' } }).attribution, 'unattributed');
+  assert.equal(classifyFailure({ ...fault, executionEvidence: { source: 'provider-response', model: 'verified-model' } }).attribution, 'model');
+});

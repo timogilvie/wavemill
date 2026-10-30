@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
+import { readJobResultFile, classifyJobCompletion, type MillJob } from './job-tracker.ts';
 import type { IncidentRecord } from './wavemill-incident-model.ts';
 
 export type IncidentFilingReconciliationOutcome = 'confirmed_active' | 'recovered' | 'superseded' | 'needs_inspection';
@@ -9,11 +10,17 @@ export interface IncidentFilingReconciliation {
   evidence: Record<string, unknown>;
 }
 
-interface WorkflowJob {
+export interface WorkflowJob {
   id: string;
   kind: string;
   status: string;
   taskId?: string;
+  issueId?: string;
+  source: string;
+  prNumbers?: number[];
+  reason?: string;
+  error?: string;
+  logPath?: string;
   pairId?: string;
   side?: string;
   startedAt?: string;
@@ -45,7 +52,7 @@ function taskId(job: Record<string, unknown>): string | undefined {
   return string(job.taskId) ?? string(job.issueId);
 }
 
-function toJob(value: unknown): WorkflowJob | null {
+function toJob(value: unknown, source: string): WorkflowJob | null {
   const job = object(value);
   const id = string(job?.id);
   const kind = string(job?.kind);
@@ -55,7 +62,13 @@ function toJob(value: unknown): WorkflowJob | null {
     id,
     kind,
     status,
-    taskId: taskId(job!),
+    taskId: taskId(job!) ?? (kind === 'comparison' ? string(job!.pairId) : undefined),
+    issueId: taskId(job!),
+    source,
+    prNumbers: Array.isArray(job!.prNumbers) ? job!.prNumbers as number[] : undefined,
+    reason: string(job!.reason),
+    error: string(job!.error) ?? string(job!.excerpt),
+    logPath: string(job!.logPath),
     pairId: string(job!.pairId) ?? string(job!.challengePairId),
     side: string(job!.side) ?? string(job!.challengeRole) ?? string(job!.role),
     startedAt: string(job!.startedAt),
@@ -75,47 +88,58 @@ function parseJson(path: string): unknown | null {
 /** Reads only persisted job state; it deliberately never polls or settles jobs. */
 export function readAuthoritativeWorkflowJobs(repoDir: string): { jobs: WorkflowJob[]; error?: string } {
   const statePath = join(repoDir, '.wavemill', 'workflow-state.json');
-  if (!existsSync(statePath)) return { jobs: [], error: 'workflow state is missing' };
-  const state = object(parseJson(statePath));
-  if (!state) return { jobs: [], error: 'workflow state is malformed' };
-  const rawJobs = state.jobs;
-  if (!rawJobs || (typeof rawJobs !== 'object')) return { jobs: [], error: 'workflow jobs are missing' };
-  const entries = Array.isArray(rawJobs) ? rawJobs : Object.values(rawJobs as Record<string, unknown>);
-  const jobs: WorkflowJob[] = [];
-  for (const entry of entries) {
-    const job = toJob(entry);
-    if (!job) return { jobs: [], error: 'workflow job is malformed' };
-    jobs.push(job);
-  }
-  // Job artifacts are a second persisted source used by the detector. They
-  // are read here solely to reject contradictory state, never to poll jobs.
-  const jobsDir = join(repoDir, '.wavemill', 'jobs');
-  if (existsSync(jobsDir)) {
-    for (const file of readdirSync(jobsDir).filter((name) => name.endsWith('.json'))) {
-      const job = toJob(parseJson(join(jobsDir, file)));
-      if (!job) return { jobs: [], error: `job artifact is malformed: ${file}` };
-      const duplicate = jobs.find((candidate) => candidate.id === job.id);
-      if (duplicate) {
-        if (duplicate.status !== job.status || duplicate.kind !== job.kind || duplicate.taskId !== job.taskId || duplicate.pairId !== job.pairId) {
-          return { jobs: [], error: `job artifact contradicts workflow state: ${job.id}` };
-        }
-      } else {
-        jobs.push(job);
-      }
+  const jobs = new Map<string, WorkflowJob>();
+  const errors: string[] = [];
+  const add = (value: unknown, source: string) => {
+    const job = toJob(value, source);
+    if (!job) { errors.push(`malformed workflow job in ${source}`); return; }
+    const prior = jobs.get(job.id);
+    if (prior && ['status', 'kind', 'taskId', 'pairId', 'side', 'resultPath', 'startedAt', 'finishedAt'].some((key) => prior[key as keyof WorkflowJob] !== job[key as keyof WorkflowJob])) {
+      errors.push(`job artifact contradicts workflow state: ${job.id}`);
+    } else if (!prior) jobs.set(job.id, job);
+  };
+  if (existsSync(statePath)) {
+    const state = object(parseJson(statePath));
+    if (!state) errors.push('workflow state is malformed');
+    else if (state.jobs) {
+      if (typeof state.jobs !== 'object') errors.push('workflow jobs are malformed');
+      else for (const job of Object.values(state.jobs)) add(job, statePath);
     }
   }
-  return { jobs };
+  const jobsDir = join(repoDir, '.wavemill', 'jobs');
+  if (existsSync(jobsDir)) {
+    for (const file of readdirSync(jobsDir).filter((name) => name.endsWith('.json') && !name.endsWith('.result.json'))) add(parseJson(join(jobsDir, file)), join(jobsDir, file));
+  } else if (!existsSync(statePath)) errors.push('workflow state is missing');
+  return { jobs: [...jobs.values()], ...(errors.length ? { error: errors.join('; ') } : {}) };
 }
 
-function resultExists(repoDir: string, resultPath: string | undefined): boolean | null {
-  if (!resultPath) return null;
-  return existsSync(isAbsolute(resultPath) ? resultPath : join(repoDir, resultPath));
+/** Validate the existing job-result contract; filenames never prove success. */
+export function workflowJobResultSucceeded(repoDir: string, job: WorkflowJob): boolean | null {
+  if (!job.resultPath) return null;
+  const path = isAbsolute(job.resultPath) ? job.resultPath : join(repoDir, job.resultPath);
+  if (!existsSync(path)) return false;
+  const result = readJobResultFile(path);
+  if (!result || typeof result.ok !== 'boolean' || !Number.isFinite(result.exitCode) || result.reason === 'invalid_result_file') return null;
+  const started = timestamp(job.startedAt);
+  if (started === null || statSync(path).mtimeMs < started) return null;
+  const lineage = result as unknown as Record<string, unknown>;
+  for (const [key, expected] of Object.entries({jobId:job.id,taskId:job.taskId,issueId:job.issueId,pairId:job.pairId,side:job.side})) {
+    if (lineage[key] !== undefined && lineage[key] !== expected) return null;
+  }
+  if (result.ok === true && result.persisted === false) return null;
+  if (job.kind === 'eval' && result.persisted !== true) return false;
+  if (result.persisted === false) return false;
+  return classifyJobCompletion(job as MillJob, result).status === 'succeeded';
+}
+
+export function isJobBackedIncident(incident: IncidentRecord): boolean {
+  return JOB_BACKED_CLASSES.has(incident.rootCauseClass) || Boolean(incident.metadata.jobId);
 }
 
 function sameLineage(job: WorkflowJob, incident: IncidentRecord, expectedKind: string, expectedPair?: string, expectedSide?: string): boolean {
   if (job.taskId !== incident.taskId || job.kind !== expectedKind) return false;
-  if (expectedPair && job.pairId !== expectedPair) return false;
-  if (expectedSide && job.side !== expectedSide) return false;
+  if (job.pairId !== expectedPair) return false;
+  if (job.side !== expectedSide) return false;
   return true;
 }
 
@@ -123,8 +147,8 @@ function decision(outcome: IncidentFilingReconciliationOutcome, evidence: Record
   return { outcome, evidence };
 }
 
-export function reconcileIncidentForFiling(incident: IncidentRecord, repoDir = process.cwd()): IncidentFilingReconciliation {
-  if (!JOB_BACKED_CLASSES.has(incident.rootCauseClass)) {
+export function reconcileIncidentForFiling(incident: IncidentRecord, repoDir = process.cwd(), read = readAuthoritativeWorkflowJobs(repoDir)): IncidentFilingReconciliation {
+  if (!isJobBackedIncident(incident)) {
     return decision('confirmed_active', { classAware: false, reason: 'not_job_backed' });
   }
   const jobId = string(incident.metadata.jobId);
@@ -137,7 +161,6 @@ export function reconcileIncidentForFiling(incident: IncidentRecord, repoDir = p
     return decision('needs_inspection', { reason: 'incident lineage is incomplete or malformed', jobId, taskId: incident.taskId, jobKind: expectedKind });
   }
 
-  const read = readAuthoritativeWorkflowJobs(repoDir);
   if (read.error) return decision('needs_inspection', { reason: read.error, jobId });
   const original = read.jobs.filter((job) => job.id === jobId);
   if (original.length !== 1 || !sameLineage(original[0], incident, expectedKind, expectedPair, expectedSide)) {
@@ -148,31 +171,29 @@ export function reconcileIncidentForFiling(incident: IncidentRecord, repoDir = p
   if ((current.finishedAt || current.startedAt) && currentTime === null) {
     return decision('needs_inspection', { reason: 'authoritative job timestamp is malformed', jobId });
   }
-  const result = resultExists(repoDir, current.resultPath ?? string(incident.metadata.resultPath));
+  const result = workflowJobResultSucceeded(repoDir, current);
   if (current.status === 'succeeded') {
-    if (currentTime === null || currentTime < failureTime || result === false) {
-      return decision('needs_inspection', { reason: 'successful job has insufficient or contradictory result evidence', jobId, resultExists: result });
+    if (currentTime === null || currentTime < failureTime || result !== true) {
+      return decision('needs_inspection', { reason: 'successful job has insufficient or contradictory result evidence', jobId, successfulResult: result });
     }
-    return decision('recovered', { jobId, status: current.status, completedAt: current.finishedAt, resultExists: result });
+    return decision('recovered', { jobId, status: current.status, completedAt: current.finishedAt, successfulResult: result });
   }
   if (current.status !== 'failed' && current.status !== 'timeout') {
     return decision('needs_inspection', { reason: 'authoritative job has non-terminal status', jobId, status: current.status });
   }
-  if (result === true) {
-    return decision('recovered', { jobId, status: current.status, resultExists: true });
-  }
-  if (result === null && incident.rootCauseClass !== 'failed_background_job') {
-    return decision('needs_inspection', { reason: 'result path is missing for result-backed incident', jobId });
-  }
 
   const newerSuccess = read.jobs.find((job) => job.id !== jobId
     && job.status === 'succeeded'
+    && JSON.stringify(job.prNumbers) === JSON.stringify(current.prNumbers)
     && sameLineage(job, incident, expectedKind, expectedPair, expectedSide)
     && timestamp(job.finishedAt ?? job.startedAt) !== null
     && timestamp(job.finishedAt ?? job.startedAt)! > failureTime
-    && resultExists(repoDir, job.resultPath) === true);
+    && timestamp(job.startedAt) !== null
+    && timestamp(job.startedAt)! >= failureTime
+    && workflowJobResultSucceeded(repoDir, job) === true);
   if (newerSuccess) {
     return decision('superseded', { jobId, supersedingJobId: newerSuccess.id, supersedingFinishedAt: newerSuccess.finishedAt, taskId: incident.taskId });
   }
-  return decision('confirmed_active', { jobId, status: current.status, resultExists: result, taskId: incident.taskId });
+  if (result === true || result === null) return decision('needs_inspection', { jobId, status: current.status, reason: 'failed job has contradictory or malformed result evidence' });
+  return decision('confirmed_active', { jobId, status: current.status, successfulResult: result, taskId: incident.taskId });
 }

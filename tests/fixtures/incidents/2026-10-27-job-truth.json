@@ -1,0 +1,61 @@
+{
+  "source": "Sanitized field extracts recorded in HOK-3324; synthetic start times and paths establish explicit replay lineage. Recovery filenames alone do not establish an attempt.",
+  "cases": [
+    {
+      "name": "HOK-3172_c aborted result remains actionable",
+      "issueId": "HOK-3172_c",
+      "side": "challenger",
+      "pr": 1594,
+      "finishedAt": "2026-10-07T15:27:09.909Z",
+      "result": {
+        "ok": false,
+        "persisted": false,
+        "exitCode": 1,
+        "error": "task_aborted"
+      },
+      "expected": "confirmed_active"
+    },
+    {
+      "name": "HOK-2845_c missing export failure without a result",
+      "issueId": "HOK-2845_c",
+      "side": "challenger",
+      "pr": 1414,
+      "finishedAt": "2026-09-15T14:34:42.781Z",
+      "result": null,
+      "expected": "confirmed_active"
+    },
+    {
+      "name": "HOK-3044 recovery file alone is not authoritative lineage",
+      "issueId": "HOK-3044",
+      "side": "primary",
+      "pr": 1437,
+      "finishedAt": "2026-09-18T13:00:59.070Z",
+      "result": {
+        "ok": false,
+        "persisted": false,
+        "exitCode": 1,
+        "reason": "eval_not_persisted"
+      },
+      "orphanRecovery": {
+        "ok": true,
+        "persisted": true,
+        "exitCode": 0
+      },
+      "expected": "confirmed_active"
+    },
+    {
+      "name": "HOK-3041_c validated later settled attempt",
+      "issueId": "HOK-3041_c",
+      "side": "challenger",
+      "pr": 1439,
+      "finishedAt": "2026-09-18T12:51:10.907Z",
+      "result": {
+        "ok": true,
+        "persisted": true,
+        "exitCode": 0
+      },
+      "settledSuccess": true,
+      "expected": "recovered"
+    }
+  ]
+}

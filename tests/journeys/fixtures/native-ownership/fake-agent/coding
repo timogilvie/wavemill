@@ -1,0 +1,15 @@
+# shellcheck shell=bash
+export FEATURE_DIR
+# First process mutates through the real native patch tool; recovery uses real native Git tools.
+if [[ ! -f "$FEATURE_DIR/native-ownership-injected" ]]; then
+  printf 'implemented %s\n' "$WAVEMILL_ISSUE" > journey-output.txt
+  git add journey-output.txt
+  git -c user.name=fake-agent -c user.email=fake-agent@example.invalid commit -q -m "$WAVEMILL_ISSUE: partial work"
+  : > "$FEATURE_DIR/native-ownership-injected"
+  run_tool ../tests/journeys/fixtures/native-ownership-step.ts mutate "$WT"
+  rm -f "$FEATURE_DIR/.coding-complete"
+  jq -n '{stage:"coding",implementationComplete:true,committed:false,passingChecks:["focused verification"],blockingChecks:["git_add refused preserved edits"],blockingReason:"environment_blocked",evidence:"Previous process mutation must survive a new tracker",recommendedAction:"relaunch_coding"}' > "$FEATURE_DIR/.coding-blocked-completion.json"
+else
+  run_tool ../tests/journeys/fixtures/native-ownership-step.ts commit "$WT"
+fi
+printf '{"hook_event_name":"Stop"}' | bash "$FAKE_AGENT_TOOLS_DIR/../shared/hooks/claude-status-hook.sh" || true

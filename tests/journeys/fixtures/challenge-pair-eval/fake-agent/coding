@@ -1,0 +1,13 @@
+# shellcheck shell=bash
+source "$FAKE_AGENT_TOOLS_DIR/../shared/lib/task-identity.sh"
+if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 && ! -f "$FEATURE_DIR/.journey-coding-interrupted" ]] \
+   && task_identity_is_challenger "$WAVEMILL_ISSUE"; then
+  touch "$FEATURE_DIR/.journey-coding-interrupted"
+  printf 'preserved interrupted challenger work\n' > recovery-preserved.txt
+  rm -f "$FEATURE_DIR/challenge-intent.json" "$FEATURE_DIR/.challenge-intent.json"
+  echo "HOK-3326 injected coding exit" >> "$FAKE_AGENT_LOG"
+  run_tool stage-result-cli.ts update "$FEATURE_DIR" coding --status failed --notes "Scripted interrupted coding attempt; implementation retained" --model-attribution-eligible false
+  exit 143
+fi
+[[ ! -f recovery-preserved.txt ]] || git add recovery-preserved.txt
+default_coding

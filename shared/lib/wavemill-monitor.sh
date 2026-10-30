@@ -3718,23 +3718,22 @@ mark_eval_completed() {
       | .updated = (now | todateiso8601)'; then
     log_warn "mark_eval_completed: failed to update $issue"
   fi
-  # Successful eval wipes the arm's bounded-retry eval budgets (HOK-2924).
+  # Successful eval wipes the arm's bounded-retry eval budget (HOK-2924).
   slug=$(pass_task_field "$issue" slug)
   if [[ -n "$slug" && -n "${WORKTREE_ROOT:-}" ]]; then
-    bounded_retry_clear "${WORKTREE_ROOT}/${slug}/features/${slug}" "challenge-eval-soft"
     bounded_retry_clear "${WORKTREE_ROOT}/${slug}/features/${slug}" "challenge-eval-hard"
-    # challenge-eval-stale is deliberately NOT cleared here: a successful eval
-    # run does not prove the persisted record satisfies the current-head
-    # selector, and clearing on success would let a persistently-refused
-    # record refill its own relaunch budget (HOK-2963). A new head resets it.
+    # challenge-eval-soft is not cleared here: HOK-3255 retired that bucket
+    # (the hard bucket owns every eval failure), and challenge-eval-stale is
+    # deliberately NOT cleared: a successful eval run does not prove the
+    # persisted record satisfies the current-head selector (HOK-2963).
   fi
 }
 
 mark_eval_failed() {
-  local issue="$1"
+  local issue="$1" decision_json="${2:-}"
   # HOK-3125: guard against recreating a stub entry after reap.
   if ! task_state_entry_exists "$issue"; then
-    record_post_reap_eval_outcome "$issue" failed
+    record_post_reap_eval_outcome "$issue" failed "$decision_json"
     log "debug" "eval failed for reaped task $issue; not recreating state entry"
     return 0
   fi
@@ -3794,8 +3793,8 @@ mark_challenge_comparison_running() {
     --arg challengerPr "$challenger_pr"
 }
 
-# challenge_eval_retry_max_attempts() and challenge_eval_hard_failure_max_retries()
-# are provided by wavemill-common.sh (HOK-2924), sourced above.
+# challenge_eval_hard_failure_max_retries() is provided by wavemill-common.sh
+# (HOK-2924); the retired challenge-eval-soft ceiling is gone (HOK-3255).
 
 clear_challenge_pair_state() {
   local pair_id="$1"
@@ -3866,16 +3865,6 @@ challenge_pair_timeout_reason() {
     *,primary,*) printf 'primary_eval_timed_out\n' ;;
     *,challenger,*) printf 'challenger_eval_timed_out\n' ;;
     *) printf 'eval_timed_out\n' ;;
-  esac
-}
-
-challenge_pair_hard_failure_reason() {
-  local failed_sides_csv="$1"
-  case ",$failed_sides_csv," in
-    *,primary,challenger,*|*,challenger,primary,*) printf 'both_eval_hard_failed\n' ;;
-    *,primary,*) printf 'primary_eval_hard_failed\n' ;;
-    *,challenger,*) printf 'challenger_eval_hard_failed\n' ;;
-    *) printf 'eval_hard_failed\n' ;;
   esac
 }
 
@@ -6329,6 +6318,22 @@ emit_blocked_completion_attention() {
   slug="$(basename "$feature_dir")"
   win="$issue-$slug"
 
+  # A structured request to resume coding belongs to the existing failed-stage
+  # policy, not the operator-only advance hold. Shared exit evidence prevents
+  # racing an agent that is still completing its commit.
+  local recovery_validation
+  recovery_validation="$(blocked_completion_validate_for_advance "$issue" "$feature_dir" auto 2>/dev/null)" || true
+  if jq -e '.recommendedAction == "relaunch_coding"' "$feature_dir/.coding-blocked-completion.json" >/dev/null 2>&1 \
+    && jq -e '.guardrails.schemaValid == true and .guardrails.artifactFresh == true' <<<"$recovery_validation" >/dev/null 2>&1 \
+    && coding_dirty_handoff_agent_exited "$issue" "$feature_dir" "${feature_dir%/features/*}"; then
+    write_stage_result "$feature_dir" "coding" "failed" "${current_agent:-unknown}" \
+      "$(resolve_stage_result_model "$feature_dir" coding "")" \
+      "${summary}: ${reason}. Structured completion requests coding recovery with confirmed owner exit."
+    log "status" "$issue → blocked completion handed to failed-stage recovery"
+    active_count=$((active_count + 1))
+    return 0
+  fi
+
   if blocked_completion_should_announce "$feature_dir" "$artifact_mtime"; then
     log "status" "$issue needs attention: $summary. Type \"advance $issue\" to launch review."
     mark_blocked_completion_announced "$feature_dir" "$artifact_mtime"
@@ -6728,8 +6733,9 @@ coding_dirty_handoff_grace_seconds() {
 # sibling-stalled rule is the backstop for arms with no evidence at all.
 coding_dirty_handoff_agent_exited() {
   local issue="$1" feature_dir="$2" worktree="${3:-}"
-  local progress grace now
-  local -a progress_args=(--phase coding --max-age 60 --feature-dir "$feature_dir")
+  local progress grace now pane_target="${4:-${WIN_TARGET:-}}"
+  local -a progress_args=(--phase coding --max-age 0 --feature-dir "$feature_dir")
+  [[ -n "$pane_target" ]] && progress_args+=(--pane-target "$pane_target")
 
   declare -F task_progress_json >/dev/null 2>&1 || return 1
   command -v jq >/dev/null 2>&1 || return 1
@@ -6742,6 +6748,7 @@ coding_dirty_handoff_agent_exited() {
   # Hook timestamps are epoch seconds; tolerate a millisecond writer.
   printf '%s' "$progress" | jq -e --argjson now "$now" --argjson grace "$grace" '
     (.agentIdle == true or .terminalIdle == true) and
+    (.agentBackgroundLive != true and .agentProcessLive != true) and
     ((.agentState // "") as $s | ["working", "waiting", "approval-needed", "blocked", "policy-denied"] | any(.[]; . == $s) == false) and
     (.blockingPrompt == null) and
     (if ((.agentRecord.state // "") == "idle") and ((.agentRecord.timestamp | type) == "number") and (.agentRecord.timestamp > 0)
@@ -6830,47 +6837,37 @@ coding_dirty_handoff_write_recovery_instruction() {
   return 1
 }
 
-# coding_dirty_handoff_relaunch <issue> <feature_dir> <worktree> <win> <dirty_paths>
-# Relaunch the coding agent once with the recovery instruction. Launch identity
-# follows the challenger launch-intent recipe for a challenger (provider-aware
-# adapter from immutable intent) and the plan→coding launch resolution for a
-# primary. Returns 0 when launched, 1 when the identity cannot be resolved or
-# the launch failed (the caller then terminalizes).
+# One recovery identity read: all stages and both arms replay the canonical
+# persisted contract through execution-contract.ts, never re-route a model.
+recovery_contract_json() {
+  local issue="$1" feature_dir="$2" stage="$3" side output
+  side="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
+  local -a args=(read-and-validate --feature-dir "$feature_dir" --stage "$stage" --repo "$REPO_DIR" --json)
+  [[ -n "$side" ]] && args+=(--challenge-side "$side")
+  if ! output="$(wavemill_run_tool recovery-contract.ts "${args[@]}" 2>/dev/null)"; then
+    jq -cn '{ok:false,reason:"contract_read_failed",detail:"recovery-contract CLI exited non-zero"}'
+  elif jq -e 'type == "object" and (.ok | type) == "boolean"' <<<"$output" >/dev/null 2>&1; then
+    printf '%s\n' "$output"
+  else
+    jq -cn '{ok:false,reason:"contract_malformed",detail:"recovery-contract CLI returned malformed JSON"}'
+  fi
+}
+
+# Relaunch coding with the persisted identity, retaining implementation and plan.
 coding_dirty_handoff_relaunch() {
   local issue="$1" feature_dir="$2" worktree="$3" win="$4" dirty_paths="$5"
-  local slug role is_challenge launch_identity agent="" model="" branch title issue_json depth
+  local slug launch_identity agent="" model="" branch title issue_json depth
   local contract_payload path_count rc=0
 
   slug="$(basename "$feature_dir")"
-  role="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
-  is_challenge="$(get_task_meta "$issue" "challenge" 2>/dev/null || true)"
-
-  if [[ "$is_challenge" == "true" && "$role" == "challenger" ]]; then
-    # No current head: the arm committed since launch by design, so the
-    # result-head staleness check of the transient-retry path does not apply.
-    launch_identity="$(resolve_challenger_transient_retry_launch_intent "$issue" "$feature_dir" "coding" "")"
-    if ! printf '%s' "$launch_identity" | jq -e '.ok == true' >/dev/null 2>&1; then
-      log_warn "$issue → coding-dirty-handoff relaunch: challenger launch identity unavailable ($(printf '%s' "$launch_identity" | jq -r '.reason // "unknown"' 2>/dev/null || echo unknown))"
-      return 1
-    fi
-    agent="$(printf '%s' "$launch_identity" | jq -r '.agent // ""' 2>/dev/null || echo "")"
-    model="$(printf '%s' "$launch_identity" | jq -r '.model // ""' 2>/dev/null || echo "")"
-  else
-    model="$(stage_result_field "$feature_dir" "coding" "model")"
-    if [[ -z "$model" ]]; then
-      model="$(read_phase_config "$feature_dir" "coding" "model")"
-      [[ -n "$model" ]] || model="$(get_task_meta "$issue" "coderModel" 2>/dev/null || true)"
-      model="$(resolve_phase_model "coding" "$model" "claude-opus-4-7")"
-    fi
-    if ! agent="$(agent_resolve_from_model "$model" "coding")"; then
-      log_warn "$issue → coding-dirty-handoff relaunch: ${AGENT_RESOLVE_LAST_DIAGNOSTIC:-agent resolution failed for $model}"
-      return 1
-    fi
-  fi
-  if [[ -z "$agent" || -z "$model" ]] || ! agent_validate_phase_launch "$agent" "coding" "$model" "$REPO_DIR"; then
-    log_warn "$issue → coding-dirty-handoff relaunch: launch identity not launchable (adapter=${agent:-?} model=${model:-?})"
+  launch_identity="$(recovery_contract_json "$issue" "$feature_dir" coding)"
+  if ! jq -e '.ok == true' <<<"$launch_identity" >/dev/null 2>&1; then
+    log_warn "$issue → coding recovery contract unavailable: $(jq -r '.detail // .reason' <<<"$launch_identity")"
     return 1
   fi
+  contract_payload="$(jq -c '.contract' <<<"$launch_identity")"
+  model="$(jq -r '.model' <<<"$contract_payload")"
+  agent="$(jq -r '.agent' <<<"$contract_payload")"
 
   branch="$(pass_task_field "$issue" branch)"
   [[ -n "$branch" ]] || branch="task/${slug}"
@@ -6887,14 +6884,9 @@ coding_dirty_handoff_relaunch() {
     log_warn "$issue → coding-dirty-handoff relaunch: could not write recovery instruction"
     return 1
   }
-  # Move .coding-complete aside so the next tick does not re-enter the guard
-  # before the relaunched agent re-writes it.
-  archive_stale_coding_artifacts "$issue" "$feature_dir"
   # The stale process_exit hook would make the new agent look exited.
   rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
 
-  contract_payload="$(jq -cn --arg agent "$agent" --arg model "$model" \
-    '{stageRole:"coding",agent:$agent,model:$model,recovery:"coding-dirty-handoff"}' 2>/dev/null || printf '{}')"
   if ! _prepare_recovery_phase_launch "$issue" "$slug" "coding" "$feature_dir" "$worktree" "$agent" "$model" "$contract_payload"; then
     return 1
   fi
@@ -8268,10 +8260,9 @@ stage_failure_owned_by_bucket() {
 # The exhaustion sentinel carries a HOK-3172 condition companion, so a new
 # head or an operator event expires it: escalation never latches.
 #
-# The relaunch reverts the task to the phase before <stage> and clears the
-# failed result, the same proven path handle_phase_launch_result uses, so the
-# normal launch path (routing, challenge intent, phase_launch_gate) re-derives
-# the launch.
+# Coding retries replay the persisted execution contract directly, retaining
+# the approved plan and implementation. An unavailable contract stays failed
+# under this same bounded budget. Other stages use their existing phase handoff.
 #
 # Returns 0 relaunched, 2 holding (backoff), 1 not applicable / terminal /
 # exhausted (caller escalates).
@@ -8338,21 +8329,21 @@ maybe_retry_failed_stage() {
   # A stale terminal-error hook would re-trigger emit_native_terminal_failure_attention
   # on the relaunched run before its first hook write (see HOK-2885 relaunch).
   rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
-  clear_stage_result "$feature_dir" "$stage"
+  [[ "$stage" == "coding" ]] || clear_stage_result "$feature_dir" "$stage"
 
-  # HOK-3211: for stage=coding, relaunch coding directly instead of
-  # transitioning back to planning. Mirrors coding_dirty_handoff_relaunch:
-  # resolve the launch identity (challenger from immutable intent; primary
-  # from phase-config → task-meta → default), prepare recovery surfaces,
-  # and launch_coding_phase. On success, set the task phase to coding and
-  # return 0; on failure, fall back to the generic retry_phase path so the
-  # task doesn't park silently.
+  # Coding has already crossed plan approval. Replay its persisted contract;
+  # failure to launch must never run the planning-overreach guard on its edits.
   if [[ "$stage" == "coding" ]]; then
     if _stage_failure_coding_relaunch "$issue" "$feature_dir" "$win" "$failure_kind" "$failure_class" "$attempts" "$limit" "$fresh"; then
       return 0
     fi
-    log_warn "$issue → coding stage-failure direct relaunch failed; falling back to generic phase revert"
-    retry_phase="planning"
+    write_stage_result "$feature_dir" coding failed \
+      "$(stage_result_field "$feature_dir" coding agent)" \
+      "$(resolve_stage_result_model "$feature_dir" coding "")" "$detail"
+    set_task_phase "$issue" coding
+    set_window_attention_state "$win" needs-user
+    log_warn "$issue → coding recovery deferred with the failed stage preserved and implementation for bounded retry"
+    return 2
   fi
 
   set_task_phase "$issue" "$retry_phase"
@@ -8377,35 +8368,17 @@ _stage_failure_coding_relaunch() {
   [[ -n "$worktree" ]] || worktree="${WORKTREE_ROOT:-}/${slug}"
   [[ -d "$worktree" ]] || return 1
 
-  declare -F agent_resolve_from_model >/dev/null 2>&1 || return 1
-  declare -F agent_validate_phase_launch >/dev/null 2>&1 || return 1
   declare -F _prepare_recovery_phase_launch >/dev/null 2>&1 || return 1
   declare -F launch_coding_phase >/dev/null 2>&1 || return 1
 
-  role="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
-  is_challenge="$(get_task_meta "$issue" "challenge" 2>/dev/null || true)"
-
-  if [[ "$is_challenge" == "true" && "$role" == "challenger" ]]; then
-    launch_identity="$(resolve_challenger_transient_retry_launch_intent "$issue" "$feature_dir" "coding" "")"
-    if ! printf '%s' "$launch_identity" | jq -e '.ok == true' >/dev/null 2>&1; then
-      log_warn "$issue → coding stage-failure relaunch: challenger launch identity unavailable ($(printf '%s' "$launch_identity" | jq -r '.reason // "unknown"' 2>/dev/null || echo unknown))"
-      return 1
-    fi
-    agent="$(printf '%s' "$launch_identity" | jq -r '.agent // ""' 2>/dev/null || echo "")"
-    model="$(printf '%s' "$launch_identity" | jq -r '.model // ""' 2>/dev/null || echo "")"
-  else
-    model="$(read_phase_config "$feature_dir" "coding" "model")"
-    [[ -n "$model" ]] || model="$(get_task_meta "$issue" "coderModel" 2>/dev/null || true)"
-    model="$(resolve_phase_model "coding" "$model" "claude-opus-4-7")"
-    if ! agent="$(agent_resolve_from_model "$model" "coding")"; then
-      log_warn "$issue → coding stage-failure relaunch: ${AGENT_RESOLVE_LAST_DIAGNOSTIC:-agent resolution failed for $model}"
-      return 1
-    fi
-  fi
-  if [[ -z "$agent" || -z "$model" ]] || ! agent_validate_phase_launch "$agent" "coding" "$model" "$REPO_DIR"; then
-    log_warn "$issue → coding stage-failure relaunch: launch identity not launchable (adapter=${agent:-?} model=${model:-?})"
+  launch_identity="$(recovery_contract_json "$issue" "$feature_dir" coding)"
+  if ! jq -e '.ok == true' <<<"$launch_identity" >/dev/null 2>&1; then
+    log_warn "$issue → coding recovery contract unavailable: $(jq -r '.detail // .reason' <<<"$launch_identity")"
     return 1
   fi
+  contract_payload="$(jq -c '.contract' <<<"$launch_identity")"
+  model="$(jq -r '.model' <<<"$contract_payload")"
+  agent="$(jq -r '.agent' <<<"$contract_payload")"
 
   branch="$(pass_task_field "$issue" branch)"
   [[ -n "$branch" ]] || branch="task/${slug}"
@@ -8418,8 +8391,6 @@ _stage_failure_coding_relaunch() {
   [[ -n "$depth" ]] || depth="$(get_task_meta "$issue" "codeDepth" 2>/dev/null || true)"
   [[ -n "$depth" ]] || depth="medium"
 
-  contract_payload="$(jq -cn --arg agent "$agent" --arg model "$model" \
-    '{stageRole:"coding",agent:$agent,model:$model,recovery:"stage-failure-coding"}' 2>/dev/null || printf '{}')"
   if ! _prepare_recovery_phase_launch "$issue" "$slug" "coding" "$feature_dir" "$worktree" "$agent" "$model" "$contract_payload"; then
     return 1
   fi
@@ -8434,112 +8405,6 @@ _stage_failure_coding_relaunch() {
   set_window_attention_state "$win" "clear"
   log "status" "♻ $issue → coding failed (${failure_kind}, ${failure_class}), relaunch ${attempts}/${limit}${fresh} directly via coding (planning guard bypassed)"
   return 0
-}
-
-# ── Challenger relaunch launch identity (HOK-2885) ────────────────────────────
-#
-# A challenger's failed stage result may record agent=native for audit
-# history; a direct relaunch (coding_dirty_handoff_relaunch) must recover the
-# provider-aware adapter, such as native-openrouter, from the immutable
-# challenge execution intent instead. The bounded relaunch of a failed stage
-# itself now goes through maybe_retry_failed_stage (HOK-3176).
-
-challenger_transient_retry_result_head() {
-  local feature_dir="$1" stage="$2"
-  jq -r '(.headSha // .head // .artifacts.headSha // .artifacts.launchHead // empty)' \
-    "$feature_dir/.${stage}-result.json" 2>/dev/null || true
-}
-
-challenger_transient_retry_intent_json() {
-  local issue="$1" feature_dir="$2"
-  local intent_json path
-
-  if [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
-    # allow-task-field: legacy challengeIntent fallback for pre-challengeExecutionIntent state files
-    intent_json="$(jq -c --arg i "$issue" '(.tasks[$i].challengeExecutionIntent // .tasks[$i].challengeIntent // empty)' "$STATE_FILE" 2>/dev/null || true)"
-    [[ "$intent_json" != "null" && -n "$intent_json" ]] && {
-      printf '%s\n' "$intent_json"
-      return 0
-    }
-  fi
-
-  for path in "$feature_dir/challenge-intent.json" "$feature_dir/.challenge-intent.json"; do
-    [[ -f "$path" ]] || continue
-    jq -c '.' "$path" 2>/dev/null || {
-      printf '%s\n' '{"__wavemillInvalidIntent":true}'
-      return 0
-    }
-    return 0
-  done
-
-  return 1
-}
-
-resolve_challenger_transient_retry_launch_intent() {
-  local issue="$1" feature_dir="$2" stage="$3" current_head="${4:-}"
-  local pair_id intent_json launch_stage result_head intent_source
-
-  pair_id="$(get_task_meta "$issue" "challengePairId" 2>/dev/null || true)"
-  launch_stage="$(challenge_stage_for_launch_env "$stage")"
-  result_head="$(challenger_transient_retry_result_head "$feature_dir" "$stage")"
-  if [[ -n "$result_head" && -n "$current_head" && "$result_head" != "$current_head" ]]; then
-    jq -cn --arg reason "stale_head" --arg stage "$launch_stage" \
-      --arg resultHead "$result_head" --arg currentHead "$current_head" \
-      '{ok:false,reason:$reason,stage:$stage,resultHead:$resultHead,currentHead:$currentHead}'
-    return 0
-  fi
-
-  if ! intent_json="$(challenger_transient_retry_intent_json "$issue" "$feature_dir")"; then
-    jq -cn --arg reason "missing_challenge_intent" --arg stage "$launch_stage" \
-      '{ok:false,reason:$reason,stage:$stage}'
-    return 0
-  fi
-
-  if printf '%s' "$intent_json" | jq -e '.__wavemillInvalidIntent == true' >/dev/null 2>&1; then
-    jq -cn --arg reason "invalid_challenge_intent_json" --arg stage "$launch_stage" \
-      '{ok:false,reason:$reason,stage:$stage}'
-    return 0
-  fi
-
-  intent_source="state"
-  jq -c \
-    --arg issue "$issue" \
-    --arg pair "$pair_id" \
-    --arg stage "$launch_stage" \
-    --arg source "$intent_source" \
-    --arg resultHead "$result_head" \
-    --arg currentHead "$current_head" \
-    '
-      if (type != "object") then
-        {ok:false, reason:"invalid_challenge_intent_schema"}
-      elif (($pair == "") or ((.pairId // "") != $pair)) then
-        {ok:false, reason:"pair_mismatch"}
-      elif ((.selectedStage // .challengeStage // "") != $stage) then
-        {ok:false, reason:"stage_mismatch"}
-      elif ((.challenger // null) == null or (.challenger | type) != "object") then
-        {ok:false, reason:"missing_challenger_intent"}
-      else
-        (.challenger) as $side
-        | ($side.role // $side.side // "") as $role
-        | ($side.key // "") as $key
-        | ($side.expectedStageAgent // (if $stage == "plan" then $side.planner.agent elif $stage == "implementation" then $side.coder.agent else $side.reviewer.agent end) // "") as $agent
-        | ($side.expectedStageModel // (if $stage == "plan" then $side.planner.model elif $stage == "implementation" then $side.coder.model else $side.reviewer.model end) // "") as $model
-        | if ($role != "challenger") then
-            {ok:false, reason:"challenger_side_mismatch"}
-          elif ($key != "" and $key != $issue) then
-            {ok:false, reason:"challenger_key_mismatch"}
-          elif ((($agent | type) != "string") or ($agent == "")) then
-            {ok:false, reason:"missing_launch_agent"}
-          elif ((($model | type) != "string") or ($model == "")) then
-            {ok:false, reason:"missing_launch_model"}
-          elif ($agent == "native") then
-            {ok:false, reason:"ambiguous_launch_agent"}
-          else
-            {ok:true, agent:$agent, model:$model, stage:$stage, source:$source}
-          end
-      end
-      | . + {resultHead:$resultHead, currentHead:$currentHead}
-    ' <<< "$intent_json" 2>/dev/null || jq -cn --arg reason "invalid_challenge_intent_schema" '{ok:false,reason:$reason}'
 }
 
 coding_missing_blocked_completion_announce_marker() {
@@ -9803,6 +9668,10 @@ _prepare_recovery_phase_launch() {
   local result_write_mode="${10:-write-result}"
   local win contract_title resolved_window artifacts_json=""
 
+  # Every coding recovery consumes the prior attempt's handoff artifacts.
+  # Durable mutation provenance is deliberately outside that archive set.
+  [[ "$phase" != coding ]] || archive_stale_coding_artifacts "$issue" "$feature_dir"
+
   if [[ "$result_write_mode" != "defer-result" ]]; then
     if [[ -f "$feature_dir/.${phase}-result.json" ]]; then
       artifacts_json="$(jq -c --arg phase "$phase" '
@@ -9940,15 +9809,8 @@ _restore_inflight_task_window_if_missing() {
     title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
   fi
 
-  local challenge_side contract_json contract_ok contract_payload reason detail
-  challenge_side="$(_challenge_side_for_issue "$issue")"
-  local recovery_args=(read-and-validate --feature-dir "$feature_dir" --stage "$phase" --repo "$REPO_DIR" --json)
-  [[ -n "$challenge_side" ]] && recovery_args+=(--challenge-side "$challenge_side")
-  if ! contract_json="$(wavemill_run_tool "recovery-contract.ts" "${recovery_args[@]}" 2>/dev/null)"; then
-    _stop_task_recovery_contract_unavailable "$issue" "$phase" "$feature_dir" "contract_read_failed" "recovery-contract CLI exited non-zero"
-    _RESTORE_STATE="failed"
-    return 0
-  fi
+  local contract_json contract_ok contract_payload reason detail
+  contract_json="$(recovery_contract_json "$issue" "$feature_dir" "$phase")"
   contract_ok="$(printf '%s' "$contract_json" | jq -r '.ok // false' 2>/dev/null || echo "false")"
   if [[ "$contract_ok" != "true" ]]; then
     reason="$(printf '%s' "$contract_json" | jq -r '.reason // "contract_malformed"' 2>/dev/null || echo "contract_malformed")"
@@ -12659,13 +12521,7 @@ review_recovery_native_timeout_repeat() {
 review_recovery_contract_payload() {
   local issue="$1" feature_dir="$2" challenge_side contract_json contract_ok reason detail
   REVIEW_RECOVERY_CONTRACT_ERROR=""
-  challenge_side="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
-  local recovery_args=(read-and-validate --feature-dir "$feature_dir" --stage review --repo "$REPO_DIR" --json)
-  [[ -n "$challenge_side" ]] && recovery_args+=(--challenge-side "$challenge_side")
-  if ! contract_json="$(wavemill_run_tool "recovery-contract.ts" "${recovery_args[@]}" 2>/dev/null)"; then
-    REVIEW_RECOVERY_CONTRACT_ERROR="recovery-contract CLI exited non-zero"
-    return 1
-  fi
+  contract_json="$(recovery_contract_json "$issue" "$feature_dir" review)"
   contract_ok="$(printf '%s' "$contract_json" | jq -r '.ok // false' 2>/dev/null || echo "false")"
   if [[ "$contract_ok" != "true" ]]; then
     reason="$(printf '%s' "$contract_json" | jq -r '.reason // "contract_malformed"' 2>/dev/null || echo "contract_malformed")"
@@ -12987,7 +12843,6 @@ review_recovery_coordinator_locked() {
 
   review_mode="$(read_phase_config "$feature_dir" "review" "mode" 2>/dev/null || true)"
   [[ -n "$review_mode" ]] || review_mode="static"
-
   if ! _prepare_recovery_phase_launch "$issue" "$slug" "review" "$feature_dir" "$wt_dir" "$reviewer_agent" "$reviewer_model" "$contract_payload" "review" "defer-result"; then
     failure_reason="failed to prepare review recovery launch surfaces"
     review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
@@ -14958,97 +14813,46 @@ poll_tracked_jobs() {
       continue
     fi
 
-    if [[ "$kind" == "eval" && ( "$reason" == "no_result_file" || "$reason" == "timed_out" ) && -n "$issue_id" ]]; then
-      local pr_num
+    # HOK-3255: one eval settlement. Every failed/timed-out eval job becomes a
+    # decision through the single failure policy (`eval_failure_disposition`);
+    # callers branch on .class/.attribution, never on job reason strings. The
+    # relaunch budget and any escalation are owned by the challenge-eval-hard
+    # bucket inside maybe_run_challenge_eval.
+    if [[ "$kind" == "eval" && "$status" != "succeeded" && -n "$issue_id" ]]; then
+      local pr_num job_exit_code issue_slug feature_dir decision_json
+      local decision_class decision_kind decision_attribution decision_next_action
       pr_num=$(echo "$job_json" | jq -r '.prNumbers[0] // empty')
-      if [[ -n "$result_path" ]] && [[ -f "$result_path" ]] \
-        && [[ "$(jq -r '.ok // .persisted // false' "$result_path" 2>/dev/null || echo "false")" == "true" ]]; then
-        log_warn "challenge eval for $issue_id ${reason}: result was persisted, marking completed"
-        mark_eval_completed "$issue_id"
-        settle_tracked_job "$job_id"
-        continue
-      fi
+      job_exit_code=$(echo "$job_json" | jq -r '.exitCode // empty')
+      # HOK-3324 seam: the one authoritative pre-check — a persisted eval
+      # record for this issue+PR means the outcome already landed. The old
+      # result-file re-read duplicated classifyJobCompletion and is gone;
+      # HOK-3324 will replace this lookup with its currentness contract.
       if [[ -n "$pr_num" ]] && eval_record_exists_for_issue_pr "$issue_id" "$pr_num"; then
-        log_warn "challenge eval for $issue_id ${reason}: eval record was persisted, marking completed"
+        log_warn "challenge eval for $issue_id ${reason:-$status}: eval record was persisted, marking completed"
         mark_eval_completed "$issue_id"
         settle_tracked_job "$job_id"
         continue
       fi
-    fi
-    if [[ "$kind" == "eval" && "$reason" == "timed_out" && -n "$issue_id" && -n "$pair_id" ]]; then
-      local retry_max retry_count timed_out_sides_csv timeout_reason primary_key challenger_key artifact_path
-      local issue_pr issue_branch issue_slug soft_retry_state_dir soft_retry_head
-      primary_key="$pair_id"
-      challenger_key="$(task_identity_challenger_key "$pair_id")"
+      # evalFailed projection (job-tracker mark-settled), then one policy
+      # disposition cached for the relaunch site and operators.
       settle_tracked_job "$job_id"
-      retry_max=$(challenge_eval_retry_max_attempts)
-      issue_pr=$(pass_task_field "$issue_id" pr)
-      issue_branch=$(pass_task_field "$issue_id" branch)
+      decision_json="$(eval_failure_disposition "$issue_id" "$reason" "$job_exit_code" "$excerpt" true)"
+      decision_class=$(jq -r '.class // "retryable"' <<<"$decision_json")
+      decision_kind=$(jq -r '.failureKind // "native-unclassified"' <<<"$decision_json")
+      decision_attribution=$(jq -r '.attribution // "unattributed"' <<<"$decision_json")
+      decision_next_action=$(jq -r '.nextAction // ""' <<<"$decision_json")
       issue_slug=$(pass_task_field "$issue_id" slug)
-      # Bounded-retry bucket in the arm's feature dir (HOK-2924). Effective
-      # count is max(bucket, comparisonRetryCount mirror) so pre-existing
-      # state keeps its budget; a fresh commit on the arm zeroes both. The
-      # mirror keeps being written for external consumers.
-      soft_retry_state_dir=""
-      soft_retry_head=""
-      local soft_retry_prior_head soft_retry_mirror
-      if [[ -n "$issue_slug" ]]; then
-        soft_retry_state_dir="${WORKTREE_ROOT}/${issue_slug}/features/${issue_slug}"
-        soft_retry_head=$(git -C "${WORKTREE_ROOT}/${issue_slug}" rev-parse HEAD 2>/dev/null || echo "")
-        soft_retry_prior_head=$(bounded_retry_head "$soft_retry_state_dir" "challenge-eval-soft")
-        bounded_retry_reset_if_new_head "$soft_retry_state_dir" "challenge-eval-soft" "$soft_retry_head"
-        if [[ -n "$soft_retry_prior_head" && -n "$soft_retry_head" && "$soft_retry_prior_head" != "$soft_retry_head" ]]; then
-          task_state_mutate_existing "$primary_key" '
-            .comparisonRetryCount = 0
-            | .updated = (now | todateiso8601)
-          ' >/dev/null || true
-        fi
-        retry_count=$(bounded_retry_count "$soft_retry_state_dir" "challenge-eval-soft")
-      else
-        retry_count=0
+      if [[ -n "$issue_slug" && -n "${WORKTREE_ROOT:-}" ]]; then
+        feature_dir="${WORKTREE_ROOT}/${issue_slug}/features/${issue_slug}"
+        mkdir -p "$feature_dir" 2>/dev/null || true
+        printf '%s\n' "$decision_json" > "$feature_dir/.eval-failure-decision.json" 2>/dev/null || true
       fi
-      soft_retry_mirror=$(read_state_value "0" --arg i "$primary_key" '.tasks[$i].comparisonRetryCount // 0')
-      [[ "$soft_retry_mirror" =~ ^[0-9]+$ ]] || soft_retry_mirror=0
-      (( soft_retry_mirror > retry_count )) && retry_count="$soft_retry_mirror"
-      timed_out_sides_csv=$(challenge_pair_timed_out_sides_csv "$primary_key")
-      if [[ -n "$timed_out_sides_csv" ]]; then
-        case ",$timed_out_sides_csv," in
-          *,"$side",*) ;;
-          *) timed_out_sides_csv="${timed_out_sides_csv},${side}" ;;
-        esac
-      else
-        timed_out_sides_csv="$side"
+      log_warn "challenge eval failed for $issue_id (kind=$decision_kind class=$decision_class attribution=$decision_attribution; log: $log_path)${decision_next_action:+; next: $decision_next_action}"
+      if [[ -n "$excerpt" ]]; then
+        while IFS= read -r line; do
+          [[ -n "$line" ]] && log_warn "  $line"
+        done <<<"$excerpt"
       fi
-      timed_out_sides_csv="${timed_out_sides_csv#,}"
-      timeout_reason=$(challenge_pair_timeout_reason "$timed_out_sides_csv")
-
-      if (( retry_count < retry_max )); then
-        if [[ -n "$soft_retry_state_dir" ]]; then
-          bounded_retry_increment "$soft_retry_state_dir" "challenge-eval-soft" "$soft_retry_head" >/dev/null
-        fi
-        retry_count=$((retry_count + 1))
-        write_challenge_pair_state "$pair_id" "retrying_eval" "$timeout_reason" "$retry_count" "$retry_max" "$issue_id" "$timed_out_sides_csv" ""
-        task_state_mutate_existing "$issue_id" '
-          .evalFailed = false
-          | .evalCompleted = false
-          | .updated = (now | todateiso8601)
-        ' >/dev/null || true
-        log "status" "challenge comparison retrying for $pair_id: $side eval timed out (attempt $retry_count/$retry_max)"
-        if [[ -n "$issue_pr" && -n "$issue_branch" && -n "$issue_slug" ]]; then
-          maybe_run_challenge_eval "$issue_id" "$issue_pr" "$issue_branch" "$issue_slug"
-        else
-          log_warn "challenge eval retry launch skipped for $issue_id: missing PR/branch/slug"
-        fi
-        continue
-      fi
-
-      if [[ -n "$soft_retry_state_dir" ]]; then
-        bounded_retry_mark_exhausted "$soft_retry_state_dir" "challenge-eval-soft" \
-          "Challenge eval soft retries exhausted for $issue_id (pair $pair_id): ${timed_out_sides_csv} eval timed out after ${retry_count}/${retry_max} attempt(s) - manual comparison needed" || true
-      fi
-      artifact_path=$(write_manual_challenge_comparison_artifact "$pair_id" "$primary_key" "$challenger_key" "$timed_out_sides_csv" "$retry_count" "$retry_max" || true)
-      write_challenge_pair_state "$pair_id" "manual_comparison_needed" "$timeout_reason" "$retry_count" "$retry_max" "" "$timed_out_sides_csv" "$artifact_path"
-      log_warn "challenge comparison blocked for $pair_id: ${timed_out_sides_csv} eval timed out. manual comparison needed${artifact_path:+ ($artifact_path)}"
       continue
     fi
 
@@ -15332,51 +15136,94 @@ maybe_run_challenge_eval() {
   fi
   eval_failed=$(read_state_value "false" --arg i "$issue" '.tasks[$i].evalFailed // false')
   if [[ "$eval_failed" == "true" ]]; then
-    # Bounded-retry bucket in the arm's feature dir (HOK-2924). The effective
-    # count is max(bucket, state mirror): the evalHardFailureRetryCount mirror
-    # stays authoritative for pre-existing state (and for
-    # resolve_challenge_pair_hard_failure, which reads it), while the bucket
-    # adds the head-keyed reset — a fresh commit zeroes both. The backoff base
-    # defaults to 0 (today's cadence); raise it via
-    # WAVEMILL_RETRY_BACKOFF_CHALLENGE_EVAL_HARD_BASE_SECONDS.
-    local hard_retry_state_dir hard_retry_head hard_retry_prior_head hard_retry_mirror hard_retry_base
+    # HOK-3255: one eval-failure budget. The poll settles every failed eval
+    # job through eval_failure_disposition and caches the decision in
+    # .eval-failure-decision.json; this site consumes it. Only an allowlisted
+    # terminal decision stops the relaunch — every retryable/unattributed
+    # decision (timeouts included) goes through the existing
+    # challenge-eval-hard bounded-retry bucket (HOK-2924), whose default
+    # backoff applies (the old forced 0s base is gone). The
+    # evalHardFailureRetryCount state field is a projection written FROM the
+    # bucket; it is never read back into the budget. Exhaustion escalates to
+    # the existing manual-comparison state — no pair resolution, no
+    # comparison record, no forfeit.
+    local hard_retry_state_dir hard_retry_head
+    local decision_path decision_json decision_class decision_kind decision_next_action
     hard_retry_state_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
-    hard_retry_head=$(git -C "${WORKTREE_ROOT}/${slug}" rev-parse HEAD 2>/dev/null || echo "")
-    hard_retry_prior_head=$(bounded_retry_head "$hard_retry_state_dir" "challenge-eval-hard")
-    bounded_retry_reset_if_new_head "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_head"
-    if [[ -n "$hard_retry_prior_head" && -n "$hard_retry_head" && "$hard_retry_prior_head" != "$hard_retry_head" ]]; then
-      task_state_mutate_existing "$issue" '
-        .evalHardFailureRetryCount = 0
-        | .updated = (now | todateiso8601)
-      ' >/dev/null || true
+    decision_path="$hard_retry_state_dir/.eval-failure-decision.json"
+    decision_json=""
+    if [[ -f "$decision_path" ]]; then
+      decision_json=$(cat "$decision_path" 2>/dev/null || echo "")
+      decision_class=$(jq -r '.class // "retryable"' <<<"$decision_json" 2>/dev/null || echo "retryable")
     fi
-    eval_hard_retry_count=$(bounded_retry_count "$hard_retry_state_dir" "challenge-eval-hard")
-    hard_retry_mirror=$(read_state_value "0" --arg i "$issue" '.tasks[$i].evalHardFailureRetryCount // 0')
-    [[ "$hard_retry_mirror" =~ ^[0-9]+$ ]] || hard_retry_mirror=0
-    (( hard_retry_mirror > eval_hard_retry_count )) && eval_hard_retry_count="$hard_retry_mirror"
+    hard_retry_head=$(git -C "${WORKTREE_ROOT}/${slug}" rev-parse HEAD 2>/dev/null || echo "")
     eval_hard_retry_max=$(challenge_eval_hard_failure_max_retries)
-    if (( eval_hard_retry_count < eval_hard_retry_max )); then
-      hard_retry_base="${WAVEMILL_RETRY_BACKOFF_CHALLENGE_EVAL_HARD_BASE_SECONDS:-0}"
-      [[ "$hard_retry_base" =~ ^[0-9]+$ ]] || hard_retry_base=0
-      if ! bounded_retry_due "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_base"; then
+    local disposition
+    if [[ "${decision_class:-retryable}" == "terminal" ]]; then
+      decision_kind=$(jq -r '.failureKind' <<<"$decision_json")
+      decision_next_action=$(jq -r '.nextAction // ""' <<<"$decision_json")
+      local terminal_abort_reason="invalid_challenge:${decision_kind}"
+      if jq -e '.attribution == "model"' <<<"$decision_json" >/dev/null 2>&1; then
+        terminal_abort_reason="terminal_stage_failure:${decision_kind}"
+      fi
+      challenge_abort_pair "$issue" "$hard_retry_state_dir" "$issue-$slug" eval \
+        "$(challenge_coder_model_for_task "$issue")" "$terminal_abort_reason" \
+        "$(jq -r '.detail // .nextAction // "terminal eval failure"' <<<"$decision_json")" "$decision_next_action" \
+        "$(challenge_abort_scope_for_failure "$issue" "$decision_kind")" || true
+      return 0
+    else
+      disposition=$(bounded_retry_gate "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_head" "$eval_hard_retry_max" "" "" "")
+    fi
+    case "$disposition" in
+      backoff)
         log "debug" "challenge eval hard-failure retry for $issue holding (backoff)"
         return 0
-      fi
-      bounded_retry_increment "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_head" >/dev/null
-      eval_hard_retry_count=$((eval_hard_retry_count + 1))
-      task_state_mutate_existing "$issue" '
-        .evalFailed = false
-        | .evalCompleted = false
-        | .evalHardFailureRetryCount = $retryCount
-        | .updated = (now | todateiso8601)
-      ' --argjson retryCount "$eval_hard_retry_count" >/dev/null || true
-      log "status" "challenge eval retrying for $issue: hard failure (attempt $eval_hard_retry_count/$eval_hard_retry_max)"
-    else
-      bounded_retry_mark_exhausted "$hard_retry_state_dir" "challenge-eval-hard" \
-        "Challenge eval hard-failure retries exhausted for $issue (${eval_hard_retry_count}/${eval_hard_retry_max}) - resolving pair ${pair_id:-unknown}" || true
-      resolve_challenge_pair_hard_failure "$pair_id" >/dev/null || true
-      return 0
-    fi
+        ;;
+      exhausted-quiet)
+        log "debug" "challenge eval hard-failure retries exhausted for $issue and will hold silently until a new head"
+        return 0
+        ;;
+      exhausted)
+        # Escalation, not resolution (HOK-3255): retry exhaustion is
+        # unattributed infrastructure evidence and cannot establish that a
+        # model lost, so there is no pair resolution and no comparison
+        # record. The pair stays visibly blocked (manual_comparison_needed +
+        # needs-user) until the eval is re-run or a new head lands; the
+        # head-keyed condition companion (HOK-3172) resets the sentinel so
+        # it never latches.
+        local hard_retry_count challenger_key artifact_path timed_out_sides_csv timeout_reason eval_side
+        decision_kind=$(jq -r '.failureKind // "native-unclassified"' <<<"$decision_json" 2>/dev/null || echo "native-unclassified")
+        decision_next_action=$(jq -r '.nextAction // ""' <<<"$decision_json" 2>/dev/null || echo "")
+        hard_retry_count=$(bounded_retry_count "$hard_retry_state_dir" "challenge-eval-hard")
+        bounded_retry_mark_exhausted "$hard_retry_state_dir" "challenge-eval-hard" \
+          "Challenge eval stopped for $issue (pair ${pair_id:-unknown}): class=${decision_class:-retryable}, kind=${decision_kind}, ${hard_retry_count}/${eval_hard_retry_max} attempt(s); next: ${decision_next_action:-re-run the eval or push a new head}" \
+          --head "$hard_retry_head" --expires-on head,operator-event || true
+        if [[ -n "$pair_id" ]]; then
+          challenger_key="$(task_identity_challenger_key "$pair_id")"
+          eval_side=$(get_task_meta "$issue" "challengeRole")
+          [[ -z "$eval_side" ]] && eval_side="primary"
+          timed_out_sides_csv=$(challenge_pair_timed_out_sides_csv "$pair_id")
+          if [[ -n "$timed_out_sides_csv" ]]; then
+            case ",$timed_out_sides_csv," in
+              *,"$eval_side",*) ;;
+              *) timed_out_sides_csv="${timed_out_sides_csv},${eval_side}" ;;
+            esac
+          else
+            timed_out_sides_csv="$eval_side"
+          fi
+          timed_out_sides_csv="${timed_out_sides_csv#,}"
+          timeout_reason=$(challenge_pair_timeout_reason "$timed_out_sides_csv")
+          artifact_path=$(write_manual_challenge_comparison_artifact "$pair_id" "$pair_id" "$challenger_key" "$timed_out_sides_csv" \
+            "$hard_retry_count" "$eval_hard_retry_max" "eval_hard_failure" || true)
+          write_challenge_pair_state "$pair_id" "manual_comparison_needed" "$timeout_reason" \
+            "$hard_retry_count" "$eval_hard_retry_max" "" "$timed_out_sides_csv" "$artifact_path" >/dev/null || true
+        fi
+        set_window_attention_state "${issue}-${slug}" "needs-user" 2>/dev/null || true
+        log_warn "challenge eval for $issue exhausted (${hard_retry_count}/${eval_hard_retry_max}, kind=${decision_kind}): unattributed infrastructure failure - manual comparison needed, no forfeit${decision_next_action:+; next: $decision_next_action}"
+        return 0
+        ;;
+    esac
+    # Charge only after the tracked launch succeeds below.
   fi
   # The eval's solution model has always been the coder; keep that meaning now
   # that challengeModel names the varied stage's model (HOK-3156).
@@ -15428,12 +15275,15 @@ maybe_run_challenge_eval() {
 
   # HOK-3184: mirror the eval launch as a shadow step row. The bucket name
   # mirrors the pair/side so the retry sentinel is attributed to this arm.
+  # HOK-3255: it mirrors the one bounded-retry budget that owns all eval
+  # failures (challenge-eval-hard); the retired challenge-eval-soft ceiling
+  # no longer feeds this shadow call.
   if declare -F wavemill_ledger_step_upsert >/dev/null 2>&1; then
     local _eval_head _eval_state_dir _eval_bucket _eval_max_attempts
     _eval_head="$(git -C "${WORKTREE_ROOT}/${slug}" rev-parse HEAD 2>/dev/null || true)"
     _eval_state_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
-    _eval_bucket="challenge-eval-soft-${pair_id}-${side}"
-    _eval_max_attempts=$(challenge_eval_retry_max_attempts)
+    _eval_bucket="challenge-eval-hard-${pair_id}-${side}"
+    _eval_max_attempts=$(challenge_eval_hard_failure_max_retries)
     wavemill_ledger_step_upsert "$issue" eval "$_eval_state_dir" "$_eval_bucket" \
       --head "$_eval_head" --pr "$pr" --pair "$pair_id" --side "$side" \
       --prompt "run-eval-hook@${challenge_stage:-eval}" \
@@ -15457,6 +15307,13 @@ maybe_run_challenge_eval() {
 
   eval_timeout="$(post_merge_eval_timeout_seconds)"
   launch_tracked_job "eval" "$job_id" "$issue" "$side" "$pair_id" "$pr" "$pid" "$eval_timeout" "$log_path" "$result_path"
+  if [[ "$eval_failed" == "true" ]]; then
+    bounded_retry_increment "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_head" >/dev/null
+    eval_hard_retry_count=$(bounded_retry_count "$hard_retry_state_dir" "challenge-eval-hard")
+    task_state_mutate_existing "$issue" '.evalFailed = false | .evalCompleted = false | .evalHardFailureRetryCount = $retryCount' \
+      --argjson retryCount "$eval_hard_retry_count" >/dev/null || true
+    log "status" "challenge eval retrying for $issue: hard failure (attempt $eval_hard_retry_count/$eval_hard_retry_max)"
+  fi
   log "status" "  📊 Challenge eval running in background for $issue (pid $pid)"
 }
 
@@ -15526,8 +15383,24 @@ launch_background_post_merge_eval() {
       if [[ "$persisted" == "true" ]]; then
         mark_eval_completed "$issue"
       else
-        printf 'WARN: Eval not persisted for %s (rc=%s); setting evalFailed=true\n' "$issue" "$rc"
-        mark_eval_failed "$issue"
+        # HOK-3255: the post-merge eval consumes the same one eval-failure
+        # disposition (eval_failure_disposition → the single failure policy).
+        # It has no pair and no relaunch loop — the task is usually already
+        # reaped — so the decision stays unattributed and visible in the
+        # eval log and the post-reap audit instead of relaunching anything.
+        local _reason="eval_not_persisted" _tail decision_json
+        local decision_class decision_kind decision_attribution decision_next_action
+        [[ "$rc" == "124" ]] && _reason="timed_out"
+        _tail=$(tail -c 2000 "$eval_log" 2>/dev/null || echo "")
+        decision_json="$(eval_failure_disposition "$issue" "$_reason" "$rc" "$_tail" false)"
+        decision_class=$(jq -r '.class // "retryable"' <<<"$decision_json")
+        decision_kind=$(jq -r '.failureKind // "native-unclassified"' <<<"$decision_json")
+        decision_attribution=$(jq -r '.attribution // "unattributed"' <<<"$decision_json")
+        decision_next_action=$(jq -r '.nextAction // ""' <<<"$decision_json")
+        printf 'WARN: Eval not persisted for %s (rc=%s): kind=%s class=%s attribution=%s%s; setting evalFailed=true\n' \
+          "$issue" "$rc" "$decision_kind" "$decision_class" "$decision_attribution" \
+          "${decision_next_action:+; next: $decision_next_action}"
+        mark_eval_failed "$issue" "$decision_json"
       fi
     } >>"$eval_log" 2>&1
   ) >/dev/null 2>&1 &

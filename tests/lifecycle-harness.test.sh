@@ -265,6 +265,7 @@ harness_extract_real_functions() {
     stage_failure_owned_by_bucket \
     maybe_retry_failed_stage \
     _stage_failure_coding_relaunch \
+  recovery_contract_json \
     clear_stage_result \
     emit_native_terminal_failure_attention \
     challenge_varied_stage_model \
