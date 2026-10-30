@@ -60,6 +60,7 @@ import {
   gatherReadyTaskProgress,
   type ReadyRemediationDisposition,
 } from './ready-remediation-disposition.ts';
+import { termCapture, termPaneField } from './terminal-backend.ts';
 
 const execFileAsync = promisify(execFile);
 const MAX_AUTO_UPDATE_ATTEMPTS = 3;
@@ -456,7 +457,24 @@ const defaultDeps: ReadyWatchdogDeps = {
     // HOK-3101: default IO-based composition. Tests stub the whole dep.
     if (!worktree || !issueId) return null;
     try {
-      return gatherReadyTaskProgress({ issue: issueId, session, task: task as never, worktree, stateDir, readyResult, now });
+      // HOK-3137/HOK-3322: pane output and its root PID are liveness inputs,
+      // not a competing in-flight predicate. The task's opaque window handle
+      // is the terminal-backend target; an unreadable pane remains unknown.
+      const paneTarget = typeof task.windowId === 'string' && task.windowId ? task.windowId : null;
+      const paneText = paneTarget ? termCapture(paneTarget, { lines: 200 }) ?? undefined : undefined;
+      const panePidValue = paneTarget ? termPaneField(paneTarget, 'pid') : null;
+      const panePid = panePidValue && /^\d+$/.test(panePidValue) ? Number(panePidValue) : null;
+      return gatherReadyTaskProgress({
+        issue: issueId,
+        session,
+        task: task as never,
+        worktree,
+        stateDir,
+        readyResult,
+        paneText,
+        panePid,
+        now,
+      });
     } catch {
       return null;
     }

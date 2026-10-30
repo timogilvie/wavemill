@@ -16,6 +16,7 @@ import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
 import type { ReadyRemediationDisposition } from './ready-remediation-disposition.ts';
 import { createStateDirRetry } from './bounded-retry.ts';
 import type { TaskProgress } from './task-progress.ts';
+import { setTerminalExecForTest } from './terminal-backend.ts';
 
 function remediationDisposition(
   kind: ReadyRemediationDisposition['kind'],
@@ -1333,6 +1334,60 @@ test('tick holds remediation while the same-head agent is still working', async 
     assert.equal(result.findings.length, 1);
     assert.equal(result.findings[0].action, 'remediation-in-flight');
   } finally {
+    await rm(repoDir, { recursive: true, force: true });
+  }
+});
+
+// protects: HOK-3137/HOK-3322 — the watchdog must compose the same pane
+// prompt evidence as the monitor before deciding an idle remediation settled.
+test('tick holds an idle same-head remediation at a pane blocking prompt', async () => {
+  const head = 'a1b2c3d4';
+  const session = 'ready-watchdog-pane-prompt';
+  const hookPath = `/tmp/wavemill-${session}-HOK-2039.hook`;
+  const { repoDir, stateDir, stateFile, featureDir } = setupReadyTask('HOK-2039', 2039);
+  seedSameHeadRemediation(featureDir, stateDir, 'HOK-2039', 2039, head);
+  const workflow = JSON.parse(readFileSync(stateFile, 'utf8')) as { tasks: Record<string, Record<string, unknown>> };
+  workflow.tasks['HOK-2039'].windowId = '@ready-remediation';
+  writeFileSync(stateFile, JSON.stringify(workflow));
+  writeFileSync(hookPath, JSON.stringify({
+    state: 'idle', event: 'Stop', agent: 'codex', writer: 'agent', timestamp: 1906853400,
+  }));
+  setTerminalExecForTest({
+    sync(args) {
+      if (args[0] === 'capture-pane') {
+        return { ok: true, stdout: 'Cannot use the background server (client 0.157.0 vs daemon 0.158.0)\n> 1. Continue\n> 2. Cancel\n' };
+      }
+      if (args[0] === 'display-message') return { ok: true, stdout: '999999\n' };
+      return { ok: false, stdout: '' };
+    },
+    async async(args) {
+      return this.sync(args);
+    },
+  });
+
+  try {
+    const result = await tickReadyWatchdog({
+      repoDir,
+      stateFile,
+      session,
+      config: WATCHDOG_CONFIG,
+      deps: {
+        fetchGitHubTruth: async () => makeTruth({
+          checks: [{ name: 'Alembic Check', status: 'failure', rawStatus: 'FAILURE', text: 'Tests failed in migration chain' }],
+        }),
+        getCurrentHead: async () => head,
+        launchReadyRemediation: async () => {
+          throw new Error('should not launch over a blocking prompt');
+        },
+        now: () => new Date('2030-06-05T12:30:00.000Z'),
+      },
+    });
+
+    assert.equal(result.findings.length, 1);
+    assert.equal(result.findings[0].action, 'remediation-in-flight');
+  } finally {
+    setTerminalExecForTest(null);
+    await rm(hookPath, { force: true });
     await rm(repoDir, { recursive: true, force: true });
   }
 });
