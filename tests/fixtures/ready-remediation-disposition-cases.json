@@ -1,5 +1,5 @@
 {
-  "_comment": "HOK-3322: one table for the Ready remediation disposition. shared/lib/ready-remediation-disposition.test.ts runs every case through the pure decision; tests/ready-remediation-disposition.test.sh materialises the `shell: true` cases (state dir, bucket, conflict marker, ownership row, agent hook file) and asserts the monitor's wrapper prints the same kind and reason. Times are seconds before now. `launch.head` is `current` (equal to HEAD) or `other` (a head the worktree moved past).",
+  "_comment": "HOK-3322: one table for the Ready remediation disposition. Provenance: the first case is a production incident replay from HOK-3316 / PR #1720 (2026-10-26); the remaining cases are hand-authored boundary siblings derived from that incident's documented monitor/watchdog decision sites. shared/lib/ready-remediation-disposition.test.ts runs every case through the pure decision; tests/ready-remediation-disposition.test.sh materialises the `shell: true` cases (state dir, bucket, conflict marker, ownership row, agent hook file) and asserts the monitor's wrapper prints the same kind and reason. Times are seconds before now. `launch.head` is `current` (equal to HEAD) or `other` (a head the worktree moved past).",
   "cases": [
     {
       "name": "incident: CI remediation agent idle after launch at the same head",
