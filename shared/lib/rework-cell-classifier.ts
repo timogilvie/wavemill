@@ -580,6 +580,7 @@ export function enrichOriginalPrReviewEvidence(
       const resolved = resolveTaskArtifact({
         issueId: options.issueId ?? '',
         slug: options.slug,
+        // allow-stage-artifact-lookup: resolves review stage result via resolveTaskArtifact
         artifactName: '.review-result.json',
         repoDir,
       });
