@@ -100,6 +100,8 @@ TESTS=(
   task-inputs-gate.test.sh
   task-progress.test.sh
   task-identity.test.sh
+  task-artifact-lookup.test.sh
+  archive-naming.test.sh
   terminal-backend.test.sh
   tracked-tree-guard.test.sh
   handle-phase-launch-result.test.sh

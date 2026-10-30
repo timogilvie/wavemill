@@ -551,12 +551,12 @@ describe('reliability-metrics', () => {
       const tmp = makeTmpDir();
       try {
         const task = archivedTask(tmp);
-        writeFixture(join(task.archiveDir!, 'operator-events.jsonl'), [
+        writeFixture(join(task.archiveDir!, '.operator-events.jsonl'), [
           { seq: 1, command: 'advance', issue: 'HOK-ARC', at: '2026-10-08T10:30:00Z' },
           { seq: 2, command: 'challenge-void', issue: 'HOK-ARC', at: '2026-10-08T11:30:00Z' },
         ]);
         const base = Math.floor(Date.parse('2026-10-08T10:00:00Z') / 1000);
-        writeFixture(join(task.archiveDir!, 'terminal-history.jsonl'), [
+        writeFixture(join(task.archiveDir!, '.terminal-history.jsonl'), [
           { payload: { state: 'working', event: 'PreToolUse', writer: 'agent', agent: 'claude', timestamp: base } },
           { payload: { state: 'idle', event: 'Stop', writer: 'agent', agent: 'claude', timestamp: base + 600 } },
         ]);
@@ -577,7 +577,7 @@ describe('reliability-metrics', () => {
       const tmp = makeTmpDir();
       try {
         const task = archivedTask(tmp);
-        writeFixture(join(task.archiveDir!, 'coding-uncommitted-output.resolved.jsonl'), [
+        writeFixture(join(task.archiveDir!, '.coding-uncommitted-output.resolved.jsonl'), [
           { reason: 'coding_output_dirty_tree', detectedAt: '2026-10-08T09:47:09Z', resolvedAt: '2026-10-08T09:53:58Z', dirtyPaths: ['a.ts'] },
         ]);
         const touches = collectOperatorTouches({ repoDir: tmp, task, evalsPath: join(tmp, 'none.jsonl') });
@@ -591,10 +591,10 @@ describe('reliability-metrics', () => {
       const tmp = makeTmpDir();
       try {
         const task = archivedTask(tmp);
-        writeFileSync(join(task.archiveDir!, 'coding-result.json'), JSON.stringify({
+        writeFileSync(join(task.archiveDir!, '.coding-result.json'), JSON.stringify({
           stage: 'coding', status: 'completed', startedAt: '2026-10-08T09:00:00Z', finishedAt: '2026-10-08T09:20:00Z',
         }));
-        writeFileSync(join(task.archiveDir!, 'review-result.json'), JSON.stringify({
+        writeFileSync(join(task.archiveDir!, '.review-result.json'), JSON.stringify({
           stage: 'review', status: 'completed', startedAt: '2026-10-08T11:00:00Z', finishedAt: '2026-10-08T11:50:00Z',
         }));
         const stuck = computeTimeStuck({ task, stallMinutes: 30 });
@@ -619,7 +619,7 @@ describe('reliability-metrics', () => {
         writeFixture(join(archiveDir, 'native-sessions', 'expansion.jsonl'), [
           { timestamp: Date.parse('2026-10-06T10:00:00Z'), type: 'session_started' },
         ]);
-        writeFileSync(join(archiveDir, 'coding-result.json'), JSON.stringify({
+        writeFileSync(join(archiveDir, '.coding-result.json'), JSON.stringify({
           stage: 'coding', status: 'completed', startedAt: '2026-10-08T10:00:00Z', finishedAt: '2026-10-08T10:20:00Z',
         }));
         const task: MergedTaskRef = { issue: 'HOK-Q', title: 'HOK-Q (#3)', prNumber: '3', mergedAt: '2026-10-08T10:30:00Z', archiveDir };
@@ -757,7 +757,7 @@ describe('reliability-metrics', () => {
       try {
         const archiveDir = join(tmp, '.wavemill', 'evals', 'artifacts', 'HOK-9');
         mkdirSync(archiveDir, { recursive: true });
-        writeFileSync(join(archiveDir, 'coding-result.json'), JSON.stringify({
+        writeFileSync(join(archiveDir, '.coding-result.json'), JSON.stringify({
           stage: 'coding', status: 'completed', startedAt: '2026-10-08T10:00:00Z', finishedAt: '2026-10-08T11:00:00Z',
         }));
         const commits: PrTimelineEvent[] = [
@@ -941,12 +941,12 @@ describe('prompt-cache hit rate section', () => {
           stageResult('coding', 'claude-sonnet-5-5', { cacheHitRate: rate, providerRoute: 'anthropic' }));
         tasks.push({ issue: `HOK-${i}`, title: `t${i}`, mergedAt: '2026-10-05T00:00:00Z', featureDir });
       });
-      // A reaped task: dotless names in the archive.
+      // A reaped task: HOK-2891 keeps the dotted name in the archive.
       const archiveDir = join(root, 'archive');
       mkdirSync(archiveDir, { recursive: true });
-      writeFileSync(join(archiveDir, 'planning-result.json'),
+      writeFileSync(join(archiveDir, '.planning-result.json'),
         stageResult('planning', 'gemini-3-pro', { cacheHitRate: 0.1, providerRoute: 'openrouter' }));
-      writeFileSync(join(archiveDir, 'review-result.json'),
+      writeFileSync(join(archiveDir, '.review-result.json'),
         stageResult('review', 'gemini-3-pro', { cacheHitRate: 0.3, providerRoute: 'openrouter' }));
       tasks.push({ issue: 'HOK-9', title: 'archived', mergedAt: '2026-10-05T00:00:00Z', archiveDir });
 

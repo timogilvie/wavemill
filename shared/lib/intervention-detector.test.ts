@@ -918,13 +918,14 @@ describe('intervention-detector', () => {
       }
     });
 
-    it('reads stage results from the archived (dotless) route-artifact dir when the worktree has been reaped', () => {
+    it('reads stage results from the archived route-artifact dir when the worktree has been reaped', () => {
       const tmpDir = mkdtempSync(join(tmpdir(), 'wavemill-attribution-archive-'));
       try {
         const issueId = 'HOK-9999';
         const archiveDir = join(tmpDir, '.wavemill', 'evals', 'artifacts', issueId);
         mkdirSync(archiveDir, { recursive: true });
-        writeFileSync(join(archiveDir, 'coding-result.json'), JSON.stringify({
+        // HOK-2891: archive keeps the live basename.
+        writeFileSync(join(archiveDir, '.coding-result.json'), JSON.stringify({
           stage: 'coding',
           status: 'completed',
           startedAt: '2026-08-27T10:00:00Z',

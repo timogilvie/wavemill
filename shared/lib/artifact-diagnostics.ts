@@ -13,6 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { resolveEvalsDir, resolveRouteArtifactArchiveDir } from './evals-paths.ts';
+import { resolveTaskArtifact } from './task-artifact-lookup.ts';
 import type { TaskContract } from './task-contract.ts';
 import type { FeatureState } from './feature-state.ts';
 import type { TraceEvent } from './trace-event.ts';
@@ -1209,17 +1210,15 @@ function checkEvalWithoutOutcome(
   const isFinal = featureStateResult.status === 'ok' &&
     (featureStateResult.value.outcome.completed === true || featureStateResult.value.currentPhase === 'done');
 
-  // Also check archive dir for archived feature-state
+  // HOK-2891: resolve the archived feature-state through the one lookup.
   if (!isFinal && taskId) {
-    let archiveDir: string | undefined;
-    try {
-      archiveDir = resolveRouteArtifactArchiveDir(taskId, repoDir);
-    } catch {
-      archiveDir = undefined;
-    }
-    if (archiveDir) {
-      const archivedStatePath = join(archiveDir, 'feature-state.json');
-      const archivedResult = readJsonTolerant<FeatureState>(archivedStatePath);
+    const resolved = resolveTaskArtifact({
+      issueId: taskId,
+      artifactName: 'feature-state.json',
+      repoDir,
+    });
+    if (resolved?.source === 'archive') {
+      const archivedResult = readJsonTolerant<FeatureState>(resolved.path);
       if (archivedResult.status === 'ok' &&
         (archivedResult.value.outcome.completed === true || archivedResult.value.currentPhase === 'done')) {
         return [];
