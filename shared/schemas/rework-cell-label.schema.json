@@ -1,0 +1,280 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rework-cell-label.schema.json",
+  "title": "ReworkCellLabelV1",
+  "description": "Version 0.1.0 derived label classifying reworked PR defects across review layer x lens product space.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_rework_label",
+    "original_pr",
+    "corrective_pr",
+    "chosen",
+    "structural",
+    "llm",
+    "agreement",
+    "disagreement_state",
+    "reason_codes",
+    "review_evidence",
+    "envelope"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "0.1.0",
+      "description": "Derived label contract version."
+    },
+    "source_rework_label": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "rework_id"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "Authoritative rework label version, e.g. cr-0.1.0"
+        },
+        "rework_id": {
+          "type": "string",
+          "description": "Canonical corrective rework pair identity, e.g. cr:1348:1350"
+        }
+      }
+    },
+    "original_pr": {
+      "$ref": "#/$defs/prRef"
+    },
+    "corrective_pr": {
+      "$ref": "#/$defs/prRef"
+    },
+    "chosen": {
+      "$ref": "#/$defs/cellDecision"
+    },
+    "structural": {
+      "$ref": "#/$defs/structuralOutcome"
+    },
+    "llm": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/llmOutcome" }
+      ]
+    },
+    "agreement": {
+      "type": "boolean",
+      "description": "True when structural and LLM classifiers agree on non-unknown layer and lens, or both evaluate to unknown."
+    },
+    "disagreement_state": {
+      "type": "string",
+      "enum": [
+        "agree",
+        "disagree",
+        "structural_only",
+        "llm_only",
+        "both_unknown",
+        "llm_failed"
+      ]
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "structural_signal_confident",
+          "structural_signal_heuristic",
+          "structural_ambiguous_signals",
+          "structural_insufficient_substrate",
+          "llm_concurrence",
+          "llm_disagreement",
+          "llm_fallback_used",
+          "llm_malformed_response",
+          "llm_unavailable",
+          "llm_refusal",
+          "llm_skipped_offline",
+          "both_unknown",
+          "structural_override",
+          "owner_dispute",
+          "missing_corrective_diff",
+          "clean_agreement"
+        ]
+      }
+    },
+    "review_evidence": {
+      "$ref": "#/$defs/reviewEvidence"
+    },
+    "envelope": {
+      "$ref": "#/$defs/reproducibilityEnvelope"
+    }
+  },
+  "$defs": {
+    "gitSha": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "isoUtcTimestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+    },
+    "layer": {
+      "type": "string",
+      "enum": ["form", "local_meaning", "wiring", "runtime", "use", "unknown"]
+    },
+    "lens": {
+      "type": "string",
+      "enum": ["correctness", "security", "history", "reversibility", "unknown"]
+    },
+    "prRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "url", "head_sha"],
+      "properties": {
+        "number": {
+          "type": "integer"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^https?://\\S+$"
+        },
+        "head_sha": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "merge_commit_sha": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/gitSha" }
+          ]
+        },
+        "title": {
+          "type": "string"
+        }
+      }
+    },
+    "cellDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["layer", "lens", "cell"],
+      "properties": {
+        "layer": {
+          "$ref": "#/$defs/layer"
+        },
+        "lens": {
+          "$ref": "#/$defs/lens"
+        },
+        "cell": {
+          "type": "string"
+        }
+      }
+    },
+    "structuralOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["layer", "lens", "cell", "confidence", "matched_rules"],
+      "properties": {
+        "layer": {
+          "$ref": "#/$defs/layer"
+        },
+        "lens": {
+          "$ref": "#/$defs/lens"
+        },
+        "cell": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "string",
+          "enum": ["high", "medium", "low", "none"]
+        },
+        "matched_rules": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "llmOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["layer", "lens", "cell"],
+      "properties": {
+        "layer": {
+          "$ref": "#/$defs/layer"
+        },
+        "lens": {
+          "$ref": "#/$defs/lens"
+        },
+        "cell": {
+          "type": "string"
+        },
+        "explanation": {
+          "type": "string"
+        },
+        "raw_response": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      }
+    },
+    "reviewEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewers_run", "challenge_stages", "provenance", "coverage_flags"],
+      "properties": {
+        "reviewers_run": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "challenge_stages": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "provenance": {
+          "type": "string",
+          "enum": ["direct", "archived", "partial", "unavailable"]
+        },
+        "coverage_flags": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "reproducibilityEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "labeller_version",
+        "rules_version",
+        "prompt_version",
+        "diff_hash",
+        "computed_at"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "0.1.0"
+        },
+        "labeller_version": {
+          "type": "string"
+        },
+        "rules_version": {
+          "type": "string"
+        },
+        "prompt_version": {
+          "type": "string"
+        },
+        "model": {
+          "type": ["string", "null"]
+        },
+        "diff_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "computed_at": {
+          "$ref": "#/$defs/isoUtcTimestamp"
+        }
+      }
+    }
+  }
+}

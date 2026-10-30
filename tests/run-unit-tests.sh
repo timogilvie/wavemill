@@ -225,6 +225,7 @@ TESTS=(
   shared/lib/router-log.test.ts
   shared/lib/arbiter-survival-label.test.ts
   shared/lib/survival-labeller.test.ts
+  shared/lib/rework-cell-label.test.ts
   shared/lib/challenge-analyzer.test.ts
   shared/lib/challenge-unavailable.test.ts
   shared/lib/challenge-attestation-backfill.test.ts
@@ -569,6 +570,7 @@ TESTS=(
   tools/openrouter-smoke.test.ts
   tools/plan-launch-priority-certifications.test.ts
   tools/reap-stale-challengers.test.ts
+  tools/report-rework-cells.test.ts
   tools/stamp-pr-route.test.ts
   shared/lib/test-partitioner.test.ts
   shared/lib/shard-balance.test.ts
