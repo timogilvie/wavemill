@@ -37,9 +37,10 @@
  */
 
 import { statSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { createStateDirRetry } from './bounded-retry.ts';
 import { readOwnershipRows, type OwnershipKind } from './session-ownership.ts';
+import { resolveTaskArtifact } from './task-artifact-lookup.ts';
 import {
   getTaskProgress,
   type HookState,
@@ -47,7 +48,7 @@ import {
   type TaskProgress,
 } from './task-progress.ts';
 import { readMarker } from './transient-marker.ts';
-import type { StageResult } from './stage-result.ts';
+import { getResultFilePath, type StageResult } from './stage-result.ts';
 import type { TaskRecord } from './workflow-state.ts';
 
 export type ReadyRemediationKind = 'ci' | 'conflict';
@@ -306,7 +307,13 @@ export function gatherReadyTaskProgress(opts: GatherReadyTaskProgressOptions): T
   if (opts.readyResult?.finishedAt) {
     transitions.push({ kind: 'transition', at: opts.readyResult.finishedAt, detail: 'ready.finishedAt' });
   }
-  const readyMtime = fileMtimeIso(join(opts.stateDir, '.ready-result.json'));
+  const readyArtifact = resolveTaskArtifact({
+    issueId: opts.issue,
+    slug: opts.task?.slug ?? basename(opts.stateDir),
+    artifactName: basename(getResultFilePath('', 'ready')),
+    worktreeDir: opts.worktree,
+  });
+  const readyMtime = readyArtifact ? fileMtimeIso(readyArtifact.path) : null;
   if (readyMtime) transitions.push({ kind: 'transition', at: readyMtime, detail: 'ready-result.mtime' });
 
   return getTaskProgress({
