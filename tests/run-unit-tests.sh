@@ -184,6 +184,8 @@ TESTS=(
   shared/lib/ci-failure-classifier.test.ts
   shared/lib/ci-log-fetcher.test.ts
   shared/lib/ready-watchdog.test.ts
+  shared/lib/ready-remediation-disposition.test.ts
+  shared/lib/ready-remediation-disposition-guard.test.ts
   shared/lib/migration-ast.test.ts
   shared/lib/tend-challenge-gate.test.ts
   shared/lib/transient-retry.test.ts

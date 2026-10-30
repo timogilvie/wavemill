@@ -324,7 +324,7 @@ harness_extract_real_functions() {
     phase_should_remain_active_without_pr \
     stage_result_is_in_progress \
     conflict_remediation_marker_path \
-    conflict_remediation_in_flight \
+    ready_remediation_disposition \
     conflict_remediation_awaiting_ready \
     conflict_remediation_exhausted_hold \
     _persist_phase \
@@ -636,7 +636,7 @@ harness_run_tick() {
     launch_ready_phase() { return 0; }
     ready_state_dir() { printf "%s\n" "$1/features/$2/ready"; }
     ready_base_sha() { printf "\n"; }
-    ready_remediation_launch_head() { printf "\n"; }
+    ready_remediation_disposition() { printf "%s\n" "inactive no-launch"; }
     ready_remediation_attempts() { printf "%s\n" "0"; }
     write_ready_attention_file() { :; }
     emit_execution_active_route() { :; }

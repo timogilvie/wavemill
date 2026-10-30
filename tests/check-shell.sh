@@ -221,6 +221,7 @@ for f in \
   "$REPO_DIR"/tests/async-in-flight-touch-set.test.sh \
   "$REPO_DIR"/tests/pr-ci-status-job.test.sh \
   "$REPO_DIR"/tests/ready-watchdog-job.test.sh \
+  "$REPO_DIR"/tests/ready-remediation-disposition.test.sh \
   "$REPO_DIR"/tests/route-task-job.test.sh \
   "$REPO_DIR"/tests/monitor-perf-smoke.test.sh \
   "$REPO_DIR"/tests/fixtures/monitor-perf/async-harness.sh \
@@ -313,6 +314,8 @@ for f in \
   "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/fake-agent/review \
   "$REPO_DIR"/tests/journeys/ready-fail-remediate.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/ready-fail-remediate/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/ready-remediation-same-head.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/ready-remediation-same-head/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/dirty-tree-coding-complete.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/dirty-tree-coding-complete/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/fixtures/dirty-tree-coding-complete/fake-agent/review \
@@ -740,7 +743,7 @@ else
       | grep -vE '^(bad|internal|keeping|marking|monitor|rate|reduce|service|skipping|staying|timed|too|using|wavemill|waiting)$' \
       | grep -vE '^(advance|review)$' \
       | grep -vE '^(not_eligible|routing_error|invalid_challenge)$' \
-      | grep -vE '^(legacy_stale|stale)$' \
+      | grep -vE '^(legacy_stale|stale|settled)$' \
       | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|completed|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$' \
       | grep -vE '^(capabilities|const|import|throw)$' \
       | grep -vE '^(ascii_upcase|first|it|num|retrying|sibling|floor|spawn)$')

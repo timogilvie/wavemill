@@ -13,6 +13,18 @@ import {
   type ReadyTaskSnapshot,
 } from './ready-watchdog.ts';
 import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
+import type { ReadyRemediationDisposition } from './ready-remediation-disposition.ts';
+import { createStateDirRetry } from './bounded-retry.ts';
+import type { TaskProgress } from './task-progress.ts';
+import { setTerminalExecForTest } from './terminal-backend.ts';
+
+function remediationDisposition(
+  kind: ReadyRemediationDisposition['kind'],
+  reason: string,
+  overrides: Partial<ReadyRemediationDisposition> = {},
+): ReadyRemediationDisposition {
+  return { kind, reason, remediation: null, launchHead: null, currentHead: 'head-sha', launchedAt: null, ...overrides };
+}
 
 function makeSnapshot(overrides: Partial<ReadyTaskSnapshot> = {}): ReadyTaskSnapshot {
   return {
@@ -34,9 +46,8 @@ function makeSnapshot(overrides: Partial<ReadyTaskSnapshot> = {}): ReadyTaskSnap
     readyAttentionDetail: null,
     hasNeedsAttention: false,
     hasConflictMarker: false,
-    remediationLaunchHead: null,
     currentHead: 'head-sha',
-    remediationPaneActive: null,
+    remediationDisposition: remediationDisposition('inactive', 'no-launch'),
     worktreeMergeState: {
       mergeHead: null,
       unmergedPaths: [],
@@ -610,9 +621,11 @@ test('classify disconnected resolved merge remediation as auto-resumable', () =>
     makeSnapshot({
       hasConflictMarker: true,
       readyResultStatus: 'running',
-      remediationLaunchHead: 'head-sha',
       currentHead: 'head-sha',
-      remediationPaneActive: false,
+      remediationDisposition: remediationDisposition('settled', 'agent-idle-after-launch', {
+        remediation: 'conflict',
+        launchHead: 'head-sha',
+      }),
       worktreeMergeState: {
         mergeHead: 'base-sha',
         unmergedPaths: [],
@@ -637,9 +650,11 @@ test('classify disconnected unresolved merge remediation as needs-user with next
     makeSnapshot({
       hasConflictMarker: true,
       readyResultStatus: 'running',
-      remediationLaunchHead: 'head-sha',
       currentHead: 'head-sha',
-      remediationPaneActive: false,
+      remediationDisposition: remediationDisposition('settled', 'agent-idle-after-launch', {
+        remediation: 'conflict',
+        launchHead: 'head-sha',
+      }),
       worktreeMergeState: {
         mergeHead: 'base-sha',
         unmergedPaths: ['package.json'],
@@ -784,6 +799,7 @@ test('tick completes disconnected resolved conflict remediation', async () => {
       deps: {
         fetchGitHubTruth: async () => makeTruth({ mergeStateStatus: 'DIRTY' }),
         getCurrentHead: async () => 'head-1',
+        getTaskProgress: () => agentProgress('idle', '2026-05-05T12:00:00.000Z'),
         getWorktreeMergeState: async () => ({
           mergeHead: 'base-sha',
           unmergedPaths: [],
@@ -792,7 +808,6 @@ test('tick completes disconnected resolved conflict remediation', async () => {
           untrackedPaths: [],
           rawStatus: ['M  package.json'],
         }),
-        isTaskPaneActive: async () => false,
         resumeResolvedConflictRemediation: async () => {
           resumed = true;
           return { status: 'completed', detail: 'Committed and pushed resolved conflict remediation for PR #2268.' };
@@ -853,6 +868,7 @@ test('tick writes needs-attention for disconnected unsafe merge remediation', as
       deps: {
         fetchGitHubTruth: async () => makeTruth({ mergeStateStatus: 'DIRTY' }),
         getCurrentHead: async () => 'head-1',
+        getTaskProgress: () => agentProgress('idle', '2026-05-05T12:00:00.000Z'),
         getWorktreeMergeState: async () => ({
           mergeHead: 'base-sha',
           unmergedPaths: ['package.json'],
@@ -861,7 +877,6 @@ test('tick writes needs-attention for disconnected unsafe merge remediation', as
           untrackedPaths: [],
           rawStatus: ['UU package.json'],
         }),
-        isTaskPaneActive: async () => false,
         resumeResolvedConflictRemediation: async () => {
           throw new Error('should not resume unsafe merge');
         },
@@ -1233,8 +1248,7 @@ test('tick retries transient CI failures without launching remediation and then 
   }
 });
 
-test('tick respects same-head remediation in-flight guard', async () => {
-  const { repoDir, stateDir, stateFile, featureDir } = setupReadyTask('HOK-2039', 2039);
+function seedSameHeadRemediation(featureDir: string, stateDir: string, issueId: string, prNumber: number, head: string): void {
   writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
     stage: 'ready',
     status: 'running',
@@ -1243,16 +1257,18 @@ test('tick respects same-head remediation in-flight guard', async () => {
     agent: 'codex',
     model: 'gpt-5.5',
     notes: null,
-    artifacts: { type: 'ready', verdict: 'fail', prNumber: 2039, remediationAttempts: 1, remediationLaunchHead: 'head-1' },
+    artifacts: { type: 'ready', verdict: 'fail', prNumber, remediationAttempts: 1, remediationLaunchHead: head },
   }, null, 2));
+  // The bucket head is the launch identity (HOK-2924); the JSON mirror is not read.
+  createStateDirRetry('ready-remediation', { maxAttempts: 3 }).increment(featureDir, head);
   writeFileSync(path.join(stateDir, 'ready-watchdog-state.json'), JSON.stringify({
     updatedAt: '2030-05-05T12:00:00.000Z',
     // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
     tasks: {
-      'HOK-2039': {
-        issueId: 'HOK-2039',
+      [issueId]: {
+        issueId,
         slug: 'ready-watchdog-task',
-        prNumber: 2039,
+        prNumber,
         classification: 'waiting-on-ci',
         displayLabel: 'waiting on CI',
         detail: 'prior',
@@ -1265,6 +1281,37 @@ test('tick respects same-head remediation in-flight guard', async () => {
       },
     },
   }, null, 2));
+}
+
+/** The remediation agent's own hook record, as the HOK-3101 primitive reports it. */
+function agentProgress(state: 'working' | 'idle', at: string): TaskProgress {
+  const timestamp = Math.floor(Date.parse(at) / 1000);
+  return {
+    issue: 'HOK-2039',
+    computedAt: at,
+    lastProgressAt: at,
+    progressAgeMinutes: 0,
+    sources: [],
+    agentState: state,
+    agentRecord: { state, event: state === 'idle' ? 'Stop' : 'PreToolUse', agent: 'claude', timestamp },
+    controllerState: null,
+    agentIdle: state === 'idle',
+    terminal: false,
+    terminalIdle: false,
+    agentProcessLive: null,
+    agentBackgroundLive: null,
+    backgroundProcesses: [],
+    stalled: false,
+    stallMinutes: 30,
+    blockingPrompt: null,
+  };
+}
+
+// protects: the watchdog relaunching remediation over a live same-head agent.
+test('tick holds remediation while the same-head agent is still working', async () => {
+  const head = 'a1b2c3d4';
+  const { repoDir, stateDir, stateFile, featureDir } = setupReadyTask('HOK-2039', 2039);
+  seedSameHeadRemediation(featureDir, stateDir, 'HOK-2039', 2039, head);
 
   try {
     const result = await tickReadyWatchdog({
@@ -1275,7 +1322,8 @@ test('tick respects same-head remediation in-flight guard', async () => {
         fetchGitHubTruth: async () => makeTruth({
           checks: [{ name: 'Alembic Check', status: 'failure', rawStatus: 'FAILURE', text: 'Tests failed in migration chain' }],
         }),
-        getCurrentHead: async () => 'head-1',
+        getCurrentHead: async () => head,
+        getTaskProgress: () => agentProgress('working', '2026-05-05T12:10:00.000Z'),
         launchReadyRemediation: async () => {
           throw new Error('should not launch');
         },
@@ -1285,6 +1333,94 @@ test('tick respects same-head remediation in-flight guard', async () => {
 
     assert.equal(result.findings.length, 1);
     assert.equal(result.findings[0].action, 'remediation-in-flight');
+  } finally {
+    await rm(repoDir, { recursive: true, force: true });
+  }
+});
+
+// protects: HOK-3137/HOK-3322 — the watchdog must compose the same pane
+// prompt evidence as the monitor before deciding an idle remediation settled.
+test('tick holds an idle same-head remediation at a pane blocking prompt', async () => {
+  const head = 'a1b2c3d4';
+  const session = 'ready-watchdog-pane-prompt';
+  const hookPath = `/tmp/wavemill-${session}-HOK-2039.hook`;
+  const { repoDir, stateDir, stateFile, featureDir } = setupReadyTask('HOK-2039', 2039);
+  seedSameHeadRemediation(featureDir, stateDir, 'HOK-2039', 2039, head);
+  const workflow = JSON.parse(readFileSync(stateFile, 'utf8')) as { tasks: Record<string, Record<string, unknown>> };
+  workflow.tasks['HOK-2039'].windowId = '@ready-remediation';
+  writeFileSync(stateFile, JSON.stringify(workflow));
+  writeFileSync(hookPath, JSON.stringify({
+    state: 'idle', event: 'Stop', agent: 'codex', writer: 'agent', timestamp: 1906853400,
+  }));
+  setTerminalExecForTest({
+    sync(args) {
+      if (args[0] === 'capture-pane') {
+        return { ok: true, stdout: 'Cannot use the background server (client 0.157.0 vs daemon 0.158.0)\n> 1. Continue\n> 2. Cancel\n' };
+      }
+      if (args[0] === 'display-message') return { ok: true, stdout: '999999\n' };
+      return { ok: false, stdout: '' };
+    },
+    async async(args) {
+      return this.sync(args);
+    },
+  });
+
+  try {
+    const result = await tickReadyWatchdog({
+      repoDir,
+      stateFile,
+      session,
+      config: WATCHDOG_CONFIG,
+      deps: {
+        fetchGitHubTruth: async () => makeTruth({
+          checks: [{ name: 'Alembic Check', status: 'failure', rawStatus: 'FAILURE', text: 'Tests failed in migration chain' }],
+        }),
+        getCurrentHead: async () => head,
+        launchReadyRemediation: async () => {
+          throw new Error('should not launch over a blocking prompt');
+        },
+        now: () => new Date('2030-06-05T12:30:00.000Z'),
+      },
+    });
+
+    assert.equal(result.findings.length, 1);
+    assert.equal(result.findings[0].action, 'remediation-in-flight');
+  } finally {
+    setTerminalExecForTest(null);
+    await rm(hookPath, { force: true });
+    await rm(repoDir, { recursive: true, force: true });
+  }
+});
+
+// protects: HOK-3322 — a same-head running result latching the watchdog after
+// the remediation agent settled with checks still red (the monitor agrees).
+test('tick hands a settled same-head remediation back to the bounded launch path', async () => {
+  const head = 'a1b2c3d4';
+  const { repoDir, stateDir, stateFile, featureDir } = setupReadyTask('HOK-2039', 2039);
+  seedSameHeadRemediation(featureDir, stateDir, 'HOK-2039', 2039, head);
+  const launches: number[] = [];
+
+  try {
+    const result = await tickReadyWatchdog({
+      repoDir,
+      stateFile,
+      config: WATCHDOG_CONFIG,
+      deps: {
+        fetchGitHubTruth: async () => makeTruth({
+          checks: [{ name: 'Alembic Check', status: 'failure', rawStatus: 'FAILURE', text: 'Tests failed in migration chain' }],
+        }),
+        getCurrentHead: async () => head,
+        getTaskProgress: () => agentProgress('idle', '2026-05-05T12:10:00.000Z'),
+        launchReadyRemediation: async (_snapshot, _summary, _names, attemptNumber) => {
+          launches.push(attemptNumber);
+          return { status: 'skipped-backoff', detail: 'backoff', attemptNumber };
+        },
+        now: () => new Date('2030-05-05T12:30:00.000Z'),
+      },
+    });
+
+    assert.deepEqual(launches, [2]);
+    assert.equal(result.findings[0].action, 'remediation-backoff');
   } finally {
     await rm(repoDir, { recursive: true, force: true });
   }
@@ -1300,10 +1436,11 @@ test('tick waits for a fresh verification artifact after remediation push when p
     agent: 'codex',
     model: 'gpt-5.5',
     notes: null,
-    artifacts: { type: 'ready', verdict: 'fail', prNumber: 2604, remediationAttempts: 1, remediationLaunchHead: 'old-head' },
+    artifacts: { type: 'ready', verdict: 'fail', prNumber: 2604, remediationAttempts: 1, remediationLaunchHead: 'aaaa0001' },
   }, null, 2));
-  writeFileSync(path.join(featureDir, '.verification-artifact-old-head.json'), JSON.stringify({
-    headSha: 'old-head',
+  createStateDirRetry('ready-remediation', { maxAttempts: 3 }).increment(featureDir, 'aaaa0001');
+  writeFileSync(path.join(featureDir, '.verification-artifact-aaaa0001.json'), JSON.stringify({
+    headSha: 'aaaa0001',
     timestamp: '2030-05-05T11:59:00.000Z',
   }, null, 2));
   let fetchCalled = false;
@@ -1318,7 +1455,7 @@ test('tick waits for a fresh verification artifact after remediation push when p
           fetchCalled = true;
           return makeTruth();
         },
-        getCurrentHead: async () => 'new-head',
+        getCurrentHead: async () => 'bbbb0002',
         now: () => new Date('2030-05-05T12:30:00.000Z'),
       },
     });
@@ -1341,10 +1478,11 @@ test('tick proceeds to poll CI when verification artifact for remediated head is
     agent: 'codex',
     model: 'gpt-5.5',
     notes: null,
-    artifacts: { type: 'ready', verdict: 'fail', prNumber: 2604, remediationAttempts: 1, remediationLaunchHead: 'old-head' },
+    artifacts: { type: 'ready', verdict: 'fail', prNumber: 2604, remediationAttempts: 1, remediationLaunchHead: 'aaaa0001' },
   }, null, 2));
-  writeFileSync(path.join(featureDir, '.verification-artifact-new-head.json'), JSON.stringify({
-    headSha: 'new-head',
+  createStateDirRetry('ready-remediation', { maxAttempts: 3 }).increment(featureDir, 'aaaa0001');
+  writeFileSync(path.join(featureDir, '.verification-artifact-bbbb0002.json'), JSON.stringify({
+    headSha: 'bbbb0002',
     timestamp: '2030-05-05T12:10:00.000Z',
   }, null, 2));
   let fetchCalled = false;
@@ -1359,7 +1497,7 @@ test('tick proceeds to poll CI when verification artifact for remediated head is
           fetchCalled = true;
           return makeTruth();
         },
-        getCurrentHead: async () => 'new-head',
+        getCurrentHead: async () => 'bbbb0002',
         now: () => new Date('2030-05-05T12:30:00.000Z'),
       },
     });
@@ -2406,8 +2544,7 @@ test('tick suppresses repeated waiting-on-merge-lane findings when only idle min
       getWorktreeMergeState: async () => ({
         mergeHead: null, unmergedPaths: [], stagedPaths: [], unstagedPaths: [], untrackedPaths: [], rawStatus: [],
       }),
-      isTaskPaneActive: async () => null,
-      now: () => new Date('2030-06-23T12:23:00.000Z'),
+        now: () => new Date('2030-06-23T12:23:00.000Z'),
     };
 
     const first = await tickReadyWatchdog({ repoDir, stateFile, config: WATCHDOG_CONFIG, deps: baseDeps });
@@ -2458,7 +2595,6 @@ test('tick suppresses repeated merge-lane stall needs-user when only waited minu
     getWorktreeMergeState: async () => ({
       mergeHead: null, unmergedPaths: [], stagedPaths: [], unstagedPaths: [], untrackedPaths: [], rawStatus: [],
     }),
-    isTaskPaneActive: async () => null,
     now: () => new Date('2030-06-23T12:23:00.000Z'),
   };
 
@@ -2529,7 +2665,6 @@ test('tick preserves classificationSince when only detail fingerprint changes', 
     getWorktreeMergeState: async () => ({
       mergeHead: null, unmergedPaths: [], stagedPaths: [], unstagedPaths: [], untrackedPaths: [], rawStatus: [],
     }),
-    isTaskPaneActive: async () => null,
     now: () => new Date('2030-06-23T12:23:00.000Z'),
   };
 
@@ -2584,7 +2719,6 @@ test('tick resets classificationSince when classification changes', async () => 
     getWorktreeMergeState: async () => ({
       mergeHead: null, unmergedPaths: [], stagedPaths: [], unstagedPaths: [], untrackedPaths: [], rawStatus: [],
     }),
-    isTaskPaneActive: async () => null,
     now: () => new Date('2030-06-23T12:23:00.000Z'),
   };
 
@@ -2627,7 +2761,6 @@ test('tick reports missing tend loop instead of generic merge-lane stall', async
     getWorktreeMergeState: async () => ({
       mergeHead: null, unmergedPaths: [], stagedPaths: [], unstagedPaths: [], untrackedPaths: [], rawStatus: [],
     }),
-    isTaskPaneActive: async () => null,
     now: () => new Date('2030-06-23T12:23:00.000Z'),
   };
 
@@ -2669,7 +2802,6 @@ test('tick reports stalled tend heartbeat instead of generic merge-lane stall', 
     getWorktreeMergeState: async () => ({
       mergeHead: null, unmergedPaths: [], stagedPaths: [], unstagedPaths: [], untrackedPaths: [], rawStatus: [],
     }),
-    isTaskPaneActive: async () => null,
     now: () => new Date('2030-06-23T12:23:00.000Z'),
   };
 
@@ -3163,7 +3295,6 @@ test('tick classifies challenge PR in merge lane as waiting-on-eval-comparison w
         getWorktreeMergeState: async () => ({
           mergeHead: null, unmergedPaths: [], stagedPaths: [], unstagedPaths: [], untrackedPaths: [], rawStatus: [],
         }),
-        isTaskPaneActive: async () => null,
         now: () => new Date('2030-05-05T12:30:00.000Z'),
       },
     });
@@ -3234,7 +3365,6 @@ test('tick classifies a green challenge PR whose no-PR sibling stalled as siblin
         getWorktreeMergeState: async () => ({
           mergeHead: null, unmergedPaths: [], stagedPaths: [], unstagedPaths: [], untrackedPaths: [], rawStatus: [],
         }),
-        isTaskPaneActive: async () => null,
         getSiblingProgress: (_repoDir, sibling) => {
           probed.push(sibling.issueId);
           return {
@@ -3322,7 +3452,6 @@ test('tick uses hard-failure retry config for challenge classification', async (
     getWorktreeMergeState: async () => ({
       mergeHead: null, unmergedPaths: [], stagedPaths: [], unstagedPaths: [], untrackedPaths: [], rawStatus: [],
     }),
-    isTaskPaneActive: async () => null,
     now: () => new Date('2030-05-05T12:30:00.000Z'),
   };
 
@@ -3395,7 +3524,6 @@ test('tick classifies orphaned challenge PR in merge lane as needs-user with rec
         getWorktreeMergeState: async () => ({
           mergeHead: null, unmergedPaths: [], stagedPaths: [], unstagedPaths: [], untrackedPaths: [], rawStatus: [],
         }),
-        isTaskPaneActive: async () => null,
         now: () => new Date('2030-05-05T12:30:00.000Z'),
       },
     });
@@ -3484,7 +3612,6 @@ test('tick classifies running challenge comparison as waiting-on-eval-comparison
         getWorktreeMergeState: async () => ({
           mergeHead: null, unmergedPaths: [], stagedPaths: [], unstagedPaths: [], untrackedPaths: [], rawStatus: [],
         }),
-        isTaskPaneActive: async () => null,
         now: () => new Date('2030-05-05T12:30:00.000Z'),
       },
     });
@@ -3521,7 +3648,6 @@ test('tick classifies non-challenge clean green PR in merge lane as waiting-on-m
         getWorktreeMergeState: async () => ({
           mergeHead: null, unmergedPaths: [], stagedPaths: [], unstagedPaths: [], untrackedPaths: [], rawStatus: [],
         }),
-        isTaskPaneActive: async () => null,
         now: () => new Date('2030-06-23T12:23:00.000Z'),
       },
     });
@@ -3597,7 +3723,6 @@ test('tick classifies challenge PR in merge lane as waiting-on-merge-lane when c
         getWorktreeMergeState: async () => ({
           mergeHead: null, unmergedPaths: [], stagedPaths: [], unstagedPaths: [], untrackedPaths: [], rawStatus: [],
         }),
-        isTaskPaneActive: async () => null,
         now: () => new Date('2030-06-23T12:23:00.000Z'),
       },
     });
