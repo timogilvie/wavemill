@@ -202,6 +202,9 @@ TESTS=(
   hot-state-byte-cap.test.sh
   monitor-usr2-wakeup.test.sh
   fakes/fakes-contract.test.sh
+  tmux-wrapper-loop.test.sh
+  world-lifetime-sigkill.test.sh
+  world-lifetime-stale-reap.test.sh
 )
 
 SHARD_INDEX=1

@@ -5319,7 +5319,7 @@ pane_release_preflight() {
   [[ "$safety_reason" == "ok" ]] || { printf '%s\n' "${safety_reason:-git-error}"; return 1; }
 
   target="$(_tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
-  if [[ -n "$target" && "$(command -v tmux 2>/dev/null || true)" != "" ]]; then
+  if [[ -n "$target" ]] && command -v tmux >/dev/null 2>&1; then
     pane_pid="$(tmux list-panes -t "$(_tmux_target_join "$SESSION" "$target")" -F '#{pane_pid}' 2>/dev/null | head -n 1 || true)"
     mill_pane_has_live_blocking_process "$pane_pid" || live_rc=$?
     live_rc="${live_rc:-0}"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# WAVEMILL_TMUX_WRAPPER: skip me when resolving the real tmux binary (HOK-3329).
 # Shared tmux fake (HOK-3226): the real tmux binary on a private socket.
 #
 # Production code calls bare `tmux` everywhere. Pointing it at a per-test
@@ -7,6 +8,13 @@
 set -euo pipefail
 : "${FAKE_TMUX_REAL:?FAKE_TMUX_REAL must name the real tmux binary}"
 : "${FAKE_TMUX_SOCK:?FAKE_TMUX_SOCK must name the private tmux socket}"
+# A misconfiguration that points the fake at the other wavemill wrapper would
+# exec-loop forever (the HOK-3329 incident shape). Refuse in one call instead:
+# 126 is the standard "command invoked cannot execute" exit.
+if head -c 2048 "$FAKE_TMUX_REAL" 2>/dev/null | grep -qF 'WAVEMILL_TMUX_WRAPPER'; then
+  echo "wavemill: tmux wrapper refuses to exec another wavemill wrapper: $FAKE_TMUX_REAL" >&2
+  exit 126
+fi
 if [[ -n "${FAKE_TMUX_LOG:-}" ]]; then
   printf '%s\n' "$*" >> "$FAKE_TMUX_LOG"
 fi
