@@ -485,7 +485,6 @@ export class DependencyHealthDetector {
  */
 export class DepsDriftDetector {
   detectRepo(repoDir: string, context: DetectorContext): IncidentRecord[] {
-    const now = context.now?.toISOString() ?? new Date().toISOString();
     let result: DepsDriftResult;
     try {
       result = checkDepsDrift(repoDir);
@@ -493,11 +492,22 @@ export class DepsDriftDetector {
       return [];
     }
     if (result.status !== 'drift') return [];
+
+    // Use installation revision timestamp (when install was last updated), not observation time.
+    // This ensures the same mismatch across polls/restarts produces one event key.
+    const eventTimestamp = result.installRevisionAt ?? context.now?.toISOString() ?? new Date().toISOString();
+
     const names = result.packages.map((pkg) => pkg.name).filter(Boolean);
+    const paths = result.packages.map((pkg) => pkg.path);
     const packageLabel = names.length > 0
       ? names.slice(0, 5).join(', ') + (names.length > 5 ? `, …+${names.length - 5}` : '')
-      : '(hidden lockfile unavailable)';
-    const detail = `reason=${result.reason} packages=${names.length > 0 ? names.join(',') : 'unknown'}`;
+      : '(unreadable)';
+
+    // Condition ID for deduplication: based on expected revision, platform, and mismatch set.
+    // Changes when the actual mismatch changes or platform/omit options differ.
+    const conditionId = result.conditionId ?? 'unknown';
+
+    const detail = `reason=${result.reason} platform=${result.platform?.os}/${result.platform?.cpu} paths=${paths.slice(0, 5).join(',')}${paths.length > 5 ? ',...' : ''}`;
     return [createIncidentDraft({
       taskId: null,
       session: context.session ?? null,
@@ -511,16 +521,37 @@ export class DepsDriftDetector {
       evidence: [{
         type: 'backstage_health',
         source: join(repoDir, 'package-lock.json'),
-        timestamp: now,
+        timestamp: eventTimestamp,
         redactedData: redactIncidentData(boundedOneLine(detail, 240)),
-        key: `deps_drift:${result.reason}`,
+        key: `deps_drift:${conditionId}`,
       }],
       metadata: {
+        conditionId,
         driftReason: result.reason,
         driftedPackages: names,
+        driftedPackagePaths: paths,
         driftedPackageCount: result.packages.length,
+        platform: result.platform,
+        expectedRevision: result.expectedRevision,
+        hiddenLockfile: result.hiddenLockfile,
       },
     })];
+  }
+}
+
+/** Check if a dependency-install incident can resolve by absence (no drift now).
+ *  Only resolves stale_dependency_install incidents when status is ok. Unknown status
+ *  keeps the incident open (may be a transient metadata error). */
+export function canResolveDepsDriftByAbsence(
+  record: IncidentRecord,
+  repoDir: string,
+): boolean {
+  if (record.rootCauseClass !== 'stale_dependency_install') return true; // not our case
+  try {
+    const result = checkDepsDrift(repoDir);
+    return result.status === 'ok'; // can resolve only on a healthy install
+  } catch {
+    return false; // unknown status: keep open
   }
 }
 
