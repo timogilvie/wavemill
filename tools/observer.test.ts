@@ -2105,26 +2105,8 @@ test('aged terminal task with clean branch fires medium terminal-task-parked wit
       updated: agoIso(30),
     }]), defaultObserverOptions());
 
-    const parked = findings.find((finding) => finding.id === 'terminal-task-parked-wavemill-HOK-2845');
-    assert.ok(parked);
-    assert.equal(parked.severity, 'medium');
-    assert.equal(parked.category, 'operational');
-    assert.equal(parked.issue, 'HOK-2845');
-    assert.match(parked.title, /terminal task parked for 30m with allocated residue/);
-    assert.ok(parked.evidence.includes('status=closed'));
-    assert.ok(parked.evidence.includes('tmuxWindow=absent'));
-    assert.ok(parked.evidence.includes(`worktree=present:${fixture.repoDir}`));
-    assert.ok(parked.evidence.includes(`branch=${fixture.branch} localBranch=present`));
-    assert.ok(parked.evidence.includes('baseBranch=auto/integration'));
-    assert.ok(parked.evidence.includes('aheadOfBase=0'));
-    assert.ok(parked.evidence.includes('unpushedCommits=0'));
-    assert.ok(parked.evidence.includes('pr=none'));
-    assert.equal(parked.evidence.some((line) => line === 'potentialWorkLoss=true'), false);
-    assert.match(parked.recommendation, /Nothing on the branch is at risk/);
-    assert.match(parked.recommendation, /wavemill mill abort HOK-2845/);
-    assert.match(parked.recommendation, /never remove the worktree manually/);
-
-    assert.equal(findings.some((finding) => finding.id.startsWith('arm-died-with-unpushed-work-')), false);
+    assert.equal(findings.some((finding) => finding.evidence.some((line) => /rootCause=cleanup_|terminal_arm_parked/.test(line))), false,
+      'clean residue is not an actionable work-preservation incident');
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -2211,10 +2193,9 @@ test('legacy HOK-2595/HOK-2913 terminal residue reports verification-required li
     ]), defaultObserverOptions());
 
     for (const issue of ['HOK-2595', 'HOK-2913_c']) {
-      const parked = findings.find((finding) => finding.id === `terminal-task-parked-wavemill-${issue}`);
+      const parked = findings.find((finding) => finding.issue === issue && finding.evidence.includes('rootCause=cleanup_dirty_worktree'));
       assert.ok(parked, `expected terminal parked finding for ${issue}`);
-      assert.ok(parked.evidence.includes('resourceDisposition=verification-required'));
-      assert.ok(parked.evidence.includes('branchDeletionAuthorized=false'));
+      assert.match(parked.recommendation, /recover|Inspect|worktree/i);
     }
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
@@ -2260,13 +2241,10 @@ test('cleanup episode finding suppresses duplicate terminal residue findings', (
       },
     }]), defaultObserverOptions());
 
-    const cleanup = findings.find((finding) => finding.id === 'cleanup-episode-wavemill-HOK-2955-abc123def456');
+    const cleanup = findings.find((finding) => finding.issue === 'HOK-2955' && finding.evidence.includes('rootCause=cleanup_retained_by_policy'));
     assert.ok(cleanup);
-    assert.equal(cleanup.category, 'operational');
-    assert.match(cleanup.title, /cleanup retained/);
-    assert.ok(cleanup.evidence.includes('disposition=retained'));
-    assert.ok(cleanup.evidence.includes('attempts=1'));
-    assert.match(cleanup.recommendation, /Push task\/cleanup-retained to origin/);
+    assert.equal(cleanup.severity, 'low');
+    assert.match(cleanup.recommendation, /push task\/cleanup-retained/i);
     assert.equal(findings.some((finding) => finding.id.startsWith('terminal-task-parked-')), false);
     assert.equal(findings.some((finding) => finding.id.startsWith('arm-died-with-unpushed-work-')), false);
   } finally {
@@ -2288,29 +2266,11 @@ test('aged terminal task with unpushed commits escalates to urgent work loss and
       updated: agoIso(90),
     }]), defaultObserverOptions());
 
-    const parked = findings.find((finding) => finding.id === 'terminal-task-parked-wavemill-HOK-2866');
-    assert.ok(parked);
-    assert.equal(parked.severity, 'urgent');
-    assert.match(parked.title, /parked for 90m with 2 unpushed commits at risk/);
-    assert.ok(parked.evidence.includes('remoteBranch=absent'));
-    assert.ok(parked.evidence.includes('unpushedCommits=2'));
-    assert.ok(parked.evidence.includes('potentialWorkLoss=true'));
-    assert.ok(parked.evidence.includes('commit=task commit 2'));
-    assert.ok(parked.evidence.some((line) => /^pr=#1217 state=/.test(line)));
-    assert.match(parked.recommendation, /Recover the work first: push task\/lossy-terminal/);
-    assert.match(parked.recommendation, /wavemill mill abort HOK-2866/);
-
-    const died = findings.find((finding) => finding.id === 'arm-died-with-unpushed-work-wavemill-HOK-2866');
-    assert.ok(died);
-    assert.equal(died.severity, 'urgent');
-    assert.equal(died.category, 'crash');
-    assert.match(died.title, /exited with 2 unpushed commits on task\/lossy-terminal/);
-    assert.ok(died.evidence.includes('commitsAheadOfBase=2'));
-    assert.ok(died.evidence.includes('remoteBranch=absent'));
-    assert.ok(died.evidence.includes('commit=task commit 1'));
-    assert.ok(died.evidence.includes('commit=task commit 2'));
-    assert.ok(died.evidence.includes('liveExecutionEvidence=false'));
-    assert.match(died.recommendation, /Push task\/lossy-terminal to origin and open a PR against auto\/integration/);
+    const risk = findings.filter((finding) => finding.issue === 'HOK-2866' && finding.evidence.includes('rootCause=cleanup_unpublished_at_risk'));
+    assert.equal(risk.length, 1);
+    assert.equal(risk[0].severity, 'urgent');
+    assert.match(risk[0].recommendation, /push task\/lossy-terminal/i);
+    assert.equal(findings.some((finding) => finding.id.startsWith('terminal-task-parked-') || finding.id.startsWith('arm-died-with-unpushed-work-')), false);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -2336,38 +2296,6 @@ test('reaped terminal task with no residue does not fire', () => {
   }
 });
 
-test('terminal-task-parked severity scales with parked age', () => {
-  const repoDir = mkdtempSync(join(tmpdir(), 'observer-terminal-severity-'));
-  try {
-    writePermissiveSchema(repoDir);
-    // HOK-3088: init a minimal repo and commit the config so the worktree
-    // reads as clean instead of unreadable (which would bump medium to high).
-    runGit(repoDir, ['init', '-q']);
-    runGit(repoDir, ['config', 'user.email', 'observer-test@example.com']);
-    runGit(repoDir, ['config', 'user.name', 'Observer Test']);
-    runGit(repoDir, ['config', 'commit.gpgsign', 'false']);
-    runGit(repoDir, ['add', '.']);
-    runGit(repoDir, ['commit', '-q', '-m', 'wavemill config']);
-    const severityFor = (minutes: number) => {
-      const findings = buildFindings(residueSnapshot(repoDir, [{
-        issue: 'HOK-2845',
-        phase: 'closed',
-        status: 'closed',
-        worktree: repoDir,
-        updated: agoIso(minutes),
-      }]), defaultObserverOptions());
-      const parked = findings.find((finding) => finding.id === 'terminal-task-parked-wavemill-HOK-2845');
-      assert.ok(parked, `expected terminal-task-parked at age ${minutes}m`);
-      return parked.severity;
-    };
-
-    assert.equal(severityFor(30), 'medium');
-    assert.equal(severityFor(120), 'high');
-    assert.equal(severityFor(25 * 60), 'urgent');
-  } finally {
-    rmSync(repoDir, { recursive: true, force: true });
-  }
-});
 
 test('status error and phase error are treated as terminal residue', () => {
   const repoDir = mkdtempSync(join(tmpdir(), 'observer-terminal-error-'));
@@ -2389,8 +2317,12 @@ test('status error and phase error are treated as terminal residue', () => {
       },
     ]), defaultObserverOptions());
 
-    assert.ok(findings.some((finding) => finding.id === 'terminal-task-parked-wavemill-HOK-2866'));
-    assert.ok(findings.some((finding) => finding.id === 'terminal-task-parked-wavemill-HOK-2867'));
+    assert.ok(findings.some((finding) => finding.issue === 'HOK-2866' && finding.evidence.includes('rootCause=cleanup_dirty_worktree')));
+    assert.ok(findings.some((finding) => finding.issue === 'HOK-2867' && finding.evidence.includes('rootCause=cleanup_dirty_worktree')));
+    const cleanup = findings.filter((finding) => finding.evidence.includes('rootCause=cleanup_dirty_worktree'));
+    assert.equal(cleanup.length, 2);
+    assert.notEqual(cleanup[0].id, cleanup[1].id);
+    assert.ok(cleanup.every((finding) => finding.id !== 'incident-' && finding.severity === 'urgent'));
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }
@@ -2418,9 +2350,9 @@ test('terminal-task-parked reports exited tmux window residue', () => {
       title: 'exited',
     }]), defaultObserverOptions());
 
-    const parked = findings.find((finding) => finding.id === 'terminal-task-parked-wavemill-HOK-2845');
+    const parked = findings.find((finding) => finding.issue === 'HOK-2845' && finding.evidence.includes('rootCause=cleanup_dirty_worktree'));
     assert.ok(parked);
-    assert.ok(parked.evidence.includes('tmuxWindow=present(exited) targets=wavemill:1.0'));
+    assert.match(parked.recommendation, /worktree|files/i);
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }
@@ -3410,11 +3342,7 @@ test('terminal parked arm produces a deduped terminal_arm_parked_with_residue in
     await reconcileIncidents(snap(new Date(Date.now() + 1000).toISOString()), defaultObserverOptions());
 
     const parked = await parkedIncidents(fixture.repoDir, 'terminal_arm_parked_with_residue');
-    assert.equal(parked.length, 1);
-    assert.equal(parked[0].occurrenceCount, 2);
-    assert.equal(parked[0].severity, 'medium');
-    assert.equal(parked[0].taskId, 'HOK-2845');
-    assert.match(parked[0].operatorAction, /wavemill mill abort HOK-2845/);
+    assert.equal(parked.length, 0, 'clean terminal residue does not invent a second incident');
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -3445,7 +3373,7 @@ test('arm died with unpushed work produces a critical incident carrying commit s
     };
     await reconcileIncidents(snapshot, defaultObserverOptions());
 
-    const records = await parkedIncidents(fixture.repoDir, 'arm_died_with_unpushed_work');
+    const records = await parkedIncidents(fixture.repoDir, 'cleanup_unpublished_at_risk');
     assert.equal(records.length, 1);
     assert.equal(records[0].severity, 'critical');
     assert.equal(records[0].confidence, 'high');

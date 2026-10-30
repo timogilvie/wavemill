@@ -18,6 +18,10 @@ if [[ -n "${WAVEMILL_PHASE:-}" || "${1:-}" != "-p" ]]; then
 fi
 
 prompt="$(cat)"
+if [[ "${JOURNEY_INCIDENT_CURRENTNESS:-0}" == 1 && "$prompt" != *"Candidate B diff:"* && ! -f "${JOURNEY_INCIDENT_OBSERVED:?}" ]]; then
+  echo 'scripted judge transport failure before authoritative observation' >&2
+  exit 1
+fi
 if [[ "$prompt" != *"Candidate B diff:"* && -n "${JOURNEY_EVAL_FAULT:-}" && -f "$JOURNEY_EVAL_FAULT" ]]; then
   if [[ -n "${JOURNEY_EVAL_FAILURE_FIXTURE:-}" ]]; then jq -r .excerpt "$JOURNEY_EVAL_FAILURE_FIXTURE" >&2
   else echo 'scripted eval harness unavailable' >&2; fi

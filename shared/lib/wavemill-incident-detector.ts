@@ -1,10 +1,9 @@
+import { readAuthoritativeWorkflowJobs, reconcileIncidentForFiling, workflowJobResultSucceeded, type WorkflowJob } from './incident-filing-reconciler.ts';
 import { ISSUE_ID_WORD_RE, challengerTaskKey, parseTaskId } from './task-identity.ts';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
   readHookStatus,
-  readJobState,
-  type JobStateDiagnostic,
   readPlanningResult,
   readPrIdentity,
   type PrIdentityDiagnostic,
@@ -55,6 +54,7 @@ const PLANNING_TERMINAL_REASONS = new Set([
 
 export interface DetectorContext {
   repoDir: string;
+  jobTruth?: ReturnType<typeof readAuthoritativeWorkflowJobs>;
   session?: string;
   now?: Date;
   tendCandidates?: TendCandidateDiagnostic[];
@@ -203,7 +203,8 @@ export class JobFailureDetector {
     const seen = new Set<string>();
     const timestamp = context.now?.toISOString() ?? new Date().toISOString();
 
-    for (const job of readJobs(repoDir)) {
+    const jobTruth = context.jobTruth ?? readAuthoritativeWorkflowJobs(repoDir);
+    for (const job of jobTruth.jobs) {
       const key = job.id ?? `${job.kind}:${job.issueId}:${job.startedAt}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -220,7 +221,7 @@ export class JobFailureDetector {
           : 'failed_background_job';
 
       const terminalTimestamp = job.finishedAt ?? job.startedAt ?? timestamp;
-      const excerpt = readIncidentLogExcerpt(job, repoDir, observedSymptom);
+      const excerpt = readIncidentLogExcerpt({ ...job, kind: job.kind === 'eval' || job.kind === 'comparison' ? job.kind : undefined, status: job.status as 'failed' | 'timeout' }, repoDir, observedSymptom);
       const diagnosed = excerpt.diagnosedClass;
       const rootCauseClass: IncidentRootCauseClass = diagnosed ?? observedSymptom;
       const category = diagnosed
@@ -256,7 +257,7 @@ export class JobFailureDetector {
         });
       }
 
-      incidents.push(createIncidentDraft({
+      const incident = createIncidentDraft({
         taskId: subjectTaskId,
         session: context.session ?? null,
         category,
@@ -282,7 +283,12 @@ export class JobFailureDetector {
           // than against observer poll time.
           authoritativeFailureAt: terminalTimestamp,
         },
-      }));
+      });
+      const current = reconcileIncidentForFiling(incident, repoDir, jobTruth);
+      if (current.outcome === 'confirmed_active' || current.outcome === 'needs_inspection') {
+        incident.metadata.currentDisposition = current.outcome;
+        incidents.push(incident);
+      }
     }
 
     return incidents;
@@ -1231,7 +1237,7 @@ function resolvePairArms(repoDir: string, workflowState: Record<string, unknown>
 /** "Waiting for work": a pair job or an arm review is still running. */
 function pairWorkInFlight(repoDir: string, pairId: string, arms: PairArmEvidence[]): boolean {
   if (arms.some((arm) => arm.review?.stageStatus === 'running' || arm.ready?.stageStatus === 'running')) return true;
-  return readJobs(repoDir).some((job) => job.status === 'running' && jobBelongsToPair(job, pairId));
+  return readAuthoritativeWorkflowJobs(repoDir).jobs.some((job) => job.status === 'running' && jobBelongsToPair(job, pairId));
 }
 
 function armReviewFailed(arm: PairArmEvidence): boolean {
@@ -1476,7 +1482,8 @@ function jobBelongsToPair(job: JobStateWithSource, pairId: string): boolean {
 
 /** True when a comparison job for exactly this pair succeeded. */
 export function comparisonSucceededForPair(repoDir: string, pairId: string): boolean {
-  return readJobs(repoDir).some((job) => job.kind === 'comparison' && job.status === 'succeeded' && jobBelongsToPair(job, pairId));
+  const read = readAuthoritativeWorkflowJobs(repoDir);
+  return !read.error && read.jobs.some((job) => job.kind === 'comparison' && job.status === 'succeeded' && jobBelongsToPair(job, pairId) && workflowJobResultSucceeded(repoDir, job) === true);
 }
 
 /** True when a eval record for the issue/pair matches `headSha` exactly. */
@@ -1587,7 +1594,7 @@ function taskEntry(workflowState: Record<string, unknown>, taskId: string): Reco
   return objectField(tasks?.[taskId]);
 }
 
-type JobStateWithSource = JobStateDiagnostic & { source: string };
+type JobStateWithSource = WorkflowJob;
 
 function jobSubjectTaskId(job: JobStateWithSource): string | null {
   const candidates = job.kind === 'comparison'
@@ -1603,42 +1610,6 @@ function jobSubjectTaskId(job: JobStateWithSource): string | null {
 function extractIssueId(value: string | undefined): string | null {
   const match = value?.match(ISSUE_ID_WORD_RE);
   return match?.[0] ?? null;
-}
-
-function readJobs(repoDir: string): JobStateWithSource[] {
-  const jobs: JobStateWithSource[] = [];
-  const jobsDir = join(repoDir, '.wavemill', 'jobs');
-  for (const fileName of safeReaddir(jobsDir).filter((name) => name.endsWith('.json'))) {
-    const source = join(jobsDir, fileName);
-    const job = readJobState(source);
-    if (job) jobs.push({ ...job, source });
-  }
-
-  const workflowStatePath = join(repoDir, '.wavemill', 'workflow-state.json');
-  const workflowState = readObjectFile(workflowStatePath);
-  const rawJobs = workflowState?.jobs;
-  const entries = Array.isArray(rawJobs) ? rawJobs : Object.values(objectField(rawJobs) ?? {});
-  for (const entry of entries) {
-    const job = objectField(entry);
-    if (!job) continue;
-    jobs.push({
-      id: stringField(job.id),
-      kind: stringEnum(job.kind, ['eval', 'comparison']),
-      status: stringEnum(job.status, ['running', 'succeeded', 'failed', 'timeout']),
-      issueId: stringField(job.issueId),
-      startedAt: stringField(job.startedAt),
-      finishedAt: stringField(job.finishedAt),
-      exitCode: numberField(job.exitCode),
-      reason: stringField(job.reason),
-      error: stringField(job.error) ?? stringField(job.excerpt),
-      resultPath: stringField(job.resultPath),
-      logPath: stringField(job.logPath),
-      pairId: stringField(job.pairId),
-      side: stringField(job.side) ?? stringField(job.challengeRole) ?? stringField(job.role),
-      source: workflowStatePath,
-    });
-  }
-  return jobs;
 }
 
 /** Planner failure fields written by `queue_health_record_failure` (queue-health.sh). */

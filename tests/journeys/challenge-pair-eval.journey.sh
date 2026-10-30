@@ -63,6 +63,9 @@ POOL_MODELS=(claude-sonnet-4-6 claude-haiku-4-5-20251001)
 # identity a real Claude run does, so their PR route stamp is complete.
 export FAKE_AGENT_SCRIPT_DIR="$FIXTURE_DIR/fake-agent"
 journey_init "${JOURNEY_PAIR_NAME:-challenge-pair-eval}"
+if [[ "${JOURNEY_INCIDENT_CURRENTNESS:-0}" == 1 ]]; then
+  export JOURNEY_INCIDENT_OBSERVED="$JOURNEY_TMP/incident-failure-observed"
+fi
 if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 ]]; then journey_set_approval_budget 2; fi
 if [[ "${JOURNEY_EVAL_EXHAUSTION:-0}" == 1 ]]; then JOURNEY_EXPECT_ATTENTION=1; fi
 fakes_linear_add_issue "$ISSUE" "Challenge pair journey change" Todo
@@ -118,6 +121,9 @@ pr_state() { fakes_gh_pr_field "$1" state; }
 # The harness only plays tend for $ISSUE's handoff; play it for the
 # challenger's too (the winner's lane once the primary is retired).
 pair_tick() {
+  if [[ "${JOURNEY_INCIDENT_CURRENTNESS:-0}" == 1 ]]; then
+    node --import tsx "$JOURNEY_INSTALL_DIR/tests/journeys/fixtures/incident-currentness-step.ts" observe "$REPO_DIR" "$JOURNEY_INCIDENT_OBSERVED"
+  fi
   if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 ]]; then journey_operator_tick "$CHALLENGER"; fi
   if [[ "$(arm_handoff_state "$CHALLENGER")" == "ready-published" \
         && "$(arm_handoff_state "$ISSUE")" != "ready-published" ]]; then
@@ -157,6 +163,9 @@ loser_retention() {
 
 # Budgets are monitor ticks (passes), not seconds.
 journey_wait_until "$ISSUE" 5  "task launched into planning"        phase_is planning
+if [[ "${JOURNEY_INCIDENT_CURRENTNESS:-0}" == 1 ]]; then
+  node --import tsx "$JOURNEY_INSTALL_DIR/tests/journeys/fixtures/incident-currentness-step.ts" init "$REPO_DIR" "$JOURNEY_INCIDENT_OBSERVED"
+fi
 journey_wait_until "$ISSUE" 10 "challenger forked after the plan"   challenger_launched
 PRIMARY_SLUG="$(field "$ISSUE" slug)"
 CHALLENGER_SLUG="$(field "$CHALLENGER" slug)"
@@ -217,6 +226,11 @@ journey_assert "only the loser's row remains (no stub recreated)" \
 journey_assert "slot count back to 0 (freeSlots == MAX_PARALLEL)" \
   test "$(jq -r '.freeSlots // empty' "$STATE_FILE")" = "1"
 journey_assert "no .needs-attention at any tick" test "$JOURNEY_SAW_ATTENTION" = "0"
+if [[ "${JOURNEY_INCIDENT_CURRENTNESS:-0}" == 1 ]]; then
+  for _poll in 1 2 3 4 5 6; do
+    journey_assert "resolved eval stays cleared and the failed control stays visible (poll $_poll)" node --import tsx "$JOURNEY_INSTALL_DIR/tests/journeys/fixtures/incident-currentness-step.ts" assert "$REPO_DIR" "$JOURNEY_INCIDENT_OBSERVED"
+  done
+fi
 if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 ]]; then
   journey_assert "both approved plans were reused without a third approval" test "$(journey_approval_count)" = 2
   journey_assert "the interrupted challenger replayed its coding contract" grep -q 'HOK-3326 injected coding exit' "$FAKE_AGENT_LOG"

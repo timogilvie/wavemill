@@ -251,7 +251,7 @@ function readWorkflowState(statePath: string): WorkflowState {
   return state;
 }
 
-function readResultFile(path: string): JobResultFile | null {
+export function readJobResultFile(path: string): JobResultFile | null {
   if (!existsSync(path)) {
     return null;
   }
@@ -383,7 +383,7 @@ export async function pollJobs({
     const elapsedMs = Number.isFinite(startedAtMs) ? now.getTime() - startedAtMs : 0;
 
     if (elapsedMs > job.timeoutSeconds * 1000) {
-      const result = readResultFile(job.resultPath);
+      const result = readJobResultFile(job.resultPath);
       const completion = classifyJobCompletion(job, result);
       if (completion.status === 'succeeded') {
         updates.set(job.id, {
@@ -428,7 +428,7 @@ export async function pollJobs({
       continue;
     }
 
-    const result = readResultFile(job.resultPath);
+    const result = readJobResultFile(job.resultPath);
     const completion = classifyJobCompletion(job, result);
     updates.set(job.id, {
       ...completion,

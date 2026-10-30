@@ -1,3 +1,4 @@
+import { INCIDENT_CURRENTNESS_GUARD } from '../../shared/lib/incident-currentness-guard.ts';
 import assert from 'node:assert/strict';
 import { STAGE_EXIT_IDENTITY_GUARD } from '../../shared/lib/stage-exit-identity-guard.ts';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -322,6 +323,14 @@ it('guards native execution against private timestamp/statistics and unbounded c
   assert.equal(check('shared/lib/native-agent/launch-coding.ts', 'runWavemillLoop({ model, convertToLlm: convert });')[0]?.pattern, 'unbounded-native-coding');
   assert.deepEqual(check('stage.sh', 'started_epoch="$(wavemill_iso8601_to_epoch "$started_at")"'), []);
   assert.deepEqual(check('shared/lib/native-agent/launch-coding.ts', 'runWavemillLoop({ model, budget: limits, convertToLlm: convert });'), []);
+});
+
+it('rejects private job readers and observed-presence recovery bypasses', () => {
+  const check = (source: string) => checkGuardSource(INCIDENT_CURRENTNESS_GUARD, 'consumer.ts', source);
+  assert.equal(check('function readJobs(repoDir: string) { return []; }')[0]?.pattern, 'private-job-reader');
+  assert.equal(check('const success = resultExists(repoDir, job.resultPath);')[0]?.pattern, 'result-presence-recovery');
+  assert.equal(check('if (observedFingerprints.has(record.fingerprint)) continue;')[0]?.pattern, 'observed-skips-recovery');
+  assert.deepEqual(check('const current = reconcileIncidentForFiling(record, repoDir);'), []);
 });
 
 // protects: coding recovery cannot regain the planning fallback or private challenger identity selection.
