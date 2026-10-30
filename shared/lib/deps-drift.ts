@@ -1,25 +1,29 @@
 /**
- * HOK-3254 — stale node_modules detector (TS twin of deps-drift.sh).
+ * HOK-3315 — semantic npm-install verdict.
  *
- * One stateless primitive consumed by the observer repo detector. The shell
- * twin covers the worktree-startup and monitor-tick hot paths; this twin
- * matches its taxonomy so the two agree on verdicts.
+ * One stateless primitive: compares expected lock entries against actual installed
+ * packages, respecting npm platform/optional semantics. The hidden lockfile is
+ * evidence only, never decides health. Physical package.json files are the
+ * authority for what's actually installed.
  *
  * Verdicts:
- *   `ok`       — lockfile matches hidden lockfile, or no lockfile at all.
- *   `drift`    — package-lock.json ≠ node_modules/.package-lock.json (or the
- *                direct-dep fallback detected a mismatch).
- *   `unknown`  — pnpm / yarn, or a hash tool / parse error we can't disprove.
- *                Never degraded to `ok`.
+ *   `ok`       — installation matches lockfile for this platform/options.
+ *   `drift`    — required package missing, wrong version, or link broken.
+ *   `unknown`  — pnpm/yarn, corrupt metadata, or unsupported package manager.
+ *
+ * Not checked: extraneous installed packages (scope is expected→actual).
+ * Documented in result; inputs are explicit (omit), npm env vars, or process.platform.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
 
 export type DepsDriftStatus = 'ok' | 'drift' | 'unknown';
 
 export interface DepsDriftPackage {
   name: string;
+  path: string;
+  kind: 'missing' | 'version' | 'link';
   lockVersion: string | null;
   installedVersion: string | null;
 }
@@ -28,13 +32,39 @@ export interface DepsDriftResult {
   status: DepsDriftStatus;
   reason: string;
   packages: DepsDriftPackage[];
+  optionalMissing?: string[];
+  hiddenLockfile?: 'consistent' | 'stale' | 'missing' | 'unreadable';
+  platform?: { os: string; cpu: string; libc: string | null; omit: string[] };
+  expectedRevision?: string;
+  lockfileHash?: string;
+  conditionId?: string;
+  installRevisionAt?: string;
 }
 
-type NpmLockfilePackages = Record<string, { version?: string } | undefined>;
-type NpmLockfileDependencies = Record<string, { version?: string } | undefined>;
+export interface InstallPlatform {
+  os: string;
+  cpu: string;
+  libc: string | null;
+  omit: string[];
+}
+
+interface NpmLockEntry {
+  version?: string;
+  resolved?: string;
+  integrity?: string;
+  link?: boolean;
+  optional?: boolean;
+  dev?: boolean;
+  devOptional?: boolean;
+  peer?: boolean;
+  os?: string[];
+  cpu?: string[];
+  libc?: string[];
+}
+
 interface NpmLockfile {
-  packages?: NpmLockfilePackages;
-  dependencies?: NpmLockfileDependencies;
+  packages?: Record<string, NpmLockEntry>;
+  lockfileVersion?: number;
 }
 
 function readJsonFile<T = unknown>(path: string): T | null {
@@ -46,143 +76,301 @@ function readJsonFile<T = unknown>(path: string): T | null {
   }
 }
 
-function versionMap(lockfile: NpmLockfile | null): Record<string, string> {
-  if (!lockfile) return {};
-  const out: Record<string, string> = {};
-  if (lockfile.packages && typeof lockfile.packages === 'object') {
-    for (const [key, entry] of Object.entries(lockfile.packages)) {
-      if (!entry || typeof entry.version !== 'string') continue;
-      if (!key) continue; // the root package has an empty key
-      const name = key.startsWith('node_modules/') ? key.slice('node_modules/'.length) : key;
-      // Skip nested dependency paths (contain another `node_modules/`) for
-      // the direct-dep diff — a nested entry is noise against this check.
-      if (name.includes('/node_modules/')) continue;
-      out[name] = entry.version;
-    }
-    return out;
-  }
-  if (lockfile.dependencies && typeof lockfile.dependencies === 'object') {
-    for (const [name, entry] of Object.entries(lockfile.dependencies)) {
-      if (!entry || typeof entry.version !== 'string') continue;
-      out[name] = entry.version;
-    }
-  }
-  return out;
+function hashBytes(data: Buffer | string): string {
+  const buf = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
+  return createHash('sha256').update(buf).digest('hex');
 }
 
-function diffLockfiles(lock: NpmLockfile, hidden: NpmLockfile): DepsDriftPackage[] {
-  const lockMap = versionMap(lock);
-  const hiddenMap = versionMap(hidden);
-  const names = new Set<string>([...Object.keys(lockMap), ...Object.keys(hiddenMap)]);
-  const drifted: DepsDriftPackage[] = [];
-  for (const name of names) {
-    const lockVersion = lockMap[name] ?? null;
-    const installedVersion = hiddenMap[name] ?? null;
-    if (lockVersion !== installedVersion) {
-      drifted.push({ name, lockVersion, installedVersion });
-    }
-  }
-  drifted.sort((a, b) => a.name.localeCompare(b.name));
-  return drifted;
-}
-
-/**
- * Direct-dependency fallback: compare each top-level dep declared in
- * `package.json` against the installed `node_modules/<name>/package.json`
- * version. Lockfile is the "expected" source when it carries a resolved
- * version; otherwise fall back to the package.json range string.
- */
-function diffDirectDeps(dir: string, lockfile: NpmLockfile | null): DepsDriftPackage[] {
-  const pkg = readJsonFile<{
-    dependencies?: Record<string, string>;
-    devDependencies?: Record<string, string>;
-  }>(join(dir, 'package.json'));
-  if (!pkg) return [];
-  const lockMap = versionMap(lockfile);
-  const direct = new Set<string>([
-    ...Object.keys(pkg.dependencies ?? {}),
-    ...Object.keys(pkg.devDependencies ?? {}),
-  ]);
-  const drifted: DepsDriftPackage[] = [];
-  for (const name of direct) {
-    const expected =
-      lockMap[name] ?? pkg.dependencies?.[name] ?? pkg.devDependencies?.[name] ?? null;
-    if (!expected) continue;
-    const installedPkg = readJsonFile<{ version?: string }>(
-      join(dir, 'node_modules', name, 'package.json'),
-    );
-    const installed = typeof installedPkg?.version === 'string' ? installedPkg.version : null;
-    if (installed !== expected) {
-      drifted.push({ name, lockVersion: expected, installedVersion: installed });
-    }
-  }
-  drifted.sort((a, b) => a.name.localeCompare(b.name));
-  return drifted;
-}
-
-function hashFile(path: string): string | null {
+function fileHash(path: string): string | null {
   try {
     const buf = readFileSync(path);
-    return createHash('sha256').update(buf).digest('hex');
+    return hashBytes(buf);
   } catch {
     return null;
   }
 }
 
-function directoryExists(path: string): boolean {
+function statMtime(path: string): string | null {
   try {
-    return statSync(path).isDirectory();
+    const st = statSync(path);
+    return st.mtimeMs.toFixed(0);
   } catch {
-    return false;
+    return null;
   }
 }
 
-export function checkDepsDrift(dir: string): DepsDriftResult {
-  if (!directoryExists(dir)) {
+export function resolveInstallPlatform(options?: {
+  os?: string;
+  cpu?: string;
+  libc?: string;
+  omit?: string[];
+}): InstallPlatform {
+  let os = options?.os ?? process.env.npm_config_os ?? process.platform;
+  let cpu = options?.cpu ?? process.env.npm_config_cpu ?? process.arch;
+  let libc = options?.libc ?? process.env.npm_config_libc ?? null;
+  const omit = options?.omit ?? (process.env.npm_config_omit?.split(',') ?? []);
+
+  // Detect glibc on Linux if not overridden
+  if (!libc && os === 'linux') {
+    try {
+      const report = (process as any).report?.getReport?.();
+      if (report?.header?.glibcVersionRuntime) {
+        libc = 'glibc';
+      }
+    } catch {
+      // Ignore glibc detection errors
+    }
+  }
+
+  return { os, cpu, libc, omit };
+}
+
+function isPlatformCompatible(entry: NpmLockEntry, platform: InstallPlatform): boolean {
+  if (entry.os && !entry.os.includes(platform.os) && !entry.os.includes('!'+platform.os)) {
+    return false;
+  }
+  if (entry.os?.some(o => o === '!' + platform.os)) {
+    return false;
+  }
+  if (entry.cpu && !entry.cpu.includes(platform.cpu) && !entry.cpu.includes('!'+platform.cpu)) {
+    return false;
+  }
+  if (entry.cpu?.some(c => c === '!' + platform.cpu)) {
+    return false;
+  }
+  // libc constraint: only applies to linux. An entry with libc constraint
+  // but running on a platform with no libc (non-linux) is incompatible.
+  if (entry.libc) {
+    if (platform.os !== 'linux' || !platform.libc) {
+      return false; // libc constraint unsatisfiable
+    }
+    if (!entry.libc.includes(platform.libc)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isOmitted(entry: NpmLockEntry, omit: string[]): boolean {
+  if (omit.includes('dev') && entry.dev) return true;
+  if (omit.includes('optional') && entry.optional) return true;
+  if (omit.includes('dev') && omit.includes('optional') && entry.devOptional) return true;
+  if (omit.includes('peer') && entry.peer) return true;
+  return false;
+}
+
+function isExpected(entry: NpmLockEntry, platform: InstallPlatform): boolean {
+  if (isOmitted(entry, platform.omit)) return false;
+  const compatible = isPlatformCompatible(entry, platform);
+  if (!compatible && (entry.optional || entry.devOptional || entry.peer)) {
+    return false; // optional/peer incompatible entries are correctly omitted
+  }
+  return true;
+}
+
+function readInstalledVersion(nmDir: string, relPath: string): { state: 'present'; version: string } | { state: 'link'; target: string } | { state: 'missing' } | { state: 'unreadable' } {
+  const fullPath = join(nmDir, relPath);
+  try {
+    const st = statSync(fullPath, { throwIfNoEntry: false });
+    if (!st) {
+      return { state: 'missing' };
+    }
+    if (st.isSymbolicLink()) {
+      try {
+        const target = realpathSync(fullPath);
+        const pkgPath = join(target, 'package.json');
+        const pkg = readJsonFile<{ version?: string }>(pkgPath);
+        if (pkg?.version && typeof pkg.version === 'string') {
+          return { state: 'link', target };
+        }
+        return { state: 'unreadable' };
+      } catch {
+        return { state: 'unreadable' }; // dangling or broken link
+      }
+    }
+    if (st.isDirectory()) {
+      const pkgPath = join(fullPath, 'package.json');
+      const pkg = readJsonFile<{ version?: string }>(pkgPath);
+      if (pkg?.version && typeof pkg.version === 'string') {
+        return { state: 'present', version: pkg.version };
+      }
+      return { state: 'unreadable' };
+    }
+    return { state: 'missing' };
+  } catch {
+    return { state: 'missing' };
+  }
+}
+
+function hiddenLockfileState(nmDir: string): 'missing' | 'unreadable' | 'consistent' | 'stale' {
+  const hidden = join(nmDir, '.package-lock.json');
+  if (!existsSync(hidden)) {
+    return 'missing';
+  }
+  const hiddenLock = readJsonFile<NpmLockfile>(hidden);
+  if (!hiddenLock?.packages || typeof hiddenLock.packages !== 'object') {
+    return 'unreadable';
+  }
+  // Simplistic staleness check: if we can read it as valid JSON, treat as consistent
+  // A full staleness check would compare hidden vs physical metadata, but that's expensive
+  return 'consistent';
+}
+
+export function checkDepsDrift(
+  dir: string,
+  options?: { os?: string; cpu?: string; libc?: string; omit?: string[] },
+): DepsDriftResult {
+  if (!existsSync(dir)) {
     return { status: 'ok', reason: 'no-dir', packages: [] };
   }
+
   if (existsSync(join(dir, 'pnpm-lock.yaml'))) {
     return { status: 'unknown', reason: 'pnpm-not-supported', packages: [] };
   }
   if (existsSync(join(dir, 'yarn.lock'))) {
     return { status: 'unknown', reason: 'yarn-not-supported', packages: [] };
   }
+
   const lockPath = join(dir, 'package-lock.json');
   if (!existsSync(lockPath)) {
     return { status: 'ok', reason: 'no-lockfile', packages: [] };
   }
+
   const nmDir = join(dir, 'node_modules');
-  if (!directoryExists(nmDir)) {
+  if (!existsSync(nmDir)) {
     return { status: 'drift', reason: 'node_modules-missing', packages: [] };
   }
-  const hiddenPath = join(nmDir, '.package-lock.json');
-  if (existsSync(hiddenPath)) {
-    const lockHash = hashFile(lockPath);
-    const hiddenHash = hashFile(hiddenPath);
-    if (!lockHash || !hiddenHash) {
-      return { status: 'unknown', reason: 'hash-tool-missing', packages: [] };
-    }
-    if (lockHash === hiddenHash) {
-      return { status: 'ok', reason: 'hidden-lockfile-match', packages: [] };
-    }
-    const lock = readJsonFile<NpmLockfile>(lockPath);
-    const hidden = readJsonFile<NpmLockfile>(hiddenPath);
-    const packages = lock && hidden ? diffLockfiles(lock, hidden) : [];
-    return { status: 'drift', reason: 'hidden-lockfile-mismatch', packages };
-  }
-  // Fallback: no hidden lockfile. Compare top-level deps against installed
-  // package.json versions.
+
   const lock = readJsonFile<NpmLockfile>(lockPath);
-  const packages = diffDirectDeps(dir, lock);
-  if (packages.length === 0) {
-    return { status: 'ok', reason: 'hidden-lockfile-missing-direct-deps-match', packages: [] };
+  if (!lock?.packages) {
+    return { status: 'unknown', reason: 'lockfile-format-unsupported', packages: [] };
   }
-  return { status: 'drift', reason: 'hidden-lockfile-missing', packages };
+
+  const platform = resolveInstallPlatform(options);
+
+  // Expected entries: keys not under node_modules/ are workspace refs, skip them
+  const expected: Record<string, { key: string; entry: NpmLockEntry }> = {};
+  for (const [key, entry] of Object.entries(lock.packages)) {
+    if (!key || !key.startsWith('node_modules/')) continue;
+    if (entry && isExpected(entry, platform)) {
+      expected[key] = { key, entry };
+    }
+  }
+
+  // Check actual install
+  const drifted: DepsDriftPackage[] = [];
+  const optionalMissing: string[] = [];
+
+  for (const { key: lockKey, entry: lockEntry } of Object.values(expected)) {
+    if (!lockEntry.version) continue; // skip entries without version
+
+    const installPath = lockKey.slice('node_modules/'.length);
+    const installed = readInstalledVersion(nmDir, installPath);
+    const lastSegment = installPath.split('/').pop() || installPath;
+
+    if (lockEntry.link) {
+      // Link entry: must be a symlink to the resolved target
+      if (installed.state === 'link') {
+        // Link exists and resolves; don't strictly verify target path match
+        // as it can vary (relative vs absolute), just check it resolves
+        continue;
+      }
+      if (installed.state === 'missing') {
+        drifted.push({
+          name: lastSegment,
+          path: installPath,
+          kind: 'link',
+          lockVersion: lockEntry.version,
+          installedVersion: null,
+        });
+      } else {
+        drifted.push({
+          name: lastSegment,
+          path: installPath,
+          kind: 'link',
+          lockVersion: lockEntry.version,
+          installedVersion: installed.state === 'present' ? installed.version : null,
+        });
+      }
+    } else if (lockEntry.optional && installed.state === 'missing') {
+      // Optional package correctly omitted; record but don't flag as drift
+      optionalMissing.push(installPath);
+    } else if (installed.state === 'missing') {
+      // Required package is missing
+      drifted.push({
+        name: lastSegment,
+        path: installPath,
+        kind: 'missing',
+        lockVersion: lockEntry.version,
+        installedVersion: null,
+      });
+    } else if (installed.state === 'unreadable') {
+      // Can't read the installed package.json
+      drifted.push({
+        name: lastSegment,
+        path: installPath,
+        kind: 'missing',
+        lockVersion: lockEntry.version,
+        installedVersion: null,
+      });
+    } else if (installed.state === 'present' && installed.version !== lockEntry.version) {
+      // Version mismatch
+      drifted.push({
+        name: lastSegment,
+        path: installPath,
+        kind: 'version',
+        lockVersion: lockEntry.version,
+        installedVersion: installed.version,
+      });
+    }
+  }
+
+  drifted.sort((a, b) => a.path.localeCompare(b.path));
+
+  const result: DepsDriftResult = {
+    status: drifted.length === 0 ? 'ok' : 'drift',
+    reason: drifted.length === 0 ? 'install-matches-lockfile' : 'install-mismatch',
+    packages: drifted,
+    platform,
+  };
+
+  if (optionalMissing.length > 0) {
+    result.optionalMissing = optionalMissing;
+  }
+
+  // Add metadata
+  result.lockfileHash = fileHash(lockPath);
+  result.expectedRevision = hashBytes(
+    JSON.stringify(
+      Object.entries(expected)
+        .map(([path, entry]) => ({ path, version: entry.version, link: entry.link }))
+        .sort((a, b) => a.path.localeCompare(b.path)),
+    ),
+  ).slice(0, 16);
+
+  // Condition ID for deduplication: hash of expected revision + platform + mismatches
+  if (drifted.length > 0) {
+    const mismatchSet = drifted
+      .map(p => `${p.path}:${p.kind}:${p.lockVersion}->${p.installedVersion}`)
+      .join('|');
+    const conditionData = `${result.expectedRevision}|${platform.os}/${platform.cpu}/${platform.libc}/${platform.omit.join(',')}|${mismatchSet}`;
+    result.conditionId = hashBytes(conditionData).slice(0, 16);
+  }
+
+  // Install revision timestamp (when the install was last updated)
+  const hiddenMtime = statMtime(join(nmDir, '.package-lock.json'));
+  const nmMtime = statMtime(nmDir);
+  result.installRevisionAt = hiddenMtime || nmMtime || undefined;
+
+  // Hidden lockfile metadata
+  result.hiddenLockfile = hiddenLockfileState(nmDir);
+
+  return result;
 }
 
-/** Compact fingerprint of the current lockfile — used by callers as a
- *  bounded-retry key so a fresh dependency bump resets the attempt counter. */
+/** Compact fingerprint of the current lockfile — used as a bounded-retry key
+ *  so a fresh dependency bump resets the attempt counter. */
 export function depsLockfileFingerprint(dir: string): string | null {
   const lockPath = join(dir, 'package-lock.json');
-  return hashFile(lockPath);
+  return fileHash(lockPath);
 }
