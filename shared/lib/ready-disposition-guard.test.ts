@@ -22,6 +22,7 @@ describe('ready-disposition guard — forbidden shapes', () => {
       ['shell-launch-head-equality'],
     );
     assert.deepEqual(
+      // allow-template-curly: literal shell `${...}` source under test
       patternsOf('shared/lib/x.sh', '  [[ "$current_head" == "${conflict_launch_head}" ]]\n'),
       ['shell-launch-head-equality'],
     );
