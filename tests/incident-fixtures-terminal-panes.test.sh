@@ -386,13 +386,13 @@ incident_setup_hok3056_terminal_dirty_worktree
 hok3056_observer_json="$(run_observer_pass)"
 
 hok3056_finding_json="$(printf '%s\n' "$hok3056_observer_json" | jq -c \
-  --arg p "terminal-task-parked-${SESSION}-${HOK3056_ISSUE}" \
-  '[.findings[]? // empty | select(.id | startswith($p))] | .[0] // empty')"
+  --arg issue "$HOK3056_ISSUE" \
+  '[.findings[]? // empty | select(.issue == $issue and (.evidence | index("rootCause=cleanup_dirty_worktree")))] | if length == 1 then .[0] else empty end')"
 
 if [[ -z "$hok3056_finding_json" || "$hok3056_finding_json" == "null" ]]; then
-  report_fail "hok3056: Observer did not emit a terminal-task-parked finding; observer output: $hok3056_observer_json"
+  report_fail "hok3056: Observer did not emit exactly one canonical cleanup finding; observer output: $hok3056_observer_json"
 else
-  report_pass "hok3056: Observer emitted a terminal-task-parked finding for the dirty worktree"
+  report_pass "hok3056: Observer emitted exactly one canonical cleanup finding for the dirty worktree"
 
   hok3056_recommendation="$(printf '%s' "$hok3056_finding_json" | jq -r '.recommendation // ""')"
   hok3056_title="$(printf '%s' "$hok3056_finding_json" | jq -r '.title // ""')"

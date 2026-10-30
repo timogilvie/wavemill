@@ -20,7 +20,6 @@ shared/lib/review-runner.test.ts                            1  # legacy source-t
 shared/lib/seam-artifacts.test.ts                           1  # legacy source-text assertion (HOK-3237)
 shared/lib/workflow-state.writer-coverage.test.ts           1  # legacy source-text assertion (HOK-3237)
 tests/backstage-observer-watchdog.test.sh                   1  # legacy source-text assertion (HOK-3237)
-tests/challenge-eval-hard-failure.test.sh                   4  # legacy source-text assertion (HOK-3237)
 tests/challenge-fork-inherited-provenance.test.sh           2  # legacy source-text assertion (HOK-3237)
 tests/challenge-fork-materialisation.test.sh                4  # legacy source-text assertion (HOK-3237)
 tests/challenge-fork-restart.test.sh                        1  # legacy source-text assertion (HOK-3237)

@@ -378,8 +378,6 @@
       "challenge-eval-hard-failure.test.sh": 1894,
       "challenge-eval-invalid-challenge.test.sh": 894,
       "challenge-planning-equivalence.test.sh": 10000,
-      "challenge-eval-soft-retry.test.sh": 471,
-      "challenge-eval-timeout.test.sh": 658,
       "challenge-fork-inherited-provenance.test.sh": 3050,
       "challenge-fork-materialisation.test.sh": 755,
       "challenge-fork-non-forked-regression.test.sh": 94,

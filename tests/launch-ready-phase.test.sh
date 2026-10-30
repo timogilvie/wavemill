@@ -100,6 +100,7 @@ extract_function "$MONITOR_SCRIPT_FILE" "review_result_failure_category" >> "$LA
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_review_head_sha" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_infra_recovery_category_label" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_infra_recovery_next_action" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "recovery_contract_json" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_contract_payload" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_claim_path" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_write_claim" >> "$LAUNCH_FUNC_FILE"

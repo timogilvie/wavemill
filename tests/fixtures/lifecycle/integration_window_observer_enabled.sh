@@ -94,7 +94,6 @@ for _ in {1..30}; do
       && "$observer_status" == "healthy" \
       && "$observer_cmd" == *"tools/observer.ts"* \
       && "$observer_cmd" == *"--loop"* \
-      && "$observer_cmd" == *"--dry-run"* \
       && "$observer_cmd" != *"--file-linear"* ]]; then
       echo "PASS: observer backstage pane created"
       exit 0

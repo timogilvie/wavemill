@@ -1,3 +1,6 @@
+import historicalEvalFailure from '../../tests/fixtures/incidents/hok-3076-eval-failure.json' with {type:'json'};
+import {buildWorkflowState} from '../../tests/lib/task-builder.ts';
+import {classifyFailure} from './failure-policy.ts';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -437,7 +440,7 @@ test('resolver suppresses a non-decisive orphan record when no side completed ev
   }
 });
 
-test('resolver writes a forfeit when one side exhausted eval hard-failure retries', async () => {
+test('resolver skips an eval-exhausted sibling instead of forfeiting', async () => {
   const { repoDir, cleanup } = setupRepoDir();
   try {
     writeWorkflowState(repoDir, {
@@ -469,16 +472,18 @@ test('resolver writes a forfeit when one side exhausted eval hard-failure retrie
       now: () => new Date('2026-07-17T12:00:00Z'),
     });
 
-    assert.equal(result.status, 'resolved');
-    assert.equal(result.outcome, 'forfeit');
-    assert.equal(result.record.winner, 'primary');
-    assert.equal(result.record.terminalReason, 'challenger_eval_hard_failed');
+    // HOK-3255: eval-hard-failed exhaustion is unattributed infrastructure —
+    // it can never establish that a model lost, so the resolver skips and
+    // writes no comparison record.
+    assert.equal(result.status, 'skipped');
+    assert.match(result.reason, /unattributed infrastructure/);
+    assert.equal(readChallengeComparisons(join(repoDir, '.wavemill', 'evals')).length, 0);
   } finally {
     cleanup();
   }
 });
 
-test('resolver writes a double-forfeit when both sides exhausted eval hard-failure retries', async () => {
+test('resolver skips an eval-exhausted pair (both sides) instead of double-forfeiting', async () => {
   const { repoDir, cleanup } = setupRepoDir();
   try {
     writeWorkflowState(repoDir, {
@@ -511,9 +516,11 @@ test('resolver writes a double-forfeit when both sides exhausted eval hard-failu
       now: () => new Date('2026-07-17T12:00:00Z'),
     });
 
-    assert.equal(result.status, 'resolved');
-    assert.equal(result.outcome, 'double-forfeit');
-    assert.equal(result.record.terminalReason, 'both_eval_hard_failed');
+    // HOK-3255: retry exhaustion is unattributed infrastructure — no winner,
+    // no comparison record, both sides stay blocked until an eval re-runs.
+    assert.equal(result.status, 'skipped');
+    assert.match(result.reason, /unattributed infrastructure/);
+    assert.equal(readChallengeComparisons(join(repoDir, '.wavemill', 'evals')).length, 0);
   } finally {
     cleanup();
   }
@@ -560,7 +567,7 @@ test('resolver waits for hard-failure config before resolving exhausted retries'
   }
 });
 
-test('resolver ignores soft retry config for hard-failure exhaustion', async () => {
+test('resolver skips an eval-exhausted sibling regardless of soft retry config', async () => {
   const { repoDir, cleanup } = setupRepoDir({
     challenge: { eval: { retryMaxAttempts: 3 } },
   });
@@ -594,15 +601,17 @@ test('resolver ignores soft retry config for hard-failure exhaustion', async () 
       now: () => new Date('2026-07-17T12:00:00Z'),
     });
 
-    assert.equal(result.status, 'resolved');
-    assert.equal(result.reason, 'sibling-eval-hard-failed');
-    assert.equal(result.outcome, 'forfeit');
+    // HOK-3255: retry exhaustion is unattributed infrastructure regardless of
+    // which retry ceiling applies; the resolver never forfeits from it.
+    assert.equal(result.status, 'skipped');
+    assert.match(result.reason, /unattributed infrastructure/);
+    assert.equal(readChallengeComparisons(join(repoDir, '.wavemill', 'evals')).length, 0);
   } finally {
     cleanup();
   }
 });
 
-test('resolver lets hard-failure env override repo config', async () => {
+test('resolver skips an eval-exhausted sibling regardless of hard-failure retry config', async () => {
   const { repoDir, cleanup } = setupRepoDir({
     challenge: { eval: { hardFailureRetryMaxAttempts: 5 } },
   });
@@ -638,9 +647,11 @@ test('resolver lets hard-failure env override repo config', async () => {
       now: () => new Date('2026-07-17T12:00:00Z'),
     });
 
-    assert.equal(result.status, 'resolved');
-    assert.equal(result.reason, 'sibling-eval-hard-failed');
-    assert.equal(result.outcome, 'forfeit');
+    // The env var still decides whether the pair is *detected* as escalated
+    // (the gate needs that), but the resolver never resolves a forfeit from it.
+    assert.equal(result.status, 'skipped');
+    assert.match(result.reason, /unattributed infrastructure/);
+    assert.equal(readChallengeComparisons(join(repoDir, '.wavemill', 'evals')).length, 0);
   } finally {
     if (previous === undefined) {
       delete process.env.WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES;
@@ -1694,3 +1705,47 @@ for (const [label, abort, expectedOutcome] of [
     }
   });
 }
+
+// protects: captured HOK-3076_c repeated module-load faults never manufacture a model loss.
+test('schema-validated HOK-3076_c replay keeps repeated harness failures unattributed', async () => {
+  const {repoDir,cleanup} = setupRepoDir();
+  try {
+    for (const [attempt,reason] of historicalEvalFailure.attemptReasons.entries()) {
+      const decision = classifyFailure({stage:'eval',challengeArm:true,job:{reason,exitCode:1,excerpt:historicalEvalFailure.excerpt}});
+      assert.equal(decision.class,'retryable');
+      assert.equal(decision.attribution,'unattributed');
+      const pair = historicalEvalFailure.pairId;
+      const state = buildWorkflowState({
+        [pair]:{phase:'ready',pr:101,challenge:true,challengePairId:pair,challengeRole:'primary',challengeModel:'claude-sonnet-4-6',evalCompleted:true},
+        [historicalEvalFailure.taskId]:{phase:'ready',pr:102,challenge:true,challengePairId:pair,challengeRole:'challenger',challengeModel:'claude-haiku-4-5-20251001',evalFailed:true,evalHardFailureRetryCount:attempt+1},
+      });
+      writeFileSync(join(repoDir,'.wavemill/workflow-state.json'),JSON.stringify(state));
+      const result = await resolveUnresolvablePair({pairId:pair,repoDir,reason:'sibling-eval-hard-failed'});
+      assert.equal(result.status,'skipped');
+      assert.equal(readChallengeComparisons(join(repoDir,'.wavemill/evals')).length,0);
+    }
+  } finally {cleanup();}
+});
+
+// protects: a terminal eval without execution attribution cannot turn into a model win.
+test('unattributed terminal eval abort resolves neutrally through the existing invalid-challenge path', async () => {
+  const {repoDir,cleanup} = setupRepoDir();
+  try {
+    const decision = classifyFailure({stage:'eval',failureKind:'ready-exhausted',challengeArm:true});
+    assert.equal(decision.class,'terminal');
+    assert.equal(decision.attribution,'unattributed');
+    const pair = 'HOK-3076';
+    const state = buildWorkflowState({
+      [pair]:{phase:'ready',pr:101,challenge:true,challengePairId:pair,challengeRole:'primary',challengeModel:'claude-sonnet-4-6',evalCompleted:true},
+      [pair+'_c']:{phase:'ready',pr:102,challenge:true,challengePairId:pair,challengeRole:'challenger',challengeModel:'claude-haiku-4-5-20251001',challengeAborted:'invalid_challenge:'+decision.failureKind},
+    });
+    writeFileSync(join(repoDir,'.wavemill/workflow-state.json'),JSON.stringify(state));
+    const result = await resolveUnresolvablePair({pairId:pair,repoDir,reason:'sibling-challenge-aborted'});
+    assert.equal(result.status,'resolved');
+    if (result.status === 'resolved') assert.equal(result.outcome,'invalid_challenge');
+    const records = readChallengeComparisons(join(repoDir,'.wavemill/evals'));
+    assert.equal(records.length,1);
+    assert.equal(records[0].comparisonOutcome,'invalid_challenge');
+    assert.equal(records[0].winner,undefined);
+  } finally {cleanup();}
+});

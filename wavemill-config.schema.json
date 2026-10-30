@@ -1325,13 +1325,13 @@
                             "type": "integer",
                             "minimum": 0,
                             "default": 1,
-                            "description": "How many eval relaunch attempts to allow before marking the challenge eval path as failed to persist."
+                            "description": "Deprecated/ignored (HOK-3255): the retired challenge-eval-soft bucket no longer exists. Accepted for config compatibility; every eval failure is now owned by the challenge-eval-hard bucket (challenge.eval.hardFailureRetryMaxAttempts)."
                         },
                         "hardFailureRetryMaxAttempts": {
                             "type": "integer",
                             "minimum": 0,
                             "default": 2,
-                            "description": "How many challenge eval hard-failure recovery attempts to allow before resolving the challenge pair as terminal. This is separate from soft eval relaunch retryMaxAttempts."
+                            "description": "How many challenge eval hard-failure recovery attempts to allow before the challenge-eval-hard bounded-retry bucket is exhausted (HOK-2924). Owns every eval failure (HOK-3255): the separate soft eval relaunch retryMaxAttempts is deprecated/ignored."
                         }
                     },
                     "additionalProperties": false
@@ -3593,7 +3593,7 @@
         },
         "retry": {
             "type": "object",
-            "description": "Per-bucket tuning for the shared bounded-retry helper (shared/lib/bounded-retry.sh, HOK-2924). Keys are bucket slugs (e.g. phase-launch-coding, ready-remediation, pending-ready-recheck, failed-ready-recheck, challenge-eval-soft, challenge-eval-hard). Env vars (WAVEMILL_RETRY_BACKOFF_<BUCKET>_{BASE,CAP}_SECONDS) take precedence at runtime. Existing ceilings (ready.remediation.maxAttempts, challenge.eval.retryMaxAttempts, challenge.eval.hardFailureRetryMaxAttempts) remain the effective source for their buckets.",
+            "description": "Per-bucket tuning for the shared bounded-retry helper (shared/lib/bounded-retry.sh, HOK-2924). Keys are bucket slugs (e.g. phase-launch-coding, ready-remediation, pending-ready-recheck, failed-ready-recheck, challenge-eval-hard; the retired challenge-eval-soft bucket is ignored). Env vars (WAVEMILL_RETRY_BACKOFF_<BUCKET>_{BASE,CAP}_SECONDS) take precedence at runtime. Existing ceilings (ready.remediation.maxAttempts, challenge.eval.hardFailureRetryMaxAttempts) remain the effective source for their buckets.",
             "additionalProperties": {
                 "type": "object",
                 "properties": {

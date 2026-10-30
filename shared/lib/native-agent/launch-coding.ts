@@ -985,7 +985,11 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
 
   let mcpClient: McpClient | undefined;
   try {
-    const tracker = createIntendedFileTracker();
+    const tracker = createIntendedFileTracker({
+      worktreePath: options.wtDir,
+      taskId: options.issue,
+      statePath: join(featureDir, '.native-intended-files.json'),
+    });
     const readOnlyDescriptors = createReadOnlyTools(options.wtDir);
     const searchTextDescriptor = readOnlyDescriptors.find(
       (d) => d.metadata.name === 'search_text',
@@ -1620,7 +1624,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     }
 
     const completion = inspection.kind;
-    writeHookStatus(hookPath, completion === 'complete' ? 'idle' : 'working', 'process_exit', completion, 'native');
+    writeHookStatus(hookPath, 'idle', 'process_exit', completion, 'native');
     writeTextStatus(options.session, options.issue, completion === 'complete' ? 'coding complete' : 'coding blocked-completion');
 
     // Ensure the monitor has a compact result artifact even when the model only

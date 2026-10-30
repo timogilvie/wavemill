@@ -1076,8 +1076,10 @@ test('HOK-2934 pair with a running comparison job is waiting for work (no incide
 test('HOK-2934 pair with a succeeded comparison clears (no incident)', () => {
   const repo = mkdtempSync(join(tmpdir(), 'incident-pair-compared-'));
   try {
+    const resultPath = join(repo, 'comparison.result.json');
+    writeFileSync(resultPath, JSON.stringify({ok:true,exitCode:0}));
     writeHok2934Pair(repo, {
-      jobs: { 'comparison-HOK-2934': { id: 'comparison-HOK-2934', kind: 'comparison', status: 'succeeded', pairId: 'HOK-2934' } },
+      jobs: { 'comparison-HOK-2934': { id: 'comparison-HOK-2934', kind: 'comparison', status: 'succeeded', pairId: 'HOK-2934', resultPath, startedAt:'2026-09-05T00:59:00Z', finishedAt:'2026-09-05T01:00:00Z' } },
     });
     const incidents = new StalledLifecycleCorrelator().detect(repo, { repoDir: repo, now, tendCandidates: [stallCandidate(1328, PAIR_GATE, { taskId: 'HOK-2934' })] });
     assert.deepEqual(incidents, []);
