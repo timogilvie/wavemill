@@ -22558,7 +22558,14 @@ monitor_issue_state() {
       fi
 
       bounded_retry_increment "$ready_state_dir_path" "pending-ready-recheck" "$current_head" >/dev/null
-      if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
+      # HOK-3322: a settled same-head remediation typically re-ran CI on the
+      # same commit. The per-pass PR cache (HOK-3206) is keyed on head, so a
+      # rerun that went green after this pass's refresh is invisible to it and
+      # Ready would charge a remediation attempt against the stale red rollup.
+      # This one re-check reads GitHub live; every other Ready run keeps the cache.
+      local recheck_pr_cache="${WAVEMILL_SESSION_PR_CACHE:-}"
+      [[ "$remediation_disposition" == "settled" ]] && recheck_pr_cache=""
+      if WAVEMILL_SESSION_PR_CACHE="$recheck_pr_cache" launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
         launch_rc=0
       else
         launch_rc=$?

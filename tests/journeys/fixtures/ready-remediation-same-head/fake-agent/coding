@@ -6,8 +6,8 @@
 # flaky red check. Any later coding launch is Ready remediation (post-PR
 # remediation runs as a prompt-driven coding launch, HOK-3272). It plays the
 # HOK-3316 incident: the agent diagnoses a flaky test, re-runs the failed CI
-# job (`gh run rerun --failed`), which passes — no commit, no push — and ends
-# its turn. Claude Code fires Stop (hook idle/Stop through the real adapter),
+# job (`gh run rerun --failed`), watches it pass — no commit, no push — and
+# ends its turn. Claude Code fires Stop (hook idle/Stop through the real adapter),
 # and the REPL stays open in the pane the way an interactive agent does. It
 # never writes .coding-complete and never touches .ready-result.json: the
 # controller must notice the settled owner and re-check Ready itself.
@@ -27,20 +27,15 @@ else
   printf '%s phase=coding issue=%s role=ready-remediation head=%s\n' \
     "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" "$(git rev-parse HEAD)" >> "$FAKE_AGENT_LOG"
   printf '%s\n' "$*" > "$FAKE_ROOT/remediation-prompt-$coding_run.txt"
-  # The rerun restarts the check on the same head: PENDING now (same lock as
-  # the journey's ci_set_pr1), and the journey's fake CI settles it green.
-  # Without the PENDING flip a slow journey poll would leave the red result
-  # attached after the agent settles, and Ready would rightly charge a second
-  # remediation against it.
-  for _ in $(seq 1 500); do
-    mkdir "$FAKE_GH_STATE.lock" 2>/dev/null && break
-    sleep 0.01
-  done
-  printf '%s' "$$" > "$FAKE_GH_STATE.lock/pid"
-  jq '.checks.byPr["1"] = [{name: "unit-tests", conclusion: "PENDING"}]' "$FAKE_GH_STATE" > "$FAKE_GH_STATE.tmp.$$" \
-    && mv "$FAKE_GH_STATE.tmp.$$" "$FAKE_GH_STATE"
+  # The rerun (`gh run rerun --failed`): the journey's fake CI owns the check
+  # state and turns the same head green; the agent never writes it. Like the
+  # incident's agent, it watches the checks until they pass, then ends its
+  # turn — so Ready never re-checks a stale red result.
   touch "$FAKE_ROOT/ci-rerun-requested"
-  rm -rf "$FAKE_GH_STATE.lock"
+  for _ in $(seq 1 240); do
+    gh pr checks 1 >/dev/null 2>&1 && break
+    sleep 0.5
+  done
   claude_hook Stop
   # Idle REPL: alive, settled, waiting for input that never comes. Bounded so
   # a broken journey cannot leave the pane running forever.
