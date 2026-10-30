@@ -79,6 +79,18 @@ for (const c of cases) {
   });
 }
 
+// protects: a failed HEAD probe must never masquerade as evidence that a
+// remediation launch advanced to another commit.
+test('decision: unavailable current head holds fail-safe', () => {
+  const disposition = decideReadyRemediationDisposition({
+    readyStatus: 'running',
+    launch: { remediation: 'ci', launchHead: CURRENT, launchedAt: '2026-10-26T19:00:00.000Z' },
+    currentHead: null,
+    progress: null,
+  });
+  assert.deepEqual([disposition.kind, disposition.reason], ['in-flight', 'current-head-unavailable']);
+});
+
 // ── launch reader against real state ──────────────────────────────────────────
 
 function stateDir(): string {

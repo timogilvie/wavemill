@@ -188,8 +188,9 @@ export function readReadyRemediationLaunch(
  * The pure decision. Rules, in order:
  *
  * 1. Ready not running, or no launch → `inactive`.
- * 2. Launch head ≠ current head → `advanced`.
- * 3. Probe failed → `in-flight` (fail safe; the watchdog still reports).
+ * 2. An unavailable current-head probe → `in-flight` (fail safe).
+ * 3. Launch head ≠ current head → `advanced`.
+ * 4. Probe failed → `in-flight` (fail safe; the watchdog still reports).
  * 4. A blocking prompt or live background work → `in-flight`: the agent is
  *    waiting on an operator or on its own task (HOK-3137).
  * 5. The agent's own record (never a monitor write, HOK-3101) written at or
@@ -220,6 +221,7 @@ export function decideReadyRemediationDisposition(
 
   if (readyStatus !== 'running') return result('inactive', 'not-running');
   if (!launch) return result('inactive', 'no-launch');
+  if (!currentHead) return result('in-flight', 'current-head-unavailable');
   if (launch.launchHead !== currentHead) return result('advanced', 'head-moved');
   if (!progress) return result('in-flight', 'progress-unavailable');
   if (progress.blockingPrompt) return result('in-flight', 'blocking-prompt');
