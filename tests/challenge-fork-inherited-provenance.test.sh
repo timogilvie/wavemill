@@ -177,7 +177,7 @@ PY
 drive() {
   local label="$1" payload="$2"
   local out
-  if ! out="$(npx tsx "$DRIVER" "$payload" 2>&1)"; then
+  if ! out="$(node "$DRIVER" "$payload" 2>&1)"; then
     fail "$label: tsx driver failed: $out"
     return
   fi

@@ -84,8 +84,6 @@ function writePatchCodingCertification(repoDir: string): void {
 function runCliFailure(repoDir: string, args: string[]): Record<string, unknown> {
   try {
     execFileSync(process.execPath, [
-      '--import',
-      'tsx',
       join(REPO_DIR, 'tools', 'check-native-agent-launch.ts'),
       '--repo-dir',
       repoDir,

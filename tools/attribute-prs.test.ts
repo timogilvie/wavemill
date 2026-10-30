@@ -343,7 +343,7 @@ describe('attribute-prs command', () => {
 
 describe('attribute-prs cli surface', () => {
   it('prints help without invoking gh', () => {
-    const result = spawnSync('npx', ['tsx', 'tools/attribute-prs.ts', '--help'], {
+    const result = spawnSync(process.execPath, ['tools/attribute-prs.ts', '--help'], {
       encoding: 'utf-8',
       cwd: join(import.meta.dirname, '..'),
     });

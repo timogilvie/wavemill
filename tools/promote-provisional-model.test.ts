@@ -7,7 +7,7 @@ import { describe, it } from 'node:test';
 
 describe('promote-provisional-model CLI', () => {
   it('prints help with the dry-run, activation, and rollback operator contract', () => {
-    const result = spawnSync('npx', ['tsx', 'tools/promote-provisional-model.ts', '--help'], {
+    const result = spawnSync(process.execPath, ['tools/promote-provisional-model.ts', '--help'], {
       encoding: 'utf-8',
     });
     assert.equal(result.status, 0, result.stderr);
@@ -19,7 +19,7 @@ describe('promote-provisional-model CLI', () => {
 
   it('refuses combined modes: --activate with --apply or --rollback', () => {
     for (const extra of ['--apply', '--rollback']) {
-      const result = spawnSync('npx', ['tsx', 'tools/promote-provisional-model.ts', '--spec', 'spec.json', '--activate', extra], {
+      const result = spawnSync(process.execPath, ['tools/promote-provisional-model.ts', '--spec', 'spec.json', '--activate', extra], {
         encoding: 'utf-8',
       });
       assert.notEqual(result.status, 0);
@@ -67,7 +67,7 @@ describe('promote-provisional-model CLI', () => {
         },
       }));
       const before = readFileSync(evalPath, 'utf-8');
-      const result = spawnSync('npx', ['tsx', 'tools/promote-provisional-model.ts', '--spec', specPath, '--repo-dir', repoDir], {
+      const result = spawnSync(process.execPath, ['tools/promote-provisional-model.ts', '--spec', specPath, '--repo-dir', repoDir], {
         encoding: 'utf-8',
       });
       assert.equal(result.status, 0, result.stderr);
@@ -77,7 +77,7 @@ describe('promote-provisional-model CLI', () => {
       assert.equal(manifest.conservation.oldReferencesBefore, 1);
 
       // Activation of a never-promoted model refuses without touching anything.
-      const activation = spawnSync('npx', ['tsx', 'tools/promote-provisional-model.ts', '--spec', specPath, '--repo-dir', repoDir, '--activate'], {
+      const activation = spawnSync(process.execPath, ['tools/promote-provisional-model.ts', '--spec', specPath, '--repo-dir', repoDir, '--activate'], {
         encoding: 'utf-8',
       });
       assert.notEqual(activation.status, 0);

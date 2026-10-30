@@ -628,7 +628,7 @@ else
   # matrix if one leg fell back while others did not.
   if ! SELECTION="$(
     printf '%s\n' "${TESTS[@]}" |
-      npx tsx "$REPO_DIR/tools/partition-tests.ts" --suite unit --shard "${SHARD_INDEX}/${SHARD_TOTAL}"
+      node "$REPO_DIR/tools/partition-tests.ts" --suite unit --shard "${SHARD_INDEX}/${SHARD_TOTAL}"
   )"; then
     echo "run-unit-tests.sh: partitioner failed for shard ${SHARD_INDEX}/${SHARD_TOTAL}" >&2
     exit 2

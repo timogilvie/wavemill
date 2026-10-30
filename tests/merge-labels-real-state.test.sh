@@ -43,7 +43,7 @@ EOF
 
   # Test that findTaskInState can find this task
   local output
-  output=$(cd "$REPO_ROOT" && npx tsx -e "(async () => {
+  output=$(cd "$REPO_ROOT" && node -e "(async () => {
     const { findTaskInState } = await import('./shared/lib/merge-labels.ts');
     const { readWorkflowState } = await import('./shared/lib/workflow-state.ts');
     const { join } = await import('node:path');
@@ -98,7 +98,7 @@ test_challenger_role() {
     HOK-123_c pr=456 slug="$slug" worktree="$test_dir" phase=ready
 
   local output
-  output=$(cd "$REPO_ROOT" && npx tsx -e "(async () => {
+  output=$(cd "$REPO_ROOT" && node -e "(async () => {
     const { findTaskInState } = await import('./shared/lib/merge-labels.ts');
     const { readWorkflowState } = await import('./shared/lib/workflow-state.ts');
     const { join } = await import('node:path');
@@ -141,7 +141,7 @@ test_blank_pr() {
     HOK-789 pr= slug="$slug" worktree="$test_dir" phase=planning
 
   local output
-  output=$(cd "$REPO_ROOT" && npx tsx -e "(async () => {
+  output=$(cd "$REPO_ROOT" && node -e "(async () => {
     const { findTaskInState } = await import('./shared/lib/merge-labels.ts');
     const { readWorkflowState } = await import('./shared/lib/workflow-state.ts');
     const { join } = await import('node:path');

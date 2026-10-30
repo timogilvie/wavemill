@@ -449,7 +449,7 @@ fi
 # We drive the shared TS classifier by running the actual cleanup CLI against
 # the scenario's workflow-state; a refusal with reason "dirty_worktree"
 # proves the two paths agree.
-hok3056_cleanup_json="$(npx tsx "$INCIDENT_REPO_DIR/tools/cleanup-terminal-inbox.ts" \
+hok3056_cleanup_json="$(node "$INCIDENT_REPO_DIR/tools/cleanup-terminal-inbox.ts" \
   --repo-dir "$REPO_DIR" --state-file "$STATE_FILE" --base-branch auto/integration \
   --json --dry-run "$HOK3056_ISSUE" 2>"$SCENARIO_DIR/cleanup-stderr.log" || true)"
 hok3056_cleanup_reason="$(printf '%s' "$hok3056_cleanup_json" | jq -r '.decisions[0].refusalReason // ""' 2>/dev/null || echo "")"

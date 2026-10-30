@@ -23,7 +23,7 @@ mkdir -p "$STATE_DIR"
 
 run_ledger() {
   WAVEMILL_MILLED_REPO_DIR="$LEDGER_DIR" \
-    npx tsx "$REPO_DIR/tools/ledger.ts" --strict --json "$@"
+    node "$REPO_DIR/tools/ledger.ts" --strict --json "$@"
 }
 
 ISSUE="HOK-TESTSHADOW"
@@ -128,7 +128,7 @@ fi
 
 # Non-strict path swallows a bogus command: the CLI prints {shadow: suppressed}
 # and exits 0 instead of propagating the error.
-if WAVEMILL_MILLED_REPO_DIR="$LEDGER_DIR" npx tsx "$REPO_DIR/tools/ledger.ts" step-upsert --issue "$ISSUE" --kind invalid --head abc --json 2>/dev/null | grep -q 'suppressed'; then
+if WAVEMILL_MILLED_REPO_DIR="$LEDGER_DIR" node "$REPO_DIR/tools/ledger.ts" step-upsert --issue "$ISSUE" --kind invalid --head abc --json 2>/dev/null | grep -q 'suppressed'; then
   pass "shadow CLI swallows errors by default"
 else
   fail "shadow CLI swallows errors by default"

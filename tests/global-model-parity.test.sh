@@ -18,7 +18,7 @@ cat > "$REPO_DIR/.wavemill-config.json" <<'JSON'
 JSON
 
 set +e
-WAVEMILL_NATIVE_CERTIFICATION_ROOT="$GLOBAL_ROOT" npx tsx "$ROOT_DIR/tools/parity-report.ts" --json --repo-dir "$REPO_DIR" >/tmp/wavemill-parity-forbidden.json
+WAVEMILL_NATIVE_CERTIFICATION_ROOT="$GLOBAL_ROOT" node "$ROOT_DIR/tools/parity-report.ts" --json --repo-dir "$REPO_DIR" >/tmp/wavemill-parity-forbidden.json
 forbidden_rc=$?
 set -e
 
@@ -41,7 +41,7 @@ cat > "$REPO_DIR/.wavemill-config.json" <<'JSON'
 JSON
 
 set +e
-WAVEMILL_NATIVE_CERTIFICATION_ROOT="$GLOBAL_ROOT" npx tsx "$ROOT_DIR/tools/parity-report.ts" --json --strict-challenge --repo-dir "$REPO_DIR" >/tmp/wavemill-parity-strict.json
+WAVEMILL_NATIVE_CERTIFICATION_ROOT="$GLOBAL_ROOT" node "$ROOT_DIR/tools/parity-report.ts" --json --strict-challenge --repo-dir "$REPO_DIR" >/tmp/wavemill-parity-strict.json
 strict_rc=$?
 set -e
 
