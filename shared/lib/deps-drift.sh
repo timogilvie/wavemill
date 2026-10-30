@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # HOK-3315 — semantic npm-install verdict (shell adapter).
 #
-# Thin wrapper around tools/deps-drift.ts. Runs the canonical TS checker
-# using wavemill_run_tool and maps exit codes.
+# Thin wrapper around tools/deps-drift.ts. Runs the canonical TS checker.
 #
 # Exit codes:
 #   0 — no drift (lockfile matches install or no lockfile)
@@ -15,48 +14,40 @@ deps_drift_check() {
   local dir="${1:-.}"
   shift || true
 
-  local output tool_path
+  local output tool_path status
 
-  # Try to use wavemill_run_tool if available
-  if declare -f wavemill_run_tool >/dev/null 2>&1; then
-    output="$(wavemill_run_tool deps-drift.ts "$dir" "$@" 2>/dev/null)" || {
-      printf '{"status":"unknown","reason":"checker-unavailable","packages":[]}\n'
-      return 2
-    }
+  # Try to find the tool relative to cwd or standard locations
+  if [[ -f "tools/deps-drift.ts" ]]; then
+    tool_path="tools/deps-drift.ts"
+  elif [[ -f "$(pwd)/tools/deps-drift.ts" ]]; then
+    tool_path="$(pwd)/tools/deps-drift.ts"
+  elif [[ -f "${0%/*}/../../tools/deps-drift.ts" ]]; then
+    tool_path="${0%/*}/../../tools/deps-drift.ts"
   else
-    # Fall back to plain Node with experimental-strip-types
-    # Find tools/deps-drift.ts relative to this script (shared/lib -> tools)
-    local script_dir root_dir
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    root_dir="$(cd "$script_dir/../.." && pwd)"
-    tool_path="$root_dir/tools/deps-drift.ts"
-    if [[ ! -f "$tool_path" ]]; then
-      printf '{"status":"unknown","reason":"checker-unavailable","packages":[]}\n'
-      return 2
-    fi
-    output="$(node --experimental-strip-types "$tool_path" "$dir" "$@" 2>/dev/null)" || {
-      printf '{"status":"unknown","reason":"checker-unavailable","packages":[]}\n'
-      return 2
-    }
-  fi
-
-  # Validate JSON and extract status
-  if ! echo "$output" | jq -e '.status' >/dev/null 2>&1; then
+    # Can't find tool and wavemill_run_tool might not work in worktrees
     printf '{"status":"unknown","reason":"checker-unavailable","packages":[]}\n'
     return 2
   fi
 
-  echo "$output"
+  # Run the tool with plain Node (works in worktrees and when tsx is stale)
+  # Note: tool returns exit code 1 for drift, so we can't use "if output=..."; instead capture output and validate
+  output="$(node --experimental-strip-types "$tool_path" "$dir" "$@" 2>/dev/null)"
 
-  # Map status to exit code
-  local status
-  status="$(echo "$output" | jq -r '.status')"
-  case "$status" in
-    ok) return 0 ;;
-    drift) return 1 ;;
-    unknown) return 2 ;;
-    *) return 2 ;;
-  esac
+  # Validate JSON and extract status
+  if echo "$output" | jq -e '.status' >/dev/null 2>&1; then
+    echo "$output"
+    status="$(echo "$output" | jq -r '.status')"
+    case "$status" in
+      ok) return 0 ;;
+      drift) return 1 ;;
+      unknown) return 2 ;;
+      *) return 2 ;;
+    esac
+  fi
+
+  # Tool execution or validation failed
+  printf '{"status":"unknown","reason":"checker-unavailable","packages":[]}\n'
+  return 2
 }
 
 # Stub for backward compatibility (no longer used; monitor reads lockfileHash from JSON)

@@ -1,0 +1,30 @@
+{
+  "node_modules/@hokusai/core": {
+    "name": "@hokusai/core",
+    "version": "0.5.0"
+  },
+  "node_modules/@esbuild/darwin-arm64": {
+    "name": "@esbuild/darwin-arm64",
+    "version": "0.28.1"
+  },
+  "node_modules/brace-expansion": {
+    "name": "brace-expansion",
+    "version": "1.1.18"
+  },
+  "node_modules/balanced-match": {
+    "name": "balanced-match",
+    "version": "1.0.0"
+  },
+  "node_modules/concat-map": {
+    "name": "concat-map",
+    "version": "0.0.1"
+  },
+  "node_modules/fast-uri": {
+    "name": "fast-uri",
+    "version": "3.1.2"
+  },
+  "node_modules/codex-tools": {
+    "link": true,
+    "target": "codex"
+  }
+}

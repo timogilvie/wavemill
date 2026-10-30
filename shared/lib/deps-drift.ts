@@ -168,7 +168,7 @@ function isExpected(entry: NpmLockEntry, platform: InstallPlatform): boolean {
   return true;
 }
 
-function readInstalledVersion(nmDir: string, relPath: string): { state: 'present'; version: string } | { state: 'link'; target: string } | { state: 'missing' } | { state: 'unreadable' } {
+function readInstalledVersion(nmDir: string, relPath: string, baseDir?: string): { state: 'present'; version: string } | { state: 'link'; target: string } | { state: 'missing' } | { state: 'unreadable' } {
   const fullPath = join(nmDir, relPath);
   try {
     const st = statSync(fullPath, { throwIfNoEntry: false });
@@ -202,7 +202,7 @@ function readInstalledVersion(nmDir: string, relPath: string): { state: 'present
   }
 }
 
-function hiddenLockfileState(nmDir: string): 'missing' | 'unreadable' | 'consistent' | 'stale' {
+function hiddenLockfileState(nmDir: string, lock: NpmLockfile, platform: InstallPlatform): 'missing' | 'unreadable' | 'consistent' | 'stale' {
   const hidden = join(nmDir, '.package-lock.json');
   if (!existsSync(hidden)) {
     return 'missing';
@@ -211,8 +211,26 @@ function hiddenLockfileState(nmDir: string): 'missing' | 'unreadable' | 'consist
   if (!hiddenLock?.packages || typeof hiddenLock.packages !== 'object') {
     return 'unreadable';
   }
-  // Simplistic staleness check: if we can read it as valid JSON, treat as consistent
-  // A full staleness check would compare hidden vs physical metadata, but that's expensive
+
+  // Check staleness: compare hidden lockfile entries against physical metadata
+  // Sample a subset of expected entries to detect disagreement
+  const expected = Object.entries(lock.packages || {})
+    .filter(([key]) => key && key.startsWith('node_modules/'))
+    .filter(([, entry]) => entry && isExpected(entry, platform))
+    .slice(0, 20); // Sample for efficiency
+
+  for (const [lockKey, lockEntry] of expected) {
+    const hiddenEntry = hiddenLock.packages?.[lockKey];
+    // Check if hidden lockfile has a different version or is missing
+    if (lockEntry?.version && hiddenEntry?.version !== lockEntry.version) {
+      return 'stale';
+    }
+    // If expected in lock but absent in hidden, could be stale
+    if (lockEntry && !hiddenEntry) {
+      return 'stale';
+    }
+  }
+
   return 'consistent';
 }
 
@@ -265,15 +283,23 @@ export function checkDepsDrift(
     if (!lockEntry.version) continue; // skip entries without version
 
     const installPath = lockKey.slice('node_modules/'.length);
-    const installed = readInstalledVersion(nmDir, installPath);
+    const installed = readInstalledVersion(nmDir, installPath, dir);
     const lastSegment = installPath.split('/').pop() || installPath;
 
     if (lockEntry.link) {
       // Link entry: must be a symlink to the resolved target
       if (installed.state === 'link') {
-        // Link exists and resolves; don't strictly verify target path match
-        // as it can vary (relative vs absolute), just check it resolves
-        continue;
+        // Link exists and resolves to a valid package.json with matching version
+        // The target must point to the resolved path specified in lockEntry.resolved
+        if (lockEntry.resolved) {
+          const expectedTarget = realpathSync(join(dir, lockEntry.resolved));
+          if (installed.target === expectedTarget) {
+            continue; // Link is correct
+          }
+        } else {
+          // No resolved path; just check the link exists and resolves
+          continue;
+        }
       }
       if (installed.state === 'missing') {
         drifted.push({
@@ -363,7 +389,7 @@ export function checkDepsDrift(
   result.installRevisionAt = hiddenMtime || nmMtime || undefined;
 
   // Hidden lockfile metadata
-  result.hiddenLockfile = hiddenLockfileState(nmDir);
+  result.hiddenLockfile = hiddenLockfileState(nmDir, lock, platform);
 
   return result;
 }
