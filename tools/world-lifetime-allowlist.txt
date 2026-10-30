@@ -1,0 +1,4 @@
+# world-lifetime guard allowlist (HOK-3329).
+# One line per file: `<path> [<max findings>]  # <reason>`.
+# Empty on purpose: the pre-existing offending sites were deleted in the same
+# PR that introduced this guard, so any new entry needs an inline reason.

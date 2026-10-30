@@ -278,10 +278,14 @@ for f in \
   "$REPO_DIR"/tests/incident-fixtures-safety-controls.test.sh \
   "$REPO_DIR"/tests/lib/incident-fixture-harness.sh \
   "$REPO_DIR"/tests/fakes/lib.sh \
+  "$REPO_DIR"/tests/fakes/world-watcher.sh \
   "$REPO_DIR"/tests/fakes/bin/gh \
   "$REPO_DIR"/tests/fakes/bin/tmux \
   "$REPO_DIR"/tests/fakes/bin/claude \
   "$REPO_DIR"/tests/fakes/fakes-contract.test.sh \
+  "$REPO_DIR"/tests/tmux-wrapper-loop.test.sh \
+  "$REPO_DIR"/tests/world-lifetime-sigkill.test.sh \
+  "$REPO_DIR"/tests/world-lifetime-stale-reap.test.sh \
   "$REPO_DIR"/tests/journeys/harness.sh \
   "$REPO_DIR"/tests/journeys/run-journeys.sh \
   "$REPO_DIR"/tests/journeys/picker-pending-touch-set.journey.sh \
