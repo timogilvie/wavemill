@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 
 function runSmoke(args: string[], env: Record<string, string | undefined> = {}) {
-  return spawnSync('npx', ['tsx', 'tools/smoke-deepseek.ts', ...args], {
+  return spawnSync(process.execPath, ['tools/smoke-deepseek.ts', ...args], {
     cwd: process.cwd(),
     encoding: 'utf-8',
     env: {

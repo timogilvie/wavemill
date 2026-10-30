@@ -11,7 +11,7 @@ beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'wavemill-ledger-')); dbPath
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 function worker(mode: string, parentId: string, key: string): Promise<{ ok: boolean; isNew?: boolean; code?: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['--import', 'tsx', 'tests/fixtures/ledger-worker.ts', dbPath, mode, parentId, key], { cwd: process.cwd() });
+    const child = spawn(process.execPath, ['tests/fixtures/ledger-worker.ts', dbPath, mode, parentId, key], { cwd: process.cwd() });
     let output = ''; let stderr = '';
     child.stdout.on('data', b => output += b); child.stderr.on('data', b => stderr += b);
     child.on('close', code => { if (mode === 'crash') { assert.notEqual(code, 0); resolve({ ok: true }); } else { try { resolve(JSON.parse(output.trim())); } catch { reject(new Error(`${output}\n${stderr}`)); } } });

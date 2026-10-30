@@ -58,7 +58,7 @@ function writeCert(repoDir: string): void {
 }
 
 function runTool(args: string[], repoDir: string, env: Record<string, string | undefined> = {}) {
-  return spawnSync('npx', ['tsx', 'tools/openrouter-doctor.ts', ...args], {
+  return spawnSync(process.execPath, ['tools/openrouter-doctor.ts', ...args], {
     cwd: process.cwd(),
     encoding: 'utf-8',
     env: {

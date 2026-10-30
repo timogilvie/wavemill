@@ -689,9 +689,8 @@ test('write-review-scope-baseline CLI materializes the artifact for the mill han
     mkdirSync(featureDir, { recursive: true });
 
     const result = spawnSync(
-      'npx',
+      process.execPath,
       [
-        'tsx',
         join(process.cwd(), 'tools', 'write-review-scope-baseline.ts'),
         '--repo-dir', repoDir,
         '--feature-dir', featureDir,
@@ -918,7 +917,7 @@ test('ensureReviewScopeBaseline refresh rewrites an advanced baseline and keeps 
 const CLI_TOOL = join(process.cwd(), 'tools', 'check-review-scope.ts');
 
 function runCli(repoDir: string): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync('npx', ['tsx', CLI_TOOL, '--repo-dir', repoDir], { encoding: 'utf-8' });
+  const result = spawnSync(process.execPath, [CLI_TOOL, '--repo-dir', repoDir], { encoding: 'utf-8' });
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 

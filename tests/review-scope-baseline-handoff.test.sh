@@ -56,8 +56,8 @@ eval "$(extract_function "$MONITOR_SCRIPT_FILE" "ensure_review_scope_baseline")"
 TOOLS_DIR="$REPO_DIR/tools"
 WARNINGS=""
 log_warn() { WARNINGS+="$*"$'\n'; }
-# Run tsx from the repo so node module resolution works for the tool.
-wavemill_run_tsx_tool() { (cd "$REPO_DIR" && npx tsx "$@"); }
+# Run the tool from the repo root, mirroring the production helper's cwd.
+wavemill_run_tsx_tool() { (cd "$REPO_DIR" && node "$@"); }
 
 # Build a worktree-shaped repo: integration base, task branch, committed work.
 WT="$TEST_TMP/worktree"

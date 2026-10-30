@@ -20,7 +20,7 @@ function cleanConfig(repoDir: string): void {
 }
 
 function runTool(repoDir: string, globalRoot: string, args: string[] = []) {
-  return execFileSync('npx', ['tsx', tool, '--json', '--repo-dir', repoDir, ...args], {
+  return execFileSync(process.execPath, [tool, '--json', '--repo-dir', repoDir, ...args], {
     cwd: resolve(__dirname, '..'),
     encoding: 'utf-8',
     env: { ...process.env, [GLOBAL_CERTIFICATION_ROOT_ENV]: globalRoot },

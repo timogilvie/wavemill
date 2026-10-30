@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { join, resolve, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { getWavemillAdditionalEvalPaths, routeBatch, tasksFromPlan } from '../shared/lib/route-batch.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const routeTaskTool = resolve(__dirname, 'route-task.ts');
@@ -103,7 +104,7 @@ describe('route-tasks CLI', () => {
         JSON.stringify({ issueId: 'HOK-101', file: packetB }),
       ].join('\n') + '\n');
 
-      const stdout = execFileSync('npx', ['tsx', routeTasksTool, '--jsonl', inputFile, '--repo-dir', repoDir], {
+      const stdout = execFileSync(process.execPath, [routeTasksTool, '--jsonl', inputFile, '--repo-dir', repoDir], {
         encoding: 'utf-8',
         cwd: resolve(__dirname, '..'),
         env: { ...process.env },
@@ -121,7 +122,7 @@ describe('route-tasks CLI', () => {
         assert.ok(item.routingMode);
       }
 
-      const single = JSON.parse(execFileSync('npx', ['tsx', routeTaskTool, '--json', '--file', packetA, '--repo-dir', repoDir], {
+      const single = JSON.parse(execFileSync(process.execPath, [routeTaskTool, '--json', '--file', packetA, '--repo-dir', repoDir], {
         encoding: 'utf-8',
         cwd: resolve(__dirname, '..'),
         env: { ...process.env },
@@ -170,7 +171,7 @@ describe('route-tasks CLI', () => {
         JSON.stringify({ issueId: 'HOK-201', featureDir: featureB, packetFile: packetB }),
       ].join('\n') + '\n');
 
-      const stdout = execFileSync('npx', ['tsx', routeTasksTool, '--expanded-jsonl', inputFile, '--repo-dir', repoDir], {
+      const stdout = execFileSync(process.execPath, [routeTasksTool, '--expanded-jsonl', inputFile, '--repo-dir', repoDir], {
         encoding: 'utf-8',
         cwd: resolve(__dirname, '..'),
         env: { ...process.env },
@@ -194,13 +195,16 @@ describe('route-tasks CLI', () => {
     }
   });
 
-  it('accepts launch-plan task model fields and keeps routing output working', () => {
+  // protects: a launch-plan task carrying a `model` selector is rejected or
+  // routed without planner/coder/reviewer. Pure library behaviour (the CLI's
+  // --plan branch is `routeBatch(tasksFromPlan(plan))` plus printing), so it
+  // runs in-process instead of paying a tool-startup spawn (HOK-2671).
+  it('accepts launch-plan task model fields and keeps routing output working', async () => {
     const repoDir = makeRepo();
     try {
       const packetA = join(repoDir, 'task-plan-a.md');
-      const planFile = join(repoDir, 'launch-plan.json');
       writeFileSync(packetA, 'Route launch plan packet with explicit model selector\n');
-      writeFileSync(planFile, JSON.stringify({
+      const tasks = tasksFromPlan({
         session: 'session-1',
         repoDir,
         baseBranch: 'auto/integration',
@@ -215,19 +219,20 @@ describe('route-tasks CLI', () => {
             model: 'sonnet',
           },
         ],
-      }));
-
-      const stdout = execFileSync('npx', ['tsx', routeTasksTool, '--plan', planFile, '--repo-dir', repoDir], {
-        encoding: 'utf-8',
-        cwd: resolve(__dirname, '..'),
-        env: { ...process.env },
       });
 
-      const parsed = JSON.parse(stdout.trim());
-      assert.equal(parsed.issueId, 'HOK-300');
-      assert.ok(parsed.planner);
-      assert.ok(parsed.coder);
-      assert.ok(parsed.reviewer);
+      const results = await routeBatch(tasks, {
+        repoDir,
+        mode: 'auto',
+        additionalEvalsPaths: getWavemillAdditionalEvalPaths(repoDir),
+      });
+
+      assert.equal(results.length, 1);
+      const [{ task, decision }] = results;
+      assert.equal(task.issueId, 'HOK-300');
+      assert.ok(decision.planner);
+      assert.ok(decision.coder);
+      assert.ok(decision.reviewer);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
@@ -243,7 +248,7 @@ describe('route-tasks CLI', () => {
       writeFileSync(packetA, 'Route this expanded packet\n');
       writeFileSync(inputFile, `${JSON.stringify({ issueId: 'HOK-202', featureDir: featureA, packetFile: packetA })}\n`);
 
-      const quiet = spawnSync('npx', ['tsx', routeTasksTool, '--expanded-jsonl', inputFile, '--repo-dir', repoDir], {
+      const quiet = spawnSync(process.execPath, [routeTasksTool, '--expanded-jsonl', inputFile, '--repo-dir', repoDir], {
         encoding: 'utf-8',
         cwd: resolve(__dirname, '..'),
         env: { ...process.env },
@@ -252,7 +257,7 @@ describe('route-tasks CLI', () => {
       assert.equal(quiet.stderr.includes('route.lifecycle:'), false);
       assert.equal(quiet.stderr.includes('route_source='), false);
 
-      const verbose = spawnSync('npx', ['tsx', routeTasksTool, '--expanded-jsonl', inputFile, '--repo-dir', repoDir], {
+      const verbose = spawnSync(process.execPath, [routeTasksTool, '--expanded-jsonl', inputFile, '--repo-dir', repoDir], {
         encoding: 'utf-8',
         cwd: resolve(__dirname, '..'),
         env: { ...process.env, WAVEMILL_ROUTER_LOG_VERBOSE: '1' },
@@ -273,7 +278,7 @@ describe('route-tasks CLI', () => {
       const stdoutFile = join(repoDir, 'route.stdout.json');
       const stderrFile = join(repoDir, 'route.stderr.log');
 
-      execFileSync('bash', ['-lc', `npx tsx "${routeTaskTool}" --json --file "${packet}" --repo-dir "${repoDir}" > "${stdoutFile}" 2> "${stderrFile}"`], {
+      execFileSync('bash', ['-lc', `"${process.execPath}" "${routeTaskTool}" --json --file "${packet}" --repo-dir "${repoDir}" > "${stdoutFile}" 2> "${stderrFile}"`], {
         cwd: resolve(__dirname, '..'),
         env: { ...process.env },
       });
@@ -298,8 +303,7 @@ describe('route-tasks CLI', () => {
       writeFileSync(packet, 'Build routing flow with tests\n');
       const outputFile = join(repoDir, 'route.output.json');
 
-      const result = spawnSync('npx', [
-        'tsx',
+      const result = spawnSync(process.execPath, [
         routeTaskTool,
         '--json',
         '--file',
@@ -330,7 +334,7 @@ describe('route-tasks CLI', () => {
     try {
       const inputFile = join(repoDir, 'empty-expanded-route-input.jsonl');
       writeFileSync(inputFile, '');
-      const stdout = execFileSync('npx', ['tsx', routeTasksTool, '--expanded-jsonl', inputFile, '--repo-dir', repoDir], {
+      const stdout = execFileSync(process.execPath, [routeTasksTool, '--expanded-jsonl', inputFile, '--repo-dir', repoDir], {
         encoding: 'utf-8',
         cwd: resolve(__dirname, '..'),
         env: { ...process.env },
@@ -350,7 +354,7 @@ describe('route-tasks CLI', () => {
       writeFileSync(inputFile, `${JSON.stringify({ issueId: 'HOK-300', featureDir: featureA, packetFile: join(featureA, 'missing-task-packet.md') })}\n`);
 
       assert.throws(() => {
-        execFileSync('npx', ['tsx', routeTasksTool, '--expanded-jsonl', inputFile, '--repo-dir', repoDir], {
+        execFileSync(process.execPath, [routeTasksTool, '--expanded-jsonl', inputFile, '--repo-dir', repoDir], {
           encoding: 'utf-8',
           cwd: resolve(__dirname, '..'),
           env: { ...process.env },

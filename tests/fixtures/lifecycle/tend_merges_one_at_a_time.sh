@@ -90,8 +90,8 @@ write_fake_gh
 write_fake_git
 write_fake_npx
 
-output_one="$(cd "$REPO_ROOT" && npx tsx tools/tend.ts --once --repo-dir "$REPO_DIR" 2>&1)"
-output_two="$(cd "$REPO_ROOT" && npx tsx tools/tend.ts --once --repo-dir "$REPO_DIR" 2>&1)"
+output_one="$(cd "$REPO_ROOT" && node tools/tend.ts --once --repo-dir "$REPO_DIR" 2>&1)"
+output_two="$(cd "$REPO_ROOT" && node tools/tend.ts --once --repo-dir "$REPO_DIR" 2>&1)"
 
 if [[ "$output_one" != *"action=merged-#51"* ]]; then
   echo "expected first run to merge PR 51, got: $output_one"

@@ -389,7 +389,7 @@ cat > "$CODING_GUARD_REPO/.wavemill-config.json" <<'EOF'
 }
 EOF
 
-if npx tsx "$REPO_DIR/tools/check-native-eligibility.ts" "$CODING_GUARD_REPO" "coding" >/dev/null 2>&1; then
+if node "$REPO_DIR/tools/check-native-eligibility.ts" "$CODING_GUARD_REPO" "coding" >/dev/null 2>&1; then
   fail "native opt-in still excludes coding"
 else
   pass "native opt-in still excludes coding"
@@ -414,7 +414,7 @@ cat > "$CODING_DISPATCH_REPO/.wavemill-config.json" <<'EOF'
 }
 EOF
 
-if npx tsx "$REPO_DIR/tools/check-native-agent-launch.ts" \
+if node "$REPO_DIR/tools/check-native-agent-launch.ts" \
   --repo-dir "$CODING_DISPATCH_REPO" \
   --phase coding \
   --agent native-openrouter \
@@ -454,7 +454,7 @@ cat > "$ROLE_CERT_ROOT/google/gemini-2.5-flash/v2.json" <<'EOF'
 }
 EOF
 
-if TEST_OPENROUTER_KEY="sk-test" WAVEMILL_NATIVE_CERTIFICATION_ROOT="$ROLE_CERT_ROOT" npx tsx "$REPO_DIR/tools/check-native-eligibility.ts" "$ROLE_REPO" "planning" >/dev/null 2>&1; then
+if TEST_OPENROUTER_KEY="sk-test" WAVEMILL_NATIVE_CERTIFICATION_ROOT="$ROLE_CERT_ROOT" node "$REPO_DIR/tools/check-native-eligibility.ts" "$ROLE_REPO" "planning" >/dev/null 2>&1; then
   fail "role-ineligible native planner is not selected"
 else
   pass "role-ineligible native planner is not selected"

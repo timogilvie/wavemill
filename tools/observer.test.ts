@@ -301,7 +301,7 @@ test('observer once exits zero in degraded mode with malformed schema', () => {
     writeFileSync(join(repoDir, 'wavemill-config.schema.json'), '{\n  "type": "object"\n}\n,\n{}\n');
     writeFileSync(join(logDir, 'mill-unknown.log'), '10:00:00 [error] independent monitor failure\n');
 
-    const result = spawnSync('npx', ['tsx', join(process.cwd(), 'tools', 'observer.ts'), '--once', '--json', '--repo-dir', repoDir], {
+    const result = spawnSync(process.execPath, [join(process.cwd(), 'tools', 'observer.ts'), '--once', '--json', '--repo-dir', repoDir], {
       cwd: process.cwd(),
       encoding: 'utf8',
       timeout: 20_000,

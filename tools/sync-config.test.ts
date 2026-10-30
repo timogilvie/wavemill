@@ -13,10 +13,10 @@ function makeTempRepo(): string {
 }
 
 function runSyncConfig(repoDir: string, args: string[] = []) {
-  // Use the repo's own tsx binary: `npx tsx` from a temp dir outside the repo
-  // cannot see node_modules and falls back to the npx cache/registry, which
-  // made this test flaky in CI ("sh: 1: tsx: not found").
-  return spawnSync(join(ROOT, 'node_modules', '.bin', 'tsx'), [TOOL, ...args], {
+  // Run the tool with the current node binary (native TypeScript stripping):
+  // `npx tsx` from a temp dir outside the repo cannot see node_modules and
+  // falls back to the npx cache/registry, which made this test flaky in CI.
+  return spawnSync(process.execPath, [TOOL, ...args], {
     cwd: repoDir,
     encoding: 'utf-8',
     env: process.env,

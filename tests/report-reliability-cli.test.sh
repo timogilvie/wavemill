@@ -29,7 +29,7 @@ printf '%s\n' '{"stage":"coding","status":"completed","startedAt":"2026-10-08T09
 # HOK-1 also has an interactive state edit in the repo touch log.
 printf '%s\n' '{"at":"2026-10-08T11:00:00Z","kind":"state-edit","issue":"HOK-1"}' > "$repo/.wavemill/operator-touches.jsonl"
 
-out="$(cd "$repo" && npx tsx "$TOOL" --since 2026-10-01 --branches main --no-github --json --repo-dir "$repo" 2>/dev/null)"
+out="$(cd "$repo" && node "$TOOL" --since 2026-10-01 --branches main --no-github --json --repo-dir "$repo" 2>/dev/null)"
 
 [[ "$(jq -r '.overall.merged' <<<"$out")" == "2" ]] || fail "merged count: $(jq -c '.overall' <<<"$out")"
 [[ "$(jq -r '.overall.unattended' <<<"$out")" == "1" ]] || fail "unattended count"
@@ -38,7 +38,7 @@ out="$(cd "$repo" && npx tsx "$TOOL" --since 2026-10-01 --branches main --no-git
 [[ "$(jq -r '[.tasks[] | select(.task.issue=="HOK-1") | .touches[].class] | all(. != null)' <<<"$out")" == "true" ]] || fail "touch rows carry a class"
 [[ "$(jq -r '.sources.githubEnabled' <<<"$out")" == "false" ]] || fail "github should be off"
 
-text="$(cd "$repo" && npx tsx "$TOOL" --since 2026-10-01 --branches main --no-github --repo-dir "$repo" 2>/dev/null)"
+text="$(cd "$repo" && node "$TOOL" --since 2026-10-01 --branches main --no-github --repo-dir "$repo" 2>/dev/null)"
 grep -q "Unattended rate: *50.0% (1/2)" <<<"$text" || fail "missing unattended line: $text"
 grep -q "Touches by class: *O=1  L=0  S=0  R=2" <<<"$text" || fail "missing per-class line: $text"
 grep -q "P90 time stuck:" <<<"$text" || fail "missing p90 line"
@@ -50,7 +50,7 @@ grep -q "Mill tasks: *1 · unattended 0.0% (0/1)" <<<"$text" || fail "missing mi
 
 # HOK-3245: --cache-dir none is accepted and leaves no cache behind.
 rm -rf "$repo/.wavemill/cache"
-(cd "$repo" && npx tsx "$TOOL" --since 2026-10-01 --branches main --no-github --cache-dir none --json --repo-dir "$repo" >/dev/null 2>&1) \
+(cd "$repo" && node "$TOOL" --since 2026-10-01 --branches main --no-github --cache-dir none --json --repo-dir "$repo" >/dev/null 2>&1) \
   || fail "--cache-dir none run failed"
 [[ ! -e "$repo/.wavemill/cache" ]] || fail "--cache-dir none wrote $repo/.wavemill/cache"
 

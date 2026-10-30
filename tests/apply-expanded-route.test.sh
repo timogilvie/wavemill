@@ -116,7 +116,7 @@ run_apply() {
 # buildChallengeExecutionIntent the mill uses, so a schema change breaks these
 # tests instead of silently diverging from them.
 real_challenge_intent() {
-  npx tsx "$REPO_DIR/tests/fixtures/build-challenge-intent.ts" "$@"
+  node "$REPO_DIR/tests/fixtures/build-challenge-intent.ts" "$@"
 }
 
 echo "=== Expanded Route Apply Helper ==="
@@ -819,7 +819,7 @@ seed_sealed_arm() {
   primary_rc=$?
   challenger_out="$(TOOLS_DIR="$REPO_DIR/tools" apply_expanded_route_if_present "$challenger_dir" "HOK-1512_c" "test-slug" "$challenger_wt" "$state_file" 2>&1)"
   challenger_rc=$?
-  npx tsx "$REPO_DIR/tools/check-challenge-route.ts" --stage review \
+  node "$REPO_DIR/tools/check-challenge-route.ts" --stage review \
     --primary-feature-dir "$primary_dir" --challenger-feature-dir "$challenger_dir" >"$root/check.json" 2>/dev/null
   check_rc=$?
   set -e

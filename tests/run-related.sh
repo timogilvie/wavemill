@@ -173,7 +173,7 @@ SELECT_ARGS=()
 if [[ "$NO_JOURNEYS" -eq 1 ]]; then SELECT_ARGS+=(--no-journeys); fi
 SELECT_ARGS+=(--repo-root "$REPO_ROOT" --files-from "$CHANGE_FILE")
 
-if ! npx tsx "$REPO_ROOT/tools/related-tests/select.ts" "${SELECT_ARGS[@]}" > "$PLAN_JSON" 2> "$TMP_DIR/select.err"; then
+if ! node "$REPO_ROOT/tools/related-tests/select.ts" "${SELECT_ARGS[@]}" > "$PLAN_JSON" 2> "$TMP_DIR/select.err"; then
   cat "$TMP_DIR/select.err" >&2
   exit 2
 fi

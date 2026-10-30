@@ -209,7 +209,7 @@ describe('checkTaskFieldReads', () => {
       assert.equal(result.findings[0].field, 'prNumber');
 
       // CLI exits 1 and prints the finding.
-      const cli = spawnSync('npx', ['tsx', join(repoRoot, 'tools/check-task-field-reads.ts'), repo], { encoding: 'utf-8' });
+      const cli = spawnSync(process.execPath, [join(repoRoot, 'tools/check-task-field-reads.ts'), repo], { encoding: 'utf-8' });
       assert.equal(cli.status, 1);
       assert.match(cli.stderr, /shared\/lib\/drift\.sh:2:\d+ \[tasks-field-read\]/);
       assert.match(cli.stderr, /prNumber/);
@@ -222,7 +222,7 @@ describe('checkTaskFieldReads', () => {
     const repo = mkdtempSync(join(tmpdir(), 'task-field-reads-noschema-'));
     try {
       execFileSync('git', ['init', '-q'], { cwd: repo });
-      const cli = spawnSync('npx', ['tsx', join(repoRoot, 'tools/check-task-field-reads.ts'), repo], { encoding: 'utf-8' });
+      const cli = spawnSync(process.execPath, [join(repoRoot, 'tools/check-task-field-reads.ts'), repo], { encoding: 'utf-8' });
       assert.equal(cli.status, 1);
       assert.match(cli.stderr, /check-task-field-reads:/);
     } finally {
