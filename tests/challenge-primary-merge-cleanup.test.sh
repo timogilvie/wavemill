@@ -44,7 +44,7 @@ cat >> "$helper_file" <<'SHIM'
 wavemill_run_tool() {
   local tool="${1:?wavemill_run_tool requires a tool basename}"
   shift
-  npx tsx "$TOOLS_DIR/$tool" "$@"
+  node "$TOOLS_DIR/$tool" "$@"
 }
 SHIM
 

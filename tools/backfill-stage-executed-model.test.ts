@@ -89,7 +89,7 @@ function setupArtifactWithClaudeSession() {
     worktree: worktreePath,
     branch: 'task/HOK-3017',
   });
-  writeJson(join(artifactDir, 'coding-result.json'), stageResult());
+  writeJson(join(artifactDir, '.coding-result.json'), stageResult());
   // The archived ownership record sits beside the stage result (HOK-3328).
   appendOwnershipRow(artifactDir, { sessionRef: 'session', harness: 'claude-code', kind: 'coding', model: 'claude-haiku-4-5' });
   return { artifactDir, worktreePath };
@@ -98,7 +98,7 @@ function setupArtifactWithClaudeSession() {
 describe('backfillStageExecutedModel', () => {
   it('dry-runs artifact-dir updates without writing', () => {
     const { artifactDir } = setupArtifactWithClaudeSession();
-    const file = join(artifactDir, 'coding-result.json');
+    const file = join(artifactDir, '.coding-result.json');
     const before = readFileSync(file, 'utf8');
 
     const results = backfillStageExecutedModel({ artifactDirs: [artifactDir] });
@@ -109,7 +109,7 @@ describe('backfillStageExecutedModel', () => {
 
   it('applies session-derived executed model and recomputes eligibility', () => {
     const { artifactDir } = setupArtifactWithClaudeSession();
-    const file = join(artifactDir, 'coding-result.json');
+    const file = join(artifactDir, '.coding-result.json');
 
     const results = backfillStageExecutedModel({ artifactDirs: [artifactDir], apply: true });
     const coding = readJson(file);
@@ -126,7 +126,7 @@ describe('backfillStageExecutedModel', () => {
   it('leaves a no-evidence stage byte-identical', () => {
     withHome();
     const artifactDir = tempDir('backfill-executed-model-no-evidence-');
-    const file = join(artifactDir, 'coding-result.json');
+    const file = join(artifactDir, '.coding-result.json');
     writeJson(join(artifactDir, 'terminal-record.json'), {
       worktree: '/deleted/worktree',
       branch: 'task/HOK-3017',
@@ -146,8 +146,8 @@ describe('backfillStageExecutedModel', () => {
       worktree: '/worktree',
       branch: 'task/HOK-3017',
     });
-    writeJson(join(artifactDir, 'planning-result.json'), stageResult({ stage: 'planning', status: 'running' }));
-    writeJson(join(artifactDir, 'coding-result.json'), stageResult({ agent: 'native', model: 'pi-model', intendedModel: 'pi-model' }));
+    writeJson(join(artifactDir, '.planning-result.json'), stageResult({ stage: 'planning', status: 'running' }));
+    writeJson(join(artifactDir, '.coding-result.json'), stageResult({ agent: 'native', model: 'pi-model', intendedModel: 'pi-model' }));
 
     const results = backfillStageExecutedModel({ artifactDirs: [artifactDir], apply: true });
 

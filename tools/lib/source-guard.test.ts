@@ -299,13 +299,13 @@ describe('runGuardCli (via a tools/check-* wrapper)', () => {
       execFileSync('git', ['add', '.'], { cwd: repo });
       const tool = join(repoRoot, 'tools', 'check-failure-policy.ts');
 
-      const clean = spawnSync('npx', ['tsx', tool, repo], { encoding: 'utf-8' });
+      const clean = spawnSync(process.execPath, [tool, repo], { encoding: 'utf-8' });
       assert.equal(clean.status, 0, clean.stderr);
       assert.match(clean.stdout, /^failure-policy: ok \(1 files scanned\)/);
 
       writeFileSync(join(repo, 'shared/lib/parks.ts'), 'export const c = { retryable: false };\n');
       execFileSync('git', ['add', '.'], { cwd: repo });
-      const failing = spawnSync('npx', ['tsx', tool, repo], { encoding: 'utf-8' });
+      const failing = spawnSync(process.execPath, [tool, repo], { encoding: 'utf-8' });
       assert.equal(failing.status, 1);
       assert.match(failing.stderr, /shared\/lib\/parks\.ts:1:\d+ \[non-retryable-classification\]/);
       assert.match(failing.stderr, /allow-failure-policy: <reason>/);

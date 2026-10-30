@@ -696,7 +696,7 @@ describe('eval-context-gatherer', () => {
       const archiveDir = nodePath.join(repoDir, '.wavemill', 'evals', 'artifacts', issueId);
       fs.mkdirSync(archiveDir, { recursive: true });
       fs.writeFileSync(
-        nodePath.join(archiveDir, 'routing-complete.json'),
+        nodePath.join(archiveDir, '.routing-complete'),
         JSON.stringify({
           planner: 'model-a',
           coder: 'model-b',
@@ -720,7 +720,7 @@ describe('eval-context-gatherer', () => {
       const issueId = 'HOK-1328';
       const archiveDir = nodePath.join(repoDir, '.wavemill', 'evals', 'artifacts', issueId);
       fs.mkdirSync(archiveDir, { recursive: true });
-      fs.writeFileSync(nodePath.join(archiveDir, 'routing-complete.json'), '{"planner":true}');
+      fs.writeFileSync(nodePath.join(archiveDir, '.routing-complete'), '{"planner":true}');
 
       try {
         expect(fetchRoutingCompleteRawWithArchive(repoDir, 'my-feature', issueId)).toBeNull();
@@ -735,7 +735,7 @@ describe('eval-context-gatherer', () => {
       const archiveDir = nodePath.join(repoDir, '.wavemill', 'evals', 'artifacts', issueId);
       fs.mkdirSync(archiveDir, { recursive: true });
       fs.writeFileSync(
-        nodePath.join(archiveDir, 'routing-complete.json'),
+        nodePath.join(archiveDir, '.routing-complete'),
         JSON.stringify({
           planner: 'model-a',
           coder: 'model-b',
@@ -771,7 +771,7 @@ describe('eval-context-gatherer', () => {
       fs.mkdirSync(featureDir, { recursive: true });
       fs.mkdirSync(archiveDir, { recursive: true });
       fs.writeFileSync(
-        nodePath.join(archiveDir, 'routing-complete.json'),
+        nodePath.join(archiveDir, '.routing-complete'),
         JSON.stringify({
           planner: 'model-a',
           coder: 'model-b',
@@ -870,7 +870,7 @@ describe('eval-context-gatherer', () => {
       const branch = 'task/fix-archived-routing';
       const archiveDir = nodePath.join(repoDir, '.wavemill', 'evals', 'artifacts', issueId);
       fs.mkdirSync(archiveDir, { recursive: true });
-      fs.writeFileSync(nodePath.join(archiveDir, 'routing-complete.json'), '{"planner":true}');
+      fs.writeFileSync(nodePath.join(archiveDir, '.routing-complete'), '{"planner":true}');
 
       try {
         const result = gatherStageArtifacts(repoDir, issueId, branch);
@@ -1005,6 +1005,67 @@ describe('eval-context-gatherer', () => {
           },
           source: '.planning-result.json',
         });
+      } finally {
+        fs.rmSync(repoDir, { recursive: true, force: true });
+      }
+    });
+
+    // protects: HOK-3114 — after reap the live feature dir is gone, so every
+    // phaseDuration was computed from `.<stage>-result.json` files in the
+    // archive. The pre-HOK-2891 archiver stripped the leading dot and the
+    // reader asked for `.coding-result.json`, so `phaseDurations` was empty.
+    // After HOK-2891 the archive keeps the dotted name and `computePhaseDurations`
+    // reads it through the one resolver.
+    it('populates phaseDurations from archive stage results after the feature dir is reaped (HOK-3114)', () => {
+      const repoDir = makeTmpDir();
+      const issueId = 'HOK-3114';
+      const branch = 'task/reap-eval-phase-durations';
+      const archiveDir = nodePath.join(repoDir, '.wavemill', 'evals', 'artifacts', issueId);
+      fs.mkdirSync(archiveDir, { recursive: true });
+      // Live feature dir intentionally absent — simulates post-reap state.
+      fs.writeFileSync(
+        nodePath.join(archiveDir, '.planning-result.json'),
+        JSON.stringify({
+          stage: 'planning',
+          status: 'completed',
+          agent: 'claude',
+          model: 'claude-opus-4-6',
+          startedAt: '2026-06-01T10:00:00.000Z',
+          finishedAt: '2026-06-01T10:02:00.000Z',
+        }),
+      );
+      fs.writeFileSync(
+        nodePath.join(archiveDir, '.coding-result.json'),
+        JSON.stringify({
+          stage: 'coding',
+          status: 'completed',
+          agent: 'claude',
+          model: 'claude-opus-4-6',
+          startedAt: '2026-06-01T10:02:00.000Z',
+          finishedAt: '2026-06-01T10:12:00.000Z',
+        }),
+      );
+      fs.writeFileSync(
+        nodePath.join(archiveDir, '.review-result.json'),
+        JSON.stringify({
+          stage: 'review',
+          status: 'completed',
+          agent: 'claude',
+          model: 'claude-sonnet-4-6',
+          startedAt: '2026-06-01T10:12:00.000Z',
+          finishedAt: '2026-06-01T10:14:00.000Z',
+        }),
+      );
+
+      try {
+        const result = gatherStageArtifacts(repoDir, issueId, branch);
+        expect(result.phaseDurations).toEqual({
+          planning: 120,
+          coding: 600,
+          review: 120,
+          total: 840,
+        });
+        expect(result.stageResultsDir).toBe(archiveDir);
       } finally {
         fs.rmSync(repoDir, { recursive: true, force: true });
       }

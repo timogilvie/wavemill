@@ -146,7 +146,7 @@ describe('measure-repo-attribution analysis', () => {
 
 describe('measure-repo-attribution cli arguments', () => {
   it('prints help without requiring gh', () => {
-    const result = spawnSync('npx', ['tsx', 'tools/measure-repo-attribution.ts', '--help'], {
+    const result = spawnSync(process.execPath, ['tools/measure-repo-attribution.ts', '--help'], {
       cwd: process.cwd(),
       encoding: 'utf-8',
     });
@@ -156,7 +156,7 @@ describe('measure-repo-attribution cli arguments', () => {
   });
 
   it('fails clearly on missing repositories before calling gh', () => {
-    const result = spawnSync('npx', ['tsx', 'tools/measure-repo-attribution.ts', '--limit', '1'], {
+    const result = spawnSync(process.execPath, ['tools/measure-repo-attribution.ts', '--limit', '1'], {
       cwd: process.cwd(),
       encoding: 'utf-8',
     });
@@ -170,7 +170,7 @@ describe('measure-repo-attribution cli arguments', () => {
     const reposFile = join(dir, 'repos.json');
     writeFileSync(reposFile, '["owner/repo"]\n', 'utf-8');
 
-    const result = spawnSync('npx', ['tsx', 'tools/measure-repo-attribution.ts', '--repos-file', reposFile, '--limit', '0'], {
+    const result = spawnSync(process.execPath, ['tools/measure-repo-attribution.ts', '--repos-file', reposFile, '--limit', '0'], {
       cwd: process.cwd(),
       encoding: 'utf-8',
     });

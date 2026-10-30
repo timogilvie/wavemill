@@ -43,6 +43,7 @@ ready_remediation_disposition() {
   if declare -F read_stage_status >/dev/null 2>&1; then
     ready_status=$(read_stage_status "$state_dir" "ready")
   else
+    # allow-stage-artifact-lookup: live in-flight status only; an archived result is never running
     ready_status=$(jq -r '.status // empty' "$state_dir/.ready-result.json" 2>/dev/null || true)
   fi
   if [[ "$ready_status" != "running" ]]; then

@@ -207,6 +207,8 @@ for f in \
   "$REPO_DIR"/tests/task-progress.test.sh \
   "$REPO_DIR"/tests/task-identity.test.sh \
   "$REPO_DIR"/tests/ready-remediation-disposition.test.sh \
+  "$REPO_DIR"/tests/task-artifact-lookup.test.sh \
+  "$REPO_DIR"/tests/archive-naming.test.sh \
   "$REPO_DIR"/tests/terminal-backend.test.sh \
   "$REPO_DIR"/tests/handle-phase-launch-result.test.sh \
   "$REPO_DIR"/tests/coding-launch-refusal.test.sh \

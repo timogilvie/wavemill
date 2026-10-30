@@ -97,7 +97,7 @@ describe('checkTaskRecordShapes', () => {
         ].sort(),
       );
 
-      const cli = spawnSync('npx', ['tsx', join(repoRoot, 'tools/check-task-record-shape.ts'), repo], { encoding: 'utf-8' });
+      const cli = spawnSync(process.execPath, [join(repoRoot, 'tools/check-task-record-shape.ts'), repo], { encoding: 'utf-8' });
       assert.equal(cli.status, 1);
       assert.match(cli.stderr, /shared\/lib\/bad\.ts:2:3 \[tasks-record-annotation\]/);
       assert.match(cli.stderr, /shared\/lib\/workflow-state\.ts/);

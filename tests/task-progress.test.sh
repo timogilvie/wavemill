@@ -145,7 +145,7 @@ sleep 1
 wavemill_hook_write "idle" "pr_merged" "" "claude" "" "monitor"
 shell_agent_state="$(wavemill_hook_read hok3101test TP-1 state --agent-only 2>/dev/null || true)"
 shell_agent_event="$(wavemill_hook_read hok3101test TP-1 event --agent-only 2>/dev/null || true)"
-cli_json="$(cd "$REPO_DIR" && npx tsx tools/task-progress.ts --issue TP-1 --session hok3101test 2>&1 || true)"
+cli_json="$(cd "$REPO_DIR" && node tools/task-progress.ts --issue TP-1 --session hok3101test 2>&1 || true)"
 cli_agent_state="$(printf '%s' "$cli_json" | jq -r '.agentRecord.state // empty' 2>/dev/null || true)"
 cli_agent_event="$(printf '%s' "$cli_json" | jq -r '.agentRecord.event // empty' 2>/dev/null || true)"
 if [[ "$shell_agent_state" == "$cli_agent_state" && "$shell_agent_event" == "$cli_agent_event" ]]; then

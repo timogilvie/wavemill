@@ -117,7 +117,7 @@ write_fake_gh
 write_fake_git
 write_fake_npx
 
-output="$(cd "$REPO_DIR" && npx tsx "$REPO_ROOT/tools/tend.ts" --once --repo-dir "$REPO_DIR" 2>&1)"
+output="$(cd "$REPO_DIR" && node "$REPO_ROOT/tools/tend.ts" --once --repo-dir "$REPO_DIR" 2>&1)"
 
 if [[ "$output" != *"action=merged-#71"* ]]; then
   echo "expected merged-#71 action, got: $output"

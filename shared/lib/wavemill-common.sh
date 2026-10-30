@@ -437,6 +437,51 @@ _wavemill_archive_copy() {
   return 1
 }
 
+# HOK-2891: the shell twin of shared/lib/task-artifact-lookup.ts.
+# Writes the resolved absolute path to stdout, returns 0 on hit, 1 on miss.
+# Probe order:
+#   1. $worktree_dir/features/$slug/$name, bugs/$slug/$name
+#   2. $WORKTREE_ROOT/$slug/features/$slug/$name, bugs/$slug/$name
+#   3. $REPO_DIR/features/$slug/$name, bugs/$slug/$name
+#   4. $REPO_DIR/.wavemill/evals/artifacts/$issue/$name
+resolve_task_artifact_path() {
+  local issue="$1" slug="$2" name="$3" worktree_dir="${4:-}"
+  local repo_dir="${REPO_DIR:-$(pwd)}"
+  local worktree_root="${WORKTREE_ROOT:-${repo_dir}/worktrees}"
+  local root dir candidate
+
+  if [[ -n "$slug" ]]; then
+    local -a roots=()
+    [[ -n "$worktree_dir" ]] && roots+=("$worktree_dir")
+    roots+=("$worktree_root/$slug" "$repo_dir")
+    for root in "${roots[@]}"; do
+      for dir in features bugs; do
+        candidate="$root/$dir/$slug/$name"
+        if [[ -f "$candidate" ]]; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      done
+    done
+  fi
+
+  if [[ -n "$issue" ]]; then
+    candidate="$repo_dir/.wavemill/evals/artifacts/$issue/$name"
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+# HOK-2891: resolve a stage result file (.{stage}-result.json), live or archived.
+resolve_stage_artifact_path() {
+  local issue="$1" slug="$2" stage="$3" worktree_dir="${4:-}"
+  resolve_task_artifact_path "$issue" "$slug" ".${stage}-result.json" "$worktree_dir"
+}
+
 _wavemill_archive_json_copy() {
   local src="$1" dest="$2" label="${3:-artifact}"
   [[ -f "$src" ]] || return 0
@@ -479,15 +524,16 @@ archive_stage_artifacts() {
       _wavemill_archive_copy "$feature_dir/task-packet-details.md" "$archive_dir/task-packet-details.md" || status=1
     fi
 
-    _wavemill_archive_json_copy "$feature_dir/.routing-complete" "$archive_dir/routing-complete.json" "route artifact" || status=1
-    _wavemill_archive_json_copy "$feature_dir/.initial-route.json" "$archive_dir/initial-route.json" "route artifact" || status=1
-    _wavemill_archive_json_copy "$feature_dir/.post-expansion-route.json" "$archive_dir/post-expansion-route.json" "route artifact" || status=1
+    # HOK-2891: archive keeps the live basename so readers resolve one name.
+    _wavemill_archive_json_copy "$feature_dir/.routing-complete" "$archive_dir/.routing-complete" "route artifact" || status=1
+    _wavemill_archive_json_copy "$feature_dir/.initial-route.json" "$archive_dir/.initial-route.json" "route artifact" || status=1
+    _wavemill_archive_json_copy "$feature_dir/.post-expansion-route.json" "$archive_dir/.post-expansion-route.json" "route artifact" || status=1
     _wavemill_archive_copy "$feature_dir/routing.jsonl" "$archive_dir/routing.jsonl" || status=1
-    _wavemill_archive_copy "$feature_dir/.coding-uncommitted-output.resolved.jsonl" "$archive_dir/coding-uncommitted-output.resolved.jsonl" || status=1
-    _wavemill_archive_json_copy "$feature_dir/.operator-intervention.json" "$archive_dir/operator-intervention.json" "operator intervention" || status=1
+    _wavemill_archive_copy "$feature_dir/.coding-uncommitted-output.resolved.jsonl" "$archive_dir/.coding-uncommitted-output.resolved.jsonl" || status=1
+    _wavemill_archive_json_copy "$feature_dir/.operator-intervention.json" "$archive_dir/.operator-intervention.json" "operator intervention" || status=1
     # HOK-3182: reliability-report evidence (time-stuck replay, operator touches).
-    _wavemill_archive_copy "$feature_dir/.terminal-history.jsonl" "$archive_dir/terminal-history.jsonl" || status=1
-    _wavemill_archive_copy "$feature_dir/.operator-events.jsonl" "$archive_dir/operator-events.jsonl" || status=1
+    _wavemill_archive_copy "$feature_dir/.terminal-history.jsonl" "$archive_dir/.terminal-history.jsonl" || status=1
+    _wavemill_archive_copy "$feature_dir/.operator-events.jsonl" "$archive_dir/.operator-events.jsonl" || status=1
     # HOK-3328: the session-ownership record keeps its name in the archive, so
     # post-reap evals read it exactly like live ones (locateOwnershipRows).
     _wavemill_archive_copy "$feature_dir/.session-ownership.jsonl" "$archive_dir/.session-ownership.jsonl" || status=1
@@ -495,12 +541,12 @@ archive_stage_artifacts() {
     local stage result_file sidecar sidecar_name
     for stage in planning coding review; do
       result_file="$feature_dir/.${stage}-result.json"
-      _wavemill_archive_json_copy "$result_file" "$archive_dir/${stage}-result.json" "stage result" || status=1
+      # HOK-2891: archive keeps the live basename (leading dot).
+      _wavemill_archive_json_copy "$result_file" "$archive_dir/.${stage}-result.json" "stage result" || status=1
 
       for sidecar in "$feature_dir/.${stage}-result.attempt-"*-failed.json; do
         [[ -f "$sidecar" ]] || continue
         sidecar_name="$(basename "$sidecar")"
-        sidecar_name="${sidecar_name#.}"
         _wavemill_archive_json_copy "$sidecar" "$archive_dir/$sidecar_name" "failed attempt" || status=1
       done
     done

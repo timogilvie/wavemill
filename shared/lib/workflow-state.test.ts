@@ -117,7 +117,7 @@ describe('readWorkflowState', () => {
       `readWorkflowState(${JSON.stringify(statePath)});`,
       `readWorkflowState(${JSON.stringify(statePath)});`,
     ].join('\n'));
-    const result = spawnSync('npx', ['tsx', scriptPath], { encoding: 'utf-8' });
+    const result = spawnSync(process.execPath, [scriptPath], { encoding: 'utf-8' });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, '');
     assert.equal(result.stderr.match(/workflow-state: schema violations/g)?.length, 1);

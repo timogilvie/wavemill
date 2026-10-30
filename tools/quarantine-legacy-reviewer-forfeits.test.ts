@@ -110,7 +110,7 @@ function runTool(repoDir: string, ...args: string[]): { stdout: string; status: 
   // Capture stdout+stderr regardless of exit status; the tool writes usage
   // and "No challenge records" to stderr with exit(0).
   try {
-    const stdout = execFileSync('npx', ['tsx', TOOL_PATH, '--repo-dir', repoDir, ...args], {
+    const stdout = execFileSync(process.execPath, [TOOL_PATH, '--repo-dir', repoDir, ...args], {
       cwd: REPO_ROOT,
       encoding: 'utf-8',
       env: { ...process.env, WAVEMILL_MILL_RUNNING: '0' },
@@ -127,7 +127,7 @@ function runTool(repoDir: string, ...args: string[]): { stdout: string; status: 
 function runToolCombined(repoDir: string, ...args: string[]): { combined: string; status: number } {
   // Alternate runner: uses the shell so stderr can be redirected to stdout.
   try {
-    const combined = execFileSync('bash', ['-c', `npx tsx ${JSON.stringify(TOOL_PATH)} --repo-dir ${JSON.stringify(repoDir)} ${args.map((a) => JSON.stringify(a)).join(' ')} 2>&1`], {
+    const combined = execFileSync('bash', ['-c', `${JSON.stringify(process.execPath)} ${JSON.stringify(TOOL_PATH)} --repo-dir ${JSON.stringify(repoDir)} ${args.map((a) => JSON.stringify(a)).join(' ')} 2>&1`], {
       cwd: REPO_ROOT,
       encoding: 'utf-8',
       env: { ...process.env, WAVEMILL_MILL_RUNNING: '0' },

@@ -544,7 +544,7 @@ test_invoke_first_wave_helper_packs_priority_without_violating_dependencies() {
 
 test_grouped_render_with_fixture_output() {
   local queue_plan output first_select third_select
-  queue_plan=$(cd "$REPO_DIR" && npx tsx tools/plan-queue.ts --backlog-file fixtures/plan-queue/backlog-basic.json --json)
+  queue_plan=$(cd "$REPO_DIR" && node tools/plan-queue.ts --backlog-file fixtures/plan-queue/backlog-basic.json --json)
   output=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" CANDIDATES="$CANDIDATES" QUEUE_PLAN="$queue_plan" bash -lc '
     set -euo pipefail
     # shellcheck source=/dev/null

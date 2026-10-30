@@ -27,7 +27,7 @@ function runCli(args: string[], baseUrl: string): Promise<CliResult> {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
-      ['--import', 'tsx', toolPath, ...args, '--base-url', baseUrl],
+      [toolPath, ...args, '--base-url', baseUrl],
       { cwd: repoRoot, env: { ...process.env, OPENROUTER_API_KEY: 'fixture-key' } },
       (error, stdout, stderr) => {
         resolve({ code: error ? Number(error.code ?? 1) : 0, stdout, stderr });

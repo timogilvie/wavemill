@@ -94,6 +94,19 @@ journey_assert "the eval persisted its record (no evalFailed path)" \
   bash -c '! grep -q "Eval not persisted" "$1"' _ "$JOURNEY_TMP/logs/eval.log"
 journey_assert "eval record appended for $ISSUE" \
   bash -c 'grep -qs "$2" "$1"/evals/*.jsonl' _ "$STATE_DIR" "$ISSUE"
+# HOK-2891 (HOK-3114 replay): post-reap evals now resolve stage results through
+# the one archive-aware lookup, so phaseDurations and executionEconomics
+# stageRole sessions are populated instead of silently empty.
+journey_assert "post-reap eval record has phaseDurations for all three stages" \
+  bash -c 'rec=$(grep -h "$2" "$1"/evals/*.jsonl | tail -1); \
+    [[ "$(printf %s "$rec" | jq -r ".phaseDurationsSeconds.planning | type")" = "number" ]] && \
+    [[ "$(printf %s "$rec" | jq -r ".phaseDurationsSeconds.coding | type")"   = "number" ]] && \
+    [[ "$(printf %s "$rec" | jq -r ".phaseDurationsSeconds.review | type")"   = "number" ]]' \
+    _ "$STATE_DIR" "$ISSUE"
+journey_assert "post-reap eval record carries at least one stageRole session" \
+  bash -c 'rec=$(grep -h "$2" "$1"/evals/*.jsonl | tail -1); \
+    [[ "$(printf %s "$rec" | jq -r "[(.executionEconomics // [])[] | (.sessions // [])[] | select(.stageRole != null and .stageRole != \"\")] | length")" -ge 1 ]]' \
+    _ "$STATE_DIR" "$ISSUE"
 journey_assert "late outcome recorded audit-only: postReapEval=completed" \
   test "$(jq -r --arg id "$ISSUE" '.terminalTaskHistory.tasks[$id].postReapEval.outcome // empty' "$STATE_FILE")" = "completed"
 journey_assert "no task row recreated for $ISSUE after the eval settled" task_row_absent

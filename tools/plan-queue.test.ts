@@ -10,9 +10,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoDir = resolve(__dirname, '..');
 const planQueueTool = resolve(__dirname, 'plan-queue.ts');
 const fixture = resolve(repoDir, 'fixtures/plan-queue/backlog-basic.json');
-// Resolve tsx from the repo, not the spawn cwd: `npx tsx` from a temp dir
-// falls back to the npm registry and flakes in CI.
-const tsxLoader = import.meta.resolve('tsx');
 // plan-queue reads `queuePlanner.mode` from the cwd's config. Default to a
 // temp dir pinned to legacy so these tests don't follow the repo's own
 // setting (grounded mode calls the classifier, which CI doesn't have).
@@ -21,7 +18,7 @@ writeFileSync(join(legacyCwd, '.wavemill-config.json'), `${JSON.stringify({ queu
 after(() => rmSync(legacyCwd, { recursive: true, force: true }));
 
 function runPlanQueue(args: string[], input?: string, cwd = legacyCwd, env: NodeJS.ProcessEnv = {}) {
-  return spawnSync(process.execPath, ['--import', tsxLoader, planQueueTool, ...args], {
+  return spawnSync(process.execPath, [planQueueTool, ...args], {
     cwd,
     encoding: 'utf-8',
     env: { ...process.env, ...env },
@@ -133,7 +130,7 @@ function millPlanArgs(backlogPath: string, cacheKey: string, reportPath: string,
 
 describe('plan-queue CLI', () => {
   it('emits queuePlan JSON from a backlog file', () => {
-    const stdout = execFileSync(process.execPath, ['--import', tsxLoader, planQueueTool, '--backlog-file', fixture, '--json'], {
+    const stdout = execFileSync(process.execPath, [planQueueTool, '--backlog-file', fixture, '--json'], {
       cwd: legacyCwd,
       encoding: 'utf-8',
       env: { ...process.env },
@@ -217,7 +214,7 @@ describe('plan-queue CLI', () => {
     try {
       const result = spawnSync(
         'bash',
-        ['-c', 'exec 0< "$1"; npx tsx "$2" --stdin --json', 'bash', tempDir, planQueueTool],
+        ['-c', 'exec 0< "$1"; "$3" "$2" --stdin --json', 'bash', tempDir, planQueueTool, process.execPath],
         {
           cwd: repoDir,
           encoding: 'utf-8',

@@ -2089,11 +2089,11 @@ run_recon_case() {
         echo "missing_attention=$(cat "$STATE_DIR/.needs-attention" 2>/dev/null | tr "\n" " ")"
         ;;
       capsule_project)
-        npx tsx "$TOOLS_DIR/reconciliation-capsule.ts" build \
+        node "$TOOLS_DIR/reconciliation-capsule.ts" build \
           --feature-dir "$STATE_DIR" --task-id HOK-2936 --title "Recon test" \
           --slug recon-test --branch task/recon --base-branch main --pr 304 \
           --review-head aaa111aaa111aaa111aaa111aaa111aaa111aaa1 --review-verdict ready >/dev/null
-        npx tsx "$TOOLS_DIR/reconciliation-capsule.ts" update-incident \
+        node "$TOOLS_DIR/reconciliation-capsule.ts" update-incident \
           --feature-dir "$STATE_DIR" --classification merge_conflict \
           --head aaa111aaa111aaa111aaa111aaa111aaa111aaa1 --detail "conflict test" >/dev/null
         rc=0
