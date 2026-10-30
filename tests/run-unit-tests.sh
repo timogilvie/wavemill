@@ -195,6 +195,12 @@ TESTS=(
   shared/lib/challenge-comparison.test.ts
   shared/lib/no-comparison-report.test.ts
   shared/lib/arbiter-r6-report.test.ts
+  shared/lib/cost-baseline/loader.test.ts
+  shared/lib/cost-baseline/dimensions.test.ts
+  shared/lib/cost-baseline/review-rounds.test.ts
+  shared/lib/cost-baseline/queue-depth.test.ts
+  shared/lib/cost-baseline/integration-failures.test.ts
+  shared/lib/cost-baseline/aggregator.test.ts
   shared/lib/fork-identity.test.ts
   tools/arbiter-r6-analysis.test.ts
   shared/lib/challenge-pair-resolver.test.ts
