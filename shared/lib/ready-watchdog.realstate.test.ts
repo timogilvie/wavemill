@@ -15,6 +15,7 @@ import {
 } from './ready-watchdog.ts';
 import type { WorkflowState, TaskRecord } from './workflow-state.ts';
 import type { StageResult, ReadyArtifacts } from './stage-result.ts';
+import { decideReadyRemediationDisposition } from './ready-remediation-disposition.ts';
 
 const FIXTURE_DIR = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -76,6 +77,12 @@ function buildSnapshot(file: string, now: Date): ReadyTaskSnapshot {
     remediationLaunchHead: null,
     currentHead: readyArtifacts?.readyHeadSha ?? null,
     remediationPaneActive: null,
+    remediationDisposition: decideReadyRemediationDisposition({
+      readyStatus: ready?.status ?? null,
+      launchHead: null,
+      currentHead: readyArtifacts?.readyHeadSha ?? null,
+      progress: null,
+    }),
     worktreeMergeState: {
       mergeHead: null,
       unmergedPaths: [],

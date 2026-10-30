@@ -100,6 +100,7 @@ TESTS=(
   task-inputs-gate.test.sh
   task-progress.test.sh
   task-identity.test.sh
+  ready-remediation-disposition.test.sh
   terminal-backend.test.sh
   tracked-tree-guard.test.sh
   handle-phase-launch-result.test.sh

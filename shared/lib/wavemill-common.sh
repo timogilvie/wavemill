@@ -19,6 +19,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-progress.sh"
 # Linear-writer predicate). Bash twin of shared/lib/task-identity.ts.
 # shellcheck source=task-identity.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-identity.sh"
+# HOK-3322: the one Ready remediation in-flight/completion disposition. Bash
+# twin of shared/lib/ready-remediation-disposition.ts.
+# shellcheck source=ready-remediation-disposition.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ready-remediation-disposition.sh"
 if [[ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/effective-task-config.sh" ]]; then
   # shellcheck source=effective-task-config.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/effective-task-config.sh"

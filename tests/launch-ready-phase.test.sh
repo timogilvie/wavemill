@@ -381,6 +381,13 @@ EOF
         printf "%s\n" "abc123" > "$STATE_DIR/.retry-ready-remediation-head"
         printf "%s\n" "$(date +%s)" > "$STATE_DIR/.retry-ready-remediation-last-at"
         ;;
+      settled_same_head_red_ci)
+        # Attempt 1 launched at this head long enough ago that its backoff
+        # window is closed; its owner has since settled.
+        printf "%s\n" "1" > "$STATE_DIR/.retry-ready-remediation-count"
+        printf "%s\n" "abc123" > "$STATE_DIR/.retry-ready-remediation-head"
+        printf "%s\n" "100" > "$STATE_DIR/.retry-ready-remediation-last-at"
+        ;;
       remediation_head_reset)
         printf "%s\n" "2" > "$STATE_DIR/.retry-ready-remediation-count"
         printf "%s\n" "oldsha" > "$STATE_DIR/.retry-ready-remediation-head"
@@ -541,7 +548,7 @@ EOF
     read_stage_status() {
       case "$TEST_CASE" in
         pending_re_check) printf "%s\n" "running" ;;
-        already_inflight_same_head) printf "%s\n" "running" ;;
+        already_inflight_same_head|settled_same_head_red_ci) printf "%s\n" "running" ;;
         *) printf "\n" ;;
       esac
     }
@@ -558,12 +565,13 @@ EOF
         pass_after_remediation) printf "%s\n" "2" ;;
         sequential_failing_launch_2) printf "%s\n" "1" ;;
         sequential_failing_launch_3) printf "%s\n" "2" ;;
+        settled_same_head_red_ci) printf "%s\n" "1" ;;
         *) printf "%s\n" "0" ;;
       esac
     }
     ready_remediation_launch_head() {
       case "$TEST_CASE" in
-        already_inflight_same_head) printf "%s\n" "abc123" ;;
+        already_inflight_same_head|settled_same_head_red_ci) printf "%s\n" "abc123" ;;
         *) printf "\n" ;;
       esac
     }
@@ -760,6 +768,15 @@ EOF
         esac
       fi
 
+      # HOK-3322: the one Ready remediation disposition decides the owner.
+      if [[ "${2:-}" == "$TOOLS_DIR/ready-remediation-disposition.ts" ]]; then
+        case "$TEST_CASE" in
+          settled_same_head_red_ci) printf "%s\n" "{\"kind\":\"settled\",\"owner\":\"idle\"}" ;;
+          *) printf "%s\n" "{\"kind\":\"in-flight\",\"owner\":\"live\"}" ;;
+        esac
+        return 0
+      fi
+
       # Failure policy (HOK-3176): only the context-window kind is terminal
       # here; anything else falls back to the bridge default (retryable).
       if [[ "${2:-}" == "$TOOLS_DIR/failure-policy-cli.ts" ]]; then
@@ -817,7 +834,7 @@ EOF
           printf "%s\n" "TypeError: ready crashed" >&2
           return 1
           ;;
-        remediation_disabled|remediation_launch|second_remediation_launch|remediation_exhausted|remediation_launch_failure|already_inflight_same_head|sequential_failing_launch_1|sequential_failing_launch_2|sequential_failing_launch_3|native_route_coder_model|no_model_available|remediation_backoff_hold|remediation_head_reset|native_remediation_ci|native_remediation_ci_refused)
+        remediation_disabled|remediation_launch|second_remediation_launch|remediation_exhausted|remediation_launch_failure|already_inflight_same_head|settled_same_head_red_ci|sequential_failing_launch_1|sequential_failing_launch_2|sequential_failing_launch_3|native_route_coder_model|no_model_available|remediation_backoff_hold|remediation_head_reset|native_remediation_ci|native_remediation_ci_refused)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"fail\",\"checks\":[{\"name\":\"ci-status\",\"status\":\"fail\",\"message\":\"1 CI check(s) failing\",\"details\":{\"failedChecks\":[{\"name\":\"Shell and Unit Tests\",\"state\":\"FAILURE\"}],\"pendingChecks\":[],\"totalChecks\":3}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"One or more checks failed - not safe to merge\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"UNSTABLE\",\"attempts\":1}}"
           return 1
           ;;
@@ -1527,6 +1544,16 @@ output="$(run_launch_case already_inflight_same_head)"
 check_contains "inflight same head returns rc 5" "$output" "rc=5"
 check_contains "inflight same head does not relaunch agent" "$output" "launch_calls=0"
 check_contains "inflight same head does not rewrite stage" "$output" "stage_calls="
+
+# HOK-3322 red-CI sibling: the owner settled at the launch head but CI is
+# still red. It is a spent attempt, not an in-flight one: the bounded retry
+# relaunches (attempt 2) instead of holding forever or passing.
+output="$(run_launch_case settled_same_head_red_ci)"
+check_contains "settled owner + red CI returns rc 5" "$output" "rc=5"
+check_contains "settled owner + red CI relaunches remediation" "$output" "launch_calls=1"
+check_contains "settled owner + red CI charges attempt 2" "$output" "\"remediationAttempts\":2"
+check_contains "settled owner + red CI keeps the bounded bucket" "$output" "remediation_retry_count=2"
+check_not_contains "settled owner + red CI never synthesises a pass" "$output" "|ready|completed|"
 
 output="$(run_launch_case conflict_persists_after_remediation)"
 check_contains "persistent conflict returns failure" "$output" "rc=1"

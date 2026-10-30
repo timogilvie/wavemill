@@ -1,0 +1,50 @@
+# shellcheck shell=bash
+# Fake coder for the ready-remediation-same-head journey (HOK-3322), sourced
+# by tests/fakes/bin/claude.
+#
+# The first coding launch implements the task the usual way; its head meets a
+# flaky red check. Any later coding launch is Ready remediation (post-PR
+# remediation runs as a prompt-driven coding launch, HOK-3272). It plays the
+# HOK-3316 incident: the agent diagnoses a flaky test, re-runs the failed CI
+# job (`gh run rerun --failed`), which passes — no commit, no push — and ends
+# its turn. Claude Code fires Stop (hook idle/Stop through the real adapter),
+# and the REPL stays open in the pane the way an interactive agent does. It
+# never writes .coding-complete and never touches .ready-result.json: the
+# controller must notice the settled owner and re-check Ready itself.
+coding_runs_file="$FAKE_ROOT/coding-runs-$WAVEMILL_ISSUE"
+coding_run=$(( $(cat "$coding_runs_file" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$coding_run" > "$coding_runs_file"
+
+if (( coding_run == 1 )); then
+  default_coding
+else
+  hook_adapter="$FAKE_AGENT_TOOLS_DIR/../shared/hooks/claude-status-hook.sh"
+  claude_hook() {
+    jq -cn --arg event "$1" '{hook_event_name: $event}' \
+      | WAVEMILL_DASHBOARD_PID="" bash "$hook_adapter" >/dev/null 2>&1 || true
+  }
+  claude_hook UserPromptSubmit
+  printf '%s phase=coding issue=%s role=ready-remediation head=%s\n' \
+    "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" "$(git rev-parse HEAD)" >> "$FAKE_AGENT_LOG"
+  printf '%s\n' "$*" > "$FAKE_ROOT/remediation-prompt-$coding_run.txt"
+  # The rerun restarts the check on the same head: PENDING now (same lock as
+  # the journey's ci_set_pr1), and the journey's fake CI settles it green.
+  # Without the PENDING flip a slow journey poll would leave the red result
+  # attached after the agent settles, and Ready would rightly charge a second
+  # remediation against it.
+  for _ in $(seq 1 500); do
+    mkdir "$FAKE_GH_STATE.lock" 2>/dev/null && break
+    sleep 0.01
+  done
+  printf '%s' "$$" > "$FAKE_GH_STATE.lock/pid"
+  jq '.checks.byPr["1"] = [{name: "unit-tests", conclusion: "PENDING"}]' "$FAKE_GH_STATE" > "$FAKE_GH_STATE.tmp.$$" \
+    && mv "$FAKE_GH_STATE.tmp.$$" "$FAKE_GH_STATE"
+  touch "$FAKE_ROOT/ci-rerun-requested"
+  rm -rf "$FAKE_GH_STATE.lock"
+  claude_hook Stop
+  # Idle REPL: alive, settled, waiting for input that never comes. Bounded so
+  # a broken journey cannot leave the pane running forever.
+  for _ in $(seq 1 600); do
+    sleep 0.5
+  done
+fi

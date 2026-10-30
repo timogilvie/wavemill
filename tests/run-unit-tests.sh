@@ -56,6 +56,7 @@ TESTS=(
   shared/lib/stage-result.test.ts
   shared/lib/task-progress.test.ts
   shared/lib/task-identity.test.ts
+  shared/lib/ready-remediation-disposition.test.ts
   shared/lib/terminal-backend.test.ts
   tests/llm-cli.test.ts
   shared/lib/linear-write-gate.test.ts
@@ -308,6 +309,7 @@ TESTS=(
   shared/lib/stage-launchability-guard.test.ts
   shared/lib/provider-identity-guard.test.ts
   shared/lib/model-equivalence-guard.test.ts
+  shared/lib/ready-disposition-guard.test.ts
   shared/lib/side-effect-ledger-guard.test.ts
   shared/lib/failure-policy-guard.test.ts
   shared/lib/task-field-read-checker.test.ts

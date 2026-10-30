@@ -205,6 +205,7 @@ WAVEMILL_PRELOAD_REQUIRE_CONFIRM_SET  # plumbing: internal mill variable (HOK-32
 WAVEMILL_PROCESS_STATUS_POLL_INTERVAL  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_PROMPT_REGISTRY_ARTIFACT  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_READY_PR_HEAD_LAG_MAX_ATTEMPTS  # plumbing: internal mill variable (HOK-3235 baseline seed)
+WAVEMILL_READY_REMEDIATION_DISPOSITION_SH_LOADED  # plumbing: ready-remediation-disposition.sh double-source guard (HOK-3322)
 WAVEMILL_READY_WATCHDOG_REPORT_INTERVAL_SECONDS  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_READY_WATCHDOG_SOURCE_ONLY  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_READY_WATCHDOG_SWEEP_INTERVAL_SECONDS  # plumbing: internal mill variable (HOK-3235 baseline seed)

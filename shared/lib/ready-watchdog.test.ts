@@ -13,9 +13,10 @@ import {
   type ReadyTaskSnapshot,
 } from './ready-watchdog.ts';
 import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
+import { decideReadyRemediationDisposition } from './ready-remediation-disposition.ts';
 
 function makeSnapshot(overrides: Partial<ReadyTaskSnapshot> = {}): ReadyTaskSnapshot {
-  return {
+  const base: Omit<ReadyTaskSnapshot, 'remediationDisposition'> = {
     issueId: 'HOK-1579',
     slug: 'ready-watchdog-task',
     branch: 'task/ready-watchdog-task',
@@ -50,6 +51,18 @@ function makeSnapshot(overrides: Partial<ReadyTaskSnapshot> = {}): ReadyTaskSnap
     idleMinutes: 30,
     backstageHealth: null,
     ...overrides,
+  };
+  // The disposition is derived from the snapshot's facts the way
+  // snapshotReadyTask derives it, unless a test pins one directly.
+  return {
+    ...base,
+    remediationDisposition: overrides.remediationDisposition ?? decideReadyRemediationDisposition({
+      readyStatus: base.readyResultStatus,
+      launchHead: base.remediationLaunchHead,
+      currentHead: base.currentHead,
+      progress: null,
+      ownerPaneLive: base.remediationPaneActive,
+    }),
   };
 }
 
@@ -169,6 +182,50 @@ test('classify clean green stale ready as stuck', () => {
 
   assert.equal(classification.kind, 'stuck');
   assert.equal(classification.autoRecoverable, true);
+});
+
+// protects: the watchdog holding a clean green PR behind a conflict resolver
+// that already settled at its launch head (HOK-3322), while still never
+// recovering over a resolver that is live.
+test('stuck clean green PR with a same-head conflict resolver recovers only once its owner settled', () => {
+  const sameHeadConflict = {
+    hasConflictMarker: true,
+    readyResultStatus: 'running',
+    remediationLaunchHead: 'head-sha',
+    currentHead: 'head-sha',
+  };
+  const classify = (remediationPaneActive: boolean | null) => classifyReadyTask(
+    makeSnapshot({ ...sameHeadConflict, remediationPaneActive }),
+    makeTruth(),
+    new Date('2026-05-05T12:30:00.000Z'),
+    WATCHDOG_CONFIG,
+  );
+
+  const live = classify(true);
+  assert.equal(live.kind, 'stuck');
+  assert.equal(live.autoRecoverable, false);
+
+  const exited = classify(false);
+  assert.equal(exited.kind, 'stuck');
+  assert.equal(exited.autoRecoverable, true);
+
+  const idleInLivePane = classifyReadyTask(
+    makeSnapshot({
+      ...sameHeadConflict,
+      remediationPaneActive: true,
+      remediationDisposition: decideReadyRemediationDisposition({
+        readyStatus: 'running',
+        launchHead: 'head-sha',
+        currentHead: 'head-sha',
+        progress: { agentIdle: true },
+        ownerPaneLive: true,
+      }),
+    }),
+    makeTruth(),
+    new Date('2026-05-05T12:30:00.000Z'),
+    WATCHDOG_CONFIG,
+  );
+  assert.equal(idleInLivePane.autoRecoverable, true);
 });
 
 test('classify clean green PR parked in merge lane as waiting-on-merge-lane (not stuck)', () => {

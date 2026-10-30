@@ -56,6 +56,11 @@ import {
   getTaskProgress as defaultGetTaskProgress,
   type TaskProgress,
 } from './task-progress.ts';
+import {
+  decideReadyRemediationDisposition,
+  readLatestRemediationLaunchAt,
+  type ReadyRemediationDisposition,
+} from './ready-remediation-disposition.ts';
 
 const execFileAsync = promisify(execFile);
 const MAX_AUTO_UPDATE_ATTEMPTS = 3;
@@ -113,7 +118,13 @@ export interface ReadyTaskSnapshot {
   hasConflictMarker: boolean;
   remediationLaunchHead: string | null;
   currentHead: string | null;
+  /** Raw pane liveness fact for the task window; an exit fact, never progress. */
   remediationPaneActive: boolean | null;
+  /**
+   * HOK-3322: the one Ready remediation in-flight/completion disposition,
+   * shared with the monitor. Every in-flight decision here reads this.
+   */
+  remediationDisposition: ReadyRemediationDisposition;
   worktreeMergeState: WorktreeMergeState;
   relevantJobs: MillJob[];
   lastProgressAt: string | null;
@@ -277,8 +288,9 @@ export interface ReadyWatchdogDeps {
    * HOK-3101: the shared task-progress primitive. computeLastProgressAt
    * delegates through this so hook, commit and worktree evidence contribute
    * to `lastProgressAt` — not only `task.updated` (which is transition-only,
-   * HOK-3087). isTaskPaneActive also consults `agentIdle` so an idle REPL
-   * (HOK-3095 (a)) does not count as active.
+   * HOK-3087). The Ready remediation disposition (HOK-3322) reads its
+   * `agentIdle` record so an idle REPL (HOK-3095 (a)) does not count as an
+   * active remediation owner.
    */
   getTaskProgress: (task: WorkflowTaskRecord, options: {
     session: string;
@@ -467,15 +479,10 @@ const defaultDeps: ReadyWatchdogDeps = {
       if (paneDead === '1') {
         return false;
       }
-      // HOK-3101 / HOK-3095 (a): an idle agent REPL sitting in a live pane
-      // is NOT active — it is the agent's own settled Stop state. Consult
-      // the shared primitive before reporting active.
+      // HOK-3101 / HOK-3095 (a): a live pane is only a pane fact. Whether
+      // the agent in it is idle is decided by the Ready remediation
+      // disposition from the task-progress primitive (see snapshotReadyTask).
       const issue = typeof task.slug === 'string' ? String(task.slug) : undefined;
-      // We cannot reach the primitive from here because we do not have the
-      // repo dir / session; the composed classifyReadyTask() path threads it
-      // through and overrides `remediationPaneActive` when agentIdle=true
-      // (see snapshotReadyTask). This default kept its previous semantics
-      // to preserve behaviour for callers that do not supply a session.
       if (command && !['bash', 'zsh', 'fish', 'sh'].includes(command)) {
         return true;
       }
@@ -875,11 +882,7 @@ function hasLocalMergeResidue(state: WorktreeMergeState): boolean {
 function canSafelyResumeResolvedMerge(snapshot: ReadyTaskSnapshot): boolean {
   const state = snapshot.worktreeMergeState;
   return snapshot.hasConflictMarker
-    && snapshot.readyResultStatus === 'running'
-    && snapshot.remediationPaneActive === false
-    && snapshot.remediationLaunchHead !== null
-    && snapshot.currentHead !== null
-    && snapshot.remediationLaunchHead === snapshot.currentHead
+    && snapshot.remediationDisposition.kind === 'settled'
     && state.mergeHead !== null
     && state.inspectError === undefined
     && state.unmergedPaths.length === 0
@@ -891,7 +894,7 @@ function disconnectedMergeResidueDetected(snapshot: ReadyTaskSnapshot): boolean 
   if (!snapshot.hasConflictMarker || snapshot.readyResultStatus !== 'running') {
     return false;
   }
-  if (snapshot.remediationPaneActive === true) {
+  if (snapshot.remediationDisposition.owner === 'live') {
     return false;
   }
   return hasLocalMergeResidue(snapshot.worktreeMergeState);
@@ -1142,7 +1145,7 @@ export function classifyReadyTask(
   }
 
   if (disconnectedMergeResidueDetected(snapshot)) {
-    const paneState = snapshot.remediationPaneActive === null ? 'unknown' : 'inactive';
+    const paneState = snapshot.remediationDisposition.owner === 'unknown' ? 'unknown' : 'inactive';
     return {
       kind: 'needs-user',
       detail: `Conflict remediation worker is ${paneState} and the worktree is unsafe to mutate automatically for PR #${snapshot.prNumber}: ${summarizeMergeState(snapshot.worktreeMergeState)}. Next command: ${nextCommandForMergeState(snapshot)}`,
@@ -1376,10 +1379,7 @@ export function classifyReadyTask(
     }
 
     const remediationInFlight = snapshot.hasConflictMarker
-      && snapshot.readyResultStatus === 'running'
-      && snapshot.remediationLaunchHead !== null
-      && snapshot.currentHead !== null
-      && snapshot.remediationLaunchHead === snapshot.currentHead;
+      && snapshot.remediationDisposition.kind === 'in-flight';
 
     return {
       kind: 'stuck',
@@ -1543,12 +1543,19 @@ async function buildSnapshot(
     now,
   });
   const lastProgressAt = computeLastProgressAt(task, readyResult, readyResultFile, taskProgress);
-  // HOK-3101 / HOK-3095 (a): if the pane is live but the agent's own record
-  // is idle, the pane is holding an idle REPL — do not report active.
-  let paneActive = await deps.isTaskPaneActive(task);
-  if (paneActive === true && taskProgress?.agentIdle) {
-    paneActive = false;
-  }
+  const paneActive = await deps.isTaskPaneActive(task);
+  const remediationLaunchHead = readyArtifacts?.remediationLaunchHead ?? readyArtifacts?.launchHead ?? null;
+  const currentHead = await deps.getCurrentHead(worktree);
+  // HOK-3322: the shared disposition. An idle REPL in a live pane is the
+  // agent's own settled Stop state (HOK-3095 (a)), not an active owner.
+  const remediationDisposition = decideReadyRemediationDisposition({
+    readyStatus: readyResult?.status ?? null,
+    launchHead: remediationLaunchHead,
+    currentHead,
+    progress: taskProgress,
+    ownerPaneLive: paneActive,
+    launchedAt: readLatestRemediationLaunchAt(stateDir),
+  });
 
   return {
     issueId,
@@ -1569,9 +1576,10 @@ async function buildSnapshot(
     readyAttentionDetail: readAttentionDetail(stateDir),
     hasNeedsAttention: existsSync(path.join(stateDir, '.needs-attention')),
     hasConflictMarker: existsSync(path.join(stateDir, '.conflict-remediation.json')),
-    remediationLaunchHead: readyArtifacts?.remediationLaunchHead ?? readyArtifacts?.launchHead ?? null,
-    currentHead: await deps.getCurrentHead(worktree),
+    remediationLaunchHead,
+    currentHead,
     remediationPaneActive: paneActive,
+    remediationDisposition,
     worktreeMergeState: await deps.getWorktreeMergeState(worktree),
     relevantJobs,
     lastProgressAt,
@@ -1843,7 +1851,7 @@ function buildExhaustedAutoUpdateEntry(
 }
 
 function evaluateVerificationArtifact(snapshot: ReadyTaskSnapshot): 'inactive' | 'fresh' | 'awaiting' {
-  if (!snapshot.remediationLaunchHead || !snapshot.currentHead || snapshot.remediationLaunchHead === snapshot.currentHead) {
+  if (snapshot.remediationDisposition.kind !== 'superseded' || !snapshot.currentHead) {
     return 'inactive';
   }
 
@@ -2345,11 +2353,7 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
               detail: `Ready remediation capped at ${attempts}/${remediationConfig.maxAttempts} attempts for PR #${snapshot.prNumber}.`,
             };
             await writeReadyAttention(snapshot, classification.detail);
-          } else if (
-            snapshot.remediationLaunchHead
-            && snapshot.currentHead
-            && snapshot.remediationLaunchHead === snapshot.currentHead
-          ) {
+          } else if (snapshot.remediationDisposition.kind === 'in-flight') {
             action = 'remediation-in-flight';
             classification = {
               ...classification,

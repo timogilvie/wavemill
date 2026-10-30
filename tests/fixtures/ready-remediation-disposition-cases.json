@@ -1,0 +1,122 @@
+{
+  "description": "HOK-3322 — the one Ready remediation disposition. Every row is asserted by shared/lib/ready-remediation-disposition.test.ts (TS module over the task-progress primitive) and tests/ready-remediation-disposition.test.sh (the shell twin the monitor calls), so monitor and watchdog agree on identical inputs. `hook` is the agent's own hook record, `ageSeconds` before now; `launchedAgeSeconds` is the ready-remediation session-ownership row's launch age (null = no row).",
+  "cases": [
+    {
+      "name": "incident HOK-3316: remediation re-ran CI green without a commit and settled idle at the launch head",
+      "readyStatus": "running",
+      "launchHead": "d5599ce169244d6db25e5e9365d66f50513e5a86",
+      "currentHead": "d5599ce169244d6db25e5e9365d66f50513e5a86",
+      "hook": { "state": "idle", "event": "Stop", "ageSeconds": 30 },
+      "launchedAgeSeconds": 600,
+      "expected": "settled"
+    },
+    {
+      "name": "settled idle record older than the hook TTL still counts (the agent's own Stop survives)",
+      "readyStatus": "running",
+      "launchHead": "aaaa111",
+      "currentHead": "aaaa111",
+      "hook": { "state": "idle", "event": "Stop", "ageSeconds": 400 },
+      "launchedAgeSeconds": 900,
+      "expected": "settled"
+    },
+    {
+      "name": "idle with no recorded launch row is the owner's own settled state",
+      "readyStatus": "running",
+      "launchHead": "aaaa111",
+      "currentHead": "aaaa111",
+      "hook": { "state": "idle", "event": "Stop", "ageSeconds": 30 },
+      "launchedAgeSeconds": null,
+      "expected": "settled"
+    },
+    {
+      "name": "live remediation agent at the launch head stays in flight",
+      "readyStatus": "running",
+      "launchHead": "aaaa111",
+      "currentHead": "aaaa111",
+      "hook": { "state": "working", "event": "PreToolUse", "ageSeconds": 10 },
+      "launchedAgeSeconds": 600,
+      "expected": "in-flight"
+    },
+    {
+      "name": "agent waiting on an operator prompt stays in flight",
+      "readyStatus": "running",
+      "launchHead": "aaaa111",
+      "currentHead": "aaaa111",
+      "hook": { "state": "approval-needed", "event": "Notification", "ageSeconds": 10 },
+      "launchedAgeSeconds": 600,
+      "expected": "in-flight"
+    },
+    {
+      "name": "idle record from before the remediation launched belongs to the previous owner",
+      "readyStatus": "running",
+      "launchHead": "aaaa111",
+      "currentHead": "aaaa111",
+      "hook": { "state": "idle", "event": "Stop", "ageSeconds": 900 },
+      "launchedAgeSeconds": 600,
+      "expected": "in-flight"
+    },
+    {
+      "name": "no owner evidence at all fails safe to in flight",
+      "readyStatus": "running",
+      "launchHead": "aaaa111",
+      "currentHead": "aaaa111",
+      "hook": null,
+      "launchedAgeSeconds": 600,
+      "expected": "in-flight"
+    },
+    {
+      "name": "remediation pushed past the launch head",
+      "readyStatus": "running",
+      "launchHead": "aaaa111",
+      "currentHead": "bbbb222",
+      "hook": { "state": "working", "event": "PreToolUse", "ageSeconds": 10 },
+      "launchedAgeSeconds": 600,
+      "expected": "superseded"
+    },
+    {
+      "name": "head moved after Ready concluded is still superseded",
+      "readyStatus": "failed",
+      "launchHead": "aaaa111",
+      "currentHead": "bbbb222",
+      "hook": null,
+      "launchedAgeSeconds": null,
+      "expected": "superseded"
+    },
+    {
+      "name": "no remediation launch recorded",
+      "readyStatus": "running",
+      "launchHead": "",
+      "currentHead": "aaaa111",
+      "hook": { "state": "working", "event": "PreToolUse", "ageSeconds": 10 },
+      "launchedAgeSeconds": null,
+      "expected": "none"
+    },
+    {
+      "name": "unknown current head",
+      "readyStatus": "running",
+      "launchHead": "aaaa111",
+      "currentHead": "",
+      "hook": null,
+      "launchedAgeSeconds": null,
+      "expected": "none"
+    },
+    {
+      "name": "same head but Ready completed: the stage result is authoritative",
+      "readyStatus": "completed",
+      "launchHead": "aaaa111",
+      "currentHead": "aaaa111",
+      "hook": { "state": "idle", "event": "Stop", "ageSeconds": 30 },
+      "launchedAgeSeconds": 600,
+      "expected": "none"
+    },
+    {
+      "name": "same head but Ready failed: the stage result is authoritative",
+      "readyStatus": "failed",
+      "launchHead": "aaaa111",
+      "currentHead": "aaaa111",
+      "hook": { "state": "working", "event": "PreToolUse", "ageSeconds": 10 },
+      "launchedAgeSeconds": 600,
+      "expected": "none"
+    }
+  ]
+}

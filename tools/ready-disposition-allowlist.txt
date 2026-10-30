@@ -1,0 +1,7 @@
+# Ratcheting allowlist for the Ready remediation disposition guard (HOK-3322).
+#
+# Format: <repo-relative path> [<max findings>]  # <reason>
+#
+# The invariant is that "is Ready remediation still in flight?" is decided
+# only by shared/lib/ready-remediation-disposition.{ts,sh}. No exceptions are
+# needed today; the list only shrinks.
