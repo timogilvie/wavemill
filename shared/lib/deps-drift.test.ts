@@ -58,18 +58,19 @@ function makeNpmFixture(opts: {
   return dir;
 }
 
-test('drift primitive flags hidden-lockfile mismatch', () => {
+test('semantic checker detects version mismatch', () => {
+  // protects: checker detects when installed version differs from locked version
   const dir = makeNpmFixture({
     lockVersion: '0.5.0',
-    hiddenInstalledVersion: '0.4.0',
     installedVersion: '0.4.0',
   });
   try {
     const result = checkDepsDrift(dir);
     assert.equal(result.status, 'drift');
-    assert.equal(result.reason, 'hidden-lockfile-mismatch');
+    assert.equal(result.reason, 'install-mismatch');
     assert.ok(result.packages.some((pkg) => pkg.name === 'foo'));
     const foo = result.packages.find((pkg) => pkg.name === 'foo')!;
+    assert.equal(foo.kind, 'version');
     assert.equal(foo.lockVersion, '0.5.0');
     assert.equal(foo.installedVersion, '0.4.0');
   } finally {
@@ -77,12 +78,13 @@ test('drift primitive flags hidden-lockfile mismatch', () => {
   }
 });
 
-test('drift primitive reports ok when hidden lockfile matches', () => {
+test('semantic checker reports ok when install matches lockfile', () => {
+  // protects: checker approves install that matches lockfile
   const dir = makeNpmFixture({ lockVersion: '0.5.0', installedVersion: '0.5.0' });
   try {
     const result = checkDepsDrift(dir);
     assert.equal(result.status, 'ok');
-    assert.equal(result.reason, 'hidden-lockfile-match');
+    assert.equal(result.reason, 'install-matches-lockfile');
     assert.deepEqual(result.packages, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -113,7 +115,8 @@ test('drift primitive reports unknown for yarn', () => {
   }
 });
 
-test('drift primitive falls back to direct-dep scan when hidden lockfile absent', () => {
+test('checker detects drift without hidden lockfile', () => {
+  // protects: checker still validates install against lock when hidden lockfile is missing
   const dir = makeNpmFixture({
     lockVersion: '0.5.0',
     installedVersion: '0.4.0',
@@ -122,7 +125,7 @@ test('drift primitive falls back to direct-dep scan when hidden lockfile absent'
   try {
     const result = checkDepsDrift(dir);
     assert.equal(result.status, 'drift');
-    assert.equal(result.reason, 'hidden-lockfile-missing');
+    assert.equal(result.reason, 'install-mismatch');
     const foo = result.packages.find((pkg) => pkg.name === 'foo');
     assert.ok(foo, 'expected foo in drifted packages');
     assert.equal(foo!.lockVersion, '0.5.0');
