@@ -84,6 +84,7 @@ TESTS=(
   expansion-handshake.test.sh
   config-version-prompt.test.sh
   monitor-ready-transition.test.sh
+  ready-remediation-disposition.test.sh
   ready-failure-blocks-pr-label.test.sh
   launch-ready-phase.test.sh
   ready-sync-github-head-lag.test.sh

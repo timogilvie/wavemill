@@ -381,6 +381,15 @@ EOF
         printf "%s\n" "abc123" > "$STATE_DIR/.retry-ready-remediation-head"
         printf "%s\n" "$(date +%s)" > "$STATE_DIR/.retry-ready-remediation-last-at"
         ;;
+      # HOK-3322: the remediation agent settled at the launch head and CI is
+      # still red: the bounded bucket decides (backoff, then a charged relaunch).
+      settled_same_head_backoff)
+        bounded_retry_increment "$STATE_DIR" "ready-remediation" "abc123" >/dev/null
+        ;;
+      settled_same_head_due)
+        bounded_retry_increment "$STATE_DIR" "ready-remediation" "abc123" >/dev/null
+        printf "%s\n" "0" > "$STATE_DIR/.retry-ready-remediation-last-at"
+        ;;
       remediation_head_reset)
         printf "%s\n" "2" > "$STATE_DIR/.retry-ready-remediation-count"
         printf "%s\n" "oldsha" > "$STATE_DIR/.retry-ready-remediation-head"
@@ -541,7 +550,7 @@ EOF
     read_stage_status() {
       case "$TEST_CASE" in
         pending_re_check) printf "%s\n" "running" ;;
-        already_inflight_same_head) printf "%s\n" "running" ;;
+        already_inflight_same_head|settled_same_head_backoff|settled_same_head_due) printf "%s\n" "running" ;;
         *) printf "\n" ;;
       esac
     }
@@ -561,10 +570,11 @@ EOF
         *) printf "%s\n" "0" ;;
       esac
     }
-    ready_remediation_launch_head() {
+    ready_remediation_disposition() {
       case "$TEST_CASE" in
-        already_inflight_same_head) printf "%s\n" "abc123" ;;
-        *) printf "\n" ;;
+        already_inflight_same_head) printf "%s\n" "in-flight agent-working" ;;
+        settled_same_head_backoff|settled_same_head_due) printf "%s\n" "settled agent-idle-after-launch" ;;
+        *) printf "%s\n" "inactive no-launch" ;;
       esac
     }
     ready_remediation_enabled() {
@@ -817,7 +827,7 @@ EOF
           printf "%s\n" "TypeError: ready crashed" >&2
           return 1
           ;;
-        remediation_disabled|remediation_launch|second_remediation_launch|remediation_exhausted|remediation_launch_failure|already_inflight_same_head|sequential_failing_launch_1|sequential_failing_launch_2|sequential_failing_launch_3|native_route_coder_model|no_model_available|remediation_backoff_hold|remediation_head_reset|native_remediation_ci|native_remediation_ci_refused)
+        remediation_disabled|remediation_launch|second_remediation_launch|remediation_exhausted|remediation_launch_failure|already_inflight_same_head|sequential_failing_launch_1|sequential_failing_launch_2|sequential_failing_launch_3|native_route_coder_model|no_model_available|remediation_backoff_hold|remediation_head_reset|settled_same_head_backoff|settled_same_head_due|native_remediation_ci|native_remediation_ci_refused)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"fail\",\"checks\":[{\"name\":\"ci-status\",\"status\":\"fail\",\"message\":\"1 CI check(s) failing\",\"details\":{\"failedChecks\":[{\"name\":\"Shell and Unit Tests\",\"state\":\"FAILURE\"}],\"pendingChecks\":[],\"totalChecks\":3}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"One or more checks failed - not safe to merge\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"UNSTABLE\",\"attempts\":1}}"
           return 1
           ;;
@@ -1018,10 +1028,10 @@ run_watchdog_launch_case() {
         *) printf "%s\n" "0" ;;
       esac
     }
-    ready_remediation_launch_head() {
+    ready_remediation_disposition() {
       case "$TEST_CASE" in
-        inflight_same_head) printf "%s\n" "abc123" ;;
-        *) printf "\n" ;;
+        inflight_same_head) printf "%s\n" "in-flight agent-working" ;;
+        *) printf "%s\n" "inactive no-launch" ;;
       esac
     }
     ready_remediation_agent_cmd() { printf "\n"; }
@@ -1495,6 +1505,18 @@ output="$(run_launch_case remediation_backoff_hold)"
 check_contains "remediation backoff holds inside window" "$output" "rc=5"
 check_contains "remediation backoff does not launch agent" "$output" "launch_calls=0"
 check_contains "remediation backoff logs the hold" "$output" "holding ready remediation"
+
+# protects: HOK-3322 — a settled same-head remediation with red checks either
+# latching forever or relaunching every poll; it must go through the bucket.
+output="$(run_launch_case settled_same_head_backoff)"
+check_contains "settled agent with red checks holds inside the backoff window" "$output" "rc=5"
+check_contains "settled agent with red checks does not relaunch inside backoff" "$output" "launch_calls=0"
+check_contains "settled agent with red checks logs the bounded hold" "$output" "holding ready remediation"
+
+output="$(run_launch_case settled_same_head_due)"
+check_contains "settled agent with red checks relaunches once due" "$output" "launch_calls=1"
+check_contains "settled agent relaunch charges the same-head bucket" "$output" "remediation_retry_count=2"
+check_not_contains "settled agent with red checks never completes Ready" "$output" "|ready|completed|"
 
 output="$(run_launch_case remediation_head_reset)"
 check_contains "new head re-enables remediation launch" "$output" "launch_calls=1"

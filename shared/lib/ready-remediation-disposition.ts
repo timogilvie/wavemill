@@ -160,8 +160,10 @@ export function readReadyRemediationLaunch(
   readyResult: Pick<StageResult, 'status' | 'startedAt' | 'artifacts'> | null,
 ): ReadyRemediationLaunch | null {
   if (readyResult?.status !== 'running') return null;
-  const artifacts = readyResult.artifacts?.type === 'ready' ? readyResult.artifacts : null;
-  const remediation: ReadyRemediationKind = artifacts?.mergeConflict === 'CONFLICTED' ? 'conflict' : 'ci';
+  // Same predicate as the monitor's conflict_remediation_awaiting_ready: the
+  // running record the resolver launch wrote, whatever its artifact typing.
+  const mergeConflict = (readyResult.artifacts as { mergeConflict?: unknown } | undefined)?.mergeConflict;
+  const remediation: ReadyRemediationKind = mergeConflict === 'CONFLICTED' ? 'conflict' : 'ci';
 
   let launchHead: string | null;
   if (remediation === 'conflict') {

@@ -63,9 +63,8 @@ extract_function "$MONITOR_SCRIPT_FILE" "pane_release_marker_path" >> "$MONITOR_
 extract_function "$MONITOR_SCRIPT_FILE" "pane_release_reason_actionable" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "clear_stale_pane_release_blocked_marker" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "release_task_pane_window_only" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "ready_remediation_launch_head" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_remediation_disposition" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_marker_path" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_in_flight" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_awaiting_ready" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_exhausted_hold" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "clear_transient_mergeability_state" >> "$MONITOR_FUNC_FILE"
@@ -283,6 +282,26 @@ JSON
         printf "%s\n" "1" > "$READY_DIR/.retry-ready-remediation-count"
         printf "%s\n" "current-head" > "$READY_DIR/.retry-ready-remediation-head"
         printf "%s\n" "0" > "$READY_DIR/.retry-ready-remediation-last-at"
+        ;;
+      # HOK-3322 incident: the remediation agent reran flaky CI without a
+      # commit and went idle. Same head, status still running/verdict fail.
+      ready_remediation_settled_same_head)
+        CURRENT_PHASE="ready"
+        READY_STATUS="running"
+        READY_LAUNCH_RC=0
+        cat > "$READY_DIR/.ready-result.json" <<JSON
+{"stage":"ready","status":"running","artifacts":{"verdict":"fail","remediationAttempts":1,"remediationLaunchHead":"current-head"}}
+JSON
+        printf "%s\n" "1" > "$READY_DIR/.retry-ready-remediation-count"
+        printf "%s\n" "current-head" > "$READY_DIR/.retry-ready-remediation-head"
+        printf "%s\n" "0" > "$READY_DIR/.retry-ready-remediation-last-at"
+        launched_epoch=$(( $(date +%s) - 600 ))
+        printf "{\"schemaVersion\":1,\"type\":\"launch\",\"sessionRef\":\"fix-1\",\"harness\":\"claude-code\",\"kind\":\"ready-remediation\",\"model\":\"m\",\"launchedAt\":\"%s\",\"attemptId\":\"ready-remediation@nohead#%s\"}\n" \
+          "$(date -u -r "$launched_epoch" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u -d "@$launched_epoch" +%Y-%m-%dT%H:%M:%S.000Z)" "$launched_epoch" \
+          > "$READY_DIR/.session-ownership.jsonl"
+        idle_epoch=$(( $(date +%s) - 60 ))
+        printf "{\"state\":\"idle\",\"event\":\"Stop\",\"agent\":\"claude\",\"timestamp\":%s,\"writer\":\"agent\",\"agentRecord\":{\"state\":\"idle\",\"event\":\"Stop\",\"agent\":\"claude\",\"timestamp\":%s}}\n" \
+          "$idle_epoch" "$idle_epoch" > "/tmp/wavemill-${SESSION}-${ISSUE}.hook"
         ;;
       pending_recheck_backoff_holds)
         CURRENT_PHASE="ready"
@@ -575,7 +594,11 @@ JSON
     gh() { return 1; }
     # HOK-3109: ensure_ready_failure_blocks_pr spawns npx tsx; silence it so
     # the extracted helper is callable here without pulling in the real tool.
-    npx() { return 0; }
+    # HOK-3322: the Ready remediation disposition is the real decision, not a stub.
+    npx() {
+      [[ "${2:-}" == */ready-remediation-disposition.ts ]] || return 0
+      command npx "$@"
+    }
     is_challenge_task() { [[ "${CHALLENGE_TASK:-false}" == "true" ]]; }
     handle_challenge_pending_ready() {
       HANDLER_CALLS=$((HANDLER_CALLS + 1))
@@ -802,6 +825,13 @@ ready_remediation_inflight_same_head_output="$(run_monitor_case ready_remediatio
 check_contains "ready remediation in-flight keeps task active" "$ready_remediation_inflight_same_head_output" "active_count=1"
 check_contains "ready remediation in-flight does not relaunch ready" "$ready_remediation_inflight_same_head_output" "ready_launches=0"
 check_contains "ready remediation in-flight clears attention" "$ready_remediation_inflight_same_head_output" "attention=clear"
+
+# protects: HOK-3322 — the same-head running hold latching a settled remediation forever.
+ready_remediation_settled_output="$(run_monitor_case ready_remediation_settled_same_head)"
+rm -f "/tmp/wavemill-ready-transition-test-HOK-1249.hook"
+check_contains "settled same-head remediation re-runs Ready" "$ready_remediation_settled_output" "ready_launches=1"
+check_contains "settled same-head remediation is logged with its reason" "$ready_remediation_settled_output" "Ready remediation settled at current (agent-idle-after-launch)"
+check_contains "settled same-head remediation clears attention" "$ready_remediation_settled_output" "attention=clear"
 
 pending_recheck_backoff_output="$(run_monitor_case pending_recheck_backoff_holds)"
 check_contains "pending recheck backoff skips relaunch" "$pending_recheck_backoff_output" "ready_launches=0"

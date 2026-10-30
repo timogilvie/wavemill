@@ -219,6 +219,7 @@ for f in \
   "$REPO_DIR"/tests/async-in-flight-touch-set.test.sh \
   "$REPO_DIR"/tests/pr-ci-status-job.test.sh \
   "$REPO_DIR"/tests/ready-watchdog-job.test.sh \
+  "$REPO_DIR"/tests/ready-remediation-disposition.test.sh \
   "$REPO_DIR"/tests/route-task-job.test.sh \
   "$REPO_DIR"/tests/monitor-perf-smoke.test.sh \
   "$REPO_DIR"/tests/fixtures/monitor-perf/async-harness.sh \
@@ -307,6 +308,8 @@ for f in \
   "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/fake-agent/review \
   "$REPO_DIR"/tests/journeys/ready-fail-remediate.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/ready-fail-remediate/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/ready-remediation-same-head.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/ready-remediation-same-head/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/dirty-tree-coding-complete.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/dirty-tree-coding-complete/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/fixtures/dirty-tree-coding-complete/fake-agent/review \

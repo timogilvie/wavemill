@@ -4421,14 +4421,15 @@ ready_remediation_attempts() {
 # spawn prints "in-flight progress-unavailable" (fail safe: hold this tick).
 ready_remediation_disposition() {
   local issue="$1" state_dir="$2" wt_dir="$3" current_head="$4"
-  local slug pane_target out kind reason
+  local ci_launch_recorded slug pane_target out kind reason
 
   if [[ "$(read_stage_status "$state_dir" "ready")" != "running" ]]; then
     printf 'inactive not-running\n'
     return 0
   fi
-  if [[ ! -f "$(conflict_remediation_marker_path "$state_dir")" ]] \
-      && [[ -z "$(bounded_retry_head "$state_dir" "ready-remediation")" ]]; then
+  # allow-ready-remediation-disposition: existence pre-filter, no head comparison.
+  ci_launch_recorded="$(bounded_retry_head "$state_dir" "ready-remediation")"
+  if [[ ! -f "$(conflict_remediation_marker_path "$state_dir")" && -z "$ci_launch_recorded" ]]; then
     printf 'inactive no-launch\n'
     return 0
   fi
