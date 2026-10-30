@@ -27,8 +27,8 @@ awk '
 #
 # wavemill_run_tool (HOK-3190) now wraps the resolver spawn in wavemill-common.sh,
 # but it is defined outside the awk-extracted session-capabilities block, so
-# shim it here to invoke the tool through `npx tsx` the same way the pre-3190
-# code did. The test passes an absolute tool path, so wavemill_tool_path is
+# shim it here to invoke the tool directly with node (native TS stripping), as the
+# fast-strip path does. The test passes an absolute tool path, so wavemill_tool_path is
 # never consulted.
 {
   printf '%s\n' '# Test harness stubs'

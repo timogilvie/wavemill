@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { join, resolve, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { getWavemillAdditionalEvalPaths, routeBatch, tasksFromPlan } from '../shared/lib/route-batch.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const routeTaskTool = resolve(__dirname, 'route-task.ts');
@@ -194,13 +195,16 @@ describe('route-tasks CLI', () => {
     }
   });
 
-  it('accepts launch-plan task model fields and keeps routing output working', () => {
+  // protects: a launch-plan task carrying a `model` selector is rejected or
+  // routed without planner/coder/reviewer. Pure library behaviour (the CLI's
+  // --plan branch is `routeBatch(tasksFromPlan(plan))` plus printing), so it
+  // runs in-process instead of paying a tool-startup spawn (HOK-2671).
+  it('accepts launch-plan task model fields and keeps routing output working', async () => {
     const repoDir = makeRepo();
     try {
       const packetA = join(repoDir, 'task-plan-a.md');
-      const planFile = join(repoDir, 'launch-plan.json');
       writeFileSync(packetA, 'Route launch plan packet with explicit model selector\n');
-      writeFileSync(planFile, JSON.stringify({
+      const tasks = tasksFromPlan({
         session: 'session-1',
         repoDir,
         baseBranch: 'auto/integration',
@@ -215,19 +219,20 @@ describe('route-tasks CLI', () => {
             model: 'sonnet',
           },
         ],
-      }));
-
-      const stdout = execFileSync(process.execPath, [routeTasksTool, '--plan', planFile, '--repo-dir', repoDir], {
-        encoding: 'utf-8',
-        cwd: resolve(__dirname, '..'),
-        env: { ...process.env },
       });
 
-      const parsed = JSON.parse(stdout.trim());
-      assert.equal(parsed.issueId, 'HOK-300');
-      assert.ok(parsed.planner);
-      assert.ok(parsed.coder);
-      assert.ok(parsed.reviewer);
+      const results = await routeBatch(tasks, {
+        repoDir,
+        mode: 'auto',
+        additionalEvalsPaths: getWavemillAdditionalEvalPaths(repoDir),
+      });
+
+      assert.equal(results.length, 1);
+      const [{ task, decision }] = results;
+      assert.equal(task.issueId, 'HOK-300');
+      assert.ok(decision.planner);
+      assert.ok(decision.coder);
+      assert.ok(decision.reviewer);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
