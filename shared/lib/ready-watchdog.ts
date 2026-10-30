@@ -27,7 +27,6 @@ import {
 import { normalizeJobs, type MillJob } from './job-tracker.ts';
 import { updateBranchWithBase, type BranchBaseUpdateResult } from './promotion-controller.ts';
 import { escapeShellArg } from './shell-utils.ts';
-import { termPaneFieldsAsync } from './terminal-backend.ts';
 import { findCachedPullRequest } from './session-gh-cache.ts';
 import { mutateJsonState } from './state-mutex.ts';
 import { mutateWorkflowState, readWorkflowState as readWorkflowStateFile, type WorkflowState } from './workflow-state.ts';
@@ -56,6 +55,11 @@ import {
   getTaskProgress as defaultGetTaskProgress,
   type TaskProgress,
 } from './task-progress.ts';
+import {
+  evaluateReadyRemediationDisposition,
+  gatherReadyTaskProgress,
+  type ReadyRemediationDisposition,
+} from './ready-remediation-disposition.ts';
 
 const execFileAsync = promisify(execFile);
 const MAX_AUTO_UPDATE_ATTEMPTS = 3;
@@ -111,9 +115,9 @@ export interface ReadyTaskSnapshot {
   hasNeedsAttention: boolean;
   /** A conflict resolver is in flight: `.conflict-remediation.json` (HOK-3273). */
   hasConflictMarker: boolean;
-  remediationLaunchHead: string | null;
   currentHead: string | null;
-  remediationPaneActive: boolean | null;
+  /** HOK-3322: the one Ready remediation disposition, shared with the monitor. */
+  remediationDisposition: ReadyRemediationDisposition;
   worktreeMergeState: WorktreeMergeState;
   relevantJobs: MillJob[];
   lastProgressAt: string | null;
@@ -272,15 +276,15 @@ export interface ReadyWatchdogDeps {
   ) => Promise<NormalizedCheckSummary[]>;
   getCurrentHead: (worktree: string) => Promise<string | null>;
   getWorktreeMergeState: (worktree: string) => Promise<WorktreeMergeState>;
-  isTaskPaneActive: (task: WorkflowTaskRecord) => Promise<boolean | null>;
   /**
    * HOK-3101: the shared task-progress primitive. computeLastProgressAt
    * delegates through this so hook, commit and worktree evidence contribute
    * to `lastProgressAt` — not only `task.updated` (which is transition-only,
-   * HOK-3087). isTaskPaneActive also consults `agentIdle` so an idle REPL
-   * (HOK-3095 (a)) does not count as active.
+   * HOK-3087). The same progress decides the Ready remediation disposition
+   * (HOK-3322), so an idle REPL in a live pane (HOK-3095 (a)) is settled.
    */
   getTaskProgress: (task: WorkflowTaskRecord, options: {
+    issueId: string;
     session: string;
     repoDir: string;
     worktree: string;
@@ -448,76 +452,11 @@ const defaultDeps: ReadyWatchdogDeps = {
   async getWorktreeMergeState(worktree) {
     return inspectWorktreeMergeState(worktree);
   },
-  async isTaskPaneActive(task) {
-    const target = typeof task.windowId === 'string' && task.windowId.trim()
-      ? task.windowId.trim()
-      : null;
-    if (!target) {
-      return null;
-    }
-
-    try {
-      const fields = await termPaneFieldsAsync(target, ['dead', 'current_command', 'pid']);
-      if (!fields) {
-        return null;
-      }
-      const paneDead = fields.dead.trim();
-      const command = fields.current_command;
-      const panePid = fields.pid.trim();
-      if (paneDead === '1') {
-        return false;
-      }
-      // HOK-3101 / HOK-3095 (a): an idle agent REPL sitting in a live pane
-      // is NOT active — it is the agent's own settled Stop state. Consult
-      // the shared primitive before reporting active.
-      const issue = typeof task.slug === 'string' ? String(task.slug) : undefined;
-      // We cannot reach the primitive from here because we do not have the
-      // repo dir / session; the composed classifyReadyTask() path threads it
-      // through and overrides `remediationPaneActive` when agentIdle=true
-      // (see snapshotReadyTask). This default kept its previous semantics
-      // to preserve behaviour for callers that do not supply a session.
-      if (command && !['bash', 'zsh', 'fish', 'sh'].includes(command)) {
-        return true;
-      }
-      if (panePid && /^\d+$/.test(panePid)) {
-        try {
-          const { stdout: childStdout } = await execFileAsync('pgrep', ['-P', panePid], {
-            encoding: 'utf-8',
-            maxBuffer: 1024 * 1024,
-          });
-          return childStdout.trim().length > 0;
-        } catch {
-          return false;
-        }
-      }
-      void issue;
-      return false;
-    } catch {
-      return null;
-    }
-  },
-  getTaskProgress(task, { session, worktree, readyResult, readyResultFile, now }) {
+  getTaskProgress(task, { issueId, session, worktree, stateDir, readyResult, now }) {
     // HOK-3101: default IO-based composition. Tests stub the whole dep.
-    if (!worktree || !task.slug) return null;
+    if (!worktree || !issueId) return null;
     try {
-      const issue = typeof (task as { issueId?: string }).issueId === 'string'
-        ? (task as { issueId?: string }).issueId!
-        : String(task.slug ?? '');
-      if (!issue) return null;
-      const extra: TaskProgress['sources'] = [];
-      if (readyResult?.startedAt) extra.push({ kind: 'transition', at: readyResult.startedAt, detail: 'ready.startedAt' });
-      if (readyResult?.finishedAt) extra.push({ kind: 'transition', at: readyResult.finishedAt, detail: 'ready.finishedAt' });
-      const readyMtime = fileMtimeIso(readyResultFile);
-      if (readyMtime) extra.push({ kind: 'transition', at: readyMtime, detail: 'ready-result.mtime' });
-      return defaultGetTaskProgress({
-        issue,
-        session,
-        task: task as never,
-        worktree,
-        phase: typeof task.phase === 'string' ? task.phase : 'ready',
-        extraTransitionSources: extra,
-        now,
-      });
+      return gatherReadyTaskProgress({ issue: issueId, session, task: task as never, worktree, stateDir, readyResult, now });
     } catch {
       return null;
     }
@@ -874,12 +813,8 @@ function hasLocalMergeResidue(state: WorktreeMergeState): boolean {
 
 function canSafelyResumeResolvedMerge(snapshot: ReadyTaskSnapshot): boolean {
   const state = snapshot.worktreeMergeState;
-  return snapshot.hasConflictMarker
-    && snapshot.readyResultStatus === 'running'
-    && snapshot.remediationPaneActive === false
-    && snapshot.remediationLaunchHead !== null
-    && snapshot.currentHead !== null
-    && snapshot.remediationLaunchHead === snapshot.currentHead
+  return snapshot.remediationDisposition.remediation === 'conflict'
+    && snapshot.remediationDisposition.kind === 'settled'
     && state.mergeHead !== null
     && state.inspectError === undefined
     && state.unmergedPaths.length === 0
@@ -891,7 +826,7 @@ function disconnectedMergeResidueDetected(snapshot: ReadyTaskSnapshot): boolean 
   if (!snapshot.hasConflictMarker || snapshot.readyResultStatus !== 'running') {
     return false;
   }
-  if (snapshot.remediationPaneActive === true) {
+  if (snapshot.remediationDisposition.kind === 'in-flight') {
     return false;
   }
   return hasLocalMergeResidue(snapshot.worktreeMergeState);
@@ -1142,10 +1077,9 @@ export function classifyReadyTask(
   }
 
   if (disconnectedMergeResidueDetected(snapshot)) {
-    const paneState = snapshot.remediationPaneActive === null ? 'unknown' : 'inactive';
     return {
       kind: 'needs-user',
-      detail: `Conflict remediation worker is ${paneState} and the worktree is unsafe to mutate automatically for PR #${snapshot.prNumber}: ${summarizeMergeState(snapshot.worktreeMergeState)}. Next command: ${nextCommandForMergeState(snapshot)}`,
+      detail: `Conflict remediation worker is not running (${snapshot.remediationDisposition.reason}) and the worktree is unsafe to mutate automatically for PR #${snapshot.prNumber}: ${summarizeMergeState(snapshot.worktreeMergeState)}. Next command: ${nextCommandForMergeState(snapshot)}`,
     };
   }
 
@@ -1375,16 +1309,10 @@ export function classifyReadyTask(
       };
     }
 
-    const remediationInFlight = snapshot.hasConflictMarker
-      && snapshot.readyResultStatus === 'running'
-      && snapshot.remediationLaunchHead !== null
-      && snapshot.currentHead !== null
-      && snapshot.remediationLaunchHead === snapshot.currentHead;
-
     return {
       kind: 'stuck',
       detail: `Local ready state has been idle for ${snapshot.idleMinutes}m while PR #${snapshot.prNumber} is clean and green.`,
-      autoRecoverable: !remediationInFlight,
+      autoRecoverable: snapshot.remediationDisposition.kind !== 'in-flight',
     };
   }
 
@@ -1534,6 +1462,7 @@ async function buildSnapshot(
   // HOK-3101: the shared task-progress primitive supplies hook/commit/worktree
   // evidence and an agentIdle fact that a live pane cannot override.
   const taskProgress = deps.getTaskProgress(task, {
+    issueId,
     session,
     repoDir,
     worktree,
@@ -1543,12 +1472,7 @@ async function buildSnapshot(
     now,
   });
   const lastProgressAt = computeLastProgressAt(task, readyResult, readyResultFile, taskProgress);
-  // HOK-3101 / HOK-3095 (a): if the pane is live but the agent's own record
-  // is idle, the pane is holding an idle REPL — do not report active.
-  let paneActive = await deps.isTaskPaneActive(task);
-  if (paneActive === true && taskProgress?.agentIdle) {
-    paneActive = false;
-  }
+  const currentHead = await deps.getCurrentHead(worktree);
 
   return {
     issueId,
@@ -1569,9 +1493,14 @@ async function buildSnapshot(
     readyAttentionDetail: readAttentionDetail(stateDir),
     hasNeedsAttention: existsSync(path.join(stateDir, '.needs-attention')),
     hasConflictMarker: existsSync(path.join(stateDir, '.conflict-remediation.json')),
-    remediationLaunchHead: readyArtifacts?.remediationLaunchHead ?? readyArtifacts?.launchHead ?? null,
-    currentHead: await deps.getCurrentHead(worktree),
-    remediationPaneActive: paneActive,
+    currentHead,
+    // HOK-3322: the same decision the monitor reads, on the same progress.
+    remediationDisposition: evaluateReadyRemediationDisposition({
+      stateDir,
+      readyResult,
+      currentHead,
+      getProgress: () => taskProgress,
+    }),
     worktreeMergeState: await deps.getWorktreeMergeState(worktree),
     relevantJobs,
     lastProgressAt,
@@ -1843,7 +1772,7 @@ function buildExhaustedAutoUpdateEntry(
 }
 
 function evaluateVerificationArtifact(snapshot: ReadyTaskSnapshot): 'inactive' | 'fresh' | 'awaiting' {
-  if (!snapshot.remediationLaunchHead || !snapshot.currentHead || snapshot.remediationLaunchHead === snapshot.currentHead) {
+  if (snapshot.remediationDisposition.kind !== 'advanced' || !snapshot.currentHead) {
     return 'inactive';
   }
 
@@ -2345,11 +2274,7 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
               detail: `Ready remediation capped at ${attempts}/${remediationConfig.maxAttempts} attempts for PR #${snapshot.prNumber}.`,
             };
             await writeReadyAttention(snapshot, classification.detail);
-          } else if (
-            snapshot.remediationLaunchHead
-            && snapshot.currentHead
-            && snapshot.remediationLaunchHead === snapshot.currentHead
-          ) {
+          } else if (snapshot.remediationDisposition.kind === 'in-flight') {
             action = 'remediation-in-flight';
             classification = {
               ...classification,

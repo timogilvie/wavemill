@@ -4325,18 +4325,6 @@ conflict_remediation_marker_path() {
   printf '%s\n' "$1/.conflict-remediation.json"
 }
 
-# conflict_remediation_in_flight <state_dir> <current_head>
-# True while the resolver launched at <current_head> is still Ready's work in
-# progress. A resolver push moves the head, so this turns false at once even
-# before the reconciler has expired the marker.
-conflict_remediation_in_flight() {
-  local state_dir="$1" current_head="$2" launch_head
-  [[ -n "$current_head" ]] || return 1
-  [[ "$(read_stage_status "$state_dir" "ready")" == "running" ]] || return 1
-  launch_head=$(jq -r '.detail.launchHead // empty' "$(conflict_remediation_marker_path "$state_dir")" 2>/dev/null || echo "")
-  [[ -n "$launch_head" && "$launch_head" == "$current_head" ]]
-}
-
 # conflict_remediation_awaiting_ready <state_dir>
 # True while Ready's result is still the "conflict remediation in progress"
 # record written when the resolver launched. That is a stage result, not a
@@ -4422,8 +4410,41 @@ ready_remediation_attempts() {
   bounded_retry_count "$1" "ready-remediation"
 }
 
-ready_remediation_launch_head() {
-  bounded_retry_head "$1" "ready-remediation"
+# ready_remediation_disposition <issue> <state_dir> <wt_dir> <current_head>
+# Prints "<kind> <reason>": kind is inactive|advanced|in-flight|settled. The
+# one Ready remediation in-flight/completion decision (CI fix or conflict
+# resolver) lives in shared/lib/ready-remediation-disposition.ts (HOK-3322);
+# this wrapper only spawns it. A running result and a launch head equal to
+# HEAD are facts about the launch, never liveness: only the agent's own
+# progress (HOK-3101) holds the arm. Two cheap existence reads keep the
+# monitor hot pass from spawning for a task with nothing launched. A failed
+# spawn prints "in-flight progress-unavailable" (fail safe: hold this tick).
+ready_remediation_disposition() {
+  local issue="$1" state_dir="$2" wt_dir="$3" current_head="$4"
+  local slug pane_target out kind reason
+
+  if [[ "$(read_stage_status "$state_dir" "ready")" != "running" ]]; then
+    printf 'inactive not-running\n'
+    return 0
+  fi
+  if [[ ! -f "$(conflict_remediation_marker_path "$state_dir")" ]] \
+      && [[ -z "$(bounded_retry_head "$state_dir" "ready-remediation")" ]]; then
+    printf 'inactive no-launch\n'
+    return 0
+  fi
+
+  slug="$(basename "$state_dir")"
+  pane_target="$(_tmux_task_window_target "${SESSION:-}" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
+  out=$(_with_timeout 15 wavemill_run_tool "ready-remediation-disposition.ts" \
+    --issue "$issue" --state-dir "$state_dir" --worktree "$wt_dir" --current-head "$current_head" \
+    --session "${SESSION:-${WAVEMILL_SESSION:-wavemill}}" \
+    ${STATE_FILE:+--state-file "$STATE_FILE"} ${pane_target:+--pane-target "$pane_target"} 2>/dev/null || true)
+  kind=$(printf '%s' "$out" | jq -r '.kind // empty' 2>/dev/null | tail -n 1 || true)
+  reason=$(printf '%s' "$out" | jq -r '.reason // empty' 2>/dev/null | tail -n 1 || true)
+  case "$kind" in
+    inactive|advanced|in-flight|settled) printf '%s %s\n' "$kind" "${reason:-unspecified}" ;;
+    *) printf 'in-flight progress-unavailable\n' ;;
+  esac
 }
 
 ready_remediation_config_json() {
@@ -13515,8 +13536,8 @@ _launch_ready_remediation_attempt() {
 launch_ready_watchdog_remediation() {
   local issue="$1" slug="$2" wt_dir="$3" branch="$4" base_branch="$5" pr_number="$6"
   local failed_check_summary="$7" attempt_number="$8" max_attempts="$9" failed_check_names_json="${10}"
-  local win state_dir status_file current_agent current_model current_head remediation_attempts remediation_launch_head
-  local ready_status checks_run checks_passed merge_status ready_result_file helper_rc
+  local win state_dir status_file current_agent current_model current_head remediation_attempts
+  local remediation_disposition checks_run checks_passed merge_status ready_result_file helper_rc
 
   : "${SESSION:=wavemill}"
   state_dir="$(ready_state_dir "$wt_dir" "$slug")"
@@ -13527,8 +13548,6 @@ launch_ready_watchdog_remediation() {
 
   current_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
   remediation_attempts=$(ready_remediation_attempts "$state_dir")
-  remediation_launch_head=$(ready_remediation_launch_head "$state_dir")
-  ready_status=$(read_stage_status "$state_dir" "ready")
   ready_result_file="$state_dir/.ready-result.json"
 
   # GitHub is authoritative: local task worktrees can lag a pushed PR head.
@@ -13548,7 +13567,8 @@ launch_ready_watchdog_remediation() {
   checks_passed=$(jq -r '.artifacts.checksPassed // 0' "$ready_result_file" 2>/dev/null || echo "0")
   merge_status=$(jq -r '.artifacts.mergeConflict // "UNKNOWN"' "$ready_result_file" 2>/dev/null || echo "UNKNOWN")
 
-  if [[ "$ready_status" == "running" ]] && [[ -n "$remediation_launch_head" ]] && [[ "$remediation_launch_head" == "$current_head" ]]; then
+  read -r remediation_disposition _ < <(ready_remediation_disposition "$issue" "$state_dir" "$wt_dir" "$current_head")
+  if [[ "$remediation_disposition" == "in-flight" ]]; then
     jq -cn --arg detail "Ready remediation is already running for PR #$pr_number at $current_head." --argjson attempt "$remediation_attempts" \
       '{status:"skipped-in-flight", detail:$detail, attemptNumber:$attempt}'
     return 0
@@ -13630,7 +13650,7 @@ launch_ready_phase() {
   local state_dir status_file result ready_rc merge_status verdict
   local current_agent current_model prompt_file launch_rc launch_head checks_run checks_passed
   local ready_head_sha ci_conclusion required_source required_contexts_json
-  local remediation_attempts remediation_launch_head remediation_enabled remediation_max_attempts
+  local remediation_attempts remediation_disposition remediation_enabled remediation_max_attempts
   local remediation_agent failed_check_names failed_check_summary current_head ready_status
   local remediation_artifacts_json failed_check_names_json ready_result_file ready_stderr_file
   local prior_ready_status prior_ready_verdict pending_log_level
@@ -13845,7 +13865,6 @@ launch_ready_phase() {
   required_source=$(printf '%s' "$result" | jq -r '.checks[]? | select(.name == "ci-status") | .details.requiredSource // empty' 2>/dev/null | head -n 1 || echo "")
   required_contexts_json=$(printf '%s' "$result" | jq -c '[.checks[]? | select(.name == "ci-status") | .details.requiredContexts[]?] | unique' 2>/dev/null || echo '[]')
   remediation_attempts=$(ready_remediation_attempts "$state_dir")
-  remediation_launch_head=$(ready_remediation_launch_head "$state_dir")
   ready_status=$(read_stage_status "$state_dir" "ready")
   ready_result_file="$state_dir/.ready-result.json"
 
@@ -14235,7 +14254,11 @@ launch_ready_phase() {
   current_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
 
   if [[ "$remediation_enabled" == "true" ]] && ready_failure_is_actionable_for_remediation "$state_dir" "$verdict" "$failed_check_names" "$result"; then
-    if [[ "$ready_status" == "running" ]] && [[ -n "$remediation_launch_head" ]] && [[ "$remediation_launch_head" == "$current_head" ]]; then
+    # HOK-3322: hold only while the launched agent still owns this head. A
+    # settled agent whose checks are still red falls through to the bounded
+    # bucket below (new-head reset, ceiling, backoff), never a latch.
+    read -r remediation_disposition _ < <(ready_remediation_disposition "$issue" "$state_dir" "$wt_dir" "$current_head")
+    if [[ "$remediation_disposition" == "in-flight" ]]; then
       return 5
     fi
 
@@ -21421,13 +21444,14 @@ monitor_issue_state() {
           ready_state_dir_path="$(ready_state_dir "${WORKTREE_ROOT}/${SLUG}" "$SLUG")"
 
           # HOK-3273: Ready launched a conflict resolver. Hold while it is in
-          # flight at the launched head; once it pushes (or exits), re-run
-          # Ready, which reads mergeability from GitHub afresh.
+          # flight at the launched head; once it pushes or settles (HOK-3322),
+          # re-run Ready, which reads mergeability from GitHub afresh.
           if conflict_remediation_awaiting_ready "$ready_state_dir_path"; then
-            local current_head
+            local current_head conflict_disposition
             current_head=$(git -C "${WORKTREE_ROOT}/${SLUG}" rev-parse HEAD 2>/dev/null || echo "")
+            read -r conflict_disposition _ < <(ready_remediation_disposition "$ISSUE" "$ready_state_dir_path" "${WORKTREE_ROOT}/${SLUG}" "$current_head")
 
-            if conflict_remediation_in_flight "$ready_state_dir_path" "$current_head"; then
+            if [[ "$conflict_disposition" == "in-flight" ]]; then
               set_window_attention_state "$WIN" "clear"
               active_count=$((active_count + 1))
               return 0
@@ -21987,7 +22011,7 @@ monitor_issue_state() {
     fi
   elif [[ "$current_phase" == "ready" ]]; then
     local resolved_phase ready_state_dir_path ready_status ready_verdict
-    local launch_head current_head title launch_rc
+    local remediation_disposition remediation_disposition_reason current_head title launch_rc
     local recheck_disposition recheck_attempt recheck_limit
     local pending_recheck_disposition pending_recheck_limit pending_recheck_reason
     local challenge_pending_rc
@@ -22002,13 +22026,14 @@ monitor_issue_state() {
 
     ready_state_dir_path="$(ready_state_dir "${WORKTREE_ROOT}/${SLUG}" "$SLUG")"
     # HOK-3273: Ready launched a conflict resolver. Hold while it is in flight
-    # at the launched head; once it pushes (or exits), re-run Ready, which
-    # reads mergeability from GitHub afresh and charges the one attempt per
-    # (head, base) only if it launches another resolver.
+    # at the launched head; once it pushes or settles (HOK-3322), re-run Ready,
+    # which reads mergeability from GitHub afresh and charges the one attempt
+    # per (head, base) only if it launches another resolver.
     if conflict_remediation_awaiting_ready "$ready_state_dir_path"; then
       current_head=$(git -C "${WORKTREE_ROOT}/${SLUG}" rev-parse HEAD 2>/dev/null || echo "")
+      read -r remediation_disposition remediation_disposition_reason < <(ready_remediation_disposition "$ISSUE" "$ready_state_dir_path" "${WORKTREE_ROOT}/${SLUG}" "$current_head")
 
-      if conflict_remediation_in_flight "$ready_state_dir_path" "$current_head"; then
+      if [[ "$remediation_disposition" == "in-flight" ]]; then
         set_window_attention_state "$WIN" "clear"
         active_count=$((active_count + 1))
         return 0
@@ -22053,7 +22078,6 @@ monitor_issue_state() {
     fi
 
     ready_status=$(read_stage_status "$ready_state_dir_path" "ready")
-    launch_head=$(ready_remediation_launch_head "$ready_state_dir_path")
     current_head=$(git -C "${WORKTREE_ROOT}/${SLUG}" rev-parse HEAD 2>/dev/null || echo "")
 
     # Ready stage finished — run challenge eval/comparison before dropping out.
@@ -22248,10 +22272,18 @@ monitor_issue_state() {
       return 0
     fi
 
-    if [[ "$ready_status" == "running" ]] && [[ -n "$launch_head" ]] && [[ "$launch_head" == "$current_head" ]]; then
+    # HOK-3322: the one Ready remediation disposition. Hold only while the
+    # remediation agent still owns the launch head; an agent that settled
+    # without a new commit (e.g. it reran flaky CI) hands the head back to the
+    # controller's Ready check below, which completes only on green checks.
+    read -r remediation_disposition remediation_disposition_reason < <(ready_remediation_disposition "$ISSUE" "$ready_state_dir_path" "${WORKTREE_ROOT}/${SLUG}" "$current_head")
+    if [[ "$remediation_disposition" == "in-flight" ]]; then
       set_window_attention_state "$WIN" "clear"
       active_count=$((active_count + 1))
       return 0
+    fi
+    if [[ "$remediation_disposition" == "settled" ]]; then
+      log "status" "$ISSUE → Ready remediation settled at ${current_head:0:7} ($remediation_disposition_reason); re-running Ready"
     fi
 
     ready_verdict=$(ready_stage_pending_verdict "$ready_state_dir_path")
@@ -22428,10 +22460,11 @@ monitor_issue_state() {
     fi
 
     # Re-run ready checks when CI is still computing (verdict=pending) OR when
-	    # a remediation agent has pushed new commits past the launch head — without
-    # the second case, a successful remediation leaves status=running/verdict=fail
-    # and the controller never re-evaluates CI.
-    if [[ "$ready_status" == "running" ]] && { [[ "$ready_verdict" == "pending" ]] || [[ -n "$launch_head" && "$launch_head" != "$current_head" ]]; }; then
+    # remediation is over: the agent pushed past the launch head (advanced) or
+    # settled at it (HOK-3322). Without those, a finished remediation leaves
+    # status=running/verdict=fail and the controller never re-evaluates CI.
+    if [[ "$ready_status" == "running" ]] && { [[ "$ready_verdict" == "pending" ]] \
+        || [[ "$remediation_disposition" == "advanced" || "$remediation_disposition" == "settled" ]]; }; then
       # HOK-3106: an infrastructure review failure never consumes the
       # pending-ready-recheck budget. The review artifact carries no
       # substantive verdict, and launch_ready_phase will route the attempt
