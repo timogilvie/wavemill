@@ -7,6 +7,8 @@
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$script_dir/routing-emitter.sh"
+# shellcheck source=terminal-backend.sh
+source "$script_dir/terminal-backend.sh"
 # shellcheck source=task-identity.sh
 source "$script_dir/task-identity.sh"
 # shellcheck source=session-ownership.sh
@@ -49,9 +51,9 @@ agent_tmux_guard_export_command() {
     echo "Error: Wavemill tmux guard is not executable: $guard_dir/tmux" >&2
     return 1
   }
-  real_tmux="$(type -P tmux 2>/dev/null || true)"
+  real_tmux="$(term_resolve_real_tmux || true)"
   [[ -n "$real_tmux" ]] || {
-    echo "Error: real tmux executable not found" >&2
+    echo "Error: real tmux executable not found (term_resolve_real_tmux)" >&2
     return 1
   }
   control_socket="$(tmux display-message -p -t "$target" '#{socket_path}' 2>/dev/null || true)"

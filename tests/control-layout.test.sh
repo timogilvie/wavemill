@@ -337,6 +337,7 @@ run_layout_case() {
   export MOCK_LINEAR_LOG="$case_dir/linear.log"
   touch "$MOCK_GIT_LOG" "$MOCK_NPX_LOG" "$MOCK_LINEAR_LOG"
 
+  # allow-world-lifetime: control-layout rendering needs a real tmux window, not a test world.
   tmux new-session -d -s "$TEST_SESSION" -x 200 -y 50
   tmux rename-window -t "$TEST_SESSION:0" mill
 

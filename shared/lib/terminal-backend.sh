@@ -462,6 +462,48 @@ _term_tmux_session_env_set() {
   tmux set-environment -t "$session" "$name" "${3-}"
 }
 
+# ── Real tmux resolution (HOK-3329) ─────────────────────────────────────────
+
+# The one primitive that answers "where is the real tmux binary?". Both
+# wavemill tmux wrappers (shared/agent-bin/tmux, tests/fakes/bin/tmux) carry a
+# fixed marker comment; any `tmux` on PATH that does not contain it is a real
+# binary. The two private guesses this replaces (a `type -P tmux` in
+# shared/lib/agent-adapters.sh and a PATH-minus-fakes `command -v tmux` in
+# tests/fakes/lib.sh) both broke when PATH order or PATH mutation put a
+# wrapper first, and neither could tell the other wrapper was about to be
+# execed — the loop that hung journeys (HOK-3329).
+#
+# Args: optional PATH to scan (default $PATH). Prints the first non-wrapper
+# tmux path; a missing tmux prints a typed stderr reason and returns 1.
+term_resolve_real_tmux() {
+  local path="${1:-$PATH}"
+  local IFS=:
+  local part candidate
+  for part in $path; do
+    [[ -n "$part" ]] || continue
+    candidate="$part/tmux"
+    [[ -x "$candidate" && ! -d "$candidate" ]] || continue
+    # Only a wrapper carries the marker; real binaries are ELF/Mach-O and
+    # return no match. A symlink is followed by both -x and head, so a link
+    # pointing at a wrapper is skipped too. Reading only the first 2 KiB keeps
+    # a very large shim cheap.
+    if head -c 2048 "$candidate" 2>/dev/null | grep -qF 'wavemill-tmux-wrapper'; then
+      continue
+    fi
+    # Belt-and-braces for the PATH-order contamination the HOK-3329 incident
+    # was made of: a directory named agent-bin always holds a Wavemill guard
+    # binary, marker or not (a stale checkout on PATH predates the marker),
+    # and a guard execed as the real tmux fails every call. Skip by name.
+    if [[ "${candidate%/*}" == */agent-bin ]]; then
+      continue
+    fi
+    printf '%s\n' "$candidate"
+    return 0
+  done
+  printf 'terminal-backend: no real tmux on PATH=%s (only wavemill wrappers are)\n' "$path" >&2
+  return 1
+}
+
 # ── Legacy names (remove once the shell call-site migrations land) ───────────
 
 wavemill_set_tmux_pane_title() {

@@ -560,6 +560,7 @@ TESTS=(
   tests/cli-smoke.test.ts
   tests/model-settings-migration.test.ts
   tools/check-test-registration.test.ts
+  tools/check-test-world-lifetime.test.ts
   tools/hok2425-verify-native-workflow-certification.test.ts
   tools/launch-native-review.test.ts
   tools/launch-priority-audit.test.ts
