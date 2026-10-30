@@ -4436,10 +4436,14 @@ ready_remediation_disposition() {
 
   slug="$(basename "$state_dir")"
   pane_target="$(_tmux_task_window_target "${SESSION:-}" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
+  local -a disposition_args=(
+    --issue "$issue" --state-dir "$state_dir" --worktree "$wt_dir" --current-head "$current_head"
+    --session "${SESSION:-${WAVEMILL_SESSION:-wavemill}}"
+  )
+  [[ -n "${STATE_FILE:-}" ]] && disposition_args+=(--state-file "$STATE_FILE")
+  [[ -n "$pane_target" ]] && disposition_args+=(--pane-target "$pane_target")
   out=$(_with_timeout 15 wavemill_run_tool "ready-remediation-disposition.ts" \
-    --issue "$issue" --state-dir "$state_dir" --worktree "$wt_dir" --current-head "$current_head" \
-    --session "${SESSION:-${WAVEMILL_SESSION:-wavemill}}" \
-    ${STATE_FILE:+--state-file "$STATE_FILE"} ${pane_target:+--pane-target "$pane_target"} 2>/dev/null || true)
+    "${disposition_args[@]}" 2>/dev/null || true)
   kind=$(printf '%s' "$out" | jq -r '.kind // empty' 2>/dev/null | tail -n 1 || true)
   reason=$(printf '%s' "$out" | jq -r '.reason // empty' 2>/dev/null | tail -n 1 || true)
   case "$kind" in
