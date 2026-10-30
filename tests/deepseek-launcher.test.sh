@@ -116,8 +116,8 @@ cleanup "$tmp"
 echo ""
 echo "=== launch-claude-deepseek.ts missing key ==="
 
-if ! command -v npx >/dev/null 2>&1; then
-  echo "  SKIP  npx not available"
+if ! command -v node >/dev/null 2>&1; then
+  echo "  SKIP  node not available"
 else
   tmp="$(make_temp_repo)"
   rc=0
@@ -142,8 +142,8 @@ fi
 echo ""
 echo "=== launch-claude-deepseek.ts with valid key ==="
 
-if ! command -v npx >/dev/null 2>&1; then
-  echo "  SKIP  npx not available"
+if ! command -v node >/dev/null 2>&1; then
+  echo "  SKIP  node not available"
 else
   tmp="$(make_temp_repo)"
   rc=0
@@ -206,8 +206,8 @@ fi
 echo ""
 echo "=== launch-claude-deepseek.ts no key leakage in stderr ==="
 
-if ! command -v npx >/dev/null 2>&1; then
-  echo "  SKIP  npx not available"
+if ! command -v node >/dev/null 2>&1; then
+  echo "  SKIP  node not available"
 else
   tmp="$(make_temp_repo)"
   stderr_output=""
