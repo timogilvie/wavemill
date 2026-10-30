@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WAVEMILL_TMUX_WRAPPER: skip me when resolving the real tmux binary (HOK-3329).
+# wavemill-tmux-wrapper: skip me when resolving the real tmux binary (HOK-3329).
 set -u
 
 # Execution-time containment for tmux commands run by Wavemill agents. Claude's
@@ -15,7 +15,7 @@ fi
 # A misconfiguration that points the guard at another wavemill wrapper would
 # exec-loop forever (the HOK-3329 incident shape). Refuse in one call instead:
 # 126 is the standard "command invoked cannot execute" exit.
-if head -c 2048 "$real_tmux" 2>/dev/null | grep -qF 'WAVEMILL_TMUX_WRAPPER'; then
+if head -c 2048 "$real_tmux" 2>/dev/null | grep -qF 'wavemill-tmux-wrapper'; then
   echo "wavemill: tmux wrapper refuses to exec another wavemill wrapper: $real_tmux" >&2
   exit 126
 fi

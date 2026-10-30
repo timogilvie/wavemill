@@ -487,7 +487,7 @@ term_resolve_real_tmux() {
     # return no match. A symlink is followed by both -x and head, so a link
     # pointing at a wrapper is skipped too. Reading only the first 2 KiB keeps
     # a very large shim cheap.
-    if head -c 2048 "$candidate" 2>/dev/null | grep -qF 'WAVEMILL_TMUX_WRAPPER'; then
+    if head -c 2048 "$candidate" 2>/dev/null | grep -qF 'wavemill-tmux-wrapper'; then
       continue
     fi
     # Belt-and-braces for the PATH-order contamination the HOK-3329 incident

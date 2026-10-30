@@ -66,7 +66,7 @@ STALE_GUARD_DIR="$TMP/old-checkout/shared/agent-bin"
 mkdir -p "$STALE_GUARD_DIR"
 cat > "$STALE_GUARD_DIR/tmux" <<'EOF'
 #!/usr/bin/env bash
-# old guard copy: no WAVEMILL_TMUX_WRAPPER marker
+# old guard copy: no wavemill-tmux-wrapper marker
 exit 127
 EOF
 chmod 755 "$STALE_GUARD_DIR/tmux"
@@ -149,15 +149,15 @@ fi
 
 # Both wrappers carry the fixed marker the resolver greps for (allow-world-
 # lifetime: replaying the refusal is the point of this test).
-if head -c 2048 "$AGENT_WRAPPER" | grep -qF 'WAVEMILL_TMUX_WRAPPER'; then
-  pass "agent wrapper carries the WAVEMILL_TMUX_WRAPPER marker"
+if head -c 2048 "$AGENT_WRAPPER" | grep -qF 'wavemill-tmux-wrapper'; then
+  pass "agent wrapper carries the wavemill-tmux-wrapper marker"
 else
-  fail "agent wrapper carries the WAVEMILL_TMUX_WRAPPER marker"
+  fail "agent wrapper carries the wavemill-tmux-wrapper marker"
 fi
-if head -c 2048 "$FAKES_WRAPPER" | grep -qF 'WAVEMILL_TMUX_WRAPPER'; then
-  pass "fakes wrapper carries the WAVEMILL_TMUX_WRAPPER marker"
+if head -c 2048 "$FAKES_WRAPPER" | grep -qF 'wavemill-tmux-wrapper'; then
+  pass "fakes wrapper carries the wavemill-tmux-wrapper marker"
 else
-  fail "fakes wrapper carries the WAVEMILL_TMUX_WRAPPER marker"
+  fail "fakes wrapper carries the wavemill-tmux-wrapper marker"
 fi
 
 echo ""
