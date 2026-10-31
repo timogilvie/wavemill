@@ -56,7 +56,7 @@ Save the raw evidence somewhere that will last (the incident dir or the issue bo
 
 ## Step 5 — Write the issue
 
-Title: name the consolidation, not the symptom. Pattern: **"One <decision>: <single source of truth>, and <what gets deleted>."**
+Title: name the consolidation, not the symptom. Pattern: **"One <decision>: <single source of truth>, and <what gets deleted>."** Keep it under ~90 characters: the mill derives branch and worktree names from the title, and a slug past the 255-byte ref limit fails the launch with "cannot lock ref". Put the deletions in the body.
 - Good: "One terminal-cleanup decision: the monitor and the CLI share one decider, and a terminal task's lifecycle (not its pane) decides release"
 - Bad: "Cleanup should also accept waiting:Notification"
 
@@ -101,6 +101,7 @@ Reject the draft and rewrite it if any of these is true:
 - Acceptance only reproduces this incident. It needs the general journey too.
 - It re-derives something a documented primitive already provides.
 - It duplicates an open issue instead of adding evidence to it.
+- It answers a model failure by changing which model runs (a minimum model strength, a pin, avoiding a model for some files, pausing challenges). Model selection is Hokusai's decision (`AGENTS.md`). Rewrite the fix so the failure reaches Hokusai: executed model, correct fault class, cost, outcome.
 
 **Legitimate exception:** an urgent hotfix that unblocks the mill today may be a point fix. File it labelled as a hotfix, **and** file (or update) the consolidation issue that will delete the hotfix, linked with `relatedTo`.
 

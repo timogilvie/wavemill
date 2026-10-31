@@ -20,6 +20,7 @@ This repository provides shared tooling for both Claude and Codex AI workflows:
 3. **Shared Templates**: `tools/prompts/` templates are consumed by both toolchains
 4. **State Separation**: Claude uses `features/`, `bugs/`, `epics/`; Codex uses `.codex/state/`
 5. **Thin Tools Pattern**: Tools in `tools/` are thin wrappers (typically <150 lines) that call shared business logic modules in `shared/lib/`. Business logic is reusable, testable, and documented with comprehensive JSDoc.
+6. **Model selection belongs to Hokusai**: Hokusai decides which model runs each stage, including whether a cheaper model's risk is worth taking. A model failure is fixed by making it visible to Hokusai, with correct attribution, fault class, cost and outcome. It is never fixed by changing coder policy locally. See "Model selection belongs to Hokusai" in `AGENTS.md`.
 
 ### Shared Business Logic Modules
 
