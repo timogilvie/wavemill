@@ -28,6 +28,12 @@ export const MAX_OPEN_SHADOWS = 5;
 /** Rows must be removed within this many days of being added. */
 export const EXPIRY_WINDOW_DAYS = 30;
 
+/**
+ * A row may carry one explicit extension, at most this many days past its
+ * original remove-by. `added` is never rewritten to buy more time.
+ */
+export const EXTENSION_WINDOW_DAYS = 30;
+
 const KILL_SWITCH_PATTERN = /(^|_)(DISABLED?|SKIP|SYNC|LIVE|SHADOW|LEGACY|AUTOFIX|ENABLED|FORCE|NO)(_|$)/;
 
 const SCANNED_EXTENSIONS = new Set([
@@ -218,6 +224,31 @@ function addDays(date: Date, days: number): Date {
   return copy;
 }
 
+export interface RemoveBy {
+  /** The date the row must be gone by (the extended date when extended). */
+  date: string;
+  /** Present when the row was extended once. */
+  extension?: { from: string; issue: string; reason: string };
+}
+
+const EXTENDED_REMOVE_BY_RE = /^(\S+)\s*\(\s*extended from\s+(\S+?)\s*,\s*([^:]+?)\s*:\s*(.*)\)$/i;
+
+/**
+ * Parse a remove-by cell: either `YYYY-MM-DD`, or one explicit extension
+ * `YYYY-MM-DD (extended from YYYY-MM-DD, HOK-123: reason)`. Returns null when
+ * the cell matches neither shape, or names more than one extension.
+ */
+export function parseRemoveBy(cell: string): RemoveBy | null {
+  const trimmed = cell.trim();
+  if ((trimmed.match(/extended from/gi) ?? []).length > 1) return null;
+  const extended = EXTENDED_REMOVE_BY_RE.exec(trimmed);
+  if (!extended) return { date: trimmed };
+  return {
+    date: extended[1],
+    extension: { from: extended[2], issue: extended[3].trim(), reason: extended[4].trim() },
+  };
+}
+
 export interface CheckOptions {
   repoDir?: string;
   /** Fixed "now" for overdue warnings; defaults to today. */
@@ -292,28 +323,52 @@ function validateExpiringRow(row: DocRow, idxByName: Record<string, number>, pol
   if (!removalResolved.ok) {
     findings.push({ severity: 'error', kind: 'bad-issue-id', message: `row \`${name}\` removal-issue is not a valid Linear ID: ${removalIssue}`, file: FEATURE_FLAGS_DOC, line: lineNumber });
   }
+  const parsedRemoveBy = parseRemoveBy(removeBy);
+  if (!parsedRemoveBy) {
+    findings.push({ severity: 'error', kind: 'bad-extension', message: `row \`${name}\` remove-by may be extended at most once: ${removeBy}`, file: FEATURE_FLAGS_DOC, line: lineNumber });
+    return;
+  }
+  const { extension } = parsedRemoveBy;
+  // The 30-day cap applies to the original date, so an extension never hides it.
+  const originalRemoveBy = extension ? extension.from : parsedRemoveBy.date;
   const addedDate = parseIsoDate(added);
-  const removeByDate = parseIsoDate(removeBy);
-  if (!addedDate || !removeByDate) {
+  const originalDate = parseIsoDate(originalRemoveBy);
+  const removeByDate = parseIsoDate(parsedRemoveBy.date);
+  if (!addedDate || !originalDate || !removeByDate) {
     findings.push({ severity: 'error', kind: 'bad-date', message: `row \`${name}\` has a non-ISO date (added=${added}, remove-by=${removeBy})`, file: FEATURE_FLAGS_DOC, line: lineNumber });
     return;
   }
   const basis = addedDate.getTime() > policyStart.getTime() ? addedDate : policyStart;
   const latest = addDays(basis, EXPIRY_WINDOW_DAYS);
-  if (removeByDate.getTime() > latest.getTime()) {
+  if (originalDate.getTime() > latest.getTime()) {
     findings.push({
       severity: 'error',
       kind: 'remove-by-too-late',
-      message: `row \`${name}\` remove-by ${removeBy} is more than ${EXPIRY_WINDOW_DAYS} days past max(added=${added}, policy=${POLICY_START_DATE})`,
+      message: `row \`${name}\` remove-by ${originalRemoveBy} is more than ${EXPIRY_WINDOW_DAYS} days past max(added=${added}, policy=${POLICY_START_DATE})`,
       file: FEATURE_FLAGS_DOC,
       line: lineNumber,
     });
+  }
+  if (extension) {
+    const extensionIssue = resolveLinearIssueId(extension.issue.replace(/\[|\]|\(|\).*/g, '').trim());
+    if (!extensionIssue.ok || !extension.reason) {
+      findings.push({ severity: 'error', kind: 'bad-extension', message: `row \`${name}\` extension needs a valid Linear issue and a reason: ${removeBy}`, file: FEATURE_FLAGS_DOC, line: lineNumber });
+    }
+    if (removeByDate.getTime() <= originalDate.getTime() || removeByDate.getTime() > addDays(originalDate, EXTENSION_WINDOW_DAYS).getTime()) {
+      findings.push({
+        severity: 'error',
+        kind: 'extension-too-late',
+        message: `row \`${name}\` extension to ${parsedRemoveBy.date} must be after ${originalRemoveBy} and at most ${EXTENSION_WINDOW_DAYS} days past it`,
+        file: FEATURE_FLAGS_DOC,
+        line: lineNumber,
+      });
+    }
   }
   if (removeByDate.getTime() < now.getTime()) {
     warnings.push({
       severity: 'warning',
       kind: 'overdue',
-      message: `[feature-flags] overdue: ${name} remove-by ${removeBy} (${removalIssue})`,
+      message: `[feature-flags] overdue: ${name} remove-by ${parsedRemoveBy.date} (${removalIssue})`,
       file: FEATURE_FLAGS_DOC,
       line: lineNumber,
     });
@@ -485,7 +540,8 @@ export function formatFeatureFlagResult(result: FeatureFlagResult): string {
     'Every WAVEMILL_* flag goes in docs/feature-flags.md (open-shadow or kill-switch table)',
     'or, when it is permanent plumbing (SESSION, ISSUE, *_LOADED, debug-only path), in',
     `${FEATURE_FLAGS_BASELINE_FILE}. Shadow and expiring rows must name an owner issue,`,
-    'a removal issue, an added date and a remove-by date <= added+30 days. The baseline',
+    'a removal issue, an added date and a remove-by date <= added+30 days, extended at most',
+    'once as "YYYY-MM-DD (extended from YYYY-MM-DD, HOK-123: reason)", <= 30 days more. The baseline',
     'only shrinks: an entry that no longer appears in code must be removed in the same change.',
     `Suppress a non-flag mention with: // ${SUPPRESSION_MARKER}: <reason> (or # for shell).`,
   ];
