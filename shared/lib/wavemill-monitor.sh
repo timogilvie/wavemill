@@ -4061,8 +4061,6 @@ write_stage_result() {
   local agent="${4:-}" model="${5:-}" notes="${6:-}" artifacts_json="${7:-}"
   local started_at_override="${8:-}"
   local result_file="$feature_dir/.${stage}-result.json" previous_status=""
-  local now_for_write=""
-  local resolved_executed_model="" resolved_evidence_status="" resolved_evidence_source="" resolved_evidence_detail=""
 
   # Capture the transition before either writer replaces the result. A malformed
   # or missing result is intentionally treated as an unknown prior state.
@@ -4070,27 +4068,10 @@ write_stage_result() {
     previous_status="$(jq -r '.status // empty' "$result_file" 2>/dev/null || true)"
   fi
 
-  if [[ "$status" == "completed" && -n "${TOOLS_DIR:-}" ]]; then
-    local effective_agent="$agent"
-    if [[ -z "$effective_agent" && -f "$result_file" ]]; then
-      effective_agent="$(jq -r '.agent // empty' "$result_file" 2>/dev/null || true)"
-    fi
-    if [[ "$effective_agent" == "claude" || "$effective_agent" == "codex" ]]; then
-      now_for_write="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-      # HOK-3328: the resolver reads the stage's owned sessions, not a time window.
-      local resolver_args=(--feature-dir "$feature_dir" --stage "$stage" --agent "$effective_agent")
-      local resolver_json
-      resolver_json="$(wavemill_run_tool "resolve-executed-model.ts" "${resolver_args[@]}" 2>/dev/null || true)"
-      if [[ -n "$resolver_json" ]] && jq -e . >/dev/null 2>&1 <<<"$resolver_json"; then
-        resolved_executed_model="$(jq -r '.executedModel // empty' <<<"$resolver_json" 2>/dev/null || true)"
-        resolved_evidence_status="$(jq -r '.evidenceStatus // empty' <<<"$resolver_json" 2>/dev/null || true)"
-        resolved_evidence_source="$(jq -r '.evidenceSource // empty' <<<"$resolver_json" 2>/dev/null || true)"
-        resolved_evidence_detail="$(jq -r '.evidenceDetail // empty' <<<"$resolver_json" 2>/dev/null || true)"
-      fi
-    fi
-  fi
-
-  # Try the TypeScript CLI first (HOK-1192: structured writes with artifacts support)
+  # HOK-3369: the one resolver + merge rule live in stage-result-cli.ts, so
+  # the shell no longer runs a per-agent resolver block or passes resolver
+  # flags. On a `completed` write the CLI reads the ownership record and
+  # resolves executed-model evidence in-process for every harness.
   if [[ -n "${TOOLS_DIR:-}" ]]; then
     local cli_args=("$feature_dir" "$stage" "$status")
     [[ -n "$agent" ]] && cli_args+=(--agent "$agent")
@@ -4099,11 +4080,6 @@ write_stage_result() {
     [[ -n "$notes" ]] && cli_args+=(--notes "$notes")
     [[ -n "$artifacts_json" ]] && cli_args+=(--artifacts "$artifacts_json")
     [[ -n "$started_at_override" ]] && cli_args+=(--started-at "$started_at_override")
-    [[ -n "$now_for_write" ]] && cli_args+=(--finished-at "$now_for_write")
-    [[ -n "$resolved_executed_model" ]] && cli_args+=(--executed-model "$resolved_executed_model")
-    [[ -n "$resolved_evidence_status" ]] && cli_args+=(--execution-evidence-status "$resolved_evidence_status")
-    [[ -n "$resolved_evidence_source" ]] && cli_args+=(--execution-evidence-source "$resolved_evidence_source")
-    [[ -n "$resolved_evidence_detail" ]] && cli_args+=(--execution-evidence-detail "$resolved_evidence_detail")
 
     if wavemill_run_tool "stage-result-cli.ts" write "${cli_args[@]}" 2>/dev/null; then
       _write_stage_result_trace_event "$feature_dir" "$stage" "$status" "$agent" "$model" "$previous_status"
@@ -4112,9 +4088,13 @@ write_stage_result() {
     log_warn "write_stage_result: TypeScript CLI failed, falling back to shell"
   fi
 
-  # Fallback: inline JSON construction (legacy path)
+  # Fallback: minimal `jq` merge used only when the CLI itself is unavailable.
+  # HOK-3369: the shell no longer computes eligibility or evidence — it merges
+  # the write's basic fields onto any existing result. If no result exists it
+  # writes a `missing` evidence block (unknown source). This path has no
+  # resolver, so it never drops an existing `direct` evidence block.
   local now
-  now="${now_for_write:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
+  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
   mkdir -p "$feature_dir"
 
@@ -4130,55 +4110,65 @@ write_stage_result() {
     finished_at="\"$now\""
   fi
 
-  local evidence_status="${resolved_evidence_status:-missing}"
-  local evidence_source="${resolved_evidence_source:-shell-fallback}"
-  local model_attribution_eligible="false"
-  local model_attribution_reason="stage_not_completed"
-  if [[ "$status" == "completed" ]]; then
-    if [[ -z "$resolved_executed_model" ]]; then
-      model_attribution_reason="missing_execution_evidence"
-    elif [[ "$evidence_status" == "contradicted" ]]; then
-      model_attribution_reason="execution_contradicted"
-    elif [[ -n "$model" && "$model" != "$resolved_executed_model" ]]; then
-      model_attribution_reason="runtime_fallback"
-    else
-      model_attribution_eligible="true"
-      model_attribution_reason=""
-    fi
-  fi
-
   local tmp
   tmp=$(mktemp) || { log_warn "write_stage_result: mktemp failed"; return 0; }
-  jq -n \
-    --arg stage "$stage" \
-    --arg status "$status" \
-    --arg startedAt "$started_at" \
-    --argjson finishedAt "$finished_at" \
-    --arg agent "$agent" \
-    --arg model "$model" \
-    --arg notes "$notes" \
-    --arg executedModel "$resolved_executed_model" \
-    --arg evidenceSource "$evidence_source" \
-    --arg evidenceStatus "$evidence_status" \
-    --arg evidenceDetail "$resolved_evidence_detail" \
-    --arg recordedAt "$now" \
-    --argjson modelAttributionEligible "$model_attribution_eligible" \
-    --arg ineligibleReason "$model_attribution_reason" \
-    '{
-      stage: $stage,
-      status: $status,
-      startedAt: $startedAt,
-      finishedAt: $finishedAt,
-      agent: $agent,
-      model: $model,
-      intendedModel: ($model | if . == "" then null else . end),
-      executedModel: ($executedModel | if . == "" then null else . end),
-      executionEvidence: ({status: $evidenceStatus, source: $evidenceSource}
-        + (if $evidenceDetail == "" then {} else {detail: $evidenceDetail} end)
-        + {recordedAt: $recordedAt}),
-      modelAttributionEligible: $modelAttributionEligible,
-      notes: $notes
-    } + (if $ineligibleReason == "" then {} else {modelAttributionIneligibleReason: $ineligibleReason} end)' > "$tmp" 2>/dev/null || { rm -f "$tmp"; log_warn "write_stage_result: jq failed"; return 0; }
+  if [[ -f "$result_file" ]]; then
+    # Merge the shell's basic fields onto the existing result. Any prior
+    # `executedModel` / `executionEvidence` / `modelAttribution*` block is
+    # preserved unchanged — the shell fallback never downgrades evidence.
+    jq \
+      --arg stage "$stage" \
+      --arg status "$status" \
+      --arg startedAt "$started_at" \
+      --argjson finishedAt "$finished_at" \
+      --arg agent "$agent" \
+      --arg model "$model" \
+      --arg notes "$notes" \
+      '. + {
+        stage: $stage,
+        status: $status,
+        startedAt: $startedAt,
+        finishedAt: $finishedAt,
+        agent: $agent,
+        model: $model,
+        intendedModel: ($model | if . == "" then null else . end),
+        notes: $notes
+      }' "$result_file" > "$tmp" 2>/dev/null || { rm -f "$tmp"; log_warn "write_stage_result: jq merge failed"; return 0; }
+  else
+    # Fresh file: write a minimal shape with `missing` evidence. Eligibility
+    # falls to `stage_not_completed` or `missing_execution_evidence`; the
+    # fallback never fabricates `runtime_fallback`.
+    local eligible="false"
+    local reason="stage_not_completed"
+    if [[ "$status" == "completed" ]]; then
+      reason="missing_execution_evidence"
+    fi
+    jq -n \
+      --arg stage "$stage" \
+      --arg status "$status" \
+      --arg startedAt "$started_at" \
+      --argjson finishedAt "$finished_at" \
+      --arg agent "$agent" \
+      --arg model "$model" \
+      --arg notes "$notes" \
+      --arg recordedAt "$now" \
+      --argjson eligible "$eligible" \
+      --arg reason "$reason" \
+      '{
+        stage: $stage,
+        status: $status,
+        startedAt: $startedAt,
+        finishedAt: $finishedAt,
+        agent: $agent,
+        model: $model,
+        intendedModel: ($model | if . == "" then null else . end),
+        executedModel: null,
+        executionEvidence: {status: "missing", source: "shell-fallback", recordedAt: $recordedAt},
+        modelAttributionEligible: $eligible,
+        modelAttributionIneligibleReason: $reason,
+        notes: $notes
+      }' > "$tmp" 2>/dev/null || { rm -f "$tmp"; log_warn "write_stage_result: jq failed"; return 0; }
+  fi
   mv "$tmp" "$result_file"
   _write_stage_result_trace_event "$feature_dir" "$stage" "$status" "$agent" "$model" "$previous_status"
 }

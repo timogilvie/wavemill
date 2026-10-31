@@ -304,6 +304,8 @@ for f in \
   "$REPO_DIR"/tests/journeys/eval-failure-exhaustion.journey.sh \
   "$REPO_DIR"/tests/journeys/challenger-contract-recovery.journey.sh \
   "$REPO_DIR"/tests/journeys/challenge-pair-eval.journey.sh \
+  "$REPO_DIR"/tests/journeys/native-arm-evidence.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/fake-agent/native-launcher.sh \
   "$REPO_DIR"/tests/journeys/native-ownership-recovery.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/native-ownership/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/grounded-overlap.journey.sh \

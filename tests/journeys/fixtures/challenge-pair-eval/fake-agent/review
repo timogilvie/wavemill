@@ -3,4 +3,11 @@
 # reviewer's analysis identity, then the shared default (push, PR, result).
 source "$FAKE_AGENT_SCRIPT_DIR/session-telemetry.sh"
 fake_review_analysis_identity "$FAKE_MODEL"
+if [[ "${JOURNEY_NATIVE_ARM_EVIDENCE:-0}" == 1 ]]; then
+  source "$FAKE_AGENT_TOOLS_DIR/../shared/lib/task-identity.sh"
+  if task_identity_is_challenger "$WAVEMILL_ISSUE"; then
+    source "$FAKE_AGENT_SCRIPT_DIR/native-launcher.sh"
+    fake_native_launcher_emit review "$@"
+  fi
+fi
 default_review
