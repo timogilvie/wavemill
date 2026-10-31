@@ -7,7 +7,7 @@
 # ── Live-only writers and in-stage readers (ratcheted) ───────────────────────
 # Each entry below is a legitimate live-only site (stage writer, in-stage
 # reader, dashboard live-only query) that must only see the live file.
-shared/lib/wavemill-monitor.sh 75  # in-stage writers and live-only inspections (monitor loop)
+shared/lib/wavemill-monitor.sh 76  # in-stage writers and live-only inspections (monitor loop; HOK-3371 ready_failure helpers)
 shared/lib/wavemill-status.sh 6  # live-only dashboard reads
 shared/lib/wavemill-startup-runner.sh 4  # stage writers at mill launch
 shared/lib/eval-context-gatherer.ts 9  # legacy ad-hoc stage-result joins kept for backward compat; shrink as callers migrate to the resolver

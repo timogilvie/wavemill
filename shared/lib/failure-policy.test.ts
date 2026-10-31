@@ -141,6 +141,14 @@ test('code failures are recognised and carry their excerpt', () => {
 
   assert.equal(classifyFailure({ stage: 'ready', ciCategory: 'deterministic-local', detail: 'lint' }).class, 'code-failure');
   assert.equal(classifyFailure({ stage: 'tend', failureKind: 'checks-failed', detail: 'unit: fail' }).class, 'code-failure');
+
+  // HOK-3361 replay: a transition tool's contract assertion is mill code, not
+  // the arm's change — the policy hands it to the operator, not the retry
+  // budget (HOK-3371). The excerpt is the tool's own message.
+  const stamp = 'Expected resolved_model for planner inherited';
+  const stampDecision = classifyFailure({ stage: 'ready', detail: stamp });
+  assert.equal(stampDecision.class, 'code-failure');
+  assert.equal(stampDecision.codeFailureExcerpt, stamp);
 });
 
 test('transient signatures override code-failure kinds', () => {

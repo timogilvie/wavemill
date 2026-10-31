@@ -327,6 +327,7 @@ TESTS=(
   shared/lib/model-equivalence-guard.test.ts
   shared/lib/side-effect-ledger-guard.test.ts
   shared/lib/failure-policy-guard.test.ts
+  shared/lib/ready-failure-policy-guard.test.ts
   shared/lib/task-field-read-checker.test.ts
   shared/lib/test-task-literal-checker.test.ts
   shared/lib/feature-flag-checker.test.ts

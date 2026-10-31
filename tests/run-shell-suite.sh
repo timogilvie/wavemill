@@ -97,6 +97,7 @@ TESTS=(
   merge-labels-real-state.test.sh
   state-fixtures.test.sh
   ready-update-from-base.test.sh
+  ready-failure-classify-and-act.test.sh
   plan-packet-binding.test.sh
   task-inputs-gate.test.sh
   task-progress.test.sh
