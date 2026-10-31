@@ -209,22 +209,32 @@ if (isMainModule) {
     const lines = content.split('\n').filter((l) => l.trim().length > 0);
 
     let count = 0;
+    let errorCount = 0;
     for (const line of lines) {
       if (count >= maxPrs) break;
-      const parsed = JSON.parse(line) as CorrectivePairInput;
-      const label = await processCorrectivePair(parsed, {
-        repoDir,
-        offline,
-        model,
-      });
+      try {
+        const parsed = JSON.parse(line) as CorrectivePairInput;
+        const label = await processCorrectivePair(parsed, {
+          repoDir,
+          offline,
+          model,
+        });
 
-      const lineOut = serializeReworkCellLabel(label) + '\n';
-      if (outPath) {
-        appendFileSync(outPath, lineOut, 'utf-8');
-      } else {
-        process.stdout.write(lineOut);
+        const lineOut = serializeReworkCellLabel(label) + '\n';
+        if (outPath) {
+          appendFileSync(outPath, lineOut, 'utf-8');
+        } else {
+          process.stdout.write(lineOut);
+        }
+        count++;
+      } catch (error) {
+        errorCount++;
+        process.stderr.write(`[backfill-rework-cells] Warning: skipped invalid line: ${error instanceof Error ? error.message : String(error)}\n`);
       }
-      count++;
+    }
+
+    if (errorCount > 0) {
+      process.stderr.write(`[backfill-rework-cells] Warning: encountered ${errorCount} invalid lines in ${resolvedCorpus}\n`);
     }
 
     if (outPath) {
