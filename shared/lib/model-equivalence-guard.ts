@@ -26,7 +26,7 @@
 import type { GuardSpec, StructuralMatch } from '../../tools/lib/source-guard.ts';
 
 /** Model-named identifiers whose comparison is a model-identity decision. */
-const MODEL_NAMED_ID = String.raw`\b(?:expected|actual|requested|resolved|route|stage|primary|challenger|intended|wire|target|canonical|effective)[A-Za-z]*Model[A-Za-z]*`;
+const MODEL_NAMED_ID = String.raw`\b(?:expected|actual|requested|resolved|route|stage|primary|challenger|intended|wire|target|canonical|effective|executed)[A-Za-z]*Model[A-Za-z]*`;
 
 /** `typeof x === 'string'` and friends: type probes, not identity decisions. */
 const TYPEOF_LITERAL = String.raw`(?:'(?:string|number|boolean|bigint|symbol|function|object|undefined)'|"(?:string|number|boolean|bigint|symbol|function|object|undefined)")`;
@@ -59,6 +59,11 @@ const GUARDED_FILES = [
   'shared/lib/challenge-pair-recovery.ts',
   'shared/lib/challenge-attestation-backfill.ts',
   'shared/lib/challenge-coverage-selector.ts',
+  // HOK-3369: executionTruthFields' runtime_fallback decision reads two
+  // model-named identifiers, so the one model-identity rule applies here too.
+  'shared/lib/stage-result.ts',
+  'shared/lib/executed-model-resolver.ts',
+  'tools/backfill-stage-executed-model.ts',
 ];
 
 export const MODEL_EQUIVALENCE_GUARD: GuardSpec = {

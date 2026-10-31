@@ -3,11 +3,16 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
 import { runTool } from '../shared/lib/tool-runner.ts';
-import { resolveExecutedModelFromSessions, type ExecutedModelResolverAgent } from '../shared/lib/executed-model-resolver.ts';
-import { executionTruthFields, isValidStage, type StageName, type StageResult } from '../shared/lib/stage-result.ts';
-import { readOwnershipRows, type OwnershipStage } from '../shared/lib/session-ownership.ts';
+import { resolveStageExecutedModel, type ResolvedStageExecutedModel } from '../shared/lib/executed-model-resolver.ts';
+import {
+  executionTruthFields,
+  isValidStage,
+  type StageExecutionEvidence,
+  type StageName,
+  type StageResult,
+} from '../shared/lib/stage-result.ts';
+import { type OwnershipStage } from '../shared/lib/session-ownership.ts';
 
 type BackfillAction =
   | 're-derived'
@@ -33,9 +38,27 @@ export interface BackfillStageExecutedModelOptions {
   worktree?: string;
   branch?: string;
   apply?: boolean;
+  /** HOK-3369: scan every archived eval artifact dir under this repo. */
+  allArchivedUnder?: string;
+  /** HOK-3369: scan every live feature dir under this repo (worktrees/*). */
+  liveUnder?: string;
+  /** HOK-3369: milled repo root, forwarded to the resolver for native streams. */
+  repoDir?: string;
 }
 
 const STAGES: readonly StageName[] = ['planning', 'coding', 'review'] as const;
+
+/**
+ * HOK-3369: archive files use `.<stage>-result.json` on recent runs and the
+ * dot-less `<stage>-result.json` on older ones (HOK-3322_c for example).
+ */
+function existingResultFilename(dir: string, stage: StageName): string | null {
+  const dotted = join(dir, `.${stage}-result.json`);
+  if (existsSync(dotted)) return dotted;
+  const bare = join(dir, `${stage}-result.json`);
+  if (existsSync(bare)) return bare;
+  return null;
+}
 
 function parseJsonFile<T>(filePath: string): T | null {
   try {
@@ -43,10 +66,6 @@ function parseJsonFile<T>(filePath: string): T | null {
   } catch {
     return null;
   }
-}
-
-function resolverAgent(value: unknown): ExecutedModelResolverAgent | null {
-  return value === 'claude' || value === 'codex' ? value : null;
 }
 
 function terminalString(record: unknown, paths: string[][]): string | undefined {
@@ -92,20 +111,34 @@ function sameJson(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function deriveTruth(result: StageResult, executedModel: string, source: string, detail: string): Partial<StageResult> {
-  return executionTruthFields({
+function deriveTruth(
+  result: StageResult,
+  resolved: ResolvedStageExecutedModel,
+  repoDir?: string,
+): { truth: Partial<StageResult>; evidence: StageExecutionEvidence } {
+  const truth = executionTruthFields({
     status: result.status,
     existing: result,
     now: new Date().toISOString(),
+    repoDir,
     flags: {
       model: result.model ?? '',
       'intended-model': result.intendedModel ?? result.model ?? '',
-      'executed-model': executedModel,
-      'execution-evidence-status': 'direct',
-      'execution-evidence-source': source,
-      'execution-evidence-detail': `backfill:session-jsonl; ${detail}`,
+      'executed-model': resolved.executedModel ?? '',
+      'execution-evidence-status': resolved.evidenceStatus,
+      'execution-evidence-source': resolved.evidenceSource,
+      'execution-evidence-detail': `backfill:session-jsonl; ${resolved.evidenceDetail}`,
     },
   });
+  const evidence: StageExecutionEvidence = { ...(truth.executionEvidence as StageExecutionEvidence) };
+  if (resolved.providerEvidence) {
+    for (const [key, value] of Object.entries(resolved.providerEvidence)) {
+      if (value !== undefined && (evidence as Record<string, unknown>)[key] === undefined) {
+        (evidence as Record<string, unknown>)[key] = value;
+      }
+    }
+  }
+  return { truth, evidence };
 }
 
 function processStageFile(input: {
@@ -113,6 +146,7 @@ function processStageFile(input: {
   stage: StageName;
   worktreePath?: string;
   branchName?: string;
+  repoDir?: string;
   apply: boolean;
 }): BackfillStageExecutedModelResult {
   if (!existsSync(input.filePath)) {
@@ -126,23 +160,21 @@ function processStageFile(input: {
   if (result.status !== 'completed') {
     return { file: input.filePath, stage: input.stage, action: 'skipped', applied: false, reason: 'stage_not_completed' };
   }
-
-  const agent = resolverAgent(result.agent);
-  if (!agent) {
-    return { file: input.filePath, stage: input.stage, action: 'skipped', applied: false, reason: 'unsupported_agent' };
-  }
   if (!input.worktreePath || !input.branchName) {
     return { file: input.filePath, stage: input.stage, action: 'missing-input', applied: false, reason: 'missing_worktree_or_branch' };
   }
 
-  // The stage result and its ownership record live side by side, live and
-  // archived alike (HOK-3328).
-  const resolved = resolveExecutedModelFromSessions({
+  // HOK-3369: one resolver for every harness, reading the ownership record
+  // beside the archived stage result (HOK-3328).
+  const stateDir = dirname(input.filePath);
+  const resolved = resolveStageExecutedModel({
+    featureDir: stateDir,
+    stage: input.stage as OwnershipStage,
     worktreePath: input.worktreePath,
     branchName: input.branchName,
-    agent,
-    stage: input.stage as OwnershipStage,
-    ownership: readOwnershipRows(dirname(input.filePath)),
+    repoDir: input.repoDir,
+    existing: result,
+    agentHint: result.agent,
   });
   if (!resolved.executedModel || resolved.evidenceStatus !== 'direct') {
     return {
@@ -154,14 +186,12 @@ function processStageFile(input: {
     };
   }
 
-  const truth = deriveTruth(result, resolved.executedModel, resolved.evidenceSource, resolved.evidenceDetail);
+  const { truth, evidence } = deriveTruth(result, resolved, input.repoDir);
   const next: StageResult = {
     ...result,
     ...truth,
+    executionEvidence: evidence,
   };
-  if (!('modelAttributionIneligibleReason' in truth)) {
-    delete next.modelAttributionIneligibleReason;
-  }
   if (sameJson(result, next)) {
     return {
       file: input.filePath,
@@ -193,22 +223,101 @@ function artifactContext(artifactDir: string, overrides: Pick<BackfillStageExecu
   return { worktreePath, branchName };
 }
 
+function discoverArchivedArtifacts(repoDir: string): string[] {
+  const artifactsRoot = join(repoDir, '.wavemill', 'evals', 'artifacts');
+  if (!existsSync(artifactsRoot)) return [];
+  try {
+    const { readdirSync } = require('node:fs') as typeof import('node:fs');
+    return readdirSync(artifactsRoot)
+      .map((name) => join(artifactsRoot, name))
+      .filter((path) => {
+        try {
+          const { statSync } = require('node:fs') as typeof import('node:fs');
+          return statSync(path).isDirectory();
+        } catch { return false; }
+      });
+  } catch {
+    return [];
+  }
+}
+
+function discoverLiveFeatureDirs(repoDir: string): string[] {
+  const worktreesRoot = join(repoDir, 'worktrees');
+  if (!existsSync(worktreesRoot)) return [];
+  const found: string[] = [];
+  try {
+    const { readdirSync, statSync } = require('node:fs') as typeof import('node:fs');
+    for (const wt of readdirSync(worktreesRoot)) {
+      const featuresRoot = join(worktreesRoot, wt, 'features');
+      if (!existsSync(featuresRoot)) continue;
+      try {
+        for (const slug of readdirSync(featuresRoot)) {
+          const dir = join(featuresRoot, slug);
+          try {
+            if (statSync(dir).isDirectory()) found.push(dir);
+          } catch { /* skip */ }
+        }
+      } catch { /* skip */ }
+    }
+  } catch {
+    // repo dir unreadable
+  }
+  return found;
+}
+
 export function backfillStageExecutedModel(options: BackfillStageExecutedModelOptions): BackfillStageExecutedModelResult[] {
   const apply = Boolean(options.apply);
   const results: BackfillStageExecutedModelResult[] = [];
+  const repoDir = options.repoDir
+    ?? process.env.WAVEMILL_MILLED_REPO_DIR
+    ?? process.env.REPO_DIR
+    ?? undefined;
 
-  for (const artifactDirRaw of options.artifactDirs ?? []) {
+  const artifactDirs: string[] = [...(options.artifactDirs ?? [])];
+  if (options.allArchivedUnder) {
+    artifactDirs.push(...discoverArchivedArtifacts(resolve(options.allArchivedUnder)));
+  }
+
+  for (const artifactDirRaw of artifactDirs) {
     const artifactDir = resolve(artifactDirRaw);
     const context = artifactContext(artifactDir, options);
+    // Prefer the artifact's own repo dir when the caller passed one via
+    // --all-archived; otherwise fall back to any explicit --repo-dir / env.
+    const perArtifactRepoDir = options.allArchivedUnder
+      ? resolve(options.allArchivedUnder)
+      : repoDir;
     for (const stage of STAGES) {
-      // HOK-2891: archive keeps the live basename.
+      // HOK-2891 / HOK-3369: archive keeps `.<stage>-result.json` on recent
+      // runs and the dot-less `<stage>-result.json` on older ones.
+      const filePath = existingResultFilename(artifactDir, stage)
+        ?? join(artifactDir, `.${stage}-result.json`);
       results.push(processStageFile({
-        filePath: join(artifactDir, `.${stage}-result.json`),
+        filePath,
         stage,
         worktreePath: context.worktreePath,
         branchName: context.branchName,
+        repoDir: perArtifactRepoDir,
         apply,
       }));
+    }
+  }
+
+  if (options.liveUnder) {
+    for (const featureDir of discoverLiveFeatureDirs(resolve(options.liveUnder))) {
+      const worktreePath = resolve(featureDir, '..', '..');
+      const branchName = gitBranch(worktreePath) ?? undefined;
+      for (const stage of STAGES) {
+        const filePath = existingResultFilename(featureDir, stage);
+        if (!filePath) continue;
+        results.push(processStageFile({
+          filePath,
+          stage,
+          worktreePath,
+          branchName,
+          repoDir: resolve(options.liveUnder),
+          apply,
+        }));
+      }
     }
   }
 
@@ -217,10 +326,12 @@ export function backfillStageExecutedModel(options: BackfillStageExecutedModelOp
     const worktreePath = options.worktree ?? resolve(featureDir, '..', '..');
     const branchName = options.branch ?? gitBranch(worktreePath);
     results.push(processStageFile({
-      filePath: join(featureDir, `.${options.stage}-result.json`),
+      filePath: existingResultFilename(featureDir, options.stage)
+        ?? join(featureDir, `.${options.stage}-result.json`),
       stage: options.stage,
       worktreePath,
       branchName,
+      repoDir,
       apply,
     }));
   }
@@ -248,6 +359,29 @@ function printResults(results: BackfillStageExecutedModelResult[], apply: boolea
   }
   const changed = results.filter((result) => result.action === 're-derived').length;
   const applied = results.filter((result) => result.applied).length;
+  // HOK-3369: per-harness summary. The resolver's reports are per-file, so
+  // we count by what we can tell from the file's agent + the resolver's
+  // recovered/still-missing split.
+  const bucket = (action: BackfillStageExecutedModelResult['action']): 're-derived' | 'still-missing' | 'other' => {
+    if (action === 're-derived') return 're-derived';
+    if (action === 'no-session-evidence') return 'still-missing';
+    return 'other';
+  };
+  const stageCounts = new Map<StageName, { recovered: number; stillMissing: number }>();
+  for (const result of results) {
+    const b = bucket(result.action);
+    if (b === 'other') continue;
+    const entry = stageCounts.get(result.stage) ?? { recovered: 0, stillMissing: 0 };
+    if (b === 're-derived') entry.recovered++;
+    else entry.stillMissing++;
+    stageCounts.set(result.stage, entry);
+  }
+  if (stageCounts.size > 0) {
+    console.log('--- Summary by stage ---');
+    for (const [stage, entry] of stageCounts) {
+      console.log(`  ${stage}: recovered=${entry.recovered}, still-missing=${entry.stillMissing}`);
+    }
+  }
   if (apply) {
     console.log(`Applied ${applied}/${changed} re-derived stage result update(s).`);
   } else {
@@ -258,29 +392,35 @@ function printResults(results: BackfillStageExecutedModelResult[], apply: boolea
 if (import.meta.main) {
   runTool({
     name: 'backfill-stage-executed-model',
-    description: 'Re-derive executedModel for completed Claude/Codex stage results from retained session JSONL',
+    description: 'Re-derive executedModel for completed stage results (every harness) from retained session JSONL',
     options: {
       'artifact-dir': { type: 'string', multiple: true, description: 'Archived eval artifact directory' },
       'feature-dir': { type: 'string', description: 'Live feature directory' },
       stage: { type: 'string', description: 'Stage for --feature-dir mode' },
       worktree: { type: 'string', description: 'Override worktree path' },
       branch: { type: 'string', description: 'Override branch name' },
+      'all-archived': { type: 'string', description: 'Repo root; scan every .wavemill/evals/artifacts/* under it' },
+      live: { type: 'string', description: 'Repo root; scan every worktrees/*/features/* under it' },
+      'repo-dir': { type: 'string', description: 'Milled repo root for native-session resolution' },
       apply: { type: 'boolean', description: 'Write updates; default is dry-run' },
     },
     examples: [
       'npx tsx tools/backfill-stage-executed-model.ts --artifact-dir .wavemill/evals/artifacts/HOK-2807 --apply',
       'npx tsx tools/backfill-stage-executed-model.ts --feature-dir features/my-task --stage coding',
+      'npx tsx tools/backfill-stage-executed-model.ts --all-archived ~/Dropbox/wavemill',
     ],
     run({ args, rawArgv }) {
       const artifactDirs = collectRepeated(rawArgv, 'artifact-dir');
       const stageArg = typeof args.stage === 'string' ? args.stage : undefined;
       const stage = stageArg && isValidStage(stageArg) ? stageArg as StageName : undefined;
       const featureDir = typeof args['feature-dir'] === 'string' ? args['feature-dir'] : undefined;
+      const allArchivedUnder = typeof args['all-archived'] === 'string' ? args['all-archived'] : undefined;
+      const liveUnder = typeof args.live === 'string' ? args.live : undefined;
       if (featureDir && !stage) {
         throw new Error('--feature-dir requires --stage planning|coding|review|ready');
       }
-      if (artifactDirs.length === 0 && !featureDir) {
-        throw new Error('Required: --artifact-dir or --feature-dir');
+      if (artifactDirs.length === 0 && !featureDir && !allArchivedUnder && !liveUnder) {
+        throw new Error('Required: --artifact-dir, --feature-dir, --all-archived, or --live');
       }
       const results = backfillStageExecutedModel({
         artifactDirs,
@@ -289,6 +429,9 @@ if (import.meta.main) {
         worktree: typeof args.worktree === 'string' ? args.worktree : undefined,
         branch: typeof args.branch === 'string' ? args.branch : undefined,
         apply: Boolean(args.apply),
+        allArchivedUnder,
+        liveUnder,
+        repoDir: typeof args['repo-dir'] === 'string' ? args['repo-dir'] : undefined,
       });
       printResults(results, Boolean(args.apply));
     },

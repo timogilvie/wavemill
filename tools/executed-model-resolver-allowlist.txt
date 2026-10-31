@@ -1,0 +1,13 @@
+# Ratcheting allowlist for the executed-model-resolver guard (HOK-3369).
+#
+# Format: <repo-relative path> [<max findings>]  # <reason>
+#
+# The invariant is that the one resolver
+# (shared/lib/executed-model-resolver.ts) owns executed-model resolution for
+# every harness, and attribution eligibility is decided only in
+# shared/lib/stage-result.ts. New call sites must route through them.
+
+shared/lib/arbiter-r6-report.ts 1  # read-side: counts drop reasons for the R6 report; not an attribution decision.
+shared/lib/challenge-comparison.ts 1  # read-side: normalises an ineligibility reason onto a comparison snapshot (not a stage-result write).
+shared/lib/pr-route-provenance.ts 2  # read-side: classifies route provenance for display; not an attribution decision.
+shared/lib/provider-identity-guard.ts 1  # guard description references the retired resolver symbol by name in prose text.

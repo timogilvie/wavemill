@@ -5,12 +5,19 @@
  * Provides write/read/update subcommands so the shell orchestrator can manage
  * stage result files without constructing JSON via heredoc.
  *
+ * HOK-3369: on `completed` status, every write path resolves the executed
+ * model in-process through {@link resolveStageExecutedModel} — one resolver
+ * for Claude Code / Codex / native, keyed on the ownership row rather than
+ * the `agent` label. The shell gate (claude|codex) is gone.
+ *
  * Usage:
  *   npx tsx tools/stage-result-cli.ts write <feature_dir> <stage> <status> [options]
  *   npx tsx tools/stage-result-cli.ts read  <feature_dir> <stage>
  *   npx tsx tools/stage-result-cli.ts update <feature_dir> <stage> [options]
  */
 
+import { execFileSync } from 'node:child_process';
+import { resolve as resolvePath } from 'node:path';
 import {
   writeStageResult,
   writeStageResultWithHistory,
@@ -20,8 +27,24 @@ import {
   isValidStatus,
   executionTruthFields,
 } from '../shared/lib/stage-result.ts';
-import type { StageResult, StageName, StageStatus, StageArtifacts } from '../shared/lib/stage-result.ts';
+import type {
+  StageResult,
+  StageName,
+  StageStatus,
+  StageArtifacts,
+  StageExecutionEvidence,
+} from '../shared/lib/stage-result.ts';
 import { applyReviewAnalysisIdentity } from '../shared/lib/review-analysis-identity.ts';
+import {
+  resolveStageExecutedModel,
+  type ResolvedStageExecutedModel,
+} from '../shared/lib/executed-model-resolver.ts';
+import {
+  OWNERSHIP_STAGES,
+  readOwnershipRows,
+  rowsForStage,
+  type OwnershipStage,
+} from '../shared/lib/session-ownership.ts';
 
 /**
  * Fold `review-changes`' head-keyed analysis identity into the review stage
@@ -36,6 +59,159 @@ async function mergeReviewIdentity(featureDir: string, stage: StageName): Promis
   } catch (error) {
     console.error(`Warning: review analysis identity not merged: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+/**
+ * HOK-3369: resolve `{featureDir, stage, worktreePath, branchName, repoDir}`
+ * inputs for the one evidence pipeline. The repo dir prefers the documented
+ * mill env (`WAVEMILL_MILLED_REPO_DIR` / `REPO_DIR`), then the git common dir
+ * of the worktree.
+ */
+function evidenceContext(featureDir: string, stage: StageName): {
+  worktreePath: string;
+  branchName: string | null;
+  repoDir: string | undefined;
+} {
+  const absFeatureDir = resolvePath(featureDir);
+  // features/<slug>/ → <slug>'s worktree root.
+  const worktreePath = resolvePath(absFeatureDir, '..', '..');
+  let branchName: string | null = null;
+  try {
+    branchName = execFileSync('git', ['-C', worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || null;
+  } catch {
+    branchName = null;
+  }
+  let repoDir: string | undefined = process.env.WAVEMILL_MILLED_REPO_DIR
+    ?? process.env.REPO_DIR
+    ?? undefined;
+  if (!repoDir) {
+    try {
+      const gitCommonDir = execFileSync('git', ['-C', worktreePath, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (gitCommonDir) {
+        // `<repo>/.git` → `<repo>`; `<repo>/.git/worktrees/<name>` → `<repo>/.git` →
+        // one more up to `<repo>`.
+        const gitDirParent = resolvePath(gitCommonDir, '..');
+        repoDir = gitDirParent;
+      }
+    } catch {
+      // No git / out of tree: leave repoDir undefined.
+    }
+  }
+  return { worktreePath, branchName, repoDir };
+}
+
+/**
+ * HOK-3369: compute `latestLaunchAt` for the stage so `executionTruthFields`
+ * knows whether existing evidence is from a prior attempt. Returns `null` for
+ * stages without ownership rows (`ready`).
+ */
+function latestLaunchAtFor(featureDir: string, stage: StageName): string | null {
+  if (!(OWNERSHIP_STAGES as readonly string[]).includes(stage)) return null;
+  let rows;
+  try {
+    rows = rowsForStage(readOwnershipRows(featureDir), stage as OwnershipStage);
+  } catch {
+    return null;
+  }
+  if (rows.length === 0) return null;
+  const latest = [...rows]
+    .map((row) => row.launchedAt)
+    .filter((at): at is string => typeof at === 'string')
+    .sort()
+    .pop();
+  return latest ?? null;
+}
+
+/**
+ * HOK-3369: call the one resolver when the status is `completed` and no
+ * explicit `--executed-model` flag was supplied. Resolver exceptions are
+ * caught and surfaced as `missing` — a stage transition must never fail on
+ * attribution.
+ */
+function maybeResolveExecutedModel(input: {
+  featureDir: string;
+  stage: StageName;
+  status: StageStatus;
+  flags: Record<string, string>;
+  existing: StageResult | null;
+}): ResolvedStageExecutedModel | null {
+  if (input.status !== 'completed') return null;
+  if (input.flags['executed-model'] !== undefined) return null;
+  if (!(OWNERSHIP_STAGES as readonly string[]).includes(input.stage)) return null;
+  const ctx = evidenceContext(input.featureDir, input.stage);
+  if (!ctx.branchName) return null;
+  try {
+    return resolveStageExecutedModel({
+      featureDir: input.featureDir,
+      stage: input.stage as OwnershipStage,
+      worktreePath: ctx.worktreePath,
+      branchName: ctx.branchName,
+      repoDir: ctx.repoDir,
+      existing: input.existing,
+      agentHint: input.flags['agent'] ?? input.existing?.agent,
+    });
+  } catch (error) {
+    console.error(`Warning: executed-model resolver failed: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+/**
+ * HOK-3369: fold the resolver's answer into the CLI flags. `direct` /
+ * `contradicted` adds explicit flags (so `executionTruthFields` replaces
+ * evidence); `missing` is a no-op, so the merge rule keeps prior evidence.
+ */
+function applyResolvedToFlags(
+  flags: Record<string, string>,
+  resolved: ResolvedStageExecutedModel | null,
+): Record<string, string> {
+  if (!resolved) return flags;
+  if (resolved.evidenceStatus === 'missing') {
+    if (resolved.evidenceDetail) {
+      console.error(`[stage-result-cli] resolver: ${resolved.evidenceDetail}`);
+    }
+    return flags;
+  }
+  const next: Record<string, string> = { ...flags };
+  if (resolved.executedModel) {
+    next['executed-model'] = resolved.executedModel;
+  }
+  next['execution-evidence-status'] = resolved.evidenceStatus;
+  next['execution-evidence-source'] = resolved.evidenceSource;
+  if (resolved.evidenceDetail) {
+    next['execution-evidence-detail'] = resolved.evidenceDetail;
+  }
+  console.error(`[stage-result-cli] resolver: ${resolved.evidenceSource}; ${resolved.evidenceDetail}`);
+  return next;
+}
+
+/**
+ * HOK-3369: merge provider-response fields from the resolver into the
+ * freshly-built evidence block. `executionTruthFields` returns the plain
+ * block; the fields the launcher recorded (identityVerdict, requestedWireId,
+ * certifiedTarget, providerReportedModel, responseId, transportProvider)
+ * come from the resolver's `providerEvidence` and are merged here.
+ */
+function mergeProviderEvidence(
+  base: Partial<StageResult>,
+  resolved: ResolvedStageExecutedModel | null,
+): Partial<StageResult> {
+  if (!resolved?.providerEvidence) return base;
+  if (!base.executionEvidence) return base;
+  const existing = base.executionEvidence;
+  const merged: StageExecutionEvidence = { ...existing };
+  for (const [key, value] of Object.entries(resolved.providerEvidence)) {
+    if (value !== undefined && (merged as Record<string, unknown>)[key] === undefined) {
+      (merged as Record<string, unknown>)[key] = value;
+    }
+  }
+  return { ...base, executionEvidence: merged };
 }
 
 const USAGE = `stage-result-cli — manage controller-owned stage result files
@@ -131,7 +307,7 @@ async function main(): Promise<void> {
     }
 
     // Re-parse flags from after the status positional
-    const writeFlags = parseFlags(args.slice(4));
+    let writeFlags = parseFlags(args.slice(4));
     const now = new Date().toISOString();
     const status: StageStatus = statusArg;
 
@@ -152,6 +328,29 @@ async function main(): Promise<void> {
       }
     }
 
+    // HOK-3369: one resolver for every harness, keyed on the ownership row.
+    const resolved = maybeResolveExecutedModel({
+      featureDir,
+      stage,
+      status,
+      flags: writeFlags,
+      existing,
+    });
+    writeFlags = applyResolvedToFlags(writeFlags, resolved);
+
+    const ctx = evidenceContext(featureDir, stage);
+    const latestLaunchAt = latestLaunchAtFor(featureDir, stage);
+    const truth = executionTruthFields({
+      status,
+      flags: writeFlags,
+      existing,
+      now,
+      latestLaunchAt,
+      newAttempt: subcommand === 'write-with-history',
+      repoDir: ctx.repoDir,
+    });
+    const withProviderFields = mergeProviderEvidence(truth, resolved);
+
     const result: StageResult = {
       stage,
       status,
@@ -159,7 +358,7 @@ async function main(): Promise<void> {
       finishedAt,
       agent: writeFlags['agent'] ?? existing?.agent ?? '',
       model: writeFlags['model'] ?? existing?.model ?? '',
-      ...executionTruthFields({ status, flags: writeFlags, existing, now }),
+      ...withProviderFields,
       notes: writeFlags['notes'] ?? '',
       ...(artifacts !== undefined && { artifacts }),
       ...(writeFlags['failure-reason'] !== undefined && { failureReason: writeFlags['failure-reason'] }),
@@ -176,7 +375,7 @@ async function main(): Promise<void> {
   }
 
   if (subcommand === 'update') {
-    const updateFlags = parseFlags(args.slice(3));
+    let updateFlags = parseFlags(args.slice(3));
 
     const patch: Partial<StageResult> = {};
 
@@ -193,22 +392,42 @@ async function main(): Promise<void> {
     if (updateFlags['started-at'] !== undefined) patch.startedAt = updateFlags['started-at'];
     if (updateFlags['finished-at'] !== undefined) patch.finishedAt = updateFlags['finished-at'];
     if (updateFlags['failure-reason'] !== undefined) patch.failureReason = updateFlags['failure-reason'];
-    if (
+
+    const existing = await readStageResult(featureDir, stage);
+    const status = (patch.status ?? existing?.status ?? 'running') as StageStatus;
+    const hasEvidenceFlag =
       updateFlags['intended-model'] !== undefined
       || updateFlags['executed-model'] !== undefined
       || updateFlags['execution-evidence-status'] !== undefined
       || updateFlags['execution-evidence-source'] !== undefined
       || updateFlags['execution-evidence-detail'] !== undefined
-      || updateFlags['model-attribution-eligible'] !== undefined
-    ) {
-      const existing = await readStageResult(featureDir, stage);
-      const status = (patch.status ?? existing?.status ?? 'running') as StageStatus;
-      Object.assign(patch, executionTruthFields({
+      || updateFlags['model-attribution-eligible'] !== undefined;
+
+    // HOK-3369: run executionTruthFields whenever the resulting status is
+    // `completed` OR an evidence flag was passed. `update --status completed`
+    // (review-phase prompt) now routes through the one resolver too; without
+    // flags, the merge rule keeps prior `direct` evidence as a whole block.
+    if (status === 'completed' || hasEvidenceFlag) {
+      const resolved = maybeResolveExecutedModel({
+        featureDir,
+        stage,
+        status,
+        flags: updateFlags,
+        existing,
+      });
+      updateFlags = applyResolvedToFlags(updateFlags, resolved);
+      const ctx = evidenceContext(featureDir, stage);
+      const latestLaunchAt = latestLaunchAtFor(featureDir, stage);
+      const truth = executionTruthFields({
         status,
         flags: updateFlags,
         existing,
         now: new Date().toISOString(),
-      }));
+        latestLaunchAt,
+        repoDir: ctx.repoDir,
+      });
+      const withProviderFields = mergeProviderEvidence(truth, resolved);
+      Object.assign(patch, withProviderFields);
     }
 
     if (updateFlags['artifacts']) {
