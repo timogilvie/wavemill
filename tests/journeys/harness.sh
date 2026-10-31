@@ -138,7 +138,8 @@ journey_write_config() {
       observer: {enabled: false},
       challenge: {enabled: false},
       ready: {watchdog: {enabled: false}},
-      monitor: {readyWatchdog: {enabled: false}}
+      monitor: {readyWatchdog: {enabled: false}},
+      nativeAgent: {certification: {canaryAutoRefresh: false}}
     } * $overlay' > "$REPO_DIR/.wavemill-config.json"
   (
     cd "$REPO_DIR"

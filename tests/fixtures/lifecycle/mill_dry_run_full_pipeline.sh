@@ -144,8 +144,10 @@ export SESSION="mill-dry-run-$$"
 export SKIP_CONFIG_CHECK=true
 export SKIP_CONTEXT_CHECK=true
 export WAVEMILL_NO_PROGRESS=1
-export WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD=1
 export REQUIRE_CONFIRM=false
+
+# Stub the config preflight function for dry-run testing
+run_mill_config_preflight() { return 0; }
 export WAVEMILL_DRY_RUN_BACKLOG_FILE="$BACKLOG_FILE"
 export WAVEMILL_DRY_RUN_PLAN_OUT="$LAUNCH_PLAN_FILE"
 export GH_REPO="acme/wavemill"
