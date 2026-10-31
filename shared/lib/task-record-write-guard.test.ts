@@ -146,6 +146,7 @@ describe('mutateJsonState write guard (shadow)', () => {
   // protects: the guard leaking onto other JSON state files with different shapes.
   it('does not validate files other than workflow-state.json', async () => {
     const other = join(repoDir, '.wavemill', 'hokusai-queue.json');
+    // allow-task-literal: a non-workflow-state `tasks` map is the point of the test
     writeFileSync(other, JSON.stringify({ tasks: { x: { evalFailed: true } } }));
     await mutateJsonState<Record<string, any>>(other, (state) => {
       state.tasks.x.evalFailed = 'not a bool here';

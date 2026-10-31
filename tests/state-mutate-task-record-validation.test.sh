@@ -82,6 +82,7 @@ echo "test_non_workflow_state_files_are_not_validated"
 # protects: the guard leaking onto other JSON state files that have a different shape.
 other="$TEST_DIR/other/.wavemill/hokusai-queue.json"
 mkdir -p "$(dirname "$other")"
+# allow-task-literal: a non-workflow-state `tasks` map is the point of the test
 printf '{"tasks":{"HOK-1":{"evalFailed":true}}}\n' >"$other"
 state_mutate "$other" '.tasks["HOK-1"].evalFailed = "not a bool here"'
 if [[ -f "$(dirname "$other")/state-schema-violations.jsonl" ]]; then fail "non-workflow-state writes are not validated"; else pass "non-workflow-state writes are not validated"; fi
