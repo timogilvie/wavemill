@@ -588,8 +588,5 @@
   },
   "taskSelection": {
     "enterAction": "wave"
-  },
-  "queuePlanner": {
-    "mode": "grounded"
   }
 }

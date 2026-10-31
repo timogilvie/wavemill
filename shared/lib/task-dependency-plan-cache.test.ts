@@ -5,19 +5,13 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import {
   CACHE_SCHEMA_VERSION,
-  cachedEdgesToDependencyEdges,
-  computeBacklogDiff,
   computeTaskFingerprint,
   getTaskDependencyCachePath,
   loadCache,
-  lookupEdge,
   lookupGroundedVerdict,
   lookupTouchSet,
   TOUCH_SET_TTL_MS,
-  mergeEdges,
   pruneCache,
-  recordEdge,
-  retainPreviousFingerprints,
   saveCache,
   type CacheFile,
   type CachedGroundedVerdict,
@@ -35,8 +29,6 @@ function createCache(overrides: Partial<CacheFile> = {}): CacheFile {
     schemaVersion: CACHE_SCHEMA_VERSION,
     projectSlug: 'sample-project',
     updatedAt: new Date(0).toISOString(),
-    fingerprints: {},
-    edges: [],
     ...overrides,
   };
 }
@@ -138,6 +130,7 @@ describe('task-dependency-plan-cache', () => {
       fingerprint,
       computedAt,
       entries: [{ path: 'shared/lib/wavemill-monitor.sh', source: 'explicit', symbols: ['poll_loop'] }],
+      status: 'predicted',
     });
     const verdict = (a: string, b: string, aFingerprint: string, bFingerprint: string): CachedGroundedVerdict => ({
       a,
@@ -246,6 +239,25 @@ describe('task-dependency-plan-cache', () => {
       assert.ok(lookupGroundedVerdict(cache, 'HOK-2', 'HOK-1', 'fp-2', 'fp-1'));
       assert.equal(lookupGroundedVerdict(cache, 'HOK-1', 'HOK-2', 'fp-1', 'fp-changed'), undefined);
     });
+
+    it('back-fills missing status on pre-HOK-3307 cache entries (migration)', () => {
+      // protects: loading an old cache without `status` must assign predicted/unknown, never leave it absent
+      const cachePath = getTaskDependencyCachePath(repoDir, 'sample-project');
+      mkdirSync(join(repoDir, '.wavemill', 'cache', 'task-dependency-plans'), { recursive: true });
+      const legacy = {
+        ...createCache(),
+        touchSets: {
+          'HOK-1': { fingerprint: 'fp-1', computedAt: '2026-10-01T00:00:00.000Z', entries: [{ path: 'shared/lib/wavemill-monitor.sh', source: 'explicit' }] },
+          'HOK-2': { fingerprint: 'fp-2', computedAt: '2026-10-01T00:00:00.000Z', entries: [] },
+        },
+      };
+      writeFileSync(cachePath, `${JSON.stringify(legacy)}\n`, 'utf8');
+
+      const cache = loadCache(repoDir, 'sample-project');
+
+      assert.equal(cache.touchSets?.['HOK-1']?.status, 'predicted');
+      assert.equal(cache.touchSets?.['HOK-2']?.status, 'unknown');
+    });
   });
 
   it('preserves the inference block through pruneCache', () => {
@@ -261,13 +273,6 @@ describe('task-dependency-plan-cache', () => {
 
     assert.deepEqual(pruned.inference, inference);
     assert.equal(pruneCache(createCache(), [{ id: 'HOK-1' }]).inference, undefined);
-  });
-
-  it('retains previous fingerprints only for tasks still in the backlog', () => {
-    assert.deepEqual(
-      retainPreviousFingerprints({ 'HOK-1': 'a', 'HOK-2': 'b', 'HOK-9': 'z' }, ['HOK-1', 'HOK-2', 'HOK-3']),
-      { 'HOK-1': 'a', 'HOK-2': 'b' },
-    );
   });
 
   it('drops schema mismatches with a warning', () => {
@@ -287,11 +292,12 @@ describe('task-dependency-plan-cache', () => {
   });
 
   it('drops invalid cache shapes with a warning', () => {
+    // protects: non-array edges field must fail isCacheFile
     const cachePath = getTaskDependencyCachePath(repoDir, 'sample-project');
     mkdirSync(join(repoDir, '.wavemill', 'cache', 'task-dependency-plans'), { recursive: true });
     writeFileSync(
       cachePath,
-      `${JSON.stringify({ ...createCache(), edges: [{}] }, null, 2)}\n`,
+      `${JSON.stringify({ ...createCache(), edges: 'not-an-array' }, null, 2)}\n`,
       'utf8',
     );
     const warn = mock.method(console, 'warn', () => undefined);
@@ -302,277 +308,10 @@ describe('task-dependency-plan-cache', () => {
     assert.equal(warn.mock.callCount(), 1);
   });
 
-  it('prunes removed and changed tasks while retaining matching inferred edges', () => {
-    const unchanged = { id: 'HOK-1', title: 'Task 1', state: 'Todo' };
-    const changedBefore = { id: 'HOK-2', title: 'Task 2', state: 'Todo' };
-    const changedAfter = { id: 'HOK-2', title: 'Task 2 updated', state: 'Todo' };
-    const removed = { id: 'HOK-3', title: 'Task 3', state: 'Todo' };
-    const stable = { id: 'HOK-4', title: 'Task 4', state: 'Todo' };
-    const cache = createCache({
-      fingerprints: {
-        'HOK-1': computeTaskFingerprint(unchanged),
-        'HOK-2': computeTaskFingerprint(changedBefore),
-        'HOK-3': computeTaskFingerprint(removed),
-        'HOK-4': computeTaskFingerprint(stable),
-      },
-      edges: [
-        {
-          from: 'HOK-1',
-          to: 'HOK-4',
-          fromFingerprint: computeTaskFingerprint(unchanged),
-          toFingerprint: computeTaskFingerprint(stable),
-          kind: 'inferred',
-          classifiedAt: '2026-01-01T00:00:00.000Z',
-        },
-        {
-          from: 'HOK-2',
-          to: 'HOK-4',
-          fromFingerprint: computeTaskFingerprint(changedBefore),
-          toFingerprint: computeTaskFingerprint(stable),
-          kind: 'inferred',
-          classifiedAt: '2026-01-01T00:00:00.000Z',
-        },
-        {
-          from: 'HOK-3',
-          to: 'HOK-4',
-          fromFingerprint: computeTaskFingerprint(removed),
-          toFingerprint: computeTaskFingerprint(stable),
-          kind: 'inferred',
-          classifiedAt: '2026-01-01T00:00:00.000Z',
-        },
-      ],
-    });
-
-    const pruned = pruneCache(cache, [unchanged, changedAfter, stable]);
-
-    assert.deepEqual(pruned.fingerprints, {
-      'HOK-1': computeTaskFingerprint(unchanged),
-      'HOK-2': computeTaskFingerprint(changedAfter),
-      'HOK-4': computeTaskFingerprint(stable),
-    });
-    assert.deepEqual(pruned.edges, [cache.edges[0]]);
-  });
-
-  it('returns an empty edge list when pruning against an empty backlog', () => {
-    const pruned = pruneCache(
-      createCache({
-        edges: [
-          {
-            from: 'HOK-1',
-            to: 'HOK-2',
-            fromFingerprint: 'a',
-            toFingerprint: 'b',
-            kind: 'inferred',
-            classifiedAt: '2026-01-01T00:00:00.000Z',
-          },
-        ],
-      }),
-      [],
-    );
-
-    assert.deepEqual(pruned.fingerprints, {});
-    assert.deepEqual(pruned.edges, []);
-  });
-
-  describe('computeBacklogDiff', () => {
-    it('detects added, changed, completed, and removed tasks', () => {
-      const unchanged = { id: 'HOK-1', title: 'Keep', state: 'Todo' };
-      const changedBefore = { id: 'HOK-2', title: 'Before', state: 'Todo' };
-      const changedAfter = { id: 'HOK-2', title: 'After', state: 'Todo' };
-      const removed = { id: 'HOK-3', title: 'Removed', state: 'Todo' };
-      const completed = { id: 'HOK-4', title: 'Completed', state: 'Done' };
-      const added = { id: 'HOK-5', title: 'Added', state: 'Todo' };
-
-      const diff = computeBacklogDiff(
-        {
-          'HOK-1': computeTaskFingerprint(unchanged),
-          'HOK-2': computeTaskFingerprint(changedBefore),
-          'HOK-3': computeTaskFingerprint(removed),
-          'HOK-4': computeTaskFingerprint(completed),
-        },
-        [unchanged, changedAfter, added],
-        (taskId) => taskId === 'HOK-4',
-      );
-
-      assert.deepEqual(diff, {
-        added: ['HOK-5'],
-        changed: ['HOK-2'],
-        completed: ['HOK-4'],
-        removed: ['HOK-3'],
-      });
-    });
-  });
-
-  describe('mergeEdges', () => {
-    function inferredEdge(
-      from: string,
-      to: string,
-      classifiedAt: string,
-      type: 'depends_on' | 'shared_surface' = 'depends_on',
-    ) {
-      return {
-        from,
-        to,
-        fromFingerprint: `fp-${from}`,
-        toFingerprint: `fp-${to}`,
-        kind: 'inferred' as const,
-        type,
-        classifiedAt,
-      };
-    }
-
-    it('keeps unchanged edges and appends new edges for added tasks', () => {
-      const merged = mergeEdges(
-        [inferredEdge('HOK-1', 'HOK-2', '2026-01-01T00:00:00.000Z')],
-        [inferredEdge('HOK-3', 'HOK-2', '2026-01-02T00:00:00.000Z')],
-        { changedTaskIds: new Set(['HOK-3']), removedTaskIds: new Set() },
-      );
-
-      assert.deepEqual(merged, [
-        inferredEdge('HOK-1', 'HOK-2', '2026-01-01T00:00:00.000Z'),
-        inferredEdge('HOK-3', 'HOK-2', '2026-01-02T00:00:00.000Z'),
-      ]);
-    });
-
-    it('replaces cached edges touching changed tasks', () => {
-      const merged = mergeEdges(
-        [
-          inferredEdge('HOK-1', 'HOK-2', '2026-01-01T00:00:00.000Z'),
-          inferredEdge('HOK-2', 'HOK-4', '2026-01-01T00:00:00.000Z'),
-          inferredEdge('HOK-4', 'HOK-5', '2026-01-01T00:00:00.000Z'),
-        ],
-        [inferredEdge('HOK-2', 'HOK-6', '2026-01-03T00:00:00.000Z')],
-        { changedTaskIds: new Set(['HOK-2']), removedTaskIds: new Set() },
-      );
-
-      assert.deepEqual(merged, [
-        inferredEdge('HOK-2', 'HOK-6', '2026-01-03T00:00:00.000Z'),
-        inferredEdge('HOK-4', 'HOK-5', '2026-01-01T00:00:00.000Z'),
-      ]);
-    });
-
-    it('drops edges touching completed or removed tasks', () => {
-      const merged = mergeEdges(
-        [
-          inferredEdge('HOK-1', 'HOK-2', '2026-01-01T00:00:00.000Z'),
-          inferredEdge('HOK-3', 'HOK-4', '2026-01-01T00:00:00.000Z'),
-        ],
-        [],
-        { changedTaskIds: new Set(), removedTaskIds: new Set(['HOK-2', 'HOK-3']) },
-      );
-
-      assert.deepEqual(merged, []);
-    });
-
-    it('warns and excludes fresh edges outside changed scope', () => {
-      const warn = mock.method(console, 'warn', () => undefined);
-
-      const merged = mergeEdges([], [inferredEdge('HOK-1', 'HOK-2', '2026-01-02T00:00:00.000Z')], {
-        changedTaskIds: new Set(['HOK-9']),
-        removedTaskIds: new Set(),
-      });
-
-      assert.deepEqual(merged, []);
-      assert.equal(warn.mock.callCount(), 1);
-    });
-
-    it('handles mixed partial refresh scenarios deterministically', () => {
-      const merged = mergeEdges(
-        [
-          inferredEdge('HOK-1', 'HOK-2', '2026-01-01T00:00:00.000Z'),
-          inferredEdge('HOK-4', 'HOK-5', '2026-01-01T00:00:00.000Z'),
-          inferredEdge('HOK-6', 'HOK-7', '2026-01-01T00:00:00.000Z', 'shared_surface'),
-        ],
-        [
-          inferredEdge('HOK-2', 'HOK-8', '2026-01-04T00:00:00.000Z'),
-          inferredEdge('HOK-6', 'HOK-7', '2026-01-05T00:00:00.000Z', 'shared_surface'),
-        ],
-        {
-          changedTaskIds: new Set(['HOK-2', 'HOK-6']),
-          removedTaskIds: new Set(['HOK-5']),
-        },
-      );
-
-      assert.deepEqual(merged, [
-        inferredEdge('HOK-2', 'HOK-8', '2026-01-04T00:00:00.000Z'),
-        inferredEdge('HOK-6', 'HOK-7', '2026-01-05T00:00:00.000Z', 'shared_surface'),
-      ]);
-    });
-  });
-
-  it('looks up cached edges in either direction and respects fingerprints', () => {
-    const cache = recordEdge(
-      createCache(),
-      {
-        from: 'HOK-1',
-        to: 'HOK-2',
-        fromFingerprint: 'fp-1',
-        toFingerprint: 'fp-2',
-        kind: 'inferred',
-        label: 'blocks',
-        confidence: 0.91,
-        classifiedAt: '2026-01-01T00:00:00.000Z',
-      },
-    );
-
-    assert.equal(lookupEdge(cache, 'HOK-1', 'HOK-2', 'fp-1', 'fp-2'), cache.edges[0]);
-    assert.equal(lookupEdge(cache, 'HOK-2', 'HOK-1', 'fp-2', 'fp-1'), cache.edges[0]);
-    assert.equal(lookupEdge(cache, 'HOK-1', 'HOK-2', 'fp-x', 'fp-2'), undefined);
-  });
-
-  it('converts cached edges into inferred planner edges', () => {
-    assert.deepEqual(
-      cachedEdgesToDependencyEdges([
-        {
-          from: 'HOK-1',
-          to: 'HOK-2',
-          fromFingerprint: 'fp-1',
-          toFingerprint: 'fp-2',
-          kind: 'inferred',
-          type: 'shared_surface',
-          label: 'same settings panel',
-          classifiedAt: '2026-01-01T00:00:00.000Z',
-        },
-        {
-          from: 'HOK-3',
-          to: 'HOK-4',
-          fromFingerprint: 'fp-3',
-          toFingerprint: 'fp-4',
-          kind: 'inferred',
-          classifiedAt: '2026-01-01T00:00:00.000Z',
-        },
-      ]),
-      [
-        {
-          from: 'HOK-1',
-          to: 'HOK-2',
-          type: 'shared_surface',
-          source: 'inferred',
-          reason: 'same settings panel',
-        },
-        {
-          from: 'HOK-3',
-          to: 'HOK-4',
-          type: 'depends_on',
-          source: 'inferred',
-        },
-      ],
-    );
-  });
-
   it('creates the cache directory and writes the cache file', async () => {
+    // protects: saveCache writes projectSlug, schemaVersion, and updatedAt
     const cache = createCache({
-      fingerprints: { 'HOK-1': 'fp-1' },
-      edges: [
-        {
-          from: 'HOK-1',
-          to: 'HOK-2',
-          fromFingerprint: 'fp-1',
-          toFingerprint: 'fp-2',
-          kind: 'inferred',
-          classifiedAt: '2026-01-01T00:00:00.000Z',
-        },
-      ],
+      touchSets: { 'HOK-1': { fingerprint: 'fp-1', computedAt: '2026-10-01T00:00:00.000Z', entries: [] } },
     });
 
     await saveCache(repoDir, 'sample-project', cache);
@@ -581,8 +320,9 @@ describe('task-dependency-plan-cache', () => {
     assert.equal(saved.projectSlug, 'sample-project');
     assert.equal(saved.schemaVersion, CACHE_SCHEMA_VERSION);
     assert.match(saved.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
-    assert.deepEqual(saved.fingerprints, cache.fingerprints);
-    assert.deepEqual(saved.edges, cache.edges);
+    assert.deepEqual(saved.touchSets, cache.touchSets);
+    assert.equal(saved.fingerprints, undefined);
+    assert.equal(saved.edges, undefined);
   });
 
   it('falls back gracefully when the cache lock times out', async () => {

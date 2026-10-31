@@ -73,7 +73,17 @@ cat > "$FAKE_BIN/tmux" <<'EOF'
 printf '%s\n' "$*" >> "$WAVEMILL_TMUX_STUB_LOG"
 exit 0
 EOF
-chmod +x "$FAKE_BIN/bash-stub" "$FAKE_BIN/tmux"
+# Positive-control npx (in its own PATH dir): pretends the mill config
+# preflight passes so the second case can assert that a successful preflight
+# does not block dry-run startup. Kept out of FAKE_BIN so the first case still
+# runs the real preflight tool.
+PASS_BIN="$TMP_DIR/pass"
+mkdir -p "$PASS_BIN"
+cat > "$PASS_BIN/npx" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$FAKE_BIN/bash-stub" "$FAKE_BIN/tmux" "$PASS_BIN/npx"
 
 legacy_repo="$TMP_DIR/legacy"
 make_legacy_repo "$legacy_repo"
@@ -114,10 +124,9 @@ set +e
 (
   cd "$legacy_repo"
   unset WAVEMILL_MILL_ACTIVE
-  PATH="$FAKE_BIN:$PATH" \
+  PATH="$PASS_BIN:$FAKE_BIN:$PATH" \
     BASH="$FAKE_BIN/bash-stub" \
     SKIP_CONTEXT_CHECK=true \
-    WAVEMILL_SKIP_CONFIG_PREFLIGHT=1 \
     WAVEMILL_BASH_STUB_LOG="$bash_log" \
     WAVEMILL_TMUX_STUB_LOG="$tmux_log" \
     "$REPO_DIR/wavemill" mill --dry-run
@@ -125,7 +134,12 @@ set +e
 skip_rc=$?
 set -e
 
-assert_contains "skip warning is printed" "$skip_stderr" "skipping Mill config preflight"
-assert_contains "skip proceeds into dry-run startup" "$skip_stderr" "Dry-run requires WAVEMILL_DRY_RUN_BACKLOG_FILE"
+# Positive control: a passing preflight (stubbed npx) does not block startup.
+assert_contains "passing preflight proceeds into dry-run startup" "$skip_stderr" "Dry-run requires WAVEMILL_DRY_RUN_BACKLOG_FILE"
+if [[ -s "$bash_log" || -s "$tmux_log" ]]; then
+  echo "FAIL: dry-run startup invoked the bash/tmux stubs before the backlog check"
+  cat "$bash_log" "$tmux_log"
+  exit 1
+fi
 
-echo "PASS: mill config preflight aborts before startup and supports skip"
+echo "PASS: mill config preflight aborts before startup and a passing preflight does not block"

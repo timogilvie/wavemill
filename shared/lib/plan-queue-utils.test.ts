@@ -233,7 +233,8 @@ describe('selectLaunchSet', () => {
     assert.equal(JSON.stringify(a), JSON.stringify(b));
   });
 
-  it('holds a task when its touch set is unknown', () => {
+  it('holds a task when its touch set is unknown (legacy meta.touchSetKnown)', () => {
+    // protects: backward-compat path: no plan.touchSetStatus but meta.touchSetKnown: false
     const plan: QueuePlan = {
       availableNow: ['HOK-1', 'HOK-2'],
       queuedAfterDependencies: [],
@@ -254,6 +255,55 @@ describe('selectLaunchSet', () => {
     const h = findHeld(result.held, 'HOK-1');
     assert.equal(h.reason, 'touch_set_unknown');
     assert.deepEqual(h.detail, { kind: 'touch_set_unknown' });
+  });
+
+  it('holds a task when plan.touchSetStatus marks it unknown (HOK-3307)', () => {
+    // protects: grounded planner path — plan carries the status, not meta
+    const plan: QueuePlan = {
+      availableNow: ['HOK-1', 'HOK-2'],
+      queuedAfterDependencies: [],
+      avoidRunningTogether: [],
+      sharedSurfaceConflicts: [],
+      needsTriage: [],
+      touchSetStatus: { 'HOK-1': 'unknown', 'HOK-2': 'predicted' },
+    };
+    const result = selectLaunchSet(plan, [{ id: 'HOK-1', score: 100 }, { id: 'HOK-2', score: 10 }], { freeSlots: 3 });
+
+    assert.deepEqual(result.launchNext, ['HOK-2']);
+    const h = findHeld(result.held, 'HOK-1');
+    assert.equal(h.reason, 'touch_set_unknown');
+  });
+
+  it('launches a task when plan.touchSetStatus marks it empty-confirmed (HOK-3307)', () => {
+    // protects: empty-confirmed is safe — no files to conflict
+    const plan: QueuePlan = {
+      availableNow: ['HOK-1'],
+      queuedAfterDependencies: [],
+      avoidRunningTogether: [],
+      sharedSurfaceConflicts: [],
+      needsTriage: [],
+      touchSetStatus: { 'HOK-1': 'empty-confirmed' },
+    };
+    const result = selectLaunchSet(plan, [{ id: 'HOK-1', score: 100 }], { freeSlots: 1 });
+    assert.deepEqual(result.launchNext, ['HOK-1']);
+    assert.deepEqual(result.held, []);
+  });
+
+  it('conservatively holds a task absent from plan.touchSetStatus when the map is present (HOK-3307)', () => {
+    // protects: plan has a touchSetStatus map but this task is missing — conservative unknown
+    const plan: QueuePlan = {
+      availableNow: ['HOK-1', 'HOK-2'],
+      queuedAfterDependencies: [],
+      avoidRunningTogether: [],
+      sharedSurfaceConflicts: [],
+      needsTriage: [],
+      touchSetStatus: { 'HOK-2': 'predicted' }, // HOK-1 absent from the map
+    };
+    const result = selectLaunchSet(plan, [{ id: 'HOK-1', score: 100 }, { id: 'HOK-2', score: 10 }], { freeSlots: 3 });
+
+    assert.deepEqual(result.launchNext, ['HOK-2']);
+    const h = findHeld(result.held, 'HOK-1');
+    assert.equal(h.reason, 'touch_set_unknown');
   });
 
   it('respects an operator hold with an optional note', () => {

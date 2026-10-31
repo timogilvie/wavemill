@@ -26,7 +26,7 @@
  * ordering response leaves every unjudged pair `independent-order` (and
  * uncached, so the next run retries).
  *
- * Gated behind `queuePlanner.mode = 'grounded'` (see `getQueuePlannerConfig`).
+ * Always active since HOK-3307 (legacy classifier deleted).
  */
 
 import { fileURLToPath } from 'node:url';
@@ -49,6 +49,7 @@ import {
   type ScorableTask,
   type ScoreOptions,
 } from './conflict-scorer.ts';
+import type { TouchSetStatus } from './touch-set-predictor.ts';
 import {
   GROUNDED_VERDICT_KINDS,
   lookupGroundedVerdict,
@@ -500,6 +501,11 @@ export interface GroundedPlanResult {
   /** Cache blocks to persist (pruned + fresh entries). */
   cache: Required<GroundedCacheState>;
   llm: GroundedLlmOutcome;
+  /**
+   * Per-task touch-set prediction quality (HOK-3307). Consumed by
+   * `selectLaunchSet` to hold `unknown` tasks. Keys are task IDs.
+   */
+  touchSetStatus: Record<string, TouchSetStatus>;
   stats: {
     tasks: number;
     touchSetCacheHits: number;
@@ -543,7 +549,10 @@ export async function runGroundedPlanning(tasks: GroundedTask[], opts: GroundedP
   const cachedTouch = new Map<string, TouchSet>();
   for (const task of tasks) {
     const hit = lookupTouchSet(cacheState, task.id, task.fingerprint, nowMs);
-    if (hit) cachedTouch.set(task.id, { taskId: task.id, entries: hit.entries.map((entry) => ({ ...entry })) });
+    if (hit) {
+      const status: TouchSetStatus = hit.status ?? (hit.entries.length > 0 ? 'predicted' : 'unknown');
+      cachedTouch.set(task.id, { taskId: task.id, entries: hit.entries.map((entry) => ({ ...entry })), status });
+    }
   }
   const missing = tasks.filter((task) => !cachedTouch.has(task.id));
   let fresh: TouchSet[] = [];
@@ -571,21 +580,33 @@ export async function runGroundedPlanning(tasks: GroundedTask[], opts: GroundedP
       });
     } catch (error) {
       warn(`[grounded-planner] touch-set prediction failed; using empty touch sets: ${(error as Error).message}`);
-      fresh = missing.map((task) => ({ taskId: task.id, entries: [] }));
+      fresh = missing.map((task) => ({ taskId: task.id, entries: [], status: 'unknown' as const }));
     }
   }
   const freshById = new Map(fresh.map((set) => [set.taskId, set]));
-  const touchSets = tasks.map((task) => cachedTouch.get(task.id) ?? freshById.get(task.id) ?? { taskId: task.id, entries: [] });
+  const touchSets = tasks.map((task) => cachedTouch.get(task.id) ?? freshById.get(task.id) ?? { taskId: task.id, entries: [], status: 'unknown' as const });
 
   const touchSetCache: Record<string, CachedTouchSet> = {};
+  // Build per-task touch-set status: prefer the fresh prediction's status,
+  // fall back to the cached status, then conservatively infer from entry count.
+  const touchSetStatus: Record<string, TouchSetStatus> = {};
+  const freshStatusById = new Map(fresh.map((set) => [set.taskId, set.status]));
   for (const task of tasks) {
     const hit = lookupTouchSet(cacheState, task.id, task.fingerprint, nowMs);
     if (hit) {
       touchSetCache[task.id] = hit;
+      // Fresh prediction supersedes cached status when both are available.
+      const freshStatus = freshStatusById.get(task.id);
+      const cachedStatus: TouchSetStatus = hit.status ?? (hit.entries.length > 0 ? 'predicted' : 'unknown');
+      touchSetStatus[task.id] = freshStatus ?? cachedStatus;
       continue;
     }
     const set = freshById.get(task.id);
-    if (set) touchSetCache[task.id] = { fingerprint: task.fingerprint, computedAt: nowIso, entries: set.entries };
+    if (set) {
+      const status = set.status ?? 'unknown';
+      touchSetCache[task.id] = { fingerprint: task.fingerprint, computedAt: nowIso, entries: set.entries, status };
+      touchSetStatus[task.id] = status;
+    }
   }
 
   // 2. Deterministic scoring.
@@ -700,6 +721,7 @@ export async function runGroundedPlanning(tasks: GroundedTask[], opts: GroundedP
       groundedVerdicts: [...keptCachedVerdicts, ...freshCachedVerdicts].sort((x, y) => compareTaskIds(pairKey(x.a, x.b), pairKey(y.a, y.b))),
     },
     llm: llmOutcome,
+    touchSetStatus,
     stats: {
       tasks: tasks.length,
       touchSetCacheHits: cachedTouch.size,

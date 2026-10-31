@@ -838,7 +838,6 @@
       "shared/lib/prompt-registry.test.ts": 1071,
       "shared/lib/prompt-utils.test.ts": 235,
       "shared/lib/queue-inference-status.test.ts": 174,
-      "shared/lib/queue-partial-refresh.test.ts": 180,
       "shared/lib/quota-state.test.ts": 11239,
       "shared/lib/ready-diagnostics.test.ts": 134,
       "shared/lib/ready-engine.test.ts": 359,

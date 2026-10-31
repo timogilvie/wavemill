@@ -565,9 +565,9 @@ run_mill() {
     chmod +x "$mill_script"
   fi
 
-  if [[ "${WAVEMILL_SKIP_CONFIG_PREFLIGHT:-}" == "1" ]]; then
-    echo -e "${YELLOW}Warning:${NC} skipping Mill config preflight (WAVEMILL_SKIP_CONFIG_PREFLIGHT=1)" >&2
-  elif [[ -f "$preflight_tool" ]]; then
+  # Mill config preflight is unconditional; the former escape hatch was
+  # retired in HOK-3278.
+  if [[ -f "$preflight_tool" ]]; then
     if ! npx tsx "$preflight_tool" --repo-dir "$PWD"; then
       echo -e "${RED}Error:${NC} Mill config preflight failed." >&2
       echo "  Run: wavemill config migrate-model-settings" >&2

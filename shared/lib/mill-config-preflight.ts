@@ -185,8 +185,7 @@ export async function runMillConfigPreflight(
         attemptCachePath: options.canaryAttemptCachePath,
       });
       const canaryRefreshEnabled = autoRemediationEnabled
-        && cohort.autoRefreshEnabled
-        && env.WAVEMILL_SKIP_CANARY_AUTO_REFRESH !== '1';
+        && cohort.autoRefreshEnabled;
       const hasRefreshTargets = canaryCohortHealth.members.some((member) =>
         member.state === 'missing'
         || member.state === 'stale'

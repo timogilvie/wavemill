@@ -6360,13 +6360,6 @@ emit_blocked_completion_attention() {
   return 0
 }
 
-blocked_completion_live_process_mode() {
-  case "${WAVEMILL_BLOCKED_COMPLETION_LIVE_PROCESS_MODE:-attention}" in
-    terminate) printf 'terminate\n' ;;
-    *) printf 'attention\n' ;;
-  esac
-}
-
 emit_blocked_completion_liveness_attention() {
   local issue="$1" feature_dir="$2" win="$3" detail="$4" next_action="$5"
   local artifact_record summary reason artifact_mtime
@@ -7589,53 +7582,14 @@ auto_advance_blocked_completion() {
   if [[ "$liveness_rc" -eq 0 ]]; then
     blocking_command="${MILL_BLOCKING_PROCESS_COMMAND:-live blocking process}"
     next_action="Stop the live blocking command for $issue (${blocking_command}), then retry review."
-    live_process_mode="$(blocked_completion_live_process_mode)"
-    if [[ "$live_process_mode" == "terminate" ]] && (( ${#MILL_BLOCKING_PROCESS_PIDS[@]} > 0 )); then
-      if mill_terminate_blocking_processes "$pane_pid" "${MILL_BLOCKING_PROCESS_PIDS[@]}"; then
-        mill_pane_has_live_blocking_process "$pane_pid" "${blocking_commands[@]}"
-        liveness_rc=$?
-        if [[ "$liveness_rc" -eq 1 ]]; then
-          log "status" "[auto-advance] $issue terminated live blocking process before coding handoff: $blocking_command"
-        elif [[ "$liveness_rc" -eq 2 ]]; then
-          AUTO_ADVANCE_BLOCKED_COMPLETION_REASON="blocked-completion liveness indeterminate after termination: ${MILL_BLOCKING_PROCESS_REASON:-unknown reason}"
-          emit_blocked_completion_liveness_attention \
-            "$issue" \
-            "$feature_dir" \
-            "$win" \
-            "blocked-completion auto-advance refused because post-termination liveness is indeterminate (${MILL_BLOCKING_PROCESS_REASON:-unknown reason})" \
-            "Inspect the coding pane for $issue and confirm the blocking command has stopped."
-          return 1
-        else
-          blocking_command="${MILL_BLOCKING_PROCESS_COMMAND:-$blocking_command}"
-          AUTO_ADVANCE_BLOCKED_COMPLETION_REASON="live blocking process still running after termination attempt"
-          emit_blocked_completion_liveness_attention \
-            "$issue" \
-            "$feature_dir" \
-            "$win" \
-            "blocked-completion auto-advance refused because a live blocking command is still running after termination attempt ($blocking_command)" \
-            "Inspect the coding pane for $issue and stop the remaining blocking command manually."
-          return 1
-        fi
-      else
-        AUTO_ADVANCE_BLOCKED_COMPLETION_REASON="failed to terminate live blocking process"
-        emit_blocked_completion_liveness_attention \
-          "$issue" \
-          "$feature_dir" \
-          "$win" \
-          "blocked-completion auto-advance refused because the live blocking command could not be terminated ($blocking_command)" \
-          "Inspect the coding pane for $issue and stop the blocking command manually."
-        return 1
-      fi
-    else
-      AUTO_ADVANCE_BLOCKED_COMPLETION_REASON="live blocking process still running"
-      emit_blocked_completion_liveness_attention \
-        "$issue" \
-        "$feature_dir" \
-        "$win" \
-        "blocked-completion auto-advance refused because a live blocking command is still running ($blocking_command)" \
-        "$next_action"
-      return 1
-    fi
+    AUTO_ADVANCE_BLOCKED_COMPLETION_REASON="live blocking process still running"
+    emit_blocked_completion_liveness_attention \
+      "$issue" \
+      "$feature_dir" \
+      "$win" \
+      "blocked-completion auto-advance refused because a live blocking command is still running ($blocking_command)" \
+      "$next_action"
+    return 1
   fi
 
   if ! complete_coding_advance \
@@ -9445,7 +9399,6 @@ reap_completed_planning_pane() {
   local issue="$1" feature_dir="$2" worktree="${3:-}"
   local slug target fg_cmd
 
-  [[ "${WAVEMILL_SKIP_PLANNING_REAP:-0}" == "1" ]] && return 0
   command -v tmux >/dev/null 2>&1 || return 0
 
   slug="$(basename "$feature_dir")"
@@ -17799,11 +17752,22 @@ fetch_queue_plan() {
     record_fetch_queue_plan_failure "cache_empty" ""
     return 1
   }
-  # HOK-3179: kick off a background refresh (one in flight, TTL-gated) that
-  # updates the on-disk cache + queue-health. The picker call below reads
-  # from the cache via --no-infer and never waits on it.
-  maybe_launch_queue_inference_refresh "$BACKLOG_JSON_CACHE" || true
   queue_plan=$(build_queue_plan_once "$BACKLOG_JSON_CACHE") || return 1
+
+  # HOK-3179: kick off a background refresh (one in flight, TTL-gated) that
+  # updates the on-disk cache + queue-health. The picker call above reads
+  # from the cache via --no-infer and never waits on it.
+  # HOK-3307: if any task in the freshly built plan has unknown touch-set status,
+  # bypass the TTL and fire an urgent refresh immediately.
+  local has_unknown_touch_set="false"
+  if printf '%s' "$queue_plan" | jq -e '.touchSetStatus | to_entries | map(select(.value == "unknown")) | length > 0' >/dev/null 2>&1; then
+    has_unknown_touch_set="true"
+  fi
+  if [[ "$has_unknown_touch_set" == "true" ]]; then
+    maybe_launch_queue_inference_refresh "$BACKLOG_JSON_CACHE" "urgent" || true
+  else
+    maybe_launch_queue_inference_refresh "$BACKLOG_JSON_CACHE" || true
+  fi
 
   QUEUE_PLAN_CACHE="$queue_plan"
   LAST_QUEUE_PLAN_FETCH=$now
@@ -17988,7 +17952,10 @@ build_queue_plan_once() {
 # cache + queue-health; the next picker pass picks the fresh cache up on its
 # own via --no-infer.
 maybe_launch_queue_inference_refresh() {
-  local backlog_json="$1"
+  # Usage: maybe_launch_queue_inference_refresh <backlog_json> [urgent]
+  # When "urgent" is passed, the 180 s TTL gate is bypassed so a refresh fires
+  # immediately (HOK-3307: any task with unknown touch-set status needs one now).
+  local backlog_json="$1" urgent="${2:-}"
   [[ -n "$backlog_json" ]] || return 0
   [[ -n "${PROJECT_NAME:-}" ]] || return 0
   [[ -n "${TOOLS_DIR:-}" ]] || return 0
@@ -18006,7 +17973,9 @@ maybe_launch_queue_inference_refresh() {
     QUEUE_INFERENCE_REFRESH_PID=""
   fi
 
-  if (( now - LAST_QUEUE_INFERENCE_REFRESH < QUEUE_INFERENCE_REFRESH_TTL )); then
+  # Bypass the TTL gate only when the caller explicitly signals urgency (e.g. an
+  # unknown touch-set was detected in the freshly built plan — HOK-3307).
+  if [[ "$urgent" != "urgent" ]] && (( now - LAST_QUEUE_INFERENCE_REFRESH < QUEUE_INFERENCE_REFRESH_TTL )); then
     return 0
   fi
 

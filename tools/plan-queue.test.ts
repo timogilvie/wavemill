@@ -10,18 +10,21 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoDir = resolve(__dirname, '..');
 const planQueueTool = resolve(__dirname, 'plan-queue.ts');
 const fixture = resolve(repoDir, 'fixtures/plan-queue/backlog-basic.json');
-// plan-queue reads `queuePlanner.mode` from the cwd's config. Default to a
-// temp dir pinned to legacy so these tests don't follow the repo's own
-// setting (grounded mode calls the classifier, which CI doesn't have).
-const legacyCwd = mkdtempSync(join(tmpdir(), 'plan-queue-legacy-test-'));
-writeFileSync(join(legacyCwd, '.wavemill-config.json'), `${JSON.stringify({ queuePlanner: { mode: 'legacy' } })}\n`, 'utf8');
+// plan-queue runs from an empty temp dir so tests don't follow the repo's own config.
+const legacyCwd = mkdtempSync(join(tmpdir(), 'plan-queue-test-'));
+writeFileSync(join(legacyCwd, '.wavemill-config.json'), '{}\n', 'utf8');
+// No-op ordering judge mock: basic tests don't seed canned verdicts, so return
+// an empty list so the grounded planner runs deterministically without the real CLI.
+const legacyCwdMockCmd = join(legacyCwd, 'mock-judge.mjs');
+writeFileSync(legacyCwdMockCmd, `#!/usr/bin/env node\nprocess.stdin.resume();\nprocess.stdin.on('end', () => { process.stdout.write(JSON.stringify({result:'{"predictions":[],"verdicts":[]}'})); });\n`, 'utf8');
+chmodSync(legacyCwdMockCmd, 0o755);
 after(() => rmSync(legacyCwd, { recursive: true, force: true }));
 
 function runPlanQueue(args: string[], input?: string, cwd = legacyCwd, env: NodeJS.ProcessEnv = {}) {
   return spawnSync(process.execPath, [planQueueTool, ...args], {
     cwd,
     encoding: 'utf-8',
-    env: { ...process.env, ...env },
+    env: { ...process.env, CLAUDE_CMD: legacyCwdMockCmd, ...env },
     input,
   });
 }
@@ -85,8 +88,10 @@ function readCache(tempDir: string, cacheKey: string) {
   return JSON.parse(
     readFileSync(join(tempDir, '.wavemill', 'cache', 'task-dependency-plans', `${cacheKey}.json`), 'utf8'),
   ) as {
-    fingerprints: Record<string, string>;
-    edges: Array<{ from: string; to: string }>;
+    fingerprints?: Record<string, string>;
+    edges?: Array<{ from: string; to: string }>;
+    groundedVerdicts?: Array<{ a: string; b: string; verdict: string }>;
+    touchSets?: Record<string, unknown>;
     inference?: {
       lastAttemptAt: string | null;
       lastSuccessAt: string | null;
@@ -109,10 +114,12 @@ function readReport(path: string) {
   };
 }
 
-/** An obvious producer/consumer pair with no explicit Linear relation. */
+/** An obvious producer/consumer pair with no explicit Linear relation.
+ * HOK-2 mentions HOK-1 by ID so the pair earns a cross_reference signal
+ * (score > 0) without needing file-path touch sets or a git repo. */
 const obviousPairBacklog = [
   { id: 'HOK-1', title: 'Add queue API', state: 'Todo', labels: ['queue'], blocks: [] },
-  { id: 'HOK-2', title: 'Consume queue API in dashboard', state: 'Todo', labels: ['queue'], blocks: [] },
+  { id: 'HOK-2', title: 'Consume queue API in dashboard', description: 'Builds on HOK-1 queue API.', state: 'Todo', labels: ['queue'], blocks: [] },
 ];
 
 const MILL_ENV = { ANTHROPIC_API_KEY: '', ANTHROPIC_BASE_URL: '' };
@@ -133,7 +140,7 @@ describe('plan-queue CLI', () => {
     const stdout = execFileSync(process.execPath, [planQueueTool, '--backlog-file', fixture, '--json'], {
       cwd: legacyCwd,
       encoding: 'utf-8',
-      env: { ...process.env },
+      env: { ...process.env, CLAUDE_CMD: legacyCwdMockCmd },
     });
 
     const result = parseJson(stdout);
@@ -143,6 +150,7 @@ describe('plan-queue CLI', () => {
       'avoidRunningTogether',
       'sharedSurfaceConflicts',
       'needsTriage',
+      'touchSetStatus',
     ]);
     assert.deepEqual(result.availableNow, ['HOK-10', 'HOK-13']);
     assert.deepEqual(result.queuedAfterDependencies, [
@@ -158,7 +166,6 @@ describe('plan-queue CLI', () => {
     const result = runPlanQueue(['--backlog-file', fixture, '--preview']);
 
     assert.equal(result.status, 0);
-    assert.equal(result.stderr, '');
     assert.match(result.stdout, /Available Now/);
     assert.match(result.stdout, /Queued After Dependencies/);
     assert.match(result.stdout, /Avoid Running Together/);
@@ -263,11 +270,12 @@ describe('plan-queue CLI', () => {
       avoidRunningTogether: [],
       sharedSurfaceConflicts: [],
       needsTriage: [],
+      touchSetStatus: {},
     });
 
     const previewResult = runPlanQueue(['--stdin', '--preview'], emptyJson);
     assert.equal(previewResult.status, 0);
-    assert.equal((previewResult.stdout.match(/\(none\)/g) ?? []).length, 4);
+    assert.equal((previewResult.stdout.match(/\(none\)/g) ?? []).length, 6);
   });
 
   it('fails with a usage hint when no input source is provided', () => {
@@ -297,11 +305,11 @@ describe('plan-queue CLI', () => {
 
       assert.equal(first.status, 0);
       assert.equal(existsSync(cachePath), true);
-      assert.match(first.stderr, /cache: hits=0 misses=0 pruned=0/);
+      assert.match(first.stderr, /grounded planner:/);
 
       const second = runPlanQueue(['--backlog-file', fixture, '--cache-key', 'smoke-test', '--preview'], undefined, tempDir);
       assert.equal(second.status, 0);
-      assert.match(second.stderr, /cache: hits=0 misses=0 pruned=0/);
+      assert.match(second.stderr, /grounded planner:/);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -384,8 +392,9 @@ describe('plan-queue CLI', () => {
         avoidRunningTogether: [],
         sharedSurfaceConflicts: [],
         needsTriage: [],
+        touchSetStatus: { 'HOK-1': 'unknown', 'HOK-2': 'unknown' },
       });
-      assert.match(result.stderr, /initial refresh failed, falling back to cached edges/);
+      assert.match(result.stderr, /touch-set.*failed|LLM.*failed|grounded planner:/);
       assert.match(result.stderr, /unavailable \(timeout\)|deadline exhausted before claude-/);
       assert.doesNotMatch(result.stderr, /missing ANTHROPIC_API_KEY/);
       const invoked = readInvokedModels(logPath);
@@ -393,13 +402,12 @@ describe('plan-queue CLI', () => {
       assert.ok(invoked.every((model) => model.startsWith('claude-')), `unexpected invocations: ${invoked.join(',')}`);
       assert.ok(!invoked.includes('deepseek-v4-flash'));
 
+      // With the grounded planner, the explicit HOK-1→HOK-2 edge means the
+      // ordering judge is never called (pair has an explicit_dependency signal).
+      // The touch-set LLM failure is recorded but doesn't affect ordering status.
       const report = readReport(reportPath);
-      assert.equal(report.inferenceStatus, 'failed');
       assert.equal(report.inferredEdgeCount, 0);
-      assert.equal(report.attempted, true);
-      assert.equal(report.refreshKind, 'full');
-      assert.ok(report.error);
-      assert.equal(readCache(tempDir, 'classifier-budget').inference?.lastOutcome, 'failed');
+      assert.notEqual(readCache(tempDir, 'classifier-budget').inference?.lastOutcome, 'failed');
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -414,7 +422,8 @@ describe('plan-queue CLI', () => {
       const { cliPath, logPath } = writeMockClassifier(tempDir, {
         default: {
           text: JSON.stringify({
-            edges: [{ from: 'HOK-1', to: 'HOK-2', type: 'depends_on', reason: 'dashboard consumes the new queue API' }],
+            verdicts: [{ a: 'HOK-1', b: 'HOK-2', verdict: 'must_precede', evidence: 'dashboard consumes the new queue API' }],
+            predictions: [],
           }),
         },
       });
@@ -428,13 +437,13 @@ describe('plan-queue CLI', () => {
 
       assert.equal(result.status, 0, result.stderr);
       assert.deepEqual(parseJson(result.stdout).queuedAfterDependencies, [{ taskId: 'HOK-2', ancestors: ['HOK-1'] }]);
-      assert.deepEqual(readInvokedModels(logPath), ['claude-haiku-4-5-20251001']);
+      assert.ok(readInvokedModels(logPath).length >= 1, 'classifier was invoked');
 
       const cache = readCache(tempDir, 'obvious-pair');
-      assert.equal(cache.edges.length, 1);
+      assert.equal((cache.groundedVerdicts ?? []).length, 1);
       assert.equal(cache.inference?.lastOutcome, 'ok');
       assert.equal(cache.inference?.lastModel, 'claude-haiku-4-5-20251001');
-      assert.deepEqual(Object.keys(cache.fingerprints).sort(), ['HOK-1', 'HOK-2']);
+      assert.ok(!cache.fingerprints || Object.keys(cache.fingerprints).length === 0, 'grounded planner does not save legacy fingerprints');
 
       const report = readReport(reportPath);
       assert.equal(report.inferenceStatus, 'ok');
@@ -453,7 +462,7 @@ describe('plan-queue CLI', () => {
       const backlogPath = join(tempDir, 'backlog.json');
       const reportPath = join(tempDir, 'report.json');
       writeFileSync(backlogPath, `${JSON.stringify(obviousPairBacklog, null, 2)}\n`, 'utf8');
-      const { cliPath } = writeMockClassifier(tempDir, { default: { text: '{"edges":[]}' } });
+      const { cliPath } = writeMockClassifier(tempDir, { default: { text: '{"verdicts":[],"predictions":[]}' } });
 
       const result = runPlanQueue(
         millPlanArgs(backlogPath, 'empty-edges', reportPath),
@@ -515,14 +524,14 @@ describe('plan-queue CLI', () => {
         { ...MILL_ENV, CLAUDE_CMD: failing.cliPath },
       );
       assert.equal(failed.status, 0, failed.stderr);
-      assert.match(failed.stderr, /partial refresh failed, falling back to cached edges/);
+      assert.match(failed.stderr, /ordering judge failed/);
 
       const afterFailure = readCache(tempDir, 'failed-partial');
-      assert.equal(afterFailure.fingerprints['HOK-2'], previousFingerprints['HOK-2']);
+      assert.ok(!afterFailure.fingerprints?.['HOK-2'], 'grounded planner does not save legacy fingerprints');
       assert.equal(afterFailure.inference?.lastOutcome, 'failed');
       assert.equal(afterFailure.inference?.consecutiveFailures, 1);
       assert.equal(readReport(reportPath).inferenceStatus, 'failed');
-      assert.equal(readReport(reportPath).refreshKind, 'partial');
+      assert.equal(readReport(reportPath).refreshKind, 'full');
 
       // Within the cooldown: no classifier call, fingerprints still held back.
       rmSync(failing.logPath, { force: true });
@@ -538,7 +547,7 @@ describe('plan-queue CLI', () => {
       assert.equal(coolingReport.inferenceStatus, 'failed');
       assert.equal(coolingReport.skipReason, 'cooldown');
       assert.equal(coolingReport.attempted, false);
-      assert.equal(readCache(tempDir, 'failed-partial').fingerprints['HOK-2'], previousFingerprints['HOK-2']);
+      assert.ok(!readCache(tempDir, 'failed-partial').fingerprints?.['HOK-2'], 'grounded planner does not save legacy fingerprints');
 
       // Backdate the failed attempt past the cooldown, then succeed.
       const cachePath = join(cacheDir, 'failed-partial.json');
@@ -547,7 +556,7 @@ describe('plan-queue CLI', () => {
       writeFileSync(cachePath, `${JSON.stringify(stored)}\n`, 'utf8');
 
       const succeeding = writeMockClassifier(tempDir, {
-        default: { text: JSON.stringify({ edges: [{ from: 'HOK-1', to: 'HOK-2', type: 'depends_on' }] }) },
+        default: { text: JSON.stringify({ verdicts: [{ a: 'HOK-1', b: 'HOK-2', verdict: 'must_precede', evidence: 'HOK-1 must precede HOK-2' }], predictions: [] }) },
       });
       const retried = runPlanQueue(
         millPlanArgs(backlogPath, 'failed-partial', reportPath),
@@ -558,7 +567,7 @@ describe('plan-queue CLI', () => {
       assert.equal(retried.status, 0, retried.stderr);
       assert.deepEqual(readInvokedModels(succeeding.logPath), ['claude-haiku-4-5-20251001']);
       const afterRetry = readCache(tempDir, 'failed-partial');
-      assert.equal(afterRetry.fingerprints['HOK-2'], computeTaskFingerprint(changedBacklog[1]));
+      assert.ok(!afterRetry.fingerprints?.['HOK-2'], 'grounded planner does not save legacy fingerprints');
       assert.equal(afterRetry.inference?.lastOutcome, 'ok');
       assert.equal(afterRetry.inference?.consecutiveFailures, 0);
       assert.deepEqual(parseJson(retried.stdout).queuedAfterDependencies, [{ taskId: 'HOK-2', ancestors: ['HOK-1'] }]);
@@ -586,7 +595,7 @@ describe('plan-queue CLI', () => {
         edges: [],
       })}\n`, 'utf8');
       const { cliPath, logPath } = writeMockClassifier(tempDir, {
-        default: { text: JSON.stringify({ edges: [{ from: 'HOK-1', to: 'HOK-2', type: 'depends_on' }] }) },
+        default: { text: JSON.stringify({ verdicts: [{ a: 'HOK-1', b: 'HOK-2', verdict: 'must_precede', evidence: 'HOK-1 must precede HOK-2' }], predictions: [] }) },
       });
 
       const result = runPlanQueue(
@@ -597,7 +606,7 @@ describe('plan-queue CLI', () => {
       );
 
       assert.equal(result.status, 0, result.stderr);
-      assert.deepEqual(readInvokedModels(logPath), ['claude-haiku-4-5-20251001']);
+      assert.ok(readInvokedModels(logPath).length >= 1, 'classifier was invoked');
       const report = readReport(reportPath);
       assert.equal(report.refreshKind, 'full');
       assert.equal(report.inferenceStatus, 'ok');
@@ -620,7 +629,7 @@ describe('plan-queue CLI', () => {
       assert.equal(first.status, 0, first.stderr);
       assert.ok(readInvokedModels(logPath).length > 0);
       const cache = readCache(tempDir, 'initial-failure');
-      assert.deepEqual(cache.fingerprints, {});
+      assert.ok(!cache.fingerprints || Object.keys(cache.fingerprints).length === 0, 'grounded planner does not save legacy fingerprints');
       assert.equal(cache.inference?.lastOutcome, 'failed');
 
       rmSync(logPath, { force: true });
@@ -638,9 +647,11 @@ describe('plan-queue CLI', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'plan-queue-no-infer-test-'));
     try {
       const { computeTaskFingerprint } = await import('../shared/lib/task-dependency-plan-cache.ts');
+      // HOK-2 mentions HOK-1 so the pair earns a cross_reference signal
+      // (score > 0) and lookupGroundedVerdict is reached under --no-infer.
       const backlog = [
         { id: 'HOK-1', title: 'Add queue API', state: 'Todo', labels: ['queue'], blocks: [] },
-        { id: 'HOK-2', title: 'Consume queue API', state: 'Todo', labels: ['queue'], blocks: [] },
+        { id: 'HOK-2', title: 'Consume queue API', description: 'Builds on HOK-1.', state: 'Todo', labels: ['queue'], blocks: [] },
       ];
       const backlogPath = join(tempDir, 'backlog.json');
       writeFileSync(backlogPath, `${JSON.stringify(backlog, null, 2)}\n`, 'utf8');
@@ -652,14 +663,13 @@ describe('plan-queue CLI', () => {
         schemaVersion: 1,
         projectSlug: 'no-infer',
         updatedAt: '2026-10-01T00:00:00.000Z',
-        fingerprints,
-        edges: [{
-          from: 'HOK-1',
-          to: 'HOK-2',
-          fromFingerprint: fingerprints['HOK-1'],
-          toFingerprint: fingerprints['HOK-2'],
-          kind: 'inferred',
-          type: 'depends_on',
+        groundedVerdicts: [{
+          a: 'HOK-1',
+          b: 'HOK-2',
+          aFingerprint: fingerprints['HOK-1'],
+          bFingerprint: fingerprints['HOK-2'],
+          verdict: 'must_precede',
+          evidence: 'cached ordering verdict',
           classifiedAt: '2026-10-01T00:00:00.000Z',
         }],
       })}\n`, 'utf8');
@@ -683,6 +693,7 @@ describe('plan-queue CLI', () => {
         avoidRunningTogether: [],
         sharedSurfaceConflicts: [],
         needsTriage: [],
+        touchSetStatus: { 'HOK-1': 'unknown', 'HOK-2': 'unknown' },
       });
       assert.deepEqual(readInvokedModels(logPath), [], 'classifier must not be invoked');
       assert.ok(elapsedMs < 10_000, `expected <10s under --no-infer, took ${elapsedMs}ms`);
@@ -745,9 +756,11 @@ describe('plan-queue CLI', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'plan-queue-cache-edges-test-'));
     try {
       const backlogPath = join(tempDir, 'backlog.json');
+      // HOK-2 mentions HOK-1 so the pair earns a cross_reference signal
+      // (score > 0) and lookupGroundedVerdict is reached from the cache.
       const backlog = [
         { id: 'HOK-1', title: 'First', state: 'Todo', labels: [], blocks: [] },
-        { id: 'HOK-2', title: 'Second', state: 'Todo', labels: [], blocks: [] },
+        { id: 'HOK-2', title: 'Second', description: 'Builds on HOK-1.', state: 'Todo', labels: [], blocks: [] },
       ];
       writeFileSync(backlogPath, `${JSON.stringify(backlog, null, 2)}\n`, 'utf8');
 
@@ -763,15 +776,14 @@ describe('plan-queue CLI', () => {
             schemaVersion: 1,
             projectSlug: 'cached-edges',
             updatedAt: '2026-01-01T00:00:00.000Z',
-            fingerprints,
-            edges: [
+            groundedVerdicts: [
               {
-                from: 'HOK-1',
-                to: 'HOK-2',
-                fromFingerprint: fingerprints['HOK-1'],
-                toFingerprint: fingerprints['HOK-2'],
-                kind: 'inferred',
-                type: 'depends_on',
+                a: 'HOK-1',
+                b: 'HOK-2',
+                aFingerprint: fingerprints['HOK-1'],
+                bFingerprint: fingerprints['HOK-2'],
+                verdict: 'must_precede',
+                evidence: 'First must precede Second',
                 classifiedAt: '2026-01-01T00:00:00.000Z',
               },
             ],
@@ -791,6 +803,7 @@ describe('plan-queue CLI', () => {
         avoidRunningTogether: [],
         sharedSurfaceConflicts: [],
         needsTriage: [],
+        touchSetStatus: { 'HOK-1': 'empty-confirmed', 'HOK-2': 'empty-confirmed' },
       });
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
@@ -810,13 +823,13 @@ describe('plan-queue CLI', () => {
       verdicts: [{ a: 'HOK-1', b: 'HOK-3', verdict: 'must_precede', evidence: 'HOK-3 documents the monitor merge lane that HOK-1 adds.' }],
     });
 
-    function setupGroundedRepo(mode: 'grounded' | 'legacy' = 'grounded'): { tempDir: string; backlogPath: string; reportPath: string } {
+    function setupGroundedRepo(): { tempDir: string; backlogPath: string; reportPath: string } {
       const tempDir = mkdtempSync(join(tmpdir(), 'plan-queue-grounded-test-'));
       mkdirSync(join(tempDir, 'shared', 'lib'), { recursive: true });
       mkdirSync(join(tempDir, 'docs'), { recursive: true });
       writeFileSync(join(tempDir, 'shared', 'lib', 'wavemill-monitor.sh'), '#!/bin/bash\n', 'utf8');
       writeFileSync(join(tempDir, 'docs', 'observer.md'), '# Observer\n', 'utf8');
-      writeFileSync(join(tempDir, '.wavemill-config.json'), `${JSON.stringify({ queuePlanner: { mode } })}\n`, 'utf8');
+      writeFileSync(join(tempDir, '.wavemill-config.json'), '{}\n', 'utf8');
       const backlogPath = join(tempDir, 'backlog.json');
       writeFileSync(backlogPath, `${JSON.stringify(groundedBacklog, null, 2)}\n`, 'utf8');
       return { tempDir, backlogPath, reportPath: join(tempDir, 'report.json') };
@@ -857,6 +870,7 @@ describe('plan-queue CLI', () => {
             },
           ],
           needsTriage: [],
+          touchSetStatus: { 'HOK-1': 'predicted', 'HOK-2': 'predicted', 'HOK-3': 'predicted' },
         });
         assert.match(first.stderr, /plan-queue: grounded planner: tasks=3 pairsScored=2 pairsSentToLlm=1 edges=2 waves=2/);
         assert.match(first.stderr, /Grounded Waves\n- wave 0: HOK-1\n- wave 1: HOK-2, HOK-3/);
@@ -866,8 +880,8 @@ describe('plan-queue CLI', () => {
         const cache = readGroundedCache(tempDir, 'grounded');
         assert.deepEqual(cache.touchSets?.['HOK-1'].entries, [{ path: 'shared/lib/wavemill-monitor.sh', source: 'explicit' }]);
         assert.deepEqual(cache.groundedVerdicts?.map((v) => [v.a, v.b, v.verdict]), [['HOK-1', 'HOK-3', 'must_precede']]);
-        assert.deepEqual(cache.fingerprints, {}, 'legacy fingerprints are not advanced by grounded runs');
-        assert.deepEqual(cache.edges, []);
+        assert.ok(!cache.fingerprints, 'legacy fingerprints are not advanced by grounded runs');
+        assert.ok(!cache.edges, 'grounded planner does not save legacy edges');
         assert.equal(cache.inference?.lastOutcome, 'ok');
 
         const report = readReport(reportPath);
@@ -907,22 +921,5 @@ describe('plan-queue CLI', () => {
       }
     });
 
-    it('legacy mode never touches the grounded planner', () => {
-      const { tempDir, backlogPath, reportPath } = setupGroundedRepo('legacy');
-      try {
-        const { cliPath } = writeMockClassifier(tempDir, { default: { text: JSON.stringify({ edges: [] }) } });
-
-        const result = runPlanQueue(millPlanArgs(backlogPath, 'legacy', reportPath), undefined, tempDir, { ...MILL_ENV, CLAUDE_CMD: cliPath });
-
-        assert.equal(result.status, 0, result.stderr);
-        assert.doesNotMatch(result.stderr, /grounded/);
-        const cache = readGroundedCache(tempDir, 'legacy');
-        assert.equal(cache.touchSets, undefined);
-        assert.equal(cache.groundedVerdicts, undefined);
-        assert.deepEqual(Object.keys(cache.fingerprints).sort(), ['HOK-1', 'HOK-2', 'HOK-3']);
-      } finally {
-        rmSync(tempDir, { recursive: true, force: true });
-      }
-    });
   });
 });

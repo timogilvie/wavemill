@@ -455,7 +455,8 @@ Configure the optional post-eval update phase in `.wavemill-config.json`:
 }
 ```
 
-Skip the optional phase entirely with `WAVEMILL_SKIP_POST_EVAL_CONTEXT_UPDATES=1`.
+Skip the optional phase entirely by setting `postEvalContextUpdates.enabled: false`
+(the run then reports `skipped-config`).
 
 When operating mode is `constrained` or `survival`, wavemill skips these updates automatically to keep mill sessions bounded.
 

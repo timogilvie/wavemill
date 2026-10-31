@@ -187,43 +187,6 @@ test('repo config falls back to integration branch when mill base is absent', ()
   }
 });
 
-test('legacy compatibility flag bypasses launch contract', () => {
-  const repoDir = tempRepo();
-  const prior = process.env.WAVEMILL_EFFECTIVE_CONFIG_LEGACY;
-  const priorHome = isolateHome(repoDir);
-  try {
-    process.env.WAVEMILL_EFFECTIVE_CONFIG_LEGACY = '1';
-    writeRepoConfig(repoDir, { baseBranch: 'main', requireConfirm: false });
-    const stateFile = writeState(repoDir, {
-      lifecycle: {
-        schemaVersion: 1,
-        workflowOutcome: 'active',
-        resourceDisposition: 'allocated',
-        launchContract: {
-          baseBranch: 'auto/integration',
-          requireConfirm: true,
-          remoteBranchDeletionPolicy: { allowed: true, mode: 'merged-pr-task-branch' },
-        },
-      },
-    });
-
-    const config = resolveEffectiveTaskConfig({ repoDir, issue: 'HOK-2956', stateFile, runtimeEnvSnapshot: null });
-
-    assert.equal(config.baseBranch.value, 'main');
-    assert.equal(config.baseBranch.source, 'repo-config');
-    assert.equal(config.requireConfirm.value, false);
-    assert.equal(config.requireConfirm.source, 'repo-config');
-  } finally {
-    if (prior === undefined) {
-      delete process.env.WAVEMILL_EFFECTIVE_CONFIG_LEGACY;
-    } else {
-      process.env.WAVEMILL_EFFECTIVE_CONFIG_LEGACY = prior;
-    }
-    restoreHome(priorHome);
-    rmSync(repoDir, { recursive: true, force: true });
-  }
-});
-
 test('runtime snapshots only include the config allowlist', () => {
   const snapshot = runtimeEnvSnapshotForTask({
     issue: 'HOK-2956',

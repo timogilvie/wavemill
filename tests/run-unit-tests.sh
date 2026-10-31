@@ -344,6 +344,8 @@ TESTS=(
   shared/lib/wavemill-incident-projection.test.ts
   shared/lib/wavemill-incident-store.test.ts
   shared/lib/state-mutex.test.ts
+  shared/lib/task-record-write-guard.test.ts
+  tools/validate-task-record-write.test.ts
   shared/lib/job-tracker.test.ts
   shared/lib/session-gh-cache.test.ts
   shared/lib/operating-mode.test.ts
@@ -358,7 +360,6 @@ TESTS=(
   shared/lib/scope-shrinker.test.ts
   shared/lib/linear-dependency-resolver.test.ts
   shared/lib/dependency-classifier.test.ts
-  shared/lib/queue-partial-refresh.test.ts
   shared/lib/route-artifact.test.ts
   shared/lib/model-router.test.ts
   shared/lib/eval-corpus-migrator.test.ts

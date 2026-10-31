@@ -92,7 +92,7 @@ function schemaFingerprint(schemaPath: string): { mtimeMs: number; size: number 
 }
 
 function loadAjvCtor(): AjvCtor | null {
-  if (process.env.WAVEMILL_DISABLE_AJV_VALIDATION === '1' || ajvUnavailable) {
+  if (ajvUnavailable) {
     return null;
   }
   const require = createRequire(import.meta.url);
