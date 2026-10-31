@@ -8,6 +8,18 @@
 # deterministic. Bounded so a reap that never happens fails the journey on
 # its own assertions rather than hanging the eval. Every other invocation
 # (agent phase launches, --version) goes straight to the shared fake.
+#
+# HOK-3307: the grounded planner (now always active) calls `claude -p` for
+# touch-set/ordering inference, but only when ≥2 tasks form comparable pairs.
+# This journey has one task, so no pairs form and the grounded planner never
+# calls the fake — the gate only ever activates for the post-merge eval judge.
+#
+# After releasing, the gate serves the fixture's real scored verdict directly
+# (bypassing FAKE_JUDGE_VERDICT_FILE). The harness seeds FAKE_JUDGE_VERDICT_FILE
+# with the empty grounded-planner format {"verdicts":[],"predictions":[]}, and
+# the monitor's MONITOR_ENV sourcing overrides the journey's shell export of the
+# real verdict path; routing through the shared fake would deliver the wrong
+# format and fail validateJudgeResponse with "Invalid score: undefined".
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 shared_fake="$(cd "$here/../../../../fakes/bin" && pwd)/claude"
@@ -21,5 +33,13 @@ if [[ -z "${WAVEMILL_PHASE:-}" && "${1:-}" == "-p" && -n "${JOURNEY_EVAL_GATE_ST
     fi
     sleep 0.2
   done
+  # Serve the fixture's real scored verdict directly so the eval record is
+  # persisted. Bypasses FAKE_JUDGE_VERDICT_FILE (harness empty format). HOK-3307.
+  cat >/dev/null
+  jq -cn --rawfile result "$here/../judge-verdict.json" \
+    '{result:$result, usage:{input_tokens:10, cache_creation_input_tokens:0, cache_read_input_tokens:0, output_tokens:5}, total_cost_usd:0.01}'
+  printf '%s judge verdict served\n' "$(date -u +%FT%TZ)" >> "${FAKE_AGENT_LOG:-/dev/null}"
+  exit 0
 fi
+
 exec "$shared_fake" "$@"
