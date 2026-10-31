@@ -49,6 +49,7 @@ that date to be retired.
 | `WAVEMILL_LEDGER_SHADOW_DISABLED`, `WAVEMILL_SIDE_EFFECT_DETECTOR_DISABLED`, `WAVEMILL_LEDGER_SHADOW_DEBUG` | These three switches control the same ledger shadow | HOK-3183 | 2026-10-20 | Ledger side-effect / step / pair rows settle for 7 days with no duplicates recorded. Flip the gate per design §4b and delete the shadow writers. | HOK-3274 | 2026-12-19 (extended from 2026-11-19, HOK-3274: flip, delete or split waits on the semantics decision and the HOK-3277 retarget) |
 | `WAVEMILL_HARNESS_RETENTION_SHADOW` | `WAVEMILL_HARNESS_RETENTION_SHADOW` | HOK-3235 | 2026-10-20 | Retention mode decided; shadow comparator deleted along with its sidecar artifact. | HOK-3276 | 2026-11-19 |
 | `WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE` | `WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE` | HOK-3187 | 2026-10-20 | Confirm renderer parity and retire the opt-in when ledger authority is live. | HOK-3275 | 2026-12-19 (extended from 2026-11-19, HOK-3275: renderer fate follows the HOK-3274 ledger decision) |
+| `WAVEMILL_TASK_RECORD_WRITE_VALIDATE_SHADOW` | `WAVEMILL_TASK_RECORD_WRITE_VALIDATE_SHADOW` (default `1` = shadow-log task-record write violations; `0` = operator kill switch, skip write validation) | HOK-3222 | 2026-10-31 | 7 days of mill traffic with no new lines in `.wavemill/state-schema-violations.jsonl`; then `state_mutate` / `mutateJsonState` refuse violating writes and the flag, shadow log and ignore entry are deleted. | HOK-3222 | 2026-11-30 |
 
 ## Kill switches, rollbacks, skips and legacy paths
 

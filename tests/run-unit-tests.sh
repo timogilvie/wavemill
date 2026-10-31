@@ -343,6 +343,8 @@ TESTS=(
   shared/lib/wavemill-incident-projection.test.ts
   shared/lib/wavemill-incident-store.test.ts
   shared/lib/state-mutex.test.ts
+  shared/lib/task-record-write-guard.test.ts
+  tools/validate-task-record-write.test.ts
   shared/lib/job-tracker.test.ts
   shared/lib/session-gh-cache.test.ts
   shared/lib/operating-mode.test.ts

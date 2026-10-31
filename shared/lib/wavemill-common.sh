@@ -3473,23 +3473,15 @@ wavemill_fetch_base_branch() {
   fi
 
   if [[ -n "${STATE_FILE:-}" ]]; then
-    local state_dir tmp
-    state_dir="$(dirname "$STATE_FILE")"
-    mkdir -p "$state_dir" 2>/dev/null || true
-    tmp="$(mktemp "${state_dir%/}/fetch-cache.XXXXXX")" || return 0
-
+    mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
     if [[ ! -s "$STATE_FILE" ]]; then
       printf '{"tasks":{}}\n' > "$STATE_FILE" 2>/dev/null || true
     fi
-
-    if jq --arg branch "$base_branch" --argjson fetchedAt "$now" \
+    # Through state_mutate (lock + write guard), never a private jq > mv.
+    state_mutate "$STATE_FILE" \
       '.baseBranchFetchCache = (.baseBranchFetchCache // {})
        | .baseBranchFetchCache[$branch] = ((.baseBranchFetchCache[$branch] // {}) + {last_fetch_at: $fetchedAt})' \
-      "$STATE_FILE" > "$tmp" 2>/dev/null; then
-      mv "$tmp" "$STATE_FILE"
-    else
-      rm -f "$tmp"
-    fi
+      --arg branch "$base_branch" --argjson fetchedAt "$now" 2>/dev/null || true
   fi
 }
 
@@ -3880,19 +3872,11 @@ wavemill_cleanup_launch_attempt() {
   fi
 
   if [[ -n "$launch_plan_file" && -f "$launch_plan_file" && -n "${STATE_FILE:-}" && -f "${STATE_FILE:-}" ]]; then
-    local tmp
-    tmp="$(mktemp "${STATE_FILE%/*}/cleanup.XXXXXX" 2>/dev/null || true)"
-    if [[ -n "$tmp" ]]; then
-      if jq --slurpfile plan "$launch_plan_file" '
+    # Through state_mutate (lock + write guard), never a private jq > mv.
+    state_mutate "$STATE_FILE" '
         ($plan[0].tasks // [] | map(.issue)) as $issues
         | .tasks = ((.tasks // {}) | with_entries(select((.key as $k | $issues | index($k)) | not)))
-      ' "$STATE_FILE" > "$tmp" 2>/dev/null; then
-        mv "$tmp" "$STATE_FILE" 2>/dev/null || cleanup_status="partial"
-      else
-        rm -f "$tmp"
-        cleanup_status="partial"
-      fi
-    fi
+      ' --slurpfile plan "$launch_plan_file" 2>/dev/null || cleanup_status="partial"
   fi
 
   if [[ -n "$launch_plan_file" && -f "$launch_plan_file" ]]; then
@@ -7211,6 +7195,10 @@ state_mutate() {
   # ~0.8 s; compact JSON gives ~40 % size + proportional parse-time back on
   # every state_mutate.
   if jq -c "$@" "$jq_filter" "$state_path" > "$tmp_file" 2>"$err_file"; then
+    # HOK-3222: validate the task records this write adds or changes, with
+    # the lock held and before the rename. Phase 1 (shadow): violations are
+    # logged by the tool and the write proceeds whatever it returns.
+    _wavemill_validate_task_record_write "$state_path" "$tmp_file" || true
     mv "$tmp_file" "$state_path" || mutate_status=$?
   else
     mutate_status=$?
@@ -7249,6 +7237,40 @@ state_mutate() {
   fi
 
   return "$mutate_status"
+}
+
+# HOK-3222: the shell seam of the task-record write guard
+# (shared/lib/task-record-write-guard.ts). For a workflow-state.json write,
+# run tools/validate-task-record-write.ts on <before> (the live file, read
+# under state_mutate's lock) and <candidate> (jq's output). Violations go to
+# <state dir>/state-schema-violations.jsonl, stderr and the observer.
+#
+# Returns the tool's status: 0 clean (or skipped), 2 violations, other = the
+# check could not run. Node type stripping only, never `npx tsx` (HOK-3206
+# hot path): a host without strip support skips the check. Invoked with
+# `command node` so test doubles for `npx`/`node` never see it.
+# WAVEMILL_TASK_RECORD_WRITE_VALIDATE_SHADOW=0 is the Phase 1 kill switch.
+_wavemill_validate_task_record_write() {
+  local state_path="$1" candidate="$2"
+  [[ "$(basename "$state_path")" == "workflow-state.json" ]] || return 0
+  [[ "${WAVEMILL_TASK_RECORD_WRITE_VALIDATE_SHADOW:-1}" != "0" ]] || return 0
+  local tool_dir="${WAVEMILL_INSTALL_DIR:-}"
+  if [[ -z "$tool_dir" ]]; then
+    tool_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" || return 0
+  fi
+  local tool="$tool_dir/tools/validate-task-record-write.ts"
+  [[ -f "$tool" ]] || return 0
+  if [[ -z "${WAVEMILL_NODE_STRIP_SUPPORTED:-}" ]]; then
+    if command node --experimental-strip-types --no-warnings -e ';' >/dev/null 2>&1; then
+      WAVEMILL_NODE_STRIP_SUPPORTED=1
+    else
+      WAVEMILL_NODE_STRIP_SUPPORTED=0
+    fi
+    export WAVEMILL_NODE_STRIP_SUPPORTED
+  fi
+  [[ "$WAVEMILL_NODE_STRIP_SUPPORTED" == "1" ]] || return 0
+  command node --experimental-strip-types --no-warnings "$tool" \
+    --before "$state_path" --after "$candidate" --state-path "$state_path" >&2
 }
 
 # HOK-3187: resolve the ledger CLI path and re-render workflow-state.json from
