@@ -1261,13 +1261,17 @@ describe('executionTruthFields merge rule (HOK-3369)', () => {
     const existing = priorDirect('completed');
     const fields = executionTruthFields({
       status: 'completed',
-      flags: { 'model-attribution-eligible': 'true' },
+      flags: {
+        'model-attribution-eligible': 'true',
+        'execution-evidence-detail': 'operator-note: evidence independently reviewed',
+      },
       existing,
       now: '2026-10-30T21:00:00Z',
     });
     assert.equal(fields.executedModel, 'moonshotai/kimi-k2-thinking');
     assert.equal(fields.executionEvidence?.status, 'direct');
     assert.equal(fields.executionEvidence?.source, 'provider-response');
+    assert.equal(fields.executionEvidence?.detail, undefined);
   });
 
   it('resets to missing when a newer launch supersedes the recorded evidence', () => {

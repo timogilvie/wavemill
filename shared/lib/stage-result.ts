@@ -605,7 +605,9 @@ function keptEvidence(
   if (input.flags['executed-model'] !== undefined) return null;
   if (input.flags['execution-evidence-status'] !== undefined) return null;
   if (input.flags['execution-evidence-source'] !== undefined) return null;
-  if (input.flags['execution-evidence-detail'] !== undefined) return null;
+  // Detail is descriptive, not new execution evidence. In particular,
+  // `stage-result-cli update --execution-evidence-detail …` must not erase
+  // a prior direct provider-response record (HOK-3322 operator recovery).
   // A fresh launch attempt resets evidence (D3.2).
   if (input.newAttempt) return null;
   // Superseded by a later launch row (D3.2).

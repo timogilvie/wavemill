@@ -124,7 +124,12 @@ pair_tick() {
   if [[ "${JOURNEY_INCIDENT_CURRENTNESS:-0}" == 1 ]]; then
     node --import tsx "$JOURNEY_INSTALL_DIR/tests/journeys/fixtures/incident-currentness-step.ts" observe "$REPO_DIR" "$JOURNEY_INCIDENT_OBSERVED"
   fi
-  if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 ]]; then journey_operator_tick "$CHALLENGER"; fi
+  # Plan-stage pairs require a second, arm-local approval. Both replay
+  # wrappers exercise that production boundary; no approval is injected for
+  # the normal implementation-stage journey.
+  if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 || "${JOURNEY_NATIVE_ARM_EVIDENCE:-0}" == 1 ]]; then
+    journey_operator_tick "$CHALLENGER"
+  fi
   if [[ "$(arm_handoff_state "$CHALLENGER")" == "ready-published" \
         && "$(arm_handoff_state "$ISSUE")" != "ready-published" ]]; then
     journey_tend_tick
@@ -247,25 +252,41 @@ if [[ "${JOURNEY_NATIVE_ARM_EVIDENCE:-0}" == 1 ]]; then
     local stage="$1" field="$2"
     local fd archive_dir
     fd="$(journey_feature_dir "$CHALLENGER" 2>/dev/null)" || true
-    archive_dir="$STATE_DIR/stage-results/$CHALLENGER"
+    # Winners are reaped before assertions run; terminal cleanup archives the
+    # stage results under the eval artifact root rather than workflow state.
+    archive_dir="$REPO_DIR/.wavemill/evals/artifacts/$CHALLENGER"
     local file="$fd/.${stage}-result.json"
     if [[ ! -f "$file" && -d "$archive_dir" ]]; then
-      file="$(ls -1t "$archive_dir/${stage}-result"*.json 2>/dev/null | head -1 || echo "")"
+      if [[ -f "$archive_dir/.${stage}-result.json" ]]; then
+        file="$archive_dir/.${stage}-result.json"
+      elif [[ -f "$archive_dir/${stage}-result.json" ]]; then
+        file="$archive_dir/${stage}-result.json"
+      else
+        file=""
+      fi
     fi
     [[ -n "$file" && -f "$file" ]] || { echo ""; return 0; }
     jq -r "$field // empty" "$file" 2>/dev/null || true
   }
+  challenger_stage_field_is() {
+    local stage="$1" field="$2" expected="$3"
+    [[ "$(challenger_stage_result "$stage" "$field")" == "$expected" ]]
+  }
+  challenger_stage_field_set() {
+    local stage="$1" field="$2"
+    [[ -n "$(challenger_stage_result "$stage" "$field")" ]]
+  }
   for stage in planning coding review; do
     journey_assert "$stage: challenger kept its executedModel after completion" \
-      bash -c '[[ -n "$(challenger_stage_result "$1" .executedModel)" ]]' _ "$stage"
+      challenger_stage_field_set "$stage" '.executedModel'
     journey_assert "$stage: challenger evidence is direct (not inherited/missing)" \
-      bash -c '[[ "$(challenger_stage_result "$1" .executionEvidence.status)" = direct ]]' _ "$stage"
+      challenger_stage_field_is "$stage" '.executionEvidence.status' direct
     journey_assert "$stage: challenger evidence source is provider-response" \
-      bash -c '[[ "$(challenger_stage_result "$1" .executionEvidence.source)" = provider-response ]]' _ "$stage"
+      challenger_stage_field_is "$stage" '.executionEvidence.source' provider-response
     journey_assert "$stage: challenger is model-attribution eligible" \
-      bash -c '[[ "$(challenger_stage_result "$1" .modelAttributionEligible)" = true ]]' _ "$stage"
+      challenger_stage_field_is "$stage" '.modelAttributionEligible' true
     journey_assert "$stage: no runtime_fallback reason recorded" \
-      bash -c '[[ "$(challenger_stage_result "$1" .modelAttributionIneligibleReason)" != runtime_fallback ]]' _ "$stage"
+      challenger_stage_field_is "$stage" '.modelAttributionIneligibleReason' ''
   done
 fi
 journey_assert_no_unhandled_fake_calls

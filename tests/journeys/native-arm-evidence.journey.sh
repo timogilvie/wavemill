@@ -7,6 +7,6 @@
 # evidence; without the HOK-3369 merge rule the agent-type gate would
 # downgrade native evidence to inherited/runtime_fallback on completion.
 export JOURNEY_NATIVE_ARM_EVIDENCE=1
-export JOURNEY_PAIR_STAGE=implementation
+export JOURNEY_PAIR_STAGE=plan
 export JOURNEY_PAIR_NAME=native-arm-evidence
 source "$(dirname "$0")/challenge-pair-eval.journey.sh"
