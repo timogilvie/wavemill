@@ -493,13 +493,20 @@ function resolveNativeExecutedModel(input: ResolveStageExecutedModelInput & {
       evidenceDetail: `no native session owned for stage=${input.stage}`,
     };
   }
-  const ownedRefs = new Set(ownedRows.map((row) => row.sessionRef));
-  const latestLaunchMs = Math.max(
-    ...ownedRows.map((row) => {
-      const ms = Date.parse(row.launchedAt);
-      return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
-    }),
-  );
+  // A retry receives a fresh ownership attempt. A prior attempt can still
+  // flush stream events after that retry begins, so timestamp filtering alone
+  // is not sufficient: only the latest attempt's session refs may contribute
+  // to the current stage record.
+  const launchMs = (row: typeof ownedRows[number]) => {
+    const ms = Date.parse(row.launchedAt);
+    return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
+  };
+  const latestLaunch = ownedRows.reduce((latest, row) => (
+    launchMs(row) > launchMs(latest) ? row : latest
+  ));
+  const latestAttemptRows = ownedRows.filter((row) => row.attemptId === latestLaunch.attemptId);
+  const ownedRefs = new Set(latestAttemptRows.map((row) => row.sessionRef));
+  const latestLaunchMs = Math.max(...latestAttemptRows.map(launchMs));
   const candidateDirs = nativeStreamCandidates({
     featureDir: input.featureDir,
     repoDir: input.repoDir,
@@ -587,8 +594,9 @@ function resolveNativeExecutedModel(input: ResolveStageExecutedModelInput & {
     };
   }
 
-  // Pick one wire id to verdict against. The launcher is the single-model
-  // producer, so the first segment's `session_started.model` is authoritative.
+  // Each retained segment carries its own wire identity. This matters when a
+  // native attempt has more than one owned session: never verdict one
+  // segment's provider response against another segment's requested model.
   const firstSegment = relevantEvents[0]!;
   const sessionStartedModel = firstSegment.sessionStartedModel;
   if (!sessionStartedModel) {
@@ -599,9 +607,11 @@ function resolveNativeExecutedModel(input: ResolveStageExecutedModelInput & {
       evidenceDetail: 'native session_started did not record a model id',
     };
   }
-  const isAlias = isRollingProviderAlias(sessionStartedModel);
-  const certifiedTarget = isAlias ? existing?.executionEvidence?.certifiedTarget : sessionStartedModel;
-  if (isAlias && !certifiedTarget) {
+  const firstIsAlias = isRollingProviderAlias(sessionStartedModel);
+  const firstCertifiedTarget = firstIsAlias
+    ? existing?.executionEvidence?.certifiedTarget
+    : sessionStartedModel;
+  if (firstIsAlias && !firstCertifiedTarget) {
     return {
       executedModel: null,
       evidenceStatus: 'missing',
@@ -609,17 +619,36 @@ function resolveNativeExecutedModel(input: ResolveStageExecutedModelInput & {
       evidenceDetail: `native alias ${sessionStartedModel} resolved target unknown (no certified target)`,
     };
   }
-  const expectation: ProviderIdentityExpectation = {
-    requestedWireId: sessionStartedModel,
-    expectedModel: certifiedTarget as string,
-    isAlias,
-  };
 
   const tracker = new ProviderIdentityTracker();
   let turnIndex = 0;
   for (const segment of relevantEvents) {
+    const segmentModel = segment.sessionStartedModel;
+    if (!segmentModel) {
+      return {
+        executedModel: null,
+        evidenceStatus: 'missing',
+        evidenceSource: 'session-stream',
+        evidenceDetail: 'native session_started did not record a model id',
+      };
+    }
+    const isAlias = isRollingProviderAlias(segmentModel);
+    const certifiedTarget = isAlias ? existing?.executionEvidence?.certifiedTarget : segmentModel;
+    if (isAlias && !certifiedTarget) {
+      return {
+        executedModel: null,
+        evidenceStatus: 'missing',
+        evidenceSource: 'session-stream',
+        evidenceDetail: `native alias ${segmentModel} resolved target unknown (no certified target)`,
+      };
+    }
+    const expectation: ProviderIdentityExpectation = {
+      requestedWireId: segmentModel,
+      expectedModel: certifiedTarget,
+      isAlias,
+    };
     for (const event of segment.events) {
-      const wire = event.model ?? segment.sessionStartedModel ?? sessionStartedModel;
+      const wire = event.model ?? segmentModel;
       const reported = extractProviderReportedIdentity(
         { responseModel: event.responseModel, responseId: event.responseId },
         wire,
@@ -640,7 +669,7 @@ function resolveNativeExecutedModel(input: ResolveStageExecutedModelInput & {
       providerEvidence: {
         ...(summary.providerReportedModel ? { providerReportedModel: summary.providerReportedModel } : {}),
         requestedWireId: sessionStartedModel,
-        ...(certifiedTarget ? { certifiedTarget } : {}),
+        ...(firstCertifiedTarget ? { certifiedTarget: firstCertifiedTarget } : {}),
         identityVerdict: 'mismatch',
         ...(firstSegment.sessionStartedProvider ? { transportProvider: firstSegment.sessionStartedProvider } : {}),
         ...(summary.lastResponseId ? { responseId: summary.lastResponseId } : {}),
@@ -665,7 +694,7 @@ function resolveNativeExecutedModel(input: ResolveStageExecutedModelInput & {
     providerEvidence: {
       ...(summary.providerReportedModel ? { providerReportedModel: summary.providerReportedModel } : {}),
       requestedWireId: sessionStartedModel,
-      ...(certifiedTarget ? { certifiedTarget } : {}),
+      ...(firstCertifiedTarget ? { certifiedTarget: firstCertifiedTarget } : {}),
       identityVerdict: summary.identityVerdict,
       ...(firstSegment.sessionStartedProvider ? { transportProvider: firstSegment.sessionStartedProvider } : {}),
       ...(summary.lastResponseId ? { responseId: summary.lastResponseId } : {}),

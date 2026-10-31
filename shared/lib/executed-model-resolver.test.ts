@@ -686,4 +686,56 @@ describe('resolveStageExecutedModel (HOK-3369)', () => {
     assert.equal(result.evidenceStatus, 'direct');
     assert.equal(result.providerEvidence?.responseId, 'gen-current');
   });
+
+  it('ignores a prior attempt session that emits after a newer native retry launches', () => {
+    const previousSession = 'wavemill-planning-prior-attempt';
+    const currentSession = 'wavemill-planning-current-attempt';
+    const previousModel = 'previous-provider/model';
+    const currentModel = 'moonshotai/kimi-k2-thinking';
+    const previousLaunchAt = '2026-10-30T15:48:06.478Z';
+    const currentLaunchAt = '2026-10-30T16:00:00.000Z';
+    const currentLaunchMs = Date.parse(currentLaunchAt);
+    const fx = setupNativeStageFixture({
+      stage: 'planning',
+      sessionRef: previousSession,
+      wireModel: previousModel,
+      launchedAt: previousLaunchAt,
+      streamEvents: [],
+    });
+    appendOwnershipRow(fx.featureDir, {
+      sessionRef: currentSession,
+      harness: 'native',
+      kind: 'native-arm',
+      stage: 'planning',
+      model: currentModel,
+      launchedAt: currentLaunchAt,
+      attemptId: 'native-arm@nohead#2',
+    });
+    writeJsonl(join(fx.repoDir, '.wavemill', 'runs', 'wavemill', 'native-sessions', 'planning-HOK-3369.jsonl'), [
+      // This event is late but belongs to the prior attempt. Filtering only
+      // on timestamp would include it and compare the current model against
+      // the prior wire identity.
+      nativeStartedEvent({ sessionId: previousSession, model: previousModel, timestamp: currentLaunchMs + 10 }),
+      nativeAssistantMessage({
+        sessionId: previousSession, model: previousModel, responseId: 'gen-prior-late', seq: 2, timestamp: currentLaunchMs + 20,
+      }),
+      nativeStartedEvent({ sessionId: currentSession, model: currentModel, timestamp: currentLaunchMs + 30 }),
+      nativeAssistantMessage({
+        sessionId: currentSession, model: currentModel, responseId: 'gen-current', seq: 4, timestamp: currentLaunchMs + 40,
+      }),
+    ]);
+
+    const result = resolveStageExecutedModel({
+      featureDir: fx.featureDir,
+      stage: 'planning',
+      worktreePath: fx.worktreePath,
+      branchName: fx.branchName,
+      repoDir: fx.repoDir,
+      existing: null,
+      agentHint: 'native',
+    });
+    assert.equal(result.evidenceStatus, 'direct');
+    assert.equal(result.executedModel, currentModel);
+    assert.equal(result.providerEvidence?.responseId, 'gen-current');
+  });
 });
