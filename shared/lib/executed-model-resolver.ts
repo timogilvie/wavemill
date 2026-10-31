@@ -232,6 +232,12 @@ export interface ResolvedStageExecutedModel {
   evidenceSource: string;
   evidenceDetail: string;
   /**
+   * The resolver returned the launcher's already-recorded evidence rather
+   * than independently resolving a new execution. Consumers must preserve
+   * that block byte-for-byte, including its `recordedAt` timestamp.
+   */
+  preservedExisting?: boolean;
+  /**
    * Optional provider-response fields (HOK-3143) carried forward when the
    * native resolver succeeded. The CLI write path never sets these from
    * flags — the resolver returns them directly for callers to merge into
@@ -469,6 +475,7 @@ function resolveNativeExecutedModel(input: ResolveStageExecutedModelInput & {
         evidenceStatus: 'direct',
         evidenceSource: existingEvidence.source,
         evidenceDetail: existingEvidence.detail ?? 'launcher provider-identity record',
+        preservedExisting: true,
         ...(Object.keys(providerEvidence).length > 0 ? { providerEvidence } : {}),
       };
     }

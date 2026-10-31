@@ -11,6 +11,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { appendOwnershipRow } from './session-ownership.ts';
 
 import {
   appendReviewIteration,
@@ -277,6 +278,55 @@ describe('writeStageResult and readStageResult', () => {
     assert.equal(fallback?.executionEvidence?.source, 'claude-session');
     assert.equal(fallback?.modelAttributionEligible, false);
     assert.equal(fallback?.modelAttributionIneligibleReason, 'runtime_fallback');
+  });
+
+  it('stage-result-cli preserves the launcher evidence timestamp on the native resolver fast path', async () => {
+    // The CLI derives its worktree as featureDir/../.., so use a temporary
+    // Git worktree with a real native ownership row to exercise the resolver
+    // rather than merely the pure stage-result merge helper.
+    const featureDir = path.join(testDir, 'features', 'native-evidence');
+    await fs.mkdir(featureDir, { recursive: true });
+    execFileSync('git', ['init', '-b', 'native-evidence'], { cwd: testDir, stdio: 'ignore' });
+    appendOwnershipRow(featureDir, {
+      sessionRef: 'native-session',
+      harness: 'native',
+      kind: 'planning',
+      model: 'moonshotai/kimi-k2-thinking',
+      // This must predate the provider evidence so the resolver returns the
+      // existing launcher record instead of scanning a fresh launch.
+      launchedAt: '2026-10-30T16:00:00.000Z',
+    });
+    await writeStageResult(featureDir, makeResult({
+      status: 'awaiting_user',
+      agent: 'native-openrouter',
+      model: 'moonshotai/kimi-k2-thinking',
+      executedModel: 'moonshotai/kimi-k2-thinking',
+      executionEvidence: {
+        status: 'direct',
+        source: 'provider-response',
+        identityVerdict: 'match',
+        recordedAt: '2026-10-30T16:07:16.000Z',
+      },
+      modelAttributionEligible: false,
+      modelAttributionIneligibleReason: 'stage_not_completed',
+    }));
+
+    execFileSync(process.execPath, [
+      'tools/stage-result-cli.ts',
+      'update',
+      featureDir,
+      'planning',
+      '--status',
+      'completed',
+      '--notes',
+      'Plan approved by user',
+    ], { cwd: process.cwd(), encoding: 'utf-8' });
+
+    const result = await readStageResult(featureDir, 'planning');
+    assert.equal(result?.executionEvidence?.recordedAt, '2026-10-30T16:07:16.000Z');
+    assert.equal(result?.executionEvidence?.source, 'provider-response');
+    assert.equal(result?.executedModel, 'moonshotai/kimi-k2-thinking');
+    assert.equal(result?.modelAttributionEligible, true);
   });
 });
 

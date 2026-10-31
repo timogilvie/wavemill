@@ -172,6 +172,10 @@ function applyResolvedToFlags(
   resolved: ResolvedStageExecutedModel | null,
 ): Record<string, string> {
   if (!resolved) return flags;
+  // The native resolver fast path returned the launcher's own evidence. Do
+  // not turn it into new flags: that would bypass `keptEvidence` and restamp
+  // its recordedAt field on every later stage-result write.
+  if (resolved.preservedExisting) return flags;
   if (resolved.evidenceStatus === 'missing') {
     if (resolved.evidenceDetail) {
       console.error(`[stage-result-cli] resolver: ${resolved.evidenceDetail}`);
