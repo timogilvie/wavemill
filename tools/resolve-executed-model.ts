@@ -18,6 +18,17 @@ function gitBranch(worktreePath: string): string | null {
   }
 }
 
+function repoDirFor(worktreePath: string): string | undefined {
+  try {
+    const commonDir = execFileSync('git', ['-C', worktreePath, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return commonDir ? resolve(commonDir, '..') : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * HOK-3369: operator wrapper over the one resolver. Nothing in shell calls
  * this any more — the CLI write path resolves in-process. Use this to debug
@@ -58,7 +69,7 @@ runTool({
         : null;
     const repoDir = typeof args['repo-dir'] === 'string'
       ? resolve(args['repo-dir'])
-      : (process.env.WAVEMILL_MILLED_REPO_DIR ?? process.env.REPO_DIR ?? undefined);
+      : (process.env.WAVEMILL_MILLED_REPO_DIR ?? process.env.REPO_DIR ?? (worktreePath ? repoDirFor(worktreePath) : undefined));
 
     if (!featureDir) throw new Error('Required: --feature-dir (holds the stage\'s .session-ownership.jsonl)');
     if (!stage || !(OWNERSHIP_STAGES as readonly string[]).includes(stage)) {

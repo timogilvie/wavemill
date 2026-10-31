@@ -172,7 +172,8 @@ function processStageFile(input: {
       executedModel: result.executedModel ?? undefined,
     };
   }
-  if (!input.worktreePath || !input.branchName) {
+  const nativeResult = /^native(?:-|$)/.test(result.agent ?? '');
+  if ((!input.worktreePath || !input.branchName) && !nativeResult) {
     return { file: input.filePath, stage: input.stage, action: 'missing-input', applied: false, reason: 'missing_worktree_or_branch' };
   }
 
@@ -182,8 +183,10 @@ function processStageFile(input: {
   const resolved = resolveStageExecutedModel({
     featureDir: stateDir,
     stage: input.stage as OwnershipStage,
-    worktreePath: input.worktreePath,
-    branchName: input.branchName,
+    // Native stream recovery reads ownership + repo telemetry, not a live
+    // worktree/session adapter. Archived native records may retain neither.
+    worktreePath: input.worktreePath ?? input.repoDir ?? stateDir,
+    branchName: input.branchName ?? '',
     repoDir: input.repoDir,
     existing: result,
     agentHint: result.agent,
@@ -233,6 +236,11 @@ function artifactContext(artifactDir: string, overrides: Pick<BackfillStageExecu
   const branchName = overrides.branch
     ?? terminalString(terminal, [['branch'], ['branchName'], ['terminal', 'branch'], ['task', 'branch'], ['state', 'branch']]);
   return { worktreePath, branchName };
+}
+
+function repoDirForArtifact(artifactDir: string): string | undefined {
+  const candidate = resolve(artifactDir, '..', '..', '..', '..');
+  return existsSync(join(candidate, '.wavemill')) ? candidate : undefined;
 }
 
 function discoverArchivedArtifacts(repoDir: string): string[] {
@@ -294,7 +302,7 @@ export function backfillStageExecutedModel(options: BackfillStageExecutedModelOp
     // --all-archived; otherwise fall back to any explicit --repo-dir / env.
     const perArtifactRepoDir = options.allArchivedUnder
       ? resolve(options.allArchivedUnder)
-      : repoDir;
+      : repoDir ?? repoDirForArtifact(artifactDir);
     for (const stage of STAGES) {
       // HOK-2891 / HOK-3369: archive keeps `.<stage>-result.json` on recent
       // runs and the dot-less `<stage>-result.json` on older ones.
@@ -412,6 +420,7 @@ if (import.meta.main) {
       live: { type: 'string', description: 'Repo root; scan every worktrees/*/features/* under it' },
       'repo-dir': { type: 'string', description: 'Milled repo root for native-session resolution' },
       apply: { type: 'boolean', description: 'Write updates; default is dry-run' },
+      'dry-run': { type: 'boolean', description: 'Report prospective updates without writing (the default)' },
     },
     examples: [
       'npx tsx tools/backfill-stage-executed-model.ts --artifact-dir .wavemill/evals/artifacts/HOK-2807 --apply',

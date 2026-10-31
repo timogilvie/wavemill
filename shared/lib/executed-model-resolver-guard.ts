@@ -11,7 +11,8 @@
  *
  * 1. The shell runs `resolve-executed-model.ts` as a separate `tsx` process
  *    (the HOK-3328 pattern HOK-3369 deletes). The CLI resolves in-process now.
- * 2. A second file imports session-model internals (`resolveExecutedModelFromSessions`)
+ * 2. A second file imports session-model internals (`resolveExecutedModelFromSessions`
+ *    or `getSessionAdapter`)
  *    — the one resolver owns them.
  * 3. A second file writes eligibility reason literals (`'runtime_fallback'`,
  *    `'missing_execution_evidence'`) outside stage-result.ts — the one
@@ -33,9 +34,16 @@ export const EXECUTED_MODEL_RESOLVER_GUARD: GuardSpec = {
     },
     {
       name: 'imports-session-resolver-internals',
-      description: 'Only the one resolver (shared/lib/executed-model-resolver.ts) imports resolveExecutedModelFromSessions.',
+      description: 'Only the one resolver (shared/lib/executed-model-resolver.ts) imports session-model resolver internals.',
       lang: 'ts',
-      re: /\bresolveExecutedModelFromSessions\b/,
+      re: /\b(?:resolveExecutedModelFromSessions|getSessionAdapter)\b/,
+      excludePaths: ['shared/lib/session-adapters.ts'],
+    },
+    {
+      name: 'shell-writes-stage-result-directly',
+      description: 'Shell stage-result writes must go through write_stage_result / stage-result-cli (HOK-3369).',
+      lang: 'sh',
+      re: /(?:>|>>|\bmv\b).*\.(?:planning|coding|review)-result\.json\b/,
     },
     {
       name: 'runtime-fallback-literal-outside-stage-result',
@@ -74,6 +82,8 @@ export const EXECUTED_MODEL_RESOLVER_GUARD: GuardSpec = {
     // treats them as invariant text (same rule as the model-equivalence guard).
     'shared/lib/challenge-attestation-backfill.ts',
     'shared/lib/arm-failure-taxonomy.ts',
+    // Legacy local writer uses the canonical write_stage_result contract.
+    'shared/lib/wavemill-startup-runner.sh',
   ],
   remediation: [
     'HOK-3369: one executed-model resolver (shared/lib/executed-model-resolver.ts)',

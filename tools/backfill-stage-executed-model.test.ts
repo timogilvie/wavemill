@@ -210,10 +210,9 @@ describe('backfillStageExecutedModel', () => {
 
     const artifactDir = join(repoDir, '.wavemill', 'evals', 'artifacts', 'HOK-3322_c');
     mkdirSync(artifactDir, { recursive: true });
-    writeJson(join(artifactDir, 'terminal-record.json'), {
-      worktree: worktreePath,
-      branch: 'task/HOK-3322_c',
-    });
+    // Archive-only native recovery needs no live worktree or branch: its
+    // ownership record and the repo-level stream are sufficient.
+    writeJson(join(artifactDir, 'terminal-record.json'), {});
     writeJson(join(artifactDir, '.planning-result.json'), stageResult({
       stage: 'planning',
       status: 'completed',
@@ -252,7 +251,6 @@ describe('backfillStageExecutedModel', () => {
 
     const results = backfillStageExecutedModel({
       artifactDirs: [artifactDir],
-      repoDir,
       apply: true,
     });
     const planning = results.find((r) => r.stage === 'planning');
