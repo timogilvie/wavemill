@@ -207,7 +207,6 @@ harness_extract_real_functions() {
     blocked_completion_announce_marker \
     blocked_completion_should_announce \
     mark_blocked_completion_announced \
-    blocked_completion_live_process_mode \
     emit_blocked_completion_liveness_attention \
     seam_artifact_cli_path \
     seam_validate_artifact \
@@ -324,7 +323,7 @@ harness_extract_real_functions() {
     phase_should_remain_active_without_pr \
     stage_result_is_in_progress \
     conflict_remediation_marker_path \
-    conflict_remediation_in_flight \
+    ready_remediation_disposition \
     conflict_remediation_awaiting_ready \
     conflict_remediation_exhausted_hold \
     _persist_phase \
@@ -636,7 +635,7 @@ harness_run_tick() {
     launch_ready_phase() { return 0; }
     ready_state_dir() { printf "%s\n" "$1/features/$2/ready"; }
     ready_base_sha() { printf "\n"; }
-    ready_remediation_launch_head() { printf "\n"; }
+    ready_remediation_disposition() { printf "%s\n" "inactive no-launch"; }
     ready_remediation_attempts() { printf "%s\n" "0"; }
     write_ready_attention_file() { :; }
     emit_execution_active_route() { :; }
@@ -2160,62 +2159,6 @@ EOF
   check_contains "live process: hook next action names issue" "$(jq -r '.next_action // empty' "$hook_file" 2>/dev/null || true)" "$issue"
 }
 
-test_coding_blocked_completion_terminates_live_process_when_configured() {
-  local slug="coding-blocked-terminate"
-  local issue="HOK-2464-TERM"
-  local repo tick commit overrides
-  repo="$(harness_init_repo "$slug")"
-  harness_setup_runtime_artifacts "$repo"
-  harness_setup_coding_state "$repo" "$slug" "running"
-  commit="$(git -C "$repo" rev-parse --short HEAD)"
-  cat > "$repo/features/$slug/.coding-blocked-completion.json" <<EOF
-{
-  "stage": "coding",
-  "implementationComplete": true,
-  "committed": true,
-  "commit": "$commit",
-  "passingChecks": ["bash tests/wavemill-mill-advance.test.sh"],
-  "blockingChecks": ["pytest -v"],
-  "blockingReason": "baseline_tests_failing",
-  "evidence": "Repo-level typecheck is failing outside this change.",
-  "recommendedAction": "advance_to_review"
-}
-EOF
-
-  overrides="$(cat <<'EOF'
-CURRENT_PHASE="coding"
-WAVEMILL_BLOCKED_COMPLETION_LIVE_PROCESS_MODE="terminate"
-MILL_LIVENESS_CALLS=0
-mill_pane_has_live_blocking_process() {
-  MILL_LIVENESS_CALLS=$((MILL_LIVENESS_CALLS + 1))
-  if [[ "$MILL_LIVENESS_CALLS" -eq 1 ]]; then
-    MILL_BLOCKING_PROCESS_COMMAND="pytest -v"
-    MILL_BLOCKING_PROCESS_REASON=""
-    MILL_BLOCKING_PROCESS_MATCH_COUNT=1
-    MILL_BLOCKING_PROCESS_PIDS=("5151")
-    return 0
-  fi
-  MILL_BLOCKING_PROCESS_COMMAND=""
-  MILL_BLOCKING_PROCESS_REASON=""
-  MILL_BLOCKING_PROCESS_MATCH_COUNT=0
-  MILL_BLOCKING_PROCESS_PIDS=()
-  return 1
-}
-mill_terminate_blocking_processes() {
-  [[ "$2" == "5151" ]] || return 1
-  return 0
-}
-EOF
-)"
-
-  tick="$(harness_run_tick "$repo" "$slug" "$issue" "$overrides")"
-
-  check_eq "terminate mode: coding stage becomes completed" "completed" "$(harness_read_stage_status "$repo" "$slug" coding)"
-  check_eq "terminate mode: attention cleared" "clear" "$(kv_value "$tick" attention)"
-  check_contains "terminate mode: termination log emitted" "$(kv_value "$tick" log_output)" "terminated live blocking process before coding handoff"
-  check_file_exists "terminate mode: auto audit written" "$repo/features/$slug/.coding-auto-advance.json"
-  check_file_exists "terminate mode: coding complete marker written" "$repo/features/$slug/.coding-complete"
-}
 
 test_coding_blocked_completion_indeterminate_liveness_needs_attention() {
   local slug="coding-blocked-indeterminate"
@@ -4069,7 +4012,6 @@ test_coding_blocked_completion_needs_user_without_advancing
 test_coding_blocked_completion_auto_advances_when_valid
 test_coding_blocked_completion_auto_advances_with_wavemill_metadata_noise
 test_coding_blocked_completion_live_process_needs_attention
-test_coding_blocked_completion_terminates_live_process_when_configured
 test_coding_blocked_completion_indeterminate_liveness_needs_attention
 test_coding_blocked_completion_missing_blocking_checks_advances_when_pane_is_gone
 test_coding_blocked_completion_empty_blocking_checks_falls_back_to_any_descendant

@@ -312,7 +312,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 0.3
 done
 
-progress_json="$(WAVEMILL_BG_CHILD_LAG_SECONDS=0 npx tsx "$TOOLS_DIR/task-progress.ts" --issue UNIT-BG --pane-pid "$pane_pid" --stall-minutes 60 2>/dev/null || true)"
+progress_json="$(WAVEMILL_BG_CHILD_LAG_SECONDS=0 node "$TOOLS_DIR/task-progress.ts" --issue UNIT-BG --pane-pid "$pane_pid" --stall-minutes 60 2>/dev/null || true)"
 bg_live="$(jq -r 'if .agentBackgroundLive == null then "null" else (.agentBackgroundLive | tostring) end' <<<"$progress_json" 2>/dev/null || echo "null")"
 if [[ "$bg_live" == "true" ]]; then
   pass "real process chain: live background task detected (agentBackgroundLive=true)"
@@ -328,7 +328,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   [[ -z "$(wavemill_collect_descendant_pids "$pane_pid" 2>/dev/null || true)" ]] && break
   sleep 0.2
 done
-progress_json2="$(WAVEMILL_BG_CHILD_LAG_SECONDS=0 npx tsx "$TOOLS_DIR/task-progress.ts" --issue UNIT-BG --pane-pid "$pane_pid" --stall-minutes 60 2>/dev/null || true)"
+progress_json2="$(WAVEMILL_BG_CHILD_LAG_SECONDS=0 node "$TOOLS_DIR/task-progress.ts" --issue UNIT-BG --pane-pid "$pane_pid" --stall-minutes 60 2>/dev/null || true)"
 bg_live2="$(jq -r 'if .agentBackgroundLive == null then "null" else (.agentBackgroundLive | tostring) end' <<<"$progress_json2" 2>/dev/null || echo "null")"
 if [[ "$bg_live2" == "false" ]]; then
   pass "real process chain: killing the background task clears agentBackgroundLive"
@@ -341,7 +341,7 @@ fi
 short_chain_pid="$(bash -c 'sleep 1' >/dev/null 2>&1 & echo $!)"
 BG_CHAIN_PIDS+=("$short_chain_pid")
 wait "$short_chain_pid" 2>/dev/null || true
-progress_json3="$(WAVEMILL_BG_CHILD_LAG_SECONDS=0 npx tsx "$TOOLS_DIR/task-progress.ts" --issue UNIT-BG --pane-pid "$short_chain_pid" --stall-minutes 60 2>/dev/null || true)"
+progress_json3="$(WAVEMILL_BG_CHILD_LAG_SECONDS=0 node "$TOOLS_DIR/task-progress.ts" --issue UNIT-BG --pane-pid "$short_chain_pid" --stall-minutes 60 2>/dev/null || true)"
 bg_live3="$(jq -r 'if .agentBackgroundLive == null then "null" else (.agentBackgroundLive | tostring) end' <<<"$progress_json3" 2>/dev/null || echo "null")"
 if [[ "$bg_live3" == "false" ]]; then
   pass "a short-lived (already-exited) child is not live by probe time"

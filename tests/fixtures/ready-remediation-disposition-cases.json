@@ -1,0 +1,172 @@
+{
+  "_comment": "HOK-3322: one table for the Ready remediation disposition. Provenance: the first case is a production incident replay from HOK-3316 / PR #1720 (2026-10-26); the remaining cases are hand-authored boundary siblings derived from that incident's documented monitor/watchdog decision sites. shared/lib/ready-remediation-disposition.test.ts runs every case through the pure decision; tests/ready-remediation-disposition.test.sh materialises the `shell: true` cases (state dir, bucket, conflict marker, ownership row, agent hook file) and asserts the monitor's wrapper prints the same kind and reason. Times are seconds before now. `launch.head` is `current` (equal to HEAD) or `other` (a head the worktree moved past).",
+  "cases": [
+    {
+      "name": "incident: CI remediation agent idle after launch at the same head",
+      "protects": "HOK-3316/PR #1720: an agent that reran flaky CI without committing held Ready forever",
+      "shell": true,
+      "readyStatus": "running",
+      "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": 600 },
+      "agentRecord": { "state": "idle", "event": "Stop", "agoSec": 60 },
+      "expected": { "kind": "settled", "reason": "agent-idle-after-launch" }
+    },
+    {
+      "name": "live remediation agent still working at the same head",
+      "protects": "re-running Ready (and so relaunching) over a remediation agent that is still working",
+      "shell": true,
+      "readyStatus": "running",
+      "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": 600 },
+      "agentRecord": { "state": "working", "event": "PreToolUse", "agoSec": 30 },
+      "expected": { "kind": "in-flight", "reason": "agent-working" }
+    },
+    {
+      "name": "previous stage's Stop predates the remediation launch",
+      "protects": "the reviewer's idle:Stop releasing a remediation agent that has not started yet",
+      "shell": true,
+      "readyStatus": "running",
+      "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": 600 },
+      "agentRecord": { "state": "idle", "event": "Stop", "agoSec": 900 },
+      "expected": { "kind": "in-flight", "reason": "awaiting-agent-evidence" }
+    },
+    {
+      "name": "remediation agent cut off mid-response (StopFailure)",
+      "protects": "an errored agent holding the arm as if it were still working",
+      "shell": true,
+      "readyStatus": "running",
+      "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": 600 },
+      "agentRecord": { "state": "error", "event": "StopFailure", "agoSec": 60 },
+      "expected": { "kind": "settled", "reason": "agent-error-after-launch" }
+    },
+    {
+      "name": "remediation agent waiting on operator approval",
+      "protects": "re-running Ready behind an agent parked at an approval prompt",
+      "shell": true,
+      "readyStatus": "running",
+      "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": 600 },
+      "agentRecord": { "state": "approval-needed", "event": "Notification", "agoSec": 60 },
+      "expected": { "kind": "in-flight", "reason": "agent-approval-needed" }
+    },
+    {
+      "name": "no agent record yet just after launch",
+      "protects": "settling a remediation before its agent has reported anything",
+      "shell": true,
+      "readyStatus": "running",
+      "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": 30 },
+      "agentRecord": null,
+      "expected": { "kind": "in-flight", "reason": "awaiting-agent-evidence" }
+    },
+    {
+      "name": "remediation pushed a new head",
+      "protects": "new-head remediation losing the existing pending re-check and condition expiry",
+      "shell": true,
+      "readyStatus": "running",
+      "launch": { "remediation": "ci", "head": "other", "launchedAgoSec": 600 },
+      "agentRecord": { "state": "working", "event": "PreToolUse", "agoSec": 30 },
+      "expected": { "kind": "advanced", "reason": "head-moved" }
+    },
+    {
+      "name": "Ready already completed",
+      "protects": "a stale bucket head holding a completed Ready",
+      "shell": true,
+      "readyStatus": "completed",
+      "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": 600 },
+      "agentRecord": { "state": "working", "event": "PreToolUse", "agoSec": 30 },
+      "expected": { "kind": "inactive", "reason": "not-running" }
+    },
+    {
+      "name": "Ready running with nothing launched (pending CI)",
+      "protects": "a pending Ready being held as if remediation were in flight",
+      "shell": true,
+      "readyStatus": "running",
+      "launch": null,
+      "agentRecord": { "state": "working", "event": "PreToolUse", "agoSec": 30 },
+      "expected": { "kind": "inactive", "reason": "no-launch" }
+    },
+    {
+      "name": "conflict resolver idle after launch at the same head",
+      "protects": "a resolver that settled without pushing latching the conflict branch",
+      "shell": true,
+      "readyStatus": "running",
+      "launch": { "remediation": "conflict", "head": "current", "launchedAgoSec": 600 },
+      "agentRecord": { "state": "idle", "event": "Stop", "agoSec": 60 },
+      "expected": { "kind": "settled", "reason": "agent-idle-after-launch" }
+    },
+    {
+      "name": "conflict resolver still working",
+      "protects": "re-running Ready over a live conflict resolver",
+      "shell": true,
+      "readyStatus": "running",
+      "launch": { "remediation": "conflict", "head": "current", "launchedAgoSec": 600 },
+      "agentRecord": { "state": "working", "event": "PreToolUse", "agoSec": 30 },
+      "expected": { "kind": "in-flight", "reason": "agent-working" }
+    },
+    {
+      "name": "idle agent waiting on its own background job",
+      "protects": "HOK-3137: an agent idle on its own backgrounded test run read as settled",
+      "shell": false,
+      "readyStatus": "running",
+      "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": 600 },
+      "agentRecord": { "state": "idle", "event": "Stop", "agoSec": 60 },
+      "progress": { "agentBackgroundLive": true },
+      "expected": { "kind": "in-flight", "reason": "background-work" }
+    },
+    {
+      "name": "agent parked at a blocking interactive prompt",
+      "protects": "re-running Ready behind an agent waiting on a menu choice",
+      "shell": false,
+      "readyStatus": "running",
+      "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": 600 },
+      "agentRecord": { "state": "idle", "event": "Stop", "agoSec": 60 },
+      "progress": { "blockingPrompt": { "id": "codex_model_retirement", "agent": "codex", "detail": "pick a model" } },
+      "expected": { "kind": "in-flight", "reason": "blocking-prompt" }
+    },
+    {
+      "name": "agent process exited without a hook",
+      "protects": "a crashed remediation agent holding the arm",
+      "shell": false,
+      "readyStatus": "running",
+      "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": 600 },
+      "agentRecord": null,
+      "progress": { "agentProcessLive": false },
+      "expected": { "kind": "settled", "reason": "agent-exited" }
+    },
+    {
+      "name": "no agent evidence and stalled past the threshold",
+      "protects": "an unreporting remediation latching instead of reaching the bounded re-check",
+      "shell": false,
+      "readyStatus": "running",
+      "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": 7200 },
+      "agentRecord": null,
+      "progress": { "stalled": true },
+      "expected": { "kind": "settled", "reason": "agent-stalled" }
+    },
+    {
+      "name": "a live record wins over stalled",
+      "protects": "relaunching over an agent inside one long tool call",
+      "shell": false,
+      "readyStatus": "running",
+      "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": 7200 },
+      "agentRecord": { "state": "working", "event": "PreToolUse", "agoSec": 3600 },
+      "progress": { "stalled": true },
+      "expected": { "kind": "in-flight", "reason": "agent-working" }
+    },
+    {
+      "name": "unknown launch time attributes no record",
+      "protects": "a pre-launch Stop releasing the hold when the launch time is unrecorded",
+      "shell": false,
+      "readyStatus": "running",
+      "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": null },
+      "agentRecord": { "state": "idle", "event": "Stop", "agoSec": 60 },
+      "expected": { "kind": "in-flight", "reason": "awaiting-agent-evidence" }
+    },
+    {
+      "name": "progress probe failed",
+      "protects": "a failed probe relaunching work (fail safe is hold)",
+      "shell": false,
+      "readyStatus": "running",
+      "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": 600 },
+      "progressUnavailable": true,
+      "expected": { "kind": "in-flight", "reason": "progress-unavailable" }
+    }
+  ]
+}

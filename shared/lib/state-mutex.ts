@@ -11,6 +11,8 @@ import {
 } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import { errorMessage } from './error-utils.ts';
+import { prepareTaskRecordWriteCheck } from './task-record-write-guard.ts';
+import type { WorkflowStateIssue } from './workflow-state.ts';
 
 function blockingSleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -20,6 +22,12 @@ export interface MutateJsonStateOptions<T> {
   timeoutMs?: number;
   createIfMissing?: boolean;
   initial?: T;
+  /**
+   * `workflow-state.json` only (HOK-3222): called with schema violations in
+   * task records the write added or changed, instead of the default stderr
+   * line. The violations are still shadow-logged.
+   */
+  onInvalid?: (statePath: string, issues: WorkflowStateIssue[]) => void;
 }
 
 export class StateLockTimeoutError extends Error {
@@ -137,7 +145,11 @@ export async function mutateJsonState<T>(
 
   try {
     const current = readJsonState(statePath, opts);
+    // HOK-3222: validate task records this write adds or changes when the
+    // target is workflow-state.json (Phase 1: shadow-log, never refuse).
+    const checkTaskRecords = prepareTaskRecordWriteCheck(statePath, current, 'ts', { onInvalid: opts.onInvalid });
     const next = transform(current);
+    checkTaskRecords?.(next);
 
     mkdirSync(dirname(statePath), { recursive: true });
     // HOK-3190: compact JSON output. Pretty-printing a 15 MB state file costs
@@ -207,7 +219,11 @@ export function mutateJsonStateSync<T>(
 
   try {
     const current = readJsonState(statePath, opts);
+    // HOK-3222: validate task records this write adds or changes when the
+    // target is workflow-state.json (Phase 1: shadow-log, never refuse).
+    const checkTaskRecords = prepareTaskRecordWriteCheck(statePath, current, 'ts', { onInvalid: opts.onInvalid });
     const next = transform(current);
+    checkTaskRecords?.(next);
 
     mkdirSync(dirname(statePath), { recursive: true });
     // HOK-3190: compact JSON output. See mutateJsonState for rationale.

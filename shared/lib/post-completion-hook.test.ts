@@ -1875,49 +1875,6 @@ await test('runPostCompletionEval records warning when context updates throw', a
   }
 });
 
-await test('runPostCompletionEval skips optional updates via env override', async () => {
-  const repoDir = mkdtempSync(join(tmpdir(), 'post-completion-skip-env-'));
-  makeContextUpdateRepo(repoDir, 'skip-env', 'HOK-1579');
-  clearConfigCache(repoDir);
-  const previous = process.env.WAVEMILL_SKIP_POST_EVAL_CONTEXT_UPDATES;
-  let calls = 0;
-
-  try {
-    process.env.WAVEMILL_SKIP_POST_EVAL_CONTEXT_UPDATES = '1';
-    await withMockedPostCompletionDeps(async () => {
-      stubBaseEvalDeps();
-      postCompletionHookDeps.runContextUpdateWork = async () => {
-        calls += 1;
-      };
-
-      const persisted = await runPostCompletionEval({
-        issueId: 'HOK-1579',
-        prNumber: '1579',
-        workflowType: 'mill',
-        repoDir,
-        branchName: 'task/skip-env',
-        worktreePath: repoDir,
-        agentType: 'codex',
-      });
-
-      assert.equal(persisted, true);
-    });
-
-    assert.equal(calls, 0);
-    const warnings = readWarningLines(repoDir);
-    assert.equal(warnings.length, 1);
-    assert.equal(warnings[0].reason, 'skipped-env');
-  } finally {
-    if (previous === undefined) {
-      delete process.env.WAVEMILL_SKIP_POST_EVAL_CONTEXT_UPDATES;
-    } else {
-      process.env.WAVEMILL_SKIP_POST_EVAL_CONTEXT_UPDATES = previous;
-    }
-    clearConfigCache(repoDir);
-    rmSync(repoDir, { recursive: true, force: true });
-  }
-});
-
 await test('runPostCompletionEval skips optional updates via config', async () => {
   const repoDir = mkdtempSync(join(tmpdir(), 'post-completion-skip-config-'));
   makeContextUpdateRepo(repoDir, 'skip-config', 'HOK-1580');
@@ -2036,7 +1993,7 @@ await test('enrichPostCompletionRecord falls back to archived routing-complete d
   const archiveDir = join(repoDir, '.wavemill', 'evals', 'artifacts', 'HOK-1123');
   mkdirSync(archiveDir, { recursive: true });
   writeFileSync(
-    join(archiveDir, 'routing-complete.json'),
+    join(archiveDir, '.routing-complete'),
     JSON.stringify({
       planner: 'claude-opus-4-6',
       coder: 'gpt-5.3-codex',

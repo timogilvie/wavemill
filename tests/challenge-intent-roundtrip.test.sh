@@ -70,7 +70,7 @@ read_state_value() {
 }
 
 real_challenge_intent() {
-  npx tsx "$REPO_DIR/tests/fixtures/build-challenge-intent.ts" "$@"
+  node "$REPO_DIR/tests/fixtures/build-challenge-intent.ts" "$@"
 }
 
 {

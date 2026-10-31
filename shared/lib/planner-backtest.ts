@@ -1,15 +1,13 @@
 /**
- * Backtest the grounded wave planner against the legacy planner (HOK-3131).
+ * Backtest the grounded wave planner (HOK-3131, HOK-3307).
  *
  * Ground truth comes from history: for every pair of merged PRs whose work
  * windows overlapped (they ran concurrently), did their diffs touch a common
  * file? A planner "predicts a conflict" for a pair when it would have kept the
- * two apart (any edge between them). Both planners see only the issue text,
+ * two apart (any edge between them). The planner sees only the issue text,
  * never the PR diff.
  *
- * Planners compared:
- * - `legacy`        — explicit Linear relations + the legacy queue-analysis classifier
- *                     (or explicit relations only when no LLM is configured).
+ * Planners reported:
  * - `grounded`      — explicit relations + non-`independent-order` grounded verdicts
  *                     + deterministic file conflicts (HOK-3304).
  * - `deterministic` — explicit relations + any grounded pair score > 0 (no LLM judge),
@@ -19,10 +17,8 @@
  * from the I/O in {@link runPlannerBacktest}, whose data sources are injected.
  */
 
-import { fileURLToPath } from 'node:url';
 import { compareTaskIds, DEFAULT_LOW_CONFLICT_FILES, type PairScore } from './conflict-scorer.ts';
 import type { GroundedPlanResult, GroundedTask, GroundedVerdict } from './grounded-planner.ts';
-import type { DependencyEdge } from './task-dependency-planner.ts';
 import { execArgvCommand } from './shell-utils.ts';
 
 export interface BacktestPr {
@@ -62,8 +58,6 @@ export interface PairOutcome {
   truthFiles: string[];
   truth: boolean;
   explicit: boolean;
-  legacy: boolean;
-  legacyReason?: string;
   grounded: boolean;
   groundedVerdict?: GroundedVerdict['verdict'];
   groundedEvidence?: string;
@@ -121,7 +115,7 @@ function ratio(numerator: number, denominator: number): number | null {
 }
 
 /** Confusion matrix and derived metrics for one planner. Pure. */
-export function computeMetrics(outcomes: PairOutcome[], key: 'legacy' | 'grounded' | 'deterministic' | 'explicit'): ConfusionMetrics {
+export function computeMetrics(outcomes: PairOutcome[], key: 'grounded' | 'deterministic' | 'explicit'): ConfusionMetrics {
   let tp = 0;
   let fp = 0;
   let fn = 0;
@@ -139,24 +133,18 @@ export function computeMetrics(outcomes: PairOutcome[], key: 'legacy' | 'grounde
   return { tp, fp, fn, tn, precision, recall, f1, accuracy: ratio(tp + tn, outcomes.length) };
 }
 
-function edgeBetween(edges: DependencyEdge[], a: string, b: string): DependencyEdge | undefined {
-  return edges.find((edge) => (edge.from === a && edge.to === b) || (edge.from === b && edge.to === a));
-}
-
 function linked(a: BacktestIssue, b: BacktestIssue): boolean {
   return a.blocks.includes(b.id) || a.dependsOn.includes(b.id) || b.blocks.includes(a.id) || b.dependsOn.includes(a.id);
 }
 
 /**
- * Combine ground truth with both planners' outputs into per-pair outcomes. Pure.
+ * Combine ground truth with the grounded planner's output into per-pair outcomes. Pure.
  *
- * @param legacyEdges - Edges inferred by the legacy classifier (explicit links are added here).
  * @param grounded - Result of `runGroundedPlanning` over the same tasks.
  * @param opts.judged - False when no ordering judge ran (deterministic-only backtest).
  */
 export function evaluatePairs(
   pairs: Array<[BacktestTask, BacktestTask]>,
-  legacyEdges: DependencyEdge[],
   grounded: Pick<GroundedPlanResult, 'verdicts' | 'scores' | 'deterministicConflicts'>,
   opts: { judged?: boolean } = {},
 ): PairOutcome[] {
@@ -173,7 +161,6 @@ export function evaluatePairs(
   return pairs.map(([a, b]) => {
     const truthFiles = groundTruthOverlap(a.files, b.files);
     const explicit = linked(a, b);
-    const legacyEdge = edgeBetween(legacyEdges, a.id, b.id);
     const verdict = verdictByPair.get(key(a.id, b.id));
     const score = scoreByPair.get(key(a.id, b.id))?.score ?? 0;
     const deterministicFiles = deterministicByPair.get(key(a.id, b.id));
@@ -187,8 +174,6 @@ export function evaluatePairs(
       truthFiles,
       truth: truthFiles.length > 0,
       explicit,
-      legacy: explicit || legacyEdge !== undefined,
-      ...(legacyEdge ? { legacyReason: `${legacyEdge.type}${legacyEdge.reason ? `: ${legacyEdge.reason}` : ''}` } : {}),
       grounded: explicit || (judged ? groundedConflict : score > 0),
       ...(verdict ? { groundedVerdict: verdict.verdict } : {}),
       ...(verdict?.evidence ? { groundedEvidence: verdict.evidence } : {}),
@@ -205,7 +190,6 @@ export interface BacktestReportInput {
   prsFetched: number;
   tasks: BacktestTask[];
   outcomes: PairOutcome[];
-  legacyMode: 'classifier' | 'explicit-only';
   groundedMode: 'llm' | 'deterministic-only';
   probeRef: string | null;
   notes?: string[];
@@ -228,24 +212,16 @@ function mark(predicted: boolean, truth: boolean): string {
 export function renderBacktestReport(input: BacktestReportInput): string {
   const { outcomes } = input;
   const planners = [
-    ['Legacy', computeMetrics(outcomes, 'legacy')],
     ['Grounded', computeMetrics(outcomes, 'grounded')],
     ['Grounded (deterministic only)', computeMetrics(outcomes, 'deterministic')],
     ['Explicit relations only', computeMetrics(outcomes, 'explicit')],
   ] as const;
-  const shown = outcomes.filter((o) => o.truth || o.legacy || o.grounded);
+  const shown = outcomes.filter((o) => o.truth || o.grounded);
   const hiddenTrueNegatives = outcomes.length - shown.length;
-  const correctness = (o: PairOutcome) => {
-    const legacyRight = o.legacy === o.truth;
-    const groundedRight = o.grounded === o.truth;
-    if (legacyRight && groundedRight) return 'both';
-    if (groundedRight) return 'grounded';
-    if (legacyRight) return 'legacy';
-    return 'neither';
-  };
+  const correctness = (o: PairOutcome) => (o.grounded === o.truth ? 'correct' : 'incorrect');
 
   const lines = [
-    '# Backtest: Grounded vs Legacy Planner',
+    '# Backtest: Grounded Planner',
     '',
     `Generated by \`npx tsx tools/backtest-planner.ts\` (HOK-3131) on ${input.generatedAt}.`,
     '',
@@ -253,7 +229,6 @@ export function renderBacktestReport(input: BacktestReportInput): string {
     `- Merged PRs fetched: ${input.prsFetched}; PRs tied to a Linear issue: ${input.tasks.length}`,
     `- Concurrent task pairs (work windows overlapped): ${outcomes.length}`,
     `- Pairs whose diffs actually overlapped (ground truth): ${outcomes.filter((o) => o.truth).length}`,
-    `- Legacy planner: ${input.legacyMode === 'classifier' ? 'explicit relations + legacy queue-analysis classifier' : 'explicit relations only (no LLM)'}`,
     `- Grounded planner: ${input.groundedMode === 'llm' ? 'touch sets + conflict scoring + evidence-required ordering judge' : 'touch sets + conflict scoring (no LLM judge)'}`,
     `- Touch sets resolved against: ${input.probeRef ? `\`${input.probeRef}\` (repository state before the earliest task started)` : 'the current working tree'}`,
     ...(input.stats
@@ -266,7 +241,7 @@ export function renderBacktestReport(input: BacktestReportInput): string {
     'Ground truth is positive when both merged diffs modified at least one common file, ignoring append-only registries',
     `(${DEFAULT_LOW_CONFLICT_FILES.map((file) => `\`${file}\``).join(', ')}).`,
     'A planner predicts a conflict when it would have kept the pair apart (any dependency or shared-surface edge, or an explicit Linear relation).',
-    'Planners only see the Linear issue text, never the PR diff.',
+    'The planner only sees the Linear issue text, never the PR diff.',
     '',
     '## Results',
     '',
@@ -277,21 +252,20 @@ export function renderBacktestReport(input: BacktestReportInput): string {
     ...(input.notes && input.notes.length > 0 ? ['## Notes', '', ...input.notes.map((note) => `- ${note}`), ''] : []),
     '## Detail',
     '',
-    `Pairs where ground truth or either planner is positive (${shown.length}); ${hiddenTrueNegatives} pairs that every planner and the ground truth call independent are omitted.`,
+    `Pairs where ground truth or the grounded planner is positive (${shown.length}); ${hiddenTrueNegatives} pairs that the planner and the ground truth call independent are omitted.`,
     '',
-    '| Task Pair | PRs | Ground Truth Overlap | Legacy Prediction | Grounded Prediction | Correct |',
-    '|-----------|-----|----------------------|-------------------|---------------------|---------|',
+    '| Task Pair | PRs | Ground Truth Overlap | Grounded Prediction | Correct |',
+    '|-----------|-----|----------------------|---------------------|---------|',
     ...shown
       .sort((x, y) => Number(y.truth) - Number(x.truth) || compareTaskIds(x.a, y.a) || compareTaskIds(x.b, y.b))
       .map((o) => {
         const truth = o.truth ? `yes: ${o.truthFiles.slice(0, 3).map((f) => `\`${f}\``).join(', ')}${o.truthFiles.length > 3 ? ` +${o.truthFiles.length - 3}` : ''}` : 'no';
-        const legacy = `${mark(o.legacy, o.truth)} ${o.legacy ? (o.explicit ? 'explicit' : cell(o.legacyReason ?? 'edge')) : 'independent'}`;
         // HOK-3304: a deterministic conflict renders with its files; an ordering verdict may sit on top.
         const conflictPart = o.deterministicFiles?.length ? `shared_surface: ${o.deterministicFiles.map((file) => `\`${cell(file)}\``).join(', ')}` : '';
         const verdictPart = o.groundedVerdict ? `${o.groundedVerdict}${o.groundedEvidence ? `: ${cell(o.groundedEvidence)}` : ''}` : '';
         const prediction = o.explicit && !conflictPart && !verdictPart ? 'explicit' : [conflictPart, verdictPart].filter(Boolean).join(' + ') || 'independent-order';
         const grounded = `${mark(o.grounded, o.truth)} ${prediction}${o.score > 0 ? ` (score ${o.score})` : ''}`;
-        return `| ${o.a} / ${o.b} | #${o.prA} / #${o.prB} | ${truth} | ${legacy} | ${grounded} | ${correctness(o)} |`;
+        return `| ${o.a} / ${o.b} | #${o.prA} / #${o.prB} | ${truth} | ${grounded} | ${correctness(o)} |`;
       }),
     '',
   ];
@@ -303,8 +277,6 @@ export interface PlannerBacktestDeps {
   fetchMergedPrs: (limit: number) => Promise<BacktestPr[]>;
   /** Linear issue text; reject or return null when unavailable. */
   fetchIssue: (id: string) => Promise<BacktestIssue | null>;
-  /** Legacy classifier over all tasks; omit for explicit-only legacy. */
-  legacyClassify?: (tasks: BacktestTask[]) => Promise<DependencyEdge[]>;
   /** Grounded planner over all tasks (caller wires probe/LLM/caching). */
   groundedPlan: (
     tasks: GroundedTask[],
@@ -322,7 +294,6 @@ export interface PlannerBacktestResult {
   tasks: BacktestTask[];
   outcomes: PairOutcome[];
   grounded: GroundedPlanResult;
-  legacyEdges: DependencyEdge[];
   notes: string[];
 }
 
@@ -366,15 +337,6 @@ export async function runPlannerBacktest(limit: number, deps: PlannerBacktestDep
   const concurrent = new Set(pairs.map(([x, y]) => (x.id < y.id ? `${x.id}\u0000${y.id}` : `${y.id}\u0000${x.id}`)));
   log(`${pairs.length} concurrent pairs`);
 
-  let legacyEdges: DependencyEdge[] = [];
-  if (deps.legacyClassify) {
-    try {
-      legacyEdges = await deps.legacyClassify(tasks);
-    } catch (error) {
-      notes.push(`Legacy classifier failed (${(error as Error).message.split('\n')[0]}); legacy predictions use explicit relations only.`);
-    }
-  }
-
   const earliestStart = tasks.reduce((min, task) => (task.startedAt < min ? task.startedAt : min), tasks[0]?.startedAt ?? new Date().toISOString());
   const grounded = await deps.groundedPlan(
     tasks.map((task) => ({
@@ -392,7 +354,7 @@ export async function runPlannerBacktest(limit: number, deps: PlannerBacktestDep
     notes.push(`Grounded ordering judge failed for some pairs (${(grounded.llm.error ?? 'unknown error').split('\n')[0]}); those pairs count as independent.`);
   }
 
-  return { prsFetched: prs.length, tasks, outcomes: evaluatePairs(pairs, legacyEdges, grounded, { judged: deps.judged ?? true }), grounded, legacyEdges, notes };
+  return { prsFetched: prs.length, tasks, outcomes: evaluatePairs(pairs, grounded, { judged: deps.judged ?? true }), grounded, notes };
 }
 
 // ---------------------------------------------------------------------------
@@ -482,40 +444,3 @@ export async function fetchIssueFromLinear(id: string): Promise<BacktestIssue | 
   };
 }
 
-const QUEUE_ANALYSIS_PROMPT_PATH = fileURLToPath(new URL('../../tools/prompts/queue-analysis.md', import.meta.url));
-
-/** Run the legacy queue-analysis classifier over every task in one full refresh. */
-export async function legacyClassifyWithLlm(
-  tasks: BacktestTask[],
-  opts: { repoDir: string; fingerprint: (task: BacktestTask) => string; timeoutMs?: number },
-): Promise<DependencyEdge[]> {
-  const [{ callLLM }, { loadPromptTemplate }, refresh, cache] = await Promise.all([
-    import('./llm-cli.ts'),
-    import('./prompt-utils.ts'),
-    import('./queue-partial-refresh.ts'),
-    import('./task-dependency-plan-cache.ts'),
-  ]);
-  const changedTaskIds = new Set(tasks.map((task) => task.id));
-  const prompt = refresh.buildPartialRefreshPrompt({
-    changedTaskIds,
-    contextTasks: tasks.map((task) => ({
-      id: task.id,
-      title: task.title,
-      description: task.description,
-      priority: task.priority ?? null,
-      blocks: task.blocks,
-      dependsOn: task.dependsOn,
-    })),
-    template: await loadPromptTemplate(QUEUE_ANALYSIS_PROMPT_PATH),
-  });
-  // Same transport flags as the grounded judge, so the comparison is about predictions, not latency.
-  const result = await callLLM(prompt, {
-    taskType: 'classify',
-    repoDir: opts.repoDir,
-    mode: 'stream',
-    cliFlags: ['--tools', ''],
-    timeout: opts.timeoutMs ?? 300_000,
-  });
-  const fingerprints = new Map(tasks.map((task) => [task.id, opts.fingerprint(task)]));
-  return cache.cachedEdgesToDependencyEdges(refresh.parseQueueAnalysisEdges(result.text, changedTaskIds, fingerprints));
-}

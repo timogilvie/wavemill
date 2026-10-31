@@ -262,8 +262,7 @@ test('resolver CLI emits parseable JSON with content and selection metadata', ()
   const repoDir = makeRepo();
   try {
     writeConfig(repoDir, {});
-    const raw = execFileSync('npx', [
-      'tsx',
+    const raw = execFileSync(process.execPath, [
       'tools/resolve-runtime-resource.ts',
       '--surface',
       'planner',

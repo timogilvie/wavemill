@@ -199,7 +199,9 @@ close_count() {
 seed "HOK-3145_c" "completed"
 dir="$(state_dir_for HOK-3145_c)"
 write_ready_result "$dir" '{"type":"ready","verdict":"fail","checksRun":3,"checksPassed":2,"mergeConflict":"MERGEABLE","prNumber":1559,"remediationAttempts":3,"remediationFailures":["unit"],"failedReadyRecheck":{"attempts":4,"exhausted":true}}'
-bounded_retry_mark_exhausted "$dir" "failed-ready-recheck" "Failed-ready re-checks exhausted after 4 attempt(s) for PR #1559: REPO_DIR is not defined" || true
+# HOK-3371: the failed-ready-recheck bucket is retired; the exhaustion context
+# comes from the shared stage-failure-ready bucket.
+bounded_retry_mark_exhausted "$dir" "stage-failure-ready" "Ready re-checks exhausted after 3 attempt(s) for PR #1559: REPO_DIR is not defined" || true
 run_terminalize "HOK-3145_c"
 if [[ "$rc" == "0" ]] \
   && [[ "$(get_task_meta HOK-3145_c challengeAborted)" == "terminal_stage_failure:ready-exhausted" ]] \
@@ -382,10 +384,12 @@ else
   fail "cause classifier table"
 fi
 
-# ── 9. Wiring: the failed-Ready branch calls the helper before holding ─────
-if grep -q 'exhausted|exhausted-quiet)' "$MONITOR_SCRIPT_FILE" \
-  && [[ "$(grep -c 'ready_exhausted_challenge_terminalize "\$ISSUE" "\$PR" "\$ready_state_dir_path" "\$WIN"' "$MONITOR_SCRIPT_FILE")" == "2" ]]; then
-  pass "the exhausted and base-conflict holds both try the retirement first"
+# ── 9. Wiring: the failed-Ready branch classifies, and every terminal path ──
+# (base conflict, allowlisted terminal cause, spent budget) tries the
+# challenger retirement before holding (HOK-3147, HOK-3371).
+if grep -q 'ready_failure_classify_and_act "$ISSUE" "$SLUG" "$ready_state_dir_path"' "$MONITOR_SCRIPT_FILE" \
+  && [[ "$(grep -c 'ready_exhausted_challenge_terminalize "\$issue" "\$pr" "\$state_dir" "\$win"' "$MONITOR_SCRIPT_FILE")" == "3" ]]; then
+  pass "the failed-Ready branch classifies and every terminal path tries the retirement first"
 else
   fail "failed-Ready branch wiring missing"
 fi

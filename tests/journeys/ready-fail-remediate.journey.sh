@@ -105,7 +105,21 @@ journey_wait_until "$ISSUE" 8  "coding launched"                      phase_is c
 journey_wait_until "$ISSUE" 8  "review launched"                      phase_is review
 journey_wait_until "$ISSUE" 10 "red CI made Ready launch remediation" remediation_launched
 RED_HEAD="${CI_LAST%%/*}"
+# HOK-3371: the failed-ready-recheck budget is retired — no legacy sentinel may
+# appear in the ready state dir (the feature dir itself, ready_state_dir) while
+# the mill drives a failed Ready phase.
+legacy_recheck_sentinels_count() {
+  local ready_dir
+  ready_dir="$(journey_feature_dir "$ISSUE")" || return 1
+  if ls "$ready_dir"/.failed-ready-recheck-* >/dev/null 2>&1; then
+    printf 'present\n'
+  else
+    printf 'absent\n'
+  fi
+}
+LEGACY_SENTINELS_AT_REMEDIATION="$(legacy_recheck_sentinels_count)"
 journey_wait_until "$ISSUE" 8  "remediation pushed a green head"      fix_pushed
+LEGACY_SENTINELS_AFTER_FIX="$(legacy_recheck_sentinels_count)"
 journey_wait_until "$ISSUE" 15 "PR merged by tend after the fix"      pr_merged
 journey_wait_until "$ISSUE" 8  "task reaped after merge"              journey_task_reaped "$ISSUE"
 
@@ -115,6 +129,10 @@ journey_assert "exactly one remediation launched (one budget unit for the red he
   test "$(remediation_launches)" = "1"
 journey_assert "the remediation prompt carried the failing check" \
   grep -q "unit-tests" "$FAKE_ROOT/remediation-prompt-2.txt"
+journey_assert "the retired failed-ready-recheck budget never reappears (HOK-3371)" \
+  bash -c '[[ "$1" == "absent" && "$2" == "absent" ]]' _ "$LEGACY_SENTINELS_AT_REMEDIATION" "$LEGACY_SENTINELS_AFTER_FIX"
+journey_assert "no untyped github-api transition default ever reached the mill log (HOK-3371)" \
+  test "$(mill_log_count "github-api transition failed")" = "0"
 journey_assert "Ready logged the remediation launch" \
   bash -c '(( $1 >= 1 ))' _ "$(mill_log_count "Launched ready remediation (attempt 1/")"
 journey_assert "no 'Ready remediation exhausted' at any point" \

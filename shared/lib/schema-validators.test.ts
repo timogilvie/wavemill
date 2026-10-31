@@ -179,8 +179,8 @@ describe('checkPrecompiledValidators drift detection', () => {
     let stderr = '';
     try {
       execFileSync(
-        'npx',
-        ['tsx', join(DEFAULT_REPO_ROOT, 'tools', 'check-schema-validators.ts'), scratch.root, scratch.validatorsDir],
+        process.execPath,
+        [join(DEFAULT_REPO_ROOT, 'tools', 'check-schema-validators.ts'), scratch.root, scratch.validatorsDir],
         { stdio: 'pipe', encoding: 'utf-8' },
       );
     } catch (error) {
@@ -198,8 +198,8 @@ describe('checkPrecompiledValidators drift detection', () => {
     let stderr = '';
     try {
       execFileSync(
-        'npx',
-        ['tsx', join(DEFAULT_REPO_ROOT, 'tools', 'check-schema-validators.ts'), scratch.root, scratch.validatorsDir],
+        process.execPath,
+        [join(DEFAULT_REPO_ROOT, 'tools', 'check-schema-validators.ts'), scratch.root, scratch.validatorsDir],
         { stdio: 'pipe', encoding: 'utf-8' },
       );
     } catch (error) {

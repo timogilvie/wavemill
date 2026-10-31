@@ -139,10 +139,9 @@ for fn in \
   ready_stage_warn_bypass_once \
   ready_stage_pending_verdict \
   conflict_remediation_marker_path \
-  conflict_remediation_in_flight \
   conflict_remediation_awaiting_ready \
   conflict_remediation_exhausted_hold \
-  ready_remediation_launch_head \
+  ready_remediation_disposition \
   inject_depends_on_pr_block \
   dispatch_queued_children_for_parent \
   review_result_has_final_evidence \
@@ -555,7 +554,6 @@ JSON
     }
     validate_pr_merge() { [[ "$VALIDATE_MERGED" == "true" ]]; }
     ready_state_dir() { printf "%s\n" "$1/features/$2/ready"; }
-    ready_remediation_launch_head() { printf "\n"; }
     write_ready_attention_file() {
       printf -v READY_ATTENTION_CALLS "%s%s|%s\n" "$READY_ATTENTION_CALLS" "$1" "$2"
       mkdir -p "$1"

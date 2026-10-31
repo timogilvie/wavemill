@@ -201,7 +201,7 @@ path.write_text(path.read_text().replace('__REPO_DIR__', repo_dir))
 PY
 
 RESULTS="$TMP_ROOT/results.jsonl"
-npx tsx "$HARNESS" "$ROOT" "$OUTSIDE" "$TRANSCRIPT_PATH" "$SENTINEL" > "$RESULTS"
+node "$HARNESS" "$ROOT" "$OUTSIDE" "$TRANSCRIPT_PATH" "$SENTINEL" > "$RESULTS"
 
 assert_scenario() {
   local label="$1"

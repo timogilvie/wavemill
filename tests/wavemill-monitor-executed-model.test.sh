@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# protects: HOK-3369 — write_stage_result no longer runs a per-agent resolver
+# or passes resolver flags. The CLI resolves in-process on completion; the
+# shell fallback is a jq merge that preserves existing evidence.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -47,9 +50,6 @@ trap 'rm -rf "$TEST_TMP"' EXIT
 
 FUNC_FILE="$TEST_TMP/write_stage_result.sh"
 extract_function "$MONITOR_SCRIPT_FILE" "write_stage_result" > "$FUNC_FILE"
-# HOK-3190: write_stage_result now routes tool spawns through
-# `wavemill_run_tool` (fast-strip wrapper). Forward it to the test's `npx`
-# intercept so the fixture keeps capturing calls.
 cat >> "$FUNC_FILE" <<'SHIM'
 
 wavemill_run_tool() {
@@ -72,13 +72,30 @@ write_existing_result() {
     notes:""
   }' > "$feature_dir/.coding-result.json"
 }
+
+write_existing_with_direct_evidence() {
+  local feature_dir="$1" agent="$2"
+  mkdir -p "$feature_dir"
+  jq -n --arg agent "$agent" '{
+    stage:"coding",
+    status:"awaiting_user",
+    startedAt:"2026-09-15T10:00:00Z",
+    finishedAt:null,
+    agent:$agent,
+    model:"requested-model",
+    executedModel:"requested-model",
+    executionEvidence:{status:"direct", source:"provider-response", identityVerdict:"match", recordedAt:"2026-09-15T10:05:00Z"},
+    modelAttributionEligible:false,
+    modelAttributionIneligibleReason:"stage_not_completed",
+    notes:""
+  }' > "$feature_dir/.coding-result.json"
+}
 EOS
 
 BIN_DIR="$TEST_TMP/bin"
 TOOLS_DIR="$TEST_TMP/tools"
 mkdir -p "$BIN_DIR" "$TOOLS_DIR"
 : > "$TOOLS_DIR/stage-result-cli.ts"
-: > "$TOOLS_DIR/resolve-executed-model.ts"
 
 cat > "$BIN_DIR/npx" <<'EOS'
 #!/usr/bin/env bash
@@ -86,23 +103,11 @@ set -euo pipefail
 script="${2:-}"
 case "$(basename "$script")" in
   resolve-executed-model.ts)
-    printf 'resolver' >> "$CALL_LOG"
+    # HOK-3369: the shell no longer runs this tool. If we see it, fail loudly.
+    printf 'unexpected-resolver-invocation' >> "$CALL_LOG"
     printf ' %q' "$@" >> "$CALL_LOG"
     printf '\n' >> "$CALL_LOG"
-    case "${RESOLVER_MODE:-direct}" in
-      direct)
-        printf '{"executedModel":"claude-haiku-4-5","evidenceStatus":"direct","evidenceSource":"claude-session","evidenceDetail":"models=claude-haiku-4-5:2; sessions=1"}\n'
-        ;;
-      codex)
-        printf '{"executedModel":"gpt-5.6-terra","evidenceStatus":"direct","evidenceSource":"codex-session","evidenceDetail":"models=gpt-5.6-terra:1; sessions=1"}\n'
-        ;;
-      missing)
-        printf '{"executedModel":null,"evidenceStatus":"missing","evidenceSource":"claude-session","evidenceDetail":"sessions=0; inWindowTurns=0"}\n'
-        ;;
-      fail)
-        exit 9
-        ;;
-    esac
+    exit 11
     ;;
   stage-result-cli.ts)
     printf 'stage-cli' >> "$CALL_LOG"
@@ -130,9 +135,11 @@ run_case() {
   PATH="$BIN_DIR:$PATH" TOOLS_DIR="$TOOLS_DIR" CALL_LOG="$case_dir/calls.log" "$@" "$case_dir"
 }
 
-echo "=== Wavemill Monitor Executed Model Evidence ==="
+echo "=== Wavemill Monitor Executed Model Evidence (HOK-3369) ==="
 
-run_case forwards_completed_claude bash -c '
+# protects: HOK-3369 — the shell no longer runs resolve-executed-model.ts.
+# It calls the stage-result CLI with only basic flags; the CLI resolves.
+run_case shell_does_not_run_resolver bash -c '
   set -euo pipefail
   source "$0"
   log_warn() { :; }
@@ -141,24 +148,14 @@ run_case forwards_completed_claude bash -c '
   write_existing_result "$feature_dir" claude
   write_stage_result "$feature_dir" coding completed claude claude-haiku-4-5 done
 ' "$FUNC_FILE"
-assert_contains "completed Claude invokes resolver" "$TEST_TMP/forwards_completed_claude/calls.log" "resolver"
-assert_contains "completed Claude forwards executed model" "$TEST_TMP/forwards_completed_claude/calls.log" "--executed-model claude-haiku-4-5"
-assert_contains "completed Claude forwards evidence source" "$TEST_TMP/forwards_completed_claude/calls.log" "--execution-evidence-source claude-session"
-assert_contains "completed Claude forwards evidence status" "$TEST_TMP/forwards_completed_claude/calls.log" "--execution-evidence-status direct"
-assert_contains "completed Claude forwards evidence detail" "$TEST_TMP/forwards_completed_claude/calls.log" "--execution-evidence-detail models=claude-haiku-4-5:2\\;\\ sessions=1"
+assert_not_contains "shell does not spawn resolve-executed-model.ts" "$TEST_TMP/shell_does_not_run_resolver/calls.log" "unexpected-resolver-invocation"
+assert_contains "shell calls stage-result-cli write" "$TEST_TMP/shell_does_not_run_resolver/calls.log" "stage-cli"
+assert_not_contains "shell does not pass --executed-model" "$TEST_TMP/shell_does_not_run_resolver/calls.log" "--executed-model"
+assert_not_contains "shell does not pass --execution-evidence-status" "$TEST_TMP/shell_does_not_run_resolver/calls.log" "--execution-evidence-status"
 
-run_case skips_non_completed bash -c '
-  set -euo pipefail
-  source "$0"
-  log_warn() { :; }
-  _write_stage_result_trace_event() { :; }
-  feature_dir="$1/feature"
-  write_existing_result "$feature_dir" claude
-  write_stage_result "$feature_dir" coding failed claude claude-haiku-4-5 failed
-' "$FUNC_FILE"
-assert_not_contains "failed Claude does not invoke resolver" "$TEST_TMP/skips_non_completed/calls.log" "resolver"
-
-run_case skips_native bash -c '
+# protects: HOK-3369 — a native completion routes through the CLI the same way
+# as claude/codex (no agent gate).
+run_case native_also_calls_cli bash -c '
   set -euo pipefail
   source "$0"
   log_warn() { :; }
@@ -167,58 +164,49 @@ run_case skips_native bash -c '
   write_existing_result "$feature_dir" native
   write_stage_result "$feature_dir" coding completed native pi-model done
 ' "$FUNC_FILE"
-assert_not_contains "native completed does not invoke resolver" "$TEST_TMP/skips_native/calls.log" "resolver"
+assert_contains "native completed also invokes stage-result-cli" "$TEST_TMP/native_also_calls_cli/calls.log" "stage-cli"
 
-run_case resolver_failure_soft bash -c '
+# protects: HOK-3369 — the shell fallback (CLI unavailable) merges the
+# write's basic fields onto any existing result, preserving its direct
+# executionEvidence block.
+run_case fallback_preserves_direct_evidence bash -c '
   set -euo pipefail
   source "$0"
   log_warn() { :; }
   _write_stage_result_trace_event() { :; }
   feature_dir="$1/feature"
-  write_existing_result "$feature_dir" claude
-  RESOLVER_MODE=fail write_stage_result "$feature_dir" coding completed claude claude-haiku-4-5 done
+  write_existing_with_direct_evidence "$feature_dir" native
+  STAGE_CLI_FAIL=1 write_stage_result "$feature_dir" coding completed native pi-model done
 ' "$FUNC_FILE"
-assert_contains "resolver failure still writes through CLI" "$TEST_TMP/resolver_failure_soft/calls.log" "stage-cli"
-assert_not_contains "resolver failure does not invent executed model" "$TEST_TMP/resolver_failure_soft/calls.log" "--executed-model"
-
-run_case fallback_uses_resolved_evidence bash -c '
-  set -euo pipefail
-  source "$0"
-  log_warn() { :; }
-  _write_stage_result_trace_event() { :; }
-  feature_dir="$1/feature"
-  write_existing_result "$feature_dir" claude
-  STAGE_CLI_FAIL=1 write_stage_result "$feature_dir" coding completed claude claude-haiku-4-5 done
-' "$FUNC_FILE"
-fallback_file="$TEST_TMP/fallback_uses_resolved_evidence/feature/.coding-result.json"
-if [[ "$(jq -r .executedModel "$fallback_file")" == "claude-haiku-4-5" \
+fallback_file="$TEST_TMP/fallback_preserves_direct_evidence/feature/.coding-result.json"
+if [[ "$(jq -r .executedModel "$fallback_file")" == "requested-model" \
   && "$(jq -r .executionEvidence.status "$fallback_file")" == "direct" \
-  && "$(jq -r .executionEvidence.source "$fallback_file")" == "claude-session" \
-  && "$(jq -r .modelAttributionEligible "$fallback_file")" == "true" ]]; then
-  pass "jq fallback writes resolved direct evidence"
+  && "$(jq -r .executionEvidence.source "$fallback_file")" == "provider-response" ]]; then
+  pass "jq fallback preserves direct provider-response evidence"
 else
   jq . "$fallback_file"
-  fail "jq fallback writes resolved direct evidence"
+  fail "jq fallback preserves direct provider-response evidence"
 fi
 
-run_case fallback_missing_stays_missing bash -c '
+# protects: HOK-3369 — a fresh file (no existing result) gets a `missing`
+# evidence block; the fallback never fabricates a direct one.
+run_case fallback_fresh_file_missing bash -c '
   set -euo pipefail
   source "$0"
   log_warn() { :; }
   _write_stage_result_trace_event() { :; }
   feature_dir="$1/feature"
-  write_existing_result "$feature_dir" claude
-  RESOLVER_MODE=fail STAGE_CLI_FAIL=1 write_stage_result "$feature_dir" coding completed claude claude-haiku-4-5 done
+  mkdir -p "$feature_dir"
+  STAGE_CLI_FAIL=1 write_stage_result "$feature_dir" coding completed claude claude-haiku-4-5 done
 ' "$FUNC_FILE"
-missing_file="$TEST_TMP/fallback_missing_stays_missing/feature/.coding-result.json"
+missing_file="$TEST_TMP/fallback_fresh_file_missing/feature/.coding-result.json"
 if [[ "$(jq -r .executedModel "$missing_file")" == "null" \
   && "$(jq -r .executionEvidence.status "$missing_file")" == "missing" \
-  && "$(jq -r .executionEvidence.source "$missing_file")" == "shell-fallback" \
   && "$(jq -r .modelAttributionIneligibleReason "$missing_file")" == "missing_execution_evidence" ]]; then
-  pass "jq fallback keeps missing when resolver has no evidence"
+  pass "jq fallback fresh file writes missing evidence"
 else
   jq . "$missing_file"
-  fail "jq fallback keeps missing when resolver has no evidence"
+  fail "jq fallback fresh file writes missing evidence"
 fi
 
 echo ""

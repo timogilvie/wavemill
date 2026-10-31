@@ -38,9 +38,6 @@ and confirmation policy. When repository config disagrees with the effective
 task value, Wavemill reports that as informational drift so intentional
 per-session overrides are visible without being treated as corruption.
 
-`WAVEMILL_EFFECTIVE_CONFIG_LEGACY=1` is a rollback adapter that bypasses launch
-contract reads while preserving the stored contract and provenance.
-
 ### Cross-PR Revert Checker
 
 `tools/check-cross-pr-reverts.ts` resolves the integration branch in this order:
@@ -617,16 +614,9 @@ clear all temporary health state with `clear --all`.
 
 ## Queue Planner Mode
 
-`queuePlanner.mode` selects how `tools/plan-queue.ts` discovers task relationships (HOK-3131):
+The grounded planner is the only planner as of HOK-3307. It predicts each task's touch set, scores pair conflicts deterministically, and asks the LLM only to judge ordering for scored pairs (evidence required).
 
-- `legacy` (default) — the LLM classifies the whole backlog into `depends_on` / `shared_surface` edges.
-- `grounded` — predict each task's touch set, score pair conflicts deterministically, and ask the LLM only to judge ordering for scored pairs (evidence required). See [Task Dependency Queue Plan](task-dependency-queue-plan.md#stage-9-grounded-wave-planning-opt-in-hok-3131).
-
-```json
-{ "queuePlanner": { "mode": "grounded" } }
-```
-
-Team-wide placement: `.wavemill-config.json`. Remove the block (or set `legacy`) to roll back immediately.
+The `queuePlanner` config key is ignored but still accepted for backward compatibility with configs that carry it. Remove the block at your convenience.
 
 ## Local Paths Guidance
 

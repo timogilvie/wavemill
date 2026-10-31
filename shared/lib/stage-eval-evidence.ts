@@ -14,6 +14,7 @@ import type {
 } from './eval-schema.ts';
 import type { ExecutedIdentity, ReviewExecutedIdentitySet } from './challenge-execution-contract.ts';
 import { parsePiRuntimeVersions, piRuntimeVersionsField } from './native-agent/pi-runtime-version.ts';
+import { resolveTaskArtifact } from './task-artifact-lookup.ts';
 
 const MAX_SNIPPET_CHARS = 320;
 
@@ -125,35 +126,22 @@ function readStageResult(
   worktreePath: string | undefined,
   stage: 'planning' | 'review',
 ): StageResultShape | null | undefined {
-  const fileName = `.${stage}-result.json`;
-  const archiveName = `${stage}-result.json`;
-  const candidates: string[] = [];
-
-  if (slug) {
-    for (const root of [worktreePath, repoDir]) {
-      if (!root) continue;
-      for (const dir of ['features', 'bugs']) {
-        candidates.push(path.join(root, dir, slug, fileName));
-      }
-    }
+  // HOK-2891: one lookup. Both live and archive carry `.${stage}-result.json`.
+  if (!issueId) return undefined;
+  const resolved = resolveTaskArtifact({
+    issueId,
+    slug,
+    artifactName: `.${stage}-result.json`,
+    worktreeDir: worktreePath,
+    repoDir,
+  });
+  if (!resolved) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(resolved.path, 'utf8')) as StageResultShape;
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
   }
-
-  if (issueId) {
-    candidates.push(path.join(repoDir, '.wavemill', 'evals', 'artifacts', issueId, fileName));
-    candidates.push(path.join(repoDir, '.wavemill', 'evals', 'artifacts', issueId, archiveName));
-  }
-
-  for (const candidate of candidates) {
-    if (!existsSync(candidate)) continue;
-    try {
-      const parsed = JSON.parse(readFileSync(candidate, 'utf8')) as StageResultShape;
-      return parsed && typeof parsed === 'object' ? parsed : null;
-    } catch {
-      return null;
-    }
-  }
-
-  return undefined;
 }
 
 function summarizePlanningResult(result: StageResultShape | null | undefined): string | undefined {

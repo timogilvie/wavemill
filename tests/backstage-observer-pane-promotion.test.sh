@@ -84,6 +84,7 @@ command -v tmux >/dev/null 2>&1 || skip_geometry "tmux not available"
 SESSION="wavemill-pane-promo-test-$$"
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 
+# allow-world-lifetime: geometry test needs a throwaway tmux server, not a test world.
 tmux new-session -d -s "$SESSION" -x 200 -y 60 'sleep 300' 2>/dev/null \
   || skip_geometry "could not start a tmux server ($(tmux -V 2>/dev/null || echo 'version unknown'))"
 trap 'tmux kill-session -t "$SESSION" 2>/dev/null || true; rm -f "$FUNCS"' EXIT

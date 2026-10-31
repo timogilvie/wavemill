@@ -15,6 +15,8 @@ set -euo pipefail
 
 INCIDENT_HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INCIDENT_REPO_DIR="$(cd "$INCIDENT_HARNESS_DIR/../.." && pwd)"
+# shellcheck source=../../shared/lib/terminal-backend.sh
+source "$INCIDENT_REPO_DIR/shared/lib/terminal-backend.sh"
 
 # Pin the cleanup-episode retry backoff well beyond any plausible 10-tick
 # wall-clock window so transient-disposition fixtures (e.g. HOK-4003 missing
@@ -263,7 +265,7 @@ incident_scenario_new() {
   SESSION="wavemill-incident-$$-${name}"
   TMUX_TMPDIR="$SCENARIO_DIR/tmux-tmp"
   TMUX_SOCK="$SCENARIO_DIR/tmux.sock"
-  REAL_TMUX="$(command -v tmux 2>/dev/null || true)"
+  REAL_TMUX="$(term_resolve_real_tmux || true)"
 
   mkdir -p "$WORKTREE_ROOT" "$BIN_DIR" "$GH_PR_DIR" "$TMUX_TMPDIR"
   : > "$MILL_LOG_FILE"
@@ -305,7 +307,7 @@ INCIDENT_TEARDOWN_TRAPS=()
 incident_scenario_teardown() {
   local scenario_dir="$1"
   local tmux_sock="${2:-$scenario_dir/tmux.sock}"
-  local real_tmux="${3:-$(command -v tmux 2>/dev/null || true)}"
+  local real_tmux="${3:-$(term_resolve_real_tmux || true)}"
   if [[ -n "$real_tmux" && -S "$tmux_sock" ]]; then
     "$real_tmux" -S "$tmux_sock" kill-server >/dev/null 2>&1 || true
   fi
@@ -736,7 +738,7 @@ tick_field() {
 # 10-minute threshold in real time.
 run_observer_pass() {
   local output
-  output="$(PATH="$(incident_scenario_path)" TMUX_TMPDIR="$TMUX_TMPDIR" TMUX_SOCK="$TMUX_SOCK" npx tsx "$INCIDENT_REPO_DIR/tools/observer.ts" \
+  output="$(PATH="$(incident_scenario_path)" TMUX_TMPDIR="$TMUX_TMPDIR" TMUX_SOCK="$TMUX_SOCK" node "$INCIDENT_REPO_DIR/tools/observer.ts" \
     --once --json --dry-run --repo-dir "$REPO_DIR" --session "$SESSION" --stale-minutes 1 2>"$SCENARIO_DIR/observer-stderr.log")" || true
   printf '%s\n' "$output"
 }

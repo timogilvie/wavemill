@@ -204,7 +204,7 @@ function makeRepoWithoutChallenge(coderHistory: string[] = []): string {
 }
 
 function runResolveChallengeTask(repoDir: string, args: string[]): Record<string, unknown> {
-  const stdout = execFileSync('npx', ['tsx', resolveChallengeTaskTool, ...args], {
+  const stdout = execFileSync(process.execPath, [resolveChallengeTaskTool, ...args], {
     encoding: 'utf-8',
     cwd: resolve(__dirname, '..'),
     env: {

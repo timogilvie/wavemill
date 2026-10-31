@@ -1,5 +1,10 @@
 # shellcheck shell=bash
 source "$FAKE_AGENT_TOOLS_DIR/../shared/lib/task-identity.sh"
+if [[ "${JOURNEY_NATIVE_ARM_EVIDENCE:-0}" == 1 ]] \
+   && task_identity_is_challenger "$WAVEMILL_ISSUE"; then
+  source "$FAKE_AGENT_SCRIPT_DIR/native-launcher.sh"
+  fake_native_launcher_emit coding "$@"
+fi
 if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 && ! -f "$FEATURE_DIR/.journey-coding-interrupted" ]] \
    && task_identity_is_challenger "$WAVEMILL_ISSUE"; then
   touch "$FEATURE_DIR/.journey-coding-interrupted"

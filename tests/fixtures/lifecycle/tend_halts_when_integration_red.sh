@@ -75,7 +75,7 @@ write_fake_gh
 write_fake_git
 write_fake_npx
 
-output="$(cd "$REPO_ROOT" && npx tsx tools/tend.ts --once --dry-run --repo-dir "$REPO_DIR" 2>&1)"
+output="$(cd "$REPO_ROOT" && node tools/tend.ts --once --dry-run --repo-dir "$REPO_DIR" 2>&1)"
 
 if [[ "$output" != *'health=unhealthy reason="integration-ci: failure"'* ]] || [[ "$output" != *"eligible=0"* ]]; then
   echo "expected health=unhealthy with reason and eligible=0, got: $output"

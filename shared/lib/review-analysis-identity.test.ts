@@ -159,7 +159,7 @@ describe('review analysis identity hand-off (HOK-3247)', () => {
 
       const cli = (artifacts: string) => execFileSync(
         process.execPath,
-        ['--import', 'tsx', join(REPO_ROOT, 'tools', 'stage-result-cli.ts'), 'update', featureDir, 'review',
+        [join(REPO_ROOT, 'tools', 'stage-result-cli.ts'), 'update', featureDir, 'review',
           '--status', 'completed', '--notes', 'PR #1 created', '--artifacts', artifacts],
         { cwd: REPO_ROOT, encoding: 'utf-8' },
       );

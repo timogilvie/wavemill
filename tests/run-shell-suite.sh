@@ -27,6 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Note: tests/check-shell.sh is deliberately absent. It is a lint/syntax pass
 # over every shell script, not a per-shard test, and runs once via `npm run lint`.
 TESTS=(
+  state-mutate-task-record-validation.test.sh
   run-related.test.sh
   run-typecheck.test.sh
   check-direct-ledger-access.test.sh
@@ -84,6 +85,7 @@ TESTS=(
   expansion-handshake.test.sh
   config-version-prompt.test.sh
   monitor-ready-transition.test.sh
+  ready-remediation-disposition.test.sh
   ready-failure-blocks-pr-label.test.sh
   launch-ready-phase.test.sh
   ready-sync-github-head-lag.test.sh
@@ -96,10 +98,13 @@ TESTS=(
   merge-labels-real-state.test.sh
   state-fixtures.test.sh
   ready-update-from-base.test.sh
+  ready-failure-classify-and-act.test.sh
   plan-packet-binding.test.sh
   task-inputs-gate.test.sh
   task-progress.test.sh
   task-identity.test.sh
+  task-artifact-lookup.test.sh
+  archive-naming.test.sh
   terminal-backend.test.sh
   tracked-tree-guard.test.sh
   handle-phase-launch-result.test.sh
@@ -202,6 +207,9 @@ TESTS=(
   hot-state-byte-cap.test.sh
   monitor-usr2-wakeup.test.sh
   fakes/fakes-contract.test.sh
+  tmux-wrapper-loop.test.sh
+  world-lifetime-sigkill.test.sh
+  world-lifetime-stale-reap.test.sh
 )
 
 SHARD_INDEX=1
@@ -252,7 +260,7 @@ else
   # matrix if one leg fell back while others did not.
   if ! SELECTION="$(
     printf '%s\n' "${TESTS[@]}" |
-      (cd "$SCRIPT_DIR/.." && npx tsx tools/partition-tests.ts --suite shell --shard "${SHARD_INDEX}/${SHARD_TOTAL}")
+      (cd "$SCRIPT_DIR/.." && node tools/partition-tests.ts --suite shell --shard "${SHARD_INDEX}/${SHARD_TOTAL}")
   )"; then
     echo "run-shell-suite.sh: partitioner failed for shard ${SHARD_INDEX}/${SHARD_TOTAL}" >&2
     exit 2

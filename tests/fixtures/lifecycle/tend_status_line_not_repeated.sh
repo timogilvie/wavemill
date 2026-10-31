@@ -62,7 +62,7 @@ OUTPUT_FILE="$STATE_DIR/tend-output.log"
 # Each iteration calls renderer.write(), which outputs one line per call in non-TTY mode.
 # Since stdout is redirected to a file, isTTY is false, so we get one line per iteration.
 # We use timeout to terminate after 3+ iterations have happened.
-timeout 5s npx tsx "$REPO_ROOT/tools/tend.ts" --loop --repo-dir "$REPO_DIR" > "$OUTPUT_FILE" 2>&1 || true
+timeout 5s node "$REPO_ROOT/tools/tend.ts" --loop --repo-dir "$REPO_DIR" > "$OUTPUT_FILE" 2>&1 || true
 
 # Count the number of lines in the output
 LINE_COUNT=$(wc -l < "$OUTPUT_FILE" || echo 0)

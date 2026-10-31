@@ -21,7 +21,6 @@ import { loadReviewInterventions } from './review-intervention-mapper.ts';
 import { resolveRouteArtifactArchiveDir } from './evals-paths.ts';
 import type { StageName, StageResult, StageResultHistoryEntry, StageStatus } from './stage-result.ts';
 import {
-  OPERATOR_INTERVENTION_ARCHIVE_FILENAME,
   OPERATOR_INTERVENTION_FILENAME,
   formatOperatorInterventionDetail,
   parseOperatorInterventions,
@@ -659,7 +658,8 @@ export function detectOperatorInterventions(dirs: ResolvedTaskArtifactDirs): Int
   }
 
   if (!foundFeatureRecord && dirs.archiveDir) {
-    const path = join(dirs.archiveDir, OPERATOR_INTERVENTION_ARCHIVE_FILENAME);
+    // HOK-2891: archive keeps the live basename (.operator-intervention.json).
+    const path = join(dirs.archiveDir, OPERATOR_INTERVENTION_FILENAME);
     if (existsSync(path)) {
       try {
         const raw = JSON.parse(readFileSync(path, 'utf-8'));
@@ -711,10 +711,10 @@ export function detectPriorFailedAttempts(dirs: ResolvedTaskArtifactDirs): Inter
   const resultDirs = dirs.featureDirs.length > 0 ? dirs.featureDirs : [];
   if (dirs.archiveDir) resultDirs.push(dirs.archiveDir);
 
+  // HOK-2891: live and archive share one basename for stage results.
   for (const dir of existingUnique(resultDirs)) {
-    const archiveStyle = Boolean(dirs.archiveDir && resolve(dir) === resolve(dirs.archiveDir));
     for (const stage of FAILED_ATTEMPT_STAGES) {
-      const resultPath = join(dir, archiveStyle ? `${stage}-result.json` : `.${stage}-result.json`);
+      const resultPath = join(dir, `.${stage}-result.json`);
       const result = readStageResultSync(resultPath);
       result?.history?.forEach((entry, index) => {
         if (!FAILED_ATTEMPT_STATUSES.includes(entry.status)) return;
@@ -727,7 +727,7 @@ export function detectPriorFailedAttempts(dirs: ResolvedTaskArtifactDirs): Inter
 
       try {
         if (!existsSync(dir)) continue;
-        const prefix = archiveStyle ? `${stage}-result.attempt-` : `.${stage}-result.attempt-`;
+        const prefix = `.${stage}-result.attempt-`;
         const suffix = '-failed.json';
         for (const file of readdirSync(dir)) {
           if (!file.startsWith(prefix) || !file.endsWith(suffix)) continue;
@@ -783,8 +783,8 @@ export interface OperatorHandoffInterval {
   codingCompleteAt?: number;
 }
 
+// HOK-2891: archive keeps the live basename.
 const CODING_UNCOMMITTED_OUTPUT_RESOLVED_LOG_FILENAME = '.coding-uncommitted-output.resolved.jsonl';
-const CODING_UNCOMMITTED_OUTPUT_RESOLVED_ARCHIVE_FILENAME = 'coding-uncommitted-output.resolved.jsonl';
 const CODING_UNCOMMITTED_OUTPUT_LIVE_FILENAME = '.coding-uncommitted-output.json';
 
 /** Grace margin absorbing stamp/launch ordering and sub-second clock skew. */
@@ -821,10 +821,10 @@ export function deriveAgentActivityWindows(dirs: ResolvedTaskArtifactDirs): Agen
   const resultDirs = dirs.featureDirs.length > 0 ? [...dirs.featureDirs] : [];
   if (dirs.archiveDir) resultDirs.push(dirs.archiveDir);
 
+  // HOK-2891: live and archive share one basename for stage results.
   for (const dir of existingUnique(resultDirs)) {
-    const archiveStyle = Boolean(dirs.archiveDir && resolve(dir) === resolve(dirs.archiveDir));
     for (const stage of FAILED_ATTEMPT_STAGES) {
-      const resultPath = join(dir, archiveStyle ? `${stage}-result.json` : `.${stage}-result.json`);
+      const resultPath = join(dir, `.${stage}-result.json`);
       const result = readStageResultSync(resultPath);
       if (result) {
         addWindow(stage, result.startedAt, result.finishedAt);
@@ -835,7 +835,7 @@ export function deriveAgentActivityWindows(dirs: ResolvedTaskArtifactDirs): Agen
 
       try {
         if (!existsSync(dir)) continue;
-        const prefix = archiveStyle ? `${stage}-result.attempt-` : `.${stage}-result.attempt-`;
+        const prefix = `.${stage}-result.attempt-`;
         const suffix = '-failed.json';
         for (const file of readdirSync(dir)) {
           if (!file.startsWith(prefix) || !file.endsWith(suffix)) continue;
@@ -915,7 +915,7 @@ export function readOperatorHandoffIntervals(dirs: ResolvedTaskArtifactDirs): Op
   }
 
   if (dirs.archiveDir) {
-    const archivedLogPath = join(dirs.archiveDir, CODING_UNCOMMITTED_OUTPUT_RESOLVED_ARCHIVE_FILENAME);
+    const archivedLogPath = join(dirs.archiveDir, CODING_UNCOMMITTED_OUTPUT_RESOLVED_LOG_FILENAME);
     if (existsSync(archivedLogPath)) {
       try {
         for (const record of readJsonlFile<RawOperatorHandoffRecord>(archivedLogPath)) {

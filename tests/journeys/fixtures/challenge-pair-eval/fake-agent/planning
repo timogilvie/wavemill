@@ -1,8 +1,17 @@
 # shellcheck shell=bash
+if [[ "${JOURNEY_NATIVE_ARM_EVIDENCE:-0}" == 1 ]]; then
+  source "$FAKE_AGENT_TOOLS_DIR/../shared/lib/task-identity.sh"
+  if task_identity_is_challenger "$WAVEMILL_ISSUE"; then
+    source "$FAKE_AGENT_SCRIPT_DIR/native-launcher.sh"
+    fake_native_launcher_emit planning "$@"
+  fi
+fi
 default_planning
-if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 ]]; then
+if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 || "${JOURNEY_NATIVE_ARM_EVIDENCE:-0}" == 1 ]]; then
   # Script the router output at the external boundary, using the selected route.
   # The real sealed-intent resolver still validates/materialises the challenger.
+  # A plan-stage native-evidence pair also needs this expanded-route handoff:
+  # its challenger is correctly deferred until this artifact exists.
   jq '{planner:.planning.model,coder:.coding.model,reviewer:.review.model,
        planDepth:(.planning.depth // "light"),codeDepth:(.coding.depth // "light"),reviewMode:"static"}' \
     "$FEATURE_DIR/.phase-config.json" > "$FEATURE_DIR/.post-expansion-route.json"

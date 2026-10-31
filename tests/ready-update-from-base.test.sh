@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Unit tests for the HOK-3092 update-from-base wiring:
-#   - failed_ready_recheck_gate accepts an optional trailing base_sha and
-#     drives the composite (head, base) reset from bounded-retry.sh.
+# Unit tests for the update-from-base wiring:
+#   - ready_failure_base_drift (HOK-3371) gates the head move on real drift
+#     evidence: a CONFLICT signature, a base-drift signature in the recorded
+#     detail, or red CI with no transition failure and an observably behind
+#     branch. Any other Ready failure skips the update entirely.
 #   - try_update_branch_from_base translates the CLI's exit codes into the
 #     `not-behind` / `updated` / `conflict:<paths>` / `error:*` protocol the
-#     failed-ready and conflict-remediation loops rely on.
+#     Ready disposition helper relies on.
 #   - conflict-remediation-relaunch bucket terminalizes after one attempt on
 #     identical (head, base) via bounded_retry_gate with limit=1.
 set -euo pipefail
@@ -67,15 +69,10 @@ FUNC_FILE="$TEST_TMP/ready-update-from-base.sh"
 : > "$FUNC_FILE"
 cat "$REPO_DIR/shared/lib/bounded-retry.sh" >> "$FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "coding_compare_commit_counts" >> "$FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_count"        >> "$FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "clear_failed_ready_recheck_state"  >> "$FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_reset_if_new_head" >> "$FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "increment_failed_ready_recheck_count"   >> "$FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_backoff_seconds"   >> "$FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_due"               >> "$FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_identical_streak"  >> "$FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_gate"              >> "$FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "try_update_branch_from_base"            >> "$FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_failure_reason"          >> "$FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_failure_evidence_detail" >> "$FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_failure_base_drift"      >> "$FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "try_update_branch_from_base"   >> "$FUNC_FILE"
 
 # The monitor helper delegates the base-ref lookup to wavemill-common; the
 # ref is only used inside `coding_compare_commit_counts` for a git rev-list
@@ -98,53 +95,44 @@ STUB
 source "$FUNC_FILE"
 
 # ---------------------------------------------------------------------------
-# 1) failed_ready_recheck_gate accepts a base_sha and honours the composite
-#    reset (HOK-3092 REQ-F2).
+# 1) ready_failure_base_drift — drift evidence gates the head move (HOK-3371).
 # ---------------------------------------------------------------------------
 SHA_HEAD="deadbee"
 SHA_BASE_A="beefcaf"
 SHA_BASE_B="c0ffee1"
 
-dir="$TEST_TMP/gate-composite"
-mkdir -p "$dir"
-check_eq "gate proceeds with fresh (head, base)" \
-  "$(failed_ready_recheck_gate "$dir" "$SHA_HEAD" "$SHA_BASE_A")" "proceed"
-# Simulate enough failed attempts to hit the default ceiling
-# (READY_FAILED_RECHECK_MAX_ATTEMPTS=4).
-for i in 1 2 3 4; do
-  increment_failed_ready_recheck_count "$dir" "$SHA_HEAD" "$SHA_BASE_A" >/dev/null
-  printf '%s\n' "$(( $(date +%s) - 7200 ))" > "$dir/.failed-ready-recheck-last-at"
-done
-# `identical_limit` short-circuits before the ceiling when the reason streak
-# is set; leave it unset for this test so the pure attempt ceiling drives.
-check_eq "gate exhausted at ceiling on (head, base_a)" \
-  "$(READY_FAILED_RECHECK_IDENTICAL_LIMIT=0 failed_ready_recheck_gate "$dir" "$SHA_HEAD" "$SHA_BASE_A")" "exhausted"
-bounded_retry_mark_exhausted "$dir" "failed-ready-recheck" "spent on (head, base_a)" || true
-# Same head, different base — a fresh merge parent invalidates the last
-# outcome and gets a full set of attempts.
-check_eq "gate resets on new base (same head)" \
-  "$(READY_FAILED_RECHECK_IDENTICAL_LIMIT=0 failed_ready_recheck_gate "$dir" "$SHA_HEAD" "$SHA_BASE_B")" "proceed"
-check_eq "new base cleared the counter" "$(failed_ready_recheck_count "$dir")" "0"
-if bounded_retry_is_exhausted "$dir" "failed-ready-recheck"; then
-  fail "new base clears exhausted sentinel"
-else
-  pass "new base clears exhausted sentinel"
-fi
+write_ready_fixture() {
+  local dir="$1" json="$2"
+  mkdir -p "$dir"
+  printf '%s\n' "$json" > "$dir/.ready-result.json"
+}
 
-# Backwards compatibility: two-arg call (no base_sha) behaves like before.
-dir="$TEST_TMP/gate-legacy"
-mkdir -p "$dir"
-check_eq "legacy 2-arg call still returns proceed" \
-  "$(failed_ready_recheck_gate "$dir" "$SHA_HEAD")" "proceed"
-increment_failed_ready_recheck_count "$dir" "$SHA_HEAD" >/dev/null
-check_eq "legacy caller writes single-line key" \
-  "$(bounded_retry_head "$dir" failed-ready-recheck)" "$SHA_HEAD"
-check_eq "legacy caller has no base component" \
-  "$(bounded_retry_base "$dir" failed-ready-recheck)" ""
+dir="$TEST_TMP/drift-conflict"
+write_ready_fixture "$dir" '{"artifacts":{"mergeConflict":"CONFLICTED"}}'
+check_eq "a CONFLICT mergeConflict signature warrants the update" \
+  "$(ready_failure_base_drift "$dir" "$TEST_TMP" main)" "yes"
 
-# ---------------------------------------------------------------------------
-# 2) try_update_branch_from_base — mock repo and stubbed CLI.
-# ---------------------------------------------------------------------------
+dir="$TEST_TMP/drift-signature"
+write_ready_fixture "$dir" '{"artifacts":{"transitionFailure":{"stage":"ready-label","detail":"remote rejected (fetch first)"}}}'
+check_eq "a base-drift signature in the detail warrants the update" \
+  "$(ready_failure_base_drift "$dir" "$TEST_TMP" main)" "yes"
+
+dir="$TEST_TMP/drift-transition-error"
+write_ready_fixture "$dir" '{"artifacts":{"transitionFailure":{"stage":"route-stamp","detail":"Expected resolved_model for planner inherited"}}}'
+check_eq "a deterministic transition error does not warrant the update" \
+  "$(ready_failure_base_drift "$dir" "$TEST_TMP" main)" "no"
+
+dir="$TEST_TMP/drift-red-checks"
+write_ready_fixture "$dir" '{"artifacts":{"ciConclusion":"FAILURE","remediationFailures":["unit-tests"]}}'
+check_eq "red checks on a branch that is not behind do not warrant the update" \
+  "$(ready_failure_base_drift "$dir" "$TEST_TMP" main)" "no"
+
+dir="$TEST_TMP/drift-empty"
+write_ready_fixture "$dir" '{"artifacts":{}}'
+check_eq "no evidence does not warrant the update" \
+  "$(ready_failure_base_drift "$dir" "$TEST_TMP" main)" "no"
+
+# Red CI with no transition failure and an observably behind branch.
 setup_repo() {
   local dir="$1" behind="$2"
   rm -rf "$dir"
@@ -169,6 +157,38 @@ setup_repo() {
     git -C "$dir/worktree" fetch -q origin main
   fi
 }
+
+# Red CI with no transition failure and an observably behind branch (the
+# task branch has no local commits — HEAD is an ancestor of origin/<base>).
+drift_dir="$TEST_TMP/drift-behind-red-ci"
+rm -rf "$drift_dir"
+mkdir -p "$drift_dir"
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com
+export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+git init -q --bare --initial-branch=main "$drift_dir/origin.git"
+git init -q -b main "$drift_dir/seed"
+git -C "$drift_dir/seed" commit -q --allow-empty -m base
+git -C "$drift_dir/seed" push -q "$drift_dir/origin.git" HEAD:refs/heads/main
+git clone -q -b main "$drift_dir/origin.git" "$drift_dir/worktree"
+git clone -q -b main "$drift_dir/origin.git" "$drift_dir/scratch"
+git -C "$drift_dir/scratch" commit -q --allow-empty -m advance
+git -C "$drift_dir/scratch" push -q origin main
+git -C "$drift_dir/worktree" fetch -q origin main
+write_ready_fixture "$drift_dir/state" '{"artifacts":{"ciConclusion":"FAILURE"}}'
+check_eq "red CI on an observably behind branch warrants the update" \
+  "$(ready_failure_base_drift "$drift_dir/state" "$drift_dir/worktree" main)" "yes"
+
+drift_dir="$TEST_TMP/drift-transition-behind"
+setup_repo "$drift_dir" yes
+write_ready_fixture "$drift_dir/state" '{"artifacts":{"ciConclusion":"FAILURE","transitionFailure":{"stage":"route-stamp","detail":"boom"}}}'
+check_eq "a transition failure wins over the behind short-circuit" \
+  "$(ready_failure_base_drift "$drift_dir/state" "$drift_dir/worktree" main)" "no"
+
+drift_dir="$TEST_TMP/drift-ahead-red-ci"
+setup_repo "$drift_dir" no
+write_ready_fixture "$drift_dir/state" '{"artifacts":{"ciConclusion":"FAILURE"}}'
+check_eq "red CI on an up-to-date branch does not warrant the update" \
+  "$(ready_failure_base_drift "$drift_dir/state" "$drift_dir/worktree" main)" "no"
 
 # 2a) not-behind → returns 0, echoes not-behind, never invokes CLI.
 dir="$TEST_TMP/case-not-behind"

@@ -215,7 +215,7 @@ PY
 
 echo "=== native review enabled ==="
 ENABLED_JSON="$TMP_ROOT/enabled.json"
-npx tsx "$HARNESS" enabled "$TEST_REPO" > "$ENABLED_JSON"
+node "$HARNESS" enabled "$TEST_REPO" > "$ENABLED_JSON"
 
 if [[ "$(jq -r '.result.verdict' "$ENABLED_JSON")" == "ready" ]]; then
   pass "native review returns ready result"
@@ -269,7 +269,7 @@ echo ""
 echo "=== native review disabled ==="
 DISABLED_JSON="$TMP_ROOT/disabled.json"
 rm -rf "$TEST_REPO/.wavemill"
-npx tsx "$HARNESS" disabled "$TEST_REPO" > "$DISABLED_JSON"
+node "$HARNESS" disabled "$TEST_REPO" > "$DISABLED_JSON"
 
 if [[ "$(jq -r '.loaderCalls' "$DISABLED_JSON")" == "0" ]]; then
   pass "disabled path does not invoke native loader"

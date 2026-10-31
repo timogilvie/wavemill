@@ -7,6 +7,8 @@
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$script_dir/routing-emitter.sh"
+# shellcheck source=terminal-backend.sh
+source "$script_dir/terminal-backend.sh"
 # shellcheck source=task-identity.sh
 source "$script_dir/task-identity.sh"
 # shellcheck source=session-ownership.sh
@@ -49,9 +51,9 @@ agent_tmux_guard_export_command() {
     echo "Error: Wavemill tmux guard is not executable: $guard_dir/tmux" >&2
     return 1
   }
-  real_tmux="$(type -P tmux 2>/dev/null || true)"
+  real_tmux="$(term_resolve_real_tmux || true)"
   [[ -n "$real_tmux" ]] || {
-    echo "Error: real tmux executable not found" >&2
+    echo "Error: real tmux executable not found (term_resolve_real_tmux)" >&2
     return 1
   }
   control_socket="$(tmux display-message -p -t "$target" '#{socket_path}' 2>/dev/null || true)"
@@ -2623,22 +2625,19 @@ agent_resume_after_error() {
 }
 
 # True when the installed codex CLI accepts --no-daemon (added alongside the
-# shared app-server daemon). Probed once per process; older CLIs reject the
-# unknown flag, so it is only passed when advertised. WAVEMILL_CODEX_NO_DAEMON
-# (1/0) overrides the probe.
+# shared app-server daemon). Probed per launch; older CLIs reject the unknown
+# flag, so it is only passed when advertised. WAVEMILL_CODEX_NO_DAEMON (1/0)
+# overrides the probe.
 agent_codex_supports_no_daemon() {
   if [[ -n "${WAVEMILL_CODEX_NO_DAEMON:-}" ]]; then
     [[ "$WAVEMILL_CODEX_NO_DAEMON" == "1" ]]
     return
   fi
-  if [[ -z "${_WAVEMILL_CODEX_NO_DAEMON_PROBE:-}" ]]; then
-    if command -v codex >/dev/null 2>&1 && codex --help 2>/dev/null | grep -q -- '--no-daemon'; then
-      _WAVEMILL_CODEX_NO_DAEMON_PROBE=1
-    else
-      _WAVEMILL_CODEX_NO_DAEMON_PROBE=0
-    fi
+  local probe_supports_no_daemon=0
+  if command -v codex >/dev/null 2>&1 && codex --help 2>/dev/null | grep -q -- '--no-daemon'; then
+    probe_supports_no_daemon=1
   fi
-  [[ "$_WAVEMILL_CODEX_NO_DAEMON_PROBE" == "1" ]]
+  [[ "$probe_supports_no_daemon" == "1" ]]
 }
 
 # ============================================================================

@@ -5,6 +5,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 GUARD_DIR="$REPO_DIR/shared/agent-bin"
 GUARD="$GUARD_DIR/tmux"
+# The "real tmux" this test launches the controller through resolves through
+# the one resolver primitive — never a private `type -P tmux` guess.
+# shellcheck source=../shared/lib/terminal-backend.sh
+source "$REPO_DIR/shared/lib/terminal-backend.sh"
 
 PASS=0
 FAIL=0
@@ -148,7 +152,7 @@ fi
 
 # End-to-end controller survival: the nested script runs with TMUX pointing at
 # a live controller server, yet the PATH guard rejects its implicit kill.
-if REAL_TMUX="$(type -P tmux 2>/dev/null || true)"; [[ -n "$REAL_TMUX" ]]; then
+if REAL_TMUX="$(term_resolve_real_tmux || true)"; [[ -n "$REAL_TMUX" ]]; then
   LIVE_SOCKET="$TMP_ROOT/live-controller.sock"
   if "$REAL_TMUX" -S "$LIVE_SOCKET" new-session -d -s controller 'sleep 60' 2>/dev/null; then
     before_pid="$($REAL_TMUX -S "$LIVE_SOCKET" display-message -p '#{pid}' 2>/dev/null || true)"

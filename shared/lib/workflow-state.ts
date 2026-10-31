@@ -32,8 +32,10 @@
  *   unparseable file reads as `null`; a schema violation is reported and the
  *   parsed value is still returned, so one bad write cannot wedge every
  *   reader.
- * - **Writes are validated too** (`mutateWorkflowState`): task records the
- *   transform changed are checked against the schema after the transform.
+ * - **Writes are validated too** (HOK-3222): `mutateJsonState` (and so
+ *   `mutateWorkflowState`) and the shell `state_mutate` check every task
+ *   record a write to `workflow-state.json` added or changed, through
+ *   `task-record-write-guard.ts` and this module's precompiled validator.
  *
  * The `tools/check-task-record-shape.ts` preflight guard forbids any other
  * file from declaring a `tasks?: Record<...>` / `WorkflowState` shape.
@@ -302,49 +304,78 @@ export function workflowTaskEntries(state: WorkflowState | null | undefined): Ar
   return Object.entries(tasks).filter((entry): entry is [string, TaskRecord] => isObject(entry[1]));
 }
 
-export interface MutateWorkflowStateOptions extends MutateJsonStateOptions<WorkflowState> {
-  /** Called with schema violations in task records this mutation changed. */
-  onInvalid?: (statePath: string, issues: WorkflowStateIssue[]) => void;
+/**
+ * Options for {@link mutateWorkflowState}. Write validation (and its
+ * `onInvalid` callback) lives one layer down in `mutateJsonState`, so a
+ * caller that writes `workflow-state.json` through `mutateJsonState` directly
+ * is validated identically (HOK-3222).
+ */
+export type MutateWorkflowStateOptions = MutateJsonStateOptions<WorkflowState>;
+
+/** A schema violation in one task record a write added or changed. */
+export interface TaskRecordWriteIssue extends WorkflowStateIssue {
+  /** The `.tasks` key of the offending record. */
+  issue: string;
 }
 
-function taskSnapshot(state: WorkflowState | null | undefined): Map<string, string> {
+/**
+ * Serialised snapshot of every task record, keyed by `.tasks` key. Taken
+ * before a transform runs so in-place mutation cannot hide a change.
+ */
+export function taskRecordSnapshot(state: unknown): Map<string, string> {
   const snapshot = new Map<string, string>();
-  for (const [issue, record] of workflowTaskEntries(state)) snapshot.set(issue, JSON.stringify(record));
+  for (const [issue, record] of workflowTaskEntries(state as WorkflowState | null)) {
+    snapshot.set(issue, JSON.stringify(record));
+  }
   return snapshot;
 }
 
 /**
- * `mutateJsonState` for `workflow-state.json`, typed and validated on write.
+ * Schema violations a write introduced: for each task record in `next` that
+ * was added or changed relative to `before` (a {@link taskRecordSnapshot}),
+ * the violations of the new row minus those the old row already had.
  *
- * Task records that the transform added or changed are validated after the
- * transform runs. Violations are reported (stderr by default), never thrown:
- * rejecting the write would strand the lock holder's intent (an abort, a
- * supersede) behind an unrelated pre-existing bad field in the same row.
+ * Charging only what the write introduced is deliberate: a pre-existing bad
+ * field (in another row, or in the same row the write touched for an
+ * unrelated reason, e.g. an abort or supersede) must not be charged to this
+ * writer, and once enforced must not strand its intent. Deleted rows have
+ * nothing to validate. A broken schema is a preflight failure
+ * (`check-schema-validators.ts`), never a reason to fail a write, so it
+ * yields no issues.
+ */
+export function changedTaskRecordIssues(before: Map<string, string>, next: unknown): TaskRecordWriteIssue[] {
+  const issues: TaskRecordWriteIssue[] = [];
+  for (const [issue, record] of workflowTaskEntries(next as WorkflowState | null)) {
+    const previous = before.get(issue);
+    if (previous === JSON.stringify(record)) continue;
+    try {
+      const found = validateTaskRecord(issue, record).issues;
+      if (found.length === 0) continue;
+      const inherited = new Set(
+        previous === undefined
+          ? []
+          : validateTaskRecord(issue, JSON.parse(previous)).issues.map((old) => `${old.path}\u0000${old.message}`),
+      );
+      for (const violation of found) {
+        if (!inherited.has(`${violation.path}\u0000${violation.message}`)) issues.push({ issue, ...violation });
+      }
+    } catch {
+      // See the doc comment: a broken schema never blocks a writer.
+    }
+  }
+  return issues;
+}
+
+/**
+ * `mutateJsonState` for `workflow-state.json`, typed.
+ *
+ * Task records the transform added or changed are validated by
+ * `mutateJsonState` itself (HOK-3222); this wrapper only supplies the type.
  */
 export async function mutateWorkflowState(
   statePath: string,
   transform: (current: WorkflowState) => WorkflowState,
   options: MutateWorkflowStateOptions = {},
 ): Promise<WorkflowState> {
-  const { onInvalid, ...mutateOptions } = options;
-  return mutateJsonState<WorkflowState>(statePath, (current) => {
-    const before = taskSnapshot(current);
-    const next = transform(current);
-    const issues: WorkflowStateIssue[] = [];
-    for (const [issue, record] of workflowTaskEntries(next)) {
-      if (before.get(issue) === JSON.stringify(record)) continue;
-      try {
-        issues.push(...validateTaskRecord(issue, record).issues);
-      } catch {
-        // See readWorkflowState: a broken schema never blocks a writer.
-      }
-    }
-    if (issues.length > 0) {
-      (onInvalid ?? ((path, found) => {
-        const shown = found.slice(0, 5).map((issue) => `${issue.path} ${issue.message}`).join('; ');
-        process.stderr.write(`workflow-state: write produced schema violations in ${path}: ${shown}\n`);
-      }))(statePath, issues);
-    }
-    return next;
-  }, mutateOptions);
+  return mutateJsonState<WorkflowState>(statePath, transform, options);
 }

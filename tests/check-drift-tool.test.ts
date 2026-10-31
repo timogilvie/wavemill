@@ -61,7 +61,7 @@ function runCheckDrift(repoDir: string) {
   delete env.npm_config__jsr_registry;
   delete env.npm_config_prefix;
 
-  return spawnSync('npx', ['tsx', toolPath, repoDir], {
+  return spawnSync(process.execPath, [toolPath, repoDir], {
     cwd: repoRoot,
     encoding: 'utf-8',
     env,

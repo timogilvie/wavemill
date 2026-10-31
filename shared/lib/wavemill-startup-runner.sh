@@ -378,9 +378,7 @@ ensure_state_file() {
 # Idempotent, lock-aware, preserves history losslessly. Env overrides:
 #   WAVEMILL_STATE_ARCHIVE_KEEP        (default 50)
 #   WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS(default 14)
-#   WAVEMILL_SKIP_STATE_ARCHIVE=1      disables migration
 run_state_archive_migration() {
-  [[ "${WAVEMILL_SKIP_STATE_ARCHIVE:-0}" == "1" ]] && return 0
   [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
   local tool
   tool="$(wavemill_tool_path migrate-state-archive.ts)"

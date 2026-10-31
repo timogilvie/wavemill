@@ -77,17 +77,11 @@ extract_function "$MONITOR_SCRIPT_FILE" "cross_pr_revert_gate_apply_result" >> "
 cat "$REPO_DIR/shared/lib/monitor-async-jobs.sh" >> "$LAUNCH_FUNC_FILE"
 cat "$REPO_DIR/tests/lib/inline-ready-checks.sh" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "write_transient_ready_attention_file" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_count" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "clear_failed_ready_recheck_state" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_reset_if_new_head" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "increment_failed_ready_recheck_count" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_backoff_seconds" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_due" >> "$LAUNCH_FUNC_FILE"
+# HOK-3371: the failed-ready-recheck wrappers are retired; Ready relaunches
+# through the shared stage-failure-ready bucket (see
+# tests/ready-failure-classify-and-act.test.sh).
 extract_function "$MONITOR_SCRIPT_FILE" "ready_failure_reason" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "record_failed_ready_recheck_observation" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_identical_streak" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "mark_failed_ready_recheck_exhausted" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_gate" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_transition_redact" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "log_ready_failure_result" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "log_ready_unparseable_result" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_failure_is_actionable_for_remediation" >> "$LAUNCH_FUNC_FILE"
@@ -367,11 +361,9 @@ EOF
           --detail-json "$(jq -cn --arg h "$replay_launch_head" --arg b "$REPLAY_BASE" "{head:\$h,base:\$b,launchHead:\$h,prNumber:304}")"
         ;;
       pass_clears_recheck)
-        printf "%s\n" "3" > "$STATE_DIR/.failed-ready-recheck-count"
-        printf "%s\n" "abc123" > "$STATE_DIR/.failed-ready-recheck-head"
-        printf "%s\n" "100" > "$STATE_DIR/.failed-ready-recheck-last-at"
-        printf "%s\n" "{\"finishedAt\":\"t1\",\"reason\":\"guard blocked\",\"streak\":2}" > "$STATE_DIR/.failed-ready-recheck-reason.json"
-        : > "$STATE_DIR/.failed-ready-recheck-exhausted"
+        # HOK-3371: the pass clears the shared stage-failure-ready budget.
+        bounded_retry_increment "$STATE_DIR" "stage-failure-ready" "abc123" >/dev/null
+        bounded_retry_mark_exhausted "$STATE_DIR" "stage-failure-ready" "old exhaustion" || true
         ;;
       unknown_capped)
         printf "%s\n" "6" > "$STATE_DIR/.transient-mergeability-count"
@@ -380,6 +372,15 @@ EOF
         printf "%s\n" "1" > "$STATE_DIR/.retry-ready-remediation-count"
         printf "%s\n" "abc123" > "$STATE_DIR/.retry-ready-remediation-head"
         printf "%s\n" "$(date +%s)" > "$STATE_DIR/.retry-ready-remediation-last-at"
+        ;;
+      # HOK-3322: the remediation agent settled at the launch head and CI is
+      # still red: the bounded bucket decides (backoff, then a charged relaunch).
+      settled_same_head_backoff)
+        bounded_retry_increment "$STATE_DIR" "ready-remediation" "abc123" >/dev/null
+        ;;
+      settled_same_head_due)
+        bounded_retry_increment "$STATE_DIR" "ready-remediation" "abc123" >/dev/null
+        printf "%s\n" "0" > "$STATE_DIR/.retry-ready-remediation-last-at"
         ;;
       remediation_head_reset)
         printf "%s\n" "2" > "$STATE_DIR/.retry-ready-remediation-count"
@@ -541,7 +542,7 @@ EOF
     read_stage_status() {
       case "$TEST_CASE" in
         pending_re_check) printf "%s\n" "running" ;;
-        already_inflight_same_head) printf "%s\n" "running" ;;
+        already_inflight_same_head|settled_same_head_backoff|settled_same_head_due) printf "%s\n" "running" ;;
         *) printf "\n" ;;
       esac
     }
@@ -561,10 +562,11 @@ EOF
         *) printf "%s\n" "0" ;;
       esac
     }
-    ready_remediation_launch_head() {
+    ready_remediation_disposition() {
       case "$TEST_CASE" in
-        already_inflight_same_head) printf "%s\n" "abc123" ;;
-        *) printf "\n" ;;
+        already_inflight_same_head) printf "%s\n" "in-flight agent-working" ;;
+        settled_same_head_backoff|settled_same_head_due) printf "%s\n" "settled agent-idle-after-launch" ;;
+        *) printf "%s\n" "inactive no-launch" ;;
       esac
     }
     ready_remediation_enabled() {
@@ -817,7 +819,7 @@ EOF
           printf "%s\n" "TypeError: ready crashed" >&2
           return 1
           ;;
-        remediation_disabled|remediation_launch|second_remediation_launch|remediation_exhausted|remediation_launch_failure|already_inflight_same_head|sequential_failing_launch_1|sequential_failing_launch_2|sequential_failing_launch_3|native_route_coder_model|no_model_available|remediation_backoff_hold|remediation_head_reset|native_remediation_ci|native_remediation_ci_refused)
+        remediation_disabled|remediation_launch|second_remediation_launch|remediation_exhausted|remediation_launch_failure|already_inflight_same_head|sequential_failing_launch_1|sequential_failing_launch_2|sequential_failing_launch_3|native_route_coder_model|no_model_available|remediation_backoff_hold|remediation_head_reset|settled_same_head_backoff|settled_same_head_due|native_remediation_ci|native_remediation_ci_refused)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"fail\",\"checks\":[{\"name\":\"ci-status\",\"status\":\"fail\",\"message\":\"1 CI check(s) failing\",\"details\":{\"failedChecks\":[{\"name\":\"Shell and Unit Tests\",\"state\":\"FAILURE\"}],\"pendingChecks\":[],\"totalChecks\":3}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"One or more checks failed - not safe to merge\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"UNSTABLE\",\"attempts\":1}}"
           return 1
           ;;
@@ -955,17 +957,15 @@ EOF
     printf "remediation_retry_count=%s\nremediation_retry_exhausted=%s\n" \
       "$remediation_retry_count" "$remediation_retry_exhausted"
     recheck_count_file="absent"
-    [[ -f "$STATE_DIR/.failed-ready-recheck-count" ]] && recheck_count_file="present"
+    [[ -f "$STATE_DIR/.retry-stage-failure-ready-count" ]] && recheck_count_file="present"
     recheck_head_file="absent"
-    [[ -f "$STATE_DIR/.failed-ready-recheck-head" ]] && recheck_head_file="present"
+    [[ -f "$STATE_DIR/.retry-stage-failure-ready-head" ]] && recheck_head_file="present"
     recheck_last_at_file="absent"
-    [[ -f "$STATE_DIR/.failed-ready-recheck-last-at" ]] && recheck_last_at_file="present"
-    recheck_reason_file="absent"
-    [[ -f "$STATE_DIR/.failed-ready-recheck-reason.json" ]] && recheck_reason_file="present"
+    [[ -f "$STATE_DIR/.retry-stage-failure-ready-last-at" ]] && recheck_last_at_file="present"
     recheck_exhausted_file="absent"
-    [[ -f "$STATE_DIR/.failed-ready-recheck-exhausted" ]] && recheck_exhausted_file="present"
-    printf "recheck_files=%s,%s,%s,%s,%s\n" \
-      "$recheck_count_file" "$recheck_head_file" "$recheck_last_at_file" "$recheck_reason_file" "$recheck_exhausted_file"
+    [[ -f "$STATE_DIR/.retry-stage-failure-ready-exhausted" ]] && recheck_exhausted_file="present"
+    printf "recheck_files=%s,%s,%s,%s\n" \
+      "$recheck_count_file" "$recheck_head_file" "$recheck_last_at_file" "$recheck_exhausted_file"
   ' 2>&1
 }
 
@@ -1018,10 +1018,10 @@ run_watchdog_launch_case() {
         *) printf "%s\n" "0" ;;
       esac
     }
-    ready_remediation_launch_head() {
+    ready_remediation_disposition() {
       case "$TEST_CASE" in
-        inflight_same_head) printf "%s\n" "abc123" ;;
-        *) printf "\n" ;;
+        inflight_same_head) printf "%s\n" "in-flight agent-working" ;;
+        *) printf "%s\n" "inactive no-launch" ;;
       esac
     }
     ready_remediation_agent_cmd() { printf "\n"; }
@@ -1154,176 +1154,12 @@ run_cross_pr_gate_case() {
   ' 2>&1
 }
 
-run_recheck_case() {
-  local test_case="$1"
-  local case_dir="$TEST_TMP/recheck-$test_case"
-  mkdir -p "$case_dir"
-
-  CASE_DIR="$case_dir" LAUNCH_FUNC_FILE="$LAUNCH_FUNC_FILE" COMMON_SCRIPT="$COMMON_SCRIPT" TEST_CASE="$test_case" bash -lc '
-    set -euo pipefail
-    source "$COMMON_SCRIPT"
-    source "$LAUNCH_FUNC_FILE"
-
-    STATE_DIR="$CASE_DIR/state"
-    mkdir -p "$STATE_DIR"
-    LOG_OUTPUT=""
-    LOG_ERROR_OUTPUT=""
-    log() { LOG_OUTPUT+="$*\n"; }
-    log_error() { LOG_ERROR_OUTPUT+="$*\n"; }
-    git() {
-      if [[ "${1:-}" == "-C" && "${3:-}" == "rev-parse" && "${4:-}" == "--show-toplevel" ]]; then
-        printf "%s\n" "$CASE_DIR"
-        return 0
-      fi
-      if [[ "${1:-}" == "-C" && "${3:-}" == "rev-parse" && "${4:-}" == "HEAD" ]]; then
-        printf "%s\n" "abc123"
-        return 0
-      fi
-      return 1
-    }
-
-    write_failed_result() {
-      printf "%s\n" "{\"stage\":\"ready\",\"status\":\"failed\",\"finishedAt\":\"$1\",\"notes\":\"$2\",\"failureReason\":\"$2\",\"artifacts\":{\"type\":\"ready\",\"verdict\":\"fail\",\"prNumber\":304,\"crossPrGuard\":{\"source\":\"cross-pr-revert-guard\"}}}" > "$STATE_DIR/.ready-result.json"
-    }
-
-    case "$TEST_CASE" in
-      counter_roundtrip)
-        c0=$(failed_ready_recheck_count "$STATE_DIR")
-        c1=$(increment_failed_ready_recheck_count "$STATE_DIR" "aaa")
-        c2=$(increment_failed_ready_recheck_count "$STATE_DIR" "aaa")
-        head_stored=$(cat "$STATE_DIR/.failed-ready-recheck-head")
-        printf "%s\n" "garbage" > "$STATE_DIR/.failed-ready-recheck-count"
-        cg=$(failed_ready_recheck_count "$STATE_DIR")
-        printf "%s\n" "{}" > "$STATE_DIR/.failed-ready-recheck-reason.json"
-        : > "$STATE_DIR/.failed-ready-recheck-exhausted"
-        clear_failed_ready_recheck_state "$STATE_DIR"
-        remaining=$(ls -A "$STATE_DIR" 2>/dev/null | grep -c "failed-ready-recheck" || true)
-        printf "c0=%s c1=%s c2=%s head_stored=%s cg=%s remaining=%s\n" \
-          "$c0" "$c1" "$c2" "$head_stored" "$cg" "$remaining"
-        ;;
-      head_reset)
-        increment_failed_ready_recheck_count "$STATE_DIR" "aaa" >/dev/null
-        : > "$STATE_DIR/.failed-ready-recheck-exhausted"
-        failed_ready_recheck_reset_if_new_head "$STATE_DIR" "aaa"
-        same_head_count=$(failed_ready_recheck_count "$STATE_DIR")
-        failed_ready_recheck_reset_if_new_head "$STATE_DIR" ""
-        empty_head_count=$(failed_ready_recheck_count "$STATE_DIR")
-        failed_ready_recheck_reset_if_new_head "$STATE_DIR" "bbb"
-        new_head_count=$(failed_ready_recheck_count "$STATE_DIR")
-        sentinel="absent"
-        [[ -f "$STATE_DIR/.failed-ready-recheck-exhausted" ]] && sentinel="present"
-        printf "same_head_count=%s empty_head_count=%s new_head_count=%s sentinel=%s\n" \
-          "$same_head_count" "$empty_head_count" "$new_head_count" "$sentinel"
-        ;;
-      backoff_schedule)
-        d1=$(failed_ready_recheck_backoff_seconds 1)
-        d2=$(failed_ready_recheck_backoff_seconds 2)
-        d3=$(failed_ready_recheck_backoff_seconds 3)
-        dg=$(failed_ready_recheck_backoff_seconds garbage)
-        d9=$(failed_ready_recheck_backoff_seconds 9)
-        READY_FAILED_RECHECK_BACKOFF_SECONDS=1000
-        READY_FAILED_RECHECK_BACKOFF_CAP_SECONDS=1500
-        dcap=$(failed_ready_recheck_backoff_seconds 2)
-        READY_FAILED_RECHECK_BACKOFF_SECONDS=garbage
-        READY_FAILED_RECHECK_BACKOFF_CAP_SECONDS=nope
-        dbad=$(failed_ready_recheck_backoff_seconds 2)
-        READY_FAILED_RECHECK_BACKOFF_SECONDS=1
-        READY_FAILED_RECHECK_BACKOFF_CAP_SECONDS=1800
-        dover=$(failed_ready_recheck_backoff_seconds 1)
-        printf "d1=%s d2=%s d3=%s dg=%s d9=%s dcap=%s dbad=%s dover=%s\n" \
-          "$d1" "$d2" "$d3" "$dg" "$d9" "$dcap" "$dbad" "$dover"
-        ;;
-      due_logic)
-        no_file="not-due"
-        failed_ready_recheck_due "$STATE_DIR" && no_file="due"
-        printf "%s\n" "1" > "$STATE_DIR/.failed-ready-recheck-count"
-        printf "%s\n" "$(date +%s)" > "$STATE_DIR/.failed-ready-recheck-last-at"
-        fresh="not-due"
-        failed_ready_recheck_due "$STATE_DIR" && fresh="due"
-        printf "%s\n" "$(( $(date +%s) - 500 ))" > "$STATE_DIR/.failed-ready-recheck-last-at"
-        elapsed="not-due"
-        failed_ready_recheck_due "$STATE_DIR" && elapsed="due"
-        printf "%s\n" "garbage" > "$STATE_DIR/.failed-ready-recheck-last-at"
-        garbage_last="not-due"
-        failed_ready_recheck_due "$STATE_DIR" && garbage_last="due"
-        printf "no_file=%s fresh=%s elapsed=%s garbage_last=%s\n" \
-          "$no_file" "$fresh" "$elapsed" "$garbage_last"
-        ;;
-      gate_dispositions)
-        g_fresh=$(failed_ready_recheck_gate "$STATE_DIR" "aaa")
-        increment_failed_ready_recheck_count "$STATE_DIR" "aaa" >/dev/null
-        g_backoff=$(failed_ready_recheck_gate "$STATE_DIR" "aaa")
-        printf "%s\n" "$(( $(date +%s) - 500 ))" > "$STATE_DIR/.failed-ready-recheck-last-at"
-        g_elapsed=$(failed_ready_recheck_gate "$STATE_DIR" "aaa")
-        printf "%s\n" "4" > "$STATE_DIR/.failed-ready-recheck-count"
-        g_ceiling=$(failed_ready_recheck_gate "$STATE_DIR" "aaa")
-        : > "$STATE_DIR/.failed-ready-recheck-exhausted"
-        g_quiet=$(failed_ready_recheck_gate "$STATE_DIR" "aaa")
-        g_newhead=$(failed_ready_recheck_gate "$STATE_DIR" "bbb")
-        newhead_count=$(failed_ready_recheck_count "$STATE_DIR")
-        printf "g_fresh=%s g_backoff=%s g_elapsed=%s g_ceiling=%s g_quiet=%s g_newhead=%s newhead_count=%s\n" \
-          "$g_fresh" "$g_backoff" "$g_elapsed" "$g_ceiling" "$g_quiet" "$g_newhead" "$newhead_count"
-        ;;
-      identical_streak)
-        write_failed_result "2026-08-27T09:52:00Z" "guard blocked"
-        record_failed_ready_recheck_observation "$STATE_DIR"
-        s1=$(failed_ready_recheck_identical_streak "$STATE_DIR")
-        record_failed_ready_recheck_observation "$STATE_DIR"
-        s_repeat=$(failed_ready_recheck_identical_streak "$STATE_DIR")
-        write_failed_result "2026-08-27T09:53:00Z" "guard blocked"
-        record_failed_ready_recheck_observation "$STATE_DIR"
-        s2=$(failed_ready_recheck_identical_streak "$STATE_DIR")
-        write_failed_result "2026-08-27T09:54:00Z" "guard blocked"
-        record_failed_ready_recheck_observation "$STATE_DIR"
-        s3=$(failed_ready_recheck_identical_streak "$STATE_DIR")
-        printf "%s\n" "1" > "$STATE_DIR/.failed-ready-recheck-count"
-        printf "%s\n" "$(date +%s)" > "$STATE_DIR/.failed-ready-recheck-last-at"
-        g_streak=$(failed_ready_recheck_gate "$STATE_DIR" "aaa")
-        write_failed_result "2026-08-27T09:55:00Z" "different failure"
-        record_failed_ready_recheck_observation "$STATE_DIR"
-        s_reset=$(failed_ready_recheck_identical_streak "$STATE_DIR")
-        printf "s1=%s s_repeat=%s s2=%s s3=%s g_streak=%s s_reset=%s\n" \
-          "$s1" "$s_repeat" "$s2" "$s3" "$g_streak" "$s_reset"
-        ;;
-      exhaustion_oneshot)
-        write_failed_result "2026-08-27T09:52:00Z" "guard blocked"
-        printf "%s\n" "4" > "$STATE_DIR/.failed-ready-recheck-count"
-        first="not-first"
-        mark_failed_ready_recheck_exhausted "HOK-1300" "304" "$STATE_DIR" && first="first"
-        attention=$(marker_reason "$STATE_DIR/.needs-attention" 2>/dev/null || echo "")
-        exhausted_flag=$(jq -r ".artifacts.failedReadyRecheck.exhausted" "$STATE_DIR/.ready-result.json")
-        attempts=$(jq -r ".artifacts.failedReadyRecheck.attempts" "$STATE_DIR/.ready-result.json")
-        last_reason=$(jq -r ".artifacts.failedReadyRecheck.lastReason" "$STATE_DIR/.ready-result.json")
-        failure_reason=$(jq -r ".failureReason" "$STATE_DIR/.ready-result.json")
-        guard_kept=$(jq -r ".artifacts.crossPrGuard.source" "$STATE_DIR/.ready-result.json")
-        result_before=$(cat "$STATE_DIR/.ready-result.json")
-        second="not-first"
-        mark_failed_ready_recheck_exhausted "HOK-1300" "304" "$STATE_DIR" && second="first"
-        result_after=$(cat "$STATE_DIR/.ready-result.json")
-        unchanged="differs"
-        [[ "$result_before" == "$result_after" ]] && unchanged="unchanged"
-        error_count=0
-        [[ -n "$LOG_ERROR_OUTPUT" ]] && error_count=$(printf "%s" "$LOG_ERROR_OUTPUT" | grep -c .)
-        STATE_DIR2="$CASE_DIR/state2"
-        mkdir -p "$STATE_DIR2"
-        printf "%s\n" "2" > "$STATE_DIR2/.failed-ready-recheck-count"
-        missing_result="not-first"
-        mark_failed_ready_recheck_exhausted "HOK-1300" "304" "$STATE_DIR2" && missing_result="first"
-        missing_attention=$(marker_reason "$STATE_DIR2/.needs-attention" 2>/dev/null || echo "")
-        printf "first=%s second=%s unchanged=%s exhausted_flag=%s attempts=%s last_reason=%s failure_reason=%s guard_kept=%s error_count=%s attention=%s missing_result=%s missing_attention=%s\n" \
-          "$first" "$second" "$unchanged" "$exhausted_flag" "$attempts" "$last_reason" "$failure_reason" "$guard_kept" "$error_count" "$attention" "$missing_result" "$missing_attention"
-        ;;
-      fresh_budget_after_success)
-        g1=$(failed_ready_recheck_gate "$STATE_DIR" "aaa")
-        increment_failed_ready_recheck_count "$STATE_DIR" "aaa" >/dev/null
-        clear_failed_ready_recheck_state "$STATE_DIR"
-        cleared_count=$(failed_ready_recheck_count "$STATE_DIR")
-        g2=$(failed_ready_recheck_gate "$STATE_DIR" "aaa")
-        printf "g1=%s cleared_count=%s g2=%s\n" "$g1" "$cleared_count" "$g2"
-        ;;
-    esac
-  ' 2>&1
-}
+# HOK-3371: the failed-ready-recheck budget cases (counter roundtrip, head
+# reset, backoff schedule, due logic, gate dispositions, identical streak,
+# exhaustion one-shot, fresh budget after success) retired with the bucket.
+# The shared stage-failure-ready relaunch is covered by
+# tests/stage-failure-retry.test.sh (coding arm, same helper) and
+# tests/ready-failure-classify-and-act.test.sh (Ready dispatch).
 
 echo "=== Cross-PR Revert Gate ==="
 
@@ -1495,6 +1331,18 @@ output="$(run_launch_case remediation_backoff_hold)"
 check_contains "remediation backoff holds inside window" "$output" "rc=5"
 check_contains "remediation backoff does not launch agent" "$output" "launch_calls=0"
 check_contains "remediation backoff logs the hold" "$output" "holding ready remediation"
+
+# protects: HOK-3322 — a settled same-head remediation with red checks either
+# latching forever or relaunching every poll; it must go through the bucket.
+output="$(run_launch_case settled_same_head_backoff)"
+check_contains "settled agent with red checks holds inside the backoff window" "$output" "rc=5"
+check_contains "settled agent with red checks does not relaunch inside backoff" "$output" "launch_calls=0"
+check_contains "settled agent with red checks logs the bounded hold" "$output" "holding ready remediation"
+
+output="$(run_launch_case settled_same_head_due)"
+check_contains "settled agent with red checks relaunches once due" "$output" "launch_calls=1"
+check_contains "settled agent relaunch charges the same-head bucket" "$output" "remediation_retry_count=2"
+check_not_contains "settled agent with red checks never completes Ready" "$output" "|ready|completed|"
 
 output="$(run_launch_case remediation_head_reset)"
 check_contains "new head re-enables remediation launch" "$output" "launch_calls=1"
@@ -1686,7 +1534,7 @@ check_contains "Tend interleave returns Ready success" "$output" "rc=0"
 check_contains "Tend interleave completes Ready" "$output" "|ready|completed|"
 check_contains "Tend interleave retains one legal claim" "$output" "handoff_claims=1"
 check_contains "Tend interleave persists claimed handoff" "$output" "\"readyTendHandoff\":\"tend-claimed\""
-check_contains "Tend interleave does not charge Ready retry" "$output" "recheck_files=absent,absent,absent,absent,absent"
+check_contains "Tend interleave does not charge Ready retry" "$output" "recheck_files=absent,absent,absent,absent"
 check_not_contains "Tend interleave has no false label failure" "$output" "failed to restore PR labels"
 
 echo "=== Stale Worktree Handoff Head (HOK-3112) ==="
@@ -1771,78 +1619,13 @@ output="$(run_launch_case fail_with_stderr)"
 check_contains "failure stderr is logged as error" "$output" "error_payload=  [ready stderr] TypeError: ready crashed"
 check_not_contains "failure stderr does not leak to terminal" "$output" $'\nTypeError: ready crashed\n'
 
-echo "=== Failed-Ready Re-check Budget ==="
-
-output="$(run_recheck_case counter_roundtrip)"
-check_contains "recheck counter starts at zero" "$output" "c0=0"
-check_contains "recheck counter increments to one" "$output" "c1=1"
-check_contains "recheck counter increments to two" "$output" "c2=2"
-check_contains "recheck counter stores launch head" "$output" "head_stored=aaa"
-check_contains "recheck counter treats garbage as zero" "$output" "cg=0"
-check_contains "recheck clear removes all budget files" "$output" "remaining=0"
-
-output="$(run_recheck_case head_reset)"
-check_contains "same head preserves recheck count" "$output" "same_head_count=1"
-check_contains "empty head preserves recheck count" "$output" "empty_head_count=1"
-check_contains "new head resets recheck count" "$output" "new_head_count=0"
-check_contains "new head clears exhausted sentinel" "$output" "sentinel=absent"
-
-output="$(run_recheck_case backoff_schedule)"
-check_contains "backoff after first attempt is base" "$output" "d1=120"
-check_contains "backoff after second attempt doubles" "$output" "d2=240"
-check_contains "backoff after third attempt doubles again" "$output" "d3=480"
-check_contains "backoff treats garbage count as one" "$output" "dg=120"
-check_contains "backoff caps at ceiling" "$output" "d9=1800"
-check_contains "backoff respects custom cap" "$output" "dcap=1500"
-check_contains "backoff falls back on non-numeric env" "$output" "dbad=240"
-check_contains "backoff respects base override" "$output" "dover=1"
-
-output="$(run_recheck_case due_logic)"
-check_contains "recheck due when no last-at file" "$output" "no_file=due"
-check_contains "recheck not due right after attempt" "$output" "fresh=not-due"
-check_contains "recheck due after backoff elapses" "$output" "elapsed=due"
-check_contains "recheck due when last-at is garbage" "$output" "garbage_last=due"
-
-output="$(run_recheck_case gate_dispositions)"
-check_contains "gate proceeds on fresh state" "$output" "g_fresh=proceed"
-check_contains "gate backs off after an attempt" "$output" "g_backoff=backoff"
-check_contains "gate proceeds once backoff elapses" "$output" "g_elapsed=proceed"
-check_contains "gate exhausts at attempt ceiling" "$output" "g_ceiling=exhausted"
-check_contains "gate goes quiet once terminalized" "$output" "g_quiet=exhausted-quiet"
-check_contains "gate proceeds again on new head" "$output" "g_newhead=proceed"
-check_contains "new head grants fresh budget" "$output" "newhead_count=0"
-
-output="$(run_recheck_case identical_streak)"
-check_contains "first observation starts streak" "$output" "s1=1"
-check_contains "repeated finishedAt leaves streak unchanged" "$output" "s_repeat=1"
-check_contains "second identical reason grows streak" "$output" "s2=2"
-check_contains "third identical reason grows streak" "$output" "s3=3"
-check_contains "identical streak exhausts below ceiling" "$output" "g_streak=exhausted"
-check_contains "different reason resets streak" "$output" "s_reset=1"
-
-output="$(run_recheck_case exhaustion_oneshot)"
-check_contains "exhaustion mark reports first time" "$output" "first=first"
-check_contains "exhaustion mark is one-shot" "$output" "second=not-first"
-check_contains "second exhaustion mark leaves result untouched" "$output" "unchanged=unchanged"
-check_contains "exhaustion annotates ready result" "$output" "exhausted_flag=true"
-check_contains "exhaustion records attempt count" "$output" "attempts=4"
-check_contains "exhaustion records last reason" "$output" "last_reason=guard blocked"
-check_contains "exhaustion preserves existing failure reason" "$output" "failure_reason=guard blocked"
-check_contains "exhaustion preserves cross-pr guard evidence" "$output" "guard_kept=cross-pr-revert-guard"
-check_contains "exhaustion logs a single error" "$output" "error_count=1"
-check_contains "exhaustion attention names the gate" "$output" "attention=Failed-ready re-checks exhausted after 4 attempt(s) for PR #304: guard blocked"
-check_contains "exhaustion tolerates missing ready result" "$output" "missing_result=first"
-check_contains "exhaustion without result uses fallback reason" "$output" "missing_attention=Failed-ready re-checks exhausted after 2 attempt(s) for PR #304: ready checks failed"
-
-output="$(run_recheck_case fresh_budget_after_success)"
-check_contains "gate proceeds before transient failure" "$output" "g1=proceed"
-check_contains "success clears the budget" "$output" "cleared_count=0"
-check_contains "gate proceeds again after success" "$output" "g2=proceed"
+# HOK-3371: the failed-ready-recheck budget assertions retired with the
+# bucket (see the note above the retired run_recheck_case runner).
 
 output="$(run_launch_case pass_clears_recheck)"
 check_contains "ready pass returns success" "$output" "rc=0"
 check_contains "ready pass writes completed stage result" "$output" "|ready|completed|"
-check_contains "ready pass clears recheck budget files" "$output" "recheck_files=absent,absent,absent,absent,absent"
+check_contains "ready pass clears recheck budget files" "$output" "recheck_files=absent,absent,absent,absent"
 
 output="$(run_launch_case route_stamp_failure)"
 check_contains "route stamp failure blocks ready" "$output" "rc=1"
@@ -2062,11 +1845,11 @@ run_recon_case() {
         echo "missing_attention=$(cat "$STATE_DIR/.needs-attention" 2>/dev/null | tr "\n" " ")"
         ;;
       capsule_project)
-        npx tsx "$TOOLS_DIR/reconciliation-capsule.ts" build \
+        node "$TOOLS_DIR/reconciliation-capsule.ts" build \
           --feature-dir "$STATE_DIR" --task-id HOK-2936 --title "Recon test" \
           --slug recon-test --branch task/recon --base-branch main --pr 304 \
           --review-head aaa111aaa111aaa111aaa111aaa111aaa111aaa1 --review-verdict ready >/dev/null
-        npx tsx "$TOOLS_DIR/reconciliation-capsule.ts" update-incident \
+        node "$TOOLS_DIR/reconciliation-capsule.ts" update-incident \
           --feature-dir "$STATE_DIR" --classification merge_conflict \
           --head aaa111aaa111aaa111aaa111aaa111aaa111aaa1 --detail "conflict test" >/dev/null
         rc=0

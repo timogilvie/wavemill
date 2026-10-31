@@ -71,7 +71,7 @@ for (const testCase of cases) {
 EOF
 
 OUT="$TMP_ROOT/results.jsonl"
-npx tsx "$HARNESS" "$TEST_REPO" > "$OUT"
+node "$HARNESS" "$TEST_REPO" > "$OUT"
 
 case_json() {
   local name="$1"
