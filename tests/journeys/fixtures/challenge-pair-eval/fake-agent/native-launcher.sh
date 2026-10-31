@@ -1,5 +1,7 @@
 # shellcheck shell=bash
-# HOK-3369: emulate the native launcher's on-disk contract so the stage
+# Fixture provenance: hand-authored test fixture for HOK-3369, derived from
+# the HOK-3322_c native planning evidence-loss incident. It emulates the
+# native launcher's on-disk contract so the stage
 # result retains the executed-model record a real native run would leave
 # (ownership row + session stream + direct provider-response stage result).
 # Used by the native-arm-evidence journey (JOURNEY_NATIVE_ARM_EVIDENCE=1):

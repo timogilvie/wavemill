@@ -1,7 +1,7 @@
 #!/usr/bin/env -S npx tsx
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { resolveStageExecutedModel, type ResolvedStageExecutedModel } from '../shared/lib/executed-model-resolver.ts';
@@ -160,6 +160,18 @@ function processStageFile(input: {
   if (result.status !== 'completed') {
     return { file: input.filePath, stage: input.stage, action: 'skipped', applied: false, reason: 'stage_not_completed' };
   }
+  // Backfill is recovery for absent evidence, not a second writer for
+  // already-attributable results. In particular, preserve the original
+  // evidence timestamp, which determines whether later attempts supersede it.
+  if (result.executionEvidence?.status === 'direct') {
+    return {
+      file: input.filePath,
+      stage: input.stage,
+      action: 'unchanged',
+      applied: false,
+      executedModel: result.executedModel ?? undefined,
+    };
+  }
   if (!input.worktreePath || !input.branchName) {
     return { file: input.filePath, stage: input.stage, action: 'missing-input', applied: false, reason: 'missing_worktree_or_branch' };
   }
@@ -227,12 +239,10 @@ function discoverArchivedArtifacts(repoDir: string): string[] {
   const artifactsRoot = join(repoDir, '.wavemill', 'evals', 'artifacts');
   if (!existsSync(artifactsRoot)) return [];
   try {
-    const { readdirSync } = require('node:fs') as typeof import('node:fs');
     return readdirSync(artifactsRoot)
       .map((name) => join(artifactsRoot, name))
       .filter((path) => {
         try {
-          const { statSync } = require('node:fs') as typeof import('node:fs');
           return statSync(path).isDirectory();
         } catch { return false; }
       });
@@ -246,7 +256,6 @@ function discoverLiveFeatureDirs(repoDir: string): string[] {
   if (!existsSync(worktreesRoot)) return [];
   const found: string[] = [];
   try {
-    const { readdirSync, statSync } = require('node:fs') as typeof import('node:fs');
     for (const wt of readdirSync(worktreesRoot)) {
       const featuresRoot = join(worktreesRoot, wt, 'features');
       if (!existsSync(featuresRoot)) continue;

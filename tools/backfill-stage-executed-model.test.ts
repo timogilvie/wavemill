@@ -140,6 +140,46 @@ describe('backfillStageExecutedModel', () => {
     assert.equal(readFileSync(file, 'utf8'), before);
   });
 
+  it('leaves existing direct evidence byte-identical without resolving it again', () => {
+    const artifactDir = tempDir('backfill-executed-model-direct-');
+    const file = join(artifactDir, '.coding-result.json');
+    writeJson(file, stageResult({
+      executedModel: 'claude-haiku-4-5',
+      executionEvidence: {
+        status: 'direct',
+        source: 'claude-session',
+        detail: 'original-launch-evidence',
+        recordedAt: '2026-09-15T10:05:01.000Z',
+      },
+      modelAttributionEligible: true,
+    }));
+    const before = readFileSync(file, 'utf8');
+
+    const results = backfillStageExecutedModel({ artifactDirs: [artifactDir], apply: true });
+
+    assert.equal(results.find((result) => result.stage === 'coding')?.action, 'unchanged');
+    assert.equal(readFileSync(file, 'utf8'), before);
+  });
+
+  it('discovers archived and live directories in ESM execution', () => {
+    const repoDir = tempDir('backfill-executed-model-discovery-');
+    const archived = join(repoDir, '.wavemill', 'evals', 'artifacts', 'HOK-3369');
+    const live = join(repoDir, 'worktrees', 'active', 'features', 'HOK-3369');
+    mkdirSync(archived, { recursive: true });
+    mkdirSync(live, { recursive: true });
+    writeJson(join(archived, 'terminal-record.json'), { worktree: '/gone', branch: 'task/HOK-3369' });
+    writeJson(join(archived, '.coding-result.json'), stageResult());
+    writeJson(join(live, '.coding-result.json'), stageResult());
+
+    const archivedResults = backfillStageExecutedModel({ allArchivedUnder: repoDir });
+    const liveResults = backfillStageExecutedModel({ liveUnder: repoDir, worktree: '/gone', branch: 'task/HOK-3369' });
+
+    assert.equal(archivedResults.find((result) => result.file === join(archived, '.coding-result.json'))?.action, 'no-session-evidence');
+    // The synthetic live worktree is not a git checkout, so its missing
+    // branch is expected; finding this result proves the ESM scanner ran.
+    assert.equal(liveResults.find((result) => result.file === join(live, '.coding-result.json'))?.action, 'missing-input');
+  });
+
   it('skips incomplete stages; a native stage with no stream reports no-session-evidence', () => {
     // HOK-3369: native results are no longer skipped as "unsupported_agent";
     // when the resolver has no stream to read, they report missing evidence.
