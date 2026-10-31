@@ -377,6 +377,7 @@
     "Golden Journey (tend-rebase-conflict-single-comment)": "bash tests/journeys/run-journeys.sh tend-rebase-conflict-single-comment",
     "Golden Journey (eval-failure-exhaustion)": "bash tests/journeys/run-journeys.sh eval-failure-exhaustion",
     "Golden Journey (native-ownership-recovery)": "bash tests/journeys/run-journeys.sh native-ownership-recovery",
+    "Golden Journey (native-arm-evidence)": "bash tests/journeys/run-journeys.sh native-arm-evidence",
     "Golden Journey (incident-currentness)": "bash tests/journeys/run-journeys.sh incident-currentness",
     "Golden Journey (challenger-contract-recovery)": "bash tests/journeys/run-journeys.sh challenger-contract-recovery",
     "Golden Journey (grounded-overlap)": "bash tests/journeys/run-journeys.sh grounded-overlap",

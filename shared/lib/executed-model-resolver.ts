@@ -1,6 +1,6 @@
 /**
- * Resolve execution identity for Claude Code / Codex CLI stages from retained
- * session telemetry.
+ * Resolve execution identity for Claude Code / Codex CLI / native stages
+ * from retained session telemetry.
  *
  * Which sessions did a stage's work is read from the task's
  * `.session-ownership.jsonl` (HOK-3328): only turns of the sessions a launch
@@ -8,15 +8,43 @@
  * was open can never set the stage's executed model. The resolver never reads
  * launch intent as the answer and never fabricates an executed model from the
  * requested model.
+ *
+ * HOK-3369: adds a native path. For a `native` harness stage, resolution
+ * reads the launcher's existing `direct / provider-response` evidence first
+ * (unchanged); failing that, scans the owned sessions' native-stream JSONL
+ * files and verdicts the per-turn `responseId` / `responseModel` through
+ * `provider-identity.ts` — the same rule the live loop uses.
  */
 
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { getSessionAdapter } from './session-adapters.ts';
 import type { ExternalSessionTurn } from './session-adapters.ts';
-import { rowsForStage, type OwnershipStage, type SessionOwnershipRow } from './session-ownership.ts';
+import {
+  readOwnershipRows,
+  rowsForStage,
+  type OwnershipStage,
+  type SessionHarness,
+  type SessionOwnershipRow,
+} from './session-ownership.ts';
+import {
+  extractProviderReportedIdentity,
+  isRollingProviderAlias,
+  ProviderIdentityTracker,
+  verifyProviderIdentity,
+  type ProviderIdentityExpectation,
+  type ProviderIdentitySummary,
+} from './native-agent/provider-identity.ts';
+import type { StageExecutionEvidence, StageResult } from './stage-result.ts';
 
 export type ExecutedModelResolverAgent = 'claude' | 'codex';
-export type ExecutedModelEvidenceSource = 'claude-session' | 'codex-session';
-export type ExecutedModelEvidenceStatus = 'direct' | 'missing';
+export type ExecutedModelEvidenceSource =
+  | 'claude-session'
+  | 'codex-session'
+  | 'provider-response'
+  | 'native-runtime'
+  | 'session-stream';
+export type ExecutedModelEvidenceStatus = 'direct' | 'missing' | 'contradicted';
 
 export interface ResolveExecutedModelFromSessionsInput {
   worktreePath: string;
@@ -170,5 +198,506 @@ function candidateFromTurn(
     sessionId,
     isSubagent: turn.isSubagent,
     index,
+  };
+}
+
+// ────────────────────────────────────────────────────────────────
+// HOK-3369: one resolver for every harness
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Input to {@link resolveStageExecutedModel}: the one entry point for
+ * resolving a stage's executed model regardless of harness.
+ */
+export interface ResolveStageExecutedModelInput {
+  /** State directory holding `.session-ownership.jsonl` and `.<stage>-result.json`. */
+  featureDir: string;
+  /** The stage to resolve for. */
+  stage: OwnershipStage;
+  /** Worktree path for Claude Code / Codex session adapters. */
+  worktreePath: string;
+  /** Git branch for Claude Code / Codex session adapters. */
+  branchName: string;
+  /** Repo root used to resolve native session streams. */
+  repoDir?: string;
+  /** The existing stage result, when the caller already has it. */
+  existing?: StageResult | null;
+  /** Agent hint (legacy fallback when the ownership file is absent). */
+  agentHint?: string;
+}
+
+export interface ResolvedStageExecutedModel {
+  executedModel: string | null;
+  evidenceStatus: ExecutedModelEvidenceStatus;
+  evidenceSource: string;
+  evidenceDetail: string;
+  /**
+   * The resolver returned the launcher's already-recorded evidence rather
+   * than independently resolving a new execution. Consumers must preserve
+   * that block byte-for-byte, including its `recordedAt` timestamp.
+   */
+  preservedExisting?: boolean;
+  /**
+   * Optional provider-response fields (HOK-3143) carried forward when the
+   * native resolver succeeded. The CLI write path never sets these from
+   * flags — the resolver returns them directly for callers to merge into
+   * the stage result (via `executionTruthFields` + a few extra fields).
+   */
+  providerEvidence?: Partial<Pick<
+    StageExecutionEvidence,
+    | 'providerReportedModel'
+    | 'requestedWireId'
+    | 'certifiedTarget'
+    | 'identityVerdict'
+    | 'transportProvider'
+    | 'responseId'
+    | 'piRuntimeVersions'
+  >>;
+}
+
+/**
+ * Pick the harness for the stage: launch rows win, agent-label is a legacy
+ * fallback only when no row names the stage.
+ */
+function selectHarness(
+  ownership: readonly SessionOwnershipRow[],
+  stage: OwnershipStage,
+  agentHint: string | undefined,
+): SessionHarness | null {
+  const stageRows = rowsForStage(ownership, stage);
+  if (stageRows.length > 0) {
+    // Any row for this stage decides the harness. Multiple harnesses on one
+    // stage would be a bug upstream; the latest launch wins.
+    const latest = [...stageRows].sort(
+      (a, b) => Date.parse(b.launchedAt) - Date.parse(a.launchedAt),
+    )[0];
+    return latest?.harness ?? null;
+  }
+  if (agentHint === 'claude') return 'claude-code';
+  if (agentHint === 'codex') return 'codex';
+  if (agentHint === 'native' || agentHint === 'native-openrouter') return 'native';
+  return null;
+}
+
+function readOwnershipRowsSafe(stateDir: string): SessionOwnershipRow[] {
+  try {
+    return readOwnershipRows(stateDir);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The one entry point: resolve a stage's executed model, regardless of
+ * harness, from the ownership record and session telemetry.
+ *
+ * Returns `direct` evidence when verified, `contradicted` when the native
+ * stream saw a provider identity mismatch, and `missing` otherwise.
+ */
+export function resolveStageExecutedModel(
+  input: ResolveStageExecutedModelInput,
+): ResolvedStageExecutedModel {
+  const ownership = readOwnershipRowsSafe(input.featureDir);
+  const harness = selectHarness(ownership, input.stage, input.agentHint);
+
+  if (harness === 'native') {
+    return resolveNativeExecutedModel({ ...input, ownership });
+  }
+
+  if (harness === 'claude-code' || harness === 'codex') {
+    const agent: ExecutedModelResolverAgent = harness === 'claude-code' ? 'claude' : 'codex';
+    const resolved = resolveExecutedModelFromSessions({
+      worktreePath: input.worktreePath,
+      branchName: input.branchName,
+      agent,
+      stage: input.stage,
+      ownership,
+    });
+    return {
+      executedModel: resolved.executedModel,
+      evidenceStatus: resolved.evidenceStatus,
+      evidenceSource: resolved.evidenceSource,
+      evidenceDetail: resolved.evidenceDetail,
+    };
+  }
+
+  return {
+    executedModel: null,
+    evidenceStatus: 'missing',
+    evidenceSource: 'unknown',
+    evidenceDetail: `no ownership row and no recognised agent hint for stage=${input.stage}`,
+  };
+}
+
+// ────────────────────────────────────────────────────────────────
+// Native path (HOK-3369 D5)
+// ────────────────────────────────────────────────────────────────
+
+interface NativeSessionStartedEvent {
+  type: 'session_started';
+  sessionId: string;
+  model?: string;
+  provider?: string;
+  timestamp?: number;
+}
+
+interface NativeAssistantMessageEvent {
+  type: 'assistant_message';
+  sessionId: string;
+  model?: string;
+  responseModel?: string;
+  responseId?: string;
+  timestamp?: number;
+}
+
+type NativeEvent = NativeSessionStartedEvent | NativeAssistantMessageEvent | { type: string; sessionId?: string; timestamp?: number };
+
+function parseJsonLine(line: string): NativeEvent | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed) as NativeEvent;
+  } catch {
+    return null;
+  }
+}
+
+function isSessionStartedEvent(event: NativeEvent): event is NativeSessionStartedEvent {
+  return event.type === 'session_started';
+}
+
+function isAssistantMessageEvent(event: NativeEvent): event is NativeAssistantMessageEvent {
+  return event.type === 'assistant_message';
+}
+
+/** Candidate native-stream file locations, deduplicated. */
+function nativeStreamCandidates(input: {
+  featureDir: string;
+  repoDir?: string;
+  worktreePath?: string;
+  stage: OwnershipStage;
+}): string[] {
+  const dirs = new Set<string>();
+  const addRunsDir = (root?: string) => {
+    if (!root) return;
+    try {
+      const runsRoot = join(root, '.wavemill', 'runs');
+      if (!existsSync(runsRoot)) return;
+      for (const session of readdirSync(runsRoot)) {
+        const sessionDir = join(runsRoot, session, 'native-sessions');
+        if (existsSync(sessionDir)) dirs.add(sessionDir);
+      }
+    } catch {
+      // Unreadable runs dir: skip, best-effort.
+    }
+  };
+  addRunsDir(input.worktreePath);
+  addRunsDir(input.repoDir);
+  // HOK-3369 D5 step 2: archive layout keeps native-sessions beside the state.
+  const archiveDir = join(input.featureDir, 'native-sessions');
+  if (existsSync(archiveDir)) dirs.add(archiveDir);
+  return [...dirs];
+}
+
+function readSessionEvents(filePath: string): NativeEvent[] {
+  try {
+    const bytes = readFileSync(filePath, 'utf8');
+    const events: NativeEvent[] = [];
+    for (const line of bytes.split(/\r?\n/)) {
+      const parsed = parseJsonLine(line);
+      if (parsed) events.push(parsed);
+    }
+    return events;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * HOK-3369 D5: resolve a native stage's executed model.
+ *
+ * Order of precedence:
+ * 1. The launcher's own `direct` / `provider-response` evidence (unchanged),
+ *    unless it is superseded by a newer launch row (`latestLaunchAt`).
+ * 2. The owned session stream(s), verdicted turn-by-turn through
+ *    `provider-identity.ts` — the same rule the live loop uses.
+ * 3. `missing` with an honest detail.
+ *
+ * Never falls back to the requested wire id (HOK-3143 guard).
+ */
+function resolveNativeExecutedModel(input: ResolveStageExecutedModelInput & {
+  ownership: readonly SessionOwnershipRow[];
+}): ResolvedStageExecutedModel {
+  // (1) Honour an existing launcher record that has not been superseded.
+  const existing = input.existing;
+  const existingEvidence = existing?.executionEvidence;
+  if (
+    existingEvidence
+    && existingEvidence.status === 'direct'
+    && existingEvidence.source === 'provider-response'
+    && existing?.executedModel
+  ) {
+    const stageRows = rowsForStage(input.ownership, input.stage).filter(
+      (row) => row.harness === 'native',
+    );
+    const latestLaunchMs = stageRows
+      .map((row) => Date.parse(row.launchedAt))
+      .filter(Number.isFinite)
+      .reduce((max, ms) => Math.max(max, ms), Number.NEGATIVE_INFINITY);
+    const recordedMs = existingEvidence.recordedAt ? Date.parse(existingEvidence.recordedAt) : NaN;
+    const superseded = Number.isFinite(latestLaunchMs)
+      && Number.isFinite(recordedMs)
+      && latestLaunchMs > recordedMs;
+    if (!superseded) {
+      // HOK-3369: carry every provider-identity field from the existing
+      // block so the CLI write can rebuild evidence with the same shape
+      // (identityVerdict, requestedWireId, certifiedTarget, responseId,
+      // transportProvider, piRuntimeVersions). The merge rule may still
+      // keep the whole block, but when an explicit --executed-model is
+      // supplied (resolver answer), these fields are reinstated.
+      const providerEvidence: ResolvedStageExecutedModel['providerEvidence'] = {};
+      for (const key of [
+        'providerReportedModel',
+        'requestedWireId',
+        'certifiedTarget',
+        'identityVerdict',
+        'transportProvider',
+        'responseId',
+        'piRuntimeVersions',
+      ] as const) {
+        const value = (existingEvidence as Record<string, unknown>)[key];
+        if (value !== undefined) {
+          (providerEvidence as Record<string, unknown>)[key] = value;
+        }
+      }
+      return {
+        executedModel: existing.executedModel,
+        evidenceStatus: 'direct',
+        evidenceSource: existingEvidence.source,
+        evidenceDetail: existingEvidence.detail ?? 'launcher provider-identity record',
+        preservedExisting: true,
+        ...(Object.keys(providerEvidence).length > 0 ? { providerEvidence } : {}),
+      };
+    }
+  }
+
+  // (2) Read the owned session stream(s) for this native stage.
+  const ownedRows = rowsForStage(input.ownership, input.stage).filter(
+    (row) => row.harness === 'native',
+  );
+  if (ownedRows.length === 0) {
+    return {
+      executedModel: null,
+      evidenceStatus: 'missing',
+      evidenceSource: 'session-stream',
+      evidenceDetail: `no native session owned for stage=${input.stage}`,
+    };
+  }
+  // A retry receives a fresh ownership attempt. A prior attempt can still
+  // flush stream events after that retry begins, so timestamp filtering alone
+  // is not sufficient: only the latest attempt's session refs may contribute
+  // to the current stage record.
+  const launchMs = (row: typeof ownedRows[number]) => {
+    const ms = Date.parse(row.launchedAt);
+    return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
+  };
+  const latestLaunch = ownedRows.reduce((latest, row) => (
+    launchMs(row) > launchMs(latest) ? row : latest
+  ));
+  const latestAttemptRows = ownedRows.filter((row) => row.attemptId === latestLaunch.attemptId);
+  const ownedRefs = new Set(latestAttemptRows.map((row) => row.sessionRef));
+  const latestLaunchMs = Math.max(...latestAttemptRows.map(launchMs));
+  const candidateDirs = nativeStreamCandidates({
+    featureDir: input.featureDir,
+    repoDir: input.repoDir,
+    worktreePath: input.worktreePath,
+    stage: input.stage,
+  });
+
+  const streamFiles: string[] = [];
+  for (const dir of candidateDirs) {
+    try {
+      for (const name of readdirSync(dir)) {
+        if (!name.endsWith('.jsonl')) continue;
+        if (!name.startsWith(`${input.stage}-`)) continue;
+        const file = join(dir, name);
+        try {
+          const stat = statSync(file);
+          if (stat.isFile()) streamFiles.push(file);
+        } catch {
+          // Skipped: readdir entry no longer resolvable.
+        }
+      }
+    } catch {
+      // Dir disappeared mid-scan.
+    }
+  }
+  if (streamFiles.length === 0) {
+    return {
+      executedModel: null,
+      evidenceStatus: 'missing',
+      evidenceSource: 'session-stream',
+      evidenceDetail: `no native session stream for stage=${input.stage}`,
+    };
+  }
+
+  const relevantEvents: Array<{ sessionStartedModel?: string; sessionStartedProvider?: string; events: NativeAssistantMessageEvent[] }> = [];
+  for (const file of streamFiles) {
+    const events = readSessionEvents(file);
+    let currentSegmentStart: NativeSessionStartedEvent | null = null;
+    let acceptSegment = false;
+    let segmentAssistants: NativeAssistantMessageEvent[] = [];
+    const commit = () => {
+      if (currentSegmentStart && acceptSegment && segmentAssistants.length > 0) {
+        relevantEvents.push({
+          sessionStartedModel: currentSegmentStart.model,
+          sessionStartedProvider: currentSegmentStart.provider,
+          events: segmentAssistants,
+        });
+      }
+      segmentAssistants = [];
+    };
+    for (const event of events) {
+      if (isSessionStartedEvent(event)) {
+        commit();
+        currentSegmentStart = event;
+        acceptSegment = ownedRefs.has(event.sessionId);
+        if (acceptSegment && Number.isFinite(latestLaunchMs)
+          && typeof event.timestamp === 'number'
+          && event.timestamp < latestLaunchMs) {
+          // Prior run on the same session file: ignore events until the next
+          // session_started (D5 step 2 "latest launchedAt" scoping).
+          acceptSegment = false;
+        }
+        continue;
+      }
+      if (!acceptSegment) continue;
+      if (isAssistantMessageEvent(event)) {
+        if (!ownedRefs.has(event.sessionId)) continue;
+        if (Number.isFinite(latestLaunchMs)
+          && typeof event.timestamp === 'number'
+          && event.timestamp < latestLaunchMs) {
+          continue;
+        }
+        segmentAssistants.push(event);
+      }
+    }
+    commit();
+  }
+
+  if (relevantEvents.length === 0) {
+    return {
+      executedModel: null,
+      evidenceStatus: 'missing',
+      evidenceSource: 'session-stream',
+      evidenceDetail: `no owned native turns after latest launch for stage=${input.stage}`,
+    };
+  }
+
+  // Each retained segment carries its own wire identity. This matters when a
+  // native attempt has more than one owned session: never verdict one
+  // segment's provider response against another segment's requested model.
+  const firstSegment = relevantEvents[0]!;
+  const sessionStartedModel = firstSegment.sessionStartedModel;
+  if (!sessionStartedModel) {
+    return {
+      executedModel: null,
+      evidenceStatus: 'missing',
+      evidenceSource: 'session-stream',
+      evidenceDetail: 'native session_started did not record a model id',
+    };
+  }
+  const firstIsAlias = isRollingProviderAlias(sessionStartedModel);
+  const firstCertifiedTarget = firstIsAlias
+    ? existing?.executionEvidence?.certifiedTarget
+    : sessionStartedModel;
+  if (firstIsAlias && !firstCertifiedTarget) {
+    return {
+      executedModel: null,
+      evidenceStatus: 'missing',
+      evidenceSource: 'session-stream',
+      evidenceDetail: `native alias ${sessionStartedModel} resolved target unknown (no certified target)`,
+    };
+  }
+
+  const tracker = new ProviderIdentityTracker();
+  let turnIndex = 0;
+  for (const segment of relevantEvents) {
+    const segmentModel = segment.sessionStartedModel;
+    if (!segmentModel) {
+      return {
+        executedModel: null,
+        evidenceStatus: 'missing',
+        evidenceSource: 'session-stream',
+        evidenceDetail: 'native session_started did not record a model id',
+      };
+    }
+    const isAlias = isRollingProviderAlias(segmentModel);
+    const certifiedTarget = isAlias ? existing?.executionEvidence?.certifiedTarget : segmentModel;
+    if (isAlias && !certifiedTarget) {
+      return {
+        executedModel: null,
+        evidenceStatus: 'missing',
+        evidenceSource: 'session-stream',
+        evidenceDetail: `native alias ${segmentModel} resolved target unknown (no certified target)`,
+      };
+    }
+    const expectation: ProviderIdentityExpectation = {
+      requestedWireId: segmentModel,
+      expectedModel: certifiedTarget,
+      isAlias,
+    };
+    for (const event of segment.events) {
+      const wire = event.model ?? segmentModel;
+      const reported = extractProviderReportedIdentity(
+        { responseModel: event.responseModel, responseId: event.responseId },
+        wire,
+      );
+      const decision = verifyProviderIdentity(expectation, reported);
+      tracker.record({ turnIndex, decision, reported });
+      turnIndex += 1;
+    }
+  }
+
+  const summary: ProviderIdentitySummary = tracker.summary();
+  if (summary.identityVerdict === 'mismatch') {
+    return {
+      executedModel: summary.executedModel,
+      evidenceStatus: 'contradicted',
+      evidenceSource: 'session-stream',
+      evidenceDetail: `session-stream: ${summary.mismatchDetail ?? 'provider identity mismatch'}`,
+      providerEvidence: {
+        ...(summary.providerReportedModel ? { providerReportedModel: summary.providerReportedModel } : {}),
+        requestedWireId: sessionStartedModel,
+        ...(firstCertifiedTarget ? { certifiedTarget: firstCertifiedTarget } : {}),
+        identityVerdict: 'mismatch',
+        ...(firstSegment.sessionStartedProvider ? { transportProvider: firstSegment.sessionStartedProvider } : {}),
+        ...(summary.lastResponseId ? { responseId: summary.lastResponseId } : {}),
+      },
+    };
+  }
+  if (summary.identityVerdict !== 'match' && summary.identityVerdict !== 'alias-resolved') {
+    return {
+      executedModel: null,
+      evidenceStatus: 'missing',
+      evidenceSource: 'session-stream',
+      evidenceDetail: `session-stream: no verifiable provider identity (${summary.identityVerdict}, turns=${turnIndex})`,
+    };
+  }
+
+  const executedModel = summary.executedModel ?? sessionStartedModel;
+  return {
+    executedModel,
+    evidenceStatus: 'direct',
+    evidenceSource: 'provider-response',
+    evidenceDetail: `session-stream: verified ${summary.identityVerdict} after ${summary.turnsVerified} turn(s)`,
+    providerEvidence: {
+      ...(summary.providerReportedModel ? { providerReportedModel: summary.providerReportedModel } : {}),
+      requestedWireId: sessionStartedModel,
+      ...(firstCertifiedTarget ? { certifiedTarget: firstCertifiedTarget } : {}),
+      identityVerdict: summary.identityVerdict,
+      ...(firstSegment.sessionStartedProvider ? { transportProvider: firstSegment.sessionStartedProvider } : {}),
+      ...(summary.lastResponseId ? { responseId: summary.lastResponseId } : {}),
+    },
   };
 }

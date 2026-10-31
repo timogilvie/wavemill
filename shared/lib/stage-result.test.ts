@@ -11,6 +11,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { appendOwnershipRow } from './session-ownership.ts';
 
 import {
   appendReviewIteration,
@@ -277,6 +278,55 @@ describe('writeStageResult and readStageResult', () => {
     assert.equal(fallback?.executionEvidence?.source, 'claude-session');
     assert.equal(fallback?.modelAttributionEligible, false);
     assert.equal(fallback?.modelAttributionIneligibleReason, 'runtime_fallback');
+  });
+
+  it('stage-result-cli preserves the launcher evidence timestamp on the native resolver fast path', async () => {
+    // The CLI derives its worktree as featureDir/../.., so use a temporary
+    // Git worktree with a real native ownership row to exercise the resolver
+    // rather than merely the pure stage-result merge helper.
+    const featureDir = path.join(testDir, 'features', 'native-evidence');
+    await fs.mkdir(featureDir, { recursive: true });
+    execFileSync('git', ['init', '-b', 'native-evidence'], { cwd: testDir, stdio: 'ignore' });
+    appendOwnershipRow(featureDir, {
+      sessionRef: 'native-session',
+      harness: 'native',
+      kind: 'planning',
+      model: 'moonshotai/kimi-k2-thinking',
+      // This must predate the provider evidence so the resolver returns the
+      // existing launcher record instead of scanning a fresh launch.
+      launchedAt: '2026-10-30T16:00:00.000Z',
+    });
+    await writeStageResult(featureDir, makeResult({
+      status: 'awaiting_user',
+      agent: 'native-openrouter',
+      model: 'moonshotai/kimi-k2-thinking',
+      executedModel: 'moonshotai/kimi-k2-thinking',
+      executionEvidence: {
+        status: 'direct',
+        source: 'provider-response',
+        identityVerdict: 'match',
+        recordedAt: '2026-10-30T16:07:16.000Z',
+      },
+      modelAttributionEligible: false,
+      modelAttributionIneligibleReason: 'stage_not_completed',
+    }));
+
+    execFileSync(process.execPath, [
+      'tools/stage-result-cli.ts',
+      'update',
+      featureDir,
+      'planning',
+      '--status',
+      'completed',
+      '--notes',
+      'Plan approved by user',
+    ], { cwd: process.cwd(), encoding: 'utf-8' });
+
+    const result = await readStageResult(featureDir, 'planning');
+    assert.equal(result?.executionEvidence?.recordedAt, '2026-10-30T16:07:16.000Z');
+    assert.equal(result?.executionEvidence?.source, 'provider-response');
+    assert.equal(result?.executedModel, 'moonshotai/kimi-k2-thinking');
+    assert.equal(result?.modelAttributionEligible, true);
   });
 });
 
@@ -1207,5 +1257,221 @@ describe('executionEvidence.piRuntimeVersions (HOK-3164)', () => {
       now: '2026-10-06T00:00:00Z',
     });
     assert.equal(fields.executionEvidence?.piRuntimeVersions, undefined);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// HOK-3369: merge rule and registry equivalence
+// ────────────────────────────────────────────────────────────────
+
+describe('executionTruthFields merge rule (HOK-3369)', () => {
+  function priorDirect(status: StageResult['status'] = 'awaiting_user'): StageResult {
+    return makeResult({
+      stage: 'planning',
+      status,
+      agent: 'native',
+      model: 'moonshotai/kimi-k2-thinking',
+      intendedModel: 'moonshotai/kimi-k2-thinking',
+      executedModel: 'moonshotai/kimi-k2-thinking',
+      executionEvidence: {
+        status: 'direct',
+        source: 'provider-response',
+        identityVerdict: 'match',
+        responseId: 'gen-xyz',
+        recordedAt: '2026-10-30T16:07:16Z',
+      },
+      modelAttributionEligible: false,
+      modelAttributionIneligibleReason: 'stage_not_completed',
+    });
+  }
+
+  // protects: HOK-3322 — approve_plan rewrote the native planning result and
+  // erased its direct provider-response evidence. The merge rule now keeps it.
+  it('keeps direct provider-response evidence across a later completed write with no flags', () => {
+    const existing = priorDirect('awaiting_user');
+    const fields = executionTruthFields({
+      status: 'completed',
+      flags: { agent: 'native-openrouter', model: 'moonshotai/kimi-k2-thinking' },
+      existing,
+      now: '2026-10-30T21:00:00Z',
+    });
+    assert.equal(fields.executedModel, 'moonshotai/kimi-k2-thinking');
+    assert.equal(fields.executionEvidence?.status, 'direct');
+    assert.equal(fields.executionEvidence?.source, 'provider-response');
+    assert.equal(fields.executionEvidence?.identityVerdict, 'match');
+    assert.equal(fields.executionEvidence?.recordedAt, '2026-10-30T16:07:16Z');
+    assert.equal(fields.modelAttributionEligible, true);
+    assert.equal(fields.modelAttributionIneligibleReason, undefined);
+  });
+
+  // protects: the operator reset — an `update` with only --model-attribution-eligible
+  // / --execution-evidence-detail used to run executionTruthFields and reset
+  // executedModel to null.
+  it('keeps direct evidence when only a non-model-replacing flag was passed', () => {
+    const existing = priorDirect('completed');
+    const fields = executionTruthFields({
+      status: 'completed',
+      flags: {
+        'model-attribution-eligible': 'true',
+        'execution-evidence-detail': 'operator-note: evidence independently reviewed',
+      },
+      existing,
+      now: '2026-10-30T21:00:00Z',
+    });
+    assert.equal(fields.executedModel, 'moonshotai/kimi-k2-thinking');
+    assert.equal(fields.executionEvidence?.status, 'direct');
+    assert.equal(fields.executionEvidence?.source, 'provider-response');
+    assert.equal(fields.executionEvidence?.detail, undefined);
+  });
+
+  it('resets to missing when a newer launch supersedes the recorded evidence', () => {
+    const existing = priorDirect('awaiting_user');
+    const fields = executionTruthFields({
+      status: 'completed',
+      flags: {},
+      existing,
+      now: '2026-10-31T10:00:00Z',
+      latestLaunchAt: '2026-10-31T09:00:00Z', // > recordedAt
+    });
+    assert.equal(fields.executedModel, null);
+    assert.equal(fields.executionEvidence?.status, 'missing');
+    assert.equal(fields.modelAttributionEligible, false);
+    assert.equal(fields.modelAttributionIneligibleReason, 'missing_execution_evidence');
+  });
+
+  it('resets to missing when newAttempt is set', () => {
+    const existing = priorDirect('awaiting_user');
+    const fields = executionTruthFields({
+      status: 'running',
+      flags: {},
+      existing,
+      now: '2026-10-30T21:00:00Z',
+      newAttempt: true,
+    });
+    assert.equal(fields.executedModel, null);
+    assert.equal(fields.executionEvidence?.status, 'missing');
+  });
+
+  it('replaces evidence when an explicit --executed-model is passed', () => {
+    const existing = priorDirect('awaiting_user');
+    const fields = executionTruthFields({
+      status: 'completed',
+      flags: { 'executed-model': 'different/model', 'execution-evidence-status': 'contradicted' },
+      existing,
+      now: '2026-10-30T21:00:00Z',
+    });
+    assert.equal(fields.executedModel, 'different/model');
+    assert.equal(fields.executionEvidence?.status, 'contradicted');
+  });
+
+  it('treats two spellings of one registry entry as equivalent for runtime_fallback', () => {
+    const existing = makeResult({
+      stage: 'planning',
+      status: 'awaiting_user',
+      model: 'kimi-k2-thinking', // registry id spelling
+      intendedModel: 'kimi-k2-thinking',
+      executedModel: 'moonshotai/kimi-k2-thinking', // wire-id spelling
+      executionEvidence: {
+        status: 'direct',
+        source: 'provider-response',
+        recordedAt: '2026-10-30T16:07:16Z',
+      },
+    });
+    const fields = executionTruthFields({
+      status: 'completed',
+      flags: { model: 'kimi-k2-thinking' },
+      existing,
+      now: '2026-10-30T21:00:00Z',
+    });
+    // Two spellings of one registry entry — eligibility must be true, no reason.
+    assert.equal(fields.modelAttributionEligible, true);
+    assert.equal(fields.modelAttributionIneligibleReason, undefined);
+  });
+
+  it('explicit --model-attribution-eligible true clears a stale runtime_fallback reason', () => {
+    const existing = makeResult({
+      stage: 'planning',
+      status: 'completed',
+      model: 'kimi-k2-thinking',
+      executedModel: 'moonshotai/kimi-k2-thinking',
+      executionEvidence: {
+        status: 'direct',
+        source: 'provider-response',
+        recordedAt: '2026-10-30T16:07:16Z',
+      },
+      modelAttributionEligible: true,
+      modelAttributionIneligibleReason: 'runtime_fallback',
+    });
+    const fields = executionTruthFields({
+      status: 'completed',
+      flags: { 'model-attribution-eligible': 'true' },
+      existing,
+      now: '2026-10-30T21:00:00Z',
+    });
+    assert.equal(fields.modelAttributionEligible, true);
+    // The key is always returned (undefined when eligible) so the caller's
+    // spread clears a stale reason.
+    assert.equal('modelAttributionIneligibleReason' in fields, true);
+    assert.equal(fields.modelAttributionIneligibleReason, undefined);
+  });
+
+  it('flags runtime_fallback for genuinely different models', () => {
+    const fields = executionTruthFields({
+      status: 'completed',
+      flags: { 'executed-model': 'gpt-5' },
+      existing: makeResult({ status: 'running', model: 'claude-opus-5-5' }),
+      now: '2026-10-30T21:00:00Z',
+    });
+    assert.equal(fields.modelAttributionEligible, false);
+    assert.equal(fields.modelAttributionIneligibleReason, 'runtime_fallback');
+  });
+
+  // protects: the acceptance invariant — no rewrite downgrades direct to missing.
+  it('never downgrades direct evidence to missing without newAttempt or supersession', () => {
+    const prior = priorDirect('awaiting_user');
+    // Exhaustive (prior-status × write-status × 2 non-evidence-replacing flag subsets).
+    const priorStatuses: StageResult['status'][] = ['running', 'awaiting_user', 'completed', 'failed', 'aborted'];
+    const writeStatuses: StageResult['status'][] = ['running', 'awaiting_user', 'completed', 'failed', 'aborted'];
+    const nonReplacingFlagSets: Record<string, string>[] = [
+      {},
+      { agent: 'claude', model: 'different-intent-model' },
+      { notes: 'Plan approved by user' },
+    ];
+    for (const priorStatus of priorStatuses) {
+      for (const writeStatus of writeStatuses) {
+        for (const flags of nonReplacingFlagSets) {
+          const fields = executionTruthFields({
+            status: writeStatus,
+            flags,
+            existing: { ...prior, status: priorStatus },
+            now: '2026-10-30T21:00:00Z',
+          });
+          assert.equal(
+            fields.executionEvidence?.status,
+            'direct',
+            `priorStatus=${priorStatus} writeStatus=${writeStatus} flags=${JSON.stringify(flags)}: evidence downgraded`,
+          );
+          assert.equal(
+            fields.executedModel,
+            'moonshotai/kimi-k2-thinking',
+            `priorStatus=${priorStatus} writeStatus=${writeStatus} flags=${JSON.stringify(flags)}: executedModel lost`,
+          );
+        }
+      }
+    }
+  });
+
+  // protects: a completed write with no ownership rows (ownership file missing)
+  // keeps evidence; the resolver passes latestLaunchAt=null for legacy state.
+  it('keeps direct evidence when latestLaunchAt is null', () => {
+    const existing = priorDirect('awaiting_user');
+    const fields = executionTruthFields({
+      status: 'completed',
+      flags: {},
+      existing,
+      now: '2026-10-30T21:00:00Z',
+      latestLaunchAt: null,
+    });
+    assert.equal(fields.executionEvidence?.status, 'direct');
   });
 });
