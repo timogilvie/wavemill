@@ -7246,7 +7246,7 @@ state_mutate() {
 # <state dir>/state-schema-violations.jsonl, stderr and the observer.
 #
 # Returns the tool's status: 0 clean (or skipped), 2 violations, other = the
-# check could not run. Node type stripping only, never `npx tsx` (HOK-3206
+# check could not run. Node type stripping only, never the tsx loader (HOK-3206
 # hot path): a host without strip support skips the check. Invoked with
 # `command node` so test doubles for `npx`/`node` never see it.
 # WAVEMILL_TASK_RECORD_WRITE_VALIDATE_SHADOW=0 is the Phase 1 kill switch.
