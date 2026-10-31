@@ -231,6 +231,13 @@ TESTS=(
   shared/lib/router-log.test.ts
   shared/lib/arbiter-survival-label.test.ts
   shared/lib/survival-labeller.test.ts
+  shared/lib/cell-label-contract.test.ts
+  shared/lib/cell-label-store.test.ts
+  shared/lib/cell-classifier.test.ts
+  shared/lib/cell-llm-adapter.test.ts
+  shared/lib/cell-review-evidence.test.ts
+  shared/lib/cell-report.test.ts
+  shared/lib/cell-backfill.test.ts
   shared/lib/challenge-analyzer.test.ts
   shared/lib/challenge-unavailable.test.ts
   shared/lib/challenge-attestation-backfill.test.ts
