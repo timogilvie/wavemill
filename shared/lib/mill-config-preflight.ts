@@ -353,7 +353,12 @@ export function formatMillConfigPreflightReport(report: MillConfigPreflightRepor
     lines.push('', formatCoderCanaryGapReport(report));
   }
 
-  if (report.removedFields.length > 0 || report.validationError) {
+  // The model-settings migration only fixes removed model fields; suggesting it
+  // for an unrelated validation error (e.g. an unknown key) sends the operator
+  // to a command that cannot help.
+  const migrationApplies = report.removedFields.length > 0
+    || (report.validationError?.includes(report.migrationCommand) ?? false);
+  if (migrationApplies) {
     lines.push(
       '',
       'Run the migration once from the repository root:',

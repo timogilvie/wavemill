@@ -2159,6 +2159,10 @@
             },
             "additionalProperties": false
         },
+        "queuePlanner": {
+            "type": "object",
+            "description": "Deprecated and ignored (HOK-3307): the grounded planner is the only queue planner. Still accepted so existing configs that carry the key keep validating; remove it at your convenience."
+        },
         "monitor": {
             "type": "object",
             "description": "Legacy monitor-specific settings kept for backwards-compatible aliases.",

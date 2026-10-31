@@ -142,7 +142,7 @@ run_mill_config_preflight() {
   local tool="${TOOLS_DIR}/mill-config-preflight.ts"
   if [[ -f "$tool" ]]; then
     if ! npx tsx "$tool" --repo-dir "$REPO_DIR"; then
-      echo "ERROR: Mill config preflight failed. Run: wavemill config migrate-model-settings" >&2
+      echo "ERROR: Mill config preflight failed; see the report above for the fix." >&2
       exit 1
     fi
   else

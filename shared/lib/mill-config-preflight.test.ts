@@ -613,6 +613,27 @@ function driftReport(ineligibleModels: IneligibleModel[]): MillConfigPreflightRe
   };
 }
 
+// protects: preflight sent operators to migrate-model-settings for validation errors that command cannot fix
+test('formatMillConfigPreflightReport suggests the model migration only for removed model fields', () => {
+  const base = {
+    repoDir: '/repo',
+    removedFields: [],
+    migrationCommand: 'wavemill config migrate-model-settings',
+  };
+  const unrelated = formatMillConfigPreflightReport({
+    ...base,
+    validationError: 'Config validation failed:\n  /typoSection: unknown property "typoSection"',
+  });
+  assert.doesNotMatch(unrelated, /Run the migration/);
+  assert.match(unrelated, /typoSection/);
+
+  const removed = formatMillConfigPreflightReport({
+    ...base,
+    validationError: 'Config validation failed:\n  /modelRegistry: Repo-local model configuration removed. Run: wavemill config migrate-model-settings',
+  });
+  assert.match(removed, /Run the migration once/);
+});
+
 test('formatMillConfigPreflightReport groups multi-model identity drift by cause', () => {
   const fixtureModels = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((key): IneligibleModel => ({
     registryKey: `model-${key}`,
