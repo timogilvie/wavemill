@@ -477,6 +477,7 @@
       "re-review-no-pr.test.sh": 178,
       "ready-exhausted-challenge.test.sh": 1756,
       "ready-failure-blocks-pr-label.test.sh": 436,
+      "ready-failure-classify-and-act.test.sh": 500,
       "ready-update-from-base.test.sh": 598,
       "ready-watchdog-job.test.sh": 1638,
       "recovery-contract-replay.test.sh": 5786,

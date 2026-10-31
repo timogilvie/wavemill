@@ -83,6 +83,19 @@ Ready publishes `.ready-tend-handoff.json` at the head it checked. Tend claims i
 |---|---|---|
 | Green PR stays in Ready; `.ready-result.json` `running` with `remediationLaunchHead` = HEAD; remediation agent idle; tend `ready-failed:head-mismatch` (PR #1720, 2026-10-26) | Remediation reran flaky CI without committing; the monitor's unconditional same-head running hold never consulted liveness | Fixed by HOK-3322 (`settled` → controller re-runs Ready). Journey: `ready-remediation-same-head` |
 
+## One Ready-failure disposition (HOK-3371)
+
+Every Ready failure — red checks, a transition-tool throw, a base conflict — is classified by the single failure policy through **one** helper, `ready_failure_classify_and_act` (`wavemill-monitor.sh`), and dispatched by nothing else:
+
+1. **Base drift first** (`ready_failure_base_drift`): a `CONFLICT*` signature, a push-rejected/non-fast-forward detail, or red CI with no transition failure and an observably behind branch runs `try_update_branch_from_base` (HOK-3092) before any classification — a merge is new information no classification substitutes for. Any other failure skips the head move entirely.
+2. **Classification** (`failure_policy_decide "ready"`, HOK-3176) against the full recorded evidence: `artifacts.transitionFailure.detail` (the transition tool's captured stderr, attached by `set_ready_pass_labels`' typed sentinel and redacted by `ready_transition_redact`), else the failed-check summary, else the failure reason.
+3. **Dispatch by class**: `terminal` retires a challenge arm with a green sibling (HOK-3147) else holds at needs-user; `code-failure` from a transition tool goes to the operator attention record with the excerpt (the mill cannot ask the coder to fix mill code), while `code-failure` from red CI relaunches Ready (which carries the failed checks into remediation, HOK-2890); `retryable` relaunches through `maybe_retry_failed_stage`'s shared `stage-failure-ready` bucket (backoff, one fresh relaunch, then escalate).
+
+- The retry budget is the shared `stage-failure-ready` bucket (`WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS`, default 3) — never a private Ready counter.
+- The typed sentinel keeps the tool's error text: `transitionFailure.detail` is the classification evidence; `transitionFailure.stderr` stays the fuller redacted dump for the operator.
+- DO NOT add a stage-name switch, a `transition_stage="github-api"` default, or a private Ready retry counter — `tools/check-ready-failure-policy.ts` fails the build on any of them.
+- Replay: `tests/journeys/ready-failure-disposition.journey.sh` (HOK-3361: the stamp tool's deterministic contract error surfaces its text, spends no budget, moves no head, retires nothing).
+
 ## Async Ready-Path Checks (HOK-3206)
 
 The cross-PR revert guard (~19 s), the live CI read (~2.5 s per PR), the ready-watchdog sweep (~5 s) and routing (30-60 s) run as tracked jobs (`launch_tracked_job` → `job-tracker.ts`, kinds `cross-pr-guard`, `pr-ci-status`, `ready-watchdog`, `route-task`). Each job writes a condition-keyed result marker; the monitor consumes it on a later pass. Implementation: `shared/lib/monitor-async-jobs.sh`.

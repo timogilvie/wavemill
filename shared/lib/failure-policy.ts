@@ -357,6 +357,11 @@ const CODE_FAILURE_SIGNATURES: ReadonlyArray<RegExp> = [
   /\b\d+\s*passed,\s*[1-9]\d*\s*failed\b/i,
   /\bdrift found\b/i,
   /\bconfig validation failed\b/i,
+  // HOK-3361/HOK-3371: a transition tool's own contract assertion. The stamp
+  // tool rejected the PR metadata shape it was handed — mill code, not the
+  // arm's change — so retrying the phase cannot fix it and the excerpt must
+  // reach the operator instead of spending the retry budget.
+  /\bExpected resolved_model\b/,
 ];
 
 /** Kinds a stage emits for red checks it already proved are the change's fault. */
