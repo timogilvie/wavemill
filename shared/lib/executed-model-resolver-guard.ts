@@ -54,12 +54,12 @@ export const EXECUTED_MODEL_RESOLVER_GUARD: GuardSpec = {
     // The one resolver and its tests/wrappers.
     'shared/lib/executed-model-resolver.ts',
     'shared/lib/executed-model-resolver-guard.ts',
-    'tools/resolve-executed-model.ts',
-    'tools/check-executed-model-resolver.ts',
+    'tools/resolve-executed-model.ts', // install-paths: allow guard's self-exclusion list, not a tool invocation
+    'tools/check-executed-model-resolver.ts', // install-paths: allow guard's self-exclusion list, not a tool invocation
     // The one attribution decision and its CLI write path.
     'shared/lib/stage-result.ts',
-    'tools/stage-result-cli.ts',
-    'tools/backfill-stage-executed-model.ts',
+    'tools/stage-result-cli.ts', // install-paths: allow guard's self-exclusion list, not a tool invocation
+    'tools/backfill-stage-executed-model.ts', // install-paths: allow guard's self-exclusion list, not a tool invocation
     // Model-registry equivalence tables may contain the literal strings as
     // enum values — allowed because they are not an eligibility decision.
     'shared/lib/eval-schema.ts',

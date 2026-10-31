@@ -238,6 +238,36 @@ if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 ]]; then
     bash -c 'git --git-dir "$1" show "refs/heads/$2:recovery-preserved.txt" | grep -qx "preserved interrupted challenger work"' _ "$FAKE_GH_ORIGIN" "$JOURNEY_INTEGRATION_BRANCH"
   journey_assert "coding recovery did not fall back to planning" bash -c '! grep -q "Retrying coding via planning" "$1"' _ "$JOURNEY_TMP/logs/status.log"
 fi
+if [[ "${JOURNEY_NATIVE_ARM_EVIDENCE:-0}" == 1 ]]; then
+  # HOK-3369: the challenger pretended to be a native OpenRouter arm. Every
+  # one of its stage results should still carry direct provider-response
+  # evidence after all subsequent monitor/CLI writes (completion, approval,
+  # review).
+  challenger_stage_result() {
+    local stage="$1" field="$2"
+    local fd archive_dir
+    fd="$(journey_feature_dir "$CHALLENGER" 2>/dev/null)" || true
+    archive_dir="$STATE_DIR/stage-results/$CHALLENGER"
+    local file="$fd/.${stage}-result.json"
+    if [[ ! -f "$file" && -d "$archive_dir" ]]; then
+      file="$(ls -1t "$archive_dir/${stage}-result"*.json 2>/dev/null | head -1 || echo "")"
+    fi
+    [[ -n "$file" && -f "$file" ]] || { echo ""; return 0; }
+    jq -r "$field // empty" "$file" 2>/dev/null || true
+  }
+  for stage in planning coding review; do
+    journey_assert "$stage: challenger kept its executedModel after completion" \
+      bash -c '[[ -n "$(challenger_stage_result "$1" .executedModel)" ]]' _ "$stage"
+    journey_assert "$stage: challenger evidence is direct (not inherited/missing)" \
+      bash -c '[[ "$(challenger_stage_result "$1" .executionEvidence.status)" = direct ]]' _ "$stage"
+    journey_assert "$stage: challenger evidence source is provider-response" \
+      bash -c '[[ "$(challenger_stage_result "$1" .executionEvidence.source)" = provider-response ]]' _ "$stage"
+    journey_assert "$stage: challenger is model-attribution eligible" \
+      bash -c '[[ "$(challenger_stage_result "$1" .modelAttributionEligible)" = true ]]' _ "$stage"
+    journey_assert "$stage: no runtime_fallback reason recorded" \
+      bash -c '[[ "$(challenger_stage_result "$1" .modelAttributionIneligibleReason)" != runtime_fallback ]]' _ "$stage"
+  done
+fi
 journey_assert_no_unhandled_fake_calls
 
 journey_finish

@@ -491,6 +491,11 @@ describe('resolveStageExecutedModel (HOK-3369)', () => {
         source: 'provider-response',
         detail: 'launcher record',
         recordedAt: '2026-10-30T16:07:16Z',
+        identityVerdict: 'match',
+        requestedWireId: wireModel,
+        certifiedTarget: wireModel,
+        responseId: 'gen-abc',
+        transportProvider: 'openrouter',
       },
     };
     const result = resolveStageExecutedModel({
@@ -505,6 +510,12 @@ describe('resolveStageExecutedModel (HOK-3369)', () => {
     assert.equal(result.evidenceStatus, 'direct');
     assert.equal(result.evidenceSource, 'provider-response');
     assert.equal(result.evidenceDetail, 'launcher record');
+    // HOK-3369: the fast path exports provider-identity fields from the
+    // existing block so a subsequent CLI write that supplies --executed-model
+    // (via the resolver answer) can reinstate them.
+    assert.equal(result.providerEvidence?.identityVerdict, 'match');
+    assert.equal(result.providerEvidence?.responseId, 'gen-abc');
+    assert.equal(result.providerEvidence?.transportProvider, 'openrouter');
   });
 
   // protects: a mid-stream responseModel differing from the non-alias wire

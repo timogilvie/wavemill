@@ -443,11 +443,33 @@ function resolveNativeExecutedModel(input: ResolveStageExecutedModelInput & {
       && Number.isFinite(recordedMs)
       && latestLaunchMs > recordedMs;
     if (!superseded) {
+      // HOK-3369: carry every provider-identity field from the existing
+      // block so the CLI write can rebuild evidence with the same shape
+      // (identityVerdict, requestedWireId, certifiedTarget, responseId,
+      // transportProvider, piRuntimeVersions). The merge rule may still
+      // keep the whole block, but when an explicit --executed-model is
+      // supplied (resolver answer), these fields are reinstated.
+      const providerEvidence: ResolvedStageExecutedModel['providerEvidence'] = {};
+      for (const key of [
+        'providerReportedModel',
+        'requestedWireId',
+        'certifiedTarget',
+        'identityVerdict',
+        'transportProvider',
+        'responseId',
+        'piRuntimeVersions',
+      ] as const) {
+        const value = (existingEvidence as Record<string, unknown>)[key];
+        if (value !== undefined) {
+          (providerEvidence as Record<string, unknown>)[key] = value;
+        }
+      }
       return {
         executedModel: existing.executedModel,
         evidenceStatus: 'direct',
         evidenceSource: existingEvidence.source,
         evidenceDetail: existingEvidence.detail ?? 'launcher provider-identity record',
+        ...(Object.keys(providerEvidence).length > 0 ? { providerEvidence } : {}),
       };
     }
   }

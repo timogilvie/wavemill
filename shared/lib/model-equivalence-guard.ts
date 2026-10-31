@@ -63,7 +63,7 @@ const GUARDED_FILES = [
   // model-named identifiers, so the one model-identity rule applies here too.
   'shared/lib/stage-result.ts',
   'shared/lib/executed-model-resolver.ts',
-  'tools/backfill-stage-executed-model.ts',
+  'tools/backfill-stage-executed-model.ts', // install-paths: allow guard's covered-files list, not a tool invocation
 ];
 
 export const MODEL_EQUIVALENCE_GUARD: GuardSpec = {
