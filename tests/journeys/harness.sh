@@ -157,6 +157,9 @@ journey_write_monitor_env() {
   export MONITOR_ENV="$JOURNEY_TMP/monitor.env"
   export MONITOR_SCRIPT="$JOURNEY_INSTALL_DIR/shared/lib/wavemill-monitor.sh"
   : > "$JOURNEY_TMP/tasks.txt"
+  # Seed a canned empty verdict so the fake claude handles ordering-judge calls
+  # without network access (grounded planner always runs now; HOK-3307).
+  printf '{"verdicts":[]}\n' > "$JOURNEY_TMP/judge-verdict.json"
   {
     printf 'SESSION=%q\n' "$SESSION"
     printf 'WAVEMILL_RUN_EPOCH=%q\n' "$(journey_now)"
@@ -199,6 +202,7 @@ journey_write_monitor_env() {
     printf 'WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE=observer\n'
     printf 'MONITOR_SCRIPT=%q\n' "$MONITOR_SCRIPT"
     printf 'MONITOR_ENV=%q\n' "$MONITOR_ENV"
+    printf 'FAKE_JUDGE_VERDICT_FILE=%q\n' "$JOURNEY_TMP/judge-verdict.json"
   } > "$MONITOR_ENV"
 }
 

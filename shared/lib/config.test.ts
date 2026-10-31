@@ -34,7 +34,6 @@ import {
   getReviewMergeConfig,
   getIntegrationReadyPolicy,
   getMillConfig,
-  getQueuePlannerConfig,
   getExpansionHandshakeConfig,
   getMaxCostUsd,
   getUiConfig,
@@ -1601,44 +1600,6 @@ test('getMillConfig returns mill section', () => {
     assert.equal(millConfig.baseBranch, 'develop');
     assert.equal(millConfig.defaultMaxCostUsd, 12.5);
     assert.equal(config.git?.fetchTtlSeconds, 30);
-  } finally {
-    cleanUp(tmp);
-  }
-});
-
-test('getQueuePlannerConfig defaults to legacy and honors grounded (HOK-3131)', () => {
-  const tmp = makeTempRepo();
-  try {
-    clearConfigCache();
-    writeConfig(tmp, JSON.stringify({ mill: { maxParallel: 5 } }));
-    assert.deepEqual(getQueuePlannerConfig(tmp), { mode: 'legacy' });
-
-    clearConfigCache();
-    writeConfig(tmp, JSON.stringify({ queuePlanner: {} }));
-    assert.deepEqual(getQueuePlannerConfig(tmp), { mode: 'legacy' });
-
-    clearConfigCache();
-    writeConfig(tmp, JSON.stringify({ queuePlanner: { mode: 'legacy' } }));
-    assert.deepEqual(getQueuePlannerConfig(tmp), { mode: 'legacy' });
-
-    clearConfigCache();
-    writeConfig(tmp, JSON.stringify({ queuePlanner: { mode: 'grounded' } }));
-    assert.deepEqual(getQueuePlannerConfig(tmp), { mode: 'grounded' });
-  } finally {
-    cleanUp(tmp);
-  }
-});
-
-test('queuePlanner rejects unknown modes and keys', () => {
-  const tmp = makeTempRepo();
-  try {
-    clearConfigCache();
-    writeConfig(tmp, JSON.stringify({ queuePlanner: { mode: 'fancy' } }));
-    assert.throws(() => loadWavemillConfig(tmp));
-
-    clearConfigCache();
-    writeConfig(tmp, JSON.stringify({ queuePlanner: { mode: 'grounded', extra: true } }));
-    assert.throws(() => loadWavemillConfig(tmp));
   } finally {
     cleanUp(tmp);
   }
