@@ -37,7 +37,6 @@ effective_task_config_json() {
     --arg issue "$issue" \
     --arg envBase "${BASE_BRANCH:-}" \
     --arg envConfirm "${REQUIRE_CONFIRM:-}" \
-    --arg legacy "${WAVEMILL_EFFECTIVE_CONFIG_LEGACY:-}" \
     --slurpfile state "$state_file" \
     --slurpfile repo "$repo_config" \
     --slurpfile user "$user_config" \
@@ -46,7 +45,7 @@ effective_task_config_json() {
       def first_obj($x): if ($x | length) > 0 then obj($x[0]) else {} end;
       def bool_env($x): if $x == "true" then true elif $x == "false" then false else null end;
       (first_obj($state).tasks[$issue] // {}) as $task
-      | (if $legacy == "1" then {} else ($task.lifecycle.launchContract // {}) end) as $contract
+      | ($task.lifecycle.launchContract // {}) as $contract
       | first_obj($runtime) as $runtime
       | first_obj($repo) as $repoConfig
       | ($repoConfig.mill // {}) as $repoMill

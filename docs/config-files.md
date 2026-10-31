@@ -38,9 +38,6 @@ and confirmation policy. When repository config disagrees with the effective
 task value, Wavemill reports that as informational drift so intentional
 per-session overrides are visible without being treated as corruption.
 
-`WAVEMILL_EFFECTIVE_CONFIG_LEGACY=1` is a rollback adapter that bypasses launch
-contract reads while preserving the stored contract and provenance.
-
 ### Cross-PR Revert Checker
 
 `tools/check-cross-pr-reverts.ts` resolves the integration branch in this order:

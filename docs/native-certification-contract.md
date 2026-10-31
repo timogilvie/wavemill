@@ -249,7 +249,7 @@ Cohort entries are validated fail-closed against the effective registry: only ve
 
 ### Automatic refresh
 
-During mill certification preflight (when `autoRemediate` and `canaryAutoRefresh` are enabled and `WAVEMILL_SKIP_CANARY_AUTO_REFRESH` is not set), members whose canary is **missing, stale, inside the renewal window, identity-invalidated, or transiently inconclusive** get at most **one** live refresh attempt per remediation episode. An episode is keyed by identity fingerprint, catalog hash, suite version, and the expiry that triggered remediation; a second preflight inside the same episode reports the manual command instead of spending another provider call. Members without resolvable credentials are skipped with the missing env var named (never its value).
+During mill certification preflight (when `autoRemediate` and `canaryAutoRefresh` are enabled), members whose canary is **missing, stale, inside the renewal window, identity-invalidated, or transiently inconclusive** get at most **one** live refresh attempt per remediation episode. An episode is keyed by identity fingerprint, catalog hash, suite version, and the expiry that triggered remediation; a second preflight inside the same episode reports the manual command instead of spending another provider call. Members without resolvable credentials are skipped with the missing env var named (never its value).
 
 A definitive `fail` or `not-live` verdict is **never** auto-retried — it revokes eligibility and requires operator review (see the re-enable procedure above). A transient or skipped refresh never overwrites a still-valid unexpired pass; the existing revocation contract is unchanged. Refresh goes through the standard certify pipeline and atomic store writes, so no credential, raw transcript, or unbounded tool result is ever persisted; attempt records carry only redacted, bounded metadata under `<root>/.canary-refresh-attempts.json`.
 
@@ -267,7 +267,7 @@ Preflight output and `tools/native-agent-models-report.ts` surface the cohort su
 
 ### Rollback
 
-Set `"canaryAutoRefresh": false` (or `WAVEMILL_SKIP_CANARY_AUTO_REFRESH=1`) to disable automatic refresh while retaining the eligibility gate. Existing valid passes remain usable until expiry; nothing synthesizes or bypasses a live pass.
+Set `"canaryAutoRefresh": false` to disable automatic refresh while retaining the eligibility gate. Existing valid passes remain usable until expiry; nothing synthesizes or bypasses a live pass.
 
 ---
 

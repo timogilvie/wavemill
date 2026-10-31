@@ -27,7 +27,3 @@ operator can see intentional launch/runtime overrides.
 Runtime snapshots are an explicit allowlist: issue, session, run epoch, base
 branch, confirmation policy, merge method, source labels, and capture time. They
 must not contain arbitrary environment variables or secrets.
-
-`WAVEMILL_EFFECTIVE_CONFIG_LEGACY=1` bypasses launch-contract reads in the
-resolver. It is a compatibility adapter for rollback and does not delete stored
-contract or provenance data.

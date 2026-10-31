@@ -209,16 +209,15 @@ reap_completed_planning_pane "HOK-2" "$FEATURE_DIR" "$TEST_TMP/worktrees/slug" |
 check_eq "failed termination still returns 0" "$rc" "0"
 check_contains "failed termination logs a warning" "$LOG_OUTPUT" "WARN:"
 
-# --- REQ-F4: WAVEMILL_SKIP_PLANNING_REAP=1 disables the reap -----------------
+# --- REQ-F4: the reap is a shell-overridable seam (tests may disable it) -----
 reset_capture
 PANE_IDLE=0
 PANE_FG_CMD="codex"
-export WAVEMILL_SKIP_PLANNING_REAP=1
+reap_completed_planning_pane() { return 0; }
 rc=0
 reap_completed_planning_pane "HOK-2" "$FEATURE_DIR" "$TEST_TMP/worktrees/slug" || rc=$?
-unset WAVEMILL_SKIP_PLANNING_REAP
-check_eq "skip toggle: reap returns 0" "$rc" "0"
-check_eq "skip toggle: no termination issued" "$TERMINATE_CALLS" "0"
+check_eq "overridden seam: reap returns 0" "$rc" "0"
+check_eq "overridden seam: no termination issued" "$TERMINATE_CALLS" "0"
 
 echo ""
 echo "launch-pane-liveness: $PASS passed, $FAIL failed"

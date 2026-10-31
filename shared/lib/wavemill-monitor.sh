@@ -6370,13 +6370,6 @@ emit_blocked_completion_attention() {
   return 0
 }
 
-blocked_completion_live_process_mode() {
-  case "${WAVEMILL_BLOCKED_COMPLETION_LIVE_PROCESS_MODE:-attention}" in
-    terminate) printf 'terminate\n' ;;
-    *) printf 'attention\n' ;;
-  esac
-}
-
 emit_blocked_completion_liveness_attention() {
   local issue="$1" feature_dir="$2" win="$3" detail="$4" next_action="$5"
   local artifact_record summary reason artifact_mtime
@@ -7599,53 +7592,14 @@ auto_advance_blocked_completion() {
   if [[ "$liveness_rc" -eq 0 ]]; then
     blocking_command="${MILL_BLOCKING_PROCESS_COMMAND:-live blocking process}"
     next_action="Stop the live blocking command for $issue (${blocking_command}), then retry review."
-    live_process_mode="$(blocked_completion_live_process_mode)"
-    if [[ "$live_process_mode" == "terminate" ]] && (( ${#MILL_BLOCKING_PROCESS_PIDS[@]} > 0 )); then
-      if mill_terminate_blocking_processes "$pane_pid" "${MILL_BLOCKING_PROCESS_PIDS[@]}"; then
-        mill_pane_has_live_blocking_process "$pane_pid" "${blocking_commands[@]}"
-        liveness_rc=$?
-        if [[ "$liveness_rc" -eq 1 ]]; then
-          log "status" "[auto-advance] $issue terminated live blocking process before coding handoff: $blocking_command"
-        elif [[ "$liveness_rc" -eq 2 ]]; then
-          AUTO_ADVANCE_BLOCKED_COMPLETION_REASON="blocked-completion liveness indeterminate after termination: ${MILL_BLOCKING_PROCESS_REASON:-unknown reason}"
-          emit_blocked_completion_liveness_attention \
-            "$issue" \
-            "$feature_dir" \
-            "$win" \
-            "blocked-completion auto-advance refused because post-termination liveness is indeterminate (${MILL_BLOCKING_PROCESS_REASON:-unknown reason})" \
-            "Inspect the coding pane for $issue and confirm the blocking command has stopped."
-          return 1
-        else
-          blocking_command="${MILL_BLOCKING_PROCESS_COMMAND:-$blocking_command}"
-          AUTO_ADVANCE_BLOCKED_COMPLETION_REASON="live blocking process still running after termination attempt"
-          emit_blocked_completion_liveness_attention \
-            "$issue" \
-            "$feature_dir" \
-            "$win" \
-            "blocked-completion auto-advance refused because a live blocking command is still running after termination attempt ($blocking_command)" \
-            "Inspect the coding pane for $issue and stop the remaining blocking command manually."
-          return 1
-        fi
-      else
-        AUTO_ADVANCE_BLOCKED_COMPLETION_REASON="failed to terminate live blocking process"
-        emit_blocked_completion_liveness_attention \
-          "$issue" \
-          "$feature_dir" \
-          "$win" \
-          "blocked-completion auto-advance refused because the live blocking command could not be terminated ($blocking_command)" \
-          "Inspect the coding pane for $issue and stop the blocking command manually."
-        return 1
-      fi
-    else
-      AUTO_ADVANCE_BLOCKED_COMPLETION_REASON="live blocking process still running"
-      emit_blocked_completion_liveness_attention \
-        "$issue" \
-        "$feature_dir" \
-        "$win" \
-        "blocked-completion auto-advance refused because a live blocking command is still running ($blocking_command)" \
-        "$next_action"
-      return 1
-    fi
+    AUTO_ADVANCE_BLOCKED_COMPLETION_REASON="live blocking process still running"
+    emit_blocked_completion_liveness_attention \
+      "$issue" \
+      "$feature_dir" \
+      "$win" \
+      "blocked-completion auto-advance refused because a live blocking command is still running ($blocking_command)" \
+      "$next_action"
+    return 1
   fi
 
   if ! complete_coding_advance \
@@ -9434,7 +9388,6 @@ reap_completed_planning_pane() {
   local issue="$1" feature_dir="$2" worktree="${3:-}"
   local slug target fg_cmd
 
-  [[ "${WAVEMILL_SKIP_PLANNING_REAP:-0}" == "1" ]] && return 0
   command -v tmux >/dev/null 2>&1 || return 0
 
   slug="$(basename "$feature_dir")"
