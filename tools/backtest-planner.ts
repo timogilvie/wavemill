@@ -1,6 +1,6 @@
 #!/usr/bin/env -S npx tsx
 /**
- * Backtest the grounded wave planner against the legacy planner (HOK-3131).
+ * Backtest the grounded wave planner (HOK-3131, HOK-3307).
  * Business logic lives in shared/lib/planner-backtest.ts.
  */
 import { writeFileSync } from 'node:fs';
@@ -14,7 +14,6 @@ import {
   commitBefore,
   fetchIssueFromLinear,
   fetchMergedPrsWithGh,
-  legacyClassifyWithLlm,
   renderBacktestReport,
   runPlannerBacktest,
   type BacktestTask,
@@ -22,7 +21,7 @@ import {
 
 runTool({
   name: 'backtest-planner',
-  description: 'Compare grounded vs legacy queue planners against historical merged-PR file overlap',
+  description: 'Backtest the grounded queue planner against historical merged-PR file overlap',
   options: {
     limit: { type: 'string', description: 'Merged PRs to fetch (default 80)' },
     base: { type: 'string', description: 'Base branch the PRs merged into (default auto/integration)' },
@@ -50,7 +49,6 @@ runTool({
     const result = await runPlannerBacktest(limit, {
       fetchMergedPrs: async (count) => fetchMergedPrsWithGh(repoDir, base, count),
       fetchIssue: fetchIssueFromLinear,
-      ...(useLlm ? { legacyClassify: (tasks: BacktestTask[]) => legacyClassifyWithLlm(tasks, { repoDir, fingerprint }) } : {}),
       fingerprint,
       log,
       judged: useLlm,
@@ -78,7 +76,6 @@ runTool({
       prsFetched: result.prsFetched,
       tasks: result.tasks,
       outcomes: result.outcomes,
-      legacyMode: useLlm ? 'classifier' : 'explicit-only',
       groundedMode: useLlm ? 'llm' : 'deterministic-only',
       probeRef,
       notes: result.notes,

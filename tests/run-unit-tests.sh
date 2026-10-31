@@ -357,7 +357,6 @@ TESTS=(
   shared/lib/scope-shrinker.test.ts
   shared/lib/linear-dependency-resolver.test.ts
   shared/lib/dependency-classifier.test.ts
-  shared/lib/queue-partial-refresh.test.ts
   shared/lib/route-artifact.test.ts
   shared/lib/model-router.test.ts
   shared/lib/eval-corpus-migrator.test.ts

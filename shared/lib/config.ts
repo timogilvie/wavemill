@@ -1050,13 +1050,6 @@ export interface MergeQueueConfig {
   skipCooldownSeconds?: number;
 }
 
-/** Wave planning strategy for tools/plan-queue.ts (HOK-3131). */
-export type QueuePlannerMode = 'legacy' | 'grounded';
-
-export interface QueuePlannerConfig {
-  mode?: QueuePlannerMode;
-}
-
 export interface MonitorConfig {
   readyWatchdog?: ReadyWatchdogConfig;
 }
@@ -1221,7 +1214,6 @@ export interface WavemillConfig {
   ready?: ReadyConfig;
   mergeQueue?: MergeQueueConfig;
   monitor?: MonitorConfig;
-  queuePlanner?: QueuePlannerConfig;
   permissions?: PermissionsConfig;
   quota?: QuotaConfig;
   verification?: VerificationConfig;
@@ -2527,15 +2519,6 @@ export function getExpansionHandshakeConfig(repoDir?: string): { policy: 'recove
  */
 export function getMaxCostUsd(repoDir?: string): number | undefined {
   return loadWavemillConfig(repoDir).mill?.defaultMaxCostUsd;
-}
-
-/**
- * Get the queue planner config section (HOK-3131).
- * `mode` resolves to 'legacy' unless explicitly set to 'grounded'.
- */
-export function getQueuePlannerConfig(repoDir?: string): Required<QueuePlannerConfig> {
-  const mode = loadWavemillConfig(repoDir).queuePlanner?.mode;
-  return { mode: mode === 'grounded' ? 'grounded' : 'legacy' };
 }
 
 /**

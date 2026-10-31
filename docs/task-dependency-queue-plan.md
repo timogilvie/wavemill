@@ -48,7 +48,7 @@ The dependency-aware queue lets mill analyze task relationships before launch, s
 
 - Purpose: merge incremental backlog updates into the cached dependency graph instead of recomputing the entire plan on every refresh.
 - Source: `shared/lib/task-dependency-plan-cache.ts`
-- Coverage: `shared/lib/task-dependency-plan-cache.test.ts`, `shared/lib/queue-partial-refresh.test.ts`
+- Coverage: `shared/lib/task-dependency-plan-cache.test.ts`
 
 ### Stage 8: Fallback behavior `[COMPLETE]`
 
@@ -56,12 +56,11 @@ The dependency-aware queue lets mill analyze task relationships before launch, s
 - Source: `shared/lib/wavemill-startup-runner.sh`, `shared/lib/wavemill-mill.sh`
 - Coverage: `tests/fixtures/startup/startup_falls_back_when_field_missing.sh`, `tests/fixtures/lifecycle/parent_branch_missing_fails_clearly.sh`, `tests/fixtures/lifecycle/dep_queue_queued_task_skipped_when_parent_active.sh`
 
-### Stage 9: Grounded wave planning `[OPT-IN]` (HOK-3131)
+### Stage 9: Grounded wave planning (HOK-3131, always active since HOK-3307)
 
-- Purpose: stop putting tasks that edit the same code in one wave. Each task's *touch set* (files it will modify) is predicted from the repo — explicit paths, `git`-resolved filenames and identifiers, and a batched LLM prediction only for vague tasks. Pairs are scored deterministically (file / hot-file / region overlap, co-change history, `n/m` series, cross-references, sweeps), and only scored pairs go to an evidence-required LLM ordering judge (`must_precede | should_precede | conflict | independent`). Ordering verdicts become `depends_on` edges, conflicts become `shared_surface` edges, and the rest of this pipeline is unchanged.
-- Enable: `"queuePlanner": { "mode": "grounded" }` in `.wavemill-config.json` (default `legacy`). Rollback: remove the block or set `legacy`.
+- Purpose: stop putting tasks that edit the same code in one wave. Each task's *touch set* (files it will modify) is predicted from the repo — explicit paths, `git`-resolved filenames and identifiers, and a batched LLM prediction only for vague tasks. Pairs are scored deterministically (file / hot-file / region overlap, co-change history, `n/m` series, cross-references, sweeps), and only scored pairs go to an evidence-required LLM ordering judge (`must_precede | should_precede | conflict | independent`). Ordering verdicts become `depends_on` edges, conflicts become `shared_surface` edges, and the rest of this pipeline is unchanged. Tasks whose touch set could not be determined get `touchSetStatus: 'unknown'`; the picker holds them until a background refresh resolves their status.
 - Source: `shared/lib/touch-set-predictor.ts`, `shared/lib/conflict-scorer.ts`, `shared/lib/grounded-planner.ts`, `tools/prompts/grounded-queue-ordering.md`, `tools/prompts/touch-set-prediction.md`; wired in `tools/plan-queue.ts`.
-- Cache: `touchSets` and `groundedVerdicts` blocks in the task-dependency cache, keyed by task fingerprint (touch sets also expire after 7 days). Grounded runs do not advance legacy `fingerprints`, so switching back to `legacy` re-classifies every task.
+- Cache: `touchSets` and `groundedVerdicts` blocks in the task-dependency cache, keyed by task fingerprint (touch sets also expire after 7 days).
 - Failure policy: never fails the plan. A failed or malformed judge answer leaves unjudged pairs `independent`, is not cached, and is reported as an inference failure (with the usual cooldown); during cooldown only cached verdicts are used.
 - Latency: the judge is one batched `classify` call (≤40 pairs) with `--tools ''`; warm runs (cached touch sets and verdicts) make no LLM call. A cold judge call can exceed the monitor's 25 s per-attempt budget — unjudged pairs are `independent` for that poll (explicit and cached edges still apply), enters the inference cooldown, and retries; verdicts are cached once a call succeeds.
 - Preview: `npx tsx tools/plan-queue.ts --project "<name>" --preview` adds **Grounded Waves** and **Grounded Deferrals** (why each task waits) sections.

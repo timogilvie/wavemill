@@ -1,24 +1,11 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { DependencyEdge } from './task-dependency-planner.ts';
 import { mutateJsonState, StateLockTimeoutError } from './state-mutex.ts';
 import { normalizeInferenceState, type QueueInferenceState } from './queue-inference-status.ts';
 
 export const CACHE_SCHEMA_VERSION = 1;
 const CACHE_WRITE_TIMEOUT_MS = 5000;
-
-export interface CachedEdge {
-  from: string;
-  to: string;
-  fromFingerprint: string;
-  toFingerprint: string;
-  kind: 'inferred';
-  type?: 'depends_on' | 'shared_surface';
-  label?: string;
-  confidence?: number;
-  classifiedAt: string;
-}
 
 /**
  * Grounded-planner pair verdict (HOK-3131). `must_precede`/`should_precede` mean
@@ -35,6 +22,12 @@ export interface CachedTouchSet {
   fingerprint: string;
   computedAt: string;
   entries: Array<{ path: string; source: 'explicit' | 'resolved' | 'predicted'; symbols?: string[] }>;
+  /**
+   * Prediction quality; absent in pre-HOK-3307 cache entries. Back-filled on
+   * load: non-empty entries → `'predicted'`, empty entries → `'unknown'` (the
+   * conservative default — an old empty row is not provably `empty-confirmed`).
+   */
+  status?: 'predicted' | 'empty-confirmed' | 'unknown';
 }
 
 /** Cached LLM ordering verdict for one task pair, valid while both fingerprints match. */
@@ -55,8 +48,18 @@ export interface CacheFile {
   schemaVersion: 1;
   projectSlug: string;
   updatedAt: string;
-  fingerprints: Record<string, string>;
-  edges: CachedEdge[];
+  /**
+   * Legacy classifier fingerprints (HOK-3307: optional, deprecated). Grounded
+   * planner still writes this for cooldown/pending tracking but does not
+   * advance edges from it. Absent in future-format caches; treat as `{}`.
+   */
+  fingerprints?: Record<string, string>;
+  /**
+   * Legacy classifier edges (HOK-3307: optional, deprecated). Grounded planner
+   * ignores these in favour of `touchSets` + `groundedVerdicts`. Absent in
+   * future-format caches.
+   */
+  edges?: unknown[];
   /**
    * Classifier bookkeeping (HOK-3130). Optional and additive: caches written
    * before it existed load without it and derive to inference status `never`.
@@ -84,13 +87,6 @@ export interface FingerprintableTask {
   blocks?: unknown;
 }
 
-export interface BacklogDiff {
-  added: string[];
-  changed: string[];
-  completed: string[];
-  removed: string[];
-}
-
 interface CacheStats {
   totalEdges: number;
   retainedEdges: number;
@@ -101,8 +97,6 @@ function emptyCache(projectSlug: string): CacheFile {
     schemaVersion: CACHE_SCHEMA_VERSION,
     projectSlug,
     updatedAt: new Date(0).toISOString(),
-    fingerprints: {},
-    edges: [],
   };
 }
 
@@ -160,35 +154,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isCachedEdge(value: unknown): value is CachedEdge {
-  if (!isRecord(value)) return false;
-  return (
-    value.kind === 'inferred' &&
-    typeof value.from === 'string' &&
-    typeof value.to === 'string' &&
-    typeof value.fromFingerprint === 'string' &&
-    typeof value.toFingerprint === 'string' &&
-    typeof value.classifiedAt === 'string' &&
-    (value.type === undefined || value.type === 'depends_on' || value.type === 'shared_surface') &&
-    (value.label === undefined || typeof value.label === 'string') &&
-    (value.confidence === undefined || typeof value.confidence === 'number')
-  );
-}
-
 function isCacheFile(value: unknown): value is CacheFile {
   if (!isRecord(value)) return false;
   if (value.schemaVersion !== CACHE_SCHEMA_VERSION) return false;
   if (typeof value.projectSlug !== 'string' || typeof value.updatedAt !== 'string') return false;
-  if (!isRecord(value.fingerprints) || !Array.isArray(value.edges)) return false;
-  if (Object.values(value.fingerprints).some((fingerprint) => typeof fingerprint !== 'string')) return false;
-  return value.edges.every(isCachedEdge);
+  // fingerprints and edges are optional deprecated legacy fields (HOK-3307).
+  if (value.fingerprints !== undefined && !isRecord(value.fingerprints)) return false;
+  if (value.edges !== undefined && !Array.isArray(value.edges)) return false;
+  return true;
 }
 
 const TOUCH_SOURCES = new Set(['explicit', 'resolved', 'predicted']);
+const TOUCH_SET_STATUSES = new Set(['predicted', 'empty-confirmed', 'unknown']);
 
 function isCachedTouchSet(value: unknown): value is CachedTouchSet {
   if (!isRecord(value)) return false;
   if (typeof value.fingerprint !== 'string' || typeof value.computedAt !== 'string' || !Array.isArray(value.entries)) return false;
+  if (value.status !== undefined && !TOUCH_SET_STATUSES.has(value.status as string)) return false;
   return value.entries.every(
     (entry) =>
       isRecord(entry) &&
@@ -247,7 +229,15 @@ function withNormalizedGrounded(cache: CacheFile): CacheFile {
       if (valid.length !== Object.keys(rawTouchSets).length) {
         console.warn('[task-dep-cache] dropping malformed touchSets entries');
       }
-      result.touchSets = Object.fromEntries(valid);
+      // Back-fill `status` for pre-HOK-3307 cache entries that have no `status`
+      // field: non-empty entries → `predicted`, empty → `unknown` (conservative).
+      result.touchSets = Object.fromEntries(valid.map(([taskId, entry]) => [
+        taskId,
+        entry.status !== undefined ? entry : {
+          ...entry,
+          status: entry.entries.length > 0 ? ('predicted' as const) : ('unknown' as const),
+        },
+      ]));
     }
   }
 
@@ -309,16 +299,10 @@ export function loadCache(rawRepoDir: string, projectSlug: string): CacheFile {
 
 export function pruneCache(cache: CacheFile, currentBacklog: FingerprintableTask[]): CacheFile {
   const fingerprints = Object.fromEntries(currentBacklog.map((task) => [task.id, computeTaskFingerprint(task)]));
-  const edges = cache.edges.filter(
-    (edge) => fingerprints[edge.from] === edge.fromFingerprint && fingerprints[edge.to] === edge.toFingerprint,
-  );
-
   return {
     schemaVersion: CACHE_SCHEMA_VERSION,
     projectSlug: cache.projectSlug,
     updatedAt: cache.updatedAt,
-    fingerprints,
-    edges,
     ...(cache.inference ? { inference: cache.inference } : {}),
     ...(cache.touchSets ? { touchSets: pruneTouchSets(cache.touchSets, fingerprints) } : {}),
     ...(cache.groundedVerdicts ? { groundedVerdicts: pruneGroundedVerdicts(cache.groundedVerdicts, fingerprints) } : {}),
@@ -377,157 +361,10 @@ export function lookupGroundedVerdict(
   );
 }
 
-/**
- * Previous fingerprints restricted to tasks still in the backlog.
- *
- * Used whenever tasks are pending but were not analyzed (classifier failure
- * or cooldown): keeping the old fingerprint — or none, for a new task — keeps
- * them in the next run's diff so they are retried instead of silently being
- * marked analyzed (HOK-3130).
- */
-export function retainPreviousFingerprints(
-  previous: Record<string, string>,
-  currentTaskIds: Iterable<string>,
-): Record<string, string> {
-  const retained: Record<string, string> = {};
-  for (const taskId of currentTaskIds) {
-    if (Object.prototype.hasOwnProperty.call(previous, taskId)) {
-      retained[taskId] = previous[taskId];
-    }
-  }
-  return retained;
-}
-
 export function getCacheStats(before: CacheFile, after: CacheFile): CacheStats {
   return {
-    totalEdges: before.edges.length,
-    retainedEdges: after.edges.length,
-  };
-}
-
-export function computeBacklogDiff(
-  prevFingerprints: Record<string, string>,
-  currentTasks: FingerprintableTask[],
-  isCompletedTask?: (taskId: string) => boolean,
-): BacklogDiff {
-  const added: string[] = [];
-  const changed: string[] = [];
-  const completed: string[] = [];
-  const removed: string[] = [];
-  const currentTaskIds = new Set<string>();
-
-  for (const task of currentTasks) {
-    currentTaskIds.add(task.id);
-    const nextFingerprint = computeTaskFingerprint(task);
-    const prevFingerprint = prevFingerprints[task.id];
-    if (prevFingerprint === undefined) {
-      added.push(task.id);
-      continue;
-    }
-    if (prevFingerprint !== nextFingerprint) {
-      changed.push(task.id);
-    }
-  }
-
-  for (const taskId of Object.keys(prevFingerprints).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))) {
-    if (currentTaskIds.has(taskId)) continue;
-    if (isCompletedTask?.(taskId) === true) {
-      completed.push(taskId);
-      continue;
-    }
-    removed.push(taskId);
-  }
-
-  added.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  changed.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-
-  return { added, changed, completed, removed };
-}
-
-export function mergeEdges(
-  cachedEdges: CachedEdge[],
-  freshEdges: CachedEdge[],
-  opts: { changedTaskIds: Set<string>; removedTaskIds: Set<string> },
-): CachedEdge[] {
-  const retained = cachedEdges.filter(
-    (edge) =>
-      !opts.removedTaskIds.has(edge.from) &&
-      !opts.removedTaskIds.has(edge.to) &&
-      !opts.changedTaskIds.has(edge.from) &&
-      !opts.changedTaskIds.has(edge.to),
-  );
-
-  const validFresh: CachedEdge[] = [];
-  for (const edge of freshEdges) {
-    if (!opts.changedTaskIds.has(edge.from) && !opts.changedTaskIds.has(edge.to)) {
-      console.warn(`[task-dep-cache] dropping fresh edge outside changed scope: ${edge.from}->${edge.to}`);
-      continue;
-    }
-    if (opts.removedTaskIds.has(edge.from) || opts.removedTaskIds.has(edge.to)) {
-      continue;
-    }
-    validFresh.push(edge);
-  }
-
-  const deduped = new Map<string, CachedEdge>();
-  for (const edge of [...retained, ...validFresh]) {
-    const key = `${edge.type ?? 'depends_on'}\u0000${edge.from}\u0000${edge.to}`;
-    const existing = deduped.get(key);
-    if (!existing) {
-      deduped.set(key, edge);
-      continue;
-    }
-
-    if (existing.classifiedAt <= edge.classifiedAt) {
-      deduped.set(key, edge);
-    }
-  }
-
-  return [...deduped.values()].sort((a, b) => {
-    const fromCompare = a.from.localeCompare(b.from, undefined, { numeric: true });
-    if (fromCompare !== 0) return fromCompare;
-    return a.to.localeCompare(b.to, undefined, { numeric: true });
-  });
-}
-
-export function cachedEdgesToDependencyEdges(edges: CachedEdge[]): DependencyEdge[] {
-  return edges.map((edge) => ({
-    from: edge.from,
-    to: edge.to,
-    type: edge.type ?? 'depends_on',
-    source: 'inferred',
-    ...(typeof edge.label === 'string' && edge.label.length > 0 ? { reason: edge.label } : {}),
-  }));
-}
-
-export function lookupEdge(
-  cache: CacheFile,
-  fromId: string,
-  toId: string,
-  fromFingerprint: string,
-  toFingerprint: string,
-): CachedEdge | undefined {
-  return cache.edges.find(
-    (edge) =>
-      (
-        edge.from === fromId &&
-        edge.to === toId &&
-        edge.fromFingerprint === fromFingerprint &&
-        edge.toFingerprint === toFingerprint
-      ) ||
-      (
-        edge.from === toId &&
-        edge.to === fromId &&
-        edge.fromFingerprint === toFingerprint &&
-        edge.toFingerprint === fromFingerprint
-      ),
-  );
-}
-
-export function recordEdge(cache: CacheFile, edge: CachedEdge): CacheFile {
-  return {
-    ...cache,
-    edges: [...cache.edges, edge],
+    totalEdges: (before.edges ?? []).length,
+    retainedEdges: (after.edges ?? []).length,
   };
 }
 
