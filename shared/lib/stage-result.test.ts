@@ -1209,3 +1209,210 @@ describe('executionEvidence.piRuntimeVersions (HOK-3164)', () => {
     assert.equal(fields.executionEvidence?.piRuntimeVersions, undefined);
   });
 });
+
+describe('executionTruthFields merge rule (HOK-3369)', () => {
+  beforeEach(async () => { testDir = await createTestDir(); });
+  afterEach(async () => { await fs.rm(testDir, { recursive: true, force: true }); });
+
+  const NOW = '2026-10-06T12:00:00Z';
+  const RECORDED_AT = '2026-10-06T00:00:00Z';
+  const WIRE = 'moonshotai/kimi-k2-thinking';
+  const providerEvidence: NonNullable<StageResult['executionEvidence']> = {
+    status: 'direct',
+    source: 'provider-response',
+    detail: 'verified match after 19 turn(s)',
+    recordedAt: RECORDED_AT,
+    providerReportedModel: WIRE,
+    requestedWireId: WIRE,
+    certifiedTarget: WIRE,
+    identityVerdict: 'match',
+    transportProvider: 'openrouter',
+    responseId: 'gen-abc',
+    piRuntimeVersions: { 'pi-ai': '1.0.2' },
+  };
+  const directResult = (overrides: Partial<StageResult> = {}): StageResult => makeResult({
+    stage: 'planning',
+    status: 'awaiting_user',
+    agent: 'native',
+    model: WIRE,
+    intendedModel: WIRE,
+    executedModel: WIRE,
+    executionEvidence: providerEvidence,
+    ...overrides,
+  });
+
+  it('keeps direct provider-response evidence when an awaiting_user result is completed with no evidence flags', () => {
+    // protects: HOK-3322 — approve_plan erased native planning evidence because awaiting_user is not running
+    const fields = executionTruthFields({
+      status: 'completed',
+      flags: { model: WIRE },
+      existing: directResult(),
+      now: NOW,
+    });
+    assert.equal(fields.executedModel, WIRE);
+    assert.equal(fields.executionEvidence?.status, 'direct');
+    assert.equal(fields.executionEvidence?.source, 'provider-response');
+    assert.equal(fields.executionEvidence?.recordedAt, RECORDED_AT);
+    assert.equal(fields.executionEvidence?.identityVerdict, 'match');
+    assert.equal(fields.executionEvidence?.responseId, 'gen-abc');
+    assert.deepEqual(fields.executionEvidence?.piRuntimeVersions, { 'pi-ai': '1.0.2' });
+    assert.equal(fields.modelAttributionEligible, true);
+    assert.equal(fields.modelAttributionIneligibleReason, undefined);
+    assert.ok('modelAttributionIneligibleReason' in fields);
+  });
+
+  it('keeps direct evidence when a completed result is rewritten with only a detail or eligibility flag', () => {
+    // protects: the operator reset — a CLI update carrying any evidence flag rebuilt the truth block as missing
+    for (const flags of [{ 'execution-evidence-detail': 'operator note' }, { 'model-attribution-eligible': 'true' }]) {
+      const fields = executionTruthFields({
+        status: 'completed',
+        flags,
+        existing: directResult({ status: 'completed' }),
+        now: NOW,
+      });
+      assert.equal(fields.executionEvidence?.status, 'direct', JSON.stringify(flags));
+      assert.equal(fields.executedModel, WIRE, JSON.stringify(flags));
+      assert.equal(fields.executionEvidence?.source, 'provider-response', JSON.stringify(flags));
+      assert.equal(fields.executionEvidence?.recordedAt, RECORDED_AT, JSON.stringify(flags));
+    }
+  });
+
+  it('applies a detail flag onto the kept block without restamping it', () => {
+    const fields = executionTruthFields({
+      status: 'completed',
+      flags: { 'execution-evidence-detail': 'operator note' },
+      existing: directResult({ status: 'completed' }),
+      now: NOW,
+    });
+    assert.equal(fields.executionEvidence?.detail, 'operator note');
+    assert.equal(fields.executionEvidence?.recordedAt, RECORDED_AT);
+  });
+
+  it('drops kept evidence when a newer ownership launch row supersedes it', () => {
+    // protects: stale evidence from a crashed prior attempt surviving a plain write-running relaunch
+    const fields = executionTruthFields({
+      status: 'running',
+      flags: {},
+      existing: directResult(),
+      now: NOW,
+      latestLaunchAt: '2026-10-07T00:00:00Z',
+    });
+    assert.equal(fields.executedModel, null);
+    assert.equal(fields.executionEvidence?.status, 'missing');
+  });
+
+  it('drops evidence on an explicit newAttempt (write-with-history relaunch)', () => {
+    // protects: a re-planned/relaunched stage must not inherit the prior attempt's attribution
+    const fields = executionTruthFields({
+      status: 'running',
+      flags: {},
+      existing: directResult(),
+      now: NOW,
+      newAttempt: true,
+    });
+    assert.equal(fields.executedModel, null);
+    assert.equal(fields.executionEvidence?.status, 'missing');
+  });
+
+  it('explicit contradicted evidence replaces the kept block and restamps it', () => {
+    const fields = executionTruthFields({
+      status: 'completed',
+      flags: { 'executed-model': 'gpt-5', 'execution-evidence-status': 'contradicted' },
+      existing: directResult({ status: 'completed' }),
+      now: NOW,
+    });
+    assert.equal(fields.executedModel, 'gpt-5');
+    assert.equal(fields.executionEvidence?.status, 'contradicted');
+    assert.equal(fields.executionEvidence?.recordedAt, NOW);
+    assert.equal(fields.modelAttributionEligible, false);
+    assert.equal(fields.modelAttributionIneligibleReason, 'execution_contradicted');
+  });
+
+  it('marks registry-equivalent alias spellings attribution-eligible', () => {
+    // protects: raw !== on model ids false-flagging runtime_fallback (HOK-3321 / HOK-3369 D4)
+    const cases: Array<{ intended: string; executed: string; eligible: boolean }> = [
+      { intended: 'kimi-k2-thinking', executed: WIRE, eligible: true },
+      { intended: 'claude-haiku-4-5', executed: 'claude-haiku-4-5-20251001', eligible: true },
+      { intended: 'claude-opus-5-5', executed: 'gpt-5', eligible: false },
+    ];
+    for (const testCase of cases) {
+      const fields = executionTruthFields({
+        status: 'completed',
+        flags: { model: testCase.intended, 'intended-model': testCase.intended },
+        existing: directResult({ status: 'completed', model: testCase.intended, intendedModel: testCase.intended, executedModel: testCase.executed }),
+        now: NOW,
+      });
+      assert.equal(fields.modelAttributionEligible, testCase.eligible, JSON.stringify(testCase));
+      assert.equal(
+        fields.modelAttributionIneligibleReason,
+        testCase.eligible ? undefined : 'runtime_fallback',
+        JSON.stringify(testCase),
+      );
+    }
+  });
+
+  it('clears a stale ineligible reason when eligibility is explicitly set true (round-trip)', async () => {
+    // protects: a stale runtime_fallback surviving next to eligible:true through updateStageResult's spread
+    await writeStageResult(testDir, directResult({
+      stage: 'coding',
+      status: 'completed',
+      finishedAt: RECORDED_AT,
+      modelAttributionEligible: false,
+      modelAttributionIneligibleReason: 'runtime_fallback',
+    }));
+    const existing = await readStageResult(testDir, 'coding');
+    const fields = executionTruthFields({
+      status: 'completed',
+      flags: { 'model-attribution-eligible': 'true' },
+      existing,
+      now: NOW,
+    });
+    await updateStageResult(testDir, 'coding', fields);
+    const read = await readStageResult(testDir, 'coding');
+    assert.equal(read?.modelAttributionEligible, true);
+    assert.equal(read && 'modelAttributionIneligibleReason' in read, false);
+    assert.equal(read?.executionEvidence?.status, 'direct');
+    assert.equal(read?.executedModel, WIRE);
+  });
+
+  it('never downgrades direct evidence to missing without an explicit new-attempt signal (invariant)', () => {
+    // protects: any stage-result rewrite erasing attribution (the HOK-3369 incident class)
+    const statuses = ['running', 'awaiting_user', 'completed', 'failed', 'aborted'] as const;
+    const flagSubsets: Array<Record<string, string>> = [
+      {},
+      { model: WIRE },
+      { model: 'claude-opus-4-7' },
+      { notes: 'note' },
+      { 'model-attribution-eligible': 'false' },
+      { 'model-attribution-eligible': 'true' },
+      { 'execution-evidence-detail': 'annotated' },
+      { model: WIRE, 'execution-evidence-detail': 'annotated' },
+    ];
+    for (const priorStatus of statuses) {
+      for (const writeStatus of statuses) {
+        for (const flags of flagSubsets) {
+          const label = `${priorStatus} -> ${writeStatus} flags=${JSON.stringify(flags)}`;
+          const fields = executionTruthFields({
+            status: writeStatus,
+            flags,
+            existing: directResult({ status: priorStatus }),
+            now: NOW,
+          });
+          assert.equal(fields.executionEvidence?.status, 'direct', label);
+          assert.equal(fields.executedModel, WIRE, label);
+          assert.equal(fields.executionEvidence?.recordedAt, RECORDED_AT, label);
+          // Contrast: an explicit new attempt must reset.
+          const reset = executionTruthFields({
+            status: writeStatus,
+            flags,
+            existing: directResult({ status: priorStatus }),
+            now: NOW,
+            newAttempt: true,
+          });
+          assert.equal(reset.executionEvidence?.status, 'missing', `newAttempt ${label}`);
+          assert.equal(reset.executedModel, null, `newAttempt ${label}`);
+        }
+      }
+    }
+  });
+});
