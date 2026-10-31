@@ -121,6 +121,7 @@ for f in \
   "$REPO_DIR"/tests/control-pane-recovery.test.sh \
   "$REPO_DIR"/tests/dashboard-refresh.test.sh \
   "$REPO_DIR"/tests/state-mutex.test.sh \
+  "$REPO_DIR"/tests/state-mutate-task-record-validation.test.sh \
   "$REPO_DIR"/tests/task-id-log-prefix.test.sh \
   "$REPO_DIR"/tests/log-hygiene.test.sh \
   "$REPO_DIR"/tests/project-context-suggestion.test.sh \
