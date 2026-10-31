@@ -37,7 +37,7 @@ cert_note() {
 
 cert_harness_require_tmux() {
   local real_tmux probe sock
-  real_tmux="$(command -v tmux 2>/dev/null || true)"
+  real_tmux="$(term_resolve_real_tmux || true)"
   [[ -n "$real_tmux" ]] || incident_harness_skip "tmux unavailable"
   probe="$(mktemp -d "${TMPDIR:-/tmp}/wavemill-terminal-lifecycle-tmux-probe.XXXXXX")"
   sock="$probe/tmux.sock"

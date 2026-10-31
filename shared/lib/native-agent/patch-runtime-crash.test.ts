@@ -104,7 +104,7 @@ const workDir = process.argv[1];
 });
 `;
 
-    const childProcess = spawn('npx', ['tsx', '--eval', childCode, workDir], {
+    const childProcess = spawn(process.execPath, ['--input-type=module', '--eval', childCode, workDir], {
       cwd: process.cwd(),
       env,
       stdio: ['ignore', 'pipe', 'pipe'],

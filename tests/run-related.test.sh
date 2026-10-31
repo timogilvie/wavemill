@@ -78,7 +78,7 @@ CUSTOM_SH_TESTS=(
 EOF
 
 # Install a minimal set of tooling the real selector will shell out to:
-# we invoke the real repo's `npx tsx tools/related-tests/select.ts`, but we
+# we invoke the real repo's `node tools/related-tests/select.ts`, but we
 # override the diff with positional files and WAVEMILL_RUN_RELATED_SCAN_ROOTS
 # so the scan only sees our fake tree.
 cp "$REPO_ROOT/tools/related-tests/select.ts" "$FAKE_REPO/tools/related-tests/"
@@ -87,7 +87,7 @@ cp "$REPO_ROOT/tools/related-tests/build-ts-graph.ts" "$FAKE_REPO/tools/related-
 cp "$REPO_ROOT/tests/run-related.sh" "$FAKE_REPO/tests/"
 chmod +x "$FAKE_REPO/tests/run-related.sh"
 
-# Point tsx at the real node_modules so the fake repo can resolve it.
+# Point module resolution at the real node_modules so the fake repo can resolve it.
 export NODE_PATH="$REPO_ROOT/node_modules"
 
 run_in_fake() {

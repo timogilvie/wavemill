@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cell-label.schema.json",
+  "title": "CellLabelRowV0",
+  "description": "HOK-3361 rework-risk cell label (layer x lens) derived over an authoritative cr-0.1.0 corrective/rework row. Interpretation stream, never the core rework fact.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "label_key",
+    "original_pr",
+    "corrective_pr",
+    "chosen",
+    "structural",
+    "llm",
+    "agreement",
+    "agreement_reason_codes",
+    "envelope"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "0.1.0" },
+    "label_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "original_pr_url", "corrective_pr_url"],
+      "properties": {
+        "repo": { "type": "string", "minLength": 1 },
+        "original_pr_url": { "type": "string", "minLength": 1 },
+        "corrective_pr_url": { "type": "string", "minLength": 1 }
+      }
+    },
+    "original_pr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "url", "head_sha"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1 },
+        "url": { "type": "string", "minLength": 1 },
+        "head_sha": { "type": ["string", "null"] }
+      }
+    },
+    "corrective_pr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "url", "head_sha", "merged_at"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1 },
+        "url": { "type": "string", "minLength": 1 },
+        "head_sha": { "type": ["string", "null"] },
+        "merged_at": { "type": ["string", "null"] }
+      }
+    },
+    "chosen": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "layer", "lens"],
+          "properties": {
+            "kind": { "const": "cell" },
+            "layer": { "$ref": "#/$defs/layer" },
+            "lens": { "$ref": "#/$defs/lens" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "reason_codes"],
+          "properties": {
+            "kind": { "const": "unknown" },
+            "reason_codes": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/unknownReasonCode" }
+            }
+          }
+        }
+      ]
+    },
+    "structural": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decided", "layer", "lens", "signals", "reason_codes"],
+      "properties": {
+        "decided": { "type": "boolean" },
+        "layer": { "type": ["string", "null"] },
+        "lens": { "type": ["string", "null"] },
+        "signals": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "reason_codes": { "type": "array", "items": { "$ref": "#/$defs/reasonCode" } }
+      }
+    },
+    "llm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decided",
+        "layer",
+        "lens",
+        "prompt_version",
+        "prompt_hash",
+        "diff_sha256",
+        "model",
+        "attempts",
+        "reason_codes"
+      ],
+      "properties": {
+        "decided": { "type": "boolean" },
+        "layer": { "type": ["string", "null"] },
+        "lens": { "type": ["string", "null"] },
+        "prompt_version": { "type": "string", "minLength": 1 },
+        "prompt_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "diff_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "model": { "type": ["string", "null"] },
+        "attempts": { "type": "integer", "minimum": 0 },
+        "reason_codes": { "type": "array", "items": { "$ref": "#/$defs/reasonCode" } }
+      }
+    },
+    "agreement": { "enum": ["agree", "disagree", "not_comparable"] },
+    "agreement_reason_codes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/reasonCode" }
+    },
+    "review_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coverage", "reason_codes", "reviewer_runs", "challenge_runs"],
+      "properties": {
+        "coverage": { "enum": ["available", "unavailable"] },
+        "reason_codes": { "type": "array", "items": { "$ref": "#/$defs/reasonCode" } },
+        "reviewer_runs": { "type": "array", "items": { "$ref": "#/$defs/evidenceRun" } },
+        "challenge_runs": { "type": "array", "items": { "$ref": "#/$defs/evidenceRun" } }
+      }
+    },
+    "envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "labeller_version",
+        "classifier_version",
+        "prompt_version",
+        "source_label_version",
+        "source_label_row_hash",
+        "corrective_head_sha",
+        "original_head_sha",
+        "computed_at"
+      ],
+      "properties": {
+        "schema_version": { "const": "0.1.0" },
+        "labeller_version": { "type": "string", "minLength": 1 },
+        "classifier_version": { "type": "string", "minLength": 1 },
+        "prompt_version": { "type": "string", "minLength": 1 },
+        "source_label_version": { "const": "cr-0.1.0" },
+        "source_label_row_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "corrective_head_sha": { "type": ["string", "null"] },
+        "original_head_sha": { "type": ["string", "null"] },
+        "computed_at": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+  "$defs": {
+    "layer": {
+      "enum": ["form", "local_meaning", "wiring", "runtime", "use"]
+    },
+    "lens": {
+      "enum": ["correctness", "security", "history", "reversibility"]
+    },
+    "unknownReasonCode": {
+      "enum": ["no_substrate", "ambiguous_signals", "llm_retries_exhausted"]
+    },
+    "reasonCode": {
+      "enum": [
+        "no_substrate",
+        "ambiguous_signals",
+        "llm_disabled",
+        "llm_unavailable",
+        "llm_malformed_response",
+        "llm_invalid_cell",
+        "llm_retries_exhausted",
+        "structural_unknown",
+        "structural_llm_disagree",
+        "structural_llm_agree",
+        "llm_evidence_missing",
+        "no_stage_artifact",
+        "feature_dir_missing",
+        "stale_head_evidence",
+        "head_identity_unverifiable",
+        "execution_evidence_missing",
+        "unpinned_execution_identity",
+        "reviewer_run_evidence_backed",
+        "challenge_run_evidence_backed"
+      ]
+    },
+    "evidenceRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stage",
+        "artifact",
+        "status",
+        "evidence_backed",
+        "executed_model",
+        "evidence_status",
+        "head_sha_match",
+        "recorded_at"
+      ],
+      "properties": {
+        "stage": { "type": "string", "minLength": 1 },
+        "artifact": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "evidence_backed": { "type": "boolean" },
+        "executed_model": { "type": ["string", "null"] },
+        "evidence_status": { "type": ["string", "null"] },
+        "head_sha_match": { "enum": ["match", "mismatch", "unknown"] },
+        "recorded_at": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

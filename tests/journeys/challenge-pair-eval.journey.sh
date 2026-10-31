@@ -124,7 +124,12 @@ pair_tick() {
   if [[ "${JOURNEY_INCIDENT_CURRENTNESS:-0}" == 1 ]]; then
     node --import tsx "$JOURNEY_INSTALL_DIR/tests/journeys/fixtures/incident-currentness-step.ts" observe "$REPO_DIR" "$JOURNEY_INCIDENT_OBSERVED"
   fi
-  if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 ]]; then journey_operator_tick "$CHALLENGER"; fi
+  # Plan-stage pairs require a second, arm-local approval. Both replay
+  # wrappers exercise that production boundary; no approval is injected for
+  # the normal implementation-stage journey.
+  if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 || "${JOURNEY_NATIVE_ARM_EVIDENCE:-0}" == 1 ]]; then
+    journey_operator_tick "$CHALLENGER"
+  fi
   if [[ "$(arm_handoff_state "$CHALLENGER")" == "ready-published" \
         && "$(arm_handoff_state "$ISSUE")" != "ready-published" ]]; then
     journey_tend_tick
@@ -237,6 +242,52 @@ if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 ]]; then
   journey_assert "the interrupted implementation was merged intact" \
     bash -c 'git --git-dir "$1" show "refs/heads/$2:recovery-preserved.txt" | grep -qx "preserved interrupted challenger work"' _ "$FAKE_GH_ORIGIN" "$JOURNEY_INTEGRATION_BRANCH"
   journey_assert "coding recovery did not fall back to planning" bash -c '! grep -q "Retrying coding via planning" "$1"' _ "$JOURNEY_TMP/logs/status.log"
+fi
+if [[ "${JOURNEY_NATIVE_ARM_EVIDENCE:-0}" == 1 ]]; then
+  # HOK-3369: the challenger pretended to be a native OpenRouter arm. Every
+  # one of its stage results should still carry direct provider-response
+  # evidence after all subsequent monitor/CLI writes (completion, approval,
+  # review).
+  challenger_stage_result() {
+    local stage="$1" field="$2"
+    local fd archive_dir
+    fd="$(journey_feature_dir "$CHALLENGER" 2>/dev/null)" || true
+    # Winners are reaped before assertions run; terminal cleanup archives the
+    # stage results under the eval artifact root rather than workflow state.
+    archive_dir="$REPO_DIR/.wavemill/evals/artifacts/$CHALLENGER"
+    local file="$fd/.${stage}-result.json"
+    if [[ ! -f "$file" && -d "$archive_dir" ]]; then
+      if [[ -f "$archive_dir/.${stage}-result.json" ]]; then
+        file="$archive_dir/.${stage}-result.json"
+      elif [[ -f "$archive_dir/${stage}-result.json" ]]; then
+        file="$archive_dir/${stage}-result.json"
+      else
+        file=""
+      fi
+    fi
+    [[ -n "$file" && -f "$file" ]] || { echo ""; return 0; }
+    jq -r "$field // empty" "$file" 2>/dev/null || true
+  }
+  challenger_stage_field_is() {
+    local stage="$1" field="$2" expected="$3"
+    [[ "$(challenger_stage_result "$stage" "$field")" == "$expected" ]]
+  }
+  challenger_stage_field_set() {
+    local stage="$1" field="$2"
+    [[ -n "$(challenger_stage_result "$stage" "$field")" ]]
+  }
+  for stage in planning coding review; do
+    journey_assert "$stage: challenger kept its executedModel after completion" \
+      challenger_stage_field_set "$stage" '.executedModel'
+    journey_assert "$stage: challenger evidence is direct (not inherited/missing)" \
+      challenger_stage_field_is "$stage" '.executionEvidence.status' direct
+    journey_assert "$stage: challenger evidence source is provider-response" \
+      challenger_stage_field_is "$stage" '.executionEvidence.source' provider-response
+    journey_assert "$stage: challenger is model-attribution eligible" \
+      challenger_stage_field_is "$stage" '.modelAttributionEligible' true
+    journey_assert "$stage: no runtime_fallback reason recorded" \
+      challenger_stage_field_is "$stage" '.modelAttributionIneligibleReason' ''
+  done
 fi
 journey_assert_no_unhandled_fake_calls
 

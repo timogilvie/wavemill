@@ -34,16 +34,18 @@ import { taskHasPendingChallengeArm } from './tend-challenge-gate.ts';
 import { challengerTaskKey, parseTaskId } from './task-identity.ts';
 import { readWorkflowState, type TaskRecord } from './workflow-state.ts';
 import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
+import type { StageName } from './stage-result.ts';
+import { resolveTaskArtifact, resolveTaskArtifactDirs } from './task-artifact-lookup.ts';
 
 export type ChallengeRecoveryVerdict = 'supersedable' | 'quarantine-upheld' | 'pair-not-found';
 
-/** Challenge stage as recorded in intent, mapped to its stage-result filename. */
-const STAGE_RESULT_FILE: Record<string, string> = {
-  plan: '.planning-result.json',
-  planning: '.planning-result.json',
-  implementation: '.coding-result.json',
-  coding: '.coding-result.json',
-  review: '.review-result.json',
+/** Challenge stage as recorded in intent, mapped to its canonical stage name. */
+const CHALLENGE_STAGE_TO_STAGE_NAME: Record<string, StageName> = {
+  plan: 'planning',
+  planning: 'planning',
+  implementation: 'coding',
+  coding: 'coding',
+  review: 'review',
 };
 
 export interface ChallengeArmEvidence {
@@ -175,24 +177,21 @@ function resolveArmIntent(
       return { intent: arm!.executionIntent, source: 'primary-challenge-arm' };
     }
   }
-  const featureDir = armFeatureDir(repoDir, task);
-  if (featureDir) {
-    for (const name of ['challenge-intent.json', '.challenge-intent.json']) {
-      const intent = readJson<ExecutionIntent>(join(featureDir, name));
-      if (belongsToPair(intent)) {
-        return { intent, source: 'feature-dir' };
+  // The challenge-intent files have no live-vs-archived rename rule yet; probe
+  // every live feature dir the arm might have executed in (HOK-2891).
+  const slug = task?.slug;
+  if (slug) {
+    const dirs = resolveTaskArtifactDirs({ issueId, slug, repoDir });
+    for (const dir of dirs.liveFeatureDirs) {
+      for (const name of ['challenge-intent.json', '.challenge-intent.json']) {
+        const intent = readJson<ExecutionIntent>(join(dir, name));
+        if (belongsToPair(intent)) {
+          return { intent, source: 'feature-dir' };
+        }
       }
     }
   }
   return {};
-}
-
-/** Resolve the feature directory an arm executed in, if its worktree survives. */
-function armFeatureDir(repoDir: string, task: ArmTask | undefined): string | undefined {
-  const slug = task?.slug;
-  if (!slug) return undefined;
-  const dir = join(repoDir, 'worktrees', slug, 'features', slug);
-  return existsSync(dir) ? dir : undefined;
 }
 
 function collectArmEvidence(
@@ -224,20 +223,27 @@ function collectArmEvidence(
     evidence.intentSource = resolvedIntent.source;
   }
 
-  const stageFile = challengeStage ? STAGE_RESULT_FILE[challengeStage] : undefined;
-  if (!stageFile) {
+  const stageName = challengeStage ? CHALLENGE_STAGE_TO_STAGE_NAME[challengeStage] : undefined;
+  if (!stageName) {
     gaps.push(`unknown challenge stage "${challengeStage ?? ''}"`);
   } else {
-    const featureDir = armFeatureDir(repoDir, task);
-    if (!featureDir) {
-      gaps.push('worktree evidence no longer on disk');
+    // HOK-2891: resolve the stage result live-or-archived. An arm whose
+    // worktree has been reaped keeps its archived `.coding-result.json`, so
+    // "worktree evidence no longer on disk" is no longer the gap it was.
+    const resolved = resolveTaskArtifact({
+      issueId,
+      slug: task.slug,
+      artifactName: `.${stageName}-result.json`,
+      repoDir,
+    });
+    if (!resolved) {
+      gaps.push(`missing .${stageName}-result.json`);
     } else {
-      const path = join(featureDir, stageFile);
-      const stageResult = readJson<{ status?: string; model?: string }>(path);
+      const stageResult = readJson<{ status?: string; model?: string }>(resolved.path);
       if (!stageResult) {
-        gaps.push(`missing ${stageFile}`);
+        gaps.push(`missing .${stageName}-result.json`);
       } else {
-        evidence.stageResultPath = path;
+        evidence.stageResultPath = resolved.path;
         evidence.stageStatus = stageResult.status;
         evidence.stageModel = stageResult.model;
         if (stageResult.status !== 'completed') {

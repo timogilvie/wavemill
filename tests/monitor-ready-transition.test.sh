@@ -63,24 +63,30 @@ extract_function "$MONITOR_SCRIPT_FILE" "pane_release_marker_path" >> "$MONITOR_
 extract_function "$MONITOR_SCRIPT_FILE" "pane_release_reason_actionable" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "clear_stale_pane_release_blocked_marker" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "release_task_pane_window_only" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "ready_remediation_launch_head" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_remediation_disposition" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_marker_path" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_in_flight" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_awaiting_ready" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_exhausted_hold" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "clear_transient_mergeability_state" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_count" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "clear_failed_ready_recheck_state" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_reset_if_new_head" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "increment_failed_ready_recheck_count" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_backoff_seconds" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_due" >> "$MONITOR_FUNC_FILE"
+# HOK-3371: the failed-ready-recheck wrappers are retired; the failed-status
+# block dispatches through ready_failure_classify_and_act →
+# maybe_retry_failed_stage (shared stage-failure-ready bucket).
 extract_function "$MONITOR_SCRIPT_FILE" "ready_failure_reason" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "record_failed_ready_recheck_observation" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_identical_streak" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "mark_failed_ready_recheck_exhausted" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ensure_ready_failure_blocks_pr" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_gate" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_transition_redact" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_failure_evidence_detail" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_failure_base_drift" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "_stage_failure_ready_relaunch" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_failure_classify_and_act" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "stage_result_field" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "native_hook_terminal_failure_detail" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "native_coding_failure_handoff_reason" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "native_stage_failure_envelope_json" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "stage_failure_owned_by_bucket" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "stage_failure_decision" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "phase_launch_head" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "phase_launch_base" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "maybe_retry_failed_stage" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_passes_ready_gate" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_has_final_evidence" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_missing_final_evidence" >> "$MONITOR_FUNC_FILE"
@@ -227,41 +233,42 @@ JSON
         READY_STATUS="failed"
         READY_LAUNCH_RC=0
         cat > "$READY_DIR/.ready-result.json" <<JSON
-{"stage":"ready","status":"failed","artifacts":{"verdict":"fail"}}
+{"stage":"ready","status":"failed","agent":"codex","artifacts":{"verdict":"fail"}}
 JSON
         ;;
       ready_failed_recheck_backoff_holds)
         CURRENT_PHASE="ready"
         READY_STATUS="failed"
         cat > "$READY_DIR/.ready-result.json" <<JSON
-{"stage":"ready","status":"failed","artifacts":{"verdict":"fail"}}
+{"stage":"ready","status":"failed","agent":"codex","artifacts":{"verdict":"fail"}}
 JSON
-        printf "%s\n" "1" > "$READY_DIR/.failed-ready-recheck-count"
-        printf "%s\n" "current-head" > "$READY_DIR/.failed-ready-recheck-head"
-        date +%s > "$READY_DIR/.failed-ready-recheck-last-at"
+        # HOK-3371: the shared stage-failure-ready budget holds the relaunch.
+        printf "%s\n" "1" > "$READY_DIR/.retry-stage-failure-ready-count"
+        printf "%s\n" "current-head" > "$READY_DIR/.retry-stage-failure-ready-head"
+        date +%s > "$READY_DIR/.retry-stage-failure-ready-last-at"
         ;;
       ready_failed_recheck_exhausted)
         CURRENT_PHASE="ready"
         READY_STATUS="failed"
         INVOKE_COUNT=2
         cat > "$READY_DIR/.ready-result.json" <<JSON
-{"stage":"ready","status":"failed","finishedAt":"2026-08-27T09:52:37Z","failureReason":"Cross-PR revert guard blocked ready phase","artifacts":{"verdict":"fail"}}
+{"stage":"ready","status":"failed","agent":"codex","finishedAt":"2026-08-27T09:52:37Z","failureReason":"Cross-PR revert guard blocked ready phase","notes":"Cross-PR revert guard blocked ready phase","artifacts":{"verdict":"fail"}}
 JSON
-        printf "%s\n" "4" > "$READY_DIR/.failed-ready-recheck-count"
-        printf "%s\n" "current-head" > "$READY_DIR/.failed-ready-recheck-head"
-        printf "%s\n" "0" > "$READY_DIR/.failed-ready-recheck-last-at"
+        printf "%s\n" "4" > "$READY_DIR/.retry-stage-failure-ready-count"
+        printf "%s\n" "current-head" > "$READY_DIR/.retry-stage-failure-ready-head"
+        printf "%s\n" "0" > "$READY_DIR/.retry-stage-failure-ready-last-at"
         ;;
       ready_failed_recheck_new_head_resets)
         CURRENT_PHASE="ready"
         READY_STATUS="failed"
         READY_LAUNCH_RC=0
         cat > "$READY_DIR/.ready-result.json" <<JSON
-{"stage":"ready","status":"failed","artifacts":{"verdict":"fail"}}
+{"stage":"ready","status":"failed","agent":"codex","artifacts":{"verdict":"fail"}}
 JSON
-        printf "%s\n" "4" > "$READY_DIR/.failed-ready-recheck-count"
-        printf "%s\n" "old-head" > "$READY_DIR/.failed-ready-recheck-head"
-        printf "%s\n" "0" > "$READY_DIR/.failed-ready-recheck-last-at"
-        : > "$READY_DIR/.failed-ready-recheck-exhausted"
+        printf "%s\n" "4" > "$READY_DIR/.retry-stage-failure-ready-count"
+        printf "%s\n" "old-head" > "$READY_DIR/.retry-stage-failure-ready-head"
+        printf "%s\n" "0" > "$READY_DIR/.retry-stage-failure-ready-last-at"
+        : > "$READY_DIR/.retry-stage-failure-ready-exhausted"
         ;;
       ready_remediation_repolls_active)
         CURRENT_PHASE="ready"
@@ -283,6 +290,26 @@ JSON
         printf "%s\n" "1" > "$READY_DIR/.retry-ready-remediation-count"
         printf "%s\n" "current-head" > "$READY_DIR/.retry-ready-remediation-head"
         printf "%s\n" "0" > "$READY_DIR/.retry-ready-remediation-last-at"
+        ;;
+      # HOK-3322 incident: the remediation agent reran flaky CI without a
+      # commit and went idle. Same head, status still running/verdict fail.
+      ready_remediation_settled_same_head)
+        CURRENT_PHASE="ready"
+        READY_STATUS="running"
+        READY_LAUNCH_RC=0
+        cat > "$READY_DIR/.ready-result.json" <<JSON
+{"stage":"ready","status":"running","artifacts":{"verdict":"fail","remediationAttempts":1,"remediationLaunchHead":"current-head"}}
+JSON
+        printf "%s\n" "1" > "$READY_DIR/.retry-ready-remediation-count"
+        printf "%s\n" "current-head" > "$READY_DIR/.retry-ready-remediation-head"
+        printf "%s\n" "0" > "$READY_DIR/.retry-ready-remediation-last-at"
+        launched_epoch=$(( $(date +%s) - 600 ))
+        printf "{\"schemaVersion\":1,\"type\":\"launch\",\"sessionRef\":\"fix-1\",\"harness\":\"claude-code\",\"kind\":\"ready-remediation\",\"model\":\"m\",\"launchedAt\":\"%s\",\"attemptId\":\"ready-remediation@nohead#%s\"}\n" \
+          "$(date -u -r "$launched_epoch" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u -d "@$launched_epoch" +%Y-%m-%dT%H:%M:%S.000Z)" "$launched_epoch" \
+          > "$READY_DIR/.session-ownership.jsonl"
+        idle_epoch=$(( $(date +%s) - 60 ))
+        printf "{\"state\":\"idle\",\"event\":\"Stop\",\"agent\":\"claude\",\"timestamp\":%s,\"writer\":\"agent\",\"agentRecord\":{\"state\":\"idle\",\"event\":\"Stop\",\"agent\":\"claude\",\"timestamp\":%s}}\n" \
+          "$idle_epoch" "$idle_epoch" > "/tmp/wavemill-${SESSION}-${ISSUE}.hook"
         ;;
       pending_recheck_backoff_holds)
         CURRENT_PHASE="ready"
@@ -558,6 +585,12 @@ JSON
     log() { LOG_OUTPUT+="$*\n"; }
     log_warn() { LOG_OUTPUT+="WARN:$*\n"; }
     log_error() { LOG_OUTPUT+="ERROR:$*\n"; }
+    log_task() { LOG_OUTPUT+="TASK:$*\n"; }
+    # HOK-3371: the challenge retirement path is exercised by
+    # tests/ready-exhausted-challenge.test.sh; here it is a knob so the
+    # failed-status dispatch cases pin their own side of the contract.
+    ready_exhausted_challenge_terminalize() { return "${TERMINALIZE_RC:-1}"; }
+    effective_task_base_branch() { printf "%s\n" "$BASE_BRANCH"; }
     read_state_value() { printf "%s\n" "${1-}"; }
     set_window_attention_state() { ATTENTION_STATE="$2"; }
     handle_agent_error_recovery() { :; }
@@ -575,7 +608,11 @@ JSON
     gh() { return 1; }
     # HOK-3109: ensure_ready_failure_blocks_pr spawns npx tsx; silence it so
     # the extracted helper is callable here without pulling in the real tool.
-    npx() { return 0; }
+    # HOK-3322: the Ready remediation disposition is the real decision, not a stub.
+    npx() {
+      [[ "${2:-}" == */ready-remediation-disposition.ts ]] || return 0
+      command npx "$@"
+    }
     is_challenge_task() { [[ "${CHALLENGE_TASK:-false}" == "true" ]]; }
     handle_challenge_pending_ready() {
       HANDLER_CALLS=$((HANDLER_CALLS + 1))
@@ -713,10 +750,10 @@ JSON
       "$transient_attention" \
       "$transient_count" \
       "$LOG_OUTPUT"
-    recheck_count="$(cat "$READY_DIR/.failed-ready-recheck-count" 2>/dev/null || echo "")"
+    recheck_count="$(cat "$READY_DIR/.retry-stage-failure-ready-count" 2>/dev/null || echo "")"
     recheck_sentinel="absent"
-    [[ -f "$READY_DIR/.failed-ready-recheck-exhausted" ]] && recheck_sentinel="present"
-    exhausted_log_count="$(printf "%s" "$LOG_OUTPUT" | grep -o "re-checks exhausted for PR" | grep -c . || true)"
+    [[ -f "$READY_DIR/.retry-stage-failure-ready-exhausted" ]] && recheck_sentinel="present"
+    exhausted_log_count="$(printf "%s" "$LOG_OUTPUT" | grep -o "escalating to needs-user" | grep -c . || true)"
     printf "recheck_count=%s\nrecheck_sentinel=%s\nexhausted_log_count=%s\n" \
       "$recheck_count" "$recheck_sentinel" "$exhausted_log_count"
     pending_count="$(cat "$READY_DIR/.retry-pending-ready-recheck-count" 2>/dev/null || echo "")"
@@ -771,7 +808,7 @@ check_contains "pending ready failure needs user" "$ready_pending_failure_needs_
 
 ready_failed_resume_repolls_output="$(run_monitor_case ready_failed_resume_repolls)"
 check_contains "failed ready resumes by re-running checks" "$ready_failed_resume_repolls_output" "ready_launches=1"
-check_contains "failed ready re-run logs bounded attempt" "$ready_failed_resume_repolls_output" "Re-running failed ready checks for PR #321 (attempt 1/4)"
+check_contains "failed ready re-run logs bounded attempt" "$ready_failed_resume_repolls_output" "re-running Ready checks (attempt 1/3)"
 check_contains "failed ready pass clears attention" "$ready_failed_resume_repolls_output" "attention=clear"
 check_contains "failed ready pass holds slot active" "$ready_failed_resume_repolls_output" "active_count=1"
 
@@ -789,7 +826,7 @@ check_contains "recheck exhaustion names failing gate" "$ready_failed_recheck_ex
 
 ready_failed_recheck_new_head_output="$(run_monitor_case ready_failed_recheck_new_head_resets)"
 check_contains "new commit re-enables failed-ready recheck" "$ready_failed_recheck_new_head_output" "ready_launches=1"
-check_contains "new commit resets attempt numbering" "$ready_failed_recheck_new_head_output" "(attempt 1/4)"
+check_contains "new commit resets attempt numbering" "$ready_failed_recheck_new_head_output" "(attempt 1/3)"
 check_contains "new commit clears exhausted sentinel" "$ready_failed_recheck_new_head_output" "recheck_sentinel=absent"
 check_contains "new head recheck pass clears attention" "$ready_failed_recheck_new_head_output" "attention=clear"
 
@@ -802,6 +839,13 @@ ready_remediation_inflight_same_head_output="$(run_monitor_case ready_remediatio
 check_contains "ready remediation in-flight keeps task active" "$ready_remediation_inflight_same_head_output" "active_count=1"
 check_contains "ready remediation in-flight does not relaunch ready" "$ready_remediation_inflight_same_head_output" "ready_launches=0"
 check_contains "ready remediation in-flight clears attention" "$ready_remediation_inflight_same_head_output" "attention=clear"
+
+# protects: HOK-3322 — the same-head running hold latching a settled remediation forever.
+ready_remediation_settled_output="$(run_monitor_case ready_remediation_settled_same_head)"
+rm -f "/tmp/wavemill-ready-transition-test-HOK-1249.hook"
+check_contains "settled same-head remediation re-runs Ready" "$ready_remediation_settled_output" "ready_launches=1"
+check_contains "settled same-head remediation is logged with its reason" "$ready_remediation_settled_output" "Ready remediation settled at current (agent-idle-after-launch)"
+check_contains "settled same-head remediation clears attention" "$ready_remediation_settled_output" "attention=clear"
 
 pending_recheck_backoff_output="$(run_monitor_case pending_recheck_backoff_holds)"
 check_contains "pending recheck backoff skips relaunch" "$pending_recheck_backoff_output" "ready_launches=0"

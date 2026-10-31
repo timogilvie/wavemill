@@ -22,6 +22,15 @@ export type QueuePlan = {
   avoidRunningTogether: string[][];
   sharedSurfaceConflicts?: ConflictEdge[];
   needsTriage: TriageRecord[];
+  /**
+   * Per-task touch-set prediction quality (HOK-3307). When a task's status is
+   * `'unknown'`, `selectLaunchSet` holds it with `touch_set_unknown`. Absence
+   * of a task's ID means the caller did not compute grounded touch sets for it
+   * (e.g. cache-only run), which is treated conservatively as `unknown`.
+   *
+   * Only populated by the grounded planner path; absent otherwise.
+   */
+  touchSetStatus?: Record<string, 'predicted' | 'empty-confirmed' | 'unknown'>;
 };
 
 export type TaskWithScore = {
@@ -267,11 +276,25 @@ export function selectLaunchSet(
 
   const universe = plan.availableNow.map((id) => {
     const meta = metaById.get(id);
+    // Precedence: operator_hold > plan.touchSetStatus === 'unknown' > meta.touchSetKnown.
+    // When touchSetStatus is present but the task has no entry, treat conservatively
+    // as unknown (the plan was computed but this task was missed).
+    const planStatus = plan.touchSetStatus?.[id];
+    let touchSetKnown: boolean;
+    if (planStatus !== undefined) {
+      touchSetKnown = planStatus !== 'unknown';
+    } else if (plan.touchSetStatus !== undefined) {
+      // touchSetStatus map present but this task absent — conservatively unknown
+      touchSetKnown = false;
+    } else {
+      // No touchSetStatus on plan (non-grounded path) — fall back to meta
+      touchSetKnown = meta?.touchSetKnown !== false;
+    }
     return {
       id,
       score: meta?.score ?? 0,
       priority: meta?.priority ?? 0,
-      touchSetKnown: meta?.touchSetKnown !== false,
+      touchSetKnown,
       operatorHoldReason: meta?.operatorHoldReason,
     };
   });

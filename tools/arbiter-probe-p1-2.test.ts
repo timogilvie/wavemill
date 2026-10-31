@@ -99,7 +99,7 @@ describe('arbiter-probe-p1-2 CLI', () => {
     writeFileSync(labelsPath, labels.map((l) => JSON.stringify(l)).join('\n') + '\n');
 
     // Run the CLI
-    const cmd = `npx tsx tools/arbiter-probe-p1-2.ts --repo-dir ${tmpdir} --evals-dir ${evalsDir} --out-dir ${outDir} --data-out-dir ${dataOutDir}`;
+    const cmd = `${JSON.stringify(process.execPath)} tools/arbiter-probe-p1-2.ts --repo-dir ${tmpdir} --evals-dir ${evalsDir} --out-dir ${outDir} --data-out-dir ${dataOutDir}`;
 
     const output = execSync(cmd, { cwd: process.cwd(), encoding: 'utf-8' });
 
@@ -146,7 +146,7 @@ describe('arbiter-probe-p1-2 CLI', () => {
     const labelsPath = join(evalsDir, 'survival-labels.jsonl');
     writeFileSync(labelsPath, labels.map((l) => JSON.stringify(l)).join('\n') + '\n');
 
-    const cmd = `npx tsx tools/arbiter-probe-p1-2.ts --repo-dir ${tmpdir} --evals-dir ${evalsDir} --out-dir ${outDir} --data-out-dir ${dataOutDir} --probe b`;
+    const cmd = `${JSON.stringify(process.execPath)} tools/arbiter-probe-p1-2.ts --repo-dir ${tmpdir} --evals-dir ${evalsDir} --out-dir ${outDir} --data-out-dir ${dataOutDir} --probe b`;
     const output = execSync(cmd, { cwd: process.cwd(), encoding: 'utf-8' });
 
     assert(output.includes('Probe B report'));
@@ -180,7 +180,7 @@ describe('arbiter-probe-p1-2 CLI', () => {
 
     // No survival labels file
 
-    const cmd = `npx tsx tools/arbiter-probe-p1-2.ts --repo-dir ${tmpdir} --evals-dir ${evalsDir} --out-dir ${outDir} --data-out-dir ${dataOutDir} --probe b`;
+    const cmd = `${JSON.stringify(process.execPath)} tools/arbiter-probe-p1-2.ts --repo-dir ${tmpdir} --evals-dir ${evalsDir} --out-dir ${outDir} --data-out-dir ${dataOutDir} --probe b`;
     const output = execSync(cmd, { cwd: process.cwd(), encoding: 'utf-8', stdio: 'pipe' });
 
     // Should still succeed and report 0 analyzed

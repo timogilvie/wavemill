@@ -73,9 +73,15 @@ function buildSnapshot(file: string, now: Date): ReadyTaskSnapshot {
     readyAttentionDetail: null,
     hasNeedsAttention: false,
     hasConflictMarker: false,
-    remediationLaunchHead: null,
     currentHead: readyArtifacts?.readyHeadSha ?? null,
-    remediationPaneActive: null,
+    remediationDisposition: {
+      kind: 'inactive',
+      reason: 'no-launch',
+      remediation: null,
+      launchHead: null,
+      currentHead: readyArtifacts?.readyHeadSha ?? null,
+      launchedAt: null,
+    },
     worktreeMergeState: {
       mergeHead: null,
       unmergedPaths: [],

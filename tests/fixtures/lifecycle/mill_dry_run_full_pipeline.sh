@@ -26,7 +26,7 @@ mkdir -p "$REPO_DIR/.wavemill" "$TMP_DIR/worktrees" "$TMP_DIR/home"
 
 cat > "$REPO_DIR/.wavemill-config.json" <<EOF
 {
-  "version": 1,
+  "configVersion": "1.0.0",
   "linear": {
     "project": "Fixture Project"
   },
@@ -144,7 +144,7 @@ export SESSION="mill-dry-run-$$"
 export SKIP_CONFIG_CHECK=true
 export SKIP_CONTEXT_CHECK=true
 export WAVEMILL_NO_PROGRESS=1
-export WAVEMILL_SKIP_CONFIG_PREFLIGHT=1
+export WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD=1
 export REQUIRE_CONFIRM=false
 export WAVEMILL_DRY_RUN_BACKLOG_FILE="$BACKLOG_FILE"
 export WAVEMILL_DRY_RUN_PLAN_OUT="$LAUNCH_PLAN_FILE"

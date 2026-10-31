@@ -47,7 +47,7 @@ tests/monitor-save-migration-reservation.test.sh            1  # legacy source-t
 tests/monitor-script-byte-identical.test.sh                 4  # legacy source-text assertion (HOK-3237)
 tests/monitor-usr2-wakeup.test.sh                           1  # legacy source-text assertion (HOK-3237)
 tests/queue-planner-stdin-policy.test.sh                    1  # legacy source-text assertion (HOK-3237)
-tests/ready-exhausted-challenge.test.sh                     1  # legacy source-text assertion (HOK-3237)
+tests/ready-exhausted-challenge.test.sh                     2  # legacy source-text assertion (HOK-3237) + HOK-3371 dispatch wiring assertion
 tests/ready-update-from-base.test.sh                        1  # legacy source-text assertion (HOK-3237)
 tests/review-gate-refused-challenge.test.sh                 1  # legacy source-text assertion (HOK-3237)
 tests/routing-complete-writes.test.sh                       18 # legacy source-text assertion (HOK-3237)

@@ -305,14 +305,41 @@ describe('challenge recovery assessment', () => {
     }
   });
 
-  it('upholds quarantine when worktree evidence is gone', () => {
+  it('upholds quarantine when the stage result is missing from both live and archive', () => {
     const spec = provenFixture();
     spec.challenger!.writeStageResult = false;
     const repoDir = makeRepo(spec);
     try {
       const assessment = assess(repoDir, 'PAIR-1');
       assert.equal(assessment.verdict, 'quarantine-upheld');
-      assert.ok(assessment.blockers.some((b) => b.includes('worktree evidence')));
+      // HOK-2891: resolver reports "missing .{stage}-result.json" when neither
+      // the live feature dir nor the archive dir carries the stage artifact.
+      assert.ok(assessment.blockers.some((b) => b.includes('missing .review-result.json')));
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  // protects: HOK-2885 — challenger PR exists but the feature dir has been
+  // reaped. The .review-result.json lives only in the per-issue archive. The
+  // old private STAGE_RESULT_FILE table + armFeatureDir read missed it and
+  // mis-classified the pair as challenger_never_launched. After HOK-2891 the
+  // one resolver finds it and the assessment resolves to supersedable.
+  it('supersedes when the challenger feature dir is reaped but the archive carries the stage result (HOK-2885)', () => {
+    const spec = provenFixture();
+    // Reap the challenger's live feature dir but seed the per-issue archive.
+    spec.challenger!.writeStageResult = false;
+    const repoDir = makeRepo(spec);
+    const archiveDir = join(repoDir, '.wavemill', 'evals', 'artifacts', 'PAIR-1_c');
+    mkdirSync(archiveDir, { recursive: true });
+    writeFileSync(
+      join(archiveDir, '.review-result.json'),
+      JSON.stringify({ stage: 'review', status: 'completed', model: 'glm-5.2' }),
+    );
+    try {
+      const assessment = assess(repoDir, 'PAIR-1');
+      assert.equal(assessment.verdict, 'supersedable');
+      assert.equal(assessment.arms[1].stageModel, 'glm-5.2');
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }

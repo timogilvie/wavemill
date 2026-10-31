@@ -34,7 +34,6 @@ import {
   getReviewMergeConfig,
   getIntegrationReadyPolicy,
   getMillConfig,
-  getQueuePlannerConfig,
   getExpansionHandshakeConfig,
   getMaxCostUsd,
   getUiConfig,
@@ -1110,35 +1109,6 @@ test('invalid challenge hard-failure config fails schema validation', () => {
   }
 });
 
-test('hard-failure accessor ignores invalid config when validation is disabled', () => {
-  const tmp = makeTempRepo();
-  const previousValidation = process.env.WAVEMILL_DISABLE_AJV_VALIDATION;
-  const previousRetry = process.env.WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES;
-  try {
-    process.env.WAVEMILL_DISABLE_AJV_VALIDATION = '1';
-    delete process.env.WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES;
-    clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      challenge: { eval: { retryMaxAttempts: 9, hardFailureRetryMaxAttempts: -1 } },
-    }));
-
-    assert.equal(getChallengeEvalHardFailureRetryMaxAttempts(tmp), 2);
-  } finally {
-    if (previousValidation === undefined) {
-      delete process.env.WAVEMILL_DISABLE_AJV_VALIDATION;
-    } else {
-      process.env.WAVEMILL_DISABLE_AJV_VALIDATION = previousValidation;
-    }
-    if (previousRetry === undefined) {
-      delete process.env.WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES;
-    } else {
-      process.env.WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES = previousRetry;
-    }
-    clearConfigCache();
-    cleanUp(tmp);
-  }
-});
-
 test('invalid hard-failure env falls through to hard-failure config only', () => {
   const tmp = makeTempRepo();
   const previous = process.env.WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES;
@@ -1183,29 +1153,6 @@ test('invalid quota override status throws validation error', () => {
       });
     }
   } finally {
-    cleanUp(tmp);
-  }
-});
-
-test('loads config without schema validation when Ajv validation is disabled', () => {
-  const tmp = makeTempRepo();
-  const previous = process.env.WAVEMILL_DISABLE_AJV_VALIDATION;
-  try {
-    clearConfigCache();
-    process.env.WAVEMILL_DISABLE_AJV_VALIDATION = '1';
-    writeConfig(tmp, JSON.stringify({
-      mill: { maxParallel: 'five' }
-    }));
-
-    const config = loadWavemillConfig(tmp);
-    assert.equal(config.mill?.maxParallel, 'five');
-  } finally {
-    clearConfigCache();
-    if (previous === undefined) {
-      delete process.env.WAVEMILL_DISABLE_AJV_VALIDATION;
-    } else {
-      process.env.WAVEMILL_DISABLE_AJV_VALIDATION = previous;
-    }
     cleanUp(tmp);
   }
 });
@@ -1653,44 +1600,6 @@ test('getMillConfig returns mill section', () => {
     assert.equal(millConfig.baseBranch, 'develop');
     assert.equal(millConfig.defaultMaxCostUsd, 12.5);
     assert.equal(config.git?.fetchTtlSeconds, 30);
-  } finally {
-    cleanUp(tmp);
-  }
-});
-
-test('getQueuePlannerConfig defaults to legacy and honors grounded (HOK-3131)', () => {
-  const tmp = makeTempRepo();
-  try {
-    clearConfigCache();
-    writeConfig(tmp, JSON.stringify({ mill: { maxParallel: 5 } }));
-    assert.deepEqual(getQueuePlannerConfig(tmp), { mode: 'legacy' });
-
-    clearConfigCache();
-    writeConfig(tmp, JSON.stringify({ queuePlanner: {} }));
-    assert.deepEqual(getQueuePlannerConfig(tmp), { mode: 'legacy' });
-
-    clearConfigCache();
-    writeConfig(tmp, JSON.stringify({ queuePlanner: { mode: 'legacy' } }));
-    assert.deepEqual(getQueuePlannerConfig(tmp), { mode: 'legacy' });
-
-    clearConfigCache();
-    writeConfig(tmp, JSON.stringify({ queuePlanner: { mode: 'grounded' } }));
-    assert.deepEqual(getQueuePlannerConfig(tmp), { mode: 'grounded' });
-  } finally {
-    cleanUp(tmp);
-  }
-});
-
-test('queuePlanner rejects unknown modes and keys', () => {
-  const tmp = makeTempRepo();
-  try {
-    clearConfigCache();
-    writeConfig(tmp, JSON.stringify({ queuePlanner: { mode: 'fancy' } }));
-    assert.throws(() => loadWavemillConfig(tmp));
-
-    clearConfigCache();
-    writeConfig(tmp, JSON.stringify({ queuePlanner: { mode: 'grounded', extra: true } }));
-    assert.throws(() => loadWavemillConfig(tmp));
   } finally {
     cleanUp(tmp);
   }

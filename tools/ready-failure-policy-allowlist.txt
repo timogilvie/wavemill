@@ -1,0 +1,12 @@
+# Allowlist for the ready-failure-policy guard (HOK-3371). Fresh invariant:
+# the monitor itself must have zero legacy sites. These entries are the
+# deliberate upgrade-compatibility shims for the retired failed-ready-recheck
+# bucket (in-flight sessions carry its sentinels); remove them with the shims.
+shared/lib/bounded-retry.sh # legacy failed-ready-recheck file-name mapping so in-flight state survives an upgrade
+shared/lib/condition-reconciler.sh # legacy .failed-ready-recheck-exhausted sentinel expiry (HOK-3172 reconciler)
+shared/lib/ledger-consistency.ts # legacy bucket enumeration for the retry-sentinel ledger audit
+shared/lib/observer-auto-fix.ts # legacy bucket in the observer auto-fix remediation list (in-flight sessions)
+shared/lib/retry-sentinel-guard.ts # legacy bucket file-name shape in the sentinel-name guard regex
+shared/lib/transient-marker.sh # legacy exhausted-condition file-name-to-bucket mapping (HOK-3172)
+tools/observer.ts # legacy .failed-ready-recheck-exhausted sentinel finding (HOK-3244)
+tools/state-invariants.ts # legacy sentinel enumeration for the state-invariants audit

@@ -22,7 +22,6 @@ import { loadWavemillConfig } from './config.ts';
 import { errorMessage } from './error-utils.ts';
 
 export const OPERATOR_INTERVENTION_FILENAME = '.operator-intervention.json';
-export const OPERATOR_INTERVENTION_ARCHIVE_FILENAME = 'operator-intervention.json';
 export const OPERATOR_INTERVENTION_SCHEMA_VERSION = '1.0';
 
 export type OperatorInterventionSeverity = 'minor' | 'major';

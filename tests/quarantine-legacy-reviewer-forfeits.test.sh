@@ -28,7 +28,7 @@ JSONL
 cd "$REPO_ROOT"
 
 # First apply: rewrites the row and creates a backup.
-output1="$(WAVEMILL_MILL_RUNNING=0 npx tsx "$TOOL" --repo-dir "$fixture_dir" --apply)"
+output1="$(WAVEMILL_MILL_RUNNING=0 node "$TOOL" --repo-dir "$fixture_dir" --apply)"
 if ! grep -q "rewrote 1" <<<"$output1"; then
   echo "FAIL: expected 'rewrote 1' in first-apply output; got:" >&2
   echo "$output1" >&2
@@ -67,7 +67,7 @@ if [[ "$bak_count" != "1" ]]; then
 fi
 
 # Second apply: no-op.
-output2="$(WAVEMILL_MILL_RUNNING=0 npx tsx "$TOOL" --repo-dir "$fixture_dir" --apply)"
+output2="$(WAVEMILL_MILL_RUNNING=0 node "$TOOL" --repo-dir "$fixture_dir" --apply)"
 if ! grep -q "rewrote 0" <<<"$output2"; then
   echo "FAIL: expected 'rewrote 0' on second apply; got:" >&2
   echo "$output2" >&2

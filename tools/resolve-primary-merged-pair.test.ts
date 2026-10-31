@@ -46,8 +46,7 @@ after(() => {
 describe('resolve-primary-merged-pair CLI', () => {
   it('emits a JSON envelope and supersedes the challenger', async () => {
     const repoDir = makeTempRepo();
-    const { stdout } = await execFileAsync('npx', [
-      'tsx',
+    const { stdout } = await execFileAsync(process.execPath, [
       'tools/resolve-primary-merged-pair.ts',
       '--pair-id',
       'pair-primary-merged',
@@ -72,8 +71,7 @@ describe('resolve-primary-merged-pair CLI', () => {
   it('rejects invalid primary PR values', async () => {
     const repoDir = makeTempRepo();
     await assert.rejects(
-      execFileAsync('npx', [
-        'tsx',
+      execFileAsync(process.execPath, [
         'tools/resolve-primary-merged-pair.ts',
         '--pair-id',
         'pair-primary-merged',

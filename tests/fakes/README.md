@@ -27,6 +27,27 @@ fakes_teardown
 `fakes_setup` isolates `HOME`, git config and the network; nothing touches the
 developer's own tmux, gh auth or Linear workspace.
 
+## World lifetime (HOK-3329)
+
+Every `fakes_setup` records its world in `/tmp/wmfake-worlds/<id>.json`, keyed
+by the owner shell's pid and `ps -o lstart=` start time. One function,
+`fakes_teardown_world`, kills the world's registered process groups, stops its
+private tmux server and removes the socket, world dir and record. It runs from:
+
+- the owner's EXIT trap (`fakes_teardown`);
+- the owner watcher (`world-watcher.sh`), the first window of the server that
+  `fakes_start_world_host` starts — it tears the world down within seconds of
+  the owner dying untrapped (SIGKILL, subagent end, parent-tree kill);
+- `fakes_reap_stale_worlds`, at the start of every `fakes_setup` and
+  `run-journeys.sh`, for worlds whose watcher died too.
+
+Start long-lived world processes with `fakes_spawn <cmd>` (own process group,
+registered in the record; pid in `FAKES_LAST_SPAWN_PID`). The real tmux binary
+comes from `term_resolve_real_tmux` (`shared/lib/terminal-backend.sh`), which
+skips both Wavemill tmux wrappers. `tools/check-test-world-lifetime.ts` fails
+on private `tmux new-session` / `kill-server`, `set -m` launches, `sleep 86400`
+placeholders and private tmux resolution.
+
 ## Scripting behaviour and faults
 
 gh state file (`$FAKE_GH_STATE`):

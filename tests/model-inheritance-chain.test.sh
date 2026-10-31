@@ -61,13 +61,13 @@ resolve_selector() {
   if [[ -n "$parent" ]]; then
     (
       cd "$REPO_ROOT"
-      WAVEMILL_RESOLVED_MODEL="$parent" npx tsx "$RESOLVER" "$selector"
+      WAVEMILL_RESOLVED_MODEL="$parent" node "$RESOLVER" "$selector"
     )
   else
     (
       cd "$REPO_ROOT"
       unset WAVEMILL_RESOLVED_MODEL
-      npx tsx "$RESOLVER" "$selector"
+      node "$RESOLVER" "$selector"
     )
   fi
 }
@@ -101,7 +101,7 @@ check "chain C grandchild inherits explicit child" "$child_c" "$grandchild_c"
 
 echo ""
 echo "=== Edge Cases ==="
-empty_parent="$(cd "$REPO_ROOT" && WAVEMILL_RESOLVED_MODEL='' npx tsx "$RESOLVER" inherit)"
+empty_parent="$(cd "$REPO_ROOT" && WAVEMILL_RESOLVED_MODEL='' node "$RESOLVER" inherit)"
 check "empty parent env falls back to default" "$default_without_parent" "$empty_parent"
 
 run_one_root="$(resolve_selector opus)"

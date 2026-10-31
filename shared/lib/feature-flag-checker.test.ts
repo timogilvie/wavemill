@@ -162,6 +162,55 @@ describe('checkFeatureFlags', () => {
     assert.ok(result.warnings.some((w) => w.kind === 'overdue'));
   });
 
+  describe('one explicit extension', () => {
+    const allFlags = 'process.env.WAVEMILL_FOO_SHADOW; process.env.WAVEMILL_FOO_DISABLED; process.env.WAVEMILL_FOO_PERM;';
+    const withShadowRemoveBy = (cell: string) => BASE_DOC.replace('| HOK-2 | 2026-11-19 |', `| HOK-2 | ${cell} |`);
+
+    // protects: a deadline deferred for a recorded reason fails CI, forcing someone to backdate `added` instead.
+    it('accepts one extension of at most 30 days with an issue and a reason, and measures overdue from the new date', () => {
+      const doc = withShadowRemoveBy('2026-12-19 (extended from 2026-11-19, HOK-2: waits on the semantics decision)');
+      const code = makeFiles({ 'src/a.ts': allFlags });
+      const beforeNewDate = checkFeatureFlags({ ...common, now: new Date('2026-12-01T00:00:00Z'), docContent: doc, ...code });
+      assert.ok(beforeNewDate.ok, JSON.stringify(beforeNewDate.findings));
+      assert.ok(!beforeNewDate.warnings.some((w) => w.kind === 'overdue' && w.message.includes('WAVEMILL_FOO_SHADOW')));
+      const afterNewDate = checkFeatureFlags({ ...common, now: new Date('2026-12-20T00:00:00Z'), docContent: doc, ...code });
+      assert.ok(afterNewDate.warnings.some((w) => w.kind === 'overdue' && w.message.includes('WAVEMILL_FOO_SHADOW remove-by 2026-12-19')));
+    });
+
+    // protects: chaining extensions turns the 30-day expiry into an open-ended shadow.
+    it('rejects a second extension', () => {
+      const doc = withShadowRemoveBy('2027-01-10 (extended from 2026-12-19 (extended from 2026-11-19, HOK-2: first), HOK-2: second)');
+      const result = checkFeatureFlags({ ...common, docContent: doc, ...makeFiles({ 'src/a.ts': allFlags }) });
+      assert.equal(result.ok, false);
+      assert.ok(result.findings.some((f) => f.kind === 'bad-extension'));
+    });
+
+    // protects: one extension being used to buy an unbounded delay.
+    it('rejects an extension more than 30 days past the original remove-by', () => {
+      const doc = withShadowRemoveBy('2026-12-20 (extended from 2026-11-19, HOK-2: too far)');
+      const result = checkFeatureFlags({ ...common, docContent: doc, ...makeFiles({ 'src/a.ts': allFlags }) });
+      assert.equal(result.ok, false);
+      assert.ok(result.findings.some((f) => f.kind === 'extension-too-late'));
+    });
+
+    // protects: an unexplained extension, which the policy exists to prevent.
+    it('rejects an extension without a reason or with a bad issue id', () => {
+      const code = makeFiles({ 'src/a.ts': allFlags });
+      const noReason = checkFeatureFlags({ ...common, docContent: withShadowRemoveBy('2026-12-19 (extended from 2026-11-19, HOK-2: )'), ...code });
+      assert.ok(noReason.findings.some((f) => f.kind === 'bad-extension'));
+      const badIssue = checkFeatureFlags({ ...common, docContent: withShadowRemoveBy('2026-12-19 (extended from 2026-11-19, not-an-id: reason)'), ...code });
+      assert.ok(badIssue.findings.some((f) => f.kind === 'bad-extension'));
+    });
+
+    // protects: an extension hiding an original remove-by that already broke the added+30 cap.
+    it('still applies the added+30 cap to the original date', () => {
+      const doc = withShadowRemoveBy('2026-12-30 (extended from 2026-12-01, HOK-2: original was already too late)');
+      const result = checkFeatureFlags({ ...common, docContent: doc, ...makeFiles({ 'src/a.ts': allFlags }) });
+      assert.equal(result.ok, false);
+      assert.ok(result.findings.some((f) => f.kind === 'remove-by-too-late'));
+    });
+  });
+
   it('rejects more than MAX_OPEN_SHADOWS rows', () => {
     const extraRows = Array.from({ length: MAX_OPEN_SHADOWS + 1 }, (_, i) =>
       `| \`WAVEMILL_EXTRA_${i}_SHADOW\` | \`WAVEMILL_EXTRA_${i}_SHADOW\` | HOK-${100 + i} | 2026-10-20 | later | HOK-${200 + i} | 2026-11-19 |`,

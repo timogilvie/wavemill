@@ -106,6 +106,8 @@ function resolveCandidate(
   featureDir: string | undefined,
   archiveDir: string | undefined,
 ): { filePath: string; raw: Buffer; hash: string } | null {
+  // HOK-2891: both feature-state.json and feature-outcome.json share one name
+  // across live and archive; probe each candidate per directory in order.
   const dirs = [featureDir, archiveDir].filter(Boolean) as string[];
 
   for (const dir of dirs) {

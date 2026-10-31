@@ -121,6 +121,7 @@ for f in \
   "$REPO_DIR"/tests/control-pane-recovery.test.sh \
   "$REPO_DIR"/tests/dashboard-refresh.test.sh \
   "$REPO_DIR"/tests/state-mutex.test.sh \
+  "$REPO_DIR"/tests/state-mutate-task-record-validation.test.sh \
   "$REPO_DIR"/tests/task-id-log-prefix.test.sh \
   "$REPO_DIR"/tests/log-hygiene.test.sh \
   "$REPO_DIR"/tests/project-context-suggestion.test.sh \
@@ -205,6 +206,8 @@ for f in \
   "$REPO_DIR"/tests/task-inputs-gate.test.sh \
   "$REPO_DIR"/tests/task-progress.test.sh \
   "$REPO_DIR"/tests/task-identity.test.sh \
+  "$REPO_DIR"/tests/task-artifact-lookup.test.sh \
+  "$REPO_DIR"/tests/archive-naming.test.sh \
   "$REPO_DIR"/tests/terminal-backend.test.sh \
   "$REPO_DIR"/tests/handle-phase-launch-result.test.sh \
   "$REPO_DIR"/tests/coding-launch-refusal.test.sh \
@@ -219,6 +222,7 @@ for f in \
   "$REPO_DIR"/tests/async-in-flight-touch-set.test.sh \
   "$REPO_DIR"/tests/pr-ci-status-job.test.sh \
   "$REPO_DIR"/tests/ready-watchdog-job.test.sh \
+  "$REPO_DIR"/tests/ready-remediation-disposition.test.sh \
   "$REPO_DIR"/tests/route-task-job.test.sh \
   "$REPO_DIR"/tests/monitor-perf-smoke.test.sh \
   "$REPO_DIR"/tests/fixtures/monitor-perf/async-harness.sh \
@@ -275,10 +279,14 @@ for f in \
   "$REPO_DIR"/tests/incident-fixtures-safety-controls.test.sh \
   "$REPO_DIR"/tests/lib/incident-fixture-harness.sh \
   "$REPO_DIR"/tests/fakes/lib.sh \
+  "$REPO_DIR"/tests/fakes/world-watcher.sh \
   "$REPO_DIR"/tests/fakes/bin/gh \
   "$REPO_DIR"/tests/fakes/bin/tmux \
   "$REPO_DIR"/tests/fakes/bin/claude \
   "$REPO_DIR"/tests/fakes/fakes-contract.test.sh \
+  "$REPO_DIR"/tests/tmux-wrapper-loop.test.sh \
+  "$REPO_DIR"/tests/world-lifetime-sigkill.test.sh \
+  "$REPO_DIR"/tests/world-lifetime-stale-reap.test.sh \
   "$REPO_DIR"/tests/journeys/harness.sh \
   "$REPO_DIR"/tests/journeys/run-journeys.sh \
   "$REPO_DIR"/tests/journeys/picker-pending-touch-set.journey.sh \
@@ -297,6 +305,8 @@ for f in \
   "$REPO_DIR"/tests/journeys/eval-failure-exhaustion.journey.sh \
   "$REPO_DIR"/tests/journeys/challenger-contract-recovery.journey.sh \
   "$REPO_DIR"/tests/journeys/challenge-pair-eval.journey.sh \
+  "$REPO_DIR"/tests/journeys/native-arm-evidence.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/fake-agent/native-launcher.sh \
   "$REPO_DIR"/tests/journeys/native-ownership-recovery.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/native-ownership/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/grounded-overlap.journey.sh \
@@ -307,6 +317,8 @@ for f in \
   "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/fake-agent/review \
   "$REPO_DIR"/tests/journeys/ready-fail-remediate.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/ready-fail-remediate/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/ready-remediation-same-head.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/ready-remediation-same-head/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/dirty-tree-coding-complete.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/dirty-tree-coding-complete/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/fixtures/dirty-tree-coding-complete/fake-agent/review \
@@ -734,7 +746,7 @@ else
       | grep -vE '^(bad|internal|keeping|marking|monitor|rate|reduce|service|skipping|staying|timed|too|using|wavemill|waiting)$' \
       | grep -vE '^(advance|review)$' \
       | grep -vE '^(not_eligible|routing_error|invalid_challenge)$' \
-      | grep -vE '^(legacy_stale|stale)$' \
+      | grep -vE '^(legacy_stale|stale|settled)$' \
       | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|completed|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$' \
       | grep -vE '^(capabilities|const|import|throw)$' \
       | grep -vE '^(ascii_upcase|first|it|num|retrying|sibling|floor|spawn)$')

@@ -116,13 +116,13 @@ cleanup "$tmp"
 echo ""
 echo "=== launch-claude-deepseek.ts missing key ==="
 
-if ! command -v npx >/dev/null 2>&1; then
-  echo "  SKIP  npx not available"
+if ! command -v node >/dev/null 2>&1; then
+  echo "  SKIP  node not available"
 else
   tmp="$(make_temp_repo)"
   rc=0
   unset DEEPSEEK_API_KEY 2>/dev/null || true
-  DEEPSEEK_API_KEY="" npx tsx "$TOOLS_DIR/launch-claude-deepseek.ts" \
+  DEEPSEEK_API_KEY="" node "$TOOLS_DIR/launch-claude-deepseek.ts" \
     --repo "$tmp" \
     --session "testsess" \
     --issue "HOK-001" \
@@ -142,13 +142,13 @@ fi
 echo ""
 echo "=== launch-claude-deepseek.ts with valid key ==="
 
-if ! command -v npx >/dev/null 2>&1; then
-  echo "  SKIP  npx not available"
+if ! command -v node >/dev/null 2>&1; then
+  echo "  SKIP  node not available"
 else
   tmp="$(make_temp_repo)"
   rc=0
   output=""
-  output="$(DEEPSEEK_API_KEY=sk-test-key npx tsx "$TOOLS_DIR/launch-claude-deepseek.ts" \
+  output="$(DEEPSEEK_API_KEY=sk-test-key node "$TOOLS_DIR/launch-claude-deepseek.ts" \
     --repo "$tmp" \
     --session "testsess" \
     --issue "HOK-001" 2>/dev/null)" || rc=$?
@@ -206,12 +206,12 @@ fi
 echo ""
 echo "=== launch-claude-deepseek.ts no key leakage in stderr ==="
 
-if ! command -v npx >/dev/null 2>&1; then
-  echo "  SKIP  npx not available"
+if ! command -v node >/dev/null 2>&1; then
+  echo "  SKIP  node not available"
 else
   tmp="$(make_temp_repo)"
   stderr_output=""
-  stderr_output="$(DEEPSEEK_API_KEY="" npx tsx "$TOOLS_DIR/launch-claude-deepseek.ts" \
+  stderr_output="$(DEEPSEEK_API_KEY="" node "$TOOLS_DIR/launch-claude-deepseek.ts" \
     --repo "$tmp" \
     --session "testsess" \
     --issue "HOK-002" 2>&1 >/dev/null)" || true

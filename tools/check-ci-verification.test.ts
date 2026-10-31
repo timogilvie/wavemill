@@ -28,7 +28,7 @@ function runTool(repoDir: string, args: string[]) {
   delete env.npm_config__jsr_registry;
   delete env.npm_config_prefix;
 
-  return spawnSync('npx', ['tsx', toolPath, '--repo', repoDir, ...args], {
+  return spawnSync(process.execPath, [toolPath, '--repo', repoDir, ...args], {
     cwd: repoRoot,
     encoding: 'utf-8',
     env,

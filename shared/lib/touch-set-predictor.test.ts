@@ -224,9 +224,9 @@ describe('predictTouchSets', () => {
     assert.deepEqual(calls[0].map((input) => input.task.id), ['C', 'D']);
     assert.equal(calls[0][0].keywordHits, 'hits for C');
     assert.deepEqual(sets, [
-      { taskId: 'A', entries: [{ path: 'shared/lib/wavemill-monitor.sh', source: 'explicit' }] },
-      { taskId: 'C', entries: [{ path: 'tools/plan-queue.ts', source: 'predicted' }] },
-      { taskId: 'D', entries: [] },
+      { taskId: 'A', entries: [{ path: 'shared/lib/wavemill-monitor.sh', source: 'explicit' }], status: 'predicted' },
+      { taskId: 'C', entries: [{ path: 'tools/plan-queue.ts', source: 'predicted' }], status: 'predicted' },
+      { taskId: 'D', entries: [], status: 'empty-confirmed' },
     ]);
   });
 
@@ -240,7 +240,7 @@ describe('predictTouchSets', () => {
       },
     });
     assert.equal(called, false);
-    assert.deepEqual(sets, [{ taskId: 'N', entries: [] }]);
+    assert.deepEqual(sets, [{ taskId: 'N', entries: [], status: 'empty-confirmed' }]);
   });
 
   it('never throws when the LLM fails; vague tasks keep empty touch sets', async () => {
@@ -252,12 +252,12 @@ describe('predictTouchSets', () => {
       },
       warn: (message) => warnings.push(message),
     });
-    assert.deepEqual(set, { taskId: 'C', entries: [] });
+    assert.deepEqual(set, { taskId: 'C', entries: [], status: 'unknown' });
     assert.match(warnings[0], /quota exhausted/);
   });
 
   it('leaves vague tasks empty when no LLM is configured', async () => {
-    assert.deepEqual(await predictTouchSet({ id: 'C', title: 'Vague' }, { probe: fakeProbe() }), { taskId: 'C', entries: [] });
+    assert.deepEqual(await predictTouchSet({ id: 'C', title: 'Vague' }, { probe: fakeProbe() }), { taskId: 'C', entries: [], status: 'unknown' });
   });
 });
 

@@ -91,7 +91,7 @@ journey_init() {
   JOURNEY_TMP="$(cd "$JOURNEY_TMP" && pwd -P)"
   trap 'journey_cleanup' EXIT
 
-  fakes_setup "$JOURNEY_TMP/world" "acme/journey" main
+  fakes_setup "$JOURNEY_TMP/world" "acme/journey" main "$JOURNEY_TMP"
   fakes_origin_branch "$JOURNEY_INTEGRATION_BRANCH" main
 
   export SESSION="wmj${$}${RANDOM}"
@@ -110,7 +110,6 @@ journey_init() {
   export WAVEMILL_DISABLE_CHALLENGE=1
   export WAVEMILL_UNATTENDED_CLEANUP_ENABLED=0
   export WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD=1
-  export WAVEMILL_SKIP_CANARY_AUTO_REFRESH=1
   export WAVEMILL_GH_CALL_COUNTING=0
   export FAKE_AGENT_BASE_BRANCH="$JOURNEY_INTEGRATION_BRANCH"
   # Tick clock seam: the monitor advances this counter once per pass and
@@ -123,8 +122,9 @@ journey_init() {
   journey_write_monitor_env
 
   # The tmux server inherits this environment (PATH with the fakes, NODE_OPTIONS,
-  # FAKE_*), exactly as the real mill's panes inherit the operator's shell.
-  tmux new-session -d -s "$SESSION" -n mill -c "$REPO_DIR" "sleep 86400"
+  # FAKE_*), exactly as the real mill's panes inherit the operator's shell. Its
+  # mill window is the world's owner watcher (HOK-3329).
+  fakes_start_world_host "$SESSION" "$REPO_DIR" mill
 }
 
 # Write the milled repo's committed config; $1 is a jq object merged on top.
@@ -138,7 +138,8 @@ journey_write_config() {
       observer: {enabled: false},
       challenge: {enabled: false},
       ready: {watchdog: {enabled: false}},
-      monitor: {readyWatchdog: {enabled: false}}
+      monitor: {readyWatchdog: {enabled: false}},
+      nativeAgent: {certification: {canaryAutoRefresh: false}}
     } * $overlay' > "$REPO_DIR/.wavemill-config.json"
   (
     cd "$REPO_DIR"
@@ -156,6 +157,17 @@ journey_write_monitor_env() {
   export MONITOR_ENV="$JOURNEY_TMP/monitor.env"
   export MONITOR_SCRIPT="$JOURNEY_INSTALL_DIR/shared/lib/wavemill-monitor.sh"
   : > "$JOURNEY_TMP/tasks.txt"
+  # Seed a canned verdict so the fake claude handles ordering-judge and
+  # touch-set-prediction calls without network access (grounded planner always
+  # runs now; HOK-3307). The file must satisfy both parsers: ordering expects
+  # `verdicts`, touch-set prediction expects `predictions`. Both receive empty
+  # arrays so ordering returns all-independent-order and touch sets become
+  # empty-confirmed (LLM ran, returned no entries → not unknown).
+  # Export the variable so it is inherited by node child processes spawned by
+  # the monitor's queue-inference background job (an unexported shell var is
+  # invisible to exec'd processes even inside subshells — HOK-3307).
+  printf '{"verdicts":[],"predictions":[]}\n' > "$JOURNEY_TMP/judge-verdict.json"
+  export FAKE_JUDGE_VERDICT_FILE="$JOURNEY_TMP/judge-verdict.json"
   {
     printf 'SESSION=%q\n' "$SESSION"
     printf 'WAVEMILL_RUN_EPOCH=%q\n' "$(journey_now)"
@@ -198,6 +210,7 @@ journey_write_monitor_env() {
     printf 'WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE=observer\n'
     printf 'MONITOR_SCRIPT=%q\n' "$MONITOR_SCRIPT"
     printf 'MONITOR_ENV=%q\n' "$MONITOR_ENV"
+    printf 'FAKE_JUDGE_VERDICT_FILE=%q\n' "$JOURNEY_TMP/judge-verdict.json"
   } > "$MONITOR_ENV"
 }
 
@@ -206,12 +219,10 @@ journey_command() {
 }
 
 journey_start_monitor() {
-  # Own process group (job control on for this one launch) so cleanup can
-  # take down the monitor and every async job it spawned in one signal.
-  set -m
-  bash "$MONITOR_SCRIPT" "$MONITOR_ENV" </dev/null > "$JOURNEY_TMP/logs/monitor.out" 2>&1 &
-  JOURNEY_MONITOR_PID=$!
-  set +m
+  # Own process group, registered in the world record, so teardown takes down
+  # the monitor and every async job it spawned in one signal (HOK-3329).
+  fakes_spawn bash "$MONITOR_SCRIPT" "$MONITOR_ENV" </dev/null > "$JOURNEY_TMP/logs/monitor.out" 2>&1
+  JOURNEY_MONITOR_PID="$FAKES_LAST_SPAWN_PID"
   journey_log "monitor started (pid $JOURNEY_MONITOR_PID)"
 }
 
@@ -562,30 +573,28 @@ journey_finish() {
   echo "--- journey $JOURNEY_NAME: passed in ${elapsed}s / $(journey_tick) ticks (timeline: $JOURNEY_TIMELINE) ---"
 }
 
+# Graceful fast path only: ask the monitor to quit and give it a bounded wait.
+# The queue stores the normalized event, so the journey writes "quit" (what an
+# operator's 'q' becomes). Anything still running is killed by its registered
+# pgid in fakes_teardown_world.
 journey_stop_monitor() {
   [[ -n "$JOURNEY_MONITOR_PID" ]] || return 0
   if kill -0 "$JOURNEY_MONITOR_PID" 2>/dev/null; then
-    journey_command "q"
+    journey_command "quit"
     local i
     for i in $(seq 1 20); do
       kill -0 "$JOURNEY_MONITOR_PID" 2>/dev/null || break
       sleep 0.25
     done
-    kill -TERM -- "-$JOURNEY_MONITOR_PID" 2>/dev/null || true
-    sleep 0.5
-    kill -KILL -- "-$JOURNEY_MONITOR_PID" 2>/dev/null || true
   fi
-  wait "$JOURNEY_MONITOR_PID" 2>/dev/null || true
   JOURNEY_MONITOR_PID=""
 }
 
 journey_cleanup() {
   journey_stop_monitor || true
+  # Removes $JOURNEY_TMP too: it is this world's recorded dir.
   fakes_teardown || true
   if [[ -n "${SESSION:-}" ]]; then
     rm -f /tmp/wavemill-"$SESSION"-* /tmp/"$SESSION"-* 2>/dev/null || true
-  fi
-  if [[ "${JOURNEY_KEEP_TMP:-0}" != "1" && -n "$JOURNEY_TMP" ]]; then
-    rm -rf "$JOURNEY_TMP"
   fi
 }

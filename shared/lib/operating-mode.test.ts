@@ -42,7 +42,7 @@ function git(command: string, cwd: string): string {
 }
 
 function runOperatingModeTool(args: string[]): { stdout: string; status: number } {
-  const result = execFileSync(process.execPath, ['--import', 'tsx', 'tools/get-operating-mode.ts', ...args], {
+  const result = execFileSync(process.execPath, ['tools/get-operating-mode.ts', ...args], {
     cwd: projectRoot,
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'ignore'],

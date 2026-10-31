@@ -26,7 +26,7 @@ function buildFamily(scenario: string, overrides: Record<string, unknown> = {}):
       mock: {
         providerProxy: 'pi-mcp-proxy',
         command: process.execPath,
-        args: ['--import', 'tsx', MOCK_SERVER_PATH, '--scenario', scenario],
+        args: [MOCK_SERVER_PATH, '--scenario', scenario],
         envAllowlist: [],
         tools: ['echo', 'noop'],
         class: 'read-only',

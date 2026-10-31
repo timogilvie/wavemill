@@ -56,12 +56,15 @@ TESTS=(
   shared/lib/stage-result.test.ts
   shared/lib/task-progress.test.ts
   shared/lib/task-identity.test.ts
+  shared/lib/task-artifact-lookup.test.ts
+  tests/migrate-archived-stage-artifacts.test.ts
   shared/lib/terminal-backend.test.ts
   tests/llm-cli.test.ts
   shared/lib/linear-write-gate.test.ts
   shared/lib/session-adapters.test.ts
   shared/lib/workflow-cost-pool-repair.test.ts
   shared/lib/executed-model-resolver.test.ts
+  shared/lib/executed-model-resolver-guard.test.ts
   shared/lib/native-agent/models.test.ts
   shared/lib/native-agent/provider.test.ts
   shared/lib/native-agent/provider-error-classifier.test.ts
@@ -182,6 +185,8 @@ TESTS=(
   shared/lib/ci-failure-classifier.test.ts
   shared/lib/ci-log-fetcher.test.ts
   shared/lib/ready-watchdog.test.ts
+  shared/lib/ready-remediation-disposition.test.ts
+  shared/lib/ready-remediation-disposition-guard.test.ts
   shared/lib/migration-ast.test.ts
   shared/lib/tend-challenge-gate.test.ts
   shared/lib/transient-retry.test.ts
@@ -191,6 +196,12 @@ TESTS=(
   shared/lib/challenge-comparison.test.ts
   shared/lib/no-comparison-report.test.ts
   shared/lib/arbiter-r6-report.test.ts
+  shared/lib/cost-baseline/loader.test.ts
+  shared/lib/cost-baseline/dimensions.test.ts
+  shared/lib/cost-baseline/review-rounds.test.ts
+  shared/lib/cost-baseline/queue-depth.test.ts
+  shared/lib/cost-baseline/integration-failures.test.ts
+  shared/lib/cost-baseline/aggregator.test.ts
   shared/lib/fork-identity.test.ts
   tools/arbiter-r6-analysis.test.ts
   shared/lib/challenge-pair-resolver.test.ts
@@ -221,6 +232,13 @@ TESTS=(
   shared/lib/router-log.test.ts
   shared/lib/arbiter-survival-label.test.ts
   shared/lib/survival-labeller.test.ts
+  shared/lib/cell-label-contract.test.ts
+  shared/lib/cell-label-store.test.ts
+  shared/lib/cell-classifier.test.ts
+  shared/lib/cell-llm-adapter.test.ts
+  shared/lib/cell-review-evidence.test.ts
+  shared/lib/cell-report.test.ts
+  shared/lib/cell-backfill.test.ts
   shared/lib/challenge-analyzer.test.ts
   shared/lib/challenge-unavailable.test.ts
   shared/lib/challenge-attestation-backfill.test.ts
@@ -310,6 +328,7 @@ TESTS=(
   shared/lib/model-equivalence-guard.test.ts
   shared/lib/side-effect-ledger-guard.test.ts
   shared/lib/failure-policy-guard.test.ts
+  shared/lib/ready-failure-policy-guard.test.ts
   shared/lib/task-field-read-checker.test.ts
   shared/lib/test-task-literal-checker.test.ts
   shared/lib/feature-flag-checker.test.ts
@@ -325,6 +344,8 @@ TESTS=(
   shared/lib/wavemill-incident-projection.test.ts
   shared/lib/wavemill-incident-store.test.ts
   shared/lib/state-mutex.test.ts
+  shared/lib/task-record-write-guard.test.ts
+  tools/validate-task-record-write.test.ts
   shared/lib/job-tracker.test.ts
   shared/lib/session-gh-cache.test.ts
   shared/lib/operating-mode.test.ts
@@ -339,7 +360,6 @@ TESTS=(
   shared/lib/scope-shrinker.test.ts
   shared/lib/linear-dependency-resolver.test.ts
   shared/lib/dependency-classifier.test.ts
-  shared/lib/queue-partial-refresh.test.ts
   shared/lib/route-artifact.test.ts
   shared/lib/model-router.test.ts
   shared/lib/eval-corpus-migrator.test.ts
@@ -558,6 +578,7 @@ TESTS=(
   tests/cli-smoke.test.ts
   tests/model-settings-migration.test.ts
   tools/check-test-registration.test.ts
+  tools/check-test-world-lifetime.test.ts
   tools/hok2425-verify-native-workflow-certification.test.ts
   tools/launch-native-review.test.ts
   tools/launch-priority-audit.test.ts
@@ -626,7 +647,7 @@ else
   # matrix if one leg fell back while others did not.
   if ! SELECTION="$(
     printf '%s\n' "${TESTS[@]}" |
-      npx tsx "$REPO_DIR/tools/partition-tests.ts" --suite unit --shard "${SHARD_INDEX}/${SHARD_TOTAL}"
+      node "$REPO_DIR/tools/partition-tests.ts" --suite unit --shard "${SHARD_INDEX}/${SHARD_TOTAL}"
   )"; then
     echo "run-unit-tests.sh: partitioner failed for shard ${SHARD_INDEX}/${SHARD_TOTAL}" >&2
     exit 2

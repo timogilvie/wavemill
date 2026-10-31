@@ -41,9 +41,21 @@ export interface TouchEntry {
   symbols?: string[];
 }
 
+export type TouchSetStatus = 'predicted' | 'empty-confirmed' | 'unknown';
+
 export interface TouchSet {
   taskId: string;
   entries: TouchEntry[];
+  /**
+   * How confident we are about the touch set (HOK-3307).
+   * - `predicted`: deterministic or LLM prediction succeeded.
+   * - `empty-confirmed`: correctly determined to touch no tracked files.
+   * - `unknown`: vague task with no LLM available, or LLM failed.
+   *
+   * Absent on intermediate results; always set on `predictTouchSets` output.
+   * Absent status in grounded-planner context is conservatively treated as `unknown`.
+   */
+  status?: TouchSetStatus;
 }
 
 export interface TouchSetTask {
@@ -347,15 +359,28 @@ export interface PredictTouchSetsOptions {
 /**
  * Predict touch sets for many tasks: deterministic passes per task, then one
  * batched LLM call for the vague ones. Never throws — an LLM failure leaves
- * the vague tasks with empty touch sets.
+ * the vague tasks with `status: 'unknown'`.
+ *
+ * Status derivation:
+ * - Deterministic hits (non-vague or vague with LLM entries) → `predicted`
+ * - Non-vague task with zero matches → `empty-confirmed` (files named but none exist/match)
+ * - Vague task + LLM returned zero entries → `empty-confirmed`
+ * - Vague task + no `llmPredict` provided, or `llmPredict` threw → `unknown`
  */
 export async function predictTouchSets(tasks: TouchSetTask[], opts: PredictTouchSetsOptions): Promise<TouchSet[]> {
   const warn = opts.warn ?? ((message: string) => console.warn(message));
   const deterministic = tasks.map((task) => predictTouchSetDeterministic(task, opts.probe));
   const vague = deterministic.filter((set) => set.vague && set.entries.length === 0);
 
+  // Track which vague tasks had LLM called and which failed
   const predicted = new Map<string, TouchEntry[]>();
+  // `llmAttempted`: set when the LLM call was made (regardless of outcome)
+  // `llmFailed`: set when the call threw — those tasks get `unknown`
+  let llmAttempted = false;
+  let llmFailed = false;
+
   if (vague.length > 0 && opts.llmPredict) {
+    llmAttempted = true;
     const taskById = new Map(tasks.map((task) => [task.id, task]));
     try {
       const inputs: TouchSetPredictionInput[] = [];
@@ -369,20 +394,46 @@ export async function predictTouchSets(tasks: TouchSetTask[], opts: PredictTouch
         predicted.set(taskId, entries);
       }
     } catch (error) {
-      warn(`[touch-set] LLM prediction failed; ${vague.length} vague task(s) keep empty touch sets: ${(error as Error).message}`);
+      llmFailed = true;
+      warn(`[touch-set] LLM prediction failed; ${vague.length} vague task(s) get unknown status: ${(error as Error).message}`);
     }
   }
 
-  return deterministic.map(({ taskId, entries }) => ({
-    taskId,
-    entries: entries.length > 0 ? entries : (predicted.get(taskId) ?? []),
-  }));
+  const vagueIds = new Set(vague.map((set) => set.taskId));
+
+  return deterministic.map(({ taskId, entries, vague: isVague }) => {
+    const finalEntries = entries.length > 0 ? entries : (predicted.get(taskId) ?? []);
+    let status: TouchSetStatus;
+    if (finalEntries.length > 0) {
+      // Deterministic or LLM hits
+      status = 'predicted';
+    } else if (!isVague) {
+      // Named files/identifiers but none matched — correctly empty
+      status = 'empty-confirmed';
+    } else if (vagueIds.has(taskId)) {
+      // Vague task
+      if (!llmAttempted) {
+        // No LLM available (--no-infer or llmPredict not provided)
+        status = 'unknown';
+      } else if (llmFailed) {
+        // LLM threw — we don't know if this task's set is empty or not
+        status = 'unknown';
+      } else {
+        // LLM ran and returned empty entries → genuinely empty
+        status = 'empty-confirmed';
+      }
+    } else {
+      // Non-vague with no deterministic hits (this path shouldn't be reached normally)
+      status = 'empty-confirmed';
+    }
+    return { taskId, entries: finalEntries, status };
+  });
 }
 
 /** Single-task convenience wrapper around {@link predictTouchSets}. */
 export async function predictTouchSet(task: TouchSetTask, opts: PredictTouchSetsOptions): Promise<TouchSet> {
-  const [set] = await predictTouchSets([task], opts);
-  return set;
+  const results = await predictTouchSets([task], opts);
+  return results[0]!;
 }
 
 function runGit(repoDir: string, args: string[]): string[] {

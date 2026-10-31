@@ -78,6 +78,7 @@ case "$event" in
     if [[ "$detail" == "Bash" ]]; then
       command_text=$(printf '%s' "$payload" | jq -r '.tool_input.command // .toolInput.command // empty' 2>/dev/null || true)
       if [[ -n "$command_text" ]] && wavemill_tmux_kill_server_uses_implicit_socket "$command_text"; then
+        # allow-world-lifetime: deny-reason prose, not an invocation.
         deny_reason="Blocked tmux kill-server without an explicit server target: Wavemill agents inherit the controller socket, and TMUX_TMPDIR does not override TMUX. Use tmux -S <private-socket> kill-server or tmux -L <private-name> kill-server."
         wavemill_hook_write "policy-denied" "$event" "$deny_reason" "claude"
         jq -nc --arg reason "$deny_reason" '{decision:"deny", reason:$reason}' >&2

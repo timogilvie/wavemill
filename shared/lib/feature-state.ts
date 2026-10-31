@@ -805,18 +805,41 @@ export async function deriveFeatureState(opts: DeriveFeatureStateOptions): Promi
   };
 
   // ── Stage results ──
+  // HOK-2891: live featureDir wins when it carries stage files; otherwise fall
+  // through to the one resolver, which probes feature/bug roots under the
+  // caller's worktreeDir (and repoDir), then the per-issue archive.
   let stages: StageResultMap = {};
   let legacyMarkers = { codingComplete: false, planApproved: false, aborted: false };
 
-  if (featureDir && existsSync(featureDir)) {
-    stages = await readAllStageResults(featureDir);
-    legacyMarkers = readLegacyMarkers(featureDir);
+  const liveFeatureDirExists = Boolean(featureDir && existsSync(featureDir));
+  if (liveFeatureDirExists) {
+    legacyMarkers = readLegacyMarkers(featureDir!);
+    stages = await readAllStageResults(featureDir!);
     if (Object.keys(stages).length > 0) {
       sources.stagesFromWorktree = true;
     }
   }
 
-  // Fall back to archived stage results if worktree stages are missing
+  if (Object.keys(stages).length === 0 && issueId) {
+    // featureDir layout is `.../<worktreeDir>/features/<slug>` or `.../<worktreeDir>/bugs/<slug>`.
+    const worktreeDir = featureDir ? path.dirname(path.dirname(featureDir)) : undefined;
+    stages = await readAllStageResults({
+      issueId,
+      slug,
+      worktreeDir,
+      repoDir: opts.repoDir,
+    });
+    if (Object.keys(stages).length > 0) {
+      if (archiveDir && existsSync(archiveDir)) {
+        sources.stagesFromArchive = true;
+      } else {
+        sources.stagesFromWorktree = true;
+      }
+    }
+  }
+
+  // Caller-supplied archiveDir that lies outside the resolver's probe (e.g.
+  // tests pointing at a tmp dir): read it directly.
   if (Object.keys(stages).length === 0 && archiveDir && existsSync(archiveDir)) {
     stages = await readAllStageResults(archiveDir);
     if (Object.keys(stages).length > 0) {

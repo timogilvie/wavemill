@@ -8,7 +8,7 @@ import test from 'node:test';
 const cli = 'tools/seam-artifact-cli.ts';
 
 function run(args: string[]) {
-  return spawnSync(process.execPath, ['--import', 'tsx', cli, ...args], {
+  return spawnSync(process.execPath, [cli, ...args], {
     cwd: process.cwd(),
     encoding: 'utf-8',
   });
