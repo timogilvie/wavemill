@@ -157,6 +157,17 @@ journey_write_monitor_env() {
   export MONITOR_ENV="$JOURNEY_TMP/monitor.env"
   export MONITOR_SCRIPT="$JOURNEY_INSTALL_DIR/shared/lib/wavemill-monitor.sh"
   : > "$JOURNEY_TMP/tasks.txt"
+  # Seed a canned verdict so the fake claude handles ordering-judge and
+  # touch-set-prediction calls without network access (grounded planner always
+  # runs now; HOK-3307). The file must satisfy both parsers: ordering expects
+  # `verdicts`, touch-set prediction expects `predictions`. Both receive empty
+  # arrays so ordering returns all-independent-order and touch sets become
+  # empty-confirmed (LLM ran, returned no entries → not unknown).
+  # Export the variable so it is inherited by node child processes spawned by
+  # the monitor's queue-inference background job (an unexported shell var is
+  # invisible to exec'd processes even inside subshells — HOK-3307).
+  printf '{"verdicts":[],"predictions":[]}\n' > "$JOURNEY_TMP/judge-verdict.json"
+  export FAKE_JUDGE_VERDICT_FILE="$JOURNEY_TMP/judge-verdict.json"
   {
     printf 'SESSION=%q\n' "$SESSION"
     printf 'WAVEMILL_RUN_EPOCH=%q\n' "$(journey_now)"
@@ -199,6 +210,7 @@ journey_write_monitor_env() {
     printf 'WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE=observer\n'
     printf 'MONITOR_SCRIPT=%q\n' "$MONITOR_SCRIPT"
     printf 'MONITOR_ENV=%q\n' "$MONITOR_ENV"
+    printf 'FAKE_JUDGE_VERDICT_FILE=%q\n' "$JOURNEY_TMP/judge-verdict.json"
   } > "$MONITOR_ENV"
 }
 

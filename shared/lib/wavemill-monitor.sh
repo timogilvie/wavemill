@@ -17629,11 +17629,22 @@ fetch_queue_plan() {
     record_fetch_queue_plan_failure "cache_empty" ""
     return 1
   }
-  # HOK-3179: kick off a background refresh (one in flight, TTL-gated) that
-  # updates the on-disk cache + queue-health. The picker call below reads
-  # from the cache via --no-infer and never waits on it.
-  maybe_launch_queue_inference_refresh "$BACKLOG_JSON_CACHE" || true
   queue_plan=$(build_queue_plan_once "$BACKLOG_JSON_CACHE") || return 1
+
+  # HOK-3179: kick off a background refresh (one in flight, TTL-gated) that
+  # updates the on-disk cache + queue-health. The picker call above reads
+  # from the cache via --no-infer and never waits on it.
+  # HOK-3307: if any task in the freshly built plan has unknown touch-set status,
+  # bypass the TTL and fire an urgent refresh immediately.
+  local has_unknown_touch_set="false"
+  if printf '%s' "$queue_plan" | jq -e '.touchSetStatus | to_entries | map(select(.value == "unknown")) | length > 0' >/dev/null 2>&1; then
+    has_unknown_touch_set="true"
+  fi
+  if [[ "$has_unknown_touch_set" == "true" ]]; then
+    maybe_launch_queue_inference_refresh "$BACKLOG_JSON_CACHE" "urgent" || true
+  else
+    maybe_launch_queue_inference_refresh "$BACKLOG_JSON_CACHE" || true
+  fi
 
   QUEUE_PLAN_CACHE="$queue_plan"
   LAST_QUEUE_PLAN_FETCH=$now
@@ -17818,7 +17829,10 @@ build_queue_plan_once() {
 # cache + queue-health; the next picker pass picks the fresh cache up on its
 # own via --no-infer.
 maybe_launch_queue_inference_refresh() {
-  local backlog_json="$1"
+  # Usage: maybe_launch_queue_inference_refresh <backlog_json> [urgent]
+  # When "urgent" is passed, the 180 s TTL gate is bypassed so a refresh fires
+  # immediately (HOK-3307: any task with unknown touch-set status needs one now).
+  local backlog_json="$1" urgent="${2:-}"
   [[ -n "$backlog_json" ]] || return 0
   [[ -n "${PROJECT_NAME:-}" ]] || return 0
   [[ -n "${TOOLS_DIR:-}" ]] || return 0
@@ -17836,7 +17850,9 @@ maybe_launch_queue_inference_refresh() {
     QUEUE_INFERENCE_REFRESH_PID=""
   fi
 
-  if (( now - LAST_QUEUE_INFERENCE_REFRESH < QUEUE_INFERENCE_REFRESH_TTL )); then
+  # Bypass the TTL gate only when the caller explicitly signals urgency (e.g. an
+  # unknown touch-set was detected in the freshly built plan — HOK-3307).
+  if [[ "$urgent" != "urgent" ]] && (( now - LAST_QUEUE_INFERENCE_REFRESH < QUEUE_INFERENCE_REFRESH_TTL )); then
     return 0
   fi
 
