@@ -172,7 +172,6 @@ export type ContextUpdateWarningReason =
   | 'timeout'
   | 'error'
   | 'skipped-config'
-  | 'skipped-env'
   | 'skipped-operating-mode';
 
 export interface ContextUpdateOutcome {
@@ -1169,15 +1168,7 @@ export async function runPostEvalContextUpdates(
 
   let outcome: ContextUpdateOutcome | null = null;
 
-  if (process.env.WAVEMILL_SKIP_POST_EVAL_CONTEXT_UPDATES === '1') {
-    outcome = {
-      ran: false,
-      reason: 'skipped-env',
-      durationMs: 0,
-      retryCount: 0,
-      operatingMode,
-    };
-  } else if (config.enabled === false) {
+  if (config.enabled === false) {
     outcome = {
       ran: false,
       reason: 'skipped-config',

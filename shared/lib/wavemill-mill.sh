@@ -135,28 +135,32 @@ EFFECTIVE_MAX_PARALLEL="$MAX_PARALLEL"
 # Persists queue plan for launch-plan JSON emission (set during task selection).
 LAUNCH_QUEUE_PLAN=""
 
-if [[ "${WAVEMILL_READY_WATCHDOG_SOURCE_ONLY:-}" != "1" ]]; then
-  MILL_CONFIG_PREFLIGHT_TOOL="${TOOLS_DIR}/mill-config-preflight.ts"
-  if [[ "${WAVEMILL_SKIP_CONFIG_PREFLIGHT:-}" == "1" ]]; then
-    echo "WARN: skipping Mill config preflight (WAVEMILL_SKIP_CONFIG_PREFLIGHT=1)" >&2
-  elif [[ -f "$MILL_CONFIG_PREFLIGHT_TOOL" ]]; then
-    if ! npx tsx "$MILL_CONFIG_PREFLIGHT_TOOL" --repo-dir "$REPO_DIR"; then
+# Mill config preflight runs unconditionally at startup (the former
+# config-preflight escape hatch was retired in HOK-3278). The wrapper is a
+# shell-overridable seam so tests can stub it in-process.
+run_mill_config_preflight() {
+  local tool="${TOOLS_DIR}/mill-config-preflight.ts"
+  if [[ -f "$tool" ]]; then
+    if ! npx tsx "$tool" --repo-dir "$REPO_DIR"; then
       echo "ERROR: Mill config preflight failed. Run: wavemill config migrate-model-settings" >&2
       exit 1
     fi
   else
-    echo "ERROR: Mill config preflight tool not found at: $MILL_CONFIG_PREFLIGHT_TOOL" >&2
+    echo "ERROR: Mill config preflight tool not found at: $tool" >&2
     exit 1
   fi
+}
+
+if [[ "${WAVEMILL_READY_WATCHDOG_SOURCE_ONLY:-}" != "1" ]]; then
+  run_mill_config_preflight
 fi
 
 # HOK-3254: on startup, run the deps-drift tick once so the mill never
 # launches against a stale install. Side effects (log, backstage health,
 # bounded-retry reinstall) match the periodic tick that runs every 10 min.
-# WAVEMILL_SKIP_DEPS_DRIFT_PREFLIGHT=1 skips this one-shot without disabling
-# the periodic tick (`WAVEMILL_DEPS_DRIFT_DISABLED` controls both).
+# `WAVEMILL_DEPS_DRIFT_DISABLED` (permanent operator switch) disables both the
+# one-shot and the periodic tick.
 if [[ "${WAVEMILL_READY_WATCHDOG_SOURCE_ONLY:-}" != "1" \
-  && "${WAVEMILL_SKIP_DEPS_DRIFT_PREFLIGHT:-0}" != "1" \
   && "${WAVEMILL_DEPS_DRIFT_DISABLED:-0}" != "1" ]]; then
   if declare -F monitor_deps_drift_tick >/dev/null 2>&1; then
     STATE_DIR="${STATE_DIR:-$REPO_DIR/.wavemill}" MILL_LOG_FILE="${MILL_LOG_FILE:-/dev/null}" \

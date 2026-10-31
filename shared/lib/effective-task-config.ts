@@ -142,9 +142,7 @@ export function resolveEffectiveTaskConfig(opts: ResolverOptions): EffectiveTask
   const stateFile = opts.stateFile ?? join(opts.repoDir, '.wavemill', 'workflow-state.json');
   const task = opts.taskState ?? taskFromState(stateFile, opts.issue);
   const normalized = normalizeTaskLifecycle(task);
-  const contract = process.env.WAVEMILL_EFFECTIVE_CONFIG_LEGACY === '1'
-    ? undefined
-    : normalized.lifecycle.launchContract;
+  const contract = normalized.lifecycle.launchContract;
   const runtime = opts.runtimeEnvSnapshot === undefined ? readRuntimeEnvSnapshot(opts.repoDir, opts.issue) : opts.runtimeEnvSnapshot;
   const user = userMillConfig();
   const repo = repoMillConfig(opts.repoDir);

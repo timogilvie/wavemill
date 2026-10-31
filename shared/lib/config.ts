@@ -1477,12 +1477,6 @@ function warnValidatorDisabled(reason: string): void {
  * configuration against the schema checked out with that worktree.
  */
 function getValidator(repoDir?: string): ValidatorFunction | null {
-  if (process.env.WAVEMILL_DISABLE_AJV_VALIDATION === '1') {
-    validatorDisabledReason = 'WAVEMILL_DISABLE_AJV_VALIDATION=1';
-    warnValidatorDisabled(validatorDisabledReason);
-    return null;
-  }
-
   if (validatorDisabledReason) {
     warnValidatorDisabled(validatorDisabledReason);
     return null;

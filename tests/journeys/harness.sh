@@ -110,7 +110,6 @@ journey_init() {
   export WAVEMILL_DISABLE_CHALLENGE=1
   export WAVEMILL_UNATTENDED_CLEANUP_ENABLED=0
   export WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD=1
-  export WAVEMILL_SKIP_CANARY_AUTO_REFRESH=1
   export WAVEMILL_GH_CALL_COUNTING=0
   export FAKE_AGENT_BASE_BRANCH="$JOURNEY_INTEGRATION_BRANCH"
   # Tick clock seam: the monitor advances this counter once per pass and
@@ -139,7 +138,8 @@ journey_write_config() {
       observer: {enabled: false},
       challenge: {enabled: false},
       ready: {watchdog: {enabled: false}},
-      monitor: {readyWatchdog: {enabled: false}}
+      monitor: {readyWatchdog: {enabled: false}},
+      nativeAgent: {certification: {canaryAutoRefresh: false}}
     } * $overlay' > "$REPO_DIR/.wavemill-config.json"
   (
     cd "$REPO_DIR"
