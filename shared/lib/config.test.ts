@@ -507,6 +507,35 @@ test('too-small eval postMergeTimeoutSeconds is rejected by schema validation', 
   }
 });
 
+// protects: HOK-3307 dropped queuePlanner from the schema while its docs promised the key stays accepted, so every repo carrying it failed mill preflight
+test('deprecated queuePlanner key still validates', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ queuePlanner: { mode: 'grounded' } }));
+    assert.doesNotThrow(() => loadWavemillConfig(tmp));
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+// protects: an unknown root key reported only as "root: must NOT have additional properties", with no name to fix
+test('unknown root key is named in the validation error', () => {
+  if (!hasAjv) {
+    console.log('        SKIP  Ajv not installed');
+    return;
+  }
+
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ notARealSection: { enabled: true } }));
+    assert.throws(() => loadWavemillConfig(tmp), /unknown property "notARealSection"/);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
 test('evalContextUpdates accessor returns defaults when absent', () => {
   const tmp = makeTempRepo();
   try {
