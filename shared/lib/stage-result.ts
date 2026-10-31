@@ -28,6 +28,7 @@ import type { ReadyRemediationDecision } from './native-agent/workflow-tools/rea
 export type { ReadyRemediationDecision } from './native-agent/workflow-tools/ready-remediation.ts';
 import type { ReviewExecutedIdentitySet } from './challenge-execution-contract.ts';
 export type { ReviewExecutedIdentitySet, ExecutedIdentity, ExecutedIdentityRole } from './challenge-execution-contract.ts';
+import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -532,6 +533,27 @@ export interface ExecutionTruthFieldsInput {
   flags: Record<string, string>;
   existing: StageResult | null;
   now: string;
+  /**
+   * HOK-3369: ISO timestamp of the stage's latest launch row in
+   * `.session-ownership.jsonl`. When provided and greater than the existing
+   * evidence's `recordedAt`, the evidence is treated as belonging to a prior
+   * attempt and is replaced on completion. Callers that cannot read ownership
+   * (resolver throws, legacy state, non-ownership stages like `ready`) should
+   * leave it null — the merge rule then keeps existing evidence.
+   */
+  latestLaunchAt?: string | null;
+  /**
+   * HOK-3369: true when this write is a fresh launch (the CLI's
+   * `write-with-history` subcommand). A new attempt resets evidence to
+   * `missing` because any carried-over evidence belongs to a prior run.
+   */
+  newAttempt?: boolean;
+  /**
+   * HOK-3369: optional repo root for the registry-backed model equivalence
+   * check (`challengeModelIdsEquivalent`). Omitted callers get the default
+   * registry (which currently ignores repo dir).
+   */
+  repoDir?: string;
 }
 
 export type ExecutionTruthFields = Pick<
@@ -558,11 +580,61 @@ function validEvidenceStatus(value: string | undefined): value is StageExecution
 }
 
 /**
+ * HOK-3369: predicate for the one merge rule in {@link executionTruthFields}.
+ *
+ * A later stage-result write with no new evidence must never downgrade an
+ * existing `direct` / `inherited` record. The exceptions are explicit
+ * evidence flags (D3.1) and a fresh attempt (D3.2) — either the caller
+ * passed `newAttempt: true`, or the stage's latest launch row post-dates the
+ * existing evidence's `recordedAt` (so that evidence belongs to a prior run).
+ *
+ * Returns the kept evidence block or null. The block is kept whole —
+ * `recordedAt` is NOT restamped, because the superseded check depends on it.
+ */
+function keptEvidence(
+  input: ExecutionTruthFieldsInput,
+): { evidence: StageExecutionEvidence; executedModel: string | null } | null {
+  const existing = input.existing;
+  if (!existing) return null;
+  const existingEvidence = existing.executionEvidence;
+  if (!existingEvidence) return null;
+  // Only direct and inherited evidence is kept across writes. A prior
+  // `missing` or `contradicted` carries nothing worth preserving.
+  if (existingEvidence.status !== 'direct' && existingEvidence.status !== 'inherited') return null;
+  // Explicit evidence flags replace existing evidence (D3.1).
+  if (input.flags['executed-model'] !== undefined) return null;
+  if (input.flags['execution-evidence-status'] !== undefined) return null;
+  if (input.flags['execution-evidence-source'] !== undefined) return null;
+  // Detail is descriptive, not new execution evidence. In particular,
+  // `stage-result-cli update --execution-evidence-detail …` must not erase
+  // a prior direct provider-response record (HOK-3322 operator recovery).
+  // A fresh launch attempt resets evidence (D3.2).
+  if (input.newAttempt) return null;
+  // Superseded by a later launch row (D3.2).
+  if (input.latestLaunchAt && existingEvidence.recordedAt) {
+    const launchMs = Date.parse(input.latestLaunchAt);
+    const recordedMs = Date.parse(existingEvidence.recordedAt);
+    if (Number.isFinite(launchMs) && Number.isFinite(recordedMs) && launchMs > recordedMs) {
+      return null;
+    }
+  }
+  return { evidence: existingEvidence, executedModel: existing.executedModel ?? null };
+}
+
+/**
  * Compute the execution-truth and attribution-eligibility block for a stage result.
  *
  * This function intentionally never infers `executedModel` from launch intent:
  * callers must pass direct execution evidence, or the result remains
  * attribution-ineligible with `missing_execution_evidence`.
+ *
+ * HOK-3369 — the merge rule: a later write with no new evidence keeps
+ * existing `direct` / `inherited` evidence as a whole block (including
+ * `recordedAt`). Only explicit evidence flags or a new launch attempt
+ * (`newAttempt: true`, or `latestLaunchAt > existing.recordedAt`) replace it.
+ * Model-attribution eligibility uses `challengeModelIdsEquivalent` so two
+ * spellings of the same registry entry (`kimi-k2-thinking` vs
+ * `moonshotai/kimi-k2-thinking`) do not spuriously flag `runtime_fallback`.
  */
 export function executionTruthFields(input: ExecutionTruthFieldsInput): ExecutionTruthFields {
   const flagModel = nullableModel(input.flags.model);
@@ -572,48 +644,39 @@ export function executionTruthFields(input: ExecutionTruthFieldsInput): Executio
     ?? (input.flags.model === undefined ? input.existing?.model : undefined)
     ?? null;
 
+  const kept = keptEvidence(input);
   const explicitExecuted = nullableModel(input.flags['executed-model']);
-  const mayPreserveExisting =
-    explicitExecuted === undefined
-    && input.existing?.status === 'running'
-    && (
-      input.flags.model === undefined
-      || input.existing.model === input.flags.model
-      || input.existing.executedModel === input.flags.model
-    );
-  const executedModel = explicitExecuted !== undefined
-    ? explicitExecuted
-    : mayPreserveExisting
-      ? input.existing?.executedModel ?? null
-      : null;
 
-  const explicitEvidenceStatus = input.flags['execution-evidence-status'];
-  if (explicitEvidenceStatus !== undefined && !validEvidenceStatus(explicitEvidenceStatus)) {
-    throw new Error(`invalid --execution-evidence-status '${explicitEvidenceStatus}'`);
-  }
-  const evidenceStatus = explicitEvidenceStatus
-    ?? (executedModel ? (mayPreserveExisting ? input.existing?.executionEvidence?.status ?? 'direct' : 'direct') : 'missing');
-  const evidenceSource = input.flags['execution-evidence-source']
-    ?? (mayPreserveExisting ? input.existing?.executionEvidence?.source : undefined)
-    ?? (executedModel ? 'stage-result-cli' : 'unknown');
-  const executionEvidence: StageExecutionEvidence = {
-    status: evidenceStatus,
-    source: evidenceSource,
-    ...(input.flags['execution-evidence-detail'] !== undefined
-      ? { detail: input.flags['execution-evidence-detail'] }
-      : input.existing?.executionEvidence?.detail && mayPreserveExisting
-        ? { detail: input.existing.executionEvidence.detail }
+  let executedModel: string | null;
+  let executionEvidence: StageExecutionEvidence;
+
+  if (kept) {
+    // D3.3: keep the existing evidence block as-is. `recordedAt` is NOT
+    // restamped — rule D3.2 (superseded by a later launch) depends on it.
+    executedModel = kept.executedModel;
+    executionEvidence = kept.evidence;
+  } else {
+    const explicitEvidenceStatus = input.flags['execution-evidence-status'];
+    if (explicitEvidenceStatus !== undefined && !validEvidenceStatus(explicitEvidenceStatus)) {
+      throw new Error(`invalid --execution-evidence-status '${explicitEvidenceStatus}'`);
+    }
+    executedModel = explicitExecuted ?? null;
+    const evidenceStatus = explicitEvidenceStatus
+      ?? (executedModel ? 'direct' : 'missing');
+    const evidenceSource = input.flags['execution-evidence-source']
+      ?? (executedModel ? 'stage-result-cli' : 'unknown');
+    executionEvidence = {
+      status: evidenceStatus,
+      source: evidenceSource,
+      ...(input.flags['execution-evidence-detail'] !== undefined
+        ? { detail: input.flags['execution-evidence-detail'] }
         : {}),
-    // HOK-3164: the CLI cannot observe the runtime, so it only carries the
-    // native launcher's Pi stamp forward for the same still-running stage.
-    ...(mayPreserveExisting && input.existing?.executionEvidence?.piRuntimeVersions
-      ? { piRuntimeVersions: input.existing.executionEvidence.piRuntimeVersions }
-      : {}),
-    recordedAt: input.now,
-  };
+      recordedAt: input.now,
+    };
+  }
 
   let modelAttributionEligible = boolFlag(input.flags['model-attribution-eligible']);
-  let modelAttributionIneligibleReason = input.existing?.modelAttributionIneligibleReason;
+  let modelAttributionIneligibleReason: ModelAttributionIneligibleReason | undefined;
   if (modelAttributionEligible === undefined) {
     if (input.status !== 'completed') {
       modelAttributionEligible = false;
@@ -621,10 +684,15 @@ export function executionTruthFields(input: ExecutionTruthFieldsInput): Executio
     } else if (!executedModel) {
       modelAttributionEligible = false;
       modelAttributionIneligibleReason = 'missing_execution_evidence';
-    } else if (evidenceStatus === 'contradicted') {
+    } else if (executionEvidence.status === 'contradicted') {
       modelAttributionEligible = false;
       modelAttributionIneligibleReason = 'execution_contradicted';
-    } else if (intendedModel && intendedModel !== executedModel) {
+    } else if (
+      intendedModel
+      && !challengeModelIdsEquivalent(intendedModel, executedModel, input.repoDir)
+    ) {
+      // HOK-3321 / HOK-3369: two spellings of the same registry entry
+      // are not a runtime fallback.
       modelAttributionEligible = false;
       modelAttributionIneligibleReason = 'runtime_fallback';
     } else {
@@ -632,17 +700,22 @@ export function executionTruthFields(input: ExecutionTruthFieldsInput): Executio
       modelAttributionIneligibleReason = undefined;
     }
   } else if (modelAttributionEligible) {
+    // HOK-3369: an explicit true always clears the reason (JSON drops it).
     modelAttributionIneligibleReason = undefined;
   } else {
-    modelAttributionIneligibleReason ??= !executedModel ? 'missing_execution_evidence' : 'execution_contradicted';
+    modelAttributionIneligibleReason = input.existing?.modelAttributionIneligibleReason
+      ?? (!executedModel ? 'missing_execution_evidence' : 'execution_contradicted');
   }
 
+  // HOK-3369 D4: always return the reason key. When eligible it is
+  // `undefined`, which `updateStageResult`'s spread uses to clear a stale
+  // reason, and JSON.stringify drops it from the written file.
   return {
     intendedModel,
     executedModel,
     executionEvidence,
     modelAttributionEligible,
-    ...(modelAttributionIneligibleReason ? { modelAttributionIneligibleReason } : {}),
+    modelAttributionIneligibleReason,
   };
 }
 
