@@ -73,6 +73,7 @@ test('the retired failed-ready-recheck bucket is forbidden in code but not in pr
 test('the suppression marker exempts one line', () => {
   const suppressed = [
     '# allow-ready-failure-policy: upgrade-compatibility shim kept for in-flight sessions',
+    // allow-template-curly: fixture quotes the shim line verbatim; "${bucket}" is literal text under test, not an interpolation.
     "const name = bucket === 'failed-ready-recheck' ? '.failed-ready-recheck-exhausted' : `.retry-${bucket}-exhausted`;",
   ].join('\n');
   const findings = checkGuardSource(READY_FAILURE_POLICY_GUARD, 'tools/observer.ts', suppressed);
