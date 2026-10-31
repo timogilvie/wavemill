@@ -15,11 +15,17 @@ policy below; it runs in `npm run test:preflight` and in CI.
   shadow requires retiring one.
 - Every row carries: owner issue, added date, removal criterion, removal
   issue, and remove-by date.
+- A row may be **extended once**, explicitly, in its remove-by cell:
+  `YYYY-MM-DD (extended from YYYY-MM-DD, HOK-123: reason)`. The new date is
+  at most 30 days past the original remove-by. The original still has to meet
+  the added+30 cap, the issue must be a valid Linear ID and the reason
+  non-empty. A second extension fails, and `added` is never rewritten to buy
+  time.
 - Rows whose remove-by is in the past get a `[feature-flags] overdue:` warning
   from the guard but do not fail CI; structural problems do fail
   (undocumented token, kill-switch pattern in the baseline, stale baseline or
-  doc entry, missing field, bad issue ID, remove-by > added+30 days, more
-  than 5 open shadows).
+  doc entry, missing field, bad issue ID, remove-by > added+30 days, a
+  malformed, second or over-30-day extension, more than 5 open shadows).
 - Suppress a non-flag mention in code with `// allow-feature-flag: <reason>`
   (or `#` in shell), on the same line or the line above.
 
@@ -40,15 +46,15 @@ that date to be retired.
 
 | Shadow | Switch(es) | Owner issue | Added | Removal criterion | Removal issue | Remove by |
 |---|---|---|---|---|---|---|
-| `WAVEMILL_LEDGER_SHADOW_DISABLED`, `WAVEMILL_SIDE_EFFECT_DETECTOR_DISABLED`, `WAVEMILL_LEDGER_SHADOW_DEBUG` | These three switches control the same ledger shadow | HOK-3183 | 2026-10-20 | Ledger side-effect / step / pair rows settle for 7 days with no duplicates recorded. Flip the gate per design §4b and delete the shadow writers. | HOK-3274 | 2026-11-19 |
+| `WAVEMILL_LEDGER_SHADOW_DISABLED`, `WAVEMILL_SIDE_EFFECT_DETECTOR_DISABLED`, `WAVEMILL_LEDGER_SHADOW_DEBUG` | These three switches control the same ledger shadow | HOK-3183 | 2026-10-20 | Ledger side-effect / step / pair rows settle for 7 days with no duplicates recorded. Flip the gate per design §4b and delete the shadow writers. | HOK-3274 | 2026-12-19 (extended from 2026-11-19, HOK-3274: flip, delete or split waits on the semantics decision and the HOK-3277 retarget) |
 | `WAVEMILL_HARNESS_RETENTION_SHADOW` | `WAVEMILL_HARNESS_RETENTION_SHADOW` | HOK-3235 | 2026-10-20 | Retention mode decided; shadow comparator deleted along with its sidecar artifact. | HOK-3276 | 2026-11-19 |
-| `WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE` | `WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE` | HOK-3187 | 2026-10-20 | Confirm renderer parity and retire the opt-in when ledger authority is live. | HOK-3275 | 2026-11-19 |
+| `WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE` | `WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE` | HOK-3187 | 2026-10-20 | Confirm renderer parity and retire the opt-in when ledger authority is live. | HOK-3275 | 2026-12-19 (extended from 2026-11-19, HOK-3275: renderer fate follows the HOK-3274 ledger decision) |
 
 ## Kill switches, rollbacks, skips and legacy paths
 
 | Flag | Default | Purpose | Owner issue | Added | Removal criterion | Removal issue | Remove by |
 |---|---|---|---|---|---|---|---|
-| `WAVEMILL_DISABLE_SCHEMA_STAMP` | 0 | Debug: skip the ledger schema stamp. | HOK-3183 | 2026-10-20 | Delete alongside the ledger shadow writers. | HOK-3274 | 2026-11-19 |
+| `WAVEMILL_DISABLE_SCHEMA_STAMP` | 0 | Debug: skip the ledger schema stamp. | HOK-3183 | 2026-10-20 | Delete alongside the ledger shadow writers. | HOK-3274 | 2026-12-19 (extended from 2026-11-19, HOK-3274: deleted alongside the ledger shadow, which was extended) |
 | `WAVEMILL_OBSERVER_LINEAR_ENABLED` | 0 | Legacy env override for `observer.linear.enabled`. HOK-2846 landed the Linear writer and HOK-3243 moved filing to shadow mode: operators now set `observer.linear.mode: shadow` in `.wavemill-config.local.json` instead. | HOK-3243 | 2026-10-20 | Shadow trial clean for a release cycle and no operator uses the env override. | HOK-3278 | 2026-11-19 |
 
 ## Permanent operator settings
