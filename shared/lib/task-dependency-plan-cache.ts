@@ -87,11 +87,6 @@ export interface FingerprintableTask {
   blocks?: unknown;
 }
 
-interface CacheStats {
-  totalEdges: number;
-  retainedEdges: number;
-}
-
 function emptyCache(projectSlug: string): CacheFile {
   return {
     schemaVersion: CACHE_SCHEMA_VERSION,
@@ -359,13 +354,6 @@ export function lookupGroundedVerdict(
       (verdict.a === taskX && verdict.b === taskY && verdict.aFingerprint === fingerprintX && verdict.bFingerprint === fingerprintY) ||
       (verdict.a === taskY && verdict.b === taskX && verdict.aFingerprint === fingerprintY && verdict.bFingerprint === fingerprintX),
   );
-}
-
-export function getCacheStats(before: CacheFile, after: CacheFile): CacheStats {
-  return {
-    totalEdges: (before.edges ?? []).length,
-    retainedEdges: (after.edges ?? []).length,
-  };
 }
 
 export async function saveCache(repoDir: string, projectSlug: string, cache: CacheFile): Promise<void> {

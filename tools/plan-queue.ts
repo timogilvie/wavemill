@@ -11,7 +11,6 @@ import {
 } from '../shared/lib/task-dependency-planner.ts';
 import {
   computeTaskFingerprint,
-  getCacheStats,
   loadCache,
   pruneCache,
   saveCache,
@@ -398,10 +397,6 @@ runTool({
       (emitJson ? process.stderr : process.stdout).write(`${renderPreview(planToEmit, records)}\n`);
       if (grounded) {
         (emitJson ? process.stderr : process.stdout).write(`\n${renderGroundedPreview(grounded)}\n`);
-      }
-      if (cacheBeforePrune && cacheAfterPrune) {
-        const cacheStats = getCacheStats(cacheBeforePrune, cacheAfterPrune);
-        process.stderr.write(`cache: hits=0 misses=0 pruned=${cacheStats.totalEdges - cacheStats.retainedEdges}\n`);
       }
     }
     if (cacheToSave && cacheKey && !noInfer) {
