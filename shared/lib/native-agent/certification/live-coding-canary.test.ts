@@ -320,6 +320,20 @@ describe('runLiveCodingCanary', () => {
     assert.equal(result.limitExceeded, 'wall_clock');
   });
 
+  // protects: the canary reading our own wall-clock abort ("Request was aborted") as a provider transient error (HOK-3362)
+  it('classifies a wall-clock stop by its budget, not by the abort message it left', async () => {
+    const loop = fakeLoop([{
+      result: {
+        stopReason: 'wall_clock_limit',
+        messages: [{ role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request was aborted', timestamp: 0 } as never],
+      },
+    }]);
+    const result = await runLiveCodingCanary(baseOptions(loop.runLoopFn));
+    assert.equal(result.status, 'inconclusive');
+    assert.equal(result.reason, 'budget_exceeded');
+    assert.equal(result.limitExceeded, 'wall_clock');
+  });
+
   it('treats token/tool-call/cost budget exhaustion as definitive failures naming the limit', async () => {
     for (const [stopReason, limit] of [
       ['token_limit', 'tokens'],

@@ -2,7 +2,13 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AgentMessage, Message } from './messages.ts';
-import type { AgentContext, LoopStopReason, WavemillLoopConfig } from './loop.ts';
+import type { AgentContext, LoopBudget, LoopStopReason, WavemillLoopConfig } from './loop.ts';
+import {
+  budgetExhaustionFromLoop,
+  describeBudgetExhaustion,
+  finalProviderErrorMessage,
+  type BudgetExhaustedFact,
+} from './budget-exhaustion.ts';
 import { runWavemillLoop } from './loop.ts';
 import { snapshotPayloadsForFailure } from './payload-capture.ts';
 import { buildStageExecutionUsage } from './prompt-cache.ts';
@@ -75,6 +81,7 @@ import { loadPromptResourceSync } from '../resource-retrieval.ts';
 import { createCleanupTracker, runCleanup, type CleanupReason } from './cleanup.ts';
 import {
   STAGE_FAILURE_ENVELOPE_SCHEMA_VERSION,
+  buildBudgetExhaustionEnvelope,
   deleteStageFailureEnvelope,
   writeStageFailureEnvelope,
   type StageFailureCause,
@@ -454,20 +461,6 @@ function extractFinalAssistantText(messages: AgentMessage[]): string {
   return '';
 }
 
-function extractFinalAssistantErrorMessage(messages: AgentMessage[]): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role !== 'assistant') {
-      continue;
-    }
-    const errorMessage = (message as { errorMessage?: string }).errorMessage?.trim();
-    if (errorMessage) {
-      return errorMessage;
-    }
-  }
-  return '';
-}
-
 function extractDeniedTools(events: TranscriptEvent[]): DeniedToolRecord[] {
   return events
     .filter((event): event is TranscriptToolResult => event.type === 'tool_result')
@@ -492,16 +485,9 @@ function extractDeniedTools(events: TranscriptEvent[]): DeniedToolRecord[] {
     .filter((entry): entry is DeniedToolRecord => entry !== null);
 }
 
+/** Description of a non-budget terminal stop; budget stops use `describeBudgetExhaustion` (HOK-3362). */
 function stopReasonDescription(stopReason: LoopStopReason): string {
   switch (stopReason) {
-    case 'turn_limit':
-      return 'Native review hit its iteration limit before producing a final JSON result.';
-    case 'token_limit':
-      return 'Native review exhausted its token budget before producing a final JSON result.';
-    case 'tool_call_limit':
-      return 'Native review exhausted its tool-call budget before producing a final JSON result.';
-    case 'wall_clock_limit':
-      return 'Native review exceeded its wall-clock budget before producing a final JSON result.';
     case 'aborted':
       return 'Native review was aborted before producing a final JSON result.';
     case 'error':
@@ -529,40 +515,21 @@ function reviewFailureCategoryForProviderErrorKind(kind: ProviderErrorKind | und
   }
 }
 
-function reviewFailureCategoryForStopReason(stopReason: LoopStopReason): string {
-  switch (stopReason) {
-    case 'wall_clock_limit':
-    case 'turn_limit':
-    case 'tool_call_limit':
-    case 'token_limit':
-      return NATIVE_REVIEW_TIMEOUT_CATEGORY;
-    default:
-      return 'native-review-failed';
-  }
-}
-
 /**
- * Map a terminal loop stop reason (plus any classified provider error kind) to
- * the typed native stage-failure cause (HOK-3064). Budget exhaustion of any
- * kind (wall-clock, turn, tool-call, token) is a `stage-timeout`; an explicit
- * abort is `cancelled`; a provider error carries its classified sub-kind. An
- * `error` stop with no classifiable provider kind stays `unknown` so it is
- * excluded from quality signals while remaining visible via bounded evidence.
+ * Map a non-budget terminal loop stop (plus any classified provider error kind)
+ * to the typed native stage-failure cause (HOK-3064). Budget stops never reach
+ * this: they record the one budget fact (`buildBudgetExhaustionEnvelope`,
+ * HOK-3362). An explicit abort is `cancelled`; a provider error carries its
+ * classified sub-kind. An `error` stop with no classifiable provider kind stays
+ * `unknown` so it is excluded from quality signals while remaining visible via
+ * bounded evidence.
  */
 function stageFailureCauseForStopReason(
   stopReason: LoopStopReason,
   providerErrorKind: ProviderErrorKind | undefined,
 ): StageFailureCause {
-  switch (stopReason) {
-    case 'wall_clock_limit':
-    case 'turn_limit':
-    case 'tool_call_limit':
-    case 'token_limit':
-      return 'stage-timeout';
-    case 'aborted':
-      return 'cancelled';
-    default:
-      break;
+  if (stopReason === 'aborted') {
+    return 'cancelled';
   }
   switch (providerErrorKind) {
     case 'provider-transient-error':
@@ -939,6 +906,33 @@ export async function runNativeReview(
     }
   };
 
+  /** HOK-3362: the one budget-exhaustion envelope, with review's retry/timeout context. */
+  const recordReviewBudgetExhaustion = (fact: BudgetExhaustedFact): void => {
+    if (!options.featureDir) {
+      return;
+    }
+    try {
+      writeStageFailureEnvelope(options.featureDir, buildBudgetExhaustionEnvelope({
+        stage: 'review',
+        fact,
+        provider: canonicalProvider,
+        model: canonicalModel,
+        agent: canonicalAgent,
+        ...(provider.requestedModel ? { requestedModel: provider.requestedModel } : {}),
+        transcriptPath,
+        payloadCaptureDir: snapshotPayloadsForFailure(
+          options.featureDir,
+          'review',
+          transcriptPath.replace(/\.jsonl$/, '.native-payloads'),
+        ),
+        retryAttempt: timeoutConfig.attempt,
+        configuredTimeoutMs: effectiveNativeTimeoutMs,
+      }));
+    } catch {
+      // Never let envelope recording fail the review failure it describes.
+    }
+  };
+
   // HOK-3162: Models owns auth injection; no Authorization: Bearer here.
   const modelConfig: WavemillLoopConfig['model'] = {
     id: provider.entry.model.id,
@@ -1016,6 +1010,12 @@ export async function runNativeReview(
       },
     }
     : undefined;
+  const reviewBudget: LoopBudget = {
+    // One additional turn is reserved for tool-free terminal synthesis.
+    maxTurns: analysisTurnLimit + 1,
+    maxToolCalls: REVIEW_TOOL_CALL_LIMIT,
+    maxWallClockMs: effectiveNativeTimeoutMs,
+  };
   let loopResult;
   try {
     loopResult = await nativeReviewDeps.runWavemillLoop({
@@ -1056,12 +1056,7 @@ export async function runNativeReview(
         }
       },
       menuProvider: menuLaunchProvider.menuProvider,
-      budget: {
-        // One additional turn is reserved for tool-free terminal synthesis.
-        maxTurns: analysisTurnLimit + 1,
-        maxToolCalls: REVIEW_TOOL_CALL_LIMIT,
-        maxWallClockMs: effectiveNativeTimeoutMs,
-      },
+      budget: reviewBudget,
       terminalSynthesis: {
         prompt: REVIEW_FINAL_SYNTHESIS_PROMPT,
       },
@@ -1143,9 +1138,24 @@ export async function runNativeReview(
   // the existing cleanup + stage-result path.
   let terminalCategory = '';
   let terminalDescription = '';
-  if (loopResult.stopReason !== 'stop') {
+  // HOK-3362: the one budget fact. A budget stop is classified from it before
+  // any error text; the review-result category stays `native-review-timeout`
+  // because the HOK-3019 escalating review budget keys on it.
+  const budgetExhausted: BudgetExhaustedFact | null = budgetExhaustionFromLoop(loopResult, reviewBudget);
+  if (budgetExhausted) {
+    terminalCategory = NATIVE_REVIEW_TIMEOUT_CATEGORY;
+    terminalDescription = describeBudgetExhaustion('review', budgetExhausted);
+    recordReviewBudgetExhaustion(budgetExhausted);
+    if (options.featureDir) {
+      try {
+        await updateStageResult(options.featureDir, 'review', { budgetExhausted });
+      } catch {
+        // The envelope already carries the fact; never mask the review failure.
+      }
+    }
+  } else if (loopResult.stopReason !== 'stop') {
     const providerErrorMessage = loopResult.stopReason === 'error'
-      ? extractFinalAssistantErrorMessage(loopResult.messages)
+      ? finalProviderErrorMessage(loopResult)
       : '';
     const providerErrorKind = loopResult.providerError?.kind
       ?? (providerErrorMessage ? classifyProviderError(providerErrorMessage).kind : undefined);
@@ -1154,7 +1164,7 @@ export async function runNativeReview(
       : '';
     terminalCategory = providerErrorKind
       ? reviewFailureCategoryForProviderErrorKind(providerErrorKind)
-      : reviewFailureCategoryForStopReason(loopResult.stopReason);
+      : 'native-review-failed';
     terminalDescription = providerDescription || stopReasonDescription(loopResult.stopReason);
     recordReviewFailureEnvelope(
       stageFailureCauseForStopReason(loopResult.stopReason, providerErrorKind),
@@ -1194,9 +1204,9 @@ export async function runNativeReview(
         failureReason: loopResult.stopReason,
         artifacts: {
           type: 'review',
-          failureCategory: reviewFailureCategoryForStopReason(loopResult.stopReason),
+          failureCategory: terminalCategory,
           verdict: 'error',
-          reviewToolError: stopReasonDescription(loopResult.stopReason),
+          reviewToolError: terminalDescription,
           missingReviewEvidence: true,
           evidence: 'missing-review-verdict',
           ...nativeReviewMetadata,
@@ -1220,6 +1230,7 @@ export async function runNativeReview(
         {
           ...nativeReviewMetadata,
           nativeLoopStopReason: loopResult.stopReason,
+          ...(budgetExhausted ? { budgetExhausted } : {}),
         },
       );
     }

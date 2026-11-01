@@ -521,14 +521,23 @@ describe('launchNativePlanning', () => {
           loopModelOverride: scriptedModel(api),
           runTsxCommand: stubRunTsxCommand(),
         }),
-        /turn_limit/,
+        /^Error: native-stage-timeout: native planning exhausted its turn budget \(1 of 1\)/,
       );
 
       const stageResult = JSON.parse(
         readFileSync(join(featureDir, '.planning-result.json'), 'utf-8'),
       ) as Record<string, any>;
       assert.equal(stageResult.status, 'failed');
+      // The eval-visible terminal reason is unchanged; the budget fact rides beside it (HOK-3362).
       assert.equal(stageResult.failureReason, 'turn_limit');
+      assert.deepEqual(
+        [stageResult.budgetExhausted?.kind, stageResult.budgetExhausted?.limit, stageResult.budgetExhausted?.used],
+        ['turn', 1, 1],
+      );
+      assert.equal(stageResult.budgetExhausted?.progress?.toolCallsExecuted, 1);
+      const envelope = JSON.parse(readFileSync(join(featureDir, '.planning-failure-envelope.json'), 'utf-8'));
+      assert.equal(envelope.cause, 'stage-timeout');
+      assert.deepEqual(envelope.budgetExhausted, stageResult.budgetExhausted);
       assert.equal(stageResult.artifacts?.planArtifactValid, false);
       assert.equal(stageResult.artifacts?.approvalReady, false);
       assert.equal(stageResult.artifacts?.bounds?.maxTurns, 1);

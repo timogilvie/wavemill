@@ -341,6 +341,9 @@ export type PlanningTerminalReason =
   | 'turn_limit'
   | 'tool_call_limit'
   | 'wall_clock_limit'
+  /** @since 1.57.0 (HOK-3362: every budget stop reason) */
+  | 'token_limit'
+  | 'cost_limit'
   | 'tool_stagnation'
   | 'invalid_final_plan'
   | 'empty_final_plan'
