@@ -2422,9 +2422,6 @@
         "activeRoute": {
           "$ref": "#/$defs/RouteArtifact"
         },
-        "routeChanged": {
-          "type": "boolean"
-        },
         "decisionSource": {
           "type": "string",
           "enum": [
@@ -2432,6 +2429,17 @@
             "expanded",
             "preserved"
           ]
+        },
+        "routeChanged": {
+          "type": "boolean",
+          "description": "Deprecated (HOK-3363): accepted on legacy records only; never written. Read stageRoutes overrides instead."
+        },
+        "stageRoutes": {
+          "$ref": "#/$defs/StageRoutes"
+        },
+        "hokusaiInferenceLogId": {
+          "type": "string",
+          "description": "Hokusai's join key (inference_log_id) for the routed decision (HOK-3363)."
         },
         "expandedCacheHit": {
           "type": "boolean"
@@ -4464,6 +4472,76 @@
         "reviewer",
         "reviewMode"
       ],
+      "additionalProperties": false
+    },
+    "StageRoutes": {
+      "type": "object",
+      "description": "The one per-stage route record (HOK-3363): what Hokusai recommended, what executed, and every override in between.",
+      "properties": {
+        "planner": { "$ref": "#/$defs/StageRouteRecord" },
+        "coder": { "$ref": "#/$defs/StageRouteRecord" },
+        "reviewer": { "$ref": "#/$defs/StageRouteRecord" }
+      },
+      "required": ["planner", "coder", "reviewer"],
+      "additionalProperties": false
+    },
+    "StageRouteRecord": {
+      "type": "object",
+      "properties": {
+        "hokusai": {
+          "type": "object",
+          "properties": {
+            "requestId": { "type": "string" },
+            "decisionId": { "type": "string" },
+            "recommended": { "type": "string" }
+          },
+          "required": ["recommended"],
+          "additionalProperties": false
+        },
+        "executed": { "type": "string" },
+        "overrides": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/RouteOverride" }
+        }
+      },
+      "required": ["executed", "overrides"],
+      "additionalProperties": false
+    },
+    "RouteOverride": {
+      "type": "object",
+      "properties": {
+        "source": { "type": "string", "enum": ["escalation", "launchability", "challenge", "operator"] },
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "reason": { "type": "string" },
+        "at": { "type": "string" },
+        "triggers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "metric": { "type": "string", "enum": ["expectedSuccess", "confidence"] },
+              "value": { "type": "number" },
+              "threshold": { "type": "number" }
+            },
+            "required": ["metric", "value", "threshold"],
+            "additionalProperties": false
+          }
+        },
+        "hokusai": {
+          "type": "object",
+          "properties": {
+            "requestId": { "type": "string" },
+            "decisionId": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "certification": { "type": "string" },
+        "pairId": { "type": "string" },
+        "side": { "type": "string", "enum": ["primary", "challenger"] },
+        "actor": { "type": "string" }
+      },
+      "required": ["source", "from", "to", "reason", "at"],
       "additionalProperties": false
     },
     "RouteArtifact": {

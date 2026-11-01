@@ -70,7 +70,8 @@ import type {
   ChallengeExecutionIntent,
   ReviewExecutedIdentitySet,
 } from './challenge-execution-contract.ts';
-import { projectChallengeIntentForPersistence } from './challenge-execution-contract.ts';
+import { projectChallengeIntentForPersistence, sealChallengeDecision } from './challenge-execution-contract.ts';
+import { applyChallengeOverride } from './route-override-record.ts';
 import {
   reportableWorkflowCostUsd,
   type WorkflowCostOutcome,
@@ -470,11 +471,14 @@ function toEvalRouteProvenance(routeProvenance: EvalRouteProvenance): EvalRouteP
     ...(routeProvenance.activeRoute
       ? { activeRoute: toEvalRouteArtifact(routeProvenance.activeRoute) }
       : {}),
-    ...(typeof routeProvenance.routeChanged === 'boolean'
-      ? { routeChanged: routeProvenance.routeChanged }
-      : {}),
     ...(routeProvenance.decisionSource
       ? { decisionSource: routeProvenance.decisionSource }
+      : {}),
+    ...(routeProvenance.stageRoutes
+      ? { stageRoutes: structuredClone(routeProvenance.stageRoutes) }
+      : {}),
+    ...(routeProvenance.hokusaiInferenceLogId
+      ? { hokusaiInferenceLogId: routeProvenance.hokusaiInferenceLogId }
       : {}),
     ...(typeof routeProvenance.expandedCacheHit === 'boolean'
       ? { expandedCacheHit: routeProvenance.expandedCacheHit }
@@ -576,14 +580,34 @@ export function attachChallengeRouteContext(
   record.challengeRouteContext = toEvalChallengeRouteContext(challengeRouteContext);
 }
 
+/**
+ * Attaches the route provenance, including the per-stage route record
+ * (HOK-3363). For a challenge arm the sealed challenge decision is appended to
+ * the record as a `challenge` override, so the arm reaches Hokusai as labelled
+ * counterfactual data rather than a silent substitution. Run after
+ * `attachChallengeExecutionMetadata`, which sets the side and intent.
+ */
 export function attachRouteProvenance(
   record: EvalRecord,
   routeProvenance?: EvalRouteProvenance | null,
 ): void {
-  if (!routeProvenance) {
+  const seal = record.challengeSide ? sealChallengeDecision(record.challengeIntent) : undefined;
+  if (!routeProvenance && !seal) {
     return;
   }
-  record.routeProvenance = toEvalRouteProvenance(routeProvenance);
+  const provenance = toEvalRouteProvenance(routeProvenance ?? {});
+  if (seal && record.challengeSide) {
+    const withChallenge = applyChallengeOverride(
+      provenance.stageRoutes,
+      seal,
+      record.challengeSide,
+      record.timestamp,
+    );
+    if (withChallenge) {
+      provenance.stageRoutes = withChallenge;
+    }
+  }
+  record.routeProvenance = provenance;
 }
 
 export function attachExecutedPlanning(

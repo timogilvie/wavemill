@@ -189,12 +189,23 @@ describe('eval-summary-printer', () => {
             reviewer: 'claude-sonnet-5',
             reviewMode: 'static',
           },
-          routeChanged: true,
+          stageRoutes: {
+            planner: { executed: 'gpt-5.4', overrides: [] },
+            coder: {
+              executed: 'gpt-5.4',
+              overrides: [
+                { source: 'escalation', from: 'claude-haiku-4-5', to: 'glm-5.3-flash', reason: 'hokusai_reask_below_floor', at: '2026-10-30T10:00:00.000Z' },
+                { source: 'operator', from: 'glm-5.3-flash', to: 'gpt-5.4', reason: 'operator_reroute', at: '2026-10-30T11:00:00.000Z' },
+              ],
+            },
+            reviewer: { executed: 'claude-sonnet-5', overrides: [] },
+          },
         },
       } as EvalRecord;
 
+      // protects: the summary hiding that Hokusai's route was overridden (HOK-3363).
       expect(formatRouteProvenanceDisplay(record)).toBe(
-        ', route: expanded gpt-5.4/deep/claude-sonnet-5/static changed=true'
+        ', route: expanded gpt-5.4/deep/claude-sonnet-5/static overrides=2(escalation,operator)'
       );
     });
   });
@@ -251,14 +262,13 @@ describe('eval-summary-printer', () => {
             reviewer: 'claude-sonnet-5',
             reviewMode: 'static',
           },
-          routeChanged: true,
         },
       } as EvalRecord;
 
       printEvalSummary(record);
 
       expect(consoleLogs).toEqual([[
-        'Post-completion eval: excellent (0.95), route: expanded gpt-5.4/deep/claude-sonnet-5/static changed=true — saved to eval store',
+        'Post-completion eval: excellent (0.95), route: expanded gpt-5.4/deep/claude-sonnet-5/static overrides=0 — saved to eval store',
       ]]);
     });
 

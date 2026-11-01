@@ -8,17 +8,29 @@ export const PR_METADATA_SCHEMA_VERSION = '1';
  * - 2 (HOK-3098): adds the optional `route_decision` sibling. `executed_route`
  *   is unchanged, so its own payload `schema` stays at
  *   {@link EXECUTED_ROUTE_SCHEMA_VERSION}.
+ * - 3 (HOK-3363): `route_decision.overrides` — every override of the decided
+ *   route, read from the per-stage route record.
  */
-export const PR_ROUTE_METADATA_SCHEMA_VERSION = 2;
+export const PR_ROUTE_METADATA_SCHEMA_VERSION = 3;
 /** Every `route_schema` value readers accept; older PR bodies keep parsing. */
-export const SUPPORTED_PR_ROUTE_METADATA_SCHEMA_VERSIONS: readonly PrRouteSchemaVersion[] = [1, 2];
+export const SUPPORTED_PR_ROUTE_METADATA_SCHEMA_VERSIONS: readonly PrRouteSchemaVersion[] = [1, 2, 3];
 /** Payload version inside `executed_route` (independent of `route_schema`). */
 export const EXECUTED_ROUTE_SCHEMA_VERSION = 1;
 export const MAX_EXECUTED_ROUTE_BYTES = 6_000;
-/** Independent byte cap for the `route_decision` payload. */
-export const MAX_ROUTE_DECISION_BYTES = 1_500;
+/** Independent byte cap for the `route_decision` payload (overrides included). */
+export const MAX_ROUTE_DECISION_BYTES = 4_000;
 
-export type PrRouteSchemaVersion = 1 | 2;
+export type PrRouteSchemaVersion = 1 | 2 | 3;
+
+/** One override of the decided route, as stamped on the PR (HOK-3363). */
+export interface PrRouteOverride {
+  stage: 'planner' | 'coder' | 'reviewer';
+  source: 'escalation' | 'launchability' | 'challenge' | 'operator';
+  from: string;
+  to: string;
+  reason: string;
+  at: string;
+}
 
 /**
  * Where the router's decision came from (HOK-3098).
@@ -58,6 +70,11 @@ export interface PrRouteDecision {
   decided_at: string;
   /** Prior `decision_id` when this decision is a genuine re-route. */
   supersedes?: string;
+  /**
+   * Every override of `recommended`, in order, from the route record
+   * (HOK-3363). Requires `route_schema` 3.
+   */
+  overrides?: PrRouteOverride[];
 }
 
 export type PrRouteStageStatus = 'executed' | 'inherited' | 'not_run' | 'unknown';
@@ -414,8 +431,11 @@ const ROUTE_DECISION_KEYS = [
   'recommended',
   'decided_at',
   'supersedes',
+  'overrides',
 ] as const;
 const ROUTE_DECISION_ROLES = ['planner', 'coder', 'reviewer'] as const;
+const ROUTE_OVERRIDE_KEYS = ['stage', 'source', 'from', 'to', 'reason', 'at'] as const;
+const ROUTE_OVERRIDE_SOURCES = ['escalation', 'launchability', 'challenge', 'operator'] as const;
 const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 function routeDecisionError(
@@ -484,8 +504,39 @@ export function validateRouteDecision(value: unknown): PrMetadataError[] {
     }
   }
 
-  // Empty recommended roles are legitimate (no viable candidate); every other
-  // string goes through the shared public-value gate.
+  if (value.overrides !== undefined) {
+    if (!Array.isArray(value.overrides)) {
+      errors.push(routeDecisionError('wrong-type', 'Expected route_decision.overrides array'));
+    } else {
+      value.overrides.forEach((override, index) => {
+        const at = `route_decision.overrides.${index}`;
+        if (!isRecord(override)) {
+          errors.push(routeDecisionError('wrong-type', `Expected object at ${at}`));
+          return;
+        }
+        for (const key of unknownKeys(override, ROUTE_OVERRIDE_KEYS)) {
+          errors.push(routeDecisionError('unknown-field', `Unknown route_decision field at ${at}.${key}`));
+        }
+        if (!(ROUTE_DECISION_ROLES as readonly unknown[]).includes(override.stage)) {
+          errors.push(routeDecisionError('wrong-type', `Expected ${at}.stage to be planner, coder or reviewer`));
+        }
+        if (!(ROUTE_OVERRIDE_SOURCES as readonly unknown[]).includes(override.source)) {
+          errors.push(routeDecisionError('wrong-type', `Expected ${at}.source to be one of ${ROUTE_OVERRIDE_SOURCES.join(', ')}`));
+        }
+        if (typeof override.from !== 'string') {
+          errors.push(routeDecisionError('wrong-type', `Expected string at ${at}.from`));
+        }
+        for (const key of ['to', 'reason', 'at'] as const) {
+          if (typeof override[key] !== 'string' || !override[key].trim()) {
+            errors.push(routeDecisionError('empty-value', `Expected non-empty ${at}.${key}`));
+          }
+        }
+      });
+    }
+  }
+
+  // Empty recommended roles (and an override's empty `from`) are legitimate;
+  // every other string goes through the shared public-value gate.
   const nonEmptyStrings = JSON.parse(JSON.stringify(value, (_key, item) => (item === '' ? undefined : item))) as unknown;
   validatePublicStrings(nonEmptyStrings, 'route_decision', errors, 'route_decision');
 
@@ -774,6 +825,12 @@ export function validateMetadataFields(meta: PrMetadata): PrMetadataError[] {
         field: 'route_decision',
         code: 'unsupported-version',
         message: 'route_decision requires route_schema 2',
+      });
+    } else if (meta.route_decision.overrides !== undefined && meta.route_schema < 3) {
+      errors.push({
+        field: 'route_decision',
+        code: 'unsupported-version',
+        message: 'route_decision.overrides requires route_schema 3',
       });
     }
     errors.push(...validateRouteDecision(meta.route_decision));

@@ -177,6 +177,33 @@ describe('reconcilePrRoute', () => {
       assert.equal(result.route.coder.resolved_model, 'strong-coder');
     });
 
+    // protects: the PR stamp recording what Hokusai recommended but not who overrode it (HOK-3363).
+    it('stamps the route record overrides from the expanded route artifact', async () => {
+      const result = await reconcilePrRoute(
+        { issue: 'HOK-3098', featureDir, currentHeadSha: head },
+        depsFor(featureDir, {
+          'routing.jsonl': `${JSON.stringify(firstDecision)}\n`,
+          '.coding-result.json': coding,
+          '.post-expansion-route.json': {
+            coder: 'strong-coder',
+            stageRoutes: {
+              planner: { executed: 'planner-a', overrides: [] },
+              coder: {
+                hokusai: { requestId: 'req-1', recommended: 'cheap-coder' },
+                executed: 'strong-coder',
+                overrides: [{ source: 'escalation', from: 'cheap-coder', to: 'strong-coder', reason: 'hokusai_reask_below_floor', at: '2026-09-28T12:00:01.000Z', hokusai: { requestId: 'req-2' } }],
+              },
+              reviewer: { executed: 'reviewer-a', overrides: [] },
+            },
+          },
+        }),
+      );
+      assert.deepEqual(result.decision?.overrides, [
+        { stage: 'coder', source: 'escalation', from: 'cheap-coder', to: 'strong-coder', reason: 'hokusai_reask_below_floor', at: '2026-09-28T12:00:01.000Z' },
+      ]);
+      assert.equal(result.decision?.recommended.coder, 'cheap-coder');
+    });
+
     it('a genuine re-route yields the latest decision with supersedes', async () => {
       const result = await reconcilePrRoute(
         { issue: 'HOK-3098', featureDir, currentHeadSha: head },

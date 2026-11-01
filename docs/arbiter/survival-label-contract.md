@@ -1,4 +1,12 @@
-# Arbiter S2 Survival Label Contract (v1.0.0)
+# Arbiter S2 Survival Label Contract (v1.0.0, extended by v1.1.0)
+
+> **v1.1.0 (HOK-3265, 2026-10-20).** The canonical v1.1.0 artefacts live in
+> `@hokusai/core` (hokusai-sdk `packages/core/schemas/arbiter-survival-label.schema.json`
+> and `packages/core/src/arbiter-survival-label.ts`); `@hokusai/scan` emits them.
+> v1.1.0 adds `envelope.integration_mode` and admits `main` for direct-merge
+> repos — see [The squash-promotion wrinkle](#the-squash-promotion-wrinkle).
+> Nothing else changes, and v1.0.0 rows remain valid. The `shared/` copies in
+> this repo are the v1.0.0 snapshot that wavemill's own labeller still emits.
 
 Status: frozen for HOK-2803. This document is the human-readable side of the
 survival-label contract between the **wavemill labeller** (producer) and the
@@ -141,7 +149,7 @@ The schema additionally enforces outcome/report consistency: e.g.
 |---|---|---|
 | `exact_revert` | `reverted` | Later commit(s) exactly restored pre-change lines over the PR ranges |
 | `line_range_followup` | `followup`, `substantially_rewritten` | A later change intersected and amended the labelled ranges |
-| `linked_issue_or_pr` | `followup` | A later PR/issue explicitly references the labelled change as needing amendment |
+| `linked_issue_or_pr` | `followup` | A later PR/issue explicitly references the labelled change as needing amendment. hokusai-scan labeller ≥ 1.3.0 counts only references from the same repo, by a non-bot author, and not from a PR into another branch (backports) |
 | `pre_merge_human_edit` | `followup` | Human materially undid/replaced the candidate ranges before merge (§3) |
 | `task_redispatch` | `followup` | The same task was redispatched to redo the work |
 | `substantial_rewrite` | `substantially_rewritten` | `survival_ratio` below the versioned threshold |
@@ -166,9 +174,10 @@ Everything a downstream re-runner needs to reproduce the label bit-for-bit:
 | `labeller_version` | Semver of the labeller code |
 | `normalization_version` | Semver of the normalizer + threshold table (whitespace/formatter stripping, rename tracking, substantial-rewrite threshold) |
 | `pr_head_sha` | Head commit of the labelled PR branch |
-| `merge_sha` | Integration-branch merge commit for this PR |
-| `horizon_terminal_sha` | Tip of `integration_branch` at (`merge_sha` committer time + `horizon_days`), resolved deterministically from the git graph |
+| `merge_sha` | Integration-branch merge commit for this PR. For a bors rollup member (`direct` mode corpora), the member's own `Rollup merge of #N` commit: reachable from `integration_branch` through the rollup's landing merge, but not on its first-parent walk |
+| `horizon_terminal_sha` | Tip of `integration_branch` at (`merge_sha` committer time + `horizon_days`), resolved deterministically from the git graph. For a rollup member the clock starts at the landing merge, when the change reached the branch |
 | `integration_branch` | The branch the labeller walked, e.g. `auto/integration` |
+| `integration_mode` | v1.1.0+: `promotion` (the branch is later squash-promoted, e.g. wavemill's `auto/integration` → `main`) or `direct` (PRs merge straight into it). Absent on v1.0.0 rows |
 | `computed_at` | ISO-8601 UTC; latest `computed_at` per (`prUrl`, `horizon_days`) wins in queries |
 
 ### The squash-promotion wrinkle
@@ -178,9 +187,14 @@ In squash-promotion repos `main` is a squashed rewrite that destroys the
 per-PR merge boundary and intermediate SHAs the labeller needs. The contract
 therefore carries the walked branch and every anchor SHA so any verifier can
 re-walk the same graph without touching `main`. In v1.0.0 the schema **hard
-rejects** `integration_branch = 'main'`; if a non-squash repo legitimately
-integrates on `main`, relaxing this to advisory is a non-breaking v1.1.0
-change.
+rejects** `integration_branch = 'main'`.
+
+v1.1.0 makes that relaxation for repos that legitimately integrate on `main`.
+Every v1.1.0 row declares `envelope.integration_mode`. `main` is accepted only
+with `integration_mode = 'direct'`: PRs merge straight into it, so its
+first-parent lineage *is* the per-PR history. Squash-promotion repos record
+`promotion` and keep the ban. The HOK-3022 public corpus is all direct-merge
+repos. Wavemill itself stays `promotion` on `auto/integration`.
 
 ## 7. Line ranges (SHA-anchored coordinates)
 

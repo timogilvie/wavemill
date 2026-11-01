@@ -245,6 +245,7 @@ import type {
 import type { ChallengeRoutingMeta } from './challenge-comparison.ts';
 import type { ChallengeStage } from './challenge-mode.ts';
 import type { TaskCostSummaryV1 } from './sdk-task-cost/contract.ts';
+import type { StageRoutes } from './route-override-record.ts';
 import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 import type { ArmFaultClass } from './arm-failure-taxonomy.ts';
 
@@ -2004,8 +2005,15 @@ export interface EvalRouteProvenance {
   bootstrapRoute?: EvalRouteArtifact;
   expandedRoute?: EvalRouteArtifact;
   activeRoute?: EvalRouteArtifact;
-  routeChanged?: boolean;
   decisionSource?: 'bootstrap' | 'expanded' | 'preserved';
+  /**
+   * The one per-stage route record (HOK-3363): what Hokusai recommended, what
+   * executed, and every override (escalation, launchability, challenge,
+   * operator). Replaces the retired `routeChanged` flag.
+   */
+  stageRoutes?: StageRoutes;
+  /** Hokusai's join key (`inference_log_id`) for the routed decision. */
+  hokusaiInferenceLogId?: string;
   expandedCacheHit?: boolean;
   packetHash?: string;
   routeSource?: 'batch' | 'single' | 'cache';

@@ -546,6 +546,7 @@ TESTS=(
   shared/lib/ready-migration-base.test.ts
   shared/lib/pr-route-provenance.test.ts
   shared/lib/route-decision.test.ts
+  shared/lib/route-override-record.test.ts
   shared/lib/resource-adapters/dspy-adapter.test.ts
   shared/lib/resource-adapters/native-runtime-adapter.test.ts
   shared/lib/resource-adapters/prompt-adapter.test.ts

@@ -21,6 +21,7 @@ import {
   toPrRouteDecision,
   type RouteDecisionRecord,
 } from './route-decision.ts';
+import { overrideStageModel } from './route-override-record.ts';
 import type { WorkflowRouteDecision } from './workflow-router.ts';
 
 const NOW = () => new Date('2026-09-28T12:00:00.000Z');
@@ -113,12 +114,17 @@ describe('resolvePolicyVersion', () => {
 });
 
 describe('recommendedRouteOf', () => {
-  it('prefers the pre-escalation snapshot over the escalated final route', () => {
+  // protects: `recommended` on the PR reporting the escalated coder instead of what Hokusai said (HOK-3363).
+  it('reads the decided model from the route record, not the overridden final route', () => {
+    const decided = decision({ routingMode: 'hokusai', coder: 'cheap-coder' });
+    const escalated = overrideStageModel(decided, 'coder', 'strong-coder', {
+      source: 'escalation',
+      reason: 'hokusai_reask_below_floor',
+      at: '2026-09-28T12:00:00.000Z',
+    });
+    assert.equal(escalated.coder, 'strong-coder');
     assert.deepEqual(
-      recommendedRouteOf(decision({
-        coder: 'strong-coder',
-        preEscalationRoute: { planner: 'planner-a', coder: 'cheap-coder', reviewer: 'reviewer-a' },
-      })),
+      recommendedRouteOf(escalated),
       { planner: 'planner-a', coder: 'cheap-coder', reviewer: 'reviewer-a' },
     );
   });

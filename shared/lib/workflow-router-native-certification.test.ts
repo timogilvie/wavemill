@@ -465,13 +465,17 @@ await test('HOK-3142: Hokusai-selected coder without a live canary is substitute
     assert.equal(decision.routingMode, 'hokusai');
     assert.notEqual(decision.coder, 'qwen-3-coder', 'routing must never select an unlaunchable coder');
     assert.ok(decision.coder, 'a launchable substitute coder is selected');
-    const substitution = decision.launchabilitySubstitutions?.find((entry) => entry.role === 'coder');
-    assert.ok(substitution, 'substitution is recorded on the decision');
+    // protects: a launchability substitution of Hokusai's coder never reaching the route record (HOK-3363).
+    const coderRecord = decision.stageRoutes?.coder;
+    const substitution = coderRecord?.overrides.find((entry) => entry.source === 'launchability');
+    assert.ok(substitution, 'substitution is recorded as a launchability override');
     assert.equal(substitution?.from, 'qwen-3-coder');
     assert.equal(substitution?.to, decision.coder);
     assert.equal(substitution?.reason, 'uncertified');
-    assert.equal(substitution?.certification, 'missing_live_canary');
-    assert.equal(decision.preEscalationRoute?.coder, 'qwen-3-coder', 'the original pick is preserved');
+    assert.ok(substitution?.source === 'launchability');
+    assert.equal(substitution.certification, 'missing_live_canary');
+    assert.equal(coderRecord?.hokusai?.recommended, 'qwen-3-coder', 'Hokusai\'s pick is preserved');
+    assert.equal(coderRecord?.executed, decision.coder);
     assert.ok(decision.reasoning.some((line) => line.includes('Launchability guard: coder qwen-3-coder')));
   } finally {
     globalThis.fetch = originalFetch;
@@ -493,7 +497,10 @@ await test('HOK-3142: enforceLaunchableRoute replaces an unlaunchable coder and 
 
     assert.notEqual(decision.coder, 'qwen-3-coder');
     assert.ok(['claude-haiku-4-5-20251001', 'claude-sonnet-4-5-20250929'].includes(decision.coder));
-    assert.equal(decision.launchabilitySubstitutions?.[0]?.certification, 'missing_live_canary');
+    const override = decision.stageRoutes?.coder.overrides[0];
+    assert.ok(override?.source === 'launchability');
+    assert.equal(override.from, 'qwen-3-coder');
+    assert.equal(override.certification, 'missing_live_canary');
     assert.equal(decision.launchabilityBlocked, undefined);
   } finally {
     cleanup();
@@ -509,7 +516,7 @@ await test('HOK-3142: enforceLaunchableRoute is a no-op for launchable routes an
       skipDifficultyClassification: true,
     };
     const decision = routeWorkflow('Implement a new feature with tests.', options);
-    assert.equal(decision.launchabilitySubstitutions, undefined);
+    assert.deepEqual(decision.stageRoutes?.coder.overrides.filter((o) => o.source === 'launchability'), []);
     assert.equal(enforceLaunchableRoute(decision, options), decision);
     const unlaunchable = { ...decision, coder: 'qwen-3-coder' };
     assert.equal(enforceLaunchableRoute(unlaunchable, {}), unlaunchable, 'repo-less routing is untouched');

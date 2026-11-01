@@ -324,6 +324,8 @@ for f in \
   "$REPO_DIR"/tests/journeys/fixtures/dirty-tree-coding-complete/fake-agent/review \
   "$REPO_DIR"/tests/journeys/post-merge-eval-reap.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/post-merge-eval-reap/bin/claude \
+  "$REPO_DIR"/tests/journeys/escalation-override-record.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/escalation-override-record/bin/claude \
   "$REPO_DIR"/tests/journeys/agent-idle-background-job.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/agent-idle-background-job/agent-session.sh \
   "$REPO_DIR"/tests/journeys/fixtures/agent-idle-background-job/fake-agent/coding \

@@ -8,6 +8,14 @@
 // is logged to $FAKE_LINEAR_LOG; queries the fake does not recognise are
 // logged to $FAKE_LINEAR_UNHANDLED and answered with a GraphQL error.
 //
+// It also serves the Hokusai Model 30 predict edge (HOK-3363) at
+// https://hokusai.fake/… from a script ($FAKE_HOKUSAI_SCRIPT):
+//   { "default": <predict response>, "byObjective": { "<objective>": <response> } }
+// The response is chosen by the request's `inputs.routing.objective`, so every
+// routing pass (launch route, expanded reroute) gets the same first answer and
+// the same re-ask answer regardless of how often the mill routes. Each request
+// is logged to $FAKE_HOKUSAI_LOG.
+//
 // Any other non-loopback fetch is refused, so a journey can never reach the
 // real network by accident.
 
@@ -181,8 +189,31 @@ function isLoopback(url) {
   }
 }
 
+function answerHokusai(init) {
+  const script = process.env.FAKE_HOKUSAI_SCRIPT;
+  if (!script) throw new TypeError('fake hokusai: FAKE_HOKUSAI_SCRIPT is not set');
+  const request = JSON.parse(init.body ?? '{}');
+  const routing = request?.inputs?.routing ?? {};
+  const objective = routing.objective ?? null;
+  const { default: fallback, byObjective = {} } = JSON.parse(readFileSync(script, 'utf8'));
+  const response = (objective && byObjective[objective]) || fallback;
+  const log = process.env.FAKE_HOKUSAI_LOG;
+  if (log) {
+    appendFileSync(log, `${JSON.stringify({
+      at: new Date().toISOString(),
+      objective,
+      availableCoderModels: routing.available_coder_models ?? null,
+      inferenceLogId: response?.inference_log_id ?? null,
+    })}\n`);
+  }
+  return new Response(JSON.stringify(response), { status: 200, headers: { 'content-type': 'application/json' } });
+}
+
 globalThis.fetch = async (input, init = {}) => {
   const url = typeof input === 'string' ? input : input?.url ?? String(input);
+  if (url.startsWith('https://hokusai.fake/')) {
+    return answerHokusai(init);
+  }
   if (url.startsWith('https://api.linear.app/graphql')) {
     if (!STATE) throw new TypeError('fake linear: FAKE_LINEAR_STATE is not set');
     const { query = '', variables } = JSON.parse(init.body ?? '{}');

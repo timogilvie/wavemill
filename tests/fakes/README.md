@@ -9,6 +9,7 @@ services (`fakes-contract.test.sh`).
 |------|------|-----------------|
 | GitHub CLI | `gh.mjs` (via `bin/gh`) | PATH. Stateful JSON (`$FAKE_GH_STATE`) backed by a real bare origin (`$FAKE_GH_ORIGIN`): PR heads follow real pushes, `pr merge` writes a real squash/merge commit, conflicts are real. |
 | Linear | `linear-fetch-preload.mjs` | `NODE_OPTIONS=--import=…` replaces `fetch` for `api.linear.app/graphql`, so the real Linear tools run unmodified. Refuses every other non-loopback fetch. |
+| Hokusai | `linear-fetch-preload.mjs` | Same preload answers the Model 30 predict edge at `https://hokusai.fake/…` from `$FAKE_HOKUSAI_SCRIPT` (`{default, byObjective}`), choosing the response by the request's routing objective; requests are logged to `$FAKE_HOKUSAI_LOG` (HOK-3363). |
 | tmux | `bin/tmux` | PATH. The real tmux binary on a private socket (`$FAKE_TMUX_SOCK`). |
 | Agent CLI | `bin/claude` | PATH. Runs inside the mill's agent panes and performs each phase's real contract (task packet + plan.md; commit + `.coding-complete`; push + `gh pr create` + review artifacts). |
 
