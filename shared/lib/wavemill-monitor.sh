@@ -12883,7 +12883,7 @@ review_recovery_coordinator_locked() {
             # gating on non-challenger here avoids double-counting the circuit.
             challenge_selection_health_record_review_timeout \
               "$(get_task_meta "$issue" "challengePairId" 2>/dev/null || printf '%s' "$issue")" \
-              "$reviewer_model" || true
+              "$reviewer_model" "$feature_dir" || true
           fi
         fi
         review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
