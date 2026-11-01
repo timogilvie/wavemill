@@ -2094,9 +2094,8 @@ function routeWorkflowStageAwareInternal(
 
     decision = {
       ...stageAwareDecision,
-      planner: finalPlanner,
-      coder: finalCoder,
-      reviewer: finalReviewer,
+      // allow-stage-launchability: the local router composing its own decision (heuristic overlay + difficulty floor); nothing was decided yet, so nothing is overridden.
+      planner: finalPlanner, coder: finalCoder, reviewer: finalReviewer,
       confidence: normalizeDecisionConfidence(stageAwareDecision.confidence),
       signals: baseSignals,
     };
@@ -2124,9 +2123,8 @@ function routeWorkflowStageAwareInternal(
 
     decision = {
       ...stageAwareDecision,
-      planner: saPlanner,
-      coder: saCoder,
-      reviewer: saReviewer,
+      // allow-stage-launchability: the local router applying its own difficulty floor while composing its decision; not an override.
+      planner: saPlanner, coder: saCoder, reviewer: saReviewer,
       confidence: normalizeDecisionConfidence(stageAwareDecision.confidence),
       signals: baseSignals,
     };
