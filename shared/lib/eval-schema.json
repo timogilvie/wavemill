@@ -519,6 +519,51 @@
         "review": { "$ref": "#/$defs/stageExecutionIdentity" }
       }
     },
+    "budgetExhaustions": {
+      "type": "array",
+      "description": "HOK-3362: every native stage attempt that stopped on a budget reason, read from the stage results (current and history). faultClass is derived from the fact by classifyArmFault, never stored as primary on the stage.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stage",
+          "attempt",
+          "fact",
+          "faultClass"
+        ],
+        "properties": {
+          "stage": {
+            "enum": [
+              "planning",
+              "coding",
+              "review"
+            ]
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fact": {
+            "$ref": "#/$defs/budgetExhausted"
+          },
+          "faultClass": {
+            "enum": [
+              "harness-fault",
+              "selection-fault",
+              "provider-fault",
+              "model-fault",
+              "unknown-fault"
+            ]
+          }
+        }
+      }
+    },
     "nonRewardReason": {
       "type": "object",
       "description": "Stable user-readable reason why the record is not reward eligible.",
@@ -2952,6 +2997,87 @@
     }
   },
   "$defs": {
+    "budgetExhausted": {
+      "type": "object",
+      "description": "HOK-3362: the one budget-exhaustion fact (shared/lib/native-agent/budget-exhaustion.ts). The fault class is derived from it, never stored.",
+      "required": [
+        "kind",
+        "stopReason",
+        "limit",
+        "used",
+        "progress"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "wall_clock",
+            "turn",
+            "tool_call",
+            "token",
+            "cost"
+          ]
+        },
+        "stopReason": {
+          "enum": [
+            "wall_clock_limit",
+            "turn_limit",
+            "tool_call_limit",
+            "token_limit",
+            "cost_limit"
+          ]
+        },
+        "limit": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "used": {
+          "type": "number",
+          "minimum": 0
+        },
+        "progress": {
+          "type": "object",
+          "required": [
+            "turnsCompleted",
+            "toolCallsExecuted",
+            "wallClockMs"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "turnsCompleted": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "toolCallsExecuted": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "wallClockMs": {
+              "type": "number",
+              "minimum": 0
+            },
+            "mutationFailures": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "providerWaitMs": {
+              "type": "number",
+              "minimum": 0
+            },
+            "providerErrorRetries": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "interruptedRequest": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
     "TaskCostHarness": {
       "type": "string",
       "description": "SDK TaskCostHarness (TASK_COST_HARNESSES).",

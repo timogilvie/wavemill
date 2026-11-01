@@ -15,6 +15,8 @@ import type {
 import type { ExecutedIdentity, ReviewExecutedIdentitySet } from './challenge-execution-contract.ts';
 import { parsePiRuntimeVersions, piRuntimeVersionsField } from './native-agent/pi-runtime-version.ts';
 import { resolveTaskArtifact } from './task-artifact-lookup.ts';
+import { parseBudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
+import { classifyArmFault } from './arm-failure-taxonomy.ts';
 
 const MAX_SNIPPET_CHARS = 320;
 
@@ -639,6 +641,51 @@ export function buildStageExecutionIdentity(input: {
     }
   }
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+interface BudgetAttemptShape {
+  model?: unknown;
+  executedModel?: unknown;
+  budgetExhausted?: unknown;
+}
+
+/**
+ * Collect every native stage attempt that stopped on a budget reason (HOK-3362)
+ * from `<stageResultsDir>/.{planning|coding|review}-result.json`: the archived
+ * `history` attempts first, then the current one. The fault class is derived
+ * from each fact by `classifyArmFault` (HOK-3338 rule 3: derived, not stored).
+ *
+ * Fail-soft: missing/malformed results and invalid facts are skipped. Returns
+ * `undefined` when no attempt exhausted a budget.
+ */
+export function buildBudgetExhaustions(input: {
+  stageResultsDir: string;
+}): import('./eval-schema.ts').EvalRecord['budgetExhaustions'] {
+  const exhaustions: NonNullable<import('./eval-schema.ts').EvalRecord['budgetExhaustions']> = [];
+  for (const stage of PROVIDER_IDENTITY_STAGES) {
+    const result = readStageResultWithIdentity(input.stageResultsDir, stage) as
+      (BudgetAttemptShape & { history?: unknown }) | undefined;
+    if (!result) continue;
+    const history = Array.isArray(result.history) ? result.history as BudgetAttemptShape[] : [];
+    const attempts: BudgetAttemptShape[] = [...history, result];
+    attempts.forEach((attempt, index) => {
+      const fact = parseBudgetExhaustedFact(attempt?.budgetExhausted ?? null);
+      if (!fact) return;
+      const model = typeof attempt.executedModel === 'string' && attempt.executedModel
+        ? attempt.executedModel
+        : typeof attempt.model === 'string' && attempt.model
+          ? attempt.model
+          : null;
+      exhaustions.push({
+        stage,
+        attempt: index + 1,
+        model,
+        fact,
+        faultClass: classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact }),
+      });
+    });
+  }
+  return exhaustions.length > 0 ? exhaustions : undefined;
 }
 
 /**

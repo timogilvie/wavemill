@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import type { EvalRecord } from './eval-schema.ts';
 import {
+  buildBudgetExhaustions,
   buildChallengeStageEval,
   buildStageExecutionIdentity,
   extractReviewExecutedIdentity,
@@ -442,5 +443,71 @@ describe('buildStageExecutionIdentity Pi runtime provenance (HOK-3164)', () => {
       executedModel: 'm',
       executionEvidence: { status: 'direct', piRuntimeVersions: { 'pi-tui': '1.0.2' } },
     }), false);
+  });
+});
+
+describe('buildBudgetExhaustions (HOK-3362)', () => {
+  const require = createRequire(import.meta.url);
+  const Ajv2020 = require('ajv/dist/2020').default || require('ajv/dist/2020');
+  const ajv = new Ajv2020({ allErrors: true, strict: false, validateFormats: false });
+  ajv.addSchema(require('./eval-schema.json'));
+  const validateField = ajv.compile({
+    $ref: 'eval-record.schema.json#/properties/budgetExhaustions',
+  }) as ((value: unknown) => boolean) & { errors?: unknown };
+
+  const wallClock = {
+    kind: 'wall_clock',
+    stopReason: 'wall_clock_limit',
+    limit: 3_600_000,
+    used: 3_600_000,
+    progress: { turnsCompleted: 145, toolCallsExecuted: 230, wallClockMs: 3_600_000, providerErrorRetries: 0, interruptedRequest: true },
+  };
+
+  // protects: a failed budget attempt that a successful relaunch archived into history never reaching the eval record
+  it('collects archived and current budget attempts with the derived class, in schema shape', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'budget-exhaustions-'));
+    try {
+      writeFileSync(join(dir, '.coding-result.json'), JSON.stringify({
+        stage: 'coding',
+        status: 'completed',
+        model: 'glm-5.3-flash',
+        executedModel: 'z-ai/glm-5.3-flash',
+        history: [
+          { status: 'failed', model: 'glm-5.3-flash', executedModel: 'z-ai/glm-5.3-flash', budgetExhausted: wallClock },
+          { status: 'failed', model: 'glm-5.3-flash', budgetExhausted: { kind: 'nope' } },
+        ],
+      }));
+      writeFileSync(join(dir, '.review-result.json'), JSON.stringify({
+        stage: 'review',
+        status: 'failed',
+        model: 'kimi-k3',
+        budgetExhausted: {
+          kind: 'turn',
+          stopReason: 'turn_limit',
+          limit: 11,
+          used: 11,
+          progress: { turnsCompleted: 11, toolCallsExecuted: 40, wallClockMs: 200_000 },
+        },
+      }));
+      const exhaustions = buildBudgetExhaustions({ stageResultsDir: dir });
+      assert.deepEqual(exhaustions?.map((entry) => [entry.stage, entry.attempt, entry.model, entry.fact.kind, entry.faultClass]), [
+        ['coding', 1, 'z-ai/glm-5.3-flash', 'wall_clock', 'model-fault'],
+        ['review', 1, 'kimi-k3', 'turn', 'model-fault'],
+      ]);
+      assert.equal(validateField(exhaustions), true, JSON.stringify(validateField.errors));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // protects: an empty budgetExhaustions array polluting records with no budget stop
+  it('returns undefined when no attempt exhausted a budget', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'budget-exhaustions-none-'));
+    try {
+      writeFileSync(join(dir, '.coding-result.json'), JSON.stringify({ stage: 'coding', status: 'completed', model: 'm' }));
+      assert.equal(buildBudgetExhaustions({ stageResultsDir: dir }), undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

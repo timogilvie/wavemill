@@ -42,6 +42,7 @@ import {
 } from './eval-record-builder.ts';
 import {
   buildChallengeStageEval,
+  buildBudgetExhaustions,
   buildStageExecutionIdentity,
   extractReviewExecutedIdentity,
   hasProviderModelSubstitution,
@@ -722,6 +723,15 @@ export function enrichPostCompletionRecord(
       }
     } catch (err) {
       console.warn(`Post-completion eval: stage execution identity failed — ${errorMessage(err)}`);
+    }
+    // HOK-3362: every budget-exhausted stage attempt, with its derived class.
+    try {
+      const budgetExhaustions = buildBudgetExhaustions({ stageResultsDir: input.stageResultsDir });
+      if (budgetExhaustions) {
+        record.budgetExhaustions = budgetExhaustions;
+      }
+    } catch (err) {
+      console.warn(`Post-completion eval: budget exhaustion collection failed — ${errorMessage(err)}`);
     }
   }
   const attestation = attestEvalRecordChallengeExecution(record, input.repoDir);
