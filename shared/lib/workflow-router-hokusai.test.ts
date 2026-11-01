@@ -9,6 +9,7 @@ import {
   baseConfig,
   makeRepo,
   mockHokusaiFetch,
+  mockHokusaiFetchSequence,
   originalFetch,
   printBanner,
   reportResults,
@@ -99,11 +100,12 @@ await test('auto mode rejects disabled hokusai model selections', async () => {
   }
 });
 
-await test('low expected success escalates cheap hokusai coder when budget allows', async () => {
-  const { repoDir, cleanup } = makeRepo({
+function hokusaiRepo(routerOverrides: Record<string, unknown> = {}) {
+  return makeRepo({
     router: {
       ...baseConfig().router,
       mode: 'auto',
+      ...routerOverrides,
       hokusai: {
         endpoint: 'http://localhost:8080/predict',
         apiKey: 'test-token',
@@ -111,159 +113,172 @@ await test('low expected success escalates cheap hokusai coder when budget allow
       },
     },
   });
+}
 
-  mockHokusaiFetch({
-    estimated_success_under_budget: 0.3,
-    confidence: 0.8,
-  });
+const HAIKU = 'claude-haiku-4-5-20251001';
+const OPUS = 'claude-opus-4-7';
 
-  try {
-    const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', {
-      repoDir,
-      maxCostUsd: 25,
-    });
-    assert.notEqual(decision.coder, 'claude-haiku-4-5-20251001');
-    assert.equal(decision.provenance?.escalation?.outcome, 'escalated');
-    assert.equal(decision.provenance?.escalation?.initialRoute.coder, 'claude-haiku-4-5-20251001');
-    assert.equal(decision.provenance?.escalation?.finalRoute.coder, decision.coder);
-    assert.deepEqual(
-      decision.provenance?.escalation?.triggers.map((trigger) => trigger.metric),
-      ['expectedSuccess'],
-    );
-    assert.ok(decision.provenance?.escalation?.finalRoute.cost ?? Infinity <= 25);
-  } finally {
-    globalThis.fetch = originalFetch;
-    cleanup();
-  }
-});
-
-await test('low confidence independently escalates when expected success is above floor', async () => {
-  const { repoDir, cleanup } = makeRepo({
-    router: {
-      ...baseConfig().router,
-      mode: 'auto',
-      hokusai: {
-        endpoint: 'http://localhost:8080/predict',
-        apiKey: 'test-token',
-        timeout: 1000,
-      },
+// protects: router escalation ranking coders locally instead of re-asking Hokusai (HOK-3363).
+await test('low Hokusai confidence re-asks Hokusai for highest_reliability without the low-confidence coder', async () => {
+  const { repoDir, cleanup } = hokusaiRepo();
+  const { requests } = mockHokusaiFetchSequence([
+    {
+      strategy: { estimated_success_under_budget: 0.8, confidence: 0.334 },
+      metadata: { request_id: 'req-1' },
+      inferenceLogId: 'req-1',
     },
-  });
-
-  mockHokusaiFetch({
-    estimated_success_under_budget: 0.8,
-    confidence: 0.29,
-  });
-
-  try {
-    const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', {
-      repoDir,
-      maxCostUsd: 25,
-    });
-    assert.notEqual(decision.coder, 'claude-haiku-4-5-20251001');
-    assert.equal(decision.provenance?.escalation?.outcome, 'escalated');
-    assert.deepEqual(
-      decision.provenance?.escalation?.triggers.map((trigger) => trigger.metric),
-      ['confidence'],
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-    cleanup();
-  }
-});
-
-await test('low success at budget ceiling keeps original route and records affordability reason', async () => {
-  const { repoDir, cleanup } = makeRepo({
-    router: {
-      ...baseConfig().router,
-      mode: 'auto',
-      hokusai: {
-        endpoint: 'http://localhost:8080/predict',
-        apiKey: 'test-token',
-        timeout: 1000,
-      },
+    {
+      strategy: { coder_model: OPUS, estimated_success_under_budget: 0.82, confidence: 0.71 },
+      metadata: { request_id: 'req-2' },
+      inferenceLogId: 'req-2',
     },
-  });
-
-  mockHokusaiFetch({
-    estimated_success_under_budget: 0.3,
-    estimated_cost_usd: 0.01,
-    confidence: 0.8,
-  });
+  ]);
 
   try {
-    const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', {
-      repoDir,
-      maxCostUsd: 0.01,
-    });
-    assert.equal(decision.coder, 'claude-haiku-4-5-20251001');
-    assert.equal(decision.provenance?.escalation?.outcome, 'no_affordable_stronger_candidate');
-    assert.match(decision.provenance?.escalation?.reason ?? '', /budget/);
+    const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', { repoDir, maxCostUsd: 25 });
+
+    assert.equal(requests.length, 2, 'exactly one re-ask');
+    const first = requests[0].inputs.routing ?? {};
+    const reask = requests[1].inputs.routing ?? {};
+    assert.equal(first.objective, undefined, 'the first ask uses Hokusai\'s default objective');
+    assert.equal(reask.objective, 'highest_reliability');
+    assert.ok(Array.isArray(reask.available_coder_models) && reask.available_coder_models.length > 0);
+    assert.ok(!reask.available_coder_models.includes(HAIKU), 'the low-confidence coder is excluded');
+    assert.deepEqual(reask.available_planner_models, ['claude-sonnet-4-5-20250929'], 'planner pinned');
+    assert.deepEqual(reask.available_reviewer_models, [HAIKU], 'reviewer pinned');
+
+    assert.equal(decision.routingMode, 'hokusai', 'the escalated route is still Hokusai\'s decision');
+    assert.equal(decision.coder, OPUS);
+    assert.equal(decision.confidence, 0.71);
+    assert.equal(decision.provenance?.inferenceLogId, 'req-1', 'the first request stays the join key');
+
+    const coder = decision.stageRoutes?.coder;
+    assert.deepEqual(coder?.hokusai, { requestId: 'req-1', recommended: HAIKU });
+    assert.equal(coder?.executed, OPUS);
+    assert.equal(coder?.overrides.length, 1);
+    const [override] = coder!.overrides;
+    assert.equal(override.source, 'escalation');
+    assert.equal(override.from, HAIKU);
+    assert.equal(override.to, OPUS);
+    assert.equal(override.reason, 'hokusai_reask_below_floor');
+    assert.ok(override.source === 'escalation');
+    assert.deepEqual(override.triggers, [{ metric: 'confidence', value: 0.334, threshold: 0.4 }]);
+    assert.deepEqual(override.hokusai, { requestId: 'req-2' });
+    assert.equal(decision.stageRoutes?.planner.overrides.length, 0);
   } finally {
     globalThis.fetch = originalFetch;
     cleanup();
   }
 });
 
+// protects: the expected-success floor silently not triggering the re-ask.
+await test('low expected success alone triggers the re-ask with an expectedSuccess trigger', async () => {
+  const { repoDir, cleanup } = hokusaiRepo();
+  const { requests } = mockHokusaiFetchSequence([
+    { strategy: { estimated_success_under_budget: 0.3, confidence: 0.8 } },
+    { strategy: { coder_model: OPUS, estimated_success_under_budget: 0.6, confidence: 0.8 } },
+  ]);
+
+  try {
+    const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', { repoDir, maxCostUsd: 25 });
+    assert.equal(requests.length, 2);
+    assert.equal(decision.coder, OPUS);
+    const override = decision.stageRoutes?.coder.overrides[0];
+    assert.ok(override?.source === 'escalation');
+    assert.deepEqual(override.triggers?.map((trigger) => trigger.metric), ['expectedSuccess']);
+  } finally {
+    globalThis.fetch = originalFetch;
+    cleanup();
+  }
+});
+
+// protects: a failed re-ask replacing Hokusai's route with a local guess.
+await test('a failed re-ask keeps Hokusai\'s first route and records no override', async () => {
+  const { repoDir, cleanup } = hokusaiRepo();
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls > 1) throw new Error('unreachable');
+    return new Response(JSON.stringify({
+      predictions: {
+        recommended_strategy: {
+          planner_model: 'claude-sonnet-4-5-20250929',
+          coder_model: HAIKU,
+          reviewer_model: HAIKU,
+          estimated_cost_usd: 4.55,
+          estimated_success_under_budget: 0.8,
+          confidence: 0.2,
+        },
+      },
+    }), { status: 200 });
+  };
+
+  try {
+    const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', { repoDir, maxCostUsd: 25 });
+    assert.equal(calls, 2);
+    assert.equal(decision.routingMode, 'hokusai');
+    assert.equal(decision.coder, HAIKU);
+    assert.equal(decision.stageRoutes?.coder.overrides.length, 0);
+    assert.ok(decision.reasoning.some((line) => /retained claude-haiku-4-5-20251001: Hokusai re-ask returned no route/.test(line)));
+  } finally {
+    globalThis.fetch = originalFetch;
+    cleanup();
+  }
+});
+
+// protects: floors triggering at equality (strict comparison).
 await test('escalation floors are strict and do not trigger at equality', async () => {
-  const { repoDir, cleanup } = makeRepo({
-    router: {
-      ...baseConfig().router,
-      mode: 'auto',
-      hokusai: {
-        endpoint: 'http://localhost:8080/predict',
-        apiKey: 'test-token',
-        timeout: 1000,
-      },
-    },
-  });
-
-  mockHokusaiFetch({
-    estimated_success_under_budget: 0.5,
-    confidence: 0.4,
-  });
+  const { repoDir, cleanup } = hokusaiRepo();
+  const { requests } = mockHokusaiFetchSequence([
+    { strategy: { estimated_success_under_budget: 0.5, confidence: 0.4 } },
+  ]);
 
   try {
-    const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', {
-      repoDir,
-      maxCostUsd: 25,
-    });
-    assert.equal(decision.coder, 'claude-haiku-4-5-20251001');
-    assert.equal(decision.provenance?.escalation, undefined);
+    const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', { repoDir, maxCostUsd: 25 });
+    assert.equal(requests.length, 1, 'no re-ask');
+    assert.equal(decision.coder, HAIKU);
+    assert.equal(decision.stageRoutes?.coder.overrides.length, 0);
   } finally {
     globalThis.fetch = originalFetch;
     cleanup();
   }
 });
 
+// protects: the escalation kill switch being ignored.
 await test('escalation can be disabled by router config', async () => {
+  const { repoDir, cleanup } = hokusaiRepo({ escalation: { enabled: false } });
+  const { requests } = mockHokusaiFetchSequence([
+    { strategy: { estimated_success_under_budget: 0.3, confidence: 0.29 } },
+  ]);
+
+  try {
+    const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', { repoDir, maxCostUsd: 25 });
+    assert.equal(requests.length, 1, 'no re-ask');
+    assert.equal(decision.coder, HAIKU);
+    assert.equal(decision.stageRoutes?.coder.overrides.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    cleanup();
+  }
+});
+
+// protects: locally routed decisions being "escalated" by a local stronger-coder ranking.
+await test('locally routed decisions never escalate, even below the floors', async () => {
   const { repoDir, cleanup } = makeRepo({
     router: {
       ...baseConfig().router,
       mode: 'auto',
-      escalation: { enabled: false },
-      hokusai: {
-        endpoint: 'http://localhost:8080/predict',
-        apiKey: 'test-token',
-        timeout: 1000,
-      },
+      escalation: { enabled: true, expectedSuccessFloor: 1, confidenceFloor: 1 },
     },
   });
 
-  mockHokusaiFetch({
-    estimated_success_under_budget: 0.3,
-    confidence: 0.29,
-  });
-
   try {
-    const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', {
-      repoDir,
-      maxCostUsd: 25,
-    });
-    assert.equal(decision.coder, 'claude-haiku-4-5-20251001');
-    assert.equal(decision.provenance?.escalation, undefined);
+    const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', { repoDir, maxCostUsd: 25 });
+    assert.notEqual(decision.routingMode, 'hokusai');
+    const reasons = Object.values(decision.stageRoutes ?? {}).flatMap((record) => record.overrides.map((o) => o.reason));
+    assert.ok(!reasons.includes('hokusai_reask_below_floor'), reasons.join(','));
+    assert.ok(!decision.reasoning.some((line) => /Router escalation/.test(line)));
   } finally {
-    globalThis.fetch = originalFetch;
     cleanup();
   }
 });

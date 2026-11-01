@@ -223,6 +223,12 @@ export interface HokusaiModel30ResponseMetadata {
 export interface HokusaiModel30Response {
   predictions: HokusaiModel30Predictions;
   metadata?: HokusaiModel30ResponseMetadata;
+  /**
+   * The data pipeline's prediction log id — Hokusai's join key for outcome
+   * rows. Returned at the top level; equal to `metadata.request_id`
+   * (hokusai-data-pipeline model_serving.py).
+   */
+  inference_log_id?: string;
 }
 
 export interface HokusaiModel30RequestOptions extends HokusaiInputOverrides {

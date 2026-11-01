@@ -144,7 +144,8 @@ Three callers consume it:
   to `strong_generalist` (or `frontier`) for `high` PRs. The floor runs *before*
   `finalizeDecision`, so the HOK-3142 launchability guard still runs on the
   upgraded reviewer. The decision stamps `blastRadius`; a substituted reviewer
-  is captured in `preEscalationRoute`.
+  is an `escalation` override (`reason: blast_radius_floor`) in the per-stage
+  route record (`stageRoutes`, HOK-3363).
 - `shared/lib/review-engine.ts` — `fillReviewPromptTemplate` injects the
   `HIGH_BLAST_RADIUS_GUIDANCE` block (fixture provenance, journey check, latch
   check) at the top of both the standard and scoped review prompts. The three

@@ -112,6 +112,23 @@ function parseHokusaiNeighborEvidence(rationale: string | undefined): {
   };
 }
 
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+/**
+ * Hokusai's join key for a prediction (HOK-3363). The predict endpoint
+ * returns `inference_log_id` at the top level and the same UUID as
+ * `metadata.request_id`; older servers nested it under `metadata`.
+ */
+export function resolveHokusaiInferenceLogId(
+  response: Pick<HokusaiModel30Response, 'inference_log_id' | 'metadata'>,
+): string | undefined {
+  return nonEmptyString(response.inference_log_id)
+    ?? nonEmptyString(response.metadata?.inference_log_id)
+    ?? nonEmptyString(response.metadata?.request_id);
+}
+
 function deriveNearestNeighborCount(
   predictions: HokusaiModel30Predictions,
 ): number | undefined {
@@ -133,6 +150,8 @@ export function fromHokusaiRecommendedStrategy(
   options: {
     repoDir?: string;
     metadata?: HokusaiModel30Response['metadata'];
+    /** Hokusai's join key; see {@link resolveHokusaiInferenceLogId}. */
+    inferenceLogId?: string;
     alternatives?: unknown;
     tradeoffs?: unknown;
     nearestNeighbors?: unknown;
@@ -200,7 +219,7 @@ export function fromHokusaiRecommendedStrategy(
       routedAt: new Date().toISOString(),
       routerMode: 'normal',
       ...(options.metadata?.request_id ? { requestId: String(options.metadata.request_id) } : {}),
-      ...(options.metadata?.inference_log_id ? { inferenceLogId: String(options.metadata.inference_log_id) } : {}),
+      ...(options.inferenceLogId ? { inferenceLogId: options.inferenceLogId } : {}),
       ...(typeof strategy.estimated_duration_seconds === 'number' && Number.isFinite(strategy.estimated_duration_seconds)
         ? { estimatedDurationSeconds: strategy.estimated_duration_seconds }
         : {}),
@@ -220,6 +239,7 @@ export function fromHokusaiModel30Response(
   return fromHokusaiRecommendedStrategy(response.predictions.recommended_strategy, {
     repoDir: options?.repoDir,
     metadata: response.metadata,
+    inferenceLogId: resolveHokusaiInferenceLogId(response),
     alternatives: response.predictions.alternatives,
     tradeoffs: response.predictions.tradeoffs,
     nearestNeighbors: response.predictions.nearest_neighbors,

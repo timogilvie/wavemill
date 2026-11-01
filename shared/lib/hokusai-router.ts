@@ -11,6 +11,7 @@ import { fromHokusaiModel30Response } from './hokusai-adapter.ts';
 import { upgradeRouteModelSuccessors } from './route-model-successors.ts';
 import {
   toHokusaiModel30Request,
+  type HokusaiModel30Objective,
   type HokusaiModel30Response,
   type HokusaiRecommendedStrategy,
 } from './hokusai-schema.ts';
@@ -44,6 +45,12 @@ export interface HokusaiRouterOptions {
   reviewerModels?: string[];
   maxCostUsd?: number;
   workflowStages?: string[];
+  /**
+   * Routing objective for this request. Set by router escalation's re-ask
+   * (`highest_reliability`, HOK-3363); omitted otherwise so Hokusai applies
+   * its default.
+   */
+  objective?: HokusaiModel30Objective;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -150,6 +157,7 @@ export async function routeViaHokusai(
         ? undefined
         : getConfiguredModelsForDescriptorStage(repoDir, 'reviewer')),
       maxCostUsd: options.maxCostUsd,
+      ...(options.objective ? { objective: options.objective } : {}),
       workflowStages: options.workflowStages ?? ['plan', 'code', 'review'],
     },
   );

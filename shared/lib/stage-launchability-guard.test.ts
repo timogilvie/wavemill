@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { checkGuardSource, formatGuardResult, runSourceGuard } from '../../tools/lib/source-guard.ts';
 import {
   findUnfinalizedRouterExits,
+  findUnrecordedStageSubstitutions,
   STAGE_LAUNCHABILITY_GUARD,
   topLevelFunctions,
   WORKFLOW_ROUTER_PATH,
@@ -94,6 +95,102 @@ describe('route-decision-outside-router pattern', () => {
     assert.deepEqual(patternsOf('shared/lib/x.ts', "import type { WorkflowRouteDecision } from './workflow-router.ts';\n"), []);
     assert.deepEqual(patternsOf('shared/lib/x.ts', 'export function show(decision: WorkflowRouteDecision): string {\n'), []);
     assert.deepEqual(patternsOf(WORKFLOW_ROUTER_PATH, 'function helper(d: T): WorkflowRouteDecision {\n  return finalizeDecision(d);\n}\n'), []);
+  });
+});
+
+describe('stage-substitution-without-override (HOK-3363)', () => {
+  const findingsOf = (file: string, source: string) =>
+    checkGuardSource(STAGE_LAUNCHABILITY_GUARD, file, source)
+      .filter((finding) => finding.pattern === 'stage-substitution-without-override')
+      .map((finding) => finding.line);
+
+  const SILENT = [
+    'function escalate(decision: StageAwareDecision): StageAwareDecision {',
+    '  return {',
+    '    ...decision,',
+    '    coder: stronger,',
+    '  };',
+    '}',
+    '',
+    'function inline(decision: WorkflowRouteDecision): WorkflowRouteDecision {',
+    '  return { ...decision, [role]: substitute };',
+    '}',
+    '',
+    'function assign(decision: WorkflowRouteDecision): void {',
+    '  decision.reviewer = other;',
+    '}',
+    '',
+  ].join('\n');
+
+  // protects: a new escalation/substitution path replacing a stage model without an override.
+  it('flags spread-then-role literals and role assignments in a function that never appends', () => {
+    assert.deepEqual(findUnrecordedStageSubstitutions(SILENT).map((match) => match.line), [4, 9, 13]);
+    assert.deepEqual(findingsOf(WORKFLOW_ROUTER_PATH, SILENT), [4, 9, 13]);
+  });
+
+  // protects: the guard rejecting the sanctioned path.
+  it('passes the same substitution when the function appends to the route record', () => {
+    const recorded = [
+      'function escalate(decision: StageAwareDecision): StageAwareDecision {',
+      "  const next = overrideStageModel(decision, 'coder', stronger, { source: 'escalation', reason: 'r' });",
+      '  return {',
+      '    ...next,',
+      '    coder: stronger,',
+      '  };',
+      '}',
+      '',
+      'async function writeRoute(featureDir: string): Promise<void> {',
+      "  await mutate((current) => ({ ...current, coder: to }));",
+      "  await appendRouteOverrideToFeatureDir(featureDir, 'coder', to, { source: 'launchability', reason: 'r' });",
+      '}',
+      '',
+    ].join('\n');
+    assert.deepEqual(findUnrecordedStageSubstitutions(recorded), []);
+  });
+
+  // protects: false positives on fresh decisions and comparisons.
+  it('ignores fresh literals, equality checks, nested keys and other paths', () => {
+    const fresh = [
+      'function build(): WorkflowRouteDecision {',
+      '  const route = { planner: p, coder: c, reviewer: r };',
+      '  if (decision.coder === other) return route;',
+      '  return { ...route, signals: { coder: 1 } };',
+      '}',
+      '',
+    ].join('\n');
+    assert.deepEqual(findUnrecordedStageSubstitutions(fresh), []);
+    assert.deepEqual(findingsOf('shared/lib/unrelated.ts', SILENT), []);
+  });
+
+  // protects: a local router's own decision composition being unflaggable as legitimate.
+  it('is suppressible with the stage-launchability marker', () => {
+    const suppressed = SILENT.replace('    coder: stronger,', '    // allow-stage-launchability: local router composing its own decision\n    coder: stronger,');
+    assert.deepEqual(findingsOf(WORKFLOW_ROUTER_PATH, suppressed), [10, 14]);
+  });
+});
+
+describe('private-route-change-flag (HOK-3363)', () => {
+  const patternsOf = (file: string, source: string) =>
+    checkGuardSource(STAGE_LAUNCHABILITY_GUARD, file, source).map((finding) => finding.pattern);
+
+  // protects: a retired per-mechanism route-change copy or local coder ranking coming back.
+  it('flags retired route-change flags and the local coder ranking anywhere', () => {
+    for (const line of [
+      'record.routeChanged = true;',
+      'const pre = decision.preEscalationRoute;',
+      'decision.launchabilitySubstitutions?.push(x);',
+      'if (decision.provenance?.escalation) {}',
+      'const rank = modelClassRank(candidate);',
+      'if (isStrongerCoder(a, b)) {}',
+    ]) {
+      assert.deepEqual(patternsOf('shared/lib/anything.ts', `${line}\n`), ['private-route-change-flag'], line);
+    }
+  });
+
+  // protects: false positives on docs and on routeChangedMaterially (expansion materiality, not an override flag).
+  it('ignores comments and the still-supported route-materiality helper', () => {
+    assert.deepEqual(patternsOf('shared/lib/anything.ts', '// routeChanged was retired\n'), []);
+    assert.deepEqual(patternsOf('shared/lib/anything.ts', 'const m = routeChangedMaterially(a, b);\n'), []);
   });
 });
 
