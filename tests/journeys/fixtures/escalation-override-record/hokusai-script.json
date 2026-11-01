@@ -1,0 +1,42 @@
+{
+  "default": {
+    "predictions": {
+      "recommended_strategy": {
+        "planner_model": "claude-sonnet-5",
+        "coder_model": "claude-haiku-4-5",
+        "reviewer_model": "claude-sonnet-5",
+        "plan_depth": "medium",
+        "code_depth": "medium",
+        "review_mode": "standard",
+        "estimated_cost_usd": 2.5,
+        "estimated_success_under_budget": 0.8,
+        "confidence": 0.334,
+        "objective": "highest_reliability",
+        "rationale": "Estimated highest_reliability strategy from 0 exact route match(es) across 12 nearest Wavemill router row(s)."
+      }
+    },
+    "metadata": { "request_id": "jrn-first-0001", "model_version": "production" },
+    "inference_log_id": "jrn-first-0001"
+  },
+  "byObjective": {
+    "highest_reliability": {
+      "predictions": {
+        "recommended_strategy": {
+          "planner_model": "claude-sonnet-5",
+          "coder_model": "claude-opus-5-5",
+          "reviewer_model": "claude-sonnet-5",
+          "plan_depth": "medium",
+          "code_depth": "medium",
+          "review_mode": "standard",
+          "estimated_cost_usd": 6.0,
+          "estimated_success_under_budget": 0.86,
+          "confidence": 0.72,
+          "objective": "highest_reliability",
+          "rationale": "Estimated highest_reliability strategy from 0 exact route match(es) across 12 nearest Wavemill router row(s)."
+        }
+      },
+      "metadata": { "request_id": "jrn-reask-0002", "model_version": "production" },
+      "inference_log_id": "jrn-reask-0002"
+    }
+  }
+}

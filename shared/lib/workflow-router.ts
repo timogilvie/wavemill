@@ -9,6 +9,7 @@
 
 import { readFileSync } from 'node:fs';
 import { buildEvalSummary, evaluateChallenge, type ChallengeRecommendation } from './challenge-scheduler.ts';
+import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
 import { getBudgetConfig, getChallengeSchedulerConfig, getDifficultyClassifierConfig, getHokusaiRouterConfig, getRouterConfig, isRouterCapabilityFilteringEnabled, loadWavemillConfig } from './config.ts';
 import { filterDeepSeekModels, type DeepSeekPoolFilterResult } from './deepseek-provider.ts';
 import { filterOpenRouterModels, type OpenRouterPoolFilterResult } from './openrouter-provider.ts';
@@ -875,7 +876,9 @@ async function reaskHokusaiBelowFloor(
     pools.coderModels ?? options?.coderModelsAvailable ?? options?.modelsAvailable
       ?? getConfiguredModelsForDescriptorStage(repoDir, 'coder'),
     options,
-  ).filter((modelId) => modelId !== initial.coder && !isDisabledModel(modelId));
+  // Every spelling of the low-confidence coder is excluded (HOK-3321: Hokusai
+  // may name an alias of a pool entry, e.g. claude-haiku-4-5 vs -20251001).
+  ).filter((modelId) => !challengeModelIdsEquivalent(modelId, initial.coder, repoDir) && !isDisabledModel(modelId));
   if (coderPool.length === 0) {
     return reasonedDecision(initial, `Router escalation (${triggerText}) retained ${initial.coder}: no other coder to re-ask Hokusai about.`);
   }
@@ -887,7 +890,7 @@ async function reaskHokusaiBelowFloor(
     coderModels: coderPool,
     reviewerModels: initial.reviewer ? [initial.reviewer] : pools.reviewerModels,
   });
-  if (!reask || !reask.coder || reask.coder === initial.coder || isDisabledModel(reask.coder)) {
+  if (!reask || !reask.coder || challengeModelIdsEquivalent(reask.coder, initial.coder, repoDir) || isDisabledModel(reask.coder)) {
     const why = !reask ? 'Hokusai re-ask returned no route' : `Hokusai re-ask returned ${reask.coder || 'no coder'}`;
     return reasonedDecision(initial, `Router escalation (${triggerText}) retained ${initial.coder}: ${why}.`);
   }
