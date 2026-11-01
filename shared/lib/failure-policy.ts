@@ -245,7 +245,11 @@ const KIND_ALIASES: Readonly<Record<string, string>> = {
   'openrouter-credits-exhausted': 'provider-credit-exhausted',
   'provider-quota-exhausted': 'provider-credit-exhausted',
   'provider-rate-limited': 'provider-transient-error',
+  // HOK-3362: one budget-exhaustion kind across native stages. The review
+  // result keeps `native-review-timeout` as its failureCategory (the HOK-3019
+  // escalation contract); historical planning rows used `planning-turn-limit`.
   'native-review-timeout': 'native-stage-timeout',
+  'planning-turn-limit': 'native-stage-timeout',
   // HOK-3249: the typed review category for an overflow of the budgeted input.
   'native-context-window-exceeded': 'context-window-exceeded',
   operator_abort: 'cancelled',
@@ -282,11 +286,18 @@ export function isTerminalKind(kind: string | null | undefined, challengeArm = f
 /** Typed coding handoff reasons that prove a completion-protocol violation. */
 const COMPLETION_PROTOCOL_HANDOFF_REASONS = new Set(['no_completion_artifact', 'invalid_completion_artifact']);
 
+/** Typed coding handoff reason for a budget stop (HOK-3362). */
+const BUDGET_EXHAUSTED_HANDOFF_REASON = 'budget_exhausted';
+
 /**
  * Native-loop signatures the provider classifier does not know, checked
  * BEFORE provider detection. Order matters: the most specific shapes first.
  */
 const NATIVE_PRE_PROVIDER_SIGNATURES: ReadonlyArray<readonly [RegExp, string]> = [
+  // HOK-3362: our own budget-stop detail (`describeBudgetExhaustion`) and the
+  // pre-HOK-3362 planning notes. Checked first so a budget is never read as a
+  // provider timeout.
+  [/^native-stage-timeout:|native planning rejected before approval: turn_limit/, 'native-stage-timeout'],
   [/context-exhausted|contextexhaustederror/, 'context-exhausted'],
   [/context-window|context_length_exceeded/, 'context-window-exceeded'],
   [/no endpoints found.*tool use|supports? tool use|tool use.*not supported/, 'tool-use-unsupported'],
@@ -302,20 +313,24 @@ const NATIVE_PRE_PROVIDER_SIGNATURES: ReadonlyArray<readonly [RegExp, string]> =
 const NATIVE_POST_PROVIDER_SIGNATURES: ReadonlyArray<readonly [RegExp, string]> = [
   [/interrupted: coding agent exited without recording a result/, 'coding-exited-without-result'],
   [/native review flow failed after.*findings/, 'review-no-output'],
-  [/native planning rejected before approval: turn_limit/, 'planning-turn-limit'],
 ];
 
 const PLANNING_ARTIFACT_REJECTED = /native planning final artifact rejected:\s*([A-Za-z0-9_:-]+)?/i;
 
 /**
  * Turn raw failure text into a stable kind. Precedence:
- *   1. typed completion-protocol handoff (never substring-matched);
+ *   1. typed handoff reason (never substring-matched): `budget_exhausted` is
+ *      the one budget kind (HOK-3362), the completion-protocol reasons are
+ *      `native-completion-protocol`;
  *   2. native-specific signatures, then the provider-error classifier, then
  *      HOK-3129 model-output signatures;
  *   3. `native-provider-error` when the handoff typed `provider_error`,
  *      otherwise `native-unclassified` — which is retryable, not terminal.
  */
 export function detectFailureKind(detail: string | null | undefined, handoffReason?: string | null): string {
+  if (handoffReason === BUDGET_EXHAUSTED_HANDOFF_REASON) {
+    return 'native-stage-timeout';
+  }
   if (handoffReason && COMPLETION_PROTOCOL_HANDOFF_REASONS.has(handoffReason)) {
     return 'native-completion-protocol';
   }
@@ -400,7 +415,7 @@ const NEXT_ACTIONS: Readonly<Record<string, string>> = {
   'provider-config-error': 'check provider auth/model configuration, then rerun. The provider rejected the request',
   'provider-credit-exhausted': 'top up OpenRouter credits at https://openrouter.ai/credits',
   'provider-transient-error': 'transient upstream failure. Start the phase again',
-  'native-stage-timeout': 'the native stage exhausted its wall-clock/turn/tool-call budget (recoverable infrastructure). Relaunch the same pinned reviewer with an escalated timeout',
+  'native-stage-timeout': 'the native stage exhausted its wall-clock/turn/tool-call/token/cost budget; the recorded budgetExhausted fact decides the fault class. The stage relaunches under its bounded retry (review relaunches the pinned reviewer with an escalated timeout)',
   'policy-denied': 'a mutation/network policy rejected the run (harness fault, not a model/provider signal). Review the policy decision before relaunching',
   cancelled: 'the run was cancelled by an operator or the orchestrator (not a model/provider signal). Relaunch the phase when ready',
   'empty-model-turn': 'relaunch native coding; the runtime exhausted bounded continuation after empty model turns',
@@ -413,7 +428,6 @@ const NEXT_ACTIONS: Readonly<Record<string, string>> = {
   'review-identity-mismatch': "the review artifact's reviewer identity disagreed with the arm's assignment (or execution evidence was contradicted); the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect the review-result.json intendedModel/executedModel on the closed PR",
   'review-unattributed': 'Ready was refused by the review gate but the reviewer identity could not be proven; the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect the review-result.json executionEvidence on the closed PR',
   'coding-dirty-handoff': 'the coding agent exited after writing .coding-complete with uncommitted output and did not repair it when relaunched (completion-protocol failure); the challenger is forfeited so the primary proceeds',
-  'planning-turn-limit': 'the model exhausted its planning turn budget without emitting a final plan. Relaunch the phase on a stronger planner or increase maxTurns',
   'planning-artifact-invalid': 'the plan artifact failed structural validation after one repair turn. Inspect the recorded validationError and relaunch on a stronger planner',
   'review-no-output': 'the review model finished without emitting findings or a terminal verdict. Relaunch the review phase on a stronger reviewer',
   'coding-exited-without-result': 'the coding agent exited without recording a terminal result (durable commits preserved). Relaunch coding to resume from the last durable commit',

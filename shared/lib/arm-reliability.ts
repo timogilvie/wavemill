@@ -9,6 +9,7 @@ import {
   type ArmFaultClass,
   type ChallengeArmSide,
 } from './arm-failure-taxonomy.ts';
+import { parseBudgetExhaustedFact, type BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 
 const DEFAULT_EVALS_DIR = '.wavemill/evals';
 const RELIABILITY_RECORDS_FILENAME = 'reliability-records.jsonl';
@@ -29,6 +30,11 @@ export interface ArmReliabilityRecord {
   qualitySignalEligible: boolean;
   detail?: string;
   nextAction?: string;
+  /**
+   * The typed budget fact when the arm ran out of budget (HOK-3362).
+   * `faultClass` is derived from it, never the other way round.
+   */
+  budgetExhausted?: BudgetExhaustedFact;
   source: 'challenge_abort_pair';
 }
 
@@ -41,6 +47,8 @@ export interface BuildArmReliabilityRecordInput {
   abortReason: string;
   detail?: string;
   nextAction?: string;
+  /** HOK-3362: the stage's budget fact (object or JSON); invalid input is dropped. */
+  budgetExhausted?: BudgetExhaustedFact | string | null;
   timestamp?: string;
   id?: string;
 }
@@ -55,7 +63,8 @@ export interface BuildArmReliabilityRecordInput {
  */
 export function buildArmReliabilityRecord(input: BuildArmReliabilityRecordInput): ArmReliabilityRecord {
   const failureKind = parseAbortFailureKind(input.abortReason);
-  const faultClass = classifyArmFault({ failureKind, detail: input.detail });
+  const budgetExhausted = parseBudgetExhaustedFact(input.budgetExhausted ?? null);
+  const faultClass = classifyArmFault({ failureKind, detail: input.detail, budgetExhausted });
   return {
     schemaVersion: '1.0.0',
     id: input.id ?? randomUUID(),
@@ -72,6 +81,7 @@ export function buildArmReliabilityRecord(input: BuildArmReliabilityRecordInput)
     qualitySignalEligible: isModelQualitySignal(faultClass),
     ...(input.detail ? { detail: input.detail } : {}),
     ...(input.nextAction ? { nextAction: input.nextAction } : {}),
+    ...(budgetExhausted ? { budgetExhausted } : {}),
     source: 'challenge_abort_pair',
   };
 }

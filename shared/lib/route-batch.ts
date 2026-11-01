@@ -21,6 +21,7 @@ import {
   type RouteSource,
 } from './route-artifact.ts';
 import { appendRouteDecision, buildRouteDecision, recordRouteDecision } from './route-decision.ts';
+import { bindRouteDecisionId, overrideStageModel } from './route-override-record.ts';
 import { loadStageAwareRouterContext, type StageAwareRouterContext } from './stage-aware-router.ts';
 import {
   readTaskPromptFromFile,
@@ -30,7 +31,6 @@ import {
   routeWorkflowDegradedWithContext,
   routeWorkflowHokusai,
   routeWorkflowStageAwareWithContext,
-  withPreEscalationRoute,
   type RouteWorkflowOptions,
   type WorkflowRouteDecision,
 } from './workflow-router.ts';
@@ -271,7 +271,13 @@ async function mintRouteDecision(
     const record = featureDir
       ? await recordRouteDecision(featureDir, decision)
       : buildRouteDecision(decision);
-    return record ? { ...decision, routeDecision: record } : decision;
+    return record
+      ? {
+        ...decision,
+        routeDecision: record,
+        ...(decision.stageRoutes ? { stageRoutes: bindRouteDecisionId(decision.stageRoutes, record.decision_id) } : {}),
+      }
+      : decision;
   } catch {
     return decision;
   }
@@ -298,10 +304,10 @@ export async function routeBatch(
   const results: RouteBatchResult[] = [];
   for (const task of resolvedTasks) {
     const routedDecision = await routeTaskInBatch(task.prompt, resolvedOptions, operatingMode, stageAwareContext);
-    // Pin the decided route before workspace selectors override the coder, so
-    // `recommended` never reflects a post-routing override.
+    // Mint before workspace selectors override the coder; `recommended` reads
+    // the decided model from the route record, never the override.
     let decision = withResolvedRouteBudget(await mintRouteDecision(
-      withPreEscalationRoute(routedDecision),
+      routedDecision,
       task.featureDir,
     ), {
       explicitMaxCostUsd: resolvedOptions.maxCostUsd,
@@ -319,10 +325,10 @@ export async function routeBatch(
           repoDir,
         },
       });
-      decision = {
-        ...decision,
-        coder: resolvedModel.resolved,
-      };
+      decision = overrideStageModel(decision, 'coder', resolvedModel.resolved, {
+        source: 'operator',
+        reason: 'workspace_model_selector',
+      });
     }
     const source = task.source
       || resolvedOptions.source

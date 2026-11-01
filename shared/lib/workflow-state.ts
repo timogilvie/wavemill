@@ -90,6 +90,14 @@ export type TaskRecord = {
   windowId?: string;
   /** Linear issue title persisted at launch (HOK-3221). */
   title?: string;
+  /**
+   * Run identity minted at launch (HOK-3373, `attempt-identity.ts`). Absent
+   * on legacy rows. Settlement and stale-run gating key on it
+   * (`task-settlement.ts`).
+   */
+  runId?: string;
+  /** Linear state last rendered from the settled outcome (HOK-3373). */
+  linearSyncedState?: string;
   /** Validated against `task-lifecycle-state.schema.json`; legacy rows may be partial. */
   lifecycle?: Partial<TaskLifecycleState>;
 

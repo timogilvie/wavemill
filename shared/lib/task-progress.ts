@@ -160,10 +160,11 @@ export interface TaskProgress {
   /** Non-progress liveness fact. `null` means "not probed". */
   agentProcessLive: boolean | null;
   /**
-   * HOK-3137: whether a live substantive descendant of the agent (a
-   * background task) was found in the pane subtree. `null` means "not
-   * probed" (no `panePid` was supplied). NEVER a progress source
-   * (invariant 1) — it only suppresses `stalled` while the agent is idle.
+   * HOK-3137: whether a live descendant of the agent process that started
+   * after it (a background task) was found in the agent's subtree.
+   * `null` means "not probed" (no `panePid` was supplied). NEVER a progress
+   * source (invariant 1) — it only suppresses `stalled` while the agent is
+   * idle.
    */
   agentBackgroundLive: boolean | null;
   /** Bounded, log-safe evidence backing `agentBackgroundLive`. */
@@ -198,8 +199,10 @@ export interface TaskProgressGatherOptions {
   /** Optional pane-process liveness fact; not a progress source. */
   agentProcessLive?: boolean | null;
   /**
-   * HOK-3137: optional pane-shell pid. When supplied, `gatherTaskProgressInputs`
-   * probes it for live background descendants (see `collectPaneBackgroundWork`).
+   * HOK-3137: optional pane root pid (the pane's shell, or the agent itself
+   * when it is the pane root). When supplied, `gatherTaskProgressInputs`
+   * resolves the agent pid from it structurally and probes the agent's own
+   * subtree for live background work (see `collectAgentBackgroundWork`).
    * Absent → `agentBackgroundLive` is `null` ("not probed").
    */
   panePid?: number | null;
@@ -476,8 +479,18 @@ export function matchInteractivePromptSignature(paneText: string | undefined): I
 // ── Controller process exclusion ────────────────────────────────────────────
 
 /**
- * Argv patterns that identify wavemill's own controller processes. A match
- * here means the process is NEVER counted as agent evidence (HOK-3095 (b)).
+ * Argv patterns that identify wavemill's own controller processes. Scoped to
+ * HOK-3101 invariant 2 — hook writes and process trees that are NOT under the
+ * agent (tools/observer.ts pane filtering, plus the shell twin in
+ * shared/lib/task-progress.sh). A match there is NEVER agent evidence.
+ *
+ * FORBIDDEN inside `deriveAgentBackgroundWork` (HOK-3374): background work is
+ * decided by process ownership only — a descendant of the agent process that
+ * started after it. When a controller-named process IS a child of the agent
+ * (the agent itself ran `npx tsx tools/plan-queue.test.ts`), it is the
+ * agent's work. Enforced by the AGENT_BACKGROUND_WORK_GUARD preflight guard
+ * (shared/lib/agent-background-work-guard.ts, run by
+ * tools/check-agent-background-work.ts).
  *
  * IMPORTANT: keep in sync with the WAVEMILL_CONTROLLER_PROCESS_REGEX in
  * shared/lib/task-progress.sh. The shell tests exercise the same fixtures
@@ -500,17 +513,18 @@ export function isWavemillControllerProcess(command: string): boolean {
 // agent is idle (see `deriveTaskProgress`), so `coding_stage_owner_lost` stops
 // firing on a healthy agent that is waiting on its own work.
 //
-// The heuristic: build the pane-pid process subtree from one `ps` snapshot,
-// classify each process as controller / neutral (plain shells, tmux) /
-// substantive, and require a substantive descendant of a substantive ancestor
-// (the pane root counts as an ancestor) that started at least
-// `minChildLagSeconds` after that ancestor. The lag filter excludes
-// session-startup services (stdio MCP servers, IDE helpers) that start within
-// seconds of the agent; a background task is spawned mid-session. Controller
-// processes are never agent evidence (HOK-3101 invariant 2) and their
-// subtrees are excluded entirely. If the agent itself died, its children
-// reparent out of the pane subtree (or lose their substantive ancestor), so a
-// genuinely abandoned agent is still owner-lost-able.
+// The rule (HOK-3374, replacing the HOK-3222 command-name classifier): build
+// the agent's process subtree from one `ps` snapshot and count a descendant
+// as the agent's work iff it is a descendant of the agent process and started
+// at least `minChildLagSeconds` after the agent. No command names, no
+// basename checks: a descendant of the agent is the agent's work whatever it
+// is named (the incident's `bash tests/run-related.sh`), and the mill's own
+// processes are never descendants of the agent. The lag floor is measured
+// against the AGENT's etime, so session-startup services (stdio MCP servers,
+// IDE helpers) that start within seconds of the agent are excluded while a
+// mid-session background task is not. If the agent itself died, its pid is
+// gone from the snapshot and the answer is `live: false` — its children
+// reparent away, so a genuinely abandoned agent is still owner-lost-able.
 
 export interface PaneProcess {
   pid: number;
@@ -522,7 +536,7 @@ export interface PaneProcess {
 
 export interface AgentBackgroundWorkResult {
   live: boolean;
-  /** Bounded, log-safe evidence of the live substantive descendants found. */
+  /** Bounded, log-safe evidence of the agent's live background descendants. */
   processes: { pid: number; command: string }[];
 }
 
@@ -571,30 +585,23 @@ export function parsePsSnapshot(psOutput: string): PaneProcess[] {
   return result;
 }
 
-const NEUTRAL_PROCESS_BASENAME_REGEX = /^-?(sh|bash|zsh|dash|fish|tmux)$/;
-
-function isNeutralProcessCommand(command: string): boolean {
-  const firstToken = command.trim().split(/\s+/)[0] ?? '';
-  const basename = firstToken.split('/').pop() ?? '';
-  return NEUTRAL_PROCESS_BASENAME_REGEX.test(basename);
-}
-
-type PaneProcessClass = 'controller' | 'neutral' | 'substantive';
-
-function classifyPaneProcess(command: string): PaneProcessClass {
-  if (isWavemillControllerProcess(command)) return 'controller';
-  if (isNeutralProcessCommand(command)) return 'neutral';
-  return 'substantive';
-}
-
 /**
- * Pure derivation of D2 (process-tree heuristic) over one `ps` snapshot.
- * `panePid` is the root of the subtree to inspect (the pane's shell, or the
- * agent itself when it is the pane root).
+ * Pure derivation of the one background-work decision (HOK-3137, HOK-3374)
+ * over one `ps` snapshot. `agentPid` is the agent's own pid — the IO wrapper
+ * (`collectAgentBackgroundWork`) resolves it structurally from the pane
+ * root.
+ *
+ * Ownership rule, and the only rule: a process is the agent's background work
+ * iff it is a descendant of `agentPid` in the snapshot and started at least
+ * `minChildLagSeconds` after the agent. No command names, no basename
+ * checks (HOK-3222). The lag floor is measured against the agent's etime, so
+ * a mid-session background task qualifies while session-startup services do
+ * not. The agent itself is never its own evidence, and an agent that is
+ * missing from the snapshot (dead, children reparented) is `live: false`.
  */
 export function deriveAgentBackgroundWork(
   processes: PaneProcess[],
-  panePid: number,
+  agentPid: number,
   opts: { minChildLagSeconds?: number } = {},
 ): AgentBackgroundWorkResult {
   const minChildLagSeconds = opts.minChildLagSeconds ?? DEFAULT_BG_CHILD_LAG_SECONDS;
@@ -608,56 +615,31 @@ export function deriveAgentBackgroundWork(
     childrenByPpid.set(p.ppid, list);
   }
 
-  const root = byPid.get(panePid);
+  const root = byPid.get(agentPid);
   if (!root) return { live: false, processes: [] };
+  const agentEtime = root.etimeSeconds;
 
-  // BFS the subtree reachable from panePid (inclusive).
-  const visited = new Set<number>();
-  const subtree: PaneProcess[] = [];
-  const queue: number[] = [panePid];
-  while (queue.length > 0) {
-    const pid = queue.shift()!;
-    if (visited.has(pid)) continue;
-    visited.add(pid);
-    const proc = byPid.get(pid);
-    if (!proc) continue;
-    subtree.push(proc);
-    for (const child of childrenByPpid.get(pid) ?? []) {
-      if (!visited.has(child.pid)) queue.push(child.pid);
-    }
-  }
-
-  const classOf = new Map<number, PaneProcessClass>();
-  for (const p of subtree) classOf.set(p.pid, classifyPaneProcess(p.command));
-
-  // Walk up from `proc`'s parent, skipping neutral processes, looking for a
-  // substantive ancestor within the subtree. A controller ancestor halts the
-  // walk (invariant 2: controller writes/processes are never agent evidence).
-  function findSubstantiveAncestor(proc: PaneProcess): PaneProcess | null {
-    let cur = byPid.get(proc.ppid);
-    while (cur && visited.has(cur.pid)) {
-      const cls = classOf.get(cur.pid);
-      if (cls === 'controller') return null;
-      if (cls === 'substantive') return cur;
-      if (cur.pid === cur.ppid) break;
-      cur = byPid.get(cur.ppid);
-    }
-    return null;
-  }
-
+  // One BFS over the agent's subtree (inclusive). Every descendant that
+  // passes the lag floor is the agent's work — ownership decides, not names.
+  const visited = new Set<number>([agentPid]);
+  const queue: number[] = [agentPid];
   const evidence: { pid: number; command: string }[] = [];
   let live = false;
-  for (const proc of subtree) {
-    if (proc.pid === panePid) continue; // the pane root is never "P" itself
-    if (classOf.get(proc.pid) !== 'substantive') continue;
-    const ancestor = findSubstantiveAncestor(proc);
-    if (!ancestor) continue;
-    if (ancestor.etimeSeconds === null || proc.etimeSeconds === null) continue;
-    const lagSeconds = ancestor.etimeSeconds - proc.etimeSeconds;
-    if (lagSeconds < minChildLagSeconds) continue;
-    live = true;
-    if (evidence.length < BACKGROUND_EVIDENCE_LIMIT) {
-      evidence.push({ pid: proc.pid, command: proc.command.slice(0, BACKGROUND_COMMAND_TRUNCATE_LENGTH) });
+  while (queue.length > 0) {
+    const pid = queue.shift()!;
+    for (const child of childrenByPpid.get(pid) ?? []) {
+      if (visited.has(child.pid)) continue;
+      visited.add(child.pid);
+      if (agentEtime !== null && child.etimeSeconds !== null) {
+        const lagSeconds = agentEtime - child.etimeSeconds;
+        if (lagSeconds >= minChildLagSeconds) {
+          live = true;
+          if (evidence.length < BACKGROUND_EVIDENCE_LIMIT) {
+            evidence.push({ pid: child.pid, command: child.command.slice(0, BACKGROUND_COMMAND_TRUNCATE_LENGTH) });
+          }
+        }
+      }
+      queue.push(child.pid);
     }
   }
 
@@ -675,11 +657,47 @@ function resolveMinChildLagSeconds(override?: number): number {
 }
 
 /**
- * IO: snapshot `ps` once and derive background-work evidence for `panePid`.
+ * Structurally resolve which process in the pane subtree is the agent: walk
+ * down from `panePid` and pick the longest-running descendant that has
+ * children of its own. In the production pane (a shell the agent was typed
+ * into) that is the agent — it is older than its own background children and
+ * it is what owns them. Structural only: no command names.
+ */
+function resolveAgentPid(processes: PaneProcess[], panePid: number): number {
+  const childrenByPpid = new Map<number, PaneProcess[]>();
+  for (const p of processes) {
+    const list = childrenByPpid.get(p.ppid) ?? [];
+    list.push(p);
+    childrenByPpid.set(p.ppid, list);
+  }
+
+  let bestPid = -1;
+  let bestEtime = -1;
+  const visited = new Set<number>([panePid]);
+  const queue: number[] = [panePid];
+  while (queue.length > 0) {
+    const pid = queue.shift()!;
+    for (const child of childrenByPpid.get(pid) ?? []) {
+      if (visited.has(child.pid)) continue;
+      visited.add(child.pid);
+      const hasChildren = (childrenByPpid.get(child.pid) ?? []).length > 0;
+      if (hasChildren && child.etimeSeconds !== null && child.etimeSeconds > bestEtime) {
+        bestEtime = child.etimeSeconds;
+        bestPid = child.pid;
+      }
+      queue.push(child.pid);
+    }
+  }
+  return bestPid > 0 ? bestPid : panePid;
+}
+
+/**
+ * IO: snapshot `ps` once, resolve the agent pid from the pane root (see
+ * `resolveAgentPid`), and derive background-work evidence for the agent.
  * Fail-safe: any error (missing `ps`, unparsable output) returns `null`
  * ("not probed"), never throws.
  */
-export function collectPaneBackgroundWork(
+export function collectAgentBackgroundWork(
   panePid: number,
   opts: { minChildLagSeconds?: number } = {},
 ): AgentBackgroundWorkResult | null {
@@ -688,7 +706,8 @@ export function collectPaneBackgroundWork(
   if (psOutput === null) return null;
   try {
     const processes = parsePsSnapshot(psOutput);
-    return deriveAgentBackgroundWork(processes, panePid, {
+    const agentPid = resolveAgentPid(processes, panePid);
+    return deriveAgentBackgroundWork(processes, agentPid, {
       minChildLagSeconds: resolveMinChildLagSeconds(opts.minChildLagSeconds),
     });
   } catch {
@@ -1084,7 +1103,7 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
   const blockingPrompt = matchBlockingPromptFromPaneText(opts.paneText);
 
   const backgroundWork = opts.panePid != null
-    ? collectPaneBackgroundWork(opts.panePid, { minChildLagSeconds: opts.backgroundWorkLagSeconds })
+    ? collectAgentBackgroundWork(opts.panePid, { minChildLagSeconds: opts.backgroundWorkLagSeconds })
     : null;
 
   return {

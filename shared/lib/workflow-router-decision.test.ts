@@ -17,6 +17,7 @@ import {
   baseConfig,
   makeRepo,
   mockHokusaiFetch,
+  mockHokusaiFetchSequence,
   originalFetch,
   printBanner,
   reportResults,
@@ -63,25 +64,34 @@ await test('hokusai success: source hokusai with the Model 30 version as policy_
   }
 });
 
-await test('hokusai escalation: recommended keeps the Model 30 coder, final route has the stronger one', async () => {
+// protects: an escalated route losing what Hokusai originally recommended (HOK-3363).
+await test('hokusai escalation: recommended keeps the Model 30 coder, final route is the re-ask answer', async () => {
   const { repoDir, cleanup } = hokusaiRepo();
-  mockHokusaiFetch({
-    estimated_success_under_budget: 0.3,
-    confidence: 0.8,
-  }, { model_version: 'model30-2026.09' });
+  mockHokusaiFetchSequence([
+    {
+      strategy: { estimated_success_under_budget: 0.3, confidence: 0.8 },
+      metadata: { model_version: 'model30-2026.09', request_id: 'req-first' },
+      inferenceLogId: 'req-first',
+    },
+    {
+      strategy: { coder_model: 'claude-opus-4-7', estimated_success_under_budget: 0.7, confidence: 0.8 },
+      metadata: { model_version: 'model30-2026.09', request_id: 'req-reask' },
+      inferenceLogId: 'req-reask',
+    },
+  ]);
 
   try {
     const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', {
       repoDir,
       maxCostUsd: 25,
     });
-    assert.equal(decision.provenance?.escalation?.outcome, 'escalated');
-    assert.notEqual(decision.coder, 'claude-haiku-4-5-20251001');
-    assert.equal(decision.preEscalationRoute?.coder, 'claude-haiku-4-5-20251001');
-    assert.equal(decision.preEscalationRoute?.planner, 'claude-sonnet-4-5-20250929');
+    assert.equal(decision.routingMode, 'hokusai');
+    assert.equal(decision.coder, 'claude-opus-4-7');
+    assert.equal(decision.stageRoutes?.coder.hokusai?.recommended, 'claude-haiku-4-5-20251001');
+    assert.equal(decision.stageRoutes?.coder.overrides[0]?.source, 'escalation');
 
-    // The escalation retry is a locally routed decision; the record must
-    // still attribute the recommendation to Model 30.
+    // The re-ask is still Hokusai's decision; the record attributes the
+    // recommendation to the first Model 30 answer.
     const record = buildRouteDecision(decision);
     assert.equal(record.source, 'hokusai');
     assert.equal(record.policy_version, 'model30-2026.09');
@@ -93,20 +103,19 @@ await test('hokusai escalation: recommended keeps the Model 30 coder, final rout
   }
 });
 
-await test('hokusai retained route (no stronger affordable coder) keeps recommended == final', async () => {
+// protects: a re-ask that returns the same coder being recorded as an override.
+await test('hokusai retained route (re-ask returns the same coder) keeps recommended == final', async () => {
   const { repoDir, cleanup } = hokusaiRepo();
-  mockHokusaiFetch({
-    estimated_success_under_budget: 0.3,
-    confidence: 0.8,
-    estimated_cost_usd: 4.55,
-  });
+  mockHokusaiFetchSequence([
+    { strategy: { estimated_success_under_budget: 0.3, confidence: 0.8 } },
+  ]);
 
   try {
     const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', {
       repoDir,
-      maxCostUsd: 0.01,
+      maxCostUsd: 25,
     });
-    assert.notEqual(decision.provenance?.escalation?.outcome, 'escalated');
+    assert.equal(decision.stageRoutes?.coder.overrides.filter((o) => o.source === 'escalation').length, 0);
     assert.deepEqual(recommendedRouteOf(decision), {
       planner: decision.planner,
       coder: decision.coder,

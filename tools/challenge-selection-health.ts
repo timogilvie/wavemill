@@ -12,6 +12,8 @@ import {
   type SelectionHealthOwner,
 } from '../shared/lib/challenge-selection-health.ts';
 import type { ChallengeStage } from '../shared/lib/challenge-scheduler.ts';
+import { classifyArmFault, type ArmFaultClass } from '../shared/lib/arm-failure-taxonomy.ts';
+import { parseBudgetExhaustedFact } from '../shared/lib/native-agent/budget-exhaustion.ts';
 
 runTool({
   name: 'challenge-selection-health',
@@ -24,7 +26,8 @@ runTool({
     provider: { type: 'string', description: 'Provider name for clear' },
     stage: { type: 'string', description: 'Challenge stage (plan|implementation|review)' },
     'failure-kind': { type: 'string', description: 'Typed terminal failure kind' },
-    'fault-class': { type: 'string', description: 'Typed fault class' },
+    'fault-class': { type: 'string', description: 'Typed fault class (derived from --failure-kind/--budget-exhausted-json when omitted)' },
+    'budget-exhausted-json': { type: 'string', description: 'Typed budget-exhaustion fact (HOK-3362)' },
     'terminal-status': { type: 'string', description: 'Explicit terminal attempt status (success|failure|forfeit|invalid)' },
     success: { type: 'boolean', description: 'Record a successful terminal outcome' },
     json: { type: 'boolean', description: 'Emit JSON status' },
@@ -77,7 +80,7 @@ runTool({
         success: args.success === true,
         terminalStatus: normalizeTerminalStatus(args['terminal-status']),
         failureKind: args['failure-kind'] || undefined,
-        faultClass: args['fault-class'] as never,
+        faultClass: resolveFaultClass(args),
       });
       return;
     }
@@ -95,6 +98,24 @@ runTool({
     throw new Error(`Unknown command: ${command}`);
   },
 });
+
+/**
+ * An explicit --fault-class wins; otherwise the class is derived from the
+ * typed kind and budget fact (HOK-3362), never hardcoded by the caller.
+ */
+function resolveFaultClass(args: {
+  'fault-class'?: string;
+  'failure-kind'?: string;
+  'budget-exhausted-json'?: string;
+  success?: boolean;
+}): ArmFaultClass | undefined {
+  if (args['fault-class']) return args['fault-class'] as ArmFaultClass;
+  if (args.success === true || !args['failure-kind']) return undefined;
+  return classifyArmFault({
+    failureKind: args['failure-kind'],
+    budgetExhausted: parseBudgetExhaustedFact(args['budget-exhausted-json'] ?? null),
+  });
+}
 
 function ownerFromArgs(args: { issue?: string; 'pair-id'?: string }): SelectionHealthOwner {
   const pairId = requireString(args['pair-id'], '--pair-id');

@@ -115,7 +115,7 @@ challenge_abort_pair() {
   printf '%s|%s|%s|%s|%s\n' "$1" "$4" "$5" "$6" "${9:-pair}" >> "$CHALLENGE_ABORT_LOG"
 }
 challenge_selection_health_record_review_timeout() {
-  printf '%s|%s\n' "$1" "$2" >> "$RECORD_OUTCOME_LOG"
+  printf '%s|%s|%s\n' "$1" "$2" "${3:-}" >> "$RECORD_OUTCOME_LOG"
 }
 read_stage_status() {
   local feature_dir="$1" stage="$2"
@@ -319,6 +319,9 @@ EOF
 cat > "$FEATURE_DIR/.review-result.json" <<'EOF'
 {"stage":"review","status":"failed","agent":"native","model":"kimi-k2","artifacts":{"type":"review","failureCategory":"native-review-timeout","verdict":"error","reviewToolError":"Native review exceeded its wall-clock budget before producing a final JSON result.","effectiveNativeTimeoutMs":1200000,"nativeTimeoutMaxMs":1200000,"nativeTimeoutMultiplier":2}}
 EOF
+cat > "$FEATURE_DIR/.review-failure-envelope.json" <<'EOF'
+{"schemaVersion":"1.0","stage":"review","cause":"stage-timeout","stopReason":"wall_clock_limit","budgetExhausted":{"kind":"wall_clock","limit":300000,"used":300000,"progress":{"turnsCompleted":8,"toolCallsExecuted":12,"wallClockMs":300000,"mutationFailures":0,"providerWaitMs":0,"providerErrorRetries":0,"interruptedRequest":true}}}
+EOF
 CONTRACT_AGENT="native-openrouter"
 CONTRACT_MODEL="kimi-k2"
 CONTRACT_PROVIDER="openrouter"
@@ -328,7 +331,7 @@ if review_recovery_coordinator "HOK-2999" "slug" "Task" "$WT_DIR" "task/slug" "a
 else
   pass "primary timeout exhaustion returns failure"
 fi
-assert_eq "primary exhaustion records selection outcome with pair/reviewer" "HOK-2999|kimi-k2" "$(cat "$RECORD_OUTCOME_LOG")"
+assert_eq "primary exhaustion records selection outcome with pair/reviewer and budget evidence directory" "HOK-2999|kimi-k2|$FEATURE_DIR" "$(cat "$RECORD_OUTCOME_LOG")"
 assert_eq "primary exhaustion does not abort the pair" "" "$(cat "$CHALLENGE_ABORT_LOG")"
 unset PRIMARY_CHALLENGE_ISSUE TASK_PAIR_ID
 CONTRACT_AGENT="claude"

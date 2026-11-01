@@ -23,6 +23,7 @@ import { providerForModel } from './execution-contract.ts';
 import { getEffectiveRegistry } from './model-registry.ts';
 import { createLaunchabilityChecker } from './stage-launchability.ts';
 import { mutateJsonState } from './state-mutex.ts';
+import { appendRouteOverrideToFeatureDir } from './route-artifact.ts';
 import {
   findLaunchableSubstitute,
   routeWorkflowAuto,
@@ -197,12 +198,17 @@ async function applyCoderSubstitution(input: {
     await mutateJsonState<Record<string, unknown>>(routingCompletePath, (current) => ({
       ...current,
       coder: input.to,
-      coderLaunchSubstitutions: [
-        ...(Array.isArray(current.coderLaunchSubstitutions) ? current.coderLaunchSubstitutions : []),
-        substitution,
-      ],
     }));
   }
+
+  // HOK-3363: the substitution is an override of the routed coder; the route
+  // record is where the eval and the Hokusai contribution row read it.
+  await appendRouteOverrideToFeatureDir(input.featureDir, 'coder', input.to, {
+    source: 'launchability',
+    reason: input.refusal.reason,
+    ...(input.refusal.certification ? { certification: input.refusal.certification } : {}),
+    at: input.at,
+  });
 
   appendFileSync(
     join(input.featureDir, ROUTE_SUBSTITUTIONS_LOG),

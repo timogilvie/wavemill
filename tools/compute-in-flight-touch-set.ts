@@ -16,12 +16,19 @@
  *
  * The runner is responsible for defending against mid-run head moves; this
  * tool just prints the touch set as a JSON array to stdout.
+ *
+ * HOK-3373: the worktree must resolve to a registered git worktree of the
+ * milled repo (`task-worktree-resolver.ts`). Anything else exits 3 with no
+ * output: `git -C <plain dir>` walks up to the enclosing checkout, which is
+ * how one dead task once "touched" every file of main (HOK-2595). The
+ * monitor treats a non-registered worktree as an unknown touch set.
  */
 
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { execArgvCommand } from '../shared/lib/shell-utils.ts';
+import { taskWorktreePathStatus } from '../shared/lib/task-worktree-resolver.ts';
 import {
   filterIgnoredFiles,
   DEFAULT_IGNORE_PATTERNS,
@@ -31,9 +38,15 @@ import {
   predictTouchSetDeterministic,
 } from '../shared/lib/touch-set-predictor.ts';
 
+/** Exit status for "worktree is not a registered task worktree". */
+const UNRESOLVED_WORKTREE_EXIT_CODE = 3;
+
 const CODE_PRODUCING_PHASES = new Set(['coding', 'review', 'ready', 'merge-queued', '']);
 
+// Both git helpers below run only after run() resolved the path as a
+// registered worktree (HOK-3373).
 function runGit(worktree: string, args: string[]): string[] {
+  // allow-settled-attempt: worktree resolved `registered` by taskWorktreePathStatus in run()
   const result = execArgvCommand('git', ['-C', worktree, ...args]);
   if (result.exitCode !== 0) return [];
   return result.stdout
@@ -43,6 +56,7 @@ function runGit(worktree: string, args: string[]): string[] {
 }
 
 function computeMergeBase(worktree: string, base: string): string | null {
+  // allow-settled-attempt: worktree resolved `registered` by taskWorktreePathStatus in run()
   const result = execArgvCommand('git', ['-C', worktree, 'merge-base', base, 'HEAD']);
   if (result.exitCode !== 0) return null;
   const sha = result.stdout.trim();
@@ -108,6 +122,7 @@ runTool({
     'feature-dir': { type: 'string', description: 'Task feature dir (for planning-phase packets)' },
     phase: { type: 'string', description: 'Workflow phase (coding | review | ready | merge-queued | planning)' },
     'task-id': { type: 'string', description: 'Task id (for predicted touch sets)' },
+    'repo-dir': { type: 'string', description: 'Milled repo the worktree must belong to (default: $WAVEMILL_MILLED_REPO_DIR, $REPO_DIR, cwd)' },
   },
   examples: [
     'npx tsx tools/compute-in-flight-touch-set.ts --worktree-dir /path/to/wt --base-branch main',
@@ -121,6 +136,18 @@ runTool({
       ? args['base-branch']
       : 'main';
     const phase = typeof args.phase === 'string' ? args.phase : '';
+    const repoDir = (typeof args['repo-dir'] === 'string' && args['repo-dir'])
+      || process.env.WAVEMILL_MILLED_REPO_DIR
+      || process.env.REPO_DIR
+      || process.cwd();
+    const resolved = taskWorktreePathStatus(repoDir, worktree);
+    if (resolved.status !== 'registered') {
+      process.stderr.write(
+        `compute-in-flight-touch-set: ${worktree} is ${resolved.status}${resolved.detail ? ` (${resolved.detail})` : ''}; touch set unknown\n`,
+      );
+      process.exitCode = UNRESOLVED_WORKTREE_EXIT_CODE;
+      return;
+    }
 
     let files: string[] = [];
     if (phase === 'planning') {

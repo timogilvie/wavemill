@@ -114,20 +114,23 @@ extract_fn() {
 }
 
 SET_STATE_BODY="$(extract_fn linear_set_state)"
+# HOK-3373: linear_set_state is the never-fails wrapper; the write itself
+# lives in linear_set_state_checked.
+SET_STATE_CHECKED_BODY="$(extract_fn linear_set_state_checked)"
 IS_COMPLETED_BODY="$(extract_fn linear_is_completed)"
-if [[ -z "$SET_STATE_BODY" || -z "$IS_COMPLETED_BODY" ]]; then
+if [[ -z "$SET_STATE_BODY" || -z "$SET_STATE_CHECKED_BODY" || -z "$IS_COMPLETED_BODY" ]]; then
   echo "Could not extract canonical helpers from wavemill-common.sh"
   exit 1
 fi
 
 check_contains "canonical writer is bounded by API_TIMEOUT" \
-  "$SET_STATE_BODY" '_with_timeout "$API_TIMEOUT" wavemill_run_tool "set-issue-state.ts"'
+  "$SET_STATE_CHECKED_BODY" '_with_timeout "$API_TIMEOUT" wavemill_run_tool "set-issue-state.ts"'
 check_not_contains "canonical writer does not go through the retry ladder" \
-  "$SET_STATE_BODY" 'retry npx'
+  "$SET_STATE_CHECKED_BODY" 'retry npx'
 check_not_contains "canonical writer never returns 1 (would exit callers under set -e)" \
   "$SET_STATE_BODY" 'return 1'
 check_contains "canonical writer surfaces the exit code" \
-  "$SET_STATE_BODY" '(exit $rc)'
+  "$SET_STATE_CHECKED_BODY" '(exit $rc)'
 check_contains "canonical probe uses get-issue-state.ts" \
   "$IS_COMPLETED_BODY" '_with_timeout "$API_TIMEOUT" wavemill_run_tool "get-issue-state.ts"'
 check_not_contains "canonical probe no longer matches display state names" \
