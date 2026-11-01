@@ -88,6 +88,8 @@ for f in \
   "$LIB_DIR"/task-progress.sh \
   "$LIB_DIR"/wavemill-reliability-refresh.sh \
   "$LIB_DIR"/task-identity.sh \
+  "$LIB_DIR"/attempt-identity.sh \
+  "$LIB_DIR"/task-worktree-resolver.sh \
   "$LIB_DIR"/session-ownership.sh \
   "$LIB_DIR"/terminal-backend.sh \
   "$LIB_DIR"/challenge-arms.sh \
@@ -122,6 +124,7 @@ for f in \
   "$REPO_DIR"/tests/dashboard-refresh.test.sh \
   "$REPO_DIR"/tests/state-mutex.test.sh \
   "$REPO_DIR"/tests/state-mutate-task-record-validation.test.sh \
+  "$REPO_DIR"/tests/settled-attempt.test.sh \
   "$REPO_DIR"/tests/task-id-log-prefix.test.sh \
   "$REPO_DIR"/tests/log-hygiene.test.sh \
   "$REPO_DIR"/tests/project-context-suggestion.test.sh \
@@ -680,7 +683,7 @@ else
     TASK_PROGRESS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/task-progress.sh" | sed 's/()//' | sort -u)
 
     # Extract function definitions from task-identity.sh (sourced by wavemill-common.sh, HOK-3114)
-    TASK_IDENTITY_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/task-identity.sh" | sed 's/()//' | sort -u)
+    TASK_IDENTITY_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/task-identity.sh" "$LIB_DIR/attempt-identity.sh" "$LIB_DIR/task-worktree-resolver.sh" | sed 's/^[^:]*://; s/()//' | sort -u)
 
     # Extract function definitions from terminal-backend.sh (sourced by wavemill-common.sh, HOK-3293)
     TERMINAL_BACKEND_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/terminal-backend.sh" | sed 's/()//' | sort -u)

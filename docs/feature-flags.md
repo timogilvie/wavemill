@@ -57,6 +57,7 @@ that date to be retired.
 |---|---|---|---|---|---|---|---|
 | `WAVEMILL_DISABLE_SCHEMA_STAMP` | 0 | Debug: skip the ledger schema stamp. | HOK-3183 | 2026-10-20 | Delete alongside the ledger shadow writers. | HOK-3274 | 2026-12-19 (extended from 2026-11-19, HOK-3274: deleted alongside the ledger shadow, which was extended) |
 | `WAVEMILL_OBSERVER_LINEAR_ENABLED` | 0 | Legacy env override for `observer.linear.enabled`. HOK-2846 landed the Linear writer and HOK-3243 moved filing to shadow mode: operators now set `observer.linear.mode: shadow` in `.wavemill-config.local.json` instead. | HOK-3243 | 2026-10-20 | Shadow trial clean for a release cycle and no operator uses the env override. | HOK-3278 | 2026-11-19 |
+| `WAVEMILL_SETTLEMENT_GATE_SHADOW` | 0 | `1` keeps the HOK-3373 settlement gate log-only: control writes against a settled or non-current run are still recorded in `.wavemill/mutator-rejections.jsonl` (and so I9) but are applied instead of reverted. | HOK-3373 | 2026-11-01 | 14 days of enforce mode with no I9 finding that names a legitimate writer; then delete the flag and the shadow branch in `task-settlement.ts`. | HOK-3373 | 2026-11-30 |
 
 ## Permanent operator settings
 

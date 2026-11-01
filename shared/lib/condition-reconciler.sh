@@ -535,8 +535,8 @@ reconcile_condition_markers_tick() {
   local issue wt_dir state_dir slug
 
   for issue in "${!BRANCH_BY_ISSUE[@]}"; do
-    # Skip cleaned tasks
-    if [[ -n "${CLEANED[$issue]:-}" ]]; then
+    # Skip tasks deregistered earlier in this pass (HOK-3373).
+    if declare -F monitor_task_registered >/dev/null 2>&1 && ! monitor_task_registered "$issue"; then
       continue
     fi
 

@@ -144,7 +144,8 @@ run_cleanup_case() {
 EOF
     : > "$MILL_LOG_FILE"
 
-    declare -Ag CLEANED=()
+    declare -Ag BRANCH_BY_ISSUE=()
+    BRANCH_BY_ISSUE["$ISSUE"]="task/${SLUG:-$ISSUE}"
     ORDER=""
     WARN_OUTPUT=""
     LOG_OUTPUT=""
@@ -244,7 +245,7 @@ EOF
     printf "present=%s\n" "$(jq -r "has(\"tasks\") and (.tasks | has(\"$ISSUE\"))" "$STATE_FILE")"
     printf "status=%s\n" "$(jq -r ".tasks[\"$ISSUE\"].status" "$STATE_FILE")"
     printf "phase=%s\n" "$(jq -r ".tasks[\"$ISSUE\"].phase" "$STATE_FILE")"
-    printf "cleaned=%s\n" "${CLEANED[$ISSUE]:-}"
+    printf "cleaned=%s\n" "$(monitor_task_registered "$ISSUE" || echo 1)"
     printf "git_calls=%s\n" "$GIT_CALLS"
     printf "attention=%s\n" "$ATTENTION"
     printf "skip_eval=%s\n" "$(should_skip_post_completion_eval "$ISSUE" "" "task/$SLUG" "$SLUG" && echo yes || echo no)"
