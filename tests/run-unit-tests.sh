@@ -325,6 +325,7 @@ TESTS=(
   shared/lib/cost-ownership-guard.test.ts
   shared/lib/session-ownership-guard.test.ts
   shared/lib/hook-ttl-guard.test.ts
+  shared/lib/agent-background-work-guard.test.ts
   shared/lib/stage-launchability-guard.test.ts
   shared/lib/provider-identity-guard.test.ts
   shared/lib/model-equivalence-guard.test.ts
