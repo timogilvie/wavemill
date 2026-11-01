@@ -125,6 +125,7 @@ fixture_workflow_state "$state" HOK-10 status=merged lifecycle:="$MERGED_LIFECYC
   -- HOK-11 status=active lifecycle:="$ACTIVE_LIFECYCLE" \
   -- HOK-12_c challengePairId=HOK-12 challengeRole=challenger status=merged lifecycle:="$MERGED_LIFECYCLE" \
   -- HOK-12 challengePairId=HOK-12 challengeRole=primary status=closed lifecycle:='{"schemaVersion":1,"workflowOutcome":"closed","resourceDisposition":"reaping"}'
+# allow-task-literal: terminalTaskHistory tombstones, not .tasks rows
 jq '.terminalTaskHistory = {tasks: {"HOK-13": {issue: "HOK-13", workflowOutcome: "merged"}, "HOK-14": {issue: "HOK-14", workflowOutcome: "aborted"}, "HOK-11": {issue: "HOK-11", workflowOutcome: "merged"}}}' "$state" >"$state.tmp" && mv "$state.tmp" "$state"
 assert_eq "HOK-10 HOK-12 HOK-12_c HOK-13" "$(delivered_issue_ids "$state" | tr '\n' ' ' | sed 's/ $//')" \
   "merged rows, merged pairs and reaped merged runs are delivered; aborted and re-run issues are not"
@@ -163,6 +164,7 @@ fixture_workflow_state "$state" HOK-20 status=merged lifecycle:="$MERGED_LIFECYC
   -- HOK-21 status=merged linearSyncedState=Done lifecycle:="$MERGED_LIFECYCLE" \
   -- HOK-22_c challengeRole=challenger status=merged lifecycle:="$MERGED_LIFECYCLE" \
   -- HOK-23 status=aborted lifecycle:='{"schemaVersion":1,"workflowOutcome":"aborted","resourceDisposition":"reaping"}'
+# allow-task-literal: terminalTaskHistory tombstones, not .tasks rows
 jq '.terminalTaskHistory = {tasks: {"HOK-24": {issue: "HOK-24", workflowOutcome: "merged", runId: "HOK-24:e:1"}, "HOK-25": {issue: "HOK-25", workflowOutcome: "merged"}}}' "$state" >"$state.tmp" && mv "$state.tmp" "$state"
 assert_eq "HOK-20	Done HOK-24	Done" "$(linear_state_pending_syncs "$state" | tr '\n' ' ' | sed 's/ $//')" \
   "only unsynced primary merged runs (live, or reaped post-HOK-3373) are pending"

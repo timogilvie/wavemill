@@ -2523,6 +2523,16 @@ cleanup_completed_task() {
   local wt_dir="${WORKTREE_ROOT}/${slug}"
   local task_branch="task/${slug}"
   local feature_dir="${wt_dir}/features/${slug}"
+  # HOK-3373: the cleanup decision's markers and retry budget live in the
+  # task's feature dir only while its worktree exists. For a task whose
+  # worktree is already gone they live under the repo's .wavemill, so the
+  # decision can still run (and reap via safe_resources_absent) without any
+  # writer recreating the dead worktree path (the HOK-2595 orphan).
+  local decision_dir="$feature_dir"
+  if [[ ! -d "$wt_dir" ]]; then
+    decision_dir="$(dirname "${STATE_FILE:-${REPO_DIR:-.}/.wavemill/workflow-state.json}")/terminal-cleanup/${issue}"
+    mkdir -p "$decision_dir" 2>/dev/null || true
+  fi
 
   # HOK-3312: the TS decider owns the reap / archive-and-reap / retain / kept
   # decision. The monitor runs it as a tracked async job (HOK-3206) and
@@ -2533,7 +2543,7 @@ cleanup_completed_task() {
     # already ran in the CLI and decided to execute, so bypass the async job.
     cleanup_decision_action="reap"
   elif declare -F cleanup_decision_launch_job >/dev/null 2>&1; then
-    cleanup_decision_action="$(cleanup_decision_launch_job "$feature_dir" "$issue" "primary" "$feature_dir" "$wt_dir")" || decision_rc=$?
+    cleanup_decision_action="$(cleanup_decision_launch_job "$decision_dir" "$issue" "primary" "$feature_dir" "$wt_dir")" || decision_rc=$?
     case "$decision_rc" in
       0) : ;;
       4)
@@ -2560,7 +2570,7 @@ cleanup_completed_task() {
     retain)
       local retention_reason=""
       if declare -F cleanup_decision_marker_retention_reason >/dev/null 2>&1; then
-        retention_reason="$(cleanup_decision_marker_retention_reason "$feature_dir/$CLEANUP_DECISION_RESULT_MARKER" 2>/dev/null || true)"
+        retention_reason="$(cleanup_decision_marker_retention_reason "$decision_dir/$CLEANUP_DECISION_RESULT_MARKER" 2>/dev/null || true)"
       fi
       [[ -n "$retention_reason" ]] || retention_reason="cleanup-decision-retain"
       set_task_lifecycle_disposition "$issue" "" "retained" "$retention_reason" "cleanup_completed_task" 2>/dev/null || true
@@ -2754,6 +2764,9 @@ cleanup_completed_task() {
   fi
   remove_task_state "$issue"
   monitor_deregister_terminal_task "$issue"
+  # The settled run's out-of-worktree decision dir must not answer for a
+  # later run of the same issue.
+  [[ "$decision_dir" == */terminal-cleanup/"$issue" ]] && rm -rf "$decision_dir" 2>/dev/null || true
 
   if [[ -n "$completion_reason" ]]; then
     log "$issue: Complete ($completion_reason)"
@@ -7581,6 +7594,7 @@ write_terminal_task_tombstone() {
         runEpoch: ($contract.runEpoch // ""),
         attempt: (($task.attempt // $l.attempt // "") | tostring),
         runId: ($task.runId // ""),
+        linearSyncedState: ($task.linearSyncedState // ""),
         actor: $actor,
         command: $command,
         createdAt: $now,
@@ -7618,6 +7632,7 @@ write_terminal_task_tombstone() {
     decisionStatus,
     decisionReason
   } + (if (.runId // "") != "" then {runId} else {} end)
+    + (if (.linearSyncedState // "") != "" then {linearSyncedState} else {} end)
     + (if has("postReapEval") then {postReapEval} else {} end)' <<<"$tombstone")" || return 1
 
   # 3. Write compact form to hot state (HOK-3203)
@@ -8635,13 +8650,17 @@ linear_set_state() {
 
 # linear_set_state_checked <task_id> <state>
 # linear_set_state with the outcome reported: 0 when the write landed (or is
-# not owed: challenger / unwritable target / dry run), 1 when it failed. The
-# HOK-3373 Linear convergence records linearSyncedState only on 0.
+# not owed: challenger / unwritable target / dry run), 1 when it failed. It
+# also leaves LINEAR_LAST_WRITE_OK=1|0 for callers that go through
+# linear_set_state (always status 0). The HOK-3373 Linear convergence records
+# linearSyncedState only for a write that landed.
 linear_set_state_checked() {
   local task_id="$1" state="$2" issue
-  issue="$(linear_write_target "$task_id")" || return 0
+  LINEAR_LAST_WRITE_OK=0
+  issue="$(linear_write_target "$task_id")" || { LINEAR_LAST_WRITE_OK=1; return 0; }
   if [[ "${DRY_RUN:-false}" == "true" ]]; then
     declare -F log >/dev/null 2>&1 && log "[DRY-RUN] Would set $issue → $state"
+    LINEAR_LAST_WRITE_OK=1
     return 0
   fi
 
@@ -8654,6 +8673,7 @@ linear_set_state_checked() {
   _with_timeout "$API_TIMEOUT" wavemill_run_tool "set-issue-state.ts" "$issue" "$state" >/dev/null 2>"$stderr_file" || rc=$?
   if (( rc == 0 )); then
     rm -f "$stderr_file"
+    LINEAR_LAST_WRITE_OK=1
     return 0
   fi
 

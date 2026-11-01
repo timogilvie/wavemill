@@ -123,6 +123,7 @@ describe('I10 settled non-convergence', () => {
   // protects: delivered work silently reappearing as an active row (a resurrection path).
   it('fires when a delivered key reappears as an open row', () => {
     const state = buildWorkflowState({ 'HOK-3': buildTask({ status: 'active', phase: 'planning' }) }, {
+      // allow-task-literal: terminalTaskHistory tombstones, not .tasks rows
       topLevel: { terminalTaskHistory: { tasks: { 'HOK-3': { issue: 'HOK-3', workflowOutcome: 'merged' } } } },
     });
     let cache = createEmptyCache();

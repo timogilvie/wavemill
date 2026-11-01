@@ -49,6 +49,8 @@ export interface TerminalTaskTombstone {
   attempt: string;
   /** HOK-3373: the settled run's identity; survives hot-state compaction. */
   runId?: string;
+  /** HOK-3373: the Linear state that landed for this run (no re-sync after reap). */
+  linearSyncedState?: string;
   actor: string;
   command: string;
   createdAt: string;
@@ -672,6 +674,7 @@ export function buildTerminalTaskTombstone(
     runEpoch: taskString(contract, 'runEpoch'),
     attempt: taskString(task, 'attempt'),
     ...(taskString(task, 'runId') ? { runId: taskString(task, 'runId') } : {}),
+    ...(taskString(task, 'linearSyncedState') ? { linearSyncedState: taskString(task, 'linearSyncedState') } : {}),
     actor,
     command,
     createdAt: now,

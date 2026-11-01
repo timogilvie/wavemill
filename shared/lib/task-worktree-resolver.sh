@@ -15,10 +15,11 @@
 #       registered.
 #   task_dir_ensure <dir>
 #       mkdir -p <dir> unless it lies inside a task worktree (under
-#       $WORKTREE_ROOT) whose root is not a live git worktree. Marker writers
-#       for task state dirs use this so no writer recreates a dead worktree
-#       path as a plain directory. Returns 1 (and creates nothing) when
-#       refused.
+#       $WORKTREE_ROOT) whose root directory is gone. Marker writers for task
+#       state dirs use this so no writer recreates a dead worktree path as a
+#       plain directory (whether an existing directory is a *registered*
+#       worktree is task_worktree_path_status's question, asked before any
+#       git -C). Returns 1 (and creates nothing) when refused.
 #
 # repo_dir defaults to $REPO_DIR, state_file to $STATE_FILE.
 
@@ -82,9 +83,9 @@ task_dir_ensure() {
   if [[ -n "$root" && "$dir" == "$root"/* ]]; then
     rel="${dir#"$root"/}"
     first="${rel%%/*}"
-    if [[ -n "$first" && ! -e "$root/$first/.git" ]]; then
+    if [[ -n "$first" && ! -d "$root/$first" ]]; then
       declare -F log >/dev/null 2>&1 \
-        && log "debug" "task_dir_ensure: refusing to recreate $dir (worktree $root/$first is not live)"
+        && log "debug" "task_dir_ensure: refusing to recreate $dir (worktree $root/$first is gone)"
       return 1
     fi
   fi

@@ -103,6 +103,8 @@ cleanup_file="$tmp/aborted-cleanup.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_scan"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "monitor_task_registered"
+  printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "mark_task_aborted_for_cleanup"
   printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "cleanup_aborted_challenge_arm"

@@ -124,7 +124,9 @@ describe('field classification', () => {
 
 describe('applySettlementGate', () => {
   const gate = (before: Record<string, unknown>, after: Record<string, unknown>, expected?: Record<string, string>) => {
+    // allow-task-literal: synthetic gate input; every row is built by buildTask above
     const next = { tasks: { 'HOK-1': structuredClone(after) } };
+    // allow-task-literal: synthetic gate input; every row is built by buildTask above
     const found = applySettlementGate(taskRecordSnapshot({ tasks: { 'HOK-1': before } }), next, { expectedRunIds: expected });
     return { found, row: next.tasks['HOK-1'] as Record<string, unknown> };
   };
@@ -206,7 +208,9 @@ describe('applySettlementGate', () => {
 
   // protects: deletion (reap) of a settled row being blocked.
   it('never gates row deletion or creation', () => {
+    // allow-task-literal: synthetic gate input; every row is built by buildTask above
     const next = { tasks: { 'HOK-2': active() } };
+    // allow-task-literal: synthetic gate input; every row is built by buildTask above
     assert.deepEqual(applySettlementGate(taskRecordSnapshot({ tasks: { 'HOK-1': merged() } }), next), []);
   });
 

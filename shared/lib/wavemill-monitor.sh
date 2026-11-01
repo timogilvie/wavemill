@@ -14671,6 +14671,10 @@ launch_tracked_job() {
   [[ -n "$side" ]] && args+=(--side "$side")
   [[ -n "$pair_id" ]] && args+=(--pair-id "$pair_id")
   [[ -n "${SESSION:-}" ]] && args+=(--session "$SESSION")
+  # HOK-3373: the job settles for the run it was launched for.
+  local run_id=""
+  [[ -n "$issue_id" ]] && run_id="$(task_run_id "$issue_id" 2>/dev/null || true)"
+  [[ -n "$run_id" ]] && args+=(--run-id "$run_id")
   wavemill_run_tool "job-tracker.ts" "${args[@]}" >/dev/null
 }
 
@@ -14882,6 +14886,17 @@ poll_tracked_jobs() {
     log_path=$(echo "$job_json" | jq -r '.logPath // empty')
     result_path=$(echo "$job_json" | jq -r '.resultPath // empty')
     side=$(echo "$job_json" | jq -r '.side // empty')
+    # HOK-3373: settle the job for the run it was launched for. Control
+    # writes its handlers make against a row that has since relaunched (a new
+    # runId) are refused at state_mutate; its evidence (eval / comparison
+    # results, cost) still lands. Unset for jobs from before HOK-3373.
+    local job_run_id
+    job_run_id=$(echo "$job_json" | jq -r '.runId // empty')
+    if [[ -n "$issue_id" && -n "$job_run_id" ]]; then
+      export WAVEMILL_EXPECTED_RUN_ID="$issue_id=$job_run_id"
+    else
+      unset WAVEMILL_EXPECTED_RUN_ID
+    fi
 
     case "$kind" in
       cross-pr-guard|pr-ci-status|ready-watchdog|route-task|prepare-task-inputs|in-flight-touch-set|state-invariants)
@@ -14962,6 +14977,7 @@ poll_tracked_jobs() {
     fi
     settle_tracked_job "$job_id"
   done < <(echo "$poll_json" | jq -c '.unsettled[]?')
+  unset WAVEMILL_EXPECTED_RUN_ID
 }
 
 # Compact fingerprint of a pair's orchestration state (HOK-2963). A change
@@ -18131,7 +18147,7 @@ launch_task() {
   # effect (the HOK-2595 relaunch re-adopted the merged PR and recreated the
   # dead worktree path). An aborted / closed run relaunches as a new run.
   if task_last_run_delivered "$issue"; then
-    log "status" "$issue: last run delivered (settled merged); refusing to relaunch"
+    log "status" "$issue: last run delivered (settled merged), relaunch refused"
     return 1
   fi
   # A preset challenge arm (challengeModel set) relaunches with its stored
@@ -20251,6 +20267,9 @@ monitor_issue_state() {
   local task_status WIN WT_DIR task_branch current_phase eval_agent debug_flag current_agent needs_attention
 
   : "${queue_owned_count:=0}"
+  # HOK-3373: a task deregistered earlier in this pass (terminal pane release,
+  # reap) is not monitored again until the registry is rebuilt from state.
+  [[ -n "${BRANCH_BY_ISSUE[$ISSUE]+x}" ]] || return 0
   BRANCH="${BRANCH_BY_ISSUE[$ISSUE]}"
   SLUG="${SLUG_BY_ISSUE[$ISSUE]}"
   PR="${PR_BY_ISSUE[$ISSUE]:-}"
@@ -21970,7 +21989,11 @@ monitor_issue_state() {
       # Challenger awaiting challenge comparison under auto-merge: git work
       # must survive for the comparison, but the pane is done.
       if wavemill_release_terminal_pane "$SESSION" "$ISSUE" "$SLUG" "pr_closed_unmerged" "$PR"; then
-        monitor_deregister_terminal_task "$ISSUE"
+        # HOK-3373: the release is durable (paneState) and this handler is
+        # idempotent, so the arm keeps being polled from its markers until the
+        # comparison retires it — the same thing a restart does. It used to be
+        # hidden for the rest of the session by the retired CLEANED set.
+        log "debug" "  ↳ $ISSUE pane released; git work kept for the challenge comparison"
       else
         log "debug" "  ↳ $ISSUE pane release deferred (${WAVEMILL_PANE_RELEASE_BLOCK_REASON:-blocked})"
       fi
