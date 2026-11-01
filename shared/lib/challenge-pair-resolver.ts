@@ -37,6 +37,7 @@ import {
   type ChallengeArmFailure,
 } from './arm-failure-taxonomy.ts';
 import { repairChallengePairingSync } from './challenge-pairing-repair.ts';
+import { parseBudgetExhaustedFact, type BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 import { Ledger } from './ledger.ts';
 import { withShadowSuppressing } from './ledger-shadow.ts';
 import { settleArmAbort } from './ledger-shadow.ts';
@@ -694,7 +695,7 @@ function buildResolutionRecord(input: {
     if (!survivor?.evalCompleted) {
       return null;
     }
-    const armFailures = buildArmFailures(primary, challenger);
+    const armFailures = buildArmFailures(primary, challenger, input.evalsDir);
     // HOK-2970: if the aborted arm's latest eval was already
     // `invalidChallenge: true` (root cause HOK-3006 — missing challenge
     // intent), the surviving arm cannot "win" this challenge because there
@@ -747,7 +748,7 @@ function buildResolutionRecord(input: {
   }
 
   if (input.reason === 'both-challenge-aborted') {
-    const armFailures = buildArmFailures(primary, challenger);
+    const armFailures = buildArmFailures(primary, challenger, input.evalsDir);
     const completed = [primary, challenger].filter((task): task is TaskEvalState => task?.evalCompleted === true);
     // HOK-2970: when both arms carried an aborted stamp but one side has a
     // valid eval, we normally hand the win to the surviving arm. If the
@@ -874,7 +875,7 @@ function buildResolutionRecord(input: {
     return null;
   }
 
-  const armFailures = buildArmFailures(primary, challenger);
+  const armFailures = buildArmFailures(primary, challenger, input.evalsDir);
   if (!loneSide.evalCompleted) {
     return {
       outcome: 'double-forfeit',
@@ -956,7 +957,7 @@ function buildInfrastructureAbortResolution(
       challengerPrUrl: getTaskPrUrl(challenger),
       primaryCompleted: primary?.evalCompleted === true,
       challengerCompleted: challenger?.evalCompleted === true,
-      armFailures: buildArmFailures(primary, challenger),
+      armFailures: buildArmFailures(primary, challenger, input.evalsDir),
       abortedSide: aborted.role,
       terminalReason: aborted.role === 'primary' ? 'primary_challenge_aborted' : 'challenger_challenge_aborted',
       invalidChallengeReason: invalidArm?.reason ?? 'arm_infrastructure_failure',
@@ -981,15 +982,37 @@ function hasOtherOpenPrForPair(
   return false;
 }
 
+/**
+ * The budget fact (HOK-3362) `challenge_abort_pair` recorded in the arm's
+ * archived `.challenge-aborted.json`, when the abort was a budget stop. Arms
+ * whose artifact is not archived yet classify without it (unknown-fault for a
+ * budget kind): no evidence, no attribution.
+ */
+function readArchivedBudgetFact(evalsDir: string | undefined, issueId: string): BudgetExhaustedFact | null {
+  if (!evalsDir) return null;
+  const artifactPath = join(evalsDir, 'artifacts', issueId, '.challenge-aborted.json');
+  if (!existsSync(artifactPath)) return null;
+  try {
+    return parseBudgetExhaustedFact((JSON.parse(readFileSync(artifactPath, 'utf-8')) as { budgetExhausted?: unknown }).budgetExhausted);
+  } catch {
+    return null;
+  }
+}
+
 function buildArmFailures(
   primary: TaskEvalState | undefined,
   challenger: TaskEvalState | undefined,
+  evalsDir?: string,
 ): ChallengeArmFailure[] {
   return [primary, challenger]
     .filter((task): task is TaskEvalState => Boolean(task?.challengeAborted))
     .map((task) => {
       const failureKind = parseAbortFailureKind(task.challengeAborted);
-      const faultClass = classifyArmFault({ failureKind, detail: task.challengeAbortedDetail });
+      const faultClass = classifyArmFault({
+        failureKind,
+        detail: task.challengeAbortedDetail,
+        budgetExhausted: readArchivedBudgetFact(evalsDir, task.issueId),
+      });
       return {
         side: task.role,
         model: getTaskModel(task),
