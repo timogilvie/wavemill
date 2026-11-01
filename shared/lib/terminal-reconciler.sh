@@ -551,7 +551,15 @@ wavemill_reconcile_terminal_linear() {
   # Check if this task is eligible to write Linear. Only proceed if status is
   # non-empty (sibling merged/closed) AND linear_write_target succeeds.
   linear_write_target "$issue" >/dev/null 2>&1 || return 0
+  # HOK-3373: record the landed state so the Linear convergence tick does not
+  # rewrite it (and does retry it after a crash before the record). A failed
+  # write keeps the historical status-0 contract; the tick retries it.
+  LINEAR_LAST_WRITE_OK=0
   linear_set_state "$issue" "$status" || return $?
+  if [[ "${LINEAR_LAST_WRITE_OK:-0}" == "1" ]] && declare -F linear_state_record_synced >/dev/null 2>&1; then
+    linear_state_record_synced "$issue" "$status"
+  fi
+  return 0
 }
 
 wavemill_reconcile_terminal() {

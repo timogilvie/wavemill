@@ -1675,9 +1675,7 @@ challenge_cancel_challenger_arm() {
     rm -f "/tmp/wavemill-${SESSION}-${challenger_key}.hook" 2>/dev/null || true
     reset_retry_count "$SESSION" "$challenger_key" 2>/dev/null || true
     remove_task_state "$challenger_key"
-    if declare -p CLEANED >/dev/null 2>&1; then
-      CLEANED["$challenger_key"]=1
-    fi
+    monitor_deregister_terminal_task "$challenger_key"
   fi
 
   state_mutate "$STATE_FILE" \
@@ -2433,7 +2431,7 @@ challenge_materialize_challenger_arm() {
   [[ -n "$arm_title" ]] || arm_title="$arm_slug"
   # challengeModel names the varied stage's model (HOK-3156 fix #4): for a
   # review-stage pair that is the reviewer, not the shared coder.
-  save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
+  SAVE_TASK_STATE_LAUNCH=1 save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
     "" "" "${planner_agent:-$coder_agent}" "$linear_issue" \
     "true" "$primary_issue" "challenger" "$reviewer_model" \
     "$planner_model" "$coder_model" "$reviewer_model" \
@@ -2760,7 +2758,7 @@ challenge_materialize_implementation_arm() {
   local arm_title
   arm_title=$(pass_task_field "$primary_issue" title)
   [[ -n "$arm_title" ]] || arm_title="$arm_slug"
-  save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
+  SAVE_TASK_STATE_LAUNCH=1 save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
     "" "" "$coder_agent" "$linear_issue" \
     "true" "$primary_issue" "challenger" "$coder_model" \
     "$planner_model" "$coder_model" "$reviewer_model" \
@@ -3216,7 +3214,7 @@ challenge_materialize_expanded_route_arm() {
   arm_title=$(pass_task_field "$primary_issue" title)
   [[ -n "$arm_title" ]] || arm_title="$arm_slug"
   # challengeModel names the varied stage's model (HOK-3156): the planner here.
-  save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
+  SAVE_TASK_STATE_LAUNCH=1 save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
     "" "" "$planner_agent" "$linear_issue" \
     "true" "$primary_issue" "challenger" "$challenger_planner" \
     "$challenger_planner" "$shared_coder" "$shared_reviewer" \
@@ -5283,7 +5281,7 @@ monitor_resume_agents_after_wake() {
   local episode="$1" issue
   [[ -n "$episode" ]] || return 0
   for issue in "${!BRANCH_BY_ISSUE[@]}"; do
-    [[ -n "${CLEANED[$issue]:-}" ]] && continue
+    monitor_task_registered "$issue" || continue
     wake_resume_interrupted_agent "$issue" "$episode" || true
   done
   return 0
@@ -9523,7 +9521,7 @@ monitor_task_reap_reason() {
 }
 
 # HOK-3210: stop tracking a task that was reaped out of band. Deregistration
-# goes through the shared terminal path (CLEANED + registry unset) so no later
+# goes through the shared terminal path (registry unset) so no later
 # tick or post-loop scan recreates its window, worktree or state row. Logs
 # once per issue per monitor process.
 declare -A REAP_LOGGED=()
@@ -11129,7 +11127,9 @@ ready_stage_warn_bypass_once() {
   local state_dir="$1" issue="$2" pr="$3"
   local sentinel="$state_dir/.ready-bypass-warned"
 
-  mkdir -p "$state_dir"
+  # HOK-3373: never recreate a dead worktree path for a warning sentinel (the
+  # HOK-2595 orphan directory's first file was this one).
+  task_dir_ensure "$state_dir" || return 1
   if [[ -f "$sentinel" ]]; then
     return 1
   fi
@@ -14671,6 +14671,10 @@ launch_tracked_job() {
   [[ -n "$side" ]] && args+=(--side "$side")
   [[ -n "$pair_id" ]] && args+=(--pair-id "$pair_id")
   [[ -n "${SESSION:-}" ]] && args+=(--session "$SESSION")
+  # HOK-3373: the job settles for the run it was launched for.
+  local run_id=""
+  [[ -n "$issue_id" ]] && run_id="$(task_run_id "$issue_id" 2>/dev/null || true)"
+  [[ -n "$run_id" ]] && args+=(--run-id "$run_id")
   wavemill_run_tool "job-tracker.ts" "${args[@]}" >/dev/null
 }
 
@@ -14882,6 +14886,17 @@ poll_tracked_jobs() {
     log_path=$(echo "$job_json" | jq -r '.logPath // empty')
     result_path=$(echo "$job_json" | jq -r '.resultPath // empty')
     side=$(echo "$job_json" | jq -r '.side // empty')
+    # HOK-3373: settle the job for the run it was launched for. Control
+    # writes its handlers make against a row that has since relaunched (a new
+    # runId) are refused at state_mutate; its evidence (eval / comparison
+    # results, cost) still lands. Unset for jobs from before HOK-3373.
+    local job_run_id
+    job_run_id=$(echo "$job_json" | jq -r '.runId // empty')
+    if [[ -n "$issue_id" && -n "$job_run_id" ]]; then
+      export WAVEMILL_EXPECTED_RUN_ID="$issue_id=$job_run_id"
+    else
+      unset WAVEMILL_EXPECTED_RUN_ID
+    fi
 
     case "$kind" in
       cross-pr-guard|pr-ci-status|ready-watchdog|route-task|prepare-task-inputs|in-flight-touch-set|state-invariants)
@@ -14962,6 +14977,7 @@ poll_tracked_jobs() {
     fi
     settle_tracked_job "$job_id"
   done < <(echo "$poll_json" | jq -c '.unsettled[]?')
+  unset WAVEMILL_EXPECTED_RUN_ID
 }
 
 # Compact fingerprint of a pair's orchestration state (HOK-2963). A change
@@ -15844,6 +15860,10 @@ mark_task_aborted_for_cleanup() {
     else
       .tasks[$issue].status = "aborted"
       | .tasks[$issue].phase = "aborted"
+      # HOK-3373 (D29): settle through the shared rule. The run is settled
+      # once lifecycle.workflowOutcome says so (task-settlement.ts), the same
+      # flip task-abort.ts makes; status/phase are its legacy mirrors.
+      | .tasks[$issue].lifecycle = ((.tasks[$issue].lifecycle // {}) + {schemaVersion: 1, workflowOutcome: "aborted"})
       | .tasks[$issue].abortedCleanupReason = $reason
       | .tasks[$issue].abortedCleanupAt = (now | todateiso8601)
       | .tasks[$issue].updated = (now | todateiso8601)
@@ -16877,7 +16897,7 @@ monitor_refresh_pr_cache() {
   local issue base
   local -a branches=() new_bases=()
   for issue in "${!BRANCH_BY_ISSUE[@]}"; do
-    [[ -n "${CLEANED[$issue]:-}" ]] && continue
+    monitor_task_registered "$issue" || continue
     [[ -n "${BRANCH_BY_ISSUE[$issue]}" ]] && branches+=("${BRANCH_BY_ISSUE[$issue]}")
     base="$(pass_task_field "$issue" baseBranch 2>/dev/null || true)"
     if [[ -n "$base" && "${MONITOR_REPO_CACHE_BASES:-}" != *" $base "* ]]; then
@@ -18079,15 +18099,23 @@ render_grouped_task_list() {
 }
 
 
-# Filter out issues that are already tracked (active or cleaned)
+# Filter out issues that are already tracked or whose last run delivered.
+# HOK-3373: "delivered" is read from workflow state (settled rows, terminal
+# history, tombstones) through delivered_issue_ids, not from an in-memory set,
+# so it survives a mill restart and never hides an aborted run that may
+# legitimately relaunch as a new run.
 filter_active_issues() {
-  local candidates="$1"
+  local candidates="$1" delivered
+  local -A delivered_set=()
+  delivered="$(delivered_issue_ids "${STATE_FILE:-}" 2>/dev/null || true)"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && delivered_set["$line"]=1
+  done <<<"$delivered"
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     local cand_issue
     cand_issue=$(echo "$line" | cut -d'|' -f1)
-    # Skip if already tracked
-    if [[ -n "${BRANCH_BY_ISSUE[$cand_issue]:-}" ]] || [[ -n "${CLEANED[$cand_issue]:-}" ]]; then
+    if [[ -n "${BRANCH_BY_ISSUE[$cand_issue]:-}" ]] || [[ -n "${delivered_set[$cand_issue]:-}" ]]; then
       continue
     fi
     echo "$line"
@@ -18114,6 +18142,14 @@ launch_task() {
   LAST_LAUNCHED_SLOTS=1
 
   linear_issue=$(get_linear_issue_id "$issue")
+  # HOK-3373: delivered work settles once. A relaunch of an issue whose last
+  # run settled `merged` is refused before any worktree, window or Linear side
+  # effect (the HOK-2595 relaunch re-adopted the merged PR and recreated the
+  # dead worktree path). An aborted / closed run relaunches as a new run.
+  if task_last_run_delivered "$issue"; then
+    log "status" "$issue: last run delivered (settled merged), relaunch refused"
+    return 1
+  fi
   # A preset challenge arm (challengeModel set) relaunches with its stored
   # coder. challengeModel itself names the varied stage's model (HOK-3156), so
   # the coder is read through challenge_coder_model_for_task.
@@ -18885,7 +18921,7 @@ EOF
     primary_challenge_model="$(challenge_selection_health_varied_model "$varied_stage_for_state" "$planner_model" "$task_model" "$reviewer_model")"
     [[ -n "$primary_challenge_model" ]] || primary_challenge_model="$task_model"
   fi
-  save_task_state "$issue" "$slug" "$branch" "$wt_dir" "" "" "${planner_agent:-$task_agent_cmd}" "$linear_issue" "$effective_challenge" "$challenge_pair" "${challenge_role:-}" "$primary_challenge_model" "$planner_model" "$task_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "${challenge_stage:-}" "" "" "$title"
+  SAVE_TASK_STATE_LAUNCH=1 save_task_state "$issue" "$slug" "$branch" "$wt_dir" "" "" "${planner_agent:-$task_agent_cmd}" "$linear_issue" "$effective_challenge" "$challenge_pair" "${challenge_role:-}" "$primary_challenge_model" "$planner_model" "$task_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "${challenge_stage:-}" "" "" "$title"
   if [[ "$challenge_enabled_for_launch" == "true" ]]; then
     if [[ "${defer_challenger:-false}" == "true" ]]; then
       # HOK-2811: Review-stage — record the challenger as a pending arm on the
@@ -18913,7 +18949,7 @@ EOF
         "${WORKTREE_ROOT}/${slug}/features/${slug}" \
         "$challenge_execution_intent"
     else
-      save_task_state "$challenger_key" "$challenger_slug" "task/${challenger_slug}" "${WORKTREE_ROOT}/${challenger_slug}" "" "" "${challenger_planner_agent:-$challenger_agent}" "$linear_issue" "true" "$challenge_pair" "challenger" "$(challenge_selection_health_varied_model "$challenge_stage" "$challenger_planner" "$challenger_model" "$challenger_reviewer")" "$challenger_planner" "$challenger_model" "$challenger_reviewer" "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" "$challenge_stage" "" "" "$title"
+      SAVE_TASK_STATE_LAUNCH=1 save_task_state "$challenger_key" "$challenger_slug" "task/${challenger_slug}" "${WORKTREE_ROOT}/${challenger_slug}" "" "" "${challenger_planner_agent:-$challenger_agent}" "$linear_issue" "true" "$challenge_pair" "challenger" "$(challenge_selection_health_varied_model "$challenge_stage" "$challenger_planner" "$challenger_model" "$challenger_reviewer")" "$challenger_planner" "$challenger_model" "$challenger_reviewer" "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" "$challenge_stage" "" "" "$title"
       state_mutate "$STATE_FILE" '.tasks[$issue].challengeStage = $stage' --arg issue "$challenger_key" --arg stage "$challenge_stage" || true
       state_mutate "$STATE_FILE" \
         '.tasks[$issue].challengerLaunched = true
@@ -19276,7 +19312,7 @@ if [[ "${WAVEMILL_MONITOR_SOURCE_ONLY:-}" == "1" ]]; then
 fi
 
 # Parse initial tasks from file
-declare -A PR_BY_ISSUE BRANCH_BY_ISSUE SLUG_BY_ISSUE CLEANED
+declare -A PR_BY_ISSUE BRANCH_BY_ISSUE SLUG_BY_ISSUE
 
 # Rehydrate tracked tasks from persisted state first so restarts continue
 # monitoring prior in-flight issues.
@@ -20231,6 +20267,9 @@ monitor_issue_state() {
   local task_status WIN WT_DIR task_branch current_phase eval_agent debug_flag current_agent needs_attention
 
   : "${queue_owned_count:=0}"
+  # HOK-3373: a task deregistered earlier in this pass (terminal pane release,
+  # reap) is not monitored again until the registry is rebuilt from state.
+  [[ -n "${BRANCH_BY_ISSUE[$ISSUE]+x}" ]] || return 0
   BRANCH="${BRANCH_BY_ISSUE[$ISSUE]}"
   SLUG="${SLUG_BY_ISSUE[$ISSUE]}"
   PR="${PR_BY_ISSUE[$ISSUE]:-}"
@@ -21941,7 +21980,7 @@ monitor_issue_state() {
       linear_set_state "$(get_linear_issue_id "$ISSUE")" "$linear_status"
     fi
     # HOK-2952: one ownership policy for every closed-PR role. The old
-    # in-memory-only `CLEANED=1` branch (which left pane/worktree/state
+    # in-memory-only cleaned-set branch (which left pane/worktree/state
     # allocated forever) is gone; a blocked release/cleanup simply retries
     # on the next pass off the durable markers.
     local closed_pr_policy
@@ -21950,7 +21989,11 @@ monitor_issue_state() {
       # Challenger awaiting challenge comparison under auto-merge: git work
       # must survive for the comparison, but the pane is done.
       if wavemill_release_terminal_pane "$SESSION" "$ISSUE" "$SLUG" "pr_closed_unmerged" "$PR"; then
-        CLEANED["$ISSUE"]=1
+        # HOK-3373: the release is durable (paneState) and this handler is
+        # idempotent, so the arm keeps being polled from its markers until the
+        # comparison retires it — the same thing a restart does. It used to be
+        # hidden for the rest of the session by the retired CLEANED set.
+        log "debug" "  ↳ $ISSUE pane released; git work kept for the challenge comparison"
       else
         log "debug" "  ↳ $ISSUE pane release deferred (${WAVEMILL_PANE_RELEASE_BLOCK_REASON:-blocked})"
       fi
@@ -23636,6 +23679,11 @@ while :; do
   monitor_step_begin depsDrift
   monitor_deps_drift_tick || true
   monitor_step_end depsDrift
+  # HOK-3373: Linear state is a render of the settled run; converge any
+  # settled run whose rendered state has not landed (crash-safe).
+  monitor_step_begin linearStateConverge
+  linear_state_converge_tick || true
+  monitor_step_end linearStateConverge
   # HOK-3229: live workflow-state invariant checker (detection only).
   monitor_step_begin stateInvariants
   monitor_state_invariants_tick || true
@@ -23673,7 +23721,7 @@ while :; do
 
   monitor_step_begin issueMonitorLoop
   for ISSUE in "${!BRANCH_BY_ISSUE[@]}"; do
-    [[ -n "${CLEANED[$ISSUE]:-}" ]] && continue
+    monitor_task_registered "$ISSUE" || continue
     set +e
     monitor_issue_state "$ISSUE"
     issue_rc=$?
@@ -23684,7 +23732,7 @@ while :; do
     fi
     # Track active challengers separately (they are free overhead for slot counting)
     _cr=$(pass_task_field "$ISSUE" challengeRole)
-    if [[ "$_cr" == "challenger" ]] && [[ -z "${CLEANED[$ISSUE]:-}" ]]; then
+    if [[ "$_cr" == "challenger" ]] && monitor_task_registered "$ISSUE"; then
       active_challenger_count=$((active_challenger_count + 1))
     fi
   done
@@ -23770,7 +23818,7 @@ while :; do
       _slots_full_in_flight="[]"
       _slots_full_active_ids=""
       for _ai in "${!BRANCH_BY_ISSUE[@]}"; do
-        [[ -n "${CLEANED[$_ai]:-}" ]] && continue
+        monitor_task_registered "$_ai" || continue
         _slots_full_active_ids+="${_ai}"$'\n'
       done
       _slots_full_queue_plan="${QUEUE_PLAN_CACHE:-}"
@@ -23846,16 +23894,29 @@ while :; do
           _in_flight_json="[]"
           _in_flight_rows=""
           _in_flight_file=""
+          # HOK-3373: a settled run is not in flight (it can never hold the
+          # picker), and an active task whose worktree the resolver cannot
+          # confirm is an UNKNOWN touch set, never "touches nothing" and
+          # never the main checkout's files (the HOK-2595 fall-through).
+          declare -A _ai_settled=()
+          while IFS= read -r _ai; do
+            [[ -n "$_ai" ]] && _ai_settled["$_ai"]=1
+          done < <(settled_task_ids "$STATE_FILE" 2>/dev/null || true)
           for _ai in "${!BRANCH_BY_ISSUE[@]}"; do
-            [[ -n "${CLEANED[$_ai]:-}" ]] && continue
+            monitor_task_registered "$_ai" || continue
             _active_issue_ids+="${_ai}"$'\n'
+            [[ -n "${_ai_settled[$_ai]:-}" ]] && continue
             _ai_pr="$(pass_task_field "$_ai" pr 2>/dev/null || true)"
             _ai_wt="$(pass_task_field "$_ai" worktree 2>/dev/null || true)"
             _ai_slug="$(pass_task_field "$_ai" slug 2>/dev/null || true)"
             _ai_phase="$(pass_task_field "$_ai" phase 2>/dev/null || true)"
             _ai_base="$(effective_task_base_branch "$_ai" 2>/dev/null || pass_task_field "$_ai" baseBranch 2>/dev/null || echo "${BASE_BRANCH:-main}")"
             _ai_files="[]"
-            if [[ -n "$_ai_wt" && -d "$_ai_wt" && -n "$_ai_slug" ]]; then
+            _ai_touch="known"
+            _ai_wt_status="$(task_worktree_path_status "$_ai_wt" 2>/dev/null || true)"
+            if [[ "$_ai_wt_status" != "registered" ]]; then
+              _ai_touch="unknown"
+            elif [[ -n "$_ai_slug" ]]; then
               _ai_sd="${_ai_wt}/features/${_ai_slug}"
               _ai_head="$(git -C "$_ai_wt" rev-parse HEAD 2>/dev/null || true)"
               # HOK-3206: `git rev-parse HEAD` is a local object-dir read
@@ -23872,11 +23933,11 @@ while :; do
               fi
             fi
             if [[ -n "$_ai_pr" && "$_ai_pr" != "null" ]]; then
-              _in_flight_rows+="$(jq -cn --arg id "$_ai" --argjson pr "$_ai_pr" --argjson files "$_ai_files" \
-                '{id:$id, prNumber:$pr, files:$files}')"$'\n'
+              _in_flight_rows+="$(jq -cn --arg id "$_ai" --argjson pr "$_ai_pr" --argjson files "$_ai_files" --arg touch "$_ai_touch" \
+                '{id:$id, prNumber:$pr, files:$files} + (if $touch == "unknown" then {touchSet:"unknown"} else {} end)')"$'\n'
             else
-              _in_flight_rows+="$(jq -cn --arg id "$_ai" --argjson files "$_ai_files" \
-                '{id:$id, files:$files}')"$'\n'
+              _in_flight_rows+="$(jq -cn --arg id "$_ai" --argjson files "$_ai_files" --arg touch "$_ai_touch" \
+                '{id:$id, files:$files} + (if $touch == "unknown" then {touchSet:"unknown"} else {} end)')"$'\n'
             fi
           done
           if [[ -n "$_in_flight_rows" ]]; then

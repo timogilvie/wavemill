@@ -73,6 +73,7 @@ async function main(): Promise<void> {
       issueId: flags['issue-id'],
       side: flags.side,
       pairId: flags['pair-id'],
+      ...(flags['run-id'] ? { runId: flags['run-id'] } : {}),
       prNumbers,
       pid: Number.parseInt(requireFlag(flags, 'pid'), 10),
       startedAt: flags['started-at'] || new Date().toISOString(),

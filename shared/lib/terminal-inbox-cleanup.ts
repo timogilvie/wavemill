@@ -47,6 +47,10 @@ export interface TerminalTaskTombstone {
   challengeRole: string;
   runEpoch: string;
   attempt: string;
+  /** HOK-3373: the settled run's identity; survives hot-state compaction. */
+  runId?: string;
+  /** HOK-3373: the Linear state that landed for this run (no re-sync after reap). */
+  linearSyncedState?: string;
   actor: string;
   command: string;
   createdAt: string;
@@ -669,6 +673,8 @@ export function buildTerminalTaskTombstone(
     challengeRole: decision.challengeRole,
     runEpoch: taskString(contract, 'runEpoch'),
     attempt: taskString(task, 'attempt'),
+    ...(taskString(task, 'runId') ? { runId: taskString(task, 'runId') } : {}),
+    ...(taskString(task, 'linearSyncedState') ? { linearSyncedState: taskString(task, 'linearSyncedState') } : {}),
     actor,
     command,
     createdAt: now,
@@ -693,7 +699,7 @@ export async function writeTerminalTaskTombstone(
   appendTombstoneToArchive(stateDir, tombstone as unknown as Record<string, unknown>);
 
   // 2. Write compact form to hot state (HOK-3203)
-  const compactTombstone = compactHotRecord(tombstone as unknown as Record<string, unknown>) as TerminalTaskTombstone;
+  const compactTombstone = compactHotRecord(tombstone as unknown as Record<string, unknown>) as unknown as TerminalTaskTombstone;
 
   await mutateWorkflowState(stateFile, (state) => {
     const next = state ?? {};
@@ -723,6 +729,22 @@ export async function writeTerminalTaskTombstone(
   if (result.warning) {
     console.warn(result.warning);
   }
+}
+
+/**
+ * HOK-3373 ownership proof for the absent-resources reap: the key of another
+ * active row that names the same PR number or worktree path, or `''` when the
+ * resources belong to this row alone.
+ */
+export function otherRowOwningResources(state: WorkflowState, issue: string, prNumber: string, worktree: string): string {
+  for (const [key, other] of Object.entries(state.tasks ?? {})) {
+    if (key === issue || !other || typeof other !== 'object') continue;
+    const otherPr = taskString(other as JsonRecord, 'pr');
+    const otherWorktree = taskString(other as JsonRecord, 'worktree');
+    if (prNumber && otherPr === prNumber) return key;
+    if (worktree && otherWorktree === worktree) return key;
+  }
+  return '';
 }
 
 /**
@@ -921,6 +943,21 @@ export function decideTerminalTask(
     return decision;
   }
   if (classified) {
+    // HOK-3373 positive-evidence reap for absent resources: delivery is
+    // proven (we only classify a MERGED PR on a non-active run), the shell
+    // verdict proves nothing unpublished remains locally (no local branch, no
+    // live worktree), and ownership is proven here: no other row claims this
+    // PR or worktree. A surviving remote branch never blocks removal.
+    if (classified.classification === 'safe_resources_absent') {
+      const owner = otherRowOwningResources(state, issue, prNumber, worktree);
+      if (owner) {
+        decision.refusalReason = `resources_owned_by:${owner}`;
+        return decision;
+      }
+      decision.status = 'would-reap';
+      decision.intendedActions = ['archive-artifacts', 'release-pane', 'write-tombstone', 'remove-active-task-row'];
+      return decision;
+    }
     if (['safe_ancestor', 'safe_terminal_pr_head', 'safe_patch_equivalent_pr', 'safe_content_equivalent_pr'].includes(classified.classification)) {
       decision.status = 'would-reap';
       decision.intendedActions = ['archive-artifacts', 'release-pane', 'write-tombstone', 'remove-local-worktree', 'remove-local-branch', 'remove-active-task-row'];
