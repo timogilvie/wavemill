@@ -329,6 +329,8 @@ for f in \
   "$REPO_DIR"/tests/journeys/fixtures/agent-idle-background-job/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/operator-abort-mid-coding.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/operator-abort-mid-coding/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/native-coder-budget-exhaustion.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/hok-3362/fake-agent/coding \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
   "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
   "$REPO_DIR"/tests/lib/state-fixtures.sh \
