@@ -221,6 +221,11 @@
  *   `workflowCostUnreliable`, attribution source `multi`, and
  *   `executionEconomics[].sessions[].stageRole.kind` with confidences
  *   `launch_record` / `unowned`. Additive; legacy records still validate.
+ * - **1.57.0**: HOK-3362 — optional `budgetExhaustions[]`: every native stage
+ *   attempt that stopped on a budget reason, with the one typed
+ *   `BudgetExhaustedFact` and the fault class derived from it.
+ *   `PlanningTerminalReason` gains `token_limit` / `cost_limit`. Additive;
+ *   legacy records still validate.
  *
  * @module eval-schema
  */
@@ -241,13 +246,31 @@ import type { ChallengeRoutingMeta } from './challenge-comparison.ts';
 import type { ChallengeStage } from './challenge-mode.ts';
 import type { TaskCostSummaryV1 } from './sdk-task-cost/contract.ts';
 import type { StageRoutes } from './route-override-record.ts';
+import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
+import type { ArmFaultClass } from './arm-failure-taxonomy.ts';
+
+/**
+ * One native stage attempt that ran out of budget (HOK-3362). `faultClass` is
+ * derived from `fact` by `classifyArmFault` when the record is built.
+ *
+ * @since 1.57.0
+ */
+export interface EvalBudgetExhaustion {
+  stage: 'planning' | 'coding' | 'review';
+  /** 1-based attempt position among the stage's recorded attempts. */
+  attempt: number;
+  /** Executed model when proven, else the launch model; null when neither is recorded. */
+  model?: string | null;
+  fact: BudgetExhaustedFact;
+  faultClass: ArmFaultClass;
+}
 
 /**
  * Current eval schema version for newly emitted records.
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.56.0';
+export const SCHEMA_VERSION = '1.57.0';
 
 /**
  * Machine-readable exploration source for an eval row.
@@ -342,6 +365,9 @@ export type PlanningTerminalReason =
   | 'turn_limit'
   | 'tool_call_limit'
   | 'wall_clock_limit'
+  /** @since 1.57.0 (HOK-3362: every budget stop reason) */
+  | 'token_limit'
+  | 'cost_limit'
   | 'tool_stagnation'
   | 'invalid_final_plan'
   | 'empty_final_plan'
@@ -2264,6 +2290,15 @@ export interface EvalRecord {
    * @since 1.52.0
    */
   stageExecution?: Partial<Record<'planning' | 'coding' | 'review', StageExecutionIdentity>>;
+
+  /**
+   * HOK-3362: every native stage attempt that stopped on a budget reason,
+   * with the typed fact and its derived fault class, so Hokusai sees an
+   * honest outcome instead of a provider or protocol error.
+   *
+   * @since 1.57.0
+   */
+  budgetExhaustions?: EvalBudgetExhaustion[];
 
   /** Whether the record includes the fields required for training export. */
   trainingEligible?: boolean;

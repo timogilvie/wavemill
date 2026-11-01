@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { Message } from './native-agent/messages.ts';
 import type { AgentContext, HeartbeatEvent, WavemillLoopConfig } from './native-agent/loop.ts';
 import { runWavemillLoop } from './native-agent/loop.ts';
+import { finalProviderErrorMessage } from './native-agent/budget-exhaustion.ts';
 import { createNativeModelsCollection } from './native-agent/models.ts';
 import { TranscriptWriter, parseTranscriptJsonl } from './native-agent/transcript.ts';
 import {
@@ -203,20 +204,6 @@ function extractAssistantText(result: Awaited<ReturnType<typeof runWavemillLoop>
   return '';
 }
 
-function extractAssistantErrorMessage(result: Awaited<ReturnType<typeof runWavemillLoop>>): string {
-  for (let index = result.messages.length - 1; index >= 0; index -= 1) {
-    const message = result.messages[index];
-    if (message.role !== 'assistant') {
-      continue;
-    }
-    const errorMessage = (message as { errorMessage?: string }).errorMessage?.trim();
-    if (errorMessage) {
-      return errorMessage;
-    }
-  }
-  return '';
-}
-
 function extractDeniedToolCalls(transcriptPath: string): ReadonlyArray<{ tool: string; reason: string }> {
   const events = parseTranscriptJsonl(readFileSync(transcriptPath, 'utf-8'));
   return events
@@ -373,7 +360,7 @@ export async function runNativeExpansion(options: NativeExpansionOptions): Promi
   });
 
   if (loopResult.stopReason === 'error') {
-    const providerError = extractAssistantErrorMessage(loopResult);
+    const providerError = finalProviderErrorMessage(loopResult);
     throw new Error(providerError
       ? `Native task expansion failed: ${providerError}`
       : 'Native task expansion failed: loop exited with stopReason=error.');

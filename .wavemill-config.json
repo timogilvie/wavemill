@@ -381,6 +381,7 @@
     "Golden Journey (incident-currentness)": "bash tests/journeys/run-journeys.sh incident-currentness",
     "Golden Journey (challenger-contract-recovery)": "bash tests/journeys/run-journeys.sh challenger-contract-recovery",
     "Golden Journey (grounded-overlap)": "bash tests/journeys/run-journeys.sh grounded-overlap",
+    "Golden Journey (native-coder-budget-exhaustion)": "bash tests/journeys/run-journeys.sh native-coder-budget-exhaustion",
     "Golden Journey (challenge-pair-eval)": "bash tests/journeys/run-journeys.sh challenge-pair-eval",
     "Golden Journey (ready-fail-remediate)": "bash tests/journeys/run-journeys.sh ready-fail-remediate",
     "Golden Journey (ready-failure-disposition)": "bash tests/journeys/run-journeys.sh ready-failure-disposition",

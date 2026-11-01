@@ -328,7 +328,10 @@ describe('native review', () => {
       assert.equal(result.verdict, 'error');
       assert.equal(result.failureCategory, 'native-review-timeout');
       assert.equal(result.codeReviewFindings.length, 0);
-      assert.match(result.reviewToolError ?? '', /iteration limit/i);
+      // HOK-3362: the description is the one budget-fact description.
+      assert.match(result.reviewToolError ?? '', /^native-stage-timeout: native review exhausted its turn budget/);
+      assert.equal(result.metadata?.budgetExhausted?.kind, 'turn');
+      assert.equal(result.metadata?.budgetExhausted?.progress.toolCallsExecuted, 1);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }

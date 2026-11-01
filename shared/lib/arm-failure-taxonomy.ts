@@ -1,3 +1,6 @@
+import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
+import { canonicalFailureKind } from './failure-policy.ts';
+
 /**
  * Attribution vocabulary for failed arms: which kinds the mill can name, so
  * reliability metrics can assign a fault class. Being in this union does NOT
@@ -17,9 +20,12 @@ export type ArmFailureKind =
   | 'empty-model-turn'
   | 'native-provider-error'
   | 'native-completion-protocol'
-  // Typed native stage-failure kinds (HOK-3064). A wall-clock/turn/tool-call/
-  // token budget exhaustion is recoverable infrastructure (HOK-3019); an
-  // explicit abort or a policy denial is our own choice and never model signal.
+  // Typed native stage-failure kinds (HOK-3064). `native-stage-timeout` is the
+  // one budget-exhaustion kind for every native stage (HOK-3362); its fault
+  // class is derived from the `budgetExhausted` fact, never fixed. Historical
+  // spellings (`native-review-timeout`, `planning-turn-limit`) resolve to it
+  // through `KIND_ALIASES`. An explicit abort or a policy denial is our own
+  // choice and never model signal.
   | 'native-stage-timeout'
   | 'policy-denied'
   | 'cancelled'
@@ -61,13 +67,13 @@ export type ArmFailureKind =
   // routes differing beyond the varied stage and collapsed the pair before the
   // varied stage ran. Same harness-fault semantics as `route-drift`.
   | 'multiple-varied-roles'
-  // HOK-3129: four recurring native arm-failure signatures the classifier
-  // used to default into `native-unclassified`. All four are model-attributable
-  // (the provider delivered output; the model failed to produce usable
-  // content). The suffixed `planning-artifact-invalid:<reason>` form is
-  // emitted by the shell classifier and matched via a startsWith guard —
-  // the taxonomy itself only holds the base variant.
-  | 'planning-turn-limit'
+  // HOK-3129: recurring native arm-failure signatures the classifier used to
+  // default into `native-unclassified`. All are model-attributable (the
+  // provider delivered output; the model failed to produce usable content).
+  // The suffixed `planning-artifact-invalid:<reason>` form is emitted by the
+  // shell classifier and matched via a startsWith guard — the taxonomy itself
+  // only holds the base variant. (`planning-turn-limit` collapsed into
+  // `native-stage-timeout`, HOK-3362.)
   | 'planning-artifact-invalid'
   | 'review-no-output'
   | 'coding-exited-without-result';
@@ -91,6 +97,54 @@ export interface ChallengeArmFailure {
 }
 
 /**
+ * Wait share at or above which a budget run that also hit provider errors is
+ * charged to the provider: most of its budget went to a failing upstream.
+ */
+export const PROVIDER_DOMINATED_WAIT_SHARE = 0.5;
+
+/**
+ * Wait share at or above which a wall-clock run that never got past its first
+ * turn is charged to the provider: it was stuck on one upstream request.
+ */
+export const STALLED_REQUEST_WAIT_SHARE = 0.9;
+
+/**
+ * The one budget-exhaustion fault rule (HOK-3362). The class is derived from
+ * the fact's progress evidence, never stored as primary (HOK-3338 rule 3), so
+ * every stage — planning, coding, review — gets the same answer for the same
+ * evidence:
+ *
+ * | # | Evidence                                                              | Class          |
+ * |---|-----------------------------------------------------------------------|----------------|
+ * | 1 | provider-error retries > 0 and provider wait ≥ 50% of the wall clock  | provider-fault |
+ * | 2 | wall-clock budget, ≤ 1 turn, provider wait ≥ 90% of the wall clock    | provider-fault |
+ * | 3 | ≥ 1 turn and ≥ 1 tool call (the agent kept making progress)          | model-fault    |
+ * | 4 | no fact (historical rows) or no progress                              | unknown-fault  |
+ *
+ * Generation time counts as provider wait (the loop cannot separate it), which
+ * is why rule 1 also requires provider errors: a slow but healthy model that
+ * runs out of budget is the model not finishing in time, not a provider fault.
+ */
+export function deriveBudgetExhaustionFaultClass(fact: BudgetExhaustedFact | null | undefined): ArmFaultClass {
+  if (!fact?.progress) return 'unknown-fault';
+  const progress = fact.progress;
+  const wallClockMs = progress.wallClockMs > 0 ? progress.wallClockMs : 0;
+  const waitShare = wallClockMs > 0 && typeof progress.providerWaitMs === 'number'
+    ? progress.providerWaitMs / wallClockMs
+    : 0;
+  if ((progress.providerErrorRetries ?? 0) > 0 && waitShare >= PROVIDER_DOMINATED_WAIT_SHARE) {
+    return 'provider-fault';
+  }
+  if (fact.kind === 'wall_clock' && progress.turnsCompleted <= 1 && waitShare >= STALLED_REQUEST_WAIT_SHARE) {
+    return 'provider-fault';
+  }
+  if (progress.turnsCompleted >= 1 && progress.toolCallsExecuted >= 1) {
+    return 'model-fault';
+  }
+  return 'unknown-fault';
+}
+
+/**
  * Classify terminal arm failures without feeding them into the quality corpus.
  *
  * Reliability is recorded for every failed arm. Model quality remains limited to
@@ -99,9 +153,21 @@ export interface ChallengeArmFailure {
  * Harness, selection, and unknown faults are intentionally excluded so routing
  * does not learn to avoid a model because of our configuration or scheduling.
  */
-export function classifyArmFault(input: { failureKind?: string | null; detail?: string | null }): ArmFaultClass {
+export function classifyArmFault(input: {
+  failureKind?: string | null;
+  detail?: string | null;
+  /** HOK-3362: the typed fact a budget-exhaustion failure carries. */
+  budgetExhausted?: BudgetExhaustedFact | null;
+}): ArmFaultClass {
   const failureKind = input.failureKind ?? '';
   const detail = (input.detail ?? '').toLowerCase();
+
+  // HOK-3362: one budget-exhaustion kind. Historical spellings
+  // (`native-review-timeout`, `planning-turn-limit`) canonicalise to it, and
+  // the class is derived from the fact — a row without one stays unattributed.
+  if (canonicalFailureKind(failureKind) === 'native-stage-timeout') {
+    return deriveBudgetExhaustionFaultClass(input.budgetExhausted);
+  }
 
   // HOK-3129: the shell classifier emits `planning-artifact-invalid:<reason>`
   // with the structural reason suffix preserved for selection-health. Match the
@@ -132,15 +198,6 @@ export function classifyArmFault(input: { failureKind?: string | null; detail?: 
     case 'provider-rate-limited':
     case 'provider-quota-exhausted':
     case 'provider-transient-error':
-      return 'provider-fault';
-    // A native stage wall-clock/turn/tool-call/token timeout is recoverable
-    // provider/infrastructure failure (HOK-3019). Circuits open only for
-    // provider-fault (HOK-2942), so an exhausted-timeout identity must not stay
-    // immediately reselectable. `native-review-timeout` is the review-stage
-    // category string that reaches this classifier through the recovery abort
-    // path; both are typed proof, not substring inference.
-    case 'native-stage-timeout':
-    case 'native-review-timeout':
       return 'provider-fault';
     case 'native-provider-error':
       if (/(finish_reason|malformed|truncated stream|stream ended without|invalid response|unusable result)/.test(detail)) {
@@ -192,12 +249,10 @@ export function classifyArmFault(input: { failureKind?: string | null; detail?: 
     case 'route-drift':
     case 'multiple-varied-roles':
       return 'harness-fault';
-    // HOK-3129: the planner exhausted its turn budget without emitting a final
-    // plan; the reviewer finished without findings or a terminal verdict; the
-    // coding agent exited leaving a durable-commit-preserved interruption. All
-    // three are model-attributable (the provider delivered output; the model
+    // HOK-3129: the reviewer finished without findings or a terminal verdict;
+    // the coding agent exited leaving a durable-commit-preserved interruption.
+    // Both are model-attributable (the provider delivered output; the model
     // failed to produce usable content).
-    case 'planning-turn-limit':
     case 'review-no-output':
     case 'coding-exited-without-result':
       return 'model-fault';

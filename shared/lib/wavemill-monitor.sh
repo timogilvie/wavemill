@@ -1016,21 +1016,33 @@ challenge_selection_health_release() {
 # stay immediately reselectable. Best-effort. Challenger arms record via
 # challenge_abort_pair → record-arm-failure.ts instead; calling both would
 # double-count the provider/model circuit window.
+# HOK-3362: the fault class is derived by the tool from the review's typed
+# budget fact (`classifyArmFault`), never hardcoded here.
 challenge_selection_health_record_review_timeout() {
-  local pair_id="${1:-}" model="${2:-}"
+  local pair_id="${1:-}" model="${2:-}" feature_dir="${3:-}"
   [[ -n "$pair_id" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
-  local tool
+  local tool budget_json
   tool="$(wavemill_tool_path challenge-selection-health.ts)"
   [[ -f "$tool" ]] || return 0
+  budget_json="$(stage_budget_exhausted_json "$feature_dir" review)"
   (
     cd "$REPO_DIR" && wavemill_run_tool "$tool" record-outcome \
       --repo-dir "$REPO_DIR" \
       --pair-id "$pair_id" \
       --stage review \
       --model "$model" \
-      --failure-kind native-review-timeout \
-      --fault-class provider-fault
+      --failure-kind native-stage-timeout \
+      ${budget_json:+--budget-exhausted-json "$budget_json"}
   ) >/dev/null 2>&1 || true
+}
+
+# The typed budget-exhaustion fact (HOK-3362) a native stage recorded in its
+# failure envelope, as compact JSON; empty when the envelope is absent or the
+# stage did not stop on a budget. Validation happens in the TS consumers.
+stage_budget_exhausted_json() {
+  local feature_dir="${1:-}" stage="${2:-}"
+  [[ -n "$feature_dir" && -n "$stage" ]] || return 0
+  jq -c '.budgetExhausted // empty' "$feature_dir/.${stage}-failure-envelope.json" 2>/dev/null || true
 }
 
 write_openrouter_warning_cache() {
@@ -1110,11 +1122,12 @@ challenge_abort_scope_for_failure() {
 # pair to it (terminalReason: challenger_challenge_aborted).
 challenge_abort_pair() {
   local issue="$1" feature_dir="$2" win="$3" stage="$4" model="$5" reason="$6" detail="$7" next_action="${8:-}" scope="${9:-pair}"
-  local result_stage pair_id role peer now artifact tmp
+  local result_stage pair_id role peer now artifact tmp budget_json
   [[ -n "$issue" && -n "$feature_dir" && -n "$stage" && -n "$reason" ]] || return 1
   [[ "$scope" == "single" ]] || scope="pair"
 
   result_stage="$(challenge_result_stage_for_launch "$stage")"
+  budget_json="$(stage_budget_exhausted_json "$feature_dir" "$result_stage")"
   pair_id="$(get_task_meta "$issue" "challengePairId" 2>/dev/null || true)"
   role="$(get_task_meta "$issue" "challengeRole" 2>/dev/null || true)"
   if [[ -n "$pair_id" ]]; then
@@ -1174,8 +1187,10 @@ challenge_abort_pair() {
     --arg abortedAt "$now" \
     --arg detail "$detail" \
     --arg nextAction "$next_action" \
+    --arg budgetExhausted "$budget_json" \
     '{pairId:$pairId, role:$role, stage:$stage, model:$model, reason:$reason, abortedAt:$abortedAt, detail:$detail}
-     + (if $nextAction == "" then {} else {nextAction:$nextAction} end)' \
+     + (if $nextAction == "" then {} else {nextAction:$nextAction} end)
+     + (if $budgetExhausted == "" then {} else {budgetExhausted:($budgetExhausted | fromjson? // null)} end)' \
     > "$tmp" 2>/dev/null && mv "$tmp" "$artifact" || rm -f "$tmp"
 
   if [[ -n "${REPO_DIR:-}" && ( "$role" == "primary" || "$role" == "challenger" ) ]]; then
@@ -1192,7 +1207,8 @@ challenge_abort_pair() {
           --model "${model:-unknown}" \
           --abort-reason "$reason" \
           --detail "$detail" \
-          --next-action "$next_action"
+          --next-action "$next_action" \
+          ${budget_json:+--budget-exhausted-json "$budget_json"}
       ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
     fi
   fi
@@ -7300,6 +7316,8 @@ archive_stale_coding_artifacts() {
     ".blocked-completion-announced"
     ".coding-uncommitted-output-announced"
     ".coding-failure-handoff.json"
+    # HOK-3362: the coding budget envelope belongs to the prior attempt.
+    ".coding-failure-envelope.json"
   )
   local present=() name archive_dir archived_names=() preserved=0
 
@@ -8022,6 +8040,7 @@ native_terminal_failure_next_action() {
 stage_failure_decision() {
   local issue="$1" feature_dir="$2" stage="$3"
   local detail envelope_json="" failure_kind="" envelope_cause="" envelope_model="" handoff_reason=""
+  local budget_exhausted=""
   local is_challenge cache fingerprint cached decision
 
   detail="$(native_hook_terminal_failure_detail "$issue" 2>/dev/null || true)"
@@ -8044,6 +8063,7 @@ stage_failure_decision() {
     failure_kind="$(jq -r '.failureKind // empty' <<<"$envelope_json" 2>/dev/null || true)"
     envelope_cause="$(jq -r '.cause // empty' <<<"$envelope_json" 2>/dev/null || true)"
     envelope_model="$(jq -r '.model // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    budget_exhausted="$(jq -c '.budgetExhausted // empty' <<<"$envelope_json" 2>/dev/null || true)"
   fi
   if [[ -z "$failure_kind" && "$stage" == "coding" ]]; then
     handoff_reason="$(native_coding_failure_handoff_reason "$feature_dir" 2>/dev/null || true)"
@@ -8052,8 +8072,10 @@ stage_failure_decision() {
   decision="$(failure_policy_decide "$stage" "$failure_kind" "$detail" "$handoff_reason" "$is_challenge" \
     | jq -c --arg detail "$detail" --arg handoffReason "$handoff_reason" --arg envelopeCause "$envelope_cause" \
         --arg envelopeModel "$envelope_model" --arg fingerprint "$fingerprint" \
+        --arg budgetExhausted "$budget_exhausted" \
         '. + {detail:$detail, handoffReason:$handoffReason, envelopeCause:$envelopeCause,
-              envelopeModel:$envelopeModel, fingerprint:$fingerprint}')"
+              envelopeModel:$envelopeModel, fingerprint:$fingerprint}
+           + (if $budgetExhausted == "" then {} else {budgetExhausted:($budgetExhausted | fromjson? // null)} end)')"
   if [[ -d "$feature_dir" ]]; then
     printf '%s\n' "$decision" > "$cache.tmp.$$" 2>/dev/null && mv "$cache.tmp.$$" "$cache" 2>/dev/null \
       || rm -f "$cache.tmp.$$"
@@ -12822,7 +12844,7 @@ review_recovery_coordinator_locked() {
         else
           challenge_selection_health_record_review_timeout \
             "$(get_task_meta "$issue" "challengePairId" 2>/dev/null || printf '%s' "$issue")" \
-            "$reviewer_model" || true
+            "$reviewer_model" "$feature_dir" || true
         fi
       fi
       review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
@@ -12861,7 +12883,7 @@ review_recovery_coordinator_locked() {
             # gating on non-challenger here avoids double-counting the circuit.
             challenge_selection_health_record_review_timeout \
               "$(get_task_meta "$issue" "challengePairId" 2>/dev/null || printf '%s' "$issue")" \
-              "$reviewer_model" || true
+              "$reviewer_model" "$feature_dir" || true
           fi
         fi
         review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"

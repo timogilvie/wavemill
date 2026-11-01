@@ -101,6 +101,8 @@ TESTS=(
   shared/lib/native-agent/coding-gate.test.ts
   shared/lib/native-agent/coding-handoff.test.ts
   shared/lib/native-agent/recovery.test.ts
+  shared/lib/native-agent/budget-exhaustion.test.ts
+  shared/lib/native-agent/budget-exhaustion.cross-stage.test.ts
   shared/lib/native-agent/cleanup.test.ts
   shared/lib/native-agent/coding-lifecycle.test.ts
   shared/lib/native-agent/command-transcript.test.ts

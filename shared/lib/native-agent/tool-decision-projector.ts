@@ -26,6 +26,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { budgetKindForStopReason } from './budget-exhaustion.ts';
 
 import type {
   SessionEvent,
@@ -513,7 +514,7 @@ function parseEventTimestamp(value: string | number): number | undefined {
 function isTimeoutTermination(sessionEnded: SessionEndedEvent | undefined): boolean {
   if (!sessionEnded) return false;
   const reason = sessionEnded.stopReason;
-  return reason === 'wall_clock_limit' || reason === 'aborted';
+  return budgetKindForStopReason(reason) === 'wall_clock' || reason === 'aborted';
 }
 
 function pickBudgetFields(

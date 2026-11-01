@@ -101,7 +101,6 @@ test('formerly terminal kinds now retry (HOK-3176 removals)', () => {
     'empty-model-turn',
     'native-provider-error',
     'native-completion-protocol',
-    'planning-turn-limit',
     'planning-artifact-invalid:missing_sections',
     'review-no-output',
     'coding-exited-without-result',
