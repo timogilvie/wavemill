@@ -133,7 +133,7 @@ export const STAGE_SUBSTITUTION_PATHS: readonly string[] = [
   'shared/lib/coder-launch-reroute.ts',
   'shared/lib/reviewer-launch-reroute.ts',
   'shared/lib/challenge-execution-contract.ts',
-  'tools/reroute-task.ts',
+  'tools/reroute-task.ts', // install-paths: allow guard scan-path list (repo-relative source path)
 ];
 
 /**
