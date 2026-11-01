@@ -339,6 +339,43 @@ export function mockHokusaiFetch(strategy: Record<string, unknown>, metadata: Re
   }), { status: 200 });
 }
 
+export interface HokusaiScriptedResponse {
+  strategy: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  /** Top-level `inference_log_id` as the predict endpoint returns it. */
+  inferenceLogId?: string;
+}
+
+/**
+ * Scripts successive Hokusai predict responses (first ask, re-ask, …) and
+ * records every request body so tests can assert what was asked. Requests
+ * past the script get the last response.
+ */
+export function mockHokusaiFetchSequence(responses: HokusaiScriptedResponse[]): { requests: Array<Record<string, any>> } {
+  const requests: Array<Record<string, any>> = [];
+  globalThis.fetch = async (_input: unknown, init?: { body?: unknown }) => {
+    requests.push(JSON.parse(String(init?.body ?? '{}')));
+    const scripted = responses[Math.min(requests.length - 1, responses.length - 1)];
+    return new Response(JSON.stringify({
+      predictions: {
+        recommended_strategy: {
+          planner_model: 'claude-sonnet-4-5-20250929',
+          coder_model: 'claude-haiku-4-5-20251001',
+          reviewer_model: 'claude-haiku-4-5-20251001',
+          plan_depth: 'medium',
+          code_depth: 'medium',
+          review_mode: 'light',
+          estimated_cost_usd: 4.55,
+          ...scripted.strategy,
+        },
+      },
+      metadata: scripted.metadata ?? {},
+      ...(scripted.inferenceLogId ? { inference_log_id: scripted.inferenceLogId } : {}),
+    }), { status: 200 });
+  };
+  return { requests };
+}
+
 /** Write a certification artifact to the test repo (with overrides for negative-path tests). */
 export function writeCertArtifact(
   repoDir: string,

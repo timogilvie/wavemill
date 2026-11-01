@@ -272,6 +272,7 @@ export interface RouterEscalationConfig {
   enabled?: boolean;
   expectedSuccessFloor?: number;
   confidenceFloor?: number;
+  /** @deprecated Ignored since HOK-3363: escalation re-asks Hokusai instead of ranking coders locally. */
   minCoderClassRankIncrease?: number;
 }
 

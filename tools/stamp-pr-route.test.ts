@@ -126,7 +126,7 @@ describe('stampPrRoute', () => {
     }
   });
 
-  it('stamps route_decision alongside executed_route with route_schema 2', async () => {
+  it('stamps route_decision alongside executed_route with the current route_schema', async () => {
     const fixture = depsWithBody('Body', DECISION);
 
     const result = await stampPrRoute({ prNumber: '42', issue: 'HOK-3098', featureDir: '/tmp/feature' }, fixture.deps);
@@ -136,7 +136,7 @@ describe('stampPrRoute', () => {
     const parsed = parsePrMetadata(fixture.body());
     assert.equal(parsed.ok, true);
     if (parsed.ok) {
-      assert.equal(parsed.metadata.route_schema, 2);
+      assert.equal(parsed.metadata.route_schema, PR_ROUTE_METADATA_SCHEMA_VERSION);
       assert.deepEqual(parsed.metadata.executed_route, ROUTE);
       assert.deepEqual(parsed.metadata.route_decision, DECISION);
     }
@@ -204,7 +204,7 @@ describe('stampPrRoute', () => {
     }
   });
 
-  it('upgrades a v1 block to route_schema 2 on restamp', async () => {
+  it('upgrades a v1 block to the current route_schema on restamp', async () => {
     const v1Body = [
       'Body',
       '',
@@ -222,7 +222,7 @@ describe('stampPrRoute', () => {
     const parsed = parsePrMetadata(fixture.body());
     assert.equal(parsed.ok, true);
     if (parsed.ok) {
-      assert.equal(parsed.metadata.route_schema, 2);
+      assert.equal(parsed.metadata.route_schema, PR_ROUTE_METADATA_SCHEMA_VERSION);
       assert.deepEqual(parsed.metadata.route_decision, DECISION);
     }
   });

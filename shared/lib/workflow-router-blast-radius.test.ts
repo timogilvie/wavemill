@@ -93,7 +93,8 @@ await test('high radius with only fast-economy reviewer pool falls back and reco
   }
 });
 
-await test('high radius records pre-escalation route when the reviewer is upgraded', () => {
+// protects: a blast-radius reviewer upgrade replacing the routed reviewer without an override (HOK-3363).
+await test('high radius records the reviewer upgrade as an override when the reviewer is upgraded', () => {
   const { repoDir, cleanup } = makeRepo();
   try {
     const decision = routeWorkflow(
@@ -106,17 +107,14 @@ await test('high radius records pre-escalation route when the reviewer is upgrad
     );
     assert.equal(decision.blastRadius, 'high');
     const registry = getEffectiveRegistry(repoDir);
-    const prevReviewer = decision.preEscalationRoute?.reviewer;
-    if (prevReviewer && prevReviewer !== decision.reviewer) {
-      // Substitution happened: pre-escalation route must name the original.
-      const prevClass = registry.models[prevReviewer]?.class;
-      const nowClass = registry.models[decision.reviewer]?.class;
-      assert.notEqual(nowClass, 'fast_economy',
-        `reviewer ${decision.reviewer} after substitution should not be fast_economy`);
-      // If an earlier escalation already captured preEscalation, we at least
-      // know the final reviewer is at least as strong as the pre-escalation.
-      assert.ok(prevClass === 'fast_economy' || prevClass === nowClass,
-        `preEscalation class=${prevClass}, final class=${nowClass}`);
+    const reviewerRecord = decision.stageRoutes?.reviewer;
+    assert.equal(reviewerRecord?.executed, decision.reviewer, 'the record names the reviewer that runs');
+    const upgrade = reviewerRecord?.overrides.find((override) => override.reason === 'blast_radius_floor');
+    if (upgrade) {
+      assert.equal(upgrade.source, 'escalation');
+      assert.notEqual(upgrade.from, upgrade.to);
+      assert.equal(registry.models[upgrade.from]?.class, 'fast_economy', 'only a fast-economy reviewer is floored');
+      assert.notEqual(registry.models[upgrade.to]?.class, 'fast_economy');
     }
     // Primary assertion: regardless of whether the baseline needed a bump,
     // the final reviewer must satisfy the floor.
@@ -140,7 +138,7 @@ await test('high radius decisions still pass through enforceLaunchableRoute', ()
     );
     // The guard either substitutes or blocks; neither field should throw. We
     // only check that the plumbing is intact (fields optional, not required).
-    assert.ok('launchabilitySubstitutions' in decision || !('launchabilitySubstitutions' in decision));
+    assert.ok(decision.stageRoutes, 'every finalized decision carries the route record');
     assert.ok('launchabilityBlocked' in decision || !('launchabilityBlocked' in decision));
   } finally {
     cleanup();

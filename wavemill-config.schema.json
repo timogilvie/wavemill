@@ -2443,7 +2443,7 @@
                 },
                 "escalation": {
                     "type": "object",
-                    "description": "Escalate risky or low-confidence routes to stronger coder candidates when budget allows.",
+                    "description": "When Hokusai's own confidence or expected success is below a floor, re-ask Hokusai for a highest_reliability route without the low-confidence coder (HOK-3363). The re-ask is recorded as an escalation override. Locally routed decisions never escalate.",
                     "properties": {
                         "enabled": {
                             "type": "boolean",
@@ -2468,7 +2468,7 @@
                             "type": "integer",
                             "minimum": 0,
                             "default": 1,
-                            "description": "Minimum model-class rank increase preferred for coder escalation. Same-class higher ladder positions remain eligible."
+                            "description": "Deprecated and ignored (HOK-3363): escalation re-asks Hokusai instead of ranking coders locally. Accepted so existing configs keep validating."
                         }
                     },
                     "additionalProperties": false
