@@ -489,7 +489,8 @@ export function matchInteractivePromptSignature(paneText: string | undefined): I
  * started after it. When a controller-named process IS a child of the agent
  * (the agent itself ran `npx tsx tools/plan-queue.test.ts`), it is the
  * agent's work. Enforced by the AGENT_BACKGROUND_WORK_GUARD preflight guard
- * (shared/lib/hook-ttl-guard.ts, run by tools/check-hook-ttl.ts).
+ * (shared/lib/agent-background-work-guard.ts, run by
+ * tools/check-agent-background-work.ts).
  *
  * IMPORTANT: keep in sync with the WAVEMILL_CONTROLLER_PROCESS_REGEX in
  * shared/lib/task-progress.sh. The shell tests exercise the same fixtures
