@@ -38,6 +38,7 @@ import type { ModelRegistry } from '../model-registry.ts';
 import { appendPromptSizeSample, type PromptSizeSample } from './prompt-size-log.ts';
 import { EMPTY_PROMPT_CACHE_SUMMARY, summarizePromptCache, type PromptCacheSummary, type TurnCacheUsage } from './prompt-cache.ts';
 import { assertToolCompat } from './tool-compat-validator.ts';
+import { assistantErrorText, isBudgetStopReason } from './budget-exhaustion.ts';
 import {
   assertPromptFitsContextWindow,
   ContextExhaustedError,
@@ -375,6 +376,11 @@ export interface LoopResult {
    * same per-turn provider usage that feeds `totalCostUsd`.
    */
   promptCache: PromptCacheSummary;
+  /**
+   * The provider failure that ended the run. Never set when the run stopped on
+   * a budget reason (HOK-3362): the abort our own budget causes is evidence of
+   * the budget stop, carried by `budgetExhaustionFromLoop`, not a provider error.
+   */
   providerError?: {
     kind: ProviderErrorKind;
     retryable: boolean;
@@ -382,6 +388,15 @@ export interface LoopResult {
     errorMessage: string;
     turnsAtFailure: number;
   };
+  /**
+   * Time spent waiting on the provider (HOK-3362): per turn, request start to
+   * the assistant `message_end`, including a request still in flight when the
+   * run ended. Generation time counts as wait; the budget fault rule also
+   * requires provider errors before it blames the provider.
+   */
+  providerWaitMs?: number;
+  /** Provider-error retries the loop spent during this run (HOK-3362). */
+  providerErrorRetries?: number;
   /**
    * Provider-reported identity summary (HOK-3143). Present when
    * `providerIdentity` was configured. Launchers persist this on the stage
@@ -464,7 +479,7 @@ function finalAssistantProviderError(messages: AgentMessage[]): {
   if (!message || message.stopReason !== 'error') {
     return undefined;
   }
-  const errorMessage = message.errorMessage?.trim() || 'Provider returned stopReason "error" without an errorMessage.';
+  const errorMessage = assistantErrorText(message) || 'Provider returned stopReason "error" without an errorMessage.';
   return {
     message,
     errorMessage,
@@ -766,6 +781,9 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   let terminalSynthesisPromptPending = false;
   let finalProviderError: LoopResult['providerError'] | undefined;
   let providerErrorRetryAttempts = 0;
+  // Provider wait accounting (HOK-3362): request start → assistant message_end.
+  let providerWaitMs = 0;
+  let providerRequestStartedAt: number | undefined;
   const providerErrorRetryMaxAttempts = config.providerErrorRetry?.maxAttempts ?? 3;
   const providerErrorRetryDelays = config.providerErrorRetry?.backoffDelaysMs ?? DEFAULT_PROVIDER_ERROR_RETRY_DELAYS_MS;
   const providerErrorSleep = config.providerErrorRetry?.sleep ?? sleepAbortable;
@@ -1347,6 +1365,16 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     if (exposeToCaller) {
       config.onEvent?.(event);
     }
+    if (event.type === 'turn_start') {
+      providerRequestStartedAt = Date.now();
+    } else if (
+      event.type === 'message_end'
+      && event.message?.role === 'assistant'
+      && providerRequestStartedAt !== undefined
+    ) {
+      providerWaitMs += Math.max(0, Date.now() - providerRequestStartedAt);
+      providerRequestStartedAt = undefined;
+    }
     switch (event.type) {
       case 'turn_start': {
         onHeartbeat?.({ state: 'working', event: 'turn_start', agent: HEARTBEAT_AGENT });
@@ -1688,18 +1716,12 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     composed.cleanup();
   }
 
-  const wallClockMs = Date.now() - startTime;
-  if (!finalProviderError) {
-    const providerError = finalAssistantProviderError(finalMessages);
-    if (providerError) {
-      finalProviderError = {
-        kind: providerError.classification.kind,
-        retryable: providerError.classification.retryable,
-        attempts: providerErrorRetryAttempts,
-        errorMessage: providerError.errorMessage,
-        turnsAtFailure: Math.max(turnsCompleted, assistantMessageCount(finalMessages)),
-      };
-    }
+  const endTime = Date.now();
+  const wallClockMs = endTime - startTime;
+  if (providerRequestStartedAt !== undefined) {
+    // The request in flight when the run ended (e.g. aborted by the wall clock).
+    providerWaitMs += Math.max(0, endTime - providerRequestStartedAt);
+    providerRequestStartedAt = undefined;
   }
 
   let stopReason: LoopStopReason;
@@ -1721,6 +1743,25 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     stopReason = composed.isWallClockExpiry() ? 'wall_clock_limit' : 'aborted';
   } else {
     stopReason = 'stop';
+  }
+
+  // Stop reason before error text (HOK-3362): the stop reason is decided first,
+  // and a budget stop never carries a provider error. A wall-clock abort leaves
+  // "Request was aborted" on the in-flight turn; classifying that text would
+  // record our own budget as `provider-unknown-error`.
+  if (isBudgetStopReason(stopReason)) {
+    finalProviderError = undefined;
+  } else if (!finalProviderError) {
+    const providerError = finalAssistantProviderError(finalMessages);
+    if (providerError) {
+      finalProviderError = {
+        kind: providerError.classification.kind,
+        retryable: providerError.classification.retryable,
+        attempts: providerErrorRetryAttempts,
+        errorMessage: providerError.errorMessage,
+        turnsAtFailure: Math.max(turnsCompleted, assistantMessageCount(finalMessages)),
+      };
+    }
   }
 
   // Write session_ended event if session stream is enabled and not externally managed
@@ -1771,6 +1812,8 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     totalCostUsd,
     wallClockMs,
     promptCache: summarizePromptCache(turnCacheUsage),
+    providerWaitMs,
+    providerErrorRetries: providerErrorRetryAttempts,
     ...(finalProviderError ? { providerError: finalProviderError } : {}),
     ...(providerIdentitySummary ? { providerIdentity: providerIdentitySummary } : {}),
   };
