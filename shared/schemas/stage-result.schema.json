@@ -156,6 +156,9 @@
         }
       }
     },
+    "budgetExhausted": {
+      "$ref": "#/$defs/budgetExhausted"
+    },
     "history": {
       "type": "array",
       "items": {
@@ -258,6 +261,87 @@
         "providerRoute": {
           "description": "Transport provider the loop called (e.g. anthropic, openrouter).",
           "type": "string"
+        }
+      }
+    },
+    "budgetExhausted": {
+      "type": "object",
+      "description": "HOK-3362: the one budget-exhaustion fact (shared/lib/native-agent/budget-exhaustion.ts). The fault class is derived from it, never stored.",
+      "required": [
+        "kind",
+        "stopReason",
+        "limit",
+        "used",
+        "progress"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "wall_clock",
+            "turn",
+            "tool_call",
+            "token",
+            "cost"
+          ]
+        },
+        "stopReason": {
+          "enum": [
+            "wall_clock_limit",
+            "turn_limit",
+            "tool_call_limit",
+            "token_limit",
+            "cost_limit"
+          ]
+        },
+        "limit": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "used": {
+          "type": "number",
+          "minimum": 0
+        },
+        "progress": {
+          "type": "object",
+          "required": [
+            "turnsCompleted",
+            "toolCallsExecuted",
+            "wallClockMs"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "turnsCompleted": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "toolCallsExecuted": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "wallClockMs": {
+              "type": "number",
+              "minimum": 0
+            },
+            "mutationFailures": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "providerWaitMs": {
+              "type": "number",
+              "minimum": 0
+            },
+            "providerErrorRetries": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "interruptedRequest": {
+              "type": "boolean"
+            }
+          }
         }
       }
     }

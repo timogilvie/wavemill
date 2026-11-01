@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  PROVIDER_DOMINATED_WAIT_SHARE,
+  STALLED_REQUEST_WAIT_SHARE,
   classifyArmFault,
+  deriveBudgetExhaustionFaultClass,
   isModelQualitySignal,
   parseAbortFailureKind,
   isInvalidChallengeAbort,
 } from './arm-failure-taxonomy.ts';
+import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 
 test('classifies the incident failure kinds into the intended fault classes', () => {
   assert.equal(classifyArmFault({
@@ -92,13 +96,12 @@ test('parses abort failure kinds and quality eligibility', () => {
 });
 
 test('classifies typed native stage-failure kinds (HOK-3064)', () => {
-  // A native stage timeout is recoverable provider/infrastructure failure
-  // (HOK-3019). Circuits open only for provider-fault (HOK-2942), so both the
-  // typed envelope kind and the review-stage category string must be eligible.
-  assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout' }), 'provider-fault');
-  assert.equal(classifyArmFault({ failureKind: 'native-review-timeout' }), 'provider-fault');
-  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'native-stage-timeout' })), true);
-  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'native-review-timeout' })), true);
+  // HOK-3362: a native stage timeout's class is derived from its
+  // budgetExhausted fact. Without one (historical rows) it stays unattributed,
+  // so neither spelling feeds quality signal on no evidence.
+  assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout' }), 'unknown-fault');
+  assert.equal(classifyArmFault({ failureKind: 'native-review-timeout' }), 'unknown-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'native-stage-timeout' })), false);
 
   // Policy denials and explicit cancellations are our own choice — never model
   // or provider quality evidence.
@@ -112,26 +115,26 @@ test('parses the typed and legacy review-timeout exhaustion reasons (HOK-3064)',
   assert.equal(parseAbortFailureKind('retry_exhausted:native-review-timeout'), 'native-review-timeout');
   // Legacy literal recorded before the typed exhaustion reason existed.
   assert.equal(parseAbortFailureKind('review_timeout_exhausted'), 'native-review-timeout');
+  // HOK-3362: historical rows carry no budget fact, so they stay unattributed.
   assert.equal(
     classifyArmFault({ failureKind: parseAbortFailureKind('retry_exhausted:native-review-timeout') }),
-    'provider-fault',
+    'unknown-fault',
   );
   assert.equal(
     classifyArmFault({ failureKind: parseAbortFailureKind('review_timeout_exhausted') }),
-    'provider-fault',
+    'unknown-fault',
   );
 });
 
 test('classifies the HOK-3129 recurring native arm-failure kinds', () => {
-  // All four shapes are model-attributable: the provider delivered output but
+  // These shapes are model-attributable: the provider delivered output but
   // the model failed to produce usable content. They used to default into
-  // native-unclassified before HOK-3129 made them typed.
-  assert.equal(classifyArmFault({ failureKind: 'planning-turn-limit' }), 'model-fault');
+  // native-unclassified before HOK-3129 made them typed. (`planning-turn-limit`
+  // collapsed into the one budget kind in HOK-3362; see the derivation tests.)
   assert.equal(classifyArmFault({ failureKind: 'planning-artifact-invalid' }), 'model-fault');
   assert.equal(classifyArmFault({ failureKind: 'review-no-output' }), 'model-fault');
   assert.equal(classifyArmFault({ failureKind: 'coding-exited-without-result' }), 'model-fault');
   for (const kind of [
-    'planning-turn-limit',
     'planning-artifact-invalid',
     'review-no-output',
     'coding-exited-without-result',
@@ -230,4 +233,105 @@ test('classifies the HOK-3156 multiple-varied-roles preflight collapse as a harn
   assert.equal(classifyArmFault({ failureKind: 'multiple-varied-roles' }), 'harness-fault');
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'multiple-varied-roles' })), false);
   assert.equal(isInvalidChallengeAbort('invalid_challenge:multiple-varied-roles'), true);
+});
+
+// ── HOK-3362: one budget-exhaustion fault rule ─────────────────────────────
+
+function budgetFact(
+  kind: 'wall_clock' | 'turn' | 'tool_call' | 'token' | 'cost',
+  progress: Partial<BudgetExhaustedFact['progress']>,
+): BudgetExhaustedFact {
+  const stopReason = ({
+    wall_clock: 'wall_clock_limit',
+    turn: 'turn_limit',
+    tool_call: 'tool_call_limit',
+    token: 'token_limit',
+    cost: 'cost_limit',
+  } as const)[kind];
+  return {
+    kind,
+    stopReason,
+    limit: 100,
+    used: 100,
+    progress: { turnsCompleted: 0, toolCallsExecuted: 0, wallClockMs: 1000, ...progress },
+  };
+}
+
+// protects: the HOK-3329 attempts deriving different classes from the same kind of evidence
+test('HOK-3329: all three attempts derive the same class from progress evidence', () => {
+  const attempt1 = budgetFact('turn', { turnsCompleted: 200, toolCallsExecuted: 88, wallClockMs: 2_160_000, mutationFailures: 44 });
+  const attempt2 = budgetFact('wall_clock', {
+    turnsCompleted: 145,
+    toolCallsExecuted: 230,
+    wallClockMs: 3_600_000,
+    providerWaitMs: 1_500_000,
+    providerErrorRetries: 0,
+    interruptedRequest: true,
+  });
+  const attempt3 = budgetFact('turn', { turnsCompleted: 200, toolCallsExecuted: 150, wallClockMs: 2_880_000 });
+  const classes = [attempt1, attempt2, attempt3].map((fact) =>
+    classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact }));
+  assert.deepEqual(classes, ['model-fault', 'model-fault', 'model-fault']);
+});
+
+// protects: the derivation table drifting (provider wait vs progress rules)
+test('deriveBudgetExhaustionFaultClass follows the documented table', () => {
+  const rows: Array<[string, BudgetExhaustedFact | undefined, string]> = [
+    [
+      'rule 1: provider errors and most of the budget spent waiting',
+      budgetFact('turn', { turnsCompleted: 30, toolCallsExecuted: 40, wallClockMs: 1000, providerWaitMs: 600, providerErrorRetries: 2 }),
+      'provider-fault',
+    ],
+    [
+      'rule 1 needs errors: a slow but healthy provider is the model not finishing',
+      budgetFact('turn', { turnsCompleted: 30, toolCallsExecuted: 40, wallClockMs: 1000, providerWaitMs: 950, providerErrorRetries: 0 }),
+      'model-fault',
+    ],
+    [
+      'rule 2: wall clock stuck on the first request',
+      budgetFact('wall_clock', { turnsCompleted: 0, toolCallsExecuted: 0, wallClockMs: 1000, providerWaitMs: 990 }),
+      'provider-fault',
+    ],
+    [
+      'rule 2 is wall-clock only',
+      budgetFact('token', { turnsCompleted: 1, toolCallsExecuted: 0, wallClockMs: 1000, providerWaitMs: 990 }),
+      'unknown-fault',
+    ],
+    [
+      'rule 3: progress without provider trouble',
+      budgetFact('tool_call', { turnsCompleted: 12, toolCallsExecuted: 120, wallClockMs: 1000, providerWaitMs: 100 }),
+      'model-fault',
+    ],
+    ['rule 4: no progress, no provider evidence', budgetFact('cost', { turnsCompleted: 0, toolCallsExecuted: 0 }), 'unknown-fault'],
+    ['rule 4: no fact (historical row)', undefined, 'unknown-fault'],
+  ];
+  for (const [name, fact, expected] of rows) {
+    assert.equal(deriveBudgetExhaustionFaultClass(fact), expected, name);
+    assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact }), expected, name);
+  }
+  assert.equal(PROVIDER_DOMINATED_WAIT_SHARE, 0.5);
+  assert.equal(STALLED_REQUEST_WAIT_SHARE, 0.9);
+});
+
+// protects: historical spellings bypassing the one derivation
+test('historical budget spellings canonicalise to the one kind and derive from the fact', () => {
+  const progressing = budgetFact('turn', { turnsCompleted: 40, toolCallsExecuted: 60 });
+  for (const kind of [
+    'planning-turn-limit',
+    'native-review-timeout',
+    parseAbortFailureKind('retry_exhausted:native-review-timeout'),
+    parseAbortFailureKind('terminal_stage_failure:planning-turn-limit'),
+  ]) {
+    assert.equal(classifyArmFault({ failureKind: kind }), 'unknown-fault', `${kind} without fact`);
+    assert.equal(classifyArmFault({ failureKind: kind, budgetExhausted: progressing }), 'model-fault', `${kind} with fact`);
+  }
+});
+
+// protects: a genuine provider failure being reclassified by the budget rule
+test('a genuine upstream 5xx still classifies as provider-fault', () => {
+  assert.equal(classifyArmFault({ failureKind: 'provider-transient-error', detail: '502 Bad Gateway' }), 'provider-fault');
+  assert.equal(
+    classifyArmFault({ failureKind: 'native-provider-error', detail: 'provider-transient-error: 503 service unavailable' }),
+    'provider-fault',
+  );
 });
