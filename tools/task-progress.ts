@@ -91,7 +91,7 @@ runTool({
     'feature-dir': { type: 'string', description: 'features/<slug> directory' },
     phase: { type: 'string', description: 'Active phase (planning|coding|review|ready) for launch anchoring' },
     'pane-target': { type: 'string', description: 'tmux pane target for the blocking-prompt matcher' },
-    'pane-pid': { type: 'string', description: 'Pane shell pid for the HOK-3137 background-work probe; resolved from --pane-target when absent' },
+    'pane-pid': { type: 'string', description: 'Pane root pid for the HOK-3137 background-work probe; the agent pid is resolved structurally from it (HOK-3374). Resolved from --pane-target when absent' },
     'stall-minutes': { type: 'string', description: 'Stall threshold in minutes (default 30)' },
     'write-cache': { type: 'boolean', description: 'Atomically write /tmp/wavemill-<session>-<issue>.progress.json' },
     'max-age': { type: 'string', description: 'When set, return the cache if it is younger than this (seconds)' },

@@ -563,65 +563,136 @@ test('parsePsSnapshot skips unparsable rows without throwing', () => {
   assert.equal(processes[0].pid, 100);
 });
 
-// ── HOK-3137: deriveAgentBackgroundWork (D2 process-tree heuristic) ─────────
+// ── HOK-3137/HOK-3374: deriveAgentBackgroundWork (one ownership rule) ──────
+//
+// The second parameter is the AGENT's pid (HOK-3374): a process is the
+// agent's background work iff it is a descendant of the agent process that
+// started at least `minChildLagSeconds` after it. No command names.
 
 function proc(pid: number, ppid: number, etimeSeconds: number, command: string): PaneProcess {
   return { pid, ppid, etimeSeconds, command };
 }
 
+// protects: HOK-3101(a) — an idle agent REPL with no descendants is never background work
 test('bg-work: idle REPL regression — shell -> claude only is NOT live (HOK-3101(a))', () => {
   const processes = [
     proc(1, 0, 600, '-bash'),
     proc(2, 1, 100, 'claude'),
   ];
-  const result = deriveAgentBackgroundWork(processes, 1, { minChildLagSeconds: 30 });
+  const result = deriveAgentBackgroundWork(processes, 2, { minChildLagSeconds: 30 });
   assert.equal(result.live, false);
   assert.deepEqual(result.processes, []);
 });
 
+// protects: HOK-3137 — a backgrounded task the idle agent waits on suppresses the stall
 test('bg-work: shell -> claude -> sleep 30 with sufficient lag is live', () => {
   const processes = [
     proc(1, 0, 600, '-bash'),
     proc(2, 1, 100, 'claude'),
     proc(3, 2, 20, 'sleep 30'),
   ];
-  const result = deriveAgentBackgroundWork(processes, 1, { minChildLagSeconds: 30 });
+  const result = deriveAgentBackgroundWork(processes, 2, { minChildLagSeconds: 30 });
   assert.equal(result.live, true);
   assert.deepEqual(result.processes, [{ pid: 3, command: 'sleep 30' }]);
 });
 
+// protects: the lag floor (agent-relative) excludes session-startup services
 test('bg-work: shell -> claude -> mcp-server with lag under threshold is NOT live (session-service exclusion)', () => {
   const processes = [
     proc(1, 0, 600, '-bash'),
     proc(2, 1, 100, 'claude'),
     proc(3, 2, 95, 'mcp-server --stdio'), // started 5s after claude, under the 30s lag floor
   ];
-  const result = deriveAgentBackgroundWork(processes, 1, { minChildLagSeconds: 30 });
+  const result = deriveAgentBackgroundWork(processes, 2, { minChildLagSeconds: 30 });
   assert.equal(result.live, false);
 });
 
-test('bg-work: shell -> claude -> bash -c -> npm test is live (neutral shells transparent)', () => {
+// protects: HOK-3374 — every qualifying descendant is evidence, not only the deepest leaf
+test('bg-work: shell -> claude -> bash -c -> npm test is live (shells are owned like anything else)', () => {
   const processes = [
     proc(1, 0, 600, '-bash'),
     proc(2, 1, 200, 'claude'),
     proc(3, 2, 50, 'bash -c "npm test"'),
     proc(4, 3, 50, 'npm test -- --watch'),
   ];
-  const result = deriveAgentBackgroundWork(processes, 1, { minChildLagSeconds: 30 });
+  const result = deriveAgentBackgroundWork(processes, 2, { minChildLagSeconds: 30 });
   assert.equal(result.live, true);
-  assert.deepEqual(result.processes.map((p) => p.pid), [4]);
+  assert.ok(result.processes.length >= 1, 'at least one evidence row');
+  assert.ok(result.processes.some((p) => p.pid === 4), 'evidence includes the deepest leaf');
 });
 
-test('bg-work: controller child under claude is NOT live (invariant 2 — never agent evidence)', () => {
+// protects: HOK-3222 — a controller-named descendant of the agent IS the agent's work
+test('bg-work: a tools/*.ts child of the agent is live (HOK-3374 regression fix)', () => {
   const processes = [
     proc(1, 0, 600, '-bash'),
     proc(2, 1, 200, 'claude'),
-    proc(3, 2, 50, 'npx tsx tools/foo.ts'),
+    proc(3, 2, 50, 'npx tsx tools/tend.ts --issue HOK-1'),
   ];
-  const result = deriveAgentBackgroundWork(processes, 1, { minChildLagSeconds: 30 });
-  assert.equal(result.live, false);
+  const result = deriveAgentBackgroundWork(processes, 2, { minChildLagSeconds: 30 });
+  assert.equal(result.live, true); // was false under the HOK-3222 name classifier
+  assert.deepEqual(result.processes, [{ pid: 3, command: 'npx tsx tools/tend.ts --issue HOK-1' }]);
 });
 
+// protects: HOK-3222 replay — the incident's pure shell chain reads live under the agent
+test('bg-work: HOK-3222 replay — pure shell chain under the agent is live', () => {
+  const processes = [
+    proc(1, 0, 1900, '-zsh'),
+    proc(2, 1, 1800, 'claude --model claude-opus-5-5'),
+    proc(3, 2, 1750, 'zsh -c bash tests/run-related.sh'),
+    proc(4, 3, 1700, 'bash tests/run-related.sh'),
+    proc(5, 4, 1600, 'bash tests/run-journeys.sh'),
+    proc(6, 5, 1500, 'bash tests/journeys/x.journey.sh'),
+  ];
+  const result = deriveAgentBackgroundWork(processes, 2, { minChildLagSeconds: 30 });
+  assert.equal(result.live, true);
+  assert.ok(result.processes.some((p) => p.pid === 6), 'evidence reaches the deepest leaf of the chain');
+});
+
+// protects: HOK-3222 replay — the mill's own tend.ts is agent work when the agent ran it
+test('bg-work: HOK-3222 replay — a tools/tend.ts descendant of the agent is live', () => {
+  const processes = [
+    proc(1, 0, 1900, '-zsh'),
+    proc(2, 1, 1800, 'claude'),
+    proc(3, 2, 50, 'npx tsx tools/tend.ts HOK-1'),
+  ];
+  const result = deriveAgentBackgroundWork(processes, 2, { minChildLagSeconds: 30 });
+  assert.equal(result.live, true); // was false under the HOK-3222 name classifier
+});
+
+// protects: HOK-3222 replay — the incident's controller-tagged probe argv is agent work under the agent
+test('bg-work: HOK-3222 replay — an npx tsx --test tools/plan-queue.test.ts child of the agent is live', () => {
+  const processes = [
+    proc(1, 0, 1900, '-zsh'),
+    proc(2, 1, 1800, 'claude'),
+    proc(3, 2, 1700, 'npx tsx --test tools/plan-queue.test.ts'),
+  ];
+  const result = deriveAgentBackgroundWork(processes, 2, { minChildLagSeconds: 30 });
+  assert.equal(result.live, true);
+});
+
+// protects: HOK-3222 replay — node --test children of the agent count as its work
+test('bg-work: HOK-3222 replay — a node --test child of the agent is live', () => {
+  const processes = [
+    proc(1, 0, 1900, '-zsh'),
+    proc(2, 1, 1800, 'claude'),
+    proc(3, 2, 1700, 'node --test shared/lib/x.test.ts'),
+  ];
+  const result = deriveAgentBackgroundWork(processes, 2, { minChildLagSeconds: 30 });
+  assert.equal(result.live, true);
+});
+
+// protects: HOK-3222 replay — even a trivial sleep child past the lag floor counts
+test('bg-work: HOK-3222 replay — a sleep child of the agent past the lag floor is live', () => {
+  const processes = [
+    proc(1, 0, 1900, '-zsh'),
+    proc(2, 1, 1800, 'claude'),
+    proc(3, 2, 1700, 'sleep 5'),
+  ];
+  const result = deriveAgentBackgroundWork(processes, 2, { minChildLagSeconds: 30 });
+  assert.equal(result.live, true);
+});
+
+// protects: the pane root may itself be the agent (pane command = the agent CLI)
 test('bg-work: pane root is the agent itself (claude -> sleep, no wrapping shell) is live', () => {
   const processes = [
     proc(2, 1, 200, 'claude'),
@@ -632,6 +703,7 @@ test('bg-work: pane root is the agent itself (claude -> sleep, no wrapping shell
   assert.deepEqual(result.processes, [{ pid: 3, command: 'sleep 600' }]);
 });
 
+// protects: BACKGROUND_EVIDENCE_LIMIT bounds the evidence payload
 test('bg-work: multiple background tasks — still live, evidence capped', () => {
   const processes = [
     proc(1, 0, 600, '-bash'),
@@ -639,11 +711,12 @@ test('bg-work: multiple background tasks — still live, evidence capped', () =>
     proc(3, 2, 50, 'sleep 600'),
     proc(4, 2, 40, 'npm test'),
   ];
-  const result = deriveAgentBackgroundWork(processes, 1, { minChildLagSeconds: 30 });
+  const result = deriveAgentBackgroundWork(processes, 2, { minChildLagSeconds: 30 });
   assert.equal(result.live, true);
   assert.equal(result.processes.length, 2);
 });
 
+// protects: a short-lived child that already exited is not evidence
 test('bg-work: a short-lived child that has already exited is simply absent from the snapshot — not live', () => {
   // The 1s child from REQ-F1's edge case is gone by the time ps runs; the
   // snapshot never contains it, so the subtree looks like the idle-REPL case.
@@ -651,17 +724,30 @@ test('bg-work: a short-lived child that has already exited is simply absent from
     proc(1, 0, 600, '-bash'),
     proc(2, 1, 100, 'claude'),
   ];
-  const result = deriveAgentBackgroundWork(processes, 1, { minChildLagSeconds: 30 });
+  const result = deriveAgentBackgroundWork(processes, 2, { minChildLagSeconds: 30 });
   assert.equal(result.live, false);
 });
 
-test('bg-work: an orphaned descendant outside the pane subtree does not protect a dead agent', () => {
+// protects: a dead agent (pid gone, children reparented) is never live
+test('bg-work: an orphaned descendant outside the agent subtree does not protect a dead agent', () => {
   // The agent (pid 2) is gone; its former child (pid 3) reparented to pid 1
-  // directly (simulating init/subreaper adoption) and is outside pane pid 2's
-  // subtree entirely when probed with the agent's own pid as panePid.
+  // directly (simulating init/subreaper adoption) and is outside the dead
+  // agent's subtree entirely.
   const processes = [
     proc(1, 0, 600, '-bash'),
     proc(3, 1, 50, 'sleep 600'),
+  ];
+  const result = deriveAgentBackgroundWork(processes, 2, { minChildLagSeconds: 30 });
+  assert.equal(result.live, false);
+  assert.deepEqual(result.processes, []);
+});
+
+// protects: descendants older than the agent (inherited pty-style) are not its work
+test('bg-work: a descendant that started before the agent (negative lag) is not live', () => {
+  const processes = [
+    proc(1, 0, 600, '-bash'),
+    proc(2, 1, 100, 'claude'),
+    proc(3, 2, 150, 'npm test'), // etime 150 > claude's 100: started before the agent
   ];
   const result = deriveAgentBackgroundWork(processes, 2, { minChildLagSeconds: 30 });
   assert.equal(result.live, false);

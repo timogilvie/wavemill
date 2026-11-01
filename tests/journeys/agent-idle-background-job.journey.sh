@@ -10,7 +10,10 @@
 # interrupted and parked the task at needs-user, and the agent's genuine
 # .coding-complete minutes later was ignored. The fix: a live substantive
 # descendant of the agent (its background task) suppresses `stalled` while the
-# agent is idle (task-progress.ts deriveAgentBackgroundWork).
+# agent is idle (task-progress.ts deriveAgentBackgroundWork). Since HOK-3374
+# that decision is ownership-only — a descendant of the agent counts whatever
+# it is named — so the fake agent also spawns a `tools/tend.ts`-named
+# descendant (a wavemill-controller argv) that must still read as live.
 #
 # The idle window is real in the pane — the agent process and its suite stay
 # alive across several monitor passes with the hook saying idle/Stop — while
