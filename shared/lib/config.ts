@@ -1588,6 +1588,9 @@ function validateConfig(config: unknown, repoDir?: string): asserts config is Wa
         if (removedMessage) {
           return removedMessage;
         }
+        if (removedPath) {
+          return `  /${removedPath.replace(/\./g, '/')}: unknown property "${removedPath}" (not in wavemill-config.schema.json; remove it or check the spelling)`;
+        }
         const path = err.instancePath || 'root';
         const message = err.message || 'unknown error';
         return `  ${path}: ${message}`;
