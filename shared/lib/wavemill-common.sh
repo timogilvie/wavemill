@@ -1186,7 +1186,7 @@ _wavemill_write_preserved_branch_incident() {
 #   operation_failed     deletion was authorized but removal failed
 cleanup_outcome_is_safe() {
   case "${1:-${WAVEMILL_CLEANUP_OUTCOME:-}}" in
-    safe_ancestor|safe_exact_remote|safe_terminal_pr_head|safe_patch_equivalent_pr|safe_content_equivalent_pr|safe_abandoned_closed_loser|safe_abandoned_pr_less_arm|safe_resources_absent|safe_noop|shadow_would_delete) return 0 ;;
+    safe_ancestor|safe_exact_remote|safe_terminal_pr_head|safe_patch_equivalent_pr|safe_content_equivalent_pr|safe_abandoned_closed_loser|safe_abandoned_pr_less_arm|safe_noop|shadow_would_delete) return 0 ;;
     *) return 1 ;;
   esac
 }

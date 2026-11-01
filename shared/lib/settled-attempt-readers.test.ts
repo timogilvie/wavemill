@@ -129,7 +129,7 @@ describe('positive-evidence reap for absent resources', () => {
     git: () => '',
     classify: () => ({ classification, verificationReason: '', worktreeIdentity: '', verifiedTopLevel: '', cleanupAuthority: 'resources absent', patchEquivalenceScope: '' }),
     cleanup: () => undefined,
-  });
+  } as any as CleanupDeps);
 
   // protects: a delivered row whose worktree and branch are gone never leaving state (HOK-2595 safe_noop).
   it('reaps a delivered row whose local resources are gone', () => {
