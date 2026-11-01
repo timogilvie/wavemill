@@ -136,10 +136,33 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     expectedKind: 'review-no-output',
   },
   {
+    // HOK-3362: the pre-HOK-3362 planning notes collapse into the one budget kind.
     name: 'HOK-3129: planning turn limit',
     evidence: { stage: 'planning', detail: 'Native planning rejected before approval: turn_limit' },
     expectedClass: 'retryable',
-    expectedKind: 'planning-turn-limit',
+    expectedKind: 'native-stage-timeout',
+  },
+  // ── HOK-3362 ──
+  {
+    name: 'HOK-3362: budget-stop detail is the one budget kind, never a provider timeout',
+    evidence: {
+      stage: 'coding',
+      detail: 'native-stage-timeout: native coding exhausted its wall-clock budget (3600s of 3600s) after 145 turn(s), 230 tool call(s)',
+    },
+    expectedClass: 'retryable',
+    expectedKind: 'native-stage-timeout',
+  },
+  {
+    name: 'HOK-3362: typed budget_exhausted handoff wins over the abort text',
+    evidence: { stage: 'coding', detail: 'Request was aborted', handoffReason: 'budget_exhausted' },
+    expectedClass: 'retryable',
+    expectedKind: 'native-stage-timeout',
+  },
+  {
+    name: 'HOK-3362: genuine upstream 5xx before the budget stays a provider failure',
+    evidence: { stage: 'coding', detail: '502 Bad Gateway: upstream server error', handoffReason: 'provider_error' },
+    expectedClass: 'retryable',
+    expectedKind: 'provider-transient-error',
   },
   {
     name: 'HOK-3129: planning artifact rejected',

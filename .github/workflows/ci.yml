@@ -400,7 +400,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        journey: [eval-failure-exhaustion, incident-currentness, challenger-contract-recovery, native-ownership-recovery, native-arm-evidence, agent-killed-mid-stage, picker-pending-touch-set, happy-path, gh-lag-after-push, errored-with-pr, inputs-ready-before-approval, mid-flight-base-conflict, tend-rebase-conflict-single-comment, challenge-pair-eval, ready-fail-remediate, ready-failure-disposition, ready-remediation-same-head, dirty-tree-coding-complete, post-merge-eval-reap, agent-idle-background-job, operator-abort-mid-coding, grounded-overlap]
+        journey: [eval-failure-exhaustion, incident-currentness, challenger-contract-recovery, native-ownership-recovery, native-arm-evidence, agent-killed-mid-stage, picker-pending-touch-set, happy-path, gh-lag-after-push, errored-with-pr, inputs-ready-before-approval, mid-flight-base-conflict, tend-rebase-conflict-single-comment, challenge-pair-eval, ready-fail-remediate, ready-failure-disposition, ready-remediation-same-head, dirty-tree-coding-complete, post-merge-eval-reap, agent-idle-background-job, operator-abort-mid-coding, grounded-overlap, native-coder-budget-exhaustion, escalation-override-record]
     env:
       RUN_JOURNEYS: ${{ needs.check-paths.outputs.journeys == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.head_ref == 'auto/integration' && github.base_ref == 'main') }}
 

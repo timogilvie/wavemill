@@ -27,6 +27,8 @@ async function main(): Promise<void> {
     abortReason,
     detail: args.detail,
     nextAction: args['next-action'],
+    // HOK-3362: the stage's typed budget fact; the fault class derives from it.
+    budgetExhausted: args['budget-exhausted-json'] || undefined,
   }, repoDir);
 
   await recordSelectionOutcome({

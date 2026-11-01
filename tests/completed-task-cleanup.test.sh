@@ -267,7 +267,8 @@ run_cleanup_case() {
 EOF
     : > "$MILL_LOG_FILE"
 
-    declare -Ag CLEANED=()
+    declare -Ag BRANCH_BY_ISSUE=()
+    BRANCH_BY_ISSUE["$ISSUE"]="task/${SLUG:-$ISSUE}"
     declare -Ag PR_BY_ISSUE=()
     LOG_OUTPUT=""
     WARN_OUTPUT=""
@@ -482,7 +483,7 @@ EOF
     printf "outcome=%s\n" "${WAVEMILL_CLEANUP_OUTCOME:-}"
     printf "remove_state_calls=%s\n" "$REMOVE_STATE_CALLS"
     printf "reset_retry_calls=%s\n" "$RESET_RETRY_CALLS"
-    printf "cleaned=%s\n" "${CLEANED[$ISSUE]:-}"
+    printf "cleaned=%s\n" "$(monitor_task_registered "$ISSUE" || echo 1)"
     printf "attention=%s\n" "$ATTENTION"
     printf "record=%s\n" "$([[ -f "$REPO_DIR/.wavemill/evals/artifacts/$ISSUE/terminal-record.json" ]] && echo present || echo absent)"
     printf "tombstone=%s\n" "$(jq -r "if ((.terminalTaskTombstones // {}) | length) > 0 then \"present\" else \"absent\" end" "$STATE_FILE" 2>/dev/null || echo absent)"
@@ -573,7 +574,8 @@ run_common_dry_run_case() {
 EOF
     : > "$MILL_LOG_FILE"
 
-    declare -Ag CLEANED=()
+    declare -Ag BRANCH_BY_ISSUE=()
+    BRANCH_BY_ISSUE["$ISSUE"]="task/${SLUG:-$ISSUE}"
     declare -Ag PR_BY_ISSUE=()
     REMOVE_STATE_CALLS=0
     LOG_OUTPUT=""

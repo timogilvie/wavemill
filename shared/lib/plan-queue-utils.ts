@@ -57,7 +57,7 @@ export type HoldReason =
 export type HeldTaskDetail =
   | { kind: 'depends_on'; blockedBy: string[] }
   | { kind: 'conflicts_with_selected'; taskId: string; files: string[] }
-  | { kind: 'conflicts_with_in_flight'; taskId: string; prNumber?: number; files: string[] }
+  | { kind: 'conflicts_with_in_flight'; taskId: string; prNumber?: number; files: string[]; touchSetUnknown?: true }
   | { kind: 'slots_full' }
   | { kind: 'touch_set_unknown' }
   | { kind: 'operator_hold'; note?: string };
@@ -72,6 +72,15 @@ export interface InFlightTask {
   id: string;
   prNumber?: number;
   files?: string[];
+  /**
+   * HOK-3373: `'unknown'` when the monitor could not resolve the task's
+   * worktree to a registered git worktree of the current run (missing,
+   * recreated as a plain directory, or another checkout). An unknown
+   * in-flight touch set is never "touches nothing": every candidate is held
+   * against it until the worktree resolves or the run settles (a settled run
+   * is excluded from the in-flight set entirely).
+   */
+  touchSet?: 'known' | 'unknown';
 }
 
 export interface LaunchSet {
@@ -273,6 +282,9 @@ export function selectLaunchSet(
   for (const task of options.inFlight ?? []) {
     inFlightById.set(task.id, task);
   }
+  const unknownInFlightTasks = [...inFlightById.values()]
+    .filter((task) => task.touchSet === 'unknown')
+    .sort((p, q) => compareTaskIds(p.id, q.id));
 
   const universe = plan.availableNow.map((id) => {
     const meta = metaById.get(id);
@@ -332,6 +344,18 @@ export function selectLaunchSet(
         reason: 'depends_on',
         detail: { kind: 'depends_on', blockedBy: [...ancestors] },
       });
+      continue;
+    }
+
+    // HOK-3373: an in-flight task whose touch set is unknown can overlap
+    // anything, so no candidate is provably disjoint from it (HOK-3307's
+    // "unknown is never safe", applied to the in-flight side).
+    const unknownInFlight = unknownInFlightTasks[0];
+    if (unknownInFlight) {
+      const detail: HeldTaskDetail = unknownInFlight.prNumber !== undefined
+        ? { kind: 'conflicts_with_in_flight', taskId: unknownInFlight.id, prNumber: unknownInFlight.prNumber, files: [], touchSetUnknown: true }
+        : { kind: 'conflicts_with_in_flight', taskId: unknownInFlight.id, files: [], touchSetUnknown: true };
+      held.push({ id: task.id, reason: 'conflicts_with_in_flight', detail });
       continue;
     }
 

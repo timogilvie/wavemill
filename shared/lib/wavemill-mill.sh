@@ -1501,39 +1501,31 @@ invoke_first_wave_helper() {
 # ============================================================================
 
 
-# Trap handler for cleanup on exit/interrupt
-ISSUES_IN_PROGRESS=()
+# Trap handler for cleanup on exit/interrupt.
+#
+# HOK-3373: the trap writes nothing about task outcomes. It used to reset
+# every issue in /tmp/${SESSION}-launched-issues.txt to Linear Backlog and
+# delete its state row, delivered or not, which flipped merged work back to
+# Backlog (HOK-2595, three times) and let the next session relaunch it. Linear
+# state is a render of the settled run (linear-state-renderer.ts); a delivered
+# run stays Done. An interrupted *unsettled* run keeps its row, worktree and
+# branch for the next session's normal recovery.
 cleanup_on_exit() {
   local exit_code=$?
-  local launched_issue_file="/tmp/${SESSION}-launched-issues.txt"
+  local launched_issue_file="/tmp/${SESSION}-launched-issues.txt" launched_count=0
 
   # Enhanced error context for debugging forced exit issues (HOK-1297)
   if [[ -n "${DEBUG_CLEANUP:-}" ]]; then
     log_warn "cleanup_on_exit: Starting cleanup (exit_code=$exit_code, session=${SESSION:-unknown})"
   fi
 
-  if [[ ${#ISSUES_IN_PROGRESS[@]} -eq 0 && -f "$launched_issue_file" ]]; then
-    while IFS= read -r issue; do
-      [[ -n "$issue" ]] && ISSUES_IN_PROGRESS+=("$issue")
-    done < <(sort -u "$launched_issue_file" 2>/dev/null || true)
-  fi
-
   cleanup_background_jobs_shutdown 2>/dev/null || true
 
-  if [[ ${#ISSUES_IN_PROGRESS[@]} -gt 0 ]]; then
-    log_warn "Interrupted - resetting Linear state for unfinished tasks..."
-    log_warn "Worktrees and branches preserved for resumption on next run."
-    for issue in "${ISSUES_IN_PROGRESS[@]}"; do
-      # linear_set_state resolves the Linear issue and skips challengers.
-      linear_set_state "$issue" "Backlog" 2>/dev/null || {
-        [[ -n "${DEBUG_CLEANUP:-}" ]] && log_warn "cleanup_on_exit: Failed to reset Linear state for $issue"
-        true
-      }
-      remove_task_state "$issue" 2>/dev/null || {
-        [[ -n "${DEBUG_CLEANUP:-}" ]] && log_warn "cleanup_on_exit: Failed to remove task state for $issue"
-        true
-      }
-    done
+  if [[ -f "$launched_issue_file" ]]; then
+    launched_count="$(sort -u "$launched_issue_file" 2>/dev/null | grep -c . || true)"
+  fi
+  if [[ "${launched_count:-0}" -gt 0 ]]; then
+    log_warn "Interrupted - ${launched_count} launched task(s) keep their state, worktrees and branches for resumption on next run."
   fi
 
   [[ -n "${DEBUG_CLEANUP:-}" ]] && log_warn "cleanup_on_exit: Cleanup complete"

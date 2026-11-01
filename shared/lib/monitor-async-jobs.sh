@@ -862,7 +862,7 @@ IN_FLIGHT_TOUCH_SET_JOB_BUCKET="in-flight-touch-set-job"
 in_flight_touch_set_job_run() {
   local issue="$1" wt_dir="$2" state_dir="$3" head_sha="$4" base_branch="$5" phase="${6:-}" feature_dir="${7:-}"
   local files_json head_after rc=0
-  local -a tool_args=(--worktree-dir "$wt_dir" --base-branch "$base_branch" --head-sha "$head_sha" --task-id "$issue")
+  local -a tool_args=(--worktree-dir "$wt_dir" --base-branch "$base_branch" --head-sha "$head_sha" --task-id "$issue" --repo-dir "${REPO_DIR:-$PWD}")
   [[ -n "$phase" ]] && tool_args+=(--phase "$phase")
   [[ -n "$feature_dir" ]] && tool_args+=(--feature-dir "$feature_dir")
 

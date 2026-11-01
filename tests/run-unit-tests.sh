@@ -101,6 +101,8 @@ TESTS=(
   shared/lib/native-agent/coding-gate.test.ts
   shared/lib/native-agent/coding-handoff.test.ts
   shared/lib/native-agent/recovery.test.ts
+  shared/lib/native-agent/budget-exhaustion.test.ts
+  shared/lib/native-agent/budget-exhaustion.cross-stage.test.ts
   shared/lib/native-agent/cleanup.test.ts
   shared/lib/native-agent/coding-lifecycle.test.ts
   shared/lib/native-agent/command-transcript.test.ts
@@ -346,6 +348,10 @@ TESTS=(
   shared/lib/wavemill-incident-store.test.ts
   shared/lib/state-mutex.test.ts
   shared/lib/task-record-write-guard.test.ts
+  shared/lib/task-settlement.test.ts
+  shared/lib/settled-attempt-readers.test.ts
+  shared/lib/state-invariants-settlement.test.ts
+  tools/check-settled-attempt.test.ts
   tools/validate-task-record-write.test.ts
   shared/lib/job-tracker.test.ts
   shared/lib/session-gh-cache.test.ts
@@ -545,6 +551,7 @@ TESTS=(
   shared/lib/ready-migration-base.test.ts
   shared/lib/pr-route-provenance.test.ts
   shared/lib/route-decision.test.ts
+  shared/lib/route-override-record.test.ts
   shared/lib/resource-adapters/dspy-adapter.test.ts
   shared/lib/resource-adapters/native-runtime-adapter.test.ts
   shared/lib/resource-adapters/prompt-adapter.test.ts

@@ -23,6 +23,7 @@ import { validateSeamArtifactValue } from './seam-artifacts.ts';
 import { resolveTaskArtifact } from './task-artifact-lookup.ts';
 import type { CleanupDecision, CleanupReport, TreeState } from './native-agent/cleanup.ts';
 import type { PiRuntimeVersions } from './native-agent/pi-runtime-version.ts';
+import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 export type { CleanupDecision, CleanupReport, TreeState } from './native-agent/cleanup.ts';
 import type { ReadyRemediationDecision } from './native-agent/workflow-tools/ready-remediation.ts';
 export type { ReadyRemediationDecision } from './native-agent/workflow-tools/ready-remediation.ts';
@@ -500,6 +501,12 @@ export interface StageResult {
   finalTreeState?: TreeState;
   cleanupDecision?: CleanupDecision;
   cleanupReport?: CleanupReport;
+  /**
+   * The typed budget-exhaustion fact (HOK-3362) when this attempt stopped on a
+   * budget reason. The launcher clears it when a new attempt starts, and the
+   * history entry keeps it, so eval sees every exhausted attempt.
+   */
+  budgetExhausted?: BudgetExhaustedFact;
   /** Previous terminal attempts preserved when recovery starts a fresh run. */
   history?: StageResultHistoryEntry[];
   /**
@@ -518,6 +525,8 @@ export type StageResultHistoryEntry = Pick<
   failureReason?: string | null;
   modelAttributionEligible?: boolean;
   modelAttributionIneligibleReason?: ModelAttributionIneligibleReason;
+  /** HOK-3362: carried from the archived attempt. */
+  budgetExhausted?: BudgetExhaustedFact;
 };
 
 /** All stage result files found in a feature directory. */
@@ -1184,6 +1193,7 @@ export async function writeStageResultWithHistory(
       modelAttributionEligible: existing.modelAttributionEligible,
       modelAttributionIneligibleReason: existing.modelAttributionIneligibleReason,
       ...(existing.failureReason !== undefined ? { failureReason: existing.failureReason } : {}),
+      ...(existing.budgetExhausted ? { budgetExhausted: existing.budgetExhausted } : {}),
     }]
     : [];
 

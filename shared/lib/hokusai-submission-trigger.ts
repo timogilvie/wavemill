@@ -8,6 +8,7 @@ import { toHokusaiSubmission, type HokusaiSubmission } from './hokusai-schema.ts
 import { appendTriggerLogEntry } from './hokusai-trigger-log.ts';
 import { errorMessage } from './error-utils.ts';
 import type { EvalRecord } from './eval-schema.ts';
+import { routeRecordContributionInputs } from './route-override-record.ts';
 
 export interface TriggerHokusaiSubmissionOptions {
   repoDir: string;
@@ -131,6 +132,13 @@ export function buildHokusaiContributionProjection(
         ? { coder_model_alias: record.model_alias }
         : {}),
       ...toLaunchPriorityInputs(launchPriorityValidation),
+      // HOK-3363: the join key Hokusai logged its prediction under, plus every
+      // override of that prediction, so the outcome is attributed to what
+      // Hokusai recommended rather than to whatever ran.
+      ...routeRecordContributionInputs(
+        record?.routeProvenance?.stageRoutes,
+        record?.routeProvenance?.hokusaiInferenceLogId,
+      ),
     },
     // Feature outcome artifact diagnostics (HOK-2262)
     // Only safe scalar/enum/array-of-string fields; no raw paths or issue IDs

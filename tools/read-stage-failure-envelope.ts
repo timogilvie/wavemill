@@ -6,7 +6,7 @@
  * shared/lib/wavemill-monitor.sh and readStageFailureEnvelope. On a valid
  * envelope, one JSON line is printed to stdout:
  *
- *   {"failureKind":…,"cause":…,"provider":…,"model":…,"agent":…,"requestedModel":…}
+ *   {"failureKind":…,"cause":…,"provider":…,"model":…,"agent":…,"requestedModel":…,"budgetExhausted":…}
  *
  * where failureKind is the single cause→kind conversion
  * (terminalFailureKindForEnvelope). A missing, malformed, or schema-invalid
@@ -52,6 +52,8 @@ runTool({
       model: envelope.model,
       agent: envelope.agent,
       ...(envelope.requestedModel ? { requestedModel: envelope.requestedModel } : {}),
+      // HOK-3362: the typed budget fact rides through to the monitor's decision.
+      ...(envelope.budgetExhausted ? { budgetExhausted: envelope.budgetExhausted } : {}),
     }));
   },
 });

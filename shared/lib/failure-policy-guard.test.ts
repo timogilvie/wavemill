@@ -61,3 +61,62 @@ it('rejects eval exhaustion followed by a model forfeit', () => {
 it('rejects the required retry-counter mock even without a nearby comparison writer', () => {
   assert.deepEqual(patternsOf('mock.sh', 'if [[ $retryCount -gt $MAX_RETRIES && $evalFailed == true ]]; then :; fi'), ['private-eval-retry-decision']);
 });
+
+describe('failure-policy guard — one budget-exhaustion outcome (HOK-3362)', () => {
+  // protects: a stage re-growing its own budget→category switch (review's reviewFailureCategoryForStopReason)
+  it('flags a private budget stop-reason switch', () => {
+    assert.deepEqual(patternsOf('a.ts', "    case 'wall_clock_limit':\n"), ['private-budget-stop-switch']);
+    assert.deepEqual(patternsOf('a.ts', "if (stopReason === 'turn_limit') return 'x';\n"), ['private-budget-stop-switch']);
+    assert.deepEqual(patternsOf('a.ts', "if ('cost_limit' !== reason) return;\n"), ['private-budget-stop-switch']);
+    assert.deepEqual(patternsOf('a.ts', "const B = new Set<LoopStopReason>(['turn_limit', 'token_limit']);\n"), ['private-budget-stop-switch']);
+    assert.deepEqual(patternsOf('a.ts', 'const B = new Set<LoopStopReason>([\n'), ['private-budget-stop-switch']);
+  });
+
+  // protects: the four findFinalAssistantErrorMessage copies coming back
+  it('flags a private final-assistant errorMessage scan', () => {
+    assert.deepEqual(patternsOf('a.ts', 'const text = (message as AgentTurn).errorMessage?.trim();\n'), ['private-final-error-scan']);
+    assert.deepEqual(patternsOf('a.ts', 'const text = (message as { errorMessage?: string }).errorMessage;\n'), ['private-final-error-scan']);
+  });
+
+  // protects: our own budget abort reaching classifyProviderError (HOK-3329 attempt 2)
+  it('flags provider classification of a raw transcript without the budget rule', () => {
+    const ungated = [
+      'function onDone(result: LoopResult): never {',
+      '  const last = result.messages.at(-1) as { errorMessage?: string };',
+      '  throw new Error(classifyProviderError(last.errorMessage ?? "").kind);',
+      '}',
+      '',
+    ].join('\n');
+    assert.deepEqual(patternsOf('shared/lib/native-agent/launch-coding.ts', ungated), ['budget-stop-provider-classification']);
+    // The same shape outside the native stage sources is not this check's concern.
+    assert.deepEqual(patternsOf('shared/lib/other.ts', ungated), []);
+
+    const gated = [
+      'function onDone(result: LoopResult): void {',
+      '  if (budgetExhaustionFromLoop(result, budget)) return;',
+      '  const text = finalProviderErrorMessage(result);',
+      '  if (text && result.messages.length > 0) console.log(classifyProviderError(text).kind);',
+      '}',
+      '',
+    ].join('\n');
+    assert.deepEqual(patternsOf('shared/lib/native-agent/launch-coding.ts', gated), []);
+  });
+
+  // protects: the guard flagging the one definition, readers of it, or unrelated vocabularies
+  it('leaves the one definition, its readers and non-budget sets alone', () => {
+    const source = [
+      "if (isBudgetStopReason(result.stopReason)) return;",
+      "const kind = budgetKindForStopReason(stopReason);",
+      "if (budgetKindForStopReason(reason) === 'wall_clock') return 'timeout';",
+      "const NON_STALL = new Set<LoopStopReason>(['aborted', 'error']);",
+      "budgetStopReason = 'turn_limit';",
+      '',
+    ].join('\n');
+    assert.deepEqual(patternsOf('a.ts', source), []);
+  });
+
+  // protects: the invariant module being scanned by its own guard
+  it('treats budget-exhaustion.ts as invariant source', () => {
+    assert.ok(FAILURE_POLICY_GUARD.invariantPaths.includes('shared/lib/native-agent/budget-exhaustion.ts'));
+  });
+});

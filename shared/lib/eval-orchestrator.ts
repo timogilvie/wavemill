@@ -78,6 +78,7 @@ import { collectExecutionEconomics } from './execution-economics.ts';
 // load for every eval.
 import { meterWorkflowCost, type MeteredWorkflowCost } from './sdk-task-cost/meter.ts';
 import {
+  buildBudgetExhaustions,
   buildStageExecutionIdentity,
   hasProviderModelSubstitution,
 } from './stage-eval-evidence.ts';
@@ -581,6 +582,8 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
   // 9c-identity. HOK-3143: per-stage provider identity. Fail-soft; a missing or
   // malformed stage result leaves `stageExecution` unset.
   let stageExecution: ReturnType<typeof buildStageExecutionIdentity> | undefined;
+  // HOK-3362: every budget-exhausted stage attempt, with its derived class.
+  let budgetExhaustions: ReturnType<typeof buildBudgetExhaustions> | undefined;
   if (stageArtifacts.stageResultsDir) {
     try {
       stageExecution = buildStageExecutionIdentity({
@@ -588,6 +591,11 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
       });
     } catch (err) {
       console.warn(`Warning: failed to build stage execution identity: ${errorMessage(err)}`);
+    }
+    try {
+      budgetExhaustions = buildBudgetExhaustions({ stageResultsDir: stageArtifacts.stageResultsDir });
+    } catch (err) {
+      console.warn(`Warning: failed to collect budget exhaustions: ${errorMessage(err)}`);
     }
   }
 
@@ -791,6 +799,9 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
         record.eligibilityErrors = [...existing, 'provider_model_substitution'];
       }
     }
+  }
+  if (budgetExhaustions) {
+    record.budgetExhaustions = budgetExhaustions;
   }
   const attestation = attestEvalRecordChallengeExecution(record, repoDir);
   if (attestation && challengeEvidenceInvalid) {

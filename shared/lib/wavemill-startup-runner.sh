@@ -1468,7 +1468,7 @@ $details_context"
   # downstream startup checks do not depend on a second jq update succeeding.
   local persisted_phase="planning"
   # Canonical save_task_state tail: challengeStage(19), phase(20), windowId(21).
-  if ! wavemill_lock_run "state" save_task_state "$issue" "$slug" "$branch" "$wt_dir" "$preflight_pr" "" "$task_agent" "$linear_issue" "$challenge" "$challenge_pair" "$challenge_role" "$challenge_model" \
+  if ! SAVE_TASK_STATE_LAUNCH=1 wavemill_lock_run "state" save_task_state "$issue" "$slug" "$branch" "$wt_dir" "$preflight_pr" "" "$task_agent" "$linear_issue" "$challenge" "$challenge_pair" "$challenge_role" "$challenge_model" \
     "$planner_model" "$coder_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "$challenge_stage" "$persisted_phase" "${created_window_id:-}"; then
     startup_phase_failed "$startup_id" agent "$issue" "saving workflow state"
     [[ -n "${created_window:-}" ]] && tmux kill-window -t "${created_window_id:-$SESSION:$win}" >/dev/null 2>&1 || true
@@ -1527,7 +1527,7 @@ $details_context"
 
   # Re-persist the launched task after the pane handoff succeeds so the final
   # workflow record reflects a fully launched planning session.
-  if ! wavemill_lock_run "state" save_task_state "$issue" "$slug" "$branch" "$wt_dir" "$preflight_pr" "" "$task_agent" "$linear_issue" "$challenge" "$challenge_pair" "$challenge_role" "$challenge_model" \
+  if ! SAVE_TASK_STATE_LAUNCH=1 wavemill_lock_run "state" save_task_state "$issue" "$slug" "$branch" "$wt_dir" "$preflight_pr" "" "$task_agent" "$linear_issue" "$challenge" "$challenge_pair" "$challenge_role" "$challenge_model" \
     "$planner_model" "$coder_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "$challenge_stage" "$persisted_phase" "${created_window_id:-}"; then
     [[ -n "${state_written:-}" ]] && wavemill_lock_run "state" remove_task_state "$issue" >/dev/null 2>&1 || true
     tmux kill-window -t "${created_window_id:-$SESSION:$win}" >/dev/null 2>&1 || true
