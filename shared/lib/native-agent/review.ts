@@ -5,6 +5,7 @@ import type { AgentMessage, Message } from './messages.ts';
 import type { AgentContext, LoopBudget, LoopStopReason, WavemillLoopConfig } from './loop.ts';
 import {
   budgetExhaustionFromLoop,
+  budgetKindForStopReason,
   describeBudgetExhaustion,
   finalProviderErrorMessage,
   type BudgetExhaustedFact,
@@ -549,7 +550,7 @@ function cleanupReasonForStopReason(stopReason: LoopStopReason): CleanupReason |
   if (stopReason === 'aborted') {
     return 'aborted';
   }
-  if (stopReason === 'wall_clock_limit') {
+  if (budgetKindForStopReason(stopReason) === 'wall_clock') {
     return 'timeout';
   }
   return null;

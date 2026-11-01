@@ -13,6 +13,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import type { AgentMessage, AgentTurn, Message } from './messages.ts';
 import {
   budgetExhaustionFromLoop,
+  budgetKindForStopReason,
   describeBudgetExhaustion,
   finalProviderErrorMessage,
   isBudgetStopReason,
@@ -461,7 +462,7 @@ function cleanupReasonForStopReason(stopReason: string): CleanupReason | null {
   if (stopReason === 'aborted') {
     return 'aborted';
   }
-  if (stopReason === 'wall_clock_limit') {
+  if (budgetKindForStopReason(stopReason) === 'wall_clock') {
     return 'timeout';
   }
   return null;

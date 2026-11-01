@@ -1735,6 +1735,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     stopReason = 'error';
   } else if (finalStopReason === 'aborted') {
     stopReason = composed.isWallClockExpiry() ? 'wall_clock_limit' : 'aborted';
+  // allow-failure-policy: the loop is the producer of budget stop reasons; a terminal-synthesis turn that finished on its last allowed turn is a clean stop, not a budget stop.
   } else if (finalStopReason === 'stop' && budgetStopReason === 'turn_limit') {
     stopReason = 'stop';
   } else if (budgetStopReason) {
