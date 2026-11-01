@@ -103,7 +103,7 @@ HEAD_ONE="$(git -C "$WT_DIR" rev-parse HEAD)"
 
 STATE_FILE="$TMP_ROOT/workflow-state.json"
 printf '{"tasks":{"%s":{"slug":"%s","phase":"executing","status":"running"}}}\n' "$ISSUE" "$SLUG" > "$STATE_FILE"
-declare -A PR_BY_ISSUE=() BRANCH_BY_ISSUE=() SLUG_BY_ISSUE=() CLEANED=() REAP_LOGGED=()
+declare -A PR_BY_ISSUE=() BRANCH_BY_ISSUE=() SLUG_BY_ISSUE=() REAP_LOGGED=()
 BRANCH_BY_ISSUE["$ISSUE"]="task/$SLUG"
 SLUG_BY_ISSUE["$ISSUE"]="$SLUG"
 active_count=0

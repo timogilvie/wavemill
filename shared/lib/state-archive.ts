@@ -60,6 +60,9 @@ export const COMPACT_HOT_FIELDS = [
   'challengeRole',
   'runEpoch',
   'attempt',
+  // HOK-3373: the settled run's identity survives hot-state compaction.
+  'runId',
+  'linearSyncedState',
   'actor',
   'command',
   'createdAt',

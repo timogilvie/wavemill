@@ -238,7 +238,6 @@ run_cleanup_case() {
     printf "{\"tasks\":{\"$ISSUE\":{\"pr\":4242}}}\n" > "$STATE_FILE"
     : > "$MILL_LOG_FILE"
 
-    declare -Ag CLEANED=()
     LOG_OUTPUT=""
     archive_stage_artifacts() { :; }
     log() { LOG_OUTPUT+="$*\n"; }

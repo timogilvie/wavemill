@@ -347,6 +347,10 @@ TESTS=(
   shared/lib/wavemill-incident-store.test.ts
   shared/lib/state-mutex.test.ts
   shared/lib/task-record-write-guard.test.ts
+  shared/lib/task-settlement.test.ts
+  shared/lib/settled-attempt-readers.test.ts
+  shared/lib/state-invariants-settlement.test.ts
+  tools/check-settled-attempt.test.ts
   tools/validate-task-record-write.test.ts
   shared/lib/job-tracker.test.ts
   shared/lib/session-gh-cache.test.ts

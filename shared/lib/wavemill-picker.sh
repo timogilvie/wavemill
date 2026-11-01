@@ -66,11 +66,17 @@ _picker_render_shared_file_reason() {
   fi
 
   if [[ "$kind" == "conflicts_with_in_flight" ]]; then
-    local suffix=""
+    local suffix="" touch_unknown
     if [[ -n "$prnum" ]]; then
       suffix=" (PR #${prnum}, in flight)"
     else
       suffix=" (in flight)"
+    fi
+    touch_unknown=$(jq -r '.touchSetUnknown // false' <<<"$detail_json" 2>/dev/null || echo "false")
+    if [[ "$touch_unknown" == "true" ]]; then
+      # HOK-3373: the in-flight task's worktree did not resolve.
+      printf 'holds: touch set of %s unknown (worktree unresolved)%s' "$peer" "$suffix"
+      return 0
     fi
     if [[ -n "$first_file" ]]; then
       printf 'holds: shares %s%s with %s%s' "$first_file" "$extra" "$peer" "$suffix"

@@ -32,6 +32,13 @@ export interface MillJob {
   issueId?: string;
   side?: string;
   pairId?: string;
+  /**
+   * HOK-3373: the task run (`attempt-identity.ts` runId) this job was
+   * launched for. The monitor settles the job with that run named, so a late
+   * completion from an old run lands its evidence but never steers a newer
+   * run's control fields.
+   */
+  runId?: string;
   prNumbers: number[];
   pid: number;
   startedAt: string;

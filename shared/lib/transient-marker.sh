@@ -62,8 +62,14 @@ marker_write() {
     return 1
   fi
 
-  # Create directory
-  mkdir -p "$(dirname "$path")"
+  # Create directory. HOK-3373: through the task-worktree resolver, so a
+  # marker for a task whose worktree is gone never recreates the dead path as
+  # a plain directory (the HOK-2595 orphan that git then fell through).
+  if declare -F task_dir_ensure >/dev/null 2>&1; then
+    task_dir_ensure "$(dirname "$path")" || return 1
+  else
+    mkdir -p "$(dirname "$path")"
+  fi
 
   # Build JSON payload
   local now_iso=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
@@ -459,7 +465,11 @@ operator_event_record() {
   local issue="$3"
   local detail="${4:-}"
 
-  mkdir -p "$state_dir"
+  if declare -F task_dir_ensure >/dev/null 2>&1; then
+    task_dir_ensure "$state_dir" || return 1
+  else
+    mkdir -p "$state_dir"
+  fi
   local events_file="$state_dir/.operator-events.jsonl"
 
   # Get current max seq (line count)
