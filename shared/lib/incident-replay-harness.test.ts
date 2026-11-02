@@ -9,6 +9,7 @@
  * (HOK-3185). The `--mode=legacy` simulator was retired in HOK-3235.
  */
 
+import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +28,7 @@ const __dirname = dirname(__filename);
 const FIXTURES_DIR = resolve(__dirname, '..', '..', 'tests', 'fixtures', 'incident-replay');
 const REAL_FIXTURES_DIR = join(FIXTURES_DIR, 'real');
 const JOURNEYS_DIR = resolve(__dirname, '..', '..', 'tests', 'journeys');
+const JOURNEY_RUNNER = join(JOURNEYS_DIR, 'run-journeys.sh');
 const MIN_REAL_FIXTURES = 15;
 
 interface SubtestFailure {
@@ -46,7 +48,25 @@ function listFixtures(dir: string): string[] {
   return entries.sort();
 }
 
+/** Read the runner's executable registry rather than inferring registration from files. */
+function registeredJourneys(): Set<string> {
+  return new Set(execFileSync('bash', [JOURNEY_RUNNER, '--list'], { encoding: 'utf8' })
+    .split(/\r?\n/)
+    .map((name) => name.trim())
+    .filter(Boolean));
+}
+
+function journeyRegistrationError(journey: string, registered: ReadonlySet<string>): string | null {
+  return registered.has(journey) ? null : `journey is not registered by ${JOURNEY_RUNNER}: ${journey}`;
+}
+
 async function main(): Promise<void> {
+  const registered = registeredJourneys();
+  // Regression check: a fixture cannot be accepted merely because a matching
+  // file exists; an absent runner registration must fail the guard.
+  if (!journeyRegistrationError('__unregistered_incident_fixture_journey__', registered)) {
+    throw new Error('journey registration regression guard accepted an unregistered journey');
+  }
   const syntheticFixtures = listFixtures(FIXTURES_DIR);
   if (syntheticFixtures.length === 0) {
     console.error(`[incident-replay-harness] no fixtures found under ${FIXTURES_DIR}`);
@@ -114,6 +134,12 @@ async function main(): Promise<void> {
         if (!existsSync(journeyPath)) {
           failures.push({ fixture: label, reason: `journey file not found: ${journeyPath}` });
           console.error(`  FAIL  ${label} — journey file not found: ${journeyPath}`);
+          continue;
+        }
+        const registrationError = journeyRegistrationError(fixture.journey, registered);
+        if (registrationError) {
+          failures.push({ fixture: label, reason: registrationError });
+          console.error(`  FAIL  ${label} — ${registrationError}`);
           continue;
         }
       } else if (!fixture.journeyNullReason) {

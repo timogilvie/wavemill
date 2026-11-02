@@ -9,7 +9,7 @@
  *
  * Every fixture is driven through `runWithRecoveryLoop`, which feeds the
  * stalled step to the real Ledger F `decideRecovery`. The fault model
- * (`faultModelFor`) is the only fixture-specific knowledge; the recovery
+ * (fixture-declared fault data) is the only fixture-specific knowledge; the recovery
  * outcome itself (failure policy, bounded retry, one escalation) is the
  * production loop. The `--mode=legacy` simulator was retired in HOK-3235.
  *
@@ -80,7 +80,7 @@ export interface IncidentReplayFixture {
   fault?: IncidentReplayFault;
   faultParams?: Record<string, unknown>;
   /**
-   * Declarative replacement for `faultModelFor` (HOK-3231 D2). Required for
+   * Declarative fault data (HOK-3231 D2). Required for
    * the stage recovery replay path. Synthetic fixtures migrated mechanically.
    */
   failure?: {
@@ -294,11 +294,6 @@ export function faultModelFromFixture(fixture: IncidentReplayFixture): FaultMode
     survivesRelaunches: survives,
     ...(f.progressing !== undefined ? { progressing: f.progressing } : {}),
   };
-}
-
-/** @deprecated use {@link faultModelFromFixture}; kept for shim callers. */
-export function faultModelFor(fixture: IncidentReplayFixture): FaultModel {
-  return faultModelFromFixture(fixture);
 }
 
 /** In-memory bounded-retry budget (no backoff — one harness tick is one backoff window). */
