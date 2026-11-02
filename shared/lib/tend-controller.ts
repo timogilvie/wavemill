@@ -3358,7 +3358,7 @@ async function emitQueueEventBestEffort(
   extra?: Record<string, unknown>,
 ): Promise<void> {
   try {
-    const stateDir = mergeLaneStateDir(repoDir);
+    const stateDir = mergeLaneStateDir(prNumber, repoDir);
     const attempt = extra?.attempt ? `-attempt-${extra.attempt}` : '';
     const eventId = `${new Date().toISOString()}-pr-${prNumber}-${eventType}${attempt}`;
     // allow-queue-event-writers: emit lifecycle event for merge lane state transitions

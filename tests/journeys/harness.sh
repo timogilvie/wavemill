@@ -438,6 +438,19 @@ journey_pr_merged() {
   [[ "$(jq -r '.prs["1"].state // empty' "$FAKE_GH_STATE")" == "MERGED" ]]
 }
 
+# Get the PR number for the current ISSUE from workflow state.
+journey_get_pr_number() {
+  journey_task_field "$ISSUE" pr
+}
+
+# Get the merge lane state directory for the current ISSUE's PR.
+journey_merge_lane_state_dir() {
+  local pr_num
+  pr_num="$(journey_get_pr_number)"
+  [[ -n "$pr_num" ]] || return 1
+  printf '%s/.wavemill/merge-lane/%s\n' "$REPO_DIR" "$pr_num"
+}
+
 # Reaped: the row is gone (or terminal) and so is the worktree, and the mill
 # has released the slot (freeSlots back to JOURNEY_MAX_PARALLEL).
 journey_task_reaped() {
