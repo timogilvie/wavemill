@@ -13,7 +13,8 @@
 import { existsSync } from 'node:fs';
 import { TASK_ID_RE } from './task-identity.ts';
 import { mutateWorkflowState, readWorkflowState, type TaskRecord } from './workflow-state.ts';
-import { recordArmTermination, type ArmFailureKind, type TerminationActor } from './arm-termination.ts';
+import { recordArmTermination, type TerminationActor } from './arm-termination.ts';
+import type { ArmFailureKind } from './arm-failure-taxonomy.ts';
 import { join } from 'node:path';
 
 export interface AbortTaskResult {

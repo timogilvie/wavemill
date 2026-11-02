@@ -17,6 +17,7 @@ import { runTool } from '../shared/lib/tool-runner.ts';
 const options = {
   'issue': { type: 'string' as const, description: 'Linear issue ID (e.g., HOK-1234)' },
   'feature-dir': { type: 'string' as const, description: 'Feature directory path' },
+  'archive': { type: 'string' as const, description: 'Archived feature directory for a one-time backfill' },
   'state-file': { type: 'string' as const, description: 'Path to workflow-state.json' },
   'stage': { type: 'string' as const, description: 'Stage name (planning, coding, review)' },
   'model': { type: 'string' as const, description: 'Model ID' },
@@ -27,8 +28,10 @@ const options = {
   'actor': { type: 'string' as const, description: 'Who is terminating (operator, monitor, etc.)' },
   'evidence': { type: 'string' as const, description: 'Evidence file path (for model-fault)' },
   'scope': { type: 'string' as const, description: 'Termination scope (single, pair)' },
+  'budget-exhausted': { type: 'string' as const, description: 'JSON budget-exhaustion fact' },
   'dry-run': { type: 'boolean' as const, description: 'Dry-run mode' },
   'stamp-only': { type: 'boolean' as const, description: 'Stamp state only (fallback)' },
+  'backfill': { type: 'boolean' as const, description: 'Record an archived termination without a live state row' },
 };
 
 runTool({
@@ -39,6 +42,7 @@ runTool({
     const {
       issue,
       'feature-dir': featureDir,
+      archive,
       'state-file': stateFile,
       stage,
       model,
@@ -49,9 +53,14 @@ runTool({
       actor,
       evidence,
       scope = 'single',
+      'budget-exhausted': budgetExhaustedRaw,
       'dry-run': dryRun,
       'stamp-only': stampOnly,
+      backfill,
     } = args;
+
+    const recordFeatureDir = archive || featureDir;
+    if (backfill && !archive) throw new Error('--backfill requires --archive <feature-dir>');
 
     // Validation
     if (!issue) throw new Error('--issue is required');
@@ -62,6 +71,10 @@ runTool({
     if (!ARM_FAILURE_KINDS.includes(kind)) {
       throw new Error(`unknown failure kind: ${kind}\nvalid kinds: ${ARM_FAILURE_KINDS.join(', ')}`);
     }
+    let budgetExhausted: Record<string, unknown> | undefined;
+    if (budgetExhaustedRaw) {
+      try { budgetExhausted = JSON.parse(budgetExhaustedRaw); } catch { throw new Error('--budget-exhausted must be JSON'); }
+    }
 
     if (dryRun) {
       console.log(JSON.stringify({
@@ -71,6 +84,7 @@ runTool({
         failureKind,
         detail,
         evidence,
+        archive,
       }, null, 2));
       return;
     }
@@ -84,7 +98,7 @@ runTool({
         stampTermination(task, {
           repoDir: process.cwd(), stateFile, issueId: issue, stage, model,
           failureKind: kind, detail: detail || abortReason || '', nextAction,
-          actor: actor as any, evidencePath: evidence, scope: scope as 'single' | 'pair',
+          actor: actor as any, evidencePath: evidence, abortReason, budgetExhausted, scope: scope as 'single' | 'pair',
         });
         return state;
       });
@@ -95,16 +109,18 @@ runTool({
     // Full record path
     const result = await recordArmTermination({
       repoDir: process.cwd(),
-      stateFile,
+      stateFile: backfill ? undefined : stateFile,
       issueId: issue,
-      featureDir,
+      featureDir: recordFeatureDir,
       stage,
       model,
       failureKind: kind,
+      abortReason,
       detail: detail || abortReason || '',
       nextAction,
       actor: actor as any,
       evidencePath: evidence,
+      budgetExhausted,
       scope: scope as 'single' | 'pair',
     });
 

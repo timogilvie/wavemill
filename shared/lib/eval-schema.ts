@@ -2154,11 +2154,11 @@ export interface EvalRecord {
   /** API endpoint used by the evaluated workflow when provider-specific */
   endpoint?: string;
 
-  /** Numeric score between 0 and 1 (inclusive) */
-  score: number;
+  /** Numeric score between 0 and 1 (inclusive), or null for a terminal arm outcome. */
+  score: number | null;
 
   /** The rubric band label derived from the score */
-  scoreBand: ScoreBandLabel;
+  scoreBand: ScoreBandLabel | null;
 
   /** Wall-clock time in seconds for task completion, or null when unknown */
   timeSeconds: number | null;
@@ -2419,6 +2419,15 @@ export interface EvalRecord {
 
   /** Decomposed outcome components (quality, cost, speed, risk dimensions) */
   outcomes?: Outcomes;
+
+  /** Facts for an unjudged terminal arm outcome (HOK-3358). */
+  armTermination?: {
+    terminationId: string;
+    failureKind: string;
+    actor: string;
+    stage: string;
+    evidence?: string;
+  };
 
   /** Routing decision metadata (required if training routing models) */
   routingDecision?: RoutingDecision;

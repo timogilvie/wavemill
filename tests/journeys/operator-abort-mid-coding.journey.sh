@@ -101,6 +101,10 @@ journey_assert "the task never left aborted once aborted (timeline ends aborted/
 journey_assert "task row is terminal aborted with the operator's reason" \
   test "$(journey_task_field "$ISSUE" phase)/$(journey_task_field "$ISSUE" status)/$(journey_task_field "$ISSUE" abortedReason)" \
     = "aborted/aborted/journey: operator stop"
+journey_assert "default operator abort records a harness-fault reliability row" \
+  bash -c 'jq -e --arg i "$1" "select(.issueId == \$i and .failureKind == \"cancelled\" and .faultClass == \"harness-fault\" and .qualitySignalEligible == false)" "$2/.wavemill/evals/reliability-records.jsonl" >/dev/null' _ "$ISSUE" "$REPO_DIR"
+journey_assert "default operator abort emits no model-quality eval" \
+  bash -c '[[ ! -f "$1/.wavemill/evals/evals.jsonl" ]] || ! jq -e --arg i "$2" "select(.issueId == \$i and .armTermination != null)" "$1/.wavemill/evals/evals.jsonl" >/dev/null' _ "$REPO_DIR" "$ISSUE"
 journey_assert "the row is the original task, not a recreated stub (slug kept, one row)" \
   test "$(journey_task_field "$ISSUE" slug)/$(jq -r '.tasks | length' "$STATE_FILE")" = "$SLUG/1"
 journey_assert "slot released (freeSlots == MAX_PARALLEL)" test "$(jq -r '.freeSlots // empty' "$STATE_FILE")" = "1"

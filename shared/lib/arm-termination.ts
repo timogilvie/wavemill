@@ -9,7 +9,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { basename, dirname, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import {
   classifyArmFault,
   formatTerminationReason,
@@ -19,11 +19,13 @@ import {
   type ArmFaultClass,
 } from './arm-failure-taxonomy.ts';
 import { canonicalFailureKind } from './failure-policy.ts';
+import { challengerTaskKey } from './task-identity.ts';
 import { appendArmReliabilityRecord, buildArmReliabilityRecord, type ArmReliabilityRecord } from './arm-reliability.ts';
 import { mutateWorkflowState, type WorkflowState, type TaskRecord } from './workflow-state.ts';
 import { buildUnscoredEvalRecord } from './eval.ts';
 import { appendEvalRecord, readEvalRecords } from './eval-persistence.ts';
 import { triggerHokusaiSubmission } from './hokusai-submission-trigger.ts';
+import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 
 const CHALLENGE_ABORTED_FILENAME = '.challenge-aborted.json';
 const DEFAULT_EVALS_DIR = '.wavemill/evals';
@@ -51,6 +53,8 @@ export interface RecordArmTerminationInput {
   stage?: string;
   model?: string;
   failureKind: ArmFailureKind;
+  /** Preserve an existing typed terminal envelope from a monitor caller. */
+  abortReason?: string;
   detail: string;
   nextAction?: string;
   actor: TerminationActor;
@@ -158,7 +162,7 @@ export function stampTermination(
   task: TaskRecord,
   input: RecordArmTerminationInput,
 ): { updated: boolean } {
-  const reason = formatTerminationReason(input.failureKind);
+  const reason = input.abortReason ?? formatTerminationReason(input.failureKind);
 
   // Never overwrite an existing stamp (D1)
   if (task.challengeAborted?.trim()) {
@@ -226,7 +230,10 @@ export async function recordArmTermination(
           stampTermination(task, input);
           // If pair scope, also stamp the peer
           if (input.scope === 'pair' && task.challengePairId) {
-            const peer = state.tasks[task.challengePairId];
+            const peerKey = task.challengeRole === 'challenger'
+              ? task.challengePairId
+              : challengerTaskKey(task.challengePairId);
+            const peer = state.tasks[peerKey];
             if (peer) {
               stampTermination(peer, input);
               // Record pair abortions (D1)
@@ -258,7 +265,7 @@ export async function recordArmTermination(
       model: input.model,
       abortedAt: input.now?.toISOString() ?? new Date().toISOString(),
       budgetExhausted: input.budgetExhausted ?? undefined,
-      reason: formatTerminationReason(input.failureKind),
+      reason: input.abortReason ?? formatTerminationReason(input.failureKind),
       actor: input.actor,
       detail: input.detail,
       nextAction: input.nextAction,
@@ -282,12 +289,13 @@ export async function recordArmTermination(
       : undefined,
     stage: input.stage || 'unknown',
     model: input.model || 'unknown',
-    abortReason: formatTerminationReason(input.failureKind),
+    abortReason: input.abortReason ?? formatTerminationReason(input.failureKind),
     detail: input.detail,
     nextAction: input.nextAction,
     actor: input.actor,
     evidence: evidencePath,
     terminationId,
+    budgetExhausted: input.budgetExhausted,
   };
   const reliabilityRecord = appendReliability(reliabilityInput, input.repoDir);
   const reliabilityRecordId = reliabilityRecord.id;
@@ -320,13 +328,25 @@ export async function recordArmTermination(
         rationale: input.detail || `Terminal ${input.failureKind} recorded by ${input.actor}`,
         diagnostic: { terminationId, failureKind: input.failureKind },
       }, { success: false });
+      // This is an outcome, not a fabricated judge score.  Preserve the
+      // failure fact in a dedicated block and omit challenge fields so pair
+      // selectors cannot treat it as a scored comparison evaluation.
+      evalRecord.score = null;
+      evalRecord.scoreBand = null;
+      delete evalRecord.failureReason;
+      delete evalRecord.nonRewardReason;
+      evalRecord.armTermination = {
+        terminationId,
+        failureKind: input.failureKind,
+        actor: input.actor,
+        stage: input.stage,
+        ...(evidencePath ? { evidence: evidencePath } : {}),
+      };
       // The evaluated model is the stage model, not the judge used to create an
-      // unscored record.  This is the value contribution export learns from.
+      // unscored record. This is the value contribution export learns from.
       evalRecord.modelId = input.model;
       evalRecord.modelVersion = input.model;
-      evalRecord.challengePairId = taskSnapshot?.challengePairId;
-      evalRecord.challengeStage = input.stage as any;
-      const appendEval = deps?.appendEvalRecord ?? ((record) => appendEvalRecord(record, { repoDir: input.repoDir }));
+      const appendEval = deps?.appendEvalRecord ?? ((record) => appendEvalRecord(record, { repoDir: input.repoDir, skipValidation: true }));
       appendEval(evalRecord, input.repoDir);
       evalRecordId = evalRecord.id;
       const submit = deps?.triggerHokusaiSubmission ?? triggerHokusaiSubmission;
@@ -363,8 +383,3 @@ function isKnownFailureKind(kind: string): boolean {
   return ARM_FAILURE_KINDS.includes(kind);
 }
 
-// Placeholder types for dependencies
-interface BudgetExhaustedFact {
-  kind?: string;
-  progress?: any;
-}
