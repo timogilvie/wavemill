@@ -748,7 +748,7 @@ function deriveJobsFromEvidence(
       id,
       kind: parsed.kind ?? 'eval',
       status: statusOf(parsed.status),
-      ...(parsed.reason ? { reason: parsed.reason } : {}),
+      ...(parsed.reason ? { reason: sanitiseString(parsed.reason, idMap, homeDir, repoDir) } : {}),
     });
   }
   return [...seen.values()];

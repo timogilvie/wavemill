@@ -141,6 +141,26 @@ test('sanitisation leaves no /Users/ or original ids but keeps _c', () => {
   }
 });
 
+test('job-state reasons are sanitised before entering fixture state', () => {
+  const dir = makeTempDir();
+  try {
+    const fp = 'c'.repeat(64);
+    const record = makeRecord(fp, { taskId: 'HOK-1234' });
+    const index: IncidentIndex = { [fp]: record };
+    writeFileSync(join(dir, 'index.json'), JSON.stringify(index));
+    writeEvidenceLog(join(dir, `${fp}.evidence.jsonl`), [
+      { observedAt: '2026-09-20T10:00:00Z', fingerprint: fp, evidence: { type: 'job_state', source: '/x', timestamp: '2026-09-20T10:00:00Z', redactedData: 'id=eval-HOK-1234 kind=eval status=failed reason=/Users/timothyogilvie/HOK-1234-token', key: 'job' } },
+    ]);
+    const { record: loaded, evidence } = loadIncidentByFingerprint(dir, fp);
+    const fixture = incidentToFixture(loaded!, evidence, { fixtureIndex: 1, homeDir: '/Users/timothyogilvie', repoDir: '/Users/timothyogilvie/Dropbox/wavemill' });
+    const reason = fixture.initialState.jobs[0]?.reason ?? '';
+    assert.doesNotMatch(reason, /\/Users\/|HOK-1234/);
+    assert.match(reason, /HOK-FIXTURE-1/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('malformed lines yield a warning and a typed error, no throw', () => {
   // protects: one corrupt log aborting clustering
   const dir = makeTempDir();
