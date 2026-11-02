@@ -828,7 +828,6 @@
       "shared/lib/pr-state-labels.test.ts": 205,
       "shared/lib/pr-timeline.test.ts": 244,
       "shared/lib/pre-pr-verification-drift-validator.test.ts": 125,
-      "shared/lib/pre-pr-verification-gate.test.ts": 7238,
       "shared/lib/pre-pr-verification.test.ts": 3409,
       "shared/lib/progress-heartbeat.test.ts": 229,
       "shared/lib/project-context-compactor.test.ts": 326,
