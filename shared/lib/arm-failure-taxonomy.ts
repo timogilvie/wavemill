@@ -19,7 +19,7 @@ export type ArmFailureKind =
   | 'tool-use-unsupported'
   | 'empty-model-turn'
   | 'native-provider-error'
-  | 'native-completion-protocol'
+  | 'completion-protocol'
   // Typed native stage-failure kinds (HOK-3064). `native-stage-timeout` is the
   // one budget-exhaustion kind for every native stage (HOK-3362); its fault
   // class is derived from the `budgetExhausted` fact, never fixed. Historical
@@ -210,7 +210,7 @@ export function classifyArmFault(input: {
     // The model violated the coding completion/tool protocol (typed
     // no_completion_artifact / invalid_completion_artifact handoff): the
     // provider delivered output, so this is model quality signal.
-    case 'native-completion-protocol':
+    case 'completion-protocol':
       return 'model-fault';
     // HOK-3128: the model finished coding but left its own output uncommitted
     // and did not repair it when relaunched with a targeted instruction — the
@@ -329,4 +329,46 @@ export function describeArmFailure(input: {
   const kind = input.failureKind || 'unknown failure';
   const fault = input.faultClass ? ` (${input.faultClass} - ${faultClassReason(input.faultClass)})` : '';
   return `${role} arm (${input.model || 'unknown'}) failed${stage}: ${kind}${fault}.`;
+}
+
+/** The classifier version stamped on reliability and eval records for traceability. */
+export const ARM_FAULT_CLASSIFIER_VERSION = 2;
+
+/** All valid arm failure kinds, for CLI validation and runtime checks. */
+export const ARM_FAILURE_KINDS = [
+  'context-exhausted',
+  'context-window-exceeded',
+  'invalid-model-id',
+  'provider-rate-limited',
+  'provider-quota-exhausted',
+  'provider-transient-error',
+  'provider-credit-exhausted',
+  'provider-config-error',
+  'tool-use-unsupported',
+  'empty-model-turn',
+  'native-provider-error',
+  'completion-protocol',
+  'native-stage-timeout',
+  'policy-denied',
+  'cancelled',
+  'native-unclassified',
+  'coding-dirty-handoff',
+  'sibling-stalled',
+  'ready-exhausted',
+  'ready-transition-failed',
+  'ready-unattributed',
+  'review-malformed-response',
+  'review-not-ready',
+  'review-identity-mismatch',
+  'review-unattributed',
+  'route-drift',
+  'multiple-varied-roles',
+  'planning-artifact-invalid',
+  'review-no-output',
+  'coding-exited-without-result',
+] as const satisfies readonly ArmFailureKind[];
+
+/** Format a failure kind as a termination reason for state stamps. */
+export function formatTerminationReason(kind: string): string {
+  return `terminal_stage_failure:${kind}`;
 }
