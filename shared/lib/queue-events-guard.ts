@@ -23,7 +23,7 @@ export const QUEUE_EVENTS_GUARD: GuardSpec = {
     'shared/lib/queue-events.ts',
     'shared/lib/queue-events.test.ts',
     'shared/lib/queue-events-guard.ts',
-    'tools/check-queue-event-writers.ts',
+    'tools/check-queue-event-writers.ts', // install-paths: allow invariantPaths list, not an argv target
   ],
   patterns: [
     {

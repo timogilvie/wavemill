@@ -752,6 +752,9 @@ export async function executeMerge(
 
   validateBranchName(candidate.headBranch, 'PR branch');
 
+  // Emit candidate_prepared event when merge execution begins
+  await emitQueueEventBestEffort(candidate.number, candidate.headSha || '', 'candidate_prepared', options.repoDir);
+
   let activeMerges: number[];
   try {
     activeMerges = await listMergingPrs(options.repoDir, deps);
@@ -808,6 +811,8 @@ export async function executeMerge(
       repoDir: options.repoDir,
       deps,
     });
+    // Emit abandoned event when merge is blocked (terminal failure)
+    await emitQueueEventBestEffort(candidate.number, attemptHeadSha, 'abandoned', options.repoDir, { reason: phase });
     return { status: 'blocked', prNumber: candidate.number, phase, failureExcerpt, haltLoop: false };
   };
 
@@ -1015,6 +1020,8 @@ export async function executeMerge(
               return handoffOutcome;
             }
             await recordLaneProgressSafe(deps, candidate.number, 'rebase', options.repoDir);
+            // Emit rebase_performed event after successful rebase
+            await emitQueueEventBestEffort(candidate.number, attemptHeadSha, 'rebase_performed', options.repoDir);
             await recordLaneProgressSafe(deps, candidate.number, 'ci-restart', options.repoDir);
           }
         } catch (error) {
@@ -1043,6 +1050,9 @@ export async function executeMerge(
             failureKind: checks.outcome === 'fail' ? 'checks-failed' : `checks-${checks.outcome}`,
           });
         }
+
+        // Emit check_run_completed event when checks pass
+        await emitQueueEventBestEffort(candidate.number, attemptHeadSha, 'check_run_completed', options.repoDir);
 
         try {
           const ready = await deps.readyChecker(candidate.number, options.repoDir);
@@ -1099,6 +1109,13 @@ export async function executeMerge(
           candidate.number,
           candidate.headSha || '',
           'merged',
+          options.repoDir,
+        );
+        // Emit dequeued event when merge completes successfully
+        await emitQueueEventBestEffort(
+          candidate.number,
+          candidate.headSha || '',
+          'dequeued',
           options.repoDir,
         );
         try {
