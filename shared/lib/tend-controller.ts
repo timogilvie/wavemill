@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeLaneStateDir, recordLaneProgress, type LaneProgressEvent } from './merge-queue.ts';
+import { appendQueueEventBestEffort } from './queue-events.ts';
 import {
   setWavemillMerged,
   setWavemillMerging,
@@ -1093,6 +1094,12 @@ export async function executeMerge(
         }
 
         await recordLaneProgressSafe(deps, candidate.number, 'merged', options.repoDir);
+        await emitQueueEventBestEffort(
+          candidate.number,
+          candidate.headSha || '',
+          'merged',
+          options.repoDir,
+        );
         try {
           deps.strictBaseRetry.clear(candidate.number, options.repoDir);
         } catch (error) {
@@ -3300,6 +3307,28 @@ async function recordLaneProgressSafe(
     await deps.recordLaneProgress(prNumber, event, repoDir);
   } catch (error) {
     console.warn(`tend: failed to record lane progress '${event}' for PR #${prNumber}: ${errorMessage(error)}`);
+  }
+}
+
+async function emitQueueEventBestEffort(
+  prNumber: number,
+  headSha: string,
+  eventType: string,
+  repoDir: string,
+  extra?: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const stateDir = mergeLaneStateDir(repoDir);
+    const eventId = `${new Date().toISOString()}-pr-${prNumber}-${eventType}`;
+    await appendQueueEventBestEffort(stateDir, {
+      eventId,
+      eventType: eventType as any,
+      prNumber,
+      headSha,
+      ...extra,
+    });
+  } catch (error) {
+    console.warn(`tend: failed to emit queue event '${eventType}' for PR #${prNumber}: ${errorMessage(error)}`);
   }
 }
 
