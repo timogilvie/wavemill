@@ -10,6 +10,7 @@ import {
   type QueueLifecycleEvent,
 } from './queue-events.ts';
 
+// protects: invalid event values are rejected by the schema validator
 test('queue-events: validate event', () => {
   const event: QueueLifecycleEvent = {
     eventId: 'test-1',
@@ -23,6 +24,7 @@ test('queue-events: validate event', () => {
   assert.strictEqual(validation.ok, true);
 });
 
+// protects: schema validation rejects invalid event type enums
 test('queue-events: reject invalid event type', () => {
   const event = {
     eventId: 'test-1',
@@ -36,6 +38,7 @@ test('queue-events: reject invalid event type', () => {
   assert.strictEqual(validation.ok, false);
 });
 
+// protects: events are persisted to disk and re-read with all fields preserved
 test('queue-events: append and read', async () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'queue-events-'));
   try {
@@ -59,6 +62,7 @@ test('queue-events: append and read', async () => {
   }
 });
 
+// protects: duplicate events with the same eventId are idempotent and not written twice to the log
 test('queue-events: deduplicate by eventId', async () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'queue-events-'));
   try {
@@ -84,6 +88,7 @@ test('queue-events: deduplicate by eventId', async () => {
   }
 });
 
+// protects: multiple distinct events are all persisted and re-read in order
 test('queue-events: handle multiple events', async () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'queue-events-'));
   try {
@@ -110,6 +115,7 @@ test('queue-events: handle multiple events', async () => {
   }
 });
 
+// protects: validation errors are reported and no invalid events are persisted
 test('queue-events: append best-effort with invalid event', async () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'queue-events-'));
   try {
@@ -132,6 +138,7 @@ test('queue-events: append best-effort with invalid event', async () => {
   }
 });
 
+// protects: reading from a non-existent log returns an empty array (graceful degradation)
 test('queue-events: read empty log', async () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'queue-events-'));
   try {
@@ -142,6 +149,7 @@ test('queue-events: read empty log', async () => {
   }
 });
 
+// protects: optional fields (actor, executedModel) are preserved when present
 test('queue-events: preserve all fields', async () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'queue-events-'));
   try {

@@ -99,6 +99,7 @@ const SAMPLE_EVENTS: QueueLifecycleEvent[] = [
   },
 ];
 
+// protects: every required schema field is exercised by at least one test event
 test('queue-events: all required fields are covered', () => {
   const coveredFields = new Set<string>();
 
@@ -116,6 +117,7 @@ test('queue-events: all required fields are covered', () => {
   }
 });
 
+// protects: every optional schema field (candidateId, attempt, actor, reason, executedModel) is exercised by at least one test event
 test('queue-events: all optional fields are covered', () => {
   const coveredFields = new Set<string>();
 
@@ -133,6 +135,7 @@ test('queue-events: all optional fields are covered', () => {
   }
 });
 
+// protects: every event type defined in the schema (candidate_prepared, enqueued, check_run_completed, rebase_performed, repair_commit_pushed, rerun_requested, ejected, merged, dequeued, abandoned) has a coverage test
 test('queue-events: all event types are covered', () => {
   const eventTypes = [
     'candidate_prepared',
