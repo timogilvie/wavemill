@@ -128,17 +128,25 @@ agent_remediation_deliver() {
     --argjson deliveryAttempts "$attempts" \
     2>/dev/null || true
 
-  # Escalate to blocked hook so operator can intervene
+  # Escalate to blocked hook so operator can intervene. The agent kind is
+  # read from the hook file if available (the caller does not pass it in);
+  # fall back to the issue id so the blocked hook is at least attributable.
   local hook_protocol="$LIB_DIR/../hooks/wavemill-hook-protocol.sh"
   if [[ -f "$hook_protocol" ]]; then
     # shellcheck disable=SC1090
     source "$hook_protocol" || true
     if declare -F wavemill_hook_write >/dev/null 2>&1; then
+      local hook_file="/tmp/wavemill-${SESSION}-${issue}.hook"
+      local agent_kind=""
+      if [[ -f "$hook_file" ]] && command -v jq >/dev/null 2>&1; then
+        agent_kind=$(jq -r '.agent // .agentRecord.agent // empty' "$hook_file" 2>/dev/null || echo "")
+      fi
+      [[ -n "$agent_kind" ]] || agent_kind="unknown"
       local next_action="Press Enter in tmux window $target to acknowledge the pending remediation notice, or relay it manually."
       WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
         wavemill_hook_write "blocked" "remediation_delivery_failed" \
           "remediation notice $status after $attempts attempts: $detail" \
-          "${current_agent:-unknown}" \
+          "$agent_kind" \
           "$next_action" "monitor" || true
     fi
   fi

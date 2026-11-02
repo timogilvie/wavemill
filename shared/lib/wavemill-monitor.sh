@@ -13882,6 +13882,20 @@ launch_ready_phase() {
         log_error "  $issue: refusing ready phase; $review_summary (terminal)"
         return 1
         ;;
+      *)
+        # An unknown disposition token (empty string, future enum value, or
+        # mangled CLI output) must never silently fall through past the
+        # review gate — the branch returned false for review_result_passes_ready_gate,
+        # so Ready cannot proceed. Treat as terminal / operator attention and
+        # record the raw token in the attention marker.
+        strip_ready_label_if_review_not_passed "$wt_dir" "$pr_number" "$state_dir" || true
+        local _ready_gate_head
+        _ready_gate_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
+        write_ready_attention_file "$state_dir" "Review verdict does not pass readiness gate for PR #$pr_number ($review_summary). Unknown remediation disposition '${disposition:-<empty>}'; investigate review-gate-remediation-cli." \
+          --head "$_ready_gate_head" --expires-on "head,operator-event,review-artifact" --review-artifact
+        log_error "  $issue: refusing ready phase; unknown disposition '${disposition:-<empty>}' from review-gate CLI"
+        return 1
+        ;;
     esac
   fi
 
