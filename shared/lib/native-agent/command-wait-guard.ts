@@ -6,13 +6,13 @@
  * the model. The guard refuses those argv shapes up front so the model gets
  * an actionable tool error instead of a silent turn sink.
  *
- * Operates on the argv tokens `parseCommandArgv` produces — never a regex
- * over the raw string, so `echo "sleep 60"` is not refused. `while` / `until`
- * loops need `;`, which `parseCommandArgv` already rejects as
- * `unsupported-shell-syntax`.
+ * Operates on the parsed command `parseCommandArgv` produces (HOK-3383) —
+ * never a regex over the raw string, so `echo "sleep 60"` is not refused.
+ * `while` / `until` loops need `;`, which `parseCommandArgv` already rejects
+ * as `unsupported-shell-syntax`.
  */
 
-import path from 'node:path';
+import { parsedCommandFromArgv, type ParsedCommand } from './command-argv.ts';
 
 /** Guard identifier recorded on transcripts and `guard_refused` events. */
 export const FOREGROUND_WAIT_GUARD = 'foreground-wait';
@@ -34,7 +34,7 @@ const TIMEOUT_OPTIONS_WITH_VALUE = new Set(['-s', '--signal', '-k', '--kill-afte
 const TAIL_FOLLOW_FLAGS = new Set(['-f', '-F', '--follow']);
 
 /**
- * Classify an exec argv as a foreground wait.
+ * Classify a parsed command as a foreground wait.
  *
  * Refused shapes:
  * - `sleep DURATION…` whose total is at or above the floor (`inf` included);
@@ -45,14 +45,14 @@ const TAIL_FOLLOW_FLAGS = new Set(['-f', '-F', '--follow']);
  * An unparseable `sleep` duration is not refused: the exec surfaces the error.
  */
 export function classifyForegroundWait(
-  argv: readonly string[],
+  parsed: ParsedCommand,
   options: { floorSeconds?: number } = {},
 ): WaitGuardDecision {
   const floorSeconds = options.floorSeconds ?? FOREGROUND_WAIT_FLOOR_SECONDS;
-  const program = argv[0] === undefined ? '' : path.basename(argv[0]);
+  const program = parsed.program;
 
   if (program === 'sleep') {
-    const durationSeconds = sumSleepDurations(argv.slice(1));
+    const durationSeconds = sumSleepDurations(parsed.programArgs);
     if (durationSeconds !== null && durationSeconds >= floorSeconds) {
       return { refused: true, kind: 'sleep', durationSeconds, floorSeconds };
     }
@@ -64,9 +64,11 @@ export function classifyForegroundWait(
   }
 
   if (program === 'timeout') {
-    const wrapped = timeoutWrappedCommand(argv.slice(1));
-    if (wrapped.length === 0) return { refused: false };
-    if (path.basename(wrapped[0]!) === 'tail' && wrapped.slice(1).some(isTailFollowFlag)) {
+    const wrappedArgv = timeoutWrappedArgv(parsed.programArgs);
+    if (wrappedArgv.length === 0) return { refused: false };
+    const wrapped = parsedCommandFromArgv(wrappedArgv);
+    if (!wrapped) return { refused: false };
+    if (wrapped.program === 'tail' && wrapped.programArgs.some(isTailFollowFlag)) {
       return { refused: true, kind: 'tail-f-timeout' };
     }
     return classifyForegroundWait(wrapped, options);
@@ -110,7 +112,7 @@ function parseDurationSeconds(token: string): number | null {
 }
 
 /** Strip `timeout`'s own options and DURATION, returning the wrapped argv. */
-function timeoutWrappedCommand(args: readonly string[]): readonly string[] {
+function timeoutWrappedArgv(args: readonly string[]): readonly string[] {
   let index = 0;
   while (index < args.length && args[index]!.startsWith('-')) {
     const option = args[index]!;

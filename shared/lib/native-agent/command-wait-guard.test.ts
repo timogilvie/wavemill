@@ -1,14 +1,21 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { parseCommandArgv } from './command-argv.ts';
+import { parseCommandArgv, parsedCommandFromArgv, type ParsedCommand } from './command-argv.ts';
 import {
   FOREGROUND_WAIT_FLOOR_SECONDS,
   classifyForegroundWait,
   describeWaitGuardRefusal,
 } from './command-wait-guard.ts';
 
+function parsed(argv: string[]): ParsedCommand {
+  const result = parsedCommandFromArgv(argv);
+  assert.ok(result, `could not build ParsedCommand for ${argv.join(' ')}`);
+  return result;
+}
+
 describe('classifyForegroundWait', () => {
+  // protects: polling shapes (sleep/watch/timeout tail -f) draining native budgets
   const refused: Array<[string[], string]> = [
     [['sleep', '60'], 'sleep'],
     [['sleep', '5'], 'sleep'],
@@ -29,12 +36,13 @@ describe('classifyForegroundWait', () => {
   ];
   for (const [argv, kind] of refused) {
     it(`refuses ${argv.join(' ')}`, () => {
-      const decision = classifyForegroundWait(argv);
+      const decision = classifyForegroundWait(parsed(argv));
       assert.equal(decision.refused, true);
       assert.equal(decision.refused && decision.kind, kind);
     });
   }
 
+  // protects: false positives on short sleeps, "sleep" as a quoted argument, etc.
   const allowed: string[][] = [
     ['sleep', '1'],
     ['sleep', '0.5'],
@@ -47,38 +55,39 @@ describe('classifyForegroundWait', () => {
     ['npm', 'test'],
     ['gh', 'pr', 'checks', '--watch=false'],
     ['echo', 'sleep 60'],
-    [],
   ];
   for (const argv of allowed) {
-    it(`allows ${argv.join(' ') || '(empty)'}`, () => {
-      assert.deepEqual(classifyForegroundWait(argv), { refused: false });
+    it(`allows ${argv.join(' ')}`, () => {
+      assert.deepEqual(classifyForegroundWait(parsed(argv)), { refused: false });
     });
   }
 
   it('refuses exactly at the floor', () => {
     assert.equal(FOREGROUND_WAIT_FLOOR_SECONDS, 5);
-    assert.equal(classifyForegroundWait(['sleep', '5']).refused, true);
-    assert.equal(classifyForegroundWait(['sleep', '4']).refused, false);
+    assert.equal(classifyForegroundWait(parsed(['sleep', '5'])).refused, true);
+    assert.equal(classifyForegroundWait(parsed(['sleep', '4'])).refused, false);
   });
 
   it('honours a custom floor', () => {
-    assert.equal(classifyForegroundWait(['sleep', '5'], { floorSeconds: 10 }).refused, false);
+    assert.equal(classifyForegroundWait(parsed(['sleep', '5']), { floorSeconds: 10 }).refused, false);
   });
 
+  // protects: a quoted "sleep 60" being refused as the wait kind
   it('classifies parsed argv, not the raw string', () => {
-    const parsed = parseCommandArgv('echo "sleep 60"');
-    assert.ok(parsed.ok);
-    assert.deepEqual(classifyForegroundWait(parsed.argv), { refused: false });
+    const result = parseCommandArgv('echo "sleep 60"');
+    assert.ok(result.ok);
+    assert.deepEqual(classifyForegroundWait(result.parsed), { refused: false });
   });
 });
 
 describe('describeWaitGuardRefusal', () => {
+  // protects: refusal detail text drifting (consumed in message rendering)
   it('summarises each refusal kind without echoing argv', () => {
-    assert.equal(describeWaitGuardRefusal(classifyForegroundWait(['sleep', '1m'])), 'sleep 60s (>= 5s floor)');
-    assert.equal(describeWaitGuardRefusal(classifyForegroundWait(['sleep', 'inf'])), 'sleep infinity (>= 5s floor)');
-    assert.equal(describeWaitGuardRefusal(classifyForegroundWait(['watch', 'secret-token'])), 'watch');
+    assert.equal(describeWaitGuardRefusal(classifyForegroundWait(parsed(['sleep', '1m']))), 'sleep 60s (>= 5s floor)');
+    assert.equal(describeWaitGuardRefusal(classifyForegroundWait(parsed(['sleep', 'inf']))), 'sleep infinity (>= 5s floor)');
+    assert.equal(describeWaitGuardRefusal(classifyForegroundWait(parsed(['watch', 'secret-token']))), 'watch');
     assert.equal(
-      describeWaitGuardRefusal(classifyForegroundWait(['timeout', '9', 'tail', '-f', 'x'])),
+      describeWaitGuardRefusal(classifyForegroundWait(parsed(['timeout', '9', 'tail', '-f', 'x']))),
       'timeout + tail -f',
     );
     assert.equal(describeWaitGuardRefusal({ refused: false }), '');

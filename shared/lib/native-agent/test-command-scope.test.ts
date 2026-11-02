@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
 
+import { parsedCommandFromArgv, type ParsedCommand } from './command-argv.ts';
 import {
   classifyTestCommandScope,
   formatScriptExpansion,
@@ -29,45 +30,52 @@ function makeWorktree(packageJson?: Record<string, unknown>): string {
   return dir;
 }
 
+function parse(argv: string[]): ParsedCommand {
+  const parsed = parsedCommandFromArgv(argv);
+  assert.ok(parsed, `could not parse ${argv.join(' ')}`);
+  return parsed;
+}
+
 describe('resolvePackageScriptInvocation', () => {
+  // protects: npm/pnpm/yarn <test> shortcuts drifting (used by HOK-3145 full-suite refusal)
   it('matches npm test and short forms', () => {
-    assert.deepEqual(resolvePackageScriptInvocation(['npm', 'test']), { manager: 'npm', script: 'test', extraArgs: [] });
-    assert.deepEqual(resolvePackageScriptInvocation(['npm', 't']), { manager: 'npm', script: 'test', extraArgs: [] });
-    assert.deepEqual(resolvePackageScriptInvocation(['npm', 'run', 'test']), { manager: 'npm', script: 'test', extraArgs: [] });
-    assert.deepEqual(resolvePackageScriptInvocation(['npm', 'run-script', 'test']), { manager: 'npm', script: 'test', extraArgs: [] });
+    assert.deepEqual(resolvePackageScriptInvocation(parse(['npm', 'test'])), { manager: 'npm', script: 'test', extraArgs: [] });
+    assert.deepEqual(resolvePackageScriptInvocation(parse(['npm', 't'])), { manager: 'npm', script: 'test', extraArgs: [] });
+    assert.deepEqual(resolvePackageScriptInvocation(parse(['npm', 'run', 'test'])), { manager: 'npm', script: 'test', extraArgs: [] });
+    assert.deepEqual(resolvePackageScriptInvocation(parse(['npm', 'run-script', 'test'])), { manager: 'npm', script: 'test', extraArgs: [] });
   });
 
   it('captures extra args and strips a leading --', () => {
-    assert.deepEqual(resolvePackageScriptInvocation(['npm', 'test', 'a.test.ts']), { manager: 'npm', script: 'test', extraArgs: ['a.test.ts'] });
-    assert.deepEqual(resolvePackageScriptInvocation(['npm', 'test', '--', '--grep', 'x']), { manager: 'npm', script: 'test', extraArgs: ['--grep', 'x'] });
+    assert.deepEqual(resolvePackageScriptInvocation(parse(['npm', 'test', 'a.test.ts'])), { manager: 'npm', script: 'test', extraArgs: ['a.test.ts'] });
+    assert.deepEqual(resolvePackageScriptInvocation(parse(['npm', 'test', '--', '--grep', 'x'])), { manager: 'npm', script: 'test', extraArgs: ['--grep', 'x'] });
   });
 
   it('skips leading noise flags', () => {
-    assert.deepEqual(resolvePackageScriptInvocation(['npm', '--silent', '-s', 'test']), { manager: 'npm', script: 'test', extraArgs: [] });
-    assert.deepEqual(resolvePackageScriptInvocation(['npm', '--prefix', 'sub', 'test']), { manager: 'npm', script: 'test', extraArgs: [], prefix: 'sub' });
-    assert.deepEqual(resolvePackageScriptInvocation(['npm', '--prefix=sub', 'test']), { manager: 'npm', script: 'test', extraArgs: [], prefix: 'sub' });
+    assert.deepEqual(resolvePackageScriptInvocation(parse(['npm', '--silent', '-s', 'test'])), { manager: 'npm', script: 'test', extraArgs: [] });
+    assert.deepEqual(resolvePackageScriptInvocation(parse(['npm', '--prefix', 'sub', 'test'])), { manager: 'npm', script: 'test', extraArgs: [], prefix: 'sub' });
+    assert.deepEqual(resolvePackageScriptInvocation(parse(['npm', '--prefix=sub', 'test'])), { manager: 'npm', script: 'test', extraArgs: [], prefix: 'sub' });
   });
 
   it('matches pnpm forms including bare pnpm <script>', () => {
-    assert.deepEqual(resolvePackageScriptInvocation(['pnpm', 'test']), { manager: 'pnpm', script: 'test', extraArgs: [] });
-    assert.deepEqual(resolvePackageScriptInvocation(['pnpm', 'run', 'test']), { manager: 'pnpm', script: 'test', extraArgs: [] });
-    assert.deepEqual(resolvePackageScriptInvocation(['pnpm', 'test:unit']), { manager: 'pnpm', script: 'test:unit', extraArgs: [] });
-    assert.equal(resolvePackageScriptInvocation(['pnpm', 'install']), null, 'builtins are not scripts');
+    assert.deepEqual(resolvePackageScriptInvocation(parse(['pnpm', 'test'])), { manager: 'pnpm', script: 'test', extraArgs: [] });
+    assert.deepEqual(resolvePackageScriptInvocation(parse(['pnpm', 'run', 'test'])), { manager: 'pnpm', script: 'test', extraArgs: [] });
+    assert.deepEqual(resolvePackageScriptInvocation(parse(['pnpm', 'test:unit'])), { manager: 'pnpm', script: 'test:unit', extraArgs: [] });
+    assert.equal(resolvePackageScriptInvocation(parse(['pnpm', 'install'])), null, 'builtins are not scripts');
   });
 
   it('matches yarn forms', () => {
-    assert.deepEqual(resolvePackageScriptInvocation(['yarn', 'test']), { manager: 'yarn', script: 'test', extraArgs: [] });
-    assert.deepEqual(resolvePackageScriptInvocation(['yarn', 'run', 'test']), { manager: 'yarn', script: 'test', extraArgs: [] });
+    assert.deepEqual(resolvePackageScriptInvocation(parse(['yarn', 'test'])), { manager: 'yarn', script: 'test', extraArgs: [] });
+    assert.deepEqual(resolvePackageScriptInvocation(parse(['yarn', 'run', 'test'])), { manager: 'yarn', script: 'test', extraArgs: [] });
   });
 
   it('returns null for non-package-manager invocations', () => {
-    assert.equal(resolvePackageScriptInvocation(['node', '--test', 'a.ts']), null);
-    assert.equal(resolvePackageScriptInvocation(['bash', 'tests/run-unit-tests.sh']), null);
-    assert.equal(resolvePackageScriptInvocation([]), null);
+    assert.equal(resolvePackageScriptInvocation(parse(['node', '--test', 'a.ts'])), null);
+    assert.equal(resolvePackageScriptInvocation(parse(['bash', 'tests/run-unit-tests.sh'])), null);
   });
 });
 
 describe('classifyTestCommandScope — full-suite', () => {
+  // protects: HOK-3145 full-suite refusal for `npm test`
   it('refuses npm/pnpm/yarn test with or without args', () => {
     const wt = makeWorktree({ scripts: { test: 'npm run a && npm run b' } });
     for (const argv of [
@@ -79,7 +87,7 @@ describe('classifyTestCommandScope — full-suite', () => {
       ['npm', 'test', 'shared/lib/x.test.ts'],
       ['npm', 'test', '--', '--grep', 'something'],
     ]) {
-      const scope = classifyTestCommandScope(argv, { cwd: wt, worktreePath: wt });
+      const scope = classifyTestCommandScope(parse(argv), { cwd: wt, worktreePath: wt });
       assert.equal(scope.scope, 'full-suite', `expected full-suite for ${argv.join(' ')}`);
       assert.equal(scope.reason, 'package-test-script');
     }
@@ -93,7 +101,7 @@ describe('classifyTestCommandScope — full-suite', () => {
       ['./tests/run-custom-tests.sh'],
       ['tests/run-lifecycle-tests.sh'],
     ]) {
-      const scope = classifyTestCommandScope(argv, { cwd: wt, worktreePath: wt });
+      const scope = classifyTestCommandScope(parse(argv), { cwd: wt, worktreePath: wt });
       assert.equal(scope.scope, 'full-suite', `expected full-suite for ${argv.join(' ')}`);
       assert.equal(scope.reason, 'repo-suite-runner');
     }
@@ -106,19 +114,20 @@ describe('classifyTestCommandScope — full-suite', () => {
       ['bash', 'tests/run-unit-tests.sh', '--list'],
       ['bash', 'tests/run-unit-tests.sh', '--shard=1/4'],
     ]) {
-      const scope = classifyTestCommandScope(argv, { cwd: wt, worktreePath: wt });
+      const scope = classifyTestCommandScope(parse(argv), { cwd: wt, worktreePath: wt });
       assert.equal(scope.scope, 'focused', `expected focused for ${argv.join(' ')}`);
     }
   });
 
   it('does not refuse named sub-suites like npm run test:unit', () => {
     const wt = makeWorktree({ scripts: { 'test:unit': 'bash tests/run-unit-tests.sh', test: 'npm run test:unit' } });
-    const scope = classifyTestCommandScope(['npm', 'run', 'test:unit'], { cwd: wt, worktreePath: wt });
+    const scope = classifyTestCommandScope(parse(['npm', 'run', 'test:unit']), { cwd: wt, worktreePath: wt });
     assert.equal(scope.scope, 'focused');
   });
 });
 
 describe('classifyTestCommandScope — focused', () => {
+  // protects: focused commands being miscategorised as full-suite
   it('allows node --test and tsx --test and single-file bash tests', () => {
     const wt = makeWorktree();
     for (const argv of [
@@ -127,7 +136,7 @@ describe('classifyTestCommandScope — focused', () => {
       ['bash', 'tests/foo.test.sh'],
       ['bash', 'tests/run-shell-suite.sh', '--shard', '1/4'],
     ]) {
-      const scope = classifyTestCommandScope(argv, { cwd: wt, worktreePath: wt });
+      const scope = classifyTestCommandScope(parse(argv), { cwd: wt, worktreePath: wt });
       assert.equal(scope.scope, 'focused');
     }
   });
@@ -140,13 +149,14 @@ describe('classifyTestCommandScope — focused', () => {
       ['./tests/run-related.sh', 'shared/lib/foo.ts'],
       ['tests/run-related.sh', '--list'],
     ]) {
-      const scope = classifyTestCommandScope(argv, { cwd: wt, worktreePath: wt });
+      const scope = classifyTestCommandScope(parse(argv), { cwd: wt, worktreePath: wt });
       assert.equal(scope.scope, 'focused', `expected focused for ${argv.join(' ')}`);
     }
   });
 });
 
 describe('readScriptExpansion', () => {
+  // protects: HOK-3145 full-suite message losing its expansion detail
   it('reads the body and chained scripts', () => {
     const body = 'npm run test:preflight && npm run test:shell && npm run test:unit && npm run test:smoke';
     const wt = makeWorktree({ scripts: { test: body } });
@@ -214,6 +224,7 @@ describe('readScriptExpansion', () => {
 });
 
 describe('formatScriptExpansion', () => {
+  // protects: rendering of the script expansion block agents see
   it('emits a compact block with chain', () => {
     const text = formatScriptExpansion({
       manager: 'npm',

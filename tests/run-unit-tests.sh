@@ -423,6 +423,7 @@ TESTS=(
   tools/check-ci-command-map-drift.test.ts
   tools/check-ci-concurrency.test.ts
   tools/lib/source-guard.test.ts
+  tools/check-command-parse.test.ts
   tools/check-source-text-assertions.test.ts
   tools/check-openrouter-alias-audit-ci.test.ts
   tools/check-cross-pr-reverts.test.ts
