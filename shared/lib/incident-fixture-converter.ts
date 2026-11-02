@@ -13,7 +13,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import type { FailureStage } from './failure-policy.ts';
+import { DEFAULT_RETRY_ATTEMPTS, type FailureStage } from './failure-policy.ts';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import {
   redactPaths,
@@ -442,7 +442,10 @@ export function incidentToFixture(
 
   const failure = deriveFailureEvidence(canonicalClass, record, evidenceEntries, finalMap, homeDir, repoDir);
   const expected = deriveExpectations(canonicalClass, record, observations, trailingAbsentCycles, jobs);
-  const convergence = deriveConvergence(options.expect ?? defaultExpect(canonicalClass));
+  const convergence = deriveConvergence(options.expect
+    ?? (failure && failure.survivesRelaunches !== 'never' && failure.survivesRelaunches < DEFAULT_RETRY_ATTEMPTS
+      ? 'merged'
+      : defaultExpect(canonicalClass)));
   const journey = JOURNEY_BY_CLASS[canonicalClass] ?? null;
 
   const fixture: IncidentFixture = {
@@ -553,8 +556,11 @@ export function compressObservations(
 
   // Compress identical middle cycles beyond the cap.
   const retained: typeof rawObs = [];
+  // `timestamp` identifies when an evidence item was sampled, not a change in
+  // the observed state.  Keeping it here would turn every poll into a new
+  // cycle and defeat the bounded replay timeline.
   const identityOf = (obs: typeof rawObs[number]): string =>
-    obs.evidence.map(evidenceKey).sort().join('|');
+    obs.evidence.map((ev) => [ev.type ?? '', ev.source ?? '', ev.key ?? '', ev.redactedData ?? ''].join('::')).sort().join('|');
   const identities = rawObs.map(identityOf);
   const keepIdx = new Set<number>();
   if (rawObs.length > 0) keepIdx.add(0);
@@ -808,11 +814,11 @@ export function deriveFailureEvidence(
       ? metadataStage
       : 'coding'
     : entry.stage;
-  // A recorded stage-failure incident is one a relaunch did not clear — the
-  // record's "resolved" lifecycle reflects absence (HOK-3314), not that a
-  // retry succeeded. The replay therefore escalates by default; a converter
-  // caller that knows a relaunch *did* fix the chain can override later.
-  const survivesRelaunches: number | 'never' = 'never';
+  // Each distinct observed failure is one attempt in the recorded chain. The
+  // first event is the initial failure, so subsequent events are relaunches
+  // that also failed. A single event therefore recovers on its first relaunch.
+  const failureEvents = new Set(entries.map((item) => item.observedAt || item.evidence.timestamp).filter(Boolean));
+  const survivesRelaunches = Math.max(0, failureEvents.size - 1);
   const failure: IncidentFixtureFailure = {
     stage,
     failureKind: entry.failureKind ?? null,

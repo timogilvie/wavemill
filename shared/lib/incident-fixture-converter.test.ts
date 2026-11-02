@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import {
   clusterIncidents,
   compressObservations,
+  deriveFailureEvidence,
   deriveExpectations,
   incidentToFixture,
   journeyFor,
@@ -83,6 +84,27 @@ test('event-key counting matches hand-computed values', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('compression ignores poll timestamps while retaining changed observations', () => {
+  const entries = [
+    { observedAt: '2026-09-20T10:00:00Z', fingerprint: 'a', evidence: { type: 'workflow_state' as const, source: '/x', timestamp: '2026-09-20T10:00:00Z', redactedData: 'same', key: 'k' } },
+    { observedAt: '2026-09-20T10:02:00Z', fingerprint: 'a', evidence: { type: 'workflow_state' as const, source: '/x', timestamp: '2026-09-20T10:02:00Z', redactedData: 'same', key: 'k' } },
+    { observedAt: '2026-09-20T10:04:00Z', fingerprint: 'a', evidence: { type: 'workflow_state' as const, source: '/x', timestamp: '2026-09-20T10:04:00Z', redactedData: 'changed', key: 'k' } },
+  ];
+  const compressed = compressObservations(entries);
+  assert.equal(compressed.observations.length, 2);
+  assert.equal(compressed.observations[1].evidence[0].redactedData, 'changed');
+});
+
+test('stage failure relaunch count comes from distinct evidence events', () => {
+  const record = makeRecord('f'.repeat(64), { rootCauseClass: 'stage_marker_not_advanced' });
+  const entries = [
+    { observedAt: '2026-09-20T10:00:00Z', fingerprint: record.fingerprint, evidence: { type: 'workflow_state' as const, source: '/x', timestamp: '2026-09-20T10:00:00Z', redactedData: 'failed', key: 'k' } },
+    { observedAt: '2026-09-20T10:02:00Z', fingerprint: record.fingerprint, evidence: { type: 'workflow_state' as const, source: '/x', timestamp: '2026-09-20T10:02:00Z', redactedData: 'failed', key: 'k' } },
+  ];
+  const failure = deriveFailureEvidence('stage_marker_not_advanced', record, entries, new Map(), '', '');
+  assert.equal(failure?.survivesRelaunches, 1);
 });
 
 test('sanitisation leaves no /Users/ or original ids but keeps _c', () => {
@@ -241,8 +263,34 @@ test('job-backed eval fixture drives eval-stage recovery and stays open', async 
     writeFileSync(fixturePath, serializeFixture(fixture));
     const { runRealFixture } = await import('./incident-replay-harness.ts');
     const replay = await runRealFixture(fixturePath);
-    assert.equal(replay.ok, true);
+    if (!replay.ok) throw new Error(JSON.stringify(replay));
     assert.equal(replay.recovery?.failureStage, 'eval');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('job-backed successful retry writes result evidence in the replay sandbox', async () => {
+  const dir = makeTempDir();
+  try {
+    const fp = '4'.repeat(64);
+    const record = makeRecord(fp, {
+      rootCauseClass: 'failed_background_job',
+      category: 'product_defect',
+      metadata: { jobId: 'eval-job-2', jobKind: 'eval', authoritativeFailureAt: '2026-09-20T10:00:00Z' },
+    });
+    const entries = [{ observedAt: '2026-09-20T10:00:00Z', fingerprint: fp, evidence: { type: 'job_state' as const, source: '/x', timestamp: '2026-09-20T10:00:00Z', redactedData: 'id=eval-job-2 kind=eval status=failed', key: 'failed' } }];
+    const fixture = incidentToFixture(record, entries, { fixtureIndex: 1 });
+    fixture.initialState.jobs = [{ id: 'eval-job-2', kind: 'eval', status: 'succeeded', resultPath: '.wavemill/results/eval-job-2.json' }];
+    fixture.expected.lifecycleWhilePresent = 'resolved';
+    fixture.expected.finalLifecycle = 'resolved';
+    fixture.expected.resolutionReasonPrefix = 'current_disposition:';
+    const fixturePath = join(dir, 'successful-retry.json');
+    writeFileSync(fixturePath, serializeFixture(fixture));
+    const { runRealFixture } = await import('./incident-replay-harness.ts');
+    const replay = await runRealFixture(fixturePath);
+    if (!replay.ok) throw new Error(JSON.stringify(replay));
+    assert.equal(replay.cycle.finalLifecycle, 'resolved');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

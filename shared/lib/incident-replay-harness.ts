@@ -28,7 +28,7 @@
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { DEFAULT_RETRY_ATTEMPTS, type FailureStage } from './failure-policy.ts';
 import type { TaskRow } from './ledger.ts';
 import { decideRecovery, type RecoveryActionKind, type RecoveryDecision, type RecoveryRetryBudget } from './ledger-recovery.ts';
@@ -473,13 +473,26 @@ export async function runIncidentCycleReplay(fixture: IncidentFixture): Promise<
 
   // allow-task-literal: synthetic sandbox state for a single-task fixture, not workflow-state read by production code
   const metadata = fixture.incident.metadata;
+  const replayJobStartedAt = fixture.observations
+    .flatMap((observation) => observation.evidence)
+    .find((evidence) => evidence.type === 'job_state')?.timestamp ?? '2026-10-10T10:00:00Z';
   const jobs = Object.fromEntries(fixture.initialState.jobs.map((job) => [job.id, {
     ...job,
     taskId: fixture.initialState.task.issue,
     pairId: job.pair ?? (typeof metadata.pairId === 'string' ? metadata.pairId : undefined),
     side: job.side ?? (typeof metadata.side === 'string' ? metadata.side : undefined),
     resultPath: job.resultPath ?? (typeof metadata.resultPath === 'string' ? metadata.resultPath : undefined),
+    startedAt: replayJobStartedAt,
   }]));
+  // Job-backed reconciliation treats a successful row as a claim, not proof:
+  // it requires the job's persisted result artifact too. Materialise that
+  // artifact in the sandbox exactly as the job tracker would.
+  for (const job of Object.values(jobs) as Array<{ status?: string; resultPath?: string }>) {
+    if (job.status !== 'succeeded' || !job.resultPath) continue;
+    const path = job.resultPath.startsWith('/') ? job.resultPath : join(dir, job.resultPath);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({ ok: true, exitCode: 0, persisted: true }));
+  }
   writeFileSync(join(dir, '.wavemill', 'workflow-state.json'), JSON.stringify({
     tasks: {
       [fixture.initialState.task.issue]: {

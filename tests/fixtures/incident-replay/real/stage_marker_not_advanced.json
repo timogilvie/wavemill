@@ -57,10 +57,10 @@
     "stage": "coding",
     "failureKind": null,
     "detail": "",
-    "survivesRelaunches": "never"
+    "survivesRelaunches": 1
   },
   "convergence": {
-    "mustEscalate": true,
+    "mustMerge": true,
     "maxTickCount": 15,
     "tickIntervalSeconds": 30
   },

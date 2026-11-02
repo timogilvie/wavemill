@@ -91,7 +91,7 @@
     "stage": "review",
     "failureKind": null,
     "detail": "raw=pull request create failed: GraphQL: Base sha can't be blank (createPullRequest)\\n[wavemill] Agent exited (native=1)\\n\", translation=base/head comparison failed - verify the PR targets the configured base branch (auto/integration) and that the head branch is pushed",
-    "survivesRelaunches": "never"
+    "survivesRelaunches": 4
   },
   "convergence": {
     "mustEscalate": true,

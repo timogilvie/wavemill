@@ -81,7 +81,7 @@
     "stage": "coding",
     "failureKind": null,
     "detail": "coding_output_dirty_tree",
-    "survivesRelaunches": "never"
+    "survivesRelaunches": 3
   },
   "convergence": {
     "mustEscalate": true,
