@@ -32,8 +32,8 @@ const REVIEW_GATE_REMEDIATION_GUARD: GuardSpec = {
     'shared/lib/review-gate-remediation.ts',
     'shared/lib/review-gate-remediation.test.ts',
     'shared/lib/agent-remediation-delivery.sh',
-    'tools/review-gate-remediation-cli.ts',
-    'tools/check-review-gate-remediation.ts',
+    './tools/review-gate-remediation-cli.ts', // install-paths: allow metadata-only string
+    './tools/check-review-gate-remediation.ts', // install-paths: allow metadata-only string
   ],
   patterns: [
     {
