@@ -1,0 +1,529 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "cleanup_verification_unavailable",
+  "incidents": [
+    "c5cd2f57b3801ef65a13abdcbbc1c8b1a0c3ef42e274c5fbde9618dd1b39da36"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-10",
+      "slug": "incident-cleanup-verification-unavailable-10",
+      "phase": "coding",
+      "status": "working"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "cleanup_verification_unavailable",
+    "severity": "info",
+    "confidence": "high",
+    "summary": "HOK-FIXTURE-10 cleanup disposition is verification-unavailable.",
+    "operatorAction": "Observer could not verify task/wavemill-add-end-to-end-lifecycle-certification-and-staged-rollout against auto/integration. Fetch remote evidence and inspect cleanup state before treating commits as lost.",
+    "metadata": {
+      "disposition": "verification-unavailable",
+      "effectiveBaseBranch": "auto/integration"
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T15:47:56.392Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T15:56:31.514Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T16:05:32.353Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T16:14:00.569Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T16:22:33.456Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T16:30:59.809Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T16:39:31.080Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T16:47:50.118Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T16:56:08.738Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T17:04:23.981Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T17:12:44.141Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T17:21:01.505Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T17:27:20.738Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T17:35:50.970Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T17:44:13.554Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T17:52:33.173Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T18:00:51.961Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T18:09:10.103Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T18:17:27.533Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T18:25:47.100Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T18:34:08.639Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T18:42:27.667Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T18:50:45.426Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T18:59:03.452Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T19:07:22.740Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T19:15:51.348Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T19:24:13.421Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T19:32:32.140Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T19:40:46.829Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T19:49:11.758Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T19:57:26.588Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T20:05:42.095Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T20:13:59.086Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T20:22:20.518Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T20:30:37.169Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T20:38:54.283Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T20:47:10.516Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T20:55:30.484Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-11T21:03:50.739Z",
+          "redactedData": "residueDisposition=verification-unavailable effectiveBaseBranch=auto/integration baseBranchSource=runtime-env repoConfigBaseBranch=main",
+          "key": "cleanup:HOK-FIXTURE-10:verification-unavailable:auto/integration:no-head-evidence:no-cleanup-fingerprint"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  },
+  "journey": null,
+  "journeyNullReason": "detector-level class; replayed via the incident cycle loop",
+  "expected": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "cleanup_verification_unavailable",
+    "occurrenceCount": 39,
+    "lifecycleWhilePresent": "active",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  },
+  "source": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "cleanup_verification_unavailable",
+    "severity": "info",
+    "confidence": "high",
+    "recordedLifecycle": "resolved",
+    "recordedResolution": "auto_resolved",
+    "occurrenceCount": 153,
+    "firstObservedAt": "2026-09-11T15:48:04.663Z",
+    "lastObservedAt": "2026-09-11T21:03:56.771Z",
+    "stateSnapshot": null,
+    "convertedBy": "tools/incident-to-fixture.ts",
+    "observationsTruncated": true
+  }
+}

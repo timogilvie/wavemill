@@ -1,0 +1,126 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "pr_create_failed",
+  "incidents": [
+    "b23376f3666bd2f45fd1cfb1d81fa1383123c19d672b6177c23330e6e3151989"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-14",
+      "slug": "incident-pr-create-failed-14",
+      "phase": "review",
+      "status": "working"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "pr_create_failed",
+    "severity": "high",
+    "confidence": "medium",
+    "summary": "HOK-FIXTURE-14 failed to create its PR and the arm's work never reached GitHub.",
+    "operatorAction": "Push the task branch to origin and re-create the PR against auto/integration, or explicitly abandon the arm. Check `git rev-list --count auto/integration..<branch>` locally before trusting the raw GitHub error text.",
+    "metadata": {
+      "baseBranch": "auto/integration"
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "log_excerpt",
+          "source": "pane:wavemill:3.0",
+          "timestamp": "2026-10-22T12:49:56.370Z",
+          "redactedData": "raw=pull request create failed: GraphQL: Base sha can't be blank (createPullRequest)\\n[wavemill] Agent exited (native=1)\\n\", translation=base/head comparison failed - verify the PR targets the configured base branch (auto/integration) and that the head branch is pushed",
+          "key": "pr-create-failed:HOK-FIXTURE-14"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "log_excerpt",
+          "source": "pane:wavemill:3.0",
+          "timestamp": "2026-10-22T12:52:05.297Z",
+          "redactedData": "raw=pull request create failed: GraphQL: Base sha can't be blank (createPullRequest)\\n[wavemill] Agent exited (native=1)\\n\", translation=base/head comparison failed - verify the PR targets the configured base branch (auto/integration) and that the head branch is pushed",
+          "key": "pr-create-failed:HOK-FIXTURE-14"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "log_excerpt",
+          "source": "pane:wavemill:3.0",
+          "timestamp": "2026-10-22T12:54:19.222Z",
+          "redactedData": "raw=pull request create failed: GraphQL: Base sha can't be blank (createPullRequest)\\n[wavemill] Agent exited (native=1)\\n\", translation=base/head comparison failed - verify the PR targets the configured base branch (auto/integration) and that the head branch is pushed",
+          "key": "pr-create-failed:HOK-FIXTURE-14"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "log_excerpt",
+          "source": "pane:wavemill:3.0",
+          "timestamp": "2026-10-22T12:56:36.023Z",
+          "redactedData": "raw=pull request create failed: GraphQL: Base sha can't be blank (createPullRequest)\\n[wavemill] Agent exited (native=1)\\n\", translation=base/head comparison failed - verify the PR targets the configured base branch (auto/integration) and that the head branch is pushed",
+          "key": "pr-create-failed:HOK-FIXTURE-14"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "log_excerpt",
+          "source": "pane:wavemill:3.0",
+          "timestamp": "2026-10-22T12:58:45.491Z",
+          "redactedData": "raw=pull request create failed: GraphQL: Base sha can't be blank (createPullRequest)\\n[wavemill] Agent exited (native=1)\\n\", translation=base/head comparison failed - verify the PR targets the configured base branch (auto/integration) and that the head branch is pushed",
+          "key": "pr-create-failed:HOK-FIXTURE-14"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "failure": {
+    "stage": "review",
+    "failureKind": null,
+    "detail": "raw=pull request create failed: GraphQL: Base sha can't be blank (createPullRequest)\\n[wavemill] Agent exited (native=1)\\n\", translation=base/head comparison failed - verify the PR targets the configured base branch (auto/integration) and that the head branch is pushed",
+    "survivesRelaunches": 4
+  },
+  "convergence": {
+    "mustEscalate": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  },
+  "journey": null,
+  "journeyNullReason": "detector-level class; replayed via the incident cycle loop",
+  "expected": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "pr_create_failed",
+    "occurrenceCount": 5,
+    "lifecycleWhilePresent": "active",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  },
+  "source": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "pr_create_failed",
+    "severity": "high",
+    "confidence": "medium",
+    "recordedLifecycle": "resolved",
+    "recordedResolution": "auto_resolved",
+    "occurrenceCount": 5,
+    "firstObservedAt": "2026-10-22T12:50:03.345Z",
+    "lastObservedAt": "2026-10-22T12:58:58.913Z",
+    "stateSnapshot": null,
+    "convertedBy": "tools/incident-to-fixture.ts",
+    "observationsTruncated": false
+  }
+}

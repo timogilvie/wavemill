@@ -1,0 +1,85 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "config_drift_base_branch",
+  "incidents": [
+    "6d7e4158803421dd3d66e6b1e2b0076b9ea1e14e2395d87ad7da33ad40d5d0cb"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-9",
+      "slug": "incident-config-drift-base-branch-9",
+      "phase": "coding",
+      "status": "working"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "config_drift_base_branch",
+    "severity": "info",
+    "confidence": "high",
+    "summary": "HOK-FIXTURE-9 effective base branch differs from repository config.",
+    "operatorAction": "No recovery is required for intentional launch/runtime overrides; inspect status provenance if the value is unexpected.",
+    "metadata": {
+      "effectiveBaseBranch": "auto/integration",
+      "repoConfigBaseBranch": "main"
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-14T16:01:02.133Z",
+          "redactedData": "baseBranch=auto/integration source=runtime-env repoConfig=main",
+          "key": "config-drift-base:HOK-FIXTURE-9:auto/integration:main"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-14T16:03:03.606Z",
+          "redactedData": "baseBranch=auto/integration source=runtime-env repoConfig=main",
+          "key": "config-drift-base:HOK-FIXTURE-9:auto/integration:main"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  },
+  "journey": null,
+  "journeyNullReason": "detector-level class; replayed via the incident cycle loop",
+  "expected": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "config_drift_base_branch",
+    "occurrenceCount": 2,
+    "lifecycleWhilePresent": "observed",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  },
+  "source": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "config_drift_base_branch",
+    "severity": "info",
+    "confidence": "high",
+    "recordedLifecycle": "resolved",
+    "recordedResolution": "auto_resolved",
+    "occurrenceCount": 2,
+    "firstObservedAt": "2026-09-14T16:01:03.120Z",
+    "lastObservedAt": "2026-09-14T16:03:04.342Z",
+    "stateSnapshot": null,
+    "convertedBy": "tools/incident-to-fixture.ts",
+    "observationsTruncated": false
+  }
+}

@@ -398,6 +398,7 @@ export function renderCodingSystemPrompt(input: {
     '- Use git_add/git_commit to commit intended changed files before completion.',
     `- Prefer .coding-complete when focused verification of the changed code passes; otherwise write ${input.blockedCompletionPath} only when implementation is complete, scoped checks passed, changes are committed, and remaining blockers are unrelated or environmental.`,
     '- Mill-core definition of done: a change to the plan → code → review → ready → tend merge → reap chain (the `journeys` path filter in `.github/workflows/ci.yml`, e.g. `shared/lib/wavemill-*.sh`, `shared/lib/tend-*.ts`, `shared/lib/ready-*.ts`, `tests/journeys/`, `tests/fakes/`) must pass the journey job (the required Golden Journeys CI check); run affected journeys with `bash tests/journeys/run-journeys.sh <name>`. A fix for an incident on that chain, or for a class a journey already covers, must add or extend a journey in `tests/journeys/` using the shared fakes (`tests/fakes/lib.sh`).',
+    '- Incident fixes (HOK-3231): a PR that fixes an incident recorded in `.wavemill/incidents/` must add that incident\'s evidence as a replay fixture under `tests/fixtures/incident-replay/real/` (`npx tsx tools/incident-to-fixture.ts --input <fingerprint> --expect merged|escalated`); the fixture must fail on the base and pass with the fix.',
   ];
 
   if (input.recoveryMode) {
