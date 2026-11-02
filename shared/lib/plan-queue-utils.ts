@@ -1,11 +1,23 @@
 import type { DependencyEdge, PlanResult, TriageRecord } from './task-dependency-planner.ts';
+import { extractProseDependencies, parseTaskId } from './task-identity.ts';
 
 export type BacklogRecord = {
   id: string;
   title?: string;
   dependsOn?: string[];
   sharedSurface?: string[];
+  description?: string;
+  parentId?: string;
+  labels?: string[];
   [key: string]: unknown;
+};
+
+/** A warning about unmet preconditions or unresolved prose references. */
+export type PlanWarning = {
+  taskId: string;
+  kind: 'prose_reference_unresolved' | 'prose_reference_ambiguous' | 'subjective_precondition';
+  message: string;
+  evidence?: string;
 };
 
 export interface ConflictEdge {
@@ -31,6 +43,10 @@ export type QueuePlan = {
    * Only populated by the grounded planner path; absent otherwise.
    */
   touchSetStatus?: Record<string, 'predicted' | 'empty-confirmed' | 'unknown'>;
+  /** Operator holds from the `wm:hold` label. Maps task ID to optional hold note. */
+  operatorHolds?: Record<string, { note?: string }>;
+  /** Plan warnings for unmet preconditions or unresolved references. */
+  planWarnings?: PlanWarning[];
 };
 
 export type TaskWithScore = {
@@ -186,6 +202,188 @@ export function buildSharedSurfaceConflicts(edges: DependencyEdge[]): ConflictEd
   return [...byKey.values()].sort((x, y) => compareTaskIds(x.a, y.a) || compareTaskIds(x.b, y.b));
 }
 
+/** Extract prose-written dependency edges from backlog records. */
+export function extractProseEdges(records: BacklogRecord[]): { edges: DependencyEdge[]; warnings: PlanWarning[] } {
+  const edges: DependencyEdge[] = [];
+  const warnings: PlanWarning[] = [];
+  const allIds = new Set(records.map((r) => r.id));
+
+  // Index siblings by parent for series code resolution
+  const byParent = new Map<string, BacklogRecord[]>();
+  const siblingSeriesIndex = new Map<string | undefined, Map<string, BacklogRecord[]>>();
+
+  for (const record of records) {
+    const parentId = record.parentId ?? undefined;
+    if (!byParent.has(parentId)) byParent.set(parentId, []);
+    byParent.get(parentId)!.push(record);
+
+    if (!siblingSeriesIndex.has(parentId)) siblingSeriesIndex.set(parentId, new Map());
+  }
+
+  // Build series code index (first token of title = series code, e.g., "B2: ...")
+  for (const [parentId, siblings] of byParent) {
+    const index = siblingSeriesIndex.get(parentId)!;
+    for (const sibling of siblings) {
+      const title = sibling.title ?? '';
+      const match = /^([A-Z]\d{1,3}):/.exec(title);
+      if (match) {
+        const code = match[1];
+        if (!index.has(code)) index.set(code, []);
+        index.get(code)!.push(sibling);
+      }
+    }
+  }
+
+  // Extract prose dependencies from each record
+  for (const record of records) {
+    const proseRefs = extractProseDependencies(record.description);
+
+    for (const ref of proseRefs) {
+      let targetId: string | null = null;
+
+      if (ref.kind === 'issue') {
+        // Issue ID reference
+        const parsed = parseTaskId(ref.target);
+        if (parsed) {
+          targetId = parsed.taskId;
+          if (!allIds.has(targetId)) {
+            warnings.push({
+              taskId: record.id,
+              kind: 'prose_reference_unresolved',
+              message: `Unresolved prose reference: "${ref.verb} ${ref.target}" references unknown task`,
+              evidence: ref.evidence,
+            });
+            continue;
+          }
+        } else {
+          warnings.push({
+            taskId: record.id,
+            kind: 'prose_reference_unresolved',
+            message: `Invalid prose reference: "${ref.verb} ${ref.target}" is not a valid issue ID`,
+            evidence: ref.evidence,
+          });
+          continue;
+        }
+      } else if (ref.kind === 'series') {
+        // Series code reference
+        if (!record.parentId) {
+          warnings.push({
+            taskId: record.id,
+            kind: 'prose_reference_unresolved',
+            message: `Unresolved prose reference: "${ref.verb} ${ref.target}" is a series code but task has no parent`,
+            evidence: ref.evidence,
+          });
+          continue;
+        }
+
+        const seriesIndex = siblingSeriesIndex.get(record.parentId) ?? new Map();
+        const matches = seriesIndex.get(ref.target) ?? [];
+
+        if (matches.length === 0) {
+          warnings.push({
+            taskId: record.id,
+            kind: 'prose_reference_unresolved',
+            message: `Unresolved prose reference: "${ref.verb} ${ref.target}" does not match any sibling`,
+            evidence: ref.evidence,
+          });
+          continue;
+        }
+
+        if (matches.length > 1) {
+          warnings.push({
+            taskId: record.id,
+            kind: 'prose_reference_ambiguous',
+            message: `Ambiguous prose reference: "${ref.verb} ${ref.target}" matches ${matches.length} siblings`,
+            evidence: ref.evidence,
+          });
+          continue;
+        }
+
+        targetId = matches[0]!.id;
+
+        // Self-reference check
+        if (targetId === record.id) {
+          warnings.push({
+            taskId: record.id,
+            kind: 'prose_reference_unresolved',
+            message: `Invalid prose reference: "${ref.verb} ${ref.target}" references itself`,
+            evidence: ref.evidence,
+          });
+          continue;
+        }
+      }
+
+      if (targetId) {
+        // Check for duplicate edge
+        const duplicate = edges.some(
+          (e) => e.type === 'depends_on' && e.from === targetId && e.to === record.id && e.source === 'prose',
+        );
+        if (!duplicate) {
+          edges.push({
+            type: 'depends_on',
+            from: targetId,
+            to: record.id,
+            source: 'prose',
+            reason: ref.evidence,
+          });
+        }
+      }
+    }
+  }
+
+  return { edges, warnings };
+}
+
+/** Extract operator holds from the `wm:hold` label. */
+export function extractOperatorHolds(records: BacklogRecord[]): Record<string, { note?: string }> {
+  const holds: Record<string, { note?: string }> = {};
+  for (const record of records) {
+    if (record.labels?.includes('wm:hold')) {
+      holds[record.id] = { note: undefined }; // Note is not set — no per-issue label comment yet
+    }
+  }
+  return holds;
+}
+
+/** Extract plan warnings for unmet preconditions when no blocker or hold is in place. */
+export function extractPlanWarnings(
+  records: BacklogRecord[],
+  blockedTaskIds: Set<string>,
+  operatorHolds: Record<string, { note?: string }>,
+): PlanWarning[] {
+  const warnings: PlanWarning[] = [];
+  const preconditionPatterns = [/\bremoval criterion\b/i, /\bdecide\b/i, /\bafter \d+ days?\b/i];
+
+  const seenTaskIds = new Set<string>();
+
+  for (const record of records) {
+    if (blockedTaskIds.has(record.id) || operatorHolds[record.id]) {
+      continue; // Task is already blocked or held
+    }
+
+    if (seenTaskIds.has(record.id)) {
+      continue; // Already warned about this task
+    }
+
+    const text = record.description ?? '';
+    for (const pattern of preconditionPatterns) {
+      const match = pattern.exec(text);
+      if (match) {
+        warnings.push({
+          taskId: record.id,
+          kind: 'subjective_precondition',
+          message: `Unmet precondition: task description mentions "${match[0]}"`,
+          evidence: text.substring(Math.max(0, match.index - 50), Math.min(text.length, match.index + match[0].length + 50)),
+        });
+        seenTaskIds.add(record.id);
+        break;
+      }
+    }
+  }
+
+  return warnings;
+}
+
 export function buildQueuePlan(edges: DependencyEdge[], result: PlanResult): QueuePlan {
   const normalizeId = (id: string) => id.trim().toUpperCase();
   const knownTaskIds = new Set(result.queues.map((queue) => normalizeId(queue.taskId)));
@@ -302,12 +500,15 @@ export function selectLaunchSet(
       // No touchSetStatus on plan (non-grounded path) — fall back to meta
       touchSetKnown = meta?.touchSetKnown !== false;
     }
+    // Operator hold precedence: plan.operatorHolds > meta.operatorHoldReason
+    const planHold = plan.operatorHolds?.[id];
+    const operatorHoldReason = planHold ? (planHold.note ?? '') : meta?.operatorHoldReason;
     return {
       id,
       score: meta?.score ?? 0,
       priority: meta?.priority ?? 0,
       touchSetKnown,
-      operatorHoldReason: meta?.operatorHoldReason,
+      operatorHoldReason,
     };
   });
 
