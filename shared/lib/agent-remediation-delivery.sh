@@ -43,7 +43,11 @@ agent_remediation_deliver() {
   [[ -n "$win" ]] || return 0
 
   # Check deduplication: have we already notified for this dedup key?
-  notified=$(jq -r ".deliveredKeys.\"$dedup_key\" // empty" "$artifact_path" 2>/dev/null || true)
+  # The write side uses jq variable substitution (`.deliveredKeys[$dedupKey]`),
+  # so the read must do the same — `.deliveredKeys."$k"` is literal field
+  # access and would never match.
+  notified=$(jq -r --arg dedupKey "$dedup_key" \
+    '.deliveredKeys[$dedupKey] // empty' "$artifact_path" 2>/dev/null || true)
   [[ -z "$notified" ]] || return 0
 
   slug="$(basename "$feature_dir")"
@@ -72,9 +76,11 @@ agent_remediation_deliver() {
     attempts="${WAVEMILL_PANE_MESSAGE_LAST_ATTEMPTS:-1}"
     detail="${WAVEMILL_PANE_MESSAGE_LAST_DETAIL:-}"
 
-    # Record successful delivery on the artifact with dedup key
+    # Record successful delivery on the artifact with dedup key.
+    # `.deliveredKeys[$dedupKey]` uses jq variable substitution so the written
+    # key is the resolved value, not a literal `$dedupKey` field.
     state_mutate "$artifact_path" \
-      ".deliveredAt = \$deliveredAt | .deliveryStatus = \$deliveryStatus | .deliverySignal = \$deliverySignal | .deliveryDetail = \$deliveryDetail | .deliveryTarget = \$deliveryTarget | .deliveryAttempts = \$deliveryAttempts | .deliveredKeys.\"\$dedupKey\" = \$deliveredAt" \
+      ".deliveredAt = \$deliveredAt | .deliveryStatus = \$deliveryStatus | .deliverySignal = \$deliverySignal | .deliveryDetail = \$deliveryDetail | .deliveryTarget = \$deliveryTarget | .deliveryAttempts = \$deliveryAttempts | .deliveredKeys[\$dedupKey] = \$deliveredAt" \
       --arg deliveredAt "$now_iso" \
       --arg deliveryStatus "$status" \
       --arg deliverySignal "$signal" \

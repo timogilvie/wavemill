@@ -49,11 +49,25 @@ classify_for_reconciliation() {
 
 # Decide the remediation disposition for a review-gate refusal (HOK-2890).
 # Routes through review-gate-remediation-cli to classify as terminal / code-failure / retryable.
-# Returns the disposition class on stdout.
+# Returns the disposition class on stdout. CLI stderr is mirrored into the
+# mill log so a broken CLI surfaces instead of silently looping on the
+# retryable fallback. The fallback matches the pre-HOK-2890 "missing review
+# artifact → retryable" branch: review_result_infra_failure returned true for
+# a missing file, which routed to relaunch_review_after_infra_recovery.
 review_gate_decide_disposition() {
-  local state_dir="$1"
-  (cd "$REPO_DIR" && wavemill_run_tool "review-gate-remediation-cli.ts" \
-    decide --state-dir "$state_dir" 2>/dev/null) || echo "retryable"
+  local state_dir="$1" result cli_err cli_rc
+  cli_err="$(mktemp 2>/dev/null || echo "/tmp/review-gate-cli.$$.err")"
+  result=$(cd "$REPO_DIR" && wavemill_run_tool "review-gate-remediation-cli.ts" \
+    decide --state-dir "$state_dir" 2>"$cli_err")
+  cli_rc=$?
+  if [[ $cli_rc -ne 0 ]]; then
+    local err_body=""
+    [[ -s "$cli_err" ]] && err_body="$(head -c 400 "$cli_err" 2>/dev/null)"
+    log_warn "review-gate-remediation-cli exited $cli_rc for $state_dir${err_body:+: ${err_body}}; defaulting to retryable"
+    result="retryable"
+  fi
+  rm -f "$cli_err" 2>/dev/null || true
+  echo "$result"
 }
 
 # Generate a dedup key for review-gate findings. Keyed on review-head SHA
