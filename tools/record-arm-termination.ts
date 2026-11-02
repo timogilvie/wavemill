@@ -9,7 +9,8 @@
  */
 
 import { parseArgs } from 'node:util';
-import { recordArmTermination } from '../shared/lib/arm-termination.ts';
+import { recordArmTermination, stampTermination } from '../shared/lib/arm-termination.ts';
+import { mutateWorkflowState } from '../shared/lib/workflow-state.ts';
 import { ARM_FAILURE_KINDS } from '../shared/lib/arm-failure-taxonomy.ts';
 import { runTool } from '../shared/lib/tool-runner.ts';
 
@@ -77,8 +78,17 @@ runTool({
     if (stampOnly) {
       // Fallback: stamp only, no records (D5)
       if (!stateFile) throw new Error('--state-file required for --stamp-only');
-      // TODO: Implement stamp-only path
-      console.log(JSON.stringify({ action: 'stamp-only', issue }, null, 2));
+      await mutateWorkflowState(stateFile, (state) => {
+        const task = state.tasks[issue];
+        if (!task) throw new Error(`task ${issue} is not present in workflow state`);
+        stampTermination(task, {
+          repoDir: process.cwd(), stateFile, issueId: issue, stage, model,
+          failureKind: kind, detail: detail || abortReason || '', nextAction,
+          actor: actor as any, evidencePath: evidence, scope: scope as 'single' | 'pair',
+        });
+        return state;
+      });
+      console.log(JSON.stringify({ action: 'stamp-only', issue, failureKind: kind }, null, 2));
       return;
     }
 

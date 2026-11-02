@@ -8,7 +8,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { basename, dirname, resolve } from 'node:path';
 import {
   classifyArmFault,
@@ -22,7 +22,7 @@ import { canonicalFailureKind } from './failure-policy.ts';
 import { appendArmReliabilityRecord, buildArmReliabilityRecord, type ArmReliabilityRecord } from './arm-reliability.ts';
 import { mutateWorkflowState, type WorkflowState, type TaskRecord } from './workflow-state.ts';
 import { buildUnscoredEvalRecord } from './eval.ts';
-import { appendEvalRecord } from './eval-persistence.ts';
+import { appendEvalRecord, readEvalRecords } from './eval-persistence.ts';
 import { triggerHokusaiSubmission } from './hokusai-submission-trigger.ts';
 
 const CHALLENGE_ABORTED_FILENAME = '.challenge-aborted.json';
@@ -75,6 +75,42 @@ export interface ArmTerminationDeps {
   triggerHokusaiSubmission?: (record: any, opts: any) => Promise<{ entryId?: string } | null>;
 }
 
+function terminationIdFor(input: RecordArmTerminationInput, evidence?: string): string {
+  // The recorder can be retried after any downstream append fails. Keep the id
+  // stable across those retries so every append-only sink can de-duplicate.
+  return createHash('sha256').update(JSON.stringify({
+    issueId: input.issueId,
+    failureKind: canonicalFailureKind(input.failureKind) ?? input.failureKind,
+    detail: input.detail,
+    stage: input.stage ?? '',
+    model: input.model ?? '',
+    actor: input.actor,
+    evidence: evidence ?? '',
+  })).digest('hex');
+}
+
+function stageResultPath(featureDir: string, stage: string): string {
+  const normalized = stage === 'implementation' ? 'coding' : stage;
+  return `${featureDir}/.${normalized}-result.json`;
+}
+
+function hasExecutedModelEvidence(input: RecordArmTerminationInput): boolean {
+  if (!input.featureDir || !input.stage || !input.model) return false;
+  const resultPath = stageResultPath(input.featureDir, input.stage);
+  if (!existsSync(resultPath)) return false;
+  try {
+    const result = JSON.parse(readFileSync(resultPath, 'utf-8')) as Record<string, unknown>;
+    const artifacts = result.artifacts as Record<string, unknown> | undefined;
+    const executed = typeof result.executedModel === 'string' ? result.executedModel
+      : typeof result.model === 'string' ? result.model
+        : typeof artifacts?.executedModel === 'string' ? artifacts.executedModel
+          : typeof artifacts?.model === 'string' ? artifacts.model : undefined;
+    return executed === input.model;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Validate input and return errors, or empty array if valid.
  * The kind must be known, and model-fault kinds require evidence.
@@ -101,6 +137,12 @@ export function validateTerminationInput(input: RecordArmTerminationInput): Vali
       errors.push({
         field: 'evidencePath',
         message: `evidence file does not exist: "${input.evidencePath}"`,
+      });
+    }
+    if (!hasExecutedModelEvidence(input)) {
+      errors.push({
+        field: 'model',
+        message: 'model-fault termination requires matching executed-model evidence in the stage result',
       });
     }
   }
@@ -153,7 +195,6 @@ export async function recordArmTermination(
     return { error: 'validation failed', validationErrors: errors };
   }
 
-  const terminationId = randomUUID();
   const faultClass = classifyArmFault({ failureKind: input.failureKind });
   const qualitySignalEligible = isModelQualitySignal(faultClass);
   const readFile = deps?.readFile ?? ((p: string) => readFileSync(p, 'utf-8'));
@@ -172,6 +213,7 @@ export async function recordArmTermination(
       evidencePath = `hash:${hashFn(content)}`;
     }
   }
+  const terminationId = terminationIdFor(input, evidencePath);
 
   let taskSnapshot: TaskRecord | undefined;
   // Step 1: Stamp state (if stateFile provided)
@@ -210,6 +252,12 @@ export async function recordArmTermination(
   if (input.featureDir) {
     artifactPath = `${input.featureDir}/${CHALLENGE_ABORTED_FILENAME}`;
     const artifact = {
+      // Preserve the monitor artifact contract used by archive/restore.
+      pairId: taskSnapshot?.challengePairId ?? input.issueId,
+      role: taskSnapshot?.challengeRole,
+      model: input.model,
+      abortedAt: input.now?.toISOString() ?? new Date().toISOString(),
+      budgetExhausted: input.budgetExhausted ?? undefined,
       reason: formatTerminationReason(input.failureKind),
       actor: input.actor,
       detail: input.detail,
@@ -248,6 +296,13 @@ export async function recordArmTermination(
   let evalRecordId: string | undefined;
   try {
     if (qualitySignalEligible && input.model && input.stage) {
+      const existing = readEvalRecords({ repoDir: input.repoDir }).find((record) =>
+        (record.metadata as Record<string, unknown> | undefined)?.terminationId === terminationId,
+      );
+      if (existing) {
+        evalRecordId = existing.id;
+        return { terminationId, reason: formatTerminationReason(input.failureKind), faultClass, qualitySignalEligible, reliabilityRecordId, evalRecordId };
+      }
       const evalRecord = await buildUnscoredEvalRecord({
         taskPrompt: input.detail || `Arm termination for ${input.issueId}`,
         prReviewOutput: '',

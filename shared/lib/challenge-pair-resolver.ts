@@ -16,6 +16,7 @@ import type { ForkIdentity, InvalidChallengeReason } from './challenge-execution
 import { readForkIdentity } from './fork-identity.ts';
 import { challengerTaskKey } from './task-identity.ts';
 import { mutateWorkflowState } from './workflow-state.ts';
+import { recordArmTermination } from './arm-termination.ts';
 import {
   getSiblingBranch,
   classifyPairUnresolvableState,
@@ -588,18 +589,14 @@ function describeStalledArm(task: TaskEvalState): string {
  */
 async function stampStalledArm(repoDir: string, task: TaskEvalState, now?: () => Date): Promise<void> {
   const statePath = join(repoDir, '.wavemill', 'workflow-state.json');
-  const timestamp = (now ?? (() => new Date()))().toISOString();
-  await mutateWorkflowState(statePath, (current) => {
-    const entry = current.tasks?.[task.issueId];
-    if (!entry || (typeof entry.challengeAborted === 'string' && entry.challengeAborted)) {
-      return current;
-    }
-    entry.challengeAborted = SIBLING_STALLED_ABORT_REASON;
-    entry.challengeAbortedDetail = describeStalledArm(task);
-    entry.challengeAbortedStage = task.phase ?? task.challengeStage ?? null;
-    entry.updated = timestamp;
-    return current;
+  const featureDir = task.worktree && task.slug ? join(task.worktree, 'features', task.slug) : undefined;
+  const result = await recordArmTermination({
+    repoDir, stateFile: statePath, issueId: task.issueId, featureDir,
+    stage: task.phase ?? task.challengeStage ?? undefined,
+    model: task.model ?? undefined,
+    failureKind: 'sibling-stalled', detail: describeStalledArm(task), actor: 'resolver', now: now?.(),
   });
+  if ('error' in result) throw new Error(`could not record stalled arm: ${result.error}`);
 }
 
 function isPastOrphanGrace(task: TaskEvalState, now: () => Date): boolean {

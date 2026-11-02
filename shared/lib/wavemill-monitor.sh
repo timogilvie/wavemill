@@ -1152,7 +1152,14 @@ challenge_abort_pair() {
         --stage "$(challenge_stage_for_launch_env "$stage")" --model "${model:-unknown}" \
         --failure-kind "$failure_kind" --detail "$detail" --next-action "$next_action" \
         --actor monitor --scope "$scope"
-    ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
+    ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || (
+      log_warn "arm termination recorder failed; stamping terminal state only"
+      cd "${WAVEMILL_RELIABILITY_REPO_DIR:-$REPO_DIR}" && wavemill_run_tool "$tool" \
+        --issue "$issue" --state-file "${STATE_FILE:-}" \
+        --stage "$(challenge_stage_for_launch_env "$stage")" --model "${model:-unknown}" \
+        --failure-kind "$failure_kind" --detail "$detail" --next-action "$next_action" \
+        --actor monitor --scope "$scope" --stamp-only
+    ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || return 1
   fi
 
   # HOK-3155: trip the credit circuit for both canonical reason spellings. The

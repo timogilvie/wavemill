@@ -352,6 +352,7 @@ TESTS=(
   shared/lib/settled-attempt-readers.test.ts
   shared/lib/state-invariants-settlement.test.ts
   tools/check-settled-attempt.test.ts
+  tools/check-arm-termination.test.ts
   tools/validate-task-record-write.test.ts
   shared/lib/job-tracker.test.ts
   shared/lib/session-gh-cache.test.ts

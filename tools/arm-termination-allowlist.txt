@@ -1,4 +1,4 @@
 # arm-termination allowlist: exception entries for cleanup markers and historical code
 # Format: path [count]  # reason
 
-shared/lib/challenge-pair-resolver.ts 2  # cleanup markers for superseded/retired pair rows predate the recorder and are not terminal attribution writes
+shared/lib/challenge-pair-resolver.ts 1  # cleanup marker for a superseded pair row; not a terminal attribution write
