@@ -1,0 +1,4 @@
+# arm-termination allowlist: exception entries for cleanup markers and historical code
+# Format: path [count]  # reason
+
+shared/lib/challenge-pair-resolver.ts 1  # markChallengerSupersededForPrimaryMerge writes a cleanup marker (primary merged), not a termination; HOK-3337 row 1.50
