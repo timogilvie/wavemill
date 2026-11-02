@@ -1,4 +1,5 @@
 import { isSafePattern } from '../permission-patterns.ts';
+import type { ParsedCommand } from './command-argv.ts';
 
 export type CommandClass = 'safe' | 'dangerous';
 
@@ -8,18 +9,15 @@ export interface CommandClassification {
   rejectionReason?: 'empty-command' | 'dangerous-command-pattern';
 }
 
-function normalizeCommand(command: string | readonly string[]): string {
-  if (typeof command === 'string') {
-    return command.trim();
-  }
-  return command.join(' ').trim();
-}
-
 /**
- * Classify a command using `permission-patterns.ts` as the single safety dialect.
+ * Classify a parsed command using `permission-patterns.ts` as the single
+ * safety dialect. The caller supplies the one `ParsedCommand` produced by
+ * `parseCommandArgv` (HOK-3383); the classifier never re-tokenises a raw
+ * string. The normalised form is `argv.join(' ')`, which is what the pattern
+ * table matches.
  */
-export function classifyCommand(command: string | readonly string[]): CommandClassification {
-  const normalizedCommand = normalizeCommand(command);
+export function classifyCommand(parsed: ParsedCommand): CommandClassification {
+  const normalizedCommand = parsed.argv.join(' ').trim();
   if (normalizedCommand.length === 0) {
     return {
       commandClass: 'dangerous',
