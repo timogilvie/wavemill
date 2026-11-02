@@ -69,6 +69,141 @@ import {
   type ScratchPrepRunner,
 } from './tend-scratch-prep.ts';
 
+// HOK-3338 queue event integration
+import { appendQueueEvent, type QueueEvent } from './queue-events.ts';
+
+/**
+ * Create and emit a queue event
+ * @param eventType - Type of queue event
+ * @param repoDir - Repository directory
+ * @param options - Event-specific options
+ */
+async function emitQueueEvent(
+  eventType: QueueEvent['eventType'],
+  repoDir: string,
+  options: {
+    eventId?: string;
+    prNumber?: number;
+    headSha?: string;
+    candidateId?: string;
+    attempt?: number;
+    actor?: string;
+    executedModel?: string;
+    laneOutcome?: 'merged' | 'dequeued' | 'abandoned';
+    detail?: Record<string, unknown>;
+  } = {}
+): Promise<void> {
+  // Best-effort emission - never block the main flow
+  try {
+    const event: QueueEvent = {
+      eventId: options.eventId || `${eventType}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      eventType,
+      timestamp: new Date().toISOString(),
+      prNumber: options.prNumber,
+      candidateId: options.candidateId,
+      attempt: options.attempt,
+      actor: options.actor,
+      executedModel: options.executedModel,
+      laneOutcome: options.laneOutcome,
+      detail: options.detail,
+    };
+    
+    await appendQueueEvent(repoDir, event);
+  } catch (error) {
+    // Log but don't throw - event emission should never block main flow
+    console.warn(`Failed to emit queue event ${eventType}:`, error);
+  }
+}
+
+/**
+ * Emit candidate_prepared event
+ */
+async function emitCandidatePrepared(repoDir: string, prNumber: number, candidateId: string): Promise<void> {
+  await emitQueueEvent('candidate_prepared', repoDir, {
+    prNumber,
+    candidateId,
+    detail: { singleEntryCandidate: true }
+  });
+}
+
+/**
+ * Emit enqueued event
+ */
+async function emitEnqueued(repoDir: string, prNumber: number, headSha: string): Promise<void> {
+  await emitQueueEvent('enqueued', repoDir, {
+    prNumber,
+    detail: { headSha }
+  });
+}
+
+/**
+ * Emit check_run_completed event
+ */
+async function emitCheckRunCompleted(repoDir: string, prNumber: number, attempt: number): Promise<void> {
+  await emitQueueEvent('check_run_completed', repoDir, {
+    prNumber,
+    attempt,
+  });
+}
+
+/**
+ * Emit rebase_performed event
+ */
+async function emitRebasePerformed(repoDir: string, prNumber: number, headSha: string): Promise<void> {
+  await emitQueueEvent('rebase_performed', repoDir, {
+    prNumber,
+    detail: { headSha }
+  });
+}
+
+/**
+ * Emit repair_commit_pushed event
+ */
+async function emitRepairCommitPushed(repoDir: string, prNumber: number, actor: string): Promise<void> {
+  await emitQueueEvent('repair_commit_pushed', repoDir, {
+    prNumber,
+    actor,
+  });
+}
+
+/**
+ * Emit rerun_requested event
+ */
+async function emitRerunRequested(repoDir: string, prNumber: number): Promise<void> {
+  await emitQueueEvent('rerun_requested', repoDir, {
+    prNumber,
+  });
+}
+
+/**
+ * Emit ejected event
+ */
+async function emitEjected(repoDir: string, prNumber: number, trigger: string): Promise<void> {
+  await emitQueueEvent('ejected', repoDir, {
+    prNumber,
+    detail: { trigger }
+  });
+}
+
+/**
+ * Emit merged event
+ */
+async function emitMerged(repoDir: string, prNumber: number, headSha: string): Promise<void> {
+  await emitQueueEvent('merged', repoDir, {
+    prNumber,
+    detail: { headSha }
+  });
+}
+
+/**
+ * Emit dequeued/abandoned event based on outcome
+ */
+async function emitLaneOutcome(repoDir: string, prNumber: number, outcome: 'dequeued' | 'abandoned'): Promise<void> {
+  await emitQueueEvent(outcome, repoDir, {
+    prNumber,
+  });
+}
+
 export interface TendCandidate {
   number: number;
   title: string;
@@ -688,6 +823,16 @@ export async function selectNextCandidate(options: SelectNextCandidateOptions): 
     emitMillTendDisagreementFinding(options.repoDir, workItem.pr, workItem.metadata, blockedCandidate);
   }
 
+  // Emit candidate_prepared event for each eligible candidate
+  for (const item of eligibleWorkItems) {
+    await emitCandidatePrepared(options.repoDir, item.pr.number, `candidate-${item.pr.number}-${Date.now()}`);
+  }
+
+  // Emit enqueued event for each eligible PR
+  for (const item of eligibleWorkItems) {
+    await emitEnqueued(options.repoDir, item.pr.number, item.pr.headRefOid);
+  }
+
   return {
     integrationHealth,
     eligible,
@@ -1014,6 +1159,9 @@ export async function executeMerge(
             }
             await recordLaneProgressSafe(deps, candidate.number, 'rebase', options.repoDir);
             await recordLaneProgressSafe(deps, candidate.number, 'ci-restart', options.repoDir);
+            
+            // Emit rebase_performed event
+            await emitRebasePerformed(options.repoDir, candidate.number, rebaseResult.headSha);
           }
         } catch (error) {
           return blockUnlessRetryable(worktreePath, 'rebase', outputFromError(error));
@@ -1033,6 +1181,14 @@ export async function executeMerge(
             onPoll: () => emitPhaseProgress('checks-wait'),
           },
         );
+        
+        // Emit check_run_completed event
+        await emitCheckRunCompleted(
+          options.repoDir, 
+          candidate.number, 
+          1 // TODO: Get actual attempt number
+        );
+        
         if (checks.outcome !== 'pass') {
           // A red check is a recognised code failure (blocked for
           // remediation) unless its output is runner/network noise; a wait
@@ -1093,6 +1249,9 @@ export async function executeMerge(
         }
 
         await recordLaneProgressSafe(deps, candidate.number, 'merged', options.repoDir);
+        
+        // Emit merged event
+        await emitMerged(options.repoDir, candidate.number, pushedHeadSha ?? candidate.headSha ?? '');
         try {
           deps.strictBaseRetry.clear(candidate.number, options.repoDir);
         } catch (error) {
