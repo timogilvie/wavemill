@@ -7,21 +7,23 @@
  * State mutation: stampTermination(task, input) (pure, called inside mutateWorkflowState).
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import { basename, dirname, resolve } from 'node:path';
 import {
   classifyArmFault,
   formatTerminationReason,
   isModelQualitySignal,
+  ARM_FAILURE_KINDS,
   type ArmFailureKind,
   type ArmFaultClass,
 } from './arm-failure-taxonomy.ts';
 import { canonicalFailureKind } from './failure-policy.ts';
 import { appendArmReliabilityRecord, buildArmReliabilityRecord, type ArmReliabilityRecord } from './arm-reliability.ts';
-import { appendJsonlRecord } from './jsonl-utils.ts';
 import { mutateWorkflowState, type WorkflowState, type TaskRecord } from './workflow-state.ts';
-import { hashContent } from './string-utils.ts';
+import { buildUnscoredEvalRecord } from './eval.ts';
+import { appendEvalRecord } from './eval-persistence.ts';
+import { triggerHokusaiSubmission } from './hokusai-submission-trigger.ts';
 
 const CHALLENGE_ABORTED_FILENAME = '.challenge-aborted.json';
 const DEFAULT_EVALS_DIR = '.wavemill/evals';
@@ -70,7 +72,7 @@ export interface ArmTerminationDeps {
   hashContent?: (data: string) => string;
   appendReliability?: (input: any, dir?: string) => ArmReliabilityRecord;
   appendEvalRecord?: (record: any, dir?: string) => void;
-  triggerHokusaiSubmission?: (record: any, opts: any) => Promise<{ rowId: string } | null>;
+  triggerHokusaiSubmission?: (record: any, opts: any) => Promise<{ entryId?: string } | null>;
 }
 
 /**
@@ -102,8 +104,6 @@ export function validateTerminationInput(input: RecordArmTerminationInput): Vali
       });
     }
   }
-
-  // TODO: Check model attribution (executionEvidence.status === direct/inherited) when available
 
   return errors;
 }
@@ -157,7 +157,7 @@ export async function recordArmTermination(
   const faultClass = classifyArmFault({ failureKind: input.failureKind });
   const qualitySignalEligible = isModelQualitySignal(faultClass);
   const readFile = deps?.readFile ?? ((p: string) => readFileSync(p, 'utf-8'));
-  const hashFn = deps?.hashContent ?? ((d: string) => hashContent(d));
+  const hashFn = deps?.hashContent ?? ((d: string) => createHash('sha256').update(d).digest('hex'));
 
   // Prepare evidence path (repo-relative or content hash for out-of-repo)
   let evidencePath: string | undefined;
@@ -173,12 +173,14 @@ export async function recordArmTermination(
     }
   }
 
+  let taskSnapshot: TaskRecord | undefined;
   // Step 1: Stamp state (if stateFile provided)
   if (input.stateFile) {
     try {
       await mutateWorkflowState(input.stateFile, (state: WorkflowState) => {
         const task = state.tasks[input.issueId];
         if (task) {
+          taskSnapshot = { ...task };
           stampTermination(task, input);
           // If pair scope, also stamp the peer
           if (input.scope === 'pair' && task.challengePairId) {
@@ -195,6 +197,7 @@ export async function recordArmTermination(
             }
           }
         }
+        return state;
       });
     } catch (err) {
       // State stamp is critical; if it fails, do not continue
@@ -217,15 +220,18 @@ export async function recordArmTermination(
       evidence: evidencePath,
       timestamp: input.now?.toISOString() ?? new Date().toISOString(),
     };
-    // TODO: Write artifact (append jsonl or json)
+    mkdirSync(dirname(artifactPath), { recursive: true });
+    writeFileSync(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
   }
 
   // Step 3: Append reliability record (D1)
   const appendReliability = deps?.appendReliability ?? appendArmReliabilityRecord;
   const reliabilityInput = {
     issueId: input.issueId,
-    challengePairId: input.failureKind === 'unknown' ? undefined : undefined, // TODO: extract from task
-    challengeRole: undefined, // TODO: extract from task
+    challengePairId: taskSnapshot?.challengePairId,
+    challengeRole: taskSnapshot?.challengeRole === 'primary' || taskSnapshot?.challengeRole === 'challenger'
+      ? taskSnapshot.challengeRole
+      : undefined,
     stage: input.stage || 'unknown',
     model: input.model || 'unknown',
     abortReason: formatTerminationReason(input.failureKind),
@@ -242,11 +248,45 @@ export async function recordArmTermination(
   let evalRecordId: string | undefined;
   try {
     if (qualitySignalEligible && input.model && input.stage) {
-      // TODO: Build failure eval record
-      // const evalRecord = buildArmTerminationEvalRecord(...);
-      // appendEvalRecord(evalRecord);
-      // evalRecordId = evalRecord.id;
-      // TODO: triggerHokusaiSubmission(evalRecord, { repoDir: input.repoDir });
+      const evalRecord = await buildUnscoredEvalRecord({
+        taskPrompt: input.detail || `Arm termination for ${input.issueId}`,
+        prReviewOutput: '',
+        issueId: input.issueId,
+        metadata: {
+          terminationId,
+          failureKind: input.failureKind,
+          faultClass,
+          actor: input.actor,
+          evidence: evidencePath,
+          stage: input.stage,
+        },
+      }, {
+        failureReason: 'pr_diff_unavailable',
+        rationale: input.detail || `Terminal ${input.failureKind} recorded by ${input.actor}`,
+        diagnostic: { terminationId, failureKind: input.failureKind },
+      }, { success: false });
+      // The evaluated model is the stage model, not the judge used to create an
+      // unscored record.  This is the value contribution export learns from.
+      evalRecord.modelId = input.model;
+      evalRecord.modelVersion = input.model;
+      evalRecord.challengePairId = taskSnapshot?.challengePairId;
+      evalRecord.challengeStage = input.stage as any;
+      const appendEval = deps?.appendEvalRecord ?? ((record) => appendEvalRecord(record, { repoDir: input.repoDir }));
+      appendEval(evalRecord, input.repoDir);
+      evalRecordId = evalRecord.id;
+      const submit = deps?.triggerHokusaiSubmission ?? triggerHokusaiSubmission;
+      const queued = await submit(evalRecord, { repoDir: input.repoDir });
+      if (queued?.entryId) {
+        return {
+          terminationId,
+          reason: formatTerminationReason(input.failureKind),
+          faultClass,
+          qualitySignalEligible,
+          reliabilityRecordId,
+          evalRecordId,
+          contribution: { rowId: queued.entryId, completionResult: 'failure' },
+        };
+      }
     }
   } catch (err) {
     // Eval step is best-effort (D1); errors are logged but don't undo earlier steps
@@ -265,8 +305,6 @@ export async function recordArmTermination(
 
 /** Check if a kind is known (in ARM_FAILURE_KINDS after canonicalization). */
 function isKnownFailureKind(kind: string): boolean {
-  // Import ARM_FAILURE_KINDS lazily to avoid cycle
-  const { ARM_FAILURE_KINDS } = require('./arm-failure-taxonomy.ts');
   return ARM_FAILURE_KINDS.includes(kind);
 }
 

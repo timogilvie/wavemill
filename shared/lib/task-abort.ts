@@ -13,7 +13,8 @@
 import { existsSync } from 'node:fs';
 import { TASK_ID_RE } from './task-identity.ts';
 import { mutateWorkflowState, readWorkflowState, type TaskRecord } from './workflow-state.ts';
-import type { ArmFailureKind, TerminationActor } from './arm-termination.ts';
+import { recordArmTermination, type ArmFailureKind, type TerminationActor } from './arm-termination.ts';
+import { join } from 'node:path';
 
 export interface AbortTaskResult {
   issue: string;
@@ -93,8 +94,31 @@ export async function abortTaskInState(
     },
   };
 
-  // Delegate state stamp and records to the recorder (D1, HOK-3358)
-  // For now, manually stamp state here; full recorder integration comes in Phase 2
+  const repoDir = opts?.repoDir ?? process.cwd();
+  const featureDir = typeof beforeTask.worktree === 'string' && typeof beforeTask.slug === 'string'
+    ? join(beforeTask.worktree, 'features', beforeTask.slug)
+    : undefined;
+  const termination = await recordArmTermination({
+    repoDir,
+    stateFile,
+    issueId: issue,
+    featureDir,
+    stage: taskString(beforeTask, 'phase') || undefined,
+    model: typeof beforeTask.model === 'string' ? beforeTask.model : (typeof beforeTask.coderModel === 'string' ? beforeTask.coderModel : undefined),
+    failureKind,
+    detail: reason,
+    actor,
+    evidencePath: opts?.evidencePath,
+    now,
+  });
+  if ('error' in termination) {
+    throw new Error(`${termination.error}: ${termination.validationErrors.map((error) => error.message).join('; ')}`);
+  }
+  result.faultClass = termination.faultClass;
+  result.qualitySignalEligible = termination.qualitySignalEligible;
+  result.reliabilityRecordId = termination.reliabilityRecordId;
+  result.evalRecordId = termination.evalRecordId;
+
   await mutateWorkflowState(stateFile, (current) => {
     const task = current.tasks?.[issue];
     if (!task) {
@@ -103,11 +127,6 @@ export async function abortTaskInState(
     task.phase = 'aborted';
     task.status = 'aborted';
     task.abortedReason = reason;
-    // The mill's arm cleanup gate reads challengeAborted, not abortedReason.
-    // Without a non-empty value here the window, worktree and branch are never
-    // reaped, so an aborted arm lingers indefinitely.
-    task.challengeAborted = `terminal_stage_failure:${failureKind}`;
-    task.challengeAbortedDetail = reason;
     task.abortedAt = nowStr;
     task.updated = nowStr;
     // HOK-3312: the shared decider in `decideTerminalTask` reads
@@ -121,12 +140,6 @@ export async function abortTaskInState(
     task.lifecycle = { ...existingLifecycle, schemaVersion: 1, workflowOutcome: 'aborted' };
     return current;
   });
-
-  // TODO: Call recordArmTermination for full attribution (Phase 2)
-  // result.faultClass = ...
-  // result.qualitySignalEligible = ...
-  // result.reliabilityRecordId = ...
-  // result.evalRecordId = ...
 
   return result;
 }

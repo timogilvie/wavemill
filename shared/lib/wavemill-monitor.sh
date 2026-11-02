@@ -1122,7 +1122,7 @@ challenge_abort_scope_for_failure() {
 # pair to it (terminalReason: challenger_challenge_aborted).
 challenge_abort_pair() {
   local issue="$1" feature_dir="$2" win="$3" stage="$4" model="$5" reason="$6" detail="$7" next_action="${8:-}" scope="${9:-pair}"
-  local result_stage pair_id role peer now artifact tmp budget_json
+  local result_stage pair_id role peer budget_json failure_kind tool
   [[ -n "$issue" && -n "$feature_dir" && -n "$stage" && -n "$reason" ]] || return 1
   [[ "$scope" == "single" ]] || scope="pair"
 
@@ -1137,80 +1137,22 @@ challenge_abort_pair() {
       peer="$(task_identity_challenger_key "$pair_id")"
     fi
   fi
-  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
   write_stage_result "$feature_dir" "$result_stage" "failed" "" "$model" "$detail"
 
-  if [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
-    state_mutate "$STATE_FILE" \
-      'def mark($key):
-         if ($key != "" and .tasks[$key] != null)
-         then .tasks[$key].challengeAborted = $reason
-              | .tasks[$key].challengeAbortedDetail = $detail
-              | .tasks[$key].challengeAbortedStage = $stage
-              | (if $nextAction != "" then .tasks[$key].challengeAbortedNextAction = $nextAction else . end)
-              | .tasks[$key].updated = (now | todate)
-         else .
-         end;
-       mark($issue)
-       | (if $scope == "pair" then mark($peer) else . end)
-       | if $pairId != "" and $role != "" then
-           .challengePairAbortions[$pairId][$role] = {
-             reason: $reason,
-             detail: $detail,
-             stage: $stage,
-             issue: $issue,
-             scope: $scope,
-             updated: (now | todate)
-           } + (if $nextAction != "" then {nextAction:$nextAction} else {} end)
-         else . end' \
-      --arg issue "$issue" \
-      --arg peer "${peer:-}" \
-      --arg pairId "${pair_id:-}" \
-      --arg role "$role" \
-      --arg reason "$reason" \
-      --arg detail "$detail" \
-      --arg stage "$(challenge_stage_for_launch_env "$stage")" \
-      --arg nextAction "$next_action" \
-      --arg scope "$scope" >/dev/null 2>&1 || true
-  fi
-
-  mkdir -p "$feature_dir"
-  artifact="$feature_dir/.challenge-aborted.json"
-  tmp="$artifact.tmp.$$"
-  jq -n -S \
-    --arg pairId "${pair_id:-$issue}" \
-    --arg role "$role" \
-    --arg stage "$(challenge_stage_for_launch_env "$stage")" \
-    --arg model "$model" \
-    --arg reason "$reason" \
-    --arg abortedAt "$now" \
-    --arg detail "$detail" \
-    --arg nextAction "$next_action" \
-    --arg budgetExhausted "$budget_json" \
-    '{pairId:$pairId, role:$role, stage:$stage, model:$model, reason:$reason, abortedAt:$abortedAt, detail:$detail}
-     + (if $nextAction == "" then {} else {nextAction:$nextAction} end)
-     + (if $budgetExhausted == "" then {} else {budgetExhausted:($budgetExhausted | fromjson? // null)} end)' \
-    > "$tmp" 2>/dev/null && mv "$tmp" "$artifact" || rm -f "$tmp"
-
-  if [[ -n "${REPO_DIR:-}" && ( "$role" == "primary" || "$role" == "challenger" ) ]]; then
-    local tool
-    tool="$(wavemill_tool_path record-arm-failure.ts)"
-    if [[ -f "$tool" ]]; then
-      (
-        cd "$REPO_DIR" && wavemill_run_tool "$tool" \
-          --repo-dir "${WAVEMILL_RELIABILITY_REPO_DIR:-$REPO_DIR}" \
-          --issue "$issue" \
-          --pair-id "${pair_id:-$issue}" \
-          --role "$role" \
-          --stage "$(challenge_stage_for_launch_env "$stage")" \
-          --model "${model:-unknown}" \
-          --abort-reason "$reason" \
-          --detail "$detail" \
-          --next-action "$next_action" \
-          ${budget_json:+--budget-exhausted-json "$budget_json"}
-      ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
-    fi
+  # The recorder owns the state stamp, abort artifact, reliability row and
+  # quality failure eval.  Preserve the monitor's typed reason by stripping
+  # its envelope before handing it to the canonical ArmFailureKind CLI.
+  failure_kind="${reason##*:}"
+  tool="$(wavemill_tool_path record-arm-termination.ts)"
+  if [[ -n "${REPO_DIR:-}" && -f "$tool" ]]; then
+    (
+      cd "${WAVEMILL_RELIABILITY_REPO_DIR:-$REPO_DIR}" && wavemill_run_tool "$tool" \
+        --issue "$issue" --feature-dir "$feature_dir" --state-file "${STATE_FILE:-}" \
+        --stage "$(challenge_stage_for_launch_env "$stage")" --model "${model:-unknown}" \
+        --failure-kind "$failure_kind" --detail "$detail" --next-action "$next_action" \
+        --actor monitor --scope "$scope"
+    ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
   fi
 
   # HOK-3155: trip the credit circuit for both canonical reason spellings. The

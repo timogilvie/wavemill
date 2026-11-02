@@ -9,8 +9,9 @@
  */
 
 import { parseArgs } from 'node:util';
-import { recordArmTermination, ARM_FAILURE_KINDS } from '../shared/lib/arm-termination.ts';
-import { runTool } from './lib/tool-runner.ts';
+import { recordArmTermination } from '../shared/lib/arm-termination.ts';
+import { ARM_FAILURE_KINDS } from '../shared/lib/arm-failure-taxonomy.ts';
+import { runTool } from '../shared/lib/tool-runner.ts';
 
 const options = {
   'issue': { type: 'string' as const, description: 'Linear issue ID (e.g., HOK-1234)' },

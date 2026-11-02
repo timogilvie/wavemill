@@ -39,10 +39,10 @@ test('operator aborts are not attributed as model or provider quality signals', 
 
   const marker = readTask(file).challengeAborted as string;
   const failureKind = parseAbortFailureKind(marker);
-  assert.equal(failureKind, null, 'operator marker must not parse as a terminal failure kind');
+  assert.equal(failureKind, 'cancelled', 'the default operator abort is a typed cancelled termination');
 
   const faultClass = classifyArmFault({ failureKind, detail: 'operator requested stop' });
-  assert.equal(faultClass, 'unknown-fault');
+  assert.equal(faultClass, 'harness-fault');
   assert.equal(isModelQualitySignal(faultClass), false, 'an operator abort must not count against a model');
 });
 
