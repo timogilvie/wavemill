@@ -111,6 +111,7 @@ render_launch_set_picker() {
   declare -A held_reason_by_id=()
   declare -A held_detail_by_id=()
   declare -A operator_hold_note=()
+  declare -A plan_warning_by_id=()
 
   jq -e . >/dev/null 2>&1 <<<"$queue_plan" || return 1
   if ! [[ "$free_slots" =~ ^[0-9]+$ ]]; then
@@ -174,6 +175,17 @@ render_launch_set_picker() {
     held_reason_by_id["$task_key"]="$hreason"
     held_detail_by_id["$task_key"]="$hdetail"
   done < <(jq -r '.[] | [.id, .reason, (.detail | tojson)] | @tsv' <<<"$held_json" 2>/dev/null)
+
+  # ── Parse plan warnings (⚠ marker for subjective_precondition) ──────
+  local warnings_json
+  warnings_json="$(jq -c '.planWarnings // []' <<<"$launch_set_json" 2>/dev/null || echo '[]')"
+  while IFS=$'\t' read -r wid wkind wmsg; do
+    [[ -n "$wid" ]] || continue
+    if [[ "$wkind" == "subjective_precondition" ]]; then
+      task_key="$(printf '%s' "$wid" | tr '[:lower:]' '[:upper:]')"
+      plan_warning_by_id["$task_key"]="⚠"
+    fi
+  done < <(jq -r '.[] | [.taskId, .kind, .message] | @tsv' <<<"$warnings_json" 2>/dev/null)
 
   # ── Section 3: Held: waiting on (depends_on from plan + held depends_on + operator_hold)
   # Build the dependency queue list, matching the behaviour of the legacy
@@ -395,7 +407,9 @@ render_launch_set_picker() {
     for rec in "${launch_entries[@]}"; do
       IFS='|' read -r task_id _slug title _area _score _blocked <<<"$rec"
       counter=$((counter + 1))
-      output+="$(printf '  %s. %s - %s' "$counter" "$task_id" "$title")"$'\n'
+      task_key="$(printf '%s' "$task_id" | tr '[:lower:]' '[:upper:]')"
+      warning_marker="${plan_warning_by_id[$task_key]:-}"
+      output+="$(printf '  %s. %s%s - %s' "$counter" "$warning_marker" "$task_id" "$title")"$'\n'
       select_lines+="${rec}"$'\n'
     done
   fi
