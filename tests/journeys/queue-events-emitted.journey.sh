@@ -55,17 +55,34 @@ assert_event_type() {
   fi
 }
 
-journey_assert "candidate_prepared event emitted" \
+# Assert all 9 lifecycle events were emitted through the merge flow
+journey_assert "enqueued event emitted when candidate enters queue" \
+  assert_event_type "enqueued"
+journey_assert "candidate_prepared event emitted at merge start" \
   assert_event_type "candidate_prepared"
-journey_assert "check_run_completed event emitted" \
+journey_assert "check_run_completed event emitted when CI checks pass" \
   assert_event_type "check_run_completed"
-journey_assert "merged event emitted" \
+journey_assert "rebase_performed event emitted after rebase" \
+  assert_event_type "rebase_performed"
+journey_assert "repair_commit_pushed event emitted after push" \
+  assert_event_type "repair_commit_pushed"
+journey_assert "rerun_requested event emitted on CI restart" \
+  assert_event_type "rerun_requested"
+journey_assert "merged event emitted on merge success" \
   assert_event_type "merged"
-journey_assert "dequeued event emitted" \
+journey_assert "dequeued event emitted on queue exit" \
   assert_event_type "dequeued"
 
+# Verify event sequence: enqueued should come before candidate_prepared
+enqueued_ts=$(jq -r "select(.eventType == \"enqueued\" and .prNumber == $PR_NUM) | .timestamp" "$EVENTS_LOG" | head -1)
+candidate_prepared_ts=$(jq -r "select(.eventType == \"candidate_prepared\" and .prNumber == $PR_NUM) | .timestamp" "$EVENTS_LOG" | head -1)
+if [[ -n "$enqueued_ts" && -n "$candidate_prepared_ts" ]]; then
+  journey_assert "event sequence: enqueued before candidate_prepared" \
+    [[ "$enqueued_ts" < "$candidate_prepared_ts" ]]
+fi
+
 journey_assert_landed "$ISSUE"
-journey_assert "post-merge eval completed" \
+journey_assert "post-merge eval completed without operator attention" \
   test "$JOURNEY_SAW_ATTENTION" = "0"
 
 journey_finish

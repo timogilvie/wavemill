@@ -688,6 +688,24 @@ export async function selectNextCandidate(options: SelectNextCandidateOptions): 
       blockedCandidate.labels = [...labelSet(workItem.pr)];
     }
     emitMillTendDisagreementFinding(options.repoDir, workItem.pr, workItem.metadata, blockedCandidate);
+    // Emit ejected event when candidates are blocked/removed from eligibility
+    await emitQueueEventBestEffort(
+      blockedCandidate.number,
+      workItem.pr.headRefOid || '',
+      'ejected',
+      options.repoDir,
+      { reason: blockedCandidate.blockReason },
+    );
+  }
+
+  // Emit enqueued event for each newly eligible candidate
+  for (const candidate of eligible) {
+    await emitQueueEventBestEffort(
+      candidate.number,
+      candidate.headSha || '',
+      'enqueued',
+      options.repoDir,
+    );
   }
 
   return {
@@ -1006,6 +1024,8 @@ export async function executeMerge(
             attemptHeadSha = pushedHeadSha;
           }
           if (rebaseResult.rebased) {
+            // Emit repair_commit_pushed event when rebase is pushed
+            await emitQueueEventBestEffort(candidate.number, pushedHeadSha, 'repair_commit_pushed', options.repoDir);
             try {
               await rebindPushedTendHead(candidate.number, candidate.featureDir, candidate.headSha, rebaseResult.headSha, options.repoDir, deps);
             } catch (error) {
@@ -1023,6 +1043,8 @@ export async function executeMerge(
             // Emit rebase_performed event after successful rebase
             await emitQueueEventBestEffort(candidate.number, attemptHeadSha, 'rebase_performed', options.repoDir);
             await recordLaneProgressSafe(deps, candidate.number, 'ci-restart', options.repoDir);
+            // Emit rerun_requested event when CI is restarted after rebase
+            await emitQueueEventBestEffort(candidate.number, attemptHeadSha, 'rerun_requested', options.repoDir);
           }
         } catch (error) {
           return blockUnlessRetryable(worktreePath, 'rebase', outputFromError(error));
