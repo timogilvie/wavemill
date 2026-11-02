@@ -209,12 +209,12 @@ const JOURNEY_NULL_REASON = 'detector-level class; replayed via the incident cyc
 
 /** Classes whose failure block is well-defined from evidence. */
 const STAGE_FAILURE_CLASSES: Partial<Record<IncidentRootCauseClass, {
-  stage: IncidentFixtureFailure['stage'];
+  stage: IncidentFixtureFailure['stage'] | 'metadata-stage';
   failureKind?: string;
-  detailFrom: 'metadata-uncommitted' | 'review-failure-category' | 'log-excerpt' | 'job-reason' | 'metadata-stage' | 'none';
+  detailFrom: 'metadata-uncommitted' | 'review-failure-category' | 'log-excerpt' | 'job-reason' | 'none';
 }>> = {
   arm_died_with_unpushed_work: { stage: 'coding', detailFrom: 'none' },
-  stage_marker_not_advanced: { stage: 'planning', detailFrom: 'metadata-stage' },
+  stage_marker_not_advanced: { stage: 'metadata-stage', detailFrom: 'none' },
   failed_background_job: { stage: 'eval', detailFrom: 'job-reason' },
   active_unpublished_work_stalled: { stage: 'coding', detailFrom: 'none' },
   inspection_required: { stage: 'review', detailFrom: 'review-failure-category' },
@@ -783,9 +783,6 @@ export function deriveFailureEvidence(
     case 'metadata-uncommitted':
       detail = typeof record.metadata?.uncommittedReason === 'string' ? record.metadata.uncommittedReason : '';
       break;
-    case 'metadata-stage':
-      detail = typeof record.metadata?.stage === 'string' ? record.metadata.stage : '';
-      break;
     case 'review-failure-category':
       detail = typeof record.metadata?.failureCategory === 'string' ? record.metadata.failureCategory : '';
       break;
@@ -805,7 +802,12 @@ export function deriveFailureEvidence(
       detail = '';
   }
   detail = sanitiseString(detail, idMap, homeDir, repoDir);
-  const stage = entry.stage;
+  const metadataStage = typeof record.metadata?.stage === 'string' ? record.metadata.stage : null;
+  const stage = entry.stage === 'metadata-stage'
+    ? metadataStage === 'planning' || metadataStage === 'coding' || metadataStage === 'review' || metadataStage === 'ready' || metadataStage === 'tend' || metadataStage === 'eval'
+      ? metadataStage
+      : 'coding'
+    : entry.stage;
   // A recorded stage-failure incident is one a relaunch did not clear — the
   // record's "resolved" lifecycle reflects absence (HOK-3314), not that a
   // retry succeeded. The replay therefore escalates by default; a converter

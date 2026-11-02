@@ -439,14 +439,22 @@ export function runFixture(
 
 export interface IncidentCycleCycleRecord {
   cycle: number;
+  /** Whether this snapshot was taken after an observation, rather than an absence tick. */
+  observed: boolean;
   observedAt: string;
   lifecycle: IncidentLifecycle | null;
+  rootCauseClass: string | null;
+  category: string | null;
+  occurrenceCount: number;
   resolutionReason: string | null;
   recurrenceCount: number;
 }
 
 export interface IncidentCycleResult {
   cycles: IncidentCycleCycleRecord[];
+  rootCauseClass: string | null;
+  category: string | null;
+  lifecycleWhilePresent: IncidentLifecycle | null;
   finalLifecycle: IncidentLifecycle | null;
   resolutionReasonPrefix: string | null;
   occurrenceCount: number;
@@ -519,7 +527,7 @@ export async function runIncidentCycleReplay(fixture: IncidentFixture): Promise<
       if (!sandboxFingerprint && r.incidents.length > 0) {
         sandboxFingerprint = r.incidents[0].fingerprint;
       }
-      cycles.push(await snapshotCycle(cycleIndex, sandboxFingerprint ?? undefined, incidentsDir));
+      cycles.push(await snapshotCycle(cycleIndex, sandboxFingerprint ?? undefined, incidentsDir, candidates.length > 0));
     };
 
     const candidateTemplate = () => buildCandidate(fixture);
@@ -544,10 +552,12 @@ export async function runIncidentCycleReplay(fixture: IncidentFixture): Promise<
     }
 
     const finalCycle = cycles[cycles.length - 1];
-    const occurrenceCount = fixture.observations.length;
-    const recurrences = fixture.observations.filter((o) => o.absentCyclesBefore >= 5).length;
+    const lastObservedCycle = [...cycles].reverse().find((cycle) => cycle.observed);
     return {
       cycles,
+      rootCauseClass: finalCycle?.rootCauseClass ?? null,
+      category: finalCycle?.category ?? null,
+      lifecycleWhilePresent: lastObservedCycle?.lifecycle ?? null,
       finalLifecycle: finalCycle?.lifecycle ?? null,
       resolutionReasonPrefix: finalCycle?.resolutionReason
         ? finalCycle.resolutionReason.startsWith('current_disposition:')
@@ -556,8 +566,8 @@ export async function runIncidentCycleReplay(fixture: IncidentFixture): Promise<
             ? 'not re-observed'
             : null
         : null,
-      occurrenceCount,
-      recurrences,
+      occurrenceCount: finalCycle?.occurrenceCount ?? 0,
+      recurrences: finalCycle?.recurrenceCount ?? 0,
     };
   } finally {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
@@ -583,29 +593,35 @@ async function snapshotCycle(
   cycleIndex: number,
   fingerprint: string | undefined,
   incidentsDir: string,
+  observed: boolean,
 ): Promise<IncidentCycleCycleRecord> {
   const observedAt = new Date().toISOString();
-  if (!fingerprint) return { cycle: cycleIndex, observedAt, lifecycle: null, resolutionReason: null, recurrenceCount: 0 };
+  const empty = (): IncidentCycleCycleRecord => ({ cycle: cycleIndex, observed, observedAt, lifecycle: null, rootCauseClass: null, category: null, occurrenceCount: 0, resolutionReason: null, recurrenceCount: 0 });
+  if (!fingerprint) return empty();
   // `IncidentStore.getIncidents` filters resolved records out, which the
   // replay needs to assert on. Reading the index directly keeps the cycle
   // snapshot straightforward without adding a replay-only store method.
   const indexPath = join(incidentsDir, 'index.json');
-  if (!existsSync(indexPath)) return { cycle: cycleIndex, observedAt, lifecycle: null, resolutionReason: null, recurrenceCount: 0 };
+  if (!existsSync(indexPath)) return empty();
   try {
     const raw = JSON.parse(readFileSync(indexPath, 'utf-8')) as Record<string, ReturnType<typeof createIncidentDraft>>;
     const record = raw[fingerprint];
-    if (!record) return { cycle: cycleIndex, observedAt, lifecycle: null, resolutionReason: null, recurrenceCount: 0 };
+    if (!record) return empty();
     const resolution = record.metadata?.resolution;
     const recurrence = record.metadata?.recurrence;
     return {
       cycle: cycleIndex,
+      observed,
       observedAt: record.lastObservedAt,
       lifecycle: record.lifecycle,
+      rootCauseClass: record.rootCauseClass,
+      category: record.category,
+      occurrenceCount: record.occurrenceCount,
       resolutionReason: typeof resolution?.reason === 'string' ? resolution.reason : null,
       recurrenceCount: typeof recurrence?.count === 'number' ? recurrence.count : 0,
     };
   } catch {
-    return { cycle: cycleIndex, observedAt, lifecycle: null, resolutionReason: null, recurrenceCount: 0 };
+    return empty();
   }
 }
 
@@ -619,8 +635,17 @@ export function assertIncidentCycle(
   expected: IncidentFixtureExpected,
 ): IncidentCycleAssertion {
   const mismatches: string[] = [];
+  if (result.rootCauseClass !== expected.rootCauseClass) {
+    mismatches.push(`rootCauseClass: got=${result.rootCauseClass ?? 'null'} expected=${expected.rootCauseClass}`);
+  }
+  if (result.category !== expected.category) {
+    mismatches.push(`category: got=${result.category ?? 'null'} expected=${expected.category}`);
+  }
   if (result.occurrenceCount !== expected.occurrenceCount) {
     mismatches.push(`occurrenceCount: got=${result.occurrenceCount} expected=${expected.occurrenceCount}`);
+  }
+  if (result.lifecycleWhilePresent !== expected.lifecycleWhilePresent) {
+    mismatches.push(`lifecycleWhilePresent: got=${result.lifecycleWhilePresent ?? 'null'} expected=${expected.lifecycleWhilePresent}`);
   }
   if (result.finalLifecycle !== expected.finalLifecycle) {
     mismatches.push(`finalLifecycle: got=${result.finalLifecycle ?? 'null'} expected=${expected.finalLifecycle}`);

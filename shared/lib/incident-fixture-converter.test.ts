@@ -331,8 +331,8 @@ test('CLI accepts an explicit evidence path outside the default incidents direct
   }
 });
 
-test('tampered expectation fails runRealFixture (fail-before-fix canary)', async () => {
-  // protects: the real-fixture harness can actually fail on an oracle mismatch
+test('tampered expectation fails every incident-cycle oracle assertion', async () => {
+  // protects: the real-fixture harness reads store results rather than re-counting fixture input
   const dir = makeTempDir();
   try {
     const fp = '4'.repeat(64);
@@ -343,13 +343,26 @@ test('tampered expectation fails runRealFixture (fail-before-fix canary)', async
     ]);
     const { record, evidence } = loadIncidentByFingerprint(dir, fp);
     const fixture: IncidentFixture = incidentToFixture(record!, evidence, { fixtureIndex: 1 });
-    // Tamper: say the final lifecycle is active, but the oracle will say resolved.
-    const tampered = { ...fixture, expected: { ...fixture.expected, finalLifecycle: 'active' as const } };
+    const tampered = {
+      ...fixture,
+      expected: {
+        ...fixture.expected,
+        rootCauseClass: 'cleanup_retained_by_policy' as const,
+        category: 'product_defect' as const,
+        occurrenceCount: fixture.expected.occurrenceCount + 1,
+        lifecycleWhilePresent: 'active' as const,
+        finalLifecycle: 'active' as const,
+      },
+    };
     const tamperedPath = join(dir, 'tampered.json');
     writeFileSync(tamperedPath, serializeFixture(tampered));
     const { runRealFixture } = await import('./incident-replay-harness.ts');
     const result = await runRealFixture(tamperedPath);
     assert.equal(result.ok, false);
+    assert.ok(result.reason && /rootCauseClass/.test(result.reason));
+    assert.ok(result.reason && /category/.test(result.reason));
+    assert.ok(result.reason && /occurrenceCount/.test(result.reason));
+    assert.ok(result.reason && /lifecycleWhilePresent/.test(result.reason));
     assert.ok(result.reason && /finalLifecycle/.test(result.reason));
   } finally {
     rmSync(dir, { recursive: true, force: true });

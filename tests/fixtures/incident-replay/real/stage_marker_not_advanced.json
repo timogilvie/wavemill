@@ -54,9 +54,9 @@
   ],
   "trailingAbsentCycles": 6,
   "failure": {
-    "stage": "planning",
+    "stage": "coding",
     "failureKind": null,
-    "detail": "coding",
+    "detail": "",
     "survivesRelaunches": "never"
   },
   "convergence": {
