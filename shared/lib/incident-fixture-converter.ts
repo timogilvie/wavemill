@@ -29,7 +29,7 @@ import {
   type IncidentRootCauseClass,
   type IncidentSeverity,
 } from './wavemill-incident-model.ts';
-import { parseTaskId, ISSUE_ID_RE, TASK_ID_RE, TASK_ID_EMBEDDED_GLOBAL_RE } from './task-identity.ts';
+import { parseTaskId, TASK_ID_EMBEDDED_GLOBAL_RE } from './task-identity.ts';
 
 export const INCIDENT_FIXTURE_SCHEMA_VERSION = 'incident-fixture/1';
 
@@ -463,7 +463,7 @@ export function incidentToFixture(
       firstObservedAt: record.firstObservedAt ?? record.createdAt ?? '',
       lastObservedAt: record.lastObservedAt ?? '',
       stateSnapshot: options.stateSnapshotPath ?? null,
-      convertedBy: 'tools/incident-to-fixture.ts',
+      convertedBy: 'tools/incident-to-fixture.ts', // install-paths: allow provenance, not argv
       observationsTruncated: observationsRaw.truncated,
     },
     initialState,
@@ -694,7 +694,7 @@ function rewriteOneId(token: string, map: Map<string, string>): string {
   if (!parsed) return token;
   const primary = map.get(parsed.linearId);
   if (!primary) return token;
-  return parsed.role === 'challenger' ? `${primary}_c` : primary;
+  return parsed.role === 'challenger' ? `${primary}_c` : primary; // allow-task-identity: fixture IDs deliberately use the non-Linear HOK-FIXTURE-N namespace
 }
 
 /** Rewrite every task-id substring in a string using the fixture id map. */
@@ -924,10 +924,9 @@ function assertNoLeaks(fixture: IncidentFixture): void {
   if (/\$HOME/.test(serialised)) throw new Error('fixture contains $HOME after sanitisation');
   // Match a Linear-shaped id that is NOT a substring of HOK-FIXTURE-N
   // (so the leading / trailing boundary rejects an inner dash as well).
-  const scan = /(?<![A-Za-z0-9-])[A-Z][A-Z0-9]*-\d+(?:_c)?(?![A-Za-z0-9-])/g;
+  const scan = /(?<![A-Za-z0-9-])[A-Z][A-Z0-9]*-\d+(?:_c)?(?![A-Za-z0-9-])/g; // allow-task-identity: stricter hyphen boundary prevents matching the suffix of HOK-FIXTURE-N
   for (const match of serialised.matchAll(scan)) {
     const token = match[0];
-    if (!ISSUE_ID_RE.test(token.replace(/_c$/, '')) && !TASK_ID_RE.test(token)) continue;
     const parsed = parseTaskId(token);
     if (!parsed) continue;
     if (!/^HOK-FIXTURE-\d+$/.test(parsed.linearId)) {
