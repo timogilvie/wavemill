@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeLaneStateDir, recordLaneProgress, type LaneProgressEvent } from './merge-queue.ts';
+// allow-queue-event-writers: tend-controller is the primary lifecycle event emitter for merge lane operations
 import { appendQueueEventBestEffort, type QueueEventType } from './queue-events.ts';
 import {
   setWavemillMerged,
@@ -3321,6 +3322,7 @@ async function emitQueueEventBestEffort(
     const stateDir = mergeLaneStateDir(repoDir);
     const attempt = extra?.attempt ? `-attempt-${extra.attempt}` : '';
     const eventId = `${new Date().toISOString()}-pr-${prNumber}-${eventType}${attempt}`;
+    // allow-queue-event-writers: emit lifecycle event for merge lane state transitions
     await appendQueueEventBestEffort(stateDir, {
       eventId,
       eventType: eventType as QueueEventType,
