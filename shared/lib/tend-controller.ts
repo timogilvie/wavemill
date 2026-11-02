@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeLaneStateDir, recordLaneProgress, type LaneProgressEvent } from './merge-queue.ts';
-import { appendQueueEventBestEffort } from './queue-events.ts';
+import { appendQueueEventBestEffort, type QueueEventType } from './queue-events.ts';
 import {
   setWavemillMerged,
   setWavemillMerging,
@@ -3319,10 +3319,11 @@ async function emitQueueEventBestEffort(
 ): Promise<void> {
   try {
     const stateDir = mergeLaneStateDir(repoDir);
-    const eventId = `${new Date().toISOString()}-pr-${prNumber}-${eventType}`;
+    const attempt = extra?.attempt ? `-attempt-${extra.attempt}` : '';
+    const eventId = `${new Date().toISOString()}-pr-${prNumber}-${eventType}${attempt}`;
     await appendQueueEventBestEffort(stateDir, {
       eventId,
-      eventType: eventType as any,
+      eventType: eventType as QueueEventType,
       prNumber,
       headSha,
       ...extra,
