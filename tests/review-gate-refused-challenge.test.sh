@@ -79,6 +79,7 @@ for fn in \
   review_result_infra_failure \
   review_result_failure_category \
   review_result_summary \
+  stage_budget_exhausted_json \
 ; do
   extracted="$(extract_function "$fn")"
   if [[ -z "$extracted" ]]; then
