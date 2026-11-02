@@ -2,9 +2,20 @@
  * CLI wrapper for review-gate remediation disposition (HOK-2890).
  * Called from shell monitor paths to decide how to handle review refusals.
  *
- * Usage: npx tsx tools/review-gate-remediation-cli.ts decide --state-dir /path/to/state [--review-model MODEL] [--plan-scope-path PLAN]
+ * Usage: npx tsx tools/review-gate-remediation-cli.ts decide --state-dir /path/to/state [--review-model MODEL]
  *
- * Outputs JSON on stdout with the disposition decision.
+ * Prints the disposition class on stdout: `terminal`, `code-failure`, or `retryable`.
+ *
+ * When `.review-result.json` carries typed `findings[]` (the post-D7a shape),
+ * disposition is the categorical switch in decideReviewGateRemediation.
+ *
+ * Otherwise (today's production shape), disposition preserves the
+ * pre-HOK-2890 pre-Ready branch: a review artifact whose `failureCategory`
+ * is in the shared infra-failure taxonomy maps to `retryable`; any other
+ * refusing verdict maps to `terminal` (operator attention / park). This is
+ * the same split `review_result_infra_failure` + `review_gate_refusal_is_terminal`
+ * used before this change — kept here so the CLI never collapses an
+ * un-typed failing verdict to `retryable`.
  */
 
 import { readFileSync } from 'node:fs';
@@ -12,13 +23,15 @@ import { join } from 'node:path';
 import process from 'node:process';
 import {
   decideReviewGateRemediation,
+  dispositionFromReviewArtifactSignals,
+  type ReviewArtifactSignals,
   type ReviewGateEvidence,
+  type ReviewGateFinding,
 } from '../shared/lib/review-gate-remediation.ts';
 
 interface CliOptions {
   stateDir?: string;
   reviewModel?: string;
-  planScopePath?: string;
 }
 
 function parseArgs(): CliOptions {
@@ -34,9 +47,6 @@ function parseArgs(): CliOptions {
       case '--review-model':
         options.reviewModel = args[++i];
         break;
-      case '--plan-scope-path':
-        options.planScopePath = args[++i];
-        break;
       default:
         break;
     }
@@ -44,6 +54,27 @@ function parseArgs(): CliOptions {
   }
 
   return options;
+}
+
+interface ReviewResult extends ReviewArtifactSignals {
+  reviewerModel?: string;
+  exitCode?: number;
+  findings?: Array<{
+    category: string;
+    offendingPath?: string;
+    message: string;
+  }>;
+  artifact?: { kind?: string; identity?: string };
+}
+
+function readUnwrapped(review: ReviewResult, key: 'failureCategory' | 'verdict'): string {
+  const artifacts = review.artifacts ?? {};
+  if (artifacts.type === 'review') {
+    return (artifacts[key] ?? review[key] ?? '') as string;
+  }
+  return (
+    (artifacts.review?.[key] ?? artifacts[key] ?? review[key] ?? '') as string
+  );
 }
 
 async function main() {
@@ -62,91 +93,66 @@ async function main() {
   }
 
   try {
-    // Read the review result artifact
-    const reviewResultPath = join(
-      options.stateDir,
-      '.review-result.json',
-    );
-    let reviewResult: {
-      verdict?: string;
-      exitCode?: number;
-      findings?: Array<{
-        category: string;
-        offendingPath?: string;
-        message: string;
-      }>;
-      reviewerModel?: string;
-    } = {
-      findings: [],
-    };
-
+    const reviewResultPath = join(options.stateDir, '.review-result.json');
+    let reviewResult: ReviewResult = {};
+    let haveReviewResult = false;
     try {
       const content = readFileSync(reviewResultPath, 'utf-8');
       reviewResult = JSON.parse(content);
+      haveReviewResult = true;
     } catch {
-      // Review result may not exist yet; continue with empty findings
+      // Review result may not exist yet.
     }
 
-    // Read the scope stop artifact if it exists
     const scopeStopPath = join(options.stateDir, '.review-scope-stop.json');
-    let scopeStop: { findings?: Array<{ category: string; offendingPath?: string; message: string }> } = {
-      findings: [],
-    };
-
+    let scopeStop: { findings?: ReviewGateFinding[] } = {};
+    let haveScopeStop = false;
     try {
       const content = readFileSync(scopeStopPath, 'utf-8');
       scopeStop = JSON.parse(content);
+      haveScopeStop = true;
     } catch {
-      // Scope stop may not exist
+      // Scope stop may not exist (D7a producer not yet landed).
     }
 
-    // Read plan scope allowlist if provided
-    let planScopeAllowlist: Array<{
-      path: string;
-      reason: string;
-      source: string;
-    }> = [];
-    if (options.planScopePath) {
-      try {
-        const content = readFileSync(options.planScopePath, 'utf-8');
-        const planData = JSON.parse(content);
-        if (planData.scopeAllowlist) {
-          planScopeAllowlist = planData.scopeAllowlist;
-        }
-      } catch {
-        // Plan scope may not be available
-      }
-    }
-
-    // Combine findings from both sources (prefer review-result if both exist)
-    const allFindings = [
-      ...(reviewResult.findings || []),
+    const typedFindings: ReviewGateFinding[] = [
+      ...((reviewResult.findings as ReviewGateFinding[] | undefined) || []),
       ...(scopeStop.findings || []),
     ].filter((f) => f && f.category && f.message);
 
-    if (allFindings.length === 0) {
-      console.error('No findings in review result or scope stop');
+    if (typedFindings.length > 0) {
+      const verdict = readUnwrapped(reviewResult, 'verdict');
+      const failureCategory = readUnwrapped(reviewResult, 'failureCategory');
+      const evidence: ReviewGateEvidence = {
+        stage: 'review',
+        stateDir: options.stateDir,
+        headSha: process.env.HEAD_SHA || 'unknown',
+        reviewerModel: options.reviewModel || reviewResult.reviewerModel,
+        verdict,
+        findings: typedFindings,
+        artifact: {
+          kind: 'review-result',
+          identity:
+            reviewResult.artifact?.identity ||
+            `${failureCategory || verdict || 'review'}-${process.env.HEAD_SHA || 'unknown'}`,
+        },
+      };
+
+      const decision = decideReviewGateRemediation(evidence);
+      console.log(decision.disposition);
+      process.exit(0);
+    }
+
+    // No typed findings: fall back to the pre-HOK-2890 artifact-signal split.
+    // Only possible when at least the review artifact exists; without any
+    // artifact we have no evidence to classify from, which is the "no
+    // refusal" case the caller should not have invoked us for.
+    if (!haveReviewResult && !haveScopeStop) {
+      console.error('No review-result.json or review-scope-stop.json to classify');
       process.exit(1);
     }
 
-    const evidence: ReviewGateEvidence = {
-      stage: reviewResult.findings && reviewResult.findings.length > 0 ? 'review' : 'pre-pr-verification',
-      stateDir: options.stateDir,
-      headSha: process.env.HEAD_SHA || 'unknown',
-      reviewerModel: options.reviewModel || reviewResult.reviewerModel,
-      verdict: reviewResult.verdict,
-      findings: allFindings,
-      artifact: {
-        kind: reviewResult.findings ? 'review-result' : 'pre-pr-gate',
-        identity: `review-${Date.now()}`,
-      },
-      planScopeAllowlist,
-    };
-
-    const decision = decideReviewGateRemediation(evidence);
-
-    // Output the disposition as plain text for shell consumption (class:disposition)
-    console.log(decision.disposition);
+    console.log(dispositionFromReviewArtifactSignals(reviewResult));
     process.exit(0);
   } catch (error) {
     console.error('Error:', error instanceof Error ? error.message : error);

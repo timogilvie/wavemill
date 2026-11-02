@@ -3,8 +3,15 @@
  * Preflight guard (HOK-2890): enforce review-gate remediation decision unification.
  *
  * Forbidden:
- * - `isRemediable` function (competing private classifier; use failure-policy)
- * - `notify_review_scope_agent` / `notify_review_rejection_agent` (use shared agent_remediation_deliver)
+ * - `isRemediable` / `isReviewRemediable` / `isGateRemediable` or any
+ *   `canBeRemediated` / `isRecoverable` scoped to review-gate — these are
+ *   competing private classifiers; the one disposition lives in
+ *   `shared/lib/review-gate-remediation.ts`.
+ * - `notify_review_scope_agent` / `notify_review_rejection_agent` — use the
+ *   shared `agent_remediation_deliver` helper.
+ * - `wavemill_pane_send_message` calls introduced for review-gate purposes
+ *   outside `agent-remediation-delivery.sh` — the shared delivery helper is
+ *   the one review-gate transport.
  *
  * Usage: npx tsx tools/check-review-gate-remediation.ts [repoRoot]
  */
@@ -23,6 +30,7 @@ const REVIEW_GATE_REMEDIATION_GUARD: GuardSpec = {
   allowlistFile: 'tools/review-gate-remediation-allowlist.txt',
   invariantPaths: [
     'shared/lib/review-gate-remediation.ts',
+    'shared/lib/review-gate-remediation.test.ts',
     'shared/lib/agent-remediation-delivery.sh',
     'tools/review-gate-remediation-cli.ts',
     'tools/check-review-gate-remediation.ts',
@@ -30,20 +38,31 @@ const REVIEW_GATE_REMEDIATION_GUARD: GuardSpec = {
   patterns: [
     {
       name: 'private-remediability-classifier',
-      description: 'isRemediable is a competing private classifier; use failure-policy.ts classifyFailure instead',
+      description:
+        'isRemediable / isReviewRemediable / isGateRemediable is a competing private classifier; use decideReviewGateRemediation / dispositionFromReviewArtifactSignals.',
       lang: 'ts',
-      re: /function\s+isRemediable\s*\(/,
+      re: /function\s+(?:isRemediable|isReviewRemediable|isGateRemediable|isReviewGateRemediable)\s*\(/,
     },
     {
       name: 'notify-review-scope-agent-reintroduction',
-      description: 'Use the shared agent_remediation_deliver helper in agent-remediation-delivery.sh instead',
+      description:
+        'Use the shared agent_remediation_deliver helper in agent-remediation-delivery.sh instead of a review-scope-specific notifier.',
       lang: 'both',
-      re: /\bnotify_review_scope_agent\b|\bnotify_review_rejection_agent\b/,
+      re: /\bnotify_review_scope_agent\b|\bnotify_review_rejection_agent\b|\bnotify_review_agent\b/,
+    },
+    {
+      name: 'review-gate-pane-send-outside-helper',
+      description:
+        'wavemill_pane_send_message for review-gate purposes must route through shared/lib/agent-remediation-delivery.sh.',
+      lang: 'sh',
+      re: /wavemill_pane_send_message\s+[^\n]*(?:review-gate|review_gate|review-scope-stop|review-gate-remediation)/,
     },
   ],
   remediation: [
-    'The review-gate remediation decision is centralized in shared/lib/review-gate-remediation.ts',
-    'and routed through failure-policy.ts. Agent delivery uses shared/lib/agent-remediation-delivery.sh.',
+    'The review-gate remediation decision is centralized in shared/lib/review-gate-remediation.ts.',
+    'Agent delivery uses shared/lib/agent-remediation-delivery.sh via agent_remediation_deliver.',
+    'Pre-D7a review artifacts without typed findings[] route through',
+    'dispositionFromReviewArtifactSignals, which preserves review_result_infra_failure semantics.',
   ],
 };
 

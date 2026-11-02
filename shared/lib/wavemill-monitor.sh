@@ -56,13 +56,38 @@ review_gate_decide_disposition() {
     decide --state-dir "$state_dir" 2>/dev/null) || echo "retryable"
 }
 
-# Generate a dedup key for review-gate findings, based on head SHA and review result identity.
-# Used to prevent duplicate remediation deliveries for the same finding.
+# Generate a dedup key for review-gate findings. Keyed on review-head SHA
+# recorded on the artifact plus a review-signature derived from
+# verdict + failureCategory (and the typed artifact identity if present).
+# Current production review-result.json shapes do not populate
+# `.artifact.identity`, so the key falls back to the review signature,
+# ensuring a fresh verdict/category combination triggers a new delivery.
 review_gate_dedup_key() {
-  local state_dir="$1" head_sha review_identity
-  head_sha=$(git -C "$state_dir" rev-parse HEAD 2>/dev/null || echo "unknown")
-  review_identity=$(jq -r '.artifact.identity // empty' "$state_dir/.review-result.json" 2>/dev/null || echo "unknown")
-  printf '%s_%s\n' "$head_sha" "$review_identity"
+  local state_dir="$1" review_file head_sha review_identity verdict failure_category sig
+  review_file="$state_dir/.review-result.json"
+  head_sha=$(jq -r '
+    (.artifacts // {}) as $artifacts
+    | (if ($artifacts.type // "") == "review" then $artifacts else ($artifacts.review // {}) end)
+    | (.reviewHeadSha // "")
+  ' "$review_file" 2>/dev/null || echo "")
+  [[ -n "$head_sha" ]] || head_sha="unknown"
+  review_identity=$(jq -r '.artifact.identity // empty' "$review_file" 2>/dev/null || echo "")
+  if [[ -n "$review_identity" ]]; then
+    printf '%s_%s\n' "$head_sha" "$review_identity"
+    return 0
+  fi
+  verdict=$(jq -r '
+    (.artifacts // {}) as $artifacts
+    | (if ($artifacts.type // "") == "review" then $artifacts else ($artifacts.review // {}) end)
+    | (.verdict // "")
+  ' "$review_file" 2>/dev/null || echo "")
+  failure_category=$(jq -r '
+    (.artifacts // {}) as $artifacts
+    | (if ($artifacts.type // "") == "review" then $artifacts else ($artifacts.review // {}) end)
+    | (.failureCategory // "")
+  ' "$review_file" 2>/dev/null || echo "")
+  sig="${verdict:-unknown}:${failure_category:-none}"
+  printf '%s_%s\n' "$head_sha" "$sig"
 }
 
 # Logging functions - defined early so they're available for all error handling

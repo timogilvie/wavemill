@@ -84,9 +84,20 @@ agent_remediation_deliver() {
       --arg dedupKey "$dedup_key" \
       2>/dev/null || true
 
-    # Write condition-keyed attention marker (expires on specified triggers)
+    # Write condition-keyed attention marker (expires on specified triggers).
+    # The HEAD comes from the task worktree, resolved from WORKTREE_ROOT/<slug>
+    # when available (feature_dir only locates the state tree, not a git repo).
+    local worktree_root="${WORKTREE_ROOT:-}"
+    local worktree_path=""
+    if [[ -n "$worktree_root" && -n "$slug" ]]; then
+      worktree_path="${worktree_root}/${slug}"
+    fi
+    local attention_head=""
+    if [[ -n "$worktree_path" ]] && git -C "$worktree_path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      attention_head=$(git -C "$worktree_path" rev-parse HEAD 2>/dev/null || echo "")
+    fi
     write_ready_attention_file "$state_dir" "Remediation action sent to agent: $message" \
-      --head "$(git -C "$(dirname "$state_dir")" rev-parse HEAD 2>/dev/null || echo "")" \
+      --head "$attention_head" \
       --expires-on "$expires_on" --review-artifact || true
 
     return 0
