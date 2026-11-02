@@ -32,6 +32,15 @@ import { join } from 'node:path';
 import { DEFAULT_RETRY_ATTEMPTS, type FailureStage } from './failure-policy.ts';
 import type { TaskRow } from './ledger.ts';
 import { decideRecovery, type RecoveryActionKind, type RecoveryDecision, type RecoveryRetryBudget } from './ledger-recovery.ts';
+import { createIncidentDraft, type IncidentLifecycle } from './wavemill-incident-model.ts';
+import { IncidentStore } from './wavemill-incident-store.ts';
+import { reconcileIncidentCycle } from './incident-reconcile-cycle.ts';
+import {
+  loadIncidentFixture,
+  type IncidentFixture,
+  type IncidentFixtureFailure,
+  type IncidentFixtureExpected,
+} from './incident-fixture-converter.ts';
 
 export const INCIDENT_REPLAY_FAULTS = [
   'host_sleep',
@@ -60,15 +69,27 @@ export interface IncidentReplayFixture {
       status: 'working' | 'idle' | 'waiting' | 'blocked';
     };
     worktreeFiles?: Record<string, string>;
-    hook: {
+    hook?: {
       state: 'working' | 'idle' | 'waiting' | 'blocked';
       event: string;
       writer: 'agent' | 'monitor';
       timestamp: number;
     };
   };
-  fault: IncidentReplayFault;
+  /** Optional coverage label; the data-driven `failure` block drives execution. */
+  fault?: IncidentReplayFault;
   faultParams?: Record<string, unknown>;
+  /**
+   * Declarative replacement for `faultModelFor` (HOK-3231 D2). Required for
+   * the stage recovery replay path. Synthetic fixtures migrated mechanically.
+   */
+  failure?: {
+    stage: FailureStage;
+    failureKind?: string | null;
+    detail: string;
+    survivesRelaunches: number | 'never';
+    progressing?: boolean;
+  };
   convergence: {
     mustMerge?: boolean;
     mustEscalate?: boolean;
@@ -117,9 +138,8 @@ export function loadFixture(path: string): IncidentReplayFixture {
   if (typeof chain !== 'string' || chain.length === 0) {
     throw new Error(`Fixture ${path} missing 'chain'`);
   }
-  const fault = parsed.fault;
-  if (!INCIDENT_REPLAY_FAULTS.includes(fault)) {
-    throw new Error(`Fixture ${path} fault '${fault}' is not one of: ${INCIDENT_REPLAY_FAULTS.join(', ')}`);
+  if (parsed.fault !== undefined && !INCIDENT_REPLAY_FAULTS.includes(parsed.fault)) {
+    throw new Error(`Fixture ${path} fault '${parsed.fault}' is not one of: ${INCIDENT_REPLAY_FAULTS.join(', ')}`);
   }
   const initialState = parsed.initialState;
   if (!initialState || typeof initialState !== 'object') {
@@ -134,6 +154,14 @@ export function loadFixture(path: string): IncidentReplayFixture {
   }
   if (!Number.isFinite(convergence.maxTickCount) || convergence.maxTickCount <= 0) {
     throw new Error(`Fixture ${path} convergence.maxTickCount must be a positive integer`);
+  }
+  if (parsed.failure !== undefined) {
+    const f = parsed.failure as Record<string, unknown>;
+    if (typeof f.detail !== 'string') throw new Error(`Fixture ${path} failure.detail must be a string`);
+    if (typeof f.stage !== 'string') throw new Error(`Fixture ${path} failure.stage must be a string`);
+    if (f.survivesRelaunches !== 'never' && typeof f.survivesRelaunches !== 'number') {
+      throw new Error(`Fixture ${path} failure.survivesRelaunches must be a number or "never"`);
+    }
   }
   return parsed as IncidentReplayFixture;
 }
@@ -165,12 +193,18 @@ export function createSandbox(fixture: IncidentReplayFixture, clock: HarnessCloc
   }));
 
   const hookFile = join(dir, 'hook.json');
+  const hook = fixture.initialState.hook ?? {
+    state: fixture.initialState.task.status,
+    event: 'synthetic',
+    writer: 'agent' as const,
+    timestamp: Math.floor(clock.nowMs / 1000),
+  };
   writeFileSync(hookFile, JSON.stringify({
-    state: fixture.initialState.hook.state,
-    event: fixture.initialState.hook.event,
-    writer: fixture.initialState.hook.writer,
+    state: hook.state,
+    event: hook.event,
+    writer: hook.writer,
     agent: 'claude',
-    timestamp: fixture.initialState.hook.timestamp,
+    timestamp: hook.timestamp,
   }));
 
   return { dir, featureDir, stateFile, hookFile, clock };
@@ -241,38 +275,28 @@ export interface FaultModel {
 }
 
 /**
- * Translate a fixture's environmental fault into the failure evidence a real
- * stage would report. This is the only fixture-specific knowledge; the
- * outcome itself comes from `decideRecovery`.
+ * Translate a fixture's declared `failure` block (HOK-3231 D2) into the
+ * failure evidence a real stage would report. This is the only fixture-
+ * specific knowledge; the outcome itself comes from `decideRecovery`.
+ *
+ * Fixtures with no `failure` block are the no-fault control; the agent is
+ * reported as progressing and no retry is spent.
  */
+export function faultModelFromFixture(fixture: IncidentReplayFixture): FaultModel {
+  const f = fixture.failure;
+  if (!f) return { survivesRelaunches: 0, progressing: true };
+  const survives = f.survivesRelaunches === 'never' ? Infinity : f.survivesRelaunches;
+  return {
+    detail: f.detail,
+    ...(f.failureKind ? { failureKind: f.failureKind } : {}),
+    survivesRelaunches: survives,
+    ...(f.progressing !== undefined ? { progressing: f.progressing } : {}),
+  };
+}
+
+/** @deprecated use {@link faultModelFromFixture}; kept for shim callers. */
 export function faultModelFor(fixture: IncidentReplayFixture): FaultModel {
-  const params = fixture.faultParams ?? {};
-  switch (fixture.fault) {
-    case 'host_sleep':
-      // The agent was suspended mid-stage; the step went silent past its deadline.
-      return { detail: '', survivesRelaunches: 0 };
-    case 'github_head_lag':
-      return {
-        detail: 'handoff rebind refused: head does not match pushed commit',
-        survivesRelaunches: Math.max(0, Math.ceil(Number(params.lagSeconds ?? 180) / 120) - 1),
-      };
-    case 'dropped_connection_push_rebase':
-      // allow-side-effect-ledger: replayed failure text, not a push.
-      return { detail: 'git push failed: ECONNRESET (connection reset by peer)', survivesRelaunches: Math.max(0, Number(params.throwCount ?? 2) - 1) };
-    case 'malformed_model_response':
-      return { failureKind: 'review-malformed-response', detail: `reviewer returned ${String(params.responseKind ?? 'non-json')} output`, survivesRelaunches: Infinity };
-    case 'provider_402_or_429':
-      return params.exhausted
-        ? { detail: '402 This request would exceed your available credits', survivesRelaunches: Infinity }
-        : { detail: '429 Too Many Requests: rate limit exceeded, retry later', survivesRelaunches: 0 };
-    case 'agent_sigkill_mid_stage': {
-      const budget = Number(params.retryBudget ?? 1);
-      return { detail: 'interrupted: coding agent exited without recording a result', survivesRelaunches: budget <= 0 ? Infinity : budget - 1 };
-    }
-    case 'control_no_fault':
-    default:
-      return { survivesRelaunches: 0, progressing: true };
-  }
+  return faultModelFromFixture(fixture);
 }
 
 /** In-memory bounded-retry budget (no backoff — one harness tick is one backoff window). */
@@ -335,7 +359,7 @@ function writeMerged(ctx: SandboxContext): ConvergenceEvidence {
  * terminal settle converges as escalated.
  */
 export function runWithRecoveryLoop(ctx: SandboxContext, fixture: IncidentReplayFixture): RunResult {
-  const model = faultModelFor(fixture);
+  const model = faultModelFromFixture(fixture);
   const retry = createMemoryRetryBudget();
   const actions: RecoveryActionKind[] = [];
   let relaunches = 0;
@@ -407,4 +431,263 @@ export function runFixture(
   } finally {
     try { rmSync(ctx.dir, { recursive: true, force: true }); } catch { /* best effort */ }
   }
+}
+
+// ── real-fixture replay (HOK-3231) ──────────────────────────────────────────
+
+export interface IncidentCycleCycleRecord {
+  cycle: number;
+  observedAt: string;
+  lifecycle: IncidentLifecycle | null;
+  resolutionReason: string | null;
+  recurrenceCount: number;
+}
+
+export interface IncidentCycleResult {
+  cycles: IncidentCycleCycleRecord[];
+  finalLifecycle: IncidentLifecycle | null;
+  resolutionReasonPrefix: string | null;
+  occurrenceCount: number;
+  recurrences: number;
+}
+
+/**
+ * Replay the real-fixture observation timeline through a sandboxed
+ * `IncidentStore` + `reconcileIncidentCycle`. Pure under test: readers are
+ * injected so no `gh` or network IO happens.
+ */
+export async function runIncidentCycleReplay(fixture: IncidentFixture): Promise<IncidentCycleResult> {
+  const dir = mkdtempSync(join(tmpdir(), 'wm-incident-'));
+  const incidentsDir = join(dir, '.wavemill', 'incidents');
+  mkdirSync(incidentsDir, { recursive: true });
+
+  // allow-task-literal: synthetic sandbox state for a single-task fixture, not workflow-state read by production code
+  writeFileSync(join(dir, '.wavemill', 'workflow-state.json'), JSON.stringify({
+    tasks: {
+      [fixture.initialState.task.issue]: {
+        slug: fixture.initialState.task.slug,
+        phase: fixture.initialState.task.phase,
+        status: fixture.initialState.task.status,
+      },
+    },
+  }));
+
+  try {
+    // Fixed start to keep IncidentStore timestamps reproducible within a replay.
+    let nowMs = Date.parse('2026-10-10T10:00:00Z');
+    const store = new IncidentStore(incidentsDir, {
+      escalationThreshold: 3,
+      resolutionAfterCycles: 5,
+      now: () => new Date(nowMs),
+    });
+
+    const cycles: IncidentCycleCycleRecord[] = [];
+    let cycleIndex = 0;
+    const advanceCycle = () => { nowMs += 120_000; cycleIndex += 1; };
+
+    // Injectable readers prevent any `gh` reads from the recovery predicate.
+    const noReaders = {
+      readReview: () => null,
+      readPr: () => null,
+      comparisonSucceeded: () => false,
+      currentHeadEval: () => false,
+    };
+
+    // The in-sandbox fingerprint is derived from the sanitised candidate, so
+    // it differs from the recorded fingerprint; we discover it on first upsert.
+    let sandboxFingerprint: string | null = null;
+    const runCycle = async (candidates: ReturnType<typeof buildCandidate>[]): Promise<void> => {
+      advanceCycle();
+      const r = await reconcileIncidentCycle({
+        store,
+        candidates,
+        cycleComplete: true,
+        repoDir: dir,
+        recoveryReaders: noReaders,
+      });
+      if (!sandboxFingerprint && r.incidents.length > 0) {
+        sandboxFingerprint = r.incidents[0].fingerprint;
+      }
+      cycles.push(await snapshotCycle(cycleIndex, sandboxFingerprint ?? undefined, incidentsDir));
+    };
+
+    const candidateTemplate = () => buildCandidate(fixture);
+
+    for (const obs of fixture.observations) {
+      for (let i = 0; i < obs.absentCyclesBefore; i += 1) {
+        await runCycle([]);
+      }
+      const draft = candidateTemplate();
+      // Attach this cycle's evidence identities (they drive the event-key dedup).
+      draft.evidence = obs.evidence.map((ev) => ({
+        type: ev.type as never,
+        source: ev.source,
+        timestamp: ev.timestamp,
+        redactedData: ev.redactedData,
+        ...(ev.key ? { key: ev.key } : {}),
+      })) as never;
+      await runCycle([draft]);
+    }
+    for (let i = 0; i < fixture.trailingAbsentCycles; i += 1) {
+      await runCycle([]);
+    }
+
+    const finalCycle = cycles[cycles.length - 1];
+    const occurrenceCount = fixture.observations.length;
+    const recurrences = fixture.observations.filter((o) => o.absentCyclesBefore >= 5).length;
+    return {
+      cycles,
+      finalLifecycle: finalCycle?.lifecycle ?? null,
+      resolutionReasonPrefix: finalCycle?.resolutionReason
+        ? finalCycle.resolutionReason.startsWith('current_disposition:')
+          ? 'current_disposition:'
+          : finalCycle.resolutionReason.startsWith('not re-observed')
+            ? 'not re-observed'
+            : null
+        : null,
+      occurrenceCount,
+      recurrences,
+    };
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+}
+
+function buildCandidate(fixture: IncidentFixture): ReturnType<typeof createIncidentDraft> {
+  return createIncidentDraft({
+    taskId: fixture.initialState.task.issue,
+    category: fixture.incident.category,
+    severity: fixture.incident.severity,
+    confidence: fixture.incident.confidence,
+    lifecycle: 'observed',
+    rootCauseClass: fixture.incident.rootCauseClass,
+    summary: fixture.incident.summary,
+    operatorAction: fixture.incident.operatorAction,
+    evidence: [],
+    metadata: { ...fixture.incident.metadata },
+  });
+}
+
+async function snapshotCycle(
+  cycleIndex: number,
+  fingerprint: string | undefined,
+  incidentsDir: string,
+): Promise<IncidentCycleCycleRecord> {
+  const observedAt = new Date().toISOString();
+  if (!fingerprint) return { cycle: cycleIndex, observedAt, lifecycle: null, resolutionReason: null, recurrenceCount: 0 };
+  // `IncidentStore.getIncidents` filters resolved records out, which the
+  // replay needs to assert on. Reading the index directly keeps the cycle
+  // snapshot straightforward without adding a replay-only store method.
+  const indexPath = join(incidentsDir, 'index.json');
+  if (!existsSync(indexPath)) return { cycle: cycleIndex, observedAt, lifecycle: null, resolutionReason: null, recurrenceCount: 0 };
+  try {
+    const raw = JSON.parse(readFileSync(indexPath, 'utf-8')) as Record<string, ReturnType<typeof createIncidentDraft>>;
+    const record = raw[fingerprint];
+    if (!record) return { cycle: cycleIndex, observedAt, lifecycle: null, resolutionReason: null, recurrenceCount: 0 };
+    const resolution = record.metadata?.resolution;
+    const recurrence = record.metadata?.recurrence;
+    return {
+      cycle: cycleIndex,
+      observedAt: record.lastObservedAt,
+      lifecycle: record.lifecycle,
+      resolutionReason: typeof resolution?.reason === 'string' ? resolution.reason : null,
+      recurrenceCount: typeof recurrence?.count === 'number' ? recurrence.count : 0,
+    };
+  } catch {
+    return { cycle: cycleIndex, observedAt, lifecycle: null, resolutionReason: null, recurrenceCount: 0 };
+  }
+}
+
+export interface IncidentCycleAssertion extends AssertionResult {
+  mismatches: string[];
+}
+
+/** Compare the replay result against the fixture's expected oracle. */
+export function assertIncidentCycle(
+  result: IncidentCycleResult,
+  expected: IncidentFixtureExpected,
+): IncidentCycleAssertion {
+  const mismatches: string[] = [];
+  if (result.occurrenceCount !== expected.occurrenceCount) {
+    mismatches.push(`occurrenceCount: got=${result.occurrenceCount} expected=${expected.occurrenceCount}`);
+  }
+  if (result.finalLifecycle !== expected.finalLifecycle) {
+    mismatches.push(`finalLifecycle: got=${result.finalLifecycle ?? 'null'} expected=${expected.finalLifecycle}`);
+  }
+  if ((result.resolutionReasonPrefix ?? null) !== (expected.resolutionReasonPrefix ?? null)) {
+    mismatches.push(`resolutionReasonPrefix: got=${result.resolutionReasonPrefix ?? 'null'} expected=${expected.resolutionReasonPrefix ?? 'null'}`);
+  }
+  if (result.recurrences !== expected.recurrences) {
+    mismatches.push(`recurrences: got=${result.recurrences} expected=${expected.recurrences}`);
+  }
+  return {
+    ok: mismatches.length === 0,
+    ...(mismatches.length > 0 ? { reason: mismatches.join('; ') } : {}),
+    mismatches,
+  };
+}
+
+export interface RealFixtureRunResult {
+  fixturePath: string;
+  cycle: IncidentCycleResult;
+  cycleAssertion: IncidentCycleAssertion;
+  recovery?: RunResult;
+  recoveryAssertion?: AssertionResult;
+  ok: boolean;
+  reason?: string;
+}
+
+/**
+ * Load a converted fixture, run the incident cycle replay (always), run the
+ * stage recovery loop (when a `failure` block is present), assert both, and
+ * clean up. `IncidentCycleAssertion.mismatches` lists every mismatch.
+ */
+export async function runRealFixture(fixturePath: string): Promise<RealFixtureRunResult> {
+  const fixture = loadIncidentFixture(fixturePath);
+  const cycle = await runIncidentCycleReplay(fixture);
+  const cycleAssertion = assertIncidentCycle(cycle, fixture.expected);
+
+  let recovery: RunResult | undefined;
+  let recoveryAssertion: AssertionResult | undefined;
+  if (fixture.failure) {
+    const replayFixture: IncidentReplayFixture = {
+      chain: fixture.chain,
+      incidents: fixture.incidents,
+      initialState: {
+        task: fixture.initialState.task,
+      },
+      failure: {
+        stage: fixture.failure.stage as FailureStage,
+        failureKind: fixture.failure.failureKind,
+        detail: fixture.failure.detail,
+        survivesRelaunches: fixture.failure.survivesRelaunches,
+        ...(fixture.failure.progressing !== undefined ? { progressing: fixture.failure.progressing } : {}),
+      },
+      convergence: fixture.convergence,
+    };
+    const clock = createInjectableClock();
+    const ctx = createSandbox(replayFixture, clock);
+    try {
+      recovery = runWithRecoveryLoop(ctx, replayFixture);
+      recoveryAssertion = assertConverged(recovery, replayFixture);
+    } finally {
+      try { rmSync(ctx.dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  }
+
+  const ok = cycleAssertion.ok && (recoveryAssertion ? recoveryAssertion.ok : true);
+  const reason = ok
+    ? undefined
+    : [cycleAssertion.ok ? null : `cycle: ${cycleAssertion.reason}`, recoveryAssertion && !recoveryAssertion.ok ? `recovery: ${recoveryAssertion.reason}` : null]
+        .filter((x): x is string => !!x)
+        .join('; ');
+  return {
+    fixturePath,
+    cycle,
+    cycleAssertion,
+    ...(recovery ? { recovery } : {}),
+    ...(recoveryAssertion ? { recoveryAssertion } : {}),
+    ok,
+    ...(reason ? { reason } : {}),
+  };
 }

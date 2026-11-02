@@ -87,6 +87,7 @@ Review the diff against the plan and task packet (if provided), but evaluate ONL
    - New control-flow branches with no coverage
    - Removed tests without replacement
    - Mill-core PRs (the `journeys` path filter in `.github/workflows/ci.yml`, e.g. `shared/lib/wavemill-*.sh`, `shared/lib/tend-*.ts`, `shared/lib/ready-*.ts`, `tests/journeys/`, `tests/fakes/`) must pass the journey job (the required Golden Journeys check); a fix for an incident on the plan → merge chain, or for a class a journey already covers, must add or extend a journey in `tests/journeys/`. A missing journey, or a journey removed/skipped without replacement, is a `blocker`.
+   - A PR that fixes an incident recorded in `.wavemill/incidents/` (HOK-3231) must include that incident's evidence as a replay fixture under `tests/fixtures/incident-replay/real/`; the fixture must fail on the base and pass with the fix. A missing fixture, or one that would already pass on the base, is a `blocker` (category `requirements`).
 
 Predicted test failures must stay scoped: if you infer "this will fail tests" from code inspection alone, label it `Hypothesis (not reproduced):` and keep it at `warning` until you have failing output, CI evidence, or a literal fixture mismatch.
 

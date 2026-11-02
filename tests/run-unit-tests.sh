@@ -346,6 +346,8 @@ TESTS=(
   shared/lib/wavemill-incident-recovery.test.ts
   shared/lib/wavemill-incident-projection.test.ts
   shared/lib/wavemill-incident-store.test.ts
+  shared/lib/incident-fixture-converter.test.ts
+  shared/lib/incident-reconcile-cycle.test.ts
   shared/lib/state-mutex.test.ts
   shared/lib/task-record-write-guard.test.ts
   shared/lib/task-settlement.test.ts

@@ -1,0 +1,100 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "failed_background_job",
+  "incidents": [
+    "bc1f955e9a7c77277851a66bc115796fb2c683fd4e603a6a1990118eeead1abe"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-7_c",
+      "slug": "incident-failed-background-job-7",
+      "phase": "coding",
+      "status": "working"
+    },
+    "jobs": [
+      {
+        "status": "failed",
+        "id": "eval-HOK-FIXTURE-7_c-challenger-1439",
+        "kind": "eval",
+        "reason": "eval_not_persisted"
+      }
+    ]
+  },
+  "incident": {
+    "category": "product_defect",
+    "rootCauseClass": "failed_background_job",
+    "severity": "medium",
+    "confidence": "definite",
+    "summary": "eval job eval-HOK-FIXTURE-7_c-challenger-1439 ended failed.",
+    "operatorAction": "Review the managed job result/log evidence and retry or settle the orphaned job through the controller.",
+    "metadata": {
+      "side": "challenger",
+      "resultPath": "~/Dropbox/wavemill/.wavemill/jobs/wavemill/eval-HOK-FIXTURE-7_c-challenger-1439.result.json",
+      "currentDisposition": "confirmed_active",
+      "diagnosedClass": null,
+      "jobId": "eval-HOK-FIXTURE-7_c-challenger-1439",
+      "jobKind": "eval",
+      "logExcerptSource": "persisted_error",
+      "logPath": "~/Dropbox/wavemill/.wavemill/jobs/wavemill/eval-HOK-FIXTURE-7_c-challenger-1439.log",
+      "observedSymptom": "failed_background_job",
+      "pairId": "HOK-FIXTURE-7"
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "job_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-18T12:51:10.907Z",
+          "redactedData": "id=eval-HOK-FIXTURE-7_c-challenger-1439 kind=eval status=failed reason=eval_not_persisted resultMissing=false",
+          "key": "observed:failed_background_job"
+        },
+        {
+          "type": "log_excerpt",
+          "source": "persisted_error",
+          "timestamp": "2026-09-18T12:51:10.907Z",
+          "redactedData": "Troubleshooting:\n  - Run health check: npm run check:review\n  - Enable verbose mode: npx tsx tools/review-changes.ts main --verbose\n  - Check system logs for more details\nTroubleshooting:\n  - Run health check: npm run check:review\n  - Enable verbose mode: npx tsx tools/review-changes.ts main --verbose\n  - Check if service is experiencing issues: https://status.anthropic.com",
+          "key": "observed:failed_background_job"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "failure": {
+    "stage": "coding",
+    "failureKind": null,
+    "detail": "eval_not_persisted",
+    "survivesRelaunches": "never"
+  },
+  "convergence": {
+    "mustEscalate": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  },
+  "journey": "incident-currentness",
+  "expected": {
+    "category": "product_defect",
+    "rootCauseClass": "failed_background_job",
+    "occurrenceCount": 1,
+    "lifecycleWhilePresent": "observed",
+    "finalLifecycle": "observed",
+    "resolutionReasonPrefix": null,
+    "recurrences": 0
+  },
+  "source": {
+    "category": "product_defect",
+    "rootCauseClass": "failed_background_job",
+    "severity": "medium",
+    "confidence": "definite",
+    "recordedLifecycle": "observed",
+    "recordedResolution": null,
+    "occurrenceCount": 1,
+    "firstObservedAt": "2026-09-22T14:18:47.514Z",
+    "lastObservedAt": "2026-09-22T14:18:47.514Z",
+    "stateSnapshot": null,
+    "convertedBy": "tools/incident-to-fixture.ts",
+    "observationsTruncated": false
+  }
+}

@@ -1,0 +1,115 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "arm_parked_awaiting_operator_commit",
+  "incidents": [
+    "3850f21d995612ca1e3f9fd3f96ad8e68f6874c28cb519f88f6e5d8b10242e9b"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-15",
+      "slug": "incident-arm-parked-awaiting-operator-commit-15",
+      "phase": "coding",
+      "status": "working"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "arm_parked_awaiting_operator_commit",
+    "severity": "high",
+    "confidence": "high",
+    "summary": "HOK-FIXTURE-15 coding is parked awaiting an operator commit: coding completed marker detected, but worktree still contains uncommitted coding output",
+    "operatorAction": "Coding parked awaiting operator commit: coding completed marker detected, but worktree still contains uncommitted coding output. Clean the dirty paths, then retry review. The monitor is deliberately holding this task on a dirty tree - do not restart it; run `git status` in ~/Dropbox/wavemill/worktrees/<fixture-slug> first.",
+    "metadata": {
+      "markerMtime": "2026-10-30T14:36:05.718Z",
+      "markerPath": "~/Dropbox/wavemill/worktrees/<fixture-slug>/features/<fixture-slug>/.coding-complete",
+      "uncommittedReason": "coding_output_dirty_tree"
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/worktrees/<fixture-slug>/features/<fixture-slug>/.coding-uncommitted-output.json",
+          "timestamp": "2026-10-30T14:47:30.977Z",
+          "redactedData": "reason=coding_output_dirty_tree firstDirtyPath=shared/lib/deps-install-verdict-guard.ts marker=.coding-complete markerAgeMinutes=11",
+          "key": "parked-coding:HOK-FIXTURE-15:shared/lib/deps-install-verdict-guard.ts"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/worktrees/<fixture-slug>/features/<fixture-slug>/.coding-uncommitted-output.json",
+          "timestamp": "2026-10-30T14:49:42.841Z",
+          "redactedData": "reason=coding_output_dirty_tree firstDirtyPath=shared/lib/deps-install-verdict-guard.ts marker=.coding-complete markerAgeMinutes=14",
+          "key": "parked-coding:HOK-FIXTURE-15:shared/lib/deps-install-verdict-guard.ts"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/worktrees/<fixture-slug>/features/<fixture-slug>/.coding-uncommitted-output.json",
+          "timestamp": "2026-10-30T14:52:03.572Z",
+          "redactedData": "reason=coding_output_dirty_tree firstDirtyPath=shared/lib/deps-install-verdict-guard.ts marker=.coding-complete markerAgeMinutes=16",
+          "key": "parked-coding:HOK-FIXTURE-15:shared/lib/deps-install-verdict-guard.ts"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/worktrees/<fixture-slug>/features/<fixture-slug>/.coding-uncommitted-output.json",
+          "timestamp": "2026-10-30T14:54:16.082Z",
+          "redactedData": "reason=coding_output_dirty_tree firstDirtyPath=shared/lib/deps-install-verdict-guard.ts marker=.coding-complete markerAgeMinutes=18",
+          "key": "parked-coding:HOK-FIXTURE-15:shared/lib/deps-install-verdict-guard.ts"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "failure": {
+    "stage": "coding",
+    "failureKind": null,
+    "detail": "coding_output_dirty_tree",
+    "survivesRelaunches": "never"
+  },
+  "convergence": {
+    "mustEscalate": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  },
+  "journey": "dirty-tree-coding-complete",
+  "expected": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "arm_parked_awaiting_operator_commit",
+    "occurrenceCount": 4,
+    "lifecycleWhilePresent": "active",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  },
+  "source": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "arm_parked_awaiting_operator_commit",
+    "severity": "high",
+    "confidence": "high",
+    "recordedLifecycle": "resolved",
+    "recordedResolution": "auto_resolved",
+    "occurrenceCount": 4,
+    "firstObservedAt": "2026-10-30T14:47:41.786Z",
+    "lastObservedAt": "2026-10-30T14:54:41.793Z",
+    "stateSnapshot": null,
+    "convertedBy": "tools/incident-to-fixture.ts",
+    "observationsTruncated": false
+  }
+}

@@ -1,0 +1,545 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "queue_planner_degraded",
+  "incidents": [
+    "4eec777e1678a7eab3fce6685c2703fc42b595d734905ba81efdc1e7bc5d5d26"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-11",
+      "slug": "incident-queue-planner-degraded-11",
+      "phase": "coding",
+      "status": "working"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "queue_planner_degraded",
+    "severity": "medium",
+    "confidence": "high",
+    "summary": "Queue planner fallback is active: timeout (step=plan_queue_failed, exit=143, cancelledBy=queue_plan_timeout).",
+    "operatorAction": "Inspect queue-health diagnostics and dependency planner inputs; fallback is acceptable briefly but should not persist.",
+    "metadata": {
+      "degradationReason": "inference_unavailable",
+      "diagnosticReason": "LLM fallback deadline exhausted before claude-sonnet-5",
+      "failureCount": 1,
+      "failureStep": "queue_inference",
+      "plannerExitCode": 0,
+      "threshold": 3
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-01T17:06:09Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=1",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 6,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-01T17:54:53Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=4",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 4,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-01T18:37:35Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=7",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 2,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-01T19:45:37Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=10",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-01T20:28:04Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=12",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-01T20:40:55Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=13",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-01T20:52:19Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=14",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-01T21:02:26Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=15",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-01T21:11:02Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=15",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-01T21:22:33Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=16",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-01T21:30:18Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=17",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-01T21:41:25Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=18",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-01T21:57:10Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=1",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 2,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-01T22:21:01Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=2",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 6,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-05T12:27:25Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=1",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 6,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-06T20:35:33Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=1",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 2,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-09T13:21:18Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=3",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 4,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-09T14:10:05Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=5",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 2,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-09T14:42:46Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=7",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 4,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-09T16:05:55Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=11",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-09T17:16:55Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=12",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-09T17:40:15Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=14",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-09T18:06:40Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=16",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-09T18:19:26Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=17",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-09T18:32:41Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=18",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-09T18:46:05Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=19",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 2,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-09T22:25:12Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=21",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-09T22:50:49Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=23",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-09T23:06:58Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=24",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-09T23:24:47Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=25",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-10T03:27:25Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=26",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-10T03:36:54Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=27",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-10T12:39:05Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=28",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-10T13:19:15Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-sonnet-5 failureCount=30",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 5,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-10T14:01:06Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-sonnet-5 failureCount=33",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-10T15:02:24Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-sonnet-5 failureCount=36",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 6,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-10T16:11:44Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-fable-5 failureCount=40",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 1,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-11T18:11:26Z",
+          "redactedData": "reason=inference_unavailable diagnostic=LLM fallback deadline exhausted before claude-sonnet-5 failureCount=1",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 6,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-22T12:53:53Z",
+          "redactedData": "reason=timeout step=plan_queue_failed exit=143 signal=none diagnostic=timeout (step=plan_queue_failed, exit=143, cancelledBy=queue_plan_timeout) failureCount=1",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 6,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "~/Dropbox/wavemill/.wavemill/queue-health.json",
+          "timestamp": "2026-10-26T16:33:26Z",
+          "redactedData": "reason=timeout step=plan_queue_failed exit=143 signal=none diagnostic=timeout (step=plan_queue_failed, exit=143, cancelledBy=queue_plan_timeout) failureCount=1",
+          "key": "queue_planner_fallback"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  },
+  "journey": null,
+  "journeyNullReason": "detector-level class; replayed via the incident cycle loop",
+  "expected": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "queue_planner_degraded",
+    "occurrenceCount": 40,
+    "lifecycleWhilePresent": "active",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 7
+  },
+  "source": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "queue_planner_degraded",
+    "severity": "medium",
+    "confidence": "high",
+    "recordedLifecycle": "resolved",
+    "recordedResolution": "auto_resolved",
+    "occurrenceCount": 158,
+    "firstObservedAt": "2026-10-01T17:07:26.006Z",
+    "lastObservedAt": "2026-10-26T16:33:51.902Z",
+    "stateSnapshot": null,
+    "convertedBy": "tools/incident-to-fixture.ts",
+    "observationsTruncated": true
+  }
+}

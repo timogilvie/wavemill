@@ -1,0 +1,125 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "inspection_required",
+  "incidents": [
+    "034848f57a0c430ac46cf2e1f7562a827577d57e9ae5b820c55d2de472cc72b9"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-13",
+      "slug": "incident-inspection-required-13",
+      "phase": "review",
+      "status": "working"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "inspection_required",
+    "severity": "medium",
+    "confidence": "low",
+    "summary": "PR #1681 stalled at ready-failed:not-ready and its lifecycle evidence is incomplete. Missing: pr_identity.",
+    "operatorAction": "Inspect authoritative PR and stage artifacts manually; missing or conflicting evidence is not enough to diagnose stale base or provider failure.",
+    "metadata": {
+      "inspectionReason": "missing_authoritative_evidence",
+      "knownIssueIds": [
+        "HOK-FIXTURE-13"
+      ],
+      "missingEvidence": [
+        "pr_identity"
+      ],
+      "prNumber": 1681,
+      "proposal": {
+        "schemaVersion": "1.2",
+        "kind": "inspection_only",
+        "allowedActions": [
+          "inspect"
+        ],
+        "evidenceRefs": [
+          {
+            "type": "review_result",
+            "source": "~/Dropbox/wavemill/worktrees/<fixture-slug>/features/<fixture-slug>/.review-result.json",
+            "index": 0
+          },
+          {
+            "type": "tend_lane",
+            "source": "~/Dropbox/wavemill/.wavemill/backstage-health.json",
+            "index": 1
+          }
+        ],
+        "forbiddenActions": [
+          "add_ready_label",
+          "merge",
+          "destructive_git",
+          "delete_branch",
+          "kill_process",
+          "modify_worktree"
+        ],
+        "prerequisites": [
+          "Inspect PR metadata, review result, pair state, and eval/comparison artifacts before choosing a recovery."
+        ],
+        "recommendationId": "inspect_stalled_candidate",
+        "retryKey": "inspection:1681:missing_authoritative_evidence",
+        "safetyLevel": "inspect"
+      },
+      "tendGate": "ready-failed:not-ready"
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "review_result",
+          "source": "~/Dropbox/wavemill/worktrees/<fixture-slug>/features/<fixture-slug>/.review-result.json",
+          "timestamp": "2026-10-19T22:13:52Z",
+          "redactedData": "verdict=not_ready stageStatus=completed failureCategory=unknown reviewedHead=unknown reviewedBase=unknown diffBase=unknown/unknown reviewedFiles=unknown",
+          "key": "review:unknown:head:unknown:base:unknown:files:unknown"
+        },
+        {
+          "type": "tend_lane",
+          "source": "~/Dropbox/wavemill/.wavemill/backstage-health.json",
+          "timestamp": "2026-10-20T00:42:12.348Z",
+          "redactedData": "source=backstage-health pr=1681 task=HOK-FIXTURE-13 gate=ready-failed:not-ready labels=wavemill streak=50",
+          "key": "tend:pr:1681:gate:ready-failed:not-ready"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "failure": {
+    "stage": "review",
+    "failureKind": null,
+    "detail": "",
+    "survivesRelaunches": "never"
+  },
+  "convergence": {
+    "mustEscalate": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  },
+  "journey": "ready-failure-disposition",
+  "expected": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "inspection_required",
+    "occurrenceCount": 1,
+    "lifecycleWhilePresent": "observed",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  },
+  "source": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "inspection_required",
+    "severity": "medium",
+    "confidence": "low",
+    "recordedLifecycle": "resolved",
+    "recordedResolution": "auto_resolved",
+    "occurrenceCount": 1,
+    "firstObservedAt": "2026-10-20T00:42:24.494Z",
+    "lastObservedAt": "2026-10-20T00:42:24.494Z",
+    "stateSnapshot": null,
+    "convertedBy": "tools/incident-to-fixture.ts",
+    "observationsTruncated": false
+  }
+}

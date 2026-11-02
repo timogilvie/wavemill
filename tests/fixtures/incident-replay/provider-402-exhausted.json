@@ -20,6 +20,11 @@
     "status": 402,
     "exhausted": true
   },
+  "failure": {
+    "stage": "coding",
+    "detail": "402 This request would exceed your available credits",
+    "survivesRelaunches": "never"
+  },
   "convergence": {
     "mustEscalate": true,
     "maxTickCount": 10,

@@ -1,0 +1,90 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "active_unpublished_work_stalled",
+  "incidents": [
+    "815913f91502eaf16bd300c01adc412de48919f2ed9d6e1dfdd2e483d23556d8"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-8",
+      "slug": "incident-active-unpublished-work-stalled-8",
+      "phase": "coding",
+      "status": "working"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "active_unpublished_work_stalled",
+    "severity": "medium",
+    "confidence": "high",
+    "summary": "HOK-FIXTURE-8 active task has unpublished commits and has not progressed for 134m.",
+    "operatorAction": "Inspect why HOK-FIXTURE-8 stalled, then let it finish or push task/cleanup-can-never-finish-for-tasks-with-long-slugs-cleanup-decision-record-file-name-exceeds-255-bytes-file-name-too-long-so-the-arm-stays-retained-forever to origin. The work is not cleanup residue; do not terminalize or reap it.",
+    "metadata": {
+      "disposition": "unpublished-at-risk",
+      "effectiveBaseBranch": "auto/integration"
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-10-12T19:29:39.033Z",
+          "redactedData": "ageMinutes=122 lastProgressAt=2026-10-12T17:27:34.000Z progressSources=hook,status-file,transition,transition residueDisposition=unpublished-at-risk effectiveBaseBranch=auto/integration baseBranchSource=repo-config comparedAgainst=origin/auto/integration aheadOfEffectiveBase=1",
+          "key": "stalled-active-unpublished:HOK-FIXTURE-8:task/cleanup-can-never-finish-for-tasks-with-long-slugs-cleanup-decision-record-file-name-exceeds-255-bytes-file-name-too-long-so-the-arm-stays-retained-forever"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-10-12T19:42:11.322Z",
+          "redactedData": "ageMinutes=134 lastProgressAt=2026-10-12T17:27:34.000Z progressSources=hook,status-file,transition,transition residueDisposition=unpublished-at-risk effectiveBaseBranch=auto/integration baseBranchSource=repo-config comparedAgainst=origin/auto/integration aheadOfEffectiveBase=1",
+          "key": "stalled-active-unpublished:HOK-FIXTURE-8:task/cleanup-can-never-finish-for-tasks-with-long-slugs-cleanup-decision-record-file-name-exceeds-255-bytes-file-name-too-long-so-the-arm-stays-retained-forever"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "failure": {
+    "stage": "coding",
+    "failureKind": null,
+    "detail": "",
+    "survivesRelaunches": "never"
+  },
+  "convergence": {
+    "mustEscalate": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  },
+  "journey": "agent-killed-mid-stage",
+  "expected": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "active_unpublished_work_stalled",
+    "occurrenceCount": 2,
+    "lifecycleWhilePresent": "observed",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  },
+  "source": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "active_unpublished_work_stalled",
+    "severity": "medium",
+    "confidence": "high",
+    "recordedLifecycle": "resolved",
+    "recordedResolution": "auto_resolved",
+    "occurrenceCount": 2,
+    "firstObservedAt": "2026-10-12T19:34:45.169Z",
+    "lastObservedAt": "2026-10-12T19:42:34.686Z",
+    "stateSnapshot": null,
+    "convertedBy": "tools/incident-to-fixture.ts",
+    "observationsTruncated": false
+  }
+}

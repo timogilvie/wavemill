@@ -20,6 +20,11 @@
     "status": 402,
     "exhausted": false
   },
+  "failure": {
+    "stage": "coding",
+    "detail": "429 Too Many Requests: rate limit exceeded, retry later",
+    "survivesRelaunches": 0
+  },
   "convergence": {
     "mustMerge": true,
     "maxTickCount": 10,

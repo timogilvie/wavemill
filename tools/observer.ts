@@ -49,7 +49,7 @@ import { abortTaskInState } from '../shared/lib/task-abort.ts';
 import { getResultFilePath, type ReadyArtifacts, type StageResult } from '../shared/lib/stage-result.ts';
 import { detectIncidentsForRepo, detectIncidentsForTask } from '../shared/lib/wavemill-incident-detector.ts';
 import { buildTendCandidates } from '../shared/lib/wavemill-incident-tend-candidates.ts';
-import { evaluateRecoveryPredicate } from '../shared/lib/wavemill-incident-recovery.ts';
+import { reconcileIncidentCycle } from '../shared/lib/incident-reconcile-cycle.ts';
 import {
   OBSERVER_SNAPSHOT_SCHEMA_VERSION,
   incidentChainEvidenceLines,
@@ -3916,18 +3916,23 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
       addConfigDegradedFindingIfMissing(snapshot.findings, repo, error, 'incident detection');
     }
 
-    const freshFingerprints: string[] = [];
-    const observedFingerprints = new Set<string>();
     const repoIncidents: IncidentRecord[] = [];
     incidentsByRepo.set(repo.repoDir, repoIncidents);
-    for (const incident of dedupeIncidentCandidates(candidates, store)) {
-      try {
-        const { record: stored, freshEvent } = await store.upsertDetailed(incident);
-        if (freshEvent) freshFingerprints.push(stored.fingerprint);
-        observedFingerprints.add(stored.fingerprint);
-        incidents.push(stored);
-        repoIncidents.push(stored);
-      } catch (error) {
+    const cycleResult = await reconcileIncidentCycle({
+      store,
+      candidates: dedupeIncidentCandidates(candidates, store),
+      cycleComplete,
+      repoDir: repo.repoDir,
+      jobs: jobTruth,
+      canResolveByAbsence: (record) => canResolveInteractivePromptByAbsence(record, repo),
+    });
+    for (const stored of cycleResult.incidents) {
+      incidents.push(stored);
+      repoIncidents.push(stored);
+    }
+    recoveredIncidents.push(...cycleResult.recovered);
+    for (const err of cycleResult.errors) {
+      if (err.kind === 'store') {
         cycleComplete = false;
         snapshot.findings.push({
           id: `incident-store-error-${repo.session}-${hashText(repo.repoDir)}`,
@@ -3936,45 +3941,12 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
           confidence: 'high',
           session: repo.session,
           repoDir: repo.repoDir,
-          issue: incident.taskId ?? undefined,
+          issue: err.incident?.taskId ?? undefined,
           title: 'Observer could not persist Wavemill incident state',
-          evidence: [`error=${error instanceof Error ? error.message : String(error)}`],
+          evidence: [`error=${err.error.message}`],
           recommendation: 'Inspect .wavemill/incidents permissions and malformed state files; incident detection is read-only but persistence is required for deduplication.',
         });
-      }
-    }
-
-    if (cycleComplete) {
-      // Recovery predicates (HOK-2595): an open correlated incident that was
-      // not re-observed this cycle resolves as soon as its declared progress
-      // condition holds (new review attempt, head change, comparison), rather
-      // than waiting out the absence sweep. Missing evidence never resolves.
-      try {
-        const jobs = jobTruth;
-        for (const record of await store.getIncidents()) {
-          const current = reconcileIncidentForFiling(record, repo.repoDir, jobs);
-          const jobBacked = isJobBackedIncident(record);
-          if (!jobBacked && observedFingerprints.has(record.fingerprint)) continue;
-          const recovery = jobBacked
-            ? { satisfied: current.outcome === 'recovered' || current.outcome === 'superseded', reason: `current_disposition:${current.outcome}`, evidence: JSON.stringify(current.evidence) }
-            : evaluateRecoveryPredicate(record, repo.repoDir);
-          if (jobBacked && !recovery.satisfied && !observedFingerprints.has(record.fingerprint)) {
-            incidents.push(record);
-            repoIncidents.push(record);
-            observedFingerprints.add(record.fingerprint);
-          }
-          if (!recovery.satisfied || !recovery.reason) continue;
-          const resolved = await store.autoResolve(record.fingerprint, { reason: recovery.reason });
-          if (resolved) {
-            recoveredIncidents.push({
-              fingerprint: resolved.fingerprint,
-              rootCauseClass: resolved.rootCauseClass,
-              reason: recovery.reason,
-              ...(recovery.evidence ? { evidence: recovery.evidence } : {}),
-            });
-          }
-        }
-      } catch (error) {
+      } else if (err.kind === 'recovery') {
         snapshot.findings.push({
           id: `incident-recovery-error-${repo.session}-${hashText(repo.repoDir)}`,
           severity: 'medium',
@@ -3983,20 +3955,10 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
           session: repo.session,
           repoDir: repo.repoDir,
           title: 'Observer could not evaluate incident recovery predicates',
-          evidence: [`error=${error instanceof Error ? error.message : String(error)}`],
+          evidence: [`error=${err.error.message}`],
           recommendation: 'Inspect .wavemill/incidents permissions and malformed state files; correlated incidents will still resolve through the absence sweep.',
         });
-      }
-      try {
-        // HOK-3314: separate observed-presence from fresh-event. An unchanged
-        // condition observed every cycle used to accrue missedCycles and
-        // auto-resolve after 5 polls (hence `recurrence.count=19` with
-        // nothing structural changed). Passing `observed` keeps it active.
-        await store.runResolutionSweep(
-          { fresh: freshFingerprints, observed: observedFingerprints },
-          (record) => !isJobBackedIncident(record) && canResolveInteractivePromptByAbsence(record, repo),
-        );
-      } catch (error) {
+      } else if (err.kind === 'sweep') {
         snapshot.findings.push({
           id: `incident-sweep-error-${repo.session}-${hashText(repo.repoDir)}`,
           severity: 'medium',
@@ -4005,7 +3967,7 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
           session: repo.session,
           repoDir: repo.repoDir,
           title: 'Observer could not run the incident resolution sweep',
-          evidence: [`error=${error instanceof Error ? error.message : String(error)}`],
+          evidence: [`error=${err.error.message}`],
           recommendation: 'Inspect .wavemill/incidents permissions and malformed state files; stale incidents will not auto-resolve until the sweep succeeds.',
         });
       }

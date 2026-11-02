@@ -1,0 +1,91 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "stage_marker_not_advanced",
+  "incidents": [
+    "05eb8d144d628a4191a59379542baef6b950701bd56e4fcd62841b69f27ee405"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-5",
+      "slug": "incident-stage-marker-not-advanced-5",
+      "phase": "planning",
+      "status": "working"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "stage_marker_not_advanced",
+    "severity": "high",
+    "confidence": "medium",
+    "summary": "HOK-FIXTURE-5 has not advanced past .coding-complete in coding.",
+    "operatorAction": "The mill has not acted on this stage marker. Inspect the monitor poll branch, this task's hook file, and any hung monitor child process before restarting anything.",
+    "metadata": {
+      "stage": "coding",
+      "markerMtime": "2026-10-01T19:10:57.655Z",
+      "markerPath": "~/Dropbox/wavemill/worktrees/<fixture-slug>/features/<fixture-slug>/.coding-complete"
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/worktrees/<fixture-slug>/features/<fixture-slug>/.coding-complete",
+          "timestamp": "2026-10-01T19:22:58.634Z",
+          "redactedData": "marker=.coding-complete phase=coding markerAgeMinutes=12",
+          "key": "marker-not-advanced:HOK-FIXTURE-5:coding"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/worktrees/<fixture-slug>/features/<fixture-slug>/.coding-complete",
+          "timestamp": "2026-10-01T19:25:34.291Z",
+          "redactedData": "marker=.coding-complete phase=coding markerAgeMinutes=15",
+          "key": "marker-not-advanced:HOK-FIXTURE-5:coding"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "failure": {
+    "stage": "planning",
+    "failureKind": null,
+    "detail": "coding",
+    "survivesRelaunches": "never"
+  },
+  "convergence": {
+    "mustEscalate": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  },
+  "journey": "agent-killed-mid-stage",
+  "expected": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "stage_marker_not_advanced",
+    "occurrenceCount": 2,
+    "lifecycleWhilePresent": "observed",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  },
+  "source": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "stage_marker_not_advanced",
+    "severity": "high",
+    "confidence": "medium",
+    "recordedLifecycle": "resolved",
+    "recordedResolution": "auto_resolved",
+    "occurrenceCount": 2,
+    "firstObservedAt": "2026-10-01T19:23:29.875Z",
+    "lastObservedAt": "2026-10-01T19:25:56.096Z",
+    "stateSnapshot": null,
+    "convertedBy": "tools/incident-to-fixture.ts",
+    "observationsTruncated": false
+  }
+}

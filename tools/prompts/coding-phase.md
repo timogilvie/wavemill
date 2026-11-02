@@ -82,6 +82,28 @@ in `.github/workflows/ci.yml`):
   `tests/journeys/`, using the shared fakes (`tests/fakes/lib.sh`), never a
   private stub.
 
+### Incident fixes (HOK-3231)
+
+A PR that fixes an incident recorded in `.wavemill/incidents/` must include
+that incident's evidence as a replay fixture under
+`tests/fixtures/incident-replay/real/`, and that fixture must fail on the
+base and pass with the fix.
+
+Convert the incident with:
+
+```bash
+npx tsx tools/incident-to-fixture.ts \
+  --input <fingerprint> \
+  --expect merged|escalated \
+  --incidents-dir /path/to/.wavemill/incidents
+```
+
+The replay harness (`shared/lib/incident-replay-harness.test.ts`) drives the
+fixture through the real `IncidentStore` cycle and, for stage-failure chains,
+through `runWithRecoveryLoop`. Expectations declared in the fixture
+(`expected.*`, `convergence`) are the oracle — do not weaken them to make a
+failing fixture pass.
+
 ### Important Notes
 - Follow the plan - don't deviate without good reason
 - If you need to change the approach, document why in commit messages
