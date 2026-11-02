@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "queue-lifecycle-event.schema.json",
+  "title": "QueueLifecycleEvent",
+  "description": "Append-only log of queue/CI/repair lifecycle events from Tend merge lane",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eventId",
+    "eventType",
+    "timestamp",
+    "prNumber",
+    "headSha"
+  ],
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "description": "Stable unique identifier for deduplication across crash/resume cycles"
+    },
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "candidate_prepared",
+        "enqueued",
+        "check_run_completed",
+        "rebase_performed",
+        "repair_commit_pushed",
+        "rerun_requested",
+        "ejected",
+        "merged",
+        "dequeued",
+        "abandoned"
+      ]
+    },
+    "timestamp": {
+      "type": "string",
+      "description": "ISO8601 timestamp when the event was recorded"
+    },
+    "prNumber": {
+      "type": "integer",
+      "description": "GitHub PR number affected by this event"
+    },
+    "headSha": {
+      "type": "string",
+      "description": "Commit SHA of the PR head at the time of the event"
+    },
+    "candidateId": {
+      "type": "string",
+      "description": "Stable ID for the candidate prepared; included even for single-entry candidates"
+    },
+    "attempt": {
+      "type": "integer",
+      "description": "CI attempt number for check_run_completed events"
+    },
+    "actor": {
+      "type": "string",
+      "description": "Author of a repair commit (repair_commit_pushed only)"
+    },
+    "reason": {
+      "type": "string",
+      "description": "Reason for ejection, abandonment, or dequeue (context-dependent)"
+    },
+    "executedModel": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Model that executed for a repair commit, or null if unknown"
+    }
+  }
+}
