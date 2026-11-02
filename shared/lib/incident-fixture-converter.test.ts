@@ -107,6 +107,13 @@ test('stage failure relaunch count comes from distinct evidence events', () => {
   assert.equal(failure?.survivesRelaunches, 1);
 });
 
+test('unresolved stage failure never claims a successful relaunch', () => {
+  const record = makeRecord('e'.repeat(64), { rootCauseClass: 'stage_marker_not_advanced', lifecycle: 'observed' });
+  const entries = [{ observedAt: '2026-09-20T10:00:00Z', fingerprint: record.fingerprint, evidence: { type: 'workflow_state' as const, source: '/x', timestamp: '2026-09-20T10:00:00Z', redactedData: 'failed', key: 'k' } }];
+  const failure = deriveFailureEvidence('stage_marker_not_advanced', record, entries, new Map(), '', '');
+  assert.equal(failure?.survivesRelaunches, 'never');
+});
+
 test('sanitisation leaves no /Users/ or original ids but keeps _c', () => {
   // protects: leaking operator paths or ids into the repo
   const dir = makeTempDir();

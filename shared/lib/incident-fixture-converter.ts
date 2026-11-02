@@ -818,7 +818,11 @@ export function deriveFailureEvidence(
   // first event is the initial failure, so subsequent events are relaunches
   // that also failed. A single event therefore recovers on its first relaunch.
   const failureEvents = new Set(entries.map((item) => item.observedAt || item.evidence.timestamp).filter(Boolean));
-  const survivesRelaunches = Math.max(0, failureEvents.size - 1);
+  // An incident still open at capture time has no recorded recovery. Preserve
+  // that terminal fact instead of inferring success from its first event.
+  const survivesRelaunches: number | 'never' = record.lifecycle === 'resolved'
+    ? Math.max(0, failureEvents.size - 1)
+    : 'never';
   const failure: IncidentFixtureFailure = {
     stage,
     failureKind: entry.failureKind ?? null,

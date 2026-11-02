@@ -66,10 +66,10 @@
     "stage": "eval",
     "failureKind": null,
     "detail": "eval_not_persisted",
-    "survivesRelaunches": 0
+    "survivesRelaunches": "never"
   },
   "convergence": {
-    "mustMerge": true,
+    "mustEscalate": true,
     "maxTickCount": 15,
     "tickIntervalSeconds": 30
   },
