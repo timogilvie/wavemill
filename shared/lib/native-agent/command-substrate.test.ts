@@ -5,6 +5,7 @@ import path from 'node:path';
 import { after, describe, it } from 'node:test';
 import { spawn } from 'node:child_process';
 
+import { parsedCommandFromArgv } from './command-argv.ts';
 import { classifyCommand } from './command-classifier.ts';
 import { runCommand, type RunCommandOptions } from './command-substrate.ts';
 import { TranscriptWriter, parseTranscriptJsonl } from './transcript.ts';
@@ -34,33 +35,25 @@ after(() => {
 });
 
 describe('command classifier reuse', () => {
-  it('classifies safe string commands', () => {
-    assert.deepEqual(classifyCommand('git status'), {
+  function parsed(argv: string[]) {
+    const p = parsedCommandFromArgv(argv);
+    if (!p) throw new Error(`could not parse ${argv.join(' ')}`);
+    return p;
+  }
+
+  // protects: classifier drifting onto a private dangerous-command dialect
+  it('classifies safe argv commands', () => {
+    assert.deepEqual(classifyCommand(parsed(['git', 'status'])), {
       commandClass: 'safe',
       normalizedCommand: 'git status',
     });
   });
 
-  it('classifies dangerous string commands', () => {
-    assert.deepEqual(classifyCommand('rm -rf /tmp/x'), {
+  it('classifies dangerous argv commands', () => {
+    assert.deepEqual(classifyCommand(parsed(['rm', '-rf', '/tmp/x'])), {
       commandClass: 'dangerous',
       normalizedCommand: 'rm -rf /tmp/x',
       rejectionReason: 'dangerous-command-pattern',
-    });
-  });
-
-  it('classifies safe argv commands', () => {
-    assert.deepEqual(classifyCommand(['git', 'status']), {
-      commandClass: 'safe',
-      normalizedCommand: 'git status',
-    });
-  });
-
-  it('classifies empty commands as dangerous', () => {
-    assert.deepEqual(classifyCommand('   '), {
-      commandClass: 'dangerous',
-      normalizedCommand: '',
-      rejectionReason: 'empty-command',
     });
   });
 
