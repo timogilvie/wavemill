@@ -41,7 +41,7 @@ interface ConvertArgs {
 /** CLI entry — exported for tests. */
 export async function runIncidentToFixtureCommand(args: ConvertArgs): Promise<number> {
   const dir = resolveIncidentsDir(args.incidentsDir, process.cwd());
-  if (!existsSync(dir)) {
+  if (args.cluster && !existsSync(dir)) {
     console.log('No incidents found to cluster');
     return 0;
   }
@@ -83,11 +83,12 @@ export async function runIncidentToFixtureCommand(args: ConvertArgs): Promise<nu
     console.error('Error: --input <fingerprint|path> or --cluster is required');
     return 1;
   }
-  const fp = args.input.endsWith('.evidence.jsonl') ? fingerprintFromPath(args.input) : args.input;
-  const { record, evidence, warnings } = loadIncidentByFingerprint(dir, fp);
+  const inputIsEvidencePath = args.input.endsWith('.evidence.jsonl');
+  const fp = inputIsEvidencePath ? fingerprintFromPath(args.input) : args.input;
+  const { record, evidence, warnings } = loadIncidentByFingerprint(dir, args.input);
   for (const w of warnings) console.error(`WARN: ${w}`);
   if (!record) {
-    const path = evidencePathFor(dir, fp);
+    const path = inputIsEvidencePath ? args.input : evidencePathFor(dir, fp);
     const log = readEvidenceLog(path);
     if (log.entries.length === 0) {
       console.error(`Error: no record for ${fp} in ${dir}/index.json and no evidence at ${path}`);

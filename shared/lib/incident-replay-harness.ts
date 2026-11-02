@@ -230,6 +230,8 @@ export interface RunResult {
   converged: boolean;
   outcome: 'merged' | 'escalated' | 'pending';
   ticks: number;
+  /** The declared failure stage supplied to the recovery policy. */
+  failureStage: FailureStage;
   evidencePath?: string;
   /** The recovery loop's action on each tick, in order. */
   actions?: RecoveryActionKind[];
@@ -308,13 +310,13 @@ export function createMemoryRetryBudget(maxAttempts = DEFAULT_RETRY_ATTEMPTS): R
   };
 }
 
-function syntheticStep(fixture: IncidentReplayFixture, nowMs: number, attempt: number): TaskRow {
+function syntheticStep(fixture: IncidentReplayFixture, stage: FailureStage, nowMs: number, attempt: number): TaskRow {
   const iso = new Date(nowMs).toISOString();
   return {
-    id: `${fixture.initialState.task.issue}-${fixture.initialState.task.phase}-${attempt}`,
+    id: `${fixture.initialState.task.issue}-${stage}-${attempt}`,
     parent_id: fixture.initialState.task.issue,
     kind: 'step',
-    slug: fixture.initialState.task.phase,
+    slug: stage,
     inputs_hash: `replay-${attempt}`,
     state: 'running',
     owner: null,
@@ -363,8 +365,8 @@ export function runWithRecoveryLoop(ctx: SandboxContext, fixture: IncidentReplay
   const retry = createMemoryRetryBudget();
   const actions: RecoveryActionKind[] = [];
   let relaunches = 0;
-  let step = syntheticStep(fixture, ctx.clock.nowMs, 0);
-  const stage = fixture.initialState.task.phase as FailureStage;
+  const stage = fixture.failure?.stage ?? fixture.initialState.task.phase;
+  let step = syntheticStep(fixture, stage, ctx.clock.nowMs, 0);
 
   for (let i = 0; i < fixture.convergence.maxTickCount; i++) {
     ctx.clock.advance(fixture.convergence.tickIntervalSeconds * 1000);
@@ -393,24 +395,24 @@ export function runWithRecoveryLoop(ctx: SandboxContext, fixture: IncidentReplay
       case 'skip':
         if (progressing) {
           const merged = writeMerged(ctx);
-          return { converged: true, outcome: 'merged', ticks: i + 1, evidencePath: merged.evidencePath, actions };
+          return { converged: true, outcome: 'merged', ticks: i + 1, failureStage: stage, evidencePath: merged.evidencePath, actions };
         }
         break;
       case 'bounded-relaunch':
       case 'spawn-remediation':
         retry.consume(decision.retryBucket ?? 'remediation', ctx.featureDir);
         relaunches += 1;
-        step = syntheticStep(fixture, ctx.clock.nowMs, relaunches);
+        step = syntheticStep(fixture, stage, ctx.clock.nowMs, relaunches);
         break;
       case 'escalate-waiting-on':
       case 'settle-aborted': {
         const escalated = writeEscalation(ctx, fixture, decision);
-        return { converged: true, outcome: 'escalated', ticks: i + 1, evidencePath: escalated.evidencePath, actions };
+        return { converged: true, outcome: 'escalated', ticks: i + 1, failureStage: stage, evidencePath: escalated.evidencePath, actions };
       }
     }
   }
   const last = detectConvergence(ctx);
-  return { converged: last.outcome !== 'pending', outcome: last.outcome, ticks: fixture.convergence.maxTickCount, evidencePath: last.evidencePath, actions };
+  return { converged: last.outcome !== 'pending', outcome: last.outcome, ticks: fixture.convergence.maxTickCount, failureStage: stage, evidencePath: last.evidencePath, actions };
 }
 
 /**
@@ -462,6 +464,14 @@ export async function runIncidentCycleReplay(fixture: IncidentFixture): Promise<
   mkdirSync(incidentsDir, { recursive: true });
 
   // allow-task-literal: synthetic sandbox state for a single-task fixture, not workflow-state read by production code
+  const metadata = fixture.incident.metadata;
+  const jobs = Object.fromEntries(fixture.initialState.jobs.map((job) => [job.id, {
+    ...job,
+    taskId: fixture.initialState.task.issue,
+    pairId: job.pair ?? (typeof metadata.pairId === 'string' ? metadata.pairId : undefined),
+    side: job.side ?? (typeof metadata.side === 'string' ? metadata.side : undefined),
+    resultPath: job.resultPath ?? (typeof metadata.resultPath === 'string' ? metadata.resultPath : undefined),
+  }]));
   writeFileSync(join(dir, '.wavemill', 'workflow-state.json'), JSON.stringify({
     tasks: {
       [fixture.initialState.task.issue]: {
@@ -470,6 +480,7 @@ export async function runIncidentCycleReplay(fixture: IncidentFixture): Promise<
         status: fixture.initialState.task.status,
       },
     },
+    jobs,
   }));
 
   try {

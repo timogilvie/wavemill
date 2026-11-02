@@ -97,7 +97,11 @@ export async function reconcileIncidentCycle(
     }
   }
 
-  if (!input.cycleComplete) {
+  // A failed persistence attempt leaves the observed set incomplete. Do not
+  // evaluate recovery or accrue an absence miss from a partial cycle: an
+  // existing record could otherwise be resolved while its re-observation
+  // could not be written.
+  if (!input.cycleComplete || errors.some((entry) => entry.kind === 'store')) {
     return { incidents, fresh: freshFingerprints, observed: [...observedFingerprints], recovered, errors };
   }
 

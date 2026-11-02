@@ -214,7 +214,7 @@ test('gap compression yields absentCyclesBefore=6 and recurrences=1 for long gap
   }
 });
 
-test('job-backed expectation: no succeeded retry → finalLifecycle stays open', () => {
+test('job-backed eval fixture drives eval-stage recovery and stays open', async () => {
   // protects: job-backed records resolving by absence despite job filing semantics
   const dir = makeTempDir();
   try {
@@ -234,8 +234,15 @@ test('job-backed expectation: no succeeded retry → finalLifecycle stays open',
     ]);
     const { record, evidence } = loadIncidentByFingerprint(dir, fp);
     const fixture = incidentToFixture(record!, evidence, { fixtureIndex: 1 });
+    assert.equal(fixture.failure?.stage, 'eval');
     assert.equal(fixture.expected.finalLifecycle, 'observed');
     assert.equal(fixture.expected.resolutionReasonPrefix, null);
+    const fixturePath = join(dir, 'failed-background-job.json');
+    writeFileSync(fixturePath, serializeFixture(fixture));
+    const { runRealFixture } = await import('./incident-replay-harness.ts');
+    const replay = await runRealFixture(fixturePath);
+    assert.equal(replay.ok, true);
+    assert.equal(replay.recovery?.failureStage, 'eval');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -280,8 +287,8 @@ test('readIncidentIndex handles missing/malformed files gracefully', () => {
   }
 });
 
-test('CLI smoke: --check writes nothing to tracked paths', async () => {
-  // protects: operator-only `--check` cannot accidentally mutate the repo
+test('CLI accepts an explicit evidence path outside the default incidents directory', async () => {
+  // protects: operator-only `--input /path/*.evidence.jsonl` reads that file and its co-located index
   const dir = makeTempDir();
   const outDir = join(dir, 'out');
   try {
@@ -299,10 +306,10 @@ test('CLI smoke: --check writes nothing to tracked paths', async () => {
     console.error = (...args: unknown[]) => { logs.push('err: ' + args.map(String).join(' ')); };
     try {
       const code = await runIncidentToFixtureCommand({
-        input: fp,
+        input: join(dir, `${fp}.evidence.jsonl`),
         cluster: false,
         top: 15,
-        incidentsDir: dir,
+        incidentsDir: join(dir, 'missing-default-incidents-dir'),
         outDir,
         stateSnapshot: undefined,
         expect: undefined,

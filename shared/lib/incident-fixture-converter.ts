@@ -13,6 +13,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import type { FailureStage } from './failure-policy.ts';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import {
   redactPaths,
@@ -74,7 +75,7 @@ export interface IncidentFixtureObservation {
 }
 
 export interface IncidentFixtureFailure {
-  stage: 'planning' | 'coding' | 'review' | 'ready';
+  stage: FailureStage;
   failureKind: string | null;
   detail: string;
   survivesRelaunches: number | 'never';
@@ -214,7 +215,7 @@ const STAGE_FAILURE_CLASSES: Partial<Record<IncidentRootCauseClass, {
 }>> = {
   arm_died_with_unpushed_work: { stage: 'coding', detailFrom: 'none' },
   stage_marker_not_advanced: { stage: 'planning', detailFrom: 'metadata-stage' },
-  failed_background_job: { stage: 'eval' as unknown as 'ready', detailFrom: 'job-reason' },
+  failed_background_job: { stage: 'eval', detailFrom: 'job-reason' },
   active_unpublished_work_stalled: { stage: 'coding', detailFrom: 'none' },
   inspection_required: { stage: 'review', detailFrom: 'review-failure-category' },
   pr_create_failed: { stage: 'review', detailFrom: 'log-excerpt' },
@@ -804,9 +805,7 @@ export function deriveFailureEvidence(
       detail = '';
   }
   detail = sanitiseString(detail, idMap, homeDir, repoDir);
-  const stage: IncidentFixtureFailure['stage'] = entry.stage === 'planning' || entry.stage === 'review' || entry.stage === 'ready'
-    ? entry.stage
-    : 'coding';
+  const stage = entry.stage;
   // A recorded stage-failure incident is one a relaunch did not clear — the
   // record's "resolved" lifecycle reflects absence (HOK-3314), not that a
   // retry succeeded. The replay therefore escalates by default; a converter
@@ -966,8 +965,8 @@ export function validateIncidentFixture(value: unknown): string[] {
   if (obj.failure !== undefined) {
     const f = obj.failure as Record<string, unknown>;
     const stage = f.stage;
-    if (stage !== 'planning' && stage !== 'coding' && stage !== 'review' && stage !== 'ready') {
-      errors.push('failure.stage must be planning|coding|review|ready');
+    if (stage !== 'planning' && stage !== 'coding' && stage !== 'review' && stage !== 'ready' && stage !== 'tend' && stage !== 'eval') {
+      errors.push('failure.stage must be planning|coding|review|ready|tend|eval');
     }
     const survives = f.survivesRelaunches;
     if (survives !== 'never' && typeof survives !== 'number') {

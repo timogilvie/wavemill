@@ -98,21 +98,25 @@ test('job-backed incident is not resolved by absence', async () => {
   }
 });
 
-test('a store error is returned as a typed error, not thrown', async () => {
-  // protects: a persistence failure crashing the whole observer tick
+test('a store error leaves the cycle incomplete', async () => {
+  // protects: a persistence failure cannot turn an unseen record into an absence resolution
   const { dir, incidentsDir } = makeSandbox();
   try {
     // Shim store with a failing upsertDetailed.
+    let recoveryReads = 0;
+    let sweeps = 0;
     const store = {
       upsertDetailed: async () => { throw new Error('simulated-write-fail'); },
-      getIncidents: async () => [],
+      getIncidents: async () => { recoveryReads += 1; return []; },
       autoResolve: async () => null,
-      runResolutionSweep: async () => [],
+      runResolutionSweep: async () => { sweeps += 1; return []; },
     } as unknown as IncidentStore;
     const result = await reconcileIncidentCycle({ store, candidates: [draft('d')], cycleComplete: true, repoDir: dir });
     assert.equal(result.errors.length, 1);
     assert.equal(result.errors[0].kind, 'store');
     assert.match(result.errors[0].error.message, /simulated-write-fail/);
+    assert.equal(recoveryReads, 0, 'partial cycles must not evaluate recovery');
+    assert.equal(sweeps, 0, 'partial cycles must not accrue absence misses');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -63,7 +63,7 @@
   ],
   "trailingAbsentCycles": 6,
   "failure": {
-    "stage": "coding",
+    "stage": "eval",
     "failureKind": null,
     "detail": "eval_not_persisted",
     "survivesRelaunches": "never"
