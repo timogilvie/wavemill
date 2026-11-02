@@ -210,6 +210,65 @@ describe('hokusai-submission-trigger', () => {
     assert.equal(readFileSync(pendingPath, 'utf-8').includes('HOK-1243'), false);
   });
 
+  // protects: Hokusai receiving "the executed model failed" with no join key or override (HOK-3363 / HOK-3329 replay).
+  it('queues the Hokusai join key and every route override on the contribution row', async () => {
+    const { repoDir, configDir } = makeRepo(true);
+
+    await triggerHokusaiSubmission(makeEligibleRecord({
+      routeProvenance: {
+        decisionSource: 'expanded',
+        hokusaiInferenceLogId: 'b41b1171-0000-4000-8000-000000000001',
+        stageRoutes: {
+          planner: { executed: 'gpt-5.4', overrides: [] },
+          coder: {
+            hokusai: { requestId: 'b41b1171-0000-4000-8000-000000000001', recommended: 'claude-haiku-4-5' },
+            executed: 'claude-opus-5-5',
+            overrides: [
+              {
+                source: 'escalation',
+                from: 'claude-haiku-4-5',
+                to: 'glm-5.3-flash',
+                reason: 'hokusai_reask_below_floor',
+                at: '2026-10-30T10:00:00.000Z',
+                triggers: [{ metric: 'confidence', value: 0.334, threshold: 0.4 }],
+              },
+              {
+                source: 'operator',
+                from: 'glm-5.3-flash',
+                to: 'claude-opus-5-5',
+                reason: 'operator_force_reroute',
+                at: '2026-10-30T14:00:00.000Z',
+              },
+            ],
+          },
+          reviewer: { executed: 'gpt-5.4', overrides: [] },
+        },
+      },
+    }), { repoDir, configDir, redactionSalt: 'c'.repeat(64) });
+
+    const pendingPath = join(repoDir, '.wavemill', 'hokusai', 'queue', 'pending.jsonl');
+    const [line] = readFileSync(pendingPath, 'utf-8').trim().split('\n');
+    const inputs = (JSON.parse(line) as { row: { inputs: Record<string, unknown> } }).row.inputs;
+    assert.equal(inputs.inference_log_id, 'b41b1171-0000-4000-8000-000000000001');
+    assert.equal(inputs.route_overrides_schema, 'route_overrides/v1');
+    assert.deepEqual(inputs.route_override_stages, ['coder', 'coder']);
+    assert.deepEqual(inputs.route_override_sources, ['escalation', 'operator']);
+    assert.deepEqual(inputs.route_override_from, ['claude-haiku-4-5', 'glm-5.3-flash']);
+    assert.deepEqual(inputs.route_override_to, ['glm-5.3-flash', 'claude-opus-5-5']);
+    assert.deepEqual(inputs.route_override_reasons, ['hokusai_reask_below_floor', 'operator_force_reroute']);
+  });
+
+  // protects: a locally routed task inventing a join key or an empty override list.
+  it('adds no route-record inputs for a record with neither a join key nor overrides', async () => {
+    const { repoDir, configDir } = makeRepo(true);
+    await triggerHokusaiSubmission(makeEligibleRecord(), { repoDir, configDir, redactionSalt: 'd'.repeat(64) });
+    const pendingPath = join(repoDir, '.wavemill', 'hokusai', 'queue', 'pending.jsonl');
+    const [line] = readFileSync(pendingPath, 'utf-8').trim().split('\n');
+    const inputs = (JSON.parse(line) as { row: { inputs: Record<string, unknown> } }).row.inputs;
+    assert.equal(inputs.inference_log_id, undefined);
+    assert.equal(inputs.route_overrides_schema, undefined);
+  });
+
   it('keeps protected vendor-telemetry and reviewer-evidence strings out of the queued row (HOK-2787)', async () => {
     const { repoDir, configDir } = makeRepo(true);
 

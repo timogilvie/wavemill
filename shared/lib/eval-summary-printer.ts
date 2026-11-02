@@ -8,6 +8,7 @@
  */
 
 import type { EvalRecord, WorkflowCostAttribution } from './eval-schema.ts';
+import { flattenRouteOverrides } from './route-override-record.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Formatting Helpers
@@ -171,7 +172,9 @@ export function formatRouteProvenanceDisplay(record: EvalRecord): string {
     return '';
   }
 
-  return `, route: ${provenance.decisionSource} ${shortRoute(provenance.activeRoute)} changed=${provenance.routeChanged === true ? 'true' : 'false'}`;
+  const overrides = flattenRouteOverrides(provenance.stageRoutes);
+  const sources = [...new Set(overrides.map((override) => override.source))];
+  return `, route: ${provenance.decisionSource} ${shortRoute(provenance.activeRoute)} overrides=${overrides.length}${sources.length > 0 ? `(${sources.join(',')})` : ''}`;
 }
 
 // ────────────────────────────────────────────────────────────────

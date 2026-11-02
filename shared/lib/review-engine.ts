@@ -23,6 +23,7 @@ import { fillPromptSlots } from './prompt-utils.ts';
 import { getNativeAgentConfig, loadWavemillConfig } from './config.ts';
 import { isLaunchableForStage, type StageLaunchability } from './stage-launchability.ts';
 import { REVIEW_MAX_OUTPUT_TOKENS } from './native-agent/output-limits.ts';
+import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 import {
   NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
   REVIEW_MODEL_UNLAUNCHABLE_FAILURE_CATEGORY,
@@ -133,6 +134,8 @@ export interface ReviewResult {
     reviewInputTaskPacketBytes?: number;
     reviewInputFileCount?: number;
     nativeLoopStopReason?: string;
+    /** The typed budget fact when the native review stopped on a budget reason (HOK-3362). */
+    budgetExhausted?: BudgetExhaustedFact;
     /** Canonical provider that performed the native review (HOK-3064). */
     reviewProvider?: string;
     /** Canonical `native-<provider>` agent identity for the native review (HOK-3064). */

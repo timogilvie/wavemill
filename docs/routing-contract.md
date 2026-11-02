@@ -209,14 +209,29 @@ Eval schema `1.18.0` adds optional `routeProvenance`:
     "bootstrapRoute": { "coder": "…", "codeDepth": "…", "reviewer": "…", "reviewMode": "…" },
     "expandedRoute": { "coder": "…", "codeDepth": "…", "reviewer": "…", "reviewMode": "…" },
     "activeRoute": { "coder": "…", "codeDepth": "…", "reviewer": "…", "reviewMode": "…" },
-    "routeChanged": true,
     "decisionSource": "expanded",
+    "stageRoutes": {
+      "planner": { "hokusai": { "requestId": "…", "recommended": "…" }, "executed": "…", "overrides": [] },
+      "coder": {
+        "hokusai": { "requestId": "<inference_log_id>", "decisionId": "…", "recommended": "claude-haiku-4-5" },
+        "executed": "claude-opus-5-5",
+        "overrides": [
+          { "source": "escalation", "from": "claude-haiku-4-5", "to": "glm-5.3-flash", "reason": "hokusai_reask_below_floor", "at": "…",
+            "triggers": [{ "metric": "confidence", "value": 0.334, "threshold": 0.4 }], "hokusai": { "requestId": "<re-ask inference_log_id>" } },
+          { "source": "operator", "from": "glm-5.3-flash", "to": "claude-opus-5-5", "reason": "operator_force_reroute", "at": "…" }
+        ]
+      },
+      "reviewer": { "executed": "…", "overrides": [] }
+    },
+    "hokusaiInferenceLogId": "<inference_log_id>",
     "expandedCacheHit": false,
     "packetHash": "<sha256>",
     "routeSource": "batch"
   }
 }
 ```
+
+`stageRoutes` is the one per-stage route record (HOK-3363, `shared/lib/route-override-record.ts`): what Hokusai recommended, what executed, and every override in between (`escalation`, `launchability`, `challenge`, `operator`). It replaces the retired `routeChanged` flag (still accepted on legacy records, never written), `preEscalationRoute`, `launchabilitySubstitutions` and `provenance.escalation`. The PR stamp (`route_decision.overrides`, `route_schema` 3) and the queued Hokusai contribution row (`inputs.inference_log_id` + `route_override_*`) read it.
 
 ## Current Vs Target Summary
 

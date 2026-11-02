@@ -1,0 +1,31 @@
+# HOK-3373 settled-attempt guard ratchet (tools/check-settled-attempt.ts).
+# `<path> <count>  # reason`. Counts only shrink: migrate a site to the seam /
+# renderer / task-worktree resolver and lower its count in the same PR.
+# Seeded from the inventory of pre-existing sites when the guard landed.
+shared/hooks/wavemill-hook-protocol.sh 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
+shared/lib/bounded-retry.sh 3  # pre-HOK-3373 site (task-path-probe×3); migrate to the resolver
+shared/lib/condition-reconciler.sh 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
+shared/lib/incident-replay-harness.ts 1  # replay harness writes a synthetic state file in a temp dir
+shared/lib/linear.ts 1  # setIssueState definition (the API client), not a call site
+shared/lib/monitor-async-jobs.sh 5  # pre-HOK-3373 site (task-path-probe×5); migrate to the resolver
+shared/lib/native-agent/tools/intended-files.ts 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
+shared/lib/observer-auto-fix.ts 5  # pre-HOK-3373 site (task-path-probe×5); migrate to the resolver
+shared/lib/ready-watchdog.ts 3  # pre-HOK-3373 site (task-path-probe×3); migrate to the resolver
+shared/lib/review-metrics.ts 1  # pre-HOK-3373 direct write; migrate to mutateWorkflowState
+shared/lib/session-ownership.sh 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
+shared/lib/task-progress.ts 2  # pre-HOK-3373 site (task-path-probe×2); migrate to the resolver
+shared/lib/task-residue-archive.ts 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
+shared/lib/terminal-inbox-cleanup.ts 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
+shared/lib/terminal-reconciler.sh 2  # reconciler-derived Linear move for challenge pairs (sibling-dependent; HOK-2972) + one HEAD probe
+shared/lib/transient-marker.sh 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
+shared/lib/wavemill-common.sh 18  # pre-HOK-3373 task-path probes (cleanup classifier, lifecycle) ; migrate in batches
+shared/lib/wavemill-mill.sh 1  # initial empty state-file creation at mill start (no rows yet)
+shared/lib/wavemill-monitor.sh 105  # pre-HOK-3373 task-path probes and launch/PR-open/merge Linear writes; migrate in batches
+shared/lib/wavemill-startup-runner.sh 4  # initial empty state-file creation + pre-HOK-3373 worktree probes
+shared/lib/wavemill-status.sh 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
+shared/lib/worktree-dirty-status.ts 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
+tools/backfill-stage-executed-model.ts 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
+tools/resolve-executed-model.ts 2  # pre-HOK-3373 site (task-path-probe×2); migrate to the resolver
+tools/set-issue-state.ts 1  # the CLI behind linear_set_state_checked
+tools/stage-result-cli.ts 2  # pre-HOK-3373 site (task-path-probe×2); migrate to the resolver
+tools/state-invariants.ts 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver

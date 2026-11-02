@@ -17,10 +17,13 @@
 #      under `_with_timeout` and prints its JSON. Fail-safe: `{}` on any
 #      failure so downstream `jq` never crashes. `--pane-pid` (or
 #      `--pane-target`, resolved to a pid by the CLI) feeds the HOK-3137
-#      background-work probe: `.agentBackgroundLive` is `true` when the agent
-#      has a live substantive descendant (a backgrounded task), which
-#      suppresses `.stalled` while the agent is idle. Process/pane existence
-#      is still NEVER progress — it never moves `.lastProgressAt` or adds a
+#      background-work probe: `.agentBackgroundLive` is `true` when the
+#      agent's own process subtree contains a live descendant that started
+#      after the agent — a backgrounded task, which is the agent's work
+#      whatever it is named (HOK-3374 ownership rule; the probe resolves the
+#      agent pid structurally from the pane root), which suppresses
+#      `.stalled` while the agent is idle. Process/pane existence is
+#      still NEVER progress — it never moves `.lastProgressAt` or adds a
 #      `.sources[]` entry (HOK-3101 invariant 1); omitting both pane options
 #      leaves `.agentBackgroundLive` as `null` ("not probed").
 #

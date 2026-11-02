@@ -9,7 +9,7 @@ import {
 } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { AgentContext, LoopResult, WavemillLoopConfig } from './loop.ts';
+import type { AgentContext, LoopBudget, LoopResult, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
 import { DEFAULT_NATIVE_PLANNING_LIMITS } from './planning-guards.ts';
 import { createNativeModelsCollection } from './models.ts';
@@ -20,7 +20,7 @@ import {
 } from './provider-identity.ts';
 import { invalidateCertificationIdentity } from './certification/identity-invalidation.ts';
 import { CODING_MAX_OUTPUT_TOKENS } from './output-limits.ts';
-import type { AgentMessage, AgentTurn, Message } from './messages.ts';
+import type { AgentMessage, Message } from './messages.ts';
 import {
   buildNativeProviderResolutionFailureMessage,
   getNativeProviderApiKey,
@@ -103,6 +103,18 @@ import {
 } from './coding-failure-handoff.ts';
 import { classifyProviderError } from './provider-error-classifier.ts';
 import {
+  budgetExhaustionFromLoop,
+  describeBudgetExhaustion,
+  finalProviderErrorMessage,
+  type BudgetExhaustedFact,
+} from './budget-exhaustion.ts';
+import {
+  buildBudgetExhaustionEnvelope,
+  getStageFailureEnvelopePath,
+  writeStageFailureEnvelope,
+} from './stage-failure-envelope.ts';
+import { snapshotPayloadsForFailure } from './payload-capture.ts';
+import {
   assertOpenRouterBalanceSufficient,
   capOpenRouterMaxTokensForBalance,
 } from './openrouter-credits-guard.ts';
@@ -121,6 +133,32 @@ import {
 const CODING_PROMPT_PATH = new URL('../../../tools/prompts/coding-phase.md', import.meta.url);
 const CODING_PROMPT_FILE = fileURLToPath(CODING_PROMPT_PATH);
 const MAX_ARTIFACT_RETRIES = 2;
+
+/**
+ * Coding's loop budget (HOK-3330 shared budgets). Hoisted so the
+ * budget-exhaustion fact (HOK-3362) names the same limits the loop enforced.
+ */
+const CODING_LOOP_BUDGET: LoopBudget = Object.freeze({
+  maxTurns: 200,
+  maxToolCalls: 1200,
+  maxWallClockMs: 60 * 60 * 1000,
+  stagnation: DEFAULT_NATIVE_PLANNING_LIMITS.toolStagnation,
+});
+
+/**
+ * The coding run stopped on a budget reason without a completion artifact
+ * (HOK-3362). The handoff, envelope and failed stage result are already
+ * written when this is thrown; the catch only updates hook/status text.
+ */
+export class NativeBudgetExhaustedError extends Error {
+  readonly fact: BudgetExhaustedFact;
+
+  constructor(fact: BudgetExhaustedFact, handoffPath: string) {
+    super(`${describeBudgetExhaustion('coding', fact)}; structured handoff: ${handoffPath}`);
+    this.name = 'NativeBudgetExhaustedError';
+    this.fact = fact;
+  }
+}
 
 type HookState = 'working' | 'idle' | 'error';
 
@@ -169,6 +207,12 @@ export interface LaunchNativeCodingOptions {
   hookPath?: string;
   providerEntries?: readonly ReadyNativeProviderEntry[];
   loopModelOverride?: WavemillLoopConfig['model'];
+  /**
+   * Test seam, like `loopModelOverride`: replaces parts of
+   * {@link CODING_LOOP_BUDGET} so budget-exhaustion replays (HOK-3362) run in
+   * milliseconds. Production launches never set it.
+   */
+  loopBudgetOverride?: Partial<LoopBudget>;
   registryMetadataOverride?: readonly ToolMetadata[];
   extraDescriptors?: readonly ToolDescriptor[];
   signal?: AbortSignal;
@@ -473,6 +517,8 @@ function archiveStaleCodingArtifacts(featureDir: string): string[] {
     '.blocked-completion-announced',
     '.coding-uncommitted-output-announced',
     '.coding-failure-handoff.json',
+    // HOK-3362: a prior attempt's budget envelope must not classify this run.
+    relative(featureDir, getStageFailureEnvelopePath(featureDir, 'coding')),
   ];
   const present = candidates.filter((name) => existsSync(join(featureDir, name)));
   if (present.length === 0) {
@@ -626,6 +672,27 @@ function buildFailureHandoffInput(input: {
   };
 }
 
+function buildBudgetExhaustedHandoffInput(input: {
+  result: LoopResult;
+  fact: BudgetExhaustedFact;
+  tracker: MutationFailureTracker;
+  recoveryAttempted: boolean;
+}): Parameters<typeof writeCodingFailureHandoff>[1] {
+  return {
+    stage: 'coding',
+    reason: 'budget_exhausted',
+    stopReason: input.result.stopReason,
+    mutationFailures: input.tracker.count,
+    lastToolError: input.tracker.last,
+    recoveryAttempted: input.recoveryAttempted,
+    suggestedAction: 'Relaunch native coding under the stage-failure-coding bounded retry; '
+      + 'the budget fact and progress evidence are preserved on this handoff.',
+    createdAt: new Date().toISOString(),
+    schemaVersion: CODING_FAILURE_HANDOFF_SCHEMA_VERSION,
+    budgetExhausted: input.fact,
+  };
+}
+
 function buildProviderErrorSuggestedAction(kind: string): string {
   switch (kind) {
     case 'provider-credit-exhausted':
@@ -689,16 +756,6 @@ function toHandoffValidationErrors(errors: readonly RetryGuidanceError[]): Codin
     ...(error.path ?? error.field ? { field: error.path ?? error.field } : {}),
     message: error.message,
   }));
-}
-
-function findFinalAssistantErrorMessage(messages: AgentMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if ((message as { role?: string }).role !== 'assistant') continue;
-    const errorMessage = (message as AgentTurn).errorMessage?.trim();
-    if (errorMessage) return errorMessage;
-  }
-  return '';
 }
 
 function loadCodingArtifacts(featureDir: string, trackerCommitCount: number): CodingArtifacts {
@@ -1226,6 +1283,9 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       modelAttributionIneligibleReason: 'stage_not_completed',
       notes: 'Native coding running',
       failureReason: null,
+      // HOK-3362: a new attempt starts without the previous attempt's budget
+      // fact (the monitor's write-with-history already archived it).
+      budgetExhausted: undefined,
     });
 
     const menuLaunchProvider = createLaunchMenuProvider({
@@ -1276,6 +1336,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     };
 
     const mutationFailureTracker: MutationFailureTracker = { count: 0, last: null };
+    const codingBudget: LoopBudget = { ...CODING_LOOP_BUDGET, ...(options.loopBudgetOverride ?? {}) };
 
     const pricing = normalizedPricingFromModel(model);
     const effectiveMaxTokens = model.provider === 'openrouter' && !options.loopModelOverride
@@ -1300,12 +1361,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       context,
       maxTokens: effectiveMaxTokens,
       // Coding uses the loop's existing admission and stagnation controls, as planning does.
-      budget: {
-        maxTurns: 200,
-        maxToolCalls: 1200,
-        maxWallClockMs: 60 * 60 * 1000,
-        stagnation: DEFAULT_NATIVE_PLANNING_LIMITS.toolStagnation,
-      },
+      budget: codingBudget,
       contextManagement: getNativeContextManagementConfig(options.repoDir),
       payloadCapture: { featureDir, stage: 'coding', ...getNativePayloadCaptureConfig(options.repoDir) },
       convertToLlm: (messages) => messages as unknown as Message[],
@@ -1433,21 +1489,99 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       return loopResult;
     };
 
+    const providerIdentitySummarySnapshot = (): ProviderIdentitySummary | undefined =>
+      providerIdentityExpectation ? providerIdentityTracker.summary() : undefined;
+    const providerExpectationSnapshot = providerIdentityExpectation
+      ? {
+        expectedModel: providerIdentityExpectation.expectedModel,
+        requestedWireId: providerIdentityExpectation.requestedWireId,
+        isAlias: providerIdentityExpectation.isAlias,
+      }
+      : undefined;
+
+    let recoveryAttempted = false;
+    /**
+     * Stop reason before error text (HOK-3362). A run that stopped on a budget
+     * reason without a completion artifact records the one budget fact
+     * (handoff `budget_exhausted`, envelope `stage-timeout`, stage result
+     * `budgetExhausted`) and ends; the abort message our own budget left on
+     * the final turn never reaches `classifyProviderError`. Only a non-budget
+     * stop is then checked for a genuine provider error.
+     */
+    const assertLoopOutcome = async (loopResult: LoopResult): Promise<void> => {
+      const fact = hasCompletionArtifact(featureDir)
+        ? null
+        : budgetExhaustionFromLoop(loopResult, codingBudget, { mutationFailures: mutationFailureTracker.count });
+      if (fact) {
+        writeCodingFailureHandoff(featureDir, buildBudgetExhaustedHandoffInput({
+          result: loopResult,
+          fact,
+          tracker: mutationFailureTracker,
+          recoveryAttempted,
+        }));
+        try {
+          writeStageFailureEnvelope(featureDir, buildBudgetExhaustionEnvelope({
+            stage: 'coding',
+            fact,
+            provider: String(model.provider),
+            model: modelName,
+            requestedModel: requestedModelName,
+            agent: `native-${String(model.provider)}`,
+            transcriptPath,
+            payloadCaptureDir: snapshotPayloadsForFailure(
+              featureDir,
+              'coding',
+              transcriptPath.replace(/\.jsonl$/, '.native-payloads'),
+            ),
+          }));
+        } catch (error) {
+          // The handoff already carries the fact; never mask the budget stop.
+          console.warn(`Failed to write coding budget envelope: ${(error as Error).message}`);
+        }
+        const attribution = buildCompletionAttribution({
+          intendedModel: requestedModelName,
+          model: modelName,
+          providerIdentity: providerIdentitySummarySnapshot(),
+          providerExpectation: providerExpectationSnapshot,
+          stageCompleted: false,
+        });
+        const description = describeBudgetExhaustion('coding', fact);
+        await updateStageResult(featureDir, 'coding', {
+          status: 'failed',
+          finishedAt: new Date().toISOString(),
+          agent: 'native',
+          model: modelName,
+          intendedModel: requestedModelName,
+          executedModel: attribution.executedModel,
+          executionEvidence: attribution.executionEvidence,
+          modelAttributionEligible: false,
+          modelAttributionIneligibleReason: attribution.modelAttributionIneligibleReason ?? 'stage_not_completed',
+          notes: `Native coding failed: ${description}`,
+          artifacts: withLoopUsage(loadCodingArtifacts(featureDir, tracker.commitCount), lastLoopUsage),
+          failureReason: `budget_exhausted:${fact.kind}`,
+          budgetExhausted: fact,
+        });
+        throw new NativeBudgetExhaustedError(
+          fact,
+          relative(process.cwd(), getCodingFailureHandoffPath(featureDir)),
+        );
+      }
+      const providerError = finalProviderErrorMessage(loopResult);
+      if (providerError) {
+        throwProviderErrorWithHandoff({
+          featureDir,
+          result: loopResult,
+          errorMessage: providerError,
+          mutationFailureTracker,
+          recoveryAttempted,
+          transcriptPath,
+        });
+      }
+    };
+
     writeHookStatus(hookPath, 'working', 'run_native_model', modelName, 'native');
     let result = await runCodingLoop();
-    let recoveryAttempted = false;
-
-    const providerError = findFinalAssistantErrorMessage(result.messages);
-    if (providerError) {
-      throwProviderErrorWithHandoff({
-        featureDir,
-        result,
-        errorMessage: providerError,
-        mutationFailureTracker,
-        recoveryAttempted,
-        transcriptPath,
-      });
-    }
+    await assertLoopOutcome(result);
 
     if (
       result.stopReason === 'stop'
@@ -1483,28 +1617,8 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         } as AgentMessage,
       ];
       result = await runCodingLoop();
-      const recoveryProviderError = findFinalAssistantErrorMessage(result.messages);
-      if (recoveryProviderError) {
-        throwProviderErrorWithHandoff({
-          featureDir,
-          result,
-          errorMessage: recoveryProviderError,
-          mutationFailureTracker,
-          recoveryAttempted,
-          transcriptPath,
-        });
-      }
+      await assertLoopOutcome(result);
     }
-
-    const providerIdentitySummarySnapshot = (): ProviderIdentitySummary | undefined =>
-      providerIdentityExpectation ? providerIdentityTracker.summary() : undefined;
-    const providerExpectationSnapshot = providerIdentityExpectation
-      ? {
-        expectedModel: providerIdentityExpectation.expectedModel,
-        requestedWireId: providerIdentityExpectation.requestedWireId,
-        isAlias: providerIdentityExpectation.isAlias,
-      }
-      : undefined;
     let inspection = await inspectCompletion({
       featureDir,
       intendedModel: requestedModelName,
@@ -1558,17 +1672,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         } as AgentMessage,
       ];
       result = await runCodingLoop();
-      const retryProviderError = findFinalAssistantErrorMessage(result.messages);
-      if (retryProviderError) {
-        throwProviderErrorWithHandoff({
-          featureDir,
-          result,
-          errorMessage: retryProviderError,
-          mutationFailureTracker,
-          recoveryAttempted,
-          transcriptPath,
-        });
-      }
+      await assertLoopOutcome(result);
       inspection = await inspectCompletion({
         featureDir,
         intendedModel: requestedModelName,
@@ -1694,6 +1798,13 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     };
   } catch (error) {
     const message = (error as Error).message;
+    // HOK-3362: the budget fact, handoff, envelope and failed stage result were
+    // written at the stop; only the hook/status text is left to update.
+    if (error instanceof NativeBudgetExhaustedError) {
+      writeHookStatus(hookPath, 'error', 'process_exit', message, 'native');
+      writeTextStatus(options.session, options.issue, `native coding budget exhausted (${error.fact.kind})`);
+      throw error;
+    }
     // HOK-3143: a provider-identity failure gets its own failure reason and
     // ineligibility code so the monitor's reroute (via HOK-3142) can route the
     // next launch around the certificate while the re-cert runs.

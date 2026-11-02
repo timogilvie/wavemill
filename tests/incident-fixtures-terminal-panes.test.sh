@@ -109,7 +109,6 @@ run_startup_preflight_replay() {
     REQUIRE_CONFIRM=false
     DRY_RUN=false
     CHALLENGE_AUTO_MERGE=false
-    declare -Ag CLEANED=()
     log() { :; }
     log_warn() { :; }
     log_error() { :; }

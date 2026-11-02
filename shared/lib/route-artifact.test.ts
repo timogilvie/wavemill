@@ -22,6 +22,8 @@ import {
   validateExpandedRouteArtifact,
   withResolvedRouteBudget,
   writeRouteArtifact,
+  appendRouteOverrideToFeatureDir,
+  routeRecordCarrier,
 } from './route-artifact.ts';
 import type { WorkflowRouteDecision } from './workflow-router.ts';
 
@@ -107,7 +109,7 @@ test('routedAt is iso-8601 utc by default', () => {
 });
 
 test('route artifact metadata constants are stable', () => {
-  assert.equal(ROUTE_ARTIFACT_SCHEMA_VERSION, '1.1');
+  assert.equal(ROUTE_ARTIFACT_SCHEMA_VERSION, '1.2');
   assert.equal(POLICY_RESOLVER_VERSION, '1.0.0');
 });
 
@@ -788,7 +790,6 @@ test('buildRouteLifecycleProvenance includes active route and expanded cache met
       reviewer: 'claude-sonnet-5',
       reviewMode: 'static',
     },
-    routeChanged: true,
     decisionSource: 'expanded',
     expandedCacheHit: true,
     packetHash: 'd'.repeat(64),
@@ -837,6 +838,101 @@ test('hasValidPostExpansionRoute returns ok for valid artifact', () => {
       reviewMode: 'llm',
     }));
     assert.deepEqual(hasValidPostExpansionRoute(dir), { ok: true });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── HOK-3363: the per-stage route record on disk ────────────────────────────
+
+function writeRouteArtifactFile(dir: string, name: string, value: Record<string, unknown>): void {
+  writeFileSync(join(dir, name), `${JSON.stringify(value, null, 2)}\n`);
+}
+
+const HOKUSAI_ROUTE_ARTIFACT = {
+  planner: 'claude-sonnet-4-5-20250929',
+  coder: 'claude-haiku-4-5-20251001',
+  reviewer: 'claude-sonnet-4-5-20250929',
+  planDepth: 'medium',
+  codeDepth: 'medium',
+  reviewMode: 'llm',
+  routingMode: 'hokusai',
+  provenance: { source: 'expanded', inputKind: 'task-packet', inputPath: '', inputHash: '', routedAt: '2026-10-30T00:00:00.000Z', routerMode: 'normal', requestId: 'req-1', inferenceLogId: 'req-1' },
+  stageRoutes: {
+    planner: { hokusai: { requestId: 'req-1', recommended: 'claude-sonnet-4-5-20250929' }, executed: 'claude-sonnet-4-5-20250929', overrides: [] },
+    coder: { hokusai: { requestId: 'req-1', recommended: 'claude-haiku-4-5-20251001' }, executed: 'claude-haiku-4-5-20251001', overrides: [] },
+    reviewer: { hokusai: { requestId: 'req-1', recommended: 'claude-sonnet-4-5-20250929' }, executed: 'claude-sonnet-4-5-20250929', overrides: [] },
+  },
+};
+
+// protects: an operator reroute that never reaches the record the eval reads (HOK-3363).
+test('appendRouteOverrideToFeatureDir appends to the expanded route and the lifecycle reader returns it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'route-record-'));
+  try {
+    writeRouteArtifactFile(dir, '.initial-route.json', { ...HOKUSAI_ROUTE_ARTIFACT, stageRoutes: undefined });
+    writeRouteArtifactFile(dir, '.post-expansion-route.json', HOKUSAI_ROUTE_ARTIFACT);
+
+    const outcome = await appendRouteOverrideToFeatureDir(dir, 'coder', 'claude-opus-5-5', {
+      source: 'operator',
+      reason: 'operator_force_reroute',
+      at: '2026-10-30T12:00:00.000Z',
+      actor: 'operator',
+    });
+    assert.equal(outcome, 'appended');
+
+    const written = JSON.parse(readFileSync(join(dir, '.post-expansion-route.json'), 'utf-8'));
+    assert.equal(written.coder, 'claude-haiku-4-5-20251001', 'the routed decision itself is not rewritten');
+    assert.equal(written.stageRoutes.coder.executed, 'claude-opus-5-5');
+
+    const provenance = buildRouteLifecycleProvenance(readRouteLifecycleArtifacts(dir));
+    assert.equal(provenance?.hokusaiInferenceLogId, 'req-1');
+    assert.deepEqual(provenance?.stageRoutes?.coder, {
+      hokusai: { requestId: 'req-1', recommended: 'claude-haiku-4-5-20251001' },
+      executed: 'claude-opus-5-5',
+      overrides: [{
+        source: 'operator',
+        from: 'claude-haiku-4-5-20251001',
+        to: 'claude-opus-5-5',
+        reason: 'operator_force_reroute',
+        at: '2026-10-30T12:00:00.000Z',
+        actor: 'operator',
+      }],
+    });
+    assert.equal(routeRecordCarrier(readRouteLifecycleArtifacts(dir))?.artifactPath?.endsWith('.post-expansion-route.json'), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// protects: a same-model reroute polluting the record, and pre-HOK-3363 artifacts losing the override.
+test('appendRouteOverrideToFeatureDir is a no-op for the same model and seeds a record for legacy artifacts', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'route-record-'));
+  try {
+    const { stageRoutes: _ignored, ...legacy } = HOKUSAI_ROUTE_ARTIFACT;
+    writeRouteArtifactFile(dir, '.initial-route.json', legacy);
+
+    assert.equal(await appendRouteOverrideToFeatureDir(dir, 'coder', 'claude-haiku-4-5-20251001', {
+      source: 'operator', reason: 'operator_reroute',
+    }), 'noop');
+    assert.equal(JSON.parse(readFileSync(join(dir, '.initial-route.json'), 'utf-8')).stageRoutes, undefined);
+
+    assert.equal(await appendRouteOverrideToFeatureDir(dir, 'reviewer', 'claude-opus-4-7', {
+      source: 'launchability', reason: 'uncertified', certification: 'missing_live_canary', at: '2026-10-30T12:00:00.000Z',
+    }), 'appended');
+    const routes = JSON.parse(readFileSync(join(dir, '.initial-route.json'), 'utf-8')).stageRoutes;
+    assert.equal(routes.reviewer.overrides[0].from, 'claude-sonnet-4-5-20250929');
+    assert.equal(routes.reviewer.overrides[0].certification, 'missing_live_canary');
+    assert.equal(routes.coder.executed, 'claude-haiku-4-5-20251001');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// protects: a reroute claiming to have recorded an override when no route record exists.
+test('appendRouteOverrideToFeatureDir reports a feature dir with no route artifact', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'route-record-'));
+  try {
+    assert.equal(await appendRouteOverrideToFeatureDir(dir, 'coder', 'x', { source: 'operator', reason: 'r' }), 'no_route_artifact');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

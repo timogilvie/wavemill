@@ -570,8 +570,8 @@ function metaBlock(lines: string[]): string {
 }
 
 describe('route_decision (HOK-3098)', () => {
-  it('writes route_schema 2 and keeps the executed_route payload at schema 1', () => {
-    assert.equal(PR_ROUTE_METADATA_SCHEMA_VERSION, 2);
+  it('writes route_schema 3 and keeps the executed_route payload at schema 1', () => {
+    assert.equal(PR_ROUTE_METADATA_SCHEMA_VERSION, 3);
     assert.equal(EXECUTED_ROUTE_SCHEMA_VERSION, 1);
   });
 
@@ -616,7 +616,7 @@ describe('route_decision (HOK-3098)', () => {
   });
 
   it('rejects unsupported route_schema values', () => {
-    for (const value of ['3', '0', '2.0', 'two']) {
+    for (const value of ['4', '0', '2.0', 'two']) {
       const parsed = parsePrMetadata(metaBlock([
         `route_schema: ${value}`,
         `executed_route: ${stableJsonStringify(EXECUTED_ROUTE_FIXTURE)}`,
@@ -721,7 +721,54 @@ describe('route_decision (HOK-3098)', () => {
       supersedes: long,
       policy_version: long,
       recommended: { planner: long, coder: long, reviewer: long },
+      overrides: Array.from({ length: 12 }, (_unused, index) => ({
+        stage: 'coder', source: 'operator', from: long, to: long, reason: 'operator_reroute', at: `2026-10-30T12:00:${String(index).padStart(2, '0')}.000Z`,
+      })),
     });
     assert.ok(errors.some((error) => error.message === `route_decision exceeds ${MAX_ROUTE_DECISION_BYTES} bytes`));
+  });
+
+  const OVERRIDES = [
+    { stage: 'coder', source: 'escalation', from: 'claude-haiku-4-5', to: 'glm-5.3-flash', reason: 'hokusai_reask_below_floor', at: '2026-10-30T10:00:00.000Z' },
+    { stage: 'coder', source: 'operator', from: 'glm-5.3-flash', to: 'claude-opus-5-5', reason: 'operator_force_reroute', at: '2026-10-30T11:00:00.000Z' },
+  ] as const;
+
+  // protects: the PR stamp dropping who overrode Hokusai's recommendation (HOK-3363).
+  it('round-trips route_decision.overrides on a v3 block', () => {
+    const metadata: PrMetadata = {
+      task: 'HOK-3329',
+      route_schema: 3,
+      executed_route: EXECUTED_ROUTE_FIXTURE,
+      route_decision: { ...ROUTE_DECISION_FIXTURE, overrides: OVERRIDES.map((override) => ({ ...override })) },
+    };
+    const parsed = parsePrMetadata(renderPrMetadata(metadata));
+    assert.equal(parsed.ok, true);
+    if (parsed.ok) {
+      assert.deepEqual(parsed.metadata, metadata);
+    }
+  });
+
+  // protects: an old reader (route_schema 2) silently accepting a field it cannot interpret.
+  it('rejects route_decision.overrides on a v2 block and malformed overrides', () => {
+    const parsed = parsePrMetadata(metaBlock([
+      'route_schema: 2',
+      `executed_route: ${stableJsonStringify(EXECUTED_ROUTE_FIXTURE)}`,
+      `route_decision: ${stableJsonStringify({ ...ROUTE_DECISION_FIXTURE, overrides: OVERRIDES })}`,
+    ]));
+    assert.equal(parsed.ok, false);
+    if (!parsed.ok) {
+      assert.deepEqual(parsed.errors.map((error) => error.message), ['route_decision.overrides requires route_schema 3']);
+    }
+
+    const errors = validateRouteDecision({
+      ...ROUTE_DECISION_FIXTURE,
+      overrides: [{ stage: 'linter', source: 'whim', from: 'a', to: '', reason: 'r', at: '2026-10-30T10:00:00.000Z', extra: 1 }],
+    });
+    assert.deepEqual(errors.map((error) => error.message).sort(), [
+      'Expected non-empty route_decision.overrides.0.to',
+      'Expected route_decision.overrides.0.source to be one of escalation, launchability, challenge, operator',
+      'Expected route_decision.overrides.0.stage to be planner, coder or reviewer',
+      'Unknown route_decision field at route_decision.overrides.0.extra',
+    ]);
   });
 });

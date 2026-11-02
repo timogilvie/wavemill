@@ -84,7 +84,7 @@ SEND_LOG="$TMP_DIR/send.log"
 : > "$LOG_FILE"
 : > "$SEND_LOG"
 
-declare -A BRANCH_BY_ISSUE=() SLUG_BY_ISSUE=() CLEANED=() TASK_PHASE=() TASK_PROGRESS=()
+declare -A BRANCH_BY_ISSUE=() SLUG_BY_ISSUE=() TASK_PHASE=() TASK_PROGRESS=()
 
 log() { printf '%s %s\n' "$1" "${*:2}" >> "$LOG_FILE"; }
 read_state_value() { printf '\n'; }
@@ -181,7 +181,7 @@ make_task HOK-7 stale-record
 TASK_PROGRESS[HOK-7]="$(idle_progress idle $((STARTED_EPOCH - 60)))"
 make_task HOK-8 cleaned-agent
 TASK_PROGRESS[HOK-8]="$(idle_progress idle)"
-CLEANED[HOK-8]=1
+unset "BRANCH_BY_ISSUE[HOK-8]"
 make_task HOK-9 terminal-agent
 TASK_PROGRESS[HOK-9]="$(idle_progress idle | jq -c '.terminal = true')"
 

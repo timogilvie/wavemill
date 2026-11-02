@@ -119,7 +119,6 @@ run_monitor_case() {
     declare -Ag BRANCH_BY_ISSUE=()
     declare -Ag SLUG_BY_ISSUE=()
     declare -Ag PR_BY_ISSUE=()
-    declare -Ag CLEANED=()
 
     ISSUE="HOK-1249"
     SLUG="monitor-ready"

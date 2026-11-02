@@ -15,8 +15,11 @@ import { afterEach, describe, it } from 'node:test';
 import { readStageResult } from '../stage-result.ts';
 import { registerScriptedPiProvider, type ScriptedPiProviderTurn, type ScriptedProviderContext } from './provider.ts';
 import { getCodingFailureHandoffPath, readCodingFailureHandoff } from './coding-failure-handoff.ts';
+import { getStageFailureEnvelopePath, readStageFailureEnvelope } from './stage-failure-envelope.ts';
+import { classifyArmFault } from '../arm-failure-taxonomy.ts';
 import {
   CODING_RECOVERY_INSTRUCTION_FILE,
+  NativeBudgetExhaustedError,
   launchNativeCoding,
   renderCodingSystemPrompt,
   withCodingRecoveryInstruction,
@@ -1033,6 +1036,180 @@ describe('launchNativeCoding', () => {
     assert.ok(existsSync(join(featureDir, '.coding-complete')));
     const stageResult = await readStageResult(featureDir, 'coding');
     assert.equal(stageResult?.status, 'completed');
+  });
+});
+
+/**
+ * A tool that blocks until the run's abort signal fires, so the loop's own
+ * wall-clock budget aborts the run mid-flight exactly as on HOK-3329 attempt 2.
+ */
+function createWaitTool(): ToolDescriptor<Record<string, never>, { ok: true }> {
+  return {
+    metadata: {
+      name: 'run_slow_check',
+      description: 'Test-only tool that waits for the abort signal.',
+      class: 'mutation',
+      allowedPhases: ['coding'],
+      executionMode: 'sequential',
+      outputCapPolicy: { strategy: 'none' },
+    },
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    async execute(_toolCallId, _params, signal) {
+      await new Promise<void>((resolve) => {
+        if (signal?.aborted) return resolve();
+        const timer = setTimeout(resolve, 5_000);
+        signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+      });
+      return { content: [{ type: 'text', text: 'checked' }], details: { ok: true } };
+    },
+  };
+}
+
+describe('launchNativeCoding budget exhaustion (HOK-3362, HOK-3329 replay)', () => {
+  // protects: our own wall-clock abort ("Request was aborted") recorded as provider_error / provider-unknown-error (HOK-3329 attempt 2)
+  it('records budget_exhausted kind=wall_clock with progress, never provider_error, when the budget aborts the run', async () => {
+    const { repoDir, featureDir, slug } = makeRepo();
+    const api = `native-coding-wall-clock-${process.pid}-${Date.now()}`;
+    let calls = 0;
+    registerScriptedPiProvider({
+      api,
+      provider: 'scripted',
+      turns: (context: ScriptedProviderContext) => {
+        calls += 1;
+        if (context.options?.signal?.aborted || calls > 1) {
+          // The in-flight request after our budget fired: the transport reports the abort.
+          return {
+            content: [],
+            usage: { input: 0, output: 0, totalTokens: 0 },
+            stopReason: 'error',
+            errorMessage: 'Request was aborted',
+          };
+        }
+        return toolTurn('slow-1', 'run_slow_check', {});
+      },
+    });
+    const model = { id: `scripted:${api}`, name: `scripted:${api}`, api, provider: 'scripted' };
+
+    await assert.rejects(
+      () => launchNativeCoding({
+        session: 'sess',
+        issue: 'HOK-3329',
+        slug,
+        wtDir: repoDir,
+        repoDir,
+        loopModelOverride: model,
+        loopBudgetOverride: { maxWallClockMs: 150 },
+        extraDescriptors: [createWaitTool()],
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof NativeBudgetExhaustedError);
+        assert.match((error as Error).message, /^native-stage-timeout: native coding exhausted its wall-clock budget/);
+        assert.doesNotMatch((error as Error).message, /provider-unknown-error|Request was aborted/);
+        return true;
+      },
+    );
+
+    const handoff = await readCodingFailureHandoff(getCodingFailureHandoffPath(featureDir));
+    assert.equal(handoff.ok, true);
+    if (!handoff.ok) return;
+    assert.equal(handoff.value.reason, 'budget_exhausted');
+    assert.equal(handoff.value.providerError, undefined);
+    assert.equal(handoff.value.stopReason, 'wall_clock_limit');
+    const fact = handoff.value.budgetExhausted!;
+    assert.equal(fact.kind, 'wall_clock');
+    assert.equal(fact.limit, 150);
+    assert.ok(fact.used >= 150);
+    assert.ok(fact.progress.turnsCompleted >= 1);
+    assert.equal(fact.progress.toolCallsExecuted, 1);
+
+    const envelope = await readStageFailureEnvelope(getStageFailureEnvelopePath(featureDir, 'coding'));
+    assert.equal(envelope.ok, true);
+    if (!envelope.ok) return;
+    assert.equal(envelope.value.cause, 'stage-timeout');
+    assert.deepEqual(envelope.value.budgetExhausted, fact);
+
+    const stageResult = await readStageResult(featureDir, 'coding');
+    assert.equal(stageResult?.status, 'failed');
+    assert.equal(stageResult?.failureReason, 'budget_exhausted:wall_clock');
+    assert.deepEqual(stageResult?.budgetExhausted, fact);
+    assert.doesNotMatch(readFileSync(getCodingFailureHandoffPath(featureDir), 'utf-8'), /provider_error/);
+    // The agent kept making progress with no provider errors: model did not finish within budget.
+    assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact }), 'model-fault');
+  });
+
+  // protects: a coding turn_limit recorded as no_completion_artifact (HOK-3329 attempts 1 and 3)
+  it('records budget_exhausted kind=turn with mutation failures instead of no_completion_artifact', async () => {
+    const { repoDir, featureDir, slug } = makeRepo();
+    // HOK-3329 attempt 1: rejected apply_patch calls until the turn budget ran out.
+    const rejectedPatch = (id: string) => toolTurn(id, 'apply_patch', {
+      patch: {
+        operations: [{
+          op: 'edit',
+          path: 'src/app.ts',
+          oldText: "export const message = 'before';\n",
+          newText: "export const message = 'after';\n",
+        }],
+      },
+    });
+    const model = scriptedModel([
+      rejectedPatch('bad-patch-1'),
+      rejectedPatch('bad-patch-2'),
+      rejectedPatch('bad-patch-3'),
+    ], 'turn-limit');
+
+    await assert.rejects(
+      () => launchNativeCoding({
+        session: 'sess',
+        issue: 'HOK-3329',
+        slug,
+        wtDir: repoDir,
+        repoDir,
+        loopModelOverride: model,
+        loopBudgetOverride: { maxTurns: 3 },
+      }),
+      NativeBudgetExhaustedError,
+    );
+
+    const handoff = await readCodingFailureHandoff(getCodingFailureHandoffPath(featureDir));
+    assert.equal(handoff.ok, true);
+    if (!handoff.ok) return;
+    assert.equal(handoff.value.reason, 'budget_exhausted');
+    const fact = handoff.value.budgetExhausted!;
+    assert.deepEqual([fact.kind, fact.limit, fact.used], ['turn', 3, 3]);
+    assert.equal(fact.progress.toolCallsExecuted, 3);
+    assert.equal(fact.progress.mutationFailures, 3);
+    assert.equal(handoff.value.mutationFailures, 3);
+    assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact }), 'model-fault');
+  });
+
+  // protects: the budget rule swallowing a genuine upstream failure that happened before the budget expired
+  it('still classifies an upstream 5xx before the budget as provider_error', async () => {
+    const { repoDir, featureDir, slug } = makeRepo();
+    const model = scriptedModel([{
+      content: [],
+      usage: { input: 0, output: 0, totalTokens: 0 },
+      stopReason: 'error',
+      errorMessage: '502 Bad Gateway: upstream server error',
+    }], 'upstream-5xx');
+
+    await assert.rejects(
+      () => launchNativeCoding({
+        session: 'sess',
+        issue: 'HOK-3329',
+        slug,
+        wtDir: repoDir,
+        repoDir,
+        loopModelOverride: model,
+      }),
+      /provider-transient-error: 502 Bad Gateway/,
+    );
+    const handoff = await readCodingFailureHandoff(getCodingFailureHandoffPath(featureDir));
+    assert.equal(handoff.ok, true);
+    if (!handoff.ok) return;
+    assert.equal(handoff.value.reason, 'provider_error');
+    assert.equal(handoff.value.budgetExhausted, undefined);
+    assert.equal(handoff.value.providerError?.kind, 'provider-transient-error');
+    assert.equal(existsSync(getStageFailureEnvelopePath(featureDir, 'coding')), false);
   });
 });
 

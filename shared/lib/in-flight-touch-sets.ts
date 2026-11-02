@@ -32,6 +32,12 @@ export interface InFlightTouchSet {
   source: 'actual' | 'predicted';
   /** Workflow phase at computation time ("coding" | "review" | ... ). */
   phase?: string;
+  /**
+   * HOK-3373: `'unknown'` when the task's worktree did not resolve to a
+   * registered worktree (`task-worktree-resolver`); `files` is then empty and
+   * means nothing. See `InFlightTask.touchSet`.
+   */
+  touchSet?: 'known' | 'unknown';
 }
 
 /**
@@ -153,6 +159,7 @@ export function parseInFlightJson(raw: string, source: string): InFlightTouchSet
     if (typeof record.phase === 'string' && record.phase.length > 0) {
       entry.phase = record.phase;
     }
+    if (record.touchSet === 'unknown') entry.touchSet = 'unknown';
     result.push(entry);
   }
   return result;

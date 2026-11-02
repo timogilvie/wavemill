@@ -5,7 +5,8 @@
  * Thin CLI bridge (HOK-2933) between the shell failure classifier in
  * shared/lib/wavemill-monitor.sh and readCodingFailureHandoff. On a valid
  * handoff the reason ("no_completion_artifact" | "invalid_completion_artifact"
- * | "provider_error") is printed to stdout and the tool exits 0. A missing,
+ * | "provider_error" | "budget_exhausted" (HOK-3362)) is printed to stdout and
+ * the tool exits 0. A missing,
  * malformed, or schema-invalid file exits non-zero with the error on stderr,
  * which the shell caller treats as "no typed evidence".
  */

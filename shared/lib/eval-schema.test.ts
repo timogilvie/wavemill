@@ -790,7 +790,7 @@ function validPromptSizeDiagnostic() {
 }
 
 test('SCHEMA_VERSION is bumped for eval schema updates', () => {
-  assert.equal(SCHEMA_VERSION, '1.56.0');
+  assert.equal(SCHEMA_VERSION, '1.57.0');
 });
 
 function validReviewIdentitySet() {
@@ -2492,8 +2492,8 @@ test('Wavemill router fields validate and schema stays in parity', () => {
   assert.equal(properties.wavemill_router_scoring?.$ref, '#/$defs/WavemillRouterScoringMetadata');
 });
 
-test('Schema version constant is 1.56.0', () => {
-  assert.equal(SCHEMA_VERSION, '1.56.0');
+test('Schema version constant is 1.57.0', () => {
+  assert.equal(SCHEMA_VERSION, '1.57.0');
 });
 
 test('correctionProvenance validates when present and is rejected when malformed (HOK-3321)', () => {

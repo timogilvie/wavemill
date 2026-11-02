@@ -28,6 +28,12 @@ export interface MutateJsonStateOptions<T> {
    * line. The violations are still shadow-logged.
    */
   onInvalid?: (statePath: string, issues: WorkflowStateIssue[]) => void;
+  /**
+   * `workflow-state.json` only (HOK-3373): `.tasks` key → the run id this
+   * writer acted for. Control writes against a row now carrying another
+   * `runId` are reverted before the write lands (`task-settlement.ts`).
+   */
+  expectedRunIds?: Record<string, string>;
 }
 
 export class StateLockTimeoutError extends Error {
@@ -145,9 +151,13 @@ export async function mutateJsonState<T>(
 
   try {
     const current = readJsonState(statePath, opts);
-    // HOK-3222: validate task records this write adds or changes when the
-    // target is workflow-state.json (Phase 1: shadow-log, never refuse).
-    const checkTaskRecords = prepareTaskRecordWriteCheck(statePath, current, 'ts', { onInvalid: opts.onInvalid });
+    // HOK-3222 / HOK-3373: for workflow-state.json, gate control writes on
+    // settled / non-current runs (reverted in place) and shadow-validate the
+    // task records this write adds or changes.
+    const checkTaskRecords = prepareTaskRecordWriteCheck(statePath, current, 'ts', {
+      onInvalid: opts.onInvalid,
+      expectedRunIds: opts.expectedRunIds,
+    });
     const next = transform(current);
     checkTaskRecords?.(next);
 
@@ -219,9 +229,13 @@ export function mutateJsonStateSync<T>(
 
   try {
     const current = readJsonState(statePath, opts);
-    // HOK-3222: validate task records this write adds or changes when the
-    // target is workflow-state.json (Phase 1: shadow-log, never refuse).
-    const checkTaskRecords = prepareTaskRecordWriteCheck(statePath, current, 'ts', { onInvalid: opts.onInvalid });
+    // HOK-3222 / HOK-3373: for workflow-state.json, gate control writes on
+    // settled / non-current runs (reverted in place) and shadow-validate the
+    // task records this write adds or changes.
+    const checkTaskRecords = prepareTaskRecordWriteCheck(statePath, current, 'ts', {
+      onInvalid: opts.onInvalid,
+      expectedRunIds: opts.expectedRunIds,
+    });
     const next = transform(current);
     checkTaskRecords?.(next);
 

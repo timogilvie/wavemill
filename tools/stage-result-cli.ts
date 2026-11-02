@@ -366,6 +366,11 @@ async function main(): Promise<void> {
       notes: writeFlags['notes'] ?? '',
       ...(artifacts !== undefined && { artifacts }),
       ...(writeFlags['failure-reason'] !== undefined && { failureReason: writeFlags['failure-reason'] }),
+      // HOK-3362: the launcher's budget fact belongs to this attempt; the
+      // monitor's terminal rewrite (failed/aborted) must not erase it.
+      ...(isTerminal && status !== 'completed' && existing?.budgetExhausted
+        ? { budgetExhausted: existing.budgetExhausted }
+        : {}),
       ...(existing?.history?.length ? { history: existing.history } : {}),
     };
 

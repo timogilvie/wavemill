@@ -5,6 +5,8 @@ import { runTool } from '../shared/lib/tool-runner.ts';
 import { resolveModelAgent } from '../shared/lib/model-agent-resolution.ts';
 import { isChallengerTaskId } from '../shared/lib/task-identity.ts';
 import { readWorkflowState } from '../shared/lib/workflow-state.ts';
+import { appendRouteOverrideToFeatureDir } from '../shared/lib/route-artifact.ts';
+import type { RouteStageRole } from '../shared/lib/route-override-record.ts';
 import {
   appendRerouteAudit,
   providerForModel,
@@ -18,6 +20,11 @@ import {
 } from '../shared/lib/execution-contract.ts';
 
 const STAGES = new Set(['planning', 'coding', 'review']);
+const STAGE_ROUTE_ROLE: Record<StageRole, RouteStageRole> = {
+  planning: 'planner',
+  coding: 'coder',
+  review: 'reviewer',
+};
 const SIDES = new Set(['primary', 'challenger']);
 
 function stage(value: string | undefined): StageRole {
@@ -108,7 +115,15 @@ await runTool({
     if (changed && after.challengeSide) {
       await writeChallengeEvidenceInvalid(stateTask.featureDir, 'operator_reroute');
     }
+    // HOK-3363: the reroute is an override of the routed model; append it to
+    // the route record so the eval and the Hokusai contribution row carry it.
+    const routeRecord = await appendRouteOverrideToFeatureDir(stateTask.featureDir, STAGE_ROUTE_ROLE[phase], after.model, {
+      source: 'operator',
+      reason: args.force ? 'operator_force_reroute' : 'operator_reroute',
+      at: after.selectedAt,
+      ...(process.env.USER ? { actor: process.env.USER } : {}),
+    });
 
-    console.log(JSON.stringify({ ok: true, taskId, phase, changed, before, after }));
+    console.log(JSON.stringify({ ok: true, taskId, phase, changed, routeRecord, before, after }));
   },
 });

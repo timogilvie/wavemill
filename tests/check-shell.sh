@@ -88,6 +88,8 @@ for f in \
   "$LIB_DIR"/task-progress.sh \
   "$LIB_DIR"/wavemill-reliability-refresh.sh \
   "$LIB_DIR"/task-identity.sh \
+  "$LIB_DIR"/attempt-identity.sh \
+  "$LIB_DIR"/task-worktree-resolver.sh \
   "$LIB_DIR"/session-ownership.sh \
   "$LIB_DIR"/terminal-backend.sh \
   "$LIB_DIR"/challenge-arms.sh \
@@ -122,6 +124,7 @@ for f in \
   "$REPO_DIR"/tests/dashboard-refresh.test.sh \
   "$REPO_DIR"/tests/state-mutex.test.sh \
   "$REPO_DIR"/tests/state-mutate-task-record-validation.test.sh \
+  "$REPO_DIR"/tests/settled-attempt.test.sh \
   "$REPO_DIR"/tests/task-id-log-prefix.test.sh \
   "$REPO_DIR"/tests/log-hygiene.test.sh \
   "$REPO_DIR"/tests/project-context-suggestion.test.sh \
@@ -324,11 +327,15 @@ for f in \
   "$REPO_DIR"/tests/journeys/fixtures/dirty-tree-coding-complete/fake-agent/review \
   "$REPO_DIR"/tests/journeys/post-merge-eval-reap.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/post-merge-eval-reap/bin/claude \
+  "$REPO_DIR"/tests/journeys/escalation-override-record.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/escalation-override-record/bin/claude \
   "$REPO_DIR"/tests/journeys/agent-idle-background-job.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/agent-idle-background-job/agent-session.sh \
   "$REPO_DIR"/tests/journeys/fixtures/agent-idle-background-job/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/operator-abort-mid-coding.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/operator-abort-mid-coding/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/native-coder-budget-exhaustion.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/hok-3362/fake-agent/coding \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
   "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
   "$REPO_DIR"/tests/lib/state-fixtures.sh \
@@ -678,7 +685,7 @@ else
     TASK_PROGRESS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/task-progress.sh" | sed 's/()//' | sort -u)
 
     # Extract function definitions from task-identity.sh (sourced by wavemill-common.sh, HOK-3114)
-    TASK_IDENTITY_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/task-identity.sh" | sed 's/()//' | sort -u)
+    TASK_IDENTITY_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/task-identity.sh" "$LIB_DIR/attempt-identity.sh" "$LIB_DIR/task-worktree-resolver.sh" | sed 's/^[^:]*://; s/()//' | sort -u)
 
     # Extract function definitions from terminal-backend.sh (sourced by wavemill-common.sh, HOK-3293)
     TERMINAL_BACKEND_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/terminal-backend.sh" | sed 's/()//' | sort -u)
@@ -3723,6 +3730,7 @@ echo ""
 echo "=== HOK-2289: Pi Vendor Adapter Seam Guard ==="
 
 PI_ALLOWED_FILES=(
+  "shared/lib/native-agent/budget-exhaustion.test.ts"
   "shared/lib/native-agent/compaction.test.ts"
   "shared/lib/native-agent/compaction.ts"
   "shared/lib/native-agent/loop.test.ts"

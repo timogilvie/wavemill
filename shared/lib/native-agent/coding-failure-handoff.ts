@@ -2,11 +2,22 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { validateBudgetExhaustedFact, type BudgetExhaustedFact } from './budget-exhaustion.ts';
 
 export const CODING_FAILURE_HANDOFF_SCHEMA_VERSION = '1.0';
 export const CODING_FAILURE_HANDOFF_FILENAME = '.coding-failure-handoff.json';
 export const CODING_FAILURE_HANDOFF_STAGE = 'coding';
-export const CODING_FAILURE_HANDOFF_REASONS = ['no_completion_artifact', 'invalid_completion_artifact', 'provider_error'] as const;
+/**
+ * `budget_exhausted` (HOK-3362) replaces `provider_error` and
+ * `no_completion_artifact` when the run stopped on a budget reason; those two
+ * remain for non-budget stops.
+ */
+export const CODING_FAILURE_HANDOFF_REASONS = [
+  'no_completion_artifact',
+  'invalid_completion_artifact',
+  'provider_error',
+  'budget_exhausted',
+] as const;
 export type CodingFailureHandoffReason = (typeof CODING_FAILURE_HANDOFF_REASONS)[number];
 
 export interface CodingFailureToolError {
@@ -43,6 +54,8 @@ export interface CodingFailureHandoff {
     attempts: number;
     transcriptPath?: string;
   };
+  /** Required for `budget_exhausted` (HOK-3362). */
+  budgetExhausted?: BudgetExhaustedFact;
 }
 
 export type CodingFailureHandoffValidationResult =
@@ -140,6 +153,15 @@ export function validateCodingFailureHandoff(
     const providerError = validateProviderError(value.providerError);
     if (!providerError.ok) {
       return providerError;
+    }
+  }
+  if (value.reason === 'budget_exhausted' || value.budgetExhausted !== undefined) {
+    if (value.budgetExhausted === undefined) {
+      return error('MISSING_REQUIRED_FIELD', 'Coding failure handoff budgetExhausted must be present for budget_exhausted.', 'budgetExhausted');
+    }
+    const fact = validateBudgetExhaustedFact(value.budgetExhausted);
+    if (fact.ok === false) {
+      return error('INVALID_FIELD_TYPE', `Coding failure handoff ${fact.message}`, fact.field);
     }
   }
 

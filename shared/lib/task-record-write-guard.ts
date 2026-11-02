@@ -31,6 +31,12 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { appendObserverFinding } from './observer-findings.ts';
 import {
+  applySettlementGate,
+  recordMutatorRejections,
+  settlementGateShadow,
+  type SettlementRejection,
+} from './task-settlement.ts';
+import {
   changedTaskRecordIssues,
   taskRecordSnapshot,
   type TaskRecordWriteIssue,
@@ -63,6 +69,21 @@ export interface ReportTaskRecordWriteOptions {
   onInvalid?: (statePath: string, issues: WorkflowStateIssue[]) => void;
   /** Injected clock for tests. */
   now?: () => Date;
+  /**
+   * HOK-3373: `.tasks` key → the run id the writer acted for. A control
+   * write against a row now carrying a different `runId` is refused.
+   */
+  expectedRunIds?: Record<string, string>;
+}
+
+/** What one guarded write produced. */
+export interface TaskRecordWriteCheckResult {
+  /** Schema violations the write introduced (HOK-3222, shadow). */
+  violations: TaskRecordWriteIssue[];
+  /** Control writes refused by the settlement gate (HOK-3373). */
+  rejections: SettlementRejection[];
+  /** True when the gate reverted at least one field in the candidate. */
+  reverted: boolean;
 }
 
 /** True when `statePath` names `workflow-state.json`. */
@@ -191,24 +212,34 @@ export function reportTaskRecordWriteViolations(
 }
 
 /**
- * Prepare a write to `statePath`: when it is `workflow-state.json` and
- * validation is enabled, snapshot the task rows of `current` and return a
- * check to run on the transform result. Returns `null` (nothing to do)
- * otherwise. The snapshot must be taken before the transform runs, since
- * transforms may mutate `current` in place.
+ * Prepare a write to `statePath`: when it is `workflow-state.json`, snapshot
+ * the task rows of `current` and return a check to run on the transform
+ * result. Returns `null` (nothing to do) otherwise. The snapshot must be
+ * taken before the transform runs, since transforms may mutate `current` in
+ * place.
+ *
+ * The check first applies the HOK-3373 settlement gate, which reverts
+ * refused control writes **in the candidate, in place** (so the caller then
+ * writes the corrected value), and then the HOK-3222 schema check on what is
+ * left. The gate always runs for `workflow-state.json`; the schema kill
+ * switch (`WAVEMILL_TASK_RECORD_WRITE_VALIDATE_SHADOW=0`) only skips the
+ * schema half.
  */
 export function prepareTaskRecordWriteCheck(
   statePath: string,
   current: unknown,
   writer: TaskRecordWriter,
   opts: ReportTaskRecordWriteOptions = {},
-): ((next: unknown) => TaskRecordWriteIssue[]) | null {
-  if (!isWorkflowStatePath(statePath) || !taskRecordWriteValidationEnabled()) return null;
+): ((next: unknown) => TaskRecordWriteCheckResult) | null {
+  if (!isWorkflowStatePath(statePath)) return null;
   const before = taskRecordSnapshot(current);
+  const validate = taskRecordWriteValidationEnabled();
   return (next) => {
-    const violations = changedTaskRecordIssues(before, next);
+    const shadow = settlementGateShadow();
+    const rejections = applySettlementGate(before, next, { expectedRunIds: opts.expectedRunIds, revert: !shadow });
+    recordMutatorRejections(statePath, writer, rejections, { mode: shadow ? 'shadow' : 'enforce', now: opts.now });
+    const violations = validate ? changedTaskRecordIssues(before, next) : [];
     reportTaskRecordWriteViolations(statePath, writer, violations, opts);
-    return violations;
+    return { violations, rejections, reverted: !shadow && rejections.length > 0 };
   };
 }
-

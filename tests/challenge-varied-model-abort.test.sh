@@ -44,6 +44,9 @@ eval "$(extract_function resolve_phase_model)"
 eval "$(extract_function resolve_stage_result_model)"
 eval "$(extract_function challenge_cancel_challenger_arm)"
 eval "$(extract_function handle_phase_launch_result)"
+# challenge_cancel_challenger_arm deregisters the retired arm through the
+# shared registry helper in wavemill-common.sh (HOK-3373).
+eval "$(MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-common.sh" extract_function monitor_deregister_terminal_task)"
 
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT

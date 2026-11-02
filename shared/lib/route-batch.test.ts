@@ -156,11 +156,10 @@ function makeRepo(mode: 'auto' | 'stage-aware' = 'auto') {
 
 // Batch routing additionally mints a route decision (HOK-3098) and pins the
 // decided route; serial router calls do neither.
-function withoutProvenance<T extends { provenance?: unknown; routeDecision?: unknown; preEscalationRoute?: unknown }>(decision: T) {
+function withoutProvenance<T extends { provenance?: unknown; routeDecision?: unknown }>(decision: T) {
   const {
     provenance: _provenance,
     routeDecision: _routeDecision,
-    preEscalationRoute: _preEscalationRoute,
     ...rest
   } = decision;
   return rest;
@@ -406,7 +405,14 @@ await test('routeBatch records the recommendation before a workspace selector ov
 
     assert.equal(result.decision.coder, 'claude-opus-4-8');
     assert.notEqual(result.decision.routeDecision?.recommended.coder, 'claude-opus-4-8');
-    assert.equal(result.decision.routeDecision?.recommended.coder, result.decision.preEscalationRoute?.coder);
+    // protects: a workspace selector silently replacing the routed coder (HOK-3363).
+    const coderRecord = result.decision.stageRoutes?.coder;
+    assert.equal(coderRecord?.executed, 'claude-opus-4-8');
+    assert.equal(coderRecord?.overrides.length, 1);
+    assert.equal(coderRecord?.overrides[0].source, 'operator');
+    assert.equal(coderRecord?.overrides[0].reason, 'workspace_model_selector');
+    assert.equal(coderRecord?.overrides[0].to, 'claude-opus-4-8');
+    assert.equal(result.decision.routeDecision?.recommended.coder, coderRecord?.overrides[0].from);
   } finally {
     cleanup();
   }

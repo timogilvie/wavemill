@@ -3,6 +3,11 @@ import { mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ArmFailureKind } from '../arm-failure-taxonomy.ts';
+import {
+  describeBudgetExhaustion,
+  validateBudgetExhaustedFact,
+  type BudgetExhaustedFact,
+} from './budget-exhaustion.ts';
 
 /**
  * Typed native stage-failure envelope (HOK-3064).
@@ -15,10 +20,12 @@ import type { ArmFailureKind } from '../arm-failure-taxonomy.ts';
  * log substring matching to recover the cause.
  *
  * Modeled on `coding-failure-handoff.ts`: same atomic tmp+rename write, same
- * validate-on-read discriminated result, same fail-closed posture. The envelope
- * is *defined* for all three native stages; this task wires the review producer.
- * Coding keeps its existing `.coding-failure-handoff.json` writer, and the
- * monitor's reader precedence covers both.
+ * validate-on-read discriminated result, same fail-closed posture. Review
+ * writes it for every terminal cause; planning and coding write it for budget
+ * exhaustion (HOK-3362), so every native stage that runs out of budget hands
+ * the monitor the same typed `stage-timeout` cause and `budgetExhausted` fact.
+ * Coding keeps `.coding-failure-handoff.json` alongside it, and the monitor's
+ * reader precedence covers both.
  */
 
 export const STAGE_FAILURE_ENVELOPE_SCHEMA_VERSION = '1.0';
@@ -33,7 +40,8 @@ export type StageFailureStage = (typeof STAGE_FAILURE_ENVELOPE_STAGES)[number];
  * on the cause without substring inference.
  */
 export const STAGE_FAILURE_CAUSES = [
-  // Wall-clock / turn / tool-call / token budget exhaustion.
+  // Budget exhaustion of any kind (HOK-3362: `isBudgetStopReason`). Carries
+  // the `budgetExhausted` fact the fault class is derived from.
   'stage-timeout',
   'provider-rate-limited',
   // Transient upstream failure (5xx, stalls, dropped streams).
@@ -77,6 +85,11 @@ export interface StageFailureEnvelope {
   retryAttempt?: number;
   /** Configured timeout budget in ms (e.g. effectiveNativeTimeoutMs). */
   configuredTimeoutMs?: number;
+  /**
+   * The typed budget-exhaustion fact (HOK-3362). Present when `cause` is
+   * `stage-timeout`; `classifyArmFault` derives the fault class from it.
+   */
+  budgetExhausted?: BudgetExhaustedFact;
   /** Canonical provider name, e.g. 'openrouter'. */
   provider: string;
   /** Canonical bare model id (wavemill alias). */
@@ -138,6 +151,47 @@ export function writeStageFailureEnvelope(featureDir: string, envelope: StageFai
   const tmpPath = `${filePath}.${randomUUID()}.tmp`;
   writeFileSync(tmpPath, `${JSON.stringify(bounded, null, 2)}\n`, 'utf-8');
   renameSync(tmpPath, filePath);
+}
+
+/**
+ * The one budget-exhaustion envelope (HOK-3362). Every native stage that stops
+ * on a budget reason records cause `stage-timeout` with the typed fact, so the
+ * monitor reads the same kind (`native-stage-timeout`) and the fault class is
+ * derived from the same evidence regardless of stage.
+ */
+export function buildBudgetExhaustionEnvelope(input: {
+  stage: StageFailureStage;
+  fact: BudgetExhaustedFact;
+  provider: string;
+  model: string;
+  agent: string;
+  requestedModel?: string;
+  transcriptPath?: string;
+  payloadCaptureDir?: string;
+  retryAttempt?: number;
+  configuredTimeoutMs?: number;
+  createdAt?: string;
+}): StageFailureEnvelope {
+  return {
+    schemaVersion: STAGE_FAILURE_ENVELOPE_SCHEMA_VERSION,
+    stage: input.stage,
+    cause: 'stage-timeout',
+    stopReason: input.fact.stopReason,
+    ...(Number.isInteger(input.retryAttempt) ? { retryAttempt: input.retryAttempt } : {}),
+    ...(Number.isInteger(input.configuredTimeoutMs) ? { configuredTimeoutMs: input.configuredTimeoutMs } : {}),
+    budgetExhausted: input.fact,
+    provider: input.provider,
+    model: input.model,
+    ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
+    agent: input.agent,
+    evidence: {
+      source: 'native-runtime',
+      detail: describeBudgetExhaustion(input.stage, input.fact),
+      ...(input.transcriptPath ? { transcriptPath: input.transcriptPath } : {}),
+      ...(input.payloadCaptureDir ? { payloadCaptureDir: input.payloadCaptureDir } : {}),
+    },
+    createdAt: input.createdAt ?? new Date().toISOString(),
+  };
 }
 
 /**
@@ -208,6 +262,12 @@ export function validateStageFailureEnvelope(value: unknown): StageFailureEnvelo
   const evidence = validateEvidence(value.evidence);
   if (!evidence.ok) {
     return evidence;
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'budgetExhausted') && value.budgetExhausted !== undefined) {
+    const fact = validateBudgetExhaustedFact(value.budgetExhausted);
+    if (fact.ok === false) {
+      return err('INVALID_FIELD_TYPE', `Stage failure envelope ${fact.message}`, fact.field);
+    }
   }
 
   return { ok: true, value: value as unknown as StageFailureEnvelope };

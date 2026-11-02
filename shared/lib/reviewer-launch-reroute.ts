@@ -22,6 +22,7 @@ import { providerForModel } from './execution-contract.ts';
 import { getEffectiveRegistry } from './model-registry.ts';
 import { createLaunchabilityChecker } from './stage-launchability.ts';
 import { mutateJsonState } from './state-mutex.ts';
+import { appendRouteOverrideToFeatureDir } from './route-artifact.ts';
 import {
   findLaunchableSubstitute,
   routeWorkflowAuto,
@@ -165,12 +166,17 @@ async function applyReviewerSubstitution(input: {
     await mutateJsonState<Record<string, unknown>>(routingCompletePath, (current) => ({
       ...current,
       reviewer: input.to,
-      reviewerLaunchSubstitutions: [
-        ...(Array.isArray(current.reviewerLaunchSubstitutions) ? current.reviewerLaunchSubstitutions : []),
-        substitution,
-      ],
     }));
   }
+
+  // HOK-3363: the substitution is an override of the routed reviewer; the route
+  // record is where the eval and the Hokusai contribution row read it.
+  await appendRouteOverrideToFeatureDir(input.featureDir, 'reviewer', input.to, {
+    source: 'launchability',
+    reason: input.refusal.reason,
+    ...(input.refusal.certification ? { certification: input.refusal.certification } : {}),
+    at: input.at,
+  });
 
   appendFileSync(
     join(input.featureDir, REVIEWER_ROUTE_SUBSTITUTIONS_LOG),

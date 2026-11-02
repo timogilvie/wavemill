@@ -10,6 +10,7 @@
 import type { EvalRecord } from './eval-schema.ts';
 import { getScoreBand } from './eval-schema.ts';
 import { CYAN, GREEN, YELLOW, RED, BOLD, DIM, NC } from './colors.ts';
+import { flattenRouteOverrides } from './route-override-record.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Helpers
@@ -233,7 +234,12 @@ export function formatEvalRecord(record: EvalRecord): string {
     lines.push(`    ${BOLD}Bootstrap:${NC} ${formatRouteSignature(provenance.bootstrapRoute)}`);
     lines.push(`    ${BOLD}Expanded:${NC}  ${formatRouteSignature(provenance.expandedRoute)}`);
     lines.push(`    ${BOLD}Active:${NC}    ${formatRouteSignature(provenance.activeRoute)}`);
-    lines.push(`    ${BOLD}Changed:${NC}   ${typeof provenance.routeChanged === 'boolean' ? String(provenance.routeChanged) : 'n/a'}`);
+    const overrides = flattenRouteOverrides(provenance.stageRoutes);
+    lines.push(`    ${BOLD}Overrides:${NC} ${provenance.stageRoutes
+      ? (overrides.length === 0
+        ? 'none'
+        : overrides.map((o) => `${o.stage} ${o.source} ${o.from}→${o.to} (${o.reason})`).join('; '))
+      : 'n/a'}`);
     lines.push('');
   }
 

@@ -299,6 +299,10 @@
           "type": "string",
           "description": "Linear issue id this task writes to (task-identity.ts). save_task_state."
         },
+        "linearSyncedState": {
+          "type": "string",
+          "description": "Linear state last rendered from this row's settled outcome and written successfully (HOK-3373, linear-state-renderer.ts). linear_state_converge."
+        },
         "manualComparisonArtifact": {
           "type": [
             "string",
@@ -382,6 +386,10 @@
         "reviewerModel": {
           "type": "string",
           "description": "Routed review model. save_task_state / route reseal."
+        },
+        "runId": {
+          "type": "string",
+          "description": "Run identity minted at launch, never changed for the life of the row (HOK-3373, attempt-identity.ts). A relaunch of a settled issue mints a new one. save_task_state."
         },
         "slug": {
           "type": "string",

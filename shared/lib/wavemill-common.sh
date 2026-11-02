@@ -19,6 +19,13 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-progress.sh"
 # Linear-writer predicate). Bash twin of shared/lib/task-identity.ts.
 # shellcheck source=task-identity.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-identity.sh"
+# HOK-3373: the one run identity + settled-run reads (twin of
+# attempt-identity.ts / task-settlement.ts / linear-state-renderer.ts) and the
+# one task-worktree resolver (twin of task-worktree-resolver.ts).
+# shellcheck source=attempt-identity.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/attempt-identity.sh"
+# shellcheck source=task-worktree-resolver.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-worktree-resolver.sh"
 if [[ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/effective-task-config.sh" ]]; then
   # shellcheck source=effective-task-config.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/effective-task-config.sh"
@@ -1167,7 +1174,9 @@ _wavemill_write_preserved_branch_incident() {
 #   safe_abandoned_closed_loser closed losing challenge arm explicitly abandoned
 #   safe_abandoned_pr_less_arm PR-less terminal arm explicitly abandoned after
 #                        its unpublished head was archived to refs/archive/wavemill/<issue>
-#   safe_noop            nothing deletable (protected/non-task/absent branch)
+#   safe_resources_absent task branch with no local branch and no live worktree:
+#                        nothing unpublished remains locally (HOK-3373)
+#   safe_noop            skipped: protected or non-task branch
 #   shadow_would_delete  deletion authority exists, but branch deletion mode is shadow
 #   retain_dirty         worktree dirty or unreadable
 #   retain_orphan_dir    worktree not registered or contains unexpected files
@@ -2276,7 +2285,26 @@ safe_remove_task_worktree_and_branch() {
     fi
   fi
 
-  [[ -z "$classification" ]] && classification="safe_noop"
+  # HOK-3373: one positive-evidence verdict for "the task's local resources
+  # are already gone". safe_noop used to mean both this and "refused to touch a
+  # protected/non-task branch"; the shell called both safe while the TS reap
+  # list reaped neither, so a delivered row whose worktree and branch were
+  # already gone could never leave state (HOK-2595, operator state_mutate).
+  # Positive evidence here: a task/* branch with no local branch and no live
+  # worktree (absent, or an orphan dir holding only generated markers), so
+  # nothing unpublished remains locally. A surviving remote branch does not
+  # block removal. Delivery (merged PR / settled run) and ownership are the
+  # callers' half of the proof (decideTerminalTask requires a MERGED PR and no
+  # other row owning it). safe_noop keeps only "protected or non-task branch".
+  if [[ -z "$classification" ]]; then
+    if [[ "$branch_is_deletable" == "true" && "$local_branch_exists" != "true" ]] \
+      && { [[ -z "$wt_dir" || ! -e "$wt_dir" ]] || [[ "$orphan_cleanup_candidate" == "true" ]]; }; then
+      classification="safe_resources_absent"
+      cleanup_authority="no local branch ${task_branch} and no live worktree; nothing unpublished remains locally"
+    else
+      classification="safe_noop"
+    fi
+  fi
 
   # Classify-only mode: destructive path (TOCTOU + deletion) is suppressed.
   # Publish evidence for the safe classification and return.
@@ -2409,11 +2437,16 @@ safe_remove_task_worktree_and_branch() {
   return 0
 }
 
-# HOK-2972: one idempotent terminal deregistration path. Marks the arm
-# CLEANED and clears it from the monitor's in-memory registries
-# (BRANCH_BY_ISSUE, SLUG_BY_ISSUE, PR_BY_ISSUE) so neither a later monitor
-# tick nor a post-loop scan can recreate state rows, worktrees, or windows
-# for it. Callers write the durable tombstone/delivery evidence first.
+# HOK-2972: one idempotent terminal deregistration path. Clears the arm from
+# the monitor's in-memory registries (BRANCH_BY_ISSUE, SLUG_BY_ISSUE,
+# PR_BY_ISSUE) so neither a later monitor tick nor a post-loop scan can
+# recreate state rows, worktrees, or windows for it. Callers write the durable
+# tombstone/delivery evidence first.
+# HOK-3373: the parallel in-memory CLEANED set is gone. A loop over the
+# registry skips a key deregistered earlier in the same pass through
+# monitor_task_registered; whether an issue may be offered again is read from
+# workflow state (delivered_issue_ids), so it survives a restart and never
+# hides an aborted run.
 # The arrays are monitor-local: startup preflight also runs these shared
 # helpers before the monitor exists, so each array is touched only when it is
 # declared (an implicit indexed array would treat HOK-#### issue IDs as
@@ -2421,15 +2454,23 @@ safe_remove_task_worktree_and_branch() {
 monitor_deregister_terminal_task() {
   local issue="${1:-}" _registry
   [[ -n "$issue" ]] || return 0
-  if declare -p CLEANED >/dev/null 2>&1; then
-    CLEANED["$issue"]=1
-  fi
   for _registry in BRANCH_BY_ISSUE SLUG_BY_ISSUE PR_BY_ISSUE; do
     if declare -p "$_registry" >/dev/null 2>&1; then
       unset "${_registry}[${issue}]" 2>/dev/null || true
     fi
   done
   return 0
+}
+
+# monitor_task_registered <issue>
+# True while <issue> is still in the monitor's task registry. Loops over a
+# snapshot of "${!BRANCH_BY_ISSUE[@]}" use it to skip a task an earlier
+# iteration of the same pass deregistered (HOK-3373; replaces CLEANED).
+monitor_task_registered() {
+  local issue="${1:-}"
+  [[ -n "$issue" ]] || return 1
+  declare -p BRANCH_BY_ISSUE >/dev/null 2>&1 || return 1
+  [[ -n "${BRANCH_BY_ISSUE[$issue]+x}" ]]
 }
 
 # HOK-3312: thin runner that calls the TS archive-task-residue tool. Writes
@@ -2482,6 +2523,16 @@ cleanup_completed_task() {
   local wt_dir="${WORKTREE_ROOT}/${slug}"
   local task_branch="task/${slug}"
   local feature_dir="${wt_dir}/features/${slug}"
+  # HOK-3373: the cleanup decision's markers and retry budget live in the
+  # task's feature dir only while its worktree exists. For a task whose
+  # worktree is already gone they live under the repo's .wavemill, so the
+  # decision can still run (and reap via safe_resources_absent) without any
+  # writer recreating the dead worktree path (the HOK-2595 orphan).
+  local decision_dir="$feature_dir"
+  if [[ ! -d "$wt_dir" ]]; then
+    decision_dir="$(dirname "${STATE_FILE:-${REPO_DIR:-.}/.wavemill/workflow-state.json}")/terminal-cleanup/${issue}"
+    mkdir -p "$decision_dir" 2>/dev/null || true
+  fi
 
   # HOK-3312: the TS decider owns the reap / archive-and-reap / retain / kept
   # decision. The monitor runs it as a tracked async job (HOK-3206) and
@@ -2492,7 +2543,7 @@ cleanup_completed_task() {
     # already ran in the CLI and decided to execute, so bypass the async job.
     cleanup_decision_action="reap"
   elif declare -F cleanup_decision_launch_job >/dev/null 2>&1; then
-    cleanup_decision_action="$(cleanup_decision_launch_job "$feature_dir" "$issue" "primary" "$feature_dir" "$wt_dir")" || decision_rc=$?
+    cleanup_decision_action="$(cleanup_decision_launch_job "$decision_dir" "$issue" "primary" "$feature_dir" "$wt_dir")" || decision_rc=$?
     case "$decision_rc" in
       0) : ;;
       4)
@@ -2519,7 +2570,7 @@ cleanup_completed_task() {
     retain)
       local retention_reason=""
       if declare -F cleanup_decision_marker_retention_reason >/dev/null 2>&1; then
-        retention_reason="$(cleanup_decision_marker_retention_reason "$feature_dir/$CLEANUP_DECISION_RESULT_MARKER" 2>/dev/null || true)"
+        retention_reason="$(cleanup_decision_marker_retention_reason "$decision_dir/$CLEANUP_DECISION_RESULT_MARKER" 2>/dev/null || true)"
       fi
       [[ -n "$retention_reason" ]] || retention_reason="cleanup-decision-retain"
       set_task_lifecycle_disposition "$issue" "" "retained" "$retention_reason" "cleanup_completed_task" 2>/dev/null || true
@@ -2713,6 +2764,9 @@ cleanup_completed_task() {
   fi
   remove_task_state "$issue"
   monitor_deregister_terminal_task "$issue"
+  # The settled run's out-of-worktree decision dir must not answer for a
+  # later run of the same issue.
+  [[ "$decision_dir" == */terminal-cleanup/"$issue" ]] && rm -rf "$decision_dir" 2>/dev/null || true
 
   if [[ -n "$completion_reason" ]]; then
     log "$issue: Complete ($completion_reason)"
@@ -7195,9 +7249,11 @@ state_mutate() {
   # ~0.8 s; compact JSON gives ~40 % size + proportional parse-time back on
   # every state_mutate.
   if jq -c "$@" "$jq_filter" "$state_path" > "$tmp_file" 2>"$err_file"; then
-    # HOK-3222: validate the task records this write adds or changes, with
-    # the lock held and before the rename. Phase 1 (shadow): violations are
-    # logged by the tool and the write proceeds whatever it returns.
+    # HOK-3222 / HOK-3373: with the lock held and before the rename, gate
+    # control writes against settled / non-current runs (the tool reverts
+    # them in $tmp_file, status 3) and shadow-validate the task records this
+    # write adds or changes (status 2). The write proceeds with whatever the
+    # tool left in $tmp_file.
     _wavemill_validate_task_record_write "$state_path" "$tmp_file" || true
     mv "$tmp_file" "$state_path" || mutate_status=$?
   else
@@ -7239,21 +7295,26 @@ state_mutate() {
   return "$mutate_status"
 }
 
-# HOK-3222: the shell seam of the task-record write guard
+# HOK-3222 / HOK-3373: the shell seam of the task-record write guard
 # (shared/lib/task-record-write-guard.ts). For a workflow-state.json write,
 # run tools/validate-task-record-write.ts on <before> (the live file, read
-# under state_mutate's lock) and <candidate> (jq's output). Violations go to
-# <state dir>/state-schema-violations.jsonl, stderr and the observer.
+# under state_mutate's lock) and <candidate> (jq's output):
+#   - the settlement gate (shared/lib/task-settlement.ts) reverts control
+#     writes against a settled run, or against a run other than the one the
+#     writer names in WAVEMILL_EXPECTED_RUN_ID (`issue=runId[,...]`), by
+#     rewriting <candidate> in place; refusals go to mutator-rejections.jsonl;
+#   - schema violations go to <state dir>/state-schema-violations.jsonl,
+#     stderr and the observer (HOK-3222 shadow).
 #
-# Returns the tool's status: 0 clean (or skipped), 2 violations, other = the
-# check could not run. Node type stripping only, never the tsx loader (HOK-3206
-# hot path): a host without strip support skips the check. Invoked with
-# `command node` so test doubles for `npx`/`node` never see it.
-# WAVEMILL_TASK_RECORD_WRITE_VALIDATE_SHADOW=0 is the Phase 1 kill switch.
+# Returns the tool's status: 0 clean (or skipped), 2 violations, 3 gate
+# reverted, other = the check could not run. Node type stripping only, never
+# the tsx loader (HOK-3206 hot path): a host without strip support skips the
+# check. Invoked with `command node` so test doubles for `npx`/`node` never
+# see it. WAVEMILL_TASK_RECORD_WRITE_VALIDATE_SHADOW=0 skips only the schema
+# half; WAVEMILL_SETTLEMENT_GATE_SHADOW=1 keeps the gate log-only.
 _wavemill_validate_task_record_write() {
   local state_path="$1" candidate="$2"
   [[ "$(basename "$state_path")" == "workflow-state.json" ]] || return 0
-  [[ "${WAVEMILL_TASK_RECORD_WRITE_VALIDATE_SHADOW:-1}" != "0" ]] || return 0
   local tool_dir="${WAVEMILL_INSTALL_DIR:-}"
   if [[ -z "$tool_dir" ]]; then
     tool_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" || return 0
@@ -7269,8 +7330,10 @@ _wavemill_validate_task_record_write() {
     export WAVEMILL_NODE_STRIP_SUPPORTED
   fi
   [[ "$WAVEMILL_NODE_STRIP_SUPPORTED" == "1" ]] || return 0
+  local -a extra=()
+  [[ -n "${WAVEMILL_EXPECTED_RUN_ID:-}" ]] && extra+=(--expected-run-id "$WAVEMILL_EXPECTED_RUN_ID")
   command node --experimental-strip-types --no-warnings "$tool" \
-    --before "$state_path" --after "$candidate" --state-path "$state_path" >&2
+    --before "$state_path" --after "$candidate" --state-path "$state_path" ${extra[@]+"${extra[@]}"} >&2
 }
 
 # HOK-3187: resolve the ledger CLI path and re-render workflow-state.json from
@@ -7530,6 +7593,8 @@ write_terminal_task_tombstone() {
         challengeRole: ($task.challengeRole // ""),
         runEpoch: ($contract.runEpoch // ""),
         attempt: (($task.attempt // $l.attempt // "") | tostring),
+        runId: ($task.runId // ""),
+        linearSyncedState: ($task.linearSyncedState // ""),
         actor: $actor,
         command: $command,
         createdAt: $now,
@@ -7566,7 +7631,9 @@ write_terminal_task_tombstone() {
     createdAt,
     decisionStatus,
     decisionReason
-  } + (if has("postReapEval") then {postReapEval} else {} end)' <<<"$tombstone")" || return 1
+  } + (if (.runId // "") != "" then {runId} else {} end)
+    + (if (.linearSyncedState // "") != "" then {linearSyncedState} else {} end)
+    + (if has("postReapEval") then {postReapEval} else {} end)' <<<"$tombstone")" || return 1
 
   # 3. Write compact form to hot state (HOK-3203)
   local rc
@@ -7706,20 +7773,25 @@ task_lifecycle_effective_base_sha() {
   git -C "$REPO_DIR" rev-parse --verify "${ref}^{commit}" 2>/dev/null || true
 }
 
+# HOK-3373 (D30): the shell lifecycle writer. It goes through
+# task_state_mutate_existing, so a cleanup step that runs after the row was
+# reaped never recreates it as a lifecycle-only stub (HOK-3125), and through
+# state_mutate's settlement gate, so a workflowOutcome it passes cannot
+# re-settle a settled run (resourceDisposition / retention are cleanup fields
+# and always land).
 set_task_lifecycle_disposition() {
   local issue="$1" workflow_outcome="${2:-}" resource_disposition="${3:-}" reason="${4:-}" actor="${5:-wavemill}"
   [[ -n "$issue" && -n "$resource_disposition" ]] || return 1
   [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
-  state_mutate "$STATE_FILE" '
-    (.tasks[$issue] // {}) as $existing
-    | ($existing.lifecycle // {}) as $l
-    | .tasks[$issue].lifecycle = ($l + {
+  task_state_mutate_existing "$issue" '
+    (.lifecycle // {}) as $l
+    | .lifecycle = ($l + {
         schemaVersion: 1,
         workflowOutcome: (if $workflowOutcome != "" then $workflowOutcome else ($l.workflowOutcome // "active") end),
         resourceDisposition: $resourceDisposition
       })
     | if $reason != "" then
-        .tasks[$issue].lifecycle.retention = {
+        .lifecycle.retention = {
           reason: $reason,
           policy: "manual-verification-required",
           actor: $actor,
@@ -7727,8 +7799,7 @@ set_task_lifecycle_disposition() {
         }
       else .
       end
-    | .tasks[$issue].updated = (now | todateiso8601)' \
-    --arg issue "$issue" \
+    | .updated = (now | todateiso8601)' \
     --arg workflowOutcome "$workflow_outcome" \
     --arg resourceDisposition "$resource_disposition" \
     --arg reason "$reason" \
@@ -8286,7 +8357,21 @@ save_task_state() {
   [[ "$remote_deletion_allowed" == "true" ]] || remote_deletion_allowed="false"
   run_epoch="${WAVEMILL_RUN_EPOCH:-${RUN_EPOCH:-}}"
 
-  if terminal_task_tombstone_matches "$issue" "$pr" "$branch" "$worktree" "$run_epoch"; then
+  # HOK-3373: a launch (SAVE_TASK_STATE_LAUNCH=1, set by the launch sites
+  # only) is a new run. It never relaunches delivered work, never merges into
+  # a settled row (that row's outcome, abort markers and PR stay with the old
+  # run), and mints a fresh runId. Every other save keeps the row's runId and
+  # still refuses to resurrect a reaped row from its tombstone (HOK-3125).
+  local launch_mode="${SAVE_TASK_STATE_LAUNCH:-0}" new_run_id
+  new_run_id="$(attempt_identity_mint_run_id "$issue" "$run_epoch" "$(date +%s)")"
+  if [[ "$launch_mode" == "1" ]]; then
+    if task_last_run_delivered "$issue"; then
+      if declare -F log_warn >/dev/null 2>&1; then
+        log_warn "save_task_state: refusing to relaunch $issue: its last run delivered (settled merged)"
+      fi
+      return 1
+    fi
+  elif terminal_task_tombstone_matches "$issue" "$pr" "$branch" "$worktree" "$run_epoch"; then
     if declare -F log_warn >/dev/null 2>&1; then
       log_warn "save_task_state: refusing to recreate terminal task $issue from tombstone history"
     fi
@@ -8294,7 +8379,9 @@ save_task_state() {
   fi
 
   if ! state_mutate "$STATE_FILE" \
-     "$(task_lifecycle_jq_filter '(.tasks[$issue] // {}) as $existing |
+     "$(task_lifecycle_jq_filter '(.tasks[$issue] // {}) as $prior |
+      ((($prior.lifecycle.workflowOutcome // "") | IN("merged","closed","aborted")) and $launch == "1") as $newRun |
+      (if $newRun then {} else $prior end) as $existing |
       ((($existing.status // "") | IN("merged","complete","completed","completed-external","closed","done","aborted","error","superseded"))
        or (($existing.phase // "") | IN("done","closed","aborted","error","superseded"))) as $existingTerminal |
       (if $statusArg != "" then $statusArg elif $existingTerminal then ($existing.status // "active") else "active" end) as $effectiveStatus |
@@ -8305,6 +8392,7 @@ save_task_state() {
         pr: $pr,
         status: $effectiveStatus,
         linearIssueId: (if $linearIssue != "" then $linearIssue else ($existing.linearIssueId // $issue) end),
+        runId: (if ($existing.runId // "") != "" then $existing.runId else $runId end),
         updated: (now | todate)
       })
       | if $agent != "" then .tasks[$issue].agent = $agent else . end
@@ -8343,7 +8431,7 @@ save_task_state() {
      --arg requireConfirmSource "$require_confirm_source" \
      --arg mergeMethodSource "$merge_method_source" \
      --arg remoteDeletionAllowed "$remote_deletion_allowed" --arg session "${SESSION:-}" \
-     --arg runEpoch "$run_epoch"; then
+     --arg runEpoch "$run_epoch" --arg runId "$new_run_id" --arg launch "$launch_mode"; then
     # log_warn is caller-provided (the mill and monitor define it; the startup
     # runner intentionally surfaces the failure through wavemill_lock_run).
     if declare -F log_warn >/dev/null 2>&1; then
@@ -8555,22 +8643,37 @@ linear_write_target() {
 # - Diagnostics: on failure log_warn carries issue, target state, exit code,
 #   and the last stderr line the tool produced.
 linear_set_state() {
+  # allow-settled-attempt: the definition, not a call site
+  linear_set_state_checked "$@" || true
+  return 0
+}
+
+# linear_set_state_checked <task_id> <state>
+# linear_set_state with the outcome reported: 0 when the write landed (or is
+# not owed: challenger / unwritable target / dry run), 1 when it failed. It
+# also leaves LINEAR_LAST_WRITE_OK=1|0 for callers that go through
+# linear_set_state (always status 0). The HOK-3373 Linear convergence records
+# linearSyncedState only for a write that landed.
+linear_set_state_checked() {
   local task_id="$1" state="$2" issue
-  issue="$(linear_write_target "$task_id")" || return 0
+  LINEAR_LAST_WRITE_OK=0
+  issue="$(linear_write_target "$task_id")" || { LINEAR_LAST_WRITE_OK=1; return 0; }
   if [[ "${DRY_RUN:-false}" == "true" ]]; then
     declare -F log >/dev/null 2>&1 && log "[DRY-RUN] Would set $issue → $state"
+    LINEAR_LAST_WRITE_OK=1
     return 0
   fi
 
   local stderr_file rc=0
   stderr_file=$(mktemp) || {
     _linear_write_warn "Failed to update Linear state for $issue to $state (mktemp failed)"
-    return 0
+    return 1
   }
 
   _with_timeout "$API_TIMEOUT" wavemill_run_tool "set-issue-state.ts" "$issue" "$state" >/dev/null 2>"$stderr_file" || rc=$?
   if (( rc == 0 )); then
     rm -f "$stderr_file"
+    LINEAR_LAST_WRITE_OK=1
     return 0
   fi
 
@@ -8582,6 +8685,76 @@ linear_set_state() {
     _linear_write_warn "Failed to update Linear state for $issue to $state (exit $rc)"
   fi
   rm -f "$stderr_file"
+  return 1
+}
+
+# ── Linear state as a render of the settled run (HOK-3373) ──────────────────
+#
+# Linear is derived from task state the way wm:ready / wm:blocked are
+# (HOK-3181): linear_state_for_task renders the settled outcome (twin of
+# linear-state-renderer.ts) and linearSyncedState records the last rendered
+# state that landed. A settled row (or, after reap, its terminal history
+# entry for a post-HOK-3373 run) whose rendered state differs from what was
+# synced is written again on the next tick, so a crash between settlement and
+# the Linear write converges with no operator touch and a delivered run stays
+# Done. The mill's exit trap no longer writes Linear at all.
+
+# linear_state_record_synced <issue> <state>
+# Record that <state> landed for <issue>: on the live row (evidence field,
+# never recreates a reaped row) or, after reap, on its terminal history entry.
+linear_state_record_synced() {
+  local issue="$1" state="$2"
+  [[ -n "$issue" && -n "$state" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  state_mutate "$STATE_FILE" '
+    if (.tasks[$i] | type) == "object" then .tasks[$i].linearSyncedState = $s
+    elif (.terminalTaskHistory.tasks[$i] | type) == "object" then .terminalTaskHistory.tasks[$i].linearSyncedState = $s
+    else . end' --arg i "$issue" --arg s "$state" >/dev/null 2>&1 || true
+}
+
+# linear_state_pending_syncs [state_file]
+# Prints "<issue>\t<state>" for every settled run whose rendered Linear state
+# has not landed: live rows (primary arms) and post-HOK-3373 terminal history
+# entries (they carry runId) with no live row.
+linear_state_pending_syncs() {
+  local state_file="${1:-${STATE_FILE:-}}"
+  [[ -n "$state_file" && -f "$state_file" ]] || return 0
+  jq -r '
+    def rendered($t): ($t.workflowOutcome // $t.lifecycle.workflowOutcome // "") as $o
+      | if ($t.challengeRole // "") == "challenger" then ""
+        elif $o == "merged" then "Done"
+        elif $o == "closed" and ($t.status // "") == "completed-external" then "Done"
+        else "" end;
+    (.tasks // {}) as $tasks
+    | ( [$tasks | to_entries[] | select((.value | type) == "object")
+          | {k: .key, r: rendered(.value), s: (.value.linearSyncedState // "")}]
+        + [(.terminalTaskHistory.tasks // {}) | to_entries[]
+            | select((.value | type) == "object" and ((.value.runId // "") != ""))
+            | select(.key as $k | ($tasks[$k] | type) != "object")
+            | {k: .key, r: rendered(.value), s: (.value.linearSyncedState // "")}] )
+    | .[] | select(.r != "" and .r != .s) | "\(.k)\t\(.r)"' "$state_file" 2>/dev/null || true
+}
+
+# linear_state_converge_tick [max_writes]
+# Write the rendered state for up to <max_writes> (default 3) pending runs.
+linear_state_converge_tick() {
+  local max="${1:-${LINEAR_STATE_CONVERGE_MAX_WRITES:-3}}" written=0 line issue state
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  [[ "${LINEAR_UPDATES:-true}" == "false" ]] && return 0
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    (( written >= max )) && break
+    issue="${line%%$'\t'*}"
+    state="${line#*$'\t'}"
+    if task_identity_is_challenger "$issue"; then
+      continue
+    fi
+    # allow-settled-attempt: the HOK-3373 renderer's one write site
+    if linear_set_state_checked "$issue" "$state"; then
+      linear_state_record_synced "$issue" "$state"
+      declare -F log >/dev/null 2>&1 && log "debug" "  ↳ $issue Linear converged to $state from its settled run"
+    fi
+    written=$((written + 1))
+  done < <(linear_state_pending_syncs "$STATE_FILE")
   return 0
 }
 

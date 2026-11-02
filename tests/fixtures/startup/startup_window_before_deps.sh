@@ -48,6 +48,8 @@ setup_env() {
   cp "$REPO_DIR/shared/lib/task-progress.sh"           "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/challenge-arms.sh"          "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/task-identity.sh"           "$repo_dir/shared/lib/"
+  cp "$REPO_DIR/shared/lib/attempt-identity.sh"           "$repo_dir/shared/lib/"
+  cp "$REPO_DIR/shared/lib/task-worktree-resolver.sh"           "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/session-ownership.sh"       "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/terminal-backend.sh"        "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/wavemill-input-reader.sh"   "$repo_dir/shared/lib/"

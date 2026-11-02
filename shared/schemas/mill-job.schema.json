@@ -26,6 +26,7 @@
     "issueId": { "type": "string" },
     "side": { "type": "string", "enum": ["primary", "challenger"] },
     "pairId": { "type": "string" },
+    "runId": { "type": "string", "description": "HOK-3373: the task run (attempt-identity.ts runId) this job was launched for; its settlement acts only for that run." },
     "prNumbers": {
       "type": "array",
       "items": { "type": "integer", "minimum": 1 },

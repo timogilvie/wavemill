@@ -756,7 +756,6 @@ describe('eval-record-builder', () => {
             routingMode: 'stage-aware',
             routerMode: 'normal',
           },
-          routeChanged: false,
           decisionSource: 'bootstrap',
           routingMode: 'stage-aware',
           routerMode: 'normal',
@@ -769,7 +768,7 @@ describe('eval-record-builder', () => {
         candidates: [{ agentType: 'codex', modelId: 'gpt-5.4' }],
         chosen: 0,
         decisionPolicyVersion: 'stage-aware',
-        routeArtifactSchemaVersion: '1.1',
+        routeArtifactSchemaVersion: '1.2',
         policyResolverVersion: '1.0.0',
         routeMode: 'stage-aware',
         operatingModeDependency: 'normal',
@@ -1772,7 +1771,22 @@ describe('eval-record-builder', () => {
         routerMode: 'survival' as const,
         routingMode: 'stage-aware',
       },
-      routeChanged: true,
+      stageRoutes: {
+        planner: { executed: 'gpt-5.4', overrides: [] },
+        coder: {
+          hokusai: { requestId: 'req-1', recommended: 'claude-haiku-4-5' },
+          executed: 'gpt-5.4',
+          overrides: [{
+            source: 'operator' as const,
+            from: 'claude-haiku-4-5',
+            to: 'gpt-5.4',
+            reason: 'operator_reroute',
+            at: '2026-10-30T12:00:00.000Z',
+          }],
+        },
+        reviewer: { executed: 'claude-sonnet-5', overrides: [] },
+      },
+      hokusaiInferenceLogId: 'req-1',
       expandedCacheHit: true,
       packetHash: 'a'.repeat(64),
       routeSource: 'cache' as const,
@@ -1810,7 +1824,7 @@ describe('eval-record-builder', () => {
         candidates: [{ agentType: 'codex', modelId: 'gpt-5.4' }],
         chosen: 0,
         decisionPolicyVersion: 'stage-aware',
-        routeArtifactSchemaVersion: '1.1',
+        routeArtifactSchemaVersion: '1.2',
         policyResolverVersion: '1.0.0',
         routeMode: 'stage-aware',
         operatingModeDependency: 'survival',
@@ -2060,6 +2074,96 @@ describe('eval-record-builder', () => {
       enrichTrainingMetadata(baseRecord, { featureOutcomeDiagnostics: diag });
       assert.equal(baseRecord.featureOutcomeDiagnostics?.present, true);
       assert.equal(baseRecord.featureOutcomeDiagnostics?.sourceHash, 'c'.repeat(64));
+    });
+  });
+  describe('challenge override on the route record (HOK-3363)', () => {
+    // HOK-3315 replay: Hokusai recommended claude-opus-4-7 for the coder; the
+    // challenge seal ran claude-haiku-4-5 as the primary arm's coder.
+    function hok3315Intent(): ChallengeExecutionIntent {
+      return {
+        pairId: 'pair-hok-3315',
+        challengeStage: 'implementation',
+        primary: {
+          key: 'HOK-3315',
+          role: 'primary',
+          planner: { model: 'claude-opus-4-7' },
+          coder: { model: 'claude-haiku-4-5' },
+          reviewer: { model: 'claude-opus-4-7' },
+        },
+        challenger: {
+          key: 'HOK-3315_c',
+          role: 'challenger',
+          planner: { model: 'claude-opus-4-7' },
+          coder: { model: 'gpt-5.5' },
+          reviewer: { model: 'claude-opus-4-7' },
+        },
+      };
+    }
+
+    const hokusaiRoutes = () => ({
+      planner: { hokusai: { requestId: '87447d9f', recommended: 'claude-opus-4-7' }, executed: 'claude-opus-4-7', overrides: [] },
+      coder: { hokusai: { requestId: '87447d9f', recommended: 'claude-opus-4-7' }, executed: 'claude-opus-4-7', overrides: [] },
+      reviewer: { hokusai: { requestId: '87447d9f', recommended: 'claude-opus-4-7' }, executed: 'claude-opus-4-7', overrides: [] },
+    });
+
+    // protects: a challenge arm's varied model reaching Hokusai as if Hokusai had recommended it.
+    it('records the sealed primary incumbent as a challenge override of Hokusai\'s coder', () => {
+      enrichEvalRecord(baseRecord, {
+        challengeSide: 'primary',
+        challengeIntent: hok3315Intent(),
+        routeProvenance: { decisionSource: 'expanded', stageRoutes: hokusaiRoutes(), hokusaiInferenceLogId: '87447d9f' },
+      });
+
+      const coder = baseRecord.routeProvenance?.stageRoutes?.coder;
+      expect(coder?.hokusai?.recommended).toBe('claude-opus-4-7');
+      expect(coder?.executed).toBe('claude-haiku-4-5');
+      expect(coder?.overrides).toEqual([{
+        source: 'challenge',
+        from: 'claude-opus-4-7',
+        to: 'claude-haiku-4-5',
+        reason: 'challenge_primary_incumbent',
+        at: baseRecord.timestamp,
+        pairId: 'pair-hok-3315',
+        side: 'primary',
+      }]);
+      expect(baseRecord.routeProvenance?.stageRoutes?.planner.overrides).toEqual([]);
+      expect(baseRecord.routeProvenance?.hokusaiInferenceLogId).toBe('87447d9f');
+    });
+
+    // protects: the challenger arm's substitution going unlabelled.
+    it('records the challenger\'s varied model as a challenge override', () => {
+      enrichEvalRecord(baseRecord, {
+        challengeSide: 'challenger',
+        challengeIntent: hok3315Intent(),
+        routeProvenance: { decisionSource: 'expanded', stageRoutes: hokusaiRoutes() },
+      });
+      const [override] = baseRecord.routeProvenance?.stageRoutes?.coder.overrides ?? [];
+      assert.equal(override?.source, 'challenge');
+      assert.equal(override.from, 'claude-opus-4-7');
+      assert.equal(override.to, 'gpt-5.5');
+      assert.equal(override.source === 'challenge' && override.side, 'challenger');
+    });
+
+    // protects: double-appending when the eval is rebuilt from a record that already carries the override.
+    it('is idempotent and does not mutate the caller\'s provenance', () => {
+      const routeProvenance = { decisionSource: 'expanded' as const, stageRoutes: hokusaiRoutes() };
+      enrichEvalRecord(baseRecord, { challengeSide: 'primary', challengeIntent: hok3315Intent(), routeProvenance });
+      expect(routeProvenance.stageRoutes.coder.overrides).toEqual([]);
+      const rebuilt = { ...baseRecord } as EvalRecord;
+      attachRouteProvenance(rebuilt, baseRecord.routeProvenance);
+      expect(rebuilt.routeProvenance?.stageRoutes?.coder.overrides.length).toBe(1);
+    });
+
+    // protects: an arm whose incumbent equals Hokusai's pick being recorded as overridden.
+    it('records nothing for a primary whose incumbent is the routed model', () => {
+      const intent = hok3315Intent();
+      intent.primary = { ...intent.primary!, coder: { model: 'claude-opus-4-7' } } as ChallengeExecutionIntent['primary'];
+      enrichEvalRecord(baseRecord, {
+        challengeSide: 'primary',
+        challengeIntent: intent,
+        routeProvenance: { decisionSource: 'expanded', stageRoutes: hokusaiRoutes() },
+      });
+      expect(baseRecord.routeProvenance?.stageRoutes?.coder.overrides).toEqual([]);
     });
   });
 });

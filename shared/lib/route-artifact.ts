@@ -4,9 +4,22 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { getMaxCostUsd } from './config.ts';
 import { getEffectiveRegistry, getModel } from './model-registry.ts';
 import type { RoutePrediction } from './eval-schema.ts';
+import { mutateJsonState } from './state-mutex.ts';
+import {
+  appendStageOverride,
+  hokusaiJoinKey,
+  parseStageRoutes,
+  type RouteOverrideInput,
+  type RouteStageRole,
+  type StageRoutes,
+} from './route-override-record.ts';
 import type { WorkflowRouteDecision } from './workflow-router.ts';
 
-export const ROUTE_ARTIFACT_SCHEMA_VERSION = '1.1';
+/**
+ * 1.2 (HOK-3363): route artifacts carry the per-stage route record
+ * (`stageRoutes`); `provenance.escalation` is retired.
+ */
+export const ROUTE_ARTIFACT_SCHEMA_VERSION = '1.2';
 export const POLICY_RESOLVER_VERSION = '1.0.0';
 
 export type RouteSource =
@@ -41,7 +54,6 @@ export interface RouteProvenance {
   alternatives?: unknown;
   tradeoffs?: unknown;
   nearestNeighbors?: unknown;
-  escalation?: RouteEscalationProvenance;
   hokusai?: {
     apiVersion?: string;
     inferenceMethod?: string;
@@ -54,46 +66,6 @@ export interface RouteProvenance {
     exactRouteMatchCount?: number;
   };
   signalVector?: Record<string, unknown>;
-}
-
-export type RouteEscalationTriggerMetric = 'expectedSuccess' | 'confidence';
-export type RouteEscalationOutcome =
-  | 'escalated'
-  | 'not_triggered'
-  | 'no_stronger_candidate'
-  | 'no_affordable_stronger_candidate'
-  | 'retry_failed';
-
-export interface RouteEscalationTrigger {
-  metric: RouteEscalationTriggerMetric;
-  value: number;
-  threshold: number;
-}
-
-export interface RouteEscalationSummary {
-  planner: string;
-  coder: string;
-  reviewer: string;
-  cost: number;
-  expectedSuccess: number;
-  confidence: number;
-}
-
-export interface RouteEscalationProvenance {
-  enabled: boolean;
-  triggered: boolean;
-  triggers: RouteEscalationTrigger[];
-  outcome: RouteEscalationOutcome;
-  initialRoute: RouteEscalationSummary;
-  finalRoute: RouteEscalationSummary;
-  candidateCount: number;
-  thresholds: {
-    expectedSuccessFloor: number;
-    confidenceFloor: number;
-    minCoderClassRankIncrease: number;
-  };
-  budget?: number | null;
-  reason?: string;
 }
 
 export interface RouteDecisionWithProvenance extends WorkflowRouteDecision {
@@ -279,6 +251,10 @@ export interface RouteArtifactSnapshot extends NormalizedExpandedRouteArtifact {
   routingMode?: string;
   expectedMetrics?: Record<string, unknown>;
   challengeRecommendation?: unknown;
+  /** The per-stage route record (HOK-3363), when the artifact carries one. */
+  stageRoutes?: StageRoutes;
+  /** Hokusai's join key for the routed decision (`inference_log_id`). */
+  hokusaiInferenceLogId?: string;
 }
 
 export interface RouteArtifactView {
@@ -312,8 +288,11 @@ export interface RouteLifecycleProvenance {
   expandedRoute?: RouteArtifactView;
   activeRoute?: RouteArtifactView;
   planningLaunchRoute?: RouteArtifactView;
-  routeChanged?: boolean;
   decisionSource?: 'bootstrap' | 'expanded' | 'preserved';
+  /** The per-stage route record of the route-record artifact (HOK-3363). */
+  stageRoutes?: StageRoutes;
+  /** Hokusai's join key for the routed decision (`inference_log_id`). */
+  hokusaiInferenceLogId?: string;
   expandedCacheHit?: boolean;
   packetHash?: string;
   routeSource?: 'batch' | 'single' | 'cache';
@@ -608,6 +587,22 @@ function parseBootstrapRouteArtifact(
     routingMode: readString(artifact.routingMode),
     expectedMetrics: readExpectedMetrics(artifact),
     challengeRecommendation: artifact.challengeRecommendation,
+    ...readRouteRecordFields(artifact),
+  };
+}
+
+/** The route record and Hokusai join key an artifact carries (HOK-3363). */
+function readRouteRecordFields(
+  artifact: Record<string, unknown>,
+): Pick<RouteArtifactSnapshot, 'stageRoutes' | 'hokusaiInferenceLogId'> {
+  const stageRoutes = parseStageRoutes(artifact.stageRoutes);
+  const provenance = artifact.provenance && typeof artifact.provenance === 'object' && !Array.isArray(artifact.provenance)
+    ? artifact.provenance as { inferenceLogId?: string; requestId?: string }
+    : undefined;
+  const joinKey = artifact.routingMode === 'hokusai' ? hokusaiJoinKey(provenance) : undefined;
+  return {
+    ...(stageRoutes ? { stageRoutes } : {}),
+    ...(joinKey ? { hokusaiInferenceLogId: joinKey } : {}),
   };
 }
 
@@ -660,6 +655,7 @@ function parseExpandedRouteArtifact(
     routingMode: readString(artifact.routingMode),
     expectedMetrics: readExpectedMetrics(artifact),
     challengeRecommendation: artifact.challengeRecommendation,
+    ...readRouteRecordFields(artifact),
   };
 }
 
@@ -869,6 +865,57 @@ export function deriveRouteDecisionSource(
   return routeChangedMaterially(bootstrap, expanded, repoDir).changed ? 'expanded' : 'preserved';
 }
 
+/**
+ * Route-record artifacts in precedence order (HOK-3363): the expanded route
+ * when it exists, else the bootstrap route — the same order the task contract
+ * reads them in. Readers and the appender share this list, so an override
+ * appended on disk is the one the eval and PR stamp read.
+ */
+export const ROUTE_RECORD_ARTIFACT_NAMES = ['.post-expansion-route.json', '.initial-route.json'] as const;
+
+/** The lifecycle snapshot whose `stageRoutes` is the task's route record. */
+export function routeRecordCarrier(artifacts: RouteLifecycleArtifacts): RouteArtifactSnapshot | null {
+  return artifacts.expanded ?? artifacts.bootstrap ?? null;
+}
+
+export type AppendRouteOverrideOutcome = 'appended' | 'noop' | 'no_route_artifact';
+
+/**
+ * The one on-disk append to the route record (HOK-3363): appends `input` as an
+ * override replacing the stage's executed model with `to` in the feature
+ * dir's route-record artifact, under the state lock. Artifacts written before
+ * HOK-3363 carry no record; one is seeded from the artifact's stage models.
+ * A same-model override is a no-op. The artifact's top-level route fields are
+ * left alone: they record what routing decided; `stageRoutes` records what
+ * executes.
+ */
+export async function appendRouteOverrideToFeatureDir(
+  featureDir: string,
+  role: RouteStageRole,
+  to: string,
+  input: RouteOverrideInput,
+): Promise<AppendRouteOverrideOutcome> {
+  const name = ROUTE_RECORD_ARTIFACT_NAMES.find((candidate) => existsSync(join(featureDir, candidate)));
+  if (!name) {
+    return 'no_route_artifact';
+  }
+  let outcome: AppendRouteOverrideOutcome = 'noop';
+  await mutateJsonState<Record<string, unknown>>(join(featureDir, name), (current) => {
+    const routes: StageRoutes = parseStageRoutes(current.stageRoutes) ?? {
+      planner: { executed: readString(current.planner) ?? '', overrides: [] },
+      coder: { executed: readString(current.coder) ?? '', overrides: [] },
+      reviewer: { executed: readString(current.reviewer) ?? '', overrides: [] },
+    };
+    const next = appendStageOverride(routes, role, to, input);
+    if (next === routes) {
+      return current;
+    }
+    outcome = 'appended';
+    return { ...current, stageRoutes: next };
+  });
+  return outcome;
+}
+
 export function buildRouteLifecycleProvenance(
   artifacts: RouteLifecycleArtifacts,
   repoDir?: string,
@@ -882,18 +929,17 @@ export function buildRouteLifecycleProvenance(
     ?? (decisionSource === 'expanded' ? artifacts.expanded : artifacts.bootstrap)
     ?? artifacts.expanded
     ?? artifacts.bootstrap;
-  const routeChanged = artifacts.bootstrap && active
-    ? routeChangedMaterially(artifacts.bootstrap, active, repoDir).changed
-    : undefined;
   const metadataCarrier = artifacts.expanded ?? active ?? undefined;
+  const recordCarrier = routeRecordCarrier(artifacts);
 
   return {
     ...(artifacts.bootstrap ? { bootstrapRoute: toRouteArtifactView(artifacts.bootstrap) } : {}),
     ...(artifacts.expanded ? { expandedRoute: toRouteArtifactView(artifacts.expanded) } : {}),
     ...(active ? { activeRoute: toRouteArtifactView(active) } : {}),
     ...(artifacts.planningLaunch ? { planningLaunchRoute: toRouteArtifactView(artifacts.planningLaunch) } : {}),
-    ...(typeof routeChanged === 'boolean' ? { routeChanged } : {}),
     decisionSource,
+    ...(recordCarrier?.stageRoutes ? { stageRoutes: recordCarrier.stageRoutes } : {}),
+    ...(recordCarrier?.hokusaiInferenceLogId ? { hokusaiInferenceLogId: recordCarrier.hokusaiInferenceLogId } : {}),
     ...(typeof metadataCarrier?.cache_hit === 'boolean' ? { expandedCacheHit: metadataCarrier.cache_hit } : {}),
     ...(metadataCarrier?.packet_hash ? { packetHash: metadataCarrier.packet_hash } : {}),
     ...(metadataCarrier?.route_source ? { routeSource: metadataCarrier.route_source } : {}),

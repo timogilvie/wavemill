@@ -46,6 +46,13 @@ function withFeature(fn: (ctx: { repoDir: string; featureDir: string }) => Promi
     coder: 'qwen-3-coder',
     reviewer: 'claude-opus-4-7',
   }));
+  writeFileSync(join(featureDir, '.post-expansion-route.json'), JSON.stringify({
+    planner: 'claude-opus-4-7',
+    coder: 'qwen-3-coder',
+    reviewer: 'claude-opus-4-7',
+    codeDepth: 'deep',
+    reviewMode: 'llm',
+  }));
   return fn({ repoDir, featureDir }).finally(cleanup);
 }
 
@@ -90,7 +97,14 @@ describe('rerouteRefusedCoder', () => {
 
       const routing = readJson(join(featureDir, '.routing-complete'));
       assert.equal(routing.coder, 'claude-sonnet-4-5-20250929');
-      assert.equal(routing.coderLaunchSubstitutions[0].certification, 'missing_live_canary');
+
+      // protects: a launch-refusal reroute replacing the routed coder without a route-record override (HOK-3363).
+      const record = readJson(join(featureDir, '.post-expansion-route.json')).stageRoutes.coder;
+      assert.equal(record.executed, 'claude-sonnet-4-5-20250929');
+      assert.equal(record.overrides.length, 1);
+      assert.equal(record.overrides[0].source, 'launchability');
+      assert.equal(record.overrides[0].from, 'qwen-3-coder');
+      assert.equal(record.overrides[0].certification, 'missing_live_canary');
 
       const audit = readFileSync(join(featureDir, ROUTE_SUBSTITUTIONS_LOG), 'utf-8').trim().split('\n');
       assert.equal(audit.length, 1);

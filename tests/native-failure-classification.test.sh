@@ -291,9 +291,10 @@ else
 fi
 
 # ── HOK-3129: four recurring native-unclassified signatures now typed ─────────
+# HOK-3362: a planning turn_limit is the one budget kind, not a private planning kind.
 turn_limit_detail="Native planning rejected before approval: turn_limit"
-if [[ "$(native_terminal_failure_kind "$turn_limit_detail")" == "planning-turn-limit" ]]; then
-  pass "planning turn_limit classified as planning-turn-limit"
+if [[ "$(native_terminal_failure_kind "$turn_limit_detail")" == "native-stage-timeout" ]]; then
+  pass "planning turn_limit classified as native-stage-timeout"
 else
   fail "planning turn_limit misclassified as $(native_terminal_failure_kind "$turn_limit_detail")"
 fi
@@ -358,10 +359,15 @@ if [[ "$(native_terminal_failure_next_action some-unknown-kind)" == "inspect the
 else
   fail "default next action changed"
 fi
-if [[ "$(native_terminal_failure_next_action planning-turn-limit)" == *"stronger planner"* ]]; then
-  pass "planning-turn-limit next action points at planner/budget"
+if [[ "$(native_terminal_failure_next_action planning-turn-limit)" == *"budgetExhausted fact"* ]]; then
+  pass "historical planning-turn-limit resolves to the native-stage-timeout next action (HOK-3362)"
 else
-  fail "planning-turn-limit next action missing"
+  fail "planning-turn-limit next action did not resolve through the alias"
+fi
+if [[ "$(native_terminal_failure_kind "Request was aborted" "budget_exhausted")" == "native-stage-timeout" ]]; then
+  pass "typed budget_exhausted handoff wins over the abort text (HOK-3362)"
+else
+  fail "budget_exhausted handoff misclassified as $(native_terminal_failure_kind "Request was aborted" "budget_exhausted")"
 fi
 if [[ "$(native_terminal_failure_next_action planning-artifact-invalid)" == *"structural validation"* ]]; then
   pass "planning-artifact-invalid base variant next action set"

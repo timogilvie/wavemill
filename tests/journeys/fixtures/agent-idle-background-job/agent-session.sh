@@ -62,12 +62,23 @@ idle_until_epoch=$(( $(date +%s) + IDLE_MIN_SECONDS ))
 ) &
 suite_pid=$!
 
+# HOK-3374: also start a descendant whose argv names a wavemill controller
+# (`tools/tend.ts` — the pre-HOK-3374 name classifier called it a controller
+# and excluded it, which killed a live 54-minute test run). Ownership, not
+# command names: a descendant of the agent is the agent's work. The 2s
+# foreground sleep puts this child's start lag relative to the agent past
+# the journey's 1s probe floor deterministically.
+sleep 2
+exec -a 'tools/tend.ts' sleep 600 &
+tend_pid=$!
+
 # The turn ends while the suite runs: Claude Code fires Stop → hook idle/Stop.
 claude_hook Stop
 printf '45\n' > "$SKEW_FILE"
 agent_log "idle-awaiting-background start-tick=$idle_start_tick"
 
 wait "$suite_pid" || true
+kill "$tend_pid" 2>/dev/null || true
 agent_log "background-finished tick=$(mill_tick)"
 
 # The suite's completion notification wakes the agent for a new turn.

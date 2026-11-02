@@ -519,6 +519,51 @@
         "review": { "$ref": "#/$defs/stageExecutionIdentity" }
       }
     },
+    "budgetExhaustions": {
+      "type": "array",
+      "description": "HOK-3362: every native stage attempt that stopped on a budget reason, read from the stage results (current and history). faultClass is derived from the fact by classifyArmFault, never stored as primary on the stage.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stage",
+          "attempt",
+          "fact",
+          "faultClass"
+        ],
+        "properties": {
+          "stage": {
+            "enum": [
+              "planning",
+              "coding",
+              "review"
+            ]
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fact": {
+            "$ref": "#/$defs/budgetExhausted"
+          },
+          "faultClass": {
+            "enum": [
+              "harness-fault",
+              "selection-fault",
+              "provider-fault",
+              "model-fault",
+              "unknown-fault"
+            ]
+          }
+        }
+      }
+    },
     "nonRewardReason": {
       "type": "object",
       "description": "Stable user-readable reason why the record is not reward eligible.",
@@ -2377,9 +2422,6 @@
         "activeRoute": {
           "$ref": "#/$defs/RouteArtifact"
         },
-        "routeChanged": {
-          "type": "boolean"
-        },
         "decisionSource": {
           "type": "string",
           "enum": [
@@ -2387,6 +2429,17 @@
             "expanded",
             "preserved"
           ]
+        },
+        "routeChanged": {
+          "type": "boolean",
+          "description": "Deprecated (HOK-3363): accepted on legacy records only; never written. Read stageRoutes overrides instead."
+        },
+        "stageRoutes": {
+          "$ref": "#/$defs/StageRoutes"
+        },
+        "hokusaiInferenceLogId": {
+          "type": "string",
+          "description": "Hokusai's join key (inference_log_id) for the routed decision (HOK-3363)."
         },
         "expandedCacheHit": {
           "type": "boolean"
@@ -2952,6 +3005,87 @@
     }
   },
   "$defs": {
+    "budgetExhausted": {
+      "type": "object",
+      "description": "HOK-3362: the one budget-exhaustion fact (shared/lib/native-agent/budget-exhaustion.ts). The fault class is derived from it, never stored.",
+      "required": [
+        "kind",
+        "stopReason",
+        "limit",
+        "used",
+        "progress"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "wall_clock",
+            "turn",
+            "tool_call",
+            "token",
+            "cost"
+          ]
+        },
+        "stopReason": {
+          "enum": [
+            "wall_clock_limit",
+            "turn_limit",
+            "tool_call_limit",
+            "token_limit",
+            "cost_limit"
+          ]
+        },
+        "limit": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "used": {
+          "type": "number",
+          "minimum": 0
+        },
+        "progress": {
+          "type": "object",
+          "required": [
+            "turnsCompleted",
+            "toolCallsExecuted",
+            "wallClockMs"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "turnsCompleted": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "toolCallsExecuted": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "wallClockMs": {
+              "type": "number",
+              "minimum": 0
+            },
+            "mutationFailures": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "providerWaitMs": {
+              "type": "number",
+              "minimum": 0
+            },
+            "providerErrorRetries": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "interruptedRequest": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
     "TaskCostHarness": {
       "type": "string",
       "description": "SDK TaskCostHarness (TASK_COST_HARNESSES).",
@@ -3743,6 +3877,8 @@
             "turn_limit",
             "tool_call_limit",
             "wall_clock_limit",
+            "token_limit",
+            "cost_limit",
             "tool_stagnation",
             "invalid_final_plan",
             "empty_final_plan",
@@ -4336,6 +4472,76 @@
         "reviewer",
         "reviewMode"
       ],
+      "additionalProperties": false
+    },
+    "StageRoutes": {
+      "type": "object",
+      "description": "The one per-stage route record (HOK-3363): what Hokusai recommended, what executed, and every override in between.",
+      "properties": {
+        "planner": { "$ref": "#/$defs/StageRouteRecord" },
+        "coder": { "$ref": "#/$defs/StageRouteRecord" },
+        "reviewer": { "$ref": "#/$defs/StageRouteRecord" }
+      },
+      "required": ["planner", "coder", "reviewer"],
+      "additionalProperties": false
+    },
+    "StageRouteRecord": {
+      "type": "object",
+      "properties": {
+        "hokusai": {
+          "type": "object",
+          "properties": {
+            "requestId": { "type": "string" },
+            "decisionId": { "type": "string" },
+            "recommended": { "type": "string" }
+          },
+          "required": ["recommended"],
+          "additionalProperties": false
+        },
+        "executed": { "type": "string" },
+        "overrides": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/RouteOverride" }
+        }
+      },
+      "required": ["executed", "overrides"],
+      "additionalProperties": false
+    },
+    "RouteOverride": {
+      "type": "object",
+      "properties": {
+        "source": { "type": "string", "enum": ["escalation", "launchability", "challenge", "operator"] },
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "reason": { "type": "string" },
+        "at": { "type": "string" },
+        "triggers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "metric": { "type": "string", "enum": ["expectedSuccess", "confidence"] },
+              "value": { "type": "number" },
+              "threshold": { "type": "number" }
+            },
+            "required": ["metric", "value", "threshold"],
+            "additionalProperties": false
+          }
+        },
+        "hokusai": {
+          "type": "object",
+          "properties": {
+            "requestId": { "type": "string" },
+            "decisionId": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "certification": { "type": "string" },
+        "pairId": { "type": "string" },
+        "side": { "type": "string", "enum": ["primary", "challenger"] },
+        "actor": { "type": "string" }
+      },
+      "required": ["source", "from", "to", "reason", "at"],
       "additionalProperties": false
     },
     "RouteArtifact": {

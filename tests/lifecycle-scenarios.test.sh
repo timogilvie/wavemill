@@ -288,7 +288,6 @@ run_lifecycle_scenario() {
       declare -gAg BRANCH_BY_ISSUE=()
       declare -gAg SLUG_BY_ISSUE=()
       declare -gAg PR_BY_ISSUE=()
-      declare -gAg CLEANED=()
 
       ISSUE="HOK-1294"
       SLUG="$SCENARIO_NAME"

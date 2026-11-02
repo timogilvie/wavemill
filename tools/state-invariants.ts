@@ -48,6 +48,7 @@ import {
   type TendHeartbeat,
 } from '../shared/lib/state-invariants.ts';
 import { appendObserverFinding } from '../shared/lib/observer-findings.ts';
+import { mutatorRejectionsPath, type MutatorRejectionRecord } from '../shared/lib/task-settlement.ts';
 import type { TaskProgress } from '../shared/lib/task-progress.ts';
 import { Ledger } from '../shared/lib/ledger.ts';
 import { runConsistencyCheck } from '../shared/lib/ledger-consistency.ts';
@@ -208,7 +209,36 @@ function readStateInvariantsCache(repoDir: string): StateInvariantsCache {
     pr: raw.pr ?? {},
     marker: raw.marker ?? {},
     signatures: raw.signatures ?? {},
+    settled: raw.settled ?? {},
   };
+}
+
+/**
+ * HOK-3373 I9 input: `mutator-rejections.jsonl` lines written inside the
+ * last `windowMinutes`. Torn or unparseable lines are skipped.
+ */
+function readRecentMutatorRejections(repoDir: string, nowMs: number, windowMinutes: number): MutatorRejectionRecord[] {
+  const path = mutatorRejectionsPath(join(repoDir, '.wavemill', 'workflow-state.json'));
+  if (!existsSync(path)) return [];
+  const cutoff = nowMs - windowMinutes * 60_000;
+  const records: MutatorRejectionRecord[] = [];
+  let text = '';
+  try {
+    text = readFileSync(path, 'utf-8');
+  } catch {
+    return [];
+  }
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const record = JSON.parse(line) as MutatorRejectionRecord;
+      const at = Date.parse(record.at);
+      if (Number.isFinite(at) && at >= cutoff) records.push(record);
+    } catch {
+      // torn line
+    }
+  }
+  return records;
 }
 
 function writeStateInvariantsCache(repoDir: string, cache: StateInvariantsCache): void {
@@ -431,12 +461,14 @@ async function runCheck(args: ToolArgs): Promise<void> {
     },
     recentMainCommits,
     tendHeartbeat,
+    mutatorRejections: readRecentMutatorRejections(repoDir, nowMs, envNumber('WAVEMILL_STATE_INV_REJECTION_WINDOW_MINUTES', 60)),
     config: {
       readyStuckMinutes: envNumber('WAVEMILL_STATE_INV_READY_STUCK_MINUTES', 15),
       labelMismatchGraceTicks: envNumber('WAVEMILL_STATE_INV_LABEL_GRACE_TICKS', 2),
       markerGraceTicks: envNumber('WAVEMILL_STATE_INV_MARKER_GRACE_TICKS', 2),
       bakeWindowMinutes,
       tendIdleStallMinutes,
+      settledGraceTicks: envNumber('WAVEMILL_STATE_INV_SETTLED_GRACE_TICKS', 3),
     },
   };
 

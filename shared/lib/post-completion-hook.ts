@@ -42,6 +42,7 @@ import {
 } from './eval-record-builder.ts';
 import {
   buildChallengeStageEval,
+  buildBudgetExhaustions,
   buildStageExecutionIdentity,
   extractReviewExecutedIdentity,
   hasProviderModelSubstitution,
@@ -489,6 +490,30 @@ interface PostCompletionEnrichmentInput {
   stageResultsDir?: string | null;
 }
 
+/**
+ * The stage-results dir to read at enrichment time. `gatherStageArtifacts`
+ * resolves it before the judge runs, usually inside the live worktree; a
+ * post-merge eval often finishes after the reap removed that worktree
+ * (HOK-3125 race), so a vanished dir is re-resolved through the same
+ * archive-aware lookup. Without this, a post-reap eval silently dropped
+ * `stageExecution` and the HOK-3362 `budgetExhaustions`.
+ */
+function resolveEnrichmentStageResultsDir(input: PostCompletionEnrichmentInput): string | null {
+  const resolved = input.stageResultsDir ?? null;
+  if (resolved && existsSync(resolved)) return resolved;
+  if (!input.issueId) return resolved;
+  try {
+    return postCompletionHookDeps.gatherStageArtifacts(
+      input.repoDir,
+      input.issueId,
+      input.branchName ?? '',
+      input.worktreePath,
+    ).stageResultsDir ?? resolved;
+  } catch {
+    return resolved;
+  }
+}
+
 function resolveRouteArtifactDirs(
   repoDir: string,
   branchName: string | undefined,
@@ -706,11 +731,10 @@ export function enrichPostCompletionRecord(
     })(),
   });
   // HOK-3143: attach per-stage provider-identity attribution, fail-soft.
-  if (input.stageResultsDir) {
+  const stageResultsDir = resolveEnrichmentStageResultsDir(input);
+  if (stageResultsDir) {
     try {
-      const stageExecution = buildStageExecutionIdentity({
-        stageResultsDir: input.stageResultsDir,
-      });
+      const stageExecution = buildStageExecutionIdentity({ stageResultsDir });
       if (stageExecution) {
         record.stageExecution = stageExecution;
         if (hasProviderModelSubstitution(stageExecution)) {
@@ -722,6 +746,15 @@ export function enrichPostCompletionRecord(
       }
     } catch (err) {
       console.warn(`Post-completion eval: stage execution identity failed — ${errorMessage(err)}`);
+    }
+    // HOK-3362: every budget-exhausted stage attempt, with its derived class.
+    try {
+      const budgetExhaustions = buildBudgetExhaustions({ stageResultsDir });
+      if (budgetExhaustions) {
+        record.budgetExhaustions = budgetExhaustions;
+      }
+    } catch (err) {
+      console.warn(`Post-completion eval: budget exhaustion collection failed — ${errorMessage(err)}`);
     }
   }
   const attestation = attestEvalRecordChallengeExecution(record, input.repoDir);

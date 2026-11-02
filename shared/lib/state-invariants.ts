@@ -18,6 +18,12 @@
  *  - I5  No condition marker outlives its condition
  *  - I6  Every tasks[id] validates against the A1 schema
  *  - I7  Every .retry-*-exhausted sentinel has its condition companion
+ *  - I9  A control write against a settled or non-current run was refused
+ *        at the task-record seam (HOK-3373, `task-settlement.ts`); late
+ *        evidence writes are always accepted and never appear here
+ *  - I10 A settled run has not converged: it still occupies a slot, is
+ *        reappearing as active work after delivery, or owes Linear its
+ *        rendered state, for ≥ N ticks (HOK-3373)
  *  - ledger-* side-effect ledger disagreements (routed through from CLI)
  *
  * The library is pure. All IO (progress CLI, filesystem reads, PR cache)
@@ -41,6 +47,9 @@ import {
   workflowTaskEntries,
 } from './workflow-state.ts';
 import { getBlastRadius } from './blast-radius.ts';
+import { linearSyncPending } from './linear-state-renderer.ts';
+import { isSettled, type MutatorRejectionRecord } from './task-settlement.ts';
+import { slotConsumesResource, isResourceDisposition } from './task-lifecycle.ts';
 import { TEND_BLOCKED_LANE_FRESH_MS } from './wavemill-incident-tend-candidates.ts';
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -54,6 +63,8 @@ export type InvariantId =
   | 'I6-schema'
   | 'I7-missing-condition-companion'
   | 'I8-bake-gate-stall'
+  | 'I9-rejected-control-write'
+  | 'I10-settled-non-convergence'
   | `ledger-${string}`;
 
 export interface InvariantViolation {
@@ -86,6 +97,8 @@ export interface InvariantConfig {
    * commit) before I8 fires.
    */
   tendIdleStallMinutes: number;
+  /** HOK-3373: ticks a settled run may stay unconverged before I10 fires. */
+  settledGraceTicks: number;
 }
 
 export const DEFAULT_INVARIANT_CONFIG: InvariantConfig = {
@@ -94,6 +107,7 @@ export const DEFAULT_INVARIANT_CONFIG: InvariantConfig = {
   markerGraceTicks: 2,
   bakeWindowMinutes: 120,
   tendIdleStallMinutes: 30,
+  settledGraceTicks: 3,
 };
 
 /** Minimum shape consumed from the retry-sentinel enumerator. */
@@ -169,6 +183,12 @@ export interface StateInvariantsCache {
     string,
     { firstSeenAt: string; lastSeenAt: string; timesSeen: number }
   >;
+  /**
+   * HOK-3373: consecutive ticks each settled run has stayed unconverged,
+   * keyed by `<taskId>|<condition>`. Optional so caches written before I10
+   * still parse.
+   */
+  settled?: Record<string, { streak: number }>;
 }
 
 export function createEmptyCache(): StateInvariantsCache {
@@ -200,6 +220,11 @@ export interface EvaluateInvariantsInputs {
    * checker treats as "tend is not reporting a stall" → no violation.
    */
   tendHeartbeat?: TendHeartbeat | null;
+  /**
+   * HOK-3373 I9 input: `mutator-rejections.jsonl` lines inside the
+   * rejection window (the CLI reads them; the evaluator stays pure).
+   */
+  mutatorRejections?: ReadonlyArray<MutatorRejectionRecord>;
 }
 
 /** Current tend heartbeat read for the bake gate (HOK-3238). */
@@ -265,6 +290,7 @@ export function evaluateInvariants(inputs: EvaluateInvariantsInputs): EvaluateIn
     pr: {},
     marker: {},
     signatures: { ...inputs.cache.signatures },
+    settled: {},
   };
   const config: InvariantConfig = { ...DEFAULT_INVARIANT_CONFIG, ...(inputs.config ?? {}) };
 
@@ -276,6 +302,8 @@ export function evaluateInvariants(inputs: EvaluateInvariantsInputs): EvaluateIn
   checkInvariant6Schema(inputs, violations);
   checkInvariant7MissingConditionCompanion(inputs, violations);
   checkInvariant8BakeGate(inputs, violations, config);
+  checkInvariant9RejectedControlWrites(inputs, violations);
+  checkInvariant10SettledNonConvergence(inputs, violations, nextCache, config);
 
   // Update signatures journal: first-seen (new) and last-seen (repeat).
   const nowIso = new Date(inputs.stateInspection.nowMs).toISOString();
@@ -786,6 +814,130 @@ export function checkInvariant8BakeGate(
     },
     signature: `I8:${bakeCommit.sha}`,
   });
+}
+
+// ── I9: refused control writes (HOK-3373) ────────────────────────────────────
+
+/**
+ * One finding per (task, reason) refused at the task-record seam inside the
+ * rejection window, with the count and up to three examples. Only control
+ * writes are ever refused, so a late evidence write (executed model, cost,
+ * session resolution) can never fire this.
+ */
+export function checkInvariant9RejectedControlWrites(
+  inputs: EvaluateInvariantsInputs,
+  out: InvariantViolation[],
+): void {
+  const rejections = inputs.mutatorRejections ?? [];
+  if (rejections.length === 0) return;
+  const nowIso = new Date(inputs.stateInspection.nowMs).toISOString();
+  const groups = new Map<string, MutatorRejectionRecord[]>();
+  for (const rejection of rejections) {
+    const key = `${rejection.issue}|${rejection.reason}`;
+    const list = groups.get(key) ?? [];
+    list.push(rejection);
+    groups.set(key, list);
+  }
+  for (const [key, list] of [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const first = list[0]!;
+    out.push({
+      invariantId: 'I9-rejected-control-write',
+      taskId: first.issue,
+      severity: 'urgent',
+      detectedAt: nowIso,
+      evidence: {
+        reason: first.reason,
+        count: list.length,
+        currentRunId: first.currentRunId,
+        ...(first.settledOutcome ? { settledOutcome: first.settledOutcome } : {}),
+        ...(first.expectedRunId ? { expectedRunId: first.expectedRunId } : {}),
+        examples: list.slice(0, 3).map((r) => ({ field: r.field, attempted: r.attempted, writer: r.writer, at: r.at, mode: r.mode })),
+      },
+      signature: `I9:${key}`,
+    });
+  }
+}
+
+// ── I10: settled non-convergence (HOK-3373) ──────────────────────────────────
+
+/** The unconverged conditions of one settled row (empty when converged). */
+export function settledNonConvergence(
+  taskId: string,
+  task: TaskRecord,
+  deliveredHistory: ReadonlySet<string>,
+): string[] {
+  const conditions: string[] = [];
+  const lifecycle = task.lifecycle;
+  if (isSettled(task)) {
+    const disposition = lifecycle?.resourceDisposition;
+    const retained = typeof lifecycle?.retention?.reason === 'string' && lifecycle.retention.reason.length > 0;
+    if (isResourceDisposition(disposition) && slotConsumesResource(disposition) && !retained) {
+      conditions.push('occupies-slot');
+    }
+    if (linearSyncPending(taskId, task)) conditions.push('linear-unsynced');
+  } else if (deliveredHistory.has(taskId)) {
+    // A delivered run settles once: an open row for the same key after a
+    // merged tombstone is delivered work reappearing as active.
+    conditions.push('reappeared-active');
+  }
+  return conditions;
+}
+
+function deliveredHistoryKeys(state: WorkflowState): Set<string> {
+  const keys = new Set<string>();
+  const history = state.terminalTaskHistory;
+  const tasks = history && typeof history === 'object' && !Array.isArray(history)
+    ? (history as Record<string, unknown>).tasks
+    : undefined;
+  if (tasks && typeof tasks === 'object' && !Array.isArray(tasks)) {
+    for (const [key, entry] of Object.entries(tasks as Record<string, unknown>)) {
+      if (entry && typeof entry === 'object' && (entry as Record<string, unknown>).workflowOutcome === 'merged') keys.add(key);
+    }
+  }
+  return keys;
+}
+
+/**
+ * Fire when a settled run stays unconverged for `settledGraceTicks`
+ * consecutive ticks: it still consumes a slot with no retention reason,
+ * still owes Linear its rendered state, or (for a delivered key) an open row
+ * has reappeared. One signature per (task, condition).
+ */
+export function checkInvariant10SettledNonConvergence(
+  inputs: EvaluateInvariantsInputs,
+  out: InvariantViolation[],
+  nextCache: StateInvariantsCache,
+  config: InvariantConfig,
+): void {
+  const nowIso = new Date(inputs.stateInspection.nowMs).toISOString();
+  const previous = inputs.cache.settled ?? {};
+  const settled: Record<string, { streak: number }> = {};
+  const delivered = deliveredHistoryKeys(inputs.state);
+  for (const [taskId, task] of workflowTaskEntries(inputs.state)) {
+    for (const condition of settledNonConvergence(taskId, task, delivered)) {
+      const key = `${taskId}|${condition}`;
+      const streak = (previous[key]?.streak ?? 0) + 1;
+      settled[key] = { streak };
+      if (streak < config.settledGraceTicks) continue;
+      out.push({
+        invariantId: 'I10-settled-non-convergence',
+        taskId,
+        severity: 'urgent',
+        detectedAt: nowIso,
+        evidence: {
+          condition,
+          ticks: streak,
+          graceTicks: config.settledGraceTicks,
+          workflowOutcome: task.lifecycle?.workflowOutcome ?? null,
+          resourceDisposition: task.lifecycle?.resourceDisposition ?? null,
+          runId: task.runId ?? null,
+          ...(condition === 'linear-unsynced' ? { linearSyncedState: task.linearSyncedState ?? null } : {}),
+        },
+        signature: `I10:${key}`,
+      });
+    }
+  }
+  nextCache.settled = settled;
 }
 
 // ── Helpers for CLI (sidecar parser, waiting-on evidence) ────────────────────

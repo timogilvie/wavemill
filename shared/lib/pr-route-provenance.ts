@@ -10,7 +10,9 @@ import {
   type PrRouteReviewerRole,
   type PrRouteRole,
 } from './pr-metadata.ts';
-import { latestRouteDecision, parseRouteDecisions, toPrRouteDecision } from './route-decision.ts';
+import { latestRouteDecision, parseRouteDecisions, toPrRouteDecision, withRouteRecordOverrides } from './route-decision.ts';
+import { ROUTE_RECORD_ARTIFACT_NAMES } from './route-artifact.ts';
+import { parseStageRoutes, type StageRoutes } from './route-override-record.ts';
 
 type RouteStage = 'planning' | 'coding' | 'review';
 type RouteRole = 'planner' | 'coder' | 'reviewer';
@@ -127,6 +129,25 @@ async function readRoutingEvents(
 
   const latest = latestRouteDecision(parseRouteDecisions(text));
   return { requested, decision: latest ? toPrRouteDecision(latest) : null };
+}
+
+/**
+ * The task's per-stage route record (HOK-3363), from the route-record
+ * artifact the overrides are appended to. Null for routes written before the
+ * record existed.
+ */
+async function readRouteRecord(deps: ReconcilePrRouteDeps, featureDir: string): Promise<StageRoutes | null> {
+  for (const name of ROUTE_RECORD_ARTIFACT_NAMES) {
+    const text = await deps.readText(join(featureDir, name));
+    if (text === null) continue;
+    try {
+      const artifact = JSON.parse(text) as Record<string, unknown>;
+      return parseStageRoutes(artifact?.stageRoutes);
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 function stageHeadSha(result: StageResult): string | undefined {
@@ -334,11 +355,12 @@ export async function reconcilePrRoute(
   deps: ReconcilePrRouteDeps = DEFAULT_DEPS,
 ): Promise<ReconcilePrRouteResult> {
   const diagnostics: string[] = [];
-  const [planning, coding, review, routing] = await Promise.all([
+  const [planning, coding, review, routing, routeRecord] = await Promise.all([
     readStageResult(deps, input.featureDir, 'planning', diagnostics),
     readStageResult(deps, input.featureDir, 'coding', diagnostics),
     readStageResult(deps, input.featureDir, 'review', diagnostics),
     readRoutingEvents(deps, input.featureDir, diagnostics),
+    readRouteRecord(deps, input.featureDir),
   ]);
 
   const { requested } = routing;
@@ -367,7 +389,7 @@ export async function reconcilePrRoute(
 
   return {
     route,
-    decision: routing.decision,
+    decision: routing.decision ? withRouteRecordOverrides(routing.decision, routeRecord) : null,
     diagnostics,
     complete: routeComplete(route),
   };

@@ -1,0 +1,52 @@
+# shellcheck shell=bash
+# Fake coder for the HOK-3362 replay (sourced by tests/fakes/bin/claude).
+#
+# HOK-3329 attempt 2: a native coder ran 145 turns / 230 tool calls until the
+# loop's own 60-minute wall-clock budget aborted the in-flight request. The
+# launcher used to read the resulting "Request was aborted" as a provider
+# error. The first launch here emulates the native launcher's on-disk
+# contract for that stop (HOK-3362) — the budget_exhausted handoff, the
+# stage-timeout envelope, the failed stage result carrying budgetExhausted and
+# the error hook — and exits. The relaunch (stage-failure-coding bounded
+# retry) completes through the shared fake's normal coding contract.
+if [[ -f "$FEATURE_DIR/budget-exhaustion-injected" ]]; then
+  default_coding
+  return
+fi
+touch "$FEATURE_DIR/budget-exhaustion-injected"
+
+fact="$(jq -cn '{
+  kind: "wall_clock", stopReason: "wall_clock_limit", limit: 3600000, used: 3600000,
+  progress: {turnsCompleted: 145, toolCallsExecuted: 230, wallClockMs: 3600000, mutationFailures: 0,
+             providerWaitMs: 1500000, providerErrorRetries: 0, interruptedRequest: true}
+}')"
+detail="native-stage-timeout: native coding exhausted its wall-clock budget (3600s of 3600s) after 145 turn(s), 230 tool call(s), 0 mutation failure(s), 1500s provider wait"
+now="$(date -u +%FT%TZ)"
+
+jq -n --argjson fact "$fact" --arg now "$now" '{
+  stage: "coding", reason: "budget_exhausted", stopReason: "wall_clock_limit",
+  mutationFailures: 0, lastToolError: null, recoveryAttempted: false,
+  suggestedAction: "Relaunch native coding under the stage-failure-coding bounded retry; the budget fact and progress evidence are preserved on this handoff.",
+  createdAt: $now, schemaVersion: "1.0", budgetExhausted: $fact
+}' > "$FEATURE_DIR/.coding-failure-handoff.json"
+
+jq -n --argjson fact "$fact" --arg now "$now" --arg detail "$detail" '{
+  schemaVersion: "1.0", stage: "coding", cause: "stage-timeout", stopReason: "wall_clock_limit",
+  budgetExhausted: $fact, provider: "openrouter", model: "glm-5.3-flash", requestedModel: "glm-5.3-flash",
+  agent: "native-openrouter", evidence: {source: "native-runtime", detail: $detail}, createdAt: $now
+}' > "$FEATURE_DIR/.coding-failure-envelope.json"
+
+result="$FEATURE_DIR/.coding-result.json"
+jq --argjson fact "$fact" --arg now "$now" --arg detail "$detail" '
+  .status = "failed" | .finishedAt = $now | .notes = ("Native coding failed: " + $detail)
+  | .failureReason = "budget_exhausted:wall_clock" | .budgetExhausted = $fact
+' "$result" > "$result.tmp"
+mv "$result.tmp" "$result"
+
+jq -n --arg detail "$detail" --argjson ts "$(date +%s)" '{
+  state: "error", event: "process_exit", detail: $detail, agent: "native", timestamp: $ts, writer: "agent",
+  agentRecord: {state: "error", event: "process_exit", detail: $detail, agent: "native", timestamp: $ts}
+}' > "/tmp/wavemill-${WAVEMILL_SESSION}-${WAVEMILL_ISSUE}.hook"
+
+printf '%s\n' "$detail"
+exit 1

@@ -28,6 +28,7 @@ import {
   type RouteFallbackReason,
 } from './pr-metadata.ts';
 import { POLICY_RESOLVER_VERSION } from './route-artifact.ts';
+import { decidedStageModel, flattenRouteOverrides, type StageRoutes } from './route-override-record.ts';
 import { loadTraceContext } from './trace-event.ts';
 import type { WorkflowRouteDecision } from './workflow-router.ts';
 
@@ -72,13 +73,6 @@ function nonEmpty(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-/** routingMode of the decision as decided, before escalation replaced it. */
-function decidedRoutingMode(
-  decision: Pick<WorkflowRouteDecision, 'routingMode' | 'preEscalationRoute'>,
-): string | undefined {
-  return decision.preEscalationRoute?.routingMode ?? decision.routingMode;
-}
-
 /**
  * Classifies where a routed decision came from.
  *
@@ -87,9 +81,11 @@ function decidedRoutingMode(
  * - `local`: wavemill's own router decided without consulting Hokusai.
  */
 export function classifyRouteDecisionSource(
-  decision: Pick<WorkflowRouteDecision, 'routingMode' | 'fallbackReason' | 'preEscalationRoute'>,
+  decision: Pick<WorkflowRouteDecision, 'routingMode' | 'fallbackReason'>,
 ): { source: RouteDecisionSource; fallback_reason?: RouteFallbackReason } {
-  if (decidedRoutingMode(decision) === 'hokusai') {
+  // Escalation re-asks Hokusai (HOK-3363), so an escalated decision keeps
+  // routingMode 'hokusai'; overrides never replace the decision's source.
+  if (decision.routingMode === 'hokusai') {
     return { source: 'hokusai' };
   }
   if (decision.fallbackReason) {
@@ -100,29 +96,32 @@ export function classifyRouteDecisionSource(
 
 /**
  * Policy version: the Model 30 version when exposed, else the local router's.
- * Read from the pre-escalation snapshot first: an escalation retry replaces
- * the decision (and its provenance) with a locally routed one.
+ * The decision keeps the first Hokusai request's provenance through
+ * escalation (HOK-3363).
  */
 export function resolvePolicyVersion(
-  decision: Pick<WorkflowRouteDecision, 'routingMode' | 'provenance' | 'preEscalationRoute'>,
+  decision: Pick<WorkflowRouteDecision, 'routingMode' | 'provenance'>,
 ): string {
-  if (decidedRoutingMode(decision) === 'hokusai') {
-    const modelVersion = nonEmpty(decision.preEscalationRoute?.hokusaiModelVersion)
-      ?? nonEmpty(decision.provenance?.hokusai?.modelVersion);
+  if (decision.routingMode === 'hokusai') {
+    const modelVersion = nonEmpty(decision.provenance?.hokusai?.modelVersion);
     if (modelVersion) return modelVersion;
   }
   return LOCAL_ROUTER_POLICY_VERSION;
 }
 
-/** The route as the router decided it, before escalation or overrides. */
+/**
+ * The route as the router decided it, before any override: read from the
+ * per-stage route record (HOK-3363), falling back to the decision's models
+ * for decisions that carry no record.
+ */
 export function recommendedRouteOf(
-  decision: Pick<WorkflowRouteDecision, 'planner' | 'coder' | 'reviewer' | 'preEscalationRoute'>,
+  decision: Pick<WorkflowRouteDecision, 'planner' | 'coder' | 'reviewer' | 'stageRoutes'>,
 ): RecommendedRoute {
-  const route = decision.preEscalationRoute ?? decision;
+  const routes = decision.stageRoutes;
   return {
-    planner: route.planner ?? '',
-    coder: route.coder ?? '',
-    reviewer: route.reviewer ?? '',
+    planner: (routes ? decidedStageModel(routes.planner) : decision.planner) ?? '',
+    coder: (routes ? decidedStageModel(routes.coder) : decision.coder) ?? '',
+    reviewer: (routes ? decidedStageModel(routes.reviewer) : decision.reviewer) ?? '',
   };
 }
 
@@ -174,7 +173,30 @@ export function toPrRouteDecision(record: PrRouteDecision): PrRouteDecision {
     },
     decided_at: record.decided_at,
     ...(record.supersedes ? { supersedes: record.supersedes } : {}),
+    ...(record.overrides && record.overrides.length > 0
+      ? { overrides: record.overrides.map((override) => ({ ...override })) }
+      : {}),
   };
+}
+
+/**
+ * Attaches the route record's overrides (HOK-3363) to a PR route decision:
+ * the decision says what was recommended, the overrides say who changed it
+ * and why. A record with no overrides leaves the decision unchanged.
+ */
+export function withRouteRecordOverrides(
+  decision: PrRouteDecision,
+  stageRoutes: StageRoutes | null | undefined,
+): PrRouteDecision {
+  const overrides = flattenRouteOverrides(stageRoutes).map((override) => ({
+    stage: override.stage,
+    source: override.source,
+    from: override.from,
+    to: override.to,
+    reason: override.reason,
+    at: override.at,
+  }));
+  return overrides.length > 0 ? { ...decision, overrides } : decision;
 }
 
 /**

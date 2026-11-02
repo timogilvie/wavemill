@@ -116,16 +116,16 @@ SESSION="wavemill-test"
 WORKTREE_ROOT="$TMP_ROOT/worktrees"
 mkdir -p "$WORKTREE_ROOT"
 STATE_FILE="$TMP_ROOT/workflow-state.json"
-declare -A PR_BY_ISSUE=() BRANCH_BY_ISSUE=() SLUG_BY_ISSUE=() CLEANED=() REAP_LOGGED=()
+declare -A PR_BY_ISSUE=() BRANCH_BY_ISSUE=() SLUG_BY_ISSUE=() REAP_LOGGED=()
 active_count=0
 
 # One monitor tick, mirroring issueMonitorLoop: rebuild the pass snapshot,
-# then visit every tracked issue that is not CLEANED.
+# then visit every issue still registered (HOK-3373: no CLEANED set).
 run_tick() {
   local ISSUE
   monitor_build_pass_snapshot
   for ISSUE in "${!BRANCH_BY_ISSUE[@]}"; do
-    [[ -n "${CLEANED[$ISSUE]:-}" ]] && continue
+    monitor_task_registered "$ISSUE" || continue
     monitor_issue_state "$ISSUE"
   done
   MONITOR_PASS_SNAPSHOT_ACTIVE=0
@@ -161,7 +161,7 @@ assert_eq "state file unchanged (no stub row recreated)" "$before_state" "$(cat 
 assert_eq "HOK-9999 row still absent" "true" "$(jq '.tasks["HOK-9999"] == null' "$STATE_FILE")"
 assert_eq "dropped from BRANCH_BY_ISSUE" "unset" "${BRANCH_BY_ISSUE[HOK-9999]-unset}"
 assert_eq "dropped from SLUG_BY_ISSUE" "unset" "${SLUG_BY_ISSUE[HOK-9999]-unset}"
-assert_eq "marked CLEANED" "1" "${CLEANED[HOK-9999]:-}"
+assert_eq "deregistered" "" "${BRANCH_BY_ISSUE[HOK-9999]+registered}"
 assert_eq "reap logged exactly once" "1" "$(grep -c 'HOK-9999 → reaped out of band' "$LOG_FILE" || true)"
 assert_eq "no 'Window disappeared' recreation line" "0" "$(grep -c 'Window disappeared' "$LOG_FILE" || true)"
 
@@ -175,7 +175,7 @@ run_tick
 run_tick
 assert_eq "no tmux new-window without a tombstone either" "0" "$(new_window_calls)"
 assert_eq "no stub row written" '{"tasks":{}}' "$(jq -c . "$STATE_FILE")"
-assert_eq "dropped (missing worktree is a reap signal)" "1" "${CLEANED[HOK-9998]:-}"
+assert_eq "dropped (missing worktree is a reap signal)" "" "${BRANCH_BY_ISSUE[HOK-9998]+registered}"
 
 echo ""
 echo "=== REQ-F1: a pre-fix orphan stub row + missing worktree is also dropped ==="
@@ -185,7 +185,7 @@ BRANCH_BY_ISSUE["HOK-9997"]="task/stub-slug"
 SLUG_BY_ISSUE["HOK-9997"]="stub-slug"
 run_tick
 assert_eq "no tmux new-window for an orphan stub" "0" "$(new_window_calls)"
-assert_eq "dropped from tracking" "1" "${CLEANED[HOK-9997]:-}"
+assert_eq "dropped from tracking" "" "${BRANCH_BY_ISSUE[HOK-9997]+registered}"
 assert_eq "reason names the stub" "1" "$(grep -c 'HOK-9997 → reaped out of band (state row stub' "$LOG_FILE" || true)"
 
 echo ""
@@ -226,7 +226,7 @@ BRANCH_BY_ISSUE["HOK-3001"]="task/x"
 SLUG_BY_ISSUE["HOK-3001"]="x"
 monitor_recreate_missing_task_window "HOK-3001" "HOK-3001-x" "$WORKTREE_ROOT/x" "$WORKTREE_ROOT/x/features/x" "executing"
 assert_eq "no tmux new-window when the worktree is gone" "0" "$(new_window_calls)"
-assert_eq "dropped from tracking" "1" "${CLEANED[HOK-3001]:-}"
+assert_eq "dropped from tracking" "" "${BRANCH_BY_ISSUE[HOK-3001]+registered}"
 assert_eq "no retry state written under a missing worktree" "false" "$([[ -e "$WORKTREE_ROOT/x" ]] && echo true || echo false)"
 
 echo ""

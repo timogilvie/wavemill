@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import type { LoopResult, LoopStopReason } from './loop.ts';
 import type { CleanupReport } from './cleanup.ts';
+import { isBudgetStopReason } from './budget-exhaustion.ts';
 import { redactSecretsInValue } from './tools/redaction.ts';
 import type { ToolPhase } from './tools/types.ts';
 
@@ -116,14 +117,6 @@ export const DEFAULT_RECOVERY_THRESHOLDS: RecoveryThresholds = {
   maxTurnsWithoutTouchedArtifact: 5,
   maxReadOnlyTurnsWithoutNewInfo: 5,
 };
-
-const BUDGET_STOP_REASONS = new Set<LoopStopReason>([
-  'turn_limit',
-  'token_limit',
-  'tool_call_limit',
-  'wall_clock_limit',
-  'cost_limit',
-]);
 
 const NON_STALL_STOP_REASONS = new Set<LoopStopReason>(['aborted', 'error']);
 
@@ -379,7 +372,7 @@ function validateThresholds(thresholds: RecoveryThresholds): void {
 }
 
 function detectBudgetExhaustion(stopReason: LoopStopReason): StallEvidence | null {
-  if (!BUDGET_STOP_REASONS.has(stopReason)) {
+  if (!isBudgetStopReason(stopReason)) {
     return null;
   }
 

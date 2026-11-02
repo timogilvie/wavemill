@@ -662,7 +662,6 @@ run_monitor_tick() {
     declare -Ag BRANCH_BY_ISSUE=()
     declare -Ag SLUG_BY_ISSUE=()
     declare -Ag PR_BY_ISSUE=()
-    declare -Ag CLEANED=()
     BRANCH_BY_ISSUE["$ISSUE"]="task/$SLUG"
     SLUG_BY_ISSUE["$ISSUE"]="$SLUG"
     [[ -n "$PR" ]] && PR_BY_ISSUE["$ISSUE"]="$PR"
@@ -693,7 +692,7 @@ run_monitor_tick() {
       printf "phase=%s\n" "$phase"
       printf "status=%s\n" "$status"
       printf "present=%s\n" "$present"
-      printf "cleaned=%s\n" "${CLEANED[$ISSUE]:-}"
+      printf "cleaned=%s\n" "$(monitor_task_registered "$ISSUE" || echo 1)"
       printf "active_count=%s\n" "$active_count"
       printf "cleanup_completed_calls=%s\n" "$CLEANUP_COMPLETED_CALLS"
       printf "cleanup_aborted_calls=%s\n" "$CLEANUP_ABORTED_CALLS"

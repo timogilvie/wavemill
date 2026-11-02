@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fromHokusaiModel30Response } from './hokusai-adapter.ts';
+import { fromHokusaiModel30Response, resolveHokusaiInferenceLogId } from './hokusai-adapter.ts';
 import type { HokusaiModel30Response } from './hokusai-schema.ts';
 
 let passed = 0;
@@ -163,6 +163,29 @@ test('clamps probability fields and preserves provenance metadata', () => {
   assert.equal(decision.provenance?.hokusai?.exactRouteMatchCount, 2);
   assert.equal(decision.provenance?.hokusai?.modelVersion, 'production');
   assert.equal(decision.provenance?.hokusai?.schema, 'technical_task_router_inputs/v2');
+});
+
+// protects: inferenceLogId null across every cached route because the server
+// returns it at the top level / as metadata.request_id (HOK-3363).
+test('reads the Hokusai join key from the top level, then metadata.inference_log_id, then metadata.request_id', () => {
+  assert.equal(resolveHokusaiInferenceLogId({ inference_log_id: 'top', metadata: { inference_log_id: 'meta', request_id: 'req' } }), 'top');
+  assert.equal(resolveHokusaiInferenceLogId({ metadata: { inference_log_id: 'meta', request_id: 'req' } }), 'meta');
+  assert.equal(resolveHokusaiInferenceLogId({ metadata: { request_id: 'req' } }), 'req');
+  assert.equal(resolveHokusaiInferenceLogId({}), undefined);
+
+  const decision = fromHokusaiModel30Response({
+    predictions: {
+      recommended_strategy: {
+        planner_model: 'claude-sonnet-4-5-20250929',
+        coder_model: 'claude-haiku-4-5-20251001',
+        reviewer_model: 'claude-sonnet-4-5-20250929',
+      },
+    },
+    inference_log_id: '96beff51-top',
+    metadata: { request_id: '96beff51-top' },
+  });
+  assert.equal(decision.provenance?.inferenceLogId, '96beff51-top');
+  assert.equal(decision.provenance?.requestId, '96beff51-top');
 });
 
 console.log(`\n--- Results: ${passed} passed, ${failed} failed ---`);

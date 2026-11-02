@@ -11,6 +11,19 @@ import {
 import { randomUUID } from 'node:crypto';
 import { dirname, join, relative, resolve } from 'node:path';
 import type { AgentMessage, AgentTurn, Message } from './messages.ts';
+import {
+  budgetExhaustionFromLoop,
+  budgetKindForStopReason,
+  describeBudgetExhaustion,
+  finalProviderErrorMessage,
+  isBudgetStopReason,
+} from './budget-exhaustion.ts';
+import {
+  buildBudgetExhaustionEnvelope,
+  deleteStageFailureEnvelope,
+  writeStageFailureEnvelope,
+} from './stage-failure-envelope.ts';
+import { snapshotPayloadsForFailure } from './payload-capture.ts';
 import type { AgentContext, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
 import { createNativeModelsCollection } from './models.ts';
@@ -372,20 +385,6 @@ function findFinalAssistantText(messages: AgentMessage[]): string {
   return '';
 }
 
-function findFinalAssistantErrorMessage(messages: AgentMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if ((message as { role?: string }).role !== 'assistant') {
-      continue;
-    }
-    const errorMessage = (message as AgentTurn).errorMessage?.trim();
-    if (errorMessage) {
-      return errorMessage;
-    }
-  }
-  return '';
-}
-
 function providerErrorPrefix(result: { providerError?: { kind: string } }, errorMessage: string): string {
   return result.providerError?.kind ?? classifyProviderError(errorMessage).kind;
 }
@@ -463,24 +462,25 @@ function cleanupReasonForStopReason(stopReason: string): CleanupReason | null {
   if (stopReason === 'aborted') {
     return 'aborted';
   }
-  if (stopReason === 'wall_clock_limit') {
+  if (budgetKindForStopReason(stopReason) === 'wall_clock') {
     return 'timeout';
   }
   return null;
 }
 
+/** Non-budget loop stops that reject planning before approval. */
+const NON_BUDGET_PLANNING_FAILURE_STOPS: ReadonlySet<string> = new Set(['tool_stagnation', 'aborted', 'error']);
+
+/**
+ * The eval-visible planning terminal reason for a loop stop. Every budget stop
+ * (`isBudgetStopReason`, HOK-3362) rejects planning and passes its stop reason
+ * through unchanged; the budget fact itself rides on the stage result and the
+ * planning envelope, not on a separate planning kind.
+ */
 function planningFailureReasonForStopReason(stopReason: string): PlanningFailureReason | null {
-  switch (stopReason) {
-    case 'turn_limit':
-    case 'tool_call_limit':
-    case 'wall_clock_limit':
-    case 'tool_stagnation':
-    case 'aborted':
-    case 'error':
-      return stopReason;
-    default:
-      return null;
-  }
+  return isBudgetStopReason(stopReason) || NON_BUDGET_PLANNING_FAILURE_STOPS.has(stopReason)
+    ? stopReason as PlanningFailureReason
+    : null;
 }
 
 function buildPlanningOutcomeArtifacts(input: {
@@ -587,6 +587,8 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
 
   try {
     mkdirSync(featureDir, { recursive: true });
+    // HOK-3362: a prior attempt's budget envelope must not classify this run.
+    deleteStageFailureEnvelope(featureDir, 'planning');
     writeHookStatus(hookPath, 'working', 'prepare_task_packet', taskPacketPath, 'native');
     ensureTaskPacket(options.repoDir, options.issue, options.linearIssue, taskPacketPath, runTsxCommand);
     writeHookStatus(hookPath, 'working', 'route_task_packet', routeOutputPath, 'native');
@@ -862,12 +864,36 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
 
     const stopFailureReason = planningFailureReasonForStopReason(result.stopReason);
     if (stopFailureReason) {
+      // Stop reason before error text (HOK-3362): a budget stop records the one
+      // budget fact; only an `error` stop is read for a provider failure.
+      const budgetExhausted = budgetExhaustionFromLoop(result, toLoopBudget(planningLimits));
       const providerError = result.stopReason === 'error'
-        ? findFinalAssistantErrorMessage(result.messages)
+        ? finalProviderErrorMessage(result)
         : '';
       const providerFailureReason = providerError
         ? `${providerErrorPrefix(result, providerError)}: ${providerError}`
         : '';
+      const budgetDescription = budgetExhausted ? describeBudgetExhaustion('planning', budgetExhausted) : '';
+      if (budgetExhausted) {
+        try {
+          writeStageFailureEnvelope(featureDir, buildBudgetExhaustionEnvelope({
+            stage: 'planning',
+            fact: budgetExhausted,
+            provider: String(model.provider),
+            model: modelName,
+            requestedModel: requestedModelName,
+            agent: `native-${String(model.provider)}`,
+            transcriptPath,
+            payloadCaptureDir: snapshotPayloadsForFailure(
+              featureDir,
+              'planning',
+              transcriptPath.replace(/\.jsonl$/, '.native-payloads'),
+            ),
+          }));
+        } catch (error) {
+          console.warn(`Failed to write planning budget envelope: ${(error as Error).message}`);
+        }
+      }
       clearRejectedPlanningArtifacts(planPath, approvalMarkerPath);
       await updateStageResult(featureDir, 'planning', {
         status: stopFailureReason === 'aborted' ? 'aborted' : 'failed',
@@ -885,7 +911,9 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         },
         modelAttributionEligible: false,
         modelAttributionIneligibleReason: 'execution_contradicted',
-        notes: `Native planning rejected before approval: ${stopFailureReason}.`,
+        notes: budgetDescription
+          ? `Native planning failed: ${budgetDescription}`
+          : `Native planning rejected before approval: ${stopFailureReason}.`,
         artifacts: {
           type: 'planning',
           taskPacketFile: relative(options.wtDir, taskPacketPath),
@@ -896,16 +924,17 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
           zeroToolCallPlan,
         },
         failureReason: providerFailureReason || stopFailureReason,
+        ...(budgetExhausted ? { budgetExhausted } : {}),
         ...cleanupPatch,
       });
       throw new Error(providerFailureReason
         ? `Native planning failed: ${providerFailureReason}`
-        : `Native planning rejected before approval: ${stopFailureReason}`);
+        : budgetDescription || `Native planning rejected before approval: ${stopFailureReason}`);
     }
 
     const rawFinalText = findFinalAssistantText(result.messages);
     if (rawFinalText.trim() === '') {
-      const providerError = findFinalAssistantErrorMessage(result.messages);
+      const providerError = finalProviderErrorMessage(result);
       clearRejectedPlanningArtifacts(planPath, approvalMarkerPath);
       await updateStageResult(featureDir, 'planning', {
         status: 'failed',

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Journey-local judge shim in front of the shared fake agent CLI
+# (escalation-override-record journey, HOK-3363).
+#
+# The post-merge eval's judge call (`claude -p`, no WAVEMILL_PHASE) gets this
+# fixture's scored verdict. The harness seeds FAKE_JUDGE_VERDICT_FILE with the
+# grounded-planner format and MONITOR_ENV sourcing overrides a journey export,
+# so routing the judge through the shared fake would fail validateJudgeResponse
+# (same reason as fixtures/post-merge-eval-reap/bin/claude). Every other
+# invocation (agent phase launches, --version) goes straight to the shared fake.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+shared_fake="$(cd "$here/../../../../fakes/bin" && pwd)/claude"
+
+if [[ -z "${WAVEMILL_PHASE:-}" && "${1:-}" == "-p" ]]; then
+  cat >/dev/null
+  jq -cn --rawfile result "$here/../judge-verdict.json" \
+    '{result:$result, usage:{input_tokens:10, cache_creation_input_tokens:0, cache_read_input_tokens:0, output_tokens:5}, total_cost_usd:0.01}'
+  printf '%s judge verdict served\n' "$(date -u +%FT%TZ)" >> "${FAKE_AGENT_LOG:-/dev/null}"
+  exit 0
+fi
+
+exec "$shared_fake" "$@"

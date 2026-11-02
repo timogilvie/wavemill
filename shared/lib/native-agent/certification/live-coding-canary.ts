@@ -52,7 +52,8 @@ import { resolveEnvValue } from '../../env-file.ts';
 import { runWavemillLoop, type LoopResult, type WavemillLoopConfig } from '../loop.ts';
 import { createNativeModelsCollection } from '../models.ts';
 import type { AgentContext, LoopStopReason } from '../loop.ts';
-import type { AgentMessage, AgentTurn, Message } from '../messages.ts';
+import type { Message } from '../messages.ts';
+import { budgetKindForStopReason, finalProviderErrorMessage, type BudgetKind } from '../budget-exhaustion.ts';
 import { classifyProviderError } from '../provider-error-classifier.ts';
 import { buildNativePatchGuidance } from '../patch-contract.ts';
 import { normalizeCodingCompleteContent } from '../completion-normalizer.ts';
@@ -336,14 +337,21 @@ async function runSingleCanaryAttempt(input: {
       ...(pricing && Number.isFinite(result.totalCostUsd) ? { costUsd: result.totalCostUsd } : {}),
     };
 
+    // Stop reason before error text (HOK-3362): a budget stop is the canary's
+    // budget outcome, never the abort message our own budget left behind.
+    const budgetOutcome = classifyBudgetOutcome(result.stopReason);
+    if (budgetOutcome) {
+      return { ...budgetOutcome, usage };
+    }
+
     const providerOutcome = classifyProviderOutcome(result);
     if (providerOutcome) {
       return { ...providerOutcome, detail: sanitizeDetail(providerOutcome.detail, tmpRoot), usage };
     }
 
-    const budgetOutcome = classifyBudgetOutcome(result.stopReason);
-    if (budgetOutcome) {
-      return { ...budgetOutcome, usage };
+    const stopOutcome = classifyNonBudgetStopOutcome(result.stopReason);
+    if (stopOutcome) {
+      return { ...stopOutcome, usage };
     }
 
     const verification = verifyCanaryRepository(workspace, evidenceRecorder.snapshot());
@@ -561,7 +569,7 @@ function createEvidenceRecorder(): {
 // ---------------------------------------------------------------------------
 
 function classifyProviderOutcome(result: LoopResult): AttemptOutcome | undefined {
-  const errorMessage = result.providerError?.errorMessage ?? findFinalAssistantErrorMessage(result.messages);
+  const errorMessage = result.providerError?.errorMessage ?? finalProviderErrorMessage(result);
   if (!errorMessage && result.stopReason !== 'error') {
     return undefined;
   }
@@ -574,40 +582,38 @@ function classifyProviderOutcome(result: LoopResult): AttemptOutcome | undefined
   return { status: 'inconclusive', reason, detail: message };
 }
 
+/**
+ * The canary's certification policy per budget kind (keyed on the one budget
+ * definition, HOK-3362). Wall-clock expiry can be provider slowness, so it is
+ * inconclusive and retryable; every other exhausted budget fails the canary.
+ */
+const CANARY_BUDGET_OUTCOMES: Readonly<Record<BudgetKind, AttemptOutcome>> = Object.freeze({
+  wall_clock: {
+    status: 'inconclusive',
+    reason: 'budget_exceeded',
+    limitExceeded: 'wall_clock',
+    detail: 'canary wall-clock limit fired before completion',
+  },
+  turn: { status: 'fail', reason: 'budget_exceeded', limitExceeded: 'turns', detail: 'canary turn limit fired before completion' },
+  token: { status: 'fail', reason: 'budget_exceeded', limitExceeded: 'tokens', detail: 'canary token limit fired before completion' },
+  tool_call: { status: 'fail', reason: 'budget_exceeded', limitExceeded: 'tool_calls', detail: 'canary tool-call budget fired (tool_call_limit)' },
+  cost: { status: 'fail', reason: 'budget_exceeded', limitExceeded: 'cost', detail: 'canary cost limit fired before completion' },
+});
+
 function classifyBudgetOutcome(stopReason: LoopStopReason): AttemptOutcome | undefined {
-  switch (stopReason) {
-    case 'wall_clock_limit':
-      // Wall-clock expiry can be provider slowness — inconclusive, retryable.
-      return {
-        status: 'inconclusive',
-        reason: 'budget_exceeded',
-        limitExceeded: 'wall_clock',
-        detail: 'canary wall-clock limit fired before completion',
-      };
-    case 'turn_limit':
-      return { status: 'fail', reason: 'budget_exceeded', limitExceeded: 'turns', detail: 'canary turn limit fired before completion' };
-    case 'token_limit':
-      return { status: 'fail', reason: 'budget_exceeded', limitExceeded: 'tokens', detail: 'canary token limit fired before completion' };
-    case 'tool_call_limit':
-    case 'tool_stagnation':
-      return { status: 'fail', reason: 'budget_exceeded', limitExceeded: 'tool_calls', detail: `canary tool-call budget fired (${stopReason})` };
-    case 'cost_limit':
-      return { status: 'fail', reason: 'budget_exceeded', limitExceeded: 'cost', detail: 'canary cost limit fired before completion' };
-    case 'aborted':
-      return { status: 'inconclusive', reason: 'internal_error', detail: 'canary run was aborted' };
-    default:
-      return undefined;
-  }
+  const kind = budgetKindForStopReason(stopReason);
+  return kind ? { ...CANARY_BUDGET_OUTCOMES[kind] } : undefined;
 }
 
-function findFinalAssistantErrorMessage(messages: AgentMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if ((message as { role?: string }).role !== 'assistant') continue;
-    const errorMessage = (message as AgentTurn).errorMessage?.trim();
-    if (errorMessage) return errorMessage;
+/** Stagnation and aborts: read after provider errors, as before HOK-3362. */
+function classifyNonBudgetStopOutcome(stopReason: LoopStopReason): AttemptOutcome | undefined {
+  if (stopReason === 'tool_stagnation') {
+    return { status: 'fail', reason: 'budget_exceeded', limitExceeded: 'tool_calls', detail: 'canary tool-call budget fired (tool_stagnation)' };
   }
-  return '';
+  if (stopReason === 'aborted') {
+    return { status: 'inconclusive', reason: 'internal_error', detail: 'canary run was aborted' };
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
