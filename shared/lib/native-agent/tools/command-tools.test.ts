@@ -250,6 +250,58 @@ describe('native-agent command tools', () => {
     assert.equal(existsSync(path.join(repo, 'output.txt')), false);
   });
 
+  // protects: HOK-3374 replay — a `bash -c '…'` wrapper would smuggle a full-suite
+  // run, a chained bash tests/*.test.sh, or a tmux ls past every downstream guard.
+  it('refuses HOK-3374 replay bash -c wrappers with the retry hint', async () => {
+    const repo = makeTempDir('command-tools-bash-c-replay-');
+    let spawnCalls = 0;
+    const spawnSpy = (file: string, args: readonly string[], options: any) => {
+      spawnCalls += 1;
+      return spawn(file, [...args], options);
+    };
+    const runTests = createRunTestsTool(repo, { spawnFn: spawnSpy });
+
+    const replay = [
+      `bash -c 'npm run test:preflight > .wavemill/logs/x.log 2>&1'`,
+      `bash -c 'bash tests/coding-dirty-handoff.test.sh > a.log && bash tests/lifecycle-harness.test.sh > b.log'`,
+      `bash -c 'tmux ls > /tmp/tmux.log'`,
+      `sh -c "bash tests/run-unit-tests.sh"`,
+      `env bash -lc 'sleep 60'`,
+    ];
+    for (const command of replay) {
+      const result = await runTests.execute('call-bash-c-replay', { command });
+      const details = result.details as RunCommandDetails;
+      assert.equal(details.ok, false, `expected refusal for: ${command}`);
+      if (!details.ok) {
+        assert.equal(details.error, 'unsupported_shell_syntax');
+        assert.equal(details.reason, 'unsupported-shell-syntax');
+        assert.match(details.message, /shell interpreter wrapper/);
+        assert.match(details.retryHint ?? '', /one program per call/);
+      }
+    }
+    assert.equal(spawnCalls, 0);
+  });
+
+  // protects: a direct `bash tests/foo.test.sh` being miscategorised as a wrapper
+  it('still runs direct bash tests/<file>.sh invocations', async () => {
+    const repo = makeTempDir('command-tools-direct-bash-');
+    const testsDir = path.join(repo, 'tests');
+    const { mkdirSync: mkdir } = await import('node:fs');
+    mkdir(testsDir, { recursive: true });
+    writeFileSync(path.join(testsDir, 'foo.test.sh'), '#!/bin/bash\necho ok-from-bash-script\n', 'utf-8');
+
+    const runTests = createRunTestsTool(repo);
+    const result = await runTests.execute('call-direct-bash', {
+      command: `bash tests/foo.test.sh`,
+    });
+    const details = result.details as RunCommandDetails;
+    assert.equal(details.ok, true);
+    if (details.ok) {
+      assert.equal(details.status, 'completed');
+      assert.match(details.stdout, /ok-from-bash-script/);
+    }
+  });
+
   it('round-trips quoted arguments through the command substrate', async () => {
     const repo = makeTempDir('command-tools-quoted-');
     const runTests = createRunTestsTool(repo);
