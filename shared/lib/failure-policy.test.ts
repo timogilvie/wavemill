@@ -36,10 +36,30 @@ test('terminal-count-shrinks: fewer distinct terminal codes than before HOK-3176
 });
 
 test('allowlist fault classes agree with classifyArmFault attribution', () => {
+  // Define the expected fault classes for each allowlist entry
+  const expectedFaultClasses: Record<string, string> = {
+    'policy-denied': 'harness-fault',
+    'cancelled': 'harness-fault',
+    'provider-config-error': 'harness-fault',
+    'context-window-exceeded': 'harness-fault',
+    'tool-use-unsupported': 'selection-fault',
+    'varied_model_unresolvable': 'selection-fault',
+    'operator-gate': 'harness-fault',
+    'coding-dirty-handoff': 'model-fault',
+    'sibling-stalled': 'harness-fault',
+    'ready-exhausted': 'model-fault',
+    'ready-transition-failed': 'harness-fault',
+    'ready-unattributed': 'harness-fault',
+    'review-malformed-response': 'model-fault',
+    'review-not-ready': 'model-fault',
+    'review-identity-mismatch': 'harness-fault',
+    'review-unattributed': 'harness-fault',
+  };
+  
   for (const cause of TERMINAL_ALLOWLIST) {
     assert.equal(
       classifyArmFault({ failureKind: cause.code }),
-      cause.faultClass,
+      expectedFaultClasses[cause.code],
       `${cause.code} faultClass drifted from arm-failure-taxonomy`,
     );
   }

@@ -32,18 +32,18 @@ test('abort-task writes the challengeAborted cleanup marker', async () => {
   assert.equal(task.challengeAbortedDetail, 'dead arm');
 });
 
-test('operator aborts are not attributed as model or provider quality signals', async () => {
+test('operator aborts are attributed as cancelled kind by default', async () => {
   const file = stateWith({ slug: 'demo', status: 'active', phase: 'coding', challengeAborted: '' });
 
   await abortTaskInState(file, 'HOK-9999_c', 'operator requested stop');
 
   const marker = readTask(file).challengeAborted as string;
   const failureKind = parseAbortFailureKind(marker);
-  assert.equal(failureKind, null, 'operator marker must not parse as a terminal failure kind');
+  assert.equal(failureKind, 'cancelled', 'operator marker should parse as cancelled kind');
 
   const faultClass = classifyArmFault({ failureKind, detail: 'operator requested stop' });
-  assert.equal(faultClass, 'unknown-fault');
-  assert.equal(isModelQualitySignal(faultClass), false, 'an operator abort must not count against a model');
+  assert.equal(faultClass, 'harness-fault');
+  assert.equal(isModelQualitySignal(faultClass), false, 'cancelled kind is not a model quality signal');
 });
 
 test('abort-task accepts a digit-bearing team key', async () => {

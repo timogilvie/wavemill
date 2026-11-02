@@ -19,7 +19,7 @@ export type ArmFailureKind =
   | 'tool-use-unsupported'
   | 'empty-model-turn'
   | 'native-provider-error'
-  | 'native-completion-protocol'
+  | 'completion-protocol'
   // Typed native stage-failure kinds (HOK-3064). `native-stage-timeout` is the
   // one budget-exhaustion kind for every native stage (HOK-3362); its fault
   // class is derived from the `budgetExhausted` fact, never fixed. Historical
@@ -95,6 +95,9 @@ export interface ChallengeArmFailure {
   faultClass?: ArmFaultClass;
   detail?: string;
 }
+
+/** Version of the arm fault classifier used for new reliability and eval records. */
+export const ARM_FAULT_CLASSIFIER_VERSION = 2;
 
 /**
  * Wait share at or above which a budget run that also hit provider errors is
@@ -176,7 +179,7 @@ export function classifyArmFault(input: {
     return 'model-fault';
   }
 
-  switch (failureKind) {
+  switch (canonicalFailureKind(failureKind)) {
     case 'context-exhausted':
     case 'context-window-exceeded':
     case 'invalid-model-id':
@@ -210,7 +213,7 @@ export function classifyArmFault(input: {
     // The model violated the coding completion/tool protocol (typed
     // no_completion_artifact / invalid_completion_artifact handoff): the
     // provider delivered output, so this is model quality signal.
-    case 'native-completion-protocol':
+    case 'completion-protocol':
       return 'model-fault';
     // HOK-3128: the model finished coding but left its own output uncommitted
     // and did not repair it when relaunched with a targeted instruction — the
@@ -268,6 +271,10 @@ export function classifyArmFault(input: {
     default:
       return 'unknown-fault';
   }
+}
+
+export function formatTerminationReason(kind: string): string {
+  return `terminal_stage_failure:${kind}`;
 }
 
 export function parseAbortFailureKind(abortReason?: string | null): string | null {

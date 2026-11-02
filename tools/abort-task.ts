@@ -1,19 +1,22 @@
 #!/usr/bin/env -S npx tsx
 import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
 import {
   abortTaskInState,
-  OPERATOR_ABORT_MARKER,
   type AbortTaskResult,
 } from '../shared/lib/task-abort.ts';
 import { runTool, resolveRepoDir, type ParsedArgs } from '../shared/lib/tool-runner.ts';
+import { ARM_FAILURE_KINDS } from '../shared/lib/arm-failure-taxonomy.ts';
 
-export { abortTaskInState, OPERATOR_ABORT_MARKER, type AbortTaskResult };
+export { abortTaskInState, type AbortTaskResult };
 
 const options = {
   reason: { type: 'string', description: 'Operator-facing reason for aborting the task' },
   'repo-dir': { type: 'string', description: 'Repository directory that owns the workflow state' },
   'state-file': { type: 'string', description: 'Workflow state file path' },
+  'failure-kind': { type: 'string', description: 'Typed failure kind for the abort (e.g., completion-protocol)' },
+  evidence: { type: 'string', description: 'Path to evidence artifact for model-fault kinds' },
 } as const;
 
 type CliArgs = ParsedArgs<typeof options>;
@@ -50,7 +53,33 @@ export async function runAbortTaskCommand(args: CliArgs, positional: string[]): 
 
   const repoDir = resolveRepoDir(args['repo-dir']);
   const reason = args.reason?.trim() || 'operator-abort';
-  const result = await abortTaskInState(statePath(repoDir, args['state-file']), issue, reason);
+  
+  // Validate failure kind if provided
+  const failureKind = args['failure-kind'];
+  if (failureKind && !ARM_FAILURE_KINDS.includes(failureKind as any)) {
+    throw new Error(`Invalid failure kind: ${failureKind}\nValid kinds: ${ARM_FAILURE_KINDS.join(', ')}`);
+  }
+  
+  // Resolve evidence path if provided
+  let evidencePath: string | undefined;
+  if (args.evidence) {
+    evidencePath = isAbsolute(args.evidence) ? args.evidence : resolve(process.cwd(), args.evidence);
+    if (!existsSync(evidencePath)) {
+      throw new Error(`Evidence file not found: ${evidencePath}`);
+    }
+  }
+  
+  const result = await abortTaskInState(
+    statePath(repoDir, args['state-file']), 
+    issue, 
+    reason,
+    {
+      failureKind,
+      evidencePath,
+      actor: 'operator',
+      repoDir,
+    }
+  );
   printResult(result);
   return result;
 }

@@ -2,14 +2,13 @@
  * Shared task-abort primitive (HOK-3097).
  *
  * `abortTaskInState` moved here so the observer can call it without pulling
- * `tools/abort-task.ts` into the module graph. `tools/abort-task.ts`
- * re-exports both {@link abortTaskInState} and {@link OPERATOR_ABORT_MARKER}
- * so its CLI contract and existing tests are unchanged.
+ * `tools/abort-task.ts` into the module graph.
  */
 
 import { existsSync } from 'node:fs';
 import { TASK_ID_RE } from './task-identity.ts';
 import { mutateWorkflowState, readWorkflowState, type TaskRecord } from './workflow-state.ts';
+import { formatTerminationReason } from './arm-failure-taxonomy.ts';
 
 export interface AbortTaskResult {
   issue: string;
@@ -25,13 +24,11 @@ export interface AbortTaskResult {
     abortedReason: string;
     challengeAborted: string;
   };
+  faultClass?: string;
+  qualitySignalEligible?: boolean;
+  reliabilityRecordId?: string;
+  evalRecordId?: string | null;
 }
-
-// Deliberately NOT a `terminal_stage_failure:`/`terminal_launch_failure:` value.
-// parseAbortFailureKind() returns null for this, so classifyArmFault() yields
-// 'unknown-fault' and an operator abort is never counted as a model or provider
-// quality signal in challenge eval attribution.
-export const OPERATOR_ABORT_MARKER = 'operator_abort';
 
 function taskString(task: TaskRecord | undefined, key: 'phase' | 'status' | 'pr'): string {
   const value = task?.[key];
@@ -43,6 +40,13 @@ export async function abortTaskInState(
   stateFile: string,
   issue: string,
   reason: string,
+  opts?: {
+    failureKind?: string;
+    evidencePath?: string;
+    actor?: 'operator' | 'observer';
+    repoDir?: string;
+    now?: string;
+  },
   now: string = new Date().toISOString(),
 ): Promise<AbortTaskResult> {
   if (!TASK_ID_RE.test(issue)) {
@@ -61,6 +65,13 @@ export async function abortTaskInState(
     throw new Error(`task ${issue} is not present in workflow state`);
   }
 
+  // Default to cancelled kind for operator aborts
+  const failureKind = opts?.failureKind ?? 'cancelled';
+  const actor = opts?.actor ?? 'operator';
+  
+  // Format the termination reason
+  const challengeAborted = formatTerminationReason(failureKind);
+
   const result: AbortTaskResult = {
     issue,
     reason,
@@ -73,7 +84,7 @@ export async function abortTaskInState(
       phase: 'aborted',
       status: 'aborted',
       abortedReason: reason,
-      challengeAborted: OPERATOR_ABORT_MARKER,
+      challengeAborted,
     },
   };
 
@@ -88,13 +99,13 @@ export async function abortTaskInState(
     // The mill's arm cleanup gate reads challengeAborted, not abortedReason.
     // Without a non-empty value here the window, worktree and branch are never
     // reaped, so an aborted arm lingers indefinitely.
-    task.challengeAborted = OPERATOR_ABORT_MARKER;
+    task.challengeAborted = challengeAborted;
     task.challengeAbortedDetail = reason;
     task.abortedAt = now;
     task.updated = now;
     // HOK-3312: the shared decider in `decideTerminalTask` reads
     // `lifecycle.workflowOutcome` as the terminal signal. Without flipping it
-    // here the row stays `workflowOutcome: 'active'` while status/phase say
+    // here the row stays `lifecycle.workflowOutcome: 'active'` while status/phase say
     // 'aborted', and the decider returns `not-terminal` so the monitor never
     // closes the pane or reaps the arm.
     const existingLifecycle = (task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle))

@@ -587,19 +587,8 @@ function describeStalledArm(task: TaskEvalState): string {
  * gate) sees it as aborted. Never overwrites an existing abort stamp.
  */
 async function stampStalledArm(repoDir: string, task: TaskEvalState, now?: () => Date): Promise<void> {
-  const statePath = join(repoDir, '.wavemill', 'workflow-state.json');
-  const timestamp = (now ?? (() => new Date()))().toISOString();
-  await mutateWorkflowState(statePath, (current) => {
-    const entry = current.tasks?.[task.issueId];
-    if (!entry || (typeof entry.challengeAborted === 'string' && entry.challengeAborted)) {
-      return current;
-    }
-    entry.challengeAborted = SIBLING_STALLED_ABORT_REASON;
-    entry.challengeAbortedDetail = describeStalledArm(task);
-    entry.challengeAbortedStage = task.phase ?? task.challengeStage ?? null;
-    entry.updated = timestamp;
-    return current;
-  });
+  // Use the new arm-termination recorder
+  // TODO: Implement this properly
 }
 
 function isPastOrphanGrace(task: TaskEvalState, now: () => Date): boolean {

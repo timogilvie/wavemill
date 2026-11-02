@@ -69,8 +69,6 @@ export interface TerminalCause {
   code: string;
   /** Why retrying cannot change the outcome (one sentence). */
   reason: string;
-  /** Reliability attribution, mirrored from `classifyArmFault`. */
-  faultClass: ArmFaultClass;
   /** `failure-policy.test.ts` case that pins this entry. Enforced by the suite. */
   testRef: string;
   /**
@@ -133,49 +131,41 @@ export const TERMINAL_ALLOWLIST: readonly TerminalCause[] = Object.freeze([
   {
     code: 'policy-denied',
     reason: 'a mutation/network policy rejected the action; only an operator can widen the policy',
-    faultClass: 'harness-fault',
     testRef: 'failure-policy.test.ts:terminal:policy-denied',
   },
   {
     code: 'cancelled',
     reason: 'an operator or the orchestrator cancelled the run; relaunching would override that decision',
-    faultClass: 'harness-fault',
     testRef: 'failure-policy.test.ts:terminal:cancelled',
   },
   {
     code: 'provider-config-error',
     reason: 'the provider rejected auth or the model id; the same request fails until configuration changes',
-    faultClass: 'harness-fault',
     testRef: 'failure-policy.test.ts:terminal:provider-config-error',
   },
   {
     code: 'context-window-exceeded',
     reason: 'the prompt exceeds the model context window; the identical relaunch overflows again',
-    faultClass: 'harness-fault',
     testRef: 'failure-policy.test.ts:terminal:context-window-exceeded',
   },
   {
     code: 'tool-use-unsupported',
     reason: 'no provider endpoint serves tool use for this model; a selection fault no retry can fix',
-    faultClass: 'selection-fault',
     testRef: 'failure-policy.test.ts:terminal:tool-use-unsupported',
   },
   {
     code: 'varied_model_unresolvable',
     reason: 'the varied challenge model can never pass launch preflight (HOK-2920)',
-    faultClass: 'selection-fault',
     testRef: 'failure-policy.test.ts:terminal:varied_model_unresolvable',
   },
   {
     code: 'operator-gate',
     reason: 'GitHub requires an approval, security, or branch-protection gate that only an operator can satisfy',
-    faultClass: 'harness-fault',
     testRef: 'failure-policy.test.ts:terminal:operator-gate',
   },
   {
     code: 'coding-dirty-handoff',
     reason: 'the HOK-3128 dirty-handoff relaunch budget is already spent; the agent will not commit its own output',
-    faultClass: 'model-fault',
     testRef: 'failure-policy.test.ts:terminal:coding-dirty-handoff',
   },
   // Challenge-only: existing pair-resolution semantics. Each is emitted only
@@ -184,56 +174,48 @@ export const TERMINAL_ALLOWLIST: readonly TerminalCause[] = Object.freeze([
   {
     code: 'sibling-stalled',
     reason: 'a no-PR arm showed no agent progress past the stall grace; retiring it releases its sibling (HOK-3128)',
-    faultClass: 'harness-fault',
     testRef: 'failure-policy.test.ts:terminal:challenge-only',
     challengeOnly: true,
   },
   {
     code: 'ready-exhausted',
     reason: "the arm's checks stayed red after Ready remediation and rechecks were exhausted (HOK-3147)",
-    faultClass: 'model-fault',
     testRef: 'failure-policy.test.ts:terminal:challenge-only',
     challengeOnly: true,
   },
   {
     code: 'ready-transition-failed',
     reason: 'Ready passed but the handoff transition kept failing; the arm is void, not forfeit (HOK-3147)',
-    faultClass: 'harness-fault',
     testRef: 'failure-policy.test.ts:terminal:challenge-only',
     challengeOnly: true,
   },
   {
     code: 'ready-unattributed',
     reason: 'Ready was exhausted without a typed cause; the arm is void, not forfeit (HOK-3147)',
-    faultClass: 'harness-fault',
     testRef: 'failure-policy.test.ts:terminal:challenge-only',
     challengeOnly: true,
   },
   {
     code: 'review-malformed-response',
     reason: 'the reviewer kept emitting a malformed verdict while Ready refused to launch (HOK-3154)',
-    faultClass: 'model-fault',
     testRef: 'failure-policy.test.ts:terminal:challenge-only',
     challengeOnly: true,
   },
   {
     code: 'review-not-ready',
     reason: 'the reviewer returned a genuine not_ready verdict while Ready refused to launch (HOK-3154)',
-    faultClass: 'model-fault',
     testRef: 'failure-policy.test.ts:terminal:challenge-only',
     challengeOnly: true,
   },
   {
     code: 'review-identity-mismatch',
     reason: 'the review artifact names a different reviewer than the arm was assigned (HOK-3154)',
-    faultClass: 'harness-fault',
     testRef: 'failure-policy.test.ts:terminal:challenge-only',
     challengeOnly: true,
   },
   {
     code: 'review-unattributed',
     reason: 'the reviewer identity behind a refused Ready launch could not be proven (HOK-3154)',
-    faultClass: 'harness-fault',
     testRef: 'failure-policy.test.ts:terminal:challenge-only',
     challengeOnly: true,
   },
@@ -252,7 +234,7 @@ const KIND_ALIASES: Readonly<Record<string, string>> = {
   'planning-turn-limit': 'native-stage-timeout',
   // HOK-3249: the typed review category for an overflow of the budgeted input.
   'native-context-window-exceeded': 'context-window-exceeded',
-  operator_abort: 'cancelled',
+  'native-completion-protocol': 'completion-protocol',
   'operator-cancelled': 'cancelled',
 };
 
@@ -332,7 +314,7 @@ export function detectFailureKind(detail: string | null | undefined, handoffReas
     return 'native-stage-timeout';
   }
   if (handoffReason && COMPLETION_PROTOCOL_HANDOFF_REASONS.has(handoffReason)) {
-    return 'native-completion-protocol';
+    return 'completion-protocol';
   }
   // Commit SHAs ("preserved at 0c564d2") must not read as HTTP 5xx digits.
   const text = (detail ?? '').replace(/\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/gi, '<sha>');
@@ -419,7 +401,7 @@ const NEXT_ACTIONS: Readonly<Record<string, string>> = {
   'policy-denied': 'a mutation/network policy rejected the run (harness fault, not a model/provider signal). Review the policy decision before relaunching',
   cancelled: 'the run was cancelled by an operator or the orchestrator (not a model/provider signal). Relaunch the phase when ready',
   'empty-model-turn': 'relaunch native coding; the runtime exhausted bounded continuation after empty model turns',
-  'native-completion-protocol': "model ended the phase without a valid completion artifact (protocol violation, not a provider fault) - check the model's structured tool-call compatibility before relaunching",
+  'completion-protocol': "model ended the phase without a valid completion artifact (protocol violation, not a provider fault) - check the model's structured tool-call compatibility before relaunching",
   'ready-exhausted': 'the arm stayed red after Ready remediation and re-checks were exhausted; it was retired (forfeit) so its green sibling proceeds. Inspect the failed checks on the closed PR',
   'ready-transition-failed': "Ready's checks passed but a handoff transition (route-stamp, review identity, label, GitHub API) kept failing; the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect .ready-result.json transitionFailure",
   'ready-unattributed': 'Ready was exhausted without a typed red-check or transition cause (base conflict, missing ready result); the arm was retired as an invalid challenge so its green sibling proceeds. Inspect the ready attention file',
@@ -467,8 +449,13 @@ function attributionFor(
   klass: FailureClass,
   cause: TerminalCause | undefined,
   executionEvidence: ExecutionEvidence | null | undefined,
+  failureKind?: string | null,
+  detail?: string | null,
+  budgetExhausted?: BudgetExhaustedFact | null,
 ): FailureAttribution {
-  return klass === 'terminal' && cause?.faultClass === 'model-fault' && Boolean(executionEvidence?.model.trim())
+  // Derive the fault class using classifyArmFault
+  const faultClass = cause ? classifyArmFault({ failureKind, detail, budgetExhausted }) : 'unknown-fault';
+  return klass === 'terminal' && faultClass === 'model-fault' && Boolean(executionEvidence?.model.trim())
     ? 'model'
     : 'unattributed';
 }
@@ -494,7 +481,7 @@ export function classifyFailure(evidence: FailureEvidence): FailureDecision {
       cause,
       rationale: `allowlisted terminal cause ${cause.code}: ${cause.reason}`,
       nextAction: nextActionFor(failureKind),
-      attribution: attributionFor('terminal', cause, evidence.executionEvidence),
+      attribution: attributionFor('terminal', cause, evidence.executionEvidence, failureKind, detail, evidence.budgetExhausted),
     };
   }
 
@@ -514,7 +501,7 @@ export function classifyFailure(evidence: FailureEvidence): FailureDecision {
             ? 'CI classified the failure as locally replayable'
             : `${failureKind} is a recognised code failure`,
         nextAction: 'remediate the failing change from the recorded excerpt, then push a new head',
-        attribution: attributionFor('code-failure', undefined, evidence.executionEvidence),
+        attribution: attributionFor('code-failure', undefined, evidence.executionEvidence, failureKind, detail, evidence.budgetExhausted),
       };
     }
   }
@@ -529,7 +516,7 @@ export function classifyFailure(evidence: FailureEvidence): FailureDecision {
         ? 'unrecognised failure: retry by default (HOK-3176)'
         : `${failureKind} is not on the terminal allowlist: retry by default (HOK-3176)`,
     nextAction: nextActionFor(failureKind),
-    attribution: attributionFor('retryable', undefined, evidence.executionEvidence),
+    attribution: attributionFor('retryable', undefined, evidence.executionEvidence, failureKind, detail, evidence.budgetExhausted),
   };
 }
 

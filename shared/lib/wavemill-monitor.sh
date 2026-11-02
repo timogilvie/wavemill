@@ -1141,73 +1141,22 @@ challenge_abort_pair() {
 
   write_stage_result "$feature_dir" "$result_stage" "failed" "" "$model" "$detail"
 
-  if [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
-    state_mutate "$STATE_FILE" \
-      'def mark($key):
-         if ($key != "" and .tasks[$key] != null)
-         then .tasks[$key].challengeAborted = $reason
-              | .tasks[$key].challengeAbortedDetail = $detail
-              | .tasks[$key].challengeAbortedStage = $stage
-              | (if $nextAction != "" then .tasks[$key].challengeAbortedNextAction = $nextAction else . end)
-              | .tasks[$key].updated = (now | todate)
-         else .
-         end;
-       mark($issue)
-       | (if $scope == "pair" then mark($peer) else . end)
-       | if $pairId != "" and $role != "" then
-           .challengePairAbortions[$pairId][$role] = {
-             reason: $reason,
-             detail: $detail,
-             stage: $stage,
-             issue: $issue,
-             scope: $scope,
-             updated: (now | todate)
-           } + (if $nextAction != "" then {nextAction:$nextAction} else {} end)
-         else . end' \
-      --arg issue "$issue" \
-      --arg peer "${peer:-}" \
-      --arg pairId "${pair_id:-}" \
-      --arg role "$role" \
-      --arg reason "$reason" \
-      --arg detail "$detail" \
-      --arg stage "$(challenge_stage_for_launch_env "$stage")" \
-      --arg nextAction "$next_action" \
-      --arg scope "$scope" >/dev/null 2>&1 || true
-  fi
-
-  mkdir -p "$feature_dir"
-  artifact="$feature_dir/.challenge-aborted.json"
-  tmp="$artifact.tmp.$$"
-  jq -n -S \
-    --arg pairId "${pair_id:-$issue}" \
-    --arg role "$role" \
-    --arg stage "$(challenge_stage_for_launch_env "$stage")" \
-    --arg model "$model" \
-    --arg reason "$reason" \
-    --arg abortedAt "$now" \
-    --arg detail "$detail" \
-    --arg nextAction "$next_action" \
-    --arg budgetExhausted "$budget_json" \
-    '{pairId:$pairId, role:$role, stage:$stage, model:$model, reason:$reason, abortedAt:$abortedAt, detail:$detail}
-     + (if $nextAction == "" then {} else {nextAction:$nextAction} end)
-     + (if $budgetExhausted == "" then {} else {budgetExhausted:($budgetExhausted | fromjson? // null)} end)' \
-    > "$tmp" 2>/dev/null && mv "$tmp" "$artifact" || rm -f "$tmp"
+  # State stamping and artifact writing now handled by record-arm-termination.ts
 
   if [[ -n "${REPO_DIR:-}" && ( "$role" == "primary" || "$role" == "challenger" ) ]]; then
     local tool
-    tool="$(wavemill_tool_path record-arm-failure.ts)"
+    tool="$(wavemill_tool_path record-arm-termination.ts)"
     if [[ -f "$tool" ]]; then
       (
         cd "$REPO_DIR" && wavemill_run_tool "$tool" \
           --repo-dir "${WAVEMILL_RELIABILITY_REPO_DIR:-$REPO_DIR}" \
           --issue "$issue" \
-          --pair-id "${pair_id:-$issue}" \
-          --role "$role" \
           --stage "$(challenge_stage_for_launch_env "$stage")" \
           --model "${model:-unknown}" \
-          --abort-reason "$reason" \
+          --failure-kind "$reason" \
           --detail "$detail" \
           --next-action "$next_action" \
+          --actor monitor \
           ${budget_json:+--budget-exhausted-json "$budget_json"}
       ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
     fi
