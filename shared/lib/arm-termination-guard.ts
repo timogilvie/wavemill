@@ -34,8 +34,8 @@ export const ARM_TERMINATION_GUARD: GuardSpec = {
   invariantPaths: [
     'shared/lib/arm-termination.ts',
     'shared/lib/arm-termination-guard.ts',
-    'tools/check-arm-termination-recorder.ts',
-    'tools/record-arm-termination.ts',
+    'tools/check-arm-termination-recorder.ts', // install-paths: allow invariantPaths list, not an argv target
+    'tools/record-arm-termination.ts', // install-paths: allow invariantPaths list, not an argv target
     // The arm-reliability record is the derived output of the recorder; its
     // ArmReliabilityRecord type declares `faultClass`, and tests for the
     // recorder verify equivalence with `classifyArmFault`.
