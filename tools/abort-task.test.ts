@@ -32,17 +32,22 @@ test('abort-task writes the challengeAborted cleanup marker', async () => {
   assert.equal(task.challengeAbortedDetail, 'dead arm');
 });
 
-test('operator aborts are not attributed as model or provider quality signals', async () => {
+test('operator aborts are not attributed as model or provider quality signals (HOK-3358)', async () => {
   const file = stateWith({ slug: 'demo', status: 'active', phase: 'coding', challengeAborted: '' });
 
   await abortTaskInState(file, 'HOK-9999_c', 'operator requested stop');
 
+  // HOK-3358: operator aborts stamp the shared `terminal_stage_failure:<kind>`
+  // form the monitor uses — default kind is `cancelled`, which classifies as
+  // harness-fault. The plan's rule: "an operator stopping work is not model
+  // evidence." The fault class is still not a quality signal.
   const marker = readTask(file).challengeAborted as string;
+  assert.equal(marker, 'terminal_stage_failure:cancelled');
   const failureKind = parseAbortFailureKind(marker);
-  assert.equal(failureKind, null, 'operator marker must not parse as a terminal failure kind');
+  assert.equal(failureKind, 'cancelled');
 
   const faultClass = classifyArmFault({ failureKind, detail: 'operator requested stop' });
-  assert.equal(faultClass, 'unknown-fault');
+  assert.equal(faultClass, 'harness-fault');
   assert.equal(isModelQualitySignal(faultClass), false, 'an operator abort must not count against a model');
 });
 

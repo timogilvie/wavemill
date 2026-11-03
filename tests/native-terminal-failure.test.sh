@@ -39,6 +39,7 @@ eval "$(extract_function native_coding_failure_handoff_reason)"
 eval "$(extract_function native_terminal_failure_kind)"
 eval "$(extract_function native_terminal_failure_next_action)"
 eval "$(extract_function stage_failure_decision)"
+eval "$(extract_function stage_budget_exhausted_json)"
 eval "$(extract_function native_stage_failure_envelope_json)"
 eval "$(extract_function stage_launch_identity)"
 eval "$(extract_function emit_native_terminal_failure_attention)"
@@ -196,8 +197,8 @@ else
 fi
 
 # Both arms of the pair must be quarantined: a dead arm invalidates the comparison.
-if [[ "$(jq -r '.tasks["PAIR-1_c"].challengeAborted' "$STATE_FILE")" == "terminal_launch_failure:context-window-exceeded" ]] \
-  && [[ "$(jq -r '.tasks["PAIR-1"].challengeAborted' "$STATE_FILE")" == "terminal_launch_failure:context-window-exceeded" ]] \
+if [[ "$(jq -r '.tasks["PAIR-1_c"].challengeAborted' "$STATE_FILE")" == "terminal_stage_failure:context-window-exceeded" ]] \
+  && [[ "$(jq -r '.tasks["PAIR-1"].challengeAborted' "$STATE_FILE")" == "terminal_stage_failure:context-window-exceeded" ]] \
   && [[ "$(jq -r '.tasks["PAIR-1_c"].challengeAbortedStage' "$STATE_FILE")" == "coding" ]] \
   && [[ -f "$fd/.challenge-aborted.json" ]] \
   && [[ "$(jq -r '.nextAction' "$fd/.challenge-aborted.json")" == *"compressed context"* ]]; then
@@ -215,7 +216,7 @@ write_hook "PAIR-1_c" "error" "$tool_use_detail"
 if emit_native_terminal_failure_attention "PAIR-1_c" "$fd" "coding" "win-tool" "%3" "native" "qwen-2.5-coder-32b"; then
   reliability_file="$WAVEMILL_RELIABILITY_REPO_DIR/.wavemill/evals/reliability-records.jsonl"
   if [[ "$(jq -r '.artifacts.failureKind' "$fd/.coding-result.json")" == "tool-use-unsupported" ]] \
-    && [[ "$(jq -r '.tasks["PAIR-1_c"].challengeAborted' "$STATE_FILE")" == "terminal_launch_failure:tool-use-unsupported" ]] \
+    && [[ "$(jq -r '.tasks["PAIR-1_c"].challengeAborted' "$STATE_FILE")" == "terminal_stage_failure:tool-use-unsupported" ]] \
     && [[ -f "$reliability_file" ]] \
     && [[ "$(jq -r 'select(.issueId == "PAIR-1_c") | .faultClass' "$reliability_file" | tail -n 1)" == "selection-fault" ]]; then
     pass "unsupported tool use quarantines and records reliability"
@@ -270,7 +271,7 @@ write_hook "PAIR-1_c" "error" "$bad_model_detail"
 
 if emit_native_terminal_failure_attention "PAIR-1_c" "$fd" "coding" "win-2" "%2" "native" "qwen-2.5-coder-32b"; then
   if [[ "$(jq -r '.artifacts.failureKind' "$fd/.coding-result.json")" == "provider-config-error" ]] \
-    && [[ "$(jq -r '.tasks["PAIR-1"].challengeAborted' "$STATE_FILE")" == "terminal_launch_failure:provider-config-error" ]]; then
+    && [[ "$(jq -r '.tasks["PAIR-1"].challengeAborted' "$STATE_FILE")" == "terminal_stage_failure:provider-config-error" ]]; then
     pass "invalid model ID fails the stage and quarantines the pair"
   else
     fail "invalid model ID side effects incomplete"
@@ -451,7 +452,7 @@ if emit_challenge_stage_failure_quarantine "PAIR-1_c" "$fd" "review" "win-review
   fi
   # HOK-2885: a transient challenger fault aborts the challenger only — the
   # healthy primary keeps running so the pair can resolve by forfeit.
-  if [[ "$(jq -r '.tasks["PAIR-1_c"].challengeAborted' "$STATE_FILE")" == "retry_exhausted:provider-transient-error" ]] \
+  if [[ "$(jq -r '.tasks["PAIR-1_c"].challengeAborted' "$STATE_FILE")" == "terminal_stage_failure:provider-transient-error" ]] \
     && [[ "$(jq -r '.tasks["PAIR-1"] | has("challengeAborted")' "$STATE_FILE")" == "false" ]]; then
     pass "retry-exhausted challenger failure stamps only the challenger arm"
   else
@@ -477,10 +478,10 @@ write_stage_result "$fd" "coding" "failed" "native" "google/gemini-2.5-pro" "$em
 bounded_retry_mark_exhausted "$fd" "stage-failure-coding" "unknown-failure-after-retries:coding:empty-model-turn"
 if emit_challenge_stage_failure_quarantine "PAIR-1_c" "$fd" "coding" "win-empty"; then
   reliability_file="$WAVEMILL_RELIABILITY_REPO_DIR/.wavemill/evals/reliability-records.jsonl"
-  if [[ "$(jq -r '.tasks["PAIR-1_c"].challengeAborted' "$STATE_FILE")" == "retry_exhausted:empty-model-turn" ]] \
+  if [[ "$(jq -r '.tasks["PAIR-1_c"].challengeAborted' "$STATE_FILE")" == "terminal_stage_failure:empty-model-turn" ]] \
     && [[ -f "$reliability_file" ]] \
-    && [[ "$(jq -r 'select(.abortReason == "retry_exhausted:empty-model-turn") | .failureKind' "$reliability_file" | tail -n 1)" == "empty-model-turn" ]] \
-    && [[ "$(jq -r 'select(.abortReason == "retry_exhausted:empty-model-turn") | .faultClass' "$reliability_file" | tail -n 1)" == "harness-fault" ]]; then
+    && [[ "$(jq -r 'select(.abortReason == "terminal_stage_failure:empty-model-turn") | .failureKind' "$reliability_file" | tail -n 1)" == "empty-model-turn" ]] \
+    && [[ "$(jq -r 'select(.abortReason == "terminal_stage_failure:empty-model-turn") | .faultClass' "$reliability_file" | tail -n 1)" == "harness-fault" ]]; then
     pass "empty turn exhaustion quarantines with named reliability fault"
   else
     fail "empty turn exhaustion side effects incomplete"

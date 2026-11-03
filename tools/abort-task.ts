@@ -3,17 +3,32 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   abortTaskInState,
-  OPERATOR_ABORT_MARKER,
   type AbortTaskResult,
 } from '../shared/lib/task-abort.ts';
 import { runTool, resolveRepoDir, type ParsedArgs } from '../shared/lib/tool-runner.ts';
 
-export { abortTaskInState, OPERATOR_ABORT_MARKER, type AbortTaskResult };
+export { abortTaskInState, type AbortTaskResult };
 
 const options = {
   reason: { type: 'string', description: 'Operator-facing reason for aborting the task' },
   'repo-dir': { type: 'string', description: 'Repository directory that owns the workflow state' },
   'state-file': { type: 'string', description: 'Workflow state file path' },
+  'failure-kind': {
+    type: 'string',
+    description: 'Typed arm-failure kind (ArmFailureKind union; HOK-3358). Default: cancelled (harness-fault).',
+  },
+  evidence: {
+    type: 'string',
+    description: 'Path to a stage artifact proving the asserted kind. Required when --failure-kind classifies as model-fault.',
+  },
+  stage: {
+    type: 'string',
+    description: 'Phase string: planning | coding | review | ready. Defaults to the task\'s current phase.',
+  },
+  model: {
+    type: 'string',
+    description: 'Executed model id for the attribution record.',
+  },
 } as const;
 
 type CliArgs = ParsedArgs<typeof options>;
@@ -31,6 +46,7 @@ function printResult(result: AbortTaskResult): void {
   console.log(`Aborting ${result.issue} (reason: ${result.reason})`);
   console.log(`Task state before:  phase=${result.before.phase}, status=${result.before.status}, pr=${formatPr(result.before.pr)}`);
   console.log(`Task state after:   phase=${result.after.phase}, status=${result.after.status}, abortedReason="${result.after.abortedReason}"`);
+  console.log(`Attribution:        kind=${result.after.kind}, faultClass=${result.after.faultClass}`);
   console.log(`Cleanup marker:     challengeAborted=${result.after.challengeAborted}`);
   if (result.before.pr) {
     console.log(`${formatPr(result.before.pr)} detected - worktree and local branch will be preserved. Only the pane and state entry will be cleaned up.`);
@@ -50,7 +66,12 @@ export async function runAbortTaskCommand(args: CliArgs, positional: string[]): 
 
   const repoDir = resolveRepoDir(args['repo-dir']);
   const reason = args.reason?.trim() || 'operator-abort';
-  const result = await abortTaskInState(statePath(repoDir, args['state-file']), issue, reason);
+  const result = await abortTaskInState(statePath(repoDir, args['state-file']), issue, reason, {
+    kind: args['failure-kind'],
+    evidencePath: args.evidence,
+    stage: args.stage,
+    model: args.model,
+  });
   printResult(result);
   return result;
 }
@@ -58,7 +79,7 @@ export async function runAbortTaskCommand(args: CliArgs, positional: string[]): 
 export async function runAbortTaskCli(argv: string[] = process.argv.slice(2)): Promise<void> {
   await runTool({
     name: 'abort-task',
-    description: 'Mark an active Wavemill task aborted so the mill can clean it up',
+    description: 'Mark an active Wavemill task aborted so the mill can clean it up (HOK-3358)',
     options,
     positional: {
       name: 'issue-id',
@@ -68,6 +89,7 @@ export async function runAbortTaskCli(argv: string[] = process.argv.slice(2)): P
     examples: [
       'wavemill abort HOK-2878 --reason "wrong repo"',
       'wavemill abort HOK-2878_c --reason "operator requested stop" --repo-dir ~/src/app',
+      'wavemill abort HOK-3315 --failure-kind completion-protocol --evidence features/<slug>/.coding-complete',
     ],
     run: ({ args, positional }) => runAbortTaskCommand(args, positional),
   }, argv);

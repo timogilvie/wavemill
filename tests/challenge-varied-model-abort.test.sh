@@ -8,6 +8,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# HOK-3358: challenge_abort_pair now delegates the state stamp, .challenge-aborted.json
+# artifact, and reliability/eval records to tools/record-arm-termination.ts. Keep a
+# handle to the real repo root so the stubbed wavemill_tool_path can locate the tool
+# after REPO_DIR is re-pointed at the test's tmp repo below.
+REAL_REPO_DIR="$REPO_DIR"
 MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 
 PASS=0
@@ -63,6 +68,16 @@ LIFECYCLE_FILE="$TMP_ROOT/lifecycle.txt"
 log() { printf '[%s] %s\n' "$1" "$2" >> "$MILL_LOG_FILE"; }
 log_error() { :; }
 log_warn() { :; }
+# HOK-3358: challenge_abort_pair resolves tools/record-arm-termination.ts via the
+# shared install helpers. Stub them against REAL_REPO_DIR so the recorder runs.
+wavemill_tool_path() { printf '%s/%s\n' "${TOOLS_DIR:-$REAL_REPO_DIR/tools}" "$1"; }
+wavemill_run_tool() {
+  local tool="$1"; shift
+  [[ "$tool" == /* ]] || tool="$(wavemill_tool_path "$tool")"
+  node "$tool" "$@"
+}
+# HOK-3362 budget-exhaustion fact lookup; absent in unit fixtures, so return empty.
+stage_budget_exhausted_json() { :; }
 log_route_lifecycle() { printf '%s\n' "$*" >> "$LIFECYCLE_FILE"; }
 agent_is_native_cmd() { [[ "${1:-}" == native-* ]]; }
 agent_model_looks_like_depth_tag() { [[ "${1:-}" == light || "${1:-}" == medium || "${1:-}" == deep ]]; }
@@ -136,8 +151,8 @@ if ! challenge_guard_varied_model_resolvable "HOK-1" "$feature_dir" "HOK-1-slug"
   if [[ "$(jq -r '.status' "$feature_dir/.planning-result.json")" == "failed" ]] \
     && [[ "$(jq -r '.model' "$feature_dir/.planning-result.json")" == "bad-model" ]] \
     && [[ -f "$feature_dir/.challenge-aborted.json" ]] \
-    && [[ "$(jq -r '.tasks["HOK-1"].challengeAborted' "$STATE_FILE")" == "varied_model_unresolvable" ]] \
-    && [[ "$(jq -r '.tasks["HOK-1_c"].challengeAborted' "$STATE_FILE")" == "varied_model_unresolvable" ]] \
+    && [[ "$(jq -r '.tasks["HOK-1"].challengeAborted' "$STATE_FILE")" == "terminal_stage_failure:varied_model_unresolvable" ]] \
+    && [[ "$(jq -r '.tasks["HOK-1_c"].challengeAborted' "$STATE_FILE")" == "terminal_stage_failure:varied_model_unresolvable" ]] \
     && grep -q 'HOK-1-slug=needs-user' "$ATTENTION_FILE"; then
     pass "unresolvable varied planning model aborts both arms"
   else
@@ -166,8 +181,8 @@ mkdir -p "$feature_dir"
 : > "$MILL_LOG_FILE"
 AGENT_NATIVE_LAUNCH_LAST_JSON='{"ok":false,"model":"bad-model","wavemillAlias":"bad-model","code":"global-projection-missing","surface":"globalEffectiveModels.coding","reason":"coding projection rejected bad-model","remediation":"Choose a model present in the coding effective projection."}'
 if ! handle_phase_launch_result "HOK-1" "$feature_dir" "coding" "planning" 1 "HOK-1-slug" "native-openrouter" "bad-model"; then
-  if [[ "$(jq -r '.tasks["HOK-1"].challengeAborted' "$STATE_FILE")" == "varied_model_unresolvable" ]] \
-    && [[ "$(jq -r '.tasks["HOK-1_c"].challengeAborted' "$STATE_FILE")" == "varied_model_unresolvable" ]] \
+  if [[ "$(jq -r '.tasks["HOK-1"].challengeAborted' "$STATE_FILE")" == "terminal_stage_failure:varied_model_unresolvable" ]] \
+    && [[ "$(jq -r '.tasks["HOK-1_c"].challengeAborted' "$STATE_FILE")" == "terminal_stage_failure:varied_model_unresolvable" ]] \
     && [[ "$(jq -r '.status' "$feature_dir/.coding-result.json")" == "failed" ]] \
     && [[ "$(jq -r '.tasks["HOK-1"].phase // empty' "$STATE_FILE")" == "" ]] \
     && grep -q 'global-projection-missing' "$MILL_LOG_FILE" \

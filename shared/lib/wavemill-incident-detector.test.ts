@@ -111,7 +111,10 @@ test('root cause canonicalization is bounded and merges same-class parse errors'
   assert.equal(offsetA, 'local_parse_failure');
   assert.equal(offsetA, offsetB);
 
-  // Typed native completion-protocol reasons (HOK-2933) route local, not remote.
+  // Typed completion-protocol reasons (HOK-2933; HOK-3358 renamed the kind to
+  // its harness-agnostic spelling) route local, not remote. Both spellings
+  // canonicalise to the same class.
+  assert.equal(canonicalizeRootCauseClass('completion-protocol'), 'native_completion_protocol_failure');
   assert.equal(canonicalizeRootCauseClass('native-completion-protocol'), 'native_completion_protocol_failure');
   assert.equal(canonicalizeRootCauseClass('native_coding_completed_without_coding_complete_or_coding_blocked_completion_jso'), 'native_completion_protocol_failure');
   assert.equal(canonicalizeRootCauseClass('blocked_completion_auto_advance_refused_because_a_live_blocking_command_is_still'), 'harness_liveness_deadlock');

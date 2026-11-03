@@ -326,8 +326,13 @@ const KIND_ALIASES: Readonly<Record<string, string>> = {
   'planning-turn-limit': 'native-stage-timeout',
   // HOK-3249: the typed review category for an overflow of the budgeted input.
   'native-context-window-exceeded': 'context-window-exceeded',
+  // HOK-3358: operator aborts carry an actor-tagged typed kind; `cancelled` is
+  // the default, with a harness-fault class. The legacy `operator_abort`
+  // marker is retired — kept here only in case historical rows surface.
   operator_abort: 'cancelled',
   'operator-cancelled': 'cancelled',
+  // HOK-3358: `completion-protocol` is the harness-agnostic spelling.
+  'native-completion-protocol': 'completion-protocol',
 };
 
 export function canonicalFailureKind(kind: string | null | undefined): string {
@@ -395,7 +400,7 @@ const PLANNING_ARTIFACT_REJECTED = /native planning final artifact rejected:\s*(
  * Turn raw failure text into a stable kind. Precedence:
  *   1. typed handoff reason (never substring-matched): `budget_exhausted` is
  *      the one budget kind (HOK-3362), the completion-protocol reasons are
- *      `native-completion-protocol`;
+ *      `completion-protocol`;
  *   2. native-specific signatures, then the provider-error classifier, then
  *      HOK-3129 model-output signatures;
  *   3. `native-provider-error` when the handoff typed `provider_error`,
@@ -406,7 +411,9 @@ export function detectFailureKind(detail: string | null | undefined, handoffReas
     return 'native-stage-timeout';
   }
   if (handoffReason && COMPLETION_PROTOCOL_HANDOFF_REASONS.has(handoffReason)) {
-    return 'native-completion-protocol';
+    // HOK-3358: harness-agnostic spelling (`native-completion-protocol` was
+    // the pre-rename name and still resolves through `KIND_ALIASES`).
+    return 'completion-protocol';
   }
   // Commit SHAs ("preserved at 0c564d2") must not read as HTTP 5xx digits.
   const text = (detail ?? '').replace(/\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/gi, '<sha>');
@@ -497,7 +504,7 @@ const NEXT_ACTIONS: Readonly<Record<string, string>> = {
   'policy-denied': 'a mutation/network policy rejected the run (harness fault, not a model/provider signal). Review the policy decision before relaunching',
   cancelled: 'the run was cancelled by an operator or the orchestrator (not a model/provider signal). Relaunch the phase when ready',
   'empty-model-turn': 'relaunch native coding; the runtime exhausted bounded continuation after empty model turns',
-  'native-completion-protocol': "model ended the phase without a valid completion artifact (protocol violation, not a provider fault) - check the model's structured tool-call compatibility before relaunching",
+  'completion-protocol': "model ended the phase without a valid completion artifact (protocol violation, not a provider fault) - check the model's structured tool-call compatibility before relaunching",
   'ready-exhausted': 'the arm stayed red after Ready remediation and re-checks were exhausted; it was retired (forfeit) so its green sibling proceeds. Inspect the failed checks on the closed PR',
   'ready-transition-failed': "Ready's checks passed but a handoff transition (route-stamp, review identity, label, GitHub API) kept failing; the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect .ready-result.json transitionFailure",
   'ready-unattributed': 'Ready was exhausted without a typed red-check or transition cause (base conflict, missing ready result); the arm was retired as an invalid challenge so its green sibling proceeds. Inspect the ready attention file',

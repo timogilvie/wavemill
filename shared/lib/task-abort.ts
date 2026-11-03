@@ -1,15 +1,21 @@
+// allow-arm-termination: task-abort.ts delegates to the arm-termination
+// recorder; this file re-exports {@link abortTaskInState} but no longer
+// writes `challengeAborted` directly (HOK-3358).
 /**
- * Shared task-abort primitive (HOK-3097).
+ * Shared task-abort primitive (HOK-3097, HOK-3358).
  *
  * `abortTaskInState` moved here so the observer can call it without pulling
- * `tools/abort-task.ts` into the module graph. `tools/abort-task.ts`
- * re-exports both {@link abortTaskInState} and {@link OPERATOR_ABORT_MARKER}
- * so its CLI contract and existing tests are unchanged.
+ * `tools/abort-task.ts` into the module graph. HOK-3358 made it a thin
+ * wrapper over {@link recordArmTermination}: the operator's abort is the
+ * same termination event as the monitor's, with `actor: 'operator'`.
  */
 
 import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { TASK_ID_RE } from './task-identity.ts';
-import { mutateWorkflowState, readWorkflowState, type TaskRecord } from './workflow-state.ts';
+import { readWorkflowState, type TaskRecord } from './workflow-state.ts';
+import { recordArmTermination, normalizeArmTerminationKind, type ArmTerminationKind } from './arm-termination.ts';
+import type { ArmFaultClass } from './arm-failure-taxonomy.ts';
 
 export interface AbortTaskResult {
   issue: string;
@@ -24,14 +30,23 @@ export interface AbortTaskResult {
     status: string;
     abortedReason: string;
     challengeAborted: string;
+    faultClass: ArmFaultClass;
+    kind: ArmTerminationKind;
   };
 }
 
-// Deliberately NOT a `terminal_stage_failure:`/`terminal_launch_failure:` value.
-// parseAbortFailureKind() returns null for this, so classifyArmFault() yields
-// 'unknown-fault' and an operator abort is never counted as a model or provider
-// quality signal in challenge eval attribution.
-export const OPERATOR_ABORT_MARKER = 'operator_abort';
+export interface AbortTaskOptions {
+  /** Typed arm-failure kind. Defaults to `cancelled` (harness-fault). */
+  kind?: string;
+  /** Path to a stage artifact. Required when the kind classifies model-fault. */
+  evidencePath?: string;
+  /** Phase string (`planning` / `coding` / `review` / `ready`). */
+  stage?: string;
+  /** Executed model id. */
+  model?: string;
+  /** ISO timestamp; defaults to now. Keeps the previous signature compatible. */
+  now?: string;
+}
 
 function taskString(task: TaskRecord | undefined, key: 'phase' | 'status' | 'pr'): string {
   const value = task?.[key];
@@ -39,11 +54,26 @@ function taskString(task: TaskRecord | undefined, key: 'phase' | 'status' | 'pr'
   return typeof value === 'string' ? value : '';
 }
 
+/**
+ * Overload: the three-argument call used by the observer stays valid.
+ */
 export async function abortTaskInState(
   stateFile: string,
   issue: string,
   reason: string,
-  now: string = new Date().toISOString(),
+  now?: string,
+): Promise<AbortTaskResult>;
+export async function abortTaskInState(
+  stateFile: string,
+  issue: string,
+  reason: string,
+  options: AbortTaskOptions,
+): Promise<AbortTaskResult>;
+export async function abortTaskInState(
+  stateFile: string,
+  issue: string,
+  reason: string,
+  nowOrOptions: string | AbortTaskOptions = {},
 ): Promise<AbortTaskResult> {
   if (!TASK_ID_RE.test(issue)) {
     throw new Error(`invalid issue id '${issue}'`);
@@ -61,7 +91,34 @@ export async function abortTaskInState(
     throw new Error(`task ${issue} is not present in workflow state`);
   }
 
-  const result: AbortTaskResult = {
+  const legacyNow = typeof nowOrOptions === 'string' ? nowOrOptions : nowOrOptions.now;
+  const options: AbortTaskOptions = typeof nowOrOptions === 'string'
+    ? { now: nowOrOptions }
+    : nowOrOptions;
+  const kind = normalizeArmTerminationKind(options.kind ?? 'cancelled');
+  const timestamp = legacyNow ?? new Date().toISOString();
+  const nowFn = () => new Date(timestamp);
+
+  const inferredStage = options.stage || taskString(beforeTask, 'phase');
+  // Resolve the repoDir from the state file path (<repoDir>/.wavemill/workflow-state.json).
+  const repoDir = resolve(dirname(stateFile), '..');
+
+  const outcome = await recordArmTermination({
+    issueId: issue,
+    kind,
+    actor: 'operator',
+    detail: reason,
+    evidencePath: options.evidencePath,
+    stage: inferredStage || undefined,
+    model: options.model,
+    scope: 'single',
+    featureDir: inferFeatureDir(repoDir, beforeTask),
+    repoDir,
+    stateFile,
+    now: nowFn,
+  });
+
+  return {
     issue,
     reason,
     before: {
@@ -73,36 +130,15 @@ export async function abortTaskInState(
       phase: 'aborted',
       status: 'aborted',
       abortedReason: reason,
-      challengeAborted: OPERATOR_ABORT_MARKER,
+      challengeAborted: outcome.abortReason,
+      faultClass: outcome.faultClass,
+      kind,
     },
   };
+}
 
-  await mutateWorkflowState(stateFile, (current) => {
-    const task = current.tasks?.[issue];
-    if (!task) {
-      throw new Error(`task ${issue} disappeared from workflow state`);
-    }
-    task.phase = 'aborted';
-    task.status = 'aborted';
-    task.abortedReason = reason;
-    // The mill's arm cleanup gate reads challengeAborted, not abortedReason.
-    // Without a non-empty value here the window, worktree and branch are never
-    // reaped, so an aborted arm lingers indefinitely.
-    task.challengeAborted = OPERATOR_ABORT_MARKER;
-    task.challengeAbortedDetail = reason;
-    task.abortedAt = now;
-    task.updated = now;
-    // HOK-3312: the shared decider in `decideTerminalTask` reads
-    // `lifecycle.workflowOutcome` as the terminal signal. Without flipping it
-    // here the row stays `workflowOutcome: 'active'` while status/phase say
-    // 'aborted', and the decider returns `not-terminal` so the monitor never
-    // closes the pane or reaps the arm.
-    const existingLifecycle = (task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle))
-      ? task.lifecycle
-      : {};
-    task.lifecycle = { ...existingLifecycle, schemaVersion: 1, workflowOutcome: 'aborted' };
-    return current;
-  });
-
-  return result;
+function inferFeatureDir(repoDir: string, task: TaskRecord | undefined): string | undefined {
+  const slug = typeof task?.slug === 'string' ? task.slug : null;
+  if (!slug) return undefined;
+  return join(repoDir, 'features', slug);
 }
