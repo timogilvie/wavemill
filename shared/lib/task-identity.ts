@@ -189,3 +189,130 @@ export function isLinearWriter(taskId: unknown, task?: TaskIdentityMeta | null):
   if (task?.challengeRole === 'challenger') return false;
   return resolveLinearIssueId(taskId, task).ok;
 }
+
+/** Kind of prose dependency reference (issue ID, series code, or unresolved). */
+export type ProseDepReferenceKind = 'issue' | 'series' | 'unresolved';
+
+/** A dependency reference extracted from prose text. */
+export interface ProseDepReference {
+  /** 'issue' for normalized Linear IDs, 'series' for series codes, 'unresolved' for unparseable references. */
+  kind: ProseDepReferenceKind;
+  /** For 'issue': normalized Linear ID (e.g., "HOK-123"). For 'series': raw series code (e.g., "B2"). For 'unresolved': the unparseable text. */
+  target: string;
+  /** The matched phrase and surrounding sentence context (up to 300 chars). */
+  evidence: string;
+  /** The verb phrase that introduced the reference ("Blocked by", "Depends on", "After", "Once...lands"). */
+  verb: string;
+}
+
+/** Pattern for series codes: uppercase letter followed by 1-3 digits. */
+const SERIES_CODE_RE = /[A-Z]\d{1,3}/;
+
+/**
+ * Extract prose-written dependency references from issue text.
+ *
+ * Matches phrases like "Blocked by HOK-123.", "Depends on B2.", "After the review.", "Once B3 lands."
+ * Returns references with kind 'issue' (for Linear IDs), 'series' (for series codes),
+ * or 'unresolved' (for unmatched references or ambiguous text).
+ *
+ * @param text - The issue description or text to search.
+ * @returns Array of extracted prose dependency references.
+ */
+export function extractProseDependencies(text: string | null | undefined): ProseDepReference[] {
+  if (!text || typeof text !== 'string') return [];
+
+  const results: ProseDepReference[] = [];
+
+  // Patterns for different verb phrases
+  const issueIdPattern = issueIdSource;
+  const seriesPattern = SERIES_CODE_RE.source;
+
+  // Match four types of patterns:
+  // 1. "Blocked by IDENTIFIER"
+  // 2. "Depends on IDENTIFIER"
+  // 3. "After IDENTIFIER"
+  // 4. "Once IDENTIFIER lands"
+  const patterns: Array<[RegExp, string, boolean]> = [
+    [new RegExp(`\\b(Blocked\\s+by)\\s+(${issueIdPattern}|${seriesPattern})`, 'gi'), 'Blocked by', false],
+    [new RegExp(`\\b(Depends\\s+on)\\s+(${issueIdPattern}|${seriesPattern})`, 'gi'), 'Depends on', false],
+    [new RegExp(`\\b(After)\\s+(${issueIdPattern}|${seriesPattern})`, 'gi'), 'After', false],
+    [new RegExp(`\\b(Once)\\s+(${issueIdPattern}|${seriesPattern})\\s+(lands?)`, 'gi'), 'Once', true],
+  ];
+
+  // Collect all matches with their positions
+  const matches: Array<{
+    index: number;
+    matchText: string;
+    verb: string;
+    target: string;
+    isOnceLands: boolean;
+    landsWord?: string;
+  }> = [];
+
+  for (const [regex, verbLabel, isOnceLands] of patterns) {
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      // Patterns have the structure:
+      // 1-3: verb (group 1), identifier (group 2), optional word (group 3)
+      const target = match[2]; // identifier is always in group 2
+      if (target) {
+        matches.push({
+          index: match.index,
+          matchText: match[0],
+          verb: verbLabel,
+          target,
+          isOnceLands,
+          landsWord: isOnceLands ? match[3] : undefined, // "lands" or "land" is in group 3 for Once pattern
+        });
+      }
+    }
+  }
+
+  // Sort by index to process in order (handles overlapping matches)
+  matches.sort((a, b) => a.index - b.index);
+
+  // Process matches and extract evidence
+  for (const matchInfo of matches) {
+    // Extract evidence: find sentence boundaries
+    let sentenceEnd = text.length;
+    for (let i = matchInfo.index + matchInfo.matchText.length; i < text.length; i++) {
+      if (text[i] === '.' || text[i] === '!' || text[i] === '?') {
+        sentenceEnd = i + 1;
+        break;
+      }
+    }
+
+    let sentenceStart = 0;
+    for (let i = matchInfo.index - 1; i >= 0; i--) {
+      if (text[i] === '.' || text[i] === '!' || text[i] === '?') {
+        sentenceStart = i + 1;
+        break;
+      }
+    }
+
+    let evidence = text.substring(sentenceStart, sentenceEnd).trim();
+    if (evidence.length > 300) {
+      evidence = evidence.substring(0, 297) + '...';
+    }
+
+    // Determine if target is an issue ID or series code
+    const isIssueId = new RegExp(`^${issueIdPattern}$`).test(matchInfo.target);
+    const isSeriesCode = new RegExp(`^${seriesPattern}$`).test(matchInfo.target);
+
+    if (isIssueId || isSeriesCode) {
+      // Build verb string
+      const verb = matchInfo.isOnceLands
+        ? `Once ${matchInfo.target} ${matchInfo.landsWord}`
+        : matchInfo.verb;
+
+      results.push({
+        kind: isIssueId ? 'issue' : 'series',
+        target: matchInfo.target,
+        verb,
+        evidence,
+      });
+    }
+  }
+
+  return results;
+}

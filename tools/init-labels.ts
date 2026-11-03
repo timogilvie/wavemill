@@ -32,6 +32,9 @@ const LABEL_DEFINITIONS = {
     { name: 'Component: UserMenu', color: '#50E3C2', description: 'User menu component' },
     { name: 'Component: LoginForm', color: '#F5A623', description: 'Login form component' },
   ],
+  operator: [
+    { name: 'wm:hold', color: '#9B9B9B', description: 'Operator hold: picker holds this task; manual launch still works.' },
+  ],
 };
 
 async function initializeLabels(teamKey?: string) {

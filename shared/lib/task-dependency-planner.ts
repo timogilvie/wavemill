@@ -9,7 +9,7 @@ export interface DependencyEdge {
   type: EdgeType;
   from: string;
   to: string;
-  source?: 'inferred' | 'explicit';
+  source?: 'inferred' | 'explicit' | 'prose';
   reason?: string;
   files?: string[];
 }

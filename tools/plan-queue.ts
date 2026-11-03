@@ -20,6 +20,9 @@ import {
 import {
   parseBacklogJson,
   extractEdgesFromBacklog,
+  extractProseEdges,
+  extractOperatorHolds,
+  extractPlanWarnings,
   buildQueuePlan,
   compareTaskIds,
   type BacklogRecord,
@@ -103,6 +106,7 @@ async function loadBacklogFromLinear(projectName?: string): Promise<BacklogRecor
     title: issue.title,
     description: issue.description,
     labels: issue.labels.nodes.map((label) => label.name).sort((a, b) => a.localeCompare(b)),
+    parentId: issue.parent?.identifier ?? undefined,
     priority: issue.priority ?? null,
     priorityLabel: issue.priorityLabel ?? null,
     estimate: issue.estimate ?? null,
@@ -283,6 +287,7 @@ runTool({
     }
     const cacheAfterPrune = cacheBeforePrune ? pruneCache(cacheBeforePrune, fingerprintTasks) : undefined;
     const explicitEdges = extractEdgesFromBacklog(records);
+    const { edges: proseEdges, warnings: proseWarnings } = extractProseEdges(records);
     const nowMs = Date.now();
     let inferenceState: QueueInferenceState | undefined = cacheBeforePrune?.inference;
 
@@ -350,7 +355,7 @@ runTool({
       );
     }
 
-    const edges = dedupeDependencyEdges([...explicitEdges, ...inferredEdges]);
+    const edges = dedupeDependencyEdges([...explicitEdges, ...inferredEdges, ...proseEdges]);
     let result: PlanResult;
     try {
       result = planTaskDependencies(records, edges, { triageUnknownEndpoints: true });
@@ -364,6 +369,18 @@ runTool({
     // selectLaunchSet can hold 'unknown' tasks.
     if (grounded) {
       queuePlan.touchSetStatus = grounded.touchSetStatus;
+    }
+    // Attach operator holds and plan warnings from prose extraction and Linear labels
+    const operatorHolds = extractOperatorHolds(records);
+    if (Object.keys(operatorHolds).length > 0) {
+      queuePlan.operatorHolds = operatorHolds;
+    }
+    const blockedTaskIds = new Set(queuePlan.queuedAfterDependencies.map((entry) => entry.taskId));
+    const planWarnings = extractPlanWarnings(records, blockedTaskIds, operatorHolds);
+    if (planWarnings.length > 0) {
+      queuePlan.planWarnings = planWarnings.concat(proseWarnings);
+    } else if (proseWarnings.length > 0) {
+      queuePlan.planWarnings = proseWarnings;
     }
     // HOK-3306: augment the plan with synthesized shared-surface edges between
     // backlog candidates (via the cached grounded touch sets) and in-flight
@@ -384,7 +401,11 @@ runTool({
             (cached.entries ?? []).map((entry) => entry.path),
           );
         }
-        planToEmit = augmentPlanWithInFlight(queuePlan, inFlight, candidateTouchSets);
+        const augmented = augmentPlanWithInFlight(queuePlan, inFlight, candidateTouchSets);
+        // Preserve operatorHolds and planWarnings through augmentation
+        augmented.operatorHolds = queuePlan.operatorHolds;
+        augmented.planWarnings = queuePlan.planWarnings;
+        planToEmit = augmented;
       } catch (error) {
         process.stderr.write(
           `plan-queue: ignoring malformed in-flight file ${inFlightPath}: ${(error as Error).message}\n`,
