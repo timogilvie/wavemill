@@ -511,6 +511,14 @@ JSON
       printf -v SET_PHASE_CALLS "%s%s|%s\n" "$SET_PHASE_CALLS" "$1" "$2"
     }
     launch_planning_phase() { return 0; }
+    # HOK-3370: scenario worktrees are plain directories, not git repos; the
+    # stage-head publication seam is stubbed to succeed like the other
+    # launch-path effects (its real behavior is pinned by
+    # branch-publication.test.ts and the head-move-publication journey).
+    publish_stage_head() {
+      PUBLISH_STAGE_HEAD_OUTCOME="pushed"; PUBLISH_STAGE_HEAD_REASON=""; PUBLISH_STAGE_HEAD_DETAIL=""
+      return 0
+    }
     launch_coding_phase() {
       CODING_LAUNCH_COUNT=$((CODING_LAUNCH_COUNT + 1))
       return 0
