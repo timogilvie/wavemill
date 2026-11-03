@@ -90,6 +90,7 @@ MODEL="anthropic/claude-sonnet-4"
 jq -n --arg a "$ISSUE_A" --arg b "$ISSUE_B" --arg c "$ISSUE_C" '
   {
     freeSlots: 1,
+    # allow-task-literal: standalone journey jq seed; this file does not source tests/lib/state-fixtures.sh (HOK-3358)
     tasks: {
       ($a): {slug: "scenario-a", status: "active", phase: "coding", challengeAborted: ""},
       ($b): {slug: "scenario-b", status: "active", phase: "coding", challengeAborted: ""},

@@ -45,7 +45,7 @@ import { recordSelectionOutcome } from './challenge-selection-health.ts';
 import { appendEvalRecord } from './eval-persistence.ts';
 import { SCHEMA_VERSION, type EvalRecord } from './eval-schema.ts';
 import { mutateWorkflowState } from './workflow-state.ts';
-import { challengerTaskKey, isChallengerTaskId } from './task-identity.ts';
+import { challengerTaskKey, isChallengerTaskId, parseTaskId } from './task-identity.ts';
 
 export type ArmTerminationActor = 'operator' | 'monitor' | 'pair-resolver';
 export type ArmTerminationScope = 'pair' | 'single';
@@ -412,14 +412,16 @@ function actorToSource(actor: ArmTerminationActor): ArmReliabilityRecord['source
 }
 
 function resolvePeerKey(issueId: string): string | null {
-  if (isChallengerTaskId(issueId)) {
-    return issueId.replace(/_c$/, '');
+  const parsed = parseTaskId(issueId);
+  if (parsed?.role === 'challenger') {
+    return parsed.linearId;
   }
   return challengerTaskKey(issueId);
 }
 
 function resolvePairId(issueId: string): string {
-  return isChallengerTaskId(issueId) ? issueId.replace(/_c$/, '') : issueId;
+  const parsed = parseTaskId(issueId);
+  return parsed?.role === 'challenger' ? parsed.linearId : issueId;
 }
 
 function normalizeChallengeStage(value: string): ChallengeStage {

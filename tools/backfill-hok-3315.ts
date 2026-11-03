@@ -65,6 +65,7 @@ function findOperatorRecoveryEvidence(archiveDir: string): string | null {
 }
 
 function readModelFromArchive(archiveDir: string): string | null {
+  // allow-stage-artifact-lookup: one-off HOK-3315 backfill reads a per-issue archive directory, not a live feature dir (HOK-3358)
   const codingResult = join(archiveDir, '.coding-result.json');
   if (existsSync(codingResult)) {
     try {
