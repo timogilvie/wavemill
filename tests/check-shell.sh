@@ -708,6 +708,9 @@ else
     # Extract function definitions from condition-reconciler.sh (also sourced by monitor, HOK-3172)
     CONDITION_RECONCILER_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/condition-reconciler.sh" | sed 's/()//' | sort -u)
 
+    # Extract function definitions from agent-remediation-delivery.sh (sourced by monitor, HOK-2890)
+    REMEDIATION_DELIVERY_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/agent-remediation-delivery.sh" | sed 's/()//' | sort -u)
+
     # Extract function definitions from monitor-async-jobs.sh (sourced by monitor, HOK-3206)
     ASYNC_JOBS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/monitor-async-jobs.sh" | sed 's/()//' | sort -u)
 
@@ -721,7 +724,7 @@ else
     PICKER_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/wavemill-picker.sh" | sed 's/()//' | sort -u)
 
     # Combine all available function definitions
-    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$ASYNC_JOBS_FUNCS" "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$MILL_CLOCK_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$TERMINAL_BACKEND_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$CONDITION_RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" "$DEPS_DRIFT_FUNCS" "$PICKER_FUNCS" | sort -u)
+    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$ASYNC_JOBS_FUNCS" "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$MILL_CLOCK_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$TERMINAL_BACKEND_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$CONDITION_RECONCILER_FUNCS" "$REMEDIATION_DELIVERY_FUNCS" "$WORKTREE_DEPS_FUNCS" "$DEPS_DRIFT_FUNCS" "$PICKER_FUNCS" | sort -u)
 
     # Known external commands and bash builtins that are NOT custom functions
     # This list covers standard utilities, coreutils, and tools used by wavemill
@@ -756,7 +759,8 @@ else
       | grep -vE '^(legacy_stale|stale|settled)$' \
       | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|completed|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$' \
       | grep -vE '^(capabilities|const|import|throw)$' \
-      | grep -vE '^(ascii_upcase|first|it|num|retrying|sibling|floor|spawn)$')
+      | grep -vE '^(ascii_upcase|first|it|num|retrying|sibling|floor|spawn)$' \
+      | grep -vE '^(decide|defaulting|investigate|remediation|unknown)$')
 
     # Check which called names look like they could be custom functions
     # and verify they're defined

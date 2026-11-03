@@ -92,6 +92,8 @@ extract_function "$MONITOR_SCRIPT_FILE" "review_result_missing_final_evidence" >
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_infra_failure" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_failure_category" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_review_head_sha" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_gate_decide_disposition" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_gate_dedup_key" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_infra_recovery_category_label" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_infra_recovery_next_action" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "recovery_contract_json" >> "$LAUNCH_FUNC_FILE"

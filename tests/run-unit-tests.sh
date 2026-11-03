@@ -170,6 +170,7 @@ TESTS=(
   shared/lib/review-scope-guard.test.ts
   shared/lib/review-progress.test.ts
   shared/lib/review-formatter.test.ts
+  shared/lib/review-gate-remediation.test.ts
   shared/lib/pr-comparison.test.ts
   shared/lib/swap-test/swap-test.test.ts
   shared/lib/arbiter-probes/strata-cells.test.ts
@@ -543,7 +544,6 @@ TESTS=(
   shared/lib/permissions-verifier.test.ts
   shared/lib/plan-validator.test.ts
   shared/lib/branch-publication.test.ts
-  shared/lib/pre-pr-verification-gate.test.ts
   shared/lib/pre-pr-verification.test.ts
   shared/lib/project-context-compactor.test.ts
   shared/lib/project-context-generator.test.ts

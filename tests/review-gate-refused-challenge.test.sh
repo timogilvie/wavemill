@@ -59,6 +59,7 @@ source "$REPO_DIR_ROOT/shared/lib/task-identity.sh"
 
 for fn in \
   review_gate_refusal_is_terminal \
+  review_gate_decide_disposition \
   review_refused_challenge_cause \
   review_refused_challenge_terminalize \
   _retired_challenge_arm_close_pr \
@@ -78,6 +79,7 @@ for fn in \
   review_result_infra_failure \
   review_result_failure_category \
   review_result_summary \
+  stage_budget_exhausted_json \
 ; do
   extracted="$(extract_function "$fn")"
   if [[ -z "$extracted" ]]; then
@@ -108,12 +110,18 @@ wavemill_tool_path() {
   printf '%s/%s\n' "${TOOLS_DIR:-$TMP_ROOT/install-tools}" "$1"
 }
 # HOK-3190: the extracted monitor function calls `wavemill_run_tool` to invoke
-# record-arm-failure.ts. The stub TS file this test writes has
-# `#!/usr/bin/env node` + a single TS non-null assertion, so route through
+# record-arm-failure.ts and review-gate-remediation-cli.ts. The stub TS files
+# this test writes have `#!/usr/bin/env node` + TypeScript, so route through
 # `node --experimental-strip-types` like `failure_policy_next_action` below.
 wavemill_run_tool() {
   local tool="$1"; shift
-  node --experimental-strip-types --no-warnings "$tool" "$@"
+  local cli
+  if [[ "$tool" == /* ]]; then
+    cli="$tool"
+  else
+    cli="$(wavemill_tool_path "$tool")"
+  fi
+  node --experimental-strip-types --no-warnings "$cli" "$@"
 }
 # HOK-3176: next actions come from the failure policy; resolve it from the
 # checkout, not the sandboxed TOOLS_DIR.
@@ -129,6 +137,59 @@ cat > "$TOOLS_DIR/record-arm-failure.ts" <<'EOT'
 import { writeFileSync } from 'node:fs';
 const target = process.env.WAVEMILL_RECORD_ARM_FAILURE_LOG!;
 writeFileSync(target, process.argv.slice(2).join(' ') + '\n', { flag: 'a' });
+EOT
+
+# Stub review-gate-remediation-cli.ts to decide disposition based on review result
+cat > "$TOOLS_DIR/review-gate-remediation-cli.ts" <<'EOT'
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+let stateDir = '';
+let i = 0;
+while (i < args.length) {
+  if (args[i] === '--state-dir') {
+    stateDir = args[++i];
+  }
+  i++;
+}
+if (!stateDir) {
+  console.error('--state-dir required');
+  process.exit(1);
+}
+const reviewResultPath = `${stateDir}/.review-result.json`;
+try {
+  const data = JSON.parse(readFileSync(reviewResultPath, 'utf-8'));
+  const artifacts = data.artifacts || {};
+  const failureCategory = artifacts.failureCategory || data.failureCategory || '';
+  const verdict = artifacts.verdict || data.verdict || '';
+
+  // Infra categories are retryable
+  const infraCategories = [
+    'native-review-timeout',
+    'native-review-malformed-response',
+    'native-review-no-output'
+  ];
+
+  if (infraCategories.includes(failureCategory)) {
+    console.log('retryable');
+  } else if (failureCategory === 'review-model-unlaunchable' && verdict !== 'not_ready') {
+    // HOK-3247: routed (non-challenge) reviewer that cannot run is retryable infra;
+    // the challenge-pinned shape (verdict not_ready) is terminal
+    console.log('retryable');
+  } else if (verdict === 'ready' || verdict === '') {
+    // ready or missing verdict → retryable
+    console.log('retryable');
+  } else if (verdict === 'error') {
+    // Non-categorized error → retryable
+    console.log('retryable');
+  } else {
+    // Any other refusing verdict (e.g., not_ready) is terminal
+    console.log('terminal');
+  }
+} catch (e) {
+  console.error(`Failed to read review result: ${e}`);
+  process.exit(1);
+}
 EOT
 PR_STATE="OPEN"
 GH_CLOSE_RC=0
