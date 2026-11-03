@@ -62,7 +62,7 @@ Ready publishes `.ready-tend-handoff.json` at the head it checked. Tend claims i
 |---|---|---|
 | Tend skips a green `wm:ready` PR every poll with `phase: handoff`; `.ready-tend-handoff.json` head ≠ PR head | Ready re-check ran in a task worktree still at the pre-rebase commit after a tend force-push, and published there (PR #1520, 2026-09-29) | Fixed by the preflight sync + GitHub-only publish head. Manual unstick: sync the worktree, then republish at the live head |
 | ~90 s `wm:blocked` ↔ `wm:ready` flip and a "Rebase failed" comment every poll (PR #1697, 158 comments) | Tend's per-commit rebase conflicted while GitHub's 3-way merge was clean; tend labelled `wm:blocked`, the reconciler relabelled `wm:ready` | Fixed by HOK-3316: one `.tend-attempt-result.json` fact per (head, base), one edited-in-place merge-status comment, conflict remediation launched once. Unstick: rebase onto the integration branch, regenerate generated files, force-push |
-| Ready refuses with "unpushed local work" | Task worktree has commits not on the PR head (e.g. remediation fix never pushed) | Push or discard the local commits; the next Ready tick syncs |
+| Worktree has commits not on the PR head (e.g. remediation fix never pushed) | Agent committed without pushing | Fixed by HOK-3370: the sync path publishes the local head through the stage-head seam (`publish_stage_head`, kind per mover) and holds for the PR view via the HOK-3171 lag path; genuine divergence fails typed (code-failure → remediation). The old "unpushed local work" refusal is deleted |
 
 ## Ready Remediation Disposition (HOK-3322)
 

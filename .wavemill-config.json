@@ -409,6 +409,7 @@
     "Golden Journey (queue-events-emitted)": "bash tests/journeys/run-journeys.sh queue-events-emitted",
     "Golden Journey (dependency-install-drift)": "bash tests/journeys/run-journeys.sh dependency-install-drift",
     "Golden Journey (native-slow-verification)": "bash tests/journeys/run-journeys.sh native-slow-verification",
+    "Golden Journey (head-move-publication)": "bash tests/journeys/run-journeys.sh head-move-publication",
     "Golden Journeys": "bash tests/run-related.sh"
     },
     "postPrReconciliation": {

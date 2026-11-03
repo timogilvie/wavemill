@@ -48,6 +48,7 @@ WAVEMILL_CHALLENGE_IMPLEMENTATION_FORK  # plumbing: internal mill variable (HOK-
 WAVEMILL_CHALLENGE_MATERIALIZE_MAX_ATTEMPTS  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_CHALLENGE_VARIED_MODEL  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_CHALLENGE_VARIED_STAGE  # plumbing: internal mill variable (HOK-3235 baseline seed)
+WAVEMILL_CHANGE_ID_CACHE  # plumbing: process-local change-identity memo array in wavemill-common.sh (HOK-3370)
 WAVEMILL_CLASSIFY_BASE  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_CLASSIFY_BRANCH  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_CLASSIFY_ISSUE  # plumbing: internal mill variable (HOK-3235 baseline seed)

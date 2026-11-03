@@ -196,6 +196,88 @@ _failure_policy_cli() {
   wavemill_run_tool failure-policy-cli.ts "$@" 2>/dev/null
 }
 
+# ── Stage-head publication seam (HOK-3370) ──────────────────────────────────
+# The one path that publishes a task branch's head at a stage exit. Agents
+# commit; the mill publishes. Wraps tools/publish-stage-head.ts, which
+# verifies the local ref, fast-forwards the remote (never force), appends a
+# head-move/v1 row to <state_dir>/.head-moves.jsonl, and shadow-records the
+# push through the side-effect ledger (HOK-3183).
+#
+# Usage: publish_stage_head <wt_dir> <branch> <state_dir> <issue> <stage> <kind> [expected_sha]
+#   stage: planning|coding|review|ready|tend
+#   kind:  coding|review-fix|remediation|conflict|base-merge|rebase
+# Sets:  PUBLISH_STAGE_HEAD_OUTCOME (pushed|reused|remote-ahead; "" on failure)
+#        PUBLISH_STAGE_HEAD_REASON  (typed failure reason; "" on success)
+#        PUBLISH_STAGE_HEAD_DETAIL  (human-readable failure message)
+# Returns the CLI's exit code: 0 success; 10 remote-divergence (conflict-
+# shaped, flows to remediation via the failure policy); 11 local ref
+# missing/moved; 13 transport failure (retryable); 1 other.
+publish_stage_head() {
+  local wt_dir="$1" branch="$2" state_dir="$3" issue="$4" stage="$5" kind="$6" expected_sha="${7:-}"
+  local out rc=0 extra_args=()
+  PUBLISH_STAGE_HEAD_OUTCOME="" PUBLISH_STAGE_HEAD_REASON="" PUBLISH_STAGE_HEAD_DETAIL=""
+  [[ -n "$expected_sha" ]] && extra_args+=(--expected-sha "$expected_sha")
+  out=$(wavemill_run_tool "publish-stage-head.ts" --worktree "$wt_dir" --branch "$branch" \
+    --state-dir "$state_dir" --issue "$issue" --stage "$stage" --kind "$kind" \
+    "${extra_args[@]}" 2>/dev/null) || rc=$?
+  if [[ -n "$out" ]]; then
+    out=$(printf '%s\n' "$out" | tail -n 1)
+    PUBLISH_STAGE_HEAD_OUTCOME=$(printf '%s' "$out" | jq -r 'if .ok == true then .outcome // empty else empty end' 2>/dev/null || true)
+    PUBLISH_STAGE_HEAD_REASON=$(printf '%s' "$out" | jq -r '.reason // empty' 2>/dev/null || true)
+    PUBLISH_STAGE_HEAD_DETAIL=$(printf '%s' "$out" | jq -r '.message // empty' 2>/dev/null || true)
+  fi
+  if (( rc != 0 )) && [[ -z "$PUBLISH_STAGE_HEAD_DETAIL" ]]; then
+    PUBLISH_STAGE_HEAD_DETAIL="publish-stage-head failed (rc=$rc) with no JSON output"
+  fi
+  return $rc
+}
+
+# ── Head-freshness primitive bridge (HOK-3370) ──────────────────────────────
+# Evidence binds to the change, not the head SHA: a base merge or clean
+# rebase keeps review evidence fresh; a code-changing commit stales it.
+# Wraps tools/change-identity.ts. Results are memoized per
+# (worktree, evidence head, current head, base ref) for the life of the
+# process, so repeated per-tick calls cost one spawn.
+#
+# Usage: change_identity_fresh <wt_dir> <evidence_head> <current_head> <base_ref> [evidence_change_id]
+# Returns 0 when the evidence is fresh, 1 when stale (or unprovable).
+# Sets CHANGE_IDENTITY_REASON to the primitive's reason string.
+declare -gA _WAVEMILL_CHANGE_ID_CACHE 2>/dev/null || true
+change_identity_fresh() {
+  local wt_dir="$1" evidence_head="$2" current_head="$3" base_ref="$4" evidence_change_id="${5:-}"
+  CHANGE_IDENTITY_REASON=""
+  [[ -z "$evidence_head" || -z "$current_head" ]] && { CHANGE_IDENTITY_REASON="compute-failed"; return 1; }
+  # Fast path without a spawn: identical heads are always fresh.
+  if [[ "$evidence_head" == "$current_head" ]]; then
+    CHANGE_IDENTITY_REASON="same-head"
+    return 0
+  fi
+  local cache_key="${wt_dir}|${evidence_head}|${current_head}|${base_ref}|${evidence_change_id}"
+  local cached="${_WAVEMILL_CHANGE_ID_CACHE[$cache_key]:-}"
+  if [[ -n "$cached" ]]; then
+    CHANGE_IDENTITY_REASON="${cached#*:}"
+    [[ "${cached%%:*}" == "fresh" ]] && return 0 || return 1
+  fi
+  local out rc=0 extra_args=()
+  [[ -n "$evidence_change_id" ]] && extra_args+=(--evidence-change-id "$evidence_change_id")
+  out=$(wavemill_run_tool "change-identity.ts" --worktree "$wt_dir" --base-ref "$base_ref" \
+    --evidence-head "$evidence_head" --current-head "$current_head" "${extra_args[@]}" 2>/dev/null) || rc=$?
+  CHANGE_IDENTITY_REASON=$(printf '%s\n' "$out" | tail -n 1 | jq -r '.reason // empty' 2>/dev/null || true)
+  if (( rc == 0 )); then
+    _WAVEMILL_CHANGE_ID_CACHE[$cache_key]="fresh:${CHANGE_IDENTITY_REASON:-same-change-identity}"
+    return 0
+  fi
+  [[ -z "$CHANGE_IDENTITY_REASON" ]] && CHANGE_IDENTITY_REASON="compute-failed"
+  # Memoize only deterministic stale verdicts. Transient reasons (a head not
+  # yet fetched, a spawn failure) must recompute next tick, or a one-off
+  # failure latches 'stale' for the life of the monitor process.
+  case "$CHANGE_IDENTITY_REASON" in
+    compute-failed|current-head-unreachable|evidence-head-unreachable) ;;
+    *) _WAVEMILL_CHANGE_ID_CACHE[$cache_key]="stale:$CHANGE_IDENTITY_REASON" ;;
+  esac
+  return 1
+}
+
 # HOK-3190: minimal fallback for pass_task_field so standalone callers
 # (test harnesses that source just wavemill-common.sh, cleanup CLIs, etc.)
 # that end up invoking a monitor function with a `pass_task_field` call
@@ -548,6 +630,9 @@ archive_stage_artifacts() {
     # HOK-3328: the session-ownership record keeps its name in the archive, so
     # post-reap evals read it exactly like live ones (locateOwnershipRows).
     _wavemill_archive_copy "$feature_dir/.session-ownership.jsonl" "$archive_dir/.session-ownership.jsonl" || status=1
+    # HOK-3370: the head-move record keeps its name too, so the challenge
+    # comparison reads per-stage authorship after the reap (locateHeadMoves).
+    _wavemill_archive_copy "$feature_dir/.head-moves.jsonl" "$archive_dir/.head-moves.jsonl" || status=1
 
     local stage result_file sidecar sidecar_name
     for stage in planning coding review; do

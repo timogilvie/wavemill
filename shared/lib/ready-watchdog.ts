@@ -26,6 +26,7 @@ import {
 } from './pr-ci-status.ts';
 import { normalizeJobs, type MillJob } from './job-tracker.ts';
 import { updateBranchWithBase, type BranchBaseUpdateResult } from './promotion-controller.ts';
+import { publishStageHead } from './branch-publication.ts';
 import { escapeShellArg } from './shell-utils.ts';
 import { findCachedPullRequest } from './session-gh-cache.ts';
 import { mutateJsonState } from './state-mutex.ts';
@@ -490,13 +491,26 @@ const defaultDeps: ReadyWatchdogDeps = {
         encoding: 'utf-8',
         maxBuffer: 1024 * 1024,
       });
-      await execFileAsync('git', ['-C', snapshot.worktree, 'push', 'origin', snapshot.branch], {
-        encoding: 'utf-8',
-        maxBuffer: 1024 * 1024,
+      // HOK-3370: the mill publishes through the one seam so the conflict
+      // head move is recorded and ledger-shadowed, never a raw push.
+      const published = publishStageHead({
+        worktreeDir: snapshot.worktree,
+        branch: snapshot.branch,
+        stateDir: snapshot.readyStateDir,
+        issue: snapshot.issueId,
+        stage: 'ready',
+        actor: 'mill',
+        kind: 'conflict',
       });
+      if (!published.ok) {
+        return {
+          status: 'failed',
+          detail: `Could not publish resolved conflict remediation for PR #${snapshot.prNumber} (${published.reason}): ${published.message}`,
+        };
+      }
       return {
         status: 'completed',
-        detail: `Committed and pushed resolved conflict remediation for PR #${snapshot.prNumber}.`,
+        detail: `Committed and published resolved conflict remediation for PR #${snapshot.prNumber} (${published.outcome}).`,
       };
     } catch (error) {
       return {
@@ -515,7 +529,14 @@ const defaultDeps: ReadyWatchdogDeps = {
       };
     }
 
-    return updateBranchWithBase(branch, baseBranch, snapshot.worktree);
+    // HOK-3370: route the post-merge push through the stage-head seam so the
+    // base-merge head move is recorded against the task's state dir.
+    return updateBranchWithBase(branch, baseBranch, snapshot.worktree, undefined, {
+      stateDir: snapshot.readyStateDir,
+      issue: snapshot.issueId,
+      stage: 'ready',
+      kind: 'base-merge',
+    });
   },
   async launchReadyRemediation(snapshot, failedCheckSummary, failedCheckNames, attemptNumber, maxAttempts, repoDir, readyWatchdogToolPath) {
     try {
@@ -875,7 +896,9 @@ function nextCommandForMergeState(snapshot: ReadyTaskSnapshot): string {
   if (!snapshot.worktreeMergeState.mergeHead) {
     return `cd ${worktree} && git status --short`;
   }
-  return `cd ${worktree} && git status --short && git commit -m ${escapeShellArg('fix: Resolve merge conflicts')} && git push origin ${escapeShellArg(snapshot.branch)}`;
+  // HOK-3370: the command only commits; the mill publishes the head through
+  // the stage-head seam once the remediation settles.
+  return `cd ${worktree} && git status --short && git commit -m ${escapeShellArg('fix: Resolve merge conflicts')}`;
 }
 
 function readBackstageHealth(repoDir: string): BackstageHealthState | null {
