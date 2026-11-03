@@ -1,5 +1,6 @@
 import { readAuthoritativeWorkflowJobs, reconcileIncidentForFiling, workflowJobResultSucceeded, type WorkflowJob } from './incident-filing-reconciler.ts';
 import { ISSUE_ID_WORD_RE, challengerTaskKey, parseTaskId } from './task-identity.ts';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
@@ -34,7 +35,7 @@ import {
 } from './wavemill-incident-model.ts';
 import { TEND_STALL_MARKER_KINDS } from './wavemill-incident-tend-candidates.ts';
 import { readIncidentLogExcerpt } from './incident-log-excerpt-reader.ts';
-import { checkDepsDrift, type DepsDriftResult } from './deps-drift.ts';
+import { checkDepsDrift, depsLockfileFingerprint, type DepsDriftResult } from './deps-drift.ts';
 import {
   deriveQueueAlertProjection,
   type QueueAlertProjection,
@@ -476,16 +477,20 @@ export class DependencyHealthDetector {
 }
 
 /**
- * HOK-3254 — stale node_modules detector. Surfaces off-machine when a
- * dependency bump landed but nothing reinstalled, so the mill is running
- * against an older install. The monitor's deps-drift tick auto-fixes locally
- * when `WAVEMILL_DEPS_DRIFT_AUTOFIX` is on; this detector exists so the
- * condition is still raised when auto-fix is off, or when the monitor is not
- * running.
+ * HOK-3254 / HOK-3315 — stale node_modules detector. Surfaces off-machine
+ * when a dependency bump landed but nothing reinstalled, so the mill is
+ * running against an older install. The monitor's deps-drift tick auto-fixes
+ * locally when `WAVEMILL_DEPS_DRIFT_AUTOFIX` is on; this detector exists so
+ * the condition is still raised when auto-fix is off, or when the monitor is
+ * not running.
+ *
+ * Evidence identity is a stable condition fingerprint (expected lockfile +
+ * platform/arch + the normalized mismatch set), not a poll timestamp, so
+ * `IncidentStore.computeEventKey` lands repeated polls of an unchanged
+ * condition on the same event — one occurrence, not one per tick.
  */
 export class DepsDriftDetector {
   detectRepo(repoDir: string, context: DetectorContext): IncidentRecord[] {
-    const now = context.now?.toISOString() ?? new Date().toISOString();
     let result: DepsDriftResult;
     try {
       result = checkDepsDrift(repoDir);
@@ -498,6 +503,16 @@ export class DepsDriftDetector {
       ? names.slice(0, 5).join(', ') + (names.length > 5 ? `, …+${names.length - 5}` : '')
       : '(hidden lockfile unavailable)';
     const detail = `reason=${result.reason} packages=${names.length > 0 ? names.join(',') : 'unknown'}`;
+
+    const lockFingerprint = depsLockfileFingerprint(repoDir) ?? 'none';
+    const normalized = result.packages
+      .map((pkg) => `${pkg.path}@${pkg.lockVersion ?? '-'}→${pkg.installedVersion ?? '-'}:${pkg.reason}`)
+      .sort()
+      .join('|');
+    const conditionIdentity = createHash('sha256')
+      .update([lockFingerprint, result.platform, result.arch, result.reason, normalized].join('::'))
+      .digest('hex');
+
     return [createIncidentDraft({
       taskId: null,
       session: context.session ?? null,
@@ -511,14 +526,23 @@ export class DepsDriftDetector {
       evidence: [{
         type: 'backstage_health',
         source: join(repoDir, 'package-lock.json'),
-        timestamp: now,
+        // Stable condition identity, not a poll timestamp (HOK-3315): the
+        // same mismatch across N polls must compute the same event key.
+        timestamp: conditionIdentity,
         redactedData: redactIncidentData(boundedOneLine(detail, 240)),
-        key: `deps_drift:${result.reason}`,
+        key: `deps_drift:${conditionIdentity.slice(0, 24)}`,
       }],
       metadata: {
         driftReason: result.reason,
         driftedPackages: names,
         driftedPackageCount: result.packages.length,
+        conditionIdentityInputs: {
+          lockFingerprint,
+          platform: result.platform,
+          arch: result.arch,
+          driftReason: result.reason,
+          mismatchSet: normalized,
+        },
       },
     })];
   }

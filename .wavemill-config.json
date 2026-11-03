@@ -394,6 +394,7 @@
     "Golden Journey (agent-idle-background-job)": "bash tests/journeys/run-journeys.sh agent-idle-background-job",
     "Golden Journey (operator-abort-mid-coding)": "bash tests/journeys/run-journeys.sh operator-abort-mid-coding",
     "Golden Journey (queue-events-emitted)": "bash tests/journeys/run-journeys.sh queue-events-emitted",
+    "Golden Journey (dependency-install-drift)": "bash tests/journeys/run-journeys.sh dependency-install-drift",
     "Golden Journeys": "npm run test:journeys"
     },
     "postPrReconciliation": {

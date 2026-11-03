@@ -1,0 +1,8 @@
+# Ratcheting allowlist for the install-verdict guard (HOK-3315).
+#
+# Format: <repo-relative path> [<max findings>]  # <reason>
+#
+# The invariant is that dependency-install health is decided exclusively by
+# shared/lib/deps-drift.ts (wrapped by deps-drift.sh / deps-drift-cli.ts).
+# This list starts empty on purpose; add an entry only for a justified
+# exception and delete it as soon as the call site is migrated.
