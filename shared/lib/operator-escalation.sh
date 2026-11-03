@@ -39,7 +39,12 @@ _operator_attention_write() {
   shift 2
   local -a condition_flags=("$@")
   local repo_dir
+  # Read-only rev-parse to resolve the marker's head; moved verbatim from the
+  # former write_ready_attention_file (HOK-3360). It mutates no worktree and
+  # returns 0 (no marker) if the task path no longer resolves.
+  # allow-settled-attempt: read-only rev-parse, no worktree mutation (HOK-3360)
   repo_dir=$(git -C "$state_dir" rev-parse --show-toplevel 2>/dev/null) || return 0
+  # allow-settled-attempt: read-only rev-parse on the resolved repo root (HOK-3360)
   local head_sha
   head_sha=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null) || return 0
   marker_write "$state_dir/.needs-attention" --kind ready-attention --head "$head_sha" --reason "$message" "${condition_flags[@]}"

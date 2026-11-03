@@ -384,6 +384,7 @@
     "Golden Journey (native-coder-budget-exhaustion)": "bash tests/journeys/run-journeys.sh native-coder-budget-exhaustion",
     "Golden Journey (challenge-pair-eval)": "bash tests/journeys/run-journeys.sh challenge-pair-eval",
     "Golden Journey (ready-fail-remediate)": "bash tests/journeys/run-journeys.sh ready-fail-remediate",
+    "Golden Journey (ready-one-tick-failure)": "bash tests/journeys/run-journeys.sh ready-one-tick-failure",
     "Golden Journey (ready-failure-disposition)": "bash tests/journeys/run-journeys.sh ready-failure-disposition",
     "Golden Journey (ready-remediation-same-head)": "bash tests/journeys/run-journeys.sh ready-remediation-same-head",
     "Golden Journey (dirty-tree-coding-complete)": "bash tests/journeys/run-journeys.sh dirty-tree-coding-complete",

@@ -40,7 +40,6 @@ import {
   type MarkerHandle,
 } from './transient-marker.ts';
 import { escalateOperatorAttention } from './operator-escalation.ts';
-import { createStateDirRetry } from './bounded-retry.ts';
 import { readChallengeComparisons, type StoredChallengeComparison } from './challenge-comparison.ts';
 import {
   classifyChallengeState,
@@ -2304,17 +2303,12 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
               ...classification,
               detail: `Ready remediation capped at ${attempts}/${remediationConfig.maxAttempts} attempts for PR #${snapshot.prNumber}.`,
             };
-            // HOK-3360: terminalize the shared ready-remediation bucket (the
-            // monitor's Ready path marks the same bucket at the same cap;
-            // markExhausted is idempotent) so the escalation basis holds, then
-            // page through the one escalation step.
-            createStateDirRetry('ready-remediation', { maxAttempts: remediationConfig.maxAttempts })
-              .markExhausted(snapshot.readyStateDir, classification.detail);
-            await escalateReadyWatchdogAttention(
-              snapshot,
-              { kind: 'exhausted', bucket: 'ready-remediation', maxAttempts: remediationConfig.maxAttempts },
-              classification.detail,
-            );
+            // HOK-3360: the monitor's Ready path owns the ready-remediation
+            // bucket — it marks it exhausted at the same cap and pages through
+            // the one escalation step (`escalate_operator_attention … exhausted
+            // ready-remediation`). The watchdog does not touch that bucket (it
+            // is launch identity, HOK-3322) and does not page; it keeps its
+            // finding row (dashboard needs-user classification) only.
           } else if (snapshot.remediationDisposition.kind === 'in-flight') {
             action = 'remediation-in-flight';
             classification = {
