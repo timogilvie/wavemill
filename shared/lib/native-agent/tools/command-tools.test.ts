@@ -6,7 +6,6 @@ import path from 'node:path';
 import { after, describe, it } from 'node:test';
 
 import {
-  CommandRunHistory,
   commandToolsAfterToolCall,
   createCommandTools,
   createRunFormatTool,
@@ -435,7 +434,7 @@ describe('native-agent command tools', () => {
       spawnCalls += 1;
       return spawn(file, [...args], options);
     };
-    const runTests = createRunTestsTool(repo, { spawnFn: spawnSpy, fingerprintFn: () => 'fp-1' });
+    const runTests = createRunTestsTool(repo, { spawnFn: spawnSpy });
 
     const bareResult = await runTests.execute('call-full-suite-bare', { command: 'npm test' });
     const bareDetails = bareResult.details as RunCommandDetails;
@@ -479,7 +478,7 @@ describe('native-agent command tools', () => {
       spawnCalls += 1;
       return spawn(file, [...args], options);
     };
-    const runTests = createRunTestsTool(repo, { spawnFn: spawnSpy, allowFullSuite: true, fingerprintFn: () => 'fp-1' });
+    const runTests = createRunTestsTool(repo, { spawnFn: spawnSpy, allowFullSuite: true });
 
     const result = await runTests.execute('call-full-suite-allowed', { command: 'npm test' });
     const details = result.details as RunCommandDetails;
@@ -493,20 +492,17 @@ describe('native-agent command tools', () => {
     assert.match(text, /npm test runs:/);
   });
 
-  it('refuses an identical repeat of a just-timed-out command without spawning', async () => {
+  // protects: the deleted rerun-after-timeout command-string key coming back — the
+  // HOK-3381 progress rule in task-progress.ts owns repeat detection now, so an
+  // identical command executes again instead of being refused.
+  it('re-runs an identical command after a timeout (no command-string refusal)', async () => {
     const repo = makeTempDir('command-tools-repeat-');
     let spawnCalls = 0;
     const spawnSpy = (file: string, args: readonly string[], options: any) => {
       spawnCalls += 1;
       return spawn(file, [...args], options);
     };
-    let fingerprint = 'tree-1';
-    const history = new CommandRunHistory();
-    const runTests = createRunTestsTool(repo, {
-      spawnFn: spawnSpy,
-      fingerprintFn: () => fingerprint,
-      history,
-    });
+    const runTests = createRunTestsTool(repo, { spawnFn: spawnSpy });
 
     const first = await Promise.race([
       runTests.execute('call-repeat-first', {
@@ -520,71 +516,31 @@ describe('native-agent command tools', () => {
     if (firstDetails.ok) {
       assert.equal(firstDetails.status, 'timed_out');
     }
+    const text = first.content[0]?.type === 'text' ? first.content[0].text : '';
+    assert.match(text, /Narrow the selection/);
     const spawnsAfterFirst = spawnCalls;
     assert.ok(spawnsAfterFirst > 0);
 
-    const secondSameTimeout = await runTests.execute('call-repeat-second', {
-      command: `node -e "setTimeout(()=>{},5000)"`,
-      timeoutMs: 100,
-    });
-    const secondSameDetails = secondSameTimeout.details as RunCommandDetails;
-    assert.equal(secondSameDetails.ok, false);
-    if (!secondSameDetails.ok) {
-      assert.equal(secondSameDetails.error, 'repeat_after_timeout');
-      assert.match(secondSameDetails.message, /timed out after/);
-      assert.match(secondSameDetails.message, /narrow the selection/);
-      assert.ok(secondSameDetails.previousTimeout);
+    // An identical repeat executes (and may time out again); the shared
+    // progress rule, not the command tool, decides when repeats stop the run.
+    const second = await Promise.race([
+      runTests.execute('call-repeat-second', {
+        command: `node -e "setTimeout(()=>{},5000)"`,
+        timeoutMs: 100,
+      }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout test hung')), 10_000)),
+    ]);
+    const secondDetails = second.details as RunCommandDetails;
+    assert.equal(secondDetails.ok, true);
+    if (secondDetails.ok) {
+      assert.equal(secondDetails.status, 'timed_out');
     }
-    assert.equal(spawnCalls, spawnsAfterFirst, 'repeat refusal must not spawn');
-
-    // Different timeoutMs — still identical argv, still refused.
-    const secondBiggerTimeout = await runTests.execute('call-repeat-second-big', {
-      command: `node -e "setTimeout(()=>{},5000)"`,
-      timeoutMs: 60_000,
-    });
-    const secondBiggerDetails = secondBiggerTimeout.details as RunCommandDetails;
-    assert.equal(secondBiggerDetails.ok, false);
-    if (!secondBiggerDetails.ok) {
-      assert.equal(secondBiggerDetails.error, 'repeat_after_timeout');
-    }
-    assert.equal(spawnCalls, spawnsAfterFirst, 'raising the timeout must not bypass');
-
-    // Different command — allowed.
-    const differentCommand = await runTests.execute('call-repeat-different', {
-      command: `node -e "console.log('ok')"`,
-    });
-    const differentDetails = differentCommand.details as RunCommandDetails;
-    assert.equal(differentDetails.ok, true);
-    assert.ok(spawnCalls > spawnsAfterFirst, 'different command must spawn');
-
-    // After the worktree fingerprint changes, the same command runs again.
-    fingerprint = 'tree-2';
-    const spawnsBeforeRetry = spawnCalls;
-    const retry = await runTests.execute('call-repeat-retry', {
-      command: `node -e "console.log('ok')"`,
-    });
-    const retryDetails = retry.details as RunCommandDetails;
-    assert.equal(retryDetails.ok, true);
-    assert.ok(spawnCalls > spawnsBeforeRetry, 'fingerprint change must allow re-run');
-  });
-
-  it('clears the record on a successful completion of the same key', async () => {
-    const repo = makeTempDir('command-tools-clear-');
-    const history = new CommandRunHistory();
-    const runTests = createRunTestsTool(repo, { fingerprintFn: () => 'fp', history });
-    // Successful run should not record a timeout.
-    const result = await runTests.execute('call-clear-1', { command: `node -e "console.log('ok')"` });
-    const details = result.details as RunCommandDetails;
-    assert.equal(details.ok, true);
-
-    // Second identical run also succeeds — no refusal.
-    const second = await runTests.execute('call-clear-2', { command: `node -e "console.log('ok')"` });
-    assert.equal((second.details as RunCommandDetails).ok, true);
+    assert.ok(spawnCalls > spawnsAfterFirst, 'identical repeat must spawn');
   });
 
   it('clamps an unreasonable timeoutMs to the ceiling and reports both', async () => {
     const repo = makeTempDir('command-tools-clamp-');
-    const runTests = createRunTestsTool(repo, { fingerprintFn: () => 'fp' });
+    const runTests = createRunTestsTool(repo);
     const requested = MAX_TEST_TIMEOUT_MS + 60_000; // 11 min
     const result = await runTests.execute('call-clamp', {
       command: `node -e "console.log('fast')"`,
@@ -600,29 +556,6 @@ describe('native-agent command tools', () => {
     assert.match(text, /clamped from/);
   });
 
-  it('shares a single history between run_tests and run_format', async () => {
-    const repo = makeTempDir('command-tools-shared-history-');
-    let fingerprint = 'fp';
-    const [runTests, runFormat] = createCommandTools(repo, { fingerprintFn: () => fingerprint });
-    assert.ok(runTests && runFormat);
-    const timeout = await Promise.race([
-      runTests!.execute('call-shared-timeout', {
-        command: `node -e "setTimeout(()=>{},5000)"`,
-        timeoutMs: 100,
-      }),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout test hung')), 10_000)),
-    ]);
-    assert.equal((timeout.details as RunCommandDetails).ok, true);
-    // The repeat guard keys include the tool name, so run_format of the same
-    // argv is not refused; this test only asserts the history survives across
-    // both tool descriptors (shared history object, same instance).
-    const repeat = await runTests!.execute('call-shared-repeat', {
-      command: `node -e "setTimeout(()=>{},5000)"`,
-      timeoutMs: 100,
-    });
-    assert.equal((repeat.details as RunCommandDetails).ok, false);
-    assert.equal((repeat.details as any).error, 'repeat_after_timeout');
-  });
 });
 
 describe('foreground-wait guard (HOK-3262)', () => {

@@ -16,12 +16,14 @@ interface Args {
   repoRoot: string;
   changedPaths: string[];
   noJourneys: boolean;
+  allJourneys: boolean;
 }
 
 function parseArgs(argv: readonly string[]): Args {
   let repoRoot = process.cwd();
   const changedPaths: string[] = [];
   let noJourneys = false;
+  let allJourneys = false;
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i]!;
     if (token === '--repo-root') {
@@ -37,13 +39,18 @@ function parseArgs(argv: readonly string[]): Args {
       }
     } else if (token === '--no-journeys') {
       noJourneys = true;
+    } else if (token === '--all-journeys') {
+      allJourneys = true;
     } else if (token.startsWith('--')) {
       throw new Error(`unknown argument: ${token}`);
     } else {
       changedPaths.push(token);
     }
   }
-  return { repoRoot: path.resolve(repoRoot), changedPaths, noJourneys };
+  if (noJourneys && allJourneys) {
+    throw new Error('--no-journeys and --all-journeys are mutually exclusive');
+  }
+  return { repoRoot: path.resolve(repoRoot), changedPaths, noJourneys, allJourneys };
 }
 
 function main(): void {
@@ -52,6 +59,7 @@ function main(): void {
     repoRoot: args.repoRoot,
     changedPaths: args.changedPaths,
     noJourneys: args.noJourneys,
+    allJourneys: args.allJourneys,
   });
   process.stdout.write(JSON.stringify(plan) + '\n');
 }

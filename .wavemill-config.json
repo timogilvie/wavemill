@@ -361,9 +361,22 @@
   "ready": {
     "localCommandMap": {
       "Preflight Checks": "npm run lint && npm run test:preflight",
-      "Shell Tests": "npm run test:shell",
-      "Unit Tests": "npm run test:node-test",
-      "Custom Harness Tests": "npm run test:custom",
+      "Shell Tests": "bash tests/run-related.sh",
+      "Shell Tests (shard 1/3)": "bash tests/run-shell-suite.sh --shard 1/3",
+      "Shell Tests (shard 2/3)": "bash tests/run-shell-suite.sh --shard 2/3",
+      "Shell Tests (shard 3/3)": "bash tests/run-shell-suite.sh --shard 3/3",
+      "Unit Tests": "bash tests/run-related.sh",
+      "Unit Tests (shard 1/7)": "bash tests/run-unit-tests.sh --shard 1/7",
+      "Unit Tests (shard 2/7)": "bash tests/run-unit-tests.sh --shard 2/7",
+      "Unit Tests (shard 3/7)": "bash tests/run-unit-tests.sh --shard 3/7",
+      "Unit Tests (shard 4/7)": "bash tests/run-unit-tests.sh --shard 4/7",
+      "Unit Tests (shard 5/7)": "bash tests/run-unit-tests.sh --shard 5/7",
+      "Unit Tests (shard 6/7)": "bash tests/run-unit-tests.sh --shard 6/7",
+      "Unit Tests (shard 7/7)": "bash tests/run-unit-tests.sh --shard 7/7",
+      "Custom Harness Tests": "bash tests/run-related.sh",
+      "Custom Harness Tests (shard 1/3)": "bash tests/run-custom-tests.sh --shard 1/3",
+      "Custom Harness Tests (shard 2/3)": "bash tests/run-custom-tests.sh --shard 2/3",
+      "Custom Harness Tests (shard 3/3)": "bash tests/run-custom-tests.sh --shard 3/3",
       "Smoke and Config Tests": "npm run test:smoke && npm run test:config",
       "Native Launch Certification": "npm run test:native-launch-certification",
       "Lifecycle Integration Tests": "npm run test:lifecycle",
@@ -395,7 +408,9 @@
     "Golden Journey (operator-abort-mid-coding)": "bash tests/journeys/run-journeys.sh operator-abort-mid-coding",
     "Golden Journey (queue-events-emitted)": "bash tests/journeys/run-journeys.sh queue-events-emitted",
     "Golden Journey (dependency-install-drift)": "bash tests/journeys/run-journeys.sh dependency-install-drift",
-    "Golden Journeys": "npm run test:journeys"
+    "Golden Journey (native-slow-verification)": "bash tests/journeys/run-journeys.sh native-slow-verification",
+    "Golden Journey (head-move-publication)": "bash tests/journeys/run-journeys.sh head-move-publication",
+    "Golden Journeys": "bash tests/run-related.sh"
     },
     "postPrReconciliation": {
       "enabled": false

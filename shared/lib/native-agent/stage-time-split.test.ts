@@ -83,6 +83,17 @@ describe('nativeStageTimeSplit — HOK-3374 attempt-2 replay', () => {
     assert.equal(split.harnessToolMs + split.providerWaitMs + split.modelMs + split.unknownMs, split.totalMs);
   });
 
+  // protects: HOK-3381 — the model-time coding budget stopping attempt 2 again; its model-side
+  // (non-harness-tool) time is about 9 minutes, far under the 60-minute budget the pausing clock enforces
+  it('replay: the 60-minute model-time budget would not have stopped attempt 2 (about 9 minutes charged)', () => {
+    const split = nativeStageTimeSplit(events, window);
+    const chargedMs = split.totalMs - split.harnessToolMs;
+    assert.ok(chargedMs < 60 * 60_000, `chargedMs=${chargedMs} must stay under the 60-minute budget`);
+    // "About 9 minutes" in the issue; the sanitized fixture derives ~7.2
+    // minutes of model time with no provider wait, so pin a single-digit band.
+    assert.ok(chargedMs >= 5 * 60_000 && chargedMs <= 12 * 60_000, `chargedMs=${chargedMs} should be single-digit minutes`);
+  });
+
   // protects: the resolver silently failing to find an archived transcript, leaving the split unknown
   it('resolves the same split through the featureDir archive when the recorded path no longer exists', () => {
     const featureDir = mkdtempSync(join(tmpdir(), 'stage-time-split-'));
