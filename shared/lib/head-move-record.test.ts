@@ -10,6 +10,7 @@ import os from 'node:os';
 
 import {
   appendHeadMove,
+  headMoveContributionInputs,
   lastRecordedHead,
   readHeadMoves,
   summarizeHeadMovesByStage,
@@ -100,5 +101,22 @@ describe('head-move record', () => {
     assert.equal(summary[1].commits, 1);
     assert.deepEqual(summary[2].kinds, ['base-merge']);
     assert.equal(summary[2].commits, 1);
+  });
+
+  it('projects authorship onto contribution-row inputs as parallel scalar arrays', () => {
+    // protects: the head_moves/v1 encoding Hokusai joins on — stages, kinds
+    // and counts must stay index-aligned (route_overrides/v1 pattern).
+    const inputs = headMoveContributionInputs([
+      { stage: 'coding', kinds: ['coding'], commits: 2, shas: ['a'.repeat(40)] },
+      { stage: 'review', kinds: ['review-fix'], commits: 1, shas: ['b'.repeat(40)] },
+    ]);
+    assert.deepEqual(inputs, {
+      head_moves_schema: 'head_moves/v1',
+      head_move_stages: ['coding', 'review'],
+      head_move_kinds: ['coding', 'review-fix'],
+      head_move_counts: ['2', '1'],
+    });
+    assert.deepEqual(headMoveContributionInputs([]), {});
+    assert.deepEqual(headMoveContributionInputs(undefined), {});
   });
 });
