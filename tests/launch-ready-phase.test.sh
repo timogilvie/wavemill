@@ -1650,7 +1650,11 @@ check_contains "ready pass clears recheck budget files" "$output" "recheck_files
 output="$(run_launch_case route_stamp_failure)"
 check_contains "route stamp failure blocks ready" "$output" "rc=1"
 check_contains "route stamp failure writes failed stage result" "$output" "|ready|failed|"
-check_contains "route stamp failure records attention" "$output" "route-stamp transition failed"
+# HOK-3360: the launcher records the transitionFailure evidence and returns;
+# the next tick's ready_failure_classify_and_act classifies it (a transition
+# code-failure pages via the operator-decision basis). The launcher itself
+# raises no attention.
+check_contains "route stamp failure raises no attention in the launcher" "$output" "needs_attention=absent"
 check_contains "route stamp failure records typed stage" "$output" "\"stage\":\"route-stamp\""
 
 echo "=== Watchdog Launch Helper ==="
@@ -1772,8 +1776,11 @@ output="$(run_launch_case native_remediation_ci_refused)"
 check_contains "refused CI fix: returns failure" "$output" "rc=1"
 check_contains "refused CI fix: nothing dispatched to the pane" "$output" "native_dispatched=no"
 check_contains "refused CI fix: remediation budget untouched" "$output" "remediation_retry_count="$'\n'"remediation_retry_exhausted=absent"
-check_contains "refused CI fix: needs-attention names the refusal" "$output" "budget is untouched): Error: native launch preflight failed: route=HOK-3241_c stage=coding"
-check_contains "refused CI fix: needs-attention carries the typed code" "$output" "code=uncertified surface=certification"
+# HOK-3360: the launcher records the refusal in the failed stage result and
+# returns; the next tick's failure policy classifies it. No attention is raised
+# here, so the refusal reason and typed code are surfaced in the stage result.
+check_contains "refused CI fix: stage result names the refusal" "$output" "not an attempt): Error: native launch preflight failed: route=HOK-3241_c stage=coding"
+check_contains "refused CI fix: stage result carries the typed code" "$output" "code=uncertified surface=certification"
 check_contains "refused CI fix: status log records the reason" "$output" "reason=gemini-3.8-flash has no current coding certificate"
 check_contains "refused CI fix: typed launch-refusal line for the observer" "$output" "[launch-refusal] issue=HOK-3241_c phase=coding model=gemini-3.8-flash provider=native-openrouter reason=uncertified"
 check_contains "refused CI fix: stage result says not an attempt" "$output" "refused before an agent started (not an attempt)"
@@ -1783,7 +1790,10 @@ check_not_contains "refused CI fix: no generic launch failure" "$output" "Could 
 output="$(run_launch_case native_remediation_conflict_refused)"
 check_contains "refused conflict: returns failure" "$output" "rc=1"
 check_contains "refused conflict: nothing dispatched to the pane" "$output" "native_dispatched=no"
-check_contains "refused conflict: escalates with the reason" "$output" "Merge-conflict remediation launch for PR #304 was refused before an agent started"
+# HOK-3360: launch_remediation_agent no longer pages on a refusal; it logs the
+# typed reason (not an attempt) and the caller returns without charging the
+# conflict budget. The refusal is surfaced through the error log, not attention.
+check_contains "refused conflict: logs the reason" "$output" "Merge-conflict remediation launch refused for PR #304 (not an attempt)"
 check_contains "refused conflict: writes no in-flight marker" "$output" "conflict_marker=absent"
 check_contains "refused conflict: does not consume the single attempt" "$output" "conflict_retry_count="$'\n'
 check_contains "refused conflict: never terminalizes the bucket" "$output" "conflict_retry_exhausted=absent"
@@ -1830,6 +1840,13 @@ run_recon_case() {
     source "$COMMON_SCRIPT"
     source "$LAUNCH_FUNC_FILE"
 
+    # HOK-3360: the monitor logger is not sourced here; stub it so helpers that
+    # surface a typed reason through log_warn (e.g. reconciliation_project_prompt)
+    # write to stderr for the test to capture, matching the real emission path.
+    log() { :; }
+    log_error() { printf "%s\n" "$*" >&2; }
+    log_warn() { printf "%s\n" "$*" >&2; }
+
     TOOLS_DIR="$REAL_REPO_DIR/tools"
     STATE_DIR="$CASE_DIR/feature"
     WT_DIR="$CASE_DIR/worktree"
@@ -1854,14 +1871,18 @@ run_recon_case() {
         git -C "$CASE_DIR" init -q
         git -C "$CASE_DIR" -c user.email=t@t -c user.name=t commit -q --allow-empty -m fixture
         printf "%s\n" "{not json" > "$STATE_DIR/.reconciliation-context.json"
+        # HOK-3360: reconciliation_project_prompt refuses (rc=1) and surfaces the
+        # typed reason through log_warn (stderr), never a .needs-attention page.
         rc=0
-        reconciliation_project_prompt "$STATE_DIR" 304 "$CASE_DIR/prompt.txt" || rc=$?
+        reconciliation_project_prompt "$STATE_DIR" 304 "$CASE_DIR/prompt.txt" 2>"$CASE_DIR/malformed.err" || rc=$?
         echo "malformed_rc=$rc"
+        echo "malformed_reason=$(tr "\n" " " < "$CASE_DIR/malformed.err" 2>/dev/null)"
         echo "malformed_attention=$(cat "$STATE_DIR/.needs-attention" 2>/dev/null | tr "\n" " ")"
         rm -f "$STATE_DIR/.reconciliation-context.json" "$STATE_DIR/.needs-attention"
         rc=0
-        reconciliation_project_prompt "$STATE_DIR" 304 "$CASE_DIR/prompt.txt" || rc=$?
+        reconciliation_project_prompt "$STATE_DIR" 304 "$CASE_DIR/prompt.txt" 2>"$CASE_DIR/missing.err" || rc=$?
         echo "missing_rc=$rc"
+        echo "missing_reason=$(tr "\n" " " < "$CASE_DIR/missing.err" 2>/dev/null)"
         echo "missing_attention=$(cat "$STATE_DIR/.needs-attention" 2>/dev/null | tr "\n" " ")"
         ;;
       capsule_project)
@@ -1920,9 +1941,10 @@ check_contains "new fingerprint starts a new episode" "$output" "new_fp_count=0"
 
 output="$(run_recon_case capsule_gate)"
 check_contains "malformed capsule refuses projection" "$output" "malformed_rc=1"
-check_contains "malformed capsule surfaces typed reason" "$output" "capsule_malformed"
+check_contains "malformed capsule surfaces typed reason" "$output" "malformed_reason=reconciliation capsule invalid (capsule_malformed)"
+check_contains "malformed capsule raises no attention" "$output" "malformed_attention="$'\n'
 check_contains "missing capsule refuses projection" "$output" "missing_rc=1"
-check_contains "missing capsule surfaces typed reason" "$output" "capsule_missing"
+check_contains "missing capsule surfaces typed reason" "$output" "missing_reason=reconciliation capsule invalid (capsule_missing)"
 
 output="$(run_recon_case capsule_project)"
 check_contains "valid capsule projects a prompt" "$output" "project_rc=0"
