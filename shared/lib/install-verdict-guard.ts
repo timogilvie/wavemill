@@ -30,7 +30,7 @@ export const INSTALL_VERDICT_GUARD: GuardSpec = {
     'shared/lib/deps-drift.sh',
     'shared/lib/deps-drift-cli.ts',
     'shared/lib/install-verdict-guard.ts',
-    'tools/check-install-verdict.ts',
+    'tools/check-install-verdict.ts', // install-paths: allow invariantPaths list, not an argv target
   ],
   patterns: [
     {
