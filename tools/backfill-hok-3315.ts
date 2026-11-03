@@ -16,7 +16,7 @@
  *   npx tsx tools/backfill-hok-3315.ts --dry-run
  *   npx tsx tools/backfill-hok-3315.ts --apply --repo-dir ~/src/wavemill
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runTool, resolveRepoDir, type ParsedArgs } from '../shared/lib/tool-runner.ts';
@@ -48,7 +48,6 @@ interface Plan {
 
 function findOperatorRecoveryEvidence(archiveDir: string): string | null {
   if (!existsSync(archiveDir)) return null;
-  const { readdirSync, statSync } = require('node:fs') as typeof import('node:fs');
   const entries = readdirSync(archiveDir)
     .filter((n: string) => n.startsWith('operator-recovery-') || n.startsWith('operator-forfeit-'))
     .sort();
