@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { reconcileIncidentCycle } from './incident-reconcile-cycle.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentRecord } from './wavemill-incident-model.ts';
-import { processHost } from './process-identity.ts';
+import { reclaimLegacyStateLock } from './state-lock.ts';
 
 function makeSandbox(): { dir: string; incidentsDir: string } {
   const dir = mkdtempSync(join(tmpdir(), 'reconcile-cycle-test-'));
@@ -82,8 +82,8 @@ test('HOK-3403 recorded stale incident index lock is reclaimed and absence resol
     const store = new IncidentStore(incidentsDir);
     await reconcileIncidentCycle({ store, candidates: [draft('hok-3403', { rootCauseClass: fixture.rootCauseClass })], cycleComplete: true, repoDir: dir });
     const lockPath = join(incidentsDir, 'index.json.lock');
-    mkdirSync(lockPath);
-    writeFileSync(join(lockPath, 'owner.json'), JSON.stringify({ pid: 99999999, processStartTime: 'dead-owner', host: processHost(), acquiredAt: '2026-10-31T16:57:00Z', purpose: 'incident-store' }));
+    writeFileSync(lockPath, ''); // recorded 0-byte pre-migration lock
+    assert.equal(reclaimLegacyStateLock(lockPath), true, 'startup preflight clears recorded ownerless lock');
     const first = await reconcileIncidentCycle({ store, candidates: [], cycleComplete: true, repoDir: dir });
     assert.deepEqual(first.errors, [], 'next cycle must persist after reclaim');
     assert.equal((await store.getIncidents())[0].metadata.missedCycles, 1);

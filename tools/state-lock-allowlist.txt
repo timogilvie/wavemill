@@ -1,2 +1,10 @@
 # Existing report refresh uses a kernel flock for a separate output file.
 shared/lib/wavemill-reliability-refresh.sh 1 # report refresh is outside JSON state mutation
+shared/hooks/process-status-monitor.sh 1 # agent process observation, not a state-lock owner
+shared/hooks/wavemill-hook-protocol.sh 2 # hook and dashboard process observation
+shared/lib/job-tracker.ts 1 # managed job process observation
+shared/lib/monitor-async-jobs.sh 1 # managed async job process observation
+shared/lib/native-agent/cleanup.ts 1 # agent process cleanup
+shared/lib/wavemill-common.sh 7 # pane and lease process observation outside state lock
+shared/lib/wavemill-monitor.sh 2 # managed monitor process observation
+shared/lib/wavemill-startup-runner.sh 1 # startup child process observation

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { acquireStateLockSync, isOwnerReclaimable, reclaimLegacyStateLock, releaseStateLock, StateLockTimeoutError } from './state-lock.ts';
+import { processAlive, processStartTime } from './process-identity.ts';
 
 const dirs: string[] = [];
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'state-lock-')); dirs.push(dir); return dir; };
@@ -14,6 +15,15 @@ describe('state-lock', () => {
   for (const entry of cases) {
     it(`shared owner contract: ${entry.name}`, () => assert.equal(isOwnerReclaimable(entry.owner, 'local', () => entry.alive), entry.reclaimable));
   }
+  it('keeps a live owner busy when ps is unavailable', () => {
+    const start = processStartTime(process.pid);
+    const oldPath = process.env.PATH;
+    try {
+      process.env.PATH = '/nonexistent-state-lock-test-bin';
+      assert.equal(processAlive(process.pid, start), true);
+      assert.equal(processAlive(99999999, start), false);
+    } finally { process.env.PATH = oldPath; }
+  });
   // protects: a legacy file remains busy at runtime but startup can remove it.
   it('reclaims a legacy zero-byte file only through preflight', () => {
     const state = join(temp(), 'state.json'); writeFileSync(`${state}.lock`, '');

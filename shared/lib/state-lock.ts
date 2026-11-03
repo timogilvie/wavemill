@@ -25,8 +25,10 @@ function attemptClaim(lockPath: string, purpose: string): StateLockHandle | null
   // which would turn a legacy ownerless lock into an unsafe runtime reclaim.
   if (existsSync(lockPath)) return null;
   mkdirSync(dirname(lockPath), { recursive: true });
+  const startTime = processStartTime(process.pid);
+  if (!startTime) throw new Error(`Cannot establish process identity for state lock owner pid=${process.pid}`);
   const temp = mkdtempSync(`${lockPath}.tmp-${process.pid}-${randomUUID()}-`);
-  const owner: OwnerRecord = { pid: process.pid, processStartTime: processStartTime(process.pid), host: processHost(), acquiredAt: new Date().toISOString(), purpose };
+  const owner: OwnerRecord = { pid: process.pid, processStartTime: startTime, host: processHost(), acquiredAt: new Date().toISOString(), purpose };
   writeFileSync(join(temp, 'owner.json'), `${JSON.stringify(owner)}\n`, { mode: 0o600 });
   try { renameSync(temp, lockPath); return { lockPath, owner }; }
   catch (error) {

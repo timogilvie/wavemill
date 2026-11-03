@@ -1,5 +1,5 @@
 {
-  "provenance": "incident repro from .wavemill/incidents/2026-11-02-stale-incident-index-lock/; recorded lock was a 0-byte ownerless file, represented here as a dead-owner lock after migration",
+  "provenance": "incident repro from .wavemill/incidents/2026-11-02-stale-incident-index-lock/; recorded lock was a 0-byte ownerless file cleared by startup preflight",
   "incidentDate": "2026-11-02",
   "lockPath": "incidents/index.json.lock",
   "recordedLockMtime": "2026-10-31T16:57:00Z",

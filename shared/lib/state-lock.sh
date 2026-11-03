@@ -23,6 +23,7 @@ _state_lock_claim() {
   mkdir -p "$(dirname "$lock_path")"
   temp="$(mktemp -d "${lock_path}.tmp.${BASHPID:-$$}.XXXXXX")" || return 1
   pid="${BASHPID:-$$}"; start="$(process_identity_start_time "$pid")"; host="$(process_identity_host)"
+  [[ -n "$start" ]] || { rm -rf "$temp"; return 1; }
   owner="$(jq -cn --argjson pid "$pid" --arg start "$start" --arg host "$host" --arg acquired "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg purpose "$purpose" '{pid:$pid,processStartTime:$start,host:$host,acquiredAt:$acquired,purpose:$purpose}')" || { rm -rf "$temp"; return 1; }
   printf '%s\n' "$owner" > "$temp/owner.json" || { rm -rf "$temp"; return 1; }
   # perl rename is the syscall, unlike mv which may move into an existing dir.
@@ -61,8 +62,14 @@ state_lock_release() {
 }
 
 state_lock_reclaim_legacy() {
-  local lock_path="$1"
+  local lock_path="$1" legacy_pid
   [[ -e "$lock_path" ]] || return 1
   if [[ -f "$lock_path" && ! -s "$lock_path" ]] || [[ -d "$lock_path" && ! -e "$lock_path/owner.json" ]]; then rm -rf "$lock_path"; return 0; fi
+  # The previous service-singleton format was a file containing only a PID.
+  # At startup, retire it only when that PID is demonstrably absent.
+  if [[ "$lock_path" == */locks/*.lock && -f "$lock_path" ]]; then
+    legacy_pid="$(cat "$lock_path" 2>/dev/null || true)"
+    if process_identity_pid_gone "$legacy_pid"; then rm -f "$lock_path"; return 0; fi
+  fi
   return 1
 }

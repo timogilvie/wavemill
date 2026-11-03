@@ -7,10 +7,21 @@ process_identity_start_time() {
 }
 
 process_identity_alive() {
-  local pid="$1" start="$2" now
+  local pid="$1" start="$2" now error
   [[ "$pid" =~ ^[0-9]+$ && -n "$start" ]] || return 1
   now="$(process_identity_start_time "$pid")"
-  [[ -n "$now" && "$now" == "$start" ]]
+  if [[ -n "$now" ]]; then [[ "$now" == "$start" ]]; return; fi
+  # ps may fail for a live process. Only a definite ESRCH proves it dead.
+  error="$(LC_ALL=C kill -0 "$pid" 2>&1)" && return 0
+  [[ "$error" != *"No such process"* ]]
 }
 
 process_identity_host() { hostname; }
+
+# A legacy PID-only record is safe to retire only when the PID is absent.
+process_identity_pid_gone() {
+  local pid="$1" error
+  [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 0 ]] || return 1
+  error="$(LC_ALL=C kill -0 "$pid" 2>&1)" && return 1
+  [[ "$error" == *"No such process"* ]]
+}
