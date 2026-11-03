@@ -60,6 +60,13 @@ import { writeJobResultFile } from '../shared/lib/job-tracker.ts';
 import type { ChallengeStage } from '../shared/lib/challenge-mode.ts';
 import { loadPromptTemplate } from '../shared/lib/prompt-utils.ts';
 import { applyForkIdentityFallback, readForkIdentity } from '../shared/lib/fork-identity.ts';
+import {
+  locateHeadMoves,
+  readHeadMoves,
+  summarizeHeadMovesByStage,
+  type HeadMoveStageSummary,
+} from '../shared/lib/head-move-record.ts';
+import { challengerTaskId } from '../shared/lib/task-identity.ts';
 
 type ComparisonForkDescriptor = Pick<
   ChallengeComparison,
@@ -131,6 +138,23 @@ function selectRecordedForkIdentity(
     ?? readForkIdentity(challenger?.forkIdentity)
     ?? readForkIdentity(intentObject(primaryDirIntent)?.forkIdentity)
     ?? readForkIdentity(intentObject(challengerDirIntent)?.forkIdentity);
+}
+
+/**
+ * Per-stage authorship for one arm (HOK-3370): the live feature dir's
+ * head-move record when present, else the eval archive copy. Undefined for
+ * pre-HOK-3370 arms with no record — additive, never a validity gate.
+ */
+function headMovesSummaryForArm(
+  featureDir: unknown,
+  repoDir: string,
+  issueId: string,
+): HeadMoveStageSummary[] | undefined {
+  const liveRows = typeof featureDir === 'string' && featureDir.trim()
+    ? readHeadMoves(featureDir)
+    : [];
+  const rows = liveRows.length > 0 ? liveRows : locateHeadMoves({ repoDir, issueId });
+  return rows.length > 0 ? summarizeHeadMovesByStage(rows) : undefined;
 }
 
 function loadFeatureDirIntent(featureDir: unknown): unknown {
@@ -957,6 +981,20 @@ runTool({
         ...(forkIdentityRecorded ? { forkIdentity: forkIdentityRecorded } : {}),
         ...(primaryReviewIdentity ? { primaryReviewExecutedIdentity: primaryReviewIdentity } : {}),
         ...(challengerReviewIdentity ? { challengerReviewExecutedIdentity: challengerReviewIdentity } : {}),
+        // HOK-3370: per-arm commits by stage from the head-move record — a
+        // reviewer or remediation commit on one arm is visible data.
+        ...((): Partial<ChallengeComparison> => {
+          const primaryHeadMoves = headMovesSummaryForArm(args['primary-feature-dir'], repoDir, issueId);
+          const challengerHeadMoves = headMovesSummaryForArm(
+            args['challenger-feature-dir'],
+            repoDir,
+            challengerTaskId(issueId),
+          );
+          return {
+            ...(primaryHeadMoves ? { primaryHeadMoves } : {}),
+            ...(challengerHeadMoves ? { challengerHeadMoves } : {}),
+          };
+        })(),
         ...(stageAttribution ? { stageAttribution } : {}),
       };
       recordForResult = record;

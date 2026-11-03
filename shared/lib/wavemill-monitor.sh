@@ -5397,7 +5397,7 @@ pane_release_preflight() {
   review_result_passes_ready_gate "$state_dir" || { printf '%s\n' "review-not-passed"; return 1; }
   review_status="$(jq -r '.status // empty' "$state_dir/.review-result.json" 2>/dev/null || echo "")"
   [[ "$review_status" != "stale" ]] || { printf '%s\n' "review-stale"; return 1; }
-  if reconciliation_review_invalidated_by_commit "$state_dir" "$wt_dir"; then
+  if reconciliation_review_invalidated_by_commit "$state_dir" "$wt_dir" "$base_branch"; then
     printf '%s\n' "review-stale"
     return 1
   fi
@@ -5410,7 +5410,10 @@ pane_release_preflight() {
   current_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
   [[ -n "$current_head" ]] || { printf '%s\n' "git-error"; return 1; }
   capsule_review_head="$(jq -r '.review.reviewHeadSha // empty' "$state_dir/.reconciliation-context.json" 2>/dev/null || echo "")"
-  [[ "$capsule_review_head" == "$current_head" ]] || { printf '%s\n' "capsule-head-mismatch"; return 1; }
+  # HOK-3370: judge by change identity, not raw SHA — a base merge after the
+  # review must not block the pane release.
+  change_identity_fresh "$wt_dir" "$capsule_review_head" "$current_head" "origin/$base_branch" \
+    || { printf '%s\n' "capsule-head-mismatch"; return 1; }
 
   safety_reason="$(task_worktree_release_safety "$wt_dir" "$branch" "$base_branch" 2>/dev/null || true)"
   [[ "$safety_reason" == "ok" ]] || { printf '%s\n' "${safety_reason:-git-error}"; return 1; }
@@ -5503,7 +5506,10 @@ prepare_released_task_for_reconciliation() {
     return 1
   fi
   capsule_head="$(jq -r '.incident.headSha // .review.reviewHeadSha // empty' "$state_dir/.reconciliation-context.json" 2>/dev/null || echo "")"
-  if [[ -n "$capsule_head" && -n "$current_head" && "$capsule_head" != "$current_head" ]]; then
+  # HOK-3370: a base merge after the capsule was recorded keeps it current;
+  # only a code-changing move stales the reconciliation request.
+  if [[ -n "$capsule_head" && -n "$current_head" ]] \
+    && ! change_identity_fresh "$wt_dir" "$capsule_head" "$current_head" "origin/$(effective_task_base_branch "$issue" 2>/dev/null || echo "${BASE_BRANCH:-auto/integration}")"; then
     bounded_retry_clear "$state_dir" "ready-remediation"
     log "status" "  ⏭ $issue: stale reconciliation request at ${capsule_head:0:7}, current head ${current_head:0:7}"
     return 1
@@ -5642,7 +5648,7 @@ reconciliation_record_attempt() {
 # (REQ-F6). Only fires once at least one reconciliation attempt was recorded,
 # so ordinary pre-reconciliation flows are untouched.
 reconciliation_review_invalidated_by_commit() {
-  local state_dir="$1" wt_dir="$2"
+  local state_dir="$1" wt_dir="$2" base_branch="${3:-${BASE_BRANCH:-auto/integration}}"
   local capsule="$state_dir/.reconciliation-context.json"
   local review_head current_head attempts
   [[ -f "$capsule" ]] || return 1
@@ -5652,7 +5658,13 @@ reconciliation_review_invalidated_by_commit() {
   [[ "$attempts" =~ ^[0-9]+$ ]] && (( attempts > 0 )) || return 1
   current_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
   [[ -n "$current_head" ]] || return 1
-  [[ "$current_head" != "$review_head" ]]
+  # HOK-3370: evidence binds to the change, not the head SHA. A base merge
+  # or clean rebase keeps the review valid (rc 1 = still valid); only a
+  # code-changing commit invalidates it (rc 0 = invalidated, re-review).
+  if change_identity_fresh "$wt_dir" "$review_head" "$current_head" "origin/${base_branch}"; then
+    return 1
+  fi
+  return 0
 }
 
 # Mark the review result stale against its recorded head so the ready gate
@@ -12299,10 +12311,16 @@ try_update_branch_from_base() {
     return 0
   fi
 
+  # HOK-3370: route the post-merge push through the stage-head seam so the
+  # base-merge head move is recorded against the task's state dir.
+  local update_state_dir
+  update_state_dir="$(ready_state_dir "$worktree" "$(basename "$worktree")" 2>/dev/null || true)"
   cli_output="$(wavemill_run_tool "update-branch-with-base.ts" \
     --worktree "$worktree" \
     --branch "$branch" \
-    --base "$base" 2>/dev/null)" && cli_status=0 || cli_status=$?
+    --base "$base" \
+    ${update_state_dir:+--state-dir "$update_state_dir"} \
+    ${update_state_dir:+--issue "$issue"} 2>/dev/null)" && cli_status=0 || cli_status=$?
 
   # The CLI always prints one JSON line to stdout even on failure. Parse
   # `status` and (on conflict) `conflictingFiles`. A missing or unparseable
@@ -13313,25 +13331,31 @@ set_ready_pass_labels() {
     rm -f "$stamp_stderr_file"
   fi
 
-  # HOK-3112: the handoff head is always GitHub's live head, never the local
-  # checkout. `head_sha` (Ready's own reading, when its output carries one) is
-  # only a cross-check. After Tend rebases and force-pushes from its scratch
-  # worktree the task checkout keeps the pre-rebase commit; publishing at that
-  # commit leaves a record Tend's claim at the live head always rejects.
+  # The handoff head is always GitHub's live head, never the local checkout
+  # (HOK-3112 lineage). HOK-3370 deletes the raw head-equality special case:
+  # the checkout only has to hold the same *change* as the live head. A tend
+  # rebase or base merge during Ready keeps the change identity (proceed at
+  # the live head); a code-changing move fails typed, and the freshness
+  # consumers re-run review for it.
   local github_head worktree_head
   github_head=$(ready_current_github_head "$wt_dir" "$pr_number")
   if [[ -z "$github_head" ]]; then
     printf '%s\n' '{"transitionFailure":{"stage":"ready-label","detail":"current GitHub head is unavailable"}}' >&2
     return 1
   fi
-  # Ready checked the checkout, so the checkout (and Ready's head, if reported)
-  # must still be the head we are about to publish. A mismatch means the PR
-  # moved while Ready ran; the caller re-runs Ready at the new head.
   worktree_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)
-  if [[ "$worktree_head" != "$github_head" || ( -n "$head_sha" && "$head_sha" != "$github_head" ) ]]; then
-    jq -cn --arg ready "$head_sha" --arg github "$github_head" --arg worktree "$worktree_head" \
-      '{transitionFailure:{stage:"ownership-changed",detail:"head-moved",readyHead:$ready,githubHead:$github,worktreeHead:$worktree}}' >&2
-    return 1
+  if [[ "$worktree_head" != "$github_head" ]]; then
+    # The live head may postdate the last sync; make it reachable for the
+    # identity computation (best-effort — an unreachable head stays stale).
+    # allow-settled-attempt: ready transition runs on the already-resolved task worktree (same resolver gate as the surrounding Ready phase)
+    git -C "$wt_dir" fetch --quiet origin >/dev/null 2>&1 || true
+    local transition_base_ref
+    transition_base_ref="origin/$(effective_task_base_branch "$issue" 2>/dev/null || echo "${BASE_BRANCH:-auto/integration}")"
+    if ! change_identity_fresh "$wt_dir" "$worktree_head" "$github_head" "$transition_base_ref"; then
+      jq -cn --arg github "$github_head" --arg worktree "$worktree_head" --arg reason "${CHANGE_IDENTITY_REASON:-change-identity-differs}" \
+        '{transitionFailure:{stage:"ownership-changed",detail:("worktree and PR head hold different changes (" + $reason + ")"),githubHead:$github,worktreeHead:$worktree}}' >&2
+      return 1
+    fi
   fi
   head_sha="$github_head"
 
@@ -13410,7 +13434,7 @@ ready_current_github_head() {
 # Sets READY_SYNC_HEAD, READY_SYNC_DETAIL, and (for rc 3) READY_SYNC_OBSERVED_PR_HEAD
 # and READY_SYNC_LOCAL_HEAD
 ready_sync_worktree_to_github_head() {
-  local wt_dir="$1" branch="$2" pr_number="$3" state_dir="$4"
+  local wt_dir="$1" branch="$2" pr_number="$3" state_dir="$4" issue="${5:-}"
   local gh_head local_head pre_fetch_origin current_branch tend_marker tend_pushed tend_previous sync_reason
   READY_SYNC_HEAD=""
   READY_SYNC_DETAIL=""
@@ -13485,8 +13509,26 @@ ready_sync_worktree_to_github_head() {
         return 3
       fi
 
-      # Genuinely unpushed local work
-      READY_SYNC_DETAIL="task worktree HEAD ${local_head:0:7} has commits that are not on PR head ${gh_head:0:7} (unpushed local work)"
+      # HOK-3370: unpushed local work is published by the mill through the
+      # one seam, never refused (HOK-3361 touches #1/#3: a remediation or
+      # reviewer commit the agent never pushed parked the arm). The seam
+      # fast-forwards the remote branch; the PR view then catches up via the
+      # existing HOK-3171 lag path. Genuine divergence fails typed through
+      # the seam and flows to the HOK-3371 Ready-failure disposition.
+      local sync_publish_kind="review-fix" sync_publish_rc=0
+      if [[ -f "$state_dir/.conflict-remediation.json" ]]; then
+        sync_publish_kind="conflict"
+      elif [[ "$(ready_remediation_attempts "$state_dir" 2>/dev/null || echo 0)" -gt 0 ]]; then
+        sync_publish_kind="remediation"
+      fi
+      publish_stage_head "$wt_dir" "$branch" "$state_dir" "${issue:-unknown}" "ready" "$sync_publish_kind" || sync_publish_rc=$?
+      if (( sync_publish_rc == 0 )); then
+        READY_SYNC_OBSERVED_PR_HEAD="$gh_head"
+        READY_SYNC_LOCAL_HEAD="$local_head"
+        READY_SYNC_DETAIL="published unpushed local head ${local_head:0:7} ($sync_publish_kind) through the stage-head seam; PR #$pr_number head catching up"
+        return 3
+      fi
+      READY_SYNC_DETAIL="stage head publication failed for local head ${local_head:0:7}: ${PUBLISH_STAGE_HEAD_DETAIL:-publish-stage-head rc=$sync_publish_rc}"
       return 2
     fi
 
@@ -13857,7 +13899,7 @@ launch_ready_phase() {
   # REQ-F6): mark it stale against its recorded head and relaunch review
   # before any ready pass can restore wm:ready.
   if [[ "$(post_pr_reconciliation_enabled "$wt_dir")" == "true" ]] \
-    && reconciliation_review_invalidated_by_commit "$state_dir" "$wt_dir" \
+    && reconciliation_review_invalidated_by_commit "$state_dir" "$wt_dir" "$base_branch" \
     && review_result_passes_ready_gate "$state_dir"; then
     local recon_old_head recon_new_head recon_review_rc=0
     recon_old_head=$(jq -r '.review.reviewHeadSha // empty' "$state_dir/.reconciliation-context.json" 2>/dev/null || echo "")
@@ -13962,7 +14004,7 @@ launch_ready_phase() {
   # Ready at the stale checkout would publish a handoff Tend can never claim.
   # The cross-PR guard below also diffs the checkout, so sync precedes it.
   local sync_rc=0
-  ready_sync_worktree_to_github_head "$wt_dir" "$branch" "$pr_number" "$state_dir" || sync_rc=$?
+  ready_sync_worktree_to_github_head "$wt_dir" "$branch" "$pr_number" "$state_dir" "$issue" || sync_rc=$?
   case "$sync_rc" in
     0)
       if [[ -n "$READY_SYNC_DETAIL" ]]; then
@@ -14303,21 +14345,6 @@ launch_ready_phase() {
       # record merge-needed on a resolver failure.
       if [[ "$transition_stage" == "capabilities-unknown" ]]; then
         log "info" "  $issue: session capability resolver unavailable - retrying next tick"
-        return 4
-      fi
-      # HOK-3112: the PR head moved while Ready ran (or the checkout no longer
-      # matches it). Nothing was published; this is transient, so re-check at
-      # the new head on the next tick instead of parking the arm in needs-user.
-      local moved_github_head
-      moved_github_head=$(printf '%s\n' "$label_output" \
-        | jq -Rr 'fromjson? | select(.transitionFailure.detail? == "head-moved") | .transitionFailure.githubHead // empty' 2>/dev/null | tail -n 1)
-      if [[ -n "$moved_github_head" ]]; then
-        bounded_retry_reset_if_new_head "$state_dir" "ready-remediation" "$moved_github_head"
-        bounded_retry_reset_if_new_head "$state_dir" "pending-ready-recheck" "$moved_github_head"
-        write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
-          "PR #$pr_number changed head while Ready was running, rechecking current GitHub head" \
-          "$(jq -cn --argjson pr "$pr_number" --arg head "$moved_github_head" '{type:"ready",verdict:"pending",prNumber:$pr,readyHeadSha:$head,pendingReason:"head-changed"}')"
-        log "info" "  $issue: PR #$pr_number head moved to ${moved_github_head:0:7} during Ready - handoff not published, re-checking"
         return 4
       fi
       transition_output=$(printf '%s' "$label_output" | ready_transition_redact | head -c 2000)
@@ -20652,6 +20679,12 @@ monitor_issue_state() {
         if [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
           wavemill_reconcile_terminal "$SESSION" "$ISSUE" "review_complete" "$PR" || true
         fi
+        # HOK-3370: publish any reviewer "fix blockers" commits through the
+        # one seam before Ready reads GitHub (a no-op `reused` when the
+        # reviewer did not commit). A failure defers to Ready's own
+        # sync-path publication and the HOK-3371 disposition.
+        publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$FEATURE_DIR" "$ISSUE" "review" "review-fix" \
+          || log_warn "$ISSUE → review head publication deferred to Ready: ${PUBLISH_STAGE_HEAD_DETAIL:-no detail}"
       else
         set_task_phase "$ISSUE" "review"
         if launch_review_for_missing_evidence "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$FEATURE_DIR" "$current_agent"; then
@@ -21356,6 +21389,30 @@ monitor_issue_state() {
             fi
             validate_coding_phase_output "$BRANCH"
             clear_coding_uncommitted_output_attention "$FEATURE_DIR"
+
+            # HOK-3370: the mill publishes the coding head through the one
+            # seam before review launches. Agents commit; the mill publishes —
+            # a stage exit never leaves a silent local head. Failure is typed
+            # through the failure policy (divergence → code-failure
+            # remediation, transport → retryable stage-failure-coding).
+            local coding_publish_rc=0
+            publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$FEATURE_DIR" "$ISSUE" "coding" "coding" || coding_publish_rc=$?
+            if (( coding_publish_rc != 0 )); then
+              write_stage_result "$FEATURE_DIR" "coding" "failed" "$current_agent" \
+                "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")" \
+                "Stage head publication failed: ${PUBLISH_STAGE_HEAD_DETAIL:-publish-stage-head rc=$coding_publish_rc}"
+              local coding_publish_retry_rc=0
+              maybe_retry_failed_stage "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" || coding_publish_retry_rc=$?
+              if [[ "$coding_publish_retry_rc" -eq 0 || "$coding_publish_retry_rc" -eq 2 ]]; then
+                active_count=$((active_count + 1))
+                return 0
+              fi
+              emit_challenge_stage_failure_quarantine "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" || true
+              set_window_attention_state "$WIN" "needs-user"
+              active_count=$((active_count + 1))
+              return 0
+            fi
+
             # Mark coding as completed (HOK-1177)
             write_stage_result "$FEATURE_DIR" "coding" "completed" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")"
             quarantine_completed_coding_pane "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}"
@@ -21708,6 +21765,12 @@ monitor_issue_state() {
               active_count=$((active_count + 1))
               return 0
             fi
+            # HOK-3370: publish any reviewer "fix blockers" commits through
+            # the one seam before Ready reads GitHub (a no-op `reused` when
+            # the reviewer did not commit). A failure here defers to Ready's
+            # own sync-path publication and the HOK-3371 disposition.
+            publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$FEATURE_DIR" "$ISSUE" "review" "review-fix" \
+              || log_warn "$ISSUE → review head publication deferred to Ready: ${PUBLISH_STAGE_HEAD_DETAIL:-no detail}"
             if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$pr_number"; then
               local launch_rc=0
             else
@@ -21781,6 +21844,12 @@ monitor_issue_state() {
               active_count=$((active_count + 1))
               return 0
             fi
+
+            # HOK-3370: the conflict resolver settled (or the head advanced) —
+            # publish its commits through the one seam before Ready re-runs,
+            # so the re-check reads the resolved head, never the stale one.
+            publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$ready_state_dir_path" "$ISSUE" "ready" "conflict" \
+              || log_warn "$ISSUE → conflict-resolution head publication deferred to Ready: ${PUBLISH_STAGE_HEAD_DETAIL:-no detail}"
 
             if conflict_remediation_exhausted_hold "$ready_state_dir_path" "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH" "$current_head"; then
               set_window_attention_state "$WIN" "needs-user"
@@ -22299,6 +22368,12 @@ monitor_issue_state() {
           return 0
         fi
 
+        # HOK-3370: publish any reviewer "fix blockers" commits through the
+        # one seam before Ready reads GitHub (a no-op `reused` when the
+        # reviewer did not commit). A failure here defers to Ready's own
+        # sync-path publication and the HOK-3371 disposition.
+        publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$FEATURE_DIR" "$ISSUE" "review" "review-fix" \
+          || log_warn "$ISSUE → review head publication deferred to Ready: ${PUBLISH_STAGE_HEAD_DETAIL:-no detail}"
         if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
           launch_rc=0
         else
@@ -22620,6 +22695,15 @@ monitor_issue_state() {
     fi
     if [[ "$remediation_disposition" == "settled" ]]; then
       log "info" "$ISSUE → Ready remediation settled at ${current_head:0:7} ($remediation_disposition_reason); re-running Ready"
+      # HOK-3370: publish the remediation agent's commits through the one
+      # seam before the controller re-runs Ready (HOK-3361 touch #1: the
+      # remediation commit was never pushed, so Ready re-checked the same
+      # red head until exhausted). A failure defers to Ready's own
+      # sync-path publication and the HOK-3371 disposition.
+      local settled_publish_kind="remediation"
+      [[ -f "$ready_state_dir_path/.conflict-remediation.json" ]] && settled_publish_kind="conflict"
+      publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$ready_state_dir_path" "$ISSUE" "ready" "$settled_publish_kind" \
+        || log_warn "$ISSUE → remediation head publication deferred to Ready: ${PUBLISH_STAGE_HEAD_DETAIL:-no detail}"
     fi
 
     ready_verdict=$(ready_stage_pending_verdict "$ready_state_dir_path")

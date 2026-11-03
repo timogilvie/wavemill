@@ -1,0 +1,61 @@
+# shellcheck shell=bash
+# Fake coder for the HOK-3381 journey (sourced by tests/fakes/bin/claude).
+#
+# Emulates the native launcher's on-disk contract for a coding run whose
+# verification outlasts 60 minutes of wall clock on a slowed fake test
+# runner: eight turns of ~1 minute of model generation, each followed by a
+# 9.5-minute run_tests call, plus a final synthesis turn — an ~85-minute
+# window of which ~76 minutes is harness tool time and ~9 minutes is model
+# time. Under the HOK-3381 model-time budget (the loop's clock pauses while
+# a harness tool executes) this run is NOT budget-stopped; the attempt
+# completes normally, writes .coding-complete, and merges with zero operator
+# touches.
+session_dir="$FEATURE_DIR/native-sessions"
+mkdir -p "$session_dir"
+transcript_path="$session_dir/coding-${WAVEMILL_ISSUE}.jsonl"
+session_id="wavemill-coding-${WAVEMILL_ISSUE}"
+base_ms=1700000000000
+model_ms=60000   # 1 minute of model generation per turn
+tool_ms=570000   # 9.5 minutes per slowed run_tests call
+seq=0
+t="$base_ms"
+
+append_event() {
+  printf '%s\n' "$1" >> "$transcript_path"
+}
+
+: > "$transcript_path"
+append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$t" \
+  '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"session_started", model:"glm-5.3-flash", api:"openrouter", provider:"openrouter"}')"
+seq=$((seq + 1))
+
+for turn in $(seq 0 7); do
+  append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$t" --argjson idx "$turn" \
+    '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"turn_started", turnIndex:$idx}')"
+  seq=$((seq + 1))
+  t=$((t + model_ms))
+  append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$t" \
+    '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"assistant_message", model:"glm-5.3-flash", stopReason:"toolUse"}')"
+  seq=$((seq + 1))
+  tool_call_id="turn${turn}-run-tests"
+  append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$t" --arg id "$tool_call_id" \
+    '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"tool_started", toolCallId:$id, toolName:"run_tests", args:{}}')"
+  seq=$((seq + 1))
+  t=$((t + tool_ms))
+  append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$t" --arg id "$tool_call_id" \
+    '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"tool_result", toolCallId:$id, toolName:"run_tests", isError:false, content:"1 passing", redacted:false}')"
+  seq=$((seq + 1))
+done
+
+# Final synthesis turn (model time, no tools).
+append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$t" \
+  '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"turn_started", turnIndex:8}')"
+seq=$((seq + 1))
+t=$((t + model_ms))
+append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$t" \
+  '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"assistant_message", model:"glm-5.3-flash", stopReason:"stop"}')"
+seq=$((seq + 1))
+append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$t" \
+  '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"session_ended", messageCount:18}')"
+
+default_coding

@@ -334,6 +334,7 @@ TESTS=(
   shared/lib/model-equivalence-guard.test.ts
   shared/lib/install-verdict-guard.test.ts
   shared/lib/side-effect-ledger-guard.test.ts
+  shared/lib/head-publication-guard.test.ts
   shared/lib/failure-policy-guard.test.ts
   shared/lib/ready-failure-policy-guard.test.ts
   shared/lib/task-field-read-checker.test.ts
@@ -549,6 +550,9 @@ TESTS=(
   shared/lib/permissions-verifier.test.ts
   shared/lib/plan-validator.test.ts
   shared/lib/branch-publication.test.ts
+  shared/lib/head-move-record.test.ts
+  shared/lib/change-identity.test.ts
+  shared/lib/head-move-incident-replay.test.ts
   shared/lib/pre-pr-verification.test.ts
   shared/lib/project-context-compactor.test.ts
   shared/lib/project-context-generator.test.ts

@@ -1,6 +1,13 @@
-import { createHash } from 'node:crypto';
 import type { LoopBudget } from './loop.ts';
+import type { ToolCallProgressPolicy } from '../task-progress.ts';
 
+/**
+ * Config-facing stagnation knobs (`nativeAgent.planning.toolStagnation`).
+ * The field names are the wavemill-config schema's; `toLoopBudget` maps them
+ * onto the shared HOK-3381 tool-call progress rule in
+ * `shared/lib/task-progress.ts` (`ToolCallProgressTracker`). The old private
+ * `ToolStagnationTracker` (exact signature + output hash) is deleted.
+ */
 export interface ToolStagnationPolicy {
   maxRepeatedSignatureCalls?: number;
   maxNoNovelProgressCalls?: number;
@@ -36,17 +43,6 @@ export type PlanningFailureReason =
   | 'aborted'
   | 'error';
 
-export interface PlanningLoopBudget extends LoopBudget {
-  stagnation?: ToolStagnationPolicy;
-}
-
-export interface ToolStagnationDecision {
-  stagnant: boolean;
-  signature: string;
-  repeatedCalls: number;
-  noNovelProgressCalls: number;
-}
-
 export interface FinalPlanValidationResult {
   valid: boolean;
   reason?: string;
@@ -72,15 +68,6 @@ export const REPAIRABLE_PLAN_VALIDATION_REASONS: ReadonlySet<string> = new Set([
 
 export function isRepairablePlanValidationReason(reason: string | undefined | null): boolean {
   return typeof reason === 'string' && REPAIRABLE_PLAN_VALIDATION_REASONS.has(reason);
-}
-
-interface ToolCallObservation {
-  toolCall: {
-    name: string;
-  };
-  args: unknown;
-  result?: unknown;
-  isError?: boolean;
 }
 
 function positiveInteger(value: unknown): number | undefined {
@@ -109,75 +96,21 @@ export function resolveNativePlanningLimits(config: {
   };
 }
 
-export function toLoopBudget(limits: NativePlanningLimits): PlanningLoopBudget {
+/** Map the config-facing stagnation knobs onto the shared HOK-3381 rule. */
+export function toToolCallProgressPolicy(policy: Required<ToolStagnationPolicy>): ToolCallProgressPolicy {
+  return {
+    maxRepeatedSelectionCalls: policy.maxRepeatedSignatureCalls,
+    maxNoProgressCalls: policy.maxNoNovelProgressCalls,
+  };
+}
+
+export function toLoopBudget(limits: NativePlanningLimits): LoopBudget {
   return {
     maxTurns: limits.maxTurns,
     maxToolCalls: limits.maxToolCalls,
     maxWallClockMs: limits.maxWallClockMs,
-    stagnation: limits.toolStagnation,
+    stagnation: toToolCallProgressPolicy(limits.toolStagnation),
   };
-}
-
-function stableStringify(value: unknown): string {
-  if (value === null || value === undefined) return JSON.stringify(value);
-  if (typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) {
-    return '[' + value.map(stableStringify).join(',') + ']';
-  }
-  const sorted = Object.keys(value as Record<string, unknown>).sort();
-  return '{' + sorted
-    .map((key) => `${JSON.stringify(key)}:${stableStringify((value as Record<string, unknown>)[key])}`)
-    .join(',') + '}';
-}
-
-export function normalizedToolSignature(name: string, args: unknown): string {
-  return `${name}:${stableStringify(args ?? {})}`;
-}
-
-function hashValue(value: unknown): string {
-  return createHash('sha256').update(stableStringify(value)).digest('hex');
-}
-
-function toolOutputFingerprint(ctx: ToolCallObservation, override: { content?: unknown; details?: unknown } | undefined): string {
-  const result = ctx.result as { content?: unknown; details?: unknown } | null | undefined;
-  return hashValue({
-    isError: ctx.isError,
-    content: override?.content ?? result?.content ?? [],
-    details: override?.details ?? result?.details ?? null,
-  });
-}
-
-export class ToolStagnationTracker {
-  private readonly policy: Required<ToolStagnationPolicy>;
-  private readonly counts = new Map<string, { repeatedCalls: number; lastOutputHash?: string; noNovelProgressCalls: number }>();
-
-  constructor(policy: Required<ToolStagnationPolicy>) {
-    this.policy = policy;
-  }
-
-  record(ctx: ToolCallObservation, override: { content?: unknown; details?: unknown } | undefined): ToolStagnationDecision {
-    const signature = normalizedToolSignature(ctx.toolCall.name, ctx.args);
-    const previous = this.counts.get(signature);
-    const outputHash = toolOutputFingerprint(ctx, override);
-    const next = previous ?? { repeatedCalls: 0, noNovelProgressCalls: 0 };
-    next.repeatedCalls += 1;
-    next.noNovelProgressCalls = next.lastOutputHash === outputHash
-      ? next.noNovelProgressCalls + 1
-      : 0;
-    next.lastOutputHash = outputHash;
-    this.counts.set(signature, next);
-
-    const stagnant =
-      next.repeatedCalls >= this.policy.maxRepeatedSignatureCalls &&
-      next.noNovelProgressCalls >= this.policy.maxNoNovelProgressCalls;
-
-    return {
-      stagnant,
-      signature,
-      repeatedCalls: next.repeatedCalls,
-      noNovelProgressCalls: next.noNovelProgressCalls,
-    };
-  }
 }
 
 const RELEASE_READINESS_FIELDS = [

@@ -297,6 +297,7 @@ for f in \
   "$REPO_DIR"/tests/journeys/run-journeys.sh \
   "$REPO_DIR"/tests/journeys/picker-pending-touch-set.journey.sh \
   "$REPO_DIR"/tests/journeys/happy-path.journey.sh \
+  "$REPO_DIR"/tests/journeys/head-move-publication.journey.sh \
   "$REPO_DIR"/tests/journeys/gh-lag-after-push.journey.sh \
   "$REPO_DIR"/tests/journeys/errored-with-pr.journey.sh \
   "$REPO_DIR"/tests/journeys/inputs-ready-before-approval.journey.sh \
@@ -339,6 +340,8 @@ for f in \
   "$REPO_DIR"/tests/journeys/fixtures/operator-abort-mid-coding/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/native-coder-budget-exhaustion.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3362/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/native-slow-verification.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/hok-3381/fake-agent/coding \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
   "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
   "$REPO_DIR"/tests/lib/state-fixtures.sh \

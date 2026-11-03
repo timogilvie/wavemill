@@ -23,7 +23,9 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { isEvidenceFresh } from './change-identity.ts';
+import { getIntegrationConfig } from './config.ts';
 import {
   buildExecutedIdentity,
   type ExecutedIdentity,
@@ -151,13 +153,21 @@ export function mergeReviewAnalysisIdentity(
   result: StageResult,
   record: ReviewAnalysisIdentityRecord | null,
   currentHeadSha: string | null,
+  /**
+   * HOK-3370: judge a differing head by change identity instead of raw SHA
+   * equality, so a base merge between the review and this merge does not
+   * strip a valid identity. Absent → raw equality (pre-HOK-3370 behaviour).
+   */
+  evidenceFresh?: (evidenceHeadSha: string, currentHeadSha: string) => boolean,
 ): StageResult {
   // A launch-time `running` write must not pick up the previous run's record.
   if (result.stage !== 'review' || !record || result.status === 'running') return result;
   const artifacts = reviewArtifactsOf(result);
   if (!artifacts) return result;
 
-  const fresh = Boolean(currentHeadSha) && record.headSha === currentHeadSha;
+  const fresh = Boolean(currentHeadSha)
+    && (record.headSha === currentHeadSha
+      || (evidenceFresh ? evidenceFresh(record.headSha, currentHeadSha as string) : false));
   if (!fresh) {
     // Only an identity this hand-off merged (tagged by reviewHeadSha = the
     // record's head) is stripped; a native review's own identity is untouched.
@@ -215,6 +225,21 @@ export async function applyReviewAnalysisIdentity(featureDir: string): Promise<b
     result,
     record,
     reviewAnalysisIdentityDeps.gitHeadSha(featureDir),
+    // HOK-3370: the one freshness primitive — a base merge keeps the record.
+    (evidenceHeadSha, currentHeadSha) => {
+      try {
+        const base = getIntegrationConfig(dirname(dirname(featureDir))).integrationBranch;
+        if (!base) return false;
+        return isEvidenceFresh({
+          gitDir: featureDir,
+          evidenceHeadSha,
+          currentHeadSha,
+          baseRef: `origin/${base}`,
+        }).fresh;
+      } catch {
+        return false;
+      }
+    },
   );
   if (merged === result) return false;
   await writeStageResult(featureDir, merged);

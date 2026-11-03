@@ -825,6 +825,10 @@ export async function runReviewFlow(options: ReviewFlowOptions): Promise<ReviewF
     branch: options.head,
     reviewedSha: options.headSha,
     baseBranch: options.base,
+    // HOK-3370: record the head move in the task's state dir so native PR
+    // creation shows up in the per-stage authorship record too.
+    stateDir: options.featureDir,
+    issue: options.issueId,
   });
 
   recordToolEvent({
