@@ -354,6 +354,8 @@ TESTS=(
   shared/lib/incident-fixture-converter.test.ts
   shared/lib/incident-reconcile-cycle.test.ts
   shared/lib/state-mutex.test.ts
+  shared/lib/state-lock.test.ts
+  shared/lib/state-lock-guard.test.ts
   shared/lib/task-record-write-guard.test.ts
   shared/lib/task-settlement.test.ts
   shared/lib/settled-attempt-readers.test.ts

@@ -55,6 +55,8 @@ state_mutate() {
 source "$REPO_ROOT/shared/lib/challenge-arms.sh"
 # shellcheck source=../../../shared/lib/bounded-retry.sh
 source "$REPO_ROOT/shared/lib/bounded-retry.sh"
+# shellcheck source=../../../shared/lib/state-lock.sh
+source "$REPO_ROOT/shared/lib/state-lock.sh"
 
 extract_function() {
   awk -v name="$1" '

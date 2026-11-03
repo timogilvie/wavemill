@@ -8,6 +8,9 @@ source "$1"
 # Source marker lifecycle helpers
 WAVEMILL_LIB_DIR="${WAVEMILL_LIB_DIR:-${LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
 source "$WAVEMILL_LIB_DIR/transient-marker.sh"
+# The monitor is copied to /tmp and runs as its own shell, so import the one
+# state-lock implementation rather than assuming wavemill-common stayed sourced.
+source "$WAVEMILL_LIB_DIR/state-lock.sh"
 
 if ! declare -F effective_task_base_branch >/dev/null 2>&1; then
 effective_task_base_branch() {
@@ -1135,17 +1138,12 @@ record_openrouter_credits_challenge_abort() {
 
   count_file="$state_dir/openrouter-credits-abort-count"
   lock_dir="$state_dir/openrouter-credits-abort-count.lock"
-  local attempt=0
-  while ! mkdir "$lock_dir" 2>/dev/null; do
-    attempt=$((attempt + 1))
-    [[ "$attempt" -le 50 ]] || return 0
-    sleep 0.05
-  done
+  state_lock_acquire "$lock_dir" 50 0.05 "openrouter-credits-abort-count" || return 0
   count="$(cat "$count_file" 2>/dev/null || echo 0)"
   [[ "$count" =~ ^[0-9]+$ ]] || count=0
   count=$((count + 1))
   printf '%s\n' "$count" > "$count_file" 2>/dev/null || true
-  rm -rf "$lock_dir" 2>/dev/null || true
+  state_lock_release "$lock_dir" || true
 
   # HOK-3155: trip the warning cache on the first classified credit abort, not
   # after a count. The count file is kept for diagnostic grep attribution.

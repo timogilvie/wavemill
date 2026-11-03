@@ -28,6 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # over every shell script, not a per-shard test, and runs once via `npm run lint`.
 TESTS=(
   state-mutate-task-record-validation.test.sh
+  state-lock.test.sh
   settled-attempt.test.sh
   run-related.test.sh
   run-typecheck.test.sh

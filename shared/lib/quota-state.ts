@@ -1,18 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import {
-  closeSync,
   existsSync,
   mkdirSync,
-  openSync,
   readFileSync,
   renameSync,
-  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { getQuotaConfig } from './config.ts';
 import { errorMessage } from './error-utils.ts';
 import { resolveFromMainRepo } from './git-utils.ts';
+import { acquireStateLockSync, releaseStateLock, type StateLockHandle } from './state-lock.ts';
 
 export type QuotaStatus = 'healthy' | 'degrading' | 'exhausted';
 
@@ -114,10 +112,7 @@ interface StatePaths {
   lockPath: string;
 }
 
-interface LockHandle {
-  fd: number;
-  lockPath: string;
-}
+type LockHandle = StateLockHandle;
 
 const QUOTA_STATE_VERSION = 2;
 export const QUOTA_STATE_TIMINGS = {
@@ -125,7 +120,6 @@ export const QUOTA_STATE_TIMINGS = {
   DEGRADING_DECAY_MS: 10 * 60_000,
   EXHAUSTED_DECAY_MS: 30 * 60_000,
   LOCK_ACQUIRE_TIMEOUT_MS: 2_000,
-  STALE_LOCK_MS: 5_000,
 };
 const REQUEST_WINDOW_MS = 5 * 60_000;
 const REQUEST_HISTORY_MAX = 100;
@@ -500,77 +494,13 @@ function saveFile(state: QuotaStateFile, repoDir?: string): void {
   renameSync(tmpPath, statePath);
 }
 
-function sleepMs(ms: number): void {
-  const buffer = new SharedArrayBuffer(4);
-  const view = new Int32Array(buffer);
-  Atomics.wait(view, 0, 0, ms);
-}
-
-function readLockTimestamp(lockPath: string): number | null {
-  try {
-    const parsed = JSON.parse(readFileSync(lockPath, 'utf-8')) as { acquiredAt?: string };
-    return parseIsoDate(parsed.acquiredAt ?? null);
-  } catch {
-    return null;
-  }
-}
-
 function acquireLock(repoDir?: string): LockHandle {
   const { lockPath } = resolveStatePaths(repoDir);
-  const startMs = Date.now();
-  const lockDir = dirname(lockPath);
-
-  mkdirSync(lockDir, { recursive: true, mode: 0o700 });
-
-  while (Date.now() - startMs <= QUOTA_STATE_TIMINGS.LOCK_ACQUIRE_TIMEOUT_MS) {
-    try {
-      const fd = openSync(lockPath, 'wx', 0o600);
-      writeFileSync(fd, JSON.stringify({
-        pid: process.pid,
-        acquiredAt: new Date(now()).toISOString(),
-      }), 'utf-8');
-      return { fd, lockPath };
-    } catch (error) {
-      const errno = error as NodeJS.ErrnoException;
-      if (errno.code !== 'EEXIST') {
-        throw error;
-      }
-
-      const lockAge = readLockTimestamp(lockPath);
-      if (lockAge == null || now() - lockAge > QUOTA_STATE_TIMINGS.STALE_LOCK_MS) {
-        try {
-          unlinkSync(lockPath);
-        } catch (unlinkError) {
-          const unlinkErrno = unlinkError as NodeJS.ErrnoException;
-          if (unlinkErrno.code !== 'ENOENT') {
-            throw unlinkError;
-          }
-        }
-        continue;
-      }
-
-      const jitterMs = 10 + Math.floor(Math.random() * 41);
-      sleepMs(jitterMs);
-    }
-  }
-
-  throw new Error(`Timed out acquiring quota state lock at ${lockPath}`);
+  mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
+  return acquireStateLockSync(lockPath.slice(0, -5), { timeoutMs: QUOTA_STATE_TIMINGS.LOCK_ACQUIRE_TIMEOUT_MS, purpose: 'quota-state' });
 }
 
-function releaseLock(handle: LockHandle): void {
-  try {
-    closeSync(handle.fd);
-  } finally {
-    try {
-      unlinkSync(handle.lockPath);
-    } catch (error) {
-      const errno = error as NodeJS.ErrnoException;
-      if (errno.code !== 'ENOENT') {
-        throw error;
-      }
-    }
-  }
-}
+function releaseLock(handle: LockHandle): void { releaseStateLock(handle); }
 
 function toPublicEntry(entry: StoredQuotaEntry): QuotaEntry {
   return {
@@ -1079,5 +1009,4 @@ export function __resetQuotaStateTestState(): void {
   QUOTA_STATE_TIMINGS.DEGRADING_DECAY_MS = 10 * 60_000;
   QUOTA_STATE_TIMINGS.EXHAUSTED_DECAY_MS = 30 * 60_000;
   QUOTA_STATE_TIMINGS.LOCK_ACQUIRE_TIMEOUT_MS = 2_000;
-  QUOTA_STATE_TIMINGS.STALE_LOCK_MS = 5_000;
 }

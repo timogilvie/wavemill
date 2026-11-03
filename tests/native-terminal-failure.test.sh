@@ -15,6 +15,9 @@ MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 # Extracted monitor helpers depend on the shared marker lifecycle module.
 # shellcheck source=../shared/lib/transient-marker.sh
 source "$REPO_DIR/shared/lib/transient-marker.sh"
+# The extracted abort-counter helper now delegates lock ownership to the shared
+# primitive, just as the production monitor does.
+source "$REPO_DIR/shared/lib/state-lock.sh"
 
 PASS=0
 FAIL=0
@@ -42,6 +45,7 @@ eval "$(extract_function stage_launch_identity)"
 eval "$(extract_function emit_native_terminal_failure_attention)"
 eval "$(extract_function emit_challenge_stage_failure_quarantine)"
 eval "$(extract_function write_openrouter_warning_cache)"
+eval "$(extract_function stage_budget_exhausted_json)"
 eval "$(extract_function record_openrouter_credits_challenge_abort)"
 eval "$(extract_function challenge_abort_pair)"
 eval "$(extract_function challenge_abort_scope_for_failure)"

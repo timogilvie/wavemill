@@ -2,12 +2,22 @@
 # Wavemill Common Library
 # Shared functions used across wavemill-mill.sh and wavemill-expand.sh
 
+# Resolve install assets from this sourced file, never the milled repository.
+# `%N` is zsh's source-file counterpart to Bash's BASH_SOURCE[0].
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+  # shellcheck disable=SC2296 # zsh's documented sourced-file expansion
+  common_source="${(%):-%N}"
+else
+  common_source="${BASH_SOURCE[0]}"
+fi
+COMMON_LIB_DIR="$(cd "$(dirname "$common_source")" && pwd)"
+
 # Bounded-retry invariant helpers (HOK-2924): every relaunch path counts
 # attempts, backs off, terminalizes at a ceiling, and resets on a new head SHA
 # through this one module. Sourced here so the mill, monitor, and startup
 # runner all inherit the same implementation.
 # shellcheck source=bounded-retry.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bounded-retry.sh"
+source "$COMMON_LIB_DIR/bounded-retry.sh"
 # HOK-3360: the one operator-escalation decision. Operator attention
 # (.needs-attention) is raised only by escalate_operator_attention, after the
 # failure policy escalates (bucket exhaustion, a terminal classification, or a
@@ -15,45 +25,47 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bounded-retry.sh"
 # inherit the single step. New attention writes must go through this helper
 # (enforced by tools/check-failure-policy.ts).
 # shellcheck source=operator-escalation.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/operator-escalation.sh"
+source "$COMMON_LIB_DIR/operator-escalation.sh"
 # HOK-3101: shared task-progress accessors (wavemill_hook_read,
 # task_progress_json, task_progress_cached_json). Sourced here so the monitor,
 # reconciler, dashboard, next-done and pane-message delivery all inherit the
 # same TTL check and controller/agent classification. New callers must go
 # through these helpers instead of reimplementing a private hook TTL check.
 # shellcheck source=task-progress.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-progress.sh"
+source "$COMMON_LIB_DIR/task-progress.sh"
 # HOK-3114: task identity invariant (task ID -> Linear ID, challenger role,
 # Linear-writer predicate). Bash twin of shared/lib/task-identity.ts.
 # shellcheck source=task-identity.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-identity.sh"
+source "$COMMON_LIB_DIR/task-identity.sh"
 # HOK-3373: the one run identity + settled-run reads (twin of
 # attempt-identity.ts / task-settlement.ts / linear-state-renderer.ts) and the
 # one task-worktree resolver (twin of task-worktree-resolver.ts).
 # shellcheck source=attempt-identity.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/attempt-identity.sh"
+source "$COMMON_LIB_DIR/attempt-identity.sh"
 # shellcheck source=task-worktree-resolver.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-worktree-resolver.sh"
-if [[ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/effective-task-config.sh" ]]; then
+source "$COMMON_LIB_DIR/task-worktree-resolver.sh"
+if [[ -f "$COMMON_LIB_DIR/effective-task-config.sh" ]]; then
   # shellcheck source=effective-task-config.sh
-  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/effective-task-config.sh"
+  source "$COMMON_LIB_DIR/effective-task-config.sh"
 fi
 # Challenge arms[] state helpers (HOK-2811). A pending review-stage challenger
 # lives as a nested arm record on the primary until the fork trigger fires.
 # shellcheck source=challenge-arms.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/challenge-arms.sh"
+source "$COMMON_LIB_DIR/challenge-arms.sh"
 # HOK-3293: terminal backend seam. Every interaction with the terminal host
 # (tmux today) goes through term_* here; see docs/terminal-backends.md.
 # shellcheck source=terminal-backend.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/terminal-backend.sh"
+source "$COMMON_LIB_DIR/terminal-backend.sh"
 
 # HOK-3100: install root resolved from BASH_SOURCE, never inherited. The
 # monitor runs from `main` while worker launchers run from worktrees, so
 # inheriting from the environment would mix versions; each process must use
 # its own install copy. The milled repo (the repo wavemill is operating on)
 # is the separate `WAVEMILL_MILLED_REPO_DIR` / `REPO_DIR`.
-WAVEMILL_INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WAVEMILL_INSTALL_DIR="$(cd "$COMMON_LIB_DIR/../.." && pwd)"
 export WAVEMILL_INSTALL_DIR
+# shellcheck source=state-lock.sh
+source "$COMMON_LIB_DIR/state-lock.sh"
 
 # Resolve an install-relative tool path. Honours a caller-set TOOLS_DIR so
 # test harnesses can inject fakes without disturbing the install.
@@ -7145,86 +7157,18 @@ wavemill_lock_run() {
   local lock_root="/tmp/wavemill-${session}-locks"
   mkdir -p "$lock_root"
 
-  if command -v flock >/dev/null 2>&1; then
-    local lock_file="$lock_root/${lock_name}"
-    touch "$lock_file"
-    { flock -x 9; "$@"; } 9>"$lock_file"
-    return
-  fi
-
-  local lock_dir="$lock_root/${lock_name}.lk"
-  local attempts=0
+  local lock_dir="$lock_root/${lock_name}.lock"
   local max_retries="${WAVEMILL_LOCK_MAX_RETRIES:-300}"
   local sleep_seconds="${WAVEMILL_LOCK_SLEEP_SECONDS:-0.1}"
-  local stale_seconds="${WAVEMILL_LOCK_STALE_SECONDS:-120}"
-  local observed_owner current_owner
-  while true; do
-    while ! mkdir "$lock_dir" 2>/dev/null; do
-      observed_owner="$(cat "$lock_dir/owner.pid" 2>/dev/null || true)"
-      if wavemill_lock_dir_is_stale "$lock_dir" "$stale_seconds"; then
-        current_owner="$(cat "$lock_dir/owner.pid" 2>/dev/null || true)"
-        if [[ -n "$observed_owner" && "$current_owner" == "$observed_owner" ]]; then
-          rm -f "$lock_dir/owner.pid" "$lock_dir/owner.command" 2>/dev/null || true
-          rmdir "$lock_dir" 2>/dev/null || true
-          continue
-        fi
-      fi
-      attempts=$((attempts + 1))
-      if (( attempts >= max_retries )); then
-        if declare -F startup_log >/dev/null 2>&1; then
-          startup_log "Warning: wavemill_lock_run timeout on $lock_name; aborting locked operation"
-        fi
-        return 1
-      fi
-      sleep "$sleep_seconds"
-    done
-
-    # If another process removed the lock directory before owner metadata could
-    # be written, retry instead of running the critical section unlocked.
-    if printf '%s\n' "${BASHPID:-$$}" > "$lock_dir/owner.pid" 2>/dev/null \
-      && printf '%s\n' "$*" > "$lock_dir/owner.command" 2>/dev/null; then
-      break
-    fi
-
-    rm -f "$lock_dir/owner.pid" "$lock_dir/owner.command" 2>/dev/null || true
-    rmdir "$lock_dir" 2>/dev/null || true
-    sleep "$sleep_seconds"
-  done
-
-  "$@"
-  local rc=$?
-  rm -f "$lock_dir/owner.pid" "$lock_dir/owner.command" 2>/dev/null || true
-  rmdir "$lock_dir" 2>/dev/null || true
-  return "$rc"
-}
-
-wavemill_lock_dir_mtime_epoch() {
-  local path="$1"
-  stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null || echo 0
-}
-
-wavemill_lock_dir_is_stale() {
-  local lock_dir="$1" stale_seconds="$2"
-  local owner_pid mtime now
-
-  if [[ ! -f "$lock_dir/owner.pid" ]]; then
-    # Treat owner-less directories as still in-flight so waiters do not delete
-    # a lock that another process is still acquiring or releasing.
+  if ! state_lock_acquire "$lock_dir" "$max_retries" "$sleep_seconds" "wavemill_lock_run:$lock_name"; then
+    if declare -F startup_log >/dev/null 2>&1; then startup_log "Warning: wavemill_lock_run timeout on $lock_name; aborting locked operation"; fi
     return 1
   fi
 
-  owner_pid="$(cat "$lock_dir/owner.pid" 2>/dev/null || true)"
-  if [[ "$owner_pid" =~ ^[0-9]+$ ]]; then
-    kill -0 "$owner_pid" 2>/dev/null && return 1
-    return 0
-  fi
-
-  [[ "$stale_seconds" =~ ^[0-9]+$ ]] || stale_seconds=120
-  (( stale_seconds <= 0 )) && return 0
-  mtime="$(wavemill_lock_dir_mtime_epoch "$lock_dir")"
-  now="$(date +%s)"
-  [[ "$mtime" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 1
-  (( now - mtime >= stale_seconds ))
+  "$@"
+  local rc=$?
+  state_lock_release "$lock_dir"
+  return "$rc"
 }
 
 # Configure agent hooks for status tracking in a worktree-specific settings file.
@@ -7321,21 +7265,16 @@ state_mutate() {
   local err_file="/tmp/wavemill-state-mutate-$$.$RANDOM.err"
   local max_retries="${STATE_MUTATE_MAX_RETRIES:-50}"
   local sleep_seconds="${STATE_MUTATE_SLEEP_SECONDS:-0.1}"
-  local retry=0
 
   if [[ ! -f "$state_path" ]]; then
     echo "state_mutate: state file not found: $state_path" >&2
     return 1
   fi
 
-  while ! mkdir "$lock_dir" 2>/dev/null; do
-    retry=$((retry + 1))
-    if (( retry >= max_retries )); then
-      echo "state_mutate: lock timeout on $state_path after $max_retries retries" >&2
-      return 1
-    fi
-    sleep "$sleep_seconds"
-  done
+  if ! state_lock_acquire "$lock_dir" "$max_retries" "$sleep_seconds" "state_mutate"; then
+    echo "state_mutate: lock timeout on $state_path after $max_retries retries" >&2
+    return 1
+  fi
 
   local mutate_status=0
   # HOK-3190: compact output. The 15 MB pretty-printed state file re-parses in
@@ -7355,7 +7294,7 @@ state_mutate() {
   fi
 
   rm -f "$tmp_file" "$err_file"
-  if ! rmdir "$lock_dir" 2>/dev/null && (( mutate_status == 0 )); then
+  if ! state_lock_release "$lock_dir" && (( mutate_status == 0 )); then
     echo "state_mutate: failed to release lock: $lock_dir" >&2
     return 1
   fi
