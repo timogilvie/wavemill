@@ -14,6 +14,13 @@ tools/node_modules/
 package-lock.json
 tools/package-lock.json
 
+# HOK-3315: sanitized real-npm fixture evidence for the deps-drift tests —
+# a committed package-lock.json / node_modules tree, deliberately exempted
+# from the ignore rules above.
+!tests/fixtures/dependency-install/**/package-lock.json
+!tests/fixtures/dependency-install/**/node_modules/
+!tests/fixtures/dependency-install/**/node_modules/**
+
 # OS files
 .DS_Store
 *.swp

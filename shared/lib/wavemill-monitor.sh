@@ -16587,7 +16587,12 @@ monitor_deps_drift_tick() {
 
   local log_file="${MILL_LOG_FILE:-/dev/null}"
   local json status reason packages
-  json="$(deps_drift_check "$REPO_DIR" 2>/dev/null)" || json=""
+  # deps_drift_check's exit code (0/1/2) is a verdict, not a failure: it
+  # always prints the JSON verdict on stdout. `|| true` only guards against
+  # `set -e` on a non-zero (drift/unknown) exit — it must never clobber the
+  # JSON already captured by the assignment (that previously made every
+  # drift/unknown verdict silently read back as "ok").
+  json="$(deps_drift_check "$REPO_DIR" 2>/dev/null)" || true
   status="$(printf '%s' "$json" | jq -r '.status // ""' 2>/dev/null)"
   reason="$(printf '%s' "$json" | jq -r '.reason // ""' 2>/dev/null)"
   packages="$(printf '%s' "$json" | jq -r '[.packages[]?.name] | join(",")' 2>/dev/null)"
@@ -16642,13 +16647,6 @@ monitor_deps_drift_tick() {
   local fingerprint
   if declare -F deps_lockfile_fingerprint >/dev/null 2>&1; then
     fingerprint="$(deps_lockfile_fingerprint "$REPO_DIR" 2>/dev/null || true)"
-  fi
-  if [[ -z "$fingerprint" ]]; then
-    if command -v sha256sum >/dev/null 2>&1; then
-      fingerprint="$(sha256sum "$REPO_DIR/package-lock.json" 2>/dev/null | awk '{print $1}')"
-    elif command -v shasum >/dev/null 2>&1; then
-      fingerprint="$(shasum -a 256 "$REPO_DIR/package-lock.json" 2>/dev/null | awk '{print $1}')"
-    fi
   fi
   [[ -n "$fingerprint" ]] || fingerprint="unknown"
 
