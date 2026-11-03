@@ -13,6 +13,7 @@ async function main(): Promise<void> {
   const model = requireArg(args, 'model');
   const abortReason = requireArg(args, 'abort-reason');
   const repoDir = args['repo-dir'];
+  const featureDir = args['feature-dir'];
 
   if (challengeRole !== 'primary' && challengeRole !== 'challenger') {
     throw new Error(`Invalid challenge role: ${challengeRole}`);
@@ -29,6 +30,8 @@ async function main(): Promise<void> {
     nextAction: args['next-action'],
     // HOK-3362: the stage's typed budget fact; the fault class derives from it.
     budgetExhausted: args['budget-exhausted-json'] || undefined,
+    // HOK-3380: resolve the fact's sessionStream transcript pointer against the feature dir.
+    featureDir,
   }, repoDir);
 
   await recordSelectionOutcome({

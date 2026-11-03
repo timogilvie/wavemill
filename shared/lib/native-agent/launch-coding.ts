@@ -108,6 +108,7 @@ import {
   finalProviderErrorMessage,
   type BudgetExhaustedFact,
 } from './budget-exhaustion.ts';
+import { resolveNativeStageTimeSplit, type NativeStageTimeSplit } from './stage-time-split.ts';
 import {
   buildBudgetExhaustionEnvelope,
   getStageFailureEnvelopePath,
@@ -153,8 +154,8 @@ const CODING_LOOP_BUDGET: LoopBudget = Object.freeze({
 export class NativeBudgetExhaustedError extends Error {
   readonly fact: BudgetExhaustedFact;
 
-  constructor(fact: BudgetExhaustedFact, handoffPath: string) {
-    super(`${describeBudgetExhaustion('coding', fact)}; structured handoff: ${handoffPath}`);
+  constructor(fact: BudgetExhaustedFact, handoffPath: string, timeSplit?: NativeStageTimeSplit | null) {
+    super(`${describeBudgetExhaustion('coding', fact, timeSplit)}; structured handoff: ${handoffPath}`);
     this.name = 'NativeBudgetExhaustedError';
     this.fact = fact;
   }
@@ -678,6 +679,8 @@ function buildBudgetExhaustedHandoffInput(input: {
   fact: BudgetExhaustedFact;
   tracker: MutationFailureTracker;
   recoveryAttempted: boolean;
+  /** HOK-3380 D5: leads `suggestedAction`; `lastToolError` is context only. */
+  description: string;
 }): Parameters<typeof writeCodingFailureHandoff>[1] {
   return {
     stage: 'coding',
@@ -686,7 +689,7 @@ function buildBudgetExhaustedHandoffInput(input: {
     mutationFailures: input.tracker.count,
     lastToolError: input.tracker.last,
     recoveryAttempted: input.recoveryAttempted,
-    suggestedAction: 'Relaunch native coding under the stage-failure-coding bounded retry; '
+    suggestedAction: `${input.description} Relaunch native coding under the stage-failure-coding bounded retry; `
       + 'the budget fact and progress evidence are preserved on this handoff.',
     createdAt: new Date().toISOString(),
     schemaVersion: CODING_FAILURE_HANDOFF_SCHEMA_VERSION,
@@ -994,10 +997,11 @@ async function inspectCompletion(input: {
   }));
   const handoffRelativePath = relative(process.cwd(), getCodingFailureHandoffPath(input.featureDir));
   const last = input.mutationFailureTracker.last;
-  const lastErrorText = last ? `; last tool error (${last.tool}/${last.error}): ${last.message}` : '';
+  // HOK-3380 D5: lead with the stop reason; a (possibly stale) last tool error is context only.
+  const lastErrorText = last ? `; context: last tool error (${last.tool}/${last.error}): ${last.message}` : '';
   throw new Error(
-    'Native coding completed without .coding-complete or .coding-blocked-completion.json'
-    + `${lastErrorText}; structured handoff: ${handoffRelativePath}`,
+    `Native coding stopped (${input.stopReason}) without .coding-complete or .coding-blocked-completion.json`
+    + `; structured handoff: ${handoffRelativePath}${lastErrorText}`,
   );
 }
 
@@ -1512,13 +1516,22 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     const assertLoopOutcome = async (loopResult: LoopResult): Promise<void> => {
       const fact = hasCompletionArtifact(featureDir)
         ? null
-        : budgetExhaustionFromLoop(loopResult, codingBudget, { mutationFailures: mutationFailureTracker.count });
+        : budgetExhaustionFromLoop(loopResult, codingBudget, {
+          mutationFailures: mutationFailureTracker.count,
+          transcriptPath,
+        });
       if (fact) {
+        // HOK-3380: resolve the split once; the fault class, envelope detail,
+        // handoff suggestedAction and stage-result notes all read this value,
+        // never a stored providerWaitMs.
+        const timeSplit = resolveNativeStageTimeSplit(fact, { featureDir, repoDir: options.repoDir });
+        const description = describeBudgetExhaustion('coding', fact, timeSplit);
         writeCodingFailureHandoff(featureDir, buildBudgetExhaustedHandoffInput({
           result: loopResult,
           fact,
           tracker: mutationFailureTracker,
           recoveryAttempted,
+          description,
         }));
         try {
           writeStageFailureEnvelope(featureDir, buildBudgetExhaustionEnvelope({
@@ -1529,6 +1542,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
             requestedModel: requestedModelName,
             agent: `native-${String(model.provider)}`,
             transcriptPath,
+            timeSplit,
             payloadCaptureDir: snapshotPayloadsForFailure(
               featureDir,
               'coding',
@@ -1546,7 +1560,6 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
           providerExpectation: providerExpectationSnapshot,
           stageCompleted: false,
         });
-        const description = describeBudgetExhaustion('coding', fact);
         await updateStageResult(featureDir, 'coding', {
           status: 'failed',
           finishedAt: new Date().toISOString(),
@@ -1565,6 +1578,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         throw new NativeBudgetExhaustedError(
           fact,
           relative(process.cwd(), getCodingFailureHandoffPath(featureDir)),
+          timeSplit,
         );
       }
       const providerError = finalProviderErrorMessage(loopResult);

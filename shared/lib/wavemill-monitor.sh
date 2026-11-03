@@ -1099,7 +1099,8 @@ challenge_selection_health_record_review_timeout() {
       --stage review \
       --model "$model" \
       --failure-kind native-stage-timeout \
-      ${budget_json:+--budget-exhausted-json "$budget_json"}
+      ${budget_json:+--budget-exhausted-json "$budget_json"} \
+      ${feature_dir:+--feature-dir "$feature_dir"}
   ) >/dev/null 2>&1 || true
 }
 
@@ -1275,7 +1276,8 @@ challenge_abort_pair() {
           --abort-reason "$reason" \
           --detail "$detail" \
           --next-action "$next_action" \
-          ${budget_json:+--budget-exhausted-json "$budget_json"}
+          ${budget_json:+--budget-exhausted-json "$budget_json"} \
+          --feature-dir "$feature_dir"
       ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
     fi
   fi

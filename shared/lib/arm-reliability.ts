@@ -10,6 +10,7 @@ import {
   type ChallengeArmSide,
 } from './arm-failure-taxonomy.ts';
 import { parseBudgetExhaustedFact, type BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
+import { resolveNativeStageTimeSplit, type NativeStageTimeSplit } from './native-agent/stage-time-split.ts';
 
 const DEFAULT_EVALS_DIR = '.wavemill/evals';
 const RELIABILITY_RECORDS_FILENAME = 'reliability-records.jsonl';
@@ -35,6 +36,8 @@ export interface ArmReliabilityRecord {
    * `faultClass` is derived from it, never the other way round.
    */
   budgetExhausted?: BudgetExhaustedFact;
+  /** HOK-3380: the transcript time split resolved from `budgetExhausted.sessionStream`, when found. */
+  timeSplit?: NativeStageTimeSplit;
   source: 'challenge_abort_pair';
 }
 
@@ -49,6 +52,8 @@ export interface BuildArmReliabilityRecordInput {
   nextAction?: string;
   /** HOK-3362: the stage's budget fact (object or JSON); invalid input is dropped. */
   budgetExhausted?: BudgetExhaustedFact | string | null;
+  /** HOK-3380: directory to resolve the fact's `sessionStream` transcript pointer against. */
+  featureDir?: string;
   timestamp?: string;
   id?: string;
 }
@@ -64,7 +69,8 @@ export interface BuildArmReliabilityRecordInput {
 export function buildArmReliabilityRecord(input: BuildArmReliabilityRecordInput): ArmReliabilityRecord {
   const failureKind = parseAbortFailureKind(input.abortReason);
   const budgetExhausted = parseBudgetExhaustedFact(input.budgetExhausted ?? null);
-  const faultClass = classifyArmFault({ failureKind, detail: input.detail, budgetExhausted });
+  const timeSplit = resolveNativeStageTimeSplit(budgetExhausted, { featureDir: input.featureDir }) ?? undefined;
+  const faultClass = classifyArmFault({ failureKind, detail: input.detail, budgetExhausted, timeSplit });
   return {
     schemaVersion: '1.0.0',
     id: input.id ?? randomUUID(),
@@ -82,6 +88,7 @@ export function buildArmReliabilityRecord(input: BuildArmReliabilityRecordInput)
     ...(input.detail ? { detail: input.detail } : {}),
     ...(input.nextAction ? { nextAction: input.nextAction } : {}),
     ...(budgetExhausted ? { budgetExhausted } : {}),
+    ...(timeSplit ? { timeSplit } : {}),
     source: 'challenge_abort_pair',
   };
 }

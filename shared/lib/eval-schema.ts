@@ -226,6 +226,12 @@
  *   `BudgetExhaustedFact` and the fault class derived from it.
  *   `PlanningTerminalReason` gains `token_limit` / `cost_limit`. Additive;
  *   legacy records still validate.
+ * - **1.58.0**: HOK-3380 — `budgetExhaustions[].timeSplit`: the
+ *   `nativeStageTimeSplit/v1` derivation resolved from the fact's
+ *   `sessionStream` pointer, so Hokusai sees model time separately from
+ *   harness tool time. `BudgetExhaustedFact.progress.providerWaitMs` is
+ *   legacy (never written, ignored on read); `BudgetExhaustedFact` gains
+ *   optional `sessionStream`. Additive; legacy records still validate.
  *
  * @module eval-schema
  */
@@ -247,11 +253,13 @@ import type { ChallengeStage } from './challenge-mode.ts';
 import type { TaskCostSummaryV1 } from './sdk-task-cost/contract.ts';
 import type { StageRoutes } from './route-override-record.ts';
 import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
+import type { NativeStageTimeSplit } from './native-agent/stage-time-split.ts';
 import type { ArmFaultClass } from './arm-failure-taxonomy.ts';
 
 /**
  * One native stage attempt that ran out of budget (HOK-3362). `faultClass` is
- * derived from `fact` by `classifyArmFault` when the record is built.
+ * derived from `fact` (and, since 1.58.0, `timeSplit`) by `classifyArmFault`
+ * when the record is built.
  *
  * @since 1.57.0
  */
@@ -263,6 +271,14 @@ export interface EvalBudgetExhaustion {
   model?: string | null;
   fact: BudgetExhaustedFact;
   faultClass: ArmFaultClass;
+  /**
+   * The transcript time split resolved from `fact.sessionStream` (HOK-3380).
+   * Absent when no stream pointer was recorded or the transcript could not be
+   * found — the fault class then falls back to the "missing input" rules.
+   *
+   * @since 1.58.0
+   */
+  timeSplit?: NativeStageTimeSplit | null;
 }
 
 /**
@@ -270,7 +286,7 @@ export interface EvalBudgetExhaustion {
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.57.0';
+export const SCHEMA_VERSION = '1.58.0';
 
 /**
  * Machine-readable exploration source for an eval row.

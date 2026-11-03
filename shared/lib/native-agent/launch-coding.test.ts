@@ -810,7 +810,9 @@ describe('launchNativeCoding', () => {
         repoDir,
         loopModelOverride: model,
       }),
-      /without \.coding-complete or \.coding-blocked-completion\.json; last tool error \(apply_patch\/invalid_patch\): Patch payload did not match the NativePatch contract/,
+      // HOK-3380 D5: the stop reason and structured-handoff path now sit
+      // between "...json" and "context: last tool error (...)".
+      /without \.coding-complete or \.coding-blocked-completion\.json[\s\S]*context: last tool error \(apply_patch\/invalid_patch\): Patch payload did not match the NativePatch contract/,
     );
 
     const handoff = await readCodingFailureHandoff(getCodingFailureHandoffPath(featureDir));
@@ -1133,8 +1135,15 @@ describe('launchNativeCoding budget exhaustion (HOK-3362, HOK-3329 replay)', () 
     assert.equal(stageResult?.failureReason, 'budget_exhausted:wall_clock');
     assert.deepEqual(stageResult?.budgetExhausted, fact);
     assert.doesNotMatch(readFileSync(getCodingFailureHandoffPath(featureDir), 'utf-8'), /provider_error/);
-    // The agent kept making progress with no provider errors: model did not finish within budget.
-    assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact }), 'model-fault');
+    assert.ok(fact.sessionStream, 'HOK-3380: the fact carries a transcript pointer instead of a stored providerWaitMs');
+    // HOK-3380 rule 5: a wall-clock fact classified with no resolved time
+    // split can no longer tell harness tool time apart from model time, so a
+    // bare classifyArmFault call (no timeSplit) is unknown-fault — the
+    // "missing input gives unknown" rule. A caller that resolves the real
+    // split (as launchNativeCoding itself does for its summaries, and as
+    // buildArmReliabilityRecord / buildBudgetExhaustions do downstream) gets
+    // the correctly attributed class instead.
+    assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact }), 'unknown-fault');
   });
 
   // protects: a coding turn_limit recorded as no_completion_artifact (HOK-3329 attempts 1 and 3)

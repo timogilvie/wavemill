@@ -518,6 +518,10 @@ describe('native review', () => {
         totalOutputTokens: 10,
         totalCostUsd: 0,
         wallClockMs: 300_000,
+        // HOK-3380: budgetExhaustionFromLoop derives the sessionStream
+        // pointer's window from startedAtMs + wallClockMs; a mock without it
+        // produces NaN, which fails the envelope's strict validation.
+        startedAtMs: Date.now() - 300_000,
       };
     });
 

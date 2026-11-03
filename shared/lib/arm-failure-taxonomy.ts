@@ -1,4 +1,5 @@
 import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
+import type { NativeStageTimeSplit } from './native-agent/stage-time-split.ts';
 import { canonicalFailureKind } from './failure-policy.ts';
 
 /**
@@ -97,46 +98,87 @@ export interface ChallengeArmFailure {
 }
 
 /**
- * Wait share at or above which a budget run that also hit provider errors is
- * charged to the provider: most of its budget went to a failing upstream.
+ * Share thresholds for the budget-exhaustion fault rule (HOK-3362, extended
+ * HOK-3380). Each share is `bucket / split.totalMs` (or, for the two
+ * provider-wait rules before a split exists, `providerWaitMs / wallClockMs`).
  */
-export const PROVIDER_DOMINATED_WAIT_SHARE = 0.5;
+export const BUDGET_FAULT_SHARE_THRESHOLDS = Object.freeze({
+  /** Wait share at or above which a budget run that also hit provider errors is charged to the provider. */
+  providerDominatedWait: 0.5,
+  /** Wait share at or above which a wall-clock run that never got past its first turn is charged to the provider. */
+  stalledRequestWait: 0.9,
+  /** Harness-tool-time share of a wall-clock stop at or above which the run is charged to the harness, not the model. */
+  harnessDominatedTool: 0.5,
+  /** Unknown-time share of a wall-clock stop at or above which whose time it was cannot be told. */
+  unknownDominated: 0.5,
+});
+
+/** @deprecated use {@link BUDGET_FAULT_SHARE_THRESHOLDS}.providerDominatedWait */
+export const PROVIDER_DOMINATED_WAIT_SHARE = BUDGET_FAULT_SHARE_THRESHOLDS.providerDominatedWait;
+/** @deprecated use {@link BUDGET_FAULT_SHARE_THRESHOLDS}.stalledRequestWait */
+export const STALLED_REQUEST_WAIT_SHARE = BUDGET_FAULT_SHARE_THRESHOLDS.stalledRequestWait;
 
 /**
- * Wait share at or above which a wall-clock run that never got past its first
- * turn is charged to the provider: it was stuck on one upstream request.
- */
-export const STALLED_REQUEST_WAIT_SHARE = 0.9;
-
-/**
- * The one budget-exhaustion fault rule (HOK-3362). The class is derived from
- * the fact's progress evidence, never stored as primary (HOK-3338 rule 3), so
- * every stage — planning, coding, review — gets the same answer for the same
- * evidence:
+ * The one budget-exhaustion fault rule (HOK-3362, extended HOK-3380). The
+ * class is derived from the fact's progress evidence and — for a wall-clock
+ * stop — the {@link NativeStageTimeSplit} derived from the session
+ * transcript, never stored as primary (HOK-3338 rule 3), so every stage —
+ * planning, coding, review — gets the same answer for the same evidence:
  *
- * | # | Evidence                                                              | Class          |
- * |---|-----------------------------------------------------------------------|----------------|
- * | 1 | provider-error retries > 0 and provider wait ≥ 50% of the wall clock  | provider-fault |
- * | 2 | wall-clock budget, ≤ 1 turn, provider wait ≥ 90% of the wall clock    | provider-fault |
- * | 3 | ≥ 1 turn and ≥ 1 tool call (the agent kept making progress)          | model-fault    |
- * | 4 | no fact (historical rows) or no progress                              | unknown-fault  |
+ * | # | Evidence                                                                    | Class          |
+ * |---|------------------------------------------------------------------------------|----------------|
+ * | 1 | no fact / no progress                                                        | unknown-fault  |
+ * | 2 | split, retries > 0 and provider share ≥ 0.5                                  | provider-fault |
+ * | 3 | split, wall_clock, ≤ 1 turn and provider share ≥ 0.9                         | provider-fault |
+ * | 4 | split, wall_clock and harness-tool share ≥ 0.5                               | harness-fault  |
+ * | 5 | wall_clock and (no split, or unknown share ≥ 0.5)                            | unknown-fault  |
+ * | 6 | ≥ 1 turn and ≥ 1 tool call (the agent kept making progress)                  | model-fault    |
+ * | 7 | otherwise                                                                     | unknown-fault  |
  *
- * Generation time counts as provider wait (the loop cannot separate it), which
- * is why rule 1 also requires provider errors: a slow but healthy model that
- * runs out of budget is the model not finishing in time, not a provider fault.
+ * Rules 4–5 (the time-split rules) apply only to `wall_clock`: tool execution
+ * does not consume a turn, tool-call, token or cost budget, so those kinds
+ * keep the progress rule (6) whatever the split says.
+ *
+ * Rule 5 is a deliberate behaviour change (HOK-3380): a historical wall-clock
+ * fact with no stream pointer moves from `model-fault` to `unknown-fault` —
+ * the "missing input gives unknown" rule, and exactly the rows HOK-3374
+ * showed were mis-charged (harness tool time charged to the model because
+ * nothing distinguished it from "the model kept going"). Count budgets
+ * (turn/tool_call/token/cost) with no split keep `model-fault` via rule 6.
+ *
+ * Generation time counts as model time (the split cannot separate it from
+ * true provider latency, same as before HOK-3380) — the provider-wait rules
+ * (2–3) fire only on a request that actually failed or is still in flight.
  */
-export function deriveBudgetExhaustionFaultClass(fact: BudgetExhaustedFact | null | undefined): ArmFaultClass {
+export function deriveBudgetExhaustionFaultClass(
+  fact: BudgetExhaustedFact | null | undefined,
+  split?: NativeStageTimeSplit | null,
+): ArmFaultClass {
   if (!fact?.progress) return 'unknown-fault';
   const progress = fact.progress;
-  const wallClockMs = progress.wallClockMs > 0 ? progress.wallClockMs : 0;
-  const waitShare = wallClockMs > 0 && typeof progress.providerWaitMs === 'number'
-    ? progress.providerWaitMs / wallClockMs
-    : 0;
-  if ((progress.providerErrorRetries ?? 0) > 0 && waitShare >= PROVIDER_DOMINATED_WAIT_SHARE) {
-    return 'provider-fault';
+
+  if (split && split.totalMs > 0) {
+    // allow-failure-policy: the one fault rule applying BUDGET_FAULT_SHARE_THRESHOLDS to a bucket nativeStageTimeSplit already derived — not a private re-derivation of the split (HOK-3380)
+    const providerShare = split.providerWaitMs / split.totalMs;
+    if ((progress.providerErrorRetries ?? 0) > 0 && providerShare >= BUDGET_FAULT_SHARE_THRESHOLDS.providerDominatedWait) {
+      return 'provider-fault';
+    }
+    if (fact.kind === 'wall_clock' && progress.turnsCompleted <= 1 && providerShare >= BUDGET_FAULT_SHARE_THRESHOLDS.stalledRequestWait) {
+      return 'provider-fault';
+    }
+    if (fact.kind === 'wall_clock') {
+      // allow-failure-policy: same as providerShare above — threshold share over an already-derived split bucket (HOK-3380)
+      const harnessShare = split.harnessToolMs / split.totalMs;
+      if (harnessShare >= BUDGET_FAULT_SHARE_THRESHOLDS.harnessDominatedTool) {
+        return 'harness-fault';
+      }
+    }
   }
-  if (fact.kind === 'wall_clock' && progress.turnsCompleted <= 1 && waitShare >= STALLED_REQUEST_WAIT_SHARE) {
-    return 'provider-fault';
+  if (fact.kind === 'wall_clock') {
+    const unknownShare = split && split.totalMs > 0 ? split.unknownMs / split.totalMs : 1;
+    if (!split || unknownShare >= BUDGET_FAULT_SHARE_THRESHOLDS.unknownDominated) {
+      return 'unknown-fault';
+    }
   }
   if (progress.turnsCompleted >= 1 && progress.toolCallsExecuted >= 1) {
     return 'model-fault';
@@ -158,6 +200,8 @@ export function classifyArmFault(input: {
   detail?: string | null;
   /** HOK-3362: the typed fact a budget-exhaustion failure carries. */
   budgetExhausted?: BudgetExhaustedFact | null;
+  /** HOK-3380: the derived transcript time split for a budget-exhaustion failure. */
+  timeSplit?: NativeStageTimeSplit | null;
 }): ArmFaultClass {
   const failureKind = input.failureKind ?? '';
   const detail = (input.detail ?? '').toLowerCase();
@@ -166,7 +210,7 @@ export function classifyArmFault(input: {
   // (`native-review-timeout`, `planning-turn-limit`) canonicalise to it, and
   // the class is derived from the fact — a row without one stays unattributed.
   if (canonicalFailureKind(failureKind) === 'native-stage-timeout') {
-    return deriveBudgetExhaustionFaultClass(input.budgetExhausted);
+    return deriveBudgetExhaustionFaultClass(input.budgetExhausted, input.timeSplit);
   }
 
   // HOK-3129: the shell classifier emits `planning-artifact-invalid:<reason>`

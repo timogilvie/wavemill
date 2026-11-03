@@ -121,6 +121,42 @@ describe('failure-policy guard — one budget-exhaustion outcome (HOK-3362)', ()
   });
 });
 
+describe('failure-policy guard — one native stage time share (HOK-3380)', () => {
+  // protects: a second site re-deriving "whose time was this" with its own share arithmetic
+  it('flags a private time-share division or accumulation', () => {
+    assert.deepEqual(patternsOf('a.ts', 'const share = providerWaitMs / totalMs;\n'), ['private-stage-time-share']);
+    assert.deepEqual(patternsOf('a.ts', 'const share = harnessToolMs / split.totalMs;\n'), ['private-stage-time-share']);
+    assert.deepEqual(patternsOf('a.ts', 'const share = modelMs / wallClockMs;\n'), ['private-stage-time-share']);
+    assert.deepEqual(patternsOf('a.ts', 'const toolShare = toolDurationMs / fact.progress.wallClockMs;\n'), ['private-stage-time-share']);
+    assert.deepEqual(patternsOf('a.ts', 'providerWaitMs += Math.max(0, Date.now() - start);\n'), ['private-stage-time-share']);
+  });
+
+  it('leaves the split derivation and unrelated division alone', () => {
+    const source = [
+      'const split = nativeStageTimeSplit(events, window);',
+      'const totalMs = window.toMs - window.fromMs;',
+      'const average = totalCostUsd / turnsCompleted;',
+      '',
+    ].join('\n');
+    assert.deepEqual(patternsOf('a.ts', source), []);
+  });
+
+  // protects: a second site re-pairing tool_started/tool_result by subtracting raw timestamps
+  it('flags private tool-event timestamp arithmetic', () => {
+    assert.deepEqual(patternsOf('a.ts', 'const duration = toolResult.timestamp - toolStarted.timestamp;\n'), ['private-tool-duration']);
+    assert.deepEqual(patternsOf('a.ts', 'const ms = event.timestamp - toolStarted.timestamp;\n'), ['private-tool-duration']);
+  });
+
+  it('leaves unrelated elapsed-time arithmetic alone', () => {
+    assert.deepEqual(patternsOf('a.ts', 'const elapsedMs = Date.now() - renderStartedAt;\n'), []);
+  });
+
+  // protects: the invariant module being scanned by its own guard
+  it('treats stage-time-split.ts as invariant source', () => {
+    assert.ok(FAILURE_POLICY_GUARD.invariantPaths.includes('shared/lib/native-agent/stage-time-split.ts'));
+  });
+});
+
 describe('failure-policy guard — one escalation decision (HOK-3360)', () => {
   // protects: a raw .needs-attention writer outside the escalation step
   it('flags write_ready_attention_file / writeReadyAttention / _operator_attention_write', () => {

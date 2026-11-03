@@ -14,6 +14,7 @@ import {
 import type { ChallengeStage } from '../shared/lib/challenge-scheduler.ts';
 import { classifyArmFault, type ArmFaultClass } from '../shared/lib/arm-failure-taxonomy.ts';
 import { parseBudgetExhaustedFact } from '../shared/lib/native-agent/budget-exhaustion.ts';
+import { resolveNativeStageTimeSplit } from '../shared/lib/native-agent/stage-time-split.ts';
 
 runTool({
   name: 'challenge-selection-health',
@@ -28,6 +29,7 @@ runTool({
     'failure-kind': { type: 'string', description: 'Typed terminal failure kind' },
     'fault-class': { type: 'string', description: 'Typed fault class (derived from --failure-kind/--budget-exhausted-json when omitted)' },
     'budget-exhausted-json': { type: 'string', description: 'Typed budget-exhaustion fact (HOK-3362)' },
+    'feature-dir': { type: 'string', description: 'Feature dir to resolve the budget fact sessionStream pointer against (HOK-3380)' },
     'terminal-status': { type: 'string', description: 'Explicit terminal attempt status (success|failure|forfeit|invalid)' },
     success: { type: 'boolean', description: 'Record a successful terminal outcome' },
     json: { type: 'boolean', description: 'Emit JSON status' },
@@ -107,13 +109,19 @@ function resolveFaultClass(args: {
   'fault-class'?: string;
   'failure-kind'?: string;
   'budget-exhausted-json'?: string;
+  'feature-dir'?: string;
   success?: boolean;
 }): ArmFaultClass | undefined {
   if (args['fault-class']) return args['fault-class'] as ArmFaultClass;
   if (args.success === true || !args['failure-kind']) return undefined;
+  const budgetExhausted = parseBudgetExhaustedFact(args['budget-exhausted-json'] ?? null);
+  // HOK-3380: resolve the fact's sessionStream transcript pointer against the
+  // feature dir so the fault class reads the derived split, not just the fact.
+  const timeSplit = resolveNativeStageTimeSplit(budgetExhausted, { featureDir: args['feature-dir'] });
   return classifyArmFault({
     failureKind: args['failure-kind'],
-    budgetExhausted: parseBudgetExhaustedFact(args['budget-exhausted-json'] ?? null),
+    budgetExhausted,
+    timeSplit,
   });
 }
 
