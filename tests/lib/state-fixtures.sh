@@ -84,6 +84,9 @@ fixture_real_state_accessors() {
   local common="$STATE_FIXTURES_REPO_DIR/shared/lib/wavemill-common.sh"
   local monitor="$STATE_FIXTURES_REPO_DIR/shared/lib/wavemill-monitor.sh"
   local spec file name body
+  # state_mutate delegates mutual exclusion to the shared primitive. Fixture
+  # extraction evaluates only selected functions, so source the dependency.
+  source "$STATE_FIXTURES_REPO_DIR/shared/lib/state-lock.sh"
   for spec in \
     "$common:_wavemill_validate_task_record_write" \
     "$common:state_mutate" \

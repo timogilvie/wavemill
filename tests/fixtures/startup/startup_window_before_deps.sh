@@ -47,6 +47,8 @@ setup_env() {
   # HOK-3360: wavemill-common.sh unconditionally sources operator-escalation.sh.
   cp "$REPO_DIR/shared/lib/operator-escalation.sh"     "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/bounded-retry.sh"           "$repo_dir/shared/lib/"
+  cp "$REPO_DIR/shared/lib/state-lock.sh"              "$repo_dir/shared/lib/"
+  cp "$REPO_DIR/shared/lib/process-identity.sh"        "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/task-progress.sh"           "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/challenge-arms.sh"          "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/task-identity.sh"           "$repo_dir/shared/lib/"

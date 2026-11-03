@@ -8,6 +8,9 @@ source "$1"
 # Source marker lifecycle helpers
 WAVEMILL_LIB_DIR="${WAVEMILL_LIB_DIR:-${LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
 source "$WAVEMILL_LIB_DIR/transient-marker.sh"
+# The monitor is copied to /tmp and runs as its own shell, so import the one
+# state-lock implementation rather than assuming wavemill-common stayed sourced.
+source "$WAVEMILL_LIB_DIR/state-lock.sh"
 
 if ! declare -F effective_task_base_branch >/dev/null 2>&1; then
 effective_task_base_branch() {
