@@ -1,0 +1,11 @@
+{"eventId":"p1-enq1","eventType":"enqueued","timestamp":"2026-01-05T00:00:00.000Z","prNumber":400,"headSha":"bbb111"}
+{"eventId":"p1-enq2","eventType":"enqueued","timestamp":"2026-01-05T00:00:30.000Z","prNumber":400,"headSha":"bbb111"}
+{"eventId":"p1-enq3","eventType":"enqueued","timestamp":"2026-01-05T00:01:00.000Z","prNumber":400,"headSha":"bbb111"}
+{"eventId":"p1-cp1","eventType":"candidate_prepared","timestamp":"2026-01-05T00:01:30.000Z","prNumber":400,"headSha":"bbb111"}
+{"eventId":"p1-ej1","eventType":"ejected","timestamp":"2026-01-05T00:05:00.000Z","prNumber":400,"headSha":"bbb111","reason":"tend-ineligible"}
+{"eventId":"p1-ej2","eventType":"ejected","timestamp":"2026-01-05T00:05:30.000Z","prNumber":400,"headSha":"bbb111","reason":"tend-ineligible"}
+{"eventId":"p1-enq4","eventType":"enqueued","timestamp":"2026-01-05T00:10:00.000Z","prNumber":400,"headSha":"bbb111"}
+{"eventId":"p1-enq5","eventType":"enqueued","timestamp":"2026-01-05T00:10:30.000Z","prNumber":400,"headSha":"bbb111"}
+{"eventId":"p1-cp2","eventType":"candidate_prepared","timestamp":"2026-01-05T00:11:00.000Z","prNumber":400,"headSha":"bbb111"}
+{"eventId":"p1-chk","eventType":"check_run_completed","timestamp":"2026-01-05T00:15:00.000Z","prNumber":400,"headSha":"bbb111","attempt":1}
+{"eventId":"p1-mrg","eventType":"merged","timestamp":"2026-01-05T00:16:00.000Z","prNumber":400,"headSha":"bbb111"}

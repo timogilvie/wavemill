@@ -1,0 +1,7 @@
+{"eventId":"e1-enq1","eventType":"enqueued","timestamp":"2026-01-03T00:00:00.000Z","prNumber":300,"headSha":"aaa111"}
+{"eventId":"e1-cp1","eventType":"candidate_prepared","timestamp":"2026-01-03T00:01:00.000Z","prNumber":300,"headSha":"aaa111"}
+{"eventId":"e1-ej","eventType":"ejected","timestamp":"2026-01-03T00:04:00.000Z","prNumber":300,"headSha":"aaa111","reason":"tend-ineligible"}
+{"eventId":"e1-enq2","eventType":"enqueued","timestamp":"2026-01-03T00:09:00.000Z","prNumber":300,"headSha":"aaa111"}
+{"eventId":"e1-cp2","eventType":"candidate_prepared","timestamp":"2026-01-03T00:10:00.000Z","prNumber":300,"headSha":"aaa111"}
+{"eventId":"e1-chk","eventType":"check_run_completed","timestamp":"2026-01-03T00:15:00.000Z","prNumber":300,"headSha":"aaa111","attempt":1}
+{"eventId":"e1-mrg","eventType":"merged","timestamp":"2026-01-03T00:16:00.000Z","prNumber":300,"headSha":"aaa111"}

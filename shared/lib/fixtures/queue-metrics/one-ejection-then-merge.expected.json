@@ -1,0 +1,73 @@
+{
+  "version": "queue-metrics/v1",
+  "eventCount": 7,
+  "queueWait": {
+    "cycles": [
+      {
+        "startEventId": "e1-enq1",
+        "startTimestamp": "2026-01-03T00:00:00.000Z",
+        "endEventId": "e1-cp1",
+        "endTimestamp": "2026-01-03T00:01:00.000Z",
+        "seconds": 60
+      },
+      {
+        "startEventId": "e1-enq2",
+        "startTimestamp": "2026-01-03T00:09:00.000Z",
+        "endEventId": "e1-cp2",
+        "endTimestamp": "2026-01-03T00:10:00.000Z",
+        "seconds": 60
+      }
+    ],
+    "totalSeconds": 120
+  },
+  "ciRun": {
+    "attempts": [
+      {
+        "startEventId": "e1-cp1",
+        "startTimestamp": "2026-01-03T00:01:00.000Z",
+        "lastCheckEventId": null,
+        "lastCheckTimestamp": null,
+        "seconds": "unknown",
+        "checkRunCount": 0,
+        "closedBy": "ejected"
+      },
+      {
+        "startEventId": "e1-cp2",
+        "startTimestamp": "2026-01-03T00:10:00.000Z",
+        "lastCheckEventId": "e1-chk",
+        "lastCheckTimestamp": "2026-01-03T00:15:00.000Z",
+        "seconds": 300,
+        "checkRunCount": 1,
+        "closedBy": "merged"
+      }
+    ],
+    "totalSeconds": "unknown"
+  },
+  "repairLoop": {
+    "cycles": [
+      {
+        "startEventId": "e1-ej",
+        "startEventType": "ejected",
+        "startTimestamp": "2026-01-03T00:04:00.000Z",
+        "endEventId": "e1-enq2",
+        "endTimestamp": "2026-01-03T00:09:00.000Z",
+        "seconds": 300,
+        "reruns": 0
+      }
+    ],
+    "totalSeconds": 300
+  },
+  "timeToLand": {
+    "startEventId": "e1-enq1",
+    "startTimestamp": "2026-01-03T00:00:00.000Z",
+    "endEventId": "e1-mrg",
+    "endTimestamp": "2026-01-03T00:16:00.000Z",
+    "seconds": 960
+  },
+  "attemptsToLand": 2,
+  "ejections": 1,
+  "reruns": 0,
+  "ciComputeMinutes": "unknown",
+  "repairTokens": "unknown",
+  "repairCostUsd": "unknown"
+}
