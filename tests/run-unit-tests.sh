@@ -330,6 +330,7 @@ TESTS=(
   shared/lib/stage-launchability-guard.test.ts
   shared/lib/provider-identity-guard.test.ts
   shared/lib/model-equivalence-guard.test.ts
+  shared/lib/install-verdict-guard.test.ts
   shared/lib/side-effect-ledger-guard.test.ts
   shared/lib/failure-policy-guard.test.ts
   shared/lib/ready-failure-policy-guard.test.ts

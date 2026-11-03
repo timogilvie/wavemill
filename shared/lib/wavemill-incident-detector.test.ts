@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 
 import {
   DependencyHealthDetector,
+  DepsDriftDetector,
   detectIncidentsForRepo,
   JobFailureDetector,
   PlanningFailureDetector,
@@ -1319,6 +1320,88 @@ test('stalled lifecycle correlator is deterministic for identical snapshots', ()
     assert.deepEqual(first.map((incident) => incident.rootCauseClass), ['review_context_overflow_stale_base', 'provider_quota_exhaustion_blocking_review']);
     assert.deepEqual(first, second);
     assert.deepEqual(first.map((incident) => store.computeFingerprint(incident)), second.map((incident) => store.computeFingerprint(incident)));
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// HOK-3315: stable condition identity for DepsDriftDetector — repeated
+// monitor-tick polls of an unchanged mismatch must land on one occurrence.
+function writeDriftedNpmFixture(lockVersion: string, installedVersion: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'incident-deps-drift-'));
+  mkdirSync(join(dir, 'node_modules', 'foo'), { recursive: true });
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({
+    name: 'demo',
+    version: '1.0.0',
+    dependencies: { foo: `^${lockVersion}` },
+  }));
+  writeFileSync(join(dir, 'package-lock.json'), JSON.stringify({
+    name: 'demo',
+    version: '1.0.0',
+    lockfileVersion: 3,
+    packages: {
+      '': { dependencies: { foo: `^${lockVersion}` } },
+      'node_modules/foo': { version: lockVersion },
+    },
+  }));
+  writeFileSync(join(dir, 'node_modules', '.package-lock.json'), JSON.stringify({
+    name: 'demo',
+    version: '1.0.0',
+    lockfileVersion: 3,
+    packages: {
+      '': { dependencies: { foo: `^${installedVersion}` } },
+      'node_modules/foo': { version: installedVersion },
+    },
+  }));
+  writeFileSync(join(dir, 'node_modules', 'foo', 'package.json'), JSON.stringify({ name: 'foo', version: installedVersion }));
+  return dir;
+}
+
+test('deps-drift detector computes a stable event identity across repeated polls', () => {
+  const repo = writeDriftedNpmFixture('0.5.0', '0.4.0');
+  try {
+    const context = { repoDir: repo, now };
+    const detector = new DepsDriftDetector();
+    const runs = Array.from({ length: 5 }, () => detector.detectRepo(repo, context));
+    for (const incidents of runs) {
+      assert.equal(incidents.length, 1);
+    }
+    const keys = runs.map((incidents) => incidents[0].evidence[0].key);
+    const timestamps = runs.map((incidents) => incidents[0].evidence[0].timestamp);
+    assert.ok(keys.every((key) => key === keys[0]), 'evidence key must be identical across polls');
+    assert.ok(timestamps.every((ts) => ts === timestamps[0]), 'evidence timestamp (condition identity) must be identical across polls');
+
+    const store = new IncidentStore(join(repo, '.wavemill', 'incidents'));
+    const eventKeys = runs.map((incidents) => store.computeEventKey(incidents[0]));
+    assert.ok(eventKeys.every((k) => k === eventKeys[0]), 'computeEventKey must collapse repeated polls to one occurrence');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('deps-drift detector computes a distinct identity when the mismatch changes', () => {
+  const repoA = writeDriftedNpmFixture('0.5.0', '0.4.0');
+  const repoB = writeDriftedNpmFixture('0.5.0', '0.3.0');
+  try {
+    const context = (repo: string) => ({ repoDir: repo, now });
+    const detector = new DepsDriftDetector();
+    const a = detector.detectRepo(repoA, context(repoA));
+    const b = detector.detectRepo(repoB, context(repoB));
+    assert.equal(a.length, 1);
+    assert.equal(b.length, 1);
+    assert.notEqual(a[0].evidence[0].key, b[0].evidence[0].key);
+    assert.notEqual(a[0].evidence[0].timestamp, b[0].evidence[0].timestamp);
+  } finally {
+    rmSync(repoA, { recursive: true, force: true });
+    rmSync(repoB, { recursive: true, force: true });
+  }
+});
+
+test('deps-drift detector reports no incidents when the install matches the lockfile', () => {
+  const repo = writeDriftedNpmFixture('0.5.0', '0.5.0');
+  try {
+    const incidents = new DepsDriftDetector().detectRepo(repo, { repoDir: repo, now });
+    assert.deepEqual(incidents, []);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
