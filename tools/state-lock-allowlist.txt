@@ -1,1 +1,2 @@
-# State-lock guard allowlist. Keep empty: state lock ownership has one primitive.
+# Existing report refresh uses a kernel flock for a separate output file.
+shared/lib/wavemill-reliability-refresh.sh 1 # report refresh is outside JSON state mutation

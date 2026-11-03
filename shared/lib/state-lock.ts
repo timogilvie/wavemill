@@ -10,13 +10,13 @@ export class StateLockTimeoutError extends Error {
 }
 
 export function isOwnerReclaimable(owner: OwnerRecord | null, thisHost = processHost(), aliveFn = processAlive): boolean {
-  return owner !== null && owner.host === thisHost && !aliveFn(owner.pid, owner.processStartTime);
+  return owner !== null && Number.isSafeInteger(owner.pid) && owner.pid > 0 && owner.processStartTime.length > 0 && owner.host === thisHost && !aliveFn(owner.pid, owner.processStartTime);
 }
 
 function readOwner(lockPath: string): OwnerRecord | null {
   try {
     const parsed = JSON.parse(readFileSync(join(lockPath, 'owner.json'), 'utf8')) as Partial<OwnerRecord>;
-    return typeof parsed.pid === 'number' && typeof parsed.processStartTime === 'string' && typeof parsed.host === 'string' && typeof parsed.acquiredAt === 'string' && typeof parsed.purpose === 'string' ? parsed as OwnerRecord : null;
+    return Number.isSafeInteger(parsed.pid) && (parsed.pid ?? 0) > 0 && typeof parsed.processStartTime === 'string' && parsed.processStartTime.length > 0 && typeof parsed.host === 'string' && parsed.host.length > 0 && typeof parsed.acquiredAt === 'string' && typeof parsed.purpose === 'string' ? parsed as OwnerRecord : null;
   } catch { return null; }
 }
 
@@ -40,8 +40,20 @@ function attemptClaim(lockPath: string, purpose: string): StateLockHandle | null
 function inspectAndReclaim(lockPath: string): boolean {
   if (!existsSync(lockPath)) return false;
   const owner = readOwner(lockPath);
-  if (isOwnerReclaimable(owner)) { rmSync(lockPath, { recursive: true, force: true }); return true; }
-  return false;
+  if (!isOwnerReclaimable(owner)) return false;
+  // Only one waiter may inspect and remove this generation of the lock. A
+  // waiter that read the old owner before a new claimant arrived must not
+  // remove that claimant's directory.
+  const reclaimPath = join(lockPath, '.reclaim');
+  try { mkdirSync(reclaimPath); } catch { return false; }
+  let removed = false;
+  try {
+    const current = readOwner(lockPath);
+    if (!current || JSON.stringify(current) !== JSON.stringify(owner) || !isOwnerReclaimable(current)) return false;
+    rmSync(lockPath, { recursive: true, force: true });
+    removed = true;
+    return true;
+  } finally { if (!removed) rmSync(reclaimPath, { recursive: true, force: true }); }
 }
 
 function sleepSync(ms: number): void { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }

@@ -1,0 +1,10 @@
+{
+  "provenance": "incident repro from .wavemill/incidents/2026-11-02-stale-incident-index-lock/; recorded lock was a 0-byte ownerless file, represented here as a dead-owner lock after migration",
+  "incidentDate": "2026-11-02",
+  "lockPath": "incidents/index.json.lock",
+  "recordedLockMtime": "2026-10-31T16:57:00Z",
+  "operatorUnlockAt": "2026-11-03T00:59:00Z",
+  "subject": "HOK-3315_c cleanup_dirty_worktree",
+  "rootCauseClass": "cleanup_dirty_worktree",
+  "absentCyclesToResolve": 5
+}

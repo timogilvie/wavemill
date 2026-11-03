@@ -31,12 +31,19 @@ _state_lock_claim() {
 }
 
 state_lock_acquire() {
-  local lock_path="$1" max_retries="${2:-50}" sleep_seconds="${3:-0.1}" purpose="${4:-state-mutation}" attempt=0 owner host
+  local lock_path="$1" max_retries="${2:-50}" sleep_seconds="${3:-0.1}" purpose="${4:-state-mutation}" attempt=0 owner current host
   while true; do
     _state_lock_claim "$lock_path" "$purpose" && return 0
     if [[ -d "$lock_path" && -f "$lock_path/owner.json" ]]; then
       owner="$(cat "$lock_path/owner.json" 2>/dev/null || true)"; host="$(process_identity_host)"
-      if state_lock_owner_reclaimable "$owner" "$host"; then rm -rf "$lock_path" 2>/dev/null || true; continue; fi
+      if state_lock_owner_reclaimable "$owner" "$host" && mkdir "$lock_path/.reclaim" 2>/dev/null; then
+        current="$(cat "$lock_path/owner.json" 2>/dev/null || true)"
+        if [[ "$current" == "$owner" ]] && state_lock_owner_reclaimable "$current" "$host"; then
+          rm -rf "$lock_path" 2>/dev/null || true
+          continue
+        fi
+        rmdir "$lock_path/.reclaim" 2>/dev/null || true
+      fi
     fi
     attempt=$((attempt + 1)); (( attempt >= max_retries )) && return 1
     sleep "$sleep_seconds"
