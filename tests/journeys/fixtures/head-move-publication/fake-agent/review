@@ -1,0 +1,44 @@
+# shellcheck shell=bash
+# Fake reviewer for the head-move-publication journey (HOK-3370).
+#
+# Reproduces the HOK-3361 shape with zero pushes from any agent:
+#   1. while the task is in review, another contributor lands an unrelated
+#      change on the integration branch (the PR will be BEHIND at Ready);
+#   2. the reviewer "fixes a blocker" with a local commit and does NOT push —
+#      the mill's review-exit publication must carry it to the PR;
+#   3. the PR is created against the branch the mill published at the coding
+#      exit, and the review result records the (locally newer) reviewHeadSha.
+contender="$FAKE_ROOT/contender-clone"
+[[ -d "$contender/.git" ]] || git clone -q "$FAKE_GH_ORIGIN" "$contender"
+(
+  cd "$contender"
+  git fetch -q origin
+  git checkout -q -B "$BASE_BRANCH" "origin/$BASE_BRANCH"
+  # Idempotent: a relaunched reviewer must not trip over its own fault.
+  if [[ ! -f base-advance.txt ]]; then
+    printf 'unrelated base work\n' > base-advance.txt
+    git add base-advance.txt
+    git -c user.name=contender -c user.email=contender@example.invalid \
+      commit -q -m "unrelated base advance"
+    git push -q origin "$BASE_BRANCH"
+  fi
+)
+
+# Reviewer fix: commit only. No push anywhere in this script — that is the
+# journey's point.
+if [[ ! -f reviewer-fix.txt ]]; then
+  printf 'review fix applied\n' > reviewer-fix.txt
+  git add reviewer-fix.txt
+  git -c user.name=fake-reviewer -c user.email=reviewer@example.invalid \
+    commit -q -m "$WAVEMILL_ISSUE: fix review blocker"
+fi
+printf '%s phase=review issue=%s fault=unpushed-review-fix\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+pr_url="$(gh pr create --base "$BASE_BRANCH" --head "$branch" --label wavemill \
+  --title "$WAVEMILL_ISSUE: journey change" \
+  --body "$(printf '## Summary\n- journey\n\n## Self-review\nready\n\n<!-- wavemill-meta\ntask: %s\n-->\n' "$WAVEMILL_ISSUE")")"
+pr_number="${pr_url##*/}"
+artifacts="$(jq -cn --argjson pr "$pr_number" --arg head "$(git rev-parse HEAD)" \
+  '{type:"review",prNumber:$pr,exitCode:0,verdict:"ready",iterations:1,blockerCount:0,warningCount:0,reviewHeadSha:$head}')"
+run_tool stage-result-cli.ts update "$FEATURE_DIR" review --status completed --notes "PR #$pr_number created" --artifacts "$artifacts"

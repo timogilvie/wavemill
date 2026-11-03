@@ -20680,6 +20680,12 @@ monitor_issue_state() {
         if [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
           wavemill_reconcile_terminal "$SESSION" "$ISSUE" "review_complete" "$PR" || true
         fi
+        # HOK-3370: publish any reviewer "fix blockers" commits through the
+        # one seam before Ready reads GitHub (a no-op `reused` when the
+        # reviewer did not commit). A failure defers to Ready's own
+        # sync-path publication and the HOK-3371 disposition.
+        publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$FEATURE_DIR" "$ISSUE" "review" "review-fix" \
+          || log_warn "$ISSUE → review head publication deferred to Ready: ${PUBLISH_STAGE_HEAD_DETAIL:-no detail}"
       else
         set_task_phase "$ISSUE" "review"
         if launch_review_for_missing_evidence "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$FEATURE_DIR" "$current_agent"; then

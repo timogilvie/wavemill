@@ -296,6 +296,7 @@ for f in \
   "$REPO_DIR"/tests/journeys/run-journeys.sh \
   "$REPO_DIR"/tests/journeys/picker-pending-touch-set.journey.sh \
   "$REPO_DIR"/tests/journeys/happy-path.journey.sh \
+  "$REPO_DIR"/tests/journeys/head-move-publication.journey.sh \
   "$REPO_DIR"/tests/journeys/gh-lag-after-push.journey.sh \
   "$REPO_DIR"/tests/journeys/errored-with-pr.journey.sh \
   "$REPO_DIR"/tests/journeys/inputs-ready-before-approval.journey.sh \
