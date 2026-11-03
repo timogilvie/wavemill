@@ -63,8 +63,13 @@ review_gate_decide_disposition() {
   if [[ $cli_rc -ne 0 ]]; then
     local err_body=""
     [[ -s "$cli_err" ]] && err_body="$(head -c 400 "$cli_err" 2>/dev/null)"
-    log_warn "review-gate-remediation-cli exited $cli_rc for $state_dir${err_body:+: ${err_body}}; defaulting to retryable"
-    result="retryable"
+    log_warn "review-gate-remediation-cli exited $cli_rc for $state_dir${err_body:+: ${err_body}}; using shell-based fallback"
+    # Fallback to shell-based disposition logic when tool is unavailable (tests, deployment issues)
+    if review_result_infra_failure "$state_dir"; then
+      result="retryable"
+    else
+      result="terminal"
+    fi
   fi
   rm -f "$cli_err" 2>/dev/null || true
   echo "$result"
