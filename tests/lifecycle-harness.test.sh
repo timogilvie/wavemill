@@ -637,7 +637,7 @@ harness_run_tick() {
     ready_base_sha() { printf "\n"; }
     ready_remediation_disposition() { printf "%s\n" "inactive no-launch"; }
     ready_remediation_attempts() { printf "%s\n" "0"; }
-    write_ready_attention_file() { :; }
+    escalate_operator_attention() { :; }
     emit_execution_active_route() { :; }
     log_route_lifecycle() { :; }
     route_lifecycle_route_id() { :; }
@@ -1678,7 +1678,7 @@ test_reconciliation_rehydration_acquires_single_owner() {
       TOOLS_DIR=""
       log() { :; }
       log_warn() { :; }
-      write_ready_attention_file() { :; }
+      escalate_operator_attention() { :; }
       bounded_retry_clear() { :; }
       npx() {
         if [[ "$*" == *"reconciliation-capsule.ts validate"* ]]; then

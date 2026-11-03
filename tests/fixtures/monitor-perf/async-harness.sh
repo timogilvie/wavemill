@@ -73,7 +73,7 @@ settle_tracked_job() { harness_record "settle_tracked_job $1"; }
 write_cross_pr_guard_ready_result() { harness_record "guard_result pr=$2 head=$3 verdict=$4"; }
 clear_cross_pr_guard_ready_evidence() { harness_record "guard_evidence_cleared $1"; }
 _write_cross_pr_diagnostic() { harness_record "guard_diagnostic ref=$2 cmd=$3"; }
-write_ready_attention_file() { harness_record "attention $2"; }
+escalate_operator_attention() { harness_record "attention $4"; return 0; }
 launch_ready_phase() { harness_record "launch_ready_phase $1 pr=$7"; }
 pass_task_field() { jq -r --arg i "$1" --arg f "$2" '.tasks[$i][$f] // empty' "$STATE_FILE" 2>/dev/null; }
 read_state_value() { local d="$1"; shift; jq -r "$@" "$STATE_FILE" 2>/dev/null || printf '%s\n' "$d"; }

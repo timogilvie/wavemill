@@ -84,6 +84,7 @@ escalate_operator_attention() {
   local state_dir="$1" basis="$2" basis_arg="$3" message="$4"
   shift 4
   local -a condition_flags=("$@")
+  local basis_label
 
   case "$basis" in
     exhausted)
@@ -91,6 +92,7 @@ escalate_operator_attention() {
         _operator_escalation_warn "[escalation-refused] basis=exhausted:${basis_arg} is not terminalized for ${state_dir}; refusing operator attention write"
         return 3
       fi
+      basis_label="exhausted:${basis_arg}"
       ;;
     policy-terminal)
       local cls
@@ -103,12 +105,14 @@ escalate_operator_attention() {
         _operator_escalation_warn "[escalation-refused] basis=policy-terminal but decision class='${cls}' for ${state_dir}; refusing operator attention write"
         return 3
       fi
+      basis_label="policy-terminal:${cls}"
       ;;
     operator-decision)
       if ! _operator_decision_is_known "$basis_arg"; then
         _operator_escalation_warn "[escalation-refused] basis=operator-decision:${basis_arg} is not a known OPERATOR_DECISIONS code for ${state_dir}; refusing operator attention write"
         return 3
       fi
+      basis_label="operator-decision:${basis_arg}"
       ;;
     *)
       _operator_escalation_warn "[escalation-refused] unknown escalation basis '${basis}' for ${state_dir}; refusing operator attention write"
@@ -117,6 +121,6 @@ escalate_operator_attention() {
   esac
 
   _operator_attention_write "$state_dir" "$message" \
-    --detail-json "$(jq -cn --arg basis "${basis}:${basis_arg}" '{escalationBasis: $basis}')" \
+    --detail-json "$(jq -cn --arg basis "$basis_label" '{escalationBasis: $basis}')" \
     "${condition_flags[@]}"
 }

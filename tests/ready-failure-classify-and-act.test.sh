@@ -91,7 +91,8 @@ log_error() { printf '%s\n' "$1" >> "$STATUS_LOG"; }
 log_task() { printf '%s\n' "$*" >> "$STATUS_LOG"; }
 set_window_attention_state() { printf '%s=%s\n' "$1" "$2" >> "$STATE_LOG"; }
 set_task_phase() { printf '%s=%s\n' "$1" "$2" >> "$STATE_LOG"; }
-write_ready_attention_file() { printf '%s\n' "$2" >> "$ATTENTION_LOG"; }
+# HOK-3360: the one escalation step; <state_dir> <basis> <basis_arg> <message>.
+escalate_operator_attention() { printf '%s\n' "$4" >> "$ATTENTION_LOG"; return 0; }
 
 WORKTREE="$TMP_ROOT/worktrees/hok-3371"
 STATE_DIR="$WORKTREE/features/hok-3371/ready"

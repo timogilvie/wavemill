@@ -129,20 +129,23 @@ pr_cache 1591 "$HEAD_SHA"
 reconcile
 assert_eq "remote moved (task .pr field): refusal cleared" "no" "$(exists "$STATE_DIR/.needs-attention")"
 
+# HOK-3360: the .needs-attention-transient kind was removed; exercise the
+# deadline trigger + UTC parsing through .ready-waiting-on.json, which still
+# carries a deadline condition.
 echo "=== deadline trigger (UTC parsing) ==="
 new_fixture
-marker_write "$STATE_DIR/.needs-attention-transient" --kind ready-attention-transient --head "$HEAD_SHA" \
+marker_write "$STATE_DIR/.ready-waiting-on.json" --kind waiting-on --head "$HEAD_SHA" \
   --state-dir "$STATE_DIR" --expires-on "deadline" --recheck-after-seconds 3600
 reconcile
-assert_eq "deadline one hour away: kept (not shifted by local UTC offset)" "yes" "$(exists "$STATE_DIR/.needs-attention-transient")"
-jq '.condition.recheckAfter = "2000-01-01T00:00:00Z"' "$STATE_DIR/.needs-attention-transient" > "$TMP_DIR/m" && mv "$TMP_DIR/m" "$STATE_DIR/.needs-attention-transient"
+assert_eq "deadline one hour away: kept (not shifted by local UTC offset)" "yes" "$(exists "$STATE_DIR/.ready-waiting-on.json")"
+jq '.condition.recheckAfter = "2000-01-01T00:00:00Z"' "$STATE_DIR/.ready-waiting-on.json" > "$TMP_DIR/m" && mv "$TMP_DIR/m" "$STATE_DIR/.ready-waiting-on.json"
 reconcile
-assert_eq "deadline passed: cleared" "no" "$(exists "$STATE_DIR/.needs-attention-transient")"
-marker_write "$STATE_DIR/.needs-attention-transient" --kind ready-attention-transient --head "$HEAD_SHA" \
+assert_eq "deadline passed: cleared" "no" "$(exists "$STATE_DIR/.ready-waiting-on.json")"
+marker_write "$STATE_DIR/.ready-waiting-on.json" --kind waiting-on --head "$HEAD_SHA" \
   --state-dir "$STATE_DIR" --expires-on "deadline" --recheck-after-seconds 3600
-jq '.condition.recheckAfter = "not-a-time"' "$STATE_DIR/.needs-attention-transient" > "$TMP_DIR/m" && mv "$TMP_DIR/m" "$STATE_DIR/.needs-attention-transient"
+jq '.condition.recheckAfter = "not-a-time"' "$STATE_DIR/.ready-waiting-on.json" > "$TMP_DIR/m" && mv "$TMP_DIR/m" "$STATE_DIR/.ready-waiting-on.json"
 reconcile
-assert_eq "unparseable deadline: kept (fail closed)" "yes" "$(exists "$STATE_DIR/.needs-attention-transient")"
+assert_eq "unparseable deadline: kept (fail closed)" "yes" "$(exists "$STATE_DIR/.ready-waiting-on.json")"
 assert_eq "UTC parse of fractional timestamp" "1791321437" "$(_condition_iso_to_epoch 2026-10-06T21:17:17.793Z)"
 
 echo "=== HOK-3165: review-infra exhaustion re-arms only on a new head ==="

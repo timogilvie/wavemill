@@ -65,7 +65,8 @@ extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_marker_path" >> "$
 extract_function "$MONITOR_SCRIPT_FILE" "transient_mergeability_count" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "increment_transient_mergeability_count" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "clear_transient_mergeability_state" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "write_ready_attention_file" >> "$LAUNCH_FUNC_FILE"
+# HOK-3360: operator attention is raised by escalate_operator_attention, which
+# each harness stubs below (write_ready_attention_file was removed).
 extract_function "$MONITOR_SCRIPT_FILE" "_write_cross_pr_diagnostic" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "write_cross_pr_guard_ready_result" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "clear_cross_pr_guard_ready_evidence" >> "$LAUNCH_FUNC_FILE"
@@ -76,7 +77,6 @@ extract_function "$MONITOR_SCRIPT_FILE" "cross_pr_revert_gate_apply_result" >> "
 # covered by tests/cross-pr-revert-job.test.sh).
 cat "$REPO_DIR/shared/lib/monitor-async-jobs.sh" >> "$LAUNCH_FUNC_FILE"
 cat "$REPO_DIR/tests/lib/inline-ready-checks.sh" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "write_transient_ready_attention_file" >> "$LAUNCH_FUNC_FILE"
 # HOK-3371: the failed-ready-recheck wrappers are retired; Ready relaunches
 # through the shared stage-failure-ready bucket (see
 # tests/ready-failure-classify-and-act.test.sh).
@@ -391,7 +391,6 @@ EOF
         ;;
       clean_after_unknown)
         printf "%s\n" "stale transient attention" > "$STATE_DIR/.needs-attention"
-        : > "$STATE_DIR/.needs-attention-transient"
         printf "%s\n" "3" > "$STATE_DIR/.transient-mergeability-count"
         ;;
       review_tool_error_gate)
@@ -681,22 +680,24 @@ EOF
           "{stage:\$stage,status:\$status,agent:\$agent,model:\$model,notes:\$notes,artifacts:\$artifacts}" > "$feature_dir/.review-result.json"
       fi
     }
-    write_ready_attention_file() {
-      printf -v READY_ATTENTION_CALLS "%s%s|%s\n" "$READY_ATTENTION_CALLS" "$1" "$2"
+    # HOK-3360: the one escalation step; <state_dir> <basis> <basis_arg> <message>.
+    escalate_operator_attention() {
+      printf -v READY_ATTENTION_CALLS "%s%s|%s\n" "$READY_ATTENTION_CALLS" "$1" "$4"
       mkdir -p "$1"
-      printf "%s\n" "$2" > "$1/.needs-attention"
+      printf "%s\n" "$4" > "$1/.needs-attention"
+      return 0
     }
     if [[ "$TEST_CASE" != "cross_pr_revert_tool_error_direct" && "$TEST_CASE" != "cross_pr_revert_blocked" && "$TEST_CASE" != "cross_pr_revert_error" ]]; then
       cross_pr_revert_gate_allows_merge() {
         case "$TEST_CASE" in
           cross_pr_revert_blocked)
-            write_ready_attention_file "$2" "PR #$4 removes files from #437 without explicit acknowledgement. Affected files: strategy.txt."
+            escalate_operator_attention "$2" operator-decision cross-pr-revert-unacknowledged "PR #$4 removes files from #437 without explicit acknowledgement. Affected files: strategy.txt."
             log "status" "⛔ $1 → Cross-PR revert guard blocked ready phase for PR #$4"
             return 1
             ;;
           cross_pr_revert_error)
             local diag_msg="Cross-PR revert guard tool failure for PR #$4: git-merge-base failed on ref '\''auto/integration'\''. Diagnostic: fatal: Not a valid object name '\''auto/integration'\''"
-            write_ready_attention_file "$2" "$diag_msg"
+            # HOK-3360: a guard tool error is retryable — no page (records a failed result).
             log_error "  Cross-PR revert guard tool failure for $1 (PR #$4): git-merge-base on '\''auto/integration'\''"
             return 1
             ;;
@@ -1063,7 +1064,7 @@ run_watchdog_launch_case() {
     ensure_ready_worker_window() {
       _ensure_task_window_exists "$SESSION" "$1" "$2" "$4"
     }
-    write_ready_attention_file() { :; }
+    escalate_operator_attention() { :; }
     log() { :; }
     log_error() { :; }
 
@@ -1281,9 +1282,14 @@ check_contains "error first poll logs retry" "$output" "Merge status for HOK-130
 
 output="$(run_launch_case unknown_capped)"
 check_contains "unknown capped returns failure" "$output" "rc=1"
-check_contains "unknown capped writes attention" "$output" "Merge status UNKNOWN persisted after 7 checks for PR #304."
-check_contains "unknown capped writes transient marker" "$output" "transient_attention=present"
-check_contains "unknown capped keeps attention file" "$output" "needs_attention=present"
+# HOK-3360: a persisted UNKNOWN mergeability records a failed ready result
+# (mergeability-unknown) instead of a transient attention marker; the
+# stage-failure-ready budget owns retries and only its exhaustion pages.
+check_contains "unknown capped records the persisted failure in the ready result" "$output" "Merge status UNKNOWN persisted after 7 checks for PR #304."
+check_contains "unknown capped writes a failed ready result" "$output" "|ready|failed|"
+check_contains "unknown capped records the mergeability-unknown kind" "$output" "\"failureKind\":\"mergeability-unknown\""
+check_contains "unknown capped writes no transient attention marker" "$output" "transient_attention=absent"
+check_contains "unknown capped raises no operator attention" "$output" "needs_attention=absent"
 check_contains "unknown capped increments counter past cap" "$output" "transient_count=7"
 check_contains "unknown capped logs persistent failure" "$output" "Merge status UNKNOWN persisted for HOK-1300 after 7 attempts"
 
@@ -1353,7 +1359,12 @@ check_contains "new head remediation returns in-progress" "$output" "rc=5"
 
 output="$(run_launch_case remediation_disabled)"
 check_contains "disabled remediation falls back to ready failure" "$output" "rc=1"
-check_contains "disabled remediation writes attention" "$output" "Ready checks failed for PR #304."
+# HOK-3360: the generic non-remediable Ready failure (the incident path)
+# records a failed stage result and returns; the next tick's classify_and_act
+# routes it through stage-failure-ready, and only that budget's exhaustion
+# pages. The launcher raises no attention on the first occurrence.
+check_contains "disabled remediation writes a failed ready result" "$output" "|ready|failed|"
+check_contains "disabled remediation raises no attention" "$output" "needs_attention=absent"
 check_contains "disabled remediation logs failing check summary" "$output" "Ready checks failed for HOK-1300 - 1 failed (ci-status: 1 check), 0 passed/skipped"
 check_contains "disabled remediation logs debug file pointer" "$output" "Full ready result: /tmp/wavemill-ready-phase-test-remediati"
 check_not_contains "disabled remediation omits raw json from error log" "$output" "error_payload=  {\"prNumber\":304"
@@ -1370,7 +1381,10 @@ check_contains "non ci failure writes debug record" "$output" "debug_lines=1"
 output="$(run_launch_case remediation_launch_failure)"
 check_contains "launch failure returns failure" "$output" "rc=1"
 check_contains "launch failure records failed stage" "$output" "|ready|failed|"
-check_contains "launch failure writes operator message" "$output" "Could not launch remediation agent for PR #304."
+# HOK-3360: a failed remediation launch records the failed stage result (the
+# launchRefusal / "could not launch" evidence) and returns; stage-failure-ready
+# owns retries. No operator page on the first occurrence.
+check_contains "launch failure raises no attention" "$output" "needs_attention=absent"
 check_contains "launch failure records attempt 1" "$output" "\"remediationAttempts\":1"
 
 output="$(run_launch_case already_inflight_same_head)"
@@ -1524,7 +1538,11 @@ check_contains "invalid dismissal marks failed verdict" "$output" "verdictState=
 output="$(run_launch_case ready_label_failure)"
 check_contains "ready label failure returns failure" "$output" "rc=1"
 check_contains "ready label failure writes failed stage" "$output" "|ready|failed|"
-check_contains "ready label failure keeps attention" "$output" "needs_attention=present"
+# HOK-3360: the launcher records the transitionFailure evidence and returns;
+# the next tick's ready_failure_classify_and_act decides (a transition
+# code-failure pages via operator-decision, otherwise it retries). The
+# launcher itself raises no attention.
+check_contains "ready label failure raises no attention in the launcher" "$output" "needs_attention=absent"
 check_contains "ready label failure records label update failure" "$output" "\"readyLabelsUpdated\":false"
 check_contains "ready label failure records typed stage" "$output" "\"stage\":\"ready-label\""
 
@@ -1984,9 +2002,10 @@ run_challenge_pending_case() {
       esac
     }
     maybe_run_challenge_comparison() { COMPARISON_CALLS=$((COMPARISON_CALLS + 1)); }
-    write_ready_attention_file() {
+    escalate_operator_attention() {
       ATTENTION_CALLS=$((ATTENTION_CALLS + 1))
-      printf "%s\n" "$2" > "$1/.needs-attention"
+      printf "%s\n" "$4" > "$1/.needs-attention"
+      return 0
     }
     log() { :; }
     log_warn() { :; }

@@ -203,9 +203,11 @@ review_recovery_contract_payload() {
 }
 review_recovery_window_observable() { return 0; }
 set_task_phase() { :; }
-write_ready_attention_file() {
+escalate_operator_attention() {
+  # HOK-3360: <state_dir> <basis> <basis_arg> <message>
   mkdir -p "$1"
-  printf '%s\n' "$2" > "$1/.needs-attention"
+  printf '%s\n' "$4" > "$1/.needs-attention"
+  return 0
 }
 
 log_lines=()

@@ -204,6 +204,8 @@ for f in \
   "$REPO_DIR"/tests/hokusai-test-registration.test.sh \
   "$REPO_DIR"/tests/monitor-script-byte-identical.test.sh \
   "$REPO_DIR"/tests/bounded-retry.test.sh \
+  "$REPO_DIR"/tests/operator-escalation.test.sh \
+  "$REPO_DIR"/tests/ready-first-failure-no-attention.test.sh \
   "$REPO_DIR"/tests/ready-update-from-base.test.sh \
   "$REPO_DIR"/tests/plan-packet-binding.test.sh \
   "$REPO_DIR"/tests/task-inputs-gate.test.sh \

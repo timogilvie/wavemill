@@ -14278,7 +14278,7 @@ launch_ready_phase() {
     # the failed stage result so stage-failure-ready owns retries like any
     # other Ready failure, and never page on the first occurrence.
     write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
-      "Merge status $merge_status persisted after $transient_count checks for PR #$pr_number" \
+      "Merge status $merge_status persisted after $transient_count checks for PR #$pr_number." \
       "$(jq -cn --argjson pr "$pr_number" --arg ms "$merge_status" '{type:"ready",verdict:"fail",prNumber:$pr,mergeConflict:$ms,failureKind:"mergeability-unknown"}')"
     log_error "  Merge status $merge_status persisted for $issue after $transient_count attempts"
     return 1
