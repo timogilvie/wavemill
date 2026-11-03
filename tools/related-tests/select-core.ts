@@ -41,6 +41,11 @@ export interface SelectOptions {
   changedPaths: readonly string[];
   /** When true, suppress the journey-suite injection. */
   noJourneys?: boolean;
+  /**
+   * When true, a mill-core change selects every golden journey (the previous
+   * behaviour) instead of the smoke journey plus changed journey files.
+   */
+  allJourneys?: boolean;
 }
 
 const MILL_CORE_FILES = new Set([
@@ -61,6 +66,62 @@ const MILL_CORE_FILES = new Set([
 ]);
 
 const MILL_CORE_PREFIXES = ['tests/journeys/', 'tests/fakes/'];
+
+/**
+ * The journey every mill-core change runs locally. The full journey matrix is
+ * the required "Golden Journeys" CI check (one journey per job); running all
+ * of them serially here took ~1h on a laptop per verification call.
+ */
+export const SMOKE_JOURNEY = 'happy-path';
+
+const JOURNEYS_DIR = 'tests/journeys';
+const JOURNEY_FILE_RE = /^tests\/journeys\/([^/]+)\.journey\.sh$/;
+
+function journeyPath(name: string): string {
+  return `${JOURNEYS_DIR}/${name}.journey.sh`;
+}
+
+function listJourneyNames(repoRoot: string): string[] {
+  try {
+    return readdirSync(path.join(repoRoot, JOURNEYS_DIR))
+      .filter((entry) => entry.endsWith('.journey.sh'))
+      .map((entry) => entry.slice(0, -'.journey.sh'.length))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Journeys to run locally for a mill-core change: each changed journey file
+ * that still exists, plus {@link SMOKE_JOURNEY}; or every journey when
+ * `all` is set. Names that have no journey file on disk are never returned,
+ * so `run-journeys.sh` is never handed an unknown name.
+ */
+export function selectJourneys(
+  repoRoot: string,
+  changedPaths: readonly string[],
+  all: boolean,
+): SelectedTest[] {
+  const known = new Set(listJourneyNames(repoRoot));
+  const picked = new Map<string, string>();
+  if (all) {
+    for (const name of known) picked.set(name, 'mill-core-all');
+  } else {
+    for (const p of changedPaths) {
+      const name = JOURNEY_FILE_RE.exec(p)?.[1];
+      if (name && known.has(name)) picked.set(name, 'changed-journey');
+    }
+    if (known.has(SMOKE_JOURNEY) && !picked.has(SMOKE_JOURNEY)) {
+      picked.set(SMOKE_JOURNEY, 'mill-core-smoke');
+    }
+  }
+  return Array.from(picked.entries()).map(([name, reason]) => ({
+    path: journeyPath(name),
+    runner: 'journeys' as const,
+    reason,
+  }));
+}
 
 const GENERIC_FN_NAMES = new Set([
   'log', 'warn', 'info', 'error', 'debug', 'fatal',
@@ -297,11 +358,14 @@ export function selectRelatedTests(options: SelectOptions): SelectionPlan {
     selected.set('__preflight__', { path: '__preflight__', runner: 'preflight', reason: 'preflight' });
   }
 
-  // 5. Mill-core journey injection.
+  // 5. Mill-core journey injection: the smoke journey plus changed journeys
+  //    (or all of them with allJourneys). CI runs the full matrix.
   let journeysInjected = false;
   if (!options.noJourneys && changed.some((f) => isMillCorePath(f.path))) {
-    selected.set('__journeys__', { path: '__journeys__', runner: 'journeys', reason: 'mill-core' });
-    journeysInjected = true;
+    for (const journey of selectJourneys(repoRoot, changedPaths, options.allJourneys === true)) {
+      selected.set(journey.path, journey);
+      journeysInjected = true;
+    }
   }
 
   const tests = Array.from(selected.values()).sort((a, b) => a.path.localeCompare(b.path));
