@@ -5,6 +5,7 @@
 # Resolve install assets from this sourced file, never the milled repository.
 # `%N` is zsh's source-file counterpart to Bash's BASH_SOURCE[0].
 if [[ -n "${ZSH_VERSION:-}" ]]; then
+  # shellcheck disable=SC2296 # zsh's documented sourced-file expansion
   common_source="${(%):-%N}"
 else
   common_source="${BASH_SOURCE[0]}"
