@@ -72,7 +72,6 @@ condition_reconcile_task() {
   # Fast path: return early if nothing to reconcile
   local needs_reconcile=false
   if [[ -f "$state_dir/.needs-attention" ]] || \
-     [[ -f "$state_dir/.needs-attention-transient" ]] || \
      [[ -f "$state_dir/.ready-waiting-on.json" ]] || \
      [[ -f "$state_dir/.cross-pr-guard-result.json" ]] || \
      [[ -f "$state_dir/.pr-ci-status-result.json" ]] || \
@@ -366,14 +365,9 @@ condition_reconcile_task() {
     fi
   fi
 
-  # Reconcile .needs-attention-transient
-  if [[ -f "$state_dir/.needs-attention-transient" ]]; then
-    local reason
-    if reason=$(_should_expire "$state_dir/.needs-attention-transient"); then
-      _log_clear ".needs-attention-transient" "${reason%%:*}" "${reason#*:}"
-      marker_clear "$state_dir/.needs-attention-transient"
-    fi
-  fi
+  # HOK-3360: the .needs-attention-transient kind was removed (a transient
+  # mergeability is a retry state, not an attention kind). Its reconciler
+  # branch is deleted — nothing writes it any more.
 
   # Reconcile .ready-waiting-on.json
   if [[ -f "$state_dir/.ready-waiting-on.json" ]]; then

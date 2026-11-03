@@ -1234,8 +1234,22 @@ is_actionable_state() {
 
     ready_status=$(get_ready_display_status "$worktree" "$slug")
     case "$ready_status" in
-      completed|failed|aborted)
+      completed|aborted)
         echo "actionable"
+        return
+        ;;
+      failed)
+        # HOK-3360: a Ready `failed` result is not automatically an operator
+        # page. The `.needs-attention` check above already classified any
+        # escalated failure as actionable. A failed Ready with no attention
+        # marker and a stage-failure-ready budget that has not exhausted is
+        # retrying (shown as active), not an inbox item. Only an exhausted
+        # budget (which pages via the escalation step) is actionable.
+        if bounded_retry_is_exhausted "$worktree/features/$slug" "stage-failure-ready"; then
+          echo "actionable"
+        else
+          echo "active"
+        fi
         return
         ;;
     esac
@@ -1516,7 +1530,17 @@ render_task_row() {
               merge-needed) phase_str="${Y}⏳ merge needed${N}" ;;
               *)
                 case "$ready_status" in
-                  failed|aborted) phase_str="${R}🚦 ready${N}" ;;
+                  failed)
+                    # HOK-3360: a failed Ready that is still retrying (no
+                    # attention raised, stage-failure-ready not exhausted) shows
+                    # as retrying, not as a red needs-user row.
+                    if [[ -f "$worktree/features/$slug/.needs-attention" ]] || bounded_retry_is_exhausted "$worktree/features/$slug" "stage-failure-ready"; then
+                      phase_str="${R}🚦 ready${N}"
+                    else
+                      phase_str="${Y}↻ retrying${N}"
+                    fi
+                    ;;
+                  aborted)        phase_str="${R}🚦 ready${N}" ;;
                   completed)      phase_str="${Y}🚦 ready${N}" ;;
                   *)              phase_str="${G}🚦 ready${N}" ;;
                 esac

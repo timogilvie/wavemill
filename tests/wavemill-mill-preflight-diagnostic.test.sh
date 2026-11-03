@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MILL_SCRIPT="$REPO_DIR/shared/lib/wavemill-mill.sh"
+# The cross-PR guard helpers live in the monitor (the mill cp's it at launch).
+MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -46,8 +48,10 @@ assert_contains() {
 
 FUNCS_FILE="$TMP_DIR/cross-pr-funcs.sh"
 : > "$FUNCS_FILE"
-for fn in write_ready_attention_file write_cross_pr_guard_ready_result clear_cross_pr_guard_ready_evidence cross_pr_revert_gate_allows_merge; do
-  extracted="$(extract_function "$MILL_SCRIPT" "$fn")"
+# HOK-3360: write_ready_attention_file was removed; the generic cross-PR guard
+# failure now records a failed ready result (retryable) and raises no attention.
+for fn in _write_cross_pr_diagnostic write_cross_pr_guard_ready_result clear_cross_pr_guard_ready_evidence cross_pr_revert_gate_apply_result cross_pr_revert_gate_allows_merge; do
+  extracted="$(extract_function "$MONITOR_SCRIPT_FILE" "$fn")"
   if [[ -z "$extracted" ]]; then
     echo "FAIL: missing extracted function $fn"
     exit 1
@@ -66,7 +70,17 @@ EOF
 read_state_value() {
   printf '%s\n' "main"
 }
+# HOK-3360: the generic cross-PR guard failure records the task agent on the
+# ready result so stage-failure-ready owns retries.
+pass_task_field() { printf '%s\n' "claude"; }
+escalate_operator_attention() { return 0; }
+wavemill_run_tool() { npx tsx "$TOOLS_DIR/$1" "${@:2}"; }
+wavemill_base_compare_ref() { printf '%s\n' "origin/$1"; }
+clear_ready_attention() { :; }
+validate_ready_attention_marker() { return 3; }
+marker_reason() { printf '%s\n' ""; }
 log() { :; }
+log_warn() { :; }
 log_error() { :; }
 
 npx() {

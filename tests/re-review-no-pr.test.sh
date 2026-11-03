@@ -121,7 +121,7 @@ write_stage_result() {
 }
 read_phase_config() { echo "static"; }
 check_stage_aborted() { return 1; }
-write_ready_attention_file() { printf '%s\n' "${2:-}" > "$1/.needs-attention"; }
+escalate_operator_attention() { printf '%s\n' "${4:-}" > "$1/.needs-attention"; return 0; }
 MONITOR_COMMAND_STATUS="noop"
 MONITOR_COMMAND_DEFER_EVENT=""
 MONITOR_COMMAND_DEFER_REASON=""

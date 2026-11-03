@@ -46,7 +46,7 @@ simulate_missing_window_branch() {
     local fd="$1" stage="$2"
     jq -r '.status // empty' "$fd/.${stage}-result.json" 2>/dev/null || true
   }
-  write_ready_attention_file() { printf '%s\n' "${2:-}" > "$1/.needs-attention"; }
+  escalate_operator_attention() { printf '%s\n' "${4:-}" > "$1/.needs-attention"; return 0; }
   set_task_phase() { echo "set_task_phase:$1:$2" >> "$ACTIONS_LOG"; }
   set_window_attention_state() { echo "attention:$2" >> "$ACTIONS_LOG"; }
   save_task_state() { echo "save_task_state:$5:$6" >> "$ACTIONS_LOG"; }
@@ -84,7 +84,7 @@ simulate_missing_window_branch() {
         echo "branch:restored" >> "$ACTIONS_LOG"
         return 0
       fi
-      write_ready_attention_file "$FEATURE_DIR" "Review window disappeared and could not be relaunched automatically."
+      # HOK-3360: a single failed relaunch is retryable — no operator page.
       set_task_phase "$ISSUE" "review"
       set_window_attention_state "$WIN" "needs-user"
       echo "branch:relaunch-failed-review-preserved" >> "$ACTIONS_LOG"
@@ -106,7 +106,7 @@ simulate_missing_window_branch() {
       "${current_agent:-unknown}" \
       "run /re-review $ISSUE to relaunch the review (it will open the PR)" \
       "monitor" || true
-    write_ready_attention_file "$FEATURE_DIR" "Review interrupted on branch $BRANCH before PR creation; re-review available."
+    escalate_operator_attention "$FEATURE_DIR" operator-decision review-session-interrupted-pre-pr "Review interrupted on branch $BRANCH before PR creation; re-review available."
     set_task_phase "$ISSUE" "review"
     set_window_attention_state "$WIN" "needs-user"
     echo "branch:no-pr-review-preserved" >> "$ACTIONS_LOG"

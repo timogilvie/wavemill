@@ -12,7 +12,7 @@
  */
 import { runTool } from '../shared/lib/tool-runner.ts';
 import type { CiFailureCategory } from '../shared/lib/ci-failure-classifier.ts';
-import { classifyFailure, nextActionFor, type FailureStage } from '../shared/lib/failure-policy.ts';
+import { classifyFailure, isOperatorDecisionCode, nextActionFor, type FailureStage } from '../shared/lib/failure-policy.ts';
 
 const STAGES: ReadonlySet<string> = new Set(['planning', 'coding', 'review', 'ready', 'tend', 'eval']);
 const CI_CATEGORIES: ReadonlySet<string> = new Set(['deterministic-local', 'transient-infra', 'github-only', 'unknown']);
@@ -33,12 +33,19 @@ runTool({
     'execution-evidence-source': { type: 'string', description: 'provider-response | attested (HOK-3143)' },
     'execution-evidence-model': { type: 'string', description: 'Model the execution evidence names' },
     'next-action-only': { type: 'boolean', description: 'Print only the next-action hint for --failure-kind' },
+    'operator-decision': { type: 'string', description: 'Exit 0 when <code> is a known OPERATOR_DECISIONS code, 1 otherwise (HOK-3360 escalation basis check)' },
   },
   examples: [
     'npx tsx tools/failure-policy-cli.ts --stage coding --detail="Native coding failed: 402 Payment Required"',
     'npx tsx tools/failure-policy-cli.ts --next-action-only --failure-kind coding-dirty-handoff',
+    'npx tsx tools/failure-policy-cli.ts --operator-decision merged-before-ready',
   ],
   run({ args }) {
+    // HOK-3360: the escalation step validates an operator-decision basis code
+    // against OPERATOR_DECISIONS. Exit status is the signal (no stdout).
+    if (args['operator-decision'] != null) {
+      process.exit(isOperatorDecisionCode(args['operator-decision']) ? 0 : 1);
+    }
     if (args['next-action-only']) {
       console.log(nextActionFor(args['failure-kind']));
       return;

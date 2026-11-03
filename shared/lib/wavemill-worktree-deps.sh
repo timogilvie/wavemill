@@ -235,6 +235,7 @@ worktree_deps_ensure() {
           ;;
         *)
           # unknown — preserve previous behaviour (treat existing tree as ok).
+          startup_log "  deps-drift unknown for $wt_dir (reason=${_wd_drift_reason:-unknown}); treating install as ok"
           return 0
           ;;
       esac

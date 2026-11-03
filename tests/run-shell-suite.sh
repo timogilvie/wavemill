@@ -90,6 +90,8 @@ TESTS=(
   ready-failure-blocks-pr-label.test.sh
   launch-ready-phase.test.sh
   ready-sync-github-head-lag.test.sh
+  operator-escalation.test.sh
+  ready-first-failure-no-attention.test.sh
   bounded-retry.test.sh
   check-install-paths.test.sh
   check-common-guards.test.sh
