@@ -189,6 +189,24 @@ describe('nativeStageTimeSplit — synthetic scenarios', () => {
     assert.equal(split.toolCalls.paired, 2);
   });
 
+  // protects: a stage window beginning while a request or harness tool is already running
+  it('clips overlapping request and tool intervals to the supplied window', () => {
+    const events: TranscriptEvent[] = [
+      sessionStarted(0),
+      turnStarted(0, 0),
+      assistantMessage(9000),
+      toolStarted(9000, 'spans-window'),
+      toolResult(16_000, 'spans-window'),
+      sessionEnded(16_000),
+    ];
+    const split = nativeStageTimeSplit(events, { fromMs: 4000, toMs: 14_000 });
+    assert.equal(split.totalMs, 10_000);
+    assert.equal(split.modelMs, 5000);
+    assert.equal(split.harnessToolMs, 5000);
+    assert.equal(split.unknownMs, 0);
+    assert.equal(split.toolCalls.paired, 1);
+  });
+
   // protects: a transcript carrying two appended attempts (seq restarts) leaking the other attempt's time into the split
   it('only counts events inside the given window when a transcript holds two appended attempts', () => {
     const attempt1: TranscriptEvent[] = [

@@ -39,8 +39,8 @@
  *      request that ended in `errorMessage`, the backoff gap that follows
  *      it, or a request still in flight when the window ends (including our
  *      own budget abort) count as provider wait.
- *   4. Events outside the given window are dropped; intervals that start
- *      inside the window and end after it are clipped to it.
+ *   4. Events outside the given window are dropped; intervals that overlap
+ *      the window are clipped to it.
  *
  * `resolveNativeStageTimeSplit` is the one place that turns a
  * {@link BudgetExhaustedFact.sessionStream} pointer into a split: it resolves
@@ -241,21 +241,26 @@ export function nativeStageTimeSplit(
 ): NativeStageTimeSplit {
   const resolvedWindow = window ?? deriveDefaultWindow(events);
   const totalMs = Math.max(0, resolvedWindow.toMs - resolvedWindow.fromMs);
-  const inWindow = (timestamp: number) => timestamp >= resolvedWindow.fromMs && timestamp <= resolvedWindow.toMs;
-  const clipEnd = (end: number) => Math.min(end, resolvedWindow.toMs);
+  const clipInterval = (start: number, end: number): Interval | null => {
+    const clippedStart = Math.max(start, resolvedWindow.fromMs);
+    const clippedEnd = Math.min(end, resolvedWindow.toMs);
+    return clippedEnd > clippedStart ? [clippedStart, clippedEnd] : null;
+  };
 
   const { paired, unpaired } = pairToolCalls(events);
-  const pairedInWindow = paired.filter((p) => inWindow(p.start.timestamp));
-  const unpairedInWindow = unpaired.filter((start) => inWindow(start.timestamp));
+  const pairedInWindow = paired.filter((p) => p.result.timestamp > resolvedWindow.fromMs && p.start.timestamp < resolvedWindow.toMs);
+  const unpairedInWindow = unpaired.filter((start) => start.timestamp >= resolvedWindow.fromMs && start.timestamp < resolvedWindow.toMs);
 
   const harnessIntervals: Interval[] = pairedInWindow
-    .map((p): Interval => [p.start.timestamp, clipEnd(p.result.timestamp)])
-    .filter(([start, end]) => end > start);
+    .map((p) => clipInterval(p.start.timestamp, p.result.timestamp))
+    .filter((interval): interval is Interval => interval !== null);
 
   const turnIntervals = buildTurnIntervals(events, resolvedWindow.toMs)
-    .filter((interval) => inWindow(interval.start))
-    .map((interval) => ({ ...interval, end: clipEnd(interval.end) }))
-    .filter((interval) => interval.end > interval.start);
+    .map((interval) => {
+      const clipped = clipInterval(interval.start, interval.end);
+      return clipped ? { ...interval, start: clipped[0], end: clipped[1] } : null;
+    })
+    .filter((interval): interval is TaggedInterval => interval !== null);
 
   const modelIntervals: Interval[] = turnIntervals
     .filter((interval) => interval.kind === 'model')
