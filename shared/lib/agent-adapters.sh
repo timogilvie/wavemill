@@ -1988,7 +1988,8 @@ Required process:
 5. Run relevant validation for touched code. At minimum, run lint and typecheck if available.
 6. Commit the conflict resolution with this exact message:
    fix: Resolve merge conflicts with $base_branch
-7. Push the branch to update PR #$pr_number.
+
+Do not push. The workflow automation publishes the branch for you (HOK-3370).
 
 Failure handling:
 - If you cannot resolve the conflicts safely, stop without broad code changes.
@@ -2044,7 +2045,8 @@ Required process:
 5. Run relevant validation for the touched code.
 6. Commit with this exact message:
    fix: Resolve ready-check failure (attempt $attempt_number/$max_attempts)
-7. Push the branch to update PR #$pr_number.
+
+Do not push. The workflow automation publishes the branch for you (HOK-3370).
 
 Do not:
 - Create a new PR or run gh pr create

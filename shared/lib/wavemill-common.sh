@@ -232,6 +232,46 @@ publish_stage_head() {
   return $rc
 }
 
+# ── Head-freshness primitive bridge (HOK-3370) ──────────────────────────────
+# Evidence binds to the change, not the head SHA: a base merge or clean
+# rebase keeps review evidence fresh; a code-changing commit stales it.
+# Wraps tools/change-identity.ts. Results are memoized per
+# (worktree, evidence head, current head, base ref) for the life of the
+# process, so repeated per-tick calls cost one spawn.
+#
+# Usage: change_identity_fresh <wt_dir> <evidence_head> <current_head> <base_ref> [evidence_change_id]
+# Returns 0 when the evidence is fresh, 1 when stale (or unprovable).
+# Sets CHANGE_IDENTITY_REASON to the primitive's reason string.
+declare -gA _WAVEMILL_CHANGE_ID_CACHE 2>/dev/null || true
+change_identity_fresh() {
+  local wt_dir="$1" evidence_head="$2" current_head="$3" base_ref="$4" evidence_change_id="${5:-}"
+  CHANGE_IDENTITY_REASON=""
+  [[ -z "$evidence_head" || -z "$current_head" ]] && { CHANGE_IDENTITY_REASON="compute-failed"; return 1; }
+  # Fast path without a spawn: identical heads are always fresh.
+  if [[ "$evidence_head" == "$current_head" ]]; then
+    CHANGE_IDENTITY_REASON="same-head"
+    return 0
+  fi
+  local cache_key="${wt_dir}|${evidence_head}|${current_head}|${base_ref}|${evidence_change_id}"
+  local cached="${_WAVEMILL_CHANGE_ID_CACHE[$cache_key]:-}"
+  if [[ -n "$cached" ]]; then
+    CHANGE_IDENTITY_REASON="${cached#*:}"
+    [[ "${cached%%:*}" == "fresh" ]] && return 0 || return 1
+  fi
+  local out rc=0 extra_args=()
+  [[ -n "$evidence_change_id" ]] && extra_args+=(--evidence-change-id "$evidence_change_id")
+  out=$(wavemill_run_tool "change-identity.ts" --worktree "$wt_dir" --base-ref "$base_ref" \
+    --evidence-head "$evidence_head" --current-head "$current_head" "${extra_args[@]}" 2>/dev/null) || rc=$?
+  CHANGE_IDENTITY_REASON=$(printf '%s\n' "$out" | tail -n 1 | jq -r '.reason // empty' 2>/dev/null || true)
+  if (( rc == 0 )); then
+    _WAVEMILL_CHANGE_ID_CACHE[$cache_key]="fresh:${CHANGE_IDENTITY_REASON:-same-change-identity}"
+    return 0
+  fi
+  [[ -z "$CHANGE_IDENTITY_REASON" ]] && CHANGE_IDENTITY_REASON="compute-failed"
+  _WAVEMILL_CHANGE_ID_CACHE[$cache_key]="stale:$CHANGE_IDENTITY_REASON"
+  return 1
+}
+
 # HOK-3190: minimal fallback for pass_task_field so standalone callers
 # (test harnesses that source just wavemill-common.sh, cleanup CLIs, etc.)
 # that end up invoking a monitor function with a `pass_task_field` call

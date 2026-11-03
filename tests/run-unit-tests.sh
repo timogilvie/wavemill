@@ -547,6 +547,7 @@ TESTS=(
   shared/lib/permissions-verifier.test.ts
   shared/lib/plan-validator.test.ts
   shared/lib/branch-publication.test.ts
+  shared/lib/head-move-record.test.ts
   shared/lib/pre-pr-verification.test.ts
   shared/lib/project-context-compactor.test.ts
   shared/lib/project-context-generator.test.ts

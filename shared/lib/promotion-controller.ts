@@ -5,6 +5,8 @@ import { detectSurvivingChangeWarnings, type CrossPrRevertFinding } from './cros
 import { WM_LABELS } from './pr-state-labels.ts';
 import { errorMessage } from './error-utils.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
+import { publishStageHead } from './branch-publication.ts';
+import type { HeadMoveKind, HeadMoveStage } from './head-move-record.ts';
 import {
   defaultHealthChecker,
   waitForChecks,
@@ -1013,11 +1015,26 @@ function execExitStatus(error: unknown): number | null {
   return null;
 }
 
+/**
+ * Head-move context for a task-branch update (HOK-3370). When provided, the
+ * post-merge push routes through the one publication seam
+ * (`publishStageHead`), which appends a `head-move/v1` row and shadow-records
+ * the push. Integration/promotion branches (no task state dir) omit it and
+ * keep the direct push.
+ */
+export interface BranchBaseUpdateHeadMoveContext {
+  stateDir: string;
+  issue: string;
+  stage?: HeadMoveStage;
+  kind?: HeadMoveKind;
+}
+
 export function updateBranchWithBase(
   branch: string,
   baseBranch: string,
   repoDir: string,
   shellRunner: ShellRunner = (cmd, opts) => String(execShellCommand(cmd, opts)),
+  headMoveContext?: BranchBaseUpdateHeadMoveContext,
 ): BranchBaseUpdateResult {
   const dirtyState = String(shellRunner(
     'git status --porcelain --untracked-files=no',
@@ -1124,6 +1141,30 @@ export function updateBranchWithBase(
     return {
       status: 'unknown-failed',
       detail,
+    };
+  }
+
+  // HOK-3370: a task-branch head move publishes through the one seam so the
+  // move is recorded (`head-move/v1`, kind base-merge) and ledger-shadowed.
+  if (headMoveContext) {
+    const published = publishStageHead({
+      worktreeDir: repoDir,
+      branch,
+      stateDir: headMoveContext.stateDir,
+      issue: headMoveContext.issue,
+      stage: headMoveContext.stage ?? 'ready',
+      actor: 'mill',
+      kind: headMoveContext.kind ?? 'base-merge',
+    });
+    if (!published.ok) {
+      return {
+        status: 'push-failed',
+        detail: `stage head publication failed (${published.reason}): ${published.message}`,
+      };
+    }
+    return {
+      status: 'success',
+      detail: `updated ${branch} with origin/${baseBranch} and published through the stage-head seam (${published.outcome})`,
     };
   }
 
