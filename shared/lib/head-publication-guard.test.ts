@@ -22,6 +22,7 @@ describe('head-publication guard — push outside the seam (HOK-3370)', () => {
 
   it('flags a raw git push in mill TS code', () => {
     assert.deepEqual(
+      // allow-template-curly: fixture source text fed to the guard, ${branch} is literal
       patternsOf('shared/lib/some-controller.ts', "exec(`git push origin ${branch}`);\n"),
       ['push-outside-seam'],
     );
