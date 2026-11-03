@@ -235,7 +235,7 @@ export interface TendHeartbeat {
 }
 
 export interface WaitingOnEvidence {
-  /** True iff any of `.needs-attention`, `.needs-attention-transient`, `.ready-waiting-on.json` exists. */
+  /** True iff any of `.needs-attention`, `.ready-waiting-on.json` exists (HOK-3360 removed `.needs-attention-transient`). */
   hasWaitingOnMarker: boolean;
   /** Human-readable detail for evidence (which marker was found). */
   detail?: string;

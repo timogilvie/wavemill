@@ -8,6 +8,14 @@
 # runner all inherit the same implementation.
 # shellcheck source=bounded-retry.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bounded-retry.sh"
+# HOK-3360: the one operator-escalation decision. Operator attention
+# (.needs-attention) is raised only by escalate_operator_attention, after the
+# failure policy escalates (bucket exhaustion, a terminal classification, or a
+# named operator-decision). Sourced here so the monitor and its shell tests all
+# inherit the single step. New attention writes must go through this helper
+# (enforced by tools/check-failure-policy.ts).
+# shellcheck source=operator-escalation.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/operator-escalation.sh"
 # HOK-3101: shared task-progress accessors (wavemill_hook_read,
 # task_progress_json, task_progress_cached_json). Sourced here so the monitor,
 # reconciler, dashboard, next-done and pane-message delivery all inherit the

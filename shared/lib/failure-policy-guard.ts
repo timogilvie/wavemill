@@ -78,6 +78,10 @@ export const FAILURE_POLICY_GUARD: GuardSpec = {
     'shared/lib/failure-policy-guard.ts',
     // HOK-3362: the one budget-exhaustion definition.
     'shared/lib/native-agent/budget-exhaustion.ts',
+    // HOK-3360: the one operator-escalation step (the only place that may
+    // write .needs-attention). Both the shell helper and its TS twin.
+    'shared/lib/operator-escalation.sh',
+    'shared/lib/operator-escalation.ts',
   ],
   structuralChecks: [{
     name: 'budget-stop-provider-classification',
@@ -137,6 +141,18 @@ export const FAILURE_POLICY_GUARD: GuardSpec = {
       description: 'private terminal/fatal/non-retryable signature table — extend TERMINAL_ALLOWLIST (with a reason and test) or let it retry',
       lang: 'both',
       re: /\b[A-Z_]*(?:TERMINAL|FATAL|PERMANENT|NON_?RETRYABLE|UNRECOVERABLE)[A-Z_]*_(?:PATTERNS|SIGNATURES|REGEX(?:ES)?|RES|MATCHERS)\s*[:=(]/,
+    },
+    {
+      name: 'attention-write-outside-escalation',
+      description: 'operator attention is raised only by escalate_operator_attention / escalateOperatorAttention (shared/lib/operator-escalation.{sh,ts}, HOK-3360)',
+      lang: 'both',
+      re: /\bwrite_ready_attention_file\b|\b_operator_attention_write\b|\bwriteReadyAttention\b|\bwrite_transient_ready_attention_file\b|marker_write\s+"[^"]*\.needs-attention|path:\s*[^,}]*["']\.needs-attention["']/,
+    },
+    {
+      name: 'retired-transient-attention',
+      description: 'the .needs-attention-transient kind / ready-attention-transient marker was removed (HOK-3360) — a transient mergeability is a retry state, not an attention kind',
+      lang: 'both',
+      re: /\.needs-attention-transient\b|ready-attention-transient\b/,
     },
   ],
   remediation: [

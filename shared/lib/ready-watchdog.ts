@@ -39,6 +39,8 @@ import {
   buildStaleMarkerFinding,
   type MarkerHandle,
 } from './transient-marker.ts';
+import { escalateOperatorAttention } from './operator-escalation.ts';
+import { createStateDirRetry } from './bounded-retry.ts';
 import { readChallengeComparisons, type StoredChallengeComparison } from './challenge-comparison.ts';
 import {
   classifyChallengeState,
@@ -1574,14 +1576,22 @@ async function recoverReadyState(
   });
 }
 
-async function writeReadyAttention(snapshot: ReadyTaskSnapshot, detail: string): Promise<void> {
-  const firstLine = detail.split(/\r?\n/, 1)[0]?.trim() || detail;
-  const markerPath = path.join(snapshot.readyStateDir, '.needs-attention');
-  const headSha = snapshot.currentHead || 'unknown';
-  writeMarker(
-    { path: markerPath, kind: 'ready-attention' },
-    { headSha, reason: firstLine },
-  );
+// HOK-3360: the watchdog raises operator attention only through the one
+// escalation step. Merge-residue needs-user is an operator decision; a capped
+// remediation is the ready-remediation bucket's exhaustion. The private
+// writeReadyAttention writer was removed — a raw .needs-attention write here
+// would fail the failure-policy guard.
+async function escalateReadyWatchdogAttention(
+  snapshot: ReadyTaskSnapshot,
+  basis: Parameters<typeof escalateOperatorAttention>[0]['basis'],
+  detail: string,
+): Promise<void> {
+  escalateOperatorAttention({
+    stateDir: snapshot.readyStateDir,
+    headSha: snapshot.currentHead || 'unknown',
+    basis,
+    message: detail,
+  });
 }
 
 async function writeAuditRecord(repoDir: string, record: ReadyWatchdogAuditRecord): Promise<void> {
@@ -2234,7 +2244,7 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
         });
       } else {
         const detail = `${resumeResult.detail}. Git state: ${summarizeMergeState(snapshot.worktreeMergeState)}. Next command: ${nextCommandForMergeState(snapshot)}`;
-        await writeReadyAttention(snapshot, detail);
+        await escalateReadyWatchdogAttention(snapshot, { kind: 'operator-decision', code: 'merge-residue' }, detail);
         entry = buildFindingEntry({
           issueId,
           snapshot,
@@ -2249,7 +2259,7 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
       let action = 'reported';
       let recoveryCommand = classification.recoveryCommand;
       if (classification.kind === 'needs-user' && disconnectedMergeResidueDetected(snapshot)) {
-        await writeReadyAttention(snapshot, classification.detail);
+        await escalateReadyWatchdogAttention(snapshot, { kind: 'operator-decision', code: 'merge-residue' }, classification.detail);
         action = 'needs-user';
       }
       if (
@@ -2273,7 +2283,10 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
               kind: 'needs-user',
               detail: `Transient CI failure budget exhausted after ${transientFailureCount - 1}/${failureClassifierConfig.transientRetryBudget} retries for PR #${snapshot.prNumber}: ${classification.detail}`,
             };
-            await writeReadyAttention(snapshot, classification.detail);
+            // HOK-3360: the monitor's Ready path owns CI failures through the
+            // stage-failure-ready budget and pages on its exhaustion. The
+            // watchdog's private transient counter does not page; it keeps its
+            // finding row (dashboard needs-user classification) only.
           }
         } else if (classification.ciFailureCategory === 'deterministic-local') {
           const attempts = snapshot.readyArtifacts?.remediationAttempts ?? 0;
@@ -2291,7 +2304,17 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
               ...classification,
               detail: `Ready remediation capped at ${attempts}/${remediationConfig.maxAttempts} attempts for PR #${snapshot.prNumber}.`,
             };
-            await writeReadyAttention(snapshot, classification.detail);
+            // HOK-3360: terminalize the shared ready-remediation bucket (the
+            // monitor's Ready path marks the same bucket at the same cap;
+            // markExhausted is idempotent) so the escalation basis holds, then
+            // page through the one escalation step.
+            createStateDirRetry('ready-remediation', { maxAttempts: remediationConfig.maxAttempts })
+              .markExhausted(snapshot.readyStateDir, classification.detail);
+            await escalateReadyWatchdogAttention(
+              snapshot,
+              { kind: 'exhausted', bucket: 'ready-remediation', maxAttempts: remediationConfig.maxAttempts },
+              classification.detail,
+            );
           } else if (snapshot.remediationDisposition.kind === 'in-flight') {
             action = 'remediation-in-flight';
             classification = {
