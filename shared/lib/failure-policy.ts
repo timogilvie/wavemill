@@ -239,6 +239,38 @@ export const TERMINAL_ALLOWLIST: readonly TerminalCause[] = Object.freeze([
   },
 ] satisfies TerminalCause[]);
 
+/**
+ * Operator decisions: policy-named causes that need a human, retry cannot change.
+ * Not new terminal causes: no task class changes, nothing parks that did not before.
+ * Each entry is a site that pages today.
+ */
+export const OPERATOR_DECISIONS: Readonly<Record<string, { reason: string; testRef: string }>> = {
+  'merged-before-ready': {
+    reason: 'the PR merged before Ready passed. This is an observation about history, so there is nothing to retry',
+    testRef: 'failure-policy.test.ts:operator-decision:merged-before-ready',
+  },
+  'cross-pr-revert-unacknowledged': {
+    reason: 'the guard verdict rc=1. Only an operator acknowledgement or a new head changes it',
+    testRef: 'failure-policy.test.ts:operator-decision:cross-pr-revert-unacknowledged',
+  },
+  'challenge-comparison-stale': {
+    reason: 'a compared pair whose record no longer satisfies Ready at the current heads. The comment argues that re-running cannot change it',
+    testRef: 'failure-policy.test.ts:operator-decision:challenge-comparison-stale',
+  },
+  'review-session-interrupted-pre-pr': {
+    reason: 'review interrupted before a PR exists. The instruction is literally "run /re-review"',
+    testRef: 'failure-policy.test.ts:operator-decision:review-session-interrupted-pre-pr',
+  },
+  'operator-command-failed': {
+    reason: 'an operator-issued `/re-review` failed to launch. The operator is the one waiting on that command; it is not a mill retry path',
+    testRef: 'failure-policy.test.ts:operator-decision:operator-command-failed',
+  },
+  'transition-code-failure': {
+    reason: 'a transition tool\'s own contract assertion. The mill cannot remediate its own code',
+    testRef: 'failure-policy.test.ts:operator-decision:transition-code-failure',
+  },
+};
+
 /** Legacy spellings that resolve to one canonical kind before policy lookup. */
 const KIND_ALIASES: Readonly<Record<string, string>> = {
   'invalid-model-id': 'provider-config-error',

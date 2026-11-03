@@ -89,8 +89,10 @@ TESTS=(
   ready-remediation-disposition.test.sh
   ready-failure-blocks-pr-label.test.sh
   launch-ready-phase.test.sh
+  ready-first-failure-no-attention.test.sh
   ready-sync-github-head-lag.test.sh
   bounded-retry.test.sh
+  operator-escalation.test.sh
   check-install-paths.test.sh
   check-common-guards.test.sh
   check-marker-clear-sites.test.sh

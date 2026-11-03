@@ -11224,7 +11224,9 @@ ready_stage_warn_bypass_once() {
   fi
 
   log "status" "⛔ $issue → PR #$pr was merged before ready checks passed"
-  : > "$sentinel"
+  # HOK-3360: Escalate via the failure policy instead of writing attention directly
+  # : > "$sentinel"
+  escalate_operator_attention "$state_dir" "operator-decision" "merged-before-ready" "PR #$pr was merged before ready checks passed"
   return 0
 }
 
@@ -11276,15 +11278,30 @@ READY_TRANSIENT_MAX_ATTEMPTS=6
 : "${READY_FAILED_RECHECK_BACKOFF_CAP_SECONDS:=1800}"
 : "${READY_FAILED_RECHECK_IDENTICAL_LIMIT:=3}"
 
+# HOK-3360: Moved to operator-escalation.sh as _operator_attention_write
+# This function is now private and should only be called through escalate_operator_attention
 write_ready_attention_file() {
   local state_dir="$1" message="$2"
   shift 2
   local -a condition_flags=("$@")
-  local repo_dir
-  repo_dir=$(git -C "$state_dir" rev-parse --show-toplevel 2>/dev/null) || return 0
-  local head_sha
-  head_sha=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null) || return 0
-  marker_write "$state_dir/.needs-attention" --kind ready-attention --head "$head_sha" --reason "$message" "${condition_flags[@]}"
+  # Delegate to the new escalation module
+  # shellcheck source=operator-escalation.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/operator-escalation.sh" 2>/dev/null || true
+  if declare -F _operator_attention_write >/dev/null 2>&1; then
+    _operator_attention_write "$state_dir" "$message" "${condition_flags[@]}"
+  else
+    # Fallback to original implementation if module not available
+    local repo_dir
+    repo_dir=$(git -C "$state_dir" rev-parse --show-toplevel 2>/dev/null) || return 0
+    local head_sha
+    head_sha=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null) || return 0
+    marker_write "$state_dir/.needs-attention" --kind ready-attention --head "$head_sha" --reason "$message" "${condition_flags[@]}"
+  fi
+}
+
+# Temporary alias for backward compatibility during HOK-3360 migration
+write_ready_attention_file_alias() {
+  write_ready_attention_file "$@"
 }
 
 _write_cross_pr_diagnostic() {
@@ -11435,7 +11452,9 @@ cross_pr_revert_gate_apply_result() {
       message="$message Affected files: $files."
     fi
     write_cross_pr_guard_ready_result "$state_dir" "$pr_number" "$checked_head_sha" "blocked" "$message" "$result"
-    write_ready_attention_file "$state_dir" "$message"
+    # HOK-3360: Escalate via the failure policy instead of writing attention directly
+    # write_ready_attention_file "$state_dir" "$message"
+    escalate_operator_attention "$state_dir" "operator-decision" "cross-pr-revert-unacknowledged" "$message"
     wavemill_run_tool "ready-preflight-diagnostic.ts" \
       --state-dir "$state_dir" \
       --stage "cross-pr-guard" \
@@ -11812,7 +11831,9 @@ ready_failure_classify_and_act() {
         if bounded_retry_mark_exhausted "$state_dir" "stage-failure-ready" \
             "Ready re-checks terminalized on a base conflict for PR #$pr: $upd_reason"; then
           log "status" "⛔ $issue → $upd_reason for PR #$pr"
-          write_ready_attention_file "$state_dir" "$upd_reason for PR #$pr"
+          # HOK-3360: Escalate via the failure policy instead of writing attention directly
+          # write_ready_attention_file "$state_dir" "$upd_reason for PR #$pr"
+          escalate_operator_attention "$state_dir" "exhausted" "stage-failure-ready" "$upd_reason for PR #$pr"
         fi
         # HOK-3147: a base conflict is not a typed model failure, so a
         # challenge arm with a green sibling is retired as unattributed.
@@ -11852,7 +11873,10 @@ ready_failure_classify_and_act() {
       ;;
     code-failure)
       if [[ "$evidence_source" == "transition" ]]; then
-        write_ready_attention_file "$state_dir" \
+        # HOK-3360: Escalate via the failure policy instead of writing attention directly
+        # write_ready_attention_file "$state_dir" \
+        #   "Ready transition failed for PR #$pr (${failure_kind}). ${next_action} Detail: ${detail:0:500}"
+        escalate_operator_attention "$state_dir" "operator-decision" "transition-code-failure" \
           "Ready transition failed for PR #$pr (${failure_kind}). ${next_action} Detail: ${detail:0:500}"
         log_warn "$issue → Ready failed (${failure_kind}, code-failure from a transition tool); ${next_action}. Detail: ${detail:0:400}"
         return 1
@@ -11871,7 +11895,9 @@ ready_failure_classify_and_act() {
           local exhausted_reason
           exhausted_reason="$(bounded_retry_exhaustion_reason "$state_dir" "stage-failure-ready")"
           if [[ -n "$exhausted_reason" && ! -f "$state_dir/.needs-attention" ]]; then
-            write_ready_attention_file "$state_dir" "$exhausted_reason"
+            # HOK-3360: Escalate via the failure policy instead of writing attention directly
+            # write_ready_attention_file "$state_dir" "$exhausted_reason"
+            escalate_operator_attention "$state_dir" "exhausted" "stage-failure-ready" "$exhausted_reason"
           fi
           if ready_exhausted_challenge_terminalize "$issue" "$pr" "$state_dir" "$win"; then
             return 0
@@ -14082,7 +14108,9 @@ launch_ready_phase() {
         conflict_reason="Conflict remediation exhausted on identical (head=$current_head, base=$conflict_base_sha) for PR #$pr_number"
         if bounded_retry_mark_exhausted "$state_dir" "conflict-remediation-relaunch" "$conflict_reason"; then
           log "status" "⛔ $issue → $conflict_reason"
-          write_ready_attention_file "$state_dir" "$conflict_reason"
+          # HOK-3360: Escalate via the failure policy instead of writing attention directly
+          # write_ready_attention_file "$state_dir" "$conflict_reason"
+          escalate_operator_attention "$state_dir" "exhausted" "conflict-remediation-relaunch" "$conflict_reason"
         fi
         log_error "  Merge conflicts persist for $issue after remediation attempt"
         return 1
@@ -14473,7 +14501,9 @@ launch_ready_phase() {
       write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
         "Ready remediation exhausted after ${remediation_attempts} attempt(s)" \
         "$exhausted_artifacts_json"
-      write_ready_attention_file "$state_dir" "Remediation exhausted after ${remediation_attempts} attempt(s) for PR #$pr_number."
+      # HOK-3360: Escalate via the failure policy instead of writing attention directly
+      # write_ready_attention_file "$state_dir" "Remediation exhausted after ${remediation_attempts} attempt(s) for PR #$pr_number."
+      escalate_operator_attention "$state_dir" "exhausted" "ready-remediation" "Remediation exhausted after ${remediation_attempts} attempt(s) for PR #$pr_number."
       bounded_retry_mark_exhausted "$state_dir" "ready-remediation" \
         "Ready remediation exhausted after ${remediation_attempts} attempt(s) for PR #$pr_number (failed checks: ${failed_check_names})" || true
       log_error "  Ready remediation exhausted for $issue (failed checks: ${failed_check_names})"
@@ -14513,7 +14543,8 @@ launch_ready_phase() {
     "{\"type\":\"ready\",\"verdict\":\"${verdict:-unknown}\",\"checksRun\":${checks_run:-0},\"checksPassed\":${checks_passed:-0},\"mergeConflict\":\"${merge_status:-UNKNOWN}\",\"prNumber\":${pr_number}${failed_check_names_json:+,\"remediationFailures\":${failed_check_names_json}}}" \
     "candidate-progress")
   write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" "Ready checks failed" "$failed_artifacts_json"
-  write_ready_attention_file "$state_dir" "Ready checks failed for PR #$pr_number."
+  # HOK-3360: Don't write attention directly, let the failure policy handle escalation
+  # write_ready_attention_file "$state_dir" "Ready checks failed for PR #$pr_number."
   log_ready_failure_result "$issue" "$result"
   return 1
 }
@@ -15290,7 +15321,10 @@ handle_challenge_pending_ready() {
   # of looping (the safe pre-HOK-2963 stall, without accepting stale
   # evidence).
   if [[ "$(read_state_value "false" --arg i "$primary_key" '.tasks[$i].challengeCompared // false')" == "true" ]]; then
-    write_ready_attention_file "$state_dir" \
+    # HOK-3360: Escalate via the failure policy instead of writing attention directly
+    # write_ready_attention_file "$state_dir" \
+    #   "Challenge pair $pair_id has a comparison record that does not satisfy Ready at the current heads for PR #$pr (stale evidence after a head change). Manual supersession or re-comparison required."
+    escalate_operator_attention "$state_dir" "operator-decision" "challenge-comparison-stale" \
       "Challenge pair $pair_id has a comparison record that does not satisfy Ready at the current heads for PR #$pr (stale evidence after a head change). Manual supersession or re-comparison required."
     return 1
   fi
@@ -20218,7 +20252,9 @@ handle_re_review_command() {
         MONITOR_COMMAND_STATUS="handled"
         return 0
       fi
-      write_ready_attention_file "$feature_dir" "Could not launch manual re-review that would create the PR (rc=$rc)."
+      # HOK-3360: Escalate via the failure policy instead of writing attention directly
+      # write_ready_attention_file "$feature_dir" "Could not launch manual re-review that would create the PR (rc=$rc)."
+      escalate_operator_attention "$feature_dir" "operator-decision" "operator-command-failed" "Could not launch manual re-review that would create the PR (rc=$rc)."
       log_warn "$issue re-review launch failed before PR creation (rc=$rc)"
       MONITOR_COMMAND_STATUS="invalid"
       return 0
@@ -21889,7 +21925,9 @@ monitor_issue_state() {
                 "monitor" || true
           fi
         fi
-        write_ready_attention_file "$FEATURE_DIR" "Review interrupted on branch $BRANCH before PR creation; coding commits preserved. Run /re-review $ISSUE to relaunch."
+        # HOK-3360: Escalate via the failure policy instead of writing attention directly
+        # write_ready_attention_file "$FEATURE_DIR" "Review interrupted on branch $BRANCH before PR creation; coding commits preserved. Run /re-review $ISSUE to relaunch."
+        escalate_operator_attention "$FEATURE_DIR" "operator-decision" "review-session-interrupted-pre-pr" "Review interrupted on branch $BRANCH before PR creation; coding commits preserved. Run /re-review $ISSUE to relaunch."
         set_task_phase "$ISSUE" "review"
         set_window_attention_state "$WIN" "needs-user"
         active_count=$((active_count + 1))
