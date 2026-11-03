@@ -142,7 +142,7 @@ test('formerly terminal kinds now retry (HOK-3176 removals)', () => {
     'native-review-timeout',
     'empty-model-turn',
     'native-provider-error',
-    'native-completion-protocol',
+    'completion-protocol',
     'planning-artifact-invalid:missing_sections',
     'review-no-output',
     'coding-exited-without-result',
@@ -155,8 +155,8 @@ test('formerly terminal kinds now retry (HOK-3176 removals)', () => {
 });
 
 test('detectFailureKind keeps the monitor ladder precedence', () => {
-  assert.equal(detectFailureKind('Provider finish_reason: error', 'no_completion_artifact'), 'native-completion-protocol');
-  assert.equal(detectFailureKind('anything', 'invalid_completion_artifact'), 'native-completion-protocol');
+  assert.equal(detectFailureKind('Provider finish_reason: error', 'no_completion_artifact'), 'completion-protocol');
+  assert.equal(detectFailureKind('anything', 'invalid_completion_artifact'), 'completion-protocol');
   assert.equal(detectFailureKind('who knows', 'provider_error'), 'native-provider-error');
   assert.equal(detectFailureKind('who knows'), 'native-unclassified');
   assert.equal(detectFailureKind(''), 'native-unclassified');

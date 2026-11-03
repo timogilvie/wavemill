@@ -13,6 +13,7 @@ import {
   parseAbortFailureKind,
   isInvalidChallengeAbort,
 } from './arm-failure-taxonomy.ts';
+import { canonicalFailureKind } from './failure-policy.ts';
 import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 import { nativeStageTimeSplit } from './native-agent/stage-time-split.ts';
 import { parseTranscriptJsonl } from './native-agent/transcript.ts';
@@ -62,11 +63,18 @@ test('classifies provider and ambiguous failures conservatively', () => {
 test('classifies the HOK-2933 typed-handoff failure kinds', () => {
   // A completion-protocol violation is the model's fault: the provider
   // returned output, but the model never produced a valid completion artifact.
+  // HOK-3358 renamed the kind from `native-completion-protocol` so the alias
+  // chain classifies both spellings; `canonicalFailureKind` resolves the
+  // legacy name to the new one before policy lookup.
   assert.equal(classifyArmFault({
-    failureKind: 'native-completion-protocol',
+    failureKind: 'completion-protocol',
     detail: 'model emitted apply_patch as assistant text with zero structured tool calls',
   }), 'model-fault');
-  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'native-completion-protocol' })), true);
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'completion-protocol' })), true);
+  // Legacy spelling parses but the classifier's switch only names the new
+  // name — the alias chain (via `canonicalFailureKind`) carries the legacy
+  // kind to its new one in every policy site.
+  assert.equal(canonicalFailureKind('native-completion-protocol'), 'completion-protocol');
 
   // Unclassified failures must stay out of the quality corpus, even when the
   // detail contains strings the native-provider-error refinement would match.
@@ -77,7 +85,7 @@ test('classifies the HOK-2933 typed-handoff failure kinds', () => {
   }), 'unknown-fault');
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'native-unclassified' })), false);
 
-  assert.equal(parseAbortFailureKind('terminal_stage_failure:native-completion-protocol'), 'native-completion-protocol');
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:completion-protocol'), 'completion-protocol');
   assert.equal(parseAbortFailureKind('terminal_launch_failure:native-unclassified'), 'native-unclassified');
 });
 
@@ -202,6 +210,11 @@ test('classifies the HOK-3154 review-gate refusal kinds and prefixes', () => {
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'review-identity-mismatch' })), false);
   assert.equal(isInvalidChallengeAbort('invalid_challenge:review-identity-mismatch'), true);
   assert.equal(isInvalidChallengeAbort(' invalid_challenge:review-unattributed '), true);
+  // HOK-3358 normalizes every arm termination to `terminal_stage_failure:*`;
+  // `isInvalidChallengeAbort` classifies by kind, not prefix, so the
+  // normalized form must still void the pair (no winner).
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:review-identity-mismatch'), true);
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:review-unattributed'), true);
 });
 
 test('classifies the HOK-3147 ready-exhausted kinds and the invalid_challenge prefix', () => {
@@ -217,11 +230,14 @@ test('classifies the HOK-3147 ready-exhausted kinds and the invalid_challenge pr
   assert.equal(classifyArmFault({ failureKind: 'ready-transition-failed' }), 'harness-fault');
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'ready-transition-failed' })), false);
   assert.equal(isInvalidChallengeAbort('invalid_challenge:ready-transition-failed'), true);
+  // HOK-3358 normalized form must classify the same way.
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:ready-transition-failed'), true);
 
   // No typed cause (conflict / missing result): invalid challenge too.
   assert.equal(parseAbortFailureKind('invalid_challenge:ready-unattributed'), 'ready-unattributed');
   assert.equal(classifyArmFault({ failureKind: 'ready-unattributed' }), 'harness-fault');
   assert.equal(isInvalidChallengeAbort('  invalid_challenge:ready-unattributed '), true);
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:ready-unattributed'), true);
 
   assert.equal(isInvalidChallengeAbort(null), false);
   assert.equal(isInvalidChallengeAbort(undefined), false);
@@ -235,6 +251,7 @@ test('classifies the HOK-3156 route-drift kind as a harness fault', () => {
   assert.equal(classifyArmFault({ failureKind: 'route-drift' }), 'harness-fault');
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'route-drift' })), false);
   assert.equal(isInvalidChallengeAbort('invalid_challenge:route-drift'), true);
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:route-drift'), true);
 });
 
 test('classifies the HOK-3156 multiple-varied-roles preflight collapse as a harness fault', () => {
@@ -242,6 +259,7 @@ test('classifies the HOK-3156 multiple-varied-roles preflight collapse as a harn
   assert.equal(classifyArmFault({ failureKind: 'multiple-varied-roles' }), 'harness-fault');
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'multiple-varied-roles' })), false);
   assert.equal(isInvalidChallengeAbort('invalid_challenge:multiple-varied-roles'), true);
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:multiple-varied-roles'), true);
 });
 
 // ── HOK-3362: one budget-exhaustion fault rule ─────────────────────────────

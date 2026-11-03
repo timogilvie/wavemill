@@ -1081,7 +1081,7 @@ challenge_selection_health_release() {
 # exhaustion never aborts the pair, so its terminal outcome would otherwise
 # never reach recordSelectionOutcome and the timed-out reviewer identity would
 # stay immediately reselectable. Best-effort. Challenger arms record via
-# challenge_abort_pair → record-arm-failure.ts instead; calling both would
+# challenge_abort_pair → record-arm-termination.ts instead; calling both would
 # double-count the provider/model circuit window.
 # HOK-3362: the fault class is derived by the tool from the review's typed
 # budget fact (`classifyArmFault`), never hardcoded here.
@@ -1190,7 +1190,7 @@ challenge_abort_scope_for_failure() {
 # pair to it (terminalReason: challenger_challenge_aborted).
 challenge_abort_pair() {
   local issue="$1" feature_dir="$2" win="$3" stage="$4" model="$5" reason="$6" detail="$7" next_action="${8:-}" scope="${9:-pair}"
-  local result_stage pair_id role peer now artifact tmp budget_json
+  local result_stage pair_id role peer now budget_json
   [[ -n "$issue" && -n "$feature_dir" && -n "$stage" && -n "$reason" ]] || return 1
   [[ "$scope" == "single" ]] || scope="pair"
 
@@ -1209,31 +1209,51 @@ challenge_abort_pair() {
 
   write_stage_result "$feature_dir" "$result_stage" "failed" "" "$model" "$detail"
 
-  if [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
+  # HOK-3358: the single arm-termination recorder owns the state stamp, the
+  # .challenge-aborted.json artifact, and the reliability/eval records. The
+  # monitor keeps the stage result write (above), the OpenRouter credit
+  # circuit (below), and the window-attention update (below).
+  local kind="${reason#terminal_stage_failure:}"
+  kind="${kind#terminal_launch_failure:}"
+  kind="${kind#retry_exhausted:}"
+  kind="${kind#invalid_challenge:}"
+  if [[ -n "${REPO_DIR:-}" && -n "$kind" ]]; then
+    local recorder_tool
+    recorder_tool="$(wavemill_tool_path record-arm-termination.ts)"
+    if [[ -f "$recorder_tool" ]]; then
+      (
+        cd "$REPO_DIR" && wavemill_run_tool "$recorder_tool" \
+          --repo-dir "${WAVEMILL_RELIABILITY_REPO_DIR:-$REPO_DIR}" \
+          --issue "$issue" \
+          --kind "$kind" \
+          --actor monitor \
+          --stage "$(challenge_stage_for_launch_env "$stage")" \
+          --model "${model:-unknown}" \
+          --detail "$detail" \
+          --next-action "$next_action" \
+          --scope "$scope" \
+          --feature-dir "$feature_dir" \
+          ${STATE_FILE:+--state-file "$STATE_FILE"} \
+          ${budget_json:+--budget-exhausted-json "$budget_json"}
+      ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
+    fi
+  fi
+
+  # Fallback: `challengePairAbortions` is read by the resolver. Keep stamping
+  # it from shell so the pair-wise map remains populated even if the recorder
+  # fails or is unavailable (it only cares about the (issueId, role) rows and
+  # the pair-level map).
+  if [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" && -n "${pair_id:-}" && -n "$role" ]]; then
     state_mutate "$STATE_FILE" \
-      'def mark($key):
-         if ($key != "" and .tasks[$key] != null)
-         then .tasks[$key].challengeAborted = $reason
-              | .tasks[$key].challengeAbortedDetail = $detail
-              | .tasks[$key].challengeAbortedStage = $stage
-              | (if $nextAction != "" then .tasks[$key].challengeAbortedNextAction = $nextAction else . end)
-              | .tasks[$key].updated = (now | todate)
-         else .
-         end;
-       mark($issue)
-       | (if $scope == "pair" then mark($peer) else . end)
-       | if $pairId != "" and $role != "" then
-           .challengePairAbortions[$pairId][$role] = {
-             reason: $reason,
-             detail: $detail,
-             stage: $stage,
-             issue: $issue,
-             scope: $scope,
-             updated: (now | todate)
-           } + (if $nextAction != "" then {nextAction:$nextAction} else {} end)
-         else . end' \
+      '.challengePairAbortions[$pairId][$role] = {
+         reason: $reason,
+         detail: $detail,
+         stage: $stage,
+         issue: $issue,
+         scope: $scope,
+         updated: (now | todate)
+       } + (if $nextAction != "" then {nextAction:$nextAction} else {} end)' \
       --arg issue "$issue" \
-      --arg peer "${peer:-}" \
       --arg pairId "${pair_id:-}" \
       --arg role "$role" \
       --arg reason "$reason" \
@@ -1241,45 +1261,6 @@ challenge_abort_pair() {
       --arg stage "$(challenge_stage_for_launch_env "$stage")" \
       --arg nextAction "$next_action" \
       --arg scope "$scope" >/dev/null 2>&1 || true
-  fi
-
-  mkdir -p "$feature_dir"
-  artifact="$feature_dir/.challenge-aborted.json"
-  tmp="$artifact.tmp.$$"
-  jq -n -S \
-    --arg pairId "${pair_id:-$issue}" \
-    --arg role "$role" \
-    --arg stage "$(challenge_stage_for_launch_env "$stage")" \
-    --arg model "$model" \
-    --arg reason "$reason" \
-    --arg abortedAt "$now" \
-    --arg detail "$detail" \
-    --arg nextAction "$next_action" \
-    --arg budgetExhausted "$budget_json" \
-    '{pairId:$pairId, role:$role, stage:$stage, model:$model, reason:$reason, abortedAt:$abortedAt, detail:$detail}
-     + (if $nextAction == "" then {} else {nextAction:$nextAction} end)
-     + (if $budgetExhausted == "" then {} else {budgetExhausted:($budgetExhausted | fromjson? // null)} end)' \
-    > "$tmp" 2>/dev/null && mv "$tmp" "$artifact" || rm -f "$tmp"
-
-  if [[ -n "${REPO_DIR:-}" && ( "$role" == "primary" || "$role" == "challenger" ) ]]; then
-    local tool
-    tool="$(wavemill_tool_path record-arm-failure.ts)"
-    if [[ -f "$tool" ]]; then
-      (
-        cd "$REPO_DIR" && wavemill_run_tool "$tool" \
-          --repo-dir "${WAVEMILL_RELIABILITY_REPO_DIR:-$REPO_DIR}" \
-          --issue "$issue" \
-          --pair-id "${pair_id:-$issue}" \
-          --role "$role" \
-          --stage "$(challenge_stage_for_launch_env "$stage")" \
-          --model "${model:-unknown}" \
-          --abort-reason "$reason" \
-          --detail "$detail" \
-          --next-action "$next_action" \
-          ${budget_json:+--budget-exhausted-json "$budget_json"} \
-          --feature-dir "$feature_dir"
-      ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
-    fi
   fi
 
   # HOK-3155: trip the credit circuit for both canonical reason spellings. The
@@ -12199,9 +12180,15 @@ review_refused_challenge_terminalize() {
     # Only a review-gate retirement this helper recorded is resumed. Any other
     # stamp (ready-exhausted retirement, pair-scope quarantine mirrored from
     # the sibling, etc.) keeps the hold so a healthy arm's PR is never closed.
+    # HOK-3358 unified the stamp format to `terminal_stage_failure:<kind>`, but
+    # a legacy `invalid_challenge:*` stamp (from pre-HOK-3358 state carried
+    # across a restart) is still recognised here so idempotent resumes work
+    # across the transition.
     existing_stage="$(get_task_meta "$issue" "challengeAbortedStage" 2>/dev/null || true)"
     case "$existing" in
-      invalid_challenge:review-identity-mismatch\
+      terminal_stage_failure:review-identity-mismatch\
+      |terminal_stage_failure:review-unattributed\
+      |invalid_challenge:review-identity-mismatch\
       |invalid_challenge:review-unattributed) ;;
       *) return 1 ;;
     esac
@@ -12971,7 +12958,7 @@ review_recovery_coordinator_locked() {
           if [[ "$review_timeout_side" == "challenger" ]]; then
             # Typed exhaustion reason (HOK-3064): retry_exhausted:native-review-timeout
             # parses to a typed native-review-timeout kind → provider-fault, so
-            # record-arm-failure.ts opens the correct provider/model circuit.
+            # record-arm-termination.ts opens the correct provider/model circuit.
             challenge_abort_pair "$issue" "$feature_dir" "" "review" "$reviewer_model" \
               "retry_exhausted:native-review-timeout" \
               "Challenger review timed out after bounded retries for model ${reviewer_model}; attempts=$(bounded_retry_count "$feature_dir" "review-infra-recovery")" \

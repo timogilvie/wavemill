@@ -217,8 +217,8 @@ fi
 # the completion-protocol kind — never to a provider error.
 repro_detail="Native coding failed: model emitted apply_patch syntax as assistant text twice (stopReason=stop, zero structured tool calls); no .coding-complete artifact"
 repro_kind="$(native_terminal_failure_kind "$repro_detail" "no_completion_artifact")"
-if [[ "$repro_kind" == "native-completion-protocol" ]]; then
-  pass "typed no_completion_artifact classifies as native-completion-protocol"
+if [[ "$repro_kind" == "completion-protocol" ]]; then
+  pass "typed no_completion_artifact classifies as completion-protocol"
 else
   fail "typed no_completion_artifact misclassified as $repro_kind"
 fi
@@ -238,15 +238,15 @@ fi
 
 # A typed protocol violation must win even when the detail contains a
 # transient-looking word, so the transient phase-relaunch never fires on it.
-if [[ "$(native_terminal_failure_kind "runtime gave up after an idle timeout waiting for a completion artifact" "no_completion_artifact")" == "native-completion-protocol" ]]; then
+if [[ "$(native_terminal_failure_kind "runtime gave up after an idle timeout waiting for a completion artifact" "no_completion_artifact")" == "completion-protocol" ]]; then
   pass "typed no_completion_artifact beats transient-looking substrings"
 else
   fail "transient substring overrode the typed handoff reason"
 fi
 
 # [REQ-F3] typed invalid_completion_artifact is also a protocol violation.
-if [[ "$(native_terminal_failure_kind "Native coding failed: completion marker missing confidence" "invalid_completion_artifact")" == "native-completion-protocol" ]]; then
-  pass "typed invalid_completion_artifact classifies as native-completion-protocol"
+if [[ "$(native_terminal_failure_kind "Native coding failed: completion marker missing confidence" "invalid_completion_artifact")" == "completion-protocol" ]]; then
+  pass "typed invalid_completion_artifact classifies as completion-protocol"
 else
   fail "typed invalid_completion_artifact misclassified"
 fi
@@ -402,7 +402,7 @@ write_hook "HOK-1_c" "error" "$repro_detail"
 if emit_native_terminal_failure_attention "HOK-1_c" "$fd" "coding" "win-e2e" "%1" "native" "meta-llama/llama-4-scout"; then
   result_file="$fd/.coding-result.json"
   if [[ "$(jq -r '.status' "$result_file")" == "failed" ]] \
-    && [[ "$(jq -r '.artifacts.failureKind' "$result_file")" == "native-completion-protocol" ]] \
+    && [[ "$(jq -r '.artifacts.failureKind' "$result_file")" == "completion-protocol" ]] \
     && [[ "$(jq -r '.artifacts.handoffReason' "$result_file")" == "no_completion_artifact" ]] \
     && [[ "$(jq -r '.artifacts.nextAction' "$result_file")" == "$expected_action" ]] \
     && [[ "$(jq -r '.notes' "$result_file")" == *"(typed handoff: no_completion_artifact)"* ]]; then

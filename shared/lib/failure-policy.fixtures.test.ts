@@ -108,7 +108,7 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     name: 'typed completion-protocol handoff',
     evidence: { stage: 'coding', detail: 'Native coding failed: Provider finish_reason: error', handoffReason: 'no_completion_artifact' },
     expectedClass: 'retryable',
-    expectedKind: 'native-completion-protocol',
+    expectedKind: 'completion-protocol',
   },
   // ── HOK-3129 signatures ──
   {

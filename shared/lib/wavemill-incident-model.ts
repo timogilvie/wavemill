@@ -99,7 +99,10 @@ export function canonicalizeRootCauseClass(raw: string): IncidentRootCauseClass 
   const value = (raw ?? '').trim();
   if (ROOT_CAUSE_CLASS_SET.has(value)) return value as IncidentRootCauseClass;
   const lower = value.toLowerCase();
-  if (/native[-_ ]completion[-_ ]protocol|no_completion_artifact|invalid_completion_artifact|coding[-_ ]complete|coding[-_ ]blocked[-_ ]completion/.test(lower)) {
+  // HOK-3358: `completion-protocol` is the harness-agnostic spelling; the
+  // pre-rename `native-completion-protocol` and the typed handoff reasons
+  // both still match.
+  if (/(?:native[-_ ])?completion[-_ ]protocol|no_completion_artifact|invalid_completion_artifact|coding[-_ ]complete|coding[-_ ]blocked[-_ ]completion/.test(lower)) {
     return 'native_completion_protocol_failure';
   }
   if (/blocked[-_ ]completion|live blocking command|auto[-_ ]advance[-_ ]refused/.test(lower)) {
