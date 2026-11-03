@@ -8,9 +8,9 @@ import {
   deriveQueueMetrics,
   deriveQueueMetricsForPr,
   QUEUE_METRICS_VERSION,
-  type QueueLifecycleEvent,
   type QueueMetricsResult,
 } from './queue-metrics.ts';
+import { type QueueLifecycleEvent } from './queue-events.ts';
 
 const THIS_DIR = dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = join(THIS_DIR, 'fixtures', 'queue-metrics');
