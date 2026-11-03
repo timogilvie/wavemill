@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # One cross-runtime state lock. Directories are stamped before their atomic rename.
 # shellcheck source=process-identity.sh
-if [[ -n "${REPO_DIR:-}" && -f "$REPO_DIR/shared/lib/process-identity.sh" ]]; then
-  source "$REPO_DIR/shared/lib/process-identity.sh"
-elif [[ -n "${WAVEMILL_INSTALL_DIR:-}" && -f "$WAVEMILL_INSTALL_DIR/shared/lib/process-identity.sh" ]]; then
-  source "$WAVEMILL_INSTALL_DIR/shared/lib/process-identity.sh"
+# Lock ownership must use the process identity twin from this install, never
+# from REPO_DIR (the separate repository currently being milled).
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+  state_lock_source="${(%):-%N}"
 else
-  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/process-identity.sh"
+  state_lock_source="${BASH_SOURCE[0]}"
 fi
+state_lock_lib_dir="$(cd "$(dirname "$state_lock_source")" && pwd)"
+source "$state_lock_lib_dir/process-identity.sh"
 
 state_lock_owner_reclaimable() {
   local owner_json="$1" this_host="$2" pid start host

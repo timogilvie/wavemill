@@ -2,19 +2,21 @@
 # Wavemill Common Library
 # Shared functions used across wavemill-mill.sh and wavemill-expand.sh
 
-# Resolve once before sourcing twins. zsh does not expose Bash's BASH_SOURCE
-# array consistently; test and embedding callers supply REPO_DIR instead.
-WAVEMILL_COMMON_LIB_DIR="${REPO_DIR:+$REPO_DIR/shared/lib}"
-if [[ -z "$WAVEMILL_COMMON_LIB_DIR" || ! -d "$WAVEMILL_COMMON_LIB_DIR" ]]; then
-  WAVEMILL_COMMON_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve install assets from this sourced file, never the milled repository.
+# `%N` is zsh's source-file counterpart to Bash's BASH_SOURCE[0].
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+  common_source="${(%):-%N}"
+else
+  common_source="${BASH_SOURCE[0]}"
 fi
+COMMON_LIB_DIR="$(cd "$(dirname "$common_source")" && pwd)"
 
 # Bounded-retry invariant helpers (HOK-2924): every relaunch path counts
 # attempts, backs off, terminalizes at a ceiling, and resets on a new head SHA
 # through this one module. Sourced here so the mill, monitor, and startup
 # runner all inherit the same implementation.
 # shellcheck source=bounded-retry.sh
-source "$WAVEMILL_COMMON_LIB_DIR/bounded-retry.sh"
+source "$COMMON_LIB_DIR/bounded-retry.sh"
 # HOK-3360: the one operator-escalation decision. Operator attention
 # (.needs-attention) is raised only by escalate_operator_attention, after the
 # failure policy escalates (bucket exhaustion, a terminal classification, or a
@@ -22,47 +24,47 @@ source "$WAVEMILL_COMMON_LIB_DIR/bounded-retry.sh"
 # inherit the single step. New attention writes must go through this helper
 # (enforced by tools/check-failure-policy.ts).
 # shellcheck source=operator-escalation.sh
-source "$WAVEMILL_COMMON_LIB_DIR/operator-escalation.sh"
+source "$COMMON_LIB_DIR/operator-escalation.sh"
 # HOK-3101: shared task-progress accessors (wavemill_hook_read,
 # task_progress_json, task_progress_cached_json). Sourced here so the monitor,
 # reconciler, dashboard, next-done and pane-message delivery all inherit the
 # same TTL check and controller/agent classification. New callers must go
 # through these helpers instead of reimplementing a private hook TTL check.
 # shellcheck source=task-progress.sh
-source "$WAVEMILL_COMMON_LIB_DIR/task-progress.sh"
+source "$COMMON_LIB_DIR/task-progress.sh"
 # HOK-3114: task identity invariant (task ID -> Linear ID, challenger role,
 # Linear-writer predicate). Bash twin of shared/lib/task-identity.ts.
 # shellcheck source=task-identity.sh
-source "$WAVEMILL_COMMON_LIB_DIR/task-identity.sh"
+source "$COMMON_LIB_DIR/task-identity.sh"
 # HOK-3373: the one run identity + settled-run reads (twin of
 # attempt-identity.ts / task-settlement.ts / linear-state-renderer.ts) and the
 # one task-worktree resolver (twin of task-worktree-resolver.ts).
 # shellcheck source=attempt-identity.sh
-source "$WAVEMILL_COMMON_LIB_DIR/attempt-identity.sh"
+source "$COMMON_LIB_DIR/attempt-identity.sh"
 # shellcheck source=task-worktree-resolver.sh
-source "$WAVEMILL_COMMON_LIB_DIR/task-worktree-resolver.sh"
-if [[ -f "$WAVEMILL_COMMON_LIB_DIR/effective-task-config.sh" ]]; then
+source "$COMMON_LIB_DIR/task-worktree-resolver.sh"
+if [[ -f "$COMMON_LIB_DIR/effective-task-config.sh" ]]; then
   # shellcheck source=effective-task-config.sh
-  source "$WAVEMILL_COMMON_LIB_DIR/effective-task-config.sh"
+  source "$COMMON_LIB_DIR/effective-task-config.sh"
 fi
 # Challenge arms[] state helpers (HOK-2811). A pending review-stage challenger
 # lives as a nested arm record on the primary until the fork trigger fires.
 # shellcheck source=challenge-arms.sh
-source "$WAVEMILL_COMMON_LIB_DIR/challenge-arms.sh"
+source "$COMMON_LIB_DIR/challenge-arms.sh"
 # HOK-3293: terminal backend seam. Every interaction with the terminal host
 # (tmux today) goes through term_* here; see docs/terminal-backends.md.
 # shellcheck source=terminal-backend.sh
-source "$WAVEMILL_COMMON_LIB_DIR/terminal-backend.sh"
+source "$COMMON_LIB_DIR/terminal-backend.sh"
 
 # HOK-3100: install root resolved from BASH_SOURCE, never inherited. The
 # monitor runs from `main` while worker launchers run from worktrees, so
 # inheriting from the environment would mix versions; each process must use
 # its own install copy. The milled repo (the repo wavemill is operating on)
 # is the separate `WAVEMILL_MILLED_REPO_DIR` / `REPO_DIR`.
-WAVEMILL_INSTALL_DIR="$(cd "$WAVEMILL_COMMON_LIB_DIR/../.." && pwd)"
+WAVEMILL_INSTALL_DIR="$(cd "$COMMON_LIB_DIR/../.." && pwd)"
 export WAVEMILL_INSTALL_DIR
 # shellcheck source=state-lock.sh
-source "$WAVEMILL_COMMON_LIB_DIR/state-lock.sh"
+source "$COMMON_LIB_DIR/state-lock.sh"
 
 # Resolve an install-relative tool path. Honours a caller-set TOOLS_DIR so
 # test harnesses can inject fakes without disturbing the install.
