@@ -151,6 +151,43 @@ export function lastRecordedHead(stateDir: string): string | null {
   return rows.length > 0 ? rows[rows.length - 1].to : null;
 }
 
+export interface LocateHeadMovesInput {
+  repoDir?: string;
+  issueId?: string;
+  slug?: string | null;
+  worktreePath?: string;
+}
+
+/**
+ * Every place a task's head-move record can live, live first: the worktree's
+ * and the repo's `features|bugs/<slug>/`, then the eval archive
+ * `.wavemill/evals/artifacts/<issue>/`. Same file name everywhere (mirrors
+ * `ownershipFileCandidates`, HOK-3328).
+ */
+export function headMovesDirCandidates(input: LocateHeadMovesInput): string[] {
+  const dirs: string[] = [];
+  if (input.slug) {
+    for (const root of [input.worktreePath, input.repoDir]) {
+      if (!root) continue;
+      for (const kind of ['features', 'bugs']) dirs.push(join(root, kind, input.slug));
+    }
+  }
+  if (input.repoDir && input.issueId) {
+    dirs.push(join(input.repoDir, '.wavemill', 'evals', 'artifacts', input.issueId));
+  }
+  return [...new Set(dirs)];
+}
+
+/** The task's head moves, from the first live/archive copy that exists. */
+export function locateHeadMoves(input: LocateHeadMovesInput): HeadMoveRow[] {
+  for (const dir of headMovesDirCandidates(input)) {
+    if (!existsSync(join(dir, HEAD_MOVES_FILE))) continue;
+    const rows = readHeadMoves(dir);
+    if (rows.length > 0) return rows;
+  }
+  return [];
+}
+
 /** Per-stage authorship summary used by the challenge comparison (HOK-3370 §3). */
 export interface HeadMoveStageSummary {
   stage: HeadMoveStage;
@@ -159,6 +196,30 @@ export interface HeadMoveStageSummary {
   commits: number;
   /** Published head SHAs, in record order. */
   shas: string[];
+}
+
+/** Version tag for the head-move encoding inside contribution-row `inputs`. */
+export const HEAD_MOVES_CONTRIBUTION_SCHEMA = 'head_moves/v1';
+
+/**
+ * Projects per-stage authorship onto contribution-row `inputs` as parallel
+ * scalar arrays (the redacted row only carries scalars and scalar arrays),
+ * following the `route_overrides/v1` pattern (HOK-3363). A reviewer or
+ * remediation commit on one arm reaches Hokusai as data. Empty when no head
+ * moves were recorded.
+ */
+export function headMoveContributionInputs(
+  summaries: HeadMoveStageSummary[] | null | undefined,
+): Record<string, string | string[]> {
+  if (!summaries || summaries.length === 0) {
+    return {};
+  }
+  return {
+    head_moves_schema: HEAD_MOVES_CONTRIBUTION_SCHEMA,
+    head_move_stages: summaries.map((summary) => summary.stage),
+    head_move_kinds: summaries.map((summary) => summary.kinds.join('+')),
+    head_move_counts: summaries.map((summary) => String(summary.commits)),
+  };
 }
 
 /**

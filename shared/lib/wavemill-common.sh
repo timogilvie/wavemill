@@ -624,6 +624,9 @@ archive_stage_artifacts() {
     # HOK-3328: the session-ownership record keeps its name in the archive, so
     # post-reap evals read it exactly like live ones (locateOwnershipRows).
     _wavemill_archive_copy "$feature_dir/.session-ownership.jsonl" "$archive_dir/.session-ownership.jsonl" || status=1
+    # HOK-3370: the head-move record keeps its name too, so the challenge
+    # comparison reads per-stage authorship after the reap (locateHeadMoves).
+    _wavemill_archive_copy "$feature_dir/.head-moves.jsonl" "$archive_dir/.head-moves.jsonl" || status=1
 
     local stage result_file sidecar sidecar_name
     for stage in planning coding review; do
