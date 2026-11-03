@@ -21,11 +21,13 @@ import {
   WINDOW_TASK_PREFIX_RE,
   challengerTaskId,
   challengerTaskKey,
+  extractProseDependencies,
   isChallengerTaskId,
   isLinearWriter,
   parseTaskId,
   resolveLinearIssueId,
   type TaskIdentityMeta,
+  type ProseDepReference,
 } from './task-identity.ts';
 
 interface FixtureCase {
@@ -112,4 +114,90 @@ test('non-string inputs fail closed', () => {
   assert.equal(parseTaskId(42), null);
   assert.equal(resolveLinearIssueId(null).ok, false);
   assert.equal(isLinearWriter(undefined), false);
+});
+
+test('extractProseDependencies: issue ID references', () => {
+  const refs = extractProseDependencies('This is blocked. Blocked by HOK-123.');
+  assert.equal(refs.length, 1);
+  const ref = refs[0] as ProseDepReference;
+  assert.equal(ref.kind, 'issue');
+  assert.equal(ref.target, 'HOK-123');
+  assert.equal(ref.verb, 'Blocked by');
+  assert.match(ref.evidence, /Blocked by HOK-123/);
+});
+
+test('extractProseDependencies: series code references', () => {
+  const refs = extractProseDependencies('This depends on B2. We need B2 to land first.');
+  assert.equal(refs.length, 1);
+  const ref = refs[0] as ProseDepReference;
+  assert.equal(ref.kind, 'series');
+  assert.equal(ref.target, 'B2');
+  assert.equal(ref.verb, 'Depends on');
+  assert.match(ref.evidence, /depends on B2/i);
+});
+
+test('extractProseDependencies: case-insensitive matching', () => {
+  const refs1 = extractProseDependencies('blocked by HOK-123.');
+  assert.equal(refs1.length, 1);
+  assert.equal(refs1[0]?.kind, 'issue');
+
+  const refs2 = extractProseDependencies('DEPENDS ON B2.');
+  assert.equal(refs2.length, 1);
+  assert.equal(refs2[0]?.kind, 'series');
+});
+
+test('extractProseDependencies: "After" verb', () => {
+  const refs = extractProseDependencies('This should be done after HOK-100.');
+  assert.equal(refs.length, 1);
+  assert.equal(refs[0]?.verb, 'After');
+  assert.equal(refs[0]?.kind, 'issue');
+});
+
+test('extractProseDependencies: "Once ... lands" verb', () => {
+  const refs = extractProseDependencies('This is blocked. Once B3 lands we can proceed.');
+  assert.equal(refs.length, 1);
+  assert.equal(refs[0]?.verb, 'Once B3 lands');
+  assert.equal(refs[0]?.kind, 'series');
+});
+
+test('extractProseDependencies: multiple references', () => {
+  const refs = extractProseDependencies('Blocked by HOK-100. Also depends on B2.');
+  assert.equal(refs.length, 2);
+  assert.equal(refs[0]?.kind, 'issue');
+  assert.equal(refs[1]?.kind, 'series');
+});
+
+test('extractProseDependencies: no matches returns empty array', () => {
+  const refs1 = extractProseDependencies('This is just normal text');
+  assert.equal(refs1.length, 0);
+
+  const refs2 = extractProseDependencies(null);
+  assert.equal(refs2.length, 0);
+
+  const refs3 = extractProseDependencies(undefined);
+  assert.equal(refs3.length, 0);
+});
+
+test('extractProseDependencies: sentence boundary extraction', () => {
+  const text = 'First sentence. Blocked by HOK-123. Another sentence.';
+  const refs = extractProseDependencies(text);
+  assert.equal(refs.length, 1);
+  assert.equal(refs[0]?.evidence, 'Blocked by HOK-123.');
+});
+
+test('extractProseDependencies: evidence is capped at 300 chars', () => {
+  const longText = 'Blocked by HOK-123. ' + 'x'.repeat(400);
+  const refs = extractProseDependencies(longText);
+  assert.equal(refs.length, 1);
+  assert(refs[0]!.evidence.length <= 302); // 300 + potential ellipsis indicator
+});
+
+test('extractProseDependencies: series code pattern is narrow (no hyphens)', () => {
+  const refs = extractProseDependencies('Blocked by HOK-123 and depends on B2.');
+  // Should get both: HOK-123 (issue) and B2 (series)
+  assert.equal(refs.length, 2);
+  assert.equal(refs[0]?.kind, 'issue');
+  assert.equal(refs[0]?.target, 'HOK-123');
+  assert.equal(refs[1]?.kind, 'series');
+  assert.equal(refs[1]?.target, 'B2');
 });

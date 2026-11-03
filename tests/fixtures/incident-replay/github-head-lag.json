@@ -19,6 +19,11 @@
   "faultParams": {
     "lagSeconds": 180
   },
+  "failure": {
+    "stage": "ready",
+    "detail": "handoff rebind refused: head does not match pushed commit",
+    "survivesRelaunches": 1
+  },
   "convergence": {
     "mustMerge": true,
     "maxTickCount": 15,

@@ -299,6 +299,7 @@ WAVEMILL_UNATTENDED_CLEANUP_DEFAULT_INTERVAL  # plumbing: internal mill variable
 WAVEMILL_USAGE_TIPS  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_WAKE_GAP_SECONDS  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_WAKE_PENDING  # plumbing: internal mill variable (HOK-3235 baseline seed)
+WAVEMILL_WINDOW  # plumbing: tmux window target for agent remediation delivery (HOK-2890)
 WAVEMILL_WINDOW_BACKSTAGE  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_WINDOW_MILL  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_WINDOW_RECREATE_MAX_ATTEMPTS  # plumbing: internal mill variable (HOK-3235 baseline seed)

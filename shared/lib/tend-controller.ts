@@ -2,6 +2,8 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeLaneStateDir, recordLaneProgress, type LaneProgressEvent } from './merge-queue.ts';
+// allow-queue-event-writers: tend-controller is the primary lifecycle event emitter for merge lane operations
+import { appendQueueEventBestEffort, type QueueEventType } from './queue-events.ts';
 import {
   setWavemillMerged,
   setWavemillMerging,
@@ -686,6 +688,24 @@ export async function selectNextCandidate(options: SelectNextCandidateOptions): 
       blockedCandidate.labels = [...labelSet(workItem.pr)];
     }
     emitMillTendDisagreementFinding(options.repoDir, workItem.pr, workItem.metadata, blockedCandidate);
+    // Emit ejected event when candidates are blocked/removed from eligibility
+    await emitQueueEventBestEffort(
+      blockedCandidate.number,
+      workItem.pr.headRefOid || '',
+      'ejected',
+      options.repoDir,
+      { reason: blockedCandidate.blockReason },
+    );
+  }
+
+  // Emit enqueued event for each newly eligible candidate
+  for (const candidate of eligible) {
+    await emitQueueEventBestEffort(
+      candidate.number,
+      candidate.headSha || '',
+      'enqueued',
+      options.repoDir,
+    );
   }
 
   return {
@@ -750,6 +770,9 @@ export async function executeMerge(
 
   validateBranchName(candidate.headBranch, 'PR branch');
 
+  // Emit candidate_prepared event when merge execution begins
+  await emitQueueEventBestEffort(candidate.number, candidate.headSha || '', 'candidate_prepared', options.repoDir);
+
   let activeMerges: number[];
   try {
     activeMerges = await listMergingPrs(options.repoDir, deps);
@@ -806,6 +829,8 @@ export async function executeMerge(
       repoDir: options.repoDir,
       deps,
     });
+    // Emit abandoned event when merge is blocked (terminal failure)
+    await emitQueueEventBestEffort(candidate.number, attemptHeadSha, 'abandoned', options.repoDir, { reason: phase });
     return { status: 'blocked', prNumber: candidate.number, phase, failureExcerpt, haltLoop: false };
   };
 
@@ -999,6 +1024,8 @@ export async function executeMerge(
             attemptHeadSha = pushedHeadSha;
           }
           if (rebaseResult.rebased) {
+            // Emit repair_commit_pushed event when rebase is pushed
+            await emitQueueEventBestEffort(candidate.number, pushedHeadSha, 'repair_commit_pushed', options.repoDir);
             try {
               await rebindPushedTendHead(candidate.number, candidate.featureDir, candidate.headSha, rebaseResult.headSha, options.repoDir, deps);
             } catch (error) {
@@ -1013,7 +1040,11 @@ export async function executeMerge(
               return handoffOutcome;
             }
             await recordLaneProgressSafe(deps, candidate.number, 'rebase', options.repoDir);
+            // Emit rebase_performed event after successful rebase
+            await emitQueueEventBestEffort(candidate.number, attemptHeadSha, 'rebase_performed', options.repoDir);
             await recordLaneProgressSafe(deps, candidate.number, 'ci-restart', options.repoDir);
+            // Emit rerun_requested event when CI is restarted after rebase
+            await emitQueueEventBestEffort(candidate.number, attemptHeadSha, 'rerun_requested', options.repoDir);
           }
         } catch (error) {
           return blockUnlessRetryable(worktreePath, 'rebase', outputFromError(error));
@@ -1041,6 +1072,9 @@ export async function executeMerge(
             failureKind: checks.outcome === 'fail' ? 'checks-failed' : `checks-${checks.outcome}`,
           });
         }
+
+        // Emit check_run_completed event when checks pass
+        await emitQueueEventBestEffort(candidate.number, attemptHeadSha, 'check_run_completed', options.repoDir);
 
         try {
           const ready = await deps.readyChecker(candidate.number, options.repoDir);
@@ -1093,6 +1127,19 @@ export async function executeMerge(
         }
 
         await recordLaneProgressSafe(deps, candidate.number, 'merged', options.repoDir);
+        await emitQueueEventBestEffort(
+          candidate.number,
+          candidate.headSha || '',
+          'merged',
+          options.repoDir,
+        );
+        // Emit dequeued event when merge completes successfully
+        await emitQueueEventBestEffort(
+          candidate.number,
+          candidate.headSha || '',
+          'dequeued',
+          options.repoDir,
+        );
         try {
           deps.strictBaseRetry.clear(candidate.number, options.repoDir);
         } catch (error) {
@@ -3300,6 +3347,30 @@ async function recordLaneProgressSafe(
     await deps.recordLaneProgress(prNumber, event, repoDir);
   } catch (error) {
     console.warn(`tend: failed to record lane progress '${event}' for PR #${prNumber}: ${errorMessage(error)}`);
+  }
+}
+
+async function emitQueueEventBestEffort(
+  prNumber: number,
+  headSha: string,
+  eventType: string,
+  repoDir: string,
+  extra?: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const stateDir = mergeLaneStateDir(prNumber, repoDir);
+    const attempt = extra?.attempt ? `-attempt-${extra.attempt}` : '';
+    const eventId = `${new Date().toISOString()}-pr-${prNumber}-${eventType}${attempt}`;
+    // allow-queue-event-writers: emit lifecycle event for merge lane state transitions
+    await appendQueueEventBestEffort(stateDir, {
+      eventId,
+      eventType: eventType as QueueEventType,
+      prNumber,
+      headSha,
+      ...extra,
+    });
+  } catch (error) {
+    console.warn(`tend: failed to emit queue event '${eventType}' for PR #${prNumber}: ${errorMessage(error)}`);
   }
 }
 

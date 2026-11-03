@@ -1,0 +1,6 @@
+# Queue Event Writers Allowlist
+#
+# This allowlist is empty by design. All queue/CI/repair event writes must
+# flow through the canonical module: shared/lib/queue-events.ts.
+#
+# If you hit a finding, move the event write to appendQueueEventBestEffort.

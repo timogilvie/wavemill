@@ -13,6 +13,8 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
+import type { ParsedCommand } from './command-argv.ts';
+
 export type PackageManager = 'npm' | 'pnpm' | 'yarn';
 
 export interface ScriptExpansion {
@@ -48,40 +50,43 @@ const PNPM_BUILTINS = new Set([
 
 /**
  * Recognise `(npm|pnpm|yarn) [run[-script]] <script> [extra args]`. Returns
- * `null` when argv is not a package-manager script invocation.
+ * `null` when the parsed command is not a package-manager script invocation.
  *
  * Leading flags like `--silent`, `-s`, `--if-present`, `--prefix <dir>`,
  * `-w <ws>` are skipped. The `--prefix <dir>` value is captured so the
  * expansion reads the right package.json.
+ *
+ * The caller supplies the one `ParsedCommand` from `parseCommandArgv` so no
+ * second re-tokenisation and no second `argv[0]` read happens here (HOK-3383).
  */
 export function resolvePackageScriptInvocation(
-  argv: readonly string[],
+  parsed: ParsedCommand,
 ): PackageScriptInvocation | null {
-  if (argv.length === 0) return null;
-  const bin = argv[0]!;
+  const bin = parsed.program;
   const manager: PackageManager | null = bin === 'npm' ? 'npm' : bin === 'pnpm' ? 'pnpm' : bin === 'yarn' ? 'yarn' : null;
   if (manager === null) return null;
 
-  let i = 1;
+  const programArgs = parsed.programArgs;
+  let i = 0;
   let prefix: string | undefined;
 
-  while (i < argv.length) {
-    const token = argv[i]!;
+  while (i < programArgs.length) {
+    const token = programArgs[i]!;
     if (token === '--silent' || token === '-s' || token === '--if-present' || token === '--quiet' || token === '-q'
       || token === '--loglevel' || token === '--no-progress' || token === '--progress') {
       i += 1;
       // --loglevel takes an argument
-      if (token === '--loglevel' && i < argv.length) i += 1;
+      if (token === '--loglevel' && i < programArgs.length) i += 1;
       continue;
     }
     if (token === '--prefix' || token === '-C' || token === '--cwd') {
-      if (i + 1 >= argv.length) return null;
-      prefix = argv[i + 1];
+      if (i + 1 >= programArgs.length) return null;
+      prefix = programArgs[i + 1];
       i += 2;
       continue;
     }
     if (token === '-w' || token === '--workspace') {
-      if (i + 1 >= argv.length) return null;
+      if (i + 1 >= programArgs.length) return null;
       i += 2;
       continue;
     }
@@ -97,24 +102,24 @@ export function resolvePackageScriptInvocation(
     break;
   }
 
-  if (i >= argv.length) return null;
-  const first = argv[i]!;
+  if (i >= programArgs.length) return null;
+  const first = programArgs[i]!;
 
   // npm/pnpm/yarn test shortcuts
   if (first === 'test' || first === 't' || first === 'tst') {
-    return { manager, script: 'test', extraArgs: stripLeadingDoubleDash(argv.slice(i + 1)), ...(prefix ? { prefix } : {}) };
+    return { manager, script: 'test', extraArgs: stripLeadingDoubleDash(programArgs.slice(i + 1)), ...(prefix ? { prefix } : {}) };
   }
 
   if (first === 'run' || first === 'run-script') {
-    if (i + 1 >= argv.length) return null;
-    const script = argv[i + 1]!;
-    return { manager, script, extraArgs: stripLeadingDoubleDash(argv.slice(i + 2)), ...(prefix ? { prefix } : {}) };
+    if (i + 1 >= programArgs.length) return null;
+    const script = programArgs[i + 1]!;
+    return { manager, script, extraArgs: stripLeadingDoubleDash(programArgs.slice(i + 2)), ...(prefix ? { prefix } : {}) };
   }
 
   // `pnpm <script>` and `yarn <script>` — only if <script> is not a builtin.
   if (manager === 'pnpm' || manager === 'yarn') {
     if (!PNPM_BUILTINS.has(first)) {
-      return { manager, script: first, extraArgs: stripLeadingDoubleDash(argv.slice(i + 1)), ...(prefix ? { prefix } : {}) };
+      return { manager, script: first, extraArgs: stripLeadingDoubleDash(programArgs.slice(i + 1)), ...(prefix ? { prefix } : {}) };
     }
   }
 
@@ -129,18 +134,26 @@ function stripLeadingDoubleDash(args: readonly string[]): string[] {
 }
 
 /**
- * True when argv matches `[bash|sh] tests/run-*.sh ...` or
- * `./tests/run-*.sh ...` or an absolute path under `<worktree>/tests/`.
+ * Resolve the shell-script path a `[bash|sh] tests/run-*.sh …` /
+ * `./tests/run-*.sh …` / absolute-path invocation points at, or `null` when
+ * the parsed command is not a shell-script runner. Reads only resolved parsed
+ * fields — no second `argv[0]` inspection (HOK-3383).
  */
-function isRepoSuiteRunner(argv: readonly string[], opts: { cwd: string; worktreePath: string }): boolean {
-  if (argv.length === 0) return false;
-  let scriptIdx = -1;
-  if ((argv[0] === 'bash' || argv[0] === 'sh') && argv.length >= 2) {
-    scriptIdx = 1;
-  } else {
-    scriptIdx = 0;
+function resolveSuiteScript(parsed: ParsedCommand): string | null {
+  if (parsed.program === 'bash' || parsed.program === 'sh') {
+    return parsed.programArgs[0] ?? null;
   }
-  const script = argv[scriptIdx]!;
+  // Program itself is the script (./tests/run-*.sh, tests/run-*.sh, or absolute).
+  return parsed.programPath;
+}
+
+/**
+ * True when the parsed command matches `[bash|sh] tests/run-*.sh …` or
+ * `./tests/run-*.sh …` or an absolute path under `<worktree>/tests/`.
+ */
+function isRepoSuiteRunner(parsed: ParsedCommand, opts: { cwd: string; worktreePath: string }): boolean {
+  const script = resolveSuiteScript(parsed);
+  if (script === null) return false;
   const normalized = normalizeToRepoRelative(script, opts.cwd, opts.worktreePath);
   if (normalized === null) return false;
   // Must be tests/run-*.sh at the worktree root
@@ -153,15 +166,9 @@ function isRepoSuiteRunner(argv: readonly string[], opts: { cwd: string; worktre
  * `--shard` / `--list`. Keeps the generic repo-suite refusal in place for
  * every other `run-*.sh` runner.
  */
-function isRunRelated(argv: readonly string[], opts: { cwd: string; worktreePath: string }): boolean {
-  if (argv.length === 0) return false;
-  let scriptIdx = -1;
-  if ((argv[0] === 'bash' || argv[0] === 'sh') && argv.length >= 2) {
-    scriptIdx = 1;
-  } else {
-    scriptIdx = 0;
-  }
-  const script = argv[scriptIdx]!;
+function isRunRelated(parsed: ParsedCommand, opts: { cwd: string; worktreePath: string }): boolean {
+  const script = resolveSuiteScript(parsed);
+  if (script === null) return false;
   const normalized = normalizeToRepoRelative(script, opts.cwd, opts.worktreePath);
   return normalized === 'tests/run-related.sh';
 }
@@ -180,9 +187,8 @@ function normalizeToRepoRelative(scriptPath: string, cwd: string, worktreePath: 
   return rel.split(path.sep).join('/');
 }
 
-function hasShardOrListFlag(argv: readonly string[]): boolean {
-  for (let i = 0; i < argv.length; i += 1) {
-    const token = argv[i]!;
+function hasShardOrListFlag(parsed: ParsedCommand): boolean {
+  for (const token of parsed.programArgs) {
     if (token === '--shard' || token === '--list' || token.startsWith('--shard=')) {
       return true;
     }
@@ -313,12 +319,10 @@ export function formatScriptExpansion(expansion: ScriptExpansion): string {
 }
 
 export function classifyTestCommandScope(
-  argv: readonly string[],
+  parsed: ParsedCommand,
   opts: { cwd: string; worktreePath: string },
 ): TestCommandScope {
-  if (argv.length === 0) return { scope: 'focused' };
-
-  const invocation = resolvePackageScriptInvocation(argv);
+  const invocation = resolvePackageScriptInvocation(parsed);
   if (invocation) {
     const expansion = readScriptExpansion({
       manager: invocation.manager,
@@ -334,12 +338,12 @@ export function classifyTestCommandScope(
     return { scope: 'focused', expansion };
   }
 
-  if (isRunRelated(argv, opts)) {
+  if (isRunRelated(parsed, opts)) {
     // tests/run-related.sh is a diff-scoped selector; always focused.
     return { scope: 'focused' };
   }
 
-  if (isRepoSuiteRunner(argv, opts) && !hasShardOrListFlag(argv)) {
+  if (isRepoSuiteRunner(parsed, opts) && !hasShardOrListFlag(parsed)) {
     return { scope: 'full-suite', reason: 'repo-suite-runner' };
   }
 

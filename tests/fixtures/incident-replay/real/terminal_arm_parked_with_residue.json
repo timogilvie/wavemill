@@ -1,0 +1,122 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "terminal_arm_parked_with_residue",
+  "incidents": [
+    "1c09388a0cea383e97572c55457dd93f0a671ba2b8870aad257b74217b31e1fa"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-6_c",
+      "slug": "incident-terminal-arm-parked-with-residue-6",
+      "phase": "coding",
+      "status": "working"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "terminal_arm_parked_with_residue",
+    "severity": "medium",
+    "confidence": "high",
+    "summary": "HOK-FIXTURE-6_c terminal task is parked with allocated residue.",
+    "operatorAction": "Nothing on the branch is at risk; set HOK-FIXTURE-6_c phase=aborted (or run `wavemill mill abort HOK-FIXTURE-6_c`) and let the mill reap the worktree and window - never remove the worktree manually while the mill loop is live.",
+    "metadata": {
+      "baseBranch": "auto/integration",
+      "branch": "task/tests-must-not-write-session-events-or-tool-decisions-into-the-real-repo-wavemill-purge-the-142-scripted-fixture-rows-from-the-corpus-challenger",
+      "disposition": "clean",
+      "worktreeDirty": "clean"
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-30T20:11:10.754Z",
+          "redactedData": "status=closed phase=closed ageMinutes=11 worktree=present tmuxWindow=absent localBranch=present unpushedCommits=0",
+          "key": "terminal-parked:HOK-FIXTURE-6_c:task/tests-must-not-write-session-events-or-tool-decisions-into-the-real-repo-wavemill-purge-the-142-scripted-fixture-rows-from-the-corpus-challenger"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-30T20:13:19.499Z",
+          "redactedData": "status=closed phase=closed ageMinutes=13 worktree=present tmuxWindow=absent localBranch=present unpushedCommits=0",
+          "key": "terminal-parked:HOK-FIXTURE-6_c:task/tests-must-not-write-session-events-or-tool-decisions-into-the-real-repo-wavemill-purge-the-142-scripted-fixture-rows-from-the-corpus-challenger"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-30T20:15:30.210Z",
+          "redactedData": "status=closed phase=closed ageMinutes=15 worktree=present tmuxWindow=absent localBranch=present unpushedCommits=0",
+          "key": "terminal-parked:HOK-FIXTURE-6_c:task/tests-must-not-write-session-events-or-tool-decisions-into-the-real-repo-wavemill-purge-the-142-scripted-fixture-rows-from-the-corpus-challenger"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-30T20:17:42.226Z",
+          "redactedData": "status=closed phase=closed ageMinutes=18 worktree=present tmuxWindow=absent localBranch=present unpushedCommits=0",
+          "key": "terminal-parked:HOK-FIXTURE-6_c:task/tests-must-not-write-session-events-or-tool-decisions-into-the-real-repo-wavemill-purge-the-142-scripted-fixture-rows-from-the-corpus-challenger"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-30T20:19:53.470Z",
+          "redactedData": "status=closed phase=closed ageMinutes=20 worktree=present tmuxWindow=absent localBranch=present unpushedCommits=0",
+          "key": "terminal-parked:HOK-FIXTURE-6_c:task/tests-must-not-write-session-events-or-tool-decisions-into-the-real-repo-wavemill-purge-the-142-scripted-fixture-rows-from-the-corpus-challenger"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  },
+  "journey": "terminal-delivered-reap",
+  "expected": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "terminal_arm_parked_with_residue",
+    "occurrenceCount": 5,
+    "lifecycleWhilePresent": "active",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  },
+  "source": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "terminal_arm_parked_with_residue",
+    "severity": "medium",
+    "confidence": "high",
+    "recordedLifecycle": "resolved",
+    "recordedResolution": "auto_resolved",
+    "occurrenceCount": 5,
+    "firstObservedAt": "2026-09-30T20:11:19.034Z",
+    "lastObservedAt": "2026-09-30T20:20:06.446Z",
+    "stateSnapshot": null,
+    "convertedBy": "tools/incident-to-fixture.ts",
+    "observationsTruncated": false
+  }
+}

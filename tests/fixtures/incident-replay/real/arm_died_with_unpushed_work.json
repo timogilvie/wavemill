@@ -1,0 +1,92 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "arm_died_with_unpushed_work",
+  "incidents": [
+    "1a44666495971223349bcc8456a14dc23ca3311d5f948f84f52b0c171c1ba8ed"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-3",
+      "slug": "incident-arm-died-with-unpushed-work-3",
+      "phase": "coding",
+      "status": "working"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "arm_died_with_unpushed_work",
+    "severity": "critical",
+    "confidence": "high",
+    "summary": "HOK-FIXTURE-3 arm exited with 1 unpushed commit on task/one-task-progress-liveness-evidence-primitive-shared-by-observer-monitor-ready-watchdog-reconciler-and-dashboard.",
+    "operatorAction": "These commits exist only locally and are unrecoverable once the worktree and branch are reaped. Push task/one-task-progress-liveness-evidence-primitive-shared-by-observer-monitor-ready-watchdog-reconciler-and-dashboard to origin and open a PR against auto/integration, or explicitly abandon the branch, before terminalizing cleanup.",
+    "metadata": {
+      "baseBranch": "auto/integration",
+      "branch": "task/one-task-progress-liveness-evidence-primitive-shared-by-observer-monitor-ready-watchdog-reconciler-and-dashboard",
+      "unpushedCommits": 1
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-28T15:38:30.998Z",
+          "redactedData": "branch=task/one-task-progress-liveness-evidence-primitive-shared-by-observer-monitor-ready-watchdog-reconciler-and-dashboard baseBranch=auto/integration unpushedCommits=1 remoteBranch=absent commit=feat(task-progress): one liveness primitive shared across sites (HOK-FIXTURE-3)",
+          "key": "unpushed:HOK-FIXTURE-3:task/one-task-progress-liveness-evidence-primitive-shared-by-observer-monitor-ready-watchdog-reconciler-and-dashboard"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-09-28T15:40:41.730Z",
+          "redactedData": "branch=task/one-task-progress-liveness-evidence-primitive-shared-by-observer-monitor-ready-watchdog-reconciler-and-dashboard baseBranch=auto/integration unpushedCommits=1 remoteBranch=absent commit=feat(task-progress): one liveness primitive shared across sites (HOK-FIXTURE-3)",
+          "key": "unpushed:HOK-FIXTURE-3:task/one-task-progress-liveness-evidence-primitive-shared-by-observer-monitor-ready-watchdog-reconciler-and-dashboard"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "failure": {
+    "stage": "coding",
+    "failureKind": null,
+    "detail": "",
+    "survivesRelaunches": 1
+  },
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  },
+  "journey": null,
+  "journeyNullReason": "detector-level class; replayed via the incident cycle loop",
+  "expected": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "arm_died_with_unpushed_work",
+    "occurrenceCount": 2,
+    "lifecycleWhilePresent": "observed",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  },
+  "source": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "arm_died_with_unpushed_work",
+    "severity": "critical",
+    "confidence": "high",
+    "recordedLifecycle": "resolved",
+    "recordedResolution": "auto_resolved",
+    "occurrenceCount": 2,
+    "firstObservedAt": "2026-09-28T15:38:39.528Z",
+    "lastObservedAt": "2026-09-28T15:40:48.837Z",
+    "stateSnapshot": null,
+    "convertedBy": "tools/incident-to-fixture.ts",
+    "observationsTruncated": false
+  }
+}
