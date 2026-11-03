@@ -144,6 +144,14 @@ const VALID_KINDS: ReadonlySet<string> = new Set<string>([
   'planning-artifact-invalid',
   'review-no-output',
   'coding-exited-without-result',
+  // `varied_model_unresolvable` is not a member of `ArmFailureKind` but the
+  // monitor's `challenge_abort_for_unresolvable_varied_model` passes it as a
+  // bare reason (no `terminal_stage_failure:` prefix). `parseAbortFailureKind`
+  // and `classifyArmFault` (→ `selection-fault`) both already treat it as a
+  // first-class kind; accept it here so the monitor's recorder call writes
+  // the reliability+eval records the pre-HOK-3358 `record-arm-failure.ts`
+  // path produced instead of being rejected as unknown.
+  'varied_model_unresolvable',
 ] as const);
 
 export function normalizeArmTerminationKind(kind: string): ArmTerminationKind {
