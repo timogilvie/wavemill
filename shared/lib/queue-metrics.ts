@@ -56,6 +56,18 @@
  *     {@link collapseReaffirmedRuns} collapses each run of consecutive
  *     same-type `enqueued`/`ejected` events down to its first event, once,
  *     before any cycle or count is derived.
+ *  6. **Cycle pairing is a one-pass sweep, not an independent scan per
+ *     start event.** An `enqueued` that is itself followed by
+ *     `ejected`/`abandoned` before any `candidate_prepared` left the queue
+ *     without ever starting an attempt — that cycle must close
+ *     `'unknown'`, not reach past the ejection to reuse a later
+ *     `candidate_prepared` that actually belongs to the *next* `enqueued`.
+ *     Two opens sharing one close would double-count and misattribute the
+ *     ejected dead time — the same inflation class one level up. `queueWait`
+ *     and `repairLoop` are both derived with a stateful sweep that tracks
+ *     at most one pending start at a time; `ciRun` does not need this
+ *     because `candidate_prepared` is itself a member of its own
+ *     closing-event set (`ATTEMPT_CLOSING_TYPES`), which forces adjacency.
  *
  * ## I/O boundary
  *
@@ -354,35 +366,64 @@ export function deriveQueueMetrics(
   const collapsed = collapseReaffirmedRuns(ordered);
 
   // ── Queue-wait cycles: each `enqueued` → next `candidate_prepared` ──
+  //
+  // A one-pass sweep, not an independent forward scan per `enqueued`: an
+  // `enqueued` that is itself followed by `ejected`/`abandoned` before any
+  // `candidate_prepared` (the PR left the queue without ever starting an
+  // attempt) must close as `'unknown'`, not reach past the ejection to pair
+  // with a later `candidate_prepared` that actually belongs to a
+  // subsequent `enqueued`. Two opens sharing one close would both inflate
+  // `totalSeconds` and misattribute the ejected dead time to the first
+  // cycle — the HOK-2895 inflation class again, one level up. Because
+  // `enqueued` is not itself a member of its own closing-event set (unlike
+  // `candidate_prepared` for {@link ciRunAttempts} below), a stateful sweep
+  // is required here.
   const queueWaitCycles: QueueWaitCycle[] = [];
-  for (let i = 0; i < collapsed.length; i++) {
-    const ev = collapsed[i];
-    if (ev.eventType !== 'enqueued') continue;
-    let endIdx = -1;
-    for (let j = i + 1; j < collapsed.length; j++) {
-      if (collapsed[j].eventType === 'candidate_prepared') {
-        endIdx = j;
-        break;
+  let pendingQueueWaitStart: QueueLifecycleEvent | null = null;
+  for (const ev of collapsed) {
+    if (ev.eventType === 'enqueued') {
+      if (pendingQueueWaitStart) {
+        queueWaitCycles.push({
+          startEventId: pendingQueueWaitStart.eventId,
+          startTimestamp: pendingQueueWaitStart.timestamp,
+          endEventId: null,
+          endTimestamp: null,
+          seconds: 'unknown',
+        });
+      }
+      pendingQueueWaitStart = ev;
+    } else if (ev.eventType === 'candidate_prepared') {
+      if (pendingQueueWaitStart) {
+        queueWaitCycles.push({
+          startEventId: pendingQueueWaitStart.eventId,
+          startTimestamp: pendingQueueWaitStart.timestamp,
+          endEventId: ev.eventId,
+          endTimestamp: ev.timestamp,
+          seconds: secondsBetween(pendingQueueWaitStart.timestamp, ev.timestamp),
+        });
+        pendingQueueWaitStart = null;
+      }
+    } else if (ev.eventType === 'ejected' || ev.eventType === 'abandoned') {
+      if (pendingQueueWaitStart) {
+        queueWaitCycles.push({
+          startEventId: pendingQueueWaitStart.eventId,
+          startTimestamp: pendingQueueWaitStart.timestamp,
+          endEventId: null,
+          endTimestamp: null,
+          seconds: 'unknown',
+        });
+        pendingQueueWaitStart = null;
       }
     }
-    if (endIdx === -1) {
-      queueWaitCycles.push({
-        startEventId: ev.eventId,
-        startTimestamp: ev.timestamp,
-        endEventId: null,
-        endTimestamp: null,
-        seconds: 'unknown',
-      });
-    } else {
-      const endEv = collapsed[endIdx];
-      queueWaitCycles.push({
-        startEventId: ev.eventId,
-        startTimestamp: ev.timestamp,
-        endEventId: endEv.eventId,
-        endTimestamp: endEv.timestamp,
-        seconds: secondsBetween(ev.timestamp, endEv.timestamp),
-      });
-    }
+  }
+  if (pendingQueueWaitStart) {
+    queueWaitCycles.push({
+      startEventId: pendingQueueWaitStart.eventId,
+      startTimestamp: pendingQueueWaitStart.timestamp,
+      endEventId: null,
+      endTimestamp: null,
+      seconds: 'unknown',
+    });
   }
 
   // ── CI-run attempt windows: `candidate_prepared` → next window-closer ──
@@ -420,42 +461,58 @@ export function deriveQueueMetrics(
   }
 
   // ── Repair cycles: `ejected`/`abandoned` → next `enqueued` ──
+  //
+  // Same one-pass sweep as {@link queueWaitCycles} above, for the same
+  // reason: a second repair-start event before the pending one's
+  // `enqueued` must not let both pair with that one `enqueued`. Today's
+  // real call sites always interpose an `enqueued` between any two
+  // repair-start events for the same PR (a PR cannot be re-ejected or
+  // re-abandoned without first becoming eligible again), but the
+  // derivation does not lean on that as an invariant — this sweep is
+  // correct regardless.
   const repairCycles: RepairLoopCycle[] = [];
-  for (let i = 0; i < collapsed.length; i++) {
-    const ev = collapsed[i];
-    if (!REPAIR_START_TYPES.has(ev.eventType)) continue;
-    let endIdx = -1;
-    let reruns = 0;
-    for (let j = i + 1; j < collapsed.length; j++) {
-      if (collapsed[j].eventType === 'rerun_requested') reruns += 1;
-      if (collapsed[j].eventType === 'enqueued') {
-        endIdx = j;
-        break;
+  let pendingRepairStart: { event: QueueLifecycleEvent; reruns: number } | null = null;
+  for (const ev of collapsed) {
+    if (REPAIR_START_TYPES.has(ev.eventType)) {
+      if (pendingRepairStart) {
+        repairCycles.push({
+          startEventId: pendingRepairStart.event.eventId,
+          startEventType: pendingRepairStart.event.eventType as 'ejected' | 'abandoned',
+          startTimestamp: pendingRepairStart.event.timestamp,
+          endEventId: null,
+          endTimestamp: null,
+          seconds: 'unknown',
+          reruns: pendingRepairStart.reruns,
+        });
       }
+      pendingRepairStart = { event: ev, reruns: 0 };
+    } else if (ev.eventType === 'enqueued') {
+      if (pendingRepairStart) {
+        repairCycles.push({
+          startEventId: pendingRepairStart.event.eventId,
+          startEventType: pendingRepairStart.event.eventType as 'ejected' | 'abandoned',
+          startTimestamp: pendingRepairStart.event.timestamp,
+          endEventId: ev.eventId,
+          endTimestamp: ev.timestamp,
+          seconds: secondsBetween(pendingRepairStart.event.timestamp, ev.timestamp),
+          reruns: pendingRepairStart.reruns,
+        });
+        pendingRepairStart = null;
+      }
+    } else if (ev.eventType === 'rerun_requested' && pendingRepairStart) {
+      pendingRepairStart.reruns += 1;
     }
-    if (endIdx === -1) {
-      // No re-enqueue; still count reruns through end of stream.
-      repairCycles.push({
-        startEventId: ev.eventId,
-        startEventType: ev.eventType as 'ejected' | 'abandoned',
-        startTimestamp: ev.timestamp,
-        endEventId: null,
-        endTimestamp: null,
-        seconds: 'unknown',
-        reruns,
-      });
-    } else {
-      const endEv = collapsed[endIdx];
-      repairCycles.push({
-        startEventId: ev.eventId,
-        startEventType: ev.eventType as 'ejected' | 'abandoned',
-        startTimestamp: ev.timestamp,
-        endEventId: endEv.eventId,
-        endTimestamp: endEv.timestamp,
-        seconds: secondsBetween(ev.timestamp, endEv.timestamp),
-        reruns,
-      });
-    }
+  }
+  if (pendingRepairStart) {
+    repairCycles.push({
+      startEventId: pendingRepairStart.event.eventId,
+      startEventType: pendingRepairStart.event.eventType as 'ejected' | 'abandoned',
+      startTimestamp: pendingRepairStart.event.timestamp,
+      endEventId: null,
+      endTimestamp: null,
+      seconds: 'unknown',
+      reruns: pendingRepairStart.reruns,
+    });
   }
 
   // ── timeToLand: first `enqueued` → `merged` ──

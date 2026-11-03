@@ -1,0 +1,6 @@
+{"eventId":"q1-enq1","eventType":"enqueued","timestamp":"2026-01-06T00:00:00.000Z","prNumber":500,"headSha":"ccc111"}
+{"eventId":"q1-ej1","eventType":"ejected","timestamp":"2026-01-06T00:00:10.000Z","prNumber":500,"headSha":"ccc111","reason":"tend-ineligible"}
+{"eventId":"q1-enq2","eventType":"enqueued","timestamp":"2026-01-06T00:00:20.000Z","prNumber":500,"headSha":"ccc111"}
+{"eventId":"q1-cp1","eventType":"candidate_prepared","timestamp":"2026-01-06T00:00:30.000Z","prNumber":500,"headSha":"ccc111"}
+{"eventId":"q1-chk","eventType":"check_run_completed","timestamp":"2026-01-06T00:05:00.000Z","prNumber":500,"headSha":"ccc111","attempt":1}
+{"eventId":"q1-mrg","eventType":"merged","timestamp":"2026-01-06T00:06:00.000Z","prNumber":500,"headSha":"ccc111"}

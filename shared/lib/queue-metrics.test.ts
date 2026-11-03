@@ -45,6 +45,10 @@ const PURE_SCENARIOS: readonly Scenario[] = [
     name: 'poll-tick-reaffirmations',
     description: 'repeated per-tick enqueued/ejected re-affirmations collapse to one cycle each, not an inflated sum',
   },
+  {
+    name: 'ejected-before-candidate-prepared',
+    description: "an enqueued cycle ejected before any candidate_prepared closes unknown, not reused by the next enqueued cycle's candidate_prepared",
+  },
 ];
 
 for (const scenario of PURE_SCENARIOS) {

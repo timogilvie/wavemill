@@ -77,6 +77,16 @@ occurred, `seconds` is `'unknown'`.
    events down to its first event, once, before any cycle or count is
    derived (`collapseReaffirmedRuns`; fixture:
    `poll-tick-reaffirmations`).
+6. **Cycle pairing is a one-pass sweep, not an independent scan per start
+   event.** An `enqueued` followed by `ejected`/`abandoned` before any
+   `candidate_prepared` left the queue without starting an attempt — it
+   must close `'unknown'`, not reach past the ejection to reuse a later
+   `candidate_prepared` that belongs to the *next* `enqueued` (two opens
+   sharing one close double-counts and misattributes the ejected dead
+   time to the first cycle). `queueWait` and `repairLoop` track at most
+   one pending start at a time; `ciRun` doesn't need this because
+   `candidate_prepared` is itself one of its own closing event types,
+   which forces adjacency (fixture: `ejected-before-candidate-prepared`).
 
 ## Cost / duration join (optional)
 
