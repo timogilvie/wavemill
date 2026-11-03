@@ -13349,6 +13349,7 @@ set_ready_pass_labels() {
   if [[ "$worktree_head" != "$github_head" ]]; then
     # The live head may postdate the last sync; make it reachable for the
     # identity computation (best-effort — an unreachable head stays stale).
+    # allow-settled-attempt: ready transition runs on the already-resolved task worktree (same resolver gate as the surrounding Ready phase)
     git -C "$wt_dir" fetch --quiet origin >/dev/null 2>&1 || true
     local transition_base_ref
     transition_base_ref="origin/$(effective_task_base_branch "$issue" 2>/dev/null || echo "${BASE_BRANCH:-auto/integration}")"
