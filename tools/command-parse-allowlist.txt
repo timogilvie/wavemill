@@ -1,0 +1,17 @@
+# command-parse-allowlist.txt — justified exceptions to the one-command-parse
+# guard (HOK-3383, tools/check-command-parse.ts). Scope: files under
+# shared/lib/native-agent/ that must read argv[0] directly despite the parse
+# rule — typically because the argv is not the native-command-tool argv.
+#
+# Format (tools/lib/source-guard.ts): `<repo-relative path> [<count>]  # <reason>`.
+# Every entry needs a same-line `# reason`. Without a count the file is exempt
+# entirely; with a count the file is still scanned and fails once it has more
+# findings than that. The list is a ratchet: an entry that over-allows (fewer
+# findings than its count, none, or a missing file) fails until it is lowered
+# or removed. The invariant source and the guard itself are excluded
+# automatically and must NOT be listed here.
+#
+# Prefer a one-line `// allow-command-parse: <reason>` suppression over an
+# entry whenever only a line or two is involved.
+
+shared/lib/native-agent/coding-recovery-guard.ts 1  # argv[0] read is on git subcommand argv, not a run_tests argv (HOK-3383)

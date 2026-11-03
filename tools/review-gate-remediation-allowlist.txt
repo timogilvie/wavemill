@@ -1,0 +1,5 @@
+# Ratcheting allowlist for check-review-gate-remediation.ts
+# Only entries that cannot be removed without breaking production code.
+# Lines are sorted and must be preserved in addition order.
+# Format: <path> [<count>] # reason
+

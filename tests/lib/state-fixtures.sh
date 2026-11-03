@@ -85,6 +85,7 @@ fixture_real_state_accessors() {
   local monitor="$STATE_FIXTURES_REPO_DIR/shared/lib/wavemill-monitor.sh"
   local spec file name body
   for spec in \
+    "$common:_wavemill_validate_task_record_write" \
     "$common:state_mutate" \
     "$common:get_task_meta" \
     "$common:task_state_mutate_existing" \

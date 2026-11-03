@@ -2,7 +2,6 @@ import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 
 import type { CommandClass } from '../command-classifier.ts';
-import { classifyCommand } from '../command-classifier.ts';
 import { parseCommandArgv } from '../command-argv.ts';
 import { FOREGROUND_WAIT_REFUSAL_MESSAGE } from '../command-wait-guard.ts';
 import { buildTrustMetadata } from '../provenance.ts';
@@ -329,7 +328,7 @@ export async function runScopedCommand(
 ): Promise<WavemillToolResult<RunCommandDetails>> {
   const startedAt = Date.now();
   const normalizedCommand = typeof input.command === 'string' ? input.command.trim() : '';
-  const commandClass = classifyCommand(normalizedCommand).commandClass;
+  const commandClass: CommandClass = 'safe';
   const effectiveCwd = input.cwd ?? input.worktreePath;
 
   if (typeof input.command !== 'string' || normalizedCommand.length === 0) {
@@ -400,62 +399,76 @@ export async function runScopedCommand(
     });
   }
 
-  // Parse argv so the full-suite classifier and script expansion can look at
-  // structured tokens. A parse failure falls through; the substrate will
-  // reject with the existing `unsupported_shell_syntax` details.
+  // HOK-3383: parse the command once up front. On a parse failure (including a
+  // `bash -c '…'` shell-interpreter wrapper), reject here with the
+  // shell-syntax message so the retry hint is attached before the substrate
+  // ever sees the string.
   const parsed = parseCommandArgv(normalizedCommand);
-  let scriptExpansion: ScriptExpansion | undefined;
-  let repeatKeyArgv: string[] | null = null;
-  if (parsed.ok) {
-    repeatKeyArgv = parsed.argv;
-    const invocation = resolvePackageScriptInvocation(parsed.argv);
-    if (invocation) {
-      scriptExpansion = readScriptExpansion({
-        manager: invocation.manager,
-        script: invocation.script,
-        extraArgs: invocation.extraArgs,
-        cwd: effectiveCwd,
-        worktreePath: input.worktreePath,
-        ...(invocation.prefix ? { prefix: invocation.prefix } : {}),
-      });
-    }
+  if (!parsed.ok) {
+    return rejectedResult({
+      ok: false,
+      tool: input.tool,
+      kind: input.kind,
+      status: 'rejected',
+      error: 'unsupported_shell_syntax',
+      commandClass,
+      reason: 'unsupported-shell-syntax',
+      command: normalizedCommand,
+      cwd: effectiveCwd,
+      durationMs: Date.now() - startedAt,
+      message: rejectionMessage('unsupported-shell-syntax', parsed.detail),
+      retryHint: rejectionRetryHint('unsupported-shell-syntax'),
+    });
+  }
 
-    if (input.kind === 'tests') {
-      const scope = classifyTestCommandScope(parsed.argv, {
+  let scriptExpansion: ScriptExpansion | undefined;
+  const invocation = resolvePackageScriptInvocation(parsed.parsed);
+  if (invocation) {
+    scriptExpansion = readScriptExpansion({
+      manager: invocation.manager,
+      script: invocation.script,
+      extraArgs: invocation.extraArgs,
+      cwd: effectiveCwd,
+      worktreePath: input.worktreePath,
+      ...(invocation.prefix ? { prefix: invocation.prefix } : {}),
+    });
+  }
+
+  if (input.kind === 'tests') {
+    const scope = classifyTestCommandScope(parsed.parsed, {
+      cwd: effectiveCwd,
+      worktreePath: input.worktreePath,
+    });
+    if (scope.scope === 'full-suite' && !input.allowFullSuite) {
+      const expansion = scope.expansion ?? scriptExpansion;
+      const expansionText = expansion ? formatScriptExpansion(expansion) : null;
+      const summary = expansionText ? ` (${expansionText.split('\n')[0]})` : '';
+      const parts = [
+        `Refused: \`${normalizedCommand}\` runs the full repository suite${summary}, which exceeds the run_tests time limit. Run focused tests instead.`,
+      ];
+      if (expansionText) parts.push(expansionText);
+      return rejectedResult({
+        ok: false,
+        tool: input.tool,
+        kind: input.kind,
+        status: 'rejected',
+        error: 'full_suite_refused',
+        commandClass,
+        reason: scope.reason === 'package-test-script' ? 'full-suite-command' : 'full-suite-repo-runner',
+        command: normalizedCommand,
         cwd: effectiveCwd,
-        worktreePath: input.worktreePath,
+        durationMs: Date.now() - startedAt,
+        message: parts.join('\n'),
+        retryHint: FOCUSED_TEST_GUIDANCE,
+        ...(expansion ? { scriptExpansion: expansion } : {}),
       });
-      if (scope.scope === 'full-suite' && !input.allowFullSuite) {
-        const expansion = scope.expansion ?? scriptExpansion;
-        const expansionText = expansion ? formatScriptExpansion(expansion) : null;
-        const summary = expansionText ? ` (${expansionText.split('\n')[0]})` : '';
-        const parts = [
-          `Refused: \`${normalizedCommand}\` runs the full repository suite${summary}, which exceeds the run_tests time limit. Run focused tests instead.`,
-        ];
-        if (expansionText) parts.push(expansionText);
-        return rejectedResult({
-          ok: false,
-          tool: input.tool,
-          kind: input.kind,
-          status: 'rejected',
-          error: 'full_suite_refused',
-          commandClass,
-          reason: scope.reason === 'package-test-script' ? 'full-suite-command' : 'full-suite-repo-runner',
-          command: normalizedCommand,
-          cwd: effectiveCwd,
-          durationMs: Date.now() - startedAt,
-          message: parts.join('\n'),
-          retryHint: FOCUSED_TEST_GUIDANCE,
-          ...(expansion ? { scriptExpansion: expansion } : {}),
-        });
-      }
     }
   }
 
   // Repeat-after-timeout guard. Key excludes timeoutMs/maxOutputBytes so the
   // agent cannot bypass the refusal by raising its own timeout.
-  const fingerprint = parsed.ok && repeatKeyArgv ? input.fingerprintFn(input.worktreePath) : '';
-  const repeatKey = parsed.ok && repeatKeyArgv ? makeRepeatKey(input.tool, repeatKeyArgv, effectiveCwd) : null;
+  const fingerprint = input.fingerprintFn(input.worktreePath);
+  const repeatKey: string | null = makeRepeatKey(input.tool, parsed.parsed.argv, effectiveCwd);
   if (repeatKey) {
     const previousTimeout = input.history.findTimeout(repeatKey, fingerprint);
     if (previousTimeout) {
@@ -500,7 +513,7 @@ export async function runScopedCommand(
 
   if (result.approval === 'rejected') {
     if (result.guard) {
-      const cmdSummary = parsed.ok ? parsed.argv[0] : undefined;
+      const cmdSummary = parsed.parsed.program;
       input.sessionStreamWriter?.writeGuardRefused({
         guard: result.guard,
         toolName: input.tool,
@@ -668,7 +681,7 @@ function rejectionRetryHint(rejectionReason: RejectionReason | string | undefine
     return 'Provide a concrete command and retry.';
   }
   if (rejectionReason === 'unsupported-shell-syntax') {
-    return 'Run one program per call, pass the cwd parameter instead of "cd ... &&", and quote arguments as for a POSIX shell. Pipes, redirects, &&, ||, ;, $VAR and backticks are not supported.';
+    return 'Run one program per call, pass the cwd parameter instead of "cd ... &&", read long output directly from the capped tool result instead of redirecting to a file, and quote arguments as for a POSIX shell. Pipes, redirects, &&, ||, ;, $VAR, backticks and shell wrappers (bash -c, sh -c, env bash -lc) are not supported.';
   }
   if (rejectionReason === 'foreground-wait-refused') {
     return 'Run the slow command itself once with a bounded timeoutMs (run_tests allows up to 10 minutes) instead of sleeping or polling for it.';

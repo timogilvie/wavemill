@@ -167,3 +167,7 @@ Each control asserts the guard holds across two consecutive ticks: the
 branch, worktree, and workflow-state task entry all survive, and the
 preservation marker (`.wavemill/incidents/preserved-branches/<branch>.json`)
 records the correct `reason` / `verificationReason`.
+
+See also `tests/fixtures/incident-replay/real/` for the HOK-3231 real-
+evidence replay fixtures (per-`rootCauseClass`, generated from the Observer's
+`.wavemill/incidents/<fingerprint>.evidence.jsonl` corpus).

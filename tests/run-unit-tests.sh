@@ -170,6 +170,7 @@ TESTS=(
   shared/lib/review-scope-guard.test.ts
   shared/lib/review-progress.test.ts
   shared/lib/review-formatter.test.ts
+  shared/lib/review-gate-remediation.test.ts
   shared/lib/pr-comparison.test.ts
   shared/lib/swap-test/swap-test.test.ts
   shared/lib/arbiter-probes/strata-cells.test.ts
@@ -346,6 +347,8 @@ TESTS=(
   shared/lib/wavemill-incident-recovery.test.ts
   shared/lib/wavemill-incident-projection.test.ts
   shared/lib/wavemill-incident-store.test.ts
+  shared/lib/incident-fixture-converter.test.ts
+  shared/lib/incident-reconcile-cycle.test.ts
   shared/lib/state-mutex.test.ts
   shared/lib/task-record-write-guard.test.ts
   shared/lib/task-settlement.test.ts
@@ -379,6 +382,7 @@ TESTS=(
   shared/lib/eval-rejected-store.test.ts
   shared/lib/task-dependency-plan-cache.test.ts
   shared/lib/queue-inference-status.test.ts
+  shared/lib/queue-events.test.ts
   shared/lib/task-dependency-planner.test.ts
   shared/lib/plan-queue-utils.test.ts
   shared/lib/touch-set-predictor.test.ts
@@ -423,6 +427,7 @@ TESTS=(
   tools/check-ci-command-map-drift.test.ts
   tools/check-ci-concurrency.test.ts
   tools/lib/source-guard.test.ts
+  tools/check-command-parse.test.ts
   tools/check-source-text-assertions.test.ts
   tools/check-openrouter-alias-audit-ci.test.ts
   tools/check-cross-pr-reverts.test.ts
@@ -539,7 +544,6 @@ TESTS=(
   shared/lib/permissions-verifier.test.ts
   shared/lib/plan-validator.test.ts
   shared/lib/branch-publication.test.ts
-  shared/lib/pre-pr-verification-gate.test.ts
   shared/lib/pre-pr-verification.test.ts
   shared/lib/project-context-compactor.test.ts
   shared/lib/project-context-generator.test.ts

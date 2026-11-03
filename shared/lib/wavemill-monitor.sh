@@ -47,6 +47,68 @@ classify_for_reconciliation() {
     "$merge_status" "$failed_check_summary" "$checks_run" "$checks_passed" 2>/dev/null) || echo "ambiguous"
 }
 
+# Decide the remediation disposition for a review-gate refusal (HOK-2890).
+# Routes through review-gate-remediation-cli to classify as terminal / code-failure / retryable.
+# Returns the disposition class on stdout. CLI stderr is mirrored into the
+# mill log so a broken CLI surfaces instead of silently looping on the
+# retryable fallback. The fallback matches the pre-HOK-2890 "missing review
+# artifact → retryable" branch: review_result_infra_failure returned true for
+# a missing file, which routed to relaunch_review_after_infra_recovery.
+review_gate_decide_disposition() {
+  local state_dir="$1" result cli_err cli_rc
+  cli_err="$(mktemp 2>/dev/null || echo "/tmp/review-gate-cli.$$.err")"
+  result=$(cd "$REPO_DIR" && wavemill_run_tool "review-gate-remediation-cli.ts" \
+    decide --state-dir "$state_dir" 2>"$cli_err")
+  cli_rc=$?
+  if [[ $cli_rc -ne 0 ]]; then
+    local err_body=""
+    [[ -s "$cli_err" ]] && err_body="$(head -c 400 "$cli_err" 2>/dev/null)"
+    log_warn "review-gate-remediation-cli exited $cli_rc for $state_dir${err_body:+: ${err_body}}; using shell-based fallback"
+    # Fallback to shell-based disposition logic when tool is unavailable (tests, deployment issues)
+    if review_result_infra_failure "$state_dir"; then
+      result="retryable"
+    else
+      result="terminal"
+    fi
+  fi
+  rm -f "$cli_err" 2>/dev/null || true
+  echo "$result"
+}
+
+# Generate a dedup key for review-gate findings. Keyed on review-head SHA
+# recorded on the artifact plus a review-signature derived from
+# verdict + failureCategory (and the typed artifact identity if present).
+# Current production review-result.json shapes do not populate
+# `.artifact.identity`, so the key falls back to the review signature,
+# ensuring a fresh verdict/category combination triggers a new delivery.
+review_gate_dedup_key() {
+  local state_dir="$1" review_file head_sha review_identity verdict failure_category sig
+  review_file="$state_dir/.review-result.json"
+  head_sha=$(jq -r '
+    (.artifacts // {}) as $artifacts
+    | (if ($artifacts.type // "") == "review" then $artifacts else ($artifacts.review // {}) end)
+    | (.reviewHeadSha // "")
+  ' "$review_file" 2>/dev/null || echo "")
+  [[ -n "$head_sha" ]] || head_sha="unknown"
+  review_identity=$(jq -r '.artifact.identity // empty' "$review_file" 2>/dev/null || echo "")
+  if [[ -n "$review_identity" ]]; then
+    printf '%s_%s\n' "$head_sha" "$review_identity"
+    return 0
+  fi
+  verdict=$(jq -r '
+    (.artifacts // {}) as $artifacts
+    | (if ($artifacts.type // "") == "review" then $artifacts else ($artifacts.review // {}) end)
+    | (.verdict // "")
+  ' "$review_file" 2>/dev/null || echo "")
+  failure_category=$(jq -r '
+    (.artifacts // {}) as $artifacts
+    | (if ($artifacts.type // "") == "review" then $artifacts else ($artifacts.review // {}) end)
+    | (.failureCategory // "")
+  ' "$review_file" 2>/dev/null || echo "")
+  sig="${verdict:-unknown}:${failure_category:-none}"
+  printf '%s_%s\n' "$head_sha" "$sig"
+}
+
 # Logging functions - defined early so they're available for all error handling
 _log_level_num() {
   case "$1" in
@@ -254,6 +316,11 @@ fi
 # so marker_write and bounded_retry helpers are available.
 if [[ -f "$LIB_DIR/condition-reconciler.sh" ]]; then
 source "$LIB_DIR/condition-reconciler.sh"
+fi
+# Agent remediation delivery helper (HOK-2890). Sourced after condition-reconciler and
+# wavemill-common.sh so all dependencies are available.
+if [[ -f "$LIB_DIR/agent-remediation-delivery.sh" ]]; then
+source "$LIB_DIR/agent-remediation-delivery.sh"
 fi
 # Async ready-path checks (HOK-3206): cross-PR guard, CI status, ready
 # watchdog and routing run as tracked jobs. Sourced after the condition
@@ -11988,9 +12055,12 @@ _retired_challenge_arm_close_pr() {
 # True when a Ready launch refusal is terminal because the review artifact can
 # never pass the readiness gate. Shared by the first-refusal and later-tick
 # branches in the pending-ready-recheck path (HOK-3154).
+# Uses the unified disposition (HOK-2890) to determine if a review refusal is terminal.
 review_gate_refusal_is_terminal() {
-  local state_dir="$1"
-  ! review_result_passes_ready_gate "$state_dir" && ! review_result_infra_failure "$state_dir"
+  local state_dir="$1" disposition
+  ! review_result_passes_ready_gate "$state_dir" || return 1
+  disposition=$(review_gate_decide_disposition "$state_dir")
+  [[ "$disposition" == "terminal" ]]
 }
 
 # review_refused_challenge_cause <state_dir> <issue>
@@ -13784,19 +13854,54 @@ launch_ready_phase() {
   fi
 
   if ! review_result_passes_ready_gate "$state_dir"; then
-    local review_summary
+    local review_summary disposition
     review_summary="$(review_result_summary "$state_dir")"
-    if review_result_infra_failure "$state_dir"; then
-      relaunch_review_after_infra_recovery "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" "$pr_number" "$state_dir"
-      return $?
-    fi
-    strip_ready_label_if_review_not_passed "$wt_dir" "$pr_number" "$state_dir" || true
-    local _ready_gate_head
-    _ready_gate_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
-    write_ready_attention_file "$state_dir" "Review verdict does not pass readiness gate for PR #$pr_number ($review_summary)." \
-      --head "$_ready_gate_head" --expires-on "head,operator-event,review-artifact" --review-artifact
-    log_error "  $issue: refusing ready phase for PR #$pr_number; $review_summary"
-    return 1
+
+    # ONE DISPOSITION for all review refusals (HOK-2890)
+    disposition=$(review_gate_decide_disposition "$state_dir")
+
+    case "$disposition" in
+      code-failure)
+        # Remediable scope violations, verification failures → deliver to agent
+        strip_ready_label_if_review_not_passed "$wt_dir" "$pr_number" "$state_dir" || true
+        agent_remediation_deliver "$feature_dir" "$issue" \
+          "$state_dir/.review-gate-remediation.json" \
+          "Review found issues that can be fixed: $review_summary. Review the findings and correct the issues." \
+          "$(review_gate_dedup_key "$state_dir")" \
+          --expires-on "head,operator-event,review-artifact" || true
+        log_error "  $issue: review found code-failure; remediation sent to agent"
+        return 1
+        ;;
+      retryable)
+        # Transient infrastructure failures → relaunch review
+        relaunch_review_after_infra_recovery "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" "$pr_number" "$state_dir"
+        return $?
+        ;;
+      terminal)
+        # Config errors, policy violations → operator attention
+        strip_ready_label_if_review_not_passed "$wt_dir" "$pr_number" "$state_dir" || true
+        local _ready_gate_head
+        _ready_gate_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
+        write_ready_attention_file "$state_dir" "Review verdict does not pass readiness gate for PR #$pr_number ($review_summary). Configuration or policy review required." \
+          --head "$_ready_gate_head" --expires-on "head,operator-event,review-artifact" --review-artifact
+        log_error "  $issue: refusing ready phase; $review_summary (terminal)"
+        return 1
+        ;;
+      *)
+        # An unknown disposition token (empty string, future enum value, or
+        # mangled CLI output) must never silently fall through past the
+        # review gate — the branch returned false for review_result_passes_ready_gate,
+        # so Ready cannot proceed. Treat as terminal / operator attention and
+        # record the raw token in the attention marker.
+        strip_ready_label_if_review_not_passed "$wt_dir" "$pr_number" "$state_dir" || true
+        local _ready_gate_head
+        _ready_gate_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
+        write_ready_attention_file "$state_dir" "Review verdict does not pass readiness gate for PR #$pr_number ($review_summary). Unknown remediation disposition '${disposition:-<empty>}'; investigate review-gate-remediation-cli." \
+          --head "$_ready_gate_head" --expires-on "head,operator-event,review-artifact" --review-artifact
+        log_error "  $issue: refusing ready phase; unknown disposition '${disposition:-<empty>}' from review-gate CLI"
+        return 1
+        ;;
+    esac
   fi
 
   if [[ "$(post_pr_reconciliation_enabled "$wt_dir")" == "true" ]]; then

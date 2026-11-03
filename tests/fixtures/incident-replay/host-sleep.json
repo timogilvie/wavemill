@@ -19,6 +19,11 @@
   "faultParams": {
     "tickGapSeconds": 900
   },
+  "failure": {
+    "stage": "coding",
+    "detail": "",
+    "survivesRelaunches": 0
+  },
   "convergence": {
     "mustMerge": true,
     "maxTickCount": 10,

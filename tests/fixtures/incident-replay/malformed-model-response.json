@@ -19,6 +19,12 @@
   "faultParams": {
     "responseKind": "non-json"
   },
+  "failure": {
+    "stage": "review",
+    "failureKind": "review-malformed-response",
+    "detail": "reviewer returned non-json output",
+    "survivesRelaunches": "never"
+  },
   "convergence": {
     "mustEscalate": true,
     "maxTickCount": 10,

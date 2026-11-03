@@ -11,6 +11,7 @@ function usage(): never {
 }
 
 function parseMutateArgs(argv: string[]): { path: string; jqFilter: string } {
+  // allow-command-parse: CLI argv for the `state` tool, unrelated to run_tests parsing (HOK-3383)
   if (argv[0] !== 'mutate') {
     usage();
   }

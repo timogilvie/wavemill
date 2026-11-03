@@ -5,7 +5,7 @@ import type { ChildProcess, SpawnOptions } from 'node:child_process';
 
 import type { CommandClass } from './command-classifier.ts';
 import { classifyCommand } from './command-classifier.ts';
-import { parseCommandArgv } from './command-argv.ts';
+import { parseCommandArgv, parsedCommandFromArgv, type ParsedCommand } from './command-argv.ts';
 import {
   FOREGROUND_WAIT_GUARD,
   classifyForegroundWait,
@@ -146,56 +146,79 @@ export async function runCommand(options: RunCommandOptions): Promise<CommandRes
   }
 
   const startedAt = Date.now();
-  const classification = classifyCommand(options.command);
-  if (classification.commandClass === 'dangerous') {
-    return rejectionResult(
-      options,
-      classification.commandClass,
-      classification.rejectionReason ?? 'dangerous-command-pattern',
-      startedAt,
-      classification.normalizedCommand,
-    );
+
+  // HOK-3383: one parse up front. For a shell-mode string we skip tokenisation
+  // entirely (the substrate hands it straight to `/bin/sh -c`). For an argv or
+  // an exec-form string we produce exactly one ParsedCommand and feed every
+  // downstream guard from it.
+  let parsed: ParsedCommand | null;
+  let normalizedCommand: string;
+  if (typeof options.command === 'string') {
+    if (options.shell === true) {
+      // Shell-mode legacy path: no tokenisation, no guards.
+      parsed = null;
+      normalizedCommand = options.command.trim();
+    } else {
+      const parseResult = parseCommandArgv(options.command);
+      if (!parseResult.ok) {
+        return rejectionResult(
+          options,
+          'safe',
+          parseResult.reason,
+          startedAt,
+          options.command.trim(),
+          parseResult.detail,
+        );
+      }
+      parsed = parseResult.parsed;
+      normalizedCommand = parsed.argv.join(' ').trim();
+    }
+  } else {
+    parsed = parsedCommandFromArgv(options.command);
+    if (parsed === null) {
+      // Array form with a shell wrapper or an empty argv.
+      const joined = options.command.join(' ').trim();
+      return rejectionResult(
+        options,
+        'safe',
+        joined.length === 0 ? 'empty-command' : 'unsupported-shell-syntax',
+        startedAt,
+        joined,
+        joined.length === 0 ? undefined : 'shell interpreter wrapper',
+      );
+    }
+    normalizedCommand = parsed.argv.join(' ').trim();
   }
 
-  let commandClass = classification.commandClass;
+  let commandClass: CommandClass = 'safe';
   let spawnCommand: readonly string[] | string = options.command;
-  if (typeof options.command === 'string' && options.shell !== true) {
-    const parsed = parseCommandArgv(options.command);
-    if (!parsed.ok) {
+  if (parsed !== null) {
+    const classification = classifyCommand(parsed);
+    if (classification.commandClass === 'dangerous') {
       return rejectionResult(
         options,
-        commandClass,
-        parsed.reason,
-        startedAt,
-        classification.normalizedCommand,
-        parsed.detail,
-      );
-    }
-    const argvClassification = classifyCommand(parsed.argv);
-    if (argvClassification.commandClass === 'dangerous') {
-      return rejectionResult(
-        options,
-        argvClassification.commandClass,
-        argvClassification.rejectionReason ?? 'dangerous-command-pattern',
+        classification.commandClass,
+        classification.rejectionReason ?? 'dangerous-command-pattern',
         startedAt,
         classification.normalizedCommand,
       );
     }
-    commandClass = argvClassification.commandClass;
+    commandClass = classification.commandClass;
+    normalizedCommand = classification.normalizedCommand;
     spawnCommand = parsed.argv;
   }
 
   // HOK-3262: refuse foreground waits (sleep/watch/timeout tail -f) on the
-  // exec argv. Shell-mode strings are not tokenized and are not guarded.
-  if (typeof spawnCommand !== 'string') {
-    const waitDecision = classifyForegroundWait(spawnCommand);
+  // parsed command. Shell-mode strings are not tokenized and are not guarded.
+  if (parsed !== null) {
+    const waitDecision = classifyForegroundWait(parsed);
     if (waitDecision.refused) {
       return rejectionResult(
         options,
         commandClass,
         'foreground-wait-refused',
         startedAt,
-        classification.normalizedCommand,
+        normalizedCommand,
         describeWaitGuardRefusal(waitDecision),
         FOREGROUND_WAIT_GUARD,
       );
@@ -209,7 +232,7 @@ export async function runCommand(options: RunCommandOptions): Promise<CommandRes
       commandClass,
       'cwd-outside-allowed-roots',
       startedAt,
-      classification.normalizedCommand,
+      normalizedCommand,
     );
   }
 
@@ -251,7 +274,7 @@ export async function runCommand(options: RunCommandOptions): Promise<CommandRes
         commandClass,
         decision.outcome === 'denied' ? 'approval-denied' : 'approval-expired',
         startedAt,
-        classification.normalizedCommand,
+        normalizedCommand,
       );
     }
   }
@@ -269,7 +292,7 @@ export async function runCommand(options: RunCommandOptions): Promise<CommandRes
   options.onSpawn?.(child);
   return await waitForProcess({
     child,
-    command: classification.normalizedCommand,
+    command: normalizedCommand,
     commandClass,
     maxOutputBytes,
     timeoutMs,
