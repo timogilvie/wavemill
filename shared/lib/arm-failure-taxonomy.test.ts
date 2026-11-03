@@ -210,6 +210,11 @@ test('classifies the HOK-3154 review-gate refusal kinds and prefixes', () => {
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'review-identity-mismatch' })), false);
   assert.equal(isInvalidChallengeAbort('invalid_challenge:review-identity-mismatch'), true);
   assert.equal(isInvalidChallengeAbort(' invalid_challenge:review-unattributed '), true);
+  // HOK-3358 normalizes every arm termination to `terminal_stage_failure:*`;
+  // `isInvalidChallengeAbort` classifies by kind, not prefix, so the
+  // normalized form must still void the pair (no winner).
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:review-identity-mismatch'), true);
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:review-unattributed'), true);
 });
 
 test('classifies the HOK-3147 ready-exhausted kinds and the invalid_challenge prefix', () => {
@@ -225,11 +230,14 @@ test('classifies the HOK-3147 ready-exhausted kinds and the invalid_challenge pr
   assert.equal(classifyArmFault({ failureKind: 'ready-transition-failed' }), 'harness-fault');
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'ready-transition-failed' })), false);
   assert.equal(isInvalidChallengeAbort('invalid_challenge:ready-transition-failed'), true);
+  // HOK-3358 normalized form must classify the same way.
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:ready-transition-failed'), true);
 
   // No typed cause (conflict / missing result): invalid challenge too.
   assert.equal(parseAbortFailureKind('invalid_challenge:ready-unattributed'), 'ready-unattributed');
   assert.equal(classifyArmFault({ failureKind: 'ready-unattributed' }), 'harness-fault');
   assert.equal(isInvalidChallengeAbort('  invalid_challenge:ready-unattributed '), true);
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:ready-unattributed'), true);
 
   assert.equal(isInvalidChallengeAbort(null), false);
   assert.equal(isInvalidChallengeAbort(undefined), false);
@@ -243,6 +251,7 @@ test('classifies the HOK-3156 route-drift kind as a harness fault', () => {
   assert.equal(classifyArmFault({ failureKind: 'route-drift' }), 'harness-fault');
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'route-drift' })), false);
   assert.equal(isInvalidChallengeAbort('invalid_challenge:route-drift'), true);
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:route-drift'), true);
 });
 
 test('classifies the HOK-3156 multiple-varied-roles preflight collapse as a harness fault', () => {
@@ -250,6 +259,7 @@ test('classifies the HOK-3156 multiple-varied-roles preflight collapse as a harn
   assert.equal(classifyArmFault({ failureKind: 'multiple-varied-roles' }), 'harness-fault');
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'multiple-varied-roles' })), false);
   assert.equal(isInvalidChallengeAbort('invalid_challenge:multiple-varied-roles'), true);
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:multiple-varied-roles'), true);
 });
 
 // ── HOK-3362: one budget-exhaustion fault rule ─────────────────────────────

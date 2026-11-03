@@ -337,12 +337,40 @@ export function parseAbortFailureKind(abortReason?: string | null): string | nul
 }
 
 /**
+ * Arm-failure kinds that retire an arm as an invalid challenge: an
+ * infrastructure/identity failure that resolves the pair without a winner
+ * (never a forfeit). These were spelled `invalid_challenge:<kind>` before
+ * HOK-3358 normalized every arm termination to `terminal_stage_failure:<kind>`;
+ * membership is decided by kind, not prefix, so both spellings classify the
+ * same.
+ */
+export const INVALID_CHALLENGE_KINDS: ReadonlySet<ArmFailureKind> = new Set<ArmFailureKind>([
+  'ready-transition-failed',
+  'ready-unattributed',
+  'review-identity-mismatch',
+  'review-unattributed',
+  'route-drift',
+  'multiple-varied-roles',
+]);
+
+/**
  * True when an arm's `challengeAborted` reason retires it as an invalid
- * challenge (`invalid_challenge:<kind>`, HOK-3147): an infrastructure/identity
- * failure that must resolve the pair without a winner or a model forfeit.
+ * challenge (HOK-3147). The reason prefix is irrelevant — the HOK-3358
+ * recorder normalizes every termination to `terminal_stage_failure:<kind>`,
+ * so we parse the kind and look it up in `INVALID_CHALLENGE_KINDS`. Legacy
+ * `invalid_challenge:*` rows still parse through the same path.
  */
 export function isInvalidChallengeAbort(abortReason?: string | null): boolean {
-  return (abortReason ?? '').trim().startsWith('invalid_challenge:');
+  const raw = (abortReason ?? '').trim();
+  if (!raw) return false;
+  // Legacy prefix-match keeps rows that pre-date the kind-based taxonomy
+  // (e.g. `invalid_challenge:route-drift` written before HOK-3358 renamed the
+  // kind set) classifying correctly even if their suffix is not a declared
+  // kind.
+  if (raw.startsWith('invalid_challenge:')) return true;
+  const kind = parseAbortFailureKind(raw);
+  if (!kind) return false;
+  return INVALID_CHALLENGE_KINDS.has(kind as ArmFailureKind);
 }
 
 export function isModelQualitySignal(faultClass: ArmFaultClass): boolean {

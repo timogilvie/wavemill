@@ -213,50 +213,54 @@ export async function recordArmTermination(input: RecordArmTerminationInput): Pr
   const peer = resolvePeerKey(input.issueId);
 
   // ── 1. Mutate workflow state (unless skipped for backfill) ────────────────
+  //
+  // `mutateWorkflowState` runs the HOK-3222 task-record-write guard under its
+  // lock; a schema violation, lock contention, or I/O error here is NOT
+  // swallowed — the recorder surfaces it so the caller does not report a
+  // successful abort over a state that was never written. The monitor's shell
+  // call site wraps the recorder in `|| true` and logs stderr to `log_warn`,
+  // so propagating does not crash the monitor loop; the operator CLI exits
+  // non-zero instead of printing "phase: aborted" over an unchanged row.
   let stateMutated = false;
   if (!input.skipStateMutation && existsSync(stateFile)) {
     const detail = input.detail;
     const nextAction = input.nextAction?.trim() || '';
     const actor = input.actor;
     const stampResult = { mutated: false };
-    try {
-      await mutateWorkflowState(stateFile, (current) => {
-        const stamp = (key: string) => {
-          const task = current.tasks?.[key];
-          if (!task) return;
-          task.challengeAborted = abortReason;
-          if (detail) task.challengeAbortedDetail = detail;
-          else delete task.challengeAbortedDetail;
-          if (stage) task.challengeAbortedStage = stage;
-          if (nextAction) task.challengeAbortedNextAction = nextAction;
-          task.updated = timestamp;
-          stampResult.mutated = true;
-        };
-        stamp(input.issueId);
-        if (scope === 'pair' && peer) stamp(peer);
+    await mutateWorkflowState(stateFile, (current) => {
+      const stamp = (key: string) => {
+        const task = current.tasks?.[key];
+        if (!task) return;
+        task.challengeAborted = abortReason;
+        if (detail) task.challengeAbortedDetail = detail;
+        else delete task.challengeAbortedDetail;
+        if (stage) task.challengeAbortedStage = stage;
+        if (nextAction) task.challengeAbortedNextAction = nextAction;
+        task.updated = timestamp;
+        stampResult.mutated = true;
+      };
+      stamp(input.issueId);
+      if (scope === 'pair' && peer) stamp(peer);
 
-        // Operator-abort also flips the task row to terminal `aborted`. The
-        // monitor/resolver paths already own phase/status + lifecycle writes
-        // (`set_window_attention_state`, stage result writes, etc.).
-        if (actor === 'operator') {
-          const task = current.tasks?.[input.issueId];
-          if (task) {
-            task.phase = 'aborted';
-            task.status = 'aborted';
-            task.abortedReason = detail || abortReason;
-            task.abortedAt = timestamp;
-            const existingLifecycle = (task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle))
-              ? task.lifecycle
-              : {};
-            task.lifecycle = { ...existingLifecycle, schemaVersion: 1, workflowOutcome: 'aborted' };
-          }
+      // Operator-abort also flips the task row to terminal `aborted`. The
+      // monitor/resolver paths already own phase/status + lifecycle writes
+      // (`set_window_attention_state`, stage result writes, etc.).
+      if (actor === 'operator') {
+        const task = current.tasks?.[input.issueId];
+        if (task) {
+          task.phase = 'aborted';
+          task.status = 'aborted';
+          task.abortedReason = detail || abortReason;
+          task.abortedAt = timestamp;
+          const existingLifecycle = (task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle))
+            ? task.lifecycle
+            : {};
+          task.lifecycle = { ...existingLifecycle, schemaVersion: 1, workflowOutcome: 'aborted' };
         }
-        return current;
-      });
-      stateMutated = stampResult.mutated;
-    } catch {
-      stateMutated = false;
-    }
+      }
+      return current;
+    });
+    stateMutated = stampResult.mutated;
   }
 
   // ── 2. Write .challenge-aborted.json ─────────────────────────────────────
