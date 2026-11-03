@@ -65,6 +65,18 @@ occurred, `seconds` is `'unknown'`.
    metric `'unknown'`, never `0` (HOK-2895 regression). A **populated**
    log that reports zero ejections reports `ejections: 0` — a real fact,
    not a missing measurement.
+5. **`enqueued`/`ejected` are level-triggered, not edge-triggered.**
+   `tend-controller.ts::selectNextCandidate` runs every poll tick and
+   re-emits a fresh `enqueued` for every still-eligible PR and a fresh
+   `ejected` for every still-blocked PR — not only on the transition into
+   that state — each with a distinct timestamp-based `eventId`, so the
+   event log's own eventId dedup never collapses them. Pairing every
+   re-affirmation with the same next transition event would reproduce
+   HOK-2895's inflation class inside this module. `deriveQueueMetrics`
+   collapses each run of consecutive same-type `enqueued`/`ejected`
+   events down to its first event, once, before any cycle or count is
+   derived (`collapseReaffirmedRuns`; fixture:
+   `poll-tick-reaffirmations`).
 
 ## Cost / duration join (optional)
 

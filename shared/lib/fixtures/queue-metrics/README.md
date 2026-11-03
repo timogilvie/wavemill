@@ -25,3 +25,4 @@ so expected durations are exact.
 | `never-merged.jsonl` | enqueued → candidate_prepared with no terminal event. timeToLand = `'unknown'`, attempt still open. |
 | `empty-log.jsonl` | empty file. Every metric `'unknown'`, counts `'unknown'`, NOT `0`. Direct HOK-2895 regression. |
 | `duplicate-replay.jsonl` | the clean-single-pass stream with every line duplicated. After `readQueueEvents` dedup, result is identical to clean-single-pass. |
+| `poll-tick-reaffirmations.jsonl` | `tend-controller.ts::selectNextCandidate` re-emits a fresh `enqueued`/`ejected` (distinct eventId) every poll tick a PR stays eligible/blocked. 3 redundant `enqueued` then 2 redundant `ejected` then 2 redundant `enqueued` collapse to one queue-wait cycle each and one repair cycle, not an inflated sum (HOK-2895 class regression inside this module). |

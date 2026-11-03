@@ -41,6 +41,10 @@ const PURE_SCENARIOS: readonly Scenario[] = [
   { name: 'multiple-reruns', description: 'reruns within one attempt window are counted individually' },
   { name: 'never-merged', description: 'open attempt yields unknown timeToLand and unknown ciRun seconds' },
   { name: 'empty-log', description: 'empty log makes every metric unknown, never 0 (HOK-2895 regression)' },
+  {
+    name: 'poll-tick-reaffirmations',
+    description: 'repeated per-tick enqueued/ejected re-affirmations collapse to one cycle each, not an inflated sum',
+  },
 ];
 
 for (const scenario of PURE_SCENARIOS) {

@@ -44,6 +44,18 @@
  *     metric `'unknown'`, never `0` — this is the regression class HOK-2895
  *     shipped. A **populated** log that genuinely contains zero ejections
  *     reports `ejections: 0`, which is a real fact.
+ *  5. **`enqueued`/`ejected` are level-triggered, not edge-triggered.**
+ *     `tend-controller.ts::selectNextCandidate` runs on every poll tick and
+ *     re-emits a fresh `enqueued` for every still-eligible PR and a fresh
+ *     `ejected` for every still-blocked PR — not only on the transition into
+ *     that state. Each re-affirmation carries a distinct timestamp-based
+ *     `eventId`, so `appendQueueEventBestEffort`'s eventId dedup never
+ *     collapses them. Pairing every re-affirmation with the same next
+ *     transition event (instead of only the one that actually entered the
+ *     state) would reproduce HOK-2895's inflation class inside this module.
+ *     {@link collapseReaffirmedRuns} collapses each run of consecutive
+ *     same-type `enqueued`/`ejected` events down to its first event, once,
+ *     before any cycle or count is derived.
  *
  * ## I/O boundary
  *
@@ -225,6 +237,33 @@ const ATTEMPT_CLOSING_TYPES = new Set<QueueEventType>([
   'abandoned',
 ]);
 
+/**
+ * `enqueued` and `ejected` are re-emitted every poll tick for as long as a
+ * PR stays eligible/blocked (see modeling decision 5 above) — they mark a
+ * persistent state, not a one-off transition.
+ */
+const REAFFIRMED_EVENT_TYPES = new Set<QueueEventType>(['enqueued', 'ejected']);
+
+/**
+ * Collapse each run of consecutive same-type {@link REAFFIRMED_EVENT_TYPES}
+ * events (in arrival order) down to its first event. Every other event type
+ * — including interleaved occurrences of the *other* reaffirmed type — is
+ * left untouched, so this only removes redundant re-affirmations of a state
+ * that never changed, never a real transition.
+ */
+function collapseReaffirmedRuns(ordered: readonly QueueLifecycleEvent[]): QueueLifecycleEvent[] {
+  const collapsed: QueueLifecycleEvent[] = [];
+  let previousType: QueueEventType | null = null;
+  for (const ev of ordered) {
+    if (ev.eventType === previousType && REAFFIRMED_EVENT_TYPES.has(ev.eventType)) {
+      continue;
+    }
+    collapsed.push(ev);
+    previousType = ev.eventType;
+  }
+  return collapsed;
+}
+
 function toEpochMs(iso: string | null | undefined): number | null {
   if (!iso) return null;
   const ms = Date.parse(iso);
@@ -306,15 +345,22 @@ export function deriveQueueMetrics(
 ): QueueMetricsResult {
   const ordered = arrivalOrderedByTimestamp(events);
   const hasEvents = ordered.length > 0;
+  // See modeling decision 5: collapse per-tick `enqueued`/`ejected`
+  // re-affirmations to their first occurrence before any pairing or
+  // counting below. `eventCount` (returned further down) deliberately
+  // keeps using `ordered.length`, not `collapsed.length` — it reports how
+  // many validated, deduplicated events the derivation read, not how many
+  // state transitions it found.
+  const collapsed = collapseReaffirmedRuns(ordered);
 
   // ── Queue-wait cycles: each `enqueued` → next `candidate_prepared` ──
   const queueWaitCycles: QueueWaitCycle[] = [];
-  for (let i = 0; i < ordered.length; i++) {
-    const ev = ordered[i];
+  for (let i = 0; i < collapsed.length; i++) {
+    const ev = collapsed[i];
     if (ev.eventType !== 'enqueued') continue;
     let endIdx = -1;
-    for (let j = i + 1; j < ordered.length; j++) {
-      if (ordered[j].eventType === 'candidate_prepared') {
+    for (let j = i + 1; j < collapsed.length; j++) {
+      if (collapsed[j].eventType === 'candidate_prepared') {
         endIdx = j;
         break;
       }
@@ -328,7 +374,7 @@ export function deriveQueueMetrics(
         seconds: 'unknown',
       });
     } else {
-      const endEv = ordered[endIdx];
+      const endEv = collapsed[endIdx];
       queueWaitCycles.push({
         startEventId: ev.eventId,
         startTimestamp: ev.timestamp,
@@ -341,13 +387,13 @@ export function deriveQueueMetrics(
 
   // ── CI-run attempt windows: `candidate_prepared` → next window-closer ──
   const ciRunAttempts: CiRunAttempt[] = [];
-  for (let i = 0; i < ordered.length; i++) {
-    const ev = ordered[i];
+  for (let i = 0; i < collapsed.length; i++) {
+    const ev = collapsed[i];
     if (ev.eventType !== 'candidate_prepared') continue;
     let closeBy: CiRunAttempt['closedBy'] = 'open';
-    let closeIdx = ordered.length;
-    for (let j = i + 1; j < ordered.length; j++) {
-      const nx = ordered[j];
+    let closeIdx = collapsed.length;
+    for (let j = i + 1; j < collapsed.length; j++) {
+      const nx = collapsed[j];
       if (ATTEMPT_CLOSING_TYPES.has(nx.eventType)) {
         closeBy = nx.eventType as CiRunAttempt['closedBy'];
         closeIdx = j;
@@ -357,8 +403,8 @@ export function deriveQueueMetrics(
     let lastCheckEv: QueueLifecycleEvent | null = null;
     let checkRunCount = 0;
     for (let j = i + 1; j < closeIdx; j++) {
-      if (ordered[j].eventType === 'check_run_completed') {
-        lastCheckEv = ordered[j];
+      if (collapsed[j].eventType === 'check_run_completed') {
+        lastCheckEv = collapsed[j];
         checkRunCount += 1;
       }
     }
@@ -375,14 +421,14 @@ export function deriveQueueMetrics(
 
   // ── Repair cycles: `ejected`/`abandoned` → next `enqueued` ──
   const repairCycles: RepairLoopCycle[] = [];
-  for (let i = 0; i < ordered.length; i++) {
-    const ev = ordered[i];
+  for (let i = 0; i < collapsed.length; i++) {
+    const ev = collapsed[i];
     if (!REPAIR_START_TYPES.has(ev.eventType)) continue;
     let endIdx = -1;
     let reruns = 0;
-    for (let j = i + 1; j < ordered.length; j++) {
-      if (ordered[j].eventType === 'rerun_requested') reruns += 1;
-      if (ordered[j].eventType === 'enqueued') {
+    for (let j = i + 1; j < collapsed.length; j++) {
+      if (collapsed[j].eventType === 'rerun_requested') reruns += 1;
+      if (collapsed[j].eventType === 'enqueued') {
         endIdx = j;
         break;
       }
@@ -399,7 +445,7 @@ export function deriveQueueMetrics(
         reruns,
       });
     } else {
-      const endEv = ordered[endIdx];
+      const endEv = collapsed[endIdx];
       repairCycles.push({
         startEventId: ev.eventId,
         startEventType: ev.eventType as 'ejected' | 'abandoned',
@@ -413,8 +459,8 @@ export function deriveQueueMetrics(
   }
 
   // ── timeToLand: first `enqueued` → `merged` ──
-  const firstEnqueued = ordered.find((e) => e.eventType === 'enqueued') ?? null;
-  const mergedEvent = ordered.find((e) => e.eventType === 'merged') ?? null;
+  const firstEnqueued = collapsed.find((e) => e.eventType === 'enqueued') ?? null;
+  const mergedEvent = collapsed.find((e) => e.eventType === 'merged') ?? null;
   const timeToLandSeconds: DurationSeconds =
     firstEnqueued && mergedEvent
       ? secondsBetween(firstEnqueued.timestamp, mergedEvent.timestamp)
@@ -423,10 +469,10 @@ export function deriveQueueMetrics(
   // ── Counts: populated log → real integer, empty log → 'unknown' ──
   const attemptsToLand: CountOrUnknown = hasEvents ? ciRunAttempts.length : 'unknown';
   const ejectionsCount: CountOrUnknown = hasEvents
-    ? ordered.filter((e) => REPAIR_START_TYPES.has(e.eventType)).length
+    ? collapsed.filter((e) => REPAIR_START_TYPES.has(e.eventType)).length
     : 'unknown';
   const rerunsCount: CountOrUnknown = hasEvents
-    ? ordered.filter((e) => e.eventType === 'rerun_requested').length
+    ? collapsed.filter((e) => e.eventType === 'rerun_requested').length
     : 'unknown';
 
   // ── Optional cost/duration join ──
