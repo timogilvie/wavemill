@@ -13,7 +13,8 @@ import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import os from 'node:os';
 
-import { publishReviewedBranch, translateGitHubHeadError } from './branch-publication.ts';
+import { publishReviewedBranch, publishStageHead, translateGitHubHeadError } from './branch-publication.ts';
+import { readHeadMoves } from './head-move-record.ts';
 
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, {
@@ -109,10 +110,35 @@ describe('publishReviewedBranch', () => {
     assert.equal(result.ok && result.remoteSha, fixture.headSha);
   });
 
-  it('rejects a remote branch whose SHA differs from the reviewed SHA', () => {
+  it('fast-forwards a remote branch that is an ancestor of the reviewed SHA (HOK-3370)', () => {
+    // protects: agent pushed an earlier head, reviewer committed on top and
+    // did not push — the mill must publish the reviewed head, never refuse
+    // (HOK-3361 operator touch #3).
     const fixture = createFixture();
-    // Remote holds a different commit under the task branch name.
     git(fixture.repoDir, ['push', 'origin', `${fixture.baseSha}:refs/heads/task/test`]);
+
+    const result = publishReviewedBranch({
+      worktreeDir: fixture.repoDir,
+      branch: 'task/test',
+      reviewedSha: fixture.headSha,
+      baseBranch: 'auto/integration',
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && result.outcome, 'pushed');
+    assert.equal(remoteBranchSha(fixture.repoDir, 'task/test'), fixture.headSha);
+  });
+
+  it('rejects a remote branch that genuinely diverged from the reviewed SHA', () => {
+    // protects: a rewritten/foreign remote head is never overwritten by the
+    // seam — divergence stays a typed failure, not a force push.
+    const fixture = createFixture();
+    // Build a sibling commit (same parent, different content) and park it on
+    // the remote under the task branch name.
+    git(fixture.repoDir, ['switch', '-c', 'task/divergent', fixture.baseSha]);
+    const divergentSha = writeAndCommit(fixture.repoDir, 'other.txt', 'other\n', 'divergent work');
+    git(fixture.repoDir, ['push', 'origin', `${divergentSha}:refs/heads/task/test`]);
+    git(fixture.repoDir, ['switch', 'task/test']);
 
     const result = publishReviewedBranch({
       worktreeDir: fixture.repoDir,
@@ -123,9 +149,9 @@ describe('publishReviewedBranch', () => {
 
     assert.equal(result.ok, false);
     assert.equal(!result.ok && result.reason, 'remote-divergence');
-    assert.equal(!result.ok && result.remoteSha, fixture.baseSha);
+    assert.equal(!result.ok && result.remoteSha, divergentSha);
     // The remote ref was not overwritten.
-    assert.equal(remoteBranchSha(fixture.repoDir, 'task/test'), fixture.baseSha);
+    assert.equal(remoteBranchSha(fixture.repoDir, 'task/test'), divergentSha);
     assert.match(!result.ok ? result.recoveryCommand : '', /git .*push/);
   });
 
@@ -192,6 +218,194 @@ describe('publishReviewedBranch', () => {
     assert.equal(result.ok, false);
     assert.equal(!result.ok && result.reason, 'push-failed');
     assert.equal(remoteBranchSha(fixture.repoDir, 'task/test'), null);
+  });
+});
+
+describe('publishStageHead', () => {
+  function stateDirFor(fixture: Fixture): string {
+    return join(fixture.tmpDir, 'state');
+  }
+
+  it('publishes an unpushed local head and appends one head-move row', () => {
+    // protects: a stage exit with commits the agent never pushed (HOK-3361
+    // operator touch #1 — remediation commit never pushed).
+    const fixture = createFixture();
+    const stateDir = stateDirFor(fixture);
+
+    const result = publishStageHead({
+      worktreeDir: fixture.repoDir,
+      branch: 'task/test',
+      stateDir,
+      issue: 'HOK-0001',
+      stage: 'coding',
+      actor: 'mill',
+      kind: 'coding',
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && result.outcome, 'pushed');
+    assert.equal(remoteBranchSha(fixture.repoDir, 'task/test'), fixture.headSha);
+    const rows = readHeadMoves(stateDir);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].to, fixture.headSha);
+    assert.equal(rows[0].from, null); // first publication — no prior remote head
+    assert.equal(rows[0].stage, 'coding');
+    assert.equal(rows[0].actor, 'mill');
+    assert.equal(rows[0].kind, 'coding');
+    assert.equal(rows[0].issue, 'HOK-0001');
+  });
+
+  it('fast-forwards a remote at an ancestor and records from/to with a commit count', () => {
+    const fixture = createFixture();
+    const stateDir = stateDirFor(fixture);
+    git(fixture.repoDir, ['push', 'origin', `${fixture.baseSha}:refs/heads/task/test`]);
+    const newHead = writeAndCommit(fixture.repoDir, 'fix.txt', 'fix\n', 'review fix');
+
+    const result = publishStageHead({
+      worktreeDir: fixture.repoDir,
+      branch: 'task/test',
+      stateDir,
+      issue: 'HOK-0001',
+      stage: 'review',
+      actor: 'mill',
+      kind: 'review-fix',
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && result.outcome, 'pushed');
+    assert.equal(remoteBranchSha(fixture.repoDir, 'task/test'), newHead);
+    const rows = readHeadMoves(stateDir);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].from, fixture.baseSha);
+    assert.equal(rows[0].to, newHead);
+    assert.equal(rows[0].commits, 2); // feature + review fix
+  });
+
+  it('reuses a matching remote without a duplicate row for the same head', () => {
+    // protects: a stage exit where nothing moved (reviewer did not commit)
+    // appends nothing — the record stays one row per head.
+    const fixture = createFixture();
+    const stateDir = stateDirFor(fixture);
+    const first = publishStageHead({
+      worktreeDir: fixture.repoDir,
+      branch: 'task/test',
+      stateDir,
+      issue: 'HOK-0001',
+      stage: 'coding',
+      actor: 'mill',
+      kind: 'coding',
+    });
+    assert.equal(first.ok, true);
+
+    const second = publishStageHead({
+      worktreeDir: fixture.repoDir,
+      branch: 'task/test',
+      stateDir,
+      issue: 'HOK-0001',
+      stage: 'review',
+      actor: 'mill',
+      kind: 'review-fix',
+    });
+
+    assert.equal(second.ok, true);
+    assert.equal(second.ok && second.outcome, 'reused');
+    assert.equal(second.ok && second.headMove, null);
+    assert.equal(readHeadMoves(stateDir).length, 1);
+  });
+
+  it('records an agent-pushed head on reuse (new head, no mill push)', () => {
+    // protects: when the agent (or gh pr create) already pushed, the move is
+    // still recorded — authorship data never depends on who pushed.
+    const fixture = createFixture();
+    const stateDir = stateDirFor(fixture);
+    git(fixture.repoDir, ['push', 'origin', 'task/test']);
+
+    const result = publishStageHead({
+      worktreeDir: fixture.repoDir,
+      branch: 'task/test',
+      stateDir,
+      issue: 'HOK-0001',
+      stage: 'coding',
+      actor: 'mill',
+      kind: 'coding',
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && result.outcome, 'reused');
+    const rows = readHeadMoves(stateDir);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].to, fixture.headSha);
+  });
+
+  it('reports remote-ahead without pushing or recording when all local commits are on the remote', () => {
+    const fixture = createFixture();
+    const stateDir = stateDirFor(fixture);
+    git(fixture.repoDir, ['push', 'origin', 'task/test']);
+    // Remote moves further ahead (as after a tend rebase/push from scratch).
+    const aheadSha = writeAndCommit(fixture.repoDir, 'ahead.txt', 'ahead\n', 'remote-side commit');
+    git(fixture.repoDir, ['push', 'origin', 'task/test']);
+    git(fixture.repoDir, ['reset', '--hard', fixture.headSha]);
+
+    const result = publishStageHead({
+      worktreeDir: fixture.repoDir,
+      branch: 'task/test',
+      stateDir,
+      issue: 'HOK-0001',
+      stage: 'ready',
+      actor: 'mill',
+      kind: 'remediation',
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && result.outcome, 'remote-ahead');
+    assert.equal(remoteBranchSha(fixture.repoDir, 'task/test'), aheadSha);
+    assert.equal(readHeadMoves(stateDir).length, 0);
+  });
+
+  it('fails typed on genuine divergence and never overwrites the remote', () => {
+    const fixture = createFixture();
+    const stateDir = stateDirFor(fixture);
+    git(fixture.repoDir, ['switch', '-c', 'task/divergent', fixture.baseSha]);
+    const divergentSha = writeAndCommit(fixture.repoDir, 'other.txt', 'other\n', 'divergent work');
+    git(fixture.repoDir, ['push', 'origin', `${divergentSha}:refs/heads/task/test`]);
+    git(fixture.repoDir, ['switch', 'task/test']);
+
+    const result = publishStageHead({
+      worktreeDir: fixture.repoDir,
+      branch: 'task/test',
+      stateDir,
+      issue: 'HOK-0001',
+      stage: 'ready',
+      actor: 'mill',
+      kind: 'conflict',
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(!result.ok && result.reason, 'remote-divergence');
+    assert.equal(remoteBranchSha(fixture.repoDir, 'task/test'), divergentSha);
+    assert.equal(readHeadMoves(stateDir).length, 0);
+  });
+
+  it('refuses to publish when the local head is not the expected stage head', () => {
+    const fixture = createFixture();
+    const stateDir = stateDirFor(fixture);
+    const movedSha = writeAndCommit(fixture.repoDir, 'extra.txt', 'extra\n', 'post-stage commit');
+
+    const result = publishStageHead({
+      worktreeDir: fixture.repoDir,
+      branch: 'task/test',
+      expectedSha: fixture.headSha,
+      stateDir,
+      issue: 'HOK-0001',
+      stage: 'review',
+      actor: 'mill',
+      kind: 'review-fix',
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(!result.ok && result.reason, 'stale-reviewed-sha');
+    assert.equal(!result.ok && result.localSha, movedSha);
+    assert.equal(readHeadMoves(stateDir).length, 0);
   });
 });
 

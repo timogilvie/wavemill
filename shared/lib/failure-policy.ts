@@ -451,6 +451,10 @@ const CODE_FAILURE_SIGNATURES: ReadonlyArray<RegExp> = [
   // arm's change — so retrying the phase cannot fix it and the excerpt must
   // reach the operator instead of spending the retry budget.
   /\bExpected resolved_model\b/,
+  // HOK-3370: the publication seam refused a genuinely diverged remote head.
+  // Conflict-shaped: the branch needs reconciling (remediation), and retrying
+  // the identical publish would refuse identically.
+  /refusing to overwrite the remote branch/,
 ];
 
 /** Kinds a stage emits for red checks it already proved are the change's fault. */

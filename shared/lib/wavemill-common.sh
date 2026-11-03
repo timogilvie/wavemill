@@ -196,6 +196,42 @@ _failure_policy_cli() {
   wavemill_run_tool failure-policy-cli.ts "$@" 2>/dev/null
 }
 
+# ── Stage-head publication seam (HOK-3370) ──────────────────────────────────
+# The one path that publishes a task branch's head at a stage exit. Agents
+# commit; the mill publishes. Wraps tools/publish-stage-head.ts, which
+# verifies the local ref, fast-forwards the remote (never force), appends a
+# head-move/v1 row to <state_dir>/.head-moves.jsonl, and shadow-records the
+# push through the side-effect ledger (HOK-3183).
+#
+# Usage: publish_stage_head <wt_dir> <branch> <state_dir> <issue> <stage> <kind> [expected_sha]
+#   stage: planning|coding|review|ready|tend
+#   kind:  coding|review-fix|remediation|conflict|base-merge|rebase
+# Sets:  PUBLISH_STAGE_HEAD_OUTCOME (pushed|reused|remote-ahead; "" on failure)
+#        PUBLISH_STAGE_HEAD_REASON  (typed failure reason; "" on success)
+#        PUBLISH_STAGE_HEAD_DETAIL  (human-readable failure message)
+# Returns the CLI's exit code: 0 success; 10 remote-divergence (conflict-
+# shaped, flows to remediation via the failure policy); 11 local ref
+# missing/moved; 13 transport failure (retryable); 1 other.
+publish_stage_head() {
+  local wt_dir="$1" branch="$2" state_dir="$3" issue="$4" stage="$5" kind="$6" expected_sha="${7:-}"
+  local out rc=0 extra_args=()
+  PUBLISH_STAGE_HEAD_OUTCOME="" PUBLISH_STAGE_HEAD_REASON="" PUBLISH_STAGE_HEAD_DETAIL=""
+  [[ -n "$expected_sha" ]] && extra_args+=(--expected-sha "$expected_sha")
+  out=$(wavemill_run_tool "publish-stage-head.ts" --worktree "$wt_dir" --branch "$branch" \
+    --state-dir "$state_dir" --issue "$issue" --stage "$stage" --kind "$kind" \
+    "${extra_args[@]}" 2>/dev/null) || rc=$?
+  if [[ -n "$out" ]]; then
+    out=$(printf '%s\n' "$out" | tail -n 1)
+    PUBLISH_STAGE_HEAD_OUTCOME=$(printf '%s' "$out" | jq -r 'if .ok == true then .outcome // empty else empty end' 2>/dev/null || true)
+    PUBLISH_STAGE_HEAD_REASON=$(printf '%s' "$out" | jq -r '.reason // empty' 2>/dev/null || true)
+    PUBLISH_STAGE_HEAD_DETAIL=$(printf '%s' "$out" | jq -r '.message // empty' 2>/dev/null || true)
+  fi
+  if (( rc != 0 )) && [[ -z "$PUBLISH_STAGE_HEAD_DETAIL" ]]; then
+    PUBLISH_STAGE_HEAD_DETAIL="publish-stage-head failed (rc=$rc) with no JSON output"
+  fi
+  return $rc
+}
+
 # HOK-3190: minimal fallback for pass_task_field so standalone callers
 # (test harnesses that source just wavemill-common.sh, cleanup CLIs, etc.)
 # that end up invoking a monitor function with a `pass_task_field` call
