@@ -17,6 +17,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# HOK-3358: challenge_abort_pair now delegates the state stamp and the
+# .challenge-aborted.json artifact to tools/record-arm-termination.ts. Keep a
+# handle to the real repo root so the overrides below can locate the tool
+# after REPO_DIR is re-pointed at the test's sandbox.
+REAL_REPO_DIR="$REPO_DIR"
 MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 
 PASS=0
@@ -52,6 +57,10 @@ extract_function() {
 # Real bounded-retry helpers (the exhausted-reason sentinel readers).
 # shellcheck source=../shared/lib/bounded-retry.sh
 source "$REPO_DIR/shared/lib/bounded-retry.sh"
+# Real task-identity helpers (challenge_abort_pair reads
+# task_identity_challenger_key after HOK-3358).
+# shellcheck source=../shared/lib/task-identity.sh
+source "$REPO_DIR/shared/lib/task-identity.sh"
 
 for fn in \
   ready_exhausted_challenge_cause \
@@ -63,6 +72,7 @@ for fn in \
   native_terminal_failure_next_action \
   challenge_result_stage_for_launch \
   challenge_stage_for_launch_env \
+  stage_budget_exhausted_json \
   ready_state_dir \
   read_stage_status \
   stage_result_field \
@@ -84,17 +94,25 @@ WARN_FILE="$TMP_ROOT/warn.txt"
 STATUS_LOG="$TMP_ROOT/status.txt"
 GH_LOG="$TMP_ROOT/gh.txt"
 WORKTREE_ROOT="$TMP_ROOT/worktrees"
-# HOK-3100: point TOOLS_DIR at an empty dir so wavemill_tool_path returns
-# a path that doesn't exist; challenge_abort_pair then skips the bridge.
-REPO_DIR="$TMP_ROOT/no-repo"
-TOOLS_DIR="$TMP_ROOT/empty-tools"
+# HOK-3358: challenge_abort_pair now delegates the state stamp and the
+# .challenge-aborted.json artifact to tools/record-arm-termination.ts via
+# wavemill_run_tool. Point TOOLS_DIR at the real tools/ so the bridge resolves
+# the recorder, and sandbox REPO_DIR so the recorder's reliability-record
+# writes land under the test's tmp dir.
+REPO_DIR="$TMP_ROOT/repo"
+TOOLS_DIR="$REAL_REPO_DIR/tools"
 export TOOLS_DIR
-mkdir -p "$WORKTREE_ROOT" "$REPO_DIR" "$TOOLS_DIR"
+mkdir -p "$WORKTREE_ROOT" "$REPO_DIR"
 
 # This test extracts isolated functions from the monitor without sourcing
-# wavemill-common.sh, so provide the helper locally.
+# wavemill-common.sh, so provide the helpers locally.
 wavemill_tool_path() {
-  printf '%s/%s\n' "${TOOLS_DIR:-$TMP_ROOT/empty-tools}" "$1"
+  printf '%s/%s\n' "${TOOLS_DIR:-$REAL_REPO_DIR/tools}" "$1"
+}
+wavemill_run_tool() {
+  local tool="$1"; shift
+  [[ "$tool" == /* ]] || tool="$(wavemill_tool_path "$tool")"
+  node --experimental-strip-types --no-warnings "$tool" "$@"
 }
 # HOK-3176: next actions come from the failure policy; resolve it from the
 # checkout, not the sandboxed TOOLS_DIR.
@@ -236,7 +254,7 @@ dir="$(state_dir_for HOK-3145_c)"
 write_ready_result "$dir" '{"type":"ready","verdict":"pass","checksRun":3,"checksPassed":3,"prNumber":1559,"transitionFailure":{"stage":"route-stamp","detail":"review identity mismatch"}}'
 run_terminalize "HOK-3145_c"
 if [[ "$rc" == "0" ]] \
-  && [[ "$(get_task_meta HOK-3145_c challengeAborted)" == "invalid_challenge:ready-transition-failed" ]] \
+  && [[ "$(get_task_meta HOK-3145_c challengeAborted)" == "terminal_stage_failure:ready-transition-failed" ]] \
   && [[ "$(get_task_meta HOK-3145_c challengeAbortedDetail)" == *"transition route-stamp (review identity mismatch)"* ]] \
   && [[ "$(get_task_meta HOK-3145_c challengeAbortedNextAction)" == *"invalid challenge"* ]] \
   && [[ "$(close_count)" == "1" ]]; then
@@ -334,8 +352,8 @@ fi
 # ── 7. Unattributed ─────────────────────────────────────────────────────────
 seed "HOK-3145_c" "completed"
 run_terminalize "HOK-3145_c"
-if [[ "$rc" == "0" ]] && [[ "$(get_task_meta HOK-3145_c challengeAborted)" == "invalid_challenge:ready-unattributed" ]]; then
-  pass "no ready result classifies as invalid_challenge:ready-unattributed"
+if [[ "$rc" == "0" ]] && [[ "$(get_task_meta HOK-3145_c challengeAborted)" == "terminal_stage_failure:ready-unattributed" ]]; then
+  pass "no ready result classifies as ready-unattributed"
 else
   fail "missing-result classification wrong ($(get_task_meta HOK-3145_c challengeAborted))"
 fi
@@ -346,7 +364,7 @@ seed "HOK-3145_c" "completed"
 dir="$(state_dir_for HOK-3145_c)"
 write_ready_result "$dir" '{"type":"ready","verdict":"fail","checksRun":3,"checksPassed":2,"remediationFailures":["unit"]}'
 run_terminalize "HOK-3145_c" "invalid_challenge:ready-unattributed"
-if [[ "$rc" == "0" ]] && [[ "$(get_task_meta HOK-3145_c challengeAborted)" == "invalid_challenge:ready-unattributed" ]]; then
+if [[ "$rc" == "0" ]] && [[ "$(get_task_meta HOK-3145_c challengeAborted)" == "terminal_stage_failure:ready-unattributed" ]]; then
   pass "an explicit cause (base conflict) overrides the result classification"
 else
   fail "explicit cause ignored ($(get_task_meta HOK-3145_c challengeAborted))"
