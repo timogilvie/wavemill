@@ -308,24 +308,6 @@ EOF
   mv "$tmp" "$result_file"
 }
 
-startup_state_lock_acquire() {
-  local lock_dir="${STATE_FILE}.lock"
-  local attempt
-  for attempt in {1..200}; do
-    if mkdir "$lock_dir" 2>/dev/null; then
-      STARTUP_STATE_LOCK_DIR="$lock_dir"
-      return 0
-    fi
-    sleep 0.05
-  done
-  return 1
-}
-
-startup_state_lock_release() {
-  [[ -n "${STARTUP_STATE_LOCK_DIR:-}" ]] && rmdir "$STARTUP_STATE_LOCK_DIR" 2>/dev/null || true
-  STARTUP_STATE_LOCK_DIR=""
-}
-
 reset_startup_phase_artifacts() {
   local feature_dir="$1"
 
@@ -1701,6 +1683,15 @@ main() {
   fi
 
   ensure_state_file
+  # HOK-3403: pre-owner lock forms are only reclaimed during startup, before
+  # backstage services and the monitor can contend for state.
+  for legacy_lock in "$STATE_FILE.lock" "$STATE_DIR/incidents/index.json.lock" "$STATE_DIR/quota-state.lock"; do
+    if state_lock_reclaim_legacy "$legacy_lock"; then startup_log "Reclaimed legacy ownerless state lock: $legacy_lock"; fi
+  done
+  for legacy_lock in "$STATE_DIR"/locks/*.lock; do
+    [[ -e "$legacy_lock" ]] || continue
+    if state_lock_reclaim_legacy "$legacy_lock"; then startup_log "Reclaimed legacy ownerless state lock: $legacy_lock"; fi
+  done
   cleanup_background_jobs_startup
   : > "$STATUS_LOG_FILE"
   : > "$LAUNCHED_ISSUES_FILE"

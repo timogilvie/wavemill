@@ -1237,7 +1237,11 @@ test('tick retries transient CI failures without launching remediation and then 
     assert.equal(third.findings[0].action, 'transient-retry-exhausted');
     assert.equal(third.findings[0].classification, 'needs-user');
     assert.equal(launchCalled, false);
-    assert.match(readFileSync(path.join(featureDir, '.needs-attention'), 'utf-8'), /Transient CI failure budget exhausted/);
+    // HOK-3360: the watchdog's private transient CI counter does not page. The
+    // monitor's Ready path owns CI failures through stage-failure-ready and
+    // pages on its exhaustion; the watchdog keeps its finding row only.
+    assert.match(third.findings[0].detail, /Transient CI failure budget exhausted/);
+    assert.equal(existsSync(path.join(featureDir, '.needs-attention')), false);
     const state = JSON.parse(readFileSync(path.join(stateDir, 'ready-watchdog-state.json'), 'utf-8')) as {
       tasks: Record<string, { transientFailureCount?: number; lastCiFailureCategory?: string }>;
     };

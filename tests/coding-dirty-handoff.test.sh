@@ -77,6 +77,7 @@ for fn in \
   coding_dirty_handoff_relaunch \
   coding_dirty_handoff_terminalize \
   guard_coding_complete_handoff \
+  stage_budget_exhausted_json \
   challenge_abort_pair \
   _challenge_side_for_issue \
   native_terminal_failure_next_action \
@@ -174,6 +175,10 @@ wavemill_run_tool() {
   if [[ "$tool" == recovery-contract.ts ]]; then
     shift # launchability is tested by execution-contract tests; read real persisted fixture here
     node "$REAL_REPO_DIR/tools/recovery-contract.ts" read "$@"
+  elif [[ "$tool" == /* ]]; then
+    # HOK-3358: challenge_abort_pair passes an absolute tool path produced by
+    # wavemill_tool_path, so accept it as-is like the real helper does.
+    node "$tool" "$@"
   else
     node "$REAL_REPO_DIR/tools/$tool" "$@"
   fi

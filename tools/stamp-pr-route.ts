@@ -27,7 +27,7 @@ export interface StampPrRouteDeps {
   getPullRequest(prNumber: string, options: { repo?: string }): PullRequest;
   updatePullRequest(prNumber: string, options: PullRequestUpdateOptions): PullRequest;
   resolveOwnerRepo(): string;
-  reconcile(input: { issue: string; featureDir: string; currentHeadSha: string }): Promise<ReconcilePrRouteResult>;
+  reconcile(input: { issue: string; featureDir: string; currentHeadSha: string; gitDir?: string; baseRef?: string }): Promise<ReconcilePrRouteResult>;
 }
 
 export interface StampPrRouteResult {
@@ -152,10 +152,17 @@ export async function stampPrRoute(
     throw new Error(`PR #${pr.number} is missing headRefOid; cannot stamp route freshness`);
   }
 
+  // HOK-3370: hand the reconciler a git context so stage evidence recorded
+  // at an older head stays valid while the change identity is unchanged
+  // (base merge / clean rebase). The tool runs from the task worktree
+  // (`cd "$wt_dir" && stamp-pr-route`), so cwd is the right git dir.
+  const baseRefName = pr.baseRefName?.trim();
   const reconciliation = await deps.reconcile({
     issue: input.issue,
     featureDir: input.featureDir,
     currentHeadSha,
+    gitDir: process.cwd(),
+    ...(baseRefName ? { baseRef: `origin/${baseRefName}` } : {}),
   });
 
   if (input.requireComplete && !reconciliation.complete) {

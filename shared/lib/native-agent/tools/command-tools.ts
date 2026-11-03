@@ -1,5 +1,4 @@
 import { Buffer } from 'node:buffer';
-import { createHash } from 'node:crypto';
 
 import type { CommandClass } from '../command-classifier.ts';
 import { parseCommandArgv } from '../command-argv.ts';
@@ -19,7 +18,6 @@ import {
   FOCUSED_TEST_GUIDANCE,
   type ScriptExpansion,
 } from '../test-command-scope.ts';
-import { defaultWorktreeFingerprint } from '../worktree-fingerprint.ts';
 import type { CleanupTracker } from '../cleanup.ts';
 import type { SessionStreamWriter } from '../session-stream.ts';
 import type { ToolDescriptor, WavemillToolResult } from './types.ts';
@@ -47,12 +45,6 @@ export interface RunCommandParams {
 export interface RunCommandOutputMeta {
   originalByteLength: number;
   truncated: boolean;
-}
-
-export interface PreviousTimeoutRecord {
-  durationMs: number;
-  timeoutMs: number;
-  at: string;
 }
 
 export interface RunCommandSuccessDetails {
@@ -89,7 +81,6 @@ export interface RunCommandRejectedDetails {
     | 'unsupported_shell_syntax'
     | 'invalid_input'
     | 'full_suite_refused'
-    | 'repeat_after_timeout'
     | 'foreground_wait_refused';
   commandClass: CommandClass;
   reason: string;
@@ -99,7 +90,6 @@ export interface RunCommandRejectedDetails {
   message: string;
   retryHint?: string;
   scriptExpansion?: ScriptExpansion;
-  previousTimeout?: PreviousTimeoutRecord;
 }
 
 export type RunCommandDetails = RunCommandSuccessDetails | RunCommandRejectedDetails;
@@ -114,14 +104,6 @@ export interface CommandToolFactoryOptions {
    * suite) sets this; coding agents inside the mill do not.
    */
   allowFullSuite?: boolean;
-  /**
-   * In-session history keyed on `(tool, argv, cwd, fingerprint)` so an
-   * identical repeat of a just-timed-out command is refused without executing.
-   * `createCommandTools` creates one history shared across the pair.
-   */
-  history?: CommandRunHistory;
-  /** Test seam: override the worktree fingerprint used by the repeat guard. */
-  fingerprintFn?: (worktreePath: string) => string;
   /**
    * HOK-3262: session stream that records `guard_refused` events when a
    * substrate guard (e.g. foreground-wait) refuses a command.
@@ -140,43 +122,12 @@ interface RunScopedCommandInput extends RunCommandParams {
   signal?: AbortSignal;
   cleanupTracker?: CleanupTracker;
   allowFullSuite: boolean;
-  history: CommandRunHistory;
-  fingerprintFn: (worktreePath: string) => string;
   sessionStreamWriter?: Pick<SessionStreamWriter, 'writeGuardRefused'>;
 }
 
 interface AfterToolCallContext {
   toolCall: { name: string };
   result: { details: unknown };
-}
-
-/**
- * In-session timeout record keyed on `(tool, argv, cwd, fingerprint)`. A
- * single history is shared across `run_tests` and `run_format` so a dirty
- * repeat is refused even across the pair. The fingerprint allows a legitimate
- * "I changed the hanging test, re-run the same focused command" through: a
- * new tree → a new fingerprint → the record no longer matches.
- */
-export class CommandRunHistory {
-  private readonly records = new Map<string, PreviousTimeoutRecord & { fingerprint: string }>();
-
-  recordTimeout(
-    key: string,
-    record: PreviousTimeoutRecord & { fingerprint: string },
-  ): void {
-    this.records.set(key, record);
-  }
-
-  findTimeout(key: string, fingerprint: string): PreviousTimeoutRecord | undefined {
-    const record = this.records.get(key);
-    if (!record) return undefined;
-    if (record.fingerprint !== fingerprint) return undefined;
-    return { durationMs: record.durationMs, timeoutMs: record.timeoutMs, at: record.at };
-  }
-
-  clear(key: string): void {
-    this.records.delete(key);
-  }
 }
 
 const runCommandParameters = {
@@ -203,14 +154,12 @@ export function createRunTestsTool(
   worktreePath: string,
   options: CommandToolFactoryOptions = {},
 ): ToolDescriptor<RunCommandParams, RunCommandDetails> {
-  const history = options.history ?? new CommandRunHistory();
-  const fingerprintFn = options.fingerprintFn ?? defaultWorktreeFingerprint;
   const allowFullSuite = options.allowFullSuite === true;
   return {
     metadata: {
       name: 'run_tests',
       description:
-        'Run focused test commands inside the active worktree, returning capped output and structured execution metadata. Commands run without a shell: shell operators, redirects and $-expansion are rejected; quoting follows POSIX rules; use cwd to change directory. Full-suite commands (npm test, pnpm test, yarn test, and unsharded tests/run-*.sh) are refused — use a focused selection such as `node --test <files>` or `bash tests/run-unit-tests.sh --shard i/n`. An identical command is refused on the next attempt if the previous run timed out, until the worktree changes. Foreground waiting (sleep, watch, timeout … tail -f) is refused: run the command once with a timeoutMs instead of polling.',
+        'Run focused test commands inside the active worktree, returning capped output and structured execution metadata. Commands run without a shell: shell operators, redirects and $-expansion are rejected; quoting follows POSIX rules; use cwd to change directory. Full-suite commands (npm test, pnpm test, yarn test, and unsharded tests/run-*.sh) are refused — use a focused selection such as `node --test <files>` or `bash tests/run-unit-tests.sh --shard i/n`. Re-running the same selection without changing the code adds no information and repeated no-progress runs stop the session. Foreground waiting (sleep, watch, timeout … tail -f) is refused: run the command once with a timeoutMs instead of polling.',
       class: 'read-only',
       allowedPhases: ['coding'],
       executionMode: 'sequential',
@@ -230,8 +179,6 @@ export function createRunTestsTool(
         signal,
         cleanupTracker: options.cleanupTracker,
         allowFullSuite,
-        history,
-        fingerprintFn,
         sessionStreamWriter: options.sessionStreamWriter,
       });
     },
@@ -249,8 +196,6 @@ export function createRunFormatTool(
   worktreePath: string,
   options: CommandToolFactoryOptions = {},
 ): ToolDescriptor<RunCommandParams, RunCommandDetails> {
-  const history = options.history ?? new CommandRunHistory();
-  const fingerprintFn = options.fingerprintFn ?? defaultWorktreeFingerprint;
   return {
     metadata: {
       name: 'run_format',
@@ -275,26 +220,18 @@ export function createRunFormatTool(
         signal,
         cleanupTracker: options.cleanupTracker,
         allowFullSuite: true, // run_format never classifies as "full suite"; this is a no-op for format.
-        history,
-        fingerprintFn,
         sessionStreamWriter: options.sessionStreamWriter,
       });
     },
   };
 }
 
-/**
- * Create both structured command tools for a worktree. A shared
- * CommandRunHistory survives for the life of the descriptors so the repeat
- * guard sees timeouts across both tools (and the no-completion recovery turn).
- */
+/** Create both structured command tools for a worktree. */
 export function createCommandTools(
   worktreePath: string,
   options: CommandToolFactoryOptions = {},
 ): readonly ToolDescriptor<RunCommandParams, RunCommandDetails>[] {
-  const sharedHistory = options.history ?? new CommandRunHistory();
-  const sharedOptions: CommandToolFactoryOptions = { ...options, history: sharedHistory };
-  return [createRunTestsTool(worktreePath, sharedOptions), createRunFormatTool(worktreePath, sharedOptions)];
+  return [createRunTestsTool(worktreePath, options), createRunFormatTool(worktreePath, options)];
 }
 
 /**
@@ -465,33 +402,6 @@ export async function runScopedCommand(
     }
   }
 
-  // Repeat-after-timeout guard. Key excludes timeoutMs/maxOutputBytes so the
-  // agent cannot bypass the refusal by raising its own timeout.
-  const fingerprint = input.fingerprintFn(input.worktreePath);
-  const repeatKey: string | null = makeRepeatKey(input.tool, parsed.parsed.argv, effectiveCwd);
-  if (repeatKey) {
-    const previousTimeout = input.history.findTimeout(repeatKey, fingerprint);
-    if (previousTimeout) {
-      const seconds = Math.round(previousTimeout.durationMs / 1000);
-      return rejectedResult({
-        ok: false,
-        tool: input.tool,
-        kind: input.kind,
-        status: 'rejected',
-        error: 'repeat_after_timeout',
-        commandClass,
-        reason: 'identical-command-timed-out',
-        command: normalizedCommand,
-        cwd: effectiveCwd,
-        durationMs: Date.now() - startedAt,
-        message: `Refused: the previous identical run timed out after ${seconds}s; narrow the selection (run fewer files or a single test) or change the code before re-running.`,
-        retryHint: FOCUSED_TEST_GUIDANCE,
-        previousTimeout,
-        ...(scriptExpansion ? { scriptExpansion } : {}),
-      });
-    }
-  }
-
   // Clamp the timeout. Agents can supply any `timeoutMs`, so without a
   // ceiling the full-suite guard can be stretched past 10 min.
   const requestedTimeoutMs = input.timeoutMs;
@@ -571,30 +481,11 @@ export async function runScopedCommand(
     ...(scriptExpansion ? { scriptExpansion } : {}),
   };
 
-  // History bookkeeping — record timeouts, clear completed runs.
-  if (repeatKey) {
-    if (result.timedOut) {
-      input.history.recordTimeout(repeatKey, {
-        durationMs: result.durationMs,
-        timeoutMs: effectiveTimeoutMs,
-        at: new Date().toISOString(),
-        fingerprint,
-      });
-    } else {
-      input.history.clear(repeatKey);
-    }
-  }
-
   return {
     content: [{ type: 'text', text: summarizeResult(details, { clamped }) }],
     details,
     metadata: { trust: buildTrustMetadata({ sourceKind: 'command_output', details }) },
   };
-}
-
-function makeRepeatKey(tool: RunCommandToolName, argv: readonly string[], cwd: string): string {
-  const canonicalArgv = argv.join('\u0000');
-  return createHash('sha256').update(`${tool}\u0001${canonicalArgv}\u0001${cwd}`).digest('hex');
 }
 
 function rejectedResult(details: RunCommandRejectedDetails): WavemillToolResult<RunCommandDetails> {
@@ -615,7 +506,7 @@ function summarizeResult(details: RunCommandSuccessDetails, extras: { clamped: b
   const lines: string[] = [];
   if (details.status === 'timed_out') {
     lines.push(`${details.tool} timed out after ${details.durationMs}ms in ${details.cwd}.`);
-    lines.push('An identical command will be refused until the worktree changes; narrow the selection or change the code before re-running.');
+    lines.push('Narrow the selection (run fewer files or a single test) or change the code before re-running; repeating it unchanged adds no information.');
   } else {
     const exitCodeText = details.exitCode === null ? 'null' : String(details.exitCode);
     lines.push(`${details.tool} completed in ${details.durationMs}ms with exit code ${exitCodeText} in ${details.cwd}.`);
@@ -684,7 +575,7 @@ function rejectionRetryHint(rejectionReason: RejectionReason | string | undefine
     return 'Run one program per call, pass the cwd parameter instead of "cd ... &&", read long output directly from the capped tool result instead of redirecting to a file, and quote arguments as for a POSIX shell. Pipes, redirects, &&, ||, ;, $VAR, backticks and shell wrappers (bash -c, sh -c, env bash -lc) are not supported.';
   }
   if (rejectionReason === 'foreground-wait-refused') {
-    return 'Run the slow command itself once with a bounded timeoutMs (run_tests allows up to 10 minutes) instead of sleeping or polling for it.';
+    return 'Run the slow command itself once with a bounded timeoutMs instead of sleeping or polling for it.';
   }
   return undefined;
 }

@@ -511,6 +511,14 @@ JSON
       printf -v SET_PHASE_CALLS "%s%s|%s\n" "$SET_PHASE_CALLS" "$1" "$2"
     }
     launch_planning_phase() { return 0; }
+    # HOK-3370: scenario worktrees are plain directories, not git repos; the
+    # stage-head publication seam is stubbed to succeed like the other
+    # launch-path effects (its real behavior is pinned by
+    # branch-publication.test.ts and the head-move-publication journey).
+    publish_stage_head() {
+      PUBLISH_STAGE_HEAD_OUTCOME="pushed"; PUBLISH_STAGE_HEAD_REASON=""; PUBLISH_STAGE_HEAD_DETAIL=""
+      return 0
+    }
     launch_coding_phase() {
       CODING_LAUNCH_COUNT=$((CODING_LAUNCH_COUNT + 1))
       return 0
@@ -553,10 +561,12 @@ JSON
     }
     validate_pr_merge() { [[ "$VALIDATE_MERGED" == "true" ]]; }
     ready_state_dir() { printf "%s\n" "$1/features/$2/ready"; }
-    write_ready_attention_file() {
-      printf -v READY_ATTENTION_CALLS "%s%s|%s\n" "$READY_ATTENTION_CALLS" "$1" "$2"
+    escalate_operator_attention() {
+      # HOK-3360: <state_dir> <basis> <basis_arg> <message> — capture the message.
+      printf -v READY_ATTENTION_CALLS "%s%s|%s\n" "$READY_ATTENTION_CALLS" "$1" "$4"
       mkdir -p "$1"
-      printf "%s\n" "$2" > "$1/.needs-attention"
+      printf "%s\n" "$4" > "$1/.needs-attention"
+      return 0
     }
     is_challenge_task() { [[ "$CHALLENGE_TASK" == "true" ]]; }
     maybe_run_challenge_eval() { :; }

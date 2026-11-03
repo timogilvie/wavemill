@@ -16,6 +16,7 @@ import type { ExecutedIdentity, ReviewExecutedIdentitySet } from './challenge-ex
 import { parsePiRuntimeVersions, piRuntimeVersionsField } from './native-agent/pi-runtime-version.ts';
 import { resolveTaskArtifact } from './task-artifact-lookup.ts';
 import { parseBudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
+import { resolveNativeStageTimeSplit } from './native-agent/stage-time-split.ts';
 import { classifyArmFault } from './arm-failure-taxonomy.ts';
 
 const MAX_SNIPPET_CHARS = 320;
@@ -676,12 +677,16 @@ export function buildBudgetExhaustions(input: {
         : typeof attempt.model === 'string' && attempt.model
           ? attempt.model
           : null;
+      // HOK-3380: resolve nativeStageTimeSplit once per attempt; the fault
+      // class is derived from it, never from the retired providerWaitMs.
+      const timeSplit = resolveNativeStageTimeSplit(fact, { featureDir: input.stageResultsDir });
       exhaustions.push({
         stage,
         attempt: index + 1,
         model,
         fact,
-        faultClass: classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact }),
+        faultClass: classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact, timeSplit }),
+        ...(timeSplit ? { timeSplit } : {}),
       });
     });
   }

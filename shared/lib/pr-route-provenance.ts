@@ -13,6 +13,7 @@ import {
 import { latestRouteDecision, parseRouteDecisions, toPrRouteDecision, withRouteRecordOverrides } from './route-decision.ts';
 import { ROUTE_RECORD_ARTIFACT_NAMES } from './route-artifact.ts';
 import { parseStageRoutes, type StageRoutes } from './route-override-record.ts';
+import { isEvidenceFresh } from './change-identity.ts';
 
 type RouteStage = 'planning' | 'coding' | 'review';
 type RouteRole = 'planner' | 'coder' | 'reviewer';
@@ -21,6 +22,15 @@ export interface ReconcilePrRouteInput {
   issue: string;
   featureDir: string;
   currentHeadSha: string;
+  /**
+   * Git worktree for the HOK-3370 freshness primitive. When provided with
+   * `baseRef`, stage evidence at a different head stays valid while the
+   * task's change identity is unchanged (base merge, clean rebase); without
+   * it, a differing head is stale (the pre-HOK-3370 behaviour).
+   */
+  gitDir?: string;
+  /** Base ref for the merge-base, e.g. `origin/auto/integration`. */
+  baseRef?: string;
 }
 
 export interface ReconcilePrRouteDeps {
@@ -219,18 +229,26 @@ function notRunRole(role: RouteRole, stage: RouteStage, requestedSelector: strin
   };
 }
 
+/**
+ * HOK-3370: evidence recorded at a different head is judged by change
+ * identity, never by raw SHA equality. The predicate is built once per
+ * reconcile pass (see `reconcilePrRoute`).
+ */
+type EvidenceFreshPredicate = (evidenceHeadSha: string) => boolean;
+
 function reconcileSimpleRole(
   role: 'planner' | 'coder',
   stage: 'planning' | 'coding',
   result: StageResult | null,
   currentHeadSha: string,
   requestedFromRouting: string | undefined,
+  evidenceFresh: EvidenceFreshPredicate,
 ): PrRouteRole {
   const requestedSelector = result?.intendedModel ?? requestedFromRouting;
   if (!result) return notRunRole(role, stage, requestedSelector);
 
   const headSha = stageHeadSha(result);
-  if (headSha && headSha !== currentHeadSha) {
+  if (headSha && !evidenceFresh(headSha)) {
     return unknownRole(role, stage, requestedSelector, result, 'stage_result_stale_head');
   }
 
@@ -306,6 +324,7 @@ function reconcileReviewer(
   result: StageResult | null,
   currentHeadSha: string,
   requestedFromRouting: string | undefined,
+  evidenceFresh: EvidenceFreshPredicate,
 ): PrRouteReviewerRole {
   if (!result) {
     return {
@@ -317,7 +336,7 @@ function reconcileReviewer(
 
   const headSha = stageHeadSha(result);
   const evidence = evidenceFor('review', result, result.executionEvidence?.source ?? 'stage-result', result.executionEvidence?.status, headSha ?? currentHeadSha);
-  if (headSha && headSha !== currentHeadSha) {
+  if (headSha && !evidenceFresh(headSha)) {
     return { status: 'unknown', evidence: { ...evidence, reason: 'stage_result_stale_head' } };
   }
   if (result.source === 'inherited' || result.executionEvidence?.status === 'inherited') {
@@ -364,13 +383,35 @@ export async function reconcilePrRoute(
   ]);
 
   const { requested } = routing;
+  // HOK-3370: one freshness predicate per pass, memoized per evidence head.
+  // Same head → fresh; different head with git context → change-identity
+  // comparison (a base merge or clean rebase keeps evidence); no git
+  // context → stale, the pre-HOK-3370 behaviour.
+  const freshnessCache = new Map<string, boolean>();
+  const evidenceFresh: EvidenceFreshPredicate = (evidenceHeadSha) => {
+    if (evidenceHeadSha === input.currentHeadSha) return true;
+    const cached = freshnessCache.get(evidenceHeadSha);
+    if (cached !== undefined) return cached;
+    let fresh = false;
+    if (input.gitDir && input.baseRef) {
+      fresh = isEvidenceFresh({
+        gitDir: input.gitDir,
+        evidenceHeadSha,
+        currentHeadSha: input.currentHeadSha,
+        baseRef: input.baseRef,
+      }).fresh;
+    }
+    freshnessCache.set(evidenceHeadSha, fresh);
+    return fresh;
+  };
+
   const route: ExecutedPrRoute = {
     schema: EXECUTED_ROUTE_SCHEMA_VERSION,
     issue: input.issue,
     head_sha: input.currentHeadSha,
-    planner: reconcileSimpleRole('planner', 'planning', planning, input.currentHeadSha, requested.planner),
-    coder: reconcileSimpleRole('coder', 'coding', coding, input.currentHeadSha, requested.coder),
-    reviewer: reconcileReviewer(review, input.currentHeadSha, requested.reviewer),
+    planner: reconcileSimpleRole('planner', 'planning', planning, input.currentHeadSha, requested.planner, evidenceFresh),
+    coder: reconcileSimpleRole('coder', 'coding', coding, input.currentHeadSha, requested.coder, evidenceFresh),
+    reviewer: reconcileReviewer(review, input.currentHeadSha, requested.reviewer, evidenceFresh),
   };
 
   if (route.planner.status !== 'executed' && route.planner.status !== 'inherited') {

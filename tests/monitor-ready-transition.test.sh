@@ -453,7 +453,6 @@ JSON
         VALIDATE_MERGED="true"
         printf "%s\n" "{\"status\":\"completed\",\"artifacts\":{\"verdict\":\"pass\"}}" > "$READY_DIR/.ready-result.json"
         printf "%s\n" "stale transient attention" > "$READY_DIR/.needs-attention"
-        : > "$READY_DIR/.needs-attention-transient"
         printf "%s\n" "4" > "$READY_DIR/.transient-mergeability-count"
         ;;
       discovered_pr_from_coding)
@@ -672,8 +671,10 @@ JSON
       [[ "$RESTORE_SHOULD_FAIL" != "true" ]]
     }
     validate_pr_merge() { [[ "$VALIDATE_MERGED" == "true" ]]; }
-    write_ready_attention_file() {
+    # HOK-3360: the one escalation step; capture the full call (basis + message).
+    escalate_operator_attention() {
       printf -v WRITE_READY_ATTENTION_CALLS '%s%s\n' "$WRITE_READY_ATTENTION_CALLS" "$*"
+      return 0
     }
     ready_state_dir() { printf "%s\n" "$READY_DIR"; }
     git() {

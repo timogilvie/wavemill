@@ -2209,7 +2209,13 @@
           "piTransportKind": "openai-completions",
           "readOnlyNative": "certified",
           "compatFlags": {
-            "thinkingFormat": "openrouter"
+            "thinkingFormat": "openrouter",
+            "openRouterRouting": {
+              "order": [
+                "z-ai"
+              ],
+              "allow_fallbacks": false
+            }
           },
           "certification": {
             "maxCertifiedPhase": "workflow",
@@ -2291,7 +2297,13 @@
           "piTransportKind": "openai-completions",
           "readOnlyNative": "certified",
           "compatFlags": {
-            "thinkingFormat": "openrouter"
+            "thinkingFormat": "openrouter",
+            "openRouterRouting": {
+              "order": [
+                "moonshotai"
+              ],
+              "allow_fallbacks": false
+            }
           },
           "certification": {
             "maxCertifiedPhase": "workflow",
@@ -2983,7 +2995,13 @@
             "certificationSuiteVersion": "v3"
           },
           "compatFlags": {
-            "thinkingFormat": "openrouter"
+            "thinkingFormat": "openrouter",
+            "openRouterRouting": {
+              "order": [
+                "z-ai"
+              ],
+              "allow_fallbacks": false
+            }
           }
         },
         "supportedModel": {

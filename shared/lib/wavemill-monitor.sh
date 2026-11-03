@@ -8,6 +8,9 @@ source "$1"
 # Source marker lifecycle helpers
 WAVEMILL_LIB_DIR="${WAVEMILL_LIB_DIR:-${LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
 source "$WAVEMILL_LIB_DIR/transient-marker.sh"
+# The monitor is copied to /tmp and runs as its own shell, so import the one
+# state-lock implementation rather than assuming wavemill-common stayed sourced.
+source "$WAVEMILL_LIB_DIR/state-lock.sh"
 
 if ! declare -F effective_task_base_branch >/dev/null 2>&1; then
 effective_task_base_branch() {
@@ -1081,7 +1084,7 @@ challenge_selection_health_release() {
 # exhaustion never aborts the pair, so its terminal outcome would otherwise
 # never reach recordSelectionOutcome and the timed-out reviewer identity would
 # stay immediately reselectable. Best-effort. Challenger arms record via
-# challenge_abort_pair → record-arm-failure.ts instead; calling both would
+# challenge_abort_pair → record-arm-termination.ts instead; calling both would
 # double-count the provider/model circuit window.
 # HOK-3362: the fault class is derived by the tool from the review's typed
 # budget fact (`classifyArmFault`), never hardcoded here.
@@ -1099,7 +1102,8 @@ challenge_selection_health_record_review_timeout() {
       --stage review \
       --model "$model" \
       --failure-kind native-stage-timeout \
-      ${budget_json:+--budget-exhausted-json "$budget_json"}
+      ${budget_json:+--budget-exhausted-json "$budget_json"} \
+      ${feature_dir:+--feature-dir "$feature_dir"}
   ) >/dev/null 2>&1 || true
 }
 
@@ -1134,17 +1138,12 @@ record_openrouter_credits_challenge_abort() {
 
   count_file="$state_dir/openrouter-credits-abort-count"
   lock_dir="$state_dir/openrouter-credits-abort-count.lock"
-  local attempt=0
-  while ! mkdir "$lock_dir" 2>/dev/null; do
-    attempt=$((attempt + 1))
-    [[ "$attempt" -le 50 ]] || return 0
-    sleep 0.05
-  done
+  state_lock_acquire "$lock_dir" 50 0.05 "openrouter-credits-abort-count" || return 0
   count="$(cat "$count_file" 2>/dev/null || echo 0)"
   [[ "$count" =~ ^[0-9]+$ ]] || count=0
   count=$((count + 1))
   printf '%s\n' "$count" > "$count_file" 2>/dev/null || true
-  rm -rf "$lock_dir" 2>/dev/null || true
+  state_lock_release "$lock_dir" || true
 
   # HOK-3155: trip the warning cache on the first classified credit abort, not
   # after a count. The count file is kept for diagnostic grep attribution.
@@ -1189,7 +1188,7 @@ challenge_abort_scope_for_failure() {
 # pair to it (terminalReason: challenger_challenge_aborted).
 challenge_abort_pair() {
   local issue="$1" feature_dir="$2" win="$3" stage="$4" model="$5" reason="$6" detail="$7" next_action="${8:-}" scope="${9:-pair}"
-  local result_stage pair_id role peer now artifact tmp budget_json
+  local result_stage pair_id role peer now budget_json
   [[ -n "$issue" && -n "$feature_dir" && -n "$stage" && -n "$reason" ]] || return 1
   [[ "$scope" == "single" ]] || scope="pair"
 
@@ -1208,31 +1207,51 @@ challenge_abort_pair() {
 
   write_stage_result "$feature_dir" "$result_stage" "failed" "" "$model" "$detail"
 
-  if [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
+  # HOK-3358: the single arm-termination recorder owns the state stamp, the
+  # .challenge-aborted.json artifact, and the reliability/eval records. The
+  # monitor keeps the stage result write (above), the OpenRouter credit
+  # circuit (below), and the window-attention update (below).
+  local kind="${reason#terminal_stage_failure:}"
+  kind="${kind#terminal_launch_failure:}"
+  kind="${kind#retry_exhausted:}"
+  kind="${kind#invalid_challenge:}"
+  if [[ -n "${REPO_DIR:-}" && -n "$kind" ]]; then
+    local recorder_tool
+    recorder_tool="$(wavemill_tool_path record-arm-termination.ts)"
+    if [[ -f "$recorder_tool" ]]; then
+      (
+        cd "$REPO_DIR" && wavemill_run_tool "$recorder_tool" \
+          --repo-dir "${WAVEMILL_RELIABILITY_REPO_DIR:-$REPO_DIR}" \
+          --issue "$issue" \
+          --kind "$kind" \
+          --actor monitor \
+          --stage "$(challenge_stage_for_launch_env "$stage")" \
+          --model "${model:-unknown}" \
+          --detail "$detail" \
+          --next-action "$next_action" \
+          --scope "$scope" \
+          --feature-dir "$feature_dir" \
+          ${STATE_FILE:+--state-file "$STATE_FILE"} \
+          ${budget_json:+--budget-exhausted-json "$budget_json"}
+      ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
+    fi
+  fi
+
+  # Fallback: `challengePairAbortions` is read by the resolver. Keep stamping
+  # it from shell so the pair-wise map remains populated even if the recorder
+  # fails or is unavailable (it only cares about the (issueId, role) rows and
+  # the pair-level map).
+  if [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" && -n "${pair_id:-}" && -n "$role" ]]; then
     state_mutate "$STATE_FILE" \
-      'def mark($key):
-         if ($key != "" and .tasks[$key] != null)
-         then .tasks[$key].challengeAborted = $reason
-              | .tasks[$key].challengeAbortedDetail = $detail
-              | .tasks[$key].challengeAbortedStage = $stage
-              | (if $nextAction != "" then .tasks[$key].challengeAbortedNextAction = $nextAction else . end)
-              | .tasks[$key].updated = (now | todate)
-         else .
-         end;
-       mark($issue)
-       | (if $scope == "pair" then mark($peer) else . end)
-       | if $pairId != "" and $role != "" then
-           .challengePairAbortions[$pairId][$role] = {
-             reason: $reason,
-             detail: $detail,
-             stage: $stage,
-             issue: $issue,
-             scope: $scope,
-             updated: (now | todate)
-           } + (if $nextAction != "" then {nextAction:$nextAction} else {} end)
-         else . end' \
+      '.challengePairAbortions[$pairId][$role] = {
+         reason: $reason,
+         detail: $detail,
+         stage: $stage,
+         issue: $issue,
+         scope: $scope,
+         updated: (now | todate)
+       } + (if $nextAction != "" then {nextAction:$nextAction} else {} end)' \
       --arg issue "$issue" \
-      --arg peer "${peer:-}" \
       --arg pairId "${pair_id:-}" \
       --arg role "$role" \
       --arg reason "$reason" \
@@ -1240,44 +1259,6 @@ challenge_abort_pair() {
       --arg stage "$(challenge_stage_for_launch_env "$stage")" \
       --arg nextAction "$next_action" \
       --arg scope "$scope" >/dev/null 2>&1 || true
-  fi
-
-  mkdir -p "$feature_dir"
-  artifact="$feature_dir/.challenge-aborted.json"
-  tmp="$artifact.tmp.$$"
-  jq -n -S \
-    --arg pairId "${pair_id:-$issue}" \
-    --arg role "$role" \
-    --arg stage "$(challenge_stage_for_launch_env "$stage")" \
-    --arg model "$model" \
-    --arg reason "$reason" \
-    --arg abortedAt "$now" \
-    --arg detail "$detail" \
-    --arg nextAction "$next_action" \
-    --arg budgetExhausted "$budget_json" \
-    '{pairId:$pairId, role:$role, stage:$stage, model:$model, reason:$reason, abortedAt:$abortedAt, detail:$detail}
-     + (if $nextAction == "" then {} else {nextAction:$nextAction} end)
-     + (if $budgetExhausted == "" then {} else {budgetExhausted:($budgetExhausted | fromjson? // null)} end)' \
-    > "$tmp" 2>/dev/null && mv "$tmp" "$artifact" || rm -f "$tmp"
-
-  if [[ -n "${REPO_DIR:-}" && ( "$role" == "primary" || "$role" == "challenger" ) ]]; then
-    local tool
-    tool="$(wavemill_tool_path record-arm-failure.ts)"
-    if [[ -f "$tool" ]]; then
-      (
-        cd "$REPO_DIR" && wavemill_run_tool "$tool" \
-          --repo-dir "${WAVEMILL_RELIABILITY_REPO_DIR:-$REPO_DIR}" \
-          --issue "$issue" \
-          --pair-id "${pair_id:-$issue}" \
-          --role "$role" \
-          --stage "$(challenge_stage_for_launch_env "$stage")" \
-          --model "${model:-unknown}" \
-          --abort-reason "$reason" \
-          --detail "$detail" \
-          --next-action "$next_action" \
-          ${budget_json:+--budget-exhausted-json "$budget_json"}
-      ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
-    fi
   fi
 
   # HOK-3155: trip the credit circuit for both canonical reason spellings. The
@@ -5397,7 +5378,7 @@ pane_release_preflight() {
   review_result_passes_ready_gate "$state_dir" || { printf '%s\n' "review-not-passed"; return 1; }
   review_status="$(jq -r '.status // empty' "$state_dir/.review-result.json" 2>/dev/null || echo "")"
   [[ "$review_status" != "stale" ]] || { printf '%s\n' "review-stale"; return 1; }
-  if reconciliation_review_invalidated_by_commit "$state_dir" "$wt_dir"; then
+  if reconciliation_review_invalidated_by_commit "$state_dir" "$wt_dir" "$base_branch"; then
     printf '%s\n' "review-stale"
     return 1
   fi
@@ -5410,7 +5391,10 @@ pane_release_preflight() {
   current_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
   [[ -n "$current_head" ]] || { printf '%s\n' "git-error"; return 1; }
   capsule_review_head="$(jq -r '.review.reviewHeadSha // empty' "$state_dir/.reconciliation-context.json" 2>/dev/null || echo "")"
-  [[ "$capsule_review_head" == "$current_head" ]] || { printf '%s\n' "capsule-head-mismatch"; return 1; }
+  # HOK-3370: judge by change identity, not raw SHA — a base merge after the
+  # review must not block the pane release.
+  change_identity_fresh "$wt_dir" "$capsule_review_head" "$current_head" "origin/$base_branch" \
+    || { printf '%s\n' "capsule-head-mismatch"; return 1; }
 
   safety_reason="$(task_worktree_release_safety "$wt_dir" "$branch" "$base_branch" 2>/dev/null || true)"
   [[ "$safety_reason" == "ok" ]] || { printf '%s\n' "${safety_reason:-git-error}"; return 1; }
@@ -5495,11 +5479,18 @@ prepare_released_task_for_reconciliation() {
   fi
   if ! validate_out=$(wavemill_run_tool "reconciliation-capsule.ts" validate --feature-dir "$state_dir" 2>/dev/null); then
     validate_reason="$(jq -r '.reason // "capsule_malformed"' <<< "$validate_out" 2>/dev/null || echo "capsule_malformed")"
-    write_ready_attention_file "$state_dir" "Reconciliation capsule invalid ($validate_reason) for PR #$pr_number - refusing pane rehydration."
+    # HOK-3360: retryable by default; record a failed ready result (with the
+    # task agent so stage-failure-ready owns retries) and return. No page here.
+    write_stage_result "$state_dir" "ready" "failed" "$(pass_task_field "$issue" agent 2>/dev/null || true)" "" \
+      "Reconciliation capsule invalid ($validate_reason) for PR #$pr_number - refusing pane rehydration" \
+      "$(jq -cn --argjson pr "${pr_number:-0}" '{type:"ready",verdict:"fail",prNumber:$pr,failureKind:"reconciliation-capsule-invalid"}')"
     return 1
   fi
   capsule_head="$(jq -r '.incident.headSha // .review.reviewHeadSha // empty' "$state_dir/.reconciliation-context.json" 2>/dev/null || echo "")"
-  if [[ -n "$capsule_head" && -n "$current_head" && "$capsule_head" != "$current_head" ]]; then
+  # HOK-3370: a base merge after the capsule was recorded keeps it current;
+  # only a code-changing move stales the reconciliation request.
+  if [[ -n "$capsule_head" && -n "$current_head" ]] \
+    && ! change_identity_fresh "$wt_dir" "$capsule_head" "$current_head" "origin/$(effective_task_base_branch "$issue" 2>/dev/null || echo "${BASE_BRANCH:-auto/integration}")"; then
     bounded_retry_clear "$state_dir" "ready-remediation"
     log "status" "  ⏭ $issue: stale reconciliation request at ${capsule_head:0:7}, current head ${current_head:0:7}"
     return 1
@@ -5588,11 +5579,14 @@ reconciliation_project_prompt() {
   local validate_out reason
   if ! validate_out=$(wavemill_run_tool "reconciliation-capsule.ts" validate --feature-dir "$state_dir" 2>/dev/null); then
     reason=$(jq -r '.reason // "capsule_malformed"' <<< "$validate_out" 2>/dev/null || echo "capsule_malformed")
-    write_ready_attention_file "$state_dir" "Reconciliation capsule invalid ($reason) for PR #$pr_number - refusing autonomous recovery launch."
+    # HOK-3360: a projection helper does not page; its callers record a failed
+    # stage result (bounded by stage-failure-ready / ready-remediation) and the
+    # next tick retries.
+    log_warn "reconciliation capsule invalid ($reason) for PR #$pr_number - refusing autonomous recovery launch"
     return 1
   fi
   if ! wavemill_run_tool "reconciliation-capsule.ts" project --feature-dir "$state_dir" > "$prompt_file" 2>/dev/null; then
-    write_ready_attention_file "$state_dir" "Reconciliation capsule projection failed for PR #$pr_number - refusing autonomous recovery launch."
+    log_warn "reconciliation capsule projection failed for PR #$pr_number - refusing autonomous recovery launch"
     return 1
   fi
   return 0
@@ -5635,7 +5629,7 @@ reconciliation_record_attempt() {
 # (REQ-F6). Only fires once at least one reconciliation attempt was recorded,
 # so ordinary pre-reconciliation flows are untouched.
 reconciliation_review_invalidated_by_commit() {
-  local state_dir="$1" wt_dir="$2"
+  local state_dir="$1" wt_dir="$2" base_branch="${3:-${BASE_BRANCH:-auto/integration}}"
   local capsule="$state_dir/.reconciliation-context.json"
   local review_head current_head attempts
   [[ -f "$capsule" ]] || return 1
@@ -5645,7 +5639,13 @@ reconciliation_review_invalidated_by_commit() {
   [[ "$attempts" =~ ^[0-9]+$ ]] && (( attempts > 0 )) || return 1
   current_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
   [[ -n "$current_head" ]] || return 1
-  [[ "$current_head" != "$review_head" ]]
+  # HOK-3370: evidence binds to the change, not the head SHA. A base merge
+  # or clean rebase keeps the review valid (rc 1 = still valid); only a
+  # code-changing commit invalidates it (rc 0 = invalidated, re-review).
+  if change_identity_fresh "$wt_dir" "$review_head" "$current_head" "origin/${base_branch}"; then
+    return 1
+  fi
+  return 0
 }
 
 # Mark the review result stale against its recorded head so the ready gate
@@ -8419,8 +8419,12 @@ maybe_retry_failed_stage() {
     if _stage_failure_ready_relaunch "$issue" "$feature_dir" "$win" "$failure_kind" "$failure_class" "$attempts" "$limit" "$fresh"; then
       return 0
     fi
-    set_window_attention_state "$win" "needs-user"
-    log_warn "$issue → ready relaunch failed (${failure_kind}, ${failure_class}), holding until the next launch or operator"
+    # HOK-3360: a failed relaunch while the stage-failure-ready budget still has
+    # room is a retry state, not an operator page. The launcher recorded a
+    # failed result the next tick classifies; show retrying (clear), and let the
+    # bucket's exhaustion be the one escalation.
+    set_window_attention_state "$win" "clear"
+    log_warn "$issue → ready relaunch failed (${failure_kind}, ${failure_class}), holding for the next launch (stage-failure-ready budget not yet spent)"
     return 2
   fi
 
@@ -9011,7 +9015,7 @@ review_capacity_terminalize() {
       fi
     fi
   fi
-  write_ready_attention_file "$feature_dir" "$recorded"
+  escalate_operator_attention "$feature_dir" exhausted review-capacity "$recorded" || true
   set_window_attention_state "$win" "needs-user"
 }
 
@@ -11276,16 +11280,11 @@ READY_TRANSIENT_MAX_ATTEMPTS=6
 : "${READY_FAILED_RECHECK_BACKOFF_CAP_SECONDS:=1800}"
 : "${READY_FAILED_RECHECK_IDENTICAL_LIMIT:=3}"
 
-write_ready_attention_file() {
-  local state_dir="$1" message="$2"
-  shift 2
-  local -a condition_flags=("$@")
-  local repo_dir
-  repo_dir=$(git -C "$state_dir" rev-parse --show-toplevel 2>/dev/null) || return 0
-  local head_sha
-  head_sha=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null) || return 0
-  marker_write "$state_dir/.needs-attention" --kind ready-attention --head "$head_sha" --reason "$message" "${condition_flags[@]}"
-}
+# HOK-3360: operator attention is raised only by escalate_operator_attention
+# (shared/lib/operator-escalation.sh), after the failure policy escalates. The
+# private marker writer lives there as _operator_attention_write. The former
+# write_ready_attention_file / write_transient_ready_attention_file helpers were
+# removed; see that module.
 
 _write_cross_pr_diagnostic() {
   local state_dir="$1" ref_name="$2" cmd_class="$3" diag_stderr="$4"
@@ -11313,6 +11312,11 @@ _write_cross_pr_diagnostic() {
 
 write_cross_pr_guard_ready_result() {
   local state_dir="$1" pr_number="$2" checked_head_sha="$3" status="$4" reason="$5" raw_result="${6:-}"
+  # HOK-3360: an optional agent makes a tool-error verdict retryable through
+  # maybe_retry_failed_stage (which skips agent-less results). The blocked
+  # (unacknowledged revert) verdict stays agent-less: it is an operator
+  # decision, paged immediately, not a mill retry.
+  local agent="${7:-}"
   local result_file="$state_dir/.ready-result.json"
   local now tmp
 
@@ -11326,6 +11330,7 @@ write_cross_pr_guard_ready_result() {
     --arg checked_head_sha "$checked_head_sha" \
     --arg status "$status" \
     --arg reason "$reason" \
+    --arg agent "$agent" \
     --arg raw_result "$raw_result" '
       ($raw_result | fromjson? // {}) as $parsed
       | {
@@ -11333,7 +11338,7 @@ write_cross_pr_guard_ready_result() {
           status: "failed",
           startedAt: $now,
           finishedAt: $now,
-          agent: "",
+          agent: $agent,
           model: "",
           notes: $reason,
           failureReason: $reason,
@@ -11435,7 +11440,9 @@ cross_pr_revert_gate_apply_result() {
       message="$message Affected files: $files."
     fi
     write_cross_pr_guard_ready_result "$state_dir" "$pr_number" "$checked_head_sha" "blocked" "$message" "$result"
-    write_ready_attention_file "$state_dir" "$message"
+    # HOK-3360: an unacknowledged cross-PR revert is an operator decision — only
+    # an operator acknowledgement or a new head changes the verdict.
+    escalate_operator_attention "$state_dir" operator-decision cross-pr-revert-unacknowledged "$message" || true
     wavemill_run_tool "ready-preflight-diagnostic.ts" \
       --state-dir "$state_dir" \
       --stage "cross-pr-guard" \
@@ -11463,8 +11470,11 @@ cross_pr_revert_gate_apply_result() {
       message="$message Diagnostic: $diag_stderr"
     fi
 
-    write_cross_pr_guard_ready_result "$state_dir" "$pr_number" "$checked_head_sha" "tool-error" "$message" "$result"
-    write_ready_attention_file "$state_dir" "$message"
+    # HOK-3360: a guard tool error is retryable by default (HOK-3176). Record
+    # it with the task agent so maybe_retry_failed_stage owns retries via
+    # stage-failure-ready; only that budget's exhaustion pages. No page here.
+    write_cross_pr_guard_ready_result "$state_dir" "$pr_number" "$checked_head_sha" "tool-error" "$message" "$result" \
+      "$(pass_task_field "$issue" agent 2>/dev/null || true)"
     _write_cross_pr_diagnostic "$state_dir" "$ref_name" "$cmd_class" "$diag_stderr"
     wavemill_run_tool "ready-preflight-diagnostic.ts" \
       --state-dir "$state_dir" \
@@ -11484,8 +11494,10 @@ cross_pr_revert_gate_apply_result() {
   fi
 
   message="Cross-PR revert guard failed for PR #$pr_number."
-  write_cross_pr_guard_ready_result "$state_dir" "$pr_number" "$checked_head_sha" "tool-error" "$message" "$result"
-  write_ready_attention_file "$state_dir" "$message"
+  # HOK-3360: retryable by default; record with the task agent so
+  # stage-failure-ready owns retries. No page on the first occurrence.
+  write_cross_pr_guard_ready_result "$state_dir" "$pr_number" "$checked_head_sha" "tool-error" "$message" "$result" \
+    "$(pass_task_field "$issue" agent 2>/dev/null || true)"
   wavemill_run_tool "ready-preflight-diagnostic.ts" \
     --state-dir "$state_dir" \
     --stage "cross-pr-guard" \
@@ -11529,21 +11541,10 @@ increment_transient_mergeability_count() {
 
 clear_transient_mergeability_state() {
   local state_dir="$1"
-  rm -f \
-    "$state_dir/.transient-mergeability-count" \
-    "$state_dir/.needs-attention-transient"
-}
-
-write_transient_ready_attention_file() {
-  local state_dir="$1" message="$2"
-  shift 2
-  local -a condition_flags=("$@")
-  write_ready_attention_file "$state_dir" "$message" "${condition_flags[@]}"
-  local repo_dir
-  repo_dir=$(git -C "$state_dir" rev-parse --show-toplevel 2>/dev/null) || return 0
-  local head_sha
-  head_sha=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null) || return 0
-  marker_write "$state_dir/.needs-attention-transient" --kind ready-attention-transient --head "$head_sha" --reason "$message" "${condition_flags[@]}"
+  # HOK-3360: the transient attention kind (.needs-attention-transient) is
+  # removed — a transient mergeability is a retry state, not an attention kind.
+  # Only the pending-hold counter remains to clear.
+  rm -f "$state_dir/.transient-mergeability-count"
 }
 
 clear_ready_attention() {
@@ -11812,7 +11813,7 @@ ready_failure_classify_and_act() {
         if bounded_retry_mark_exhausted "$state_dir" "stage-failure-ready" \
             "Ready re-checks terminalized on a base conflict for PR #$pr: $upd_reason"; then
           log "status" "⛔ $issue → $upd_reason for PR #$pr"
-          write_ready_attention_file "$state_dir" "$upd_reason for PR #$pr"
+          escalate_operator_attention "$state_dir" exhausted stage-failure-ready "$upd_reason for PR #$pr" || true
         fi
         # HOK-3147: a base conflict is not a typed model failure, so a
         # challenge arm with a green sibling is retired as unattributed.
@@ -11852,8 +11853,11 @@ ready_failure_classify_and_act() {
       ;;
     code-failure)
       if [[ "$evidence_source" == "transition" ]]; then
-        write_ready_attention_file "$state_dir" \
-          "Ready transition failed for PR #$pr (${failure_kind}). ${next_action} Detail: ${detail:0:500}"
+        # A transition tool failed deterministically on mill code: the coder
+        # cannot be asked to fix mill code, so this is an operator decision,
+        # not a retry (HOK-3360).
+        escalate_operator_attention "$state_dir" operator-decision transition-code-failure \
+          "Ready transition failed for PR #$pr (${failure_kind}). ${next_action} Detail: ${detail:0:500}" || true
         log_warn "$issue → Ready failed (${failure_kind}, code-failure from a transition tool); ${next_action}. Detail: ${detail:0:400}"
         return 1
       fi
@@ -11871,7 +11875,7 @@ ready_failure_classify_and_act() {
           local exhausted_reason
           exhausted_reason="$(bounded_retry_exhaustion_reason "$state_dir" "stage-failure-ready")"
           if [[ -n "$exhausted_reason" && ! -f "$state_dir/.needs-attention" ]]; then
-            write_ready_attention_file "$state_dir" "$exhausted_reason"
+            escalate_operator_attention "$state_dir" exhausted stage-failure-ready "$exhausted_reason" || true
           fi
           if ready_exhausted_challenge_terminalize "$issue" "$pr" "$state_dir" "$win"; then
             return 0
@@ -12174,9 +12178,15 @@ review_refused_challenge_terminalize() {
     # Only a review-gate retirement this helper recorded is resumed. Any other
     # stamp (ready-exhausted retirement, pair-scope quarantine mirrored from
     # the sibling, etc.) keeps the hold so a healthy arm's PR is never closed.
+    # HOK-3358 unified the stamp format to `terminal_stage_failure:<kind>`, but
+    # a legacy `invalid_challenge:*` stamp (from pre-HOK-3358 state carried
+    # across a restart) is still recognised here so idempotent resumes work
+    # across the transition.
     existing_stage="$(get_task_meta "$issue" "challengeAbortedStage" 2>/dev/null || true)"
     case "$existing" in
-      invalid_challenge:review-identity-mismatch\
+      terminal_stage_failure:review-identity-mismatch\
+      |terminal_stage_failure:review-unattributed\
+      |invalid_challenge:review-identity-mismatch\
       |invalid_challenge:review-unattributed) ;;
       *) return 1 ;;
     esac
@@ -12288,10 +12298,16 @@ try_update_branch_from_base() {
     return 0
   fi
 
+  # HOK-3370: route the post-merge push through the stage-head seam so the
+  # base-merge head move is recorded against the task's state dir.
+  local update_state_dir
+  update_state_dir="$(ready_state_dir "$worktree" "$(basename "$worktree")" 2>/dev/null || true)"
   cli_output="$(wavemill_run_tool "update-branch-with-base.ts" \
     --worktree "$worktree" \
     --branch "$branch" \
-    --base "$base" 2>/dev/null)" && cli_status=0 || cli_status=$?
+    --base "$base" \
+    ${update_state_dir:+--state-dir "$update_state_dir"} \
+    ${update_state_dir:+--issue "$issue"} 2>/dev/null)" && cli_status=0 || cli_status=$?
 
   # The CLI always prints one JSON line to stdout even on failure. Parse
   # `status` and (on conflict) `conflictingFiles`. A missing or unparseable
@@ -12884,8 +12900,8 @@ review_recovery_coordinator_locked() {
       failure_reason="Review failed terminally (${category}) for PR #$pr_number; $(jq -r '.nextAction // "manual re-review required"' <<<"$policy_json")"
       bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" \
         --head "$retry_identity" --expires-on "head,operator-event,review-artifact-substantive" --review-artifact || true
-      write_ready_attention_file "$feature_dir" "$failure_reason" \
-        --head "$retry_identity" --expires-on "head,operator-event,review-artifact" --review-artifact
+      escalate_operator_attention "$feature_dir" policy-terminal "$policy_json" "$failure_reason" \
+        --head "$retry_identity" --expires-on "head,operator-event,review-artifact" --review-artifact || true
       review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
       return 1
     fi
@@ -12900,8 +12916,9 @@ review_recovery_coordinator_locked() {
       failure_reason="Review infrastructure recovery exhausted: native-review-timeout repeated at head ${_repeat_head:-unknown} for PR #$pr_number; $(review_infra_recovery_next_action "$category")"
       bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" \
         --head "${retry_identity:-$_repeat_head}" --expires-on "head,operator-event,review-artifact-substantive" --review-artifact || true
-      write_ready_attention_file "$feature_dir" "Review failed on infrastructure (native-review-timeout) for PR #$pr_number, $(review_infra_recovery_next_action "$category")." \
-        --head "${retry_identity:-$_repeat_head}" --expires-on "head,operator-event,review-artifact" --review-artifact
+      escalate_operator_attention "$feature_dir" exhausted review-infra-recovery \
+        "Review failed on infrastructure (native-review-timeout) for PR #$pr_number, $(review_infra_recovery_next_action "$category")." \
+        --head "${retry_identity:-$_repeat_head}" --expires-on "head,operator-event,review-artifact" --review-artifact || true
       if [[ -n "$(_challenge_side_for_issue "$issue" 2>/dev/null || true)" ]]; then
         local _repeat_side
         _repeat_side="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
@@ -12930,15 +12947,16 @@ review_recovery_coordinator_locked() {
         failure_reason="Review infrastructure recovery exhausted after $(bounded_retry_count "$feature_dir" "review-infra-recovery") attempt(s) for PR #$pr_number (category=${category}); $(review_infra_recovery_next_action "$category")"
         bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" \
           --head "$retry_identity" --expires-on "head,operator-event,review-artifact-substantive" --review-artifact || true
-        write_ready_attention_file "$feature_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, $(review_infra_recovery_next_action "$category")." \
-          --head "$retry_identity" --expires-on "head,operator-event,review-artifact" --review-artifact
+        escalate_operator_attention "$feature_dir" exhausted review-infra-recovery \
+          "Review failed on infrastructure (${category}) for PR #$pr_number, $(review_infra_recovery_next_action "$category")." \
+          --head "$retry_identity" --expires-on "head,operator-event,review-artifact" --review-artifact || true
         if [[ "$category" == "native-review-timeout" ]]; then
           local review_timeout_side
           review_timeout_side="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
           if [[ "$review_timeout_side" == "challenger" ]]; then
             # Typed exhaustion reason (HOK-3064): retry_exhausted:native-review-timeout
             # parses to a typed native-review-timeout kind → provider-fault, so
-            # record-arm-failure.ts opens the correct provider/model circuit.
+            # record-arm-termination.ts opens the correct provider/model circuit.
             challenge_abort_pair "$issue" "$feature_dir" "" "review" "$reviewer_model" \
               "retry_exhausted:native-review-timeout" \
               "Challenger review timed out after bounded retries for model ${reviewer_model}; attempts=$(bounded_retry_count "$feature_dir" "review-infra-recovery")" \
@@ -12970,7 +12988,9 @@ review_recovery_coordinator_locked() {
   if ! agent_validate_phase_launch "$reviewer_agent" "review" "$reviewer_model" "$REPO_DIR"; then
     failure_reason="${AGENT_RESOLVE_LAST_DIAGNOSTIC:-review recovery launch validation failed for agent=$reviewer_agent model=$reviewer_model}"
     if [[ "$source" == "infra" ]]; then
-      write_ready_attention_file "$feature_dir" "Review infrastructure is still unavailable for PR #$pr_number; waiting for reviewer runtime recovery."
+      # HOK-3360: the restored terminal review result plus the
+      # review-infra-recovery bucket own retries/escalation; waiting for
+      # reviewer runtime recovery is not an operator page on its own.
       log_error "  $issue: waiting for reviewer runtime recovery before re-reviewing PR #$pr_number"
     fi
     review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
@@ -13067,9 +13087,9 @@ relaunch_review_after_infra_recovery() {
   if [[ "$rc" -eq 2 ]] && check_stage_aborted "$state_dir"; then
     return 2
   fi
-  if [[ "$rc" -eq 1 && ! -f "$state_dir/.needs-attention" ]]; then
-    write_ready_attention_file "$state_dir" "Could not relaunch infrastructure re-review for PR #$pr_number (rc=$rc)."
-  fi
+  # HOK-3360: a single failed relaunch is not a page. The review-infra-recovery
+  # bucket escalates on exhaustion (via review_recovery_coordinator); this path
+  # just returns so the next tick retries.
   return 1
 }
 
@@ -13298,25 +13318,31 @@ set_ready_pass_labels() {
     rm -f "$stamp_stderr_file"
   fi
 
-  # HOK-3112: the handoff head is always GitHub's live head, never the local
-  # checkout. `head_sha` (Ready's own reading, when its output carries one) is
-  # only a cross-check. After Tend rebases and force-pushes from its scratch
-  # worktree the task checkout keeps the pre-rebase commit; publishing at that
-  # commit leaves a record Tend's claim at the live head always rejects.
+  # The handoff head is always GitHub's live head, never the local checkout
+  # (HOK-3112 lineage). HOK-3370 deletes the raw head-equality special case:
+  # the checkout only has to hold the same *change* as the live head. A tend
+  # rebase or base merge during Ready keeps the change identity (proceed at
+  # the live head); a code-changing move fails typed, and the freshness
+  # consumers re-run review for it.
   local github_head worktree_head
   github_head=$(ready_current_github_head "$wt_dir" "$pr_number")
   if [[ -z "$github_head" ]]; then
     printf '%s\n' '{"transitionFailure":{"stage":"ready-label","detail":"current GitHub head is unavailable"}}' >&2
     return 1
   fi
-  # Ready checked the checkout, so the checkout (and Ready's head, if reported)
-  # must still be the head we are about to publish. A mismatch means the PR
-  # moved while Ready ran; the caller re-runs Ready at the new head.
   worktree_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)
-  if [[ "$worktree_head" != "$github_head" || ( -n "$head_sha" && "$head_sha" != "$github_head" ) ]]; then
-    jq -cn --arg ready "$head_sha" --arg github "$github_head" --arg worktree "$worktree_head" \
-      '{transitionFailure:{stage:"ownership-changed",detail:"head-moved",readyHead:$ready,githubHead:$github,worktreeHead:$worktree}}' >&2
-    return 1
+  if [[ "$worktree_head" != "$github_head" ]]; then
+    # The live head may postdate the last sync; make it reachable for the
+    # identity computation (best-effort — an unreachable head stays stale).
+    # allow-settled-attempt: ready transition runs on the already-resolved task worktree (same resolver gate as the surrounding Ready phase)
+    git -C "$wt_dir" fetch --quiet origin >/dev/null 2>&1 || true
+    local transition_base_ref
+    transition_base_ref="origin/$(effective_task_base_branch "$issue" 2>/dev/null || echo "${BASE_BRANCH:-auto/integration}")"
+    if ! change_identity_fresh "$wt_dir" "$worktree_head" "$github_head" "$transition_base_ref"; then
+      jq -cn --arg github "$github_head" --arg worktree "$worktree_head" --arg reason "${CHANGE_IDENTITY_REASON:-change-identity-differs}" \
+        '{transitionFailure:{stage:"ownership-changed",detail:("worktree and PR head hold different changes (" + $reason + ")"),githubHead:$github,worktreeHead:$worktree}}' >&2
+      return 1
+    fi
   fi
   head_sha="$github_head"
 
@@ -13395,7 +13421,7 @@ ready_current_github_head() {
 # Sets READY_SYNC_HEAD, READY_SYNC_DETAIL, and (for rc 3) READY_SYNC_OBSERVED_PR_HEAD
 # and READY_SYNC_LOCAL_HEAD
 ready_sync_worktree_to_github_head() {
-  local wt_dir="$1" branch="$2" pr_number="$3" state_dir="$4"
+  local wt_dir="$1" branch="$2" pr_number="$3" state_dir="$4" issue="${5:-}"
   local gh_head local_head pre_fetch_origin current_branch tend_marker tend_pushed tend_previous sync_reason
   READY_SYNC_HEAD=""
   READY_SYNC_DETAIL=""
@@ -13470,8 +13496,26 @@ ready_sync_worktree_to_github_head() {
         return 3
       fi
 
-      # Genuinely unpushed local work
-      READY_SYNC_DETAIL="task worktree HEAD ${local_head:0:7} has commits that are not on PR head ${gh_head:0:7} (unpushed local work)"
+      # HOK-3370: unpushed local work is published by the mill through the
+      # one seam, never refused (HOK-3361 touches #1/#3: a remediation or
+      # reviewer commit the agent never pushed parked the arm). The seam
+      # fast-forwards the remote branch; the PR view then catches up via the
+      # existing HOK-3171 lag path. Genuine divergence fails typed through
+      # the seam and flows to the HOK-3371 Ready-failure disposition.
+      local sync_publish_kind="review-fix" sync_publish_rc=0
+      if [[ -f "$state_dir/.conflict-remediation.json" ]]; then
+        sync_publish_kind="conflict"
+      elif [[ "$(ready_remediation_attempts "$state_dir" 2>/dev/null || echo 0)" -gt 0 ]]; then
+        sync_publish_kind="remediation"
+      fi
+      publish_stage_head "$wt_dir" "$branch" "$state_dir" "${issue:-unknown}" "ready" "$sync_publish_kind" || sync_publish_rc=$?
+      if (( sync_publish_rc == 0 )); then
+        READY_SYNC_OBSERVED_PR_HEAD="$gh_head"
+        READY_SYNC_LOCAL_HEAD="$local_head"
+        READY_SYNC_DETAIL="published unpushed local head ${local_head:0:7} ($sync_publish_kind) through the stage-head seam; PR #$pr_number head catching up"
+        return 3
+      fi
+      READY_SYNC_DETAIL="stage head publication failed for local head ${local_head:0:7}: ${PUBLISH_STAGE_HEAD_DETAIL:-publish-stage-head rc=$sync_publish_rc}"
       return 2
     fi
 
@@ -13534,7 +13578,10 @@ launch_remediation_agent() {
   [[ "$(get_task_meta "$issue" "challenge" 2>/dev/null || true)" == "true" ]] && challenge_arm="true"
   REMEDIATION_LAUNCH_REFUSAL_DECISION="$(failure_policy_decide "ready" "$kind" "$REMEDIATION_LAUNCH_REFUSAL" "" "$challenge_arm" \
     | jq -c --arg reason "$REMEDIATION_LAUNCH_REFUSAL" '. + {refusal: $reason, attempt: false}')"
-  write_ready_attention_file "$state_dir" "$what launch for PR #$pr was refused before an agent started (harness fault; the remediation budget is untouched): $REMEDIATION_LAUNCH_REFUSAL"
+  # HOK-3360: the caller writes the failed stage result carrying this refusal
+  # decision (launchRefusal); the failure policy classifies it on the next
+  # tick. The refusal is not an operator page on its own — never raise
+  # attention here.
   log_coding_launch_refusal "$issue" "$model" "$agent" "${kind:-unclassified}" "" "needs-user" "" ""
   log_error "  $issue: $what launch refused for PR #$pr (not an attempt): $REMEDIATION_LAUNCH_REFUSAL"
   return 3
@@ -13572,7 +13619,11 @@ _launch_ready_remediation_attempt() {
       --detail "Ready-check failure on PR #$pr_number: $failed_check_summary" \
       --failing-checks-json "$recon_checks_json" \
       2>/dev/null) || {
-      write_ready_attention_file "$state_dir" "Reconciliation capsule invalid ($(jq -r '.reason // "unknown"' <<< "$recon_incident_out" 2>/dev/null || echo "unknown")) for PR #$pr_number - refusing ready remediation launch."
+      # HOK-3360: retryable by default; record the failed stage result and let
+      # stage-failure-ready own retries. No page on the first occurrence.
+      write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
+        "Reconciliation capsule invalid ($(jq -r '.reason // "unknown"' <<< "$recon_incident_out" 2>/dev/null || echo "unknown")) for PR #$pr_number - refusing ready remediation launch" \
+        "$(jq -cn --argjson pr "$pr_number" '{type:"ready",verdict:"fail",prNumber:$pr,failureKind:"reconciliation-capsule-invalid"}')"
       log_error "  $issue: reconciliation capsule unavailable - refusing ready remediation launch for PR #$pr_number"
       return 1
     }
@@ -13594,7 +13645,8 @@ _launch_ready_remediation_attempt() {
     write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$resolved_model" \
       "No model configured for ready remediation" \
       "$no_model_artifacts_json"
-    write_ready_attention_file "$state_dir" "Ready remediation cannot proceed without a configured model for PR #$pr_number."
+    # HOK-3360: the failed stage result is recorded; stage-failure-ready owns
+    # retries. No page on the first occurrence.
     log_error "  Failed to launch ready remediation agent for $issue (no model configured)"
     bounded_retry_increment "$state_dir" "ready-remediation" "$current_head" >/dev/null
     return 1
@@ -13685,7 +13737,7 @@ _launch_ready_remediation_attempt() {
   write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$resolved_model" \
     "Could not launch ready remediation agent" \
     "$remediation_failed_artifacts_json"
-  write_ready_attention_file "$state_dir" "Could not launch remediation agent for PR #$pr_number."
+  # HOK-3360: failed stage result recorded; stage-failure-ready owns retries.
   log_error "  Failed to launch ready remediation agent for $issue"
   return 1
 }
@@ -13834,7 +13886,7 @@ launch_ready_phase() {
   # REQ-F6): mark it stale against its recorded head and relaunch review
   # before any ready pass can restore wm:ready.
   if [[ "$(post_pr_reconciliation_enabled "$wt_dir")" == "true" ]] \
-    && reconciliation_review_invalidated_by_commit "$state_dir" "$wt_dir" \
+    && reconciliation_review_invalidated_by_commit "$state_dir" "$wt_dir" "$base_branch" \
     && review_result_passes_ready_gate "$state_dir"; then
     local recon_old_head recon_new_head recon_review_rc=0
     recon_old_head=$(jq -r '.review.reviewHeadSha // empty' "$state_dir/.reconciliation-context.json" 2>/dev/null || echo "")
@@ -13849,7 +13901,11 @@ launch_ready_phase() {
     if [[ "$recon_review_rc" -eq 2 ]] && check_stage_aborted "$state_dir"; then
       return 2
     fi
-    write_ready_attention_file "$state_dir" "Review invalidated by reconciliation commit, but re-review could not be launched for PR #$pr_number."
+    # HOK-3360: a failed re-review relaunch is retryable by default; record the
+    # failed review stage result and let the next tick relaunch. No page here.
+    write_stage_result "$state_dir" "review" "failed" "$current_agent" "" \
+      "Review invalidated by reconciliation commit, but re-review could not be launched for PR #$pr_number" \
+      "$(jq -cn --argjson pr "$pr_number" '{type:"review",verdict:"fail",prNumber:$pr,failureKind:"review-relaunch-failed"}')"
     return 1
   fi
 
@@ -13878,26 +13934,28 @@ launch_ready_phase() {
         return $?
         ;;
       terminal)
-        # Config errors, policy violations → operator attention
+        # Config errors, policy violations → operator attention. The review
+        # gate's disposition IS the typed FailureClass (HOK-2890); pass it
+        # through as the policy-terminal basis (HOK-3360).
         strip_ready_label_if_review_not_passed "$wt_dir" "$pr_number" "$state_dir" || true
         local _ready_gate_head
         _ready_gate_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
-        write_ready_attention_file "$state_dir" "Review verdict does not pass readiness gate for PR #$pr_number ($review_summary). Configuration or policy review required." \
-          --head "$_ready_gate_head" --expires-on "head,operator-event,review-artifact" --review-artifact
+        escalate_operator_attention "$state_dir" policy-terminal "$disposition" \
+          "Review verdict does not pass readiness gate for PR #$pr_number ($review_summary). Configuration or policy review required." \
+          --head "$_ready_gate_head" --expires-on "head,operator-event,review-artifact" --review-artifact || true
         log_error "  $issue: refusing ready phase; $review_summary (terminal)"
         return 1
         ;;
       *)
         # An unknown disposition token (empty string, future enum value, or
-        # mangled CLI output) must never silently fall through past the
-        # review gate — the branch returned false for review_result_passes_ready_gate,
-        # so Ready cannot proceed. Treat as terminal / operator attention and
-        # record the raw token in the attention marker.
+        # mangled CLI output) must never silently fall through past the review
+        # gate. Per HOK-3176 an unclassified failure is retryable by default:
+        # record the failed review stage result and let the next tick
+        # re-decide; the review-gate CLI is not a page on its own (HOK-3360).
         strip_ready_label_if_review_not_passed "$wt_dir" "$pr_number" "$state_dir" || true
-        local _ready_gate_head
-        _ready_gate_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
-        write_ready_attention_file "$state_dir" "Review verdict does not pass readiness gate for PR #$pr_number ($review_summary). Unknown remediation disposition '${disposition:-<empty>}'; investigate review-gate-remediation-cli." \
-          --head "$_ready_gate_head" --expires-on "head,operator-event,review-artifact" --review-artifact
+        write_stage_result "$state_dir" "review" "failed" "$current_agent" "" \
+          "Review verdict does not pass readiness gate for PR #$pr_number ($review_summary). Unknown remediation disposition '${disposition:-<empty>}'; investigate review-gate-remediation-cli." \
+          "$(jq -cn --argjson pr "$pr_number" '{type:"review",verdict:"fail",prNumber:$pr,failureKind:"review-gate-unknown-disposition"}')"
         log_error "  $issue: refusing ready phase; unknown disposition '${disposition:-<empty>}' from review-gate CLI"
         return 1
         ;;
@@ -13933,7 +13991,7 @@ launch_ready_phase() {
   # Ready at the stale checkout would publish a handoff Tend can never claim.
   # The cross-PR guard below also diffs the checkout, so sync precedes it.
   local sync_rc=0
-  ready_sync_worktree_to_github_head "$wt_dir" "$branch" "$pr_number" "$state_dir" || sync_rc=$?
+  ready_sync_worktree_to_github_head "$wt_dir" "$branch" "$pr_number" "$state_dir" "$issue" || sync_rc=$?
   case "$sync_rc" in
     0)
       if [[ -n "$READY_SYNC_DETAIL" ]]; then
@@ -13963,9 +14021,9 @@ launch_ready_phase() {
         if bounded_retry_mark_exhausted "$state_dir" "ready-pr-head-lag" \
             "GitHub PR head has not caught up with pushed head after $lag_count checks" \
             --head "$local_head" --observed "prHeadRefOid=$READY_SYNC_OBSERVED_PR_HEAD" --expires-on "head,operator-event,remote"; then
-          write_ready_attention_file "$state_dir" \
+          escalate_operator_attention "$state_dir" exhausted ready-pr-head-lag \
             "GitHub PR head has not caught up with pushed head after $lag_count checks. Refusing Ready for PR #$pr_number." \
-            --head "$local_head" --observed "prHeadRefOid=$READY_SYNC_OBSERVED_PR_HEAD" --expires-on "head,operator-event,remote"
+            --head "$local_head" --observed "prHeadRefOid=$READY_SYNC_OBSERVED_PR_HEAD" --expires-on "head,operator-event,remote" || true
         fi
         log_error "  $issue: refusing ready phase for PR #$pr_number; GitHub head lag exhausted after $lag_count checks"
         return 1
@@ -13994,12 +14052,19 @@ launch_ready_phase() {
     2)
       # Clear lag bucket on successful sync or genuine unpushed work
       bounded_retry_clear "$state_dir" "ready-pr-head-lag"
-      write_ready_attention_file "$state_dir" "Task worktree does not match PR #$pr_number head and cannot be synced: $READY_SYNC_DETAIL. Refusing Ready."
+      # HOK-3360: a worktree/PR head mismatch is retryable by default; record
+      # the failed stage result and let stage-failure-ready own retries. Only
+      # that budget's exhaustion pages an operator.
+      write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
+        "Task worktree does not match PR #$pr_number head and cannot be synced: $READY_SYNC_DETAIL" \
+        "$(jq -cn --argjson pr "$pr_number" '{type:"ready",verdict:"fail",prNumber:$pr,failureKind:"ready-worktree-sync"}')"
       log_error "  $issue: refusing ready phase for PR #$pr_number; $READY_SYNC_DETAIL"
       return 1
       ;;
     *)
-      write_ready_attention_file "$state_dir" "Task worktree does not match PR #$pr_number head and cannot be synced: $READY_SYNC_DETAIL. Refusing Ready."
+      write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
+        "Task worktree does not match PR #$pr_number head and cannot be synced: $READY_SYNC_DETAIL" \
+        "$(jq -cn --argjson pr "$pr_number" '{type:"ready",verdict:"fail",prNumber:$pr,failureKind:"ready-worktree-sync"}')"
       log_error "  $issue: refusing ready phase for PR #$pr_number; $READY_SYNC_DETAIL"
       return 1
       ;;
@@ -14062,7 +14127,12 @@ launch_ready_phase() {
 
   if [[ -z "$merge_status" ]]; then
     log_ready_unparseable_result "$issue" "$result"
-    write_ready_attention_file "$state_dir" "Ready stage produced invalid output for PR #$pr_number."
+    # HOK-3360: unparseable Ready output is retryable by default (HOK-3176).
+    # Record the failed stage result and let the next tick classify/retry via
+    # stage-failure-ready; do not page on the first occurrence.
+    write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
+      "Ready stage produced invalid output for PR #$pr_number" \
+      "$(jq -cn --argjson pr "$pr_number" '{type:"ready",verdict:"fail",prNumber:$pr,failureKind:"ready-invalid-output"}')"
     return 1
   fi
 
@@ -14082,7 +14152,7 @@ launch_ready_phase() {
         conflict_reason="Conflict remediation exhausted on identical (head=$current_head, base=$conflict_base_sha) for PR #$pr_number"
         if bounded_retry_mark_exhausted "$state_dir" "conflict-remediation-relaunch" "$conflict_reason"; then
           log "status" "⛔ $issue → $conflict_reason"
-          write_ready_attention_file "$state_dir" "$conflict_reason"
+          escalate_operator_attention "$state_dir" exhausted conflict-remediation-relaunch "$conflict_reason" || true
         fi
         log_error "  Merge conflicts persist for $issue after remediation attempt"
         return 1
@@ -14113,13 +14183,23 @@ launch_ready_phase() {
         ${recon_base_sha:+--base "$recon_base_sha"} \
         --detail "PR #$pr_number reports merge conflicts against $base_branch (GitHub mergeable: CONFLICTED)." \
         2>/dev/null) || {
-        write_ready_attention_file "$state_dir" "Reconciliation capsule invalid ($(jq -r '.reason // "unknown"' <<< "$recon_incident_out" 2>/dev/null || echo "unknown")) for PR #$pr_number - refusing conflict reconciliation launch."
+        # HOK-3360: a capsule that could not be updated is retryable by
+        # default; record the failed stage result and let stage-failure-ready
+        # own retries. Do not page on the first occurrence.
+        write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
+          "Reconciliation capsule invalid ($(jq -r '.reason // "unknown"' <<< "$recon_incident_out" 2>/dev/null || echo "unknown")) for PR #$pr_number - refusing conflict reconciliation launch" \
+          "$(jq -cn --argjson pr "$pr_number" '{type:"ready",verdict:"fail",prNumber:$pr,failureKind:"reconciliation-capsule-invalid"}')"
         log_error "  $issue: reconciliation capsule unavailable - refusing conflict launch for PR #$pr_number"
         return 1
       }
       recon_fingerprint=$(jq -r '.failureFingerprint // empty' <<< "$recon_incident_out" 2>/dev/null || echo "")
       reconciliation_reset_retry_if_new_fingerprint "$state_dir" "ready-remediation" "$recon_fingerprint"
       if ! reconciliation_project_prompt "$state_dir" "$pr_number" "$prompt_file.capsule"; then
+        # HOK-3360: retryable by default; record a failed ready result so
+        # stage-failure-ready owns retries. No page on the first occurrence.
+        write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
+          "Reconciliation capsule projection failed for PR #$pr_number - refusing conflict launch" \
+          "$(jq -cn --argjson pr "$pr_number" '{type:"ready",verdict:"fail",prNumber:$pr,failureKind:"reconciliation-capsule-invalid"}')"
         log_error "  $issue: reconciliation capsule projection failed - refusing conflict launch for PR #$pr_number"
         return 1
       fi
@@ -14183,7 +14263,11 @@ launch_ready_phase() {
       # and the budget was not charged, so the next pass may still launch.
       return 1
     fi
-    write_ready_attention_file "$state_dir" "Automatic merge-conflict resolution could not be launched for PR #$pr_number."
+    # HOK-3360: a failed resolver launch is retryable by default; record the
+    # failed stage result and let the next tick classify/retry. No page here.
+    write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
+      "Automatic merge-conflict resolution could not be launched for PR #$pr_number" \
+      "$(jq -cn --argjson pr "$pr_number" '{type:"ready",verdict:"fail",prNumber:$pr,failureKind:"conflict-resolver-launch-failed"}')"
     log_error "  Failed to launch conflict-resolution agent for $issue"
     return 1
   fi
@@ -14214,19 +14298,22 @@ launch_ready_phase() {
         "pending GitHub mergeability - will retry (attempt ${transient_count}/${transient_limit})" \
         "$pending_artifacts_json"
       marker_clear "$state_dir/.needs-attention"
-      marker_clear "$state_dir/.needs-attention-transient"
       log "info" "  Merge status for $issue is $merge_status - will retry (attempt ${transient_count}/${transient_limit})"
       return 4
     fi
 
-    write_transient_ready_attention_file "$state_dir" \
-      "Merge status $merge_status persisted after $transient_count checks for PR #$pr_number."
+    # HOK-3360: a persisted GitHub mergeability UNKNOWN/ERROR is retryable
+    # (the HOK-1576 semantic). The transient attention kind is removed; record
+    # the failed stage result so stage-failure-ready owns retries like any
+    # other Ready failure, and never page on the first occurrence.
+    write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
+      "Merge status $merge_status persisted after $transient_count checks for PR #$pr_number." \
+      "$(jq -cn --argjson pr "$pr_number" --arg ms "$merge_status" '{type:"ready",verdict:"fail",prNumber:$pr,mergeConflict:$ms,failureKind:"mergeability-unknown"}')"
     log_error "  Merge status $merge_status persisted for $issue after $transient_count attempts"
     return 1
   fi
 
   marker_clear "$state_dir/.needs-attention"
-  marker_clear "$state_dir/.needs-attention-transient"
   clear_transient_mergeability_state "$state_dir"
 
   if [[ "$ready_rc" -eq 0 ]]; then
@@ -14245,21 +14332,6 @@ launch_ready_phase() {
       # record merge-needed on a resolver failure.
       if [[ "$transition_stage" == "capabilities-unknown" ]]; then
         log "info" "  $issue: session capability resolver unavailable - retrying next tick"
-        return 4
-      fi
-      # HOK-3112: the PR head moved while Ready ran (or the checkout no longer
-      # matches it). Nothing was published; this is transient, so re-check at
-      # the new head on the next tick instead of parking the arm in needs-user.
-      local moved_github_head
-      moved_github_head=$(printf '%s\n' "$label_output" \
-        | jq -Rr 'fromjson? | select(.transitionFailure.detail? == "head-moved") | .transitionFailure.githubHead // empty' 2>/dev/null | tail -n 1)
-      if [[ -n "$moved_github_head" ]]; then
-        bounded_retry_reset_if_new_head "$state_dir" "ready-remediation" "$moved_github_head"
-        bounded_retry_reset_if_new_head "$state_dir" "pending-ready-recheck" "$moved_github_head"
-        write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
-          "PR #$pr_number changed head while Ready was running, rechecking current GitHub head" \
-          "$(jq -cn --argjson pr "$pr_number" --arg head "$moved_github_head" '{type:"ready",verdict:"pending",prNumber:$pr,readyHeadSha:$head,pendingReason:"head-changed"}')"
-        log "info" "  $issue: PR #$pr_number head moved to ${moved_github_head:0:7} during Ready - handoff not published, re-checking"
         return 4
       fi
       transition_output=$(printf '%s' "$label_output" | ready_transition_redact | head -c 2000)
@@ -14299,9 +14371,11 @@ launch_ready_phase() {
       write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
         "Ready passed but failed at ${transition_stage:-an untyped transition failure}${transition_detail:+: ${transition_detail:0:300}}" \
         "$label_failed_artifacts_json"
-      local attention_stage_label="the ${transition_stage} transition"
-      [[ -n "$transition_stage" ]] || attention_stage_label="a transition"
-      write_ready_attention_file "$state_dir" "Ready passed for PR #$pr_number, but ${attention_stage_label} failed. ${transition_output:0:500}"
+      # HOK-3360: do not page here. The failed stage result carries the
+      # transitionFailure evidence; the next tick's
+      # ready_failure_classify_and_act classifies it — a transition
+      # code-failure pages through the operator-decision basis, everything else
+      # retries via stage-failure-ready.
       log_error "  Ready passed for $issue but ${transition_stage:-the transition} failed${transition_detail:+: ${transition_detail:0:300}}"
       return 1
     fi
@@ -14473,9 +14547,10 @@ launch_ready_phase() {
       write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
         "Ready remediation exhausted after ${remediation_attempts} attempt(s)" \
         "$exhausted_artifacts_json"
-      write_ready_attention_file "$state_dir" "Remediation exhausted after ${remediation_attempts} attempt(s) for PR #$pr_number."
       bounded_retry_mark_exhausted "$state_dir" "ready-remediation" \
         "Ready remediation exhausted after ${remediation_attempts} attempt(s) for PR #$pr_number (failed checks: ${failed_check_names})" || true
+      escalate_operator_attention "$state_dir" exhausted ready-remediation \
+        "Remediation exhausted after ${remediation_attempts} attempt(s) for PR #$pr_number." || true
       log_error "  Ready remediation exhausted for $issue (failed checks: ${failed_check_names})"
       return 1
     fi
@@ -14513,7 +14588,11 @@ launch_ready_phase() {
     "{\"type\":\"ready\",\"verdict\":\"${verdict:-unknown}\",\"checksRun\":${checks_run:-0},\"checksPassed\":${checks_passed:-0},\"mergeConflict\":\"${merge_status:-UNKNOWN}\",\"prNumber\":${pr_number}${failed_check_names_json:+,\"remediationFailures\":${failed_check_names_json}}}" \
     "candidate-progress")
   write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" "Ready checks failed" "$failed_artifacts_json"
-  write_ready_attention_file "$state_dir" "Ready checks failed for PR #$pr_number."
+  # HOK-3360: a first-occurrence non-remediable Ready failure is retryable by
+  # default (HOK-3176). Record the failed stage result and return; the next
+  # tick's ready_failure_classify_and_act routes it through the
+  # stage-failure-ready bounded budget, and only that budget's exhaustion pages
+  # an operator. Never raise attention here.
   log_ready_failure_result "$issue" "$result"
   return 1
 }
@@ -15290,8 +15369,10 @@ handle_challenge_pending_ready() {
   # of looping (the safe pre-HOK-2963 stall, without accepting stale
   # evidence).
   if [[ "$(read_state_value "false" --arg i "$primary_key" '.tasks[$i].challengeCompared // false')" == "true" ]]; then
-    write_ready_attention_file "$state_dir" \
-      "Challenge pair $pair_id has a comparison record that does not satisfy Ready at the current heads for PR #$pr (stale evidence after a head change). Manual supersession or re-comparison required."
+    # HOK-3360: a settled comparison that no longer satisfies Ready cannot be
+    # changed by re-running Ready, so it is an operator decision, not a retry.
+    escalate_operator_attention "$state_dir" operator-decision challenge-comparison-stale \
+      "Challenge pair $pair_id has a comparison record that does not satisfy Ready at the current heads for PR #$pr (stale evidence after a head change). Manual supersession or re-comparison required." || true
     return 1
   fi
 
@@ -16587,7 +16668,12 @@ monitor_deps_drift_tick() {
 
   local log_file="${MILL_LOG_FILE:-/dev/null}"
   local json status reason packages
-  json="$(deps_drift_check "$REPO_DIR" 2>/dev/null)" || json=""
+  # deps_drift_check's exit code (0/1/2) is a verdict, not a failure: it
+  # always prints the JSON verdict on stdout. `|| true` only guards against
+  # `set -e` on a non-zero (drift/unknown) exit — it must never clobber the
+  # JSON already captured by the assignment (that previously made every
+  # drift/unknown verdict silently read back as "ok").
+  json="$(deps_drift_check "$REPO_DIR" 2>/dev/null)" || true
   status="$(printf '%s' "$json" | jq -r '.status // ""' 2>/dev/null)"
   reason="$(printf '%s' "$json" | jq -r '.reason // ""' 2>/dev/null)"
   packages="$(printf '%s' "$json" | jq -r '[.packages[]?.name] | join(",")' 2>/dev/null)"
@@ -16642,13 +16728,6 @@ monitor_deps_drift_tick() {
   local fingerprint
   if declare -F deps_lockfile_fingerprint >/dev/null 2>&1; then
     fingerprint="$(deps_lockfile_fingerprint "$REPO_DIR" 2>/dev/null || true)"
-  fi
-  if [[ -z "$fingerprint" ]]; then
-    if command -v sha256sum >/dev/null 2>&1; then
-      fingerprint="$(sha256sum "$REPO_DIR/package-lock.json" 2>/dev/null | awk '{print $1}')"
-    elif command -v shasum >/dev/null 2>&1; then
-      fingerprint="$(shasum -a 256 "$REPO_DIR/package-lock.json" 2>/dev/null | awk '{print $1}')"
-    fi
   fi
   [[ -n "$fingerprint" ]] || fingerprint="unknown"
 
@@ -20218,7 +20297,8 @@ handle_re_review_command() {
         MONITOR_COMMAND_STATUS="handled"
         return 0
       fi
-      write_ready_attention_file "$feature_dir" "Could not launch manual re-review that would create the PR (rc=$rc)."
+      escalate_operator_attention "$feature_dir" operator-decision operator-command-failed \
+        "Could not launch manual re-review that would create the PR (rc=$rc)." || true
       log_warn "$issue re-review launch failed before PR creation (rc=$rc)"
       MONITOR_COMMAND_STATUS="invalid"
       return 0
@@ -20252,7 +20332,8 @@ handle_re_review_command() {
     MONITOR_COMMAND_STATUS="handled"
     return 0
   fi
-  write_ready_attention_file "$feature_dir" "Could not launch manual re-review for PR #$pr (rc=$rc)."
+  escalate_operator_attention "$feature_dir" operator-decision operator-command-failed \
+    "Could not launch manual re-review for PR #$pr (rc=$rc)." || true
   log_warn "$issue re-review launch failed for PR #$pr (rc=$rc)"
   MONITOR_COMMAND_STATUS="invalid"
 }
@@ -20474,7 +20555,7 @@ monitor_issue_state() {
       if ! ready_stage_allows_merge "$merged_ready_dir"; then
         merged_before_ready=true
         ready_stage_warn_bypass_once "$merged_ready_dir" "$ISSUE" "$PR" || true
-        write_ready_attention_file "$merged_ready_dir" "PR #$PR was merged before the Release Readiness Check passed."
+        escalate_operator_attention "$merged_ready_dir" operator-decision merged-before-ready "PR #$PR was merged before the Release Readiness Check passed." || true
       else
         clear_transient_mergeability_state "$merged_ready_dir"
         marker_clear "$merged_ready_dir/.needs-attention"
@@ -20585,6 +20666,12 @@ monitor_issue_state() {
         if [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
           wavemill_reconcile_terminal "$SESSION" "$ISSUE" "review_complete" "$PR" || true
         fi
+        # HOK-3370: publish any reviewer "fix blockers" commits through the
+        # one seam before Ready reads GitHub (a no-op `reused` when the
+        # reviewer did not commit). A failure defers to Ready's own
+        # sync-path publication and the HOK-3371 disposition.
+        publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$FEATURE_DIR" "$ISSUE" "review" "review-fix" \
+          || log_warn "$ISSUE → review head publication deferred to Ready: ${PUBLISH_STAGE_HEAD_DETAIL:-no detail}"
       else
         set_task_phase "$ISSUE" "review"
         if launch_review_for_missing_evidence "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$FEATURE_DIR" "$current_agent"; then
@@ -20597,7 +20684,10 @@ monitor_issue_state() {
             set_window_attention_state "$WIN" "needs-user"
             return 0
           fi
-          write_ready_attention_file "$FEATURE_DIR" "Could not relaunch review for PR #$PR after missing review verdict evidence (rc=$launch_rc)."
+          # HOK-3360: a failed review relaunch is retryable — the next tick
+          # re-enters this branch and relaunches. Do not raise operator
+          # attention on the first occurrence.
+          log_warn "$ISSUE → review relaunch after missing verdict evidence failed (rc=$launch_rc); will retry next tick (PR #$PR)"
           set_window_attention_state "$WIN" "needs-user"
         fi
         active_count=$((active_count + 1))
@@ -21286,6 +21376,30 @@ monitor_issue_state() {
             fi
             validate_coding_phase_output "$BRANCH"
             clear_coding_uncommitted_output_attention "$FEATURE_DIR"
+
+            # HOK-3370: the mill publishes the coding head through the one
+            # seam before review launches. Agents commit; the mill publishes —
+            # a stage exit never leaves a silent local head. Failure is typed
+            # through the failure policy (divergence → code-failure
+            # remediation, transport → retryable stage-failure-coding).
+            local coding_publish_rc=0
+            publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$FEATURE_DIR" "$ISSUE" "coding" "coding" || coding_publish_rc=$?
+            if (( coding_publish_rc != 0 )); then
+              write_stage_result "$FEATURE_DIR" "coding" "failed" "$current_agent" \
+                "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")" \
+                "Stage head publication failed: ${PUBLISH_STAGE_HEAD_DETAIL:-publish-stage-head rc=$coding_publish_rc}"
+              local coding_publish_retry_rc=0
+              maybe_retry_failed_stage "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" || coding_publish_retry_rc=$?
+              if [[ "$coding_publish_retry_rc" -eq 0 || "$coding_publish_retry_rc" -eq 2 ]]; then
+                active_count=$((active_count + 1))
+                return 0
+              fi
+              emit_challenge_stage_failure_quarantine "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" || true
+              set_window_attention_state "$WIN" "needs-user"
+              active_count=$((active_count + 1))
+              return 0
+            fi
+
             # Mark coding as completed (HOK-1177)
             write_stage_result "$FEATURE_DIR" "coding" "completed" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")"
             quarantine_completed_coding_pane "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}"
@@ -21630,12 +21744,20 @@ monitor_issue_state() {
                   set_window_attention_state "$WIN" "needs-user"
                   return 0
                 fi
-                write_ready_attention_file "$FEATURE_DIR" "Could not relaunch review for PR #$pr_number after missing review verdict evidence (rc=$relaunch_rc)."
+                # HOK-3360: retryable — the next tick re-enters and relaunches;
+                # no operator page on the first occurrence.
+                log_warn "$ISSUE → review relaunch after missing verdict evidence failed (rc=$relaunch_rc); will retry next tick (PR #$pr_number)"
                 set_window_attention_state "$WIN" "needs-user"
               fi
               active_count=$((active_count + 1))
               return 0
             fi
+            # HOK-3370: publish any reviewer "fix blockers" commits through
+            # the one seam before Ready reads GitHub (a no-op `reused` when
+            # the reviewer did not commit). A failure here defers to Ready's
+            # own sync-path publication and the HOK-3371 disposition.
+            publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$FEATURE_DIR" "$ISSUE" "review" "review-fix" \
+              || log_warn "$ISSUE → review head publication deferred to Ready: ${PUBLISH_STAGE_HEAD_DETAIL:-no detail}"
             if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$pr_number"; then
               local launch_rc=0
             else
@@ -21710,6 +21832,12 @@ monitor_issue_state() {
               return 0
             fi
 
+            # HOK-3370: the conflict resolver settled (or the head advanced) —
+            # publish its commits through the one seam before Ready re-runs,
+            # so the re-check reads the resolved head, never the stale one.
+            publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$ready_state_dir_path" "$ISSUE" "ready" "conflict" \
+              || log_warn "$ISSUE → conflict-resolution head publication deferred to Ready: ${PUBLISH_STAGE_HEAD_DETAIL:-no detail}"
+
             if conflict_remediation_exhausted_hold "$ready_state_dir_path" "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH" "$current_head"; then
               set_window_attention_state "$WIN" "needs-user"
               return 0
@@ -21718,7 +21846,9 @@ monitor_issue_state() {
             local pr_number
             pr_number=$(find_pr_for_branch "$BRANCH")
             if [[ -z "$pr_number" ]]; then
-              write_ready_attention_file "$ready_state_dir_path" "Unable to find open PR for branch $BRANCH after conflict remediation."
+              # HOK-3360: a missing PR right after a conflict push is a GitHub
+              # lag class — retryable. The next tick re-reads GitHub; no page.
+              log_warn "$ISSUE → no open PR for branch $BRANCH after conflict remediation; will retry next tick"
               set_window_attention_state "$WIN" "needs-user"
               return 0
             fi
@@ -21832,7 +21962,10 @@ monitor_issue_state() {
           # the review stage was interrupted, not finished. Preserve commits
           # and keep the phase at review so operator recovery (/re-review or
           # a window restart) still works.
-          write_ready_attention_file "$FEATURE_DIR" "Review window disappeared and could not be relaunched automatically. Coding commits preserved; re-review or operator restart required."
+          # HOK-3360: a single failed relaunch of a disappeared review window
+          # is retryable — the window-recreate path (HOK-3210) and the next
+          # tick's recovery own it. Do not page on the first occurrence.
+          log_warn "$ISSUE → review window disappeared and relaunch failed; coding commits preserved, will retry next tick"
           set_task_phase "$ISSUE" "review"
           set_window_attention_state "$WIN" "needs-user"
           active_count=$((active_count + 1))
@@ -21889,7 +22022,8 @@ monitor_issue_state() {
                 "monitor" || true
           fi
         fi
-        write_ready_attention_file "$FEATURE_DIR" "Review interrupted on branch $BRANCH before PR creation; coding commits preserved. Run /re-review $ISSUE to relaunch."
+        escalate_operator_attention "$FEATURE_DIR" operator-decision review-session-interrupted-pre-pr \
+          "Review interrupted on branch $BRANCH before PR creation; coding commits preserved. Run /re-review $ISSUE to relaunch." || true
         set_task_phase "$ISSUE" "review"
         set_window_attention_state "$WIN" "needs-user"
         active_count=$((active_count + 1))
@@ -21932,7 +22066,7 @@ monitor_issue_state() {
     if ! ready_stage_allows_merge "$merged_ready_dir"; then
       merged_before_ready=true
       ready_stage_warn_bypass_once "$merged_ready_dir" "$ISSUE" "$PR" || true
-      write_ready_attention_file "$merged_ready_dir" "PR #$PR was merged before the Release Readiness Check passed."
+      escalate_operator_attention "$merged_ready_dir" operator-decision merged-before-ready "PR #$PR was merged before the Release Readiness Check passed." || true
     else
       clear_transient_mergeability_state "$merged_ready_dir"
       marker_clear "$merged_ready_dir/.needs-attention"
@@ -22212,13 +22346,21 @@ monitor_issue_state() {
               set_window_attention_state "$WIN" "needs-user"
               return 0
             fi
-            write_ready_attention_file "$FEATURE_DIR" "Could not relaunch review for PR #$PR after missing review verdict evidence (rc=$launch_rc)."
+            # HOK-3360: retryable — the next tick re-enters and relaunches; no
+            # operator page on the first occurrence.
+            log_warn "$ISSUE → review relaunch after missing verdict evidence failed (rc=$launch_rc); will retry next tick (PR #$PR)"
             set_window_attention_state "$WIN" "needs-user"
           fi
           active_count=$((active_count + 1))
           return 0
         fi
 
+        # HOK-3370: publish any reviewer "fix blockers" commits through the
+        # one seam before Ready reads GitHub (a no-op `reused` when the
+        # reviewer did not commit). A failure here defers to Ready's own
+        # sync-path publication and the HOK-3371 disposition.
+        publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$FEATURE_DIR" "$ISSUE" "review" "review-fix" \
+          || log_warn "$ISSUE → review head publication deferred to Ready: ${PUBLISH_STAGE_HEAD_DETAIL:-no detail}"
         if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
           launch_rc=0
         else
@@ -22540,6 +22682,15 @@ monitor_issue_state() {
     fi
     if [[ "$remediation_disposition" == "settled" ]]; then
       log "info" "$ISSUE → Ready remediation settled at ${current_head:0:7} ($remediation_disposition_reason); re-running Ready"
+      # HOK-3370: publish the remediation agent's commits through the one
+      # seam before the controller re-runs Ready (HOK-3361 touch #1: the
+      # remediation commit was never pushed, so Ready re-checked the same
+      # red head until exhausted). A failure defers to Ready's own
+      # sync-path publication and the HOK-3371 disposition.
+      local settled_publish_kind="remediation"
+      [[ -f "$ready_state_dir_path/.conflict-remediation.json" ]] && settled_publish_kind="conflict"
+      publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$ready_state_dir_path" "$ISSUE" "ready" "$settled_publish_kind" \
+        || log_warn "$ISSUE → remediation head publication deferred to Ready: ${PUBLISH_STAGE_HEAD_DETAIL:-no detail}"
     fi
 
     ready_verdict=$(ready_stage_pending_verdict "$ready_state_dir_path")
@@ -22658,9 +22809,9 @@ monitor_issue_state() {
           if bounded_retry_mark_exhausted "$ready_state_dir_path" "pending-ready-recheck" \
               "Review infrastructure recovery is exhausted for PR #$PR; pending-ready halted until the review artifact changes" \
               --head "$current_head" --expires-on "head,operator-event,review-artifact-substantive" --review-artifact; then
-            write_ready_attention_file "$ready_state_dir_path" \
+            escalate_operator_attention "$ready_state_dir_path" exhausted pending-ready-recheck \
               "Review infrastructure recovery is exhausted for PR #$PR. Waiting for operator or a new commit." \
-              --head "$current_head" --expires-on "head,operator-event,review-artifact-substantive" --review-artifact
+              --head "$current_head" --expires-on "head,operator-event,review-artifact-substantive" --review-artifact || true
             log "status" "⛔ $ISSUE → Pending-ready halted for PR #$PR because review infrastructure recovery is exhausted"
           fi
           set_window_attention_state "$WIN" "needs-user"
@@ -22706,8 +22857,8 @@ monitor_issue_state() {
           [[ -n "$pending_recheck_reason" ]] || pending_recheck_reason="ready launch kept failing without a fresh verdict"
           if bounded_retry_mark_exhausted "$ready_state_dir_path" "pending-ready-recheck" \
               "Pending-ready re-checks exhausted after $(bounded_retry_count "$ready_state_dir_path" "pending-ready-recheck") attempt(s) for PR #$PR: $pending_recheck_reason"; then
-            write_ready_attention_file "$ready_state_dir_path" \
-              "Pending-ready re-checks exhausted for PR #$PR: $pending_recheck_reason. Waiting for a new commit or operator."
+            escalate_operator_attention "$ready_state_dir_path" exhausted pending-ready-recheck \
+              "Pending-ready re-checks exhausted for PR #$PR: $pending_recheck_reason. Waiting for a new commit or operator." || true
             log "status" "⛔ $ISSUE → Pending-ready re-checks exhausted for PR #$PR; waiting for a new commit or operator"
           fi
           # HOK-3154: a challenge arm whose review-gate refusal is terminal is

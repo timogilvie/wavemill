@@ -72,9 +72,12 @@ tend merge → reap chain (`shared/lib/wavemill-*.sh`, `agent-adapters.sh`,
 `workflow-state*.ts`, `shared/hooks/`, `tools/tend.ts`, `tools/ready.ts`,
 `tests/journeys/`, `tests/fakes/`; the full list is the `journeys` path filter
 in `.github/workflows/ci.yml`):
-- The PR must pass the journey job (the required **Golden Journeys** CI check).
-  Run the journeys your change can affect with
-  `bash tests/journeys/run-journeys.sh <name>` (one bounded call each).
+- The PR must pass the journey job (the required **Golden Journeys** CI check,
+  which runs every journey). `bash tests/run-related.sh` already runs the
+  `happy-path` journey plus any journey file you changed. Run another journey
+  locally only when your change targets the scenario it covers, with
+  `bash tests/journeys/run-journeys.sh <name>` (one bounded call each). Never
+  run the whole journey suite locally.
 - A fix for an incident on that chain — or for a class a journey already
   covers (challenge pairs, Ready fail → remediate, dirty-tree
   `.coding-complete`, post-merge eval + reap, agent idle on its own background

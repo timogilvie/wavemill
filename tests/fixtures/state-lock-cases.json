@@ -1,0 +1,10 @@
+{
+  "provenance": "hand-authored contract cases for HOK-3403",
+  "cases": [
+  {"name":"alive","owner":{"pid":1,"processStartTime":"same","host":"local","acquiredAt":"x","purpose":"x"},"alive":true,"reclaimable":false},
+  {"name":"dead","owner":{"pid":999,"processStartTime":"old","host":"local","acquiredAt":"x","purpose":"x"},"alive":false,"reclaimable":true},
+  {"name":"pid-reused","owner":{"pid":1,"processStartTime":"old","host":"local","acquiredAt":"x","purpose":"x"},"alive":false,"reclaimable":true},
+  {"name":"foreign-host","owner":{"pid":999,"processStartTime":"old","host":"foreign","acquiredAt":"x","purpose":"x"},"alive":false,"reclaimable":false},
+  {"name":"empty-start-time","owner":{"pid":1,"processStartTime":"","host":"local","acquiredAt":"x","purpose":"x"},"alive":false,"reclaimable":false}
+  ]
+}

@@ -2,25 +2,81 @@
 # Fake coder for the HOK-3362 replay (sourced by tests/fakes/bin/claude).
 #
 # HOK-3329 attempt 2: a native coder ran 145 turns / 230 tool calls until the
-# loop's own 60-minute wall-clock budget aborted the in-flight request. The
-# launcher used to read the resulting "Request was aborted" as a provider
-# error. The first launch here emulates the native launcher's on-disk
-# contract for that stop (HOK-3362) — the budget_exhausted handoff, the
-# stage-timeout envelope, the failed stage result carrying budgetExhausted and
-# the error hook — and exits. The relaunch (stage-failure-coding bounded
-# retry) completes through the shared fake's normal coding contract.
+# loop's own wall-clock budget aborted the run. The launcher used to read the
+# resulting "Request was aborted" as a provider error. The first launch here
+# emulates the native launcher's on-disk contract for that stop (HOK-3362) —
+# the budget_exhausted handoff, the stage-timeout envelope, the failed stage
+# result carrying budgetExhausted and the error hook — and exits. The relaunch
+# (stage-failure-coding bounded retry) completes through the shared fake's
+# normal coding contract.
+#
+# HOK-3380: this is a turn-churn run (fast tools, dominant model time), not a
+# harness-fault one — the fact carries a `sessionStream` pointer to a
+# synthetic transcript instead of a stored `providerWaitMs`, and the
+# downstream fault class is derived from `nativeStageTimeSplit`, not
+# hardcoded from progress counts.
 if [[ -f "$FEATURE_DIR/budget-exhaustion-injected" ]]; then
   default_coding
   return
 fi
 touch "$FEATURE_DIR/budget-exhaustion-injected"
 
-fact="$(jq -cn '{
-  kind: "wall_clock", stopReason: "wall_clock_limit", limit: 3600000, used: 3600000,
-  progress: {turnsCompleted: 145, toolCallsExecuted: 230, wallClockMs: 3600000, mutationFailures: 0,
-             providerWaitMs: 1500000, providerErrorRetries: 0, interruptedRequest: true}
+# Build a synthetic transcript: 145 turns of 20s model generation each, with
+# 230 fast (50ms) tool calls spread across them (85 turns get 2 tools, 60
+# turns get 1) — harness tool time stays a sliver of total wall clock.
+session_dir="$FEATURE_DIR/native-sessions"
+mkdir -p "$session_dir"
+transcript_path="$session_dir/coding-${WAVEMILL_ISSUE}.jsonl"
+session_id="wavemill-coding-${WAVEMILL_ISSUE}"
+base_ms=1700000000000
+model_ms=20000
+tool_ms=50
+seq=0
+t="$base_ms"
+
+append_event() {
+  printf '%s\n' "$1" >> "$transcript_path"
+}
+
+: > "$transcript_path"
+append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$t" \
+  '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"session_started", model:"glm-5.3-flash", api:"openrouter", provider:"openrouter"}')"
+seq=$((seq + 1))
+
+for turn in $(seq 0 144); do
+  append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$t" --argjson idx "$turn" \
+    '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"turn_started", turnIndex:$idx}')"
+  seq=$((seq + 1))
+  t=$((t + model_ms))
+  if [[ "$turn" -lt 85 ]]; then tool_count=2; else tool_count=1; fi
+  append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$t" \
+    '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"assistant_message", model:"glm-5.3-flash", stopReason:"toolUse"}')"
+  seq=$((seq + 1))
+  for toolIndex in $(seq 1 "$tool_count"); do
+    tool_call_id="turn${turn}-tool${toolIndex}"
+    append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$t" --arg id "$tool_call_id" \
+      '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"tool_started", toolCallId:$id, toolName:"read_file", args:{}}')"
+    seq=$((seq + 1))
+    t=$((t + tool_ms))
+    append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$t" --arg id "$tool_call_id" \
+      '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"tool_result", toolCallId:$id, toolName:"read_file", isError:false, content:"ok", redacted:false}')"
+    seq=$((seq + 1))
+  done
+done
+window_from_ms="$base_ms"
+window_to_ms="$t"
+total_ms=$((window_to_ms - window_from_ms))
+append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$t" \
+  '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"session_ended", messageCount:290}')"
+
+fact="$(jq -cn --argjson wallClockMs "$total_ms" --arg path "$transcript_path" --argjson fromMs "$window_from_ms" --argjson toMs "$window_to_ms" '{
+  kind: "wall_clock", stopReason: "wall_clock_limit", limit: $wallClockMs, used: $wallClockMs,
+  progress: {turnsCompleted: 145, toolCallsExecuted: 230, wallClockMs: $wallClockMs, mutationFailures: 0,
+             providerErrorRetries: 0, interruptedRequest: true},
+  sessionStream: {path: $path, fromMs: $fromMs, toMs: $toMs}
 }')"
-detail="native-stage-timeout: native coding exhausted its wall-clock budget (3600s of 3600s) after 145 turn(s), 230 tool call(s), 0 mutation failure(s), 1500s provider wait"
+total_s=$(( (total_ms + 500) / 1000 ))
+detail="native-stage-timeout: native coding exhausted its wall-clock budget (${total_s}s of ${total_s}s); time split nativeStageTimeSplit/v1: 12s harness tools, 48m20s model, 0s provider wait, 0s unknown; 145 turn(s), 230 tool call(s), 0 mutation failure(s)"
 now="$(date -u +%FT%TZ)"
 
 jq -n --argjson fact "$fact" --arg now "$now" '{

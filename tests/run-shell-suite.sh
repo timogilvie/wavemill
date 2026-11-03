@@ -28,6 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # over every shell script, not a per-shard test, and runs once via `npm run lint`.
 TESTS=(
   state-mutate-task-record-validation.test.sh
+  state-lock.test.sh
   settled-attempt.test.sh
   run-related.test.sh
   run-typecheck.test.sh
@@ -90,6 +91,8 @@ TESTS=(
   ready-failure-blocks-pr-label.test.sh
   launch-ready-phase.test.sh
   ready-sync-github-head-lag.test.sh
+  operator-escalation.test.sh
+  ready-first-failure-no-attention.test.sh
   bounded-retry.test.sh
   check-install-paths.test.sh
   check-common-guards.test.sh

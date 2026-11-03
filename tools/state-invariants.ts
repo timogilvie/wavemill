@@ -177,12 +177,11 @@ function enumerateRetrySentinelsForTask(taskId: string, stateDir: string): Retry
 
 function waitingOnEvidenceForTask(stateDir: string): WaitingOnEvidence {
   if (!existsSync(stateDir)) return { hasWaitingOnMarker: false };
+  // HOK-3360: the .needs-attention-transient kind was removed.
   const needs = join(stateDir, '.needs-attention');
-  const needsTransient = join(stateDir, '.needs-attention-transient');
   const readyWait = join(stateDir, '.ready-waiting-on.json');
   const parts: string[] = [];
   if (existsSync(needs)) parts.push('.needs-attention');
-  if (existsSync(needsTransient)) parts.push('.needs-attention-transient');
   if (existsSync(readyWait)) parts.push('.ready-waiting-on.json');
   return { hasWaitingOnMarker: parts.length > 0, detail: parts.join(',') || undefined };
 }

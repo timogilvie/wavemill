@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
+  BUDGET_FAULT_SHARE_THRESHOLDS,
   PROVIDER_DOMINATED_WAIT_SHARE,
   STALLED_REQUEST_WAIT_SHARE,
   classifyArmFault,
@@ -9,7 +13,13 @@ import {
   parseAbortFailureKind,
   isInvalidChallengeAbort,
 } from './arm-failure-taxonomy.ts';
+import { canonicalFailureKind } from './failure-policy.ts';
 import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
+import { nativeStageTimeSplit } from './native-agent/stage-time-split.ts';
+import { parseTranscriptJsonl } from './native-agent/transcript.ts';
+import type { NativeStageTimeSplit } from './native-agent/stage-time-split.ts';
+
+const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), 'native-agent', 'fixtures', 'time-split');
 
 test('classifies the incident failure kinds into the intended fault classes', () => {
   assert.equal(classifyArmFault({
@@ -53,11 +63,18 @@ test('classifies provider and ambiguous failures conservatively', () => {
 test('classifies the HOK-2933 typed-handoff failure kinds', () => {
   // A completion-protocol violation is the model's fault: the provider
   // returned output, but the model never produced a valid completion artifact.
+  // HOK-3358 renamed the kind from `native-completion-protocol` so the alias
+  // chain classifies both spellings; `canonicalFailureKind` resolves the
+  // legacy name to the new one before policy lookup.
   assert.equal(classifyArmFault({
-    failureKind: 'native-completion-protocol',
+    failureKind: 'completion-protocol',
     detail: 'model emitted apply_patch as assistant text with zero structured tool calls',
   }), 'model-fault');
-  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'native-completion-protocol' })), true);
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'completion-protocol' })), true);
+  // Legacy spelling parses but the classifier's switch only names the new
+  // name — the alias chain (via `canonicalFailureKind`) carries the legacy
+  // kind to its new one in every policy site.
+  assert.equal(canonicalFailureKind('native-completion-protocol'), 'completion-protocol');
 
   // Unclassified failures must stay out of the quality corpus, even when the
   // detail contains strings the native-provider-error refinement would match.
@@ -68,7 +85,7 @@ test('classifies the HOK-2933 typed-handoff failure kinds', () => {
   }), 'unknown-fault');
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'native-unclassified' })), false);
 
-  assert.equal(parseAbortFailureKind('terminal_stage_failure:native-completion-protocol'), 'native-completion-protocol');
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:completion-protocol'), 'completion-protocol');
   assert.equal(parseAbortFailureKind('terminal_launch_failure:native-unclassified'), 'native-unclassified');
 });
 
@@ -193,6 +210,11 @@ test('classifies the HOK-3154 review-gate refusal kinds and prefixes', () => {
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'review-identity-mismatch' })), false);
   assert.equal(isInvalidChallengeAbort('invalid_challenge:review-identity-mismatch'), true);
   assert.equal(isInvalidChallengeAbort(' invalid_challenge:review-unattributed '), true);
+  // HOK-3358 normalizes every arm termination to `terminal_stage_failure:*`;
+  // `isInvalidChallengeAbort` classifies by kind, not prefix, so the
+  // normalized form must still void the pair (no winner).
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:review-identity-mismatch'), true);
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:review-unattributed'), true);
 });
 
 test('classifies the HOK-3147 ready-exhausted kinds and the invalid_challenge prefix', () => {
@@ -208,11 +230,14 @@ test('classifies the HOK-3147 ready-exhausted kinds and the invalid_challenge pr
   assert.equal(classifyArmFault({ failureKind: 'ready-transition-failed' }), 'harness-fault');
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'ready-transition-failed' })), false);
   assert.equal(isInvalidChallengeAbort('invalid_challenge:ready-transition-failed'), true);
+  // HOK-3358 normalized form must classify the same way.
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:ready-transition-failed'), true);
 
   // No typed cause (conflict / missing result): invalid challenge too.
   assert.equal(parseAbortFailureKind('invalid_challenge:ready-unattributed'), 'ready-unattributed');
   assert.equal(classifyArmFault({ failureKind: 'ready-unattributed' }), 'harness-fault');
   assert.equal(isInvalidChallengeAbort('  invalid_challenge:ready-unattributed '), true);
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:ready-unattributed'), true);
 
   assert.equal(isInvalidChallengeAbort(null), false);
   assert.equal(isInvalidChallengeAbort(undefined), false);
@@ -226,6 +251,7 @@ test('classifies the HOK-3156 route-drift kind as a harness fault', () => {
   assert.equal(classifyArmFault({ failureKind: 'route-drift' }), 'harness-fault');
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'route-drift' })), false);
   assert.equal(isInvalidChallengeAbort('invalid_challenge:route-drift'), true);
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:route-drift'), true);
 });
 
 test('classifies the HOK-3156 multiple-varied-roles preflight collapse as a harness fault', () => {
@@ -233,6 +259,7 @@ test('classifies the HOK-3156 multiple-varied-roles preflight collapse as a harn
   assert.equal(classifyArmFault({ failureKind: 'multiple-varied-roles' }), 'harness-fault');
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'multiple-varied-roles' })), false);
   assert.equal(isInvalidChallengeAbort('invalid_challenge:multiple-varied-roles'), true);
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:multiple-varied-roles'), true);
 });
 
 // ── HOK-3362: one budget-exhaustion fault rule ─────────────────────────────
@@ -257,60 +284,152 @@ function budgetFact(
   };
 }
 
-// protects: the HOK-3329 attempts deriving different classes from the same kind of evidence
-test('HOK-3329: all three attempts derive the same class from progress evidence', () => {
+function timeSplit(overrides: Partial<NativeStageTimeSplit> & { totalMs: number }): NativeStageTimeSplit {
+  return {
+    version: 'nativeStageTimeSplit/v1',
+    modelMs: 0,
+    providerWaitMs: 0,
+    harnessToolMs: 0,
+    unknownMs: 0,
+    toolCalls: { paired: 0, unpaired: 0 },
+    ...overrides,
+  };
+}
+
+// protects: HOK-3380 — a wall-clock budget fact with no stream pointer being charged to the model by default
+test('HOK-3329: turn-budget attempts still derive model-fault from progress; a wall-clock attempt with no split is now unknown', () => {
   const attempt1 = budgetFact('turn', { turnsCompleted: 200, toolCallsExecuted: 88, wallClockMs: 2_160_000, mutationFailures: 44 });
-  const attempt2 = budgetFact('wall_clock', {
+  const attempt3 = budgetFact('turn', { turnsCompleted: 200, toolCallsExecuted: 150, wallClockMs: 2_880_000 });
+  for (const fact of [attempt1, attempt3]) {
+    assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact }), 'model-fault');
+  }
+
+  // Deliberate behaviour change (HOK-3380, rule 5): a wall-clock stop with no
+  // session-stream pointer can no longer tell harness tool time apart from
+  // model time, so it is unknown rather than defaulting to model-fault.
+  const attempt2NoSplit = budgetFact('wall_clock', {
     turnsCompleted: 145,
     toolCallsExecuted: 230,
     wallClockMs: 3_600_000,
-    providerWaitMs: 1_500_000,
     providerErrorRetries: 0,
     interruptedRequest: true,
   });
-  const attempt3 = budgetFact('turn', { turnsCompleted: 200, toolCallsExecuted: 150, wallClockMs: 2_880_000 });
-  const classes = [attempt1, attempt2, attempt3].map((fact) =>
-    classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact }));
-  assert.deepEqual(classes, ['model-fault', 'model-fault', 'model-fault']);
+  assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: attempt2NoSplit }), 'unknown-fault');
+
+  // The same fact, resolved against a harness-dominated split (the HOK-3374
+  // shape), correctly becomes harness-fault instead of model-fault.
+  const harnessDominated = timeSplit({ totalMs: 3_600_000, harnessToolMs: 3_000_000, modelMs: 600_000 });
+  assert.equal(deriveBudgetExhaustionFaultClass(attempt2NoSplit, harnessDominated), 'harness-fault');
 });
 
-// protects: the derivation table drifting (provider wait vs progress rules)
+// protects: the derivation table drifting (provider-wait, harness-tool and progress rules)
 test('deriveBudgetExhaustionFaultClass follows the documented table', () => {
-  const rows: Array<[string, BudgetExhaustedFact | undefined, string]> = [
+  const rows: Array<[string, BudgetExhaustedFact | undefined, NativeStageTimeSplit | undefined, string]> = [
+    ['rule 1: no fact (historical row)', undefined, undefined, 'unknown-fault'],
     [
-      'rule 1: provider errors and most of the budget spent waiting',
-      budgetFact('turn', { turnsCompleted: 30, toolCallsExecuted: 40, wallClockMs: 1000, providerWaitMs: 600, providerErrorRetries: 2 }),
+      'rule 2: provider errors and most of the split spent in provider wait (not wall-clock-only)',
+      budgetFact('turn', { turnsCompleted: 30, toolCallsExecuted: 40, providerErrorRetries: 2 }),
+      timeSplit({ totalMs: 1000, providerWaitMs: 600, modelMs: 400 }),
       'provider-fault',
     ],
     [
-      'rule 1 needs errors: a slow but healthy provider is the model not finishing',
-      budgetFact('turn', { turnsCompleted: 30, toolCallsExecuted: 40, wallClockMs: 1000, providerWaitMs: 950, providerErrorRetries: 0 }),
+      'rule 2 needs share, not just retries: a mostly-model split is the model not finishing',
+      budgetFact('turn', { turnsCompleted: 30, toolCallsExecuted: 40, providerErrorRetries: 2 }),
+      timeSplit({ totalMs: 1000, providerWaitMs: 100, modelMs: 900 }),
       'model-fault',
     ],
     [
-      'rule 2: wall clock stuck on the first request',
-      budgetFact('wall_clock', { turnsCompleted: 0, toolCallsExecuted: 0, wallClockMs: 1000, providerWaitMs: 990 }),
+      'rule 3: wall clock stuck on the first request',
+      budgetFact('wall_clock', { turnsCompleted: 0, toolCallsExecuted: 0 }),
+      timeSplit({ totalMs: 1000, providerWaitMs: 990, modelMs: 10 }),
       'provider-fault',
     ],
     [
-      'rule 2 is wall-clock only',
-      budgetFact('token', { turnsCompleted: 1, toolCallsExecuted: 0, wallClockMs: 1000, providerWaitMs: 990 }),
+      'rule 3 is wall-clock only',
+      budgetFact('token', { turnsCompleted: 1, toolCallsExecuted: 0 }),
+      timeSplit({ totalMs: 1000, providerWaitMs: 990, modelMs: 10 }),
       'unknown-fault',
     ],
     [
-      'rule 3: progress without provider trouble',
-      budgetFact('tool_call', { turnsCompleted: 12, toolCallsExecuted: 120, wallClockMs: 1000, providerWaitMs: 100 }),
+      'rule 4: wall-clock stop dominated by harness tool time (HOK-3374)',
+      budgetFact('wall_clock', { turnsCompleted: 92, toolCallsExecuted: 116, providerErrorRetries: 0 }),
+      timeSplit({ totalMs: 3_600_000, harnessToolMs: 3_167_438, modelMs: 431_537, unknownMs: 1025 }),
+      'harness-fault',
+    ],
+    [
+      'rule 5: wall clock with no split at all',
+      budgetFact('wall_clock', { turnsCompleted: 50, toolCallsExecuted: 60 }),
+      undefined,
+      'unknown-fault',
+    ],
+    [
+      'rule 5: wall clock whose split is mostly unknown',
+      budgetFact('wall_clock', { turnsCompleted: 50, toolCallsExecuted: 60 }),
+      timeSplit({ totalMs: 1000, harnessToolMs: 100, modelMs: 100, unknownMs: 800 }),
+      'unknown-fault',
+    ],
+    [
+      'rule 6: progress without provider or harness trouble (non-wall-clock, no split)',
+      budgetFact('tool_call', { turnsCompleted: 12, toolCallsExecuted: 120 }),
+      undefined,
       'model-fault',
     ],
-    ['rule 4: no progress, no provider evidence', budgetFact('cost', { turnsCompleted: 0, toolCallsExecuted: 0 }), 'unknown-fault'],
-    ['rule 4: no fact (historical row)', undefined, 'unknown-fault'],
+    [
+      'rule 6: wall-clock turn-churn with fast tools (model-dominated split) still model-fault',
+      budgetFact('wall_clock', { turnsCompleted: 200, toolCallsExecuted: 200 }),
+      timeSplit({ totalMs: 1000, modelMs: 900, harnessToolMs: 50, unknownMs: 50 }),
+      'model-fault',
+    ],
+    [
+      'rule 7: no progress, no provider or harness evidence',
+      budgetFact('cost', { turnsCompleted: 0, toolCallsExecuted: 0 }),
+      undefined,
+      'unknown-fault',
+    ],
   ];
-  for (const [name, fact, expected] of rows) {
-    assert.equal(deriveBudgetExhaustionFaultClass(fact), expected, name);
-    assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact }), expected, name);
+  for (const [name, fact, split, expected] of rows) {
+    assert.equal(deriveBudgetExhaustionFaultClass(fact, split), expected, name);
   }
+  assert.equal(BUDGET_FAULT_SHARE_THRESHOLDS.providerDominatedWait, 0.5);
+  assert.equal(BUDGET_FAULT_SHARE_THRESHOLDS.stalledRequestWait, 0.9);
+  assert.equal(BUDGET_FAULT_SHARE_THRESHOLDS.harnessDominatedTool, 0.5);
+  assert.equal(BUDGET_FAULT_SHARE_THRESHOLDS.unknownDominated, 0.5);
   assert.equal(PROVIDER_DOMINATED_WAIT_SHARE, 0.5);
   assert.equal(STALLED_REQUEST_WAIT_SHARE, 0.9);
+});
+
+// protects: classifyArmFault threading the split through to the one derivation
+test('classifyArmFault passes the split through to deriveBudgetExhaustionFaultClass', () => {
+  const fact = budgetFact('wall_clock', { turnsCompleted: 92, toolCallsExecuted: 116, providerErrorRetries: 0 });
+  const split = timeSplit({ totalMs: 3_600_000, harnessToolMs: 3_167_438, modelMs: 431_537, unknownMs: 1025 });
+  assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact, timeSplit: split }), 'harness-fault');
+  assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact }), 'unknown-fault');
+});
+
+// protects: HOK-3374 — two lost coding attempts whose ~51 minutes of `run_tests` on an
+// overloaded host were charged to the model instead of the harness
+test('HOK-3374 replay: the attempt-2 handoff derives harness-fault from the real transcript', () => {
+  const handoff = JSON.parse(
+    readFileSync(join(fixturesDir, 'hok-3374-attempt-2.coding-failure-handoff.json'), 'utf8'),
+  ) as { stopReason: string; mutationFailures: number };
+  const events = parseTranscriptJsonl(readFileSync(join(fixturesDir, 'hok-3374-attempt-2.transcript.jsonl'), 'utf8'));
+  const started = events.find((e) => e.type === 'session_started')!;
+  const ended = [...events].reverse().find((e) => e.type === 'session_ended')!;
+  const window = { fromMs: started.timestamp, toMs: ended.timestamp };
+  const split = nativeStageTimeSplit(events, window);
+
+  const fact = budgetFact('wall_clock', {
+    turnsCompleted: 92,
+    toolCallsExecuted: 116,
+    mutationFailures: handoff.mutationFailures,
+  });
+  assert.equal(handoff.stopReason, 'wall_clock_limit');
+  assert.ok(split.harnessToolMs >= 50 * 60_000 && split.harnessToolMs <= 54 * 60_000, `harnessToolMs=${split.harnessToolMs}`);
+  assert.equal(
+    classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact, timeSplit: split }),
+    'harness-fault',
+  );
+  assert.equal(deriveBudgetExhaustionFaultClass(fact, split), 'harness-fault');
 });
 
 // protects: historical spellings bypassing the one derivation

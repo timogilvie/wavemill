@@ -3,12 +3,13 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { reconcileIncidentCycle } from './incident-reconcile-cycle.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentRecord } from './wavemill-incident-model.ts';
+import { reclaimLegacyStateLock } from './state-lock.ts';
 
 function makeSandbox(): { dir: string; incidentsDir: string } {
   const dir = mkdtempSync(join(tmpdir(), 'reconcile-cycle-test-'));
@@ -72,6 +73,26 @@ test('absence sweep resolves after 5 empty cycles', async () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('HOK-3403 recorded stale incident index lock is reclaimed and absence resolves', async () => {
+  const fixture = JSON.parse(readFileSync(join(import.meta.dirname, '..', '..', 'tests', 'fixtures', 'incident-replay', 'real', 'state-lock', '2026-11-02-stale-incident-index-lock.json'), 'utf8')) as { rootCauseClass: string; absentCyclesToResolve: number };
+  const { dir, incidentsDir } = makeSandbox();
+  try {
+    const store = new IncidentStore(incidentsDir);
+    await reconcileIncidentCycle({ store, candidates: [draft('hok-3403', { rootCauseClass: fixture.rootCauseClass })], cycleComplete: true, repoDir: dir });
+    const lockPath = join(incidentsDir, 'index.json.lock');
+    writeFileSync(lockPath, ''); // recorded 0-byte pre-migration lock
+    assert.equal(reclaimLegacyStateLock(lockPath), true, 'startup preflight clears recorded ownerless lock');
+    const first = await reconcileIncidentCycle({ store, candidates: [], cycleComplete: true, repoDir: dir });
+    assert.deepEqual(first.errors, [], 'next cycle must persist after reclaim');
+    assert.equal((await store.getIncidents())[0].metadata.missedCycles, 1);
+    for (let i = 1; i < fixture.absentCyclesToResolve; i += 1) {
+      const result = await reconcileIncidentCycle({ store, candidates: [], cycleComplete: true, repoDir: dir });
+      assert.deepEqual(result.errors, []);
+    }
+    assert.equal((await store.getIncidents()).length, 0, 'stale record auto-resolves');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('job-backed incident is not resolved by absence', async () => {

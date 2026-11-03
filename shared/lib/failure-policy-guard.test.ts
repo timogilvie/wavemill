@@ -120,3 +120,79 @@ describe('failure-policy guard — one budget-exhaustion outcome (HOK-3362)', ()
     assert.ok(FAILURE_POLICY_GUARD.invariantPaths.includes('shared/lib/native-agent/budget-exhaustion.ts'));
   });
 });
+
+describe('failure-policy guard — one native stage time share (HOK-3380)', () => {
+  // protects: a second site re-deriving "whose time was this" with its own share arithmetic
+  it('flags a private time-share division or accumulation', () => {
+    assert.deepEqual(patternsOf('a.ts', 'const share = providerWaitMs / totalMs;\n'), ['private-stage-time-share']);
+    assert.deepEqual(patternsOf('a.ts', 'const share = harnessToolMs / split.totalMs;\n'), ['private-stage-time-share']);
+    assert.deepEqual(patternsOf('a.ts', 'const share = modelMs / wallClockMs;\n'), ['private-stage-time-share']);
+    assert.deepEqual(patternsOf('a.ts', 'const toolShare = toolDurationMs / fact.progress.wallClockMs;\n'), ['private-stage-time-share']);
+    assert.deepEqual(patternsOf('a.ts', 'providerWaitMs += Math.max(0, Date.now() - start);\n'), ['private-stage-time-share']);
+  });
+
+  it('leaves the split derivation and unrelated division alone', () => {
+    const source = [
+      'const split = nativeStageTimeSplit(events, window);',
+      'const totalMs = window.toMs - window.fromMs;',
+      'const average = totalCostUsd / turnsCompleted;',
+      '',
+    ].join('\n');
+    assert.deepEqual(patternsOf('a.ts', source), []);
+  });
+
+  // protects: a second site re-pairing tool_started/tool_result by subtracting raw timestamps
+  it('flags private tool-event timestamp arithmetic', () => {
+    assert.deepEqual(patternsOf('a.ts', 'const duration = toolResult.timestamp - toolStarted.timestamp;\n'), ['private-tool-duration']);
+    assert.deepEqual(patternsOf('a.ts', 'const ms = event.timestamp - toolStarted.timestamp;\n'), ['private-tool-duration']);
+  });
+
+  it('leaves unrelated elapsed-time arithmetic alone', () => {
+    assert.deepEqual(patternsOf('a.ts', 'const elapsedMs = Date.now() - renderStartedAt;\n'), []);
+  });
+
+  // protects: the invariant module being scanned by its own guard
+  it('treats stage-time-split.ts as invariant source', () => {
+    assert.ok(FAILURE_POLICY_GUARD.invariantPaths.includes('shared/lib/native-agent/stage-time-split.ts'));
+  });
+});
+
+describe('failure-policy guard — one escalation decision (HOK-3360)', () => {
+  // protects: a raw .needs-attention writer outside the escalation step
+  it('flags write_ready_attention_file / writeReadyAttention / _operator_attention_write', () => {
+    assert.deepEqual(patternsOf('a.sh', 'write_ready_attention_file "$dir" "boom"\n'), ['attention-write-outside-escalation']);
+    assert.deepEqual(patternsOf('a.ts', 'await writeReadyAttention(snapshot, detail);\n'), ['attention-write-outside-escalation']);
+    assert.deepEqual(patternsOf('a.sh', '_operator_attention_write "$dir" "boom"\n'), ['attention-write-outside-escalation']);
+  });
+
+  // protects: a raw marker_write of .needs-attention bypassing the escalation step
+  it('flags a raw marker_write / writeMarker of .needs-attention', () => {
+    assert.deepEqual(patternsOf('a.sh', 'marker_write "$state_dir/.needs-attention" --kind ready-attention --head "$h"\n'), ['attention-write-outside-escalation']);
+    assert.deepEqual(patternsOf('a.ts', "writeMarker({ path: '.needs-attention', kind: 'ready-attention' }, { headSha });\n"), ['attention-write-outside-escalation']);
+  });
+
+  // protects: the escalation step itself and readers/clearers of the marker are allowed
+  it('leaves escalate_operator_attention and marker reads/clears alone', () => {
+    const clean = [
+      'escalate_operator_attention "$state_dir" exhausted stage-failure-ready "$reason"',
+      'marker_clear "$state_dir/.needs-attention"',
+      'if [[ -f "$state_dir/.needs-attention" ]]; then :; fi',
+      '',
+    ].join('\n');
+    assert.deepEqual(patternsOf('a.sh', clean), []);
+    assert.deepEqual(patternsOf('a.ts', "escalateOperatorAttention({ stateDir, headSha, basis, message });\nclearMarker({ path: join(d, '.needs-attention'), kind: 'ready-attention' });\n"), []);
+  });
+
+  // protects: the retired transient attention kind cannot return
+  it('flags the retired .needs-attention-transient kind', () => {
+    assert.deepEqual(patternsOf('a.sh', 'marker_write "$dir/.needs-attention-transient" --kind ready-attention-transient\n').sort(),
+      ['attention-write-outside-escalation', 'retired-transient-attention'].sort());
+    assert.deepEqual(patternsOf('a.ts', "const p = join(dir, '.needs-attention-transient');\n"), ['retired-transient-attention']);
+  });
+
+  // protects: the escalation modules are the invariant source, never scanned
+  it('treats operator-escalation.{sh,ts} as invariant source', () => {
+    assert.ok(FAILURE_POLICY_GUARD.invariantPaths.includes('shared/lib/operator-escalation.sh'));
+    assert.ok(FAILURE_POLICY_GUARD.invariantPaths.includes('shared/lib/operator-escalation.ts'));
+  });
+});

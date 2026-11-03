@@ -18,6 +18,7 @@ import {
   finalProviderErrorMessage,
   isBudgetStopReason,
 } from './budget-exhaustion.ts';
+import { resolveNativeStageTimeSplit } from './stage-time-split.ts';
 import {
   buildBudgetExhaustionEnvelope,
   deleteStageFailureEnvelope,
@@ -866,14 +867,17 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
     if (stopFailureReason) {
       // Stop reason before error text (HOK-3362): a budget stop records the one
       // budget fact; only an `error` stop is read for a provider failure.
-      const budgetExhausted = budgetExhaustionFromLoop(result, toLoopBudget(planningLimits));
+      const budgetExhausted = budgetExhaustionFromLoop(result, toLoopBudget(planningLimits), { transcriptPath });
       const providerError = result.stopReason === 'error'
         ? finalProviderErrorMessage(result)
         : '';
       const providerFailureReason = providerError
         ? `${providerErrorPrefix(result, providerError)}: ${providerError}`
         : '';
-      const budgetDescription = budgetExhausted ? describeBudgetExhaustion('planning', budgetExhausted) : '';
+      const planningTimeSplit = budgetExhausted
+        ? resolveNativeStageTimeSplit(budgetExhausted, { featureDir, repoDir: options.repoDir })
+        : null;
+      const budgetDescription = budgetExhausted ? describeBudgetExhaustion('planning', budgetExhausted, planningTimeSplit) : '';
       if (budgetExhausted) {
         try {
           writeStageFailureEnvelope(featureDir, buildBudgetExhaustionEnvelope({
@@ -884,6 +888,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
             requestedModel: requestedModelName,
             agent: `native-${String(model.provider)}`,
             transcriptPath,
+            timeSplit: planningTimeSplit,
             payloadCaptureDir: snapshotPayloadsForFailure(
               featureDir,
               'planning',

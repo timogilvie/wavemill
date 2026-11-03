@@ -96,7 +96,7 @@ mkdir -p "$repo/.wavemill"
 STATE_FILE="$repo/.wavemill/workflow-state.json"
 REPO_DIR="$repo"
 fixture_workflow_state "$STATE_FILE" HOK-5 slug=five branch=task/five worktree="$repo/wt/five" pr=40 status=aborted phase=aborted \
-  challengeAborted=operator_abort runId="HOK-5:old:1" lifecycle:='{"schemaVersion":1,"workflowOutcome":"aborted","resourceDisposition":"reaping"}'
+  challengeAborted=terminal_stage_failure:cancelled runId="HOK-5:old:1" lifecycle:='{"schemaVersion":1,"workflowOutcome":"aborted","resourceDisposition":"reaping"}'
 WAVEMILL_RUN_EPOCH="new-epoch" SAVE_TASK_STATE_LAUNCH=1 save_task_state HOK-5 five task/five "$repo/wt/five" "" "" claude HOK-5 2>/dev/null
 row="$(jq -c '.tasks["HOK-5"]' "$STATE_FILE")"
 assert_eq "active|||active" "$(jq -r '[.status, .pr, (.challengeAborted // ""), .lifecycle.workflowOutcome] | join("|")' <<<"$row")" "the relaunch is a fresh active row"

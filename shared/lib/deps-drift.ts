@@ -1,16 +1,25 @@
 /**
- * HOK-3254 — stale node_modules detector (TS twin of deps-drift.sh).
+ * HOK-3254 / HOK-3315 — the one semantic dependency-install verdict.
  *
- * One stateless primitive consumed by the observer repo detector. The shell
- * twin covers the worktree-startup and monitor-tick hot paths; this twin
- * matches its taxonomy so the two agree on verdicts.
+ * "Is node_modules what the lockfile says should be installed on this
+ * platform?" Compares npm's hidden `node_modules/.package-lock.json`
+ * (written by every `npm ci` / `npm install`) against `package-lock.json`,
+ * entry by full install path, honouring npm's own platform/optional/link
+ * semantics so a foreign-OS optional binary (e.g. `@esbuild/linux-x64` on
+ * darwin) or a representation-only byte difference (formatting, the empty
+ * root-package key) is never reported as drift. Byte-identity between the
+ * two lockfiles is never consulted for the verdict — only
+ * {@link depsLockfileFingerprint} uses it, as a retry/cache key.
  *
  * Verdicts:
- *   `ok`       — lockfile matches hidden lockfile, or no lockfile at all.
- *   `drift`    — package-lock.json ≠ node_modules/.package-lock.json (or the
- *                direct-dep fallback detected a mismatch).
- *   `unknown`  — pnpm / yarn, or a hash tool / parse error we can't disprove.
- *                Never degraded to `ok`.
+ *   `ok`       — every package that should be installed on this platform is,
+ *                at the version the lockfile expects (or no lockfile at all).
+ *   `drift`    — a real mismatch: a required package missing, at the wrong
+ *                version, or an install present that the lockfile never
+ *                declared.
+ *   `unknown`  — pnpm / yarn, or a lockfile we can't parse. Never degraded
+ *                to `ok`, so callers never blind-reinstall on unreadable
+ *                metadata.
  */
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -19,113 +28,51 @@ import { join } from 'node:path';
 export type DepsDriftStatus = 'ok' | 'drift' | 'unknown';
 
 export interface DepsDriftPackage {
+  /** Full install path, e.g. `node_modules/foo/node_modules/bar`. */
+  path: string;
+  /** Package name without the `node_modules/` prefix. */
   name: string;
   lockVersion: string | null;
   installedVersion: string | null;
+  reason: 'missing' | 'version-mismatch' | 'unexpected-extra';
 }
 
 export interface DepsDriftResult {
   status: DepsDriftStatus;
   reason: string;
   packages: DepsDriftPackage[];
+  platform: NodeJS.Platform;
+  arch: string;
 }
 
-type NpmLockfilePackages = Record<string, { version?: string } | undefined>;
+export interface DepsDriftOptions {
+  /** Explicit input, not read from an envvar — tests inject fixed values. */
+  platform?: NodeJS.Platform;
+  arch?: string;
+}
+
+interface LockPackageEntry {
+  version?: string;
+  os?: string[];
+  cpu?: string[];
+  optional?: boolean;
+  link?: boolean;
+}
+type NpmLockfilePackages = Record<string, LockPackageEntry | undefined>;
 type NpmLockfileDependencies = Record<string, { version?: string } | undefined>;
 interface NpmLockfile {
   packages?: NpmLockfilePackages;
   dependencies?: NpmLockfileDependencies;
 }
 
-function readJsonFile<T = unknown>(path: string): T | null {
+type ReadResult<T> = { ok: true; value: T } | { ok: false; exists: boolean };
+
+function readJson<T = unknown>(path: string): ReadResult<T> {
+  if (!existsSync(path)) return { ok: false, exists: false };
   try {
-    const raw = readFileSync(path, 'utf8');
-    return JSON.parse(raw) as T;
+    return { ok: true, value: JSON.parse(readFileSync(path, 'utf8')) as T };
   } catch {
-    return null;
-  }
-}
-
-function versionMap(lockfile: NpmLockfile | null): Record<string, string> {
-  if (!lockfile) return {};
-  const out: Record<string, string> = {};
-  if (lockfile.packages && typeof lockfile.packages === 'object') {
-    for (const [key, entry] of Object.entries(lockfile.packages)) {
-      if (!entry || typeof entry.version !== 'string') continue;
-      if (!key) continue; // the root package has an empty key
-      const name = key.startsWith('node_modules/') ? key.slice('node_modules/'.length) : key;
-      // Skip nested dependency paths (contain another `node_modules/`) for
-      // the direct-dep diff — a nested entry is noise against this check.
-      if (name.includes('/node_modules/')) continue;
-      out[name] = entry.version;
-    }
-    return out;
-  }
-  if (lockfile.dependencies && typeof lockfile.dependencies === 'object') {
-    for (const [name, entry] of Object.entries(lockfile.dependencies)) {
-      if (!entry || typeof entry.version !== 'string') continue;
-      out[name] = entry.version;
-    }
-  }
-  return out;
-}
-
-function diffLockfiles(lock: NpmLockfile, hidden: NpmLockfile): DepsDriftPackage[] {
-  const lockMap = versionMap(lock);
-  const hiddenMap = versionMap(hidden);
-  const names = new Set<string>([...Object.keys(lockMap), ...Object.keys(hiddenMap)]);
-  const drifted: DepsDriftPackage[] = [];
-  for (const name of names) {
-    const lockVersion = lockMap[name] ?? null;
-    const installedVersion = hiddenMap[name] ?? null;
-    if (lockVersion !== installedVersion) {
-      drifted.push({ name, lockVersion, installedVersion });
-    }
-  }
-  drifted.sort((a, b) => a.name.localeCompare(b.name));
-  return drifted;
-}
-
-/**
- * Direct-dependency fallback: compare each top-level dep declared in
- * `package.json` against the installed `node_modules/<name>/package.json`
- * version. Lockfile is the "expected" source when it carries a resolved
- * version; otherwise fall back to the package.json range string.
- */
-function diffDirectDeps(dir: string, lockfile: NpmLockfile | null): DepsDriftPackage[] {
-  const pkg = readJsonFile<{
-    dependencies?: Record<string, string>;
-    devDependencies?: Record<string, string>;
-  }>(join(dir, 'package.json'));
-  if (!pkg) return [];
-  const lockMap = versionMap(lockfile);
-  const direct = new Set<string>([
-    ...Object.keys(pkg.dependencies ?? {}),
-    ...Object.keys(pkg.devDependencies ?? {}),
-  ]);
-  const drifted: DepsDriftPackage[] = [];
-  for (const name of direct) {
-    const expected =
-      lockMap[name] ?? pkg.dependencies?.[name] ?? pkg.devDependencies?.[name] ?? null;
-    if (!expected) continue;
-    const installedPkg = readJsonFile<{ version?: string }>(
-      join(dir, 'node_modules', name, 'package.json'),
-    );
-    const installed = typeof installedPkg?.version === 'string' ? installedPkg.version : null;
-    if (installed !== expected) {
-      drifted.push({ name, lockVersion: expected, installedVersion: installed });
-    }
-  }
-  drifted.sort((a, b) => a.name.localeCompare(b.name));
-  return drifted;
-}
-
-function hashFile(path: string): string | null {
-  try {
-    const buf = readFileSync(path);
-    return createHash('sha256').update(buf).digest('hex');
-  } catch {
-    return null;
+    return { ok: false, exists: true };
   }
 }
 
@@ -137,52 +84,203 @@ function directoryExists(path: string): boolean {
   }
 }
 
-export function checkDepsDrift(dir: string): DepsDriftResult {
-  if (!directoryExists(dir)) {
-    return { status: 'ok', reason: 'no-dir', packages: [] };
+/**
+ * npm's `os`/`cpu` field semantics: an empty/absent list means unrestricted.
+ * A list of negated entries (`!win32`) excludes only those; a list with at
+ * least one non-negated entry restricts to that allow-list (negated entries
+ * in the same list still exclude).
+ */
+function platformValueApplies(values: string[] | undefined, current: string): boolean {
+  if (!values || values.length === 0) return true;
+  const negated = values.filter((v) => v.startsWith('!'));
+  const positive = values.filter((v) => !v.startsWith('!'));
+  if (negated.some((v) => v.slice(1) === current)) return false;
+  if (positive.length > 0) return positive.includes(current);
+  return true;
+}
+
+function appliesToPlatform(entry: LockPackageEntry, platform: string, arch: string): boolean {
+  return platformValueApplies(entry.os, platform) && platformValueApplies(entry.cpu, arch);
+}
+
+function packageNameFromPath(key: string): string {
+  const idx = key.lastIndexOf('node_modules/');
+  return idx === -1 ? key : key.slice(idx + 'node_modules/'.length);
+}
+
+/**
+ * Semantic diff between the project lockfile and the hidden install-state
+ * lockfile, entry by full install path. Platform-omitted and optional-absent
+ * entries are skipped entirely; workspace links are checked for existence
+ * only (version compare does not apply to a link).
+ */
+function diffSemanticLockfiles(
+  dir: string,
+  lock: NpmLockfile,
+  hidden: NpmLockfile,
+  platform: string,
+  arch: string,
+): DepsDriftPackage[] {
+  const lockPackages = lock.packages ?? {};
+  const hiddenPackages = hidden.packages ?? {};
+  const drifted: DepsDriftPackage[] = [];
+
+  for (const [key, entry] of Object.entries(lockPackages)) {
+    if (!key || !entry || !key.startsWith('node_modules/')) continue; // '' is the root package
+    if (!appliesToPlatform(entry, platform, arch)) continue; // correctly omitted on this platform
+
+    const name = packageNameFromPath(key);
+
+    if (entry.link) {
+      // A workspace link's target existing on disk is enough; its version
+      // (there isn't one in the usual sense) is never drift.
+      if (!existsSync(join(dir, key))) {
+        drifted.push({ path: key, name, lockVersion: null, installedVersion: null, reason: 'missing' });
+      }
+      continue;
+    }
+
+    const hiddenEntry = hiddenPackages[key];
+    if (!hiddenEntry) {
+      if (entry.optional) continue; // correctly omitted
+      drifted.push({ path: key, name, lockVersion: entry.version ?? null, installedVersion: null, reason: 'missing' });
+      continue;
+    }
+
+    const lockVersion = entry.version ?? null;
+    const installedVersion = hiddenEntry.version ?? null;
+    if (lockVersion !== installedVersion) {
+      drifted.push({ path: key, name, lockVersion, installedVersion, reason: 'version-mismatch' });
+    }
   }
-  if (existsSync(join(dir, 'pnpm-lock.yaml'))) {
-    return { status: 'unknown', reason: 'pnpm-not-supported', packages: [] };
+
+  // Hidden has strictly more than the lockfile declares: an install the
+  // lockfile never named at all (not merely platform/optional-omitted).
+  const declaredKeys = new Set(
+    Object.keys(lockPackages).filter((key) => key && key.startsWith('node_modules/')),
+  );
+  for (const [key, hiddenEntry] of Object.entries(hiddenPackages)) {
+    if (!key || !key.startsWith('node_modules/') || declaredKeys.has(key)) continue;
+    drifted.push({
+      path: key,
+      name: packageNameFromPath(key),
+      lockVersion: null,
+      installedVersion: hiddenEntry?.version ?? null,
+      reason: 'unexpected-extra',
+    });
   }
-  if (existsSync(join(dir, 'yarn.lock'))) {
-    return { status: 'unknown', reason: 'yarn-not-supported', packages: [] };
+
+  drifted.sort((a, b) => a.path.localeCompare(b.path));
+  return drifted;
+}
+
+/**
+ * Fallback when `node_modules/.package-lock.json` is missing (pre-npm-7
+ * installs): compare each direct dependency declared in `package.json`
+ * against the installed `node_modules/<name>/package.json` version.
+ * Platform/optional omissions are honoured from the lockfile's own metadata
+ * for that top-level entry when present.
+ */
+function diffDirectDeps(
+  dir: string,
+  lock: NpmLockfile,
+  platform: string,
+  arch: string,
+): DepsDriftPackage[] {
+  const pkgRead = readJson<{
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+  }>(join(dir, 'package.json'));
+  if (!pkgRead.ok) return [];
+  const pkg = pkgRead.value;
+  const lockPackages = lock.packages ?? {};
+  const direct = new Set<string>([
+    ...Object.keys(pkg.dependencies ?? {}),
+    ...Object.keys(pkg.devDependencies ?? {}),
+    ...Object.keys(pkg.optionalDependencies ?? {}),
+  ]);
+
+  const drifted: DepsDriftPackage[] = [];
+  for (const name of direct) {
+    const key = `node_modules/${name}`;
+    const lockEntry = lockPackages[key];
+    if (lockEntry && !appliesToPlatform(lockEntry, platform, arch)) continue; // correctly omitted
+
+    const isOptional = Boolean(lockEntry?.optional) || Boolean(pkg.optionalDependencies?.[name]);
+    const expected = lockEntry?.version ?? lock.dependencies?.[name]?.version ?? null;
+
+    const installedRead = readJson<{ version?: string }>(join(dir, 'node_modules', name, 'package.json'));
+    const installedVersion = installedRead.ok && typeof installedRead.value.version === 'string'
+      ? installedRead.value.version
+      : null;
+
+    if (installedVersion === null) {
+      if (isOptional) continue; // correctly omitted
+      drifted.push({ path: key, name, lockVersion: expected, installedVersion: null, reason: 'missing' });
+      continue;
+    }
+    if (expected !== null && installedVersion !== expected) {
+      drifted.push({ path: key, name, lockVersion: expected, installedVersion, reason: 'version-mismatch' });
+    }
   }
+  drifted.sort((a, b) => a.name.localeCompare(b.name));
+  return drifted;
+}
+
+export function checkDepsDrift(dir: string, opts: DepsDriftOptions = {}): DepsDriftResult {
+  const platform = opts.platform ?? process.platform;
+  const arch = opts.arch ?? process.arch;
+  const empty = (status: DepsDriftStatus, reason: string): DepsDriftResult => (
+    { status, reason, packages: [], platform, arch }
+  );
+
+  if (!directoryExists(dir)) return empty('ok', 'no-dir');
+  if (existsSync(join(dir, 'pnpm-lock.yaml'))) return empty('unknown', 'pnpm-not-supported');
+  if (existsSync(join(dir, 'yarn.lock'))) return empty('unknown', 'yarn-not-supported');
+
   const lockPath = join(dir, 'package-lock.json');
-  if (!existsSync(lockPath)) {
-    return { status: 'ok', reason: 'no-lockfile', packages: [] };
-  }
+  if (!existsSync(lockPath)) return empty('ok', 'no-lockfile');
+
+  const lockRead = readJson<NpmLockfile>(lockPath);
+  if (!lockRead.ok) return empty('unknown', 'lockfile-parse-error');
+  const lock = lockRead.value;
+
   const nmDir = join(dir, 'node_modules');
-  if (!directoryExists(nmDir)) {
-    return { status: 'drift', reason: 'node_modules-missing', packages: [] };
-  }
+  if (!directoryExists(nmDir)) return empty('drift', 'node_modules-missing');
+
   const hiddenPath = join(nmDir, '.package-lock.json');
-  if (existsSync(hiddenPath)) {
-    const lockHash = hashFile(lockPath);
-    const hiddenHash = hashFile(hiddenPath);
-    if (!lockHash || !hiddenHash) {
-      return { status: 'unknown', reason: 'hash-tool-missing', packages: [] };
-    }
-    if (lockHash === hiddenHash) {
-      return { status: 'ok', reason: 'hidden-lockfile-match', packages: [] };
-    }
-    const lock = readJsonFile<NpmLockfile>(lockPath);
-    const hidden = readJsonFile<NpmLockfile>(hiddenPath);
-    const packages = lock && hidden ? diffLockfiles(lock, hidden) : [];
-    return { status: 'drift', reason: 'hidden-lockfile-mismatch', packages };
+  const hiddenRead = readJson<NpmLockfile>(hiddenPath);
+
+  if (hiddenRead.ok) {
+    const packages = diffSemanticLockfiles(dir, lock, hiddenRead.value, platform, arch);
+    if (packages.length === 0) return { status: 'ok', reason: 'hidden-lockfile-match', packages: [], platform, arch };
+    return { status: 'drift', reason: 'hidden-lockfile-mismatch', packages, platform, arch };
   }
-  // Fallback: no hidden lockfile. Compare top-level deps against installed
-  // package.json versions.
-  const lock = readJsonFile<NpmLockfile>(lockPath);
-  const packages = diffDirectDeps(dir, lock);
+  if (hiddenRead.exists) {
+    // Present but unparsable — never coerce a corrupt metadata file into ok.
+    return empty('unknown', 'hidden-lockfile-parse-error');
+  }
+
+  // No hidden lockfile at all: fall back to the direct-dep scan.
+  const packages = diffDirectDeps(dir, lock, platform, arch);
   if (packages.length === 0) {
-    return { status: 'ok', reason: 'hidden-lockfile-missing-direct-deps-match', packages: [] };
+    return { status: 'ok', reason: 'hidden-lockfile-missing-direct-deps-match', packages: [], platform, arch };
   }
-  return { status: 'drift', reason: 'hidden-lockfile-missing', packages };
+  return { status: 'drift', reason: 'hidden-lockfile-missing', packages, platform, arch };
+}
+
+function hashFile(path: string): string | null {
+  try {
+    return createHash('sha256').update(readFileSync(path)).digest('hex');
+  } catch {
+    return null;
+  }
 }
 
 /** Compact fingerprint of the current lockfile — used by callers as a
- *  bounded-retry key so a fresh dependency bump resets the attempt counter. */
+ *  bounded-retry key so a fresh dependency bump resets the attempt counter.
+ *  Byte identity is deliberately never used for the drift verdict above. */
 export function depsLockfileFingerprint(dir: string): string | null {
-  const lockPath = join(dir, 'package-lock.json');
-  return hashFile(lockPath);
+  return hashFile(join(dir, 'package-lock.json'));
 }

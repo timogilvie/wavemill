@@ -138,8 +138,13 @@ export interface AutoFixDeps {
   git(args: string[], cwd: string): string;
   /** gh invoker. Returns `{ ok, stdout, stderr }`. */
   gh(args: string[], cwd: string): { ok: boolean; stdout: string; stderr: string };
-  /** Update branch with origin/<base>. Reuses HOK-3092. */
-  updateBranchWithBase(branch: string, baseBranch: string, worktree: string): BranchBaseUpdateResult;
+  /** Update branch with origin/<base>. Reuses HOK-3092. The optional context routes the push through the stage-head seam (HOK-3370). */
+  updateBranchWithBase(
+    branch: string,
+    baseBranch: string,
+    worktree: string,
+    headMoveContext?: { stateDir: string; issue: string },
+  ): BranchBaseUpdateResult;
   /** Read a task's dirty-worktree status (HOK-3088). */
   readWorktreeDirtyStatus(worktree: string): WorktreeDirtyStatus;
   /** HOK-3101 progress primitive; return `undefined` on failure. */
@@ -620,7 +625,11 @@ function applyUpdateBranchMerge(
     // means the budget runs one attempt longer.
   }
 
-  const result = deps.updateBranchWithBase(task.branch!, candidate.base, task.worktree!);
+  // HOK-3370: record the base-merge head move through the stage-head seam.
+  const result = deps.updateBranchWithBase(task.branch!, candidate.base, task.worktree!, {
+    stateDir,
+    issue: task.issue,
+  });
 
   if (result.status === 'success') {
     const headAfter = worktreeHead(deps, task.worktree!) ?? '';

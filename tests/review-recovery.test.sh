@@ -92,7 +92,9 @@ agent_validate_phase_launch() { return 0; }
 _prepare_recovery_phase_launch() { return 0; }
 review_recovery_window_observable() { return 0; }
 clear_review_gate_attention() { rm -f "$1/.needs-attention"; }
-write_ready_attention_file() { printf '%s\n' "$2" > "$1/.needs-attention"; }
+# HOK-3360: operator attention is raised through the one escalation step; the
+# message is the 4th argument (state_dir basis basis_arg message ...).
+escalate_operator_attention() { printf '%s\n' "$4" > "$1/.needs-attention"; return 0; }
 check_stage_aborted() { return 1; }
 _challenge_side_for_issue() {
   if [[ "$1" == *_c ]]; then

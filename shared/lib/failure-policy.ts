@@ -239,6 +239,80 @@ export const TERMINAL_ALLOWLIST: readonly TerminalCause[] = Object.freeze([
   },
 ] satisfies TerminalCause[]);
 
+/**
+ * One operator-decision code (HOK-3360). A failure the policy names as needing
+ * a human *now*, where retrying provably cannot change the outcome and no
+ * bounded-retry bucket owns it. This is NOT a new terminal cause: no task
+ * class changes, nothing parks that did not park before, and every entry is a
+ * site that raised operator attention before HOK-3360. The one escalation step
+ * (`escalate_operator_attention` / {@link isOperatorDecisionCode}) accepts an
+ * `operator-decision` basis only when its code is listed here, so a caller
+ * cannot page on a first occurrence by inventing a code. Each entry carries a
+ * reason and a pinned test, exactly like {@link TERMINAL_ALLOWLIST}.
+ */
+export interface OperatorDecision {
+  /** Stable code passed as the escalation basis argument. */
+  code: string;
+  /** Why retrying cannot change the outcome, so a human is the next step. */
+  reason: string;
+  /** Pinned test (`failure-policy.test.ts:operator-decision:<code>`). */
+  testRef: string;
+}
+
+export const OPERATOR_DECISIONS: readonly OperatorDecision[] = Object.freeze([
+  {
+    code: 'merged-before-ready',
+    reason: 'the PR merged before Release Readiness passed; this is an observation about history, so there is nothing to retry',
+    testRef: 'failure-policy.test.ts:operator-decision:merged-before-ready',
+  },
+  {
+    code: 'cross-pr-revert-unacknowledged',
+    reason: 'the cross-PR revert guard blocked the merge; only an operator acknowledgement or a new head changes the verdict',
+    testRef: 'failure-policy.test.ts:operator-decision:cross-pr-revert-unacknowledged',
+  },
+  {
+    code: 'challenge-comparison-stale',
+    reason: 'a compared pair whose record no longer satisfies Ready at the current heads; re-running Ready cannot change a settled comparison',
+    testRef: 'failure-policy.test.ts:operator-decision:challenge-comparison-stale',
+  },
+  {
+    code: 'review-session-interrupted-pre-pr',
+    reason: 'review was interrupted before a PR existed; the operator runs /re-review, which is not a mill retry path',
+    testRef: 'failure-policy.test.ts:operator-decision:review-session-interrupted-pre-pr',
+  },
+  {
+    code: 'operator-command-failed',
+    reason: 'an operator-issued command (e.g. /re-review) failed to launch; the operator who issued it is the one waiting',
+    testRef: 'failure-policy.test.ts:operator-decision:operator-command-failed',
+  },
+  {
+    code: 'transition-code-failure',
+    reason: 'Ready passed but a transition tool failed deterministically on mill code; the coder cannot be asked to fix mill code',
+    testRef: 'failure-policy.test.ts:operator-decision:transition-code-failure',
+  },
+  {
+    code: 'merge-residue',
+    reason: 'disconnected git state after a merge needs a human; the next command is printed and no mill path can reconcile it',
+    testRef: 'failure-policy.test.ts:operator-decision:merge-residue',
+  },
+] satisfies OperatorDecision[]);
+
+const OPERATOR_DECISION_BY_CODE: ReadonlyMap<string, OperatorDecision> = new Map(
+  OPERATOR_DECISIONS.map((decision) => [decision.code, decision]),
+);
+
+/** The operator-decision entry for a code, or undefined when not listed. */
+export function operatorDecisionFor(code: string | null | undefined): OperatorDecision | undefined {
+  const trimmed = (code ?? '').trim();
+  if (!trimmed) return undefined;
+  return OPERATOR_DECISION_BY_CODE.get(trimmed);
+}
+
+/** True when `code` names a known {@link OPERATOR_DECISIONS} entry. */
+export function isOperatorDecisionCode(code: string | null | undefined): boolean {
+  return operatorDecisionFor(code) !== undefined;
+}
+
 /** Legacy spellings that resolve to one canonical kind before policy lookup. */
 const KIND_ALIASES: Readonly<Record<string, string>> = {
   'invalid-model-id': 'provider-config-error',
@@ -252,8 +326,13 @@ const KIND_ALIASES: Readonly<Record<string, string>> = {
   'planning-turn-limit': 'native-stage-timeout',
   // HOK-3249: the typed review category for an overflow of the budgeted input.
   'native-context-window-exceeded': 'context-window-exceeded',
+  // HOK-3358: operator aborts carry an actor-tagged typed kind; `cancelled` is
+  // the default, with a harness-fault class. The legacy `operator_abort`
+  // marker is retired — kept here only in case historical rows surface.
   operator_abort: 'cancelled',
   'operator-cancelled': 'cancelled',
+  // HOK-3358: `completion-protocol` is the harness-agnostic spelling.
+  'native-completion-protocol': 'completion-protocol',
 };
 
 export function canonicalFailureKind(kind: string | null | undefined): string {
@@ -321,7 +400,7 @@ const PLANNING_ARTIFACT_REJECTED = /native planning final artifact rejected:\s*(
  * Turn raw failure text into a stable kind. Precedence:
  *   1. typed handoff reason (never substring-matched): `budget_exhausted` is
  *      the one budget kind (HOK-3362), the completion-protocol reasons are
- *      `native-completion-protocol`;
+ *      `completion-protocol`;
  *   2. native-specific signatures, then the provider-error classifier, then
  *      HOK-3129 model-output signatures;
  *   3. `native-provider-error` when the handoff typed `provider_error`,
@@ -332,7 +411,9 @@ export function detectFailureKind(detail: string | null | undefined, handoffReas
     return 'native-stage-timeout';
   }
   if (handoffReason && COMPLETION_PROTOCOL_HANDOFF_REASONS.has(handoffReason)) {
-    return 'native-completion-protocol';
+    // HOK-3358: harness-agnostic spelling (`native-completion-protocol` was
+    // the pre-rename name and still resolves through `KIND_ALIASES`).
+    return 'completion-protocol';
   }
   // Commit SHAs ("preserved at 0c564d2") must not read as HTTP 5xx digits.
   const text = (detail ?? '').replace(/\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/gi, '<sha>');
@@ -377,6 +458,10 @@ const CODE_FAILURE_SIGNATURES: ReadonlyArray<RegExp> = [
   // arm's change — so retrying the phase cannot fix it and the excerpt must
   // reach the operator instead of spending the retry budget.
   /\bExpected resolved_model\b/,
+  // HOK-3370: the publication seam refused a genuinely diverged remote head.
+  // Conflict-shaped: the branch needs reconciling (remediation), and retrying
+  // the identical publish would refuse identically.
+  /refusing to overwrite the remote branch/,
 ];
 
 /** Kinds a stage emits for red checks it already proved are the change's fault. */
@@ -419,7 +504,7 @@ const NEXT_ACTIONS: Readonly<Record<string, string>> = {
   'policy-denied': 'a mutation/network policy rejected the run (harness fault, not a model/provider signal). Review the policy decision before relaunching',
   cancelled: 'the run was cancelled by an operator or the orchestrator (not a model/provider signal). Relaunch the phase when ready',
   'empty-model-turn': 'relaunch native coding; the runtime exhausted bounded continuation after empty model turns',
-  'native-completion-protocol': "model ended the phase without a valid completion artifact (protocol violation, not a provider fault) - check the model's structured tool-call compatibility before relaunching",
+  'completion-protocol': "model ended the phase without a valid completion artifact (protocol violation, not a provider fault) - check the model's structured tool-call compatibility before relaunching",
   'ready-exhausted': 'the arm stayed red after Ready remediation and re-checks were exhausted; it was retired (forfeit) so its green sibling proceeds. Inspect the failed checks on the closed PR',
   'ready-transition-failed': "Ready's checks passed but a handoff transition (route-stamp, review identity, label, GitHub API) kept failing; the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect .ready-result.json transitionFailure",
   'ready-unattributed': 'Ready was exhausted without a typed red-check or transition cause (base conflict, missing ready result); the arm was retired as an invalid challenge so its green sibling proceeds. Inspect the ready attention file',

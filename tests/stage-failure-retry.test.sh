@@ -60,6 +60,7 @@ for fn in \
   recovery_contract_json \
   emit_challenge_stage_failure_quarantine \
   challenge_abort_scope_for_failure \
+  stage_budget_exhausted_json \
   challenge_abort_pair \
   _challenge_side_for_issue \
   challenge_result_stage_for_launch \
@@ -284,7 +285,7 @@ rc=0; maybe_retry_failed_stage T-1_c "$fd" coding win-c || rc=$?
 write_stage_result "$fd" coding failed native llama-4-scout "$unknown_detail"
 rc=0; maybe_retry_failed_stage T-1_c "$fd" coding win-c || rc=$?
 if [[ "$rc" -eq 1 ]] && emit_challenge_stage_failure_quarantine T-1_c "$fd" coding win-c \
-  && [[ "$(get_task_meta T-1_c challengeAborted)" == "retry_exhausted:native-unclassified" ]] \
+  && [[ "$(get_task_meta T-1_c challengeAborted)" == "terminal_stage_failure:native-unclassified" ]] \
   && [[ -z "$(get_task_meta T-1 challengeAborted)" ]] \
   && [[ "$CLEANUP_CALLS" == *"T-1_c|coding|retry exhausted:native-unclassified"* ]]; then
   pass "exhausted challenger retires single-sided so the healthy primary proceeds"

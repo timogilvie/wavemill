@@ -10,6 +10,7 @@ import {
   finalProviderErrorMessage,
   type BudgetExhaustedFact,
 } from './budget-exhaustion.ts';
+import { resolveNativeStageTimeSplit, type NativeStageTimeSplit } from './stage-time-split.ts';
 import { runWavemillLoop } from './loop.ts';
 import { snapshotPayloadsForFailure } from './payload-capture.ts';
 import { buildStageExecutionUsage } from './prompt-cache.ts';
@@ -908,7 +909,7 @@ export async function runNativeReview(
   };
 
   /** HOK-3362: the one budget-exhaustion envelope, with review's retry/timeout context. */
-  const recordReviewBudgetExhaustion = (fact: BudgetExhaustedFact): void => {
+  const recordReviewBudgetExhaustion = (fact: BudgetExhaustedFact, timeSplit?: NativeStageTimeSplit | null): void => {
     if (!options.featureDir) {
       return;
     }
@@ -921,6 +922,7 @@ export async function runNativeReview(
         agent: canonicalAgent,
         ...(provider.requestedModel ? { requestedModel: provider.requestedModel } : {}),
         transcriptPath,
+        timeSplit,
         payloadCaptureDir: snapshotPayloadsForFailure(
           options.featureDir,
           'review',
@@ -1142,11 +1144,12 @@ export async function runNativeReview(
   // HOK-3362: the one budget fact. A budget stop is classified from it before
   // any error text; the review-result category stays `native-review-timeout`
   // because the HOK-3019 escalating review budget keys on it.
-  const budgetExhausted: BudgetExhaustedFact | null = budgetExhaustionFromLoop(loopResult, reviewBudget);
+  const budgetExhausted: BudgetExhaustedFact | null = budgetExhaustionFromLoop(loopResult, reviewBudget, { transcriptPath });
   if (budgetExhausted) {
     terminalCategory = NATIVE_REVIEW_TIMEOUT_CATEGORY;
-    terminalDescription = describeBudgetExhaustion('review', budgetExhausted);
-    recordReviewBudgetExhaustion(budgetExhausted);
+    const reviewTimeSplit = resolveNativeStageTimeSplit(budgetExhausted, { featureDir: options.featureDir, repoDir: options.repoDir });
+    terminalDescription = describeBudgetExhaustion('review', budgetExhausted, reviewTimeSplit);
+    recordReviewBudgetExhaustion(budgetExhausted, reviewTimeSplit);
     if (options.featureDir) {
       try {
         await updateStageResult(options.featureDir, 'review', { budgetExhausted });

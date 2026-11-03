@@ -2,7 +2,7 @@
 #
 # Run only the tests related to the current change.
 #
-#   bash tests/run-related.sh [--base <ref>] [--list] [--dry-run] [--no-journeys] [files...]
+#   bash tests/run-related.sh [--base <ref>] [--list] [--dry-run] [--no-journeys|--all-journeys] [files...]
 #
 # Selection:
 #   - TS: tests that import a changed module, transitively (regex scan +
@@ -12,8 +12,11 @@
 #   - Preflight guards: `npm run test:preflight` when any file under
 #     tools/check-*.ts, tests/check-*.test.sh, tests/check-*.test.ts, or
 #     shared/lib/*.sh is changed.
-#   - Journeys: tests/journeys/run-journeys.sh when any mill-core path is
-#     changed (toggleable with --no-journeys).
+#   - Journeys: when any mill-core path is changed, the happy-path smoke
+#     journey plus every changed tests/journeys/*.journey.sh, in one
+#     run-journeys.sh call. The full journey matrix is the required "Golden
+#     Journeys" CI check; --all-journeys runs it locally, --no-journeys skips
+#     journeys entirely.
 #
 # Change set defaults to:
 #   git diff --name-only <base>...HEAD ∪ unstaged ∪ staged
@@ -46,15 +49,18 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 print_usage() {
   cat <<'EOF'
-Usage: bash tests/run-related.sh [--base <ref>] [--list] [--dry-run] [--no-journeys] [files...]
+Usage: bash tests/run-related.sh [--base <ref>] [--list] [--dry-run] [--no-journeys|--all-journeys] [files...]
 
 Options:
   --base <ref>     Diff base (default: origin/auto/integration, falling back
                    to origin/main, then main).
   --list           Print selected tests, one per line, and exit 0.
   --dry-run        Print the full plan with reason tags and exit 0.
-  --no-journeys    Suppress journey-suite injection even if mill-core paths
+  --no-journeys    Suppress journey injection even if mill-core paths
                    changed.
+  --all-journeys   On a mill-core change, run every golden journey instead of
+                   the happy-path smoke journey plus changed journeys (slow:
+                   ~2 min per journey locally; CI runs them all anyway).
   --help           Show this message.
 
 Positional files...: override the diff. When given, exactly these files are
@@ -75,6 +81,7 @@ BASE_REF=""
 LIST_ONLY=0
 DRY_RUN=0
 NO_JOURNEYS=0
+ALL_JOURNEYS=0
 POSITIONAL_FILES=()
 
 while [[ $# -gt 0 ]]; do
@@ -92,12 +99,18 @@ while [[ $# -gt 0 ]]; do
     --list) LIST_ONLY=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --no-journeys) NO_JOURNEYS=1; shift ;;
+    --all-journeys) ALL_JOURNEYS=1; shift ;;
     --help|-h) print_usage; exit 0 ;;
     --) shift; while [[ $# -gt 0 ]]; do POSITIONAL_FILES+=("$1"); shift; done ;;
     --*) echo "run-related.sh: unknown argument: $1" >&2; print_usage >&2; exit 2 ;;
     *) POSITIONAL_FILES+=("$1"); shift ;;
   esac
 done
+
+if [[ "$NO_JOURNEYS" -eq 1 && "$ALL_JOURNEYS" -eq 1 ]]; then
+  echo "run-related.sh: --no-journeys and --all-journeys are mutually exclusive" >&2
+  exit 2
+fi
 
 timestamp_start=$(date +%s)
 
@@ -171,6 +184,7 @@ fi
 PLAN_JSON="$TMP_DIR/plan.json"
 SELECT_ARGS=()
 if [[ "$NO_JOURNEYS" -eq 1 ]]; then SELECT_ARGS+=(--no-journeys); fi
+if [[ "$ALL_JOURNEYS" -eq 1 ]]; then SELECT_ARGS+=(--all-journeys); fi
 SELECT_ARGS+=(--repo-root "$REPO_ROOT" --files-from "$CHANGE_FILE")
 
 if ! node "$REPO_ROOT/tools/related-tests/select.ts" "${SELECT_ARGS[@]}" > "$PLAN_JSON" 2> "$TMP_DIR/select.err"; then
@@ -229,7 +243,7 @@ NODE_TEST_FILES=()
 TSX_TEST_FILES=()
 BASH_TEST_FILES=()
 RUN_PREFLIGHT=0
-RUN_JOURNEYS=0
+JOURNEY_NAMES=()
 
 for row in "${SELECTED_LINES[@]}"; do
   IFS=$'\t' read -r p runner _reason <<< "$row"
@@ -238,7 +252,7 @@ for row in "${SELECTED_LINES[@]}"; do
     tsx-single) TSX_TEST_FILES+=("$p") ;;
     bash-test) BASH_TEST_FILES+=("$p") ;;
     preflight) RUN_PREFLIGHT=1 ;;
-    journeys) RUN_JOURNEYS=1 ;;
+    journeys) JOURNEY_NAMES+=("$(basename "$p" .journey.sh)") ;;
     *) echo "[WARN] unknown runner: $runner" >&2 ;;
   esac
 done
@@ -303,10 +317,15 @@ for sf in "${BASH_TEST_FILES[@]}"; do
   run_one "bash $sf" bash "$sf"
 done
 
-# Journeys last (longest).
-if [[ "$RUN_JOURNEYS" -eq 1 ]]; then
-  echo "[mill-core] running journey suite" >&2
-  run_one "journeys (tests/journeys/run-journeys.sh)" bash tests/journeys/run-journeys.sh
+# Journeys last (longest), in one run-journeys.sh call so its stale-world
+# reaper and hygiene check run once.
+if [[ ${#JOURNEY_NAMES[@]} -gt 0 ]]; then
+  if [[ "$ALL_JOURNEYS" -eq 1 ]]; then
+    echo "[mill-core] running all ${#JOURNEY_NAMES[@]} journeys" >&2
+  else
+    echo "[mill-core] running ${#JOURNEY_NAMES[@]} journey(s): ${JOURNEY_NAMES[*]} — CI's Golden Journeys check runs the full matrix (--all-journeys to run it here)" >&2
+  fi
+  run_one "journeys (${JOURNEY_NAMES[*]})" bash tests/journeys/run-journeys.sh "${JOURNEY_NAMES[@]}"
 fi
 
 elapsed=$(( $(date +%s) - timestamp_start ))

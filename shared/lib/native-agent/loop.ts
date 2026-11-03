@@ -69,7 +69,15 @@ import {
 } from './provider-error-classifier.ts';
 import { evaluateBeforeToolCallPolicy, type ToolPolicyConfig } from './tools/policies.ts';
 import { redactSecrets, redactSecretsInValue } from './tools/redaction.ts';
-import { ToolStagnationTracker, type ToolStagnationPolicy } from './planning-guards.ts';
+import {
+  ToolCallProgressTracker,
+  toolCallResultKey,
+  toolSelectionKey,
+  type ToolCallProgressPolicy,
+} from '../task-progress.ts';
+import { millClockNowMs } from '../mill-clock.ts';
+import { nativeStageTimeSplit } from './stage-time-split.ts';
+import type { TranscriptEvent } from './transcript.ts';
 import {
   extractProviderReportedIdentity,
   ProviderIdentityMismatchError,
@@ -128,9 +136,18 @@ export interface LoopBudget {
   maxOutputTokens?: number;
   maxTotalTokens?: number;
   maxToolCalls?: number;
+  /**
+   * Model-attributable time budget (HOK-3381). The clock pauses while a
+   * harness tool executes: charged time is `totalMs - harnessToolMs` over the
+   * run's window, derived through `nativeStageTimeSplit` (HOK-3380), never a
+   * second timer. Per-call tool timeouts still bound a single hung tool; the
+   * stage-level backstop for a hung harness is slice 3/3 (ledger step
+   * deadline).
+   */
   maxWallClockMs?: number;
   maxCostUsd?: number;
-  stagnation?: ToolStagnationPolicy;
+  /** Shared HOK-3381 tool-call progress policy (task-progress.ts). */
+  stagnation?: ToolCallProgressPolicy;
 }
 
 export type LoopStopReason =
@@ -230,6 +247,13 @@ export interface WavemillLoopConfig {
     worktreePath: string;
     registry: readonly ToolMetadata[];
   };
+  /**
+   * Worktree tracked-content fingerprint for the shared HOK-3381 progress
+   * rule (`trackedContentFingerprint`): the diff of tracked files, never
+   * mtime, with `.wavemill/` (test logs) excluded. Omitted (planning), the
+   * rule compares selections on their result alone.
+   */
+  progressFingerprint?: () => string;
   /** Optional prior-session state; passed as AgentContext messages and is sufficient
    *  for continuation via replayed thinkingSignature / responseId metadata. */
   priorState?: { messages: AgentMessage[] };
@@ -388,15 +412,18 @@ export interface LoopResult {
     errorMessage: string;
     turnsAtFailure: number;
   };
-  /**
-   * Time spent waiting on the provider (HOK-3362): per turn, request start to
-   * the assistant `message_end`, including a request still in flight when the
-   * run ended. Generation time counts as wait; the budget fault rule also
-   * requires provider errors before it blames the provider.
-   */
-  providerWaitMs?: number;
   /** Provider-error retries the loop spent during this run (HOK-3362). */
   providerErrorRetries?: number;
+  /**
+   * `Date.now()` when this run started (HOK-3380). Paired with `wallClockMs`
+   * to give `budgetExhaustionFromLoop` the run's raw window
+   * (`[startedAtMs, startedAtMs + wallClockMs]`), which it stores on the fact
+   * as `sessionStream.{fromMs,toMs}` so `nativeStageTimeSplit` can be derived
+   * from the transcript. Replaces the loop's own `providerWaitMs` wait
+   * accounting, which charged every non-provider-error turn's generation time
+   * as "wait" and could not tell our own harness tool time apart from either.
+   */
+  startedAtMs: number;
   /**
    * Provider-reported identity summary (HOK-3143). Present when
    * `providerIdentity` was configured. Launchers persist this on the stage
@@ -647,15 +674,19 @@ interface ComposedSignal {
   isWallClockExpiry: () => boolean;
   /** Abort the composed signal (not treated as a wall-clock expiry). */
   abort: () => void;
+  /** Abort because the model-time budget ran out (HOK-3381). */
+  expireWallClock: () => void;
 }
 
-function composeAbortSignal(
-  callerSignal: AbortSignal | undefined,
-  maxWallClockMs: number | undefined,
-): ComposedSignal {
+/**
+ * Compose the caller's abort signal with the loop's own abort. The fixed
+ * wall-clock timer that used to live here was deleted (HOK-3381): the
+ * model-time budget is enforced by the loop's pausing clock
+ * (`armModelClock`), which charges only non-harness-tool time.
+ */
+function composeAbortSignal(callerSignal: AbortSignal | undefined): ComposedSignal {
   const controller = new AbortController();
   let wallClockExpired = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
 
   function abort() {
     if (!controller.signal.aborted) {
@@ -664,10 +695,7 @@ function composeAbortSignal(
   }
 
   function cleanup() {
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      timer = undefined;
-    }
+    callerSignal?.removeEventListener('abort', abort);
   }
 
   if (callerSignal?.aborted) {
@@ -676,14 +704,16 @@ function composeAbortSignal(
     callerSignal.addEventListener('abort', abort, { once: true });
   }
 
-  if (maxWallClockMs !== undefined) {
-    timer = setTimeout(() => {
+  return {
+    signal: controller.signal,
+    cleanup,
+    isWallClockExpiry: () => wallClockExpired,
+    abort,
+    expireWallClock: () => {
       wallClockExpired = true;
       abort();
-    }, maxWallClockMs);
-  }
-
-  return { signal: controller.signal, cleanup, isWallClockExpiry: () => wallClockExpired, abort };
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -705,15 +735,53 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   const contextManagement = resolveContextManagementConfig(config.contextManagement);
 
   const startTime = Date.now();
-  const composed = composeAbortSignal(callerSignal, budget?.maxWallClockMs);
-  const stagnationTracker =
-    budget?.stagnation?.maxRepeatedSignatureCalls !== undefined &&
-    budget.stagnation.maxNoNovelProgressCalls !== undefined
-      ? new ToolStagnationTracker({
-        maxRepeatedSignatureCalls: budget.stagnation.maxRepeatedSignatureCalls,
-        maxNoNovelProgressCalls: budget.stagnation.maxNoNovelProgressCalls,
-      })
-      : undefined;
+  const composed = composeAbortSignal(callerSignal);
+  const stagnationTracker = budget?.stagnation
+    ? new ToolCallProgressTracker(budget.stagnation)
+    : undefined;
+
+  // ── Model-time budget clock (HOK-3381) ───────────────────────────────────
+  // `maxWallClockMs` now bounds model-attributable time: the clock pauses
+  // while a harness tool executes. Charged time is derived from the loop's
+  // own event timeline through `nativeStageTimeSplit` (HOK-3380) —
+  // `totalMs - harnessToolMs` — never a second interval-pairing site.
+  // `millClockNowMs` keeps the derivation deterministic under the journey
+  // tick clock (mill-clock.ts).
+  const clockStartMs = millClockNowMs();
+  const timeline: TranscriptEvent[] = [];
+  let timelineSeq = 0;
+  let activeToolCount = 0;
+  let modelClockTimer: ReturnType<typeof setTimeout> | undefined;
+  const pushTimelineEvent = (event: Record<string, unknown>): void => {
+    timeline.push({ seq: timelineSeq++, sessionId: 'loop', timestamp: millClockNowMs(), ...event } as unknown as TranscriptEvent);
+  };
+  const chargedModelTimeMs = (nowMs: number): number => {
+    const split = nativeStageTimeSplit(timeline, { fromMs: clockStartMs, toMs: nowMs });
+    return split.totalMs - split.harnessToolMs;
+  };
+  /**
+   * (Re-)arm the model-time budget. Cleared while a harness tool executes
+   * (the pause); re-armed with the remaining charged budget when the loop is
+   * back in model/provider time. Charged time advances 1:1 with wall time
+   * while unpaused, so a timer armed for the remainder fires exactly at the
+   * budget boundary.
+   */
+  const armModelClock = (): void => {
+    if (budget?.maxWallClockMs === undefined) return;
+    if (modelClockTimer !== undefined) {
+      clearTimeout(modelClockTimer);
+      modelClockTimer = undefined;
+    }
+    if (composed.signal.aborted) return;
+    const remaining = budget.maxWallClockMs - chargedModelTimeMs(millClockNowMs());
+    if (remaining <= 0) {
+      composed.expireWallClock();
+      return;
+    }
+    if (activeToolCount > 0) return; // paused: a harness tool holds the loop
+    modelClockTimer = setTimeout(() => composed.expireWallClock(), remaining);
+  };
+  armModelClock();
 
   // Initialize optional session event stream writer
   // Session boundary events (started/ended) are only written if not provided externally
@@ -754,7 +822,15 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     (config.toolPolicy?.registry ?? []).map((m) => [m.name, m]),
   );
 
+  const stopModelClock = (): void => {
+    if (modelClockTimer !== undefined) {
+      clearTimeout(modelClockTimer);
+      modelClockTimer = undefined;
+    }
+  };
+
   if (composed.signal.aborted) {
+    stopModelClock();
     composed.cleanup();
     return {
       messages: [],
@@ -766,6 +842,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       totalCostUsd: 0,
       wallClockMs: 0,
       promptCache: EMPTY_PROMPT_CACHE_SUMMARY,
+      startedAtMs: startTime,
     };
   }
 
@@ -781,9 +858,6 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   let terminalSynthesisPromptPending = false;
   let finalProviderError: LoopResult['providerError'] | undefined;
   let providerErrorRetryAttempts = 0;
-  // Provider wait accounting (HOK-3362): request start → assistant message_end.
-  let providerWaitMs = 0;
-  let providerRequestStartedAt: number | undefined;
   const providerErrorRetryMaxAttempts = config.providerErrorRetry?.maxAttempts ?? 3;
   const providerErrorRetryDelays = config.providerErrorRetry?.backoffDelaysMs ?? DEFAULT_PROVIDER_ERROR_RETRY_DELAYS_MS;
   const providerErrorSleep = config.providerErrorRetry?.sleep ?? sleepAbortable;
@@ -889,6 +963,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       throw new ContextWindowUnverifiableError(config.toolPolicy?.phase ?? 'native', config.model);
     }
   } catch (error) {
+    stopModelClock();
     composed.cleanup();
     throw error;
   }
@@ -1063,16 +1138,29 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       if (config.afterToolCall) {
         callerOverride = await config.afterToolCall(ctx, signal);
       }
-      const stagnationDecision = !isSkipped
-        ? stagnationTracker?.record(ctx, callerOverride)
-        : undefined;
-      if (stagnationDecision?.stagnant) {
-        budgetStopReason = 'tool_stagnation';
-      }
 
       // Compute effective content and details after caller override.
       type ContentBlock = { type: string; text: string };
       const baseResult = ctx.result as { content?: ContentBlock[]; details?: unknown } | null | undefined;
+
+      // Shared HOK-3381 progress rule: a call is "no progress" when the same
+      // selection last ran against the same tracked worktree content and
+      // produced the same result. Repeated no-progress calls stop the run via
+      // the existing `tool_stagnation` reason.
+      const stagnationDecision = !isSkipped && stagnationTracker
+        ? stagnationTracker.record({
+          selectionKey: toolSelectionKey(ctx.toolCall.name, ctx.args),
+          worktreeFingerprint: config.progressFingerprint?.() ?? '',
+          resultKey: toolCallResultKey({
+            isError: callerOverride?.isError ?? ctx.isError,
+            content: callerOverride?.content ?? baseResult?.content ?? [],
+            details: callerOverride?.details !== undefined ? callerOverride.details : baseResult?.details,
+          }),
+        })
+        : undefined;
+      if (stagnationDecision?.stagnant) {
+        budgetStopReason = 'tool_stagnation';
+      }
       const existingMetadata = (
         ctx.result &&
         typeof ctx.result === 'object' &&
@@ -1365,19 +1453,10 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     if (exposeToCaller) {
       config.onEvent?.(event);
     }
-    if (event.type === 'turn_start') {
-      providerRequestStartedAt = Date.now();
-    } else if (
-      event.type === 'message_end'
-      && event.message?.role === 'assistant'
-      && providerRequestStartedAt !== undefined
-    ) {
-      providerWaitMs += Math.max(0, Date.now() - providerRequestStartedAt);
-      providerRequestStartedAt = undefined;
-    }
     switch (event.type) {
       case 'turn_start': {
         onHeartbeat?.({ state: 'working', event: 'turn_start', agent: HEARTBEAT_AGENT });
+        pushTimelineEvent({ type: 'turn_started', turnIndex: turnsCompleted });
 
         // Resolve the per-turn menu (HOK-3054). Do the drift check before
         // emitting any events so a mismatch fails the run rather than
@@ -1475,6 +1554,20 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         onHeartbeat?.({ state: 'working', event: 'message_update', agent: HEARTBEAT_AGENT });
         break;
       case 'message_end': {
+        if (event.message?.role === 'assistant') {
+          const assistant = event.message as AssistantMessage;
+          pushTimelineEvent({
+            type: 'assistant_message',
+            model: config.model.id,
+            stopReason: assistant.stopReason ?? 'stop',
+            ...(typeof assistant.errorMessage === 'string' && assistant.errorMessage
+              ? { errorMessage: assistant.errorMessage }
+              : {}),
+            rawContent: [],
+            replayContent: [],
+            redacted: false,
+          });
+        }
         if (event.message?.role === 'assistant' && budget?.maxToolCalls !== undefined) {
           const requested = event.message.content.filter((block) => block.type === 'toolCall').length;
           // Pi's finishTurn runs AFTER dispatch. Gate the complete response here,
@@ -1544,6 +1637,10 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
           detail: event.toolName,
           agent: HEARTBEAT_AGENT,
         });
+        // HOK-3381: a harness tool now holds the loop — pause the model clock.
+        pushTimelineEvent({ type: 'tool_started', toolCallId: event.toolCallId, toolName: event.toolName, args: {} });
+        activeToolCount += 1;
+        armModelClock();
         // Log tool call event when tool execution starts.
         // HOK-3122: `event.toolCallId` is the real SDK call id; the earlier
         // `event.callId ?? randomUUID()` bug minted a fresh UUID for every
@@ -1560,6 +1657,19 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
             console.warn(`Failed to log tool call event: ${(error as Error).message}`);
           }
         }
+        break;
+      case 'tool_execution_end':
+        // HOK-3381: the harness tool released the loop — resume the model clock.
+        pushTimelineEvent({
+          type: 'tool_result',
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          isError: event.isError === true,
+          content: '',
+          redacted: false,
+        });
+        activeToolCount = Math.max(0, activeToolCount - 1);
+        armModelClock();
         break;
       case 'agent_end':
         finalMessages = event.messages;
@@ -1713,16 +1823,12 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       });
     }
     payloadRing?.flushPending();
+    stopModelClock();
     composed.cleanup();
   }
 
   const endTime = Date.now();
   const wallClockMs = endTime - startTime;
-  if (providerRequestStartedAt !== undefined) {
-    // The request in flight when the run ended (e.g. aborted by the wall clock).
-    providerWaitMs += Math.max(0, endTime - providerRequestStartedAt);
-    providerRequestStartedAt = undefined;
-  }
 
   let stopReason: LoopStopReason;
   const finalStopReason = finalAssistantStopReason(finalMessages);
@@ -1813,8 +1919,8 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     totalCostUsd,
     wallClockMs,
     promptCache: summarizePromptCache(turnCacheUsage),
-    providerWaitMs,
     providerErrorRetries: providerErrorRetryAttempts,
+    startedAtMs: startTime,
     ...(finalProviderError ? { providerError: finalProviderError } : {}),
     ...(providerIdentitySummary ? { providerIdentity: providerIdentitySummary } : {}),
   };

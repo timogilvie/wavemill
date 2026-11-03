@@ -16,6 +16,7 @@ import type { ForkIdentity, InvalidChallengeReason } from './challenge-execution
 import { readForkIdentity } from './fork-identity.ts';
 import { challengerTaskKey } from './task-identity.ts';
 import { mutateWorkflowState } from './workflow-state.ts';
+import { recordArmTermination } from './arm-termination.ts';
 import {
   getSiblingBranch,
   classifyPairUnresolvableState,
@@ -38,6 +39,7 @@ import {
 } from './arm-failure-taxonomy.ts';
 import { repairChallengePairingSync } from './challenge-pairing-repair.ts';
 import { parseBudgetExhaustedFact, type BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
+import { resolveNativeStageTimeSplit, type NativeStageTimeSplit } from './native-agent/stage-time-split.ts';
 import { Ledger } from './ledger.ts';
 import { withShadowSuppressing } from './ledger-shadow.ts';
 import { settleArmAbort } from './ledger-shadow.ts';
@@ -585,20 +587,33 @@ function describeStalledArm(task: TaskEvalState): string {
 /**
  * Durably stamp a stalled arm so every other consumer (monitor, dashboard,
  * gate) sees it as aborted. Never overwrites an existing abort stamp.
+ *
+ * HOK-3358: delegates to the one arm-termination recorder with
+ * `actor: 'pair-resolver'`. The recorder is idempotent — a second call with
+ * the same reason is a no-op — so an already-stamped arm is skipped at the
+ * state-mutation level by `mutateWorkflowState` (nothing changes), and the
+ * reliability-record dedupe key `(issueId, pairId, role, abortReason, stage)`
+ * suppresses duplicate reliability writes.
  */
 async function stampStalledArm(repoDir: string, task: TaskEvalState, now?: () => Date): Promise<void> {
   const statePath = join(repoDir, '.wavemill', 'workflow-state.json');
-  const timestamp = (now ?? (() => new Date()))().toISOString();
-  await mutateWorkflowState(statePath, (current) => {
-    const entry = current.tasks?.[task.issueId];
-    if (!entry || (typeof entry.challengeAborted === 'string' && entry.challengeAborted)) {
-      return current;
-    }
-    entry.challengeAborted = SIBLING_STALLED_ABORT_REASON;
-    entry.challengeAbortedDetail = describeStalledArm(task);
-    entry.challengeAbortedStage = task.phase ?? task.challengeStage ?? null;
-    entry.updated = timestamp;
-    return current;
+  // The recorder's `preserveExistingAbort: true` re-checks inside the lock,
+  // so a concurrent operator/monitor abort cannot be clobbered by a later
+  // sibling-stalled stamp (the pre-HOK-3358 helper did the same by holding
+  // the lock across the check). The reliability/eval records are idempotent
+  // by the (issueId, pairId, role, abortReason, stage) dedupe key.
+  await recordArmTermination({
+    issueId: task.issueId,
+    kind: 'sibling-stalled',
+    actor: 'pair-resolver',
+    detail: describeStalledArm(task),
+    stage: task.phase ?? task.challengeStage ?? undefined,
+    model: task.model ?? undefined,
+    scope: 'single',
+    repoDir,
+    stateFile: statePath,
+    preserveExistingAbort: true,
+    now,
   });
 }
 
@@ -984,18 +999,27 @@ function hasOtherOpenPrForPair(
 
 /**
  * The budget fact (HOK-3362) `challenge_abort_pair` recorded in the arm's
- * archived `.challenge-aborted.json`, when the abort was a budget stop. Arms
- * whose artifact is not archived yet classify without it (unknown-fault for a
- * budget kind): no evidence, no attribution.
+ * archived `.challenge-aborted.json`, when the abort was a budget stop, plus
+ * (HOK-3380) the `nativeStageTimeSplit` resolved from its `sessionStream`
+ * pointer — the archive directory `join(evalsDir, 'artifacts', issueId)` is
+ * exactly where the fact's transcript was archived to. Arms whose artifact is
+ * not archived yet classify without either (unknown-fault for a budget kind):
+ * no evidence, no attribution.
  */
-function readArchivedBudgetFact(evalsDir: string | undefined, issueId: string): BudgetExhaustedFact | null {
-  if (!evalsDir) return null;
-  const artifactPath = join(evalsDir, 'artifacts', issueId, '.challenge-aborted.json');
-  if (!existsSync(artifactPath)) return null;
+function readArchivedBudgetFact(
+  evalsDir: string | undefined,
+  issueId: string,
+): { fact: BudgetExhaustedFact | null; timeSplit: NativeStageTimeSplit | null } {
+  if (!evalsDir) return { fact: null, timeSplit: null };
+  const artifactDir = join(evalsDir, 'artifacts', issueId);
+  const artifactPath = join(artifactDir, '.challenge-aborted.json');
+  if (!existsSync(artifactPath)) return { fact: null, timeSplit: null };
   try {
-    return parseBudgetExhaustedFact((JSON.parse(readFileSync(artifactPath, 'utf-8')) as { budgetExhausted?: unknown }).budgetExhausted);
+    const fact = parseBudgetExhaustedFact((JSON.parse(readFileSync(artifactPath, 'utf-8')) as { budgetExhausted?: unknown }).budgetExhausted);
+    const timeSplit = resolveNativeStageTimeSplit(fact, { featureDir: artifactDir });
+    return { fact, timeSplit };
   } catch {
-    return null;
+    return { fact: null, timeSplit: null };
   }
 }
 
@@ -1008,10 +1032,12 @@ function buildArmFailures(
     .filter((task): task is TaskEvalState => Boolean(task?.challengeAborted))
     .map((task) => {
       const failureKind = parseAbortFailureKind(task.challengeAborted);
+      const { fact, timeSplit } = readArchivedBudgetFact(evalsDir, task.issueId);
       const faultClass = classifyArmFault({
         failureKind,
         detail: task.challengeAbortedDetail,
-        budgetExhausted: readArchivedBudgetFact(evalsDir, task.issueId),
+        budgetExhausted: fact,
+        timeSplit,
       });
       return {
         side: task.role,
