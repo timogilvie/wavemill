@@ -1,0 +1,6 @@
+{"eventId":"r1-enq","eventType":"enqueued","timestamp":"2026-01-02T00:00:00.000Z","prNumber":200,"headSha":"def456"}
+{"eventId":"r1-cp","eventType":"candidate_prepared","timestamp":"2026-01-02T00:02:00.000Z","prNumber":200,"headSha":"def456"}
+{"eventId":"r1-rb","eventType":"rebase_performed","timestamp":"2026-01-02T00:03:00.000Z","prNumber":200,"headSha":"def456","attempt":1}
+{"eventId":"r1-rr","eventType":"rerun_requested","timestamp":"2026-01-02T00:04:00.000Z","prNumber":200,"headSha":"def456","attempt":1}
+{"eventId":"r1-chk","eventType":"check_run_completed","timestamp":"2026-01-02T00:09:00.000Z","prNumber":200,"headSha":"def456","attempt":2}
+{"eventId":"r1-mrg","eventType":"merged","timestamp":"2026-01-02T00:10:00.000Z","prNumber":200,"headSha":"def456"}

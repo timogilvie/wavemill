@@ -389,6 +389,7 @@ TESTS=(
   shared/lib/task-dependency-plan-cache.test.ts
   shared/lib/queue-inference-status.test.ts
   shared/lib/queue-events.test.ts
+  shared/lib/queue-metrics.test.ts
   shared/lib/task-dependency-planner.test.ts
   shared/lib/plan-queue-utils.test.ts
   shared/lib/touch-set-predictor.test.ts
