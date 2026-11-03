@@ -239,6 +239,80 @@ export const TERMINAL_ALLOWLIST: readonly TerminalCause[] = Object.freeze([
   },
 ] satisfies TerminalCause[]);
 
+/**
+ * One operator-decision code (HOK-3360). A failure the policy names as needing
+ * a human *now*, where retrying provably cannot change the outcome and no
+ * bounded-retry bucket owns it. This is NOT a new terminal cause: no task
+ * class changes, nothing parks that did not park before, and every entry is a
+ * site that raised operator attention before HOK-3360. The one escalation step
+ * (`escalate_operator_attention` / {@link isOperatorDecisionCode}) accepts an
+ * `operator-decision` basis only when its code is listed here, so a caller
+ * cannot page on a first occurrence by inventing a code. Each entry carries a
+ * reason and a pinned test, exactly like {@link TERMINAL_ALLOWLIST}.
+ */
+export interface OperatorDecision {
+  /** Stable code passed as the escalation basis argument. */
+  code: string;
+  /** Why retrying cannot change the outcome, so a human is the next step. */
+  reason: string;
+  /** Pinned test (`failure-policy.test.ts:operator-decision:<code>`). */
+  testRef: string;
+}
+
+export const OPERATOR_DECISIONS: readonly OperatorDecision[] = Object.freeze([
+  {
+    code: 'merged-before-ready',
+    reason: 'the PR merged before Release Readiness passed; this is an observation about history, so there is nothing to retry',
+    testRef: 'failure-policy.test.ts:operator-decision:merged-before-ready',
+  },
+  {
+    code: 'cross-pr-revert-unacknowledged',
+    reason: 'the cross-PR revert guard blocked the merge; only an operator acknowledgement or a new head changes the verdict',
+    testRef: 'failure-policy.test.ts:operator-decision:cross-pr-revert-unacknowledged',
+  },
+  {
+    code: 'challenge-comparison-stale',
+    reason: 'a compared pair whose record no longer satisfies Ready at the current heads; re-running Ready cannot change a settled comparison',
+    testRef: 'failure-policy.test.ts:operator-decision:challenge-comparison-stale',
+  },
+  {
+    code: 'review-session-interrupted-pre-pr',
+    reason: 'review was interrupted before a PR existed; the operator runs /re-review, which is not a mill retry path',
+    testRef: 'failure-policy.test.ts:operator-decision:review-session-interrupted-pre-pr',
+  },
+  {
+    code: 'operator-command-failed',
+    reason: 'an operator-issued command (e.g. /re-review) failed to launch; the operator who issued it is the one waiting',
+    testRef: 'failure-policy.test.ts:operator-decision:operator-command-failed',
+  },
+  {
+    code: 'transition-code-failure',
+    reason: 'Ready passed but a transition tool failed deterministically on mill code; the coder cannot be asked to fix mill code',
+    testRef: 'failure-policy.test.ts:operator-decision:transition-code-failure',
+  },
+  {
+    code: 'merge-residue',
+    reason: 'disconnected git state after a merge needs a human; the next command is printed and no mill path can reconcile it',
+    testRef: 'failure-policy.test.ts:operator-decision:merge-residue',
+  },
+] satisfies OperatorDecision[]);
+
+const OPERATOR_DECISION_BY_CODE: ReadonlyMap<string, OperatorDecision> = new Map(
+  OPERATOR_DECISIONS.map((decision) => [decision.code, decision]),
+);
+
+/** The operator-decision entry for a code, or undefined when not listed. */
+export function operatorDecisionFor(code: string | null | undefined): OperatorDecision | undefined {
+  const trimmed = (code ?? '').trim();
+  if (!trimmed) return undefined;
+  return OPERATOR_DECISION_BY_CODE.get(trimmed);
+}
+
+/** True when `code` names a known {@link OPERATOR_DECISIONS} entry. */
+export function isOperatorDecisionCode(code: string | null | undefined): boolean {
+  return operatorDecisionFor(code) !== undefined;
+}
+
 /** Legacy spellings that resolve to one canonical kind before policy lookup. */
 const KIND_ALIASES: Readonly<Record<string, string>> = {
   'invalid-model-id': 'provider-config-error',

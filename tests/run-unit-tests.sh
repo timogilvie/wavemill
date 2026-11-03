@@ -213,6 +213,7 @@ TESTS=(
   tools/quarantine-legacy-reviewer-forfeits.test.ts
   shared/lib/arm-failure-taxonomy.test.ts
   shared/lib/failure-policy.test.ts
+  shared/lib/operator-escalation.test.ts
   shared/lib/failure-policy.fixtures.test.ts
   shared/lib/failure-policy.property.test.ts
   shared/lib/condition-reconciler.property.test.ts

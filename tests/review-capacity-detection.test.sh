@@ -109,7 +109,7 @@ write_stage_result() {
   mkdir -p "$feature_dir"
   printf '{"stage":"%s","status":"%s"}\n' "$stage" "$status" > "$feature_dir/.${stage}-result.json"
 }
-write_ready_attention_file() { printf '%s\n' "${2:-}" > "$1/.needs-attention"; }
+escalate_operator_attention() { printf '%s\n' "${4:-}" > "$1/.needs-attention"; return 0; }
 _tmux_task_window_target() { return 1; }
 phase_launch_head() { echo "abc1234"; }
 

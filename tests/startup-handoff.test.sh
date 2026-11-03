@@ -488,6 +488,8 @@ mkdir -p "$TEST_REPO/shared/lib" "$TEST_REPO/tools/prompts" "$TEST_REPO/worktree
 mkdir -p "$TMP_ROOT/home/.claude" "$TMP_ROOT/home/.codex"
 cp "$REPO_DIR/shared/lib/wavemill-startup-runner.sh" "$TEST_REPO/shared/lib/"
 cp "$REPO_DIR/shared/lib/wavemill-common.sh" "$TEST_REPO/shared/lib/"
+# HOK-3360: wavemill-common.sh unconditionally sources operator-escalation.sh.
+cp "$REPO_DIR/shared/lib/operator-escalation.sh" "$TEST_REPO/shared/lib/"
 cp "$REPO_DIR/shared/lib/bounded-retry.sh" "$TEST_REPO/shared/lib/"
 cp "$REPO_DIR/shared/lib/task-progress.sh" "$TEST_REPO/shared/lib/"
 cp "$REPO_DIR/shared/lib/challenge-arms.sh" "$TEST_REPO/shared/lib/"

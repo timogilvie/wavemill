@@ -35,10 +35,10 @@ test('review-gate remediation: empty findings throws (callers must use artifact-
 });
 
 // protects: a pre-HOK-2890 review artifact with no typed findings[] and a
-// failing verdict (not_ready) with no infra category was previously parked
-// via write_ready_attention_file (terminal). The empty-findings fallback must
-// preserve that — classifying as retryable would burn the stage-failure-review
-// budget on a genuine agent fault.
+// failing verdict (not_ready) with no infra category is a terminal disposition
+// that the HOK-3360 escalation step pages (policy-terminal basis). The
+// empty-findings fallback must preserve that — classifying as retryable would
+// burn the stage-failure-review budget on a genuine agent fault.
 test('review-gate artifact signals: failing verdict without infra category → terminal', () => {
   const artifact: ReviewArtifactSignals = {
     artifacts: {
