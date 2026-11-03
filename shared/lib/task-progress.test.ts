@@ -842,3 +842,170 @@ test('deriveTaskProgress: non-idle agent + live background work does NOT suppres
 test('smoke: existsSync helper is available in the test env', () => {
   assert.equal(existsSync('/'), true);
 });
+
+// ── HOK-3381: shared tool-call progress rule ────────────────────────────────
+
+import {
+  ToolCallProgressTracker,
+  toolCallResultKey,
+  toolSelectionKey,
+} from './task-progress.ts';
+import { trackedContentFingerprint } from './native-agent/worktree-fingerprint.ts';
+
+const CODING_PROGRESS_POLICY = { maxRepeatedSelectionCalls: 8, maxNoProgressCalls: 4 };
+
+function testObservation(selection: string, fingerprint: string, result: string) {
+  return { selectionKey: selection, worktreeFingerprint: fingerprint, resultKey: result };
+}
+
+// protects: a model rerunning the same failing selection with no edits looping forever (HOK-3381 acceptance)
+test('ToolCallProgressTracker: same selection, unchanged tree, same failure stagnates within the configured count', () => {
+  const tracker = new ToolCallProgressTracker(CODING_PROGRESS_POLICY);
+  let stagnantAt: number | null = null;
+  for (let call = 1; call <= 10; call += 1) {
+    const decision = tracker.record(testObservation('run_tests:{"command":"node --test a.test.ts"}', 'tree-1', 'exit:1'));
+    if (decision.stagnant && stagnantAt === null) stagnantAt = call;
+  }
+  assert.equal(stagnantAt, CODING_PROGRESS_POLICY.maxRepeatedSelectionCalls);
+});
+
+// protects: slow repeats of the same timed-out selection evading the rule because output text differs (old output-hash rule)
+test('ToolCallProgressTracker: repeated timeouts of one selection are no-progress even when each run is slow', () => {
+  const tracker = new ToolCallProgressTracker({ maxRepeatedSelectionCalls: 3, maxNoProgressCalls: 2 });
+  assert.equal(tracker.record(testObservation('sel', 'tree-1', 'timeout')).stagnant, false);
+  assert.equal(tracker.record(testObservation('sel', 'tree-1', 'timeout')).noProgress, true);
+  const third = tracker.record(testObservation('sel', 'tree-1', 'timeout'));
+  assert.equal(third.noProgress, true);
+  assert.equal(third.stagnant, true);
+});
+
+// protects: an agent that edits code between runs being stopped as "stagnant"
+test('ToolCallProgressTracker: changed tracked content resets the no-progress count', () => {
+  const tracker = new ToolCallProgressTracker({ maxRepeatedSelectionCalls: 2, maxNoProgressCalls: 1 });
+  tracker.record(testObservation('sel', 'tree-1', 'exit:1'));
+  const edited = tracker.record(testObservation('sel', 'tree-2', 'exit:1'));
+  assert.equal(edited.noProgress, false);
+  assert.equal(edited.stagnant, false);
+  // Same content but a different result (the failure changed) is also progress.
+  const differentResult = tracker.record(testObservation('sel', 'tree-2', 'exit:0'));
+  assert.equal(differentResult.noProgress, false);
+});
+
+// protects: HOK-3374 attempt 2 — running smaller selections after a timeout is new information, not a loop
+test('ToolCallProgressTracker: a narrower selection after a timeout is a new selection, never stagnant', () => {
+  const tracker = new ToolCallProgressTracker(CODING_PROGRESS_POLICY);
+  tracker.record(testObservation('run_tests:{"command":"bash tests/run-related.sh"}', 'tree-1', 'timeout'));
+  for (let shard = 0; shard < 10; shard += 1) {
+    const decision = tracker.record(
+      testObservation(`run_tests:{"command":"node --test file-${shard}.test.ts"}`, 'tree-1', 'exit:0'),
+    );
+    assert.equal(decision.stagnant, false);
+    assert.equal(decision.noProgress, false);
+  }
+});
+
+// protects: a changed timeoutMs or argument order making a repeat look like a new selection
+test('toolSelectionKey: ignores volatile budget args and key order', () => {
+  const a = toolSelectionKey('run_tests', { command: 'node --test a.test.ts', timeoutMs: 100, maxOutputBytes: 1024 });
+  const b = toolSelectionKey('run_tests', { maxOutputBytes: 65536, command: 'node --test a.test.ts', timeoutMs: 600_000 });
+  assert.equal(a, b);
+  assert.notEqual(a, toolSelectionKey('run_tests', { command: 'node --test b.test.ts' }));
+  assert.notEqual(a, toolSelectionKey('run_format', { command: 'node --test a.test.ts' }));
+});
+
+// protects: test output with timings in it defeating result comparison (the old byte-identical output-hash rule)
+test('toolCallResultKey: command outcomes collapse to pass/fail/timeout, ignoring output noise', () => {
+  const timeoutA = toolCallResultKey({ details: { ok: true, status: 'timed_out', exitCode: null, durationMs: 300_001, stdout: 'ran 14s' } });
+  const timeoutB = toolCallResultKey({ details: { ok: true, status: 'timed_out', exitCode: null, durationMs: 599_872, stdout: 'ran 599s' } });
+  assert.equal(timeoutA, 'timeout');
+  assert.equal(timeoutA, timeoutB);
+  assert.equal(toolCallResultKey({ details: { ok: true, status: 'completed', exitCode: 1 } }), 'exit:1');
+  assert.equal(toolCallResultKey({ details: { ok: true, status: 'completed', exitCode: 0 } }), 'exit:0');
+  assert.equal(toolCallResultKey({ details: { ok: false, error: 'full_suite_refused' } }), 'rejected:full_suite_refused');
+  // Read-only tools digest the observable result.
+  const read1 = toolCallResultKey({ content: [{ type: 'text', text: 'page 1' }] });
+  const read2 = toolCallResultKey({ content: [{ type: 'text', text: 'page 2' }] });
+  assert.notEqual(read1, read2);
+  assert.equal(read1, toolCallResultKey({ content: [{ type: 'text', text: 'page 1' }] }));
+});
+
+// protects: test logs under .wavemill/ counting as worktree progress (HOK-3381: logs must not count)
+test('trackedContentFingerprint: tracked edits change it, .wavemill log writes do not', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'hok3381-fp-'));
+  try {
+    const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: ['ignore', 'pipe', 'ignore'] });
+    git('init', '-q');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'test');
+    writeFileSync(join(repo, 'src.ts'), 'export const x = 1;\n');
+    git('add', '.');
+    git('commit', '-qm', 'init');
+
+    const base = trackedContentFingerprint(repo);
+    assert.ok(base.length > 0);
+
+    // Log-only change: .wavemill/logs must not count as progress.
+    mkdirSync(join(repo, '.wavemill', 'logs'), { recursive: true });
+    writeFileSync(join(repo, '.wavemill', 'logs', 'run-tests.log'), 'line 1\n');
+    assert.equal(trackedContentFingerprint(repo), base);
+    writeFileSync(join(repo, '.wavemill', 'logs', 'run-tests.log'), 'line 1\nline 2\n');
+    assert.equal(trackedContentFingerprint(repo), base);
+
+    // A tracked-file edit is progress.
+    writeFileSync(join(repo, 'src.ts'), 'export const x = 2;\n');
+    assert.notEqual(trackedContentFingerprint(repo), base);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// ── HOK-3381: native session stream as a progress source ───────────────────
+
+// protects: a native coder deep inside a long run_tests reading as stalled while its own loop events keep flowing
+test('deriveTaskProgress: native session events after launch are a progress source', () => {
+  const now = new Date('2026-11-01T12:00:00Z');
+  const inputs = emptyInputs({
+    launchAt: '2026-11-01T11:00:00Z',
+    nativeSessionLastEventAt: '2026-11-01T11:55:00Z',
+  });
+  const p = deriveTaskProgress(inputs, { now });
+  const native = p.sources.find((s) => s.kind === 'native-session');
+  assert.ok(native, 'expected a native-session source');
+  assert.equal(p.lastProgressAt, '2026-11-01T11:55:00.000Z');
+  assert.equal(p.stalled, false);
+});
+
+// protects: stale pre-launch transcript events (a relaunch over an old stream) counting as progress
+test('deriveTaskProgress: native session events older than the launch anchor are ignored', () => {
+  const now = new Date('2026-11-01T12:00:00Z');
+  const inputs = emptyInputs({
+    launchAt: '2026-11-01T11:00:00Z',
+    nativeSessionLastEventAt: '2026-11-01T10:55:00Z',
+  });
+  const p = deriveTaskProgress(inputs, { now });
+  assert.equal(p.sources.find((s) => s.kind === 'native-session'), undefined);
+});
+
+// protects: the gather side never wiring the transcript tail into the primitive
+test('gatherTaskProgressInputs: reads the newest native session event from the transcript tail', () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'hok3381-run-'));
+  const prevRunDir = process.env.WAVEMILL_RUN_DIR;
+  try {
+    process.env.WAVEMILL_RUN_DIR = runDir;
+    const dir = join(runDir, 'native-sessions');
+    mkdirSync(dir, { recursive: true });
+    const tsA = Date.UTC(2026, 10, 1, 11, 10, 0);
+    const tsB = Date.UTC(2026, 10, 1, 11, 20, 0);
+    writeFileSync(join(dir, 'coding-HOK-9999.jsonl'), [
+      JSON.stringify({ seq: 0, sessionId: 's', timestamp: tsA, type: 'tool_started', toolCallId: 't1', toolName: 'run_tests', args: {} }),
+      JSON.stringify({ seq: 1, sessionId: 's', timestamp: tsB, type: 'tool_result', toolCallId: 't1', toolName: 'run_tests', isError: false, content: '' }),
+      '',
+    ].join('\n'));
+    const inputs = gatherTaskProgressInputs({ issue: 'HOK-9999', session: 'wavemill', phase: 'coding' });
+    assert.equal(inputs.nativeSessionLastEventAt, new Date(tsB).toISOString());
+  } finally {
+    if (prevRunDir === undefined) delete process.env.WAVEMILL_RUN_DIR;
+    else process.env.WAVEMILL_RUN_DIR = prevRunDir;
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});

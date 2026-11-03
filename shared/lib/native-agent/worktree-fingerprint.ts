@@ -2,17 +2,23 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 /**
- * Short fingerprint of the worktree state (HEAD sha + porcelain status + diff).
- * Used by the command-tools repeat-after-timeout guard so a legitimate
- * "fixed the hanging test, re-run the same focused command" still goes
- * through: a new tree → a new fingerprint → the record no longer matches.
+ * Fingerprint of the worktree's *content* for the shared HOK-3381 progress
+ * rule (`ToolCallProgressTracker` in shared/lib/task-progress.ts): HEAD sha,
+ * porcelain status, and the tracked-file diff — never mtimes. `.wavemill/`
+ * (test logs, telemetry, run artifacts) is excluded from every component so a
+ * verification run that only appended logs does not read as progress.
  *
- * Any git failure returns an empty string, which the guard treats
- * conservatively (the refusal persists until the agent changes the command).
+ * Any git failure returns an empty string, which the rule compares like any
+ * other value (two consecutive failures look unchanged — conservative).
  */
-export function defaultWorktreeFingerprint(worktreePath: string): string {
+export function trackedContentFingerprint(worktreePath: string): string {
+  const exclude = ':(exclude).wavemill';
   const parts: string[] = [];
-  for (const args of [['rev-parse', 'HEAD'], ['status', '--porcelain'], ['diff', 'HEAD']] as const) {
+  for (const args of [
+    ['rev-parse', 'HEAD'],
+    ['status', '--porcelain', '--', '.', exclude],
+    ['diff', 'HEAD', '--', '.', exclude],
+  ] as const) {
     try {
       const output = execFileSync('git', [...args], {
         cwd: worktreePath,

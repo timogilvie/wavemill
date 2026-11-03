@@ -515,16 +515,37 @@ describe('loop — budget stops', () => {
     assert.equal(result.turnsCompleted, 1);
   });
 
-  it('wall-clock budget fires abort signal', async () => {
-    const api = uniqueApi('budget-wall-clock');
-    const tool = makeTool('slow_tool', 'sequential', async (_id, signal) => {
-      // Honor the abort signal; exit quickly when fired (check already-aborted too).
-      await new Promise<void>((resolve, reject) => {
-        if (signal?.aborted) { reject(new Error('aborted')); return; }
-        const timer = setTimeout(resolve, 10_000);
-        signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('aborted')); }, { once: true });
-      });
-      return 'never';
+  // protects: the model-time budget no longer firing at all once the fixed wall-clock timer was removed (HOK-3381)
+  it('model-time budget aborts a run whose model-side time exceeds it', async () => {
+    const api = uniqueApi('budget-model-clock');
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        { content: [{ type: 'text', text: 'should be cut off' }], stopReason: 'stop' },
+      ],
+    });
+
+    const result = await runWavemillLoop({
+      model: { id: 'test-model', api, provider: 'test-provider' },
+      context: makeContext(),
+      // Model-side time: outside any harness tool interval, so it is charged.
+      convertToLlm: async (messages) => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return messages as Message[];
+      },
+      budget: { maxWallClockMs: 100 },
+    });
+
+    assert.equal(result.stopReason, 'wall_clock_limit');
+    assert.ok(result.wallClockMs >= 100);
+  });
+
+  // protects: HOK-3374 — 51 minutes of our own run_tests execution being charged against the model's time budget
+  it('pauses the model clock while a harness tool executes', async () => {
+    const api = uniqueApi('budget-clock-pause');
+    const tool = makeTool('slow_tool', 'sequential', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return 'done';
     });
 
     registerScriptedPiProvider({
@@ -534,18 +555,20 @@ describe('loop — budget stops', () => {
           content: [{ type: 'tool_call', id: 'sl1', name: 'slow_tool', arguments: {} }],
           stopReason: 'tool_calls',
         },
+        { content: [{ type: 'text', text: 'Done' }], stopReason: 'stop' },
       ],
     });
 
+    // The tool alone (300ms) exceeds the 150ms budget; only model time is
+    // charged, so the run completes.
     const result = await runWavemillLoop({
-      model: { id: 'test-model', api, provider: 'test-provider' },
-      context: makeContext([tool]),
-      convertToLlm: piIdentity,
-      budget: { maxWallClockMs: 100 },
+      ...baseConfig(api, [tool]),
+      budget: { maxWallClockMs: 150 },
     });
 
-    assert.equal(result.stopReason, 'wall_clock_limit');
-    assert.ok(result.wallClockMs >= 100);
+    assert.equal(result.stopReason, 'stop');
+    assert.equal(result.toolCallsExecuted, 1);
+    assert.ok(result.wallClockMs >= 300);
   });
 
   it('stops repeated normalized tool signatures with identical output as tool_stagnation', async () => {
@@ -581,8 +604,8 @@ describe('loop — budget stops', () => {
       ...baseConfig(api, [tool]),
       budget: {
         stagnation: {
-          maxRepeatedSignatureCalls: 3,
-          maxNoNovelProgressCalls: 2,
+          maxRepeatedSelectionCalls: 3,
+          maxNoProgressCalls: 2,
         },
       },
     });
@@ -625,8 +648,8 @@ describe('loop — budget stops', () => {
       ...baseConfig(api, [tool]),
       budget: {
         stagnation: {
-          maxRepeatedSignatureCalls: 3,
-          maxNoNovelProgressCalls: 2,
+          maxRepeatedSelectionCalls: 3,
+          maxNoProgressCalls: 2,
         },
       },
     });
