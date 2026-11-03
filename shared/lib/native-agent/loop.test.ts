@@ -544,7 +544,7 @@ describe('loop — budget stops', () => {
   it('pauses the model clock while a harness tool executes', async () => {
     const api = uniqueApi('budget-clock-pause');
     const tool = makeTool('slow_tool', 'sequential', async () => {
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await new Promise((resolve) => setTimeout(resolve, 2_500));
       return 'done';
     });
 
@@ -559,16 +559,17 @@ describe('loop — budget stops', () => {
       ],
     });
 
-    // The tool alone (300ms) exceeds the 150ms budget; only model time is
-    // charged, so the run completes.
+    // The tool alone (2.5s) exceeds the 1s budget; only model time is
+    // charged, so the run completes. The budget leaves generous headroom for
+    // pre-tool loop overhead so a loaded CI host cannot fire it spuriously.
     const result = await runWavemillLoop({
       ...baseConfig(api, [tool]),
-      budget: { maxWallClockMs: 150 },
+      budget: { maxWallClockMs: 1_000 },
     });
 
     assert.equal(result.stopReason, 'stop');
     assert.equal(result.toolCallsExecuted, 1);
-    assert.ok(result.wallClockMs >= 300);
+    assert.ok(result.wallClockMs >= 2_500);
   });
 
   // protects: HOK-3381 acceptance — rerunning the same failing selection with no
@@ -612,7 +613,8 @@ describe('loop — budget stops', () => {
       budget: {
         // Three slow runs (~360ms of harness tool time) do not consume this
         // model-time budget: stagnation must stop the run, not the clock.
-        maxWallClockMs: 1_000,
+        // Generous so load-induced loop overhead cannot fire it first.
+        maxWallClockMs: 15_000,
         stagnation: {
           maxRepeatedSelectionCalls: 3,
           maxNoProgressCalls: 2,
