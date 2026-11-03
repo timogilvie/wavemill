@@ -9,6 +9,12 @@ import { appendTriggerLogEntry } from './hokusai-trigger-log.ts';
 import { errorMessage } from './error-utils.ts';
 import type { EvalRecord } from './eval-schema.ts';
 import { routeRecordContributionInputs } from './route-override-record.ts';
+import {
+  headMoveContributionInputs,
+  locateHeadMoves,
+  summarizeHeadMovesByStage,
+  type HeadMoveStageSummary,
+} from './head-move-record.ts';
 
 export interface TriggerHokusaiSubmissionOptions {
   repoDir: string;
@@ -104,6 +110,8 @@ export function buildHokusaiContributionProjection(
   observedAt: string,
   record?: EvalRecord,
   launchPriorityValidation?: LaunchPriorityValidationContext,
+  /** Per-stage head-move authorship (HOK-3370); resolved by the caller from the task's record. */
+  headMoves?: HeadMoveStageSummary[],
 ): RedactedEvalContributionProjection {
   const fod = record?.featureOutcomeDiagnostics ?? undefined;
 
@@ -139,6 +147,9 @@ export function buildHokusaiContributionProjection(
         record?.routeProvenance?.stageRoutes,
         record?.routeProvenance?.hokusaiInferenceLogId,
       ),
+      // HOK-3370: per-stage head-move authorship, so a reviewer or
+      // remediation commit on an arm is visible to Hokusai as data.
+      ...headMoveContributionInputs(headMoves),
     },
     // Feature outcome artifact diagnostics (HOK-2262)
     // Only safe scalar/enum/array-of-string fields; no raw paths or issue IDs
@@ -294,12 +305,19 @@ export async function triggerHokusaiSubmission(
       configDir: options.configDir,
       salt: options.redactionSalt,
     });
+    // HOK-3370: per-stage authorship from the head-move record (live state
+    // dir or eval archive) rides the contribution row. Best-effort — an
+    // absent record contributes nothing.
+    const headMoveRows = record.issueId
+      ? locateHeadMoves({ repoDir: options.repoDir, issueId: record.issueId })
+      : [];
     const row = hokusaiSubmissionTriggerDeps.buildSubmitDataContributionRow(
       buildHokusaiContributionProjection(
         redactedSubmission,
         record.timestamp,
         record,
         options.launchPriorityValidation,
+        headMoveRows.length > 0 ? summarizeHeadMovesByStage(headMoveRows) : undefined,
       ),
     );
     const enqueueResult = await hokusaiSubmissionTriggerDeps.enqueueContribution(row, {

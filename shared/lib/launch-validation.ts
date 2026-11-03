@@ -578,6 +578,9 @@ function buildHokusaiDiagnostics(
     eligibleEvalRecords += 1;
     try {
       const redacted = redactHokusaiSubmission(submission.submission, { salt: redactionSalt });
+      // HOK-3370 note: head-move authorship is attached on the real
+      // submission path (hokusai-submission-trigger.ts); this diagnostics
+      // preview has no repoDir to resolve the record from.
       const projection = buildHokusaiContributionProjection(
         redacted,
         record.timestamp,

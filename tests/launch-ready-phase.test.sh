@@ -321,6 +321,9 @@ run_launch_case() {
         head_sync_head_moved_during_ready)
           printf "%s\n%s\n" "$SHA_NEW" "newer999" > "$GH_HEADS_FILE"
           ;;
+        head_sync_head_moved_identity_differs)
+          printf "%s\n%s\n" "$SHA_NEW" "newer999" > "$GH_HEADS_FILE"
+          ;;
         head_sync_github_lag)
           # HOK-3171: the agent pushed a fix and origin/<branch> holds it, but
           # the GitHub API still reports the parent as the PR head.
@@ -343,6 +346,20 @@ EOF
     trap '\''rm -f "$DEBUG_FILE"'\'' EXIT
 
     case "$TEST_CASE" in
+      # HOK-3370: pin the seam and the freshness primitive deterministically —
+      # the harness intercepts tool spawns, so the real CLI never runs here.
+      head_sync_unpushed_commits)
+        publish_stage_head() {
+          PUBLISH_STAGE_HEAD_OUTCOME="pushed"; PUBLISH_STAGE_HEAD_REASON=""; PUBLISH_STAGE_HEAD_DETAIL=""
+          return 0
+        }
+        ;;
+      head_sync_head_moved_during_ready)
+        change_identity_fresh() { CHANGE_IDENTITY_REASON="same-change-identity"; return 0; }
+        ;;
+      head_sync_head_moved_identity_differs)
+        change_identity_fresh() { CHANGE_IDENTITY_REASON="change-identity-differs"; return 1; }
+        ;;
       # The one resolver for (abc123, base) already launched and Ready still
       # sees the conflict: the budget terminalizes.
       conflict_persists_after_remediation)
@@ -1593,22 +1610,41 @@ check_contains "GitHub head unavailable at publish: fails closed" "$output" "rc=
 check_contains "GitHub head unavailable at publish: typed ready-label" "$output" "\"stage\":\"ready-label\""
 check_contains "GitHub head unavailable at publish: no checkout fallback" "$output" "handoff_heads=[]"
 
+# HOK-3370: unpushed local work is published through the stage-head seam,
+# never refused (HOK-3361 touches #1/#3). The seam (stubbed here) publishes
+# the local head; the sync then holds for the PR view via the HOK-3171 lag
+# path. Nothing is handed to tend at a stale head and no attention is raised.
 output="$(run_launch_case head_sync_unpushed_commits)"
 sha_local="$(field "$output" sha_local)"
-check_contains "unpushed commits: sync refused" "$output" "rc=1"
-check_contains "unpushed commits: attention names the divergence" "$output" "unpushed local work"
+check_contains "unpushed commits: published, held as pending (rc 4)" "$output" "rc=4"
+check_contains "unpushed commits: detail names the seam publication" "$output" "published unpushed local head"
+check_contains "unpushed commits: pending typed as pr-head-lag" "$output" "\"pendingReason\":\"pr-head-lag\""
 check_contains "unpushed commits: local work kept" "$output" "worktree_head_after=$sha_local"
-check_contains "unpushed commits: Ready not run" "$output" "ready_checked_head=none"
-check_contains "unpushed commits: nothing published" "$output" "handoff_heads=[]"
+check_contains "unpushed commits: Ready not run yet" "$output" "ready_checked_head=none"
+check_contains "unpushed commits: nothing handed to tend" "$output" "handoff_heads=[]"
+check_contains "unpushed commits: no operator attention" "$output" "needs_attention=absent"
 
+# HOK-3370 (deletes the HOK-3112 head-moved special case): a PR head that
+# moved while Ready ran but holds the same change (tend rebase — the
+# freshness primitive, stubbed fresh here) proceeds at the live head: the
+# handoff is published at GitHub's head, never the stale checkout's.
 output="$(run_launch_case head_sync_head_moved_during_ready)"
 sha_new="$(field "$output" sha_new)"
 check_contains "head moved during Ready: Ready checked the synced head" "$output" "ready_checked_head=$sha_new"
-check_contains "head moved during Ready: returns pending" "$output" "rc=4"
-check_contains "head moved during Ready: typed head-changed" "$output" "\"pendingReason\":\"head-changed\""
-check_contains "head moved during Ready: pending names the new head" "$output" "\"readyHeadSha\":\"newer999\""
-check_contains "head moved during Ready: nothing published" "$output" "handoff_heads=[]"
+check_contains "head moved during Ready: same change proceeds (rc 0)" "$output" "rc=0"
+check_contains "head moved during Ready: handoff checked at the live head" "$output" "ready-tend-handoff-checked:newer999"
+check_contains "head moved during Ready: handoff published at the live head" "$output" "ready-tend-handoff-publish:newer999"
+check_not_contains "head moved during Ready: retired head-changed pending never reappears" "$output" "\"pendingReason\":\"head-changed\""
 check_not_contains "head moved during Ready: no needs-user failure" "$output" "|ready|failed|"
+
+# HOK-3370: the same move with a *different* change identity (a code-changing
+# commit landed) fails typed through ownership-changed; the HOK-3371
+# disposition owns the retry. Never a silent publish of unreviewed work.
+output="$(run_launch_case head_sync_head_moved_identity_differs)"
+check_contains "head moved, identity differs: fails closed (rc 1)" "$output" "rc=1"
+check_contains "head moved, identity differs: typed ownership-changed" "$output" "\"stage\":\"ownership-changed\""
+check_contains "head moved, identity differs: detail names the identity divergence" "$output" "hold different changes"
+check_contains "head moved, identity differs: nothing published" "$output" "handoff_heads=[]"
 
 # The caller's lag branch runs under set -u; it once read the sync helper's
 # private `local_head` and killed the monitor on the first lagging PR.

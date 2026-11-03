@@ -4577,7 +4577,10 @@ export async function applyAutoFixes(
         const result = run('gh', args, 20_000, cwd);
         return result;
       },
-      updateBranchWithBase: (branch, baseBranch, worktree) => updateBranchWithBase(branch, baseBranch, worktree),
+      updateBranchWithBase: (branch, baseBranch, worktree, headMoveContext) =>
+        updateBranchWithBase(branch, baseBranch, worktree, undefined, headMoveContext
+          ? { ...headMoveContext, stage: 'ready', kind: 'base-merge' }
+          : undefined),
       readWorktreeDirtyStatus: (worktree) => readWorktreeDirtyStatus({ worktree }),
       getProgress: (task) => progressByIssue.get(task.issue),
       abortTaskInState: (stateFile, issue, reason) => abortTaskInState(stateFile, issue, reason).then(() => undefined),

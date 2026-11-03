@@ -231,7 +231,8 @@
       "canaryCohort": [
         { "provider": "openrouter", "model": "qwen-3-coder" },
         { "provider": "openrouter", "model": "kimi-k2.7-code" },
-        { "provider": "openrouter", "model": "glm-5.3" }
+        { "provider": "openrouter", "model": "glm-5.3" },
+        { "provider": "openrouter", "model": "glm-5.3-flash" }
       ],
       "minCodingReady": 2
     },
@@ -410,6 +411,7 @@
     "Golden Journey (queue-events-emitted)": "bash tests/journeys/run-journeys.sh queue-events-emitted",
     "Golden Journey (dependency-install-drift)": "bash tests/journeys/run-journeys.sh dependency-install-drift",
     "Golden Journey (native-slow-verification)": "bash tests/journeys/run-journeys.sh native-slow-verification",
+    "Golden Journey (head-move-publication)": "bash tests/journeys/run-journeys.sh head-move-publication",
     "Golden Journeys": "bash tests/run-related.sh"
     },
     "postPrReconciliation": {

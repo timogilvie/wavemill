@@ -8,6 +8,7 @@ import type { StageExecutionEvidenceStatus, StageName, StageResult, StageStatus 
 import type { ChallengeArmFailure } from './arm-failure-taxonomy.ts';
 import { parsePiRuntimeVersions, piRuntimeVersionsField, type PiRuntimeVersions } from './native-agent/pi-runtime-version.ts';
 import type { ChallengeStage } from './challenge-mode.ts';
+import type { HeadMoveStageSummary } from './head-move-record.ts';
 import type {
   DeliveryVerdict,
   ForkIdentity,
@@ -336,6 +337,15 @@ export interface ChallengeComparison {
   primaryReviewExecutedIdentity?: ReviewExecutedIdentitySet;
   /** Executed review identities observed for the challenger arm. */
   challengerReviewExecutedIdentity?: ReviewExecutedIdentitySet;
+
+  /**
+   * Per-arm commits by stage, from the head-move record (HOK-3370). A
+   * reviewer or remediation commit on one arm is visible data for the judge
+   * corpus and Hokusai; absent when no head-move record exists (pre-HOK-3370
+   * arms).
+   */
+  primaryHeadMoves?: HeadMoveStageSummary[];
+  challengerHeadMoves?: HeadMoveStageSummary[];
 
   /**
    * Corrective marker written by legacy sweeps (HOK-2970) and other quarantine
