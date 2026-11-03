@@ -880,7 +880,7 @@ describe('resolve-challenge-task CLI', () => {
         model: 'qwen-3-coder',
         stage: 'implementation',
         terminalStatus: 'failure',
-        failureKind: 'native-completion-protocol',
+        failureKind: 'completion-protocol',
         faultClass: 'model-fault',
       });
 
@@ -934,7 +934,7 @@ describe('resolve-challenge-task CLI', () => {
         model: 'qwen-3-coder',
         stage: 'implementation',
         terminalStatus: 'failure',
-        failureKind: 'native-completion-protocol',
+        failureKind: 'completion-protocol',
         faultClass: 'model-fault',
       });
 

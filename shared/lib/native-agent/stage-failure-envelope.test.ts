@@ -166,7 +166,7 @@ test('terminalFailureKindForEnvelope covers the full cause table', () => {
     'provider-outage': 'provider-transient-error',
     'provider-credit-exhausted': 'provider-credit-exhausted',
     'provider-config-error': 'provider-config-error',
-    'model-protocol': 'native-completion-protocol',
+    'model-protocol': 'completion-protocol',
     'context-exhausted': 'context-exhausted',
     'context-window-exceeded': 'context-window-exceeded',
     'policy-denied': 'policy-denied',

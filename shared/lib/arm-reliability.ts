@@ -38,7 +38,15 @@ export interface ArmReliabilityRecord {
   budgetExhausted?: BudgetExhaustedFact;
   /** HOK-3380: the transcript time split resolved from `budgetExhausted.sessionStream`, when found. */
   timeSplit?: NativeStageTimeSplit;
-  source: 'challenge_abort_pair';
+  /**
+   * HOK-3358: the recorder that produced this row. `challenge_abort_pair`
+   * remains the default (and the historical value for backfilled rows).
+   * `operator-abort` and `pair-resolver` are added so the operator and
+   * sibling-stalled paths both emit through the same recorder; readers that
+   * only check `source === 'challenge_abort_pair'` continue to work, new
+   * values are additive.
+   */
+  source: 'challenge_abort_pair' | 'operator-abort' | 'pair-resolver';
 }
 
 export interface BuildArmReliabilityRecordInput {
@@ -56,6 +64,8 @@ export interface BuildArmReliabilityRecordInput {
   featureDir?: string;
   timestamp?: string;
   id?: string;
+  /** HOK-3358: which recorder is writing this row. Defaults to `challenge_abort_pair`. */
+  source?: ArmReliabilityRecord['source'];
 }
 
 /**
@@ -89,7 +99,7 @@ export function buildArmReliabilityRecord(input: BuildArmReliabilityRecordInput)
     ...(input.nextAction ? { nextAction: input.nextAction } : {}),
     ...(budgetExhausted ? { budgetExhausted } : {}),
     ...(timeSplit ? { timeSplit } : {}),
-    source: 'challenge_abort_pair',
+    source: input.source ?? 'challenge_abort_pair',
   };
 }
 

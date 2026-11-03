@@ -1,0 +1,14 @@
+# Allowlist for check-arm-termination-recorder.ts (HOK-3358).
+#
+# Format: <repo-relative path> [<max findings>]  # <reason>
+#
+# A missing count exempts the file entirely. A count caps the file at that
+# many findings; the ratchet only shrinks. One-line suppressions use
+# `// allow-arm-termination: <reason>` or `# allow-arm-termination: <reason>`.
+
+# Supersession is a different lifecycle (phase/status/supersededReason flip),
+# not an arm termination: no fault class, no evidence, no reliability record.
+# `markChallengerSupersededForPrimaryMerge` keeps its direct write with a
+# distinct value ("Primary already merged as PR #N") that doesn't carry the
+# `terminal_stage_failure:` prefix.
+shared/lib/challenge-pair-resolver.ts 1  # markChallengerSupersededForPrimaryMerge: supersession, not termination

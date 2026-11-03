@@ -15,7 +15,8 @@ import type { EvalRecord } from './eval-schema.ts';
 import type { ForkIdentity, InvalidChallengeReason } from './challenge-execution-contract.ts';
 import { readForkIdentity } from './fork-identity.ts';
 import { challengerTaskKey } from './task-identity.ts';
-import { mutateWorkflowState } from './workflow-state.ts';
+import { mutateWorkflowState, readWorkflowState } from './workflow-state.ts';
+import { recordArmTermination } from './arm-termination.ts';
 import {
   getSiblingBranch,
   classifyPairUnresolvableState,
@@ -586,21 +587,41 @@ function describeStalledArm(task: TaskEvalState): string {
 /**
  * Durably stamp a stalled arm so every other consumer (monitor, dashboard,
  * gate) sees it as aborted. Never overwrites an existing abort stamp.
+ *
+ * HOK-3358: delegates to the one arm-termination recorder with
+ * `actor: 'pair-resolver'`. The recorder is idempotent — a second call with
+ * the same reason is a no-op — so an already-stamped arm is skipped at the
+ * state-mutation level by `mutateWorkflowState` (nothing changes), and the
+ * reliability-record dedupe key `(issueId, pairId, role, abortReason, stage)`
+ * suppresses duplicate reliability writes.
  */
 async function stampStalledArm(repoDir: string, task: TaskEvalState, now?: () => Date): Promise<void> {
   const statePath = join(repoDir, '.wavemill', 'workflow-state.json');
-  const timestamp = (now ?? (() => new Date()))().toISOString();
-  await mutateWorkflowState(statePath, (current) => {
-    const entry = current.tasks?.[task.issueId];
-    if (!entry || (typeof entry.challengeAborted === 'string' && entry.challengeAborted)) {
-      return current;
-    }
-    entry.challengeAborted = SIBLING_STALLED_ABORT_REASON;
-    entry.challengeAbortedDetail = describeStalledArm(task);
-    entry.challengeAbortedStage = task.phase ?? task.challengeStage ?? null;
-    entry.updated = timestamp;
-    return current;
+  // Short-circuit when the arm already has an abort stamp — the recorder
+  // would still write but we also want to preserve the "never overwrite"
+  // semantics the pre-HOK-3358 helper had.
+  if (await stalledArmAlreadyStamped(statePath, task.issueId)) return;
+
+  await recordArmTermination({
+    issueId: task.issueId,
+    kind: 'sibling-stalled',
+    actor: 'pair-resolver',
+    detail: describeStalledArm(task),
+    stage: task.phase ?? task.challengeStage ?? undefined,
+    model: task.model ?? undefined,
+    scope: 'single',
+    repoDir,
+    stateFile: statePath,
+    now,
   });
+}
+
+async function stalledArmAlreadyStamped(statePath: string, issueId: string): Promise<boolean> {
+  if (!existsSync(statePath)) return false;
+  const state = readWorkflowState(statePath);
+  const entry = state?.tasks?.[issueId];
+  if (!entry) return false;
+  return typeof entry.challengeAborted === 'string' && entry.challengeAborted.length > 0;
 }
 
 function isPastOrphanGrace(task: TaskEvalState, now: () => Date): boolean {

@@ -288,10 +288,11 @@ export async function readStageFailureEnvelope(filePath: string): Promise<StageF
 /**
  * The single cause → {@link ArmFailureKind} conversion (HOK-3064).
  *
- * `model-protocol` reuses `native-completion-protocol` (already classified
+ * `model-protocol` reuses `completion-protocol` (already classified
  * `model-fault`): the provider delivered output but the model violated the
  * stage's output protocol — a malformed/empty *review* response is the same
- * class of signal as a malformed coding completion artifact.
+ * class of signal as a malformed coding completion artifact. HOK-3358
+ * renamed the kind to its harness-agnostic spelling.
  */
 export function terminalFailureKindForEnvelope(envelope: StageFailureEnvelope): ArmFailureKind {
   return terminalFailureKindForCause(envelope.cause);
@@ -310,7 +311,7 @@ export function terminalFailureKindForCause(cause: StageFailureCause): ArmFailur
     case 'provider-config-error':
       return 'provider-config-error';
     case 'model-protocol':
-      return 'native-completion-protocol';
+      return 'completion-protocol';
     case 'context-exhausted':
       return 'context-exhausted';
     case 'context-window-exceeded':

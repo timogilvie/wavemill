@@ -20,7 +20,10 @@ export type ArmFailureKind =
   | 'tool-use-unsupported'
   | 'empty-model-turn'
   | 'native-provider-error'
-  | 'native-completion-protocol'
+  // HOK-3358: harness-agnostic (`native-completion-protocol` was the pre-rename
+  // spelling and is still accepted via `KIND_ALIASES`). "Completion artifact
+  // contradicts the delivered work" — model-fault, regardless of harness.
+  | 'completion-protocol'
   // Typed native stage-failure kinds (HOK-3064). `native-stage-timeout` is the
   // one budget-exhaustion kind for every native stage (HOK-3362); its fault
   // class is derived from the `budgetExhausted` fact, never fixed. Historical
@@ -254,7 +257,8 @@ export function classifyArmFault(input: {
     // The model violated the coding completion/tool protocol (typed
     // no_completion_artifact / invalid_completion_artifact handoff): the
     // provider delivered output, so this is model quality signal.
-    case 'native-completion-protocol':
+    // HOK-3358: harness-agnostic (was `native-completion-protocol`).
+    case 'completion-protocol':
       return 'model-fault';
     // HOK-3128: the model finished coding but left its own output uncommitted
     // and did not repair it when relaunched with a targeted instruction — the

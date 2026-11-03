@@ -13,6 +13,7 @@ import {
   parseAbortFailureKind,
   isInvalidChallengeAbort,
 } from './arm-failure-taxonomy.ts';
+import { canonicalFailureKind } from './failure-policy.ts';
 import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 import { nativeStageTimeSplit } from './native-agent/stage-time-split.ts';
 import { parseTranscriptJsonl } from './native-agent/transcript.ts';
@@ -62,11 +63,18 @@ test('classifies provider and ambiguous failures conservatively', () => {
 test('classifies the HOK-2933 typed-handoff failure kinds', () => {
   // A completion-protocol violation is the model's fault: the provider
   // returned output, but the model never produced a valid completion artifact.
+  // HOK-3358 renamed the kind from `native-completion-protocol` so the alias
+  // chain classifies both spellings; `canonicalFailureKind` resolves the
+  // legacy name to the new one before policy lookup.
   assert.equal(classifyArmFault({
-    failureKind: 'native-completion-protocol',
+    failureKind: 'completion-protocol',
     detail: 'model emitted apply_patch as assistant text with zero structured tool calls',
   }), 'model-fault');
-  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'native-completion-protocol' })), true);
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'completion-protocol' })), true);
+  // Legacy spelling parses but the classifier's switch only names the new
+  // name — the alias chain (via `canonicalFailureKind`) carries the legacy
+  // kind to its new one in every policy site.
+  assert.equal(canonicalFailureKind('native-completion-protocol'), 'completion-protocol');
 
   // Unclassified failures must stay out of the quality corpus, even when the
   // detail contains strings the native-provider-error refinement would match.
@@ -77,7 +85,7 @@ test('classifies the HOK-2933 typed-handoff failure kinds', () => {
   }), 'unknown-fault');
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'native-unclassified' })), false);
 
-  assert.equal(parseAbortFailureKind('terminal_stage_failure:native-completion-protocol'), 'native-completion-protocol');
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:completion-protocol'), 'completion-protocol');
   assert.equal(parseAbortFailureKind('terminal_launch_failure:native-unclassified'), 'native-unclassified');
 });
 
