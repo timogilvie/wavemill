@@ -1045,21 +1045,23 @@ describe('launchNativeCoding', () => {
  * A tool that blocks until the run's abort signal fires, so the loop's own
  * wall-clock budget aborts the run mid-flight exactly as on HOK-3329 attempt 2.
  */
-function createWaitTool(): ToolDescriptor<Record<string, never>, { ok: true }> {
+function createWaitTool(): ToolDescriptor<Record<string, unknown>, { ok: true }> {
   return {
     metadata: {
       name: 'run_slow_check',
-      description: 'Test-only tool that waits for the abort signal.',
+      // HOK-3381: harness tool time pauses the model clock, so this tool
+      // stays fast — the budget is drained by the model-side churn around it.
+      description: 'Test-only fast check tool.',
       class: 'mutation',
       allowedPhases: ['coding'],
       executionMode: 'sequential',
       outputCapPolicy: { strategy: 'none' },
     },
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    parameters: { type: 'object', properties: { n: { type: 'number' } }, additionalProperties: false },
     async execute(_toolCallId, _params, signal) {
       await new Promise<void>((resolve) => {
         if (signal?.aborted) return resolve();
-        const timer = setTimeout(resolve, 5_000);
+        const timer = setTimeout(resolve, 1);
         signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
       });
       return { content: [{ type: 'text', text: 'checked' }], details: { ok: true } };
@@ -1078,7 +1080,7 @@ describe('launchNativeCoding budget exhaustion (HOK-3362, HOK-3329 replay)', () 
       provider: 'scripted',
       turns: (context: ScriptedProviderContext) => {
         calls += 1;
-        if (context.options?.signal?.aborted || calls > 1) {
+        if (context.options?.signal?.aborted) {
           // The in-flight request after our budget fired: the transport reports the abort.
           return {
             content: [],
@@ -1087,7 +1089,11 @@ describe('launchNativeCoding budget exhaustion (HOK-3362, HOK-3329 replay)', () 
             errorMessage: 'Request was aborted',
           };
         }
-        return toolTurn('slow-1', 'run_slow_check', {});
+        // HOK-3381: the model churns tool turns (distinct args each call, so
+        // the shared progress rule sees new selections, never stagnation);
+        // the fast tool pauses the clock only briefly, so model-side time
+        // drains the 150ms budget.
+        return toolTurn(`slow-${calls}`, 'run_slow_check', { n: calls });
       },
     });
     const model = { id: `scripted:${api}`, name: `scripted:${api}`, api, provider: 'scripted' };
@@ -1100,7 +1106,7 @@ describe('launchNativeCoding budget exhaustion (HOK-3362, HOK-3329 replay)', () 
         wtDir: repoDir,
         repoDir,
         loopModelOverride: model,
-        loopBudgetOverride: { maxWallClockMs: 150 },
+        loopBudgetOverride: { maxWallClockMs: 150, maxTurns: 10_000, maxToolCalls: 10_000 },
         extraDescriptors: [createWaitTool()],
       }),
       (error: unknown) => {
@@ -1122,7 +1128,7 @@ describe('launchNativeCoding budget exhaustion (HOK-3362, HOK-3329 replay)', () 
     assert.equal(fact.limit, 150);
     assert.ok(fact.used >= 150);
     assert.ok(fact.progress.turnsCompleted >= 1);
-    assert.equal(fact.progress.toolCallsExecuted, 1);
+    assert.ok(fact.progress.toolCallsExecuted >= 1);
 
     const envelope = await readStageFailureEnvelope(getStageFailureEnvelopePath(featureDir, 'coding'));
     assert.equal(envelope.ok, true);

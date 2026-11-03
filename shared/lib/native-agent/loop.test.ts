@@ -571,6 +571,59 @@ describe('loop — budget stops', () => {
     assert.ok(result.wallClockMs >= 300);
   });
 
+  // protects: HOK-3381 acceptance — rerunning the same failing selection with no
+  // edits stops via tool_stagnation within the configured count, even when each
+  // run is slow and the model varies timeoutMs between calls
+  it('stops reruns of the same failing selection with no edits via tool_stagnation, even when slow', async () => {
+    let executions = 0;
+    const tool = makeTool('run_tests', 'sequential', async () => {
+      executions += 1;
+      await new Promise((resolve) => setTimeout(resolve, 120)); // slow run: paused clock, not budget
+      return 'tests timed out after the per-call ceiling';
+    });
+    const api = uniqueApi('stagnant-verification');
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        {
+          content: [{ type: 'tool_call', id: 'v1', name: 'run_tests', arguments: { command: 'node --test a.test.ts', timeoutMs: 100 } }],
+          stopReason: 'tool_calls',
+        },
+        {
+          // A raised timeoutMs is volatile — same selection.
+          content: [{ type: 'tool_call', id: 'v2', name: 'run_tests', arguments: { command: 'node --test a.test.ts', timeoutMs: 600_000 } }],
+          stopReason: 'tool_calls',
+        },
+        {
+          content: [{ type: 'tool_call', id: 'v3', name: 'run_tests', arguments: { command: 'node --test a.test.ts', timeoutMs: 100 } }],
+          stopReason: 'tool_calls',
+        },
+        {
+          content: [{ type: 'text', text: 'should not reach final text' }],
+          stopReason: 'stop',
+        },
+      ],
+    });
+
+    const result = await runWavemillLoop({
+      ...baseConfig(api, [tool]),
+      // The tree never changes between runs: no progress.
+      progressFingerprint: () => 'tree-1',
+      budget: {
+        // Three slow runs (~360ms of harness tool time) do not consume this
+        // model-time budget: stagnation must stop the run, not the clock.
+        maxWallClockMs: 1_000,
+        stagnation: {
+          maxRepeatedSelectionCalls: 3,
+          maxNoProgressCalls: 2,
+        },
+      },
+    });
+
+    assert.equal(result.stopReason, 'tool_stagnation');
+    assert.equal(executions, 3);
+  });
+
   it('stops repeated normalized tool signatures with identical output as tool_stagnation', async () => {
     let executions = 0;
     const tool = makeTool('search_text', 'parallel', async () => {
