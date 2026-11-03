@@ -17,47 +17,19 @@ import {
   openSync,
   readFileSync,
   renameSync,
-  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 import { runTool } from '../shared/lib/tool-runner.ts';
+import { acquireStateLockSync, releaseStateLock, type StateLockHandle } from '../shared/lib/state-lock.ts';
 import {
   archiveFromHotState,
   DEFAULT_KEEP,
   DEFAULT_MAX_AGE_DAYS,
   DEFAULT_BYTE_CAP,
 } from '../shared/lib/state-archive.ts';
-
-function acquireLockDir(statePath: string, timeoutMs: number): string {
-  const lock = `${statePath}.lock`;
-  const started = Date.now();
-  // Match shared/lib/wavemill-common.sh state_mutate lock protocol: mkdir
-  // the lock dir, back off on EEXIST.
-  while (true) {
-    try {
-      mkdirSync(lock);
-      return lock;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-      if (Date.now() - started > timeoutMs) {
-        throw new Error(`timed out acquiring ${lock}`);
-      }
-      // Short blocking sleep via Atomics.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
-    }
-  }
-}
-
-function releaseLock(lockDir: string): void {
-  try {
-    rmdirSync(lockDir);
-  } catch {
-    // ignore
-  }
-}
 
 runTool({
   name: 'migrate-state-archive',
@@ -138,7 +110,7 @@ runTool({
     }
 
     const stateDir = dirname(absState);
-    const lock = acquireLockDir(absState, 15_000);
+    const lock = acquireStateLockSync(absState, { timeoutMs: 15_000, purpose: 'migrate-state-archive' });
     try {
       const raw = readFileSync(absState, 'utf-8');
       const bytesBefore = Buffer.byteLength(raw);
@@ -219,7 +191,7 @@ runTool({
         }
       }
     } finally {
-      releaseLock(lock);
+      releaseStateLock(lock);
       try {
         unlinkSync(`${absState}.tmp.${process.pid}`);
       } catch {

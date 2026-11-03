@@ -5,7 +5,8 @@
 #   - a tiny TS graph (a.ts imports b.ts; tests/a.test.ts imports a.ts)
 #   - a tiny shell dep tree (lib.sh sourced by tests/lib.test.sh)
 #
-# Then exercises --list, --dry-run, mill-core injection, --no-journeys, and
+# Then exercises --list, --dry-run, mill-core journey selection (smoke +
+# changed journeys, --all-journeys, --no-journeys), and
 # the [FAIL] truncation path. All writes go to the mktemp tree (no tracked
 # repo paths), satisfying the HOK-3157 tracked-tree guard.
 
@@ -115,23 +116,87 @@ else
   fail "shell-dep" "did not find tests/lib.test.sh in --list output: $OUT"
 fi
 
-echo "=== mill-core triggers journeys ==="
-# Create the mill-core sentinel path in the fake tree so classification sees it.
-mkdir -p "$FAKE_REPO/shared/lib"
+echo "=== mill-core change runs only the smoke journey ==="
+# protects: a mill-core edit running all ~29 journeys serially (~1h locally)
+# when CI's Golden Journeys check already runs the full matrix.
+mkdir -p "$FAKE_REPO/shared/lib" "$FAKE_REPO/tests/journeys"
 touch "$FAKE_REPO/shared/lib/wavemill-monitor.sh"
-OUT="$(run_in_fake --dry-run shared/lib/wavemill-monitor.sh 2>&1 || true)"
-if printf '%s\n' "$OUT" | grep -q '__journeys__'; then
-  pass "mill-core: journeys injected"
+# shared/lib/*.sh also injects __preflight__; journey assertions look only at
+# the journey lines of --list.
+journeys_of() { printf '%s\n' "$1" | grep '^tests/journeys/' || true; }
+for j in happy-path errored-with-pr gh-lag-after-push; do
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_REPO/tests/journeys/$j.journey.sh"
+done
+OUT="$(journeys_of "$(run_in_fake --list shared/lib/wavemill-monitor.sh 2>&1 || true)")"
+if [[ "$OUT" == "tests/journeys/happy-path.journey.sh" ]]; then
+  pass "mill-core: only the happy-path smoke journey selected"
 else
-  fail "mill-core" "no __journeys__ in dry-run: $OUT"
+  fail "mill-core smoke" "expected only happy-path, got: $OUT"
+fi
+
+echo "=== a changed journey is selected alongside the smoke journey ==="
+# protects: an agent editing a journey not running that journey locally.
+OUT="$(run_in_fake --list tests/journeys/errored-with-pr.journey.sh 2>&1 || true)"
+EXPECTED=$'tests/journeys/errored-with-pr.journey.sh\ntests/journeys/happy-path.journey.sh'
+if [[ "$OUT" == "$EXPECTED" ]]; then
+  pass "changed journey + smoke selected, nothing else"
+else
+  fail "changed journey" "expected errored-with-pr + happy-path, got: $OUT"
+fi
+
+echo "=== a deleted journey is never handed to run-journeys.sh ==="
+# protects: run-journeys.sh exiting 2 on an unknown name after a journey is removed.
+OUT="$(journeys_of "$(run_in_fake --list shared/lib/wavemill-monitor.sh tests/journeys/removed.journey.sh 2>&1 || true)")"
+if [[ "$OUT" == "tests/journeys/happy-path.journey.sh" ]]; then
+  pass "deleted journey dropped"
+else
+  fail "deleted journey" "expected only happy-path, got: $OUT"
+fi
+
+echo "=== --all-journeys selects every journey ==="
+# protects: losing the opt-in to the previous full local journey run.
+OUT="$(journeys_of "$(run_in_fake --list --all-journeys shared/lib/wavemill-monitor.sh 2>&1 || true)")"
+EXPECTED=$'tests/journeys/errored-with-pr.journey.sh\ntests/journeys/gh-lag-after-push.journey.sh\ntests/journeys/happy-path.journey.sh'
+if [[ "$OUT" == "$EXPECTED" ]]; then
+  pass "--all-journeys selects all three journeys"
+else
+  fail "--all-journeys" "expected all journeys, got: $OUT"
+fi
+
+echo "=== selected journeys run in one run-journeys.sh call ==="
+# protects: the executor still invoking run-journeys.sh with no names (= all).
+OUT="$(run_in_fake tests/journeys/errored-with-pr.journey.sh 2>&1 || true)"
+if printf '%s\n' "$OUT" | grep -q '^\[run\] journeys (errored-with-pr happy-path)$'; then
+  pass "executor passes the selected journey names"
+else
+  fail "executor names" "missing '[run] journeys (errored-with-pr happy-path)': $OUT"
+fi
+
+echo "=== non-mill-core change selects no journeys ==="
+OUT="$(run_in_fake --list shared/lib/b.ts 2>&1 || true)"
+if printf '%s\n' "$OUT" | grep -q 'journey'; then
+  fail "non-mill-core" "journeys selected for b.ts: $OUT"
+else
+  pass "non-mill-core change selects no journeys"
 fi
 
 echo "=== --no-journeys suppresses journey injection ==="
-OUT="$(run_in_fake --dry-run --no-journeys shared/lib/wavemill-monitor.sh 2>&1 || true)"
-if printf '%s\n' "$OUT" | grep -q '__journeys__'; then
-  fail "--no-journeys" "found __journeys__ despite flag: $OUT"
+OUT="$(run_in_fake --list --no-journeys shared/lib/wavemill-monitor.sh 2>&1 || true)"
+if printf '%s\n' "$OUT" | grep -q 'journey'; then
+  fail "--no-journeys" "found journeys despite flag: $OUT"
 else
   pass "--no-journeys suppresses journeys"
+fi
+
+echo "=== --no-journeys with --all-journeys is a usage error ==="
+set +e
+run_in_fake --list --no-journeys --all-journeys shared/lib/wavemill-monitor.sh >/dev/null 2>&1
+RC=$?
+set -e
+if [[ "$RC" -eq 2 ]]; then
+  pass "conflicting journey flags exit 2"
+else
+  fail "flag conflict" "expected exit 2, got $RC"
 fi
 
 echo "=== --list output is deterministic and sorted ==="

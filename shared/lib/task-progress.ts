@@ -35,9 +35,10 @@
  * @module task-progress
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import type { TaskRecord } from './workflow-state.ts';
 
 // ── Hook contract ────────────────────────────────────────────────────────────
@@ -123,6 +124,7 @@ export type ProgressSourceKind =
   | 'commit'      // Newest task-branch commit after launch.
   | 'worktree'    // Newest mtime among tracked/untracked worktree paths.
   | 'status-file' // Status-file mtime after launch + 5s.
+  | 'native-session' // Newest agent-issued native session-stream event (HOK-3381).
   | 'transition'  // Stage startedAt/finishedAt, task.updated, or caller extras.
   | 'terminal';   // Merged/closed PR or terminal lifecycle evidence.
 
@@ -212,6 +214,15 @@ export interface TaskProgressGatherOptions {
   hookFilePath?: string;
   /** For gather IO: override the default status file path. */
   statusFilePath?: string;
+  /**
+   * HOK-3381: repository directory used to locate the native session stream
+   * (`<repoDir>/.wavemill/runs/<session>/native-sessions/<phase>-<issue>.jsonl`).
+   * Defaults to `process.cwd()`; `WAVEMILL_RUN_DIR` takes precedence, matching
+   * the native launchers' transcript layout.
+   */
+  repoDir?: string;
+  /** HOK-3381: explicit native session-stream (transcript) path override. */
+  nativeSessionPath?: string;
 }
 
 export interface TaskProgressDeriveOptions {
@@ -233,6 +244,12 @@ export interface TaskProgressInputs {
   worktreeMtimePath?: string;
   /** status-file mtime, ISO. */
   statusFileMtimeAt: string | null;
+  /**
+   * HOK-3381: ISO time of the newest agent-issued event in the native session
+   * stream. The stream is written only by the agent's own loop, so its events
+   * are agent evidence (invariant 2 is preserved: the monitor never writes it).
+   */
+  nativeSessionLastEventAt?: string | null;
   /** transitions the caller wants counted (stage finishedAt, task.updated, ready). */
   transitionSources: ProgressSource[];
   /** PR / lifecycle evidence for `terminal`. */
@@ -789,6 +806,15 @@ export function deriveTaskProgress(
     sources.push({ kind: 'status-file', at: new Date(statusMs).toISOString() });
   }
 
+  // (4b) native session stream (HOK-3381). Agent-issued loop events
+  //      (`tool_started` / `tool_result` / assistant turns) are the agent's
+  //      own work; a native coder deep inside a long `run_tests` keeps
+  //      appending them while the hook stays quiet.
+  const nativeMs = parseIsoToMs(inputs.nativeSessionLastEventAt ?? null);
+  if (nativeMs !== null && (launchMs === null || nativeMs > launchMs)) {
+    sources.push({ kind: 'native-session', at: new Date(nativeMs).toISOString() });
+  }
+
   // (5) transitions supplied by the caller (stage startedAt/finishedAt,
   //     task.updated, ready-watchdog stage result mtime).
   for (const src of inputs.transitionSources) {
@@ -1036,6 +1062,56 @@ function readTerminalHistoryIdleAt(historyPath: string): string | null {
 }
 
 /**
+ * Resolve the native session-stream path for a task, matching the native
+ * launchers' transcript layout (`makeTranscriptPath` in launch-coding.ts):
+ * `WAVEMILL_RUN_DIR/native-sessions/<phase>-<issue>.jsonl` when set, else
+ * `<repoDir>/.wavemill/runs/<session>/native-sessions/<phase>-<issue>.jsonl`.
+ */
+function resolveNativeSessionPath(opts: TaskProgressGatherOptions, session: string): string | null {
+  if (opts.nativeSessionPath) return opts.nativeSessionPath;
+  if (!opts.phase) return null;
+  const safeIssue = opts.issue.replace(/[^A-Za-z0-9._-]+/g, '-');
+  const baseDir = process.env.WAVEMILL_RUN_DIR
+    ? join(process.env.WAVEMILL_RUN_DIR, 'native-sessions')
+    : join(opts.repoDir ?? process.cwd(), '.wavemill', 'runs', session, 'native-sessions');
+  return join(baseDir, `${opts.phase}-${safeIssue}.jsonl`);
+}
+
+/**
+ * ISO time of the newest event in a native session stream, read from the
+ * file's tail without loading the whole transcript. Returns `null` on any
+ * failure: a missing or unparsable stream is simply absent evidence.
+ */
+function readNativeSessionLastEventAt(path: string | null): string | null {
+  if (!path) return null;
+  try {
+    const stat = statSync(path);
+    if (!stat.isFile() || stat.size === 0) return null;
+    const fd = openSync(path, 'r');
+    try {
+      const len = Math.min(stat.size, 64 * 1024);
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, stat.size - len);
+      const lines = buf.toString('utf8').split('\n').filter((line) => line.trim().length > 0);
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        try {
+          const event = JSON.parse(lines[index]) as { timestamp?: unknown };
+          const ts = numberField(event.timestamp);
+          if (ts !== undefined && ts > 0) return new Date(ts).toISOString();
+        } catch {
+          // The first line of the tail window may be a partial record; skip.
+        }
+      }
+      return null;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Read the stage `<featureDir>/.<phase>-result.json` and pluck out the
  * launchAt (`startedAt`) plus the transition sources (`startedAt`,
  * `finishedAt`, `updated`).
@@ -1087,6 +1163,8 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
   const statusFilePath = opts.statusFilePath ?? `/tmp/${session}-${opts.issue}-status.txt`;
   const statusFileMtimeAt = safeStatMtimeIso(statusFilePath);
 
+  const nativeSessionLastEventAt = readNativeSessionLastEventAt(resolveNativeSessionPath(opts, session));
+
   const transitionSources: ProgressSource[] = [...stageTransitions];
   if (opts.task?.updated) {
     transitionSources.push({ kind: 'transition', at: opts.task.updated, detail: 'task.updated' });
@@ -1115,6 +1193,7 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
     worktreeMtimeAt: wt.at,
     worktreeMtimePath: wt.path,
     statusFileMtimeAt,
+    nativeSessionLastEventAt,
     transitionSources,
     terminal: {
       prState,
@@ -1173,4 +1252,151 @@ export function progressCacheIsFresh(
  */
 export function progressAgeMinutesFor(inputs: TaskProgressInputs, now: Date = new Date()): number | null {
   return deriveTaskProgress(inputs, { now }).progressAgeMinutes;
+}
+
+// ── Tool-call progress rule (HOK-3381) ──────────────────────────────────────
+//
+// The one in-loop "is this agent making progress?" decision, shared by the
+// native coding and planning loops. It replaces the deleted
+// `ToolStagnationTracker` (exact call signature + identical output hash,
+// which only tripped on byte-identical repeats) and the command tools'
+// rerun-after-timeout command-string key.
+//
+// A call is "no progress" when, since the *same selection* last ran, the
+// worktree content is unchanged (tracked-file diff, never mtime; test logs
+// under `.wavemill/` never count — see `trackedContentFingerprint` in
+// shared/lib/native-agent/worktree-fingerprint.ts) AND the run produced the
+// same result (pass / fail / timeout for command tools, an output digest for
+// read-only tools). The key is the selection, not the command text, so a
+// changed `timeoutMs`, a wrapper, or a renamed log file does not evade it,
+// and a smaller selection after a timeout is new information, not a loop.
+
+/** Keys stripped from tool args before building a selection key: they change the call's budget, not what it selects. */
+const SELECTION_VOLATILE_ARG_KEYS: ReadonlySet<string> = new Set(['timeoutMs', 'maxOutputBytes']);
+
+function stableStringifyForKey(value: unknown): string {
+  if (value === null || value === undefined) return JSON.stringify(value);
+  if (typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return '[' + value.map(stableStringifyForKey).join(',') + ']';
+  }
+  const record = value as Record<string, unknown>;
+  const pairs = Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringifyForKey(record[key])}`);
+  return '{' + pairs.join(',') + '}';
+}
+
+/**
+ * Normalized selection key for one tool call: the tool name plus its
+ * arguments with volatile budget fields (`timeoutMs`, `maxOutputBytes`)
+ * removed, so raising a timeout never makes a repeat look like a new call.
+ */
+export function toolSelectionKey(name: string, args: unknown): string {
+  if (args !== null && args !== undefined && typeof args === 'object' && !Array.isArray(args)) {
+    const filtered: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
+      if (!SELECTION_VOLATILE_ARG_KEYS.has(key)) filtered[key] = value;
+    }
+    return `${name}:${stableStringifyForKey(filtered)}`;
+  }
+  return `${name}:${stableStringifyForKey(args ?? {})}`;
+}
+
+/**
+ * Normalized result key for one tool call. Command-shaped results (the
+ * native `run_tests` / `run_format` details) collapse to their outcome —
+ * `timeout`, `exit:<code>`, or `rejected:<error>` — so two slow runs of the
+ * same failing selection compare equal even when their output differs in
+ * timings. Everything else digests the observable result.
+ */
+export function toolCallResultKey(outcome: { isError?: boolean; content?: unknown; details?: unknown }): string {
+  const details = outcome.details;
+  if (details !== null && details !== undefined && typeof details === 'object' && !Array.isArray(details)) {
+    const d = details as Record<string, unknown>;
+    if (d.ok === false && typeof d.error === 'string') return `rejected:${d.error}`;
+    if (d.status === 'timed_out' || d.timedOut === true) return 'timeout';
+    if (d.status === 'completed' || typeof d.exitCode === 'number' || d.exitCode === null) {
+      return `exit:${d.exitCode === null ? 'signal' : String(d.exitCode ?? 'unknown')}`;
+    }
+  }
+  const digest = createHash('sha256')
+    .update(stableStringifyForKey({
+      isError: outcome.isError === true,
+      content: outcome.content ?? null,
+      details: details ?? null,
+    }))
+    .digest('hex')
+    .slice(0, 16);
+  return `output:${digest}`;
+}
+
+export interface ToolCallProgressPolicy {
+  /** Total calls of one selection before stagnation can trip (was `maxRepeatedSignatureCalls`). */
+  maxRepeatedSelectionCalls: number;
+  /** Consecutive no-progress calls of one selection that trip stagnation (was `maxNoNovelProgressCalls`). */
+  maxNoProgressCalls: number;
+}
+
+export interface ToolCallProgressObservation {
+  /** From {@link toolSelectionKey}: what the call selected, not its text. */
+  selectionKey: string;
+  /** Tracked worktree content fingerprint ('' when the caller has none, e.g. planning). */
+  worktreeFingerprint: string;
+  /** From {@link toolCallResultKey}: the run's observable outcome. */
+  resultKey: string;
+}
+
+export interface ToolCallProgressDecision {
+  /** True when this call added no information over the selection's previous run. */
+  noProgress: boolean;
+  /** True when the policy's thresholds are both met: stop via `tool_stagnation`. */
+  stagnant: boolean;
+  selectionKey: string;
+  repeatedCalls: number;
+  noProgressCalls: number;
+}
+
+interface ToolCallProgressState {
+  repeatedCalls: number;
+  noProgressCalls: number;
+  lastFingerprint: string;
+  lastResultKey: string;
+}
+
+/**
+ * The one tool-call progress tracker (HOK-3381). Decision sites must consume
+ * this — never a private stagnation counter (enforced by the HOK-3101 guard,
+ * `tools/check-hook-ttl.ts`).
+ */
+export class ToolCallProgressTracker {
+  private readonly policy: ToolCallProgressPolicy;
+  private readonly bySelection = new Map<string, ToolCallProgressState>();
+
+  constructor(policy: ToolCallProgressPolicy) {
+    this.policy = policy;
+  }
+
+  record(observation: ToolCallProgressObservation): ToolCallProgressDecision {
+    const previous = this.bySelection.get(observation.selectionKey);
+    const repeatedCalls = (previous?.repeatedCalls ?? 0) + 1;
+    const noProgress = previous !== undefined
+      && previous.lastFingerprint === observation.worktreeFingerprint
+      && previous.lastResultKey === observation.resultKey;
+    const noProgressCalls = noProgress ? previous.noProgressCalls + 1 : 0;
+    this.bySelection.set(observation.selectionKey, {
+      repeatedCalls,
+      noProgressCalls,
+      lastFingerprint: observation.worktreeFingerprint,
+      lastResultKey: observation.resultKey,
+    });
+    return {
+      noProgress,
+      stagnant: repeatedCalls >= this.policy.maxRepeatedSelectionCalls
+        && noProgressCalls >= this.policy.maxNoProgressCalls,
+      selectionKey: observation.selectionKey,
+      repeatedCalls,
+      noProgressCalls,
+    };
+  }
 }

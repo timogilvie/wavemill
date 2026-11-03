@@ -515,16 +515,37 @@ describe('loop — budget stops', () => {
     assert.equal(result.turnsCompleted, 1);
   });
 
-  it('wall-clock budget fires abort signal', async () => {
-    const api = uniqueApi('budget-wall-clock');
-    const tool = makeTool('slow_tool', 'sequential', async (_id, signal) => {
-      // Honor the abort signal; exit quickly when fired (check already-aborted too).
-      await new Promise<void>((resolve, reject) => {
-        if (signal?.aborted) { reject(new Error('aborted')); return; }
-        const timer = setTimeout(resolve, 10_000);
-        signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('aborted')); }, { once: true });
-      });
-      return 'never';
+  // protects: the model-time budget no longer firing at all once the fixed wall-clock timer was removed (HOK-3381)
+  it('model-time budget aborts a run whose model-side time exceeds it', async () => {
+    const api = uniqueApi('budget-model-clock');
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        { content: [{ type: 'text', text: 'should be cut off' }], stopReason: 'stop' },
+      ],
+    });
+
+    const result = await runWavemillLoop({
+      model: { id: 'test-model', api, provider: 'test-provider' },
+      context: makeContext(),
+      // Model-side time: outside any harness tool interval, so it is charged.
+      convertToLlm: async (messages) => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return messages as Message[];
+      },
+      budget: { maxWallClockMs: 100 },
+    });
+
+    assert.equal(result.stopReason, 'wall_clock_limit');
+    assert.ok(result.wallClockMs >= 100);
+  });
+
+  // protects: HOK-3374 — 51 minutes of our own run_tests execution being charged against the model's time budget
+  it('pauses the model clock while a harness tool executes', async () => {
+    const api = uniqueApi('budget-clock-pause');
+    const tool = makeTool('slow_tool', 'sequential', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2_500));
+      return 'done';
     });
 
     registerScriptedPiProvider({
@@ -534,18 +555,75 @@ describe('loop — budget stops', () => {
           content: [{ type: 'tool_call', id: 'sl1', name: 'slow_tool', arguments: {} }],
           stopReason: 'tool_calls',
         },
+        { content: [{ type: 'text', text: 'Done' }], stopReason: 'stop' },
+      ],
+    });
+
+    // The tool alone (2.5s) exceeds the 1s budget; only model time is
+    // charged, so the run completes. The budget leaves generous headroom for
+    // pre-tool loop overhead so a loaded CI host cannot fire it spuriously.
+    const result = await runWavemillLoop({
+      ...baseConfig(api, [tool]),
+      budget: { maxWallClockMs: 1_000 },
+    });
+
+    assert.equal(result.stopReason, 'stop');
+    assert.equal(result.toolCallsExecuted, 1);
+    assert.ok(result.wallClockMs >= 2_500);
+  });
+
+  // protects: HOK-3381 acceptance — rerunning the same failing selection with no
+  // edits stops via tool_stagnation within the configured count, even when each
+  // run is slow and the model varies timeoutMs between calls
+  it('stops reruns of the same failing selection with no edits via tool_stagnation, even when slow', async () => {
+    let executions = 0;
+    const tool = makeTool('run_tests', 'sequential', async () => {
+      executions += 1;
+      await new Promise((resolve) => setTimeout(resolve, 120)); // slow run: paused clock, not budget
+      return 'tests timed out after the per-call ceiling';
+    });
+    const api = uniqueApi('stagnant-verification');
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        {
+          content: [{ type: 'tool_call', id: 'v1', name: 'run_tests', arguments: { command: 'node --test a.test.ts', timeoutMs: 100 } }],
+          stopReason: 'tool_calls',
+        },
+        {
+          // A raised timeoutMs is volatile — same selection.
+          content: [{ type: 'tool_call', id: 'v2', name: 'run_tests', arguments: { command: 'node --test a.test.ts', timeoutMs: 600_000 } }],
+          stopReason: 'tool_calls',
+        },
+        {
+          content: [{ type: 'tool_call', id: 'v3', name: 'run_tests', arguments: { command: 'node --test a.test.ts', timeoutMs: 100 } }],
+          stopReason: 'tool_calls',
+        },
+        {
+          content: [{ type: 'text', text: 'should not reach final text' }],
+          stopReason: 'stop',
+        },
       ],
     });
 
     const result = await runWavemillLoop({
-      model: { id: 'test-model', api, provider: 'test-provider' },
-      context: makeContext([tool]),
-      convertToLlm: piIdentity,
-      budget: { maxWallClockMs: 100 },
+      ...baseConfig(api, [tool]),
+      // The tree never changes between runs: no progress.
+      progressFingerprint: () => 'tree-1',
+      budget: {
+        // Three slow runs (~360ms of harness tool time) do not consume this
+        // model-time budget: stagnation must stop the run, not the clock.
+        // Generous so load-induced loop overhead cannot fire it first.
+        maxWallClockMs: 15_000,
+        stagnation: {
+          maxRepeatedSelectionCalls: 3,
+          maxNoProgressCalls: 2,
+        },
+      },
     });
 
-    assert.equal(result.stopReason, 'wall_clock_limit');
-    assert.ok(result.wallClockMs >= 100);
+    assert.equal(result.stopReason, 'tool_stagnation');
+    assert.equal(executions, 3);
   });
 
   it('stops repeated normalized tool signatures with identical output as tool_stagnation', async () => {
@@ -581,8 +659,8 @@ describe('loop — budget stops', () => {
       ...baseConfig(api, [tool]),
       budget: {
         stagnation: {
-          maxRepeatedSignatureCalls: 3,
-          maxNoNovelProgressCalls: 2,
+          maxRepeatedSelectionCalls: 3,
+          maxNoProgressCalls: 2,
         },
       },
     });
@@ -625,8 +703,8 @@ describe('loop — budget stops', () => {
       ...baseConfig(api, [tool]),
       budget: {
         stagnation: {
-          maxRepeatedSignatureCalls: 3,
-          maxNoNovelProgressCalls: 2,
+          maxRepeatedSelectionCalls: 3,
+          maxNoProgressCalls: 2,
         },
       },
     });

@@ -188,15 +188,15 @@ test('P2 idempotency: a second reconcile tick is a no-op', () => {
       const fixture = getFixture();
       resetFixtureState(fixture);
       const markers = Array.from({ length: nMarkers }, (_, i) => ({
-        name: i === 0 ? '.needs-attention' : '.needs-attention-transient',
+        name: i === 0 ? '.needs-attention' : '.ready-waiting-on.json',
         flags: ['--expires-on', 'head'],
         head: fixture.head,
       }));
       writeMarkersAndReconcile(fixture, markers);
-      const beforeFiles = ['.needs-attention', '.needs-attention-transient']
+      const beforeFiles = ['.needs-attention', '.ready-waiting-on.json']
         .filter((n) => existsSync(join(fixture.stateDir, n)));
       runReconcile(fixture);
-      const afterFiles = ['.needs-attention', '.needs-attention-transient']
+      const afterFiles = ['.needs-attention', '.ready-waiting-on.json']
         .filter((n) => existsSync(join(fixture.stateDir, n)));
       assert.deepEqual(
         afterFiles,
@@ -218,14 +218,14 @@ test('P3 deadline: future deadline survives, past deadline clears', () => {
         resetFixtureState(fixture);
         writeMarkersAndReconcile(fixture, [
           {
-            name: '.needs-attention-transient',
+            name: '.ready-waiting-on.json',
             flags: ['--expires-on', 'deadline', '--recheck-after-seconds', String(deltaSeconds)],
             head: fixture.head,
           },
         ]);
         if (!pastDeadline) {
           assert.ok(
-            existsSync(join(fixture.stateDir, '.needs-attention-transient')),
+            existsSync(join(fixture.stateDir, '.ready-waiting-on.json')),
             'future-deadline marker must survive the first reconcile',
           );
         } else {
@@ -234,13 +234,13 @@ test('P3 deadline: future deadline survives, past deadline clears', () => {
             'bash',
             [
               '-c',
-              `jq '.condition.recheckAfter = "2000-01-01T00:00:00Z"' "${join(fixture.stateDir, '.needs-attention-transient')}" > "${fixture.dir}/m" && mv "${fixture.dir}/m" "${join(fixture.stateDir, '.needs-attention-transient')}"`,
+              `jq '.condition.recheckAfter = "2000-01-01T00:00:00Z"' "${join(fixture.stateDir, '.ready-waiting-on.json')}" > "${fixture.dir}/m" && mv "${fixture.dir}/m" "${join(fixture.stateDir, '.ready-waiting-on.json')}"`,
             ],
             { encoding: 'utf-8' },
           );
           runReconcile(fixture);
           assert.equal(
-            existsSync(join(fixture.stateDir, '.needs-attention-transient')),
+            existsSync(join(fixture.stateDir, '.ready-waiting-on.json')),
             false,
             'past-deadline marker must be cleared',
           );

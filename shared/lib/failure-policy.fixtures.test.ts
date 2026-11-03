@@ -108,7 +108,7 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     name: 'typed completion-protocol handoff',
     evidence: { stage: 'coding', detail: 'Native coding failed: Provider finish_reason: error', handoffReason: 'no_completion_artifact' },
     expectedClass: 'retryable',
-    expectedKind: 'native-completion-protocol',
+    expectedKind: 'completion-protocol',
   },
   // ── HOK-3129 signatures ──
   {
@@ -307,6 +307,22 @@ const HISTORICAL_FIXTURES: Fixture[] = [
   {
     name: 'HOK-3313: SIGTERM mid-run with OpenRouter in pane tail (incident replay)',
     evidence: { stage: 'coding', detail: 'Agent exited (143) after OpenRouter credits review (SIGTERM)' },
+    expectedClass: 'retryable',
+  },
+  // ── HOK-3370: stage-head publication seam failures ──
+  {
+    name: 'HOK-3370: publication refused on genuine remote divergence (conflict-shaped)',
+    evidence: { stage: 'coding', detail: 'Stage head publication failed: origin/task/x is at 396ecf4e which is neither an ancestor nor a descendant of local head 4ea98a06; refusing to overwrite the remote branch (merge conflict-shaped divergence)' },
+    expectedClass: 'code-failure',
+  },
+  {
+    name: 'HOK-3370: publication push transport failure stays retryable',
+    evidence: { stage: 'coding', detail: 'Stage head publication failed: push of task/x to origin failed: fatal: unable to access remote (connection reset)' },
+    expectedClass: 'retryable',
+  },
+  {
+    name: 'HOK-3370: post-push verification failure stays retryable',
+    evidence: { stage: 'review', detail: 'Stage head publication failed: origin/task/x resolved to (absent) after push instead of the published head 4ea98a06' },
     expectedClass: 'retryable',
   },
 ];

@@ -26,6 +26,7 @@ import {
 } from './pr-task-resolver.ts';
 import { getIntegrationConfig, getIntegrationReadyPolicy, resolveSessionCapabilities } from './config.ts';
 import { appendObserverFinding as sharedAppendObserverFinding } from './observer-findings.ts';
+import { appendHeadMove } from './head-move-record.ts';
 import { millClockNowMs, millClockSleep } from './mill-clock.ts';
 import { readChallengeComparisons } from './challenge-comparison.ts';
 import { getPullRequest, removeLabelFromPullRequest } from './github.ts';
@@ -1018,6 +1019,9 @@ export async function executeMerge(
                 worktreePath,
               });
             },
+            headMoveRecord: candidate.featureDir
+              ? { stateDir: candidate.featureDir, issue: readIssueIdFromFeatureDir(candidate.featureDir) }
+              : undefined,
           });
           pushedHeadSha = rebaseResult.headSha || undefined;
           if (pushedHeadSha) {
@@ -2119,6 +2123,23 @@ async function recordTendPushedHeadBestEffort(
 interface RebaseAndPushHooks {
   onBeforePush?: (prePushSha: string, rebasedHeadSha: string) => Promise<void> | void;
   onAfterPush?: (rebasedHeadSha: string) => Promise<void> | void;
+  /**
+   * HOK-3370: where to append the `head-move/v1` row for the rebase push
+   * (kind `rebase`, actor `tend`). Tend keeps its own force-with-lease push
+   * (HOK-3105 rebind semantics); only the record is added here.
+   */
+  headMoveRecord?: { stateDir: string; issue: string };
+}
+
+/** Issue id from a feature dir's `.trace-context.json`, '' when unavailable. */
+function readIssueIdFromFeatureDir(featureDir: string | undefined): string {
+  if (!featureDir) return '';
+  try {
+    const parsed = JSON.parse(readFileSync(join(featureDir, '.trace-context.json'), 'utf-8')) as { issueId?: unknown };
+    return typeof parsed.issueId === 'string' ? parsed.issueId : '';
+  } catch {
+    return '';
+  }
 }
 
 async function rebaseAndPush(
@@ -2204,6 +2225,23 @@ async function rebaseAndPush(
     result: { outcome: 'pushed', source: 'tend-rebase' },
     cwd: worktreePath,
   });
+  // HOK-3370: one head-move row per rebase push, beside the ledger record.
+  // Best-effort — the push already happened; a failed append must not fail
+  // the merge attempt.
+  if (hooks.headMoveRecord?.stateDir) {
+    try {
+      appendHeadMove(hooks.headMoveRecord.stateDir, {
+        issue: hooks.headMoveRecord.issue,
+        from: prBranchSha,
+        to: rebasedHeadSha,
+        stage: 'tend',
+        actor: 'tend',
+        kind: 'rebase',
+      });
+    } catch (error) {
+      console.warn(`tend: head-move record append failed: ${errorMessage(error)}`);
+    }
+  }
 
   if (hooks.onAfterPush) {
     try {
@@ -3307,6 +3345,9 @@ async function attemptStrictBaseRecovery(args: {
           worktreePath: args.worktreePath,
         });
       },
+      headMoveRecord: candidate.featureDir
+        ? { stateDir: candidate.featureDir, issue: readIssueIdFromFeatureDir(candidate.featureDir) }
+        : undefined,
     });
     refreshedHead = refresh.headSha;
     if (refresh.rebased) {

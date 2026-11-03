@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# HOK-3254: pins the stale-node_modules primitive against the 2026-10-19
-# incident shape (lockfile at X, installed @hokusai/core at X-1) and the
-# three fallback paths (matching install, pnpm, hidden-lockfile missing).
+# HOK-3254 / HOK-3315: drives the shell wrapper's exit codes end-to-end (it
+# delegates to deps-drift-cli.ts) against the 2026-10-19 incident shape
+# (lockfile at X, installed @hokusai/core at X-1) and the three fallback
+# paths (matching install, pnpm, hidden-lockfile missing). Semantic platform
+# cases (os/cpu omission, optional-absent, nested paths) are covered in
+# shared/lib/deps-drift.test.ts; this file pins the shell/exit-code contract.
 #
 # Tests must only write to a tmp dir (HOK-3157 tracked-write guard).
 

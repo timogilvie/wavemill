@@ -3,13 +3,16 @@ import test from 'node:test';
 import { classifyArmFault } from './arm-failure-taxonomy.ts';
 import {
   DEFAULT_RETRY_ATTEMPTS,
+  OPERATOR_DECISIONS,
   TERMINAL_ALLOWLIST,
   TERMINAL_CODES_BEFORE_HOK_3176,
   canonicalFailureKind,
   classifyFailure,
   detectFailureKind,
+  isOperatorDecisionCode,
   isTerminalKind,
   nextActionFor,
+  operatorDecisionFor,
   retryBucketFor,
   terminalCauseFor,
 } from './failure-policy.ts';
@@ -33,6 +36,45 @@ test('terminal-count-shrinks: fewer distinct terminal codes than before HOK-3176
   );
   const allStage = TERMINAL_ALLOWLIST.filter((cause) => !cause.challengeOnly);
   assert.equal(allStage.length, 8, 'all-stage terminals changed — update this pin deliberately');
+});
+
+// protects: the one escalation step accepting an operator-decision code that is
+// not named by the policy, or rejecting a named one (HOK-3360).
+test('operator-decisions-are-explicit: every entry has a code, reason, and pinned test', () => {
+  const codes = new Set<string>();
+  for (const decision of OPERATOR_DECISIONS) {
+    assert.match(decision.code, /^[a-z-]+$/, `bad operator-decision code ${decision.code}`);
+    assert.ok(decision.reason.length > 20, `${decision.code} needs a real reason`);
+    assert.match(decision.testRef, /^failure-policy\.test\.ts:operator-decision:/, `${decision.code} testRef`);
+    assert.ok(!codes.has(decision.code), `duplicate operator-decision code ${decision.code}`);
+    codes.add(decision.code);
+  }
+  assert.ok(Object.isFrozen(OPERATOR_DECISIONS));
+});
+
+for (const code of [
+  'merged-before-ready',
+  'cross-pr-revert-unacknowledged',
+  'challenge-comparison-stale',
+  'review-session-interrupted-pre-pr',
+  'operator-command-failed',
+  'transition-code-failure',
+  'merge-residue',
+]) {
+  // The testRef suffix (operator-decision:<code>) is this pinned case.
+  test(`operator-decision:${code} is a known escalation basis code`, () => {
+    assert.ok(isOperatorDecisionCode(code), `${code} must be a known operator-decision`);
+    assert.equal(operatorDecisionFor(code)?.code, code);
+  });
+}
+
+test('operator-decision: unknown / empty codes are rejected', () => {
+  assert.equal(isOperatorDecisionCode('not-a-real-code'), false);
+  assert.equal(isOperatorDecisionCode(''), false);
+  assert.equal(isOperatorDecisionCode(undefined), false);
+  assert.equal(isOperatorDecisionCode(null), false);
+  // A terminal allowlist code is not an operator-decision code.
+  assert.equal(isOperatorDecisionCode('policy-denied'), false);
 });
 
 test('allowlist fault classes agree with classifyArmFault attribution', () => {
@@ -100,7 +142,7 @@ test('formerly terminal kinds now retry (HOK-3176 removals)', () => {
     'native-review-timeout',
     'empty-model-turn',
     'native-provider-error',
-    'native-completion-protocol',
+    'completion-protocol',
     'planning-artifact-invalid:missing_sections',
     'review-no-output',
     'coding-exited-without-result',
@@ -113,8 +155,8 @@ test('formerly terminal kinds now retry (HOK-3176 removals)', () => {
 });
 
 test('detectFailureKind keeps the monitor ladder precedence', () => {
-  assert.equal(detectFailureKind('Provider finish_reason: error', 'no_completion_artifact'), 'native-completion-protocol');
-  assert.equal(detectFailureKind('anything', 'invalid_completion_artifact'), 'native-completion-protocol');
+  assert.equal(detectFailureKind('Provider finish_reason: error', 'no_completion_artifact'), 'completion-protocol');
+  assert.equal(detectFailureKind('anything', 'invalid_completion_artifact'), 'completion-protocol');
   assert.equal(detectFailureKind('who knows', 'provider_error'), 'native-provider-error');
   assert.equal(detectFailureKind('who knows'), 'native-unclassified');
   assert.equal(detectFailureKind(''), 'native-unclassified');

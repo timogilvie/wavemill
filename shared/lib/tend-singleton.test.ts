@@ -4,6 +4,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { acquireObserverLock, acquireTendLock, computeLockKey, getLockPath, getServiceLockPath } from './tend-singleton.ts';
+import { processHost, processStartTime } from './process-identity.ts';
+
+function writeOwnerLock(lockPath: string, pid: number, start = processStartTime(pid)): void {
+  mkdirSync(lockPath, { recursive: true });
+  writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({ pid, processStartTime: start, host: processHost(), acquiredAt: new Date().toISOString(), purpose: 'test' }));
+}
 
 const tempDirs: string[] = [];
 
@@ -40,7 +46,7 @@ describe('tend-singleton', () => {
     const lockPath = getLockPath(repoDir, computeLockKey(repoDir, 'session-a'));
 
     assert.equal(result.outcome, 'started');
-    assert.equal(readFileSync(lockPath, 'utf-8'), `${process.pid}\n`);
+    assert.equal(JSON.parse(readFileSync(path.join(lockPath, 'owner.json'), 'utf-8')).pid, process.pid);
     assert.match(logs[0], /\[tend-singleton\] started /);
 
     result.release();
@@ -52,7 +58,7 @@ describe('tend-singleton', () => {
     const lockPath = getLockPath(repoDir, computeLockKey(repoDir, 'session-a'));
 
     mkdirSync(path.dirname(lockPath), { recursive: true });
-    writeFileSync(lockPath, `${process.pid}\n`, 'utf-8');
+    writeOwnerLock(lockPath, process.pid);
 
     const result = acquireTendLock({ repoDir, session: 'session-a', logger });
     assert.equal(result.outcome, 'skipped');
@@ -65,12 +71,12 @@ describe('tend-singleton', () => {
     const lockPath = getLockPath(repoDir, computeLockKey(repoDir, 'session-a'));
 
     mkdirSync(path.dirname(lockPath), { recursive: true });
-    writeFileSync(lockPath, '2147483647\n', 'utf-8');
+    writeOwnerLock(lockPath, 2147483647, 'old-process');
 
     const result = acquireTendLock({ repoDir, session: 'session-a', logger });
     assert.equal(result.outcome, 'recovered-stale');
     assert.equal(result.holderPid, 2147483647);
-    assert.equal(readFileSync(lockPath, 'utf-8'), `${process.pid}\n`);
+    assert.equal(JSON.parse(readFileSync(path.join(lockPath, 'owner.json'), 'utf-8')).pid, process.pid);
 
     result.release();
   });
@@ -92,10 +98,11 @@ describe('tend-singleton', () => {
     const result = acquireTendLock({ repoDir, session: 'session-a', logger });
     const lockPath = getLockPath(repoDir, computeLockKey(repoDir, 'session-a'));
 
-    writeFileSync(lockPath, '999999\n', 'utf-8');
+    rmSync(lockPath, { recursive: true, force: true });
+    writeOwnerLock(lockPath, 999999, 'replacement');
     result.release();
 
-    assert.equal(readFileSync(lockPath, 'utf-8'), '999999\n');
+    assert.equal(JSON.parse(readFileSync(path.join(lockPath, 'owner.json'), 'utf-8')).pid, 999999);
   });
 
   it('concurrent acquisition yields one started and one skipped result', async () => {
@@ -157,7 +164,7 @@ describe('tend-singleton', () => {
     const lockPath = getServiceLockPath(repoDir, 'observer', computeLockKey(repoDir, 'session-a'));
 
     mkdirSync(path.dirname(lockPath), { recursive: true });
-    writeFileSync(lockPath, `${process.pid}\n`, 'utf-8');
+    writeOwnerLock(lockPath, process.pid);
 
     const result = acquireObserverLock({ repoDir, session: 'session-a', logger });
     assert.equal(result.outcome, 'skipped');

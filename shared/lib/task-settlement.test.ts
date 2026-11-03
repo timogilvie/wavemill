@@ -170,9 +170,11 @@ describe('applySettlementGate', () => {
 
   // protects: an abort arriving after the merge relabelling delivered work as aborted.
   it('refuses abort markers on a merged run but accepts them on an aborted one', () => {
-    assert.equal(gate(merged(), { ...merged(), challengeAborted: 'operator_abort' }).found.length, 1);
+    // HOK-3358: operator aborts stamp `terminal_stage_failure:<kind>`
+    // instead of the retired `operator_abort` literal.
+    assert.equal(gate(merged(), { ...merged(), challengeAborted: 'terminal_stage_failure:cancelled' }).found.length, 1);
     const aborted = merged({ status: 'aborted', phase: 'aborted', lifecycle: { schemaVersion: 1, workflowOutcome: 'aborted', resourceDisposition: 'reaping' } });
-    assert.equal(gate(aborted, { ...aborted, challengeAborted: 'operator_abort' }).found.length, 0);
+    assert.equal(gate(aborted, { ...aborted, challengeAborted: 'terminal_stage_failure:cancelled' }).found.length, 0);
   });
 
   // protects: active × stale runId × control — an old run's completion landing on the relaunch.

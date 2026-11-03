@@ -15,7 +15,12 @@
  * - the TTL constant (`HOOK_TTL_SECONDS` / `WAVEMILL_HOOK_TTL_SECONDS`) used
  *   outside the primitive — doing the freshness math yourself;
  * - a jq read of `.timestamp` straight out of a hook file;
- * - a hard-coded 300s comparison on a hook / staleness / timestamp line.
+ * - a hard-coded 300s comparison on a hook / staleness / timestamp line;
+ * - a private stagnation/progress tracker in `shared/lib/native-agent/`
+ *   (HOK-3381): the one tool-call progress rule is
+ *   `ToolCallProgressTracker` in shared/lib/task-progress.ts — never a
+ *   second signature/output-hash tracker or a rerun-after-timeout
+ *   command-string key.
  *
  * Pre-existing sites are held by a count ratchet in
  * tools/hook-ttl-allowlist.txt, so a new private check in the same file still
@@ -45,6 +50,12 @@ export const HOOK_TTL_GUARD: GuardSpec = {
       description: 'jq read of `.timestamp` from a hook file — use wavemill_hook_read (add --agent-only for the agent record)',
       lang: 'sh',
       re: /['"]\.(?:agentRecord\.)?timestamp\b[^'"]*['"]\s+"?\$\{?hook/,
+    },
+    {
+      name: 'private-stagnation-tracker',
+      description: 'private stagnation/progress tracker — the one tool-call progress rule is ToolCallProgressTracker in shared/lib/task-progress.ts (HOK-3381)',
+      lang: 'ts',
+      re: /\bclass\s+\w*(?:Stagnation|Progress)Tracker\b|\bToolStagnationTracker\b|\bCommandRunHistory\b|\blastOutputHash\b|\bnoNovelProgressCalls\b|\btoolOutputFingerprint\b/,
     },
     {
       name: 'hook-ttl-literal',

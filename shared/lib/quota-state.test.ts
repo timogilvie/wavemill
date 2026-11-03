@@ -8,7 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { clearConfigCache } from './config.ts';
@@ -376,11 +376,10 @@ describe('quota-state', () => {
     assert.equal(snapshot.models['exhausted-model']?.status, 'degrading');
   });
 
-  it('steals stale locks and cleans them up after writing', () => {
-    mkdirSync(dirname(quotaLockPath(repoDir)), { recursive: true });
-    writeFileSync(quotaLockPath(repoDir), JSON.stringify({
-      pid: 99999,
-      acquiredAt: '2026-04-17T16:59:49.000Z',
+  it('reclaims a lock held by a provably dead owner and cleans it up after writing', () => {
+    mkdirSync(quotaLockPath(repoDir), { recursive: true });
+    writeFileSync(join(quotaLockPath(repoDir), 'owner.json'), JSON.stringify({
+      pid: 99999, processStartTime: 'old', host: hostname(), acquiredAt: '2026-04-17T16:59:49.000Z', purpose: 'test',
     }), 'utf-8');
 
     __setClock(() => Date.parse('2026-04-17T17:00:00.000Z'));

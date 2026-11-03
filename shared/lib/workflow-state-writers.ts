@@ -35,7 +35,10 @@ import { join } from 'node:path';
 
 /** Repo-relative TypeScript files that write task records via `mutateWorkflowState`. */
 export const TS_TASK_WRITER_FILES: readonly string[] = [
-  'shared/lib/task-abort.ts',
+  // HOK-3358: the one arm-termination recorder owns `challengeAborted*`,
+  // `aborted*`, phase/status/lifecycle writes. `task-abort.ts` delegates here
+  // instead of writing the row itself, so this is the writer surface now.
+  'shared/lib/arm-termination.ts',
   'shared/lib/terminal-inbox-cleanup.ts',
   'shared/lib/challenge-pair-resolver.ts',
   'shared/lib/challenge-recovery.ts',

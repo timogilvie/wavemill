@@ -365,7 +365,7 @@ test('terminal attempts record truthfully per status and drive cooldown from fai
       ...extra,
     });
 
-    await record('kimi-k2', { terminalStatus: 'failure', failureKind: 'native-completion-protocol', faultClass: 'model-fault' });
+    await record('kimi-k2', { terminalStatus: 'failure', failureKind: 'completion-protocol', faultClass: 'model-fault' });
     await record('qwen3-coder', { success: true });
     await record('glm-4.7', { terminalStatus: 'forfeit' });
     await record('mistral-large', { terminalStatus: 'invalid' });
@@ -427,7 +427,7 @@ test('cooldowns expire deterministically and lookback prunes attempt evidence (H
       model: 'kimi-k2',
       stage: 'review',
       terminalStatus: 'failure',
-      failureKind: 'native-completion-protocol',
+      failureKind: 'completion-protocol',
       faultClass: 'model-fault',
     });
 

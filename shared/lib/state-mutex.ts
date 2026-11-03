@@ -1,9 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
-  closeSync,
   existsSync,
   mkdirSync,
-  openSync,
   readFileSync,
   renameSync,
   unlinkSync,
@@ -11,12 +9,9 @@ import {
 } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import { errorMessage } from './error-utils.ts';
+import { acquireStateLock, acquireStateLockSync, releaseStateLock, StateLockTimeoutError } from './state-lock.ts';
 import { prepareTaskRecordWriteCheck } from './task-record-write-guard.ts';
 import type { WorkflowStateIssue } from './workflow-state.ts';
-
-function blockingSleep(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
 
 export interface MutateJsonStateOptions<T> {
   timeoutMs?: number;
@@ -36,12 +31,7 @@ export interface MutateJsonStateOptions<T> {
   expectedRunIds?: Record<string, string>;
 }
 
-export class StateLockTimeoutError extends Error {
-  constructor(statePath: string, timeoutMs: number) {
-    super(`Timed out acquiring state lock for ${statePath} after ${timeoutMs}ms`);
-    this.name = 'StateLockTimeoutError';
-  }
-}
+export { StateLockTimeoutError } from './state-lock.ts';
 
 export class StateParseError extends Error {
   constructor(statePath: string, cause: unknown) {
@@ -51,33 +41,6 @@ export class StateParseError extends Error {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function acquireLock(statePath: string, timeoutMs: number): Promise<{ fd: number; lockPath: string }> {
-  const lockPath = `${statePath}.lock`;
-  const startedAt = Date.now();
-  let delayMs = 10;
-
-  while (true) {
-    try {
-      const fd = openSync(lockPath, 'wx');
-      return { fd, lockPath };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-        throw error;
-      }
-
-      if (Date.now() - startedAt >= timeoutMs) {
-        throw new StateLockTimeoutError(statePath, timeoutMs);
-      }
-
-      await sleep(delayMs);
-      delayMs = Math.min(Math.ceil(delayMs * 1.5), 100);
-    }
-  }
-}
 
 function readJsonState<T>(
   statePath: string,
@@ -146,7 +109,7 @@ export async function mutateJsonState<T>(
   if (opts.createIfMissing) {
     mkdirSync(dirname(statePath), { recursive: true });
   }
-  const lock = await acquireLock(statePath, timeoutMs);
+  const lock = await acquireStateLock(statePath, { timeoutMs, purpose: 'mutate-json-state' });
   const tmpPath = `${statePath}.tmp.${process.pid}.${randomUUID()}`;
 
   try {
@@ -177,32 +140,7 @@ export async function mutateJsonState<T>(
         throw error;
       }
     } finally {
-      closeSync(lock.fd);
-      unlinkSync(lock.lockPath);
-    }
-  }
-}
-
-function acquireLockSync(statePath: string, timeoutMs: number): { fd: number; lockPath: string } {
-  const lockPath = `${statePath}.lock`;
-  const startedAt = Date.now();
-  let delayMs = 10;
-
-  while (true) {
-    try {
-      const fd = openSync(lockPath, 'wx');
-      return { fd, lockPath };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-        throw error;
-      }
-
-      if (Date.now() - startedAt >= timeoutMs) {
-        throw new StateLockTimeoutError(statePath, timeoutMs);
-      }
-
-      blockingSleep(delayMs);
-      delayMs = Math.min(Math.ceil(delayMs * 1.5), 100);
+      releaseStateLock(lock);
     }
   }
 }
@@ -224,7 +162,7 @@ export function mutateJsonStateSync<T>(
   if (opts.createIfMissing) {
     mkdirSync(dirname(statePath), { recursive: true });
   }
-  const lock = acquireLockSync(statePath, timeoutMs);
+  const lock = acquireStateLockSync(statePath, { timeoutMs, purpose: 'mutate-json-state' });
   const tmpPath = `${statePath}.tmp.${process.pid}.${randomUUID()}`;
 
   try {
@@ -254,8 +192,7 @@ export function mutateJsonStateSync<T>(
         throw error;
       }
     } finally {
-      closeSync(lock.fd);
-      unlinkSync(lock.lockPath);
+      releaseStateLock(lock);
     }
   }
 }

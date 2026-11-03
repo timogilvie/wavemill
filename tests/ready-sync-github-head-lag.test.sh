@@ -113,14 +113,35 @@ run_sync
 check "rewrite syncs (rc 0)" "$SYNC_RC" 0
 check "worktree moved to the rewritten head" "$(git -C "$WT" rev-parse HEAD)" "$rewritten"
 
-echo "=== unpushed local work on top of the PR head is refused ==="
+echo "=== unpushed local work is published through the seam (HOK-3370) ==="
+# protects: HOK-3361 touches #1/#3 — a remediation or reviewer commit the
+# agent never pushed must be published by the mill, never refused.
 setup_world unpushed
 pr_head="$(git -C "$WT" rev-parse HEAD)"
 echo local > "$WT/local.txt"; git -C "$WT" add local.txt; git -C "$WT" commit -q -m local
 local_only="$(git -C "$WT" rev-parse HEAD)"
 FAKE_GH_HEAD="$pr_head"
+PUBLISH_CALLS=0
+publish_stage_head() {
+  PUBLISH_CALLS=$((PUBLISH_CALLS + 1))
+  PUBLISH_STAGE_HEAD_OUTCOME="pushed"; PUBLISH_STAGE_HEAD_REASON=""; PUBLISH_STAGE_HEAD_DETAIL=""
+  return 0
+}
+ready_remediation_attempts() { echo 0; }
 run_sync
-check "refuses (rc 2)" "$SYNC_RC" 2
+check "publishes and holds for the PR head to catch up (rc 3)" "$SYNC_RC" 3
+check "the seam was called exactly once" "$PUBLISH_CALLS" 1
+check "unpushed commit is kept" "$(git -C "$WT" rev-parse HEAD)" "$local_only"
+check "lagging PR head recorded for the HOK-3171 wait" "$READY_SYNC_OBSERVED_PR_HEAD" "$pr_head"
+
+echo "=== seam failure (genuine divergence) stays a typed rc-2 refusal ==="
+publish_stage_head() {
+  PUBLISH_STAGE_HEAD_OUTCOME=""; PUBLISH_STAGE_HEAD_REASON="remote-divergence"
+  PUBLISH_STAGE_HEAD_DETAIL="origin/task/x diverged; refusing to overwrite the remote branch (merge conflict-shaped divergence)"
+  return 10
+}
+run_sync
+check "refuses with the seam's typed detail (rc 2)" "$SYNC_RC" 2
 check "unpushed commit is kept" "$(git -C "$WT" rev-parse HEAD)" "$local_only"
 
 echo ""

@@ -10,6 +10,7 @@ import {
   type ChallengeArmSide,
 } from './arm-failure-taxonomy.ts';
 import { parseBudgetExhaustedFact, type BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
+import { resolveNativeStageTimeSplit, type NativeStageTimeSplit } from './native-agent/stage-time-split.ts';
 
 const DEFAULT_EVALS_DIR = '.wavemill/evals';
 const RELIABILITY_RECORDS_FILENAME = 'reliability-records.jsonl';
@@ -35,7 +36,17 @@ export interface ArmReliabilityRecord {
    * `faultClass` is derived from it, never the other way round.
    */
   budgetExhausted?: BudgetExhaustedFact;
-  source: 'challenge_abort_pair';
+  /** HOK-3380: the transcript time split resolved from `budgetExhausted.sessionStream`, when found. */
+  timeSplit?: NativeStageTimeSplit;
+  /**
+   * HOK-3358: the recorder that produced this row. `challenge_abort_pair`
+   * remains the default (and the historical value for backfilled rows).
+   * `operator-abort` and `pair-resolver` are added so the operator and
+   * sibling-stalled paths both emit through the same recorder; readers that
+   * only check `source === 'challenge_abort_pair'` continue to work, new
+   * values are additive.
+   */
+  source: 'challenge_abort_pair' | 'operator-abort' | 'pair-resolver';
 }
 
 export interface BuildArmReliabilityRecordInput {
@@ -49,8 +60,12 @@ export interface BuildArmReliabilityRecordInput {
   nextAction?: string;
   /** HOK-3362: the stage's budget fact (object or JSON); invalid input is dropped. */
   budgetExhausted?: BudgetExhaustedFact | string | null;
+  /** HOK-3380: directory to resolve the fact's `sessionStream` transcript pointer against. */
+  featureDir?: string;
   timestamp?: string;
   id?: string;
+  /** HOK-3358: which recorder is writing this row. Defaults to `challenge_abort_pair`. */
+  source?: ArmReliabilityRecord['source'];
 }
 
 /**
@@ -64,7 +79,8 @@ export interface BuildArmReliabilityRecordInput {
 export function buildArmReliabilityRecord(input: BuildArmReliabilityRecordInput): ArmReliabilityRecord {
   const failureKind = parseAbortFailureKind(input.abortReason);
   const budgetExhausted = parseBudgetExhaustedFact(input.budgetExhausted ?? null);
-  const faultClass = classifyArmFault({ failureKind, detail: input.detail, budgetExhausted });
+  const timeSplit = resolveNativeStageTimeSplit(budgetExhausted, { featureDir: input.featureDir }) ?? undefined;
+  const faultClass = classifyArmFault({ failureKind, detail: input.detail, budgetExhausted, timeSplit });
   return {
     schemaVersion: '1.0.0',
     id: input.id ?? randomUUID(),
@@ -82,7 +98,8 @@ export function buildArmReliabilityRecord(input: BuildArmReliabilityRecordInput)
     ...(input.detail ? { detail: input.detail } : {}),
     ...(input.nextAction ? { nextAction: input.nextAction } : {}),
     ...(budgetExhausted ? { budgetExhausted } : {}),
-    source: 'challenge_abort_pair',
+    ...(timeSplit ? { timeSplit } : {}),
+    source: input.source ?? 'challenge_abort_pair',
   };
 }
 

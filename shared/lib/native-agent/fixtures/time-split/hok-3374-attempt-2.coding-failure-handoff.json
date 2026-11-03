@@ -1,0 +1,16 @@
+{
+  "stage": "coding",
+  "reason": "no_completion_artifact",
+  "stopReason": "wall_clock_limit",
+  "mutationFailures": 7,
+  "lastToolError": {
+    "tool": "run_tests",
+    "error": "unsafe_command",
+    "message": "Command was rejected by the native safety classifier.",
+    "retryHint": "Retry with a safer scoped test or formatter command."
+  },
+  "recoveryAttempted": false,
+  "suggestedAction": "Retry native coding with the documented tool contract and the preserved last tool error.",
+  "createdAt": "2026-11-01T17:00:37.870Z",
+  "schemaVersion": "1.0"
+}

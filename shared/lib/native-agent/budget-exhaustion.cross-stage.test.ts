@@ -145,6 +145,9 @@ async function runReview(): Promise<string> {
     totalOutputTokens: 10,
     totalCostUsd: 0,
     wallClockMs: 5,
+    // HOK-3380: budgetExhaustionFromLoop derives the sessionStream pointer's
+    // window from startedAtMs + wallClockMs; a mock without it produces NaN.
+    startedAtMs: Date.now(),
   }) as never);
   const result = await runNativeReview({
     diff: 'diff --git a/file.ts b/file.ts',

@@ -49,6 +49,14 @@ runTool({
       description: 'Emit only the JSON result on stdout (default: true)',
       default: true,
     },
+    'state-dir': {
+      type: 'string',
+      description: 'Task state dir: routes the push through the stage-head seam and records the head move (HOK-3370)',
+    },
+    issue: {
+      type: 'string',
+      description: 'Issue id for the head-move record (required with --state-dir)',
+    },
   },
   examples: [
     'npx tsx tools/update-branch-with-base.ts --worktree ./wt --branch task/foo --base auto/integration',
@@ -63,7 +71,13 @@ runTool({
       process.exit(1);
     }
 
-    const result = updateBranchWithBase(branch, base, worktree);
+    const stateDir = args['state-dir'] as string | undefined;
+    const issue = args.issue as string | undefined;
+    const headMoveContext = stateDir && issue
+      ? { stateDir, issue, kind: 'base-merge' as const }
+      : undefined;
+
+    const result = updateBranchWithBase(branch, base, worktree, undefined, headMoveContext);
     const exitCode = EXIT_CODE_BY_STATUS[result.status] ?? 1;
 
     // Prefer the JSON verbatim from the module so a future field addition

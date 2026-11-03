@@ -97,7 +97,7 @@ ATTENTION_FILE="$TMP_ROOT/attention.txt"
 WARN_FILE="$TMP_ROOT/warn.txt"
 STATUS_LOG="$TMP_ROOT/status.txt"
 GH_LOG="$TMP_ROOT/gh.txt"
-ARG_LOG="$TMP_ROOT/record-arm-failure.argv.txt"
+ARG_LOG="$TMP_ROOT/record-arm-termination.argv.txt"
 WORKTREE_ROOT="$TMP_ROOT/worktrees"
 REPO_DIR="$TMP_ROOT/repo"
 TOOLS_DIR="$TMP_ROOT/install-tools"  # HOK-3100: wavemill_tool_path reads from TOOLS_DIR
@@ -110,9 +110,10 @@ wavemill_tool_path() {
   printf '%s/%s\n' "${TOOLS_DIR:-$TMP_ROOT/install-tools}" "$1"
 }
 # HOK-3190: the extracted monitor function calls `wavemill_run_tool` to invoke
-# record-arm-failure.ts and review-gate-remediation-cli.ts. The stub TS files
-# this test writes have `#!/usr/bin/env node` + TypeScript, so route through
-# `node --experimental-strip-types` like `failure_policy_next_action` below.
+# record-arm-termination.ts (HOK-3358) and review-gate-remediation-cli.ts. The
+# stub TS files this test writes have `#!/usr/bin/env node` + TypeScript, so
+# route through `node --experimental-strip-types` like
+# `failure_policy_next_action` below.
 wavemill_run_tool() {
   local tool="$1"; shift
   local cli
@@ -130,13 +131,64 @@ failure_policy_next_action() {
     --next-action-only "--failure-kind=${1:-}" 2>/dev/null
 }
 
-# Stub record-arm-failure.ts so the HOK-3064 bridge argv is captured.
-cat > "$TOOLS_DIR/record-arm-failure.ts" <<'EOT'
+# Stub record-arm-termination.ts (HOK-3358): the real recorder stamps
+# `challengeAborted = terminal_stage_failure:<kind>` on the state row and
+# writes `.challenge-aborted.json`. This stub captures argv AND mutates the
+# state the same way the real recorder would, so the shell test can assert
+# both the bridge arguments (via the arg log) and the end state the recorder
+# produces. The reliability/eval writes the real recorder does are out of
+# scope here — they have their own unit tests.
+cat > "$TOOLS_DIR/record-arm-termination.ts" <<'EOT'
 #!/usr/bin/env node
-// Test stub: write argv to a file so the test can assert the bridge arguments.
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync, mkdirSync, renameSync } from 'node:fs';
 const target = process.env.WAVEMILL_RECORD_ARM_FAILURE_LOG!;
-writeFileSync(target, process.argv.slice(2).join(' ') + '\n', { flag: 'a' });
+const argv = process.argv.slice(2);
+writeFileSync(target, argv.join(' ') + '\n', { flag: 'a' });
+const flag = (name: string): string => {
+  const i = argv.indexOf(`--${name}`);
+  return i >= 0 && i + 1 < argv.length ? argv[i + 1] : '';
+};
+const issue = flag('issue');
+const kind = flag('kind');
+const stage = flag('stage');
+const model = flag('model');
+const detail = flag('detail');
+const nextAction = flag('next-action');
+const featureDir = flag('feature-dir');
+const stateFile = flag('state-file');
+if (!issue || !kind) process.exit(0);
+const abortReason = `terminal_stage_failure:${kind}`;
+if (stateFile) {
+  try {
+    const state = JSON.parse(readFileSync(stateFile, 'utf-8'));
+    state.tasks = state.tasks || {};
+    const task = state.tasks[issue];
+    if (task) {
+      task.challengeAborted = abortReason;
+      if (detail) task.challengeAbortedDetail = detail;
+      if (stage) task.challengeAbortedStage = stage;
+      if (nextAction) task.challengeAbortedNextAction = nextAction;
+    }
+    writeFileSync(stateFile + '.tmp', JSON.stringify(state, null, 2));
+    renameSync(stateFile + '.tmp', stateFile);
+  } catch (e) {
+    process.stderr.write(`stub state-write failed: ${(e as Error).message}\n`);
+  }
+}
+if (featureDir) {
+  try {
+    mkdirSync(featureDir, { recursive: true });
+    const artifact = {
+      pairId: issue.replace(/_c$/, ''),
+      role: issue.endsWith('_c') ? 'challenger' : 'primary',
+      stage, model: model || '', reason: abortReason,
+      abortedAt: new Date().toISOString(),
+      detail: detail || '',
+      actor: flag('actor'),
+    };
+    writeFileSync(`${featureDir}/.challenge-aborted.json`, JSON.stringify(artifact, null, 2));
+  } catch {}
+}
 EOT
 
 # Stub review-gate-remediation-cli.ts to decide disposition based on review result
@@ -315,12 +367,12 @@ bounded_retry_mark_exhausted "$dir" "pending-ready-recheck" \
   "Ready launch refused for PR #1562: review verdict does not pass the readiness gate (terminal until the review artifact changes)" || true
 run_terminalize "HOK-3097_c"
 if [[ "$rc" == "0" ]] \
-  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "invalid_challenge:review-identity-mismatch" ]] \
+  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "terminal_stage_failure:review-identity-mismatch" ]] \
   && [[ "$(get_task_meta HOK-3097_c challengeAbortedStage)" == "review" ]] \
   && [[ "$(get_task_meta HOK-3097_c challengeAbortedDetail)" == *"Ready launch refused"*"failureCategory=native-review-malformed-response"* ]] \
   && [[ -z "$(get_task_meta HOK-3097 challengeAborted)" ]] \
   && [[ "$(jq -r '.challengePairAbortions["HOK-3097"].challenger.scope' "$STATE_FILE")" == "single" ]] \
-  && [[ "$(jq -r '.reason' "$dir/.challenge-aborted.json")" == "invalid_challenge:review-identity-mismatch" ]] \
+  && [[ "$(jq -r '.reason' "$dir/.challenge-aborted.json")" == "terminal_stage_failure:review-identity-mismatch" ]] \
   && [[ "$(jq -r '.stage' "$dir/.challenge-aborted.json")" == "review" ]] \
   && [[ "$(close_count)" == "1" ]] \
   && grep -q '^pr close 1562 ' "$GH_LOG"; then
@@ -343,13 +395,14 @@ if grep -q 'retired (invalid_challenge:review-identity-mismatch)' "$WARN_FILE"; 
 else
   fail "retirement warning missing"
 fi
-# HOK-3064 bridge: record-arm-failure.ts gets --stage review and the typed abort-reason.
+# HOK-3064 bridge (HOK-3358 recorder): record-arm-termination.ts gets
+# --stage review and the typed --kind.
 if [[ -f "$ARG_LOG" ]] \
   && grep -q -- '--stage review' "$ARG_LOG" \
-  && grep -q -- '--abort-reason invalid_challenge:review-identity-mismatch' "$ARG_LOG"; then
-  pass "HOK-3064 bridge (acceptance 3): record-arm-failure gets --stage review and the typed abort-reason"
+  && grep -q -- '--kind review-identity-mismatch' "$ARG_LOG"; then
+  pass "HOK-3064 bridge (acceptance 3): record-arm-termination gets --stage review and the typed kind"
 else
-  fail "record-arm-failure argv missing or wrong: $(cat "$ARG_LOG" 2>/dev/null || echo '<none>')"
+  fail "record-arm-termination argv missing or wrong: $(cat "$ARG_LOG" 2>/dev/null || echo '<none>')"
 fi
 
 # ── 2. Proven reviewer identity remains unattributed until HOK-2891 ────────
@@ -359,7 +412,7 @@ write_review_result "$dir" "$MALFORMED_ARTIFACTS" \
   '{"intendedModel":"kimi-k2","model":"kimi-k2","executedModel":"kimi-k2","executionEvidence":{"status":"consistent","source":"native-reviewer"},"modelAttributionEligible":true}'
 run_terminalize "HOK-3097_c"
 if [[ "$rc" == "0" ]] \
-  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "invalid_challenge:review-unattributed" ]] \
+  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "terminal_stage_failure:review-unattributed" ]] \
   && [[ "$(get_task_meta HOK-3097_c challengeAbortedStage)" == "review" ]] \
   && [[ "$(jq -r '.model' "$dir/.challenge-aborted.json")" == "kimi-k2" ]] \
   && [[ "$(jq -r '.stage' "$dir/.challenge-aborted.json")" == "review" ]]; then
@@ -368,10 +421,10 @@ else
   fail "attributed forfeit wrong (aborted=$(get_task_meta HOK-3097_c challengeAborted) model=$(jq -r '.model' "$dir/.challenge-aborted.json"))"
 fi
 if grep -q -- '--model kimi-k2' "$ARG_LOG" \
-  && grep -q -- '--abort-reason invalid_challenge:review-unattributed' "$ARG_LOG"; then
+  && grep -q -- '--kind review-unattributed' "$ARG_LOG"; then
   pass "selection-health records the reviewer (kimi-k2), not the coder"
 else
-  fail "record-arm-failure did not attribute the reviewer: $(cat "$ARG_LOG")"
+  fail "record-arm-termination did not attribute the reviewer: $(cat "$ARG_LOG")"
 fi
 
 # ── 3. Acceptance 2 (symmetric): primary refused, challenger green ─────────
@@ -381,7 +434,7 @@ write_review_result "$dir" "$MALFORMED_ARTIFACTS" \
   '{"intendedModel":"gpt-5.6-terra","model":"gpt-5.6-terra","executedModel":"gpt-5.6-terra","executionEvidence":{"status":"consistent"},"modelAttributionEligible":true}'
 run_terminalize "HOK-3097"
 if [[ "$rc" == "0" ]] \
-  && [[ "$(get_task_meta HOK-3097 challengeAborted)" == "invalid_challenge:review-unattributed" ]] \
+  && [[ "$(get_task_meta HOK-3097 challengeAborted)" == "terminal_stage_failure:review-unattributed" ]] \
   && [[ "$(get_task_meta HOK-3097 challengeAbortedStage)" == "review" ]] \
   && [[ -z "$(get_task_meta HOK-3097_c challengeAborted)" ]] \
   && grep -q '^pr close 1563 ' "$GH_LOG"; then
@@ -397,7 +450,7 @@ write_review_result "$dir" "$MALFORMED_ARTIFACTS" \
   '{"intendedModel":"kimi-k2","model":"kimi-k2"}'
 run_terminalize "HOK-3097_c"
 if [[ "$rc" == "0" ]] \
-  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "invalid_challenge:review-unattributed" ]] \
+  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "terminal_stage_failure:review-unattributed" ]] \
   && [[ "$(jq -r '.model' "$dir/.challenge-aborted.json")" == "kimi-k2" ]]; then
   pass "missing execution evidence (no executedModel) with matching recorded/assigned retires as unattributed"
 else
@@ -411,7 +464,7 @@ write_review_result "$dir" "$NOT_READY_ARTIFACTS" \
   '{"intendedModel":"kimi-k2","model":"kimi-k2","executedModel":"kimi-k2","executionEvidence":{"status":"consistent"},"modelAttributionEligible":true}'
 run_terminalize "HOK-3097_c"
 if [[ "$rc" == "0" ]] \
-  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "invalid_challenge:review-unattributed" ]]; then
+  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "terminal_stage_failure:review-unattributed" ]]; then
   pass "a genuine not_ready with 2 undismissed blockers remains unattributed until HOK-2891"
 else
   fail "review-not-ready attribution wrong (aborted=$(get_task_meta HOK-3097_c challengeAborted))"
@@ -425,7 +478,7 @@ write_review_result "$dir" "$MALFORMED_ARTIFACTS" \
   '{"intendedModel":"kimi-k2","model":"kimi-k2","executedModel":"kimi-k2","executionEvidence":{"status":"consistent"},"modelAttributionEligible":false,"modelAttributionIneligibleReason":"missing_evidence"}'
 run_terminalize "HOK-3097_c"
 if [[ "$rc" == "0" ]] \
-  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "invalid_challenge:review-unattributed" ]] \
+  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "terminal_stage_failure:review-unattributed" ]] \
   && [[ "$(jq -r '.modelAttributionIneligibleReason' "$dir/.review-result.json")" == "missing_evidence" ]]; then
   pass "modelAttributionEligible=false blocks the forfeit (unattributed) and preserves the ineligible reason"
 else
@@ -439,7 +492,7 @@ write_review_result "$dir" "$MALFORMED_ARTIFACTS" \
   '{"intendedModel":"kimi-k2","model":"kimi-k2","executedModel":"kimi-k2","executionEvidence":{"status":"contradicted","source":"native-reviewer"},"modelAttributionEligible":true}'
 run_terminalize "HOK-3097_c"
 if [[ "$rc" == "0" ]] \
-  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "invalid_challenge:review-identity-mismatch" ]]; then
+  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "terminal_stage_failure:review-identity-mismatch" ]]; then
   pass "executionEvidence.status==contradicted retires as identity-mismatch"
 else
   fail "contradicted-evidence wrong (aborted=$(get_task_meta HOK-3097_c challengeAborted))"
@@ -615,7 +668,7 @@ cause_model="$(review_refused_challenge_cause "$dir" "HOK-3097_c")"
 run_terminalize "HOK-3097_c"
 if [[ "${cause_model%%$'\t'*}" == "invalid_challenge:review-identity-mismatch" ]] \
   && [[ "$rc" == "0" ]] \
-  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "invalid_challenge:review-identity-mismatch" ]] \
+  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "terminal_stage_failure:review-identity-mismatch" ]] \
   && [[ "$(close_count)" == "1" ]]; then
   pass "a challenge-pinned unlaunchable reviewer retires the arm as invalid_challenge:review-identity-mismatch"
 else

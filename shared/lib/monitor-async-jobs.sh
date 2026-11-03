@@ -21,7 +21,7 @@
 #
 # Sourced by wavemill-monitor.sh after wavemill-common.sh, transient-marker.sh
 # and bounded-retry.sh. Every function here resolves monitor helpers
-# (launch_tracked_job, write_ready_attention_file, log, …) at call time.
+# (launch_tracked_job, escalate_operator_attention, log, …) at call time.
 #
 # The sync fallbacks that let the pre-HOK-3206 inline paths run were retired
 # in HOK-3235. Tests source `tests/lib/inline-ready-checks.sh` to pin the

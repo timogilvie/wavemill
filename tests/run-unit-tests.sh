@@ -103,6 +103,7 @@ TESTS=(
   shared/lib/native-agent/recovery.test.ts
   shared/lib/native-agent/budget-exhaustion.test.ts
   shared/lib/native-agent/budget-exhaustion.cross-stage.test.ts
+  shared/lib/native-agent/stage-time-split.test.ts
   shared/lib/native-agent/cleanup.test.ts
   shared/lib/native-agent/coding-lifecycle.test.ts
   shared/lib/native-agent/command-transcript.test.ts
@@ -213,6 +214,7 @@ TESTS=(
   tools/quarantine-legacy-reviewer-forfeits.test.ts
   shared/lib/arm-failure-taxonomy.test.ts
   shared/lib/failure-policy.test.ts
+  shared/lib/operator-escalation.test.ts
   shared/lib/failure-policy.fixtures.test.ts
   shared/lib/failure-policy.property.test.ts
   shared/lib/condition-reconciler.property.test.ts
@@ -330,7 +332,9 @@ TESTS=(
   shared/lib/stage-launchability-guard.test.ts
   shared/lib/provider-identity-guard.test.ts
   shared/lib/model-equivalence-guard.test.ts
+  shared/lib/install-verdict-guard.test.ts
   shared/lib/side-effect-ledger-guard.test.ts
+  shared/lib/head-publication-guard.test.ts
   shared/lib/failure-policy-guard.test.ts
   shared/lib/ready-failure-policy-guard.test.ts
   shared/lib/task-field-read-checker.test.ts
@@ -350,6 +354,8 @@ TESTS=(
   shared/lib/incident-fixture-converter.test.ts
   shared/lib/incident-reconcile-cycle.test.ts
   shared/lib/state-mutex.test.ts
+  shared/lib/state-lock.test.ts
+  shared/lib/state-lock-guard.test.ts
   shared/lib/task-record-write-guard.test.ts
   shared/lib/task-settlement.test.ts
   shared/lib/settled-attempt-readers.test.ts
@@ -544,6 +550,9 @@ TESTS=(
   shared/lib/permissions-verifier.test.ts
   shared/lib/plan-validator.test.ts
   shared/lib/branch-publication.test.ts
+  shared/lib/head-move-record.test.ts
+  shared/lib/change-identity.test.ts
+  shared/lib/head-move-incident-replay.test.ts
   shared/lib/pre-pr-verification.test.ts
   shared/lib/project-context-compactor.test.ts
   shared/lib/project-context-generator.test.ts
