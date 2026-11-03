@@ -346,7 +346,7 @@ SKIP_VERIFICATION=true npx tsx shared/lib/run-verification.ts
 
 ### Check Commands Failing
 
-**Symptom:** Typecheck/lint/test always fail
+**Symptom:** Lint/test always fail
 
 **Check:**
 1. Do the commands work standalone? Run `npm run lint` manually
