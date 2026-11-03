@@ -30,6 +30,16 @@
  * - `classifyProviderError(` over a raw transcript (`.messages`) in a native
  *   stage function that never consults the budget definition — our own budget
  *   abort must never be classified as a provider error.
+ *
+ * Native stage time share (HOK-3380): "whose time was this" is derived once,
+ * by `nativeStageTimeSplit` in shared/lib/native-agent/stage-time-split.ts.
+ * Also caught:
+ * - `private-stage-time-share` — a share/division of a time-split bucket over
+ *   the wall clock, or a private `providerWaitMs` accumulation, computed
+ *   outside that module;
+ * - `private-tool-duration` — tool-event timestamp arithmetic
+ *   (`tool_result.timestamp - tool_started.timestamp`) computed outside that
+ *   module.
  */
 import type { GuardSpec, StructuralMatch } from '../../tools/lib/source-guard.ts';
 
@@ -78,6 +88,8 @@ export const FAILURE_POLICY_GUARD: GuardSpec = {
     'shared/lib/failure-policy-guard.ts',
     // HOK-3362: the one budget-exhaustion definition.
     'shared/lib/native-agent/budget-exhaustion.ts',
+    // HOK-3380: the one native stage time-share derivation.
+    'shared/lib/native-agent/stage-time-split.ts',
   ],
   structuralChecks: [{
     name: 'budget-stop-provider-classification',
@@ -107,6 +119,18 @@ export const FAILURE_POLICY_GUARD: GuardSpec = {
       description: 'private final-assistant errorMessage scan — use finalProviderErrorMessage, which never returns our own budget abort (HOK-3362)',
       lang: 'ts',
       re: /\.errorMessage\?\.trim\(\)|\(\s*message\s+as\s+[^)]*\)\.errorMessage\b/,
+    },
+    {
+      name: 'private-stage-time-share',
+      description: 'native stage time share computed outside nativeStageTimeSplit (stage-time-split.ts, HOK-3380)',
+      lang: 'ts',
+      re: /\b(?:providerWaitMs|harnessToolMs|modelMs|toolDurationMs)\b\s*\/|\/\s*[\w.]*\bwallClockMs\b|\bproviderWaitMs\s*\+=/,
+    },
+    {
+      name: 'private-tool-duration',
+      description: 'native stage time share computed outside nativeStageTimeSplit (stage-time-split.ts, HOK-3380)',
+      lang: 'ts',
+      re: /(?:tool_?[Rr]esult|tool_?[Ss]tarted|toolEnd|toolStart)\w*\.timestamp\s*-|\.timestamp\s*-\s*[\w.]*(?:tool_?[Ss]tarted|toolStart)/,
     },
     {
       name: 'private-eval-retry-decision',

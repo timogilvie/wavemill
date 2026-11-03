@@ -560,6 +560,9 @@
               "model-fault",
               "unknown-fault"
             ]
+          },
+          "timeSplit": {
+            "$ref": "#/$defs/nativeStageTimeSplit"
           }
         }
       }
@@ -3073,7 +3076,8 @@
             },
             "providerWaitMs": {
               "type": "number",
-              "minimum": 0
+              "minimum": 0,
+              "description": "legacy (<=HOK-3362), never written since HOK-3380, ignored on read. nativeStageTimeSplit derives provider-wait time from the transcript instead."
             },
             "providerErrorRetries": {
               "type": "integer",
@@ -3082,6 +3086,48 @@
             "interruptedRequest": {
               "type": "boolean"
             }
+          }
+        },
+        "sessionStream": {
+          "type": "object",
+          "description": "HOK-3380: pointer to the native transcript nativeStageTimeSplit is derived from.",
+          "required": ["path", "fromMs", "toMs"],
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "fromMs": { "type": "number", "minimum": 0 },
+            "toMs": { "type": "number", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "nativeStageTimeSplit": {
+      "type": "object",
+      "description": "HOK-3380: the one versioned derivation of 'whose time was this' over a native stage's transcript (shared/lib/native-agent/stage-time-split.ts).",
+      "required": [
+        "version",
+        "totalMs",
+        "modelMs",
+        "providerWaitMs",
+        "harnessToolMs",
+        "unknownMs",
+        "toolCalls"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "version": { "const": "nativeStageTimeSplit/v1" },
+        "totalMs": { "type": "number", "minimum": 0 },
+        "modelMs": { "type": "number", "minimum": 0 },
+        "providerWaitMs": { "type": "number", "minimum": 0 },
+        "harnessToolMs": { "type": "number", "minimum": 0 },
+        "unknownMs": { "type": "number", "minimum": 0 },
+        "toolCalls": {
+          "type": "object",
+          "required": ["paired", "unpaired"],
+          "additionalProperties": false,
+          "properties": {
+            "paired": { "type": "integer", "minimum": 0 },
+            "unpaired": { "type": "integer", "minimum": 0 }
           }
         }
       }

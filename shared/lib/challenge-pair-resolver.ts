@@ -38,6 +38,7 @@ import {
 } from './arm-failure-taxonomy.ts';
 import { repairChallengePairingSync } from './challenge-pairing-repair.ts';
 import { parseBudgetExhaustedFact, type BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
+import { resolveNativeStageTimeSplit, type NativeStageTimeSplit } from './native-agent/stage-time-split.ts';
 import { Ledger } from './ledger.ts';
 import { withShadowSuppressing } from './ledger-shadow.ts';
 import { settleArmAbort } from './ledger-shadow.ts';
@@ -984,18 +985,27 @@ function hasOtherOpenPrForPair(
 
 /**
  * The budget fact (HOK-3362) `challenge_abort_pair` recorded in the arm's
- * archived `.challenge-aborted.json`, when the abort was a budget stop. Arms
- * whose artifact is not archived yet classify without it (unknown-fault for a
- * budget kind): no evidence, no attribution.
+ * archived `.challenge-aborted.json`, when the abort was a budget stop, plus
+ * (HOK-3380) the `nativeStageTimeSplit` resolved from its `sessionStream`
+ * pointer — the archive directory `join(evalsDir, 'artifacts', issueId)` is
+ * exactly where the fact's transcript was archived to. Arms whose artifact is
+ * not archived yet classify without either (unknown-fault for a budget kind):
+ * no evidence, no attribution.
  */
-function readArchivedBudgetFact(evalsDir: string | undefined, issueId: string): BudgetExhaustedFact | null {
-  if (!evalsDir) return null;
-  const artifactPath = join(evalsDir, 'artifacts', issueId, '.challenge-aborted.json');
-  if (!existsSync(artifactPath)) return null;
+function readArchivedBudgetFact(
+  evalsDir: string | undefined,
+  issueId: string,
+): { fact: BudgetExhaustedFact | null; timeSplit: NativeStageTimeSplit | null } {
+  if (!evalsDir) return { fact: null, timeSplit: null };
+  const artifactDir = join(evalsDir, 'artifacts', issueId);
+  const artifactPath = join(artifactDir, '.challenge-aborted.json');
+  if (!existsSync(artifactPath)) return { fact: null, timeSplit: null };
   try {
-    return parseBudgetExhaustedFact((JSON.parse(readFileSync(artifactPath, 'utf-8')) as { budgetExhausted?: unknown }).budgetExhausted);
+    const fact = parseBudgetExhaustedFact((JSON.parse(readFileSync(artifactPath, 'utf-8')) as { budgetExhausted?: unknown }).budgetExhausted);
+    const timeSplit = resolveNativeStageTimeSplit(fact, { featureDir: artifactDir });
+    return { fact, timeSplit };
   } catch {
-    return null;
+    return { fact: null, timeSplit: null };
   }
 }
 
@@ -1008,10 +1018,12 @@ function buildArmFailures(
     .filter((task): task is TaskEvalState => Boolean(task?.challengeAborted))
     .map((task) => {
       const failureKind = parseAbortFailureKind(task.challengeAborted);
+      const { fact, timeSplit } = readArchivedBudgetFact(evalsDir, task.issueId);
       const faultClass = classifyArmFault({
         failureKind,
         detail: task.challengeAbortedDetail,
-        budgetExhausted: readArchivedBudgetFact(evalsDir, task.issueId),
+        budgetExhausted: fact,
+        timeSplit,
       });
       return {
         side: task.role,

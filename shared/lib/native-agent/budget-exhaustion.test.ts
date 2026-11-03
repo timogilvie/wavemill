@@ -29,6 +29,7 @@ function loopResult(overrides: Partial<LoopResult>): LoopResult {
     totalOutputTokens: 0,
     totalCostUsd: 0,
     wallClockMs: 0,
+    startedAtMs: 1_000_000,
     promptCache: { turns: 0, inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, hitRate: null } as never,
     ...overrides,
   };
@@ -88,7 +89,7 @@ describe('budgetExhaustionFromLoop', () => {
         turnsCompleted: 145,
         toolCallsExecuted: 230,
         wallClockMs: 3_600_000,
-        providerWaitMs: 1_200_000,
+        startedAtMs: 1_000_000,
         providerErrorRetries: 0,
         messages: [abortedTurn],
       }),
@@ -105,12 +106,31 @@ describe('budgetExhaustionFromLoop', () => {
         toolCallsExecuted: 230,
         wallClockMs: 3_600_000,
         mutationFailures: 3,
-        providerWaitMs: 1_200_000,
         providerErrorRetries: 0,
         interruptedRequest: true,
       },
     });
     assert.equal(validateBudgetExhaustedFact(fact).ok, true);
+  });
+
+  // protects: HOK-3380 — the budget fact pointing at the wrong transcript window
+  it('builds the sessionStream pointer from startedAtMs and wallClockMs when a transcript path is given', () => {
+    const fact = budgetExhaustionFromLoop(
+      loopResult({ stopReason: 'wall_clock_limit', wallClockMs: 3_600_000, startedAtMs: 1_000_000 }),
+      { maxWallClockMs: 3_600_000 },
+      { transcriptPath: '/tmp/coding-HOK-0000.jsonl' },
+    );
+    assert.deepEqual(fact?.sessionStream, {
+      path: '/tmp/coding-HOK-0000.jsonl',
+      fromMs: 1_000_000,
+      toMs: 4_600_000,
+    });
+  });
+
+  // protects: a fact built without a transcript path silently fabricating a pointer
+  it('omits sessionStream when no transcript path is given', () => {
+    const fact = budgetExhaustionFromLoop(loopResult({ stopReason: 'turn_limit', turnsCompleted: 5 }), { maxTurns: 5 });
+    assert.equal(fact?.sessionStream, undefined);
   });
 
   // protects: limit/used naming the wrong budget for each kind
@@ -138,8 +158,8 @@ describe('budgetExhaustionFromLoop', () => {
     }
   });
 
-  // protects: the notes/hook detail not naming the one kind
-  it('describes the fact with the native-stage-timeout prefix', () => {
+  // protects: the notes/hook detail not naming the one kind, or dropping the time split (HOK-3380)
+  it('describes the fact with the native-stage-timeout prefix and the time split', () => {
     const fact = budgetExhaustionFromLoop(
       loopResult({ stopReason: 'turn_limit', turnsCompleted: 200, toolCallsExecuted: 88 }),
       { maxTurns: 200 },
@@ -147,7 +167,22 @@ describe('budgetExhaustionFromLoop', () => {
     )!;
     assert.equal(
       describeBudgetExhaustion('coding', fact),
-      'native-stage-timeout: native coding exhausted its turn budget (200 of 200) after 200 turn(s), 88 tool call(s), 44 mutation failure(s)',
+      'native-stage-timeout: native coding exhausted its turn budget (200 of 200); time split unknown (no session stream); 200 turn(s), 88 tool call(s), 44 mutation failure(s)',
+    );
+    const split = {
+      version: 'nativeStageTimeSplit/v1' as const,
+      totalMs: 1000,
+      modelMs: 700,
+      providerWaitMs: 0,
+      harnessToolMs: 300,
+      unknownMs: 0,
+      toolCalls: { paired: 1, unpaired: 0 },
+    };
+    assert.equal(
+      describeBudgetExhaustion('coding', fact, split),
+      'native-stage-timeout: native coding exhausted its turn budget (200 of 200); '
+      + 'time split nativeStageTimeSplit/v1: 0s harness tools, 1s model, 0s provider wait, 0s unknown; '
+      + '200 turn(s), 88 tool call(s), 44 mutation failure(s)',
     );
   });
 });
@@ -172,13 +207,27 @@ describe('validateBudgetExhaustedFact', () => {
       [{ ...valid, limit: -1 }, 'budgetExhausted.limit'],
       [{ ...valid, used: 'x' }, 'budgetExhausted.used'],
       [{ ...valid, progress: { ...valid.progress, turnsCompleted: 1.5 } }, 'budgetExhausted.progress.turnsCompleted'],
-      [{ ...valid, progress: { ...valid.progress, providerWaitMs: -5 } }, 'budgetExhausted.progress.providerWaitMs'],
+      [{ ...valid, sessionStream: { path: '', fromMs: 0, toMs: 1 } }, 'budgetExhausted.sessionStream'],
+      [{ ...valid, sessionStream: { path: '/x', fromMs: -1, toMs: 1 } }, 'budgetExhausted.sessionStream'],
     ];
     for (const [value, field] of cases) {
       const result = validateBudgetExhaustedFact(value);
       assert.equal(result.ok, false, JSON.stringify(value));
       if (!result.ok) assert.equal(result.field, field);
     }
+  });
+
+  // protects: HOK-3380 — a historical row carrying the retired providerWaitMs field being rejected
+  it('still validates a legacy fact carrying progress.providerWaitMs, ignoring the value', () => {
+    const legacy = { ...valid, progress: { ...valid.progress, providerWaitMs: 1_200_000 } };
+    const result = validateBudgetExhaustedFact(legacy);
+    assert.equal(result.ok, true);
+  });
+
+  // protects: HOK-3380 — the sessionStream pointer being accepted when well-formed
+  it('accepts a well-formed sessionStream pointer', () => {
+    const withPointer = { ...valid, sessionStream: { path: '/tmp/coding-X.jsonl', fromMs: 0, toMs: 1000 } };
+    assert.equal(validateBudgetExhaustedFact(withPointer).ok, true);
   });
 
   // protects: CLI/abort-artifact parsing accepting garbage
@@ -242,7 +291,8 @@ describe('runWavemillLoop budget stop (HOK-3329 attempt-2 replay)', () => {
     assert.equal(result.stopReason, 'wall_clock_limit');
     assert.equal(result.providerError, undefined);
     assert.equal(finalProviderErrorMessage(result), '');
-    assert.ok((result.providerWaitMs ?? 0) > 0, 'in-flight request counts as provider wait');
+    assert.equal(typeof result.startedAtMs, 'number');
+    assert.ok(result.startedAtMs <= Date.now());
     assert.equal(result.providerErrorRetries, 0);
     const fact = budgetExhaustionFromLoop(result, { maxWallClockMs: 150, maxTurns: 200 });
     assert.equal(fact?.kind, 'wall_clock');

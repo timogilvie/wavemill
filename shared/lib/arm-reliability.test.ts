@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   appendArmReliabilityRecord,
   buildArmReliabilityRecord,
@@ -81,6 +82,9 @@ test('derives the fault class from the budget fact and keeps the fact on the rec
     used: 3_600_000,
     progress: { turnsCompleted: 145, toolCallsExecuted: 230, wallClockMs: 3_600_000, providerErrorRetries: 0 },
   } as const;
+  // HOK-3380: a wall-clock fact with no resolvable session-stream pointer can
+  // no longer tell harness tool time apart from model time, so it is
+  // unknown-fault rather than defaulting to model-fault.
   const progressing = buildArmReliabilityRecord({
     issueId: 'HOK-3329_c',
     challengePairId: 'HOK-3329',
@@ -91,8 +95,9 @@ test('derives the fault class from the budget fact and keeps the fact on the rec
     budgetExhausted: JSON.stringify(fact),
   });
   assert.equal(progressing.failureKind, 'native-stage-timeout');
-  assert.equal(progressing.faultClass, 'model-fault');
+  assert.equal(progressing.faultClass, 'unknown-fault');
   assert.deepEqual(progressing.budgetExhausted, fact);
+  assert.equal(progressing.timeSplit, undefined);
 
   const stalled = buildArmReliabilityRecord({
     issueId: 'HOK-3329_c',
@@ -103,10 +108,10 @@ test('derives the fault class from the budget fact and keeps the fact on the rec
     abortReason: 'retry_exhausted:native-review-timeout',
     budgetExhausted: {
       ...fact,
-      progress: { turnsCompleted: 0, toolCallsExecuted: 0, wallClockMs: 300_000, providerWaitMs: 299_000 },
+      progress: { turnsCompleted: 0, toolCallsExecuted: 0, wallClockMs: 300_000 },
     },
   });
-  assert.equal(stalled.faultClass, 'provider-fault');
+  assert.equal(stalled.faultClass, 'unknown-fault');
 
   const historical = buildArmReliabilityRecord({
     issueId: 'HOK-3329_c',
@@ -119,4 +124,42 @@ test('derives the fault class from the budget fact and keeps the fact on the rec
   });
   assert.equal(historical.faultClass, 'unknown-fault');
   assert.equal(historical.budgetExhausted, undefined);
+});
+
+// protects: HOK-3380 — the reliability record failing to resolve a real archived transcript into harness-fault
+test('resolves and records a timeSplit, and derives harness-fault, from an archived transcript', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'arm-reliability-split-'));
+  try {
+    const archiveDir = join(repoDir, 'native-sessions');
+    const transcriptPath = join(archiveDir, 'coding-HOK-3374.jsonl');
+    mkdirSync(archiveDir, { recursive: true });
+    const source = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), 'native-agent', 'fixtures', 'time-split', 'hok-3374-attempt-2.transcript.jsonl'),
+      'utf8',
+    );
+    writeFileSync(transcriptPath, source);
+
+    const record = buildArmReliabilityRecord({
+      issueId: 'HOK-3374_c',
+      challengePairId: 'HOK-3374',
+      challengeRole: 'challenger',
+      stage: 'coding',
+      model: 'z-ai/glm-5.3-flash',
+      abortReason: 'retry_exhausted:native-stage-timeout',
+      budgetExhausted: {
+        kind: 'wall_clock',
+        stopReason: 'wall_clock_limit',
+        limit: 3_600_000,
+        used: 3_600_000,
+        progress: { turnsCompleted: 92, toolCallsExecuted: 116, wallClockMs: 3_600_000 },
+        sessionStream: { path: '/nonexistent/coding-HOK-3374.jsonl', fromMs: 1_793_548_837_834, toMs: 1_793_552_437_834 },
+      },
+      featureDir: repoDir,
+    });
+    assert.equal(record.faultClass, 'harness-fault');
+    assert.ok(record.timeSplit);
+    assert.ok(record.timeSplit!.harnessToolMs >= 50 * 60_000);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
 });

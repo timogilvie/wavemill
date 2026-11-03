@@ -388,15 +388,18 @@ export interface LoopResult {
     errorMessage: string;
     turnsAtFailure: number;
   };
-  /**
-   * Time spent waiting on the provider (HOK-3362): per turn, request start to
-   * the assistant `message_end`, including a request still in flight when the
-   * run ended. Generation time counts as wait; the budget fault rule also
-   * requires provider errors before it blames the provider.
-   */
-  providerWaitMs?: number;
   /** Provider-error retries the loop spent during this run (HOK-3362). */
   providerErrorRetries?: number;
+  /**
+   * `Date.now()` when this run started (HOK-3380). Paired with `wallClockMs`
+   * to give `budgetExhaustionFromLoop` the run's raw window
+   * (`[startedAtMs, startedAtMs + wallClockMs]`), which it stores on the fact
+   * as `sessionStream.{fromMs,toMs}` so `nativeStageTimeSplit` can be derived
+   * from the transcript. Replaces the loop's own `providerWaitMs` wait
+   * accounting, which charged every non-provider-error turn's generation time
+   * as "wait" and could not tell our own harness tool time apart from either.
+   */
+  startedAtMs: number;
   /**
    * Provider-reported identity summary (HOK-3143). Present when
    * `providerIdentity` was configured. Launchers persist this on the stage
@@ -766,6 +769,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       totalCostUsd: 0,
       wallClockMs: 0,
       promptCache: EMPTY_PROMPT_CACHE_SUMMARY,
+      startedAtMs: startTime,
     };
   }
 
@@ -781,9 +785,6 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   let terminalSynthesisPromptPending = false;
   let finalProviderError: LoopResult['providerError'] | undefined;
   let providerErrorRetryAttempts = 0;
-  // Provider wait accounting (HOK-3362): request start → assistant message_end.
-  let providerWaitMs = 0;
-  let providerRequestStartedAt: number | undefined;
   const providerErrorRetryMaxAttempts = config.providerErrorRetry?.maxAttempts ?? 3;
   const providerErrorRetryDelays = config.providerErrorRetry?.backoffDelaysMs ?? DEFAULT_PROVIDER_ERROR_RETRY_DELAYS_MS;
   const providerErrorSleep = config.providerErrorRetry?.sleep ?? sleepAbortable;
@@ -1365,16 +1366,6 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     if (exposeToCaller) {
       config.onEvent?.(event);
     }
-    if (event.type === 'turn_start') {
-      providerRequestStartedAt = Date.now();
-    } else if (
-      event.type === 'message_end'
-      && event.message?.role === 'assistant'
-      && providerRequestStartedAt !== undefined
-    ) {
-      providerWaitMs += Math.max(0, Date.now() - providerRequestStartedAt);
-      providerRequestStartedAt = undefined;
-    }
     switch (event.type) {
       case 'turn_start': {
         onHeartbeat?.({ state: 'working', event: 'turn_start', agent: HEARTBEAT_AGENT });
@@ -1718,11 +1709,6 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
 
   const endTime = Date.now();
   const wallClockMs = endTime - startTime;
-  if (providerRequestStartedAt !== undefined) {
-    // The request in flight when the run ended (e.g. aborted by the wall clock).
-    providerWaitMs += Math.max(0, endTime - providerRequestStartedAt);
-    providerRequestStartedAt = undefined;
-  }
 
   let stopReason: LoopStopReason;
   const finalStopReason = finalAssistantStopReason(finalMessages);
@@ -1813,8 +1799,8 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     totalCostUsd,
     wallClockMs,
     promptCache: summarizePromptCache(turnCacheUsage),
-    providerWaitMs,
     providerErrorRetries: providerErrorRetryAttempts,
+    startedAtMs: startTime,
     ...(finalProviderError ? { providerError: finalProviderError } : {}),
     ...(providerIdentitySummary ? { providerIdentity: providerIdentitySummary } : {}),
   };

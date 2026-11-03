@@ -455,6 +455,8 @@ describe('buildBudgetExhaustions (HOK-3362)', () => {
     $ref: 'eval-record.schema.json#/properties/budgetExhaustions',
   }) as ((value: unknown) => boolean) & { errors?: unknown };
 
+  // HOK-3380: no sessionStream pointer, so the wall-clock rule (5) now
+  // derives unknown-fault rather than defaulting to model-fault.
   const wallClock = {
     kind: 'wall_clock',
     stopReason: 'wall_clock_limit',
@@ -491,9 +493,55 @@ describe('buildBudgetExhaustions (HOK-3362)', () => {
       }));
       const exhaustions = buildBudgetExhaustions({ stageResultsDir: dir });
       assert.deepEqual(exhaustions?.map((entry) => [entry.stage, entry.attempt, entry.model, entry.fact.kind, entry.faultClass]), [
-        ['coding', 1, 'z-ai/glm-5.3-flash', 'wall_clock', 'model-fault'],
+        ['coding', 1, 'z-ai/glm-5.3-flash', 'wall_clock', 'unknown-fault'],
         ['review', 1, 'kimi-k3', 'turn', 'model-fault'],
       ]);
+      assert.equal(exhaustions?.[0]?.timeSplit, undefined);
+      assert.equal(validateField(exhaustions), true, JSON.stringify(validateField.errors));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // protects: HOK-3380 — a budget attempt with a resolvable sessionStream pointer losing its derived split on the way to the eval record
+  it('resolves a sessionStream pointer into a timeSplit on the entry, deriving harness-fault', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'budget-exhaustions-split-'));
+    try {
+      const archiveDir = join(dir, 'native-sessions');
+      mkdirSync(archiveDir, { recursive: true });
+      const transcriptPath = join(archiveDir, 'coding-HOK-3374.jsonl');
+      const base = 1_793_548_837_834;
+      const events = [
+        { seq: 0, sessionId: 's', timestamp: base, type: 'session_started', model: 'm', api: 'a', provider: 'p' },
+        { seq: 1, sessionId: 's', timestamp: base, type: 'turn_started', turnIndex: 0 },
+        { seq: 2, sessionId: 's', timestamp: base + 60_000, type: 'assistant_message', model: 'm', stopReason: 'toolUse', rawContent: [], replayContent: [], redacted: false },
+        { seq: 3, sessionId: 's', timestamp: base + 60_000, type: 'tool_started', toolCallId: 'c1', toolName: 'run_tests', args: {} },
+        { seq: 4, sessionId: 's', timestamp: base + 3_600_000, type: 'tool_result', toolCallId: 'c1', toolName: 'run_tests', isError: false, content: 'ok' },
+        { seq: 5, sessionId: 's', timestamp: base + 3_600_000, type: 'session_ended', messageCount: 5 },
+      ];
+      writeFileSync(transcriptPath, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+      writeFileSync(join(dir, '.coding-result.json'), JSON.stringify({
+        stage: 'coding',
+        status: 'failed',
+        model: 'glm-5.3-flash',
+        executedModel: 'z-ai/glm-5.3-flash',
+        budgetExhausted: {
+          kind: 'wall_clock',
+          stopReason: 'wall_clock_limit',
+          limit: 3_600_000,
+          used: 3_600_000,
+          progress: { turnsCompleted: 1, toolCallsExecuted: 1, wallClockMs: 3_600_000 },
+          // The recorded absolute path no longer exists; the resolver falls
+          // back to <featureDir>/native-sessions/<basename> (HOK-3380 D4).
+          sessionStream: { path: '/nonexistent/coding-HOK-3374.jsonl', fromMs: base, toMs: base + 3_600_000 },
+        },
+      }));
+      const exhaustions = buildBudgetExhaustions({ stageResultsDir: dir });
+      assert.equal(exhaustions?.length, 1);
+      const entry = exhaustions![0]!;
+      assert.equal(entry.faultClass, 'harness-fault');
+      assert.equal(entry.timeSplit?.version, 'nativeStageTimeSplit/v1');
+      assert.ok(entry.timeSplit && entry.timeSplit.harnessToolMs > entry.timeSplit.modelMs);
       assert.equal(validateField(exhaustions), true, JSON.stringify(validateField.errors));
     } finally {
       rmSync(dir, { recursive: true, force: true });

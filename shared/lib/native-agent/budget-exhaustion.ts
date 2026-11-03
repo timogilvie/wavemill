@@ -27,9 +27,17 @@
  * Enforced by `tools/check-failure-policy.ts` (patterns
  * `private-budget-stop-switch`, `private-final-error-scan`,
  * `budget-stop-provider-classification`).
+ *
+ * HOK-3380: the fact no longer stores `providerWaitMs`. It carries a
+ * `sessionStream` pointer (the transcript path and the run's raw window)
+ * instead, and `nativeStageTimeSplit` (`stage-time-split.ts`) derives
+ * provider wait, model time and harness tool time from the transcript on
+ * read. A legacy fact may still carry `progress.providerWaitMs` from a row
+ * written before this change; it validates but is ignored.
  */
 import type { LoopBudget, LoopResult, LoopStopReason } from './loop.ts';
 import type { AgentMessage } from './messages.ts';
+import { formatTimeSplit, type NativeStageTimeSplit } from './stage-time-split.ts';
 
 /** Which configured budget the run exhausted. */
 export type BudgetKind = 'wall_clock' | 'turn' | 'tool_call' | 'token' | 'cost';
@@ -80,12 +88,31 @@ export interface BudgetExhaustionProgress {
   wallClockMs: number;
   /** Coding only: failed mutation tool calls (`MutationFailureTracker.count`). */
   mutationFailures?: number;
-  /** Time between each turn's request and its assistant response, in-flight request included. */
-  providerWaitMs?: number;
   /** Provider-error retries the loop spent during the run. */
   providerErrorRetries?: number;
   /** The final assistant turn carried the abort message our own budget caused. */
   interruptedRequest?: boolean;
+  /**
+   * Legacy (≤HOK-3362), never written since HOK-3380, ignored on read. Time
+   * between each turn's request and its assistant response, in-flight
+   * request included. Kept on the type only so a historical row with this
+   * field still type-checks; `nativeStageTimeSplit` is the one source of
+   * provider-wait time now.
+   */
+  providerWaitMs?: number;
+}
+
+/**
+ * Pointer to the transcript a `sessionStream`-eligible fact was computed
+ * against (HOK-3380), plus the run's raw window. `fromMs`/`toMs` are
+ * timestamps, not durations — the same `Date.now()` clock the transcript
+ * events use. `resolveNativeStageTimeSplit` (`stage-time-split.ts`) is the
+ * one reader.
+ */
+export interface BudgetExhaustedSessionStreamPointer {
+  path: string;
+  fromMs: number;
+  toMs: number;
 }
 
 /** The typed fact every native stage writes when it stops on a budget reason. */
@@ -98,6 +125,8 @@ export interface BudgetExhaustedFact {
   /** How much of that budget the run consumed, in the same unit. */
   used: number;
   progress: BudgetExhaustionProgress;
+  /** HOK-3380: transcript pointer the fault rule derives `nativeStageTimeSplit` from. */
+  sessionStream?: BudgetExhaustedSessionStreamPointer;
 }
 
 type LoopEvidence = Pick<
@@ -110,7 +139,8 @@ type LoopEvidence = Pick<
   | 'totalOutputTokens'
   | 'totalCostUsd'
   | 'wallClockMs'
-> & Partial<Pick<LoopResult, 'providerWaitMs' | 'providerErrorRetries'>>;
+  | 'startedAtMs'
+> & Partial<Pick<LoopResult, 'providerErrorRetries'>>;
 
 function finiteOrNull(value: number | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -173,11 +203,16 @@ function lastAssistantErrorMessage(messages: readonly AgentMessage[]): string {
  * Build the fact for a loop run, or `null` when the run did not stop on a
  * budget reason. `budget` is the {@link LoopBudget} the launcher passed to the
  * loop, so `limit` names the configured ceiling, not a guess.
+ *
+ * `extra.transcriptPath`, when given, becomes the fact's `sessionStream`
+ * pointer (HOK-3380): `fromMs = result.startedAtMs`, `toMs = fromMs +
+ * result.wallClockMs`, the same window the loop's own wall-clock budget
+ * measured.
  */
 export function budgetExhaustionFromLoop(
   result: LoopEvidence,
   budget: LoopBudget | undefined,
-  extra: { mutationFailures?: number } = {},
+  extra: { mutationFailures?: number; transcriptPath?: string } = {},
 ): BudgetExhaustedFact | null {
   const kind = budgetKindForStopReason(result.stopReason);
   if (!kind) return null;
@@ -193,10 +228,18 @@ export function budgetExhaustionFromLoop(
       toolCallsExecuted: result.toolCallsExecuted,
       wallClockMs: result.wallClockMs,
       ...(typeof extra.mutationFailures === 'number' ? { mutationFailures: extra.mutationFailures } : {}),
-      ...(typeof result.providerWaitMs === 'number' ? { providerWaitMs: result.providerWaitMs } : {}),
       ...(typeof result.providerErrorRetries === 'number' ? { providerErrorRetries: result.providerErrorRetries } : {}),
       ...(interruptedRequest ? { interruptedRequest: true } : {}),
     },
+    ...(extra.transcriptPath
+      ? {
+        sessionStream: {
+          path: extra.transcriptPath,
+          fromMs: result.startedAtMs,
+          toMs: result.startedAtMs + result.wallClockMs,
+        },
+      }
+      : {}),
   };
 }
 
@@ -228,21 +271,27 @@ function formatAmount(kind: BudgetKind, value: number): string {
 /**
  * One-line, stage-prefixed description of the fact. Starts with
  * `native-stage-timeout:` so a hook/notes reader sees the one kind.
+ *
+ * `split` (HOK-3380), when given, is rendered as `time split <...>`, leading
+ * with the stop reason and budget and relegating `lastToolError` elsewhere to
+ * context only. Pass `null`/omit when no stream could be resolved — the text
+ * says so explicitly rather than silently dropping the segment.
  */
-export function describeBudgetExhaustion(stage: string, fact: BudgetExhaustedFact): string {
+export function describeBudgetExhaustion(
+  stage: string,
+  fact: BudgetExhaustedFact,
+  split?: NativeStageTimeSplit | null,
+): string {
   const limit = fact.limit === null ? 'unbounded' : formatAmount(fact.kind, fact.limit);
   const progress = fact.progress;
   const parts = [
     `${progress.turnsCompleted} turn(s)`,
     `${progress.toolCallsExecuted} tool call(s)`,
     ...(typeof progress.mutationFailures === 'number' ? [`${progress.mutationFailures} mutation failure(s)`] : []),
-    ...(typeof progress.providerWaitMs === 'number'
-      ? [`${Math.round(progress.providerWaitMs / 1000)}s provider wait`]
-      : []),
     ...(progress.providerErrorRetries ? [`${progress.providerErrorRetries} provider retry(ies)`] : []),
   ];
   return `native-stage-timeout: native ${stage} exhausted its ${KIND_LABEL[fact.kind]} budget `
-    + `(${formatAmount(fact.kind, fact.used)} of ${limit}) after ${parts.join(', ')}`;
+    + `(${formatAmount(fact.kind, fact.used)} of ${limit}); time split ${formatTimeSplit(split)}; ${parts.join(', ')}`;
 }
 
 // ── Validation (shared by the handoff, envelope and stage-result readers) ──
@@ -298,11 +347,23 @@ export function validateBudgetExhaustedFact(value: unknown, prefix = 'budgetExha
       return fail(`progress.${field}`, 'must be a non-negative integer when present.');
     }
   }
-  if (progress.providerWaitMs !== undefined && !isNonNegativeNumber(progress.providerWaitMs)) {
-    return fail('progress.providerWaitMs', 'must be a non-negative number when present.');
-  }
+  // Legacy (≤HOK-3362): progress.providerWaitMs is never written any more and
+  // is not validated — a historical row that carries it still validates, and
+  // its value is ignored (HOK-3380).
   if (progress.interruptedRequest !== undefined && typeof progress.interruptedRequest !== 'boolean') {
     return fail('progress.interruptedRequest', 'must be a boolean when present.');
+  }
+  if (value.sessionStream !== undefined) {
+    const pointer = value.sessionStream;
+    if (
+      !isRecord(pointer)
+      || typeof pointer.path !== 'string'
+      || !pointer.path
+      || !isNonNegativeNumber(pointer.fromMs)
+      || !isNonNegativeNumber(pointer.toMs)
+    ) {
+      return fail('sessionStream', 'must be an object with a non-empty path and non-negative fromMs/toMs when present.');
+    }
   }
   return { ok: true, value: value as unknown as BudgetExhaustedFact };
 }

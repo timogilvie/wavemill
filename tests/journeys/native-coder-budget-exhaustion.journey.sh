@@ -9,6 +9,12 @@
 # attempt's budget fact being lost once the relaunch succeeds — the eval
 # record must carry it with the derived fault class, with zero operator
 # touches.
+#
+# HOK-3380: the fixture's fault is a turn-churn run (dominant model time, fast
+# tools), not a harness-fault one — the fact carries a `sessionStream`
+# pointer, never a stored `providerWaitMs`, and the eval record's fault class
+# and `nativeStageTimeSplit/v1` time split are both derived from the
+# archived transcript, not hardcoded from progress counts.
 set -euo pipefail
 source "$(dirname "$0")/harness.sh"
 
@@ -83,8 +89,12 @@ journey_assert "the relaunch archived the failed attempt's budget fact in the co
 journey_assert "eval record carries budgetExhaustions[0] = coding wall_clock fact" \
   bash -c 'printf %s "$1" | jq -e ".budgetExhaustions[0] | .stage == \"coding\" and .fact.kind == \"wall_clock\"
     and .fact.progress.turnsCompleted == 145 and .fact.progress.toolCallsExecuted == 230" >/dev/null' _ "$(eval_record)"
-journey_assert "eval record derives model-fault from the progress evidence" \
+journey_assert "eval record derives model-fault from the nativeStageTimeSplit derivation, not hardcoded progress counts" \
   bash -c 'printf %s "$1" | jq -e ".budgetExhaustions[0].faultClass == \"model-fault\"" >/dev/null' _ "$(eval_record)"
+journey_assert "eval record carries the nativeStageTimeSplit/v1 derivation" \
+  bash -c 'printf %s "$1" | jq -e ".budgetExhaustions[0].timeSplit.version == \"nativeStageTimeSplit/v1\"" >/dev/null' _ "$(eval_record)"
+journey_assert "harness tool time stays a sliver of model time (turn-churn, not harness-fault)" \
+  bash -c 'printf %s "$1" | jq -e ".budgetExhaustions[0].timeSplit.harnessToolMs < .budgetExhaustions[0].timeSplit.modelMs" >/dev/null' _ "$(eval_record)"
 journey_assert_landed "$ISSUE"
 
 journey_finish

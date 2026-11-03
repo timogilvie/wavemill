@@ -8,6 +8,7 @@ import {
   validateBudgetExhaustedFact,
   type BudgetExhaustedFact,
 } from './budget-exhaustion.ts';
+import type { NativeStageTimeSplit } from './stage-time-split.ts';
 
 /**
  * Typed native stage-failure envelope (HOK-3064).
@@ -171,6 +172,8 @@ export function buildBudgetExhaustionEnvelope(input: {
   retryAttempt?: number;
   configuredTimeoutMs?: number;
   createdAt?: string;
+  /** HOK-3380: the derived transcript time split, rendered into `evidence.detail`. */
+  timeSplit?: NativeStageTimeSplit | null;
 }): StageFailureEnvelope {
   return {
     schemaVersion: STAGE_FAILURE_ENVELOPE_SCHEMA_VERSION,
@@ -186,7 +189,7 @@ export function buildBudgetExhaustionEnvelope(input: {
     agent: input.agent,
     evidence: {
       source: 'native-runtime',
-      detail: describeBudgetExhaustion(input.stage, input.fact),
+      detail: describeBudgetExhaustion(input.stage, input.fact, input.timeSplit),
       ...(input.transcriptPath ? { transcriptPath: input.transcriptPath } : {}),
       ...(input.payloadCaptureDir ? { payloadCaptureDir: input.payloadCaptureDir } : {}),
     },
