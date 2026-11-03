@@ -15,7 +15,7 @@ import type { EvalRecord } from './eval-schema.ts';
 import type { ForkIdentity, InvalidChallengeReason } from './challenge-execution-contract.ts';
 import { readForkIdentity } from './fork-identity.ts';
 import { challengerTaskKey } from './task-identity.ts';
-import { mutateWorkflowState, readWorkflowState } from './workflow-state.ts';
+import { mutateWorkflowState } from './workflow-state.ts';
 import { recordArmTermination } from './arm-termination.ts';
 import {
   getSiblingBranch,
@@ -597,11 +597,11 @@ function describeStalledArm(task: TaskEvalState): string {
  */
 async function stampStalledArm(repoDir: string, task: TaskEvalState, now?: () => Date): Promise<void> {
   const statePath = join(repoDir, '.wavemill', 'workflow-state.json');
-  // Short-circuit when the arm already has an abort stamp — the recorder
-  // would still write but we also want to preserve the "never overwrite"
-  // semantics the pre-HOK-3358 helper had.
-  if (await stalledArmAlreadyStamped(statePath, task.issueId)) return;
-
+  // The recorder's `preserveExistingAbort: true` re-checks inside the lock,
+  // so a concurrent operator/monitor abort cannot be clobbered by a later
+  // sibling-stalled stamp (the pre-HOK-3358 helper did the same by holding
+  // the lock across the check). The reliability/eval records are idempotent
+  // by the (issueId, pairId, role, abortReason, stage) dedupe key.
   await recordArmTermination({
     issueId: task.issueId,
     kind: 'sibling-stalled',
@@ -612,16 +612,9 @@ async function stampStalledArm(repoDir: string, task: TaskEvalState, now?: () =>
     scope: 'single',
     repoDir,
     stateFile: statePath,
+    preserveExistingAbort: true,
     now,
   });
-}
-
-async function stalledArmAlreadyStamped(statePath: string, issueId: string): Promise<boolean> {
-  if (!existsSync(statePath)) return false;
-  const state = readWorkflowState(statePath);
-  const entry = state?.tasks?.[issueId];
-  if (!entry) return false;
-  return typeof entry.challengeAborted === 'string' && entry.challengeAborted.length > 0;
 }
 
 function isPastOrphanGrace(task: TaskEvalState, now: () => Date): boolean {

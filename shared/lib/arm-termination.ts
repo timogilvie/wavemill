@@ -85,6 +85,17 @@ export interface RecordArmTerminationInput {
   budgetExhausted?: BudgetExhaustedFact | string | null;
   /** Skip workflow-state mutation (backfill: the row was reaped long ago). */
   skipStateMutation?: boolean;
+  /**
+   * When true, the state-stamp step is a no-op if the task already has a
+   * non-empty `challengeAborted`. Use this from the pair-resolver's
+   * `stampStalledArm` so a concurrent operator/monitor abort is not clobbered
+   * by a later sibling-stalled stamp (the check is re-run inside the lock,
+   * which the pre-HOK-3358 helper did too). The reliability record, failure
+   * eval record, artifact and circuit still run — they are idempotent by the
+   * `(issueId, pairId, role, abortReason, stage)` dedupe key, so repeat calls
+   * are safe.
+   */
+  preserveExistingAbort?: boolean;
   /** Deterministic clock for tests. */
   now?: () => Date;
 }
@@ -239,6 +250,16 @@ export async function recordArmTermination(input: RecordArmTerminationInput): Pr
       const stamp = (key: string) => {
         const task = current.tasks?.[key];
         if (!task) return;
+        // HOK-3358 (self-review): the pair-resolver's `stampStalledArm`
+        // asks us to preserve an existing abort stamp (its pre-HOK-3358
+        // helper's "never overwrite" semantic). The check runs inside the
+        // lock so a concurrent operator/monitor abort cannot be clobbered
+        // between a pre-lock peek and this write.
+        if (input.preserveExistingAbort
+            && typeof task.challengeAborted === 'string'
+            && task.challengeAborted.length > 0) {
+          return;
+        }
         task.challengeAborted = abortReason;
         if (detail) task.challengeAbortedDetail = detail;
         else delete task.challengeAbortedDetail;
