@@ -1,0 +1,1 @@
+# State-lock guard allowlist. Keep empty: state lock ownership has one primitive.

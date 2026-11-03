@@ -15,6 +15,9 @@
 #   ... run production code ...
 #   fakes_teardown
 #
+# shellcheck source=../../shared/lib/process-identity.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../shared/lib/process-identity.sh"
+
 # The world: a bare origin repository at <root>/github.com/<owner>/<repo>.git
 # (so code that parses owner/repo out of the remote URL still works), a clone at
 # $FAKE_REPO_DIR, gh/Linear state files, and an isolated HOME / git config.
@@ -156,15 +159,12 @@ fakes_require_tmux() {
 # `ps -o lstart=` for one pid, or empty when the pid is gone. Recorded at
 # fakes_setup and compared verbatim, so a reused pid never looks like the owner.
 fakes_pid_start_time() {
-  ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//' || true
+  process_identity_start_time "$1"
 }
 
 # A world is owned while its owner pid is alive with the recorded start time.
 fakes_world_owner_alive() {
-  local owner="$1" start="$2" now
-  [[ "$owner" =~ ^[0-9]+$ && -n "$start" ]] || return 1
-  now="$(fakes_pid_start_time "$owner")"
-  [[ -n "$now" && "$now" == "$start" ]]
+  process_identity_alive "$1" "$2"
 }
 
 # Optional JSONL of every world and pgid created under FAKES_WORLD_LOG, so a

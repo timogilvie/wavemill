@@ -198,6 +198,12 @@ Wavemill tracks agent lifecycle using a JSON status file contract at `/tmp/wavem
 
 ## State Mutation
 
+**State locks (HOK-3403):** all state lock ownership and reclaim decisions go
+through `shared/lib/state-lock.{ts,sh}` and `process-identity.{ts,sh}`. Locks
+are owner-stamped directories and are reclaimed only when the local owner PID
+and start time prove dead; lock age and an ownerless legacy form are never a
+runtime reclaim signal. `tools/check-state-lock.ts` enforces this boundary.
+
 All JSON state read-modify-write updates must use `state_mutate` from `shared/lib/wavemill-common.sh` in shell or `mutateJsonState` from `shared/lib/state-mutex.ts` in TypeScript. For `workflow-state.json`, TypeScript uses `mutateWorkflowState` from `shared/lib/workflow-state.ts` (a typed, validating wrapper around `mutateJsonState`). These helpers serialize concurrent writers with a file lock before writing a temporary file and atomically renaming it into place.
 
 Writes to `workflow-state.json` validate the task records they add or change against the HOK-3220 schema at the write seam (HOK-3222): `mutateJsonState` / `mutateJsonStateSync` in TS (so every `mutateWorkflowState` caller) and `state_mutate` in shell, via `tools/validate-task-record-write.ts` under the lock (Node type stripping, never `tsx`). Both call `shared/lib/task-record-write-guard.ts`; only violations the write introduced count. During the HOK-3222 bake (`WAVEMILL_TASK_RECORD_WRITE_VALIDATE_SHADOW`, `0` = kill switch) violations are shadow-logged to `.wavemill/state-schema-violations.jsonl` + stderr + one observer finding per new signature and the write proceeds; Phase 2 refuses the write.

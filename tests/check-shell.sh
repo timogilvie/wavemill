@@ -123,6 +123,7 @@ for f in \
   "$REPO_DIR"/tests/control-pane-recovery.test.sh \
   "$REPO_DIR"/tests/dashboard-refresh.test.sh \
   "$REPO_DIR"/tests/state-mutex.test.sh \
+  "$REPO_DIR"/tests/state-lock.test.sh \
   "$REPO_DIR"/tests/state-mutate-task-record-validation.test.sh \
   "$REPO_DIR"/tests/settled-attempt.test.sh \
   "$REPO_DIR"/tests/task-id-log-prefix.test.sh \
