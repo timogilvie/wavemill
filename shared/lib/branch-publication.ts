@@ -407,6 +407,28 @@ export function publishStageHead(request: StageHeadPublicationRequest): StageHea
       return { ok: true, outcome: 'remote-ahead', remote, branch, localSha, remoteSha, headMove: null };
     }
     if (!isAncestor(remoteSha, localSha)) {
+      // Divergence must be proven, not assumed: when the fetch above failed
+      // (transient transport error) the remote head is not locally reachable,
+      // both ancestry probes return false, and concluding 'remote-divergence'
+      // here would misclassify a retryable network blip as conflict-shaped
+      // code-failure. Only an object we actually hold can prove non-ancestry.
+      let remoteHeadReachable = false;
+      try {
+        execFileSync('git', ['cat-file', '-e', `${remoteSha}^{commit}`], {
+          cwd: request.worktreeDir,
+          stdio: ['ignore', 'ignore', 'ignore'],
+        });
+        remoteHeadReachable = true;
+      } catch {
+        remoteHeadReachable = false;
+      }
+      if (!remoteHeadReachable) {
+        return fail(
+          'remote-lookup-failed',
+          `${remote}/${branch} is at ${remoteSha} but that head could not be fetched locally, so ancestry against local head ${localSha} is unprovable (transient fetch failure)`,
+          { localSha, remoteSha },
+        );
+      }
       return fail(
         'remote-divergence',
         `${remote}/${branch} is at ${remoteSha} which is neither an ancestor nor a descendant of local head ${localSha}; refusing to overwrite the remote branch (merge conflict-shaped divergence)`,

@@ -268,7 +268,13 @@ change_identity_fresh() {
     return 0
   fi
   [[ -z "$CHANGE_IDENTITY_REASON" ]] && CHANGE_IDENTITY_REASON="compute-failed"
-  _WAVEMILL_CHANGE_ID_CACHE[$cache_key]="stale:$CHANGE_IDENTITY_REASON"
+  # Memoize only deterministic stale verdicts. Transient reasons (a head not
+  # yet fetched, a spawn failure) must recompute next tick, or a one-off
+  # failure latches 'stale' for the life of the monitor process.
+  case "$CHANGE_IDENTITY_REASON" in
+    compute-failed|current-head-unreachable|evidence-head-unreachable) ;;
+    *) _WAVEMILL_CHANGE_ID_CACHE[$cache_key]="stale:$CHANGE_IDENTITY_REASON" ;;
+  esac
   return 1
 }
 
