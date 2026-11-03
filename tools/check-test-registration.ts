@@ -5,7 +5,11 @@ import { parseShellArray } from '../shared/lib/shard-balance.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const defaultRepoRoot = join(dirname(__filename), '..');
-const TEST_ROOTS = ['shared', 'tools', 'src'];
+const TEST_ROOTS = ['shared', 'tools', 'src', 'codex'];
+const INTENTIONAL_STANDALONE_TESTS = new Set([
+  // live-gh-authed integration smoke; not CI-safe. Runnable by operator via `node --test shared/lib/github.test.js`.
+  'shared/lib/github.test.js',
+]);
 
 export interface TestRegistrationResult {
   ok: boolean;
@@ -21,6 +25,10 @@ export interface TestRegistrationResult {
   customDuplicates: string[];
   /** Custom-harness registrations whose files do not exist. */
   customMissing: string[];
+  /** Intentional standalone tests that exist on disk. */
+  standalone: string[];
+  /** Intentional standalone tests that are missing on disk. */
+  standaloneMissing: string[];
 }
 
 export function checkTestRegistration(repoDir = defaultRepoRoot): TestRegistrationResult {
@@ -48,29 +56,44 @@ export function checkTestRegistration(repoDir = defaultRepoRoot): TestRegistrati
   const staleCustom = rawCustomTsRegistered.filter((testFile) => !discoveredSet.has(testFile)).sort();
   const overlap = customTsRegistered.filter((testFile) => unitRegisteredSet.has(testFile));
 
+  // Check standalone tests
+  const standalone = Array.from(INTENTIONAL_STANDALONE_TESTS).filter((testFile) =>
+    existsSync(join(repoDir, testFile))
+  );
+  const standaloneMissing = Array.from(INTENTIONAL_STANDALONE_TESTS).filter(
+    (testFile) => !existsSync(join(repoDir, testFile))
+  );
+
+  // Filter discovered to exclude standalone tests
+  const discoverableTests = discovered.filter((testFile) => !INTENTIONAL_STANDALONE_TESTS.has(testFile));
+
   return {
-    ok: discovered.every((testFile) => registeredSet.has(testFile))
+    ok: discoverableTests.every((testFile) => registeredSet.has(testFile))
       && stale.length === 0
       && staleCustom.length === 0
       && duplicates.length === 0
       && overlap.length === 0
       && customDuplicates.length === 0
-      && customMissing.length === 0,
+      && customMissing.length === 0
+      && standaloneMissing.length === 0,
     discovered,
     registered,
-    unregistered: discovered.filter((testFile) => !registeredSet.has(testFile)),
+    unregistered: discoverableTests.filter((testFile) => !registeredSet.has(testFile)),
     stale,
     staleCustom,
     duplicates,
     overlap,
     customDuplicates,
     customMissing,
+    standalone,
+    standaloneMissing,
   };
 }
 
 export function formatTestRegistration(result: TestRegistrationResult): string {
   if (result.ok) {
-    return `test-registration: ok (${result.discovered.length} discovered, ${result.registered.length} registered)`;
+    const standaloneSuffix = result.standalone.length > 0 ? `, ${result.standalone.length} standalone` : '';
+    return `test-registration: ok (${result.discovered.length} discovered, ${result.registered.length} registered${standaloneSuffix})`;
   }
 
   const lines = ['test-registration: test registry drift found:'];
@@ -81,6 +104,7 @@ export function formatTestRegistration(result: TestRegistrationResult): string {
   appendSection(lines, 'Cross-suite overlap (registered in both TESTS and CUSTOM_TS_TESTS):', result.overlap);
   appendSection(lines, 'Duplicate custom harness registrations:', result.customDuplicates);
   appendSection(lines, 'Missing custom harness test files:', result.customMissing);
+  appendSection(lines, 'Missing standalone tests:', result.standaloneMissing);
   lines.push(
     '',
     'Update tests/run-unit-tests.sh and tests/run-custom-tests.sh so every scoped *.test.ts is registered in exactly one of TESTS or CUSTOM_TS_TESTS,',
@@ -101,7 +125,9 @@ function discoverTests(directory: string, relativeDirectory: string): string[] {
       if (entry.isDirectory()) {
         return discoverTests(join(directory, entry.name), relativePath);
       }
-      return entry.isFile() && entry.name.endsWith('.test.ts') ? [relativePath] : [];
+      return entry.isFile() && (entry.name.endsWith('.test.ts') || entry.name.endsWith('.test.js'))
+        ? [relativePath]
+        : [];
     });
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
@@ -111,7 +137,7 @@ function discoverTests(directory: string, relativeDirectory: string): string[] {
 
 function parseUnitTestRegistry(script: string): string[] {
   const block = script.match(/^TESTS=\(\n(?<entries>[\s\S]*?)^\)/m)?.groups?.entries ?? '';
-  return [...block.matchAll(/^\s*([^\s#][^\s]*\.test\.ts)\s*(?:#.*)?$/gm)].map((match) => match[1]);
+  return [...block.matchAll(/^\s*([^\s#][^\s]*\.test\.(ts|js))\s*(?:#.*)?$/gm)].map((match) => match[1]);
 }
 
 function isScopedTest(testFile: string): boolean {

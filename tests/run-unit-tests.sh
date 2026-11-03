@@ -618,6 +618,8 @@ TESTS=(
   shared/lib/observer-findings.test.ts
   shared/lib/pr-comparison-actions.test.ts
   tests/state-archive-roundtrip.test.ts
+  codex/tests/git.test.js
+  shared/lib/string-utils.test.js
 )
 
 SHARD_INDEX=1
