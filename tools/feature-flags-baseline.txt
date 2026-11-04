@@ -256,6 +256,7 @@ WAVEMILL_SESSION_REPO_CACHE  # plumbing: internal mill variable (HOK-3235 baseli
 WAVEMILL_SESSION_REPO_DIR  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_SLUG  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS  # plumbing: internal mill variable (HOK-3235 baseline seed)
+WAVEMILL_STAGE_TEARDOWN_SH_LOADED  # plumbing: double-source guard for stage-teardown.sh (HOK-3359)
 WAVEMILL_STARTUP_CONCURRENCY  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_STARTUP_PREFLIGHT_LOADED  # plumbing: internal mill variable (HOK-3235 baseline seed)
 WAVEMILL_STARTUP_PROGRESS_FILE  # plumbing: internal mill variable (HOK-3235 baseline seed)

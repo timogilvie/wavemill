@@ -46,6 +46,16 @@ if [[ -n "${WAVEMILL_STAGE_TEARDOWN_SH_LOADED:-}" ]]; then
 fi
 WAVEMILL_STAGE_TEARDOWN_SH_LOADED=1
 
+# HOK-3227: the settle grace reads the tick clock seam (wall clock unless a
+# golden journey sets WAVEMILL_TICK_CLOCK_FILE), matching bounded-retry.sh /
+# condition-reconciler.sh — otherwise a journey asserting the grace elapsed
+# would have to wait out the real 120s.
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/mill-clock.sh" ]]; then
+  # shellcheck source=mill-clock.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/mill-clock.sh"
+fi
+declare -F mill_clock_now >/dev/null 2>&1 || mill_clock_now() { date +%s; }
+
 # Grace seconds for the settle phase. Reuses the one dirty-handoff grace
 # constant (coding_dirty_handoff_grace_seconds, wavemill-monitor.sh) when it
 # is loaded; otherwise reads the same env var directly so stage-teardown.sh
@@ -132,7 +142,7 @@ stage_agent_teardown() {
   if (( no_settle == 0 )) && ! _stage_teardown_agent_settled "$issue" "$feature_dir" "$phase" "$worktree"; then
     local grace now start
     grace="$(_stage_teardown_grace_seconds)"
-    now="$(date +%s)"
+    now="$(mill_clock_now)"
     [[ -n "$marker" ]] || marker="$(_stage_teardown_default_marker "$feature_dir" "$phase")"
     # The grace is anchored to the completion marker that triggered this
     # teardown; without such a marker there is nothing to wait for and
