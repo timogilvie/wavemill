@@ -46,9 +46,13 @@ runTool({
     try {
       if (!issue || !stateDir || !worktree) throw new Error('--issue, --state-dir and --worktree are required');
       if (!isStageAgentStage(stageArg)) throw new Error('--stage must be one of planning|coding|review|ready-remediation|conflict-resolution');
-      // Resolve the stage result (null for non-canonical stages).
-      const canonical: StageName | null = stageArg === 'planning' || stageArg === 'coding' || stageArg === 'review' ? stageArg : null;
-      const stageResult = canonical ? await readStageResult(stateDir, canonical) : null;
+      // Resolve the stage result backing this stage's `.<stage>-result.json`.
+      // ready-remediation and conflict-resolution are sub-activities of the
+      // Ready stage, so `running`/`awaiting_user` etc. come from `.ready-
+      // result.json` — there is no separate `.ready-remediation-result.json`
+      // or `.conflict-resolution-result.json` on disk.
+      const resultStage: StageName = stageArg === 'ready-remediation' || stageArg === 'conflict-resolution' ? 'ready' : stageArg;
+      const stageResult = await readStageResult(stateDir, resultStage);
       console.log(JSON.stringify(evaluateStageAgentDisposition({
         stateDir,
         stage: stageArg,

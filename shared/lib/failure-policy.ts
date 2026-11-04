@@ -395,7 +395,12 @@ const NATIVE_PRE_PROVIDER_SIGNATURES: ReadonlyArray<readonly [RegExp, string]> =
  * Payment Required)" still classifies as the provider fault.
  */
 const NATIVE_POST_PROVIDER_SIGNATURES: ReadonlyArray<readonly [RegExp, string]> = [
-  [/interrupted: coding agent exited without recording a result/, 'coding-exited-without-result'],
+  // HOK-3386: the generalised stage-agent disposition's settled-without-
+  // result write ("agent settled without a result") must classify the same
+  // as the pre-HOK-3386 coding_stage_mark_interrupted wording ("agent
+  // exited without recording a result") it replaces in the monitor's coding
+  // branch — same model-fault attribution either way.
+  [/interrupted: coding agent (?:exited without recording|settled without) a result/, 'coding-exited-without-result'],
   [/native review flow failed after.*findings/, 'review-no-output'],
 ];
 

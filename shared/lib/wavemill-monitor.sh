@@ -4533,12 +4533,21 @@ stage_agent_disposition() {
 }
 
 # HOK-3386: _stage_disposition_act <issue> <feature_dir> <wt_dir> <win_target> <win> <stage>
-# Reads the disposition and translates it into one of three monitor actions:
-#   rc 0  — in-flight, inactive or advanced: caller falls through (holds / existing logic picks up)
+# Reads the disposition and translates it into one of four monitor actions:
+#   rc 0  — in-flight, inactive (with a launch row) or advanced: evidence-
+#           backed, so the caller trusts it and falls through without
+#           consulting any stage-specific legacy liveness check
 #   rc 1  — settled without result: wrote a failed stage result so the next
 #           tick routes through classifyFailure → maybe_retry_failed_stage
 #   rc 2  — settled with a recognised blocking prompt: emitted a single
 #           operator-decision escalation and kept the stage otherwise alive
+#   rc 3  — inactive, no-launch: no session-ownership row for this stage
+#           (HOK-3328), so the disposition has no evidence to decide from at
+#           all. A stage-specific legacy check (e.g. coding's
+#           coding_stage_owner_lost, for tasks predating session-ownership
+#           tracking) remains a necessary backstop here — it must NOT be
+#           consulted on rc 0, where the disposition already has evidence
+#           and a second, narrower check could contradict it.
 _stage_disposition_act() {
   local issue="$1" feature_dir="$2" wt_dir="$3" win_target="$4" win="$5" stage="$6"
   local current_head disposition kind reason has_completion blocking_id blocking_detail
@@ -4554,6 +4563,9 @@ _stage_disposition_act() {
   blocking_id="$(printf '%s' "$disposition" | jq -r '.blockingPrompt.id // empty' 2>/dev/null)"
   blocking_detail="$(printf '%s' "$disposition" | jq -r '.blockingPrompt.detail // empty' 2>/dev/null)"
 
+  if [[ "$kind" == "inactive" && "$reason" == "no-launch" ]]; then
+    return 3
+  fi
   case "$kind" in
     inactive|advanced|in-flight) return 0 ;;
     settled) : ;;
@@ -4600,7 +4612,7 @@ _stage_disposition_act() {
     '{type: $type, terminationClass: "interrupted", exitEvidence: $evidence, validationState: "unknown",
       recoveryAction: "Relaunch the stage from the HOK-3176 stage-failure-<stage> bucket."}' 2>/dev/null || echo '{"type":"'"$result_stage"'"}')"
   write_stage_result "$feature_dir" "$result_stage" "failed" "$agent" "$model" "$detail" "$artifacts_json"
-  log_warn "$issue → ${result_stage} agent settled without a result (${reason}); routing to stage-failure-${result_stage}"
+  log_warn "$issue → ${result_stage} agent settled without a result (${reason}) - routing to stage-failure-${result_stage}"
   return 1
 }
 
@@ -21672,12 +21684,17 @@ monitor_issue_state() {
             log "debug" "$ISSUE → Coding still running: waiting for .coding-complete"
           fi
 
-          # Reconcile phase state with process ownership (HOK-2963): a
-          # "running" coding result with no live agent descendant, no fresh
-          # hook heartbeat, and no completion marker is interrupted, not
-          # healthy active coding. Persist a typed interrupted outcome that
-          # preserves the durable commits and names the recovery action.
+          # HOK-3386: `coding_stage_owner_lost` only runs when the shared
+          # disposition had no evidence at all to decide from (rc 3,
+          # no session-ownership row for this launch — tasks launched
+          # before HOK-3328, or a launch whose ownership write failed).
+          # Whenever the disposition DID have evidence (rc 0/1/2 above), it
+          # is the one coding liveness decision and this legacy, narrower
+          # re-derivation (HOK-2963/HOK-3137: shorter grace period, no
+          # owned-session transcript evidence) is never consulted — so the
+          # two can no longer contradict each other for the same launch.
           if [[ "$coding_status" == "running" ]] \
+            && (( coding_disposition_rc == 3 )) \
             && coding_stage_owner_lost "$ISSUE" "$FEATURE_DIR" "$WIN_TARGET"; then
             coding_stage_mark_interrupted "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "$WIN" "$current_agent"
             active_count=$((active_count + 1))
