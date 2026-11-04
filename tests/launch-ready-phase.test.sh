@@ -599,6 +599,12 @@ EOF
     log_error() { LOG_ERROR_OUTPUT+="$*\n"; }
     log_warn() { LOG_WARN_OUTPUT+="$*\n"; }
     build_conflict_resolution_prompt() { :; }
+    # HOK-3385: the mill-side base merge runs before the resolver launch.
+    # Report a retained conflict so the launch path behaves as it does when
+    # the merge is genuinely conflicted and left in progress.
+    try_update_branch_from_base() {
+      printf "conflict:%s\n" "package.json"
+    }
     ensure_ready_worker_window() {
       printf "%s\n" "win-1"
     }

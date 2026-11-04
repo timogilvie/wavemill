@@ -524,6 +524,73 @@ describe('runPromotion', () => {
     }
   });
 
+  // HOK-3385: the conflict launch runs the base merge mill-side and leaves it
+  // in progress so the resolver agent (including a native one with no merge
+  // tool) only resolves the conflicted files.
+  it('retainConflict leaves the merge in progress with the unmerged paths and never aborts', () => {
+    const repo = makeRepo();
+    const shell = shellHarness({ mergeTreeResult: 'conflicts' });
+    let mergeAttempted = false;
+    const shellRunner = (cmd: string, opts?: { encoding?: string; cwd?: string }) => {
+      if (cmd === "git merge --no-edit 'origin/main'") {
+        shell.calls.push(cmd);
+        mergeAttempted = true;
+        throw new Error('CONFLICT (content): merge conflict in package.json');
+      }
+      if (cmd === 'git rev-parse --verify --quiet MERGE_HEAD') {
+        shell.calls.push(cmd);
+        if (!mergeAttempted) throw new Error('fatal: no MERGE_HEAD');
+        return 'merge-head-sha';
+      }
+      if (cmd === 'git diff --name-only --diff-filter=U') {
+        shell.calls.push(cmd);
+        return 'package.json\n';
+      }
+      return shell.shellRunner(cmd, opts);
+    };
+
+    try {
+      const result = updateBranchWithBase(
+        'auto/integration', 'main', repo.repoDir, shellRunner, undefined, { retainConflict: true },
+      );
+      assert.equal(result.status, 'conflict');
+      assert.equal(result.mergeInProgress, true);
+      assert.deepEqual(result.conflictingFiles, ['package.json']);
+      // The merge-tree prediction never touches the worktree, so the real
+      // merge must have been started to materialise the conflicted index.
+      assert(shell.calls.includes("git merge --no-edit 'origin/main'"), 'must start the real merge');
+      assert(!shell.calls.includes('git merge --abort'), 'must not abort the retained merge');
+      assert(!shell.calls.some((cmd) => cmd === "git push origin 'auto/integration'"), 'must not push');
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('retainConflict falls through to a normal publish when the real merge is clean', () => {
+    const repo = makeRepo();
+    // merge-tree predicts conflicts (conservative), but the real merge works.
+    const shell = shellHarness({ mergeTreeResult: 'conflicts' });
+    const shellRunner = (cmd: string, opts?: { encoding?: string; cwd?: string }) => {
+      if (cmd === 'git rev-parse --verify --quiet MERGE_HEAD') {
+        shell.calls.push(cmd);
+        throw new Error('fatal: no MERGE_HEAD');
+      }
+      return shell.shellRunner(cmd, opts);
+    };
+
+    try {
+      const result = updateBranchWithBase(
+        'auto/integration', 'main', repo.repoDir, shellRunner, undefined, { retainConflict: true },
+      );
+      assert.equal(result.status, 'success', JSON.stringify(result));
+      assert.equal(result.mergeInProgress, undefined);
+      assert(shell.calls.includes("git push origin 'auto/integration'"));
+      assert(!shell.calls.includes('git merge --abort'));
+    } finally {
+      repo.cleanup();
+    }
+  });
+
   it('returns push-failed with the original push error', () => {
     const repo = makeRepo();
     const shell = shellHarness({ pushError: 'remote rejected push' });

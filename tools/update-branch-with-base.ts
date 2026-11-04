@@ -57,6 +57,11 @@ runTool({
       type: 'string',
       description: 'Issue id for the head-move record (required with --state-dir)',
     },
+    'retain-conflict': {
+      type: 'boolean',
+      description: 'On conflict, leave the merge in progress for the resolver agent instead of aborting (HOK-3385)',
+      default: false,
+    },
   },
   examples: [
     'npx tsx tools/update-branch-with-base.ts --worktree ./wt --branch task/foo --base auto/integration',
@@ -77,7 +82,9 @@ runTool({
       ? { stateDir, issue, kind: 'base-merge' as const }
       : undefined;
 
-    const result = updateBranchWithBase(branch, base, worktree, undefined, headMoveContext);
+    const result = updateBranchWithBase(branch, base, worktree, undefined, headMoveContext, {
+      retainConflict: args['retain-conflict'] === true,
+    });
     const exitCode = EXIT_CODE_BY_STATUS[result.status] ?? 1;
 
     // Prefer the JSON verbatim from the module so a future field addition
