@@ -73,8 +73,17 @@ _stage_teardown_default_marker() {
 }
 
 _stage_teardown_mtime_epoch() {
-  local path="$1"
-  stat -f %m "$path" 2>/dev/null || stat -c %Y "$path" 2>/dev/null || date +%s
+  local path="$1" result
+  # Each attempt's output is captured in isolation before being trusted: on
+  # GNU coreutils, `-f` means "file system status" (no argument), not BSD's
+  # format flag, so a failing BSD-style call can still print unrelated
+  # filesystem text to stdout ahead of its nonzero exit. A bare `||` chain
+  # would let that leak into the next attempt's output within the same
+  # command substitution at the call site; capturing per attempt and
+  # validating with the digit regex avoids that.
+  result="$(stat -f %m "$path" 2>/dev/null)" && [[ "$result" =~ ^[0-9]+$ ]] && { printf '%s\n' "$result"; return 0; }
+  result="$(stat -c %Y "$path" 2>/dev/null)" && [[ "$result" =~ ^[0-9]+$ ]] && { printf '%s\n' "$result"; return 0; }
+  date +%s
 }
 
 # True (rc 0) when the task-progress primitive shows the agent already
