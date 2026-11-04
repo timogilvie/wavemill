@@ -23,7 +23,7 @@ export const READY_REMEDIATION_DISPOSITION_GUARD: GuardSpec = {
     'shared/lib/ready-remediation-disposition-guard.ts',
     'shared/lib/stage-agent-disposition.ts',
     'shared/lib/stage-agent-disposition.test.ts',
-    'tools/stage-agent-disposition.ts',
+    'tools/stage-agent-disposition.ts', // install-paths: allow invariant-path list entry, not an argv/exec literal
   ],
   patterns: [
     // ── HOK-3322: Ready remediation specific ─────────────────────────────

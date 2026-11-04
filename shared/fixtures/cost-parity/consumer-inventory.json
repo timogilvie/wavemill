@@ -380,6 +380,19 @@
       "notes": "Stage-aware router budget estimates (Wavemill-only decision policy)"
     },
     {
+      "file": "shared/lib/task-progress.ts",
+      "symbols": [
+        {
+          "module": "shared/lib/wavemill-session-paths.ts",
+          "name": "resolveProjectsDirs",
+          "kind": "value"
+        }
+      ],
+      "class": "wavemill_only_join",
+      "production": true,
+      "notes": "HOK-3386: session file discovery to read the stage agent's owned Claude Code session transcript as an agent-progress source"
+    },
+    {
       "file": "shared/lib/workflow-router.ts",
       "symbols": [
         {

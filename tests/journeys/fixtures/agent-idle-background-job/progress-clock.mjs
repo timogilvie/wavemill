@@ -1,6 +1,12 @@
 // Clock seam for the liveness primitive in the agent-idle-background-job
 // journey (HOK-3137). Preloaded via NODE_OPTIONS into every node process the
-// monitor spawns, but it only acts inside `tools/task-progress.ts`.
+// monitor spawns, but it only acts inside `tools/task-progress.ts` and
+// `tools/stage-agent-disposition.ts` — the two CLI entry points that compute
+// a `TaskProgress` snapshot from the wall clock. HOK-3386 moved the coding
+// stage's own liveness check from the former (`coding_stage_stalled`'s
+// `task_progress_json --write-cache`, now deleted) to the latter
+// (`stage_agent_disposition` → `evaluateStageAgentDisposition` →
+// `gatherStageTaskProgress`), so both scripts need the skew.
 //
 // The incident's idle window lasted past the primitive's 30-minute stall
 // threshold; a journey has ~90s. The tick clock (mill-clock) does not reach
@@ -13,7 +19,7 @@ import { readFileSync } from 'node:fs';
 const script = process.argv[1] ?? '';
 const skewFile = process.env.FAKE_ROOT ? `${process.env.FAKE_ROOT}/progress-clock-skew-minutes` : '';
 
-if (skewFile && /[\\/]tools[\\/]task-progress\.ts$/.test(script)) {
+if (skewFile && /[\\/]tools[\\/](task-progress|stage-agent-disposition)\.ts$/.test(script)) {
   let skewMs = 0;
   try {
     const minutes = Number.parseFloat(readFileSync(skewFile, 'utf8'));

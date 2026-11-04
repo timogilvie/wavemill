@@ -6,6 +6,7 @@
  * disposition so a broken probe holds rather than relaunches.
  */
 
+import { writeFileSync, renameSync } from 'node:fs';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import {
   evaluateStageAgentDisposition,
@@ -19,6 +20,26 @@ import { readWorkflowState } from '../shared/lib/workflow-state.ts';
 function isStageAgentStage(value: string | undefined): value is StageAgentStage {
   return value === 'planning' || value === 'coding' || value === 'review'
     || value === 'ready-remediation' || value === 'conflict-resolution';
+}
+
+/**
+ * Best-effort atomic write of the shared `/tmp/wavemill-<session>-<issue>.
+ * progress.json` cache — the same path `tools/task-progress.ts --write-cache`
+ * writes. Previously only the coding stage's (now-deleted)
+ * `coding_stage_stalled` wrote this; every stage's disposition check now
+ * computes a `TaskProgress` snapshot anyway, so it keeps the dashboard
+ * (`wavemill-status.sh` → `task_progress_cached_json`) fed for every stage,
+ * not just coding. Never throws.
+ */
+function writeProgressCache(session: string, issue: string, progress: unknown): void {
+  try {
+    const path = `/tmp/wavemill-${session}-${issue}.progress.json`;
+    const tmp = `${path}.tmp.${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(progress), 'utf-8');
+    renameSync(tmp, path);
+  } catch {
+    // Best-effort; the disposition decision never depends on this write.
+  }
 }
 
 runTool({
@@ -53,15 +74,12 @@ runTool({
       // or `.conflict-resolution-result.json` on disk.
       const resultStage: StageName = stageArg === 'ready-remediation' || stageArg === 'conflict-resolution' ? 'ready' : stageArg;
       const stageResult = await readStageResult(stateDir, resultStage);
-      console.log(JSON.stringify(evaluateStageAgentDisposition({
-        stateDir,
-        stage: stageArg,
-        stageResult,
-        currentHead,
-        launchHead,
-        getProgress: () => gatherStageTaskProgress({
+      const session = args.session?.trim() || process.env.WAVEMILL_SESSION || 'wavemill';
+      let progressCache: ReturnType<typeof gatherStageTaskProgress> | null = null;
+      const getProgress = () => {
+        progressCache = gatherStageTaskProgress({
           issue,
-          session: args.session?.trim() || process.env.WAVEMILL_SESSION || 'wavemill',
+          session,
           worktree,
           stateDir,
           stage: stageArg,
@@ -69,8 +87,19 @@ runTool({
           stageResult,
           paneText: target ? termCapture(target, { lines: 200, timeoutMs: 3000 }) ?? undefined : undefined,
           panePid: target ? termListPanes({ target, timeoutMs: 3000 })[0]?.pid ?? null : null,
-        }),
-      })));
+        });
+        return progressCache;
+      };
+      const disposition = evaluateStageAgentDisposition({
+        stateDir,
+        stage: stageArg,
+        stageResult,
+        currentHead,
+        launchHead,
+        getProgress,
+      });
+      if (progressCache) writeProgressCache(session, issue, progressCache);
+      console.log(JSON.stringify(disposition));
     } catch {
       console.log(JSON.stringify({ kind: 'in-flight', reason: 'progress-unavailable', currentHead, stage: stageArg ?? null }));
     }

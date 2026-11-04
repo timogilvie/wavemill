@@ -104,6 +104,7 @@ export type StageAgentProgress = Pick<
   | 'blockingPrompt'
   | 'stalled'
   | 'ownedSessionIdleAt'
+  | 'terminal'
 >;
 
 export interface StageAgentDispositionInput {
@@ -203,18 +204,21 @@ function waitingFromAgentState(state: HookState | null): StageAgentWaitingOn | n
  * 4. Launch head present + current head known + they differ → `advanced`
  *    (`head-moved`). CI remediation mostly.
  * 5. Probe failed → `in-flight` (`progress-unavailable`, unknown evidence).
- * 6. HOK-3386: `blockingPrompt` → `settled` (`blocking-prompt:<id>`). The
+ * 6. HOK-3386: the task's own PR/lifecycle evidence is already terminal
+ *    (merged/closed/aborted) → `inactive` (`task-terminal`, high confidence).
+ *    A stage whose status lags the task's true outcome is never acted on.
+ * 7. HOK-3386: `blockingPrompt` → `settled` (`blocking-prompt:<id>`). The
  *    caller escalates once; it does NOT hold.
- * 7. Background live → `in-flight` (`background-work`, low confidence).
- * 8. Agent record at/after launch:
+ * 8. Background live → `in-flight` (`background-work`, low confidence).
+ * 9. Agent record at/after launch:
  *    - live state → `in-flight` (`agent-<state>`); fresh `waiting`/
  *      `approval-needed` carry a `waitingOn`.
  *    - settled state → `settled` (`agent-<state>-after-launch`, high).
- * 9. HOK-3386: owned-session idle (agent's own transcript stop event) at/
+ * 10. HOK-3386: owned-session idle (agent's own transcript stop event) at/
  *    after launch → `settled` (`agent-idle-after-launch`, high).
- * 10. Process exited → `settled` (`agent-exited`, high).
- * 11. Stalled → `settled` (`agent-stalled`, high).
- * 12. Else → `in-flight` (`awaiting-agent-evidence`, unknown).
+ * 11. Process exited → `settled` (`agent-exited`, high).
+ * 12. Stalled → `settled` (`agent-stalled`, high).
+ * 13. Else → `in-flight` (`awaiting-agent-evidence`, unknown).
  */
 export function decideStageAgentDisposition(input: StageAgentDispositionInput): StageAgentDisposition {
   const base = {
@@ -263,6 +267,10 @@ export function decideStageAgentDisposition(input: StageAgentDispositionInput): 
 
   if (!input.progress) {
     return result('in-flight', 'progress-unavailable');
+  }
+
+  if (input.progress.terminal) {
+    return result('inactive', 'task-terminal', { evidenceConfidence: 'high' });
   }
 
   const prompt = input.progress.blockingPrompt;
@@ -330,16 +338,30 @@ export interface EvaluateStageAgentDispositionOptions {
   completionMarkerPath?: string;
 }
 
-function completionMarkerForStage(stateDir: string, stage: StageAgentStage): string {
+/**
+ * Candidate completion-artifact paths for a stage, in no particular order —
+ * any one existing means the agent produced its output and settling is a
+ * legitimate handoff, not an abandonment.
+ *
+ * Planning's agent-produced artifact is `plan.md`, not `.plan-approved`
+ * (approval is a later HUMAN action, not agent evidence): checking only
+ * `.plan-approved` here raced the monitor's own plan.md → `awaiting_user`
+ * transition (same tick, but file existence is cheaper and unconditional),
+ * so a planning agent that wrote plan.md and exited — the normal, expected
+ * handoff to a human — could be declared `agent-exited` with no result and
+ * sent through the stage-failure relaunch path before the monitor's own
+ * reconciliation ever ran.
+ */
+function completionMarkerPathsForStage(stateDir: string, stage: StageAgentStage): string[] {
   switch (stage) {
     case 'planning':
-      return join(stateDir, '.plan-approved');
+      return [join(stateDir, 'plan.md'), join(stateDir, '.plan-approved')];
     case 'coding':
-      return join(stateDir, '.coding-complete');
+      return [join(stateDir, '.coding-complete')];
     case 'review':
-      return join(stateDir, '.review-complete');
+      return [join(stateDir, '.review-complete')];
     default:
-      return join(stateDir, `.${stage}-complete`);
+      return [join(stateDir, `.${stage}-complete`)];
   }
 }
 
@@ -349,12 +371,14 @@ function stageHasCompletionArtifact(
   stageResult: Pick<StageResult, 'status'> | null,
   markerPath?: string,
 ): boolean {
-  const resolved = markerPath ?? completionMarkerForStage(stateDir, stage);
-  try {
-    statSync(resolved);
-    return true;
-  } catch {
-    // Not present.
+  const candidates = markerPath ? [markerPath] : completionMarkerPathsForStage(stateDir, stage);
+  for (const candidate of candidates) {
+    try {
+      statSync(candidate);
+      return true;
+    } catch {
+      // Not present; try the next candidate.
+    }
   }
   const terminalStatuses = new Set(['completed', 'failed', 'aborted', 'awaiting_user']);
   return !!stageResult?.status && terminalStatuses.has(stageResult.status);

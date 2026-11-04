@@ -91,6 +91,51 @@ read_state_value() { printf '\n'; }
 get_task_phase() { printf '%s\n' "${TASK_PHASE[$1]:-coding}"; }
 _tmux_task_window_target() { printf "%s:%s\n" "$SESSION" "$3"; }
 task_progress_json() { printf '%s\n' "${TASK_PROGRESS[$1]:-{\}}"; }
+
+# HOK-3386: wake_resume_interrupted_agent now consumes the shared
+# stage_agent_disposition instead of calling task_progress_json and a
+# private jq filter directly. Stub it over the same TASK_PROGRESS fixtures,
+# mirroring the real decideStageAgentDisposition rules this test exercises:
+# task-terminal, a recognised blocking prompt, background-work, and an
+# agent record at/after the stage's own launch time.
+stage_agent_disposition() {
+  local issue="$1" feature_dir="$2" phase="$5"
+  local progress="${TASK_PROGRESS[$issue]:-{\}}"
+  local started_at started_epoch
+  started_at="$(jq -r '.startedAt // empty' "$feature_dir/.${phase}-result.json" 2>/dev/null || true)"
+  started_epoch="$(wavemill_iso8601_to_epoch "$started_at" 2>/dev/null || true)"
+  [[ "$started_epoch" =~ ^[0-9]+$ ]] || started_epoch=0
+
+  local terminal blocking_id blocking_detail bg_live rec_state rec_ts
+  terminal="$(printf '%s' "$progress" | jq -r '.terminal // false' 2>/dev/null)"
+  blocking_id="$(printf '%s' "$progress" | jq -r '.blockingPrompt.id // empty' 2>/dev/null)"
+  blocking_detail="$(printf '%s' "$progress" | jq -r '.blockingPrompt.detail // empty' 2>/dev/null)"
+  bg_live="$(printf '%s' "$progress" | jq -r '.agentBackgroundLive // false' 2>/dev/null)"
+  rec_state="$(printf '%s' "$progress" | jq -r '.agentRecord.state // empty' 2>/dev/null)"
+  rec_ts="$(printf '%s' "$progress" | jq -r '.agentRecord.timestamp // 0 | floor' 2>/dev/null)"
+
+  if [[ "$terminal" == "true" ]]; then
+    printf '{"kind":"inactive","reason":"task-terminal","hasCompletionArtifact":false,"blockingPrompt":null}\n'
+    return 0
+  fi
+  if [[ -n "$blocking_id" ]]; then
+    jq -cn --arg id "$blocking_id" --arg detail "$blocking_detail" \
+      '{kind:"settled",reason:("blocking-prompt:"+$id),hasCompletionArtifact:false,blockingPrompt:{id:$id,detail:$detail}}'
+    return 0
+  fi
+  if [[ "$bg_live" == "true" ]]; then
+    printf '{"kind":"in-flight","reason":"background-work","hasCompletionArtifact":false,"blockingPrompt":null}\n'
+    return 0
+  fi
+  if [[ -n "$rec_state" && "$rec_ts" =~ ^[0-9]+$ ]] && (( rec_ts >= started_epoch )); then
+    case "$rec_state" in
+      idle|error)
+        printf '{"kind":"settled","reason":"agent-%s-after-launch","hasCompletionArtifact":false,"blockingPrompt":null}\n' "$rec_state"
+        return 0 ;;
+    esac
+  fi
+  printf '{"kind":"in-flight","reason":"awaiting-agent-evidence","hasCompletionArtifact":false,"blockingPrompt":null}\n'
+}
 PANE_CMD="claude"
 tmux() {
   case "${1:-}" in

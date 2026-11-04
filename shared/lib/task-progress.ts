@@ -715,6 +715,22 @@ export function deriveAgentBackgroundWork(
   return { live, processes: evidence };
 }
 
+/**
+ * Pure: does the pane root process still have a live descendant at all (any
+ * command, no lag floor)? This is the original HOK-3101/HOK-2963 fast-death
+ * signal (mirrors `mill_pane_has_live_blocking_process` in
+ * wavemill-common.sh): a pane whose root process is gone, or whose root
+ * process has zero children, has lost its agent — any deeper descendant
+ * necessarily traces through a direct child, so checking direct children is
+ * sufficient. `agentProcessLive` is NEVER a progress source (invariant 1);
+ * it only backstops `stalled`'s fast path when the agent process has
+ * genuinely exited, instead of waiting out the full stall threshold.
+ */
+export function deriveAgentProcessLive(processes: PaneProcess[], panePid: number): boolean {
+  if (!processes.some((p) => p.pid === panePid)) return false;
+  return processes.some((p) => p.ppid === panePid);
+}
+
 function resolveMinChildLagSeconds(override?: number): number {
   if (typeof override === 'number' && Number.isFinite(override) && override >= 0) return override;
   const envVal = process.env.WAVEMILL_BG_CHILD_LAG_SECONDS;
@@ -760,6 +776,40 @@ function resolveAgentPid(processes: PaneProcess[], panePid: number): number {
   return bestPid > 0 ? bestPid : panePid;
 }
 
+export interface PaneProcessSignals {
+  /** `null` means "not probed" (bad panePid, missing `ps`, unparsable output). */
+  agentProcessLive: boolean | null;
+  backgroundWork: AgentBackgroundWorkResult | null;
+}
+
+/**
+ * IO: snapshot `ps` once and derive both pane-process facts from it —
+ * `agentProcessLive` (does the pane root have any live descendant at all)
+ * and `backgroundWork` (does the resolved agent have a live, lagged
+ * descendant). One snapshot serves both so a disposition check never pays
+ * for `ps -axo` twice. Fail-safe: any error returns both facts `null`
+ * ("not probed"), never throws.
+ */
+export function collectPaneProcessSignals(
+  panePid: number,
+  opts: { minChildLagSeconds?: number } = {},
+): PaneProcessSignals {
+  if (!Number.isFinite(panePid) || panePid <= 0) return { agentProcessLive: null, backgroundWork: null };
+  const psOutput = safeExecFile('ps', ['-axo', 'pid=,ppid=,etime=,command=']);
+  if (psOutput === null) return { agentProcessLive: null, backgroundWork: null };
+  try {
+    const processes = parsePsSnapshot(psOutput);
+    const agentPid = resolveAgentPid(processes, panePid);
+    const backgroundWork = deriveAgentBackgroundWork(processes, agentPid, {
+      minChildLagSeconds: resolveMinChildLagSeconds(opts.minChildLagSeconds),
+    });
+    const agentProcessLive = deriveAgentProcessLive(processes, panePid);
+    return { agentProcessLive, backgroundWork };
+  } catch {
+    return { agentProcessLive: null, backgroundWork: null };
+  }
+}
+
 /**
  * IO: snapshot `ps` once, resolve the agent pid from the pane root (see
  * `resolveAgentPid`), and derive background-work evidence for the agent.
@@ -770,18 +820,7 @@ export function collectAgentBackgroundWork(
   panePid: number,
   opts: { minChildLagSeconds?: number } = {},
 ): AgentBackgroundWorkResult | null {
-  if (!Number.isFinite(panePid) || panePid <= 0) return null;
-  const psOutput = safeExecFile('ps', ['-axo', 'pid=,ppid=,etime=,command=']);
-  if (psOutput === null) return null;
-  try {
-    const processes = parsePsSnapshot(psOutput);
-    const agentPid = resolveAgentPid(processes, panePid);
-    return deriveAgentBackgroundWork(processes, agentPid, {
-      minChildLagSeconds: resolveMinChildLagSeconds(opts.minChildLagSeconds),
-    });
-  } catch {
-    return null;
-  }
+  return collectPaneProcessSignals(panePid, opts).backgroundWork;
 }
 
 // ── Pure derivation ──────────────────────────────────────────────────────────
@@ -1500,9 +1539,15 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
 
   const blockingPrompt = matchBlockingPromptFromPaneText(opts.paneText);
 
-  const backgroundWork = opts.panePid != null
-    ? collectAgentBackgroundWork(opts.panePid, { minChildLagSeconds: opts.backgroundWorkLagSeconds })
-    : null;
+  // HOK-3386: a caller-supplied `agentProcessLive` wins (Ready's own probe);
+  // otherwise derive both pane-process facts from one `ps` snapshot so every
+  // stage disposition gets the HOK-2963 fast-death signal, not just the
+  // background-work one.
+  const paneSignals = opts.panePid != null
+    ? collectPaneProcessSignals(opts.panePid, { minChildLagSeconds: opts.backgroundWorkLagSeconds })
+    : { agentProcessLive: null, backgroundWork: null };
+  const backgroundWork = paneSignals.backgroundWork;
+  const agentProcessLive = opts.agentProcessLive ?? paneSignals.agentProcessLive;
 
   return {
     issue: opts.issue,
@@ -1522,7 +1567,7 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
       lifecycleOutcome: outcome,
       at: terminalAt,
     },
-    agentProcessLive: opts.agentProcessLive ?? null,
+    agentProcessLive,
     backgroundWork,
     blockingPrompt,
   };
