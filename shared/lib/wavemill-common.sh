@@ -4150,6 +4150,40 @@ wavemill_process_command_line() {
   printf '%s\n' "$command_line"
 }
 
+# HOK-2579: a safe-to-display process identity for blocked-completion
+# liveness diagnostics. Never returns raw argv — Codex Computer Use
+# descendants can carry a serialized coding prompt in their command line,
+# and that text must never reach logs, hooks, or attention state.
+#
+# Prefers `ps -o comm=` (the executable only, no arguments), basename'd.
+# Falls back to the first whitespace-separated token of the caller-supplied
+# command_line (also basename'd), then to a bare "pid N". The result is
+# always piped through sanitize_blocked_completion_text so a hostile
+# executable name cannot smuggle newlines or control characters through
+# either path.
+mill_blocking_process_identity() {
+  local pid="${1:-}" command_line="${2:-}" comm="" identity=""
+
+  if [[ "$pid" =~ ^[0-9]+$ ]] && command -v ps >/dev/null 2>&1; then
+    comm="$(ps -p "$pid" -o comm= 2>/dev/null || true)"
+    comm="$(printf '%s' "$comm" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  fi
+
+  if [[ -n "$comm" ]]; then
+    identity="$(basename "$comm" 2>/dev/null || true)"
+  elif [[ -n "$command_line" ]]; then
+    identity="$(basename "${command_line%% *}" 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$identity" ]]; then
+    identity="$identity (pid ${pid:-unknown})"
+  else
+    identity="pid ${pid:-unknown}"
+  fi
+
+  sanitize_blocked_completion_text "$identity"
+}
+
 wavemill_pid_is_descendant() {
   local root_pid="${1:-}" candidate_pid="${2:-}" pid
   [[ "$root_pid" =~ ^[0-9]+$ && "$candidate_pid" =~ ^[0-9]+$ ]] || return 1
@@ -4214,7 +4248,7 @@ mill_pane_has_live_blocking_process() {
       fi
       MILL_BLOCKING_PROCESS_PIDS=("$pid")
       MILL_BLOCKING_PROCESS_MATCH_COUNT=1
-      MILL_BLOCKING_PROCESS_COMMAND="${command_line:-pid $pid}"
+      MILL_BLOCKING_PROCESS_COMMAND="$(mill_blocking_process_identity "$pid" "$command_line")"
       return 0
     done
     return 1
@@ -4250,7 +4284,9 @@ mill_pane_has_live_blocking_process() {
         matched=true
         matched_pids+=("$pid")
         if [[ -z "$MILL_BLOCKING_PROCESS_COMMAND" ]]; then
-          MILL_BLOCKING_PROCESS_COMMAND="$command_line"
+          # The matched blocking_command is already sanitised at entry
+          # (above); never fall back to the raw command_line here.
+          MILL_BLOCKING_PROCESS_COMMAND="${blocking_command} (pid ${pid})"
         fi
         break
       fi
