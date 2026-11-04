@@ -3,14 +3,18 @@
 #   - REQ-F3: _launch_agent_in_pane prepares the pane BEFORE sending the
 #     WAVEMILL_* export line, so send-keys never types into a live REPL.
 #   - REQ-F4: reap_completed_planning_pane terminates a planning agent that
-#     wrote its completion marker but kept running, and is a no-op when the
-#     pane is idle or the foreground command is an operator shell.
+#     wrote its completion marker but kept running. HOK-3359: it now
+#     delegates to the one stage-agent teardown (--keep-window --no-settle)
+#     instead of its own private dead/idle + foreground-command check, so
+#     the agent-CLI-vs-shell distinction is no longer load-bearing here —
+#     agent_terminate_in_pane's own idle/dead short-circuit covers that.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 ADAPTERS_SCRIPT_FILE="$REPO_DIR/shared/lib/agent-adapters.sh"
+STAGE_TEARDOWN_SCRIPT="$REPO_DIR/shared/lib/stage-teardown.sh"
 
 PASS=0
 FAIL=0
@@ -64,11 +68,12 @@ extract_function() {
 
 FUNC_FILE="$TEST_TMP/pane_liveness_funcs.sh"
 extract_function "$MONITOR_SCRIPT_FILE" "_launch_agent_in_pane" > "$FUNC_FILE"
+extract_function "$STAGE_TEARDOWN_SCRIPT" "stage_agent_teardown" >> "$FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "reap_completed_planning_pane" >> "$FUNC_FILE"
 cat "$REPO_DIR/shared/lib/terminal-backend.sh" >> "$FUNC_FILE"
 extract_function "$ADAPTERS_SCRIPT_FILE" "_pane_command_is_shell" >> "$FUNC_FILE"
 
-for fn in _launch_agent_in_pane reap_completed_planning_pane _tmux_target_join _pane_command_is_shell; do
+for fn in _launch_agent_in_pane reap_completed_planning_pane stage_agent_teardown _tmux_target_join _pane_command_is_shell; do
   if ! grep -q "${fn}()" "$FUNC_FILE"; then
     echo "Could not extract ${fn}()"
     exit 1
@@ -92,8 +97,6 @@ reset_capture() {
   TERMINATE_CALLS=0
   TERMINATE_RC=0
   LOG_OUTPUT=""
-  PANE_IDLE=1
-  PANE_FG_CMD="zsh"
   WINDOW_TARGET="@7"
 }
 
@@ -124,9 +127,7 @@ agent_launch_interactive() {
   return 0
 }
 
-_tmux_task_window_target() { printf '%s\n' "$WINDOW_TARGET"; }
-_pane_is_dead_or_idle() { [[ "$PANE_IDLE" == "1" ]]; }
-_pane_current_command() { printf '%s\n' "$PANE_FG_CMD"; }
+_tmux_task_window_target() { [[ -n "$WINDOW_TARGET" ]] && printf '%s\n' "$WINDOW_TARGET"; }
 agent_terminate_in_pane() {
   TERMINATE_CALLS=$((TERMINATE_CALLS + 1))
   CALL_LOG+="terminate:$1:$2"$'\n'
@@ -168,51 +169,37 @@ check_eq "aborted prepare propagates rc 2" "$rc" "2"
 check_eq "aborted prepare sends no export" "$EXPORT_SEND_COUNT" "0"
 check_not_contains "aborted prepare never launches the agent" "$CALL_LOG" "launch:"
 
-# --- REQ-F4: reap terminates a lingering planning agent ----------------------
+# --- REQ-F4 (HOK-3359): reap delegates to stage_agent_teardown, keeping the
+# window and skipping the settle (this call site is fire-and-forget, with no
+# later tick to retry a pending hold on) -------------------------------------
 reset_capture
-PANE_IDLE=0
-PANE_FG_CMD="codex"
 FEATURE_DIR="$TEST_TMP/worktrees/slug/features/slug"
 mkdir -p "$FEATURE_DIR"
 rc=0
 reap_completed_planning_pane "HOK-2" "$FEATURE_DIR" "$TEST_TMP/worktrees/slug" || rc=$?
 check_eq "reap returns 0" "$rc" "0"
-check_eq "reap terminates the lingering agent" "$TERMINATE_CALLS" "1"
+check_eq "reap terminates the lingering agent via teardown" "$TERMINATE_CALLS" "1"
 check_contains "reap targets the task window" "$CALL_LOG" "terminate:$SESSION:@7"
-check_contains "reap logs the foreground command" "$LOG_OUTPUT" "codex"
+check_not_contains "reap keeps the window (no kill-window call)" "$CALL_LOG" "tmux:kill-window"
 
-# --- REQ-F4: reap is a no-op when the foreground command is a shell ----------
+# --- REQ-F4: reap is a no-op when there is no task window to reap -----------
 reset_capture
-PANE_IDLE=0
-PANE_FG_CMD="zsh"
+WINDOW_TARGET=""
 rc=0
 reap_completed_planning_pane "HOK-2" "$FEATURE_DIR" "$TEST_TMP/worktrees/slug" || rc=$?
-check_eq "shell foreground: reap returns 0" "$rc" "0"
-check_eq "shell foreground: no termination issued" "$TERMINATE_CALLS" "0"
-
-# --- REQ-F4: reap is a no-op on an idle pane ---------------------------------
-reset_capture
-PANE_IDLE=1
-PANE_FG_CMD="codex"
-rc=0
-reap_completed_planning_pane "HOK-2" "$FEATURE_DIR" "$TEST_TMP/worktrees/slug" || rc=$?
-check_eq "idle pane: reap returns 0" "$rc" "0"
-check_eq "idle pane: no termination issued" "$TERMINATE_CALLS" "0"
+check_eq "no window: reap returns 0" "$rc" "0"
+check_eq "no window: no termination issued" "$TERMINATE_CALLS" "0"
 
 # --- REQ-F4: failed termination never blocks the transition ------------------
 reset_capture
-PANE_IDLE=0
-PANE_FG_CMD="codex"
 TERMINATE_RC=1
 rc=0
 reap_completed_planning_pane "HOK-2" "$FEATURE_DIR" "$TEST_TMP/worktrees/slug" || rc=$?
 check_eq "failed termination still returns 0" "$rc" "0"
-check_contains "failed termination logs a warning" "$LOG_OUTPUT" "WARN:"
+check_eq "failed termination still attempted" "$TERMINATE_CALLS" "1"
 
 # --- REQ-F4: the reap is a shell-overridable seam (tests may disable it) -----
 reset_capture
-PANE_IDLE=0
-PANE_FG_CMD="codex"
 reap_completed_planning_pane() { return 0; }
 rc=0
 reap_completed_planning_pane "HOK-2" "$FEATURE_DIR" "$TEST_TMP/worktrees/slug" || rc=$?

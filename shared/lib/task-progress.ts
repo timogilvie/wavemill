@@ -22,6 +22,17 @@
  *   3. An agent's own idle/Stop survives later monitor writes; it is revoked
  *      only by a later agent work event.
  *
+ * A fourth, orthogonal category (HOK-3359): the one stage-agent teardown
+ * (`shared/lib/stage-teardown.sh` `stage_agent_teardown`) records that the
+ * CONTROLLER ended an agent as a `writer=controller, kind=controller-
+ * termination` entry in `.terminal-history.jsonl`. This is an EXIT FACT —
+ * neither progress (it never becomes `lastProgressAt` or a `sources[]`
+ * entry, so invariant 1 holds) nor the monitor-write-as-evidence invariant 2
+ * is bent (it is a distinct writer, `controller`, not `monitor`): it only
+ * makes `agentIdle` true via `readTerminalHistoryIdleAt`, so a controller-
+ * killed agent is reported exited rather than stuck at its last `working`
+ * hook state.
+ *
  * The implementation is split so tests can target the pure decision:
  *   - `deriveTaskProgress(inputs, opts)` is pure.
  *   - `gatherTaskProgressInputs(gatherOpts)` does IO (hook, history, git, stat).
@@ -1043,14 +1054,16 @@ function readTerminalHistoryIdleAt(historyPath: string): string | null {
     const state = stringField(payload.state);
     const event = stringField(payload.event);
     const writer = stringField(payload.writer);
-    if (state !== 'idle') continue;
-    if (writer === 'monitor') continue;
-    if (event && CONTROLLER_HOOK_EVENTS.has(event)) continue;
-    // A missing event or an idle event whose name is a known settled event.
-    const IDLE_EVENTS = new Set(['Stop', 'process_exit', 'stream_end', 'process_idle']);
-    if (event && !IDLE_EVENTS.has(event) && !CONTROLLER_HOOK_EVENTS.has(event)) {
-      // Unknown idle event kind; still trust it (it is an idle state) unless
-      // it looks like a controller event.
+    const kind = stringField(payload.kind);
+    // HOK-3359: a controller-termination entry is an exit fact the
+    // controller recorded after ending the agent itself — it counts as
+    // settled-idle unconditionally, independent of the state/event
+    // classification above (which exists for the agent's OWN records).
+    const isControllerTermination = writer === 'controller' && kind === 'controller-termination';
+    if (!isControllerTermination) {
+      if (state !== 'idle') continue;
+      if (writer === 'monitor') continue;
+      if (event && CONTROLLER_HOOK_EVENTS.has(event)) continue;
     }
     const ts = numberField(payload.timestamp);
     if (ts === undefined) continue;

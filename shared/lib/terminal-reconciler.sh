@@ -474,14 +474,21 @@ wavemill_release_terminal_pane() {
   fi
 
   # 4. Kill the window (verified), then drop the hook file - mirrors
-  # release_task_pane_window_only.
+  # release_task_pane_window_only. HOK-3359: delegates the kill to the one
+  # teardown. This function already owns the archive (step 2) and the
+  # durable terminal record (step 3) above, so teardown's own record step is
+  # suppressed (--no-record); pane liveness is already proven NOT an input
+  # for a terminal task (HOK-3312), so --no-settle too.
   if [[ "$window_exists" == "true" ]]; then
+    local teardown_rc=0
     if declare -F wavemill_cleanup_run >/dev/null 2>&1; then
-      wavemill_cleanup_run tmux kill-window -t "$joined_target" 2>/dev/null || true
+      wavemill_cleanup_run stage_agent_teardown "$issue" "$feature_dir" "$reason_slug" \
+        --worktree "$wt_dir" --no-settle --no-record || teardown_rc=$?
     else
-      tmux kill-window -t "$joined_target" 2>/dev/null || true
+      stage_agent_teardown "$issue" "$feature_dir" "$reason_slug" \
+        --worktree "$wt_dir" --no-settle --no-record || teardown_rc=$?
     fi
-    if _tmux_window_target_exists "$session" "$target"; then
+    if [[ "$teardown_rc" -eq 1 ]]; then
       WAVEMILL_PANE_RELEASE_BLOCK_REASON="tmux-window-close-failed"
       # First failure warns; retries (record already durable) log at debug
       # so repeated passes never emit duplicate pane-release errors.

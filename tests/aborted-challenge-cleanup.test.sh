@@ -6,6 +6,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MILL_SCRIPT="$REPO_DIR/shared/lib/wavemill-mill.sh"
 MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 COMMON_SCRIPT="$REPO_DIR/shared/lib/wavemill-common.sh"
+STAGE_TEARDOWN_SCRIPT="$REPO_DIR/shared/lib/stage-teardown.sh"
 
 extract_function() {
   local source_file="$1"
@@ -106,6 +107,14 @@ cleanup_file="$tmp/aborted-cleanup.sh"
   extract_function "$COMMON_SCRIPT" "monitor_task_registered"
   printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "mark_task_aborted_for_cleanup"
+  printf '\n'
+  # HOK-3359: cleanup_aborted_challenge_arm's window kill is now one call
+  # into the shared teardown primitive. --no-settle short-circuits the
+  # settle phase without calling its private helpers, and the terminate /
+  # record phases are declare -F-guarded no-ops without agent_terminate_in_pane
+  # / wavemill_hook_write_controller_termination, so only the top-level
+  # function needs extracting here.
+  extract_function "$STAGE_TEARDOWN_SCRIPT" "stage_agent_teardown"
   printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "cleanup_aborted_challenge_arm"
   printf '\n'

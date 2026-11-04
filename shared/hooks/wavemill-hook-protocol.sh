@@ -621,6 +621,70 @@ wavemill_hook_terminalize() {
   wavemill_hook_write "$state" "$reason" "$detail" "$agent" "" "$writer"
 }
 
+# wavemill_hook_write_controller_termination <issue> <feature_dir> <reason> [phase] [session]
+#
+# HOK-3359: record that the controller (not the agent) ended this stage
+# agent. This is an EXIT FACT, not agent-liveness evidence and not progress —
+# a third category, orthogonal to the HOK-3101 invariants (see the "exit
+# facts" note in shared/lib/task-progress.ts). It archives the agent's live
+# hook snapshot (if any) under the existing archive mechanism, then appends a
+# second, explicit `controller-termination` entry to `.terminal-history.jsonl`
+# carrying the agent's last known record. `tools/task-progress.ts`'s
+# readTerminalHistoryIdleAt recognises `writer=controller` +
+# `kind=controller-termination` as settled-idle, so `agentIdle` becomes true
+# without moving `lastProgressAt` or adding a `sources[]` entry.
+wavemill_hook_write_controller_termination() {
+  local issue="$1" feature_dir="$2" reason="$3" phase="${4:-}" session="${5:-${WAVEMILL_SESSION:-}}"
+  [[ -n "$issue" && -n "$feature_dir" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  [[ -n "$session" ]] || session="${SESSION:-wavemill}"
+
+  # allow-settled-attempt: mirrors wavemill_hook_archive_current's existing mkdir on this already-resolved $feature_dir; must degrade without the task-worktree resolver
+  mkdir -p "$feature_dir" 2>/dev/null || return 0
+  local history_file="$feature_dir/.terminal-history.jsonl"
+  local hook_file="/tmp/wavemill-${session}-${issue}.hook"
+  local agent_record="null"
+
+  if [[ -f "$hook_file" ]] && jq -e . "$hook_file" >/dev/null 2>&1; then
+    # Preserve the agent's last known record before archiving the raw
+    # snapshot (same archive path every other terminal write uses).
+    agent_record="$(jq -c '
+      .agentRecord // (
+        if (.writer // "agent") == "agent" and ((.state // "") | length) > 0
+        then {state, event, agent, timestamp, detail}
+        else null end
+      )' "$hook_file" 2>/dev/null || printf 'null')"
+    [[ -n "$agent_record" ]] || agent_record="null"
+    WAVEMILL_SESSION="$session" WAVEMILL_ISSUE="$issue" WAVEMILL_FEATURE_DIR="$feature_dir" \
+      wavemill_hook_archive_current "$session" "$issue" "$reason" || true
+  fi
+
+  local torndown_at timestamp payload
+  torndown_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  timestamp="$(date +%s)"
+
+  payload="$(jq -cn \
+    --arg state "idle" \
+    --arg event "controller_termination" \
+    --arg writer "controller" \
+    --arg kind "controller-termination" \
+    --arg reason "$reason" \
+    --arg phase "$phase" \
+    --arg agent "wavemill" \
+    --arg torndownAt "$torndown_at" \
+    --argjson timestamp "$timestamp" \
+    --argjson agentRecord "$agent_record" \
+    '{state: $state, event: $event, writer: $writer, kind: $kind, reason: $reason,
+      phase: (if $phase == "" then null else $phase end), agent: $agent,
+      timestamp: $timestamp, torndownAt: $torndownAt, agentRecord: $agentRecord}' 2>/dev/null)" || return 0
+  [[ -n "$payload" ]] || return 0
+
+  jq -cn --arg archivedAt "$torndown_at" --arg reason "$reason" --arg session "$session" \
+    --arg issue "$issue" --argjson payload "$payload" \
+    '{archivedAt: $archivedAt, reason: $reason, session: $session, issue: $issue, payload: $payload}' \
+    >> "$history_file" 2>/dev/null || true
+}
+
 wavemill_hook_supersede() {
   local session="$1" issue="$2" reason="${3:-superseded}"
   local hook_file="/tmp/wavemill-${session}-${issue}.hook"

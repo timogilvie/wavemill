@@ -100,6 +100,7 @@ for f in \
   "$LIB_DIR"/startup-progress.sh \
   "$LIB_DIR"/agent-adapters.sh \
   "$LIB_DIR"/deps-drift.sh \
+  "$LIB_DIR"/stage-teardown.sh \
   "$REPO_DIR"/shared/hooks/*.sh \
   "$REPO_DIR"/shared/agent-bin/tmux \
   "$REPO_DIR"/tests/run-related.sh \
@@ -174,6 +175,7 @@ for f in \
   "$REPO_DIR"/tests/native-failure-classification.test.sh \
   "$REPO_DIR"/tests/stage-failure-retry.test.sh \
   "$REPO_DIR"/tests/coding-dirty-handoff.test.sh \
+  "$REPO_DIR"/tests/stage-teardown.test.sh \
   "$REPO_DIR"/tests/ready-exhausted-challenge.test.sh \
   "$REPO_DIR"/tests/review-gate-refused-challenge.test.sh \
   "$REPO_DIR"/tests/monitor-late-completion.test.sh \
@@ -736,8 +738,11 @@ else
     # Extract function definitions from wavemill-picker.sh (also sourced by monitor, HOK-3305)
     PICKER_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/wavemill-picker.sh" | sed 's/()//' | sort -u)
 
+    # Extract function definitions from stage-teardown.sh (sourced by wavemill-common.sh, HOK-3359)
+    STAGE_TEARDOWN_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/stage-teardown.sh" | sed 's/()//' | sort -u)
+
     # Combine all available function definitions
-    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$ASYNC_JOBS_FUNCS" "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$OPERATOR_ESCALATION_FUNCS" "$MILL_CLOCK_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$TERMINAL_BACKEND_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$STATE_LOCK_FUNCS" "$RECONCILER_FUNCS" "$CONDITION_RECONCILER_FUNCS" "$REMEDIATION_DELIVERY_FUNCS" "$WORKTREE_DEPS_FUNCS" "$DEPS_DRIFT_FUNCS" "$PICKER_FUNCS" | sort -u)
+    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$ASYNC_JOBS_FUNCS" "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$OPERATOR_ESCALATION_FUNCS" "$MILL_CLOCK_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$TERMINAL_BACKEND_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$STATE_LOCK_FUNCS" "$RECONCILER_FUNCS" "$CONDITION_RECONCILER_FUNCS" "$REMEDIATION_DELIVERY_FUNCS" "$WORKTREE_DEPS_FUNCS" "$DEPS_DRIFT_FUNCS" "$PICKER_FUNCS" "$STAGE_TEARDOWN_FUNCS" | sort -u)
 
     # Known external commands and bash builtins that are NOT custom functions
     # This list covers standard utilities, coreutils, and tools used by wavemill
