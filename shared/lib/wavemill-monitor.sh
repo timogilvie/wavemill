@@ -9486,6 +9486,37 @@ quarantine_completed_coding_pane() {
   return "$teardown_rc"
 }
 
+# HOK-3359 safety net for the tick where resolved_phase=="review": by this
+# point coding was already marked completed, which means
+# quarantine_completed_coding_pane already ran (and recorded the HOK-2571
+# replacement-intent marker) on the tick that detected completion. This
+# re-checks for a live tmux target before guard_coding_complete_handoff
+# runs — covering the rare case where that first teardown did not fully
+# tear the pane down — without re-stamping the intent marker, which nothing
+# would be left to consume if it ran again here. Mirrors
+# quarantine_completed_coding_pane's own no-op short-circuit: a pure no-op
+# (rc 0) when there is no live target, so the common "already gone" case
+# never touches the HOK-3101 settle check at all.
+settle_already_quarantined_coding_pane() {
+  local issue="$1" feature_dir="$2" worktree="${3:-}"
+  local slug target teardown_rc=0
+
+  slug="$(basename "$feature_dir")"
+  [[ -n "$worktree" ]] || worktree="$(dirname "$(dirname "$feature_dir")")"
+
+  command -v tmux >/dev/null 2>&1 || return 0
+  target="$(_tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "$worktree" 2>/dev/null || true)"
+  [[ -n "$target" ]] || return 0
+
+  mark_coding_pane_expected_replacement "$issue" "$feature_dir" "$worktree" "$target" || true
+  stage_agent_teardown "$issue" "$feature_dir" "completed-coding-pane-quarantine" \
+    --phase coding --worktree "$worktree" || teardown_rc=$?
+  if [[ "$teardown_rc" -eq 1 ]]; then
+    clear_coding_pane_expected_replacement "$feature_dir"
+  fi
+  return "$teardown_rc"
+}
+
 # Reap a planning agent that finished its phase but did not exit (HOK-2921 /
 # REQ-F4). Called at the .plan-approved transition so the next poll's coding
 # launch finds an idle pane rather than typing into a live REPL. Unlike
@@ -21375,8 +21406,15 @@ monitor_issue_state() {
             # agent holds this tick (pending); the pane is almost always
             # already gone here (quarantine_completed_coding_pane already
             # ran it on the tick that marked coding completed below).
+            # settle_already_quarantined_coding_pane (not the
+            # quarantine_completed_coding_pane wrapper) is deliberate: that
+            # wrapper unconditionally re-stamps the HOK-2571
+            # replacement-intent marker, which belongs solely to the
+            # completion-detection call below, and it is a no-op when no
+            # live tmux target is found instead of running the HOK-3101
+            # settle check unconditionally.
             local coding_teardown_rc=0
-            quarantine_completed_coding_pane "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || coding_teardown_rc=$?
+            settle_already_quarantined_coding_pane "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || coding_teardown_rc=$?
             if [[ "$coding_teardown_rc" -eq 2 ]]; then
               active_count=$((active_count + 1))
               return 0

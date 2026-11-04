@@ -639,6 +639,7 @@ wavemill_hook_write_controller_termination() {
   command -v jq >/dev/null 2>&1 || return 0
   [[ -n "$session" ]] || session="${SESSION:-wavemill}"
 
+  # allow-settled-attempt: mirrors wavemill_hook_archive_current's existing mkdir on this already-resolved $feature_dir; must degrade without the task-worktree resolver
   mkdir -p "$feature_dir" 2>/dev/null || return 0
   local history_file="$feature_dir/.terminal-history.jsonl"
   local hook_file="/tmp/wavemill-${session}-${issue}.hook"
