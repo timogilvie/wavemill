@@ -17,9 +17,10 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { getSessionAdapter } from './session-adapters.ts';
-import type { ExternalSessionTurn } from './session-adapters.ts';
+import type { IngestUsageInput } from '@hokusai/costs';
+import { extractOwnedSessionUsageRows } from './sdk-task-cost/measure.ts';
 import {
   readOwnershipRows,
   rowsForStage,
@@ -36,6 +37,7 @@ import {
   type ProviderIdentitySummary,
 } from './native-agent/provider-identity.ts';
 import type { StageExecutionEvidence, StageResult } from './stage-result.ts';
+import { resolveClaudeProjectsDirsFor } from './session-adapters.ts';
 
 export type ExecutedModelResolverAgent = 'claude' | 'codex';
 export type ExecutedModelEvidenceSource =
@@ -47,12 +49,19 @@ export type ExecutedModelEvidenceSource =
 export type ExecutedModelEvidenceStatus = 'direct' | 'missing' | 'contradicted';
 
 export interface ResolveExecutedModelFromSessionsInput {
-  worktreePath: string;
-  branchName: string;
   agent: ExecutedModelResolverAgent;
   stage: OwnershipStage;
   /** The task's launch rows; only sessions owned for `stage` are read. */
   ownership: readonly SessionOwnershipRow[];
+  /**
+   * SDK per-session usage rows (HOK-3407): `extractOwnedSessionUsageRows`
+   * for Claude Code and Codex, keyed on `sessionRef`. The resolver reads
+   * each turn's `observedModel` + `isSubagent` + `observedAt` to compute
+   * dominance; logic is otherwise identical to the pre-HOK-3407 scan.
+   */
+  usageRowsForSession: (sessionRef: string) => readonly IngestUsageInput[];
+  /** Branch name used only in diagnostic messages. */
+  branchName?: string;
 }
 
 export interface ResolvedExecutedModelEvidence {
@@ -95,15 +104,21 @@ function formatModelCounts(counts: Map<string, { count: number }>): string {
  * Resolve the executed model from the turns of the sessions owned for a
  * stage. When a stage has both Claude main-loop and sidechain turns, sidechain
  * turns are ignored for model dominance.
+ *
+ * Reads the SDK's per-session usage rows (HOK-3407): the caller hands the
+ * resolver a lookup over owned `sessionRef` → `IngestUsageInput[]` (built
+ * by `extractOwnedSessionUsageRows`). Each row carries `observedModel`,
+ * `isSubagent`, and `observedAt`, so model dominance and the subagent
+ * exclusion rule are preserved exactly.
  */
 export function resolveExecutedModelFromSessions(
   input: ResolveExecutedModelFromSessionsInput,
 ): ResolvedExecutedModelEvidence {
   const evidenceSource = sourceForAgent(input.agent);
-  const owned = new Set(rowsForStage(input.ownership, input.stage)
+  const ownedRefs = [...new Set(rowsForStage(input.ownership, input.stage)
     .filter((row) => row.harness === AGENT_HARNESS[input.agent])
-    .map((row) => row.sessionRef));
-  if (owned.size === 0) {
+    .map((row) => row.sessionRef))];
+  if (ownedRefs.length === 0) {
     return {
       executedModel: null,
       evidenceStatus: 'missing',
@@ -112,27 +127,25 @@ export function resolveExecutedModelFromSessions(
     };
   }
 
-  const adapter = getSessionAdapter(input.agent);
-  const result = adapter.scan({
-    worktreePath: input.worktreePath,
-    branchName: input.branchName,
-  });
-  const sessions = (result?.externalSessions ?? []).filter((session) => owned.has(session.sessionId));
-  if (sessions.length === 0) {
+  const sessionsWithRows = ownedRefs
+    .map((sessionRef) => ({ sessionRef, rows: input.usageRowsForSession(sessionRef) }))
+    .filter((entry) => entry.rows.length > 0);
+  if (sessionsWithRows.length === 0) {
+    const branchSuffix = input.branchName ? ` for branch=${input.branchName}` : '';
     return {
       executedModel: null,
       evidenceStatus: 'missing',
       evidenceSource,
-      evidenceDetail: `owned ${input.agent} sessions=${owned.size}; none found in telemetry for branch=${input.branchName}`,
+      evidenceDetail: `owned ${input.agent} sessions=${ownedRefs.length}; none found in telemetry${branchSuffix}`,
     };
   }
 
   const candidates: CandidateTurn[] = [];
   let index = 0;
-  for (const session of sessions) {
-    for (const turn of session.turns) {
+  for (const { sessionRef, rows } of sessionsWithRows) {
+    for (const row of rows) {
       index++;
-      const candidate = candidateFromTurn(turn, session.sessionId, index);
+      const candidate = candidateFromRow(row, sessionRef, index);
       if (candidate) candidates.push(candidate);
     }
   }
@@ -142,7 +155,7 @@ export function resolveExecutedModelFromSessions(
       executedModel: null,
       evidenceStatus: 'missing',
       evidenceSource,
-      evidenceDetail: `sessions=${sessions.length}; modelTurns=0`,
+      evidenceDetail: `sessions=${sessionsWithRows.length}; modelTurns=0`,
     };
   }
 
@@ -185,18 +198,18 @@ export function resolveExecutedModelFromSessions(
   };
 }
 
-function candidateFromTurn(
-  turn: ExternalSessionTurn,
+function candidateFromRow(
+  row: IngestUsageInput,
   sessionId: string,
   index: number,
 ): CandidateTurn | null {
-  if (!turn.model) return null;
-  const timestampMs = (turn.timestamp ? parseTimestampMs(turn.timestamp) : null) ?? Number.NEGATIVE_INFINITY;
+  if (!row.observedModel) return null;
+  const timestampMs = (row.observedAt ? parseTimestampMs(row.observedAt) : null) ?? Number.NEGATIVE_INFINITY;
   return {
-    model: turn.model,
+    model: row.observedModel,
     timestampMs,
     sessionId,
-    isSubagent: turn.isSubagent,
+    isSubagent: typeof row.isSubagent === 'boolean' ? row.isSubagent : null,
     index,
   };
 }
@@ -306,12 +319,18 @@ export function resolveStageExecutedModel(
 
   if (harness === 'claude-code' || harness === 'codex') {
     const agent: ExecutedModelResolverAgent = harness === 'claude-code' ? 'claude' : 'codex';
-    const resolved = resolveExecutedModelFromSessions({
+    const lookup = buildExternalUsageRowsLookup({
+      ownership,
+      stage: input.stage,
+      harness,
       worktreePath: input.worktreePath,
-      branchName: input.branchName,
+    });
+    const resolved = resolveExecutedModelFromSessions({
       agent,
       stage: input.stage,
       ownership,
+      usageRowsForSession: lookup,
+      branchName: input.branchName,
     });
     return {
       executedModel: resolved.executedModel,
@@ -327,6 +346,71 @@ export function resolveStageExecutedModel(
     evidenceSource: 'unknown',
     evidenceDetail: `no ownership row and no recognised agent hint for stage=${input.stage}`,
   };
+}
+
+/**
+ * Build a `sessionRef → IngestUsageInput[]` lookup for the owned external
+ * sessions of one stage (HOK-3407). Executes the SDK's own file read +
+ * extract pass, so the resolver sees deduped (`eventKey`) rows with disjoint
+ * Codex buckets (`normalizeCodexBuckets`) — the same path the meter uses.
+ *
+ * Unlike the cost meter, the resolver correlates purely by `sessionId`, so
+ * the SDK attribution window is opened wide (`1970…9999`) to include every
+ * turn of every owned session. Archived backfills re-append ownership rows
+ * with a fresh `launchedAt` that post-dates the archived transcript; using
+ * the launch time as the window start would drop those pre-existing turns
+ * and the resolver would emit `missing_execution_evidence` even though the
+ * session's model is still on disk.
+ */
+function buildExternalUsageRowsLookup(input: {
+  ownership: readonly SessionOwnershipRow[];
+  stage: OwnershipStage;
+  harness: 'claude-code' | 'codex';
+  worktreePath: string;
+}): (sessionRef: string) => readonly IngestUsageInput[] {
+  const stageRows = rowsForStage(input.ownership, input.stage).filter(
+    (row) => row.harness === input.harness,
+  );
+  if (stageRows.length === 0) {
+    return () => [];
+  }
+
+  const claudeRoots = input.harness === 'claude-code' ? claudeRootsForRows(stageRows, input.worktreePath) : [];
+  const codexRoots = input.harness === 'codex' ? [codexSessionsRoot()] : [];
+
+  let result: Map<string, readonly IngestUsageInput[]> | null = null;
+  const build = (): Map<string, readonly IngestUsageInput[]> => {
+    try {
+      const extracted = extractOwnedSessionUsageRows({
+        // The SDK boundary accepts any non-empty id; the resolver never reads
+        // it back. Correlation is driven by `sessionIds` alone.
+        taskId: 'unknown-task',
+        rows: stageRows,
+        claudeRoots,
+        codexRoots,
+        nativeSessions: [],
+        priceOverrides: [],
+        window: { startedAt: '1970-01-01T00:00:00.000Z', endedAt: '9999-12-31T23:59:59.999Z' },
+      });
+      return input.harness === 'claude-code' ? extracted.claude : extracted.codex;
+    } catch {
+      return new Map<string, readonly IngestUsageInput[]>();
+    }
+  };
+
+  return (sessionRef: string) => {
+    if (!result) result = build();
+    return result.get(sessionRef) ?? [];
+  };
+}
+
+function claudeRootsForRows(rows: readonly SessionOwnershipRow[], worktreePath: string): string[] {
+  const cwds = new Set(rows.map((row) => row.cwd || worktreePath));
+  return resolveClaudeProjectsDirsFor([...cwds]);
+}
+
+function codexSessionsRoot(): string {
+  return join(homedir(), '.codex', 'sessions');
 }
 
 // ────────────────────────────────────────────────────────────────

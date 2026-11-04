@@ -573,6 +573,8 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
         routing: stageArtifacts.routing ?? null,
         ownership: metered?.owned ?? null,
         sessionCosts: metered?.sessionCosts ?? null,
+        sessionUsageRows: metered?.sessionUsageRows ?? new Map(),
+        sessionHarness: metered?.sessionHarness ?? new Map(),
       });
     } catch (err) {
       console.warn(`Warning: failed to collect execution economics: ${errorMessage(err)}`);
