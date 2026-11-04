@@ -38,6 +38,26 @@ describe('ready-remediation-disposition guard — retired holds', () => {
   });
 });
 
+describe('ready-remediation-disposition guard — HOK-3386 stage-agent patterns', () => {
+  // protects: a new monitor branch re-deriving liveness from task_progress_json jq instead of the shared decision.
+  it('flags a private jq filter over task_progress_json output', () => {
+    assert.deepEqual(
+      patternsOf('a.sh', 'printf "%s" "$progress" | jq -e ".agentIdle == true" >/dev/null\n'),
+      ['private-task-progress-jq-filter'],
+    );
+    assert.deepEqual(
+      patternsOf('a.sh', 'if jq -e ".stalled == true" <<<"$p" >/dev/null; then :; fi\n'),
+      ['private-task-progress-jq-filter'],
+    );
+  });
+
+  // protects: coding_stage_stalled, the retired warn-only detector, being
+  // reintroduced under its old name.
+  it('flags the retired coding_stage_stalled symbol', () => {
+    assert.deepEqual(patternsOf('a.sh', 'coding_stage_stalled "$ISSUE" "$FEATURE_DIR" "$WIN_TARGET"\n'), ['retired-coding-stage-stalled']);
+  });
+});
+
 describe('ready-remediation-disposition guard — clean shapes', () => {
   // protects: the guard firing on readers of the shared decision, mirror writes or prose.
   it('ignores consumers of the decision, mirror writes, comments and suppressions', () => {

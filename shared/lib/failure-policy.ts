@@ -295,6 +295,11 @@ export const OPERATOR_DECISIONS: readonly OperatorDecision[] = Object.freeze([
     reason: 'disconnected git state after a merge needs a human; the next command is printed and no mill path can reconcile it',
     testRef: 'failure-policy.test.ts:operator-decision:merge-residue',
   },
+  {
+    code: 'stage-blocking-prompt',
+    reason: 'a stage agent is parked at a recognised interactive prompt whose operatorAction only a human can answer (the one signature catalog is closed)',
+    testRef: 'failure-policy.test.ts:operator-decision:stage-blocking-prompt',
+  },
 ] satisfies OperatorDecision[]);
 
 const OPERATOR_DECISION_BY_CODE: ReadonlyMap<string, OperatorDecision> = new Map(
