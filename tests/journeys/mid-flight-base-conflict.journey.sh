@@ -75,8 +75,12 @@ journey_assert "Ready saw the conflict on GitHub" \
   bash -c '(( $1 >= 1 ))' _ "$(mill_log_count "Merge conflict detected for $ISSUE")"
 journey_assert "the reconciler expired the in-flight marker on the resolved head" \
   bash -c '(( $1 >= 1 ))' _ "$(mill_log_count "cleared .conflict-remediation.json (head:")"
-journey_assert "a Ready after the resolution deferred on the cross-PR guard (the HOK-3241 shape)" \
-  bash -c '(( $1 >= 2 ))' _ "$(mill_log_count "cross-PR revert guard pending - deferring Ready")"
+# HOK-3241 shape: a guard-deferred Ready must never spend the conflict
+# budget (the one-launch assertion above proves the budget held). Under
+# HOK-3385 the post-resolution Ready holds on the publish/head-lag path
+# rather than the guard, so exactly one guard deferral is the common shape.
+journey_assert "a Ready deferred on the cross-PR guard without spending the budget (the HOK-3241 shape)" \
+  bash -c '(( $1 >= 1 ))' _ "$(mill_log_count "cross-PR revert guard pending - deferring Ready")"
 journey_assert "the contending integration change survived the merge" \
   bash -c 'git --git-dir "$1" log --format=%s "refs/heads/$2" | grep -q "contending change to journey-output.txt"' \
     _ "$FAKE_GH_ORIGIN" "$JOURNEY_INTEGRATION_BRANCH"

@@ -48,8 +48,8 @@ describe('base-merge guard — mill-side merges outside the primitive', () => {
   it('flags a private TS shell merge or rebase', () => {
     // protects: a new base-integration mover (HOK-3347) must call
     // updateBranchWithBase, never a private `git merge`/`git rebase`.
-    // allow-template-curly: fixture source text fed to the guard, ${base} is literal
     assert.deepEqual(
+      // allow-template-curly: fixture source text fed to the guard, ${base} is literal
       patternsOf('shared/lib/some-mover.ts', 'shellRunner(`git merge --no-edit ${base}`);\n'),
       ['mill-base-merge-ts'],
     );

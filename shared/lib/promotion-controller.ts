@@ -1152,7 +1152,12 @@ export function updateBranchWithBase(
     );
   } catch (error) {
     const detail = errorMessage(error);
-    const isConflict = /conflict/i.test(detail);
+    // Both `git merge-tree --write-tree` and `git merge` exit 1 exactly when
+    // the trees conflict. The merge-tree conflict report goes to stdout, so
+    // an execSync error message carries no "conflict" substring (the same
+    // classification `predictPromotionBaseMerge` uses); keep the string
+    // match as a fallback for runners that surface git's text.
+    const isConflict = execExitStatus(error) === 1 || /conflict/i.test(detail);
 
     if (isConflict && options?.retainConflict) {
       // HOK-3385: leave the merge in progress for the resolver agent.
