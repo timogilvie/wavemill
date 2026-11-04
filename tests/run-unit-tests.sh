@@ -389,6 +389,7 @@ TESTS=(
   shared/lib/task-dependency-plan-cache.test.ts
   shared/lib/queue-inference-status.test.ts
   shared/lib/queue-events.test.ts
+  shared/lib/queue-metrics.test.ts
   shared/lib/task-dependency-planner.test.ts
   shared/lib/plan-queue-utils.test.ts
   shared/lib/touch-set-predictor.test.ts
@@ -618,6 +619,8 @@ TESTS=(
   shared/lib/observer-findings.test.ts
   shared/lib/pr-comparison-actions.test.ts
   tests/state-archive-roundtrip.test.ts
+  codex/tests/git.test.js
+  shared/lib/string-utils.test.js
 )
 
 SHARD_INDEX=1

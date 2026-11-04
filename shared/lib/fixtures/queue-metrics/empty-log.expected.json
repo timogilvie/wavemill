@@ -1,0 +1,29 @@
+{
+  "version": "queue-metrics/v1",
+  "eventCount": 0,
+  "queueWait": {
+    "cycles": [],
+    "totalSeconds": "unknown"
+  },
+  "ciRun": {
+    "attempts": [],
+    "totalSeconds": "unknown"
+  },
+  "repairLoop": {
+    "cycles": [],
+    "totalSeconds": "unknown"
+  },
+  "timeToLand": {
+    "startEventId": null,
+    "startTimestamp": null,
+    "endEventId": null,
+    "endTimestamp": null,
+    "seconds": "unknown"
+  },
+  "attemptsToLand": "unknown",
+  "ejections": "unknown",
+  "reruns": "unknown",
+  "ciComputeMinutes": "unknown",
+  "repairTokens": "unknown",
+  "repairCostUsd": "unknown"
+}

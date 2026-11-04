@@ -1,0 +1,7 @@
+{"eventId":"m1-enq","eventType":"enqueued","timestamp":"2026-01-05T00:00:00.000Z","prNumber":500,"headSha":"ccc333"}
+{"eventId":"m1-cp","eventType":"candidate_prepared","timestamp":"2026-01-05T00:01:00.000Z","prNumber":500,"headSha":"ccc333"}
+{"eventId":"m1-rr1","eventType":"rerun_requested","timestamp":"2026-01-05T00:02:00.000Z","prNumber":500,"headSha":"ccc333","attempt":1}
+{"eventId":"m1-rr2","eventType":"rerun_requested","timestamp":"2026-01-05T00:04:00.000Z","prNumber":500,"headSha":"ccc333","attempt":2}
+{"eventId":"m1-rr3","eventType":"rerun_requested","timestamp":"2026-01-05T00:06:00.000Z","prNumber":500,"headSha":"ccc333","attempt":3}
+{"eventId":"m1-chk","eventType":"check_run_completed","timestamp":"2026-01-05T00:09:00.000Z","prNumber":500,"headSha":"ccc333","attempt":4}
+{"eventId":"m1-mrg","eventType":"merged","timestamp":"2026-01-05T00:10:00.000Z","prNumber":500,"headSha":"ccc333"}

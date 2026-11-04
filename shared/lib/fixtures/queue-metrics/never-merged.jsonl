@@ -1,0 +1,2 @@
+{"eventId":"n1-enq","eventType":"enqueued","timestamp":"2026-01-06T00:00:00.000Z","prNumber":600,"headSha":"ddd444"}
+{"eventId":"n1-cp","eventType":"candidate_prepared","timestamp":"2026-01-06T00:03:00.000Z","prNumber":600,"headSha":"ddd444"}

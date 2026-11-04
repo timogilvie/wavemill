@@ -1,5 +1,5 @@
 import assert from 'assert';
-import { sanitizeBranchName } from '../../shared/lib/git.js';
+import { sanitizeBranchName } from '../../shared/lib/git.ts';
 
 const name = 'Add User Authentication System!!! with spaces';
 const branch = sanitizeBranchName(name, 'feature');
