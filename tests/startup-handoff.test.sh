@@ -301,7 +301,7 @@ else
 fi
 
 if [[ "$RESTORE_WINDOW_BLOCK" == *'_tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir"'* ]] \
-  && [[ "$RESTORE_WINDOW_BLOCK" == *'-f "$feature_dir/.coding-complete"'* ]] \
+  && [[ "$RESTORE_WINDOW_BLOCK" == *'read_stage_status "$feature_dir" "coding"'* ]] \
   && [[ "$RESTORE_WINDOW_BLOCK" == *'launch_review_phase "$issue" "$slug" "$title" "$wt_dir" "$branch" "$BASE_BRANCH"'* ]] \
   && [[ "$RESTORE_WINDOW_BLOCK" != *'grep -qxF "$win"'* ]]; then
   pass "resume restore treats renamed task windows as existing via stable windowId"
@@ -502,6 +502,8 @@ cp "$REPO_DIR/shared/lib/attempt-identity.sh" "$TEST_REPO/shared/lib/"
 cp "$REPO_DIR/shared/lib/task-worktree-resolver.sh" "$TEST_REPO/shared/lib/"
 cp "$REPO_DIR/shared/lib/session-ownership.sh" "$TEST_REPO/shared/lib/"
 cp "$REPO_DIR/shared/lib/terminal-backend.sh" "$TEST_REPO/shared/lib/"
+# HOK-3359: wavemill-common.sh unconditionally sources stage-teardown.sh.
+cp "$REPO_DIR/shared/lib/stage-teardown.sh" "$TEST_REPO/shared/lib/"
 cp "$REPO_DIR/shared/lib/wavemill-input-reader.sh" "$TEST_REPO/shared/lib/"
 cp "$REPO_DIR/shared/lib/agent-adapters.sh" "$TEST_REPO/shared/lib/"
 cp "$REPO_DIR/shared/lib/routing-emitter.sh" "$TEST_REPO/shared/lib/"

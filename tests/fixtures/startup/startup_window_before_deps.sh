@@ -56,6 +56,8 @@ setup_env() {
   cp "$REPO_DIR/shared/lib/task-worktree-resolver.sh"           "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/session-ownership.sh"       "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/terminal-backend.sh"        "$repo_dir/shared/lib/"
+  # HOK-3359: wavemill-common.sh unconditionally sources stage-teardown.sh.
+  cp "$REPO_DIR/shared/lib/stage-teardown.sh"          "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/wavemill-input-reader.sh"   "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/agent-adapters.sh"          "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/routing-emitter.sh"         "$repo_dir/shared/lib/"

@@ -168,6 +168,7 @@ harness_extract_real_functions() {
   cat "$REPO_DIR/shared/lib/terminal-backend.sh" >> "$REAL_FUNC_FILE"
   for func in \
     trim_outer_whitespace \
+    stage_agent_teardown \
     merge_retry_marker_until \
     lane_progress_patch_json \
     refresh_ready_merge_queue_tick \
@@ -340,10 +341,12 @@ harness_extract_real_functions() {
     ensure_task_inputs_ready
   do
     local extracted source_file
-    # trim_outer_whitespace is defined only in the parent mill script; every
-    # other extracted controller function lives in the monitor script.
+    # trim_outer_whitespace is defined only in the parent mill script;
+    # stage_agent_teardown (HOK-3359) lives in the shared teardown primitive;
+    # every other extracted controller function lives in the monitor script.
     source_file="$MONITOR_SCRIPT_FILE"
     [[ "$func" == "trim_outer_whitespace" ]] && source_file="$MILL_SCRIPT"
+    [[ "$func" == "stage_agent_teardown" ]] && source_file="$REPO_DIR/shared/lib/stage-teardown.sh"
     extracted="$(extract_function "$source_file" "$func")"
     if [[ -z "$extracted" ]]; then
       echo "Could not extract $func() from $source_file" >&2
@@ -2729,12 +2732,17 @@ test_completed_coding_pane_is_quarantined_best_effort() {
 
   tick="$(harness_run_tick "$repo" "$slug" "$issue" '
     CURRENT_PHASE="coding"
+    WAVEMILL_CODING_DIRTY_HANDOFF_GRACE_SECONDS=0
     _tmux_task_window_target() { printf "%s\\n" "@7"; }
-    tmux() { printf "%s\\n" "$*" >> "$REPO_UNDER_TEST/tmux.log"; return 0; }
+    # HOK-3359: logs outside the repo under test — teardown now runs (and
+    # kills the window) BEFORE the dirty-tree guard checks git status, so a
+    # log file written inside the repo would make the guard see its own
+    # instrumentation as uncommitted output.
+    tmux() { printf "%s\\n" "$*" >> "$REPO_UNDER_TEST.tmux.log"; return 0; }
   ')"
 
   check_eq "pane quarantine: coding stage becomes completed" "completed" "$(harness_read_stage_status "$repo" "$slug" coding)"
-  check_contains "pane quarantine: completed window is killed" "$(cat "$repo/tmux.log")" "kill-window -t @7"
+  check_contains "pane quarantine: completed window is killed" "$(cat "$repo.tmux.log")" "kill-window -t @7"
   check_file_exists "pane quarantine: expected replacement marker written" "$repo/features/$slug/.coding-pane-expected-replacement.json"
   check_eq "pane quarantine: state advances despite cleanup" "" "$(kv_value "$tick" attention)"
 
@@ -3110,6 +3118,7 @@ test_coding_complete_wins_over_capacity_prompt() {
   tick="$(harness_run_tick "$repo" "$slug" "$issue" '
     CURRENT_PHASE="coding"
     WAVEMILL_CAPACITY_STALL_SECONDS=0
+    WAVEMILL_CODING_DIRTY_HANDOFF_GRACE_SECONDS=0
     _tmux_task_window_target() { printf "%s\n" "@7"; }
     tmux() {
       if [[ "${1:-}" == "capture-pane" ]]; then

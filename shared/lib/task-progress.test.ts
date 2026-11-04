@@ -240,6 +240,35 @@ test('(d) a monitor-written working hook is not agentState progress', () => {
   assert.equal(p.sources.length, 0); // monitor working != progress
 });
 
+// ── HOK-3359 controller-termination exit fact ────────────────────────────────
+
+test('(e) a controller-termination history entry makes agentIdle true without moving lastProgressAt', () => {
+  const now = new Date('2026-10-30T11:00:00Z');
+  // The live hook still shows the agent mid-write (no Stop was ever
+  // written) — exactly the HOK-3315 incident shape.
+  const baseInputs = emptyInputs({
+    hookFile: makeHookFile({
+      top: { state: 'working', event: 'PreToolUse', agent: 'claude', timestamp: ts('2026-10-30T10:36:08Z') },
+      agentRecord: { state: 'working', event: 'PreToolUse', agent: 'claude', timestamp: ts('2026-10-30T10:36:08Z') },
+      writer: 'agent',
+      topTimestamp: ts('2026-10-30T10:36:08Z'),
+    }),
+  });
+
+  const without = deriveTaskProgress(baseInputs, { now });
+  const withTermination = deriveTaskProgress(
+    { ...baseInputs, terminalHistoryIdleAt: '2026-10-30T10:36:09Z' },
+    { now },
+  );
+
+  assert.equal(without.agentIdle, false);
+  assert.equal(withTermination.agentIdle, true);
+  // The controller-termination fact never becomes a progress source or moves
+  // lastProgressAt (HOK-3101 invariant 1) — it is an exit fact, not progress.
+  assert.equal(withTermination.lastProgressAt, without.lastProgressAt);
+  assert.deepEqual(withTermination.sources, without.sources);
+});
+
 // ── HOK-3069 stall replay ────────────────────────────────────────────────────
 
 test('HOK-3069 replay: no hook, HEAD older than launch, clean worktree, status mtime = launch, age > 30m → stalled', () => {
@@ -434,6 +463,46 @@ test('progressCacheIsFresh treats a cache older than the hook file as stale', ()
 });
 
 // ── Gather IO: history-file fallback + worktree filter ───────────────────────
+
+test('gather: a controller-termination entry provides terminalHistoryIdleAt, ignoring a stale monitor entry', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'task-progress-test-'));
+  try {
+    const featureDir = join(tmp, 'features', 'testslug');
+    mkdirSync(featureDir, { recursive: true });
+    const monitorTs = Math.floor(Date.parse('2026-10-30T10:30:00Z') / 1000);
+    const teardownTs = Math.floor(Date.parse('2026-10-30T10:36:09Z') / 1000);
+    const lines = [
+      // A stale writer=monitor archive entry must never count as idle, even
+      // when it carries state=idle itself.
+      {
+        archivedAt: '2026-10-30T10:30:00Z',
+        reason: 'pr_opened',
+        session: 'sess', issue: 'TEST-3315',
+        payload: { state: 'idle', event: 'pr_opened', writer: 'monitor', agent: 'wavemill', timestamp: monitorTs },
+      },
+      // The controller-termination exit fact (HOK-3359).
+      {
+        archivedAt: '2026-10-30T10:36:09Z',
+        reason: 'completed-coding-pane-quarantine',
+        session: 'sess', issue: 'TEST-3315',
+        payload: {
+          state: 'idle', event: 'controller_termination', writer: 'controller', kind: 'controller-termination',
+          reason: 'completed-coding-pane-quarantine', phase: 'coding', agent: 'wavemill', timestamp: teardownTs,
+          agentRecord: { state: 'working', event: 'PreToolUse', agent: 'claude', timestamp: teardownTs },
+        },
+      },
+    ];
+    writeFileSync(featureDir + '/.terminal-history.jsonl', lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+    const inputs = gatherTaskProgressInputs({
+      issue: 'TEST-3315',
+      session: 'sess',
+      featureDir,
+    });
+    assert.equal(inputs.terminalHistoryIdleAt, new Date(teardownTs * 1000).toISOString());
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
 
 test('gather: history file with agent Stop provides terminalHistoryIdleAt', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'task-progress-test-'));

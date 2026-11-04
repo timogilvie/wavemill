@@ -235,6 +235,10 @@ do
   extract_function "$MONITOR_SCRIPT_FILE" "$fn" >> "$MONITOR_FUNC_FILE"
   printf '\n' >> "$MONITOR_FUNC_FILE"
 done
+# HOK-3359: quarantine_completed_coding_pane's window kill is one call into
+# the shared teardown primitive.
+extract_function "$REPO_DIR/shared/lib/stage-teardown.sh" "stage_agent_teardown" >> "$MONITOR_FUNC_FILE"
+printf '\n' >> "$MONITOR_FUNC_FILE"
 
 if [[ ! -s "$MONITOR_FUNC_FILE" ]]; then
   echo "Could not extract lifecycle controller functions"

@@ -61,6 +61,7 @@ TESTS=(
   native-failure-classification.test.sh
   stage-failure-retry.test.sh
   coding-dirty-handoff.test.sh
+  stage-teardown.test.sh
   ready-exhausted-challenge.test.sh
   review-gate-refused-challenge.test.sh
   monitor-late-completion.test.sh

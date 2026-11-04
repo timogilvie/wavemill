@@ -56,6 +56,12 @@ source "$COMMON_LIB_DIR/challenge-arms.sh"
 # (tmux today) goes through term_* here; see docs/terminal-backends.md.
 # shellcheck source=terminal-backend.sh
 source "$COMMON_LIB_DIR/terminal-backend.sh"
+# HOK-3359: the one stage-agent teardown (settle, terminate, record). Every
+# site that ends a stage agent's tmux window routes through
+# stage_agent_teardown instead of a raw kill-window / agent_terminate_in_pane
+# call. Enforced by tools/check-stage-teardown.ts.
+# shellcheck source=stage-teardown.sh
+source "$COMMON_LIB_DIR/stage-teardown.sh"
 
 # HOK-3100: install root resolved from BASH_SOURCE, never inherited. The
 # monitor runs from `main` while worker launchers run from worktrees, so
@@ -2613,7 +2619,6 @@ cleanup_completed_task() {
   local slug="$2"
   local completion_reason="${3:-}"
   local win="$issue-$slug"
-  local target=""
   local release_rc=0
   local pr=""
   local cleanup_candidate_json=""
@@ -2739,14 +2744,12 @@ cleanup_completed_task() {
     wavemill_release_terminal_pane "$SESSION" "$issue" "$slug" "${completion_reason:-completed}" "$pr" || release_rc=$?
   else
     # Legacy fallback for contexts that source wavemill-common.sh without
-    # terminal-reconciler.sh (no archive/record support).
-    target="$(_tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "${WORKTREE_ROOT}/${slug}" 2>/dev/null || true)"
-    if [[ -n "$target" ]] && command -v tmux >/dev/null 2>&1; then
-      wavemill_cleanup_run tmux kill-window -t "$(_tmux_target_join "$SESSION" "$target")" 2>/dev/null || true
-      if _tmux_window_target_exists "$SESSION" "$target"; then
-        release_rc=1
-      fi
-    fi
+    # terminal-reconciler.sh (no archive/record support). HOK-3359: still
+    # routed through the one teardown (wavemill_cleanup_run gates the whole
+    # settle/terminate/record/kill sequence so a dry-run `wavemill cleanup`
+    # without --execute stays a no-op, same as the raw kill-window before).
+    wavemill_cleanup_run stage_agent_teardown "$issue" "$feature_dir" "terminal-cleanup" \
+      --worktree "${WORKTREE_ROOT}/${slug}" --no-settle || release_rc=$?
     if [[ "$release_rc" -eq 0 ]]; then
       rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
     fi
