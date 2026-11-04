@@ -4426,29 +4426,10 @@ tend_attempt_conflict_needs_ready() {
   [[ -n "$written_at" && ( -z "$ready_at" || "$written_at" > "$ready_at" ) ]]
 }
 
-# tend_attempt_conflict_prompt_note <state_dir> <base_branch>
-# Extra resolver instructions when the conflict is tend's per-commit rebase
-# rather than a GitHub-visible conflict: a merge commit would leave GitHub
-# clean and tend's rebase still conflicting. Prints nothing otherwise.
-tend_attempt_conflict_prompt_note() {
-  local state_dir="$1" base_branch="$2" fact excerpt
-  fact="$(tend_attempt_fact_path "$state_dir")"
-  [[ -f "$fact" ]] || return 0
-  [[ "$(jq -r '.detail.phase // empty' "$fact" 2>/dev/null || echo "")" == "rebase" ]] || return 0
-  excerpt=$(jq -r '.detail.excerpt // empty' "$fact" 2>/dev/null || echo "")
-  cat <<_WVML_PROMPT_
-
-Merge-lane note (HOK-3316):
-GitHub reports this PR mergeable, but that does not make it mergeable in the merge lane.
-Tend rebases it onto origin/$base_branch one commit at a time, and that rebase conflicts.
-A merge commit does not fix this.
-Instead of step 3, rebase the branch onto origin/$base_branch (git rebase origin/$base_branch).
-Resolve each conflicting commit, and regenerate generated files rather than hand-merging them.
-Then update the PR branch with a --force-with-lease push.
-Tend's rebase output:
-$excerpt
-_WVML_PROMPT_
-}
+# HOK-3385: the rebase-alternative resolver note (tend_attempt_conflict_prompt_note)
+# is deleted. One strategy brings a task branch up to date with its base:
+# the mill's merge through updateBranchWithBase. Tend's lane rebase hand-off
+# converges on the same path (HOK-3347 / HOK-3370 own the lane strategy).
 
 # Source of truth is the bounded-retry bucket (HOK-2924); the JSON
 # remediationAttempts / remediationLaunchHead mirrors in .ready-result.json
@@ -12360,8 +12341,12 @@ review_refused_challenge_terminalize() {
 # Always returns 0 (like `bounded_retry_gate`): every disposition is
 # encoded in the echoed string, so a `local x; x="$(try_update_...)"`
 # assignment never trips the parent script's `set -e`.
+# try_update_branch_from_base <issue> <worktree> <branch> <base> [retain-conflict]
+# With "retain-conflict" (HOK-3385), a conflicting base merge is left in
+# progress in the worktree (MERGE_HEAD present, conflicted hunks on disk) so
+# the resolver agent only resolves the conflicted files; the default aborts.
 try_update_branch_from_base() {
-  local issue="$1" worktree="$2" branch="$3" base="$4"
+  local issue="$1" worktree="$2" branch="$3" base="$4" retain="${5:-}"
   local compare_counts behind_count ahead_count fetch_rc=0
   local cli_output cli_status cli_files
 
@@ -12401,7 +12386,8 @@ try_update_branch_from_base() {
     --branch "$branch" \
     --base "$base" \
     ${update_state_dir:+--state-dir "$update_state_dir"} \
-    ${update_state_dir:+--issue "$issue"} 2>/dev/null)" && cli_status=0 || cli_status=$?
+    ${update_state_dir:+--issue "$issue"} \
+    ${retain:+--retain-conflict} 2>/dev/null)" && cli_status=0 || cli_status=$?
 
   # The CLI always prints one JSON line to stdout even on failure. Parse
   # `status` and (on conflict) `conflictingFiles`. A missing or unparseable
@@ -13546,6 +13532,7 @@ ready_sync_worktree_to_github_head() {
 
     pre_fetch_origin=$(git -C "$wt_dir" rev-parse --verify -q "refs/remotes/origin/$branch" 2>/dev/null || true)
     if ! git -C "$wt_dir" fetch --quiet origin "$branch" >/dev/null 2>&1; then
+      # allow-base-merge: detail string naming the failed command, not an agent instruction
       READY_SYNC_DETAIL="git fetch origin $branch failed"
       return 2
     fi
@@ -14258,9 +14245,39 @@ launch_ready_phase() {
     marker_clear "$state_dir/.needs-attention"
     log "status" "  ⚠ Merge conflict detected for $issue (PR #$pr_number)"
 
+    # HOK-3385: the mill runs the base merge through the one primitive
+    # (updateBranchWithBase, retain-conflict mode). A clean merge means
+    # GitHub's CONFLICTED view was stale (or the base moved): publish like
+    # any update-from-base, launch no resolver, charge no budget. Only a
+    # true conflict — left in progress in the worktree — launches the
+    # task's own agent, which resolves the conflicted files and commits.
+    local base_update_result conflict_files
+    base_update_result="$(try_update_branch_from_base "$issue" "$wt_dir" "$branch" "$base_branch" retain-conflict)"
+    case "$base_update_result" in
+      updated|not-behind)
+        write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
+          "Mill-side base merge was clean for PR #$pr_number (stale CONFLICTED view); Ready re-checks at the current head" \
+          "$(jq -cn --argjson pr "$pr_number" '{type:"ready",verdict:"pending",prNumber:$pr,pendingReason:"base-merge-clean"}')"
+        log "status" "  ✓ $issue: base merge clean for PR #$pr_number ($base_update_result) - no resolver launched"
+        return 4
+        ;;
+      conflict:*)
+        conflict_files="${base_update_result#conflict:}"
+        ;;
+      *)
+        # HOK-3360: a failed mill-side base merge (dirty worktree, fetch
+        # failure, ...) is retryable by default; record the failed stage
+        # result and let stage-failure-ready own retries. No page here.
+        write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
+          "Mill-side base merge failed (${base_update_result#error:}) for PR #$pr_number" \
+          "$(jq -cn --argjson pr "$pr_number" '{type:"ready",verdict:"fail",prNumber:$pr,failureKind:"base-merge-failed"}')"
+        log_error "  $issue: mill-side base merge failed ($base_update_result) for PR #$pr_number"
+        return 1
+        ;;
+    esac
+
     prompt_file="/tmp/${SESSION}-${issue}-conflict-prompt.txt"
-    build_conflict_resolution_prompt "$pr_number" "$branch" "$wt_dir" "$status_file" "$base_branch" > "$prompt_file"
-    tend_attempt_conflict_prompt_note "$state_dir" "$base_branch" >> "$prompt_file"
+    build_conflict_resolution_prompt "$pr_number" "$branch" "$wt_dir" "$status_file" "$base_branch" "$conflict_files" > "$prompt_file"
     if [[ "$(post_pr_reconciliation_enabled "$wt_dir")" == "true" ]]; then
       # Fresh-agent conflict reconciliation from the durable capsule
       # (HOK-2936): stable foundation projection first, current incident and

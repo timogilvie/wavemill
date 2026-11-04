@@ -130,6 +130,24 @@ export interface BranchBaseUpdateResult {
    * when parsing failed. Absent for every non-conflict status.
    */
   conflictingFiles?: string[];
+  /**
+   * On `conflict` with `retainConflict` (HOK-3385): the merge was left in
+   * progress (MERGE_HEAD present, conflicted hunks in the worktree) so a
+   * resolver agent only edits, stages, and commits — it never runs fetch,
+   * merge, or rebase itself. Absent when the merge was aborted (the default).
+   */
+  mergeInProgress?: boolean;
+}
+
+/** Options for {@link updateBranchWithBase} (HOK-3385). */
+export interface BranchBaseUpdateOptions {
+  /**
+   * On a merge conflict, leave the merge in progress in the worktree instead
+   * of running `git merge --abort`, and report `mergeInProgress: true`. Used
+   * by the Ready conflict launch: the mill runs the base merge, the task's
+   * agent only resolves the conflicted files.
+   */
+  retainConflict?: boolean;
 }
 
 /** Commit-count distance between a branch and its base (HOK-3092 / HOK-3096). */
@@ -1035,6 +1053,7 @@ export function updateBranchWithBase(
   repoDir: string,
   shellRunner: ShellRunner = (cmd, opts) => String(execShellCommand(cmd, opts)),
   headMoveContext?: BranchBaseUpdateHeadMoveContext,
+  options?: BranchBaseUpdateOptions,
 ): BranchBaseUpdateResult {
   const dirtyState = String(shellRunner(
     'git status --porcelain --untracked-files=no',
@@ -1096,6 +1115,32 @@ export function updateBranchWithBase(
     // No remote counterpart yet — proceed without syncing.
   }
 
+  const listUnmergedFiles = (): string[] => {
+    // HOK-3092: capture the unmerged file list before any abort so callers
+    // can surface it. Best-effort — a failing enumerate never masks the
+    // original merge failure.
+    try {
+      const raw = String(shellRunner(
+        'git diff --name-only --diff-filter=U',
+        { encoding: 'utf-8', cwd: repoDir },
+      ));
+      return raw
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+    } catch {
+      return [];
+    }
+  };
+  const mergeHeadPresent = (): boolean => {
+    try {
+      shellRunner('git rev-parse --verify --quiet MERGE_HEAD', { encoding: 'utf-8', cwd: repoDir });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   try {
     shellRunner(
       `git merge-tree --write-tree ${escapeShellArg(branch)} ${escapeShellArg(remoteBranchRef(baseBranch))}`,
@@ -1107,41 +1152,59 @@ export function updateBranchWithBase(
     );
   } catch (error) {
     const detail = errorMessage(error);
-    // HOK-3092: capture the unmerged file list before aborting so callers can
-    // surface it in the operator-facing attention file. Best-effort — a
-    // failing enumerate never masks the original merge failure.
-    let conflictingFiles: string[] = [];
-    if (/conflict/i.test(detail)) {
-      try {
-        const raw = String(shellRunner(
-          'git diff --name-only --diff-filter=U',
-          { encoding: 'utf-8', cwd: repoDir },
-        ));
-        conflictingFiles = raw
-          .split('\n')
-          .map((line) => line.trim())
-          .filter((line) => line.length > 0);
-      } catch {
-        // Best-effort: leave the list empty and rely on `detail`.
-      }
-    }
-    try {
-      shellRunner('git merge --abort', { encoding: 'utf-8', cwd: repoDir });
-    } catch {
-      // Best-effort cleanup if merge started.
-    }
+    const isConflict = /conflict/i.test(detail);
 
-    if (/conflict/i.test(detail)) {
+    if (isConflict && options?.retainConflict) {
+      // HOK-3385: leave the merge in progress for the resolver agent.
+      // `git merge-tree` predicts without touching the worktree, so when it
+      // was the step that threw, run the real merge now to materialise the
+      // conflicted index the resolver works on.
+      let retainedCleanMerge = false;
+      if (!mergeHeadPresent()) {
+        try {
+          shellRunner(
+            `git merge --no-edit ${escapeShellArg(remoteBranchRef(baseBranch))}`,
+            { encoding: 'utf-8', cwd: repoDir },
+          );
+          // merge-tree was conservative and the real merge completed
+          // cleanly: fall through to the normal publish path below.
+          retainedCleanMerge = true;
+        } catch {
+          // Expected: the merge stops with unmerged paths and stays open.
+        }
+      }
+      if (mergeHeadPresent()) {
+        return {
+          status: 'conflict',
+          detail,
+          conflictingFiles: listUnmergedFiles(),
+          mergeInProgress: true,
+        };
+      }
+      if (!retainedCleanMerge) {
+        return { status: 'unknown-failed', detail };
+      }
+      // Clean after all — continue to publication below.
+    } else {
+      const conflictingFiles = isConflict ? listUnmergedFiles() : [];
+      try {
+        shellRunner('git merge --abort', { encoding: 'utf-8', cwd: repoDir });
+      } catch {
+        // Best-effort cleanup if merge started.
+      }
+
+      if (isConflict) {
+        return {
+          status: 'conflict',
+          detail,
+          conflictingFiles,
+        };
+      }
       return {
-        status: 'conflict',
+        status: 'unknown-failed',
         detail,
-        conflictingFiles,
       };
     }
-    return {
-      status: 'unknown-failed',
-      detail,
-    };
   }
 
   // HOK-3370: a task-branch head move publishes through the one seam so the
