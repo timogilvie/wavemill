@@ -29,6 +29,9 @@ import {
   matchInteractivePromptSignature,
   progressCacheIsFresh,
   readHookFile,
+  readOwnedSessionTail,
+  readOwnedStageLaunch,
+  readOwnedStageTranscript,
   selectAgentRecord,
   INTERACTIVE_PROMPT_SIGNATURES,
   normalizeInteractivePromptText,
@@ -38,6 +41,7 @@ import {
   type TaskProgressInputs,
   type PaneProcess,
 } from './task-progress.ts';
+import { appendOwnershipRow } from './session-ownership.ts';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -54,6 +58,7 @@ function emptyInputs(overrides: Partial<TaskProgressInputs> = {}): TaskProgressI
     launchAt: null,
     worktreeMtimeAt: null,
     statusFileMtimeAt: null,
+    ownedSession: null,
     transitionSources: [],
     terminal: { prState: null, prNumber: null, lifecycleOutcome: null, at: null },
     agentProcessLive: null,
@@ -1076,5 +1081,180 @@ test('gatherTaskProgressInputs: reads the newest native session event from the t
     if (prevRunDir === undefined) delete process.env.WAVEMILL_RUN_DIR;
     else process.env.WAVEMILL_RUN_DIR = prevRunDir;
     rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+// ── HOK-3386: owned session transcript as agent evidence ───────────────────
+
+const CODEX_ROLLOUT_WITH_TASK_COMPLETE = [
+  JSON.stringify({ timestamp: '2026-11-02T09:40:00.000Z', type: 'session_meta', payload: { id: 'thread-1', cwd: '/tmp' } }),
+  JSON.stringify({ timestamp: '2026-11-02T09:41:00.000Z', type: 'response_item', payload: { type: 'message' } }),
+  JSON.stringify({ timestamp: '2026-11-02T09:42:00.000Z', type: 'event_msg', payload: { type: 'task_complete', last_agent_message: '…' } }),
+  '',
+].join('\n');
+
+const CODEX_ROLLOUT_IN_FLIGHT = [
+  JSON.stringify({ timestamp: '2026-11-02T09:40:00.000Z', type: 'session_meta', payload: { id: 'thread-2', cwd: '/tmp' } }),
+  JSON.stringify({ timestamp: '2026-11-02T09:45:00.000Z', type: 'event_msg', payload: { type: 'item_started' } }),
+  '',
+].join('\n');
+
+const CLAUDE_CODE_SESSION_WITH_STOP = [
+  JSON.stringify({ type: 'queue-operation', timestamp: '2026-11-02T09:30:00.000Z', operation: 'start' }),
+  JSON.stringify({ type: 'user', timestamp: '2026-11-02T09:30:01.000Z' }),
+  JSON.stringify({ type: 'assistant', timestamp: '2026-11-02T09:30:30.000Z' }),
+  JSON.stringify({ type: 'system', subtype: 'stop_hook_summary', timestamp: '2026-11-02T09:30:31.000Z' }),
+  '',
+].join('\n');
+
+const CLAUDE_CODE_SESSION_IN_FLIGHT = [
+  JSON.stringify({ type: 'user', timestamp: '2026-11-02T09:30:01.000Z' }),
+  JSON.stringify({ type: 'assistant', timestamp: '2026-11-02T09:30:30.000Z' }),
+  '',
+].join('\n');
+
+// protects: a Codex review agent that writes task_complete without producing a verdict
+//           must raise agentIdle through the transcript so disposition can read settled.
+test('(HOK-3386) readOwnedSessionTail: codex task_complete sets agentIdleAtMs', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'hok3386-codex-'));
+  const path = join(tmp, 'rollout.jsonl');
+  writeFileSync(path, CODEX_ROLLOUT_WITH_TASK_COMPLETE);
+  const tail = readOwnedSessionTail(path, 'codex');
+  rmSync(tmp, { recursive: true, force: true });
+  assert.equal(tail.agentIdleAtMs, Date.parse('2026-11-02T09:42:00.000Z'));
+  assert.equal(tail.lastEventAtMs, Date.parse('2026-11-02T09:42:00.000Z'));
+});
+
+// protects: an in-flight codex rollout being misread as idle.
+test('(HOK-3386) readOwnedSessionTail: codex in-flight events raise progress, not idle', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'hok3386-codex-'));
+  const path = join(tmp, 'rollout.jsonl');
+  writeFileSync(path, CODEX_ROLLOUT_IN_FLIGHT);
+  const tail = readOwnedSessionTail(path, 'codex');
+  rmSync(tmp, { recursive: true, force: true });
+  assert.equal(tail.agentIdleAtMs, null);
+  assert.equal(tail.lastEventAtMs, Date.parse('2026-11-02T09:45:00.000Z'));
+});
+
+// protects: a Claude Code stop_hook_summary system event being ignored as agent idle.
+test('(HOK-3386) readOwnedSessionTail: claude-code stop_hook_summary sets agentIdleAtMs', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'hok3386-claude-'));
+  const path = join(tmp, 'sess.jsonl');
+  writeFileSync(path, CLAUDE_CODE_SESSION_WITH_STOP);
+  const tail = readOwnedSessionTail(path, 'claude-code');
+  rmSync(tmp, { recursive: true, force: true });
+  assert.equal(tail.agentIdleAtMs, Date.parse('2026-11-02T09:30:31.000Z'));
+});
+
+// protects: a running claude-code transcript being misread as idle.
+test('(HOK-3386) readOwnedSessionTail: claude-code running transcript is progress, not idle', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'hok3386-claude-'));
+  const path = join(tmp, 'sess.jsonl');
+  writeFileSync(path, CLAUDE_CODE_SESSION_IN_FLIGHT);
+  const tail = readOwnedSessionTail(path, 'claude-code');
+  rmSync(tmp, { recursive: true, force: true });
+  assert.equal(tail.agentIdleAtMs, null);
+  assert.equal(tail.lastEventAtMs, Date.parse('2026-11-02T09:30:30.000Z'));
+});
+
+// protects: readOwnedStageLaunch picks the newest launch row for the stage only.
+test('(HOK-3386) readOwnedStageLaunch: honours the stage selection (review not coding)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hok3386-ownership-'));
+  try {
+    appendOwnershipRow(dir, { sessionRef: 'sess-coding', harness: 'claude-code', kind: 'coding', model: 'm', launchedAt: '2026-11-02T08:00:00.000Z' });
+    appendOwnershipRow(dir, { sessionRef: 'sess-review-old', harness: 'codex', kind: 'review', model: 'm', launchedAt: '2026-11-02T09:00:00.000Z' });
+    appendOwnershipRow(dir, { sessionRef: 'sess-review-new', harness: 'codex', kind: 'review', model: 'm', launchedAt: '2026-11-02T09:39:13.000Z' });
+    const launch = readOwnedStageLaunch(dir, 'review');
+    assert.ok(launch);
+    assert.equal(launch!.sessionRef, 'sess-review-new');
+    assert.equal(launch!.harness, 'codex');
+    assert.equal(launch!.stage ?? launch!.kind, 'review');
+    // A conflicting coding stage is not selected when we ask for review.
+    assert.notEqual(launch!.sessionRef, 'sess-coding');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// protects: a transcript owned by another stage leaking into this stage's disposition.
+test('(HOK-3386) readOwnedStageLaunch: returns null when no row names the stage', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hok3386-ownership-'));
+  try {
+    appendOwnershipRow(dir, { sessionRef: 'sess-coding', harness: 'claude-code', kind: 'coding', model: 'm', launchedAt: '2026-11-02T08:00:00.000Z' });
+    assert.equal(readOwnedStageLaunch(dir, 'review'), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// protects: a native-harness row triggering an owned-session read (the native-session reader already covers it).
+test('(HOK-3386) readOwnedStageLaunch: native rows are skipped (native-session reader owns them)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hok3386-ownership-'));
+  try {
+    appendOwnershipRow(dir, { sessionRef: 'native-sess', harness: 'native', kind: 'native-arm', stage: 'review', model: 'm', launchedAt: '2026-11-02T09:00:00.000Z' });
+    assert.equal(readOwnedStageLaunch(dir, 'review'), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// protects: deriveTaskProgress missing the owned-session evidence folded into agentIdle.
+test('(HOK-3386) deriveTaskProgress: owned-session events are progress and task_complete is idle', () => {
+  const now = new Date('2026-11-02T11:00:00.000Z');
+  const ownedIdleMs = Date.parse('2026-11-02T09:42:00.000Z');
+  const inputs = emptyInputs({
+    launchAt: '2026-11-02T09:00:00.000Z',
+    ownedSession: { lastEventAtMs: ownedIdleMs, agentIdleAtMs: ownedIdleMs, harness: 'codex' },
+  });
+  const p = deriveTaskProgress(inputs, { now });
+  const owned = p.sources.find((s) => s.kind === 'owned-session');
+  assert.ok(owned, 'expected owned-session source');
+  assert.equal(p.agentIdle, true);
+  assert.equal(p.ownedSessionIdleAt, new Date(ownedIdleMs).toISOString());
+  assert.equal(p.ownedSessionHarness, 'codex');
+});
+
+// protects: a pre-launch owned-session event being counted as this launch's progress.
+test('(HOK-3386) deriveTaskProgress: owned-session events older than launch are ignored', () => {
+  const now = new Date('2026-11-02T11:00:00.000Z');
+  const ownedMs = Date.parse('2026-11-02T08:30:00.000Z'); // 30m before launch
+  const inputs = emptyInputs({
+    launchAt: '2026-11-02T09:00:00.000Z',
+    ownedSession: { lastEventAtMs: ownedMs, agentIdleAtMs: ownedMs, harness: 'codex' },
+  });
+  const p = deriveTaskProgress(inputs, { now });
+  assert.equal(p.sources.find((s) => s.kind === 'owned-session'), undefined);
+  // Pre-launch idle also must not make agentIdle true.
+  assert.equal(p.agentIdle, false);
+  assert.equal(p.ownedSessionIdleAt, null);
+});
+
+// protects: the gather side of the primitive never wiring stageForOwnedSession.
+test('(HOK-3386) gatherTaskProgressInputs: ownedSession is null without stage context', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hok3386-gather-'));
+  try {
+    appendOwnershipRow(dir, { sessionRef: 'sess-codex-1', harness: 'codex', kind: 'review', model: 'm', launchedAt: '2026-11-02T09:00:00.000Z' });
+    const inputs = gatherTaskProgressInputs({ issue: 'HOK-TEST', session: 'wavemill', featureDir: dir, stageForOwnedSession: null });
+    assert.equal(inputs.ownedSession, null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// protects: readOwnedStageTranscript treating a missing transcript as evidence.
+test('(HOK-3386) readOwnedStageTranscript: a launch with no transcript file returns null', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hok3386-notranscript-'));
+  try {
+    appendOwnershipRow(dir, {
+      sessionRef: 'no-such-id',
+      harness: 'claude-code',
+      kind: 'review',
+      model: 'm',
+      launchedAt: '2026-11-02T09:00:00.000Z',
+      cwd: '/nonexistent/path',
+    });
+    assert.equal(readOwnedStageTranscript(dir, 'review'), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

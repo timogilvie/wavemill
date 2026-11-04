@@ -4500,6 +4500,131 @@ ready_remediation_disposition() {
   esac
 }
 
+# HOK-3386: stage_agent_disposition <issue> <state_dir> <wt_dir> <current_head> <stage>
+# Prints JSON: {"kind":"...","reason":"...","blockingPromptId":"...","blockingPromptDetail":"..."}.
+# The one in-flight/settled decision for an agent stage (planning, coding,
+# review, ready-remediation, conflict-resolution). A failed spawn prints
+# `{"kind":"in-flight","reason":"progress-unavailable"}` (fail safe).
+stage_agent_disposition() {
+  local issue="$1" state_dir="$2" wt_dir="$3" current_head="$4" stage="$5"
+  local slug pane_target out
+
+  case "$stage" in
+    planning|coding|review|ready-remediation|conflict-resolution) ;;
+    *) printf '{"kind":"in-flight","reason":"progress-unavailable"}\n'; return 0 ;;
+  esac
+
+  slug="$(basename "$state_dir")"
+  pane_target="$(_tmux_task_window_target "${SESSION:-}" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
+  local -a disposition_args=(
+    --issue "$issue" --state-dir "$state_dir" --worktree "$wt_dir" --stage "$stage"
+    --session "${SESSION:-${WAVEMILL_SESSION:-wavemill}}"
+  )
+  [[ -n "$current_head" ]] && disposition_args+=(--current-head "$current_head")
+  [[ -n "${STATE_FILE:-}" ]] && disposition_args+=(--state-file "$STATE_FILE")
+  [[ -n "$pane_target" ]] && disposition_args+=(--pane-target "$pane_target")
+  out=$(_with_timeout 15 wavemill_run_tool "stage-agent-disposition.ts" \
+    "${disposition_args[@]}" 2>/dev/null || true)
+  if [[ -z "$out" ]] || ! jq -e . >/dev/null 2>&1 <<<"$out"; then
+    printf '{"kind":"in-flight","reason":"progress-unavailable"}\n'
+    return 0
+  fi
+  printf '%s\n' "$out"
+}
+
+# HOK-3386: _stage_disposition_act <issue> <feature_dir> <wt_dir> <win_target> <win> <stage>
+# Reads the disposition and translates it into one of four monitor actions:
+#   rc 0  — in-flight, inactive (with a launch row) or advanced: evidence-
+#           backed, so the caller trusts it and falls through without
+#           consulting any stage-specific legacy liveness check
+#   rc 1  — settled without result: wrote a failed stage result so the next
+#           tick routes through classifyFailure → maybe_retry_failed_stage
+#   rc 2  — settled with a recognised blocking prompt: emitted a single
+#           operator-decision escalation and kept the stage otherwise alive
+#   rc 3  — inactive, no-launch: no session-ownership row for this stage
+#           (HOK-3328), so the disposition has no evidence to decide from at
+#           all. A stage-specific legacy check (e.g. coding's
+#           coding_stage_owner_lost, for tasks predating session-ownership
+#           tracking) remains a necessary backstop here — it must NOT be
+#           consulted on rc 0, where the disposition already has evidence
+#           and a second, narrower check could contradict it.
+_stage_disposition_act() {
+  local issue="$1" feature_dir="$2" wt_dir="$3" win_target="$4" win="$5" stage="$6"
+  local current_head disposition kind reason has_completion blocking_id blocking_detail
+  local state_dir="$feature_dir" result_stage started_at
+
+  # ready-remediation and conflict-resolution are sub-activities of the Ready
+  # stage, recorded in `.ready-result.json` — there is no separate
+  # `.ready-remediation-result.json` / `.conflict-resolution-result.json` on
+  # disk (mirrors tools/stage-agent-disposition.ts's own resultStage mapping).
+  case "$stage" in
+    ready-remediation|conflict-resolution) result_stage="ready" ;;
+    *) result_stage="$stage" ;;
+  esac
+
+  # allow-settled-attempt: HOK-3386 disposition reads live head of the caller's resolved worktree
+  current_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+  disposition="$(stage_agent_disposition "$issue" "$state_dir" "$wt_dir" "$current_head" "$stage" 2>/dev/null || true)"
+  [[ -n "$disposition" ]] || return 0
+  kind="$(printf '%s' "$disposition" | jq -r '.kind // "in-flight"' 2>/dev/null)"
+  reason="$(printf '%s' "$disposition" | jq -r '.reason // "unspecified"' 2>/dev/null)"
+  has_completion="$(printf '%s' "$disposition" | jq -r '.hasCompletionArtifact // false' 2>/dev/null)"
+  blocking_id="$(printf '%s' "$disposition" | jq -r '.blockingPrompt.id // empty' 2>/dev/null)"
+  blocking_detail="$(printf '%s' "$disposition" | jq -r '.blockingPrompt.detail // empty' 2>/dev/null)"
+
+  if [[ "$kind" == "inactive" && "$reason" == "no-launch" ]]; then
+    return 3
+  fi
+  case "$kind" in
+    inactive|advanced|in-flight) return 0 ;;
+    settled) : ;;
+    *) return 0 ;;
+  esac
+
+  # A completion marker or a terminal stage status is already a result; let
+  # the existing machinery pick it up.
+  if [[ "$has_completion" == "true" ]]; then
+    return 0
+  fi
+
+  # Settled + recognised blocking prompt → one operator-decision escalation.
+  if [[ -n "$blocking_id" ]]; then
+    local escalation_message="Stage ${stage} agent parked at interactive prompt '${blocking_id}': ${blocking_detail}"
+    if declare -F escalate_operator_attention >/dev/null 2>&1; then
+      escalate_operator_attention "$state_dir" operator-decision "stage-blocking-prompt" "$escalation_message" \
+        --head "$current_head" --expires-on head,operator-event >/dev/null 2>&1 || true
+    fi
+    set_window_attention_state "$win" "needs-user" >/dev/null 2>&1 || true
+    log_warn "$issue → ${stage} agent parked at ${blocking_id}, raised one operator-decision escalation"
+    return 2
+  fi
+
+  # Settled without a result: stamp the stage failed so the next tick routes
+  # through classifyFailure → maybe_retry_failed_stage. Dynamic evidence from
+  # the disposition so the stamped `exitEvidence` says what actually happened.
+  started_at="$(jq -r '.startedAt // empty' "$feature_dir/.${result_stage}-result.json" 2>/dev/null || true)"
+  local agent model
+  agent="$(stage_result_field "$feature_dir" "$result_stage" "agent")"
+  model="$(resolve_stage_result_model "$feature_dir" "$result_stage" "")"
+  local evidence_json detail
+  if command -v jq >/dev/null 2>&1; then
+    evidence_json="$(jq -cn --arg reason "$reason" --arg stage "$result_stage" --arg currentHead "${current_head:-unknown}" \
+      '{reason:$reason, stage:$stage, observedHead:$currentHead, observedAt:(now|todate)}' 2>/dev/null || echo "{}")"
+  else
+    evidence_json="{}"
+  fi
+  detail="Interrupted: ${result_stage} agent settled without a result (${reason})"
+  local artifacts_json
+  artifacts_json="$(jq -cn \
+    --arg type "$result_stage" \
+    --argjson evidence "$evidence_json" \
+    '{type: $type, terminationClass: "interrupted", exitEvidence: $evidence, validationState: "unknown",
+      recoveryAction: "Relaunch the stage from the HOK-3176 stage-failure-<stage> bucket."}' 2>/dev/null || echo '{"type":"'"$result_stage"'"}')"
+  write_stage_result "$feature_dir" "$result_stage" "failed" "$agent" "$model" "$detail" "$artifacts_json"
+  log_warn "$issue → ${result_stage} agent settled without a result (${reason}) - routing to stage-failure-${result_stage}"
+  return 1
+}
+
 ready_remediation_config_json() {
   local wt_dir="$1"
   local user_config="$HOME/.wavemill/config.json"
@@ -4881,7 +5006,7 @@ coding_stage_owner_lost() {
   if [[ "$live_rc" -eq 0 ]]; then
     if command -v jq >/dev/null 2>&1 \
       && printf '%s' "$progress" \
-      | jq -e '.agentIdle == true and .stalled == true and ((.agentBackgroundLive // false) != true)' >/dev/null 2>&1; then
+      | jq -e '.agentIdle == true and .stalled == true and ((.agentBackgroundLive // false) != true)' >/dev/null 2>&1; then # allow-ready-remediation-disposition: HOK-3137 idle-REPL detection, not a stage disposition
       probe_label="live-idle-repl"
     fi
   elif [[ "$live_rc" -eq 1 ]]; then
@@ -5144,83 +5269,11 @@ planning_late_coding_complete_reconcile() {
   return 0
 }
 
-# HOK-3101 / HOK-3069: a coding task with no hook, no commits, no worktree
-# changes, and only the launcher's `working` status write (which the
-# primitive discounts during the launch grace) is stalled. This detector
-# runs after the owner-grace only. It never kills — it warns once per
-# episode, sets needs-user attention, and writes a monitor `waiting` hook.
-coding_stage_stalled() {
-  local issue="$1" feature_dir="$2" win_target="$3"
-  [[ -f "$feature_dir/.coding-result.json" ]] || return 1
-  local started_at started_epoch now_epoch
-  started_at="$(jq -r '.startedAt // empty' "$feature_dir/.coding-result.json" 2>/dev/null || true)"
-  [[ -n "$started_at" ]] || return 1
-  started_epoch="$(wavemill_iso8601_to_epoch "$started_at" 2>/dev/null || true)"
-  [[ "$started_epoch" =~ ^[0-9]+$ ]] || return 1
-  now_epoch="$(date +%s)"
-  local owner_grace="${WAVEMILL_CODING_OWNER_GRACE_SECONDS:-300}"
-  (( now_epoch - started_epoch >= owner_grace )) || return 1
-
-  declare -F task_progress_json >/dev/null 2>&1 || return 1
-  local pane_target="$win_target"
-  local progress
-  progress="$(task_progress_json "$issue" \
-    --phase coding \
-    --pane-target "$pane_target" \
-    --max-age 60 \
-    --write-cache 2>/dev/null || printf '{}')"
-  command -v jq >/dev/null 2>&1 || return 1
-  printf '%s' "$progress" | jq -e '.stalled == true' >/dev/null 2>&1 || return 1
-
-  local marker="$feature_dir/.coding-stalled.json"
-  local last_progress_at prompt_id detected_iso
-  last_progress_at="$(printf '%s' "$progress" | jq -r '.lastProgressAt // "never"' 2>/dev/null || echo "never")"
-  prompt_id="$(printf '%s' "$progress" | jq -r '.blockingPrompt.id // ""' 2>/dev/null || true)"
-
-  # Suppress a duplicate warning if we already saw this same lastProgressAt.
-  local previous_last=""
-  if [[ -f "$marker" ]]; then
-    previous_last="$(jq -r '.lastProgressAt // ""' "$marker" 2>/dev/null || true)"
-  fi
-  if [[ "$previous_last" != "$last_progress_at" ]]; then
-    detected_iso="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-    local tmp="${marker}.tmp.$$"
-    jq -cn --arg last "$last_progress_at" --arg detected "$detected_iso" --arg prompt "$prompt_id" \
-      '{lastProgressAt:$last, detectedAt:$detected, blockingPrompt:(if $prompt == "" then null else $prompt end)}' \
-      > "$tmp" 2>/dev/null && mv "$tmp" "$marker" 2>/dev/null || rm -f "$tmp"
-
-    local age_minutes progress_sources
-    age_minutes="$(printf '%s' "$progress" | jq -r '.progressAgeMinutes // "?"' 2>/dev/null || echo "?")"
-    progress_sources="$(printf '%s' "$progress" | jq -r '(.sources // []) | map(.kind) | join(",")' 2>/dev/null || echo "")"
-    local suffix=""
-    [[ -n "$prompt_id" ]] && suffix=" (prompt: $prompt_id)"
-    [[ -z "$progress_sources" ]] && progress_sources="none-since-launch"
-    log "warn" "$issue → coding stalled ${age_minutes}m, sources=$progress_sources${suffix}"
-
-    if declare -F set_window_attention_state >/dev/null 2>&1; then
-      local slug win
-      slug="$(basename "$feature_dir")"
-      win="$issue-$slug"
-      set_window_attention_state "$win" "needs-user" >/dev/null 2>&1 || true
-    fi
-
-    # Publish a monitor `waiting` hook so the dashboard shows the attention
-    # state; keep the agent's own record intact via agentRecord preservation.
-    if declare -F wavemill_hook_write >/dev/null 2>&1; then
-      local detail next_action
-      if [[ -n "$prompt_id" ]]; then
-        detail="coding stalled ${age_minutes}m: $prompt_id"
-        next_action="inspect pane $pane_target for the $prompt_id prompt"
-      else
-        detail="coding stalled ${age_minutes}m: no hook/commit/worktree progress since launch"
-        next_action="inspect pane $pane_target — pane/process alone is not agent progress"
-      fi
-      WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
-        wavemill_hook_write "waiting" "coding_stalled" "$detail" "wavemill" "$next_action" "monitor" || true
-    fi
-  fi
-  return 0
-}
+# HOK-3386: coding_stage_stalled's warn-only needs-user path has been
+# superseded by the shared stage-agent disposition (shared/lib/stage-agent-
+# disposition.ts, shell: stage_agent_disposition). A settled coding stage
+# now routes through classifyFailure → maybe_retry_failed_stage instead of
+# parking at needs-user with a dead-end warning.
 
 # ── HOK-3174: host sleep/wake recovery ────────────────────────────────────
 # A sleeping host freezes the monitor loop, and an agent whose API response
@@ -5267,8 +5320,8 @@ monitor_record_tick_epoch() {
 # stage checks, which still own stall/owner-lost handling.
 wake_resume_interrupted_agent() {
   local issue="$1" episode="$2"
-  local slug wt_dir win_target feature_dir phase result_file agent started_at started_epoch
-  local progress agent_ts pane_cmd head key disposition
+  local slug wt_dir win_target feature_dir phase result_file agent
+  local pane_cmd head key disposition
 
   slug="${SLUG_BY_ISSUE[$issue]:-}"
   [[ -n "$slug" && -n "$episode" ]] || return 1
@@ -5296,25 +5349,26 @@ wake_resume_interrupted_agent() {
   win_target="$(_tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
   [[ -n "$win_target" ]] || win_target="$(_tmux_target_join "$SESSION" "$issue-$slug" 2>/dev/null || printf '%s:%s\n' "$SESSION" "$issue-$slug")"
 
-  declare -F task_progress_json >/dev/null 2>&1 || return 1
-  progress="$(task_progress_json "$issue" \
-    --phase "$phase" \
-    --pane-target "$win_target" \
-    --worktree "$wt_dir" \
-    --feature-dir "$feature_dir" 2>/dev/null || printf '{}')"
-  # Idle at the prompt (Stop) or cut off mid-response (StopFailure → error),
-  # with nothing else explaining the silence.
-  local resumable_filter='(.terminal != true) and (.blockingPrompt == null) and (.agentBackgroundLive != true) and ((.agentIdle == true) or (.agentRecord.state == "error"))'
-  printf '%s' "$progress" | jq -e "$resumable_filter" >/dev/null 2>&1 || return 1
-
-  # The idle/error record must belong to this stage's agent, not a previous
-  # stage's agent that stopped before this stage launched.
-  started_at="$(jq -r '.startedAt // empty' "$result_file" 2>/dev/null || true)"
-  started_epoch="$(wavemill_iso8601_to_epoch "$started_at" 2>/dev/null || true)"
-  agent_ts="$(printf '%s' "$progress" | jq -r '.agentRecord.timestamp // 0 | floor' 2>/dev/null || echo 0)"
-  if [[ "$started_epoch" =~ ^[0-9]+$ && "$agent_ts" =~ ^[0-9]+$ ]] && (( agent_ts < started_epoch )); then
-    return 1
-  fi
+  # HOK-3386: consume the shared disposition instead of a private jq filter.
+  # Resume only when the stage agent settled with the agent's own idle/error
+  # record (no completion artifact, no blocking prompt). Any other disposition
+  # falls through to the normal stage checks.
+  # allow-settled-attempt: HOK-3386 disposition reads live head of the caller's resolved worktree
+  head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+  disposition="$(stage_agent_disposition "$issue" "$feature_dir" "$wt_dir" "$head" "$phase" 2>/dev/null || true)"
+  [[ -n "$disposition" ]] || return 1
+  local disp_kind disp_reason disp_has_completion disp_prompt
+  disp_kind="$(printf '%s' "$disposition" | jq -r '.kind // empty' 2>/dev/null)"
+  disp_reason="$(printf '%s' "$disposition" | jq -r '.reason // empty' 2>/dev/null)"
+  disp_has_completion="$(printf '%s' "$disposition" | jq -r '.hasCompletionArtifact // false' 2>/dev/null)"
+  disp_prompt="$(printf '%s' "$disposition" | jq -r '.blockingPrompt.id // empty' 2>/dev/null)"
+  [[ "$disp_kind" == "settled" ]] || return 1
+  [[ "$disp_has_completion" != "true" ]] || return 1
+  [[ -z "$disp_prompt" ]] || return 1
+  case "$disp_reason" in
+    agent-idle-after-launch|agent-error-after-launch) ;;
+    *) return 1 ;;
+  esac
 
   # An exited agent leaves a shell behind; never type the message into it.
   pane_cmd="$(tmux display-message -p -t "$win_target" '#{pane_current_command}' 2>/dev/null || true)"
@@ -21356,6 +21410,21 @@ monitor_issue_state() {
 
           # Stage still running — keep task active
           if [[ "$planning_status" == "running" ]]; then
+            # HOK-3386: the one in-flight/settled decision for the planning
+            # agent. A settled agent without plan.md lands in stage-failure-
+            # planning on the next tick; a recognised blocking prompt raises
+            # one operator-decision escalation.
+            local planning_disposition_rc=0
+            _stage_disposition_act "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "$WIN_TARGET" "$WIN" "planning" || planning_disposition_rc=$?
+            if (( planning_disposition_rc == 1 )); then
+              # A failed stage result was written; the next tick routes it.
+              active_count=$((active_count + 1))
+              return 0
+            fi
+            if (( planning_disposition_rc == 2 )); then
+              active_count=$((active_count + 1))
+              return 0
+            fi
             set_window_attention_state "$WIN" "clear"
             active_count=$((active_count + 1))
             return 0
@@ -21612,24 +21681,34 @@ monitor_issue_state() {
             if emit_terminal_blocked_completion_attention "$ISSUE" "$SLUG" "$FEATURE_DIR" "$WIN" "$WIN_TARGET"; then
               return 0
             fi
-            # HOK-3101 / HOK-3069: detect a coding task that has gone silent
-            # for 30m+ with no hook, no commits, no worktree changes and only
-            # the launcher's `working` status write. The primitive treats
-            # pane/process existence as separate from progress, so a hookless
-            # interactive Codex parked at a menu is caught here even though
-            # its pane is alive.
-            if declare -F coding_stage_stalled >/dev/null 2>&1; then
-              coding_stage_stalled "$ISSUE" "$FEATURE_DIR" "$WIN_TARGET" || true
+            # HOK-3386: the one in-flight/settled decision for the coding
+            # agent (supersedes the warn-only coding_stage_stalled). A
+            # settled agent without .coding-complete lands in stage-failure-
+            # coding on the next tick; a blocking prompt escalates once.
+            local coding_disposition_rc=0
+            _stage_disposition_act "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "$WIN_TARGET" "$WIN" "coding" || coding_disposition_rc=$?
+            if (( coding_disposition_rc == 1 )); then
+              active_count=$((active_count + 1))
+              return 0
+            fi
+            if (( coding_disposition_rc == 2 )); then
+              active_count=$((active_count + 1))
+              return 0
             fi
             log "debug" "$ISSUE → Coding still running: waiting for .coding-complete"
           fi
 
-          # Reconcile phase state with process ownership (HOK-2963): a
-          # "running" coding result with no live agent descendant, no fresh
-          # hook heartbeat, and no completion marker is interrupted, not
-          # healthy active coding. Persist a typed interrupted outcome that
-          # preserves the durable commits and names the recovery action.
+          # HOK-3386: `coding_stage_owner_lost` only runs when the shared
+          # disposition had no evidence at all to decide from (rc 3,
+          # no session-ownership row for this launch — tasks launched
+          # before HOK-3328, or a launch whose ownership write failed).
+          # Whenever the disposition DID have evidence (rc 0/1/2 above), it
+          # is the one coding liveness decision and this legacy, narrower
+          # re-derivation (HOK-2963/HOK-3137: shorter grace period, no
+          # owned-session transcript evidence) is never consulted — so the
+          # two can no longer contradict each other for the same launch.
           if [[ "$coding_status" == "running" ]] \
+            && (( coding_disposition_rc == 3 )) \
             && coding_stage_owner_lost "$ISSUE" "$FEATURE_DIR" "$WIN_TARGET"; then
             coding_stage_mark_interrupted "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "$WIN" "$current_agent"
             active_count=$((active_count + 1))
@@ -21745,6 +21824,20 @@ monitor_issue_state() {
             elif emit_native_terminal_failure_attention "$ISSUE" "$FEATURE_DIR" "review" "$WIN" "$WIN_TARGET" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "review" "claude-sonnet-5")"; then
               return 0
             else
+              # HOK-3386: the one in-flight/settled decision for the review
+              # agent. A settled agent with no PR and no verdict lands in
+              # stage-failure-review on the next tick, exactly the symptom of
+              # the 2026-11-02 Codex review silent-stall incident.
+              local review_disposition_rc=0
+              _stage_disposition_act "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "$WIN_TARGET" "$WIN" "review" || review_disposition_rc=$?
+              if (( review_disposition_rc == 1 )); then
+                active_count=$((active_count + 1))
+                return 0
+              fi
+              if (( review_disposition_rc == 2 )); then
+                active_count=$((active_count + 1))
+                return 0
+              fi
               set_window_attention_state "$WIN" "clear"
               # Keep review tasks active while the controller-owned stage is running
               active_count=$((active_count + 1))

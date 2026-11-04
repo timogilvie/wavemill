@@ -417,6 +417,7 @@
     "Golden Journey (dependency-install-drift)": "bash tests/journeys/run-journeys.sh dependency-install-drift",
     "Golden Journey (native-slow-verification)": "bash tests/journeys/run-journeys.sh native-slow-verification",
     "Golden Journey (head-move-publication)": "bash tests/journeys/run-journeys.sh head-move-publication",
+    "Golden Journey (stage-silent-stall)": "bash tests/journeys/run-journeys.sh stage-silent-stall",
     "Golden Journeys": "bash tests/run-related.sh"
     },
     "postPrReconciliation": {

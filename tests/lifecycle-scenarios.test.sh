@@ -195,6 +195,8 @@ for fn in \
   write_coding_uncommitted_output_artifact \
   stage_result_field \
   stage_launch_identity \
+  stage_agent_disposition \
+  _stage_disposition_act \
   native_hook_terminal_failure_detail \
   native_coding_failure_handoff_reason \
   native_terminal_failure_kind \

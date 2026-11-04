@@ -50,6 +50,15 @@ import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, s
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import {
+  isPendingSessionRef,
+  readOwnershipRows,
+  type OwnershipKind,
+  type OwnershipStage,
+  type SessionOwnershipRow,
+} from './session-ownership.ts';
+import { codexSessionsRoot, resolveCodexLaunchNonces } from './codex-rollout-resolver.ts';
+import { resolveProjectsDirs } from './wavemill-session-paths.ts';
 import type { TaskRecord } from './workflow-state.ts';
 
 // ── Hook contract ────────────────────────────────────────────────────────────
@@ -136,6 +145,7 @@ export type ProgressSourceKind =
   | 'worktree'    // Newest mtime among tracked/untracked worktree paths.
   | 'status-file' // Status-file mtime after launch + 5s.
   | 'native-session' // Newest agent-issued native session-stream event (HOK-3381).
+  | 'owned-session'  // Newest agent-issued event in the owned harness transcript (HOK-3386).
   | 'transition'  // Stage startedAt/finishedAt, task.updated, or caller extras.
   | 'terminal';   // Merged/closed PR or terminal lifecycle evidence.
 
@@ -185,6 +195,15 @@ export interface TaskProgress {
   stalled: boolean;
   stallMinutes: number;
   blockingPrompt?: BlockingPrompt | null;
+  /**
+   * HOK-3386: ISO time of the agent's own terminal `task_complete` / `Stop`
+   * event in its owned session transcript, when the launched stage's harness
+   * wrote one. Agent evidence, invariant 2 is preserved (the transcript is
+   * agent-written). Null when no such event was seen, or no stage is active.
+   */
+  ownedSessionIdleAt?: string | null;
+  /** Harness that authored the owned-session evidence, when any. */
+  ownedSessionHarness?: 'claude-code' | 'codex' | null;
 }
 
 // ── Pure derivation inputs ───────────────────────────────────────────────────
@@ -234,6 +253,16 @@ export interface TaskProgressGatherOptions {
   repoDir?: string;
   /** HOK-3381: explicit native session-stream (transcript) path override. */
   nativeSessionPath?: string;
+  /**
+   * HOK-3386: the stage whose owned session transcript (Claude Code / Codex)
+   * should be read as agent evidence. Defaults to {@link phase} when that is a
+   * canonical stage (`planning | coding | review`); callers for
+   * ready-remediation / conflict-resolution pass this explicitly. `null`
+   * disables the owned-session probe.
+   */
+  stageForOwnedSession?: 'planning' | 'coding' | 'review' | 'ready-remediation' | 'conflict-resolution' | null;
+  /** HOK-3386: state directory for the session-ownership file; defaults to {@link featureDir}. */
+  ownershipStateDir?: string;
 }
 
 export interface TaskProgressDeriveOptions {
@@ -261,6 +290,18 @@ export interface TaskProgressInputs {
    * are agent evidence (invariant 2 is preserved: the monitor never writes it).
    */
   nativeSessionLastEventAt?: string | null;
+  /**
+   * HOK-3386: agent evidence from the stage's owned session transcript
+   * (Claude Code `.jsonl` or Codex rollout). The transcript is agent-written,
+   * so its last-event time is progress and a terminal stop event is an agent
+   * idle record (invariant 2 preserved). Null when the stage does not launch
+   * through such a transcript, or the launch is pre-grace.
+   */
+  ownedSession?: {
+    lastEventAtMs: number | null;
+    agentIdleAtMs: number | null;
+    harness: 'claude-code' | 'codex';
+  } | null;
   /** transitions the caller wants counted (stage finishedAt, task.updated, ready). */
   transitionSources: ProgressSource[];
   /** PR / lifecycle evidence for `terminal`. */
@@ -674,6 +715,22 @@ export function deriveAgentBackgroundWork(
   return { live, processes: evidence };
 }
 
+/**
+ * Pure: does the pane root process still have a live descendant at all (any
+ * command, no lag floor)? This is the original HOK-3101/HOK-2963 fast-death
+ * signal (mirrors `mill_pane_has_live_blocking_process` in
+ * wavemill-common.sh): a pane whose root process is gone, or whose root
+ * process has zero children, has lost its agent — any deeper descendant
+ * necessarily traces through a direct child, so checking direct children is
+ * sufficient. `agentProcessLive` is NEVER a progress source (invariant 1);
+ * it only backstops `stalled`'s fast path when the agent process has
+ * genuinely exited, instead of waiting out the full stall threshold.
+ */
+export function deriveAgentProcessLive(processes: PaneProcess[], panePid: number): boolean {
+  if (!processes.some((p) => p.pid === panePid)) return false;
+  return processes.some((p) => p.ppid === panePid);
+}
+
 function resolveMinChildLagSeconds(override?: number): number {
   if (typeof override === 'number' && Number.isFinite(override) && override >= 0) return override;
   const envVal = process.env.WAVEMILL_BG_CHILD_LAG_SECONDS;
@@ -719,6 +776,40 @@ function resolveAgentPid(processes: PaneProcess[], panePid: number): number {
   return bestPid > 0 ? bestPid : panePid;
 }
 
+export interface PaneProcessSignals {
+  /** `null` means "not probed" (bad panePid, missing `ps`, unparsable output). */
+  agentProcessLive: boolean | null;
+  backgroundWork: AgentBackgroundWorkResult | null;
+}
+
+/**
+ * IO: snapshot `ps` once and derive both pane-process facts from it —
+ * `agentProcessLive` (does the pane root have any live descendant at all)
+ * and `backgroundWork` (does the resolved agent have a live, lagged
+ * descendant). One snapshot serves both so a disposition check never pays
+ * for `ps -axo` twice. Fail-safe: any error returns both facts `null`
+ * ("not probed"), never throws.
+ */
+export function collectPaneProcessSignals(
+  panePid: number,
+  opts: { minChildLagSeconds?: number } = {},
+): PaneProcessSignals {
+  if (!Number.isFinite(panePid) || panePid <= 0) return { agentProcessLive: null, backgroundWork: null };
+  const psOutput = safeExecFile('ps', ['-axo', 'pid=,ppid=,etime=,command=']);
+  if (psOutput === null) return { agentProcessLive: null, backgroundWork: null };
+  try {
+    const processes = parsePsSnapshot(psOutput);
+    const agentPid = resolveAgentPid(processes, panePid);
+    const backgroundWork = deriveAgentBackgroundWork(processes, agentPid, {
+      minChildLagSeconds: resolveMinChildLagSeconds(opts.minChildLagSeconds),
+    });
+    const agentProcessLive = deriveAgentProcessLive(processes, panePid);
+    return { agentProcessLive, backgroundWork };
+  } catch {
+    return { agentProcessLive: null, backgroundWork: null };
+  }
+}
+
 /**
  * IO: snapshot `ps` once, resolve the agent pid from the pane root (see
  * `resolveAgentPid`), and derive background-work evidence for the agent.
@@ -729,18 +820,7 @@ export function collectAgentBackgroundWork(
   panePid: number,
   opts: { minChildLagSeconds?: number } = {},
 ): AgentBackgroundWorkResult | null {
-  if (!Number.isFinite(panePid) || panePid <= 0) return null;
-  const psOutput = safeExecFile('ps', ['-axo', 'pid=,ppid=,etime=,command=']);
-  if (psOutput === null) return null;
-  try {
-    const processes = parsePsSnapshot(psOutput);
-    const agentPid = resolveAgentPid(processes, panePid);
-    return deriveAgentBackgroundWork(processes, agentPid, {
-      minChildLagSeconds: resolveMinChildLagSeconds(opts.minChildLagSeconds),
-    });
-  } catch {
-    return null;
-  }
+  return collectPaneProcessSignals(panePid, opts).backgroundWork;
 }
 
 // ── Pure derivation ──────────────────────────────────────────────────────────
@@ -826,6 +906,15 @@ export function deriveTaskProgress(
     sources.push({ kind: 'native-session', at: new Date(nativeMs).toISOString() });
   }
 
+  // (4c) owned session transcript (HOK-3386). Claude Code / Codex stage
+  //      transcripts are agent-written; their last-event time is progress
+  //      and a terminal stop event is an agent idle record (folded into
+  //      `agentIdle` below with the same semantics as `terminalHistoryIdleAt`).
+  const ownedMs = inputs.ownedSession?.lastEventAtMs ?? null;
+  if (ownedMs !== null && (launchMs === null || ownedMs > launchMs)) {
+    sources.push({ kind: 'owned-session', at: new Date(ownedMs).toISOString() });
+  }
+
   // (5) transitions supplied by the caller (stage startedAt/finishedAt,
   //     task.updated, ready-watchdog stage result mtime).
   for (const src of inputs.transitionSources) {
@@ -864,7 +953,12 @@ export function deriveTaskProgress(
     : null;
 
   const historyIdle = !!inputs.terminalHistoryIdleAt;
-  const agentIdle = (agentRec !== null && agentRec.state === 'idle') || historyIdle;
+  // HOK-3386: an owned-session idle event is agent-written (invariant 2
+  // holds) and lets a Codex stage with no hook adapter reach `agentIdle` once
+  // its rollout carries a `task_complete` event.
+  const ownedIdleMs = inputs.ownedSession?.agentIdleAtMs ?? null;
+  const ownedIdleValid = ownedIdleMs !== null && (launchMs === null || ownedIdleMs >= launchMs);
+  const agentIdle = (agentRec !== null && agentRec.state === 'idle') || historyIdle || ownedIdleValid;
   const terminalIdle = terminal && (agentIdle || inputs.agentProcessLive === false);
 
   // Attention states are never "stalled" — the agent has already declared it
@@ -901,6 +995,8 @@ export function deriveTaskProgress(
     stalled,
     stallMinutes,
     blockingPrompt: inputs.blockingPrompt,
+    ownedSessionIdleAt: ownedIdleValid && ownedIdleMs !== null ? new Date(ownedIdleMs).toISOString() : null,
+    ownedSessionHarness: inputs.ownedSession?.harness ?? null,
   };
 }
 
@@ -1124,6 +1220,240 @@ function readNativeSessionLastEventAt(path: string | null): string | null {
   }
 }
 
+// ── HOK-3386: owned session transcript as agent evidence ───────────────────
+//
+// A launched stage records exactly one session-ownership row before its agent
+// starts (HOK-3328): harness, kind, stage, launchedAt, cwd. The agent's own
+// transcript — Claude Code's `~/.claude/projects/<slug>/<sessionRef>.jsonl`,
+// Codex's `rollout-...jsonl` — is written on every tool_result and the final
+// stop. Those writes are agent-written, so their last timestamp is progress
+// and a terminal stop event is an idle record. This folds that transcript
+// into the progress primitive for `claude-code` and `codex` harnesses; native
+// stages stay on their existing session-stream reader.
+
+/** Stage names a stage-agent disposition reads. */
+export type StageAgentStage = 'planning' | 'coding' | 'review' | 'ready-remediation' | 'conflict-resolution';
+
+const OWNED_SESSION_MTIME_SLACK_MS = 60_000;
+const OWNED_SESSION_TAIL_BYTES = 64 * 1024;
+
+const STAGE_TO_OWNERSHIP_KIND: Record<StageAgentStage, readonly OwnershipKind[]> = {
+  planning: ['planning'],
+  coding: ['coding'],
+  review: ['review'],
+  'ready-remediation': ['ready-remediation'],
+  'conflict-resolution': ['conflict-resolution'],
+};
+
+export interface OwnedStageLaunch {
+  sessionRef: string;
+  harness: 'claude-code' | 'codex';
+  launchedAt: string;
+  cwd?: string;
+  kind: OwnershipKind;
+  stage?: OwnershipStage;
+  attemptId: string;
+}
+
+/**
+ * Newest `launch` ownership row whose kind maps to `stage`, filtered to
+ * claude-code or codex harnesses. Native rows are ignored here — the native
+ * session stream reader (HOK-3381) already covers them.
+ */
+export function readOwnedStageLaunch(stateDir: string, stage: StageAgentStage): OwnedStageLaunch | null {
+  const kinds = new Set<OwnershipKind>(STAGE_TO_OWNERSHIP_KIND[stage]);
+  let best: SessionOwnershipRow | null = null;
+  let bestMs = -Infinity;
+  for (const row of readOwnershipRows(stateDir)) {
+    if (!kinds.has(row.kind)) continue;
+    if (row.harness !== 'claude-code' && row.harness !== 'codex') continue;
+    const ms = Date.parse(row.launchedAt);
+    if (!Number.isFinite(ms) || ms <= bestMs) continue;
+    bestMs = ms;
+    best = row;
+  }
+  if (!best) return null;
+  return {
+    sessionRef: best.sessionRef,
+    harness: best.harness as 'claude-code' | 'codex',
+    launchedAt: best.launchedAt,
+    ...(best.cwd ? { cwd: best.cwd } : {}),
+    kind: best.kind,
+    ...(best.stage ? { stage: best.stage } : {}),
+    attemptId: best.attemptId,
+  };
+}
+
+/** Resolve the pending nonce of a Codex row to a real thread id, or return null. */
+function resolveCodexSessionRef(launch: OwnedStageLaunch): string | null {
+  if (!isPendingSessionRef(launch.sessionRef)) return launch.sessionRef;
+  // Build a minimal row for the resolver (same shape it takes).
+  const minimalRow: SessionOwnershipRow = {
+    sessionRef: launch.sessionRef,
+    harness: 'codex',
+    kind: launch.kind,
+    model: '',
+    launchedAt: launch.launchedAt,
+    attemptId: launch.attemptId,
+    ...(launch.cwd ? { cwd: launch.cwd } : {}),
+    ...(launch.stage ? { stage: launch.stage } : {}),
+  };
+  try {
+    const resolved = resolveCodexLaunchNonces([minimalRow]);
+    return resolved.get(launch.sessionRef) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Candidate transcript paths for a launch. For Claude Code, the path depends
+ * on the cwd slug plus the sessionRef; for Codex, the rollout is named by
+ * its (resolved) thread id, nested under a date tree.
+ */
+export function resolveOwnedSessionTranscriptPath(launch: OwnedStageLaunch): string | null {
+  if (launch.harness === 'claude-code') {
+    if (!launch.cwd) return null;
+    const dirs = resolveProjectsDirs(launch.cwd);
+    for (const dir of dirs) {
+      const candidate = join(dir, `${launch.sessionRef}.jsonl`);
+      if (existsSync(candidate)) return candidate;
+    }
+    return null;
+  }
+  // codex
+  const threadId = resolveCodexSessionRef(launch);
+  if (!threadId) return null;
+  const root = codexSessionsRoot();
+  if (!existsSync(root)) return null;
+  // Rollout name: `rollout-<date>-<threadId>.jsonl`, nested by year/month/day.
+  const stack: string[] = [root];
+  const launchMs = Date.parse(launch.launchedAt);
+  const minMtimeMs = Number.isFinite(launchMs) ? launchMs - OWNED_SESSION_MTIME_SLACK_MS : -Infinity;
+  let depth = 0;
+  while (stack.length > 0 && depth < 2000) {
+    depth += 1;
+    const dir = stack.shift()!;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+      } else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl') && entry.name.includes(threadId)) {
+        try {
+          if (statSync(full).mtimeMs >= minMtimeMs) return full;
+        } catch {
+          // skip
+        }
+      }
+    }
+  }
+  return null;
+}
+
+interface OwnedSessionTail {
+  lastEventAtMs: number | null;
+  agentIdleAtMs: number | null;
+}
+
+/**
+ * Tail the transcript and parse the last few events. Returns an idle
+ * timestamp when the trailing stop-shaped event is present. The reader is
+ * tolerant: an unparsable tail line is skipped, and any error yields nulls.
+ */
+export function readOwnedSessionTail(path: string, harness: 'claude-code' | 'codex'): OwnedSessionTail {
+  try {
+    const st = statSync(path);
+    if (!st.isFile() || st.size === 0) return { lastEventAtMs: null, agentIdleAtMs: null };
+    const fd = openSync(path, 'r');
+    try {
+      const len = Math.min(st.size, OWNED_SESSION_TAIL_BYTES);
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, st.size - len);
+      const lines = buf.toString('utf8').split('\n').filter((l) => l.trim().length > 0);
+      if (lines.length === 0) return { lastEventAtMs: null, agentIdleAtMs: null };
+
+      let lastEventAtMs: number | null = null;
+      let agentIdleAtMs: number | null = null;
+      // Walk forward so chronology is preserved: the last parseable timestamp
+      // is `lastEventAtMs`; a stop-shaped event sets `agentIdleAtMs` to the
+      // event's own timestamp.
+      for (let i = 0; i < lines.length; i += 1) {
+        let entry: Record<string, unknown>;
+        try {
+          entry = JSON.parse(lines[i]) as Record<string, unknown>;
+        } catch {
+          continue; // tail head can be a truncated record
+        }
+        const tsIso = stringField(entry.timestamp);
+        const atMs = tsIso ? Date.parse(tsIso) : NaN;
+        if (Number.isFinite(atMs)) lastEventAtMs = atMs;
+
+        if (harness === 'codex') {
+          if (entry.type === 'event_msg') {
+            const payload = objectField(entry.payload);
+            const pType = payload ? stringField(payload.type) : null;
+            if (pType === 'task_complete' || pType === 'agent_turn_complete'
+              || pType === 'response_complete' || pType === 'response.completed') {
+              if (Number.isFinite(atMs)) agentIdleAtMs = atMs;
+            }
+          }
+        } else {
+          // claude-code
+          if (entry.type === 'Stop' || entry.type === 'stop_hook_event') {
+            if (Number.isFinite(atMs)) agentIdleAtMs = atMs;
+          }
+          if (entry.type === 'system') {
+            const subtype = stringField(entry.subtype);
+            if (subtype === 'stop_hook_summary' || subtype === 'turn_duration') {
+              if (Number.isFinite(atMs)) agentIdleAtMs = atMs;
+            }
+          }
+        }
+      }
+      return { lastEventAtMs, agentIdleAtMs };
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return { lastEventAtMs: null, agentIdleAtMs: null };
+  }
+}
+
+/**
+ * Resolve the stage's owned launch, load its transcript tail, and return the
+ * owned-session evidence shape consumed by {@link deriveTaskProgress}. Any
+ * failure returns `null`: no owned-session evidence is a legitimate state,
+ * and the derivation then falls back to the hook / commit / worktree sources.
+ */
+export function readOwnedStageTranscript(
+  stateDir: string,
+  stage: StageAgentStage,
+): { lastEventAtMs: number | null; agentIdleAtMs: number | null; harness: 'claude-code' | 'codex' } | null {
+  const launch = readOwnedStageLaunch(stateDir, stage);
+  if (!launch) return null;
+  const path = resolveOwnedSessionTranscriptPath(launch);
+  if (!path) return null;
+  // Defensive bound: a file whose mtime predates the launch (minus clock
+  // slack) cannot be this launch's transcript.
+  try {
+    const launchMs = Date.parse(launch.launchedAt);
+    const mtimeMs = statSync(path).mtimeMs;
+    if (Number.isFinite(launchMs) && mtimeMs + OWNED_SESSION_MTIME_SLACK_MS < launchMs) {
+      return null;
+    }
+  } catch {
+    // Unreadable stat: skip.
+  }
+  const tail = readOwnedSessionTail(path, launch.harness);
+  return { ...tail, harness: launch.harness };
+}
+
 /**
  * Read the stage `<featureDir>/.<phase>-result.json` and pluck out the
  * launchAt (`startedAt`) plus the transition sources (`startedAt`,
@@ -1178,6 +1508,22 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
 
   const nativeSessionLastEventAt = readNativeSessionLastEventAt(resolveNativeSessionPath(opts, session));
 
+  // HOK-3386: pick the stage for the owned-session probe. `stageForOwnedSession
+  // = null` disables; otherwise fall back to a canonical stage derived from
+  // `phase` when it names one.
+  let ownedSessionStage: StageAgentStage | null = null;
+  if (opts.stageForOwnedSession === null) {
+    ownedSessionStage = null;
+  } else if (opts.stageForOwnedSession) {
+    ownedSessionStage = opts.stageForOwnedSession;
+  } else if (opts.phase === 'planning' || opts.phase === 'coding' || opts.phase === 'review') {
+    ownedSessionStage = opts.phase;
+  }
+  const ownershipDir = opts.ownershipStateDir ?? featureDir;
+  const ownedSession = ownedSessionStage && ownershipDir
+    ? readOwnedStageTranscript(ownershipDir, ownedSessionStage)
+    : null;
+
   const transitionSources: ProgressSource[] = [...stageTransitions];
   if (opts.task?.updated) {
     transitionSources.push({ kind: 'transition', at: opts.task.updated, detail: 'task.updated' });
@@ -1193,9 +1539,15 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
 
   const blockingPrompt = matchBlockingPromptFromPaneText(opts.paneText);
 
-  const backgroundWork = opts.panePid != null
-    ? collectAgentBackgroundWork(opts.panePid, { minChildLagSeconds: opts.backgroundWorkLagSeconds })
-    : null;
+  // HOK-3386: a caller-supplied `agentProcessLive` wins (Ready's own probe);
+  // otherwise derive both pane-process facts from one `ps` snapshot so every
+  // stage disposition gets the HOK-2963 fast-death signal, not just the
+  // background-work one.
+  const paneSignals = opts.panePid != null
+    ? collectPaneProcessSignals(opts.panePid, { minChildLagSeconds: opts.backgroundWorkLagSeconds })
+    : { agentProcessLive: null, backgroundWork: null };
+  const backgroundWork = paneSignals.backgroundWork;
+  const agentProcessLive = opts.agentProcessLive ?? paneSignals.agentProcessLive;
 
   return {
     issue: opts.issue,
@@ -1207,6 +1559,7 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
     worktreeMtimePath: wt.path,
     statusFileMtimeAt,
     nativeSessionLastEventAt,
+    ownedSession,
     transitionSources,
     terminal: {
       prState,
@@ -1214,7 +1567,7 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
       lifecycleOutcome: outcome,
       at: terminalAt,
     },
-    agentProcessLive: opts.agentProcessLive ?? null,
+    agentProcessLive,
     backgroundWork,
     blockingPrompt,
   };

@@ -345,6 +345,8 @@ for f in \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3362/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/native-slow-verification.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3381/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/stage-silent-stall.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/stage-silent-stall/fake-agent/review \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
   "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
   "$REPO_DIR"/tests/lib/state-fixtures.sh \

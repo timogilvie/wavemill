@@ -42,9 +42,10 @@ tools/backfill-pricing-snapshot.ts 1  # backfill: pricing snapshot type
 # ── Session discovery (wavemill_only_join) ──
 shared/lib/session-adapters.ts 1  # wavemill_only_join: session file discovery for every adapter
 shared/lib/intervention-detector.ts 1  # wavemill_only_join: session discovery for intervention detection
-shared/lib/outcome-collectors.ts 1  # wavemill_only_join: session discovery for outcome collection
+shared/lib/outcome-collectors.ts 1  # wavemill_only_join: session discovery for operator-touch counting
 shared/lib/reliability-metrics.ts 1  # wavemill_only_join: session discovery for operator-touch counting
 shared/lib/deepseek-smoke.ts 1  # wavemill_only_join: DeepSeek smoke test locates its transcript dir
+shared/lib/task-progress.ts 1  # wavemill_only_join: HOK-3386 owned-session transcript as agent evidence (reads path, not cost)
 
 # ── Regression harness ──
 shared/lib/cost-parity.ts 8  # measurement: parity harness materializes sessions (path) and types its pricing table; also emits raw provider usage keys into fixture transcripts (HOK-3407)
