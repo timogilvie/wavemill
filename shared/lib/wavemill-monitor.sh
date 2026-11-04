@@ -4551,7 +4551,16 @@ stage_agent_disposition() {
 _stage_disposition_act() {
   local issue="$1" feature_dir="$2" wt_dir="$3" win_target="$4" win="$5" stage="$6"
   local current_head disposition kind reason has_completion blocking_id blocking_detail
-  local state_dir="$feature_dir" result_stage="$stage" started_at
+  local state_dir="$feature_dir" result_stage started_at
+
+  # ready-remediation and conflict-resolution are sub-activities of the Ready
+  # stage, recorded in `.ready-result.json` — there is no separate
+  # `.ready-remediation-result.json` / `.conflict-resolution-result.json` on
+  # disk (mirrors tools/stage-agent-disposition.ts's own resultStage mapping).
+  case "$stage" in
+    ready-remediation|conflict-resolution) result_stage="ready" ;;
+    *) result_stage="$stage" ;;
+  esac
 
   # allow-settled-attempt: HOK-3386 disposition reads live head of the caller's resolved worktree
   current_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
