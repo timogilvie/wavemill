@@ -1,25 +1,26 @@
 /**
- * Execution economics — normalize external harness (Claude Code / Codex)
- * session telemetry into the versioned, provider-independent
- * `EvalExecutionEconomics` contract and join it to Wavemill route intent
- * (HOK-2958).
+ * Execution economics — normalize SDK per-session usage rows (@hokusai/costs)
+ * for the task's owned Claude Code / Codex sessions into the versioned,
+ * provider-independent `EvalExecutionEconomics` contract, joined to Wavemill
+ * route intent (HOK-2958 / HOK-3407).
  *
  * Invariants:
+ * - Session usage is read from the SDK's per-event rows (dedup'd on
+ *   `eventKey`; Codex buckets disjoint via `normalizeCodexBuckets`), so
+ *   session `usage` equals the SDK totals by construction.
  * - A missing or unpriced value is `null` + an availability marker, never `0`.
  * - Route intent and executed telemetry disagreements are surfaced as an
  *   explicit `conflict`, never coerced.
  * - A session's stage label and kind are read from the launch row in
- *   `.session-ownership.jsonl` that names it (`ownershipStageRole`); a worktree
- *   session no launch recorded is `operator` / `unowned` and carries no cost
- *   (HOK-3328). No timestamp window decides ownership.
+ *   `.session-ownership.jsonl` that names it (`ownershipStageRole`); only
+ *   sessions a launch owns ever appear as a session block (HOK-3328).
  * - Per-session cost is copied from the `@hokusai/costs` report for that
  *   session (`meterWorkflowCost` → `sessionCosts`); this module prices nothing.
- * - Raw source entries are never spread into records; the adapters copy only
- *   allowlisted fields, and this module only consumes those.
  *
  * @module execution-economics
  */
 
+import type { IngestUsageInput } from '@hokusai/costs';
 import {
   EXECUTION_ECONOMICS_SCHEMA_VERSION,
   type EvalExecutionEconomics,
@@ -33,14 +34,6 @@ import {
   type RoutingRole,
   type WorkflowCostAttributionCoverage,
 } from './eval-schema.ts';
-import {
-  ClaudeSessionAdapter,
-  CodexSessionAdapter,
-  type ExternalSessionTurn,
-  type ExternalSessionUsageRecord,
-  type ExternalTurnUsage,
-  type SessionUsageResult,
-} from './session-adapters.ts';
 import { indexBySessionRef, ownershipStageRole, type SessionOwnershipRow } from './session-ownership.ts';
 import type { OwnedSessionCost } from './sdk-task-cost/meter.ts';
 import { getEffectiveRegistry, resolveModelRegistryKey, type ModelSelector } from './model-registry.ts';
@@ -61,8 +54,10 @@ const STAGE_TO_ROUTING_ROLE: Record<'planning' | 'coding' | 'review', RoutingRol
 };
 
 export interface BuildExecutionEconomicsInput {
-  /** Adapter scan results whose `externalSessions` should be normalized. */
-  scanResults: Array<SessionUsageResult | null | undefined>;
+  /** Per-session SDK usage rows, grouped by `sessionId` (HOK-3407). */
+  sessionUsageRows: ReadonlyMap<string, readonly IngestUsageInput[]>;
+  /** Harness tag per session, so we stamp the right provider contract version. */
+  sessionHarness: ReadonlyMap<string, 'claude-code' | 'codex'>;
   issueId?: string | null;
   branch?: string | null;
   /** Resolved per-role route intent from routing.jsonl. */
@@ -84,6 +79,9 @@ export interface CollectExecutionEconomicsInput {
   routing?: EvalRouting | null;
   ownership?: readonly SessionOwnershipRow[] | null;
   sessionCosts?: ReadonlyMap<string, OwnedSessionCost> | null;
+  /** Per-session SDK usage rows (HOK-3407). */
+  sessionUsageRows: ReadonlyMap<string, readonly IngestUsageInput[]>;
+  sessionHarness: ReadonlyMap<string, 'claude-code' | 'codex'>;
 }
 
 function renderModelSelector(selector: ModelSelector | undefined): string | null {
@@ -100,7 +98,7 @@ function renderModelSelector(selector: ModelSelector | undefined): string | null
   }
 }
 
-function usageAvailability(usage: ExternalTurnUsage): FieldAvailability {
+function usageAvailability(usage: ExecutionEconomicsTokenUsage): FieldAvailability {
   const values = [
     usage.inputTokens,
     usage.outputTokens,
@@ -113,31 +111,60 @@ function usageAvailability(usage: ExternalTurnUsage): FieldAvailability {
   return values.some((value) => value === null) ? 'partial' : 'available';
 }
 
-function toTokenUsage(usage: ExternalTurnUsage): ExecutionEconomicsTokenUsage {
+function finiteNonNegativeOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Map one SDK row's partial token usage onto the null-preserving shape. */
+function usageFromRow(row: IngestUsageInput): ExecutionEconomicsTokenUsage {
+  const u = row.usage ?? {};
   return {
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    cacheReadTokens: usage.cacheReadTokens,
-    cacheWriteTokens: usage.cacheWriteTokens,
-    reasoningTokens: usage.reasoningTokens,
+    inputTokens: finiteNonNegativeOrNull(u.input_tokens),
+    outputTokens: finiteNonNegativeOrNull(u.output_tokens),
+    cacheReadTokens: finiteNonNegativeOrNull(u.cache_read_tokens),
+    cacheWriteTokens: finiteNonNegativeOrNull(u.cache_write_tokens),
+    reasoningTokens: finiteNonNegativeOrNull(u.reasoning_tokens),
   };
 }
 
-function toTurn(turn: ExternalSessionTurn): ExecutionEconomicsTurn {
+function addObserved(total: number | null, value: number | null): number | null {
+  if (value === null) return total;
+  return (total ?? 0) + value;
+}
+
+function sumUsage(total: ExecutionEconomicsTokenUsage, turn: ExecutionEconomicsTokenUsage): void {
+  total.inputTokens = addObserved(total.inputTokens, turn.inputTokens);
+  total.outputTokens = addObserved(total.outputTokens, turn.outputTokens);
+  total.cacheReadTokens = addObserved(total.cacheReadTokens, turn.cacheReadTokens);
+  total.cacheWriteTokens = addObserved(total.cacheWriteTokens, turn.cacheWriteTokens);
+  total.reasoningTokens = addObserved(total.reasoningTokens, turn.reasoningTokens);
+}
+
+function emptyUsage(): ExecutionEconomicsTokenUsage {
   return {
-    turnId: turn.turnId,
-    parentId: turn.parentId,
-    isSubagent: turn.isSubagent,
-    model: turn.model,
-    timestamp: turn.timestamp,
-    usage: toTokenUsage(turn.usage),
-    usageCoverage: usageAvailability(turn.usage),
-    actualCostUsd: turn.actualCostUsd,
+    inputTokens: null,
+    outputTokens: null,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    reasoningTokens: null,
+  };
+}
+
+function toTurn(row: IngestUsageInput, usage: ExecutionEconomicsTokenUsage): ExecutionEconomicsTurn {
+  return {
+    turnId: row.turnId ?? null,
+    parentId: row.parentEventId ?? null,
+    isSubagent: typeof row.isSubagent === 'boolean' ? row.isSubagent : null,
+    model: row.observedModel ?? null,
+    timestamp: row.observedAt ?? null,
+    usage,
+    usageCoverage: usageAvailability(usage),
+    actualCostUsd: finiteNonNegativeOrNull(row.actualCostUsd),
   };
 }
 
 /** Consecutive same-model turn runs, preserving model-switch structure. */
-function computeModelSegments(turns: readonly ExternalSessionTurn[]): Array<{ model: string; turnCount: number }> {
+function computeModelSegments(turns: readonly ExecutionEconomicsTurn[]): Array<{ model: string; turnCount: number }> {
   const segments: Array<{ model: string; turnCount: number }> = [];
   for (const turn of turns) {
     if (!turn.model) continue;
@@ -151,7 +178,7 @@ function computeModelSegments(turns: readonly ExternalSessionTurn[]): Array<{ mo
   return segments;
 }
 
-function dominantModel(turns: readonly ExternalSessionTurn[]): string | null {
+function dominantModel(turns: readonly ExecutionEconomicsTurn[]): string | null {
   const counts = new Map<string, number>();
   for (const turn of turns) {
     if (!turn.model) continue;
@@ -169,13 +196,13 @@ function dominantModel(turns: readonly ExternalSessionTurn[]): string | null {
 }
 
 function buildModelIdentity(
-  session: ExternalSessionUsageRecord,
+  turns: readonly ExecutionEconomicsTurn[],
   stageRole: ExecutionEconomicsSession['stageRole'],
   routing: EvalRouting | null | undefined,
   launchModel: string | null,
   repoDir: string | undefined,
 ): ExecutionEconomicsModelIdentity {
-  const executed = dominantModel(session.turns);
+  const executed = dominantModel(turns);
   const provenance: ExecutionEconomicsModelIdentity['provenance'] = {};
   if (executed) {
     provenance.executed = 'session_telemetry';
@@ -212,7 +239,7 @@ function buildModelIdentity(
     const registry = getEffectiveRegistry(repoDir);
     const canonical = (modelId: string) => resolveModelRegistryKey(registry, modelId);
     const executedModels = new Set(
-      session.turns.map((turn) => turn.model).filter((m): m is string => !!m).map(canonical),
+      turns.map((turn) => turn.model).filter((m): m is string => !!m).map(canonical),
     );
     if (executedModels.size > 0 && !executedModels.has(canonical(identity.resolved))) {
       const stageModelAgrees = launchModel ? executedModels.has(canonical(launchModel)) : false;
@@ -239,54 +266,77 @@ function aggregateCoverage(
   return 'partial';
 }
 
+interface NormalizedSessionInput {
+  sessionId: string;
+  harness: 'claude-code' | 'codex';
+  rows: readonly IngestUsageInput[];
+}
+
 function normalizeSession(
-  session: ExternalSessionUsageRecord,
+  session: NormalizedSessionInput,
   input: BuildExecutionEconomicsInput,
   owners: ReadonlyMap<string, SessionOwnershipRow>,
   nowIso: string,
   turnCap: number,
 ): ExecutionEconomicsSession {
-  const diagnostics = [...session.diagnostics];
+  const diagnostics: string[] = [];
   const owner = owners.get(session.sessionId);
   const stageRole = ownershipStageRole(owner);
-  const models = buildModelIdentity(session, stageRole, input.routing, owner?.model || null, input.repoDir);
-  // Unowned sessions are reported, never charged to the task.
-  const cost = owner ? input.sessionCosts?.get(session.sessionId) : undefined;
-  if (!owner) {
-    diagnostics.push('unowned session: excluded from task cost');
-  } else if (!cost) {
+
+  // Rows come back from the SDK adapters in deduped, boundary-filtered form
+  // and ordered by timestamp; render per-turn detail + session usage directly.
+  const sortedRows = [...session.rows];
+  const perTurn = sortedRows.map((row) => ({ row, usage: usageFromRow(row) }));
+  const totalUsage = emptyUsage();
+  let sessionActualCost: number | null = null;
+  let harnessVersion: string | null = null;
+  const triggerAvailability: FieldAvailability = 'unavailable';
+  for (const { row, usage } of perTurn) {
+    sumUsage(totalUsage, usage);
+    if (harnessVersion === null && typeof row.harnessVersion === 'string' && row.harnessVersion.length > 0) {
+      harnessVersion = row.harnessVersion;
+    }
+    const actual = finiteNonNegativeOrNull(row.actualCostUsd);
+    if (actual !== null) sessionActualCost = addObserved(sessionActualCost, actual);
+  }
+
+  const turns: ExecutionEconomicsTurn[] = perTurn.map(({ row, usage }) => toTurn(row, usage));
+  const turnsTruncated = turns.length > turnCap;
+  const boundedTurns = turnsTruncated ? turns.slice(0, turnCap) : turns;
+  if (turnsTruncated) {
+    diagnostics.push(`per-turn detail truncated to ${turnCap} of ${turns.length} turns`);
+  }
+
+  const models = buildModelIdentity(turns, stageRole, input.routing, owner?.model || null, input.repoDir);
+  const cost = input.sessionCosts?.get(session.sessionId);
+  if (!cost) {
     diagnostics.push('no @hokusai/costs report for this owned session');
   }
 
-  const turnsTruncated = session.turns.length > turnCap;
-  if (turnsTruncated) {
-    diagnostics.push(`per-turn detail truncated to ${turnCap} of ${session.turns.length} turns`);
-  }
-
-  const actualCostUsd = cost?.actualUsd ?? null;
+  const actualCostUsd = cost?.actualUsd ?? sessionActualCost;
   const estimatedCostUsd = cost?.estimatedUsd ?? null;
   const costSource: ExecutionEconomicsSession['costSource'] = cost?.costSource ?? 'none';
   const coverage: WorkflowCostAttributionCoverage = cost?.coverage ?? 'unavailable';
 
   const fieldAvailability: Record<string, FieldAvailability> = {
-    harnessVersion: session.harnessVersion !== null ? 'available' : 'unavailable',
-    triggerSource: session.triggerSource !== null ? 'available' : 'unavailable',
-    turnLineage: session.turns.length === 0
+    harnessVersion: harnessVersion !== null ? 'available' : 'unavailable',
+    triggerSource: triggerAvailability,
+    turnLineage: turns.length === 0
       ? 'unavailable'
-      : session.turns.every((turn) => turn.turnId !== null)
+      : turns.every((turn) => turn.turnId !== null)
         ? 'available'
-        : session.turns.some((turn) => turn.turnId !== null)
+        : turns.some((turn) => turn.turnId !== null)
           ? 'partial'
           : 'unavailable',
-    perTurnUsage: session.turns.length === 0
+    perTurnUsage: turns.length === 0
       ? 'unavailable'
-      : session.turns.every((turn) => turn.usageAvailable)
+      : turns.every((turn) => turn.usage.inputTokens !== null || turn.usage.outputTokens !== null)
         ? 'available'
-        : session.turns.some((turn) => turn.usageAvailable)
+        : turns.some((turn) => turn.usage.inputTokens !== null || turn.usage.outputTokens !== null)
           ? 'partial'
           : 'unavailable',
-    reasoningTokens: session.usage.reasoningTokens !== null ? 'available' : 'unavailable',
-    cacheWriteTokens: session.usage.cacheWriteTokens !== null ? 'available' : 'unavailable',
+    reasoningTokens: totalUsage.reasoningTokens !== null ? 'available' : 'unavailable',
+    cacheWriteTokens: totalUsage.cacheWriteTokens !== null ? 'available' : 'unavailable',
     actualCost: actualCostUsd !== null
       ? actualCostUsd === 0 ? 'known_zero' : 'available'
       : 'unavailable',
@@ -295,20 +345,23 @@ function normalizeSession(
   return {
     sessionId: session.sessionId,
     rootSessionId: null,
-    harnessVersion: session.harnessVersion,
+    harnessVersion,
     triggerSource: {
-      value: session.triggerSource,
-      provenance: session.triggerProvenance
-        ?? (session.harness === 'codex' ? 'codex.session_meta.originator' : 'claude_code.promptSource'),
-      availability: session.triggerSource !== null ? 'available' : 'unavailable',
+      // Trigger source is not surfaced by the SDK adapters (HOK-3407); it is
+      // not needed by any current reader beyond its availability flag.
+      value: null,
+      provenance: session.harness === 'codex'
+        ? 'codex.session_meta.originator'
+        : 'claude_code.promptSource',
+      availability: triggerAvailability,
     },
     stageRole,
     models,
-    turnCount: session.turnCount,
-    turns: session.turns.slice(0, turnCap).map(toTurn),
+    turnCount: turns.length,
+    turns: boundedTurns,
     turnsTruncated,
-    modelSegments: computeModelSegments(session.turns),
-    usage: toTokenUsage(session.usage),
+    modelSegments: computeModelSegments(turns),
+    usage: totalUsage,
     actualCostUsd,
     estimatedCostUsd,
     costSource,
@@ -321,24 +374,34 @@ function normalizeSession(
 }
 
 /**
- * Build normalized execution-economics blocks (one per harness) from adapter
- * scan results, the task's ownership rows and the SDK's per-session costs.
- * Pure aside from registry loading; never throws on missing evidence —
- * degraded inputs become availability diagnostics.
+ * Build normalized execution-economics blocks (one per harness) from SDK
+ * per-session usage rows, the task's ownership rows and the SDK's
+ * per-session costs. Pure aside from registry loading; never throws on
+ * missing evidence — degraded inputs become availability diagnostics.
+ *
+ * Only owned sessions become blocks — an unowned worktree session with no
+ * launch row is dropped (HOK-3407). This drops the historical `stageRole:
+ * null` session blocks entirely.
  */
 export function buildExecutionEconomics(input: BuildExecutionEconomicsInput): EvalExecutionEconomics[] {
   const owners = indexBySessionRef(input.ownership ?? []);
   const nowIso = (input.now?.() ?? new Date()).toISOString();
   const turnCap = input.turnCap ?? DEFAULT_TURN_CAP;
 
+  const grouped = new Map<ExecutionEconomicsHarness, NormalizedSessionInput[]>();
+  for (const [sessionId, rows] of input.sessionUsageRows) {
+    if (!owners.has(sessionId)) continue; // owned-only enumeration (HOK-3407)
+    const harness = input.sessionHarness.get(sessionId);
+    if (harness !== 'claude-code' && harness !== 'codex') continue;
+    const bucket = grouped.get(harness) ?? [];
+    bucket.push({ sessionId, harness, rows });
+    grouped.set(harness, bucket);
+  }
+
   const blocks: EvalExecutionEconomics[] = [];
-  for (const scanResult of input.scanResults) {
-    const externalSessions = scanResult?.externalSessions;
-    if (!externalSessions || externalSessions.length === 0) continue;
-
-    const harness = externalSessions[0].harness;
-    const sessions = externalSessions.map((session) => normalizeSession(session, input, owners, nowIso, turnCap));
-
+  for (const [harness, group] of grouped) {
+    if (group.length === 0) continue;
+    const sessions = group.map((session) => normalizeSession(session, input, owners, nowIso, turnCap));
     blocks.push({
       schemaVersion: EXECUTION_ECONOMICS_SCHEMA_VERSION,
       providerContractVersion: PROVIDER_CONTRACT_VERSIONS[harness],
@@ -358,25 +421,18 @@ export function buildExecutionEconomics(input: BuildExecutionEconomicsInput): Ev
 }
 
 /**
- * Collect execution-economics blocks for a completed workflow: scans Claude
- * Code and Codex sessions for the branch/worktree and labels each from the
- * task's ownership rows. Fail-soft by design — callers wrap it, and every
- * missing input degrades to diagnostics.
+ * Collect execution-economics blocks for a completed workflow from the
+ * meter's per-session SDK usage rows. Owned sessions only — the callers
+ * (`post-completion-hook`, `eval-orchestrator`) pass in what
+ * `meterWorkflowCost` already produced, so transcript bytes are parsed once
+ * per task.
  */
 export async function collectExecutionEconomics(
   input: CollectExecutionEconomicsInput,
 ): Promise<EvalExecutionEconomics[]> {
-  const scanOpts = {
-    worktreePath: input.worktreePath,
-    branchName: input.branchName,
-    repoDir: input.repoDir,
-    issueId: input.issueId,
-  };
   return buildExecutionEconomics({
-    scanResults: [
-      new ClaudeSessionAdapter().scan(scanOpts),
-      new CodexSessionAdapter().scan(scanOpts),
-    ],
+    sessionUsageRows: input.sessionUsageRows,
+    sessionHarness: input.sessionHarness,
     issueId: input.issueId ?? null,
     branch: input.branchName ?? null,
     routing: input.routing,

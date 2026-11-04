@@ -27,6 +27,7 @@
  */
 
 import { dirname } from 'node:path';
+import type { IngestUsageInput } from '@hokusai/costs';
 import { resolveCodexLaunchNonces, codexSessionsRoot } from '../codex-rollout-resolver.ts';
 import { errorMessage } from '../error-utils.ts';
 import { getEffectiveRegistry, resolveModelRegistryKey } from '../model-registry.ts';
@@ -50,7 +51,7 @@ import type { TaskCostSummaryV1 } from './contract.ts';
 import type { MeasureOwnedSessionsInput } from './measure.ts';
 import { projectReportToWorkflowCost, reportCostUsd } from './project.ts';
 
-type MeasureModule = Pick<typeof import('./measure.ts'), 'measureOwnedSessions' | 'pricingUsedFor'>;
+type MeasureModule = Pick<typeof import('./measure.ts'), 'measureOwnedSessions' | 'pricingUsedFor' | 'extractOwnedSessionUsageRows'>;
 type PriceOverrideModule = Pick<typeof import('./price-overrides.ts'), 'buildHostPriceOverrides'>;
 
 export type WorkflowCostMeterReason =
@@ -106,6 +107,15 @@ export interface MeteredWorkflowCost {
   owned: SessionOwnershipRow[];
   /** SDK report per owned sessionRef, for `executionEconomics`. */
   sessionCosts: Map<string, OwnedSessionCost>;
+  /**
+   * Per-session SDK usage rows, grouped by `sessionRef` (HOK-3407). Empty
+   * when metering was skipped or returned no sessions. Used by
+   * `executionEconomics` and `executed-model-resolver` so transcript bytes
+   * are parsed once per task.
+   */
+  sessionUsageRows: Map<string, readonly IngestUsageInput[]>;
+  /** Harness tag per sessionRef so downstream stamps the right contract version. */
+  sessionHarness: Map<string, 'claude-code' | 'codex'>;
 }
 
 const defaultLoadMeasure = async (): Promise<MeasureModule & PriceOverrideModule> => {
@@ -185,7 +195,12 @@ function failure(
 
 export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<MeteredWorkflowCost> {
   const logger = input.logger ?? console;
-  const empty = { summaries: null, sessionCosts: new Map<string, OwnedSessionCost>() };
+  const empty = {
+    summaries: null,
+    sessionCosts: new Map<string, OwnedSessionCost>(),
+    sessionUsageRows: new Map<string, readonly IngestUsageInput[]>(),
+    sessionHarness: new Map<string, 'claude-code' | 'codex'>(),
+  };
 
   let owned: SessionOwnershipRow[];
   let recordFile: string | undefined;
@@ -284,7 +299,30 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
       .map(([harness, usd]) => `${harness}: ${usd === null ? 'unresolved' : `$${usd.toFixed(4)}`}`)
       .join('; ');
     logger.log(`${input.label}: @hokusai/costs total $${reportCostUsd(report).toFixed(4)} over ${measured.length} owned session(s) (${harnesses}; coverage ${report.coverage.status})`);
-    return { outcome, reason: 'sdk_report', summaries: [...report.summaries], owned, sessionCosts };
+
+    // Per-session SDK usage rows (HOK-3407): downstream readers
+    // (execution-economics, executed-model-resolver) use these so transcript
+    // bytes are parsed once per task. A failure here is non-fatal — cost still
+    // succeeds — and the maps surface empty.
+    let sessionUsageRows = empty.sessionUsageRows;
+    let sessionHarness = empty.sessionHarness;
+    try {
+      const rows = sdk.extractOwnedSessionUsageRows({ ...base, rows: measured });
+      sessionUsageRows = new Map<string, readonly IngestUsageInput[]>();
+      sessionHarness = new Map<string, 'claude-code' | 'codex'>();
+      for (const [sessionId, inputs] of rows.claude) {
+        sessionUsageRows.set(sessionId, inputs);
+        sessionHarness.set(sessionId, 'claude-code');
+      }
+      for (const [sessionId, inputs] of rows.codex) {
+        sessionUsageRows.set(sessionId, inputs);
+        sessionHarness.set(sessionId, 'codex');
+      }
+    } catch (rowsErr) {
+      logger.warn(`${input.label}: @hokusai/costs per-session usage rows unavailable — ${errorMessage(rowsErr)}`);
+    }
+
+    return { outcome, reason: 'sdk_report', summaries: [...report.summaries], owned, sessionCosts, sessionUsageRows, sessionHarness };
   } catch (error) {
     const message = errorMessage(error);
     logger.warn(`${input.label}: @hokusai/costs measurement failed — ${message}`);

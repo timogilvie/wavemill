@@ -21,9 +21,10 @@
  */
 
 import { createHash } from 'node:crypto';
-import { measureTask, type HostPriceOverride, type TaskCostReport, type TaskUsageRecord } from '@hokusai/costs';
+import { measureTask, type HostPriceOverride, type IngestUsageInput, type TaskCostReport, type TaskUsageRecord } from '@hokusai/costs';
+import { extractClaudeCodeUsage } from '@hokusai/costs/sources/claude-code';
 import { extractCodexUsage } from '@hokusai/costs/sources/codex';
-import { readSessionFiles } from '@hokusai/costs/sources/node-fs';
+import { readSessionFiles, type TaskCostSourceDiagnostics } from '@hokusai/costs/sources/node-fs';
 import { normalizeModelId, resolveModelPrice } from '@hokusai/core';
 import type { NativeSessionUsageRecord } from '../session-adapters.ts';
 import type { SessionOwnershipRow } from '../session-ownership.ts';
@@ -136,7 +137,7 @@ function sessionIdsFor(rows: readonly SessionOwnershipRow[], harness: SessionOwn
 }
 
 /** Codex rollouts for the owned thread ids, through the SDK's own Codex source. */
-function codexInputs(taskId: string, sessionIds: readonly string[], input: MeasureOwnedSessionsInput): unknown[] {
+function codexInputs(taskId: string, sessionIds: readonly string[], input: MeasureOwnedSessionsInput): IngestUsageInput[] {
   if (sessionIds.length === 0 || input.codexRoots.length === 0) return [];
   const read = readSessionFiles({ roots: input.codexRoots, sessionIds });
   const extracted = extractCodexUsage({
@@ -150,6 +151,66 @@ function codexInputs(taskId: string, sessionIds: readonly string[], input: Measu
     files: read.files.map((file) => file.content),
   });
   return [...extracted.inputs];
+}
+
+/** Claude Code transcript rows for the owned session ids, through the SDK's own source. */
+function claudeInputs(taskId: string, sessionIds: readonly string[], input: MeasureOwnedSessionsInput): IngestUsageInput[] {
+  if (sessionIds.length === 0 || input.claudeRoots.length === 0) return [];
+  const read = readSessionFiles({ roots: input.claudeRoots, sessionIds });
+  const extracted = extractClaudeCodeUsage({
+    boundary: {
+      boundaryVersion: 1,
+      taskId,
+      sessionIds,
+      startedAt: input.window.startedAt,
+      endedAt: input.window.endedAt,
+    },
+    files: read.files.map((file) => file.content),
+  });
+  return [...extracted.inputs];
+}
+
+/**
+ * Per-session SDK usage rows for one task's owned Claude Code and Codex
+ * sessions (HOK-3407). The SDK's sources dedupe (`eventKey`) and normalize
+ * Codex buckets (`normalizeCodexBuckets`); the rows returned here have the
+ * correct, disjoint token counts by construction.
+ *
+ * Executes the same `readSessionFiles` + `extract*Usage` passes the metering
+ * call makes under the hood, so downstream readers (execution-economics,
+ * executed-model-resolver) never re-parse the transcript bytes.
+ *
+ * Returns empty maps when the owned sessions resolve to nothing on disk;
+ * diagnostics are merged across harnesses.
+ */
+export interface OwnedSessionUsageRows {
+  claude: Map<string, IngestUsageInput[]>;
+  codex: Map<string, IngestUsageInput[]>;
+  diagnostics: TaskCostSourceDiagnostics;
+}
+
+export function extractOwnedSessionUsageRows(input: MeasureOwnedSessionsInput): OwnedSessionUsageRows {
+  const taskId = toSdkId(input.taskId, 'unknown-task');
+  const claudeIds = sessionIdsFor(input.rows, 'claude-code');
+  const codexIds = sessionIdsFor(input.rows, 'codex');
+  const claudeRows = claudeInputs(taskId, claudeIds, input);
+  const codexRows = codexInputs(taskId, codexIds, input);
+  const claude = groupBySessionId(claudeRows);
+  const codex = groupBySessionId(codexRows);
+  // Diagnostics are not currently surfaced upstream — kept as an empty bag
+  // so the return shape is complete for future plumbing without a schema
+  // change.
+  return { claude, codex, diagnostics: {} };
+}
+
+function groupBySessionId(rows: readonly IngestUsageInput[]): Map<string, IngestUsageInput[]> {
+  const grouped = new Map<string, IngestUsageInput[]>();
+  for (const row of rows) {
+    const existing = grouped.get(row.sessionId);
+    if (existing) existing.push(row);
+    else grouped.set(row.sessionId, [row]);
+  }
+  return grouped;
 }
 
 /**

@@ -61,13 +61,12 @@ describe('EXECUTED_MODEL_RESOLVER_GUARD', () => {
     );
   });
 
-  it('fails on a second session-adapter resolver or direct shell result write', () => {
+  it('fails on a direct shell result write', () => {
+    // protects: a shell script bypassing write_stage_result / stage-result-cli
     const repo = tempRepo();
-    track(repo, 'shared/lib/offender.ts', `import { getSessionAdapter } from './session-adapters.ts';\nexport const x = getSessionAdapter;\n`);
     track(repo, 'scripts/offender.sh', `echo '{}' > "$FEATURE_DIR/.coding-result.json"\n`);
     commit(repo);
     const result = runSourceGuard(EXECUTED_MODEL_RESOLVER_GUARD, repo);
-    assert.ok(result.findings.some((f) => f.pattern === 'imports-session-resolver-internals'));
     assert.ok(result.findings.some((f) => f.pattern === 'shell-writes-stage-result-directly'));
   });
 

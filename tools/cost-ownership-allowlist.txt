@@ -47,4 +47,13 @@ shared/lib/reliability-metrics.ts 1  # wavemill_only_join: session discovery for
 shared/lib/deepseek-smoke.ts 1  # wavemill_only_join: DeepSeek smoke test locates its transcript dir
 
 # ── Regression harness ──
-shared/lib/cost-parity.ts 2  # measurement: parity harness materializes sessions (path) and types its pricing table
+shared/lib/cost-parity.ts 8  # measurement: parity harness materializes sessions (path) and types its pricing table; also emits raw provider usage keys into fixture transcripts (HOK-3407)
+
+# ── CLI adapter envelope parsers (HOK-3407 slice 2 open shadow) ──
+# These parse the live JSON envelope the Claude / Codex CLIs emit at the agent
+# boundary — they are not transcript parsers. Kept until slice 2/2 moves the
+# shared `llm-cli` Codex helper onto an SDK mapper and these adapter sites
+# switch to a shared projector.
+shared/lib/llm-cli.ts 5  # agent-boundary: parses live Claude CLI / Codex `turn.completed` envelopes for per-call cost; slice 2/2 moves Codex helpers onto SDK mapper
+shared/lib/model-adapters/claude-cli-adapter.ts 6  # agent-boundary: reads Claude CLI JSON envelope's usage object for per-turn cost/tokens
+shared/lib/model-adapters/codex-cli-adapter.ts 1  # agent-boundary: reads Codex CLI envelope's reasoning_output_tokens for per-turn cost/tokens
