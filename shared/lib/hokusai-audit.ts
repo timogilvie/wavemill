@@ -39,7 +39,15 @@ const REQUIRED_SCENARIOS = [
 
 type RequiredScenarioName = typeof REQUIRED_SCENARIOS[number];
 type AuditLineSource = 'export' | 'queue';
-type RowShape = 'submit_data' | 'technical_task_router_row/v1' | 'technical_task_router_row/v2';
+// HOK-3415: Wavemill writes v4 rows; v1/v2 (and the historical submit_data
+// shape) remain here so audit can read pre-cutover rows the queue still
+// holds. `submit_data` is kept for incoming queue entries and is not
+// produced by any writer.
+type RowShape =
+  | 'submit_data'
+  | 'technical_task_router_row/v1'
+  | 'technical_task_router_row/v2'
+  | 'technical_task_router_row/v4';
 type CoverageRole = 'planner' | 'coder' | 'reviewer';
 type TechnicalTaskRouterBenchmarkRow =
   | TechnicalTaskRouterContributionRowV1
@@ -235,13 +243,21 @@ function getRowShape(value: unknown): RowShape | 'unknown' {
 
   if (value.schemaVersion === '1.0' && 'row' in value) {
     const envelope = value as Partial<HokusaiQueueEnvelope>;
-    if (envelope.rowShape === 'submit_data' || envelope.rowShape === 'technical_task_router_row/v1') {
+    if (
+      envelope.rowShape === 'submit_data'
+      || envelope.rowShape === 'technical_task_router_row/v1'
+      || envelope.rowShape === 'technical_task_router_row/v4'
+    ) {
       return envelope.rowShape;
     }
   }
 
   if (value.schema_version === 'technical_task_router_row/v1') {
     return 'technical_task_router_row/v1';
+  }
+
+  if (value.schema_version === 'technical_task_router_row/v4') {
+    return 'technical_task_router_row/v4';
   }
 
   if (!('schema_version' in value) && typeof value.success_under_budget === 'boolean') {

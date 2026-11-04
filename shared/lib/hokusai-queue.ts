@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { getHokusaiContributionsConfig } from './config.ts';
 import {
   TECHNICAL_TASK_ROUTER_ROW_SCHEMA_VERSION,
+  TECHNICAL_TASK_ROUTER_ROW_SCHEMA_VERSION_V4,
   validateContributionRow,
   type ContributionRow,
 } from './hokusai-contribution-schema.ts';
@@ -15,7 +16,12 @@ import { mutateJsonState, StateParseError } from './state-mutex.ts';
 const STATE_SCHEMA_VERSION = '1.0';
 const MAX_RECENT_IDEMPOTENCY_KEYS = 1000;
 
-export type QueueRowShape = 'submit_data' | typeof TECHNICAL_TASK_ROUTER_ROW_SCHEMA_VERSION;
+export type QueueRowShape =
+  | typeof TECHNICAL_TASK_ROUTER_ROW_SCHEMA_VERSION
+  | typeof TECHNICAL_TASK_ROUTER_ROW_SCHEMA_VERSION_V4
+  // Historical shape: rows already in the queue from a pre-HOK-3415 writer.
+  // Wavemill no longer writes these.
+  | 'submit_data';
 
 export interface HokusaiQueueEnvelope {
   schemaVersion: typeof STATE_SCHEMA_VERSION;
@@ -159,6 +165,9 @@ function toStableJson(value: unknown): string {
 }
 
 function getRowShape(row: ContributionRow): QueueRowShape {
+  // HOK-3415: Wavemill only writes v4 rows now; a row that still arrives
+  // without `schema_version` must be a historical submit_data entry rebuilt
+  // from the queue for drain and is tagged so for provenance.
   return 'schema_version' in row ? row.schema_version : 'submit_data';
 }
 
@@ -522,7 +531,7 @@ export function readPending(opts: QueueAccessOptions = {}): ReadPendingResult {
           entries: [{
             schemaVersion: STATE_SCHEMA_VERSION,
             entryId: 'malformed-entry',
-            rowShape: 'submit_data',
+            rowShape: TECHNICAL_TASK_ROUTER_ROW_SCHEMA_VERSION_V4,
             row: { success_under_budget: false },
             idempotencyKey: 'malformed-entry',
             enqueuedAt: now.toISOString(),

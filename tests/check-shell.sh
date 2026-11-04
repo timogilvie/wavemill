@@ -119,6 +119,7 @@ for f in \
   "$REPO_DIR"/tests/check-marker-clear-sites.test.sh \
   "$REPO_DIR"/tests/check-state-surface-writes.test.sh \
   "$REPO_DIR"/tests/check-label-write-sites.test.sh \
+  "$REPO_DIR"/tests/check-no-submit-data-producer.test.sh \
   "$REPO_DIR"/tests/merge-labels-real-state.test.sh \
   "$REPO_DIR"/tests/state-fixtures.test.sh \
   "$REPO_DIR"/tests/control-pane-recovery.test.sh \

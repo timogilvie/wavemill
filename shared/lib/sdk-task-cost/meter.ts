@@ -43,6 +43,7 @@ import {
   exactRows,
   groupByKind,
   locateOwnershipRows,
+  type OwnershipKind,
   type SessionOwnershipRow,
 } from '../session-ownership.ts';
 import { resolveProjectsDirs } from '../wavemill-session-paths.ts';
@@ -116,6 +117,13 @@ export interface MeteredWorkflowCost {
   sessionUsageRows: Map<string, readonly IngestUsageInput[]>;
   /** Harness tag per sessionRef so downstream stamps the right contract version. */
   sessionHarness: Map<string, 'claude-code' | 'codex'>;
+  /**
+   * Raw SDK task-cost summaries for the sessions of each ownership kind
+   * (HOK-3415). The v4 contribution row carries one `stage_executions[]`
+   * entry per `(kind, harness)` built from these summaries; the retired
+   * cross-harness `byKind.totalUsd` is a projection of them.
+   */
+  summariesByKind: Map<OwnershipKind, TaskCostSummaryV1[]>;
 }
 
 const defaultLoadMeasure = async (): Promise<MeasureModule & PriceOverrideModule> => {
@@ -200,6 +208,7 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
     sessionCosts: new Map<string, OwnedSessionCost>(),
     sessionUsageRows: new Map<string, readonly IngestUsageInput[]>(),
     sessionHarness: new Map<string, 'claude-code' | 'codex'>(),
+    summariesByKind: new Map<OwnershipKind, TaskCostSummaryV1[]>(),
   };
 
   let owned: SessionOwnershipRow[];
@@ -277,8 +286,11 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
     }
 
     const byKind: Record<string, number | null> = {};
+    const summariesByKind = new Map<OwnershipKind, TaskCostSummaryV1[]>();
     for (const [kind, rows] of groupByKind(measured)) {
-      byKind[kind] = (await sdk.measureOwnedSessions({ ...base, rows })).totalUsd;
+      const kindReport = await sdk.measureOwnedSessions({ ...base, rows });
+      byKind[kind] = kindReport.totalUsd;
+      summariesByKind.set(kind, [...kindReport.summaries]);
     }
     const sessionCosts = new Map<string, OwnedSessionCost>();
     for (const row of measured) {
@@ -322,7 +334,7 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
       logger.warn(`${input.label}: @hokusai/costs per-session usage rows unavailable — ${errorMessage(rowsErr)}`);
     }
 
-    return { outcome, reason: 'sdk_report', summaries: [...report.summaries], owned, sessionCosts, sessionUsageRows, sessionHarness };
+    return { outcome, reason: 'sdk_report', summaries: [...report.summaries], owned, sessionCosts, sessionUsageRows, sessionHarness, summariesByKind };
   } catch (error) {
     const message = errorMessage(error);
     logger.warn(`${input.label}: @hokusai/costs measurement failed — ${message}`);
