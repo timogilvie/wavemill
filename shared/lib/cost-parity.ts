@@ -326,7 +326,7 @@ export function materializeCase(caseItem: CostParityCase): MaterializationContex
       // session-file layout each parser actually reads. Fixtures live in a
       // human-readable "logical" form (camelCase, per-case branch alias, etc);
       // this step is the sole boundary between that form and the real
-      // ClaudeSessionAdapter / CodexSessionAdapter / NativeSessionAdapter
+      // Claude Code / Codex (SDK sources) / NativeSessionAdapter
       // formats. Without it the engine would silently see zero
       // discoverable turns and every baseline entry would collapse to
       // `no_sessions`.

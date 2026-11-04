@@ -210,6 +210,11 @@
     }
   },
   "providers": {
+    "deepseek": {
+      "enabled": true,
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "baseUrl": "https://api.deepseek.com/anthropic"
+    },
     "openrouter": {
       "enabled": true,
       "apiKeyEnv": "OPENROUTER_API_KEY",
