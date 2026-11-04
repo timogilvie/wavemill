@@ -1000,6 +1000,8 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
           routing: stageArtifacts.routing ?? null,
           ownership: metered.owned,
           sessionCosts: metered.sessionCosts,
+          sessionUsageRows: metered.sessionUsageRows,
+          sessionHarness: metered.sessionHarness,
         });
         if (executionEconomics.length > 0) {
           const summary = executionEconomics

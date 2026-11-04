@@ -7713,7 +7713,12 @@ auto_advance_blocked_completion() {
   fi
 
   if [[ "$liveness_rc" -eq 0 ]]; then
-    blocking_command="${MILL_BLOCKING_PROCESS_COMMAND:-live blocking process}"
+    # HOK-2579: belt-and-braces. MILL_BLOCKING_PROCESS_COMMAND is already a
+    # redacted, bounded identity (see mill_blocking_process_identity), but
+    # sanitise again here so a regressed upstream caller can never leak a
+    # multi-line or JSON-serialized process argv into logs/hooks.
+    blocking_command="$(sanitize_blocked_completion_text "${MILL_BLOCKING_PROCESS_COMMAND:-live blocking process}")"
+    [[ -n "$blocking_command" ]] || blocking_command="live blocking process"
     next_action="Stop the live blocking command for $issue (${blocking_command}), then retry review."
     AUTO_ADVANCE_BLOCKED_COMPLETION_REASON="live blocking process still running"
     emit_blocked_completion_liveness_attention \

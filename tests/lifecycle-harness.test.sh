@@ -2162,6 +2162,115 @@ EOF
   check_contains "live process: hook next action names issue" "$(jq -r '.next_action // empty' "$hook_file" 2>/dev/null || true)" "$issue"
 }
 
+test_coding_blocked_completion_redacts_process_arguments() {
+  local slug="coding-blocked-redact-identity"
+  local issue="HOK-2579-REDACT"
+  local repo tick commit hook_file overrides
+  repo="$(harness_init_repo "$slug")"
+  harness_setup_runtime_artifacts "$repo"
+  harness_setup_coding_state "$repo" "$slug" "running"
+  commit="$(git -C "$repo" rev-parse --short HEAD)"
+  hook_file="/tmp/wavemill-lifecycle-harness-${issue}.hook"
+  cat > "$repo/features/$slug/.coding-blocked-completion.json" <<EOF
+{
+  "stage": "coding",
+  "implementationComplete": true,
+  "committed": true,
+  "commit": "$commit",
+  "passingChecks": ["bash tests/wavemill-mill-advance.test.sh"],
+  "blockingChecks": ["pytest -v"],
+  "blockingReason": "baseline_tests_failing",
+  "evidence": "Repo-level typecheck is failing outside this change.",
+  "recommendedAction": "advance_to_review"
+}
+EOF
+
+  # HOK-2579: mill_pane_has_live_blocking_process already redacted the
+  # process identity before returning. This test exercises what the
+  # monitor DOES with that redacted value — it must reach the log and
+  # hook verbatim, with no trace of a raw argv/JSON payload.
+  overrides="$(cat <<'EOF'
+CURRENT_PHASE="coding"
+mill_pane_has_live_blocking_process() {
+  MILL_BLOCKING_PROCESS_COMMAND="pytest -v (pid 4242)"
+  MILL_BLOCKING_PROCESS_REASON=""
+  MILL_BLOCKING_PROCESS_MATCH_COUNT=1
+  MILL_BLOCKING_PROCESS_PIDS=("4242")
+  return 0
+}
+EOF
+)"
+
+  tick="$(harness_run_tick "$repo" "$slug" "$issue" "$overrides")"
+
+  check_contains "redact identity: attention log names check and pid" "$(kv_value "$tick" log_output)" "pytest -v (pid 4242)"
+  check_not_contains "redact identity: log has no JSON brace" "$(kv_value "$tick" log_output)" "{"
+  check_not_contains "redact identity: log has no turn-ended text" "$(kv_value "$tick" log_output)" "turn-ended"
+  check_eq "redact identity: hook state blocked" "blocked" "$(jq -r '.state // empty' "$hook_file" 2>/dev/null || true)"
+  check_contains "redact identity: hook next action names check and pid" "$(jq -r '.next_action // empty' "$hook_file" 2>/dev/null || true)" "pytest -v (pid 4242)"
+  check_not_contains "redact identity: hook next_action has no JSON brace" "$(jq -r '.next_action // empty' "$hook_file" 2>/dev/null || true)" "{"
+  check_not_contains "redact identity: hook detail has no JSON brace" "$(jq -r '.detail // empty' "$hook_file" 2>/dev/null || true)" "{"
+}
+
+test_coding_blocked_completion_redacts_malformed_mill_variable() {
+  local slug="coding-blocked-redact-malformed"
+  local issue="HOK-2579-MALFORMED"
+  local repo tick commit hook_file overrides
+  repo="$(harness_init_repo "$slug")"
+  harness_setup_runtime_artifacts "$repo"
+  harness_setup_coding_state "$repo" "$slug" "running"
+  commit="$(git -C "$repo" rev-parse --short HEAD)"
+  hook_file="/tmp/wavemill-lifecycle-harness-${issue}.hook"
+  cat > "$repo/features/$slug/.coding-blocked-completion.json" <<EOF
+{
+  "stage": "coding",
+  "implementationComplete": true,
+  "committed": true,
+  "commit": "$commit",
+  "passingChecks": ["bash tests/wavemill-mill-advance.test.sh"],
+  "blockingChecks": ["pytest -v"],
+  "blockingReason": "baseline_tests_failing",
+  "evidence": "Repo-level typecheck is failing outside this change.",
+  "recommendedAction": "advance_to_review"
+}
+EOF
+
+  # Proves the defensive sanitiser in auto_advance_blocked_completion holds
+  # the invariant even if a regressed upstream caller leaks a multi-line,
+  # JSON-containing value into MILL_BLOCKING_PROCESS_COMMAND.
+  overrides="$(cat <<'OUTER'
+CURRENT_PHASE="coding"
+mill_pane_has_live_blocking_process() {
+  MILL_BLOCKING_PROCESS_COMMAND=$'live-child\n{"turn-ended":"prompt leak line1\nline2"}'
+  MILL_BLOCKING_PROCESS_REASON=""
+  MILL_BLOCKING_PROCESS_MATCH_COUNT=1
+  MILL_BLOCKING_PROCESS_PIDS=("4242")
+  return 0
+}
+OUTER
+)"
+
+  tick="$(harness_run_tick "$repo" "$slug" "$issue" "$overrides")"
+
+  # sanitize_blocked_completion_text collapses embedded newlines/control
+  # characters to spaces — it bounds the value to one physical line, it does
+  # not scrub JSON syntax or words. Assert the attention log line stays a
+  # single physical line (the embedded "\nline2" is folded into the same
+  # line, not dropped or left to start a new one), and that the hook fields
+  # carry no literal newline character.
+  local log_output matched_line next_action detail
+  log_output="$(kv_value "$tick" log_output)"
+  matched_line="$(printf '%s\n' "$log_output" | grep -F "live-child" || true)"
+  check_eq "redact malformed: attention entry is a single physical line" "1" "$(printf '%s\n' "$matched_line" | grep -c . || true)"
+  check_contains "redact malformed: single line still carries the folded tail" "$matched_line" "line2"
+
+  check_eq "redact malformed: hook state blocked" "blocked" "$(jq -r '.state // empty' "$hook_file" 2>/dev/null || true)"
+  next_action="$(jq -r '.next_action // empty' "$hook_file" 2>/dev/null || true)"
+  detail="$(jq -r '.detail // empty' "$hook_file" 2>/dev/null || true)"
+  check_not_contains "redact malformed: hook next_action has no literal newline" "$next_action" $'\n'
+  check_not_contains "redact malformed: hook detail has no literal newline" "$detail" $'\n'
+  check_contains "redact malformed: hook next_action still carries folded tail" "$next_action" "line2"
+}
 
 test_coding_blocked_completion_indeterminate_liveness_needs_attention() {
   local slug="coding-blocked-indeterminate"
@@ -4021,6 +4130,8 @@ test_coding_blocked_completion_needs_user_without_advancing
 test_coding_blocked_completion_auto_advances_when_valid
 test_coding_blocked_completion_auto_advances_with_wavemill_metadata_noise
 test_coding_blocked_completion_live_process_needs_attention
+test_coding_blocked_completion_redacts_process_arguments
+test_coding_blocked_completion_redacts_malformed_mill_variable
 test_coding_blocked_completion_indeterminate_liveness_needs_attention
 test_coding_blocked_completion_missing_blocking_checks_advances_when_pane_is_gone
 test_coding_blocked_completion_empty_blocking_checks_falls_back_to_any_descendant

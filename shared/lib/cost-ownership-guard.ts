@@ -78,6 +78,14 @@ export const COST_OWNERSHIP_GUARD: GuardSpec = {
       lang: 'ts',
       re: /from\s+['"][^'"]*\/openrouter-generation-api(?:\.ts)?['"]|import\(\s*['"][^'"]*\/openrouter-generation-api(?:\.ts)?['"]/,
     },
+    {
+      name: 'raw-harness-usage-parse',
+      description:
+        'raw provider usage key outside the SDK bridge (HOK-3407) — parse through @hokusai/costs sources ' +
+        '(parseClaudeCodeTranscript / parseCodexRollout) and read IngestUsageInput.usage',
+      lang: 'ts',
+      re: /\b(?:cache_read_input_tokens|cache_creation_input_tokens|cached_input_tokens|reasoning_output_tokens)\b/,
+    },
   ],
   remediation: [
     'Wavemill has one cost engine: @hokusai/costs over the task\'s owned sessions (HOK-3077,',

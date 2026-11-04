@@ -459,7 +459,6 @@
     "shared/lib/intervention-detector.test.ts",
     "shared/lib/sdk-task-cost/price-overrides.test.ts",
     "shared/lib/sdk-task-cost/project.test.ts",
-    "shared/lib/session-adapters.test.ts",
     "shared/lib/wavemill-session-paths.test.ts",
     "tools/backfill-stage-executed-model.test.ts"
   ],
