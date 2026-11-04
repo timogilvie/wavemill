@@ -125,16 +125,19 @@ stage_agent_teardown() {
     grace="$(_stage_teardown_grace_seconds)"
     now="$(date +%s)"
     [[ -n "$marker" ]] || marker="$(_stage_teardown_default_marker "$feature_dir" "$phase")"
+    # The grace is anchored to the completion marker that triggered this
+    # teardown; without such a marker there is nothing to wait for and
+    # latching `pending` would stall the caller forever. Treat "no marker"
+    # as "already elapsed" so the teardown proceeds to terminate — a caller
+    # that genuinely wants to hold on a different signal must pass --marker.
     if [[ -n "$marker" && -f "$marker" ]]; then
       start="$(_stage_teardown_mtime_epoch "$marker")"
-    else
-      start="$now"
+      [[ "$start" =~ ^[0-9]+$ ]] || start="$now"
+      if (( now - start < grace )); then
+        return 2
+      fi
     fi
-    [[ "$start" =~ ^[0-9]+$ ]] || start="$now"
-    if (( now - start < grace )); then
-      return 2
-    fi
-    # Grace elapsed with the agent still live — proceed to terminate anyway.
+    # Grace elapsed (or no marker to anchor it) — proceed to terminate.
   fi
 
   # --- Phase 2: terminate ----------------------------------------------------

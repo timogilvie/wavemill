@@ -9869,18 +9869,19 @@ _restore_inflight_task_window_if_missing() {
     return 0
   fi
 
-  # HOK-3359: this used to trust the raw `.coding-complete` marker's mere
-  # presence as proof the missing window was intentional. The authoritative
-  # evidence is the coding STAGE RESULT, not the marker file — the dispatch
-  # loop keeps calling this with phase=coding every tick between "coding
-  # completed" and "review launched" (current_phase only flips once review
-  # actually launches), so skipping on the marker alone was fragile and
-  # skipping on nothing at all would spuriously relaunch a finished coding
-  # agent every tick during that gap. `stage_agent_teardown` now always
-  # leaves a controller-termination exit record when it tears the pane down,
-  # so this reads the stage transition it actually wrote instead of
-  # inferring intent from a marker file.
-  if [[ "$phase" == "coding" ]] && [[ "$(read_stage_status "$feature_dir" "coding" 2>/dev/null || true)" == "completed" ]]; then
+  # HOK-3359: skip relaunch when the authoritative coding stage result says
+  # the agent is done (`completed`), or the `.coding-complete` marker is on
+  # disk. The stage-result check is primary; the marker check also covers the
+  # narrow race between `stage_agent_teardown` killing the pane and
+  # `write_stage_result "completed"` landing on the same tick — if the
+  # monitor dies in that window, the marker still exists and the dispatch
+  # loop's completion path (which calls teardown + guard again on restart)
+  # handles the final tree instead of a spurious coding relaunch. The marker
+  # alone is still fragile if an operator strips it, but with both signals a
+  # finished-coding agent is never relaunched spuriously.
+  if [[ "$phase" == "coding" ]] \
+    && { [[ "$(read_stage_status "$feature_dir" "coding" 2>/dev/null || true)" == "completed" ]] \
+      || [[ -f "$feature_dir/.coding-complete" ]]; }; then
     return 0
   fi
 
