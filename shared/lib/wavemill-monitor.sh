@@ -1697,21 +1697,17 @@ challenge_cancel_challenger_arm() {
   local issue="$1" primary_slug="$2" challenger_key="${3:-}" feature_dir="${4:-}" stage="${5:-}" varied_model="${6:-}" reason="${7:-}" detail="${8:-}"
   [[ -n "$issue" && -n "$reason" ]] || return 1
 
-  local challenger_slug challenger_worktree target target_gone="false" win
+  local challenger_slug challenger_worktree challenger_feature_dir target_gone="false" win
   if [[ -n "$challenger_key" ]]; then
     challenger_slug=$(pass_task_field "$challenger_key" slug 2>/dev/null || true)
     challenger_worktree=$(pass_task_field "$challenger_key" worktree 2>/dev/null || true)
     win="$challenger_key-$challenger_slug"
+    challenger_feature_dir="${challenger_worktree}/features/${challenger_slug}"
 
-    target="$(_tmux_task_window_target "$SESSION" "$challenger_key" "$challenger_slug" "${STATE_FILE:-}" "$challenger_worktree" 2>/dev/null || true)"
-    if [[ -z "$target" ]] || ! command -v tmux >/dev/null 2>&1; then
-      target_gone="true"
-    else
-      tmux kill-window -t "$(_tmux_target_join "$SESSION" "$target")" 2>/dev/null || true
-      if ! _tmux_window_target_exists "$SESSION" "$target"; then
-        target_gone="true"
-      fi
-    fi
+    local teardown_rc=0
+    stage_agent_teardown "$challenger_key" "$challenger_feature_dir" "challenge-cancel" \
+      --worktree "$challenger_worktree" --no-settle || teardown_rc=$?
+    [[ "$teardown_rc" -ne 1 ]] && target_gone="true"
 
     if [[ "$target_gone" != "true" ]]; then
       set_window_attention_state "$win" "needs-user"
@@ -5447,14 +5443,11 @@ pane_release_preflight() {
 }
 
 release_task_pane_window_only() {
-  local issue="$1" slug="$2" wt_dir="$3" target
-  target="$(_tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
-  if [[ -n "$target" ]] && command -v tmux >/dev/null 2>&1; then
-    tmux kill-window -t "$(_tmux_target_join "$SESSION" "$target")" 2>/dev/null || true
-    if _tmux_window_target_exists "$SESSION" "$target" "$wt_dir"; then
-      return 1
-    fi
-  fi
+  local issue="$1" slug="$2" wt_dir="$3"
+  local feature_dir="${wt_dir}/features/${slug}"
+  local teardown_rc=0
+  stage_agent_teardown "$issue" "$feature_dir" "pane-release" --worktree "$wt_dir" --no-settle || teardown_rc=$?
+  [[ "$teardown_rc" -ne 1 ]] || return 1
   rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
   return 0
 }
@@ -7605,7 +7598,10 @@ complete_coding_advance() {
     return 1
   fi
 
-  quarantine_completed_coding_pane "$issue" "$feature_dir"
+  # HOK-3359: both callers (auto-advance, after proving no live blocking
+  # process; manual operator override) already answered the liveness
+  # question before reaching this point, so the pane kill is immediate.
+  quarantine_completed_coding_pane "$issue" "$feature_dir" "" --no-settle
 
   return 0
 }
@@ -9024,10 +9020,9 @@ review_capacity_terminalize() {
 # Best-effort — tmux failures never abort the reroute.
 review_capacity_release_window() {
   local issue="$1" slug="$2" wt_dir="$3"
-  local target
-  target="$(_tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
-  [[ -n "$target" ]] || return 0
-  tmux kill-window -t "$target" 2>/dev/null || true
+  local feature_dir="${wt_dir}/features/${slug}"
+  stage_agent_teardown "$issue" "$feature_dir" "review-reroute" --phase review --worktree "$wt_dir" --no-settle
+  return 0
 }
 
 # Handle a confirmed review-agent capacity stop. Writes the stage-aware
@@ -9459,9 +9454,19 @@ clear_coding_pane_replacement_intent() {
   rm -f "$(coding_pane_replacement_intent_path "$feature_dir")" 2>/dev/null || true
 }
 
+# stage_agent_teardown (HOK-3359) owns the settle/terminate/record/kill
+# sequence; this wrapper keeps the HOK-2571 replacement-intent bookkeeping
+# that only the coding→review handoff needs. Returns whatever
+# stage_agent_teardown returns (0 torn down, 2 pending, 1 window-close
+# failure) so callers that need to hold a settling agent can.
+#
+# Optional 4th arg --no-settle: the operator-advance / auto-advance callers
+# (complete_coding_advance) already proved the pane has no live blocking
+# process (mill_pane_has_live_blocking_process) or are an explicit operator
+# override before reaching here, so there is nothing left to settle on.
 quarantine_completed_coding_pane() {
-  local issue="$1" feature_dir="$2" worktree="${3:-}"
-  local slug target
+  local issue="$1" feature_dir="$2" worktree="${3:-}" settle_flag="${4:-}"
+  local slug target teardown_rc=0
 
   slug="$(basename "$feature_dir")"
   [[ -n "$worktree" ]] || worktree="$(dirname "$(dirname "$feature_dir")")"
@@ -9472,43 +9477,30 @@ quarantine_completed_coding_pane() {
   [[ -n "$target" ]] || return 0
 
   mark_coding_pane_expected_replacement "$issue" "$feature_dir" "$worktree" "$target" || true
-  if ! tmux kill-window -t "$target" 2>/dev/null; then
+  local -a teardown_args=("$issue" "$feature_dir" "completed-coding-pane-quarantine" --phase coding --worktree "$worktree")
+  [[ "$settle_flag" == "--no-settle" ]] && teardown_args+=(--no-settle)
+  stage_agent_teardown "${teardown_args[@]}" || teardown_rc=$?
+  if [[ "$teardown_rc" -eq 1 ]]; then
     clear_coding_pane_expected_replacement "$feature_dir"
   fi
-  return 0
+  return "$teardown_rc"
 }
 
 # Reap a planning agent that finished its phase but did not exit (HOK-2921 /
 # REQ-F4). Called at the .plan-approved transition so the next poll's coding
 # launch finds an idle pane rather than typing into a live REPL. Unlike
-# quarantine_completed_coding_pane this does NOT kill the window — the
-# operator may have the plan scrollback open and the same window is reused
-# for coding. Only known agent CLIs are terminated: if the pane's foreground
-# command is a shell (agent already exited, or the operator recovered the
-# window), the reap is a no-op. Failure never blocks the phase transition.
+# quarantine_completed_coding_pane this keeps the window — the operator may
+# have the plan scrollback open and the same window is reused for coding.
+# HOK-3359: delegates to stage_agent_teardown (graceful terminate + exit
+# record, --keep-window). Callers here don't retry on a later tick, so this
+# does not settle first — the escalating agent_terminate_in_pane sequence
+# inside teardown already no-ops instantly on an idle/dead pane, which is
+# the common case right after `.plan-approved`.
 reap_completed_planning_pane() {
   local issue="$1" feature_dir="$2" worktree="${3:-}"
-  local slug target fg_cmd
-
-  command -v tmux >/dev/null 2>&1 || return 0
-
-  slug="$(basename "$feature_dir")"
   [[ -n "$worktree" ]] || worktree="$(dirname "$(dirname "$feature_dir")")"
-  target="$(_tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "$worktree" 2>/dev/null || true)"
-  [[ -n "$target" ]] || return 0
-
-  if _pane_is_dead_or_idle "$(_tmux_target_join "$SESSION" "$target")"; then
-    return 0
-  fi
-  fg_cmd="$(_pane_current_command "$(_tmux_target_join "$SESSION" "$target")")"
-  if _pane_command_is_shell "$fg_cmd"; then
-    return 0
-  fi
-
-  log "status" "$issue → reaping completed planning agent ($fg_cmd) before coding launch"
-  if ! agent_terminate_in_pane "$SESSION" "$target" 10; then
-    log_warn "$issue → planning agent in $target did not exit cleanly; coding launch will force pane preparation"
-  fi
+  stage_agent_teardown "$issue" "$feature_dir" "completed-planning-reap" \
+    --phase planning --worktree "$worktree" --keep-window --no-settle
   return 0
 }
 
@@ -9877,7 +9869,18 @@ _restore_inflight_task_window_if_missing() {
     return 0
   fi
 
-  if [[ "$phase" == "coding" && -f "$feature_dir/.coding-complete" ]]; then
+  # HOK-3359: this used to trust the raw `.coding-complete` marker's mere
+  # presence as proof the missing window was intentional. The authoritative
+  # evidence is the coding STAGE RESULT, not the marker file — the dispatch
+  # loop keeps calling this with phase=coding every tick between "coding
+  # completed" and "review launched" (current_phase only flips once review
+  # actually launches), so skipping on the marker alone was fragile and
+  # skipping on nothing at all would spuriously relaunch a finished coding
+  # agent every tick during that gap. `stage_agent_teardown` now always
+  # leaves a controller-termination exit record when it tears the pane down,
+  # so this reads the stage transition it actually wrote instead of
+  # inferring intent from a marker file.
+  if [[ "$phase" == "coding" ]] && [[ "$(read_stage_status "$feature_dir" "coding" 2>/dev/null || true)" == "completed" ]]; then
     return 0
   fi
 
@@ -16105,7 +16108,7 @@ cleanup_quarantined_no_pr_challenge_arm() {
 
 cleanup_aborted_challenge_arm() {
   local issue="$1" slug="${2:-}" reason="${3:-challenge aborted}"
-  local win target target_gone wt_dir task_branch state_branch pr feature_dir
+  local win target_gone wt_dir task_branch state_branch pr feature_dir
   local cleanup_candidate_json cleanup_decision_action=""
   local decision_rc=0
 
@@ -16203,15 +16206,9 @@ cleanup_aborted_challenge_arm() {
   fi
 
   target_gone="false"
-  target="$(_tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
-  if [[ -z "$target" ]] || ! command -v tmux >/dev/null 2>&1; then
-    target_gone="true"
-  else
-    tmux kill-window -t "$(_tmux_target_join "$SESSION" "$target")" 2>/dev/null || true
-    if ! _tmux_window_target_exists "$SESSION" "$target"; then
-      target_gone="true"
-    fi
-  fi
+  local teardown_rc=0
+  stage_agent_teardown "$issue" "$feature_dir" "aborted-arm" --worktree "$wt_dir" --no-settle || teardown_rc=$?
+  [[ "$teardown_rc" -ne 1 ]] && target_gone="true"
 
   if [[ "$target_gone" != "true" ]]; then
     set_window_attention_state "$win" "needs-user"
@@ -21371,6 +21368,18 @@ monitor_issue_state() {
           fi
 
           if [[ "$resolved_phase" == "review" ]]; then
+            # HOK-3359: tear down (settle, terminate, record) BEFORE the
+            # dirty-tree guard runs, so the guard sees the tree after the
+            # agent has either committed or genuinely exited. A still-live
+            # agent holds this tick (pending); the pane is almost always
+            # already gone here (quarantine_completed_coding_pane already
+            # ran it on the tick that marked coding completed below).
+            local coding_teardown_rc=0
+            quarantine_completed_coding_pane "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || coding_teardown_rc=$?
+            if [[ "$coding_teardown_rc" -eq 2 ]]; then
+              active_count=$((active_count + 1))
+              return 0
+            fi
             if guard_coding_complete_handoff "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH"; then
               return 0
             fi
@@ -21400,9 +21409,9 @@ monitor_issue_state() {
               return 0
             fi
 
-            # Mark coding as completed (HOK-1177)
+            # Mark coding as completed (HOK-1177). The pane was already torn
+            # down above (HOK-3359), before the guard ran.
             write_stage_result "$FEATURE_DIR" "coding" "completed" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")"
-            quarantine_completed_coding_pane "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}"
 
             # FORCE_MODEL takes priority, then phase config, then state, then default
             if [[ -n "${FORCE_MODEL:-}" ]]; then
@@ -21507,6 +21516,18 @@ monitor_issue_state() {
                 active_count=$((active_count + 1))
                 return 0
               fi
+              # HOK-3359: tear down (settle, terminate, record) BEFORE the
+              # dirty-tree guard runs — the 2026-10-30 incident (HOK-3315) was
+              # this exact kill firing 3s after the marker, mid-write, with
+              # no settle and no exit record. A still-live agent holds this
+              # tick (pending); the guard then sees the tree after the agent
+              # has either committed or genuinely exited.
+              local coding_complete_teardown_rc=0
+              quarantine_completed_coding_pane "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || coding_complete_teardown_rc=$?
+              if [[ "$coding_complete_teardown_rc" -eq 2 ]]; then
+                active_count=$((active_count + 1))
+                return 0
+              fi
               if guard_coding_complete_handoff "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH"; then
                 return 0
               fi
@@ -21514,7 +21535,6 @@ monitor_issue_state() {
               log "status" "$ISSUE → .coding-complete detected, marking coding as completed"
               clear_coding_uncommitted_output_attention "$FEATURE_DIR"
               write_stage_result "$FEATURE_DIR" "coding" "completed" "$current_agent" "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")"
-              quarantine_completed_coding_pane "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}"
               # Next iteration will detect resolved_phase == "review" and launch review
               active_count=$((active_count + 1))
               return 0
