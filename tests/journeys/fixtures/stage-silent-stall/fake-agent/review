@@ -1,0 +1,32 @@
+# shellcheck shell=bash
+# Fake reviewer for the stage-silent-stall journey (HOK-3386).
+#
+# First review run: writes a Stop hook (the agent's own idle evidence) but no
+# .review-result.json verdict, no PR, no useful work. The HOK-3101 primitive
+# reads Stop-hook as `agentIdle`; the HOK-3386 disposition sees
+# `settled: agent-idle-after-launch` + `hasCompletionArtifact: false` and
+# `_stage_disposition_act` stamps the stage failed so classifyFailure →
+# maybe_retry_failed_stage relaunches it. (The real 2026-11-02 incident had
+# the agent parked at an interactive prompt without a hook — the mill then
+# relies on the stall threshold; this fake exercises the Stop-hook path, the
+# faster of the two at a 90s journey budget.)
+#
+# Any later review run is the mill's stage-failure-review relaunch; it
+# completes normally and the PR merges.
+fake_stop_hook() {
+  printf '{"hook_event_name":"Stop"}' | bash "$FAKE_AGENT_TOOLS_DIR/../shared/hooks/claude-status-hook.sh" || true
+}
+
+review_runs_file="$FAKE_ROOT/review-runs-$WAVEMILL_ISSUE"
+review_run=$(( $(cat "$review_runs_file" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$review_run" > "$review_runs_file"
+
+if (( review_run == 1 )); then
+  printf '%s phase=review issue=%s fault=silent-stall-no-verdict run=1\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+  # Agent writes its Stop hook (its own idle record) but no verdict.
+  fake_stop_hook
+else
+  printf '%s phase=review issue=%s role=stage-failure-review-relaunch run=%s\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" "$review_run" >> "$FAKE_AGENT_LOG"
+  default_review
+  fake_stop_hook
+fi

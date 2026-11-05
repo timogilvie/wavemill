@@ -15,6 +15,7 @@ import {
 import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
 import type { ReadyRemediationDisposition } from './ready-remediation-disposition.ts';
 import { createStateDirRetry } from './bounded-retry.ts';
+import { appendOwnershipRow } from './session-ownership.ts';
 import type { TaskProgress } from './task-progress.ts';
 import { setTerminalExecForTest } from './terminal-backend.ts';
 
@@ -789,6 +790,8 @@ test('tick completes disconnected resolved conflict remediation', async () => {
       launchHead: 'head-1',
     },
   }, null, 2));
+  // The resolver launch records its ownership row before the child starts (HOK-3328).
+  appendOwnershipRow(featureDir, { sessionRef: 'resolver-HOK-2268', harness: 'codex', kind: 'conflict-resolution', model: 'gpt-5.5', launchedAt: '2026-05-05T11:55:00.000Z' });
   let resumed = false;
 
   try {
@@ -1265,6 +1268,8 @@ function seedSameHeadRemediation(featureDir: string, stateDir: string, issueId: 
   }, null, 2));
   // The bucket head is the launch identity (HOK-2924); the JSON mirror is not read.
   createStateDirRetry('ready-remediation', { maxAttempts: 3 }).increment(featureDir, head);
+  // Every launch records its ownership row before the child starts (HOK-3328).
+  appendOwnershipRow(featureDir, { sessionRef: `fix-${issueId}`, harness: 'codex', kind: 'ready-remediation', model: 'gpt-5.5', launchedAt: '2026-05-05T11:55:00.000Z' });
   writeFileSync(path.join(stateDir, 'ready-watchdog-state.json'), JSON.stringify({
     updatedAt: '2030-05-05T12:00:00.000Z',
     // allow-task-literal: ready-watchdog-state.json records, not workflow-state task rows
@@ -1443,6 +1448,7 @@ test('tick waits for a fresh verification artifact after remediation push when p
     artifacts: { type: 'ready', verdict: 'fail', prNumber: 2604, remediationAttempts: 1, remediationLaunchHead: 'aaaa0001' },
   }, null, 2));
   createStateDirRetry('ready-remediation', { maxAttempts: 3 }).increment(featureDir, 'aaaa0001');
+  appendOwnershipRow(featureDir, { sessionRef: 'fix-HOK-2604', harness: 'codex', kind: 'ready-remediation', model: 'gpt-5.5', launchedAt: '2030-05-05T12:00:00.000Z' });
   writeFileSync(path.join(featureDir, '.verification-artifact-aaaa0001.json'), JSON.stringify({
     headSha: 'aaaa0001',
     timestamp: '2030-05-05T11:59:00.000Z',

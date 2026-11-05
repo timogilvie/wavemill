@@ -1,0 +1,1926 @@
+{
+  "description": "Real eval record HOK-3385 (2026-11-04T22:57:08.435Z) with the task's owned sessions re-metered per execution stage on 2026-11-05. Session and event ids are placeholders; prompt text and local paths are omitted.",
+  "record": {
+    "id": "051569cc-2066-4b50-82b5-3a30a5ea279f",
+    "schemaVersion": "1.58.0",
+    "originalPrompt": "<prompt omitted from fixture>",
+    "modelId": "claude-fable-5",
+    "modelVersion": "claude-fable-5",
+    "judgeModel": "claude-sonnet-5",
+    "judgeProvider": "anthropic",
+    "score": 0.85,
+    "scoreBand": "Minor Feedback",
+    "timeSeconds": 9093.695,
+    "timestamp": "2026-11-04T22:57:08.435Z",
+    "interventionRequired": true,
+    "interventionCount": 1,
+    "interventionDetails": [
+      "[session_redirect] CRITICAL: Respond with ONLY valid JSON. No text before or after. Start with { and end with }.\n\n# Code Review - JSON Output Required\n\n**CRITICAL INSTRUCTION**: You MUST respond with ONLY a valid JSON o"
+    ],
+    "interventions": [
+      {
+        "timestamp": "2026-11-04T22:33:47.692Z",
+        "type": "scope_change",
+        "severity": "med",
+        "note": "[session_redirect] CRITICAL: Respond with ONLY valid JSON. No text before or after. Start with { and end with }.\n\n# Code Review - JSON Output Required\n\n**CRITICAL INSTRUCTION**: You MUST respond with ONLY a valid JSON o"
+      }
+    ],
+    "rationale": "<rationale omitted from fixture>",
+    "issueId": "HOK-3385",
+    "prUrl": "https://github.com/timogilvie/wavemill/pull/1798",
+    "tokenUsage": {
+      "inputTokens": 309821,
+      "outputTokens": 3608,
+      "totalTokens": 313429
+    },
+    "estimatedCost": 0.6875378,
+    "outcomes": {
+      "success": true,
+      "ci": {
+        "ran": true,
+        "passed": true,
+        "checks": [
+          {
+            "name": "Shell and Unit Tests",
+            "status": "success",
+            "durationSeconds": 5
+          },
+          {
+            "name": "Golden Journeys",
+            "status": "success",
+            "durationSeconds": 7
+          },
+          {
+            "name": "Golden Journey (queue-events-emitted)",
+            "status": "success",
+            "durationSeconds": 157
+          },
+          {
+            "name": "Golden Journey (agent-killed-mid-stage)",
+            "status": "success",
+            "durationSeconds": 162
+          },
+          {
+            "name": "Golden Journey (stage-silent-stall)",
+            "status": "success",
+            "durationSeconds": 130
+          },
+          {
+            "name": "Golden Journey (ready-failure-disposition)",
+            "status": "success",
+            "durationSeconds": 144
+          },
+          {
+            "name": "Golden Journey (native-ownership-recovery)",
+            "status": "success",
+            "durationSeconds": 116
+          },
+          {
+            "name": "Golden Journey (dependency-install-drift)",
+            "status": "success",
+            "durationSeconds": 51
+          },
+          {
+            "name": "Golden Journey (head-move-publication)",
+            "status": "success",
+            "durationSeconds": 115
+          },
+          {
+            "name": "Golden Journey (tend-rebase-conflict-single-comment)",
+            "status": "success",
+            "durationSeconds": 175
+          },
+          {
+            "name": "Golden Journey (operator-abort)",
+            "status": "success",
+            "durationSeconds": 43
+          },
+          {
+            "name": "Golden Journey (picker-pending-touch-set)",
+            "status": "success",
+            "durationSeconds": 150
+          },
+          {
+            "name": "Golden Journey (eval-failure-exhaustion)",
+            "status": "success",
+            "durationSeconds": 259
+          },
+          {
+            "name": "Golden Journey (inputs-ready-before-approval)",
+            "status": "success",
+            "durationSeconds": 124
+          },
+          {
+            "name": "Golden Journey (errored-with-pr)",
+            "status": "success",
+            "durationSeconds": 152
+          },
+          {
+            "name": "Golden Journey (happy-path)",
+            "status": "success",
+            "durationSeconds": 154
+          },
+          {
+            "name": "Golden Journey (grounded-overlap)",
+            "status": "success",
+            "durationSeconds": 41
+          },
+          {
+            "name": "Golden Journey (dirty-tree-coding-complete)",
+            "status": "success",
+            "durationSeconds": 113
+          },
+          {
+            "name": "Golden Journey (native-coder-budget-exhaustion)",
+            "status": "success",
+            "durationSeconds": 119
+          },
+          {
+            "name": "OpenRouter Alias Audit",
+            "status": "success",
+            "durationSeconds": 4
+          },
+          {
+            "name": "Lifecycle Integration Tests",
+            "status": "success",
+            "durationSeconds": 188
+          },
+          {
+            "name": "Golden Journey (incident-currentness)",
+            "status": "success",
+            "durationSeconds": 238
+          },
+          {
+            "name": "Golden Journey (challenger-contract-recovery)",
+            "status": "success",
+            "durationSeconds": 237
+          },
+          {
+            "name": "Golden Journey (escalation-override-record)",
+            "status": "success",
+            "durationSeconds": 142
+          },
+          {
+            "name": "Golden Journey (native-arm-evidence)",
+            "status": "success",
+            "durationSeconds": 271
+          },
+          {
+            "name": "Golden Journey (native-slow-verification)",
+            "status": "success",
+            "durationSeconds": 116
+          },
+          {
+            "name": "Golden Journey (ready-one-tick-failure)",
+            "status": "success",
+            "durationSeconds": 162
+          },
+          {
+            "name": "Golden Journey (operator-abort-mid-coding)",
+            "status": "success",
+            "durationSeconds": 80
+          },
+          {
+            "name": "Golden Journey (agent-idle-background-job)",
+            "status": "success",
+            "durationSeconds": 133
+          },
+          {
+            "name": "Golden Journey (gh-lag-after-push)",
+            "status": "success",
+            "durationSeconds": 127
+          },
+          {
+            "name": "Golden Journey (post-merge-eval-reap)",
+            "status": "success",
+            "durationSeconds": 107
+          },
+          {
+            "name": "Golden Journey (terminal-delivered-reap)",
+            "status": "success",
+            "durationSeconds": 107
+          },
+          {
+            "name": "Golden Journey (mid-flight-base-conflict)",
+            "status": "success",
+            "durationSeconds": 127
+          },
+          {
+            "name": "Golden Journey (ready-remediation-same-head)",
+            "status": "success",
+            "durationSeconds": 124
+          },
+          {
+            "name": "Golden Journey (challenge-pair-eval)",
+            "status": "success",
+            "durationSeconds": 252
+          },
+          {
+            "name": "Golden Journey (ready-fail-remediate)",
+            "status": "success",
+            "durationSeconds": 140
+          },
+          {
+            "name": "Custom Harness Tests (shard 2/3)",
+            "status": "success",
+            "durationSeconds": 63
+          },
+          {
+            "name": "Unit Tests (shard 2/7)",
+            "status": "success",
+            "durationSeconds": 86
+          },
+          {
+            "name": "Unit Tests (shard 5/7)",
+            "status": "success",
+            "durationSeconds": 79
+          },
+          {
+            "name": "Preflight Checks",
+            "status": "success",
+            "durationSeconds": 192
+          },
+          {
+            "name": "Unit Tests (shard 6/7)",
+            "status": "success",
+            "durationSeconds": 80
+          },
+          {
+            "name": "Unit Tests (shard 7/7)",
+            "status": "success",
+            "durationSeconds": 91
+          },
+          {
+            "name": "Custom Harness Tests (shard 1/3)",
+            "status": "success",
+            "durationSeconds": 48
+          },
+          {
+            "name": "Shell Tests (shard 1/3)",
+            "status": "success",
+            "durationSeconds": 298
+          },
+          {
+            "name": "Unit Tests (shard 3/7)",
+            "status": "success",
+            "durationSeconds": 119
+          },
+          {
+            "name": "Unit Tests (shard 4/7)",
+            "status": "success",
+            "durationSeconds": 83
+          },
+          {
+            "name": "Custom Harness Tests (shard 3/3)",
+            "status": "success",
+            "durationSeconds": 93
+          },
+          {
+            "name": "Smoke and Config Tests",
+            "status": "success",
+            "durationSeconds": 44
+          },
+          {
+            "name": "Native Launch Certification",
+            "status": "success",
+            "durationSeconds": 252
+          },
+          {
+            "name": "Unit Tests (shard 1/7)",
+            "status": "success",
+            "durationSeconds": 76
+          },
+          {
+            "name": "Shell Tests (shard 3/3)",
+            "status": "success",
+            "durationSeconds": 173
+          },
+          {
+            "name": "Shell Tests (shard 2/3)",
+            "status": "success",
+            "durationSeconds": 292
+          },
+          {
+            "name": "Check Lifecycle Paths",
+            "status": "success",
+            "durationSeconds": 7
+          },
+          {
+            "name": "Harness Retention Shadow",
+            "status": "skipped",
+            "durationSeconds": 0
+          }
+        ]
+      },
+      "tests": {
+        "added": true,
+        "passRate": 1
+      },
+      "staticAnalysis": {
+        "type_errors": 656,
+        "lint_errors": 991,
+        "build_ok": null,
+        "complexity_delta": 1259,
+        "build_evidence": null,
+        "complexity_metric": "wavemill-cyclomatic/v1"
+      },
+      "review": {
+        "humanReviewRequired": false,
+        "rounds": 0,
+        "approvals": 0,
+        "changeRequests": 0
+      },
+      "rework": {
+        "agentIterations": 90
+      },
+      "delivery": {
+        "prCreated": true,
+        "merged": false
+      }
+    },
+    "routingDecision": {
+      "candidates": [
+        {
+          "agentType": "claude",
+          "modelId": "gpt-5.6-terra"
+        },
+        {
+          "agentType": "claude",
+          "modelId": "claude-fable-5"
+        },
+        {
+          "agentType": "claude",
+          "modelId": "claude-haiku-4-5-20251001"
+        }
+      ],
+      "chosen": {
+        "agentType": "claude",
+        "modelId": "claude-fable-5"
+      },
+      "decisionPolicyVersion": "hokusai",
+      "decisionRationale": "Routing: planner=gpt-5.6-terra, coder=claude-fable-5, reviewer=claude-haiku-4-5-20251001; planDepth=light, codeDepth=light, reviewMode=static",
+      "routeMode": "hokusai",
+      "routeArtifactSchemaVersion": "1.2",
+      "policyResolverVersion": "1.0.0",
+      "operatingModeDependency": "normal"
+    },
+    "promptArtifacts": [
+      {
+        "templateName": "eval-judge",
+        "templateHash": "80fdf56962fe3bbcf9026c4cb7b4fe6ea91cd48c3055b5a293a87da4630dc1c6",
+        "filledPromptHash": "2c582eca1a2e63e2b4d22d942e0e2c41be994211df823a647a77f5904283aa7f"
+      }
+    ],
+    "rubricEval": {
+      "schema_version": "1.0",
+      "rubric_version": "1.1",
+      "criteria": {
+        "completeness": {
+          "score": 0.9,
+          "rationale": "All acceptance criteria — single executor guard, replay fix, stale-conflict skip, journey extension, prompt deletions — appear addressed in the diff."
+        },
+        "correctness": {
+          "score": 0.85,
+          "rationale": "No functional bugs are evidenced by review comments, post-PR commits, or manual edits; the merge-classification logic is tested for both branches."
+        },
+        "code_quality": {
+          "score": 0.87,
+          "rationale": "Clear comments explaining non-obvious invariants, consistent with codebase conventions, and backed by both unit and golden-journey tests."
+        },
+        "intervention_impact": {
+          "score": 0.9,
+          "rationale": "The only logged intervention is a session_redirect entry whose content is itself an injected formatting directive rather than a substantive engineering correction, so it carries minimal weight against autonomy."
+        },
+        "autonomy": {
+          "score": 0.87,
+          "rationale": "No review_comment, post_pr_commit, manual_edit, or test_fix interventions are recorded, indicating the work landed without human correction cycles."
+        }
+      },
+      "determinative_boundary": "cosmetic_only"
+    },
+    "metadata": {
+      "workflowType": "mill",
+      "hookTriggered": true,
+      "interventionSummary": {
+        "interventions": [
+          {
+            "type": "review_comment",
+            "count": 0,
+            "details": [],
+            "timestamps": []
+          },
+          {
+            "type": "test_fix",
+            "count": 0,
+            "details": [],
+            "timestamps": []
+          },
+          {
+            "type": "post_pr_commit",
+            "count": 0,
+            "details": [],
+            "timestamps": [],
+            "agentCount": 1
+          },
+          {
+            "type": "manual_edit",
+            "count": 0,
+            "details": [],
+            "timestamps": [],
+            "severities": []
+          },
+          {
+            "type": "session_redirect",
+            "count": 1,
+            "details": [
+              "CRITICAL: Respond with ONLY valid JSON. No text before or after. Start with { and end with }.\n\n# Code Review - JSON Output Required\n\n**CRITICAL INSTRUCTION**: You MUST respond with ONLY a valid JSON o"
+            ],
+            "timestamps": [
+              "2026-11-04T22:33:47.692Z"
+            ]
+          }
+        ],
+        "totalInterventionScore": 0.12
+      },
+      "interventionFlags": [
+        "session_redirect:injected JSON-only formatting directive embedded in intervention metadata, not a substantive engineering correction"
+      ],
+      "stageScores": {
+        "expansion": {
+          "score": 0.92,
+          "rationale": "The task packet correctly identifies updateBranchWithBase as the consolidation target, names the exact files to touch (promotion-controller.ts, update-branch-with-base.ts, wavemill-monitor.sh, agent-adapters.sh, guard files, journey fixtures), and gives clear acceptance/validation criteria including the replay scenario and budget-charge semantics.",
+          "rubricCriteria": [
+            {
+              "criterion": "requirement_coverage",
+              "score": 0.93,
+              "notes": "Covers retained-conflict mode, clean-merge skip path, resolver-only prompt, guard enforcement, and journey extension."
+            },
+            {
+              "criterion": "ambiguity_resolution",
+              "score": 0.88,
+              "notes": "Clarifies scope boundaries (tend's rebaseAndPush out of scope, no new markers/buckets) precisely."
+            },
+            {
+              "criterion": "implementation_guidance_quality",
+              "score": 0.93,
+              "notes": "Points directly at the correct primitive and call sites with accurate current-state description."
+            },
+            {
+              "criterion": "validation_readiness",
+              "score": 0.9,
+              "notes": "Specifies unit tests, replay fixture, and golden journey extension as validation surfaces."
+            }
+          ]
+        },
+        "plan": {
+          "score": 0.88,
+          "rationale": "The plan correctly sequences primitive extension before orchestration changes before prompt/guard cleanup before test coverage, and explicitly calls out the edge cases (stale CONFLICTED, dirty worktree, budget keying) that the diff later handles correctly.",
+          "rubricCriteria": [
+            {
+              "criterion": "component_boundaries",
+              "score": 0.9,
+              "notes": "Cleanly separates primitive, orchestration, prompt, and guard concerns matching the final diff's structure."
+            },
+            {
+              "criterion": "invariant_coverage",
+              "score": 0.87,
+              "notes": "Flags the budget-keyed-by-(head,base) and charge-only-after-successful-launch invariants explicitly."
+            },
+            {
+              "criterion": "sequencing_and_dependencies",
+              "score": 0.88,
+              "notes": "Orders primitive-first, then orchestration, then prompt/guard, then tests — matches implementation order."
+            },
+            {
+              "criterion": "risk_and_validation_coverage",
+              "score": 0.85,
+              "notes": "Names the stale-CONFLICTED and dirty-worktree edge cases that the final tests actually exercise."
+            }
+          ]
+        },
+        "implementation": {
+          "score": 0.87,
+          "rationale": "The diff delivers every planned component: retainConflict option with correct merge-vs-abort branching, Ready orchestration with clean/conflict/failure cases, a resolution-only prompt, a new guard with both static and live-tree tests, and golden-journey coverage proving zero operator touches and one budget charge. No functional defects are evident from the diff and no post-PR fixes or review comments are recorded.",
+          "rubricCriteria": [
+            {
+              "criterion": "requirement_completeness",
+              "score": 0.9,
+              "notes": "All four acceptance bullets (single executor, replay, stale-conflict skip, journey extension, net deletions) appear addressed in the diff."
+            },
+            {
+              "criterion": "correctness",
+              "score": 0.85,
+              "notes": "Merge-tree-vs-real-merge conflict classification and MERGE_HEAD handling look carefully reasoned; no evidence of a shipped defect."
+            },
+            {
+              "criterion": "integration_with_existing_patterns",
+              "score": 0.88,
+              "notes": "Reuses launch_remediation_agent, the existing conflict budget, and publishStageHead seam exactly as the task constrained."
+            },
+            {
+              "criterion": "code_quality_and_test_coverage",
+              "score": 0.87,
+              "notes": "New guard ships with dedicated unit tests plus a live-tree regression test; journey fixture updated to emulate native tool constraints faithfully."
+            }
+          ]
+        },
+        "review": {
+          "score": 0.75,
+          "rationale": "No self-review summary or PR review comments are present in the record, and no post-PR commits or manual edits appear, which is consistent with either a clean pass or simply absent reviewer scrutiny. The score reflects genuine uncertainty rather than demonstrated review depth, since there is no artifact showing the agent or a reviewer actively probed the riskiest branch (the merge-tree-vs-real-merge reclassification logic).",
+          "rubricCriteria": [
+            {
+              "criterion": "issue_detection",
+              "score": 0.7,
+              "notes": "No self-review artifact is available to confirm issues were actively hunted rather than simply not occurring."
+            },
+            {
+              "criterion": "validation_depth",
+              "score": 0.78,
+              "notes": "The new tests do exercise the riskiest retained-conflict and clean-fallthrough paths directly."
+            },
+            {
+              "criterion": "self_review_effectiveness",
+              "score": 0.72,
+              "notes": "Cannot be confirmed from available evidence; inferred conservatively."
+            },
+            {
+              "criterion": "regression_risk_coverage",
+              "score": 0.78,
+              "notes": "Live-tree guard test and journey assertions reduce regression risk for the core invariant."
+            }
+          ]
+        }
+      },
+      "planCritique": {
+        "component_boundaries": {
+          "score": 0.9,
+          "rationale": "The plan's five-step breakdown (primitive extension, orchestration, prompt cleanup, guard enforcement, end-to-end coverage) maps directly onto the files touched in the diff."
+        },
+        "invariant_coverage": {
+          "score": 0.87,
+          "rationale": "Explicitly protects the conflict-budget keying and charge-only-after-launch rule, both of which the implementation preserves."
+        },
+        "approach_soundness": {
+          "score": 0.88,
+          "rationale": "Choosing an explicit retainConflict option on the existing primitive rather than a parallel merge path is the correct minimal-surface-area approach and was followed faithfully."
+        },
+        "missed_patches": {
+          "score": 0.85,
+          "rationale": "Implementation closely tracked the plan with no visible deviation or compensating rework; the only addition beyond the plan's explicit text is the merge-tree-vs-real-merge disambiguation logic, which is a reasonable elaboration rather than a gap-fill."
+        },
+        "overall": {
+          "score": 0.87,
+          "rationale": "A well-sequenced, invariant-aware plan that the implementation followed closely with no evidence of thrash or rework."
+        }
+      }
+    },
+    "promptSizeDiagnostic": {
+      "totalBytes": 100919,
+      "limitBytes": 9437184,
+      "perComponentBytes": {
+        "taskPrompt": 10597,
+        "prReviewOutput": 52902,
+        "interventionMetadata": 1190,
+        "taskPacket": 4782,
+        "planContent": 5617,
+        "selfReviewSummary": 32,
+        "templateScaffold": 25799
+      },
+      "policy": "fail",
+      "action": "pass"
+    },
+    "trainingEligible": true,
+    "budgetEvalEligible": true,
+    "eligibilityErrors": [],
+    "phaseDurationsSeconds": {
+      "planning": 1350.856,
+      "coding": 7488.368,
+      "review": 254.471,
+      "total": 9093.695
+    },
+    "stageOutcomes": {
+      "expansion": {
+        "score": 0.92,
+        "rationale": "The task packet correctly identifies updateBranchWithBase as the consolidation target, names the exact files to touch (promotion-controller.ts, update-branch-with-base.ts, wavemill-monitor.sh, agent-adapters.sh, guard files, journey fixtures), and gives clear acceptance/validation criteria including the replay scenario and budget-charge semantics.",
+        "rubricCriteria": [
+          {
+            "criterion": "requirement_coverage",
+            "score": 0.93,
+            "notes": "Covers retained-conflict mode, clean-merge skip path, resolver-only prompt, guard enforcement, and journey extension."
+          },
+          {
+            "criterion": "ambiguity_resolution",
+            "score": 0.88,
+            "notes": "Clarifies scope boundaries (tend's rebaseAndPush out of scope, no new markers/buckets) precisely."
+          },
+          {
+            "criterion": "implementation_guidance_quality",
+            "score": 0.93,
+            "notes": "Points directly at the correct primitive and call sites with accurate current-state description."
+          },
+          {
+            "criterion": "validation_readiness",
+            "score": 0.9,
+            "notes": "Specifies unit tests, replay fixture, and golden journey extension as validation surfaces."
+          }
+        ]
+      },
+      "plan": {
+        "score": 0.88,
+        "rationale": "The plan correctly sequences primitive extension before orchestration changes before prompt/guard cleanup before test coverage, and explicitly calls out the edge cases (stale CONFLICTED, dirty worktree, budget keying) that the diff later handles correctly.",
+        "rubricCriteria": [
+          {
+            "criterion": "component_boundaries",
+            "score": 0.9,
+            "notes": "Cleanly separates primitive, orchestration, prompt, and guard concerns matching the final diff's structure."
+          },
+          {
+            "criterion": "invariant_coverage",
+            "score": 0.87,
+            "notes": "Flags the budget-keyed-by-(head,base) and charge-only-after-successful-launch invariants explicitly."
+          },
+          {
+            "criterion": "sequencing_and_dependencies",
+            "score": 0.88,
+            "notes": "Orders primitive-first, then orchestration, then prompt/guard, then tests — matches implementation order."
+          },
+          {
+            "criterion": "risk_and_validation_coverage",
+            "score": 0.85,
+            "notes": "Names the stale-CONFLICTED and dirty-worktree edge cases that the final tests actually exercise."
+          }
+        ],
+        "planCritique": {
+          "component_boundaries": {
+            "score": 0.9,
+            "rationale": "The plan's five-step breakdown (primitive extension, orchestration, prompt cleanup, guard enforcement, end-to-end coverage) maps directly onto the files touched in the diff."
+          },
+          "invariant_coverage": {
+            "score": 0.87,
+            "rationale": "Explicitly protects the conflict-budget keying and charge-only-after-launch rule, both of which the implementation preserves."
+          },
+          "approach_soundness": {
+            "score": 0.88,
+            "rationale": "Choosing an explicit retainConflict option on the existing primitive rather than a parallel merge path is the correct minimal-surface-area approach and was followed faithfully."
+          },
+          "missed_patches": {
+            "score": 0.85,
+            "rationale": "Implementation closely tracked the plan with no visible deviation or compensating rework; the only addition beyond the plan's explicit text is the merge-tree-vs-real-merge disambiguation logic, which is a reasonable elaboration rather than a gap-fill."
+          },
+          "overall": {
+            "score": 0.87,
+            "rationale": "A well-sequenced, invariant-aware plan that the implementation followed closely with no evidence of thrash or rework."
+          }
+        }
+      },
+      "implementation": {
+        "score": 0.87,
+        "rationale": "The diff delivers every planned component: retainConflict option with correct merge-vs-abort branching, Ready orchestration with clean/conflict/failure cases, a resolution-only prompt, a new guard with both static and live-tree tests, and golden-journey coverage proving zero operator touches and one budget charge. No functional defects are evident from the diff and no post-PR fixes or review comments are recorded.",
+        "rubricCriteria": [
+          {
+            "criterion": "requirement_completeness",
+            "score": 0.9,
+            "notes": "All four acceptance bullets (single executor, replay, stale-conflict skip, journey extension, net deletions) appear addressed in the diff."
+          },
+          {
+            "criterion": "correctness",
+            "score": 0.85,
+            "notes": "Merge-tree-vs-real-merge conflict classification and MERGE_HEAD handling look carefully reasoned; no evidence of a shipped defect."
+          },
+          {
+            "criterion": "integration_with_existing_patterns",
+            "score": 0.88,
+            "notes": "Reuses launch_remediation_agent, the existing conflict budget, and publishStageHead seam exactly as the task constrained."
+          },
+          {
+            "criterion": "code_quality_and_test_coverage",
+            "score": 0.87,
+            "notes": "New guard ships with dedicated unit tests plus a live-tree regression test; journey fixture updated to emulate native tool constraints faithfully."
+          }
+        ]
+      },
+      "review": {
+        "score": 0.75,
+        "rationale": "No self-review summary or PR review comments are present in the record, and no post-PR commits or manual edits appear, which is consistent with either a clean pass or simply absent reviewer scrutiny. The score reflects genuine uncertainty rather than demonstrated review depth, since there is no artifact showing the agent or a reviewer actively probed the riskiest branch (the merge-tree-vs-real-merge reclassification logic).",
+        "rubricCriteria": [
+          {
+            "criterion": "issue_detection",
+            "score": 0.7,
+            "notes": "No self-review artifact is available to confirm issues were actively hunted rather than simply not occurring."
+          },
+          {
+            "criterion": "validation_depth",
+            "score": 0.78,
+            "notes": "The new tests do exercise the riskiest retained-conflict and clean-fallthrough paths directly."
+          },
+          {
+            "criterion": "self_review_effectiveness",
+            "score": 0.72,
+            "notes": "Cannot be confirmed from available evidence; inferred conservatively."
+          },
+          {
+            "criterion": "regression_risk_coverage",
+            "score": 0.78,
+            "notes": "Live-tree guard test and journey assertions reduce regression risk for the core invariant."
+          }
+        ]
+      },
+      "routing": {
+        "routingUsed": true,
+        "candidateCount": 3,
+        "chosenModel": "claude-fable-5",
+        "scoreAchieved": 0.85,
+        "costUsd": 35.940501,
+        "policyVersion": "hokusai"
+      }
+    },
+    "agentType": "claude",
+    "challengePairId": "HOK-3385",
+    "evaluatedPrHeadSha": "64c634cda3c1a8aa7a62bf8e5205552da94ff8af",
+    "challengeSide": "primary",
+    "forkIdentity": {
+      "stage": "review",
+      "commit": "76bd55ecfeefb26b189a8bd5fcc496d9da69e1f0",
+      "tree": "e15a30997da199017581a52698623cf627887c46",
+      "taskPacketHash": "c0dba6f53c598980a324ca5ec67a2bdb9d38e0f29f4a2437a04299f1a7d23fef",
+      "planHash": "03a472cd3483a03123bb9c9c1e01e43c76c62abee85ecec0b1fac324b0d822db",
+      "promptHash": "a6f66339c47b6305083d413f04c9652fd753f452c3f9841e9ba5f6fe87aaec08",
+      "toolConfigHash": null,
+      "sharedPrefix": true,
+      "primaryInheritedStages": [],
+      "challengerInheritedStages": [
+        "plan",
+        "implementation"
+      ],
+      "producer": "wavemill-monitor@fork-materialize",
+      "producerVersion": "1"
+    },
+    "challengeIntent": {
+      "pairId": "HOK-3385",
+      "challengeStage": "review",
+      "decisionSource": "bootstrap",
+      "selectedStage": "review",
+      "primary": {
+        "pairId": "HOK-3385",
+        "side": "primary",
+        "challengeStage": "review",
+        "expectedStageModel": "claude-haiku-4-5-20251001",
+        "expectedStageAgent": "claude",
+        "expectedRoute": {
+          "planner": "gpt-5.6-terra",
+          "coder": "claude-fable-5",
+          "reviewer": "claude-haiku-4-5-20251001",
+          "planDepth": "light",
+          "codeDepth": "light",
+          "reviewMode": "static"
+        }
+      },
+      "challenger": {
+        "pairId": "HOK-3385",
+        "side": "challenger",
+        "challengeStage": "review",
+        "expectedStageModel": "kimi-k3",
+        "expectedStageAgent": "native-openrouter",
+        "expectedRoute": {
+          "planner": "gpt-5.6-terra",
+          "coder": "claude-fable-5",
+          "reviewer": "kimi-k3",
+          "planDepth": "light",
+          "codeDepth": "light",
+          "reviewMode": "static"
+        }
+      }
+    },
+    "challengeExecutionRoute": {
+      "planner": "gpt-5.6-terra",
+      "coder": "claude-fable-5",
+      "reviewer": "claude-haiku-4-5-20251001",
+      "planDepth": "light",
+      "codeDepth": "light",
+      "reviewMode": "static"
+    },
+    "challengeStage": "review",
+    "challengeStageEval": {
+      "stage": "review",
+      "provenance": "inferred",
+      "summary": "Review comparison fell back to inferred evidence because direct review artifacts were incomplete.",
+      "fallbackReason": "Missing self-review summary and complete review iteration evidence",
+      "evidence": [
+        {
+          "label": "review_result",
+          "summary": "status=completed, model=claude-haiku-4-5-20251001, exitCode=0, verdict=ready, iterations=1, blockers=0, warnings=0, notes=PR #1798 created",
+          "source": ".review-result.json"
+        },
+        {
+          "label": "review_outcome",
+          "summary": "rounds=0, approvals=0, changeRequests=0",
+          "source": "outcomes.review"
+        },
+        {
+          "label": "interventions",
+          "summary": "scope_change=1",
+          "source": "interventions"
+        },
+        {
+          "label": "review_duration",
+          "summary": "reviewSeconds=254.471",
+          "source": ".review-result.json"
+        },
+        {
+          "label": "review_identity",
+          "summary": "orchestrator=claude-haiku-4-5-20251001(pinned=true), analysis=claude-haiku-4-5-20251001(pinned=true)",
+          "source": ".review-result.json"
+        },
+        {
+          "label": "inferred_review_score",
+          "summary": "score=0.75, rationale=No self-review summary or PR review comments are present in the record, and no post-PR commits or manual edits appear, which is consistent with either a clean …",
+          "source": "metadata.stageScores.review"
+        }
+      ]
+    },
+    "reviewExecutedIdentity": {
+      "orchestrator": {
+        "role": "review_orchestrator",
+        "requestedModel": "claude-haiku-4-5-20251001",
+        "resolvedModel": "claude-haiku-4-5-20251001",
+        "agent": "codex",
+        "source": "artifact",
+        "pinned": true
+      },
+      "substantiveAnalysis": {
+        "role": "substantive_analysis",
+        "requestedModel": "claude-haiku-4-5-20251001",
+        "resolvedModel": "claude-haiku-4-5-20251001",
+        "agent": "claude-cli",
+        "source": "artifact",
+        "pinned": true
+      },
+      "remediation": null
+    },
+    "challengeRouteContext": {
+      "decisionSource": "preserved",
+      "bootstrapRoute": {
+        "coder": "claude-fable-5",
+        "codeDepth": "light",
+        "reviewer": "claude-haiku-4-5-20251001",
+        "reviewMode": "static"
+      },
+      "expandedRoute": {
+        "coder": "claude-opus-4-7",
+        "codeDepth": "medium",
+        "reviewer": "claude-sonnet-5",
+        "reviewMode": "llm"
+      },
+      "refreshRationale": "expanded route matches bootstrap on coder class/depth"
+    },
+    "routeProvenance": {
+      "bootstrapRoute": {
+        "coder": "claude-fable-5",
+        "codeDepth": "light",
+        "reviewer": "claude-haiku-4-5-20251001",
+        "reviewMode": "static",
+        "planner": "gpt-5.6-terra",
+        "planDepth": "light",
+        "artifactPath": "worktrees/one-base-merge-executor-the-mill-merges-the-base-into-a-conflicted-task-branch-through-updatebranchwithbase-and-the-resolver-agent-only-resolves-the-conflicted-files/features/one-base-merge-executor-the-mill-merges-the-base-into-a-conflicted-task-branch-through-updatebranchwithbase-and-the-resolver-agent-only-resolves-the-conflicted-files/.initial-route.json",
+        "artifactHash": "32d3efc366d40ea3ea61d33793ce3fd68a0e11f1ff113438057618dd1107cdab",
+        "inputHash": "b87da9a59bad2ff19471221d80af4c94412a61f31d4ea5c2c6c3122d74d0c964",
+        "source": "bootstrap",
+        "routerMode": "normal",
+        "routingMode": "hokusai",
+        "expectedMetrics": {
+          "expectedSuccess": 0.578465,
+          "expectedCost": 23.2,
+          "confidence": 0.346849,
+          "expectedCostPlan": 1.33,
+          "expectedCostCode": 20.62,
+          "expectedCostReview": 1.25,
+          "neighborCount": 40,
+          "neighborSimilarityRange": [
+            0,
+            0
+          ],
+          "maxCostUsd": 25,
+          "challengeRecommendation": {
+            "shouldChallenge": true,
+            "reason": "new-model",
+            "defaultModel": "claude-opus-5-5",
+            "challengerModel": "deepseek-v3",
+            "stage": "plan",
+            "priority": 300
+          },
+          "signals": {
+            "taskType": "bugfix",
+            "promptLength": "long",
+            "complexityScore": 5,
+            "complexityBand": "xl",
+            "riskFlags": [
+              "large-scope-refactor",
+              "test-infrastructure"
+            ],
+            "fileTypes": [
+              ".json",
+              ".sh",
+              ".ts"
+            ],
+            "riskScore": 13
+          },
+          "reasoning": [
+            "Adapted from Hokusai Model 30 recommended_strategy.",
+            "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics.",
+            "Router escalation (confidence 0.394116 < 0.4) re-asked Hokusai for highest_reliability without claude-opus-4-8; Hokusai selected coder claude-fable-5."
+          ]
+        }
+      },
+      "expandedRoute": {
+        "coder": "claude-opus-4-7",
+        "codeDepth": "medium",
+        "reviewer": "claude-sonnet-5",
+        "reviewMode": "llm",
+        "planner": "claude-opus-4-7",
+        "planDepth": "medium",
+        "artifactPath": "worktrees/one-base-merge-executor-the-mill-merges-the-base-into-a-conflicted-task-branch-through-updatebranchwithbase-and-the-resolver-agent-only-resolves-the-conflicted-files/features/one-base-merge-executor-the-mill-merges-the-base-into-a-conflicted-task-branch-through-updatebranchwithbase-and-the-resolver-agent-only-resolves-the-conflicted-files/.post-expansion-route.json",
+        "artifactHash": "3251ad45c6c8c61b79cdadbcd96464e639fc19f9ca7a2459f515c7bfe69f2325",
+        "inputHash": "093a50a8a885c211523f06db59dad565f7ff4f4cff77bfd9eb4688c5e810ee76",
+        "source": "expanded",
+        "cacheHit": false,
+        "routeSource": "single",
+        "routerMode": "normal",
+        "routingMode": "hokusai",
+        "expectedMetrics": {
+          "expectedSuccess": 0.818131,
+          "expectedCost": 12.21,
+          "confidence": 0.599864,
+          "expectedCostPlan": 1.34,
+          "expectedCostCode": 10.36,
+          "expectedCostReview": 0.51,
+          "neighborCount": 40,
+          "neighborSimilarityRange": [
+            0,
+            0
+          ],
+          "maxCostUsd": 25,
+          "challengeRecommendation": {
+            "shouldChallenge": true,
+            "reason": "new-model",
+            "defaultModel": "claude-opus-5-5",
+            "challengerModel": "deepseek-v3",
+            "stage": "plan",
+            "priority": 300
+          },
+          "signals": {
+            "taskType": "test",
+            "promptLength": "long",
+            "complexityScore": 5,
+            "complexityBand": "xl",
+            "riskFlags": [
+              "large-scope-refactor"
+            ],
+            "fileTypes": [
+              ".ts",
+              ".sh",
+              ".md",
+              ".json"
+            ],
+            "riskScore": 11
+          },
+          "reasoning": [
+            "Adapted from Hokusai Model 30 recommended_strategy.",
+            "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics."
+          ]
+        }
+      },
+      "activeRoute": {
+        "coder": "claude-fable-5",
+        "codeDepth": "light",
+        "reviewer": "claude-haiku-4-5-20251001",
+        "reviewMode": "static",
+        "planner": "gpt-5.6-terra",
+        "planDepth": "light",
+        "artifactPath": "worktrees/one-base-merge-executor-the-mill-merges-the-base-into-a-conflicted-task-branch-through-updatebranchwithbase-and-the-resolver-agent-only-resolves-the-conflicted-files/features/one-base-merge-executor-the-mill-merges-the-base-into-a-conflicted-task-branch-through-updatebranchwithbase-and-the-resolver-agent-only-resolves-the-conflicted-files/.routing-complete",
+        "artifactHash": "46a8dba6064d2c8080617830e8b2ba08921049cd635f80a4513923ac5dc87963",
+        "inputHash": "093a50a8a885c211523f06db59dad565f7ff4f4cff77bfd9eb4688c5e810ee76",
+        "source": "expanded",
+        "cacheHit": false,
+        "routeSource": "single",
+        "routerMode": "normal",
+        "routingMode": "hokusai",
+        "expectedMetrics": {
+          "expectedSuccess": 0.818131,
+          "expectedCost": 12.21,
+          "confidence": 0.599864,
+          "expectedCostPlan": 1.34,
+          "expectedCostCode": 10.36,
+          "expectedCostReview": 0.51,
+          "neighborCount": 40,
+          "neighborSimilarityRange": [
+            0,
+            0
+          ],
+          "maxCostUsd": 25,
+          "challengeRecommendation": {
+            "shouldChallenge": true,
+            "reason": "new-model",
+            "defaultModel": "claude-opus-5-5",
+            "challengerModel": "deepseek-v3",
+            "stage": "plan",
+            "priority": 300
+          },
+          "signals": {
+            "taskType": "test",
+            "promptLength": "long",
+            "complexityScore": 5,
+            "complexityBand": "xl",
+            "riskFlags": [
+              "large-scope-refactor"
+            ],
+            "fileTypes": [
+              ".ts",
+              ".sh",
+              ".md",
+              ".json"
+            ],
+            "riskScore": 11
+          },
+          "reasoning": [
+            "Adapted from Hokusai Model 30 recommended_strategy.",
+            "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics."
+          ]
+        }
+      },
+      "decisionSource": "preserved",
+      "stageRoutes": {
+        "planner": {
+          "hokusai": {
+            "requestId": "98731a9f-f43e-4396-9add-e755d57b4655",
+            "decisionId": "6e5aada8-ff50-4f9b-8d78-87fb4d00c728",
+            "recommended": "claude-opus-4-7"
+          },
+          "executed": "claude-opus-4-7",
+          "overrides": []
+        },
+        "coder": {
+          "hokusai": {
+            "requestId": "98731a9f-f43e-4396-9add-e755d57b4655",
+            "decisionId": "6e5aada8-ff50-4f9b-8d78-87fb4d00c728",
+            "recommended": "claude-opus-4-7"
+          },
+          "executed": "claude-opus-4-7",
+          "overrides": []
+        },
+        "reviewer": {
+          "hokusai": {
+            "requestId": "98731a9f-f43e-4396-9add-e755d57b4655",
+            "decisionId": "6e5aada8-ff50-4f9b-8d78-87fb4d00c728",
+            "recommended": "claude-sonnet-5"
+          },
+          "executed": "claude-haiku-4-5-20251001",
+          "overrides": [
+            {
+              "source": "challenge",
+              "reason": "challenge_primary_incumbent",
+              "pairId": "HOK-3385",
+              "side": "primary",
+              "from": "claude-sonnet-5",
+              "to": "claude-haiku-4-5-20251001",
+              "at": "2026-11-04T22:57:08.435Z"
+            }
+          ]
+        }
+      },
+      "hokusaiInferenceLogId": "98731a9f-f43e-4396-9add-e755d57b4655",
+      "expandedCacheHit": false,
+      "packetHash": "23ac3fc02de4fa0d32601ea7aabb7baf66ec3e165d5db0030c6cfa7063801a30",
+      "routeSource": "single",
+      "routerMode": "normal",
+      "routingMode": "hokusai",
+      "artifactPath": "worktrees/one-base-merge-executor-the-mill-merges-the-base-into-a-conflicted-task-branch-through-updatebranchwithbase-and-the-resolver-agent-only-resolves-the-conflicted-files/features/one-base-merge-executor-the-mill-merges-the-base-into-a-conflicted-task-branch-through-updatebranchwithbase-and-the-resolver-agent-only-resolves-the-conflicted-files/.post-expansion-route.json",
+      "artifactHash": "3251ad45c6c8c61b79cdadbcd96464e639fc19f9ca7a2459f515c7bfe69f2325"
+    },
+    "executedPlanning": {
+      "agent": "codex",
+      "model": "gpt-5.6-terra",
+      "status": "completed",
+      "source": ".planning-result.json"
+    },
+    "planningExecutionOutcome": {
+      "agent": "codex",
+      "model": "gpt-5.6-terra",
+      "status": "completed",
+      "source": ".planning-result.json"
+    },
+    "routePrediction": {
+      "expectedSuccess": 0.818131,
+      "expectedCostUsd": 12.21,
+      "confidence": 0.599864,
+      "riskScore": 11,
+      "taskType": "test",
+      "topFeatures": [
+        "Adapted from Hokusai Model 30 recommended_strategy.",
+        "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics.",
+        "taskType=test",
+        "complexityScore=5",
+        "riskScore=11"
+      ],
+      "rationaleSummary": "Adapted from Hokusai Model 30 recommended_strategy. Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics."
+    },
+    "difficultyBand": "hard",
+    "difficultySignals": {
+      "locTouched": 635,
+      "filesTouched": 16
+    },
+    "stratum": "ts_std_large",
+    "taskContext": {
+      "taskType": "chore",
+      "changeKind": "mixed",
+      "complexity": "l"
+    },
+    "repoContext": {
+      "repoId": "timogilvie/wavemill",
+      "repoVisibility": "oss",
+      "primaryLanguage": "TypeScript",
+      "languages": {
+        "TypeScript": 76,
+        "Shell": 19,
+        "Python": 2,
+        "JavaScript": 3
+      },
+      "packageManager": "npm",
+      "testFrameworks": [
+        "node:test"
+      ],
+      "ciProvider": "github-actions",
+      "repoSize": {
+        "fileCount": 2689,
+        "loc": 533666,
+        "dependencyCount": 15
+      },
+      "monorepo": true
+    },
+    "workflowCost": 35.940501,
+    "workflowTokenUsage": {
+      "gpt-5.6-terra": {
+        "inputTokens": 119496,
+        "cacheCreationTokens": 0,
+        "cacheReadTokens": 1539840,
+        "outputTokens": 8677,
+        "costUsd": 0.813858
+      },
+      "claude-fable-5": {
+        "inputTokens": 270,
+        "cacheCreationTokens": 381022,
+        "cacheReadTokens": 24898027,
+        "outputTokens": 103422,
+        "costUsd": 34.834639
+      },
+      "claude-haiku-4-5-20251001": {
+        "inputTokens": 77,
+        "cacheCreationTokens": 195824,
+        "cacheReadTokens": 562849,
+        "outputTokens": 12773,
+        "costUsd": 0.292004
+      }
+    },
+    "workflowCostStatus": "success",
+    "pricingSnapshot": {
+      "gpt-5.6-terra": {
+        "inputCostPerMTok": 2.5,
+        "outputCostPerMTok": 15,
+        "cacheWriteCostPerMTok": 3.125,
+        "cacheReadCostPerMTok": 0.25
+      },
+      "claude-fable-5": {
+        "inputCostPerMTok": 10,
+        "outputCostPerMTok": 50,
+        "cacheWriteCostPerMTok": 12.5,
+        "cacheReadCostPerMTok": 1
+      },
+      "claude-haiku-4-5-20251001": {
+        "inputCostPerMTok": 0.8,
+        "outputCostPerMTok": 4,
+        "cacheWriteCostPerMTok": 1,
+        "cacheReadCostPerMTok": 0.08
+      }
+    },
+    "workflowCostAttribution": {
+      "source": "multi",
+      "coverage": "complete",
+      "sessions": 6,
+      "turns": 146,
+      "pricedSessions": 4,
+      "unpricedSessions": 0,
+      "models": [
+        {
+          "provider": "codex",
+          "modelId": "gpt-5.6-terra",
+          "priced": true,
+          "inputTokens": 119496,
+          "outputTokens": 8677,
+          "cacheReadTokens": 1539840,
+          "cacheCreationTokens": 0,
+          "totalTokens": 1668013,
+          "costUsd": 0.813858,
+          "pricingSource": "local_estimate"
+        },
+        {
+          "provider": "claude",
+          "modelId": "claude-fable-5",
+          "priced": true,
+          "inputTokens": 270,
+          "outputTokens": 103422,
+          "cacheReadTokens": 24898027,
+          "cacheCreationTokens": 381022,
+          "totalTokens": 25382741,
+          "costUsd": 34.834639,
+          "pricingSource": "local_estimate"
+        },
+        {
+          "provider": "claude",
+          "modelId": "claude-haiku-4-5-20251001",
+          "priced": true,
+          "inputTokens": 77,
+          "outputTokens": 12773,
+          "cacheReadTokens": 562849,
+          "cacheCreationTokens": 195824,
+          "totalTokens": 771523,
+          "costUsd": 0.292004,
+          "pricingSource": "local_estimate"
+        }
+      ]
+    },
+    "workflowCostByHarness": {
+      "codex": 0.813858,
+      "claude-code": 35.126643
+    },
+    "workflowCostByKind": {
+      "planning": 0.813858,
+      "coding": 27.639073,
+      "review": 0.116775,
+      "helper:json-code-review": 0.175229,
+      "ready-remediation": 7.195566
+    },
+    "routeCalibration": {
+      "costErrorUsd": -23.730501,
+      "successDelta": 0.181869,
+      "predictedSuccess": 0.818131,
+      "actualSuccess": true,
+      "predictedCostUsd": 12.21,
+      "actualCostUsd": 35.940501,
+      "interventionCount": 1,
+      "durationMs": 9093695
+    },
+    "taskDescriptor": {
+      "schema_version": "1.0",
+      "signals": {
+        "heuristic": {
+          "task_type": "chore",
+          "languages": [
+            "typescript",
+            "shell",
+            "python",
+            "javascript"
+          ],
+          "framework_tags": [],
+          "files_touched": 16,
+          "repo_size_loc": 533666,
+          "description_tokens": 3533,
+          "is_greenfield": false,
+          "has_migration": false,
+          "has_ui": false,
+          "has_tests": true,
+          "cross_service": false
+        },
+        "learned": {
+          "complexity": 4,
+          "domain": "backend",
+          "risk_flags": [
+            "large-scope-refactor",
+            "test-infrastructure"
+          ]
+        }
+      },
+      "constraints": {
+        "max_cost_usd": 25,
+        "models_available": [
+          "claude-opus-5-5",
+          "gpt-6-sol",
+          "claude-fable-5",
+          "claude-opus-4-8",
+          "claude-opus-4-7",
+          "gpt-5.6-terra",
+          "deepseek-reasoner",
+          "deepseek-v4-pro",
+          "claude-sonnet-5",
+          "claude-haiku-4-5-20251001",
+          "gpt-6-luna",
+          "deepseek-chat",
+          "deepseek-v4-flash"
+        ],
+        "objective": "balanced"
+      },
+      "stages": {
+        "planner": {
+          "model": "gpt-5.6-terra",
+          "score": 0.88,
+          "cost_usd": 0.813858
+        },
+        "coder": {
+          "model": "claude-fable-5",
+          "score": 0.87,
+          "cost_usd": 34.834639
+        },
+        "reviewer": {
+          "model": "claude-haiku-4-5-20251001",
+          "score": 0.75,
+          "cost_usd": 0.292004
+        }
+      },
+      "rubric": {
+        "has_rubric": true,
+        "criterion_count": 5,
+        "mean_score": 0.8779999999999999,
+        "criteria_scores": {
+          "completeness": 0.9,
+          "correctness": 0.85,
+          "code_quality": 0.87,
+          "intervention_impact": 0.9,
+          "autonomy": 0.87
+        },
+        "determinative_boundary": "cosmetic_only"
+      },
+      "outcome": {
+        "overall_score": 0.85,
+        "total_cost_usd": 35.940501,
+        "total_time_minutes": 151.56158333333332,
+        "interventions": 1,
+        "intervention_types": [
+          "scope_change"
+        ]
+      }
+    },
+    "constraints": {
+      "maxCostUsd": 25
+    },
+    "modelIdentityAttribution": {
+      "observedAt": "2026-11-04T22:57:09.855Z",
+      "roles": {
+        "planner": {
+          "alias": "gpt-5.6-terra",
+          "providerId": "gpt-5.6-terra",
+          "identityStatus": "verified",
+          "identityRevision": 1,
+          "fingerprint": "0e95bbc0abd07ea24658118725b3434ee564c08ed4cbe4de9e90002a1d5fd9e6",
+          "evidencePolicy": "eligible"
+        },
+        "coder": {
+          "alias": "claude-fable-5",
+          "providerId": "claude-fable-5",
+          "identityStatus": "verified",
+          "identityRevision": 1,
+          "fingerprint": "91f9c9ce67e72c9333e6c5274971de9ec57323e90901689d701de3bec797b7a0",
+          "evidencePolicy": "eligible"
+        },
+        "reviewer": {
+          "alias": "claude-haiku-4-5-20251001",
+          "providerId": "claude-haiku-4-5-20251001",
+          "identityStatus": "verified",
+          "identityRevision": 1,
+          "fingerprint": "342b230dec3ed61b2065a115e4d3717223f8853f555db2d9e66a7d5ba746f31e",
+          "evidencePolicy": "eligible"
+        }
+      },
+      "provisionalRoles": [],
+      "candidateOnlyProvisional": []
+    },
+    "stageExecution": {
+      "planning": {
+        "intendedModel": "gpt-5.6-terra",
+        "executedModel": null,
+        "executionEvidence": {
+          "status": "missing",
+          "source": "unknown"
+        }
+      },
+      "coding": {
+        "intendedModel": "claude-fable-5",
+        "executedModel": "claude-fable-5",
+        "executionEvidence": {
+          "status": "direct",
+          "source": "claude-session"
+        }
+      },
+      "review": {
+        "intendedModel": "claude-haiku-4-5-20251001",
+        "executedModel": "claude-haiku-4-5-20251001",
+        "executionEvidence": {
+          "status": "direct",
+          "source": "claude-session"
+        }
+      }
+    },
+    "challengeExecutionEvidence": {
+      "pairId": "HOK-3385",
+      "side": "primary",
+      "validity": "valid",
+      "challengeStage": "review",
+      "expectedStageModel": "claude-haiku-4-5-20251001",
+      "expectedStageAgent": "claude",
+      "effectiveRoute": {
+        "planner": "gpt-5.6-terra",
+        "coder": "claude-fable-5",
+        "reviewer": "claude-haiku-4-5-20251001",
+        "planDepth": "light",
+        "codeDepth": "light",
+        "reviewMode": "static"
+      },
+      "evidence": [
+        {
+          "stage": "review",
+          "source": ".review-result.json"
+        },
+        {
+          "stage": "review",
+          "source": "outcomes.review"
+        },
+        {
+          "stage": "review",
+          "source": "interventions"
+        },
+        {
+          "stage": "review",
+          "source": ".review-result.json"
+        },
+        {
+          "stage": "review",
+          "source": ".review-result.json"
+        },
+        {
+          "stage": "review",
+          "source": "metadata.stageScores.review"
+        }
+      ]
+    }
+  },
+  "metered": {
+    "owned": [
+      {
+        "sessionRef": "session-1",
+        "harness": "codex",
+        "kind": "planning",
+        "stage": "planning",
+        "model": "gpt-5.6-terra",
+        "launchedAt": "2026-11-04T20:03:38.000Z",
+        "attemptId": "planning@2192e1b#1793822618"
+      },
+      {
+        "sessionRef": "session-2",
+        "harness": "claude-code",
+        "kind": "coding",
+        "stage": "coding",
+        "model": "claude-fable-5",
+        "launchedAt": "2026-11-04T20:26:15.000Z",
+        "attemptId": "coding@2192e1b#1793823975"
+      },
+      {
+        "sessionRef": "session-3",
+        "harness": "claude-code",
+        "kind": "review",
+        "stage": "review",
+        "model": "claude-haiku-4-5-20251001",
+        "launchedAt": "2026-11-04T22:31:07.000Z",
+        "attemptId": "review@76bd55e#1793831467"
+      },
+      {
+        "sessionRef": "session-4",
+        "harness": "claude-code",
+        "kind": "helper:json-code-review",
+        "model": "claude-haiku-4-5-20251001",
+        "launchedAt": "2026-11-04T22:32:54.043Z",
+        "attemptId": "helper:json-code-review@nohead#1793831574"
+      },
+      {
+        "sessionRef": "session-5",
+        "harness": "claude-code",
+        "kind": "helper:json-code-review",
+        "model": "claude-haiku-4-5-20251001",
+        "launchedAt": "2026-11-04T22:33:47.260Z",
+        "attemptId": "helper:json-code-review@nohead#1793831627"
+      },
+      {
+        "sessionRef": "session-6",
+        "harness": "claude-code",
+        "kind": "ready-remediation",
+        "model": "claude-fable-5",
+        "launchedAt": "2026-11-04T22:38:30.000Z",
+        "attemptId": "ready-remediation@76bd55e#1793831910"
+      }
+    ],
+    "summariesByStage": {
+      "planning": [
+        {
+          "schema_version": "task_cost_summary/v1",
+          "task_id": "HOK-3385",
+          "session_ids": [
+            "session-1"
+          ],
+          "harness": "codex",
+          "harness_version": "0.166.0",
+          "provider_contract_version": "codex/2",
+          "models": [
+            "gpt-5.6-terra"
+          ],
+          "model_segments": [
+            {
+              "model": "gpt-5.6-terra",
+              "turn_count": 2,
+              "usage": {
+                "input_tokens": 119496,
+                "output_tokens": 8677,
+                "cache_read_tokens": 1539840,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 1035
+              },
+              "actual_cost_usd": null,
+              "estimated_cost_usd": 0.813858,
+              "cost_source": "local_estimate"
+            }
+          ],
+          "turn_count": 2,
+          "turns_truncated": false,
+          "usage": {
+            "input_tokens": 119496,
+            "output_tokens": 8677,
+            "cache_read_tokens": 1539840,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 1035
+          },
+          "actual_cost_usd": null,
+          "estimated_cost_usd": 0.813858,
+          "total_cost_usd": 0.813858,
+          "cost_source": "local_estimate",
+          "cost_basis": "per_token_api",
+          "coverage": "complete",
+          "field_availability": {
+            "usage": "available",
+            "actual_cost": "unavailable",
+            "estimated_cost": "available",
+            "pricing": "available"
+          },
+          "pricing_source": "local_estimate",
+          "join_confidence": "unattributed",
+          "collected_at": "2026-11-04T20:25:13.166Z",
+          "event_count": 21,
+          "event_ids": [
+            "event-1",
+            "event-2",
+            "event-3",
+            "event-4",
+            "event-5",
+            "event-6",
+            "event-7",
+            "event-8",
+            "event-9",
+            "event-10",
+            "event-11",
+            "event-12",
+            "event-13",
+            "event-14",
+            "event-15",
+            "event-16",
+            "event-17",
+            "event-18",
+            "event-19",
+            "event-20",
+            "event-21"
+          ],
+          "diagnostics": []
+        }
+      ],
+      "coding": [
+        {
+          "schema_version": "task_cost_summary/v1",
+          "task_id": "HOK-3385",
+          "session_ids": [
+            "session-2"
+          ],
+          "harness": "claude-code",
+          "harness_version": "2.1.318",
+          "provider_contract_version": "claude-code/1",
+          "models": [
+            "claude-fable-5"
+          ],
+          "model_segments": [
+            {
+              "model": "claude-fable-5",
+              "turn_count": 99,
+              "usage": {
+                "input_tokens": 198,
+                "output_tokens": 83135,
+                "cache_read_tokens": 20314755,
+                "cache_write_tokens": 253245,
+                "reasoning_tokens": 39555
+              },
+              "actual_cost_usd": null,
+              "estimated_cost_usd": 27.639073,
+              "cost_source": "local_estimate"
+            }
+          ],
+          "turn_count": 99,
+          "turns_truncated": false,
+          "usage": {
+            "input_tokens": 198,
+            "output_tokens": 83135,
+            "cache_read_tokens": 20314755,
+            "cache_write_tokens": 253245,
+            "reasoning_tokens": 39555
+          },
+          "actual_cost_usd": null,
+          "estimated_cost_usd": 27.639073,
+          "total_cost_usd": 27.639073,
+          "cost_source": "local_estimate",
+          "cost_basis": "per_token_api",
+          "coverage": "complete",
+          "field_availability": {
+            "usage": "available",
+            "actual_cost": "unavailable",
+            "estimated_cost": "available",
+            "pricing": "available"
+          },
+          "pricing_source": "local_estimate",
+          "join_confidence": "unattributed",
+          "collected_at": "2026-11-04T22:29:33.264Z",
+          "event_count": 99,
+          "event_ids": [
+            "event-22",
+            "event-23",
+            "event-24",
+            "event-25",
+            "event-26",
+            "event-27",
+            "event-28",
+            "event-29",
+            "event-30",
+            "event-31",
+            "event-32",
+            "event-33",
+            "event-34",
+            "event-35",
+            "event-36",
+            "event-37",
+            "event-38",
+            "event-39",
+            "event-40",
+            "event-41",
+            "event-42",
+            "event-43",
+            "event-44",
+            "event-45",
+            "event-46",
+            "event-47",
+            "event-48",
+            "event-49",
+            "event-50",
+            "event-51",
+            "event-52",
+            "event-53",
+            "event-54",
+            "event-55",
+            "event-56",
+            "event-57",
+            "event-58",
+            "event-59",
+            "event-60",
+            "event-61",
+            "event-62",
+            "event-63",
+            "event-64",
+            "event-65",
+            "event-66",
+            "event-67",
+            "event-68",
+            "event-69",
+            "event-70",
+            "event-71",
+            "event-72",
+            "event-73",
+            "event-74",
+            "event-75",
+            "event-76",
+            "event-77",
+            "event-78",
+            "event-79",
+            "event-80",
+            "event-81",
+            "event-82",
+            "event-83",
+            "event-84",
+            "event-85",
+            "event-86",
+            "event-87",
+            "event-88",
+            "event-89",
+            "event-90",
+            "event-91",
+            "event-92",
+            "event-93",
+            "event-94",
+            "event-95",
+            "event-96",
+            "event-97",
+            "event-98",
+            "event-99",
+            "event-100",
+            "event-101",
+            "event-102",
+            "event-103",
+            "event-104",
+            "event-105",
+            "event-106",
+            "event-107",
+            "event-108",
+            "event-109",
+            "event-110",
+            "event-111",
+            "event-112",
+            "event-113",
+            "event-114",
+            "event-115",
+            "event-116",
+            "event-117",
+            "event-118",
+            "event-119",
+            "event-120"
+          ],
+          "diagnostics": []
+        }
+      ],
+      "review": [
+        {
+          "schema_version": "task_cost_summary/v1",
+          "task_id": "HOK-3385",
+          "session_ids": [
+            "session-4",
+            "session-3",
+            "session-5"
+          ],
+          "harness": "claude-code",
+          "harness_version": "2.1.318",
+          "provider_contract_version": "claude-code/1",
+          "models": [
+            "claude-haiku-4-5-20251001"
+          ],
+          "model_segments": [
+            {
+              "model": "claude-haiku-4-5-20251001",
+              "turn_count": 9,
+              "usage": {
+                "input_tokens": 77,
+                "output_tokens": 12773,
+                "cache_read_tokens": 562849,
+                "cache_write_tokens": 195824,
+                "reasoning_tokens": 8961
+              },
+              "actual_cost_usd": null,
+              "estimated_cost_usd": 0.292004,
+              "cost_source": "local_estimate"
+            }
+          ],
+          "turn_count": 9,
+          "turns_truncated": false,
+          "usage": {
+            "input_tokens": 77,
+            "output_tokens": 12773,
+            "cache_read_tokens": 562849,
+            "cache_write_tokens": 195824,
+            "reasoning_tokens": 8961
+          },
+          "actual_cost_usd": null,
+          "estimated_cost_usd": 0.292004,
+          "total_cost_usd": 0.292004,
+          "cost_source": "local_estimate",
+          "cost_basis": "per_token_api",
+          "coverage": "complete",
+          "field_availability": {
+            "usage": "available",
+            "actual_cost": "unavailable",
+            "estimated_cost": "available",
+            "pricing": "available"
+          },
+          "pricing_source": "local_estimate",
+          "join_confidence": "unattributed",
+          "collected_at": "2026-11-04T22:35:05.339Z",
+          "event_count": 9,
+          "event_ids": [
+            "event-121",
+            "event-122",
+            "event-123",
+            "event-124",
+            "event-125",
+            "event-126",
+            "event-127",
+            "event-128",
+            "event-129"
+          ],
+          "diagnostics": []
+        }
+      ],
+      "ready-remediation": [
+        {
+          "schema_version": "task_cost_summary/v1",
+          "task_id": "HOK-3385",
+          "session_ids": [
+            "session-6"
+          ],
+          "harness": "claude-code",
+          "harness_version": "2.1.318",
+          "provider_contract_version": "claude-code/1",
+          "models": [
+            "claude-fable-5"
+          ],
+          "model_segments": [
+            {
+              "model": "claude-fable-5",
+              "turn_count": 36,
+              "usage": {
+                "input_tokens": 72,
+                "output_tokens": 20287,
+                "cache_read_tokens": 4583272,
+                "cache_write_tokens": 127777,
+                "reasoning_tokens": 9577
+              },
+              "actual_cost_usd": null,
+              "estimated_cost_usd": 7.195566,
+              "cost_source": "local_estimate"
+            }
+          ],
+          "turn_count": 36,
+          "turns_truncated": false,
+          "usage": {
+            "input_tokens": 72,
+            "output_tokens": 20287,
+            "cache_read_tokens": 4583272,
+            "cache_write_tokens": 127777,
+            "reasoning_tokens": 9577
+          },
+          "actual_cost_usd": null,
+          "estimated_cost_usd": 7.195566,
+          "total_cost_usd": 7.195566,
+          "cost_source": "local_estimate",
+          "cost_basis": "per_token_api",
+          "coverage": "complete",
+          "field_availability": {
+            "usage": "available",
+            "actual_cost": "unavailable",
+            "estimated_cost": "available",
+            "pricing": "available"
+          },
+          "pricing_source": "local_estimate",
+          "join_confidence": "unattributed",
+          "collected_at": "2026-11-04T22:48:48.763Z",
+          "event_count": 36,
+          "event_ids": [
+            "event-130",
+            "event-131",
+            "event-132",
+            "event-133",
+            "event-134",
+            "event-135",
+            "event-136",
+            "event-137",
+            "event-138",
+            "event-139",
+            "event-140",
+            "event-141",
+            "event-142",
+            "event-143",
+            "event-144",
+            "event-145",
+            "event-146",
+            "event-147",
+            "event-148",
+            "event-149",
+            "event-150",
+            "event-151",
+            "event-152",
+            "event-153",
+            "event-154",
+            "event-155",
+            "event-156",
+            "event-157",
+            "event-158",
+            "event-159",
+            "event-160",
+            "event-161",
+            "event-162",
+            "event-163",
+            "event-164",
+            "event-165"
+          ],
+          "diagnostics": []
+        }
+      ]
+    }
+  },
+  "expected": {
+    "workflowCost": 35.940501
+  }
+}

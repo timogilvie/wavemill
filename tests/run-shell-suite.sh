@@ -61,9 +61,11 @@ TESTS=(
   native-failure-classification.test.sh
   stage-failure-retry.test.sh
   coding-dirty-handoff.test.sh
+  stage-teardown.test.sh
   ready-exhausted-challenge.test.sh
   review-gate-refused-challenge.test.sh
   monitor-late-completion.test.sh
+  blocked-completion-redaction.test.sh
   plan-reapproval-late-coding-complete.test.sh
   monitor-terminal-cleanup-tick.test.sh
   monitor-reaped-task-no-window-recreation.test.sh
@@ -99,6 +101,7 @@ TESTS=(
   check-marker-clear-sites.test.sh
   check-state-surface-writes.test.sh
   check-label-write-sites.test.sh
+  check-no-submit-data-producer.test.sh
   merge-labels-real-state.test.sh
   state-fixtures.test.sh
   ready-update-from-base.test.sh

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { IngestUsageInput } from '@hokusai/costs';
 import {
   resolveExecutedModelFromSessions,
   resolveStageExecutedModel,
@@ -10,7 +11,6 @@ import {
 import {
   appendOwnershipRow,
   helperKind,
-  SESSION_OWNERSHIP_FILE,
   type SessionOwnershipRow,
 } from './session-ownership.ts';
 import { encodeProjectDir } from './wavemill-session-paths.ts';
@@ -43,13 +43,6 @@ function setupClaude() {
   return { home, worktreePath, projectsDir };
 }
 
-function setupCodex() {
-  const home = withTempHome('resolver-codex-');
-  const sessionsDir = join(home, '.codex', 'sessions', '2026', '09', '15');
-  mkdirSync(sessionsDir, { recursive: true });
-  return { home, sessionsDir };
-}
-
 /** Launch rows naming `sessionRefs` (Claude: the transcript file stem) as owned work. */
 function owned(
   harness: SessionOwnershipRow['harness'],
@@ -73,6 +66,7 @@ function writeJsonl(filePath: string, entries: unknown[]) {
 }
 
 function claudeTurn(opts: {
+  sessionId?: string;
   branch?: string;
   model?: string;
   timestamp: string;
@@ -81,12 +75,15 @@ function claudeTurn(opts: {
 }) {
   return {
     type: 'assistant',
+    sessionId: opts.sessionId ?? 'sess',
     timestamp: opts.timestamp,
     uuid: opts.uuid ?? `turn-${opts.timestamp}`,
     parentUuid: null,
     isSidechain: opts.isSidechain ?? false,
     gitBranch: opts.branch ?? 'task/HOK-3017',
+    requestId: `req-${opts.timestamp}`,
     message: {
+      id: `msg-${opts.timestamp}`,
       model: opts.model ?? 'claude-haiku-4-5',
       usage: {
         input_tokens: 12,
@@ -98,71 +95,45 @@ function claudeTurn(opts: {
   };
 }
 
-function codexMeta(opts: { cwd: string; branch: string; id?: string }) {
+function row(opts: {
+  sessionId: string;
+  model: string;
+  timestamp: string;
+  harness?: 'claude-code' | 'codex';
+  isSubagent?: boolean;
+  seq?: number;
+}): IngestUsageInput {
+  const harness = opts.harness ?? 'claude-code';
+  const turnId = `turn-${opts.sessionId}-${opts.timestamp}`;
   return {
-    timestamp: '2026-09-15T10:00:00.000Z',
-    type: 'session_meta',
-    payload: {
-      id: opts.id ?? 'codex-session',
-      timestamp: '2026-09-15T10:00:00.000Z',
-      cwd: opts.cwd,
-      cli_version: '1.0.0',
-      originator: 'codex_exec',
-      git: { branch: opts.branch },
-    },
+    eventId: turnId,
+    taskId: 'test-task',
+    sessionId: opts.sessionId,
+    turnId,
+    sequence: opts.seq ?? 1,
+    harness,
+    providerContractVersion: harness === 'claude-code' ? 'claude-code/1' : 'codex/1',
+    observedModel: opts.model,
+    usage: { input_tokens: 10, output_tokens: 5, cache_read_tokens: null, cache_write_tokens: null, reasoning_tokens: null },
+    usageKind: 'delta',
+    observedAt: opts.timestamp,
+    ...(typeof opts.isSubagent === 'boolean' ? { isSubagent: opts.isSubagent } : {}),
   };
 }
 
-function codexTurn(model: string, timestamp: string) {
-  return {
-    timestamp,
-    type: 'turn_context',
-    payload: {
-      turn_id: `turn-${timestamp}`,
-      root_turn_id: null,
-      model,
-    },
-  };
-}
-
-function codexToken(timestamp = '2026-09-15T10:02:30.000Z') {
-  return {
-    timestamp,
-    type: 'event_msg',
-    payload: {
-      type: 'token_count',
-      info: {
-        last_token_usage: {
-          input_tokens: 10,
-          cached_input_tokens: 1,
-          output_tokens: 2,
-          reasoning_output_tokens: 3,
-        },
-        total_token_usage: {
-          input_tokens: 10,
-          cached_input_tokens: 1,
-          output_tokens: 2,
-          reasoning_output_tokens: 3,
-          total_tokens: 15,
-        },
-      },
-    },
-  };
+function rowsLookup(map: Record<string, IngestUsageInput[]>): (sessionRef: string) => readonly IngestUsageInput[] {
+  return (sessionRef) => map[sessionRef] ?? [];
 }
 
 describe('resolveExecutedModelFromSessions', () => {
   it('resolves a single Claude model from the stage\'s owned session', () => {
-    const fixture = setupClaude();
-    writeJsonl(join(fixture.projectsDir, 'claude.jsonl'), [
-      claudeTurn({ timestamp: '2026-09-15T10:01:00.000Z', model: 'claude-haiku-4-5' }),
-    ]);
-
     const result = resolveExecutedModelFromSessions({
-      worktreePath: fixture.worktreePath,
-      branchName: 'task/HOK-3017',
       agent: 'claude',
       stage: 'coding',
       ownership: owned('claude-code', ['claude']),
+      usageRowsForSession: rowsLookup({
+        claude: [row({ sessionId: 'claude', model: 'claude-haiku-4-5', timestamp: '2026-09-15T10:01:00.000Z' })],
+      }),
     });
 
     assert.equal(result.executedModel, 'claude-haiku-4-5');
@@ -172,21 +143,17 @@ describe('resolveExecutedModelFromSessions', () => {
 
   it('ignores a helper session that ran while the stage was open', () => {
     // protects: a helper turn in the stage window setting the stage's executed model (HOK-3328)
-    const fixture = setupClaude();
-    writeJsonl(join(fixture.projectsDir, 'coder.jsonl'), [
-      claudeTurn({ timestamp: '2026-09-15T10:01:00.000Z', model: 'claude-haiku-4-5' }),
-    ]);
-    writeJsonl(join(fixture.projectsDir, 'helper.jsonl'), [
-      claudeTurn({ timestamp: '2026-09-15T10:02:00.000Z', model: 'claude-sonnet-5' }),
-      claudeTurn({ timestamp: '2026-09-15T10:03:00.000Z', model: 'claude-sonnet-5' }),
-    ]);
-
     const result = resolveExecutedModelFromSessions({
-      worktreePath: fixture.worktreePath,
-      branchName: 'task/HOK-3017',
       agent: 'claude',
       stage: 'coding',
       ownership: [...owned('claude-code', ['coder']), ...owned('claude-code', ['helper'], helperKind('json-code-review'))],
+      usageRowsForSession: rowsLookup({
+        coder: [row({ sessionId: 'coder', model: 'claude-haiku-4-5', timestamp: '2026-09-15T10:01:00.000Z' })],
+        helper: [
+          row({ sessionId: 'helper', model: 'claude-sonnet-5', timestamp: '2026-09-15T10:02:00.000Z' }),
+          row({ sessionId: 'helper', model: 'claude-sonnet-5', timestamp: '2026-09-15T10:03:00.000Z' }),
+        ],
+      }),
     });
 
     assert.equal(result.executedModel, 'claude-haiku-4-5');
@@ -195,17 +162,13 @@ describe('resolveExecutedModelFromSessions', () => {
 
   it('reports missing evidence when no session is owned for the stage', () => {
     // protects: falling back to whatever ran in the worktree when the launch recorded nothing
-    const fixture = setupClaude();
-    writeJsonl(join(fixture.projectsDir, 'claude.jsonl'), [
-      claudeTurn({ timestamp: '2026-09-15T10:01:00.000Z', model: 'claude-haiku-4-5' }),
-    ]);
-
     const result = resolveExecutedModelFromSessions({
-      worktreePath: fixture.worktreePath,
-      branchName: 'task/HOK-3017',
       agent: 'claude',
       stage: 'review',
       ownership: owned('claude-code', ['claude']),
+      usageRowsForSession: rowsLookup({
+        claude: [row({ sessionId: 'claude', model: 'claude-haiku-4-5', timestamp: '2026-09-15T10:01:00.000Z' })],
+      }),
     });
 
     assert.equal(result.executedModel, null);
@@ -214,18 +177,16 @@ describe('resolveExecutedModelFromSessions', () => {
   });
 
   it('ignores Claude sidechain turns when main-loop turns exist', () => {
-    const fixture = setupClaude();
-    writeJsonl(join(fixture.projectsDir, 'claude.jsonl'), [
-      claudeTurn({ timestamp: '2026-09-15T10:01:00.000Z', model: 'claude-haiku-4-5', isSidechain: true }),
-      claudeTurn({ timestamp: '2026-09-15T10:02:00.000Z', model: 'claude-sonnet-5', isSidechain: false }),
-    ]);
-
     const result = resolveExecutedModelFromSessions({
-      worktreePath: fixture.worktreePath,
-      branchName: 'task/HOK-3017',
       agent: 'claude',
       stage: 'coding',
       ownership: owned('claude-code', ['claude']),
+      usageRowsForSession: rowsLookup({
+        claude: [
+          row({ sessionId: 'claude', model: 'claude-haiku-4-5', timestamp: '2026-09-15T10:01:00.000Z', isSubagent: true }),
+          row({ sessionId: 'claude', model: 'claude-sonnet-5', timestamp: '2026-09-15T10:02:00.000Z', isSubagent: false }),
+        ],
+      }),
     });
 
     assert.equal(result.executedModel, 'claude-sonnet-5');
@@ -233,19 +194,17 @@ describe('resolveExecutedModelFromSessions', () => {
   });
 
   it('chooses the dominant Claude model and reports every observed model', () => {
-    const fixture = setupClaude();
-    writeJsonl(join(fixture.projectsDir, 'claude.jsonl'), [
-      claudeTurn({ timestamp: '2026-09-15T10:01:00.000Z', model: 'claude-haiku-4-5' }),
-      claudeTurn({ timestamp: '2026-09-15T10:02:00.000Z', model: 'claude-sonnet-5' }),
-      claudeTurn({ timestamp: '2026-09-15T10:03:00.000Z', model: 'claude-sonnet-5' }),
-    ]);
-
     const result = resolveExecutedModelFromSessions({
-      worktreePath: fixture.worktreePath,
-      branchName: 'task/HOK-3017',
       agent: 'claude',
       stage: 'coding',
       ownership: owned('claude-code', ['claude']),
+      usageRowsForSession: rowsLookup({
+        claude: [
+          row({ sessionId: 'claude', model: 'claude-haiku-4-5', timestamp: '2026-09-15T10:01:00.000Z' }),
+          row({ sessionId: 'claude', model: 'claude-sonnet-5', timestamp: '2026-09-15T10:02:00.000Z' }),
+          row({ sessionId: 'claude', model: 'claude-sonnet-5', timestamp: '2026-09-15T10:03:00.000Z' }),
+        ],
+      }),
     });
 
     assert.equal(result.executedModel, 'claude-sonnet-5');
@@ -254,14 +213,11 @@ describe('resolveExecutedModelFromSessions', () => {
   });
 
   it('reports missing evidence without echoing an intended model', () => {
-    const fixture = setupClaude();
-
     const result = resolveExecutedModelFromSessions({
-      worktreePath: fixture.worktreePath,
-      branchName: 'task/HOK-3017',
       agent: 'claude',
       stage: 'coding',
       ownership: owned('claude-code', ['claude']),
+      usageRowsForSession: rowsLookup({}),
     });
 
     assert.equal(result.executedModel, null);
@@ -270,61 +226,31 @@ describe('resolveExecutedModelFromSessions', () => {
   });
 
   it('resolves a Codex rollout model from the stage\'s owned session', () => {
-    const fixture = setupCodex();
-    const worktreePath = join(fixture.home, 'worktree');
-    writeJsonl(join(fixture.sessionsDir, 'rollout-1.jsonl'), [
-      codexMeta({ cwd: worktreePath, branch: 'task/HOK-3017' }),
-      codexTurn('gpt-5.5', '2026-09-15T10:01:00.000Z'),
-      codexToken(),
-    ]);
-
     const result = resolveExecutedModelFromSessions({
-      worktreePath,
-      branchName: 'task/HOK-3017',
       agent: 'codex',
       stage: 'coding',
       ownership: owned('codex', ['codex-session']),
+      usageRowsForSession: rowsLookup({
+        'codex-session': [row({ sessionId: 'codex-session', model: 'gpt-5.5', timestamp: '2026-09-15T10:01:00.000Z', harness: 'codex' })],
+      }),
     });
 
     assert.equal(result.executedModel, 'gpt-5.5');
     assert.equal(result.evidenceSource, 'codex-session');
   });
 
-  it('matches Codex sessions by branch when the worktree no longer exists', () => {
-    const fixture = setupCodex();
-    writeJsonl(join(fixture.sessionsDir, 'rollout-branch.jsonl'), [
-      codexMeta({ cwd: '/deleted/worktree', branch: 'task/HOK-3017' }),
-      codexTurn('gpt-5.5', '2026-09-15T10:01:00.000Z'),
-      codexToken(),
-    ]);
-
-    const result = resolveExecutedModelFromSessions({
-      worktreePath: '/some/other/deleted/worktree',
-      branchName: 'task/HOK-3017',
-      agent: 'codex',
-      stage: 'coding',
-      ownership: owned('codex', ['codex-session']),
-    });
-
-    assert.equal(result.executedModel, 'gpt-5.5');
-  });
-
   it('merges overlapping sessions before computing dominance', () => {
-    const fixture = setupClaude();
-    writeJsonl(join(fixture.projectsDir, 'one.jsonl'), [
-      claudeTurn({ timestamp: '2026-09-15T10:01:00.000Z', model: 'claude-haiku-4-5' }),
-    ]);
-    writeJsonl(join(fixture.projectsDir, 'two.jsonl'), [
-      claudeTurn({ timestamp: '2026-09-15T10:02:00.000Z', model: 'claude-sonnet-5' }),
-      claudeTurn({ timestamp: '2026-09-15T10:03:00.000Z', model: 'claude-sonnet-5' }),
-    ]);
-
     const result = resolveExecutedModelFromSessions({
-      worktreePath: fixture.worktreePath,
-      branchName: 'task/HOK-3017',
       agent: 'claude',
       stage: 'coding',
       ownership: owned('claude-code', ['one', 'two']),
+      usageRowsForSession: rowsLookup({
+        one: [row({ sessionId: 'one', model: 'claude-haiku-4-5', timestamp: '2026-09-15T10:01:00.000Z' })],
+        two: [
+          row({ sessionId: 'two', model: 'claude-sonnet-5', timestamp: '2026-09-15T10:02:00.000Z' }),
+          row({ sessionId: 'two', model: 'claude-sonnet-5', timestamp: '2026-09-15T10:03:00.000Z' }),
+        ],
+      }),
     });
 
     assert.equal(result.executedModel, 'claude-sonnet-5');

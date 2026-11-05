@@ -1,10 +1,14 @@
 # shellcheck shell=bash
-# Fake coder for the mid-flight base conflict journey (HOK-3273).
+# Fake coder for the mid-flight base conflict journey (HOK-3273 / HOK-3385).
 #
 # The first coding launch implements the task. Any later coding launch is the
-# Ready conflict resolver (post-PR remediation runs the coding phase, HOK-3272):
-# it merges the integration branch keeping the task's side and pushes the
-# resolution, after which the PR merges cleanly again.
+# Ready conflict resolver (post-PR remediation runs the coding phase, HOK-3272).
+# HOK-3385: the mill has already merged origin/$BASE_BRANCH into the branch
+# through updateBranchWithBase and left the merge in progress, so the resolver
+# emulates a *native-capable* agent: it only edits the conflicted file (keeping
+# both sides, like the HOK-3374 package.json resolution), stages it, and
+# commits. No fetch, no merge, no rebase, no push — a native agent has none of
+# those tools.
 coding_runs_file="$FAKE_ROOT/coding-runs-$WAVEMILL_ISSUE"
 coding_run=$(( $(cat "$coding_runs_file" 2>/dev/null || echo 0) + 1 ))
 printf '%s\n' "$coding_run" > "$coding_runs_file"
@@ -12,14 +16,19 @@ printf '%s\n' "$coding_run" > "$coding_runs_file"
 if (( coding_run == 1 )); then
   default_coding
 else
-  printf '%s phase=coding issue=%s role=conflict-resolver\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
-  git fetch -q origin "$BASE_BRANCH"
-  if ! git -c user.name=fake-agent -c user.email=fake-agent@example.invalid \
-      merge -q --no-edit "origin/$BASE_BRANCH" >/dev/null 2>&1; then
-    git checkout -q --ours journey-output.txt
+  merge_in_progress=no
+  if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+    merge_in_progress=yes
+  fi
+  printf '%s phase=coding issue=%s role=conflict-resolver merge_in_progress=%s\n' \
+    "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" "$merge_in_progress" >> "$FAKE_AGENT_LOG"
+  if [[ "$merge_in_progress" == yes ]]; then
+    # Resolve by editing: drop only the conflict markers, keeping both sides'
+    # lines (a plain file write, the one operation every harness has).
+    grep -vE '^(<<<<<<< |=======$|>>>>>>> )' journey-output.txt > journey-output.txt.resolved
+    mv journey-output.txt.resolved journey-output.txt
     git add journey-output.txt
     git -c user.name=fake-agent -c user.email=fake-agent@example.invalid \
-      commit -q --no-edit -m "Resolve merge conflicts with $BASE_BRANCH"
+      commit -q --no-edit -m "fix: Resolve merge conflicts with $BASE_BRANCH"
   fi
-  git push -q origin HEAD
 fi

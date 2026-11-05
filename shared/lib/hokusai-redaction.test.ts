@@ -9,6 +9,8 @@ import {
   PROTECTED_EGRESS_FIELD_FIXTURE,
   protectedEgressSentinelValues,
   redactHokusaiSubmission,
+  redactPairId,
+  redactStageTaskCost,
 } from './hokusai-redaction.ts';
 import type { HokusaiSubmission } from './hokusai-schema.ts';
 import { validateHokusaiSubmission } from './hokusai-schema.ts';
@@ -206,3 +208,40 @@ describe('hokusai-redaction', () => {
     assert.doesNotMatch(serialized, /(?:\/[a-zA-Z0-9._-]+){2,}/);
   });
 });
+
+describe('v4 stage-cost redaction (HOK-3415)', () => {
+  const salt = 'a'.repeat(64);
+
+  // protects: a challenge pair id leaving raw, or the two arms of a pair (same
+  // contributor salt) getting different comparison_group ids.
+  it('redactPairId is a minted-format UUID, stable per salt, and never the raw id', () => {
+    const id = redactPairId('HOK-3385', { salt });
+    assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.equal(redactPairId('HOK-3385', { salt }), id);
+    assert.notEqual(redactPairId('HOK-3385', { salt: 'b'.repeat(64) }), id);
+    assert.notEqual(redactPairId('HOK-3386', { salt }), id);
+    assert.equal(id.includes('3385'), false);
+  });
+
+  // protects: a stage summary keyed on the raw task id (rejected by the v4
+  // validator) or carrying raw session / provider request ids off the machine.
+  it('redactStageTaskCost re-keys the task id and hashes session and event ids, keeping counts', () => {
+    const summary = {
+      task_id: 'HOK-3385',
+      session_ids: ['404ef1f4-651e-4ba3-aea1-423814c6e809', '404ef1f4-651e-4ba3-aea1-423814c6e809'],
+      event_ids: ['msg_011Cgi9ibksP83A54jgFRYJp.req_011Cgi9ibXDuZhqPRjhJQSvB', 'msg_2.req_2'],
+      event_count: 2,
+      total_cost_usd: 1.25,
+    };
+    const redacted = redactStageTaskCost(summary, { taskId: 'redacted-0123456789abcdef', salt });
+    assert.equal(redacted.task_id, 'redacted-0123456789abcdef');
+    assert.equal(redacted.total_cost_usd, 1.25);
+    assert.equal(redacted.event_ids.length, redacted.event_count);
+    assert.equal(redacted.session_ids[0], redacted.session_ids[1], 'one session stays one session');
+    const serialized = JSON.stringify(redacted);
+    for (const raw of [...summary.session_ids, ...summary.event_ids, 'HOK-3385']) {
+      assert.equal(serialized.includes(raw), false, `${raw} survived redaction`);
+    }
+  });
+});
+

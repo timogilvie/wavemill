@@ -1,322 +1,217 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  buildSubmitDataContributionRow,
-  buildTechnicalTaskRouterContributionRow,
-  buildTechnicalTaskRouterContributionRowV2,
+  buildTechnicalTaskRouterRowV4,
   deriveOutcomeLabels,
 } from './hokusai-contribution-builder.ts';
 import type {
-  RedactedEvalContributionProjection,
-  RedactedEvalContributionProjectionV2,
+  RedactedEvalContributionProjectionV4,
+  StageExecutionProjection,
 } from './hokusai-contribution-builder.ts';
 
+// The v4 builder internally runs the v3 shape check, which requires
+// taskDescriptor/allowedModels/selectedModels. These are the minimum shape
+// each builder call needs; tests override individual fields.
+const BASE_DESCRIPTOR = {
+  language: 'typescript',
+  framework: 'none',
+  task_family: 'feature',
+  reasoning_depth: 'medium',
+  repository_scale: 'small',
+} as const;
+
+const BASE_SELECTED = {
+  coder: 'claude-sonnet-5.5',
+  reviewer: 'claude-sonnet-5.5',
+};
+
+function makeStageExecution(
+  overrides: Partial<StageExecutionProjection> = {},
+): StageExecutionProjection {
+  return {
+    stage: 'coding',
+    executedModel: BASE_SELECTED.coder,
+    modelEvidence: 'provider_response',
+    harness: 'claude-code',
+    // Empty summaries → the builder auto-fills an `unavailable` task_cost
+    // summary whose `task_id` matches the row's taskId. That satisfies the v4
+    // validator's `task_cost.task_id === row.task_id` rule without wiring up a
+    // full event ledger inside a unit test.
+    cost: { summaries: [] },
+    ...overrides,
+  };
+}
+
 function makeProjection(
-  overrides: Partial<RedactedEvalContributionProjection> = {},
-): RedactedEvalContributionProjection {
+  overrides: Partial<RedactedEvalContributionProjectionV4> = {},
+): RedactedEvalContributionProjectionV4 {
   return {
     taskId: 'redacted-task',
     runId: 'redacted-run',
     harness: 'wavemill',
-    observedAt: '2026-05-30T12:00:00.000Z',
+    observedAt: '2026-10-31T12:00:00.000Z',
     observedSuccess: true,
     budgetCompliant: true,
-    actualCostUsd: 1.25,
+    actualCostUsd: 0.42,
     wallClockSeconds: 30,
-    inputs: {
-      route_family: 'balanced',
-      retries: 2,
-      flags: ['a', 'b'],
-      nested: {
-        compact: 'ok',
-        dropped: { not: 'kept' },
-      },
-    },
-    taskDescriptor: {
-      task_type: 'feature',
-      language: 'typescript',
-      domain: 'frontend',
-      complexity: 5,
-      repo_size_bucket: 'medium',
-      files_touched_bucket: '2_5',
-      description_length_bucket: 'medium',
-      is_greenfield: false,
-      is_migration: false,
-      requires_tests: true,
-      cross_service: false,
-      ui_heavy: true,
-      risk_level: 'medium',
-    },
-    allowedModels: ['planner-a', 'coder-a', 'reviewer-a'],
-    selectedModels: {
-      planner: 'planner-a',
-      coder: 'coder-a',
-      reviewer: 'reviewer-a',
-    },
-    budgetUsd: 10,
-    scorerRef: 'router-benchmark/v1',
+    taskDescriptor: { ...BASE_DESCRIPTOR },
+    allowedModels: [BASE_SELECTED.coder, BASE_SELECTED.reviewer],
+    selectedModels: { ...BASE_SELECTED },
+    stageExecutions: [makeStageExecution()],
     ...overrides,
   };
 }
 
-function makeProjectionV2(
-  overrides: Partial<RedactedEvalContributionProjectionV2> = {},
-): RedactedEvalContributionProjectionV2 {
-  return {
-    ...makeProjection(),
-    availableModels: {
-      planner_models: ['planner-a'],
-      coder_models: ['coder-a', 'deepseek-coder-v2'],
-      reviewer_models: ['reviewer-a'],
-    },
-    candidatePool: {
-      scenario_id: 'challenger-qwen',
-      scenario_kind: 'challenger',
-      pool_size: 2,
-      baseline_model: 'gpt-5.4',
-    },
-    sparseCell: {
-      cell_id: 'frontend-medium-2_5',
-      descriptor_signature: 'frontend|medium|2_5',
-      observed_count: 2,
-      is_sparse: true,
-    },
-    ...overrides,
-  };
-}
-
-describe('hokusai-contribution-builder', () => {
-  it('builds a minimal submit-data row', () => {
-    const row = buildSubmitDataContributionRow(makeProjection({
-      actualCostUsd: undefined,
-      wallClockSeconds: undefined,
-      inputs: undefined,
-      harness: undefined,
-      taskId: undefined,
-    }));
-
-    assert.deepEqual(row, {
-      success_under_budget: true,
-    });
+describe('hokusai-contribution-builder (v4)', () => {
+  it('builds a minimal v4 row from one stage execution', () => {
+    const row = buildTechnicalTaskRouterRowV4(makeProjection());
+    assert.equal(row.schema_version, 'technical_task_router_row/v4');
+    assert.equal(row.stage_executions.length, 1);
+    assert.equal(row.stage_executions[0].stage, 'coding');
+    assert.equal(row.stage_executions[0].executed_model, BASE_SELECTED.coder);
+    assert.equal(row.stage_executions[0].model_evidence, 'provider_response');
+    assert.equal(row.stage_executions[0].harness, 'claude-code');
+    // Every stage carries a task_cost — the builder auto-fills an unavailable
+    // summary when no events were measured.
+    assert.equal(row.stage_executions[0].task_cost.task_id, 'redacted-task');
+    assert.equal(row.stage_executions[0].task_cost.coverage, 'unavailable');
   });
 
-  it('builds a full submit-data row and compacts inputs', () => {
-    const row = buildSubmitDataContributionRow(makeProjection());
-
-    assert.equal(row.success_under_budget, true);
-    assert.deepEqual(row.inputs, {
-      route_family: 'balanced',
-      retries: 2,
-      flags: ['a', 'b'],
-      nested: { compact: 'ok' },
-    });
+  it('refuses a projection without any stage executions', () => {
+    assert.throws(
+      () => buildTechnicalTaskRouterRowV4(makeProjection({ stageExecutions: [] })),
+      /stageExecutions must list at least one stage/,
+    );
   });
 
-  it('preserves null actual cost in submit-data rows', () => {
-    const row = buildSubmitDataContributionRow(makeProjection({
-      actualCostUsd: null,
-      budgetCompliant: false,
-    }));
-
-    assert.equal(row.actual_cost_usd, null);
-    assert.equal(row.success_under_budget, false);
+  it('refuses a projection without taskId', () => {
+    assert.throws(
+      () =>
+        buildTechnicalTaskRouterRowV4(
+          makeProjection({ taskId: '' as unknown as string }),
+        ),
+      /taskId is required/,
+    );
   });
 
-  it('builds a benchmark row', () => {
-    const row = buildTechnicalTaskRouterContributionRow(makeProjection());
-    assert.equal(row.completion_result, 'success');
-    assert.equal(row.success_under_budget, true);
-    assert.equal(row.selected_models.coder, 'coder-a');
+  it('[REQ-F1] builds a challenge pair with matching comparison_group', () => {
+    const pairId = '01a1a6d0-0000-7000-8000-000000000001';
+    const primary = buildTechnicalTaskRouterRowV4(
+      makeProjection({
+        taskId: 'redacted-primary',
+        stageExecutions: [
+          makeStageExecution({ stage: 'coding', executedModel: 'claude-opus-4-7' }),
+        ],
+        selectedModels: { coder: 'claude-opus-4-7', reviewer: BASE_SELECTED.reviewer },
+        allowedModels: ['claude-opus-4-7', BASE_SELECTED.reviewer],
+        comparisonGroup: { id: pairId, roleVaried: 'coder' },
+      }),
+    );
+    const challenger = buildTechnicalTaskRouterRowV4(
+      makeProjection({
+        taskId: 'redacted-primary_c',
+        stageExecutions: [
+          makeStageExecution({ stage: 'coding', executedModel: 'claude-haiku-4-5' }),
+        ],
+        selectedModels: { coder: 'claude-haiku-4-5', reviewer: BASE_SELECTED.reviewer },
+        allowedModels: ['claude-haiku-4-5', BASE_SELECTED.reviewer],
+        comparisonGroup: { id: pairId, roleVaried: 'coder' },
+      }),
+    );
+    assert.equal(primary.comparison_group?.id, pairId);
+    assert.equal(challenger.comparison_group?.id, pairId);
+    assert.equal(primary.comparison_group?.role_varied, 'coder');
+    assert.equal(challenger.comparison_group?.role_varied, 'coder');
+    assert.notEqual(
+      primary.stage_executions[0].executed_model,
+      challenger.stage_executions[0].executed_model,
+    );
   });
 
-  it('preserves null actual cost in benchmark rows', () => {
-    const row = buildTechnicalTaskRouterContributionRow(makeProjection({
-      actualCostUsd: null,
-      budgetCompliant: false,
-    }));
+  it('[REQ-F2] ci-fix is a separate stage execution from coding', () => {
+    const row = buildTechnicalTaskRouterRowV4(
+      makeProjection({
+        stageExecutions: [
+          makeStageExecution({ stage: 'coding', harness: 'claude-code' }),
+          makeStageExecution({
+            stage: 'ci-fix',
+            harness: 'codex',
+            executedModel: 'codex-mini',
+            modelEvidence: 'requested_only',
+            sessionIds: ['sess-ci-1'],
+          }),
+        ],
+      }),
+    );
 
-    assert.equal(row.actual_cost_usd, null);
-    assert.equal(row.success_under_budget, false);
+    assert.equal(row.stage_executions.length, 2);
+    const coding = row.stage_executions.find((entry) => entry.stage === 'coding');
+    const ciFix = row.stage_executions.find((entry) => entry.stage === 'ci-fix');
+    assert.ok(coding, 'coding stage present');
+    assert.ok(ciFix, 'ci-fix stage present');
+    assert.equal(ciFix!.harness, 'codex');
+    assert.equal(ciFix!.executed_model, 'codex-mini');
+    // The two stages are independent: the ci-fix harness/model does not leak
+    // into the coding stage entry.
+    assert.equal(coding!.harness, 'claude-code');
+    assert.notEqual(coding!.executed_model, ciFix!.executed_model);
   });
 
-  it('uses observed success plus budget compliance for success_under_budget', () => {
-    const row = buildSubmitDataContributionRow(makeProjection({
-      observedSuccess: true,
-      budgetCompliant: false,
-    }));
-    assert.equal(row.success_under_budget, false);
+  it('[REQ-F2] a stage that reaches the builder pre-aggregated produces one entry', () => {
+    // The v4 builder itself takes one summary per (stage, harness). Multiple
+    // sessions for the same ci-fix invocation reach it already aggregated
+    // upstream (groupByKind in the meter), so the builder emits one entry,
+    // never a third.
+    const row = buildTechnicalTaskRouterRowV4(
+      makeProjection({
+        stageExecutions: [
+          makeStageExecution({ stage: 'coding', harness: 'claude-code' }),
+          makeStageExecution({
+            stage: 'ci-fix',
+            harness: 'codex',
+            executedModel: 'codex-mini',
+            modelEvidence: 'requested_only',
+          }),
+        ],
+      }),
+    );
+    const ciFixEntries = row.stage_executions.filter((entry) => entry.stage === 'ci-fix');
+    assert.equal(ciFixEntries.length, 1);
   });
 
-  it('omits unknown raw text fields from inputs', () => {
-    const row = buildSubmitDataContributionRow(makeProjection({
-      inputs: {
-        safe: 'kept',
-        large_blob: { body: { deeper: 'dropped' } },
-      },
-    }));
-
-    assert.deepEqual(row.inputs, {
-      safe: 'kept',
-    });
-  });
-
-  it('builds a full v2 benchmark row', () => {
-    const row = buildTechnicalTaskRouterContributionRowV2(makeProjectionV2());
-
-    assert.equal(row.schema_version, 'technical_task_router_row/v2');
-    assert.equal(row.available_models.coder_models[1], 'deepseek-coder-v2');
-    assert.equal(row.candidate_pool.baseline_model, 'gpt-5.4');
-    assert.equal(row.sparse_cell.is_sparse, true);
-  });
-
-  it('supports challenger rows with Qwen coder ids', () => {
-    const row = buildTechnicalTaskRouterContributionRowV2(makeProjectionV2({
-      selectedModels: {
-        planner: 'planner-a',
-        coder: 'qwen2.5-coder-32b',
-        reviewer: 'reviewer-a',
-      },
-      availableModels: {
-        planner_models: ['planner-a'],
-        coder_models: ['qwen2.5-coder-32b', 'deepseek-coder-v2'],
-        reviewer_models: ['reviewer-a'],
-      },
-    }));
-
-    assert.equal(row.selected_models.coder, 'qwen2.5-coder-32b');
-    assert.equal(row.candidate_pool.scenario_kind, 'challenger');
+  it('carries requested_only evidence through for repair stages', () => {
+    const row = buildTechnicalTaskRouterRowV4(
+      makeProjection({
+        stageExecutions: [
+          makeStageExecution({ stage: 'coding' }),
+          makeStageExecution({
+            stage: 'ready-remediation',
+            harness: 'claude-code',
+            modelEvidence: 'requested_only',
+          }),
+        ],
+      }),
+    );
+    const remediation = row.stage_executions.find(
+      (entry) => entry.stage === 'ready-remediation',
+    );
+    assert.ok(remediation);
+    assert.equal(remediation!.model_evidence, 'requested_only');
   });
 
   it('derives outcome labels from observed cost and time', () => {
-    const labels = deriveOutcomeLabels(makeProjectionV2({
-      budgetUsd: 2,
+    const labels = deriveOutcomeLabels({
+      observedAt: '2026-10-31T12:00:00.000Z',
+      observedSuccess: false,
+      budgetCompliant: false,
       actualCostUsd: 6,
       wallClockSeconds: 3600,
-      observedSuccess: false,
-    }));
-
-    assert.deepEqual(labels, {
-      budget_label: 'over_budget',
-      cost_label: 'high',
-      time_label: 'slow',
-      success_label: 'failure',
+      budgetUsd: 2,
     });
-  });
 
-  it('applies role-pool fallback when role-specific pools are missing', () => {
-    const row = buildTechnicalTaskRouterContributionRowV2(makeProjectionV2({
-      availableModels: undefined,
-      selectedModels: {
-        coder: 'coder-a',
-        reviewer: 'reviewer-a',
-      },
-    }));
-
-    assert.deepEqual(row.available_models, {
-      planner_models: [],
-      coder_models: ['planner-a', 'coder-a', 'reviewer-a'],
-      reviewer_models: ['planner-a', 'coder-a', 'reviewer-a'],
-    });
-  });
-
-  it('fills default v2 metadata when optional scenario fields are absent', () => {
-    const row = buildTechnicalTaskRouterContributionRowV2(makeProjectionV2({
-      candidatePool: undefined,
-      sparseCell: undefined,
-      actualCostUsd: null,
-      wallClockSeconds: undefined,
-      budgetUsd: undefined,
-    }));
-
-    assert.deepEqual(row.candidate_pool, {
-      scenario_id: 'unknown',
-      scenario_kind: 'unknown',
-      pool_size: 3,
-    });
-    assert.deepEqual(row.sparse_cell, {
-      cell_id: 'unknown',
-      descriptor_signature: 'unknown',
-      observed_count: 0,
-      is_sparse: false,
-    });
-    assert.deepEqual(row.outcome_labels, {
-      budget_label: 'unknown',
-      cost_label: 'unknown',
-      time_label: 'unknown',
-      success_label: 'success',
-    });
-  });
-});
-
-// ────────────────────────────────────────────────────────────────
-// Feature outcome diagnostic columns in buildSubmitDataContributionRow (HOK-2262)
-// ────────────────────────────────────────────────────────────────
-
-describe('buildSubmitDataContributionRow – outcome diagnostic fields (HOK-2262)', () => {
-  it('includes outcome diagnostic fields when all set on projection', () => {
-    const projection = makeProjection({
-      outcomeDiagnostic: 'eligible',
-      outcomeSource: 'feature_outcome_artifact',
-      outcomeArtifactPresent: true,
-      outcomeArtifactValid: true,
-      outcomeArtifactUsed: true,
-      outcomeMissingFields: [],
-      outcomeInvalidFields: [],
-      outcomeFailureReason: undefined,
-    });
-    const row = buildSubmitDataContributionRow(projection);
-    assert.equal(row.outcome_diagnostic, 'eligible');
-    assert.equal(row.outcome_source, 'feature_outcome_artifact');
-    assert.equal(row.outcome_artifact_present, true);
-    assert.equal(row.outcome_artifact_valid, true);
-    assert.equal(row.outcome_artifact_used, true);
-    assert.deepEqual(row.outcome_missing_fields, []);
-    assert.deepEqual(row.outcome_invalid_fields, []);
-    assert.equal(row.outcome_failure_reason, undefined);
-  });
-
-  it('omits outcome diagnostic fields when not set on projection', () => {
-    const projection = makeProjection({
-      outcomeDiagnostic: undefined,
-      outcomeSource: undefined,
-      outcomeArtifactPresent: undefined,
-    });
-    const row = buildSubmitDataContributionRow(projection);
-    assert.equal(row.outcome_diagnostic, undefined);
-    assert.equal(row.outcome_source, undefined);
-    assert.equal(row.outcome_artifact_present, undefined);
-  });
-
-  it('includes failure reason when artifact is invalid', () => {
-    const projection = makeProjection({
-      outcomeDiagnostic: 'unknown',
-      outcomeSource: 'unknown',
-      outcomeArtifactPresent: true,
-      outcomeArtifactValid: false,
-      outcomeArtifactUsed: false,
-      outcomeMissingFields: ['merged', 'ciPassed'],
-      outcomeFailureReason: 'incomplete_outcome',
-    });
-    const row = buildSubmitDataContributionRow(projection);
-    assert.equal(row.outcome_diagnostic, 'unknown');
-    assert.equal(row.outcome_artifact_valid, false);
-    assert.deepEqual(row.outcome_missing_fields, ['merged', 'ciPassed']);
-    assert.equal(row.outcome_failure_reason, 'incomplete_outcome');
-  });
-
-  it('ineligible_failed_outcome flows through', () => {
-    const projection = makeProjection({
-      outcomeDiagnostic: 'ineligible_failed_outcome',
-      outcomeSource: 'feature_outcome_artifact',
-      outcomeArtifactPresent: true,
-      outcomeArtifactValid: true,
-      outcomeArtifactUsed: true,
-      outcomeMissingFields: [],
-      outcomeInvalidFields: [],
-      outcomeFailureReason: 'ineligible_failed_outcome',
-    });
-    const row = buildSubmitDataContributionRow(projection);
-    assert.equal(row.outcome_diagnostic, 'ineligible_failed_outcome');
-    assert.equal(row.outcome_failure_reason, 'ineligible_failed_outcome');
+    assert.equal(labels.budget_label, 'over_budget');
+    assert.equal(labels.cost_label, 'high');
+    assert.equal(labels.time_label, 'slow');
+    assert.equal(labels.success_label, 'failure');
   });
 });

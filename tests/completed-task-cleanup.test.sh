@@ -66,6 +66,11 @@ HELPERS_FILE="$TEST_TMP/tmux_helpers.sh"
   cat "$REPO_DIR/shared/lib/terminal-backend.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_cleanup_run"
+  printf '\n'
+  # HOK-3359: wavemill_release_terminal_pane's kill step and
+  # cleanup_completed_task's legacy fallback both delegate the window kill
+  # to the one stage-agent teardown.
+  extract_function "$REPO_DIR/shared/lib/stage-teardown.sh" "stage_agent_teardown"
 } > "$HELPERS_FILE"
 
 CLEANUP_FILE="$TEST_TMP/cleanup_completed_task.sh"

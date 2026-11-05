@@ -1,0 +1,1945 @@
+{
+  "description": "Real eval record HOK-3381 (2026-11-03T16:05:32.287Z) with the task's owned sessions re-metered per execution stage on 2026-11-05. Session and event ids are placeholders; prompt text and local paths are omitted.",
+  "record": {
+    "id": "cf40cdc1-7c24-46e9-9b42-f7c3cad1ca19",
+    "schemaVersion": "1.57.0",
+    "originalPrompt": "<prompt omitted from fixture>",
+    "modelId": "claude-fable-5",
+    "modelVersion": "claude-fable-5",
+    "judgeModel": "claude-sonnet-5",
+    "judgeProvider": "anthropic",
+    "score": 0.92,
+    "scoreBand": "Minor Feedback",
+    "timeSeconds": 8650.427,
+    "timestamp": "2026-11-03T16:05:32.287Z",
+    "interventionRequired": false,
+    "interventionCount": 0,
+    "interventionDetails": [],
+    "rationale": "<rationale omitted from fixture>",
+    "issueId": "HOK-3381",
+    "prUrl": "https://github.com/timogilvie/wavemill/pull/1782",
+    "tokenUsage": {
+      "inputTokens": 66390,
+      "outputTokens": 3089,
+      "totalTokens": 69479
+    },
+    "estimatedCost": 0.283089,
+    "outcomes": {
+      "success": true,
+      "ci": {
+        "ran": true,
+        "passed": true,
+        "checks": [
+          {
+            "name": "Shell and Unit Tests",
+            "status": "success",
+            "durationSeconds": 3
+          },
+          {
+            "name": "Golden Journeys",
+            "status": "success",
+            "durationSeconds": 6
+          },
+          {
+            "name": "Golden Journey (inputs-ready-before-approval)",
+            "status": "success",
+            "durationSeconds": 105
+          },
+          {
+            "name": "Golden Journey (ready-one-tick-failure)",
+            "status": "success",
+            "durationSeconds": 130
+          },
+          {
+            "name": "Golden Journey (native-slow-verification)",
+            "status": "success",
+            "durationSeconds": 102
+          },
+          {
+            "name": "Golden Journey (escalation-override-record)",
+            "status": "success",
+            "durationSeconds": 161
+          },
+          {
+            "name": "Golden Journey (grounded-overlap)",
+            "status": "success",
+            "durationSeconds": 52
+          },
+          {
+            "name": "Golden Journey (agent-killed-mid-stage)",
+            "status": "success",
+            "durationSeconds": 128
+          },
+          {
+            "name": "Golden Journey (agent-idle-background-job)",
+            "status": "success",
+            "durationSeconds": 117
+          },
+          {
+            "name": "Unit Tests (shard 5/7)",
+            "status": "success",
+            "durationSeconds": 102
+          },
+          {
+            "name": "Golden Journey (terminal-delivered-reap)",
+            "status": "success",
+            "durationSeconds": 149
+          },
+          {
+            "name": "Golden Journey (ready-fail-remediate)",
+            "status": "success",
+            "durationSeconds": 135
+          },
+          {
+            "name": "Golden Journey (challenge-pair-eval)",
+            "status": "success",
+            "durationSeconds": 216
+          },
+          {
+            "name": "Golden Journey (native-coder-budget-exhaustion)",
+            "status": "success",
+            "durationSeconds": 165
+          },
+          {
+            "name": "Golden Journey (gh-lag-after-push)",
+            "status": "success",
+            "durationSeconds": 135
+          },
+          {
+            "name": "Lifecycle Integration Tests",
+            "status": "success",
+            "durationSeconds": 7
+          },
+          {
+            "name": "Golden Journey (ready-failure-disposition)",
+            "status": "success",
+            "durationSeconds": 114
+          },
+          {
+            "name": "Golden Journey (happy-path)",
+            "status": "success",
+            "durationSeconds": 106
+          },
+          {
+            "name": "Golden Journey (dirty-tree-coding-complete)",
+            "status": "success",
+            "durationSeconds": 119
+          },
+          {
+            "name": "OpenRouter Alias Audit",
+            "status": "success",
+            "durationSeconds": 53
+          },
+          {
+            "name": "Golden Journey (eval-failure-exhaustion)",
+            "status": "success",
+            "durationSeconds": 195
+          },
+          {
+            "name": "Golden Journey (incident-currentness)",
+            "status": "success",
+            "durationSeconds": 266
+          },
+          {
+            "name": "Golden Journey (challenger-contract-recovery)",
+            "status": "success",
+            "durationSeconds": 205
+          },
+          {
+            "name": "Golden Journey (native-ownership-recovery)",
+            "status": "success",
+            "durationSeconds": 133
+          },
+          {
+            "name": "Golden Journey (native-arm-evidence)",
+            "status": "success",
+            "durationSeconds": 237
+          },
+          {
+            "name": "Golden Journey (dependency-install-drift)",
+            "status": "success",
+            "durationSeconds": 49
+          },
+          {
+            "name": "Golden Journey (picker-pending-touch-set)",
+            "status": "success",
+            "durationSeconds": 153
+          },
+          {
+            "name": "Golden Journey (ready-remediation-same-head)",
+            "status": "success",
+            "durationSeconds": 169
+          },
+          {
+            "name": "Golden Journey (queue-events-emitted)",
+            "status": "success",
+            "durationSeconds": 219
+          },
+          {
+            "name": "Golden Journey (errored-with-pr)",
+            "status": "success",
+            "durationSeconds": 129
+          },
+          {
+            "name": "Golden Journey (post-merge-eval-reap)",
+            "status": "success",
+            "durationSeconds": 151
+          },
+          {
+            "name": "Golden Journey (mid-flight-base-conflict)",
+            "status": "success",
+            "durationSeconds": 110
+          },
+          {
+            "name": "Golden Journey (tend-rebase-conflict-single-comment)",
+            "status": "success",
+            "durationSeconds": 152
+          },
+          {
+            "name": "Golden Journey (operator-abort-mid-coding)",
+            "status": "success",
+            "durationSeconds": 113
+          },
+          {
+            "name": "Shell Tests (shard 2/3)",
+            "status": "success",
+            "durationSeconds": 293
+          },
+          {
+            "name": "Shell Tests (shard 3/3)",
+            "status": "success",
+            "durationSeconds": 241
+          },
+          {
+            "name": "Unit Tests (shard 6/7)",
+            "status": "success",
+            "durationSeconds": 88
+          },
+          {
+            "name": "Custom Harness Tests (shard 2/3)",
+            "status": "success",
+            "durationSeconds": 66
+          },
+          {
+            "name": "Unit Tests (shard 2/7)",
+            "status": "success",
+            "durationSeconds": 97
+          },
+          {
+            "name": "Unit Tests (shard 7/7)",
+            "status": "success",
+            "durationSeconds": 79
+          },
+          {
+            "name": "Custom Harness Tests (shard 1/3)",
+            "status": "success",
+            "durationSeconds": 65
+          },
+          {
+            "name": "Unit Tests (shard 4/7)",
+            "status": "success",
+            "durationSeconds": 83
+          },
+          {
+            "name": "Check Lifecycle Paths",
+            "status": "success",
+            "durationSeconds": 7
+          },
+          {
+            "name": "Unit Tests (shard 3/7)",
+            "status": "success",
+            "durationSeconds": 115
+          },
+          {
+            "name": "Preflight Checks",
+            "status": "success",
+            "durationSeconds": 194
+          },
+          {
+            "name": "Unit Tests (shard 1/7)",
+            "status": "success",
+            "durationSeconds": 69
+          },
+          {
+            "name": "Custom Harness Tests (shard 3/3)",
+            "status": "success",
+            "durationSeconds": 93
+          },
+          {
+            "name": "Smoke and Config Tests",
+            "status": "success",
+            "durationSeconds": 41
+          },
+          {
+            "name": "Native Launch Certification",
+            "status": "success",
+            "durationSeconds": 230
+          },
+          {
+            "name": "Shell Tests (shard 1/3)",
+            "status": "success",
+            "durationSeconds": 233
+          },
+          {
+            "name": "Harness Retention Shadow",
+            "status": "skipped",
+            "durationSeconds": 0
+          }
+        ]
+      },
+      "tests": {
+        "added": true,
+        "passRate": 1
+      },
+      "staticAnalysis": {
+        "type_errors": 645,
+        "lint_errors": 987,
+        "build_ok": null,
+        "complexity_delta": 635,
+        "build_evidence": null,
+        "complexity_metric": "wavemill-cyclomatic/v1"
+      },
+      "review": {
+        "humanReviewRequired": false,
+        "rounds": 0,
+        "approvals": 0,
+        "changeRequests": 0
+      },
+      "rework": {
+        "agentIterations": 46
+      },
+      "delivery": {
+        "prCreated": true,
+        "merged": false
+      }
+    },
+    "routingDecision": {
+      "candidates": [
+        {
+          "agentType": "claude",
+          "modelId": "gpt-5.6-terra"
+        },
+        {
+          "agentType": "claude",
+          "modelId": "claude-fable-5"
+        },
+        {
+          "agentType": "claude",
+          "modelId": "claude-haiku-4-5-20251001"
+        }
+      ],
+      "chosen": {
+        "agentType": "claude",
+        "modelId": "claude-fable-5"
+      },
+      "decisionPolicyVersion": "hokusai",
+      "decisionRationale": "Routing: planner=gpt-5.6-terra, coder=claude-fable-5, reviewer=claude-haiku-4-5-20251001; planDepth=light, codeDepth=light, reviewMode=static",
+      "routeMode": "hokusai",
+      "routeArtifactSchemaVersion": "1.2",
+      "policyResolverVersion": "1.0.0",
+      "operatingModeDependency": "normal"
+    },
+    "promptArtifacts": [
+      {
+        "templateName": "eval-judge",
+        "templateHash": "80fdf56962fe3bbcf9026c4cb7b4fe6ea91cd48c3055b5a293a87da4630dc1c6",
+        "filledPromptHash": "67c460ac446c9c4282c36b81ec9a9210be898157807f3e8de77a6b534da5b2f8"
+      }
+    ],
+    "rubricEval": {
+      "schema_version": "1.0",
+      "rubric_version": "1.1",
+      "criteria": {
+        "completeness": {
+          "score": 0.92,
+          "rationale": "All five functional requirements (guard extension, verification progress rule, budget pause, budget_exhausted on model-time overrun, full tracker deletion) are visible in the diff."
+        },
+        "correctness": {
+          "score": 0.88,
+          "rationale": "Logic for clock pausing, selection/result keying, and worktree fingerprinting (excluding .wavemill/) appears correct and well-tested; no reproduced failures in the review output."
+        },
+        "code_quality": {
+          "score": 0.88,
+          "rationale": "Clean separation of concerns, clear comments explaining non-obvious invariants (e.g., why timeoutMs is excluded from selection keys), and idiomatic TypeScript."
+        },
+        "intervention_impact": {
+          "score": 0.95,
+          "rationale": "Zero interventions recorded across all categories (review_comment, test_fix, post_pr_commit, manual_edit, session_redirect all 0)."
+        },
+        "autonomy": {
+          "score": 0.9,
+          "rationale": "The agent appears to have completed this high-risk, architecturally deep task end-to-end without any recorded human correction, including building its own regression journey and fixture."
+        }
+      },
+      "determinative_boundary": "no_interventions"
+    },
+    "metadata": {
+      "workflowType": "mill",
+      "hookTriggered": true,
+      "interventionSummary": {
+        "interventions": [
+          {
+            "type": "review_comment",
+            "count": 0,
+            "details": [],
+            "timestamps": []
+          },
+          {
+            "type": "test_fix",
+            "count": 0,
+            "details": [],
+            "timestamps": []
+          },
+          {
+            "type": "post_pr_commit",
+            "count": 0,
+            "details": [],
+            "timestamps": [],
+            "agentCount": 1
+          },
+          {
+            "type": "manual_edit",
+            "count": 0,
+            "details": [],
+            "timestamps": [],
+            "severities": []
+          },
+          {
+            "type": "session_redirect",
+            "count": 0,
+            "details": [],
+            "timestamps": []
+          }
+        ],
+        "totalInterventionScore": 0
+      },
+      "interventionFlags": [],
+      "stageScores": {
+        "expansion": {
+          "score": 0.9,
+          "rationale": "The task packet precisely named the files to touch, the invariant to preserve (HOK-3101 single-primitive rule), the constraint set (no new stop reasons, keep per-call timeouts), and detailed validation steps with edge cases, which maps closely to what was implemented.",
+          "rubricCriteria": [
+            {
+              "criterion": "requirement_coverage",
+              "score": 0.92,
+              "notes": "All REQ-F1 through REQ-F5 were explicit and testable."
+            },
+            {
+              "criterion": "ambiguity_resolution",
+              "score": 0.88,
+              "notes": "Clarified scope-out items (hang recovery, bash -c bypass) to prevent overreach."
+            },
+            {
+              "criterion": "implementation_guidance_quality",
+              "score": 0.9,
+              "notes": "Named exact files and even line-number hints for deletions."
+            },
+            {
+              "criterion": "validation_readiness",
+              "score": 0.88,
+              "notes": "Validation steps included concrete replay fixture expectations (~9 min model time)."
+            }
+          ]
+        },
+        "plan": {
+          "score": 0.88,
+          "rationale": "The plan correctly sequenced guard-extension before deletion, identified the shared primitive as the sole decision site, and anticipated the model-time/harness-time split dependency on HOK-3380, matching the final architecture closely.",
+          "rubricCriteria": [
+            {
+              "criterion": "component_boundaries",
+              "score": 0.9,
+              "notes": "Correctly scoped task-progress.ts as the owner, loop.ts/planning-guards.ts as consumers."
+            },
+            {
+              "criterion": "invariant_coverage",
+              "score": 0.88,
+              "notes": "Called out HOK-3101 single-primitive invariant and backward-compat constraints (no new stop reasons)."
+            },
+            {
+              "criterion": "sequencing_and_dependencies",
+              "score": 0.86,
+              "notes": "Properly sequenced guard extension, deletion, and budget refactor; noted HOK-3380/HOK-3374 dependencies."
+            },
+            {
+              "criterion": "risk_and_validation_coverage",
+              "score": 0.88,
+              "notes": "Planned for replay fixture validation and golden journey coverage of the central risk (budget false-positives)."
+            }
+          ]
+        },
+        "implementation": {
+          "score": 0.9,
+          "rationale": "The diff shows complete deletion of private trackers, a working pausing model clock using nativeStageTimeSplit, a new shared ToolCallProgressTracker with selection/result keying that avoids the old brittleness (volatile timeoutMs, byte-identical output hash), and a static guard in hook-ttl-guard.ts blocking reintroduction — directly satisfying REQ-F1 through REQ-F5.",
+          "rubricCriteria": [
+            {
+              "criterion": "requirement_completeness",
+              "score": 0.92,
+              "notes": "Covers guard extension, tracker deletion, task-progress enhancement, and loop refactor."
+            },
+            {
+              "criterion": "correctness",
+              "score": 0.88,
+              "notes": "Logic appears sound (armModelClock re-arms on tool start/end, charged time excludes harness tool time); no human-found bugs recorded."
+            },
+            {
+              "criterion": "integration_with_existing_patterns",
+              "score": 0.9,
+              "notes": "Uses mill-clock.ts seam, existing stop reasons, and the HOK-3380 nativeStageTimeSplit contract as instructed."
+            },
+            {
+              "criterion": "code_quality_and_test_coverage",
+              "score": 0.9,
+              "notes": "Extensive new/updated tests across loop.test.ts, task-progress.test.ts, command-tools.test.ts, plus a new golden journey and fixture."
+            }
+          ]
+        },
+        "review": {
+          "score": 0.85,
+          "rationale": "No self-review summary was provided, but the PR diff itself includes substantial self-validation: new unit tests targeting each acceptance scenario (stagnation on no-progress, clock pause during harness tools, replay fixture ~9min charged time) and a new golden journey asserting zero operator touches on a >60min tool-dominated run, which functions as strong embedded review evidence.",
+          "rubricCriteria": [
+            {
+              "criterion": "issue_detection",
+              "score": 0.82,
+              "notes": "Tests appear written to probe the exact edge cases named in the task (narrower selection after timeout, log-only changes)."
+            },
+            {
+              "criterion": "validation_depth",
+              "score": 0.86,
+              "notes": "Covers the risky budget-pause and stagnation-detection logic directly, not just surface checks."
+            },
+            {
+              "criterion": "regression_risk_coverage",
+              "score": 0.86,
+              "notes": "Golden journey explicitly guards against the HOK-3374 regression pattern recurring."
+            },
+            {
+              "criterion": "self_review_effectiveness",
+              "score": 0.84,
+              "notes": "No human intervention was recorded, suggesting self-validation was sufficient before PR."
+            }
+          ]
+        }
+      },
+      "planCritique": {
+        "component_boundaries": {
+          "score": 0.9,
+          "rationale": "The plan correctly isolated task-progress.ts as the single decision primitive and scoped loop.ts/planning-guards.ts/command-tools.ts as consumers to be stripped of private logic."
+        },
+        "invariant_coverage": {
+          "score": 0.88,
+          "rationale": "Explicitly named the HOK-3101 single-primitive invariant, no-new-stop-reasons constraint, and retained per-call timeout ceilings — all honored in the final diff."
+        },
+        "approach_soundness": {
+          "score": 0.88,
+          "rationale": "Phased approach (extend primitive, route loops through it, separate model time from wall clock, add regression coverage) matches a low-risk order of operations for a high-blast-radius change."
+        },
+        "missed_patches": {
+          "score": 0.88,
+          "rationale": "The implementation closely followed the plan's phases with no evidence of significant deviation or compensating rework; minor key-naming differences (maxRepeatedSelectionCalls vs original maxRepeatedSignatureCalls) were anticipated by the plan's intent to replace the policy shape."
+        },
+        "overall": {
+          "score": 0.88,
+          "rationale": "A well-sequenced, invariant-aware plan that was executed faithfully, with test and journey coverage added exactly where the plan called for it."
+        }
+      }
+    },
+    "promptSizeDiagnostic": {
+      "totalBytes": 138043,
+      "limitBytes": 9437184,
+      "perComponentBytes": {
+        "taskPrompt": 13361,
+        "prReviewOutput": 91236,
+        "interventionMetadata": 965,
+        "taskPacket": 2565,
+        "planContent": 4085,
+        "selfReviewSummary": 32,
+        "templateScaffold": 25799
+      },
+      "policy": "fail",
+      "action": "pass"
+    },
+    "trainingEligible": true,
+    "budgetEvalEligible": true,
+    "eligibilityErrors": [],
+    "phaseDurationsSeconds": {
+      "planning": 833.527,
+      "coding": 7544.41,
+      "review": 272.49,
+      "total": 8650.427
+    },
+    "stageOutcomes": {
+      "expansion": {
+        "score": 0.9,
+        "rationale": "The task packet precisely named the files to touch, the invariant to preserve (HOK-3101 single-primitive rule), the constraint set (no new stop reasons, keep per-call timeouts), and detailed validation steps with edge cases, which maps closely to what was implemented.",
+        "rubricCriteria": [
+          {
+            "criterion": "requirement_coverage",
+            "score": 0.92,
+            "notes": "All REQ-F1 through REQ-F5 were explicit and testable."
+          },
+          {
+            "criterion": "ambiguity_resolution",
+            "score": 0.88,
+            "notes": "Clarified scope-out items (hang recovery, bash -c bypass) to prevent overreach."
+          },
+          {
+            "criterion": "implementation_guidance_quality",
+            "score": 0.9,
+            "notes": "Named exact files and even line-number hints for deletions."
+          },
+          {
+            "criterion": "validation_readiness",
+            "score": 0.88,
+            "notes": "Validation steps included concrete replay fixture expectations (~9 min model time)."
+          }
+        ]
+      },
+      "plan": {
+        "score": 0.88,
+        "rationale": "The plan correctly sequenced guard-extension before deletion, identified the shared primitive as the sole decision site, and anticipated the model-time/harness-time split dependency on HOK-3380, matching the final architecture closely.",
+        "rubricCriteria": [
+          {
+            "criterion": "component_boundaries",
+            "score": 0.9,
+            "notes": "Correctly scoped task-progress.ts as the owner, loop.ts/planning-guards.ts as consumers."
+          },
+          {
+            "criterion": "invariant_coverage",
+            "score": 0.88,
+            "notes": "Called out HOK-3101 single-primitive invariant and backward-compat constraints (no new stop reasons)."
+          },
+          {
+            "criterion": "sequencing_and_dependencies",
+            "score": 0.86,
+            "notes": "Properly sequenced guard extension, deletion, and budget refactor; noted HOK-3380/HOK-3374 dependencies."
+          },
+          {
+            "criterion": "risk_and_validation_coverage",
+            "score": 0.88,
+            "notes": "Planned for replay fixture validation and golden journey coverage of the central risk (budget false-positives)."
+          }
+        ],
+        "planCritique": {
+          "component_boundaries": {
+            "score": 0.9,
+            "rationale": "The plan correctly isolated task-progress.ts as the single decision primitive and scoped loop.ts/planning-guards.ts/command-tools.ts as consumers to be stripped of private logic."
+          },
+          "invariant_coverage": {
+            "score": 0.88,
+            "rationale": "Explicitly named the HOK-3101 single-primitive invariant, no-new-stop-reasons constraint, and retained per-call timeout ceilings — all honored in the final diff."
+          },
+          "approach_soundness": {
+            "score": 0.88,
+            "rationale": "Phased approach (extend primitive, route loops through it, separate model time from wall clock, add regression coverage) matches a low-risk order of operations for a high-blast-radius change."
+          },
+          "missed_patches": {
+            "score": 0.88,
+            "rationale": "The implementation closely followed the plan's phases with no evidence of significant deviation or compensating rework; minor key-naming differences (maxRepeatedSelectionCalls vs original maxRepeatedSignatureCalls) were anticipated by the plan's intent to replace the policy shape."
+          },
+          "overall": {
+            "score": 0.88,
+            "rationale": "A well-sequenced, invariant-aware plan that was executed faithfully, with test and journey coverage added exactly where the plan called for it."
+          }
+        }
+      },
+      "implementation": {
+        "score": 0.9,
+        "rationale": "The diff shows complete deletion of private trackers, a working pausing model clock using nativeStageTimeSplit, a new shared ToolCallProgressTracker with selection/result keying that avoids the old brittleness (volatile timeoutMs, byte-identical output hash), and a static guard in hook-ttl-guard.ts blocking reintroduction — directly satisfying REQ-F1 through REQ-F5.",
+        "rubricCriteria": [
+          {
+            "criterion": "requirement_completeness",
+            "score": 0.92,
+            "notes": "Covers guard extension, tracker deletion, task-progress enhancement, and loop refactor."
+          },
+          {
+            "criterion": "correctness",
+            "score": 0.88,
+            "notes": "Logic appears sound (armModelClock re-arms on tool start/end, charged time excludes harness tool time); no human-found bugs recorded."
+          },
+          {
+            "criterion": "integration_with_existing_patterns",
+            "score": 0.9,
+            "notes": "Uses mill-clock.ts seam, existing stop reasons, and the HOK-3380 nativeStageTimeSplit contract as instructed."
+          },
+          {
+            "criterion": "code_quality_and_test_coverage",
+            "score": 0.9,
+            "notes": "Extensive new/updated tests across loop.test.ts, task-progress.test.ts, command-tools.test.ts, plus a new golden journey and fixture."
+          }
+        ]
+      },
+      "review": {
+        "score": 0.85,
+        "rationale": "No self-review summary was provided, but the PR diff itself includes substantial self-validation: new unit tests targeting each acceptance scenario (stagnation on no-progress, clock pause during harness tools, replay fixture ~9min charged time) and a new golden journey asserting zero operator touches on a >60min tool-dominated run, which functions as strong embedded review evidence.",
+        "rubricCriteria": [
+          {
+            "criterion": "issue_detection",
+            "score": 0.82,
+            "notes": "Tests appear written to probe the exact edge cases named in the task (narrower selection after timeout, log-only changes)."
+          },
+          {
+            "criterion": "validation_depth",
+            "score": 0.86,
+            "notes": "Covers the risky budget-pause and stagnation-detection logic directly, not just surface checks."
+          },
+          {
+            "criterion": "regression_risk_coverage",
+            "score": 0.86,
+            "notes": "Golden journey explicitly guards against the HOK-3374 regression pattern recurring."
+          },
+          {
+            "criterion": "self_review_effectiveness",
+            "score": 0.84,
+            "notes": "No human intervention was recorded, suggesting self-validation was sufficient before PR."
+          }
+        ]
+      },
+      "routing": {
+        "routingUsed": true,
+        "candidateCount": 3,
+        "chosenModel": "claude-fable-5",
+        "scoreAchieved": 0.92,
+        "costUsd": 81.666887,
+        "policyVersion": "hokusai"
+      }
+    },
+    "agentType": "claude",
+    "challengePairId": "HOK-3381",
+    "evaluatedPrHeadSha": "2e213aaba52609639501a2bcbe9c158cee77e647",
+    "challengeSide": "primary",
+    "forkIdentity": {
+      "stage": "review",
+      "commit": "0000da6f32b203ac2e112122dbdd6e205f65f52e",
+      "tree": "52379c7a554b21394c4ac56844f6b0b30ab827c3",
+      "taskPacketHash": "99bd622ebb3962babaf81b9e61385011a0be149c244e15701a73edaf5865daec",
+      "planHash": "076314cfc49d033aeb04258581584772ce68ee1b070aee9027435f77226513dc",
+      "promptHash": "707a30c24070eaef37733b5d45e6af49bf5ca488a52c4eb2c665cbac25aa96c1",
+      "toolConfigHash": null,
+      "sharedPrefix": true,
+      "primaryInheritedStages": [],
+      "challengerInheritedStages": [
+        "plan",
+        "implementation"
+      ],
+      "producer": "wavemill-monitor@fork-materialize",
+      "producerVersion": "1"
+    },
+    "challengeIntent": {
+      "pairId": "HOK-3381",
+      "challengeStage": "review",
+      "decisionSource": "bootstrap",
+      "selectedStage": "review",
+      "primary": {
+        "pairId": "HOK-3381",
+        "side": "primary",
+        "challengeStage": "review",
+        "expectedStageModel": "claude-haiku-4-5-20251001",
+        "expectedStageAgent": "claude",
+        "expectedRoute": {
+          "planner": "gpt-5.6-terra",
+          "coder": "claude-fable-5",
+          "reviewer": "claude-haiku-4-5-20251001",
+          "planDepth": "light",
+          "codeDepth": "light",
+          "reviewMode": "static"
+        }
+      },
+      "challenger": {
+        "pairId": "HOK-3381",
+        "side": "challenger",
+        "challengeStage": "review",
+        "expectedStageModel": "kimi-k3",
+        "expectedStageAgent": "native-openrouter",
+        "expectedRoute": {
+          "planner": "gpt-5.6-terra",
+          "coder": "claude-fable-5",
+          "reviewer": "kimi-k3",
+          "planDepth": "light",
+          "codeDepth": "light",
+          "reviewMode": "static"
+        }
+      }
+    },
+    "challengeExecutionRoute": {
+      "planner": "gpt-5.6-terra",
+      "coder": "claude-fable-5",
+      "reviewer": "claude-haiku-4-5-20251001",
+      "planDepth": "light",
+      "codeDepth": "light",
+      "reviewMode": "static"
+    },
+    "challengeStage": "review",
+    "challengeStageEval": {
+      "stage": "review",
+      "provenance": "inferred",
+      "summary": "Review comparison fell back to inferred evidence because direct review artifacts were incomplete.",
+      "fallbackReason": "Missing self-review summary and complete review iteration evidence",
+      "evidence": [
+        {
+          "label": "review_result",
+          "summary": "status=completed, model=claude-haiku-4-5-20251001, exitCode=0, verdict=ready, iterations=1, blockers=0, warnings=0, notes=PR #1782 created",
+          "source": ".review-result.json"
+        },
+        {
+          "label": "review_outcome",
+          "summary": "rounds=0, approvals=0, changeRequests=0",
+          "source": "outcomes.review"
+        },
+        {
+          "label": "review_duration",
+          "summary": "reviewSeconds=272.49",
+          "source": ".review-result.json"
+        },
+        {
+          "label": "review_identity",
+          "summary": "orchestrator=claude-haiku-4-5-20251001(pinned=true), analysis=claude-haiku-4-5-20251001(pinned=true)",
+          "source": ".review-result.json"
+        },
+        {
+          "label": "inferred_review_score",
+          "summary": "score=0.85, rationale=No self-review summary was provided, but the PR diff itself includes substantial self-validation: new unit tests targeting each acceptance scenario (stagnation…",
+          "source": "metadata.stageScores.review"
+        }
+      ]
+    },
+    "reviewExecutedIdentity": {
+      "orchestrator": {
+        "role": "review_orchestrator",
+        "requestedModel": "claude-haiku-4-5-20251001",
+        "resolvedModel": "claude-haiku-4-5-20251001",
+        "agent": "codex",
+        "source": "artifact",
+        "pinned": true
+      },
+      "substantiveAnalysis": {
+        "role": "substantive_analysis",
+        "requestedModel": "claude-haiku-4-5-20251001",
+        "resolvedModel": "claude-haiku-4-5-20251001",
+        "agent": "claude-cli",
+        "source": "artifact",
+        "pinned": true
+      },
+      "remediation": null
+    },
+    "challengeRouteContext": {
+      "decisionSource": "preserved",
+      "bootstrapRoute": {
+        "coder": "claude-fable-5",
+        "codeDepth": "light",
+        "reviewer": "claude-haiku-4-5-20251001",
+        "reviewMode": "static"
+      },
+      "expandedRoute": {
+        "coder": "claude-sonnet-5",
+        "codeDepth": "medium",
+        "reviewer": "claude-opus-4-8",
+        "reviewMode": "llm"
+      },
+      "refreshRationale": "expanded route matches bootstrap on coder class/depth"
+    },
+    "routeProvenance": {
+      "bootstrapRoute": {
+        "coder": "claude-fable-5",
+        "codeDepth": "light",
+        "reviewer": "claude-haiku-4-5-20251001",
+        "reviewMode": "static",
+        "planner": "gpt-5.6-terra",
+        "planDepth": "light",
+        "artifactPath": "worktrees/native-time-budget-2-3-native-coding-stops-on-lack-of-progress-from-the-shared-task-progress-primitive-not-elapsed-time-delete-the-private-stagnation-tracker/features/native-time-budget-2-3-native-coding-stops-on-lack-of-progress-from-the-shared-task-progress-primitive-not-elapsed-time-delete-the-private-stagnation-tracker/.initial-route.json",
+        "artifactHash": "1aea213ce5e75efb8f13f2fe7ef595e99f0a0c3c4e0f81b1d033a6204738d7dc",
+        "inputHash": "3a75880a369cee3affe3ae7b20c154585d77a3531cf6830c1fac963071994467",
+        "source": "bootstrap",
+        "routerMode": "normal",
+        "routingMode": "hokusai",
+        "expectedMetrics": {
+          "expectedSuccess": 0.620625,
+          "expectedCost": 11.43,
+          "confidence": 0.334116,
+          "expectedCostPlan": 3.25,
+          "expectedCostCode": 7.94,
+          "expectedCostReview": 0.24,
+          "neighborCount": 40,
+          "neighborSimilarityRange": [
+            0,
+            0
+          ],
+          "maxCostUsd": 25,
+          "challengeRecommendation": {
+            "shouldChallenge": true,
+            "reason": "new-model",
+            "defaultModel": "claude-opus-5-5",
+            "challengerModel": "deepseek-v3",
+            "stage": "plan",
+            "priority": 300
+          },
+          "signals": {
+            "taskType": "bugfix",
+            "promptLength": "long",
+            "complexityScore": 5,
+            "complexityBand": "xl",
+            "riskFlags": [
+              "large-scope-refactor",
+              "test-infrastructure"
+            ],
+            "fileTypes": [
+              ".ts"
+            ],
+            "riskScore": 11
+          },
+          "reasoning": [
+            "Adapted from Hokusai Model 30 recommended_strategy.",
+            "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics.",
+            "Router escalation (confidence 0.348969 < 0.4) re-asked Hokusai for highest_reliability without claude-opus-4-7; Hokusai selected coder claude-fable-5."
+          ]
+        }
+      },
+      "expandedRoute": {
+        "coder": "claude-sonnet-5",
+        "codeDepth": "medium",
+        "reviewer": "claude-opus-4-8",
+        "reviewMode": "llm",
+        "planner": "claude-opus-4-7",
+        "planDepth": "medium",
+        "artifactPath": "worktrees/native-time-budget-2-3-native-coding-stops-on-lack-of-progress-from-the-shared-task-progress-primitive-not-elapsed-time-delete-the-private-stagnation-tracker/features/native-time-budget-2-3-native-coding-stops-on-lack-of-progress-from-the-shared-task-progress-primitive-not-elapsed-time-delete-the-private-stagnation-tracker/.post-expansion-route.json",
+        "artifactHash": "ca81c0ab9679f6d7e432de0245b76f9378a43ccfa6fa3fb206e7985b46577e92",
+        "inputHash": "e5ffbf275596ed12715134dca640eb1ff4040919d73a2d0324cbc06f43f55475",
+        "source": "expanded",
+        "cacheHit": false,
+        "routeSource": "single",
+        "routerMode": "normal",
+        "routingMode": "hokusai",
+        "expectedMetrics": {
+          "expectedSuccess": 0.789394,
+          "expectedCost": 14.71,
+          "confidence": 0.453779,
+          "expectedCostPlan": 2.92,
+          "expectedCostCode": 9.02,
+          "expectedCostReview": 2.77,
+          "neighborCount": 40,
+          "neighborSimilarityRange": [
+            0,
+            0
+          ],
+          "maxCostUsd": 25,
+          "challengeRecommendation": {
+            "shouldChallenge": true,
+            "reason": "new-model",
+            "defaultModel": "claude-opus-5-5",
+            "challengerModel": "deepseek-v3",
+            "stage": "plan",
+            "priority": 300
+          },
+          "signals": {
+            "taskType": "feature",
+            "promptLength": "long",
+            "complexityScore": 4,
+            "complexityBand": "l",
+            "riskFlags": [
+              "large-scope-refactor",
+              "test-infrastructure"
+            ],
+            "fileTypes": [
+              ".ts"
+            ],
+            "riskScore": 8
+          },
+          "reasoning": [
+            "Adapted from Hokusai Model 30 recommended_strategy.",
+            "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics."
+          ]
+        }
+      },
+      "activeRoute": {
+        "coder": "claude-fable-5",
+        "codeDepth": "light",
+        "reviewer": "claude-haiku-4-5-20251001",
+        "reviewMode": "static",
+        "planner": "gpt-5.6-terra",
+        "planDepth": "light",
+        "artifactPath": "worktrees/native-time-budget-2-3-native-coding-stops-on-lack-of-progress-from-the-shared-task-progress-primitive-not-elapsed-time-delete-the-private-stagnation-tracker/features/native-time-budget-2-3-native-coding-stops-on-lack-of-progress-from-the-shared-task-progress-primitive-not-elapsed-time-delete-the-private-stagnation-tracker/.routing-complete",
+        "artifactHash": "730a5b0cddf5f4be46b7733a63c282a7d6e8d85aa06a5318aebc4dc5e43531f7",
+        "inputHash": "e5ffbf275596ed12715134dca640eb1ff4040919d73a2d0324cbc06f43f55475",
+        "source": "expanded",
+        "cacheHit": false,
+        "routeSource": "single",
+        "routerMode": "normal",
+        "routingMode": "hokusai",
+        "expectedMetrics": {
+          "expectedSuccess": 0.789394,
+          "expectedCost": 14.71,
+          "confidence": 0.453779,
+          "expectedCostPlan": 2.92,
+          "expectedCostCode": 9.02,
+          "expectedCostReview": 2.77,
+          "neighborCount": 40,
+          "neighborSimilarityRange": [
+            0,
+            0
+          ],
+          "maxCostUsd": 25,
+          "challengeRecommendation": {
+            "shouldChallenge": true,
+            "reason": "new-model",
+            "defaultModel": "claude-opus-5-5",
+            "challengerModel": "deepseek-v3",
+            "stage": "plan",
+            "priority": 300
+          },
+          "signals": {
+            "taskType": "feature",
+            "promptLength": "long",
+            "complexityScore": 4,
+            "complexityBand": "l",
+            "riskFlags": [
+              "large-scope-refactor",
+              "test-infrastructure"
+            ],
+            "fileTypes": [
+              ".ts"
+            ],
+            "riskScore": 8
+          },
+          "reasoning": [
+            "Adapted from Hokusai Model 30 recommended_strategy.",
+            "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics."
+          ]
+        }
+      },
+      "decisionSource": "preserved",
+      "stageRoutes": {
+        "planner": {
+          "hokusai": {
+            "requestId": "62cbc0ba-0000-429d-b989-ec5c5d5d0112",
+            "decisionId": "43c118a7-bb2a-4f3c-9941-21b4418c3bdc",
+            "recommended": "claude-opus-4-7"
+          },
+          "executed": "claude-opus-4-7",
+          "overrides": []
+        },
+        "coder": {
+          "hokusai": {
+            "requestId": "62cbc0ba-0000-429d-b989-ec5c5d5d0112",
+            "decisionId": "43c118a7-bb2a-4f3c-9941-21b4418c3bdc",
+            "recommended": "claude-sonnet-5"
+          },
+          "executed": "claude-sonnet-5",
+          "overrides": []
+        },
+        "reviewer": {
+          "hokusai": {
+            "requestId": "62cbc0ba-0000-429d-b989-ec5c5d5d0112",
+            "decisionId": "43c118a7-bb2a-4f3c-9941-21b4418c3bdc",
+            "recommended": "claude-opus-4-8"
+          },
+          "executed": "claude-haiku-4-5-20251001",
+          "overrides": [
+            {
+              "source": "challenge",
+              "reason": "challenge_primary_incumbent",
+              "pairId": "HOK-3381",
+              "side": "primary",
+              "from": "claude-opus-4-8",
+              "to": "claude-haiku-4-5-20251001",
+              "at": "2026-11-03T16:05:32.287Z"
+            }
+          ]
+        }
+      },
+      "hokusaiInferenceLogId": "62cbc0ba-0000-429d-b989-ec5c5d5d0112",
+      "expandedCacheHit": false,
+      "packetHash": "ef1a7b21ebeb7ef68df515f07a6c5f64a2ca24feb92a1ba234fa9982f9f99bd9",
+      "routeSource": "single",
+      "routerMode": "normal",
+      "routingMode": "hokusai",
+      "artifactPath": "worktrees/native-time-budget-2-3-native-coding-stops-on-lack-of-progress-from-the-shared-task-progress-primitive-not-elapsed-time-delete-the-private-stagnation-tracker/features/native-time-budget-2-3-native-coding-stops-on-lack-of-progress-from-the-shared-task-progress-primitive-not-elapsed-time-delete-the-private-stagnation-tracker/.post-expansion-route.json",
+      "artifactHash": "ca81c0ab9679f6d7e432de0245b76f9378a43ccfa6fa3fb206e7985b46577e92"
+    },
+    "executedPlanning": {
+      "agent": "codex",
+      "model": "gpt-5.6-terra",
+      "status": "completed",
+      "source": ".planning-result.json"
+    },
+    "planningExecutionOutcome": {
+      "agent": "codex",
+      "model": "gpt-5.6-terra",
+      "status": "completed",
+      "source": ".planning-result.json"
+    },
+    "routePrediction": {
+      "expectedSuccess": 0.789394,
+      "expectedCostUsd": 14.71,
+      "confidence": 0.453779,
+      "riskScore": 8,
+      "taskType": "feature",
+      "topFeatures": [
+        "Adapted from Hokusai Model 30 recommended_strategy.",
+        "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics.",
+        "taskType=feature",
+        "complexityScore=4",
+        "riskScore=8"
+      ],
+      "rationaleSummary": "Adapted from Hokusai Model 30 recommended_strategy. Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics."
+    },
+    "difficultyBand": "very_hard",
+    "difficultySignals": {
+      "locTouched": 1253,
+      "filesTouched": 18
+    },
+    "stratum": "unknown_large",
+    "taskContext": {
+      "taskType": "feature",
+      "changeKind": "mixed",
+      "complexity": "xl",
+      "constraints": {
+        "hasStrictStyle": true
+      },
+      "requiresDomainKnowledge": "auth"
+    },
+    "repoContext": {
+      "repoId": "timogilvie/wavemill",
+      "repoVisibility": "oss",
+      "primaryLanguage": "TypeScript",
+      "languages": {
+        "TypeScript": 76,
+        "Shell": 19,
+        "Python": 2,
+        "JavaScript": 3
+      },
+      "packageManager": "npm",
+      "testFrameworks": [
+        "node:test"
+      ],
+      "ciProvider": "github-actions",
+      "repoSize": {
+        "fileCount": 2633,
+        "loc": 528143,
+        "dependencyCount": 15
+      },
+      "monorepo": true
+    },
+    "workflowCost": 81.666887,
+    "workflowTokenUsage": {
+      "gpt-5.6-terra": {
+        "inputTokens": 102795,
+        "cacheCreationTokens": 0,
+        "cacheReadTokens": 1021952,
+        "outputTokens": 9265,
+        "costUsd": 0.651455
+      },
+      "claude-fable-5": {
+        "inputTokens": 416,
+        "cacheCreationTokens": 492672,
+        "cacheReadTokens": 66152563,
+        "outputTokens": 169085,
+        "costUsd": 80.76942600000001
+      },
+      "claude-haiku-4-5-20251001": {
+        "inputTokens": 99,
+        "cacheCreationTokens": 139979,
+        "cacheReadTokens": 870896,
+        "outputTokens": 9069,
+        "costUsd": 0.246006
+      }
+    },
+    "workflowCostStatus": "success",
+    "pricingSnapshot": {
+      "gpt-5.6-terra": {
+        "inputCostPerMTok": 2.5,
+        "outputCostPerMTok": 15,
+        "cacheWriteCostPerMTok": 3.125,
+        "cacheReadCostPerMTok": 0.25
+      },
+      "claude-fable-5": {
+        "inputCostPerMTok": 10,
+        "outputCostPerMTok": 50,
+        "cacheWriteCostPerMTok": 12.5,
+        "cacheReadCostPerMTok": 1
+      },
+      "claude-haiku-4-5-20251001": {
+        "inputCostPerMTok": 0.8,
+        "outputCostPerMTok": 4,
+        "cacheWriteCostPerMTok": 1,
+        "cacheReadCostPerMTok": 0.08
+      }
+    },
+    "workflowCostAttribution": {
+      "source": "multi",
+      "coverage": "complete",
+      "sessions": 5,
+      "turns": 222,
+      "pricedSessions": 4,
+      "unpricedSessions": 0,
+      "models": [
+        {
+          "provider": "codex",
+          "modelId": "gpt-5.6-terra",
+          "priced": true,
+          "inputTokens": 102795,
+          "outputTokens": 9265,
+          "cacheReadTokens": 1021952,
+          "cacheCreationTokens": 0,
+          "totalTokens": 1134012,
+          "costUsd": 0.651455,
+          "pricingSource": "local_estimate"
+        },
+        {
+          "provider": "claude",
+          "modelId": "claude-fable-5",
+          "priced": true,
+          "inputTokens": 416,
+          "outputTokens": 169085,
+          "cacheReadTokens": 66152563,
+          "cacheCreationTokens": 492672,
+          "totalTokens": 66814736,
+          "costUsd": 80.76942600000001,
+          "pricingSource": "local_estimate"
+        },
+        {
+          "provider": "claude",
+          "modelId": "claude-haiku-4-5-20251001",
+          "priced": true,
+          "inputTokens": 99,
+          "outputTokens": 9069,
+          "cacheReadTokens": 870896,
+          "cacheCreationTokens": 139979,
+          "totalTokens": 1020043,
+          "costUsd": 0.246006,
+          "pricingSource": "local_estimate"
+        }
+      ]
+    },
+    "workflowCostByHarness": {
+      "codex": 0.651455,
+      "claude-code": 81.015432
+    },
+    "workflowCostByKind": {
+      "planning": 0.651455,
+      "coding": 78.081208,
+      "review": 0.149058,
+      "helper:json-code-review": 0.096948,
+      "ready-remediation": 2.688218
+    },
+    "routeCalibration": {
+      "costErrorUsd": -66.956887,
+      "successDelta": 0.210606,
+      "predictedSuccess": 0.789394,
+      "actualSuccess": true,
+      "predictedCostUsd": 14.71,
+      "actualCostUsd": 81.666887,
+      "interventionCount": 0,
+      "durationMs": 8650427
+    },
+    "taskDescriptor": {
+      "schema_version": "1.0",
+      "signals": {
+        "heuristic": {
+          "task_type": "feature",
+          "languages": [
+            "typescript",
+            "shell",
+            "python",
+            "javascript"
+          ],
+          "framework_tags": [],
+          "files_touched": 18,
+          "repo_size_loc": 528143,
+          "description_tokens": 4454,
+          "is_greenfield": false,
+          "has_migration": false,
+          "has_ui": false,
+          "has_tests": true,
+          "cross_service": false
+        },
+        "learned": {
+          "complexity": 5,
+          "domain": "data-pipeline",
+          "risk_flags": [
+            "large-scope-refactor",
+            "modifies-existing-runtime",
+            "test-infrastructure"
+          ]
+        }
+      },
+      "constraints": {
+        "max_cost_usd": 25,
+        "models_available": [
+          "claude-opus-5-5",
+          "gpt-6-sol",
+          "claude-fable-5",
+          "claude-opus-4-8",
+          "claude-opus-4-7",
+          "gpt-5.6-terra",
+          "deepseek-reasoner",
+          "deepseek-v4-pro",
+          "claude-sonnet-5",
+          "claude-haiku-4-5-20251001",
+          "gpt-6-luna",
+          "deepseek-chat",
+          "deepseek-v4-flash"
+        ],
+        "objective": "balanced"
+      },
+      "stages": {
+        "planner": {
+          "model": "gpt-5.6-terra",
+          "score": 0.88,
+          "cost_usd": 0.651455
+        },
+        "coder": {
+          "model": "claude-fable-5",
+          "score": 0.9,
+          "cost_usd": 80.76942600000001
+        },
+        "reviewer": {
+          "model": "claude-haiku-4-5-20251001",
+          "score": 0.85,
+          "cost_usd": 0.246006
+        }
+      },
+      "rubric": {
+        "has_rubric": true,
+        "criterion_count": 5,
+        "mean_score": 0.906,
+        "criteria_scores": {
+          "completeness": 0.92,
+          "correctness": 0.88,
+          "code_quality": 0.88,
+          "intervention_impact": 0.95,
+          "autonomy": 0.9
+        },
+        "determinative_boundary": "no_interventions"
+      },
+      "outcome": {
+        "overall_score": 0.92,
+        "total_cost_usd": 81.666887,
+        "total_time_minutes": 144.17378333333332,
+        "interventions": 0,
+        "intervention_types": []
+      }
+    },
+    "constraints": {
+      "maxCostUsd": 25
+    },
+    "modelIdentityAttribution": {
+      "observedAt": "2026-11-03T16:05:33.898Z",
+      "roles": {
+        "planner": {
+          "alias": "gpt-5.6-terra",
+          "providerId": "gpt-5.6-terra",
+          "identityStatus": "verified",
+          "identityRevision": 1,
+          "fingerprint": "0e95bbc0abd07ea24658118725b3434ee564c08ed4cbe4de9e90002a1d5fd9e6",
+          "evidencePolicy": "eligible"
+        },
+        "coder": {
+          "alias": "claude-fable-5",
+          "providerId": "claude-fable-5",
+          "identityStatus": "verified",
+          "identityRevision": 1,
+          "fingerprint": "91f9c9ce67e72c9333e6c5274971de9ec57323e90901689d701de3bec797b7a0",
+          "evidencePolicy": "eligible"
+        },
+        "reviewer": {
+          "alias": "claude-haiku-4-5-20251001",
+          "providerId": "claude-haiku-4-5-20251001",
+          "identityStatus": "verified",
+          "identityRevision": 1,
+          "fingerprint": "342b230dec3ed61b2065a115e4d3717223f8853f555db2d9e66a7d5ba746f31e",
+          "evidencePolicy": "eligible"
+        }
+      },
+      "provisionalRoles": [],
+      "candidateOnlyProvisional": []
+    },
+    "stageExecution": {
+      "planning": {
+        "intendedModel": "gpt-5.6-terra",
+        "executedModel": null,
+        "executionEvidence": {
+          "status": "missing",
+          "source": "unknown"
+        }
+      },
+      "coding": {
+        "intendedModel": "claude-fable-5",
+        "executedModel": "claude-fable-5",
+        "executionEvidence": {
+          "status": "direct",
+          "source": "claude-session"
+        }
+      },
+      "review": {
+        "intendedModel": "claude-haiku-4-5-20251001",
+        "executedModel": "claude-haiku-4-5-20251001",
+        "executionEvidence": {
+          "status": "direct",
+          "source": "claude-session"
+        }
+      }
+    },
+    "challengeExecutionEvidence": {
+      "pairId": "HOK-3381",
+      "side": "primary",
+      "validity": "valid",
+      "challengeStage": "review",
+      "expectedStageModel": "claude-haiku-4-5-20251001",
+      "expectedStageAgent": "claude",
+      "effectiveRoute": {
+        "planner": "gpt-5.6-terra",
+        "coder": "claude-fable-5",
+        "reviewer": "claude-haiku-4-5-20251001",
+        "planDepth": "light",
+        "codeDepth": "light",
+        "reviewMode": "static"
+      },
+      "evidence": [
+        {
+          "stage": "review",
+          "source": ".review-result.json"
+        },
+        {
+          "stage": "review",
+          "source": "outcomes.review"
+        },
+        {
+          "stage": "review",
+          "source": ".review-result.json"
+        },
+        {
+          "stage": "review",
+          "source": ".review-result.json"
+        },
+        {
+          "stage": "review",
+          "source": "metadata.stageScores.review"
+        }
+      ]
+    }
+  },
+  "metered": {
+    "owned": [
+      {
+        "sessionRef": "session-1",
+        "harness": "codex",
+        "kind": "planning",
+        "stage": "planning",
+        "model": "gpt-5.6-terra",
+        "launchedAt": "2026-11-03T13:26:08.000Z",
+        "attemptId": "planning@447ee24#1793712368"
+      },
+      {
+        "sessionRef": "session-2",
+        "harness": "claude-code",
+        "kind": "coding",
+        "stage": "coding",
+        "model": "claude-fable-5",
+        "launchedAt": "2026-11-03T13:40:05.000Z",
+        "attemptId": "coding@447ee24#1793713205"
+      },
+      {
+        "sessionRef": "session-3",
+        "harness": "claude-code",
+        "kind": "review",
+        "stage": "review",
+        "model": "claude-haiku-4-5-20251001",
+        "launchedAt": "2026-11-03T15:45:56.000Z",
+        "attemptId": "review@0000da6#1793720756"
+      },
+      {
+        "sessionRef": "session-4",
+        "harness": "claude-code",
+        "kind": "helper:json-code-review",
+        "model": "claude-haiku-4-5-20251001",
+        "launchedAt": "2026-11-03T15:48:12.620Z",
+        "attemptId": "helper:json-code-review@nohead#1793720892"
+      },
+      {
+        "sessionRef": "session-5",
+        "harness": "claude-code",
+        "kind": "ready-remediation",
+        "model": "claude-fable-5",
+        "launchedAt": "2026-11-03T15:53:30.000Z",
+        "attemptId": "ready-remediation@0000da6#1793721210"
+      }
+    ],
+    "summariesByStage": {
+      "planning": [
+        {
+          "schema_version": "task_cost_summary/v1",
+          "task_id": "HOK-3381",
+          "session_ids": [
+            "session-1"
+          ],
+          "harness": "codex",
+          "harness_version": "0.166.0",
+          "provider_contract_version": "codex/2",
+          "models": [
+            "gpt-5.6-terra"
+          ],
+          "model_segments": [
+            {
+              "model": "gpt-5.6-terra",
+              "turn_count": 2,
+              "usage": {
+                "input_tokens": 102795,
+                "output_tokens": 9265,
+                "cache_read_tokens": 1021952,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 1584
+              },
+              "actual_cost_usd": null,
+              "estimated_cost_usd": 0.651455,
+              "cost_source": "local_estimate"
+            }
+          ],
+          "turn_count": 2,
+          "turns_truncated": false,
+          "usage": {
+            "input_tokens": 102795,
+            "output_tokens": 9265,
+            "cache_read_tokens": 1021952,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 1584
+          },
+          "actual_cost_usd": null,
+          "estimated_cost_usd": 0.651455,
+          "total_cost_usd": 0.651455,
+          "cost_source": "local_estimate",
+          "cost_basis": "per_token_api",
+          "coverage": "complete",
+          "field_availability": {
+            "usage": "available",
+            "actual_cost": "unavailable",
+            "estimated_cost": "available",
+            "pricing": "available"
+          },
+          "pricing_source": "local_estimate",
+          "join_confidence": "unattributed",
+          "collected_at": "2026-11-03T13:38:37.077Z",
+          "event_count": 16,
+          "event_ids": [
+            "event-1",
+            "event-2",
+            "event-3",
+            "event-4",
+            "event-5",
+            "event-6",
+            "event-7",
+            "event-8",
+            "event-9",
+            "event-10",
+            "event-11",
+            "event-12",
+            "event-13",
+            "event-14",
+            "event-15",
+            "event-16"
+          ],
+          "diagnostics": []
+        }
+      ],
+      "coding": [
+        {
+          "schema_version": "task_cost_summary/v1",
+          "task_id": "HOK-3381",
+          "session_ids": [
+            "session-2"
+          ],
+          "harness": "claude-code",
+          "harness_version": "2.1.317",
+          "provider_contract_version": "claude-code/1",
+          "models": [
+            "claude-fable-5"
+          ],
+          "model_segments": [
+            {
+              "model": "claude-fable-5",
+              "turn_count": 192,
+              "usage": {
+                "input_tokens": 384,
+                "output_tokens": 164900,
+                "cache_read_tokens": 64614832,
+                "cache_write_tokens": 417399,
+                "reasoning_tokens": 72164
+              },
+              "actual_cost_usd": null,
+              "estimated_cost_usd": 78.081208,
+              "cost_source": "local_estimate"
+            }
+          ],
+          "turn_count": 192,
+          "turns_truncated": false,
+          "usage": {
+            "input_tokens": 384,
+            "output_tokens": 164900,
+            "cache_read_tokens": 64614832,
+            "cache_write_tokens": 417399,
+            "reasoning_tokens": 72164
+          },
+          "actual_cost_usd": null,
+          "estimated_cost_usd": 78.081208,
+          "total_cost_usd": 78.081208,
+          "cost_source": "local_estimate",
+          "cost_basis": "per_token_api",
+          "coverage": "complete",
+          "field_availability": {
+            "usage": "available",
+            "actual_cost": "unavailable",
+            "estimated_cost": "available",
+            "pricing": "available"
+          },
+          "pricing_source": "local_estimate",
+          "join_confidence": "unattributed",
+          "collected_at": "2026-11-03T15:44:42.489Z",
+          "event_count": 192,
+          "event_ids": [
+            "event-17",
+            "event-18",
+            "event-19",
+            "event-20",
+            "event-21",
+            "event-22",
+            "event-23",
+            "event-24",
+            "event-25",
+            "event-26",
+            "event-27",
+            "event-28",
+            "event-29",
+            "event-30",
+            "event-31",
+            "event-32",
+            "event-33",
+            "event-34",
+            "event-35",
+            "event-36",
+            "event-37",
+            "event-38",
+            "event-39",
+            "event-40",
+            "event-41",
+            "event-42",
+            "event-43",
+            "event-44",
+            "event-45",
+            "event-46",
+            "event-47",
+            "event-48",
+            "event-49",
+            "event-50",
+            "event-51",
+            "event-52",
+            "event-53",
+            "event-54",
+            "event-55",
+            "event-56",
+            "event-57",
+            "event-58",
+            "event-59",
+            "event-60",
+            "event-61",
+            "event-62",
+            "event-63",
+            "event-64",
+            "event-65",
+            "event-66",
+            "event-67",
+            "event-68",
+            "event-69",
+            "event-70",
+            "event-71",
+            "event-72",
+            "event-73",
+            "event-74",
+            "event-75",
+            "event-76",
+            "event-77",
+            "event-78",
+            "event-79",
+            "event-80",
+            "event-81",
+            "event-82",
+            "event-83",
+            "event-84",
+            "event-85",
+            "event-86",
+            "event-87",
+            "event-88",
+            "event-89",
+            "event-90",
+            "event-91",
+            "event-92",
+            "event-93",
+            "event-94",
+            "event-95",
+            "event-96",
+            "event-97",
+            "event-98",
+            "event-99",
+            "event-100",
+            "event-101",
+            "event-102",
+            "event-103",
+            "event-104",
+            "event-105",
+            "event-106",
+            "event-107",
+            "event-108",
+            "event-109",
+            "event-110",
+            "event-111",
+            "event-112",
+            "event-113",
+            "event-114",
+            "event-115",
+            "event-116",
+            "event-117",
+            "event-118",
+            "event-119",
+            "event-120",
+            "event-121",
+            "event-122",
+            "event-123",
+            "event-124",
+            "event-125",
+            "event-126",
+            "event-127",
+            "event-128",
+            "event-129",
+            "event-130",
+            "event-131",
+            "event-132",
+            "event-133",
+            "event-134",
+            "event-135",
+            "event-136",
+            "event-137",
+            "event-138",
+            "event-139",
+            "event-140",
+            "event-141",
+            "event-142",
+            "event-143",
+            "event-144",
+            "event-145",
+            "event-146",
+            "event-147",
+            "event-148",
+            "event-149",
+            "event-150",
+            "event-151",
+            "event-152",
+            "event-153",
+            "event-154",
+            "event-155",
+            "event-156",
+            "event-157",
+            "event-158",
+            "event-159",
+            "event-160",
+            "event-161",
+            "event-162",
+            "event-163",
+            "event-164",
+            "event-165",
+            "event-166",
+            "event-167",
+            "event-168",
+            "event-169",
+            "event-170",
+            "event-171",
+            "event-172",
+            "event-173",
+            "event-174",
+            "event-175",
+            "event-176",
+            "event-177",
+            "event-178",
+            "event-179",
+            "event-180",
+            "event-181",
+            "event-182",
+            "event-183",
+            "event-184",
+            "event-185",
+            "event-186",
+            "event-187",
+            "event-188",
+            "event-189",
+            "event-190",
+            "event-191",
+            "event-192",
+            "event-193",
+            "event-194",
+            "event-195",
+            "event-196",
+            "event-197",
+            "event-198",
+            "event-199",
+            "event-200",
+            "event-201",
+            "event-202",
+            "event-203",
+            "event-204",
+            "event-205",
+            "event-206",
+            "event-207",
+            "event-208"
+          ],
+          "diagnostics": []
+        }
+      ],
+      "review": [
+        {
+          "schema_version": "task_cost_summary/v1",
+          "task_id": "HOK-3381",
+          "session_ids": [
+            "session-3",
+            "session-4"
+          ],
+          "harness": "claude-code",
+          "harness_version": "2.1.317",
+          "provider_contract_version": "claude-code/1",
+          "models": [
+            "claude-haiku-4-5-20251001"
+          ],
+          "model_segments": [
+            {
+              "model": "claude-haiku-4-5-20251001",
+              "turn_count": 12,
+              "usage": {
+                "input_tokens": 99,
+                "output_tokens": 9069,
+                "cache_read_tokens": 870896,
+                "cache_write_tokens": 139979,
+                "reasoning_tokens": 5387
+              },
+              "actual_cost_usd": null,
+              "estimated_cost_usd": 0.246006,
+              "cost_source": "local_estimate"
+            }
+          ],
+          "turn_count": 12,
+          "turns_truncated": false,
+          "usage": {
+            "input_tokens": 99,
+            "output_tokens": 9069,
+            "cache_read_tokens": 870896,
+            "cache_write_tokens": 139979,
+            "reasoning_tokens": 5387
+          },
+          "actual_cost_usd": null,
+          "estimated_cost_usd": 0.246006,
+          "total_cost_usd": 0.246006,
+          "cost_source": "local_estimate",
+          "cost_basis": "per_token_api",
+          "coverage": "complete",
+          "field_availability": {
+            "usage": "available",
+            "actual_cost": "unavailable",
+            "estimated_cost": "available",
+            "pricing": "available"
+          },
+          "pricing_source": "local_estimate",
+          "join_confidence": "unattributed",
+          "collected_at": "2026-11-03T15:49:55.683Z",
+          "event_count": 12,
+          "event_ids": [
+            "event-209",
+            "event-210",
+            "event-211",
+            "event-212",
+            "event-213",
+            "event-214",
+            "event-215",
+            "event-216",
+            "event-217",
+            "event-218",
+            "event-219",
+            "event-220"
+          ],
+          "diagnostics": []
+        }
+      ],
+      "ready-remediation": [
+        {
+          "schema_version": "task_cost_summary/v1",
+          "task_id": "HOK-3381",
+          "session_ids": [
+            "session-5"
+          ],
+          "harness": "claude-code",
+          "harness_version": "2.1.317",
+          "provider_contract_version": "claude-code/1",
+          "models": [
+            "claude-fable-5"
+          ],
+          "model_segments": [
+            {
+              "model": "claude-fable-5",
+              "turn_count": 16,
+              "usage": {
+                "input_tokens": 32,
+                "output_tokens": 4185,
+                "cache_read_tokens": 1537731,
+                "cache_write_tokens": 75273,
+                "reasoning_tokens": 480
+              },
+              "actual_cost_usd": null,
+              "estimated_cost_usd": 2.688218,
+              "cost_source": "local_estimate"
+            }
+          ],
+          "turn_count": 16,
+          "turns_truncated": false,
+          "usage": {
+            "input_tokens": 32,
+            "output_tokens": 4185,
+            "cache_read_tokens": 1537731,
+            "cache_write_tokens": 75273,
+            "reasoning_tokens": 480
+          },
+          "actual_cost_usd": null,
+          "estimated_cost_usd": 2.688218,
+          "total_cost_usd": 2.688218,
+          "cost_source": "local_estimate",
+          "cost_basis": "per_token_api",
+          "coverage": "complete",
+          "field_availability": {
+            "usage": "available",
+            "actual_cost": "unavailable",
+            "estimated_cost": "available",
+            "pricing": "available"
+          },
+          "pricing_source": "local_estimate",
+          "join_confidence": "unattributed",
+          "collected_at": "2026-11-03T15:56:07.645Z",
+          "event_count": 16,
+          "event_ids": [
+            "event-221",
+            "event-222",
+            "event-223",
+            "event-224",
+            "event-225",
+            "event-226",
+            "event-227",
+            "event-228",
+            "event-229",
+            "event-230",
+            "event-231",
+            "event-232",
+            "event-233",
+            "event-234",
+            "event-235",
+            "event-236"
+          ],
+          "diagnostics": []
+        }
+      ]
+    }
+  },
+  "expected": {
+    "workflowCost": 81.666887
+  }
+}

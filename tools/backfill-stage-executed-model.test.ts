@@ -65,7 +65,10 @@ function claudeTurn(worktreePath: string) {
     parentUuid: null,
     isSidechain: false,
     gitBranch: 'task/HOK-3017',
+    sessionId: 'session',
+    requestId: 'req-1',
     message: {
+      id: 'msg-1',
       model: 'claude-haiku-4-5',
       usage: {
         input_tokens: 10,

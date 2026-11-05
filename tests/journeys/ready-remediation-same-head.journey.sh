@@ -14,6 +14,12 @@
 # (the merge here still waits for Ready's own green-check verdict and handoff),
 # and a settled agent with green checks being charged a second remediation.
 #
+# Also protects against the 2026-11-05 HOK-3415 incident: the remediation
+# agent's /tmp hook file was lost to a host reboot after it stopped, and the
+# Ready-only disposition (which read nothing else) held it in flight forever.
+# The fake agent here clears its hook file after the Stop, so Ready must read
+# the agent's own transcript through the shared stage-agent disposition.
+#
 # CI is modelled per head: a head is red until a rerun was requested for it
 # ($FAKE_ROOT/ci-rerun-<head>, written by the remediation agent).
 set -euo pipefail

@@ -13,14 +13,9 @@ import {
   type ModelRoleEvidence,
   type SamplingPlanEntry,
 } from './launch-priority-audit.ts';
-import { buildSubmitDataContributionRow } from './hokusai-contribution-builder.ts';
-import { validateContributionRow } from './hokusai-contribution-schema.ts';
 import { redactHokusaiSubmission } from './hokusai-redaction.ts';
-import {
-  buildHokusaiContributionProjection,
-  type LaunchPriorityValidationContext,
-} from './hokusai-submission-trigger.ts';
-import { toHokusaiSubmission } from './hokusai-schema.ts';
+import type { LaunchPriorityValidationContext } from './hokusai-submission-trigger.ts';
+import { toHokusaiSubmission, type HokusaiSubmission } from './hokusai-schema.ts';
 import {
   buildCatalogSnapshot,
   fetchOpenRouterModels,
@@ -498,10 +493,6 @@ function buildAnchorDiagnostics(
     .sort((left, right) => right.share - left.share || right.directEvidenceCount - left.directEvidenceCount || left.wavemillAlias.localeCompare(right.wavemillAlias));
 }
 
-function asStringRecord(value: unknown): Record<string, unknown> | null {
-  return isPlainObject(value) ? value : null;
-}
-
 function fieldAlias(value: unknown, activeModels: ActiveLaunchModel[]): string | null {
   if (typeof value !== 'string' || value.trim().length === 0) {
     return null;
@@ -536,6 +527,62 @@ function resolveRoleAlias(
     return fieldAlias(inputs.planner_model, activeModels);
   }
   return fieldAlias(inputs.reviewer_model, activeModels);
+}
+
+interface LaunchValidationRowPreview {
+  success_under_budget: boolean;
+  /** `launch_priority_*` provenance from the fixture/catalog context. */
+  launch_priority_inputs: Record<string, string>;
+  /** Shape-compatible with the old `inputs` dict for `resolveRoleAlias`. */
+  inputs_preview: Record<string, unknown>;
+}
+
+/**
+ * HOK-3415: project the fields the launch-priority audit needs directly from
+ * the redacted submission. The audit never submitted a row — it only inspected
+ * the dict the row would have carried — so dropping the v4 row build is a
+ * no-op for the audit's observable behavior.
+ */
+function projectDiagnosticFields(
+  submission: HokusaiSubmission,
+  record: EvalRecord,
+  launchPriorityValidation: LaunchPriorityValidationContext,
+): LaunchValidationRowPreview {
+  const actualCostUsd = submission.observed_outcomes.actual_cost_usd;
+  const budgetCompliant = typeof actualCostUsd !== 'number' || !Number.isFinite(actualCostUsd)
+    ? false
+    : typeof submission.constraints.max_cost_usd !== 'number'
+      || !Number.isFinite(submission.constraints.max_cost_usd)
+      ? true
+      : actualCostUsd <= submission.constraints.max_cost_usd;
+
+  const launchPriorityInputs: Record<string, string> = {};
+  if (launchPriorityValidation.catalogGeneratedAt) {
+    launchPriorityInputs.launch_priority_catalog_generated_at = launchPriorityValidation.catalogGeneratedAt;
+  }
+  if (launchPriorityValidation.catalogSourceHash) {
+    launchPriorityInputs.launch_priority_catalog_source_hash = launchPriorityValidation.catalogSourceHash;
+  }
+  if (launchPriorityValidation.launchPriorityListVersion) {
+    launchPriorityInputs.launch_priority_list_version = launchPriorityValidation.launchPriorityListVersion;
+  }
+  if (launchPriorityValidation.launchPriorityFixtureHash) {
+    launchPriorityInputs.launch_priority_fixture_hash = launchPriorityValidation.launchPriorityFixtureHash;
+  }
+
+  const inputsPreview: Record<string, unknown> = {
+    planner_model: submission.route_taken.planner_model,
+    coder_model: submission.route_taken.coder_model,
+    reviewer_model: submission.route_taken.reviewer_model,
+    ...(record.attempted_model ? { coder_attempted_model: record.attempted_model } : {}),
+    ...(record.model_alias ? { coder_model_alias: record.model_alias } : {}),
+  };
+
+  return {
+    success_under_budget: submission.observed_outcomes.completed_successfully && budgetCompliant,
+    launch_priority_inputs: launchPriorityInputs,
+    inputs_preview: inputsPreview,
+  };
 }
 
 function launchPriorityValidationContext(provenance: LaunchValidationProvenance): LaunchPriorityValidationContext {
@@ -578,33 +625,27 @@ function buildHokusaiDiagnostics(
     eligibleEvalRecords += 1;
     try {
       const redacted = redactHokusaiSubmission(submission.submission, { salt: redactionSalt });
-      // HOK-3370 note: head-move authorship is attached on the real
-      // submission path (hokusai-submission-trigger.ts); this diagnostics
-      // preview has no repoDir to resolve the record from.
-      const projection = buildHokusaiContributionProjection(
+      // HOK-3415: v4 rows have no `inputs` dict. The launch-priority audit
+      // reads models directly from the redacted submission's `route_taken`
+      // and the launch-priority provenance context; the row builder itself
+      // is not exercised here (`buildTechnicalTaskRouterRowV4` requires the
+      // ownership record, which the diagnostic preview has no repoDir for).
+      const diag = projectDiagnosticFields(
         redacted,
-        record.timestamp,
         record,
         launchPriorityValidationContext(provenance),
       );
-      const row = validateContributionRow(buildSubmitDataContributionRow(projection));
       validRows += 1;
 
-      const rowObject = asStringRecord(row);
-      const inputs = asStringRecord(rowObject?.inputs);
-      const successful = rowObject?.success_under_budget === true;
+      const successful = diag.success_under_budget === true;
 
-      if (Object.keys(provenancePreview).length === 0 && inputs) {
-        provenancePreview = Object.fromEntries(
-          Object.entries(inputs)
-            .filter(([key, value]) => key.startsWith('launch_priority_') && typeof value === 'string')
-            .map(([key, value]) => [key, value as string]),
-        );
+      if (Object.keys(provenancePreview).length === 0) {
+        provenancePreview = diag.launch_priority_inputs;
       }
 
       let hadAlias = false;
       for (const role of ROLE_ORDER) {
-        const alias = resolveRoleAlias(inputs, role, activeModels);
+        const alias = resolveRoleAlias(diag.inputs_preview, role, activeModels);
         if (!alias) {
           continue;
         }

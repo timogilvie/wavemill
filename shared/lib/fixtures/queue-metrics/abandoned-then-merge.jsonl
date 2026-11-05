@@ -1,0 +1,8 @@
+{"eventId":"a1-enq1","eventType":"enqueued","timestamp":"2026-01-04T00:00:00.000Z","prNumber":400,"headSha":"bbb222"}
+{"eventId":"a1-cp1","eventType":"candidate_prepared","timestamp":"2026-01-04T00:01:00.000Z","prNumber":400,"headSha":"bbb222"}
+{"eventId":"a1-chk1","eventType":"check_run_completed","timestamp":"2026-01-04T00:06:00.000Z","prNumber":400,"headSha":"bbb222","attempt":1}
+{"eventId":"a1-ab","eventType":"abandoned","timestamp":"2026-01-04T00:07:00.000Z","prNumber":400,"headSha":"bbb222","reason":"checks"}
+{"eventId":"a1-enq2","eventType":"enqueued","timestamp":"2026-01-04T00:12:00.000Z","prNumber":400,"headSha":"bbb222"}
+{"eventId":"a1-cp2","eventType":"candidate_prepared","timestamp":"2026-01-04T00:13:00.000Z","prNumber":400,"headSha":"bbb222"}
+{"eventId":"a1-chk2","eventType":"check_run_completed","timestamp":"2026-01-04T00:18:00.000Z","prNumber":400,"headSha":"bbb222","attempt":1}
+{"eventId":"a1-mrg","eventType":"merged","timestamp":"2026-01-04T00:19:00.000Z","prNumber":400,"headSha":"bbb222"}

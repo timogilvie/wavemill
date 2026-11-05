@@ -1,19 +1,32 @@
 // allow-ready-remediation-disposition: this is the invariant definition.
+// allow-stage-agent-disposition: this guard definition carries the stage-agent patterns.
 import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 /**
- * HOK-3322: "is Ready remediation still in flight?" is decided only by
- * shared/lib/ready-remediation-disposition.ts (shell: ready_remediation_disposition).
- * A running result plus a launch head equal to HEAD is a fact about the
- * launch, not liveness; these shapes re-derive the decision privately.
+ * HOK-3322 + HOK-3386: "is a stage's agent still in flight, or has it settled
+ * without a result?" is decided only by:
+ *
+ *   - shared/lib/ready-remediation-disposition.ts (Ready remediation adapter)
+ *   - shared/lib/stage-agent-disposition.ts (the one generalised decision)
+ *   - shell: ready_remediation_disposition, stage_agent_disposition
+ *
+ * The HOK-3386 patterns catch private re-derivation over `task_progress_json`
+ * output and private stage-launch-identity reads outside `readStageAgentLaunch`.
  */
 export const READY_REMEDIATION_DISPOSITION_GUARD: GuardSpec = {
   name: 'ready-remediation-disposition',
-  findingNoun: 'private Ready remediation in-flight decision(s)',
+  findingNoun: 'private stage-agent / Ready in-flight decision(s)',
   suppressionMarker: 'allow-ready-remediation-disposition',
   allowlistFile: 'tools/ready-remediation-disposition-allowlist.txt',
-  invariantPaths: ['shared/lib/ready-remediation-disposition.ts', 'shared/lib/ready-remediation-disposition-guard.ts'],
+  invariantPaths: [
+    'shared/lib/ready-remediation-disposition.ts',
+    'shared/lib/ready-remediation-disposition-guard.ts',
+    'shared/lib/stage-agent-disposition.ts',
+    'shared/lib/stage-agent-disposition.test.ts',
+    'tools/stage-agent-disposition.ts', // install-paths: allow invariant-path list entry, not an argv/exec literal
+  ],
   patterns: [
+    // ── HOK-3322: Ready remediation specific ─────────────────────────────
     { name: 'same-head-hold', lang: 'sh',
       re: /\$\{?\w*launch_head\}?"?\s*[!=]=\s*"?\$\{?\w*current_head|\$\{?\w*current_head\}?"?\s*[!=]=\s*"?\$\{?\w*launch_head/,
       description: 'Comparing a remediation launch head with HEAD is the retired same-head hold; read ready_remediation_disposition.' },
@@ -28,10 +41,19 @@ export const READY_REMEDIATION_DISPOSITION_GUARD: GuardSpec = {
       description: 'Pane activity is not liveness (HOK-3101); read the ReadyRemediationDisposition.' },
     { name: 'private-launch-bucket', lang: 'ts', re: /createStateDirRetry\(\s*['"]ready-remediation['"]/,
       description: 'The ready-remediation bucket head is launch identity; read it through readReadyRemediationLaunch.' },
+    // ── HOK-3386: stage-agent disposition ────────────────────────────────
+    { name: 'private-task-progress-jq-filter', lang: 'sh',
+      re: /jq\s+-e[^\n]*\.(?:agentIdle|stalled|agentRecord\.state|terminal)\b/,
+      description: 'Private jq filter over task_progress_json output; consume stage_agent_disposition instead (HOK-3386).' },
+    { name: 'retired-coding-stage-stalled', lang: 'sh', re: /\bcoding_stage_stalled\b/,
+      description: 'coding_stage_stalled was retired by HOK-3386; the shared stage-agent disposition owns the decision.' },
   ],
   remediation: [
-    'Ready remediation in-flight/completion is one decision (HOK-3322):',
-    '  TS: evaluateReadyRemediationDisposition / decideReadyRemediationDisposition (shared/lib/ready-remediation-disposition.ts)',
+    'Ready remediation in-flight/completion is the stage-agent decision (HOK-3322, HOK-3386):',
+    '  TS: evaluateReadyRemediationDisposition (shared/lib/ready-remediation-disposition.ts) — Ready launch identity onto decideStageAgentDisposition',
     '  shell: ready_remediation_disposition <issue> <state_dir> <wt_dir> <current_head>',
+    'Per-stage agent in-flight/settled decision (HOK-3386):',
+    '  TS: evaluateStageAgentDisposition / decideStageAgentDisposition (shared/lib/stage-agent-disposition.ts)',
+    '  shell: stage_agent_disposition <issue> <state_dir> <wt_dir> <current_head> <stage>',
   ],
 };

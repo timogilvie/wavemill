@@ -6,6 +6,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MILL_SCRIPT="$REPO_DIR/shared/lib/wavemill-mill.sh"
 MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 COMMON_SCRIPT="$REPO_DIR/shared/lib/wavemill-common.sh"
+STAGE_TEARDOWN_SCRIPT="$REPO_DIR/shared/lib/stage-teardown.sh"
 
 extract_function() {
   local source_file="$1"
@@ -106,6 +107,10 @@ cleanup_file="$tmp/operator-abort-cleanup.sh"
   extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_scan"
   printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "mark_task_aborted_for_cleanup"
+  printf '\n'
+  # HOK-3359: the window kill is one call into the shared teardown
+  # primitive (--no-settle short-circuits before its private helpers).
+  extract_function "$STAGE_TEARDOWN_SCRIPT" "stage_agent_teardown"
   printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "cleanup_aborted_challenge_arm"
 } > "$cleanup_file"

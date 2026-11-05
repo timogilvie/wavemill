@@ -26,6 +26,10 @@ JSON
   detail="$(jq -cn --arg h "$current_head" '{head:$h,base:"main",launchHead:$h,prNumber:528}')"
   marker_write "$ready_dir/.conflict-remediation.json" --kind conflict-remediation \
     --head "$current_head" --expires-on "head,remote,operator-event" --detail-json "$detail"
+  # The resolver launch records its ownership row before the child starts (HOK-3328).
+  # shellcheck source=../../../shared/lib/session-ownership.sh
+  source "$(dirname "$COMMON_LIB")/session-ownership.sh"
+  session_ownership_append "$ready_dir" "resolver-1" "claude-code" "conflict-resolution" "m" "" "$WT_DIR"
 }
 
 assert_ready_conflict_resolver_in_flight_holds() {

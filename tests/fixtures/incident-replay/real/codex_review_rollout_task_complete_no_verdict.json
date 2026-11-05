@@ -1,0 +1,83 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "codex_review_rollout_task_complete_no_verdict",
+  "incidents": [
+    "hok3386b1234567890b1234567890c1234567890d1234567890e1234567890fff"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-17",
+      "slug": "incident-codex-review-rollout-task-complete-no-verdict-17",
+      "phase": "review",
+      "status": "working"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "inspection_required",
+    "severity": "high",
+    "confidence": "medium",
+    "summary": "HOK-FIXTURE-17 review Codex rollout ended in task_complete but no .review-result.json verdict was written.",
+    "operatorAction": "The review agent reported task_complete but left no verdict artifact. HOK-3386 treats this as settled-without-result and routes through stage-failure-review.",
+    "metadata": {
+      "stage": "review",
+      "disposition": "settled:agent-exited",
+      "hasTranscript": true,
+      "hasCompletionArtifact": false,
+      "hasResultVerdict": false,
+      "transcriptTail": "payload.type=task_complete"
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "stage_result",
+          "source": "~/Dropbox/wavemill/worktrees/<fixture-slug>/features/<fixture-slug>/.review-result.json",
+          "timestamp": "2026-11-02T11:15:00.000Z",
+          "redactedData": "stage=review status=running agent=codex launchedHead=unknown lastEvent=task_complete verdictWritten=false",
+          "key": "stage-agent-settled:HOK-FIXTURE-17:review:task-complete-no-verdict"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "failure": {
+    "stage": "review",
+    "failureKind": null,
+    "detail": "review agent exited (task_complete) without writing a verdict",
+    "survivesRelaunches": 1
+  },
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  },
+  "journey": null,
+  "journeyNullReason": "detector-level class; replayed via the incident cycle loop",
+  "expected": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "inspection_required",
+    "occurrenceCount": 1,
+    "lifecycleWhilePresent": "observed",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  },
+  "source": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "inspection_required",
+    "severity": "high",
+    "confidence": "medium",
+    "recordedLifecycle": "resolved",
+    "recordedResolution": "auto_resolved",
+    "occurrenceCount": 1,
+    "firstObservedAt": "2026-11-02T11:15:00.000Z",
+    "lastObservedAt": "2026-11-02T11:15:00.000Z",
+    "stateSnapshot": null,
+    "convertedBy": "HOK-3386 hand-crafted",
+    "observationsTruncated": false
+  }
+}
