@@ -29,7 +29,7 @@ export const JOURNEY_WALL_CLOCK_BUDGET_GUARD: GuardSpec = {
     'shared/lib/journey-wall-clock-budget-guard.ts',
     // The guard's self-test necessarily spells out every forbidden shape as a
     // fixture, so it is invariant source too and is never scanned.
-    'tools/check-journey-wall-clock-budget.test.ts',
+    'tools/check-journey-wall-clock-budget.test.ts', // install-paths: allow invariantPaths list, not an argv target
   ],
   excludedPrefixes: [
     // Default list minus `tests/` so this guard still scans journey code.
