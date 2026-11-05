@@ -638,12 +638,12 @@ launch_route_job_run() {
   stderr_file=$(mktemp 2>/dev/null) || stderr_file=""
   if [[ -n "$stderr_file" ]]; then
     route_json=$(wavemill_run_tool "$TOOLS_DIR/route-task.ts" --json --file "$packet_file" --repo-dir "$REPO_DIR" \
-      --feature-dir "$feature_dir" --source live --input-kind task-packet "${cost_args[@]}" 2>"$stderr_file") || rc=$?
+      --feature-dir "$feature_dir" --issue-id "$issue" --source live --input-kind task-packet "${cost_args[@]}" 2>"$stderr_file") || rc=$?
     stderr_output=$(cat "$stderr_file" 2>/dev/null || echo "")
     rm -f "$stderr_file"
   else
     route_json=$(wavemill_run_tool "$TOOLS_DIR/route-task.ts" --json --file "$packet_file" --repo-dir "$REPO_DIR" \
-      --feature-dir "$feature_dir" --source live --input-kind task-packet "${cost_args[@]}") || rc=$?
+      --feature-dir "$feature_dir" --issue-id "$issue" --source live --input-kind task-packet "${cost_args[@]}") || rc=$?
     stderr_output=""
   fi
   if (( rc != 0 )) || ! printf '%s' "$route_json" | jq -e '.planner and .coder and .reviewer' >/dev/null 2>&1; then

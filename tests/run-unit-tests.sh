@@ -57,6 +57,7 @@ TESTS=(
   shared/lib/stage-result.test.ts
   shared/lib/task-progress.test.ts
   shared/lib/task-identity.test.ts
+  shared/lib/routing-objective-split.test.ts
   shared/lib/task-artifact-lookup.test.ts
   tests/migrate-archived-stage-artifacts.test.ts
   shared/lib/terminal-backend.test.ts

@@ -18717,13 +18717,13 @@ launch_task() {
           printf '\n[attempt %d] live route\n' "$route_attempt" >> "$routing_log_file"
           rm -f "$route_stderr_file"
           if [[ "$route_debug_enabled" == "true" ]]; then
-            if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
+            if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --issue-id "$issue" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
               route_rc=0
             else
               route_rc=$?
             fi
           else
-            if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
+            if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --issue-id "$issue" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
               route_rc=0
             else
               route_rc=$?
@@ -18776,13 +18776,13 @@ launch_task() {
         printf '\n[heuristic fallback]\n' >> "$routing_log_file"
         rm -f "$route_stderr_file"
         if [[ "$route_debug_enabled" == "true" ]]; then
-          if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
+          if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --issue-id "$issue" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
             route_rc=0
           else
             route_rc=$?
           fi
         else
-          if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
+          if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --issue-id "$issue" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
             route_rc=0
           else
             route_rc=$?

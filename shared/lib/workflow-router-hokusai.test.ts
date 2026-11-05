@@ -4,6 +4,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { deriveRoutingObjectiveForIssue } from './routing-objective-split.ts';
 import { routeWorkflowAuto, routeWorkflowHokusai } from './workflow-router.ts';
 import {
   baseConfig,
@@ -118,7 +119,15 @@ function hokusaiRepo(routerOverrides: Record<string, unknown> = {}) {
 const HAIKU = 'claude-haiku-4-5-20251001';
 const OPUS = 'claude-opus-4-7';
 
-// protects: router escalation ranking coders locally instead of re-asking Hokusai (HOK-3363).
+function issueIdForObjective(objective: 'lowest_cost' | 'highest_reliability'): string {
+  for (let number = 1; number <= 1000; number += 1) {
+    const issueId = `HOK-${number}`;
+    if (deriveRoutingObjectiveForIssue(issueId) === objective) return issueId;
+  }
+  throw new Error(`No test issue ID found for ${objective}`);
+}
+
+// protects: highest-reliability routing re-asks Hokusai instead of ranking coders locally (HOK-3363).
 await test('low Hokusai confidence re-asks Hokusai for highest_reliability without the low-confidence coder', async () => {
   const { repoDir, cleanup } = hokusaiRepo();
   const { requests } = mockHokusaiFetchSequence([
@@ -135,12 +144,13 @@ await test('low Hokusai confidence re-asks Hokusai for highest_reliability witho
   ]);
 
   try {
-    const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', { repoDir, maxCostUsd: 25 });
+    const issueId = issueIdForObjective('highest_reliability');
+    const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', { repoDir, maxCostUsd: 25, issueId });
 
     assert.equal(requests.length, 2, 'exactly one re-ask');
     const first = requests[0].inputs.routing ?? {};
     const reask = requests[1].inputs.routing ?? {};
-    assert.equal(first.objective, undefined, 'the first ask uses Hokusai\'s default objective');
+    assert.equal(first.objective, 'highest_reliability');
     assert.equal(reask.objective, 'highest_reliability');
     assert.ok(Array.isArray(reask.available_coder_models) && reask.available_coder_models.length > 0);
     assert.ok(!reask.available_coder_models.includes(HAIKU), 'the low-confidence coder is excluded');
@@ -149,6 +159,7 @@ await test('low Hokusai confidence re-asks Hokusai for highest_reliability witho
 
     assert.equal(decision.routingMode, 'hokusai', 'the escalated route is still Hokusai\'s decision');
     assert.equal(decision.coder, OPUS);
+    assert.equal(decision.routingObjective, 'highest_reliability');
     assert.equal(decision.confidence, 0.71);
     assert.equal(decision.provenance?.inferenceLogId, 'req-1', 'the first request stays the join key');
 
@@ -165,6 +176,69 @@ await test('low Hokusai confidence re-asks Hokusai for highest_reliability witho
     assert.deepEqual(override.triggers, [{ metric: 'confidence', value: 0.334, threshold: 0.4 }]);
     assert.deepEqual(override.hokusai, { requestId: 'req-2' });
     assert.equal(decision.stageRoutes?.planner.overrides.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    cleanup();
+  }
+});
+
+// protects: cheap Hokusai routes being replaced solely because their prior confidence is below the floor.
+await test('lowest_cost routing keeps a low-confidence Hokusai recommendation without a re-ask', async () => {
+  const { repoDir, cleanup } = hokusaiRepo();
+  const { requests } = mockHokusaiFetchSequence([
+    { strategy: { estimated_success_under_budget: 0.62, confidence: 0.26 } },
+  ]);
+
+  try {
+    const issueId = issueIdForObjective('lowest_cost');
+    const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', { repoDir, maxCostUsd: 25, issueId });
+
+    assert.equal(requests.length, 1, 'lowest_cost routes never receive a confidence-floor re-ask');
+    assert.equal(requests[0].inputs.routing?.objective, 'lowest_cost');
+    assert.equal(decision.routingObjective, 'lowest_cost');
+    assert.equal(decision.coder, HAIKU);
+    assert.ok(!decision.stageRoutes?.coder.overrides.some((override) => override.reason === 'hokusai_reask_below_floor'));
+    assert.ok(decision.reasoning.includes('Router escalation skipped: objective=lowest_cost exempts low-confidence routes from the re-ask.'));
+  } finally {
+    globalThis.fetch = originalFetch;
+    cleanup();
+  }
+});
+
+// protects: non-task/ad-hoc routing changing Hokusai's server-default objective.
+await test('ad-hoc Hokusai routing leaves objective undefined', async () => {
+  const { repoDir, cleanup } = hokusaiRepo();
+  const { requests } = mockHokusaiFetchSequence([
+    { strategy: { estimated_success_under_budget: 0.8, confidence: 0.8 } },
+  ]);
+
+  try {
+    const decision = await routeWorkflowAuto('Fix a backend routing bug with tests.', { repoDir, maxCostUsd: 25 });
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].inputs.routing?.objective, undefined);
+    assert.equal(decision.routingObjective, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+    cleanup();
+  }
+});
+
+// protects: a challenge pair's primary and challenger drifting into different routing-objective arms.
+await test('challenge arms share their base issue routing objective', async () => {
+  const { repoDir, cleanup } = hokusaiRepo();
+  const { requests } = mockHokusaiFetchSequence([
+    { strategy: { estimated_success_under_budget: 0.8, confidence: 0.8 } },
+    { strategy: { estimated_success_under_budget: 0.8, confidence: 0.8 } },
+  ]);
+
+  try {
+    const issueId = issueIdForObjective('lowest_cost');
+    const primary = await routeWorkflowAuto('Fix a backend routing bug with tests.', { repoDir, issueId });
+    const challenger = await routeWorkflowAuto('Fix a backend routing bug with tests.', { repoDir, issueId: `${issueId}_c` });
+
+    assert.equal(primary.routingObjective, 'lowest_cost');
+    assert.equal(challenger.routingObjective, primary.routingObjective);
+    assert.equal(requests[0].inputs.routing?.objective, requests[1].inputs.routing?.objective);
   } finally {
     globalThis.fetch = originalFetch;
     cleanup();
