@@ -49,8 +49,8 @@ export const READY_REMEDIATION_DISPOSITION_GUARD: GuardSpec = {
       description: 'coding_stage_stalled was retired by HOK-3386; the shared stage-agent disposition owns the decision.' },
   ],
   remediation: [
-    'Ready remediation in-flight/completion is one decision (HOK-3322):',
-    '  TS: evaluateReadyRemediationDisposition / decideReadyRemediationDisposition (shared/lib/ready-remediation-disposition.ts)',
+    'Ready remediation in-flight/completion is the stage-agent decision (HOK-3322, HOK-3386):',
+    '  TS: evaluateReadyRemediationDisposition (shared/lib/ready-remediation-disposition.ts) — Ready launch identity onto decideStageAgentDisposition',
     '  shell: ready_remediation_disposition <issue> <state_dir> <wt_dir> <current_head>',
     'Per-stage agent in-flight/settled decision (HOK-3386):',
     '  TS: evaluateStageAgentDisposition / decideStageAgentDisposition (shared/lib/stage-agent-disposition.ts)',
