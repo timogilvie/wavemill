@@ -12,6 +12,7 @@ import os from 'node:os';
 import { join } from 'node:path';
 import {
   decideStageAgentDisposition,
+  gatherStageTaskProgress,
   readStageAgentLaunch,
   type StageAgentDispositionInput,
   type StageAgentProgress,
@@ -362,6 +363,78 @@ test('readStageAgentLaunch: returns null when no row matches', () => {
   const dir = stateDir();
   try {
     assert.equal(readStageAgentLaunch(dir, 'review'), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── HOK-3422: gather anchors stall clock off ownership launchedAt ─────────────
+//
+// The 2026-11-05 incident: the Ready remediation agent died but the controller
+// kept rewriting `.ready-result.json` on every tick (per-tick CI refresh). Pre-
+// fix the stage-result mtime moved `lastProgressAt` forward on every tick and
+// `stalled` never fired. These tests pin the new invariant: a running stage
+// result whose mtime advances every tick, with NO agent transcript events
+// after launch, reports `stalled=true` after the stall threshold.
+
+test('HOK-3422: gatherStageTaskProgress — per-tick stage-result rewrite without agent evidence → stalled after threshold', () => {
+  const dir = stateDir();
+  try {
+    // Launch happened 45 minutes before "now".
+    const launchIso = '2026-11-05T12:00:00.000Z';
+    const now = new Date('2026-11-05T12:45:00.000Z');
+    appendOwnershipRow(dir, {
+      sessionRef: 'remediation-sess',
+      harness: 'claude-code',
+      kind: 'ready-remediation',
+      model: 'claude-sonnet-5',
+      launchedAt: launchIso,
+      cwd: '/tmp/nonexistent-cwd',
+    });
+    const progress = gatherStageTaskProgress({
+      issue: 'HOK-TEST-3422',
+      session: 'wavemill',
+      worktree: dir,
+      stateDir: dir,
+      stage: 'ready-remediation',
+      // Stage result status is 'running'. Its finishedAt is pushed forward
+      // on every tick by the controller's CI refresh — exactly the incident.
+      stageResult: {
+        startedAt: launchIso,
+        finishedAt: '2026-11-05T12:44:30.000Z', // 30s before "now"
+      } as unknown as Parameters<typeof gatherStageTaskProgress>[0]['stageResult'],
+      now,
+    });
+    // HOK-3422: no agent-written evidence; the stall clock anchors to the
+    // ownership launchedAt (45m ago) and fires past the 30m threshold.
+    assert.equal(progress.lastProgressAt, null,
+      'controller stage-result timestamps must not become lastProgressAt');
+    assert.equal(progress.stalled, true,
+      'ready remediation should be reported stalled 45m past launch with no agent evidence');
+    // lastTransitionAt still exposes the controller's newest move, so dash-
+    // board strings do not go null for a healthy controller-owned wait.
+    assert.ok(progress.lastTransitionAt !== null,
+      'lastTransitionAt should carry the newest controller-authored timestamp');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3422: gatherStageTaskProgress — no launch row + no agent evidence → never stalled', () => {
+  const dir = stateDir();
+  try {
+    const now = new Date('2026-11-05T12:45:00.000Z');
+    const progress = gatherStageTaskProgress({
+      issue: 'HOK-TEST-3422',
+      session: 'wavemill',
+      worktree: dir,
+      stateDir: dir,
+      stage: 'ready-remediation',
+      stageResult: null,
+      now,
+    });
+    assert.equal(progress.stalled, false,
+      'no launch row → no stall-clock anchor → never stalled (healthy controller-owned wait)');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

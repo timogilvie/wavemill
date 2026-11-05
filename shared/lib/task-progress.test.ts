@@ -59,7 +59,7 @@ function emptyInputs(overrides: Partial<TaskProgressInputs> = {}): TaskProgressI
     worktreeMtimeAt: null,
     statusFileMtimeAt: null,
     ownedSession: null,
-    transitionSources: [],
+    transitionInputs: [],
     terminal: { prState: null, prNumber: null, lifecycleOutcome: null, at: null },
     agentProcessLive: null,
     backgroundWork: null,
@@ -108,7 +108,10 @@ test('(a) an idle agent with no other evidence, past threshold, is stalled', () 
       writer: 'agent',
       topTimestamp: stopTs,
     }),
-    transitionSources: [{ kind: 'transition', at: '2026-09-28T15:15:00Z', detail: 'coding.startedAt' }],
+    // HOK-3422: stall clock anchors off launchAt when no agent progress has
+    // landed. The idle Stop is an agent record but never a progress source.
+    launchAt: '2026-09-28T15:15:00Z',
+    transitionInputs: [{ at: '2026-09-28T15:15:00Z', detail: 'coding.startedAt' }],
     agentProcessLive: true,
   });
   const p = deriveTaskProgress(inputs, { now, stallMinutes: 30 });
@@ -156,8 +159,8 @@ test('(c) a fresh agent hook + fresh commit override a stale task.updated (HOK-3
     }),
     latestCommitAt: '2026-09-28T15:55:00Z', // 5m ago
     launchAt: '2026-09-28T14:00:00Z',
-    transitionSources: [
-      { kind: 'transition', at: '2026-09-28T13:00:00Z', detail: 'task.updated' }, // 3h stale
+    transitionInputs: [
+      { at: '2026-09-28T13:00:00Z', detail: 'task.updated' }, // 3h stale
     ],
   });
   void launchTs;
@@ -167,16 +170,100 @@ test('(c) a fresh agent hook + fresh commit override a stale task.updated (HOK-3
   assert.ok(kinds.includes('hook'));
   assert.ok(kinds.includes('commit'));
   assert.ok(p.progressAgeMinutes !== null && p.progressAgeMinutes < 30);
+  // HOK-3422: the stale controller-authored transition is surfaced via
+  // lastTransitionAt only, never through sources[] or progressAgeMinutes.
+  assert.ok(!kinds.includes('transition' as never));
+  assert.equal(p.lastTransitionAt, '2026-09-28T13:00:00.000Z');
 });
 
-test('(c) with only transition (task.updated) available, age falls back to it', () => {
+// HOK-3422: controller-authored transitions never become progress sources.
+test('HOK-3422: transition input never appears in sources[] and never feeds lastProgressAt', () => {
   const now = new Date('2026-09-28T16:00:00Z');
   const inputs = emptyInputs({
-    transitionSources: [{ kind: 'transition', at: '2026-09-28T15:50:00Z', detail: 'task.updated' }],
+    transitionInputs: [{ at: '2026-09-28T15:50:00Z', detail: 'task.updated' }],
   });
   const p = deriveTaskProgress(inputs, { now });
-  assert.equal(p.progressAgeMinutes, 10);
+  assert.equal(p.sources.length, 0);
+  assert.equal(p.lastProgressAt, null);
+  assert.equal(p.progressAgeMinutes, null);
+  // But lastTransitionAt is derived from transitionInputs.
+  assert.equal(p.lastTransitionAt, '2026-09-28T15:50:00.000Z');
+});
+
+// HOK-3422: lastTransitionAt picks the newest transition.
+test('HOK-3422: lastTransitionAt derives from transitionInputs, newest first', () => {
+  const now = new Date('2026-09-28T16:00:00Z');
+  const inputs = emptyInputs({
+    transitionInputs: [
+      { at: '2026-09-28T13:00:00Z', detail: 'coding.startedAt' },
+      { at: '2026-09-28T15:50:00Z', detail: 'ready-result.mtime' },
+      { at: '2026-09-28T14:30:00Z', detail: 'coding.finishedAt' },
+    ],
+  });
+  const p = deriveTaskProgress(inputs, { now });
+  assert.equal(p.lastTransitionAt, '2026-09-28T15:50:00.000Z');
+});
+
+// HOK-3422: launchAt is the stall-clock anchor when no agent evidence exists.
+test('HOK-3422: no agent evidence after launchAt + stallMinutes → stalled=true, lastProgressAt=null', () => {
+  const now = new Date('2026-09-28T16:00:00Z');
+  const inputs = emptyInputs({
+    // Launched 45m ago; no hook, no commit, no worktree, no transcript.
+    launchAt: '2026-09-28T15:15:00Z',
+    // Controller rewrites the stage-result on every tick — the 2026-11-05
+    // incident shape. Must NOT advance lastProgressAt.
+    transitionInputs: [
+      { at: '2026-09-28T15:15:00Z', detail: 'ready.startedAt' },
+      { at: '2026-09-28T15:59:55Z', detail: 'ready.finishedAt' },
+      { at: '2026-09-28T15:59:55Z', detail: 'ready-result.mtime' },
+    ],
+  });
+  const p = deriveTaskProgress(inputs, { now, stallMinutes: 30 });
+  assert.equal(p.stalled, true);
+  assert.equal(p.lastProgressAt, null);
+  assert.equal(p.progressAgeMinutes, null);
+  // lastTransitionAt is the newest controller write so readers that want
+  // "last controller move" still see it.
+  assert.equal(p.lastTransitionAt, '2026-09-28T15:59:55.000Z');
+});
+
+// HOK-3422: controller-owned wait with no launch anchor is never stalled.
+test('HOK-3422: no launchAt and no agent evidence → stalled=false (healthy CI wait)', () => {
+  const now = new Date('2026-09-28T16:00:00Z');
+  const inputs = emptyInputs({
+    // Ready CI wait with no remediation launched: no agent was ever started,
+    // so the stall clock has no anchor.
+    launchAt: null,
+    transitionInputs: [
+      { at: '2026-09-28T13:00:00Z', detail: 'ready.startedAt' },
+      { at: '2026-09-28T15:59:55Z', detail: 'ready-result.mtime' },
+    ],
+  });
+  const p = deriveTaskProgress(inputs, { now, stallMinutes: 30 });
   assert.equal(p.stalled, false);
+  assert.equal(p.lastProgressAt, null);
+});
+
+test('HOK-3422 replay: 2026-11-05 incident — no hook after reboot, controller rewrites ready-result every tick', () => {
+  // Launched 22:33:08Z; now ~14:00Z next day (~15h30m after launch).
+  const now = new Date('2026-11-05T14:00:00Z');
+  const launchIso = '2026-11-04T22:33:08Z';
+  // Per-tick rewrite of the ready-result file keeps advancing the mtime,
+  // the exact evidence attached to the issue. Pre-fix: these advanced
+  // lastProgressAt and `stalled` never fired. Post-fix: they feed
+  // lastTransitionAt only and the stall clock anchors to launchAt.
+  const inputs = emptyInputs({
+    hookFile: null, // /tmp was cleared on reboot
+    launchAt: launchIso,
+    transitionInputs: [
+      { at: launchIso, detail: 'ready.startedAt' },
+      { at: '2026-11-05T14:06:54Z', detail: 'ready.finishedAt' },
+      { at: '2026-11-05T14:07:28Z', detail: 'ready-result.mtime' },
+    ],
+  });
+  const p = deriveTaskProgress(inputs, { now, stallMinutes: 30 });
+  assert.equal(p.stalled, true, 'the ready-remediation agent should be reported as stalled, not in-flight');
+  assert.equal(p.lastProgressAt, null);
 });
 
 // ── (d) writer classification + agentRecord preservation ────────────────────
@@ -285,12 +372,13 @@ test('HOK-3069 replay: no hook, HEAD older than launch, clean worktree, status m
     launchAt: launchIso,
     worktreeMtimeAt: null,
     statusFileMtimeAt: '2026-09-28T15:29:00Z', // == launch, within 5s grace
-    transitionSources: [{ kind: 'transition', at: launchIso, detail: 'coding.startedAt' }],
+    transitionInputs: [{ at: launchIso, detail: 'coding.startedAt' }],
   });
   const p = deriveTaskProgress(inputs, { now, stallMinutes: 30 });
   assert.equal(p.stalled, true);
   const kinds = p.sources.map((s) => s.kind);
-  assert.deepEqual(kinds, ['transition']);
+  // HOK-3422: transitions are no longer a progress source.
+  assert.deepEqual(kinds, []);
 });
 
 test('HOK-3069 counter: status mtime at launch+10m => not stalled at 31m', () => {
@@ -298,7 +386,7 @@ test('HOK-3069 counter: status mtime at launch+10m => not stalled at 31m', () =>
   const inputs = emptyInputs({
     launchAt: '2026-09-28T15:29:00Z',
     statusFileMtimeAt: '2026-09-28T15:39:00Z',
-    transitionSources: [{ kind: 'transition', at: '2026-09-28T15:29:00Z', detail: 'coding.startedAt' }],
+    transitionInputs: [{ at: '2026-09-28T15:29:00Z', detail: 'coding.startedAt' }],
   });
   const p = deriveTaskProgress(inputs, { now, stallMinutes: 30 });
   assert.equal(p.stalled, false);
@@ -317,7 +405,10 @@ test('a fresh agent waiting or approval-needed state suppresses the stall flag',
         agentRecord: { state, event: 'Notification', agent: 'claude', timestamp: waitingTs },
         topTimestamp: waitingTs,
       },
-      transitionSources: [{ kind: 'transition', at: '2026-09-28T14:00:00Z', detail: 'coding.startedAt' }],
+      // HOK-3422: launchAt anchors the stall clock; a fresh attention state
+      // suppresses it even though the launch is 2h old.
+      launchAt: '2026-09-28T14:00:00Z',
+      transitionInputs: [{ at: '2026-09-28T14:00:00Z', detail: 'coding.startedAt' }],
     });
     const p = deriveTaskProgress(inputs, { now, stallMinutes: 30 });
     assert.equal(p.stalled, false, `expected not stalled for ${state}`);
@@ -327,8 +418,9 @@ test('a fresh agent waiting or approval-needed state suppresses the stall flag',
 test('a terminal task is never stalled, even after threshold', () => {
   const now = new Date('2026-09-28T16:00:00Z');
   const inputs = emptyInputs({
+    launchAt: '2026-09-28T00:00:00Z',
     terminal: { prState: 'MERGED', prNumber: 1, lifecycleOutcome: 'merged', at: '2026-09-28T00:00:00Z' },
-    transitionSources: [{ kind: 'transition', at: '2026-09-28T00:00:00Z', detail: 'task.updated' }],
+    transitionInputs: [{ at: '2026-09-28T00:00:00Z', detail: 'task.updated' }],
   });
   const p = deriveTaskProgress(inputs, { now, stallMinutes: 30 });
   assert.equal(p.stalled, false);
@@ -832,11 +924,12 @@ test('bg-work: a descendant that started before the agent (negative lag) is not 
 
 // NOTE: an idle hook record is never itself a progress `source` (it is the
 // agent's settled state, not progress), so `progressAgeMinutes` would be
-// `null` — and `overThreshold` false — without an independent stale
-// transition source. Each fixture below supplies one (`task.updated` 60
-// minutes ago) purely to make `overThreshold` true, isolating what we're
-// actually testing: whether background-work suppression fires.
-const STALE_TRANSITION_SOURCE = { kind: 'transition' as const, at: '2026-09-28T15:00:00Z', detail: 'task.updated' };
+// `null` — and `overThreshold` false — without an independent stall anchor.
+// HOK-3422: each fixture below sets `launchAt` to 60 minutes ago; the
+// derivation's new anchor rule (`lastProgressMs ?? launchMs`) then fires
+// `overThreshold` from the launch, isolating what we're actually testing:
+// whether background-work suppression fires.
+const STALE_LAUNCH_AT = '2026-09-28T15:00:00Z';
 
 test('deriveTaskProgress: idle agent + live background work suppresses stalled, never touches lastProgressAt/sources', () => {
   const now = new Date('2026-09-28T16:00:00Z');
@@ -848,7 +941,7 @@ test('deriveTaskProgress: idle agent + live background work suppresses stalled, 
       writer: 'agent',
       topTimestamp: stopTs,
     }),
-    transitionSources: [STALE_TRANSITION_SOURCE],
+    launchAt: STALE_LAUNCH_AT,
     backgroundWork: { live: true, processes: [{ pid: 999, command: 'sleep 600' }] },
   });
   const p = deriveTaskProgress(inputs, { now });
@@ -856,11 +949,10 @@ test('deriveTaskProgress: idle agent + live background work suppresses stalled, 
   assert.equal(p.agentBackgroundLive, true);
   assert.equal(p.backgroundProcesses.length, 1);
   assert.equal(p.stalled, false);
-  // Invariant 1 pinned: background work never becomes progress — the only
-  // source present is the caller-supplied transition, not the idle hook or
-  // the background-work probe.
-  assert.equal(p.sources.length, 1);
-  assert.equal(p.sources[0].kind, 'transition');
+  // HOK-3422 invariant: the idle hook and background-work probe never add
+  // progress sources. Transitions are no longer a progress kind either, so
+  // sources[] is empty here.
+  assert.equal(p.sources.length, 0);
 });
 
 test('deriveTaskProgress: idle agent + no background work still stalls (existing behavior preserved)', () => {
@@ -873,7 +965,7 @@ test('deriveTaskProgress: idle agent + no background work still stalls (existing
       writer: 'agent',
       topTimestamp: stopTs,
     }),
-    transitionSources: [STALE_TRANSITION_SOURCE],
+    launchAt: STALE_LAUNCH_AT,
     backgroundWork: { live: false, processes: [] },
   });
   const p = deriveTaskProgress(inputs, { now });
@@ -892,7 +984,7 @@ test('deriveTaskProgress: not probed (backgroundWork null) behaves like today (a
       writer: 'agent',
       topTimestamp: stopTs,
     }),
-    transitionSources: [STALE_TRANSITION_SOURCE],
+    launchAt: STALE_LAUNCH_AT,
   });
   const p = deriveTaskProgress(inputs, { now });
   assert.equal(p.agentBackgroundLive, null);
@@ -903,7 +995,7 @@ test('deriveTaskProgress: non-idle agent + live background work does NOT suppres
   const now = new Date('2026-09-28T16:00:00Z');
   const inputs = emptyInputs({
     hookFile: null,
-    transitionSources: [{ kind: 'transition', at: '2026-09-28T15:00:00Z', detail: 'task.updated' }],
+    launchAt: STALE_LAUNCH_AT,
     backgroundWork: { live: true, processes: [{ pid: 999, command: 'sleep 600' }] },
   });
   const p = deriveTaskProgress(inputs, { now });

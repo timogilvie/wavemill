@@ -44,8 +44,8 @@ import {
   CONTROLLER_HOOK_EVENTS,
   deriveTaskProgress,
   type HookState,
-  type ProgressSource,
   type TaskProgressInputs,
+  type TransitionInput,
 } from './task-progress.ts';
 import { resolveEvalsDir } from './evals-paths.ts';
 import { getReliabilityConfig, loadWavemillConfig } from './config.ts';
@@ -393,6 +393,11 @@ export function replayStallIntervals(
   let lastAgentWorkMs: number | null = null;
   let lastCommitMs: number | null = null;
   let lastTransition: ProgressEvidence | null = null;
+  // HOK-3422: the earliest stage-started transition is a controller-authored
+  // "the stage was launched" fact — a legitimate stall-clock anchor even
+  // though it is never a progress source. Replays of historical tasks whose
+  // archives carry only stage results (no transcripts) rely on it.
+  let firstLaunchMs: number | null = null;
   const frames: SnapshotFrame[] = [];
   for (const t of [...ticks].sort((a, b) => a - b)) {
     while (i < sorted.length && sorted[i].atMs <= t) {
@@ -407,25 +412,43 @@ export function replayStallIntervals(
         lastCommitMs = e.atMs;
       } else if (e.kind === 'transition') {
         lastTransition = e;
+        if (firstLaunchMs === null && typeof e.detail === 'string' && e.detail.endsWith(':started')) {
+          firstLaunchMs = e.atMs;
+        }
       }
     }
     const terminal = t >= opts.endMs;
-    const transitionSources: ProgressSource[] = [];
+    // HOK-3422: controller-authored transitions feed only `lastTransitionAt`,
+    // not progress. Carry them through as `transitionInputs` so the derived
+    // snapshot still exposes the controller's last move, but the stall math
+    // is agent-only.
+    const transitionInputs: TransitionInput[] = [];
     if (lastTransition) {
-      transitionSources.push({ kind: 'transition', at: iso(lastTransition.atMs), ...(lastTransition.detail ? { detail: lastTransition.detail } : {}) });
+      transitionInputs.push({ at: iso(lastTransition.atMs), ...(lastTransition.detail ? { detail: lastTransition.detail } : {}) });
     }
     // The agent's last real work stays the progress anchor after it idles: a
     // live observer reads it from the history archive, not the idle record.
+    // HOK-3422: this is agent-written evidence, so synthesize it as an agent
+    // hook record on `lastAgent` (invariant 2 preserved) — not as a
+    // `transition`, which would be a controller write.
+    let agentWorkHook: HookArchivePayload | null = lastAgent;
     if (lastAgentWorkMs !== null) {
-      transitionSources.push({ kind: 'transition', at: iso(lastAgentWorkMs), detail: 'agent-work' });
+      agentWorkHook = {
+        state: 'working' as HookState,
+        event: 'ReplayAgentWork',
+        writer: 'agent',
+        agent: lastAgent?.agent ?? 'replay',
+        timestamp: Math.floor(lastAgentWorkMs / 1000),
+      };
     }
     frames.push({
       atMs: t,
       inputs: {
         ...emptyProgressInputs(),
-        hookFile: lastTop ? synthesizeHookFile(lastTop, lastAgent) : null,
+        hookFile: lastTop ? synthesizeHookFile(lastTop, agentWorkHook) : null,
         latestCommitAt: lastCommitMs !== null ? iso(lastCommitMs) : null,
-        transitionSources,
+        launchAt: firstLaunchMs !== null ? iso(firstLaunchMs) : null,
+        transitionInputs,
         terminal: terminal
           ? { prState: 'MERGED', prNumber: null, lifecycleOutcome: null, at: iso(opts.endMs) }
           : { prState: null, prNumber: null, lifecycleOutcome: null, at: null },
@@ -1384,7 +1407,7 @@ function emptyProgressInputs(): TaskProgressInputs {
     launchAt: null,
     worktreeMtimeAt: null,
     statusFileMtimeAt: null,
-    transitionSources: [],
+    transitionInputs: [],
     terminal: { prState: null, prNumber: null, lifecycleOutcome: null, at: null },
     agentProcessLive: null,
     backgroundWork: null,

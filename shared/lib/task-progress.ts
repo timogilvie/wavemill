@@ -6,8 +6,12 @@
  * whichever signal was closest at hand. That created four families of bugs:
  *   (a) an idle agent REPL counted as a live process;
  *   (b) the monitor's own polling subprocesses counted as the task;
- *   (c) a stale `.tasks[id].updated` was treated as the last progress time
- *       even though it only changes on transitions;
+ *   (c) FIXED (HOK-3422): `task.updated` and stage-result `startedAt` /
+ *       `finishedAt` / mtimes are controller writes. They no longer contribute
+ *       to `lastProgressAt` or `stalled`; the controller-move time is now a
+ *       separate derived `lastTransitionAt` on `TaskProgress` that readers
+ *       consume when they want "when did the controller last move this task"
+ *       (reliability metrics, dashboard, ready watchdog).
  *   (d) a monitor-written hook overwrote the agent's own record.
  *
  * This module builds one primitive that turns raw evidence into
@@ -18,9 +22,19 @@
  *
  * Design invariants pinned by the tests:
  *   1. Pane or process existence is never progress.
- *   2. Monitor or controller writes are never agent evidence.
+ *   2. Monitor or controller writes are never agent evidence. In particular,
+ *      stage-result `startedAt` / `finishedAt` / `updated` and `task.updated`
+ *      are controller timestamps (HOK-3422): they feed only `lastTransitionAt`,
+ *      never `lastProgressAt` or `stalled`.
  *   3. An agent's own idle/Stop survives later monitor writes; it is revoked
  *      only by a later agent work event.
+ *
+ * Stall-clock anchor (HOK-3422): `stalled` fires when `(now − anchor) >
+ * stallMinutes`, where `anchor = lastProgressAt ?? launchAt`. The launch
+ * anchor is the stage's session-ownership `launchedAt` (HOK-3328) when
+ * supplied through `launchAtOverride`, else the stage-result `startedAt`. A
+ * controller-owned wait (no agent was ever launched — e.g. a Ready CI wait
+ * with no remediation launch row) has no anchor, so `stalled` is always false.
  *
  * A fourth, orthogonal category (HOK-3359): the one stage-agent teardown
  * (`shared/lib/stage-teardown.sh` `stage_agent_teardown`) records that the
@@ -146,12 +160,25 @@ export type ProgressSourceKind =
   | 'status-file' // Status-file mtime after launch + 5s.
   | 'native-session' // Newest agent-issued native session-stream event (HOK-3381).
   | 'owned-session'  // Newest agent-issued event in the owned harness transcript (HOK-3386).
-  | 'transition'  // Stage startedAt/finishedAt, task.updated, or caller extras.
   | 'terminal';   // Merged/closed PR or terminal lifecycle evidence.
 
 export interface ProgressSource {
   kind: ProgressSourceKind;
   /** ISO timestamp of the evidence. */
+  at: string;
+  /** Short human-readable detail, safe for logs. */
+  detail?: string;
+}
+
+/**
+ * HOK-3422: a controller-authored transition timestamp (stage `startedAt` /
+ * `finishedAt` / `updated`, `task.updated`, caller-supplied extras). Readers
+ * that want "when did the controller last move this task" consume
+ * {@link TaskProgress.lastTransitionAt}. It is NEVER a progress source and
+ * never contributes to `lastProgressAt` / `stalled` (invariant 2).
+ */
+export interface TransitionInput {
+  /** ISO timestamp of the controller-authored move. */
   at: string;
   /** Short human-readable detail, safe for logs. */
   detail?: string;
@@ -174,6 +201,14 @@ export interface TaskProgress {
   lastProgressAt: string | null;
   progressAgeMinutes: number | null;
   sources: ProgressSource[];
+  /**
+   * HOK-3422: newest ISO among controller-authored transition timestamps
+   * (stage `startedAt` / `finishedAt` / `updated`, `task.updated`, caller
+   * extras). Separate from `lastProgressAt`: readers that want "when did the
+   * controller last move this task" (reliability metrics, dashboard, ready
+   * watchdog) consume this field. NEVER feeds `stalled`.
+   */
+  lastTransitionAt: string | null;
   agentState: HookState | null;
   agentRecord: HookRecord | null;
   controllerState: HookState | null;
@@ -222,10 +257,20 @@ export interface TaskProgressGatherOptions {
    */
   phase?: string;
   /**
-   * Extra caller-supplied timestamps that count as `transition` progress
-   * (e.g. ready-watchdog's stage result mtime).
+   * HOK-3422: extra caller-supplied controller-authored timestamps (e.g. the
+   * stage-result mtime). Feed {@link TaskProgress.lastTransitionAt} only —
+   * never `lastProgressAt` / `stalled` (invariant 2: controller writes are
+   * never agent evidence).
    */
-  extraTransitionSources?: ProgressSource[];
+  extraTransitionInputs?: TransitionInput[];
+  /**
+   * HOK-3422: optional override for the derived `launchAt` input. When
+   * supplied, replaces the stage-result's `startedAt` as the stall-clock
+   * anchor. Callers pass the stage's `session-ownership.launchedAt` (HOK-3328)
+   * so the clock ticks from the moment the agent was launched, not from the
+   * stage-result write that the controller rewrites on every tick.
+   */
+  launchAtOverride?: string | null;
   /** Optional pane text for the blocking-prompt matcher. */
   paneText?: string;
   /** Optional pane-process liveness fact; not a progress source. */
@@ -302,8 +347,12 @@ export interface TaskProgressInputs {
     agentIdleAtMs: number | null;
     harness: 'claude-code' | 'codex';
   } | null;
-  /** transitions the caller wants counted (stage finishedAt, task.updated, ready). */
-  transitionSources: ProgressSource[];
+  /**
+   * HOK-3422: controller-authored timestamps for the derived
+   * {@link TaskProgress.lastTransitionAt}. Never contributes to `sources[]`,
+   * `lastProgressAt`, or `stalled` (invariant 2).
+   */
+  transitionInputs: TransitionInput[];
   /** PR / lifecycle evidence for `terminal`. */
   terminal: {
     prState?: string | null;
@@ -839,13 +888,6 @@ function tsToIso(secondsOrMs: number, secondsSuspected = false): string {
   return new Date(ms).toISOString();
 }
 
-function pushSource(list: ProgressSource[], src: ProgressSource | null): void {
-  if (!src) return;
-  const at = parseIsoToMs(src.at);
-  if (at === null) return;
-  list.push(src);
-}
-
 /**
  * The pure decision: build a TaskProgress from already-gathered evidence.
  *
@@ -915,11 +957,9 @@ export function deriveTaskProgress(
     sources.push({ kind: 'owned-session', at: new Date(ownedMs).toISOString() });
   }
 
-  // (5) transitions supplied by the caller (stage startedAt/finishedAt,
-  //     task.updated, ready-watchdog stage result mtime).
-  for (const src of inputs.transitionSources) {
-    pushSource(sources, src);
-  }
+  // (5) HOK-3422: controller-authored transition timestamps are no longer a
+  //     progress source. They feed `lastTransitionAt` below, which is derived
+  //     independently of `sources[]` and never contributes to `stalled`.
 
   // (6) terminal.
   const terminalPrState = inputs.terminal.prState ?? null;
@@ -938,6 +978,18 @@ export function deriveTaskProgress(
   const progressAgeMinutes = lastProgressMs !== null
     ? Math.max(0, Math.floor((nowMs - lastProgressMs) / 60_000))
     : null;
+
+  // HOK-3422: `lastTransitionAt` is the newest controller-authored move time,
+  // derived from `transitionInputs` independently of `sources[]`. Readers that
+  // want "when did the controller last move this task" (reliability metrics,
+  // dashboard, ready watchdog) use this field. It NEVER feeds `stalled`.
+  let lastTransitionMs: number | null = null;
+  for (const t of inputs.transitionInputs) {
+    const ms = parseIsoToMs(t.at);
+    if (ms === null) continue;
+    if (lastTransitionMs === null || ms > lastTransitionMs) lastTransitionMs = ms;
+  }
+  const lastTransitionAt = lastTransitionMs !== null ? new Date(lastTransitionMs).toISOString() : null;
 
   // Freshness gate for `agentState` (the agent's own state right now).
   const agentStateFresh = agentRec && agentRec.timestamp > 0
@@ -965,7 +1017,17 @@ export function deriveTaskProgress(
   // is waiting on a human.
   const suppressedState = agentStateFresh
     && ['waiting', 'approval-needed', 'blocked', 'policy-denied'].includes(agentStateFresh);
-  const overThreshold = progressAgeMinutes !== null && progressAgeMinutes > stallMinutes;
+
+  // HOK-3422: the stall clock's anchor is the newest agent-written evidence,
+  // else the launch time. A stage launched 40 min ago with zero agent evidence
+  // (incident 2026-11-05: host reboot cleared the `/tmp` hook, no transcript
+  // events after launch) is stalled from the launch anchor. A controller-owned
+  // wait (no launch; Ready CI wait with no remediation agent) has no anchor,
+  // so `stalled` is always false.
+  const stallAnchorMs = lastProgressMs ?? launchMs;
+  const stallThresholdMs = stallMinutes * 60_000;
+  const overThreshold = stallAnchorMs !== null
+    && (nowMs - stallAnchorMs) > stallThresholdMs;
 
   // HOK-3137: an idle agent with a live background task is not stalled — it
   // is waiting on its own work, not abandoned. Scoped to `agentIdle` so
@@ -983,6 +1045,7 @@ export function deriveTaskProgress(
     lastProgressAt,
     progressAgeMinutes,
     sources,
+    lastTransitionAt,
     agentState: agentStateFresh,
     agentRecord: agentRec,
     controllerState: controllerFresh,
@@ -1456,12 +1519,15 @@ export function readOwnedStageTranscript(
 
 /**
  * Read the stage `<featureDir>/.<phase>-result.json` and pluck out the
- * launchAt (`startedAt`) plus the transition sources (`startedAt`,
- * `finishedAt`, `updated`).
+ * launchAt (`startedAt`) plus the controller-authored transition inputs
+ * (`startedAt`, `finishedAt`, `updated`).
+ *
+ * HOK-3422: the three timestamps feed only `lastTransitionAt`; they never
+ * contribute to `lastProgressAt` / `stalled` (invariant 2).
  */
 function readStageResult(featureDir: string | undefined, phase: string | undefined): {
   launchAt: string | null;
-  transitions: ProgressSource[];
+  transitions: TransitionInput[];
 } {
   if (!featureDir || !phase) return { launchAt: null, transitions: [] };
   const file = join(featureDir, `.${phase}-result.json`);
@@ -1469,12 +1535,12 @@ function readStageResult(featureDir: string | undefined, phase: string | undefin
   if (result.status !== 'ok') return { launchAt: null, transitions: [] };
   const value = result.value;
   const launchAt = stringField(value.startedAt) ?? null;
-  const transitions: ProgressSource[] = [];
-  if (launchAt) transitions.push({ kind: 'transition', at: launchAt, detail: `${phase}.startedAt` });
+  const transitions: TransitionInput[] = [];
+  if (launchAt) transitions.push({ at: launchAt, detail: `${phase}.startedAt` });
   const finishedAt = stringField(value.finishedAt);
-  if (finishedAt) transitions.push({ kind: 'transition', at: finishedAt, detail: `${phase}.finishedAt` });
+  if (finishedAt) transitions.push({ at: finishedAt, detail: `${phase}.finishedAt` });
   const updated = stringField(value.updated);
-  if (updated) transitions.push({ kind: 'transition', at: updated, detail: `${phase}.updated` });
+  if (updated) transitions.push({ at: updated, detail: `${phase}.updated` });
   return { launchAt, transitions };
 }
 
@@ -1524,13 +1590,25 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
     ? readOwnedStageTranscript(ownershipDir, ownedSessionStage)
     : null;
 
-  const transitionSources: ProgressSource[] = [...stageTransitions];
+  // HOK-3422: controller-authored transition timestamps feed only
+  // `lastTransitionAt`. They never land in `sources[]` / `lastProgressAt`
+  // (invariant 2: controller writes are never agent evidence).
+  const transitionInputs: TransitionInput[] = [...stageTransitions];
   if (opts.task?.updated) {
-    transitionSources.push({ kind: 'transition', at: opts.task.updated, detail: 'task.updated' });
+    transitionInputs.push({ at: opts.task.updated, detail: 'task.updated' });
   }
-  for (const s of opts.extraTransitionSources ?? []) {
-    transitionSources.push(s);
+  for (const s of opts.extraTransitionInputs ?? []) {
+    transitionInputs.push(s);
   }
+
+  // HOK-3422: prefer the caller's launch anchor (e.g. the stage's
+  // session-ownership `launchedAt`) over the stage-result `startedAt`. The
+  // stage-result is controller-rewritten on every tick, so anchoring the
+  // stall clock to it drifts with the controller's writes; the ownership row
+  // is set once, before the agent starts, and never updates.
+  const launchAtResolved = opts.launchAtOverride !== undefined
+    ? opts.launchAtOverride
+    : launchAt;
 
   const prState = opts.task?.lifecycle?.deliveryEvidence?.prState ?? null;
   const prNumber = opts.task?.lifecycle?.deliveryEvidence?.prNumber ?? null;
@@ -1554,13 +1632,13 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
     hookFile,
     terminalHistoryIdleAt: historyIdleAt,
     latestCommitAt,
-    launchAt,
+    launchAt: launchAtResolved,
     worktreeMtimeAt: wt.at,
     worktreeMtimePath: wt.path,
     statusFileMtimeAt,
     nativeSessionLastEventAt,
     ownedSession,
-    transitionSources,
+    transitionInputs,
     terminal: {
       prState,
       prNumber,
