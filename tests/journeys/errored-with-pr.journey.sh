@@ -20,6 +20,7 @@ journey_init errored-with-pr
 fakes_linear_add_issue "$ISSUE" "Add journey output file" Todo
 
 journey_start_monitor
+journey_set_tick_budget 600
 journey_wait_until "$ISSUE" 30 "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 

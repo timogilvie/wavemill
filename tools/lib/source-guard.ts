@@ -45,6 +45,13 @@ export interface GuardPattern {
   re: RegExp;
   /** Repo-relative paths this pattern does not apply to (other patterns still do). */
   excludePaths?: readonly string[];
+  /**
+   * When set, the pattern applies only to files under one of these
+   * repo-relative path prefixes (other patterns still apply everywhere). Use
+   * for a forbidden shape whose token is a generic noun in production code but
+   * forbidden in one subtree, e.g. a `BUDGET` variable under `tests/journeys/`.
+   */
+  scopedPaths?: readonly string[];
 }
 
 export interface StructuralMatch {
@@ -272,6 +279,7 @@ function scanSource(resolved: ResolvedSpec, file: string, sourceText: string): G
   const patterns = spec.patterns.filter((pattern) => (
     (pattern.lang === 'both' || pattern.lang === lang)
     && !(pattern.excludePaths ?? []).includes(file)
+    && (!pattern.scopedPaths || pattern.scopedPaths.some((prefix) => file.startsWith(prefix)))
   ));
   const checks = (spec.structuralChecks ?? []).filter((check) => check.paths.includes(file));
   if (patterns.length === 0 && checks.length === 0) return [];
