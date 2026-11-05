@@ -48,6 +48,7 @@ import {
   type HookState,
   type TaskProgress,
 } from './task-progress.ts';
+import { getResultFilePath } from './stage-result.ts';
 import { isSettled } from './task-settlement.ts';
 import { termCapture } from './terminal-backend.ts';
 import type { MarkerCondition, MarkerPayload } from './transient-marker.ts';
@@ -267,8 +268,9 @@ function approvePlanItem(input: AttentionTaskInput, nowMs: number): AttentionIte
   const fd = input.featureDir ?? undefined;
   if (awaiting) {
     evidence.push({
+      // allow-stage-artifact-lookup: evidence label naming the file; the path comes from getResultFilePath
       source: '.planning-result.json',
-      ...(fd ? { path: join(fd, '.planning-result.json') } : {}),
+      ...(fd ? { path: getResultFilePath(fd, 'planning') } : {}),
       summary: planning.reapprovalReason
         ? `Plan ready — waiting for re-approval: ${planning.reapprovalReason}`
         : 'Plan ready — waiting for approval',
@@ -556,7 +558,7 @@ export function readAttentionMarker(featureDir: string): AttentionMarkerInput | 
 }
 
 export function readPlanningInput(featureDir: string): AttentionPlanningInput {
-  const resultPath = join(featureDir, '.planning-result.json');
+  const resultPath = getResultFilePath(featureDir, 'planning');
   const result = readJson<{ status?: string; finishedAt?: string; startedAt?: string }>(resultPath);
   const binding = readJson<{ packetHash?: string }>(join(featureDir, '.plan-packet-hash'));
   const rejectionPath = join(featureDir, '.planning-rejected.json');
