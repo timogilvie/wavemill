@@ -45,6 +45,7 @@ printf 'AUTO_EVAL=true\n' >> "$MONITOR_ENV"
 EVAL_LOG="/tmp/${SESSION}-eval-${ISSUE}.log"
 
 journey_start_monitor
+journey_set_tick_budget 140
 journey_wait_until "$ISSUE" 30 "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 

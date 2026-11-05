@@ -602,6 +602,7 @@ TESTS=(
   tools/check-review-setup.test.ts
   tests/cli-smoke.test.ts
   tests/model-settings-migration.test.ts
+  tools/check-journey-wall-clock-budget.test.ts
   tools/check-test-registration.test.ts
   tools/check-test-world-lifetime.test.ts
   tools/hok2425-verify-native-workflow-certification.test.ts
