@@ -23,9 +23,10 @@ test('resolveCarriedBudget inherits the first carrier\'s recorded source', () =>
 });
 
 // protects: HOK-3390 — with nothing carried, a configured default is repo-config
-// and an absent one is missing (never a fabricated 25).
+// only when the caller says so (else 'default'), and an absent one is missing.
 test('resolveCarriedBudget falls back to repo-config, then null', () => {
-  assert.deepEqual(resolveCarriedBudget([{ maxCostUsd: null }], 12), { maxCostUsd: 12, budgetSource: 'repo-config' });
+  assert.deepEqual(resolveCarriedBudget([{ maxCostUsd: null }], 12, 'repo-config'), { maxCostUsd: 12, budgetSource: 'repo-config' });
+  assert.deepEqual(resolveCarriedBudget([{ maxCostUsd: null }], 12), { maxCostUsd: 12, budgetSource: 'default' });
   assert.equal(resolveCarriedBudget([undefined, { constraints: null }], undefined), null);
   assert.deepEqual(
     resolveCarriedBudget([{ constraints: { maxCostUsd: 5, budgetSource: 'bogus' } }], undefined),

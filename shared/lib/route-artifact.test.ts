@@ -993,10 +993,12 @@ test('resolveRouteDecisionBudgetWithSource distinguishes default from repo-confi
     // Do NOT create .wavemill-config.json — test the implicit default case
     clearConfigCache(dir);
 
-    // When no explicit config exists, the fallback budget should be 'default'
+    // With no explicit config and nothing carried, the budget is missing (never a fabricated default).
+    assert.equal(resolveRouteDecisionBudgetWithSource(minimalDecision(), { repoDir: dir }), null);
+    // A carried default budget keeps its recorded 'default' source.
     assert.deepEqual(
-      resolveRouteDecisionBudgetWithSource(minimalDecision(), { repoDir: dir }),
-      { maxCostUsd: undefined, budgetSource: 'default' },
+      resolveRouteDecisionBudgetWithSource(minimalDecision({ constraints: { maxCostUsd: 25, budgetSource: 'default' } }), { repoDir: dir }),
+      { maxCostUsd: 25, budgetSource: 'default' },
     );
   } finally {
     clearConfigCache(dir);
