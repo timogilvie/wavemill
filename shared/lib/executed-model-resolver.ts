@@ -24,6 +24,7 @@ import { extractOwnedSessionUsageRows } from './sdk-task-cost/measure.ts';
 import {
   readOwnershipRows,
   rowsForStage,
+  type OwnershipKind,
   type OwnershipStage,
   type SessionHarness,
   type SessionOwnershipRow,
@@ -784,4 +785,89 @@ function resolveNativeExecutedModel(input: ResolveStageExecutedModelInput & {
       ...(summary.lastResponseId ? { responseId: summary.lastResponseId } : {}),
     },
   };
+}
+
+// ────────────────────────────────────────────────────────────────
+// HOK-3415: repair-stage resolver (ci-fix / conflict-resolution / ready-remediation)
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Ownership kinds that carry work for a repair stage. These are not
+ * `OwnershipStage`s (planning / coding / review) and have no
+ * `.<kind>-result.json` to cross-check against (except `ready-remediation`
+ * which has `.ready-result.json`), so repair-stage evidence is `requested_only`
+ * (launch row's `model`) — mapped from the resolver's `missing` status.
+ */
+export const REPAIR_STAGE_KINDS = ['ci-fix', 'conflict-resolution', 'ready-remediation'] as const;
+export type RepairStageKind = (typeof REPAIR_STAGE_KINDS)[number];
+
+export function isRepairStageKind(value: unknown): value is RepairStageKind {
+  return typeof value === 'string'
+    && (REPAIR_STAGE_KINDS as readonly string[]).includes(value);
+}
+
+export interface ResolveRepairStageExecutedModelInput {
+  /** State directory holding `.session-ownership.jsonl`. */
+  featureDir: string;
+  /** Repair kind to resolve. */
+  kind: RepairStageKind;
+  /** Ownership rows the caller already read; absent means read from disk. */
+  ownership?: readonly SessionOwnershipRow[];
+}
+
+export interface ResolvedRepairStageExecutedModel {
+  executedModel: string | null;
+  evidenceStatus: ExecutedModelEvidenceStatus;
+  evidenceSource: 'launch-record' | 'unknown';
+  evidenceDetail: string;
+  /** Harness the repair stage ran under, read from the launch row. */
+  harness: SessionHarness | null;
+}
+
+/**
+ * Resolve a repair stage's executed model from the launch rows. Repair stages
+ * don't publish provider identity evidence (no coding / review stage result),
+ * so the launch row's model and harness are the evidence. The latest launch
+ * row wins — a retried `ci-fix` keeps the retry's model.
+ */
+export function resolveRepairStageExecutedModel(
+  input: ResolveRepairStageExecutedModelInput,
+): ResolvedRepairStageExecutedModel {
+  const ownership = input.ownership ?? readOwnershipRowsSafe(input.featureDir);
+  const rows = ownership.filter((row): row is SessionOwnershipRow => row.kind === input.kind);
+  if (rows.length === 0) {
+    return {
+      executedModel: null,
+      evidenceStatus: 'missing',
+      evidenceSource: 'unknown',
+      evidenceDetail: `no ownership row for kind=${input.kind}`,
+      harness: null,
+    };
+  }
+  const latest = rows.reduce((max, row) => (
+    Date.parse(row.launchedAt) > Date.parse(max.launchedAt) ? row : max
+  ));
+  if (!latest.model) {
+    return {
+      executedModel: null,
+      evidenceStatus: 'missing',
+      evidenceSource: 'launch-record',
+      evidenceDetail: `kind=${input.kind}: launch row has no model (attempt=${latest.attemptId})`,
+      harness: latest.harness,
+    };
+  }
+  return {
+    executedModel: latest.model,
+    // Launch-record evidence is intent, not execution — map to `requested_only`
+    // at the projection boundary. `missing` here keeps the rule in one place.
+    evidenceStatus: 'missing',
+    evidenceSource: 'launch-record',
+    evidenceDetail: `kind=${input.kind}: launch ${latest.attemptId} at ${latest.launchedAt}`,
+    harness: latest.harness,
+  };
+}
+
+/** Ownership kinds that the repair-stage resolver understands, as a type guard. */
+export function isRepairOwnershipKind(kind: OwnershipKind): kind is RepairStageKind {
+  return isRepairStageKind(kind);
 }

@@ -10,8 +10,10 @@ import {
   appendOwnershipRow,
   appendSessionRefResolution,
   buildAttemptId,
+  executionStageForRow,
   exactRows,
   extractLaunchNonce,
+  groupByExecutionStage,
   groupByHarness,
   groupByKind,
   helperKind,
@@ -23,6 +25,8 @@ import {
   readOwnershipRows,
   recordLaunch,
   rowsForStage,
+  stageForKind,
+  type SessionOwnershipRow,
 } from './session-ownership.ts';
 
 const SHELL_TWIN = join(dirname(fileURLToPath(import.meta.url)), 'session-ownership.sh');
@@ -219,3 +223,42 @@ session_ownership_append "$DIR" "sess-4" claude-code bogus m "" "" || echo rejec
     assert.equal(readFileSync(join(codexDir, SESSION_OWNERSHIP_FILE), 'utf8').includes(ref), true);
   });
 });
+
+describe('execution stage of a session (HOK-3415)', () => {
+  const at = '2026-11-01T10:00:00.000Z';
+  const r = (kind: SessionOwnershipRow['kind'], stage?: SessionOwnershipRow['stage']): SessionOwnershipRow => ({
+    sessionRef: `s-${kind}`, harness: 'claude-code', kind, ...(stage ? { stage } : {}), model: 'm', launchedAt: at, attemptId: `${kind}@nohead#1`,
+  });
+
+  // protects: the review engine's helper sessions (rows without a stage) being
+  // left out of the review stage's cost and attribution, or a repair session
+  // being folded into a base stage.
+  it('maps helper review calls to review, repair kinds to themselves and native arms to their recorded stage', () => {
+    assert.equal(executionStageForRow(r('helper:json-code-review')), 'review');
+    assert.equal(executionStageForRow(r('ci-fix')), 'ci-fix');
+    assert.equal(executionStageForRow(r('conflict-resolution')), 'conflict-resolution');
+    assert.equal(executionStageForRow(r('ready-remediation')), 'ready-remediation');
+    assert.equal(executionStageForRow(r('native-arm', 'planning')), 'planning');
+    assert.equal(executionStageForRow(r('helper:task-scorer')), null);
+    assert.equal(stageForKind('helper:json-code-review'), 'review');
+  });
+
+  // protects: the shell twin stamping a helper review row without the stage the
+  // TypeScript writer gives it, so the two launch paths disagree on review cost.
+  it('the shell twin and appendOwnershipRow stamp a helper review row with stage review', () => {
+    const dir = tempDir();
+    shell('session_ownership_append "$DIR" "sess-helper" claude-code "helper:json-code-review" m "" ""', { DIR: dir });
+    appendOwnershipRow(dir, { sessionRef: 'ts-helper', harness: 'claude-code', kind: 'helper:json-code-review', model: 'm' });
+    assert.deepEqual(readOwnershipRows(dir).map((row) => row.stage), ['review', 'review']);
+  });
+
+  // protects: historical helper rows (written before the purpose had a stage)
+  // being missed by stage readers that key on the recorded stage.
+  it('rowsForStage and ownershipStageRole read the kind\'s stage when the row recorded none', () => {
+    const rows = [r('review', 'review'), r('helper:json-code-review'), r('coding', 'coding')];
+    assert.deepEqual(rowsForStage(rows, 'review').map((row) => row.kind), ['review', 'helper:json-code-review']);
+    assert.equal(ownershipStageRole(r('helper:json-code-review')).value, 'review');
+    assert.deepEqual([...groupByExecutionStage(rows).keys()].sort(), ['coding', 'review']);
+  });
+});
+
