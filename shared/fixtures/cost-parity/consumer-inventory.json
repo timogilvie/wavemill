@@ -470,6 +470,7 @@
     "shared/lib/eval-orchestrator.test.ts",
     "shared/lib/executed-model-resolver.test.ts",
     "shared/lib/intervention-detector.test.ts",
+    "shared/lib/ready-remediation-disposition.test.ts",
     "shared/lib/sdk-task-cost/price-overrides.test.ts",
     "shared/lib/sdk-task-cost/project.test.ts",
     "shared/lib/wavemill-session-paths.test.ts",
