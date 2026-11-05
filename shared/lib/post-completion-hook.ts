@@ -22,7 +22,7 @@ import { loadPricingTable, type PricingTable } from './pricing/model-pricing.ts'
 import { collectExecutionEconomics } from './execution-economics.ts';
 // meter.ts loads @hokusai/costs lazily, so a stale install cannot fail module
 // load for every eval.
-import { meterWorkflowCost } from './sdk-task-cost/meter.ts';
+import { meterWorkflowCost, type MeteredWorkflowCost } from './sdk-task-cost/meter.ts';
 import { getDeepSeekProviderMetadata } from './deepseek-provider.ts';
 import { runEvalAnalysis } from './eval-analysis.ts';
 import { callHeadlessLLM } from './headless-llm.ts';
@@ -50,7 +50,11 @@ import {
 import { buildTaskDescriptor } from './task-descriptor-builder.ts';
 import { getEvalContextUpdatesConfig, getMaxCostUsd } from './config.ts';
 import { runConfiguredHarnessRetentionReplay } from './harness-replay.ts';
-import { formatHokusaiSubmissionTriggerResult, triggerHokusaiSubmission } from './hokusai-submission-trigger.ts';
+import {
+  formatHokusaiSubmissionTriggerResult,
+  triggerHokusaiSubmission,
+  type TriggerHokusaiSubmissionOptions,
+} from './hokusai-submission-trigger.ts';
 import { readAndValidateArtifact } from './pre-pr-verification.ts';
 import { getPrePrVerificationConfig } from './config.ts';
 import type { PrePrVerificationConfig } from './pre-pr-verification-types.ts';
@@ -282,9 +286,13 @@ export const postCompletionHookDeps = {
   appendContextUpdateWarning,
 };
 
-async function triggerHokusaiSubmissionAfterPersistence(record: EvalRecord, repoDir: string): Promise<void> {
+async function triggerHokusaiSubmissionAfterPersistence(
+  record: EvalRecord,
+  repoDir: string,
+  evidence: Pick<TriggerHokusaiSubmissionOptions, 'meteredCost' | 'worktreePath' | 'branchName'> = {},
+): Promise<void> {
   try {
-    const result = await postCompletionHookDeps.triggerHokusaiSubmission(record, { repoDir });
+    const result = await postCompletionHookDeps.triggerHokusaiSubmission(record, { repoDir, ...evidence });
     console.log(`Post-completion eval: Hokusai submission ${formatHokusaiSubmissionTriggerResult(result)}`);
   } catch (error) {
     console.warn(`Post-completion eval: Hokusai submission failed (${errorMessage(error)})`);
@@ -953,6 +961,7 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
     let costOutcome: WorkflowCostOutcome | null = null;
     let executionEconomics: EvalExecutionEconomics[] | null = null;
     let taskCostSummary: EvalTaskCostSummary[] | null = null;
+    let metered: MeteredWorkflowCost | null = null;
     if (ctx.worktreePath && branchName) {
       let pricingTable: PricingTable | undefined;
       console.log('Post-completion eval: computing workflow cost...');
@@ -978,7 +987,7 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
       // `@hokusai/costs` over the task's owned sessions (HOK-3328): the one
       // cost engine. Fail-soft — a measurement failure becomes an
       // `adapter_error` outcome, never a thrown eval.
-      const metered = await postCompletionHookDeps.meterWorkflowCost({
+      metered = await postCompletionHookDeps.meterWorkflowCost({
         worktreePath: ctx.worktreePath,
         branchName,
         repoDir,
@@ -1099,7 +1108,12 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
     ctx.onPersisted?.();
 
     // 8. Enqueue Hokusai contribution before optional post-eval work.
-    await triggerHokusaiSubmissionAfterPersistence(record, repoDir);
+    // The v4 row's stage executions come from the cost metered above (HOK-3415).
+    await triggerHokusaiSubmissionAfterPersistence(record, repoDir, {
+      ...(metered ? { meteredCost: metered } : {}),
+      ...(ctx.worktreePath ? { worktreePath: ctx.worktreePath } : {}),
+      ...(branchName ? { branchName } : {}),
+    });
 
     // 9. Run retention replay before mutating project context/subsystem memory.
     const retentionReport = await postCompletionHookDeps.runHarnessRetentionReplay(repoDir);

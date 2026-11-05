@@ -447,33 +447,33 @@ export function applyChallengeOverride(
 
 // ── Hokusai contribution export ─────────────────────────────────────────────
 
-/** Version tag for the override encoding inside contribution-row `inputs`. */
-export const ROUTE_OVERRIDES_CONTRIBUTION_SCHEMA = 'route_overrides/v1';
+/**
+ * The routing-outcome shape a v3/v4 contribution-row projection takes
+ * (HOK-3415): the join key Hokusai logged its prediction under, plus every
+ * override of that prediction, tagged with the stage it applied to. Fields
+ * are undefined for an unrouted task — no recommendation means no overrides
+ * block — and the SDK builder rejects partial routing-outcome input.
+ */
+export interface RoutingOutcomeProjection {
+  inferenceLogId?: string;
+  routeOverrides?: StageRouteOverride[];
+}
 
 /**
- * Projects the record onto contribution-row `inputs` (HOK-3363): the join key
- * Hokusai logged the prediction under (`inference_log_id`) and the overrides,
- * as parallel scalar arrays (the redacted row only carries scalars and scalar
- * arrays). The recommendation itself is not copied — Hokusai already holds it
- * under `inference_log_id`. Empty when there is nothing to report.
+ * Builds the routing-outcome block for a v4 contribution-row projection
+ * (HOK-3415). A routed task names its join key and the (possibly empty)
+ * override list; an unrouted task (no `inferenceLogId`) returns `{}`.
  */
-export function routeRecordContributionInputs(
+export function routingOutcomeForProjection(
   stageRoutes: StageRoutes | null | undefined,
   inferenceLogId: string | undefined,
-): Record<string, string | string[]> {
-  const overrides = flattenRouteOverrides(stageRoutes);
+): RoutingOutcomeProjection {
   const joinKey = nonEmpty(inferenceLogId);
-  if (!joinKey && overrides.length === 0) {
+  if (!joinKey) {
     return {};
   }
   return {
-    ...(joinKey ? { inference_log_id: joinKey } : {}),
-    route_overrides_schema: ROUTE_OVERRIDES_CONTRIBUTION_SCHEMA,
-    route_override_stages: overrides.map((override) => override.stage),
-    route_override_sources: overrides.map((override) => override.source),
-    route_override_from: overrides.map((override) => override.from),
-    route_override_to: overrides.map((override) => override.to),
-    route_override_reasons: overrides.map((override) => override.reason),
-    route_override_at: overrides.map((override) => override.at),
+    inferenceLogId: joinKey,
+    routeOverrides: flattenRouteOverrides(stageRoutes),
   };
 }

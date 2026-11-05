@@ -101,6 +101,7 @@ TESTS=(
   check-marker-clear-sites.test.sh
   check-state-surface-writes.test.sh
   check-label-write-sites.test.sh
+  check-no-submit-data-producer.test.sh
   merge-labels-real-state.test.sh
   state-fixtures.test.sh
   ready-update-from-base.test.sh

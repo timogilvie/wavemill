@@ -55,6 +55,8 @@ _session_ownership_valid_kind() {
 _session_ownership_stage_for_kind() {
   case "${1:-}" in
     planning|coding|review) printf '%s\n' "$1" ;;
+    # Twin of HELPER_PURPOSE_STAGE in session-ownership.ts (HOK-3415).
+    helper:json-code-review) printf 'review\n' ;;
     *) printf '\n' ;;
   esac
 }

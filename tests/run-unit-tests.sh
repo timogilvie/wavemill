@@ -300,6 +300,7 @@ TESTS=(
   shared/lib/hokusai-router-audit.test.ts
   shared/lib/hokusai-contribution-schema.test.ts
   shared/lib/hokusai-contribution-builder.test.ts
+  shared/lib/hokusai-contribution-v4-replay.test.ts
   shared/lib/hokusai-local-config.test.ts
   shared/lib/hokusai-audit.test.ts
   shared/lib/hokusai-submission-trigger.test.ts

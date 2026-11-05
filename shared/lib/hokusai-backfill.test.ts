@@ -2,14 +2,59 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after, beforeEach, describe, it } from 'node:test';
+import { after, afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { clearConfigCache } from './config.ts';
 import type { EvalRecord, RoutingDecision } from './eval-schema.ts';
 import { backfillHokusaiSubmissions, selectBackfillRecords } from './hokusai-backfill.ts';
 import { saveUserConfig } from './hokusai-consent.ts';
 import { appendHokusaiLedgerEntry } from './hokusai-ledger.ts';
+import { hokusaiSubmissionTriggerDeps } from './hokusai-submission-trigger.ts';
+import type { MeteredWorkflowCost } from './sdk-task-cost/meter.ts';
 
 const tempDirs: string[] = [];
+
+/**
+ * The promoted task's archived session-ownership evidence (HOK-3328): one owned
+ * coding session. A v4 row needs at least one stage execution (HOK-3415), and
+ * backfill meters it through the trigger's one cost engine by issue id. Returns
+ * the issue ids metering was asked for.
+ */
+function stubOwnedTaskEvidence(sessions: 'one-coding-session' | 'none' = 'one-coding-session'): string[] {
+  const meteredFor: string[] = [];
+  mock.method(hokusaiSubmissionTriggerDeps, 'meterWorkflowCost', async (input: { issueId?: string }) => {
+    meteredFor.push(input.issueId ?? '');
+    return {
+      outcome: { status: 'success' } as never,
+      reason: 'measured' as never,
+      summaries: [],
+      owned: sessions === 'none' ? [] : [{
+        sessionRef: 'promoted-coding-1',
+        harness: 'claude-code',
+        kind: 'coding',
+        stage: 'coding',
+        model: 'gpt-5.4',
+        launchedAt: '2026-08-25T11:00:00.000Z',
+        attemptId: 'coding@abc1234#1756119600',
+      }],
+      sessionCosts: new Map(),
+      sessionUsageRows: new Map(),
+      sessionHarness: new Map(),
+      summariesByKind: new Map(),
+    } satisfies MeteredWorkflowCost;
+  });
+  // Matches the record's routed coder so the v4 "last coding stage executed
+  // model equals selected_models.coder" rule holds.
+  mock.method(hokusaiSubmissionTriggerDeps, 'resolveStageExecutedModel', () => ({
+    executedModel: 'gpt-5.4',
+    evidenceStatus: 'direct' as const,
+    evidenceSource: 'session-stream' as const,
+  }));
+  return meteredFor;
+}
+
+afterEach(() => {
+  mock.restoreAll();
+});
 
 function rec(id: string, issueId: string, ts: string) {
   return { id, issueId, timestamp: ts } as never;
@@ -204,6 +249,7 @@ describe('hokusai backfill safety', () => {
   });
 
   it('enqueues a promoted never-submitted eval once and no-ops on repeat', async () => {
+    const meteredFor = stubOwnedTaskEvidence();
     const record = promotedRecord();
     const repoDir = makeRepo([record], { submissionEnabled: true });
     const configDir = makeConfigDir();
@@ -238,6 +284,31 @@ describe('hokusai backfill safety', () => {
     });
     assert.equal(second.results[0].status, 'no-op: already_pending');
     assert.equal(pendingLines(repoDir).length, 1);
+    // Backfill metered the task's own owned sessions by issue id (HOK-3415).
+    assert.ok(meteredFor.includes('HOK-2864'));
+    assert.deepEqual(
+      (entry.row?.stage_executions as Array<{ stage?: string; executed_model?: string }> | undefined)
+        ?.map((e) => [e.stage, e.executed_model]),
+      [['coding', 'gpt-5.4']],
+    );
+  });
+
+  // protects: a backfilled eval whose task has no owned session being sent as a
+  // v4 row with invented stage facts, instead of being refused.
+  it('refuses a promoted eval whose task has no owned sessions', async () => {
+    stubOwnedTaskEvidence('none');
+    const repoDir = makeRepo([promotedRecord()], { submissionEnabled: true });
+    const configDir = makeConfigDir();
+    const manifestPath = writeManifest(repoDir);
+
+    const applied = await backfillHokusaiSubmissions({
+      repoDir,
+      configDir,
+      promotionManifestPath: manifestPath,
+      apply: true,
+    });
+    assert.match(applied.results[0].status, /no_stage_executions/);
+    assert.equal(pendingLines(repoDir).length, 0);
   });
 
   it('reconciles a zero-evidence promotion manifest as zero rows instead of refusing', async () => {

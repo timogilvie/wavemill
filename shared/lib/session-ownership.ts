@@ -133,8 +133,55 @@ export function helperKind(purpose: string): OwnershipKind {
 }
 
 /** Canonical stage a kind belongs to, when it is one. */
+/**
+ * Helper purposes launched by exactly one stage, which their sessions' work and
+ * cost belong to. `json-code-review` is the review engine's own reviewer call
+ * (`review-engine.ts`); without this its sessions had no stage, so the review
+ * stage's cost and attribution missed them (HOK-3415).
+ */
+const HELPER_PURPOSE_STAGE: Readonly<Record<string, OwnershipStage>> = Object.freeze({
+  'json-code-review': 'review',
+});
+
+/** The stage a kind's sessions do the work of, when the kind names one. */
 export function stageForKind(kind: OwnershipKind): OwnershipStage | undefined {
-  return (OWNERSHIP_STAGES as readonly string[]).includes(kind) ? kind as OwnershipStage : undefined;
+  if ((OWNERSHIP_STAGES as readonly string[]).includes(kind)) return kind as OwnershipStage;
+  if (kind.startsWith('helper:')) return HELPER_PURPOSE_STAGE[kind.slice('helper:'.length)];
+  return undefined;
+}
+
+/**
+ * The stage a row's sessions did the work of: the stage the launch recorded,
+ * else its kind's (rows written before a helper purpose gained a stage).
+ */
+export function rowStage(row: Pick<SessionOwnershipRow, 'kind' | 'stage'>): OwnershipStage | undefined {
+  return row.stage ?? stageForKind(row.kind);
+}
+
+/** Stages a session's cost is reported under: the base stages plus the repair kinds. */
+export type ExecutionStage = OwnershipStage | 'ci-fix' | 'conflict-resolution' | 'ready-remediation';
+
+const REPAIR_EXECUTION_STAGES: readonly ExecutionStage[] = ['ci-fix', 'conflict-resolution', 'ready-remediation'];
+
+/**
+ * The one answer to "which stage does this session's work and cost count
+ * toward?" (HOK-3415): a repair kind is its own stage, never folded into the
+ * coder's; everything else is {@link rowStage}. Null for a session no stage
+ * owns (an unmapped helper purpose).
+ */
+export function executionStageForRow(row: Pick<SessionOwnershipRow, 'kind' | 'stage'>): ExecutionStage | null {
+  if ((REPAIR_EXECUTION_STAGES as readonly string[]).includes(row.kind)) return row.kind as ExecutionStage;
+  return rowStage(row) ?? null;
+}
+
+/** Rows grouped by {@link executionStageForRow}; rows no stage owns are left out. */
+export function groupByExecutionStage(rows: readonly SessionOwnershipRow[]): Map<ExecutionStage, SessionOwnershipRow[]> {
+  const groups = new Map<ExecutionStage, SessionOwnershipRow[]>();
+  for (const row of rows) {
+    const stage = executionStageForRow(row);
+    if (stage) groups.set(stage, [...(groups.get(stage) ?? []), row]);
+  }
+  return groups;
 }
 
 /** Fresh exact session id (lowercase UUID v4, accepted by `claude --session-id`). */
@@ -418,7 +465,7 @@ export function indexBySessionRef(rows: readonly SessionOwnershipRow[]): Map<str
 
 /** Rows that did the given stage's work (stage kinds and native arms of that stage). */
 export function rowsForStage(rows: readonly SessionOwnershipRow[], stage: OwnershipStage): SessionOwnershipRow[] {
-  return rows.filter((row) => row.stage === stage);
+  return rows.filter((row) => rowStage(row) === stage);
 }
 
 /**
@@ -436,7 +483,7 @@ export function ownershipStageRole(row: SessionOwnershipRow | undefined): Execut
     };
   }
   return {
-    value: row.stage ?? null,
+    value: rowStage(row) ?? null,
     kind: row.kind,
     confidence: 'launch_record',
     evidence: `launch ${row.attemptId} at ${row.launchedAt}`,
