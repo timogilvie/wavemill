@@ -10,6 +10,7 @@ export WAVEMILL_CODING_DIRTY_HANDOFF_GRACE_SECONDS=0
 journey_init native-ownership-recovery
 fakes_linear_add_issue "$ISSUE" "Recover native ownership" Todo
 journey_start_monitor
+journey_set_tick_budget 80
 journey_wait_until "$ISSUE" 5 "task offered" journey_backlog_offers "$ISSUE"
 journey_command 'select 1'
 recovered() { [[ "$(journey_agent_launch_count "$ISSUE" coding)" -ge 2 ]]; }

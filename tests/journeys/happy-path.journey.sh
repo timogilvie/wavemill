@@ -19,6 +19,7 @@ journey_init happy-path
 fakes_linear_add_issue "$ISSUE" "Add journey output file" Todo
 
 journey_start_monitor
+journey_set_tick_budget 60
 # The operator picks the first backlog task, as from the mill prompt.
 journey_wait_until "$ISSUE" 5  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"

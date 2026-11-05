@@ -52,6 +52,7 @@ fixture_workflow_state "$STATE_FILE" \
     runId="JRN-9:e:1" lifecycle:="$lifecycle_active"
 
 journey_start_monitor
+journey_set_tick_budget 20
 
 held_as_unknown() { grep -q "holds: touch set of JRN-9 unknown" "$JOURNEY_TMP/logs/monitor.out" 2>/dev/null; }
 journey_wait_until JRN-9 6 "picker holds JRN-2 against JRN-9's unknown touch set" held_as_unknown

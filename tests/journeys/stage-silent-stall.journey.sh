@@ -30,6 +30,7 @@ journey_init stage-silent-stall
 fakes_linear_add_issue "$ISSUE" "Change whose first review agent stalls silently" Todo
 
 journey_start_monitor
+journey_set_tick_budget 95
 journey_wait_until "$ISSUE" 5  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 

@@ -67,6 +67,7 @@ EVAL_LOG="/tmp/${SESSION}-eval-${ISSUE}.log"
 PENDING="$STATE_DIR/hokusai/queue/pending.jsonl"
 
 journey_start_monitor
+journey_set_tick_budget 85
 journey_wait_until "$ISSUE" 5  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 

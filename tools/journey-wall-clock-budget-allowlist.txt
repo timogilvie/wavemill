@@ -1,0 +1,4 @@
+# Allowlist for the journey-wall-clock-budget guard (HOK-3425).
+# Format: <repo-relative path> [<max findings>]  # <reason>
+# A journey measures its work in monitor ticks (journey_set_tick_budget), never
+# wall-clock seconds. This list starts empty and only shrinks.

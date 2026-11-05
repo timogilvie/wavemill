@@ -33,6 +33,7 @@ fakes_linear_add_issue "$ISSUE" "Change whose coder leaves a dirty tree" Todo
 # (The pre-exit hold only paints the tmux window red; it writes no marker.)
 
 journey_start_monitor
+journey_set_tick_budget 75
 journey_wait_until "$ISSUE" 5  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 
