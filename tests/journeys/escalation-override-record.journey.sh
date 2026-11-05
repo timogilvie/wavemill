@@ -111,14 +111,17 @@ journey_assert "eval record: one escalation override to claude-opus-5-5 (confide
              and .hokusai.requestId == \"jrn-reask-0002\")" >/dev/null' _ "$(eval_record)"
 journey_assert "eval record: Hokusai join key recorded on the route provenance" \
   bash -c 'printf %s "$1" | jq -e ".routeProvenance.hokusaiInferenceLogId == \"jrn-first-0001\"" >/dev/null' _ "$(eval_record)"
+# The row is technical_task_router_row/v4 (HOK-3415): the routing-outcome
+# block carries the join key as top-level inference_log_id and each override
+# as {role, source, from, to, reason}.
+journey_assert "queued contribution row is a v4 router row" \
+  bash -c 'printf %s "$1" | jq -e ".row.schema_version == \"technical_task_router_row/v4\"" >/dev/null' _ "$(queued_row)"
 journey_assert "queued contribution row carries the join key" \
-  bash -c 'printf %s "$1" | jq -e ".row.inputs.inference_log_id == \"jrn-first-0001\"" >/dev/null' _ "$(queued_row)"
+  bash -c 'printf %s "$1" | jq -e ".row.inference_log_id == \"jrn-first-0001\"" >/dev/null' _ "$(queued_row)"
 journey_assert "queued contribution row carries the escalation override" \
   bash -c 'printf %s "$1" | jq -e "
-    .row.inputs
-    | .route_overrides_schema == \"route_overrides/v1\"
-      and (.route_override_sources | index(\"escalation\")) != null
-      and (.route_override_to | index(\"claude-opus-5-5\")) != null" >/dev/null' _ "$(queued_row)"
+    [.row.overrides[] | select(.role == \"coder\" and .source == \"escalation\" and .to == \"claude-opus-5-5\")]
+    | length == 1" >/dev/null' _ "$(queued_row)"
 journey_assert "zero operator touches: no operator override on the record" \
   bash -c 'printf %s "$1" | jq -e "[.routeProvenance.stageRoutes[].overrides[] | select(.source == \"operator\")] | length == 0" >/dev/null' _ "$(eval_record)"
 journey_assert "no operator attention was requested" test "$JOURNEY_SAW_ATTENTION" = "0"
