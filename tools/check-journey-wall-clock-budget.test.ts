@@ -16,7 +16,9 @@ describe('journey-wall-clock-budget guard', () => {
   it('flags JOURNEY_BUDGET_SECONDS and a bare BUDGET inside tests/journeys/', () => {
     const source = [
       '#!/usr/bin/env bash',
+      // allow-template-curly: literal shell fixture asserting the retired wall-clock budget shape
       'JOURNEY_BUDGET_SECONDS=$(( ${JOURNEY_BUDGET_SECONDS:-0} * 2 ))',
+      // allow-template-curly: literal shell fixture asserting the retired wall-clock budget shape
       'BUDGET="${JOURNEY_BUDGET_SECONDS:-90}"',
       '(( $(date +%s) - STARTED_AT < BUDGET )) || fail "past budget"',
     ].join('\n');
@@ -39,6 +41,7 @@ describe('journey-wall-clock-budget guard', () => {
       '#!/usr/bin/env bash',
       'journey_set_tick_budget 85',
       'JOURNEY_TICK_BUDGET=0',
+      // allow-template-curly: literal shell fixture exercising the allowed tick-budget primitive
       'journey_set_tick_budget "${JOURNEY_TICK_BUDGET:-170}"',
     ].join('\n');
     const findings = checkGuardSource(JOURNEY_WALL_CLOCK_BUDGET_GUARD, 'tests/journeys/synthetic.journey.sh', source);

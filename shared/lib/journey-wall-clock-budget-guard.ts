@@ -27,6 +27,9 @@ export const JOURNEY_WALL_CLOCK_BUDGET_GUARD: GuardSpec = {
   allowlistFile: 'tools/journey-wall-clock-budget-allowlist.txt',
   invariantPaths: [
     'shared/lib/journey-wall-clock-budget-guard.ts',
+    // The guard's self-test necessarily spells out every forbidden shape as a
+    // fixture, so it is invariant source too and is never scanned.
+    'tools/check-journey-wall-clock-budget.test.ts',
   ],
   excludedPrefixes: [
     // Default list minus `tests/` so this guard still scans journey code.
