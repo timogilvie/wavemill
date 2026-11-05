@@ -1,0 +1,5 @@
+# Ratcheting allowlist for tools/check-base-merge.ts (HOK-3385).
+# <repo-relative path> [<max findings>]  # reason
+# This list only shrinks: new base-integration movers must call
+# updateBranchWithBase, and agent prompts never instruct fetch/merge/rebase.
+shared/lib/tend-controller.ts 2  # tend keeps its lane rebase (HOK-3105); the lane strategy belongs to HOK-3347/HOK-3370 and its conflict hand-off converges on the mill merge

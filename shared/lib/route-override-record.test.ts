@@ -7,7 +7,6 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { buildSubmitDataContributionRow } from './hokusai-contribution-builder.ts';
 import {
   appendOverride,
   appendStageOverride,
@@ -19,8 +18,7 @@ import {
   hokusaiJoinKey,
   overrideStageModel,
   parseStageRoutes,
-  ROUTE_OVERRIDES_CONTRIBUTION_SCHEMA,
-  routeRecordContributionInputs,
+  routingOutcomeForProjection,
   seedStageRoutes,
   type RouteRecordCarrier,
   type StageRouteRecord,
@@ -225,17 +223,14 @@ describe('replay fixtures', () => {
     assert.equal(operator.from, 'glm-5.3-flash');
     assert.equal(operator.to, 'claude-opus-5-5');
 
-    const row = buildSubmitDataContributionRow({
-      observedAt: '2026-10-31T00:00:00.000Z',
-      observedSuccess: false,
-      budgetCompliant: true,
-      harness: 'wavemill',
-      inputs: routeRecordContributionInputs(routes, hokusaiJoinKey(decision.provenance)),
-    });
-    assert.equal(row.inputs?.inference_log_id, 'b41b1171');
-    assert.equal(row.inputs?.route_overrides_schema, ROUTE_OVERRIDES_CONTRIBUTION_SCHEMA);
-    assert.deepEqual(row.inputs?.route_override_sources, ['escalation', 'operator']);
-    assert.deepEqual(row.inputs?.route_override_to, ['glm-5.3-flash', 'claude-opus-5-5']);
+    // HOK-3415: the v4 projection's routing-outcome block replaces the
+    // legacy `inputs.route_override_*` dict. We assert on it directly.
+    const projection = routingOutcomeForProjection(routes, hokusaiJoinKey(decision.provenance));
+    assert.equal(projection.inferenceLogId, 'b41b1171');
+    assert.ok(projection.routeOverrides);
+    assert.deepEqual(projection.routeOverrides!.map((o) => o.source), ['escalation', 'operator']);
+    assert.deepEqual(projection.routeOverrides!.map((o) => o.to), ['glm-5.3-flash', 'claude-opus-5-5']);
+    assert.deepEqual(projection.routeOverrides!.map((o) => o.stage), ['coder', 'coder']);
   });
 
   // protects: HOK-3315 — the challenge's varied model reaching Hokusai as Hokusai's recommendation.
@@ -268,14 +263,10 @@ describe('replay fixtures', () => {
       }],
     });
 
-    const row = buildSubmitDataContributionRow({
-      observedAt: '2026-10-31T00:00:00.000Z',
-      observedSuccess: false,
-      budgetCompliant: true,
-      inputs: routeRecordContributionInputs(routes, '87447d9f'),
-    });
-    assert.equal(row.inputs?.inference_log_id, '87447d9f');
-    assert.deepEqual(row.inputs?.route_override_sources, ['challenge']);
-    assert.deepEqual(row.inputs?.route_override_from, ['claude-opus-4-7']);
+    const projection = routingOutcomeForProjection(routes, '87447d9f');
+    assert.equal(projection.inferenceLogId, '87447d9f');
+    assert.ok(projection.routeOverrides);
+    assert.deepEqual(projection.routeOverrides!.map((o) => o.source), ['challenge']);
+    assert.deepEqual(projection.routeOverrides!.map((o) => o.from), ['claude-opus-4-7']);
   });
 });

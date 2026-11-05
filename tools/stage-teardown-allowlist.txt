@@ -1,0 +1,8 @@
+# HOK-3359 stage-teardown allowlist. Ratcheting: only shrinks. Every entry
+# names a non-task-window kill (mill startup/shutdown panes, the
+# terminal-backend seam's own host primitives) — a new task-window kill
+# site must go through stage_agent_teardown instead of adding a line here.
+shared/lib/terminal-backend.sh 2  # the tmux seam itself (term_window_kill / term_pane_kill host primitives), not a task-window write
+shared/lib/wavemill-common.sh 1  # wavemill_reconcile_backstage_service_pane dedupes extra tend/observer backstage panes, not a task window
+shared/lib/wavemill-monitor.sh 1  # cleanup_dashboard_pane closes the mill's own control/dashboard panes on exit, not a task window
+shared/lib/wavemill-startup-runner.sh 7  # mill startup/shutdown: backstage observer/tend pane cleanup + rollback of a just-created window on launch failure, never a task window

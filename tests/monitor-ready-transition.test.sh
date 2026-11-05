@@ -195,6 +195,11 @@ JSON
         printf "%s\n" "{\"stage\":\"ready\",\"status\":\"running\",\"artifacts\":{\"mergeConflict\":\"CONFLICTED\",\"launchHead\":\"current-head\"}}" > "$READY_DIR/.ready-result.json"
         marker_write "$READY_DIR/.conflict-remediation.json" --kind conflict-remediation --head current-head \
           --expires-on "head,remote,operator-event" --detail-json "{\"launchHead\":\"current-head\"}"
+        # Every launch records its ownership row before the child starts (HOK-3328).
+        launched_epoch=$(( $(date +%s) - 60 ))
+        printf "{\"schemaVersion\":1,\"type\":\"launch\",\"sessionRef\":\"resolver-1\",\"harness\":\"claude-code\",\"kind\":\"conflict-resolution\",\"model\":\"m\",\"launchedAt\":\"%s\",\"attemptId\":\"conflict-resolution@nohead#%s\"}\n" \
+          "$(date -u -r "$launched_epoch" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u -d "@$launched_epoch" +%Y-%m-%dT%H:%M:%S.000Z)" "$launched_epoch" \
+          > "$READY_DIR/.session-ownership.jsonl"
         ;;
       ready_conflict_exhausted)
         CURRENT_PHASE="ready"
@@ -289,6 +294,11 @@ JSON
         printf "%s\n" "1" > "$READY_DIR/.retry-ready-remediation-count"
         printf "%s\n" "current-head" > "$READY_DIR/.retry-ready-remediation-head"
         printf "%s\n" "0" > "$READY_DIR/.retry-ready-remediation-last-at"
+        # Every launch records its ownership row before the child starts (HOK-3328).
+        launched_epoch=$(( $(date +%s) - 60 ))
+        printf "{\"schemaVersion\":1,\"type\":\"launch\",\"sessionRef\":\"fix-1\",\"harness\":\"claude-code\",\"kind\":\"ready-remediation\",\"model\":\"m\",\"launchedAt\":\"%s\",\"attemptId\":\"ready-remediation@nohead#%s\"}\n" \
+          "$(date -u -r "$launched_epoch" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u -d "@$launched_epoch" +%Y-%m-%dT%H:%M:%S.000Z)" "$launched_epoch" \
+          > "$READY_DIR/.session-ownership.jsonl"
         ;;
       # HOK-3322 incident: the remediation agent reran flaky CI without a
       # commit and went idle. Same head, status still running/verdict fail.

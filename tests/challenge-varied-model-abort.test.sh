@@ -47,6 +47,10 @@ eval "$(extract_function phase_launch_head)"
 eval "$(extract_function phase_launch_base)"
 eval "$(extract_function resolve_phase_model)"
 eval "$(extract_function resolve_stage_result_model)"
+# HOK-3359: challenge_cancel_challenger_arm's window kill is one call into
+# the shared teardown primitive (--no-settle short-circuits before its
+# private settle helpers, which are not needed here).
+eval "$(MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/stage-teardown.sh" extract_function stage_agent_teardown)"
 eval "$(extract_function challenge_cancel_challenger_arm)"
 eval "$(extract_function handle_phase_launch_result)"
 # challenge_cancel_challenger_arm deregisters the retired arm through the

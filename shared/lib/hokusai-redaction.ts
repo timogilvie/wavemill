@@ -148,6 +148,51 @@ export function getOrCreateRedactionSalt(configDir?: string): string {
 }
 
 /**
+ * A challenge pair's id as a v4 `comparison_group.id` (HOK-3415). Wavemill's
+ * pair id is a task identifier (the primary's issue id), and the contract asks
+ * for a minted UUID or ULID, so it leaves as an RFC 9562 version-8 UUID (the
+ * custom layout) over HMAC-SHA256 with the contributor's salt: both arms of a
+ * pair get the same id, and the raw identifier never leaves.
+ */
+export function redactPairId(pairId: string, options: RedactionOptions = {}): string {
+  const salt = options.salt ?? getOrCreateRedactionSalt(options.configDir);
+  const hex = createHmac('sha256', salt).update(`pair:${pairId}`).digest('hex').slice(0, 32).split('');
+  hex[12] = '8';
+  hex[16] = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+  const h = hex.join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
+
+/** Raw session identifiers never leave on an egress path; hash them with the salt. */
+export function redactSessionIds(sessionIds: readonly string[], options: RedactionOptions = {}): string[] {
+  const salt = options.salt ?? getOrCreateRedactionSalt(options.configDir);
+  return sessionIds.map((id) => hashIdentifier(id, salt));
+}
+
+/**
+ * Redact one stage's task-cost summary for a v4 row (HOK-3415). The meter's
+ * SDK summary is keyed on the raw task id and names the owned sessions: the
+ * task id becomes the row's already-hashed `task_id` (the v4 validator requires
+ * they match). Session ids and event ids (provider message / request ids) are
+ * hashed with the same salt, so the row still tells sessions and events apart
+ * (and keeps `event_count === event_ids.length`) without a raw identifier.
+ */
+export function redactStageTaskCost<
+  T extends { task_id: string; session_ids?: readonly string[]; event_ids?: readonly string[] },
+>(
+  summary: T,
+  options: RedactionOptions & { taskId: string },
+): T {
+  const salt = options.salt ?? getOrCreateRedactionSalt(options.configDir);
+  return {
+    ...summary,
+    task_id: options.taskId,
+    ...(summary.session_ids ? { session_ids: redactSessionIds(summary.session_ids, { salt }) } : {}),
+    ...(summary.event_ids ? { event_ids: summary.event_ids.map((id) => hashIdentifier(id, salt)) } : {}),
+  };
+}
+
+/**
  * Redact a Hokusai submission so only training-relevant fields remain readable.
  *
  * Identifiers are deterministically hashed for deduplication. Known model

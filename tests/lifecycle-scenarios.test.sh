@@ -195,6 +195,8 @@ for fn in \
   write_coding_uncommitted_output_artifact \
   stage_result_field \
   stage_launch_identity \
+  stage_agent_disposition \
+  _stage_disposition_act \
   native_hook_terminal_failure_detail \
   native_coding_failure_handoff_reason \
   native_terminal_failure_kind \
@@ -235,6 +237,10 @@ do
   extract_function "$MONITOR_SCRIPT_FILE" "$fn" >> "$MONITOR_FUNC_FILE"
   printf '\n' >> "$MONITOR_FUNC_FILE"
 done
+# HOK-3359: quarantine_completed_coding_pane's window kill is one call into
+# the shared teardown primitive.
+extract_function "$REPO_DIR/shared/lib/stage-teardown.sh" "stage_agent_teardown" >> "$MONITOR_FUNC_FILE"
+printf '\n' >> "$MONITOR_FUNC_FILE"
 
 if [[ ! -s "$MONITOR_FUNC_FILE" ]]; then
   echo "Could not extract lifecycle controller functions"

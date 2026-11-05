@@ -12,6 +12,9 @@
  * - Validates all events on read and write
  * - Uses atomic append operations to prevent corruption
  *
+ * @see shared/lib/queue-metrics.ts — the one derivation module reading these
+ *   events into queue/CI/repair durations and time-to-land (HOK-3340).
+ * @see docs/queue-metrics.md — boundary table and modeling decisions.
  * @module queue-events
  */
 

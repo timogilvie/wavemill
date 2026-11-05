@@ -118,7 +118,7 @@
       "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": 600 },
       "agentRecord": { "state": "idle", "event": "Stop", "agoSec": 60 },
       "progress": { "blockingPrompt": { "id": "codex_model_retirement", "agent": "codex", "detail": "pick a model" } },
-      "expected": { "kind": "in-flight", "reason": "blocking-prompt" }
+      "expected": { "kind": "in-flight", "reason": "blocking-prompt:codex_model_retirement" }
     },
     {
       "name": "agent process exited without a hook",
@@ -151,13 +151,13 @@
       "expected": { "kind": "in-flight", "reason": "agent-working" }
     },
     {
-      "name": "unknown launch time attributes no record",
-      "protects": "a pre-launch Stop releasing the hold when the launch time is unrecorded",
+      "name": "a launch with no ownership row is an unrecorded launch",
+      "protects": "a Stop with no recorded launch time releasing the hold as if it followed a recorded launch (HOK-3328 rows precede every launch)",
       "shell": false,
       "readyStatus": "running",
       "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": null },
       "agentRecord": { "state": "idle", "event": "Stop", "agoSec": 60 },
-      "expected": { "kind": "in-flight", "reason": "awaiting-agent-evidence" }
+      "expected": { "kind": "inactive", "reason": "no-launch" }
     },
     {
       "name": "progress probe failed",

@@ -56,6 +56,12 @@ source "$COMMON_LIB_DIR/challenge-arms.sh"
 # (tmux today) goes through term_* here; see docs/terminal-backends.md.
 # shellcheck source=terminal-backend.sh
 source "$COMMON_LIB_DIR/terminal-backend.sh"
+# HOK-3359: the one stage-agent teardown (settle, terminate, record). Every
+# site that ends a stage agent's tmux window routes through
+# stage_agent_teardown instead of a raw kill-window / agent_terminate_in_pane
+# call. Enforced by tools/check-stage-teardown.ts.
+# shellcheck source=stage-teardown.sh
+source "$COMMON_LIB_DIR/stage-teardown.sh"
 
 # HOK-3100: install root resolved from BASH_SOURCE, never inherited. The
 # monitor runs from `main` while worker launchers run from worktrees, so
@@ -2613,7 +2619,6 @@ cleanup_completed_task() {
   local slug="$2"
   local completion_reason="${3:-}"
   local win="$issue-$slug"
-  local target=""
   local release_rc=0
   local pr=""
   local cleanup_candidate_json=""
@@ -2739,14 +2744,12 @@ cleanup_completed_task() {
     wavemill_release_terminal_pane "$SESSION" "$issue" "$slug" "${completion_reason:-completed}" "$pr" || release_rc=$?
   else
     # Legacy fallback for contexts that source wavemill-common.sh without
-    # terminal-reconciler.sh (no archive/record support).
-    target="$(_tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "${WORKTREE_ROOT}/${slug}" 2>/dev/null || true)"
-    if [[ -n "$target" ]] && command -v tmux >/dev/null 2>&1; then
-      wavemill_cleanup_run tmux kill-window -t "$(_tmux_target_join "$SESSION" "$target")" 2>/dev/null || true
-      if _tmux_window_target_exists "$SESSION" "$target"; then
-        release_rc=1
-      fi
-    fi
+    # terminal-reconciler.sh (no archive/record support). HOK-3359: still
+    # routed through the one teardown (wavemill_cleanup_run gates the whole
+    # settle/terminate/record/kill sequence so a dry-run `wavemill cleanup`
+    # without --execute stays a no-op, same as the raw kill-window before).
+    wavemill_cleanup_run stage_agent_teardown "$issue" "$feature_dir" "terminal-cleanup" \
+      --worktree "${WORKTREE_ROOT}/${slug}" --no-settle || release_rc=$?
     if [[ "$release_rc" -eq 0 ]]; then
       rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
     fi
@@ -3627,6 +3630,7 @@ wavemill_fetch_base_branch() {
   wavemill_git_remote_with_timeout "$remote_timeout" -C "$REPO_DIR" fetch origin \
     "+refs/heads/${base_branch}:refs/remotes/origin/${base_branch}" || fetch_rc=$?
   if (( fetch_rc != 0 )); then
+    # allow-base-merge: log message naming the failed command, not an agent instruction
     wavemill_warn "git fetch origin $base_branch failed for repo=$REPO_DIR timeout=${remote_timeout}s exit=$fetch_rc; continuing without refreshing base-branch cache"
     return "$fetch_rc"
   fi
@@ -4147,6 +4151,40 @@ wavemill_process_command_line() {
   printf '%s\n' "$command_line"
 }
 
+# HOK-2579: a safe-to-display process identity for blocked-completion
+# liveness diagnostics. Never returns raw argv — Codex Computer Use
+# descendants can carry a serialized coding prompt in their command line,
+# and that text must never reach logs, hooks, or attention state.
+#
+# Prefers `ps -o comm=` (the executable only, no arguments), basename'd.
+# Falls back to the first whitespace-separated token of the caller-supplied
+# command_line (also basename'd), then to a bare "pid N". The result is
+# always piped through sanitize_blocked_completion_text so a hostile
+# executable name cannot smuggle newlines or control characters through
+# either path.
+mill_blocking_process_identity() {
+  local pid="${1:-}" command_line="${2:-}" comm="" identity=""
+
+  if [[ "$pid" =~ ^[0-9]+$ ]] && command -v ps >/dev/null 2>&1; then
+    comm="$(ps -p "$pid" -o comm= 2>/dev/null || true)"
+    comm="$(printf '%s' "$comm" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  fi
+
+  if [[ -n "$comm" ]]; then
+    identity="$(basename "$comm" 2>/dev/null || true)"
+  elif [[ -n "$command_line" ]]; then
+    identity="$(basename "${command_line%% *}" 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$identity" ]]; then
+    identity="$identity (pid ${pid:-unknown})"
+  else
+    identity="pid ${pid:-unknown}"
+  fi
+
+  sanitize_blocked_completion_text "$identity"
+}
+
 wavemill_pid_is_descendant() {
   local root_pid="${1:-}" candidate_pid="${2:-}" pid
   [[ "$root_pid" =~ ^[0-9]+$ && "$candidate_pid" =~ ^[0-9]+$ ]] || return 1
@@ -4211,7 +4249,7 @@ mill_pane_has_live_blocking_process() {
       fi
       MILL_BLOCKING_PROCESS_PIDS=("$pid")
       MILL_BLOCKING_PROCESS_MATCH_COUNT=1
-      MILL_BLOCKING_PROCESS_COMMAND="${command_line:-pid $pid}"
+      MILL_BLOCKING_PROCESS_COMMAND="$(mill_blocking_process_identity "$pid" "$command_line")"
       return 0
     done
     return 1
@@ -4247,7 +4285,9 @@ mill_pane_has_live_blocking_process() {
         matched=true
         matched_pids+=("$pid")
         if [[ -z "$MILL_BLOCKING_PROCESS_COMMAND" ]]; then
-          MILL_BLOCKING_PROCESS_COMMAND="$command_line"
+          # The matched blocking_command is already sanitised at entry
+          # (above); never fall back to the raw command_line here.
+          MILL_BLOCKING_PROCESS_COMMAND="${blocking_command} (pid ${pid})"
         fi
         break
       fi

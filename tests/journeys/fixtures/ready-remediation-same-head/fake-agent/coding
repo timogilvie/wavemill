@@ -11,7 +11,9 @@
 # agent watches the rerun go green, then ends its turn the way Claude Code
 # does — UserPromptSubmit, PreToolUse, Stop through the real hook adapter
 # (shared/hooks/claude-status-hook.sh) — and exits. It never writes .coding-complete and never prompts anyone: Ready must
-# notice on its own that the remediation settled at the launch head.
+# notice on its own that the remediation settled at the launch head. After
+# the Stop, the hook file is cleared the way a host reboot clears /tmp
+# (HOK-3415): only the agent's own transcript stop survives.
 coding_runs_file="$FAKE_ROOT/coding-runs-$WAVEMILL_ISSUE"
 coding_run=$(( $(cat "$coding_runs_file" 2>/dev/null || echo 0) + 1 ))
 printf '%s\n' "$coding_run" > "$coding_runs_file"
@@ -57,4 +59,23 @@ else
   done
 
   claude_hook Stop
+  # Claude Code records the end of the turn in the session's own transcript
+  # (`stop_hook_summary`) as well as through the hook. Then the host reboots
+  # (HOK-3415, 2026-11-05): /tmp is cleared, taking the hook file with it, so
+  # the agent's own transcript is the only durable evidence that it settled.
+  if [[ -n "${FAKE_SESSION_ID:-}" && -n "${projects_dir:-}" ]]; then
+    jq -cn --arg sid "$FAKE_SESSION_ID" --arg ts "$(date -u +%FT%TZ)" \
+      '{type:"system", subtype:"stop_hook_summary", sessionId:$sid, timestamp:$ts}' \
+      >> "$projects_dir/$FAKE_SESSION_ID.jsonl"
+  fi
+  rm -f "/tmp/wavemill-${WAVEMILL_SESSION}-${WAVEMILL_ISSUE}.hook"
+  printf '%s phase=coding issue=%s role=ready-remediation hook-cleared\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+  # A real Claude Code REPL stays alive, idle at its prompt, after the Stop:
+  # the process probe says "alive", so only the transcript can say "settled".
+  # Bounded; the mill's stage teardown or the world teardown ends it sooner.
+  idle_until=$(( $(mill_tick) + 40 ))
+  for _ in $(seq 1 2400); do
+    (( $(mill_tick) >= idle_until )) && break
+    sleep 0.25
+  done
 fi

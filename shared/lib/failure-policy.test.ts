@@ -60,6 +60,9 @@ for (const code of [
   'operator-command-failed',
   'transition-code-failure',
   'merge-residue',
+  // HOK-3386: a recognised interactive prompt whose operatorAction only a
+  // human can answer; the stage-agent disposition escalates once per head.
+  'stage-blocking-prompt',
 ]) {
   // The testRef suffix (operator-decision:<code>) is this pinned case.
   test(`operator-decision:${code} is a known escalation basis code`, () => {

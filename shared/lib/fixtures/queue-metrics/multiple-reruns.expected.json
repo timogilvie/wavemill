@@ -1,0 +1,47 @@
+{
+  "version": "queue-metrics/v1",
+  "eventCount": 7,
+  "queueWait": {
+    "cycles": [
+      {
+        "startEventId": "m1-enq",
+        "startTimestamp": "2026-01-05T00:00:00.000Z",
+        "endEventId": "m1-cp",
+        "endTimestamp": "2026-01-05T00:01:00.000Z",
+        "seconds": 60
+      }
+    ],
+    "totalSeconds": 60
+  },
+  "ciRun": {
+    "attempts": [
+      {
+        "startEventId": "m1-cp",
+        "startTimestamp": "2026-01-05T00:01:00.000Z",
+        "lastCheckEventId": "m1-chk",
+        "lastCheckTimestamp": "2026-01-05T00:09:00.000Z",
+        "seconds": 480,
+        "checkRunCount": 1,
+        "closedBy": "merged"
+      }
+    ],
+    "totalSeconds": 480
+  },
+  "repairLoop": {
+    "cycles": [],
+    "totalSeconds": 0
+  },
+  "timeToLand": {
+    "startEventId": "m1-enq",
+    "startTimestamp": "2026-01-05T00:00:00.000Z",
+    "endEventId": "m1-mrg",
+    "endTimestamp": "2026-01-05T00:10:00.000Z",
+    "seconds": 600
+  },
+  "attemptsToLand": 1,
+  "ejections": 0,
+  "reruns": 3,
+  "ciComputeMinutes": "unknown",
+  "repairTokens": "unknown",
+  "repairCostUsd": "unknown"
+}

@@ -36,6 +36,7 @@ TESTS=(
   shared/lib/view-workflow-state.test.ts
   shared/lib/ledger-consistency.test.ts
   tests/state-invariants.test.ts
+  shared/lib/base-merge-guard.test.ts
   shared/lib/blast-radius.test.ts
   shared/lib/ledger-replay-contract.test.ts
   shared/lib/ledger-pair-abort.test.ts
@@ -191,6 +192,7 @@ TESTS=(
   shared/lib/ready-watchdog.test.ts
   shared/lib/ready-remediation-disposition.test.ts
   shared/lib/ready-remediation-disposition-guard.test.ts
+  shared/lib/stage-agent-disposition.test.ts
   shared/lib/migration-ast.test.ts
   shared/lib/tend-challenge-gate.test.ts
   shared/lib/transient-retry.test.ts
@@ -298,6 +300,7 @@ TESTS=(
   shared/lib/hokusai-router-audit.test.ts
   shared/lib/hokusai-contribution-schema.test.ts
   shared/lib/hokusai-contribution-builder.test.ts
+  shared/lib/hokusai-contribution-v4-replay.test.ts
   shared/lib/hokusai-local-config.test.ts
   shared/lib/hokusai-audit.test.ts
   shared/lib/hokusai-submission-trigger.test.ts
@@ -389,6 +392,7 @@ TESTS=(
   shared/lib/task-dependency-plan-cache.test.ts
   shared/lib/queue-inference-status.test.ts
   shared/lib/queue-events.test.ts
+  shared/lib/queue-metrics.test.ts
   shared/lib/task-dependency-planner.test.ts
   shared/lib/plan-queue-utils.test.ts
   shared/lib/touch-set-predictor.test.ts
@@ -618,6 +622,8 @@ TESTS=(
   shared/lib/observer-findings.test.ts
   shared/lib/pr-comparison-actions.test.ts
   tests/state-archive-roundtrip.test.ts
+  codex/tests/git.test.js
+  shared/lib/string-utils.test.js
 )
 
 SHARD_INDEX=1

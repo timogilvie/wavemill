@@ -573,6 +573,8 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
         routing: stageArtifacts.routing ?? null,
         ownership: metered?.owned ?? null,
         sessionCosts: metered?.sessionCosts ?? null,
+        sessionUsageRows: metered?.sessionUsageRows ?? new Map(),
+        sessionHarness: metered?.sessionHarness ?? new Map(),
       });
     } catch (err) {
       console.warn(`Warning: failed to collect execution economics: ${errorMessage(err)}`);
@@ -880,7 +882,14 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
 
   if (persisted) {
     try {
-      const result = await evalOrchestratorDeps.triggerHokusaiSubmission(record, { repoDir });
+      // Hand over the cost this eval already metered (HOK-3415): the v4 row's
+      // stage executions come from the same owned sessions, never re-metered.
+      const result = await evalOrchestratorDeps.triggerHokusaiSubmission(record, {
+        repoDir,
+        ...(metered ? { meteredCost: metered } : {}),
+        ...(worktreePath ? { worktreePath } : {}),
+        ...(branch ? { branchName: branch } : {}),
+      });
       console.log(`[hokusai] submission ${formatHokusaiSubmissionTriggerResult(result)}`);
     } catch (error) {
       console.warn(`[hokusai] failed to trigger submission: ${errorMessage(error)}`);

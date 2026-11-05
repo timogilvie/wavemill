@@ -25,7 +25,7 @@ When a new read-only tool is added:
 2. Reuse the real tool descriptor from `createReadOnlyTools()` or `createGitTools()` so schema drift stays visible.
 3. Capture the request body with the transport `onPayload` hook and update `expectedPayload`.
 4. Capture or hand-author the minimal streaming response needed to produce the expected tool call.
-5. Run `npm run test:native-agent` and confirm the coverage gate passes.
+5. Run `bash tests/run-unit-tests.sh` (the native-agent tests are part of the unit shard) and confirm the coverage gate passes.
 
 The tests fail on two conditions:
 - Missing fixture for a tool/transport pair.

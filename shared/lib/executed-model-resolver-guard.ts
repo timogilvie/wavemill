@@ -11,9 +11,8 @@
  *
  * 1. The shell runs `resolve-executed-model.ts` as a separate `tsx` process
  *    (the HOK-3328 pattern HOK-3369 deletes). The CLI resolves in-process now.
- * 2. A second file imports session-model internals (`resolveExecutedModelFromSessions`
- *    or `getSessionAdapter`)
- *    — the one resolver owns them.
+ * 2. A second file imports session-model internals
+ *    (`resolveExecutedModelFromSessions`) — the one resolver owns them.
  * 3. A second file writes eligibility reason literals (`'runtime_fallback'`,
  *    `'missing_execution_evidence'`) outside stage-result.ts — the one
  *    attribution decision owns them.
@@ -36,8 +35,7 @@ export const EXECUTED_MODEL_RESOLVER_GUARD: GuardSpec = {
       name: 'imports-session-resolver-internals',
       description: 'Only the one resolver (shared/lib/executed-model-resolver.ts) imports session-model resolver internals.',
       lang: 'ts',
-      re: /\b(?:resolveExecutedModelFromSessions|getSessionAdapter)\b/,
-      excludePaths: ['shared/lib/session-adapters.ts'],
+      re: /\bresolveExecutedModelFromSessions\b/,
     },
     {
       name: 'shell-writes-stage-result-directly',

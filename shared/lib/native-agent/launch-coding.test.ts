@@ -405,7 +405,7 @@ describe('launchNativeCoding', () => {
           implementationComplete: true,
           committed: true,
           passingChecks: ['node -e targeted-ok'],
-          blockingChecks: ['npm run typecheck'],
+          blockingChecks: ['npm run lint'],
           blockingReason: 'baseline_tests_failing',
           evidence: 'Repo-level baseline failed outside the scoped change.',
           recommendedAction: 'advance_to_review',

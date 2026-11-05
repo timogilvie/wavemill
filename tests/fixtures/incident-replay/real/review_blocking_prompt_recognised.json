@@ -1,0 +1,81 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "review_blocking_prompt_recognised",
+  "incidents": [
+    "hok3386c1234567890b1234567890c1234567890d1234567890e1234567890fff"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-18",
+      "slug": "incident-review-blocking-prompt-recognised-18",
+      "phase": "review",
+      "status": "waiting"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "agent_interactive_prompt_blocked",
+    "severity": "high",
+    "confidence": "high",
+    "summary": "HOK-FIXTURE-18 review pane is parked at a recognised interactive prompt; HOK-3386 raises one operator-decision escalation and holds otherwise.",
+    "operatorAction": "The review agent is waiting at a recognised blocking prompt whose answer only the operator can give. HOK-3386 raises a single escalation via operator-decision:stage-blocking-prompt and never retries until the operator intervenes.",
+    "metadata": {
+      "stage": "review",
+      "disposition": "settled:blocking-prompt",
+      "blockingPromptId": "codex_daemon_version_mismatch",
+      "escalationBasis": "operator-decision:stage-blocking-prompt"
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "pane_blocking_prompt",
+          "source": "~/Dropbox/wavemill/worktrees/<fixture-slug>/features/<fixture-slug>/.review-result.json",
+          "timestamp": "2026-11-02T12:30:00.000Z",
+          "redactedData": "stage=review promptId=codex_daemon_version_mismatch recognised=true",
+          "key": "stage-blocking-prompt:HOK-FIXTURE-18:review:codex_daemon_version_mismatch"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "failure": {
+    "stage": "review",
+    "failureKind": null,
+    "detail": "review agent parked at recognised interactive prompt",
+    "survivesRelaunches": "never"
+  },
+  "convergence": {
+    "mustEscalate": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  },
+  "journey": null,
+  "journeyNullReason": "detector-level class; replayed via the incident cycle loop",
+  "expected": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "agent_interactive_prompt_blocked",
+    "occurrenceCount": 1,
+    "lifecycleWhilePresent": "observed",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  },
+  "source": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "agent_interactive_prompt_blocked",
+    "severity": "high",
+    "confidence": "high",
+    "recordedLifecycle": "resolved",
+    "recordedResolution": "auto_resolved",
+    "occurrenceCount": 1,
+    "firstObservedAt": "2026-11-02T12:30:00.000Z",
+    "lastObservedAt": "2026-11-02T12:30:00.000Z",
+    "stateSnapshot": null,
+    "convertedBy": "HOK-3386 hand-crafted",
+    "observationsTruncated": false
+  }
+}

@@ -61,9 +61,6 @@ Verification is triggered automatically when:
 ⚠️  Weak model detected: claude-haiku-4-5-20251001 (score: 60, threshold: 80)
 Quality gap: 20 points below threshold
 
-Running typecheck: npm run typecheck
-✓ typecheck passed
-
 Running lint: npm run lint
 ✓ lint passed
 
@@ -96,9 +93,6 @@ Second-pass review will be required (stronger reviewer available: claude-opus-4-
 ```
 ⚠️  Weak model detected: claude-haiku-4-5-20251001 (score: 60, threshold: 80)
 Quality gap: 20 points below threshold
-
-Running typecheck: npm run typecheck
-✓ typecheck passed
 
 Running lint: npm run lint
 ✓ lint passed
@@ -139,7 +133,6 @@ Add to `.wavemill-config.json`:
       "adjustByQualityGap": true
     },
     "mandatoryChecks": {
-      "typecheck": true,
       "lint": true,
       "test": true,
       "selfExplanation": true
@@ -166,7 +159,6 @@ Verification uses check commands from `claude/config.json`:
 ```json
 {
   "checks": {
-    "typecheck": "npm run typecheck",
     "lint": "npm run lint",
     "test": "npm test"
   }
@@ -354,10 +346,10 @@ SKIP_VERIFICATION=true npx tsx shared/lib/run-verification.ts
 
 ### Check Commands Failing
 
-**Symptom:** Typecheck/lint/test always fail
+**Symptom:** Lint/test always fail
 
 **Check:**
-1. Do the commands work standalone? Run `npm run typecheck` manually
+1. Do the commands work standalone? Run `npm run lint` manually
 2. Are commands configured correctly in `claude/config.json`?
 3. Is the working directory correct for the commands?
 
@@ -400,7 +392,7 @@ Use this data to:
 1. **Trust the defaults** - Thresholds are calibrated based on model capabilities
 2. **Monitor false positives** - If verification frequently blocks valid code, file an issue
 3. **Split large PRs** - Even with strong models, smaller PRs are easier to review
-4. **Configure check commands** - Verification is most effective when typecheck/lint/test are configured
+4. **Configure check commands** - Verification is most effective when lint/test are configured
 5. **Use stronger reviewers when available** - Second-pass review is safer than patch size caps
 
 ## Related Documentation

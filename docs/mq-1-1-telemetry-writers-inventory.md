@@ -536,3 +536,15 @@ rg -n 'reportOutcome|recordContribution|hokusai-trigger-log'          # Axis 7
 
 A hit outside this inventory is drift. A row in this inventory whose grep no
 longer matches is also drift — promote to a follow-up with a HOK- reference.
+
+## Follow-up: queue-metrics derivation (HOK-3340 / MQ-1.4)
+
+`shared/lib/queue-metrics.ts` is the one derivation module reading the
+HOK-3339 event log (`shared/lib/queue-events.ts`) into queue/CI/repair
+durations and time-to-land. It lists four ad-hoc calculations in
+`shared/lib/cost-baseline/` (`computeQueueWait`, `computeCi`,
+`computeTaskDimensions`, `integration-failures`) that still derive the same
+facts from the label-write ledger and lane `progress.json`. These predate
+the event log (ledger from 2026-10-13; log from HOK-3339) and are left in
+place; MQ-0.1 re-run is the natural follow-up to migrate them once enough
+live event-log data exists. See `docs/queue-metrics.md`.
