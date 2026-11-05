@@ -3630,6 +3630,7 @@ wavemill_fetch_base_branch() {
   wavemill_git_remote_with_timeout "$remote_timeout" -C "$REPO_DIR" fetch origin \
     "+refs/heads/${base_branch}:refs/remotes/origin/${base_branch}" || fetch_rc=$?
   if (( fetch_rc != 0 )); then
+    # allow-base-merge: log message naming the failed command, not an agent instruction
     wavemill_warn "git fetch origin $base_branch failed for repo=$REPO_DIR timeout=${remote_timeout}s exit=$fetch_rc; continuing without refreshing base-branch cache"
     return "$fetch_rc"
   fi

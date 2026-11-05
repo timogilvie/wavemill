@@ -33,8 +33,9 @@
  * when the probe did not run or no stage launched.
  *
  * Enforced by `tools/check-ready-remediation-disposition.ts` (extended, not
- * replaced); the Ready module (`ready-remediation-disposition.ts`) stays
- * intact and reads this module for its progress-based branches.
+ * replaced). Ready remediation decides here too: the Ready module
+ * (`ready-remediation-disposition.ts`) only reads Ready's launch identity
+ * (sub-stage and launch head) and maps the result onto Ready's actions.
  *
  * @module stage-agent-disposition
  */
@@ -422,7 +423,7 @@ export function evaluateStageAgentDisposition(
   }
 }
 
-// ── Progress gatherer for agent stages (parallels gatherReadyTaskProgress) ──
+// ── Progress gatherer for agent stages (Ready's gatherReadyTaskProgress delegates here) ──
 
 export interface GatherStageTaskProgressOptions {
   issue: string;
@@ -457,8 +458,8 @@ function fileMtimeIso(file: string): string | null {
 }
 
 /**
- * Compose task-progress for an agent stage. Mirrors `gatherReadyTaskProgress`
- * — the stage result's start/finish/mtime are transitions, and the
+ * Compose task-progress for an agent stage. The stage result's
+ * start/finish/mtime are transitions (HOK-3422 retires those), and the
  * HOK-3386 owned-session probe is wired through `stageForOwnedSession`.
  */
 export function gatherStageTaskProgress(opts: GatherStageTaskProgressOptions): TaskProgress {

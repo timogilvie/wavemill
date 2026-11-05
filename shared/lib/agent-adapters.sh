@@ -1952,14 +1952,28 @@ _WVML_PROMPT_
 
 # Build a narrow prompt for automatic merge-conflict resolution in an existing PR worktree.
 #
+# HOK-3385: the mill has already merged origin/<base> into the branch through
+# updateBranchWithBase and left the merge in progress on conflict. The agent
+# only resolves the conflicted files, stages them, and commits — it never
+# fetches, merges, or rebases itself (a native agent has no such tools).
+#
 # Args:
 #   $1 = pr_number
 #   $2 = branch
 #   $3 = wt_dir
 #   $4 = status_file
 #   $5 = base_branch
+#   $6 = conflicted files (space-separated, optional)
 build_conflict_resolution_prompt() {
-  local pr_number="$1" branch="$2" wt_dir="$3" status_file="$4" base_branch="${5:-main}"
+  local pr_number="$1" branch="$2" wt_dir="$3" status_file="$4" base_branch="${5:-main}" conflict_files="${6:-}"
+
+  local files_section="" f
+  if [[ -n "$conflict_files" ]]; then
+    files_section=$'\nConflicted files:\n'
+    for f in $conflict_files; do
+      files_section+="- $f"$'\n'
+    done
+  fi
 
   cat <<_WVML_PROMPT_
 You are resolving merge conflicts for open PR #$pr_number.
@@ -1968,10 +1982,15 @@ Repo worktree: $wt_dir
 Branch: $branch
 Base branch: $base_branch
 
+The workflow automation has already merged origin/$base_branch into this
+branch, and the merge stopped on conflicts. The merge is still in progress in
+this worktree: the conflicted files contain conflict markers and are unmerged
+in the index.
+$files_section
 Scope:
-- Resolve merge conflicts only.
+- Resolve the conflicted hunks only. Do not start a new merge or rebase, and do not fetch.
 - Do not do new feature work or refactors unless strictly required to complete the merge.
-- Preserve the existing branch intent.
+- Preserve the existing branch intent, and keep both sides' intent where both apply.
 
 Status Reporting:
 Throughout your work, periodically update your status by running:
@@ -1979,14 +1998,11 @@ Throughout your work, periodically update your status by running:
 Keep it under 50 chars. Update it at each major step.
 
 Required process:
-1. Inspect the current branch state and conflict state.
-2. Fetch the latest base branch:
-   git fetch origin $base_branch
-3. Merge the base branch into the current branch:
-   git merge origin/$base_branch
-4. Resolve conflicts with the smallest safe changes possible.
-5. Run relevant validation for touched code. At minimum, run lint and typecheck if available.
-6. Commit the conflict resolution with this exact message:
+1. Inspect the in-progress merge: git status lists the unmerged files.
+2. Edit each conflicted file to resolve its conflict markers with the smallest safe changes.
+3. Stage each resolved file with git add.
+4. Run relevant validation for touched code. At minimum, run lint and typecheck if available.
+5. Commit the resolution (this completes the in-progress merge) with this exact message:
    fix: Resolve merge conflicts with $base_branch
 
 Do not push. The workflow automation publishes the branch for you (HOK-3370).
