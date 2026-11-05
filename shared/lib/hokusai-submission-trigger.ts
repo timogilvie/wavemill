@@ -5,7 +5,6 @@ import {
   type RedactedEvalContributionProjectionV4,
   type RouteRole,
   type StageExecutionProjection,
-  type StageExecutionStage,
 } from './hokusai-contribution-builder.ts';
 
 /** Projection-side `comparison_group` shape (camelCase per @hokusai/core). */
@@ -16,7 +15,13 @@ interface ComparisonGroupProjection {
 import { drainContributionQueue } from './hokusai-queue-drain.ts';
 import { enqueueContribution, type HokusaiQueueProvenance } from './hokusai-queue.ts';
 import { formatSubmissionSwitches, getSubmissionSwitchReport } from './hokusai-consent.ts';
-import { redactHokusaiSubmission } from './hokusai-redaction.ts';
+import {
+  getOrCreateRedactionSalt,
+  redactHokusaiSubmission,
+  redactPairId,
+  redactSessionIds,
+  redactStageTaskCost,
+} from './hokusai-redaction.ts';
 import {
   toHokusaiInput,
   toHokusaiSubmission,
@@ -39,10 +44,10 @@ import {
   type ExecutedModelEvidenceStatus,
 } from './executed-model-resolver.ts';
 import {
-  OWNERSHIP_STAGES,
+  groupByExecutionStage,
+  groupByHarness,
   locateOwnershipRows,
-  type OwnershipKind,
-  type OwnershipStage,
+  type ExecutionStage,
   type SessionHarness,
   type SessionOwnershipRow,
 } from './session-ownership.ts';
@@ -180,8 +185,7 @@ const HARNESS_LABEL: Record<SessionHarness, string> = {
 };
 
 interface ResolvedStageExecution {
-  stage: StageExecutionStage;
-  kind: OwnershipKind;
+  stage: ExecutionStage;
   harness: SessionHarness;
   executedModel: string;
   modelEvidence: ModelEvidence;
@@ -190,52 +194,37 @@ interface ResolvedStageExecution {
 }
 
 /**
- * Group owned rows for one ownership kind by harness and build one stage
- * execution per `(kind, harness)`: the v4 contract splits a stage that spans
- * harnesses into one entry per harness.
+ * Build one stage execution per `(stage, harness)` for one execution stage's
+ * owned rows (`executionStageForRow`): the v4 contract splits a stage that
+ * spans harnesses into one entry per harness. A helper session counts in the
+ * stage it served; a repair stage is its own stage (HOK-3415).
  */
-function stageExecutionsForKind(
+function stageExecutionsForStage(
   input: {
-    kind: OwnershipKind;
+    stage: ExecutionStage;
     rows: SessionOwnershipRow[];
-    summariesByKind: Map<OwnershipKind, TaskCostSummaryV1[]>;
+    summariesByStage: Map<ExecutionStage, TaskCostSummaryV1[]>;
     featureDir: string;
     worktreePath: string;
     branchName: string;
     repoDir: string;
   },
 ): ResolvedStageExecution[] {
-  const { kind, rows } = input;
+  const { stage, rows } = input;
   if (rows.length === 0) return [];
 
-  const stage = kindAsStage(kind);
-  if (!stage) return [];
-
-  const byHarness = new Map<SessionHarness, SessionOwnershipRow[]>();
-  for (const row of rows) {
-    const existing = byHarness.get(row.harness) ?? [];
-    existing.push(row);
-    byHarness.set(row.harness, existing);
-  }
-
   const results: ResolvedStageExecution[] = [];
-  for (const [harness, harnessRows] of byHarness) {
-    const summaries = pickSummariesForHarness(
-      input.summariesByKind.get(kind) ?? [],
-      harness,
-    );
-    const resolved = resolveExecutedModelForKind({
-      kind,
-      harness,
+  for (const [harness, harnessRows] of groupByHarness(rows)) {
+    const summaries = pickSummariesForHarness(input.summariesByStage.get(stage) ?? [], harness);
+    const resolved = resolveExecutedModelForStage({
+      stage,
       rows: harnessRows,
       featureDir: input.featureDir,
       worktreePath: input.worktreePath,
       branchName: input.branchName,
       repoDir: input.repoDir,
     });
-    const executedModel = resolved.executedModel;
-    const modelEvidence = toModelEvidence(resolved.evidenceStatus, resolved.evidenceSource);
-    if (!executedModel) {
+    if (!resolved.executedModel) {
       // No model could be established at all — skip the entry so the row
       // never ships a stage with an empty `executed_model`. The sibling
       // entries (if any) are still emitted, and a task with no resolvable
@@ -244,10 +233,9 @@ function stageExecutionsForKind(
     }
     results.push({
       stage,
-      kind,
       harness,
-      executedModel,
-      modelEvidence,
+      executedModel: resolved.executedModel,
+      modelEvidence: toModelEvidence(resolved.evidenceStatus, resolved.evidenceSource),
       summaries,
       sessionIds: harnessRows.map((row) => row.sessionRef),
     });
@@ -255,22 +243,10 @@ function stageExecutionsForKind(
   return results;
 }
 
-/** Ownership kind → v4 stage name (null for helper kinds). */
-function kindAsStage(kind: OwnershipKind): StageExecutionStage | null {
-  if ((OWNERSHIP_STAGES as readonly string[]).includes(kind)) {
-    return kind as OwnershipStage;
-  }
-  if (kind === 'ci-fix' || kind === 'conflict-resolution' || kind === 'ready-remediation') {
-    return kind;
-  }
-  if (kind === 'native-arm') return 'coding';
-  return null;
-}
-
 /**
- * Pick the task-cost summaries that match a harness. The meter's per-kind
+ * Pick the task-cost summaries that match a harness. The meter's per-stage
  * group may span harnesses (rare but possible); the v4 contract asks for one
- * summary per `(kind, harness)` pair.
+ * summary per `(stage, harness)` pair.
  */
 function pickSummariesForHarness(
   summaries: readonly TaskCostSummaryV1[],
@@ -280,27 +256,26 @@ function pickSummariesForHarness(
   return summaries.filter((summary) => summary.harness === label);
 }
 
-interface ResolvedKindModel {
+interface ResolvedStageModel {
   executedModel: string | null;
   evidenceStatus: ExecutedModelEvidenceStatus;
   evidenceSource: ExecutedModelEvidenceSource | 'launch-record' | 'unknown';
 }
 
-function resolveExecutedModelForKind(input: {
-  kind: OwnershipKind;
-  harness: SessionHarness;
+function resolveExecutedModelForStage(input: {
+  stage: ExecutionStage;
   rows: SessionOwnershipRow[];
   featureDir: string;
   worktreePath: string;
   branchName: string;
   repoDir: string;
-}): ResolvedKindModel {
+}): ResolvedStageModel {
   const fallbackModel = latestLaunchModel(input.rows);
 
-  if (isRepairStageKind(input.kind)) {
+  if (isRepairStageKind(input.stage)) {
     const repair = hokusaiSubmissionTriggerDeps.resolveRepairStageExecutedModel({
       featureDir: input.featureDir,
-      kind: input.kind,
+      kind: input.stage,
       ownership: input.rows,
     });
     return {
@@ -310,26 +285,17 @@ function resolveExecutedModelForKind(input: {
     };
   }
 
-  const stage = kindAsStage(input.kind);
-  if (stage === 'planning' || stage === 'coding' || stage === 'review') {
-    const resolved = hokusaiSubmissionTriggerDeps.resolveStageExecutedModel({
-      featureDir: input.featureDir,
-      stage,
-      worktreePath: input.worktreePath,
-      branchName: input.branchName,
-      repoDir: input.repoDir,
-    });
-    return {
-      executedModel: resolved.executedModel ?? fallbackModel,
-      evidenceStatus: resolved.evidenceStatus,
-      evidenceSource: resolved.evidenceSource as ResolvedKindModel['evidenceSource'],
-    };
-  }
-
+  const resolved = hokusaiSubmissionTriggerDeps.resolveStageExecutedModel({
+    featureDir: input.featureDir,
+    stage: input.stage,
+    worktreePath: input.worktreePath,
+    branchName: input.branchName,
+    repoDir: input.repoDir,
+  });
   return {
-    executedModel: fallbackModel,
-    evidenceStatus: 'missing',
-    evidenceSource: 'launch-record',
+    executedModel: resolved.executedModel ?? fallbackModel,
+    evidenceStatus: resolved.evidenceStatus,
+    evidenceSource: resolved.evidenceSource as ResolvedStageModel['evidenceSource'],
   };
 }
 
@@ -350,27 +316,23 @@ export function buildHokusaiV4Projection(
   submission: HokusaiSubmission,
   record: EvalRecord,
   meteredCost: MeteredWorkflowCost | null,
-  options: Pick<TriggerHokusaiSubmissionOptions, 'repoDir' | 'worktreePath' | 'branchName'>,
+  options: Pick<TriggerHokusaiSubmissionOptions, 'repoDir' | 'worktreePath' | 'branchName' | 'configDir' | 'redactionSalt'>,
 ): RedactedEvalContributionProjectionV4 | null {
   const ownershipRows: readonly SessionOwnershipRow[] = meteredCost?.owned ?? [];
   if (ownershipRows.length === 0) return null;
+  // Stage costs leave under the same redaction as the submission (HOK-2787):
+  // the row's hashed task id, hashed session and event ids.
+  const salt = options.redactionSalt ?? getOrCreateRedactionSalt(options.configDir);
 
   const featureDir = resolveFeatureDir(options, record, meteredCost);
-  const summariesByKind = meteredCost?.summariesByKind ?? new Map<OwnershipKind, TaskCostSummaryV1[]>();
-
-  const byKind = new Map<OwnershipKind, SessionOwnershipRow[]>();
-  for (const row of ownershipRows) {
-    const existing = byKind.get(row.kind) ?? [];
-    existing.push(row);
-    byKind.set(row.kind, existing);
-  }
+  const summariesByStage = meteredCost?.summariesByStage ?? new Map<ExecutionStage, TaskCostSummaryV1[]>();
 
   const stageExecutions: StageExecutionProjection[] = [];
-  for (const [kind, rows] of byKind) {
-    const entries = stageExecutionsForKind({
-      kind,
+  for (const [stage, rows] of groupByExecutionStage(ownershipRows)) {
+    const entries = stageExecutionsForStage({
+      stage,
       rows,
-      summariesByKind,
+      summariesByStage,
       featureDir,
       worktreePath: options.worktreePath ?? options.repoDir,
       branchName: options.branchName ?? '',
@@ -382,8 +344,10 @@ export function buildHokusaiV4Projection(
         executedModel: entry.executedModel,
         modelEvidence: entry.modelEvidence,
         harness: HARNESS_LABEL[entry.harness],
-        cost: { summaries: entry.summaries },
-        ...(entry.sessionIds.length > 0 ? { sessionIds: entry.sessionIds } : {}),
+        cost: {
+          summaries: entry.summaries.map((summary) => redactStageTaskCost(summary, { taskId: submission.task_id, salt })),
+        },
+        ...(entry.sessionIds.length > 0 ? { sessionIds: redactSessionIds(entry.sessionIds, { salt }) } : {}),
       });
     }
   }
@@ -391,7 +355,12 @@ export function buildHokusaiV4Projection(
   if (stageExecutions.length === 0) return null;
 
   const fod = record.featureOutcomeDiagnostics;
-  const comparisonGroup = buildComparisonGroup(record);
+  // The pair id is a task identifier (often the primary's issue id): it leaves
+  // hashed like the row's task_id, identically for both arms.
+  const rawComparisonGroup = buildComparisonGroup(record);
+  const comparisonGroup = rawComparisonGroup
+    ? { ...rawComparisonGroup, id: redactPairId(rawComparisonGroup.id, { salt }) }
+    : null;
   const routingOutcome = routingOutcomeForProjection(
     record.routeProvenance?.stageRoutes,
     record.routeProvenance?.hokusaiInferenceLogId,
@@ -628,6 +597,31 @@ function queueProvenanceFromRecord(
  * attempt. Upload is intentionally detached so evaluation completion remains
  * independent from endpoint latency or transient service failures.
  */
+/**
+ * Best-effort metering for a caller that did not hand in its own result
+ * (backfill, replay): the one cost engine over the task's live or archived
+ * session-ownership record (HOK-3328). A measurement failure is `null`, which
+ * leaves the row without stage executions (`not_eligible`), never a throw.
+ */
+async function meterForSubmission(
+  record: EvalRecord,
+  options: TriggerHokusaiSubmissionOptions,
+): Promise<MeteredWorkflowCost | null> {
+  if (!record.issueId) return null;
+  try {
+    return await hokusaiSubmissionTriggerDeps.meterWorkflowCost({
+      worktreePath: options.worktreePath ?? options.repoDir,
+      branchName: options.branchName ?? '',
+      repoDir: options.repoDir,
+      issueId: record.issueId,
+      label: 'Hokusai submission',
+    });
+  } catch (error) {
+    warnHokusai('cost metering failed', error);
+    return null;
+  }
+}
+
 export async function triggerHokusaiSubmission(
   record: EvalRecord,
   options: TriggerHokusaiSubmissionOptions,
@@ -651,14 +645,17 @@ export async function triggerHokusaiSubmission(
       configDir: options.configDir,
       salt: options.redactionSalt,
     });
+    const meteredCost = options.meteredCost ?? await meterForSubmission(record, options);
     const projection = buildHokusaiV4Projection(
       redactedSubmission,
       record,
-      options.meteredCost ?? null,
+      meteredCost,
       {
         repoDir: options.repoDir,
         worktreePath: options.worktreePath,
         branchName: options.branchName,
+        configDir: options.configDir,
+        redactionSalt: options.redactionSalt,
       },
     );
     if (!projection) {

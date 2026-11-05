@@ -1,0 +1,1654 @@
+{
+  "description": "Real eval record HOK-2672 (2026-11-03T23:05:15.581Z) with the task's owned sessions re-metered per execution stage on 2026-11-05. Session and event ids are placeholders; prompt text and local paths are omitted.",
+  "record": {
+    "id": "95b70bfe-deb6-4efa-bafa-a21f7e5d08a3",
+    "schemaVersion": "1.58.0",
+    "originalPrompt": "<prompt omitted from fixture>",
+    "modelId": "claude-haiku-4-5-20251001",
+    "modelVersion": "claude-haiku-4-5-20251001",
+    "judgeModel": "claude-sonnet-5",
+    "judgeProvider": "anthropic",
+    "score": 0.92,
+    "scoreBand": "Minor Feedback",
+    "timeSeconds": 1753.997,
+    "timestamp": "2026-11-03T23:05:15.581Z",
+    "interventionRequired": false,
+    "interventionCount": 0,
+    "interventionDetails": [],
+    "rationale": "<rationale omitted from fixture>",
+    "issueId": "HOK-2672",
+    "prUrl": "https://github.com/timogilvie/wavemill/pull/1790",
+    "tokenUsage": {
+      "inputTokens": 46803,
+      "outputTokens": 2665,
+      "totalTokens": 49468
+    },
+    "estimatedCost": 0.20050099999999998,
+    "outcomes": {
+      "success": true,
+      "ci": {
+        "ran": true,
+        "passed": true,
+        "checks": [
+          {
+            "name": "Shell and Unit Tests",
+            "status": "success",
+            "durationSeconds": 3
+          },
+          {
+            "name": "Golden Journeys",
+            "status": "success",
+            "durationSeconds": 6
+          },
+          {
+            "name": "Lifecycle Integration Tests",
+            "status": "success",
+            "durationSeconds": 3
+          },
+          {
+            "name": "Golden Journey (dependency-install-drift)",
+            "status": "success",
+            "durationSeconds": 3
+          },
+          {
+            "name": "Golden Journey (native-coder-budget-exhaustion)",
+            "status": "success",
+            "durationSeconds": 4
+          },
+          {
+            "name": "Golden Journey (operator-abort)",
+            "status": "success",
+            "durationSeconds": 2
+          },
+          {
+            "name": "Golden Journey (operator-abort-mid-coding)",
+            "status": "success",
+            "durationSeconds": 7
+          },
+          {
+            "name": "Golden Journey (terminal-delivered-reap)",
+            "status": "success",
+            "durationSeconds": 4
+          },
+          {
+            "name": "Golden Journey (tend-rebase-conflict-single-comment)",
+            "status": "success",
+            "durationSeconds": 7
+          },
+          {
+            "name": "Golden Journey (native-slow-verification)",
+            "status": "success",
+            "durationSeconds": 10
+          },
+          {
+            "name": "Golden Journey (mid-flight-base-conflict)",
+            "status": "success",
+            "durationSeconds": 3
+          },
+          {
+            "name": "Golden Journey (ready-remediation-same-head)",
+            "status": "success",
+            "durationSeconds": 3
+          },
+          {
+            "name": "Golden Journey (agent-idle-background-job)",
+            "status": "success",
+            "durationSeconds": 4
+          },
+          {
+            "name": "Golden Journey (queue-events-emitted)",
+            "status": "success",
+            "durationSeconds": 3
+          },
+          {
+            "name": "Golden Journey (escalation-override-record)",
+            "status": "success",
+            "durationSeconds": 4
+          },
+          {
+            "name": "Golden Journey (grounded-overlap)",
+            "status": "success",
+            "durationSeconds": 2
+          },
+          {
+            "name": "Golden Journey (post-merge-eval-reap)",
+            "status": "success",
+            "durationSeconds": 3
+          },
+          {
+            "name": "Golden Journey (dirty-tree-coding-complete)",
+            "status": "success",
+            "durationSeconds": 3
+          },
+          {
+            "name": "Golden Journey (ready-failure-disposition)",
+            "status": "success",
+            "durationSeconds": 3
+          },
+          {
+            "name": "Golden Journey (ready-one-tick-failure)",
+            "status": "success",
+            "durationSeconds": 3
+          },
+          {
+            "name": "Golden Journey (eval-failure-exhaustion)",
+            "status": "success",
+            "durationSeconds": 2
+          },
+          {
+            "name": "Golden Journey (ready-fail-remediate)",
+            "status": "success",
+            "durationSeconds": 2
+          },
+          {
+            "name": "Golden Journey (challenger-contract-recovery)",
+            "status": "success",
+            "durationSeconds": 5
+          },
+          {
+            "name": "Golden Journey (native-ownership-recovery)",
+            "status": "success",
+            "durationSeconds": 2
+          },
+          {
+            "name": "Golden Journey (native-arm-evidence)",
+            "status": "success",
+            "durationSeconds": 7
+          },
+          {
+            "name": "Golden Journey (agent-killed-mid-stage)",
+            "status": "success",
+            "durationSeconds": 4
+          },
+          {
+            "name": "Golden Journey (picker-pending-touch-set)",
+            "status": "success",
+            "durationSeconds": 5
+          },
+          {
+            "name": "Golden Journey (happy-path)",
+            "status": "success",
+            "durationSeconds": 2
+          },
+          {
+            "name": "Golden Journey (head-move-publication)",
+            "status": "success",
+            "durationSeconds": 3
+          },
+          {
+            "name": "Golden Journey (gh-lag-after-push)",
+            "status": "success",
+            "durationSeconds": 4
+          },
+          {
+            "name": "Golden Journey (errored-with-pr)",
+            "status": "success",
+            "durationSeconds": 2
+          },
+          {
+            "name": "Golden Journey (inputs-ready-before-approval)",
+            "status": "success",
+            "durationSeconds": 4
+          },
+          {
+            "name": "Golden Journey (challenge-pair-eval)",
+            "status": "success",
+            "durationSeconds": 11
+          },
+          {
+            "name": "Golden Journey (incident-currentness)",
+            "status": "success",
+            "durationSeconds": 3
+          },
+          {
+            "name": "OpenRouter Alias Audit",
+            "status": "success",
+            "durationSeconds": 4
+          },
+          {
+            "name": "Check Lifecycle Paths",
+            "status": "success",
+            "durationSeconds": 5
+          },
+          {
+            "name": "Unit Tests (shard 7/7)",
+            "status": "success",
+            "durationSeconds": 95
+          },
+          {
+            "name": "Shell Tests (shard 1/3)",
+            "status": "success",
+            "durationSeconds": 270
+          },
+          {
+            "name": "Native Launch Certification",
+            "status": "success",
+            "durationSeconds": 184
+          },
+          {
+            "name": "Unit Tests (shard 4/7)",
+            "status": "success",
+            "durationSeconds": 78
+          },
+          {
+            "name": "Unit Tests (shard 2/7)",
+            "status": "success",
+            "durationSeconds": 95
+          },
+          {
+            "name": "Custom Harness Tests (shard 1/3)",
+            "status": "success",
+            "durationSeconds": 53
+          },
+          {
+            "name": "Custom Harness Tests (shard 2/3)",
+            "status": "success",
+            "durationSeconds": 62
+          },
+          {
+            "name": "Unit Tests (shard 6/7)",
+            "status": "success",
+            "durationSeconds": 84
+          },
+          {
+            "name": "Unit Tests (shard 3/7)",
+            "status": "success",
+            "durationSeconds": 89
+          },
+          {
+            "name": "Preflight Checks",
+            "status": "success",
+            "durationSeconds": 173
+          },
+          {
+            "name": "Unit Tests (shard 5/7)",
+            "status": "success",
+            "durationSeconds": 83
+          },
+          {
+            "name": "Unit Tests (shard 1/7)",
+            "status": "success",
+            "durationSeconds": 84
+          },
+          {
+            "name": "Smoke and Config Tests",
+            "status": "success",
+            "durationSeconds": 43
+          },
+          {
+            "name": "Custom Harness Tests (shard 3/3)",
+            "status": "success",
+            "durationSeconds": 92
+          },
+          {
+            "name": "Shell Tests (shard 3/3)",
+            "status": "success",
+            "durationSeconds": 243
+          },
+          {
+            "name": "Shell Tests (shard 2/3)",
+            "status": "success",
+            "durationSeconds": 199
+          },
+          {
+            "name": "Harness Retention Shadow",
+            "status": "skipped",
+            "durationSeconds": 0
+          }
+        ]
+      },
+      "tests": {
+        "added": false,
+        "passRate": 1
+      },
+      "staticAnalysis": {
+        "type_errors": null,
+        "lint_errors": null,
+        "build_ok": null,
+        "complexity_delta": null,
+        "build_evidence": null,
+        "complexity_metric": null
+      },
+      "review": {
+        "humanReviewRequired": false,
+        "rounds": 0,
+        "approvals": 0,
+        "changeRequests": 0
+      },
+      "rework": {
+        "agentIterations": 0
+      },
+      "delivery": {
+        "prCreated": true,
+        "merged": true,
+        "timeToMergeSeconds": 394
+      }
+    },
+    "routingDecision": {
+      "candidates": [
+        {
+          "agentType": "claude",
+          "modelId": "claude-opus-4-7"
+        },
+        {
+          "agentType": "claude",
+          "modelId": "claude-haiku-4-5-20251001"
+        }
+      ],
+      "chosen": {
+        "agentType": "claude",
+        "modelId": "claude-haiku-4-5-20251001"
+      },
+      "decisionPolicyVersion": "hokusai",
+      "decisionRationale": "Routing: planner=claude-opus-4-7, coder=claude-haiku-4-5-20251001, reviewer=claude-opus-4-7; planDepth=medium, codeDepth=medium, reviewMode=llm",
+      "routeMode": "hokusai",
+      "routeArtifactSchemaVersion": "1.2",
+      "policyResolverVersion": "1.0.0",
+      "operatingModeDependency": "normal"
+    },
+    "promptArtifacts": [
+      {
+        "templateName": "eval-judge",
+        "templateHash": "80fdf56962fe3bbcf9026c4cb7b4fe6ea91cd48c3055b5a293a87da4630dc1c6",
+        "filledPromptHash": "a579d5bf04ca06b6e34f4b7046c1fd52f48952ffd827d394fce9f47dd1e604cf"
+      }
+    ],
+    "rubricEval": {
+      "schema_version": "1.0",
+      "rubric_version": "1.1",
+      "criteria": {
+        "completeness": {
+          "score": 0.92,
+          "rationale": "All five REQ-F requirements and the package.json cleanup items are visibly present in the diff, including downstream doc/fixture updates."
+        },
+        "correctness": {
+          "score": 0.88,
+          "rationale": "New unit tests exercise the modified logic directly and no functional bug was flagged by review; no verbatim failing-test evidence exists either way, but no claim of failure was made."
+        },
+        "code_quality": {
+          "score": 0.9,
+          "rationale": "The allowlist pattern with inline justification comments and protects-style test comments follows clean, auditable conventions consistent with the plan."
+        },
+        "intervention_impact": {
+          "score": 1,
+          "rationale": "Zero interventions of any type were recorded across review comments, test fixes, post-PR commits, manual edits, or session redirects."
+        },
+        "autonomy": {
+          "score": 0.92,
+          "rationale": "The task was executed fully autonomously from task packet through plan to implementation with no human correction needed."
+        }
+      },
+      "determinative_boundary": "no_interventions"
+    },
+    "metadata": {
+      "workflowType": "mill",
+      "hookTriggered": true,
+      "interventionSummary": {
+        "interventions": [
+          {
+            "type": "review_comment",
+            "count": 0,
+            "details": [],
+            "timestamps": []
+          },
+          {
+            "type": "test_fix",
+            "count": 0,
+            "details": [],
+            "timestamps": []
+          },
+          {
+            "type": "post_pr_commit",
+            "count": 0,
+            "details": [],
+            "timestamps": [],
+            "agentCount": 0
+          },
+          {
+            "type": "manual_edit",
+            "count": 0,
+            "details": [],
+            "timestamps": [],
+            "severities": []
+          },
+          {
+            "type": "session_redirect",
+            "count": 0,
+            "details": [],
+            "timestamps": []
+          }
+        ],
+        "totalInterventionScore": 0
+      },
+      "interventionFlags": [],
+      "stageScores": {
+        "expansion": {
+          "score": 0.88,
+          "rationale": "The task packet correctly identified the key files, scope boundaries (no second discovery framework, no bulk test resurrection), and gave concrete validation commands, enabling a clean implementation path.",
+          "rubricCriteria": [
+            {
+              "criterion": "requirement_coverage",
+              "score": 0.9,
+              "notes": "All five REQ-F items were well specified with validation steps."
+            },
+            {
+              "criterion": "ambiguity_resolution",
+              "score": 0.85,
+              "notes": "Scope-out section clearly fenced off HOK-2671/3237/3228 overlap and repo-wide type migration."
+            },
+            {
+              "criterion": "implementation_guidance_quality",
+              "score": 0.88,
+              "notes": "Pointed correctly at check-test-registration.ts, package.json, and the three runner scripts."
+            },
+            {
+              "criterion": "validation_readiness",
+              "score": 0.88,
+              "notes": "Gave explicit expected output strings and validation commands."
+            }
+          ]
+        },
+        "plan": {
+          "score": 0.93,
+          "rationale": "The plan did real investigative work (verified current 611-baseline, enumerated every uncovered test and why, traced every downstream reference to deleted scripts) and built in an explicit decision rule for the ambiguous typecheck phase, which is exactly what the implementation followed.",
+          "rubricCriteria": [
+            {
+              "criterion": "component_boundaries",
+              "score": 0.93,
+              "notes": "Correctly scoped to check-test-registration.ts, package.json, and runner scripts with no scope creep."
+            },
+            {
+              "criterion": "invariant_coverage",
+              "score": 0.92,
+              "notes": "Explicitly protected HOK-3157 tracked-tree guard and shard-balance invariants."
+            },
+            {
+              "criterion": "sequencing_and_dependencies",
+              "score": 0.9,
+              "notes": "Phased A–H ordering handled discovery before disposal before downstream reference fixes."
+            },
+            {
+              "criterion": "risk_and_validation_coverage",
+              "score": 0.93,
+              "notes": "Anticipated tsc backlog risk with a fallback and defined concrete verification commands per phase."
+            }
+          ]
+        },
+        "implementation": {
+          "score": 0.91,
+          "rationale": "The diff matches the plan closely: all deletions, additions, and the standalone-allowlist mechanism are present with matching tests (6 new registration test cases), and every downstream reference (README, launch-coding fixture, verification-modes.md) was kept consistent with the typecheck decision made.",
+          "rubricCriteria": [
+            {
+              "criterion": "requirement_completeness",
+              "score": 0.92,
+              "notes": "All REQ-F1 through REQ-F5 items are visibly addressed in the diff."
+            },
+            {
+              "criterion": "correctness",
+              "score": 0.88,
+              "notes": "Logic for standalone/discoverable filtering appears sound and is exercised by new unit tests; no reproduced test failures in review output."
+            },
+            {
+              "criterion": "integration_with_existing_patterns",
+              "score": 0.92,
+              "notes": "Followed existing mkdtemp-based test harness conventions and shell array patterns."
+            },
+            {
+              "criterion": "code_quality_and_test_coverage",
+              "score": 0.9,
+              "notes": "New test cases include protects-comments; code adds a clear, auditable allowlist rather than hidden exceptions."
+            }
+          ]
+        },
+        "review": {
+          "score": 0.85,
+          "rationale": "No self-review summary was available, but the diff shows the agent proactively added regression tests covering the new discovery logic (codex scanning, .test.js matching, standalone allowlist, standalone drift) which substitutes for a formal review pass; zero human-found issues reinforces this.",
+          "rubricCriteria": [
+            {
+              "criterion": "issue_detection",
+              "score": 0.82,
+              "notes": "No external review comments were needed, suggesting the agent's own checks were sufficient."
+            },
+            {
+              "criterion": "validation_depth",
+              "score": 0.85,
+              "notes": "New tests exercise the risky surfaces: unregistered codex tests, missing standalone entries, .test.js discovery."
+            },
+            {
+              "criterion": "regression_risk_coverage",
+              "score": 0.87,
+              "notes": "Regression test explicitly checks the prior happy path is unaffected."
+            },
+            {
+              "criterion": "self_review_effectiveness",
+              "score": 0.83,
+              "notes": "Inferred from zero post-PR commits or manual edits; no evidence of missed self-caught issues either way."
+            }
+          ]
+        }
+      },
+      "planCritique": {
+        "component_boundaries": {
+          "score": 0.93,
+          "rationale": "The plan correctly scoped work to the registration guard, package.json, and runner scripts without drifting into unrelated areas."
+        },
+        "invariant_coverage": {
+          "score": 0.92,
+          "rationale": "Explicitly called out HOK-3157 tracked-tree guard risk (used to justify deleting workflow-state.test.js) and shard-balance preservation."
+        },
+        "approach_soundness": {
+          "score": 0.9,
+          "rationale": "The standalone-allowlist mechanism and the wire-real-with-fallback decision rule for typecheck are both well-reasoned, minimal-footprint solutions matching the task's 'no second framework' constraint."
+        },
+        "missed_patches": {
+          "score": 0.92,
+          "rationale": "Implementation closely mirrors the plan's phases A through G with no visible deviation or compensating patches required."
+        },
+        "overall": {
+          "score": 0.92,
+          "rationale": "A thorough, well-investigated plan that anticipated ambiguity (typecheck decision rule) and was executed faithfully."
+        }
+      }
+    },
+    "promptSizeDiagnostic": {
+      "totalBytes": 94901,
+      "limitBytes": 9437184,
+      "perComponentBytes": {
+        "taskPrompt": 12549,
+        "prReviewOutput": 27725,
+        "interventionMetadata": 965,
+        "taskPacket": 12454,
+        "planContent": 15377,
+        "selfReviewSummary": 32,
+        "templateScaffold": 25799
+      },
+      "policy": "fail",
+      "action": "pass"
+    },
+    "trainingEligible": true,
+    "budgetEvalEligible": true,
+    "eligibilityErrors": [],
+    "phaseDurationsSeconds": {
+      "planning": 666.229,
+      "coding": 498.882,
+      "review": 588.886,
+      "total": 1753.997
+    },
+    "stageOutcomes": {
+      "expansion": {
+        "score": 0.88,
+        "rationale": "The task packet correctly identified the key files, scope boundaries (no second discovery framework, no bulk test resurrection), and gave concrete validation commands, enabling a clean implementation path.",
+        "rubricCriteria": [
+          {
+            "criterion": "requirement_coverage",
+            "score": 0.9,
+            "notes": "All five REQ-F items were well specified with validation steps."
+          },
+          {
+            "criterion": "ambiguity_resolution",
+            "score": 0.85,
+            "notes": "Scope-out section clearly fenced off HOK-2671/3237/3228 overlap and repo-wide type migration."
+          },
+          {
+            "criterion": "implementation_guidance_quality",
+            "score": 0.88,
+            "notes": "Pointed correctly at check-test-registration.ts, package.json, and the three runner scripts."
+          },
+          {
+            "criterion": "validation_readiness",
+            "score": 0.88,
+            "notes": "Gave explicit expected output strings and validation commands."
+          }
+        ]
+      },
+      "plan": {
+        "score": 0.93,
+        "rationale": "The plan did real investigative work (verified current 611-baseline, enumerated every uncovered test and why, traced every downstream reference to deleted scripts) and built in an explicit decision rule for the ambiguous typecheck phase, which is exactly what the implementation followed.",
+        "rubricCriteria": [
+          {
+            "criterion": "component_boundaries",
+            "score": 0.93,
+            "notes": "Correctly scoped to check-test-registration.ts, package.json, and runner scripts with no scope creep."
+          },
+          {
+            "criterion": "invariant_coverage",
+            "score": 0.92,
+            "notes": "Explicitly protected HOK-3157 tracked-tree guard and shard-balance invariants."
+          },
+          {
+            "criterion": "sequencing_and_dependencies",
+            "score": 0.9,
+            "notes": "Phased A–H ordering handled discovery before disposal before downstream reference fixes."
+          },
+          {
+            "criterion": "risk_and_validation_coverage",
+            "score": 0.93,
+            "notes": "Anticipated tsc backlog risk with a fallback and defined concrete verification commands per phase."
+          }
+        ],
+        "planCritique": {
+          "component_boundaries": {
+            "score": 0.93,
+            "rationale": "The plan correctly scoped work to the registration guard, package.json, and runner scripts without drifting into unrelated areas."
+          },
+          "invariant_coverage": {
+            "score": 0.92,
+            "rationale": "Explicitly called out HOK-3157 tracked-tree guard risk (used to justify deleting workflow-state.test.js) and shard-balance preservation."
+          },
+          "approach_soundness": {
+            "score": 0.9,
+            "rationale": "The standalone-allowlist mechanism and the wire-real-with-fallback decision rule for typecheck are both well-reasoned, minimal-footprint solutions matching the task's 'no second framework' constraint."
+          },
+          "missed_patches": {
+            "score": 0.92,
+            "rationale": "Implementation closely mirrors the plan's phases A through G with no visible deviation or compensating patches required."
+          },
+          "overall": {
+            "score": 0.92,
+            "rationale": "A thorough, well-investigated plan that anticipated ambiguity (typecheck decision rule) and was executed faithfully."
+          }
+        }
+      },
+      "implementation": {
+        "score": 0.91,
+        "rationale": "The diff matches the plan closely: all deletions, additions, and the standalone-allowlist mechanism are present with matching tests (6 new registration test cases), and every downstream reference (README, launch-coding fixture, verification-modes.md) was kept consistent with the typecheck decision made.",
+        "rubricCriteria": [
+          {
+            "criterion": "requirement_completeness",
+            "score": 0.92,
+            "notes": "All REQ-F1 through REQ-F5 items are visibly addressed in the diff."
+          },
+          {
+            "criterion": "correctness",
+            "score": 0.88,
+            "notes": "Logic for standalone/discoverable filtering appears sound and is exercised by new unit tests; no reproduced test failures in review output."
+          },
+          {
+            "criterion": "integration_with_existing_patterns",
+            "score": 0.92,
+            "notes": "Followed existing mkdtemp-based test harness conventions and shell array patterns."
+          },
+          {
+            "criterion": "code_quality_and_test_coverage",
+            "score": 0.9,
+            "notes": "New test cases include protects-comments; code adds a clear, auditable allowlist rather than hidden exceptions."
+          }
+        ]
+      },
+      "review": {
+        "score": 0.85,
+        "rationale": "No self-review summary was available, but the diff shows the agent proactively added regression tests covering the new discovery logic (codex scanning, .test.js matching, standalone allowlist, standalone drift) which substitutes for a formal review pass; zero human-found issues reinforces this.",
+        "rubricCriteria": [
+          {
+            "criterion": "issue_detection",
+            "score": 0.82,
+            "notes": "No external review comments were needed, suggesting the agent's own checks were sufficient."
+          },
+          {
+            "criterion": "validation_depth",
+            "score": 0.85,
+            "notes": "New tests exercise the risky surfaces: unregistered codex tests, missing standalone entries, .test.js discovery."
+          },
+          {
+            "criterion": "regression_risk_coverage",
+            "score": 0.87,
+            "notes": "Regression test explicitly checks the prior happy path is unaffected."
+          },
+          {
+            "criterion": "self_review_effectiveness",
+            "score": 0.83,
+            "notes": "Inferred from zero post-PR commits or manual edits; no evidence of missed self-caught issues either way."
+          }
+        ]
+      },
+      "routing": {
+        "routingUsed": true,
+        "candidateCount": 2,
+        "chosenModel": "claude-haiku-4-5-20251001",
+        "scoreAchieved": 0.92,
+        "costUsd": 8.92223,
+        "policyVersion": "hokusai"
+      }
+    },
+    "agentType": "claude",
+    "evaluatedPrHeadSha": "d680f1dc583c3eb1a9f55b04c77ec93026316863",
+    "reviewExecutedIdentity": {
+      "orchestrator": {
+        "role": "review_orchestrator",
+        "requestedModel": "claude-opus-4-7",
+        "resolvedModel": "claude-opus-4-7",
+        "agent": "codex",
+        "source": "artifact",
+        "pinned": true
+      },
+      "substantiveAnalysis": {
+        "role": "substantive_analysis",
+        "requestedModel": "claude-opus-4-7",
+        "resolvedModel": "claude-opus-4-7",
+        "agent": "claude-cli",
+        "source": "artifact",
+        "pinned": true
+      },
+      "remediation": null
+    },
+    "routeProvenance": {
+      "bootstrapRoute": {
+        "coder": "claude-opus-4-7",
+        "codeDepth": "medium",
+        "reviewer": "claude-haiku-4-5-20251001",
+        "reviewMode": "llm",
+        "planner": "claude-opus-4-7",
+        "planDepth": "medium",
+        "artifactPath": ".wavemill/evals/artifacts/HOK-2672/.initial-route.json",
+        "artifactHash": "f96fc1e823c45379c085b4ae9010a8547b0f82529cbb20f378d6da9edd0bca0f",
+        "inputHash": "180f0258d2f046f1033e65a398113d20b114bbfc39e5e081f7b1840e20d72002",
+        "source": "bootstrap",
+        "routerMode": "normal",
+        "routingMode": "hokusai",
+        "expectedMetrics": {
+          "expectedSuccess": 0.066,
+          "expectedCost": 15.94,
+          "confidence": 0.273722,
+          "expectedCostPlan": 2.42,
+          "expectedCostCode": 13.16,
+          "expectedCostReview": 0.36,
+          "neighborCount": 40,
+          "neighborSimilarityRange": [
+            0,
+            0
+          ],
+          "maxCostUsd": 25,
+          "challengeRecommendation": {
+            "shouldChallenge": true,
+            "reason": "new-model",
+            "defaultModel": "claude-opus-5-5",
+            "challengerModel": "deepseek-v3",
+            "stage": "plan",
+            "priority": 300
+          },
+          "signals": {
+            "taskType": "test",
+            "promptLength": "long",
+            "complexityScore": 5,
+            "complexityBand": "xl",
+            "riskFlags": [
+              "large-scope-refactor",
+              "schema-migration",
+              "test-infrastructure"
+            ],
+            "fileTypes": [
+              ".json",
+              ".ts",
+              ".sh"
+            ],
+            "riskScore": 10
+          },
+          "reasoning": [
+            "Adapted from Hokusai Model 30 recommended_strategy.",
+            "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics.",
+            "Router escalation (expectedSuccess 0.285389 < 0.5, confidence 0.27079 < 0.4) re-asked Hokusai for highest_reliability without claude-haiku-4-5-20251001; Hokusai selected coder claude-opus-4-7."
+          ]
+        }
+      },
+      "expandedRoute": {
+        "coder": "claude-haiku-4-5-20251001",
+        "codeDepth": "medium",
+        "reviewer": "claude-opus-4-7",
+        "reviewMode": "llm",
+        "planner": "claude-fable-5",
+        "planDepth": "medium",
+        "artifactPath": ".wavemill/evals/artifacts/HOK-2672/.post-expansion-route.json",
+        "artifactHash": "d97cb3c15819cdd0b003df58539e9dd05713c39dbb4502ceef2fe9e0c63f3034",
+        "inputHash": "800814751247402417fd2980e690fdeba23eac8c6207c6a3f16295daba1dbb7d",
+        "source": "expanded",
+        "cacheHit": false,
+        "routeSource": "single",
+        "routerMode": "normal",
+        "routingMode": "hokusai",
+        "expectedMetrics": {
+          "expectedSuccess": 0.706303,
+          "expectedCost": 4.31,
+          "confidence": 0.373026,
+          "expectedCostPlan": 1.95,
+          "expectedCostCode": 1.45,
+          "expectedCostReview": 0.91,
+          "neighborCount": 40,
+          "neighborSimilarityRange": [
+            0,
+            0
+          ],
+          "maxCostUsd": 25,
+          "challengeRecommendation": {
+            "shouldChallenge": true,
+            "reason": "new-model",
+            "defaultModel": "claude-opus-5-5",
+            "challengerModel": "deepseek-v3",
+            "stage": "plan",
+            "priority": 300
+          },
+          "signals": {
+            "taskType": "bugfix",
+            "promptLength": "long",
+            "complexityScore": 5,
+            "complexityBand": "xl",
+            "riskFlags": [
+              "large-scope-refactor",
+              "schema-migration",
+              "test-infrastructure"
+            ],
+            "fileTypes": [
+              ".ts",
+              ".json",
+              ".sh",
+              ".md",
+              ".yml"
+            ],
+            "riskScore": 14
+          },
+          "reasoning": [
+            "Adapted from Hokusai Model 30 recommended_strategy.",
+            "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics.",
+            "Router escalation (confidence 0.377009 < 0.4) re-asked Hokusai for highest_reliability without claude-fable-5; Hokusai selected coder claude-haiku-4-5-20251001."
+          ]
+        }
+      },
+      "activeRoute": {
+        "coder": "claude-haiku-4-5-20251001",
+        "codeDepth": "medium",
+        "reviewer": "claude-opus-4-7",
+        "reviewMode": "llm",
+        "planner": "claude-opus-4-7",
+        "planDepth": "medium",
+        "artifactPath": ".wavemill/evals/artifacts/HOK-2672/.routing-complete",
+        "artifactHash": "ee63a1b11d899b1eda11f8aeb0e434d086a68b546125cd8c01a00925ad202f45",
+        "inputHash": "800814751247402417fd2980e690fdeba23eac8c6207c6a3f16295daba1dbb7d",
+        "source": "expanded",
+        "cacheHit": false,
+        "routeSource": "single",
+        "routerMode": "normal",
+        "routingMode": "hokusai",
+        "expectedMetrics": {
+          "expectedSuccess": 0.706303,
+          "expectedCost": 4.31,
+          "confidence": 0.373026,
+          "expectedCostPlan": 1.95,
+          "expectedCostCode": 1.45,
+          "expectedCostReview": 0.91,
+          "neighborCount": 40,
+          "neighborSimilarityRange": [
+            0,
+            0
+          ],
+          "maxCostUsd": 25,
+          "challengeRecommendation": {
+            "shouldChallenge": true,
+            "reason": "new-model",
+            "defaultModel": "claude-opus-5-5",
+            "challengerModel": "deepseek-v3",
+            "stage": "plan",
+            "priority": 300
+          },
+          "signals": {
+            "taskType": "bugfix",
+            "promptLength": "long",
+            "complexityScore": 5,
+            "complexityBand": "xl",
+            "riskFlags": [
+              "large-scope-refactor",
+              "schema-migration",
+              "test-infrastructure"
+            ],
+            "fileTypes": [
+              ".ts",
+              ".json",
+              ".sh",
+              ".md",
+              ".yml"
+            ],
+            "riskScore": 14
+          },
+          "reasoning": [
+            "Adapted from Hokusai Model 30 recommended_strategy.",
+            "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics.",
+            "Router escalation (confidence 0.377009 < 0.4) re-asked Hokusai for highest_reliability without claude-fable-5; Hokusai selected coder claude-haiku-4-5-20251001."
+          ]
+        }
+      },
+      "decisionSource": "expanded",
+      "stageRoutes": {
+        "planner": {
+          "hokusai": {
+            "requestId": "8209b2c6-12a1-464f-ab81-67578b9a9867",
+            "decisionId": "f1c9863c-ed54-4b0c-b0ce-2e600becaeac",
+            "recommended": "claude-fable-5"
+          },
+          "executed": "claude-fable-5",
+          "overrides": []
+        },
+        "coder": {
+          "hokusai": {
+            "requestId": "8209b2c6-12a1-464f-ab81-67578b9a9867",
+            "decisionId": "f1c9863c-ed54-4b0c-b0ce-2e600becaeac",
+            "recommended": "claude-fable-5"
+          },
+          "executed": "claude-haiku-4-5-20251001",
+          "overrides": [
+            {
+              "source": "escalation",
+              "from": "claude-fable-5",
+              "to": "claude-haiku-4-5-20251001",
+              "reason": "hokusai_reask_below_floor",
+              "at": "2026-11-03T22:37:50.873Z",
+              "triggers": [
+                {
+                  "metric": "confidence",
+                  "value": 0.377009,
+                  "threshold": 0.4
+                }
+              ],
+              "hokusai": {
+                "requestId": "c94a5ed9-92a3-41f6-a932-c4ae8426164c"
+              }
+            }
+          ]
+        },
+        "reviewer": {
+          "hokusai": {
+            "requestId": "8209b2c6-12a1-464f-ab81-67578b9a9867",
+            "decisionId": "f1c9863c-ed54-4b0c-b0ce-2e600becaeac",
+            "recommended": "claude-opus-4-7"
+          },
+          "executed": "claude-opus-4-7",
+          "overrides": []
+        }
+      },
+      "hokusaiInferenceLogId": "8209b2c6-12a1-464f-ab81-67578b9a9867",
+      "expandedCacheHit": false,
+      "packetHash": "bcea62088cb01651097c0dd03bd28c28af74cf06ca3bbfc3f1ef9d9f3d062141",
+      "routeSource": "single",
+      "routerMode": "normal",
+      "routingMode": "hokusai",
+      "artifactPath": ".wavemill/evals/artifacts/HOK-2672/.post-expansion-route.json",
+      "artifactHash": "d97cb3c15819cdd0b003df58539e9dd05713c39dbb4502ceef2fe9e0c63f3034"
+    },
+    "executedPlanning": {
+      "agent": "claude",
+      "model": "claude-opus-4-7",
+      "status": "completed",
+      "source": ".planning-result.json"
+    },
+    "planningExecutionOutcome": {
+      "agent": "claude",
+      "model": "claude-opus-4-7",
+      "status": "completed",
+      "source": ".planning-result.json"
+    },
+    "routePrediction": {
+      "expectedSuccess": 0.706303,
+      "expectedCostUsd": 4.31,
+      "confidence": 0.373026,
+      "riskScore": 14,
+      "taskType": "bugfix",
+      "topFeatures": [
+        "Adapted from Hokusai Model 30 recommended_strategy.",
+        "Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics.",
+        "Router escalation (confidence 0.377009 < 0.4) re-asked Hokusai for highest_reliability without claude-fable-5; Hokusai selected coder claude-haiku-4-5-20251001.",
+        "taskType=bugfix",
+        "complexityScore=5"
+      ],
+      "rationaleSummary": "Adapted from Hokusai Model 30 recommended_strategy. Stage costs are apportioned from Hokusai estimated_cost_usd using router token heuristics. Router escalation (confidence 0.377009 < 0.4) re-asked Hokusai for highest_reliability without claude-fable-5; Hokusai selected coder..."
+    },
+    "difficultyBand": "hard",
+    "difficultySignals": {
+      "locTouched": 201,
+      "filesTouched": 9
+    },
+    "stratum": "ts_std_med",
+    "taskContext": {
+      "taskType": "test",
+      "changeKind": "modify_existing",
+      "complexity": "l",
+      "constraints": {
+        "hasStrictStyle": true,
+        "mustNotTouchX": true
+      },
+      "requiresDomainKnowledge": "auth"
+    },
+    "repoContext": {
+      "repoId": "timogilvie/wavemill",
+      "repoVisibility": "oss",
+      "primaryLanguage": "TypeScript",
+      "languages": {
+        "TypeScript": 76,
+        "Shell": 19,
+        "Python": 2,
+        "JavaScript": 3
+      },
+      "packageManager": "npm",
+      "testFrameworks": [
+        "node:test"
+      ],
+      "ciProvider": "github-actions",
+      "repoSize": {
+        "fileCount": 2689,
+        "loc": 533666,
+        "dependencyCount": 15
+      },
+      "monorepo": true
+    },
+    "workflowCost": 8.92223,
+    "workflowTokenUsage": {
+      "claude-opus-4-7": {
+        "inputTokens": 86,
+        "cacheCreationTokens": 495471,
+        "cacheReadTokens": 7272535,
+        "outputTokens": 48871,
+        "costUsd": 7.955175
+      },
+      "claude-haiku-4-5-20251001": {
+        "inputTokens": 658,
+        "cacheCreationTokens": 114606,
+        "cacheReadTokens": 9181624,
+        "outputTokens": 29348,
+        "costUsd": 0.967055
+      }
+    },
+    "workflowCostStatus": "success",
+    "pricingSnapshot": {
+      "claude-opus-4-7": {
+        "inputCostPerMTok": 5,
+        "outputCostPerMTok": 25,
+        "cacheWriteCostPerMTok": 6.25,
+        "cacheReadCostPerMTok": 0.5
+      },
+      "claude-haiku-4-5-20251001": {
+        "inputCostPerMTok": 0.8,
+        "outputCostPerMTok": 4,
+        "cacheWriteCostPerMTok": 1,
+        "cacheReadCostPerMTok": 0.08
+      }
+    },
+    "workflowCostAttribution": {
+      "source": "claude",
+      "coverage": "complete",
+      "sessions": 6,
+      "turns": 141,
+      "pricedSessions": 3,
+      "unpricedSessions": 0,
+      "models": [
+        {
+          "provider": "claude",
+          "modelId": "claude-opus-4-7",
+          "priced": true,
+          "inputTokens": 86,
+          "outputTokens": 48871,
+          "cacheReadTokens": 7272535,
+          "cacheCreationTokens": 495471,
+          "totalTokens": 7816963,
+          "costUsd": 7.955175,
+          "pricingSource": "local_estimate"
+        },
+        {
+          "provider": "claude",
+          "modelId": "claude-haiku-4-5-20251001",
+          "priced": true,
+          "inputTokens": 658,
+          "outputTokens": 29348,
+          "cacheReadTokens": 9181624,
+          "cacheCreationTokens": 114606,
+          "totalTokens": 9326236,
+          "costUsd": 0.967055,
+          "pricingSource": "local_estimate"
+        }
+      ]
+    },
+    "workflowCostByHarness": {
+      "claude-code": 8.92223
+    },
+    "workflowCostByKind": {
+      "planning": 3.176018,
+      "coding": 0.967055,
+      "review": 1.788392,
+      "helper:json-code-review": 2.990765
+    },
+    "routeCalibration": {
+      "costErrorUsd": -4.61223,
+      "successDelta": 0.293697,
+      "predictedSuccess": 0.706303,
+      "actualSuccess": true,
+      "predictedCostUsd": 4.31,
+      "actualCostUsd": 8.92223,
+      "interventionCount": 0,
+      "durationMs": 1753997
+    },
+    "taskDescriptor": {
+      "schema_version": "1.0",
+      "signals": {
+        "heuristic": {
+          "task_type": "test",
+          "languages": [
+            "typescript",
+            "shell",
+            "python",
+            "javascript"
+          ],
+          "framework_tags": [],
+          "files_touched": 9,
+          "repo_size_loc": 533666,
+          "description_tokens": 4183,
+          "is_greenfield": false,
+          "has_migration": true,
+          "has_ui": true,
+          "has_tests": true,
+          "cross_service": false
+        },
+        "learned": {
+          "complexity": 4,
+          "domain": "frontend",
+          "risk_flags": [
+            "large-scope-refactor",
+            "schema-migration",
+            "test-infrastructure"
+          ]
+        }
+      },
+      "constraints": {
+        "max_cost_usd": 25,
+        "models_available": [
+          "claude-opus-5-5",
+          "gpt-6-sol",
+          "claude-fable-5",
+          "claude-opus-4-8",
+          "claude-opus-4-7",
+          "gpt-5.6-terra",
+          "deepseek-reasoner",
+          "deepseek-v4-pro",
+          "claude-sonnet-5",
+          "claude-haiku-4-5-20251001",
+          "gpt-6-luna",
+          "deepseek-chat",
+          "deepseek-v4-flash"
+        ],
+        "objective": "balanced"
+      },
+      "stages": {
+        "planner": {
+          "model": "claude-opus-4-7",
+          "score": 0.93,
+          "cost_usd": 7.955175
+        },
+        "coder": {
+          "model": "claude-haiku-4-5-20251001",
+          "score": 0.91,
+          "cost_usd": 0.967055
+        },
+        "reviewer": {
+          "model": "claude-opus-4-7",
+          "score": 0.85,
+          "cost_usd": 7.955175
+        }
+      },
+      "rubric": {
+        "has_rubric": true,
+        "criterion_count": 5,
+        "mean_score": 0.924,
+        "criteria_scores": {
+          "completeness": 0.92,
+          "correctness": 0.88,
+          "code_quality": 0.9,
+          "intervention_impact": 1,
+          "autonomy": 0.92
+        },
+        "determinative_boundary": "no_interventions"
+      },
+      "outcome": {
+        "overall_score": 0.92,
+        "total_cost_usd": 8.92223,
+        "total_time_minutes": 29.233283333333336,
+        "interventions": 0,
+        "intervention_types": []
+      }
+    },
+    "constraints": {
+      "maxCostUsd": 25
+    },
+    "modelIdentityAttribution": {
+      "observedAt": "2026-11-03T23:05:16.457Z",
+      "roles": {
+        "planner": {
+          "alias": "claude-opus-4-7",
+          "providerId": "claude-opus-4-7",
+          "identityStatus": "verified",
+          "identityRevision": 1,
+          "fingerprint": "efe08305e38612dcbfe1a928059b9bbbae080e826bd4ca255c91e6b3dc56dc52",
+          "evidencePolicy": "eligible"
+        },
+        "coder": {
+          "alias": "claude-haiku-4-5-20251001",
+          "providerId": "claude-haiku-4-5-20251001",
+          "identityStatus": "verified",
+          "identityRevision": 1,
+          "fingerprint": "342b230dec3ed61b2065a115e4d3717223f8853f555db2d9e66a7d5ba746f31e",
+          "evidencePolicy": "eligible"
+        },
+        "reviewer": {
+          "alias": "claude-opus-4-7",
+          "providerId": "claude-opus-4-7",
+          "identityStatus": "verified",
+          "identityRevision": 1,
+          "fingerprint": "efe08305e38612dcbfe1a928059b9bbbae080e826bd4ca255c91e6b3dc56dc52",
+          "evidencePolicy": "eligible"
+        }
+      },
+      "provisionalRoles": [],
+      "candidateOnlyProvisional": []
+    },
+    "stageExecution": {
+      "planning": {
+        "intendedModel": "claude-opus-4-7",
+        "executedModel": "claude-opus-4-7",
+        "executionEvidence": {
+          "status": "direct",
+          "source": "claude-session"
+        }
+      },
+      "coding": {
+        "intendedModel": "claude-haiku-4-5-20251001",
+        "executedModel": "claude-haiku-4-5-20251001",
+        "executionEvidence": {
+          "status": "direct",
+          "source": "claude-session"
+        }
+      },
+      "review": {
+        "intendedModel": "claude-opus-4-7",
+        "executedModel": "claude-opus-4-7",
+        "executionEvidence": {
+          "status": "direct",
+          "source": "claude-session"
+        }
+      }
+    }
+  },
+  "metered": {
+    "owned": [
+      {
+        "sessionRef": "session-1",
+        "harness": "claude-code",
+        "kind": "planning",
+        "stage": "planning",
+        "model": "claude-opus-4-7",
+        "launchedAt": "2026-11-03T22:27:21.000Z",
+        "attemptId": "planning@38f3975#1793744841"
+      },
+      {
+        "sessionRef": "session-2",
+        "harness": "claude-code",
+        "kind": "coding",
+        "stage": "coding",
+        "model": "claude-haiku-4-5-20251001",
+        "launchedAt": "2026-11-03T22:38:33.000Z",
+        "attemptId": "coding@38f3975#1793745513"
+      },
+      {
+        "sessionRef": "session-3",
+        "harness": "claude-code",
+        "kind": "review",
+        "stage": "review",
+        "model": "claude-opus-4-7",
+        "launchedAt": "2026-11-03T22:46:52.000Z",
+        "attemptId": "review@78ce2e6#1793746012"
+      },
+      {
+        "sessionRef": "session-4",
+        "harness": "claude-code",
+        "kind": "helper:json-code-review",
+        "model": "claude-opus-4-7",
+        "launchedAt": "2026-11-03T22:48:22.243Z",
+        "attemptId": "helper:json-code-review@nohead#1793746102"
+      },
+      {
+        "sessionRef": "session-5",
+        "harness": "claude-code",
+        "kind": "helper:json-code-review",
+        "model": "claude-opus-4-7",
+        "launchedAt": "2026-11-03T22:51:20.486Z",
+        "attemptId": "helper:json-code-review@nohead#1793746280"
+      },
+      {
+        "sessionRef": "session-6",
+        "harness": "claude-code",
+        "kind": "helper:json-code-review",
+        "model": "claude-opus-4-7",
+        "launchedAt": "2026-11-03T22:55:23.140Z",
+        "attemptId": "helper:json-code-review@nohead#1793746523"
+      }
+    ],
+    "summariesByStage": {
+      "planning": [
+        {
+          "schema_version": "task_cost_summary/v1",
+          "task_id": "HOK-2672",
+          "session_ids": [
+            "session-1"
+          ],
+          "harness": "claude-code",
+          "harness_version": "2.1.317",
+          "provider_contract_version": "claude-code/1",
+          "models": [
+            "claude-opus-4-7"
+          ],
+          "model_segments": [
+            {
+              "model": "claude-opus-4-7",
+              "turn_count": 19,
+              "usage": {
+                "input_tokens": 29,
+                "output_tokens": 25694,
+                "cache_read_tokens": 2653104,
+                "cache_write_tokens": 193115,
+                "reasoning_tokens": 12180
+              },
+              "actual_cost_usd": null,
+              "estimated_cost_usd": 3.176018,
+              "cost_source": "local_estimate"
+            }
+          ],
+          "turn_count": 19,
+          "turns_truncated": false,
+          "usage": {
+            "input_tokens": 29,
+            "output_tokens": 25694,
+            "cache_read_tokens": 2653104,
+            "cache_write_tokens": 193115,
+            "reasoning_tokens": 12180
+          },
+          "actual_cost_usd": null,
+          "estimated_cost_usd": 3.176018,
+          "total_cost_usd": 3.176018,
+          "cost_source": "local_estimate",
+          "cost_basis": "per_token_api",
+          "coverage": "complete",
+          "field_availability": {
+            "usage": "available",
+            "actual_cost": "unavailable",
+            "estimated_cost": "available",
+            "pricing": "available"
+          },
+          "pricing_source": "local_estimate",
+          "join_confidence": "unattributed",
+          "collected_at": "2026-11-03T22:37:04.345Z",
+          "event_count": 19,
+          "event_ids": [
+            "event-1",
+            "event-2",
+            "event-3",
+            "event-4",
+            "event-5",
+            "event-6",
+            "event-7",
+            "event-8",
+            "event-9",
+            "event-10",
+            "event-11",
+            "event-12",
+            "event-13",
+            "event-14",
+            "event-15",
+            "event-16",
+            "event-17",
+            "event-18",
+            "event-19"
+          ],
+          "diagnostics": []
+        }
+      ],
+      "coding": [
+        {
+          "schema_version": "task_cost_summary/v1",
+          "task_id": "HOK-2672",
+          "session_ids": [
+            "session-2"
+          ],
+          "harness": "claude-code",
+          "harness_version": "2.1.317",
+          "provider_contract_version": "claude-code/1",
+          "models": [
+            "claude-haiku-4-5-20251001"
+          ],
+          "model_segments": [
+            {
+              "model": "claude-haiku-4-5-20251001",
+              "turn_count": 82,
+              "usage": {
+                "input_tokens": 658,
+                "output_tokens": 29348,
+                "cache_read_tokens": 9181624,
+                "cache_write_tokens": 114606,
+                "reasoning_tokens": 6677
+              },
+              "actual_cost_usd": null,
+              "estimated_cost_usd": 0.967055,
+              "cost_source": "local_estimate"
+            }
+          ],
+          "turn_count": 82,
+          "turns_truncated": false,
+          "usage": {
+            "input_tokens": 658,
+            "output_tokens": 29348,
+            "cache_read_tokens": 9181624,
+            "cache_write_tokens": 114606,
+            "reasoning_tokens": 6677
+          },
+          "actual_cost_usd": null,
+          "estimated_cost_usd": 0.967055,
+          "total_cost_usd": 0.967055,
+          "cost_source": "local_estimate",
+          "cost_basis": "per_token_api",
+          "coverage": "complete",
+          "field_availability": {
+            "usage": "available",
+            "actual_cost": "unavailable",
+            "estimated_cost": "available",
+            "pricing": "available"
+          },
+          "pricing_source": "local_estimate",
+          "join_confidence": "unattributed",
+          "collected_at": "2026-11-03T22:46:07.597Z",
+          "event_count": 82,
+          "event_ids": [
+            "event-20",
+            "event-21",
+            "event-22",
+            "event-23",
+            "event-24",
+            "event-25",
+            "event-26",
+            "event-27",
+            "event-28",
+            "event-29",
+            "event-30",
+            "event-31",
+            "event-32",
+            "event-33",
+            "event-34",
+            "event-35",
+            "event-36",
+            "event-37",
+            "event-38",
+            "event-39",
+            "event-40",
+            "event-41",
+            "event-42",
+            "event-43",
+            "event-44",
+            "event-45",
+            "event-46",
+            "event-47",
+            "event-48",
+            "event-49",
+            "event-50",
+            "event-51",
+            "event-52",
+            "event-53",
+            "event-54",
+            "event-55",
+            "event-56",
+            "event-57",
+            "event-58",
+            "event-59",
+            "event-60",
+            "event-61",
+            "event-62",
+            "event-63",
+            "event-64",
+            "event-65",
+            "event-66",
+            "event-67",
+            "event-68",
+            "event-69",
+            "event-70",
+            "event-71",
+            "event-72",
+            "event-73",
+            "event-74",
+            "event-75",
+            "event-76",
+            "event-77",
+            "event-78",
+            "event-79",
+            "event-80",
+            "event-81",
+            "event-82",
+            "event-83",
+            "event-84",
+            "event-85",
+            "event-86",
+            "event-87",
+            "event-88",
+            "event-89",
+            "event-90",
+            "event-91",
+            "event-92",
+            "event-93",
+            "event-94",
+            "event-95",
+            "event-96",
+            "event-97",
+            "event-98",
+            "event-99",
+            "event-100",
+            "event-101"
+          ],
+          "diagnostics": []
+        }
+      ],
+      "review": [
+        {
+          "schema_version": "task_cost_summary/v1",
+          "task_id": "HOK-2672",
+          "session_ids": [
+            "session-6",
+            "session-4",
+            "session-5",
+            "session-3"
+          ],
+          "harness": "claude-code",
+          "harness_version": "2.1.317",
+          "provider_contract_version": "claude-code/1",
+          "models": [
+            "claude-opus-4-7"
+          ],
+          "model_segments": [
+            {
+              "model": "claude-opus-4-7",
+              "turn_count": 40,
+              "usage": {
+                "input_tokens": 57,
+                "output_tokens": 23177,
+                "cache_read_tokens": 4619431,
+                "cache_write_tokens": 302356,
+                "reasoning_tokens": 11329
+              },
+              "actual_cost_usd": null,
+              "estimated_cost_usd": 4.779157,
+              "cost_source": "local_estimate"
+            }
+          ],
+          "turn_count": 40,
+          "turns_truncated": false,
+          "usage": {
+            "input_tokens": 57,
+            "output_tokens": 23177,
+            "cache_read_tokens": 4619431,
+            "cache_write_tokens": 302356,
+            "reasoning_tokens": 11329
+          },
+          "actual_cost_usd": null,
+          "estimated_cost_usd": 4.779157,
+          "total_cost_usd": 4.779157,
+          "cost_source": "local_estimate",
+          "cost_basis": "per_token_api",
+          "coverage": "complete",
+          "field_availability": {
+            "usage": "available",
+            "actual_cost": "unavailable",
+            "estimated_cost": "available",
+            "pricing": "available"
+          },
+          "pricing_source": "local_estimate",
+          "join_confidence": "unattributed",
+          "collected_at": "2026-11-03T22:56:32.419Z",
+          "event_count": 40,
+          "event_ids": [
+            "event-102",
+            "event-103",
+            "event-104",
+            "event-105",
+            "event-106",
+            "event-107",
+            "event-108",
+            "event-109",
+            "event-110",
+            "event-111",
+            "event-112",
+            "event-113",
+            "event-114",
+            "event-115",
+            "event-116",
+            "event-117",
+            "event-118",
+            "event-119",
+            "event-120",
+            "event-121",
+            "event-122",
+            "event-123",
+            "event-124",
+            "event-125",
+            "event-126",
+            "event-127",
+            "event-128",
+            "event-129",
+            "event-130",
+            "event-131",
+            "event-132",
+            "event-133",
+            "event-134",
+            "event-135",
+            "event-136",
+            "event-137",
+            "event-138",
+            "event-139",
+            "event-140",
+            "event-141"
+          ],
+          "diagnostics": []
+        }
+      ]
+    }
+  },
+  "expected": {
+    "workflowCost": 8.92223
+  }
+}

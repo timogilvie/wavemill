@@ -137,6 +137,44 @@ describe('meterWorkflowCost over owned sessions (HOK-3328)', () => {
     if (metered.outcome.status === 'success') assert.equal(metered.outcome.totalCostUsd, 0.75);
   });
 
+  // protects: HOK-3415 — a v4 row whose stage costs miss the task total because a
+  // helper review call (no recorded stage) was dropped or a ci-fix session was
+  // folded into the coder's stage.
+  it('summariesByStage counts a helper review call in review and keeps ci-fix its own stage', async () => {
+    const claudeDir = tempDir();
+    writeClaudeSession(claudeDir, 's-coding', 10_000);
+    writeClaudeSession(claudeDir, 's-review', 2_000);
+    writeClaudeSession(claudeDir, 's-helper', 4_000);
+    writeClaudeSession(claudeDir, 's-ci-fix', 1_000);
+    const metered = await meterWorkflowCost({
+      worktreePath: '/wt',
+      branchName: 'task/x',
+      issueId: 'HOK-1',
+      ownership: [
+        row('s-coding', 'claude-code', 'coding', 'coding'),
+        row('s-review', 'claude-code', 'review', 'review'),
+        row('s-helper', 'claude-code', 'helper:json-code-review'),
+        row('s-ci-fix', 'claude-code', 'ci-fix'),
+      ],
+      pricingTable: PRICING,
+      roots: { claude: [claudeDir], codex: [] },
+      label: 'test',
+      now: NOW,
+      logger: silent,
+    });
+    assert.equal(metered.outcome.status, 'success');
+    const stageTotal = (stage: string) => (metered.summariesByStage.get(stage as never) ?? [])
+      .reduce((sum, summary) => sum + (summary.total_cost_usd ?? 0), 0);
+    assert.deepEqual([...metered.summariesByStage.keys()].sort(), ['ci-fix', 'coding', 'review']);
+    assert.equal(stageTotal('coding'), 0.75);
+    assert.equal(Math.round(stageTotal('review') * 1e9) / 1e9, 0.45);
+    assert.equal(stageTotal('ci-fix'), 0.075);
+    if (metered.outcome.status === 'success') {
+      const sum = Math.round((stageTotal('coding') + stageTotal('review') + stageTotal('ci-fix')) * 1e9) / 1e9;
+      assert.equal(sum, metered.outcome.totalCostUsd);
+    }
+  });
+
   // protects: "no ownership" being reported as a $0 task
   it('no owned session is no_sessions, never $0', async () => {
     const metered = await meterWorkflowCost({

@@ -41,9 +41,10 @@ import { NativeSessionAdapter, type NativeSessionUsageRecord } from '../session-
 import {
   appendSessionRefResolution,
   exactRows,
+  groupByExecutionStage,
   groupByKind,
   locateOwnershipRows,
-  type OwnershipKind,
+  type ExecutionStage,
   type SessionOwnershipRow,
 } from '../session-ownership.ts';
 import { resolveProjectsDirs } from '../wavemill-session-paths.ts';
@@ -118,12 +119,13 @@ export interface MeteredWorkflowCost {
   /** Harness tag per sessionRef so downstream stamps the right contract version. */
   sessionHarness: Map<string, 'claude-code' | 'codex'>;
   /**
-   * Raw SDK task-cost summaries for the sessions of each ownership kind
-   * (HOK-3415). The v4 contribution row carries one `stage_executions[]`
-   * entry per `(kind, harness)` built from these summaries; the retired
-   * cross-harness `byKind.totalUsd` is a projection of them.
+   * Raw SDK task-cost summaries over the sessions of each execution stage
+   * (`executionStageForRow`, HOK-3415): one per harness. The v4 contribution
+   * row carries one `stage_executions[]` entry per `(stage, harness)` built
+   * from these, so a helper session counts in the stage it served and a
+   * repair stage never folds into the coder's.
    */
-  summariesByKind: Map<OwnershipKind, TaskCostSummaryV1[]>;
+  summariesByStage: Map<ExecutionStage, TaskCostSummaryV1[]>;
 }
 
 const defaultLoadMeasure = async (): Promise<MeasureModule & PriceOverrideModule> => {
@@ -208,7 +210,7 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
     sessionCosts: new Map<string, OwnedSessionCost>(),
     sessionUsageRows: new Map<string, readonly IngestUsageInput[]>(),
     sessionHarness: new Map<string, 'claude-code' | 'codex'>(),
-    summariesByKind: new Map<OwnershipKind, TaskCostSummaryV1[]>(),
+    summariesByStage: new Map<ExecutionStage, TaskCostSummaryV1[]>(),
   };
 
   let owned: SessionOwnershipRow[];
@@ -286,11 +288,12 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
     }
 
     const byKind: Record<string, number | null> = {};
-    const summariesByKind = new Map<OwnershipKind, TaskCostSummaryV1[]>();
     for (const [kind, rows] of groupByKind(measured)) {
-      const kindReport = await sdk.measureOwnedSessions({ ...base, rows });
-      byKind[kind] = kindReport.totalUsd;
-      summariesByKind.set(kind, [...kindReport.summaries]);
+      byKind[kind] = (await sdk.measureOwnedSessions({ ...base, rows })).totalUsd;
+    }
+    const summariesByStage = new Map<ExecutionStage, TaskCostSummaryV1[]>();
+    for (const [stage, rows] of groupByExecutionStage(measured)) {
+      summariesByStage.set(stage, [...(await sdk.measureOwnedSessions({ ...base, rows })).summaries]);
     }
     const sessionCosts = new Map<string, OwnedSessionCost>();
     for (const row of measured) {
@@ -334,7 +337,7 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
       logger.warn(`${input.label}: @hokusai/costs per-session usage rows unavailable — ${errorMessage(rowsErr)}`);
     }
 
-    return { outcome, reason: 'sdk_report', summaries: [...report.summaries], owned, sessionCosts, sessionUsageRows, sessionHarness, summariesByKind };
+    return { outcome, reason: 'sdk_report', summaries: [...report.summaries], owned, sessionCosts, sessionUsageRows, sessionHarness, summariesByStage };
   } catch (error) {
     const message = errorMessage(error);
     logger.warn(`${input.label}: @hokusai/costs measurement failed — ${message}`);

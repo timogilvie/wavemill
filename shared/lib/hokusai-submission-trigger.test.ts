@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, beforeEach, describe, it, mock } from 'node:test';
+import { contributionV4Fixtures } from '@hokusai/core';
 import { clearConfigCache } from './config.ts';
 import { saveUserConfig } from './hokusai-consent.ts';
 import type { EvalRecord, RoutingDecision } from './eval-schema.ts';
@@ -17,7 +18,8 @@ import {
   triggerHokusaiSubmission,
 } from './hokusai-submission-trigger.ts';
 import type { MeteredWorkflowCost } from './sdk-task-cost/meter.ts';
-import type { SessionOwnershipRow } from './session-ownership.ts';
+import type { TaskCostSummaryV1 } from './sdk-task-cost/contract.ts';
+import type { ExecutionStage, SessionOwnershipRow } from './session-ownership.ts';
 
 /**
  * A minimal `MeteredWorkflowCost` with one owned coding session, enough to
@@ -795,3 +797,148 @@ describe('hokusai-submission-trigger', () => {
     assert.equal(proj.outcomeArtifactUsed, false);
   });
 });
+
+// ── HOK-3415 acceptance through the producer ─────────────────────────────────
+
+const MINTED_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function ownedRow(sessionRef: string, kind: SessionOwnershipRow['kind'], harness: SessionOwnershipRow['harness'], model: string): SessionOwnershipRow {
+  return {
+    sessionRef,
+    harness,
+    kind,
+    ...(kind === 'planning' || kind === 'coding' || kind === 'review' ? { stage: kind } : {}),
+    model,
+    launchedAt: '2026-11-01T10:00:00.000Z',
+    attemptId: `${kind}@abc1234#1793527200`,
+  };
+}
+
+function meteredWith(owned: SessionOwnershipRow[], summariesByStage: Array<[ExecutionStage, TaskCostSummaryV1[]]>): MeteredWorkflowCost {
+  return {
+    outcome: 'measured' as never,
+    reason: 'ok' as never,
+    summaries: [],
+    owned,
+    sessionCosts: new Map(),
+    sessionUsageRows: new Map(),
+    sessionHarness: new Map(),
+    summariesByStage: new Map(summariesByStage),
+  };
+}
+
+/** Stage results name these executed models; the resolver reads them per stage. */
+function stubStageResults(models: Partial<Record<'planning' | 'coding' | 'review', string>>): void {
+  mock.method(hokusaiSubmissionTriggerDeps, 'resolveStageExecutedModel', (input: { stage: 'planning' | 'coding' | 'review' }) => ({
+    executedModel: models[input.stage] ?? null,
+    evidenceStatus: 'direct' as const,
+    evidenceSource: 'session-stream' as const,
+  }));
+}
+
+function queuedRows(repoDir: string): Array<Record<string, any>> {
+  return readFileSync(join(repoDir, '.wavemill', 'hokusai', 'queue', 'pending.jsonl'), 'utf-8')
+    .trim().split('\n').map((line) => (JSON.parse(line) as { row: Record<string, any> }).row);
+}
+
+function routedRecord(overrides: Partial<EvalRecord>, coder: string, reviewer = coder): EvalRecord {
+  const base = makeEligibleRecord();
+  return {
+    ...base,
+    taskDescriptor: {
+      ...(base.taskDescriptor ?? {}),
+      stages: { planner: { model: coder }, coder: { model: coder }, reviewer: { model: reviewer } },
+    } as never,
+    ...overrides,
+  };
+}
+
+describe('HOK-3415 acceptance: v4 rows from the producer', () => {
+  // protects: a challenge pair whose two v4 rows do not share one valid
+  // comparison group (raw issue-id pair ids fail the contract and leak the id).
+  it('a challenge pair produces two rows with one minted comparison_group and the stage results\' models', async () => {
+    const { repoDir, configDir } = makeRepo(true);
+    mock.method(hokusaiSubmissionTriggerDeps, 'drainContributionQueue', async () => ({}));
+    const salt = 'e'.repeat(64);
+
+    const arms = [
+      { id: 'eval-pair-primary', issueId: 'HOK-9000', coder: 'gpt-5.4' },
+      { id: 'eval-pair-challenger', issueId: 'HOK-9000_c', coder: 'claude-haiku-4-5' },
+    ];
+    for (const arm of arms) {
+      stubStageResults({ coding: arm.coder });
+      const record = routedRecord({
+        id: arm.id,
+        issueId: arm.issueId,
+        challengePairId: 'HOK-9000',
+        challengeStage: 'implementation',
+      } as Partial<EvalRecord>, arm.coder);
+      const result = await triggerHokusaiSubmission(record, {
+        repoDir,
+        configDir,
+        redactionSalt: salt,
+        meteredCost: meteredWith([ownedRow(`${arm.id}-coding`, 'coding', 'claude-code', arm.coder)], []),
+      });
+      assert.equal(result.status, 'enqueued', JSON.stringify(result));
+      mock.restoreAll();
+      mock.method(hokusaiSubmissionTriggerDeps, 'drainContributionQueue', async () => ({}));
+    }
+
+    const [primary, challenger] = queuedRows(repoDir);
+    assert.ok(primary && challenger, 'two rows queued');
+    assert.match(primary.comparison_group.id, MINTED_UUID);
+    assert.equal(primary.comparison_group.id, challenger.comparison_group.id);
+    assert.equal(primary.comparison_group.role_varied, 'coder');
+    assert.equal(challenger.comparison_group.role_varied, 'coder');
+    const codingModel = (row: Record<string, any>) => row.stage_executions.find((stage: { stage: string }) => stage.stage === 'coding')?.executed_model;
+    assert.equal(codingModel(primary), 'gpt-5.4');
+    assert.equal(codingModel(challenger), 'claude-haiku-4-5');
+    assert.equal(JSON.stringify([primary, challenger]).includes('HOK-9000'), false, 'raw pair id leaked');
+  });
+
+  // protects: a ci-fix session folded into (or double-counted with) the coder's
+  // cost, or helper review calls dropped, so stage costs miss workflowCost.
+  it('a task with a ci-fix session reports stage costs that sum to workflowCost, ci-fix only in its own stage', async () => {
+    const { repoDir, configDir } = makeRepo(true);
+    mock.method(hokusaiSubmissionTriggerDeps, 'drainContributionQueue', async () => ({}));
+    const golden = contributionV4Fixtures.ciFixRepair;
+    const summaryFor = (stage: string) => golden.stage_executions.find((entry) => entry.stage === stage)!.task_cost as TaskCostSummaryV1;
+    const coder = 'gpt-5-codex';
+    const reviewer = 'claude-opus-4-8';
+    stubStageResults({ coding: coder, review: reviewer });
+
+    const record = routedRecord({ workflowCost: golden.actual_cost_usd as number }, coder, reviewer);
+    const owned = [
+      ownedRow('s-coding', 'coding', 'codex', coder),
+      ownedRow('s-review', 'review', 'claude-code', reviewer),
+      // The review engine's own reviewer call: no recorded stage, counted in review.
+      ownedRow('s-review-helper', 'helper:json-code-review', 'claude-code', reviewer),
+      ownedRow('s-ci-fix', 'ci-fix', 'codex', coder),
+    ];
+    const result = await triggerHokusaiSubmission(record, {
+      repoDir,
+      configDir,
+      redactionSalt: 'f'.repeat(64),
+      meteredCost: meteredWith(owned, [
+        ['coding', [summaryFor('coding')]],
+        ['review', [summaryFor('review')]],
+        ['ci-fix', [summaryFor('ci-fix')]],
+      ]),
+    });
+    assert.equal(result.status, 'enqueued', JSON.stringify(result));
+
+    const [row] = queuedRows(repoDir);
+    const stages = row.stage_executions as Array<{ stage: string; harness: string; task_cost: { total_cost_usd: number; task_id: string } }>;
+    assert.deepEqual(stages.map((stage) => stage.stage).sort(), ['ci-fix', 'coding', 'review']);
+    const total = (name: string) => stages.filter((stage) => stage.stage === name).reduce((sum, stage) => sum + stage.task_cost.total_cost_usd, 0);
+    assert.equal(total('ci-fix'), summaryFor('ci-fix').total_cost_usd);
+    assert.equal(total('coding'), summaryFor('coding').total_cost_usd, 'ci-fix cost is not in the coding stage');
+    const stageSum = Math.round(stages.reduce((sum, stage) => sum + stage.task_cost.total_cost_usd, 0) * 1e9) / 1e9;
+    assert.equal(stageSum, record.workflowCost);
+    for (const stage of stages) assert.equal(stage.task_cost.task_id, row.task_id);
+    for (const ref of owned.map((entry) => entry.sessionRef)) {
+      assert.equal(JSON.stringify(row).includes(`"${ref}"`), false, `raw session id ${ref} leaked`);
+    }
+  });
+});
+
