@@ -68,7 +68,7 @@ import {
   resolveChallengeSide,
   type ChallengeExecutionIntent,
 } from './challenge-execution-contract.ts';
-import { getMaxCostUsd } from './config.ts';
+import { getMaxCostUsd, isDefaultMaxCostUsdExplicitlyConfigured } from './config.ts';
 import { resolveCarriedBudget } from './budget-source.ts';
 import { formatHokusaiSubmissionTriggerResult, triggerHokusaiSubmission } from './hokusai-submission-trigger.ts';
 import { getConfiguredModelsForDescriptor } from './model-registry.ts';
@@ -125,7 +125,8 @@ function resolveEvalConstraints(
   routingComplete: RoutingCompleteData | null,
   repoDir: string,
 ): EvalConstraints | undefined {
-  return resolveCarriedBudget([routingComplete], getMaxCostUsd(repoDir)) ?? undefined;
+  const configuredBudgetSource = isDefaultMaxCostUsdExplicitlyConfigured(repoDir) ? 'repo-config' : 'default';
+  return resolveCarriedBudget([routingComplete], getMaxCostUsd(repoDir), configuredBudgetSource) ?? undefined;
 }
 
 function resolveExecutionModel(solutionModel: string | undefined, routingDecision: unknown): string | undefined {

@@ -974,9 +974,29 @@ test('resolveRouteDecisionBudgetWithSource tracks request, carried, and repo-con
       resolveRouteDecisionBudgetWithSource(minimalDecision({ constraints: { maxCostUsd: 6 } }), { repoDir: dir }),
       { maxCostUsd: 6, budgetSource: 'request' },
     );
+    // Fallback to repo config when explicitly configured
     assert.deepEqual(
       resolveRouteDecisionBudgetWithSource(minimalDecision(), { repoDir: dir }),
       { maxCostUsd: 25, budgetSource: 'repo-config' },
+    );
+  } finally {
+    clearConfigCache(dir);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// protects: HOK-3390 — when no explicit repo config is present, the default budget source
+// must be 'default', not 'repo-config'.
+test('resolveRouteDecisionBudgetWithSource distinguishes default from repo-config budgets', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'route-artifact-budget-no-config-'));
+  try {
+    // Do NOT create .wavemill-config.json — test the implicit default case
+    clearConfigCache(dir);
+
+    // When no explicit config exists, the fallback budget should be 'default'
+    assert.deepEqual(
+      resolveRouteDecisionBudgetWithSource(minimalDecision(), { repoDir: dir }),
+      { maxCostUsd: undefined, budgetSource: 'default' },
     );
   } finally {
     clearConfigCache(dir);

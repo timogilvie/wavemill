@@ -46,12 +46,13 @@ export interface BudgetCarrier {
  * The one budget-provenance derivation (HOK-3390). Returns the first carrier's
  * budget with the source recorded beside it — a carried budget without a
  * recorded source predates HOK-3390 and only ever came from an explicit
- * caller, so it is `request` — else the repo's `mill.defaultMaxCostUsd` as
- * `repo-config`, else null.
+ * caller, so it is `request` — else the repo's `mill.defaultMaxCostUsd` with
+ * source `configuredBudgetSource` (or 'default' if not provided), else null.
  */
 export function resolveCarriedBudget(
   carriers: ReadonlyArray<BudgetCarrier | null | undefined>,
   configuredMaxCostUsd: unknown,
+  configuredBudgetSource?: BudgetSource | null,
 ): ResolvedBudget | null {
   for (const carrier of carriers) {
     if (!carrier) continue;
@@ -62,7 +63,7 @@ export function resolveCarriedBudget(
     }
   }
   return isFiniteNonNegativeBudget(configuredMaxCostUsd)
-    ? { maxCostUsd: configuredMaxCostUsd, budgetSource: 'repo-config' }
+    ? { maxCostUsd: configuredMaxCostUsd, budgetSource: configuredBudgetSource || 'default' }
     : null;
 }
 

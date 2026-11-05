@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
-import { getMaxCostUsd } from './config.ts';
+import { getMaxCostUsd, isDefaultMaxCostUsdExplicitlyConfigured } from './config.ts';
 import { isBudgetSource, resolveCarriedBudget, type BudgetSource, type ResolvedBudget } from './budget-source.ts';
 import { getEffectiveRegistry, getModel } from './model-registry.ts';
 import type { RoutePrediction } from './eval-schema.ts';
@@ -128,10 +128,11 @@ export function resolveRouteDecisionBudgetWithSource(
   decision: Partial<WorkflowRouteDecision>,
   options: ResolveRouteBudgetOptions = {},
 ): ResolvedBudget | null {
+  const configuredBudgetSource = isDefaultMaxCostUsdExplicitlyConfigured(options.repoDir) ? 'repo-config' : 'default';
   return resolveCarriedBudget([
     { constraints: { maxCostUsd: options.explicitMaxCostUsd, budgetSource: options.explicitBudgetSource } },
     decision,
-  ], getMaxCostUsd(options.repoDir));
+  ], getMaxCostUsd(options.repoDir), configuredBudgetSource);
 }
 
 export function resolveRouteDecisionBudget(

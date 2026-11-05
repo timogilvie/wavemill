@@ -2528,6 +2528,29 @@ export function getMaxCostUsd(repoDir?: string): number | undefined {
 }
 
 /**
+ * Check if the default max cost is explicitly configured in .wavemill-config.json or
+ * .wavemill-config.local.json (HOK-3390). Returns true only if the value is present in
+ * one of these files, not if using a hard-coded default.
+ */
+export function isDefaultMaxCostUsdExplicitlyConfigured(repoDir?: string): boolean {
+  const absRepoDir = resolveRepoDir(repoDir);
+  const basePath = resolve(absRepoDir, '.wavemill-config.json');
+  const localPath = resolve(absRepoDir, '.wavemill-config.local.json');
+
+  const checkFile = (path: string): boolean => {
+    if (!existsSync(path)) return false;
+    try {
+      const content = JSON.parse(readFileSync(path, 'utf-8'));
+      return typeof content?.mill?.defaultMaxCostUsd === 'number';
+    } catch {
+      return false;
+    }
+  };
+
+  return checkFile(basePath) || checkFile(localPath);
+}
+
+/**
  * Get the UI config section.
  * Returns empty object if not configured.
  */

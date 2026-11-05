@@ -48,7 +48,7 @@ import {
   hasProviderModelSubstitution,
 } from './stage-eval-evidence.ts';
 import { buildTaskDescriptor } from './task-descriptor-builder.ts';
-import { getEvalContextUpdatesConfig, getMaxCostUsd } from './config.ts';
+import { getEvalContextUpdatesConfig, getMaxCostUsd, isDefaultMaxCostUsdExplicitlyConfigured } from './config.ts';
 import { resolveCarriedBudget, type ResolvedBudget } from './budget-source.ts';
 import { runConfiguredHarnessRetentionReplay } from './harness-replay.ts';
 import {
@@ -118,7 +118,8 @@ function resolvePostCompletionBudget(input: Pick<PostCompletionEnrichmentInput, 
   const routingComplete = slug
     ? fetchRoutingCompleteRawWithArchive(input.repoDir, slug, input.issueId || '', input.worktreePath)
     : null;
-  return resolveCarriedBudget([input.record, routingComplete], getMaxCostUsd(input.repoDir)) ?? undefined;
+  const configuredBudgetSource = isDefaultMaxCostUsdExplicitlyConfigured(input.repoDir) ? 'repo-config' : 'default';
+  return resolveCarriedBudget([input.record, routingComplete], getMaxCostUsd(input.repoDir), configuredBudgetSource) ?? undefined;
 }
 
 function loadPostCompletionChallengeIntent(input: PostCompletionEnrichmentInput): ChallengeExecutionIntent | undefined {

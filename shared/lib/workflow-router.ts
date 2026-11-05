@@ -86,6 +86,7 @@ export function resolveRequestedBudget(
 }
 
 /** Decision `constraints` for a caller-supplied budget (HOK-3390). */
+// allow-stage-launchability: helper function, returns partial decision not a full router exit
 export function requestedBudgetConstraints(
   options: Pick<RouteWorkflowOptions, 'maxCostUsd' | 'budgetSource'> | undefined,
 ): WorkflowRouteDecision['constraints'] {
