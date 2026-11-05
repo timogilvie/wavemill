@@ -103,8 +103,10 @@ export JOURNEY_EVAL_FAULT="$JOURNEY_TMP/eval-fault"
 journey_start_monitor
 # Two arms run the whole plan→ready chain, each eval'd, then compared — about
 # twice a single-task journey's waits. A sourcing variant may raise this by
-# exporting JOURNEY_TICK_BUDGET before sourcing this journey.
-journey_set_tick_budget "${JOURNEY_TICK_BUDGET:-170}"
+# exporting JOURNEY_PAIR_TICK_BUDGET before sourcing this journey (the harness
+# already owns JOURNEY_TICK_BUDGET as its "not declared" sentinel, so a sourcing
+# variant must not reuse that name).
+journey_set_tick_budget "${JOURNEY_PAIR_TICK_BUDGET:-170}"
 journey_wait_until "$ISSUE" 5 "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 
