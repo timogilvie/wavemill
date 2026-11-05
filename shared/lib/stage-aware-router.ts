@@ -16,6 +16,7 @@ import { resolveFromMainRepo } from './git-utils.ts';
 import { loadPricingTable } from './pricing/model-pricing.ts';
 import { priceUsageUsd } from './sdk-task-cost/price-overrides.ts';
 import type { WorkflowRouteDecision, PlanDepth, CodeDepth, ReviewMode } from './workflow-router.ts';
+import type { BudgetSource } from './budget-source.ts';
 import { getRouterConfig } from './config.ts';
 import { listEffectiveModelsForStage } from './effective-models.ts';
 import { filterDeepSeekModels } from './deepseek-provider.ts';
@@ -55,6 +56,8 @@ export interface StageAwareConstraints {
   coderCapabilityConstraints?: CapabilityConstraints;
   reviewerCapabilityConstraints?: CapabilityConstraints;
   maxCostUsd?: number;
+  /** Provenance of `maxCostUsd`; defaults to `request` (HOK-3390). */
+  budgetSource?: BudgetSource;
 }
 
 export interface StageAwareOptions extends StageAwareConstraints {
@@ -1106,7 +1109,7 @@ export function routeStageAwareWithContext(
       repoDir,
     );
     if (options.maxCostUsd !== undefined) {
-      partialDecision.constraints = { maxCostUsd: options.maxCostUsd };
+      partialDecision.constraints = { maxCostUsd: options.maxCostUsd, budgetSource: options.budgetSource ?? 'request' };
     }
     partialDecision.routingMode = 'stage-aware-partial';
     partialDecision.confidence = Number((clamp(partialDecision.confidence * 0.8, 0.1, 0.95)).toFixed(2));
@@ -1152,7 +1155,7 @@ export function routeStageAwareWithContext(
     }
   }
   if (options.maxCostUsd !== undefined) {
-    decision.constraints = { maxCostUsd: options.maxCostUsd };
+    decision.constraints = { maxCostUsd: options.maxCostUsd, budgetSource: options.budgetSource ?? 'request' };
   }
   prependCapabilityFallbackReasoning(decision, rankings);
 

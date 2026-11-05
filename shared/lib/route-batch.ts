@@ -321,6 +321,7 @@ export async function routeBatch(
       task.featureDir,
     ), {
       explicitMaxCostUsd: resolvedOptions.maxCostUsd,
+      explicitBudgetSource: resolvedOptions.budgetSource,
       repoDir,
     });
     const requestedModelSelector = task.modelSelector ?? task.workspaceSelector;
@@ -455,6 +456,7 @@ export async function routeExpandedPackets(
 
     const cachedDecision = upgradeRouteModelSuccessors(withResolvedRouteBudget(cached.decision, {
       explicitMaxCostUsd: resolvedOptions.maxCostUsd,
+      explicitBudgetSource: resolvedOptions.budgetSource,
       repoDir,
     }), repoDir);
     // A cache hit replays an earlier decision rather than making a new one:
@@ -483,6 +485,7 @@ export async function routeExpandedPackets(
   ): Promise<void> => {
     const budgetedDecision = upgradeRouteModelSuccessors(withResolvedRouteBudget(decision, {
       explicitMaxCostUsd: resolvedOptions.maxCostUsd,
+      explicitBudgetSource: resolvedOptions.budgetSource,
       repoDir,
     }), repoDir);
     const decorated = withExpandedRouteMetadata(budgetedDecision, {

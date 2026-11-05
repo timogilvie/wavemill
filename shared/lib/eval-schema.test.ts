@@ -790,8 +790,8 @@ function validPromptSizeDiagnostic() {
 }
 
 test('SCHEMA_VERSION is bumped for eval schema updates', () => {
-  // HOK-3380: bumped to 1.58.0 for budgetExhaustions[].timeSplit.
-  assert.equal(SCHEMA_VERSION, '1.58.0');
+  // HOK-3390: bumped to 1.59.0 for constraints.budgetSource.
+  assert.equal(SCHEMA_VERSION, '1.59.0');
 });
 
 function validReviewIdentitySet() {
@@ -2493,9 +2493,9 @@ test('Wavemill router fields validate and schema stays in parity', () => {
   assert.equal(properties.wavemill_router_scoring?.$ref, '#/$defs/WavemillRouterScoringMetadata');
 });
 
-test('Schema version constant is 1.58.0', () => {
-  // HOK-3380: bumped to 1.58.0 for budgetExhaustions[].timeSplit.
-  assert.equal(SCHEMA_VERSION, '1.58.0');
+test('Schema version constant is 1.59.0', () => {
+  // HOK-3390: bumped to 1.59.0 for constraints.budgetSource.
+  assert.equal(SCHEMA_VERSION, '1.59.0');
 });
 
 test('correctionProvenance validates when present and is rejected when malformed (HOK-3321)', () => {

@@ -2,6 +2,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { runTool } from '../shared/lib/tool-runner.ts';
+import { BUDGET_CLI_OPTIONS, parseCliBudget } from '../shared/lib/budget-source.ts';
 import { getWavemillAdditionalEvalPaths, routeBatch } from '../shared/lib/route-batch.ts';
 import { inferFeatureDirFromTaskFile } from '../shared/lib/route-decision.ts';
 import { readTaskPromptFromFile, summarizeWorkflowRoute } from '../shared/lib/workflow-router.ts';
@@ -38,10 +39,7 @@ runTool({
       type: 'string',
       description: 'Route input kind (issue, task-packet, cache, heuristic)',
     },
-    'max-cost': {
-      type: 'string',
-      description: 'Maximum cost budget in USD for routing',
-    },
+    ...BUDGET_CLI_OPTIONS,
     'feature-dir': {
       type: 'string',
       description: 'Feature directory whose routing.jsonl records the route decision (default: inferred when --file lives under features/<slug>/)',
@@ -97,13 +95,7 @@ runTool({
 
     const repoDir = args['repo-dir'] || process.cwd();
     const mode = args.mode || 'auto';
-    let maxCostUsd: number | undefined;
-    if (args['max-cost']) {
-      maxCostUsd = Number(args['max-cost']);
-      if (!Number.isFinite(maxCostUsd) || maxCostUsd < 0) {
-        throw new Error(`--max-cost must be a non-negative number, got ${args['max-cost']}`);
-      }
-    }
+    const budget = parseCliBudget(args);
     const featureDir = args['feature-dir'] || inferFeatureDirFromTaskFile(file);
     let issueId = args['issue-id'];
     if (!issueId && featureDir) {
@@ -130,7 +122,7 @@ runTool({
     ], {
       repoDir,
       mode: mode as 'auto' | 'stage-aware' | 'heuristic' | 'hokusai',
-      maxCostUsd,
+      ...budget,
       additionalEvalsPaths: getWavemillAdditionalEvalPaths(repoDir),
       ...(excludeModels.length > 0 ? { excludeModels } : {}),
     });

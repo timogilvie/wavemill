@@ -232,6 +232,12 @@
  *   harness tool time. `BudgetExhaustedFact.progress.providerWaitMs` is
  *   legacy (never written, ignored on read); `BudgetExhaustedFact` gains
  *   optional `sessionStream`. Additive; legacy records still validate.
+ * - **1.59.0**: HOK-3390 — `constraints.budgetSource`,
+ *   `taskDescriptor.constraints.budget_source` and
+ *   `budgetViolationDetails.budgetSource` record where `maxCostUsd` came from
+ *   (`request | issue-override | repo-config | default`), so training can
+ *   treat a defaulted budget as missing instead of a real constraint.
+ *   Additive; legacy records without the field still validate.
  *
  * @module eval-schema
  */
@@ -254,6 +260,7 @@ import type { TaskCostSummaryV1 } from './sdk-task-cost/contract.ts';
 import type { StageRoutes } from './route-override-record.ts';
 import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 import type { NativeStageTimeSplit } from './native-agent/stage-time-split.ts';
+import type { BudgetSource } from './budget-source.ts';
 import type { ArmFaultClass } from './arm-failure-taxonomy.ts';
 
 /**
@@ -286,7 +293,7 @@ export interface EvalBudgetExhaustion {
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.58.0';
+export const SCHEMA_VERSION = '1.59.0';
 
 /**
  * Machine-readable exploration source for an eval row.
@@ -1474,6 +1481,13 @@ export interface Outcomes {
 export interface EvalConstraints {
   /** Maximum routing budget in USD for the task. */
   maxCostUsd?: number;
+  /**
+   * Where `maxCostUsd` came from (HOK-3390). `default` means no caller or
+   * config set it — downstream treats it as a missing budget.
+   *
+   * @since 1.59.0
+   */
+  budgetSource?: BudgetSource;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -1800,6 +1814,8 @@ export interface LearnedSignals {
 export interface DescriptorConstraints {
   /** Maximum cost budget in USD */
   max_cost_usd?: number;
+  /** Provenance of `max_cost_usd` (HOK-3390, @since 1.59.0) */
+  budget_source?: BudgetSource;
   /** Maximum time budget in minutes */
   max_time_minutes?: number;
   /** Models available for routing consideration */
@@ -2641,6 +2657,8 @@ export interface EvalRecord {
     requestedCost: number;
     /** Budget limit that was exceeded */
     maxCostUsd: number;
+    /** Provenance of `maxCostUsd` (HOK-3390, @since 1.59.0) */
+    budgetSource?: BudgetSource;
     /** Operating mode at time of violation (normal, constrained, survival) */
     operatingMode: 'normal' | 'constrained' | 'survival';
     /** Whether the router attempted to downgrade models to fit budget */

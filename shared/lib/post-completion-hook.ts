@@ -49,6 +49,7 @@ import {
 } from './stage-eval-evidence.ts';
 import { buildTaskDescriptor } from './task-descriptor-builder.ts';
 import { getEvalContextUpdatesConfig, getMaxCostUsd } from './config.ts';
+import { resolveCarriedBudget, type ResolvedBudget } from './budget-source.ts';
 import { runConfiguredHarnessRetentionReplay } from './harness-replay.ts';
 import {
   formatHokusaiSubmissionTriggerResult,
@@ -112,21 +113,12 @@ import {
 
 const ISSUE_TITLE_RE = new RegExp(`^#\\s*${ISSUE_ID_RE.source.slice(1, -1)}:\\s*(.+)$`, 'm');
 
-function isFiniteNonNegativeBudget(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
-}
-
-function resolvePostCompletionBudget(input: Pick<PostCompletionEnrichmentInput, 'repoDir' | 'issueId' | 'branchName' | 'worktreePath' | 'record'>): number | undefined {
+function resolvePostCompletionBudget(input: Pick<PostCompletionEnrichmentInput, 'repoDir' | 'issueId' | 'branchName' | 'worktreePath' | 'record'>): ResolvedBudget | undefined {
   const slug = input.branchName?.replace(/^(task|bug)\//, '') || input.issueId?.toLowerCase() || '';
   const routingComplete = slug
     ? fetchRoutingCompleteRawWithArchive(input.repoDir, slug, input.issueId || '', input.worktreePath)
     : null;
-  return [
-    input.record.constraints?.maxCostUsd,
-    routingComplete?.maxCostUsd,
-    routingComplete?.constraints?.maxCostUsd,
-    getMaxCostUsd(input.repoDir),
-  ].find(isFiniteNonNegativeBudget);
+  return resolveCarriedBudget([input.record, routingComplete], getMaxCostUsd(input.repoDir)) ?? undefined;
 }
 
 function loadPostCompletionChallengeIntent(input: PostCompletionEnrichmentInput): ChallengeExecutionIntent | undefined {
@@ -618,7 +610,7 @@ export function buildTaskDescriptorForPostCompletion(
   const workflowTokenUsage = input.costOutcome?.status === 'success'
     ? input.costOutcome.models
     : input.record.workflowTokenUsage;
-  const maxCostUsd = resolvePostCompletionBudget(input);
+  const budget = resolvePostCompletionBudget(input);
 
   return buildTaskDescriptor({
     originalPrompt: input.originalPrompt,
@@ -638,7 +630,8 @@ export function buildTaskDescriptorForPostCompletion(
     rubricEval: input.record.rubricEval || undefined,
     modelsAvailable: getConfiguredModelsForDescriptor(input.repoDir),
     objective: 'balanced',
-    maxCostUsd,
+    maxCostUsd: budget?.maxCostUsd,
+    budgetSource: budget?.budgetSource,
   });
 }
 
@@ -733,10 +726,7 @@ export function enrichPostCompletionRecord(
     executionEconomics: input.executionEconomics,
     taskCostSummary: input.taskCostSummary,
     taskDescriptor,
-    constraints: (() => {
-      const maxCostUsd = resolvePostCompletionBudget(input);
-      return typeof maxCostUsd === 'number' ? { maxCostUsd } : undefined;
-    })(),
+    constraints: resolvePostCompletionBudget(input),
   });
   // HOK-3143: attach per-stage provider-identity attribution, fail-soft.
   const stageResultsDir = resolveEnrichmentStageResultsDir(input);
