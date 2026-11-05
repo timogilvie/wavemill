@@ -981,3 +981,61 @@ drain_deferred_launches() {
   done < "$tmp"
   rm -f "$tmp"
 }
+
+# ── Attention projection (HOK-3423) ──────────────────────────────────────────
+#
+# The one attention decision (`deriveAttentionItems`, shared/lib/attention.ts)
+# runs as a tracked job and writes `$STATE_DIR/attention.json`, stamped with
+# the monitor pass it was computed against. The dashboard inbox renders only
+# that file and shows it as stale once the stamp passes `staleAfterMs` (one
+# interval plus the job timeout: a projection that should have been rewritten
+# by then and was not). A failed job charges its bucket and the file ages
+# into "stale"; it never raises attention itself.
+ATTENTION_PROJECTION_INTERVAL_SECONDS="${ATTENTION_PROJECTION_INTERVAL_SECONDS:-10}"
+ATTENTION_PROJECTION_TIMEOUT_SECONDS=60
+ATTENTION_PROJECTION_JOB_BUCKET="attention-projection-job"
+
+monitor_attention_projection_tick() {
+  local pass_stamp_ms="${1:-}"
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
+  [[ -n "${STATE_DIR:-}" && -n "${REPO_DIR:-}" ]] || return 0
+
+  local interval="$ATTENTION_PROJECTION_INTERVAL_SECONDS" now last_at stamp_file job_id
+  [[ "$interval" =~ ^[0-9]+$ && "$interval" -gt 0 ]] || interval=10
+  job_id="attention-projection-$(sanitize_job_token "${SESSION:-wavemill}")"
+  # The job id is reused every interval: a finished run the tracker has not
+  # classified yet keeps its result file until the next poll, or the poll
+  # would read the relaunch's missing result as a failure of the old run.
+  if [[ -f "$(monitor_async_job_dir "$job_id")/job-result.json" && -n "${STATE_FILE:-}" ]] \
+    && [[ "$(jq -r --arg id "$job_id" '.jobs[$id].status // empty' "$STATE_FILE" 2>/dev/null)" == "running" ]]; then
+    return 0
+  fi
+  stamp_file="$STATE_DIR/.attention-projection-last-at"
+  # Tick clock seam (HOK-3227): a journey runs one projection per pass.
+  if declare -F mill_clock_now >/dev/null 2>&1; then
+    now="$(mill_clock_now)"
+  else
+    now="$(date +%s)"
+  fi
+  if [[ -f "$stamp_file" ]]; then
+    last_at="$(cat "$stamp_file" 2>/dev/null || echo 0)"
+    [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
+    (( now - last_at < interval )) && return 0
+  fi
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  printf '%s\n' "$now" > "$stamp_file" 2>/dev/null || true
+  [[ "$pass_stamp_ms" =~ ^[0-9]+$ && "$pass_stamp_ms" -gt 0 ]] || pass_stamp_ms="$(( $(date +%s) * 1000 ))"
+
+  local meta_json
+  meta_json="$(jq -cn --arg s "$STATE_DIR" --arg b "$ATTENTION_PROJECTION_JOB_BUCKET" --arg k "$now" '{stateDir: $s, bucket: $b, key: $k}')"
+  monitor_async_job_launch attention-projection "$job_id" "" "" "$ATTENTION_PROJECTION_TIMEOUT_SECONDS" "$meta_json" \
+    wavemill_run_tool attention-projection.ts \
+      --repo-dir "$REPO_DIR" \
+      --state-dir "$STATE_DIR" \
+      --state-file "${STATE_FILE:-$STATE_DIR/workflow-state.json}" \
+      --session "${SESSION:-wavemill}" \
+      --output "$STATE_DIR/attention.json" \
+      --pass-stamp-ms "$pass_stamp_ms" \
+      --stale-after-seconds "$(( interval + ATTENTION_PROJECTION_TIMEOUT_SECONDS ))"
+  return 0
+}

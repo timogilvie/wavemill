@@ -15216,7 +15216,7 @@ poll_tracked_jobs() {
     fi
 
     case "$kind" in
-      cross-pr-guard|pr-ci-status|ready-watchdog|route-task|prepare-task-inputs|in-flight-touch-set|state-invariants)
+      cross-pr-guard|pr-ci-status|ready-watchdog|route-task|prepare-task-inputs|in-flight-touch-set|state-invariants|attention-projection)
         [[ "$status" == "succeeded" ]] || handle_check_job_failure "$job_id" "$kind" "$status" "$reason" "$result_path" "$excerpt"
         settle_tracked_job "$job_id"
         continue
@@ -24147,6 +24147,12 @@ while :; do
   monitor_step_begin pollTrackedJobs
   poll_tracked_jobs
   monitor_step_end pollTrackedJobs
+  # HOK-3423: the one attention projection the dashboard inbox renders.
+  # Launched after the poll so the previous run is classified before its
+  # result file is replaced (the job id is reused every interval).
+  monitor_step_begin attentionProjection
+  monitor_attention_projection_tick "$monitor_iteration_start_ms" || true
+  monitor_step_end attentionProjection
   monitor_step_begin backstageHealth
   check_backstage_health
   monitor_step_end backstageHealth

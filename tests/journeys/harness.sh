@@ -63,6 +63,11 @@ JOURNEY_APPROVALS=0
 # Optional function name a journey sets to act right after each approval
 # (e.g. change the task packet to prove the HOK-3099 guard still fires).
 JOURNEY_AFTER_APPROVAL=""
+# Optional function name a journey sets to observe a pending approval request
+# before the operator acts (called with the feature dir and issue). A non-zero
+# return holds the approval until a later poll (HOK-3423: the attention
+# projection must show the request first).
+JOURNEY_BEFORE_APPROVAL=""
 # Snapshot of the feature dir taken the first time the task is in coding.
 JOURNEY_CODING_SNAPSHOT=""
 
@@ -363,6 +368,9 @@ journey_operator_tick() {
   fd="$(journey_feature_dir "$issue" 2>/dev/null)" || return 0
   if [[ -f "$fd/plan.md" && ! -f "$fd/.plan-approved" ]] \
      && [[ "$(jq -r '.status // empty' "$fd/.planning-result.json" 2>/dev/null)" == "awaiting_user" ]]; then
+    if [[ -n "$JOURNEY_BEFORE_APPROVAL" ]] && ! "$JOURNEY_BEFORE_APPROVAL" "$fd" "$issue"; then
+      return 0
+    fi
     journey_record_approval_request "$issue" "$fd"
     if (( JOURNEY_APPROVAL_BUDGET >= 0 && JOURNEY_APPROVALS >= JOURNEY_APPROVAL_BUDGET )); then
       journey_fail "approval budget exceeded: approval request #$((JOURNEY_APPROVALS + 1)) (budget $JOURNEY_APPROVAL_BUDGET; note: $(jq -r '.notes // ""' "$fd/.planning-result.json" 2>/dev/null))"
