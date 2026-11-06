@@ -95,7 +95,7 @@ echo "assertions:"
 journey_assert "Hokusai was first asked with JRN-1's highest_reliability objective" \
   journey_jq_true -s 'map(select(.objective == "highest_reliability" and .inferenceLogId == "jrn-first-0001")) | length >= 1' "$FAKE_HOKUSAI_LOG"
 journey_assert "the router re-asked Hokusai for highest_reliability without any spelling of claude-haiku-4-5" \
-  journey_jq_true -s 'map(select(.objective == "highest_reliability")) | length >= 1 and all(.availableCoderModels | map(select(startswith("claude-haiku-4-5"))) | length == 0)' "$FAKE_HOKUSAI_LOG"
+  journey_jq_true -s 'map(select(.objective == "highest_reliability" and .inferenceLogId == "jrn-reask-0002")) | length >= 1 and all(.availableCoderModels | map(select(startswith("claude-haiku-4-5"))) | length == 0)' "$FAKE_HOKUSAI_LOG"
 OWNERSHIP="$REPO_DIR/.wavemill/evals/artifacts/$ISSUE/.session-ownership.jsonl"
 journey_assert "the coding stage ran the re-ask's coder" \
   journey_jq_true -s 'map(select(.type == "launch" and .kind == "coding")) | length >= 1 and all(.model == "claude-opus-5-5")' "$OWNERSHIP"
