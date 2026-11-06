@@ -323,13 +323,13 @@ export function reviewInputBudgetFromAdapter(
   reservedPrompt: string,
   reservedTokens = 0,
 ): ReviewInputBudget {
-  const { contextWindowTokens, maxInputChars, maxOutputTokens = 0, cliHarnessOverheadTokens = 0 } = adapter.limits;
+  const { contextWindowTokens, maxInputChars, reservedOutputTokens = 0, cliHarnessOverheadTokens = 0 } = adapter.limits;
   const tokenLimit = typeof contextWindowTokens === 'number' && contextWindowTokens > 0 ? contextWindowTokens : undefined;
   return {
     countTokens: (text) => adapter.countTokens(text),
     ...(tokenLimit !== undefined
       ? {
-          maxTokens: Math.max(0, Math.floor((tokenLimit - maxOutputTokens) / (1 + CONTEXT_WINDOW_SAFETY_MARGIN))
+          maxTokens: Math.max(0, Math.floor((tokenLimit - reservedOutputTokens) / (1 + CONTEXT_WINDOW_SAFETY_MARGIN))
             - cliHarnessOverheadTokens - adapter.countTokens(reservedPrompt) - reservedTokens - REVIEW_INPUT_SLACK),
         }
       : {}),

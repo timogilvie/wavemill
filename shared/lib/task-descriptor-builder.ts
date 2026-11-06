@@ -26,6 +26,7 @@ import type {
 } from './eval-schema.ts';
 import type { CapabilityConstraints } from './model-registry.ts';
 import type { RoutingCompleteData } from './eval-context-gatherer.ts';
+import type { BudgetSource } from './budget-source.ts';
 import { classifyTaskPacket } from './task-packet-classifier.ts';
 import { estimateTokensDefault } from './model-adapters/token-estimator.ts';
 
@@ -95,6 +96,8 @@ export interface TaskDescriptorInput {
   objective?: 'max_success' | 'min_cost' | 'balanced';
   /** Maximum cost budget in USD */
   maxCostUsd?: number;
+  /** Provenance of `maxCostUsd` (HOK-3390) */
+  budgetSource?: BudgetSource;
   /** Maximum time budget in minutes */
   maxTimeMinutes?: number;
   /** Optional capability-aware routing constraints */
@@ -455,6 +458,7 @@ function deriveLearnedSignals(input: TaskDescriptorInput): LearnedSignals {
 function deriveConstraints(input: TaskDescriptorInput): DescriptorConstraints {
   return {
     max_cost_usd: input.maxCostUsd,
+    ...(input.maxCostUsd !== undefined && input.budgetSource ? { budget_source: input.budgetSource } : {}),
     max_time_minutes: input.maxTimeMinutes,
     models_available: input.modelsAvailable || [],
     objective: input.objective || 'balanced',

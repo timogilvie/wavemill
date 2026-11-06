@@ -62,7 +62,16 @@ phase_is() { [[ "$(journey_task_field "$ISSUE" phase)" == "$1" ]]; }
 # late-completion reconcile would have papered over it).
 sample_coding() {
   local fd
-  if jq -e '.agentIdle == true and .agentBackgroundLive == true and .stalled == false and (.progressAgeMinutes // 0) > 30' \
+  fd="$(journey_feature_dir "$ISSUE" 2>/dev/null)" || return 0
+  # An idle record is deliberately not progress (HOK-3422). With no work
+  # event after launch, progressAgeMinutes is null and the stall anchor is
+  # the recorded coding launch. Check the same anchor in this assertion.
+  local launched_at
+  launched_at="$(jq -r '.startedAt // empty' "$fd/.coding-result.json" 2>/dev/null)"
+  if jq -e --arg launch "$launched_at" '
+      def epoch: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
+      .agentIdle == true and .agentBackgroundLive == true and .stalled == false
+      and ((.computedAt | epoch) - ((.lastProgressAt // $launch) | epoch)) > 1800' \
       "$PROGRESS_CACHE" >/dev/null 2>&1; then
     touch "$SAW_PROTECTED"
   fi
@@ -82,6 +91,7 @@ agent_log_tick() {
 }
 
 journey_start_monitor
+journey_set_tick_budget 65
 journey_wait_until "$ISSUE" 5  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 

@@ -15,10 +15,14 @@ if [[ -n "$reason" ]]; then
 fi
 
 ISSUE="JRN-1"
+# The review phase invokes the real adapter against the shared CLI fake.
+export FAKE_AGENT_SCRIPT_DIR
+FAKE_AGENT_SCRIPT_DIR="$(cd "$(dirname "$0")/fixtures/happy-path/fake-agent" && pwd)"
 journey_init happy-path
 fakes_linear_add_issue "$ISSUE" "Add journey output file" Todo
 
 journey_start_monitor
+journey_set_tick_budget 60
 # The operator picks the first backlog task, as from the mill prompt.
 journey_wait_until "$ISSUE" 5  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
@@ -51,6 +55,6 @@ echo "assertions:"
 journey_assert_landed "$ISSUE"
 journey_assert "post-merge eval completed without operator attention" \
   test "$JOURNEY_SAW_ATTENTION" = "0"
-journey_assert_session_ownership "$ISSUE" planning coding review
+journey_assert_session_ownership "$ISSUE" planning coding review helper:json-code-review
 
 journey_finish

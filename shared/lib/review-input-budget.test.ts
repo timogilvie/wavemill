@@ -234,7 +234,7 @@ describe('reviewInputBudgetFromAdapter (HOK-3249)', () => {
     const budget = reviewInputBudgetFromAdapter({
       kind: 'claude-cli',
       model: 'm',
-      limits: { contextWindowTokens: 110_000, maxOutputTokens: 0, cliHarnessOverheadTokens: 10_000, maxInputChars: 50_000 },
+      limits: { contextWindowTokens: 110_000, reservedOutputTokens: 0, cliHarnessOverheadTokens: 10_000, maxInputChars: 50_000 },
       countTokens: (text) => text.length,
       preflight: () => undefined,
       invoke: async () => ({ text: '', reportedModel: 'unverified' }),

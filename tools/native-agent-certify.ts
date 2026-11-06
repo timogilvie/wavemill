@@ -79,8 +79,13 @@ export interface CertifyOptions {
   /** Test seam for the live canary. Production certification uses the real runner. */
   runLiveCanaryFn?: typeof runLiveCodingCanary;
   /** Test seam for reading the previously published artifact (canary carry-forward). */
-  loadPreviousArtifactFn?: (provider: string, model: string, suiteVersion: string) => NativeCertificationArtifact | undefined;
-  writeCertificationFn?: typeof writeGlobalCertification | ((repoDir: string, record: NativeCertificationArtifact) => string);
+  loadPreviousArtifactFn?: (
+    provider: string,
+    model: string,
+    suiteVersion: string,
+  ) => NativeCertificationArtifact | undefined;
+  writeCertificationFn?:
+    typeof writeGlobalCertification | ((repoDir: string, record: NativeCertificationArtifact) => string);
   now?: () => Date;
   env?: NodeJS.ProcessEnv;
 }
@@ -130,7 +135,8 @@ export interface CertifyAllOptions {
   runOpenRouterSmokeFn?: typeof runOpenRouterSmoke;
   runLiveCanaryFn?: typeof runLiveCodingCanary;
   loadPreviousArtifactFn?: CertifyOptions['loadPreviousArtifactFn'];
-  writeCertificationFn?: typeof writeGlobalCertification | ((repoDir: string, record: NativeCertificationArtifact) => string);
+  writeCertificationFn?:
+    typeof writeGlobalCertification | ((repoDir: string, record: NativeCertificationArtifact) => string);
   now?: () => Date;
   env?: NodeJS.ProcessEnv;
 }
@@ -186,14 +192,18 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
 
   if (!nativeCapability || nativeCapability.readOnlyNative === 'unsupported') {
     throw Object.assign(
-      new Error(`Model "${opts.model}" with provider "${opts.provider}" is not supported for native certification (readOnlyNative: ${nativeCapability?.readOnlyNative ?? 'unregistered'}).`),
+      new Error(
+        `Model "${opts.model}" with provider "${opts.provider}" is not supported for native certification (readOnlyNative: ${nativeCapability?.readOnlyNative ?? 'unregistered'}).`,
+      ),
       { exitCode: 1 },
     );
   }
 
   if (nativeCapability.nativeProvider !== opts.provider) {
     throw Object.assign(
-      new Error(`Model "${opts.model}" is registered with provider "${nativeCapability.nativeProvider}", not "${opts.provider}".`),
+      new Error(
+        `Model "${opts.model}" is registered with provider "${nativeCapability.nativeProvider}", not "${opts.provider}".`,
+      ),
       { exitCode: 1 },
     );
   }
@@ -208,8 +218,10 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
 
   // Filter scenarios to those whose phase is satisfied by the requested phase
   const allScenarios = getDefaultScenarios();
-  const phaseScenarios = allScenarios.filter(s => opts.phase === s.phase || PHASE_ORDER.indexOf(s.phase) <= PHASE_ORDER.indexOf(opts.phase));
-  const hasRequestedPhaseScenario = phaseScenarios.some(s => s.phase === opts.phase);
+  const phaseScenarios = allScenarios.filter(
+    (s) => opts.phase === s.phase || PHASE_ORDER.indexOf(s.phase) <= PHASE_ORDER.indexOf(opts.phase),
+  );
+  const hasRequestedPhaseScenario = phaseScenarios.some((s) => s.phase === opts.phase);
 
   const runOpts: RunScenariosOptions = {
     provider: opts.provider,
@@ -244,8 +256,8 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
 
   if (liveCertifiable && !dryRun) {
     const needsLiveSmokeForAlias = opts.provider === 'openrouter' && subjectIsAlias;
-    const needsLiveSmokeForProvisional = opts.provider === 'openrouter'
-      && modelEntry?.identity?.status === 'provisional';
+    const needsLiveSmokeForProvisional =
+      opts.provider === 'openrouter' && modelEntry?.identity?.status === 'provisional';
     if (needsLiveSmokeForAlias || needsLiveSmokeForProvisional) {
       liveSmokeEvidence = await requireFreshOpenRouterSmokeEvidence({
         subject: resolvedSubject.subject,
@@ -268,8 +280,8 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
     if (subjectIsAlias && !resolvedTarget) {
       throw Object.assign(
         new Error(
-          `OpenRouter alias ${resolvedSubject.subject.providerNativeId} cannot be certified without a pinned resolvedTarget. `
-          + `A fresh live smoke must return response.model as a concrete model id (not another "~" alias).`,
+          `OpenRouter alias ${resolvedSubject.subject.providerNativeId} cannot be certified without a pinned resolvedTarget. ` +
+            `A fresh live smoke must return response.model as a concrete model id (not another "~" alias).`,
         ),
         { exitCode: 1 },
       );
@@ -339,20 +351,23 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
       phase: opts.phase,
       suiteVersion,
       certifiedAt: now().toISOString(),
-      scenarios: report.results
-        .filter((result) => result.status !== 'not-run')
-        .map(toArtifactScenario),
+      scenarios: report.results.filter((result) => result.status !== 'not-run').map(toArtifactScenario),
       ...(knownLimitations.length > 0 ? { knownLimitations } : {}),
       ...(liveSmokeEvidence ? { liveSmokeEvidence } : {}),
       ...(liveCanary ? { liveCanary } : {}),
       ...(resolvedTarget ? { resolvedTarget } : {}),
     };
-    artifactPath = writeCertificationFn.length >= 2
-      ? (writeCertificationFn as (repoDir: string, record: NativeCertificationArtifact) => string)(opts.repoDir, artifact)
-      : (writeCertificationFn as typeof writeGlobalCertification)(artifact);
+    artifactPath =
+      writeCertificationFn.length >= 2
+        ? (writeCertificationFn as (repoDir: string, record: NativeCertificationArtifact) => string)(
+            opts.repoDir,
+            artifact,
+          )
+        : (writeCertificationFn as typeof writeGlobalCertification)(artifact);
 
-    codingEligible = canaryApplicable
-      && evaluateLiveCodingCanaryEligibility(artifact, suiteVersion, now(), resolvedSubject.subject).eligible;
+    codingEligible =
+      canaryApplicable &&
+      evaluateLiveCodingCanaryEligibility(artifact, suiteVersion, now(), resolvedSubject.subject).eligible;
   }
 
   return {
@@ -369,7 +384,7 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
     ...(liveSmokeEvidence ? { liveSmokeEvidence } : {}),
     ...(canarySummary ? { liveCanary: canarySummary } : {}),
     codingEligible,
-    scenarios: report.results.map(r => ({
+    scenarios: report.results.map((r) => ({
       scenarioId: r.scenarioId,
       status: r.status,
       ...(r.detail ? { detail: r.detail } : {}),
@@ -420,11 +435,7 @@ function loadPreviousEligibleCanary(input: {
   if (previous.identityInvalidation) return undefined;
   // HOK-3143: an alias retarget invalidates all prior canaries — the canary
   // ran against the previous target even though the suite version matches.
-  if (
-    input.resolvedTarget
-    && previous.resolvedTarget
-    && previous.resolvedTarget.model !== input.resolvedTarget.model
-  ) {
+  if (input.resolvedTarget && previous.resolvedTarget && previous.resolvedTarget.model !== input.resolvedTarget.model) {
     return undefined;
   }
   const eligibility = evaluateLiveCodingCanaryEligibility(previous, input.suiteVersion, input.now(), input.subject);
@@ -476,8 +487,9 @@ export async function certifySelectedNativeAgents(opts: CertifySelectedOptions):
   const published: CertifyAllEntry[] = [];
   const skipped: CertifyAllEntry[] = [];
   const failed: CertifyAllEntry[] = [];
-  const targets = [...opts.targets]
-    .sort((a, b) => a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model));
+  const targets = [...opts.targets].sort(
+    (a, b) => a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model),
+  );
 
   for (const target of targets) {
     try {
@@ -519,7 +531,11 @@ export async function certifySelectedNativeAgents(opts: CertifySelectedOptions):
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      const entry = { provider: target.provider, model: target.model, reason: message };
+      const entry = {
+        provider: target.provider,
+        model: target.model,
+        reason: message,
+      };
       if (isPolicySkip(message)) {
         skipped.push(entry);
       } else {
@@ -539,7 +555,9 @@ export async function certifySelectedNativeAgents(opts: CertifySelectedOptions):
 }
 
 function isPolicySkip(message: string): boolean {
-  return message.includes('OPENROUTER_LIVE_SMOKE=1 is required before publishing a provisional OpenRouter certification');
+  return message.includes(
+    'OPENROUTER_LIVE_SMOKE=1 is required before publishing a provisional OpenRouter certification',
+  );
 }
 
 async function requireFreshOpenRouterSmokeEvidence(input: {
@@ -568,23 +586,28 @@ async function requireFreshOpenRouterSmokeEvidence(input: {
   const model = input.registry.models[input.registryKey];
   const supported = model?.supportedModel;
   const report = await input.runOpenRouterSmokeFn({
-    entries: [{
-      wavemillAlias: supported?.wavemillAlias ?? input.registryKey,
-      openrouterId: input.subject.providerNativeId,
-      family: model?.identity?.family === 'unknown' ? 'unknown' : model?.identity?.family ?? 'unknown',
-      contextTokens: model?.contextWindowTokens ?? null,
-      pricing: {
-        inputPerMTok: model?.pricing?.inputCostPerMTok ?? null,
-        outputPerMTok: model?.pricing?.outputCostPerMTok ?? null,
-        cacheReadPerMTok: model?.pricing?.cacheReadCostPerMTok ?? null,
-        cacheWritePerMTok: model?.pricing?.cacheWriteCostPerMTok ?? null,
+    entries: [
+      {
+        wavemillAlias: supported?.wavemillAlias ?? input.registryKey,
+        openrouterId: input.subject.providerNativeId,
+        family: model?.identity?.family === 'unknown' ? 'unknown' : (model?.identity?.family ?? 'unknown'),
+        contextTokens: model?.contextWindowTokens ?? null,
+        pricing: {
+          inputPerMTok: model?.pricing?.inputCostPerMTok ?? null,
+          outputPerMTok: model?.pricing?.outputCostPerMTok ?? null,
+          cacheReadPerMTok: model?.pricing?.cacheReadCostPerMTok ?? null,
+          cacheWritePerMTok: model?.pricing?.cacheWriteCostPerMTok ?? null,
+        },
+        roleEligibility:
+          supported?.stages?.filter(
+            (stage): stage is 'planning' | 'coding' | 'review' =>
+              stage === 'planning' || stage === 'coding' || stage === 'review',
+          ) ?? [],
+        status: model?.identity?.status === 'provisional' ? 'provisional' : 'active',
+        priorityTier: 0,
+        resolvedAt: input.now().toISOString(),
       },
-      roleEligibility: supported?.stages?.filter((stage): stage is 'planning' | 'coding' | 'review' =>
-        stage === 'planning' || stage === 'coding' || stage === 'review') ?? [],
-      status: model?.identity?.status === 'provisional' ? 'provisional' : 'active',
-      priorityTier: 0,
-      resolvedAt: input.now().toISOString(),
-    }],
+    ],
     apiKey,
     now: input.now,
     catalogHash: input.subject.catalogHash,
@@ -597,10 +620,9 @@ async function requireFreshOpenRouterSmokeEvidence(input: {
     );
   }
   if (smoke.requestedWireId !== input.subject.providerNativeId || smoke.catalogHash !== input.subject.catalogHash) {
-    throw Object.assign(
-      new Error('OpenRouter live smoke evidence did not match the current certification subject.'),
-      { exitCode: 1 },
-    );
+    throw Object.assign(new Error('OpenRouter live smoke evidence did not match the current certification subject.'), {
+      exitCode: 1,
+    });
   }
   return {
     requestedWireId: smoke.requestedWireId,
@@ -612,14 +634,10 @@ async function requireFreshOpenRouterSmokeEvidence(input: {
 
 function formatSmokeFailure(smoke: SmokeReport | undefined): string {
   if (!smoke) return 'no smoke result';
-  return smoke.detail ? `${smoke.category ?? 'blocker'}: ${smoke.detail}` : smoke.category ?? 'blocker';
+  return smoke.detail ? `${smoke.category ?? 'blocker'}: ${smoke.detail}` : (smoke.category ?? 'blocker');
 }
 
-function resolveRegistryModelId(
-  provider: NativeProviderName,
-  modelId: string,
-  registry: ModelRegistry,
-): string {
+function resolveRegistryModelId(provider: NativeProviderName, modelId: string, registry: ModelRegistry): string {
   if (registry.models[modelId]) {
     return modelId;
   }
@@ -642,234 +660,250 @@ function resolveRegistryModelId(
 }
 
 export function runCertifyCommand(argv = process.argv.slice(2)): Promise<void> {
-return runTool({
-  name: 'native-agent-certify',
-  description: 'Run the certification scenario harness for a native provider/model/phase and persist the artifact on success.',
-  options: {
-    provider: {
+  return runTool(
+    {
+      name: 'native-agent-certify',
+      description:
+        'Run the certification scenario harness for a native provider/model/phase and persist the artifact on success.',
+      options: {
+        provider: {
+          type: 'string',
+          description: `Provider to certify. One of: ${NATIVE_PROVIDERS.join(', ')}.`,
+        },
+        model: {
+          type: 'string',
+          description: 'Model ID to certify (e.g. gpt-4o).',
+        },
+        phase: {
+          type: 'string',
+          description: `Certification phase. One of: ${PHASE_ORDER.join(', ')}.`,
+        },
+        'dry-run': {
+          type: 'boolean',
+          description: 'Run scenarios without persisting a certification artifact.',
+        },
+        'live-coding-canary': {
+          type: 'boolean',
+          description:
+            'Run the provider-backed live coding canary (credentialed; required for coding eligibility). Never runs with --dry-run.',
+        },
+        'canary-max-cost-usd': {
+          type: 'string',
+          description: 'Override the live canary maximum estimated cost in USD (default 0.5).',
+        },
+        'canary-timeout-ms': {
+          type: 'string',
+          description: 'Override the live canary wall-clock limit in milliseconds (default 240000).',
+        },
+        'canary-max-tokens': {
+          type: 'string',
+          description: 'Override the live canary total token budget (default 60000).',
+        },
+        'canary-max-tool-calls': {
+          type: 'string',
+          description: 'Override the live canary tool-call budget (default 10).',
+        },
+    'canary-max-turns': {
       type: 'string',
-      description: `Provider to certify. One of: ${NATIVE_PROVIDERS.join(', ')}.`,
+      description: 'Override the live canary turn budget (default 6).',
     },
-    model: {
-      type: 'string',
-      description: 'Model ID to certify (e.g. gpt-4o).',
-    },
-    phase: {
-      type: 'string',
-      description: `Certification phase. One of: ${PHASE_ORDER.join(', ')}.`,
-    },
-    'dry-run': {
-      type: 'boolean',
-      description: 'Run scenarios without persisting a certification artifact.',
-    },
-    'live-coding-canary': {
-      type: 'boolean',
-      description: 'Run the provider-backed live coding canary (credentialed; required for coding eligibility). Never runs with --dry-run.',
-    },
-    'canary-max-cost-usd': {
-      type: 'string',
-      description: 'Override the live canary maximum estimated cost in USD (default 0.5).',
-    },
-    'canary-timeout-ms': {
-      type: 'string',
-      description: 'Override the live canary wall-clock limit in milliseconds (default 240000).',
-    },
-    'canary-max-tokens': {
-      type: 'string',
-      description: 'Override the live canary total token budget (default 60000).',
-    },
-    'canary-max-tool-calls': {
-      type: 'string',
-      description: 'Override the live canary tool-call budget (default 10).',
-    },
-    all: {
-      type: 'boolean',
-      description: 'Certify every native-capable registry model. --provider filters the batch when set.',
-    },
-    'refresh-canary-cohort': {
-      type: 'boolean',
-      description: 'Refresh live coding canaries for the configured bounded cohort (credentialed; targets only missing/stale/renewal-due/identity-invalidated members).',
-    },
-    json: {
-      type: 'boolean',
-      description: 'Emit machine-readable JSON.',
-    },
-    repo: {
-      type: 'string',
-      description: 'Repository directory. Defaults to current working directory.',
-    },
-  },
-  examples: [
-    'npx tsx tools/native-agent-certify.ts --provider openai --model gpt-4o --phase read-only --dry-run',
-    'npx tsx tools/native-agent-certify.ts --provider openai --model gpt-4o --phase read-only',
-    'npx tsx tools/native-agent-certify.ts --provider openrouter --model openai/gpt-4o --phase read-only --json',
-    'npx tsx tools/native-agent-certify.ts --all --phase workflow',
-    'npx tsx tools/native-agent-certify.ts --provider openrouter --model qwen-3-coder --phase workflow --live-coding-canary',
-    'npx tsx tools/native-agent-certify.ts --refresh-canary-cohort',
-  ],
-  async run({ args }) {
-    const repoDir = (args.repo as string | undefined) || process.cwd();
-    const rawProvider = args.provider as string | undefined;
-    const rawModel = args.model as string | undefined;
-    const rawPhase = (args.phase as string | undefined) ?? 'workflow';
-    const dryRun = args['dry-run'] === true;
-    const all = args.all === true;
-    const liveCodingCanary = args['live-coding-canary'] === true;
-    const canaryLimits = parseCanaryLimitFlags(args);
-    if (!canaryLimits.ok) {
-      console.error(`Error: ${canaryLimits.message}`);
-      process.exit(2);
-    }
-    if (liveCodingCanary && dryRun) {
-      console.error('Error: --live-coding-canary cannot be combined with --dry-run (the canary is a live provider run).');
-      process.exit(2);
-    }
-
-    const refreshCohort = args['refresh-canary-cohort'] === true;
-    if (refreshCohort) {
-      const conflictError = refreshCohortFlagError(args);
-      if (conflictError) {
-        console.error(`Error: ${conflictError}`);
-        process.exit(2);
-      }
-      const refresh = await refreshCanaryCohort({
-        repoDir,
-        certifyFn: certifyNativeAgent,
-        respectAttemptGuard: false,
-        ...(canaryLimits.limits ? { canaryLimits: canaryLimits.limits } : {}),
-        log: (line) => console.error(line),
-      });
-      if (args.json === true) {
-        console.log(JSON.stringify(refresh, null, 2));
-      } else {
-        for (const outcome of refresh.outcomes) {
-          console.log(
-            `${outcome.provider}/${outcome.model}: ${outcome.action}`
-            + (outcome.result ? ` result=${outcome.result}` : ` state=${outcome.state}`)
-            + ` eligible=${outcome.codingEligible ? 'yes' : 'no'}`
-            + (outcome.reason ? ` - ${outcome.reason}` : ''),
+        all: {
+          type: 'boolean',
+          description: 'Certify every native-capable registry model. --provider filters the batch when set.',
+        },
+        'refresh-canary-cohort': {
+          type: 'boolean',
+          description:
+            'Refresh live coding canaries for the configured bounded cohort (credentialed; targets only missing/stale/renewal-due/identity-invalidated members).',
+        },
+        'respect-attempt-guard': {
+          type: 'boolean',
+          description: 'Internal monitor option: honor the one-attempt-per-remediation-episode guard.',
+        },
+        json: {
+          type: 'boolean',
+          description: 'Emit machine-readable JSON.',
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository directory. Defaults to current working directory.',
+        },
+      },
+      examples: [
+        'npx tsx tools/native-agent-certify.ts --provider openai --model gpt-4o --phase read-only --dry-run',
+        'npx tsx tools/native-agent-certify.ts --provider openai --model gpt-4o --phase read-only',
+        'npx tsx tools/native-agent-certify.ts --provider openrouter --model openai/gpt-4o --phase read-only --json',
+        'npx tsx tools/native-agent-certify.ts --all --phase workflow',
+        'npx tsx tools/native-agent-certify.ts --provider openrouter --model qwen-3-coder --phase workflow --live-coding-canary',
+        'npx tsx tools/native-agent-certify.ts --refresh-canary-cohort',
+      ],
+      async run({ args }) {
+        const repoDir = (args.repo as string | undefined) || process.cwd();
+        const rawProvider = args.provider as string | undefined;
+        const rawModel = args.model as string | undefined;
+        const rawPhase = (args.phase as string | undefined) ?? 'workflow';
+        const dryRun = args['dry-run'] === true;
+        const all = args.all === true;
+        const liveCodingCanary = args['live-coding-canary'] === true;
+        const canaryLimits = parseCanaryLimitFlags(args);
+        if (!canaryLimits.ok) {
+          console.error(`Error: ${canaryLimits.message}`);
+          process.exit(2);
+        }
+        if (liveCodingCanary && dryRun) {
+          console.error(
+            'Error: --live-coding-canary cannot be combined with --dry-run (the canary is a live provider run).',
           );
+          process.exit(2);
         }
-        console.log('');
-        console.log(renderCanaryCohortHealth(refresh.health));
-      }
-      const hadError = refresh.outcomes.some((outcome) => outcome.result === 'error');
-      if (hadError || refresh.health.belowMinimum) {
-        process.exit(1);
-      }
-      return;
-    }
 
-    // Validate required flags
-    if (!all && !rawProvider) {
-      console.error('Error: --provider is required');
-      process.exit(2);
-    }
-    if (!all && !rawModel) {
-      console.error('Error: --model is required');
-      process.exit(2);
-    }
-    if (all && rawModel) {
-      console.error('Error: --all cannot be combined with --model');
-      process.exit(2);
-    }
-
-    // Validate phase
-    if (!(PHASE_ORDER as readonly string[]).includes(rawPhase)) {
-      console.error(`Error: invalid --phase "${rawPhase}". Must be one of: ${PHASE_ORDER.join(', ')}`);
-      process.exit(2);
-    }
-
-    const phase = rawPhase as CertificationPhase;
-
-    if (rawProvider && !(NATIVE_PROVIDERS as readonly string[]).includes(rawProvider)) {
-      console.error(`Error: invalid --provider "${rawProvider}". Must be one of: ${NATIVE_PROVIDERS.join(', ')}`);
-      process.exit(2);
-    }
-
-    const provider = rawProvider as NativeProviderName | undefined;
-
-    if (all) {
-      const result = await certifyAllNativeAgents({
-        provider,
-        phase,
-        repoDir,
-        dryRun,
-        liveCodingCanary,
-        ...(canaryLimits.limits ? { canaryLimits: canaryLimits.limits } : {}),
-      });
-      if (args.json === true) {
-        console.log(JSON.stringify(result, null, 2));
-      } else {
-        renderCertifyAllSummary(result);
-      }
-      if (result.failed.length > 0) {
-        process.exit(1);
-      }
-      return;
-    }
-
-    let result: CertifyResult;
-    try {
-      result = await certifyNativeAgent({
-        provider: provider!,
-        model: rawModel!,
-        phase,
-        repoDir,
-        dryRun,
-        liveCodingCanary,
-        ...(canaryLimits.limits ? { canaryLimits: canaryLimits.limits } : {}),
-      });
-    } catch (err: unknown) {
-      const exitCode = (err as { exitCode?: number }).exitCode;
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`Error: ${msg}`);
-      process.exit(exitCode === 1 ? 1 : 2);
-    }
-
-    if (args.json === true) {
-      console.log(JSON.stringify(result, null, 2));
-    } else {
-      const prefix = dryRun ? '[dry-run] ' : '';
-      console.log(`${prefix}Provider: ${result.provider}`);
-      console.log(`${prefix}Model:    ${result.model}`);
-      console.log(`${prefix}Phase:    ${result.phase}`);
-      console.log(`${prefix}Suite:    ${result.suiteVersion}`);
-      console.log('');
-      for (const s of result.scenarios) {
-        const statusLabel = s.status.toUpperCase().padEnd(12);
-        console.log(`  ${statusLabel} ${s.scenarioId}${s.detail ? ` — ${s.detail}` : ''}`);
-      }
-      if (result.knownLimitations.length > 0) {
-        console.log('');
-        console.log('Known limitations:');
-        for (const lim of result.knownLimitations) {
-          console.log(`  - ${lim}`);
+        const refreshCohort = args['refresh-canary-cohort'] === true;
+        if (refreshCohort) {
+          const conflictError = refreshCohortFlagError(args);
+          if (conflictError) {
+            console.error(`Error: ${conflictError}`);
+            process.exit(2);
+          }
+          const refresh = await refreshCanaryCohort({
+            repoDir,
+            certifyFn: certifyNativeAgent,
+            respectAttemptGuard: args['respect-attempt-guard'] === true,
+            ...(canaryLimits.limits ? { canaryLimits: canaryLimits.limits } : {}),
+            log: (line) => console.error(line),
+          });
+          if (args.json === true) {
+            console.log(JSON.stringify(refresh, null, 2));
+          } else {
+            for (const outcome of refresh.outcomes) {
+              console.log(
+                `${outcome.provider}/${outcome.model}: ${outcome.action}` +
+                  (outcome.result ? ` result=${outcome.result}` : ` state=${outcome.state}`) +
+                  ` eligible=${outcome.codingEligible ? 'yes' : 'no'}` +
+                  (outcome.reason ? ` - ${outcome.reason}` : ''),
+              );
+            }
+            console.log('');
+            console.log(renderCanaryCohortHealth(refresh.health));
+          }
+          const hadError = refresh.outcomes.some((outcome) => outcome.result === 'error');
+          if (hadError || refresh.health.belowMinimum) {
+            process.exit(1);
+          }
+          return;
         }
-      }
-      console.log('');
-      if (result.harnessPassed) {
-        if (dryRun) {
-          console.log('Dry-run PASSED. No artifact written.');
-      } else if (result.artifactPath) {
-          console.log(`CERTIFIED. Artifact (${result.artifactScope ?? 'global'}): ${result.artifactPath}`);
+
+        // Validate required flags
+        if (!all && !rawProvider) {
+          console.error('Error: --provider is required');
+          process.exit(2);
+        }
+        if (!all && !rawModel) {
+          console.error('Error: --model is required');
+          process.exit(2);
+        }
+        if (all && rawModel) {
+          console.error('Error: --all cannot be combined with --model');
+          process.exit(2);
+        }
+
+        // Validate phase
+        if (!(PHASE_ORDER as readonly string[]).includes(rawPhase)) {
+          console.error(`Error: invalid --phase "${rawPhase}". Must be one of: ${PHASE_ORDER.join(', ')}`);
+          process.exit(2);
+        }
+
+        const phase = rawPhase as CertificationPhase;
+
+        if (rawProvider && !(NATIVE_PROVIDERS as readonly string[]).includes(rawProvider)) {
+          console.error(`Error: invalid --provider "${rawProvider}". Must be one of: ${NATIVE_PROVIDERS.join(', ')}`);
+          process.exit(2);
+        }
+
+        const provider = rawProvider as NativeProviderName | undefined;
+
+        if (all) {
+          const result = await certifyAllNativeAgents({
+            provider,
+            phase,
+            repoDir,
+            dryRun,
+            liveCodingCanary,
+            ...(canaryLimits.limits ? { canaryLimits: canaryLimits.limits } : {}),
+          });
+          if (args.json === true) {
+            console.log(JSON.stringify(result, null, 2));
+          } else {
+            renderCertifyAllSummary(result);
+          }
+          if (result.failed.length > 0) {
+            process.exit(1);
+          }
+          return;
+        }
+
+        let result: CertifyResult;
+        try {
+          result = await certifyNativeAgent({
+            provider: provider!,
+            model: rawModel!,
+            phase,
+            repoDir,
+            dryRun,
+            liveCodingCanary,
+            ...(canaryLimits.limits ? { canaryLimits: canaryLimits.limits } : {}),
+          });
+        } catch (err: unknown) {
+          const exitCode = (err as { exitCode?: number }).exitCode;
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`Error: ${msg}`);
+          process.exit(exitCode === 1 ? 1 : 2);
+        }
+
+        if (args.json === true) {
+          console.log(JSON.stringify(result, null, 2));
         } else {
-          console.log('Passed (not live-certifiable — no artifact written).');
+          const prefix = dryRun ? '[dry-run] ' : '';
+          console.log(`${prefix}Provider: ${result.provider}`);
+          console.log(`${prefix}Model:    ${result.model}`);
+          console.log(`${prefix}Phase:    ${result.phase}`);
+          console.log(`${prefix}Suite:    ${result.suiteVersion}`);
+          console.log('');
+          for (const s of result.scenarios) {
+            const statusLabel = s.status.toUpperCase().padEnd(12);
+            console.log(`  ${statusLabel} ${s.scenarioId}${s.detail ? ` — ${s.detail}` : ''}`);
+          }
+          if (result.knownLimitations.length > 0) {
+            console.log('');
+            console.log('Known limitations:');
+            for (const lim of result.knownLimitations) {
+              console.log(`  - ${lim}`);
+            }
+          }
+          console.log('');
+          if (result.harnessPassed) {
+            if (dryRun) {
+              console.log('Dry-run PASSED. No artifact written.');
+            } else if (result.artifactPath) {
+              console.log(`CERTIFIED. Artifact (${result.artifactScope ?? 'global'}): ${result.artifactPath}`);
+            } else {
+              console.log('Passed (not live-certifiable — no artifact written).');
+            }
+          } else {
+            console.log('FAILED. Certification not written.');
+          }
+          console.log(renderCanaryStatusLine(result, phase));
         }
-      } else {
-        console.log('FAILED. Certification not written.');
-      }
-      console.log(renderCanaryStatusLine(result, phase));
-    }
 
-    if (!result.harnessPassed) {
-      process.exit(1);
-    }
-    if (liveCodingCanary && !result.dryRun && !result.codingEligible) {
-      process.exit(1);
-    }
-  },
-}, argv);
+        if (!result.harnessPassed) {
+          process.exit(1);
+        }
+        if (liveCodingCanary && !result.dryRun && !result.codingEligible) {
+          process.exit(1);
+        }
+      },
+    },
+    argv,
+  );
 }
 
 /**
@@ -878,6 +912,9 @@ return runTool({
  * target selection are rejected up front.
  */
 export function refreshCohortFlagError(args: Record<string, unknown>): string | undefined {
+  if (args['respect-attempt-guard'] === true && args['refresh-canary-cohort'] !== true) {
+    return '--respect-attempt-guard is only valid with --refresh-canary-cohort.';
+  }
   if (args['dry-run'] === true) {
     return '--refresh-canary-cohort cannot be combined with --dry-run (the canary is a live provider run).';
   }
@@ -915,12 +952,23 @@ export function renderCanaryStatusLine(result: CertifyResult, phase: Certificati
     canary.reason ? `reason=${canary.reason}` : '',
     canary.limitExceeded ? `limit=${canary.limitExceeded}` : '',
     `ranAt=${canary.ranAt}`,
-  ].filter(Boolean).join(' ');
+  ]
+    .filter(Boolean)
+    .join(' ');
   return `Live coding canary (${provenance}): ${detail}. Coding eligibility: ${result.codingEligible ? 'granted' : 'NOT granted'}.`;
 }
 
 function parseCanaryLimitFlags(args: Record<string, unknown>):
-  | { ok: true; limits?: { maxCostUsd?: number; maxWallClockMs?: number; maxTotalTokens?: number; maxToolCalls?: number } }
+  | {
+      ok: true;
+      limits?: {
+        maxCostUsd?: number;
+        maxWallClockMs?: number;
+        maxTotalTokens?: number;
+        maxToolCalls?: number;
+        maxTurns?: number;
+      };
+    }
   | { ok: false; message: string } {
   const parse = (flag: string, integer: boolean): number | undefined | null => {
     const raw = args[flag];
@@ -933,19 +981,42 @@ function parseCanaryLimitFlags(args: Record<string, unknown>):
   };
 
   const maxCostUsd = parse('canary-max-cost-usd', false);
-  if (maxCostUsd === null) return { ok: false, message: '--canary-max-cost-usd must be a positive number' };
+  if (maxCostUsd === null)
+    return {
+      ok: false,
+      message: '--canary-max-cost-usd must be a positive number',
+    };
   const maxWallClockMs = parse('canary-timeout-ms', true);
-  if (maxWallClockMs === null) return { ok: false, message: '--canary-timeout-ms must be a positive integer' };
+  if (maxWallClockMs === null)
+    return {
+      ok: false,
+      message: '--canary-timeout-ms must be a positive integer',
+    };
   const maxTotalTokens = parse('canary-max-tokens', true);
-  if (maxTotalTokens === null) return { ok: false, message: '--canary-max-tokens must be a positive integer' };
+  if (maxTotalTokens === null)
+    return {
+      ok: false,
+      message: '--canary-max-tokens must be a positive integer',
+    };
   const maxToolCalls = parse('canary-max-tool-calls', true);
-  if (maxToolCalls === null) return { ok: false, message: '--canary-max-tool-calls must be a positive integer' };
+  if (maxToolCalls === null)
+    return {
+      ok: false,
+      message: '--canary-max-tool-calls must be a positive integer',
+    };
+  const maxTurns = parse('canary-max-turns', true);
+  if (maxTurns === null)
+    return {
+      ok: false,
+      message: '--canary-max-turns must be a positive integer',
+    };
 
   const limits = {
     ...(maxCostUsd !== undefined ? { maxCostUsd } : {}),
     ...(maxWallClockMs !== undefined ? { maxWallClockMs } : {}),
     ...(maxTotalTokens !== undefined ? { maxTotalTokens } : {}),
     ...(maxToolCalls !== undefined ? { maxToolCalls } : {}),
+    ...(maxTurns !== undefined ? { maxTurns } : {}),
   };
   return { ok: true, ...(Object.keys(limits).length > 0 ? { limits } : {}) };
 }
@@ -966,7 +1037,9 @@ function renderCertifyAllSummary(result: CertifyAllResult): void {
     console.log('');
     console.log(`${label}:`);
     for (const entry of entries) {
-      console.log(`  ${entry.provider}/${entry.model}${entry.artifactPath ? ` -> ${entry.artifactPath}` : ''}${entry.reason ? ` - ${entry.reason}` : ''}`);
+      console.log(
+        `  ${entry.provider}/${entry.model}${entry.artifactPath ? ` -> ${entry.artifactPath}` : ''}${entry.reason ? ` - ${entry.reason}` : ''}`,
+      );
     }
   }
 }

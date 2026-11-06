@@ -321,3 +321,94 @@ test('fixture: at least one materialisable row per disposition kind', () => {
   const kinds = new Set(cases.filter((c) => c.shell).map((c) => c.expected.kind));
   assert.deepEqual([...kinds].sort(), ['advanced', 'in-flight', 'inactive', 'settled']);
 });
+
+// ── HOK-3422: controller writes never reset the stall clock ───────────────
+
+// protects: HOK-3422 — the direct cause the HOK-3415 incident exposed. Before
+// the fix, a dead Ready remediation agent (no hook, no transcript events after
+// launch) read as `in-flight / awaiting-agent-evidence` indefinitely because
+// the per-tick `.ready-result.json` mtime rewrite pushed `lastProgressAt`
+// forward. Post-fix: the stall clock anchors to the ownership `launchedAt` and
+// fires once the threshold elapses, so the disposition settles with
+// `agent-stalled` and the controller re-runs its own Ready check.
+test('HOK-3422: per-tick ready-result rewrite without agent evidence settles as agent-stalled', () => {
+  const worktree = mkdtempSync(join(os.tmpdir(), 'hok3422-wt-'));
+  try {
+    const slug = 'hok3422-replay';
+    const dir = join(worktree, 'features', slug);
+    mkdirSync(dir, { recursive: true });
+    const launchHead = 'c0ffee0000000000000000000000000000003422';
+    createStateDirRetry('ready-remediation', { maxAttempts: 3 }).increment(dir, launchHead);
+    // Launch recorded 45 minutes ago. No hook file, no agent transcript.
+    appendOwnershipRow(dir, {
+      sessionRef: 'remediation-dead-agent',
+      harness: 'claude-code',
+      kind: 'ready-remediation',
+      model: 'claude-opus-4-7',
+      launchedAt: '2026-11-05T13:00:00.000Z',
+      cwd: worktree,
+    });
+    // The controller's per-tick CI refresh keeps rewriting lastCiObservedAt
+    // and the file's mtime. Pre-fix: these advanced lastProgressAt.
+    const running: StageResult = {
+      stage: 'ready',
+      status: 'running',
+      startedAt: '2026-11-05T13:00:00.000Z',
+      finishedAt: null,
+      artifacts: { type: 'ready', verdict: 'fail', lastCiObservedAt: '2026-11-05T13:44:30.000Z' },
+    } as StageResult;
+    writeFileSync(join(dir, '.ready-result.json'), JSON.stringify(running));
+
+    const disposition = evaluateReadyRemediationDisposition({
+      stateDir: dir,
+      readyResult: running,
+      currentHead: launchHead,
+      getProgress: () => gatherReadyTaskProgress({
+        issue: 'HOK-3422',
+        session: `hok3422-replay-${process.pid}`,
+        worktree,
+        stateDir: dir,
+        readyResult: running,
+        now: new Date('2026-11-05T13:45:00.000Z'),
+      }),
+    });
+    assert.equal(disposition.launchedAt, '2026-11-05T13:00:00.000Z');
+    assert.deepEqual([disposition.kind, disposition.reason], ['settled', 'agent-stalled']);
+  } finally {
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+// protects: a healthy controller-owned Ready CI wait (no remediation launched)
+// being reported stalled by the new launch-anchored stall clock. The gatherer
+// must NOT synthesize a launch anchor from the ready-result startedAt when no
+// ownership row exists.
+test('HOK-3422: Ready CI wait with no remediation launched is never stalled', () => {
+  const worktree = mkdtempSync(join(os.tmpdir(), 'hok3422-ciwait-'));
+  try {
+    const slug = 'hok3422-ciwait';
+    const dir = join(worktree, 'features', slug);
+    mkdirSync(dir, { recursive: true });
+    const running: StageResult = {
+      stage: 'ready',
+      status: 'running',
+      startedAt: '2026-11-05T12:00:00.000Z',
+      finishedAt: null,
+      artifacts: { type: 'ready', verdict: 'fail', lastCiObservedAt: '2026-11-05T13:44:30.000Z' },
+    } as StageResult;
+    writeFileSync(join(dir, '.ready-result.json'), JSON.stringify(running));
+
+    const progress = gatherReadyTaskProgress({
+      issue: 'HOK-3422-CI',
+      session: `hok3422-ciwait-${process.pid}`,
+      worktree,
+      stateDir: dir,
+      readyResult: running,
+      now: new Date('2026-11-05T13:45:00.000Z'),
+    });
+    assert.equal(progress.stalled, false,
+      'with no ownership launch row, the controller-owned CI wait has no stall-clock anchor');
+  } finally {
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});

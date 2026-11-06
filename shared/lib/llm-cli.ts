@@ -1232,7 +1232,6 @@ async function executeStream(
       const elapsedMs = Date.now() - startedAt;
       const timeSinceLastActivity = Date.now() - lastActivityAt;
       const stdoutBytes = Buffer.byteLength(stdout, 'utf-8');
-      const wasIdle = timeSinceLastActivity > 30_000; // >30s since last output
 
       reject(
         withElapsed(new Error(
@@ -1241,8 +1240,8 @@ async function executeStream(
           `Working directory: ${cwd}\n` +
           `Elapsed: ${elapsedMs}ms\n` +
           `Stdout collected: ${stdoutBytes} bytes\n` +
-          `Last activity: ${timeSinceLastActivity}ms ago\n` +
-          `Process state: ${wasIdle ? 'IDLE (no output for >30s)' : 'ACTIVE (recently producing output)'}\n`
+          `Last CLI output: ${timeSinceLastActivity}ms ago\n` +
+          `Output silence does not establish agent liveness; structured JSON may be buffered until completion.\n`
         ), elapsedMs)
       );
     }, timeout);

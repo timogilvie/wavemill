@@ -318,83 +318,6 @@ is_ready_conflicted() {
   [[ -f "$worktree/features/$slug/.conflict-remediation.json" ]]
 }
 
-is_stale_ready_gate_detail_for_phase() {
-  local task_phase="${1:-}" agent_state="${2:-}" detail="${3:-}"
-
-  [[ "$agent_state" == "running" ]] || return 1
-  [[ "$task_phase" == "review" || "$task_phase" == "ready" ]] || return 1
-  case "$detail" in
-    Review\ verdict\ does\ not\ pass\ readiness\ gate*|\
-    Review\ recorded\ no\ verdict*|\
-    *blocked\ by\ scope\ guard*)
-      return 0
-      ;;
-  esac
-  return 1
-}
-
-ready_attention_detail() {
-  local worktree="$1" slug="$2"
-  local task_phase="${3:-}" agent_state="${4:-}"
-  local feature_dir="$worktree/features/$slug"
-  local attention_file="$feature_dir/.needs-attention"
-  local detail
-
-  [[ -f "$attention_file" ]] || return 0
-  detail="$(head -1 "$attention_file" 2>/dev/null | tr -d '\r')"
-  if is_stale_ready_gate_detail_for_phase "$task_phase" "$agent_state" "$detail"; then
-    return 0
-  fi
-  printf '%s\n' "$detail"
-}
-
-truncate_blocked_completion_summary() {
-  local summary="${1:-}"
-  local max_len=80
-
-  if (( ${#summary} > max_len )); then
-    printf '%s...\n' "${summary:0:77}"
-  else
-    printf '%s\n' "$summary"
-  fi
-}
-
-coding_blocked_completion_detail() {
-  local worktree="$1" slug="$2" issue="$3"
-  local feature_dir="$worktree/features/$slug"
-  local artifact_record summary reason artifact_mtime
-  local auto_detail uncommitted_detail
-
-  auto_detail="$(coding_auto_advance_detail "$worktree" "$slug" "$issue")"
-  [[ -z "$auto_detail" ]] || return 0
-
-  uncommitted_detail="$(coding_uncommitted_output_detail "$worktree" "$slug" "$issue")"
-  if [[ -n "$uncommitted_detail" ]]; then
-    printf '%s\n' "$uncommitted_detail"
-    return 0
-  fi
-
-  artifact_record="$(read_blocked_completion "$feature_dir" "$issue")"
-  [[ -n "$artifact_record" ]] || return 0
-
-  IFS=$'\001' read -r summary reason artifact_mtime <<< "$artifact_record"
-  summary="$(truncate_blocked_completion_summary "$summary")"
-  printf '%s needs attention: %s. Type "advance %s" to launch review.\n' "$issue" "$summary" "$issue"
-}
-
-coding_uncommitted_output_detail() {
-  local worktree="$1" slug="$2" issue="$3"
-  local feature_dir="$worktree/features/$slug"
-  local artifact_record summary reason action artifact_mtime
-
-  artifact_record="$(read_coding_uncommitted_output "$feature_dir")"
-  [[ -n "$artifact_record" ]] || return 0
-
-  IFS=$'\001' read -r summary reason action artifact_mtime <<< "$artifact_record"
-  summary="$(truncate_blocked_completion_summary "$summary")"
-  printf '%s needs attention: %s. %s\n' "$issue" "$summary" "$action"
-}
-
 coding_auto_advance_detail() {
   local worktree="$1" slug="$2" issue="$3"
   local feature_dir="$worktree/features/$slug"
@@ -402,56 +325,6 @@ coding_auto_advance_detail() {
 
   [[ -f "$artifact" ]] || return 0
   printf '%s auto-advanced coding to review from blocked completion.\n' "$issue"
-}
-
-planning_rejection_detail() {
-  local worktree="$1" slug="$2"
-  local feature_dir="$worktree/features/$slug"
-  local artifact="$feature_dir/.planning-rejected.json"
-  local reason files notified_at notify_status notify_attempts notify_target notify_suffix
-
-  [[ -f "$artifact" ]] || return 0
-  reason=$(jq -r '.reason // empty' "$artifact" 2>/dev/null || true)
-  [[ "$reason" == "planning_modified_out_of_scope_files" ]] || return 0
-
-  files=$(jq -r '(.outOfScopeFiles // []) | join(", ")' "$artifact" 2>/dev/null || true)
-  [[ -n "$files" ]] || files="out-of-scope files"
-
-  # Delivery status of the notification sent to the agent pane. Distinguishes a
-  # successfully notified agent from one where the message was stranded in the
-  # input box or otherwise never confirmed as submitted (HOK-2765).
-  notified_at=$(jq -r '.notifiedAt // empty' "$artifact" 2>/dev/null || true)
-  notify_status=$(jq -r '.notifyStatus // empty' "$artifact" 2>/dev/null || true)
-  notify_attempts=$(jq -r '.notifyAttempts // empty' "$artifact" 2>/dev/null || true)
-  notify_target=$(jq -r '.notifyTarget // empty' "$artifact" 2>/dev/null || true)
-
-  if [[ -n "$notified_at" ]]; then
-    notify_suffix=" Agent notified."
-  else
-    case "$notify_status" in
-      stranded)
-        notify_suffix=" Agent NOT notified: message stranded in pane input after ${notify_attempts:-?} attempts"
-        [[ -n "$notify_target" ]] && notify_suffix+=" — press Enter in $notify_target"
-        notify_suffix+="."
-        ;;
-      unconfirmed)
-        notify_suffix=" Agent NOT notified: delivery unconfirmed after ${notify_attempts:-?} attempts"
-        [[ -n "$notify_target" ]] && notify_suffix+=" — check $notify_target"
-        notify_suffix+="."
-        ;;
-      unavailable)
-        notify_suffix=" Agent NOT notified: pane unavailable."
-        ;;
-      "")
-        notify_suffix=" Agent not notified."
-        ;;
-      *)
-        notify_suffix=" Agent NOT notified: ${notify_status}."
-        ;;
-    esac
-  fi
-
-  printf 'Planning needs attention: edited %s; reverted. Review plan.md and re-approve.%s\n' "$files" "$notify_suffix"
 }
 
 ready_watchdog_state_file() {
@@ -1190,75 +1063,111 @@ task_running_detail() {
   fi
 }
 
-# Classify dashboard tasks into sections based on agent state.
-is_actionable_state() {
-  local agent_state="$1"
-  local task_phase="${2:-}"
-  local worktree="${3:-}"
-  local slug="${4:-}"
-  local issue="${5:-}"
-  local ready_status attention_detail planning_detail watchdog_classification coding_detail
+# ── Attention projection (HOK-3423) ──────────────────────────────────────────
+#
+# The inbox is a render of `$STATE_DIR/attention.json`: the one attention
+# decision (`deriveAttentionItems`, shared/lib/attention.ts) written by the
+# monitor's `attention-projection` tracked job. Nothing in this file decides
+# whether a task needs a human; it only reads the projection, in its order.
+# A projection past its `staleAfterMs` is rendered as stale (items kept), and
+# a missing one as pending — never as "nothing needs you".
+declare -gA ATTENTION_TASK_KINDS=()
+declare -gA ATTENTION_TASK_SOURCES=()
+declare -gA ATTENTION_SUMMARY=()
+declare -gA ATTENTION_FIRST_SUMMARY=()
+declare -ga ATTENTION_TASK_ORDER=()
+declare -ga ATTENTION_FREE_ITEMS=()
+ATTENTION_STATUS="pending"
+ATTENTION_PASS_STAMP_MS=0
 
-  if [[ "$task_phase" == "coding" ]]; then
-    coding_detail=$(coding_blocked_completion_detail "$worktree" "$slug" "$issue")
-    if [[ -n "$coding_detail" ]]; then
-      echo "actionable"
-      return
+attention_projection_path() {
+  [[ -n "${STATE_FILE:-}" ]] || return 1
+  printf '%s\n' "$(dirname "$STATE_FILE")/attention.json"
+}
+
+attention_projection_load() {
+  local path lines now_ms sep=$'\037'
+  local kind task summary sources affected
+  ATTENTION_TASK_KINDS=()
+  ATTENTION_TASK_SOURCES=()
+  ATTENTION_SUMMARY=()
+  ATTENTION_FIRST_SUMMARY=()
+  ATTENTION_TASK_ORDER=()
+  ATTENTION_FREE_ITEMS=()
+  ATTENTION_STATUS="pending"
+  ATTENTION_PASS_STAMP_MS=0
+  path="$(attention_projection_path)" || return 0
+  [[ -r "$path" && -s "$path" ]] || return 0
+  now_ms=$(( $(date +%s) * 1000 ))
+  lines="$(jq -r --argjson now "$now_ms" '
+    def clean: tostring | gsub("[\u001f\n\r]"; " ");
+    (if ((.staleAfterMs // 0) | tonumber) < $now then "stale" else "fresh" end) as $status
+    | ([ "__status__", $status, ((.passStampMs // 0) | tostring), "", "" ] | join("\u001f")),
+      ((.items // [])[] | [
+        (.kind // "" | clean),
+        (.taskId // "" | clean),
+        (.summary // "" | clean),
+        ((.evidence // []) | map(.source // "" | clean) | join(" ")),
+        ((.affectedTaskIds // []) | map(clean) | join(", "))
+      ] | join("\u001f"))
+  ' "$path" 2>/dev/null)" || return 0
+  while IFS="$sep" read -r kind task summary sources affected; do
+    [[ -n "$kind" ]] || continue
+    if [[ "$kind" == "__status__" ]]; then
+      ATTENTION_STATUS="$task"
+      ATTENTION_PASS_STAMP_MS="$summary"
+      continue
     fi
-  fi
+    if [[ -z "$task" ]]; then
+      ATTENTION_FREE_ITEMS+=("${kind}${sep}${summary}${sep}${affected}")
+      continue
+    fi
+    if [[ -z "${ATTENTION_TASK_KINDS[$task]+set}" ]]; then
+      ATTENTION_TASK_ORDER+=("$task")
+      ATTENTION_TASK_KINDS[$task]=""
+      ATTENTION_FIRST_SUMMARY[$task]="$summary"
+    fi
+    ATTENTION_TASK_KINDS[$task]+=" $kind"
+    ATTENTION_TASK_SOURCES[$task]+=" $sources"
+    [[ -n "${ATTENTION_SUMMARY[$task|$kind]+set}" ]] || ATTENTION_SUMMARY[$task|$kind]="$summary"
+  done <<<"$lines"
+  return 0
+}
 
-  planning_detail=$(planning_rejection_detail "$worktree" "$slug")
-  if [[ -n "$planning_detail" ]]; then
-    echo "actionable"
-    return
-  fi
+attention_task_in_inbox() {
+  [[ -n "${ATTENTION_TASK_KINDS[$1]+set}" ]]
+}
 
-  attention_detail=$(ready_attention_detail "$worktree" "$slug" "$task_phase" "$agent_state")
-  if [[ -n "$attention_detail" ]]; then
-    echo "actionable"
-    return
-  fi
+attention_task_has_kind() {
+  [[ " ${ATTENTION_TASK_KINDS[$1]:-} " == *" $2 "* ]]
+}
 
-  if [[ "$task_phase" == "ready" ]]; then
-    watchdog_classification=$(ready_watchdog_field "$issue" "classification")
-    case "$watchdog_classification" in
-      stuck|needs-user)
-        echo "actionable"
-        return
-        ;;
-      waiting-on-ci|waiting-on-eval-comparison|waiting-on-merge-lane)
-        echo "active"
-        return
-        ;;
-    esac
+attention_task_has_source() {
+  [[ " ${ATTENTION_TASK_SOURCES[$1]:-} " == *" $2 "* ]]
+}
 
-    ready_status=$(get_ready_display_status "$worktree" "$slug")
-    case "$ready_status" in
-      completed|aborted)
-        echo "actionable"
-        return
-        ;;
-      failed)
-        # HOK-3360: a Ready `failed` result is not automatically an operator
-        # page. The `.needs-attention` check above already classified any
-        # escalated failure as actionable. A failed Ready with no attention
-        # marker and a stage-failure-ready budget that has not exhausted is
-        # retrying (shown as active), not an inbox item. Only an exhausted
-        # budget (which pages via the escalation step) is actionable.
-        if bounded_retry_is_exhausted "$worktree/features/$slug" "stage-failure-ready"; then
-          echo "actionable"
-        else
-          echo "active"
-        fi
-        return
-        ;;
-    esac
-  fi
+# attention_task_summary <issue> <kind...> — the row text of the first kind
+# the projection holds for the task, in the order given.
+attention_task_summary() {
+  local issue="$1" kind
+  shift
+  for kind in "$@"; do
+    if [[ -n "${ATTENTION_SUMMARY[$issue|$kind]:-}" ]]; then
+      printf '%s\n' "${ATTENTION_SUMMARY[$issue|$kind]}"
+      return 0
+    fi
+  done
+  return 0
+}
 
-  case "$agent_state" in
-    exited|waiting|blocked|approval-needed|policy-denied|error) echo "actionable" ;;
-    *)                                                           echo "active" ;;
-  esac
+attention_task_escalation_summary() {
+  attention_task_summary "$1" operator-decision exhausted policy-terminal
+}
+
+attention_task_escalated() {
+  attention_task_has_kind "$1" operator-decision \
+    || attention_task_has_kind "$1" exhausted \
+    || attention_task_has_kind "$1" policy-terminal
 }
 
 task_window_target() {
@@ -1342,6 +1251,23 @@ is_stale_planning_detail_for_phase() {
   [[ "$task_phase" != "planning" && -n "$detail" ]] || return 1
   case "$detail" in
     planning_*|awaiting\ plan\ approval|Plan\ ready*|Native\ planning*) return 0 ;;
+  esac
+  return 1
+}
+
+# Hook detail text left over from a ready-gate refusal of the previous attempt
+# (HOK-2915) while the relaunched review/Ready agent is running again.
+is_stale_ready_gate_detail_for_phase() {
+  local task_phase="${1:-}" agent_state="${2:-}" detail="${3:-}"
+
+  [[ "$agent_state" == "running" ]] || return 1
+  [[ "$task_phase" == "review" || "$task_phase" == "ready" ]] || return 1
+  case "$detail" in
+    Review\ verdict\ does\ not\ pass\ readiness\ gate*|\
+    Review\ recorded\ no\ verdict*|\
+    *blocked\ by\ scope\ guard*)
+      return 0
+      ;;
   esac
   return 1
 }
@@ -1477,7 +1403,8 @@ render_task_row() {
     planning)
       plan_status=""
       [[ -n "$worktree" && -n "$slug" ]] && plan_status=$(get_planning_display_status "$worktree" "$slug")
-      planning_detail=$(planning_rejection_detail "$worktree" "$slug")
+      planning_detail=""
+      attention_task_has_source "$issue" .planning-rejected.json && planning_detail="$(attention_task_summary "$issue" approve-plan)"
       case "$plan_status" in
         awaiting_approval)
           if [[ -n "$planning_detail" ]]; then
@@ -1494,7 +1421,7 @@ render_task_row() {
     executing) phase_str="${G}🔨 executing${N}" ;;
     coding)
       coding_auto_detail=$(coding_auto_advance_detail "$worktree" "$slug" "$issue")
-      coding_blocked_detail=$(coding_blocked_completion_detail "$worktree" "$slug" "$issue")
+      coding_blocked_detail="$(attention_task_summary "$issue" resolve-blocked-completion)"
       coding_approval_status=""
       [[ -n "$worktree" && -n "$slug" ]] && coding_approval_status=$(get_coding_approval_status "$worktree" "$slug")
       if [[ -n "$coding_auto_detail" ]]; then
@@ -1531,10 +1458,10 @@ render_task_row() {
               *)
                 case "$ready_status" in
                   failed)
-                    # HOK-3360: a failed Ready that is still retrying (no
-                    # attention raised, stage-failure-ready not exhausted) shows
-                    # as retrying, not as a red needs-user row.
-                    if [[ -f "$worktree/features/$slug/.needs-attention" ]] || bounded_retry_is_exhausted "$worktree/features/$slug" "stage-failure-ready"; then
+                    # HOK-3360/HOK-3423: a failed Ready shows red only once the
+                    # escalation step paged (an escalation item in the
+                    # projection); otherwise it is still retrying.
+                    if attention_task_escalated "$issue"; then
                       phase_str="${R}🚦 ready${N}"
                     else
                       phase_str="${Y}↻ retrying${N}"
@@ -1561,7 +1488,7 @@ render_task_row() {
   printf "%-10s  %4s  %-22s  %6s  %-12b  %-11b  %b${EL}\n" \
     "$issue" "$pane" "$ds" "$t" "$phase_str" "$st_str" "$pr_str" >> "$FRAME"
 
-  attention_detail=$(ready_attention_detail "$worktree" "$slug" "$task_phase" "$agent_state")
+  attention_detail="$(attention_task_escalation_summary "$issue")"
   if [[ "$agent_state" != "running" && "$task_phase" == "ready" ]]; then
     if [[ -n "$attention_detail" ]]; then
       reported="$attention_detail"
@@ -1575,7 +1502,8 @@ render_task_row() {
   elif [[ -n "$coding_blocked_detail" ]]; then
     reported="$coding_blocked_detail"
   fi
-  planning_detail=$(planning_rejection_detail "$worktree" "$slug")
+  planning_detail=""
+  attention_task_has_source "$issue" .planning-rejected.json && planning_detail="$(attention_task_summary "$issue" approve-plan)"
   if [[ -z "$reported" && -n "$planning_detail" ]]; then
     reported="$planning_detail"
   elif [[ -z "$reported" ]] && plan_waiting_for_review "$task_phase" "$agent_state" "$worktree" "$slug"; then
@@ -1594,6 +1522,13 @@ render_task_row() {
   case "$reported" in
     working|waiting|done) reported="" ;;
   esac
+  # HOK-3423: an inbox row leads with why it is in the inbox (the projection
+  # item's summary, highest-precedence item first).
+  local attention_first="${ATTENTION_FIRST_SUMMARY[$issue]:-}"
+  if [[ -n "$attention_first" ]]; then
+    render_task_detail_lines "$attention_first"
+    [[ "$reported" == "$attention_first" ]] && reported=""
+  fi
   if [[ -n "$reported" ]]; then
     render_task_detail_lines "$reported"
   fi
@@ -1685,14 +1620,37 @@ render_pending_challenge_arms() {
 }
 
 render_inbox_section() {
-  local count="${#inbox_tasks[@]}"
-  local task_data issue slug branch worktree task_status task_phase state_pr agent_state
-  (( count == 0 )) && return
+  local count task_data issue slug branch worktree task_status task_phase state_pr agent_state
+  local item kind summary affected title age_s
+  count=$(( ${#inbox_tasks[@]} + ${#ATTENTION_FREE_ITEMS[@]} ))
+  title="📥 INBOX"
+  case "$ATTENTION_STATUS" in
+    fresh)
+      (( count == 0 )) && return
+      ;;
+    stale)
+      age_s=""
+      [[ "$ATTENTION_PASS_STAMP_MS" =~ ^[0-9]+$ ]] && (( ATTENTION_PASS_STAMP_MS > 0 )) \
+        && age_s=" $(( $(date +%s) - ATTENTION_PASS_STAMP_MS / 1000 ))s old"
+      title="📥 INBOX — stale attention projection${age_s}"
+      ;;
+    *)
+      printf "${EL}\n${B}%s${N} ${D}(attention projection pending — waiting for the monitor)${N}${EL}\n" "$title" >> "$FRAME"
+      return
+      ;;
+  esac
 
-  render_section_header "📥 INBOX" "$count"
+  render_section_header "$title" "$count"
+  if [[ "$ATTENTION_STATUS" == "stale" ]] && (( count == 0 )); then
+    printf "  ${Y}%s${N}${EL}\n" "No items in the last projection; the monitor has not refreshed it." >> "$FRAME"
+  fi
   for task_data in "${inbox_tasks[@]}"; do
     IFS='|' read -r issue slug branch worktree win task_status task_phase state_pr agent_state <<<"$task_data"
     render_task_row "$issue" "$slug" "$branch" "$worktree" "$win" "$task_status" "$task_phase" "$state_pr" "$agent_state"
+  done
+  for item in "${ATTENTION_FREE_ITEMS[@]}"; do
+    IFS=$'\037' read -r kind summary affected <<<"$item"
+    printf "${R}%-10s${N}  %s%b${EL}\n" "$kind" "$summary" "${affected:+${D} · tasks: ${affected}${N}}" >> "$FRAME"
   done
 }
 
@@ -2475,9 +2433,11 @@ tool_choice_gate_dashboard_line() {
 
 render_dashboard() {
   local tasks line issue slug branch worktree task_status task_phase state_pr
-  local win agent_state classification task_data free_slots queue_owned_tasks usage_tip openrouter_warning backstage_health_line tool_choice_gate_line reliability_line malformed_challenge_warning resource_disposition workflow_outcome
+  local win agent_state task_data free_slots queue_owned_tasks usage_tip openrouter_warning backstage_health_line tool_choice_gate_line reliability_line malformed_challenge_warning resource_disposition workflow_outcome
   declare -ga inbox_tasks=()
   declare -ga active_tasks=()
+  local -A inbox_task_data=()
+  attention_projection_load
   # HOK-3068: terminal work with retained resources is surfaced only here.
   declare -ga backstage_terminal_rows=()
 
@@ -2561,20 +2521,21 @@ render_dashboard() {
         agent_state=$(agent_status "$issue" "$(task_window_target "$issue" "$slug" "$worktree")")
       fi
 
-      if [[ "$agent_state" == "queue-owned" ]]; then
-        classification="active"
-      else
-        classification=$(is_actionable_state "$agent_state" "$task_phase" "$worktree" "$slug" "$issue")
-      fi
       task_data="$issue|$slug|$branch|$worktree|$win|$task_status|$task_phase|$state_pr|$agent_state"
 
-      if [[ "$classification" == "actionable" ]]; then
-        inbox_tasks+=("$task_data")
+      # HOK-3423: inbox membership is read from the attention projection.
+      if attention_task_in_inbox "$issue"; then
+        inbox_task_data["$issue"]="$task_data"
       else
         active_tasks+=("$task_data")
       fi
     done <<<"$tasks"
 
+    # The projection's order (fixed kind precedence, then age) is the inbox order.
+    for issue in "${ATTENTION_TASK_ORDER[@]}"; do
+      # allow-attention: renders projection membership in projection order
+      [[ -n "${inbox_task_data[$issue]+set}" ]] && inbox_tasks+=("${inbox_task_data[$issue]}")
+    done
   fi
 
   if declare -f render_incidents_section >/dev/null 2>&1; then

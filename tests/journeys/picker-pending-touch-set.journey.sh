@@ -16,6 +16,7 @@ fakes_linear_add_issue "$ISSUE" "Add journey output file" Todo
 fakes_linear_add_issue JRN-2 "Leave a second task in the backlog" Todo
 journey_write_monitor_env
 journey_start_monitor
+journey_set_tick_budget 60
 journey_wait_until "$ISSUE" 5 "backlog offers task" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 phase_is() { [[ "$(journey_task_field "$ISSUE" phase)" == "$1" ]]; }

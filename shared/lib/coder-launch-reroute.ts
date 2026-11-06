@@ -235,6 +235,7 @@ export async function rerouteRefusedCoder(opts: RerouteRefusedCoderOptions): Pro
   const routeOptions: RouteWorkflowOptions & { repoDir: string } = {
     ...opts.routeOptions,
     repoDir: opts.repoDir,
+    issueId: opts.issue,
     excludeModels: excluded,
     // Keep the reroute deterministic and cheap: no LLM difficulty classifier.
     skipDifficultyClassification: true,

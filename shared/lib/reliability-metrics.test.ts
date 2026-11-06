@@ -138,7 +138,7 @@ describe('reliability-metrics', () => {
         launchAt: null,
         worktreeMtimeAt: null,
         statusFileMtimeAt: null,
-        transitionSources: [],
+        transitionInputs: [],
         terminal: { prState: null, prNumber: null, lifecycleOutcome: null, at: null },
         agentProcessLive: null,
         backgroundWork: null,
@@ -526,13 +526,30 @@ describe('reliability-metrics', () => {
       assert.equal(sumStallMs(intervals), 55 * minute);
     });
 
-    it('commits and stage transitions are progress', () => {
-      const evidence: ProgressEvidence[] = [
+    it('commits are progress (HOK-3422: stage transitions no longer suppress stall)', () => {
+      // Commits are agent evidence and keep the stall clock advancing. Stage
+      // transitions (controller writes) stopped suppressing stall under
+      // HOK-3422: lastTransitionAt is derived, but stalled fires anyway.
+      const evidenceAgentFresh: ProgressEvidence[] = [
+        hook(base, 'agent'),
+        { atMs: base + 25 * minute, kind: 'commit' },
+        // An agent hook keeps the clock moving past the 30m threshold.
+        hook(base + 40 * minute, 'agent'),
+      ];
+      assert.equal(
+        sumStallMs(replayStallIntervals(evidenceAgentFresh, { endMs: base + 70 * minute, stallMinutes: 30 })),
+        0,
+      );
+      // A stage transition alone no longer counts as progress (HOK-3422).
+      const evidenceTransitionOnly: ProgressEvidence[] = [
         hook(base, 'agent'),
         { atMs: base + 25 * minute, kind: 'commit' },
         { atMs: base + 50 * minute, kind: 'transition', detail: 'review:started' },
       ];
-      assert.equal(sumStallMs(replayStallIntervals(evidence, { endMs: base + 70 * minute, stallMinutes: 30 })), 0);
+      assert.ok(
+        sumStallMs(replayStallIntervals(evidenceTransitionOnly, { endMs: base + 70 * minute, stallMinutes: 30 })) > 0,
+        'a controller transition after the last agent evidence must not suppress stall',
+      );
     });
 
     it('returns no intervals without evidence', () => {
@@ -599,10 +616,14 @@ describe('reliability-metrics', () => {
         }));
         const stuck = computeTimeStuck({ task, stallMinutes: 30 });
         assert.equal(stuck.coverage, 'partial');
-        // 09:20 → 11:00 gap: stalled from 09:55 (first tick past 30m on the
-        // 09:00 grid) to 11:00 = 65m. The 50-minute review has no in-stage
-        // evidence (no session activity archived): stalled 11:35 → 11:50 = 15m.
-        assert.equal(stuck.stuckMs, 80 * 60_000);
+        // HOK-3422: stage transitions are controller writes and no longer
+        // reset the stall clock. For a task with no archived agent transcripts
+        // the stall anchors to the first `coding:started` transition (09:00);
+        // with no later agent evidence, stall opens at 09:35 (first tick past
+        // 30m) and closes at the 12:00 merge terminal frame. The old rule
+        // let `coding:finished` at 09:20 and `review:started` at 11:00 reset
+        // the clock — the exact bug family HOK-3422 fixes.
+        assert.equal(stuck.stuckMs, 145 * 60_000);
       } finally {
         rmSync(tmp, { recursive: true, force: true });
       }

@@ -68,7 +68,8 @@ import {
   resolveChallengeSide,
   type ChallengeExecutionIntent,
 } from './challenge-execution-contract.ts';
-import { getMaxCostUsd } from './config.ts';
+import { getMaxCostUsd, isDefaultMaxCostUsdExplicitlyConfigured } from './config.ts';
+import { resolveCarriedBudget } from './budget-source.ts';
 import { formatHokusaiSubmissionTriggerResult, triggerHokusaiSubmission } from './hokusai-submission-trigger.ts';
 import { getConfiguredModelsForDescriptor } from './model-registry.ts';
 import { reportableWorkflowCostUsd, type WorkflowCostOutcome } from './workflow-cost.ts';
@@ -124,15 +125,8 @@ function resolveEvalConstraints(
   routingComplete: RoutingCompleteData | null,
   repoDir: string,
 ): EvalConstraints | undefined {
-  const candidates = [
-    routingComplete?.maxCostUsd,
-    routingComplete?.constraints?.maxCostUsd,
-    getMaxCostUsd(repoDir),
-  ];
-  const maxCostUsd = candidates.find((value) => (
-    typeof value === 'number' && Number.isFinite(value) && value >= 0
-  ));
-  return typeof maxCostUsd === 'number' ? { maxCostUsd } : undefined;
+  const configuredBudgetSource = isDefaultMaxCostUsdExplicitlyConfigured(repoDir) ? 'repo-config' : 'default';
+  return resolveCarriedBudget([routingComplete], getMaxCostUsd(repoDir), configuredBudgetSource) ?? undefined;
 }
 
 function resolveExecutionModel(solutionModel: string | undefined, routingDecision: unknown): string | undefined {
@@ -699,6 +693,7 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
       modelsAvailable: getConfiguredModelsForDescriptor(repoDir),
       objective: 'balanced',
       maxCostUsd: evalConstraints?.maxCostUsd,
+      budgetSource: evalConstraints?.budgetSource,
     });
   } catch (err) {
     const errorMsg = errorMessage(err);

@@ -6,18 +6,8 @@
       "capabilities": {
         "vendor": "anthropic",
         "class": "frontier",
-        "strengths": [
-          "frontier reasoning",
-          "long-horizon agentic work",
-          "code review",
-          "architecture"
-        ],
-        "weaknesses": [
-          "highest cost",
-          "slower",
-          "minutes-long turns on hard tasks",
-          "OpenRouter dependency"
-        ],
+        "strengths": ["frontier reasoning", "long-horizon agentic work", "code review", "architecture"],
+        "weaknesses": ["highest cost", "slower", "minutes-long turns on hard tasks", "OpenRouter dependency"],
         "releasedAt": "2026-06-10",
         "qualityScores": {
           "routing": 62,
@@ -50,16 +40,8 @@
       "capabilities": {
         "vendor": "anthropic",
         "class": "frontier",
-        "strengths": [
-          "long-horizon reasoning",
-          "code review",
-          "architecture",
-          "agentic coding"
-        ],
-        "weaknesses": [
-          "higher cost",
-          "slower"
-        ],
+        "strengths": ["long-horizon reasoning", "code review", "architecture", "agentic coding"],
+        "weaknesses": ["higher cost", "slower"],
         "releasedAt": "2026-09-15",
         "qualityScores": {
           "routing": 62,
@@ -93,9 +75,7 @@
           "family": "claude",
           "evidencePolicy": "eligible",
           "lineage": {
-            "predecessors": [
-              "claude-opus-4-8"
-            ]
+            "predecessors": ["claude-opus-4-8"]
           }
         }
       }
@@ -105,16 +85,8 @@
       "capabilities": {
         "vendor": "anthropic",
         "class": "frontier",
-        "strengths": [
-          "long-horizon reasoning",
-          "code review",
-          "architecture",
-          "agentic coding"
-        ],
-        "weaknesses": [
-          "higher cost",
-          "slower"
-        ],
+        "strengths": ["long-horizon reasoning", "code review", "architecture", "agentic coding"],
+        "weaknesses": ["higher cost", "slower"],
         "releasedAt": "2026-05-20",
         "qualityScores": {
           "routing": 62,
@@ -146,15 +118,8 @@
       "capabilities": {
         "vendor": "anthropic",
         "class": "frontier",
-        "strengths": [
-          "long-horizon reasoning",
-          "code review",
-          "architecture"
-        ],
-        "weaknesses": [
-          "higher cost",
-          "slower"
-        ],
+        "strengths": ["long-horizon reasoning", "code review", "architecture"],
+        "weaknesses": ["higher cost", "slower"],
         "qualityScores": {
           "routing": 60,
           "planning": 95,
@@ -185,15 +150,8 @@
       "capabilities": {
         "vendor": "anthropic",
         "class": "frontier",
-        "strengths": [
-          "long-horizon reasoning",
-          "code review",
-          "architecture"
-        ],
-        "weaknesses": [
-          "higher cost",
-          "slower"
-        ],
+        "strengths": ["long-horizon reasoning", "code review", "architecture"],
+        "weaknesses": ["higher cost", "slower"],
         "qualityScores": {
           "routing": 58,
           "planning": 92,
@@ -224,14 +182,8 @@
       "capabilities": {
         "vendor": "anthropic",
         "class": "strong_generalist",
-        "strengths": [
-          "code generation",
-          "balanced quality/cost",
-          "instruction following"
-        ],
-        "weaknesses": [
-          "less deep reasoning"
-        ],
+        "strengths": ["code generation", "balanced quality/cost", "instruction following"],
+        "weaknesses": ["less deep reasoning"],
         "releasedAt": "2026-06-30",
         "qualityScores": {
           "routing": 77,
@@ -263,14 +215,8 @@
       "capabilities": {
         "vendor": "anthropic",
         "class": "strong_generalist",
-        "strengths": [
-          "code generation",
-          "balanced quality/cost",
-          "instruction following"
-        ],
-        "weaknesses": [
-          "less deep reasoning"
-        ],
+        "strengths": ["code generation", "balanced quality/cost", "instruction following"],
+        "weaknesses": ["less deep reasoning"],
         "qualityScores": {
           "routing": 75,
           "planning": 82,
@@ -301,14 +247,8 @@
       "capabilities": {
         "vendor": "anthropic",
         "class": "strong_generalist",
-        "strengths": [
-          "code generation",
-          "balanced quality/cost",
-          "instruction following"
-        ],
-        "weaknesses": [
-          "less deep reasoning"
-        ],
+        "strengths": ["code generation", "balanced quality/cost", "instruction following"],
+        "weaknesses": ["less deep reasoning"],
         "qualityScores": {
           "routing": 72,
           "planning": 78,
@@ -339,14 +279,8 @@
       "capabilities": {
         "vendor": "anthropic",
         "class": "fast_economy",
-        "strengths": [
-          "speed",
-          "low cost",
-          "classification"
-        ],
-        "weaknesses": [
-          "less depth on complex reasoning"
-        ],
+        "strengths": ["speed", "low cost", "classification"],
+        "weaknesses": ["less depth on complex reasoning"],
         "qualityScores": {
           "routing": 88,
           "planning": 55,
@@ -377,14 +311,8 @@
       "capabilities": {
         "vendor": "anthropic",
         "class": "fast_economy",
-        "strengths": [
-          "speed",
-          "low cost",
-          "classification"
-        ],
-        "weaknesses": [
-          "less depth on complex reasoning"
-        ],
+        "strengths": ["speed", "low cost", "classification"],
+        "weaknesses": ["less depth on complex reasoning"],
         "qualityScores": {
           "routing": 88,
           "planning": 55,
@@ -413,10 +341,7 @@
         "supportedModel": {
           "wavemillAlias": "claude-haiku-4-5",
           "providerNativeId": "claude-haiku-4-5-20251001",
-          "stages": [
-            "coding",
-            "review"
-          ],
+          "stages": ["coding", "review"],
           "lifecycle": "supported",
           "launchEligible": true,
           "routingEligible": true
@@ -428,14 +353,8 @@
       "capabilities": {
         "vendor": "openai",
         "class": "frontier",
-        "strengths": [
-          "frontier reasoning",
-          "code generation",
-          "architecture"
-        ],
-        "weaknesses": [
-          "higher cost"
-        ],
+        "strengths": ["frontier reasoning", "code generation", "architecture"],
+        "weaknesses": ["higher cost"],
         "releasedAt": "2026-05-01",
         "qualityScores": {
           "routing": 62,
@@ -470,10 +389,7 @@
           "family": "gpt",
           "evidencePolicy": "eligible",
           "lineage": {
-            "predecessors": [
-              "gpt-5",
-              "gpt-5-mini"
-            ],
+            "predecessors": ["gpt-5", "gpt-5-mini"],
             "successor": "gpt-5.6-terra"
           }
         },
@@ -489,14 +405,8 @@
       "capabilities": {
         "vendor": "openai",
         "class": "frontier",
-        "strengths": [
-          "frontier reasoning",
-          "code generation",
-          "architecture"
-        ],
-        "weaknesses": [
-          "superseded for ChatGPT Codex launches by GPT-5.6 Terra"
-        ],
+        "strengths": ["frontier reasoning", "code generation", "architecture"],
+        "weaknesses": ["superseded for ChatGPT Codex launches by GPT-5.6 Terra"],
         "disabled": false,
         "qualityScores": {
           "routing": 60,
@@ -545,14 +455,8 @@
       "capabilities": {
         "vendor": "openai",
         "class": "frontier",
-        "strengths": [
-          "frontier professional reasoning",
-          "complex coding",
-          "tool use"
-        ],
-        "weaknesses": [
-          "new routing candidate; evaluation evidence is still accumulating"
-        ],
+        "strengths": ["frontier professional reasoning", "complex coding", "tool use"],
+        "weaknesses": ["new routing candidate; evaluation evidence is still accumulating"],
         "releasedAt": "2026-09-15",
         "qualityScores": {
           "routing": 62,
@@ -589,9 +493,7 @@
           "family": "gpt",
           "evidencePolicy": "eligible",
           "lineage": {
-            "predecessors": [
-              "gpt-5.6-sol"
-            ]
+            "predecessors": ["gpt-5.6-sol"]
           }
         }
       }
@@ -601,15 +503,8 @@
       "capabilities": {
         "vendor": "openai",
         "class": "frontier",
-        "strengths": [
-          "frontier professional reasoning",
-          "complex coding",
-          "tool use"
-        ],
-        "weaknesses": [
-          "higher cost",
-          "not certified for the ChatGPT Codex launch surface"
-        ],
+        "strengths": ["frontier professional reasoning", "complex coding", "tool use"],
+        "weaknesses": ["higher cost", "not certified for the ChatGPT Codex launch surface"],
         "defaultLadderEligible": false,
         "qualityScores": {
           "routing": 0,
@@ -646,14 +541,8 @@
       "capabilities": {
         "vendor": "openai",
         "class": "strong_generalist",
-        "strengths": [
-          "balanced professional reasoning",
-          "coding",
-          "tool use"
-        ],
-        "weaknesses": [
-          "new routing candidate; evaluation evidence is still accumulating"
-        ],
+        "strengths": ["balanced professional reasoning", "coding", "tool use"],
+        "weaknesses": ["new routing candidate; evaluation evidence is still accumulating"],
         "qualityScores": {
           "routing": 62,
           "planning": 94,
@@ -689,9 +578,7 @@
           "family": "gpt",
           "evidencePolicy": "eligible",
           "lineage": {
-            "predecessors": [
-              "gpt-5.4"
-            ]
+            "predecessors": ["gpt-5.4"]
           }
         }
       }
@@ -701,14 +588,8 @@
       "capabilities": {
         "vendor": "openai",
         "class": "fast_economy",
-        "strengths": [
-          "cost-sensitive high-volume workloads",
-          "tool use",
-          "long context"
-        ],
-        "weaknesses": [
-          "new routing candidate; evaluation evidence is still accumulating"
-        ],
+        "strengths": ["cost-sensitive high-volume workloads", "tool use", "long context"],
+        "weaknesses": ["new routing candidate; evaluation evidence is still accumulating"],
         "releasedAt": "2026-09-15",
         "qualityScores": {
           "routing": 70,
@@ -745,9 +626,7 @@
           "family": "gpt",
           "evidencePolicy": "eligible",
           "lineage": {
-            "predecessors": [
-              "gpt-5.6-luna"
-            ]
+            "predecessors": ["gpt-5.6-luna"]
           }
         }
       }
@@ -757,13 +636,8 @@
       "capabilities": {
         "vendor": "openai",
         "class": "fast_economy",
-        "strengths": [
-          "cost-sensitive high-volume workloads",
-          "tool use"
-        ],
-        "weaknesses": [
-          "not certified for the ChatGPT Codex launch surface"
-        ],
+        "strengths": ["cost-sensitive high-volume workloads", "tool use"],
+        "weaknesses": ["not certified for the ChatGPT Codex launch surface"],
         "defaultLadderEligible": false,
         "qualityScores": {
           "routing": 0,
@@ -800,14 +674,8 @@
       "capabilities": {
         "vendor": "openai",
         "class": "strong_generalist",
-        "strengths": [
-          "cost-efficient coding",
-          "fast edits"
-        ],
-        "weaknesses": [
-          "ChatGPT Codex account incompatibility",
-          "disabled for active routing"
-        ],
+        "strengths": ["cost-efficient coding", "fast edits"],
+        "weaknesses": ["ChatGPT Codex account incompatibility", "disabled for active routing"],
         "disabled": true,
         "qualityScores": {
           "routing": 56,
@@ -841,15 +709,8 @@
       "capabilities": {
         "vendor": "openai",
         "class": "strong_generalist",
-        "strengths": [
-          "general reasoning",
-          "coding",
-          "broad tool support"
-        ],
-        "weaknesses": [
-          "premium cost",
-          "not available to the ChatGPT Codex surface"
-        ],
+        "strengths": ["general reasoning", "coding", "broad tool support"],
+        "weaknesses": ["premium cost", "not available to the ChatGPT Codex surface"],
         "qualityScores": {
           "routing": 72,
           "planning": 92,
@@ -897,14 +758,8 @@
       "capabilities": {
         "vendor": "openai",
         "class": "fast_economy",
-        "strengths": [
-          "fast responses",
-          "low-cost coding"
-        ],
-        "weaknesses": [
-          "less depth than frontier GPT variants",
-          "not available to the ChatGPT Codex surface"
-        ],
+        "strengths": ["fast responses", "low-cost coding"],
+        "weaknesses": ["less depth than frontier GPT variants", "not available to the ChatGPT Codex surface"],
         "qualityScores": {
           "routing": 60,
           "planning": 75,
@@ -952,15 +807,8 @@
       "capabilities": {
         "vendor": "openai",
         "class": "strong_generalist",
-        "strengths": [
-          "coding",
-          "tool use",
-          "low-latency implementation work"
-        ],
-        "weaknesses": [
-          "coding-only watchlist entry",
-          "not available to the ChatGPT Codex surface"
-        ],
+        "strengths": ["coding", "tool use", "low-latency implementation work"],
+        "weaknesses": ["coding-only watchlist entry", "not available to the ChatGPT Codex surface"],
         "qualityScores": {
           "routing": 52,
           "planning": 0,
@@ -995,15 +843,8 @@
       "capabilities": {
         "vendor": "google",
         "class": "frontier",
-        "strengths": [
-          "planning",
-          "long context",
-          "code review"
-        ],
-        "weaknesses": [
-          "opt-in only",
-          "OpenRouter dependency"
-        ],
+        "strengths": ["planning", "long context", "code review"],
+        "weaknesses": ["opt-in only", "OpenRouter dependency"],
         "qualityScores": {
           "routing": 68,
           "planning": 90,
@@ -1047,11 +888,7 @@
           "providerNativeId": "google/gemini-2.5-pro",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding",
-            "review"
-          ],
+          "stages": ["planning", "coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -1089,16 +926,8 @@
       "capabilities": {
         "vendor": "google",
         "class": "frontier",
-        "strengths": [
-          "planning",
-          "coding",
-          "code review",
-          "long context"
-        ],
-        "weaknesses": [
-          "preview model",
-          "OpenRouter dependency"
-        ],
+        "strengths": ["planning", "coding", "code review", "long context"],
+        "weaknesses": ["preview model", "OpenRouter dependency"],
         "qualityScores": {
           "routing": 50,
           "planning": 70,
@@ -1144,11 +973,7 @@
           "providerNativeId": "google/gemini-3.1-pro-preview",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding",
-            "review"
-          ],
+          "stages": ["planning", "coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -1186,16 +1011,8 @@
       "capabilities": {
         "vendor": "google",
         "class": "frontier",
-        "strengths": [
-          "coding",
-          "tool selection",
-          "long context"
-        ],
-        "weaknesses": [
-          "preview model",
-          "OpenRouter dependency",
-          "variant tuned for custom tools"
-        ],
+        "strengths": ["coding", "tool selection", "long context"],
+        "weaknesses": ["preview model", "OpenRouter dependency", "variant tuned for custom tools"],
         "qualityScores": {
           "routing": 68,
           "planning": 90,
@@ -1241,11 +1058,7 @@
           "providerNativeId": "google/gemini-3.1-pro-preview-customtools",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding",
-            "review"
-          ],
+          "stages": ["planning", "coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -1272,15 +1085,8 @@
       "capabilities": {
         "vendor": "google",
         "class": "fast_economy",
-        "strengths": [
-          "speed",
-          "low cost",
-          "coding"
-        ],
-        "weaknesses": [
-          "shallower planning than pro",
-          "opt-in only"
-        ],
+        "strengths": ["speed", "low cost", "coding"],
+        "weaknesses": ["shallower planning than pro", "opt-in only"],
         "qualityScores": {
           "routing": 58,
           "planning": 72,
@@ -1324,10 +1130,7 @@
           "providerNativeId": "google/gemini-2.5-flash",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "coding",
-            "review"
-          ],
+          "stages": ["coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -1354,15 +1157,8 @@
       "capabilities": {
         "vendor": "google",
         "class": "fast_economy",
-        "strengths": [
-          "speed",
-          "low cost",
-          "full multimodal coverage"
-        ],
-        "weaknesses": [
-          "shallower planning than pro-tier Gemini",
-          "opt-in only"
-        ],
+        "strengths": ["speed", "low cost", "full multimodal coverage"],
+        "weaknesses": ["shallower planning than pro-tier Gemini", "opt-in only"],
         "qualityScores": {
           "routing": 60,
           "planning": 75,
@@ -1396,9 +1192,7 @@
           "compatFlags": {
             "thinkingFormat": "openrouter",
             "openRouterRouting": {
-              "order": [
-                "google-ai-studio"
-              ]
+              "order": ["google-ai-studio"]
             }
           },
           "certification": {
@@ -1412,10 +1206,7 @@
           "providerNativeId": "google/gemini-3.8-flash",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "coding",
-            "review"
-          ],
+          "stages": ["coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -1442,15 +1233,8 @@
       "capabilities": {
         "vendor": "meta",
         "class": "strong_generalist",
-        "strengths": [
-          "planning",
-          "cost efficiency",
-          "broad availability"
-        ],
-        "weaknesses": [
-          "less reliable than top frontier models",
-          "opt-in only"
-        ],
+        "strengths": ["planning", "cost efficiency", "broad availability"],
+        "weaknesses": ["less reliable than top frontier models", "opt-in only"],
         "qualityScores": {
           "routing": 56,
           "planning": 78,
@@ -1492,10 +1276,7 @@
           "providerNativeId": "meta-llama/llama-4-maverick",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding"
-          ],
+          "stages": ["planning", "coding"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -1522,15 +1303,8 @@
       "capabilities": {
         "vendor": "mistral",
         "class": "strong_generalist",
-        "strengths": [
-          "planning",
-          "coding",
-          "long context"
-        ],
-        "weaknesses": [
-          "opt-in only",
-          "less tooling maturity"
-        ],
+        "strengths": ["planning", "coding", "long context"],
+        "weaknesses": ["opt-in only", "less tooling maturity"],
         "qualityScores": {
           "routing": 60,
           "planning": 82,
@@ -1573,11 +1347,7 @@
           "providerNativeId": "mistralai/mistral-large-2512",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding",
-            "review"
-          ],
+          "stages": ["planning", "coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -1604,15 +1374,8 @@
       "capabilities": {
         "vendor": "mistral",
         "class": "strong_generalist",
-        "strengths": [
-          "agentic workflows",
-          "coding",
-          "multimodal review"
-        ],
-        "weaknesses": [
-          "watchlist maturity",
-          "higher cost than small Mistral models"
-        ],
+        "strengths": ["agentic workflows", "coding", "multimodal review"],
+        "weaknesses": ["watchlist maturity", "higher cost than small Mistral models"],
         "qualityScores": {
           "routing": 58,
           "planning": 78,
@@ -1654,9 +1417,7 @@
           "providerNativeId": "mistralai/mistral-medium-3-5",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "coding"
-          ],
+          "stages": ["coding"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -1683,15 +1444,8 @@
       "capabilities": {
         "vendor": "mistral",
         "class": "strong_generalist",
-        "strengths": [
-          "agentic workflows",
-          "coding",
-          "multimodal review"
-        ],
-        "weaknesses": [
-          "watchlist maturity",
-          "coding-focused scope"
-        ],
+        "strengths": ["agentic workflows", "coding", "multimodal review"],
+        "weaknesses": ["watchlist maturity", "coding-focused scope"],
         "qualityScores": {
           "routing": 58,
           "planning": 78,
@@ -1734,9 +1488,7 @@
           "providerNativeId": "mistralai/devstral-2512",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "coding"
-          ],
+          "stages": ["coding"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -1763,15 +1515,8 @@
       "capabilities": {
         "vendor": "deepseek",
         "class": "frontier",
-        "strengths": [
-          "reasoning",
-          "planning",
-          "broad coverage"
-        ],
-        "weaknesses": [
-          "higher latency",
-          "OpenRouter dependency"
-        ],
+        "strengths": ["reasoning", "planning", "broad coverage"],
+        "weaknesses": ["higher latency", "OpenRouter dependency"],
         "qualityScores": {
           "routing": 64,
           "planning": 91,
@@ -1802,16 +1547,8 @@
       "capabilities": {
         "vendor": "deepseek",
         "class": "strong_generalist",
-        "strengths": [
-          "coding",
-          "review",
-          "agentic tool use",
-          "budget efficiency"
-        ],
-        "weaknesses": [
-          "reasoning defaults off unless explicitly requested",
-          "OpenRouter dependency"
-        ],
+        "strengths": ["coding", "review", "agentic tool use", "budget efficiency"],
+        "weaknesses": ["reasoning defaults off unless explicitly requested", "OpenRouter dependency"],
         "qualityScores": {
           "routing": 58,
           "planning": 74,
@@ -1843,16 +1580,8 @@
       "capabilities": {
         "vendor": "qwen",
         "class": "strong_generalist",
-        "strengths": [
-          "planning",
-          "coding",
-          "review",
-          "challenger family coverage"
-        ],
-        "weaknesses": [
-          "opt-in only",
-          "provider routing dependency"
-        ],
+        "strengths": ["planning", "coding", "review", "challenger family coverage"],
+        "weaknesses": ["opt-in only", "provider routing dependency"],
         "qualityScores": {
           "routing": 58,
           "planning": 72,
@@ -1895,11 +1624,7 @@
           "providerNativeId": "qwen/qwen3-coder",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding",
-            "review"
-          ],
+          "stages": ["planning", "coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -1926,15 +1651,8 @@
       "capabilities": {
         "vendor": "qwen",
         "class": "frontier",
-        "strengths": [
-          "planning",
-          "coding",
-          "review breadth"
-        ],
-        "weaknesses": [
-          "watchlist maturity",
-          "opt-in only"
-        ],
+        "strengths": ["planning", "coding", "review breadth"],
+        "weaknesses": ["watchlist maturity", "opt-in only"],
         "qualityScores": {
           "routing": 60,
           "planning": 86,
@@ -1977,11 +1695,7 @@
           "providerNativeId": "qwen/qwen3-235b-a22b-2507",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding",
-            "review"
-          ],
+          "stages": ["planning", "coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -2008,15 +1722,8 @@
       "capabilities": {
         "vendor": "moonshotai",
         "class": "strong_generalist",
-        "strengths": [
-          "planning",
-          "coding",
-          "challenger family coverage"
-        ],
-        "weaknesses": [
-          "provider routing dependency",
-          "opt-in only"
-        ],
+        "strengths": ["planning", "coding", "challenger family coverage"],
+        "weaknesses": ["provider routing dependency", "opt-in only"],
         "qualityScores": {
           "routing": 60,
           "planning": 84,
@@ -2058,11 +1765,7 @@
           "providerNativeId": "moonshotai/kimi-k2",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding",
-            "review"
-          ],
+          "stages": ["planning", "coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -2089,15 +1792,8 @@
       "capabilities": {
         "vendor": "z-ai",
         "class": "strong_generalist",
-        "strengths": [
-          "reasoning",
-          "coding",
-          "long-context analysis"
-        ],
-        "weaknesses": [
-          "watchlist maturity",
-          "provider routing dependency"
-        ],
+        "strengths": ["reasoning", "coding", "long-context analysis"],
+        "weaknesses": ["watchlist maturity", "provider routing dependency"],
         "qualityScores": {
           "routing": 58,
           "planning": 82,
@@ -2140,11 +1836,7 @@
           "providerNativeId": "z-ai/glm-5.2",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding",
-            "review"
-          ],
+          "stages": ["planning", "coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -2171,15 +1863,8 @@
       "capabilities": {
         "vendor": "z-ai",
         "class": "strong_generalist",
-        "strengths": [
-          "reasoning",
-          "coding",
-          "long-context analysis"
-        ],
-        "weaknesses": [
-          "watchlist maturity",
-          "provider routing dependency"
-        ],
+        "strengths": ["reasoning", "coding", "long-context analysis"],
+        "weaknesses": ["watchlist maturity", "provider routing dependency"],
         "qualityScores": {
           "routing": 60,
           "planning": 84,
@@ -2211,9 +1896,7 @@
           "compatFlags": {
             "thinkingFormat": "openrouter",
             "openRouterRouting": {
-              "order": [
-                "z-ai"
-              ],
+              "order": ["z-ai"],
               "allow_fallbacks": false
             }
           },
@@ -2228,11 +1911,7 @@
           "providerNativeId": "z-ai/glm-5.3",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding",
-            "review"
-          ],
+          "stages": ["planning", "coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -2259,15 +1938,8 @@
       "capabilities": {
         "vendor": "moonshotai",
         "class": "strong_generalist",
-        "strengths": [
-          "coding",
-          "planning",
-          "agentic execution"
-        ],
-        "weaknesses": [
-          "watchlist maturity",
-          "provider routing dependency"
-        ],
+        "strengths": ["coding", "planning", "agentic execution"],
+        "weaknesses": ["watchlist maturity", "provider routing dependency"],
         "qualityScores": {
           "routing": 60,
           "planning": 86,
@@ -2299,9 +1971,7 @@
           "compatFlags": {
             "thinkingFormat": "openrouter",
             "openRouterRouting": {
-              "order": [
-                "moonshotai"
-              ],
+              "order": ["moonshotai"],
               "allow_fallbacks": false
             }
           },
@@ -2316,11 +1986,7 @@
           "providerNativeId": "moonshotai/kimi-k2.7-code",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding",
-            "review"
-          ],
+          "stages": ["planning", "coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -2347,15 +2013,8 @@
       "capabilities": {
         "vendor": "moonshotai",
         "class": "frontier",
-        "strengths": [
-          "reasoning",
-          "planning",
-          "challenger family coverage"
-        ],
-        "weaknesses": [
-          "watchlist maturity",
-          "slower than kimi-k2"
-        ],
+        "strengths": ["reasoning", "planning", "challenger family coverage"],
+        "weaknesses": ["watchlist maturity", "slower than kimi-k2"],
         "qualityScores": {
           "routing": 58,
           "planning": 88,
@@ -2398,11 +2057,7 @@
           "providerNativeId": "moonshotai/kimi-k2-thinking",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding",
-            "review"
-          ],
+          "stages": ["planning", "coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -2429,15 +2084,8 @@
       "capabilities": {
         "vendor": "moonshotai",
         "class": "strong_generalist",
-        "strengths": [
-          "planning",
-          "coding",
-          "long context"
-        ],
-        "weaknesses": [
-          "provider routing dependency",
-          "higher cost than k2"
-        ],
+        "strengths": ["planning", "coding", "long context"],
+        "weaknesses": ["provider routing dependency"],
         "qualityScores": {
           "routing": 62,
           "planning": 85,
@@ -2447,8 +2095,8 @@
         },
         "pricing": {
           "inputCostPerMTok": 3,
-          "outputCostPerMTok": 15,
-          "cacheReadCostPerMTok": 0.71
+          "outputCostPerMTok": 16,
+          "cacheReadCostPerMTok": 0.3
         },
         "defaultLadderEligible": false,
         "contextWindowTokens": 1048576,
@@ -2460,7 +2108,7 @@
         "latencyTier": "standard",
         "reasoningTier": "advanced",
         "costPerMillionInputTokensUsd": 3,
-        "costPerMillionOutputTokensUsd": 15,
+        "costPerMillionOutputTokensUsd": 16,
         "agent": "native-openrouter",
         "nativeCapability": {
           "nativeProvider": "openrouter",
@@ -2469,9 +2117,7 @@
           "compatFlags": {
             "thinkingFormat": "openrouter",
             "openRouterRouting": {
-              "order": [
-                "moonshotai"
-              ],
+              "order": ["moonshotai"],
               "allow_fallbacks": false
             }
           },
@@ -2486,11 +2132,7 @@
           "providerNativeId": "moonshotai/kimi-k3",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding",
-            "review"
-          ],
+          "stages": ["planning", "coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -2513,19 +2155,77 @@
       }
     },
     {
+      "id": "kimi-k3.1-pro",
+      "capabilities": {
+        "vendor": "moonshotai",
+        "class": "strong_generalist",
+        "strengths": ["planning", "coding", "long context"],
+        "weaknesses": ["provider routing dependency"],
+        "qualityScores": {
+          "routing": 62,
+          "planning": 85,
+          "coding": 85,
+          "review": 83,
+          "classify": 60
+        },
+        "pricing": {
+          "inputCostPerMTok": 2,
+          "outputCostPerMTok": 10,
+          "cacheReadCostPerMTok": 0.2
+        },
+        "defaultLadderEligible": false,
+        "contextWindowTokens": 1048576,
+        "toolSupport": "basic",
+        "multimodal": { "text": true, "image": false },
+        "latencyTier": "standard",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 2,
+        "costPerMillionOutputTokensUsd": 10,
+        "agent": "native-openrouter",
+        "nativeCapability": {
+          "nativeProvider": "openrouter",
+          "piTransportKind": "openai-completions",
+          "readOnlyNative": "certified",
+          "compatFlags": {
+            "thinkingFormat": "openrouter",
+            "openRouterRouting": {
+              "order": ["moonshotai"],
+              "allow_fallbacks": false
+            }
+          }
+        },
+        "supportedModel": {
+          "wavemillAlias": "kimi-k3.1-pro",
+          "providerNativeId": "moonshotai/kimi-k3.1-pro",
+          "provider": "openrouter",
+          "transport": "openai-completions",
+          "stages": ["planning", "coding", "review"],
+          "requiredCertificationPhaseByStage": {
+            "planning": "workflow",
+            "coding": "patch",
+            "review": "read-only"
+          },
+          "certificationSuiteVersion": "v3",
+          "certificationFreshnessDays": 60,
+          "canonicalArtifactIdentity": {
+            "provider": "moonshotai",
+            "model": "kimi-k3.1-pro",
+            "suiteVersion": "v3"
+          },
+          "lifecycle": "supported",
+          "compatibilityFlags": { "thinkingFormat": "openrouter" },
+          "launchEligible": true,
+          "routingEligible": true
+        }
+      }
+    },
+    {
       "id": "deepseek-v4-pro",
       "capabilities": {
         "vendor": "deepseek",
         "class": "strong_generalist",
-        "strengths": [
-          "long-context reasoning",
-          "code generation",
-          "anthropic-compatible launch"
-        ],
-        "weaknesses": [
-          "opt-in only",
-          "pricing subject to change"
-        ],
+        "strengths": ["long-context reasoning", "code generation", "anthropic-compatible launch"],
+        "weaknesses": ["opt-in only", "pricing subject to change"],
         "qualityScores": {
           "routing": 64,
           "planning": 84,
@@ -2554,11 +2254,7 @@
           "providerNativeId": "deepseek/deepseek-v4-pro-0813",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding",
-            "review"
-          ],
+          "stages": ["planning", "coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -2585,15 +2281,8 @@
       "capabilities": {
         "vendor": "deepseek",
         "class": "strong_generalist",
-        "strengths": [
-          "max-context tasks",
-          "code generation",
-          "anthropic-compatible launch"
-        ],
-        "weaknesses": [
-          "opt-in only",
-          "pricing subject to change"
-        ],
+        "strengths": ["max-context tasks", "code generation", "anthropic-compatible launch"],
+        "weaknesses": ["opt-in only", "pricing subject to change"],
         "qualityScores": {
           "routing": 63,
           "planning": 85,
@@ -2626,15 +2315,8 @@
       "capabilities": {
         "vendor": "deepseek",
         "class": "fast_economy",
-        "strengths": [
-          "speed",
-          "low cost",
-          "anthropic-compatible launch"
-        ],
-        "weaknesses": [
-          "less depth than pro",
-          "opt-in only"
-        ],
+        "strengths": ["speed", "low cost", "anthropic-compatible launch"],
+        "weaknesses": ["less depth than pro", "opt-in only"],
         "qualityScores": {
           "routing": 70,
           "planning": 68,
@@ -2663,11 +2345,7 @@
           "providerNativeId": "deepseek/deepseek-v4-flash-0731",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding",
-            "review"
-          ],
+          "stages": ["planning", "coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -2694,13 +2372,8 @@
       "capabilities": {
         "vendor": "deepseek",
         "class": "strong_generalist",
-        "strengths": [
-          "compatibility alias for existing DeepSeek integrations"
-        ],
-        "weaknesses": [
-          "compatibility alias",
-          "future deprecation risk"
-        ],
+        "strengths": ["compatibility alias for existing DeepSeek integrations"],
+        "weaknesses": ["compatibility alias", "future deprecation risk"],
         "qualityScores": {
           "routing": 46,
           "planning": 70,
@@ -2733,13 +2406,8 @@
       "capabilities": {
         "vendor": "deepseek",
         "class": "frontier",
-        "strengths": [
-          "reasoning-oriented compatibility alias"
-        ],
-        "weaknesses": [
-          "compatibility alias",
-          "future deprecation risk"
-        ],
+        "strengths": ["reasoning-oriented compatibility alias"],
+        "weaknesses": ["compatibility alias", "future deprecation risk"],
         "qualityScores": {
           "routing": 44,
           "planning": 78,
@@ -2772,11 +2440,7 @@
       "capabilities": {
         "vendor": "unknown",
         "class": "strong_generalist",
-        "strengths": [
-          "verified catalog: long context",
-          "verified catalog: tools",
-          "verified catalog: multimodal"
-        ],
+        "strengths": ["verified catalog: long context", "verified catalog: tools", "verified catalog: multimodal"],
         "weaknesses": [
           "provisional stealth identity",
           "quality priors intentionally held",
@@ -2824,11 +2488,7 @@
           "providerNativeId": "stealth/ox-alpha",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding",
-            "review"
-          ],
+          "stages": ["planning", "coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "workflow",
@@ -2873,11 +2533,7 @@
       "capabilities": {
         "vendor": "x-ai",
         "class": "fast_economy",
-        "strengths": [
-          "fast coding iteration",
-          "low-latency implementation work",
-          "Grok family coverage"
-        ],
+        "strengths": ["fast coding iteration", "low-latency implementation work", "Grok family coverage"],
         "weaknesses": [
           "coding-only watchlist entry",
           "OpenRouter dependency",
@@ -2920,9 +2576,7 @@
           "providerNativeId": "x-ai/grok-code-fast-1",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "coding"
-          ],
+          "stages": ["coding"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "patch",
@@ -2955,10 +2609,7 @@
           "verified catalog: text+image+video multimodal",
           "verified catalog: low per-token cost"
         ],
-        "weaknesses": [
-          "no local performance evidence yet",
-          "watchlist maturity"
-        ],
+        "weaknesses": ["no local performance evidence yet", "watchlist maturity"],
         "qualityScores": {
           "routing": 58,
           "planning": 82,
@@ -2997,9 +2648,7 @@
           "compatFlags": {
             "thinkingFormat": "openrouter",
             "openRouterRouting": {
-              "order": [
-                "z-ai"
-              ],
+              "order": ["z-ai"],
               "allow_fallbacks": false
             }
           }
@@ -3009,11 +2658,7 @@
           "providerNativeId": "z-ai/glm-5.3-flash",
           "provider": "openrouter",
           "transport": "openai-completions",
-          "stages": [
-            "planning",
-            "coding",
-            "review"
-          ],
+          "stages": ["planning", "coding", "review"],
           "requiredCertificationPhaseByStage": {
             "planning": "workflow",
             "coding": "workflow",
@@ -3046,12 +2691,8 @@
             "catalogHash": "43d7c16065ef1016deaea32990c9653a393b9aaba00a14a7674c9784215363ec"
           },
           "lineage": {
-            "predecessors": [
-              "ox-alpha"
-            ],
-            "formerIds": [
-              "stealth/ox-alpha"
-            ],
+            "predecessors": ["ox-alpha"],
+            "formerIds": ["stealth/ox-alpha"],
             "disclosedAt": "2026-08-27T22:55:48.000Z",
             "disclosureSource": "https://openrouter.ai/z-ai/glm-5.3-flash"
           }
@@ -3108,13 +2749,7 @@
       "deepseek-reasoner",
       "claude-haiku-4-5-20251001"
     ],
-    "classify": [
-      "claude-haiku-4-5-20251001",
-      "deepseek-v4-flash",
-      "claude-sonnet-5",
-      "gpt-5.6-terra",
-      "claude-fable-5"
-    ]
+    "classify": ["claude-haiku-4-5-20251001", "deepseek-v4-flash", "claude-sonnet-5", "gpt-5.6-terra", "claude-fable-5"]
   },
   "openrouterMappings": [
     {
@@ -3123,11 +2758,7 @@
       "family": "claude",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "claude-opus-4-8",
@@ -3135,11 +2766,7 @@
       "family": "claude",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "claude-opus-4-7",
@@ -3147,11 +2774,7 @@
       "family": "claude",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "claude-sonnet-5",
@@ -3159,11 +2782,7 @@
       "family": "claude",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "claude-sonnet-4-6",
@@ -3171,11 +2790,7 @@
       "family": "claude",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "claude-haiku-4-5",
@@ -3183,10 +2798,7 @@
       "family": "claude",
       "status": "active",
       "priorityTier": 2,
-      "roleEligibility": [
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["coding", "review"]
     },
     {
       "wavemillAlias": "gpt-6-sol",
@@ -3194,11 +2806,7 @@
       "family": "gpt",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gpt-6-luna",
@@ -3206,11 +2814,7 @@
       "family": "gpt",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gpt-5.5",
@@ -3218,11 +2822,7 @@
       "family": "gpt",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gpt-5",
@@ -3230,11 +2830,7 @@
       "family": "gpt",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gpt-5-mini",
@@ -3242,10 +2838,7 @@
       "family": "gpt",
       "status": "active",
       "priorityTier": 2,
-      "roleEligibility": [
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["coding", "review"]
     },
     {
       "wavemillAlias": "o3-mini",
@@ -3253,9 +2846,7 @@
       "family": "gpt",
       "status": "watchlist",
       "priorityTier": 3,
-      "roleEligibility": [
-        "coding"
-      ]
+      "roleEligibility": ["coding"]
     },
     {
       "wavemillAlias": "deepseek-r1",
@@ -3263,11 +2854,7 @@
       "family": "deepseek",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "deepseek-v3",
@@ -3275,10 +2862,7 @@
       "family": "deepseek",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["coding", "review"]
     },
     {
       "wavemillAlias": "qwen-3-coder",
@@ -3286,11 +2870,7 @@
       "family": "qwen",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "qwen-3-235b",
@@ -3298,11 +2878,7 @@
       "family": "qwen",
       "status": "watchlist",
       "priorityTier": 2,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "kimi-k2",
@@ -3310,11 +2886,7 @@
       "family": "kimi",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "kimi-k2.7-code",
@@ -3322,11 +2894,7 @@
       "family": "kimi",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "kimi-k2-thinking",
@@ -3334,11 +2902,7 @@
       "family": "kimi",
       "status": "watchlist",
       "priorityTier": 2,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "glm-5.2",
@@ -3346,11 +2910,7 @@
       "family": "glm",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gemini-2.5-pro",
@@ -3358,11 +2918,7 @@
       "family": "gemini",
       "status": "deprecated",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gemini-3.1-pro-preview",
@@ -3370,11 +2926,7 @@
       "family": "gemini",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gemini-3.1-pro-preview-customtools",
@@ -3382,11 +2934,7 @@
       "family": "gemini",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gemini-2.5-flash",
@@ -3394,10 +2942,7 @@
       "family": "gemini",
       "status": "active",
       "priorityTier": 2,
-      "roleEligibility": [
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["coding", "review"]
     },
     {
       "wavemillAlias": "llama-4-maverick",
@@ -3405,10 +2950,7 @@
       "family": "llama",
       "status": "active",
       "priorityTier": 2,
-      "roleEligibility": [
-        "planning",
-        "coding"
-      ]
+      "roleEligibility": ["planning", "coding"]
     },
     {
       "wavemillAlias": "mistral-large-2",
@@ -3416,11 +2958,7 @@
       "family": "mistral",
       "status": "deprecated",
       "priorityTier": 2,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "mistral-medium-3",
@@ -3428,9 +2966,7 @@
       "family": "mistral",
       "status": "watchlist",
       "priorityTier": 3,
-      "roleEligibility": [
-        "coding"
-      ]
+      "roleEligibility": ["coding"]
     },
     {
       "wavemillAlias": "devstral-medium",
@@ -3438,9 +2974,7 @@
       "family": "mistral",
       "status": "deprecated",
       "priorityTier": 2,
-      "roleEligibility": [
-        "coding"
-      ]
+      "roleEligibility": ["coding"]
     },
     {
       "wavemillAlias": "ox-alpha",
@@ -3448,11 +2982,7 @@
       "family": "unknown",
       "status": "deprecated",
       "priorityTier": 3,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "grok-code-fast",
@@ -3460,9 +2990,7 @@
       "family": "grok",
       "status": "deprecated",
       "priorityTier": 3,
-      "roleEligibility": [
-        "coding"
-      ]
+      "roleEligibility": ["coding"]
     },
     {
       "wavemillAlias": "glm-5.3-flash",
@@ -3470,11 +2998,7 @@
       "family": "glm",
       "status": "active",
       "priorityTier": 3,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "glm-5.3",
@@ -3482,11 +3006,7 @@
       "family": "glm",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "kimi-k3",
@@ -3494,11 +3014,15 @@
       "family": "kimi",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
+    },
+    {
+      "wavemillAlias": "kimi-k3.1-pro",
+      "openrouterId": "moonshotai/kimi-k3.1-pro",
+      "family": "kimi",
+      "status": "active",
+      "priorityTier": 1,
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gemini-3.8-flash",
@@ -3506,10 +3030,7 @@
       "family": "gemini",
       "status": "active",
       "priorityTier": 2,
-      "roleEligibility": [
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["coding", "review"]
     },
     {
       "wavemillAlias": "deepseek-v4-pro",
@@ -3517,11 +3038,7 @@
       "family": "deepseek",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "deepseek-v4-flash",
@@ -3529,11 +3046,7 @@
       "family": "deepseek",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     }
   ]
 }

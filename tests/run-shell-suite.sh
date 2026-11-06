@@ -37,6 +37,7 @@ TESTS=(
   ledger-hook-shadow.test.sh
   check-ledger-shadow-swallow.test.sh
   monitor-side-effect-detector-tick.test.sh
+  monitor-canary-cohort-refresh-tick.test.sh
   deps-drift.test.sh
   aborted-challenge-cleanup.test.sh
   safe-branch-cleanup.test.sh

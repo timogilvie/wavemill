@@ -15216,7 +15216,7 @@ poll_tracked_jobs() {
     fi
 
     case "$kind" in
-      cross-pr-guard|pr-ci-status|ready-watchdog|route-task|prepare-task-inputs|in-flight-touch-set|state-invariants)
+      cross-pr-guard|pr-ci-status|ready-watchdog|route-task|prepare-task-inputs|in-flight-touch-set|state-invariants|attention-projection)
         [[ "$status" == "succeeded" ]] || handle_check_job_failure "$job_id" "$kind" "$status" "$reason" "$result_path" "$excerpt"
         settle_tracked_job "$job_id"
         continue
@@ -16903,6 +16903,58 @@ monitor_state_invariants_tick() {
   return 0
 }
 
+# ─── Periodic native canary cohort refresh (HOK-3428) ───────────────────────
+#
+# The tool owns the durable sentinel and the evidence-based eligibility check;
+# this tick only derives the opt-in cadence and launches its tracked job.
+# A single stamp file ("<checked_at> <launched_at>") gates both: this tick is
+# polled every monitor pass, but monitor_async_job_launch only skips a job
+# that is *currently running* — without a gate here, a sub-second job would
+# relaunch on every pass instead of once per canaryAutoRefreshIntervalMinutes,
+# and loading the merged config (a jq subprocess) every pass would violate
+# the HOK-3206 hot-pass invariant. Config is re-derived at most once a
+# minute regardless of the configured interval (which can be hours), so a
+# live edit — enabling, shrinking, or disabling the cadence — is never
+# missed for longer than that minute, unlike gating the recheck on the
+# interval itself.
+monitor_canary_cohort_refresh_tick() {
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
+  [[ -n "${STATE_DIR:-}" && -n "${REPO_DIR:-}" ]] || return 0
+  declare -F monitor_async_job_launch >/dev/null 2>&1 || return 0
+  declare -F wavemill_load_config >/dev/null 2>&1 || return 0
+
+  local stamp_file="$STATE_DIR/.canary-cohort-refresh-last-at"
+  local now checked_at=0 launched_at=0
+  now="$(date +%s)"
+  if [[ -f "$stamp_file" ]]; then
+    read -r checked_at launched_at < "$stamp_file" 2>/dev/null || true
+    [[ "$checked_at" =~ ^[0-9]+$ ]] || checked_at=0
+    [[ "$launched_at" =~ ^[0-9]+$ ]] || launched_at=0
+  fi
+
+  local recheck_floor_seconds=60
+  (( now - checked_at < recheck_floor_seconds )) && return 0
+
+  local interval_minutes interval_seconds
+  interval_minutes="$(wavemill_load_config "$REPO_DIR" | jq -r '.nativeAgent.certification.canaryAutoRefreshIntervalMinutes // 0' 2>/dev/null || echo 0)"
+  [[ "$interval_minutes" =~ ^[1-9][0-9]*$ ]] || interval_minutes=0
+  interval_seconds=$((interval_minutes * 60))
+
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  if [[ "$interval_seconds" -eq 0 ]] || (( now - launched_at < interval_seconds )); then
+    printf '%s %s\n' "$now" "$launched_at" > "$stamp_file" 2>/dev/null || true
+    return 0
+  fi
+  printf '%s %s\n' "$now" "$now" > "$stamp_file" 2>/dev/null || true
+
+  local job_id meta_json
+  job_id="canary-cohort-refresh-$(sanitize_job_token "${SESSION:-wavemill}")"
+  meta_json="$(jq -cn --arg interval "$interval_seconds" '{intervalSeconds: ($interval | tonumber)}')"
+  monitor_async_job_launch canary-cohort-refresh "$job_id" "" "" 1500 "$meta_json" \
+    wavemill_run_tool monitor-canary-cohort-refresh.ts --repo-dir "$REPO_DIR"
+  return 0
+}
+
 # ─── Per-step pass timing (HOK-3190) ────────────────────────────────────────
 #
 # `monitor_step_begin NAME` and `monitor_step_end NAME` sandwich a measured
@@ -17507,7 +17559,7 @@ batch_route_selected_tasks() {
   route_output_file="/tmp/${SESSION}-dynamic-route-batch-output.jsonl"
   route_stderr_file="/tmp/${SESSION}-dynamic-route-batch.stderr"
 
-  [[ -n "${DEFAULT_MAX_COST_USD:-}" ]] && route_max_cost_args=(--max-cost "$DEFAULT_MAX_COST_USD")
+  [[ -n "${DEFAULT_MAX_COST_USD:-}" ]] && route_max_cost_args=(--max-cost "$DEFAULT_MAX_COST_USD" --budget-source repo-config)
   : > "$route_jsonl_file"
 
   while IFS= read -r line; do
@@ -17638,7 +17690,7 @@ reroute_expanded_packets_for_coding_handoff() {
     done < <(jq -r '.tasks | to_entries[] | select(.key != "" and ((.value.slug // "") != "")) | [.key, (.value.slug // ""), (.value.worktree // "")] | @tsv' "$STATE_FILE" 2>/dev/null || true)
   fi
 
-  [[ -n "${DEFAULT_MAX_COST_USD:-}" ]] && route_max_cost_args=(--max-cost "$DEFAULT_MAX_COST_USD")
+  [[ -n "${DEFAULT_MAX_COST_USD:-}" ]] && route_max_cost_args=(--max-cost "$DEFAULT_MAX_COST_USD" --budget-source repo-config)
 
   if ! _with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_batch_tool" \
     --expanded-jsonl "$input_file" \
@@ -18673,7 +18725,7 @@ launch_task() {
       rm -f "$routing_failure_file"
 
       if [[ -n "${DEFAULT_MAX_COST_USD:-}" ]]; then
-        route_max_cost_args=(--max-cost "$DEFAULT_MAX_COST_USD")
+        route_max_cost_args=(--max-cost "$DEFAULT_MAX_COST_USD" --budget-source repo-config)
       fi
       if [[ "${WAVEMILL_ROUTING_DEBUG:-0}" == "1" ]]; then
         route_debug_enabled="true"
@@ -18717,13 +18769,13 @@ launch_task() {
           printf '\n[attempt %d] live route\n' "$route_attempt" >> "$routing_log_file"
           rm -f "$route_stderr_file"
           if [[ "$route_debug_enabled" == "true" ]]; then
-            if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
+            if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --issue-id "$issue" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
               route_rc=0
             else
               route_rc=$?
             fi
           else
-            if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
+            if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --issue-id "$issue" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
               route_rc=0
             else
               route_rc=$?
@@ -18776,13 +18828,13 @@ launch_task() {
         printf '\n[heuristic fallback]\n' >> "$routing_log_file"
         rm -f "$route_stderr_file"
         if [[ "$route_debug_enabled" == "true" ]]; then
-          if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
+          if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --issue-id "$issue" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
             route_rc=0
           else
             route_rc=$?
           fi
         else
-          if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
+          if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --issue-id "$issue" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
             route_rc=0
           else
             route_rc=$?
@@ -19438,9 +19490,14 @@ Implement from the issue description plus direct codebase analysis."
   # The routing tool was already called at lines above (route-task.ts).
   # We just need to write the .routing-complete file and launch planning.
   local routing_file="$feature_dir/.routing-complete"
-  local routing_max_cost_usd
+  local routing_max_cost_usd routing_budget_source
   routing_max_cost_usd="$(read_route_json "$SESSION" "$issue" "constraints.maxCostUsd" "")"
-  [[ -z "$routing_max_cost_usd" ]] && routing_max_cost_usd="${DEFAULT_MAX_COST_USD:-}"
+  routing_budget_source="$(read_route_json "$SESSION" "$issue" "constraints.budgetSource" "")"
+  # HOK-3390: a budget taken from mill.defaultMaxCostUsd is repo-config.
+  if [[ -z "$routing_max_cost_usd" && -n "${DEFAULT_MAX_COST_USD:-}" ]]; then
+    routing_max_cost_usd="$DEFAULT_MAX_COST_USD"
+    routing_budget_source="repo-config"
+  fi
 
   local startup_route_file="/tmp/${SESSION}-${issue}-route.json"
   if [[ -f "$startup_route_file" ]] && jq -e '.planner and .coder and .reviewer' "$startup_route_file" >/dev/null 2>&1; then
@@ -19455,6 +19512,7 @@ Implement from the issue description plus direct codebase analysis."
       --arg inputKind "issue" \
       --arg inputPath "features/$slug/selected-task.json" \
       --argjson maxCostUsd "${routing_max_cost_usd:-null}" \
+      --arg budgetSource "${routing_budget_source:-}" \
       '(.provenance // {}) as $p
       | .planner = $planner
       | .coder = $coder
@@ -19473,7 +19531,9 @@ Implement from the issue description plus direct codebase analysis."
         })
       | if $maxCostUsd == null
         then .
-        else .maxCostUsd = $maxCostUsd | .constraints = ((.constraints // {}) + {maxCostUsd: $maxCostUsd})
+        else .maxCostUsd = $maxCostUsd
+          | .constraints = ((.constraints // {}) + {maxCostUsd: $maxCostUsd}
+            + (if $budgetSource == "" then {} else {budgetSource: $budgetSource} end))
         end' "$startup_route_file" \
       | write_json_artifact "$routing_file"
   else
@@ -19494,6 +19554,7 @@ Implement from the issue description plus direct codebase analysis."
       --arg provenanceRoutedAt "$(read_route_json "$SESSION" "$issue" "routedAt" "")" \
       --arg provenanceRouterMode "$(read_route_json "$SESSION" "$issue" "routerMode" "")" \
       --argjson maxCostUsd "${routing_max_cost_usd:-null}" \
+      --arg budgetSource "${routing_budget_source:-}" \
       '{
         planner: $planner,
         coder: $coder,
@@ -19511,7 +19572,7 @@ Implement from the issue description plus direct codebase analysis."
           routerMode: (if $provenanceRouterMode == "" then "normal" else $provenanceRouterMode end)
         },
         maxCostUsd: $maxCostUsd
-      } + (if $maxCostUsd == null then {} else {constraints: {maxCostUsd: $maxCostUsd}} end)' \
+      } + (if $maxCostUsd == null then {} else {constraints: ({maxCostUsd: $maxCostUsd} + (if $budgetSource == "" then {} else {budgetSource: $budgetSource} end))} end)' \
       | write_json_artifact "$routing_file"
   fi
 
@@ -24140,6 +24201,10 @@ while :; do
   monitor_step_begin stateInvariants
   monitor_state_invariants_tick || true
   monitor_step_end stateInvariants
+  # HOK-3428: opt-in, interval-gated renewal of expiring live coding canaries.
+  monitor_step_begin canaryCohortRefresh
+  monitor_canary_cohort_refresh_tick || true
+  monitor_step_end canaryCohortRefresh
   # HOK-3174: after a host wake, re-check running stages before normal gates.
   if [[ -n "$monitor_wake_episode" ]]; then
     monitor_resume_agents_after_wake "$monitor_wake_episode"
@@ -24147,6 +24212,12 @@ while :; do
   monitor_step_begin pollTrackedJobs
   poll_tracked_jobs
   monitor_step_end pollTrackedJobs
+  # HOK-3423: the one attention projection the dashboard inbox renders.
+  # Launched after the poll so the previous run is classified before its
+  # result file is replaced (the job id is reused every interval).
+  monitor_step_begin attentionProjection
+  monitor_attention_projection_tick "$monitor_iteration_start_ms" || true
+  monitor_step_end attentionProjection
   monitor_step_begin backstageHealth
   check_backstage_health
   monitor_step_end backstageHealth

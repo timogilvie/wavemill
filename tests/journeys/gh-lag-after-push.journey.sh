@@ -34,6 +34,7 @@ JOURNEY_BEFORE_FIRST_TEND=move_integration_and_lag_reads
 JOURNEY_EXPECT_ATTENTION=any
 
 journey_start_monitor
+journey_set_tick_budget 60
 journey_wait_until "$ISSUE" 5  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 

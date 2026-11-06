@@ -19,6 +19,7 @@ journey_init queue-events-emitted
 fakes_linear_add_issue "$ISSUE" "Emit queue lifecycle events" Todo
 
 journey_start_monitor
+journey_set_tick_budget 55
 
 # The operator picks the first backlog task.
 journey_wait_until "$ISSUE" 5 "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
