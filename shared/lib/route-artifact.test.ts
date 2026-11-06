@@ -17,6 +17,7 @@ import {
   readRouteLifecycleArtifacts,
   resolveRouterPolicyVersion,
   resolveRouteDecisionBudget,
+  resolveRouteDecisionBudgetWithSource,
   routeChangedMaterially,
   stringifyRouteArtifact,
   validateExpandedRouteArtifact,
@@ -316,6 +317,7 @@ test('withResolvedRouteBudget writes constraints and top-level budget from confi
 
     assert.equal(decision.maxCostUsd, 12.5);
     assert.equal(decision.constraints?.maxCostUsd, 12.5);
+    assert.equal(decision.constraints?.budgetSource, 'repo-config');
   } finally {
     clearConfigCache(dir);
     rmSync(dir, { recursive: true, force: true });
@@ -934,6 +936,72 @@ test('appendRouteOverrideToFeatureDir reports a feature dir with no route artifa
   try {
     assert.equal(await appendRouteOverrideToFeatureDir(dir, 'coder', 'x', { source: 'operator', reason: 'r' }), 'no_route_artifact');
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// protects: HOK-3390 — the resolved route budget must say where it came from,
+// and a decision's recorded source must survive re-resolution.
+test('resolveRouteDecisionBudgetWithSource tracks request, carried, and repo-config sources', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'route-artifact-budget-'));
+  try {
+    writeFileSync(join(dir, '.wavemill-config.json'), JSON.stringify({
+      mill: { defaultMaxCostUsd: 25 },
+    }));
+    clearConfigCache(dir);
+
+    assert.deepEqual(
+      resolveRouteDecisionBudgetWithSource(minimalDecision({ constraints: { maxCostUsd: 4, budgetSource: 'default' } }), {
+        explicitMaxCostUsd: 9,
+        repoDir: dir,
+      }),
+      { maxCostUsd: 9, budgetSource: 'request' },
+    );
+    assert.deepEqual(
+      resolveRouteDecisionBudgetWithSource(minimalDecision(), {
+        explicitMaxCostUsd: 25,
+        explicitBudgetSource: 'repo-config',
+        repoDir: dir,
+      }),
+      { maxCostUsd: 25, budgetSource: 'repo-config' },
+    );
+    assert.deepEqual(
+      resolveRouteDecisionBudgetWithSource(minimalDecision({ constraints: { maxCostUsd: 25, budgetSource: 'default' } }), { repoDir: dir }),
+      { maxCostUsd: 25, budgetSource: 'default' },
+    );
+    // Legacy decision: a carried budget without a source came from an explicit caller.
+    assert.deepEqual(
+      resolveRouteDecisionBudgetWithSource(minimalDecision({ constraints: { maxCostUsd: 6 } }), { repoDir: dir }),
+      { maxCostUsd: 6, budgetSource: 'request' },
+    );
+    // Fallback to repo config when explicitly configured
+    assert.deepEqual(
+      resolveRouteDecisionBudgetWithSource(minimalDecision(), { repoDir: dir }),
+      { maxCostUsd: 25, budgetSource: 'repo-config' },
+    );
+  } finally {
+    clearConfigCache(dir);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// protects: HOK-3390 — when no explicit repo config is present, the default budget source
+// must be 'default', not 'repo-config'.
+test('resolveRouteDecisionBudgetWithSource distinguishes default from repo-config budgets', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'route-artifact-budget-no-config-'));
+  try {
+    // Do NOT create .wavemill-config.json — test the implicit default case
+    clearConfigCache(dir);
+
+    // With no explicit config and nothing carried, the budget is missing (never a fabricated default).
+    assert.equal(resolveRouteDecisionBudgetWithSource(minimalDecision(), { repoDir: dir }), null);
+    // A carried default budget keeps its recorded 'default' source.
+    assert.deepEqual(
+      resolveRouteDecisionBudgetWithSource(minimalDecision({ constraints: { maxCostUsd: 25, budgetSource: 'default' } }), { repoDir: dir }),
+      { maxCostUsd: 25, budgetSource: 'default' },
+    );
+  } finally {
+    clearConfigCache(dir);
     rmSync(dir, { recursive: true, force: true });
   }
 });

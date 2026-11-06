@@ -634,7 +634,7 @@ launch_route_job_run() {
   local issue="$1" packet_file="$2" feature_dir="$3" packet_hash="$4" saved_route="$5" source_file="$6"
   local route_json rc=0 stderr_file stderr_output
   local -a cost_args=()
-  [[ -n "${DEFAULT_MAX_COST_USD:-}" ]] && cost_args=(--max-cost "$DEFAULT_MAX_COST_USD")
+  [[ -n "${DEFAULT_MAX_COST_USD:-}" ]] && cost_args=(--max-cost "$DEFAULT_MAX_COST_USD" --budget-source repo-config)
   stderr_file=$(mktemp 2>/dev/null) || stderr_file=""
   if [[ -n "$stderr_file" ]]; then
     route_json=$(wavemill_run_tool "$TOOLS_DIR/route-task.ts" --json --file "$packet_file" --repo-dir "$REPO_DIR" \

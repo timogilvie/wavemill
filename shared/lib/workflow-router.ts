@@ -10,7 +10,8 @@
 import { readFileSync } from 'node:fs';
 import { buildEvalSummary, evaluateChallenge, type ChallengeRecommendation } from './challenge-scheduler.ts';
 import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
-import { getBudgetConfig, getChallengeSchedulerConfig, getDifficultyClassifierConfig, getHokusaiRouterConfig, getRouterConfig, isRouterCapabilityFilteringEnabled, loadWavemillConfig } from './config.ts';
+import { getChallengeSchedulerConfig, getModeBudget, getDifficultyClassifierConfig, getHokusaiRouterConfig, getRouterConfig, isRouterCapabilityFilteringEnabled, loadWavemillConfig } from './config.ts';
+import type { BudgetSource } from './budget-source.ts';
 import { filterDeepSeekModels, type DeepSeekPoolFilterResult } from './deepseek-provider.ts';
 import { filterOpenRouterModels, type OpenRouterPoolFilterResult } from './openrouter-provider.ts';
 import { routeViaHokusai, type HokusaiRouterOptions } from './hokusai-router.ts';
@@ -73,6 +74,25 @@ export { STAGE_PHASE_REQUIREMENT } from './native-agent/certification/router-fil
 
 const FILE_TYPE_PATTERN = /\.\b(ts|tsx|js|jsx|py|sh|json|yaml|yml|md|css|html|sql|go|rs|rb)\b/gi;
 
+/**
+ * The caller's explicit budget with its provenance, or null when the caller
+ * passed none (HOK-3390).
+ */
+export function resolveRequestedBudget(
+  options: Pick<RouteWorkflowOptions, 'maxCostUsd' | 'budgetSource'> | undefined,
+): { maxCostUsd: number; budgetSource: BudgetSource } | null {
+  if (options?.maxCostUsd === undefined) return null;
+  return { maxCostUsd: options.maxCostUsd, budgetSource: options.budgetSource ?? 'request' };
+}
+
+/** Decision `constraints` for a caller-supplied budget (HOK-3390). */
+// allow-stage-launchability: helper function, returns partial decision not a full router exit
+export function requestedBudgetConstraints(
+  options: Pick<RouteWorkflowOptions, 'maxCostUsd' | 'budgetSource'> | undefined,
+): WorkflowRouteDecision['constraints'] {
+  return resolveRequestedBudget(options) ?? undefined;
+}
+
 export type PlanDepth = 'light' | 'medium' | 'deep';
 export type CodeDepth = 'light' | 'medium' | 'deep';
 export type ReviewMode = 'none' | 'static' | 'llm' | 'static+llm';
@@ -80,6 +100,8 @@ export type ReviewMode = 'none' | 'static' | 'llm' | 'static+llm';
 export interface BudgetViolation {
   requestedCost: number;
   maxCostUsd: number;
+  /** Provenance of `maxCostUsd` (HOK-3390). */
+  budgetSource?: BudgetSource;
   operatingMode: OperatingMode;
   attemptedDowngrade: boolean;
   cheapestViableOption: {
@@ -118,6 +140,8 @@ export interface WorkflowRouteDecision {
   challengeRecommendation?: ChallengeRecommendation;
   constraints?: {
     maxCostUsd?: number;
+    /** Provenance of `maxCostUsd` (HOK-3390). */
+    budgetSource?: BudgetSource;
   };
   maxCostUsd?: number | null;
   budgetViolation?: BudgetViolation;
@@ -175,6 +199,12 @@ export interface RouteWorkflowOptions {
   coderCapabilityConstraints?: CapabilityConstraints;
   reviewerCapabilityConstraints?: CapabilityConstraints;
   maxCostUsd?: number;
+  /**
+   * Provenance of `maxCostUsd` (HOK-3390). Defaults to `request` when
+   * `maxCostUsd` is set; the mill passes `repo-config` for its configured
+   * `mill.defaultMaxCostUsd`.
+   */
+  budgetSource?: BudgetSource;
   maxTimeMinutes?: number;
   taskDifficulty?: RoutingDifficulty;
   taskTitle?: string;
@@ -1836,12 +1866,8 @@ export function routeWorkflow(prompt: string, options?: RouteWorkflowOptions): W
   let budgetViolation: BudgetViolation | undefined;
 
   const mode = getCurrentOperatingMode(repoDir);
-  const budgetConfig = getBudgetConfig(repoDir);
-  const effectiveBudget = options?.maxCostUsd ?? (
-    mode === 'survival' ? budgetConfig.survivalMode :
-    mode === 'constrained' ? budgetConfig.constrainedMode :
-    budgetConfig.normalMode
-  );
+  const { maxCostUsd: effectiveBudget, budgetSource } = resolveRequestedBudget(options)
+    ?? getModeBudget(mode, repoDir);
 
   const initialCost =
     estimateStageCost(finalPlanner, PLAN_TOKENS[planDepth], repoDir) +
@@ -1877,6 +1903,7 @@ export function routeWorkflow(prompt: string, options?: RouteWorkflowOptions): W
       budgetViolation = {
         requestedCost: initialCost,
         maxCostUsd: effectiveBudget,
+        budgetSource,
         operatingMode: mode,
         attemptedDowngrade: true,
         cheapestViableOption: cheapestOption,
@@ -2004,7 +2031,7 @@ export function routeWorkflow(prompt: string, options?: RouteWorkflowOptions): W
       : estimateStageCost(finalReviewer, REVIEW_TOKENS[reviewRecommended as Exclude<ReviewMode, 'none'>], repoDir),
     reasoning,
     signals: signalContext.signals,
-    constraints: { maxCostUsd: effectiveBudget },
+    constraints: { maxCostUsd: effectiveBudget, budgetSource },
     routingMode: 'heuristic',
     ...(budgetViolation ? { budgetViolation } : {}),
     ...(coderRecommendation.resourceSelections?.length
@@ -2055,6 +2082,7 @@ function routeWorkflowStageAwareInternal(
       coderCapabilityConstraints: policyResolution?.stageCapabilityConstraints.coder,
       reviewerCapabilityConstraints: policyResolution?.stageCapabilityConstraints.reviewer,
       maxCostUsd: options?.maxCostUsd,
+      budgetSource: options?.budgetSource,
       additionalEvalsPaths: options?.additionalEvalsPaths,
       randomFn: options?.randomFn,
       queryInput: {
@@ -2282,16 +2310,14 @@ function routeWorkflowDegradedInternal(
   const degradedPool = buildDegradedModelPool(mode, options.repoDir);
 
   // Apply mode-specific budget if not explicitly provided
-  const budgetConfig = getBudgetConfig(options.repoDir);
-  const modeBudget = mode === 'survival'
-    ? budgetConfig.survivalMode
-    : budgetConfig.constrainedMode;
+  const budget = resolveRequestedBudget(options) ?? getModeBudget(mode, options.repoDir);
 
   const degradedOptions: RouteWorkflowOptions = {
     ...options,
     modelsAvailable: degradedPool,
     skipDifficultyClassification: true,
-    maxCostUsd: options.maxCostUsd ?? modeBudget,
+    maxCostUsd: budget.maxCostUsd,
+    budgetSource: budget.budgetSource,
   };
   const rationale = mode === 'survival'
     ? 'Survival mode: frontier models exhausted. Restricted to haiku. KNN signal used without LLM reasoning.'
@@ -2483,9 +2509,7 @@ export function tryPolicyResolution(
     neighborCount: 0,
     neighborSimilarityRange: [0, 0],
     expectedCost: Number((expectedCostPlan + expectedCostCode + expectedCostReview).toFixed(2)),
-    constraints: options?.maxCostUsd === undefined
-      ? undefined
-      : { maxCostUsd: options.maxCostUsd },
+    constraints: requestedBudgetConstraints(options),
     ...(explorationAttribution ? { exploration: explorationAttribution } : {}),
   }, signalContext.classification), { plannerPool: pool, coderPool: pool, reviewerPool: pool }, repoDir);
   logRoutingSignalVector(decision);

@@ -79,6 +79,15 @@ completed_successfully == true
 
 actual_cost_usd ≤ max_cost_usd
 
+Every eval record states where its budget came from (HOK-3390, eval schema
+1.59.0): `constraints.budgetSource` and `taskDescriptor.constraints.budget_source`
+are one of `request` (explicit caller / router request `max_cost_usd`),
+`issue-override` (reserved), `repo-config` (`mill.defaultMaxCostUsd` or
+`budget.<mode>` in `.wavemill-config.json`), or `default` (Wavemill's built-in
+25/15/5). The router corpus collector passes it through as the `budget_source`
+CSV column and treats `default` (and records without a source) as a missing
+budget, so budget compliance is only scored against real constraints.
+
 ### 3.5 Measurement Policies
 
 - `replay_exact_match`: use the persisted route decision exactly as captured in the route artifact and score it against the observed eval outcome.

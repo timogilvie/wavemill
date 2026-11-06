@@ -381,6 +381,7 @@ TESTS=(
   shared/lib/linear-dependency-resolver.test.ts
   shared/lib/dependency-classifier.test.ts
   shared/lib/route-artifact.test.ts
+  shared/lib/budget-source.test.ts
   shared/lib/model-router.test.ts
   shared/lib/eval-corpus-migrator.test.ts
   shared/lib/eval-record-builder.test.ts
