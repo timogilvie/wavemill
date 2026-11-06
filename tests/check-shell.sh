@@ -330,6 +330,8 @@ for f in \
   "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/fake-agent/review \
   "$REPO_DIR"/tests/journeys/ready-fail-remediate.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/ready-fail-remediate/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/controller-writes-dont-reset-stall.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/controller-writes-dont-reset-stall/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/ready-remediation-same-head.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/ready-remediation-same-head/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/dirty-tree-coding-complete.journey.sh \

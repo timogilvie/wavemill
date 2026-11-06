@@ -7,11 +7,13 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
 import {
   decideStageAgentDisposition,
+  gatherStageTaskProgress,
   readStageAgentLaunch,
   type StageAgentDispositionInput,
   type StageAgentProgress,
@@ -25,6 +27,28 @@ const OTHER = 'c0ffee0000000000000000000000000000000002';
 
 function stateDir(): string {
   return mkdtempSync(join(os.tmpdir(), 'stage-agent-disposition-'));
+}
+
+/**
+ * A real git worktree with one commit at `commitIso` — exercises
+ * `readLatestCommitAt` for real, unlike a bare `mkdtempSync` directory (where
+ * `git log` fails and `latestCommitAt` is always null, silently skipping the
+ * exact evidence path the 2026-11-05 incident bug lives in).
+ */
+function worktreeWithCommit(commitIso: string): string {
+  const dir = mkdtempSync(join(os.tmpdir(), 'stage-agent-disposition-wt-'));
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_DATE: commitIso,
+    GIT_COMMITTER_DATE: commitIso,
+  };
+  execFileSync('git', ['init', '-q', dir], { encoding: 'utf-8' });
+  execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@example.com'], { encoding: 'utf-8' });
+  execFileSync('git', ['-C', dir, 'config', 'user.name', 'Stage Agent Disposition Test'], { encoding: 'utf-8' });
+  writeFileSync(join(dir, 'file.txt'), 'content\n', 'utf-8');
+  execFileSync('git', ['-C', dir, 'add', 'file.txt'], { encoding: 'utf-8' });
+  execFileSync('git', ['-C', dir, 'commit', '-q', '-m', 'coding phase commit'], { encoding: 'utf-8', env });
+  return dir;
 }
 
 function baseInput(overrides: Partial<StageAgentDispositionInput> = {}): StageAgentDispositionInput {
@@ -363,6 +387,108 @@ test('readStageAgentLaunch: returns null when no row matches', () => {
   try {
     assert.equal(readStageAgentLaunch(dir, 'review'), null);
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── HOK-3422: gather anchors stall clock off ownership launchedAt ─────────────
+//
+// The 2026-11-05 incident: the Ready remediation agent died but the controller
+// kept rewriting `.ready-result.json` on every tick (per-tick CI refresh). Pre-
+// fix the stage-result mtime moved `lastProgressAt` forward on every tick and
+// `stalled` never fired. These tests pin the new invariant: a running stage
+// result whose mtime advances every tick, with NO agent transcript events
+// after launch, reports `stalled=true` after the stall threshold.
+
+test('HOK-3422: gatherStageTaskProgress — per-tick stage-result rewrite without agent evidence → stalled after threshold', () => {
+  const dir = stateDir();
+  try {
+    // Launch happened 45 minutes before "now".
+    const launchIso = '2026-11-05T12:00:00.000Z';
+    const now = new Date('2026-11-05T12:45:00.000Z');
+    appendOwnershipRow(dir, {
+      sessionRef: 'remediation-sess',
+      harness: 'claude-code',
+      kind: 'ready-remediation',
+      model: 'claude-sonnet-5',
+      launchedAt: launchIso,
+      cwd: '/tmp/nonexistent-cwd',
+    });
+    const progress = gatherStageTaskProgress({
+      issue: 'HOK-TEST-3422',
+      session: 'wavemill',
+      worktree: dir,
+      stateDir: dir,
+      stage: 'ready-remediation',
+      // Stage result status is 'running'. Its finishedAt is pushed forward
+      // on every tick by the controller's CI refresh — exactly the incident.
+      stageResult: {
+        startedAt: launchIso,
+        finishedAt: '2026-11-05T12:44:30.000Z', // 30s before "now"
+      } as unknown as Parameters<typeof gatherStageTaskProgress>[0]['stageResult'],
+      now,
+    });
+    // HOK-3422: no agent-written evidence; the stall clock anchors to the
+    // ownership launchedAt (45m ago) and fires past the 30m threshold.
+    assert.equal(progress.lastProgressAt, null,
+      'controller stage-result timestamps must not become lastProgressAt');
+    assert.equal(progress.stalled, true,
+      'ready remediation should be reported stalled 45m past launch with no agent evidence');
+    // lastTransitionAt still exposes the controller's newest move, so dash-
+    // board strings do not go null for a healthy controller-owned wait.
+    assert.ok(progress.lastTransitionAt !== null,
+      'lastTransitionAt should carry the newest controller-authored timestamp');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3422: gatherStageTaskProgress — no launch row + no agent evidence → never stalled', () => {
+  const dir = stateDir();
+  try {
+    const now = new Date('2026-11-05T12:45:00.000Z');
+    const progress = gatherStageTaskProgress({
+      issue: 'HOK-TEST-3422',
+      session: 'wavemill',
+      worktree: dir,
+      stateDir: dir,
+      stage: 'ready-remediation',
+      stageResult: null,
+      now,
+    });
+    assert.equal(progress.stalled, false,
+      'no launch row → no stall-clock anchor → never stalled (healthy controller-owned wait)');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// protects: a Ready CI wait with no remediation agent ever launched, where
+// the task worktree is a REAL git checkout carrying a stale commit from the
+// coding/review phase (hours old) — the exact production shape. Before the
+// fix, `readLatestCommitAt` returned that old commit, and the evidence
+// filters admitted it unconditionally whenever `launchMs` was null, tripping
+// a false stall on a healthy wait.
+test('HOK-3422: gatherStageTaskProgress — stale coding-phase commit in the real worktree is never admitted without a launch row', () => {
+  const wt = worktreeWithCommit('2026-11-05T09:00:00.000Z'); // 3h45m before "now"
+  const dir = stateDir();
+  try {
+    const now = new Date('2026-11-05T12:45:00.000Z');
+    const progress = gatherStageTaskProgress({
+      issue: 'HOK-TEST-3422',
+      session: 'wavemill',
+      worktree: wt,
+      stateDir: dir,
+      stage: 'ready-remediation',
+      stageResult: null,
+      now,
+    });
+    assert.equal(progress.lastProgressAt, null,
+      'a stale coding-phase commit must not be admitted as progress with no launch row');
+    assert.equal(progress.stalled, false,
+      'no launch row → no stall-clock anchor → never stalled, even with an old commit in the worktree');
+  } finally {
+    rmSync(wt, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
   }
 });
