@@ -16907,20 +16907,53 @@ monitor_state_invariants_tick() {
 #
 # The tool owns the durable sentinel and the evidence-based eligibility check;
 # this tick only derives the opt-in cadence and launches its tracked job.
+# A single stamp file ("<last_at> <interval_seconds>", mirroring the
+# "pid started_at" pair monitor_async_job_running already stores) gates both
+# the job's own launch cadence and how often this tick re-derives it from
+# config: monitor_async_job_launch only skips a *currently running* job, so
+# without this gate a sub-second job would relaunch on every monitor pass
+# instead of once per canaryAutoRefreshIntervalMinutes, and a disabled
+# feature (the default) would still pay a wavemill_load_config + jq
+# subprocess every pass (HOK-3206 hot-pass invariant).
 monitor_canary_cohort_refresh_tick() {
   [[ "${DRY_RUN:-false}" == "true" ]] && return 0
   [[ -n "${STATE_DIR:-}" && -n "${REPO_DIR:-}" ]] || return 0
   declare -F monitor_async_job_launch >/dev/null 2>&1 || return 0
   declare -F wavemill_load_config >/dev/null 2>&1 || return 0
 
-  local interval_minutes
+  local stamp_file="$STATE_DIR/.canary-cohort-refresh-last-at"
+  local now last_at=0 last_interval=0
+  now="$(date +%s)"
+  if [[ -f "$stamp_file" ]]; then
+    read -r last_at last_interval < "$stamp_file" 2>/dev/null || true
+    [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
+    [[ "$last_interval" =~ ^[0-9]+$ ]] || last_interval=0
+  fi
+
+  # last_interval > 0: previously enabled, so hold until the configured
+  # cadence elapses. last_interval == 0: previously disabled (or never
+  # checked), so re-derive from config at most once a minute — a freshly
+  # enabled cadence is picked up within a minute without polling config
+  # every pass while the opt-in feature sits at its default (off).
+  local recheck_floor_seconds=60
+  if (( last_interval > 0 )); then
+    (( now - last_at < last_interval )) && return 0
+  elif (( now - last_at < recheck_floor_seconds )); then
+    return 0
+  fi
+
+  local interval_minutes interval_seconds
   interval_minutes="$(wavemill_load_config "$REPO_DIR" | jq -r '.nativeAgent.certification.canaryAutoRefreshIntervalMinutes // 0' 2>/dev/null || echo 0)"
-  [[ "$interval_minutes" =~ ^[1-9][0-9]*$ ]] || return 0
-  CANARY_COHORT_REFRESH_INTERVAL_SECONDS="$((interval_minutes * 60))"
+  [[ "$interval_minutes" =~ ^[1-9][0-9]*$ ]] || interval_minutes=0
+  interval_seconds=$((interval_minutes * 60))
+
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  printf '%s %s\n' "$now" "$interval_seconds" > "$stamp_file" 2>/dev/null || true
+  [[ "$interval_seconds" -gt 0 ]] || return 0
 
   local job_id meta_json
   job_id="canary-cohort-refresh-$(sanitize_job_token "${SESSION:-wavemill}")"
-  meta_json="$(jq -cn --arg interval "$CANARY_COHORT_REFRESH_INTERVAL_SECONDS" '{intervalSeconds: ($interval | tonumber)}')"
+  meta_json="$(jq -cn --arg interval "$interval_seconds" '{intervalSeconds: ($interval | tonumber)}')"
   monitor_async_job_launch canary-cohort-refresh "$job_id" "" "" 1500 "$meta_json" \
     wavemill_run_tool monitor-canary-cohort-refresh.ts --repo-dir "$REPO_DIR"
   return 0
