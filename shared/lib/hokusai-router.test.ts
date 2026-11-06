@@ -4,10 +4,16 @@
 
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { clearConfigCache } from './config.ts';
 import { classifyHokusaiFailure, DEFAULT_HOKUSAI_MODEL30_ENDPOINT, routeViaHokusai } from './hokusai-router.ts';
+import { DEFAULT_MODEL_REGISTRY } from './model-registry.ts';
+import { buildLiveCodingCanaryFixture } from './native-agent/certification/canary-fixtures.ts';
+import { resolveCertificationSubject } from './native-agent/certification/identity.ts';
+import { buildGlobalCertificationPath } from './native-agent/certification/loader.ts';
+import { CERTIFICATION_SCHEMA_VERSION } from './native-agent/certification/schema.ts';
+import { GLOBAL_CERTIFICATION_ROOT_ENV } from './native-agent/certification/storage.ts';
 
 let passed = 0;
 let failed = 0;
@@ -24,10 +30,19 @@ async function test(name: string, fn: () => void | Promise<void>) {
   }
 }
 
-function makeRepo(configOverrides: Record<string, unknown> = {}): { repoDir: string; cleanup: () => void } {
+function makeRepo(
+  configOverrides: Record<string, unknown> = {},
+  topLevelOverrides: Record<string, unknown> = {},
+): { repoDir: string; cleanup: () => void } {
   const repoDir = mkdtempSync(join(tmpdir(), 'hokusai-router-test-'));
+  // Isolate the certification store: the native pool offered to Model 30 reads
+  // the global store, so without this the request bodies would depend on
+  // whatever certifications the developer happens to have run locally.
+  const previousCertificationRoot = process.env[GLOBAL_CERTIFICATION_ROOT_ENV];
+  process.env[GLOBAL_CERTIFICATION_ROOT_ENV] = join(repoDir, 'global-certifications');
   mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
     writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
+      ...topLevelOverrides,
       router: {
         hokusai: {
           endpoint: 'http://localhost:8080/predict',
@@ -41,8 +56,68 @@ function makeRepo(configOverrides: Record<string, unknown> = {}): { repoDir: str
   return {
     repoDir,
     cleanup: () => {
+      if (previousCertificationRoot === undefined) {
+        delete process.env[GLOBAL_CERTIFICATION_ROOT_ENV];
+      } else {
+        process.env[GLOBAL_CERTIFICATION_ROOT_ENV] = previousCertificationRoot;
+      }
       clearConfigCache(repoDir);
       rmSync(repoDir, { recursive: true, force: true });
+    },
+  };
+}
+
+const CERTIFICATION_AT = '2026-11-01T00:00:00.000Z';
+
+/** Write a fresh (or canary-stale) certification artifact for a native model. */
+function writeCertification(repoDir: string, modelId: string, canaryRanAt = '2026-11-04T00:00:00.000Z'): void {
+  const capabilities = DEFAULT_MODEL_REGISTRY.models[modelId];
+  const suiteVersion = capabilities?.nativeCapability?.certification?.certificationSuiteVersion;
+  const provider = capabilities?.nativeCapability?.nativeProvider;
+  assert.ok(suiteVersion);
+  assert.ok(provider);
+  const identity = resolveCertificationSubject({
+    provider,
+    model: modelId,
+    registry: DEFAULT_MODEL_REGISTRY,
+  });
+  const path = buildGlobalCertificationPath(
+    identity.storageIdentity.provider,
+    identity.storageIdentity.model,
+    suiteVersion,
+  );
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({
+    schemaVersion: CERTIFICATION_SCHEMA_VERSION,
+    subject: identity.subject,
+    provider: identity.storageIdentity.provider,
+    model: identity.storageIdentity.model,
+    phase: 'workflow',
+    suiteVersion,
+    certifiedAt: CERTIFICATION_AT,
+    scenarios: [{ scenarioId: 'native-openrouter-workflow-launch', passed: true }],
+    liveCanary: buildLiveCodingCanaryFixture(identity.subject, suiteVersion, { ranAt: canaryRanAt }),
+  }, null, 2));
+}
+
+function makeOpenRouterRepo(configOverrides: Record<string, unknown> = {}): { repoDir: string; cleanup: () => void } {
+  const previousKey = process.env.TEST_OPENROUTER_KEY;
+  process.env.TEST_OPENROUTER_KEY = 'test-openrouter-key';
+  const repo = makeRepo(configOverrides, {
+    providers: {
+      openrouter: { enabled: true, apiKeyEnv: 'TEST_OPENROUTER_KEY' },
+    },
+  });
+  const cleanup = repo.cleanup;
+  return {
+    repoDir: repo.repoDir,
+    cleanup: () => {
+      cleanup();
+      if (previousKey === undefined) {
+        delete process.env.TEST_OPENROUTER_KEY;
+      } else {
+        process.env.TEST_OPENROUTER_KEY = previousKey;
+      }
     },
   };
 }
@@ -172,6 +247,93 @@ await test('sends the nested inputs payload and prevents legacy flat payload key
     assert.equal(authorization, 'Bearer secret-token');
     // protects: HOK-3390 — the request's max_cost_usd is recorded as an explicit budget.
     assert.deepEqual(decision?.constraints, { maxCostUsd: 3.25, budgetSource: 'request' });
+  } finally {
+    globalThis.fetch = originalFetch;
+    cleanup();
+  }
+});
+
+await test('offers certified native models to Model 30 and leaves a native recommendation intact', async () => {
+  const { repoDir, cleanup } = makeOpenRouterRepo();
+  process.env.TEST_HOKUSAI_TOKEN = 'secret-token';
+  const nativeModels = ['qwen-3-coder', 'kimi-k2.7-code', 'glm-5.3', 'glm-5.3-flash'];
+  for (const modelId of nativeModels) {
+    writeCertification(repoDir, modelId);
+  }
+  let requestBody = '';
+  globalThis.fetch = async (_input, init) => {
+    requestBody = String(init?.body ?? '');
+    return new Response(JSON.stringify({
+      predictions: {
+        recommended_strategy: {
+          planner_model: 'claude-sonnet-4-5-20250929',
+          coder_model: 'qwen-3-coder',
+          reviewer_model: 'claude-haiku-4-5-20251001',
+          estimated_success_under_budget: 0.84,
+          estimated_cost_usd: 1.2,
+          confidence: 0.7,
+        },
+      },
+      metadata: {},
+    }), { status: 200 });
+  };
+
+  try {
+    const decision = await routeViaHokusai('Add a JSON export command with tests.', { repoDir });
+    const routing = JSON.parse(requestBody).inputs.routing;
+    for (const modelId of nativeModels) {
+      assert.ok(
+        routing.available_coder_models.includes(modelId),
+        `${modelId} must be offered to Model 30 as a coder candidate`,
+      );
+    }
+    // protects: a native recommendation is not rewritten by the successor upgrade.
+    assert.equal(decision?.coder, 'qwen-3-coder');
+  } finally {
+    globalThis.fetch = originalFetch;
+    cleanup();
+  }
+});
+
+await test('drops a stale-canary native model from the pool and records the reason', async () => {
+  const { repoDir, cleanup } = makeOpenRouterRepo();
+  process.env.TEST_HOKUSAI_TOKEN = 'secret-token';
+  writeCertification(repoDir, 'qwen-3-coder', '2026-10-01T00:00:00.000Z');
+  writeCertification(repoDir, 'kimi-k2.7-code');
+  let requestBody = '';
+  globalThis.fetch = async (_input, init) => {
+    requestBody = String(init?.body ?? '');
+    return new Response(JSON.stringify({
+      predictions: {
+        recommended_strategy: {
+          planner_model: 'claude-sonnet-4-5-20250929',
+          coder_model: 'claude-haiku-4-5-20251001',
+          reviewer_model: 'claude-haiku-4-5-20251001',
+          estimated_success_under_budget: 0.8,
+          estimated_cost_usd: 1.5,
+          confidence: 0.7,
+        },
+      },
+      metadata: {},
+    }), { status: 200 });
+  };
+
+  try {
+    const decision = await routeViaHokusai('Add a JSON export command with tests.', { repoDir });
+    const routing = JSON.parse(requestBody).inputs.routing;
+    assert.ok(!routing.available_coder_models.includes('qwen-3-coder'));
+    assert.ok(routing.available_coder_models.includes('kimi-k2.7-code'));
+    const rejection = decision?.nativeCertificationRejections?.find(
+      (entry) => entry.modelId === 'qwen-3-coder' && entry.role === 'coder',
+    );
+    assert.equal(rejection?.reason, 'stale-live-canary');
+    // protects: the reason is visible in the route artifact, not just the pool.
+    assert.ok(
+      decision?.reasoning.some(
+        (line) => line.includes('qwen-3-coder') && line.includes('stale-live-canary'),
+      ),
+      'reasoning must state why the model was rejected',
+    );
   } finally {
     globalThis.fetch = originalFetch;
     cleanup();
