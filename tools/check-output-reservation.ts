@@ -9,7 +9,7 @@ export const OUTPUT_RESERVATION_GUARD: GuardSpec = {
   findingNoun: 'output reservation/cap conflation(s)',
   suppressionMarker: 'allow-output-reservation',
   allowlistFile: 'tools/output-reservation-allowlist.txt',
-  invariantPaths: ['tools/check-output-reservation.ts'],
+  invariantPaths: ['tools/check-output-reservation.ts'], // install-paths: allow source-guard file identity, not an executable argv
   patterns: [
     {
       name: 'reservation-as-invocation-cap',
