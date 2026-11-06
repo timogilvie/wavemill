@@ -37,6 +37,8 @@ TESTS=(
   shared/lib/ledger-consistency.test.ts
   tests/state-invariants.test.ts
   shared/lib/base-merge-guard.test.ts
+  shared/lib/attention.test.ts
+  shared/lib/attention-guard.test.ts
   shared/lib/blast-radius.test.ts
   shared/lib/ledger-replay-contract.test.ts
   shared/lib/ledger-pair-abort.test.ts

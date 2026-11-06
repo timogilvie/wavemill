@@ -18,6 +18,27 @@ iso_at_offset() {
   perl -MPOSIX=strftime -e 'my $offset = shift @ARGV; print strftime("%Y-%m-%dT%H:%M:%SZ", gmtime(time() + $offset)), "\n"' -- "$1"
 }
 
+# HOK-3423: the inbox renders .wavemill/attention.json (the one projection,
+# derived and tested in shared/lib/attention.test.ts). Each scenario's
+# behavior file names the projection items; `attentionProjection` may be
+# "stale" or "missing" to exercise the reader's staleness handling.
+seed_attention_projection() {
+  local state_file="$1" behavior_file="$2" now_ms mode
+  local out
+  out="$(dirname "$state_file")/attention.json"
+  mode="$(jq -r '.attentionProjection // "fresh"' "$behavior_file")"
+  rm -f "$out"
+  [[ "$mode" == "missing" ]] && return 0
+  now_ms=$(( $(date +%s) * 1000 ))
+  jq --argjson now "$now_ms" --arg mode "$mode" '{
+      schemaVersion: 1,
+      passStampMs: (if $mode == "stale" then $now - 600000 else $now end),
+      staleAfterMs: (if $mode == "stale" then $now - 530000 else $now + 600000 end),
+      computedAt: "",
+      items: (.attention // [])
+    }' "$behavior_file" > "$out"
+}
+
 run_render() {
   local state_file="$1"
   local workspace_root="$2"
@@ -25,6 +46,7 @@ run_render() {
   local output_file="$4"
   local pane_mode="${5:-}"
 
+  seed_attention_projection "$state_file" "$behavior_file"
   (
     export WAVEMILL_TIP_INDEX=0
     if [[ -n "$pane_mode" ]]; then
@@ -106,18 +128,6 @@ run_render() {
   )
 }
 
-run_blocked_detail() {
-  local workspace_root="$1"
-  local issue="$2"
-  local slug="$3"
-
-  (
-    set -- test-session "$workspace_root"
-    source "$REPO_DIR/shared/lib/wavemill-status.sh" >/dev/null 2>&1
-    coding_blocked_completion_detail "$workspace_root/$slug" "$slug" "$issue"
-  ) | strip_ansi | head -1
-}
-
 echo "=== wavemill-status inbox renderer ==="
 
 TMP_DIR="$(mktemp -d)"
@@ -194,7 +204,11 @@ cat > "$BEHAVIOR_ONE" <<'EOF'
   },
   "checks": {
     "task/active-task": "pass"
-  }
+  },
+  "attention": [
+    {"kind": "approve-plan", "taskId": "HOK-1220", "summary": "Plan ready — waiting for approval", "evidence": [{"source": ".planning-result.json"}]},
+    {"kind": "answer-agent", "taskId": "HOK-1221", "summary": "HOK-1221 is waiting on you: Waiting on tests", "evidence": [{"source": "task-progress"}]}
+  ]
 }
 EOF
 
@@ -392,7 +406,10 @@ cat > "$BEHAVIOR_PLANNING_REJECTED" <<'EOF'
     "rejected-plan-task": "awaiting_approval"
   },
   "pr": {},
-  "checks": {}
+  "checks": {},
+  "attention": [
+    {"kind": "approve-plan", "taskId": "HOK-1230", "summary": "Planning needs attention: edited src/new-feature.ts; reverted. Review plan.md and re-approve. Agent not notified.", "evidence": [{"source": ".planning-rejected.json"}]}
+  ]
 }
 EOF
 
@@ -414,12 +431,6 @@ cat > "$WORKTREES_DIR/coding-task/features/coding-task/.coding-blocked-completio
 }
 EOF
 
-CODING_DETAIL_OUTPUT="$(run_blocked_detail "$WORKTREES_DIR" "HOK-1642" "coding-task")"
-if [[ "$CODING_DETAIL_OUTPUT" == 'HOK-1642 needs attention: coding done; full verification blocked by Docker and baseline tests. Type "advance HOK-1642" to launch review.' ]]; then
-  pass "formats coding blocked-completion detail with advance guidance"
-else
-  fail "coding blocked-completion detail formatting is incorrect"
-fi
 
 cat > "$WORKTREES_DIR/coding-task/features/coding-task/.coding-blocked-completion.json" <<'EOF'
 {
@@ -428,12 +439,6 @@ cat > "$WORKTREES_DIR/coding-task/features/coding-task/.coding-blocked-completio
 }
 EOF
 
-CAPACITY_CODING_DETAIL_OUTPUT="$(run_blocked_detail "$WORKTREES_DIR" "HOK-1642" "coding-task")"
-if [[ "$CAPACITY_CODING_DETAIL_OUTPUT" == 'HOK-1642 needs attention: coding blocked: Codex model at capacity. Type "advance HOK-1642" to launch review.' ]]; then
-  pass "formats coding capacity blocked-completion detail"
-else
-  fail "coding capacity blocked-completion detail formatting is incorrect"
-fi
 
 cat > "$WORKTREES_DIR/coding-task/features/coding-task/.coding-blocked-completion.json" <<'EOF'
 {
@@ -483,9 +488,17 @@ cat > "$BEHAVIOR_CODING_BLOCKED" <<'EOF'
   },
   "checks": {
     "task/active-task": "pass"
-  }
+  },
+  "attention": [
+    {"kind": "resolve-blocked-completion", "taskId": "HOK-1642", "summary": "HOK-1642 needs attention: coding done; full verification blocked by Docker and baseline tests. Type \"advance HOK-1642\" to launch review.", "evidence": [{"source": ".coding-blocked-completion.json"}]}
+  ]
 }
 EOF
+BEHAVIOR_CODING_UNCOMMITTED="$TMP_DIR/behavior-coding-uncommitted.json"
+jq '.attention = [{"kind": "resolve-blocked-completion", "taskId": "HOK-1642", "summary": "HOK-1642 needs attention: coding completed marker detected, but branch has no commits beyond auto/integratio... Commit the coding output, then retry review.", "evidence": [{"source": ".coding-uncommitted-output.json"}]}]' \
+  "$BEHAVIOR_CODING_BLOCKED" > "$BEHAVIOR_CODING_UNCOMMITTED"
+BEHAVIOR_CODING_QUIET="$TMP_DIR/behavior-coding-quiet.json"
+jq '.attention = []' "$BEHAVIOR_CODING_BLOCKED" > "$BEHAVIOR_CODING_QUIET"
 
 OUTPUT_CODING_BLOCKED="$TMP_DIR/output-coding-blocked.txt"
 run_render "$STATE_FILE_CODING_BLOCKED" "$WORKTREES_DIR" "$BEHAVIOR_CODING_BLOCKED" "$OUTPUT_CODING_BLOCKED"
@@ -501,12 +514,6 @@ fi
 
 printf '{"summary":"%s"}\n' "$(perl -e 'print "x" x 120')" > "$WORKTREES_DIR/coding-task/features/coding-task/.coding-blocked-completion.json"
 
-LONG_CODING_DETAIL_OUTPUT="$(run_blocked_detail "$WORKTREES_DIR" "HOK-1642" "coding-task")"
-if [[ "$LONG_CODING_DETAIL_OUTPUT" == *'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...'* ]]; then
-  pass "coding blocked-completion summary truncates in detail helper"
-else
-  fail "coding blocked-completion summary was not truncated"
-fi
 
 cat > "$WORKTREES_DIR/coding-task/features/coding-task/.coding-blocked-completion.json" <<'EOF'
 {
@@ -514,12 +521,6 @@ cat > "$WORKTREES_DIR/coding-task/features/coding-task/.coding-blocked-completio
 }
 EOF
 
-FALLBACK_CODING_DETAIL_OUTPUT="$(run_blocked_detail "$WORKTREES_DIR" "HOK-1642" "coding-task")"
-if [[ "$FALLBACK_CODING_DETAIL_OUTPUT" == 'HOK-1642 needs attention: coding done; verification blocked. Type "advance HOK-1642" to launch review.' ]]; then
-  pass "coding blocked-completion falls back when summary is missing"
-else
-  fail "coding blocked-completion did not use the generic fallback summary"
-fi
 
 cat > "$WORKTREES_DIR/coding-task/features/coding-task/.coding-uncommitted-output.json" <<'EOF'
 {
@@ -528,17 +529,9 @@ cat > "$WORKTREES_DIR/coding-task/features/coding-task/.coding-uncommitted-outpu
 }
 EOF
 
-UNCOMMITTED_CODING_DETAIL_OUTPUT="$(run_blocked_detail "$WORKTREES_DIR" "HOK-1642" "coding-task")"
-if [[ "$UNCOMMITTED_CODING_DETAIL_OUTPUT" == *'branch has no commits beyond auto/integ'* ]] \
-  && [[ "$UNCOMMITTED_CODING_DETAIL_OUTPUT" == *'Commit the coding output, then retry review.'* ]] \
-  && [[ "$UNCOMMITTED_CODING_DETAIL_OUTPUT" != *'advance HOK-1642'* ]]; then
-  pass "formats uncommitted coding-output detail distinctly from review failures"
-else
-  fail "uncommitted coding-output detail formatting is incorrect"
-fi
 
 OUTPUT_CODING_UNCOMMITTED="$TMP_DIR/output-coding-uncommitted.txt"
-run_render "$STATE_FILE_CODING_BLOCKED" "$WORKTREES_DIR" "$BEHAVIOR_CODING_BLOCKED" "$OUTPUT_CODING_UNCOMMITTED"
+run_render "$STATE_FILE_CODING_BLOCKED" "$WORKTREES_DIR" "$BEHAVIOR_CODING_UNCOMMITTED" "$OUTPUT_CODING_UNCOMMITTED"
 
 if grep -q '📥 INBOX (1)' "$OUTPUT_CODING_UNCOMMITTED" \
   && grep -q 'HOK-1642.*coding-task.*⚠ coding.*● running' "$OUTPUT_CODING_UNCOMMITTED" \
@@ -557,15 +550,9 @@ cat > "$WORKTREES_DIR/coding-task/features/coding-task/.coding-auto-advance.json
 }
 EOF
 
-AUTO_CODING_DETAIL_OUTPUT="$(run_blocked_detail "$WORKTREES_DIR" "HOK-1642" "coding-task")"
-if [[ -z "$AUTO_CODING_DETAIL_OUTPUT" ]]; then
-  pass "coding blocked-completion detail suppresses manual prompt after auto-advance"
-else
-  fail "coding blocked-completion detail still prompted after auto-advance"
-fi
 
 OUTPUT_CODING_AUTO="$TMP_DIR/output-coding-auto.txt"
-run_render "$STATE_FILE_CODING_BLOCKED" "$WORKTREES_DIR" "$BEHAVIOR_CODING_BLOCKED" "$OUTPUT_CODING_AUTO"
+run_render "$STATE_FILE_CODING_BLOCKED" "$WORKTREES_DIR" "$BEHAVIOR_CODING_QUIET" "$OUTPUT_CODING_AUTO"
 
 if grep -q '⚡ ACTIVE (2)' "$OUTPUT_CODING_AUTO" \
   && ! grep -q '📥 INBOX (1)' "$OUTPUT_CODING_AUTO" \
@@ -581,7 +568,7 @@ rm -f "$WORKTREES_DIR/coding-task/features/coding-task/.coding-auto-advance.json
 rm -f "$WORKTREES_DIR/coding-task/features/coding-task/.coding-blocked-completion.json"
 
 OUTPUT_CODING_NORMAL="$TMP_DIR/output-coding-normal.txt"
-run_render "$STATE_FILE_CODING_BLOCKED" "$WORKTREES_DIR" "$BEHAVIOR_CODING_BLOCKED" "$OUTPUT_CODING_NORMAL"
+run_render "$STATE_FILE_CODING_BLOCKED" "$WORKTREES_DIR" "$BEHAVIOR_CODING_QUIET" "$OUTPUT_CODING_NORMAL"
 
 if grep -q 'HOK-1642.*coding-task.*💻 coding.*● running' "$OUTPUT_CODING_NORMAL" \
   && ! grep -q 'needs attention:' "$OUTPUT_CODING_NORMAL"; then
@@ -877,6 +864,49 @@ if ! grep -q '📥 INBOX' "$OUTPUT_TWO" && grep -q '⚡ ACTIVE (1)' "$OUTPUT_TWO
   pass "omits inbox section when no actionable tasks exist"
 else
   fail "active-only dashboard still rendered an inbox section"
+fi
+
+# ── HOK-3423: the inbox renders the attention projection, never a guess ──────
+
+BEHAVIOR_ATTENTION_STALE="$TMP_DIR/behavior-attention-stale.json"
+jq '.attentionProjection = "stale" | .attention = []' "$BEHAVIOR_TWO" > "$BEHAVIOR_ATTENTION_STALE"
+OUTPUT_ATTENTION_STALE="$TMP_DIR/output-attention-stale.txt"
+run_render "$STATE_FILE_TWO" "$WORKTREES_DIR" "$BEHAVIOR_ATTENTION_STALE" "$OUTPUT_ATTENTION_STALE"
+# protects: a projection the monitor stopped refreshing reading as "nothing needs you".
+if grep -q '📥 INBOX — stale attention projection' "$OUTPUT_ATTENTION_STALE" \
+  && grep -q 'No items in the last projection' "$OUTPUT_ATTENTION_STALE"; then
+  pass "stale projection with no items renders as stale, not as an empty inbox"
+else
+  fail "stale attention projection was hidden or rendered as an empty inbox"
+fi
+
+BEHAVIOR_ATTENTION_MISSING="$TMP_DIR/behavior-attention-missing.json"
+jq '.attentionProjection = "missing"' "$BEHAVIOR_TWO" > "$BEHAVIOR_ATTENTION_MISSING"
+OUTPUT_ATTENTION_MISSING="$TMP_DIR/output-attention-missing.txt"
+run_render "$STATE_FILE_TWO" "$WORKTREES_DIR" "$BEHAVIOR_ATTENTION_MISSING" "$OUTPUT_ATTENTION_MISSING"
+# protects: first boot (no projection yet) reading as "nothing needs you".
+if grep -q '📥 INBOX (attention projection pending' "$OUTPUT_ATTENTION_MISSING" \
+  && grep -q '⚡ ACTIVE (1)' "$OUTPUT_ATTENTION_MISSING"; then
+  pass "missing projection renders the inbox as pending"
+else
+  fail "missing attention projection did not render as pending"
+fi
+
+BEHAVIOR_ATTENTION_ORDER="$TMP_DIR/behavior-attention-order.json"
+jq '.attention = [
+    {"kind": "answer-agent", "taskId": "HOK-1221", "summary": "HOK-1221 is waiting on you: Waiting on tests", "evidence": [{"source": "task-progress"}]},
+    {"kind": "exhausted", "taskId": "HOK-1220", "summary": "Planning budget exhausted", "evidence": [{"source": ".needs-attention"}]},
+    {"kind": "incident", "affectedTaskIds": ["HOK-1220", "HOK-1222"], "summary": "Eval job failing for two tasks", "evidence": [{"source": "incident"}]}
+  ]' "$BEHAVIOR_ONE" > "$BEHAVIOR_ATTENTION_ORDER"
+OUTPUT_ATTENTION_ORDER="$TMP_DIR/output-attention-order.txt"
+run_render "$STATE_FILE_ONE" "$WORKTREES_DIR" "$BEHAVIOR_ATTENTION_ORDER" "$OUTPUT_ATTENTION_ORDER"
+# protects: the renderer re-ordering the inbox, or dropping a grouped incident.
+if grep -q '📥 INBOX (3)' "$OUTPUT_ATTENTION_ORDER" \
+  && [[ $(grep -n '^HOK-1221 ' "$OUTPUT_ATTENTION_ORDER" | head -1 | cut -d: -f1) -lt $(grep -n '^HOK-1220 ' "$OUTPUT_ATTENTION_ORDER" | head -1 | cut -d: -f1) ]] \
+  && grep -q 'incident .*Eval job failing for two tasks · tasks: HOK-1220, HOK-1222' "$OUTPUT_ATTENTION_ORDER"; then
+  pass "inbox follows the projection order and renders a grouped incident once"
+else
+  fail "inbox order or grouped incident rendering diverged from the projection"
 fi
 
 STATE_FILE_THREE="$TMP_DIR/state-three.json"
@@ -1288,17 +1318,20 @@ cat > "$BEHAVIOR_READY_CLASSIFY" <<'EOF'
   "checks": {
     "task/ready-complete-task": "pass",
     "task/ready-failed-task": "fail"
-  }
+  },
+  "attention": [
+    {"kind": "exhausted", "taskId": "HOK-1304", "summary": "Remediation exhausted after 3 attempt(s) for PR #378.", "evidence": [{"source": ".needs-attention"}]}
+  ]
 }
 EOF
 
 OUTPUT_READY_CLASSIFY="$TMP_DIR/output-ready-classify.txt"
 run_render "$STATE_FILE_READY_CLASSIFY" "$WORKTREES_DIR" "$BEHAVIOR_READY_CLASSIFY" "$OUTPUT_READY_CLASSIFY"
 
-if grep -q '📥 INBOX (2)' "$OUTPUT_READY_CLASSIFY" && ! grep -q '⚡ ACTIVE (2)' "$OUTPUT_READY_CLASSIFY"; then
-  pass "classifies completed or attention-needed ready tasks as inbox items"
+if grep -q '📥 INBOX (1)' "$OUTPUT_READY_CLASSIFY" && grep -q '⚡ ACTIVE (1)' "$OUTPUT_READY_CLASSIFY"; then
+  pass "only the escalated ready task is an inbox item; a completed Ready stays active"
 else
-  fail "ready-task controller state did not move actionable tasks into inbox"
+  fail "ready inbox membership did not follow the attention projection"
 fi
 
 if grep -q 'HOK-1304.*ready-failed-task.*🚦 ready.*● running.*#412 ✗' "$OUTPUT_READY_CLASSIFY" \
@@ -1518,17 +1551,20 @@ cat > "$BEHAVIOR_READY_WATCHDOG" <<'EOF'
     "task/active-task": "pass",
     "task/ready-complete-task": "pass",
     "task/ready-failed-task": "fail"
-  }
+  },
+  "attention": [
+    {"kind": "operator-decision", "taskId": "HOK-1309", "summary": "PR #412 has real merge conflicts on GitHub.", "evidence": [{"source": ".needs-attention"}, {"source": "ready-watchdog-state.json"}]}
+  ]
 }
 EOF
 
 OUTPUT_READY_WATCHDOG="$TMP_DIR/output-ready-watchdog.txt"
 run_render "$STATE_FILE_READY_WATCHDOG" "$WORKTREES_DIR" "$BEHAVIOR_READY_WATCHDOG" "$OUTPUT_READY_WATCHDOG"
 
-if grep -q '📥 INBOX (2)' "$OUTPUT_READY_WATCHDOG" && grep -q '⚡ ACTIVE (2)' "$OUTPUT_READY_WATCHDOG"; then
-  pass "watchdog puts stuck and needs-user ready tasks in inbox while CI/eval waits stay active"
+if grep -q '📥 INBOX (1)' "$OUTPUT_READY_WATCHDOG" && grep -q '⚡ ACTIVE (3)' "$OUTPUT_READY_WATCHDOG"; then
+  pass "only the escalated watchdog task is an inbox item; stuck and waiting ready tasks stay active"
 else
-  fail "watchdog classification did not split ready tasks into inbox and active sections"
+  fail "watchdog rows did not follow the attention projection"
 fi
 
 if grep -q 'Checks still pending: build (PENDING).' "$OUTPUT_READY_WATCHDOG" \
@@ -2128,6 +2164,7 @@ EOF
 run_render_with_agent_states() {
   local state_file="$1" workspace_root="$2" behavior_file="$3" output_file="$4"
   local blocked_issue="$5" approval_issue="$6" denied_issue="$7"
+  seed_attention_projection "$state_file" "$behavior_file"
   (
     export WAVEMILL_TIP_INDEX=0
     set -- test-session "$workspace_root" "$state_file"
@@ -2211,7 +2248,10 @@ cat > "$BEHAVIOR_WAITING_STATE" <<'EOF'
   "reported": {},
   "planning": {},
   "pr": {},
-  "checks": {}
+  "checks": {},
+  "attention": [
+    {"kind": "answer-agent", "taskId": "HOK-2370-W", "summary": "HOK-2370-W is waiting on you: waiting on CI shard 3/5", "evidence": [{"source": "task-progress"}]}
+  ]
 }
 EOF
 
@@ -2238,12 +2278,14 @@ OUTPUT_BLOCKED_STATE="$TMP_DIR/output-blocked-state.txt"
 run_render_with_agent_states "$STATE_FILE_BLOCKED_STATE" "$WORKTREES_DIR" "$BEHAVIOR_BLOCKED_STATE" "$OUTPUT_BLOCKED_STATE" \
   "HOK-2370-A" "" ""
 
-if grep -q '📥 INBOX (1)' "$OUTPUT_BLOCKED_STATE" \
-  && grep -q '⚡ ACTIVE (1)' "$OUTPUT_BLOCKED_STATE" \
+# HOK-3423: a raw hook `blocked` is not an attention item (the failure policy
+# owns it until the escalation step pages), so the row stays active.
+if ! grep -q '📥 INBOX' "$OUTPUT_BLOCKED_STATE" \
+  && grep -q '⚡ ACTIVE (2)' "$OUTPUT_BLOCKED_STATE" \
   && grep -q 'HOK-2370-A.*blocked-task.*⊘ blocked' "$OUTPUT_BLOCKED_STATE"; then
-  pass "blocked state renders ⊘ blocked and moves task to inbox"
+  pass "blocked state renders ⊘ blocked and stays active without a projection item"
 else
-  fail "blocked state did not render correctly or did not move to inbox"
+  fail "blocked state did not render correctly or entered the inbox from a raw hook state"
 fi
 
 if grep -q 'cannot proceed: merge conflict' "$OUTPUT_BLOCKED_STATE"; then
@@ -2294,7 +2336,10 @@ cat > "$BEHAVIOR_APPROVAL_STATE" <<'EOF'
   "reported": {},
   "planning": {},
   "pr": {},
-  "checks": {}
+  "checks": {},
+  "attention": [
+    {"kind": "answer-agent", "taskId": "HOK-2370-C", "summary": "HOK-2370-C is waiting on you: waiting for human approval", "evidence": [{"source": "task-progress"}]}
+  ]
 }
 EOF
 
@@ -2372,12 +2417,12 @@ OUTPUT_DENIED_STATE="$TMP_DIR/output-denied-state.txt"
 run_render_with_agent_states "$STATE_FILE_DENIED_STATE" "$WORKTREES_DIR" "$BEHAVIOR_DENIED_STATE" "$OUTPUT_DENIED_STATE" \
   "HOK-2370-F" "" "HOK-2370-E"
 
-if grep -q '📥 INBOX (2)' "$OUTPUT_DENIED_STATE" \
+if ! grep -q '📥 INBOX' "$OUTPUT_DENIED_STATE" \
   && grep -q 'HOK-2370-E.*denied-task.*⛔ denied' "$OUTPUT_DENIED_STATE" \
   && grep -q 'HOK-2370-F.*blocked-task.*⊘ blocked' "$OUTPUT_DENIED_STATE"; then
-  pass "policy-denied and blocked both render as actionable inbox items"
+  pass "policy-denied and blocked render distinctly and stay active without projection items"
 else
-  fail "policy-denied or blocked did not render correctly in inbox"
+  fail "policy-denied or blocked did not render correctly, or entered the inbox from raw hook states"
 fi
 
 if grep -q 'network policy rejected outbound request' "$OUTPUT_DENIED_STATE"; then
@@ -2450,27 +2495,6 @@ if grep -q '⚡ ACTIVE (1)' "$TMP_DIR/output-baseline-running.txt" \
   pass "running state baseline unchanged — stays in active, not inbox"
 else
   fail "running state baseline regressed"
-fi
-
-# ── Stale approval-needed falls back to pane liveness ─────────────────────
-# The stale-hook fallback is already validated by the TTL in agent_status().
-# We verify the contract via a static check: stale hook state → pane liveness.
-# Confirm that is_actionable_state still routes stale-hook states correctly:
-# agent_status returns "running" when hook is stale → task stays active.
-stale_result_file="$TMP_DIR/stale-classification.txt"
-(
-  set -- test-session "$WORKTREES_DIR"
-  exec 3>"$stale_result_file"
-  exec >/dev/null 2>&1
-  source "$REPO_DIR/shared/lib/wavemill-status.sh"
-  trap - EXIT
-  is_actionable_state "running" "coding" "$WORKTREES_DIR/active-task" "active-task" "HOK-9999" >&3
-) 2>/dev/null || true
-stale_classification="$(cat "$stale_result_file" 2>/dev/null || true)"
-if [[ "$stale_classification" == "active" ]]; then
-  pass "stale hook fallback (running) stays active — does not freeze in actionable state"
-else
-  fail "stale hook fallback classification unexpected: '$stale_classification'"
 fi
 
 # ── Terminal durable state overrides fresh stale hook semantics ────────────

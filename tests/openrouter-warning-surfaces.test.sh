@@ -106,6 +106,7 @@ TIP_REFRESH=60
 _CURRENT_TIP="tip"
 gather_tasks() { :; }
 render_inbox_section() { :; }
+attention_projection_load() { :; }
 render_active_section() { :; }
 render_backstage_retained_section() { :; }
 render_project_context_suggestion() { :; }
