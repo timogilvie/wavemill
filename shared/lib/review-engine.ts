@@ -22,7 +22,6 @@ import {
 import { fillPromptSlots } from './prompt-utils.ts';
 import { getNativeAgentConfig, loadWavemillConfig } from './config.ts';
 import { isLaunchableForStage, type StageLaunchability } from './stage-launchability.ts';
-import { REVIEW_MAX_OUTPUT_TOKENS } from './native-agent/output-limits.ts';
 import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 import {
   NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
@@ -611,7 +610,7 @@ function buildCliReviewAdapter(
   repoDir: string,
   failClosed: boolean,
 ): TransportAdapter {
-  const common = { model, repoDir, reservedOutputTokens: REVIEW_MAX_OUTPUT_TOKENS, failClosed };
+  const common = { model, repoDir, failClosed };
   return provider === 'codex' ? new CodexCliAdapter(common) : new ClaudeCliAdapter(common);
 }
 
