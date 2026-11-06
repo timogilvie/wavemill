@@ -11,6 +11,8 @@
 // It also serves the Hokusai Model 30 predict edge (HOK-3363) at
 // https://hokusai.fake/… from a script ($FAKE_HOKUSAI_SCRIPT):
 //   { "default": <predict response>, "byObjective": { "<objective>": <response> } }
+// An objective response may instead be `{ initial, whenCoderExcluded }` to
+// model an escalation re-ask without changing the objective assignment.
 // The response is chosen by the request's `inputs.routing.objective`, so every
 // routing pass (launch route, expanded reroute) gets the same first answer and
 // the same re-ask answer regardless of how often the mill routes. Each request
@@ -196,13 +198,19 @@ function answerHokusai(init) {
   const routing = request?.inputs?.routing ?? {};
   const objective = routing.objective ?? null;
   const { default: fallback, byObjective = {} } = JSON.parse(readFileSync(script, 'utf8'));
-  const response = (objective && byObjective[objective]) || fallback;
+  const configured = objective ? byObjective[objective] : undefined;
+  const availableCoderModels = routing.available_coder_models;
+  const response = configured?.initial
+    ? (Array.isArray(availableCoderModels) && !availableCoderModels.some((model) => model.startsWith('claude-haiku-4-5'))
+      ? configured.whenCoderExcluded ?? configured.initial
+      : configured.initial)
+    : configured || fallback;
   const log = process.env.FAKE_HOKUSAI_LOG;
   if (log) {
     appendFileSync(log, `${JSON.stringify({
       at: new Date().toISOString(),
       objective,
-      availableCoderModels: routing.available_coder_models ?? null,
+      availableCoderModels: availableCoderModels ?? null,
       inferenceLogId: response?.inference_log_id ?? null,
     })}\n`);
   }

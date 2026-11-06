@@ -1,5 +1,5 @@
 #!/usr/bin/env -S npx tsx
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { getWavemillAdditionalEvalPaths, routeBatch } from '../shared/lib/route-batch.ts';
@@ -45,6 +45,10 @@ runTool({
     'feature-dir': {
       type: 'string',
       description: 'Feature directory whose routing.jsonl records the route decision (default: inferred when --file lives under features/<slug>/)',
+    },
+    'issue-id': {
+      type: 'string',
+      description: 'Canonical issue ID used to select the stable Hokusai routing objective',
     },
     'exclude-model': {
       type: 'string',
@@ -101,9 +105,28 @@ runTool({
       }
     }
     const featureDir = args['feature-dir'] || inferFeatureDirFromTaskFile(file);
+    let issueId = args['issue-id'];
+    if (!issueId && featureDir) {
+      const selectedTaskPath = resolve(featureDir, 'selected-task.json');
+      if (existsSync(selectedTaskPath)) {
+        try {
+          const selectedTask = JSON.parse(readFileSync(selectedTaskPath, 'utf-8')) as { taskId?: unknown };
+          if (typeof selectedTask.taskId === 'string') issueId = selectedTask.taskId;
+        } catch {
+          // A routing request remains usable when the optional task artifact is malformed.
+        }
+      }
+    }
     const excludeModels = (args['exclude-model'] ?? []).map((model) => model.trim()).filter(Boolean);
     const [result] = await routeBatch([
-      { prompt, file, source: args.source, inputKind: args['input-kind'], ...(featureDir ? { featureDir } : {}) },
+      {
+        prompt,
+        file,
+        source: args.source,
+        inputKind: args['input-kind'],
+        ...(featureDir ? { featureDir } : {}),
+        ...(issueId ? { issueId } : {}),
+      },
     ], {
       repoDir,
       mode: mode as 'auto' | 'stage-aware' | 'heuristic' | 'hokusai',
