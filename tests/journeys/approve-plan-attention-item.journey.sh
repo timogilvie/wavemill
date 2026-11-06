@@ -72,6 +72,8 @@ observe_approval_request() {
 JOURNEY_BEFORE_APPROVAL=observe_approval_request
 
 journey_start_monitor
+# Sum of the bounded waits below (5 + 5 + 12 + 10 + 10).
+journey_set_tick_budget 42
 journey_wait_until "$ISSUE" 5  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 

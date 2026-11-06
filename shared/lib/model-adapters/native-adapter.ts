@@ -10,6 +10,7 @@
  */
 import { getEffectiveRegistry, getModel } from '../model-registry.ts';
 import {
+  DEFAULT_RESERVED_OUTPUT_TOKENS,
   policyKindFor,
   type AdapterError,
   type AdapterInvokeResult,
@@ -29,7 +30,6 @@ export interface NativeAdapterOptions {
   reservedOutputTokens?: number;
 }
 
-const DEFAULT_RESERVED_OUTPUT_TOKENS = 8_000;
 
 abstract class NativeAdapterBase implements TransportAdapter {
   abstract readonly kind: AdapterKind;
@@ -46,7 +46,7 @@ abstract class NativeAdapterBase implements TransportAdapter {
         ? { contextWindowTokens: capabilities.contextWindowTokens }
         : {}),
       cliHarnessOverheadTokens: 0,
-      maxOutputTokens: this.reservedOutputTokens,
+      reservedOutputTokens: this.reservedOutputTokens,
     };
   }
 

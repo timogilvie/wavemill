@@ -31,13 +31,16 @@ export type AdapterErrorKind =
   | 'transient'
   | 'unknown';
 
+/** Shared input-preflight reservation. Runtime output limits belong to each transport. */
+export const DEFAULT_RESERVED_OUTPUT_TOKENS = 8_000;
+
 export interface AdapterLimits {
   /** Context window in tokens from the registry; undefined if the registry is silent. */
   contextWindowTokens?: number;
   /** Hard character cap the transport imposes before any model call (codex: 1_048_576). */
   maxInputChars?: number;
-  /** Max output tokens the adapter allows per call. */
-  maxOutputTokens?: number;
+  /** Output space reserved by input preflight; never an invocation cap. */
+  reservedOutputTokens?: number;
   /**
    * Fixed overhead the transport adds on top of the user prompt (claude CLI
    * harness and tool declarations: 30k; codex: 20k; native: 0). Already

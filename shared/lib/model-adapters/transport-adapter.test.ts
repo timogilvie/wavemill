@@ -1,4 +1,7 @@
 import { describe, it } from 'node:test';
+import { execFileSync } from 'node:child_process';
+import { checkGuardSource } from '../../../tools/lib/source-guard.ts';
+import { OUTPUT_RESERVATION_GUARD } from '../../../tools/check-output-reservation.ts';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -227,4 +230,77 @@ describe('resolveModelAdapter', () => {
     assert.equal(result.resolution.ok, false);
     assert.equal(result.adapter, null);
   });
+});
+
+// Replay the incident through the shared external-edge fake. The fake needs
+// 8193 total reasoning + answer tokens; a preflight reservation of 8192
+// must not be imposed as its generated-output cap.
+describe('CLI output reservation incident replay', () => {
+  it('keeps reservations separate from explicit caps, preserves ownership, and reports buffered timeouts truthfully', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'review-output-contract-'));
+    const script = String.raw`
+      import assert from 'node:assert/strict';
+      import { writeFileSync, readFileSync } from 'node:fs';
+      import { join } from 'node:path';
+      import { ClaudeCliAdapter } from './shared/lib/model-adapters/claude-cli-adapter.ts';
+      import { readOwnershipRows } from './shared/lib/session-ownership.ts';
+      const verdictFile = join(process.env.FAKE_ROOT, 'review.json');
+      writeFileSync(verdictFile, JSON.stringify({verdict:'ready',codeReviewFindings:[]}));
+      process.env.FAKE_JUDGE_VERDICT_FILE = verdictFile;
+      const incident = JSON.parse(readFileSync('./tests/fixtures/review-output-contract/incident.json','utf8'));
+      assert.equal(incident.completion.thinkingTokens,incident.request.maxTokens);
+      process.env.FAKE_JUDGE_REQUIRED_OUTPUT_TOKENS = String(incident.completion.outputTokens + 1);
+      delete process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
+      const featureDir = join(process.env.FAKE_REPO_DIR, 'features', 'review');
+      const adapter = new ClaudeCliAdapter({model:incident.request.model,repoDir:process.env.FAKE_REPO_DIR,reservedOutputTokens:incident.request.maxTokens});
+      assert.equal(adapter.limits.reservedOutputTokens,8192);
+      assert.equal(adapter.limits.maxOutputTokens,undefined);
+      const options = {cwd:process.env.FAKE_REPO_DIR,ownership:{featureDir,helperPurpose:'json-code-review'}};
+      const result = await adapter.invoke('Return the review verdict.',options);
+      assert.equal(result.error,undefined);
+      assert.equal(JSON.parse(result.text).verdict,'ready');
+      assert.equal(result.reportedModel,'claude-sonnet-5');
+      const row = readOwnershipRows(featureDir)[0];
+      assert.equal(row.kind,'helper:json-code-review');
+      assert.equal(row.model,'claude-sonnet-5');
+      assert.equal(row.harness,'claude-code');
+      const calls = readFileSync(join(process.env.FAKE_ROOT,'logs','judge-calls.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(calls[0].maxOutputTokens,'');
+      const capped = await adapter.invoke('Return the review verdict.',{...options,maxOutputTokens:8192});
+      assert.match(capped.error?.message ?? '',/exhausted max_tokens/);
+      const explicit = await adapter.invoke('Return the review verdict.',{...options,maxOutputTokens:9000});
+      assert.equal(explicit.error,undefined);
+      process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '9000';
+      const inherited = await adapter.invoke('Return the review verdict.',options);
+      assert.equal(inherited.error,undefined);
+      const later = readFileSync(join(process.env.FAKE_ROOT,'logs','judge-calls.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(later.at(-1).maxOutputTokens,'9000');
+      process.env.FAKE_JUDGE_DELAY_SECONDS = '1';
+      const timeout = await adapter.invoke('Return the review verdict.',{...options,timeout:100});
+      assert.match(timeout.error?.message ?? '',/hard wall-clock cap/);
+      assert.match(timeout.error.message,/Output silence does not establish agent liveness/);
+      assert.doesNotMatch(timeout.error.message,/Process state:|IDLE/);
+      console.log('OUTPUT_CONTRACT_REPLAY_PASSED');
+    `;
+    try {
+      const output = execFileSync('bash', ['-c', `
+        set -euo pipefail
+        source "$1/tests/fakes/lib.sh"
+        fakes_setup "$2/world"
+        node --import tsx --input-type=module -e "$3"
+      `, '_', process.cwd(), dir, script], {cwd:process.cwd(), encoding:'utf8',timeout:60_000,env:{...process.env,CLAUDE_CMD:'claude'}});
+      assert.match(output,/OUTPUT_CONTRACT_REPLAY_PASSED/);
+    } finally {
+      rmSync(dir,{recursive:true,force:true});
+    }
+  });
+});
+
+// Guard against reintroducing the same decision in another call site.
+it('output reservation guard rejects cap conflation and native ceilings in CLI review', () => {
+  const scan = (file: string, source: string) => checkGuardSource(OUTPUT_RESERVATION_GUARD,file,source).map(f=>f.pattern);
+  assert.deepEqual(scan('shared/lib/model-adapters/new-cli.ts','maxOutputTokens: opts.maxOutputTokens ?? this.reservedOutputTokens,'),['reservation-as-invocation-cap']);
+  assert.deepEqual(scan('shared/lib/review-engine.ts','const options = { reservedOutputTokens: REVIEW_MAX_OUTPUT_TOKENS };'),['native-ceiling-in-cli-review']);
+  assert.deepEqual(scan('shared/lib/model-adapters/claude-cli-adapter.ts','maxOutputTokens: opts.maxOutputTokens,'),[]);
+  assert.deepEqual(scan('shared/lib/native-agent/review.ts','const cap = REVIEW_MAX_OUTPUT_TOKENS;'),[]);
 });
