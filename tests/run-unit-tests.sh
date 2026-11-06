@@ -476,6 +476,7 @@ TESTS=(
   shared/lib/native-agent/certification/auto-remediate.test.ts
   shared/lib/native-agent/certification/catalog-hash-migration.test.ts
   shared/lib/native-agent/certification/canary-cohort.test.ts
+  shared/lib/native-agent/certification/monitor-canary-cohort-refresh.test.ts
   shared/lib/native-agent/certification/validator.test.ts
   shared/lib/native-agent/certification/scenarios.test.ts
   shared/lib/native-agent/certification/scenario-runner.test.ts

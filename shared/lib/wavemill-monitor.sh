@@ -16903,6 +16903,29 @@ monitor_state_invariants_tick() {
   return 0
 }
 
+# ─── Periodic native canary cohort refresh (HOK-3428) ───────────────────────
+#
+# The tool owns the durable sentinel and the evidence-based eligibility check;
+# this tick only derives the opt-in cadence and launches its tracked job.
+monitor_canary_cohort_refresh_tick() {
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
+  [[ -n "${STATE_DIR:-}" && -n "${REPO_DIR:-}" ]] || return 0
+  declare -F monitor_async_job_launch >/dev/null 2>&1 || return 0
+  declare -F wavemill_load_config >/dev/null 2>&1 || return 0
+
+  local interval_minutes
+  interval_minutes="$(wavemill_load_config "$REPO_DIR" | jq -r '.nativeAgent.certification.canaryAutoRefreshIntervalMinutes // 0' 2>/dev/null || echo 0)"
+  [[ "$interval_minutes" =~ ^[1-9][0-9]*$ ]] || return 0
+  CANARY_COHORT_REFRESH_INTERVAL_SECONDS="$((interval_minutes * 60))"
+
+  local job_id meta_json
+  job_id="canary-cohort-refresh-$(sanitize_job_token "${SESSION:-wavemill}")"
+  meta_json="$(jq -cn --arg interval "$CANARY_COHORT_REFRESH_INTERVAL_SECONDS" '{intervalSeconds: ($interval | tonumber)}')"
+  monitor_async_job_launch canary-cohort-refresh "$job_id" "" "" 1500 "$meta_json" \
+    wavemill_run_tool monitor-canary-cohort-refresh.ts --repo-dir "$REPO_DIR"
+  return 0
+}
+
 # ─── Per-step pass timing (HOK-3190) ────────────────────────────────────────
 #
 # `monitor_step_begin NAME` and `monitor_step_end NAME` sandwich a measured
@@ -24140,6 +24163,10 @@ while :; do
   monitor_step_begin stateInvariants
   monitor_state_invariants_tick || true
   monitor_step_end stateInvariants
+  # HOK-3428: opt-in, interval-gated renewal of expiring live coding canaries.
+  monitor_step_begin canaryCohortRefresh
+  monitor_canary_cohort_refresh_tick || true
+  monitor_step_end canaryCohortRefresh
   # HOK-3174: after a host wake, re-check running stages before normal gates.
   if [[ -n "$monitor_wake_episode" ]]; then
     monitor_resume_agents_after_wake "$monitor_wake_episode"

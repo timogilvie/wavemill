@@ -8,11 +8,7 @@
       "family": "claude",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "claude-opus-4-8",
@@ -20,11 +16,7 @@
       "family": "claude",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "claude-opus-4-7",
@@ -32,11 +24,7 @@
       "family": "claude",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "claude-sonnet-5",
@@ -44,11 +32,7 @@
       "family": "claude",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "claude-sonnet-4-6",
@@ -56,11 +40,7 @@
       "family": "claude",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "claude-haiku-4-5",
@@ -68,10 +48,7 @@
       "family": "claude",
       "status": "active",
       "priorityTier": 2,
-      "roleEligibility": [
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["coding", "review"]
     },
     {
       "wavemillAlias": "gpt-6-sol",
@@ -79,11 +56,7 @@
       "family": "gpt",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gpt-6-luna",
@@ -91,11 +64,7 @@
       "family": "gpt",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gpt-5.5",
@@ -103,11 +72,7 @@
       "family": "gpt",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gpt-5",
@@ -115,11 +80,7 @@
       "family": "gpt",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gpt-5-mini",
@@ -127,10 +88,7 @@
       "family": "gpt",
       "status": "active",
       "priorityTier": 2,
-      "roleEligibility": [
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["coding", "review"]
     },
     {
       "wavemillAlias": "o3-mini",
@@ -138,9 +96,7 @@
       "family": "gpt",
       "status": "watchlist",
       "priorityTier": 3,
-      "roleEligibility": [
-        "coding"
-      ]
+      "roleEligibility": ["coding"]
     },
     {
       "wavemillAlias": "deepseek-r1",
@@ -148,11 +104,7 @@
       "family": "deepseek",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "deepseek-v3",
@@ -160,10 +112,7 @@
       "family": "deepseek",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["coding", "review"]
     },
     {
       "wavemillAlias": "qwen-3-coder",
@@ -171,11 +120,7 @@
       "family": "qwen",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "qwen-3-235b",
@@ -183,11 +128,7 @@
       "family": "qwen",
       "status": "watchlist",
       "priorityTier": 2,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "kimi-k2",
@@ -195,11 +136,7 @@
       "family": "kimi",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "kimi-k2.7-code",
@@ -207,11 +144,7 @@
       "family": "kimi",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "kimi-k2-thinking",
@@ -219,11 +152,7 @@
       "family": "kimi",
       "status": "watchlist",
       "priorityTier": 2,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "glm-5.2",
@@ -231,11 +160,7 @@
       "family": "glm",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gemini-2.5-pro",
@@ -243,11 +168,7 @@
       "family": "gemini",
       "status": "deprecated",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gemini-3.1-pro-preview",
@@ -255,11 +176,7 @@
       "family": "gemini",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gemini-3.1-pro-preview-customtools",
@@ -267,11 +184,7 @@
       "family": "gemini",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gemini-2.5-flash",
@@ -279,10 +192,7 @@
       "family": "gemini",
       "status": "active",
       "priorityTier": 2,
-      "roleEligibility": [
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["coding", "review"]
     },
     {
       "wavemillAlias": "llama-4-maverick",
@@ -290,10 +200,7 @@
       "family": "llama",
       "status": "active",
       "priorityTier": 2,
-      "roleEligibility": [
-        "planning",
-        "coding"
-      ]
+      "roleEligibility": ["planning", "coding"]
     },
     {
       "wavemillAlias": "mistral-large-2",
@@ -301,11 +208,7 @@
       "family": "mistral",
       "status": "active",
       "priorityTier": 2,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "mistral-medium-3",
@@ -313,9 +216,7 @@
       "family": "mistral",
       "status": "watchlist",
       "priorityTier": 3,
-      "roleEligibility": [
-        "coding"
-      ]
+      "roleEligibility": ["coding"]
     },
     {
       "wavemillAlias": "devstral-medium",
@@ -323,9 +224,7 @@
       "family": "mistral",
       "status": "deprecated",
       "priorityTier": 2,
-      "roleEligibility": [
-        "coding"
-      ]
+      "roleEligibility": ["coding"]
     },
     {
       "wavemillAlias": "glm-5.3-flash",
@@ -333,11 +232,7 @@
       "family": "glm",
       "status": "active",
       "priorityTier": 3,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "grok-code-fast",
@@ -345,9 +240,7 @@
       "family": "grok",
       "status": "deprecated",
       "priorityTier": 3,
-      "roleEligibility": [
-        "coding"
-      ]
+      "roleEligibility": ["coding"]
     },
     {
       "wavemillAlias": "glm-5.3",
@@ -355,11 +248,7 @@
       "family": "glm",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "kimi-k3",
@@ -367,11 +256,15 @@
       "family": "kimi",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
+    },
+    {
+      "wavemillAlias": "kimi-k3.1-pro",
+      "openrouterId": "moonshotai/kimi-k3.1-pro",
+      "family": "kimi",
+      "status": "active",
+      "priorityTier": 1,
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "gemini-3.8-flash",
@@ -379,10 +272,7 @@
       "family": "gemini",
       "status": "active",
       "priorityTier": 2,
-      "roleEligibility": [
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["coding", "review"]
     },
     {
       "wavemillAlias": "deepseek-v4-pro",
@@ -390,11 +280,7 @@
       "family": "deepseek",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     },
     {
       "wavemillAlias": "deepseek-v4-flash",
@@ -402,11 +288,7 @@
       "family": "deepseek",
       "status": "active",
       "priorityTier": 1,
-      "roleEligibility": [
-        "planning",
-        "coding",
-        "review"
-      ]
+      "roleEligibility": ["planning", "coding", "review"]
     }
   ]
 }

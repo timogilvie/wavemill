@@ -1,8 +1,8 @@
 {
   "name": "wavemill-config",
   "schemaPath": "wavemill-config.schema.json",
-  "schemaSha256": "de5f1ec75c2334a0e55eeb0d79b562fe5e2a23bb6baf75560f24881994e77037",
-  "codeSha256": "077e4dbd25232416e67cfa470bc859096b986ff85863f88f1bde5a47edf9eff0",
+  "schemaSha256": "a95df54c3320787048f98c435db4e161e67488958e4b458a8628ee0a1d28d7e4",
+  "codeSha256": "66240eafe4fac511d44303e06841e31e44403ed58ee2cbf6a40fc88ba9b606c7",
   "ajvOptions": {
     "allErrors": true,
     "strict": false

@@ -1736,6 +1736,12 @@
                         "canaryAutoRefresh": {
                             "type": "boolean",
                             "default": true
+                        },
+                        "canaryAutoRefreshIntervalMinutes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 10080,
+                            "default": 0
                         }
                     },
                     "additionalProperties": false

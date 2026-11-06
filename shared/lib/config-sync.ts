@@ -1,10 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { CURRENT_CONFIG_VERSION, loadWavemillBaseConfig, type WavemillConfig } from './config.ts';
-import {
-  classifyLocalOverrideFields,
-  type LocalOverrideClassificationEntry,
-} from './sync-config-classifier.ts';
+import { classifyLocalOverrideFields, type LocalOverrideClassificationEntry } from './sync-config-classifier.ts';
 
 export const CANONICAL_CONFIG_TEMPLATE: WavemillConfig = {
   configVersion: CURRENT_CONFIG_VERSION,
@@ -44,31 +41,111 @@ export const CANONICAL_CONFIG_TEMPLATE: WavemillConfig = {
       provider: 'anthropic',
     },
     pricing: {
-      'claude-fable-5': { inputCostPerMTok: 10, outputCostPerMTok: 50, cacheWriteCostPerMTok: 12.5, cacheReadCostPerMTok: 1 },
-      'claude-opus-5-5': { inputCostPerMTok: 4, outputCostPerMTok: 20, cacheWriteCostPerMTok: 5, cacheReadCostPerMTok: 0.2 },
-      'claude-opus-4-6': { inputCostPerMTok: 5, outputCostPerMTok: 25, cacheWriteCostPerMTok: 6.25, cacheReadCostPerMTok: 0.5 },
-      'claude-opus-4-8': { inputCostPerMTok: 5, outputCostPerMTok: 25, cacheWriteCostPerMTok: 6.25, cacheReadCostPerMTok: 0.5 },
-      'claude-opus-4-7': { inputCostPerMTok: 5, outputCostPerMTok: 25, cacheWriteCostPerMTok: 6.25, cacheReadCostPerMTok: 0.5 },
-      'claude-sonnet-5': { inputCostPerMTok: 2, outputCostPerMTok: 10, cacheWriteCostPerMTok: 2.5, cacheReadCostPerMTok: 0.2 },
-      'claude-sonnet-4-6': { inputCostPerMTok: 3, outputCostPerMTok: 15, cacheWriteCostPerMTok: 3.75, cacheReadCostPerMTok: 0.3 },
-      'claude-sonnet-4-5-20250929': { inputCostPerMTok: 3, outputCostPerMTok: 15, cacheWriteCostPerMTok: 3.75, cacheReadCostPerMTok: 0.3 },
-      'claude-haiku-4-5-20251001': { inputCostPerMTok: 0.8, outputCostPerMTok: 4, cacheWriteCostPerMTok: 1, cacheReadCostPerMTok: 0.08 },
-      'gpt-5.3-codex': { inputCostPerMTok: 1.75, outputCostPerMTok: 14, cacheReadCostPerMTok: 0.44 },
-      'gpt-5.6-terra': { inputCostPerMTok: 2.5, outputCostPerMTok: 15, cacheWriteCostPerMTok: 3.125, cacheReadCostPerMTok: 0.25 },
-      'gpt-6-sol': { inputCostPerMTok: 2, outputCostPerMTok: 10, cacheWriteCostPerMTok: 2.5, cacheReadCostPerMTok: 0.2 },
-      'gpt-6-luna': { inputCostPerMTok: 0.1, outputCostPerMTok: 0.5, cacheWriteCostPerMTok: 0.125, cacheReadCostPerMTok: 0.01 },
+      'claude-fable-5': {
+        inputCostPerMTok: 10,
+        outputCostPerMTok: 50,
+        cacheWriteCostPerMTok: 12.5,
+        cacheReadCostPerMTok: 1,
+      },
+      'claude-opus-5-5': {
+        inputCostPerMTok: 4,
+        outputCostPerMTok: 20,
+        cacheWriteCostPerMTok: 5,
+        cacheReadCostPerMTok: 0.2,
+      },
+      'claude-opus-4-6': {
+        inputCostPerMTok: 5,
+        outputCostPerMTok: 25,
+        cacheWriteCostPerMTok: 6.25,
+        cacheReadCostPerMTok: 0.5,
+      },
+      'claude-opus-4-8': {
+        inputCostPerMTok: 5,
+        outputCostPerMTok: 25,
+        cacheWriteCostPerMTok: 6.25,
+        cacheReadCostPerMTok: 0.5,
+      },
+      'claude-opus-4-7': {
+        inputCostPerMTok: 5,
+        outputCostPerMTok: 25,
+        cacheWriteCostPerMTok: 6.25,
+        cacheReadCostPerMTok: 0.5,
+      },
+      'claude-sonnet-5': {
+        inputCostPerMTok: 2,
+        outputCostPerMTok: 10,
+        cacheWriteCostPerMTok: 2.5,
+        cacheReadCostPerMTok: 0.2,
+      },
+      'claude-sonnet-4-6': {
+        inputCostPerMTok: 3,
+        outputCostPerMTok: 15,
+        cacheWriteCostPerMTok: 3.75,
+        cacheReadCostPerMTok: 0.3,
+      },
+      'claude-sonnet-4-5-20250929': {
+        inputCostPerMTok: 3,
+        outputCostPerMTok: 15,
+        cacheWriteCostPerMTok: 3.75,
+        cacheReadCostPerMTok: 0.3,
+      },
+      'claude-haiku-4-5-20251001': {
+        inputCostPerMTok: 0.8,
+        outputCostPerMTok: 4,
+        cacheWriteCostPerMTok: 1,
+        cacheReadCostPerMTok: 0.08,
+      },
+      'gpt-5.3-codex': {
+        inputCostPerMTok: 1.75,
+        outputCostPerMTok: 14,
+        cacheReadCostPerMTok: 0.44,
+      },
+      'gpt-5.6-terra': {
+        inputCostPerMTok: 2.5,
+        outputCostPerMTok: 15,
+        cacheWriteCostPerMTok: 3.125,
+        cacheReadCostPerMTok: 0.25,
+      },
+      'gpt-6-sol': {
+        inputCostPerMTok: 2,
+        outputCostPerMTok: 10,
+        cacheWriteCostPerMTok: 2.5,
+        cacheReadCostPerMTok: 0.2,
+      },
+      'gpt-6-luna': {
+        inputCostPerMTok: 0.1,
+        outputCostPerMTok: 0.5,
+        cacheWriteCostPerMTok: 0.125,
+        cacheReadCostPerMTok: 0.01,
+      },
       'gpt-4.1': { inputCostPerMTok: 2, outputCostPerMTok: 8 },
       'qwen-3-coder': { inputCostPerMTok: 0.35, outputCostPerMTok: 1.05 },
       'qwen-3-235b': { inputCostPerMTok: 0.09, outputCostPerMTok: 0.55 },
-      'deepseek-v3': { inputCostPerMTok: 0.2145, outputCostPerMTok: 0.32175, cacheReadCostPerMTok: 0.02145 },
+      'deepseek-v3': {
+        inputCostPerMTok: 0.2145,
+        outputCostPerMTok: 0.32175,
+        cacheReadCostPerMTok: 0.02145,
+      },
       'glm-5.2': { inputCostPerMTok: 0.9, outputCostPerMTok: 4.2 },
       'glm-5.3': { inputCostPerMTok: 1.4, outputCostPerMTok: 4.4 },
       'kimi-k2': { inputCostPerMTok: 1, outputCostPerMTok: 3 },
-      'kimi-k3': { inputCostPerMTok: 3, outputCostPerMTok: 15 },
+      'kimi-k3': {
+        inputCostPerMTok: 0.19,
+        outputCostPerMTok: 16,
+        cacheReadCostPerMTok: 0.182,
+      },
+      'kimi-k3.1-pro': {
+        inputCostPerMTok: 2,
+        outputCostPerMTok: 10,
+        cacheReadCostPerMTok: 0.2,
+      },
       'kimi-k2.7-code': { inputCostPerMTok: 1.2, outputCostPerMTok: 3.6 },
       'kimi-k2-thinking': { inputCostPerMTok: 1.5, outputCostPerMTok: 4.5 },
       'gemini-3.1-pro-preview': { inputCostPerMTok: 2, outputCostPerMTok: 12 },
-      'gemini-3.1-pro-preview-customtools': { inputCostPerMTok: 2, outputCostPerMTok: 12 },
+      'gemini-3.1-pro-preview-customtools': {
+        inputCostPerMTok: 2,
+        outputCostPerMTok: 12,
+      },
       'gemini-2.5-flash': { inputCostPerMTok: 0.3, outputCostPerMTok: 2.5 },
       'gemini-3.8-flash': { inputCostPerMTok: 0.75, outputCostPerMTok: 3.75 },
       'llama-4-maverick': { inputCostPerMTok: 0.4, outputCostPerMTok: 1.6 },
@@ -329,14 +406,12 @@ export function prepareConfigSync(repoDir: string): PreparedConfigSync {
 }
 
 export function findLocalPromotionConflicts(prepared: PreparedConfigSync): LocalOverrideClassificationEntry[] {
-  const requiresDecision = prepared.localOverrideClassifications.filter(
-    entry => entry.label === 'requires decision',
-  );
+  const requiresDecision = prepared.localOverrideClassifications.filter((entry) => entry.label === 'requires decision');
   if (requiresDecision.length === 0 || prepared.additions.length === 0) {
     return [];
   }
 
-  return requiresDecision.filter(entry =>
-    prepared.additions.some(addition => pathIsEqualOrChild(addition, entry.path)),
+  return requiresDecision.filter((entry) =>
+    prepared.additions.some((addition) => pathIsEqualOrChild(addition, entry.path)),
   );
 }

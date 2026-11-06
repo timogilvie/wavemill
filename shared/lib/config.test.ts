@@ -100,14 +100,16 @@ function test(name: string, fn: () => void | Promise<void>) {
   try {
     const result = fn();
     if (result instanceof Promise) {
-      result.then(() => {
-        passed++;
-        console.log(`  PASS  ${name}`);
-      }).catch((err) => {
-        failed++;
-        console.log(`  FAIL  ${name}`);
-        console.log(`        ${(err as Error).message}`);
-      });
+      result
+        .then(() => {
+          passed++;
+          console.log(`  PASS  ${name}`);
+        })
+        .catch((err) => {
+          failed++;
+          console.log(`  FAIL  ${name}`);
+          console.log(`        ${(err as Error).message}`);
+        });
     } else {
       passed++;
       console.log(`  PASS  ${name}`);
@@ -187,43 +189,50 @@ test('valid config passes validation', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      router: {
-        enabled: true,
-        minRecords: 20,
-        minModels: 2,
-      },
-      resources: {
-        runtimeSelection: {
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        router: {
           enabled: true,
-          defaultVariant: 'optimized',
-          fallbackToBaseline: true,
-          canaryRate: 0.2,
-          surfaces: {
-            planner: {
-              enabled: true,
-              variant: 'optimized',
-              path: 'dspy/artifacts/optimized-planner.json',
+          minRecords: 20,
+          minModels: 2,
+        },
+        resources: {
+          runtimeSelection: {
+            enabled: true,
+            defaultVariant: 'optimized',
+            fallbackToBaseline: true,
+            canaryRate: 0.2,
+            surfaces: {
+              planner: {
+                enabled: true,
+                variant: 'optimized',
+                path: 'dspy/artifacts/optimized-planner.json',
+              },
             },
           },
         },
-      },
-      challenge: {
-        enabled: true,
-        rate: 0.25,
-        allowDeepseek: true,
-      },
-      challengeScheduler: { enabled: true, confidenceThreshold: 0.65, newModelChallengeCount: 4 },
-      providers: {
-        deepseek: {
+        challenge: {
           enabled: true,
-          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          rate: 0.25,
+          allowDeepseek: true,
         },
-      },
-      eval: { evalsDir: '.wavemill/evals' },
-      cleanup: { branchDeletion: { enabled: true } },
-      mill: { maxParallel: 5 },
-    }));
+        challengeScheduler: {
+          enabled: true,
+          confidenceThreshold: 0.65,
+          newModelChallengeCount: 4,
+        },
+        providers: {
+          deepseek: {
+            enabled: true,
+            apiKeyEnv: 'DEEPSEEK_API_KEY',
+          },
+        },
+        eval: { evalsDir: '.wavemill/evals' },
+        cleanup: { branchDeletion: { enabled: true } },
+        mill: { maxParallel: 5 },
+      }),
+    );
     const config = loadWavemillConfig(tmp);
     assert.equal(config.router?.enabled, true);
     assert.equal(config.challenge?.enabled, true);
@@ -275,19 +284,59 @@ test('cleanup config defaults branch deletion to shadow mode', () => {
 
 test('removed repo-local model fields are rejected with migration guidance', () => {
   const cases: Array<{ path: string; config: Record<string, unknown> }> = [
-    { path: 'modelRegistry', config: { modelRegistry: { models: { local: {} } } } },
-    { path: 'router.defaultModel', config: { router: { defaultModel: 'local-model' } } },
+    {
+      path: 'modelRegistry',
+      config: { modelRegistry: { models: { local: {} } } },
+    },
+    {
+      path: 'router.defaultModel',
+      config: { router: { defaultModel: 'local-model' } },
+    },
     { path: 'router.models', config: { router: { models: ['local-model'] } } },
-    { path: 'router.availableModels', config: { router: { availableModels: { coder: ['local-model'] } } } },
-    { path: 'router.agentMap', config: { router: { agentMap: { 'local-model': 'codex' } } } },
-    { path: 'challenge.models', config: { challenge: { models: ['local-model'] } } },
-    { path: 'challenge.comparisonModel', config: { challenge: { comparisonModel: 'local-model' } } },
-    { path: 'providers.openrouter.models', config: { providers: { openrouter: { models: ['local-model'] } } } },
-    { path: 'providers.openrouter.stages', config: { providers: { openrouter: { stages: ['coder'] } } } },
-    { path: 'providers.deepseek.models', config: { providers: { deepseek: { models: ['deepseek-local'] } } } },
-    { path: 'providers.deepseek.stages', config: { providers: { deepseek: { stages: ['coder'] } } } },
-    { path: 'nativeAgent.providers.openai.models', config: { nativeAgent: { providers: { openai: { models: ['local-model'] } } } } },
-    { path: 'nativeAgent.providers.openrouter.models', config: { nativeAgent: { providers: { openrouter: { models: ['local-model'] } } } } },
+    {
+      path: 'router.availableModels',
+      config: { router: { availableModels: { coder: ['local-model'] } } },
+    },
+    {
+      path: 'router.agentMap',
+      config: { router: { agentMap: { 'local-model': 'codex' } } },
+    },
+    {
+      path: 'challenge.models',
+      config: { challenge: { models: ['local-model'] } },
+    },
+    {
+      path: 'challenge.comparisonModel',
+      config: { challenge: { comparisonModel: 'local-model' } },
+    },
+    {
+      path: 'providers.openrouter.models',
+      config: { providers: { openrouter: { models: ['local-model'] } } },
+    },
+    {
+      path: 'providers.openrouter.stages',
+      config: { providers: { openrouter: { stages: ['coder'] } } },
+    },
+    {
+      path: 'providers.deepseek.models',
+      config: { providers: { deepseek: { models: ['deepseek-local'] } } },
+    },
+    {
+      path: 'providers.deepseek.stages',
+      config: { providers: { deepseek: { stages: ['coder'] } } },
+    },
+    {
+      path: 'nativeAgent.providers.openai.models',
+      config: {
+        nativeAgent: { providers: { openai: { models: ['local-model'] } } },
+      },
+    },
+    {
+      path: 'nativeAgent.providers.openrouter.models',
+      config: {
+        nativeAgent: { providers: { openrouter: { models: ['local-model'] } } },
+      },
+    },
   ];
 
   for (const testCase of cases) {
@@ -327,21 +376,66 @@ test('native review timeout defaults to five minutes with bounded escalation', (
   }
 });
 
+test('canary monitor refresh interval is opt-in and schema-validated', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, '{}');
+    assert.equal(getNativeAgentConfig(tmp).certification?.canaryAutoRefreshIntervalMinutes, undefined);
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          certification: { canaryAutoRefreshIntervalMinutes: 360 },
+        },
+      }),
+    );
+    clearConfigCache();
+    assert.equal(getNativeAgentConfig(tmp).certification?.canaryAutoRefreshIntervalMinutes, 360);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('kimi-k3 review override gives the native route a fair first attempt', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        review: { nativeTimeoutModelOverrides: { 'kimi-k3': { timeoutMs: 450_000, maxMs: 900_000 } } },
+      }),
+    );
+    assert.equal(getNativeReviewTimeoutConfig(tmp, 'kimi-k3', 0).timeoutMs, 450_000);
+    assert.equal(getNativeReviewTimeoutConfig(tmp, 'kimi-k3', 1).timeoutMs, 900_000);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
 test('native review timeout honors global and per-model overrides', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      review: {
-        nativeTimeoutMs: 400_000,
-        nativeTimeoutMaxMs: 900_000,
-        nativeTimeoutMultiplier: 2,
-        nativeTimeoutModelOverrides: {
-          'moonshotai/kimi-k3': { timeoutMs: 600_000, maxMs: 1_500_000, multiplier: 3 },
-          'gpt-4o': 200_000,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        review: {
+          nativeTimeoutMs: 400_000,
+          nativeTimeoutMaxMs: 900_000,
+          nativeTimeoutMultiplier: 2,
+          nativeTimeoutModelOverrides: {
+            'moonshotai/kimi-k3': {
+              timeoutMs: 600_000,
+              maxMs: 1_500_000,
+              multiplier: 3,
+            },
+            'gpt-4o': 200_000,
+          },
         },
-      },
-    }));
+      }),
+    );
     assert.equal(getNativeReviewTimeoutConfig(tmp, 'other-model', 1).timeoutMs, 800_000);
     assert.equal(getNativeReviewTimeoutConfig(tmp, 'moonshotai/kimi-k3', 1).timeoutMs, 1_500_000);
     assert.equal(getNativeReviewTimeoutConfig(tmp, 'native-openai/gpt-4o', 1).timeoutMs, 400_000);
@@ -353,23 +447,15 @@ test('native review timeout honors global and per-model overrides', () => {
 test('uses the schema checked out with the target worktree', () => {
   const tmp = makeTempRepo();
   try {
-    const schema = JSON.parse(
-      readFileSync(join(process.cwd(), 'wavemill-config.schema.json'), 'utf-8')
-    );
+    const schema = JSON.parse(readFileSync(join(process.cwd(), 'wavemill-config.schema.json'), 'utf-8'));
     schema.properties.prePrVerification = {
       type: 'object',
       properties: { enabled: { type: 'boolean' } },
       additionalProperties: false,
     };
-    writeFileSync(
-      join(tmp, 'wavemill-config.schema.json'),
-      JSON.stringify(schema)
-    );
+    writeFileSync(join(tmp, 'wavemill-config.schema.json'), JSON.stringify(schema));
     clearConfigCache();
-    writeFileSync(
-      join(tmp, '.wavemill-config.json'),
-      JSON.stringify({ prePrVerification: { enabled: true } })
-    );
+    writeFileSync(join(tmp, '.wavemill-config.json'), JSON.stringify({ prePrVerification: { enabled: true } }));
 
     assert.equal(loadWavemillConfig(tmp).prePrVerification?.enabled, true);
   } finally {
@@ -383,25 +469,16 @@ test('uses the schema checked out with the target worktree', () => {
 test('recompiles the validator when the schema at the same path changes', () => {
   const tmp = makeTempRepo();
   try {
-    const baseSchema = JSON.parse(
-      readFileSync(join(process.cwd(), 'wavemill-config.schema.json'), 'utf-8')
-    );
+    const baseSchema = JSON.parse(readFileSync(join(process.cwd(), 'wavemill-config.schema.json'), 'utf-8'));
     const schemaPath = join(tmp, 'wavemill-config.schema.json');
 
     // First schema rejects the property outright.
     const strict = JSON.parse(JSON.stringify(baseSchema));
     strict.additionalProperties = false;
     writeFileSync(schemaPath, JSON.stringify(strict));
-    writeFileSync(
-      join(tmp, '.wavemill-config.json'),
-      JSON.stringify({ totallyUnknownKey: true })
-    );
+    writeFileSync(join(tmp, '.wavemill-config.json'), JSON.stringify({ totallyUnknownKey: true }));
     clearConfigCache();
-    assert.throws(
-      () => loadWavemillConfig(tmp),
-      /validation failed/i,
-      'strict schema should reject the unknown key'
-    );
+    assert.throws(() => loadWavemillConfig(tmp), /validation failed/i, 'strict schema should reject the unknown key');
 
     // Replace the schema at the SAME path with one that permits it.
     const permissive = JSON.parse(JSON.stringify(baseSchema));
@@ -410,10 +487,7 @@ test('recompiles the validator when the schema at the same path changes', () => 
     clearConfigCache();
 
     // A stale cached validator would still reject here.
-    assert.doesNotThrow(
-      () => loadWavemillConfig(tmp),
-      'validator should recompile after the schema file changes'
-    );
+    assert.doesNotThrow(() => loadWavemillConfig(tmp), 'validator should recompile after the schema file changes');
   } finally {
     cleanUp(tmp);
   }
@@ -423,13 +497,16 @@ test('eval prompt size config loads through getEvalConfig', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      eval: {
-        evalsDir: '.wavemill/evals',
-        maxPromptBytes: 1234567,
-        oversizePolicy: 'truncate',
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        eval: {
+          evalsDir: '.wavemill/evals',
+          maxPromptBytes: 1234567,
+          oversizePolicy: 'truncate',
+        },
+      }),
+    );
 
     const evalConfig = getEvalConfig(tmp);
     assert.equal(evalConfig.maxPromptBytes, 1234567);
@@ -448,9 +525,12 @@ test('invalid eval oversizePolicy is rejected by schema validation', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      eval: { oversizePolicy: 'compress' },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        eval: { oversizePolicy: 'compress' },
+      }),
+    );
     assert.throws(() => loadWavemillConfig(tmp), /Config validation failed/);
   } finally {
     cleanUp(tmp);
@@ -466,9 +546,12 @@ test('too-small eval maxPromptBytes is rejected by schema validation', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      eval: { maxPromptBytes: 512 },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        eval: { maxPromptBytes: 512 },
+      }),
+    );
     assert.throws(() => loadWavemillConfig(tmp), /Config validation failed/);
   } finally {
     cleanUp(tmp);
@@ -479,9 +562,12 @@ test('eval postMergeTimeoutSeconds is accepted by schema validation', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      eval: { postMergeTimeoutSeconds: 600 },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        eval: { postMergeTimeoutSeconds: 600 },
+      }),
+    );
 
     assert.equal(getEvalConfig(tmp).postMergeTimeoutSeconds, 600);
   } finally {
@@ -498,9 +584,12 @@ test('too-small eval postMergeTimeoutSeconds is rejected by schema validation', 
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      eval: { postMergeTimeoutSeconds: 29 },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        eval: { postMergeTimeoutSeconds: 29 },
+      }),
+    );
     assert.throws(() => loadWavemillConfig(tmp), /Config validation failed/);
   } finally {
     cleanUp(tmp);
@@ -582,13 +671,16 @@ test('evalContextUpdates accessor returns explicit config values', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      evalContextUpdates: {
-        enabled: false,
-        timeoutSeconds: 90,
-        maxRetries: 2,
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        evalContextUpdates: {
+          enabled: false,
+          timeoutSeconds: 90,
+          maxRetries: 2,
+        },
+      }),
+    );
 
     assert.deepEqual(getEvalContextUpdatesConfig(tmp), {
       enabled: false,
@@ -624,19 +716,22 @@ test('harness retention accessor returns explicit config values', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      harness: {
-        retention: {
-          enabled: true,
-          mode: 'enforce',
-          tolerance: 2,
-          suitePath: 'fixtures/replay.json',
-          reportDir: '.wavemill/custom-reports',
-          baselineHarnessId: 'baseline',
-          candidateHarnessId: 'candidate',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        harness: {
+          retention: {
+            enabled: true,
+            mode: 'enforce',
+            tolerance: 2,
+            suitePath: 'fixtures/replay.json',
+            reportDir: '.wavemill/custom-reports',
+            baselineHarnessId: 'baseline',
+            candidateHarnessId: 'candidate',
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.deepEqual(getHarnessRetentionConfig(tmp), {
       enabled: true,
@@ -656,29 +751,32 @@ test('ready watchdog supports canonical and legacy alias config', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      monitor: {
-        readyWatchdog: {
-          thresholdMinutes: 20,
-          autoRecover: false,
-        },
-      },
-      ready: {
-        watchdog: {
-          enabled: false,
-          timeoutSeconds: 45,
-          stableFailureConsecutivePolls: 3,
-        },
-        migrationChecks: {
-          enabled: false,
-          autoDetectAlembic: false,
-          baseRefresh: {
-            enabled: false,
-            timeoutSeconds: 12,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        monitor: {
+          readyWatchdog: {
+            thresholdMinutes: 20,
+            autoRecover: false,
           },
         },
-      },
-    }));
+        ready: {
+          watchdog: {
+            enabled: false,
+            timeoutSeconds: 45,
+            stableFailureConsecutivePolls: 3,
+          },
+          migrationChecks: {
+            enabled: false,
+            autoDetectAlembic: false,
+            baseRefresh: {
+              enabled: false,
+              timeoutSeconds: 12,
+            },
+          },
+        },
+      }),
+    );
 
     assert.deepEqual(getReadyWatchdogConfig(tmp), {
       enabled: false,
@@ -706,13 +804,16 @@ test('invalid evalContextUpdates values fail validation', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      evalContextUpdates: {
-        enabled: 'yes',
-        timeoutSeconds: 4,
-        maxRetries: 4,
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        evalContextUpdates: {
+          enabled: 'yes',
+          timeoutSeconds: 4,
+          maxRetries: 4,
+        },
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -732,13 +833,16 @@ test('ready watchdog schema rejects thresholdMinutes below 1', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      ready: {
-        watchdog: {
-          thresholdMinutes: 0,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        ready: {
+          watchdog: {
+            thresholdMinutes: 0,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -754,17 +858,20 @@ test('invalid runtime resource variant fails validation', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      resources: {
-        runtimeSelection: {
-          surfaces: {
-            planner: {
-              variant: 'beta',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        resources: {
+          runtimeSelection: {
+            surfaces: {
+              planner: {
+                variant: 'beta',
+              },
             },
           },
         },
-      },
-    }));
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -780,15 +887,17 @@ test('invalid runtime resource variant fails validation', () => {
   }
 });
 
-
 test('invalid type in config throws validation error', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
     // mill.maxParallel should be integer, not string
-    writeConfig(tmp, JSON.stringify({
-      mill: { maxParallel: 'five' }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        mill: { maxParallel: 'five' },
+      }),
+    );
     if (hasAjv) {
       assert.throws(() => {
         loadWavemillConfig(tmp);
@@ -819,13 +928,16 @@ test('enabled deepseek provider without apiKeyEnv fails validation', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      providers: {
-        deepseek: {
-          enabled: true,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        providers: {
+          deepseek: {
+            enabled: true,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -845,16 +957,19 @@ test('deepseek provider accessor returns typed config', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      providers: {
-        deepseek: {
-          enabled: true,
-          apiKeyEnv: 'CUSTOM_DEEPSEEK_KEY',
-          baseUrl: 'https://api.deepseek.com/anthropic',
-          effortLevel: 'high',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        providers: {
+          deepseek: {
+            enabled: true,
+            apiKeyEnv: 'CUSTOM_DEEPSEEK_KEY',
+            baseUrl: 'https://api.deepseek.com/anthropic',
+            effortLevel: 'high',
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.deepEqual(getDeepSeekProviderConfig(tmp), {
       enabled: true,
@@ -882,18 +997,21 @@ test('getDeepSeekLauncherConfig returns launcher sub-config', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      providers: {
-        deepseek: {
-          apiKeyEnv: 'DEEPSEEK_API_KEY',
-          launcher: {
-            model: 'deepseek-v4-pro',
-            subagentModel: 'deepseek-v4-flash',
-            stateDir: '.wavemill/deepseek-state/custom',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        providers: {
+          deepseek: {
+            apiKeyEnv: 'DEEPSEEK_API_KEY',
+            launcher: {
+              model: 'deepseek-v4-pro',
+              subagentModel: 'deepseek-v4-flash',
+              stateDir: '.wavemill/deepseek-state/custom',
+            },
           },
         },
-      },
-    }));
+      }),
+    );
 
     assert.deepEqual(getDeepSeekLauncherConfig(tmp), {
       model: 'deepseek-v4-pro',
@@ -909,16 +1027,19 @@ test('launcher config with secretSource is returned', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      providers: {
-        deepseek: {
-          apiKeyEnv: 'DEEPSEEK_API_KEY',
-          launcher: {
-            secretSource: 'MY_CUSTOM_KEY_ENV',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        providers: {
+          deepseek: {
+            apiKeyEnv: 'DEEPSEEK_API_KEY',
+            launcher: {
+              secretSource: 'MY_CUSTOM_KEY_ENV',
+            },
           },
         },
-      },
-    }));
+      }),
+    );
 
     const launcherConfig = getDeepSeekLauncherConfig(tmp);
     assert.equal(launcherConfig.secretSource, 'MY_CUSTOM_KEY_ENV');
@@ -931,15 +1052,18 @@ test('deepseek provider accessor still returns typed config with launcher presen
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      providers: {
-        deepseek: {
-          enabled: true,
-          apiKeyEnv: 'DEEPSEEK_API_KEY',
-          launcher: { model: 'deepseek-v4-flash' },
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        providers: {
+          deepseek: {
+            enabled: true,
+            apiKeyEnv: 'DEEPSEEK_API_KEY',
+            launcher: { model: 'deepseek-v4-flash' },
+          },
         },
-      },
-    }));
+      }),
+    );
 
     const provider = getDeepSeekProviderConfig(tmp);
     assert.equal(provider.enabled, true);
@@ -954,9 +1078,12 @@ test('invalid challenge rate throws validation error', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      challenge: { enabled: true, rate: 2 }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        challenge: { enabled: true, rate: 2 },
+      }),
+    );
     if (hasAjv) {
       assert.throws(() => {
         loadWavemillConfig(tmp);
@@ -975,9 +1102,12 @@ test('invalid challenge scheduler threshold throws validation error', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      challengeScheduler: { confidenceThreshold: 2 }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        challengeScheduler: { confidenceThreshold: 2 },
+      }),
+    );
     if (hasAjv) {
       assert.throws(() => {
         loadWavemillConfig(tmp);
@@ -996,11 +1126,14 @@ test('challenge.allowDeepseek accepts boolean true', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      challenge: {
-        allowDeepseek: true,
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        challenge: {
+          allowDeepseek: true,
+        },
+      }),
+    );
 
     const config = loadWavemillConfig(tmp);
     assert.equal(config.challenge?.allowDeepseek, true);
@@ -1013,11 +1146,14 @@ test('challenge.allowDeepseek rejects non-boolean values', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      challenge: {
-        allowDeepseek: 'yes',
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        challenge: {
+          allowDeepseek: 'yes',
+        },
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -1058,9 +1194,12 @@ test('challenge hard-failure retry max uses explicit config', () => {
   try {
     delete process.env.WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES;
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      challenge: { eval: { hardFailureRetryMaxAttempts: 5 } },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        challenge: { eval: { hardFailureRetryMaxAttempts: 5 } },
+      }),
+    );
 
     assert.equal(getChallengeEvalHardFailureRetryMaxAttempts(tmp), 5);
   } finally {
@@ -1079,9 +1218,12 @@ test('challenge hard-failure env override wins over config', () => {
   try {
     process.env.WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES = '3';
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      challenge: { eval: { hardFailureRetryMaxAttempts: 5 } },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        challenge: { eval: { hardFailureRetryMaxAttempts: 5 } },
+      }),
+    );
 
     assert.equal(getChallengeEvalHardFailureRetryMaxAttempts(tmp), 3);
   } finally {
@@ -1100,9 +1242,12 @@ test('challenge soft retry max does not affect hard-failure retry max', () => {
   try {
     delete process.env.WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES;
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      challenge: { eval: { retryMaxAttempts: 7 } },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        challenge: { eval: { retryMaxAttempts: 7 } },
+      }),
+    );
 
     assert.equal(getChallengeEvalHardFailureRetryMaxAttempts(tmp), 2);
     assert.equal(loadWavemillConfig(tmp).challenge?.eval?.retryMaxAttempts, 7);
@@ -1120,9 +1265,12 @@ test('invalid challenge hard-failure config fails schema validation', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      challenge: { eval: { hardFailureRetryMaxAttempts: -1 } },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        challenge: { eval: { hardFailureRetryMaxAttempts: -1 } },
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -1144,9 +1292,14 @@ test('invalid hard-failure env falls through to hard-failure config only', () =>
   try {
     process.env.WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES = 'bad';
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      challenge: { eval: { retryMaxAttempts: 9, hardFailureRetryMaxAttempts: 4 } },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        challenge: {
+          eval: { retryMaxAttempts: 9, hardFailureRetryMaxAttempts: 4 },
+        },
+      }),
+    );
 
     assert.equal(getChallengeEvalHardFailureRetryMaxAttempts(tmp), 4);
   } finally {
@@ -1163,15 +1316,18 @@ test('invalid quota override status throws validation error', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      quota: {
-        manualOverrides: {
-          sonnet: {
-            status: 'warning',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        quota: {
+          manualOverrides: {
+            sonnet: {
+              status: 'warning',
+            },
           },
         },
-      },
-    }));
+      }),
+    );
     if (hasAjv) {
       assert.throws(() => {
         loadWavemillConfig(tmp);
@@ -1190,10 +1346,13 @@ test('unknown fields are allowed (schema additionalProperties: false)', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      router: { enabled: true },
-      unknownField: 'should be rejected'
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        router: { enabled: true },
+        unknownField: 'should be rejected',
+      }),
+    );
     if (hasAjv) {
       // Schema has additionalProperties: false, so this should throw
       assert.throws(() => {
@@ -1213,22 +1372,25 @@ test('getQuotaConfig returns configured overrides and thresholds', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      quota: {
-        manualOverrides: {
-          'claude-sonnet-4-6': {
-            status: 'degrading',
-            reason: 'known provider load',
-            expiresAt: '2026-04-20T00:00:00.000Z',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        quota: {
+          manualOverrides: {
+            'claude-sonnet-4-6': {
+              status: 'degrading',
+              reason: 'known provider load',
+              expiresAt: '2026-04-20T00:00:00.000Z',
+            },
+          },
+          thresholds: {
+            volumeThresholdPercent: 75,
+            budgetThresholdPercent: 30,
+            nearLimitCount: 4,
           },
         },
-        thresholds: {
-          volumeThresholdPercent: 75,
-          budgetThresholdPercent: 30,
-          nearLimitCount: 4,
-        },
-      },
-    }));
+      }),
+    );
 
     const quota = getQuotaConfig(tmp);
     assert.equal(quota.manualOverrides?.['claude-sonnet-4-6']?.status, 'degrading');
@@ -1266,15 +1428,18 @@ test('challenge scheduler accessor returns configured values', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      challengeScheduler: {
-        enabled: true,
-        confidenceThreshold: 0.55,
-        newModelChallengeCount: 3,
-        minEvalRecordsPerStage: 8,
-        maxConcurrentChallenges: 2,
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        challengeScheduler: {
+          enabled: true,
+          confidenceThreshold: 0.55,
+          newModelChallengeCount: 3,
+          minEvalRecordsPerStage: 8,
+          maxConcurrentChallenges: 2,
+        },
+      }),
+    );
 
     const config = getChallengeSchedulerConfig(tmp);
     assert.equal(config.enabled, true);
@@ -1444,10 +1609,13 @@ test('getRouterConfig returns router section', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      router: { enabled: true, minRecords: 10 },
-      eval: { evalsDir: '.wavemill/evals' },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        router: { enabled: true, minRecords: 10 },
+        eval: { evalsDir: '.wavemill/evals' },
+      }),
+    );
 
     const routerConfig = getRouterConfig(tmp);
     assert.equal(routerConfig.enabled, true);
@@ -1461,13 +1629,16 @@ test('getRouterConfig accepts router.capabilityFiltering.enabled', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      router: {
-        capabilityFiltering: {
-          enabled: true,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        router: {
+          capabilityFiltering: {
+            enabled: true,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     const routerConfig = getRouterConfig(tmp);
     assert.equal(routerConfig.capabilityFiltering?.enabled, true);
@@ -1481,11 +1652,14 @@ test('router capability filtering defaults to disabled when omitted', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      router: {
-        enabled: true,
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        router: {
+          enabled: true,
+        },
+      }),
+    );
 
     assert.equal(isRouterCapabilityFilteringEnabled(tmp), false);
   } finally {
@@ -1497,19 +1671,19 @@ test('router capability filtering rejects unexpected nested properties', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      router: {
-        capabilityFiltering: {
-          enabled: true,
-          mode: 'strict',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        router: {
+          capabilityFiltering: {
+            enabled: true,
+            mode: 'strict',
+          },
         },
-      },
-    }));
-
-    assert.throws(
-      () => loadWavemillConfig(tmp),
-      /capabilityFiltering/,
+      }),
     );
+
+    assert.throws(() => loadWavemillConfig(tmp), /capabilityFiltering/);
   } finally {
     cleanUp(tmp);
   }
@@ -1519,14 +1693,17 @@ test('getChallengeConfig returns challenge section', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      challenge: {
-        enabled: true,
-        rate: 0.5,
-        allowDeepseek: true,
-        autoMergeWinner: true,
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        challenge: {
+          enabled: true,
+          rate: 0.5,
+          allowDeepseek: true,
+          autoMergeWinner: true,
+        },
+      }),
+    );
 
     const challengeConfig = getChallengeConfig(tmp);
     assert.equal(challengeConfig.enabled, true);
@@ -1576,12 +1753,15 @@ test('getEvalConfig returns eval section', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      eval: {
-        evalsDir: '.wavemill/evals',
-        judge: { model: 'claude-haiku-4-5-20251001' }
-      }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        eval: {
+          evalsDir: '.wavemill/evals',
+          judge: { model: 'claude-haiku-4-5-20251001' },
+        },
+      }),
+    );
 
     const evalConfig = getEvalConfig(tmp);
     assert.equal(evalConfig.evalsDir, '.wavemill/evals');
@@ -1595,14 +1775,17 @@ test('getMintEligibilityConfig returns eval mintEligibility section', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      eval: {
-        mintEligibility: {
-          coverageThreshold: 0.9,
-          maxInvalidRouteRate: 0.05,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        eval: {
+          mintEligibility: {
+            coverageThreshold: 0.9,
+            maxInvalidRouteRate: 0.05,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     const mintConfig = getMintEligibilityConfig(tmp);
     assert.equal(mintConfig?.coverageThreshold, 0.9);
@@ -1616,12 +1799,19 @@ test('getMillConfig returns mill section', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      git: {
-        fetchTtlSeconds: 30,
-      },
-      mill: { maxParallel: 5, baseBranch: 'develop', defaultMaxCostUsd: 12.5 }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        git: {
+          fetchTtlSeconds: 30,
+        },
+        mill: {
+          maxParallel: 5,
+          baseBranch: 'develop',
+          defaultMaxCostUsd: 12.5,
+        },
+      }),
+    );
 
     const millConfig = getMillConfig(tmp);
     const config = loadWavemillConfig(tmp);
@@ -1666,13 +1856,16 @@ test('getExpansionHandshakeConfig returns recover when configured', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      mill: {
-        expansionHandshake: {
-          policy: 'recover',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        mill: {
+          expansionHandshake: {
+            policy: 'recover',
+          },
         },
-      },
-    }));
+      }),
+    );
     assert.deepEqual(getExpansionHandshakeConfig(tmp), {
       policy: 'recover',
       timeoutSeconds: 300,
@@ -1686,13 +1879,16 @@ test('getExpansionHandshakeConfig returns warn when configured', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      mill: {
-        expansionHandshake: {
-          policy: 'warn',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        mill: {
+          expansionHandshake: {
+            policy: 'warn',
+          },
         },
-      },
-    }));
+      }),
+    );
     assert.deepEqual(getExpansionHandshakeConfig(tmp), {
       policy: 'warn',
       timeoutSeconds: 300,
@@ -1706,14 +1902,17 @@ test('getExpansionHandshakeConfig returns configured recovery timeout', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      mill: {
-        expansionHandshake: {
-          policy: 'recover',
-          timeoutSeconds: 180,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        mill: {
+          expansionHandshake: {
+            policy: 'recover',
+            timeoutSeconds: 180,
+          },
         },
-      },
-    }));
+      }),
+    );
     assert.deepEqual(getExpansionHandshakeConfig(tmp), {
       policy: 'recover',
       timeoutSeconds: 180,
@@ -1727,13 +1926,16 @@ test('invalid expansionHandshake policy fails validation', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      mill: {
-        expansionHandshake: {
-          policy: 'silent',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        mill: {
+          expansionHandshake: {
+            policy: 'silent',
+          },
         },
-      },
-    }));
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -1753,13 +1955,16 @@ test('invalid expansionHandshake timeout fails validation', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      mill: {
-        expansionHandshake: {
-          timeoutSeconds: 0,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        mill: {
+          expansionHandshake: {
+            timeoutSeconds: 0,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -1779,9 +1984,12 @@ test('getMaxCostUsd returns configured budget', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      mill: { defaultMaxCostUsd: 4.25 }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        mill: { defaultMaxCostUsd: 4.25 },
+      }),
+    );
 
     assert.equal(getMaxCostUsd(tmp), 4.25);
   } finally {
@@ -1793,9 +2001,12 @@ test('getMaxCostUsd returns undefined when unset', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      mill: { maxParallel: 5 }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        mill: { maxParallel: 5 },
+      }),
+    );
 
     assert.equal(getMaxCostUsd(tmp), undefined);
   } finally {
@@ -1819,12 +2030,15 @@ test('getDashboardConfig returns dashboard section', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      dashboard: {
-        verbosity: 'debug',
-        logToFile: false,
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        dashboard: {
+          verbosity: 'debug',
+          logToFile: false,
+        },
+      }),
+    );
 
     const dashboardConfig = getDashboardConfig(tmp);
     assert.equal(dashboardConfig.verbosity, 'debug');
@@ -1853,12 +2067,15 @@ test('getProjectContextConfig returns explicit overrides', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      projectContext: {
-        compactionThresholdKb: 180,
-        recentWorkKeep: 40,
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        projectContext: {
+          compactionThresholdKb: 180,
+          recentWorkKeep: 40,
+        },
+      }),
+    );
 
     assert.deepEqual(getProjectContextConfig(tmp), {
       compactionThresholdKb: 180,
@@ -1873,15 +2090,18 @@ test('getHokusaiSubmissionConfig returns hokusai section', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      hokusai: {
-        dataSubmission: {
-          enabled: false,
-          consentVersion: '2.0',
-          endpoint: 'https://example.com/hokusai',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        hokusai: {
+          dataSubmission: {
+            enabled: false,
+            consentVersion: '2.0',
+            endpoint: 'https://example.com/hokusai',
+          },
         },
-      },
-    }));
+      }),
+    );
 
     const hokusaiConfig = getHokusaiSubmissionConfig(tmp);
     assert.equal(hokusaiConfig.enabled, false);
@@ -1896,15 +2116,18 @@ test('getHokusaiRouterConfig returns router.hokusai section including apiKeyEnv'
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      router: {
-        hokusai: {
-          endpoint: 'https://api.hokus.ai/api/v1/models/30/predict',
-          apiKeyEnv: 'CUSTOM_HOKUSAI_TOKEN',
-          timeout: 9000,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        router: {
+          hokusai: {
+            endpoint: 'https://api.hokus.ai/api/v1/models/30/predict',
+            apiKeyEnv: 'CUSTOM_HOKUSAI_TOKEN',
+            timeout: 9000,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     const hokusaiConfig = getHokusaiRouterConfig(tmp);
     assert.equal(hokusaiConfig.endpoint, 'https://api.hokus.ai/api/v1/models/30/predict');
@@ -1941,21 +2164,24 @@ test('getHokusaiContributionsConfig returns configured values', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      hokusai: {
-        contributions: {
-          enabled: true,
-          endpoint: 'https://example.com/contributions',
-          endpointTokenEnv: 'HOKUSAI_TOKEN',
-          batchSize: 25,
-          exportPath: '.wavemill/hokusai-export',
-          maxRetries: 7,
-          backoffInitialMs: 2000,
-          backoffMaxMs: 600000,
-          timeoutMs: 45000,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        hokusai: {
+          contributions: {
+            enabled: true,
+            endpoint: 'https://example.com/contributions',
+            endpointTokenEnv: 'HOKUSAI_TOKEN',
+            batchSize: 25,
+            exportPath: '.wavemill/hokusai-export',
+            maxRetries: 7,
+            backoffInitialMs: 2000,
+            backoffMaxMs: 600000,
+            timeoutMs: 45000,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.deepEqual(getHokusaiContributionsConfig(tmp), {
       enabled: true,
@@ -1977,9 +2203,12 @@ test('getUiConfig returns ui section', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      ui: { visualVerification: false, devServer: 'http://localhost:3000' }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        ui: { visualVerification: false, devServer: 'http://localhost:3000' },
+      }),
+    );
 
     const uiConfig = getUiConfig(tmp);
     assert.equal(uiConfig.visualVerification, false);
@@ -2030,22 +2259,25 @@ test('nested config values are accessible', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      eval: {
-        judge: { model: 'claude-sonnet-4-5-20250929', provider: 'anthropic' },
-        interventionPenalties: {
-          reviewComment: 0.1,
-          postPrCommit: 0.15,
-          manualEdit: 0.2
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        eval: {
+          judge: { model: 'claude-sonnet-4-5-20250929', provider: 'anthropic' },
+          interventionPenalties: {
+            reviewComment: 0.1,
+            postPrCommit: 0.15,
+            manualEdit: 0.2,
+          },
+          pricing: {
+            'claude-opus-4-6': {
+              inputCostPerMTok: 15,
+              outputCostPerMTok: 75,
+            },
+          },
         },
-        pricing: {
-          'claude-opus-4-6': {
-            inputCostPerMTok: 15,
-            outputCostPerMTok: 75
-          }
-        }
-      }
-    }));
+      }),
+    );
 
     const config = loadWavemillConfig(tmp);
     assert.equal(config.eval?.judge?.model, 'claude-sonnet-4-5-20250929');
@@ -2060,24 +2292,30 @@ test('all top-level sections can coexist', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      linear: { project: 'My Project' },
-      mill: { maxParallel: 3 },
-      expand: { maxSelect: 2 },
-      plan: { maxDisplay: 5 },
-      eval: { evalsDir: '.wavemill/evals' },
-      autoEval: true,
-      hokusai: {
-        dataSubmission: { enabled: false, consentVersion: '1.0' },
-        contributions: { enabled: true, endpoint: null, batchSize: 10 },
-      },
-      router: { enabled: true },
-      validation: { enabled: true },
-      constraints: { enabled: false },
-      ui: { visualVerification: true },
-      review: { maxIterations: 3 },
-      permissions: { autoApprovePatterns: ['git status*'], worktreeMode: { enabled: true } }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        linear: { project: 'My Project' },
+        mill: { maxParallel: 3 },
+        expand: { maxSelect: 2 },
+        plan: { maxDisplay: 5 },
+        eval: { evalsDir: '.wavemill/evals' },
+        autoEval: true,
+        hokusai: {
+          dataSubmission: { enabled: false, consentVersion: '1.0' },
+          contributions: { enabled: true, endpoint: null, batchSize: 10 },
+        },
+        router: { enabled: true },
+        validation: { enabled: true },
+        constraints: { enabled: false },
+        ui: { visualVerification: true },
+        review: { maxIterations: 3 },
+        permissions: {
+          autoApprovePatterns: ['git status*'],
+          worktreeMode: { enabled: true },
+        },
+      }),
+    );
 
     const config = loadWavemillConfig(tmp);
     assert.equal(config.linear?.project, 'My Project');
@@ -2104,12 +2342,15 @@ test('getPermissionsConfig returns permissions section', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      permissions: {
-        autoApprovePatterns: ['git status*', 'gh pr view*', 'ls *'],
-        worktreeMode: { enabled: true, autoApproveReadOnly: true }
-      }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        permissions: {
+          autoApprovePatterns: ['git status*', 'gh pr view*', 'ls *'],
+          worktreeMode: { enabled: true, autoApproveReadOnly: true },
+        },
+      }),
+    );
 
     const permissionsConfig = getPermissionsConfig(tmp);
     assert.equal(permissionsConfig.autoApprovePatterns?.length, 3);
@@ -2164,12 +2405,15 @@ test('getReadyConfig honors explicit check lists', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      ready: {
-        checks: ['ci-status', 'merge-conflicts'],
-        requiredChecks: ['merge-conflicts']
-      }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        ready: {
+          checks: ['ci-status', 'merge-conflicts'],
+          requiredChecks: ['merge-conflicts'],
+        },
+      }),
+    );
 
     const readyConfig = getReadyConfig(tmp);
     assert.deepEqual(readyConfig.checks, ['ci-status', 'merge-conflicts']);
@@ -2183,11 +2427,14 @@ test('getReadyConfig honors explicit migration patterns', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      ready: {
-        migrationPatterns: ['db/revisions/', 'custom_migrations/']
-      }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        ready: {
+          migrationPatterns: ['db/revisions/', 'custom_migrations/'],
+        },
+      }),
+    );
 
     const readyConfig = getReadyConfig(tmp);
     assert.deepEqual(readyConfig.migrationPatterns, ['db/revisions/', 'custom_migrations/']);
@@ -2200,11 +2447,14 @@ test('getReadyConfig returns migrationKind when configured', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      ready: {
-        migrationKind: 'sql',
-      }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        ready: {
+          migrationKind: 'sql',
+        },
+      }),
+    );
 
     const readyConfig = getReadyConfig(tmp);
     assert.equal(readyConfig.migrationKind, 'sql');
@@ -2217,12 +2467,15 @@ test('ready.requiredChecks must be a subset of ready.checks', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      ready: {
-        checks: ['ci-status'],
-        requiredChecks: ['forbidden-ddl'],
-      }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        ready: {
+          checks: ['ci-status'],
+          requiredChecks: ['forbidden-ddl'],
+        },
+      }),
+    );
 
     assert.throws(() => loadWavemillConfig(tmp), /ready\/requiredChecks/);
   } finally {
@@ -2234,12 +2487,15 @@ test('ready.requiredChecks accepts merge-conflicts alias when checks uses merge-
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      ready: {
-        checks: ['merge-conflict', 'ci-status'],
-        requiredChecks: ['merge-conflicts'],
-      }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        ready: {
+          checks: ['merge-conflict', 'ci-status'],
+          requiredChecks: ['merge-conflicts'],
+        },
+      }),
+    );
 
     assert.doesNotThrow(() => loadWavemillConfig(tmp));
   } finally {
@@ -2251,15 +2507,18 @@ test('getReadyConfig respects explicit remediation overrides', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      ready: {
-        remediation: {
-          enabled: false,
-          maxAttempts: 5,
-          agentCmd: 'claude',
-        }
-      }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        ready: {
+          remediation: {
+            enabled: false,
+            maxAttempts: 5,
+            agentCmd: 'claude',
+          },
+        },
+      }),
+    );
 
     const readyConfig = getReadyConfig(tmp);
     assert.deepEqual(readyConfig.remediation, {
@@ -2275,16 +2534,19 @@ test('getReadyConfig respects explicit remediation overrides', () => {
 test('ready failure classifier and verification accessors return configured values', () => {
   const tmp = makeTempRepo();
   try {
-    writeConfig(tmp, JSON.stringify({
-      ready: {
-        transientRetryBudget: 5,
-        remediationLogMaxBytes: 1234,
-        verificationGatingEnabled: false,
-        localCommandMap: {
-          'Unit Tests': 'npm test',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        ready: {
+          transientRetryBudget: 5,
+          remediationLogMaxBytes: 1234,
+          verificationGatingEnabled: false,
+          localCommandMap: {
+            'Unit Tests': 'npm test',
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.deepEqual(getReadyFailureClassifierConfig(tmp), {
       transientRetryBudget: 5,
@@ -2323,15 +2585,18 @@ test('getMergeQueueConfig honors explicit overrides', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      mergeQueue: {
-        enabled: false,
-        maxConcurrentCandidates: 3,
-        stuckTimeoutSeconds: 1200,
-        conflictGroupingEnabled: false,
-        skipCooldownSeconds: 0,
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        mergeQueue: {
+          enabled: false,
+          maxConcurrentCandidates: 3,
+          stuckTimeoutSeconds: 1200,
+          conflictGroupingEnabled: false,
+          skipCooldownSeconds: 0,
+        },
+      }),
+    );
 
     assert.deepEqual(getMergeQueueConfig(tmp), {
       enabled: false,
@@ -2349,11 +2614,14 @@ test('mergeQueue schema rejects invalid maxConcurrentCandidates', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      mergeQueue: {
-        maxConcurrentCandidates: 0,
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        mergeQueue: {
+          maxConcurrentCandidates: 0,
+        },
+      }),
+    );
 
     assert.throws(() => loadWavemillConfig(tmp), /Config validation failed/);
   } finally {
@@ -2365,18 +2633,24 @@ test('mergeQueue local overlay merges onto base config', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeFileSync(join(tmp, '.wavemill-config.json'), JSON.stringify({
-      mergeQueue: {
-        enabled: true,
-        maxConcurrentCandidates: 2,
-        stuckTimeoutSeconds: 900,
-      },
-    }));
-    writeFileSync(join(tmp, '.wavemill-config.local.json'), JSON.stringify({
-      mergeQueue: {
-        maxConcurrentCandidates: 4,
-      },
-    }));
+    writeFileSync(
+      join(tmp, '.wavemill-config.json'),
+      JSON.stringify({
+        mergeQueue: {
+          enabled: true,
+          maxConcurrentCandidates: 2,
+          stuckTimeoutSeconds: 900,
+        },
+      }),
+    );
+    writeFileSync(
+      join(tmp, '.wavemill-config.local.json'),
+      JSON.stringify({
+        mergeQueue: {
+          maxConcurrentCandidates: 4,
+        },
+      }),
+    );
 
     assert.deepEqual(getMergeQueueConfig(tmp), {
       enabled: true,
@@ -2394,14 +2668,17 @@ test('getReadyConfig honors explicit danger labels and forbidden patterns', () =
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      ready: {
-        migrationDangerLabels: {
-          drop_table: 'db-risk-approved',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        ready: {
+          migrationDangerLabels: {
+            drop_table: 'db-risk-approved',
+          },
+          migrationForbiddenPatterns: ['custom-online-ddl'],
         },
-        migrationForbiddenPatterns: ['custom-online-ddl'],
-      }
-    }));
+      }),
+    );
 
     const readyConfig = getReadyConfig(tmp);
     assert.deepEqual(readyConfig.migrationDangerLabels, {
@@ -2431,9 +2708,12 @@ test('getIntegrationConfig returns defaults for an empty section', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: {},
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: {},
+      }),
+    );
 
     assert.deepEqual(getIntegrationConfig(tmp), INTEGRATION_DEFAULTS);
   } finally {
@@ -2445,11 +2725,14 @@ test('getIntegrationConfig uses mill base branch when integration branch is not 
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      mill: {
-        baseBranch: 'main',
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        mill: {
+          baseBranch: 'main',
+        },
+      }),
+    );
 
     assert.deepEqual(getIntegrationConfig(tmp), {
       ...INTEGRATION_DEFAULTS,
@@ -2464,12 +2747,15 @@ test('getIntegrationConfig merges partial overrides with defaults', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: {
-        enabled: true,
-        mergeMethod: 'merge',
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: {
+          enabled: true,
+          mergeMethod: 'merge',
+        },
+      }),
+    );
 
     assert.deepEqual(getIntegrationConfig(tmp), {
       ...INTEGRATION_DEFAULTS,
@@ -2528,9 +2814,12 @@ test('getIntegrationConfig advisoryChecks override replaces the default list', (
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: { advisoryChecks: ['Some Other Check', 'Another'] },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: { advisoryChecks: ['Some Other Check', 'Another'] },
+      }),
+    );
 
     assert.deepEqual(getIntegrationConfig(tmp).advisoryChecks, ['Some Other Check', 'Another']);
   } finally {
@@ -2542,9 +2831,12 @@ test('getIntegrationConfig accepts an empty advisoryChecks list (opt-out)', () =
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: { advisoryChecks: [] },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: { advisoryChecks: [] },
+      }),
+    );
 
     assert.deepEqual(getIntegrationConfig(tmp).advisoryChecks, []);
   } finally {
@@ -2556,9 +2848,12 @@ test('schema rejects non-string advisoryChecks entries', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: { advisoryChecks: [123] },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: { advisoryChecks: [123] },
+      }),
+    );
 
     assert.throws(() => loadWavemillConfig(tmp), /advisoryChecks/);
   } finally {
@@ -2594,13 +2889,16 @@ test('getReviewMergeConfig merges partial overrides with defaults', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      reviewMerge: {
-        crossPrRevertCheck: {
-          maxRecentMerges: 12,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        reviewMerge: {
+          crossPrRevertCheck: {
+            maxRecentMerges: 12,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.deepEqual(getReviewMergeConfig(tmp), {
       crossPrRevertCheck: {
@@ -2617,13 +2915,16 @@ test('schema rejects invalid reviewMerge.crossPrRevertCheck.maxRecentMerges valu
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      reviewMerge: {
-        crossPrRevertCheck: {
-          maxRecentMerges: 0,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        reviewMerge: {
+          crossPrRevertCheck: {
+            maxRecentMerges: 0,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.throws(() => loadWavemillConfig(tmp), /maxRecentMerges/);
   } finally {
@@ -2635,11 +2936,14 @@ test('getPromotionConfig merges partial overrides with defaults', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      promotion: {
-        protectedIntegrationStrategy: 'block',
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        promotion: {
+          protectedIntegrationStrategy: 'block',
+        },
+      }),
+    );
 
     assert.deepEqual(getPromotionConfig(tmp), {
       ...PROMOTION_DEFAULTS,
@@ -2670,11 +2974,14 @@ test('invalid promotion protectedIntegrationStrategy throws validation error', (
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      promotion: {
-        protectedIntegrationStrategy: 'rewrite-anyway',
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        promotion: {
+          protectedIntegrationStrategy: 'rewrite-anyway',
+        },
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -2694,11 +3001,14 @@ test('invalid integration mergeMethod throws validation error', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: {
-        mergeMethod: 'fast-forward',
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: {
+          mergeMethod: 'fast-forward',
+        },
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -2718,11 +3028,14 @@ test('invalid integration highRiskPolicy throws validation error', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: {
-        highRiskPolicy: 'yolo',
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: {
+          highRiskPolicy: 'yolo',
+        },
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -2742,11 +3055,14 @@ test('invalid integration enabled type throws validation error', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: {
-        enabled: 'yes',
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: {
+          enabled: 'yes',
+        },
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -2766,11 +3082,14 @@ test('invalid integration autoUpdatePromotionBranch type throws validation error
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: {
-        autoUpdatePromotionBranch: 'yes',
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: {
+          autoUpdatePromotionBranch: 'yes',
+        },
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -2794,9 +3113,9 @@ test('repo config remains valid and integration defaults stay opt-in', () => {
   // Assert on the shipped base file directly, not the merged config. A
   // developer running with `.wavemill-config.local.json` may have integration
   // enabled locally; this test guards the canonical default that ships in main.
-  const shipped = JSON.parse(
-    readFileSync(join(process.cwd(), '.wavemill-config.json'), 'utf-8'),
-  ) as { integration?: unknown };
+  const shipped = JSON.parse(readFileSync(join(process.cwd(), '.wavemill-config.json'), 'utf-8')) as {
+    integration?: unknown;
+  };
   if (shipped.integration !== undefined) {
     assert.equal((shipped.integration as { enabled?: unknown }).enabled, false);
   }
@@ -2806,13 +3125,16 @@ test('ready remediation maxAttempts must be at least 1', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      ready: {
-        remediation: {
-          maxAttempts: 0,
-        }
-      }
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        ready: {
+          remediation: {
+            maxAttempts: 0,
+          },
+        },
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -2831,14 +3153,17 @@ test('integration ready policy accessor returns defaults with branch fallback', 
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: {
-        integrationBranch: 'auto/staging',
-        readyPolicy: {
-          enabled: true,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: {
+          integrationBranch: 'auto/staging',
+          readyPolicy: {
+            enabled: true,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.deepEqual(getIntegrationReadyPolicy(tmp), {
       enabled: true,
@@ -2855,13 +3180,16 @@ test('invalid integration ready policy risk setting throws validation error', ()
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: {
-        readyPolicy: {
-          riskPolicy: 'manual',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: {
+          readyPolicy: {
+            riskPolicy: 'manual',
+          },
         },
-      },
-    }));
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -2881,11 +3209,14 @@ test('eval success threshold accepts values between 0 and 1', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      eval: {
-        successThreshold: 0.65,
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        eval: {
+          successThreshold: 0.65,
+        },
+      }),
+    );
 
     const config = loadWavemillConfig(tmp);
     assert.equal(config.eval?.successThreshold, 0.65);
@@ -2898,11 +3229,14 @@ test('eval success threshold rejects values above 1', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      eval: {
-        successThreshold: 1.1,
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        eval: {
+          successThreshold: 1.1,
+        },
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -2922,11 +3256,14 @@ test('eval success threshold rejects values below 0', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      eval: {
-        successThreshold: -0.1,
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        eval: {
+          successThreshold: -0.1,
+        },
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -2946,11 +3283,14 @@ test('eval success threshold rejects non-numeric values', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      eval: {
-        successThreshold: '0.5',
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        eval: {
+          successThreshold: '0.5',
+        },
+      }),
+    );
 
     if (hasAjv) {
       assert.throws(() => {
@@ -2970,13 +3310,16 @@ test('agents config accepts family alias, pinned ID, and inherit selectors', () 
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      agents: {
-        planner: { model: 'claude-opus-4-7' },
-        coder: { model: 'opus' },
-        reviewer: { model: 'inherit' },
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        agents: {
+          planner: { model: 'claude-opus-4-7' },
+          coder: { model: 'opus' },
+          reviewer: { model: 'inherit' },
+        },
+      }),
+    );
 
     const config = loadWavemillConfig(tmp);
     assert.equal(config.agents?.planner?.model, 'claude-opus-4-7');
@@ -2992,11 +3335,14 @@ test('agents config rejects invalid model selector strings with path context', (
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      agents: {
-        coder: { model: 'not a valid selector' },
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        agents: {
+          coder: { model: 'not a valid selector' },
+        },
+      }),
+    );
 
     assert.throws(() => {
       loadWavemillConfig(tmp);
@@ -3010,11 +3356,14 @@ test('agents config rejects empty model selectors', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      agents: {
-        coder: { model: '' },
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        agents: {
+          coder: { model: '' },
+        },
+      }),
+    );
 
     assert.throws(() => {
       loadWavemillConfig(tmp);
@@ -3029,11 +3378,14 @@ test('agents config still enforces string shape validation', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      agents: {
-        coder: { model: 123 },
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        agents: {
+          coder: { model: 123 },
+        },
+      }),
+    );
 
     assert.throws(() => {
       loadWavemillConfig(tmp);
@@ -3047,9 +3399,12 @@ test('getAgentsConfig returns empty object when agents config is absent', () => 
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      mill: { maxParallel: 3 },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        mill: { maxParallel: 3 },
+      }),
+    );
 
     assert.deepEqual(getAgentsConfig(tmp), {});
   } finally {
@@ -3071,14 +3426,20 @@ test('local overlay deep-merges objects onto base', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      mill: { baseBranch: 'main', maxParallel: 7 },
-      integration: { enabled: false, integrationBranch: 'auto/integration' },
-    }));
-    writeLocalConfig(tmp, JSON.stringify({
-      mill: { baseBranch: 'auto/integration' },
-      integration: { enabled: true },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        mill: { baseBranch: 'main', maxParallel: 7 },
+        integration: { enabled: false, integrationBranch: 'auto/integration' },
+      }),
+    );
+    writeLocalConfig(
+      tmp,
+      JSON.stringify({
+        mill: { baseBranch: 'auto/integration' },
+        integration: { enabled: true },
+      }),
+    );
 
     const config = loadWavemillConfig(tmp);
     assert.equal(config.mill?.baseBranch, 'auto/integration');
@@ -3094,16 +3455,22 @@ test('base-only loader ignores local overlay values', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      configVersion: '1.3.0',
-      mill: { maxParallel: 5 },
-      router: { enabled: false },
-    }));
-    writeLocalConfig(tmp, JSON.stringify({
-      configVersion: '1.4.0',
-      mill: { maxParallel: 12 },
-      router: { enabled: true },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        configVersion: '1.3.0',
+        mill: { maxParallel: 5 },
+        router: { enabled: false },
+      }),
+    );
+    writeLocalConfig(
+      tmp,
+      JSON.stringify({
+        configVersion: '1.4.0',
+        mill: { maxParallel: 12 },
+        router: { enabled: true },
+      }),
+    );
 
     const baseConfig = loadWavemillBaseConfig(tmp);
     const runtimeConfig = loadWavemillConfig(tmp);
@@ -3123,17 +3490,23 @@ test('local overlay deep-merges promotion config onto base', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      promotion: {
-        protectedIntegrationStrategy: 'skip-reconciliation',
-        promotionHeadBranch: 'auto/base-promotion',
-      },
-    }));
-    writeLocalConfig(tmp, JSON.stringify({
-      promotion: {
-        protectedIntegrationStrategy: 'use-promotion-head',
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        promotion: {
+          protectedIntegrationStrategy: 'skip-reconciliation',
+          promotionHeadBranch: 'auto/base-promotion',
+        },
+      }),
+    );
+    writeLocalConfig(
+      tmp,
+      JSON.stringify({
+        promotion: {
+          protectedIntegrationStrategy: 'use-promotion-head',
+        },
+      }),
+    );
 
     assert.deepEqual(getPromotionConfig(tmp), {
       protectedIntegrationStrategy: 'use-promotion-head',
@@ -3148,12 +3521,18 @@ test('local overlay replaces arrays entirely rather than concatenating', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      permissions: { autoApprovePatterns: ['git status*', 'ls *'] },
-    }));
-    writeLocalConfig(tmp, JSON.stringify({
-      permissions: { autoApprovePatterns: ['rg *'] },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        permissions: { autoApprovePatterns: ['git status*', 'ls *'] },
+      }),
+    );
+    writeLocalConfig(
+      tmp,
+      JSON.stringify({
+        permissions: { autoApprovePatterns: ['rg *'] },
+      }),
+    );
 
     const config = loadWavemillConfig(tmp);
     assert.deepEqual(config.permissions?.autoApprovePatterns, ['rg *']);
@@ -3166,9 +3545,12 @@ test('local overlay alone (no base file) acts as the entire config', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeLocalConfig(tmp, JSON.stringify({
-      mill: { maxParallel: 3 },
-    }));
+    writeLocalConfig(
+      tmp,
+      JSON.stringify({
+        mill: { maxParallel: 3 },
+      }),
+    );
 
     const config = loadWavemillConfig(tmp);
     assert.equal(config.mill?.maxParallel, 3);
@@ -3181,10 +3563,13 @@ test('base-only loader returns empty object when only local overlay exists', () 
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeLocalConfig(tmp, JSON.stringify({
-      configVersion: CURRENT_CONFIG_VERSION,
-      mill: { maxParallel: 3 },
-    }));
+    writeLocalConfig(
+      tmp,
+      JSON.stringify({
+        configVersion: CURRENT_CONFIG_VERSION,
+        mill: { maxParallel: 3 },
+      }),
+    );
 
     const baseConfig = loadWavemillBaseConfig(tmp);
     const runtimeConfig = loadWavemillConfig(tmp);
@@ -3201,9 +3586,12 @@ test('local overlay with no overrides yields the base config unchanged', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      mill: { maxParallel: 5 },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        mill: { maxParallel: 5 },
+      }),
+    );
     writeLocalConfig(tmp, '{}');
 
     const config = loadWavemillConfig(tmp);
@@ -3218,12 +3606,18 @@ test('schema validation runs against the merged config, catching bad overlay key
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: { enabled: false },
-    }));
-    writeLocalConfig(tmp, JSON.stringify({
-      integration: { mergeMethod: 'not-a-real-method' },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: { enabled: false },
+      }),
+    );
+    writeLocalConfig(
+      tmp,
+      JSON.stringify({
+        integration: { mergeMethod: 'not-a-real-method' },
+      }),
+    );
 
     assert.throws(() => {
       loadWavemillConfig(tmp);
@@ -3264,15 +3658,18 @@ test('nativeAgent remains default-off when only providers are configured', () =>
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        providers: {
-          openai: {
-            apiKeyEnv: 'OPENAI_API_KEY',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          providers: {
+            openai: {
+              apiKeyEnv: 'OPENAI_API_KEY',
+            },
           },
         },
-      },
-    }));
+      }),
+    );
 
     assert.equal(getNativeAgentConfig(tmp).enabled, undefined);
     assert.equal(loadWavemillConfig(tmp).nativeAgent?.enabled, undefined);
@@ -3285,12 +3682,15 @@ test('valid nativeAgent allowedPhases validate and are returned by the accessor'
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        enabled: true,
-        allowedPhases: ['task-expansion', 'planning', 'coding', 'review'],
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          enabled: true,
+          allowedPhases: ['task-expansion', 'planning', 'coding', 'review'],
+        },
+      }),
+    );
 
     assert.deepEqual(getNativeAgentConfig(tmp), {
       enabled: true,
@@ -3316,17 +3716,20 @@ test('advanced tool config: accepts a well-formed browser block', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        advanced: {
-          browser: {
-            enabled: true,
-            allowedPhases: ['coding'],
-            logicalIds: ['browser.navigate'],
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          advanced: {
+            browser: {
+              enabled: true,
+              allowedPhases: ['coding'],
+              logicalIds: ['browser.navigate'],
+            },
           },
         },
-      },
-    }));
+      }),
+    );
     const advanced = loadWavemillConfig(tmp).nativeAgent?.advanced;
     assert.deepEqual(advanced, {
       browser: {
@@ -3366,17 +3769,20 @@ test('getNativeBrowserConfig: enabling the family without an allowlist stays dis
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        advanced: {
-          browser: {
-            enabled: true,
-            allowedPhases: ['review'],
-            session: { allowedOrigins: [] },
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          advanced: {
+            browser: {
+              enabled: true,
+              allowedPhases: ['review'],
+              session: { allowedOrigins: [] },
+            },
           },
         },
-      },
-    }));
+      }),
+    );
     const resolved = getNativeBrowserConfig(tmp);
     assert.equal(resolved.enabled, false);
     assert.ok(resolved.invalidReasons.includes('empty_allowed_origins'));
@@ -3389,29 +3795,25 @@ test('getNativeBrowserConfig: canonicalizes and dedupes allowlist entries', () =
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        advanced: {
-          browser: {
-            enabled: true,
-            allowedPhases: ['review'],
-            session: {
-              allowedOrigins: [
-                'http://localhost:3000/x',
-                'http://localhost:3000/y',
-                'https://app.example.com:8443/',
-              ],
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          advanced: {
+            browser: {
+              enabled: true,
+              allowedPhases: ['review'],
+              session: {
+                allowedOrigins: ['http://localhost:3000/x', 'http://localhost:3000/y', 'https://app.example.com:8443/'],
+              },
             },
           },
         },
-      },
-    }));
+      }),
+    );
     const resolved = getNativeBrowserConfig(tmp);
     assert.equal(resolved.enabled, true);
-    assert.deepEqual(resolved.session.allowedOrigins, [
-      'http://localhost:3000',
-      'https://app.example.com:8443',
-    ]);
+    assert.deepEqual(resolved.session.allowedOrigins, ['http://localhost:3000', 'https://app.example.com:8443']);
   } finally {
     cleanUp(tmp);
   }
@@ -3442,24 +3844,27 @@ test('getNativeScreenshotConfig: full valid config with all limits', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        advanced: {
-          screenshot: {
-            enabled: true,
-            allowedPhases: ['review'],
-            limits: {
-              maxImageBytes: 5_000_000,
-              maxWidth: 2048,
-              maxHeight: 2048,
-              oversizePolicy: 'downscale',
-              maxComparePixels: 8_000_000,
-              diffThreshold: 0.05,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          advanced: {
+            screenshot: {
+              enabled: true,
+              allowedPhases: ['review'],
+              limits: {
+                maxImageBytes: 5_000_000,
+                maxWidth: 2048,
+                maxHeight: 2048,
+                oversizePolicy: 'downscale',
+                maxComparePixels: 8_000_000,
+                diffThreshold: 0.05,
+              },
             },
           },
         },
-      },
-    }));
+      }),
+    );
     const resolved = getNativeScreenshotConfig(tmp);
     assert.equal(resolved.enabled, true);
     assert.deepEqual([...resolved.allowedPhases], ['review']);
@@ -3479,19 +3884,22 @@ test('getNativeScreenshotConfig: out-of-range limits fail schema validation', ()
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        advanced: {
-          screenshot: {
-            enabled: true,
-            allowedPhases: ['review'],
-            limits: {
-              maxImageBytes: 0, // Too small
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          advanced: {
+            screenshot: {
+              enabled: true,
+              allowedPhases: ['review'],
+              limits: {
+                maxImageBytes: 0, // Too small
+              },
             },
           },
         },
-      },
-    }));
+      }),
+    );
     if (hasAjv) {
       assert.throws(() => loadWavemillConfig(tmp), /validation failed/);
     } else {
@@ -3509,13 +3917,16 @@ test('advanced tool config: rejects an unknown family via schema', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        advanced: {
-          not_a_family: { enabled: true },
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          advanced: {
+            not_a_family: { enabled: true },
+          },
         },
-      },
-    }));
+      }),
+    );
     if (hasAjv) {
       assert.throws(() => loadWavemillConfig(tmp), /validation failed/);
     } else {
@@ -3530,13 +3941,16 @@ test('advanced tool config: rejects an unknown allowed phase', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        advanced: {
-          browser: { enabled: true, allowedPhases: ['not-a-phase'] },
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          advanced: {
+            browser: { enabled: true, allowedPhases: ['not-a-phase'] },
+          },
         },
-      },
-    }));
+      }),
+    );
     if (hasAjv) {
       assert.throws(() => loadWavemillConfig(tmp), /validation failed/);
     } else {
@@ -3567,17 +3981,20 @@ test('native context management config defaults and validates overrides', () => 
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        contextManagement: {
-          compactionThreshold: 0.75,
-          safetyMarginPct: 7,
-          minRetainedToolResults: 6,
-          minOutputTokens: 2048,
-          packetBudgetFraction: 0.4,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          contextManagement: {
+            compactionThreshold: 0.75,
+            safetyMarginPct: 7,
+            minRetainedToolResults: 6,
+            minOutputTokens: 2048,
+            packetBudgetFraction: 0.4,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.deepEqual(getNativeContextManagementConfig(tmp), {
       compactionThreshold: 0.75,
@@ -3598,7 +4015,7 @@ test('native context management config supplies defaults when omitted', () => {
     writeConfig(tmp, JSON.stringify({}));
 
     assert.deepEqual(getNativeContextManagementConfig(tmp), {
-      compactionThreshold: 0.80,
+      compactionThreshold: 0.8,
       safetyMarginPct: 5,
       minRetainedToolResults: 4,
       minOutputTokens: 1024,
@@ -3628,11 +4045,14 @@ test('native patch coding config defaults to disabled when patchCoding is missin
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        enabled: true,
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          enabled: true,
+        },
+      }),
+    );
 
     assert.deepEqual(getNativePatchCodingConfig(tmp), {
       enabled: false,
@@ -3647,13 +4067,16 @@ test('native patch coding config returns enabled when explicitly set', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        patchCoding: {
-          enabled: true,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          patchCoding: {
+            enabled: true,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.deepEqual(getNativePatchCodingConfig(tmp), {
       enabled: true,
@@ -3668,14 +4091,17 @@ test('native patch coding config honours allowFullSuiteTests (HOK-3145)', () => 
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        patchCoding: {
-          enabled: true,
-          allowFullSuiteTests: true,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          patchCoding: {
+            enabled: true,
+            allowFullSuiteTests: true,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.deepEqual(getNativePatchCodingConfig(tmp), {
       enabled: true,
@@ -3690,15 +4116,18 @@ test('native expansion config returns enabled, allowed, and fallback values', ()
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        enabled: true,
-        allowedPhases: ['task-expansion'],
-        expansion: {
-          fallbackOnUnavailable: true,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          enabled: true,
+          allowedPhases: ['task-expansion'],
+          expansion: {
+            fallbackOnUnavailable: true,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.deepEqual(getNativeExpansionConfig(tmp), {
       enabled: true,
@@ -3714,19 +4143,22 @@ test('nativeAgent planning limits validate and are returned by the accessor', ()
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        planning: {
-          maxTurns: 12,
-          maxToolCalls: 34,
-          maxWallClockMs: 56000,
-          toolStagnation: {
-            maxRepeatedSignatureCalls: 5,
-            maxNoNovelProgressCalls: 3,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          planning: {
+            maxTurns: 12,
+            maxToolCalls: 34,
+            maxWallClockMs: 56000,
+            toolStagnation: {
+              maxRepeatedSignatureCalls: 5,
+              maxNoNovelProgressCalls: 3,
+            },
           },
         },
-      },
-    }));
+      }),
+    );
 
     assert.deepEqual(getNativeAgentConfig(tmp).planning, {
       maxTurns: 12,
@@ -3747,13 +4179,16 @@ test('invalid nativeAgent planning limits are rejected by schema validation', ()
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        planning: {
-          maxTurns: 0,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          planning: {
+            maxTurns: 0,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.throws(() => {
       loadWavemillConfig(tmp);
@@ -3768,14 +4203,17 @@ test('invalid nativeAgent expansion keys are rejected by schema validation', () 
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        expansion: {
-          fallbackOnUnavailable: true,
-          extra: true,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          expansion: {
+            fallbackOnUnavailable: true,
+            extra: true,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.throws(() => {
       loadWavemillConfig(tmp);
@@ -3790,13 +4228,16 @@ test('invalid nativeAgent patchCoding.enabled values are rejected by schema vali
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        patchCoding: {
-          enabled: 'yes',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          patchCoding: {
+            enabled: 'yes',
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.throws(() => {
       loadWavemillConfig(tmp);
@@ -3811,14 +4252,17 @@ test('invalid nativeAgent patchCoding keys are rejected by schema validation', (
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        patchCoding: {
-          enabled: true,
-          extra: true,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          patchCoding: {
+            enabled: true,
+            extra: true,
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.throws(() => {
       loadWavemillConfig(tmp);
@@ -3833,12 +4277,15 @@ test('invalid nativeAgent allowedPhases are rejected by schema validation', () =
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        enabled: true,
-        allowedPhases: ['planning', 'deploy'],
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          enabled: true,
+          allowedPhases: ['planning', 'deploy'],
+        },
+      }),
+    );
 
     assert.throws(() => {
       loadWavemillConfig(tmp);
@@ -3852,26 +4299,29 @@ test('valid nativeAgent provider config validates and is returned by the accesso
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        enabled: true,
-        allowedPhases: ['planning', 'review'],
-        providers: {
-          openai: {
-            apiKeyEnv: 'OPENAI_API_KEY',
-            baseUrl: 'https://api.openai.com/v1',
-            headers: {
-              'X-Trace': 'wavemill',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          enabled: true,
+          allowedPhases: ['planning', 'review'],
+          providers: {
+            openai: {
+              apiKeyEnv: 'OPENAI_API_KEY',
+              baseUrl: 'https://api.openai.com/v1',
+              headers: {
+                'X-Trace': 'wavemill',
+              },
+            },
+            openrouter: {
+              enabled: true,
+              apiKeyEnv: 'OPENROUTER_API_KEY',
+              baseUrl: 'https://openrouter.ai/api/v1',
             },
           },
-          openrouter: {
-            enabled: true,
-            apiKeyEnv: 'OPENROUTER_API_KEY',
-            baseUrl: 'https://openrouter.ai/api/v1',
-          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.deepEqual(getNativeAgentConfig(tmp), {
       enabled: true,
@@ -3901,15 +4351,18 @@ test('unsupported nativeAgent provider names fail schema validation', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {
-        providers: {
-          foobar: {
-            apiKeyEnv: 'NOPE',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {
+          providers: {
+            foobar: {
+              apiKeyEnv: 'NOPE',
+            },
           },
         },
-      },
-    }));
+      }),
+    );
 
     assert.throws(() => {
       loadWavemillConfig(tmp);
@@ -3923,12 +4376,15 @@ test('configs that omit nativeAgent providers still validate', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      nativeAgent: {},
-      integration: {
-        enabled: false,
-      },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        nativeAgent: {},
+        integration: {
+          enabled: false,
+        },
+      }),
+    );
 
     const config = loadWavemillConfig(tmp);
     assert.deepEqual(config.nativeAgent, {});
@@ -3942,20 +4398,33 @@ test('modelExclusions validates and preserves repo/local source diagnostics', ()
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      modelExclusions: [
-        { model: 'qwen-3-coder', stages: ['coding'], reason: 'cost' },
-      ],
-    }));
-    writeFileSync(join(tmp, '.wavemill-config.local.json'), JSON.stringify({
-      modelExclusions: [
-        { model: 'gpt-5.5', stages: ['reviewer'], reason: 'policy' },
-      ],
-    }), 'utf-8');
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        modelExclusions: [{ model: 'qwen-3-coder', stages: ['coding'], reason: 'cost' }],
+      }),
+    );
+    writeFileSync(
+      join(tmp, '.wavemill-config.local.json'),
+      JSON.stringify({
+        modelExclusions: [{ model: 'gpt-5.5', stages: ['reviewer'], reason: 'policy' }],
+      }),
+      'utf-8',
+    );
 
     assert.deepEqual(getEffectiveModelExclusions(tmp), [
-      { model: 'qwen-3-coder', stages: ['coding'], reason: 'cost', source: 'repo' },
-      { model: 'gpt-5.5', stages: ['reviewer'], reason: 'policy', source: 'local' },
+      {
+        model: 'qwen-3-coder',
+        stages: ['coding'],
+        reason: 'cost',
+        source: 'repo',
+      },
+      {
+        model: 'gpt-5.5',
+        stages: ['reviewer'],
+        reason: 'policy',
+        source: 'local',
+      },
     ]);
   } finally {
     cleanUp(tmp);
@@ -3967,11 +4436,12 @@ test('modelExclusions rejects invalid stages', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      modelExclusions: [
-        { model: 'gpt-5.5', stages: ['unknown-stage'] },
-      ],
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        modelExclusions: [{ model: 'gpt-5.5', stages: ['unknown-stage'] }],
+      }),
+    );
 
     assert.throws(() => loadWavemillConfig(tmp), /validation failed/);
   } finally {
@@ -3987,9 +4457,12 @@ test('pre-PR verification: loads empty config when not configured', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      router: { enabled: true },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        router: { enabled: true },
+      }),
+    );
 
     const config = getPrePrVerificationConfig(tmp);
     assert.deepEqual(config, {});
@@ -4002,56 +4475,59 @@ test('pre-PR verification: loads full configuration', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      prePrVerification: {
-        enabled: true,
-        required: true,
-        source: 'explicit',
-        recipe: {
-          commands: ['npm test', 'npm run lint'],
-          timeoutSeconds: 600,
-          retryPolicy: {
-            enabled: true,
-            maxAttempts: 2,
-            backoffSeconds: 5,
-          },
-        },
-        logCaptureLines: 100,
-        draftFallback: false,
-        staleTtlSeconds: 7200,
-        compatibility: {
-          mode: 'warn',
-          warnAfterDays: 14,
-        },
-        remoteOnlyExceptions: [
-          {
-            checkName: 'Security Scan',
-            reason: 'Requires org secrets unavailable locally',
-            acknowledgedBy: 'security@example.com',
-            acknowledgedAt: '2026-08-04T12:00:00Z',
-          },
-        ],
-        nonEnforcedJobs: ['Aggregate Status'],
-        driftValidation: {
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        prePrVerification: {
           enabled: true,
-          blockOnUnmapped: true,
-          warnOnDrift: true,
-          autoAcknowledgeThreshold: 0.9,
-        },
-        mappingAcknowledgements: {
-          checks: {
-            'Lint Check': 'npm run lint',
-            'Unit Tests': {
-              localCommand: 'npm test',
-              workflowPath: '.github/workflows/ci.yml',
-              jobName: 'unit',
+          required: true,
+          source: 'explicit',
+          recipe: {
+            commands: ['npm test', 'npm run lint'],
+            timeoutSeconds: 600,
+            retryPolicy: {
+              enabled: true,
+              maxAttempts: 2,
+              backoffSeconds: 5,
             },
           },
-          acknowledgedBy: 'maintainer@example.com',
-          acknowledgedAt: '2026-08-04T12:00:00Z',
+          logCaptureLines: 100,
+          draftFallback: false,
+          staleTtlSeconds: 7200,
+          compatibility: {
+            mode: 'warn',
+            warnAfterDays: 14,
+          },
+          remoteOnlyExceptions: [
+            {
+              checkName: 'Security Scan',
+              reason: 'Requires org secrets unavailable locally',
+              acknowledgedBy: 'security@example.com',
+              acknowledgedAt: '2026-08-04T12:00:00Z',
+            },
+          ],
+          nonEnforcedJobs: ['Aggregate Status'],
+          driftValidation: {
+            enabled: true,
+            blockOnUnmapped: true,
+            warnOnDrift: true,
+            autoAcknowledgeThreshold: 0.9,
+          },
+          mappingAcknowledgements: {
+            checks: {
+              'Lint Check': 'npm run lint',
+              'Unit Tests': {
+                localCommand: 'npm test',
+                workflowPath: '.github/workflows/ci.yml',
+                jobName: 'unit',
+              },
+            },
+            acknowledgedBy: 'maintainer@example.com',
+            acknowledgedAt: '2026-08-04T12:00:00Z',
+          },
         },
-      },
-    }));
+      }),
+    );
 
     const config = getPrePrVerificationConfig(tmp);
     assert.equal(config.enabled, true);
@@ -4084,16 +4560,19 @@ test('pre-PR verification: handles github-enforced source', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      prePrVerification: {
-        enabled: true,
-        source: 'github-enforced',
-        requiredChecks: ['Shell and Unit Tests', 'Type Check'],
-        recipe: {
-          commands: ['npm test'],
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        prePrVerification: {
+          enabled: true,
+          source: 'github-enforced',
+          requiredChecks: ['Shell and Unit Tests', 'Type Check'],
+          recipe: {
+            commands: ['npm test'],
+          },
         },
-      },
-    }));
+      }),
+    );
 
     const config = getPrePrVerificationConfig(tmp);
     assert.equal(config.source, 'github-enforced');
@@ -4108,15 +4587,18 @@ test('pre-PR verification: rejects empty commands when required is true', () => 
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      prePrVerification: {
-        enabled: true,
-        required: true,
-        recipe: {
-          commands: [], // Empty when required should fail schema validation
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        prePrVerification: {
+          enabled: true,
+          required: true,
+          recipe: {
+            commands: [], // Empty when required should fail schema validation
+          },
         },
-      },
-    }));
+      }),
+    );
 
     // Schema should reject empty commands (minItems: 1 when required is true)
     assert.throws(() => loadWavemillConfig(tmp), /validation failed|commands.*must NOT have fewer/);
@@ -4130,16 +4612,19 @@ test('pre-PR verification: rejects empty requiredChecks when source is github-en
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      prePrVerification: {
-        enabled: true,
-        source: 'github-enforced',
-        requiredChecks: [], // Empty when source is github-enforced should fail
-        recipe: {
-          commands: ['npm test'],
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        prePrVerification: {
+          enabled: true,
+          source: 'github-enforced',
+          requiredChecks: [], // Empty when source is github-enforced should fail
+          recipe: {
+            commands: ['npm test'],
+          },
         },
-      },
-    }));
+      }),
+    );
 
     // Schema validates minItems: 1 when source is github-enforced
     assert.throws(() => loadWavemillConfig(tmp), /validation failed|requiredChecks.*must NOT have fewer/);
@@ -4153,15 +4638,18 @@ test('pre-PR verification: rejects invalid source enum', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      prePrVerification: {
-        enabled: true,
-        source: 'invalid-source',
-        recipe: {
-          commands: ['npm test'],
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        prePrVerification: {
+          enabled: true,
+          source: 'invalid-source',
+          recipe: {
+            commands: ['npm test'],
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.throws(() => loadWavemillConfig(tmp), /validation failed|source/);
   } finally {
@@ -4174,17 +4662,20 @@ test('pre-PR verification: rejects invalid compatibility mode', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      prePrVerification: {
-        enabled: true,
-        recipe: {
-          commands: ['npm test'],
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        prePrVerification: {
+          enabled: true,
+          recipe: {
+            commands: ['npm test'],
+          },
+          compatibility: {
+            mode: 'invalid-mode',
+          },
         },
-        compatibility: {
-          mode: 'invalid-mode',
-        },
-      },
-    }));
+      }),
+    );
 
     assert.throws(() => loadWavemillConfig(tmp), /validation failed|mode/);
   } finally {
@@ -4197,19 +4688,22 @@ test('pre-PR verification: rejects remote-only exception without rationale', () 
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      prePrVerification: {
-        enabled: true,
-        recipe: {
-          commands: ['npm test'],
-        },
-        remoteOnlyExceptions: [
-          {
-            checkName: 'Security Scan',
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        prePrVerification: {
+          enabled: true,
+          recipe: {
+            commands: ['npm test'],
           },
-        ],
-      },
-    }));
+          remoteOnlyExceptions: [
+            {
+              checkName: 'Security Scan',
+            },
+          ],
+        },
+      }),
+    );
 
     assert.throws(() => loadWavemillConfig(tmp), /validation failed|reason/);
   } finally {
@@ -4222,17 +4716,20 @@ test('pre-PR verification: rejects drift threshold outside confidence range', ()
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      prePrVerification: {
-        enabled: true,
-        recipe: {
-          commands: ['npm test'],
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        prePrVerification: {
+          enabled: true,
+          recipe: {
+            commands: ['npm test'],
+          },
+          driftValidation: {
+            autoAcknowledgeThreshold: 1.5,
+          },
         },
-        driftValidation: {
-          autoAcknowledgeThreshold: 1.5,
-        },
-      },
-    }));
+      }),
+    );
 
     assert.throws(() => loadWavemillConfig(tmp), /validation failed|autoAcknowledgeThreshold/);
   } finally {
@@ -4245,15 +4742,18 @@ test('pre-PR verification: rejects timeoutSeconds below minimum', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      prePrVerification: {
-        enabled: true,
-        recipe: {
-          commands: ['npm test'],
-          timeoutSeconds: 5, // Minimum is 10
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        prePrVerification: {
+          enabled: true,
+          recipe: {
+            commands: ['npm test'],
+            timeoutSeconds: 5, // Minimum is 10
+          },
         },
-      },
-    }));
+      }),
+    );
 
     assert.throws(() => loadWavemillConfig(tmp), /validation failed|timeoutSeconds/);
   } finally {
@@ -4265,20 +4765,27 @@ test('pre-PR verification: merges local config over base', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      prePrVerification: {
-        enabled: false,
-        recipe: {
-          commands: ['npm test'],
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        prePrVerification: {
+          enabled: false,
+          recipe: {
+            commands: ['npm test'],
+          },
         },
-      },
-    }));
-    writeFileSync(join(tmp, '.wavemill-config.local.json'), JSON.stringify({
-      prePrVerification: {
-        enabled: true,
-        required: true,
-      },
-    }), 'utf-8');
+      }),
+    );
+    writeFileSync(
+      join(tmp, '.wavemill-config.local.json'),
+      JSON.stringify({
+        prePrVerification: {
+          enabled: true,
+          required: true,
+        },
+      }),
+      'utf-8',
+    );
 
     const config = getPrePrVerificationConfig(tmp);
     assert.equal(config.enabled, true); // From local
@@ -4293,18 +4800,17 @@ test('pre-PR verification: handles multiple commands in recipe', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      prePrVerification: {
-        enabled: true,
-        recipe: {
-          commands: [
-            'npx tsx tools/check-pi-version.ts',
-            'npm test',
-            'npm run test:native-launch-certification',
-          ],
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        prePrVerification: {
+          enabled: true,
+          recipe: {
+            commands: ['npx tsx tools/check-pi-version.ts', 'npm test', 'npm run test:native-launch-certification'],
+          },
         },
-      },
-    }));
+      }),
+    );
 
     const config = getPrePrVerificationConfig(tmp);
     assert.equal(config.recipe?.commands?.length, 3);
@@ -4319,12 +4825,15 @@ test('pre-PR verification: backward compatible with legacy configs', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      router: { enabled: true },
-      ready: { checks: ['ci-status'] },
-      verification: { enabled: true },
-      // No prePrVerification field
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        router: { enabled: true },
+        ready: { checks: ['ci-status'] },
+        verification: { enabled: true },
+        // No prePrVerification field
+      }),
+    );
 
     const config = loadWavemillConfig(tmp);
     assert.ok(config.router?.enabled);
@@ -4345,9 +4854,12 @@ test('incident config defaults include resolutionAfterCycles and honor overrides
     assert.equal(defaults.detection?.resolutionAfterCycles, 5);
 
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      incident: { detection: { resolutionAfterCycles: 12 } },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        incident: { detection: { resolutionAfterCycles: 12 } },
+      }),
+    );
     const overridden = getIncidentConfig(tmp);
     assert.equal(overridden.detection?.resolutionAfterCycles, 12);
     assert.equal(overridden.detection?.dependencyThreshold, 3);
@@ -4384,23 +4896,26 @@ test('observer linear config normalizes partial policies and env project overrid
     clearConfigCache();
     process.env.WAVEMILL_OBSERVER_LINEAR_PROJECT = 'Env Project';
     process.env.WAVEMILL_OBSERVER_LINEAR_ENABLED = 'true';
-    writeConfig(tmp, JSON.stringify({
-      observer: {
-        linear: {
-          enabled: false,
-          team: 'HOK',
-          policies: {
-            external_transient_dependency: {
-              strategy: 'threshold',
-              threshold: 5,
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        observer: {
+          linear: {
+            enabled: false,
+            team: 'HOK',
+            policies: {
+              external_transient_dependency: {
+                strategy: 'threshold',
+                threshold: 5,
+              },
+            },
+            redaction: {
+              patterns: ['custom_secret'],
             },
           },
-          redaction: {
-            patterns: ['custom_secret'],
-          },
         },
-      },
-    }));
+      }),
+    );
     const config = getObserverLinearConfig(tmp);
     assert.equal(config.enabled, true);
     assert.equal(config.project, 'Env Project');
@@ -4474,7 +4989,14 @@ test('observer alerts: config push.url enables alerts; explicit enabled:false wi
   try {
     withObserverPushUrl(undefined, () => {
       clearConfigCache();
-      writeConfig(tmp, JSON.stringify({ observer: { alerts: { push: { url: 'https://ntfy.sh/from-config' } } } }));
+      writeConfig(
+        tmp,
+        JSON.stringify({
+          observer: {
+            alerts: { push: { url: 'https://ntfy.sh/from-config' } },
+          },
+        }),
+      );
       const config = getObserverAlertsConfig(tmp);
       assert.equal(config.enabled, true);
       assert.equal(config.push.url, 'https://ntfy.sh/from-config');
@@ -4509,7 +5031,12 @@ test('observer linear config derives mode from legacy enabled/detectionOnly by d
 
     // enabled=true, detectionOnly=true → offline (legacy alias)
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({ observer: { linear: { enabled: true, detectionOnly: true } } }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        observer: { linear: { enabled: true, detectionOnly: true } },
+      }),
+    );
     config = getObserverLinearConfig(tmp);
     assert.equal(config.mode, 'offline');
   } finally {
@@ -4567,14 +5094,11 @@ test('observer linear suppress defaults are the two noisy classes', () => {
   try {
     clearConfigCache();
     const config = getObserverLinearConfig(tmp);
-    assert.deepEqual(
-      [...config.suppress.classes].sort(),
-      ['arm_died_with_unpushed_work', 'cleanup_dirty_worktree'],
-    );
-    assert.deepEqual(
-      [...OBSERVER_LINEAR_SUPPRESS_DEFAULTS.classes].sort(),
-      ['arm_died_with_unpushed_work', 'cleanup_dirty_worktree'],
-    );
+    assert.deepEqual([...config.suppress.classes].sort(), ['arm_died_with_unpushed_work', 'cleanup_dirty_worktree']);
+    assert.deepEqual([...OBSERVER_LINEAR_SUPPRESS_DEFAULTS.classes].sort(), [
+      'arm_died_with_unpushed_work',
+      'cleanup_dirty_worktree',
+    ]);
   } finally {
     cleanUp(tmp);
   }
@@ -4584,9 +5108,12 @@ test('observer linear suppress classes: empty array disables suppression', () =>
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      observer: { linear: { suppress: { classes: [] } } },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        observer: { linear: { suppress: { classes: [] } } },
+      }),
+    );
     const config = getObserverLinearConfig(tmp);
     assert.deepEqual(config.suppress.classes, []);
   } finally {
@@ -4598,9 +5125,14 @@ test('observer linear suppress classes: caller list replaces defaults', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      observer: { linear: { suppress: { classes: ['stage_marker_not_advanced'] } } },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        observer: {
+          linear: { suppress: { classes: ['stage_marker_not_advanced'] } },
+        },
+      }),
+    );
     const config = getObserverLinearConfig(tmp);
     assert.deepEqual(config.suppress.classes, ['stage_marker_not_advanced']);
   } finally {
@@ -4662,7 +5194,9 @@ test('service mode: live resolves only when every gate holds', () => {
 });
 
 test('service mode: live without a credential fails closed to off', () => {
-  const res = resolveObserverLinearServiceMode(LIVE_READY_LINEAR, { credentialReady: false });
+  const res = resolveObserverLinearServiceMode(LIVE_READY_LINEAR, {
+    credentialReady: false,
+  });
   assert.equal(res.mode, 'off');
   assert.equal(res.downgraded, true);
 });
@@ -4670,13 +5204,39 @@ test('service mode: live without a credential fails closed to off', () => {
 test('service mode: live with unmet gates downgrades to shadow', () => {
   const cases: Array<[string, typeof LIVE_READY_LINEAR]> = [
     ['missing routing', { ...LIVE_READY_LINEAR, label: undefined as unknown as string }],
-    ['gates not passed', { ...LIVE_READY_LINEAR, rollout: { ...LIVE_READY_LINEAR.rollout, gatesPassed: false } }],
-    ['no shadow trial', { ...LIVE_READY_LINEAR, rollout: { ...LIVE_READY_LINEAR.rollout, shadowTrialCompleted: false } }],
-    ['no rollback rehearsal', { ...LIVE_READY_LINEAR, rollout: { ...LIVE_READY_LINEAR.rollout, rollbackRehearsed: false } }],
-    ['zero per-pass bound', { ...LIVE_READY_LINEAR, rollout: { ...LIVE_READY_LINEAR.rollout, maxProposedPerPass: 0 } }],
+    [
+      'gates not passed',
+      {
+        ...LIVE_READY_LINEAR,
+        rollout: { ...LIVE_READY_LINEAR.rollout, gatesPassed: false },
+      },
+    ],
+    [
+      'no shadow trial',
+      {
+        ...LIVE_READY_LINEAR,
+        rollout: { ...LIVE_READY_LINEAR.rollout, shadowTrialCompleted: false },
+      },
+    ],
+    [
+      'no rollback rehearsal',
+      {
+        ...LIVE_READY_LINEAR,
+        rollout: { ...LIVE_READY_LINEAR.rollout, rollbackRehearsed: false },
+      },
+    ],
+    [
+      'zero per-pass bound',
+      {
+        ...LIVE_READY_LINEAR,
+        rollout: { ...LIVE_READY_LINEAR.rollout, maxProposedPerPass: 0 },
+      },
+    ],
   ];
   for (const [label, config] of cases) {
-    const res = resolveObserverLinearServiceMode(config, { credentialReady: true });
+    const res = resolveObserverLinearServiceMode(config, {
+      credentialReady: true,
+    });
     assert.equal(res.mode, 'shadow', `${label} should downgrade live→shadow`);
     assert.equal(res.downgraded, true, label);
     assert.ok(res.reasons.length > 0, `${label} should record a reason`);
@@ -4742,14 +5302,15 @@ for (const integ of TRISTATES) {
         try {
           clearConfigCache();
           writeConfig(tmp, buildConfig(integ, ums, mq));
-          const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+          const caps = resolveSessionCapabilities(tmp, {
+            env: {},
+            readHealth: false,
+          });
           // backstage means integration.enabled=true AND useMillSession!=false
           // useMillSession defaults to true (see INTEGRATION_DEFAULTS)
           const backstage = integ === 'true' && ums !== 'false';
           assert.equal(caps.tend, backstage, 'tend');
-          const expectedExecutor =
-            backstage ? 'tend' :
-            (integ === 'true' ? 'none' : 'operator');
+          const expectedExecutor = backstage ? 'tend' : integ === 'true' ? 'none' : 'operator';
           assert.equal(caps.mergeExecutor, expectedExecutor, 'mergeExecutor');
           // mergeQueue.enabled defaults to true; false only when explicitly set
           const mqOn = mq !== 'false';
@@ -4768,11 +5329,17 @@ test('HOK-3094: integration off + observer.enabled=true → observer on, tend of
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: { enabled: false },
-      observer: { enabled: true },
-    }));
-    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: { enabled: false },
+        observer: { enabled: true },
+      }),
+    );
+    const caps = resolveSessionCapabilities(tmp, {
+      env: {},
+      readHealth: false,
+    });
     assert.equal(caps.observer, true);
     assert.equal(caps.tend, false);
     assert.equal(caps.mergeExecutor, 'operator');
@@ -4786,11 +5353,17 @@ test('observer=true and backstage on → observer true', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: { enabled: true, useMillSession: true },
-      observer: { enabled: true },
-    }));
-    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: { enabled: true, useMillSession: true },
+        observer: { enabled: true },
+      }),
+    );
+    const caps = resolveSessionCapabilities(tmp, {
+      env: {},
+      readHealth: false,
+    });
     assert.equal(caps.observer, true);
     assert.equal(caps.tend, true);
   } finally {
@@ -4803,10 +5376,16 @@ for (const integrationEnabled of [true, false]) {
     const tmp = makeTempRepo();
     try {
       clearConfigCache();
-      writeConfig(tmp, JSON.stringify({
-        integration: { enabled: integrationEnabled, useMillSession: true },
-      }));
-      const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+      writeConfig(
+        tmp,
+        JSON.stringify({
+          integration: { enabled: integrationEnabled, useMillSession: true },
+        }),
+      );
+      const caps = resolveSessionCapabilities(tmp, {
+        env: {},
+        readHealth: false,
+      });
       assert.equal(caps.observer, true);
       assert.equal(caps.tend, integrationEnabled);
     } finally {
@@ -4819,11 +5398,17 @@ test('HOK-3094: observer.enabled=false opts out even with integration on', () =>
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: { enabled: true, useMillSession: true },
-      observer: { enabled: false },
-    }));
-    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: { enabled: true, useMillSession: true },
+        observer: { enabled: false },
+      }),
+    );
+    const caps = resolveSessionCapabilities(tmp, {
+      env: {},
+      readHealth: false,
+    });
     assert.equal(caps.observer, false);
     assert.equal(caps.tend, true);
     assert.equal(caps.reasons.observer, 'observer.enabled=false');
@@ -4836,10 +5421,13 @@ test('MERGE_QUEUE_ENABLED=false env override → mergeQueue false even with tend
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: { enabled: true, useMillSession: true },
-      mergeQueue: { enabled: true },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: { enabled: true, useMillSession: true },
+        mergeQueue: { enabled: true },
+      }),
+    );
     const caps = resolveSessionCapabilities(tmp, {
       env: { MERGE_QUEUE_ENABLED: 'false' },
       readHealth: false,
@@ -4855,9 +5443,12 @@ test('MERGE_QUEUE_ENABLED=0 env override → mergeQueue false', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: { enabled: true, useMillSession: true },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: { enabled: true, useMillSession: true },
+      }),
+    );
     const caps = resolveSessionCapabilities(tmp, {
       env: { MERGE_QUEUE_ENABLED: '0' },
       readHealth: false,
@@ -4872,10 +5463,13 @@ test('MERGE_QUEUE_ENABLED=true env override with config=false → true (env wins
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: { enabled: true, useMillSession: true },
-      mergeQueue: { enabled: false },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: { enabled: true, useMillSession: true },
+        mergeQueue: { enabled: false },
+      }),
+    );
     const caps = resolveSessionCapabilities(tmp, {
       env: { MERGE_QUEUE_ENABLED: 'true' },
       readHealth: false,
@@ -4896,7 +5490,10 @@ test('local overlay flips integration on', () => {
       JSON.stringify({ integration: { enabled: true, useMillSession: true } }),
       'utf-8',
     );
-    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    const caps = resolveSessionCapabilities(tmp, {
+      env: {},
+      readHealth: false,
+    });
     assert.equal(caps.tend, true);
     assert.equal(caps.mergeExecutor, 'tend');
   } finally {
@@ -4938,17 +5535,24 @@ test('health.tend.status reported through health, tend stays true (D2)', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: { enabled: true, useMillSession: true },
-      observer: { enabled: true },
-    }));
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: { enabled: true, useMillSession: true },
+        observer: { enabled: true },
+      }),
+    );
     mkdirSync(join(tmp, '.wavemill'), { recursive: true });
-    writeFileSync(join(tmp, '.wavemill', 'backstage-health.json'), JSON.stringify({
-      services: {
-        tend: { status: 'needs-user' },
-        observer: { status: 'healthy' },
-      },
-    }), 'utf-8');
+    writeFileSync(
+      join(tmp, '.wavemill', 'backstage-health.json'),
+      JSON.stringify({
+        services: {
+          tend: { status: 'needs-user' },
+          observer: { status: 'healthy' },
+        },
+      }),
+      'utf-8',
+    );
     const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: true });
     assert.equal(caps.health.tend, 'needs-user');
     assert.equal(caps.health.observer, 'healthy');
@@ -4967,10 +5571,17 @@ test('readHealth=false skips file read', () => {
     clearConfigCache();
     writeConfig(tmp, JSON.stringify({ integration: { enabled: true, useMillSession: true } }));
     mkdirSync(join(tmp, '.wavemill'), { recursive: true });
-    writeFileSync(join(tmp, '.wavemill', 'backstage-health.json'), JSON.stringify({
-      services: { tend: { status: 'unhealthy' } },
-    }), 'utf-8');
-    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    writeFileSync(
+      join(tmp, '.wavemill', 'backstage-health.json'),
+      JSON.stringify({
+        services: { tend: { status: 'unhealthy' } },
+      }),
+      'utf-8',
+    );
+    const caps = resolveSessionCapabilities(tmp, {
+      env: {},
+      readHealth: false,
+    });
     assert.equal(caps.health.tend, null);
   } finally {
     cleanUp(tmp);
@@ -4981,10 +5592,16 @@ test('integration on + useMillSession=false → mergeExecutor=none', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
-    writeConfig(tmp, JSON.stringify({
-      integration: { enabled: true, useMillSession: false },
-    }));
-    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    writeConfig(
+      tmp,
+      JSON.stringify({
+        integration: { enabled: true, useMillSession: false },
+      }),
+    );
+    const caps = resolveSessionCapabilities(tmp, {
+      env: {},
+      readHealth: false,
+    });
     assert.equal(caps.tend, false);
     assert.equal(caps.mergeExecutor, 'none');
     assert.equal(caps.mergeQueue, false);
@@ -4998,7 +5615,10 @@ test('integration off → mergeExecutor=operator', () => {
   try {
     clearConfigCache();
     writeConfig(tmp, JSON.stringify({ integration: { enabled: false } }));
-    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    const caps = resolveSessionCapabilities(tmp, {
+      env: {},
+      readHealth: false,
+    });
     assert.equal(caps.mergeExecutor, 'operator');
     assert.equal(caps.tend, false);
     assert.equal(caps.mergeQueue, false);

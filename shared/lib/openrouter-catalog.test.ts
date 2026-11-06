@@ -85,7 +85,7 @@ describe('loadLaunchPriorityFixture', () => {
     const list = loadLaunchPriorityList();
     assert.ok(list.length >= 25, `expected at least 25 launch-priority models, got ${list.length}`);
     const aliases = new Set(list.map((m) => m.wavemillAlias));
-    for (const required of ['gpt-5.5', 'deepseek-r1', 'kimi-k2', 'glm-5.2', 'glm-5.3', 'kimi-k3', 'gemini-3.8-flash', 'kimi-k2.7-code']) {
+    for (const required of ['gpt-5.5', 'deepseek-r1', 'kimi-k2', 'glm-5.2', 'glm-5.3', 'kimi-k3', 'kimi-k3.1-pro', 'gemini-3.8-flash', 'kimi-k2.7-code']) {
       assert.ok(aliases.has(required), `expected fixture to include ${required}`);
     }
   });
