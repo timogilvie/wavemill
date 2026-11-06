@@ -137,9 +137,9 @@
         "cacheReadCostPerMTok": 0.18
       },
       "kimi-k3": {
-        "inputCostPerMTok": 0.19,
+        "inputCostPerMTok": 3,
         "outputCostPerMTok": 16,
-        "cacheReadCostPerMTok": 0.182
+        "cacheReadCostPerMTok": 0.3
       },
       "kimi-k3.1-pro": {
         "inputCostPerMTok": 2,

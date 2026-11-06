@@ -130,9 +130,9 @@ export const CANONICAL_CONFIG_TEMPLATE: WavemillConfig = {
       'glm-5.3': { inputCostPerMTok: 1.4, outputCostPerMTok: 4.4 },
       'kimi-k2': { inputCostPerMTok: 1, outputCostPerMTok: 3 },
       'kimi-k3': {
-        inputCostPerMTok: 0.19,
+        inputCostPerMTok: 3,
         outputCostPerMTok: 16,
-        cacheReadCostPerMTok: 0.182,
+        cacheReadCostPerMTok: 0.3,
       },
       'kimi-k3.1-pro': {
         inputCostPerMTok: 2,
