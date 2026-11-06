@@ -2566,7 +2566,12 @@ export async function routeWorkflowAuto(
   prompt: string,
   options?: RouteWorkflowOptions,
 ): Promise<StageAwareDecision> {
-  return routeWorkflowAutoWithContext(prompt, options);
+  const decision = await routeWorkflowAutoWithContext(prompt, options);
+  const routingObjective = options?.routingObjective
+    ?? (options?.issueId ? deriveRoutingObjectiveForIssue(options.issueId) : undefined);
+  return routingObjective && !decision.routingObjective
+    ? { ...decision, routingObjective }
+    : decision;
 }
 
 export async function routeWorkflowAutoWithContext(
