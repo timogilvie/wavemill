@@ -7,7 +7,8 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
 import {
@@ -26,6 +27,28 @@ const OTHER = 'c0ffee0000000000000000000000000000000002';
 
 function stateDir(): string {
   return mkdtempSync(join(os.tmpdir(), 'stage-agent-disposition-'));
+}
+
+/**
+ * A real git worktree with one commit at `commitIso` — exercises
+ * `readLatestCommitAt` for real, unlike a bare `mkdtempSync` directory (where
+ * `git log` fails and `latestCommitAt` is always null, silently skipping the
+ * exact evidence path the 2026-11-05 incident bug lives in).
+ */
+function worktreeWithCommit(commitIso: string): string {
+  const dir = mkdtempSync(join(os.tmpdir(), 'stage-agent-disposition-wt-'));
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_DATE: commitIso,
+    GIT_COMMITTER_DATE: commitIso,
+  };
+  execFileSync('git', ['init', '-q', dir], { encoding: 'utf-8' });
+  execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@example.com'], { encoding: 'utf-8' });
+  execFileSync('git', ['-C', dir, 'config', 'user.name', 'Stage Agent Disposition Test'], { encoding: 'utf-8' });
+  writeFileSync(join(dir, 'file.txt'), 'content\n', 'utf-8');
+  execFileSync('git', ['-C', dir, 'add', 'file.txt'], { encoding: 'utf-8' });
+  execFileSync('git', ['-C', dir, 'commit', '-q', '-m', 'coding phase commit'], { encoding: 'utf-8', env });
+  return dir;
 }
 
 function baseInput(overrides: Partial<StageAgentDispositionInput> = {}): StageAgentDispositionInput {
@@ -436,6 +459,36 @@ test('HOK-3422: gatherStageTaskProgress — no launch row + no agent evidence �
     assert.equal(progress.stalled, false,
       'no launch row → no stall-clock anchor → never stalled (healthy controller-owned wait)');
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// protects: a Ready CI wait with no remediation agent ever launched, where
+// the task worktree is a REAL git checkout carrying a stale commit from the
+// coding/review phase (hours old) — the exact production shape. Before the
+// fix, `readLatestCommitAt` returned that old commit, and the evidence
+// filters admitted it unconditionally whenever `launchMs` was null, tripping
+// a false stall on a healthy wait.
+test('HOK-3422: gatherStageTaskProgress — stale coding-phase commit in the real worktree is never admitted without a launch row', () => {
+  const wt = worktreeWithCommit('2026-11-05T09:00:00.000Z'); // 3h45m before "now"
+  const dir = stateDir();
+  try {
+    const now = new Date('2026-11-05T12:45:00.000Z');
+    const progress = gatherStageTaskProgress({
+      issue: 'HOK-TEST-3422',
+      session: 'wavemill',
+      worktree: wt,
+      stateDir: dir,
+      stage: 'ready-remediation',
+      stageResult: null,
+      now,
+    });
+    assert.equal(progress.lastProgressAt, null,
+      'a stale coding-phase commit must not be admitted as progress with no launch row');
+    assert.equal(progress.stalled, false,
+      'no launch row → no stall-clock anchor → never stalled, even with an old commit in the worktree');
+  } finally {
+    rmSync(wt, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
   }
 });

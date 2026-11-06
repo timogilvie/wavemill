@@ -234,6 +234,7 @@ test('HOK-3422: no launchAt and no agent evidence → stalled=false (healthy CI 
     // Ready CI wait with no remediation launched: no agent was ever started,
     // so the stall clock has no anchor.
     launchAt: null,
+    launchKnownAbsent: true,
     transitionInputs: [
       { at: '2026-09-28T13:00:00Z', detail: 'ready.startedAt' },
       { at: '2026-09-28T15:59:55Z', detail: 'ready-result.mtime' },
@@ -242,6 +243,48 @@ test('HOK-3422: no launchAt and no agent evidence → stalled=false (healthy CI 
   const p = deriveTaskProgress(inputs, { now, stallMinutes: 30 });
   assert.equal(p.stalled, false);
   assert.equal(p.lastProgressAt, null);
+});
+
+// protects: a stale commit/worktree mtime left over from an earlier stage
+// (e.g. coding's last commit, hours old) must not be admitted as progress
+// just because no agent was ever launched for this disposition — a
+// `launchKnownAbsent` wait has nothing to compare staleness against, so
+// admitting old evidence unconditionally would silently resurrect the false
+// stall this field exists to prevent. Without `launchKnownAbsent` (launchAt
+// merely unresolved, e.g. legacy archive replay), the same stale evidence
+// still counts as progress on its own — see the `replayStallIntervals` tests
+// in reliability-metrics.test.ts.
+test('HOK-3422: stale evidence is never admitted when launchKnownAbsent (no anchor to compare against)', () => {
+  const now = new Date('2026-09-28T16:00:00Z');
+  const inputs = emptyInputs({
+    launchAt: null,
+    launchKnownAbsent: true,
+    // All older than the stall threshold relative to `now`.
+    latestCommitAt: '2026-09-28T10:00:00Z',
+    worktreeMtimeAt: '2026-09-28T10:00:00Z',
+    statusFileMtimeAt: '2026-09-28T10:00:00Z',
+    nativeSessionLastEventAt: '2026-09-28T10:00:00Z',
+  });
+  const p = deriveTaskProgress(inputs, { now, stallMinutes: 30 });
+  assert.equal(p.sources.length, 0, 'no evidence source should be admitted when launchKnownAbsent');
+  assert.equal(p.lastProgressAt, null);
+  assert.equal(p.stalled, false);
+});
+
+// protects: when launchAt is merely unresolved (not positively known absent),
+// stale commit/worktree evidence must still be admitted as progress — the
+// pre-existing, generic fallback that `replayStallIntervals` (archive replay
+// with no recorded launch marker) depends on must not regress.
+test('HOK-3422: stale evidence IS admitted when launchAt is merely unresolved (not launchKnownAbsent)', () => {
+  const now = new Date('2026-09-28T16:00:00Z');
+  const inputs = emptyInputs({
+    launchAt: null,
+    latestCommitAt: '2026-09-28T10:00:00Z',
+  });
+  const p = deriveTaskProgress(inputs, { now, stallMinutes: 30 });
+  assert.equal(p.sources.length, 1);
+  assert.equal(p.sources[0].kind, 'commit');
+  assert.equal(p.lastProgressAt, '2026-09-28T10:00:00.000Z');
 });
 
 test('HOK-3422 replay: 2026-11-05 incident — no hook after reboot, controller rewrites ready-result every tick', () => {

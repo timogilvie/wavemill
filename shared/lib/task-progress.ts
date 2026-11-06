@@ -324,6 +324,18 @@ export interface TaskProgressInputs {
   latestCommitAt: string | null;
   /** stage launch ISO time (e.g. `.coding-result.json.startedAt`). */
   launchAt: string | null;
+  /**
+   * HOK-3422: true only when the caller explicitly knows no agent was ever
+   * launched for this disposition (`launchAtOverride: null` — a
+   * `ready-remediation` / `conflict-resolution` sub-stage with no
+   * session-ownership row), as opposed to `launchAt` simply being unresolved
+   * (e.g. a legacy archive replay with no recorded launch marker). Set, it
+   * stops the commit/worktree/status-file/native-session/owned-session
+   * filters from vacuously admitting stale evidence left over from an earlier
+   * stage — there is no anchor to compare it against, so pre-existing
+   * evidence must never be reported as current progress.
+   */
+  launchKnownAbsent?: boolean;
   /** newest mtime among tracked/untracked worktree paths, ISO. */
   worktreeMtimeAt: string | null;
   worktreeMtimePath?: string;
@@ -913,17 +925,28 @@ export function deriveTaskProgress(
     });
   }
 
-  // (2) commit. Only when strictly newer than launch anchor.
+  // (2) commit. Only when strictly newer than launch anchor — unless there is
+  //     no anchor at all. A merely *unresolved* launch time (e.g. legacy
+  //     archive replay with no recorded launch marker) still lets evidence
+  //     stand on its own; but when the caller explicitly knows no agent was
+  //     ever launched for this disposition (HOK-3422: `launchKnownAbsent`,
+  //     set for a `ready-remediation` / `conflict-resolution` sub-stage with
+  //     no session-ownership row), there is nothing to compare staleness
+  //     against, so evidence left over from an earlier stage must never be
+  //     admitted as progress — admitting it unconditionally would resurrect
+  //     the exact false-stall this field exists to prevent.
   const launchMs = parseIsoToMs(inputs.launchAt);
+  const admitWithoutAnchor = launchMs === null && inputs.launchKnownAbsent !== true;
   const commitMs = parseIsoToMs(inputs.latestCommitAt);
-  if (commitMs !== null && (launchMs === null || commitMs > launchMs)) {
+  if (commitMs !== null && (admitWithoutAnchor || (launchMs !== null && commitMs > launchMs))) {
     sources.push({ kind: 'commit', at: new Date(commitMs).toISOString() });
   }
 
   // (3) worktree. Only when strictly newer than launch anchor (a base commit
-  //     from before the launch does not count as progress).
+  //     from before the launch does not count as progress; see (2) for the
+  //     no-anchor rationale).
   const wtMs = parseIsoToMs(inputs.worktreeMtimeAt);
-  if (wtMs !== null && (launchMs === null || wtMs > launchMs)) {
+  if (wtMs !== null && (admitWithoutAnchor || (launchMs !== null && wtMs > launchMs))) {
     sources.push({
       kind: 'worktree',
       at: new Date(wtMs).toISOString(),
@@ -933,18 +956,23 @@ export function deriveTaskProgress(
 
   // (4) status-file. Only when strictly newer than launch + 5s grace. The
   //     launcher's `working` write happens within a couple of seconds of
-  //     `startedAt` so we treat launch..launch+5s as "not progress".
+  //     `startedAt` so we treat launch..launch+5s as "not progress" (see (2)
+  //     for the no-anchor rationale).
   const statusMs = parseIsoToMs(inputs.statusFileMtimeAt);
-  if (statusMs !== null && (launchMs === null || statusMs > launchMs + LAUNCH_STATUS_GRACE_SECONDS * 1000)) {
+  if (
+    statusMs !== null
+    && (admitWithoutAnchor || (launchMs !== null && statusMs > launchMs + LAUNCH_STATUS_GRACE_SECONDS * 1000))
+  ) {
     sources.push({ kind: 'status-file', at: new Date(statusMs).toISOString() });
   }
 
   // (4b) native session stream (HOK-3381). Agent-issued loop events
   //      (`tool_started` / `tool_result` / assistant turns) are the agent's
   //      own work; a native coder deep inside a long `run_tests` keeps
-  //      appending them while the hook stays quiet.
+  //      appending them while the hook stays quiet. See (2) for the no-anchor
+  //      rationale.
   const nativeMs = parseIsoToMs(inputs.nativeSessionLastEventAt ?? null);
-  if (nativeMs !== null && (launchMs === null || nativeMs > launchMs)) {
+  if (nativeMs !== null && (admitWithoutAnchor || (launchMs !== null && nativeMs > launchMs))) {
     sources.push({ kind: 'native-session', at: new Date(nativeMs).toISOString() });
   }
 
@@ -952,8 +980,9 @@ export function deriveTaskProgress(
   //      transcripts are agent-written; their last-event time is progress
   //      and a terminal stop event is an agent idle record (folded into
   //      `agentIdle` below with the same semantics as `terminalHistoryIdleAt`).
+  //      See (2) for the no-anchor rationale.
   const ownedMs = inputs.ownedSession?.lastEventAtMs ?? null;
-  if (ownedMs !== null && (launchMs === null || ownedMs > launchMs)) {
+  if (ownedMs !== null && (admitWithoutAnchor || (launchMs !== null && ownedMs > launchMs))) {
     sources.push({ kind: 'owned-session', at: new Date(ownedMs).toISOString() });
   }
 
@@ -1609,6 +1638,11 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
   const launchAtResolved = opts.launchAtOverride !== undefined
     ? opts.launchAtOverride
     : launchAt;
+  // HOK-3422: an explicit `launchAtOverride: null` means the caller has
+  // positively established that no agent was ever launched for this
+  // disposition (vs. `launchAt` merely being unresolved) — see
+  // `TaskProgressInputs.launchKnownAbsent`.
+  const launchKnownAbsent = opts.launchAtOverride === null;
 
   const prState = opts.task?.lifecycle?.deliveryEvidence?.prState ?? null;
   const prNumber = opts.task?.lifecycle?.deliveryEvidence?.prNumber ?? null;
@@ -1633,6 +1667,7 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
     terminalHistoryIdleAt: historyIdleAt,
     latestCommitAt,
     launchAt: launchAtResolved,
+    launchKnownAbsent,
     worktreeMtimeAt: wt.at,
     worktreeMtimePath: wt.path,
     statusFileMtimeAt,
