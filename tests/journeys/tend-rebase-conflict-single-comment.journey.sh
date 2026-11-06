@@ -34,6 +34,7 @@ fakes_linear_add_issue "$ISSUE" "Change that also regenerates a generated file" 
 fakes_repo_commit "$JOURNEY_INTEGRATION_BRANCH" "generated.txt" "generated: v0" "seed generated.txt"
 
 journey_start_monitor
+journey_set_tick_budget 110
 journey_wait_until "$ISSUE" 5  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 

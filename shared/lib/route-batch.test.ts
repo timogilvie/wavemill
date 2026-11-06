@@ -183,7 +183,7 @@ await test('batch decisions match serial auto routing and reuse eval loading', a
     resetStageAwareRouterDebugState();
     const serialDecisions = [];
     for (const task of tasks) {
-      serialDecisions.push(await routeWorkflowAuto(task.prompt, { repoDir, additionalEvalsPaths: [] }));
+      serialDecisions.push(await routeWorkflowAuto(task.prompt, { repoDir, additionalEvalsPaths: [], issueId: task.issueId }));
     }
     const serialLoads = getStageAwareRouterDebugState().evalLoadCount;
 

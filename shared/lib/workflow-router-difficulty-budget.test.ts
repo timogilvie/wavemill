@@ -267,6 +267,48 @@ await test('uses survival mode budget when in survival', () => {
   }
 });
 
+// protects: HOK-3390 — every route recorded maxCostUsd=25 with no way to
+// tell the built-in default from a real constraint.
+await test('records budgetSource=default when nothing sets the budget', () => {
+  const { repoDir, cleanup } = makeRepo();
+  try {
+    const decision = routeWorkflow('Implement a feature', { repoDir });
+    assert.deepEqual(decision.constraints, { maxCostUsd: 25, budgetSource: 'default' });
+  } finally {
+    cleanup();
+  }
+});
+
+await test('records budgetSource=request for an explicit maxCostUsd', () => {
+  const { repoDir, cleanup } = makeRepo();
+  try {
+    const decision = routeWorkflow('Implement a feature', { repoDir, maxCostUsd: 7.5 });
+    assert.deepEqual(decision.constraints, { maxCostUsd: 7.5, budgetSource: 'request' });
+  } finally {
+    cleanup();
+  }
+});
+
+await test('records budgetSource=repo-config when budget.normalMode is configured', () => {
+  const { repoDir, cleanup } = makeRepo({ ...baseConfig(), budget: { normalMode: 40 } });
+  try {
+    const decision = routeWorkflow('Implement a feature', { repoDir });
+    assert.deepEqual(decision.constraints, { maxCostUsd: 40, budgetSource: 'repo-config' });
+  } finally {
+    cleanup();
+  }
+});
+
+await test('passes a caller-named budgetSource through with the budget', () => {
+  const { repoDir, cleanup } = makeRepo();
+  try {
+    const decision = routeWorkflow('Implement a feature', { repoDir, maxCostUsd: 25, budgetSource: 'repo-config' });
+    assert.deepEqual(decision.constraints, { maxCostUsd: 25, budgetSource: 'repo-config' });
+  } finally {
+    cleanup();
+  }
+});
+
 await test('includes budget rule in reasoning when triggered', () => {
   const { repoDir, cleanup } = makeRepo();
   try {

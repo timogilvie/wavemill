@@ -791,39 +791,20 @@ function buildReapedEntry(
   };
 }
 
-function fileMtimeIso(file: string): string | null {
-  if (!existsSync(file)) {
-    return null;
-  }
-  try {
-    return statSync(file).mtime.toISOString();
-  } catch {
-    return null;
-  }
-}
-
 function computeLastProgressAt(
-  task: WorkflowTaskRecord,
-  readyResult: StageResult | null,
-  readyResultFile: string,
+  _task: WorkflowTaskRecord,
+  _readyResult: StageResult | null,
+  _readyResultFile: string,
   taskProgress: TaskProgress | null,
 ): string | null {
-  // HOK-3101: prefer the shared primitive so hook, commit and worktree
-  // evidence contribute — not only transitions. The ready-specific inputs
-  // (ready result mtime, its startedAt/finishedAt) are still folded in
-  // through extraTransitionSources when the caller composes the primitive.
-  const candidates = [
-    taskProgress?.lastProgressAt ?? null,
-    task.updated,
-    readyResult?.finishedAt ?? null,
-    readyResult?.startedAt ?? null,
-    fileMtimeIso(readyResultFile),
-  ]
-    .map((v) => (typeof v === 'string' ? parseIsoDate(v) : v))
-    .filter((value): value is Date => value !== null)
-    .sort((a, b) => b.getTime() - a.getTime());
-
-  return candidates[0]?.toISOString() ?? null;
+  // HOK-3422: dashboard "last movement" is `lastProgressAt` (agent evidence)
+  // when available, else the controller-authored `lastTransitionAt` so the
+  // string stays non-null for a healthy controller-owned wait. Direct reads
+  // of `task.updated` / `readyResult.finishedAt` / the `.ready-result.json`
+  // mtime are controller writes — they must never feed a stall-like decision.
+  return taskProgress?.lastProgressAt
+    ?? taskProgress?.lastTransitionAt
+    ?? null;
 }
 
 function computeIdleMinutes(lastProgressAt: string | null, now: Date): number | null {

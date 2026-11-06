@@ -29,6 +29,7 @@ journey_init head-move-publication
 fakes_linear_add_issue "$ISSUE" "Change published by the mill at each stage exit" Todo
 
 journey_start_monitor
+journey_set_tick_budget 105
 journey_wait_until "$ISSUE" 5  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 

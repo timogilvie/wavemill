@@ -30,7 +30,6 @@ set -euo pipefail
 
 JOURNEY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$JOURNEY_DIR/../.." && pwd)"
-BUDGET="${JOURNEY_BUDGET_SECONDS:-90}"
 
 if (( BASH_VERSINFO[0] < 4 )); then
   echo "SKIP operator-abort journey: bash >= 4 required (have $BASH_VERSION)"
@@ -56,11 +55,6 @@ assert() {
   else
     fail "$message"
   fi
-}
-
-(( BUDGET > 0 )) || BUDGET=90
-budget_check() {
-  (( $(date +%s) - STARTED_AT < BUDGET )) || fail "journey ran past $BUDGET s budget"
 }
 
 REPO_DIR="$WORK/repo"
@@ -106,7 +100,6 @@ printf '{"stage":"coding","confidence":"low","note":"HOK-3358 journey evidence"}
 
 # ── Scenario A — model-fault abort with evidence ─────────────────────────────
 log "scenario A: wavemill abort $ISSUE_A --failure-kind completion-protocol --evidence <file> --model $MODEL"
-budget_check
 A_OUT="$WORK/a.out"
 if ! npx tsx "$ROOT/tools/abort-task.ts" "$ISSUE_A" \
     --repo-dir "$REPO_DIR" --reason "model repeated 'ok, I'm done' without finishing" \
@@ -153,7 +146,6 @@ assert "A: eval outcomes.success is explicitly false (contribution → 'failure'
 
 # ── Scenario B — default (no flags) harness-fault abort ──────────────────────
 log "scenario B: wavemill abort $ISSUE_B (no flags)"
-budget_check
 B_OUT="$WORK/b.out"
 EVALS_COUNT_BEFORE="$([[ -f $EVALS_FILE ]] && wc -l < "$EVALS_FILE" || echo 0)"
 if ! npx tsx "$ROOT/tools/abort-task.ts" "$ISSUE_B" \
@@ -184,7 +176,6 @@ assert "B: no eval row keyed by $ISSUE_B" \
 
 # ── Scenario C — missing evidence rejection ──────────────────────────────────
 log "scenario C: wavemill abort $ISSUE_C --failure-kind completion-protocol (no --evidence)"
-budget_check
 C_BEFORE_JSON="$(jq -c --arg i "$ISSUE_C" '.tasks[$i]' "$STATE_FILE")"
 RELIABILITY_BEFORE_C="$([[ -f $RELIABILITY_FILE ]] && wc -l < "$RELIABILITY_FILE" || echo 0)"
 EVALS_BEFORE_C="$([[ -f $EVALS_FILE ]] && wc -l < "$EVALS_FILE" || echo 0)"

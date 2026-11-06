@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
-import { getMaxCostUsd } from './config.ts';
+import { getMaxCostUsd, isDefaultMaxCostUsdExplicitlyConfigured } from './config.ts';
+import { isBudgetSource, resolveCarriedBudget, type BudgetSource, type ResolvedBudget } from './budget-source.ts';
 import { getEffectiveRegistry, getModel } from './model-registry.ts';
 import type { RoutePrediction } from './eval-schema.ts';
 import { mutateJsonState } from './state-mutex.ts';
@@ -111,39 +112,42 @@ export function resolveRouterPolicyVersion(
   return 'baseline';
 }
 
-function isFiniteNonNegativeBudget(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
-}
-
 export interface ResolveRouteBudgetOptions {
   explicitMaxCostUsd?: number;
+  /** Provenance of `explicitMaxCostUsd`; defaults to `request` (HOK-3390). */
+  explicitBudgetSource?: BudgetSource;
   repoDir?: string;
+}
+
+/**
+ * Resolve a route decision's budget and its provenance (HOK-3390): an
+ * explicit request, then the budget the decision already carries, then the
+ * repo's `mill.defaultMaxCostUsd`.
+ */
+export function resolveRouteDecisionBudgetWithSource(
+  decision: Partial<WorkflowRouteDecision>,
+  options: ResolveRouteBudgetOptions = {},
+): ResolvedBudget | null {
+  const configuredBudgetSource = isDefaultMaxCostUsdExplicitlyConfigured(options.repoDir) ? 'repo-config' : 'default';
+  return resolveCarriedBudget([
+    { constraints: { maxCostUsd: options.explicitMaxCostUsd, budgetSource: options.explicitBudgetSource } },
+    decision,
+  ], getMaxCostUsd(options.repoDir), configuredBudgetSource);
 }
 
 export function resolveRouteDecisionBudget(
   decision: Partial<WorkflowRouteDecision>,
   options: ResolveRouteBudgetOptions = {},
 ): number | null {
-  if (isFiniteNonNegativeBudget(options.explicitMaxCostUsd)) {
-    return options.explicitMaxCostUsd;
-  }
-  if (isFiniteNonNegativeBudget(decision.constraints?.maxCostUsd)) {
-    return decision.constraints.maxCostUsd;
-  }
-  if (isFiniteNonNegativeBudget(decision.maxCostUsd)) {
-    return decision.maxCostUsd;
-  }
-
-  const configured = getMaxCostUsd(options.repoDir);
-  return isFiniteNonNegativeBudget(configured) ? configured : null;
+  return resolveRouteDecisionBudgetWithSource(decision, options)?.maxCostUsd ?? null;
 }
 
 export function withResolvedRouteBudget<T extends WorkflowRouteDecision>(
   decision: T,
   options: ResolveRouteBudgetOptions = {},
 ): T {
-  const maxCostUsd = resolveRouteDecisionBudget(decision, options);
-  if (maxCostUsd === null) {
+  const budget = resolveRouteDecisionBudgetWithSource(decision, options);
+  if (budget === null) {
     return {
       ...decision,
       maxCostUsd: null,
@@ -154,9 +158,10 @@ export function withResolvedRouteBudget<T extends WorkflowRouteDecision>(
     ...decision,
     constraints: {
       ...(decision.constraints ?? {}),
-      maxCostUsd,
+      maxCostUsd: budget.maxCostUsd,
+      budgetSource: budget.budgetSource,
     },
-    maxCostUsd,
+    maxCostUsd: budget.maxCostUsd,
   };
 }
 
@@ -537,6 +542,11 @@ function readExpectedMetrics(artifact: Record<string, unknown>): Record<string, 
     if (typeof artifact[key] !== 'undefined') {
       metrics[key] = artifact[key];
     }
+  }
+  // Budget provenance travels with maxCostUsd (HOK-3390).
+  const constraints = artifact.constraints as { budgetSource?: unknown } | undefined;
+  if (isBudgetSource(constraints?.budgetSource)) {
+    metrics.budgetSource = constraints.budgetSource;
   }
   return Object.keys(metrics).length > 0 ? metrics : undefined;
 }

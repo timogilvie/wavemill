@@ -60,6 +60,7 @@ fixture_workflow_state "$STATE_FILE" "$DELIVERED" \
     deliveryEvidence: {prNumber: "1", prState: "MERGED"}}')"
 
 journey_start_monitor
+journey_set_tick_budget 30
 
 delivered_row_gone() { [[ "$(jq -r --arg i "$DELIVERED" '.tasks[$i] // empty' "$STATE_FILE")" == "" ]]; }
 linear_done() { [[ "$(fakes_linear_state_of "$DELIVERED")" == "Done" ]]; }

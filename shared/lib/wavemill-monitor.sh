@@ -17559,7 +17559,7 @@ batch_route_selected_tasks() {
   route_output_file="/tmp/${SESSION}-dynamic-route-batch-output.jsonl"
   route_stderr_file="/tmp/${SESSION}-dynamic-route-batch.stderr"
 
-  [[ -n "${DEFAULT_MAX_COST_USD:-}" ]] && route_max_cost_args=(--max-cost "$DEFAULT_MAX_COST_USD")
+  [[ -n "${DEFAULT_MAX_COST_USD:-}" ]] && route_max_cost_args=(--max-cost "$DEFAULT_MAX_COST_USD" --budget-source repo-config)
   : > "$route_jsonl_file"
 
   while IFS= read -r line; do
@@ -17690,7 +17690,7 @@ reroute_expanded_packets_for_coding_handoff() {
     done < <(jq -r '.tasks | to_entries[] | select(.key != "" and ((.value.slug // "") != "")) | [.key, (.value.slug // ""), (.value.worktree // "")] | @tsv' "$STATE_FILE" 2>/dev/null || true)
   fi
 
-  [[ -n "${DEFAULT_MAX_COST_USD:-}" ]] && route_max_cost_args=(--max-cost "$DEFAULT_MAX_COST_USD")
+  [[ -n "${DEFAULT_MAX_COST_USD:-}" ]] && route_max_cost_args=(--max-cost "$DEFAULT_MAX_COST_USD" --budget-source repo-config)
 
   if ! _with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_batch_tool" \
     --expanded-jsonl "$input_file" \
@@ -18725,7 +18725,7 @@ launch_task() {
       rm -f "$routing_failure_file"
 
       if [[ -n "${DEFAULT_MAX_COST_USD:-}" ]]; then
-        route_max_cost_args=(--max-cost "$DEFAULT_MAX_COST_USD")
+        route_max_cost_args=(--max-cost "$DEFAULT_MAX_COST_USD" --budget-source repo-config)
       fi
       if [[ "${WAVEMILL_ROUTING_DEBUG:-0}" == "1" ]]; then
         route_debug_enabled="true"
@@ -18769,13 +18769,13 @@ launch_task() {
           printf '\n[attempt %d] live route\n' "$route_attempt" >> "$routing_log_file"
           rm -f "$route_stderr_file"
           if [[ "$route_debug_enabled" == "true" ]]; then
-            if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
+            if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --issue-id "$issue" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
               route_rc=0
             else
               route_rc=$?
             fi
           else
-            if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
+            if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --issue-id "$issue" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
               route_rc=0
             else
               route_rc=$?
@@ -18828,13 +18828,13 @@ launch_task() {
         printf '\n[heuristic fallback]\n' >> "$routing_log_file"
         rm -f "$route_stderr_file"
         if [[ "$route_debug_enabled" == "true" ]]; then
-          if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
+          if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --issue-id "$issue" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
             route_rc=0
           else
             route_rc=$?
           fi
         else
-          if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
+          if route_json=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --issue-id "$issue" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
             route_rc=0
           else
             route_rc=$?
@@ -19490,9 +19490,14 @@ Implement from the issue description plus direct codebase analysis."
   # The routing tool was already called at lines above (route-task.ts).
   # We just need to write the .routing-complete file and launch planning.
   local routing_file="$feature_dir/.routing-complete"
-  local routing_max_cost_usd
+  local routing_max_cost_usd routing_budget_source
   routing_max_cost_usd="$(read_route_json "$SESSION" "$issue" "constraints.maxCostUsd" "")"
-  [[ -z "$routing_max_cost_usd" ]] && routing_max_cost_usd="${DEFAULT_MAX_COST_USD:-}"
+  routing_budget_source="$(read_route_json "$SESSION" "$issue" "constraints.budgetSource" "")"
+  # HOK-3390: a budget taken from mill.defaultMaxCostUsd is repo-config.
+  if [[ -z "$routing_max_cost_usd" && -n "${DEFAULT_MAX_COST_USD:-}" ]]; then
+    routing_max_cost_usd="$DEFAULT_MAX_COST_USD"
+    routing_budget_source="repo-config"
+  fi
 
   local startup_route_file="/tmp/${SESSION}-${issue}-route.json"
   if [[ -f "$startup_route_file" ]] && jq -e '.planner and .coder and .reviewer' "$startup_route_file" >/dev/null 2>&1; then
@@ -19507,6 +19512,7 @@ Implement from the issue description plus direct codebase analysis."
       --arg inputKind "issue" \
       --arg inputPath "features/$slug/selected-task.json" \
       --argjson maxCostUsd "${routing_max_cost_usd:-null}" \
+      --arg budgetSource "${routing_budget_source:-}" \
       '(.provenance // {}) as $p
       | .planner = $planner
       | .coder = $coder
@@ -19525,7 +19531,9 @@ Implement from the issue description plus direct codebase analysis."
         })
       | if $maxCostUsd == null
         then .
-        else .maxCostUsd = $maxCostUsd | .constraints = ((.constraints // {}) + {maxCostUsd: $maxCostUsd})
+        else .maxCostUsd = $maxCostUsd
+          | .constraints = ((.constraints // {}) + {maxCostUsd: $maxCostUsd}
+            + (if $budgetSource == "" then {} else {budgetSource: $budgetSource} end))
         end' "$startup_route_file" \
       | write_json_artifact "$routing_file"
   else
@@ -19546,6 +19554,7 @@ Implement from the issue description plus direct codebase analysis."
       --arg provenanceRoutedAt "$(read_route_json "$SESSION" "$issue" "routedAt" "")" \
       --arg provenanceRouterMode "$(read_route_json "$SESSION" "$issue" "routerMode" "")" \
       --argjson maxCostUsd "${routing_max_cost_usd:-null}" \
+      --arg budgetSource "${routing_budget_source:-}" \
       '{
         planner: $planner,
         coder: $coder,
@@ -19563,7 +19572,7 @@ Implement from the issue description plus direct codebase analysis."
           routerMode: (if $provenanceRouterMode == "" then "normal" else $provenanceRouterMode end)
         },
         maxCostUsd: $maxCostUsd
-      } + (if $maxCostUsd == null then {} else {constraints: {maxCostUsd: $maxCostUsd}} end)' \
+      } + (if $maxCostUsd == null then {} else {constraints: ({maxCostUsd: $maxCostUsd} + (if $budgetSource == "" then {} else {budgetSource: $budgetSource} end))} end)' \
       | write_json_artifact "$routing_file"
   fi
 

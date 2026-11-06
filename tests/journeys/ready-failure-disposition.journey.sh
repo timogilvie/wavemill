@@ -91,6 +91,7 @@ mill_log_count() {
 }
 
 journey_start_monitor
+journey_set_tick_budget 55
 journey_wait_until "$ISSUE" 5  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 journey_wait_until "$ISSUE" 5  "task launched into planning" phase_is planning

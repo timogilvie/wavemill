@@ -36,6 +36,8 @@ import {
   getMillConfig,
   getExpansionHandshakeConfig,
   getMaxCostUsd,
+  getModeBudget,
+  isBudgetModeExplicit,
   getUiConfig,
   getReliabilityConfig,
   getPermissionsConfig,
@@ -1975,6 +1977,24 @@ test('invalid expansionHandshake timeout fails validation', () => {
         loadWavemillConfig(tmp);
       });
     }
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+// protects: HOK-3390 — a mode budget the repo never configured must be
+// recorded as `default`, not passed off as a real constraint.
+test('getModeBudget labels configured mode budgets repo-config and the rest default', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ budget: { constrainedMode: 12 } }));
+
+    assert.equal(isBudgetModeExplicit('constrained', tmp), true);
+    assert.equal(isBudgetModeExplicit('normal', tmp), false);
+    assert.deepEqual(getModeBudget('constrained', tmp), { maxCostUsd: 12, budgetSource: 'repo-config' });
+    assert.deepEqual(getModeBudget('normal', tmp), { maxCostUsd: 25, budgetSource: 'default' });
+    assert.deepEqual(getModeBudget('survival', tmp), { maxCostUsd: 5, budgetSource: 'default' });
   } finally {
     cleanUp(tmp);
   }

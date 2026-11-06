@@ -265,6 +265,8 @@ Both modes use stage-aware KNN signals for candidate selection and prepend a deg
 - Stamp route artifacts with `provenance.source`, `inputKind`, `inputPath`, `inputHash`, `routedAt`, and `routerMode`
 - Preserve `cache_hit`, `route_source`, and `packet_hash` when promoting `.post-expansion-route.json` into `.routing-complete`
 - Prefer cache hits for unchanged expanded packets on coding launch and resume
+- Pass `issueId` through every task-launch routing path so the task's deterministic objective and confidence-floor behavior remain aligned
+- Preserve the task's objective on every Hokusai re-ask
 
 ### DON'T
 - Trigger constrained mode while any frontier model is healthy
@@ -277,6 +279,7 @@ Both modes use stage-aware KNN signals for candidate selection and prepend a deg
 - Allow an uncertified native model to reach the final pool (fail closed, never silently ignore certification failures)
 - Accept a native model based only on registry `maxCertifiedPhase` metadata without checking the on-disk artifact
 - Assume an OpenRouter alias and its raw `vendor/model` ID resolve to different certification artifacts
+- Skip the assigned objective on a Hokusai re-ask; the objective belongs to the task, not a routing stage
 
 ## Known Failure Modes
 

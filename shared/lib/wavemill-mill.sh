@@ -575,7 +575,7 @@ write_launch_plan() {
 
   local tasks_json='[]'
   local t issue slug title branch wt_dir linear_issue task_packet_file details_file issue_json_file route_file scorer_file
-  local route_json route_planner route_coder route_reviewer route_plan_depth route_code_depth route_review_mode route_max_cost_usd
+  local route_json route_planner route_coder route_reviewer route_plan_depth route_code_depth route_review_mode route_max_cost_usd route_budget_source
   local route_payload challenge_flag challenge_pair challenge_role challenge_model migration_number task_agent
   local depends_on base_from_task attempt_id attempt_json
 
@@ -601,7 +601,12 @@ write_launch_plan() {
     route_code_depth="${TASK_CODE_DEPTH_BY_ISSUE[$issue]:-$(echo "$route_json" | jq -r '.codeDepth // "medium"' 2>/dev/null)}"
     route_review_mode="${TASK_REVIEW_MODE_BY_ISSUE[$issue]:-$(echo "$route_json" | jq -r '.reviewRecommended // .reviewMode // "static"' 2>/dev/null)}"
     route_max_cost_usd="$(echo "$route_json" | jq -r '.constraints.maxCostUsd // empty' 2>/dev/null)"
-    [[ -z "$route_max_cost_usd" ]] && route_max_cost_usd="${DEFAULT_MAX_COST_USD:-}"
+    route_budget_source="$(echo "$route_json" | jq -r '.constraints.budgetSource // empty' 2>/dev/null)"
+    # HOK-3390: a budget taken from mill.defaultMaxCostUsd is repo-config.
+    if [[ -z "$route_max_cost_usd" && -n "${DEFAULT_MAX_COST_USD:-}" ]]; then
+      route_max_cost_usd="$DEFAULT_MAX_COST_USD"
+      route_budget_source="repo-config"
+    fi
     challenge_flag="${TASK_CHALLENGE_BY_ISSUE[$issue]:-false}"
     challenge_pair="${TASK_CHALLENGE_PAIR_BY_ISSUE[$issue]:-}"
     challenge_role="${TASK_CHALLENGE_ROLE_BY_ISSUE[$issue]:-}"
@@ -643,6 +648,7 @@ write_launch_plan() {
       --arg codeDepth "$route_code_depth" \
       --arg reviewMode "$route_review_mode" \
       --argjson maxCostUsd "${route_max_cost_usd:-null}" \
+      --arg budgetSource "${route_budget_source:-}" \
       '{
         planner: $planner,
         coder: $coder,
@@ -651,7 +657,7 @@ write_launch_plan() {
         codeDepth: $codeDepth,
         reviewMode: $reviewMode,
         maxCostUsd: $maxCostUsd
-      } + (if $maxCostUsd == null then {} else {constraints: {maxCostUsd: $maxCostUsd}} end)')"
+      } + (if $maxCostUsd == null then {} else {constraints: ({maxCostUsd: $maxCostUsd} + (if $budgetSource == "" then {} else {budgetSource: $budgetSource} end))} end)')"
 
     tasks_json="$(jq -n \
       --argjson tasks "$tasks_json" \
@@ -2272,7 +2278,7 @@ elif [[ "${ROUTER_ENABLED:-true}" == "true" ]]; then
     log "info" "Running model router..."
     ROUTE_MAX_COST_ARGS=()
     if [[ -n "${DEFAULT_MAX_COST_USD:-}" ]]; then
-      ROUTE_MAX_COST_ARGS=(--max-cost "$DEFAULT_MAX_COST_USD")
+      ROUTE_MAX_COST_ARGS=(--max-cost "$DEFAULT_MAX_COST_USD" --budget-source repo-config)
     fi
     STARTUP_BATCH_ROUTED=false
     if [[ -f "$ROUTE_BATCH_TOOL" ]]; then

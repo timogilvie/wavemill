@@ -26,6 +26,7 @@ fakes_linear_add_issue "$ISSUE" "Test agent killed mid-stage" Todo
 
 export WAVEMILL_CODING_OWNER_GRACE_SECONDS=0
 journey_start_monitor
+journey_set_tick_budget 115
 journey_wait_until "$ISSUE" 30  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 
