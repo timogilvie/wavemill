@@ -294,6 +294,7 @@ describe('model-registry', () => {
       'kimi-k2.7-code',
       'kimi-k2-thinking',
       'kimi-k3',
+      'kimi-k3.1-pro',
       'llama-4-maverick',
       'mistral-large-2',
       'mistral-medium-3',
@@ -421,6 +422,7 @@ describe('model-registry', () => {
     const expected: Record<string, { providerNativeId: string; stages: string[] }> = {
       'glm-5.3': { providerNativeId: 'z-ai/glm-5.3', stages: ['planning', 'coding', 'review'] },
       'kimi-k3': { providerNativeId: 'moonshotai/kimi-k3', stages: ['planning', 'coding', 'review'] },
+      'kimi-k3.1-pro': { providerNativeId: 'moonshotai/kimi-k3.1-pro', stages: ['planning', 'coding', 'review'] },
       'gemini-3.8-flash': { providerNativeId: 'google/gemini-3.8-flash', stages: ['coding', 'review'] },
       'deepseek-v4-pro': { providerNativeId: 'deepseek/deepseek-v4-pro-0813', stages: ['planning', 'coding', 'review'] },
       'deepseek-v4-flash': { providerNativeId: 'deepseek/deepseek-v4-flash-0731', stages: ['planning', 'coding', 'review'] },
@@ -2839,6 +2841,7 @@ describe('canonical supported-model helpers', () => {
       'gemini-3.8-flash': 1_048_576,
       'glm-5.3': 1_310_720,
       'kimi-k3': 1_048_576,
+      'kimi-k3.1-pro': 1_048_576,
     };
 
     for (const [alias, limit] of Object.entries(knownProviderLimits)) {

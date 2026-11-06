@@ -137,15 +137,7 @@ export interface HokusaiConfig {
 }
 
 export type ModelExclusionStage =
-  | 'planner'
-  | 'coder'
-  | 'reviewer'
-  | 'expansion'
-  | 'planning'
-  | 'coding'
-  | 'review'
-  | 'plan'
-  | 'implementation';
+  'planner' | 'coder' | 'reviewer' | 'expansion' | 'planning' | 'coding' | 'review' | 'plan' | 'implementation';
 
 export interface ModelExclusionConfig {
   model: string;
@@ -381,11 +373,15 @@ export interface ReviewConfig {
   nativeTimeoutMs?: number;
   nativeTimeoutMaxMs?: number;
   nativeTimeoutMultiplier?: number;
-  nativeTimeoutModelOverrides?: Record<string, number | {
-    timeoutMs?: number;
-    maxMs?: number;
-    multiplier?: number;
-  }>;
+  nativeTimeoutModelOverrides?: Record<
+    string,
+    | number
+    | {
+        timeoutMs?: number;
+        maxMs?: number;
+        multiplier?: number;
+      }
+  >;
 }
 
 export interface ResolvedNativeReviewTimeoutConfig {
@@ -486,6 +482,11 @@ export interface NativeCertificationConfig {
   canaryRenewalWindowDays?: number;
   /** Master switch for automatic cohort canary refresh during preflight. */
   canaryAutoRefresh?: boolean;
+  /**
+   * Opt-in monitor cadence for refresh checks. Zero leaves periodic refresh
+   * disabled; startup preflight remediation is unaffected.
+   */
+  canaryAutoRefreshIntervalMinutes?: number;
 }
 
 export interface NativeContextManagementConfig {
@@ -930,10 +931,7 @@ export interface IncidentConfig {
   };
 }
 
-export type PromotionProtectedIntegrationStrategy =
-  | 'skip-reconciliation'
-  | 'block'
-  | 'use-promotion-head';
+export type PromotionProtectedIntegrationStrategy = 'skip-reconciliation' | 'block' | 'use-promotion-head';
 
 export interface PromotionConfig {
   protectedIntegrationStrategy: PromotionProtectedIntegrationStrategy;
@@ -1148,11 +1146,15 @@ export interface PrePrVerificationConfigSchema {
     autoAcknowledgeThreshold?: number;
   };
   mappingAcknowledgements?: {
-    checks?: Record<string, string | {
-      localCommand?: string;
-      workflowPath?: string;
-      jobName?: string;
-    }>;
+    checks?: Record<
+      string,
+      | string
+      | {
+          localCommand?: string;
+          workflowPath?: string;
+          jobName?: string;
+        }
+    >;
     acknowledgedBy?: string;
     acknowledgedAt?: string;
   };
@@ -1323,10 +1325,19 @@ export const OBSERVER_LINEAR_DEFAULTS: ObserverLinearConfig = {
   rateLimitBackoffMs: 1000,
   policies: {
     product_defect: { strategy: 'create' },
-    model_task_harness_outcome: { strategy: 'no_create', correlateIssueIds: ['HOK-2593'] },
+    model_task_harness_outcome: {
+      strategy: 'no_create',
+      correlateIssueIds: ['HOK-2593'],
+    },
     external_transient_dependency: { strategy: 'threshold', threshold: 3 },
-    configuration_operator_condition: { strategy: 'create_if_persistent', persistentThreshold: 3 },
-    stale_orphaned_state: { strategy: 'create_if_persistent', persistentThreshold: 3 },
+    configuration_operator_condition: {
+      strategy: 'create_if_persistent',
+      persistentThreshold: 3,
+    },
+    stale_orphaned_state: {
+      strategy: 'create_if_persistent',
+      persistentThreshold: 3,
+    },
   },
   redaction: {
     enabled: true,
@@ -1355,10 +1366,7 @@ export const REVIEW_MERGE_DEFAULTS: ResolvedReviewMergeConfig = {
   },
 };
 
-export const DEFAULT_READY_MIGRATION_PATTERNS = [
-  'migrations/',
-  'alembic/versions/',
-] as const;
+export const DEFAULT_READY_MIGRATION_PATTERNS = ['migrations/', 'alembic/versions/'] as const;
 
 export const DEFAULT_READY_MIGRATION_DANGER_LABELS = {
   drop_column: 'migration:destructive',
@@ -1460,8 +1468,7 @@ function warnValidatorDisabled(reason: string): void {
     return;
   }
   console.warn(
-    `Wavemill config validation skipped: ${reason}. ` +
-    'Install dependencies to restore schema validation.'
+    `Wavemill config validation skipped: ${reason}. ` + 'Install dependencies to restore schema validation.',
   );
   didWarnValidatorDisabled = true;
 }
@@ -1479,12 +1486,10 @@ function getValidator(repoDir?: string): ValidatorFunction | null {
 
   const canonicalSchemaPath = resolve(
     import.meta.url.replace('file://', '').replace('/shared/lib/config.ts', ''),
-    'wavemill-config.schema.json'
+    'wavemill-config.schema.json',
   );
   const worktreeSchemaPath = repoDir ? resolve(repoDir, 'wavemill-config.schema.json') : '';
-  const schemaPath = worktreeSchemaPath && existsSync(worktreeSchemaPath)
-    ? worktreeSchemaPath
-    : canonicalSchemaPath;
+  const schemaPath = worktreeSchemaPath && existsSync(worktreeSchemaPath) ? worktreeSchemaPath : canonicalSchemaPath;
 
   // Compiling this schema costs ~400ms, so a compiled validator is reused for
   // as long as the underlying file is unchanged. The fingerprint check keeps a
@@ -1492,19 +1497,13 @@ function getValidator(repoDir?: string): ValidatorFunction | null {
   // being validated against a stale validator.
   const fingerprint = schemaFingerprint(schemaPath);
   const cached = compiledValidators.get(schemaPath);
-  if (
-    cached &&
-    fingerprint &&
-    cached.mtimeMs === fingerprint.mtimeMs &&
-    cached.size === fingerprint.size
-  ) {
+  if (cached && fingerprint && cached.mtimeMs === fingerprint.mtimeMs && cached.size === fingerprint.size) {
     return cached.validator;
   }
 
   if (!existsSync(schemaPath)) {
     throw new Error(
-      `Config schema not found at ${schemaPath}. ` +
-      `Ensure wavemill-config.schema.json exists in the repo root.`
+      `Config schema not found at ${schemaPath}. ` + `Ensure wavemill-config.schema.json exists in the repo root.`,
     );
   }
 
@@ -1529,7 +1528,9 @@ function getValidator(repoDir?: string): ValidatorFunction | null {
   const schema = JSON.parse(schemaText);
   const require = createRequire(import.meta.url);
   let AjvCtor: {
-    new (options: { allErrors: boolean; strict: boolean }): { compile(schema: unknown): ValidatorFunction };
+    new (options: { allErrors: boolean; strict: boolean }): {
+      compile(schema: unknown): ValidatorFunction;
+    };
   };
 
   try {
@@ -1600,7 +1601,7 @@ function validateConfig(config: unknown, repoDir?: string): asserts config is Wa
 
     throw new Error(
       `Config validation failed:\n${errorMessages}\n\n` +
-      `Check .wavemill-config.json against wavemill-config.schema.json`
+        `Check .wavemill-config.json against wavemill-config.schema.json`,
     );
   }
 
@@ -1629,16 +1630,14 @@ function validateReadyPolicySubset(config: unknown): void {
 
   // Effective check set = explicitly configured checks + universal defaults (always present at runtime).
   const configuredChecks = Array.isArray(ready.checks) ? ready.checks : [];
-  const effectiveCheckSet = new Set(
-    [...configuredChecks, ...UNIVERSAL_CHECK_NAMES].map(canonicalizeReadyCheckName)
-  );
+  const effectiveCheckSet = new Set([...configuredChecks, ...UNIVERSAL_CHECK_NAMES].map(canonicalizeReadyCheckName));
   for (const requiredCheck of ready.requiredChecks) {
     const canonicalRequired = canonicalizeReadyCheckName(requiredCheck);
     if (!effectiveCheckSet.has(canonicalRequired)) {
       throw new Error(
         `Config validation failed:\n` +
-        `  /ready/requiredChecks: "${requiredCheck}" must also be present in ready.checks\n\n` +
-        `Check .wavemill-config.json against wavemill-config.schema.json`
+          `  /ready/requiredChecks: "${requiredCheck}" must also be present in ready.checks\n\n` +
+          `Check .wavemill-config.json against wavemill-config.schema.json`,
       );
     }
   }
@@ -1668,9 +1667,9 @@ function validateAgentsModelSelectors(config: unknown): void {
 
     throw new Error(
       `Config validation failed:\n` +
-      `  /agents/${phase}/model: "${model}" is not a valid model selector.\n` +
-      `  Valid forms: "inherit", a family alias (e.g. "opus", "sonnet", "haiku"), or a pinned model ID (e.g. "claude-opus-4-7").\n` +
-      `  Parse error: ${parsed.error.message}`
+        `  /agents/${phase}/model: "${model}" is not a valid model selector.\n` +
+        `  Valid forms: "inherit", a family alias (e.g. "opus", "sonnet", "haiku"), or a pinned model ID (e.g. "claude-opus-4-7").\n` +
+        `  Parse error: ${parsed.error.message}`,
     );
   }
 }
@@ -1779,9 +1778,7 @@ export function loadWavemillConfig(repoDir?: string): WavemillConfig {
 
   // Missing base file is not an error (all fields are optional). A `.local.json`
   // alone with no base is also valid — it acts as the entire config.
-  const base = existsSync(resolve(absRepoDir, '.wavemill-config.json'))
-    ? loadWavemillBaseConfig(absRepoDir)
-    : {};
+  const base = existsSync(resolve(absRepoDir, '.wavemill-config.json')) ? loadWavemillBaseConfig(absRepoDir) : {};
   const overlay = existsSync(localConfigPath) ? readAndParseConfig(localConfigPath) : null;
   const merged = overlay ? deepMergeConfig(base, overlay) : base;
 
@@ -1890,8 +1887,16 @@ export function getEffectiveModelExclusions(repoDir?: string): EffectiveModelExc
     : [];
 
   return [
-    ...base.map((entry) => ({ ...entry, stages: entry.stages ? [...entry.stages] : undefined, source: 'repo' as const })),
-    ...local.map((entry) => ({ ...entry, stages: entry.stages ? [...entry.stages] : undefined, source: 'local' as const })),
+    ...base.map((entry) => ({
+      ...entry,
+      stages: entry.stages ? [...entry.stages] : undefined,
+      source: 'repo' as const,
+    })),
+    ...local.map((entry) => ({
+      ...entry,
+      stages: entry.stages ? [...entry.stages] : undefined,
+      source: 'local' as const,
+    })),
   ];
 }
 
@@ -1924,9 +1929,7 @@ export function isRouterCapabilityFilteringEnabled(repoDir?: string): boolean {
  * Get the per-stage context window floors config.
  * Returns empty object when no floors are configured.
  */
-export function getContextWindowFloorsConfig(
-  repoDir?: string,
-): ContextWindowFloorsConfig {
+export function getContextWindowFloorsConfig(repoDir?: string): ContextWindowFloorsConfig {
   return loadWavemillConfig(repoDir).contextWindowFloors || {};
 }
 
@@ -2038,13 +2041,19 @@ export interface PromptCacheConfig {
 export function getReliabilityConfig(
   repoDir?: string,
   env: NodeJS.ProcessEnv = process.env,
-): Required<Omit<ReliabilityConfig, 'promptCache'>> & { promptCache: Required<PromptCacheConfig> } {
+): Required<Omit<ReliabilityConfig, 'promptCache'>> & {
+  promptCache: Required<PromptCacheConfig>;
+} {
   const config = loadWavemillConfig(repoDir).reliability ?? {};
   const envLogins = env.WAVEMILL_RELIABILITY_MILL_ACTOR_LOGINS;
   return {
-    millActorLogins: envLogins !== undefined
-      ? envLogins.split(',').map((login) => login.trim()).filter(Boolean)
-      : config.millActorLogins ?? [],
+    millActorLogins:
+      envLogins !== undefined
+        ? envLogins
+            .split(',')
+            .map((login) => login.trim())
+            .filter(Boolean)
+        : (config.millActorLogins ?? []),
     stallMinutes: config.stallMinutes ?? 30,
     github: config.github ?? true,
     promptCache: {
@@ -2079,7 +2088,8 @@ export function getHarnessRetentionConfig(repoDir?: string): Required<HarnessRet
     suitePath: config.suitePath ?? 'shared/fixtures/harness-replay/harness-retention-v1/manifest.json',
     reportDir: config.reportDir ?? '.wavemill/harness-replay/reports',
     baselineHarnessId: config.baselineHarnessId ?? process.env.WAVEMILL_BASELINE_HARNESS_ID ?? '',
-    candidateHarnessId: config.candidateHarnessId ?? process.env.WAVEMILL_CANDIDATE_HARNESS_ID ?? process.env.WAVEMILL_HARNESS_ID ?? '',
+    candidateHarnessId:
+      config.candidateHarnessId ?? process.env.WAVEMILL_CANDIDATE_HARNESS_ID ?? process.env.WAVEMILL_HARNESS_ID ?? '',
   };
 }
 
@@ -2150,7 +2160,14 @@ export function getReadyWatchdogConfig(repoDir?: string): Required<ReadyWatchdog
     timeoutSeconds: merged.timeoutSeconds ?? 30,
     stableFailureConsecutivePolls: merged.stableFailureConsecutivePolls ?? 2,
     stableFailureEscalateAfterPolls: merged.stableFailureEscalateAfterPolls ?? 4,
-    safeRemediationCategories: merged.safeRemediationCategories ?? ['lint', 'type', 'test', 'build', 'migration-chain', 'alembic'],
+    safeRemediationCategories: merged.safeRemediationCategories ?? [
+      'lint',
+      'type',
+      'test',
+      'build',
+      'migration-chain',
+      'alembic',
+    ],
   };
 }
 
@@ -2183,12 +2200,14 @@ export function getReadyRemediationConfig(repoDir?: string): Required<ReadyRemed
 export function getReadyFailureClassifierConfig(repoDir?: string): ReadyFailureClassifierConfig {
   const ready = loadWavemillConfig(repoDir).ready ?? {};
   return {
-    transientRetryBudget: Number.isInteger(ready.transientRetryBudget) && (ready.transientRetryBudget ?? 0) >= 0
-      ? ready.transientRetryBudget as number
-      : 3,
-    remediationLogMaxBytes: Number.isInteger(ready.remediationLogMaxBytes) && (ready.remediationLogMaxBytes ?? 0) > 0
-      ? ready.remediationLogMaxBytes as number
-      : 20_000,
+    transientRetryBudget:
+      Number.isInteger(ready.transientRetryBudget) && (ready.transientRetryBudget ?? 0) >= 0
+        ? (ready.transientRetryBudget as number)
+        : 3,
+    remediationLogMaxBytes:
+      Number.isInteger(ready.remediationLogMaxBytes) && (ready.remediationLogMaxBytes ?? 0) > 0
+        ? (ready.remediationLogMaxBytes as number)
+        : 20_000,
     localCommandMap: ready.localCommandMap ?? {},
   };
 }
@@ -2309,7 +2328,7 @@ function envMergeQueueOverride(env: NodeJS.ProcessEnv): boolean | undefined {
   const raw = env.MERGE_QUEUE_ENABLED;
   if (raw === undefined) return undefined;
   const v = String(raw).trim().toLowerCase();
-  if (v === '' ) return undefined;
+  if (v === '') return undefined;
   if (v === '0' || v === 'false' || v === 'no') return false;
   if (v === '1' || v === 'true' || v === 'yes') return true;
   return undefined;
@@ -2357,7 +2376,7 @@ export function resolveSessionCapabilities(
     mergeExecutorReason = 'integration on + useMillSession on → tend merges';
   } else if (integration.enabled === true) {
     mergeExecutor = 'none';
-    mergeExecutorReason = "integration on but useMillSession off; run `wavemill tend --loop` or merge manually";
+    mergeExecutorReason = 'integration on but useMillSession off; run `wavemill tend --loop` or merge manually';
   } else {
     mergeExecutor = 'operator';
     mergeExecutorReason = 'integration off → operator merges (HOK-3093 default)';
@@ -2374,20 +2393,18 @@ export function resolveSessionCapabilities(
   const reasons: SessionCapabilitiesReasons = {
     tend: tend
       ? 'integration.enabled && useMillSession'
-      : (integration.enabled === true
-          ? 'integration.enabled but useMillSession=false'
-          : 'integration.enabled=false'),
-    observer: observerOn
-      ? 'observer on (default; independent of integration)'
-      : 'observer.enabled=false',
+      : integration.enabled === true
+        ? 'integration.enabled but useMillSession=false'
+        : 'integration.enabled=false',
+    observer: observerOn ? 'observer on (default; independent of integration)' : 'observer.enabled=false',
     mergeExecutor: mergeExecutorReason,
     mergeQueue: mergeQueueOn
       ? 'mergeQueue.enabled && mergeExecutor=tend'
-      : (mergeExecutor !== 'tend'
-          ? 'no tend to drain the queue'
-          : (envOverride === false
-              ? 'MERGE_QUEUE_ENABLED=false override'
-              : 'mergeQueue.enabled=false')),
+      : mergeExecutor !== 'tend'
+        ? 'no tend to drain the queue'
+        : envOverride === false
+          ? 'MERGE_QUEUE_ENABLED=false override'
+          : 'mergeQueue.enabled=false',
   };
 
   return {
@@ -2406,7 +2423,10 @@ export function resolveSessionCapabilities(
  */
 export function getIntegrationConfig(repoDir?: string): IntegrationConfig {
   const config = loadWavemillConfig(repoDir);
-  const integration = { ...INTEGRATION_DEFAULTS, ...(config.integration ?? {}) };
+  const integration = {
+    ...INTEGRATION_DEFAULTS,
+    ...(config.integration ?? {}),
+  };
   if (!config.integration?.integrationBranch && config.mill?.baseBranch) {
     integration.integrationBranch = config.mill.baseBranch;
   }
@@ -2418,7 +2438,10 @@ export function getIntegrationConfig(repoDir?: string): IntegrationConfig {
  * Returns defaults when not configured.
  */
 export function getPromotionConfig(repoDir?: string): PromotionConfig {
-  return { ...PROMOTION_DEFAULTS, ...(loadWavemillConfig(repoDir).promotion ?? {}) };
+  return {
+    ...PROMOTION_DEFAULTS,
+    ...(loadWavemillConfig(repoDir).promotion ?? {}),
+  };
 }
 
 /**
@@ -2431,14 +2454,13 @@ export function getReviewMergeConfig(repoDir?: string): ResolvedReviewMergeConfi
   return {
     crossPrRevertCheck: {
       enabled: crossPrRevertCheck.enabled ?? REVIEW_MERGE_DEFAULTS.crossPrRevertCheck.enabled,
-      maxRecentMerges:
-        crossPrRevertCheck.maxRecentMerges ?? REVIEW_MERGE_DEFAULTS.crossPrRevertCheck.maxRecentMerges,
+      maxRecentMerges: crossPrRevertCheck.maxRecentMerges ?? REVIEW_MERGE_DEFAULTS.crossPrRevertCheck.maxRecentMerges,
     },
   };
 }
 
 function positiveInteger(value: unknown): number | undefined {
-  return Number.isInteger(value) && (value as number) > 0 ? value as number : undefined;
+  return Number.isInteger(value) && (value as number) > 0 ? (value as number) : undefined;
 }
 
 function nativeReviewOverrideForModel(
@@ -2447,7 +2469,11 @@ function nativeReviewOverrideForModel(
 ): number | { timeoutMs?: number; maxMs?: number; multiplier?: number } | undefined {
   const cleanModel = model?.trim();
   if (!cleanModel || !overrides) return undefined;
-  return overrides[cleanModel] ?? overrides[cleanModel.replace(/^native-[^/]+\//, '')] ?? overrides[cleanModel.replace(/^[^/]+\//, '')];
+  return (
+    overrides[cleanModel] ??
+    overrides[cleanModel.replace(/^native-[^/]+\//, '')] ??
+    overrides[cleanModel.replace(/^[^/]+\//, '')]
+  );
 }
 
 export function getNativeReviewTimeoutConfig(
@@ -2458,15 +2484,18 @@ export function getNativeReviewTimeoutConfig(
   const review = loadWavemillConfig(repoDir).review ?? {};
   const override = nativeReviewOverrideForModel(review.nativeTimeoutModelOverrides, model);
   const overrideObject = typeof override === 'object' && override !== null ? override : undefined;
-  const configuredBase = positiveInteger(typeof override === 'number' ? override : overrideObject?.timeoutMs)
-    ?? positiveInteger(review.nativeTimeoutMs)
-    ?? DEFAULT_NATIVE_REVIEW_TIMEOUT_MS;
-  const configuredMax = positiveInteger(overrideObject?.maxMs)
-    ?? positiveInteger(review.nativeTimeoutMaxMs)
-    ?? DEFAULT_NATIVE_REVIEW_TIMEOUT_MAX_MS;
-  const configuredMultiplier = positiveInteger(overrideObject?.multiplier)
-    ?? positiveInteger(review.nativeTimeoutMultiplier)
-    ?? DEFAULT_NATIVE_REVIEW_TIMEOUT_MULTIPLIER;
+  const configuredBase =
+    positiveInteger(typeof override === 'number' ? override : overrideObject?.timeoutMs) ??
+    positiveInteger(review.nativeTimeoutMs) ??
+    DEFAULT_NATIVE_REVIEW_TIMEOUT_MS;
+  const configuredMax =
+    positiveInteger(overrideObject?.maxMs) ??
+    positiveInteger(review.nativeTimeoutMaxMs) ??
+    DEFAULT_NATIVE_REVIEW_TIMEOUT_MAX_MS;
+  const configuredMultiplier =
+    positiveInteger(overrideObject?.multiplier) ??
+    positiveInteger(review.nativeTimeoutMultiplier) ??
+    DEFAULT_NATIVE_REVIEW_TIMEOUT_MULTIPLIER;
   const maxMs = Math.max(configuredBase, configuredMax);
   const attempt = Math.max(0, Math.floor(retryAttempt));
   const scaled = configuredBase * Math.pow(configuredMultiplier, attempt);
@@ -2511,7 +2540,10 @@ export function getMillConfig(repoDir?: string): MillConfig {
   return loadWavemillConfig(repoDir).mill || {};
 }
 
-export function getExpansionHandshakeConfig(repoDir?: string): { policy: 'recover' | 'block' | 'warn'; timeoutSeconds: number } {
+export function getExpansionHandshakeConfig(repoDir?: string): {
+  policy: 'recover' | 'block' | 'warn';
+  timeoutSeconds: number;
+} {
   const config = loadWavemillConfig(repoDir).mill?.expansionHandshake ?? {};
   return {
     policy: config.policy ?? 'recover',
@@ -2644,9 +2676,7 @@ export function getObserverAlertsConfig(repoDir?: string): ObserverAlertsConfig 
   // HOK-3239: configuring a push destination (env or config) is an opt-in to
   // alerts. Only an absent `alerts.enabled` is inferred; an explicit `false`
   // still wins so an operator can silence alerts without unsetting the URL.
-  const enabled = alerts.enabled === undefined
-    ? Boolean(push.url) || OBSERVER_ALERTS_DEFAULTS.enabled
-    : alerts.enabled;
+  const enabled = alerts.enabled === undefined ? Boolean(push.url) || OBSERVER_ALERTS_DEFAULTS.enabled : alerts.enabled;
   return {
     enabled,
     minSeverity: alerts.minSeverity ?? OBSERVER_ALERTS_DEFAULTS.minSeverity,
@@ -2662,9 +2692,10 @@ export function getObserverLinearConfig(repoDir?: string): ObserverLinearConfig 
   const linear = observer.linear ?? {};
   const envEnabled = process.env.WAVEMILL_OBSERVER_LINEAR_ENABLED;
   const envProject = process.env.WAVEMILL_OBSERVER_LINEAR_PROJECT;
-  const enabled = envEnabled === undefined
-    ? linear.enabled ?? OBSERVER_LINEAR_DEFAULTS.enabled
-    : envEnabled === '1' || envEnabled.toLowerCase() === 'true';
+  const enabled =
+    envEnabled === undefined
+      ? (linear.enabled ?? OBSERVER_LINEAR_DEFAULTS.enabled)
+      : envEnabled === '1' || envEnabled.toLowerCase() === 'true';
   const detectionOnly = linear.detectionOnly ?? OBSERVER_LINEAR_DEFAULTS.detectionOnly;
   const mode = resolveObserverLinearMode(linear.mode, enabled, detectionOnly);
   return {
@@ -2763,7 +2794,13 @@ export function resolveObserverLinearServiceMode(
     // `offline` maps to `off` for the managed service but is not a "downgrade".
     const requestedManaged: ObserverLinearManagedServiceMode =
       requested === 'shadow' || requested === 'live' ? requested : 'off';
-    return { mode, requested, source, downgraded: mode !== requestedManaged, reasons };
+    return {
+      mode,
+      requested,
+      source,
+      downgraded: mode !== requestedManaged,
+      reasons,
+    };
   };
 
   if (requested === 'off' || requested === 'offline') {
@@ -2827,7 +2864,9 @@ export function resolveObserverLinearMode(
 ): ObserverLinearMode {
   if (explicit !== undefined) {
     if (!VALID_OBSERVER_LINEAR_MODES.includes(explicit)) {
-      throw new Error(`observer.linear.mode must be one of ${VALID_OBSERVER_LINEAR_MODES.join('/')}, got ${JSON.stringify(explicit)}`);
+      throw new Error(
+        `observer.linear.mode must be one of ${VALID_OBSERVER_LINEAR_MODES.join('/')}, got ${JSON.stringify(explicit)}`,
+      );
     }
     return explicit;
   }
@@ -2882,7 +2921,7 @@ export function getNativeAgentConfig(repoDir?: string): NativeAgentConfig {
 export function getNativeContextManagementConfig(repoDir?: string): Required<NativeContextManagementConfig> {
   const config = getNativeAgentConfig(repoDir).contextManagement || {};
   return {
-    compactionThreshold: config.compactionThreshold ?? 0.80,
+    compactionThreshold: config.compactionThreshold ?? 0.8,
     safetyMarginPct: config.safetyMarginPct ?? 5,
     minRetainedToolResults: config.minRetainedToolResults ?? 4,
     minOutputTokens: config.minOutputTokens ?? 1_024,
@@ -3046,11 +3085,7 @@ const CODE_SEARCH_LIMIT_MAX = Object.freeze({
   maxResults: 200,
 });
 
-function clampLimit(
-  candidate: number | undefined,
-  fallback: number,
-  ceiling: number,
-): number {
+function clampLimit(candidate: number | undefined, fallback: number, ceiling: number): number {
   if (candidate === undefined) return fallback;
   const n = Math.floor(candidate);
   if (!Number.isFinite(n) || n <= 0) return fallback;
@@ -3071,8 +3106,16 @@ export function getNativeCodeSearchConfig(repoDir?: string): ResolvedNativeCodeS
   const limits = {
     maxFiles: clampLimit(rawLimits.maxFiles, CODE_SEARCH_LIMIT_DEFAULTS.maxFiles, CODE_SEARCH_LIMIT_MAX.maxFiles),
     maxBytes: clampLimit(rawLimits.maxBytes, CODE_SEARCH_LIMIT_DEFAULTS.maxBytes, CODE_SEARCH_LIMIT_MAX.maxBytes),
-    maxSymbols: clampLimit(rawLimits.maxSymbols, CODE_SEARCH_LIMIT_DEFAULTS.maxSymbols, CODE_SEARCH_LIMIT_MAX.maxSymbols),
-    maxResults: clampLimit(rawLimits.maxResults, CODE_SEARCH_LIMIT_DEFAULTS.maxResults, CODE_SEARCH_LIMIT_MAX.maxResults),
+    maxSymbols: clampLimit(
+      rawLimits.maxSymbols,
+      CODE_SEARCH_LIMIT_DEFAULTS.maxSymbols,
+      CODE_SEARCH_LIMIT_MAX.maxSymbols,
+    ),
+    maxResults: clampLimit(
+      rawLimits.maxResults,
+      CODE_SEARCH_LIMIT_DEFAULTS.maxResults,
+      CODE_SEARCH_LIMIT_MAX.maxResults,
+    ),
   };
 
   for (const [key, value] of Object.entries(rawLimits)) {
@@ -3138,8 +3181,16 @@ export function getNativeAstConfig(repoDir?: string): ResolvedNativeAstConfig {
   const limits = {
     maxFiles: clampLimit(rawLimits.maxFiles, AST_TRANSFORM_LIMIT_DEFAULTS.maxFiles, AST_TRANSFORM_LIMIT_MAX.maxFiles),
     maxBytes: clampLimit(rawLimits.maxBytes, AST_TRANSFORM_LIMIT_DEFAULTS.maxBytes, AST_TRANSFORM_LIMIT_MAX.maxBytes),
-    maxSymbols: clampLimit(rawLimits.maxSymbols, AST_TRANSFORM_LIMIT_DEFAULTS.maxSymbols, AST_TRANSFORM_LIMIT_MAX.maxSymbols),
-    maxMatches: clampLimit(rawLimits.maxMatches, AST_TRANSFORM_LIMIT_DEFAULTS.maxMatches, AST_TRANSFORM_LIMIT_MAX.maxMatches),
+    maxSymbols: clampLimit(
+      rawLimits.maxSymbols,
+      AST_TRANSFORM_LIMIT_DEFAULTS.maxSymbols,
+      AST_TRANSFORM_LIMIT_MAX.maxSymbols,
+    ),
+    maxMatches: clampLimit(
+      rawLimits.maxMatches,
+      AST_TRANSFORM_LIMIT_DEFAULTS.maxMatches,
+      AST_TRANSFORM_LIMIT_MAX.maxMatches,
+    ),
     maxSummaryBytes: clampLimit(
       rawLimits.maxSummaryBytes,
       AST_TRANSFORM_LIMIT_DEFAULTS.maxSummaryBytes,
@@ -3178,7 +3229,11 @@ export function getNativeScreenshotConfig(repoDir?: string): ResolvedNativeScree
 
   // Validate numeric limits are within schema bounds (if provided)
   if (limits.maxImageBytes !== undefined) {
-    if (typeof limits.maxImageBytes !== 'number' || limits.maxImageBytes < 1024 || limits.maxImageBytes > 16 * 1024 * 1024) {
+    if (
+      typeof limits.maxImageBytes !== 'number' ||
+      limits.maxImageBytes < 1024 ||
+      limits.maxImageBytes > 16 * 1024 * 1024
+    ) {
       invalidReasons.push('invalid_maxImageBytes');
     }
   }
@@ -3193,7 +3248,11 @@ export function getNativeScreenshotConfig(repoDir?: string): ResolvedNativeScree
     }
   }
   if (limits.maxComparePixels !== undefined) {
-    if (typeof limits.maxComparePixels !== 'number' || limits.maxComparePixels < 1 || limits.maxComparePixels > 268435456) {
+    if (
+      typeof limits.maxComparePixels !== 'number' ||
+      limits.maxComparePixels < 1 ||
+      limits.maxComparePixels > 268435456
+    ) {
       invalidReasons.push('invalid_maxComparePixels');
     }
   }
@@ -3331,7 +3390,9 @@ export function getRegistryConfig(repoDir?: string): Required<RegistryConfig> {
   };
 }
 
-export function getRuntimeResourceSelectionConfig(repoDir?: string): Required<Omit<RuntimeResourceSelectionConfig, 'surfaces'>> & {
+export function getRuntimeResourceSelectionConfig(repoDir?: string): Required<
+  Omit<RuntimeResourceSelectionConfig, 'surfaces'>
+> & {
   surfaces: Partial<Record<RuntimeResourceSurface, RuntimeResourceSurfaceConfig>>;
 } {
   const config = loadWavemillConfig(repoDir).resources?.runtimeSelection || {};

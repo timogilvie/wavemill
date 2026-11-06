@@ -16903,6 +16903,58 @@ monitor_state_invariants_tick() {
   return 0
 }
 
+# ─── Periodic native canary cohort refresh (HOK-3428) ───────────────────────
+#
+# The tool owns the durable sentinel and the evidence-based eligibility check;
+# this tick only derives the opt-in cadence and launches its tracked job.
+# A single stamp file ("<checked_at> <launched_at>") gates both: this tick is
+# polled every monitor pass, but monitor_async_job_launch only skips a job
+# that is *currently running* — without a gate here, a sub-second job would
+# relaunch on every pass instead of once per canaryAutoRefreshIntervalMinutes,
+# and loading the merged config (a jq subprocess) every pass would violate
+# the HOK-3206 hot-pass invariant. Config is re-derived at most once a
+# minute regardless of the configured interval (which can be hours), so a
+# live edit — enabling, shrinking, or disabling the cadence — is never
+# missed for longer than that minute, unlike gating the recheck on the
+# interval itself.
+monitor_canary_cohort_refresh_tick() {
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
+  [[ -n "${STATE_DIR:-}" && -n "${REPO_DIR:-}" ]] || return 0
+  declare -F monitor_async_job_launch >/dev/null 2>&1 || return 0
+  declare -F wavemill_load_config >/dev/null 2>&1 || return 0
+
+  local stamp_file="$STATE_DIR/.canary-cohort-refresh-last-at"
+  local now checked_at=0 launched_at=0
+  now="$(date +%s)"
+  if [[ -f "$stamp_file" ]]; then
+    read -r checked_at launched_at < "$stamp_file" 2>/dev/null || true
+    [[ "$checked_at" =~ ^[0-9]+$ ]] || checked_at=0
+    [[ "$launched_at" =~ ^[0-9]+$ ]] || launched_at=0
+  fi
+
+  local recheck_floor_seconds=60
+  (( now - checked_at < recheck_floor_seconds )) && return 0
+
+  local interval_minutes interval_seconds
+  interval_minutes="$(wavemill_load_config "$REPO_DIR" | jq -r '.nativeAgent.certification.canaryAutoRefreshIntervalMinutes // 0' 2>/dev/null || echo 0)"
+  [[ "$interval_minutes" =~ ^[1-9][0-9]*$ ]] || interval_minutes=0
+  interval_seconds=$((interval_minutes * 60))
+
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  if [[ "$interval_seconds" -eq 0 ]] || (( now - launched_at < interval_seconds )); then
+    printf '%s %s\n' "$now" "$launched_at" > "$stamp_file" 2>/dev/null || true
+    return 0
+  fi
+  printf '%s %s\n' "$now" "$now" > "$stamp_file" 2>/dev/null || true
+
+  local job_id meta_json
+  job_id="canary-cohort-refresh-$(sanitize_job_token "${SESSION:-wavemill}")"
+  meta_json="$(jq -cn --arg interval "$interval_seconds" '{intervalSeconds: ($interval | tonumber)}')"
+  monitor_async_job_launch canary-cohort-refresh "$job_id" "" "" 1500 "$meta_json" \
+    wavemill_run_tool monitor-canary-cohort-refresh.ts --repo-dir "$REPO_DIR"
+  return 0
+}
+
 # ─── Per-step pass timing (HOK-3190) ────────────────────────────────────────
 #
 # `monitor_step_begin NAME` and `monitor_step_end NAME` sandwich a measured
@@ -24149,6 +24201,10 @@ while :; do
   monitor_step_begin stateInvariants
   monitor_state_invariants_tick || true
   monitor_step_end stateInvariants
+  # HOK-3428: opt-in, interval-gated renewal of expiring live coding canaries.
+  monitor_step_begin canaryCohortRefresh
+  monitor_canary_cohort_refresh_tick || true
+  monitor_step_end canaryCohortRefresh
   # HOK-3174: after a host wake, re-check running stages before normal gates.
   if [[ -n "$monitor_wake_episode" ]]; then
     monitor_resume_agents_after_wake "$monitor_wake_episode"
