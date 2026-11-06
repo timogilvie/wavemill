@@ -1090,7 +1090,7 @@ challenge_selection_health_release() {
 startup_run_task_phases() {
   local task_json="$1" ordinal="${2:-}" total="${3:-}"
   local issue slug title branch wt_dir linear_issue task_packet_file details_file issue_json_file task_scorer_result_file
-  local planner_model coder_model reviewer_model plan_depth code_depth review_mode route_max_cost_usd
+  local planner_model coder_model reviewer_model plan_depth code_depth review_mode route_max_cost_usd route_budget_source
   local challenge challenge_pair challenge_role challenge_model challenge_stage task_agent win
   local depends_on base_from_task
   local packet_content issue_json issue_description issue_context details_context labels_json
@@ -1122,6 +1122,7 @@ startup_run_task_phases() {
   code_depth="$(echo "$task_json" | jq -r '.route.codeDepth // "medium"')"
   review_mode="$(echo "$task_json" | jq -r '.route.reviewMode // "static"')"
   route_max_cost_usd="$(echo "$task_json" | jq -r '.route.maxCostUsd // empty')"
+  route_budget_source="$(echo "$task_json" | jq -r '.route.constraints.budgetSource // empty')"
   challenge="$(echo "$task_json" | jq -r '.challenge // false')"
   challenge_pair="$(echo "$task_json" | jq -r '.challengePairId // empty')"
   challenge_role="$(echo "$task_json" | jq -r '.challengeRole // empty')"
@@ -1376,6 +1377,7 @@ $details_context"
       --arg inputPath "features/$slug/selected-task.json" \
       --arg routerMode "$bootstrap_router_mode" \
       --argjson maxCostUsd "${route_max_cost_usd:-null}" \
+      --arg budgetSource "${route_budget_source:-}" \
       '(.provenance // {}) as $p
       | .planner = $planner
       | .coder = $coder
@@ -1394,7 +1396,9 @@ $details_context"
         })
       | if $maxCostUsd == null
         then .
-        else .maxCostUsd = $maxCostUsd | .constraints = ((.constraints // {}) + {maxCostUsd: $maxCostUsd})
+        else .maxCostUsd = $maxCostUsd
+          | .constraints = ((.constraints // {}) + {maxCostUsd: $maxCostUsd}
+            + (if $budgetSource == "" then {} else {budgetSource: $budgetSource} end))
         end' "$startup_route_file" \
       | write_json_artifact "$feature_dir/.routing-complete"
   else
@@ -1410,6 +1414,7 @@ $details_context"
       --arg inputPath "features/$slug/selected-task.json" \
       --arg routerMode "$bootstrap_router_mode" \
       --argjson maxCostUsd "${route_max_cost_usd:-null}" \
+      --arg budgetSource "${route_budget_source:-}" \
       '{
         planner: $planner,
         coder: $coder,
@@ -1426,7 +1431,8 @@ $details_context"
           routedAt: (now | todateiso8601),
           routerMode: $routerMode
         }
-      } + (if $maxCostUsd == null then {} else {maxCostUsd: $maxCostUsd} end)' \
+      } + (if $maxCostUsd == null then {} else {maxCostUsd: $maxCostUsd} end)
+        + (if $maxCostUsd == null or $budgetSource == "" then {} else {constraints: {maxCostUsd: $maxCostUsd, budgetSource: $budgetSource}} end)' \
       | write_json_artifact "$feature_dir/.routing-complete"
   fi
   if [[ -f "$feature_dir/.initial-route.json" ]]; then

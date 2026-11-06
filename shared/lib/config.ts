@@ -14,6 +14,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { resolve, join as joinPath } from 'node:path';
 import { createRequire } from 'node:module';
 import { errorMessage } from './error-utils.ts';
+import type { ResolvedBudget } from './budget-source.ts';
 import { loadPrecompiledValidator, WAVEMILL_CONFIG_AJV_OPTIONS } from './schema-validators.ts';
 import { parseModelSelector } from './model-registry.ts';
 import type { AgentType, RegistryTaskType } from './model-registry.ts';
@@ -2527,6 +2528,29 @@ export function getMaxCostUsd(repoDir?: string): number | undefined {
 }
 
 /**
+ * Check if the default max cost is explicitly configured in .wavemill-config.json or
+ * .wavemill-config.local.json (HOK-3390). Returns true only if the value is present in
+ * one of these files, not if using a hard-coded default.
+ */
+export function isDefaultMaxCostUsdExplicitlyConfigured(repoDir?: string): boolean {
+  const absRepoDir = resolveRepoDir(repoDir);
+  const basePath = resolve(absRepoDir, '.wavemill-config.json');
+  const localPath = resolve(absRepoDir, '.wavemill-config.local.json');
+
+  const checkFile = (path: string): boolean => {
+    if (!existsSync(path)) return false;
+    try {
+      const content = JSON.parse(readFileSync(path, 'utf-8'));
+      return typeof content?.mill?.defaultMaxCostUsd === 'number';
+    } catch {
+      return false;
+    }
+  };
+
+  return checkFile(basePath) || checkFile(localPath);
+}
+
+/**
  * Get the UI config section.
  * Returns empty object if not configured.
  */
@@ -3263,6 +3287,39 @@ export function getBudgetConfig(repoDir?: string): Required<BudgetConfig> {
     normalMode: config.normalMode ?? 25.0,
     constrainedMode: config.constrainedMode ?? 15.0,
     survivalMode: config.survivalMode ?? 5.0,
+  };
+}
+
+const BUDGET_MODE_KEYS = {
+  normal: 'normalMode',
+  constrained: 'constrainedMode',
+  survival: 'survivalMode',
+} as const satisfies Record<string, keyof BudgetConfig>;
+
+/**
+ * True when the repo config explicitly sets the budget for `mode`
+ * (`budget.normalMode` etc.), as opposed to falling back to the built-in
+ * default (HOK-3390).
+ */
+export function isBudgetModeExplicit(
+  mode: keyof typeof BUDGET_MODE_KEYS,
+  repoDir?: string,
+): boolean {
+  const value = loadWavemillConfig(repoDir).budget?.[BUDGET_MODE_KEYS[mode]];
+  return typeof value === 'number';
+}
+
+/**
+ * The operating-mode budget with its provenance: `repo-config` when
+ * `budget.<mode>` is set, else the built-in default (HOK-3390).
+ */
+export function getModeBudget(
+  mode: keyof typeof BUDGET_MODE_KEYS,
+  repoDir?: string,
+): ResolvedBudget {
+  return {
+    maxCostUsd: getBudgetConfig(repoDir)[BUDGET_MODE_KEYS[mode]],
+    budgetSource: isBudgetModeExplicit(mode, repoDir) ? 'repo-config' : 'default',
   };
 }
 

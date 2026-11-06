@@ -123,7 +123,7 @@ await test('includes budget constraints in heuristic routing decisions when prov
       'Implement a backend workflow feature with tests.',
       { repoDir, maxCostUsd: 3.5 },
     );
-    assert.deepEqual(decision.constraints, { maxCostUsd: 3.5 });
+    assert.deepEqual(decision.constraints, { maxCostUsd: 3.5, budgetSource: 'request' });
   } finally {
     cleanup();
   }

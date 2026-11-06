@@ -23,6 +23,7 @@ import {
 import { appendRouteDecision, buildRouteDecision, recordRouteDecision } from './route-decision.ts';
 import { bindRouteDecisionId, overrideStageModel } from './route-override-record.ts';
 import { loadStageAwareRouterContext, type StageAwareRouterContext } from './stage-aware-router.ts';
+import { deriveRoutingObjectiveForIssue } from './routing-objective-split.ts';
 import {
   readTaskPromptFromFile,
   routeWorkflow,
@@ -303,7 +304,16 @@ export async function routeBatch(
 
   const results: RouteBatchResult[] = [];
   for (const task of resolvedTasks) {
-    const routedDecision = await routeTaskInBatch(task.prompt, resolvedOptions, operatingMode, stageAwareContext);
+    const taskOptions: RouteBatchOptions = {
+      ...resolvedOptions,
+      ...(task.issueId ? { issueId: task.issueId } : {}),
+    };
+    const routed = await routeTaskInBatch(task.prompt, taskOptions, operatingMode, stageAwareContext);
+    const routingObjective = taskOptions.routingObjective
+      ?? (taskOptions.issueId ? deriveRoutingObjectiveForIssue(taskOptions.issueId) : undefined);
+    const routedDecision = routingObjective && !routed.routingObjective
+      ? { ...routed, routingObjective }
+      : routed;
     // Mint before workspace selectors override the coder; `recommended` reads
     // the decided model from the route record, never the override.
     let decision = withResolvedRouteBudget(await mintRouteDecision(
@@ -311,6 +321,7 @@ export async function routeBatch(
       task.featureDir,
     ), {
       explicitMaxCostUsd: resolvedOptions.maxCostUsd,
+      explicitBudgetSource: resolvedOptions.budgetSource,
       repoDir,
     });
     const requestedModelSelector = task.modelSelector ?? task.workspaceSelector;
@@ -445,6 +456,7 @@ export async function routeExpandedPackets(
 
     const cachedDecision = upgradeRouteModelSuccessors(withResolvedRouteBudget(cached.decision, {
       explicitMaxCostUsd: resolvedOptions.maxCostUsd,
+      explicitBudgetSource: resolvedOptions.budgetSource,
       repoDir,
     }), repoDir);
     // A cache hit replays an earlier decision rather than making a new one:
@@ -473,6 +485,7 @@ export async function routeExpandedPackets(
   ): Promise<void> => {
     const budgetedDecision = upgradeRouteModelSuccessors(withResolvedRouteBudget(decision, {
       explicitMaxCostUsd: resolvedOptions.maxCostUsd,
+      explicitBudgetSource: resolvedOptions.budgetSource,
       repoDir,
     }), repoDir);
     const decorated = withExpandedRouteMetadata(budgetedDecision, {

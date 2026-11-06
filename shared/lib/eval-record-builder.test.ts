@@ -1206,6 +1206,49 @@ describe('eval-record-builder', () => {
       expect(baseRecord.budgetEvalEligibilityError).toBe(undefined);
     });
 
+    // protects: HOK-3390 — the budget's provenance is written beside every
+    // budget location, and a defaulted budget still counts as a snapshot.
+    it('writes budgetSource beside the budget without changing eligibility', () => {
+      baseRecord.constraints = { maxCostUsd: 4, budgetSource: 'request' };
+      baseRecord.taskDescriptor = {
+        schema_version: '1.0',
+        signals: {
+          heuristic: {
+            task_type: 'feature',
+            languages: ['typescript'],
+            framework_tags: [],
+            files_touched: 1,
+            repo_size_loc: 100,
+            description_tokens: 10,
+            is_greenfield: false,
+            has_migration: false,
+            has_ui: false,
+            has_tests: true,
+            cross_service: false,
+          },
+          learned: { complexity: 1, domain: 'core', risk_flags: [] },
+        },
+        constraints: { objective: 'balanced' },
+        stages: {},
+      };
+
+      attachBudgetMetadata(baseRecord, 25, 'default');
+      expect(baseRecord.constraints).toEqual({ maxCostUsd: 25, budgetSource: 'default' });
+      expect(baseRecord.taskDescriptor.constraints.max_cost_usd).toBe(25);
+      expect(baseRecord.taskDescriptor.constraints.budget_source).toBe('default');
+      expect(baseRecord.budgetEvalEligible).toBe(true);
+
+      // A legacy caller with no source never leaves a stale source behind.
+      attachBudgetMetadata(baseRecord, 3);
+      expect(baseRecord.constraints).toEqual({ maxCostUsd: 3 });
+      expect(baseRecord.taskDescriptor.constraints.budget_source).toBe(undefined);
+
+      attachBudgetMetadata(baseRecord, 3, 'request');
+      attachBudgetMetadata(baseRecord, null, 'request');
+      expect(baseRecord.constraints).toBe(undefined);
+      expect(baseRecord.taskDescriptor.constraints.budget_source).toBe(undefined);
+    });
+
     it('marks missing budget without writing constraints', () => {
       baseRecord.constraints = { maxCostUsd: 4 };
       baseRecord.taskDescriptor = {
