@@ -9,6 +9,7 @@
 import { getEffectiveRegistry, getModel } from '../model-registry.ts';
 import { callLLM } from '../llm-cli.ts';
 import {
+  DEFAULT_RESERVED_OUTPUT_TOKENS,
   policyKindFor,
   type AdapterError,
   type AdapterInvokeOptions,
@@ -35,7 +36,6 @@ export const BYTES_PER_TOKEN_CODEX_DEFAULT = 3.0;
 /** Tokens the codex CLI harness adds on top of the user prompt. */
 export const CODEX_CLI_HARNESS_OVERHEAD_TOKENS = 20_000;
 
-const DEFAULT_RESERVED_OUTPUT_TOKENS = 8_000;
 
 function bytesPerToken(): number {
   const override = Number.parseFloat(process.env.WAVEMILL_TOKEN_BYTES_CODEX ?? '');
@@ -72,7 +72,7 @@ export class CodexCliAdapter implements TransportAdapter {
         : {}),
       maxInputChars: CODEX_CLI_MAX_INPUT_CHARS,
       cliHarnessOverheadTokens: CODEX_CLI_HARNESS_OVERHEAD_TOKENS,
-      maxOutputTokens: this.reservedOutputTokens,
+      reservedOutputTokens: this.reservedOutputTokens,
     };
   }
 

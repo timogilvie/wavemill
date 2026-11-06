@@ -1,0 +1,21 @@
+# shellcheck shell=bash
+# Replay the 2026-11-06 review stall through the real adapter: an 8192-token
+# input reservation must not become a combined reasoning + answer cap.
+(
+  cd "$FAKE_AGENT_TOOLS_DIR/.."
+  env -u WAVEMILL_PHASE \
+    FAKE_JUDGE_REQUIRED_OUTPUT_TOKENS=8193 \
+    FAKE_JUDGE_VERDICT_FILE="$FAKE_AGENT_SCRIPT_DIR/../verdict.json" \
+    node --import tsx --input-type=module -e '
+      import { resolveModelAdapter } from "./shared/lib/model-adapters/resolve-adapter.ts";
+      const [model, worktree, featureDir] = process.argv.slice(1);
+      const { resolution, adapter } = resolveModelAdapter({ model, phase: "review", repoDir: worktree, reservedOutputTokens: 8192 });
+      if (!resolution.ok || adapter?.kind !== "claude-cli") throw new Error("review route did not use Claude CLI");
+      const result = await adapter.invoke("Review the completed journey change and return JSON.", {
+        cwd: worktree, ownership: { featureDir, helperPurpose: "json-code-review" }
+      });
+      if (result.error) throw new Error(result.error.message);
+      if (JSON.parse(result.text).verdict !== "ready" || result.reportedModel !== model) throw new Error("review response or executed identity missing");
+    ' "$FAKE_LAUNCH_MODEL" "$WT" "$FEATURE_DIR"
+)
+default_review
