@@ -48,9 +48,9 @@ import {
   getTaskProgress,
   type BlockingPrompt,
   type HookState,
-  type ProgressSource,
   type StageAgentStage,
   type TaskProgress,
+  type TransitionInput,
 } from './task-progress.ts';
 import { getResultFilePath, type StageName, type StageResult } from './stage-result.ts';
 import type { TaskRecord } from './workflow-state.ts';
@@ -458,17 +458,21 @@ function fileMtimeIso(file: string): string | null {
 }
 
 /**
- * Compose task-progress for an agent stage. The stage result's
- * start/finish/mtime are transitions (HOK-3422 retires those), and the
- * HOK-3386 owned-session probe is wired through `stageForOwnedSession`.
+ * Compose task-progress for an agent stage. The stage-result start/finish/
+ * mtime are controller writes (HOK-3422): they feed `lastTransitionAt` only,
+ * never `lastProgressAt` / `stalled`. The HOK-3386 owned-session probe is
+ * wired through `stageForOwnedSession`. The stall-clock anchor is the stage's
+ * `session-ownership.launchedAt` when a launch row exists (HOK-3328); else it
+ * falls back to the stage-result's `startedAt` (via the primitive's own
+ * `readStageResult` for `planning` / `coding` / `review`).
  */
 export function gatherStageTaskProgress(opts: GatherStageTaskProgressOptions): TaskProgress {
-  const transitions: ProgressSource[] = [];
+  const transitionInputs: TransitionInput[] = [];
   if (opts.stageResult?.startedAt) {
-    transitions.push({ kind: 'transition', at: opts.stageResult.startedAt, detail: `${opts.stage}.startedAt` });
+    transitionInputs.push({ at: opts.stageResult.startedAt, detail: `${opts.stage}.startedAt` });
   }
   if (opts.stageResult?.finishedAt) {
-    transitions.push({ kind: 'transition', at: opts.stageResult.finishedAt, detail: `${opts.stage}.finishedAt` });
+    transitionInputs.push({ at: opts.stageResult.finishedAt, detail: `${opts.stage}.finishedAt` });
   }
   const artifactName = stageResultArtifactName(opts.stage);
   if (artifactName) {
@@ -480,8 +484,32 @@ export function gatherStageTaskProgress(opts: GatherStageTaskProgressOptions): T
     });
     if (resolved) {
       const mtime = fileMtimeIso(resolved.path);
-      if (mtime) transitions.push({ kind: 'transition', at: mtime, detail: `${opts.stage}-result.mtime` });
+      if (mtime) transitionInputs.push({ at: mtime, detail: `${opts.stage}-result.mtime` });
     }
+  }
+
+  // HOK-3422: anchor the stall clock to the stage's session-ownership
+  // `launchedAt` (set once before the agent starts, never rewritten by the
+  // controller). Reader is {@link readStageAgentLaunch}, which covers every
+  // harness including native.
+  //
+  // For `planning | coding | review`, no launch row falls through to the
+  // primitive's own `readStageResult`, which reads the stage-result's
+  // `startedAt` (the primitive's existing anchor). For `ready-remediation` /
+  // `conflict-resolution`, the stage-result is `.ready-result.json`, whose
+  // `startedAt` is the controller's Ready-check launch — NOT the remediation
+  // agent's — and would silently trip the stall clock on a healthy CI wait.
+  // So those two sub-stages pass `launchAtOverride: null` when no ownership
+  // row exists, leaving the stall clock with no anchor and `stalled: false`.
+  const stageLaunch = readStageAgentLaunch(opts.stateDir, opts.stage);
+  const isReadySubStage = opts.stage === 'ready-remediation' || opts.stage === 'conflict-resolution';
+  let launchAtOverride: string | null | undefined;
+  if (stageLaunch?.launchedAt) {
+    launchAtOverride = stageLaunch.launchedAt;
+  } else if (isReadySubStage) {
+    launchAtOverride = null;
+  } else {
+    launchAtOverride = undefined; // fall through to the primitive's stage-result read
   }
 
   return getTaskProgress({
@@ -493,7 +521,8 @@ export function gatherStageTaskProgress(opts: GatherStageTaskProgressOptions): T
     phase: opts.stage === 'planning' || opts.stage === 'coding' || opts.stage === 'review' ? opts.stage : 'ready',
     stageForOwnedSession: opts.stage,
     ownershipStateDir: opts.stateDir,
-    extraTransitionSources: transitions,
+    extraTransitionInputs: transitionInputs,
+    ...(launchAtOverride !== undefined ? { launchAtOverride } : {}),
     paneText: opts.paneText,
     panePid: opts.panePid,
     now: opts.now,

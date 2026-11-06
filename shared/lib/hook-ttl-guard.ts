@@ -63,6 +63,31 @@ export const HOOK_TTL_GUARD: GuardSpec = {
       lang: 'both',
       re: /^(?=.*\b(?:hook\w*|staleness|timestamp)\b).*?(?:<=?|>=?|-lt|-le|-gt|-ge)\s*300(?:_?000)?\b/i,
     },
+    {
+      // HOK-3422: a controller-authored timestamp pushed as a progress source
+      // is the exact bug family (c) fixed by splitting lastTransitionAt out
+      // of lastProgressAt. Forbid any new site that builds a
+      // ProgressSource with `kind: 'transition'`.
+      //
+      // reliability-metrics.ts carries its own local `ProgressEvidence.kind`
+      // namespace that is distinct from `ProgressSourceKind`; its
+      // `kind: 'transition'` literals compose the replay timeline (not the
+      // primitive's sources list) and are exempted here.
+      name: 'transition-progress-source-outside-primitive',
+      description: "ProgressSource `kind: 'transition'` is retired — controller timestamps feed TaskProgress.lastTransitionAt (TransitionInput), never lastProgressAt / stalled (HOK-3422)",
+      lang: 'ts',
+      re: /\bkind\s*:\s*['"]transition['"]/,
+      excludePaths: ['shared/lib/reliability-metrics.ts'],
+    },
+    {
+      // HOK-3422: the `extraTransitionSources` / `transitionSources` option
+      // and inputs field both treat a controller write as a progress source.
+      // The replacement is `extraTransitionInputs` / `transitionInputs`.
+      name: 'extra-transition-sources',
+      description: 'extraTransitionSources / transitionSources are retired — pass extraTransitionInputs / transitionInputs instead (HOK-3422)',
+      lang: 'ts',
+      re: /\b(?:extraTransitionSources|transitionSources)\b/,
+    },
   ],
   remediation: [
     'Every liveness decision goes through the task-progress primitive (HOK-3101):',
