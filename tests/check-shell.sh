@@ -115,6 +115,7 @@ for f in \
   "$REPO_DIR"/tests/ledger-hook-shadow.test.sh \
   "$REPO_DIR"/tests/check-ledger-shadow-swallow.test.sh \
   "$REPO_DIR"/tests/monitor-side-effect-detector-tick.test.sh \
+  "$REPO_DIR"/tests/monitor-canary-cohort-refresh-tick.test.sh \
   "$REPO_DIR"/tests/deps-drift.test.sh \
   "$REPO_DIR"/tests/check-marker-clear-sites.test.sh \
   "$REPO_DIR"/tests/check-state-surface-writes.test.sh \
