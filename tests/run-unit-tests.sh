@@ -59,6 +59,7 @@ TESTS=(
   shared/lib/stage-result.test.ts
   shared/lib/task-progress.test.ts
   shared/lib/task-identity.test.ts
+  shared/lib/routing-objective-split.test.ts
   shared/lib/task-artifact-lookup.test.ts
   tests/migrate-archived-stage-artifacts.test.ts
   shared/lib/terminal-backend.test.ts
@@ -382,6 +383,7 @@ TESTS=(
   shared/lib/linear-dependency-resolver.test.ts
   shared/lib/dependency-classifier.test.ts
   shared/lib/route-artifact.test.ts
+  shared/lib/budget-source.test.ts
   shared/lib/model-router.test.ts
   shared/lib/eval-corpus-migrator.test.ts
   shared/lib/eval-record-builder.test.ts
@@ -604,6 +606,7 @@ TESTS=(
   tools/check-review-setup.test.ts
   tests/cli-smoke.test.ts
   tests/model-settings-migration.test.ts
+  tools/check-journey-wall-clock-budget.test.ts
   tools/check-test-registration.test.ts
   tools/check-test-world-lifetime.test.ts
   tools/hok2425-verify-native-workflow-certification.test.ts

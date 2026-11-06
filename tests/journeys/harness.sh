@@ -21,8 +21,11 @@
 # Time is a tick counter, not the wall clock: the monitor runs with
 # POLL_SECONDS=0 and the tick clock seam (shared/lib/mill-clock.sh / .ts) on,
 # so deadlines, retry backoff and tend's retry sleeps advance per monitor pass.
-# Waits are bounded in monitor ticks; JOURNEY_BUDGET_SECONDS (CI: 120) is the
-# wall-clock ceiling for the whole journey.
+# A journey's work is bounded in monitor ticks: each wait has a per-wait tick
+# bound, and the journey declares one total tick budget (journey_set_tick_budget
+# N) that journey_finish enforces. Wall-clock elapsed time is reported in the
+# `passed in Ns / N ticks` line and the timing-journeys artifact, never gated;
+# a hang is caught by the per-wait safety deadline and the CI job timeout.
 #
 # On failure it prints a compact trace (tick-by-tick phase/marker/label table,
 # unhandled fake calls, last 30 monitor log lines) instead of a log flood.
@@ -49,8 +52,10 @@ JOURNEY_SAW_ATTENTION=0
 # Whether the task may raise .needs-attention: 0 = never (default), 1 = it
 # must, any = tolerated (a known race the journey is not about).
 JOURNEY_EXPECT_ATTENTION=0
-# Wall-clock ceiling for the whole journey (0 = none). CI sets 90.
-JOURNEY_BUDGET_SECONDS="${JOURNEY_BUDGET_SECONDS:-0}"
+# Total monitor-tick budget for the whole journey (0 = not declared yet). A
+# journey must call journey_set_tick_budget before journey_finish; a run that
+# exceeds it is a monitor loop that is not advancing toward its waits.
+JOURNEY_TICK_BUDGET=0
 # Optional function name a journey sets to inject faults right before the
 # first tend tick (e.g. move the integration branch, add gh read lag).
 JOURNEY_BEFORE_FIRST_TEND=""
@@ -309,6 +314,9 @@ journey_record_timeline() {
 
 journey_set_approval_budget() { JOURNEY_APPROVAL_BUDGET="$1"; }
 
+# The journey's total monitor-tick budget, declared once next to its waits.
+journey_set_tick_budget() { JOURNEY_TICK_BUDGET="$1"; }
+
 # Hash of the task packet files in the order the binding hashes them
 # (header, details, single). Computed here, not by the mill's helper, so the
 # oracle does not share the code under test. Empty when there is no packet.
@@ -399,8 +407,8 @@ journey_tend_tick() {
 }
 
 # journey_wait_until <issue> <max-ticks> <description> <predicate...>
-# Bounded in monitor passes (ticks), plus the journey's wall-clock budget and
-# a hard safety cap so a monitor stuck inside one pass cannot hang CI.
+# Bounded in monitor passes (ticks), plus a hard safety cap so a monitor stuck
+# inside one pass cannot hang CI.
 journey_wait_until() {
   local issue="$1" max_ticks="$2" description="$3"; shift 3
   local tick_deadline=$(( $(journey_tick) + max_ticks ))
@@ -413,9 +421,6 @@ journey_wait_until() {
     if "$@"; then
       journey_log "reached: $description (tick $(journey_tick))"
       return 0
-    fi
-    if (( JOURNEY_BUDGET_SECONDS > 0 && $(journey_elapsed) > JOURNEY_BUDGET_SECONDS )); then
-      journey_fail "over the ${JOURNEY_BUDGET_SECONDS}s journey budget waiting for: $description"
     fi
     if (( $(journey_now) > safety_deadline )); then
       journey_fail "monitor made no progress for ${JOURNEY_WAIT_SAFETY_SECONDS:-300}s waiting for: $description"
@@ -579,19 +584,25 @@ journey_fail() {
 }
 
 journey_finish() {
-  local elapsed
+  local elapsed ticks
   elapsed="$(journey_elapsed)"
-  if (( JOURNEY_BUDGET_SECONDS > 0 && elapsed > JOURNEY_BUDGET_SECONDS )); then
-    printf '  FAIL  journey took %ss, over the %ss budget\n' "$elapsed" "$JOURNEY_BUDGET_SECONDS"
+  ticks="$(journey_tick)"
+  # One work bound: monitor ticks. Wall-clock elapsed stays in the summary and
+  # the timing-journeys artifact, but never gates the journey (HOK-3425).
+  if (( JOURNEY_TICK_BUDGET <= 0 )); then
+    printf '  FAIL  journey declared no tick budget; call journey_set_tick_budget N next to its waits\n'
+    JOURNEY_FAILURES=$((JOURNEY_FAILURES + 1))
+  elif (( ticks > JOURNEY_TICK_BUDGET )); then
+    printf '  FAIL  journey ran %s monitor ticks, over its %s-tick budget\n' "$ticks" "$JOURNEY_TICK_BUDGET"
     JOURNEY_FAILURES=$((JOURNEY_FAILURES + 1))
   fi
   if (( JOURNEY_FAILURES > 0 )); then
     journey_trace
     JOURNEY_KEEP_TMP=1
-    echo "--- journey $JOURNEY_NAME: $JOURNEY_FAILURES failure(s) in ${elapsed}s ---"
+    echo "--- journey $JOURNEY_NAME: $JOURNEY_FAILURES failure(s) in ${elapsed}s / ${ticks} ticks ---"
     exit 1
   fi
-  echo "--- journey $JOURNEY_NAME: passed in ${elapsed}s / $(journey_tick) ticks (timeline: $JOURNEY_TIMELINE) ---"
+  echo "--- journey $JOURNEY_NAME: passed in ${elapsed}s / ${ticks} ticks (timeline: $JOURNEY_TIMELINE) ---"
 }
 
 # Graceful fast path only: ask the monitor to quit and give it a bounded wait.

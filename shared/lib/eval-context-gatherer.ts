@@ -35,6 +35,7 @@ import {
   resolveRouterPolicyVersion,
 } from './route-artifact.ts';
 import { resolveTaskArtifact } from './task-artifact-lookup.ts';
+import type { BudgetSource } from './budget-source.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -429,6 +430,8 @@ export interface RoutingCompleteData {
   packet_hash?: string;
   constraints?: {
     maxCostUsd?: number;
+    /** Provenance of `maxCostUsd` (HOK-3390). */
+    budgetSource?: BudgetSource;
   };
   maxCostUsd?: number | null;
   expectedSuccess?: number;

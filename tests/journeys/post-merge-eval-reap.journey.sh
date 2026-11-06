@@ -47,6 +47,7 @@ export JOURNEY_EVAL_GATE_STATE="$STATE_FILE" JOURNEY_EVAL_GATE_ISSUE="$ISSUE"
 EVAL_LOG="/tmp/${SESSION}-eval-${ISSUE}.log"
 
 journey_start_monitor
+journey_set_tick_budget 85
 journey_wait_until "$ISSUE" 5  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 

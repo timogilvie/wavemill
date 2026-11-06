@@ -24,6 +24,7 @@ journey_init terminal-delivered-reap
 fakes_linear_add_issue "$ISSUE" "Terminal cleanup under a live hook" Todo
 
 journey_start_monitor
+journey_set_tick_budget 70
 journey_wait_until "$ISSUE" 5  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 

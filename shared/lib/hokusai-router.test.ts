@@ -150,7 +150,7 @@ await test('sends the nested inputs payload and prevents legacy flat payload key
   };
 
   try {
-    await routeViaHokusai('Implement a backend feature with tests.', {
+    const decision = await routeViaHokusai('Implement a backend feature with tests.', {
       repoDir,
       maxCostUsd: 3.25,
       plannerModels: ['planner-a'],
@@ -170,6 +170,8 @@ await test('sends the nested inputs payload and prevents legacy flat payload key
     assert.equal(parsed.available_models, undefined);
     assert.equal(parsed.constraints, undefined);
     assert.equal(authorization, 'Bearer secret-token');
+    // protects: HOK-3390 — the request's max_cost_usd is recorded as an explicit budget.
+    assert.deepEqual(decision?.constraints, { maxCostUsd: 3.25, budgetSource: 'request' });
   } finally {
     globalThis.fetch = originalFetch;
     cleanup();

@@ -10,10 +10,12 @@
 import { readFileSync } from 'node:fs';
 import { buildEvalSummary, evaluateChallenge, type ChallengeRecommendation } from './challenge-scheduler.ts';
 import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
-import { getBudgetConfig, getChallengeSchedulerConfig, getDifficultyClassifierConfig, getHokusaiRouterConfig, getRouterConfig, isRouterCapabilityFilteringEnabled, loadWavemillConfig } from './config.ts';
+import { getChallengeSchedulerConfig, getModeBudget, getDifficultyClassifierConfig, getHokusaiRouterConfig, getRouterConfig, isRouterCapabilityFilteringEnabled, loadWavemillConfig } from './config.ts';
+import type { BudgetSource } from './budget-source.ts';
 import { filterDeepSeekModels, type DeepSeekPoolFilterResult } from './deepseek-provider.ts';
 import { filterOpenRouterModels, type OpenRouterPoolFilterResult } from './openrouter-provider.ts';
 import { routeViaHokusai, type HokusaiRouterOptions } from './hokusai-router.ts';
+import type { HokusaiModel30Objective } from './hokusai-schema.ts';
 import { analyzePrompt, loadRouterConfig, recommendModel, resolveAgent, type PromptCharacteristics, type TaskType } from './model-router.ts';
 import { compareLatencyTier, getConfiguredModelsForDescriptorStage, getEffectiveRegistry, getLadder, hasCapabilityConstraints, isCodexChatgptLaunchEligible, isModelEnabled, type CapabilityConstraints, type LatencyTier, type RegistryTaskType } from './model-registry.ts';
 import { readQuotaSnapshot, type QuotaSnapshot } from './quota-state.ts';
@@ -65,11 +67,31 @@ import {
   type StageLaunchRefusal,
 } from './stage-launchability.ts';
 import { getBlastRadius, type BlastRadius } from './blast-radius.ts';
+import { deriveRoutingObjectiveForIssue } from './routing-objective-split.ts';
 
 export type { RouterCertificationRejection } from './native-agent/certification/router-filter.ts';
 export { STAGE_PHASE_REQUIREMENT } from './native-agent/certification/router-filter.ts';
 
 const FILE_TYPE_PATTERN = /\.\b(ts|tsx|js|jsx|py|sh|json|yaml|yml|md|css|html|sql|go|rs|rb)\b/gi;
+
+/**
+ * The caller's explicit budget with its provenance, or null when the caller
+ * passed none (HOK-3390).
+ */
+export function resolveRequestedBudget(
+  options: Pick<RouteWorkflowOptions, 'maxCostUsd' | 'budgetSource'> | undefined,
+): { maxCostUsd: number; budgetSource: BudgetSource } | null {
+  if (options?.maxCostUsd === undefined) return null;
+  return { maxCostUsd: options.maxCostUsd, budgetSource: options.budgetSource ?? 'request' };
+}
+
+/** Decision `constraints` for a caller-supplied budget (HOK-3390). */
+// allow-stage-launchability: helper function, returns partial decision not a full router exit
+export function requestedBudgetConstraints(
+  options: Pick<RouteWorkflowOptions, 'maxCostUsd' | 'budgetSource'> | undefined,
+): WorkflowRouteDecision['constraints'] {
+  return resolveRequestedBudget(options) ?? undefined;
+}
 
 export type PlanDepth = 'light' | 'medium' | 'deep';
 export type CodeDepth = 'light' | 'medium' | 'deep';
@@ -78,6 +100,8 @@ export type ReviewMode = 'none' | 'static' | 'llm' | 'static+llm';
 export interface BudgetViolation {
   requestedCost: number;
   maxCostUsd: number;
+  /** Provenance of `maxCostUsd` (HOK-3390). */
+  budgetSource?: BudgetSource;
   operatingMode: OperatingMode;
   attemptedDowngrade: boolean;
   cheapestViableOption: {
@@ -116,12 +140,16 @@ export interface WorkflowRouteDecision {
   challengeRecommendation?: ChallengeRecommendation;
   constraints?: {
     maxCostUsd?: number;
+    /** Provenance of `maxCostUsd` (HOK-3390). */
+    budgetSource?: BudgetSource;
   };
   maxCostUsd?: number | null;
   budgetViolation?: BudgetViolation;
   resourceSelections?: RuntimeResourceSelection[];
   provenance?: RouteProvenance;
   routingMode?: string;
+  /** Stable experiment arm used for Hokusai routing of this task. */
+  routingObjective?: HokusaiModel30Objective;
   nativeCertificationRejections?: RouterCertificationRejection[];
   modelExclusions?: ModelExclusionDiagnostic[];
   harnessId?: string;
@@ -171,6 +199,12 @@ export interface RouteWorkflowOptions {
   coderCapabilityConstraints?: CapabilityConstraints;
   reviewerCapabilityConstraints?: CapabilityConstraints;
   maxCostUsd?: number;
+  /**
+   * Provenance of `maxCostUsd` (HOK-3390). Defaults to `request` when
+   * `maxCostUsd` is set; the mill passes `repo-config` for its configured
+   * `mill.defaultMaxCostUsd`.
+   */
+  budgetSource?: BudgetSource;
   maxTimeMinutes?: number;
   taskDifficulty?: RoutingDifficulty;
   taskTitle?: string;
@@ -184,6 +218,10 @@ export interface RouteWorkflowOptions {
    * gate already refused for this task (HOK-3142 typed-refusal reroute).
    */
   excludeModels?: string[];
+  /** Canonical task ID used to derive the stable Hokusai routing objective. */
+  issueId?: string;
+  /** Explicit Hokusai routing objective, primarily for operators and tests. */
+  routingObjective?: HokusaiModel30Objective;
 }
 
 function withSignals(
@@ -846,7 +884,7 @@ type HokusaiAskPools = Pick<HokusaiRouterOptions, 'plannerModels' | 'coderModels
  * Hokusai — never a local "stronger coder" ranking. The re-ask keeps the same
  * descriptor, pins the planner and reviewer Hokusai already chose, removes the
  * low-confidence coder from the coder pool and asks for
- * `objective: highest_reliability`. Hokusai's second answer wins; the change
+ * the task's assigned objective. Hokusai's second answer wins; the change
  * is recorded as one `escalation` override carrying both triggers and the
  * re-ask's join key, while the decision keeps the first request's provenance
  * (its `inference_log_id` stays the outcome's join key).
@@ -860,11 +898,18 @@ async function reaskHokusaiBelowFloor(
   initial: StageAwareDecision,
   options: RouteWorkflowOptions | undefined,
   pools: HokusaiAskPools,
+  routingObjective: HokusaiModel30Objective | undefined,
 ): Promise<StageAwareDecision> {
   const repoDir = options?.repoDir;
   const config = normalizeEscalationConfig(repoDir);
   if (!config.enabled || initial.routingMode !== 'hokusai') {
     return initial;
+  }
+  if (routingObjective === 'lowest_cost') {
+    return reasonedDecision(
+      initial,
+      'Router escalation skipped: objective=lowest_cost exempts low-confidence routes from the re-ask.',
+    );
   }
   const triggers = routeEscalationTriggers(initial, config);
   if (triggers.length === 0) {
@@ -885,7 +930,7 @@ async function reaskHokusaiBelowFloor(
 
   const reask = await routeViaHokusai(prompt, {
     ...options,
-    objective: 'highest_reliability',
+    objective: routingObjective ?? 'highest_reliability',
     plannerModels: initial.planner ? [initial.planner] : pools.plannerModels,
     coderModels: coderPool,
     reviewerModels: initial.reviewer ? [initial.reviewer] : pools.reviewerModels,
@@ -1821,12 +1866,8 @@ export function routeWorkflow(prompt: string, options?: RouteWorkflowOptions): W
   let budgetViolation: BudgetViolation | undefined;
 
   const mode = getCurrentOperatingMode(repoDir);
-  const budgetConfig = getBudgetConfig(repoDir);
-  const effectiveBudget = options?.maxCostUsd ?? (
-    mode === 'survival' ? budgetConfig.survivalMode :
-    mode === 'constrained' ? budgetConfig.constrainedMode :
-    budgetConfig.normalMode
-  );
+  const { maxCostUsd: effectiveBudget, budgetSource } = resolveRequestedBudget(options)
+    ?? getModeBudget(mode, repoDir);
 
   const initialCost =
     estimateStageCost(finalPlanner, PLAN_TOKENS[planDepth], repoDir) +
@@ -1862,6 +1903,7 @@ export function routeWorkflow(prompt: string, options?: RouteWorkflowOptions): W
       budgetViolation = {
         requestedCost: initialCost,
         maxCostUsd: effectiveBudget,
+        budgetSource,
         operatingMode: mode,
         attemptedDowngrade: true,
         cheapestViableOption: cheapestOption,
@@ -1989,7 +2031,7 @@ export function routeWorkflow(prompt: string, options?: RouteWorkflowOptions): W
       : estimateStageCost(finalReviewer, REVIEW_TOKENS[reviewRecommended as Exclude<ReviewMode, 'none'>], repoDir),
     reasoning,
     signals: signalContext.signals,
-    constraints: { maxCostUsd: effectiveBudget },
+    constraints: { maxCostUsd: effectiveBudget, budgetSource },
     routingMode: 'heuristic',
     ...(budgetViolation ? { budgetViolation } : {}),
     ...(coderRecommendation.resourceSelections?.length
@@ -2040,6 +2082,7 @@ function routeWorkflowStageAwareInternal(
       coderCapabilityConstraints: policyResolution?.stageCapabilityConstraints.coder,
       reviewerCapabilityConstraints: policyResolution?.stageCapabilityConstraints.reviewer,
       maxCostUsd: options?.maxCostUsd,
+      budgetSource: options?.budgetSource,
       additionalEvalsPaths: options?.additionalEvalsPaths,
       randomFn: options?.randomFn,
       queryInput: {
@@ -2267,16 +2310,14 @@ function routeWorkflowDegradedInternal(
   const degradedPool = buildDegradedModelPool(mode, options.repoDir);
 
   // Apply mode-specific budget if not explicitly provided
-  const budgetConfig = getBudgetConfig(options.repoDir);
-  const modeBudget = mode === 'survival'
-    ? budgetConfig.survivalMode
-    : budgetConfig.constrainedMode;
+  const budget = resolveRequestedBudget(options) ?? getModeBudget(mode, options.repoDir);
 
   const degradedOptions: RouteWorkflowOptions = {
     ...options,
     modelsAvailable: degradedPool,
     skipDifficultyClassification: true,
-    maxCostUsd: options.maxCostUsd ?? modeBudget,
+    maxCostUsd: budget.maxCostUsd,
+    budgetSource: budget.budgetSource,
   };
   const rationale = mode === 'survival'
     ? 'Survival mode: frontier models exhausted. Restricted to haiku. KNN signal used without LLM reasoning.'
@@ -2468,9 +2509,7 @@ export function tryPolicyResolution(
     neighborCount: 0,
     neighborSimilarityRange: [0, 0],
     expectedCost: Number((expectedCostPlan + expectedCostCode + expectedCostReview).toFixed(2)),
-    constraints: options?.maxCostUsd === undefined
-      ? undefined
-      : { maxCostUsd: options.maxCostUsd },
+    constraints: requestedBudgetConstraints(options),
     ...(explorationAttribution ? { exploration: explorationAttribution } : {}),
   }, signalContext.classification), { plannerPool: pool, coderPool: pool, reviewerPool: pool }, repoDir);
   logRoutingSignalVector(decision);
@@ -2482,6 +2521,8 @@ export async function routeWorkflowHokusai(
   options?: RouteWorkflowOptions,
 ): Promise<StageAwareDecision> {
   const repoDir = options?.repoDir;
+  const routingObjective = options?.routingObjective
+    ?? (options?.issueId ? deriveRoutingObjectiveForIssue(options.issueId) : undefined);
   const policyResolution = resolvePolicyStagePools(prompt, options || {});
   const taskDifficulty = policyResolution?.taskDifficulty || resolveTaskDifficulty(options || {}, repoDir);
   const pools: HokusaiAskPools = {
@@ -2489,7 +2530,7 @@ export async function routeWorkflowHokusai(
     coderModels: policyResolution?.policyStagePools.coderModels,
     reviewerModels: policyResolution?.policyStagePools.reviewerModels,
   };
-  const decision = await routeViaHokusai(prompt, { ...options, ...pools });
+  const decision = await routeViaHokusai(prompt, { ...options, ...pools, objective: routingObjective });
   if (!decision) {
     return { ...routeWorkflowStageAware(prompt, options), fallbackReason: 'null_response' };
   }
@@ -2508,6 +2549,7 @@ export async function routeWorkflowHokusai(
         ]
       : enriched.reasoning,
     routingMode: 'hokusai',
+    ...(routingObjective ? { routingObjective } : {}),
     neighborCount: typeof enriched.provenance?.hokusai?.nearestNeighborCount === 'number'
       ? enriched.provenance.hokusai.nearestNeighborCount
       : Array.isArray(enriched.provenance?.nearestNeighbors)
@@ -2532,7 +2574,7 @@ export async function routeWorkflowHokusai(
     { plannerPool: floorPool, coderPool: floorPool, reviewerPool: floorPool },
     repoDir,
   );
-  const escalatedDecision = await reaskHokusaiBelowFloor(prompt, signalDecision, options, pools);
+  const escalatedDecision = await reaskHokusaiBelowFloor(prompt, signalDecision, options, pools, routingObjective);
   const blastFloored = applyBlastRadiusFloor(
     escalatedDecision,
     { reviewerPool: floorPool },
@@ -2548,7 +2590,12 @@ export async function routeWorkflowAuto(
   prompt: string,
   options?: RouteWorkflowOptions,
 ): Promise<StageAwareDecision> {
-  return routeWorkflowAutoWithContext(prompt, options);
+  const decision = await routeWorkflowAutoWithContext(prompt, options);
+  const routingObjective = options?.routingObjective
+    ?? (options?.issueId ? deriveRoutingObjectiveForIssue(options.issueId) : undefined);
+  return routingObjective && !decision.routingObjective
+    ? { ...decision, routingObjective }
+    : decision;
 }
 
 export async function routeWorkflowAutoWithContext(

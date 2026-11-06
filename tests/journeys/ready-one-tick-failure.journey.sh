@@ -77,6 +77,7 @@ mill_log_count() {
 }
 
 journey_start_monitor
+journey_set_tick_budget 75
 journey_wait_until "$ISSUE" 5  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
 journey_command "select 1"
 

@@ -1478,6 +1478,11 @@
           "type": "number",
           "minimum": 0,
           "description": "Maximum routing budget in USD."
+        },
+        "budgetSource": {
+          "type": "string",
+          "enum": ["request", "issue-override", "repo-config", "default"],
+          "description": "Where maxCostUsd came from (HOK-3390, since 1.59.0). 'default' means no caller or config set it."
         }
       },
       "additionalProperties": false
@@ -1847,6 +1852,11 @@
               "type": "number",
               "minimum": 0,
               "description": "Maximum cost budget in USD."
+            },
+            "budget_source": {
+              "type": "string",
+              "enum": ["request", "issue-override", "repo-config", "default"],
+              "description": "Provenance of max_cost_usd (HOK-3390, since 1.59.0)."
             },
             "max_time_minutes": {
               "type": "number",
