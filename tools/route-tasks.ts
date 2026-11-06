@@ -13,6 +13,7 @@ import {
 import type { RouteInputKind, RouteSource } from '../shared/lib/route-artifact.ts';
 import { routerLogVerboseEnabled } from '../shared/lib/router-log.ts';
 import { runTool } from '../shared/lib/tool-runner.ts';
+import { BUDGET_CLI_OPTIONS, parseCliBudget } from '../shared/lib/budget-source.ts';
 
 interface RouteBatchTaskInput {
   issueId?: string;
@@ -150,10 +151,7 @@ runTool({
       type: 'string',
       description: 'Routing mode: auto, stage-aware, heuristic, or hokusai',
     },
-    'max-cost': {
-      type: 'string',
-      description: 'Maximum cost budget in USD for routing',
-    },
+    ...BUDGET_CLI_OPTIONS,
   },
   examples: [
     '# Route a JSONL file of task packets',
@@ -175,13 +173,7 @@ runTool({
 
     const repoDir = args['repo-dir'] || process.cwd();
     const mode = (args.mode || 'auto') as 'auto' | 'stage-aware' | 'heuristic' | 'hokusai';
-    let maxCostUsd: number | undefined;
-    if (args['max-cost']) {
-      maxCostUsd = Number(args['max-cost']);
-      if (!Number.isFinite(maxCostUsd) || maxCostUsd < 0) {
-        throw new Error(`--max-cost must be a non-negative number, got ${args['max-cost']}`);
-      }
-    }
+    const budget = parseCliBudget(args);
 
     if (args['expanded-jsonl']) {
       const tasks = await readExpandedJsonlTasks(args['expanded-jsonl']);
@@ -192,7 +184,7 @@ runTool({
       const results = await routeExpandedPackets(tasks, {
         repoDir,
         mode,
-        maxCostUsd,
+        ...budget,
         additionalEvalsPaths: getWavemillAdditionalEvalPaths(repoDir),
       });
 
@@ -249,7 +241,7 @@ runTool({
     const results = await routeBatch(tasks, {
       repoDir,
       mode,
-      maxCostUsd,
+      ...budget,
       additionalEvalsPaths: getWavemillAdditionalEvalPaths(repoDir),
     });
 

@@ -37,6 +37,8 @@ TESTS=(
   shared/lib/ledger-consistency.test.ts
   tests/state-invariants.test.ts
   shared/lib/base-merge-guard.test.ts
+  shared/lib/attention.test.ts
+  shared/lib/attention-guard.test.ts
   shared/lib/blast-radius.test.ts
   shared/lib/ledger-replay-contract.test.ts
   shared/lib/ledger-pair-abort.test.ts
@@ -57,6 +59,7 @@ TESTS=(
   shared/lib/stage-result.test.ts
   shared/lib/task-progress.test.ts
   shared/lib/task-identity.test.ts
+  shared/lib/routing-objective-split.test.ts
   shared/lib/task-artifact-lookup.test.ts
   tests/migrate-archived-stage-artifacts.test.ts
   shared/lib/terminal-backend.test.ts
@@ -380,6 +383,7 @@ TESTS=(
   shared/lib/linear-dependency-resolver.test.ts
   shared/lib/dependency-classifier.test.ts
   shared/lib/route-artifact.test.ts
+  shared/lib/budget-source.test.ts
   shared/lib/model-router.test.ts
   shared/lib/eval-corpus-migrator.test.ts
   shared/lib/eval-record-builder.test.ts
@@ -476,6 +480,7 @@ TESTS=(
   shared/lib/native-agent/certification/auto-remediate.test.ts
   shared/lib/native-agent/certification/catalog-hash-migration.test.ts
   shared/lib/native-agent/certification/canary-cohort.test.ts
+  shared/lib/native-agent/certification/monitor-canary-cohort-refresh.test.ts
   shared/lib/native-agent/certification/validator.test.ts
   shared/lib/native-agent/certification/scenarios.test.ts
   shared/lib/native-agent/certification/scenario-runner.test.ts
@@ -602,6 +607,7 @@ TESTS=(
   tools/check-review-setup.test.ts
   tests/cli-smoke.test.ts
   tests/model-settings-migration.test.ts
+  tools/check-journey-wall-clock-budget.test.ts
   tools/check-test-registration.test.ts
   tools/check-test-world-lifetime.test.ts
   tools/hok2425-verify-native-workflow-certification.test.ts

@@ -21,6 +21,7 @@ import {
 } from './model-registry.ts';
 import { buildTaskDescriptor } from './task-descriptor-builder.ts';
 import type { WorkflowRouteDecision } from './workflow-router.ts';
+import type { BudgetSource } from './budget-source.ts';
 
 export const DEFAULT_HOKUSAI_MODEL30_ENDPOINT = 'https://api.hokus.ai/api/v1/models/30/predict';
 export const DEFAULT_HOKUSAI_TIMEOUT_MS = 5000;
@@ -44,6 +45,8 @@ export interface HokusaiRouterOptions {
   coderModels?: string[];
   reviewerModels?: string[];
   maxCostUsd?: number;
+  /** Provenance of `maxCostUsd`; defaults to `request` (HOK-3390). */
+  budgetSource?: BudgetSource;
   workflowStages?: string[];
   /**
    * Routing objective for this request. Set by router escalation's re-ask
@@ -201,7 +204,7 @@ export async function routeViaHokusai(
       repoDir,
     );
     if (typeof options.maxCostUsd === 'number') {
-      decision.constraints = { maxCostUsd: options.maxCostUsd };
+      decision.constraints = { maxCostUsd: options.maxCostUsd, budgetSource: options.budgetSource ?? 'request' };
     }
     return decision;
   } catch (error) {

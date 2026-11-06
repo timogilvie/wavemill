@@ -1,0 +1,31 @@
+# shellcheck shell=bash
+# HOK-3422: implement, silently stall the first Ready remediation, then
+# repair the code on the replacement. The monitor owns retry and teardown.
+coding_runs_file="$FAKE_ROOT/coding-runs-$WAVEMILL_ISSUE"
+coding_run=$(( $(cat "$coding_runs_file" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$coding_run" > "$coding_runs_file"
+if (( coding_run == 1 )); then
+  default_coding
+elif (( coding_run == 2 )); then
+  printf '%s phase=coding issue=%s role=ready-remediation\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+  # No hook or stop event. Controller refreshes cannot reset agent progress.
+  rm -f "/tmp/wavemill-${WAVEMILL_SESSION}-${WAVEMILL_ISSUE}.hook"
+  printf '45\n' > "$FAKE_ROOT/progress-clock-skew-minutes"
+  exec -a claude-agent sleep 600
+else
+  rm -f "$FAKE_ROOT/progress-clock-skew-minutes"
+  printf '%s phase=coding issue=%s role=ready-remediation\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+  # Publish the repair and its CI result under the shared gh fake's lock.
+  # Otherwise the monitor can see the new head with the previous head's red
+  # checks before the journey parent's next ci_tick, causing a third repair.
+  for _ in $(seq 1 500); do
+    mkdir "$FAKE_GH_STATE.lock" 2>/dev/null && break
+    sleep 0.01
+  done
+  printf '%s' "$$" > "$FAKE_GH_STATE.lock/pid"
+  default_coding
+  : > "$FAKE_ROOT/ci-rerun-$(git rev-parse HEAD)"
+  jq '.checks.byPr["1"] = [{name: "unit-tests", conclusion: "SUCCESS"}]' "$FAKE_GH_STATE" > "$FAKE_GH_STATE.tmp.$$" \
+    && mv "$FAKE_GH_STATE.tmp.$$" "$FAKE_GH_STATE"
+  rm -rf "$FAKE_GH_STATE.lock"
+fi

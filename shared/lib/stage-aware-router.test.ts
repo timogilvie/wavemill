@@ -566,7 +566,7 @@ test('routeStageAware carries maxCostUsd through the decision', () => {
       maxCostUsd: 12,
     });
     assert.ok(decision);
-    assert.deepEqual(decision?.constraints, { maxCostUsd: 12 });
+    assert.deepEqual(decision?.constraints, { maxCostUsd: 12, budgetSource: 'request' });
   } finally {
     cleanup();
   }

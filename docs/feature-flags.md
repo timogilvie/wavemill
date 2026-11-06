@@ -80,6 +80,7 @@ that date to be retired.
 | `WAVEMILL_SKIP_FAST_STRIP` | 0 | Force `npx tsx` instead of `node --experimental-strip-types`. | Loader opt-out for test environments and older Nodes; eight call-sites and a mocked `npx` in tests make removal risky (HOK-3200). |
 | `WAVEMILL_REVIEW_SKIP_FETCH` | 0 | Skip the pre-review `git fetch origin <base>`. | Sandbox/offline opt-out for review runs (HOK-3162). |
 | `WAVEMILL_DISABLE_CHALLENGE` | 0 | Operator kill-switch for the whole challenge program. | Challenges are paused by default (HOK-3175); the recursive-launch gate in the monitor uses it structurally and removal would be a refactor. |
+| `nativeAgent.certification.canaryAutoRefreshIntervalMinutes` | 0 | Opt-in monitor cadence for guarded native canary refresh; `360` is the recommended six-hour production setting. | Permanent scheduling setting; the existing per-episode guard bounds provider calls. |
 
 ## Retired in HOK-3235
 

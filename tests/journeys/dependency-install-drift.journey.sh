@@ -9,7 +9,6 @@ set -euo pipefail
 JOURNEY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$JOURNEY_DIR/../.." && pwd)"
 LIB_DIR="$ROOT/shared/lib"
-BUDGET="${JOURNEY_BUDGET_SECONDS:-90}"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/journey-deps-drift.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -172,4 +171,4 @@ done
 (( recovered == 1 )) || fail "install never recovered to ok within the bounded wait"
 grep -q '\[deps-drift\] reinstall + swap complete' "$MILL_LOG_FILE" || fail "expected a logged successful swap"
 
-echo "--- dependency-install-drift journey passed (budget ${BUDGET}s) ---"
+echo "--- dependency-install-drift journey passed ---"

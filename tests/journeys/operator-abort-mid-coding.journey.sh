@@ -30,6 +30,7 @@ journey_init operator-abort-mid-coding
 fakes_linear_add_issue "$ISSUE" "Task the operator aborts mid-coding" Todo
 
 journey_start_monitor
+journey_set_tick_budget 45
 # journey_quiet_ticks <n>: let n monitor passes go by with the operator roles
 # still running (unlike journey_wait_until, reaching the end is success).
 journey_quiet_ticks() {

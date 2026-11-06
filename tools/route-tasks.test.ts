@@ -122,7 +122,7 @@ describe('route-tasks CLI', () => {
         assert.ok(item.routingMode);
       }
 
-      const single = JSON.parse(execFileSync(process.execPath, [routeTaskTool, '--json', '--file', packetA, '--repo-dir', repoDir], {
+      const single = JSON.parse(execFileSync(process.execPath, [routeTaskTool, '--json', '--file', packetA, '--issue-id', 'HOK-100', '--repo-dir', repoDir], {
         encoding: 'utf-8',
         cwd: resolve(__dirname, '..'),
         env: { ...process.env },

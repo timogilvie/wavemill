@@ -12,6 +12,7 @@
 import { getEffectiveRegistry, getModel } from '../model-registry.ts';
 import { callLLM } from '../llm-cli.ts';
 import {
+  DEFAULT_RESERVED_OUTPUT_TOKENS,
   policyKindFor,
   type AdapterError,
   type AdapterInvokeOptions,
@@ -39,7 +40,6 @@ export const BYTES_PER_TOKEN_CLAUDE_DEFAULT = 2.4;
  */
 export const CLAUDE_CLI_HARNESS_OVERHEAD_TOKENS = 30_000;
 
-const DEFAULT_RESERVED_OUTPUT_TOKENS = 8_000;
 
 function bytesPerToken(): number {
   const override = Number.parseFloat(process.env.WAVEMILL_TOKEN_BYTES_CLAUDE ?? '');
@@ -98,7 +98,7 @@ export class ClaudeCliAdapter implements TransportAdapter {
         ? { contextWindowTokens: capabilities.contextWindowTokens }
         : {}),
       cliHarnessOverheadTokens: CLAUDE_CLI_HARNESS_OVERHEAD_TOKENS,
-      maxOutputTokens: this.reservedOutputTokens,
+      reservedOutputTokens: this.reservedOutputTokens,
     };
   }
 
@@ -148,7 +148,11 @@ export class ClaudeCliAdapter implements TransportAdapter {
         mode: 'stream',
         model: this.model,
         timeout: opts.timeout,
-        maxOutputTokens: opts.maxOutputTokens ?? this.reservedOutputTokens,
+        // A preflight reservation is not a generated-output cap. Claude CLI
+        // owns its model-aware reasoning + answer limit unless the caller
+        // explicitly supplies a cap. Native JSON ceilings can starve
+        // adaptive reasoning of any answer tokens (2026-11-06 incident).
+        maxOutputTokens: opts.maxOutputTokens,
         signal: opts.signal,
         cwd: opts.cwd,
         retry: (opts.maxRetries ?? 0) > 0,

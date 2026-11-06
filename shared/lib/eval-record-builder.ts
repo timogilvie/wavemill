@@ -52,6 +52,7 @@ import type {
   EvalTaskCostSummary,
   EvalTaskScorerResult,
 } from './eval-schema.ts';
+import { isBudgetSource } from './budget-source.ts';
 import {
   getEffectiveRegistry,
   resolveModelIdentity,
@@ -1541,6 +1542,9 @@ export function attachConstraints(
   const normalized: EvalConstraints = {};
   if (typeof constraints.maxCostUsd === 'number') {
     normalized.maxCostUsd = constraints.maxCostUsd;
+    if (isBudgetSource(constraints.budgetSource)) {
+      normalized.budgetSource = constraints.budgetSource;
+    }
   }
 
   if (Object.keys(normalized).length > 0) {
@@ -1554,15 +1558,20 @@ export function attachConstraints(
  * `0` is a valid budget. Missing, null, negative, or non-finite values mark
  * the record as explicitly missing budget metadata without fabricating a
  * descriptor that otherwise has required training fields.
+ *
+ * `budgetSource` (HOK-3390) is written beside every budget it describes. It
+ * does not affect eligibility: a `default` budget is still a snapshot, and the
+ * data pipeline decides whether to treat it as missing.
  */
-export function attachBudgetMetadata(record: EvalRecord, budgetUsd: unknown): void {
+export function attachBudgetMetadata(record: EvalRecord, budgetUsd: unknown, budgetSource?: unknown): void {
   if (!isFiniteNonNegativeBudget(budgetUsd)) {
-    if (record.constraints && 'maxCostUsd' in record.constraints) {
-      const { maxCostUsd: _maxCostUsd, ...rest } = record.constraints;
+    if (record.constraints && ('maxCostUsd' in record.constraints || 'budgetSource' in record.constraints)) {
+      const { maxCostUsd: _maxCostUsd, budgetSource: _budgetSource, ...rest } = record.constraints;
       record.constraints = Object.keys(rest).length > 0 ? rest : undefined;
     }
     if (record.taskDescriptor?.constraints) {
       delete record.taskDescriptor.constraints.max_cost_usd;
+      delete record.taskDescriptor.constraints.budget_source;
     }
     record.budgetEvalEligible = false;
     record.budgetEvalEligibilityError = BUDGET_MISSING;
@@ -1570,12 +1579,20 @@ export function attachBudgetMetadata(record: EvalRecord, budgetUsd: unknown): vo
     return;
   }
 
+  const source = isBudgetSource(budgetSource) ? budgetSource : undefined;
+  const { budgetSource: _staleSource, ...constraints } = record.constraints ?? {};
   record.constraints = {
-    ...(record.constraints ?? {}),
+    ...constraints,
     maxCostUsd: budgetUsd,
+    ...(source ? { budgetSource: source } : {}),
   };
   if (record.taskDescriptor?.constraints) {
     record.taskDescriptor.constraints.max_cost_usd = budgetUsd;
+    if (source) {
+      record.taskDescriptor.constraints.budget_source = source;
+    } else {
+      delete record.taskDescriptor.constraints.budget_source;
+    }
   }
   record.budgetEvalEligible = true;
   delete record.budgetEvalEligibilityError;
@@ -1604,6 +1621,7 @@ export function attachBudgetViolation(record: EvalRecord): void {
   record.budgetViolationDetails = {
     requestedCost: v.requestedCost,
     maxCostUsd: v.maxCostUsd,
+    ...(isBudgetSource(v.budgetSource) ? { budgetSource: v.budgetSource } : {}),
     operatingMode: v.operatingMode,
     attemptedDowngrade: v.attemptedDowngrade,
     cheapestOption: v.cheapestViableOption ? {
@@ -1824,7 +1842,7 @@ export function enrichEvalRecord(record: EvalRecord, metadata: EvalRecordMetadat
   attachTaskDescriptor(record, metadata.taskDescriptor || null);
   attachFallbackEvent(record, metadata.fallbackEvent || null);
   attachConstraints(record, metadata.constraints || null);
-  attachBudgetMetadata(record, metadata.constraints?.maxCostUsd);
+  attachBudgetMetadata(record, metadata.constraints?.maxCostUsd, metadata.constraints?.budgetSource);
   attachBudgetViolation(record);
   if (metadata.rubricEval) {
     attachRubricEval(record, metadata.rubricEval);

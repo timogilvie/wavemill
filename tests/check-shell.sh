@@ -115,6 +115,7 @@ for f in \
   "$REPO_DIR"/tests/ledger-hook-shadow.test.sh \
   "$REPO_DIR"/tests/check-ledger-shadow-swallow.test.sh \
   "$REPO_DIR"/tests/monitor-side-effect-detector-tick.test.sh \
+  "$REPO_DIR"/tests/monitor-canary-cohort-refresh-tick.test.sh \
   "$REPO_DIR"/tests/deps-drift.test.sh \
   "$REPO_DIR"/tests/check-marker-clear-sites.test.sh \
   "$REPO_DIR"/tests/check-state-surface-writes.test.sh \
@@ -301,10 +302,12 @@ for f in \
   "$REPO_DIR"/tests/journeys/run-journeys.sh \
   "$REPO_DIR"/tests/journeys/picker-pending-touch-set.journey.sh \
   "$REPO_DIR"/tests/journeys/happy-path.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/happy-path/fake-agent/review \
   "$REPO_DIR"/tests/journeys/head-move-publication.journey.sh \
   "$REPO_DIR"/tests/journeys/gh-lag-after-push.journey.sh \
   "$REPO_DIR"/tests/journeys/errored-with-pr.journey.sh \
   "$REPO_DIR"/tests/journeys/inputs-ready-before-approval.journey.sh \
+  "$REPO_DIR"/tests/journeys/approve-plan-attention-item.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3220/fake-agent/planning \
   "$REPO_DIR"/tests/journeys/mid-flight-base-conflict.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3273/fake-agent/review \
@@ -328,6 +331,8 @@ for f in \
   "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/fake-agent/review \
   "$REPO_DIR"/tests/journeys/ready-fail-remediate.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/ready-fail-remediate/fake-agent/coding \
+  "$REPO_DIR"/tests/journeys/controller-writes-dont-reset-stall.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/controller-writes-dont-reset-stall/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/ready-remediation-same-head.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/ready-remediation-same-head/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/dirty-tree-coding-complete.journey.sh \
