@@ -12,7 +12,10 @@ import { DEFAULT_MODEL_REGISTRY } from './model-registry.ts';
 import { buildLiveCodingCanaryFixture } from './native-agent/certification/canary-fixtures.ts';
 import { resolveCertificationSubject } from './native-agent/certification/identity.ts';
 import { buildGlobalCertificationPath } from './native-agent/certification/loader.ts';
-import { CERTIFICATION_SCHEMA_VERSION } from './native-agent/certification/schema.ts';
+import {
+  CERTIFICATION_SCHEMA_VERSION,
+  LIVE_CODING_CANARY_TTL_DAYS,
+} from './native-agent/certification/schema.ts';
 import { GLOBAL_CERTIFICATION_ROOT_ENV } from './native-agent/certification/storage.ts';
 
 let passed = 0;
@@ -67,10 +70,18 @@ function makeRepo(
   };
 }
 
-const CERTIFICATION_AT = '2026-11-01T00:00:00.000Z';
+// `routeViaHokusai` evaluates certification/canary freshness against the real
+// system clock, so these timestamps are derived from `Date.now()` rather than
+// hardcoded: a fixed `certifiedAt`/`ranAt` would deterministically drift past
+// the 60-day certification TTL / 14-day live-canary TTL and break these tests.
+const CERTIFICATION_AT = new Date().toISOString();
+const FRESH_CANARY_RAN_AT = new Date().toISOString();
+const STALE_CANARY_RAN_AT = new Date(
+  Date.now() - (LIVE_CODING_CANARY_TTL_DAYS + 1) * 24 * 60 * 60 * 1000,
+).toISOString();
 
 /** Write a fresh (or canary-stale) certification artifact for a native model. */
-function writeCertification(repoDir: string, modelId: string, canaryRanAt = '2026-11-04T00:00:00.000Z'): void {
+function writeCertification(repoDir: string, modelId: string, canaryRanAt = FRESH_CANARY_RAN_AT): void {
   const capabilities = DEFAULT_MODEL_REGISTRY.models[modelId];
   const suiteVersion = capabilities?.nativeCapability?.certification?.certificationSuiteVersion;
   const provider = capabilities?.nativeCapability?.nativeProvider;
@@ -298,7 +309,7 @@ await test('offers certified native models to Model 30 and leaves a native recom
 await test('drops a stale-canary native model from the pool and records the reason', async () => {
   const { repoDir, cleanup } = makeOpenRouterRepo();
   process.env.TEST_HOKUSAI_TOKEN = 'secret-token';
-  writeCertification(repoDir, 'qwen-3-coder', '2026-10-01T00:00:00.000Z');
+  writeCertification(repoDir, 'qwen-3-coder', STALE_CANARY_RAN_AT);
   writeCertification(repoDir, 'kimi-k2.7-code');
   let requestBody = '';
   globalThis.fetch = async (_input, init) => {
