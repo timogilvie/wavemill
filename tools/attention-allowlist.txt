@@ -1,8 +1,5 @@
-# HOK-3423 attention guard ratchet: pre-existing raw .needs-attention readers.
-# Counted entries only shrink. None of these decides inbox membership.
-shared/lib/incident-replay-harness.ts 2  # replay harness asserts the escalation marker a replayed incident wrote
-shared/lib/ready-watchdog.ts 3  # watchdog snapshot evidence and its own clear; slice 2/2 moves it onto attention.json
-shared/lib/tend-controller.ts 2  # tend merge gate holds an escalated PR; not inbox membership
-shared/lib/wavemill-monitor.sh 3  # monitor stage gates hold while escalated; not inbox membership
-tools/observer.ts 1  # slice 2/2: Observer push (readReadyFailureReason) moves onto attention.json
-tools/state-invariants.ts 2  # I5 condition-marker invariant inspects every marker for expiry
+# HOK-3423 attention guard ratchet (HOK-3424: empty).
+# No raw .needs-attention readers remain outside the escalation module
+# (shared/lib/operator-escalation.{ts,sh}), the condition reconciler and
+# attention.ts; readers go through escalationMarkerPath / readEscalationMarker
+# (operator_escalation_marker_path / _has_marker / _marker_reason in shell).

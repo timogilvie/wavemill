@@ -8,5 +8,4 @@ shared/lib/ledger-consistency.ts # legacy bucket enumeration for the retry-senti
 shared/lib/observer-auto-fix.ts # legacy bucket in the observer auto-fix remediation list (in-flight sessions)
 shared/lib/retry-sentinel-guard.ts # legacy bucket file-name shape in the sentinel-name guard regex
 shared/lib/transient-marker.sh # legacy exhausted-condition file-name-to-bucket mapping (HOK-3172)
-tools/observer.ts # legacy .failed-ready-recheck-exhausted sentinel finding (HOK-3244)
 tools/state-invariants.ts # legacy sentinel enumeration for the state-invariants audit

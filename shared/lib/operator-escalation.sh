@@ -31,6 +31,30 @@
 # of `.needs-attention` outside this module (and its TS twin
 # `operator-escalation.ts`) fails preflight.
 
+# operator_escalation_marker_path <state_dir>
+# Print the one `.needs-attention` path. Read-only callers outside this module
+# (tend merge gate, monitor stage gates, watchdog) use this instead of
+# re-deriving the path (HOK-3424).
+operator_escalation_marker_path() {
+  printf '%s\n' "$1/.needs-attention"
+}
+
+# operator_escalation_has_marker <state_dir>
+# Exit 0 when the escalation marker exists, 1 otherwise.
+operator_escalation_has_marker() {
+  [[ -f "$(operator_escalation_marker_path "$1")" ]]
+}
+
+# operator_escalation_marker_reason <state_dir>
+# Echo the escalation marker's reason (JSON `reason`, else first legacy line).
+# Prints nothing when the marker is absent or unreadable; never fails.
+operator_escalation_marker_reason() {
+  local marker
+  marker="$(operator_escalation_marker_path "$1")"
+  [[ -r "$marker" ]] || return 0
+  marker_reason "$marker" 2>/dev/null || true
+}
+
 # _operator_attention_write <state_dir> <message> [marker condition flags...]
 # Private. Writes the `.needs-attention` marker. Never call directly — go
 # through escalate_operator_attention so the basis is checked first.

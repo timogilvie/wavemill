@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { OBSERVER_ALERTS_DEFAULTS, type ObserverAlertsConfig } from './config.ts';
 import {
+  attentionItemsToAlertFindings,
+  readAttentionItemsForPush,
   selectAlertsToSend,
   sendPushNotification,
   runObserverAlerts,
   type AlertFinding,
   type AlertJournal,
 } from './observer-alerts.ts';
+import type { AttentionItem } from './attention.ts';
 
 function cfg(overrides: Partial<ObserverAlertsConfig> = {}): ObserverAlertsConfig {
   return {
@@ -25,6 +31,100 @@ const base: AlertFinding = {
   title: 'something urgent',
   recommendation: 'look at it',
 };
+
+function attentionItem(overrides: Partial<AttentionItem> & Pick<AttentionItem, 'id' | 'kind'>): AttentionItem {
+  return {
+    since: Date.parse('2026-11-05T11:00:00Z'),
+    summary: `${overrides.kind} summary`,
+    evidence: [],
+    commands: [],
+    ...overrides,
+  };
+}
+
+test('attentionItemsToAlertFindings: task items map to high findings keyed by the stable item id', () => {
+  // protects: the Observer deciding loudness itself — every task kind paged at
+  // high before HOK-3424 (exhaustion detector, interactive-prompt incident), so
+  // the projection read must keep the same severity and dedupe identity.
+  const items: AttentionItem[] = [
+    attentionItem({
+      id: 'HOK-1:exhausted:stage-failure-ready:abcd1234abcd',
+      kind: 'exhausted',
+      taskId: 'HOK-1',
+      summary: 'HOK-1 exceeded its ready budget',
+      evidence: [{ source: '.needs-attention', summary: 'Ready failed 3 times' }],
+    }),
+    attentionItem({
+      id: 'HOK-2:answer-agent:prompt',
+      kind: 'answer-agent',
+      taskId: 'HOK-2',
+      summary: 'HOK-2 is waiting on an answer',
+      commands: [{ label: 'reply in pane', argv: ['answer', 'HOK-2'] }],
+    }),
+    // A free (non-task) signal: inbox-only, never pushed.
+    attentionItem({ id: 'queue-health:degraded-inference', kind: 'queue-health', summary: 'queue degraded' }),
+  ];
+  const findings = attentionItemsToAlertFindings(items, { repoDir: '/repo', session: 'wavemill' });
+  assert.deepEqual(findings.map((finding) => finding.id), [
+    'HOK-1:exhausted:stage-failure-ready:abcd1234abcd',
+    'HOK-2:answer-agent:prompt',
+  ]);
+  assert.deepEqual(findings.map((finding) => finding.severity), ['high', 'high']);
+  assert.deepEqual(findings.map((finding) => finding.issue), ['HOK-1', 'HOK-2']);
+  assert.equal(findings[0].title, 'HOK-1 exceeded its ready budget');
+  assert.equal(findings[0].recommendation, 'Ready failed 3 times');
+  assert.equal(findings[1].recommendation, 'reply in pane');
+  assert.equal(findings[0].repoDir, '/repo');
+  assert.equal(findings[0].session, 'wavemill');
+});
+
+test('attentionItemsToAlertFindings: the journal still applies persistMinutes and repeatMinutes', () => {
+  // protects: reading the projection bypassing the HOK-3097 dedupe — one
+  // escalation held for persistMinutes, pushed once, not repeated before
+  // repeatMinutes.
+  const finding = attentionItemsToAlertFindings([
+    attentionItem({ id: 'HOK-3:operator-decision:merge-residue:abcd', kind: 'operator-decision', taskId: 'HOK-3' }),
+  ])[0];
+  const config = cfg({ persistMinutes: 15, repeatMinutes: 60 });
+  const t0 = new Date('2026-11-05T12:00:00Z');
+  const t1 = new Date('2026-11-05T12:20:00Z');
+  const t2 = new Date('2026-11-05T12:30:00Z');
+  const held = selectAlertsToSend([finding], { findings: {} }, config, t0);
+  assert.equal(held.due.length, 0);
+  const sent = selectAlertsToSend([finding], held.journal, config, t1);
+  assert.equal(sent.due.length, 1);
+  const repeated = selectAlertsToSend([finding], sent.journal, config, t2);
+  assert.equal(repeated.due.length, 0);
+});
+
+test('readAttentionItemsForPush: missing, wrong-schema, stale → no items', () => {
+  // protects: push disagreeing with the inbox — the projection the dashboard
+  // calls stale or pending must produce no alert.
+  const root = mkdtempSync(join(tmpdir(), 'observer-push-'));
+  try {
+    const projectionPath = join(root, '.wavemill', 'attention.json');
+    const now = new Date('2026-11-05T12:00:00Z');
+    assert.deepEqual(readAttentionItemsForPush(root, now), []);
+
+    mkdirSync(join(root, '.wavemill'), { recursive: true });
+    const item = attentionItem({ id: 'HOK-4:exhausted:b:key', kind: 'exhausted', taskId: 'HOK-4' });
+    writeFileSync(projectionPath, JSON.stringify({
+      schemaVersion: 1,
+      passStampMs: now.getTime() - 1_000,
+      staleAfterMs: now.getTime() + 60_000,
+      computedAt: now.toISOString(),
+      items: [item],
+    }));
+    assert.deepEqual(readAttentionItemsForPush(root, now), [item]);
+
+    assert.deepEqual(readAttentionItemsForPush(root, new Date(now.getTime() + 61_000)), []);
+
+    writeFileSync(projectionPath, JSON.stringify({ schemaVersion: 2, staleAfterMs: now.getTime() + 60_000, items: [item] }));
+    assert.deepEqual(readAttentionItemsForPush(root, now), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('selectAlertsToSend: holds back finding before persistMinutes', () => {
   const config = cfg({ persistMinutes: 15, repeatMinutes: 60 });

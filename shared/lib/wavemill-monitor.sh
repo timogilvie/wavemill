@@ -5464,7 +5464,7 @@ pane_release_preflight() {
       return 1
       ;;
   esac
-  if [[ -f "$state_dir/.needs-attention" ]] && ! marker_is_stale "$state_dir/.needs-attention" "$current_head"; then
+  if operator_escalation_has_marker "$state_dir" && ! marker_is_stale "$(operator_escalation_marker_path "$state_dir")" "$current_head"; then
     printf '%s\n' "attention-marker-present"
     return 1
   fi
@@ -11450,8 +11450,9 @@ clear_cross_pr_guard_ready_evidence() {
     fi
   fi
 
-  local attention_reason="" attention_marker="$state_dir/.needs-attention"
-  attention_reason="$(marker_reason "$state_dir/.needs-attention" 2>/dev/null || true)"
+  local attention_reason="" attention_marker
+  attention_marker="$(operator_escalation_marker_path "$state_dir")"
+  attention_reason="$(operator_escalation_marker_reason "$state_dir")"
   if [[ -n "$attention_reason" ]] \
     && { [[ "$attention_reason" == *'Cross-PR revert guard'* ]] \
       || [[ "$attention_reason" == *'without explicit acknowledgement'* ]]; } \
@@ -11949,7 +11950,7 @@ ready_failure_classify_and_act() {
           # with a green sibling (HOK-3147), else hold at needs-user.
           local exhausted_reason
           exhausted_reason="$(bounded_retry_exhaustion_reason "$state_dir" "stage-failure-ready")"
-          if [[ -n "$exhausted_reason" && ! -f "$state_dir/.needs-attention" ]]; then
+          if [[ -n "$exhausted_reason" ]] && ! operator_escalation_has_marker "$state_dir"; then
             escalate_operator_attention "$state_dir" exhausted stage-failure-ready "$exhausted_reason" || true
           fi
           if ready_exhausted_challenge_terminalize "$issue" "$pr" "$state_dir" "$win"; then

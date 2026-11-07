@@ -38,7 +38,9 @@ import {
   type AutoFixTask,
 } from '../shared/lib/observer-auto-fix.ts';
 import {
+  attentionItemsToAlertFindings,
   detectDesktopPlatform,
+  readAttentionItemsForPush,
   runObserverAlerts,
   sendDesktopNotification,
   sendPushNotification,
@@ -158,8 +160,6 @@ const CANDIDATE_STUCK_MINUTES = 15;
 /** Promotions to merge-candidate on the same head within the window below this many times is churn. */
 const CANDIDATE_CHURN_THRESHOLD = 3;
 const CANDIDATE_CHURN_WINDOW_MINUTES = 30;
-/** An exhausted retry sentinel quiet for this long with no newer commit/progress is abandoned. */
-const EXHAUSTED_RETRY_QUIET_MINUTES = 10;
 /** An active branch more than this many commits behind its base has drifted. */
 const BEHIND_BASE_THRESHOLD_COMMITS = 5;
 
@@ -1736,7 +1736,6 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       const sessionCapabilities = resolveSessionCapabilities(repo.repoDir);
       return detectStuckMergeCandidates(repo, now, sessionCapabilities);
     }, findings);
-    runDetector('exhausted-retries', repo, () => detectExhaustedRetries(repo, now, progressLookup), findings);
     runDetector('branch-behind-base', repo, () => detectBranchBehindBase(repo, now), findings);
     // HOK-3207: sustained slow passes (p50 > warnMs for ≥ 1 h) and
     // stuck queue inference (consecutiveFailures ≥ 5). Each has a stable
@@ -2683,15 +2682,15 @@ function readReadyFailureReason(repo: RepoSnapshot, issue: string): string | und
   const task = repo.tasks?.find((candidate) => candidate.issue === issue);
   if (!task?.worktree || !task.slug) return undefined;
   const featureDir = join(task.worktree, 'features', task.slug);
-  const attentionPath = join(featureDir, '.needs-attention');
-  if (existsSync(attentionPath)) {
-    try {
-      const attention = readFileSync(attentionPath, 'utf-8').trim();
-      if (attention) return attention;
-    } catch {
-      // Fall through to the structured result when the advisory cannot be read.
-    }
-  }
+
+  // HOK-3424: the escalation text comes from the attention projection, the
+  // same record the dashboard inbox renders — never a raw .needs-attention read.
+  const escalation = readAttentionItemsForPush(repo.repoDir, new Date()).find(
+    (item) => item.taskId === issue
+      && (item.kind === 'operator-decision' || item.kind === 'exhausted' || item.kind === 'policy-terminal'),
+  );
+  const projected = escalation?.evidence.find((entry) => entry.source === '.needs-attention')?.summary;
+  if (projected) return projected;
 
   const resultPath = join(featureDir, '.ready-result.json');
   if (!existsSync(resultPath)) return undefined;
@@ -3316,147 +3315,6 @@ export function detectStuckMergeCandidates(
   return findings;
 }
 
-interface RetryExhaustionSentinel {
-  bucket: string;
-  path: string;
-  mtimeMs: number;
-  reason: string;
-}
-
-/**
- * Scan a task state directory for retry-exhausted sentinels (HOK-2924). Never
- * throws. Matches both the standard `.retry-<bucket>-exhausted` shape and the
- * legacy `.failed-ready-recheck-exhausted` shape — `_bounded_retry_prefix`
- * drops the `.retry-` prefix for that single bucket for upgrade compatibility
- * (bounded-retry.sh:44). Without the extra match, the detector silently misses
- * every failed-ready-recheck exhaustion (HOK-3244 REQ-F3).
- */
-function listExhaustedRetrySentinels(stateDir: string): RetryExhaustionSentinel[] {
-  let entries: string[];
-  try {
-    entries = readdirSync(stateDir);
-  } catch {
-    return [];
-  }
-  const sentinels: RetryExhaustionSentinel[] = [];
-  for (const name of entries) {
-    let bucket: string | undefined;
-    if (name === '.failed-ready-recheck-exhausted') {
-      bucket = 'failed-ready-recheck';
-    } else {
-      const match = /^\.retry-(.+)-exhausted$/.exec(name);
-      if (match) bucket = match[1];
-    }
-    if (!bucket) continue;
-    const path = join(stateDir, name);
-    try {
-      const stat = statSync(path);
-      const reason = readFileSync(path, 'utf8').trim();
-      sentinels.push({ bucket, path, mtimeMs: stat.mtimeMs, reason });
-    } catch {
-      // Unreadable sentinel: skip rather than report on data we cannot verify.
-    }
-  }
-  return sentinels;
-}
-
-/**
- * Resolve the per-bucket file prefix used by `shared/lib/bounded-retry.sh`:
- * `.retry-<bucket>-` for every bucket, with the sole exception of
- * `failed-ready-recheck`, whose storage keeps its pre-HOK-2924 names
- * (`.failed-ready-recheck-*`) for upgrade compatibility.
- */
-function retryBucketPrefix(bucket: string): string {
-  return bucket === 'failed-ready-recheck' ? '.failed-ready-recheck-' : `.retry-${bucket}-`;
-}
-
-/**
- * True when the bucket's retry budget is still keyed to the branch's current
- * tip — i.e. the exhaustion sentinel is still relevant. `bounded-retry.sh`
- * resets the whole bucket (including the exhausted sentinel) on a new head
- * SHA, so a mismatched key means the budget is already about to clear itself
- * and firing here would be a false positive. Absent key file or an
- * unresolvable tip is treated as "still relevant" — the detector never
- * suppresses on information it cannot verify.
- */
-function exhaustedRetryStillKeyed(stateDir: string, bucket: string, repoDir: string, branch: string | undefined): boolean {
-  const headFile = join(stateDir, `${retryBucketPrefix(bucket)}head`);
-  if (!existsSync(headFile)) return true;
-  let storedHead: string | undefined;
-  try {
-    storedHead = readFileSync(headFile, 'utf8').split('\n')[0]?.trim();
-  } catch {
-    return true;
-  }
-  if (!storedHead || !branch) return true;
-  const tip = gitRevParse(repoDir, branch);
-  if (!tip) return true;
-  return storedHead === tip;
-}
-
-function lastCommitEpochMs(repoDir: string, branch: string): number | undefined {
-  const result = run('git', ['-C', repoDir, 'log', '-1', '--format=%ct', branch], 8_000);
-  if (!result.ok) return undefined;
-  const seconds = Number.parseInt(result.stdout.trim(), 10);
-  return Number.isFinite(seconds) ? seconds * 1000 : undefined;
-}
-
-/**
- * Detector 2 (REQ-F3): a bounded-retry bucket (HOK-2924) has terminalized
- * with an `.retry-<bucket>-exhausted` sentinel, and nothing — a new commit,
- * or agent/operator progress per the HOK-3101 primitive — has happened since.
- */
-export function detectExhaustedRetries(
-  repo: RepoSnapshot,
-  now: number,
-  progressLookup: (task: ObservedTask) => TaskProgress | undefined,
-): Finding[] {
-  const findings: Finding[] = [];
-  for (const task of repo.tasks) {
-    if (taskWorkflowIsTerminal(task)) continue;
-    const stateDir = resolveTaskStateDir(repo.repoDir, task);
-    if (!stateDir) continue;
-    const sentinels = listExhaustedRetrySentinels(stateDir);
-    if (sentinels.length === 0) continue;
-
-    const branch = taskBranch(task);
-    const progress = progressLookup(task);
-    const lastProgressMs = progress?.lastProgressAt ? Date.parse(progress.lastProgressAt) : NaN;
-    const lastCommitMs = branch ? lastCommitEpochMs(repo.repoDir, branch) : undefined;
-
-    for (const sentinel of sentinels) {
-      const ageMinutes = (now - sentinel.mtimeMs) / 60_000;
-      if (ageMinutes < EXHAUSTED_RETRY_QUIET_MINUTES) continue;
-      if (!exhaustedRetryStillKeyed(stateDir, sentinel.bucket, repo.repoDir, branch)) continue;
-      if (lastCommitMs !== undefined && lastCommitMs > sentinel.mtimeMs) continue;
-      if (Number.isFinite(lastProgressMs) && lastProgressMs > sentinel.mtimeMs) continue;
-
-      findings.push({
-        id: `exhausted-retry-abandoned-${repo.session}-${task.issue}-${sentinel.bucket}`,
-        severity: 'high',
-        category: 'stuck',
-        confidence: 'high',
-        session: repo.session,
-        repoDir: repo.repoDir,
-        issue: task.issue,
-        title: `${task.issue} abandoned: Exhausted retries: ${truncate(sentinel.reason, 160)}`,
-        evidence: [
-          `bucket=${sentinel.bucket}`,
-          `sentinel=${sentinel.path}`,
-          `sentinelReason=${sentinel.reason}`,
-          `sentinelAgeMinutes=${Math.round(ageMinutes)}`,
-          `lastCommitAt=${lastCommitMs !== undefined ? new Date(lastCommitMs).toISOString() : 'unknown'}`,
-          `lastProgressAt=${progress?.lastProgressAt ?? 'never'}`,
-          branch ? `branch=${branch}` : 'branch=unknown',
-          taskPrEvidence(repo.repoDir, task),
-        ],
-        recommendation: `Fix the recorded cause (${truncate(sentinel.reason, 160)}), then push a new commit to ${branch ?? 'the task branch'} to reset the ${sentinel.bucket} retry budget, or abort the task. Never just delete the sentinel — the underlying cause is still unresolved. observer.autoFix.resetReadyRecheckBudget (HOK-3097) can reset the budget once the head or base SHA has changed.`,
-      });
-    }
-  }
-  return findings;
-}
-
 /**
  * Pure severity rule for Detector 3 (REQ-F5, D6): `medium` by default, raised
  * to `high` when the PR is ready to merge. Labels win when known; when they
@@ -3567,67 +3425,6 @@ function capturePaneText(pane: Pane): string | undefined {
  */
 export const normalizeInteractivePromptText = taskProgressNormalizeInteractivePromptText;
 export const matchInteractivePromptSignature = taskProgressMatchInteractivePromptSignature;
-
-/**
- * HOK-3045: emit an incident when a task-correlated pane is parked at a known
- * interactive agent lifecycle prompt. Only nonterminal task panes are
- * inspected, and each pane's text is captured at most once per cycle.
- * Evidence carries only the signature id and choice count — never the raw
- * capture — so persisted incidents cannot leak prompt content, transcripts,
- * paths, tokens, or user identifiers.
- */
-function detectInteractivePromptBlockedIncidents(
-  repo: RepoSnapshot,
-  snapshot: Pick<ObserverSnapshot, 'panes'>,
-  timestamp: string,
-): IncidentRecord[] {
-  const incidents: IncidentRecord[] = [];
-  for (const task of repo.tasks) {
-    if (!task.issue) continue;
-    if (taskWorkflowIsTerminal(task)) continue;
-    const residue = taskPaneResidue(repo, task, snapshot.panes);
-    if (!residue.present) continue;
-    // Inspect each correlated pane at most once per observation cycle.
-    for (const pane of residue.panes) {
-      const paneText = capturePaneText(pane);
-      const signature = matchInteractivePromptSignature(paneText);
-      if (!signature) continue;
-      const paneTarget = `${pane.session}:${pane.windowIndex}.${pane.paneIndex}`;
-      const evidenceKey = `interactive-prompt:${task.issue}:${signature.id}`;
-      incidents.push(createIncidentDraft({
-        taskId: task.issue,
-        session: repo.session,
-        category: 'configuration_operator_condition',
-        severity: 'high',
-        confidence: 'high',
-        lifecycle: 'observed',
-        rootCauseClass: 'agent_interactive_prompt_blocked',
-        summary: `${task.issue} task pane is parked at an interactive ${signature.agent} prompt (${signature.id}).`,
-        operatorAction: signature.operatorAction,
-        evidence: [{
-          type: 'hook_status',
-          source: `pane:${paneTarget}`,
-          timestamp,
-          redactedData: `agent=${signature.agent} prompt=${signature.id}${signature.choiceCount ? ` choices=${signature.choiceCount}` : ''}`,
-          key: evidenceKey,
-        }],
-        metadata: {
-          promptSignatureId: signature.id,
-          promptAgent: signature.agent,
-          paneTarget,
-          // Captured for the current-truth resolution gate — the incident may
-          // not auto-resolve until this task advances past this timestamp or
-          // becomes terminal (HOK-3045).
-          observedTaskUpdatedAt: task.updated ?? null,
-        },
-      }));
-      // A task pane's signature only matches once per pane per cycle; a second
-      // match on the same pane would produce a duplicate fingerprint anyway.
-      break;
-    }
-  }
-  return incidents;
-}
 
 /**
  * Gate for the incident-store resolution sweep (HOK-3045): interactive-prompt
@@ -3910,7 +3707,6 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
 
       candidates.push(...detectParkedArmIncidents(repo, snapshot, options, snapshot.timestamp));
       candidates.push(...detectCleanupIncidentsForRepo(repo, snapshot.timestamp));
-      candidates.push(...detectInteractivePromptBlockedIncidents(repo, snapshot, snapshot.timestamp));
     } catch (error) {
       cycleComplete = false;
       addConfigDegradedFindingIfMissing(snapshot.findings, repo, error, 'incident detection');
@@ -4670,6 +4466,14 @@ export async function sendAlerts(
         session: f.session,
         ...(f.oneShot ? { oneShot: true } : {}),
       }));
+    // HOK-3424: task-scoped pushes are selected from the one attention
+    // projection the inbox renders (*second reader*, not a second decider).
+    // Free (non-task) items produce no finding. A missing or stale projection
+    // contributes nothing — the tracked job refreshes it next tick.
+    findings.push(...attentionItemsToAlertFindings(
+      readAttentionItemsForPush(repo.repoDir, now),
+      { repoDir: repo.repoDir, session: repo.session },
+    ));
 
     try {
       const result = await runObserverAlerts({
