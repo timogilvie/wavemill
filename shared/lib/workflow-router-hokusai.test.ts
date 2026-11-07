@@ -406,7 +406,19 @@ await test('explicit hokusai mode falls back gracefully to stage-aware', async (
 // decided coder, resolves to the native-openrouter agent with no override, and
 // the pool that was offered actually contained it (HOK-3429).
 await test('a native coder recommended by Model 30 launches through native-openrouter with no override', async () => {
-  const { repoDir, cleanup } = makeOpenRouterReadyRepo();
+  // Pin the Hokusai credential in the fixture: without it the router reads the
+  // developer's repo `.env` (or ambient env) locally but finds none in CI, so
+  // routing falls back to heuristic and this test fails only outside a dev box.
+  const { repoDir, cleanup } = makeOpenRouterReadyRepo({
+    router: {
+      ...baseConfig().router,
+      hokusai: {
+        endpoint: 'http://localhost:8080/predict',
+        apiKey: 'test-token',
+        timeout: 1000,
+      },
+    },
+  });
   writeNativeCertificationArtifact(repoDir, 'openrouter', 'qwen-3-coder', 'v3', 'workflow');
   const { requests } = mockHokusaiFetchSequence([
     {
