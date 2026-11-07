@@ -178,6 +178,7 @@ for f in \
   "$REPO_DIR"/tests/stage-failure-retry.test.sh \
   "$REPO_DIR"/tests/coding-dirty-handoff.test.sh \
   "$REPO_DIR"/tests/stage-teardown.test.sh \
+  "$REPO_DIR"/tests/agent-exit-record.test.sh \
   "$REPO_DIR"/tests/ready-exhausted-challenge.test.sh \
   "$REPO_DIR"/tests/review-gate-refused-challenge.test.sh \
   "$REPO_DIR"/tests/monitor-late-completion.test.sh \
@@ -353,6 +354,8 @@ for f in \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3381/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/stage-silent-stall.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/stage-silent-stall/fake-agent/review \
+  "$REPO_DIR"/tests/journeys/agent-killed-mid-review.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/hok-3426/fake-agent/review \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
   "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
   "$REPO_DIR"/tests/lib/state-fixtures.sh \

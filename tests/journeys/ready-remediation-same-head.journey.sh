@@ -116,6 +116,13 @@ journey_assert "the monitor released the settled remediation itself" \
   bash -c '(( $1 >= 1 ))' _ "$(mill_log_count "Ready remediation settled at ${RED_HEAD:0:7} (agent-idle-after-launch)")"
 journey_assert "no remediation or pending-ready exhaustion at any point" \
   test "$(( $(mill_log_count "Ready remediation exhausted") + $(mill_log_count "Pending-ready re-checks exhausted") ))" = "0"
+# HOK-3426: the live reviewer in this journey finishes normally. A pane that no
+# longer shows the agent's descendants must never stamp the stage failed — the
+# settle decision reads the recorded exit fact only.
+journey_assert "the live reviewer was never settled as agent-exited" \
+  test "$(mill_log_count "review agent settled without a result")" = "0"
+journey_assert "the review stage-failure bucket was never charged" \
+  test "$(mill_log_count "$ISSUE → review failed")" = "0"
 journey_assert_landed "$ISSUE"
 journey_assert_session_ownership "$ISSUE" planning coding review ready-remediation
 

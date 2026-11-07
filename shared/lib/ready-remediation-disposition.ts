@@ -213,7 +213,7 @@ export interface GatherReadyTaskProgressOptions {
   worktree: string;
   /** The ready state dir (`<worktree>/features/<slug>`). */
   stateDir: string;
-  task?: Pick<TaskRecord, 'updated' | 'branch' | 'slug' | 'worktree' | 'status' | 'phase' | 'lifecycle'>;
+  task?: Pick<TaskRecord, 'updated' | 'branch' | 'slug' | 'worktree' | 'status' | 'phase' | 'lifecycle' | 'windowId'>;
   readyResult: Pick<StageResult, 'startedAt' | 'finishedAt' | 'artifacts'> | null;
   /** Pane target for the blocking-prompt matcher and background-work probe. */
   paneText?: string;

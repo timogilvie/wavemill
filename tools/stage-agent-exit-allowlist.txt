@@ -1,0 +1,8 @@
+# HOK-3426 stage-agent-exit allowlist. Ratcheting: only shrinks. Every entry
+# names a file that legitimately reads `agentProcessLive === false` and is not
+# a stage settle decision, with a same-line `# reason`. The invariant source
+# (shared/lib/stage-agent-exit-guard.ts) and the primitive's `terminalIdle`
+# diagnostic (shared/lib/task-progress.ts) are excluded in the guard spec, so
+# this file ships empty.
+#
+# Format: <repo-relative path> [<max findings>]  # <reason>

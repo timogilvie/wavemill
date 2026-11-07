@@ -42,6 +42,7 @@ import {
   type PaneProcess,
 } from './task-progress.ts';
 import { appendOwnershipRow } from './session-ownership.ts';
+import { setTerminalExecForTest } from './terminal-backend.ts';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -62,6 +63,7 @@ function emptyInputs(overrides: Partial<TaskProgressInputs> = {}): TaskProgressI
     transitionInputs: [],
     terminal: { prState: null, prNumber: null, lifecycleOutcome: null, at: null },
     agentProcessLive: null,
+    agentExited: null,
     backgroundWork: null,
     blockingPrompt: null,
     ...overrides,
@@ -640,6 +642,222 @@ test('gather: a controller-termination entry provides terminalHistoryIdleAt, ign
     });
     assert.equal(inputs.terminalHistoryIdleAt, new Date(teardownTs * 1000).toISOString());
   } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// protects: the HOK-3426 exit fact — a controller-termination record for THIS
+// stage, at/after the launch, becomes `agentExited`; one for another phase
+// (the coding pane's quarantine) never settles review.
+test('gather: controller-termination is agentExited only for its own phase and attempt', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'task-progress-exit-'));
+  try {
+    const featureDir = join(tmp, 'features', 'testslug');
+    mkdirSync(featureDir, { recursive: true });
+    const codingTs = Math.floor(Date.parse('2026-11-05T12:01:00Z') / 1000);
+    const reviewTs = Math.floor(Date.parse('2026-11-05T12:10:00Z') / 1000);
+    const lines = [
+      {
+        archivedAt: '2026-11-05T12:01:00Z', reason: 'completed-coding-pane-quarantine', session: 'sess', issue: 'TEST-3426',
+        payload: { state: 'idle', event: 'controller_termination', writer: 'controller', kind: 'controller-termination', reason: 'completed-coding-pane-quarantine', phase: 'coding', timestamp: codingTs },
+      },
+      {
+        archivedAt: '2026-11-05T12:10:00Z', reason: 'review-reroute', session: 'sess', issue: 'TEST-3426',
+        payload: { state: 'idle', event: 'controller_termination', writer: 'controller', kind: 'controller-termination', reason: 'review-reroute', phase: 'review', timestamp: reviewTs },
+      },
+    ];
+    writeFileSync(join(featureDir, '.terminal-history.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+
+    // Review, launched before the termination: the review record is the fact.
+    const review = gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir,
+      agentExitPhase: 'review', agentExitSince: '2026-11-05T12:03:00Z',
+    });
+    assert.deepEqual(review.agentExited, {
+      at: new Date(reviewTs * 1000).toISOString(), source: 'controller-termination',
+    });
+
+    // The coding quarantine alone is not evidence about review: a gather that
+    // sees ONLY the coding record must not settle review.
+    const codingOnlyDir = join(tmp, 'features', 'coding-only');
+    mkdirSync(codingOnlyDir, { recursive: true });
+    writeFileSync(join(codingOnlyDir, '.terminal-history.jsonl'), JSON.stringify(lines[0]) + '\n');
+    const reviewWithCodingOnly = gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir: codingOnlyDir,
+      agentExitPhase: 'review', agentExitSince: '2026-11-05T12:03:00Z',
+    });
+    assert.equal(reviewWithCodingOnly.agentExited, null,
+      'the coding pane quarantine must never be the review stage exit fact');
+
+    // A terminated attempt followed by a relaunch: the older record is stale.
+    const relaunched = gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir,
+      agentExitPhase: 'review', agentExitSince: '2026-11-05T12:11:00Z',
+    });
+    assert.equal(relaunched.agentExited, null);
+
+    // A coding-stage gather sees only its own record.
+    const coding = gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir,
+      agentExitPhase: 'coding', agentExitSince: '2026-11-05T12:00:00Z',
+    });
+    assert.deepEqual(coding.agentExited, {
+      at: new Date(codingTs * 1000).toISOString(), source: 'controller-termination',
+    });
+
+    // No launch recorded → no agent was launched → no termination is an exit.
+    const notLaunched = gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir,
+      agentExitPhase: 'review', agentExitSince: null,
+    });
+    assert.equal(notLaunched.agentExited, null);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// protects: the launcher's own `agent-exit` record (the agent process's parent
+// observed its exit — the only surface that sees a hard-killed agent) becomes
+// the exit fact, phase- and launch-scoped, and a controller termination for
+// the same stage takes precedence over it.
+test('gather: a launcher agent-exit record is agentExited, phase- and attempt-scoped', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'task-progress-launcher-exit-'));
+  try {
+    const featureDir = join(tmp, 'features', 'testslug');
+    mkdirSync(featureDir, { recursive: true });
+    const ts = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+    const launcherExit = (phase: string, iso: string, exitCode: number) => ({
+      archivedAt: iso,
+      reason: 'agent-exit',
+      payload: {
+        state: exitCode === 0 ? 'idle' : 'error', event: 'agent_exit', writer: 'launcher',
+        kind: 'agent-exit', phase, timestamp: ts(iso), exitCode, recordedAt: iso,
+      },
+    });
+    const codingTs = ts('2026-11-05T12:02:00Z');
+    const reviewTs = ts('2026-11-05T12:05:00Z');
+
+    // The coding pane's launcher exit never settles a review gather.
+    const codingOnlyDir = join(tmp, 'features', 'coding-only');
+    mkdirSync(codingOnlyDir, { recursive: true });
+    writeFileSync(
+      join(codingOnlyDir, '.terminal-history.jsonl'),
+      JSON.stringify(launcherExit('coding', '2026-11-05T12:02:00Z', 143)) + '\n',
+    );
+    assert.equal(gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir: codingOnlyDir,
+      agentExitPhase: 'review', agentExitSince: '2026-11-05T12:03:00Z',
+    }).agentExited, null, 'another phase\'s agent-exit is never this stage\'s exit');
+
+    // The review attempt launched at 12:03 exited at 12:05.
+    writeFileSync(
+      join(featureDir, '.terminal-history.jsonl'),
+      [
+        JSON.stringify(launcherExit('coding', '2026-11-05T12:02:00Z', 143)),
+        JSON.stringify(launcherExit('review', '2026-11-05T12:05:00Z', 143)),
+      ].join('\n') + '\n',
+    );
+    assert.deepEqual(gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir,
+      agentExitPhase: 'review', agentExitSince: '2026-11-05T12:03:00Z',
+    }).agentExited, { at: new Date(reviewTs * 1000).toISOString(), source: 'launcher' });
+
+    // A relaunch after that exit has no exit fact of its own yet.
+    assert.equal(gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir,
+      agentExitPhase: 'review', agentExitSince: '2026-11-05T12:06:00Z',
+    }).agentExited, null);
+
+    // Exit records carry second precision: an agent that exits in the launch's
+    // own second is still this attempt's exit, while a later second is not.
+    assert.deepEqual(gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir,
+      agentExitPhase: 'review', agentExitSince: '2026-11-05T12:05:00.800Z',
+    }).agentExited, { at: new Date(reviewTs * 1000).toISOString(), source: 'launcher' });
+    assert.equal(gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir,
+      agentExitPhase: 'review', agentExitSince: '2026-11-05T12:05:01.500Z',
+    }).agentExited, null);
+
+    // The coding stage gathers its own launcher exit.
+    assert.deepEqual(gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir,
+      agentExitPhase: 'coding', agentExitSince: '2026-11-05T12:00:00Z',
+    }).agentExited, { at: new Date(codingTs * 1000).toISOString(), source: 'launcher' });
+
+    // A controller termination for the same stage is the preferred source.
+    const termination = {
+      archivedAt: '2026-11-05T12:07:00Z', reason: 'review-reroute',
+      payload: {
+        state: 'idle', event: 'controller_termination', writer: 'controller',
+        kind: 'controller-termination', reason: 'review-reroute', phase: 'review',
+        timestamp: ts('2026-11-05T12:07:00Z'),
+      },
+    };
+    writeFileSync(
+      join(featureDir, '.terminal-history.jsonl'),
+      [
+        JSON.stringify(launcherExit('review', '2026-11-05T12:05:00Z', 143)),
+        JSON.stringify(termination),
+      ].join('\n') + '\n',
+    );
+    const preferred = gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir,
+      agentExitPhase: 'review', agentExitSince: '2026-11-05T12:03:00Z',
+    });
+    assert.equal(preferred.agentExited?.source, 'controller-termination');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// protects: the launched slot itself reports dead (term_is_dead on the
+// recorded window handle) becoming the exit fact — never a pane descendant
+// count.
+test('gather: term_is_dead on the launch-recorded windowId is agentExited', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'task-progress-exit-'));
+  const calls: string[][] = [];
+  try {
+    const featureDir = join(tmp, 'features', 'testslug');
+    mkdirSync(featureDir, { recursive: true });
+    setTerminalExecForTest({
+      sync(args) {
+        calls.push([...args]);
+        if (args[0] === 'list-panes') return { ok: true, stdout: '1\n' };
+        return { ok: false, stdout: '' };
+      },
+      async async(args) {
+        return this.sync(args);
+      },
+    });
+    const dead = gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir,
+      task: { windowId: '@7' } as never,
+    });
+    assert.equal(dead.agentExited?.source, 'terminal-backend');
+    assert.ok(calls.some((args) => args.includes('@7')), 'probed the launch-recorded handle');
+
+    // Without a recorded handle the slot cannot be read; no exit fact.
+    const noHandle = gatherTaskProgressInputs({ issue: 'TEST-3426', session: 'sess', featureDir });
+    assert.equal(noHandle.agentExited, null);
+
+    // A running slot reports dead=0 → no exit fact.
+    setTerminalExecForTest({
+      sync(args) {
+        if (args[0] === 'list-panes') return { ok: true, stdout: '0\n' };
+        return { ok: false, stdout: '' };
+      },
+      async async(args) {
+        return this.sync(args);
+      },
+    });
+    const live = gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir,
+      task: { windowId: '@8' } as never,
+    });
+    assert.equal(live.agentExited, null);
+  } finally {
+    setTerminalExecForTest(null);
     rmSync(tmp, { recursive: true, force: true });
   }
 });

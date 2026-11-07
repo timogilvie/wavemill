@@ -2662,6 +2662,45 @@ agent_codex_supports_no_daemon() {
 # AGENT LAUNCH — INTERACTIVE (PLANNING) MODE
 # ============================================================================
 
+# agent_launch_exit_trap_inject <launcher> <issue> <feature_dir> <phase>
+#
+# HOK-3426: append a generated EXIT trap to a generated launcher so the agent's
+# own exit status is RECORDED (`.terminal-history.jsonl`, kind `agent-exit`).
+# The launcher is the agent process's parent and therefore the only surface
+# that observes a hard-killed agent's exit; the pane shell outlives the agent,
+# and a name-resolved pane can be a quarantined window, so neither is an exit
+# fact. `TaskProgress.agentExited` and the stage disposition consume the record.
+agent_launch_exit_trap_inject() {
+  local launcher="$1" issue="$2" feature_dir="$3" phase="$4"
+  local hooks_dir helper tmp first
+  [[ -f "$launcher" && -n "$feature_dir" ]] || return 0
+  hooks_dir="$(agent_hooks_dir)"
+  [[ -f "$hooks_dir/wavemill-hook-protocol.sh" ]] || return 0
+
+  helper="${launcher%.sh}-exit-record.sh"
+  {
+    printf '#!/bin/bash\n'
+    printf '# HOK-3426 generated launcher exit record. Do not edit.\n'
+    printf 'wm_launch_rc="${1:-0}"\n'
+    printf 'source %q >/dev/null 2>&1 || exit 0\n' "$hooks_dir/wavemill-hook-protocol.sh"
+    printf 'declare -F wavemill_hook_write_agent_exit >/dev/null 2>&1 || exit 0\n'
+    printf 'wavemill_hook_write_agent_exit %q %q %q "$wm_launch_rc"\n' \
+      "$issue" "$feature_dir" "$phase"
+  } > "$helper" 2>/dev/null || return 0
+  chmod +x "$helper" 2>/dev/null || return 0
+
+  tmp="${launcher}.exit-trap.$$"
+  {
+    IFS= read -r first || true
+    printf '%s\n' "$first"
+    printf '_WM_LAUNCH_EXIT_RECORD=%q\n' "$helper"
+    printf "trap '\$_WM_LAUNCH_EXIT_RECORD \$?' EXIT\n"
+    cat
+  } < "$launcher" > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
+  mv "$tmp" "$launcher" && chmod +x "$launcher" || return 0
+  return 0
+}
+
 # Launch an agent interactively in a tmux window for user-guided planning.
 # Creates a small launcher script that execs the agent with the prompt.
 #
@@ -3005,6 +3044,13 @@ LAUNCHEOF
   esac
 
   chmod +x "$launcher"
+  # HOK-3426: the launcher is the agent process's parent, so it is the only
+  # surface that observes the agent's own exit — including a hard-killed agent
+  # whose harness never writes an idle hook. Record it as an EXIT FACT; the
+  # stage disposition settles on that record, never on a pane descendant count.
+  if ! agent_is_native_cmd "$agent_cmd"; then
+    agent_launch_exit_trap_inject "$launcher" "$issue" "$feature_dir" "${launch_phase:-$window}"
+  fi
   printf -v launcher_cmd '%q' "$launcher"
 
   if [[ "$prepare_rc" -ne 0 ]]; then

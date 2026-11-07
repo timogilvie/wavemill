@@ -63,6 +63,7 @@ TESTS=(
   stage-failure-retry.test.sh
   coding-dirty-handoff.test.sh
   stage-teardown.test.sh
+  agent-exit-record.test.sh
   ready-exhausted-challenge.test.sh
   review-gate-refused-challenge.test.sh
   monitor-late-completion.test.sh
