@@ -5,9 +5,14 @@
  */
 
 import { getHokusaiRouterConfig } from './config.ts';
+import {
+  getDescriptorStagePool,
+  type DescriptorStagePool,
+} from './descriptor-stage-pool.ts';
 import { resolveEnvValue } from './env-file.ts';
 import { errorMessage } from './error-utils.ts';
 import { fromHokusaiModel30Response } from './hokusai-adapter.ts';
+import type { RouterCertificationRejection, RouterRole } from './native-agent/certification/router-filter.ts';
 import { upgradeRouteModelSuccessors } from './route-model-successors.ts';
 import {
   toHokusaiModel30Request,
@@ -123,6 +128,93 @@ function warnHokusaiFailure(classification: HokusaiFailureClassification, detail
   console.warn(`[hokusai-router] Hokusai routing failed (${classification}): ${detail}`);
 }
 
+function dedupe(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+/**
+ * Resolve the candidate pool sent to Model 30 for one stage.
+ *
+ * The pool is always the ladder plus certified, launch-ready native models:
+ * - with an explicit (policy- or caller-supplied) pool we union only the
+ *   native models in, so quota filtering of ladder models is preserved;
+ * - with a flat `modelsAvailable` we keep the historical "no per-stage pool"
+ *   behaviour;
+ * - otherwise the enriched descriptor-stage pool is used whole.
+ */
+function resolveStageModels(
+  stage: RouterRole,
+  explicitPool: string[] | undefined,
+  stagePools: Record<RouterRole, DescriptorStagePool> | undefined,
+  repoDir: string | undefined,
+  modelsAvailable: string[] | undefined,
+): string[] | undefined {
+  const enriched = stagePools?.[stage];
+  if (explicitPool) {
+    return dedupe([...explicitPool, ...(enriched?.nativeModels ?? [])]);
+  }
+  if (modelsAvailable) {
+    return undefined;
+  }
+  return enriched?.models ?? getConfiguredModelsForDescriptorStage(repoDir, stage);
+}
+
+function rejectionReasoningLine(rejection: RouterCertificationRejection): string {
+  const details = [
+    `launchPhase=${rejection.requestedLaunchPhase}`,
+    `certPhase=${rejection.requestedPhase}`,
+    `reason=${rejection.reason}`,
+    `provider=${rejection.nativeProvider ?? 'unknown'}`,
+  ];
+  if (rejection.eligibleRoles) {
+    details.push(`eligibleRoles=${rejection.eligibleRoles.join(',') || 'none'}`);
+  }
+  if (rejection.allowedNativeAgentPhases) {
+    details.push(`allowedNativeAgentPhases=${rejection.allowedNativeAgentPhases.join(',') || 'none'}`);
+  }
+  return `Native model ${rejection.modelId} rejected for ${rejection.role} role (${details.join(', ')}).`;
+}
+
+/**
+ * Record why native models are missing from the pools on the returned
+ * decision. `route-task.ts` serializes the decision verbatim into the route
+ * artifact, so these entries are how an operator sees a stale canary or a
+ * disabled provider in `.post-expansion-route.json` / `.initial-route.json`.
+ */
+function attachNativePoolDiagnostics(
+  decision: WorkflowRouteDecision,
+  stagePools: Record<RouterRole, DescriptorStagePool> | undefined,
+): void {
+  if (!stagePools) {
+    return;
+  }
+
+  const rejections = [
+    ...stagePools.planner.nativeRejections,
+    ...stagePools.coder.nativeRejections,
+    ...stagePools.reviewer.nativeRejections,
+  ];
+  const providerWarnings = dedupe([
+    ...stagePools.planner.providerWarnings,
+    ...stagePools.coder.providerWarnings,
+    ...stagePools.reviewer.providerWarnings,
+  ]);
+
+  if (rejections.length === 0 && providerWarnings.length === 0) {
+    return;
+  }
+
+  const reasoning = [
+    ...decision.reasoning,
+    ...rejections.map(rejectionReasoningLine),
+    ...providerWarnings,
+  ];
+  decision.reasoning = reasoning;
+  if (rejections.length > 0) {
+    decision.nativeCertificationRejections = rejections;
+  }
+}
+
 export async function routeViaHokusai(
   prompt: string,
   options: HokusaiRouterOptions = {},
@@ -143,6 +235,16 @@ export async function routeViaHokusai(
     modelsAvailable: descriptorModelsAvailable,
     maxCostUsd: options.maxCostUsd,
   });
+  // Native models are only offered when we can read the repo's config and
+  // certification store. One computation per stage feeds both the request
+  // pools and the diagnostics attached to the decision below.
+  const stagePools: Record<RouterRole, DescriptorStagePool> | undefined = repoDir
+    ? {
+        planner: getDescriptorStagePool(repoDir, 'planner'),
+        coder: getDescriptorStagePool(repoDir, 'coder'),
+        reviewer: getDescriptorStagePool(repoDir, 'reviewer'),
+      }
+    : undefined;
   const requestBody = toHokusaiModel30Request(
     descriptor,
     descriptor.repoContext,
@@ -150,15 +252,9 @@ export async function routeViaHokusai(
       description: prompt,
       externalTaskId: 'workflow-route',
       modelsAvailable: options.modelsAvailable,
-      plannerModels: options.plannerModels ?? (options.modelsAvailable
-        ? undefined
-        : getConfiguredModelsForDescriptorStage(repoDir, 'planner')),
-      coderModels: options.coderModels ?? (options.modelsAvailable
-        ? undefined
-        : getConfiguredModelsForDescriptorStage(repoDir, 'coder')),
-      reviewerModels: options.reviewerModels ?? (options.modelsAvailable
-        ? undefined
-        : getConfiguredModelsForDescriptorStage(repoDir, 'reviewer')),
+      plannerModels: resolveStageModels('planner', options.plannerModels, stagePools, repoDir, options.modelsAvailable),
+      coderModels: resolveStageModels('coder', options.coderModels, stagePools, repoDir, options.modelsAvailable),
+      reviewerModels: resolveStageModels('reviewer', options.reviewerModels, stagePools, repoDir, options.modelsAvailable),
       maxCostUsd: options.maxCostUsd,
       ...(options.objective ? { objective: options.objective } : {}),
       workflowStages: options.workflowStages ?? ['plan', 'code', 'review'],
@@ -203,6 +299,7 @@ export async function routeViaHokusai(
       fromHokusaiModel30Response(payload, { repoDir }),
       repoDir,
     );
+    attachNativePoolDiagnostics(decision, stagePools);
     if (typeof options.maxCostUsd === 'number') {
       decision.constraints = { maxCostUsd: options.maxCostUsd, budgetSource: options.budgetSource ?? 'request' };
     }
