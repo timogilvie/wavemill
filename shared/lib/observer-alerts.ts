@@ -20,6 +20,7 @@ import type { ObserverAlertsConfig, ObserverAlertMinSeverity } from './config.ts
 import {
   ATTENTION_PROJECTION_FILE,
   ATTENTION_PROJECTION_SCHEMA_VERSION,
+  type AttentionFreeKind,
   type AttentionItem,
   type AttentionKind,
   type AttentionProjection,
@@ -130,27 +131,35 @@ export function selectAlertsToSend(
 //
 // The Observer's phone/desktop push is the *second reader* of the HOK-3423
 // projection, never a second decider. `attentionItemsToAlertFindings` maps the
-// task-scoped items to alert findings keyed by the item's stable id, so the
-// existing journal (persistMinutes / repeatMinutes) keeps deduplicating.
+// task-scoped items (those carrying a `taskId`) to alert findings keyed by the
+// item's stable id, so the existing journal (persistMinutes / repeatMinutes)
+// keeps deduplicating.
 //
-// Every task kind maps to `high`: the deleted exhaustion detector and the
+// `PushedAttentionKind` is exactly the kinds whose items carry a `taskId`.
+// `incident` items are grouped by fingerprint and carry `affectedTaskIds`
+// (never a `taskId`) — they still page through the retained HOK-2595
+// correlation findings, so they must not double-push here. Free (non-task)
+// items are inbox-only. Both are excluded from the map so a future change that
+// gave one a `taskId` would drop it at the filter rather than page twice.
+//
+// Every pushed kind maps to `high`: the deleted exhaustion detector and the
 // retired interactive-prompt incident both paged at `high`, so loudness is
-// unchanged while the projection becomes the single source. Free (non-task)
-// items are intentionally skipped — they belong to the terminal inbox only.
+// unchanged while the projection becomes the single source.
 
-export const ATTENTION_KIND_TO_SEVERITY: Record<AttentionKind, AlertSeverity> = {
+export type PushedAttentionKind = Exclude<AttentionKind, AttentionFreeKind | 'incident'>;
+
+export const ATTENTION_KIND_TO_SEVERITY: Record<PushedAttentionKind, AlertSeverity> = {
   'approve-plan': 'high',
   'answer-agent': 'high',
   'resolve-blocked-completion': 'high',
   'operator-decision': 'high',
   exhausted: 'high',
   'policy-terminal': 'high',
-  incident: 'high',
-  'queue-health': 'high',
-  'backstage-health': 'high',
-  openrouter: 'high',
-  'malformed-challenge': 'high',
 };
+
+function isPushedAttentionKind(kind: AttentionKind): kind is PushedAttentionKind {
+  return kind in ATTENTION_KIND_TO_SEVERITY;
+}
 
 function attentionRecommendation(item: AttentionItem): string {
   if (item.commands.length > 0) return item.commands.map((command) => command.label).join('; ');
@@ -164,8 +173,9 @@ export interface AttentionAlertContext {
 }
 
 /**
- * Task-scoped attention items → alert findings. A free item (no `taskId`)
- * produces no finding: the push is task-scoped by definition.
+ * Task-scoped attention items → alert findings. A free item (no `taskId`) and
+ * a fingerprint-grouped `incident` item produce no finding: the push is
+ * task-scoped by definition, and incidents page through HOK-2595 correlation.
  */
 export function attentionItemsToAlertFindings(
   items: readonly AttentionItem[],
@@ -173,6 +183,7 @@ export function attentionItemsToAlertFindings(
 ): AlertFinding[] {
   return items
     .filter((item) => typeof item.taskId === 'string' && item.taskId.length > 0)
+    .filter((item) => isPushedAttentionKind(item.kind))
     .map((item) => ({
       id: item.id,
       severity: ATTENTION_KIND_TO_SEVERITY[item.kind],
