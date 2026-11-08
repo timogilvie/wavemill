@@ -78,6 +78,7 @@ CUSTOM_TS_TESTS=(
   shared/lib/native-agent/certification/router-filter.test.ts
   shared/lib/native-agent/patch-runtime-crash.test.ts
   shared/lib/incident-replay-harness.test.ts
+  tools/check-defect-escalation.test.ts
 )
 
 CUSTOM_SH_TESTS=(

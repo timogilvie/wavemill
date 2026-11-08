@@ -1,0 +1,7 @@
+# Pending delete in HOK-3325 — these sites are removed in Phase C.
+# Do not merge with these entries.
+tools/observer.ts 1 # pending delete: raw issueCreate mutation in fileLinearIssues
+shared/lib/incident-to-linear-synchronizer.ts 4 # pending delete: generateIssueBody renderer and three callers
+
+# Legitimate exceptions (not defect escalation)
+shared/lib/initiative-decomposer.ts 1 # legitimate initiative planning issue creation, not defect escalation
