@@ -297,6 +297,7 @@ TESTS=(
   shared/lib/mill-config-preflight.test.ts
   shared/lib/effective-task-config.test.ts
   shared/lib/routing-policy.test.ts
+  shared/lib/descriptor-stage-pool.test.ts
   shared/lib/hokusai-consent.test.ts
   shared/lib/hokusai-redaction.test.ts
   shared/lib/hokusai-schema.test.ts

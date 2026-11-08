@@ -5,9 +5,11 @@
 
 import assert from 'node:assert/strict';
 import { deriveRoutingObjectiveForIssue } from './routing-objective-split.ts';
+import { resolveModelAgent } from './model-agent-resolution.ts';
 import { routeWorkflowAuto, routeWorkflowHokusai } from './workflow-router.ts';
 import {
   baseConfig,
+  makeOpenRouterReadyRepo,
   makeRepo,
   mockHokusaiFetch,
   mockHokusaiFetchSequence,
@@ -15,6 +17,7 @@ import {
   printBanner,
   reportResults,
   test,
+  writeNativeCertificationArtifact,
 } from './workflow-router-test-helpers.ts';
 
 printBanner('workflow-router Hokusai Tests');
@@ -393,6 +396,53 @@ await test('explicit hokusai mode falls back gracefully to stage-aware', async (
   try {
     const decision = await routeWorkflowHokusai('Build a backend feature with tests and review.', { repoDir });
     assert.notEqual(decision.routingMode, 'hokusai');
+  } finally {
+    globalThis.fetch = originalFetch;
+    cleanup();
+  }
+});
+
+// protects: acceptance #3 — a native coder recommended by Model 30 stays the
+// decided coder, resolves to the native-openrouter agent with no override, and
+// the pool that was offered actually contained it (HOK-3429).
+await test('a native coder recommended by Model 30 launches through native-openrouter with no override', async () => {
+  // Pin the Hokusai credential in the fixture: without it the router reads the
+  // developer's repo `.env` (or ambient env) locally but finds none in CI, so
+  // routing falls back to heuristic and this test fails only outside a dev box.
+  const { repoDir, cleanup } = makeOpenRouterReadyRepo({
+    router: {
+      ...baseConfig().router,
+      hokusai: {
+        endpoint: 'http://localhost:8080/predict',
+        apiKey: 'test-token',
+        timeout: 1000,
+      },
+    },
+  });
+  writeNativeCertificationArtifact(repoDir, 'openrouter', 'qwen-3-coder', 'v3', 'workflow');
+  const { requests } = mockHokusaiFetchSequence([
+    {
+      strategy: {
+        coder_model: 'qwen-3-coder',
+        estimated_success_under_budget: 0.85,
+        confidence: 0.7,
+      },
+    },
+  ]);
+
+  try {
+    const decision = await routeWorkflowHokusai('Add a JSON export command with tests.', { repoDir, maxCostUsd: 25 });
+    assert.equal(decision.routingMode, 'hokusai');
+    assert.equal(decision.coder, 'qwen-3-coder');
+    assert.ok(
+      requests[0].inputs.routing.available_coder_models.includes('qwen-3-coder'),
+      'the certified native coder must be offered to Model 30',
+    );
+    assert.deepEqual(decision.stageRoutes?.coder.overrides, []);
+
+    const resolution = resolveModelAgent({ model: decision.coder, phase: 'coding', repoDir });
+    assert.equal(resolution.ok, true);
+    assert.equal(resolution.ok && resolution.agent, 'native-openrouter');
   } finally {
     globalThis.fetch = originalFetch;
     cleanup();
