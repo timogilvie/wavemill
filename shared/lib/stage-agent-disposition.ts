@@ -100,7 +100,7 @@ export type StageAgentProgress = Pick<
   | 'agentRecord'
   | 'agentState'
   | 'agentIdle'
-  | 'agentProcessLive'
+  | 'agentExited'
   | 'agentBackgroundLive'
   | 'blockingPrompt'
   | 'stalled'
@@ -217,7 +217,10 @@ function waitingFromAgentState(state: HookState | null): StageAgentWaitingOn | n
  *    - settled state → `settled` (`agent-<state>-after-launch`, high).
  * 10. HOK-3386: owned-session idle (agent's own transcript stop event) at/
  *    after launch → `settled` (`agent-idle-after-launch`, high).
- * 11. Process exited → `settled` (`agent-exited`, high).
+ * 11. HOK-3426: a recorded exit fact (`agentExited` — the launcher's
+ *    `agent-exit` record, the launched slot's `term_is_dead`, or a
+ *    controller-termination record) → `settled` (`agent-exited`, high). The
+ *    pane descendant count never settles a stage.
  * 12. Stalled → `settled` (`agent-stalled`, high).
  * 13. Else → `in-flight` (`awaiting-agent-evidence`, unknown).
  */
@@ -313,7 +316,11 @@ export function decideStageAgentDisposition(input: StageAgentDispositionInput): 
     return result('settled', 'agent-idle-after-launch', { evidenceConfidence: 'high' });
   }
 
-  if (input.progress.agentProcessLive === false) {
+  // HOK-3426: settle on the ONE exit fact only. The pane descendant count
+  // (`agentProcessLive`) is a name-resolved-pane proxy — it can name a
+  // quarantined/recreated window or the right pane before its agent forked —
+  // and must never settle a stage; with no exit fact we fall through.
+  if (input.progress.agentExited) {
     return result('settled', 'agent-exited', { evidenceConfidence: 'high' });
   }
 
@@ -431,7 +438,7 @@ export interface GatherStageTaskProgressOptions {
   worktree: string;
   stateDir: string;
   stage: StageAgentStage;
-  task?: Pick<TaskRecord, 'updated' | 'branch' | 'slug' | 'worktree' | 'status' | 'phase' | 'lifecycle'>;
+  task?: Pick<TaskRecord, 'updated' | 'branch' | 'slug' | 'worktree' | 'status' | 'phase' | 'lifecycle' | 'windowId'>;
   stageResult: Pick<StageResult, 'startedAt' | 'finishedAt'> | null;
   paneText?: string;
   panePid?: number | null;
@@ -512,6 +519,12 @@ export function gatherStageTaskProgress(opts: GatherStageTaskProgressOptions): T
     launchAtOverride = undefined; // fall through to the primitive's stage-result read
   }
 
+  // HOK-3426: scope the controller-termination exit fact to THIS stage and
+  // THIS attempt. A record naming another phase (the coding pane's quarantine)
+  // or older than the launch (a previous attempt) is never this stage's exit.
+  const exitPhase = isReadySubStage ? null : opts.stage;
+  const exitSince = stageLaunch?.launchedAt ?? null;
+
   return getTaskProgress({
     issue: opts.issue,
     session: opts.session,
@@ -523,6 +536,8 @@ export function gatherStageTaskProgress(opts: GatherStageTaskProgressOptions): T
     ownershipStateDir: opts.stateDir,
     extraTransitionInputs: transitionInputs,
     ...(launchAtOverride !== undefined ? { launchAtOverride } : {}),
+    agentExitPhase: exitPhase,
+    agentExitSince: exitSince,
     paneText: opts.paneText,
     panePid: opts.panePid,
     now: opts.now,

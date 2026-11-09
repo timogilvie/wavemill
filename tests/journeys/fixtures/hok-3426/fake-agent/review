@@ -1,0 +1,17 @@
+# shellcheck shell=bash
+# Fake reviewer for the HOK-3426 replay (sourced by tests/fakes/bin/claude).
+#
+# The 2026-11-05 incident stamped a LIVE reviewer `failed` (agent-exited) from
+# a pane descendant count and burned the stage-failure-review bucket. This
+# fixture is the opposite, honest case: the reviewer really is killed
+# mid-stage (SIGTERM, exit 143) before it writes the PR or a verdict. The pane
+# shell survives the kill, so no pane read can see it — only the launcher's
+# recorded `agent-exit` fact can settle the stage, which must happen once and
+# relaunch through the shared bucket with zero operator touches.
+if [[ -f "$FEATURE_DIR/review-kill-injected" ]]; then
+  default_review
+  return
+fi
+touch "$FEATURE_DIR/review-kill-injected"
+printf 'reviewer stopping before the PR (simulated SIGTERM)\n'
+exit 143

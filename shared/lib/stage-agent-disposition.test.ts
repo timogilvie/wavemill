@@ -19,6 +19,7 @@ import {
   type StageAgentProgress,
 } from './stage-agent-disposition.ts';
 import { appendOwnershipRow } from './session-ownership.ts';
+import { setTerminalExecForTest } from './terminal-backend.ts';
 import type { HookState } from './task-progress.ts';
 
 const LAUNCH_ISO = '2026-11-02T09:00:00.000Z';
@@ -71,7 +72,7 @@ function baseInput(overrides: Partial<StageAgentDispositionInput> = {}): StageAg
       agentRecord: null,
       agentState: null,
       agentIdle: false,
-      agentProcessLive: null,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: false,
@@ -136,7 +137,7 @@ test('decision: blockingPrompt → settled blocking-prompt:<id>', () => {
       agentRecord: null,
       agentState: null,
       agentIdle: false,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: { id: 'codex_daemon_version_mismatch', agent: 'codex', detail: 'cancel the menu' },
       stalled: false,
@@ -155,7 +156,7 @@ test('decision: agentBackgroundLive → in-flight background-work', () => {
       agentRecord: null,
       agentState: null,
       agentIdle: true,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: true,
       blockingPrompt: null,
       stalled: false,
@@ -175,7 +176,7 @@ test('decision: agent working at launch+30s → in-flight agent-working', () => 
       agentRecord: hookRecord('working', 30, now),
       agentState: 'working',
       agentIdle: false,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: false,
@@ -195,7 +196,7 @@ test('decision: agent idle after launch → settled agent-idle-after-launch', ()
       agentRecord: { state: 'idle', event: 'Stop', agent: 'claude', timestamp: Math.floor((now - 60 * 1000) / 1000) },
       agentState: null,
       agentIdle: true,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: false,
@@ -214,7 +215,7 @@ test('decision: owned-session idle after launch → settled agent-idle-after-lau
       agentRecord: null,
       agentState: null,
       agentIdle: true,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: false,
@@ -233,7 +234,7 @@ test('decision: owned-session idle BEFORE launch is ignored', () => {
       agentRecord: null,
       agentState: null,
       agentIdle: false,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: false,
@@ -251,7 +252,7 @@ test('decision: stalled → settled agent-stalled', () => {
       agentRecord: null,
       agentState: null,
       agentIdle: false,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: true,
@@ -263,14 +264,14 @@ test('decision: stalled → settled agent-stalled', () => {
   assert.equal(d.evidenceConfidence, 'high');
 });
 
-// protects: a dead agent process being held in-flight by the default fallthrough.
-test('decision: process exited → settled agent-exited', () => {
+// protects: a recorded exit fact being held in-flight by the default fallthrough.
+test('decision: agentExited (terminal-backend) → settled agent-exited', () => {
   const d = decideStageAgentDisposition(baseInput({
     progress: {
       agentRecord: null,
       agentState: null,
       agentIdle: false,
-      agentProcessLive: false,
+      agentExited: { at: '2026-11-02T09:30:00.000Z', source: 'terminal-backend' },
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: false,
@@ -279,6 +280,54 @@ test('decision: process exited → settled agent-exited', () => {
   }));
   assert.equal(d.kind, 'settled');
   assert.equal(d.reason, 'agent-exited');
+  assert.equal(d.evidenceConfidence, 'high');
+});
+
+// protects: HOK-3359 controller-termination exit facts settling a stage.
+test('decision: agentExited (controller-termination) → settled agent-exited', () => {
+  const d = decideStageAgentDisposition(baseInput({
+    progress: {
+      agentRecord: null,
+      agentState: null,
+      agentIdle: false,
+      agentExited: { at: '2026-11-02T09:30:00.000Z', source: 'controller-termination' },
+      agentBackgroundLive: null,
+      blockingPrompt: null,
+      stalled: false,
+      ownedSessionIdleAt: null,
+    },
+  }));
+  assert.equal(d.kind, 'settled');
+  assert.equal(d.reason, 'agent-exited');
+  assert.equal(d.evidenceConfidence, 'high');
+});
+
+// protects: the 2026-11-05 incident — a live reviewer whose pane descendant
+// count read false must never be settled as exited and relaunched through
+// stage-failure-review. No exit fact means no high-confidence settle.
+test('HOK-3426: pane descendant count false alone never settles agent-exited', () => {
+  const progress: StageAgentProgress = {
+    agentRecord: null,
+    agentState: null,
+    agentIdle: false,
+    agentExited: null,
+    agentBackgroundLive: null,
+    blockingPrompt: null,
+    stalled: false,
+    ownedSessionIdleAt: null,
+  };
+  // A fresh, still-live stage holds (no evidence yet) rather than settling.
+  const held = decideStageAgentDisposition(baseInput({ progress }));
+  assert.equal(held.kind, 'in-flight');
+  assert.equal(held.reason, 'awaiting-agent-evidence');
+
+  // Once the stall clock fires, the stage settles as STALLED — which routes
+  // through the failure policy — never as `agent-exited`.
+  const stalled = decideStageAgentDisposition(baseInput({
+    progress: { ...progress, stalled: true },
+  }));
+  assert.equal(stalled.kind, 'settled');
+  assert.equal(stalled.reason, 'agent-stalled');
 });
 
 // ── HOK-3277 inputs shape ──────────────────────────────────────────────────
@@ -306,7 +355,7 @@ test('HOK-3277: stopped-without-result exposes hasResultVerdict=false', () => {
       agentRecord: null,
       agentState: null,
       agentIdle: true,
-      agentProcessLive: false,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: false,
@@ -332,7 +381,7 @@ test('HOK-3277: long legitimate background work → in-flight waitingOn.backgrou
       agentRecord: null,
       agentState: null,
       agentIdle: true,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: true,
       blockingPrompt: null,
       stalled: false,
@@ -351,7 +400,7 @@ test('HOK-3277: approval-needed → in-flight waitingOn.approval', () => {
       agentRecord: { state: 'approval-needed', event: 'Notification', agent: 'claude', timestamp: Math.floor((now - 30 * 1000) / 1000) },
       agentState: 'approval-needed',
       agentIdle: false,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: false,
@@ -489,6 +538,75 @@ test('HOK-3422: gatherStageTaskProgress — stale coding-phase commit in the rea
       'no launch row → no stall-clock anchor → never stalled, even with an old commit in the worktree');
   } finally {
     rmSync(wt, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── HOK-3426: the one agent-exited fact ────────────────────────────────────
+
+// protects: the coding pane's quarantine being read as the review stage's
+// exit (the 2026-11-05 incident class), and the launch-recorded slot being
+// the only terminal-backend source.
+test('HOK-3426: gatherStageTaskProgress scopes the exit fact to the stage and attempt', () => {
+  const dir = stateDir();
+  const terminateCalls: string[][] = [];
+  try {
+    const launchIso = '2026-11-05T12:03:00.000Z';
+    const now = new Date('2026-11-05T12:03:21.000Z');
+    appendOwnershipRow(dir, {
+      sessionRef: 'review-sess',
+      harness: 'claude-code',
+      kind: 'review',
+      model: 'claude-sonnet-5',
+      launchedAt: launchIso,
+      cwd: '/tmp/nonexistent-cwd',
+    });
+    // The coding pane was quarantined one minute BEFORE the review launch.
+    const codingTs = Math.floor(Date.parse('2026-11-05T12:02:00.000Z') / 1000);
+    writeFileSync(join(dir, '.terminal-history.jsonl'), JSON.stringify({
+      archivedAt: '2026-11-05T12:02:00.000Z', reason: 'completed-coding-pane-quarantine', session: 's', issue: 'HOK-TEST-3426',
+      payload: { state: 'idle', event: 'controller_termination', writer: 'controller', kind: 'controller-termination', phase: 'coding', timestamp: codingTs },
+    }) + '\n');
+    // The launch-recorded slot is alive (pane_dead=0).
+    setTerminalExecForTest({
+      sync(args) {
+        terminateCalls.push([...args]);
+        if (args[0] === 'list-panes') return { ok: true, stdout: '0\n' };
+        return { ok: false, stdout: '' };
+      },
+      async async(args) {
+        return this.sync(args);
+      },
+    });
+
+    const live = gatherStageTaskProgress({
+      issue: 'HOK-TEST-3426', session: 'wavemill', worktree: dir, stateDir: dir,
+      stage: 'review', stageResult: null, now,
+      task: { windowId: '@review-live' } as never,
+    });
+    assert.equal(live.agentExited, null,
+      'a coding-phase termination + a live review slot is not a review exit');
+    assert.ok(terminateCalls.some((args) => args.includes('@review-live')),
+      'the exit probe reads the launch-recorded window handle');
+
+    // The launched review slot itself reports dead → the one exit fact.
+    setTerminalExecForTest({
+      sync(args) {
+        if (args[0] === 'list-panes') return { ok: true, stdout: '1\n' };
+        return { ok: false, stdout: '' };
+      },
+      async async(args) {
+        return this.sync(args);
+      },
+    });
+    const dead = gatherStageTaskProgress({
+      issue: 'HOK-TEST-3426', session: 'wavemill', worktree: dir, stateDir: dir,
+      stage: 'review', stageResult: null, now,
+      task: { windowId: '@review-dead' } as never,
+    });
+    assert.equal(dead.agentExited?.source, 'terminal-backend');
+  } finally {
+    setTerminalExecForTest(null);
     rmSync(dir, { recursive: true, force: true });
   }
 });

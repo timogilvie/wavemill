@@ -20,6 +20,16 @@
  * `blockingPrompt`, plus a rough `agentProcessLive` fact that is NEVER a
  * source of progress.
  *
+ * HOK-3426: `agentExited` is the ONE "the launched stage agent exited" fact —
+ * derived from a RECORDED exit: a HOK-3359 controller-termination record, the
+ * launcher's `agent-exit` record (the launcher is the agent process's parent
+ * and the only surface that sees a hard-killed agent's exit), or the
+ * launch-recorded window slot reporting dead (`term_is_dead`) — never from
+ * `agentProcessLive`. Stage dispositions settle on it; the descendant count
+ * remains only the HOK-3374 background-work input and a diagnostic.
+ * `terminalIdle` keeps its existing pane-count fast path and is not an exit
+ * decision.
+ *
  * Design invariants pinned by the tests:
  *   1. Pane or process existence is never progress.
  *   2. Monitor or controller writes are never agent evidence. In particular,
@@ -73,6 +83,7 @@ import {
 } from './session-ownership.ts';
 import { codexSessionsRoot, resolveCodexLaunchNonces } from './codex-rollout-resolver.ts';
 import { resolveProjectsDirs } from './wavemill-session-paths.ts';
+import { termIsDead } from './terminal-backend.ts';
 import type { TaskRecord } from './workflow-state.ts';
 
 // ── Hook contract ────────────────────────────────────────────────────────────
@@ -191,6 +202,30 @@ export interface BlockingPrompt {
 }
 
 /**
+ * HOK-3426: which recorded surface answered "the launched stage agent exited".
+ * - `controller-termination` — a HOK-3359 `stage_agent_teardown` record.
+ * - `launcher` — the launcher's `agent-exit` record (the agent process's
+ *   parent observed its exit status: the only surface that sees a hard-killed
+ *   agent, whose harness never writes an idle hook).
+ * - `terminal-backend` — `term_is_dead` on the launch-recorded window slot
+ *   (the whole slot exited).
+ */
+export type AgentExitedSource = 'terminal-backend' | 'controller-termination' | 'launcher';
+
+/**
+ * HOK-3426: the one "this stage's agent has exited" fact. It is derived from a
+ * RECORDED exit (controller termination, the launcher's own observation, or the
+ * launch-recorded slot reporting dead) — never from a pane descendant count. A
+ * stage settles on this fact; `agentProcessLive` is only a
+ * background-work/diagnostic input.
+ */
+export interface AgentExitedFact {
+  /** ISO timestamp of the recorded exit (gather time for `terminal-backend`). */
+  at: string;
+  source: AgentExitedSource;
+}
+
+/**
  * The result of one task-progress computation. `stalled` is the primary
  * "attention needed" signal; it is intentionally the only decision the
  * observer / monitor / dashboard need to consume.
@@ -217,6 +252,14 @@ export interface TaskProgress {
   terminalIdle: boolean;
   /** Non-progress liveness fact. `null` means "not probed". */
   agentProcessLive: boolean | null;
+  /**
+   * HOK-3426: the one "the launched stage agent has exited" fact, or `null`
+   * when no exit was recorded. Derived from the launcher's `agent-exit`
+   * record, the launch-recorded window slot (`term_is_dead`), or a HOK-3359
+   * controller-termination record — NEVER from the pane descendant count
+   * (`agentProcessLive`). This is what a stage disposition settles on.
+   */
+  agentExited: AgentExitedFact | null;
   /**
    * HOK-3137: whether a live descendant of the agent process that started
    * after it (a background task) was found in the agent's subtree.
@@ -247,7 +290,7 @@ export interface TaskProgressGatherOptions {
   issue: string;
   session?: string;
   /** Task record from workflow-state.json (only the fields read here). */
-  task?: Pick<TaskRecord, 'updated' | 'branch' | 'slug' | 'worktree' | 'status' | 'phase' | 'lifecycle'>;
+  task?: Pick<TaskRecord, 'updated' | 'branch' | 'slug' | 'worktree' | 'status' | 'phase' | 'lifecycle' | 'windowId'>;
   worktree?: string;
   featureDir?: string;
   /**
@@ -273,6 +316,21 @@ export interface TaskProgressGatherOptions {
   launchAtOverride?: string | null;
   /** Optional pane text for the blocking-prompt matcher. */
   paneText?: string;
+  /**
+   * HOK-3426: the phase a controller-termination record must name to be this
+   * gather's exit fact. A record for another phase is never evidence about
+   * this stage (the coding pane's quarantine must not settle review). When
+   * `undefined`, `phase` (if supplied) is used; a record with no recorded
+   * phase always counts, because unrelated teardown paths do not stamp one.
+   */
+  agentExitPhase?: string | null;
+  /**
+   * HOK-3426: the stage's launch time (ISO). A controller-termination older
+   * than the launch belongs to an earlier attempt and never settles this one.
+   * `undefined` means no time filter; `null` means no agent was ever launched,
+   * so no controller termination can be this stage's exit.
+   */
+  agentExitSince?: string | null;
   /** Optional pane-process liveness fact; not a progress source. */
   agentProcessLive?: boolean | null;
   /**
@@ -373,6 +431,8 @@ export interface TaskProgressInputs {
     at?: string | null;
   };
   agentProcessLive: boolean | null;
+  /** HOK-3426: the one recorded exit fact, or `null` when no exit was seen. */
+  agentExited: AgentExitedFact | null;
   /** HOK-3137: background-work probe result, or `null` when not probed. */
   backgroundWork: AgentBackgroundWorkResult | null;
   blockingPrompt: BlockingPrompt | null;
@@ -1082,6 +1142,9 @@ export function deriveTaskProgress(
     terminal,
     terminalIdle,
     agentProcessLive: inputs.agentProcessLive,
+    // HOK-3426: the one exit fact. `terminalIdle` above still reads the pane
+    // descendant count as a diagnostic; a stage settles only on this field.
+    agentExited: inputs.agentExited,
     agentBackgroundLive,
     backgroundProcesses: inputs.backgroundWork?.processes ?? [],
     stalled,
@@ -1256,6 +1319,68 @@ function readTerminalHistoryIdleAt(historyPath: string): string | null {
     const ts = numberField(payload.timestamp);
     if (ts === undefined) continue;
     const ms = ts * 1000;
+    if (bestMs === null || ms > bestMs) bestMs = ms;
+  }
+  if (bestMs === null) return null;
+  return new Date(bestMs).toISOString();
+}
+
+/**
+ * HOK-3426: newest recorded exit entry for one stage, from
+ * `<featureDir>/.terminal-history.jsonl`. Unlike {@link
+ * readTerminalHistoryIdleAt} this NEVER counts an agent-written idle Stop: an
+ * exit record is written by the surface that OBSERVED the launched process
+ * end — the controller (HOK-3359 `controller-termination`) or the launcher
+ * that spawned it (`agent-exit`, `wavemill_hook_write_agent_exit`) — while an
+ * agent's `idle:Stop` is agent evidence, not an exit.
+ *
+ * Scoping:
+ * - `phase` filters to records naming that phase (or naming none, since some
+ *   controller teardown paths do not stamp one) — the coding pane's
+ *   quarantine must never settle review.
+ * - `since` excludes records older than the current attempt's launch.
+ * - `since === null` means "no agent was launched", so no exit record can be
+ *   this stage's exit and the source is disabled.
+ */
+function readExitRecordAt(
+  historyPath: string,
+  match: { writer: string; kind: string },
+  opts: { phase?: string | null; since?: string | null },
+): string | null {
+  if (opts.since === null) return null;
+  if (!existsSync(historyPath)) return null;
+  let content: string;
+  try {
+    content = readFileSync(historyPath, 'utf-8');
+  } catch {
+    return null;
+  }
+  const sinceMs = opts.since ? parseIsoToMs(opts.since) : null;
+  const lines = content.split('\n').filter((l) => l.length > 0);
+  let bestMs: number | null = null;
+  for (const line of lines) {
+    let entry: Record<string, unknown>;
+    try {
+      entry = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const payload = objectField(entry.payload);
+    if (!payload) continue;
+    if (stringField(payload.writer) !== match.writer) continue;
+    if (stringField(payload.kind) !== match.kind) continue;
+    const entryPhase = stringField(payload.phase) ?? null;
+    if (opts.phase !== undefined && entryPhase !== null && entryPhase !== opts.phase) continue;
+    const ts = numberField(payload.timestamp);
+    if (ts === undefined) continue;
+    const ms = ts * 1000;
+    // `payload.timestamp` has second precision (the hook protocol writes epoch
+    // seconds) while `since` carries milliseconds: a record in the launch's own
+    // second must still settle that attempt, otherwise an agent that exits
+    // sub-second after launch is missed until the stall clock. The 999 ms slack
+    // can only admit a same-second record; a same-phase relaunch never starts
+    // that fast.
+    if (sinceMs !== null && ms + 999 < sinceMs) continue;
     if (bestMs === null || ms > bestMs) bestMs = ms;
   }
   if (bestMs === null) return null;
@@ -1661,6 +1786,44 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
   const backgroundWork = paneSignals.backgroundWork;
   const agentProcessLive = opts.agentProcessLive ?? paneSignals.agentProcessLive;
 
+  // HOK-3426: the ONE exit fact, from a RECORDED exit only, in this order:
+  //   1. a controller termination (HOK-3359) — the controller recorded that it
+  //      ended the launched agent;
+  //   2. an `agent-exit` record — the launcher, which is the agent process's
+  //      parent, recorded the process's own exit status (this is the only
+  //      surface that sees a hard-killed agent's exit; the pane shell outlives
+  //      the agent, so the pane is not the record);
+  //   3. the launched slot's handle — the window id recorded at launch —
+  //      reporting dead through the terminal backend (the whole slot exited).
+  // The pane descendant count (`agentProcessLive`) is never consulted here: a
+  // name-resolved or freshly recreated pane can be the wrong pane or the right
+  // pane before its agent forked, which is how a live reviewer was stamped
+  // `failed` in the 2026-11-05 incident.
+  const exitPhase = opts.agentExitPhase !== undefined ? opts.agentExitPhase : opts.phase;
+  const exitScope = { phase: exitPhase, since: opts.agentExitSince };
+  const historyPath = featureDir ? join(featureDir, '.terminal-history.jsonl') : null;
+  const controllerTerminationAt = historyPath
+    ? readExitRecordAt(historyPath, { writer: 'controller', kind: 'controller-termination' }, exitScope)
+    : null;
+  const launcherExitAt = historyPath
+    ? readExitRecordAt(historyPath, { writer: 'launcher', kind: 'agent-exit' }, exitScope)
+    : null;
+  const windowId = opts.task?.windowId;
+  // Only probe the slot when no record already answered and a launched agent
+  // is in scope: the probe spawns a terminal-backend call, a recorded exit is
+  // already the stronger fact, and `since === null` means no agent of this
+  // stage was launched, so a dead slot is not an exit of one.
+  const slotDead = opts.agentExitSince !== null
+    && !controllerTerminationAt && !launcherExitAt
+    && !!windowId && termIsDead(windowId, { timeoutMs: 3000 }) === true;
+  const agentExited: AgentExitedFact | null = controllerTerminationAt
+    ? { at: controllerTerminationAt, source: 'controller-termination' }
+    : launcherExitAt
+      ? { at: launcherExitAt, source: 'launcher' }
+      : slotDead
+        ? { at: new Date().toISOString(), source: 'terminal-backend' }
+        : null;
+
   return {
     issue: opts.issue,
     hookFile,
@@ -1681,6 +1844,7 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
       at: terminalAt,
     },
     agentProcessLive,
+    agentExited,
     backgroundWork,
     blockingPrompt,
   };
