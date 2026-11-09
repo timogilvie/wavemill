@@ -3,7 +3,6 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNNER="$REPO_DIR/shared/lib/wavemill-startup-runner.sh"
-STATUS_LIB="$REPO_DIR/shared/lib/wavemill-status.sh"
 
 extract_function() {
   local file="$1"
@@ -23,12 +22,6 @@ STARTUP_FUNCS="$(
   extract_function "$RUNNER" startup_clear_openrouter_credit_circuit
   echo
   extract_function "$RUNNER" startup_warn_openrouter_status
-)"
-
-STATUS_FUNCS="$(
-  extract_function "$STATUS_LIB" cached_openrouter_warning
-  echo
-  extract_function "$STATUS_LIB" render_dashboard
 )"
 
 TMP_DIR="$(mktemp -d)"
@@ -94,32 +87,11 @@ cat > "$STATE_FILE" <<EOF
 {"freeSlots":1,"tasks":{}}
 EOF
 
-FRAME="$TMP_DIR/frame.txt"
-REFRESH=5
-EL=""
-B=""
-N=""
-D=""
-G=""
-_LAST_TIP_REFRESH_AT=0
-TIP_REFRESH=60
-_CURRENT_TIP="tip"
-gather_tasks() { :; }
-render_inbox_section() { :; }
-attention_projection_load() { :; }
-render_active_section() { :; }
-render_backstage_retained_section() { :; }
-render_project_context_suggestion() { :; }
-wavemill_pick_usage_tip() { printf 'tip\n'; }
-
-eval "$STATUS_FUNCS"
-render_dashboard
-
-if ! grep -q 'WARN: OpenRouter credits exhausted - challenge coverage disabled' "$FRAME"; then
-  echo "dashboard did not render cached OpenRouter warning" >&2
-  cat "$FRAME" >&2
-  exit 1
-fi
+# HOK-3424: the dashboard no longer renders the cached warning as a private
+# header line; it becomes an `openrouter` free item in attention.json (see
+# shared/lib/attention.test.ts). This test keeps covering the startup side of
+# the cache contract: writing it when the balance is exhausted and clearing it
+# on a confirmed top-up.
 
 # HOK-3155: on a confirmed top-up (balance >= min_credits) startup clears the
 # warning cache AND the abort-count sentinel so a later credit abort trips

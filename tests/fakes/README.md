@@ -12,6 +12,7 @@ services (`fakes-contract.test.sh`).
 | Hokusai | `linear-fetch-preload.mjs` | Same preload answers the Model 30 predict edge at `https://hokusai.fake/…` from `$FAKE_HOKUSAI_SCRIPT` (`{default, byObjective}`), choosing the response by the request's routing objective; requests are logged to `$FAKE_HOKUSAI_LOG` (HOK-3363). |
 | tmux | `bin/tmux` | PATH. The real tmux binary on a private socket (`$FAKE_TMUX_SOCK`). |
 | Agent CLI | `bin/claude` | PATH. Runs inside the mill's agent panes and performs each phase's real contract (task packet + plan.md; commit + `.coding-complete`; push + `gh pr create` + review artifacts). |
+| Push endpoint | `push-sink.mjs` (via `fakes_start_push_sink`) | An ephemeral loopback HTTP server standing in for the ntfy/webhook `observer.alerts.push.url` points at; appends one JSON line per request to a capture file so a journey can assert exactly how many pushes fired and what they carried (HOK-3424). |
 
 ## Using them
 

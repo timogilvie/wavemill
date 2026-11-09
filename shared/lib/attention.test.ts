@@ -9,8 +9,11 @@ import {
   ATTENTION_KIND_RANK,
   deriveAttentionItems,
   gatherAttentionInputs,
+  openRouterWarningCachePath,
   parseEscalationBasis,
+  readNonTaskAttentionInputs,
   writeAttentionProjection,
+  type AttentionFreeItemInput,
   type AttentionIncidentInput,
   type AttentionInputs,
   type AttentionItem,
@@ -348,6 +351,7 @@ describe('deriveAttentionItems — fixed precedence', () => {
     assert.equal(projection.items[1].paneTarget, '@9');
     assert.deepEqual(Object.keys(ATTENTION_KIND_RANK), [
       'approve-plan', 'answer-agent', 'resolve-blocked-completion', 'operator-decision', 'exhausted', 'policy-terminal', 'incident',
+      'queue-health', 'backstage-health', 'openrouter', 'malformed-challenge',
     ]);
   });
 
@@ -373,6 +377,114 @@ describe('deriveAttentionItems — fixed precedence', () => {
     assert.equal(parseEscalationBasis('retryable:x'), null);
     assert.equal(parseEscalationBasis('exhausted:'), null);
     assert.equal(parseEscalationBasis(undefined), null);
+  });
+});
+
+describe('deriveAttentionItems — non-task signals are free items (HOK-3424)', () => {
+  const free = (kind: AttentionFreeItemInput['kind'], key: string, sinceMs: number): AttentionFreeItemInput => ({
+    kind,
+    key,
+    summary: `${kind} ${key}`,
+    sinceMs,
+    evidence: [{ source: `${kind}.json`, summary: key }],
+  });
+
+  it('sorts free items after incidents, by kind precedence, with no taskId', () => {
+    // protects: a free item appearing as task-owned work (the Observer's push
+    // is task-scoped and must never claim it) or jumping the queue ahead of a
+    // task blocked on a human.
+    const projection = deriveAttentionItems({
+      passStampMs: PASS,
+      staleAfterMs: PASS + 1,
+      nowMs: NOW,
+      tasks: [escalated('HOK-70', 'exhausted:stage-failure-ready', '2026-11-05T11:00:00Z')],
+      incidents: [{ incident: incident('a'.repeat(64), 'HOK-71', []), reconciliation: { outcome: 'confirmed_active' } }],
+      freeItems: [
+        free('openrouter', 'credits-exhausted', NOW - 10),
+        free('malformed-challenge', 'HOK-80_c', NOW - 20),
+        free('backstage-health', 'tend', NOW - 30),
+        free('queue-health', 'degraded-inference', NOW - 40),
+      ],
+    });
+    assert.deepEqual(projection.items.map((item) => item.kind), [
+      'exhausted', 'incident', 'queue-health', 'backstage-health', 'openrouter', 'malformed-challenge',
+    ]);
+    for (const item of projection.items.filter((entry) => (ATTENTION_KIND_RANK[entry.kind] ?? 0) >= 7)) {
+      assert.equal(item.taskId, undefined);
+      assert.equal(item.id, `${item.kind}:${item.summary.split(' ')[1]}`);
+    }
+  });
+
+  it('reads the four signals from the one file each already owns', () => {
+    // protects: the dashboard header readers coming back — queue health,
+    // backstage health, the OpenRouter cache and malformed challenge stubs
+    // each have exactly one reader and it is here.
+    const session = `attention-free-${process.pid}-${Date.now()}`;
+    const warnPath = openRouterWarningCachePath(session);
+    try {
+      write(stateDir, 'queue-health.json', {
+        currentAlertProjection: {
+          status: 'degraded-inference',
+          summary: 'Queue inference failing: 3 consecutive attempts',
+          nextAction: 'use_explicit_edges_only',
+          episode: { startedAt: '2026-11-05T10:00:00Z' },
+        },
+      });
+      write(stateDir, 'backstage-health.json', {
+        services: { tend: { status: 'degraded' }, observer: { status: 'healthy', progressState: 'stalled' } },
+      });
+      writeFileSync(warnPath,
+        '\nOpenRouter credits exhausted - challenge coverage disabled, top up at https://openrouter.ai/credits\n');
+      const state = buildWorkflowState({
+        'HOK-80_c': { challengePairId: 'pair-80', challengeRole: 'challenger' },
+      }, { bare: true });
+
+      const inputs = readNonTaskAttentionInputs({ stateDir, session, state });
+      assert.deepEqual(inputs.map((input) => input.kind), [
+        'queue-health', 'backstage-health', 'openrouter', 'malformed-challenge',
+      ]);
+      assert.equal(inputs[0].summary, 'Queue inference failing: 3 consecutive attempts');
+      assert.equal(inputs[0].sinceMs, Date.parse('2026-11-05T10:00:00Z'));
+      assert.equal(inputs[1].summary, 'backstage unhealthy — tend: degraded │ observer: alive-not-progressing');
+      assert.equal(inputs[2].summary,
+        'OpenRouter credits exhausted - challenge coverage disabled, top up at https://openrouter.ai/credits');
+      assert.equal(inputs[3].summary,
+        'challenge pair entry HOK-80_c has no slug: arm is hidden but may still be running; repair state (HOK-2926)');
+      assert.deepEqual(inputs[3].affectedTaskIds, ['HOK-80_c']);
+
+      const projection = deriveAttentionItems({
+        passStampMs: PASS,
+        staleAfterMs: PASS + 1,
+        nowMs: NOW,
+        tasks: [],
+        incidents: [],
+        freeItems: inputs,
+      });
+      assert.deepEqual(projection.items.map((item) => item.id), [
+        'queue-health:degraded-inference',
+        'backstage-health:tend,observer',
+        `openrouter:${createHash('sha256').update(inputs[2].summary).digest('hex').slice(0, 12)}`,
+        'malformed-challenge:HOK-80_c',
+      ]);
+    } finally {
+      rmSync(warnPath, { force: true });
+    }
+  });
+
+  it('reports nothing when the four signals are healthy or absent', () => {
+    // protects: healthy services paging the operator, and a missing
+    // queue-health.json read as degradation.
+    const session = `attention-free-quiet-${process.pid}-${Date.now()}`;
+    const warnPath = openRouterWarningCachePath(session);
+    rmSync(warnPath, { force: true });
+    write(stateDir, 'queue-health.json', { status: 'healthy' });
+    write(stateDir, 'backstage-health.json', {
+      services: { tend: { status: 'healthy' }, observer: { status: 'disabled' } },
+    });
+    assert.deepEqual(
+      readNonTaskAttentionInputs({ stateDir, session, state: buildWorkflowState({}) }),
+      [],
+    );
   });
 });
 

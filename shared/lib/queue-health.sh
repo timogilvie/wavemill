@@ -558,7 +558,8 @@ queue_alert_projection_read() {
 # Reads `.currentAlertProjection.summary` directly — the single source of
 # truth for wording. Empty output means do not render a banner (healthy /
 # planner-only degradation / unknown-but-no-reason-to-alert); the planner
-# fallback banner is rendered by `queue_health_dashboard_warning` instead.
+# fallback banner is the `queue-health` free attention item in the inbox
+# (HOK-3423, shared/lib/attention.ts) instead.
 queue_inference_degraded_banner() {
   local projection status summary
   projection="$(queue_alert_projection_read 2>/dev/null || echo 'null')"
