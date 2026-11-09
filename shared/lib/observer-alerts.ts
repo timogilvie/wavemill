@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ObserverAlertsConfig, ObserverAlertMinSeverity } from './config.ts';
+import { parsedCommandFromArgv } from './native-agent/command-argv.ts';
 import {
   ATTENTION_PROJECTION_FILE,
   ATTENTION_PROJECTION_SCHEMA_VERSION,
@@ -168,7 +169,9 @@ function attentionRecommendation(item: AttentionItem): string {
   // dropped here in favour of the safe, human-readable labels and the evidence
   // summary. The dashboard inbox keeps rendering the raw `commands` untouched.
   const safeLabels = item.commands
-    .filter((command) => !(command.argv[0] === 'sh' && command.argv[1] === '-c'))
+    // The one command parser (HOK-3383) returns null for a shell-interpreter
+    // wrapper (`sh|bash|zsh|dash -c …`), which is exactly the raw recovery shape.
+    .filter((command) => parsedCommandFromArgv(command.argv) !== null)
     .map((command) => command.label);
   if (safeLabels.length > 0) return safeLabels.join('; ');
   const evidence = item.evidence.map((entry) => entry.summary).filter((summary) => summary.length > 0);
