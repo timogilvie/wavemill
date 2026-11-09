@@ -121,8 +121,14 @@ journey_assert "no remediation or pending-ready exhaustion at any point" \
 # settle decision reads the recorded exit fact only.
 journey_assert "the live reviewer was never settled as agent-exited" \
   test "$(mill_log_count "review agent settled without a result")" = "0"
-journey_assert "the review stage-failure bucket was never charged" \
-  test "$(mill_log_count "$ISSUE → review failed")" = "0"
+# A charged review bucket relaunches CODING (maybe_retry_failed_stage maps
+# review → retry_phase=coding), so a second `coding` session-ownership row is
+# the observable charge. Read it from the archived ownership record, which
+# survives reaping (the feature dir does not).
+journey_assert "the review stage-failure bucket never relaunched coding" \
+  test "$(jq -r 'select(.type == "launch" and .kind == "coding") | .sessionRef' \
+    "$REPO_DIR/.wavemill/evals/artifacts/$ISSUE/.session-ownership.jsonl" 2>/dev/null \
+    | wc -l | tr -d ' ')" = "1"
 journey_assert_landed "$ISSUE"
 journey_assert_session_ownership "$ISSUE" planning coding review ready-remediation
 
