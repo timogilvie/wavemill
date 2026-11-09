@@ -137,6 +137,9 @@ To fetch the Linear backlog:
 npx tsx tools/get-backlog.ts "Project Name"
 ```
 
+### Operator Tools
+Tools the mill never calls, used by hand or by agents during recoveries, are listed in `docs/operator-tools.md` with what each does and whether it writes. Check it before writing a one-off recovery script. `tools/check-operator-tools.ts` (preflight) fails when an unreferenced tool is missing from the list or a listed tool doesn't run with `--help`; tools that parse their own arguments call `exitOnHelp` from `shared/lib/tool-runner.ts` first.
+
 ### Workflow Commands
 Available in `~/.claude/commands/`:
 - `/workflow` - Full feature workflow (task selection → plan → implementation → validation → PR)

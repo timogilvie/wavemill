@@ -5,11 +5,20 @@ import { runTool } from '../shared/lib/tool-runner.ts';
 
 runTool({
   name: 'challenge-recover',
-  description: 'Recover PRs erronously closed with wm:superseded label due to invalid challenge comparison.',
-  async run({ positional, flags }) {
-    const prArgs = flags.pr ?? [];
-    const dryRun = flags['dry-run'] === true || flags.dryRun === true;
-    const repoDir = flags['repo-dir'] ?? process.cwd();
+  description: 'Recover PRs erroneously closed with wm:superseded label due to invalid challenge comparison.',
+  options: {
+    pr: { type: 'string', multiple: true, description: 'PR number(s); repeat the flag or pass a comma-separated list' },
+    'dry-run': { type: 'boolean', description: 'Print the planned actions without changing GitHub or workflow state' },
+    'repo-dir': { type: 'string', description: 'Repository root (default: cwd)' },
+  },
+  examples: [
+    'npx tsx tools/challenge-recover.ts --pr 1234 --dry-run',
+    'npx tsx tools/challenge-recover.ts --pr 1234,1235',
+  ],
+  async run({ args }) {
+    const prArgs = args.pr ?? [];
+    const dryRun = args['dry-run'] === true;
+    const repoDir = args['repo-dir'] ?? process.cwd();
 
     if (prArgs.length === 0) {
       console.error('Error: At least one PR number required via --pr');

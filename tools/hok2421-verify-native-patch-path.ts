@@ -26,6 +26,7 @@ import { reviewEngineTestUtils, runReview } from '../shared/lib/review-engine.ts
 import { routeWorkflow } from '../shared/lib/workflow-router.ts';
 import type { ModelCapabilities, ModelRegistry } from '../shared/lib/model-registry.ts';
 import type { ReviewContext } from '../shared/lib/review-context-gatherer.ts';
+import { exitOnHelp } from '../shared/lib/tool-runner.ts';
 
 const MODELS = [
   {
@@ -535,6 +536,10 @@ function verifyRouteFixture(repoDir: string): {
 }
 
 async function main(): Promise<void> {
+  exitOnHelp(
+    'Usage: npx tsx tools/hok2421-verify-native-patch-path.ts\n'
+      + 'One-off HOK-2421 verifier: runs native patch-path certification scenarios in a temporary repo.',
+  );
   const repoDir = makeRepo();
   const originalOpenRouterKey = process.env.OPENROUTER_API_KEY;
 

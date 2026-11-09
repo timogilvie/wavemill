@@ -34,7 +34,8 @@ interface CLIOptions {
 function parseCLI(): CLIOptions | null {
   const args = process.argv.slice(2);
 
-  if (args.length === 0 || args[0] === '--help') {
+  const wantsHelp = args.includes('--help') || args.includes('-h');
+  if (args.length === 0 || wantsHelp) {
     console.log(`Usage: npx tsx tools/discover-ci-checks.ts <repo> [options]
 
 Arguments:
@@ -46,6 +47,7 @@ Options:
   --list-workflows  Also list available workflow jobs
   --help            Show this help message
 `);
+    if (wantsHelp) process.exit(0);
     return null;
   }
 
