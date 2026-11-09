@@ -811,11 +811,11 @@ test('missing rejected eval quarantine directory produces no finding', () => {
   }
 });
 
-test('service mode rejects Linear filing', () => {
+test('--file-linear is no longer accepted', () => {
   const previous = process.env.WAVEMILL_OBSERVER_SERVICE;
   process.env.WAVEMILL_OBSERVER_SERVICE = '1';
   try {
-    assert.throws(() => parseArgs(['--loop', '--file-linear']), /--file-linear is not allowed/);
+    assert.throws(() => parseArgs(['--loop', '--file-linear']), /Unknown observer option: --file-linear/);
   } finally {
     if (previous === undefined) {
       delete process.env.WAVEMILL_OBSERVER_SERVICE;
@@ -1628,13 +1628,8 @@ test('incident sync suppress.classes:[] disables suppression (HOK-3243)', async 
   }
 });
 
-test('--dry-run and --autofix-dry-run are independent flags (HOK-3243)', () => {
-  const legacy = parseArgs(['--dry-run']);
-  assert.equal(legacy.dryRun, true);
-  assert.equal(legacy.autoFixDryRun, false);
-
+test('--autofix-dry-run is the only dry-run flag (HOK-3243)', () => {
   const autoFix = parseArgs(['--autofix-dry-run']);
-  assert.equal(autoFix.dryRun, false);
   assert.equal(autoFix.autoFixDryRun, true);
 });
 

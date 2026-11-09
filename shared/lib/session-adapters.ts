@@ -1,3 +1,4 @@
+import { resolveTaskArtifactDirs } from './task-artifact-lookup.ts';
 import { TASK_ID_EMBEDDED_GLOBAL_RE } from './task-identity.ts';
 /**
  * Session adapters — native runtime session parsing for workflow cost
@@ -177,10 +178,6 @@ export class NativeSessionAdapter implements SessionAdapter {
       ...(opts.repoDir ? [join(resolve(opts.repoDir), '.wavemill', 'runs')] : []),
     ].filter((dir, index, all) => all.indexOf(dir) === index && existsSync(dir));
 
-    if (runsDirs.length === 0) {
-      return null;
-    }
-
     let sessionFiles: string[] = [];
     try {
       for (const runsDir of runsDirs) {
@@ -202,6 +199,18 @@ export class NativeSessionAdapter implements SessionAdapter {
       }
     } catch {
       return null;
+    }
+
+    // A terminal arm may already be reaped. The canonical artifact locator
+    // retains its owned native stream beside the archived stage results.
+    if (opts.issueId) {
+      const { archiveDir } = resolveTaskArtifactDirs({ issueId: opts.issueId, repoDir: opts.repoDir, worktreeDir: opts.worktreePath });
+      const nativeDir = archiveDir ? join(archiveDir, 'native-sessions') : null;
+      if (nativeDir && existsSync(nativeDir)) {
+        sessionFiles.push(...readdirSync(nativeDir)
+          .filter((name) => name.endsWith('.jsonl') && matchesIssue(name, opts.issueId, opts.branchName))
+          .map((name) => join(nativeDir, name)));
+      }
     }
 
     if (sessionFiles.length === 0) {

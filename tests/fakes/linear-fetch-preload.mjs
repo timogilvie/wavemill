@@ -134,6 +134,43 @@ function answer(query, variables) {
     const issues = Object.values(state.issues);
     const teamKey = query.match(/team:\s*\{\s*key:\s*\{\s*eq:\s*"([^"]+)"/)?.[1] ?? variables?.teamKey;
 
+    // Incident transport uses these same shared edges as the mill. Persist
+    // writes so journeys assert independent service truth, including dedup.
+    if (/teams\s*\{/.test(query)) {
+      const keys = [...new Set(issues.map(i => i.identifier.split('-')[0]))];
+      return { data: { teams: { nodes: keys.map(key => ({id:`team-${key}`,key,name:key})) } } };
+    }
+    if (/projects\s*\(/.test(query) || /projects\s*\{/.test(query)) {
+      return { data: { projects: { nodes: [] } } };
+    }
+    if (/issueLabels\s*[({]/.test(query)) {
+      return { data: { issueLabels: { nodes: Object.values(state.labels ?? {}) } } };
+    }
+    if (/issueLabelCreate\(/.test(query)) {
+      const input = variables.input;
+      state.labels ??= {};
+      const label = {id:`label-${input.name}`,name:input.name,color:input.color};
+      state.labels[label.id] = label;
+      return { data: { issueLabelCreate: {success:true,issueLabel:label} } };
+    }
+    if (/commentCreate\(/.test(query)) {
+      const input = variables.input;
+      const issue = issues.find(i => (i.id ?? `issue-${i.identifier}`) === input.issueId);
+      if (!issue) return {errors:[{message:'Entity not found'}]};
+      state.comments ??= [];
+      const comment = {id:`comment-${state.comments.length+1}`,url:'https://linear.app/fake/comment',...input};
+      state.comments.push(comment);
+      return {data:{commentCreate:{success:true,comment}}};
+    }
+    if (/issueCreate\(/.test(query)) {
+      const input = variables.input;
+      const key = input.teamId.replace(/^team-/, '');
+      const number = Math.max(0, ...issues.filter(i=>i.identifier.startsWith(`${key}-`)).map(i=>Number(i.identifier.split('-')[1])||0))+1;
+      const identifier = `${key}-${number}`;
+      const issue = {id:`issue-${identifier}`,identifier,title:input.title,description:input.description,state:'Backlog',labels:(input.labelIds??[]).map(id=>state.labels?.[id]?.name ?? id)};
+      state.issues[identifier] = issue;
+      return {data:{issueCreate:{issue:issueNode(issue)}}};
+    }
     const single = query.match(/number:\s*\{\s*eq:\s*(\d+)\s*\}/);
     if (single) {
       const found = issues.filter((i) => i.identifier === `${teamKey}-${single[1]}`);
@@ -168,6 +205,8 @@ function answer(query, variables) {
       const issue = issues.find((i) => (i.id ?? `issue-${i.identifier}`) === variables?.issueId);
       if (!issue) return { errors: [{ message: `Entity not found: ${variables?.issueId}` }] };
       const input = variables?.input ?? {};
+      const labelIds = variables?.labelIds ?? input.labelIds;
+      if (labelIds) issue.labels = labelIds.map(id => state.labels?.[id]?.name ?? id);
       if (input.stateId) {
         const next = stateName(input.stateId);
         state.transitions.push({ identifier: issue.identifier, from: issue.state ?? 'Backlog', to: next, at: new Date().toISOString() });

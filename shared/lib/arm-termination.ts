@@ -24,6 +24,7 @@
  * - the `.challenge-aborted.json` artifact under `featureDir` preserves the
  *   pair/role/stage/model/reason bytes for later eval replay.
  */
+import { triggerHokusaiSubmission } from './hokusai-submission-trigger.ts';
 import { existsSync, mkdirSync, writeFileSync, renameSync } from 'node:fs';
 import { join, dirname, resolve, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -42,7 +43,7 @@ import {
   type ArmReliabilityRecord,
 } from './arm-reliability.ts';
 import { recordSelectionOutcome } from './challenge-selection-health.ts';
-import { appendEvalRecord } from './eval-persistence.ts';
+import { appendEvalRecord, readEvalRecords } from './eval-persistence.ts';
 import { SCHEMA_VERSION, type EvalRecord } from './eval-schema.ts';
 import { mutateWorkflowState } from './workflow-state.ts';
 import { challengerTaskKey, isChallengerTaskId, parseTaskId } from './task-identity.ts';
@@ -349,7 +350,8 @@ export async function recordArmTermination(input: RecordArmTerminationInput): Pr
   // non-reward-eligible by construction (`score: 0`, `nonRewardReason`,
   // `trainingEligible: false`). Readers that need "the model was aborted on
   // this task" (Hokusai contribution builder → `completion_result: failure`)
-  // see this row; readers that walk evals for rewards keep ignoring it.
+  // recover verified completion feedback through the normal submission trigger;
+  // readers that walk evals for output-quality rewards keep ignoring this row.
   const evalRecordId = await maybeAppendFailureEvalRecord({
     input,
     kind,
@@ -448,6 +450,9 @@ async function maybeAppendFailureEvalRecord(args: AppendEvalInput): Promise<stri
   // No model → nothing to attribute. (The reliability record still lands.)
   if (!input.model || !input.model.trim()) return null;
 
+  const prior = readEvalRecords({ repoDir, dir: join(repoDir, '.wavemill', 'evals') }).find((row) =>
+    (row.metadata?.arm_termination as { reliabilityId?: string } | undefined)?.reliabilityId === reliabilityId);
+  if (prior) return prior.id;
   const id = randomUUID();
   const detailLine = input.detail ? `— ${input.detail}` : '';
   const rationale = `Arm terminated: ${kind} (${faultClass}) ${detailLine}`.trim();
@@ -526,6 +531,7 @@ async function maybeAppendFailureEvalRecord(args: AppendEvalInput): Promise<stri
 
   try {
     appendEvalRecord(record, { repoDir, dir: join(repoDir, '.wavemill', 'evals') });
+    await triggerHokusaiSubmission(record, { repoDir, featureDir: input.featureDir });
   } catch {
     // Validation refused the record. Reliability record remains the
     // authoritative termination row.

@@ -1,0 +1,157 @@
+{
+  "incident": "HOK-3424_c: four planning runs consume 40 turns each without final markdown",
+  "record": {
+    "id": "terminal-feedback-replay",
+    "schemaVersion": "1.59.0",
+    "originalPrompt": "monitor abort: REPLAY-1_c",
+    "modelId": "z-ai/glm-5.3",
+    "modelVersion": "z-ai/glm-5.3",
+    "attempted_model": "z-ai/glm-5.3",
+    "score": 0,
+    "scoreBand": "Failure",
+    "timeSeconds": null,
+    "timestamp": "2026-11-08T23:31:33.572Z",
+    "interventionRequired": false,
+    "interventionCount": 0,
+    "interventionDetails": [],
+    "rationale": "Arm terminated: native-stage-timeout (model-fault) \u2014 native-stage-timeout: native planning exhausted its turn budget (40 of 40); time split nativeStageTimeSplit/v1: 26s harness tools, 5m48s model, 0s provider wait, 0s unknown; 40 turn(s), 67 tool call(s) [typed envelope cause: stage-timeout]",
+    "issueId": "REPLAY-1_c",
+    "challengePairId": "REPLAY-1",
+    "challengeSide": "challenger",
+    "nonRewardReason": {
+      "code": "arm-terminated",
+      "message": "Arm terminated by monitor with kind native-stage-timeout (model-fault); not reward eligible."
+    },
+    "trainingEligible": false,
+    "budgetEvalEligible": false,
+    "outcomes": {
+      "success": false,
+      "review": {
+        "humanReviewRequired": false,
+        "rounds": 0,
+        "approvals": 0,
+        "changeRequests": 0
+      },
+      "rework": {
+        "agentIterations": 0
+      },
+      "delivery": {
+        "prCreated": false,
+        "merged": false
+      }
+    },
+    "taskDescriptor": {
+      "schema_version": "1.0",
+      "signals": {
+        "heuristic": {
+          "files_touched": 0,
+          "repo_size_loc": 0
+        },
+        "learned": {}
+      },
+      "constraints": {
+        "models_available": [
+          "z-ai/glm-5.3"
+        ]
+      },
+      "stages": {}
+    },
+    "metadata": {
+      "arm_termination": {
+        "actor": "monitor",
+        "kind": "native-stage-timeout",
+        "faultClass": "model-fault",
+        "qualitySignalEligible": true,
+        "reliabilityId": "b73a75b8-7ea4-4f78-8b03-93cc4179f445",
+        "stage": "plan"
+      }
+    }
+  },
+  "termination": {
+    "pairId": "REPLAY-1",
+    "role": "challenger",
+    "stage": "plan",
+    "model": "z-ai/glm-5.3",
+    "reason": "terminal_stage_failure:native-stage-timeout",
+    "abortedAt": "2026-11-08T23:31:33.572Z",
+    "detail": "native-stage-timeout: native planning exhausted its turn budget (40 of 40); time split nativeStageTimeSplit/v1: 26s harness tools, 5m48s model, 0s provider wait, 0s unknown; 40 turn(s), 67 tool call(s) [typed envelope cause: stage-timeout]",
+    "nextAction": "the native stage exhausted its wall-clock/turn/tool-call/token/cost budget; the recorded budgetExhausted fact decides the fault class. The stage relaunches under its bounded retry (review relaunches the pinned reviewer with an escalated timeout)",
+    "budgetExhausted": {
+      "kind": "turn",
+      "stopReason": "turn_limit",
+      "limit": 40,
+      "used": 40,
+      "progress": {
+        "turnsCompleted": 40,
+        "toolCallsExecuted": 67,
+        "wallClockMs": 374368,
+        "providerErrorRetries": 0
+      },
+      "sessionStream": {
+        "path": "/retired/planning-REPLAY-1_c.jsonl",
+        "fromMs": 1794180307631,
+        "toMs": 1794180681999
+      }
+    },
+    "actor": "monitor"
+  },
+  "route": {
+    "planner": "glm-5.3",
+    "coder": "deepseek-v4-flash",
+    "reviewer": "deepseek-v4-pro",
+    "planDepth": "medium",
+    "codeDepth": "medium",
+    "reviewMode": "llm",
+    "reviewRecommended": "llm",
+    "maxCostUsd": 25,
+    "constraints": {
+      "maxCostUsd": 25,
+      "budgetSource": "repo-config"
+    }
+  },
+  "expandedRoute": {
+    "planner": "glm-5.3-flash",
+    "coder": "deepseek-v4-flash",
+    "reviewer": "claude-fable-5",
+    "stageRoutes": {
+      "planner": {
+        "hokusai": {
+          "requestId": "replay-routing-decision",
+          "recommended": "glm-5.3-flash"
+        },
+        "executed": "glm-5.3-flash",
+        "overrides": []
+      },
+      "coder": {
+        "hokusai": {
+          "requestId": "replay-routing-decision",
+          "recommended": "deepseek-v4-flash"
+        },
+        "executed": "deepseek-v4-flash",
+        "overrides": []
+      },
+      "reviewer": {
+        "hokusai": {
+          "requestId": "replay-routing-decision",
+          "recommended": "qwen3-coder"
+        },
+        "executed": "claude-fable-5",
+        "overrides": [
+          {
+            "source": "launchability",
+            "reason": "unknown-model",
+            "from": "qwen3-coder",
+            "to": "claude-fable-5",
+            "at": "2026-11-08T23:25:06.357Z"
+          }
+        ]
+      }
+    },
+    "routingMode": "hokusai",
+    "provenance": {
+      "inferenceLogId": "replay-routing-decision"
+    },
+    "codeDepth": "medium",
+    "reviewMode": "llm"
+  }
+}

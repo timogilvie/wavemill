@@ -30,6 +30,12 @@ import {
   reconcileIncidentForFiling,
   type IncidentFilingReconciliation,
 } from './incident-filing-reconciler.ts';
+import {
+  preparePayloadForTransport,
+  renderInvestigatedCommentBody,
+  renderInvestigatedIssueBody,
+  type InvestigationOutcome,
+} from './root-cause-escalation.ts';
 
 export type IncidentPolicyStrategy = 'create' | 'no_create' | 'threshold' | 'create_if_persistent';
 
@@ -212,6 +218,11 @@ export interface SyncIncidentOptions {
    * is reached so shadow cannot hammer Linear across many incidents.
    */
   lookupBudget?: LookupBudget;
+  /**
+   * HOK-3325: root-cause investigation outcome. When absent or draft, live/shadow
+   * filing is skipped so symptom-only issues are never created.
+   */
+  investigation?: InvestigationOutcome;
 }
 
 const DEFAULT_CLIENT: IncidentLinearClient = {
@@ -340,76 +351,6 @@ function relatedIssues(incident: IncidentRecord, policy?: IncidentClassPolicy): 
   ].filter((value, index, array) => array.indexOf(value) === index);
 }
 
-export function generateIssueBody(incident: IncidentRecord, config: ObserverLinearConfig, evidenceRevision: string, now: Date): string {
-  const policy = config.policies[incident.category];
-  const evidence = redactEvidence(incident.evidence, config.redaction).slice(-12);
-  const related = relatedIssues(incident, policy);
-  const model = extractEvidenceField(incident.evidence, 'model') ?? 'N/A';
-  const cooldownUntil = new Date(now.getTime() + config.updateCooldownMinutes * 60_000).toISOString();
-  return redactLinearIssueContent([
-    '## Incident Summary',
-    `- **Type**: ${incident.category}`,
-    `- **Severity**: ${incident.severity}`,
-    `- **Confidence**: ${incident.confidence}`,
-    `- **Root Cause**: ${incident.rootCauseClass}`,
-    `- **Observed Symptom**: ${typeof incident.metadata?.observedSymptom === 'string' ? incident.metadata.observedSymptom : incident.rootCauseClass}`,
-    `- **Status**: ${incident.lifecycle}`,
-    `- **First Seen**: ${incident.firstObservedAt || incident.createdAt}`,
-    `- **Last Seen**: ${incident.lastObservedAt}`,
-    `- **Occurrences (distinct events)**: ${incident.occurrenceCount}`,
-    '',
-    '## Impact',
-    incident.operatorAction,
-    '',
-    '## Affected Session/Task/Model',
-    `- Session: ${incident.session ?? 'repo-wide'}`,
-    `- Task: ${incident.taskId ?? 'N/A'}`,
-    `- Model: ${model}`,
-    '',
-    '## Evidence',
-    ...evidence.map(evidenceLine),
-    '',
-    '## Structured Evidence References',
-    ...evidence.map((item) => `- ${item.type}: ${item.source} [${item.timestamp}]`),
-    '',
-    '## Threshold & Escalation',
-    `- Threshold triggered: ${String(incident.metadata?.thresholdTriggered ?? false)}`,
-    `- Escalated at: ${String(incident.metadata?.escalatedAt ?? 'N/A')}`,
-    '',
-    '## Related Issues',
-    ...(related.length > 0 ? related.map((id) => `- ${id}`) : ['- None recorded']),
-    '',
-    '## Operator Recommendation',
-    incident.operatorAction,
-    '',
-    '---',
-    `**Incident fingerprint**: ${incident.fingerprint}`,
-    `**Evidence revision**: ${evidenceRevision}`,
-    `**Evidence updated**: ${now.toISOString()}`,
-    `**Occurrences in window**: ${incident.occurrenceCount}`,
-    `**Update cooldown until**: ${cooldownUntil}`,
-  ].join('\n'), config.redaction);
-}
-
-export function generateCommentBody(incident: IncidentRecord, config: ObserverLinearConfig, evidenceRevision: string, now: Date): string {
-  const evidence = redactEvidence(incident.evidence, config.redaction).slice(-8);
-  return redactLinearIssueContent([
-    `## Wavemill Incident Evidence Update`,
-    `- **Fingerprint**: ${incident.fingerprint}`,
-    `- **Root Cause**: ${incident.rootCauseClass}`,
-    `- **Severity/Confidence**: ${incident.severity}/${incident.confidence}`,
-    `- **Occurrences**: ${incident.occurrenceCount}`,
-    `- **Last Seen**: ${incident.lastObservedAt}`,
-    `- **Evidence revision**: ${evidenceRevision}`,
-    '',
-    '## New Evidence',
-    ...evidence.map(evidenceLine),
-    '',
-    `Recommendation: ${incident.operatorAction}`,
-    '',
-    `Synced at: ${now.toISOString()}`,
-  ].join('\n'), config.redaction);
-}
 
 function extractEvidenceField(evidence: IncidentEvidence[], field: string): string | undefined {
   for (const item of evidence) {
@@ -568,7 +509,8 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
   const shadowMode = options.shadow === true || config.mode === 'shadow';
   const incident = options.incident;
   const audit = options.audit ?? (() => {});
-  const reconciliation = (options.reconciler ?? reconcileIncidentForFiling)(incident, options.repoDir ?? process.cwd());
+  const repoDir = options.repoDir ?? process.cwd();
+  const reconciliation = (options.reconciler ?? reconcileIncidentForFiling)(incident, repoDir);
   const baseResult = { fingerprint: incident.fingerprint, evidenceRevision, dryRun, reconciliation };
 
   // An unlinked incident proven recovered/superseded must not cause even a
@@ -587,6 +529,8 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
         correlation: { matchedBy: 'none', candidateCount: 0 },
         forcedAction: 'skip_recovered',
         forcedReason: `reconciliation: ${reconciliation.outcome}`,
+        investigation: options.investigation,
+        repoDir,
       });
       return {
         ...baseResult,
@@ -600,6 +544,59 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
     return { ...baseResult, action: 'skip', status: 'skipped', reason: `reconciliation: ${reconciliation.outcome}` };
   }
 
+  const prepared = preparePayloadForTransport(options.investigation ?? {
+    incident,
+    payload: null,
+    reconciliation,
+    state: 'pending',
+  }, repoDir);
+
+  if (!config.enabled && !dryRun) {
+    return { ...baseResult, action: 'skip', status: 'skipped', reason: 'observer.linear.enabled is false' };
+  }
+
+  if (prepared.kind === 'skip') {
+    audit('incident filing skipped by escalation', { fingerprint: incident.fingerprint, reason: prepared.reason });
+    if (shadowMode) {
+      const plan = planShadowSync({
+        incident,
+        config,
+        evidenceRevision,
+        now,
+        reconciliation,
+        correlation: { matchedBy: 'none', candidateCount: 0 },
+        forcedAction: 'skip',
+        forcedReason: prepared.reason,
+        investigation: options.investigation,
+        repoDir,
+      });
+      return { ...baseResult, action: 'skip', status: 'skipped', reason: prepared.reason, plannedTitle: plan.plannedTitle, shadowPlan: plan };
+    }
+    return { ...baseResult, action: 'skip', status: 'skipped', reason: prepared.reason };
+  }
+
+  if (prepared.kind === 'draft') {
+    audit('incident filing draft', { fingerprint: incident.fingerprint, draftPath: prepared.draftPath });
+    if (shadowMode) {
+      const plan = planShadowSync({
+        incident,
+        config,
+        evidenceRevision,
+        now,
+        reconciliation,
+        correlation: { matchedBy: 'none', candidateCount: 0 },
+        forcedAction: 'skip',
+        forcedReason: 'draft: missing root-cause payload',
+        investigation: options.investigation,
+        repoDir,
+      });
+      return { ...baseResult, action: 'skip', status: 'skipped', reason: 'draft: missing root-cause payload', plannedTitle: plan.plannedTitle, shadowPlan: plan };
+    }
+    return { ...baseResult, action: 'skip', status: 'skipped', reason: 'draft: missing root-cause payload' };
+  }
+
+  const transportTitle = prepared.kind === 'transport' ? prepared.title : generateIssueTitle(incident);
+
   if (shadowMode) {
     return await runShadowSync({ ...options, now, evidenceRevision, reconciliation, audit });
   }
@@ -608,16 +605,14 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
     return { ...planOfflineSync(incident, config, evidenceRevision, now, options.replay === true), reconciliation };
   }
 
-  if (!config.enabled && !dryRun) {
-    return { ...baseResult, action: 'skip', status: 'skipped', reason: 'observer.linear.enabled is false' };
-  }
-
   const client = withRequestPacing(options.client ?? DEFAULT_CLIENT, config);
 
   try {
     const existing = incident.metadata?.linkedLinearId
       ? await resolveIssueByIdentifier(client, incident.metadata.linkedLinearId)
-      : await findExistingIssue(incident, config, client);
+      : prepared.targetIssueId
+        ? await resolveIssueByIdentifier(client, prepared.targetIssueId)
+        : await findExistingIssue(incident, config, client);
     const createPolicy = policyAllowsCreate(incident, config);
 
     if (!existing && !createPolicy.allowed) {
@@ -647,7 +642,8 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
           reason: 'dry-run planned evidence update',
         };
       }
-      await client.createComment(existing.id, generateCommentBody(incident, config, evidenceRevision, now));
+      const commentBody = renderInvestigatedCommentBody(incident, options.investigation!.payload!, config, evidenceRevision, now);
+      await client.createComment(existing.id, commentBody);
       await addIncidentLabels(existing, incident, config, client);
       await options.store?.recordLinearSync(incident.fingerprint, {
         linearIssueId: existing.identifier,
@@ -659,17 +655,20 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
       return { ...baseResult, action: 'update_comment', status: 'updated', issueId: existing.identifier, issueUrl: existing.url };
     }
 
-    const plannedTitle = generateIssueTitle(incident);
+    if (prepared.kind !== 'transport') {
+      audit('incident filing skipped by escalation', { fingerprint: incident.fingerprint, reason: 'investigation_pending' });
+      return { ...baseResult, action: 'skip', status: 'skipped', reason: 'investigation_pending' };
+    }
     if (dryRun) {
-      return { ...baseResult, action: 'create', status: 'skipped', plannedTitle, reason: 'dry-run planned issue create' };
+      return { ...baseResult, action: 'create', status: 'skipped', plannedTitle: transportTitle, reason: 'dry-run planned issue create' };
     }
 
     const routing = await resolveRouting(config, client);
     const fingerprint = await client.getOrCreateLabel(fingerprintLabel(incident), routing.teamId);
     const className = await client.getOrCreateLabel(classLabel(incident), routing.teamId);
     const created = await client.createIssue({
-      title: plannedTitle,
-      description: generateIssueBody(incident, config, evidenceRevision, now),
+      title: transportTitle,
+      description: prepared.body,
       teamId: routing.teamId,
       projectId: routing.projectId,
       labelIds: [...new Set([...routing.labelIds, fingerprint.id, className.id])],
@@ -1183,6 +1182,10 @@ export interface PlanShadowSyncOptions {
   forcedAction?: SyncAction;
   forcedReason?: string;
   replay?: boolean;
+  /** HOK-3325: root-cause investigation outcome driving the planned payload. */
+  investigation?: InvestigationOutcome;
+  /** Repository whose `.wavemill/incidents/` dir receives a draft artefact. */
+  repoDir?: string;
 }
 
 /**
@@ -1192,7 +1195,13 @@ export interface PlanShadowSyncOptions {
  */
 export function planShadowSync(options: PlanShadowSyncOptions): ShadowSyncPlan {
   const { incident, config, evidenceRevision, now, reconciliation, correlation } = options;
-  const plannedTitle = generateIssueTitle(incident);
+  const prepared = preparePayloadForTransport(options.investigation ?? {
+    incident,
+    payload: null,
+    reconciliation,
+    state: 'pending',
+  }, options.repoDir ?? process.cwd());
+  const plannedTitle = prepared.kind === 'transport' ? prepared.title : generateIssueTitle(incident);
   const policy = config.policies[incident.category] ?? DEFAULT_INCIDENT_LINEAR_CONFIG.policies[incident.category];
   const createPolicy = policyAllowsCreate(incident, config);
 
@@ -1204,11 +1213,19 @@ export function planShadowSync(options: PlanShadowSyncOptions): ShadowSyncPlan {
   if (options.forcedAction) {
     action = options.forcedAction;
     reason = options.forcedReason;
-    if (action === 'create') {
-      plannedBody = generateIssueBody(incident, config, evidenceRevision, now);
-    } else if (action === 'update_comment') {
-      plannedCommentBody = generateCommentBody(incident, config, evidenceRevision, now);
+    if (prepared.kind === 'transport') {
+      if (action === 'create') {
+        plannedBody = prepared.body;
+      } else if (action === 'update_comment') {
+        plannedCommentBody = renderInvestigatedCommentBody(incident, options.investigation!.payload!, config, evidenceRevision, now);
+      }
     }
+  } else if (prepared.kind === 'skip') {
+    action = 'skip';
+    reason = prepared.reason;
+  } else if (prepared.kind === 'draft') {
+    action = 'skip';
+    reason = 'draft: missing root-cause payload';
   } else if (correlation.matchedBy !== 'none' && correlation.identifier) {
     const update = shouldUpdateIncident(incident, evidenceRevision, now, options.replay === true);
     if (!update.allowed) {
@@ -1217,7 +1234,7 @@ export function planShadowSync(options: PlanShadowSyncOptions): ShadowSyncPlan {
     } else {
       action = 'update_comment';
       reason = 'shadow: planned evidence update';
-      plannedCommentBody = generateCommentBody(incident, config, evidenceRevision, now);
+      plannedCommentBody = renderInvestigatedCommentBody(incident, options.investigation!.payload!, config, evidenceRevision, now);
     }
   } else if (!createPolicy.allowed) {
     action = 'skip';
@@ -1225,7 +1242,7 @@ export function planShadowSync(options: PlanShadowSyncOptions): ShadowSyncPlan {
   } else {
     action = 'create';
     reason = 'shadow: planned issue create';
-    plannedBody = generateIssueBody(incident, config, evidenceRevision, now);
+    plannedBody = prepared.body;
   }
 
   const redactionSummary = summarizeRedaction(config.redaction, plannedTitle, plannedBody ?? '', plannedCommentBody ?? '');
@@ -1260,6 +1277,7 @@ interface RunShadowSyncOptions extends SyncIncidentOptions {
 
 async function runShadowSync(options: RunShadowSyncOptions): Promise<SyncResult> {
   const { incident, config, now, evidenceRevision, reconciliation, audit } = options;
+  const repoDir = options.repoDir ?? process.cwd();
   const baseClient = options.client ?? DEFAULT_CLIENT;
   const wrapped = wrapReadOnlyIncidentLinearClient(baseClient);
   const budgetedClient = withLookupBudget(wrapped.client, options.lookupBudget);
@@ -1305,6 +1323,7 @@ async function runShadowSync(options: RunShadowSyncOptions): Promise<SyncResult>
       correlation,
       forcedAction: 'failed',
       forcedReason: `shadow correlation failed: ${failure.reason}`,
+      repoDir,
     });
     if (wrapped.mutationAttempts > 0) {
       throw new Error(`shadow contract violated: mutation attempted (${wrapped.mutationCallLog.join(',')})`);
@@ -1327,6 +1346,8 @@ async function runShadowSync(options: RunShadowSyncOptions): Promise<SyncResult>
     reconciliation,
     correlation,
     replay: options.replay === true,
+    investigation: options.investigation,
+    repoDir,
   });
 
   if (wrapped.mutationAttempts > 0) {
