@@ -74,6 +74,7 @@ import { escalateOperatorAttention } from '../shared/lib/operator-escalation.ts'
 import { acquireObserverLock } from '../shared/lib/tend-singleton.ts';
 import { countRejectedEvalRecords, listRejectedEvalRecords } from '../shared/lib/eval-rejected-store.ts';
 import { renderObserverStatus } from '../shared/lib/observer-status-renderer.ts';
+import { resolveWavemillToolPath } from '../shared/lib/native-agent/install-paths.ts';
 import {
   detectGlobalConfigIntegrity,
   detectRepoConfigIntegrity,
@@ -4566,7 +4567,7 @@ async function launchRootCauseInvestigation(
   const err = openSync(logPath, 'a');
   const proc = spawn(
     process.execPath,
-    ['--import', 'tsx', 'tools/investigate-incident.ts', '--request', requestPath],
+    ['--import', 'tsx', resolveWavemillToolPath('investigate-incident.ts'), '--request', requestPath],
     {
       cwd: resolve(__dirname, '..'),
       detached: true,

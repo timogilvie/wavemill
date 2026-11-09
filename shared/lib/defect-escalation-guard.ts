@@ -24,7 +24,7 @@ export const DEFECT_ESCALATION_GUARD: GuardSpec = {
   allowlistFile: 'tools/defect-escalation-allowlist.txt',
   invariantPaths: [
     'shared/lib/defect-escalation-guard.ts',
-    'tools/check-defect-escalation.ts',
+    'tools/check-defect-escalation.ts', // install-paths: allow invariantPaths list, not an argv target
     'shared/lib/linear.ts', // authorised Linear-write seam
   ],
   patterns: [
