@@ -4540,7 +4540,11 @@ async function launchRootCauseInvestigation(
 
   const key = investigationRevisionKey(fingerprint, revision);
   const keyHash = investigationKeyHash(key);
-  const stateDir = join(repoDir, '.wavemill');
+  // Scoped per-incident (not the shared `<repoDir>/.wavemill`): the
+  // bounded-retry helper keeps one (count, head) pair per (stateDir, bucket),
+  // so a stateDir shared across incidents would reset one incident's attempt
+  // counter every time a different incident's keyHash was gated in between.
+  const stateDir = join(repoDir, '.wavemill', 'incidents', fingerprint);
   const retry = createStateDirRetry('root-cause-investigation', { maxAttempts: 3 });
   const decision = retry.gate(stateDir, keyHash);
   if (decision !== 'proceed') {
