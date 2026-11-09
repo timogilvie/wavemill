@@ -1800,7 +1800,8 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
   // The pane descendant count (`agentProcessLive`) is never consulted here: a
   // name-resolved or freshly recreated pane can be the wrong pane or the right
   // pane before its agent forked, which is how a live reviewer was stamped
-  // `failed` in the 2026-11-05 incident.
+  // `failed` in the reported 2026-11-05 stall (no retained production record;
+  // the attribution comes from reproducing it against the base-branch rule).
   const exitPhase = opts.agentExitPhase !== undefined ? opts.agentExitPhase : opts.phase;
   const exitScope = { phase: exitPhase, since: opts.agentExitSince };
   const historyPath = featureDir ? join(featureDir, '.terminal-history.jsonl') : null;

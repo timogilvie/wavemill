@@ -8,7 +8,9 @@
  * The pane descendant count (`agentProcessLive`) is a "rough fact that is
  * NEVER a source of progress" (HOK-3101 invariant 1). Reading its `false` as
  * a high-confidence exit is what stamped a live reviewer `failed` and
- * relaunched it through `stage-failure-review` (the 2026-11-05 incident): the
+ * relaunched it through `stage-failure-review` in the reported 2026-11-05
+ * stall. Production logs hold no retained record of that stall, so the
+ * attribution is a reproduction, not incident evidence (plan Step 0). The
  * probe resolves the task window BY NAME, so a quarantined or freshly
  * recreated window — or the right window before its agent forked — reads
  * dead while the agent is alive.

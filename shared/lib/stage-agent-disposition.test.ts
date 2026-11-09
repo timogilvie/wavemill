@@ -34,7 +34,7 @@ function stateDir(): string {
  * A real git worktree with one commit at `commitIso` — exercises
  * `readLatestCommitAt` for real, unlike a bare `mkdtempSync` directory (where
  * `git log` fails and `latestCommitAt` is always null, silently skipping the
- * exact evidence path the 2026-11-05 incident bug lives in).
+ * exact evidence path the reported 2026-11-05 stall's bug lives in).
  */
 function worktreeWithCommit(commitIso: string): string {
   const dir = mkdtempSync(join(os.tmpdir(), 'stage-agent-disposition-wt-'));
@@ -387,9 +387,9 @@ test('decision: agentExited (controller-termination) → settled agent-exited', 
   assert.equal(d.evidenceConfidence, 'high');
 });
 
-// protects: the 2026-11-05 incident — a live reviewer whose pane descendant
-// count read false must never be settled as exited and relaunched through
-// stage-failure-review. No exit fact means no high-confidence settle.
+// protects: the reported 2026-11-05 stall — a live reviewer whose pane
+// descendant count read false must never be settled as exited and relaunched
+// through stage-failure-review. No exit fact means no high-confidence settle.
 test('HOK-3426: pane descendant count false alone never settles agent-exited', () => {
   const progress: StageAgentProgress = {
     agentRecord: null,
@@ -630,8 +630,8 @@ test('HOK-3422: gatherStageTaskProgress — stale coding-phase commit in the rea
 // ── HOK-3426: the one agent-exited fact ────────────────────────────────────
 
 // protects: the coding pane's quarantine being read as the review stage's
-// exit (the 2026-11-05 incident class), and the launch-recorded slot being
-// the only terminal-backend source.
+// exit (the reported 2026-11-05 stall class), and the launch-recorded slot
+// being the only terminal-backend source.
 test('HOK-3426: gatherStageTaskProgress scopes the exit fact to the stage and attempt', () => {
   const dir = stateDir();
   const terminateCalls: string[][] = [];

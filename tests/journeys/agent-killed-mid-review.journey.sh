@@ -3,7 +3,7 @@
 # RECORDED exit fact — the launcher's `agent-exit` record — never on a pane
 # descendant count — and the run completes with zero operator touches.
 #
-# Protects against: the 2026-11-05 incident shape in both directions.
+# Protects against: the reported 2026-11-05 stall shape in both directions.
 #   (a) a live reviewer stamped `failed` because a name-resolved pane (or a
 #       pane whose agent had not forked yet) showed no descendants;
 #   (b) a genuinely killed reviewer never being noticed because the pane shell
