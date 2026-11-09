@@ -4573,6 +4573,11 @@ async function launchRootCauseInvestigation(
       stdio: ['ignore', out, err],
     },
   );
+  // An unhandled 'error' event throws and crashes the observer loop (e.g. a
+  // transient ENOENT/EMFILE spawning the child); log it instead.
+  proc.on('error', (spawnError) => {
+    console.warn(`[root-cause-investigation] spawn failed for ${fingerprint}: ${spawnError instanceof Error ? spawnError.message : String(spawnError)}`);
+  });
   proc.unref();
 }
 
