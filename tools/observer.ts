@@ -2,8 +2,9 @@
 import { isJobBackedIncident, readAuthoritativeWorkflowJobs, reconcileIncidentForFiling } from '../shared/lib/incident-filing-reconciler.ts';
 import { ISSUE_ID_RE } from '../shared/lib/task-identity.ts';
 
-import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mutateJsonState, mutateJsonStateSync } from '../shared/lib/state-mutex.ts';
@@ -60,6 +61,7 @@ import {
 import { IncidentStore } from '../shared/lib/wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentRecord, type IncidentRootCauseClass } from '../shared/lib/wavemill-incident-model.ts';
 import { createLookupBudget, syncIncident, syncIncidentLifecycle, type LifecycleSyncResult, type SyncResult } from '../shared/lib/incident-to-linear-synchronizer.ts';
+import { loadInvestigationOutcome } from '../shared/lib/root-cause-escalation.ts';
 import {
   appendShadowRecord,
   buildShadowAuditRecord,
@@ -67,6 +69,8 @@ import {
   type ShadowAuditRecord,
 } from '../shared/lib/observer-shadow-audit.ts';
 import { drainIncidentQueue, enqueueIncidentSync } from '../shared/lib/incident-linear-retry-queue.ts';
+import { createStateDirRetry } from '../shared/lib/bounded-retry.ts';
+import { escalateOperatorAttention } from '../shared/lib/operator-escalation.ts';
 import { acquireObserverLock } from '../shared/lib/tend-singleton.ts';
 import { countRejectedEvalRecords, listRejectedEvalRecords } from '../shared/lib/eval-rejected-store.ts';
 import { renderObserverStatus } from '../shared/lib/observer-status-renderer.ts';
@@ -179,9 +183,7 @@ interface ObserverOptions {
   intervalSeconds: number;
   staleMinutes: number;
   hungMinutes: number;
-  fileLinear: boolean;
   fileIncidents: boolean;
-  dryRun: boolean;
   autoFixDryRun: boolean;
   incidentsDryRun: boolean;
   incidentsShadow?: boolean;
@@ -247,7 +249,6 @@ interface Finding {
   title: string;
   evidence: string[];
   recommendation: string;
-  linearIssueUrl?: string;
   occurrenceCount?: number;
   groupedUnder?: string;
   /**
@@ -410,7 +411,6 @@ Options:
   --interval <seconds>   Loop interval (default: ${DEFAULT_INTERVAL_SECONDS})
   --json                 Emit JSON snapshots
   --compact              One line per actionable finding; rolls up log-scrape noise
-  --file-linear          Create Linear issues for high-confidence findings
   --file-incidents       Create/update Linear issues for confirmed deduplicated incidents
   --incidents-dry-run    Preview incident Linear actions without writes (alias for --incidents-mode=offline)
   --incidents-shadow     Shadow-audit incident Linear actions (bounded reads, zero mutations)
@@ -423,8 +423,6 @@ Options:
   --linear-team <key>    Linear team key/name/id for filed issues
   --linear-project <id>  Optional Linear project id/name for filed issues
   --linear-label <name>  Optional Linear label name to attach
-  --dry-run              Suppress legacy --file-linear writes (does not gate
-                         auto-fix; use --autofix-dry-run for that).
   --autofix-dry-run      Preview auto-fix actions without applying them.
   --stale-minutes <n>    State/log/marker stale threshold (default: ${DEFAULT_STALE_MINUTES})
   --hung-minutes <n>     Child process hung threshold (default: ${DEFAULT_HUNG_MINUTES})
@@ -448,9 +446,7 @@ export function parseArgs(argv: string[]): ObserverOptions {
     intervalSeconds: DEFAULT_INTERVAL_SECONDS,
     staleMinutes: DEFAULT_STALE_MINUTES,
     hungMinutes: DEFAULT_HUNG_MINUTES,
-    fileLinear: false,
     fileIncidents: false,
-    dryRun: false,
     autoFixDryRun: false,
     incidentsDryRun: false,
     maxLogLines: 240,
@@ -483,8 +479,6 @@ export function parseArgs(argv: string[]): ObserverOptions {
       options.json = true;
     } else if (arg === '--compact') {
       options.compact = true;
-    } else if (arg === '--file-linear') {
-      options.fileLinear = true;
     } else if (arg === '--file-incidents') {
       options.fileIncidents = true;
     } else if (arg === '--incidents-dry-run') {
@@ -511,8 +505,6 @@ export function parseArgs(argv: string[]): ObserverOptions {
     } else if (arg.startsWith('--incidents-policy=')) {
       options.incidentsPolicy = arg.slice('--incidents-policy='.length);
       options.fileIncidents = true;
-    } else if (arg === '--dry-run') {
-      options.dryRun = true;
     } else if (arg === '--autofix-dry-run') {
       options.autoFixDryRun = true;
     } else if (arg === '--print-prompt') {
@@ -562,10 +554,6 @@ export function parseArgs(argv: string[]): ObserverOptions {
     } else {
       throw new Error(`Unknown observer option: ${arg}`);
     }
-  }
-
-  if (options.serviceMode && options.fileLinear) {
-    throw new Error('--file-linear is not allowed when WAVEMILL_OBSERVER_SERVICE=1');
   }
 
   return options;
@@ -4381,6 +4369,7 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
     const mutationAttemptsThisPass = 0;
     const shadowRecords: ShadowAuditRecord[] = [];
     for (const incident of incidentsForPass) {
+      const investigation = loadInvestigationOutcome(incident, repo.repoDir);
       const result = await syncIncident({
         incident,
         store,
@@ -4402,6 +4391,7 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
         },
         repoDir: repo.repoDir,
         lookupBudget,
+        investigation: investigation ?? undefined,
       });
       collectSyncResult(summary, result);
       if (shadowMode && result.shadowPlan) {
@@ -4513,6 +4503,91 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
     }
   }
   return { ...snapshot, incidentSync: summary };
+}
+
+function investigationRequestPath(repoDir: string, fingerprint: string, revision: string): string {
+  return join(repoDir, '.wavemill', 'incidents', fingerprint, `request-${revision.replace(/[^a-zA-Z0-9._-]/g, '-')}.json`);
+}
+
+function investigationRevisionKey(fingerprint: string, revision: string): string {
+  return `${fingerprint}:${revision}`;
+}
+
+function investigationKeyHash(key: string): string {
+  return createHash('sha256').update(key).digest('hex');
+}
+
+function hasInvestigationForRevision(repoDir: string, fingerprint: string, revision: string): boolean {
+  const dir = join(repoDir, '.wavemill', 'incidents', fingerprint);
+  if (!existsSync(dir)) return false;
+  const prefix = `investigation-${revision.replace(/[^a-zA-Z0-9._-]/g, '-')}`;
+  return readdirSync(dir).some((name) => name.startsWith(prefix) && name.endsWith('.json'));
+}
+
+async function launchRootCauseInvestigation(
+  repoDir: string,
+  fingerprint: string,
+  revision: string,
+): Promise<void> {
+  const requestPath = investigationRequestPath(repoDir, fingerprint, revision);
+  mkdirSync(dirname(requestPath), { recursive: true });
+  writeFileSync(requestPath, JSON.stringify({
+    fingerprint,
+    repoDir,
+    evidenceRevision: revision,
+    requestedAt: new Date().toISOString(),
+  }, null, 2));
+
+  const key = investigationRevisionKey(fingerprint, revision);
+  const keyHash = investigationKeyHash(key);
+  const stateDir = join(repoDir, '.wavemill');
+  const retry = createStateDirRetry('root-cause-investigation', { maxAttempts: 3 });
+  const decision = retry.gate(stateDir, keyHash);
+  if (decision !== 'proceed') {
+    if (decision.startsWith('exhausted')) {
+      escalateOperatorAttention({
+        stateDir,
+        headSha: keyHash,
+        basis: { kind: 'exhausted', bucket: retry.bucket, maxAttempts: 3 },
+        message: `Root-cause investigation for ${fingerprint} exhausted its retry budget`,
+      });
+    }
+    return;
+  }
+
+  retry.increment(stateDir, keyHash);
+  const logPath = join(stateDir, 'async-jobs', `root-cause-investigation-${fingerprint.slice(0, 16)}`, 'job.log');
+  mkdirSync(dirname(logPath), { recursive: true });
+  const out = openSync(logPath, 'a');
+  const err = openSync(logPath, 'a');
+  const proc = spawn(
+    process.execPath,
+    ['--import', 'tsx', 'tools/investigate-incident.ts', '--request', requestPath],
+    {
+      cwd: resolve(__dirname, '..'),
+      detached: true,
+      stdio: ['ignore', out, err],
+    },
+  );
+  proc.unref();
+}
+
+async function launchRootCauseInvestigations(snapshot: ObserverSnapshot, options: ObserverOptions): Promise<void> {
+  if (!options.fileIncidents && !options.incidentsReplay) return;
+  for (const repo of snapshot.repos) {
+    const store = incidentStoreForRepo(repo, options);
+    if (!store) continue;
+    const config = mergeObserverLinearConfig(getObserverLinearConfig(repo.repoDir), options);
+    if (config.mode === 'off') continue;
+    const incidents = await store.getIncidents();
+    for (const incident of incidents) {
+      const reconciliation = reconcileIncidentForFiling(incident, repo.repoDir);
+      if (reconciliation.outcome !== 'confirmed_active') continue;
+      const revision = store.computeEvidenceRevision(incident);
+      if (hasInvestigationForRevision(repo.repoDir, incident.fingerprint, revision)) continue;
+      await launchRootCauseInvestigation(repo.repoDir, incident.fingerprint, revision, statePath);
+    }
+  }
 }
 
 function maxObserverLinearMode(a: IncidentSyncSnapshot['mode'], b: IncidentSyncSnapshot['mode']): IncidentSyncSnapshot['mode'] {
@@ -4780,6 +4855,52 @@ function redactSnapshot(snapshot: ObserverSnapshot): ObserverSnapshot {
   };
 }
 
+function latestInvestigationSummary(repoDir: string): { state?: 'ready' | 'draft' | 'exhausted' | 'skipped'; at?: string; reason?: string } | undefined {
+  const incidentsDir = join(repoDir, '.wavemill', 'incidents');
+  if (!existsSync(incidentsDir)) return undefined;
+  let latest: { path: string; generatedAt: string } | undefined;
+  for (const fingerprint of readdirSync(incidentsDir)) {
+    const dir = join(incidentsDir, fingerprint);
+    try {
+      if (!statSync(dir).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    for (const name of readdirSync(dir)) {
+      if (!name.startsWith('investigation-') || !name.endsWith('.json')) continue;
+      const path = join(dir, name);
+      let generatedAt: string | undefined;
+      try {
+        const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { generatedAt?: string; mode?: string; missingEvidence?: string[] };
+        generatedAt = parsed.generatedAt;
+      } catch {
+        continue;
+      }
+      if (!generatedAt) continue;
+      if (!latest || generatedAt > latest.generatedAt) {
+        latest = { path, generatedAt };
+      }
+    }
+  }
+  if (!latest) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(latest.path, 'utf-8')) as { mode?: string; missingEvidence?: string[] };
+    const state = parsed.mode === 'draft' ? 'draft' : 'ready';
+    return { state, at: latest.generatedAt, reason: parsed.missingEvidence?.join(', ') };
+  } catch {
+    return undefined;
+  }
+}
+
+function observerEscalationMode(config: ObserverLinearConfig, options: ObserverOptions): 'off' | 'shadow' | 'live' {
+  if (options.incidentsMode) {
+    if (options.incidentsMode === 'off' || options.incidentsMode === 'offline') return 'off';
+    return options.incidentsMode;
+  }
+  if (!config.enabled || config.mode === 'off' || config.mode === 'offline' || config.detectionOnly) return 'off';
+  return config.mode;
+}
+
 export async function writeServiceHeartbeat(snapshot: ObserverSnapshot, options: ObserverOptions): Promise<void> {
   if (!options.serviceMode || !options.repoDir) return;
   const healthPath = join(options.repoDir, '.wavemill', 'backstage-health.json');
@@ -4804,6 +4925,21 @@ export async function writeServiceHeartbeat(snapshot: ObserverSnapshot, options:
         configSource = undefined;
       }
       const credentialReady = Boolean(process.env.LINEAR_API_KEY);
+      let autoFixConfig: ReturnType<typeof getObserverAutoFixConfig> | undefined;
+      let linearConfig: ReturnType<typeof getObserverLinearConfig> | undefined;
+      try {
+        autoFixConfig = getObserverAutoFixConfig(options.repoDir);
+        linearConfig = getObserverLinearConfig(options.repoDir);
+      } catch {
+        // Config errors already surface as findings; heartbeat degrades gracefully.
+      }
+      const detectionMode: 'off' | 'detection-only' | 'remediation' = !options.incidentDetector
+        ? 'off'
+        : (autoFixConfig?.enabled && !options.autoFixDryRun)
+          ? 'remediation'
+          : 'detection-only';
+      const escalationMode = linearConfig ? observerEscalationMode(linearConfig, options) : 'off';
+      const investigationSummary = latestInvestigationSummary(options.repoDir);
       const lastError = snapshot.incidentSync?.errors?.[snapshot.incidentSync.errors.length - 1];
       const incidentSyncSummary = snapshot.incidentSync ? {
         mode: snapshot.incidentSync.mode ?? 'off',
@@ -4854,6 +4990,13 @@ export async function writeServiceHeartbeat(snapshot: ObserverSnapshot, options:
         repoDir: options.repoDir,
         findingCounts: counts,
         incidentSync: incidentSyncSummary,
+        escalation: {
+          detectionMode,
+          escalationMode,
+          lastInvestigationAt: investigationSummary?.at,
+          lastInvestigationState: investigationSummary?.state,
+          lastInvestigationReason: investigationSummary?.reason,
+        },
       };
       next.updatedAt = snapshot.timestamp;
       next.services = services;
@@ -4904,7 +5047,6 @@ function renderSummary(snapshot: ObserverSnapshot): string {
       lines.push(`  downstream: ${downstreamCount} finding(s) grouped under this root cause`);
     }
     lines.push(`  recommendation: ${finding.recommendation}`);
-    if (finding.linearIssueUrl) lines.push(`  linear: ${finding.linearIssueUrl}`);
   }
   if (visibleFindings.length > 20) {
     lines.push('');
@@ -4963,149 +5105,19 @@ function countGroupedFindings(findings: Finding[]): Map<string, number> {
   return counts;
 }
 
-function readEnvFile(cwd = process.cwd()): Record<string, string> {
-  const envPath = resolve(cwd, '.env');
-  if (!existsSync(envPath)) return {};
-  const env: Record<string, string> = {};
-  for (const line of readFileSync(envPath, 'utf8').split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const index = trimmed.indexOf('=');
-    if (index === -1) continue;
-    const key = trimmed.slice(0, index).trim();
-    let value = trimmed.slice(index + 1).trim();
-    value = value.replace(/^['"]|['"]$/g, '');
-    env[key] = value;
-  }
-  return env;
-}
-
-async function linearGraphql<T>(
-  apiKey: string,
-  query: string,
-  variables: Record<string, unknown>,
-): Promise<T> {
-  const response = await fetch('https://api.linear.app/graphql', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: apiKey,
-    },
-    body: JSON.stringify({ query, variables }),
-  });
-  const json = await response.json() as { data?: T; errors?: Array<{ message: string }> };
-  if (!response.ok || json.errors?.length) {
-    throw new Error(json.errors?.map((error) => error.message).join('; ') || `Linear HTTP ${response.status}`);
-  }
-  return json.data as T;
-}
-
-async function resolveLinearTeam(apiKey: string, requested?: string): Promise<string> {
-  const data = await linearGraphql<{ teams: { nodes: Array<{ id: string; key: string; name: string }> } }>(
-    apiKey,
-    `query Teams { teams(first: 50) { nodes { id key name } } }`,
-    {},
-  );
-  const teams = data.teams.nodes;
-  const found = requested
-    ? teams.find((team) => team.id === requested || team.key === requested || team.name === requested)
-    : teams[0];
-  if (!found) {
-    throw new Error(`Linear team not found: ${requested ?? '(first team)'}`);
-  }
-  return found.id;
-}
-
-async function resolveLinearProject(apiKey: string, requested?: string): Promise<string | undefined> {
-  if (!requested) return undefined;
-  const data = await linearGraphql<{ projects: { nodes: Array<{ id: string; name: string }> } }>(
-    apiKey,
-    `query Projects { projects(first: 100) { nodes { id name } } }`,
-    {},
-  );
-  const project = data.projects.nodes.find((node) => node.id === requested || node.name === requested);
-  if (!project) {
-    throw new Error(`Linear project not found: ${requested}`);
-  }
-  return project.id;
-}
-
-async function resolveLinearLabel(apiKey: string, requested?: string): Promise<string | undefined> {
-  if (!requested) return undefined;
-  const data = await linearGraphql<{ issueLabels: { nodes: Array<{ id: string; name: string }> } }>(
-    apiKey,
-    `query Labels { issueLabels(first: 100) { nodes { id name } } }`,
-    {},
-  );
-  const label = data.issueLabels.nodes.find((node) => node.id === requested || node.name === requested);
-  if (!label) {
-    throw new Error(`Linear label not found: ${requested}`);
-  }
-  return label.id;
-}
-
-async function fileLinearIssues(snapshot: ObserverSnapshot, options: ObserverOptions): Promise<void> {
-  if (options.dryRun || !options.fileLinear) return;
-  const env = { ...readEnvFile(resolve(__dirname, '..')), ...readEnvFile(process.cwd()), ...process.env };
-  const apiKey = env.LINEAR_API_KEY;
-  if (!apiKey) {
-    throw new Error('LINEAR_API_KEY not found in environment or .env');
-  }
-  const teamId = await resolveLinearTeam(apiKey, options.linearTeam);
-  const projectId = await resolveLinearProject(apiKey, options.linearProject);
-  const labelId = await resolveLinearLabel(apiKey, options.linearLabel);
-  const actionable = snapshot.findings.filter((finding) =>
-    finding.confidence === 'high' && (finding.severity === 'urgent' || finding.severity === 'high')
-  );
-  for (const finding of actionable) {
-    const body = [
-      `Severity: ${finding.severity}`,
-      `Category: ${finding.category}`,
-      `Confidence: ${finding.confidence}`,
-      finding.session ? `Session: ${finding.session}` : undefined,
-      finding.repoDir ? `Repo: ${finding.repoDir}` : undefined,
-      finding.issue ? `Issue: ${finding.issue}` : undefined,
-      '',
-      'Evidence:',
-      ...finding.evidence.map((item) => `- ${item}`),
-      '',
-      `Recommendation: ${finding.recommendation}`,
-      '',
-      `Detected at: ${snapshot.timestamp}`,
-    ].filter((line): line is string => line !== undefined).join('\n');
-    const data = await linearGraphql<{ issueCreate: { issue: { url: string } } }>(
-      apiKey,
-      `mutation CreateIssue($input: IssueCreateInput!) {
-        issueCreate(input: $input) { issue { url } }
-      }`,
-      {
-        input: {
-          teamId,
-          title: `[observer] ${finding.title}`.slice(0, 250),
-          description: body,
-          ...(projectId ? { projectId } : {}),
-          ...(labelId ? { labelIds: [labelId] } : {}),
-        },
-      },
-    );
-    finding.linearIssueUrl = data.issueCreate.issue.url;
-  }
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
 function observerPrompt(): string {
-  const wavemillDir = resolve(__dirname, '..');
   return `You are the Wavemill Observer.
 
 Run \`wavemill observer --json --once\` every few minutes and use its findings as the authoritative structured snapshot.
 
 Act conservatively:
-- If a finding identifies a conclusively hung child process blocking the monitor, terminate only that child and verify recovery.
-- If the root cause is a clear Wavemill code defect, fix it in ${wavemillDir}, add tests, commit, push, and open a PR targeting auto/integration.
-- Otherwise create a Linear issue with the evidence from the observer output.
+- Detect Wavemill conditions and verify auto-fix outcomes.
+- For confirmed defects that are not repairable within existing authority, invoke the escalation workflow; the root-cause skill decides whether evidence appends to an existing issue or becomes one consolidated report.
+- Do not create ad-hoc Linear issues and do not make ad-hoc code edits outside the bounded auto-fix actions.
 - Never kill a whole tmux session, reset worktrees, or modify active task work unless explicitly instructed.
 
 Detection-only unless observer.autoFix is enabled; the observer's own fixes are logged in .wavemill/incidents/actions.jsonl.
@@ -5144,11 +5156,11 @@ async function main(): Promise<void> {
     do {
       const reconciled = await reconcileIncidents(observe(options), options);
       const fixed = await applyAutoFixes(reconciled, options);
+      await launchRootCauseInvestigations(fixed, options);
       const alerted = await sendAlerts(fixed, options);
       const observed = await syncIncidentsToLinear(alerted, options);
       const snapshot = options.serviceMode ? redactSnapshot(observed) : observed;
       await writeServiceHeartbeat(snapshot, options);
-      await fileLinearIssues(snapshot, options);
       if (options.json) {
         process.stdout.write(`${JSON.stringify(snapshot, null, 2)}\n`);
       } else if (options.compact) {

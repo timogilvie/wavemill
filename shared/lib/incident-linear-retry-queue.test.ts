@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -9,8 +9,25 @@ import { DEFAULT_INCIDENT_LINEAR_CONFIG, type IncidentLinearClient } from './inc
 import { computeIncidentBackoffMs, drainIncidentQueue, enqueueIncidentSync } from './incident-linear-retry-queue.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 import { createIncidentDraft } from './wavemill-incident-model.ts';
+import type { InvestigationPayload } from './root-cause-escalation.ts';
 
 const queuePath = (repoDir: string) => join(repoDir, '.wavemill', 'registry', 'linear-incident-queue.jsonl');
+
+function seedInvestigation(repoDir: string, fingerprint: string, overrides: Partial<InvestigationPayload> = {}): void {
+  const dir = join(repoDir, '.wavemill', 'incidents', fingerprint);
+  mkdirSync(dir, { recursive: true });
+  const payload: InvestigationPayload = {
+    incidentFingerprint: fingerprint,
+    mode: 'new_consolidation',
+    title: 'One test issue',
+    sections: { why: 'why', change: 'change', notInScope: 'not in scope', acceptance: 'acceptance' },
+    modelId: 'gpt-test',
+    provider: 'codex',
+    generatedAt: '2026-08-04T12:15:00.000Z',
+    ...overrides,
+  };
+  writeFileSync(join(dir, 'investigation-revision-1.json'), JSON.stringify(payload, null, 2));
+}
 
 test('enqueueIncidentSync writes retryable incident action with short exponential backoff', () => {
   const repoDir = mkdtempSync(join(tmpdir(), 'incident-queue-enqueue-'));
@@ -107,6 +124,7 @@ test('drainIncidentQueue replays queued incident and tombstones success', async 
       }],
       metadata: { thresholdTriggered: true },
     }));
+    seedInvestigation(repoDir, stored.fingerprint);
     enqueueIncidentSync({
       repoDir,
       incidentFingerprint: stored.fingerprint,
@@ -262,6 +280,7 @@ test('drainIncidentQueue keeps replayed 429 pending with incremented attempt', a
       }],
       metadata: { thresholdTriggered: true },
     }));
+    seedInvestigation(repoDir, stored.fingerprint);
     enqueueIncidentSync({
       repoDir,
       incidentFingerprint: stored.fingerprint,

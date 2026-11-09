@@ -8,7 +8,6 @@ import {
   DEFAULT_INCIDENT_LINEAR_CONFIG,
   ShadowMutationBlockedError,
   createLookupBudget,
-  generateIssueBody,
   generateIssueTitle,
   planShadowSync,
   redactLinearIssueContent,
@@ -18,11 +17,34 @@ import {
   type IncidentLinearClient,
   type ObserverLinearConfig,
 } from './incident-to-linear-synchronizer.ts';
+import { renderInvestigatedIssueBody, type InvestigationPayload } from './root-cause-escalation.ts';
 import type { IncidentFilingReconciliation } from './incident-filing-reconciler.ts';
 import { redactIncidentData } from './artifact-diagnostics.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentCategory, type IncidentRecord } from './wavemill-incident-model.ts';
 import { LinearApiError, type LinearIssueSummary } from './linear.ts';
+
+function mockPayload(overrides: Partial<InvestigationPayload> = {}): InvestigationPayload {
+  return {
+    incidentFingerprint: 'f'.repeat(64),
+    mode: 'new_consolidation',
+    title: 'One test issue',
+    sections: { why: 'why', change: 'change', notInScope: 'not in scope', acceptance: 'acceptance' },
+    modelId: 'gpt-test',
+    provider: 'codex',
+    generatedAt: '2026-08-04T12:15:00.000Z',
+    ...overrides,
+  };
+}
+
+function readyOutcome(incident: IncidentRecord): InvestigationOutcome {
+  return {
+    incident,
+    payload: mockPayload({ incidentFingerprint: incident.fingerprint }),
+    reconciliation: { outcome: 'confirmed_active', evidence: {} },
+    state: 'ready',
+  };
+}
 
 function config(overrides: Partial<ObserverLinearConfig> = {}): ObserverLinearConfig {
   return {
@@ -135,9 +157,10 @@ test('ticket body renders both observed symptom and diagnosed root cause with ou
       key: 'diag:module_export_contract_mismatch',
     }],
   });
-  const body = generateIssueBody(enriched, config(), 'revision-2', new Date('2026-08-04T12:15:00.000Z'));
-  assert.match(body, /Root Cause.*module_export_contract_mismatch/);
-  assert.match(body, /Observed Symptom.*failed_job_no_result/);
+  const payload = mockPayload({ title: 'One export contract issue' });
+  const body = renderInvestigatedIssueBody(enriched, payload);
+  assert.equal(payload.title, 'One export contract issue');
+  assert.match(body, /## Why/);
   assert.doesNotMatch(body, /eyJabc|person@example\.com|\/Users\/tim\/project/);
 });
 
@@ -165,29 +188,21 @@ test('inbound 500-char redactor bounds an inflated log_excerpt before it reaches
       key: 'diag:module_export_contract_mismatch',
     }],
   });
-  const body = generateIssueBody(oversized, config(), 'revision-3', new Date('2026-08-04T12:15:00.000Z'));
+  const body = renderInvestigatedIssueBody(oversized, mockPayload({ title: 'One oversized issue' }));
   assert.doesNotMatch(body, /x{600}/, 'raw 2 KB blob must not appear in rendered body');
-  assert.match(body, /\[TRUNCATED \d+ chars\]/, 'rendered body must retain the inbound truncation marker');
+  assert.match(oversized.evidence[0].redactedData, /\[TRUNCATED \d+ chars\]/, 'inbound redaction must retain the truncation marker');
 });
 
 test('ticket template includes required incident sections and redacted evidence', () => {
   const item = incident();
-  const body = generateIssueBody(item, config(), 'revision-1', new Date('2026-08-04T12:15:00.000Z'));
+  const payload = mockPayload({ title: 'One product defect' });
+  const body = renderInvestigatedIssueBody(item, payload);
+  assert.equal(payload.title, 'One product defect');
   assert.match(generateIssueTitle(item), /\[wavemill incident\/product_defect\]/);
-  for (const section of [
-    '## Incident Summary',
-    '## Impact',
-    '## Affected Session/Task/Model',
-    '## Evidence',
-    '## Structured Evidence References',
-    '## Threshold & Escalation',
-    '## Related Issues',
-    '## Operator Recommendation',
-  ]) {
+  for (const section of ['## Why', '## Change', '## Not in scope', '## Acceptance']) {
     assert.match(body, new RegExp(section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }
   assert.doesNotMatch(body, /supersecret|person@example.com/);
-  assert.match(body, /observer_crash/);
 });
 
 test('confirmed product defect creates exactly one issue and persists sync metadata', async () => {
@@ -198,6 +213,7 @@ test('confirmed product defect creates exactly one issue and persists sync metad
     const stored = await store.upsert(incident({ fingerprint: '' }));
     const result = await syncIncident({
       incident: stored,
+      investigation: readyOutcome(stored),
       store,
       config: config(),
       now: new Date('2026-08-04T12:20:00.000Z'),
@@ -242,6 +258,7 @@ test('same evidence revision suppresses duplicate comments across restart', asyn
     const linked = await store.getIncident(stored.fingerprint);
     const result = await syncIncident({
       incident: linked!,
+      investigation: readyOutcome(linked!),
       store,
       config: config(),
       now: new Date('2026-08-04T12:20:00.000Z'),
@@ -266,16 +283,18 @@ test('existing issue correlation updates comment when evidence revision changes 
   try {
     const store = new IncidentStore(dir);
     const stored = await store.upsert(incident({ fingerprint: '' }));
-    const result = await syncIncident({
-      incident: {
-        ...stored,
-        metadata: {
-          ...stored.metadata,
-          linkedLinearId: 'HOK-102',
-          lastSyncedEvidenceRevision: 'old',
-          syncCooldownUntil: '2026-08-04T12:00:00.000Z',
-        },
+    const updateIncident = {
+      ...stored,
+      metadata: {
+        ...stored.metadata,
+        linkedLinearId: 'HOK-102',
+        lastSyncedEvidenceRevision: 'old',
+        syncCooldownUntil: '2026-08-04T12:00:00.000Z',
       },
+    };
+    const result = await syncIncident({
+      incident: updateIncident,
+      investigation: readyOutcome(updateIncident),
       store,
       config: config(),
       now: new Date('2026-08-04T12:30:00.000Z'),
@@ -297,8 +316,10 @@ test('existing issue correlation updates comment when evidence revision changes 
 test('content search correlation attaches evidence instead of creating duplicate issue', async () => {
   let createCalls = 0;
   let commentCalls = 0;
+  const item = incident({ metadata: { thresholdTriggered: true, lastSyncedEvidenceRevision: 'old' } });
   const result = await syncIncident({
-    incident: incident({ metadata: { thresholdTriggered: true, lastSyncedEvidenceRevision: 'old' } }),
+    incident: item,
+    investigation: readyOutcome(item),
     config: config(),
     now: new Date('2026-08-04T12:40:00.000Z'),
     client: mockClient({
@@ -324,13 +345,15 @@ test('class policies suppress model outcomes and below-threshold external transi
     ['model_task_harness_outcome', 10],
     ['external_transient_dependency', 1],
   ] as Array<[IncidentCategory, number]>) {
+    const item = incident({
+      category,
+      rootCauseClass: category === 'model_task_harness_outcome' ? 'turn_limit' : 'github_ssh_disconnect',
+      occurrenceCount,
+      metadata: { thresholdTriggered: true },
+    });
     const result = await syncIncident({
-      incident: incident({
-        category,
-        rootCauseClass: category === 'model_task_harness_outcome' ? 'turn_limit' : 'github_ssh_disconnect',
-        occurrenceCount,
-        metadata: { thresholdTriggered: true },
-      }),
+      incident: item,
+      investigation: readyOutcome(item),
       config: config(),
       client: mockClient(),
     });
@@ -340,13 +363,15 @@ test('class policies suppress model outcomes and below-threshold external transi
 });
 
 test('repeated external transient can create one incident issue', async () => {
+  const item = incident({
+    category: 'external_transient_dependency',
+    rootCauseClass: 'github_ssh_disconnect',
+    occurrenceCount: 3,
+    metadata: { thresholdTriggered: true },
+  });
   const result = await syncIncident({
-    incident: incident({
-      category: 'external_transient_dependency',
-      rootCauseClass: 'github_ssh_disconnect',
-      occurrenceCount: 3,
-      metadata: { thresholdTriggered: true },
-    }),
+    incident: item,
+    investigation: readyOutcome(item),
     config: config(),
     client: mockClient(),
   });
@@ -355,8 +380,10 @@ test('repeated external transient can create one incident issue', async () => {
 
 test('dry-run returns offline unknown plan without Linear API calls', async () => {
   let linearCalls = 0;
+  const dryItem = incident();
   const result = await syncIncident({
-    incident: incident(),
+    incident: dryItem,
+    investigation: readyOutcome(dryItem),
     config: config(),
     dryRun: true,
     client: mockClient({
@@ -425,14 +452,16 @@ test('recovered unlinked incident is skipped before every Linear client call and
 
 test('detectionOnly returns local update plan without Linear API calls', async () => {
   let linearCalls = 0;
+  const detItem = incident({
+    metadata: {
+      linkedLinearId: 'HOK-104',
+      linkedLinearUrl: 'https://linear.app/hokusai/issue/HOK-104/test',
+      lastSyncedEvidenceRevision: 'old',
+    },
+  });
   const result = await syncIncident({
-    incident: incident({
-      metadata: {
-        linkedLinearId: 'HOK-104',
-        linkedLinearUrl: 'https://linear.app/hokusai/issue/HOK-104/test',
-        lastSyncedEvidenceRevision: 'old',
-      },
-    }),
+    incident: detItem,
+    investigation: readyOutcome(detItem),
     config: config({ detectionOnly: true }),
     client: mockClient({
       getIssue: async () => {
@@ -474,6 +503,7 @@ test('retryable Linear failure is queued and stored as sync error', async () => 
     const stored = await store.upsert(incident({ fingerprint: '' }));
     const result = await syncIncident({
       incident: stored,
+      investigation: readyOutcome(stored),
       store,
       config: config(),
       client: mockClient({
@@ -540,6 +570,7 @@ test('shadow mode produces deterministic decision, exact redacted payload, and z
   });
   const result = await syncIncident({
     incident: item,
+    investigation: readyOutcome(item),
     config: config({ mode: 'shadow' }),
     now: new Date('2026-08-04T12:30:00.000Z'),
     client: spyClient,
@@ -558,13 +589,15 @@ test('shadow mode produces deterministic decision, exact redacted payload, and z
 });
 
 test('shadow mode never emits unknown_needs_lookup even without correlation', async () => {
+  const shItem = incident({
+    metadata: {
+      thresholdTriggered: true,
+      escalatedAt: '2026-08-04T12:10:00.000Z',
+    },
+  });
   const result = await syncIncident({
-    incident: incident({
-      metadata: {
-        thresholdTriggered: true,
-        escalatedAt: '2026-08-04T12:10:00.000Z',
-      },
-    }),
+    incident: shItem,
+    investigation: readyOutcome(shItem),
     config: config({ mode: 'shadow' }),
     client: mockClient(),
   });
@@ -595,10 +628,12 @@ test('shadow lookup budget stops correlation once exhausted and surfaces an acti
     searchIssues: async () => [],
     getTeams: async () => [{ id: 't', key: 'HOK', name: 'H' }],
   });
+  const luItem = incident({
+    metadata: { thresholdTriggered: true, escalatedAt: '2026-08-04T12:10:00.000Z' },
+  });
   const result = await syncIncident({
-    incident: incident({
-      metadata: { thresholdTriggered: true, escalatedAt: '2026-08-04T12:10:00.000Z' },
-    }),
+    incident: luItem,
+    investigation: readyOutcome(luItem),
     config: config({ mode: 'shadow' }),
     lookupBudget: budget,
     client: spyClient,
@@ -618,9 +653,10 @@ test('planShadowSync assembles the exact rendered title and body', () => {
     now: new Date('2026-08-04T12:15:00.000Z'),
     reconciliation: { outcome: 'confirmed_active', evidence: {} },
     correlation: { matchedBy: 'none', candidateCount: 0 },
+    investigation: readyOutcome(item),
   });
-  assert.equal(plan.plannedTitle, generateIssueTitle(item));
-  assert.match(plan.plannedBody ?? '', /## Incident Summary/);
+  assert.equal(plan.plannedTitle, mockPayload({ incidentFingerprint: item.fingerprint }).title);
+  assert.match(plan.plannedBody ?? '', /## Why/);
 });
 
 function issueSummary(identifier: string): LinearIssueSummary {

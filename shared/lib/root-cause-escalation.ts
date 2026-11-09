@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { callHeadlessLLM, HEADLESS_DEFAULT_MODEL, type HeadlessLLMOptions, type LLMCallResult } from './headless-llm.ts';
@@ -84,6 +84,33 @@ function readJsonFile<T>(path: string): T | null {
   } catch {
     return null;
   }
+}
+
+function latestInvestigationFile(repoDir: string, fingerprint: string): string | null {
+  const dir = incidentDir(repoDir, fingerprint);
+  if (!existsSync(dir)) return null;
+  const files = readdirSync(dir)
+    .filter((name) => name.startsWith('investigation-') && name.endsWith('.json'))
+    .sort();
+  return files.length > 0 ? join(dir, files[files.length - 1]) : null;
+}
+
+export function loadInvestigationOutcome(
+  incident: IncidentRecord,
+  repoDir: string,
+): InvestigationOutcome | null {
+  const path = latestInvestigationFile(repoDir, incident.fingerprint);
+  if (!path) return null;
+  const payload = readJsonFile<InvestigationPayload>(path);
+  if (!payload || payload.incidentFingerprint !== incident.fingerprint) return null;
+  const validated = validatePayload(payload);
+  if (!validated.ok) return null;
+  return {
+    incident,
+    payload: validated.payload,
+    reconciliation: { outcome: 'confirmed_active', evidence: {} },
+    state: validated.payload.mode === 'draft' ? 'draft' : 'ready',
+  };
 }
 
 function evidenceRevision(incident: IncidentRecord): string {

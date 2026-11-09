@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeF
 import { dirname, isAbsolute, join } from 'node:path';
 import { classifyLinearError, type ClassifiedLinearError } from './linear.ts';
 import { syncIncident, syncIncidentLifecycle, type IncidentLinearClient, type ObserverLinearConfig, type SyncIncidentOptions } from './incident-to-linear-synchronizer.ts';
+import { loadInvestigationOutcome } from './root-cause-escalation.ts';
 import type { IncidentLifecycleTransitionKind } from './wavemill-incident-model.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 
@@ -240,6 +241,7 @@ export async function drainIncidentQueue(options: DrainIncidentQueueOptions): Pr
         }
         throw new Error(lifecycleResult.reason ?? 'incident lifecycle retry did not complete');
       }
+      const investigation = loadInvestigationOutcome(incident, repoDir);
       const syncResult = await syncIncident({
         incident,
         store: options.store,
@@ -261,6 +263,7 @@ export async function drainIncidentQueue(options: DrainIncidentQueueOptions): Pr
         },
         repoDir,
         reconciler: options.reconciler,
+        investigation: investigation ?? undefined,
       });
       if (record.linearAction === 'create' && (syncResult.reconciliation?.outcome === 'recovered' || syncResult.reconciliation?.outcome === 'superseded')) {
         appendRecord(path, { schemaVersion: SCHEMA_VERSION, recordType: 'tombstone', id: record.id, settledAt: toIso(now) });
