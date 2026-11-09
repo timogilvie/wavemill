@@ -78,6 +78,31 @@ test('attentionItemsToAlertFindings: task items map to high findings keyed by th
   assert.equal(findings[0].session, 'wavemill');
 });
 
+test('attentionItemsToAlertFindings: a raw recovery command never becomes the push body', () => {
+  // protects: the push body leaking the operator's absolute filesystem paths —
+  // the ready-watchdog recovery command is `sh -c` with absolute paths and
+  // `observer.alerts.push.url` may be a public ntfy topic (HOK-3424).
+  const findings = attentionItemsToAlertFindings([
+    attentionItem({
+      id: 'HOK-4:operator-decision:inputs-preparation-failed:abcd',
+      kind: 'operator-decision',
+      taskId: 'HOK-4',
+      summary: 'HOK-4 needs the operator',
+      evidence: [{ source: '.needs-attention', summary: 'packet expansion failed' }],
+      commands: [
+        {
+          label: 'npx tsx /Users/op/wavemill/tools/expand.ts --repo-dir /Users/op/wavemill --dry-run',
+          argv: ['sh', '-c', 'npx tsx /Users/op/wavemill/tools/expand.ts --repo-dir /Users/op/wavemill --dry-run'],
+        },
+        { label: 'wavemill abort HOK-4', argv: ['wavemill', 'abort', 'HOK-4'] },
+      ],
+    }),
+  ]);
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].recommendation, 'wavemill abort HOK-4');
+  assert.ok(!findings[0].recommendation.includes('/Users/op/'));
+});
+
 test('attentionItemsToAlertFindings: the journal still applies persistMinutes and repeatMinutes', () => {
   // protects: reading the projection bypassing the HOK-3097 dedupe — one
   // escalation held for persistMinutes, pushed once, not repeated before

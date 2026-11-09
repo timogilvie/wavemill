@@ -162,7 +162,15 @@ function isPushedAttentionKind(kind: AttentionKind): kind is PushedAttentionKind
 }
 
 function attentionRecommendation(item: AttentionItem): string {
-  if (item.commands.length > 0) return item.commands.map((command) => command.label).join('; ');
+  // Raw shell commands (`argv` `sh -c …`, e.g. the ready-watchdog recovery
+  // command) carry absolute filesystem paths. They must never become the push
+  // body — `observer.alerts.push.url` may be a public ntfy topic — so they are
+  // dropped here in favour of the safe, human-readable labels and the evidence
+  // summary. The dashboard inbox keeps rendering the raw `commands` untouched.
+  const safeLabels = item.commands
+    .filter((command) => !(command.argv[0] === 'sh' && command.argv[1] === '-c'))
+    .map((command) => command.label);
+  if (safeLabels.length > 0) return safeLabels.join('; ');
   const evidence = item.evidence.map((entry) => entry.summary).filter((summary) => summary.length > 0);
   return evidence.join(' — ') || item.summary;
 }
