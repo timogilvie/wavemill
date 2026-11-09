@@ -364,6 +364,7 @@ for f in \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-restart.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-budgets.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-flags.test.sh \
+  "$REPO_DIR"/tests/deepseek-gh-wrapper.test.sh \
   "$REPO_DIR"/tests/fixtures/terminal-lifecycle/merge_commit_delivery.sh \
   "$REPO_DIR"/tests/fixtures/terminal-lifecycle/squash_delivery.sh \
   "$REPO_DIR"/tests/fixtures/terminal-lifecycle/rebase_delivery.sh \

@@ -135,6 +135,7 @@ TESTS=(
   cleanup-episodes.test.sh
   completed-task-cleanup.test.sh
   error-recovery.test.sh
+  deepseek-gh-wrapper.test.sh
   startup-terminal-prune.test.sh
   planning-validation.test.sh
   wavemill-guards.test.sh
