@@ -1,9 +1,14 @@
 # shellcheck shell=bash
 # Fake reviewer for the HOK-3426 replay (sourced by tests/fakes/bin/claude).
 #
-# The 2026-11-05 incident stamped a LIVE reviewer `failed` (agent-exited) from
-# a pane descendant count and burned the stage-failure-review bucket. This
-# fixture is the opposite, honest case: the reviewer really is killed
+# The reported 2026-11-05 stall was attributed to a LIVE reviewer being
+# stamped `failed` (agent-exited) from a pane descendant count, which would
+# burn the stage-failure-review bucket. Production logs hold no record of that
+# incident (plan Step 0), so the attribution is a reproduction, not incident
+# evidence: against the base-branch rule a name-resolved pane whose shell has
+# no child settles a live review as agent-exited.
+#
+# This fixture is the opposite, honest case: the reviewer really is killed
 # mid-stage (SIGTERM, exit 143) before it writes the PR or a verdict. The pane
 # shell survives the kill, so no pane read can see it — only the launcher's
 # recorded `agent-exit` fact can settle the stage, which must happen once and
