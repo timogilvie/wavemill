@@ -97,6 +97,30 @@ export function isBlockingFinding(finding: ReviewFinding): boolean {
   return finding.severity === 'blocker' && !isDismissedFinding(finding);
 }
 
+/**
+ * Convert a tool report to a review contract (HOK-3448).
+ */
+export function reviewContractFromToolReport(report: ReviewToolReport): { verdict: 'ready' | 'not_ready'; codeReviewFindings: ReviewFinding[] } {
+  const findings: ReviewFinding[] = report.findings.map(finding => {
+    const reviewFinding: ReviewFinding = {
+      severity: finding.severity,
+      category: finding.category,
+      location: finding.line ? `${finding.file}:${finding.line}` : finding.file,
+      description: [finding.short_summary, finding.summary, finding.failure_scenario].filter(Boolean).join('\n\n'),
+    };
+    
+    if (finding.verdict) {
+      reviewFinding.evidence = `verification: ${finding.verdict}`;
+    }
+    
+    return reviewFinding;
+  });
+  
+  const verdict = findings.some(isBlockingFinding) ? 'not_ready' : 'ready';
+  
+  return { verdict, codeReviewFindings: findings };
+}
+
 export interface ReviewResult {
   verdict: 'ready' | 'not_ready' | 'error';
   codeReviewFindings: ReviewFinding[];
@@ -153,6 +177,12 @@ export interface ReviewResult {
       mergeBaseSha: string | null;
       reviewedHead: string | null;
       reviewedFileCount: number;
+    };
+    /** Source evidence for tool reports (HOK-3448) */
+    reportSource?: {
+      source: string;
+      sessionId: string;
+      toolUseId: string;
     };
   };
 }
@@ -490,6 +520,12 @@ interface ReviewLLMResponse {
   /** Model id the CLI's own output reported, when it reports one. */
   reportedModel?: string;
   fallbackChain?: LLMCallResult['fallbackChain'];
+  /** Structured report from tool findings (HOK-3448) */
+  structuredReport?: ReviewToolReport;
+  /** Error when a report was delivered but is unusable (HOK-3448) */
+  structuredReportError?: string;
+  /** Session ID from the CLI output (HOK-3448) */
+  sessionId?: string;
 }
 
 /**
@@ -523,6 +559,9 @@ async function invokeLLMWithRetry(
     provider: cli.provider,
     invokedModel: model,
     ...(adapterResult.reportedModel !== 'unverified' ? { reportedModel: adapterResult.reportedModel } : {}),
+    ...(adapterResult.structuredReport ? { structuredReport: adapterResult.structuredReport } : {}),
+    ...(adapterResult.structuredReportError ? { structuredReportError: adapterResult.structuredReportError } : {}),
+    ...(adapterResult.sessionId ? { sessionId: adapterResult.sessionId } : {}),
   };
 }
 
@@ -851,31 +890,73 @@ async function runReviewWithRetry(
     );
   };
 
-  // Pre-validate response format
-  if (!looksLikeJson(responseText)) {
+  // Handle structured report errors
+  if (response.structuredReportError) {
+    // Throw structured report errors inside the existing parse try block
+    // so it takes the existing single stricter-prompt retry and then throws
     if (attempt < maxAttempts) {
       return retryWithStricterPrompt(
-        'Claude returned non-JSON output',
-        'LLM returned conversational response',
-        `Response preview: ${responseText.substring(0, 200)}`,
+        `Structured report error: ${response.structuredReportError}`,
+        'Structured report error',
+        `Error: ${response.structuredReportError}`,
       );
     }
-    throw new Error(
-      'LLM returned conversational text instead of JSON after 2 attempts.\n' +
-      `Response preview: ${responseText.substring(0, 300)}\n\n` +
-      `Possible causes:\n` +
-      `  - Model is not following JSON format instructions\n` +
-      `  - Network issues caused incomplete response\n` +
-      `  - Context is too large for the model\n\n` +
-      `Troubleshooting:\n` +
-      `  - Run with --verbose to see full LLM response\n` +
-      `  - Try a different model: REVIEW_MODEL=claude-opus-4-8 npx tsx tools/review-changes.ts\n` +
-      `  - Break changes into smaller PRs if diff is very large\n` +
-      `  - Check your network connection and retry`
-    );
+    throw new Error(`Structured report error: ${response.structuredReportError}`);
   }
 
-  // Parse response
+  // Handle structured reports
+  if (response.structuredReport) {
+    const contract = reviewContractFromToolReport(response.structuredReport);
+    
+    // If response.text also parses as a review contract, its verdict must equal the derived verdict
+    try {
+      const textContract = parseNativeReviewResponse(responseText, context, options.operatingMode ?? 'normal');
+      if (textContract.verdict !== contract.verdict) {
+        // Verdict mismatch - throw to retry/fail
+        if (attempt < maxAttempts) {
+          return retryWithStricterPrompt(
+            'Review report verdict mismatch',
+            'Review report verdict mismatch',
+            `Tool report verdict: ${contract.verdict}, text contract verdict: ${textContract.verdict}`,
+          );
+        }
+        throw new Error(`Review report verdict mismatch: tool report ${contract.verdict}, text contract ${textContract.verdict}`);
+      }
+      // On agreement, use the text contract (keeps the ordinary JSON contract unchanged)
+      return {
+        ...textContract,
+        substantiveAnalysisIdentity: buildCliAnalysisIdentity({ requestedModel: model, response }),
+        metadata: {
+          ...textContract.metadata,
+          reportSource: {
+            source: response.structuredReport.source,
+            sessionId: response.structuredReport.sessionId,
+            toolUseId: response.structuredReport.toolUseId
+          }
+        }
+      };
+    } catch (error) {
+      // Text doesn't parse as a review contract - use the tool report contract
+      return {
+        ...contract,
+        substantiveAnalysisIdentity: buildCliAnalysisIdentity({ requestedModel: model, response }),
+        metadata: {
+          branch: context.metadata.branch,
+          files: context.metadata.files,
+          hasUiChanges: context.metadata.hasUiChanges,
+          designContextAvailable: context.designContext !== null,
+          uiVerificationRun: false,
+          reportSource: {
+            source: response.structuredReport.source,
+            sessionId: response.structuredReport.sessionId,
+            toolUseId: response.structuredReport.toolUseId
+          }
+        }
+      };
+    }
+  }
+
+  // Parse response (fallback to text-only parsing)
   try {
     await options.reporter?.emit({
       event: 'response_parsing',
@@ -1467,8 +1548,8 @@ export const reviewEngineTestUtils = {
   getPersonaPromptPath,
   isNativeReviewOptedIn,
   loadPersonaPromptTemplate,
-  looksLikeJson,
   parseNativeReviewResponse,
+  reviewContractFromToolReport,
   setLoadNativeReviewModule(loader: typeof reviewEngineDeps.loadNativeReviewModule) {
     reviewEngineDeps.loadNativeReviewModule = loader;
   },

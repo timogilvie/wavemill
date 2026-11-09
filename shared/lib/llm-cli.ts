@@ -146,6 +146,8 @@ export interface LLMCallResult {
   reportedModel?: string;
   /** Models skipped due to quota exhaustion before success */
   fallbackChain?: Array<{ model: string; reason: string }>;
+  /** Session reference minted for this call (HOK-3448) */
+  sessionRef?: string;
 }
 
 export interface CliHealthCheck {
@@ -681,47 +683,7 @@ function stripToolCalls(text: string): string {
 // JSON Envelope Unwrapping
 // ────────────────────────────────────────────────────────────────
 
-interface JsonEnvelope {
-  result?: string;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    cache_creation_input_tokens?: number;
-    cache_read_input_tokens?: number;
-  };
-  total_cost_usd?: number;
-  /** Per-model usage keyed by the model id(s) that served the turn (claude CLI). */
-  modelUsage?: Record<string, { outputTokens?: number; canonicalModel?: string } | undefined>;
-  is_error?: boolean;
-  error?: string;
-}
-
-/**
- * Pick the model the claude CLI reports as having served the turn from its
- * `modelUsage` map (HOK-3247). The map can hold helper models next to the main
- * one, so the entry with the most output tokens wins; `canonicalModel` is
- * preferred over the map key when present. Returns undefined when the
- * envelope reports no model — callers must then treat identity as unverified.
- */
-export function reportedModelFromEnvelope(modelUsage: unknown): string | undefined {
-  if (!modelUsage || typeof modelUsage !== 'object' || Array.isArray(modelUsage)) {
-    return undefined;
-  }
-  let best: { model: string; outputTokens: number } | undefined;
-  for (const [key, usage] of Object.entries(modelUsage as NonNullable<JsonEnvelope['modelUsage']>)) {
-    const canonical = typeof usage?.canonicalModel === 'string' && usage.canonicalModel.trim()
-      ? usage.canonicalModel.trim()
-      : key.trim();
-    if (!canonical) continue;
-    const outputTokens = typeof usage?.outputTokens === 'number' && Number.isFinite(usage.outputTokens)
-      ? usage.outputTokens
-      : 0;
-    if (!best || outputTokens > best.outputTokens) {
-      best = { model: canonical, outputTokens };
-    }
-  }
-  return best?.model;
-}
+import { parseClaudeCliOutput, claudeCliErrorFromStdout } from './model-adapters/claude-cli-output.ts';
 
 /**
  * Unwrap JSON envelope from LLM CLI --output-format json.
@@ -739,44 +701,18 @@ function unwrapJsonEnvelope(raw: string): {
   costUsd?: number;
   reportedModel?: string;
 } {
-  let data: JsonEnvelope;
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    // If JSON parse fails, treat the entire output as text (fallback)
-    return { text: raw.trim() };
+  const result = parseClaudeCliOutput(raw);
+  if (result.error) {
+    // Check for is_error envelope and throw (outside try-catch so it propagates)
+    throw new Error(`claude CLI returned is_error: ${result.error}`);
   }
-
-  // Check for is_error envelope and throw (outside try-catch so it propagates)
-  if (data.is_error === true) {
-    const errorMsg = data.error || 'Unknown error';
-    throw new Error(`claude CLI returned is_error: ${errorMsg}`);
-  }
-
-  // Extract text from data.result if present
-  const text = (data.result || raw).trim();
-
-  // Extract usage if present
-  let usage: LLMCallResult['usage'] | undefined;
-  if (data.usage) {
-    const u = data.usage;
-    const inputTokens =
-      (u.input_tokens || 0) +
-      (u.cache_creation_input_tokens || 0) +
-      (u.cache_read_input_tokens || 0);
-    const outputTokens = u.output_tokens || 0;
-    usage = {
-      inputTokens,
-      outputTokens,
-      totalTokens: inputTokens + outputTokens,
-    };
-  }
-
-  // Extract cost if present
-  const costUsd = data.total_cost_usd;
-  const reportedModel = reportedModelFromEnvelope(data.modelUsage);
-
-  return { text, usage, costUsd, ...(reportedModel ? { reportedModel } : {}) };
+  
+  return { 
+    text: result.text, 
+    usage: result.usage, 
+    costUsd: result.costUsd, 
+    reportedModel: result.reportedModel 
+  };
 }
 
 /**
@@ -819,6 +755,7 @@ const SESSION_SELECTION_FLAGS = new Set(['--session-id', '--resume', '-r', '--co
 interface HelperOwnership {
   stateDir: string;
   pendingRef?: string;
+  sessionRef?: string;
 }
 
 /**
@@ -842,7 +779,7 @@ function recordHelperLaunch(
     const sessionRef = newSessionRef();
     if (!recordLaunch(options.featureDir, { ...base, sessionRef, harness: 'claude-code' })) return null;
     cliArgs.push('--session-id', sessionRef);
-    return { stateDir: options.featureDir };
+    return { stateDir: options.featureDir, sessionRef };
   }
   const pendingRef = pendingSessionRef(newSessionRef());
   if (!recordLaunch(options.featureDir, { ...base, sessionRef: pendingRef, harness: 'codex' })) return null;
@@ -1881,6 +1818,7 @@ async function callLLMOnce(
       provider,
       model: options.model || '(default)',
       ...(reportedModel ? { reportedModel } : {}),
+      ...(ownership?.sessionRef ? { sessionRef: ownership.sessionRef } : {}),
     };
   } catch (error) {
     throw withElapsed(error as Error, getElapsed(error) || Date.now() - startedAt);

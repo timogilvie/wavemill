@@ -25,6 +25,7 @@ import {
 import { estimateTokensWithBytesPerToken } from './token-estimator.ts';
 import { estimatePromptTokens, evaluateContextWindow } from '../native-agent/context-window-guard.ts';
 import { classifyCliMessage } from './cli-error-classifier.ts';
+import { parseClaudeCliOutput, claudeCliErrorFromStdout } from './claude-cli-output.ts';
 
 /**
  * JSON-heavy worst-case bytes-per-token for the claude CLI, derived from a
@@ -157,11 +158,18 @@ export class ClaudeCliAdapter implements TransportAdapter {
         cwd: opts.cwd,
         retry: (opts.maxRetries ?? 0) > 0,
         maxRetries: opts.maxRetries,
+        cliFlags: ['--verbose'], // Enable verbose output to get tool reports
         ...(opts.ownership ? { featureDir: opts.ownership.featureDir, helperPurpose: opts.ownership.helperPurpose } : {}),
         // Fail-closed by default: no ladder.
         ...(this.failClosed ? { fallbackModels: [] } : { taskType: 'review' as const }),
       });
-      const invokeResult: AdapterInvokeResult = {
+      
+      // Parse the verbose output to extract tool reports
+      const parsedOutput = parseClaudeCliOutput(result.rawOutput, { 
+        expectedSessionId: result.sessionRef 
+      });
+      
+      const invokeResult: AdapterInvokeResult & { structuredReport?: ReviewToolReport; structuredReportError?: string; sessionId?: string } = {
         text: result.text,
         reportedModel: result.reportedModel ?? 'unverified',
         ...(result.usage
@@ -174,6 +182,9 @@ export class ClaudeCliAdapter implements TransportAdapter {
               } satisfies AdapterUsage,
             }
           : {}),
+        ...(parsedOutput.toolReport ? { structuredReport: parsedOutput.toolReport } : {}),
+        ...(parsedOutput.toolReportError ? { structuredReportError: parsedOutput.toolReportError } : {}),
+        ...(parsedOutput.sessionId ? { sessionId: parsedOutput.sessionId } : {}),
       };
       return invokeResult;
     } catch (error) {
@@ -188,19 +199,11 @@ export class ClaudeCliAdapter implements TransportAdapter {
     // The claude CLI's `--output-format json` writes {"is_error":true,"error":...}
     // on stdout on failure, which the previous stderr-only error builder
     // discarded (HOK-3248 problem 3).
-    let envelope: ClaudeEnvelope | undefined;
-    try {
-      const parsed = JSON.parse(stdout) as unknown;
-      if (parsed && typeof parsed === 'object') {
-        envelope = parsed as ClaudeEnvelope;
-      }
-    } catch {
-      envelope = undefined;
-    }
-
-    if (envelope?.is_error === true) {
-      const message = envelope.error ?? 'claude CLI returned is_error with no message';
-      const adapterError = classifyClaudeMessage(message);
+    
+    // Check for is_error in stdout first
+    const errorFromStdout = claudeCliErrorFromStdout(stdout);
+    if (errorFromStdout) {
+      const adapterError = classifyClaudeMessage(errorFromStdout);
       return {
         text: '',
         reportedModel: 'unverified',
@@ -226,29 +229,22 @@ export class ClaudeCliAdapter implements TransportAdapter {
       };
     }
 
-    // Success path
-    if (!envelope) {
-      return { text: stdout.trim(), reportedModel: 'unverified' };
+    // Parse using the new Claude CLI output parser
+    const result = parseClaudeCliOutput(stdout);
+    if (result.error) {
+      const adapterError = classifyClaudeMessage(result.error);
+      return {
+        text: '',
+        reportedModel: 'unverified',
+        error: adapterError,
+      };
     }
-    const text = (envelope.result ?? stdout).trim();
-    const reportedModel = reportedModelFromEnvelope(envelope.modelUsage) ?? 'unverified';
-    const usage = envelope.usage
-      ? ({
-          inputTokens:
-            (envelope.usage.input_tokens ?? 0) +
-            (envelope.usage.cache_creation_input_tokens ?? 0) +
-            (envelope.usage.cache_read_input_tokens ?? 0),
-          outputTokens: envelope.usage.output_tokens ?? 0,
-          totalTokens:
-            (envelope.usage.input_tokens ?? 0) +
-            (envelope.usage.cache_creation_input_tokens ?? 0) +
-            (envelope.usage.cache_read_input_tokens ?? 0) +
-            (envelope.usage.output_tokens ?? 0),
-          ...(envelope.total_cost_usd !== undefined ? { costUsd: envelope.total_cost_usd } : {}),
-        } satisfies AdapterUsage)
-      : undefined;
-    const out: AdapterInvokeResult = { text, reportedModel };
-    if (usage) out.usage = usage;
+    
+    const out: AdapterInvokeResult = { 
+      text: result.text, 
+      reportedModel: result.reportedModel ?? 'unverified' 
+    };
+    if (result.usage) out.usage = result.usage;
     return out;
   }
 }

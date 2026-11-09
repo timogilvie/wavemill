@@ -22,6 +22,8 @@ export type AdapterKind =
   | 'native-openai'
   | 'native-openrouter';
 
+
+
 export type AdapterErrorKind =
   | 'input-too-large'
   | 'context-exceeded'
@@ -76,6 +78,18 @@ export interface AdapterInvokeResult {
   reportedModel: string;
   usage?: AdapterUsage;
   error?: AdapterError;
+  /**
+   * Validated, session-bound tool report (HOK-3448)
+   */
+  structuredReport?: ReviewToolReport;
+  /**
+   * Error when a report was delivered but is unusable (HOK-3448)
+   */
+  structuredReportError?: string;
+  /**
+   * Session ID from the CLI output (HOK-3448)
+   */
+  sessionId?: string;
 }
 
 export type AdapterParseResult = AdapterInvokeResult;
