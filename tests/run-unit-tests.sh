@@ -308,6 +308,7 @@ TESTS=(
   shared/lib/hokusai-local-config.test.ts
   shared/lib/hokusai-audit.test.ts
   shared/lib/hokusai-submission-trigger.test.ts
+  shared/lib/terminal-arm-feedback.test.ts
   shared/lib/hokusai-trigger-log.test.ts
   shared/lib/hokusai-queue.test.ts
   shared/lib/hokusai-backfill.test.ts
@@ -495,6 +496,7 @@ TESTS=(
   tools/native-agent-certifications.test.ts
   shared/lib/incident-linear-retry-queue.test.ts
   shared/lib/incident-to-linear-synchronizer.test.ts
+  shared/lib/root-cause-escalation.test.ts
   shared/lib/observer-shadow-audit.test.ts
   shared/lib/incident-filing-reconciler.test.ts
   shared/lib/incident-log-excerpt-reader.test.ts

@@ -1,0 +1,30 @@
+{
+  "$id": "investigation-payload",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["incidentFingerprint", "mode", "title", "sections", "modelId", "provider", "generatedAt"],
+  "properties": {
+    "incidentFingerprint": { "type": "string" },
+    "mode": { "enum": ["append_to_owner", "new_consolidation", "draft"] },
+    "targetIssueId": { "type": "string" },
+    "title": { "type": "string" },
+    "sections": {
+      "type": "object",
+      "required": ["why", "change", "notInScope", "acceptance"],
+      "properties": {
+        "why": { "type": "string" },
+        "change": { "type": "string" },
+        "notInScope": { "type": "string" },
+        "acceptance": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "primitivesTable": { "type": "string" },
+    "fixturePointer": { "type": "string" },
+    "missingEvidence": { "type": "array", "items": { "type": "string" } },
+    "modelId": { "type": "string" },
+    "provider": { "enum": ["claude", "codex", "native-openrouter", "native-openai"] },
+    "generatedAt": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

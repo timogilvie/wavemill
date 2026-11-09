@@ -1,0 +1,2 @@
+# Legitimate exceptions (not defect escalation)
+shared/lib/initiative-decomposer.ts 1 # legitimate initiative planning issue creation, not defect escalation
