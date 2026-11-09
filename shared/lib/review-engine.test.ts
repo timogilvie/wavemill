@@ -1,11 +1,14 @@
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { HIGH_BLAST_RADIUS_GUIDANCE, isBlockingFinding, isDismissedFinding, reviewEngineTestUtils } from './review-engine.ts';
 import type { ReviewContext } from './review-context-gatherer.ts';
 import type { callLLM } from './llm-cli.ts';
+import type { ReviewToolReport } from './model-adapters/transport-adapter.ts';
+
+const HOK3325_FIXTURE = join(process.cwd(), 'tests/fixtures/claude-cli/hok3325-report-findings.verbose.json');
 
 describe('review-engine scoped mode', () => {
   afterEach(() => {
@@ -612,5 +615,262 @@ describe('review-engine blast-radius guidance (HOK-3238)', () => {
     assert.match(HIGH_BLAST_RADIUS_GUIDANCE, /Fixture provenance/);
     assert.match(HIGH_BLAST_RADIUS_GUIDANCE, /Journey check/);
     assert.match(HIGH_BLAST_RADIUS_GUIDANCE, /Latch check/);
+  });
+});
+
+// HOK-3448: the review engine accepts a validated ReportFindings tool report
+// and rejects text-only completion decisions.
+describe('review-engine tool-report contract (HOK-3448)', () => {
+  afterEach(() => {
+    reviewEngineTestUtils.resetDeps();
+  });
+
+  function makeReport(overrides: Partial<ReviewToolReport> = {}): ReviewToolReport {
+    return {
+      source: 'claude-cli:ReportFindings',
+      sessionId: 's1',
+      toolUseId: 't1',
+      findings: [
+        {
+          file: 'src/app.ts',
+          line: 10,
+          severity: 'warning',
+          category: 'logic',
+          short_summary: 'short',
+          summary: 'summary',
+          failure_scenario: 'fs',
+          verdict: 'CONFIRMED',
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  function runWithReports(reports: Array<{ text: string; report?: ReviewToolReport; error?: string }>) {
+    let index = 0;
+    reviewEngineTestUtils.setBuildCliReviewAdapter((provider, model) => ({
+      kind: provider === 'codex' ? 'codex-cli' : 'claude-cli',
+      model,
+      limits: {},
+      countTokens: () => 0,
+      preflight: () => undefined,
+      invoke: async () => {
+        const r = reports[index++] ?? { text: '{"verdict":"ready","codeReviewFindings":[]}' };
+        return {
+          text: r.text,
+          reportedModel: 'claude-sonnet-5',
+          ...(r.report ? { structuredReport: r.report } : {}),
+          ...(r.error ? { structuredReportError: r.error } : {}),
+        };
+      },
+      parseResult: () => ({ text: '', reportedModel: 'unverified' }),
+    }));
+    return { calls: () => index };
+  }
+
+  async function runReviewWithToolReport(report: ReviewToolReport, text = 'verdict is ready') {
+    const { calls } = runWithReports([{ text, report }]);
+    const repoDir = mkdtempSync(join(tmpdir(), 'review-engine-tool-report-'));
+    try {
+      const { runReview } = await import('./review-engine.ts');
+      const result = await runReview(makeReviewContext(), repoDir, {
+        model: 'claude-sonnet-5',
+        skipClaudePreflight: true,
+      });
+      return { result, calls: calls() };
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  }
+
+  // protects: REQ-F1 — a ready tool report yields one invocation, the same
+  // finding, and source evidence in metadata.
+  it('accepts a ready tool report as the review contract', async () => {
+    const { result, calls } = await runReviewWithToolReport(makeReport());
+    assert.equal(calls, 1);
+    assert.equal(result.verdict, 'ready');
+    assert.equal(result.codeReviewFindings.length, 1);
+    const f = result.codeReviewFindings[0];
+    assert.equal(f.severity, 'warning');
+    assert.equal(f.location, 'src/app.ts:10');
+    assert.equal(f.category, 'logic');
+    assert.equal(f.description, 'short\n\nsummary\n\nfs');
+    assert.equal(f.evidence, 'verification: CONFIRMED');
+    assert.equal(result.substantiveAnalysisIdentity?.pinned, true);
+    assert.equal(result.substantiveAnalysisIdentity?.resolvedModel, 'claude-sonnet-5');
+    assert.equal(result.metadata?.reportSource?.source, 'claude-cli:ReportFindings');
+    assert.equal(result.metadata?.reportSource?.toolUseId, 't1');
+  });
+
+  // protects: REQ-F1 — the real ClaudeCliAdapter accepts the HOK-3325 verbose
+  // fixture from a fake claude on PATH, with exactly one CLI invocation.
+  it('replays the HOK-3325 fixture through the real adapter and fake claude', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'review-engine-real-adapter-'));
+    const fakeBin = join(repoDir, 'bin');
+    const fakeLog = join(repoDir, 'fake-claude.log');
+    mkdirSync(fakeBin, { recursive: true });
+
+    const fakeScript = `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$(date -u +%FT%TZ) $*" >> "\${FAKE_CLAUDE_LOG}"
+# Read and discard the prompt that callLLM sends on stdin.
+cat >/dev/null
+sid=""
+while (( $# > 0 )); do
+  case "$1" in
+    --session-id) sid="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+fixture="\${FAKE_CLAUDE_FIXTURE}"
+if [[ -n "$sid" ]]; then
+  sed "s/01367a57-7b0a-439d-83a9-bc35579a7a33/$sid/g" "$fixture"
+else
+  cat "$fixture"
+fi
+exit 0
+`;
+    writeFileSync(join(fakeBin, 'claude'), fakeScript, { mode: 0o755 });
+
+    const originalPath = process.env.PATH;
+    reviewEngineTestUtils.resetDeps();
+    reviewEngineTestUtils.setResolveReviewAgent(() => ({ ok: true, agent: 'claude' }));
+
+    try {
+      process.env.PATH = `${fakeBin}:${originalPath}`;
+      process.env.FAKE_CLAUDE_FIXTURE = HOK3325_FIXTURE;
+      process.env.FAKE_CLAUDE_LOG = fakeLog;
+
+      const { runReview } = await import('./review-engine.ts');
+      const result = await runReview(makeReviewContext(), repoDir, {
+        model: 'claude-sonnet-5',
+        skipClaudePreflight: true,
+      });
+
+      assert.equal(result.verdict, 'ready');
+      assert.equal(result.codeReviewFindings.length, 3);
+      assert.equal(result.codeReviewFindings.filter((f) => f.severity === 'warning').length, 3);
+      assert.equal(result.codeReviewFindings.filter((f) => f.severity === 'blocker').length, 0);
+      assert.equal(result.substantiveAnalysisIdentity?.pinned, true);
+      assert.equal(result.substantiveAnalysisIdentity?.resolvedModel, 'claude-sonnet-5');
+      assert.equal(result.metadata?.reportSource?.source, 'claude-cli:ReportFindings');
+      assert.equal(result.metadata?.reportSource?.toolUseId, 'toolu_01HOK3325');
+
+      const logLines = readFileSync(fakeLog, 'utf8').trim().split('\n');
+      assert.equal(logLines.length, 1, 'expected exactly one claude CLI invocation');
+    } finally {
+      process.env.PATH = originalPath;
+      delete process.env.FAKE_CLAUDE_FIXTURE;
+      delete process.env.FAKE_CLAUDE_LOG;
+      reviewEngineTestUtils.resetDeps();
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  // protects: a blocker in the tool report stays a blocker.
+  it('derives not_ready from a blocker finding', async () => {
+    const report = makeReport({
+      findings: [{ file: 'x.ts', line: 1, severity: 'blocker', category: 'crash', summary: 'crash', failure_scenario: 'fs' }],
+    });
+    const { result } = await runReviewWithToolReport(report);
+    assert.equal(result.verdict, 'not_ready');
+    assert.equal(result.codeReviewFindings[0]?.severity, 'blocker');
+  });
+
+  // protects: a structuredReportError is fail-closed and takes one retry.
+  it('retries once on a structured report error and then fails', async () => {
+    const { calls } = runWithReports([
+      { text: 'verdict is ready', error: 'missing severity' },
+      { text: 'still no json' },
+    ]);
+    const repoDir = mkdtempSync(join(tmpdir(), 'review-engine-tool-report-'));
+    try {
+      const { runReview } = await import('./review-engine.ts');
+      await assert.rejects(
+        runReview(makeReviewContext(), repoDir, { model: 'claude-sonnet-5', skipClaudePreflight: true }),
+        /Failed to parse JSON/,
+      );
+      assert.equal(calls(), 2);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  // protects: a verdict mismatch between tool report and text contract is
+  // fail-closed and retried.
+  it('retries when the text contract disagrees with the tool report', async () => {
+    const { calls } = runWithReports([
+      {
+        text: '{"verdict":"not_ready","codeReviewFindings":[{"severity":"blocker","location":"x.ts:1","category":"crash","description":"d"}]}',
+        report: makeReport(),
+      },
+      { text: 'still no json' },
+    ]);
+    const repoDir = mkdtempSync(join(tmpdir(), 'review-engine-tool-report-'));
+    try {
+      const { runReview } = await import('./review-engine.ts');
+      await assert.rejects(
+        runReview(makeReviewContext(), repoDir, { model: 'claude-sonnet-5', skipClaudePreflight: true }),
+        /Failed to parse JSON/,
+      );
+      assert.equal(calls(), 2);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  // protects: when tool report and text contract agree, the richer text
+  // contract is used.
+  it('uses the text contract when it matches the tool report verdict', async () => {
+    const { calls } = runWithReports([
+      {
+        text: '{"verdict":"ready","codeReviewFindings":[{"severity":"warning","location":"src/app.ts:10","category":"logic","description":"short\\n\\nsummary\\n\\nfs","evidence":"verification: CONFIRMED"}]}',
+        report: makeReport(),
+      },
+    ]);
+    const repoDir = mkdtempSync(join(tmpdir(), 'review-engine-tool-report-'));
+    try {
+      const { runReview } = await import('./review-engine.ts');
+      const result = await runReview(makeReviewContext(), repoDir, { model: 'claude-sonnet-5', skipClaudePreflight: true });
+      assert.equal(calls(), 1);
+      assert.equal(result.verdict, 'ready');
+      assert.equal(result.codeReviewFindings[0]?.evidence, 'verification: CONFIRMED');
+      assert.equal(result.metadata?.reportSource?.source, 'claude-cli:ReportFindings');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  // protects: ordinary JSON-text reviews keep working without a tool report.
+  it('parses ordinary JSON text when no tool report is present', async () => {
+    const { calls } = runWithReports([{ text: '{"verdict":"ready","codeReviewFindings":[]}' }]);
+    const repoDir = mkdtempSync(join(tmpdir(), 'review-engine-tool-report-'));
+    try {
+      const { runReview } = await import('./review-engine.ts');
+      const result = await runReview(makeReviewContext(), repoDir, { model: 'claude-sonnet-5', skipClaudePreflight: true });
+      assert.equal(calls(), 1);
+      assert.equal(result.verdict, 'ready');
+      assert.equal(result.metadata?.reportSource, undefined);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  // protects: prose-only output gets the existing single retry and then fails.
+  it('retries once on prose-only output and then fails', async () => {
+    const { calls } = runWithReports([
+      { text: 'Here is my review verdict: ready' },
+      { text: 'Here is my review verdict: ready' },
+    ]);
+    const repoDir = mkdtempSync(join(tmpdir(), 'review-engine-tool-report-'));
+    try {
+      const { runReview } = await import('./review-engine.ts');
+      await assert.rejects(
+        runReview(makeReviewContext(), repoDir, { model: 'claude-sonnet-5', skipClaudePreflight: true }),
+      );
+      assert.equal(calls(), 2);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
   });
 });

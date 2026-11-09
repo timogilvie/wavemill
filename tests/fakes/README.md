@@ -68,6 +68,13 @@ Agent: put a bash snippet at `$FAKE_AGENT_SCRIPT_DIR/<phase>` (planning, coding,
 review) to replace that phase's default behaviour — e.g. exit with a dirty
 tree, never write `.coding-complete`, report review blockers.
 
+Helper-call env vars for `bin/claude`:
+
+| Var | Effect |
+|-----|--------|
+| `FAKE_JUDGE_VERDICT_FILE` | When `claude -p` is invoked, emit the file contents as the CLI's `result` (object envelope by default; array envelope when `--verbose` is present). |
+| `FAKE_JUDGE_TOOL_REPORT_FILE` | When `claude -p --verbose` is invoked, emit a verbose JSON array containing a `ReportFindings` tool_use (input from the file), its matching tool_result, and a prose result element. Used by the review-tool-report golden journey (HOK-3448). |
+
 ## Unmodelled calls are failures, not silence
 
 Anything the fakes do not model is appended to `$FAKE_GH_UNHANDLED`,

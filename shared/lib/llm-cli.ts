@@ -40,6 +40,11 @@ import {
   pendingSessionRef,
   recordLaunch,
 } from './session-ownership.ts';
+import {
+  claudeCliErrorFromStdout,
+  parseClaudeCliOutput,
+  reportedModelFromEnvelope,
+} from './model-adapters/claude-cli-output.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -146,6 +151,12 @@ export interface LLMCallResult {
   reportedModel?: string;
   /** Models skipped due to quota exhaustion before success */
   fallbackChain?: Array<{ model: string; reason: string }>;
+  /**
+   * Owned claude CLI session id minted for this call (HOK-3328, HOK-3448).
+   * Present when the call was launched with a featureDir and no session
+   * selection flags. The adapter uses this to bind a verbose tool report.
+   */
+  sessionRef?: string;
 }
 
 export interface CliHealthCheck {
@@ -678,106 +689,12 @@ function stripToolCalls(text: string): string {
 }
 
 // ────────────────────────────────────────────────────────────────
-// JSON Envelope Unwrapping
+// Claude CLI stdout interpretation
 // ────────────────────────────────────────────────────────────────
 
-interface JsonEnvelope {
-  result?: string;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    cache_creation_input_tokens?: number;
-    cache_read_input_tokens?: number;
-  };
-  total_cost_usd?: number;
-  /** Per-model usage keyed by the model id(s) that served the turn (claude CLI). */
-  modelUsage?: Record<string, { outputTokens?: number; canonicalModel?: string } | undefined>;
-  is_error?: boolean;
-  error?: string;
-}
-
-/**
- * Pick the model the claude CLI reports as having served the turn from its
- * `modelUsage` map (HOK-3247). The map can hold helper models next to the main
- * one, so the entry with the most output tokens wins; `canonicalModel` is
- * preferred over the map key when present. Returns undefined when the
- * envelope reports no model — callers must then treat identity as unverified.
- */
-export function reportedModelFromEnvelope(modelUsage: unknown): string | undefined {
-  if (!modelUsage || typeof modelUsage !== 'object' || Array.isArray(modelUsage)) {
-    return undefined;
-  }
-  let best: { model: string; outputTokens: number } | undefined;
-  for (const [key, usage] of Object.entries(modelUsage as NonNullable<JsonEnvelope['modelUsage']>)) {
-    const canonical = typeof usage?.canonicalModel === 'string' && usage.canonicalModel.trim()
-      ? usage.canonicalModel.trim()
-      : key.trim();
-    if (!canonical) continue;
-    const outputTokens = typeof usage?.outputTokens === 'number' && Number.isFinite(usage.outputTokens)
-      ? usage.outputTokens
-      : 0;
-    if (!best || outputTokens > best.outputTokens) {
-      best = { model: canonical, outputTokens };
-    }
-  }
-  return best?.model;
-}
-
-/**
- * Unwrap JSON envelope from LLM CLI --output-format json.
- *
- * Extracts:
- * - data.result (the actual response text)
- * - data.usage (token counts)
- * - data.total_cost_usd (cost in USD)
- *
- * Falls back to raw output if not valid JSON envelope.
- */
-function unwrapJsonEnvelope(raw: string): {
-  text: string;
-  usage?: LLMCallResult['usage'];
-  costUsd?: number;
-  reportedModel?: string;
-} {
-  let data: JsonEnvelope;
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    // If JSON parse fails, treat the entire output as text (fallback)
-    return { text: raw.trim() };
-  }
-
-  // Check for is_error envelope and throw (outside try-catch so it propagates)
-  if (data.is_error === true) {
-    const errorMsg = data.error || 'Unknown error';
-    throw new Error(`claude CLI returned is_error: ${errorMsg}`);
-  }
-
-  // Extract text from data.result if present
-  const text = (data.result || raw).trim();
-
-  // Extract usage if present
-  let usage: LLMCallResult['usage'] | undefined;
-  if (data.usage) {
-    const u = data.usage;
-    const inputTokens =
-      (u.input_tokens || 0) +
-      (u.cache_creation_input_tokens || 0) +
-      (u.cache_read_input_tokens || 0);
-    const outputTokens = u.output_tokens || 0;
-    usage = {
-      inputTokens,
-      outputTokens,
-      totalTokens: inputTokens + outputTokens,
-    };
-  }
-
-  // Extract cost if present
-  const costUsd = data.total_cost_usd;
-  const reportedModel = reportedModelFromEnvelope(data.modelUsage);
-
-  return { text, usage, costUsd, ...(reportedModel ? { reportedModel } : {}) };
-}
+// Re-exported for existing tests; the implementation lives in the single
+// claude-cli-output boundary (HOK-3448).
+export { reportedModelFromEnvelope } from './model-adapters/claude-cli-output.ts';
 
 /**
  * Unwrap Codex `codex exec --json` output.
@@ -818,6 +735,8 @@ const SESSION_SELECTION_FLAGS = new Set(['--session-id', '--resume', '-r', '--co
 
 interface HelperOwnership {
   stateDir: string;
+  /** Minted claude `--session-id`; present for claude helper calls. */
+  sessionRef?: string;
   pendingRef?: string;
 }
 
@@ -842,7 +761,7 @@ function recordHelperLaunch(
     const sessionRef = newSessionRef();
     if (!recordLaunch(options.featureDir, { ...base, sessionRef, harness: 'claude-code' })) return null;
     cliArgs.push('--session-id', sessionRef);
-    return { stateDir: options.featureDir };
+    return { stateDir: options.featureDir, sessionRef };
   }
   const pendingRef = pendingSessionRef(newSessionRef());
   if (!recordLaunch(options.featureDir, { ...base, sessionRef: pendingRef, harness: 'codex' })) return null;
@@ -1309,25 +1228,15 @@ async function executeStream(
       cleanup(timeoutId, slowInterval, activityTimeoutId);
       const elapsedMs = Date.now() - startedAt;
       if (code !== 0) {
-        // HOK-3248: the claude CLI's `-p --output-format json` writes its
-        // real error into the JSON envelope on stdout on a non-zero exit.
-        // Previously we built the error from stderr alone and discarded the
-        // real reason. Prefer the parsed stdout envelope, else include both
-        // stdout and stderr so the real text is never lost.
+        // HOK-3248 / HOK-3448: the single claude CLI stdout interpreter
+        // extracts the real error from the envelope (object or verbose array).
+        // Fall back to raw stdout/stderr so the real text is never lost.
         let stdoutDetail = '';
         if (stdout) {
-          try {
-            const parsed = JSON.parse(stdout) as { is_error?: boolean; error?: string } | unknown;
-            if (parsed && typeof parsed === 'object' && (parsed as { is_error?: boolean }).is_error === true) {
-              const envelopeError = (parsed as { error?: unknown }).error;
-              if (typeof envelopeError === 'string' && envelopeError.length > 0) {
-                stdoutDetail = envelopeError;
-              }
-            }
-          } catch {
-            // stdout not JSON — fall through to raw-text inclusion
-          }
-          if (!stdoutDetail) {
+          const envelopeError = claudeCliErrorFromStdout(stdout);
+          if (envelopeError) {
+            stdoutDetail = envelopeError;
+          } else {
             stdoutDetail = stdout.slice(0, 2000);
           }
         }
@@ -1865,22 +1774,28 @@ async function callLLMOnce(
 
     resolveHelperOwnership(ownership, rawOutput);
 
-    // Unwrap provider output: Claude/OpenAI emit a single JSON envelope; Codex
-    // emits a JSONL event stream.
-    const { text: unwrappedText, usage, costUsd, reportedModel } =
-      provider === 'codex' ? unwrapCodexJsonl(rawOutput) : unwrapJsonEnvelope(rawOutput);
+    // Unwrap provider output: Claude/OpenAI emit a single JSON envelope (or
+    // the verbose array form); Codex emits a JSONL event stream.
+    const parsedOutput =
+      provider === 'codex'
+        ? unwrapCodexJsonl(rawOutput)
+        : parseClaudeCliOutput(rawOutput, { expectedSessionId: ownership?.sessionRef });
+    if (parsedOutput.error) {
+      throw new Error(`claude CLI returned is_error: ${parsedOutput.error}`);
+    }
 
     // Strip tool calls if enabled
-    const cleanedText = stripCalls ? stripToolCalls(unwrappedText) : unwrappedText;
+    const cleanedText = stripCalls ? stripToolCalls(parsedOutput.text) : parsedOutput.text;
 
     return {
       text: cleanedText,
-      usage,
-      costUsd,
+      usage: parsedOutput.usage,
+      costUsd: parsedOutput.costUsd,
       rawOutput,
       provider,
       model: options.model || '(default)',
-      ...(reportedModel ? { reportedModel } : {}),
+      ...(parsedOutput.reportedModel ? { reportedModel: parsedOutput.reportedModel } : {}),
+      ...(ownership?.sessionRef ? { sessionRef: ownership.sessionRef } : {}),
     };
   } catch (error) {
     throw withElapsed(error as Error, getElapsed(error) || Date.now() - startedAt);
