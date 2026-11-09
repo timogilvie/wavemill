@@ -18,7 +18,10 @@ review_json="$(cd "$FAKE_AGENT_TOOLS_DIR/.." && env -u WAVEMILL_PHASE -u FAKE_JU
   FAKE_JUDGE_TOOL_REPORT_FILE="$FAKE_JUDGE_TOOL_REPORT_FILE" \
   node --import tsx --input-type=module -e '
     import { resolveModelAdapter } from "./shared/lib/model-adapters/resolve-adapter.ts";
+    import { writeReviewAnalysisIdentity } from "./shared/lib/review-analysis-identity.ts";
+    import { buildExecutedIdentity } from "./shared/lib/challenge-execution-contract.ts";
     import assert from "node:assert/strict";
+    import { execFileSync } from "node:child_process";
     const [model, worktree, featureDir] = process.argv.slice(1);
     const { resolution, adapter } = resolveModelAdapter({ model, phase: "review", repoDir: worktree, reservedOutputTokens: 8192 });
     if (!resolution.ok || adapter?.kind !== "claude-cli") throw new Error("review route did not use Claude CLI");
@@ -33,6 +36,18 @@ review_json="$(cd "$FAKE_AGENT_TOOLS_DIR/.." && env -u WAVEMILL_PHASE -u FAKE_JU
     const blockers = findings.filter((f) => f.severity === "blocker");
     assert.equal(warnings.length, 3, "expected 3 warnings from the tool report");
     assert.equal(blockers.length, 0, "expected 0 blockers from the tool report");
+    const headSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: worktree, encoding: "utf8" }).trim();
+    writeReviewAnalysisIdentity(featureDir, {
+      headSha,
+      substantiveAnalysis: buildExecutedIdentity({
+        role: "substantive_analysis",
+        requestedModel: model,
+        resolvedModel: result.reportedModel,
+        agent: "claude-cli",
+        source: "artifact",
+      }),
+      usage: result.usage,
+    });
     const out = {
       verdict: "ready",
       codeReviewFindings: findings.map((f) => ({

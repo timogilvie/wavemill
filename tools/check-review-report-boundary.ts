@@ -24,6 +24,7 @@ export const REVIEW_REPORT_BOUNDARY_GUARD: GuardSpec = {
       name: 'private-report-findings',
       description: 'The literal ReportFindings string belongs in claude-cli-output.ts; import the type/source from there.',
       lang: 'both',
+      scopedPaths: ['shared/lib/llm-cli.ts', 'shared/lib/model-adapters/', 'shared/lib/review-engine.ts'],
       re: /\bReportFindings\b/,
     },
     {

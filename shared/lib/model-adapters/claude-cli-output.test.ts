@@ -182,6 +182,17 @@ describe('ReportFindings validation', () => {
     assert.equal(out.toolReport, undefined);
   });
 
+  it('rejects an unbound report when an owned session is expected', () => {
+    const stdout = JSON.stringify([
+      { type: 'assistant', content: [{ type: 'tool_use', name: 'ReportFindings', id: 't1', input: buildReport(), parent_tool_use_id: null }] },
+      { type: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', is_error: false }] },
+      { type: 'result', session_id: 's1', result: 'ok' },
+    ]);
+    const out = parseClaudeCliOutput(stdout, { expectedSessionId: 's1' });
+    assert.equal(out.toolReportError, 'missing-session');
+    assert.equal(out.toolReport, undefined);
+  });
+
   it('rejects a tool_result with is_error', () => {
     const stdout = JSON.stringify([
       { type: 'assistant', session_id: 's1', content: [{ type: 'tool_use', name: 'ReportFindings', id: 't1', input: buildReport(), parent_tool_use_id: null }] },

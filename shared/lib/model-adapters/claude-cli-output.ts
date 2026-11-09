@@ -258,6 +258,12 @@ function extractToolReport(
   if (call.parentId !== null) {
     return { toolReportError: 'subagent-report' };
   }
+  // An owned invocation must never accept an unbound tool call. The result
+  // envelope is transport metadata, not a substitute for the tool call's
+  // own session binding.
+  if (expectedSessionId !== undefined && call.elementSessionId === undefined) {
+    return { toolReportError: 'missing-session' };
+  }
   if (sessionId !== undefined && call.elementSessionId !== undefined && call.elementSessionId !== sessionId) {
     return { toolReportError: 'foreign-session' };
   }

@@ -32,6 +32,14 @@ journey_wait_until "$ISSUE" 30 "PR merged by tend"           journey_pr_merged
 fd="$(journey_feature_dir "$ISSUE")"
 journey_assert "review stage result is completed" \
   test "$(jq -r '.status' "$fd/.review-result.json" 2>/dev/null)" = "completed"
+journey_assert "review stage preserves direct Claude identity" \
+  test "$(jq -r '.artifacts.reviewExecutedIdentity.substantiveAnalysis.source' "$fd/.review-result.json" 2>/dev/null)" = "artifact"
+journey_assert "review stage preserves executed review model" \
+  test "$(jq -r '.artifacts.reviewExecutedIdentity.substantiveAnalysis.resolvedModel' "$fd/.review-result.json" 2>/dev/null)" = "claude-sonnet-5"
+journey_assert "review stage preserves tool-report cost" \
+  test "$(jq -r '.artifacts.usage.costUsd' "$fd/.review-result.json" 2>/dev/null)" = "0.01"
+journey_assert "review stage preserves tool-report usage" \
+  test "$(jq -r '.artifacts.usage.totalTokens' "$fd/.review-result.json" 2>/dev/null)" = "15"
 journey_assert ".review-tool-report-result.json verdict is ready" \
   test "$(jq -r '.verdict' "$fd/.review-tool-report-result.json" 2>/dev/null)" = "ready"
 journey_assert ".review-tool-report-result.json has 3 warnings" \
