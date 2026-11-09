@@ -54,6 +54,7 @@ TESTS=(
   shared/lib/operator-intervention.test.ts
   shared/lib/intervention-detector.test.ts
   shared/lib/reliability-metrics.test.ts
+  shared/lib/stall-cause.test.ts
   shared/lib/label-write-ledger.test.ts
   shared/lib/pr-timeline.test.ts
   shared/lib/stage-result.test.ts
