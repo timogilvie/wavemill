@@ -199,3 +199,7 @@ assert "C: evals.jsonl line count unchanged" \
   test "$EVALS_BEFORE_C" = "$EVALS_AFTER_C"
 
 log "operator-abort journey OK (scenarios A, B, C)"
+
+# HOK-3424_c replay: local termination records must become usable completion
+# feedback, not merely a false outcome hidden behind trainingEligible=false.
+node --import tsx "$ROOT/tests/fixtures/terminal-arm-feedback/run.ts"

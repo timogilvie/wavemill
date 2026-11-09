@@ -7,6 +7,7 @@
  * remain transport dedupe details only.
  */
 
+import { prepareTerminalArmFeedback } from './terminal-arm-feedback.ts';
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -876,7 +877,10 @@ async function runLegacyBackfill(
   for (const record of selected) {
     let status: string;
     if (!apply) {
-      status = legacyDryRunStatus(repoDir, record);
+      const prepared = getHokusaiSubmissionConfig(repoDir).enabled === true
+        ? await prepareTerminalArmFeedback(record, { repoDir })
+        : { record };
+      status = legacyDryRunStatus(repoDir, prepared.record);
     } else {
       try {
         status = formatHokusaiSubmissionTriggerResult(

@@ -1,3 +1,4 @@
+import { prepareTerminalArmFeedback } from './terminal-arm-feedback.ts';
 import { getHokusaiSubmissionConfig, getHokusaiSubmissionEnableSources } from './config.ts';
 import {
   buildTechnicalTaskRouterRowV4,
@@ -72,6 +73,8 @@ export interface TriggerHokusaiSubmissionOptions {
    * Defaults to `repoDir`.
    */
   worktreePath?: string;
+  /** Known task state directory for a live terminal-arm submission. */
+  featureDir?: string;
   /** Branch name used only in diagnostic messages. */
   branchName?: string;
 }
@@ -487,10 +490,11 @@ function buildComparisonGroup(record: EvalRecord): ComparisonGroupProjection | n
  * and `.ready-result.json` from this directory.
  */
 function resolveFeatureDir(
-  options: Pick<TriggerHokusaiSubmissionOptions, 'repoDir' | 'worktreePath'>,
+  options: Pick<TriggerHokusaiSubmissionOptions, 'repoDir' | 'worktreePath' | 'featureDir'>,
   record: EvalRecord,
   meteredCost: MeteredWorkflowCost | null,
 ): string {
+  if (options.featureDir) return options.featureDir;
   if (meteredCost && record.issueId) {
     const located = hokusaiSubmissionTriggerDeps.locateOwnershipRows({
       repoDir: options.repoDir,
@@ -636,6 +640,9 @@ export async function triggerHokusaiSubmission(
       }, options);
     }
 
+    const prepared = await prepareTerminalArmFeedback(record, options);
+    record = prepared.record;
+    options = { ...options, meteredCost: prepared.meteredCost ?? options.meteredCost, featureDir: prepared.featureDir ?? options.featureDir };
     const submissionResult = hokusaiSubmissionTriggerDeps.toHokusaiSubmission(record);
     if (!submissionResult.ok) {
       return recordTriggerResult(record, options.repoDir, { status: 'not_eligible', reasons: submissionResult.reasons }, options);
