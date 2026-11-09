@@ -56,18 +56,22 @@ import {
   emptyClassCounts,
   evalDetectorName,
   readOperatorTouchLog,
+  type ClassifiableTouch,
+  type CommitAttribution,
   type InterventionClass,
+  type OperatorTouchAttribution,
   type OperatorTouchKind,
   type OperatorTouchLogEntry,
+  type SessionMessageProvenance,
 } from './operator-intervention.ts';
 import {
   deriveAgentActivityWindows,
   detectManualEdits,
   readOperatorHandoffIntervals,
   detectSessionRedirects,
-  isWorkflowAutomationMessage,
   type PrCommit,
 } from './intervention-detector.ts';
+import { locateOwnershipRows } from './session-ownership.ts';
 import {
   indexMillLabelWrites,
   matchesMillLabelWrite,
@@ -78,6 +82,7 @@ import { fetchPrTimeline, type GhRunner, type PrTimelineEvent } from './pr-timel
 import { readLaneProgress, mergeLaneStateDir } from './merge-queue.ts';
 import { resolveProjectsDirs } from './wavemill-session-paths.ts';
 import { parseTaskId } from './task-identity.ts';
+import { aggregateStallCauses, deriveStallCause, STALL_CAUSES, type CauseSpan, type StallCause } from './stall-cause.ts';
 
 export type { InterventionClass } from './operator-intervention.ts';
 
@@ -89,6 +94,8 @@ export interface TouchEvent {
   kind: TouchKind;
   at: string;
   detail?: string;
+  /** Whether this is a human touch, mill automation, or an approval. */
+  attribution: OperatorTouchAttribution;
   /** Design §8f class (O/L/S/R). */
   class: InterventionClass;
   /** GitHub login or local user, when the source records one. */
@@ -125,6 +132,12 @@ export interface TaskReliability {
   touchCount: number;
   /** Per-class touch counts after dedup. */
   touchClasses: Record<InterventionClass, number>;
+  /** Plan approvals (not human touches). */
+  approvals: number;
+  /** Mill automation touches (not human touches). */
+  automationCount: number;
+  /** Commits that could not be attributed to agent or operator. */
+  unattributedCommits: number;
   stuckMs: number;
   stuckCoverage: MetricCoverage;
   stallIntervals: StallInterval[];
@@ -143,6 +156,10 @@ export interface StallInterval {
   to: string;
   /** Duration in milliseconds. */
   durationMs: number;
+  /** Derived stall cause (HOK-3455). */
+  cause?: StallCause;
+  /** Supporting fact for the cause. */
+  causeDetail?: string;
 }
 
 export interface ReliabilityBucket {
@@ -164,6 +181,16 @@ export interface ReliabilityBucket {
   touchClasses: Record<InterventionClass, number>;
   /** Tasks with at least one touch of each class. */
   touchedTasksByClass: Record<InterventionClass, number>;
+  /** Plan approvals summed over the bucket's tasks. */
+  approvals: number;
+  /** Tasks with at least one approval. */
+  tasksWithApprovals: number;
+  /** Mill automation touches by kind. */
+  automationByKind: Record<TouchKind, number>;
+  /** Tasks with at least one unattributed commit. */
+  tasksWithUnattributedCommits: number;
+  /** Stalls over 1h by cause. */
+  stallCauses: Record<StallCause, { stalls: number; hours: number }>;
   /** Mill-run tasks only (`TaskReliability.isMillTask`); the fields above cover every merged PR. */
   millMerged: number;
   millUnattended: number;
@@ -261,23 +288,51 @@ function dedupBucketKey(iso: string, kind: TouchKind): string {
   return `${slot}|${kind}`;
 }
 
-/** A touch as a source emits it; `class` and `bucket` are filled on dedupe. */
-export type RawTouch = Omit<TouchEvent, 'class' | 'bucket'> & { class?: InterventionClass; bucket?: string };
+/** A touch as a source emits it; `attribution`, `class` and `bucket` are filled on dedupe. */
+export type RawTouch = Omit<TouchEvent, 'attribution' | 'class' | 'bucket'> & {
+  attribution?: OperatorTouchAttribution;
+  class?: InterventionClass;
+  bucket?: string;
+};
+
+const ATTRIBUTION_PRECEDENCE: Record<OperatorTouchAttribution, number> = {
+  human: 2,
+  approval: 1,
+  automation: 0,
+};
 
 /**
- * De-duplicate touches by `(kind, 60s minute bucket)`; keep earliest. Every
- * surviving touch carries a class (`classifyOperatorTouch` when the source
- * did not set one), so persisted rows without a class classify on read.
+ * De-duplicate touches by `(kind, 60s minute bucket)`. If the bucket sees
+ * multiple raw touches, keep the one with the highest attribution precedence
+ * (human > approval > automation); otherwise keep earliest. Every surviving
+ * touch carries an attribution and class from `classifyOperatorTouch`, so
+ * persisted rows without them classify on read.
  */
 export function dedupeTouches(touches: RawTouch[]): TouchEvent[] {
-  const seen = new Map<string, TouchEvent>();
+  const candidates = new Map<string, RawTouch[]>();
   for (const t of touches.slice().sort((a, b) => parseMs(a.at)! - parseMs(b.at)!)) {
     const key = dedupBucketKey(t.at, t.kind);
-    if (!seen.has(key)) {
-      seen.set(key, { ...t, class: t.class ?? classifyOperatorTouch(t), bucket: key });
-    }
+    const list = candidates.get(key) ?? [];
+    list.push(t);
+    candidates.set(key, list);
   }
-  return [...seen.values()].sort((a, b) => parseMs(a.at)! - parseMs(b.at)!);
+
+  const result: TouchEvent[] = [];
+  for (const [key, list] of candidates) {
+    let chosen = list[0];
+    for (const t of list) {
+      const a = t.attribution ?? classifyOperatorTouch(t).attribution;
+      const b = chosen.attribution ?? classifyOperatorTouch(chosen).attribution;
+      if (ATTRIBUTION_PRECEDENCE[a] > ATTRIBUTION_PRECEDENCE[b]) {
+        chosen = t;
+      }
+    }
+    const classified = chosen.class !== undefined && chosen.attribution !== undefined
+      ? (chosen as TouchEvent)
+      : { ...chosen, ...classifyOperatorTouch(chosen) };
+    result.push({ ...classified, bucket: key } as TouchEvent);
+  }
+  return result.sort((a, b) => parseMs(a.at)! - parseMs(b.at)!);
 }
 
 /** Per-class counts over already-deduped touches. */
@@ -846,26 +901,7 @@ interface OperatorInterventionRecordRaw {
   operator?: string;
 }
 
-/**
- * Eval-row detectors that record the agent's own behaviour rather than an
- * operator touch (retries the mill made itself, self-review findings,
- * commits it could not attribute). They stay in eval scoring but are not
- * operator touches.
- */
-const NON_OPERATOR_EVAL_DETECTORS = new Set([
-  'prior_failed_attempt',
-  'self_review_blocker',
-  'self_review_warning',
-  'unknown_attribution',
-  'test_fix',
-]);
 
-/** Eval detectors whose direct source has its own kind, so the two dedupe. */
-const EVAL_DETECTOR_KIND: Readonly<Record<string, TouchKind>> = {
-  session_redirect: 'session-redirect',
-  operator_recovery: 'operator-intervention',
-  manual_edit: 'manual-push',
-};
 
 export interface CollectTouchesOptions {
   repoDir: string;
@@ -894,7 +930,7 @@ export function collectOperatorTouches(opts: CollectTouchesOptions): TouchEvent[
 
   raw.push(...readOperatorEvents(resolveTaskSource(task, 'operator-events.jsonl')));
   raw.push(...readOperatorInterventionArtifacts(resolveTaskSource(task, 'operator-intervention.json')));
-  raw.push(...readOperatorHandoffTouches(task));
+  raw.push(...readOperatorHandoffTouches(task, ctx));
   raw.push(...readPaneMessageTouches(resolveTaskSource(task, 'terminal-history.jsonl')));
   raw.push(...readEvalInterventions(ctx.evals, task));
   raw.push(...readTouchLog(ctx.touchLog, task));
@@ -958,19 +994,27 @@ function readOperatorInterventionArtifacts(path: string | undefined): RawTouch[]
  * was recovered. The eval pipeline treats the interval as an operator
  * handoff; the touch is counted once, at resolution.
  */
-function readOperatorHandoffTouches(task: MergedTaskRef): RawTouch[] {
+function readOperatorHandoffTouches(task: MergedTaskRef, ctx: ReliabilityContext): RawTouch[] {
   const dirs = {
     featureDirs: task.featureDir && existsSync(task.featureDir) ? [task.featureDir] : [],
     ...(task.archiveDir ? { archiveDir: task.archiveDir } : {}),
   };
   const now = Date.now();
+  const ownership = locateOwnershipRows({ repoDir: ctx.repoDir, issueId: task.issue, slug: task.slug, worktreePath: task.worktree });
   return readOperatorHandoffIntervals(dirs)
     .filter((interval) => interval.resolvedAt < now - 1000)
-    .map((interval) => ({
-      kind: 'operator-intervention' as const,
-      at: iso(interval.resolvedAt),
-      detail: 'dirty-tree handoff recovery',
-    }));
+    .map((interval) => {
+      const selfRecovered = ownership.rows.some((row) => {
+        const launched = Date.parse(row.launchedAt);
+        return launched >= interval.detectedAt && launched <= interval.resolvedAt;
+      });
+      return {
+        kind: 'operator-intervention' as const,
+        at: iso(interval.resolvedAt),
+        detail: 'dirty-tree handoff recovery',
+        selfRecovered,
+      };
+    });
 }
 
 /**
@@ -1023,16 +1067,16 @@ function readEvalInterventions(evals: EvalsIndex | undefined, task: MergedTaskRe
         // Notes are `[detector] detail`; legacy rows carry only `type`.
         const detail = ev.note ? ev.note.slice(0, 200) : ev.type;
         const detector = evalDetectorName(detail);
-        if (NON_OPERATOR_EVAL_DETECTORS.has(detector)) continue;
-        if (detector === 'session_redirect'
-          && isWorkflowAutomationMessage((ev.note ?? '').replace(/^\[session_redirect\]\s*/, ''))) {
-          continue;
-        }
-        touches.push({
-          kind: EVAL_DETECTOR_KIND[detector] ?? (ev.type === 'session_redirect' ? 'session-redirect' : 'eval-intervention'),
-          at,
-          detail,
-        });
+        // Map eval detectors to the same kinds as their native sources so they
+        // dedupe correctly. Session-redirect eval rows dedupe with transcript
+        // redirects; operator_recovery dedupes with operator-intervention artifacts.
+        let kind: TouchKind;
+        if (detector === 'session_redirect') kind = 'session-redirect';
+        else if (detector === 'operator_recovery') kind = 'operator-intervention';
+        else if (detector === 'manual_edit') kind = 'manual-push';
+        else kind = 'eval-intervention';
+        const raw = (ev.note ?? '').replace(/^\[[a-z_]+\]\s*/, '');
+        touches.push({ kind, at, detail, ...(kind === 'session-redirect' ? { text: raw } : {}) });
       }
     } else if ((row.interventionCount ?? 0) > 0 && row.timestamp) {
       // Fall back to the row's `timestamp` with count=N as a single touch each
@@ -1063,14 +1107,29 @@ function readTouchLog(log: OperatorTouchLogEntry[] | undefined, task: MergedTask
  * prompt (tmux send-keys from outside the mill). Reuses the eval pipeline's
  * `detectSessionRedirects`, which already drops the mill's own injections.
  */
+function sessionKindForWindow(windows: import('./session-ownership.ts').OwnedSessionWindow[], sessionId: string): string | undefined {
+  return windows.find((w) => w.sessionRef === sessionId)?.kind;
+}
+
 function readSessionRedirectTouches(task: MergedTaskRef, ctx: ReliabilityContext): RawTouch[] {
   if (!task.worktree || !task.branch) return [];
-  const event = detectSessionRedirects(task.worktree, task.branch);
-  return event.details.map((detail, i) => ({
-    kind: 'session-redirect' as const,
-    at: event.timestamps?.[i] ?? task.mergedAt,
-    detail: detail.slice(0, 100),
-  }));
+  const result = detectSessionRedirects(task.worktree, task.branch, task.issue, ctx.repoDir);
+  return result.messages.map((msg) => {
+    const byFile = new Map<string, number>();
+    // Recompute first-message index per file for this message.
+    // (Simpler: detectSessionRedirects already skipped first owned messages;
+    // remaining messages are never first in their session.)
+    const firstInOwnedSession = false;
+    return {
+      kind: 'session-redirect' as const,
+      at: msg.timestamp ?? task.mergedAt,
+      detail: msg.content.slice(0, 100),
+      text: msg.content,
+      provenance: msg.provenance,
+      sessionKind: sessionKindForWindow(result.ownedWindows, msg.sessionId),
+      firstInOwnedSession,
+    };
+  });
 }
 
 function readTaskTimeline(task: MergedTaskRef, ctx: ReliabilityContext): PrTimelineEvent[] | null {
@@ -1141,6 +1200,13 @@ export function readLabelEditTouches(
  * pipeline's commit attribution, fed with the timeline's commits so no
  * second GitHub call is made.
  */
+function commitAttributionFromDetail(detail: string): CommitAttribution {
+  if (detail.includes('operator handoff commit')) return 'operator_handoff';
+  if (detail.includes('outside all recorded agent activity windows')) return 'operator_out_of_window';
+  if (detail.includes('no stage-result attribution data available')) return 'unattributed';
+  return 'unknown';
+}
+
 export function readManualPushTouches(
   task: MergedTaskRef,
   timeline: PrTimelineEvent[],
@@ -1151,7 +1217,7 @@ export function readManualPushTouches(
     .filter((e) => e.event === 'committed' && e.sha)
     .map((e) => ({ sha: e.sha!, message: e.message ?? '', author: e.author ?? '', date: e.at }));
   if (prCommits.length === 0) return [];
-  const { manualEdit } = detectManualEdits({
+  const { manualEdit, unknownAttribution } = detectManualEdits({
     prNumber: task.prNumber,
     prCommits,
     branchName: task.branch,
@@ -1160,11 +1226,21 @@ export function readManualPushTouches(
     issueId: task.issue,
     attributeByWindows: true,
   });
-  return manualEdit.details.map((detail, i) => ({
+  const raw: RawTouch[] = manualEdit.details.map((detail, i) => ({
     kind: 'manual-push' as const,
     at: manualEdit.timestamps?.[i] ?? task.mergedAt,
     detail: detail.slice(0, 200),
+    commitAttribution: commitAttributionFromDetail(detail),
   }));
+  for (let i = 0; i < unknownAttribution.details.length; i++) {
+    raw.push({
+      kind: 'manual-push' as const,
+      at: unknownAttribution.timestamps?.[i] ?? task.mergedAt,
+      detail: unknownAttribution.details[i].slice(0, 200),
+      commitAttribution: 'unattributed',
+    });
+  }
+  return raw;
 }
 
 /**
@@ -1182,17 +1258,20 @@ export function readExternalMergeTouches(
 ): RawTouch[] {
   if (!task.prNumber || task.merged === false) return [];
   const mergedEvent = timeline?.find((e) => e.event === 'merged');
-  if (mergedEvent && isMillActor(mergedEvent.actor, ctx)) return [];
+  const hasTendReceipt = readLaneProgress(task.prNumber, ctx.repoDir)?.lastEvent === 'merged';
+  const millActor = Boolean(mergedEvent) && isMillActor(mergedEvent!.actor, ctx);
+  if (hasTendReceipt || millActor) return [];
   const mergedAt = mergedEvent?.at ?? task.mergedAt;
   const mergedMs = parseMs(mergedAt);
   const sinceMs = ctx.mergeLaneSinceMs ?? null;
   if (sinceMs === null || mergedMs === null || mergedMs < sinceMs) return [];
-  if (readLaneProgress(task.prNumber, ctx.repoDir)?.lastEvent === 'merged') return [];
   const laneDir = mergeLaneStateDir(task.prNumber, ctx.repoDir);
   return [{
     kind: 'external-merge',
     at: mergedAt,
     detail: existsSync(laneDir) ? 'merged outside tend (lane entered, no tend merge)' : 'merged outside tend',
+    hasTendReceipt: false,
+    millActor: false,
     ...(mergedEvent?.actor ? { actor: mergedEvent.actor } : {}),
   }];
 }
@@ -1271,6 +1350,72 @@ export function computeTimeStuck(opts: ComputeTimeStuckOptions): ComputeTimeStuc
   const stallIntervals = replayStallIntervals(live, { endMs, stallMinutes: opts.stallMinutes });
   const coverage: MetricCoverage = historyRecords >= 2 ? 'full' : 'partial';
   return { stuckMs: sumStallMs(stallIntervals), coverage, stallIntervals };
+}
+
+function deriveStageAgentSpans(task: MergedTaskRef): CauseSpan[] {
+  const dirs = {
+    featureDirs: task.featureDir && existsSync(task.featureDir) ? [task.featureDir] : [],
+    ...(task.archiveDir ? { archiveDir: task.archiveDir } : {}),
+  };
+  return deriveAgentActivityWindows(dirs).map((w) => ({
+    cause: 'stage-agent' as StallCause,
+    fromMs: w.start,
+    toMs: w.end,
+    detail: `${w.stage} window`,
+  }));
+}
+
+function deriveOperatorAttentionSpans(task: MergedTaskRef): CauseSpan[] {
+  const dirs = {
+    featureDirs: task.featureDir && existsSync(task.featureDir) ? [task.featureDir] : [],
+    ...(task.archiveDir ? { archiveDir: task.archiveDir } : {}),
+  };
+  return readOperatorHandoffIntervals(dirs).map((interval) => ({
+    cause: 'operator-attention' as StallCause,
+    fromMs: interval.detectedAt,
+    toMs: interval.resolvedAt,
+    detail: 'dirty-tree handoff',
+  }));
+}
+
+function deriveMergeLaneSpans(task: MergedTaskRef, ctx: ReliabilityContext): CauseSpan[] {
+  if (!task.prNumber) return [];
+  const record = readLaneProgress(task.prNumber, ctx.repoDir);
+  if (!record) return [];
+  const entered = parseMs(record.enteredLaneAt);
+  const merged = parseMs(record.lastProgressAt);
+  if (entered === null) return [];
+  return [{
+    cause: 'merge-lane' as StallCause,
+    fromMs: entered,
+    toMs: merged ?? parseMs(task.mergedAt) ?? Date.now(),
+    detail: 'in merge lane',
+  }];
+}
+
+function deriveHostDownSpans(_task: MergedTaskRef, _ctx: ReliabilityContext): CauseSpan[] {
+  // Tend poll gaps require repo-wide scan of the poll log; omitted in this
+  // slice (would need all tasks). Reported as unknown when not inferable.
+  return [];
+}
+
+function attachStallCauses(
+  task: MergedTaskRef,
+  intervals: StallInterval[],
+  ctx: ReliabilityContext,
+): StallInterval[] {
+  const spans: CauseSpan[] = [
+    ...deriveStageAgentSpans(task),
+    ...deriveOperatorAttentionSpans(task),
+    ...deriveMergeLaneSpans(task, ctx),
+    ...deriveHostDownSpans(task, ctx),
+  ];
+  return intervals.map((interval) => {
+    const fromMs = parseMs(interval.from) ?? 0;
+    const toMs = parseMs(interval.to) ?? fromMs;
+    const { cause, causeDetail } = deriveStallCause({ fromMs, toMs }, spans);
+    return { ...interval, cause, causeDetail };
+  });
 }
 
 interface HookArchivePayload {
@@ -1517,6 +1662,24 @@ function unattendedAndStuck(tasks: TaskReliability[]) {
   };
 }
 
+function emptyAutomationByKind(): Record<TouchKind, number> {
+  return {
+    'operator-event': 0,
+    'operator-intervention': 0,
+    'eval-intervention': 0,
+    'pane-message': 0,
+    'session-redirect': 0,
+    'label-edit': 0,
+    'external-merge': 0,
+    'manual-push': 0,
+    'state-edit': 0,
+  };
+}
+
+function aggregateStallCausesForTasks(tasks: TaskReliability[]): Record<StallCause, { stalls: number; hours: number }> {
+  return aggregateStallCauses(tasks.flatMap((t) => t.stallIntervals));
+}
+
 function aggregateBucket(tasks: TaskReliability[], key: string, label: string): ReliabilityBucket {
   const all = unattendedAndStuck(tasks);
   const mill = unattendedAndStuck(tasks.filter((t) => t.isMillTask));
@@ -1527,13 +1690,21 @@ function aggregateBucket(tasks: TaskReliability[], key: string, label: string): 
   };
   const touchClasses = emptyClassCounts();
   const touchedTasksByClass = emptyClassCounts();
+  let approvals = 0;
+  const automationByKind = emptyAutomationByKind();
+  let tasksWithApprovals = 0;
+  let tasksWithUnattributedCommits = 0;
   for (const t of tasks) {
     const counts = t.touchClasses ?? countTouchClasses(t.touches);
     for (const cls of INTERVENTION_CLASSES) {
       touchClasses[cls] += counts[cls];
       if (counts[cls] > 0) touchedTasksByClass[cls] += 1;
     }
+    approvals += t.approvals;
+    if (t.approvals > 0) tasksWithApprovals += 1;
+    if (t.unattributedCommits > 0) tasksWithUnattributedCommits += 1;
   }
+  const stallCauses = aggregateStallCausesForTasks(tasks);
   return {
     key,
     label,
@@ -1541,6 +1712,11 @@ function aggregateBucket(tasks: TaskReliability[], key: string, label: string): 
     coverage,
     touchClasses,
     touchedTasksByClass,
+    approvals,
+    tasksWithApprovals,
+    automationByKind,
+    tasksWithUnattributedCommits,
+    stallCauses,
     millMerged: mill.merged,
     millUnattended: mill.unattended,
     millUnattendedRate: mill.unattendedRate,
@@ -1601,6 +1777,8 @@ export function renderReliabilitySummary(summary: ReliabilitySummary, opts: Rend
   lines.push(`Coverage: full=${o.coverage.full}, partial=${o.coverage.partial}, none=${o.coverage.none}`);
   lines.push(`Touches by class:             ${fmtClasses(o.touchClasses)}`);
   lines.push(`Tasks touched by class:       ${fmtClasses(o.touchedTasksByClass)}`);
+  lines.push(`Approvals:                    ${o.approvals} (${o.tasksWithApprovals} tasks)`);
+  lines.push(`Stall causes (>1h):           ${fmtStallCauses(o.stallCauses)}`);
   if (summary.sources) lines.push(renderSources(summary.sources));
   lines.push('');
 
@@ -1654,6 +1832,13 @@ export function renderReliabilitySummary(summary: ReliabilitySummary, opts: Rend
 
 function fmtClasses(counts: Record<InterventionClass, number>): string {
   return INTERVENTION_CLASSES.map((cls) => `${cls}=${counts[cls]}`).join('  ');
+}
+
+function fmtStallCauses(causes: Record<StallCause, { stalls: number; hours: number }>): string {
+  const parts = STALL_CAUSES
+    .filter((cause) => cause !== 'unknown' || causes[cause].stalls > 0)
+    .map((cause) => `${cause}=${causes[cause].stalls}/${causes[cause].hours.toFixed(1)}h`);
+  return parts.join('  ');
 }
 
 function renderSources(sources: SourceCoverage): string {
@@ -1711,7 +1896,11 @@ export function computeTaskReliability(
   opts: { session?: string; stallMinutes?: number } = {},
 ): TaskReliability {
   const timeline = readTaskTimeline(task, ctx);
-  const touches = collectOperatorTouches({ repoDir: ctx.repoDir, task, context: ctx, timeline });
+  const allTouches = collectOperatorTouches({ repoDir: ctx.repoDir, task, context: ctx, timeline });
+  const humanTouches = allTouches.filter((t) => t.attribution === 'human');
+  const approvals = allTouches.filter((t) => t.attribution === 'approval').length;
+  const automation = allTouches.filter((t) => t.attribution === 'automation');
+  const unattributedCommits = automation.filter((t) => t.kind === 'manual-push').length;
   const stuck = computeTimeStuck({
     task,
     session: opts.session,
@@ -1719,14 +1908,18 @@ export function computeTaskReliability(
     context: ctx,
     timeline,
   });
+  const stallIntervals = attachStallCauses(task, stuck.stallIntervals, ctx);
   return {
     task,
-    touches,
-    touchCount: touches.length,
-    touchClasses: countTouchClasses(touches),
+    touches: humanTouches,
+    touchCount: humanTouches.length,
+    touchClasses: countTouchClasses(allTouches),
+    approvals,
+    automationCount: automation.length,
+    unattributedCommits,
     stuckMs: stuck.stuckMs,
     stuckCoverage: stuck.coverage,
-    stallIntervals: stuck.stallIntervals,
+    stallIntervals,
     isMillTask: Boolean(task.featureDir || task.archiveDir) || stuck.coverage !== 'none',
   };
 }

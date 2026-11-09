@@ -10,7 +10,6 @@ import {
   toInterventionMeta,
   formatForJudge,
   detectSessionRedirects,
-  isWorkflowAutomationMessage,
   isWavemillManagedBranch,
   agentCommitsAsUser,
   buildPostPrCommitEvent,
@@ -382,9 +381,9 @@ describe('intervention-detector', () => {
         const targetBranch = 'task/my-feature';
         const otherBranch = 'task/other-feature';
         const lines = [
-          userEntry({ branch: targetBranch, content: 'Task prompt for my-feature' }),
+          userEntry({ branch: targetBranch, content: 'You are working on: My Feature (HOK-100)' }),
           assistantEntry({ branch: targetBranch }),
-          userEntry({ branch: otherBranch, content: 'Task prompt for other-feature' }),
+          userEntry({ branch: otherBranch, content: 'You are working on: Other Feature (HOK-101)' }),
           assistantEntry({ branch: otherBranch }),
           userEntry({ branch: otherBranch, content: 'Redirect on other branch' }),
           assistantEntry({ branch: otherBranch }),
@@ -407,7 +406,7 @@ describe('intervention-detector', () => {
         const branch = 'task/my-feature';
         const longMessage = 'x'.repeat(500);
         const lines = [
-          userEntry({ branch, content: 'Task prompt' }),
+          userEntry({ branch, content: 'You are working on: My Feature (HOK-100)' }),
           assistantEntry({ branch }),
           userEntry({ branch, content: longMessage }),
           assistantEntry({ branch }),
@@ -429,7 +428,7 @@ describe('intervention-detector', () => {
 
         // Session 1: task prompt + redirect
         const session1 = [
-          userEntry({ branch, content: 'Task prompt session 1' }),
+          userEntry({ branch, content: 'You are working on: My Feature (HOK-100)' }),
           assistantEntry({ branch }),
           userEntry({ branch, content: 'First redirect' }),
           assistantEntry({ branch }),
@@ -444,7 +443,7 @@ describe('intervention-detector', () => {
         writeFileSync(join(projectsDir, 'session2.jsonl'), session2.join('\n'));
 
         const event = detectSessionRedirects(worktreePath, branch);
-        // First string message across all files is skipped (task prompt).
+        // First string message of each session is skipped if it is a launch prompt;
         // "First redirect" and "Second redirect in session 2" are counted.
         assert.equal(event.count, 2);
       } finally {
@@ -484,100 +483,6 @@ describe('intervention-detector', () => {
 
         const event = detectSessionRedirects(worktreePath, 'task/foo');
         assert.equal(event.count, 0);
-      } finally {
-        cleanup();
-      }
-    });
-  });
-
-  describe('isWorkflowAutomationMessage', () => {
-    it('filters phase transition context injections', () => {
-      assert.equal(isWorkflowAutomationMessage('You are working on: My Feature (HOK-100)\n\nRepo worktree: /path'), true);
-    });
-
-    it('filters review phase prompt injections', () => {
-      assert.equal(isWorkflowAutomationMessage('# Code Review - JSON Output Required\n\n**CRITICAL INSTRUCTION**...'), true);
-    });
-
-    it('filters Claude Code system XML wrappers', () => {
-      assert.equal(isWorkflowAutomationMessage('<local-command-caveat>Caveat: The messages below...</local-command-caveat>'), true);
-      assert.equal(isWorkflowAutomationMessage('<local-command-stdout>Bye!</local-command-stdout>'), true);
-      assert.equal(isWorkflowAutomationMessage('<command-name>/exit</command-name>\n<command-message>exit</command-message>'), true);
-    });
-
-    it('filters slash command error responses', () => {
-      assert.equal(isWorkflowAutomationMessage('Unknown skill: exit'), true);
-    });
-
-    it('filters single-word permission responses', () => {
-      assert.equal(isWorkflowAutomationMessage('approved'), true);
-      assert.equal(isWorkflowAutomationMessage('yes'), true);
-      assert.equal(isWorkflowAutomationMessage('test'), true);
-    });
-
-    it('does NOT filter genuine human redirections', () => {
-      assert.equal(isWorkflowAutomationMessage('No, I want to change the title not the H1'), false);
-      assert.equal(isWorkflowAutomationMessage('Actually change the meta title'), false);
-      assert.equal(isWorkflowAutomationMessage('Also update the favicon while you are at it'), false);
-      assert.equal(isWorkflowAutomationMessage('Stop. Use a different approach for the database migration.'), false);
-    });
-  });
-
-  describe('detectSessionRedirects with workflow automation filtering', () => {
-    it('filters out workflow automation messages from redirect count', () => {
-      const { worktreePath, projectsDir, cleanup } = setupSessionDir();
-      try {
-        const branch = 'task/my-feature';
-        const lines = [
-          // Initial task prompt (always skipped)
-          userEntry({ branch, content: 'You are working on: My Feature (HOK-100)' }),
-          assistantEntry({ branch }),
-          // Workflow automation messages (should be filtered)
-          userEntry({ branch, content: 'approved' }),
-          assistantEntry({ branch }),
-          userEntry({ branch, content: '<local-command-caveat>Caveat: The messages below...</local-command-caveat>' }),
-          assistantEntry({ branch }),
-          userEntry({ branch, content: '<command-name>/exit</command-name>\n<command-message>exit</command-message>' }),
-          assistantEntry({ branch }),
-          userEntry({ branch, content: '<local-command-stdout>Bye!</local-command-stdout>' }),
-          assistantEntry({ branch }),
-          userEntry({ branch, content: '# Code Review - JSON Output Required\n\n**CRITICAL INSTRUCTION**...' }),
-          assistantEntry({ branch }),
-          userEntry({ branch, content: 'You are working on: My Feature (HOK-100)\n\nRepo worktree: /path' }),
-          assistantEntry({ branch }),
-          userEntry({ branch, content: 'Unknown skill: exit' }),
-          assistantEntry({ branch }),
-          userEntry({ branch, content: 'test' }),
-          assistantEntry({ branch }),
-        ];
-        writeFileSync(join(projectsDir, 'session1.jsonl'), lines.join('\n'));
-
-        const event = detectSessionRedirects(worktreePath, branch);
-        assert.equal(event.count, 0, `Expected 0 redirects but got ${event.count}: ${JSON.stringify(event.details)}`);
-      } finally {
-        cleanup();
-      }
-    });
-
-    it('still detects genuine human redirections among automation messages', () => {
-      const { worktreePath, projectsDir, cleanup } = setupSessionDir();
-      try {
-        const branch = 'task/my-feature';
-        const lines = [
-          userEntry({ branch, content: 'You are working on: My Feature (HOK-100)' }),
-          assistantEntry({ branch }),
-          userEntry({ branch, content: 'approved' }),
-          assistantEntry({ branch }),
-          userEntry({ branch, content: 'No, use a different approach for the database migration' }),
-          assistantEntry({ branch }),
-          userEntry({ branch, content: '<local-command-stdout>Done</local-command-stdout>' }),
-          assistantEntry({ branch }),
-        ];
-        writeFileSync(join(projectsDir, 'session1.jsonl'), lines.join('\n'));
-
-        const event = detectSessionRedirects(worktreePath, branch);
-        assert.equal(event.count, 1);
-        assert.ok(event.details[0].includes('different approach'));
       } finally {
         cleanup();
       }
@@ -755,7 +660,7 @@ describe('intervention-detector', () => {
       }
     });
 
-    it('flags a commit outside every recorded agent activity window as manual_edit (med)', () => {
+    it('flags a commit outside every recorded agent activity window as manual_edit when ownership rows exist, otherwise unattributed (HOK-3455)', () => {
       const tmpDir = mkdtempSync(join(tmpdir(), 'wavemill-attribution-outside-'));
       try {
         const featureDir = join(tmpDir, 'features', 'outside-demo');
@@ -788,10 +693,11 @@ describe('intervention-detector', () => {
           agentType: 'codex',
         });
 
-        assert.equal(result.manualEdit.count, 1);
-        assert.match(result.manualEdit.details[0], /outside all recorded agent activity windows/);
-        assert.equal(result.manualEdit.severities?.[0], 'med');
-        assert.equal(result.unknownAttribution.count, 0);
+        // Without ownership rows an out-of-window commit is unattributed, not a
+        // human touch (HOK-3455 decision 4).
+        assert.equal(result.manualEdit.count, 0);
+        assert.equal(result.unknownAttribution.count, 1);
+        assert.match(result.unknownAttribution.details[0], /no stage-result attribution data available/);
       } finally {
         rmSync(tmpDir, { recursive: true, force: true });
       }
@@ -1412,11 +1318,14 @@ describe('intervention-detector', () => {
           agentType: 'native-openrouter',
         }, DEFAULT_PENALTIES);
 
-        const manualEdit = summary.interventions.find((event) => event.type === 'manual_edit');
-        assert.ok(manualEdit, 'manual_edit event should be present');
-        assert.equal(manualEdit!.count, 1, 'Only the out-of-window commit should be flagged');
-        assert.match(manualEdit!.details[0], /out-of-window operator commit/);
-        assert.match(manualEdit!.details[0], /outside all recorded agent activity windows/);
+        // Without session-ownership rows the out-of-window commit is
+        // unattributed rather than operator, but manual-edit detection still
+        // ran and classified the commits (HOK-3455).
+        const unknownAttribution = summary.interventions.find((event) => event.type === 'unknown_attribution');
+        assert.ok(unknownAttribution, 'unknown_attribution event should be present');
+        assert.equal(unknownAttribution!.count, 1, 'Only the out-of-window commit should be flagged');
+        assert.match(unknownAttribution!.details[0], /out-of-window operator commit/);
+        assert.match(unknownAttribution!.details[0], /no stage-result attribution data available/);
       } finally {
         rmSync(repo, { recursive: true, force: true });
       }
