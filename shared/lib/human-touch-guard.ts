@@ -14,7 +14,7 @@ export const HUMAN_TOUCH_GUARD: GuardSpec = {
   invariantPaths: [
     'shared/lib/operator-intervention.ts',
     'shared/lib/human-touch-guard.ts',
-    'tools/check-human-touch.ts',
+    'tools/check-human-touch.ts', // install-paths: allow invariant path string, not an executable invocation
     'tools/human-touch-allowlist.txt',
   ],
   patterns: [
