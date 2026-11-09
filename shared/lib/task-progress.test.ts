@@ -813,7 +813,8 @@ test('gather: a launcher agent-exit record is agentExited, phase- and attempt-sc
 
 // protects: the launched slot itself reports dead (term_is_dead on the
 // recorded window handle) becoming the exit fact — never a pane descendant
-// count.
+// count — while the probe stays bounded to a disposition gather that knows a
+// launch time, and a missing/replaced handle never reads as an exit.
 test('gather: term_is_dead on the launch-recorded windowId is agentExited', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'task-progress-exit-'));
   const calls: string[][] = [];
@@ -833,13 +834,38 @@ test('gather: term_is_dead on the launch-recorded windowId is agentExited', () =
     const dead = gatherTaskProgressInputs({
       issue: 'TEST-3426', session: 'sess', featureDir,
       task: { windowId: '@7' } as never,
+      agentExitSince: '2026-11-05T12:03:00Z',
     });
     assert.equal(dead.agentExited?.source, 'terminal-backend');
     assert.ok(calls.some((args) => args.includes('@7')), 'probed the launch-recorded handle');
 
     // Without a recorded handle the slot cannot be read; no exit fact.
-    const noHandle = gatherTaskProgressInputs({ issue: 'TEST-3426', session: 'sess', featureDir });
+    const noHandle = gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir,
+      agentExitSince: '2026-11-05T12:03:00Z',
+    });
     assert.equal(noHandle.agentExited, null);
+
+    // HOK-3206 hot-pass callers (dashboard, monitor tick) do not supply a
+    // launch time, so they must not pay for a terminal-backend probe even when
+    // the task row carries a windowId.
+    const beforeCalls = calls.length;
+    const hotPass = gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir,
+      task: { windowId: '@hot' } as never,
+    });
+    assert.equal(hotPass.agentExited, null);
+    assert.equal(calls.length, beforeCalls, 'no slot probe outside a disposition gather');
+    assert.ok(!calls.some((args) => args.includes('@hot')), 'never probed the hot-pass handle');
+
+    // `null` means no agent was ever launched for this stage: a dead slot is
+    // then not an exit of one.
+    const notLaunched = gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir,
+      task: { windowId: '@7' } as never,
+      agentExitSince: null,
+    });
+    assert.equal(notLaunched.agentExited, null);
 
     // A running slot reports dead=0 → no exit fact.
     setTerminalExecForTest({
@@ -854,8 +880,29 @@ test('gather: term_is_dead on the launch-recorded windowId is agentExited', () =
     const live = gatherTaskProgressInputs({
       issue: 'TEST-3426', session: 'sess', featureDir,
       task: { windowId: '@8' } as never,
+      agentExitSince: '2026-11-05T12:03:00Z',
     });
     assert.equal(live.agentExited, null);
+
+    // A reaped or recreated handle is unreadable (the backend call fails):
+    // `termIsDead` reports null, never true, so a replaced window cannot fake
+    // an exit for a live agent.
+    setTerminalExecForTest({
+      sync(args) {
+        calls.push([...args]);
+        if (args[0] === 'list-panes') return { ok: false, stdout: '' };
+        return { ok: false, stdout: '' };
+      },
+      async async(args) {
+        return this.sync(args);
+      },
+    });
+    const missing = gatherTaskProgressInputs({
+      issue: 'TEST-3426', session: 'sess', featureDir,
+      task: { windowId: '@gone' } as never,
+      agentExitSince: '2026-11-05T12:03:00Z',
+    });
+    assert.equal(missing.agentExited, null, 'a missing window is not an exit');
   } finally {
     setTerminalExecForTest(null);
     rmSync(tmp, { recursive: true, force: true });

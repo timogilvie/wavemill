@@ -116,5 +116,74 @@ else
 fi
 
 echo ""
+echo "=== trap_2: the recorded phase is the launch's session-ownership kind ==="
+
+# Ready remediation and conflict resolution launch with the `coding` phase
+# token but own `ready-remediation` / `conflict-resolution` rows. The reader
+# scopes exit records by stage name, so the launcher must record the KIND, not
+# the raw token, or a hard-killed remediation agent would never settle.
+kind="$(WAVEMILL_SESSION_KIND=ready-remediation session_ownership_kind_for_launch "coding")"
+if [[ "$kind" == "ready-remediation" ]]; then
+  pass "trap_2: a remediation launch resolves to the ready-remediation kind"
+else
+  fail "trap_2: a remediation launch resolves to the ready-remediation kind" "got '$kind'"
+fi
+uncoded_kind="$(session_ownership_kind_for_launch "review")"
+if [[ "$uncoded_kind" == "review" ]]; then
+  pass "trap_2: a plain review launch keeps the review kind"
+else
+  fail "trap_2: a plain review launch keeps the review kind" "got '$uncoded_kind'"
+fi
+
+kind_launcher="$TMP_ROOT/kind-launcher.sh"
+printf '#!/bin/bash\nagent_cmd="$1"\n"$agent_cmd"\n' > "$kind_launcher"
+chmod +x "$kind_launcher"
+agent_launch_exit_trap_inject "$kind_launcher" "TEST-3426" "$feature_dir" "$kind"
+bash "$kind_launcher" "$TMP_ROOT/killed-agent" >/dev/null 2>&1 || true
+kind_latest="$(jq -r 'select(.payload.kind == "agent-exit") | .payload.phase' "$history" | tail -n 1)"
+if [[ "$kind_latest" == "ready-remediation" ]]; then
+  pass "trap_2: the exit record names the ownership kind as its phase"
+else
+  fail "trap_2: the exit record names the ownership kind as its phase" "got '$kind_latest'"
+fi
+
+echo ""
+echo "=== trap_3: a signal-killed launcher still records the exit ==="
+
+# The mill's shutdown path kills the launcher, not the agent. Bash runs an
+# EXIT trap on SIGTERM/SIGHUP, so the fact survives — but only while the
+# launcher stays a shell (it deliberately does not `exec` the agent; replacing
+# the process image would delete the trap). Protecting this keeps a killed
+# stage from waiting out the 30-minute stall clock.
+sig_agent="$TMP_ROOT/sig-agent.sh"
+printf '#!/bin/bash\nsleep 30\n' > "$sig_agent"
+chmod +x "$sig_agent"
+sig_launcher="$TMP_ROOT/sig-launcher.sh"
+printf '#!/bin/bash\nagent_cmd="$1"\n"$agent_cmd"\n' > "$sig_launcher"
+chmod +x "$sig_launcher"
+agent_launch_exit_trap_inject "$sig_launcher" "TEST-3426" "$feature_dir" "review"
+
+for sig in TERM HUP; do
+  before="$(jq -r 'select(.payload.kind == "agent-exit") | .payload.phase' "$history" 2>/dev/null | wc -l | tr -d ' ')"
+  bash "$sig_launcher" "$sig_agent" >/dev/null 2>&1 &
+  launcher_pid=$!
+  # bounded wait for the launcher to actually be running its agent
+  for _ in $(seq 1 50); do
+    kill -0 "$launcher_pid" 2>/dev/null || break
+    [[ -n "$(pgrep -P "$launcher_pid" 2>/dev/null || true)" ]] && break
+    sleep 0.02
+  done
+  kill -"$sig" "$launcher_pid" 2>/dev/null || true
+  wait "$launcher_pid" 2>/dev/null || true
+  after="$(jq -r 'select(.payload.kind == "agent-exit") | .payload.phase' "$history" 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ "$after" -gt "$before" ]]; then
+    pass "trap_3: SIG$sig of the launcher is recorded as an exit"
+  else
+    fail "trap_3: SIG$sig of the launcher is recorded as an exit" "records $before -> $after"
+  fi
+  # the orphaned agent sleep is short-lived and holds no world resource
+done
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

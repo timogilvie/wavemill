@@ -188,6 +188,91 @@ test('decision: agent working at launch+30s → in-flight agent-working', () => 
   assert.equal(d.evidenceConfidence, 'high');
 });
 
+// protects: HOK-3426 problem 1 — a real agent killed mid-tool leaves `working`
+// from the PreToolUse it died in as its last hook. A recorded exit at/after
+// that record must settle the stage, or a killed agent holds forever.
+test('HOK-3426: a recorded exit at/after a `working` record settles agent-exited', () => {
+  const now = Date.parse('2026-11-02T10:00:00.000Z');
+  const record = hookRecord('working', 30, now); // 2026-11-02T09:59:30Z
+  const d = decideStageAgentDisposition(baseInput({
+    progress: {
+      agentRecord: record,
+      agentState: 'working',
+      agentIdle: false,
+      agentExited: { at: '2026-11-02T09:59:45.000Z', source: 'launcher' },
+      agentBackgroundLive: null,
+      blockingPrompt: null,
+      stalled: false,
+      ownedSessionIdleAt: null,
+    },
+  }));
+  assert.equal(d.kind, 'settled');
+  assert.equal(d.reason, 'agent-exited');
+  assert.equal(d.evidenceConfidence, 'high');
+});
+
+// protects: a stale exit record ending a working agent — the record is newer
+// than the exit, so the live agent still holds.
+test('HOK-3426: a `working` record newer than the exit keeps in-flight agent-working', () => {
+  const now = Date.parse('2026-11-02T10:00:00.000Z');
+  const d = decideStageAgentDisposition(baseInput({
+    progress: {
+      agentRecord: hookRecord('working', 30, now), // 09:59:30, newer than the exit
+      agentState: 'working',
+      agentIdle: false,
+      agentExited: { at: '2026-11-02T09:59:15.000Z', source: 'launcher' },
+      agentBackgroundLive: null,
+      blockingPrompt: null,
+      stalled: false,
+      ownedSessionIdleAt: null,
+    },
+  }));
+  assert.equal(d.kind, 'in-flight');
+  assert.equal(d.reason, 'agent-working');
+});
+
+// protects: a hook record and an exit in the SAME second (hook timestamps are
+// epoch seconds) being read as "record is newer", which would hold a killed
+// agent until the stall clock.
+test('HOK-3426: an exit in the same second as the record still settles agent-exited', () => {
+  const now = Date.parse('2026-11-02T10:00:00.000Z');
+  const d = decideStageAgentDisposition(baseInput({
+    progress: {
+      agentRecord: hookRecord('working', 30, now), // epoch second of 09:59:30
+      agentState: 'working',
+      agentIdle: false,
+      agentExited: { at: '2026-11-02T09:59:30.900Z', source: 'launcher' },
+      agentBackgroundLive: null,
+      blockingPrompt: null,
+      stalled: false,
+      ownedSessionIdleAt: null,
+    },
+  }));
+  assert.equal(d.kind, 'settled');
+  assert.equal(d.reason, 'agent-exited');
+});
+
+// protects: a live `approval-needed` wait being settled by an exit fact that
+// predates it (the operator answered and the agent resumed).
+test('HOK-3426: an exit before a `approval-needed` record does not settle the wait', () => {
+  const now = Date.parse('2026-11-02T10:00:00.000Z');
+  const d = decideStageAgentDisposition(baseInput({
+    progress: {
+      agentRecord: hookRecord('approval-needed', 30, now),
+      agentState: 'approval-needed',
+      agentIdle: false,
+      agentExited: { at: '2026-11-02T09:59:00.000Z', source: 'controller-termination' },
+      agentBackgroundLive: null,
+      blockingPrompt: null,
+      stalled: false,
+      ownedSessionIdleAt: null,
+    },
+  }));
+  assert.equal(d.kind, 'in-flight');
+  assert.equal(d.reason, 'agent-approval-needed');
+  assert.deepEqual(d.waitingOn, { kind: 'approval', detail: 'approval-needed' });
+});
+
 // protects: an agent idle record being ignored so a review stage with no verdict holds forever.
 test('decision: agent idle after launch → settled agent-idle-after-launch', () => {
   const now = Date.parse('2026-11-02T10:00:00.000Z');

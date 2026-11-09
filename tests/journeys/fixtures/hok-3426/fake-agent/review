@@ -13,5 +13,13 @@ if [[ -f "$FEATURE_DIR/review-kill-injected" ]]; then
   return
 fi
 touch "$FEATURE_DIR/review-kill-injected"
+# The real kill shape: the reviewer dies inside a tool call, so its LAST hook
+# record is `working` (PreToolUse) and the harness never writes an idle/Stop
+# record. Without the recorded exit refuting this stale live record the stage
+# would hold forever (or wait out the 30-minute stall clock); with it the
+# stage must settle on the recorded exit.
+hook_file="/tmp/wavemill-${WAVEMILL_SESSION}-${WAVEMILL_ISSUE}.hook"
+printf '{"state":"working","event":"PreToolUse","detail":"Bash","agent":"claude","timestamp":%s,"writer":"agent"}\n' \
+  "$(date +%s)" > "$hook_file" 2>/dev/null || true
 printf 'reviewer stopping before the PR (simulated SIGTERM)\n'
 exit 143

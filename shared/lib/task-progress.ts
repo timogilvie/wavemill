@@ -328,7 +328,9 @@ export interface TaskProgressGatherOptions {
    * HOK-3426: the stage's launch time (ISO). A controller-termination older
    * than the launch belongs to an earlier attempt and never settles this one.
    * `undefined` means no time filter; `null` means no agent was ever launched,
-   * so no controller termination can be this stage's exit.
+   * so no controller termination can be this stage's exit. Only a non-empty
+   * ISO string arms the terminal-backend slot probe (a launch is known); the
+   * HOK-3206 hot-pass callers leave this unset and never pay for the probe.
    */
   agentExitSince?: string | null;
   /** Optional pane-process liveness fact; not a progress source. */
@@ -1809,11 +1811,16 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
     ? readExitRecordAt(historyPath, { writer: 'launcher', kind: 'agent-exit' }, exitScope)
     : null;
   const windowId = opts.task?.windowId;
-  // Only probe the slot when no record already answered and a launched agent
-  // is in scope: the probe spawns a terminal-backend call, a recorded exit is
-  // already the stronger fact, and `since === null` means no agent of this
-  // stage was launched, so a dead slot is not an exit of one.
-  const slotDead = opts.agentExitSince !== null
+  // Only probe the slot when no record already answered AND an explicit,
+  // non-null launch time was supplied. The probe is a terminal-backend spawn
+  // (up to 3s): only the stage-disposition gather, which already talks to the
+  // terminal backend, passes `agentExitSince`, so the HOK-3206 hot-pass paths
+  // (dashboard, monitor tick) never pay for it. `since === null` means no agent
+  // of this stage was launched, so a dead slot is not an exit of one. A stale
+  // handle (a reaped or recreated window id) is unreadable, and
+  // `termIsDead` reports `null` for an unreadable target — never `true` — so a
+  // replaced window cannot fake an exit.
+  const slotDead = typeof opts.agentExitSince === 'string' && opts.agentExitSince.length > 0
     && !controllerTerminationAt && !launcherExitAt
     && !!windowId && termIsDead(windowId, { timeoutMs: 3000 }) === true;
   const agentExited: AgentExitedFact | null = controllerTerminationAt

@@ -3048,8 +3048,12 @@ LAUNCHEOF
   # surface that observes the agent's own exit — including a hard-killed agent
   # whose harness never writes an idle hook. Record it as an EXIT FACT; the
   # stage disposition settles on that record, never on a pane descendant count.
+  # The phase recorded is the launch's session-ownership KIND, not the raw
+  # phase token: Ready remediation and conflict resolution launch with the
+  # `coding` token but own `ready-remediation` / `conflict-resolution` rows, and
+  # the reader scopes exit records by that kind's stage name.
   if ! agent_is_native_cmd "$agent_cmd"; then
-    agent_launch_exit_trap_inject "$launcher" "$issue" "$feature_dir" "${launch_phase:-$window}"
+    agent_launch_exit_trap_inject "$launcher" "$issue" "$feature_dir" "${ownership_kind:-${phase_env:-}}"
   fi
   printf -v launcher_cmd '%q' "$launcher"
 
