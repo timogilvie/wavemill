@@ -8,12 +8,14 @@ import { LinearApiError } from './linear.ts';
 import { DEFAULT_INCIDENT_LINEAR_CONFIG, type IncidentLinearClient } from './incident-to-linear-synchronizer.ts';
 import { computeIncidentBackoffMs, drainIncidentQueue, enqueueIncidentSync } from './incident-linear-retry-queue.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
-import { createIncidentDraft } from './wavemill-incident-model.ts';
+import { createIncidentDraft, type IncidentRecord } from './wavemill-incident-model.ts';
 import type { InvestigationPayload } from './root-cause-escalation.ts';
 
 const queuePath = (repoDir: string) => join(repoDir, '.wavemill', 'registry', 'linear-incident-queue.jsonl');
 
-function seedInvestigation(repoDir: string, fingerprint: string, overrides: Partial<InvestigationPayload> = {}): void {
+function seedInvestigation(repoDir: string, incident: IncidentRecord, overrides: Partial<InvestigationPayload> = {}): void {
+  const fingerprint = incident.fingerprint;
+  const revision = new IncidentStore(join(repoDir, '.wavemill', 'incidents')).computeEvidenceRevision(incident);
   const dir = join(repoDir, '.wavemill', 'incidents', fingerprint);
   mkdirSync(dir, { recursive: true });
   const payload: InvestigationPayload = {
@@ -26,7 +28,7 @@ function seedInvestigation(repoDir: string, fingerprint: string, overrides: Part
     generatedAt: '2026-08-04T12:15:00.000Z',
     ...overrides,
   };
-  writeFileSync(join(dir, 'investigation-revision-1.json'), JSON.stringify(payload, null, 2));
+  writeFileSync(join(dir, `investigation-${revision}.json`), JSON.stringify(payload, null, 2));
 }
 
 test('enqueueIncidentSync writes retryable incident action with short exponential backoff', () => {
@@ -124,7 +126,6 @@ test('drainIncidentQueue replays queued incident and tombstones success', async 
       }],
       metadata: { thresholdTriggered: true },
     }));
-    seedInvestigation(repoDir, stored.fingerprint);
     enqueueIncidentSync({
       repoDir,
       incidentFingerprint: stored.fingerprint,
@@ -138,6 +139,20 @@ test('drainIncidentQueue replays queued incident and tombstones success', async 
       },
       now: new Date('2026-08-04T12:00:00.000Z'),
     });
+    // protects: pending investigation cannot consume the transport retry
+    // budget or tombstone a write before its payload exists.
+    const pending = await drainIncidentQueue({
+      repoDir, store,
+      config: {...DEFAULT_INCIDENT_LINEAR_CONFIG,enabled:true,team:'HOK',requestDelayMs:0},
+      now: new Date('2026-08-04T12:01:00.000Z'),
+      client: successClient({createIssue:async()=>assert.fail('pending analysis reached transport')}),
+    });
+    assert.equal(pending.skipped,1);
+    assert.equal(pending.failed,0);
+    const waitingRows=readFileSync(queuePath(repoDir),'utf8').trim().split('\n').map(line=>JSON.parse(line));
+    assert.equal(waitingRows.at(-1).recordType,'pending');
+    assert.equal(waitingRows.at(-1).attempts,1);
+    seedInvestigation(repoDir, stored);
     const result = await drainIncidentQueue({
       repoDir,
       store,
@@ -215,6 +230,7 @@ test('drainIncidentQueue marks nonretryable replay failure permanent', async () 
       }],
       metadata: { thresholdTriggered: true },
     }));
+    seedInvestigation(repoDir, stored);
     enqueueIncidentSync({
       repoDir,
       incidentFingerprint: stored.fingerprint,
@@ -280,7 +296,7 @@ test('drainIncidentQueue keeps replayed 429 pending with incremented attempt', a
       }],
       metadata: { thresholdTriggered: true },
     }));
-    seedInvestigation(repoDir, stored.fingerprint);
+    seedInvestigation(repoDir, stored);
     enqueueIncidentSync({
       repoDir,
       incidentFingerprint: stored.fingerprint,

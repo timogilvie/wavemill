@@ -582,7 +582,7 @@ test('shadow mode produces deterministic decision, exact redacted payload, and z
   assert.equal(result.shadowPlan!.correlationTarget.matchedBy, 'linked_metadata');
   assert.equal(result.shadowPlan!.correlationTarget.identifier, 'HOK-500');
   assert.ok(result.shadowPlan!.plannedCommentBody);
-  assert.match(result.shadowPlan!.plannedCommentBody!, /Wavemill Incident Evidence Update/);
+  assert.match(result.shadowPlan!.plannedCommentBody!, /Wavemill Root-Cause Evidence Update/);
   // Redaction summary should mark that redaction is enabled and describe the profile.
   assert.equal(result.shadowPlan!.redactionSummary.redactionEnabled, true);
   assert.equal(result.shadowPlan!.redactionSummary.patternsApplied > 0, true);
@@ -918,5 +918,20 @@ test('shadow mode renders the proposed lifecycle action without mutation', async
     assert.equal(state.stateChanges.length, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// protects: the linked-issue update path racing an async investigation and
+// sending uninvestigated symptom evidence while the current revision is pending.
+test('linked incidents with pending investigation do not read or write Linear in live or shadow', async () => {
+  for (const mode of ['live','shadow'] as const) {
+    const item = incident({metadata:{linkedLinearId:'HOK-102',lastSyncedEvidenceRevision:'old',thresholdTriggered:true}});
+    let calls=0;
+    const fail=async()=>{calls++;throw new Error('pending analysis must not reach Linear');};
+    const result=await syncIncident({incident:item,config:config({mode}),client:mockClient({getIssue:fail,searchIssues:fail,createIssue:fail,createComment:fail})});
+    assert.equal(result.action,'skip');
+    assert.equal(result.reason,'investigation_pending');
+    assert.equal(calls,0);
+    assert.equal(result.shadowPlan?.plannedCommentBody,undefined);
   }
 });

@@ -358,8 +358,8 @@ export function renderInvestigatedCommentBody(
   evidenceRevision: string,
   now: Date,
 ): string {
-  if (payload.mode !== 'append_to_owner') {
-    throw new Error('renderInvestigatedCommentBody only renders append_to_owner payloads');
+  if (payload.mode === 'draft') {
+    throw new Error('renderInvestigatedCommentBody refuses to render a draft payload');
   }
   const evidence = redactEvidence(incident.evidence, config.redaction).slice(-8);
   return redactLinearIssueContent([
@@ -371,6 +371,8 @@ export function renderInvestigatedCommentBody(
     `- **Evidence revision**: ${evidenceRevision}`,
     `- **Investigated at**: ${payload.generatedAt}`,
     `- **Model**: ${payload.modelId} (${payload.provider})`,
+    '',
+    renderInvestigatedIssueBody(incident, payload),
     '',
     '## New Evidence',
     ...evidence.map((item) => `- ${item.type}: ${item.source} [${item.timestamp}] ${item.redactedData}`),

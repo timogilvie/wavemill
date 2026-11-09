@@ -270,6 +270,12 @@ export async function drainIncidentQueue(options: DrainIncidentQueueOptions): Pr
         result.succeeded += 1;
         continue;
       }
+      // Waiting for analysis is not a failed Linear transport attempt. Keep
+      // the queued write intact; a later pass consumes the current payload.
+      if (syncResult.action === 'skip' && (syncResult.reason === 'investigation_pending' || syncResult.reason?.startsWith('draft:'))) {
+        result.skipped += 1;
+        continue;
+      }
       if (syncResult.status === 'created' || syncResult.status === 'updated' || syncResult.action === 'no_op') {
         appendRecord(path, { schemaVersion: SCHEMA_VERSION, recordType: 'tombstone', id: record.id, settledAt: toIso(now) });
         result.succeeded += 1;

@@ -66,3 +66,6 @@ assert.equal(parsed.entries.length, 1);
 assert.equal(parsed.entries[0].path, 'tools/observer.ts');
 
 console.log('defect-escalation guard: ok');
+
+// protects: an already-linked incident bypassing investigation through comments
+assert.deepEqual(patterns(findingsFor('const body = generateCommentBody(incident, config, rev, now);')), ['generateCommentBody-reference']);

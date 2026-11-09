@@ -352,39 +352,6 @@ function relatedIssues(incident: IncidentRecord, policy?: IncidentClassPolicy): 
 }
 
 
-export function generateCommentBody(incident: IncidentRecord, config: ObserverLinearConfig, evidenceRevision: string, now: Date): string {
-  const evidence = redactEvidence(incident.evidence, config.redaction).slice(-8);
-  return redactLinearIssueContent([
-    `## Wavemill Incident Evidence Update`,
-    `- **Fingerprint**: ${incident.fingerprint}`,
-    `- **Root Cause**: ${incident.rootCauseClass}`,
-    `- **Severity/Confidence**: ${incident.severity}/${incident.confidence}`,
-    `- **Occurrences**: ${incident.occurrenceCount}`,
-    `- **Last Seen**: ${incident.lastObservedAt}`,
-    `- **Evidence revision**: ${evidenceRevision}`,
-    '',
-    '## New Evidence',
-    ...evidence.map(evidenceLine),
-    '',
-    `Recommendation: ${incident.operatorAction}`,
-    '',
-    `Synced at: ${now.toISOString()}`,
-  ].join('\n'), config.redaction);
-}
-
-function renderInvestigatedCommentBodyOrFallback(
-  incident: IncidentRecord,
-  investigation: InvestigationOutcome | undefined,
-  config: ObserverLinearConfig,
-  evidenceRevision: string,
-  now: Date,
-): string {
-  if (investigation?.payload?.mode === 'append_to_owner') {
-    return renderInvestigatedCommentBody(incident, investigation.payload, config, evidenceRevision, now);
-  }
-  return generateCommentBody(incident, config, evidenceRevision, now);
-}
-
 function extractEvidenceField(evidence: IncidentEvidence[], field: string): string | undefined {
   for (const item of evidence) {
     const match = item.redactedData.match(new RegExp(`\\b${field}=([^\\s,;]+)`, 'i'));
@@ -588,8 +555,7 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
     return { ...baseResult, action: 'skip', status: 'skipped', reason: 'observer.linear.enabled is false' };
   }
 
-  const hasLinkedIssue = Boolean(incident.metadata?.linkedLinearId);
-  if (prepared.kind === 'skip' && (prepared.reason !== 'investigation_pending' || !hasLinkedIssue)) {
+  if (prepared.kind === 'skip') {
     audit('incident filing skipped by escalation', { fingerprint: incident.fingerprint, reason: prepared.reason });
     if (shadowMode) {
       const plan = planShadowSync({
@@ -676,9 +642,7 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
           reason: 'dry-run planned evidence update',
         };
       }
-      const commentBody = prepared.kind === 'transport' && options.investigation?.payload?.mode === 'append_to_owner'
-        ? renderInvestigatedCommentBody(incident, options.investigation.payload, config, evidenceRevision, now)
-        : generateCommentBody(incident, config, evidenceRevision, now);
+      const commentBody = renderInvestigatedCommentBody(incident, options.investigation!.payload!, config, evidenceRevision, now);
       await client.createComment(existing.id, commentBody);
       await addIncidentLabels(existing, incident, config, client);
       await options.store?.recordLinearSync(incident.fingerprint, {
@@ -1253,7 +1217,7 @@ export function planShadowSync(options: PlanShadowSyncOptions): ShadowSyncPlan {
       if (action === 'create') {
         plannedBody = prepared.body;
       } else if (action === 'update_comment') {
-        plannedCommentBody = renderInvestigatedCommentBodyOrFallback(incident, options.investigation, config, evidenceRevision, now);
+        plannedCommentBody = renderInvestigatedCommentBody(incident, options.investigation!.payload!, config, evidenceRevision, now);
       }
     }
   } else if (prepared.kind === 'skip') {
@@ -1270,7 +1234,7 @@ export function planShadowSync(options: PlanShadowSyncOptions): ShadowSyncPlan {
     } else {
       action = 'update_comment';
       reason = 'shadow: planned evidence update';
-      plannedCommentBody = renderInvestigatedCommentBodyOrFallback(incident, options.investigation, config, evidenceRevision, now);
+      plannedCommentBody = renderInvestigatedCommentBody(incident, options.investigation!.payload!, config, evidenceRevision, now);
     }
   } else if (!createPolicy.allowed) {
     action = 'skip';

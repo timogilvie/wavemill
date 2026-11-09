@@ -42,6 +42,12 @@ export const DEFECT_ESCALATION_GUARD: GuardSpec = {
       excludePaths: ['shared/lib/incident-to-linear-synchronizer.ts'],
     },
     {
+      name: 'generateCommentBody-reference',
+      description: 'reference to deleted uninvestigated comment renderer — transport investigated payloads only',
+      lang: 'ts',
+      re: /\bgenerateCommentBody\b/,
+    },
+    {
       name: 'generateIssueBody-reference',
       description: 'reference to deleted symptom-body renderer — use the root-cause investigation payload instead',
       lang: 'ts',
