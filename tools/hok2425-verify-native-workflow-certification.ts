@@ -18,6 +18,7 @@ import { routeWorkflow } from '../shared/lib/workflow-router.ts';
 import { listEffectiveNativeProviderModels } from '../shared/lib/effective-models.ts';
 import type { ModelRegistry } from '../shared/lib/model-registry.ts';
 import { resolveWavemillToolPath } from '../shared/lib/native-agent/install-paths.ts';
+import { exitOnHelp } from '../shared/lib/tool-runner.ts';
 
 const ISSUE_ID = 'HOK-2425';
 const EVIDENCE_PATH = 'features/verification-companion-for-native-workflow-certification-coverage/verification-evidence.md';
@@ -784,6 +785,10 @@ function formatReasons(rejections: RouterCertificationRejection[]): string {
 }
 
 async function main(): Promise<void> {
+  exitOnHelp(
+    'Usage: npx tsx tools/hok2425-verify-native-workflow-certification.ts\n'
+      + 'One-off HOK-2425 verifier: runs workflow certification checks and writes its evidence file in the repo.',
+  );
   const repoDir = process.cwd();
   const summary = await runVerification(repoDir);
   const markdown = buildVerificationMarkdown(summary);

@@ -2,8 +2,13 @@
 
 import { readFileSync } from 'node:fs';
 import { isTaskPacketContent } from '../shared/lib/task-packet-utils.ts';
+import { exitOnHelp } from '../shared/lib/tool-runner.ts';
 
 function main(): number {
+  exitOnHelp(
+    'Usage: npx tsx tools/classify-packet.ts <packet-file>\n'
+      + 'Prints "task-packet" (exit 0) or "raw" (exit 1) for the given file.',
+  );
   const packetPath = process.argv[2];
   if (!packetPath) {
     console.error('Usage: classify-packet <packet-file>');

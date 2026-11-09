@@ -6,8 +6,13 @@ import { DEFAULT_VALIDATION_CONFIG, validateTaskPacket } from '../shared/lib/tas
 import { loadPromptTemplate } from '../shared/lib/prompt-utils.ts';
 import { closeManifest, openManifest, resolveManifestPath } from '../shared/lib/resource-manifest.ts';
 import { resolveWavemillPromptPath } from '../shared/lib/native-agent/install-paths.ts';
+import { exitOnHelp } from '../shared/lib/tool-runner.ts';
 
 async function main(): Promise<void> {
+  exitOnHelp(
+    'Usage: npx tsx tools/hok2417-verify-native-expansion.ts\n'
+      + 'One-off HOK-2417 verifier: runs a real native expansion (calls a model) and writes to /tmp/hok2417.',
+  );
   const repoDir = process.cwd();
   const outDir = '/tmp/hok2417/fixture';
   const outputFile = join(outDir, 'task-packet.md');

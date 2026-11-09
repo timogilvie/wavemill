@@ -326,6 +326,7 @@ TESTS=(
   shared/lib/harness-diff.test.ts
   shared/lib/quota-state.test.ts
   shared/lib/template-curly-checker.test.ts
+  shared/lib/operator-tools-index.test.ts
   shared/lib/test-tracked-write-checker.test.ts
   shared/lib/task-identity-checker.test.ts
   shared/lib/task-record-shape-checker.test.ts
