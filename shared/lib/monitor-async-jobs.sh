@@ -1039,3 +1039,35 @@ monitor_attention_projection_tick() {
       --stale-after-seconds "$(( interval + ATTENTION_PROJECTION_TIMEOUT_SECONDS ))"
   return 0
 }
+
+# Observer queues one standing request per incident. Only the monitor launches
+# investigations: the shared tracked-job seam owns liveness/timeout and its
+# poll arm charges the existing bounded-retry bucket on a failed execution.
+monitor_root_cause_investigations_tick() {
+  # The first empty-backlog pass can precede creation of workflow state.
+  # Do not start a worker before its tracked launch can be persisted.
+  [[ -f "$STATE_FILE" ]] || return 0
+  local request state_dir fingerprint revision job_id gate meta
+  for request in "$REPO_DIR"/.wavemill/incidents/*/request.json; do
+    [[ -f "$request" ]] || continue
+    state_dir="$(dirname "$request")"
+    fingerprint="$(jq -r '.fingerprint // empty' "$request")"
+    revision="$(jq -r '.evidenceRevision // empty' "$request")"
+    [[ "$fingerprint" =~ ^[a-f0-9]{64}$ && "$revision" =~ ^[a-f0-9]{64}$ ]] || continue
+    [[ -f "$state_dir/investigation-$revision.json" ]] && continue
+    job_id="root-cause-investigation-$fingerprint"
+    monitor_async_job_running "$job_id" && continue
+    gate="$(bounded_retry_gate "$state_dir" root-cause-investigation "$revision" "$ASYNC_CHECK_JOB_RETRY_LIMIT")"
+    case "$gate" in
+      exhausted|exhausted-quiet)
+        if bounded_retry_mark_exhausted "$state_dir" root-cause-investigation "Investigation failed for $fingerprint" --head "$revision"; then
+          escalate_operator_attention "$state_dir" exhausted root-cause-investigation "Root-cause investigation exhausted for $fingerprint" --head "$revision" || true
+        fi
+        continue ;;
+      backoff) continue ;;
+    esac
+    meta="$(jq -cn --arg stateDir "$state_dir" --arg key "$revision" '{stateDir:$stateDir,bucket:"root-cause-investigation",key:$key}')"
+    monitor_async_job_launch root-cause-investigation "$job_id" "" "" "$ASYNC_JOB_MAX_RUNTIME_SECONDS" "$meta" \
+      wavemill_run_tool investigate-incident.ts --request "$request"
+  done
+}

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# The shared fake CLI serves investigation payloads through its usual JSON
+# envelope; every phase and other helper still uses the common contract.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+shared_fake="$(cd "$here/../../../../fakes/bin" && pwd)/claude"
+if [[ -z "${WAVEMILL_PHASE:-}" && "${1:-}" == "-p" ]]; then
+  prompt="$(cat)"
+  if [[ "$prompt" == *"You are investigating a confirmed Wavemill incident"* ]]; then
+    fingerprint="$(printf '%s' "$prompt" | sed -n '/^Incident fingerprint:/{n;p;}' | tail -n 1)"
+    printf '%s\n' "$fingerprint" >> "$FAKE_INVESTIGATION_PAYLOAD_DIR/calls.log"
+    printf '%s' "$prompt" | FAKE_JUDGE_VERDICT_FILE="$FAKE_INVESTIGATION_PAYLOAD_DIR/$fingerprint.json" "$shared_fake" "$@"
+    exit $?
+  fi
+  printf '%s' "$prompt" | "$shared_fake" "$@"
+  exit $?
+fi
+exec "$shared_fake" "$@"
