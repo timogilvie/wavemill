@@ -13,6 +13,7 @@ import { resolve } from 'node:path';
 import { IncidentStore } from '../shared/lib/wavemill-incident-store.ts';
 import { getIncidentConfig } from '../shared/lib/config.ts';
 import { captureReplayIncident, markInstanceReady, markInstanceDraft } from '../shared/lib/challenge-replay-capture.ts';
+import { exitOnHelp } from '../shared/lib/tool-runner.ts';
 
 interface CliArgs {
   fingerprint?: string;
@@ -64,6 +65,11 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 async function main(): Promise<void> {
+  exitOnHelp(
+    'Usage: npx tsx tools/challenge-replay-capture.ts <fingerprint> [--bad-patch FILE] [--good-patch FILE]\n'
+      + '  [--task-title TEXT] [--task-description TEXT] [--base-sha SHA] [--repo-dir DIR] [--mark-ready]\n'
+      + 'Captures a replay instance from a recorded incident.',
+  );
   const args = parseArgs(process.argv.slice(2));
 
   if (!args.fingerprint) {

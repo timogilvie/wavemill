@@ -54,6 +54,7 @@ TESTS=(
   shared/lib/operator-intervention.test.ts
   shared/lib/intervention-detector.test.ts
   shared/lib/reliability-metrics.test.ts
+  shared/lib/stall-cause.test.ts
   shared/lib/label-write-ledger.test.ts
   shared/lib/pr-timeline.test.ts
   shared/lib/stage-result.test.ts
@@ -297,6 +298,7 @@ TESTS=(
   shared/lib/mill-config-preflight.test.ts
   shared/lib/effective-task-config.test.ts
   shared/lib/routing-policy.test.ts
+  shared/lib/descriptor-stage-pool.test.ts
   shared/lib/hokusai-consent.test.ts
   shared/lib/hokusai-redaction.test.ts
   shared/lib/hokusai-schema.test.ts
@@ -307,6 +309,7 @@ TESTS=(
   shared/lib/hokusai-local-config.test.ts
   shared/lib/hokusai-audit.test.ts
   shared/lib/hokusai-submission-trigger.test.ts
+  shared/lib/terminal-arm-feedback.test.ts
   shared/lib/hokusai-trigger-log.test.ts
   shared/lib/hokusai-queue.test.ts
   shared/lib/hokusai-backfill.test.ts
@@ -323,6 +326,7 @@ TESTS=(
   shared/lib/harness-diff.test.ts
   shared/lib/quota-state.test.ts
   shared/lib/template-curly-checker.test.ts
+  shared/lib/operator-tools-index.test.ts
   shared/lib/test-tracked-write-checker.test.ts
   shared/lib/task-identity-checker.test.ts
   shared/lib/task-record-shape-checker.test.ts
@@ -494,6 +498,7 @@ TESTS=(
   tools/native-agent-certifications.test.ts
   shared/lib/incident-linear-retry-queue.test.ts
   shared/lib/incident-to-linear-synchronizer.test.ts
+  shared/lib/root-cause-escalation.test.ts
   shared/lib/observer-shadow-audit.test.ts
   shared/lib/incident-filing-reconciler.test.ts
   shared/lib/incident-log-excerpt-reader.test.ts

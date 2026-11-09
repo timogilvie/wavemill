@@ -676,11 +676,16 @@ describe('reliability-metrics', () => {
         }]);
         const task: MergedTaskRef = { title: 'Merge pull request #1603 from acme/task/x', prNumber: '1603', mergedAt: '2026-10-08T13:00:00Z' };
         const touches = collectOperatorTouches({ repoDir: tmp, task, evalsPath });
-        assert.deepEqual(touches.map((t) => [t.kind, t.class]), [
+        // Automation noise is still collected but marked automation; human touches
+        // are the three genuine operator signals.
+        const human = touches.filter((t) => t.attribution === 'human');
+        assert.deepEqual(human.map((t) => [t.kind, t.class]), [
           ['session-redirect', 'L'],
           ['eval-intervention', 'S'],
           ['operator-intervention', 'R'],
         ]);
+        assert.ok(touches.some((t) => t.attribution === 'automation' && t.kind === 'eval-intervention'));
+
       } finally {
         rmSync(tmp, { recursive: true, force: true });
       }

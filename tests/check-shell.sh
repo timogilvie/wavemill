@@ -301,6 +301,8 @@ for f in \
   "$REPO_DIR"/tests/journeys/harness.sh \
   "$REPO_DIR"/tests/journeys/run-journeys.sh \
   "$REPO_DIR"/tests/journeys/picker-pending-touch-set.journey.sh \
+  "$REPO_DIR"/tests/journeys/defect-escalation.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/defect-escalation/bin/claude \
   "$REPO_DIR"/tests/journeys/happy-path.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/happy-path/fake-agent/review \
   "$REPO_DIR"/tests/journeys/head-move-publication.journey.sh \
@@ -364,6 +366,7 @@ for f in \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-restart.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-budgets.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-flags.test.sh \
+  "$REPO_DIR"/tests/deepseek-gh-wrapper.test.sh \
   "$REPO_DIR"/tests/fixtures/terminal-lifecycle/merge_commit_delivery.sh \
   "$REPO_DIR"/tests/fixtures/terminal-lifecycle/squash_delivery.sh \
   "$REPO_DIR"/tests/fixtures/terminal-lifecycle/rebase_delivery.sh \

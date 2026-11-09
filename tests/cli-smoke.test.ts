@@ -402,7 +402,8 @@ describe('wavemill CLI', () => {
       const out = run(['observer', '--help']);
       assert.match(out, /Wavemill Observer/);
       assert.match(out, /--loop/);
-      assert.match(out, /--file-linear/);
+      assert.match(out, /--file-incidents/);
+      assert.doesNotMatch(out, /--file-linear/);
     });
 
     it('prints the supervisor prompt', () => {

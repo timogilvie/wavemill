@@ -352,6 +352,7 @@ function normalizeSession(
       value: null,
       provenance: session.harness === 'codex'
         ? 'codex.session_meta.originator'
+        // allow-human-touch: cost/usage provenance label, not touch classification
         : 'claude_code.promptSource',
       availability: triggerAvailability,
     },
