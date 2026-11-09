@@ -1,0 +1,85 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "cleanup_dirty_worktree",
+  "incidents": [
+    "f0263b269baaadcae61fdabbd9069ad03a8cde29f2deab60bd1a3e91abf3fabc"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-90",
+      "slug": "incident-cleanup-dirty-worktree-90",
+      "phase": "coding",
+      "status": "working"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "cleanup_dirty_worktree",
+    "severity": "high",
+    "confidence": "high",
+    "summary": "HOK-FIXTURE-90 cleanup disposition is dirty-worktree.",
+    "operatorAction": "The worktree still holds uncommitted or untracked work that is not on any branch. Recover it first: commit and push the task branch and open or update a draft PR, or copy the files off the worktree, before terminalizing cleanup. Never run `wavemill mill abort HOK-FIXTURE-90` while the tree is dirty - the reap deletes these files.",
+    "metadata": {
+      "disposition": "dirty-worktree",
+      "effectiveBaseBranch": "auto/integration"
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "/workspace/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-10-27T11:01:08.471Z",
+          "redactedData": "residueDisposition=dirty-worktree effectiveBaseBranch=auto/integration baseBranchSource=repo-config comparedAgainst=origin/auto/integration aheadOfEffectiveBase=4 worktreeDirty=true dirtyPathCount=1 dirtyPath= M .wavemill-config.json",
+          "key": "cleanup:HOK-FIXTURE-90:dirty-worktree:auto/integration:4:no-cleanup-fingerprint"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "/workspace/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-10-27T12:46:40.793Z",
+          "redactedData": "residueDisposition=dirty-worktree effectiveBaseBranch=auto/integration baseBranchSource=repo-config comparedAgainst=origin/auto/integration aheadOfEffectiveBase=4 worktreeDirty=true dirtyPathCount=1 dirtyPath= M .wavemill-config.json",
+          "key": "cleanup:HOK-FIXTURE-90:dirty-worktree:auto/integration:4:no-cleanup-fingerprint"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  },
+  "journey": null,
+  "journeyNullReason": "detector-level class; replayed via the incident cycle loop",
+  "expected": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "cleanup_dirty_worktree",
+    "occurrenceCount": 2,
+    "lifecycleWhilePresent": "observed",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  },
+  "source": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "cleanup_dirty_worktree",
+    "severity": "high",
+    "confidence": "high",
+    "recordedLifecycle": "active",
+    "recordedResolution": null,
+    "occurrenceCount": 691,
+    "firstObservedAt": "2026-10-22T15:51:07.731Z",
+    "lastObservedAt": "2026-10-27T12:47:12.669Z",
+    "stateSnapshot": null,
+    "convertedBy": "tools/incident-to-fixture.ts",
+    "observationsTruncated": false
+  }
+}

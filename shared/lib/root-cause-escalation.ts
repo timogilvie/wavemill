@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { callHeadlessLLM, HEADLESS_DEFAULT_MODEL, type HeadlessLLMOptions } from './headless-llm.ts';
@@ -11,6 +11,7 @@ import {
 } from './schema-validators.ts';
 import type { IncidentFilingReconciliation } from './incident-filing-reconciler.ts';
 import type { IncidentRecord } from './wavemill-incident-model.ts';
+import { IncidentStore } from './wavemill-incident-store.ts';
 import type { ObserverLinearConfig } from './incident-to-linear-synchronizer.ts';
 import { redactEvidence, redactLinearIssueContent } from './incident-to-linear-synchronizer.ts';
 
@@ -87,21 +88,11 @@ function readJsonFile<T>(path: string): T | null {
   }
 }
 
-function latestInvestigationFile(repoDir: string, fingerprint: string): string | null {
-  const dir = incidentDir(repoDir, fingerprint);
-  if (!existsSync(dir)) return null;
-  const files = readdirSync(dir)
-    .filter((name) => name.startsWith('investigation-') && name.endsWith('.json'))
-    .sort();
-  return files.length > 0 ? join(dir, files[files.length - 1]) : null;
-}
-
 export function loadInvestigationOutcome(
   incident: IncidentRecord,
   repoDir: string,
 ): InvestigationOutcome | null {
-  const path = latestInvestigationFile(repoDir, incident.fingerprint);
-  if (!path) return null;
+  const path = investigationPath(repoDir, incident.fingerprint, investigationEvidenceRevision(incident, repoDir));
   const payload = readJsonFile<InvestigationPayload>(path);
   if (!payload || payload.incidentFingerprint !== incident.fingerprint) return null;
   const validated = validatePayload(payload);
@@ -114,12 +105,10 @@ export function loadInvestigationOutcome(
   };
 }
 
-function evidenceRevision(incident: IncidentRecord): string {
-  // Matches the evidence revision used by the synchronizer: fingerprint + occurrenceCount + evidence hashes.
-  const evidenceHash = incident.evidence
-    .map((item) => `${item.type}:${item.source}:${item.timestamp}:${item.redactedData}`)
-    .join('\0');
-  return `${incident.fingerprint}:${incident.occurrenceCount}:${evidenceHash.length}`;
+// One revision function shared with the incident synchronizer/observer. A
+// different revision spelling makes completed jobs invisible to their consumer.
+export function investigationEvidenceRevision(incident: IncidentRecord, repoDir: string): string {
+  return new IncidentStore(join(repoDir, '.wavemill', 'incidents')).computeEvidenceRevision(incident);
 }
 
 function buildInvestigationPrompt(incident: IncidentRecord, reconciliation: IncidentFilingReconciliation): string {
@@ -218,10 +207,10 @@ export async function investigateConfirmedIncident(
     };
   }
 
-  const revision = evidenceRevision(incident);
+  const revision = investigationEvidenceRevision(incident, repoDir);
   const artefactPath = investigationPath(repoDir, incident.fingerprint, revision);
   const existing = readJsonFile<InvestigationPayload>(artefactPath);
-  if (existing && existing.incidentFingerprint === incident.fingerprint) {
+  if (existing && existing.incidentFingerprint === incident.fingerprint && validatePayload(existing).ok) {
     return {
       incident,
       payload: existing,
@@ -234,20 +223,21 @@ export async function investigateConfirmedIncident(
   const runner = opts.runInvestigation ?? callHeadlessLLM;
   const prompt = buildInvestigationPrompt(incident, reconciliation);
   const result = await runner(prompt, {
+    mode: 'stream', // preserve the skill and empty --tools argument as literal argv
     systemInstruction: loadSkillText(),
     noTools: true,
     model: HEADLESS_DEFAULT_MODEL,
     repoDir,
   });
 
-  if (!result.ok || typeof result.output !== 'string' || result.output.trim() === '') {
+  if (typeof result.text !== 'string' || result.text.trim() === '') {
     const draft: InvestigationPayload = {
       incidentFingerprint: incident.fingerprint,
       mode: 'draft',
       title: 'Draft: investigation failed',
       sections: { why: '', change: '', notInScope: '', acceptance: '' },
       missingEvidence: ['model_call_failed'],
-      modelId: result.modelId ?? HEADLESS_DEFAULT_MODEL,
+      modelId: result.reportedModel ?? result.model ?? HEADLESS_DEFAULT_MODEL,
       provider: result.provider ?? 'claude',
       generatedAt: now.toISOString(),
     };
@@ -258,7 +248,7 @@ export async function investigateConfirmedIncident(
 
   let parsed: unknown;
   try {
-    parsed = parseModelResponse(result.output);
+    parsed = parseModelResponse(result.text);
   } catch {
     const draft: InvestigationPayload = {
       incidentFingerprint: incident.fingerprint,
@@ -266,7 +256,7 @@ export async function investigateConfirmedIncident(
       title: 'Draft: malformed model output',
       sections: { why: '', change: '', notInScope: '', acceptance: '' },
       missingEvidence: ['model_output_malformed'],
-      modelId: result.modelId ?? HEADLESS_DEFAULT_MODEL,
+      modelId: result.reportedModel ?? result.model ?? HEADLESS_DEFAULT_MODEL,
       provider: result.provider ?? 'claude',
       generatedAt: now.toISOString(),
     };
@@ -283,7 +273,7 @@ export async function investigateConfirmedIncident(
       title: 'Draft: payload validation failed',
       sections: { why: '', change: '', notInScope: '', acceptance: '' },
       missingEvidence: ['payload_validation_failed', ...validated.errors],
-      modelId: result.modelId ?? HEADLESS_DEFAULT_MODEL,
+      modelId: result.reportedModel ?? result.model ?? HEADLESS_DEFAULT_MODEL,
       provider: result.provider ?? 'claude',
       generatedAt: now.toISOString(),
     };

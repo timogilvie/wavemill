@@ -62,6 +62,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // A queued request can be superseded while another revision is running.
+  if (store.computeEvidenceRevision(incident) !== request.evidenceRevision) return;
   const reconciliation = reconcileIncidentForFiling(incident, repoDir);
   const outcome = await investigateConfirmedIncident({
     incident,

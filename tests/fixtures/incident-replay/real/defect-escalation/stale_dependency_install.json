@@ -1,0 +1,114 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "stale_dependency_install",
+  "incidents": [
+    "734f6f0e08feb7452b52ed08316a4c350740304a23751c03cb39f8ab3185218d"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-90",
+      "slug": "incident-stale-dependency-install-90",
+      "phase": "coding",
+      "status": "working"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "stale_dependency_install",
+    "severity": "medium",
+    "confidence": "high",
+    "summary": "node_modules is stale against the lockfile (hidden-lockfile-mismatch): @esbuild/aix-ppc64, @esbuild/android-arm, @esbuild/android-arm64, @esbuild/android-x64, @esbuild/darwin-x64, \u2026+24.",
+    "operatorAction": "Run `npm ci` in the repo, or set WAVEMILL_DEPS_DRIFT_AUTOFIX=1 to let the monitor repair it on its next tick.",
+    "metadata": {
+      "driftedPackageCount": 27,
+      "driftedPackages": [
+        "@esbuild/aix-ppc64",
+        "@esbuild/android-arm",
+        "@esbuild/android-arm64",
+        "@esbuild/android-x64",
+        "@esbuild/darwin-x64",
+        "@esbuild/freebsd-arm64",
+        "@esbuild/freebsd-x64",
+        "@esbuild/linux-arm",
+        "@esbuild/linux-arm64",
+        "@esbuild/linux-ia32",
+        "@esbuild/linux-loong64",
+        "@esbuild/linux-mips64el",
+        "@esbuild/linux-ppc64",
+        "@esbuild/linux-riscv64",
+        "@esbuild/linux-s390x",
+        "@esbuild/linux-x64",
+        "@esbuild/netbsd-arm64",
+        "@esbuild/netbsd-x64",
+        "@esbuild/openbsd-arm64",
+        "@esbuild/openbsd-x64",
+        "@esbuild/openharmony-arm64",
+        "@esbuild/sunos-x64",
+        "@esbuild/win32-arm64",
+        "@esbuild/win32-ia32",
+        "@esbuild/win32-x64",
+        "brace-expansion",
+        "fast-uri"
+      ],
+      "driftReason": "hidden-lockfile-mismatch"
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "/workspace/wavemill/package-lock.json",
+          "timestamp": "2026-10-27T11:01:08.471Z",
+          "redactedData": "reason=hidden-lockfile-mismatch packages=@esbuild/aix-ppc64,@esbuild/android-arm,@esbuild/android-arm64,@esbuild/android-x64,@esbuild/darwin-x64,@esbuild/freebsd-arm64,@esbuild/freebsd-x64,@esbuild/linux-arm,@esbuild/linux-arm64,@esbuild/li\u2026",
+          "key": "deps_drift:hidden-lockfile-mismatch"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "backstage_health",
+          "source": "/workspace/wavemill/package-lock.json",
+          "timestamp": "2026-10-27T12:46:40.793Z",
+          "redactedData": "reason=hidden-lockfile-mismatch packages=@esbuild/aix-ppc64,@esbuild/android-arm,@esbuild/android-arm64,@esbuild/android-x64,@esbuild/darwin-x64,@esbuild/freebsd-arm64,@esbuild/freebsd-x64,@esbuild/linux-arm,@esbuild/linux-arm64,@esbuild/li\u2026",
+          "key": "deps_drift:hidden-lockfile-mismatch"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  },
+  "journey": null,
+  "journeyNullReason": "detector-level class; replayed via the incident cycle loop",
+  "expected": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "stale_dependency_install",
+    "occurrenceCount": 2,
+    "lifecycleWhilePresent": "observed",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  },
+  "source": {
+    "category": "configuration_operator_condition",
+    "rootCauseClass": "stale_dependency_install",
+    "severity": "medium",
+    "confidence": "high",
+    "recordedLifecycle": "active",
+    "recordedResolution": null,
+    "occurrenceCount": 1978,
+    "firstObservedAt": "2026-10-20T15:14:06.689Z",
+    "lastObservedAt": "2026-10-27T12:47:11.453Z",
+    "stateSnapshot": null,
+    "convertedBy": "tools/incident-to-fixture.ts",
+    "observationsTruncated": false
+  }
+}

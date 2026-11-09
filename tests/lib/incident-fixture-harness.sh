@@ -417,7 +417,7 @@ record_pr_deleted_branch() {
 }
 
 # Real npx is only safe to forward for tools/observer.ts (no Linear/GitHub
-# writes with --dry-run). Every other npx call inside the real controller
+# writes with --incidents-dry-run). Every other npx call inside the real controller
 # code (Linear state sync, challenge-pair resolution, reconciliation
 # classifiers) is best-effort and already wrapped in `|| true` / `2>/dev/null`
 # by the production code, so a shim that simply fails for anything else is
@@ -728,7 +728,7 @@ tick_field() {
 # --- Observer -----------------------------------------------------------------
 
 # run_observer_pass - runs the real observer.ts against the scenario repo.
-# Uses --dry-run (no Linear writes) and --repo-dir (reads workflow-state.json
+# Uses --incidents-dry-run (no Linear writes) and --repo-dir (reads workflow-state.json
 # directly), so it needs no network access. The scenario-local PATH shim forces
 # observer.ts's bare `tmux list-panes -a` calls onto the private socket.
 # --stale-minutes 1 makes the
@@ -738,7 +738,7 @@ tick_field() {
 run_observer_pass() {
   local output
   output="$(PATH="$(incident_scenario_path)" TMUX_TMPDIR="$TMUX_TMPDIR" TMUX_SOCK="$TMUX_SOCK" node "$INCIDENT_REPO_DIR/tools/observer.ts" \
-    --once --json --dry-run --repo-dir "$REPO_DIR" --session "$SESSION" --stale-minutes 1 2>"$SCENARIO_DIR/observer-stderr.log")" || true
+    --once --json --incidents-dry-run --repo-dir "$REPO_DIR" --session "$SESSION" --stale-minutes 1 2>"$SCENARIO_DIR/observer-stderr.log")" || true
   printf '%s\n' "$output"
 }
 

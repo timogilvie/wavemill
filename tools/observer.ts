@@ -2,9 +2,8 @@
 import { isJobBackedIncident, readAuthoritativeWorkflowJobs, reconcileIncidentForFiling } from '../shared/lib/incident-filing-reconciler.ts';
 import { ISSUE_ID_RE } from '../shared/lib/task-identity.ts';
 
-import { execFileSync, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mutateJsonState, mutateJsonStateSync } from '../shared/lib/state-mutex.ts';
@@ -69,12 +68,9 @@ import {
   type ShadowAuditRecord,
 } from '../shared/lib/observer-shadow-audit.ts';
 import { drainIncidentQueue, enqueueIncidentSync } from '../shared/lib/incident-linear-retry-queue.ts';
-import { createStateDirRetry } from '../shared/lib/bounded-retry.ts';
-import { escalateOperatorAttention } from '../shared/lib/operator-escalation.ts';
 import { acquireObserverLock } from '../shared/lib/tend-singleton.ts';
 import { countRejectedEvalRecords, listRejectedEvalRecords } from '../shared/lib/eval-rejected-store.ts';
 import { renderObserverStatus } from '../shared/lib/observer-status-renderer.ts';
-import { resolveWavemillToolPath } from '../shared/lib/native-agent/install-paths.ts';
 import {
   detectGlobalConfigIntegrity,
   detectRepoConfigIntegrity,
@@ -4506,83 +4502,21 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
   return { ...snapshot, incidentSync: summary };
 }
 
-function investigationRequestPath(repoDir: string, fingerprint: string, revision: string): string {
-  return join(repoDir, '.wavemill', 'incidents', fingerprint, `request-${revision.replace(/[^a-zA-Z0-9._-]/g, '-')}.json`);
-}
-
-function investigationRevisionKey(fingerprint: string, revision: string): string {
-  return `${fingerprint}:${revision}`;
-}
-
-function investigationKeyHash(key: string): string {
-  return createHash('sha256').update(key).digest('hex');
+// The observer is a producer only. The monitor owns tracked launch, single
+// writer, bounded failure retries and process supervision (HOK-3206).
+function queueRootCauseInvestigation(repoDir: string, fingerprint: string, revision: string): void {
+  const requestPath = join(repoDir, '.wavemill', 'incidents', fingerprint, 'request.json');
+  mkdirSync(dirname(requestPath), { recursive: true });
+  writeFileSync(requestPath, JSON.stringify({
+    fingerprint, repoDir, evidenceRevision: revision, requestedAt: new Date().toISOString(),
+  }, null, 2));
 }
 
 function hasInvestigationForRevision(repoDir: string, fingerprint: string, revision: string): boolean {
-  const dir = join(repoDir, '.wavemill', 'incidents', fingerprint);
-  if (!existsSync(dir)) return false;
-  const prefix = `investigation-${revision.replace(/[^a-zA-Z0-9._-]/g, '-')}`;
-  return readdirSync(dir).some((name) => name.startsWith(prefix) && name.endsWith('.json'));
+  return existsSync(join(repoDir, '.wavemill', 'incidents', fingerprint, `investigation-${revision}.json`));
 }
 
-async function launchRootCauseInvestigation(
-  repoDir: string,
-  fingerprint: string,
-  revision: string,
-): Promise<void> {
-  const requestPath = investigationRequestPath(repoDir, fingerprint, revision);
-  mkdirSync(dirname(requestPath), { recursive: true });
-  writeFileSync(requestPath, JSON.stringify({
-    fingerprint,
-    repoDir,
-    evidenceRevision: revision,
-    requestedAt: new Date().toISOString(),
-  }, null, 2));
-
-  const key = investigationRevisionKey(fingerprint, revision);
-  const keyHash = investigationKeyHash(key);
-  // Scoped per-incident (not the shared `<repoDir>/.wavemill`): the
-  // bounded-retry helper keeps one (count, head) pair per (stateDir, bucket),
-  // so a stateDir shared across incidents would reset one incident's attempt
-  // counter every time a different incident's keyHash was gated in between.
-  const stateDir = join(repoDir, '.wavemill', 'incidents', fingerprint);
-  const retry = createStateDirRetry('root-cause-investigation', { maxAttempts: 3 });
-  const decision = retry.gate(stateDir, keyHash);
-  if (decision !== 'proceed') {
-    if (decision.startsWith('exhausted')) {
-      escalateOperatorAttention({
-        stateDir,
-        headSha: keyHash,
-        basis: { kind: 'exhausted', bucket: retry.bucket, maxAttempts: 3 },
-        message: `Root-cause investigation for ${fingerprint} exhausted its retry budget`,
-      });
-    }
-    return;
-  }
-
-  retry.increment(stateDir, keyHash);
-  const logPath = join(stateDir, 'async-jobs', `root-cause-investigation-${fingerprint.slice(0, 16)}`, 'job.log');
-  mkdirSync(dirname(logPath), { recursive: true });
-  const out = openSync(logPath, 'a');
-  const err = openSync(logPath, 'a');
-  const proc = spawn(
-    process.execPath,
-    ['--import', 'tsx', resolveWavemillToolPath('investigate-incident.ts'), '--request', requestPath],
-    {
-      cwd: resolve(__dirname, '..'),
-      detached: true,
-      stdio: ['ignore', out, err],
-    },
-  );
-  // An unhandled 'error' event throws and crashes the observer loop (e.g. a
-  // transient ENOENT/EMFILE spawning the child); log it instead.
-  proc.on('error', (spawnError) => {
-    console.warn(`[root-cause-investigation] spawn failed for ${fingerprint}: ${spawnError instanceof Error ? spawnError.message : String(spawnError)}`);
-  });
-  proc.unref();
-}
-
-async function launchRootCauseInvestigations(snapshot: ObserverSnapshot, options: ObserverOptions): Promise<void> {
+export async function queueRootCauseInvestigations(snapshot: ObserverSnapshot, options: ObserverOptions): Promise<void> {
   if (!options.fileIncidents && !options.incidentsReplay) return;
   for (const repo of snapshot.repos) {
     if (!resolveSessionCapabilities(repo.repoDir).observer) continue;
@@ -4596,7 +4530,7 @@ async function launchRootCauseInvestigations(snapshot: ObserverSnapshot, options
       if (reconciliation.outcome !== 'confirmed_active') continue;
       const revision = store.computeEvidenceRevision(incident);
       if (hasInvestigationForRevision(repo.repoDir, incident.fingerprint, revision)) continue;
-      await launchRootCauseInvestigation(repo.repoDir, incident.fingerprint, revision);
+      queueRootCauseInvestigation(repo.repoDir, incident.fingerprint, revision);
     }
   }
 }
@@ -5167,7 +5101,7 @@ async function main(): Promise<void> {
     do {
       const reconciled = await reconcileIncidents(observe(options), options);
       const fixed = await applyAutoFixes(reconciled, options);
-      await launchRootCauseInvestigations(fixed, options);
+      await queueRootCauseInvestigations(fixed, options);
       const alerted = await sendAlerts(fixed, options);
       const observed = await syncIncidentsToLinear(alerted, options);
       const snapshot = options.serviceMode ? redactSnapshot(observed) : observed;

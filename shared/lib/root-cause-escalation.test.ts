@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { writeFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import {
   investigateConfirmedIncident,
+  investigationEvidenceRevision,
+  loadInvestigationOutcome,
   preparePayloadForTransport,
   renderInvestigatedCommentBody,
   renderInvestigatedIssueBody,
@@ -55,14 +57,12 @@ function recovered(): IncidentFilingReconciliation {
 
 function makeRunner(payload: InvestigationPayload) {
   return async (): Promise<LLMCallResult> => ({
-    ok: true,
-    output: JSON.stringify(payload),
-    modelId: 'gpt-test',
+    text: JSON.stringify(payload),
+    rawOutput: JSON.stringify(payload),
+    model: 'gpt-test',
     provider: 'codex',
-    exitCode: 0,
     costUsd: 0.001,
-    latencyMs: 100,
-    tokenUsage: { input: 100, output: 50 },
+    usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
   });
 }
 
@@ -149,8 +149,8 @@ test('investigateConfirmedIncident drafts missing sections and reuses artefact',
     const runner = async (): Promise<LLMCallResult> => {
       calls += 1;
       return {
-        ok: true,
-        output: JSON.stringify({
+        rawOutput: '',
+        text: JSON.stringify({
           incidentFingerprint: 'f'.repeat(64),
           mode: 'new_consolidation',
           title: 'Bad',
@@ -159,12 +159,10 @@ test('investigateConfirmedIncident drafts missing sections and reuses artefact',
           provider: 'codex',
           generatedAt: new Date().toISOString(),
         }),
-        modelId: 'gpt-test',
+        model: 'gpt-test',
         provider: 'codex',
-        exitCode: 0,
-        costUsd: 0.001,
-        latencyMs: 100,
-        tokenUsage: { input: 100, output: 50 },
+            costUsd: 0.001,
+            usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
       };
     };
     const incident = makeIncident();
@@ -197,14 +195,12 @@ test('investigateConfirmedIncident drafts malformed model output', async () => {
       repoDir: tmp,
       reconciliation: confirmedActive(),
       runInvestigation: async () => ({
-        ok: true,
-        output: 'not json',
-        modelId: 'gpt-test',
+        rawOutput: '',
+        text: 'not json',
+        model: 'gpt-test',
         provider: 'codex',
-        exitCode: 0,
-        costUsd: 0.001,
-        latencyMs: 100,
-        tokenUsage: { input: 100, output: 50 },
+            costUsd: 0.001,
+            usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
       }),
     });
     assert.equal(outcome.state, 'draft');
@@ -307,4 +303,69 @@ test('renderInvestigatedCommentBody renders append payload', () => {
   const body = renderInvestigatedCommentBody(makeIncident(), payload, config(), 'rev-1', new Date('2026-08-04T12:15:00.000Z'));
   assert.match(body, /Root-Cause Evidence Update/);
   assert.doesNotMatch(body, /supersecret/);
+});
+
+// protects: three revision spellings caused Observer to re-launch completed
+// investigations and the synchronizer to read an older, unrelated payload.
+test('worker and observer share the store revision; a new revision requires fresh evidence', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'investigation-revision-'));
+  try {
+    const incident = makeIncident();
+    const { IncidentStore } = await import('./wavemill-incident-store.ts');
+    const expected = new IncidentStore(join(dir, '.wavemill/incidents')).computeEvidenceRevision(incident);
+    assert.equal(investigationEvidenceRevision(incident, dir), expected);
+    let calls = 0;
+    const payload: InvestigationPayload = {incidentFingerprint:incident.fingerprint,mode:'new_consolidation',title:'One reader: share validation',sections:{why:'why',change:'delete private reader',notInScope:'no policy',acceptance:'replay'},modelId:'gpt-test',provider:'codex',generatedAt:new Date().toISOString()};
+    const runInvestigation = async () => { calls++; return makeRunner(payload)(); };
+    const first = await investigateConfirmedIncident({incident,repoDir:dir,reconciliation:confirmedActive(),runInvestigation});
+    assert.equal(first.state,'ready');
+    assert.equal(loadInvestigationOutcome(incident,dir)?.state,'ready');
+    await investigateConfirmedIncident({incident,repoDir:dir,reconciliation:confirmedActive(),runInvestigation});
+    assert.equal(calls,1);
+    const revised = {...incident,occurrenceCount:incident.occurrenceCount+1};
+    assert.equal(loadInvestigationOutcome(revised,dir),null,'never reuse a result from another evidence revision');
+    const artifact = join(dir,'.wavemill/incidents',incident.fingerprint,`investigation-${expected}.json`);
+    writeFileSync(artifact,JSON.stringify({...payload,sections:{}}));
+    assert.equal(loadInvestigationOutcome(incident,dir),null,'schema-invalid cached artifacts cannot authorize a write');
+  } finally { rmSync(dir,{recursive:true,force:true}); }
+});
+
+// protects: the 2026-10-27 audit's known defects being filed as new symptom
+// bugs instead of contributing evidence to their existing consolidation owner.
+test('sanitized operator-audit fixtures replay and append once to their known owners', async () => {
+  const { loadIncidentFixture } = await import('./incident-fixture-converter.ts');
+  const { runRealFixture } = await import('./incident-replay-harness.ts');
+  const { IncidentStore } = await import('./wavemill-incident-store.ts');
+  const { syncIncident } = await import('./incident-to-linear-synchronizer.ts');
+  for (const [rootCauseClass, owner] of [['cleanup_dirty_worktree','HOK-3312'],['stale_dependency_install','HOK-3315'],['failed_background_job','HOK-3255']] as const) {
+    const path = new URL(`../../tests/fixtures/incident-replay/real/defect-escalation/${rootCauseClass}.json`, import.meta.url);
+    const fixture = loadIncidentFixture(path.pathname);
+    const replay = await runRealFixture(path.pathname);
+    assert.equal(replay.ok,true,replay.reason);
+    const dir = mkdtempSync(join(tmpdir(),'audit-escalation-'));
+    try {
+      const store = new IncidentStore(join(dir,'.wavemill/incidents'),{escalationThreshold:1});
+      const observed = makeIncident({...fixture.incident,metadata:{knownIssueIds:[owner],thresholdTriggered:true},evidence:fixture.observations[0].evidence});
+      const record = await store.upsert(observed);
+      let comments = 0;
+      const outcome = await investigateConfirmedIncident({incident:record,repoDir:dir,reconciliation:confirmedActive(),runInvestigation:async (prompt) => {
+        assert.ok(prompt.includes(owner),'recorded owner evidence reaches investigation');
+        return makeRunner({incidentFingerprint:record.fingerprint,mode:'append_to_owner',targetIssueId:owner,title:'Append audit evidence to the existing consolidation',sections:{why:'recorded audit',change:'shared primitive',notInScope:'new policy',acceptance:'replay'},modelId:'gpt-test',provider:'codex',generatedAt:new Date().toISOString()})();
+      }});
+      const client = {
+        getTeams:async()=>[],getProjects:async()=>[],searchIssues:async()=>[],
+        getIssue:async()=>({id:'existing-owner',identifier:owner,title:'Existing consolidation',url:`https://linear.app/fake/${owner}`,state:{name:'In Progress'},labels:{nodes:[]},completedAt:null,canceledAt:null}),
+        createIssue:async()=>assert.fail('a known audit class must not create an issue'),
+        createComment:async(id:string,body:string)=>{ assert.equal(id,'existing-owner');assert.ok(body.includes(rootCauseClass));comments++;return {id:'comment-1',url:'https://linear.app/fake/comment'}; },
+        getOrCreateLabel:async(name:string)=>({id:name,name}),addLabelsToIssue:async()=>({success:true,issue:{id:'existing-owner',identifier:owner,title:'Existing consolidation',url:`https://linear.app/fake/${owner}`}}),
+      };
+      const opts={store,repoDir:dir,config:{...config(),requestDelayMs:0},client,reconciler:()=>confirmedActive(),investigation:outcome};
+      const first=await syncIncident({...opts,incident:record});
+      assert.equal(first.action,'update_comment',first.reason);
+      const reloaded=await store.getIncident(record.fingerprint);
+      assert.ok(reloaded);
+      await syncIncident({...opts,incident:reloaded});
+      assert.equal(comments,1,'persisted revision suppresses duplicate evidence after restart');
+    } finally {rmSync(dir,{recursive:true,force:true});}
+  }
 });
