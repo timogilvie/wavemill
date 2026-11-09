@@ -4575,6 +4575,7 @@ async function launchRootCauseInvestigation(
 async function launchRootCauseInvestigations(snapshot: ObserverSnapshot, options: ObserverOptions): Promise<void> {
   if (!options.fileIncidents && !options.incidentsReplay) return;
   for (const repo of snapshot.repos) {
+    if (!resolveSessionCapabilities(repo.repoDir).observer) continue;
     const store = incidentStoreForRepo(repo, options);
     if (!store) continue;
     const config = mergeObserverLinearConfig(getObserverLinearConfig(repo.repoDir), options);
@@ -4585,7 +4586,7 @@ async function launchRootCauseInvestigations(snapshot: ObserverSnapshot, options
       if (reconciliation.outcome !== 'confirmed_active') continue;
       const revision = store.computeEvidenceRevision(incident);
       if (hasInvestigationForRevision(repo.repoDir, incident.fingerprint, revision)) continue;
-      await launchRootCauseInvestigation(repo.repoDir, incident.fingerprint, revision, statePath);
+      await launchRootCauseInvestigation(repo.repoDir, incident.fingerprint, revision);
     }
   }
 }

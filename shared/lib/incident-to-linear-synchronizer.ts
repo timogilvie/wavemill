@@ -542,7 +542,8 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
   const shadowMode = options.shadow === true || config.mode === 'shadow';
   const incident = options.incident;
   const audit = options.audit ?? (() => {});
-  const reconciliation = (options.reconciler ?? reconcileIncidentForFiling)(incident, options.repoDir ?? process.cwd());
+  const repoDir = options.repoDir ?? process.cwd();
+  const reconciliation = (options.reconciler ?? reconcileIncidentForFiling)(incident, repoDir);
   const baseResult = { fingerprint: incident.fingerprint, evidenceRevision, dryRun, reconciliation };
 
   // An unlinked incident proven recovered/superseded must not cause even a
@@ -562,6 +563,7 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
         forcedAction: 'skip_recovered',
         forcedReason: `reconciliation: ${reconciliation.outcome}`,
         investigation: options.investigation,
+        repoDir,
       });
       return {
         ...baseResult,
@@ -580,7 +582,7 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
     payload: null,
     reconciliation,
     state: 'pending',
-  });
+  }, repoDir);
 
   if (!config.enabled && !dryRun) {
     return { ...baseResult, action: 'skip', status: 'skipped', reason: 'observer.linear.enabled is false' };
@@ -600,6 +602,7 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
         forcedAction: 'skip',
         forcedReason: prepared.reason,
         investigation: options.investigation,
+        repoDir,
       });
       return { ...baseResult, action: 'skip', status: 'skipped', reason: prepared.reason, plannedTitle: plan.plannedTitle, shadowPlan: plan };
     }
@@ -619,6 +622,7 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
         forcedAction: 'skip',
         forcedReason: 'draft: missing root-cause payload',
         investigation: options.investigation,
+        repoDir,
       });
       return { ...baseResult, action: 'skip', status: 'skipped', reason: 'draft: missing root-cause payload', plannedTitle: plan.plannedTitle, shadowPlan: plan };
     }
@@ -1216,6 +1220,8 @@ export interface PlanShadowSyncOptions {
   replay?: boolean;
   /** HOK-3325: root-cause investigation outcome driving the planned payload. */
   investigation?: InvestigationOutcome;
+  /** Repository whose `.wavemill/incidents/` dir receives a draft artefact. */
+  repoDir?: string;
 }
 
 /**
@@ -1230,7 +1236,7 @@ export function planShadowSync(options: PlanShadowSyncOptions): ShadowSyncPlan {
     payload: null,
     reconciliation,
     state: 'pending',
-  });
+  }, options.repoDir ?? process.cwd());
   const plannedTitle = prepared.kind === 'transport' ? prepared.title : generateIssueTitle(incident);
   const policy = config.policies[incident.category] ?? DEFAULT_INCIDENT_LINEAR_CONFIG.policies[incident.category];
   const createPolicy = policyAllowsCreate(incident, config);
@@ -1307,6 +1313,7 @@ interface RunShadowSyncOptions extends SyncIncidentOptions {
 
 async function runShadowSync(options: RunShadowSyncOptions): Promise<SyncResult> {
   const { incident, config, now, evidenceRevision, reconciliation, audit } = options;
+  const repoDir = options.repoDir ?? process.cwd();
   const baseClient = options.client ?? DEFAULT_CLIENT;
   const wrapped = wrapReadOnlyIncidentLinearClient(baseClient);
   const budgetedClient = withLookupBudget(wrapped.client, options.lookupBudget);
@@ -1352,6 +1359,7 @@ async function runShadowSync(options: RunShadowSyncOptions): Promise<SyncResult>
       correlation,
       forcedAction: 'failed',
       forcedReason: `shadow correlation failed: ${failure.reason}`,
+      repoDir,
     });
     if (wrapped.mutationAttempts > 0) {
       throw new Error(`shadow contract violated: mutation attempted (${wrapped.mutationCallLog.join(',')})`);
@@ -1375,6 +1383,7 @@ async function runShadowSync(options: RunShadowSyncOptions): Promise<SyncResult>
     correlation,
     replay: options.replay === true,
     investigation: options.investigation,
+    repoDir,
   });
 
   if (wrapped.mutationAttempts > 0) {

@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { callHeadlessLLM, HEADLESS_DEFAULT_MODEL, type HeadlessLLMOptions, type LLMCallResult } from './headless-llm.ts';
+import { callHeadlessLLM, HEADLESS_DEFAULT_MODEL, type HeadlessLLMOptions } from './headless-llm.ts';
+import type { LLMCallResult } from './llm-cli.ts';
 import {
   compileSchemaValidator,
   loadPrecompiledValidator,
@@ -305,6 +306,7 @@ export async function investigateConfirmedIncident(
 
 export function preparePayloadForTransport(
   outcome: InvestigationOutcome,
+  repoDir: string,
 ):
   | { kind: 'skip'; reason: string }
   | { kind: 'draft'; draftPath: string }
@@ -316,7 +318,7 @@ export function preparePayloadForTransport(
     return { kind: 'skip', reason: 'investigation_pending' };
   }
   if (outcome.payload.mode === 'draft') {
-    const path = draftPath(outcome.incident.metadata?.repoDir ?? process.cwd(), outcome.incident.fingerprint);
+    const path = draftPath(repoDir, outcome.incident.fingerprint);
     ensureDir(path);
     writeFileSync(path, JSON.stringify(outcome.payload, null, 2));
     return { kind: 'draft', draftPath: path };

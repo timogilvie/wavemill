@@ -224,7 +224,7 @@ test('preparePayloadForTransport routes outcomes correctly', async () => {
       payload: null,
       reconciliation: confirmedActive(),
       state: 'pending',
-    });
+    }, tmp);
     assert.equal(skip.kind, 'skip');
     assert.equal(skip.reason, 'investigation_pending');
 
@@ -233,7 +233,7 @@ test('preparePayloadForTransport routes outcomes correctly', async () => {
       repoDir: tmp,
       reconciliation: recovered(),
     });
-    const skip2 = preparePayloadForTransport(recoveredOutcome);
+    const skip2 = preparePayloadForTransport(recoveredOutcome, tmp);
     assert.equal(skip2.kind, 'skip');
 
     const ready: InvestigationPayload = {
@@ -250,7 +250,7 @@ test('preparePayloadForTransport routes outcomes correctly', async () => {
       payload: ready,
       reconciliation: confirmedActive(),
       state: 'ready',
-    });
+    }, tmp);
     assert.equal(transport.kind, 'transport');
     assert.equal(transport.title, 'One issue');
     assert.match(transport.body, /## Why/);
@@ -270,9 +270,10 @@ test('preparePayloadForTransport routes outcomes correctly', async () => {
       payload: draft,
       reconciliation: confirmedActive(),
       state: 'draft',
-    });
+    }, tmp);
     assert.equal(draftResult.kind, 'draft');
     assert.ok(existsSync(draftResult.draftPath));
+    assert.ok(draftResult.draftPath.startsWith(tmp));
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
