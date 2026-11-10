@@ -151,8 +151,6 @@ RELEASE_FILE="$TEST_TMP/release_terminal_pane.sh"
 # primitive is unconditional for terminal tasks (lifecycle decides release,
 # not pane liveness).
 {
-  extract_function "$RECONCILER_SCRIPT" "wavemill_terminal_fresh_hook_state"
-  printf '\n'
   extract_function "$RECONCILER_SCRIPT" "wavemill_terminal_feature_dir"
   printf '\n'
   extract_function "$RECONCILER_SCRIPT" "wavemill_release_terminal_pane"

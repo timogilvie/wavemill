@@ -33,7 +33,7 @@ ALLOW_SUBSTRINGS=(
   "function named \`npx\` (see tests/*.sh) rely on the \`npx tsx <path>"
   # The fallback branch inside wavemill_run_tool.
   'npx tsx "$cli" "$@"'
-  # Fallback inside trim_terminal_task_overflow_if_needed / startup migration.
+  # Fallback inside enforce_hot_state_byte_cap_if_needed (state-archive trim tool).
   '|| npx tsx "$tool" "${args[@]}" 2>/dev/null'
   # _wavemill_tsx_invoker fallback branch and its header comment.
   "    printf 'npx tsx'"

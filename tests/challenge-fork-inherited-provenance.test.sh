@@ -8,8 +8,7 @@
 #   - delivery winner without stage winner (comparison-side quarantine)
 #
 # Unit-level invariants for these shapes are already covered by
-# shared/lib/reviewer-stage-adjudicator.test.ts,
-# shared/lib/challenge-execution-contract.test.ts, and
+# shared/lib/challenge-execution-contract.test.ts and
 # tests/fork-aware-comparison.test.ts. This shell test is the surface-level
 # gate: the test SUITE cannot claim a green pair for a shape the adjudicator
 # rejects. Each sub-assertion drives the real contract entry point via a tsx

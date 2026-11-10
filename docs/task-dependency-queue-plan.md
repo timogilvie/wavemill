@@ -11,8 +11,8 @@ The dependency-aware queue lets mill analyze task relationships before launch, s
 ### Stage 1: Read-only dependency analysis `[COMPLETE]`
 
 - Purpose: derive dependency edges and blocked/available task groups without mutating runtime queue state.
-- Source: `shared/lib/task-dependency-planner.ts`, `shared/lib/dependency-classifier.ts`
-- Coverage: `shared/lib/task-dependency-planner.test.ts`, `shared/lib/dependency-classifier.test.ts`, `tests/fixtures/lifecycle/tend_blocked_by_dependency.sh`
+- Source: `shared/lib/task-dependency-planner.ts`
+- Coverage: `shared/lib/task-dependency-planner.test.ts`, `tests/fixtures/lifecycle/tend_blocked_by_dependency.sh`
 
 ### Stage 2: Dependency-aware backlog selection `[COMPLETE]`
 

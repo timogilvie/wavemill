@@ -12,16 +12,20 @@ pass() { echo "  PASS  $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL  $1"; FAIL=$((FAIL + 1)); }
 
 extract_function() {
-  local name="$1"
+  local name="$1" source_file="${2:-$MILL_SCRIPT}"
   awk -v name="$name" '
     $0 ~ "^" name "\\(\\) \\{" { capture=1 }
     capture { print }
     /^}/ && capture { exit }
-  ' "$MILL_SCRIPT"
+  ' "$source_file"
 }
 
-eval "$(extract_function challenge_pair_records_file)"
-eval "$(extract_function challenge_pair_record_exists)"
+# challenge_pair_records_file and challenge_pair_record_exists have no caller
+# in the mill process (HOK-3458); the mill copies were deleted and the
+# monitor's copies are the live decisive-record oracle, so this test now
+# extracts both from the monitor script.
+eval "$(extract_function challenge_pair_records_file "$MONITOR_SCRIPT_FILE")"
+eval "$(extract_function challenge_pair_record_exists "$MONITOR_SCRIPT_FILE")"
 
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -55,25 +59,6 @@ if challenge_pair_record_exists "HOK-2"; then
   fail "voided comparison row was treated as terminal"
 else
   pass "voided comparison row is ignored"
-fi
-
-# Ensure the two identical copies of challenge_pair_record_exists do not drift
-# (one copy in the parent mill script, one in the committed monitor script)
-FIRST_LINE=$(awk '/^challenge_pair_record_exists\(\) \{/ {print NR; exit}' "$MILL_SCRIPT")
-SECOND_LINE=$(awk '/^challenge_pair_record_exists\(\) \{/ {print NR; exit}' "$MONITOR_SCRIPT_FILE")
-if [ -n "$FIRST_LINE" ] && [ -n "$SECOND_LINE" ]; then
-  # Find the end of each function
-  FIRST_END=$(awk -v start="$FIRST_LINE" 'NR > start && /^}/ {print NR; exit}' "$MILL_SCRIPT")
-  SECOND_END=$(awk -v start="$SECOND_LINE" 'NR > start && /^}/ {print NR; exit}' "$MONITOR_SCRIPT_FILE")
-  FIRST_BODY=$(sed -n "${FIRST_LINE},${FIRST_END}p" "$MILL_SCRIPT")
-  SECOND_BODY=$(sed -n "${SECOND_LINE},${SECOND_END}p" "$MONITOR_SCRIPT_FILE")
-  if [ "$FIRST_BODY" = "$SECOND_BODY" ]; then
-    pass "duplicate challenge_pair_record_exists functions are identical"
-  else
-    fail "duplicate challenge_pair_record_exists functions have drifted"
-  fi
-else
-  fail "could not locate both copies of challenge_pair_record_exists"
 fi
 
 if (( FAIL > 0 )); then

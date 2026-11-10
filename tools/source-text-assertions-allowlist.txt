@@ -23,7 +23,6 @@ tests/backstage-observer-watchdog.test.sh                   1  # legacy source-t
 tests/challenge-fork-inherited-provenance.test.sh           2  # legacy source-text assertion (HOK-3237)
 tests/challenge-fork-materialisation.test.sh                4  # legacy source-text assertion (HOK-3237)
 tests/challenge-fork-restart.test.sh                        1  # legacy source-text assertion (HOK-3237)
-tests/challenge-record-decisive.test.sh                     2  # legacy source-text assertion (HOK-3237)
 tests/cleanup-branch.test.sh                                7  # legacy source-text assertion (HOK-3237)
 tests/coding-launch-refusal.test.sh                         2  # legacy source-text assertion (HOK-3237)
 tests/completed-task-cleanup.test.sh                        1  # legacy source-text assertion (HOK-3237)

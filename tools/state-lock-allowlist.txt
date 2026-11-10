@@ -5,6 +5,6 @@ shared/hooks/wavemill-hook-protocol.sh 2 # hook and dashboard process observatio
 shared/lib/job-tracker.ts 1 # managed job process observation
 shared/lib/monitor-async-jobs.sh 1 # managed async job process observation
 shared/lib/native-agent/cleanup.ts 1 # agent process cleanup
-shared/lib/wavemill-common.sh 7 # pane and lease process observation outside state lock
+shared/lib/wavemill-common.sh 6 # pane and lease process observation outside state lock
 shared/lib/wavemill-monitor.sh 2 # managed monitor process observation
 shared/lib/wavemill-startup-runner.sh 1 # startup child process observation

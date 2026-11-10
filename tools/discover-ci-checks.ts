@@ -131,20 +131,6 @@ async function main(): Promise<void> {
         });
       }
 
-      console.log(`\nNext steps:`);
-      console.log(`  1. Add to .wavemill-config.json:`);
-      console.log(`     "prePrVerification": {`);
-      console.log(`       "enabled": true,`);
-      console.log(`       "required": true,`);
-      console.log(`       "source": "explicit",`);
-      console.log(`       "recipe": {`);
-      console.log(`         "commands": [`);
-      console.log(`           "npx tsx tools/check-pi-version.ts",`);
-      console.log(`           "npm test"`);
-      console.log(`         ]`);
-      console.log(`       }`);
-      console.log(`     }`);
-      console.log(`  2. Test locally: npx tsx tools/run-pre-pr-verification.ts`);
     }
   } catch (err) {
     if (!opts.json) {

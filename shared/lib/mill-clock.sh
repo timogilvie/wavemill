@@ -37,17 +37,6 @@ _mill_clock_read() {
   printf '%s %s\n' "$tick" "$epoch"
 }
 
-# Current tick count (0 when the clock is off).
-mill_clock_tick() {
-  if ! mill_clock_enabled; then
-    printf '0\n'
-    return 0
-  fi
-  local tick epoch
-  read -r tick epoch <<< "$(_mill_clock_read)"
-  printf '%s\n' "$tick"
-}
-
 # Epoch seconds: wall clock, or the tick-derived virtual time.
 mill_clock_now() {
   if ! mill_clock_enabled; then

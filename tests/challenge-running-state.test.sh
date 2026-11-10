@@ -76,11 +76,16 @@ FUNCTION_FILE="$TEST_TMP/challenge-running-functions.sh"
 : > "$FUNCTION_FILE"
 # save_task_state is provided by sourcing wavemill-common.sh below (HOK-2900
 # canonicalization); only monitor-local helpers are extracted here.
+# HOK-3458: mark_challenge_eval_running / mark_challenge_comparison_running
+# have no caller in the mill process; the mill copies were deleted as dead
+# code, so this now extracts the monitor's own (live) copies instead. The
+# mill-only clear_challenge_eval_running / clear_challenge_comparison_running
+# were deleted outright — neither had a monitor duplicate, and this test
+# never actually calls them (monitor clears running state inline via
+# del(.evalRunning) / del(.comparisonRunning) in its own completion path).
 for fn in \
-  mark_challenge_eval_running:1:mill \
-  clear_challenge_eval_running:1:mill \
-  mark_challenge_comparison_running:1:mill \
-  clear_challenge_comparison_running:1:mill \
+  mark_challenge_eval_running:1:monitor \
+  mark_challenge_comparison_running:1:monitor \
   sanitize_job_token:1:monitor \
   challenge_job_dir:1:monitor \
   build_eval_job_id:1:monitor \

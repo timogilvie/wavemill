@@ -14,21 +14,6 @@ if [[ -z "${__WAVEMILL_DEPS_DRIFT_LOADED:-}" ]]; then
   unset _wd_deps_drift_src
 fi
 
-# Reasons the drift primitive returns that still represent a safe-to-reuse
-# tree (hidden lockfile matches, no lockfile at all, pre-existing legacy
-# install with no visible drift). Everything else — including `unknown` — must
-# not win over a lockfile-hash mismatch below.
-_wd_drift_reason_is_ok() {
-  case "$1" in
-    hidden-lockfile-match|no-lockfile|hidden-lockfile-missing-direct-deps-match|no-dir)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 _wd_detect_package_manager() {
   local dir="$1"
   if [[ -f "$dir/pnpm-lock.yaml" ]]; then
