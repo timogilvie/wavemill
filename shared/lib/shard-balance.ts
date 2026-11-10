@@ -8,8 +8,8 @@
  *   (tests/ci-test-weights.json);
  * - parsing shard counts straight from .github/workflows/ci.yml so the
  *   preflight check can never disagree with the real matrix;
- * - parsing the runners' registration arrays (the single source of truth for
- *   suite membership);
+ * - reading suite membership from test discovery
+ *   (shared/lib/test-discovery.ts, the single source of truth);
  * - running the deterministic partitioner over each suite and enforcing
  *   REQ-F1 (exactly-once assignment), REQ-F3 (130%-of-median balance with a
  *   named indivisible-hotspot exception), and manifest hygiene (no stale
@@ -27,6 +27,7 @@ import {
   type BalanceAnalysis,
   type PartitionResult,
 } from './test-partitioner.ts';
+import { discoverTestSuites } from './test-discovery.ts';
 
 /** Checked-in weights manifest shape (tests/ci-test-weights.json). */
 export interface WeightsManifest {
@@ -108,43 +109,15 @@ export function parseShardCount(workflowYaml: string, jobKey: string): number | 
   return null;
 }
 
-/**
- * Parse a `NAME=( ... )` bash array block: one path per line, optional
- * trailing comment, comment-only lines ignored. This mirrors the format
- * contract documented in the runners and in tools/check-test-registration.ts.
- */
-export function parseShellArray(script: string, arrayName: string): string[] {
-  const block = script.match(new RegExp(`^${arrayName}=\\(\\n(?<entries>[\\s\\S]*?)^\\)`, 'm'))?.groups?.entries;
-  if (block === undefined) {
-    throw new Error(`registration parse: array ${arrayName}=( ... ) not found`);
-  }
-  return [...block.matchAll(/^\s*([^\s#][^\s]*)\s*(?:#.*)?$/gm)].map((match) => match[1]);
-}
-
-/** Registered files per partitioned suite, read from the runners. */
-export function readRegisteredSuites(repoDir: string): Record<PartitionedSuite, string[]> {
-  const shellScript = readFileSync(join(repoDir, 'tests', 'run-shell-suite.sh'), 'utf8');
-  const unitScript = readFileSync(join(repoDir, 'tests', 'run-unit-tests.sh'), 'utf8');
-  const customScript = readFileSync(join(repoDir, 'tests', 'run-custom-tests.sh'), 'utf8');
-  return {
-    shell: parseShellArray(shellScript, 'TESTS'),
-    unit: parseShellArray(unitScript, 'TESTS'),
-    custom: [
-      ...parseShellArray(customScript, 'CUSTOM_TS_TESTS'),
-      ...parseShellArray(customScript, 'CUSTOM_SH_TESTS'),
-    ],
-  };
-}
-
 export interface SuiteBalanceReport {
   suite: PartitionedSuite;
   shardCount: number;
   testCount: number;
   partition: PartitionResult;
   balance: BalanceAnalysis;
-  /** Manifest entries that reference tests no longer registered. */
+  /** Manifest entries that reference tests no longer in the suite. */
   staleWeights: string[];
-  /** Registered tests with no manifest entry (assigned defaultMs). */
+  /** Discovered tests with no manifest entry (assigned defaultMs). */
   unmeasured: string[];
   problems: string[];
   notes: string[];
@@ -164,7 +137,7 @@ export interface ShardBalanceResult {
 export function checkShardBalance(repoDir: string, { thresholdRatio = 1.3 }: { thresholdRatio?: number } = {}): ShardBalanceResult {
   const workflow = readFileSync(join(repoDir, '.github', 'workflows', 'ci.yml'), 'utf8');
   const manifest = loadWeightsManifest(join(repoDir, WEIGHTS_MANIFEST_PATH));
-  const registered = readRegisteredSuites(repoDir);
+  const registered = discoverTestSuites(repoDir);
 
   const suites: SuiteBalanceReport[] = [];
   const globalProblems: string[] = [];
@@ -184,7 +157,7 @@ export function checkShardBalance(repoDir: string, { thresholdRatio = 1.3 }: { t
     const staleWeights = Object.keys(weights).filter((file) => !fileSet.has(file)).sort();
     if (staleWeights.length > 0) {
       problems.push(
-        `${suite}: stale weights manifest entries (tests no longer registered): ${staleWeights.join(', ')} — refresh ${WEIGHTS_MANIFEST_PATH}`
+        `${suite}: stale weights manifest entries (tests no longer in the suite): ${staleWeights.join(', ')} — refresh ${WEIGHTS_MANIFEST_PATH}`
       );
     }
     const unmeasured = files.filter((file) => !Object.prototype.hasOwnProperty.call(weights, file)).sort();
@@ -195,7 +168,7 @@ export function checkShardBalance(repoDir: string, { thresholdRatio = 1.3 }: { t
     const assigned = partition.shards.flatMap((shard) => shard.files);
     const assignedSet = new Set(assigned);
     if (assigned.length !== files.length || files.some((file) => !assignedSet.has(file))) {
-      problems.push(`${suite}: partition did not assign every registered test exactly once`);
+      problems.push(`${suite}: partition did not assign every discovered test exactly once`);
     }
 
     const balance = analyzeBalance(partition, { thresholdRatio });

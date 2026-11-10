@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Tests for the route-decision capture in the workflow router (HOK-3098):
  * every route path (hokusai, fallback, local) must expose what it decided

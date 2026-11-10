@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Tests for the workflow router — difficulty floors, budget behavior, and
  * exploration. See `workflow-router-test-helpers.ts` for the shared harness

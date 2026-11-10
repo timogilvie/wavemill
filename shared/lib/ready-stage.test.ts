@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 import { describe, it, mock, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

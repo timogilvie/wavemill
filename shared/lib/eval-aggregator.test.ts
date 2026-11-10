@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 import assert from 'node:assert/strict';
 import type { EvalRecord, RubricEval } from './eval-schema.ts';
 import { deduplicateByHash, meetsMintEligibility } from './eval-aggregator.ts';

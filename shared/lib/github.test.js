@@ -1,3 +1,4 @@
+// wavemill-test-suite: standalone (live gh-authed smoke, not CI-safe; run by hand with node --test)
 import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import {

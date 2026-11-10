@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# wavemill-test-suite: none (ran in no suite before HOK-3466; run it or delete it)
 # Tests for claude-deepseek launcher shell behavior.
 # Run with: bash tests/deepseek-launcher.test.sh
 #

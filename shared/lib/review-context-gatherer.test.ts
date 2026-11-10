@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+// wavemill-test-suite: custom
 /**
  * Tests for review-context-gatherer
  * Run with: npx tsx shared/lib/review-context-gatherer.test.ts
