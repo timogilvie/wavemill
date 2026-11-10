@@ -952,6 +952,7 @@
       "tools/check-ci-command-map-drift.test.ts": 825,
       "tools/check-ci-concurrency.test.ts": 188,
       "tools/check-ci-verification.test.ts": 5901,
+      "tools/check-required-files-list.test.ts": 5000,
       "tools/check-config-version.test.ts": 347,
       "tools/check-cross-pr-reverts.test.ts": 2842,
       "tools/check-native-agent-launch.test.ts": 7207,

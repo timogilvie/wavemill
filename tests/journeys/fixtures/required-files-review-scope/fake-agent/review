@@ -1,0 +1,3 @@
+# shellcheck shell=bash
+# Default review path: required files were admitted by the scope guard (HOK-3456).
+default_review
