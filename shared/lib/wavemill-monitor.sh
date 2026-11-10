@@ -21943,6 +21943,48 @@ monitor_issue_state() {
             return 0
           fi
 
+          # HOK-3463: the mill opens the task PR. A completed review with no
+          # PR is the normal state now — the agent records the PR title and
+          # body in its stage result and never runs `gh pr create`, so its own
+          # GitHub credentials cannot strand finished work. A failed open is a
+          # harness fault: it retries through the bounded `review-pr-open`
+          # bucket and pages only on exhaustion; it never sets `error`.
+          if [[ -z "$pr_number" && "$review_status" == "completed" ]]; then
+            local pr_open_head pr_open_gate pr_open_title
+            pr_open_head="$(git -C "${WORKTREE_ROOT}/${SLUG}" rev-parse HEAD 2>/dev/null || true)"
+            pr_open_gate="$(bounded_retry_gate "$FEATURE_DIR" "review-pr-open" "$pr_open_head" 5)"
+            case "$pr_open_gate" in
+              backoff|exhausted-quiet)
+                active_count=$((active_count + 1))
+                return 0
+                ;;
+              exhausted)
+                if bounded_retry_mark_exhausted "$FEATURE_DIR" "review-pr-open" \
+                  "harness-fault:review-pr-open could not open the PR for $BRANCH after $(bounded_retry_count "$FEATURE_DIR" "review-pr-open") attempt(s)"; then
+                  escalate_operator_attention "$FEATURE_DIR" exhausted review-pr-open \
+                    "The mill could not open the PR for $BRANCH (harness fault, not a review failure). Check gh auth and GitHub status; the next commit or /re-review $ISSUE retries." || true
+                  log_warn "⛔ $ISSUE → could not open the PR for $BRANCH after repeated attempts (harness fault, paging the operator)"
+                fi
+                set_window_attention_state "$WIN" "needs-user"
+                active_count=$((active_count + 1))
+                return 0
+                ;;
+            esac
+            pr_open_title=$(pass_task_field "$ISSUE" title)
+            if open_task_pr "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$FEATURE_DIR" "$ISSUE" "$pr_open_title"; then
+              pr_number="$OPEN_TASK_PR_NUMBER"
+              PR_BY_ISSUE["$ISSUE"]="$pr_number"
+              save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$pr_number" "" "$current_agent"
+              log "status" "$ISSUE → mill opened PR #$pr_number for $BRANCH (${OPEN_TASK_PR_OUTCOME:-created})"
+            else
+              bounded_retry_increment "$FEATURE_DIR" "review-pr-open" "$pr_open_head" >/dev/null || true
+              log_warn "$ISSUE → mill could not open the PR for $BRANCH (${OPEN_TASK_PR_REASON:-unknown}: ${OPEN_TASK_PR_DETAIL:-no detail}); will retry (harness fault)"
+              set_window_attention_state "$WIN" "clear"
+              active_count=$((active_count + 1))
+              return 0
+            fi
+          fi
+
           # This branch is only reachable when no PR is cached yet. The live
           # review -> ready transition for PR-backed tasks runs in the PR
           # lifecycle section below so resumed tasks can still advance.

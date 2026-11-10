@@ -1,8 +1,8 @@
-## Your Task: Review & PR Creation
+## Your Task: Review & PR Description
 
 You are in the **REVIEW PHASE** of a multi-phase workflow (mode: {{REVIEW_MODE}}).
 
-The implementation is complete. Your job is to review and create a PR.
+The implementation is complete. Your job is to review it and write the PR description. The mill opens the PR for you; you never run `gh pr create`.
 
 ### Your Responsibilities
 
@@ -14,7 +14,7 @@ The implementation is complete. Your job is to review and create a PR.
    Track `FINAL_REVIEW_EXIT_CODE`, `REVIEW_ITERATIONS`, final verdict, blocker count, warning count, the `failureCategory` field from the final review JSON when present, and any review-tool stderr for the last run.
    - Exit code 0 = review passed → proceed to step 3
    - Exit code 1 = issues found → fix blockers and re-run (step 2)
-   - Exit code 2 = error → log comprehensive diagnostics, record `verdict: "error"`, and proceed to PR creation in step 3 without readiness certification
+   - Exit code 2 = error → log comprehensive diagnostics, record `verdict: "error"`, and proceed to step 3 without readiness certification
    The output is structured JSON with verdict, codeReviewFindings, and optional uiFindings.
 
    When exit code 2 occurs, you MUST log the following diagnostics to help debug the failure:
@@ -31,7 +31,7 @@ The implementation is complete. Your job is to review and create a PR.
    - Base branch exists: $(git rev-parse --verify {{BASE_BRANCH}} 2>&1 || echo "NOT FOUND")
    - STDERR output: [paste the actual stderr from the failed command]
 
-   Proceeding to PR creation. The mill (Ready → Tend) will run its own Ready gate and, if it publishes a handoff, apply `wm:ready` on your behalf.
+   Proceeding to the PR description. The mill (Ready → Tend) will run its own Ready gate and, if it publishes a handoff, apply `wm:ready` on your behalf.
    ```
    This diagnostic information is CRITICAL for debugging recurring tool failures.
 
@@ -48,15 +48,8 @@ The implementation is complete. Your job is to review and create a PR.
    - Commit fixes: git commit -m "fix: Address self-review findings (iteration N)"
    - Re-run the review tool (step 1)
 
-3. **Create a PR** using GitHub CLI with a descriptive title and body:
-   gh pr create \
-     --base {{BASE_BRANCH}} \
-     --title "{{ISSUE}}: <concise summary>" \
-     --label "wavemill" \
-     --body "<PR body>"
-   If `gh pr create` fails because the `wavemill` label does not exist in this repository, create the PR without `--label "wavemill"`, then attempt:
-   `gh pr edit "<PR_URL>" --add-label "wavemill"`
-   If that also fails, note the missing label in the PR body and proceed.
+3. **Write the PR title and body.** Do NOT run `gh pr create` or `gh pr edit`, and do NOT push the branch. The mill publishes your commits and opens the PR with its own credentials once you record the review result in step 4.
+   The title is `{{ISSUE}}: <concise summary>`.
    The PR body MUST include:
    - A "## Summary" section with 2-4 bullet points describing what changed and why
    - A "## Changes" section listing the key files/modules modified
@@ -80,13 +73,12 @@ The implementation is complete. Your job is to review and create a PR.
      <!-- wavemill-meta
      task: {{ISSUE}}
      -->
-   Do NOT use --fill. Write the PR body as a HEREDOC if needed for formatting.
-   After creating the PR, do NOT run `gh pr edit ... --add-label wm:*` at any point. The mill applies `wm:ready` — and every other `wm:*` label — once its Ready gate has published a Ready → Tend handoff for the current PR head. The mill consumes your review artifacts (step 4) to make that decision.
+   Do NOT run `gh pr edit ... --add-label wm:*` at any point. The mill applies `wm:ready` — and every other `wm:*` label — once its Ready gate has published a Ready → Tend handoff for the current PR head. The mill consumes your review artifacts (step 4) to make that decision.
    Do NOT apply any `wm:*` label yourself, regardless of review outcome. When circumstances prevent the mill from publishing a handoff (e.g., when the final self-review run errored (exit code 2) without readiness certification), the mill will handle label management; agent-applied labels are treated as untrusted and stripped.
    When your self-review dismissed one or more blockers on the strength of justifications, list each dismissed blocker with its justification and evidence in the PR body's "## Self-review" section so an operator can audit the decision. Record the dismissals themselves in the review artifact (step 4); the mill's Ready gate reads that artifact and either publishes the handoff (which triggers `wm:ready` application) or withholds it.
 
-4. **Record final review evidence** in `{{FEATURE_DIR}}/.review-result.json` after PR creation.
-   Use `tools/stage-result-cli.ts` to update the review stage with explicit final self-review outcome fields. `status: "completed"` only means the review phase produced the PR artifact; it does not mean the review passed.
+4. **Record final review evidence and the PR description** in `{{FEATURE_DIR}}/.review-result.json`.
+   Use `tools/stage-result-cli.ts` to update the review stage with explicit final self-review outcome fields. `status: "completed"` only means the review phase finished and recorded its PR description; it does not mean the review passed. Always record `prTitle` and `prBody` (steps 3) in the artifacts; the mill opens the PR from them.
    - If the final run exited 0 with verdict `ready` and zero blockers, record `exitCode: 0`, `verdict: "ready"`, `iterations: <count>`, `blockerCount: 0`, and `warningCount`.
    - If the final run exited 1, record `exitCode: 1`, `verdict: "not_ready"`, `iterations`, `blockerCount`, and `warningCount`. Report the verdict and counts truthfully — never report zero blockers to force readiness.
    - If you disproved blockers (step 2), additionally record `dismissedBlockers`: an array with one entry per dismissed blocker, each `{location, category, description, justification, evidence}`. `justification` is REQUIRED and must be non-empty; `evidence` should cite the verification command you ran. Keep `blockerCount` as the raw count — the orchestrator's ready gate derives the effective (undismissed) count from these entries and passes when every raw blocker is validly dismissed.
@@ -95,7 +87,8 @@ The implementation is complete. Your job is to review and create a PR.
    Example:
    ```bash
    REVIEW_ARTIFACTS=$(jq -cn \
-     --argjson pr "$PR_NUMBER" \
+     --arg prTitle "$PR_TITLE" \
+     --arg prBody "$PR_BODY" \
      --argjson exitCode "$FINAL_REVIEW_EXIT_CODE" \
      --arg verdict "$FINAL_REVIEW_VERDICT" \
      --argjson iterations "$REVIEW_ITERATIONS" \
@@ -103,12 +96,12 @@ The implementation is complete. Your job is to review and create a PR.
      --argjson warnings "$FINAL_WARNING_COUNT" \
      --argjson dismissed "${DISMISSED_BLOCKERS_JSON:-[]}" \
      --arg failureCategory "${FINAL_FAILURE_CATEGORY:-}" \
-     '{type:"review",prNumber:$pr,exitCode:$exitCode,verdict:$verdict,iterations:$iterations,blockerCount:$blockers,warningCount:$warnings}
+     '{type:"review",prTitle:$prTitle,prBody:$prBody,exitCode:$exitCode,verdict:$verdict,iterations:$iterations,blockerCount:$blockers,warningCount:$warnings}
       + (if ($dismissed | length) > 0 then {dismissedBlockers:$dismissed} else {} end)
       + (if $failureCategory != "" then {failureCategory:$failureCategory} else {} end)')
    npx tsx {{TOOLS_DIR}}/stage-result-cli.ts update "{{FEATURE_DIR}}" review \
      --status completed \
-     --notes "PR #$PR_NUMBER created" \
+     --notes "Review recorded; PR description ready for the mill" \
      --artifacts "$REVIEW_ARTIFACTS"
    ```
    With a dismissal, `DISMISSED_BLOCKERS_JSON` looks like:
@@ -121,7 +114,7 @@ The implementation is complete. Your job is to review and create a PR.
 
 ### Authorship Attribution
 
-Before creating the PR, determine whether you are the principal author:
+Before committing review fixes, determine whether you are the principal author:
 
 1. **Check commit authorship** using:
    ```bash
@@ -142,7 +135,7 @@ Before creating the PR, determine whether you are the principal author:
      - Use "Reviewed-by" tag if appropriate, or simply omit attribution
      - Never override the PR author field if someone else created the branch
 
-4. **Link the PR to {{ISSUE}}**
+4. **Name {{ISSUE}} in the PR title** so the PR links to it.
 
 {{OPERATING_MODE_GUIDANCE}}
 
@@ -155,12 +148,12 @@ Before creating the PR, determine whether you are the principal author:
 ### Success Criteria
 - [ ] Self-review tool executed (unless mode is 'none')
 - [ ] Blockers fixed (if any were found)
-- [ ] PR created with descriptive summary
-- [ ] PR linked to {{ISSUE}}
+- [ ] PR title and body recorded in the review result (the mill opens the PR)
+- [ ] PR title names {{ISSUE}}
 
 ### Important Notes
 - Do not skip the review - it's a required step
-- Fix blockers before creating PR
+- Fix blockers before recording the review result
 - Make targeted fixes only - no scope creep
 - If review tool fails with exit code 2, document the failure and proceed
 
@@ -178,7 +171,7 @@ The Wavemill controller manages Ready gating, label application, and all merge o
 You are ONLY allowed to:
 - Run the self-review tool
 - Fix issues identified by self-review (targeted fixes only)
-- Create the PR via gh pr create
+- Record the PR title and body in the review result
 - Create git commits for review fixes
 
 You are FORBIDDEN from:

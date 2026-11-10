@@ -280,6 +280,12 @@ export interface GitHubCreatePrRequest {
   body: string;
   /** Create as a draft PR. */
   draft?: boolean;
+  /**
+   * What to do when an open PR already exists for head->base. `update` (the
+   * default) rewrites its title and body; `reuse` leaves it untouched, for
+   * callers that must not overwrite a body the mill has since stamped.
+   */
+  ifExists?: 'update' | 'reuse';
 }
 
 export interface GitHubCreatePrSuccess extends WorkflowToolResultBase {

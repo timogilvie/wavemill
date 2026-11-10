@@ -1672,7 +1672,7 @@ else
 fi
 
 if grep -q 'Draft PR fallback' "$PROMPT_RENDER_DIR/review-survival.txt" \
-  && grep -q -- '--draft' "$PROMPT_RENDER_DIR/review-survival.txt" \
+  && grep -q 'prDraft: true' "$PROMPT_RENDER_DIR/review-survival.txt" \
   && grep -q -- '--operating-mode survival' "$PROMPT_RENDER_DIR/review-survival.txt" \
   && grep -q 'syntax, contract violations, obvious regressions, and test-coverage gaps' "$PROMPT_RENDER_DIR/review-survival.txt" \
   && grep -q 'needs_stronger_reviewer' "$PROMPT_RENDER_DIR/review-survival.txt"; then
@@ -1713,11 +1713,15 @@ else
   fail "review prompt reviewer --model rendering is wrong"
 fi
 
-if grep -q -- '--base main' "$PROMPT_RENDER_DIR/review-claude.txt" \
-  && grep -q -- '--base main' "$PROMPT_RENDER_DIR/review-codex.txt"; then
-  pass "review prompt specifies --base for PR creation"
+# HOK-3463: the mill opens the PR. The prompt asks for the PR title and body
+# in the review result and carries no PR-create command for the agent.
+if grep -q 'prTitle' "$PROMPT_RENDER_DIR/review-claude.txt" \
+  && grep -q 'prBody' "$PROMPT_RENDER_DIR/review-codex.txt" \
+  && ! grep -qE '^[[:space:]]*gh pr create' "$PROMPT_RENDER_DIR/review-claude.txt" \
+  && ! grep -qE '^[[:space:]]*gh pr create' "$PROMPT_RENDER_DIR/review-codex.txt"; then
+  pass "review prompt records the PR title and body for the mill and has no PR-create command"
 else
-  fail "review prompt is missing --base flag for PR creation"
+  fail "review prompt must record prTitle/prBody and must not instruct the agent to create the PR"
 fi
 
 if grep -q '<!-- wavemill-meta' "$PROMPT_RENDER_DIR/review-claude.txt" \
@@ -1740,13 +1744,6 @@ if grep -q '## Routing' "$PROMPT_RENDER_DIR/review-claude.txt" \
   pass "review prompt includes routing.jsonl guidance"
 else
   fail "review prompt is missing routing.jsonl guidance"
-fi
-
-if grep -q 'label "wavemill"' "$PROMPT_RENDER_DIR/review-claude.txt" \
-  && grep -q 'label "wavemill"' "$PROMPT_RENDER_DIR/review-codex.txt"; then
-  pass "review prompt instructs adding wavemill label"
-else
-  fail "review prompt is missing wavemill label instruction"
 fi
 
 if grep -q 'wm:ready' "$PROMPT_RENDER_DIR/review-claude.txt" \

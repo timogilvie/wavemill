@@ -1,0 +1,12 @@
+# shellcheck shell=bash
+# HOK-3463 journey: a review agent that cannot reach GitHub. It commits a
+# review fix and records the PR title and body in its stage result. It never
+# pushes and never calls gh: the mill publishes the head and opens the PR.
+printf 'review fix for %s\n' "$WAVEMILL_ISSUE" >> journey-output.txt
+git add journey-output.txt
+git -c user.name=fake-agent -c user.email=fake-agent@example.invalid commit -q -m "fix: Address self-review findings (iteration 1)"
+artifacts="$(jq -cn --arg head "$(git rev-parse HEAD)" --arg title "$WAVEMILL_ISSUE: journey change opened by the mill" \
+  --arg body "$(printf '## Summary\n- journey\n\n## Self-review\nready\n')" \
+  '{type:"review",prTitle:$title,prBody:$body,exitCode:0,verdict:"ready",iterations:1,blockerCount:0,warningCount:0,reviewHeadSha:$head}')"
+run_tool stage-result-cli.ts update "$FEATURE_DIR" review --status completed \
+  --notes "Review recorded; PR description ready for the mill" --artifacts "$artifacts"

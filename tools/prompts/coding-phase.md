@@ -122,7 +122,7 @@ You are ONLY allowed to:
 - Create/edit files in {{FEATURE_DIR}}/ (markers only)
 
 You are FORBIDDEN from:
-- Creating a PR or running gh pr create
+- Creating a PR (never run gh pr create)
 - Running the self-review tool (tools/review-changes.ts)
 - Modifying plan.md or task-packet files
 - Starting work on features not covered by the plan
