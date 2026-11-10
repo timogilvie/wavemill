@@ -1788,31 +1788,6 @@ function buildPairFromRouteSnapshotWithReason(
   return finalizeStage(result);
 }
 
-export function pickChallengeWorkflowsWithContext(
-  pool: string[],
-  opts: {
-    pairId: string;
-    issueId: string;
-    slug: string;
-    prompt: string;
-    primaryModel?: string;
-    suggestedChallengerModel?: string;
-    challengeStage?: ChallengeStage;
-    agentMap?: Record<string, string>;
-    defaultAgent?: string;
-    randomFn?: () => number;
-    repoDir?: string;
-    now?: Date;
-    routeFn?: (prompt: string, options?: { repoDir?: string }) => WorkflowRouteDecision;
-  } & ChallengeCoverageOptions,
-  routeArtifacts: {
-    bootstrap: RouteArtifactSnapshot | null;
-    expanded: RouteArtifactSnapshot | null;
-  },
-): (ChallengePairSelection & { routeContext: ChallengeRouteContext }) | null {
-  return pickChallengeWorkflowsWithContextAndReason(pool, opts, routeArtifacts).pair;
-}
-
 export function pickChallengeWorkflowsWithContextAndReason(
   pool: string[],
   opts: {

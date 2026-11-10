@@ -1,6 +1,6 @@
 /**
  * Tests for shard-balance preflight logic (HOK-2939): ci.yml shard-count
- * parsing, runner registration parsing, weights-manifest validation, and the
+ * parsing, weights-manifest validation, and the
  * end-to-end balance check with its stale-entry and indivisible-hotspot paths.
  */
 
@@ -12,8 +12,6 @@ import path from 'node:path';
 import {
   loadWeightsManifest,
   parseShardCount,
-  parseShellArray,
-  readRegisteredSuites,
   checkShardBalance,
   formatShardBalance,
 } from './shard-balance.ts';
@@ -67,18 +65,15 @@ function withFixtureRepo(options: FixtureOptions, fn: (repoDir: string) => void)
     ];
     const customSh = options.customSh ?? ['tests/w.test.sh'];
     const shellTests = options.shellTests ?? ['s-a.test.sh', 's-b.test.sh', 's-c.test.sh', 's-d.test.sh', 's-e.test.sh', 's-f.test.sh'];
-    writeFileSync(
-      path.join(repoDir, 'tests', 'run-shell-suite.sh'),
-      `TESTS=(\n${shellTests.map((t) => `  ${t}`).join('\n')}\n)\n`
-    );
-    writeFileSync(
-      path.join(repoDir, 'tests', 'run-unit-tests.sh'),
-      `TESTS=(\n${unitTests.map((t) => `  ${t}`).join('\n')}\n)\n`
-    );
-    writeFileSync(
-      path.join(repoDir, 'tests', 'run-custom-tests.sh'),
-      `CUSTOM_TS_TESTS=(\n${customTs.map((t) => `  ${t}`).join('\n')}\n)\n\nCUSTOM_SH_TESTS=(\n${customSh.map((t) => `  ${t}`).join('\n')}\n)\n`
-    );
+    // Suite membership is discovered from the files themselves (HOK-3466).
+    const writeTest = (file: string, content: string): void => {
+      mkdirSync(path.dirname(path.join(repoDir, file)), { recursive: true });
+      writeFileSync(path.join(repoDir, file), content);
+    };
+    for (const file of shellTests) writeTest(`tests/${file}`, '#!/usr/bin/env bash\n');
+    for (const file of unitTests) writeTest(file, '');
+    for (const file of customTs) writeTest(file, '// wavemill-test-suite: custom\n');
+    for (const file of customSh) writeTest(file, '#!/usr/bin/env bash\n# wavemill-test-suite: custom\n');
     writeFileSync(path.join(repoDir, '.github', 'workflows', 'ci.yml'), options.workflow ?? FIXTURE_WORKFLOW);
     const manifest = options.manifest ?? { version: 1, defaultMs: 30000, sources: [], suites: { unit: {}, custom: {} } };
     writeFileSync(path.join(repoDir, 'tests', 'ci-test-weights.json'), JSON.stringify(manifest));
@@ -94,28 +89,6 @@ test('parseShardCount reads matrix shard lists per job', () => {
   assert.equal(parseShardCount(FIXTURE_WORKFLOW, 'custom'), 3);
   assert.equal(parseShardCount(FIXTURE_WORKFLOW, 'smoke'), null);
   assert.equal(parseShardCount(FIXTURE_WORKFLOW, 'nonexistent'), null);
-});
-
-test('parseShellArray reads entries and ignores comments', () => {
-  const script = 'X=(\n  a.test.ts\n  # a comment line\n  b.test.ts  # trailing comment\n)\n';
-  assert.deepEqual(parseShellArray(script, 'X'), ['a.test.ts', 'b.test.ts']);
-  assert.throws(() => parseShellArray(script, 'MISSING'), /MISSING/);
-});
-
-test('readRegisteredSuites reads the shell array and merges custom ts and sh arrays', () => {
-  withFixtureRepo({}, (repoDir) => {
-    const suites = readRegisteredSuites(repoDir);
-    assert.deepEqual(suites.shell, ['s-a.test.sh', 's-b.test.sh', 's-c.test.sh', 's-d.test.sh', 's-e.test.sh', 's-f.test.sh']);
-    assert.equal(suites.unit.length, 5);
-    assert.deepEqual(suites.custom, [
-      'shared/lib/x.test.ts',
-      'shared/lib/y.test.ts',
-      'shared/lib/z.test.ts',
-      'shared/lib/q.test.ts',
-      'shared/lib/r.test.ts',
-      'tests/w.test.sh',
-    ]);
-  });
 });
 
 test('loadWeightsManifest rejects malformed manifests with diagnostics', () => {

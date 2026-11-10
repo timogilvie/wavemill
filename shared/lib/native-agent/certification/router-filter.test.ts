@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Unit tests for the native certification router filter.
  *

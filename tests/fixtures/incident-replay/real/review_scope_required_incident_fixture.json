@@ -1,0 +1,79 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "review_scope_required_incident_fixture",
+  "incidents": [
+    "hok3403-incident-fixture-scope-rejection-placeholder"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-INCIDENT",
+      "slug": "incident-review-scope-fixture",
+      "phase": "review",
+      "status": "blocked"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "stalled_stage",
+    "rootCauseClass": "review_scope_required_incident_fixture",
+    "severity": "high",
+    "confidence": "high",
+    "summary": "HOK-3403: a new incident replay fixture under tests/fixtures/incident-replay/real/ was rejected by the review scope guard as out-of-scope, stalling review until an operator intervened.",
+    "operatorAction": "With the fix in HOK-3456, incident replay fixture paths in REQUIRED_PATHS are admitted automatically. If this fixture regresses, investigate review-scope-guard.ts before touching the fixture directory.",
+    "metadata": {
+      "disposition": "required-file-rejected",
+      "effectiveBaseBranch": "auto/integration"
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "~/Dropbox/wavemill/.wavemill/workflow-state.json",
+          "timestamp": "2026-11-06T10:00:00.000Z",
+          "redactedData": "phase=review status=blocked scopeRejection=tests/fixtures/incident-replay/real/ reason=required-fixture-directory-out-of-scope",
+          "key": "review-scope:HOK-FIXTURE-INCIDENT:tests/fixtures/incident-replay/real/"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 5,
+  "failure": {
+    "stage": "review",
+    "failureKind": "scope-rejection",
+    "detail": "review scope guard rejected tests/fixtures/incident-replay/real/ as out of scope",
+    "survivesRelaunches": 0
+  },
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 10,
+    "tickIntervalSeconds": 30
+  },
+  "journey": null,
+  "journeyNullReason": "detector-level class; replayed via the incident cycle loop",
+  "expected": {
+    "category": "stalled_stage",
+    "rootCauseClass": "unclassified_local_failure",
+    "occurrenceCount": 1,
+    "lifecycleWhilePresent": "observed",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  },
+  "source": {
+    "category": "stalled_stage",
+    "rootCauseClass": "review_scope_required_incident_fixture",
+    "severity": "high",
+    "confidence": "high",
+    "recordedLifecycle": "resolved",
+    "recordedResolution": "auto_resolved",
+    "occurrenceCount": 1,
+    "firstObservedAt": "2026-11-06T10:00:00.000Z",
+    "lastObservedAt": "2026-11-06T10:00:00.000Z",
+    "stateSnapshot": null,
+    "convertedBy": "tools/incident-to-fixture.ts",
+    "observationsTruncated": false
+  }
+}

@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+// wavemill-test-suite: custom
 /**
  * Tests for constraint-parser
  * Run with: npx tsx shared/lib/constraint-parser.test.ts

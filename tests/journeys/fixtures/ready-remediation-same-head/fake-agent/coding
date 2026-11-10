@@ -73,9 +73,27 @@ else
   # A real Claude Code REPL stays alive, idle at its prompt, after the Stop:
   # the process probe says "alive", so only the transcript can say "settled".
   # Bounded; the mill's stage teardown or the world teardown ends it sooner.
+  #
+  # Idle WITHOUT forking: a `sleep 0.25` poll is a live descendant started
+  # mid-session, which the HOK-3374 background-work rule (correctly) reads as
+  # the agent's own background task, so the stage never settles and the
+  # journey flakes under load (HOK-3426 diagnosis). `read -t` on a fifo this
+  # shell holds open blocks for the timeout and spawns nothing — the shape of
+  # a REPL parked at its prompt.
   idle_until=$(( $(mill_tick) + 40 ))
-  for _ in $(seq 1 2400); do
-    (( $(mill_tick) >= idle_until )) && break
-    sleep 0.25
-  done
+  idle_fifo="$FAKE_ROOT/idle-fifo.$$"
+  if mkfifo "$idle_fifo" 2>/dev/null; then
+    exec 9<> "$idle_fifo"
+    rm -f "$idle_fifo"
+    for _ in $(seq 1 2400); do
+      (( $(mill_tick) >= idle_until )) && break
+      read -t 0.25 -u 9 -r _ || true
+    done
+    exec 9>&-
+  else
+    for _ in $(seq 1 2400); do
+      (( $(mill_tick) >= idle_until )) && break
+      sleep 0.25
+    done
+  fi
 fi

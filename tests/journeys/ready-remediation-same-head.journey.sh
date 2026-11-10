@@ -116,6 +116,19 @@ journey_assert "the monitor released the settled remediation itself" \
   bash -c '(( $1 >= 1 ))' _ "$(mill_log_count "Ready remediation settled at ${RED_HEAD:0:7} (agent-idle-after-launch)")"
 journey_assert "no remediation or pending-ready exhaustion at any point" \
   test "$(( $(mill_log_count "Ready remediation exhausted") + $(mill_log_count "Pending-ready re-checks exhausted") ))" = "0"
+# HOK-3426: the live reviewer in this journey finishes normally. A pane that no
+# longer shows the agent's descendants must never stamp the stage failed — the
+# settle decision reads the recorded exit fact only.
+journey_assert "the live reviewer was never settled as agent-exited" \
+  test "$(mill_log_count "review agent settled without a result")" = "0"
+# A charged review bucket relaunches CODING (maybe_retry_failed_stage maps
+# review → retry_phase=coding), so a second `coding` session-ownership row is
+# the observable charge. Read it from the archived ownership record, which
+# survives reaping (the feature dir does not).
+journey_assert "the review stage-failure bucket never relaunched coding" \
+  test "$(jq -r 'select(.type == "launch" and .kind == "coding") | .sessionRef' \
+    "$REPO_DIR/.wavemill/evals/artifacts/$ISSUE/.session-ownership.jsonl" 2>/dev/null \
+    | wc -l | tr -d ' ')" = "1"
 journey_assert_landed "$ISSUE"
 journey_assert_session_ownership "$ISSUE" planning coding review ready-remediation
 

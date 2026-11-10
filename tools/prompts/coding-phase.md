@@ -71,7 +71,8 @@ tend merge → reap chain (`shared/lib/wavemill-*.sh`, `agent-adapters.sh`,
 `task-progress.*`, `shared/lib/tend-*.ts`, `ready-*.ts`, `merge-labels.ts`,
 `workflow-state*.ts`, `shared/hooks/`, `tools/tend.ts`, `tools/ready.ts`,
 `tests/journeys/`, `tests/fakes/`; the full list is the `journeys` path filter
-in `.github/workflows/ci.yml`):
+in `.github/workflows/ci.yml`, and the canonical required-paths registry is
+`REQUIRED_PATHS` in `shared/lib/review-scope-guard.ts`):
 - The PR must pass the journey job (the required **Golden Journeys** CI check,
   which runs every journey). `bash tests/run-related.sh` already runs the
   `happy-path` journey plus any journey file you changed. Run another journey
@@ -89,7 +90,8 @@ in `.github/workflows/ci.yml`):
 
 A PR that fixes an incident recorded in `.wavemill/incidents/` must include
 that incident's evidence as a replay fixture under
-`tests/fixtures/incident-replay/real/`, and that fixture must fail on the
+`tests/fixtures/incident-replay/real/` (one of the paths in `REQUIRED_PATHS`
+in `shared/lib/review-scope-guard.ts`), and that fixture must fail on the
 base and pass with the fix.
 
 Convert the incident with:
@@ -122,7 +124,7 @@ You are ONLY allowed to:
 - Create/edit files in {{FEATURE_DIR}}/ (markers only)
 
 You are FORBIDDEN from:
-- Creating a PR or running gh pr create
+- Creating a PR (never run gh pr create)
 - Running the self-review tool (tools/review-changes.ts)
 - Modifying plan.md or task-packet files
 - Starting work on features not covered by the plan

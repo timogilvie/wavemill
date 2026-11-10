@@ -1,0 +1,51 @@
+# shellcheck shell=bash
+# Declare the unit test file as in-scope; required files need no declaration (HOK-3456).
+cat > "$FEATURE_DIR/task-packet-header.md" <<'PACKET'
+# Task Packet: $WAVEMILL_ISSUE
+
+## Objective
+Add required files and verify they pass review scope automatically.
+
+## Key Files
+- tests/required-files-review-scope.test.ts
+- .github/workflows/ci.yml
+
+## Detailed Sections
+See task-packet-details.md.
+PACKET
+cat > "$FEATURE_DIR/task-packet-details.md" <<'PACKET'
+## 1. Objective & Scope
+Add a unit test, a journey, a fixture, and register them.
+
+## 2. Technical Context
+Fixture repository.
+
+## 3. Implementation Approach
+Create required files and edit registration files.
+
+## 4. Success Criteria
+- [REQ-F1] Required files pass review scope with no operator step.
+
+## 5. Implementation Constraints
+None.
+
+## 6. Validation Steps
+Run focused tests.
+
+## 7. Definition of Done
+Merged.
+
+## 8. Rollback Plan
+Revert the commit.
+
+## 9. Proposed Labels
+journey
+PACKET
+cat "$FEATURE_DIR/task-packet-header.md" "$FEATURE_DIR/task-packet-details.md" > "$FEATURE_DIR/task-packet.md"
+cat > "$FEATURE_DIR/plan.md" <<'PLAN'
+# Plan: $WAVEMILL_ISSUE
+
+## Files to Modify
+- tests/required-files-review-scope.test.ts
+- .github/workflows/ci.yml
+PLAN

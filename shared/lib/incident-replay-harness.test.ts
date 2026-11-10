@@ -1,7 +1,8 @@
+// wavemill-test-suite: custom
 /**
  * HOK-3177 — incident replay harness test suite.
  *
- * Registered in `tests/run-custom-tests.sh` (CUSTOM_TS_TESTS). Fails loud on
+ * Runs in the custom suite (`tests/run-custom-tests.sh`). Fails loud on
  * any fixture that does not converge within its tick budget.
  *
  * Uses the custom harness `process.exit(1)` style; each fixture is a

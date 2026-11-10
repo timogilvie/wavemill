@@ -2525,3 +2525,23 @@ describe('loop — prompt-cache projection', () => {
     });
   });
 });
+
+// protects: reserving synthesis never exempts a request from hard token or cost safety limits.
+for (const limit of ['token', 'cost'] as const) {
+  it(`keeps the ${limit} limit hard when terminal synthesis becomes pending`, async () => {
+    const api = uniqueApi(`synthesis-hard-${limit}`);
+    const tool = makeTool('inspect', 'parallel', async () => 'evidence');
+    let requests = 0;
+    registerScriptedPiProvider({ api, turns: () => {
+      requests++;
+      return { content: [{ type: 'tool_call', id: 'read', name: 'inspect', arguments: {} }], usage: { input: 600, output: 0 }, stopReason: 'tool_calls' };
+    } });
+    const result = await runWavemillLoop({ ...baseConfig(api, [tool]),
+      modelPricing: { inputCostPerMTok: 1, outputCostPerMTok: 0 },
+      budget: { maxTurns: 2, ...(limit === 'token' ? { maxInputTokens: 500 } : { maxCostUsd: 0.0005 }) },
+      terminalSynthesis: { prompt: 'Finish now.' },
+    });
+    assert.equal(result.stopReason, `${limit}_limit`);
+    assert.equal(requests, 1);
+  });
+}

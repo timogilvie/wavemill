@@ -215,7 +215,7 @@ export async function githubCreatePr(
       const current = existing[0];
       if (current) {
         const ref = toPullRequestRef(current);
-        if (current.title === safeTitle && current.body === safeBody) {
+        if (request.ifExists === 'reuse' || (current.title === safeTitle && current.body === safeBody)) {
           return {
             ok: true,
             tool: 'github_create_pr',

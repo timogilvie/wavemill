@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+// wavemill-test-suite: custom
 /**
  * Unit tests for the HOK-3325 defect-escalation preflight guard.
  *

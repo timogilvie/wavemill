@@ -804,7 +804,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       },
     };
 
-    const result = await runWavemillLoop({
+    const planningLoopConfig: WavemillLoopConfig = {
       model,
       ...(nativeModels ? { models: nativeModels } : {}),
       context,
@@ -827,8 +827,17 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       sessionStreamConfig,
       menuProvider: menuLaunchProvider.menuProvider,
       budget: toLoopBudget(planningLimits),
+      terminalSynthesis: {
+        prompt: [
+          'Stop investigating. This is your reserved terminal synthesis turn.',
+          'Using only the evidence already gathered, return the complete implementation plan as Markdown now.',
+          'Follow the planning output requirements already provided and state unresolved questions explicitly.',
+          'Do not call tools or narrate your process.',
+        ].join(' '),
+      },
       ...(providerIdentityConfig ? { providerIdentity: providerIdentityConfig } : {}),
-    });
+    };
+    const result = await runWavemillLoop(planningLoopConfig);
     const planningOutcomeArtifacts = buildPlanningOutcomeArtifacts({
       repoDir: options.repoDir,
       modelId: modelName,
@@ -1004,25 +1013,10 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       ];
       const repairContext: AgentContext = { ...context, messages: repairMessages };
       const repairResult = await runWavemillLoop({
-        model,
-        ...(nativeModels ? { models: nativeModels } : {}),
+        ...planningLoopConfig,
         context: repairContext,
-        maxTokens: effectiveMaxTokens,
-        contextManagement: getNativeContextManagementConfig(options.repoDir),
-        payloadCapture: { featureDir, stage: 'planning', ...getNativePayloadCaptureConfig(options.repoDir) },
-        convertToLlm: (messages) => messages as unknown as Message[],
-        afterToolCall: gitAfterToolCall,
-        signal: options.signal,
-        toolPolicy: planningToolPolicy,
-        onEvent: (event) => {
-          transcriptWriter.handleEvent(event);
-        },
-        sessionStreamConfig,
-        menuProvider: menuLaunchProvider.menuProvider,
-        // Reuses the configured planning budget. Wall-clock already consumed by
-        // the initial run leaves repair headroom under the same ceiling.
-        budget: toLoopBudget(planningLimits),
-        ...(providerIdentityConfig ? { providerIdentity: providerIdentityConfig } : {}),
+        // Repair retains its existing separate loop budget and telemetry scope.
+        promptSizeLog: undefined,
       });
       const repairText = findFinalAssistantText(repairResult.messages);
       if (repairText.trim() !== '') {

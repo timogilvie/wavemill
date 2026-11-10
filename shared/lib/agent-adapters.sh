@@ -762,23 +762,6 @@ agent_is_native_cmd() {
   esac
 }
 
-agent_phase_from_role() {
-  case "${1:-}" in
-    planner|planning)
-      printf '%s\n' "planning"
-      ;;
-    reviewer|review|reviewing)
-      printf '%s\n' "review"
-      ;;
-    coder|coding)
-      printf '%s\n' "coding"
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 agent_role_from_phase() {
   case "${1:-}" in
     planning)
@@ -1235,32 +1218,6 @@ _agent_check_deepseek_api_key() {
   return 0
 }
 
-# Internal: validate OPENROUTER_API_KEY (or configured apiKeyEnv) for claude-openrouter.
-# Args: $1 = repo_dir
-# Returns: 0 if key present, 1 if missing
-_agent_check_openrouter_api_key() {
-  local repo_dir="${1:-$(pwd)}"
-  local provider_json api_key_env has_api_key
-
-  provider_json="$(agent_openrouter_config "$repo_dir" 2>/dev/null)" || {
-    if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
-      echo "Error: OPENROUTER_API_KEY is not set. Set it before launching a claude-openrouter agent." >&2
-      return 1
-    fi
-    return 0
-  }
-
-  api_key_env="$(agent_json_get "$provider_json" apiKeyEnv)"
-  api_key_env="${api_key_env:-OPENROUTER_API_KEY}"
-  has_api_key="$(agent_json_get "$provider_json" hasApiKey)"
-
-  if [[ "$has_api_key" != "true" ]]; then
-    echo "Error: ${api_key_env} is not set. Set it before launching a claude-openrouter agent." >&2
-    return 1
-  fi
-  return 0
-}
-
 # Check if agent is authenticated and ready to use.
 # Args: $1 = agent command name (e.g. "claude", "codex", "claude-deepseek")
 # Returns: 0 if authenticated, 1 if not authenticated
@@ -1399,13 +1356,6 @@ agent_check_auth() {
 # ============================================================================
 # Single source of truth for agent prompts. Used by both
 # wavemill-orchestrator.sh (initial batch) and launch_task() (monitor loop).
-
-agent_exit_followup_text() {
-  local agent_cmd="${1:-claude}"
-
-  # Agent-agnostic: the orchestrator detects session end via pane state (HOK-1177)
-  echo "Stop working. The orchestrator will handle cleanup."
-}
 
 agent_abort_feedback_text() {
   local agent_cmd="${1:-claude}" marker_path="$2"
@@ -1558,15 +1508,14 @@ This is a REQUIRED step — do not skip it or substitute your own review.
    - Commit fixes: git commit -m "fix: Address self-review findings (iteration N)"
    - Re-run the review tool (step 1)
 
-3. Create a PR using GitHub CLI with a descriptive title and body:
-   gh pr create --title "$issue: <concise summary>" --body "<PR body>"
+3. Write the PR title ("$issue: <concise summary>") and body, and record them
+   as prTitle and prBody in the review stage result. The mill opens the PR.
    The PR body MUST include:
    - A "## Summary" section with 2-4 bullet points describing what changed and why
    - A "## Changes" section listing the key files/modules modified
    - A "## Test plan" section describing how the changes were validated
    - A "## Self-review" section noting the review verdict and iterations run
-   Do NOT use --fill. Write the PR body as a HEREDOC if needed for formatting.
-4. Link the PR to $issue
+4. Name $issue in the PR title
 
 Success criteria:
 - [ ] Implementation matches plan and issue requirements
@@ -2096,7 +2045,7 @@ Required process:
 Do not push. The workflow automation publishes the branch for you (HOK-3370).
 
 Do not:
-- Create a new PR or run gh pr create
+- Create a new PR (never run gh pr create)
 - Create workflow markers
 - Run the self-review tool
 - Edit the task packet
@@ -2180,8 +2129,8 @@ coding_confidence=\$(jq -r '.confidence // empty' \"$feature_dir/.coding-complet
 \`\`\`
 
 If \`\$coding_confidence\` is \`low\`, or if the initial self-review run exits 1:
-- Create the PR as a draft by adding \`--draft\` to \`gh pr create\`.
-- Do not iterate through more than one review-fix cycle before opening the draft.
+- Ask the mill to open the PR as a draft: add \`prDraft: true\` to the review artifacts you record in step 4.
+- Do not iterate through more than one review-fix cycle before recording the result.
 - Note the low-confidence or failed-review reason in the PR description."
   fi
 
@@ -2697,6 +2646,45 @@ agent_codex_supports_no_daemon() {
 # AGENT LAUNCH — INTERACTIVE (PLANNING) MODE
 # ============================================================================
 
+# agent_launch_exit_trap_inject <launcher> <issue> <feature_dir> <phase>
+#
+# HOK-3426: append a generated EXIT trap to a generated launcher so the agent's
+# own exit status is RECORDED (`.terminal-history.jsonl`, kind `agent-exit`).
+# The launcher is the agent process's parent and therefore the only surface
+# that observes a hard-killed agent's exit; the pane shell outlives the agent,
+# and a name-resolved pane can be a quarantined window, so neither is an exit
+# fact. `TaskProgress.agentExited` and the stage disposition consume the record.
+agent_launch_exit_trap_inject() {
+  local launcher="$1" issue="$2" feature_dir="$3" phase="$4"
+  local hooks_dir helper tmp first
+  [[ -f "$launcher" && -n "$feature_dir" ]] || return 0
+  hooks_dir="$(agent_hooks_dir)"
+  [[ -f "$hooks_dir/wavemill-hook-protocol.sh" ]] || return 0
+
+  helper="${launcher%.sh}-exit-record.sh"
+  {
+    printf '#!/bin/bash\n'
+    printf '# HOK-3426 generated launcher exit record. Do not edit.\n'
+    printf 'wm_launch_rc="${1:-0}"\n'
+    printf 'source %q >/dev/null 2>&1 || exit 0\n' "$hooks_dir/wavemill-hook-protocol.sh"
+    printf 'declare -F wavemill_hook_write_agent_exit >/dev/null 2>&1 || exit 0\n'
+    printf 'wavemill_hook_write_agent_exit %q %q %q "$wm_launch_rc"\n' \
+      "$issue" "$feature_dir" "$phase"
+  } > "$helper" 2>/dev/null || return 0
+  chmod +x "$helper" 2>/dev/null || return 0
+
+  tmp="${launcher}.exit-trap.$$"
+  {
+    IFS= read -r first || true
+    printf '%s\n' "$first"
+    printf '_WM_LAUNCH_EXIT_RECORD=%q\n' "$helper"
+    printf "trap '\$_WM_LAUNCH_EXIT_RECORD \$?' EXIT\n"
+    cat
+  } < "$launcher" > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
+  mv "$tmp" "$launcher" && chmod +x "$launcher" || return 0
+  return 0
+}
+
 # Launch an agent interactively in a tmux window for user-guided planning.
 # Creates a small launcher script that execs the agent with the prompt.
 #
@@ -3044,6 +3032,17 @@ LAUNCHEOF
   esac
 
   chmod +x "$launcher"
+  # HOK-3426: the launcher is the agent process's parent, so it is the only
+  # surface that observes the agent's own exit — including a hard-killed agent
+  # whose harness never writes an idle hook. Record it as an EXIT FACT; the
+  # stage disposition settles on that record, never on a pane descendant count.
+  # The phase recorded is the launch's session-ownership KIND, not the raw
+  # phase token: Ready remediation and conflict resolution launch with the
+  # `coding` token but own `ready-remediation` / `conflict-resolution` rows, and
+  # the reader scopes exit records by that kind's stage name.
+  if ! agent_is_native_cmd "$agent_cmd"; then
+    agent_launch_exit_trap_inject "$launcher" "$issue" "$feature_dir" "${ownership_kind:-${phase_env:-}}"
+  fi
   printf -v launcher_cmd '%q' "$launcher"
 
   if [[ "$prepare_rc" -ne 0 ]]; then

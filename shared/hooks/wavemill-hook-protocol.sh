@@ -685,6 +685,50 @@ wavemill_hook_write_controller_termination() {
     >> "$history_file" 2>/dev/null || true
 }
 
+# wavemill_hook_write_agent_exit <issue> <feature_dir> <phase> <exit_code>
+#
+# HOK-3426: the LAUNCHER's own record that the agent process it started has
+# ended. The launcher is the only surface that observes the agent's real exit
+# status (it is the process's parent), so this is the recorded exit fact for a
+# stage agent — including a hard-killed one whose harness never writes an idle
+# hook. The pane's descendant count is never an exit fact: the pane shell
+# outlives the agent, and a name-resolved pane can be a quarantined window.
+#
+# Like `controller-termination`, this is an EXIT FACT (third category): it is
+# never `lastProgressAt`, never a `sources[]` entry, and never agent-liveness
+# evidence. Readers scope it to the phase and launch attempt.
+wavemill_hook_write_agent_exit() {
+  local issue="$1" feature_dir="$2" phase="${3:-}" exit_code="${4:-0}"
+  [[ -n "$issue" && -n "$feature_dir" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  [[ -d "$feature_dir" ]] || return 0
+
+  local history_file="$feature_dir/.terminal-history.jsonl"
+  local recorded_at state payload timestamp
+  recorded_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  timestamp="$(date +%s)"
+  if [[ "$exit_code" == "0" ]]; then state="idle"; else state="error"; fi
+
+  payload="$(jq -cn \
+    --arg state "$state" \
+    --arg event "agent_exit" \
+    --arg writer "launcher" \
+    --arg kind "agent-exit" \
+    --arg phase "$phase" \
+    --arg recordedAt "$recorded_at" \
+    --argjson timestamp "$timestamp" \
+    --argjson exitCode "$exit_code" \
+    '{state: $state, event: $event, writer: $writer, kind: $kind,
+      phase: (if $phase == "" then null else $phase end),
+      timestamp: $timestamp, exitCode: $exitCode, recordedAt: $recordedAt}' 2>/dev/null)" || return 0
+  [[ -n "$payload" ]] || return 0
+
+  jq -cn --arg archivedAt "$recorded_at" --arg reason "agent-exit" \
+    --argjson payload "$payload" \
+    '{archivedAt: $archivedAt, reason: $reason, payload: $payload}' \
+    >> "$history_file" 2>/dev/null || true
+}
+
 wavemill_hook_supersede() {
   local session="$1" issue="$2" reason="${3:-superseded}"
   local hook_file="/tmp/wavemill-${session}-${issue}.hook"

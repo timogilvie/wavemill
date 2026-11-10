@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# wavemill-test-suite: standalone (run by its own npm script in package.json)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

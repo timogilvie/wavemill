@@ -250,6 +250,43 @@ publish_stage_head() {
   return $rc
 }
 
+# ── The one task-PR opener (HOK-3463) ───────────────────────────────────────
+# At review exit the mill publishes the head and opens the task PR. Agents
+# never run `gh pr create`: the review stage result carries the title and
+# body, and this seam does the rest with the mill's own credentials. Wraps
+# tools/open-task-pr.ts (publishStageHead + the idempotent githubCreatePr).
+#
+# Usage: open_task_pr <wt_dir> <branch> <base_branch> <state_dir> <issue> [fallback_title]
+# Sets:  OPEN_TASK_PR_NUMBER  (PR number; "" on failure)
+#        OPEN_TASK_PR_OUTCOME (created|reused; "" on failure)
+#        OPEN_TASK_PR_REASON  (typed failure reason; "" on success)
+#        OPEN_TASK_PR_DETAIL  (human-readable failure message)
+# Returns the CLI's exit code: 0 success; 10 remote-divergence; 11 local ref
+# missing; 13 publish or PR open failed (retryable harness fault); 1 other.
+open_task_pr() {
+  local wt_dir="$1" branch="$2" base_branch="$3" state_dir="$4" issue="$5" fallback_title="${6:-}"
+  local out rc=0 extra_args=()
+  OPEN_TASK_PR_NUMBER="" OPEN_TASK_PR_OUTCOME="" OPEN_TASK_PR_REASON="" OPEN_TASK_PR_DETAIL=""
+  [[ -n "$fallback_title" ]] && extra_args+=(--fallback-title "$fallback_title")
+  out=$(wavemill_run_tool "open-task-pr.ts" --worktree "$wt_dir" --branch "$branch" \
+    --base "$base_branch" --state-dir "$state_dir" --issue "$issue" \
+    "${extra_args[@]}" 2>/dev/null) || rc=$?
+  if [[ -n "$out" ]]; then
+    out=$(printf '%s\n' "$out" | tail -n 1)
+    OPEN_TASK_PR_NUMBER=$(printf '%s' "$out" | jq -r 'if .ok == true then (.number | tostring) else empty end' 2>/dev/null || true)
+    OPEN_TASK_PR_OUTCOME=$(printf '%s' "$out" | jq -r 'if .ok == true then .outcome // empty else empty end' 2>/dev/null || true)
+    OPEN_TASK_PR_REASON=$(printf '%s' "$out" | jq -r '.reason // empty' 2>/dev/null || true)
+    OPEN_TASK_PR_DETAIL=$(printf '%s' "$out" | jq -r '.message // empty' 2>/dev/null || true)
+  fi
+  if (( rc == 0 )) && [[ -z "$OPEN_TASK_PR_NUMBER" ]]; then
+    rc=1
+  fi
+  if (( rc != 0 )) && [[ -z "$OPEN_TASK_PR_DETAIL" ]]; then
+    OPEN_TASK_PR_DETAIL="open-task-pr failed (rc=$rc) with no JSON output"
+  fi
+  return $rc
+}
+
 # ── Head-freshness primitive bridge (HOK-3370) ──────────────────────────────
 # Evidence binds to the change, not the head SHA: a base merge or clean
 # rebase keeps review evidence fresh; a code-changing commit stales it.
@@ -963,12 +1000,6 @@ cleanup_episode_ack_present() {
   jq -e --arg issue "$issue" '
     (.tasks[$issue].lifecycle.cleanupEpisode.operatorAcknowledgedAt // "") != ""
   ' "$STATE_FILE" >/dev/null 2>&1
-}
-
-cleanup_episode_clear() {
-  local issue="$1"
-  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
-  state_mutate "$STATE_FILE" 'del(.tasks[$issue].lifecycle.cleanupEpisode)' --arg issue "$issue"
 }
 
 cleanup_episode_required_action() {
@@ -4185,17 +4216,6 @@ mill_blocking_process_identity() {
   sanitize_blocked_completion_text "$identity"
 }
 
-wavemill_pid_is_descendant() {
-  local root_pid="${1:-}" candidate_pid="${2:-}" pid
-  [[ "$root_pid" =~ ^[0-9]+$ && "$candidate_pid" =~ ^[0-9]+$ ]] || return 1
-
-  while IFS= read -r pid; do
-    [[ "$pid" == "$candidate_pid" ]] && return 0
-  done < <(wavemill_collect_descendant_pids "$root_pid" 2>/dev/null || true)
-
-  return 1
-}
-
 mill_pane_has_live_blocking_process() {
   local pane_pid="${1:-}"
   shift || true
@@ -4302,26 +4322,6 @@ mill_pane_has_live_blocking_process() {
   fi
 
   return 1
-}
-
-mill_terminate_blocking_processes() {
-  local pane_pid="${1:-}"
-  shift || true
-
-  [[ "$pane_pid" =~ ^[0-9]+$ ]] || return 1
-
-  local pid terminated_any=false
-  for pid in "$@"; do
-    [[ "$pid" =~ ^[0-9]+$ ]] || continue
-    (( pid > 1 )) || continue
-    [[ "$pid" != "$$" ]] || continue
-    kill -0 "$pid" 2>/dev/null || continue
-    wavemill_pid_is_descendant "$pane_pid" "$pid" || continue
-    _wavemill_kill_process_tree "$pid"
-    terminated_any=true
-  done
-
-  [[ "$terminated_any" == true ]]
 }
 
 # Run a command with a hard wall-clock timeout.
@@ -6298,12 +6298,6 @@ wavemill_load_config() {
   fi
 }
 
-wavemill_observer_config_enabled() {
-  local merged="${1:-}"
-  [[ -n "$merged" ]] || merged="$(wavemill_load_config "${REPO_DIR:-$PWD}")"
-  [[ "$(printf '%s' "$merged" | jq -r '.observer.enabled != false' 2>/dev/null || echo false)" == "true" ]]
-}
-
 wavemill_observer_interval_seconds() {
   local merged="${1:-}" value
   [[ -n "$merged" ]] || merged="$(wavemill_load_config "${REPO_DIR:-$PWD}")"
@@ -7515,58 +7509,10 @@ _terminal_task_tombstone_matches_archive() {
     ' <(awk 'NF' "$archive_file" | jq -s '.') >/dev/null 2>&1
 }
 
-# HOK-3190: for lookups that previously did
-# `(.terminalTaskHistory.tasks // {})[$key]` or
-# `(.terminalTaskHistory.challengePairs // {})[$pair][$role]`,
-# fall back to the archive when the hot file misses. Both run off the hot path.
-terminal_task_history_lookup() {
-  local issue="$1"
-  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || { printf '\n'; return 0; }
-  local hot
-  hot="$(jq -c --arg i "$issue" '.terminalTaskHistory.tasks[$i] // empty' "$STATE_FILE" 2>/dev/null)"
-  if [[ -n "$hot" ]]; then
-    printf '%s\n' "$hot"
-    return 0
-  fi
-  local archive_file
-  archive_file="$(dirname "${STATE_FILE:-}")/.wavemill/state-archive/history.jsonl"
-  [[ -f "$archive_file" ]] || { printf '\n'; return 0; }
-  jq -c --arg i "$issue" --slurp \
-    'map(select(.issue == $i or .__key == $i)) | if length == 0 then null else .[-1] end' \
-    "$archive_file" 2>/dev/null || printf '\n'
-}
-
-# HOK-3190: trim hot terminalTaskHistory / terminalTaskTombstones in place
-# after a terminal-task write. Keeps at most WAVEMILL_STATE_ARCHIVE_KEEP
-# records (default 50); older ones are shed to the JSONL archive. The call is
-# a no-op when the hot sub-tree is already under the cap, so the common case
-# costs one `jq length`.
 _state_archive_trim_tool_path() {
   local base="${WAVEMILL_INSTALL_DIR:-}"
   [[ -z "$base" ]] && base="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
   printf '%s/tools/migrate-state-archive.ts\n' "$base"
-}
-
-trim_terminal_task_overflow_if_needed() {
-  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
-  local keep="${WAVEMILL_STATE_ARCHIVE_KEEP:-50}"
-  local h_count t_count
-  h_count="$(jq -r '(.terminalTaskHistory.tasks // {}) | length' "$STATE_FILE" 2>/dev/null || echo 0)"
-  t_count="$(jq -r '(.terminalTaskTombstones // {}) | length' "$STATE_FILE" 2>/dev/null || echo 0)"
-  [[ "$h_count" =~ ^[0-9]+$ ]] || h_count=0
-  [[ "$t_count" =~ ^[0-9]+$ ]] || t_count=0
-  if (( h_count <= keep && t_count <= keep )); then
-    return 0
-  fi
-  local tool
-  tool="$(_state_archive_trim_tool_path)"
-  [[ -f "$tool" ]] || return 0
-  local -a args=(--state-file "$STATE_FILE" --quiet --keep "$keep")
-  [[ -n "${WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS:-}" ]] \
-    && args+=(--max-age-days "$WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS")
-  node --experimental-strip-types --no-warnings "$tool" "${args[@]}" 2>/dev/null \
-    || npx tsx "$tool" "${args[@]}" 2>/dev/null \
-    || true
 }
 
 # HOK-3203: enforce hot state byte cap by iteratively compacting and trimming
@@ -7882,12 +7828,6 @@ get_task_resource_disposition() {
   local issue="$1"
   [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || { printf 'allocated\n'; return 0; }
   jq -r --arg issue "$issue" "$(task_lifecycle_jq_filter '(.tasks[$issue] // {}) | wm_resource_disposition')" "$STATE_FILE" 2>/dev/null || printf 'allocated\n'
-}
-
-task_consumes_mill_slot() {
-  local issue="$1"
-  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
-  jq -e --arg issue "$issue" "$(task_lifecycle_jq_filter '(.tasks[$issue] // {}) | wm_slot_consumes')" "$STATE_FILE" >/dev/null 2>&1
 }
 
 slot_consuming_task_count() {
@@ -8255,13 +8195,6 @@ task_worktree_release_safety() {
 reconciliation_lease_dir() {
   local state_dir="$1"
   printf '%s\n' "$state_dir/.reconciliation-lease"
-}
-
-reconciliation_lease_info() {
-  local state_dir="$1" lease_file
-  lease_file="$(reconciliation_lease_dir "$state_dir")/lease.json"
-  [[ -f "$lease_file" ]] || return 1
-  cat "$lease_file"
 }
 
 reconciliation_lease_release() {
@@ -9142,14 +9075,6 @@ queue_remove_task() {
   state_mutate "$STATE_FILE" \
     '.queued_tasks = ((.queued_tasks // []) | map(select(.issue_id != $issue_id)))' \
     --arg issue_id "$issue_id"
-}
-
-queue_list_tasks() {
-  [[ -f "$STATE_FILE" ]] || {
-    printf '[]\n'
-    return 0
-  }
-  jq -r '.queued_tasks // []' "$STATE_FILE"
 }
 
 find_queued_children_for_parent() {

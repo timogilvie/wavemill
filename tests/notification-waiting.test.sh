@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# wavemill-test-suite: none (ran in no suite before HOK-3466; run it or delete it)
 set -euo pipefail
 
 # Notification → waiting transition tests for the Claude status hook adapter.

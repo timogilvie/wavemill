@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Tests for the workflow router — Hokusai routing and escalation thresholds.
  * See `workflow-router-test-helpers.ts` for the shared harness and fixtures.

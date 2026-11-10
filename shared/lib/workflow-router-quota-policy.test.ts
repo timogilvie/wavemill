@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Tests for the workflow router — quota-driven degraded/survival modes,
  * frontier substitution, and policy diagnostics. See

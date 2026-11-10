@@ -85,3 +85,5 @@ production calls to an external edge are noticed and modelled deliberately.
 
 When production starts reading a new gh field, re-record the shapes in
 `recordings/` (see its README) and extend `gh.mjs` until the contract test passes.
+
+The shared agent fake exposes `default_task_packet` to seed planning inputs without publishing a plan. The native-planning-synthesis journey uses it before invoking the real native planning launcher with `registerScriptedPiProvider`; approval and downstream stages remain owned by the monitor.

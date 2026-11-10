@@ -127,7 +127,7 @@
       "readyStatus": "running",
       "launch": { "remediation": "ci", "head": "current", "launchedAgoSec": 600 },
       "agentRecord": null,
-      "progress": { "agentProcessLive": false },
+      "progress": { "agentExited": { "at": "2026-10-26T19:20:00.000Z", "source": "launcher" } },
       "expected": { "kind": "settled", "reason": "agent-exited" }
     },
     {

@@ -306,7 +306,7 @@ In the grouped backlog pane, mill shows queued dependency items by default only 
 
 | Stage | What happens | Source files | Observable signals |
 | --- | --- | --- | --- |
-| 1. Analysis | Backlog dependencies are classified in read-only mode. | `shared/lib/task-dependency-planner.ts`, `shared/lib/dependency-classifier.ts` | Dependency-plan logs and planner/cache tests pass. |
+| 1. Analysis | Backlog dependencies are classified in read-only mode. | `shared/lib/task-dependency-planner.ts` | Dependency-plan logs and planner/cache tests pass. |
 | 2. Selection | Startup emits `queuePlan` metadata with `availableNow` and queued children. | `shared/lib/wavemill-startup-runner.sh` | Dry-run launch plan contains queue metadata. |
 | 3. First wave | Mill launches only the first available dependency-safe wave. | `shared/lib/wavemill-startup-runner.sh` | `.wavemill/workflow-state.json` gains `queued_tasks`. |
 | 4. Parent PR dispatch | Monitor detects a parent PR and dispatches queued children from the parent PR branch. | `shared/lib/wavemill-mill.sh` | Status log shows child launch after parent PR detection. |

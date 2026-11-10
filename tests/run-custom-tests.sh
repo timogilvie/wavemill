@@ -13,7 +13,7 @@ set -euo pipefail
 # Sharding uses the deterministic weighted partitioner
 # (tools/partition-tests.ts + tests/ci-test-weights.json) so shard runtimes
 # stay balanced. --shard 1/1 (the default) short-circuits to the full list and
-# never invokes the partitioner, so plain local runs have no extra dependency.
+# never invokes the partitioner.
 #
 # Timing output (--timing-out or TIMING_OUTPUT env) is a single bounded JSON
 # document: one entry per executed test with id, elapsed ms, and result. It
@@ -28,66 +28,17 @@ if [[ ! -f "$TSX_LOADER" ]]; then
   TSX_LOADER="$(npm root -g)/tsx/dist/loader.mjs"
 fi
 
-# Registered custom-harness tests, as repo-relative paths. TypeScript entries
-# run under the tsx loader; shell entries run under bash. The partitioner and
-# the preflight registration/balance checks parse these two arrays, so keep the
-# format: one path per line, optional trailing comment.
-CUSTOM_TS_TESTS=(
-  shared/lib/check-routing.test.ts
-  shared/lib/challenge-coverage-selector.test.ts
-  shared/lib/challenge-selection-health.test.ts
-  shared/lib/challenge-score-selector.test.ts
-  shared/lib/challenge-scheduler.test.ts
-  shared/lib/constraint-parser.test.ts
-  shared/lib/constraint-storage.test.ts
-  shared/lib/difficulty-analyzer.test.ts
-  shared/lib/eval-export.test.ts
-  shared/lib/eval-aggregator.test.ts
-  shared/lib/eval-backfill.test.ts
-  shared/lib/eval-persistence.test.ts
-  shared/lib/eval-schema.test.ts
-  shared/lib/hokusai-adapter.test.ts
-  shared/lib/hokusai-router.test.ts
-  shared/lib/context-linter.test.ts
-  shared/lib/config-sync.test.ts
-  shared/lib/sync-config-classifier.test.ts
-  shared/lib/llm-router.test.ts
-  shared/lib/issue-expander.test.ts
-  shared/lib/ready-stage.test.ts
-  shared/lib/repo-context-analyzer.test.ts
-  shared/lib/review-context-gatherer.test.ts
-  shared/lib/route-batch.test.ts
-  shared/lib/router-diversity.test.ts
-  shared/lib/router-exploration.test.ts
-  shared/lib/rule-generator.test.ts
-  shared/lib/stage-aware-router.test.ts
-  shared/lib/subagent-economics-policy.test.ts
-  shared/lib/task-descriptor-backfill.test.ts
-  shared/lib/task-context-analyzer.test.ts
-  shared/lib/post-completion-hook.test.ts
-  shared/lib/task-packet-validator.test.ts
-  shared/lib/openrouter-generation-api.test.ts
-  shared/lib/queue-events-writer-coverage.test.ts
-  shared/lib/workflow-router-blast-radius.test.ts
-  shared/lib/workflow-router-decision.test.ts
-  shared/lib/workflow-router-difficulty-budget.test.ts
-  shared/lib/workflow-router-heuristic.test.ts
-  shared/lib/workflow-router-hokusai.test.ts
-  shared/lib/workflow-router-native-certification.test.ts
-  shared/lib/workflow-router-quota-policy.test.ts
-  shared/lib/native-agent/certification/router-filter.test.ts
-  shared/lib/native-agent/patch-runtime-crash.test.ts
-  shared/lib/incident-replay-harness.test.ts
-  tools/check-defect-escalation.test.ts
-)
-
-CUSTOM_SH_TESTS=(
-)
-
-# Known-broken tests (pre-existing issues, tracked separately)
-CUSTOM_SKIP_TESTS=(
-  shared/lib/constraint-validator.test.ts
-)
+# Suite membership is discovered, never listed (HOK-3466): see
+# shared/lib/test-discovery.ts for the pattern and marker rules. A discovery
+# failure must fail the run loudly rather than run a partial suite.
+if ! DISCOVERED="$(cd "$REPO_DIR" && node tools/discover-tests.ts --suite custom)"; then
+  echo "run-custom-tests.sh: test discovery failed" >&2
+  exit 2
+fi
+ALL_TESTS=()
+while IFS= read -r line; do
+  [[ -n "$line" ]] && ALL_TESTS+=("$line")
+done <<< "$DISCOVERED"
 
 SHARD_INDEX=1
 SHARD_TOTAL=1
@@ -128,8 +79,6 @@ if (( SHARD_TOTAL < 1 || SHARD_INDEX < 1 || SHARD_INDEX > SHARD_TOTAL )); then
   echo "run-custom-tests.sh: invalid shard ${SHARD_INDEX}/${SHARD_TOTAL}" >&2
   exit 2
 fi
-
-ALL_TESTS=("${CUSTOM_TS_TESTS[@]}" "${CUSTOM_SH_TESTS[@]}")
 
 if (( SHARD_TOTAL == 1 )); then
   SELECTED=("${ALL_TESTS[@]}")
@@ -186,7 +135,6 @@ TREE_BEFORE="$(tracked_tree_snapshot "$REPO_DIR")"
 
 PASS=0
 FAIL=0
-SKIP=0
 TIMING_ENTRIES=()
 
 record_timing() {
@@ -234,11 +182,6 @@ for f in "${SELECTED[@]}"; do
   esac
 done
 
-for f in "${CUSTOM_SKIP_TESTS[@]}"; do
-  echo "  $f: SKIP (known import issue)"
-  SKIP=$((SKIP + 1))
-done
-
 if [[ -n "$TIMING_OUT" ]]; then
   # Bounded machine-readable timing document: one entry per executed test.
   # Written atomically (tmp + mv) so a partial file is never observed.
@@ -261,7 +204,7 @@ if [[ -n "$TIMING_OUT" ]]; then
 fi
 
 echo ""
-echo "--- Results: $PASS passed, $FAIL failed, $SKIP skipped ---"
+echo "--- Results: $PASS passed, $FAIL failed ---"
 
 GUARD_RC=0
 if ! tracked_tree_check "$REPO_DIR" "$TREE_BEFORE" run-custom-tests.sh; then

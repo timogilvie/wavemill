@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# wavemill-test-suite: standalone (run by its own npm script in package.json)
 set -euo pipefail
 
 # Tests for layered config resolution in wavemill-common.sh
