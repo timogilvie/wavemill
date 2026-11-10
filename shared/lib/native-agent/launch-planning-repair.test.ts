@@ -274,3 +274,28 @@ describe('launchNativePlanning HOK-3129 repair turn', () => {
     }
   });
 });
+
+// protects: structural repair inherits the same reserved terminal response as initial planning.
+it('synthesizes a corrected plan when format repair reaches its research boundary', async () => {
+  const { wtDir, featureDir } = setupWorktree();
+  const api = uniqueApi('repair-terminal-synthesis');
+  writeFileSync(join(wtDir, '.wavemill-config.json'), JSON.stringify({ nativeAgent: { planning: { maxTurns: 3 } } }));
+  let calls = 0;
+  try {
+    registerScriptedPiProvider({ api, turns: ctx => {
+      calls++;
+      if (calls === 1) return { content: [{ type: 'text', text: PLAN_WITHOUT_H1 }], stopReason: 'stop' };
+      if (calls < 4) return { content: [{ type: 'tool_call', id: `read-${calls}`, name: 'read_file', arguments: { path: 'src.ts' } }], stopReason: 'tool_calls' };
+      assert.equal((ctx.rawContext as { tools?: unknown[] }).tools?.length ?? 0, 0);
+      assert.match(JSON.stringify(ctx.messages), /reserved terminal synthesis/);
+      assert.ok(JSON.stringify(ctx.messages).includes('missing_title'));
+      return { content: [{ type: 'text', text: PLAN_WITH_H1 }], stopReason: 'stop' };
+    } });
+    await launchNativePlanning({ session: 'repair-synthesis', issue: 'HOK-3465', slug: 'demo', wtDir, repoDir: wtDir, loopModelOverride: scriptedModel(api), runTsxCommand: stubRunTsxCommand() });
+    assert.equal(calls, 4);
+    const stage = JSON.parse(readFileSync(join(featureDir, '.planning-result.json'), 'utf8'));
+    assert.equal(stage.status, 'awaiting_user');
+    assert.equal(stage.artifacts.repairAttempted, true);
+    assert.equal(existsSync(join(featureDir, '.plan-approved')), false);
+  } finally { cleanup(wtDir); }
+});

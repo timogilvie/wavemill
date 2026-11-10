@@ -1,0 +1,25 @@
+{
+  "incident": "HOK-3447",
+  "recordedAt": "2026-11-10",
+  "observed": {
+    "attempts": 4,
+    "turnsPerAttempt": 40,
+    "toolCallsPerAttempt": [
+      74,
+      67,
+      68,
+      69
+    ],
+    "toolErrors": 0,
+    "failureReason": "turn_limit"
+  },
+  "replay": {
+    "maxTurns": 3,
+    "maxToolCalls": 2,
+    "researchPaths": [
+      "src.ts",
+      "features/demo/task-packet.md"
+    ],
+    "evidence": "export const value = 1;"
+  }
+}
