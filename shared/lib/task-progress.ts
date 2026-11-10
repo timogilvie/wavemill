@@ -23,8 +23,8 @@
  * HOK-3426: `agentExited` is the ONE "the launched stage agent exited" fact —
  * derived from a RECORDED exit: a HOK-3359 controller-termination record, the
  * launcher's `agent-exit` record (the launcher is the agent process's parent
- * and the only surface that sees a hard-killed agent's exit), or the
- * launch-recorded window slot reporting dead (`term_is_dead`) — never from
+ * and the only surface that sees a hard-killed agent's exit), or the task
+ * row's recorded `windowId` slot reporting dead (`term_is_dead`) — never from
  * `agentProcessLive`. Stage dispositions settle on it; the descendant count
  * remains only the HOK-3374 background-work input and a diagnostic.
  * `terminalIdle` keeps its existing pane-count fast path and is not an exit
@@ -207,15 +207,15 @@ export interface BlockingPrompt {
  * - `launcher` — the launcher's `agent-exit` record (the agent process's
  *   parent observed its exit status: the only surface that sees a hard-killed
  *   agent, whose harness never writes an idle hook).
- * - `terminal-backend` — `term_is_dead` on the launch-recorded window slot
- *   (the whole slot exited).
+ * - `terminal-backend` — `term_is_dead` on the task row's recorded
+ *   `windowId` slot (the task window's pane has no running process).
  */
 export type AgentExitedSource = 'terminal-backend' | 'controller-termination' | 'launcher';
 
 /**
  * HOK-3426: the one "this stage's agent has exited" fact. It is derived from a
  * RECORDED exit (controller termination, the launcher's own observation, or the
- * launch-recorded slot reporting dead) — never from a pane descendant count. A
+ * task row's recorded window slot reporting dead) — never from a pane descendant count. A
  * stage settles on this fact; `agentProcessLive` is only a
  * background-work/diagnostic input.
  */
@@ -255,7 +255,7 @@ export interface TaskProgress {
   /**
    * HOK-3426: the one "the launched stage agent has exited" fact, or `null`
    * when no exit was recorded. Derived from the launcher's `agent-exit`
-   * record, the launch-recorded window slot (`term_is_dead`), or a HOK-3359
+   * record, the task row's recorded window slot (`term_is_dead`), or a HOK-3359
    * controller-termination record — NEVER from the pane descendant count
    * (`agentProcessLive`). This is what a stage disposition settles on.
    */

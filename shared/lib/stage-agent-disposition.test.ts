@@ -630,7 +630,7 @@ test('HOK-3422: gatherStageTaskProgress — stale coding-phase commit in the rea
 // ── HOK-3426: the one agent-exited fact ────────────────────────────────────
 
 // protects: the coding pane's quarantine being read as the review stage's
-// exit (the reported 2026-11-05 stall class), and the launch-recorded slot
+// exit (the reported 2026-11-05 stall class), and the task row's recorded slot
 // being the only terminal-backend source.
 test('HOK-3426: gatherStageTaskProgress scopes the exit fact to the stage and attempt', () => {
   const dir = stateDir();
@@ -652,7 +652,7 @@ test('HOK-3426: gatherStageTaskProgress scopes the exit fact to the stage and at
       archivedAt: '2026-11-05T12:02:00.000Z', reason: 'completed-coding-pane-quarantine', session: 's', issue: 'HOK-TEST-3426',
       payload: { state: 'idle', event: 'controller_termination', writer: 'controller', kind: 'controller-termination', phase: 'coding', timestamp: codingTs },
     }) + '\n');
-    // The launch-recorded slot is alive (pane_dead=0).
+    // The task row's recorded slot is alive (pane_dead=0).
     setTerminalExecForTest({
       sync(args) {
         terminateCalls.push([...args]);
@@ -672,7 +672,7 @@ test('HOK-3426: gatherStageTaskProgress scopes the exit fact to the stage and at
     assert.equal(live.agentExited, null,
       'a coding-phase termination + a live review slot is not a review exit');
     assert.ok(terminateCalls.some((args) => args.includes('@review-live')),
-      'the exit probe reads the launch-recorded window handle');
+      'the exit probe reads the task row window handle');
 
     // The launched review slot itself reports dead → the one exit fact.
     setTerminalExecForTest({

@@ -1,8 +1,8 @@
 /**
  * Preflight guard for the one agent-exited fact (HOK-3426): a stage settles
  * `agent-exited` only on a recorded exit — the launcher's own `agent-exit`
- * record (the agent process's parent wrote it as it exited), the launched
- * slot's `term_is_dead` (the window handle recorded at launch), or a HOK-3359
+ * record (the agent process's parent wrote it as it exited), the task row's
+ * recorded window slot reporting dead (`term_is_dead`), or a HOK-3359
  * controller-termination record, all exposed as `TaskProgress.agentExited`.
  *
  * The pane descendant count (`agentProcessLive`) is a "rough fact that is
@@ -45,7 +45,7 @@ export const STAGE_AGENT_EXIT_GUARD: GuardSpec = {
     {
       name: 'agent-process-live-settle',
       description:
-        'agentProcessLive === false used as an exit decision — settle on TaskProgress.agentExited (a launcher agent-exit record, the launched slot, or a controller-termination record), never on the pane descendant count (HOK-3426)',
+        'agentProcessLive === false used as an exit decision — settle on TaskProgress.agentExited (a launcher agent-exit record, the task row\'s recorded window slot, or a controller-termination record), never on the pane descendant count (HOK-3426)',
       lang: 'ts',
       re: PROCESS_LIVE_SETTLE,
       excludePaths: [TASK_PROGRESS_PATH],
@@ -54,8 +54,8 @@ export const STAGE_AGENT_EXIT_GUARD: GuardSpec = {
   remediation: [
     'One agent-exited fact (HOK-3426): a stage agent has exited when a launcher',
     'record says so (the agent process\'s parent writes `agent-exit` as it exits),',
-    'its LAUNCHED slot says so (term_is_dead on the window handle recorded at',
-    'launch), or a HOK-3359 controller-termination record exists. task-progress exposes that as',
+    'the task row\'s recorded window slot says so (term_is_dead on the',
+    'windowId persisted for the task), or a HOK-3359 controller-termination record exists. task-progress exposes that as',
     'TaskProgress.agentExited; decideStageAgentDisposition settles on it. The pane',
     'descendant count (agentProcessLive) is the HOK-3374 background-work input and a',
     'diagnostic only: it resolves the task window by name, so a quarantined or',

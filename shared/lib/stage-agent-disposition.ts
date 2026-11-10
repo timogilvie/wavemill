@@ -239,7 +239,7 @@ function waitingFromAgentState(state: HookState | null): StageAgentWaitingOn | n
  * 10. HOK-3386: owned-session idle (agent's own transcript stop event) at/
  *    after launch → `settled` (`agent-idle-after-launch`, high).
  * 11. HOK-3426: a recorded exit fact (`agentExited` — the launcher's
- *    `agent-exit` record, the launched slot's `term_is_dead`, or a
+ *    `agent-exit` record, the task row's recorded window slot reporting dead, or a
  *    controller-termination record) → `settled` (`agent-exited`, high). The
  *    pane descendant count never settles a stage: with no exit fact the stage
  *    falls through (`agent-stalled` once the stall clock fires).
