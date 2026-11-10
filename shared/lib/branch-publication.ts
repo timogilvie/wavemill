@@ -9,6 +9,12 @@
  * commits cannot be published fails typed through `failure-policy.ts`; it
  * never leaves a silent local head.
  *
+ * `openTaskPullRequest` (HOK-3463) is the one task-PR opener: at review exit
+ * the mill publishes the head through `publishStageHead` and then opens the
+ * PR through the idempotent `githubCreatePr`. The review agent supplies the
+ * title and body in its stage result; it never runs `gh pr create`, so the
+ * agent's GitHub credentials stop deciding whether finished work gets a PR.
+ *
  * `publishReviewedBranch` (HOK-2914) remains as a strict preflight for
  * native-review PR creation: it proves `origin/<branch>` resolves to exactly
  * the reviewed SHA before a PR create call, failing closed on any
@@ -17,6 +23,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { readStageResult } from './stage-result.ts';
+import { githubCreatePr, type GitHubToolDeps } from './native-agent/workflow-tools/github.ts';
 import { gitPushKey, shadowRecordSideEffect } from './side-effect-ledger.ts';
 import {
   appendHeadMove,
@@ -478,4 +486,154 @@ export function publishStageHead(request: StageHeadPublicationRequest): StageHea
 
   const headMove = recordRow(remoteSha);
   return { ok: true, outcome: 'pushed', remote, branch, localSha, remoteSha: verifiedSha, headMove };
+}
+
+// ── The one task-PR opener (HOK-3463) ───────────────────────────────────────
+
+/** PR content the review agent recorded, with mill fallbacks filled in. */
+export interface TaskPullRequestContent {
+  title: string;
+  body: string;
+  draft: boolean;
+  /** Where title/body came from: the review artifacts, or the mill's fallback. */
+  source: 'review-artifacts' | 'fallback';
+}
+
+function metaBlock(issue: string): string {
+  return `<!-- wavemill-meta\ntask: ${issue}\n-->`;
+}
+
+/**
+ * Read the PR title/body the review agent recorded in its review stage
+ * result (`artifacts.prTitle` / `prBody` / `prDraft`). Missing content never blocks the PR: the mill falls back to the
+ * task title and a minimal body, because an absent description is cheaper
+ * than finished work with no PR. The `wavemill-meta` task block is appended
+ * when the body lacks one.
+ */
+export async function resolveTaskPullRequestContent(input: {
+  stateDir: string;
+  issue: string;
+  fallbackTitle?: string;
+}): Promise<TaskPullRequestContent> {
+  let artifacts: Record<string, unknown> = {};
+  try {
+    const review = await readStageResult({ featureDir: input.stateDir, stage: 'review' });
+    if (review?.artifacts && typeof review.artifacts === 'object') {
+      artifacts = review.artifacts as Record<string, unknown>;
+    }
+  } catch {
+    // Unreadable result: fall back rather than fail the PR.
+  }
+  const recordedTitle = typeof artifacts.prTitle === 'string' ? artifacts.prTitle.trim() : '';
+  const recordedBody = typeof artifacts.prBody === 'string' ? artifacts.prBody.trim() : '';
+  const fallbackTitle = (input.fallbackTitle ?? '').trim();
+  let title = recordedTitle || fallbackTitle || 'Task changes';
+  if (!title.includes(input.issue)) title = `${input.issue}: ${title}`;
+  let body = recordedBody
+    || `## Summary\n\n${fallbackTitle || title}\n\nThe review stage recorded no PR description; the mill opened this PR with a fallback body.`;
+  if (!body.includes('wavemill-meta')) body = `${body}\n\n${metaBlock(input.issue)}`;
+  return {
+    title,
+    body,
+    draft: artifacts.prDraft === true,
+    source: recordedTitle && recordedBody ? 'review-artifacts' : 'fallback',
+  };
+}
+
+export interface TaskPullRequestRequest {
+  /** Task worktree containing the branch. */
+  worktreeDir: string;
+  /** Remote to publish to. Defaults to 'origin'. */
+  remote?: string;
+  /** Task branch (no refs/heads/ prefix). */
+  branch: string;
+  /** Base branch, from the launch contract. Never taken from a prompt. */
+  base: string;
+  /** Repository in "owner/repo" form. */
+  repo: string;
+  /** Task state dir: receives the head-move row. */
+  stateDir?: string;
+  issue: string;
+  title: string;
+  body: string;
+  draft?: boolean;
+  /** Test seam for the GitHub calls. */
+  githubDeps?: Partial<GitHubToolDeps>;
+}
+
+export interface TaskPullRequestSuccess {
+  ok: true;
+  /** `reused`: an open PR already existed for the branch and was left untouched. */
+  outcome: 'created' | 'reused';
+  number: number;
+  url: string;
+  headSha: string;
+  publication: StageHeadPublicationOutcome;
+}
+
+export interface TaskPullRequestFailure {
+  ok: false;
+  reason: BranchPublicationFailureReason | 'pr-open-failed';
+  message: string;
+  /**
+   * A failure to publish or open the PR is the mill's own (credentials,
+   * network, GitHub). It is never the reviewer model's fault.
+   */
+  faultClass: 'harness-fault';
+}
+
+export type TaskPullRequestResult = TaskPullRequestSuccess | TaskPullRequestFailure;
+
+/**
+ * Open the task PR at review exit (HOK-3463): publish the head through the
+ * one seam, then create the PR idempotently. An existing open PR for the
+ * branch is reused untouched, so the mill never overwrites a body it has
+ * already stamped. Never throws for GitHub or git failures.
+ */
+export async function openTaskPullRequest(request: TaskPullRequestRequest): Promise<TaskPullRequestResult> {
+  const publication = publishStageHead({
+    worktreeDir: request.worktreeDir,
+    remote: request.remote,
+    branch: request.branch,
+    stateDir: request.stateDir,
+    issue: request.issue,
+    stage: 'review',
+    actor: 'mill',
+    kind: 'review-fix',
+  });
+  if (!publication.ok) {
+    return { ok: false, reason: publication.reason, message: publication.message, faultClass: 'harness-fault' };
+  }
+
+  const pullRequest = await githubCreatePr(
+    {
+      repo: request.repo,
+      phase: 'review',
+      head: request.branch,
+      base: request.base,
+      headSha: publication.localSha,
+      title: request.title,
+      body: request.body,
+      draft: request.draft,
+      ifExists: 'reuse',
+    },
+    { repoDir: request.worktreeDir, ...request.githubDeps },
+  );
+  if (!pullRequest.ok) {
+    return {
+      ok: false,
+      reason: 'pr-open-failed',
+      message: `${pullRequest.error}: ${pullRequest.message}`,
+      faultClass: 'harness-fault',
+    };
+  }
+  const ref = pullRequest.idempotency.ref;
+  return {
+    ok: true,
+    outcome: pullRequest.idempotency.outcome === 'created' ? 'created' : 'reused',
+    number: ref.number,
+    url: ref.url,
+    headSha: publication.localSha,
+    publication: publication.outcome,
+  };
 }

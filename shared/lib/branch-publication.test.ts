@@ -8,12 +8,19 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import os from 'node:os';
 
-import { publishReviewedBranch, publishStageHead, translateGitHubHeadError } from './branch-publication.ts';
+import {
+  openTaskPullRequest,
+  publishReviewedBranch,
+  publishStageHead,
+  resolveTaskPullRequestContent,
+  translateGitHubHeadError,
+} from './branch-publication.ts';
+import { createFixtureBackedGithubDeps } from './native-agent/workflow-tools/fixtures/github-mock.ts';
 import { readHeadMoves } from './head-move-record.ts';
 
 function git(cwd: string, args: string[]): string {
@@ -420,5 +427,126 @@ describe('translateGitHubHeadError', () => {
 
   it('leaves other GitHub errors untouched', () => {
     assert.equal(translateGitHubHeadError('GraphQL: something else went wrong'), null);
+  });
+});
+
+describe('openTaskPullRequest (HOK-3463)', () => {
+  const REPO = 'acme/widgets';
+
+  function open(fixture: Fixture, github: ReturnType<typeof createFixtureBackedGithubDeps>, stateDir?: string) {
+    return openTaskPullRequest({
+      worktreeDir: fixture.repoDir,
+      branch: 'task/test',
+      base: 'auto/integration',
+      repo: REPO,
+      stateDir,
+      issue: 'HOK-1',
+      title: 'HOK-1: add feature',
+      body: 'body',
+      githubDeps: github.deps,
+    });
+  }
+
+  // protects: finished review work with an unpublished head and no PR (the HOK-3424 incident)
+  it('publishes the unpushed head and creates the PR at that head', async () => {
+    const fixture = createFixture();
+    const stateDir = join(fixture.tmpDir, 'state');
+    mkdirSync(stateDir);
+    const github = createFixtureBackedGithubDeps();
+    assert.equal(remoteBranchSha(fixture.repoDir, 'task/test'), null);
+
+    const result = await open(fixture, github, stateDir);
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.outcome, 'created');
+    assert.equal(result.headSha, fixture.headSha);
+    assert.equal(result.publication, 'pushed');
+    assert.equal(remoteBranchSha(fixture.repoDir, 'task/test'), fixture.headSha);
+    assert.deepEqual(
+      github.state.pullRequests.map((pr) => [pr.head, pr.base, pr.title]),
+      [['task/test', 'auto/integration', 'HOK-1: add feature']],
+    );
+    assert.deepEqual(readHeadMoves(stateDir).map((row) => [row.stage, row.kind]), [['review', 'review-fix']]);
+  });
+
+  // protects: a second tick opening a duplicate PR, or overwriting a body the mill already stamped
+  it('reuses an existing open PR without touching its title or body', async () => {
+    const fixture = createFixture();
+    const github = createFixtureBackedGithubDeps({
+      pullRequests: [{
+        number: 7,
+        title: 'existing title',
+        body: 'stamped body',
+        head: 'task/test',
+        base: 'auto/integration',
+        url: `https://github.com/${REPO}/pull/7`,
+      }],
+    });
+
+    const result = await open(fixture, github);
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.outcome, 'reused');
+    assert.equal(result.number, 7);
+    assert.equal(github.state.calls.createPullRequest, 0);
+    assert.equal(github.state.calls.updatePullRequest, 0);
+    assert.equal(github.state.pullRequests[0].body, 'stamped body');
+  });
+
+  // protects: a GitHub or credential failure being charged to the reviewer model or thrown into the monitor
+  it('reports a failed PR open as a typed harness fault after publishing the head', async () => {
+    const fixture = createFixture();
+    const github = createFixtureBackedGithubDeps({
+      failCreatePullRequest: [new Error('gh: To get started with GitHub CLI, please run: gh auth login')],
+      maxAttempts: 1,
+    });
+
+    const result = await open(fixture, github);
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.reason, 'pr-open-failed');
+    assert.equal(result.faultClass, 'harness-fault');
+    assert.match(result.message, /gh auth login/);
+    // The head is published even though the PR open failed, so a retry only needs GitHub.
+    assert.equal(remoteBranchSha(fixture.repoDir, 'task/test'), fixture.headSha);
+  });
+});
+
+describe('resolveTaskPullRequestContent (HOK-3463)', () => {
+  function stateDirWith(artifacts: unknown): string {
+    const dir = mkdtempSync(join(os.tmpdir(), 'task-pr-content-'));
+    tempDirs.push(dir);
+    if (artifacts !== undefined) {
+      writeFileSync(join(dir, '.review-result.json'), JSON.stringify({ stage: 'review', status: 'completed', artifacts }));
+    }
+    return dir;
+  }
+
+  // protects: the PR losing the description the review agent wrote, or its task metadata block
+  it('uses the recorded title and body and appends the task metadata block once', async () => {
+    const stateDir = stateDirWith({ prTitle: 'HOK-9: tidy things', prBody: '## Summary\n- tidied', prDraft: true });
+    const content = await resolveTaskPullRequestContent({ stateDir, issue: 'HOK-9' });
+    assert.equal(content.title, 'HOK-9: tidy things');
+    assert.equal(content.body, '## Summary\n- tidied\n\n<!-- wavemill-meta\ntask: HOK-9\n-->');
+    assert.equal(content.draft, true);
+    assert.equal(content.source, 'review-artifacts');
+
+    const already = stateDirWith({ prTitle: 'HOK-9: x', prBody: 'b\n<!-- wavemill-meta\ntask: HOK-9\n-->' });
+    assert.equal((await resolveTaskPullRequestContent({ stateDir: already, issue: 'HOK-9' })).body.match(/wavemill-meta/g)?.length, 1);
+  });
+
+  // protects: a review that recorded no description (or an unreadable result) blocking the PR
+  it('falls back to the task title when the review recorded no description', async () => {
+    for (const stateDir of [stateDirWith({ verdict: 'ready' }), stateDirWith(undefined)]) {
+      const content = await resolveTaskPullRequestContent({ stateDir, issue: 'HOK-9', fallbackTitle: 'Tidy things' });
+      assert.equal(content.title, 'HOK-9: Tidy things');
+      assert.match(content.body, /Tidy things/);
+      assert.match(content.body, /wavemill-meta\ntask: HOK-9/);
+      assert.equal(content.draft, false);
+      assert.equal(content.source, 'fallback');
+    }
   });
 });
