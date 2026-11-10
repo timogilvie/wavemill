@@ -1,0 +1,53 @@
+# shellcheck shell=bash
+# Fake reviewer for the review-tool-report journey (HOK-3448).
+#
+# Seeds the shared fake claude with a ReportFindings tool report and runs the
+# real review-changes.ts. The review engine must accept the tool report as the
+# review contract from a single CLI invocation.
+set -euo pipefail
+
+export FAKE_JUDGE_TOOL_REPORT_FILE
+FAKE_JUDGE_TOOL_REPORT_FILE="$FAKE_AGENT_SCRIPT_DIR/../tool-report-input.json"
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+git push -q -u origin "$branch"
+
+# Run the real self-review entry point (review-changes.ts → reviewChanges →
+# runReviewWithRetry → ClaudeCliAdapter) across the fake claude, which emits
+# the verbose array carrying the ReportFindings tool report. This is the
+# HOK-3325 incident site: the journey fails if the review engine ignores or
+# mishandles the structured report. review-changes.ts also records the
+# analysis identity and usage itself (.review-analysis-identity.json).
+review_rc=0
+review_json="$(env -u WAVEMILL_PHASE -u FAKE_JUDGE_VERDICT_FILE \
+  FAKE_JUDGE_TOOL_REPORT_FILE="$FAKE_JUDGE_TOOL_REPORT_FILE" \
+  bash -c 'cd "$1/.." && node --import tsx tools/review-changes.ts "$2" "$3" --json --skip-ui --model "$4"' \
+  _ "$FAKE_AGENT_TOOLS_DIR" "$BASE_BRANCH" "$WT" "$FAKE_LAUNCH_MODEL")" || review_rc=$?
+if (( review_rc > 1 )); then
+  echo "review-changes.ts errored (exit $review_rc): $review_json" >&2
+  exit 1
+fi
+
+verdict="$(printf '%s' "$review_json" | jq -r '.verdict')"
+blocker_count="$(printf '%s' "$review_json" | jq -r '.codeReviewFindings | map(select(.severity == "blocker")) | length')"
+warning_count="$(printf '%s' "$review_json" | jq -r '.codeReviewFindings | map(select(.severity == "warning")) | length')"
+head_sha="$(git rev-parse HEAD)"
+
+pr_url="$(gh pr create --base "$BASE_BRANCH" --head "$branch" --label wavemill \
+  --title "$WAVEMILL_ISSUE: journey change" \
+  --body "$(printf '## Summary\n- journey\n\n## Self-review\n%s (%d warnings, %d blockers)\n\n<!-- wavemill-meta\ntask: %s\n-->\n' "$verdict" "$warning_count" "$blocker_count" "$WAVEMILL_ISSUE")")"
+pr_number="${pr_url##*/}"
+
+# Include the full review contract in the stage artifacts so the monitor sees
+# a completed review and the journey can still inspect the findings.
+artifacts="$(printf '%s' "$review_json" | jq -c \
+  --argjson pr "$pr_number" \
+  --arg head "$head_sha" \
+  --argjson iterations 1 \
+  --argjson blockerCount "$blocker_count" \
+  --argjson warningCount "$warning_count" \
+  '. + {type:"review",prNumber:$pr,exitCode:0,iterations:$iterations,reviewHeadSha:$head,blockerCount:$blockerCount,warningCount:$warningCount}')"
+run_tool stage-result-cli.ts update "$FEATURE_DIR" review --status completed --notes "PR #$pr_number created" --artifacts "$artifacts"
+
+# Leave the JSON review result where the journey assertions can read it.
+printf '%s\n' "$review_json" > "$FEATURE_DIR/.review-tool-report-result.json"

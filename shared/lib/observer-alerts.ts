@@ -14,7 +14,18 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { ObserverAlertsConfig, ObserverAlertMinSeverity } from './config.ts';
+import { parsedCommandFromArgv } from './native-agent/command-argv.ts';
+import {
+  ATTENTION_PROJECTION_FILE,
+  ATTENTION_PROJECTION_SCHEMA_VERSION,
+  type AttentionFreeKind,
+  type AttentionItem,
+  type AttentionKind,
+  type AttentionProjection,
+} from './attention.ts';
 
 export type AlertSeverity = 'urgent' | 'high' | 'medium' | 'low';
 
@@ -115,6 +126,102 @@ export function selectAlertsToSend(
   }
 
   return { due, journal: next };
+}
+
+// ── Attention-projection selection (HOK-3424) ──────────────────────────────
+//
+// The Observer's phone/desktop push is the *second reader* of the HOK-3423
+// projection, never a second decider. `attentionItemsToAlertFindings` maps the
+// task-scoped items (those carrying a `taskId`) to alert findings keyed by the
+// item's stable id, so the existing journal (persistMinutes / repeatMinutes)
+// keeps deduplicating.
+//
+// `PushedAttentionKind` is exactly the kinds whose items carry a `taskId`.
+// `incident` items are grouped by fingerprint and carry `affectedTaskIds`
+// (never a `taskId`) — they still page through the retained HOK-2595
+// correlation findings, so they must not double-push here. Free (non-task)
+// items are inbox-only. Both are excluded from the map so a future change that
+// gave one a `taskId` would drop it at the filter rather than page twice.
+//
+// Every pushed kind maps to `high`: the deleted exhaustion detector and the
+// retired interactive-prompt incident both paged at `high`, so loudness is
+// unchanged while the projection becomes the single source.
+
+export type PushedAttentionKind = Exclude<AttentionKind, AttentionFreeKind | 'incident'>;
+
+export const ATTENTION_KIND_TO_SEVERITY: Record<PushedAttentionKind, AlertSeverity> = {
+  'approve-plan': 'high',
+  'answer-agent': 'high',
+  'resolve-blocked-completion': 'high',
+  'operator-decision': 'high',
+  exhausted: 'high',
+  'policy-terminal': 'high',
+};
+
+function isPushedAttentionKind(kind: AttentionKind): kind is PushedAttentionKind {
+  return kind in ATTENTION_KIND_TO_SEVERITY;
+}
+
+function attentionRecommendation(item: AttentionItem): string {
+  // Raw shell commands (`argv` `sh -c …`, e.g. the ready-watchdog recovery
+  // command) carry absolute filesystem paths. They must never become the push
+  // body — `observer.alerts.push.url` may be a public ntfy topic — so they are
+  // dropped here in favour of the safe, human-readable labels and the evidence
+  // summary. The dashboard inbox keeps rendering the raw `commands` untouched.
+  const safeLabels = item.commands
+    // The one command parser (HOK-3383) returns null for a shell-interpreter
+    // wrapper (`sh|bash|zsh|dash -c …`), which is exactly the raw recovery shape.
+    .filter((command) => parsedCommandFromArgv(command.argv) !== null)
+    .map((command) => command.label);
+  if (safeLabels.length > 0) return safeLabels.join('; ');
+  const evidence = item.evidence.map((entry) => entry.summary).filter((summary) => summary.length > 0);
+  return evidence.join(' — ') || item.summary;
+}
+
+export interface AttentionAlertContext {
+  repoDir?: string;
+  session?: string;
+}
+
+/**
+ * Task-scoped attention items → alert findings. A free item (no `taskId`) and
+ * a fingerprint-grouped `incident` item produce no finding: the push is
+ * task-scoped by definition, and incidents page through HOK-2595 correlation.
+ */
+export function attentionItemsToAlertFindings(
+  items: readonly AttentionItem[],
+  context: AttentionAlertContext = {},
+): AlertFinding[] {
+  return items
+    .filter((item) => typeof item.taskId === 'string' && item.taskId.length > 0)
+    .filter((item) => isPushedAttentionKind(item.kind))
+    .map((item) => ({
+      id: item.id,
+      severity: ATTENTION_KIND_TO_SEVERITY[item.kind],
+      title: item.summary,
+      recommendation: attentionRecommendation(item),
+      issue: item.taskId as string,
+      ...(context.repoDir ? { repoDir: context.repoDir } : {}),
+      ...(context.session ? { session: context.session } : {}),
+    }));
+}
+
+/**
+ * Read the projection the dashboard inbox renders. A missing file, an
+ * unreadable one, an unknown schema or a stale projection contributes no
+ * items — the tracked job refreshes it on the next tick, and push must never
+ * disagree with a projection the inbox would call stale or pending.
+ */
+export function readAttentionItemsForPush(repoDir: string, now: Date): AttentionItem[] {
+  let parsed: AttentionProjection;
+  try {
+    parsed = JSON.parse(readFileSync(join(repoDir, '.wavemill', ATTENTION_PROJECTION_FILE), 'utf-8')) as AttentionProjection;
+  } catch {
+    return [];
+  }
+  if (!parsed || parsed.schemaVersion !== ATTENTION_PROJECTION_SCHEMA_VERSION || !Array.isArray(parsed.items)) return [];
+  if (typeof parsed.staleAfterMs === 'number' && now.getTime() > parsed.staleAfterMs) return [];
+  return parsed.items;
 }
 
 // ── Dispatch ────────────────────────────────────────────────────────────────

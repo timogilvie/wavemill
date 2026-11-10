@@ -15,6 +15,7 @@
  * @module model-adapters/transport-adapter
  */
 import type { ProviderErrorKind } from '../native-agent/provider-error-classifier.ts';
+import type { ReportFindingsSource } from './claude-cli-output.ts';
 
 export type AdapterKind =
   | 'claude-cli'
@@ -67,6 +68,26 @@ export interface AdapterError {
   rawExcerpt?: string;
 }
 
+/** One finding emitted by the claude CLI's `ReportFindings` tool. */
+export interface ReportedReviewFinding {
+  file: string;
+  line?: number;
+  severity: 'blocker' | 'warning';
+  category: string;
+  short_summary?: string;
+  summary: string;
+  failure_scenario: string;
+  verdict?: 'CONFIRMED' | 'PLAUSIBLE';
+}
+
+/** A validated, session-bound `ReportFindings` report from a claude CLI call. */
+export interface ReviewToolReport {
+  source: ReportFindingsSource;
+  sessionId?: string;
+  toolUseId: string;
+  findings: ReportedReviewFinding[];
+}
+
 export interface AdapterInvokeResult {
   text: string;
   /**
@@ -76,6 +97,18 @@ export interface AdapterInvokeResult {
   reportedModel: string;
   usage?: AdapterUsage;
   error?: AdapterError;
+  /**
+   * Validated `ReportFindings` report, when the claude CLI verbose output
+   * carried one and it passed session binding + schema checks (HOK-3448).
+   */
+  structuredReport?: ReviewToolReport;
+  /**
+   * A report was delivered but is unusable (foreign session, malformed, etc).
+   * Fail-closed: consumers must reject the response.
+   */
+  structuredReportError?: string;
+  /** Owned claude CLI session id, when one was minted for this call. */
+  sessionId?: string;
 }
 
 export type AdapterParseResult = AdapterInvokeResult;

@@ -340,6 +340,21 @@ export async function runTool<TOptions extends Record<string, OptionConfig>>(
 /**
  * Synchronous version of runTool for tools that don't need async
  */
+/**
+ * Print `usage` and exit 0 when `--help` or `-h` is present.
+ *
+ * For tools that parse their own arguments instead of using {@link runTool}.
+ * Call it before any work, so `--help` never reads, writes or calls a model.
+ * The operator-tools check runs every indexed tool with `--help`, so a tool
+ * that skips this would do real work in CI.
+ */
+export function exitOnHelp(usage: string, argv: readonly string[] = process.argv.slice(2)): void {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    console.log(usage);
+    process.exit(0);
+  }
+}
+
 export function runToolSync<TOptions extends Record<string, OptionConfig>>(
   config: Omit<ToolConfig<TOptions>, 'run'> & {
     run: (context: RunContext<TOptions>) => void;

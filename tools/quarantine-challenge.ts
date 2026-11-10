@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 import { normalizeIssueId } from '../shared/lib/task-identity.ts';
+import { exitOnHelp } from '../shared/lib/tool-runner.ts';
 /**
  * Quarantine challenge records that violated the one-variable invariant.
  * Marks records as ineligible for stage-level learning.
@@ -118,6 +119,11 @@ async function quarantineChallenges(repoDir: string, issues: string[], dryRun: b
 }
 
 async function main() {
+  exitOnHelp(
+    'Usage: npx tsx tools/quarantine-challenge.ts [--repo-dir <dir>] [--dry-run] <issue-ids...>\n'
+      + 'Marks challenge records that broke the one-variable rule as ineligible for stage-level learning.\n'
+      + 'Rewrites .wavemill/evals/challenge-records.jsonl unless --dry-run is given.',
+  );
   const { repoDir, dryRun, issues } = parseArgs();
 
   if (issues.length === 0) {

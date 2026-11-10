@@ -40,7 +40,7 @@ import {
   buildStaleMarkerFinding,
   type MarkerHandle,
 } from './transient-marker.ts';
-import { escalateOperatorAttention } from './operator-escalation.ts';
+import { escalateOperatorAttention, escalationMarkerPath, readEscalationMarker } from './operator-escalation.ts';
 import { readChallengeComparisons, type StoredChallengeComparison } from './challenge-comparison.ts';
 import {
   classifyChallengeState,
@@ -725,25 +725,8 @@ function readyStateDir(worktree: string, slug: string): string {
 }
 
 function readAttentionDetail(stateDir: string): string | null {
-  const file = path.join(stateDir, '.needs-attention');
-  if (!existsSync(file)) {
-    return null;
-  }
-
-  try {
-    const content = readFileSync(file, 'utf-8');
-    try {
-      const parsed = JSON.parse(content) as { schemaVersion?: unknown; reason?: unknown };
-      if (parsed?.schemaVersion === 1 && typeof parsed.reason === 'string') {
-        return parsed.reason.trim() || null;
-      }
-    } catch {
-      // Legacy plain-text marker.
-    }
-    return content.split(/\r?\n/, 1)[0]?.trim() || null;
-  } catch {
-    return null;
-  }
+  // HOK-3424: the escalation module owns the marker shape (JSON and legacy).
+  return readEscalationMarker(stateDir)?.reason ?? null;
 }
 
 function parseIsoDate(value: string | null | undefined): Date | null {
@@ -1514,7 +1497,7 @@ async function buildSnapshot(
     readyResultStatus: readyResult?.status ?? null,
     readyVerdict: readyArtifacts?.verdict ?? null,
     readyAttentionDetail: readAttentionDetail(stateDir),
-    hasNeedsAttention: existsSync(path.join(stateDir, '.needs-attention')),
+    hasNeedsAttention: readEscalationMarker(stateDir) !== null,
     hasConflictMarker: existsSync(path.join(stateDir, '.conflict-remediation.json')),
     currentHead,
     // HOK-3322: the same decision the monitor reads, on the same progress.
@@ -1539,7 +1522,7 @@ async function recoverReadyState(
   deps: ReadyWatchdogDeps,
   note = 'Ready watchdog cleared stale local state and queued a re-check.',
 ): Promise<void> {
-  clearMarker({ path: path.join(snapshot.readyStateDir, '.needs-attention'), kind: 'ready-attention' });
+  clearMarker({ path: escalationMarkerPath(snapshot.readyStateDir), kind: 'ready-attention' });
   clearMarker({ path: path.join(snapshot.readyStateDir, '.conflict-remediation.json'), kind: 'conflict-remediation' });
 
   const priorArtifacts = snapshot.readyArtifacts ?? { type: 'ready' } as ReadyArtifacts;

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { runWavemillRouterEval, runPatchSelectionEval } from '../src/evaluation/adapters/wavemill-router-adapter.ts';
+import { exitOnHelp } from '../shared/lib/tool-runner.ts';
 
 interface CliArgs {
   policy?: 'replay_exact_match' | 'challenge_prospective' | 'subagent_model_economics_shadow';
@@ -57,6 +58,12 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 async function main(): Promise<void> {
+  exitOnHelp(
+    'Usage: npx tsx tools/run-wavemill-router-eval.ts [--policy NAME] [--fixture FILE] [--evals-dir DIR]\n'
+      + '  [--repo-dir DIR] [--models-available a,b] [--patch-selection-corpus FILE] [--corpus FILE]\n'
+      + '  [--split train|held-out|all] [--selections FILE] [--persist]\n'
+      + 'Replays recorded tasks through the router to evaluate a routing policy. Writes results only with --persist.',
+  );
   const args = parseArgs(process.argv.slice(2));
   const repoDir = args.repoDir ?? process.cwd();
 
