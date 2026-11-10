@@ -436,6 +436,7 @@
       "Golden Journey (head-move-publication)": "bash tests/journeys/run-journeys.sh head-move-publication",
       "Golden Journey (stage-silent-stall)": "bash tests/journeys/run-journeys.sh stage-silent-stall",
       "Golden Journey (observer-attention-push)": "bash tests/journeys/run-journeys.sh observer-attention-push",
+      "Golden Journey (required-files-review-scope)": "bash tests/journeys/run-journeys.sh required-files-review-scope",
       "Golden Journeys": "bash tests/run-related.sh"
     },
     "postPrReconciliation": {
