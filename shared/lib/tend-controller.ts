@@ -20,6 +20,7 @@ import {
   type ClaimHandoffOutcome,
 } from './ready-tend-handoff.ts';
 import { readWorkflowState, workflowTaskEntries } from './workflow-state.ts';
+import { readEscalationMarker } from './operator-escalation.ts';
 import {
   resolveBranchTask,
   resolvePrTask,
@@ -4001,13 +4002,10 @@ function readReadyResultSnapshot(
     }
   }
 
-  const attentionFile = join(readyDir, '.needs-attention');
-  if (existsSync(attentionFile)) {
-    try {
-      snapshot.attention = readFileSync(attentionFile, 'utf-8');
-    } catch {
-      // Missing attention text just means we rely on structured evidence.
-    }
+  // HOK-3424: the escalation module owns the marker read.
+  const attention = readEscalationMarker(readyDir);
+  if (attention) {
+    snapshot.attention = attention.reason ?? '';
   }
 
   return Object.keys(snapshot).length > 0 ? snapshot : null;
@@ -4051,7 +4049,7 @@ function resolveReadyStateDir(
   }
 
   for (const candidate of uniqueStrings(candidates)) {
-    if (existsSync(join(candidate, '.ready-result.json')) || existsSync(join(candidate, '.needs-attention'))) {
+    if (existsSync(join(candidate, '.ready-result.json')) || readEscalationMarker(candidate)) {
       return candidate;
     }
   }

@@ -27,6 +27,13 @@ import {
   readOperatorInterventions,
   type OperatorInterventionSeverity,
 } from './operator-intervention.ts';
+import {
+  locateOwnershipRows,
+  ownedSessionWindows,
+  indexBySessionRef,
+  type OwnedSessionWindow,
+  type SessionOwnershipRow,
+} from './session-ownership.ts';
 import type {
   InterventionRecord,
   InterventionType,
@@ -426,131 +433,7 @@ export function detectTestFixes(
 // Session-based Detection
 // ────────────────────────────────────────────────────────────────
 
-/**
- * Patterns that identify messages injected by the wavemill workflow orchestration
- * or Claude Code system internals, NOT actual human redirections.
- *
- * These messages appear as `type: 'user'` with string content in session JSONL
- * because they are sent programmatically to the agent, but they are not human
- * interventions.
- */
-const WORKFLOW_AUTOMATION_PATTERNS: RegExp[] = [
-  // Phase transition context injections from agent-adapters.sh
-  /^You are working on:/,
-  // Review phase prompt injections
-  /^#\s+Code Review/,
-  // Claude Code system XML wrappers
-  /^<local-command-caveat>/,
-  /^<local-command-stdout>/,
-  /^<command-name>/,
-  // Slash command responses
-  /^Unknown skill:/,
-  // Single-word permission/approval responses from Claude Code internals
-  /^(approved|yes|no|confirmed|denied|test)$/i,
-  // Exit/quit commands issued by the workflow
-  /^<command-name>\/?exit<\/command-name>/,
-  // User-prompt-submit-hook outputs
-  /^<user-prompt-submit-hook>/,
-  // Claude Code background-task completion notices (HOK-3182)
-  /^<task-notification>/,
-  // Task-packet review prompt injected during expansion (HOK-3182)
-  /^#\s+Task Packet Reviewer/,
-  // Issue-writer expansion prompt (tools/prompts/issue-writer.md) (HOK-3182)
-  /^#\s+Issue Writer\b/,
-  // Ready-check remediation prompt (agent-adapters.sh) (HOK-3182)
-  /^You are remediating a ready-check failure/,
-  // Claude Code's own auto-continue after a truncated response (HOK-3182)
-  /^Your last response was cut off by an API error/,
-];
 
-/**
- * Check whether a user message is actually an automated workflow message
- * rather than a genuine human redirection.
- */
-export function isWorkflowAutomationMessage(content: string): boolean {
-  const trimmed = content.trim();
-  return WORKFLOW_AUTOMATION_PATTERNS.some((pattern) => pattern.test(trimmed));
-}
-
-/**
- * Detect user redirections from Claude session JSONL data.
- *
- * Reads session files from `~/.claude/projects/<encoded-worktree>/`.
- * Real user messages have `message.content` as a string (not an array of
- * tool_result blocks). The first string-content user message is the automated
- * task prompt injected by wavemill — all subsequent ones are checked against
- * workflow automation patterns before being classified as human redirections.
- */
-export function detectSessionRedirects(worktreePath: string, branchName: string): InterventionEvent {
-  const event: InterventionEvent = { type: 'session_redirect', count: 0, details: [], timestamps: [] };
-
-  try {
-    const projectsDirs = resolveProjectsDirs(worktreePath).filter((projectsDir) => existsSync(projectsDir));
-    if (projectsDirs.length === 0) return event;
-
-    let sessionFiles: string[];
-    try {
-      sessionFiles = projectsDirs.flatMap((projectsDir) =>
-        readdirSync(projectsDir)
-          .filter((f) => f.endsWith('.jsonl'))
-          .map((f) => join(projectsDir, f))
-      );
-    } catch {
-      return event;
-    }
-
-    interface UserMessage {
-      content: string;
-      timestamp: string;
-    }
-    const userMessages: UserMessage[] = [];
-
-    for (const filePath of sessionFiles) {
-      try {
-        for (const entry of readJsonlFile<Record<string, unknown>>(filePath)) {
-
-          if (entry.type !== 'user') continue;
-          if (entry.gitBranch !== branchName) continue;
-
-          const message = entry.message as Record<string, unknown> | undefined;
-          if (!message) continue;
-
-          // Real user text has content as a string.
-          // Tool results / approvals have content as an array.
-          if (typeof message.content !== 'string') continue;
-
-          const timestamp = typeof entry.timestamp === 'string'
-            ? entry.timestamp
-            : new Date().toISOString();
-          userMessages.push({
-            content: message.content as string,
-            timestamp,
-          });
-        }
-      } catch {
-        continue;
-      }
-    }
-
-    // Skip the first string-content user message (automated task prompt from wavemill).
-    // Then filter out workflow automation messages from the remainder.
-    const candidates = userMessages.slice(1);
-    const redirections = candidates.filter(
-      (msg) => !isWorkflowAutomationMessage(msg.content)
-    );
-
-    for (const msg of redirections) {
-      event.details.push(msg.content.slice(0, 200));
-      event.timestamps!.push(msg.timestamp);
-    }
-    event.count = redirections.length;
-  } catch (err: unknown) {
-    const message = errorMessage(err);
-    console.warn(`[intervention-detector] Failed to detect session redirects: ${message}`);
-  }
-
-  return event;
-}
 
 // ────────────────────────────────────────────────────────────────
 // Deduplication
@@ -626,6 +509,193 @@ export function resolveTaskArtifactDirs(opts: DetectOptions): ResolvedTaskArtifa
     featureDirs,
     archiveDir: archiveDir && existsSync(archiveDir) ? archiveDir : undefined,
   };
+}
+
+// ────────────────────────────────────────────────────────────────
+// Session-based Detection (HOK-3455)
+// ────────────────────────────────────────────────────────────────
+
+const LAUNCH_PROMPT_PATTERNS: RegExp[] = [
+  /^You are working on:/, // allow-human-touch: launch-prompt shape for the one transcript reader
+  /^#\s+Code Review/, // allow-human-touch: launch-prompt shape for the one transcript reader
+  /^You are remediating a ready-check failure/, // allow-human-touch: launch-prompt shape for the one transcript reader
+];
+
+function looksLikeLaunchPrompt(content: string): boolean {
+  return LAUNCH_PROMPT_PATTERNS.some((pattern) => pattern.test(content.trim()));
+}
+
+/** A user message extracted from a session transcript, with classification facts. */
+export interface SessionUserMessage {
+  content: string;
+  timestamp: string;
+  sessionId: string;
+  /** Session file it came from (for grouping "first message per session"). */
+  sessionFile: string;
+  provenance?: {
+    isMeta?: boolean; // allow-human-touch: one transcript reader feeds classifyOperatorTouch
+    isCompactSummary?: boolean; // allow-human-touch: one transcript reader feeds classifyOperatorTouch
+    originKind?: string;
+    promptSource?: string; // allow-human-touch: one transcript reader feeds classifyOperatorTouch
+  };
+}
+
+/** Result of `detectSessionRedirects`: messages plus ownership context. */
+export interface SessionRedirectResult {
+  type: 'session_redirect';
+  count: number;
+  details: string[];
+  timestamps?: string[];
+  /** Full messages with facts for the reliability classifier. */
+  messages: SessionUserMessage[];
+  /** Owned session windows active for this branch. */
+  ownedWindows: OwnedSessionWindow[];
+  /** Map from session file to whether it is an owned session. */
+  ownedSessionFiles: Set<string>;
+}
+
+function readSessionUserMessages(worktreePath: string, branchName: string): SessionUserMessage[] {
+  const messages: SessionUserMessage[] = [];
+  try {
+    const projectsDirs = resolveProjectsDirs(worktreePath).filter((projectsDir) => existsSync(projectsDir));
+    if (projectsDirs.length === 0) return messages;
+
+    let sessionFiles: string[];
+    try {
+      sessionFiles = projectsDirs.flatMap((projectsDir) =>
+        readdirSync(projectsDir)
+          .filter((f) => f.endsWith('.jsonl'))
+          .map((f) => join(projectsDir, f))
+      );
+    } catch {
+      return messages;
+    }
+
+    for (const filePath of sessionFiles) {
+      try {
+        for (const entry of readJsonlFile<Record<string, unknown>>(filePath)) {
+          if (entry.type !== 'user') continue;
+          if (entry.gitBranch !== branchName) continue;
+
+          const message = entry.message as Record<string, unknown> | undefined;
+          if (!message) continue;
+          if (typeof message.content !== 'string') continue;
+
+          const timestamp = typeof entry.timestamp === 'string'
+            ? entry.timestamp
+            : new Date().toISOString();
+          const provenance = entry.provenance as Record<string, unknown> | undefined;
+          messages.push({
+            content: message.content as string,
+            timestamp,
+            sessionId: typeof entry.sessionId === 'string' ? entry.sessionId : filePath,
+            sessionFile: filePath,
+            provenance: provenance
+              ? {
+                  isMeta: Boolean(provenance.isMeta), // allow-human-touch: one transcript reader feeds classifyOperatorTouch
+                  isCompactSummary: Boolean(provenance.isCompactSummary), // allow-human-touch: one transcript reader feeds classifyOperatorTouch
+                  originKind: typeof provenance.originKind === 'string' ? provenance.originKind : undefined,
+                  promptSource: typeof provenance.promptSource === 'string' ? provenance.promptSource : undefined, // allow-human-touch: one transcript reader feeds classifyOperatorTouch
+                }
+              : undefined,
+          });
+        }
+      } catch {
+        continue;
+      }
+    }
+  } catch (err: unknown) {
+    console.warn(`[intervention-detector] Failed to read session messages: ${errorMessage(err)}`);
+  }
+  return messages;
+}
+
+function findTranscriptEndMs(row: SessionOwnershipRow, worktreePath: string): number | undefined {
+  const dirs = resolveProjectsDirs(worktreePath).filter((d) => existsSync(d));
+  for (const dir of dirs) {
+    const file = join(dir, `${row.sessionRef}.jsonl`);
+    if (!existsSync(file)) continue;
+    try {
+      let lastMs: number | undefined;
+      for (const entry of readJsonlFile<{ timestamp?: string | number }>(file)) {
+        const ts = typeof entry.timestamp === 'number' ? entry.timestamp : Date.parse(entry.timestamp ?? '');
+        if (Number.isFinite(ts)) lastMs = ts;
+      }
+      return lastMs;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Detect user redirections from Claude session JSONL data.
+ *
+ * Per-session: the first string-content user message of an owned session is
+ * the launch prompt and is not a redirect. All other messages are passed to
+ * the classifier with their provenance.
+ */
+export function detectSessionRedirects(
+  worktreePath: string,
+  branchName: string,
+  issueId?: string,
+  repoDir?: string,
+): SessionRedirectResult {
+  const result: SessionRedirectResult = {
+    type: 'session_redirect',
+    count: 0,
+    details: [],
+    timestamps: [],
+    messages: [],
+    ownedWindows: [],
+    ownedSessionFiles: new Set(),
+  };
+
+  const messages = readSessionUserMessages(worktreePath, branchName);
+  if (messages.length === 0) return result;
+
+  // Resolve ownership for this branch/worktree.
+  const slug = branchName.match(/^(?:task|feature|bugfix|bug)\/(.+)$/)?.[1];
+  const ownership = locateOwnershipRows({ repoDir, issueId, slug, worktreePath });
+  const byRef = indexBySessionRef(ownership.rows);
+
+  // Group messages by session file and mark first string message per session.
+  const byFile = new Map<string, SessionUserMessage[]>();
+  for (const msg of messages) {
+    const list = byFile.get(msg.sessionFile) ?? [];
+    list.push(msg);
+    byFile.set(msg.sessionFile, list);
+  }
+
+  for (const [file, list] of byFile) {
+    const sessionId = list[0]?.sessionId ?? '';
+    const row = byRef.get(sessionId);
+    if (row) result.ownedSessionFiles.add(file);
+  }
+
+  result.ownedWindows = ownedSessionWindows(ownership.rows, (row) =>
+    findTranscriptEndMs(row, worktreePath),
+  );
+
+  const redirections: SessionUserMessage[] = [];
+  for (const [file, list] of byFile) {
+    const isOwned = result.ownedSessionFiles.has(file);
+    for (let i = 0; i < list.length; i++) {
+      const msg = list[i];
+      // First message of an owned session is the launch prompt. For unowned
+      // sessions, skip a first message that matches the launch prompt shape
+      // so tests and legacy transcripts behave consistently.
+      if (i === 0 && (isOwned || looksLikeLaunchPrompt(msg.content))) continue;
+      redirections.push(msg);
+    }
+  }
+
+  result.count = redirections.length;
+  result.details = redirections.map((m) => m.content.slice(0, 200));
+  result.timestamps = redirections.map((m) => m.timestamp);
+  result.messages = redirections;
+  return result;
 }
 
 function severityForOperator(severity: OperatorInterventionSeverity): InterventionSeverity {
@@ -930,26 +1000,64 @@ export function readOperatorHandoffIntervals(dirs: ResolvedTaskArtifactDirs): Op
   return intervals;
 }
 
-export type CommitAttribution = 'agent' | 'operator_handoff' | 'operator_out_of_window' | 'unknown';
+export type CommitAttribution = 'agent' | 'operator_handoff' | 'operator_out_of_window' | 'unattributed' | 'unknown';
+
+function isDuringHandoffEpisode(commitDateMs: number, intervals: OperatorHandoffInterval[]): boolean {
+  return intervals.some((interval) => commitDateMs >= interval.detectedAt && commitDateMs <= interval.resolvedAt);
+}
+
+function isInOwnedSession(commitDateMs: number, windows: OwnedSessionWindow[]): boolean {
+  return windows.some((w) => commitDateMs >= w.fromMs && commitDateMs <= w.toMs);
+}
+
+function ownedSessionLaunchedDuringHandoff(
+  commitDateMs: number,
+  ownershipRows: SessionOwnershipRow[],
+  intervals: OperatorHandoffInterval[],
+): boolean {
+  for (const row of ownershipRows) {
+    const launched = Date.parse(row.launchedAt);
+    if (!Number.isFinite(launched)) continue;
+    if (launched > commitDateMs) continue;
+    if (!isDuringHandoffEpisode(launched, intervals)) continue;
+    // A session launched during a handoff and still active at commit time
+    // is the mill recovering itself (HOK-3128).
+    if (isInOwnedSession(commitDateMs, ownedSessionWindows([row], () => undefined))) return true;
+  }
+  return false;
+}
 
 /**
- * Classify one commit's author-date against recorded evidence, in priority
- * order: an operator-handoff interval always wins over an overlapping agent
- * window (a stalled coding window deliberately overlaps the handoff commit
- * it should catch — HOK-2888_c), then agent windows (with grace margin),
- * then "outside everything we know about" (operator), then "we don't know"
- * (unknown — fail loud, never a silent zero).
+ * Classify one commit's author-date against recorded evidence.
+ *
+ * Priority order (HOK-3455):
+ * 1. Commit inside an owned session launched during a handoff episode → agent.
+ * 2. Commit inside any handoff interval → operator handoff.
+ * 3. Commit inside an owned session window → agent.
+ * 4. Task has ownership rows, commit outside them → operator.
+ * 5. No ownership rows, commit inside a stage window → agent.
+ * 6. No ownership rows, outside all windows → unattributed.
  */
 export function classifyCommitAttribution(
   commitDateMs: number,
   windows: AgentActivityWindow[],
   intervals: OperatorHandoffInterval[],
   hasAttributionData: boolean,
+  ownership?: { rows: SessionOwnershipRow[]; windows: OwnedSessionWindow[]; hasRows: boolean },
 ): CommitAttribution {
+  if (ownership && ownedSessionLaunchedDuringHandoff(commitDateMs, ownership.rows, intervals)) {
+    return 'agent';
+  }
+
   for (const interval of intervals) {
     if (commitDateMs >= interval.detectedAt && commitDateMs <= interval.resolvedAt) {
       return 'operator_handoff';
     }
+  }
+
+  if (ownership) {
+    if (isInOwnedSession(commitDateMs, ownership.windows)) return 'agent';
+    if (ownership.hasRows) return 'operator_out_of_window';
   }
 
   for (const window of windows) {
@@ -958,7 +1066,7 @@ export function classifyCommitAttribution(
     }
   }
 
-  return hasAttributionData ? 'operator_out_of_window' : 'unknown';
+  return (ownership && !ownership.hasRows) || hasAttributionData ? 'unattributed' : 'unknown';
 }
 
 interface ParsedCommit {
@@ -1029,11 +1137,19 @@ export function detectManualEdits(opts: DetectOptions): ManualEditsResult {
   let windows: AgentActivityWindow[] = [];
   let intervals: OperatorHandoffInterval[] = [];
   let hasAttributionData = false;
+  let ownership: { rows: SessionOwnershipRow[]; windows: OwnedSessionWindow[]; hasRows: boolean } | undefined;
   if (useAttribution) {
     const dirs = resolveTaskArtifactDirs({ ...opts, branchName, baseBranch });
     windows = deriveAgentActivityWindows(dirs);
     intervals = readOperatorHandoffIntervals(dirs);
     hasAttributionData = windows.length > 0 || intervals.length > 0;
+    const ownershipRead = locateOwnershipRows({ repoDir: opts.repoDir, issueId: opts.issueId, slug: branchSlug(branchName), worktreePath: opts.worktreePath });
+    const exactRows = ownershipRead.rows.filter((row) => !row.kind.startsWith('helper:'));
+    ownership = {
+      rows: exactRows,
+      windows: ownedSessionWindows(exactRows, (row) => findTranscriptEndMs(row, opts.worktreePath ?? cwd)),
+      hasRows: exactRows.length > 0,
+    };
   }
 
   try {
@@ -1052,7 +1168,7 @@ export function detectManualEdits(opts: DetectOptions): ManualEditsResult {
       }
 
       const commitMs = parseTimestampMs(c.date) ?? Date.now();
-      const attribution = classifyCommitAttribution(commitMs, windows, intervals, hasAttributionData);
+      const attribution = classifyCommitAttribution(commitMs, windows, intervals, hasAttributionData, ownership);
 
       if (attribution === 'agent') continue;
 
@@ -1172,7 +1288,7 @@ export function detectAllInterventions(
   // Applies to Claude and claude-deepseek — Codex autonomous mode has no user messages.
   const isClaudeLike = !opts.agentType || opts.agentType === 'claude' || opts.agentType === 'claude-deepseek';
   if (opts.worktreePath && branch && isClaudeLike) {
-    interventions.push(detectSessionRedirects(opts.worktreePath, branch));
+    interventions.push(detectSessionRedirects(opts.worktreePath, branch, opts.issueId, opts.repoDir));
   }
 
   const artifactDirs = resolveTaskArtifactDirs(opts);

@@ -30,7 +30,7 @@ import {
 } from './stage-result.ts';
 import { ClaudeCliAdapter, claudeCliReportedModelMatches } from './model-adapters/claude-cli-adapter.ts';
 import { CodexCliAdapter } from './model-adapters/codex-cli-adapter.ts';
-import type { AdapterError, TransportAdapter } from './model-adapters/transport-adapter.ts';
+import type { AdapterError, ReviewToolReport, TransportAdapter } from './model-adapters/transport-adapter.ts';
 import { estimateTokensDefault } from './model-adapters/token-estimator.ts';
 import {
   buildReviewInput,
@@ -97,6 +97,35 @@ export function isBlockingFinding(finding: ReviewFinding): boolean {
   return finding.severity === 'blocker' && !isDismissedFinding(finding);
 }
 
+/**
+ * Map a validated `ReportFindings` tool report onto the native review contract
+ * `{ verdict, codeReviewFindings }` (HOK-3448). The verdict is derived only
+ * from `isBlockingFinding`; no text shape is ever interpreted as completion.
+ */
+export function reviewContractFromToolReport(report: ReviewToolReport): {
+  verdict: 'ready' | 'not_ready';
+  codeReviewFindings: ReviewFinding[];
+} {
+  const codeReviewFindings = report.findings.map((finding) => {
+    const parts = [finding.short_summary, finding.summary, finding.failure_scenario].filter(
+      (s): s is string => typeof s === 'string' && s.trim() !== '',
+    );
+    const description = parts.join('\n\n');
+    const mapped: ReviewFinding = {
+      severity: finding.severity,
+      category: finding.category,
+      location: finding.line !== undefined ? `${finding.file}:${finding.line}` : finding.file,
+      description,
+    };
+    if (finding.verdict !== undefined) {
+      mapped.evidence = `verification: ${finding.verdict}`;
+    }
+    return mapped;
+  });
+  const verdict = codeReviewFindings.some(isBlockingFinding) ? 'not_ready' : 'ready';
+  return { verdict, codeReviewFindings };
+}
+
 export interface ReviewResult {
   verdict: 'ready' | 'not_ready' | 'error';
   codeReviewFindings: ReviewFinding[];
@@ -139,6 +168,8 @@ export interface ReviewResult {
     reviewProvider?: string;
     /** Canonical `native-<provider>` agent identity for the native review (HOK-3064). */
     reviewAgent?: string;
+    /** Source evidence when the review contract came from a tool report (HOK-3448). */
+    reportSource?: { source: string; sessionId?: string; toolUseId?: string };
     /**
      * The base the review diff was computed against (HOK-3166). Set by
      * `reviewChanges` for three-dot reviews; absent for `sinceCommit` reviews.
@@ -490,6 +521,10 @@ interface ReviewLLMResponse {
   /** Model id the CLI's own output reported, when it reports one. */
   reportedModel?: string;
   fallbackChain?: LLMCallResult['fallbackChain'];
+  /** Validated `ReportFindings` report, when the transport delivered one. */
+  structuredReport?: ReviewToolReport;
+  /** A report was delivered but is unusable; the parse must fail closed. */
+  structuredReportError?: string;
 }
 
 /**
@@ -523,6 +558,8 @@ async function invokeLLMWithRetry(
     provider: cli.provider,
     invokedModel: model,
     ...(adapterResult.reportedModel !== 'unverified' ? { reportedModel: adapterResult.reportedModel } : {}),
+    ...(adapterResult.structuredReport ? { structuredReport: adapterResult.structuredReport } : {}),
+    ...(adapterResult.structuredReportError ? { structuredReportError: adapterResult.structuredReportError } : {}),
   };
 }
 
@@ -619,49 +656,6 @@ class ReviewCliContextWindowExceededError extends Error {
     super(message);
     this.name = 'ReviewCliContextWindowExceededError';
   }
-}
-
-// ────────────────────────────────────────────────────────────────
-// Response Validation
-// ────────────────────────────────────────────────────────────────
-
-/**
- * Check if response looks like JSON before attempting to parse.
- * Returns true if response appears to be valid JSON format.
- *
- * This is a quick heuristic check to detect conversational responses
- * before expensive parsing attempts.
- */
-export function looksLikeJson(text: string): boolean {
-  let trimmed = text.trim();
-
-  // Strip markdown code fences if present
-  // Handles: ```json { ... } ```, ``` { ... } ```, and { ... } ``` (trailing fence only)
-  if (trimmed.startsWith('```')) {
-    trimmed = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
-  } else if (trimmed.endsWith('```')) {
-    trimmed = trimmed.replace(/\s*```\s*$/, '').trim();
-  }
-
-  // Check if it starts with { and ends with }
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
-    return false;
-  }
-
-  // Quick heuristic: conversational responses usually have these patterns
-  const conversationalPatterns = [
-    /^(Sure|Ok|Okay|Let me|I'll|I will|Here's|Here is)/i,
-    /I (will|would|can|cannot|should|have)/i,
-    /(Based on|Looking at|After reviewing)/i,
-  ];
-
-  for (const pattern of conversationalPatterns) {
-    if (pattern.test(trimmed)) {
-      return false;
-    }
-  }
-
-  return true;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -787,7 +781,8 @@ export function parseNativeReviewResponse(
  *
  * This wrapper implements a two-attempt strategy:
  * 1. First attempt with normal prompt
- * 2. If response is conversational or unparseable, retry with stricter prompt
+ * 2. If the result is unparseable or a delivered tool report is unusable,
+ *    retry once with a stricter prompt.
  *
  * @param prompt - Filled review prompt
  * @param context - Review context
@@ -851,31 +846,8 @@ async function runReviewWithRetry(
     );
   };
 
-  // Pre-validate response format
-  if (!looksLikeJson(responseText)) {
-    if (attempt < maxAttempts) {
-      return retryWithStricterPrompt(
-        'Claude returned non-JSON output',
-        'LLM returned conversational response',
-        `Response preview: ${responseText.substring(0, 200)}`,
-      );
-    }
-    throw new Error(
-      'LLM returned conversational text instead of JSON after 2 attempts.\n' +
-      `Response preview: ${responseText.substring(0, 300)}\n\n` +
-      `Possible causes:\n` +
-      `  - Model is not following JSON format instructions\n` +
-      `  - Network issues caused incomplete response\n` +
-      `  - Context is too large for the model\n\n` +
-      `Troubleshooting:\n` +
-      `  - Run with --verbose to see full LLM response\n` +
-      `  - Try a different model: REVIEW_MODEL=claude-opus-4-8 npx tsx tools/review-changes.ts\n` +
-      `  - Break changes into smaller PRs if diff is very large\n` +
-      `  - Check your network connection and retry`
-    );
-  }
-
-  // Parse response
+  // Parse response. A delivered but unusable tool report is fail-closed and
+  // takes the same single retry path as an unparseable JSON contract.
   try {
     await options.reporter?.emit({
       event: 'response_parsing',
@@ -884,8 +856,46 @@ async function runReviewWithRetry(
       attempt,
       maxAttempts,
     });
+
+    if (response.structuredReportError) {
+      throw new Error(`review report rejected: ${response.structuredReportError}`);
+    }
+
+    let result: ReviewResult;
+    if (response.structuredReport) {
+      const contract = reviewContractFromToolReport(response.structuredReport);
+
+      // If the text *also* carries a JSON contract, its verdict must agree.
+      // On agreement we use the richer text contract; otherwise fail closed.
+      let textContract: ReviewResult | undefined;
+      try {
+        textContract = parseNativeReviewResponse(responseText, context, options.operatingMode ?? 'normal');
+      } catch {
+        // Prose or unparseable text is ignored when a valid tool report exists.
+      }
+      if (textContract && textContract.verdict !== contract.verdict) {
+        throw new Error('review report mismatch');
+      }
+
+      if (textContract) {
+        result = textContract;
+      } else {
+        result = parseNativeReviewResponse(JSON.stringify(contract), context, options.operatingMode ?? 'normal');
+      }
+
+      if (result.metadata && response.structuredReport) {
+        result.metadata.reportSource = {
+          source: response.structuredReport.source,
+          sessionId: response.structuredReport.sessionId,
+          toolUseId: response.structuredReport.toolUseId,
+        };
+      }
+    } else {
+      result = parseNativeReviewResponse(responseText, context, options.operatingMode ?? 'normal');
+    }
+
     return {
-      ...parseNativeReviewResponse(responseText, context, options.operatingMode ?? 'normal'),
+      ...result,
       substantiveAnalysisIdentity: buildCliAnalysisIdentity({ requestedModel: model, response }),
     };
   } catch (error) {
@@ -1425,6 +1435,9 @@ export async function runReview(
     },
   });
 
+  // Preserve source evidence from any persona that used a tool report.
+  const reportSource = results.find((result) => result.metadata?.reportSource)?.metadata?.reportSource;
+
   const finalResult: ReviewResult = {
     verdict: hasBlockers ? 'not_ready' : 'ready',
     codeReviewFindings: deduplicatedCodeFindings,
@@ -1449,6 +1462,7 @@ export async function runReview(
       hasUiChanges: context.metadata.hasUiChanges,
       designContextAvailable: context.designContext !== null,
       uiVerificationRun: deduplicatedUiFindings.length > 0,
+      ...(reportSource ? { reportSource } : {}),
     },
   };
 
@@ -1467,7 +1481,6 @@ export const reviewEngineTestUtils = {
   getPersonaPromptPath,
   isNativeReviewOptedIn,
   loadPersonaPromptTemplate,
-  looksLikeJson,
   parseNativeReviewResponse,
   setLoadNativeReviewModule(loader: typeof reviewEngineDeps.loadNativeReviewModule) {
     reviewEngineDeps.loadNativeReviewModule = loader;

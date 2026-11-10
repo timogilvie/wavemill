@@ -54,6 +54,7 @@ TESTS=(
   shared/lib/operator-intervention.test.ts
   shared/lib/intervention-detector.test.ts
   shared/lib/reliability-metrics.test.ts
+  shared/lib/stall-cause.test.ts
   shared/lib/label-write-ledger.test.ts
   shared/lib/pr-timeline.test.ts
   shared/lib/stage-result.test.ts
@@ -281,6 +282,7 @@ TESTS=(
   shared/lib/pr-task-lookup-checker.test.ts
   shared/lib/mill-clock.test.ts
   shared/lib/model-registry.test.ts
+  shared/lib/model-adapters/claude-cli-output.test.ts
   shared/lib/model-adapters/transport-adapter.test.ts
   shared/lib/model-registry-gpt55-inventory.test.ts
   shared/lib/model-registry-loader.test.ts
@@ -325,6 +327,7 @@ TESTS=(
   shared/lib/harness-diff.test.ts
   shared/lib/quota-state.test.ts
   shared/lib/template-curly-checker.test.ts
+  shared/lib/operator-tools-index.test.ts
   shared/lib/test-tracked-write-checker.test.ts
   shared/lib/task-identity-checker.test.ts
   shared/lib/task-record-shape-checker.test.ts
@@ -445,6 +448,7 @@ TESTS=(
   tools/lib/source-guard.test.ts
   tools/check-command-parse.test.ts
   tools/check-source-text-assertions.test.ts
+  tools/check-review-report-boundary.test.ts
   tools/check-openrouter-alias-audit-ci.test.ts
   tools/check-cross-pr-reverts.test.ts
   tools/hok2423-verify-native-provider-gate.test.ts

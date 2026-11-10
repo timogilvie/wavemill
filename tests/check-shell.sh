@@ -305,11 +305,15 @@ for f in \
   "$REPO_DIR"/tests/journeys/fixtures/defect-escalation/bin/claude \
   "$REPO_DIR"/tests/journeys/happy-path.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/happy-path/fake-agent/review \
+  "$REPO_DIR"/tests/journeys/review-tool-report.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/review-tool-report/fake-agent/review \
   "$REPO_DIR"/tests/journeys/head-move-publication.journey.sh \
   "$REPO_DIR"/tests/journeys/gh-lag-after-push.journey.sh \
   "$REPO_DIR"/tests/journeys/errored-with-pr.journey.sh \
   "$REPO_DIR"/tests/journeys/inputs-ready-before-approval.journey.sh \
   "$REPO_DIR"/tests/journeys/approve-plan-attention-item.journey.sh \
+  "$REPO_DIR"/tests/journeys/observer-attention-push.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/observer-attention-push/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3220/fake-agent/planning \
   "$REPO_DIR"/tests/journeys/mid-flight-base-conflict.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3273/fake-agent/review \
@@ -364,6 +368,7 @@ for f in \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-restart.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-budgets.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-flags.test.sh \
+  "$REPO_DIR"/tests/deepseek-gh-wrapper.test.sh \
   "$REPO_DIR"/tests/fixtures/terminal-lifecycle/merge_commit_delivery.sh \
   "$REPO_DIR"/tests/fixtures/terminal-lifecycle/squash_delivery.sh \
   "$REPO_DIR"/tests/fixtures/terminal-lifecycle/rebase_delivery.sh \

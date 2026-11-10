@@ -301,6 +301,9 @@ export type InterventionClass = 'O' | 'L' | 'S' | 'R';
 
 export const INTERVENTION_CLASSES: readonly InterventionClass[] = ['O', 'L', 'S', 'R'];
 
+/** Attribution result for one operator touch. */
+export type OperatorTouchAttribution = 'human' | 'automation' | 'approval';
+
 /** Every evidence source an operator touch can be counted from. */
 export type OperatorTouchKind =
   /** `operator_event_record` command (`.operator-events.jsonl`). */
@@ -394,10 +397,57 @@ export const EVAL_DETECTOR_CLASS: Readonly<Record<string, InterventionClass>> = 
   unknown_attribution: 'S',
 };
 
+/** Detectors that describe the mill's own work, not a person. */
+export const AUTOMATION_EVAL_DETECTORS = new Set([
+  'prior_failed_attempt',
+  'self_review_blocker',
+  'self_review_warning',
+  'unknown_attribution',
+  'test_fix',
+  'post_pr_commit',
+  'manual_edit',
+]);
+
+/** Provenance of a transcript message used to classify session redirects. */
+export interface SessionMessageProvenance {
+  /** `true` for meta/system messages (output limit, continuation, etc.). */
+  isMeta?: boolean;
+  /** `true` for compact-summary continuations. */
+  isCompactSummary?: boolean;
+  /** Origin kind, e.g. `task-notification`, `human`. */
+  originKind?: string;
+  /** Prompt source, e.g. `system`, `sdk`, `typed`. */
+  promptSource?: string;
+}
+
 export interface ClassifiableTouch {
   kind: OperatorTouchKind;
   detail?: string;
+  /** For `session-redirect`: the raw message text before truncation. */
+  text?: string;
+  /** For `session-redirect`: transcript provenance signals. */
+  provenance?: SessionMessageProvenance;
+  /** For `session-redirect`: kind of the session this message belongs to. */
+  sessionKind?: string;
+  /** For `session-redirect`: `true` if this is the first string message of an owned session. */
+  firstInOwnedSession?: boolean;
+  /** For `manual-push` / `eval-intervention`: commit attribution evidence. */
+  commitAttribution?: CommitAttribution;
+  /** For `external-merge`: `true` if tend wrote a merge receipt. */
+  hasTendReceipt?: boolean;
+  /** For `external-merge`: `true` if the merge actor is a mill/bot login. */
+  millActor?: boolean;
+  /** For `operator-intervention`: `true` when a dirty-tree handoff resolved via an owned relaunch. */
+  selfRecovered?: boolean;
 }
+
+/** Commit attribution answers used by the classifier and reporting. */
+export type CommitAttribution =
+  | 'agent'
+  | 'operator_handoff'
+  | 'operator_out_of_window'
+  | 'unattributed'
+  | 'unknown';
 
 /** First whitespace/colon-delimited token of a detail string, lower-cased. */
 function leadingToken(detail: string | undefined): string {
@@ -411,46 +461,161 @@ export function evalDetectorName(detail: string | undefined): string {
 }
 
 /**
- * Classify one operator touch into its design §8f class. Pure and table
- * driven: `kind` picks the table, `detail` picks the row, and each kind has a
- * fixed fallback so an unrecognised command or label still gets a class.
+ * Patterns that identify messages injected by the wavemill workflow orchestration
+ * or Claude Code system internals, NOT actual human redirections.
  *
- * Detail conventions per kind:
- * - `operator-event`: `<command>[: <detail>]`
- * - `operator-intervention`: the record's `trigger` (or summary)
- * - `eval-intervention`: `[<detector>] <note>` or a bare detector name
- * - `label-edit`: `<labeled|unlabeled>:<label>`
- * - `manual-push`: the commit attribution detail
+ * These messages appear as `type: 'user'` with string content in session JSONL
+ * because they are sent programmatically to the agent, but they are not human
+ * interventions.
  */
-export function classifyOperatorTouch(touch: ClassifiableTouch): InterventionClass {
+export const WORKFLOW_AUTOMATION_PATTERNS: RegExp[] = [
+  // Phase transition context injections from agent-adapters.sh
+  /^You are working on:/,
+  // Review phase prompt injections
+  /^#\s+Code Review/,
+  // Claude Code system XML wrappers
+  /^<local-command-caveat>/,
+  /^<local-command-stdout>/,
+  /^<command-name>/,
+  // Slash command responses
+  /^Unknown skill:/,
+  // Exit/quit commands issued by the workflow
+  /^<command-name>\/?exit<\/command-name>/,
+  // User-prompt-submit-hook outputs
+  /^<user-prompt-submit-hook>/,
+  // Claude Code background-task completion notices (HOK-3182)
+  /^<task-notification>/,
+  // Task-packet review prompt injected during expansion (HOK-3182)
+  /^#\s+Task Packet Reviewer/,
+  // Issue-writer expansion prompt (tools/prompts/issue-writer.md) (HOK-3182)
+  /^#\s+Issue Writer\b/,
+  // Ready-check remediation prompt (agent-adapters.sh) (HOK-3182)
+  /^You are remediating a ready-check failure/,
+  // Claude Code's own auto-continue after a truncated response (HOK-3182)
+  /^Your last response was cut off by an API error/,
+  // Output token limit / context-window truncation notices
+  /^Output token limit/,
+  // Compact-summary continuation header
+  /^This session is being continued/,
+  // Loop wakeups
+  /^\/loop/,
+];
+
+/** Whether a string message matches known mill/harness automation text. */
+function isWorkflowAutomationMessage(content: string): boolean {
+  const trimmed = content.trim();
+  return WORKFLOW_AUTOMATION_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+/**
+ * Approval phrases. `approved`, `approve`, `lgtm` and `<n> approved` with any
+ * trailing text count anywhere; bare `yes`/`ok` count only in a planning session.
+ */
+function isApprovalMessage(touch: ClassifiableTouch): boolean {
+  const text = (touch.text ?? touch.detail ?? '').trim();
+  if (/^(approved|approve|lgtm)(\s*[,.:\-]?\s+.*)?$/i.test(text)) return true;
+  if (/^\d+\s+approved(\s*[,.:\-]?\s+.*)?$/i.test(text)) return true;
+  if (touch.sessionKind === 'planning' || touch.sessionKind?.startsWith('helper:plan')) {
+    return /^(yes|ok)(\s*[,.:\-]?\s+.*)?$/i.test(text);
+  }
+  return false;
+}
+
+/**
+ * Classify a `session-redirect` touch. Order (first match wins):
+ * 1. Provenance says automated.
+ * 2. Owned helper session.
+ * 3. First message of an owned session.
+ * 4. Text matches mill/harness table.
+ * 5. Approval shape.
+ * 6. Otherwise human.
+ */
+function classifySessionRedirect(touch: ClassifiableTouch): { attribution: OperatorTouchAttribution; class: InterventionClass } {
+  const prov = touch.provenance ?? {};
+  if (prov.isMeta || prov.isCompactSummary) {
+    return { attribution: 'automation', class: 'L' };
+  }
+  if (prov.originKind === 'task-notification' || prov.promptSource === 'system' || prov.promptSource === 'sdk') {
+    return { attribution: 'automation', class: 'L' };
+  }
+  if (touch.sessionKind?.startsWith('helper:')) {
+    return { attribution: 'automation', class: 'L' };
+  }
+  if (touch.firstInOwnedSession) {
+    return { attribution: 'automation', class: 'L' };
+  }
+  if (isWorkflowAutomationMessage(touch.text ?? touch.detail ?? '')) {
+    return { attribution: 'automation', class: 'L' };
+  }
+  if (isApprovalMessage(touch)) {
+    return { attribution: 'approval', class: 'L' };
+  }
+  return { attribution: 'human', class: 'L' };
+}
+
+/**
+ * Classify one operator touch into its attribution (human/automation/approval)
+ * and its design §8f class. Pure and table driven.
+ *
+ * Sources pass facts in `ClassifiableTouch`; the classifier never does IO.
+ */
+export function classifyOperatorTouch(touch: ClassifiableTouch): { attribution: OperatorTouchAttribution; class: InterventionClass } {
   switch (touch.kind) {
-    case 'operator-event':
-      return OPERATOR_COMMAND_CLASS[leadingToken(touch.detail)] ?? 'R';
+    case 'operator-event': {
+      const token = leadingToken(touch.detail);
+      if (token === 'approve') return { attribution: 'approval', class: 'L' };
+      return { attribution: 'human', class: OPERATOR_COMMAND_CLASS[token] ?? 'R' };
+    }
     case 'operator-intervention': {
       const trigger = (touch.detail ?? '').toLowerCase();
-      for (const [needle, cls] of OPERATOR_TRIGGER_CLASS) {
-        if (trigger.includes(needle)) return cls;
+      if (trigger.includes('dirty-tree handoff') && touch.selfRecovered) {
+        return { attribution: 'automation', class: 'R' };
       }
-      return 'R';
+      for (const [needle, cls] of OPERATOR_TRIGGER_CLASS) {
+        if (trigger.includes(needle)) return { attribution: 'human', class: cls };
+      }
+      return { attribution: 'human', class: 'R' };
     }
-    case 'eval-intervention':
-      return EVAL_DETECTOR_CLASS[evalDetectorName(touch.detail)] ?? 'S';
+    case 'eval-intervention': {
+      const detector = evalDetectorName(touch.detail);
+      if (AUTOMATION_EVAL_DETECTORS.has(detector)) {
+        return { attribution: 'automation', class: EVAL_DETECTOR_CLASS[detector] ?? 'S' };
+      }
+      if (detector === 'session_redirect') {
+        return classifySessionRedirect({ ...touch, kind: 'session-redirect' });
+      }
+      return { attribution: 'human', class: EVAL_DETECTOR_CLASS[detector] ?? 'S' };
+    }
     case 'pane-message':
+      return { attribution: 'human', class: 'L' };
+    case 'state-edit':
+      return { attribution: 'human', class: 'R' };
     case 'session-redirect':
-      return 'L';
+      return classifySessionRedirect(touch);
     case 'label-edit': {
       const label = (touch.detail ?? '').replace(/^(?:un)?labeled:/, '');
-      return LABEL_CLASS[label] ?? 'S';
+      return { attribution: 'human', class: LABEL_CLASS[label] ?? 'S' };
     }
-    case 'manual-push':
-      return /operator handoff/i.test(touch.detail ?? '') ? 'R' : 'S';
-    case 'external-merge':
-      return 'S';
-    case 'state-edit':
-      return 'R';
+    case 'manual-push': {
+      const attr = touch.commitAttribution ?? 'unknown';
+      if (attr === 'agent') return { attribution: 'automation', class: 'S' };
+      if (attr === 'operator_handoff') return { attribution: 'human', class: 'R' };
+      if (attr === 'operator_out_of_window') return { attribution: 'human', class: 'S' };
+      // unattributed / unknown: not a human touch, reported separately
+      return { attribution: 'automation', class: 'S' };
+    }
+    case 'external-merge': {
+      if (touch.hasTendReceipt || touch.millActor) return { attribution: 'automation', class: 'S' };
+      return { attribution: 'human', class: 'S' };
+    }
     default:
-      return 'R';
+      return { attribution: 'human', class: 'R' };
   }
+}
+
+/** Convenience: just the class for callers that already split attributions. */
+export function operatorTouchClass(touch: ClassifiableTouch): InterventionClass {
+  return classifyOperatorTouch(touch).class;
 }
 
 /** Zeroed per-class counter. */
@@ -489,7 +654,7 @@ export function appendOperatorTouch(repoDir: string, entry: OperatorTouchLogEntr
   mkdirSync(dirname(path), { recursive: true });
   const record: OperatorTouchLogEntry = {
     ...entry,
-    class: entry.class ?? classifyOperatorTouch(entry),
+    class: entry.class ?? operatorTouchClass(entry),
   };
   appendFileSync(path, `${JSON.stringify(record)}\n`);
   return path;

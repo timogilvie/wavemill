@@ -12,6 +12,7 @@ import {
   buildOperatorInterventionRecord,
   classifyOperatorTouch,
   evalDetectorName,
+  operatorTouchClass,
   operatorTouchLogPath,
   readOperatorTouchLog,
   formatOperatorInterventionDetail,
@@ -121,56 +122,78 @@ describe('operator-intervention', () => {
   });
 });
 
-describe('classifyOperatorTouch (HOK-3182)', () => {
+describe('classifyOperatorTouch (HOK-3455)', () => {
   it('maps every operator command in the table to its class', () => {
     for (const [command, cls] of Object.entries(OPERATOR_COMMAND_CLASS)) {
-      assert.equal(classifyOperatorTouch({ kind: 'operator-event', detail: `${command}: detail` }), cls, command);
-      assert.equal(classifyOperatorTouch({ kind: 'operator-event', detail: command }), cls, command);
+      assert.equal(classifyOperatorTouch({ kind: 'operator-event', detail: `${command}: detail` }).class, cls, command);
+      assert.equal(classifyOperatorTouch({ kind: 'operator-event', detail: command }).class, cls, command);
     }
   });
 
   it('defaults unknown operator commands to R', () => {
-    assert.equal(classifyOperatorTouch({ kind: 'operator-event', detail: 'frobnicate' }), 'R');
-    assert.equal(classifyOperatorTouch({ kind: 'operator-event' }), 'R');
+    assert.equal(classifyOperatorTouch({ kind: 'operator-event', detail: 'frobnicate' }).class, 'R');
+    assert.equal(classifyOperatorTouch({ kind: 'operator-event' }).class, 'R');
   });
 
   it('classifies operator-intervention triggers, defaulting to R', () => {
-    assert.equal(classifyOperatorTouch({ kind: 'operator-intervention', detail: 'orphaned-challenger' }), 'O');
-    assert.equal(classifyOperatorTouch({ kind: 'operator-intervention', detail: 'stalled coding agent' }), 'L');
-    assert.equal(classifyOperatorTouch({ kind: 'operator-intervention', detail: 'stale wm:blocked label' }), 'S');
-    assert.equal(classifyOperatorTouch({ kind: 'operator-intervention', detail: 'invalid_artifact' }), 'R');
+    assert.equal(classifyOperatorTouch({ kind: 'operator-intervention', detail: 'orphaned-challenger' }).class, 'O');
+    assert.equal(classifyOperatorTouch({ kind: 'operator-intervention', detail: 'stalled coding agent' }).class, 'L');
+    assert.equal(classifyOperatorTouch({ kind: 'operator-intervention', detail: 'stale wm:blocked label' }).class, 'S');
+    assert.equal(classifyOperatorTouch({ kind: 'operator-intervention', detail: 'invalid_artifact' }).class, 'R');
   });
 
   it('maps every label in the table and defaults unknown labels to S', () => {
     for (const [label, cls] of Object.entries(LABEL_CLASS)) {
-      assert.equal(classifyOperatorTouch({ kind: 'label-edit', detail: `labeled:${label}` }), cls, label);
-      assert.equal(classifyOperatorTouch({ kind: 'label-edit', detail: `unlabeled:${label}` }), cls, label);
+      assert.equal(classifyOperatorTouch({ kind: 'label-edit', detail: `labeled:${label}` }).class, cls, label);
+      assert.equal(classifyOperatorTouch({ kind: 'label-edit', detail: `unlabeled:${label}` }).class, cls, label);
     }
-    assert.equal(classifyOperatorTouch({ kind: 'label-edit', detail: 'labeled:wm:something-new' }), 'S');
+    assert.equal(classifyOperatorTouch({ kind: 'label-edit', detail: 'labeled:wm:something-new' }).class, 'S');
   });
 
   it('classifies eval interventions by detector prefix or legacy type', () => {
-    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention', detail: '[session_redirect] please fix' }), 'L');
-    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention', detail: '[operator_recovery] severity=major' }), 'R');
-    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention', detail: '[review_comment] nit' }), 'S');
-    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention', detail: 'operator_recovery' }), 'R');
-    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention', detail: 'bugfix' }), 'S');
-    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention' }), 'S');
+    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention', detail: '[session_redirect] please fix' }).class, 'L');
+    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention', detail: '[operator_recovery] severity=major' }).class, 'R');
+    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention', detail: '[review_comment] nit' }).class, 'S');
+    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention', detail: 'operator_recovery' }).class, 'R');
+    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention', detail: 'bugfix' }).class, 'S');
+    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention' }).class, 'S');
   });
 
   it('pins the fixed class of every remaining kind', () => {
-    assert.equal(classifyOperatorTouch({ kind: 'pane-message' }), 'L');
-    assert.equal(classifyOperatorTouch({ kind: 'session-redirect', detail: 'keep going' }), 'L');
-    assert.equal(classifyOperatorTouch({ kind: 'external-merge' }), 'S');
-    assert.equal(classifyOperatorTouch({ kind: 'manual-push', detail: 'abc1234: fix — commit outside all recorded agent activity windows' }), 'S');
-    assert.equal(classifyOperatorTouch({ kind: 'manual-push', detail: 'abc1234: wip — operator handoff commit completing uncommitted agent output' }), 'R');
-    assert.equal(classifyOperatorTouch({ kind: 'state-edit' }), 'R');
+    assert.equal(classifyOperatorTouch({ kind: 'pane-message' }).class, 'L');
+    assert.equal(classifyOperatorTouch({ kind: 'session-redirect', detail: 'keep going' }).class, 'L');
+    assert.equal(classifyOperatorTouch({ kind: 'external-merge' }).class, 'S');
+    assert.equal(classifyOperatorTouch({ kind: 'manual-push', detail: 'abc1234: fix — commit outside all recorded agent activity windows', commitAttribution: 'operator_out_of_window' }).class, 'S');
+    assert.equal(classifyOperatorTouch({ kind: 'manual-push', detail: 'abc1234: wip — operator handoff commit completing uncommitted agent output', commitAttribution: 'operator_handoff' }).class, 'R');
+    assert.equal(classifyOperatorTouch({ kind: 'state-edit' }).class, 'R');
   });
 
   it('extracts the eval detector name', () => {
     assert.equal(evalDetectorName('[manual_edit] abc: x'), 'manual_edit');
     assert.equal(evalDetectorName('review_comment'), 'review_comment');
     assert.equal(evalDetectorName(undefined), '');
+  });
+
+  it('approvals are not human touches', () => {
+    assert.deepEqual(classifyOperatorTouch({ kind: 'operator-event', detail: 'approve: L' }), { attribution: 'approval', class: 'L' });
+    assert.deepEqual(classifyOperatorTouch({ kind: 'session-redirect', text: 'approved, 1 in scope', sessionKind: 'planning' }), { attribution: 'approval', class: 'L' });
+  });
+
+  it('session-redirect automation is detected from provenance and patterns', () => {
+    assert.equal(classifyOperatorTouch({ kind: 'session-redirect', text: 'Output token limit hit', provenance: { isMeta: true } }).attribution, 'automation');
+    assert.equal(classifyOperatorTouch({ kind: 'session-redirect', text: 'You are working on: foo', firstInOwnedSession: false }).attribution, 'automation');
+    assert.equal(classifyOperatorTouch({ kind: 'session-redirect', text: 'yes', sessionKind: 'planning' }).attribution, 'approval');
+    assert.equal(classifyOperatorTouch({ kind: 'session-redirect', text: 'keep going' }).attribution, 'human');
+  });
+
+  it('external merge uses tend receipt and mill actor', () => {
+    assert.equal(classifyOperatorTouch({ kind: 'external-merge', hasTendReceipt: true }).attribution, 'automation');
+    assert.equal(classifyOperatorTouch({ kind: 'external-merge', millActor: true }).attribution, 'automation');
+    assert.equal(classifyOperatorTouch({ kind: 'external-merge' }).attribution, 'human');
+  });
+
+  it('operatorTouchClass returns only the class', () => {
+    assert.equal(operatorTouchClass({ kind: 'state-edit' }), 'R');
   });
 });
 

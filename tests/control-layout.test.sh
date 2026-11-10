@@ -124,6 +124,11 @@ create_test_repo() {
   cp "$REPO_DIR/shared/lib/terminal-reconciler.sh" "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/routing-emitter.sh" "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/model-validator.ts" "$repo_dir/shared/lib/"
+  # HOK-3360: wavemill-common.sh unconditionally sources operator-escalation.sh.
+  cp "$REPO_DIR/shared/lib/operator-escalation.sh" "$repo_dir/shared/lib/"
+  # HOK-3403: state locks resolve through state-lock.sh + process-identity.sh.
+  cp "$REPO_DIR/shared/lib/state-lock.sh" "$repo_dir/shared/lib/"
+  cp "$REPO_DIR/shared/lib/process-identity.sh" "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/wavemill-status.sh" "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/wavemill-window-titles.sh" "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/agent-bin/tmux" "$repo_dir/shared/agent-bin/"
