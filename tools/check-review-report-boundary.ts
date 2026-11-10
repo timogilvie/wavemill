@@ -11,7 +11,7 @@ export const REVIEW_REPORT_BOUNDARY_GUARD: GuardSpec = {
   allowlistFile: 'tools/review-report-boundary-allowlist.txt',
   invariantPaths: [
     'shared/lib/model-adapters/claude-cli-output.ts',
-    'tools/check-review-report-boundary.ts',
+    'tools/check-review-report-boundary.ts', // install-paths: allow source-guard file identity, not an executable argv
   ],
   patterns: [
     {
