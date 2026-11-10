@@ -146,6 +146,11 @@ export class ClaudeCliAdapter implements TransportAdapter {
       const parsed = parseClaudeCliOutput(result.rawOutput, {
         expectedSessionId: result.sessionRef,
       });
+      // HOK-3448: a result element bound to another session (or none) must not
+      // supply this invocation's identity, usage or cost — fail closed.
+      if (parsed.error) {
+        return { text: '', reportedModel: 'unverified', error: classifyClaudeMessage(parsed.error) };
+      }
       const invokeResult: AdapterInvokeResult = {
         text: parsed.text,
         reportedModel: parsed.reportedModel ?? result.reportedModel ?? 'unverified',

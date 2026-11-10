@@ -11,7 +11,9 @@ if [[ -n "$reason" ]]; then
   exit 0
 fi
 
-ISSUE="JRN-RTR-1"
+# A valid task id: a two-hyphen id fails task-identity parsing, so Linear
+# state is never rendered for it.
+ISSUE="JRN-48"
 export FAKE_AGENT_SCRIPT_DIR
 FAKE_AGENT_SCRIPT_DIR="$(cd "$(dirname "$0")/fixtures/review-tool-report/fake-agent" && pwd)"
 journey_init review-tool-report
@@ -36,10 +38,9 @@ journey_assert "review stage preserves direct Claude identity" \
   test "$(jq -r '.artifacts.reviewExecutedIdentity.substantiveAnalysis.source' "$fd/.review-result.json" 2>/dev/null)" = "artifact"
 journey_assert "review stage preserves executed review model" \
   test "$(jq -r '.artifacts.reviewExecutedIdentity.substantiveAnalysis.resolvedModel' "$fd/.review-result.json" 2>/dev/null)" = "claude-sonnet-5"
-journey_assert "review stage preserves tool-report cost" \
-  test "$(jq -r '.artifacts.usage.costUsd' "$fd/.review-result.json" 2>/dev/null)" = "0.01"
-journey_assert "review stage preserves tool-report usage" \
-  test "$(jq -r '.artifacts.usage.totalTokens' "$fd/.review-result.json" 2>/dev/null)" = "15"
+# Cost evidence is the owned helper:json-code-review session metered by the
+# SDK (REQ-F4), asserted by journey_assert_session_ownership below; the stage
+# result's artifacts.usage is native-reviewer-only.
 journey_assert ".review-tool-report-result.json verdict is ready" \
   test "$(jq -r '.verdict' "$fd/.review-tool-report-result.json" 2>/dev/null)" = "ready"
 journey_assert ".review-tool-report-result.json has 3 warnings" \
@@ -52,10 +53,9 @@ journey_wait_until "$ISSUE" 8  "task reaped after merge"     journey_task_reaped
 journey_assert_landed "$ISSUE"
 journey_assert_session_ownership "$ISSUE" planning coding review helper:json-code-review
 
-# The fake's judge-call log should contain exactly one tool-report served line.
-# (Any ordering/touch-set predictions use the global verdict file and are not
-# counted as review CLI calls.)
+# The fake's judge-call log should contain exactly one tool-report served line
+# (the review path's non-verbose CLI preflight is logged separately).
 call_count="$(grep -c "judge tool-report served" "$FAKE_ROOT/logs/agent.log" 2>/dev/null || true)"
 journey_assert "exactly one review CLI invocation used the tool report" test "$call_count" = "1"
 
-echo ""
+journey_finish

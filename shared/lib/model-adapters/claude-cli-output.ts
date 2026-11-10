@@ -101,6 +101,32 @@ interface VerboseElement {
   session_id?: string;
   role?: string;
   content?: unknown;
+  /** Real CLI stream messages nest content under `message` (Anthropic message shape). */
+  message?: { role?: string; content?: unknown };
+  /** Real CLI stream messages carry the subagent link on the element. */
+  parent_tool_use_id?: string | null;
+}
+
+function elementRole(element: VerboseElement): string | undefined {
+  return element.type ?? element.role ?? element.message?.role;
+}
+
+function elementBlocks(element: VerboseElement): unknown[] {
+  return element.content !== undefined ? contentBlocks(element.content) : contentBlocks(element.message?.content);
+}
+
+/**
+ * Bind one verbose element to the session the invocation owns (HOK-3448).
+ * With an owned session, a missing or different `session_id` fails closed.
+ */
+function sessionBindingError(
+  elementSessionId: string | undefined,
+  expectedSessionId: string | undefined,
+): 'missing-session' | 'foreign-session' | undefined {
+  if (expectedSessionId === undefined) return undefined;
+  if (elementSessionId === undefined) return 'missing-session';
+  if (elementSessionId !== expectedSessionId) return 'foreign-session';
+  return undefined;
 }
 
 interface ToolUseBlock {
@@ -234,8 +260,8 @@ function extractToolReport(
   for (const el of arr) {
     if (el === null || typeof el !== 'object') continue;
     const element = el as VerboseElement;
-    if (element.type !== 'assistant' && element.role !== 'assistant') continue;
-    for (const block of contentBlocks(element.content)) {
+    if (elementRole(element) !== 'assistant') continue;
+    for (const block of elementBlocks(element)) {
       if (!isToolUseBlock(block)) continue;
       if (block.name !== 'ReportFindings') continue;
       const id = block.id;
@@ -244,7 +270,7 @@ function extractToolReport(
         id,
         input: block.input,
         elementSessionId: element.session_id,
-        parentId: block.parent_tool_use_id ?? null,
+        parentId: block.parent_tool_use_id ?? element.parent_tool_use_id ?? null,
       });
     }
   }
@@ -268,22 +294,41 @@ function extractToolReport(
     return { toolReportError: 'foreign-session' };
   }
 
+  // The result element and the matching tool_result are bound to the owned
+  // session too: the result element supplies execution identity and cost, so
+  // a foreign one must never ride along with an owned tool call.
+  const resultBinding = sessionBindingError(resultEnvelope?.session_id, expectedSessionId);
+  if (resultBinding) {
+    return { toolReportError: `result-${resultBinding}` };
+  }
+
   let toolResultFound = false;
   let toolResultErrored = false;
+  let toolResultBinding: 'missing-session' | 'foreign-session' | undefined;
   for (const el of arr) {
     if (el === null || typeof el !== 'object') continue;
     const element = el as VerboseElement;
-    if (element.type !== 'user' && element.role !== 'user') continue;
-    for (const block of contentBlocks(element.content)) {
+    if (elementRole(element) !== 'user') continue;
+    for (const block of elementBlocks(element)) {
       if (!isToolResultBlock(block)) continue;
       if (block.tool_use_id !== call.id) continue;
       toolResultFound = true;
       if (block.is_error === true) toolResultErrored = true;
+      // Same rule as the tool call: missing fails only for an owned session;
+      // a session id that differs from the bound one always fails.
+      toolResultBinding ??=
+        sessionBindingError(element.session_id, expectedSessionId) ??
+        (sessionId !== undefined && element.session_id !== undefined && element.session_id !== sessionId
+          ? 'foreign-session'
+          : undefined);
     }
   }
 
   if (!toolResultFound) {
     return { toolReportError: 'missing tool_result' };
+  }
+  if (toolResultBinding) {
+    return { toolReportError: `tool_result-${toolResultBinding}` };
   }
   if (toolResultErrored) {
     return { toolReportError: 'tool_result.is_error' };
@@ -348,6 +393,22 @@ export function parseClaudeCliOutput(
   }
 
   const text = (envelope.result ?? stdout).trim();
+  // HOK-3448: with an owned session, the result element's model/usage/cost
+  // are execution identity. A foreign result session always fails closed
+  // rather than attributing another session's data to this invocation; a
+  // missing one fails closed for the verbose array, where a tool report rides
+  // on the same output (the plain object envelope carries no tool report).
+  const resultBinding = sessionBindingError(
+    typeof envelope.session_id === 'string' && envelope.session_id ? envelope.session_id : undefined,
+    opts?.expectedSessionId,
+  );
+  if (resultBinding === 'foreign-session' || (resultBinding === 'missing-session' && isArray)) {
+    return {
+      text,
+      error: `claude CLI result element ${resultBinding === 'missing-session' ? 'has no session_id' : 'belongs to a foreign session'} (expected ${opts?.expectedSessionId})`,
+      toolReportError: `result-${resultBinding}`,
+    };
+  }
   const out: ClaudeCliOutput = { text };
   const usage = usageFromEnvelope(envelope.usage);
   if (usage) out.usage = usage;

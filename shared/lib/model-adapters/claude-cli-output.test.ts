@@ -219,6 +219,82 @@ describe('ReportFindings validation', () => {
     assert.match(out.toolReportError ?? '', /findings not an array/);
     assert.equal(out.toolReport, undefined);
   });
+
+  // protects: an owned tool call riding with a foreign result element would
+  // attribute another session's model/usage/cost to this invocation.
+  it('fails closed when the result element belongs to a foreign session', () => {
+    const stdout = JSON.stringify([
+      { type: 'assistant', session_id: 's1', content: [{ type: 'tool_use', name: 'ReportFindings', id: 't1', input: buildReport(), parent_tool_use_id: null }] },
+      { type: 'user', session_id: 's1', content: [{ type: 'tool_result', tool_use_id: 't1', is_error: false }] },
+      { type: 'result', session_id: 'other-session', result: 'ok', total_cost_usd: 9, modelUsage: { 'claude-opus-5-5': { outputTokens: 5 } } },
+    ]);
+    const out = parseClaudeCliOutput(stdout, { expectedSessionId: 's1' });
+    assert.ok(out.error);
+    assert.equal(out.toolReportError, 'result-foreign-session');
+    assert.equal(out.toolReport, undefined);
+    assert.equal(out.costUsd, undefined);
+    assert.equal(out.reportedModel, undefined);
+    assert.equal(out.sessionId, undefined);
+  });
+
+  // protects: an owned invocation must not accept a result element with no session binding.
+  it('fails closed when the result element has no session id for an owned session', () => {
+    const stdout = JSON.stringify([
+      { type: 'assistant', session_id: 's1', content: [{ type: 'tool_use', name: 'ReportFindings', id: 't1', input: buildReport(), parent_tool_use_id: null }] },
+      { type: 'user', session_id: 's1', content: [{ type: 'tool_result', tool_use_id: 't1', is_error: false }] },
+      { type: 'result', result: 'ok' },
+    ]);
+    const out = parseClaudeCliOutput(stdout, { expectedSessionId: 's1' });
+    assert.ok(out.error);
+    assert.equal(out.toolReportError, 'result-missing-session');
+    assert.equal(out.toolReport, undefined);
+  });
+
+  // protects: the matching tool_result from a foreign session must not confirm an owned call.
+  it('rejects a matching tool_result from a foreign session', () => {
+    const stdout = JSON.stringify([
+      { type: 'assistant', session_id: 's1', content: [{ type: 'tool_use', name: 'ReportFindings', id: 't1', input: buildReport(), parent_tool_use_id: null }] },
+      { type: 'user', session_id: 'other-session', content: [{ type: 'tool_result', tool_use_id: 't1', is_error: false }] },
+      { type: 'result', session_id: 's1', result: 'ok' },
+    ]);
+    const out = parseClaudeCliOutput(stdout, { expectedSessionId: 's1' });
+    assert.equal(out.toolReportError, 'tool_result-foreign-session');
+    assert.equal(out.toolReport, undefined);
+  });
+
+  // protects: an owned call whose tool_result element carries no session id is unbound.
+  it('rejects a matching tool_result with no session id for an owned session', () => {
+    const stdout = JSON.stringify([
+      { type: 'assistant', session_id: 's1', content: [{ type: 'tool_use', name: 'ReportFindings', id: 't1', input: buildReport(), parent_tool_use_id: null }] },
+      { type: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', is_error: false }] },
+      { type: 'result', session_id: 's1', result: 'ok' },
+    ]);
+    const out = parseClaudeCliOutput(stdout, { expectedSessionId: 's1' });
+    assert.equal(out.toolReportError, 'tool_result-missing-session');
+    assert.equal(out.toolReport, undefined);
+  });
+
+  // protects: real CLI stream messages nest blocks under `message.content` and
+  // carry `parent_tool_use_id` on the element; a parser reading only
+  // `element.content` would silently find no report in real output.
+  it('reads the real CLI message shape (message.content, element-level parent link)', () => {
+    const ok = JSON.stringify([
+      { type: 'assistant', session_id: 's1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'tool_use', name: 'ReportFindings', id: 't1', input: buildReport() }] } },
+      { type: 'user', session_id: 's1', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', is_error: false }] } },
+      { type: 'result', session_id: 's1', result: 'ok' },
+    ]);
+    const out = parseClaudeCliOutput(ok, { expectedSessionId: 's1' });
+    assert.equal(out.toolReportError, undefined);
+    assert.equal(out.toolReport?.toolUseId, 't1');
+    assert.equal(out.toolReport?.findings.length, 1);
+
+    const subagent = JSON.stringify([
+      { type: 'assistant', session_id: 's1', parent_tool_use_id: 'toolu_parent', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'ReportFindings', id: 't1', input: buildReport() }] } },
+      { type: 'user', session_id: 's1', parent_tool_use_id: 'toolu_parent', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', is_error: false }] } },
+      { type: 'result', session_id: 's1', result: 'ok' },
+    ]);
+    assert.equal(parseClaudeCliOutput(subagent, { expectedSessionId: 's1' }).toolReportError, 'subagent-report');
+  });
 });
 
 describe('claudeCliErrorFromStdout', () => {

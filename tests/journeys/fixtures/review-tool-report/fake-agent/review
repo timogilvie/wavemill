@@ -1,9 +1,9 @@
 # shellcheck shell=bash
 # Fake reviewer for the review-tool-report journey (HOK-3448).
 #
-# Seeds the shared fake claude with a ReportFindings tool report and exercises
-# the real ClaudeCliAdapter directly. The adapter must accept the tool report
-# as the review contract from a single CLI invocation.
+# Seeds the shared fake claude with a ReportFindings tool report and runs the
+# real review-changes.ts. The review engine must accept the tool report as the
+# review contract from a single CLI invocation.
 set -euo pipefail
 
 export FAKE_JUDGE_TOOL_REPORT_FILE
@@ -12,55 +12,21 @@ FAKE_JUDGE_TOOL_REPORT_FILE="$FAKE_AGENT_SCRIPT_DIR/../tool-report-input.json"
 branch="$(git rev-parse --abbrev-ref HEAD)"
 git push -q -u origin "$branch"
 
-# Run the real adapter across the fake claude, which emits the verbose array
-# carrying the ReportFindings tool report.
-review_json="$(cd "$FAKE_AGENT_TOOLS_DIR/.." && env -u WAVEMILL_PHASE -u FAKE_JUDGE_VERDICT_FILE \
+# Run the real self-review entry point (review-changes.ts → reviewChanges →
+# runReviewWithRetry → ClaudeCliAdapter) across the fake claude, which emits
+# the verbose array carrying the ReportFindings tool report. This is the
+# HOK-3325 incident site: the journey fails if the review engine ignores or
+# mishandles the structured report. review-changes.ts also records the
+# analysis identity and usage itself (.review-analysis-identity.json).
+review_rc=0
+review_json="$(env -u WAVEMILL_PHASE -u FAKE_JUDGE_VERDICT_FILE \
   FAKE_JUDGE_TOOL_REPORT_FILE="$FAKE_JUDGE_TOOL_REPORT_FILE" \
-  node --import tsx --input-type=module -e '
-    import { resolveModelAdapter } from "./shared/lib/model-adapters/resolve-adapter.ts";
-    import { writeReviewAnalysisIdentity } from "./shared/lib/review-analysis-identity.ts";
-    import { buildExecutedIdentity } from "./shared/lib/challenge-execution-contract.ts";
-    import assert from "node:assert/strict";
-    import { execFileSync } from "node:child_process";
-    const [model, worktree, featureDir] = process.argv.slice(1);
-    const { resolution, adapter } = resolveModelAdapter({ model, phase: "review", repoDir: worktree, reservedOutputTokens: 8192 });
-    if (!resolution.ok || adapter?.kind !== "claude-cli") throw new Error("review route did not use Claude CLI");
-    const result = await adapter.invoke("Review the completed journey change and return JSON.", {
-      cwd: worktree,
-      ownership: { featureDir, helperPurpose: "json-code-review" },
-    });
-    if (result.error) throw new Error(result.error.message);
-    if (!result.structuredReport) throw new Error("adapter did not return a structured report");
-    const findings = result.structuredReport.findings;
-    const warnings = findings.filter((f) => f.severity === "warning");
-    const blockers = findings.filter((f) => f.severity === "blocker");
-    assert.equal(warnings.length, 3, "expected 3 warnings from the tool report");
-    assert.equal(blockers.length, 0, "expected 0 blockers from the tool report");
-    const headSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: worktree, encoding: "utf8" }).trim();
-    writeReviewAnalysisIdentity(featureDir, {
-      headSha,
-      substantiveAnalysis: buildExecutedIdentity({
-        role: "substantive_analysis",
-        requestedModel: model,
-        resolvedModel: result.reportedModel,
-        agent: "claude-cli",
-        source: "artifact",
-      }),
-      usage: result.usage,
-    });
-    const out = {
-      verdict: "ready",
-      codeReviewFindings: findings.map((f) => ({
-        severity: f.severity,
-        category: f.category,
-        location: f.line !== undefined ? `${f.file}:${f.line}` : f.file,
-        description: [f.short_summary, f.summary, f.failure_scenario].filter(Boolean).join("\n\n"),
-        ...(f.verdict ? { evidence: `verification: ${f.verdict}` } : {}),
-      })),
-    };
-    console.log(JSON.stringify(out));
-  ' "$FAKE_LAUNCH_MODEL" "$WT" "$FEATURE_DIR"
-)"
+  bash -c 'cd "$1/.." && node --import tsx tools/review-changes.ts "$2" "$3" --json --skip-ui --model "$4"' \
+  _ "$FAKE_AGENT_TOOLS_DIR" "$BASE_BRANCH" "$WT" "$FAKE_LAUNCH_MODEL")" || review_rc=$?
+if (( review_rc > 1 )); then
+  echo "review-changes.ts errored (exit $review_rc): $review_json" >&2
+  exit 1
+fi
 
 verdict="$(printf '%s' "$review_json" | jq -r '.verdict')"
 blocker_count="$(printf '%s' "$review_json" | jq -r '.codeReviewFindings | map(select(.severity == "blocker")) | length')"
