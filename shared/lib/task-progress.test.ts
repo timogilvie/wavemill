@@ -815,7 +815,7 @@ test('gather: a launcher agent-exit record is agentExited, phase- and attempt-sc
 // recorded window handle) becoming the exit fact — never a pane descendant
 // count — while the probe stays bounded to a disposition gather that knows a
 // launch time, and a missing/replaced handle never reads as an exit.
-test('gather: term_is_dead on the task row's recorded windowId is agentExited', () => {
+test("gather: term_is_dead on the task row's recorded windowId is agentExited", () => {
   const tmp = mkdtempSync(join(tmpdir(), 'task-progress-exit-'));
   const calls: string[][] = [];
   try {
