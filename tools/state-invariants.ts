@@ -49,6 +49,7 @@ import {
 } from '../shared/lib/state-invariants.ts';
 import { appendObserverFinding } from '../shared/lib/observer-findings.ts';
 import { mutatorRejectionsPath, type MutatorRejectionRecord } from '../shared/lib/task-settlement.ts';
+import { readEscalationMarker } from '../shared/lib/operator-escalation.ts';
 import type { TaskProgress } from '../shared/lib/task-progress.ts';
 import { Ledger } from '../shared/lib/ledger.ts';
 import { runConsistencyCheck } from '../shared/lib/ledger-consistency.ts';
@@ -178,10 +179,10 @@ function enumerateRetrySentinelsForTask(taskId: string, stateDir: string): Retry
 function waitingOnEvidenceForTask(stateDir: string): WaitingOnEvidence {
   if (!existsSync(stateDir)) return { hasWaitingOnMarker: false };
   // HOK-3360: the .needs-attention-transient kind was removed.
-  const needs = join(stateDir, '.needs-attention');
   const readyWait = join(stateDir, '.ready-waiting-on.json');
   const parts: string[] = [];
-  if (existsSync(needs)) parts.push('.needs-attention');
+  // HOK-3424: the escalation module owns the marker read.
+  if (readEscalationMarker(stateDir)) parts.push('.needs-attention');
   if (existsSync(readyWait)) parts.push('.ready-waiting-on.json');
   return { hasWaitingOnMarker: parts.length > 0, detail: parts.join(',') || undefined };
 }

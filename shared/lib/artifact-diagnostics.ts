@@ -215,17 +215,6 @@ export interface QuotaSnapshotDiagnostic {
   source: string;
 }
 
-export interface EvalFallbackEventDiagnostic {
-  issueId?: string;
-  challengePairId?: string;
-  taskType?: string;
-  outcome: 'all_exhausted';
-  failedProviders: string[];
-  failedModels: string[];
-  timestamp?: string;
-  source: string;
-}
-
 // ── Internal Read Result Types ────────────────────────────────────────────────
 
 type JsonReadResult<T> =
@@ -275,29 +264,6 @@ export function readPlanningResult(filePath: string): PlanningResultDiagnostic |
     finishedAt: stringField(value.finishedAt) ?? stringField(value.completedAt),
     planFile: stringField(value.planFile) ?? stringField(value.planPath),
     transcriptFile: stringField(value.transcriptFile) ?? stringField(value.transcriptPath),
-  };
-}
-
-export function readJobState(jobPath: string): JobStateDiagnostic | null {
-  const result = readJsonTolerant<Record<string, unknown>>(jobPath);
-  if (result.status === 'missing') return null;
-  if (result.status === 'malformed') return { error: result.reason };
-
-  const value = result.value;
-  return {
-    id: stringField(value.id),
-    kind: stringEnum(value.kind, ['eval', 'comparison']),
-    status: stringEnum(value.status, ['running', 'succeeded', 'failed', 'timeout']),
-    issueId: stringField(value.issueId),
-    startedAt: stringField(value.startedAt),
-    finishedAt: stringField(value.finishedAt),
-    exitCode: numberField(value.exitCode),
-    reason: stringField(value.reason),
-    error: stringField(value.error) ?? stringField(value.excerpt),
-    resultPath: stringField(value.resultPath),
-    logPath: stringField(value.logPath),
-    pairId: stringField(value.pairId),
-    side: stringField(value.side) ?? stringField(value.challengeRole) ?? stringField(value.role),
   };
 }
 
@@ -553,44 +519,6 @@ export function readQuotaSnapshotDiagnostic(repoDir: string): QuotaSnapshotDiagn
     modelHealth,
     source,
   };
-}
-
-export function readEvalFallbackEventsDiagnostic(repoDir: string, sinceIso?: string): EvalFallbackEventDiagnostic[] {
-  const source = join(repoDir, '.wavemill', 'evals', 'evals.jsonl');
-  const result = readJsonlTolerant<Record<string, unknown>>(source);
-  const sinceMs = sinceIso ? Date.parse(sinceIso) : Number.NaN;
-  const events: EvalFallbackEventDiagnostic[] = [];
-  for (const record of result.records.slice(-200)) {
-    const fallbackEvent = objectField(record.fallbackEvent);
-    if (!fallbackEvent || fallbackEvent.outcome !== 'all_exhausted') continue;
-    const timestamp = stringField(record.timestamp) ?? stringField(fallbackEvent.timestamp);
-    if (!Number.isNaN(sinceMs) && timestamp && Date.parse(timestamp) < sinceMs) continue;
-    const chain = arrayField(fallbackEvent.fallback_chain) ?? [];
-    const failedModels = chain
-      .map((entry) => stringField(objectField(entry)?.model))
-      .filter((model): model is string => Boolean(model))
-      .slice(0, 50);
-    const failedProviders = new Set<string>();
-    for (const model of failedModels) {
-      const provider = model.includes('/') ? model.split('/')[0] : model.split(':')[0];
-      if (provider) failedProviders.add(clampText(provider, 80));
-    }
-    const reasons = chain
-      .map((entry) => stringField(objectField(entry)?.reason) ?? '')
-      .join(' ');
-    if (!/quota|credit|provider|402|limit|exhaust/i.test(`${reasons} ${failedModels.join(' ')}`)) continue;
-    events.push({
-      issueId: stringField(record.issueId),
-      challengePairId: stringField(record.challengePairId),
-      taskType: stringField(fallbackEvent.task_type),
-      outcome: 'all_exhausted',
-      failedProviders: [...failedProviders].slice(0, 20),
-      failedModels: failedModels.map((model) => clampText(model, 120)),
-      timestamp,
-      source,
-    });
-  }
-  return events.slice(-50);
 }
 
 export function redactIncidentData(text: string): string {

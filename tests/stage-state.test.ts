@@ -1,3 +1,4 @@
+// wavemill-test-suite: lifecycle (run by tests/run-lifecycle-tests.sh)
 /**
  * Tests for controller-owned stage state functions (HOK-1177)
  *

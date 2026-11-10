@@ -1,0 +1,14 @@
+# shellcheck shell=bash
+# HOK-3424 journey: hold the coding commit until the operator releases it.
+#
+# The journey escalates while the coding agent is parked here, so the marker's
+# recorded head and the worktree HEAD stay equal while it observes the attention
+# projection and the push. Touching $FAKE_ROOT/attention-coding-release lets the
+# agent perform the ordinary coding contract (commit + .coding-complete), which
+# moves HEAD and lets the HOK-3172 reconciler expire the escalation.
+: > "$FAKE_ROOT/attention-coding-waiting"
+while [[ ! -f "$FAKE_ROOT/attention-coding-release" ]]; do
+  sleep 0.2
+done
+rm -f "$FAKE_ROOT/attention-coding-release" "$FAKE_ROOT/attention-coding-waiting"
+default_coding

@@ -302,38 +302,6 @@ wavemill_terminal_pane_policy_for_reason() {
   printf '%s\n' "$policy"
 }
 
-# HOK-3101: replaced with a thin wrapper over the shared accessor so the
-# reconciler stops paying the TTL check twice and inherits the writer
-# classification. Kept as a wrapper because callers still expect the
-# `wavemill_terminal_` prefix.
-wavemill_terminal_fresh_hook_state() {
-  local session="$1" issue="$2"
-  # Try to source the accessor lazily; the reconciler is used both from a
-  # sourced context (wavemill-common.sh already brings task-progress.sh) and
-  # from stand-alone scripts.
-  if ! declare -F wavemill_hook_read >/dev/null 2>&1; then
-    local _sr_dir
-    _sr_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
-    if [[ -n "$_sr_dir" && -f "$_sr_dir/task-progress.sh" ]]; then
-      # shellcheck source=task-progress.sh
-      source "$_sr_dir/task-progress.sh"
-    fi
-  fi
-  if declare -F wavemill_hook_read >/dev/null 2>&1; then
-    wavemill_hook_read "$session" "$issue" state --fresh 2>/dev/null || true
-    return 0
-  fi
-  local hook_file hook_ts now
-  hook_file="/tmp/wavemill-${session}-${issue}.hook"
-  [[ -f "$hook_file" ]] || return 0
-  command -v jq >/dev/null 2>&1 || return 0
-  hook_ts=$(jq -r '.timestamp // 0' "$hook_file" 2>/dev/null || echo 0)
-  [[ "$hook_ts" =~ ^[0-9]+$ ]] || return 0
-  now=$(date +%s)
-  (( now - hook_ts < 300 )) || return 0
-  jq -r '.state // empty' "$hook_file" 2>/dev/null || true
-}
-
 # HOK-3312: `wavemill_terminal_agent_idle_evidence` is deleted. Terminal
 # release is decided by lifecycle (shared/lib/terminal-inbox-cleanup.ts),
 # not by pane liveness. The HOK-3101 primitive (shared/lib/task-progress.*)

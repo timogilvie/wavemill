@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 import assert from 'node:assert/strict';
 import { CANONICAL_CONFIG_TEMPLATE } from './config-sync.ts';
 import { classifyLocalOverrideFields } from './sync-config-classifier.ts';

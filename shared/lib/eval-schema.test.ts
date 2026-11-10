@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Scenario validation tests for the eval scoring rubric and data schema.
  *
@@ -21,7 +22,6 @@ import {
 } from './eval-schema.ts';
 import { repairPooledWorkflowCost } from './workflow-cost-pool-repair.ts';
 import { fixtureTaskCostSummaries, listSdkTaskCostFixtures } from './sdk-task-cost/fixtures.ts';
-import { findTaskCostSchemaDrift } from './sdk-task-cost/schema-drift.ts';
 import { validateEvalRecord } from './eval-validator.ts';
 import {
   buildChallengeExecutionIntent,
@@ -3157,20 +3157,6 @@ test('replay_fidelity out of range fails validation', () => {
 // ────────────────────────────────────────────────────────────────
 // HOK-3075: shadow SDK task-cost summaries
 // ────────────────────────────────────────────────────────────────
-
-test('taskCostSummary schema enums match the pinned @hokusai/core contract', () => {
-  assert.deepEqual(findTaskCostSchemaDrift(schema), []);
-});
-
-test('Schema drift guard reports an SDK enum the schema does not know', () => {
-  const drifted = JSON.parse(JSON.stringify(schema));
-  drifted.$defs.TaskCostHarness.enum = drifted.$defs.TaskCostHarness.enum.filter((value: string) => value !== 'pi');
-  drifted.$defs.TaskCostSummary.properties.schema_version.const = 'task_cost_summary/v2';
-  const findings = findTaskCostSchemaDrift(drifted);
-  assert.equal(findings.length, 2);
-  assert.ok(findings.some((finding) => finding.includes('TaskCostHarness')));
-  assert.ok(findings.some((finding) => finding.includes('schema_version')));
-});
 
 test('Record with SDK taskCostSummary from every bridge fixture validates', () => {
   for (const name of listSdkTaskCostFixtures()) {

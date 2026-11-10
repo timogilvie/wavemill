@@ -762,23 +762,6 @@ agent_is_native_cmd() {
   esac
 }
 
-agent_phase_from_role() {
-  case "${1:-}" in
-    planner|planning)
-      printf '%s\n' "planning"
-      ;;
-    reviewer|review|reviewing)
-      printf '%s\n' "review"
-      ;;
-    coder|coding)
-      printf '%s\n' "coding"
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 agent_role_from_phase() {
   case "${1:-}" in
     planning)
@@ -1071,6 +1054,37 @@ agent_openrouter_config() {
   )
 }
 
+# HOTFIX(HOK-3464): delete when HOK-3463 lands (the mill opens the PR, so
+# review agents no longer need GitHub credentials).
+#
+# DeepSeek launches redirect HOME/XDG_CONFIG_HOME into a per-run provider
+# directory. `gh` then finds no hosts file and cannot reach the macOS keychain
+# (it falls back to a stale plaintext token), so a DeepSeek review agent cannot
+# open its PR (HOK-3424). This prints launcher lines that put a `gh` wrapper on
+# PATH which runs the real `gh` with the operator's HOME and gh config dir.
+# Only `gh` sees the real HOME; the agent stays isolated and no token is copied.
+#
+# The lines must run BEFORE the launcher redirects HOME. $1 is the provider
+# state root; the wrapper is written to $1/bin.
+agent_deepseek_gh_wrapper_snippet() {
+  local provider_root="$1"
+  # No provider root, no wrapper: never write to "/bin".
+  [[ -n "$provider_root" ]] || return 0
+  cat <<SNIPPET
+# HOTFIX(HOK-3464): keep the operator's gh login under the isolated HOME (delete with HOK-3463).
+wm_gh_real="\$(command -v gh 2>/dev/null || true)"
+if [[ -n "\$wm_gh_real" ]]; then
+  wm_gh_wrapper_dir='${provider_root}/bin'
+  mkdir -p "\$wm_gh_wrapper_dir"
+  printf '#!/bin/bash\nexport HOME=%q\nexport GH_CONFIG_DIR=%q\nexec %q "\$@"\n' \\
+    "\$HOME" "\${GH_CONFIG_DIR:-\${XDG_CONFIG_HOME:-\$HOME/.config}/gh}" "\$wm_gh_real" \\
+    > "\$wm_gh_wrapper_dir/gh"
+  chmod 700 "\$wm_gh_wrapper_dir/gh"
+  export PATH="\$wm_gh_wrapper_dir:\$PATH"
+fi
+SNIPPET
+}
+
 agent_deepseek_state_dir() {
   local repo_dir="$1"
   local session="$2"
@@ -1199,32 +1213,6 @@ _agent_check_deepseek_api_key() {
   key_value="${!api_key_env:-}"
   if [[ -z "$key_value" ]]; then
     echo "Error: ${api_key_env} is not set. Set it before launching a claude-deepseek agent." >&2
-    return 1
-  fi
-  return 0
-}
-
-# Internal: validate OPENROUTER_API_KEY (or configured apiKeyEnv) for claude-openrouter.
-# Args: $1 = repo_dir
-# Returns: 0 if key present, 1 if missing
-_agent_check_openrouter_api_key() {
-  local repo_dir="${1:-$(pwd)}"
-  local provider_json api_key_env has_api_key
-
-  provider_json="$(agent_openrouter_config "$repo_dir" 2>/dev/null)" || {
-    if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
-      echo "Error: OPENROUTER_API_KEY is not set. Set it before launching a claude-openrouter agent." >&2
-      return 1
-    fi
-    return 0
-  }
-
-  api_key_env="$(agent_json_get "$provider_json" apiKeyEnv)"
-  api_key_env="${api_key_env:-OPENROUTER_API_KEY}"
-  has_api_key="$(agent_json_get "$provider_json" hasApiKey)"
-
-  if [[ "$has_api_key" != "true" ]]; then
-    echo "Error: ${api_key_env} is not set. Set it before launching a claude-openrouter agent." >&2
     return 1
   fi
   return 0
@@ -1368,13 +1356,6 @@ agent_check_auth() {
 # ============================================================================
 # Single source of truth for agent prompts. Used by both
 # wavemill-orchestrator.sh (initial batch) and launch_task() (monitor loop).
-
-agent_exit_followup_text() {
-  local agent_cmd="${1:-claude}"
-
-  # Agent-agnostic: the orchestrator detects session end via pane state (HOK-1177)
-  echo "Stop working. The orchestrator will handle cleanup."
-}
 
 agent_abort_feedback_text() {
   local agent_cmd="${1:-claude}" marker_path="$2"
@@ -2378,6 +2359,8 @@ agent_launch_autonomous() {
 
       # Extract resolved model from env block (ANTHROPIC_MODEL line)
       resolved_model="$(printf '%s\n' "$env_block" | grep '^ANTHROPIC_MODEL=' | head -1 | sed "s/^ANTHROPIC_MODEL='//;s/'$//")"
+      local deepseek_state_dir
+      deepseek_state_dir="$(printf '%s\n' "$env_block" | grep '^WAVEMILL_DEEPSEEK_STATE_DIR=' | head -1 | sed "s/^WAVEMILL_DEEPSEEK_STATE_DIR='//;s/'$//")"
       local effective_model_flag=""
       if [[ -n "$resolved_model" ]]; then
         effective_model_flag=" --model $resolved_model"
@@ -2404,6 +2387,7 @@ elif [[ "\$launch_rc" -ne 0 ]]; then
   echo "Error: claude-deepseek launcher failed (rc=\$launch_rc): \$env_block" >&2
   exit 1
 fi
+$(agent_deepseek_gh_wrapper_snippet "$deepseek_state_dir")
 eval "\$env_block"
 $(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "${resolved_model:-$model}")
 cat '$instr_file' | claude${effective_model_flag} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions
@@ -2453,6 +2437,7 @@ if [[ -z "\$api_key_value" ]]; then
 fi
 mkdir -p "\$provider_home" "\$xdg_config_home" "\$xdg_data_home"
 chmod 700 "\$provider_root" "\$provider_home" "\$xdg_config_home" "\$xdg_data_home" 2>/dev/null || true
+$(agent_deepseek_gh_wrapper_snippet "$provider_root")
 export HOME="\$provider_home"
 export XDG_CONFIG_HOME="\$xdg_config_home"
 export XDG_DATA_HOME="\$xdg_data_home"
@@ -2907,6 +2892,8 @@ agent_launch_interactive() {
       }
 
       resolved_model="$(printf '%s\n' "$env_block" | grep '^ANTHROPIC_MODEL=' | head -1 | sed "s/^ANTHROPIC_MODEL='//;s/'$//")"
+      local deepseek_state_dir
+      deepseek_state_dir="$(printf '%s\n' "$env_block" | grep '^WAVEMILL_DEEPSEEK_STATE_DIR=' | head -1 | sed "s/^WAVEMILL_DEEPSEEK_STATE_DIR='//;s/'$//")"
       local effective_model_flag=""
       if [[ -n "$resolved_model" ]]; then
         effective_model_flag=" --model $resolved_model"
@@ -2934,6 +2921,7 @@ elif [[ "\$launch_rc" -ne 0 ]]; then
   echo "Error: claude-deepseek launcher failed (rc=\$launch_rc): \$env_block" >&2
   exit 1
 fi
+$(agent_deepseek_gh_wrapper_snippet "$deepseek_state_dir")
 eval "\$env_block"
 $(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "${resolved_model:-$model}")
 claude${effective_model_flag}${agent_flags} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions "\$(cat '$prompt_file')"
@@ -2975,6 +2963,7 @@ if [[ -z "\$api_key_value" ]]; then
 fi
 mkdir -p "\$provider_home" "\$xdg_config_home" "\$xdg_data_home"
 chmod 700 "\$provider_root" "\$provider_home" "\$xdg_config_home" "\$xdg_data_home" 2>/dev/null || true
+$(agent_deepseek_gh_wrapper_snippet "$provider_root")
 export HOME="\$provider_home"
 export XDG_CONFIG_HOME="\$xdg_config_home"
 export XDG_DATA_HOME="\$xdg_data_home"

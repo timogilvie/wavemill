@@ -51,15 +51,39 @@ export const REVIEW_SCOPE_GUARD_EXIT_TOOL = 2;
 export const REVIEW_SCOPE_GUARD_EXIT_NO_PR = 3;
 
 /**
- * Registration files that a task may touch as a companion to a legitimate
- * test companion. `CLAUDE.md` mandates registering every new test in these
- * runner arrays, so they are permitted — but only when at least one in-scope
- * test companion is part of the same change set.
+ * Files our own rules demand during review (HOK-3456).
+ *
+ * CLAUDE.md "Test Registration" names the test runner / check-shell files.
+ * tools/prompts/{coding-phase,review-general,review-general-scoped}.md and
+ * shared/lib/native-agent/launch-coding.ts name golden journeys and
+ * incident replay fixtures. tools/check-ci-command-map-drift.ts and the
+ * journey matrix in `.github/workflows/ci.yml` register a new journey.
+ *
+ * Every entry is rooted at the repo and uses POSIX separators. The guard
+ * matches each incoming path against this list in three shapes:
+ *   - exact match (e.g. `tests/run-unit-tests.sh`)
+ *   - directory prefix (trailing `/`, e.g. `tests/journeys/`)
+ *   - `.github/workflows/ci.yml`, which is subject to the structural
+ *     journey-matrix-only rule in `isAllowedCiYmlDiff()`.
+ *
+ * NEVER duplicate this list. `tools/check-required-files-list.ts` enforces
+ * single-source-of-truth; add new entries here, not elsewhere.
  */
-const REGISTRATION_COMPANIONS = new Set([
-  'tests/run-unit-tests.sh',
+export const REQUIRED_PATHS: readonly string[] = [
+  // Test registration (CLAUDE.md "Test Registration")
   'tests/run-shell-suite.sh',
-]);
+  'tests/run-unit-tests.sh',
+  'tests/run-custom-tests.sh',
+  'tests/check-shell.sh',
+  'tests/ci-test-weights.json',
+  // Golden journeys and their fakes (HOK-3227/3228)
+  'tests/journeys/',
+  'tests/fakes/',
+  // Incident replay fixtures (HOK-3231)
+  'tests/fixtures/incident-replay/real/',
+  // CI matrix for journey registration — structurally narrowed below
+  '.github/workflows/ci.yml',
+];
 
 const TEST_COMPANION_PATTERN = /^(?<base>.+)\.(?:test|spec)\.(?<ext>ts|tsx|js|jsx|mjs|cjs|sh)$/;
 
@@ -199,6 +223,91 @@ const BASELINE_FILE = '.review-scope-baseline.json';
 const BASELINE_HISTORY_FILE = '.review-scope-baseline.history.jsonl';
 const DEFAULT_DELETION_RATIO = 3;
 const DEFAULT_DELETION_FLOOR = 50;
+
+function isRequiredPath(path: string): boolean {
+  return REQUIRED_PATHS.some((required) => {
+    if (required === '.github/workflows/ci.yml') {
+      return path === required;
+    }
+    if (required.endsWith('/')) {
+      return path.startsWith(required);
+    }
+    return path === required || path.startsWith(`${required}/`);
+  });
+}
+
+const JOURNEY_MATRIX_LINE_RE = /^(\s*)journey:\s*\[(?<entries>[^\]]*)\]\s*$/m;
+// allow-feature-flag: structural sentinel used only for byte-for-byte ci.yml comparison, not an env flag.
+const JOURNEY_MATRIX_SENTINEL = '__WAVEMILL_JOURNEY_MATRIX__';
+
+/**
+ * Structural check for `.github/workflows/ci.yml` (HOK-3456).
+ *
+ * A required-paths edit to ci.yml is only in scope when it adds entries to
+ * the `journey:` matrix inside the `journeys:` job block and changes nothing
+ * else. The check fails closed: any read error, missing anchor, or edit
+ * outside the matrix is a violation.
+ */
+function isAllowedCiYmlDiff(
+  repoDir: string,
+  baseRef: string,
+  headRef: string,
+  shellRunner: ShellRunner,
+): boolean {
+  let baseText: string;
+  let headText: string;
+  try {
+    baseText = runGitChecked(
+      shellRunner,
+      repoDir,
+      `git show ${escapeShellArg(`${baseRef}:.github/workflows/ci.yml`)}`,
+      'git-show-ci-yml-base',
+    );
+    headText = runGitChecked(
+      shellRunner,
+      repoDir,
+      `git show ${escapeShellArg(`${headRef}:.github/workflows/ci.yml`)}`,
+      'git-show-ci-yml-head',
+    );
+  } catch {
+    return false;
+  }
+
+  const baseMatch = JOURNEY_MATRIX_LINE_RE.exec(baseText);
+  const headMatch = JOURNEY_MATRIX_LINE_RE.exec(headText);
+  if (!baseMatch || !headMatch) {
+    return false;
+  }
+
+  const baseEntries = parseJourneyMatrixEntries(baseMatch.groups?.entries ?? '');
+  const headEntries = parseJourneyMatrixEntries(headMatch.groups?.entries ?? '');
+
+  const normalizedBase = baseText.replace(JOURNEY_MATRIX_LINE_RE, `$1${JOURNEY_MATRIX_SENTINEL}`);
+  const normalizedHead = headText.replace(JOURNEY_MATRIX_LINE_RE, `$1${JOURNEY_MATRIX_SENTINEL}`);
+
+  if (normalizedBase !== normalizedHead) {
+    return false;
+  }
+
+  for (const entry of baseEntries) {
+    if (!headEntries.has(entry)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function parseJourneyMatrixEntries(csv: string): Set<string> {
+  const entries = new Set<string>();
+  for (const part of csv.split(',')) {
+    const trimmed = part.trim();
+    if (trimmed) {
+      entries.add(trimmed);
+    }
+  }
+  return entries;
+}
 
 export const reviewScopeGuardDeps = {
   buildTaskContract,
@@ -441,14 +550,20 @@ export function validateReviewScope(options: ReviewScopeGuardOptions): ReviewSco
         && !featureDirRel.startsWith('..')
         && (path === featureDirRel || path.startsWith(`${featureDirRel}/`)));
 
+    const requiredPathMatches = isRequiredPath;
+
     const allowedCommitted = (path: string): boolean =>
-      (declaredGovernsCommitted ? false : committedScopeSet.has(path))
+      requiredPathMatches(path)
+      || (declaredGovernsCommitted ? false : committedScopeSet.has(path))
       || scopeMatchers.some((matcher) => matcher(path))
       || companionSet.has(path)
       || isTaskContextPath(path)
       || isSupportFile(path, committedScopeSet);
     const allowedUncommitted = (path: string): boolean =>
-      allowedCommitted(path) || taskPathSet.has(path) || baselineSet.has(path);
+      requiredPathMatches(path)
+      || allowedCommitted(path)
+      || taskPathSet.has(path)
+      || baselineSet.has(path);
 
     const stagedPathSet = new Set(stagedPaths);
     const outOfScope = new Map<string, NameStatusEntry & { observedIn: 'staged' | 'working-tree' | 'committed' }>();
@@ -484,6 +599,35 @@ export function validateReviewScope(options: ReviewScopeGuardOptions): ReviewSco
           declaredScope,
         },
       });
+    }
+
+    // CI workflow structural check (HOK-3456). Required paths are admitted by
+    // the scope predicates above, but `.github/workflows/ci.yml` edits must
+    // also pass a structural journey-matrix-only check. This runs after scope
+    // resolution so an invalid ci.yml edit is still reported even when the
+    // file already lives in the task baseline.
+    if (baseRef) {
+      const ciYmlEntry = [...uncommittedEntries, ...committedEntries]
+        .find((entry) => entry.path === '.github/workflows/ci.yml');
+      if (ciYmlEntry && !isAllowedCiYmlDiff(repoDir, baseRef, headRef, shellRunner)) {
+        const observedIn: 'staged' | 'working-tree' | 'committed' =
+          stagedPathSet.has('.github/workflows/ci.yml')
+            ? 'staged'
+            : (ciYmlEntry.observedIn ?? 'committed');
+        findings.push({
+          severity: 'blocker',
+          category: 'review-scope',
+          kind: 'violation',
+          observedIn,
+          path: '.github/workflows/ci.yml',
+          status: ciYmlEntry.status,
+          message:
+            'Unexpected review change outside task scope: .github/workflows/ci.yml ' +
+            `(${ciYmlEntry.status}, ${observedIn}). ` +
+            'ci.yml edits are only allowed when they add entries to the journey matrix.',
+          details: { baselineSource },
+        });
+      }
     }
 
     if (baseRef) {
@@ -1407,7 +1551,7 @@ function collectDeletionBudgetFindings(
   ));
 
   return entries
-    .filter((entry) => !scopeSet.has(entry.path))
+    .filter((entry) => !scopeSet.has(entry.path) || isRequiredPath(entry.path))
     .filter((entry) => entry.deletions >= DEFAULT_DELETION_FLOOR)
     .filter((entry) => entry.deletions > Math.max(DEFAULT_DELETION_FLOOR, entry.additions * DEFAULT_DELETION_RATIO))
     .map((entry) => ({
@@ -1547,30 +1691,19 @@ function buildScopeMatchers(entries: string[]): Array<(path: string) => boolean>
  * Compute the companion allowlist for a candidate change set.
  *
  * A `foo.test.ts` / `foo.spec.ts` file is a companion iff its source file
- * (`foo.ts`) is in scope; the test-registration runner files are companions
- * only when at least one legitimate test companion is in the same change set.
- * This matches the "add a test, then register it" workflow `CLAUDE.md`
- * mandates without opening the registration files to arbitrary edits.
+ * (`foo.ts`) is in scope. Test-registration runner files are no longer
+ * handled here: they are required files under `REQUIRED_PATHS` and are
+ * admitted outright (HOK-3456).
  */
 function findAllowedCompanionPaths(
   candidatePaths: string[],
   isInScope: (path: string) => boolean,
 ): string[] {
   const companionPaths = new Set<string>();
-  let hasAllowedTestCompanion = false;
 
   for (const candidatePath of candidatePaths) {
     if (isTestCompanionForScopedSource(candidatePath, isInScope)) {
       companionPaths.add(candidatePath);
-      hasAllowedTestCompanion = true;
-    }
-  }
-
-  if (hasAllowedTestCompanion) {
-    for (const candidatePath of candidatePaths) {
-      if (REGISTRATION_COMPANIONS.has(candidatePath)) {
-        companionPaths.add(candidatePath);
-      }
     }
   }
 

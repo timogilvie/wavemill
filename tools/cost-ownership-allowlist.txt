@@ -55,6 +55,6 @@ shared/lib/cost-parity.ts 8  # measurement: parity harness materializes sessions
 # boundary — they are not transcript parsers. Kept until slice 2/2 moves the
 # shared `llm-cli` Codex helper onto an SDK mapper and these adapter sites
 # switch to a shared projector.
-shared/lib/llm-cli.ts 5  # agent-boundary: parses live Claude CLI / Codex `turn.completed` envelopes for per-call cost; slice 2/2 moves Codex helpers onto SDK mapper
-shared/lib/model-adapters/claude-cli-adapter.ts 6  # agent-boundary: reads Claude CLI JSON envelope's usage object for per-turn cost/tokens
+shared/lib/llm-cli.ts 1  # agent-boundary: parses live Claude CLI / Codex `turn.completed` envelopes for per-call cost; slice 2/2 moves Codex helpers onto SDK mapper
+shared/lib/model-adapters/claude-cli-output.ts 4  # agent-boundary: single Claude CLI stdout interpreter reads the envelope's raw usage fields (HOK-3448)
 shared/lib/model-adapters/codex-cli-adapter.ts 1  # agent-boundary: reads Codex CLI envelope's reasoning_output_tokens for per-turn cost/tokens

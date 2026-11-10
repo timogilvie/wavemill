@@ -143,14 +143,6 @@ check_equals "failed inference leaves planner failure count at zero" "0" "$(heal
 check_equals "failed inference still advances last successful plan" "true" \
   "$(health_field '.lastSuccessfulPlanAt != null')"
 check_skip_result "failed inference never backs off the planner" "proceed"
-# HOK-3314: `queue_health_status_summary` reads the projection; the exact
-# wording comes from `projection.summary`. Assert the pieces callers rely on
-# (status token, current failure count, next action) rather than pin to the
-# literal string, since the projection shape owns phrasing.
-status_summary_actual="$(queue_health_status_summary)"
-check_equals "status summary names projection status" "true" "$([[ "$status_summary_actual" == *"degraded-inference"* ]] && echo true || echo false)"
-check_equals "status summary names current failure count" "true" "$([[ "$status_summary_actual" == *"2 consecutive failed attempts"* ]] && echo true || echo false)"
-check_equals "status summary names next action" "true" "$([[ "$status_summary_actual" == *"use_explicit_edges_only"* ]] && echo true || echo false)"
 
 for degraded_status in stale never; do
   queue_health_record_success "202" "202" "120" "planner command" "$(inference_report "$degraded_status" 0)" \

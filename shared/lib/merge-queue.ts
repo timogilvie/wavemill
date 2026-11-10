@@ -275,39 +275,6 @@ function comparePriority(left: MergeQueuePr, right: MergeQueuePr): number {
   return left.issue.localeCompare(right.issue);
 }
 
-export function computeConflictGroups(prs: MergeQueuePr[]): MergeQueuePr[][] {
-  const visited = new Set<string>();
-  const groups: MergeQueuePr[][] = [];
-  const index = new Map(prs.map((pr) => [pr.issue, pr]));
-
-  for (const pr of prs) {
-    if (visited.has(pr.issue)) continue;
-    const group: MergeQueuePr[] = [];
-    const queue = [pr.issue];
-    visited.add(pr.issue);
-
-    while (queue.length > 0) {
-      const issue = queue.shift();
-      if (!issue) continue;
-      const current = index.get(issue);
-      if (!current) continue;
-      group.push(current);
-
-      for (const candidate of prs) {
-        if (visited.has(candidate.issue)) continue;
-        if (overlaps(current.changedFiles, candidate.changedFiles)) {
-          visited.add(candidate.issue);
-          queue.push(candidate.issue);
-        }
-      }
-    }
-
-    groups.push(group.sort(comparePriority));
-  }
-
-  return groups.sort((left, right) => comparePriority(left[0], right[0]));
-}
-
 export function isCandidateStuck(
   candidate: Pick<MergeQueuePr, 'candidateLastProgressAt' | 'candidatePromotedAt' | 'mergeRetryInProgressUntil' | 'lastProgressAt'>,
   now: string,

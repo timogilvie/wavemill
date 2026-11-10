@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Tests for the workflow router — native certification (phase/certification
  * eligibility and provenance). See `workflow-router-test-helpers.ts` for the

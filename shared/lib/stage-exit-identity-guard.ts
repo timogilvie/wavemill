@@ -5,7 +5,7 @@
  * Preflight guard for the single stage-exit observation invariant (HOK-3313,
  * enforced by HOK-3236).
  *
- * Two anti-patterns are forbidden:
+ * Guards exit observation and the shared native execution boundaries:
  *
  * 1. A direct `wavemill_reconcile_terminal … recovery_failure` outside the
  *    bounded-retry exhaustion sites: `phase_launch_gate` (exhausted
@@ -24,6 +24,7 @@
  *    Claude coder whose scrollback contained the words "OpenRouter" or
  *    "wavemill native-agent".
  */
+import * as ts from 'typescript';
 import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export const STAGE_EXIT_IDENTITY_GUARD: GuardSpec = {
@@ -90,6 +91,43 @@ export const STAGE_EXIT_IDENTITY_GUARD: GuardSpec = {
       return [...source.matchAll(/runWavemillLoop\(\{([\s\S]*?)convertToLlm:/g)]
         .filter((match) => !/\bbudget\s*:/.test(match[1]))
         .map((match) => ({ line: source.slice(0, match.index).split('\n').length }));
+    },
+  }, {
+    name: 'missing-readonly-terminal-synthesis',
+    description: 'native planning and review must use loop-owned terminal synthesis, including shared-config spreads',
+    paths: ['shared/lib/native-agent/launch-planning.ts', 'shared/lib/native-agent/review.ts'],
+    find(source) {
+      const file = ts.createSourceFile('launcher.ts', source, ts.ScriptTarget.Latest, true);
+      const bindings = new Map<string, ts.Expression>();
+      const calls: ts.CallExpression[] = [];
+      const visit = (node: ts.Node): void => {
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) bindings.set(node.name.text, node.initializer);
+        if (ts.isCallExpression(node) && /(?:^|\.)runWavemillLoop$/.test(node.expression.getText(file))) calls.push(node);
+        ts.forEachChild(node, visit);
+      };
+      visit(file);
+      const enabled = (expr: ts.Expression | undefined, seen = new Set<string>()): boolean | undefined => {
+        if (!expr) return undefined;
+        if (ts.isIdentifier(expr)) {
+          if (seen.has(expr.text)) return undefined;
+          return enabled(bindings.get(expr.text), new Set([...seen, expr.text]));
+        }
+        if (!ts.isObjectLiteralExpression(expr)) return undefined;
+        let synthesis: boolean | undefined;
+        for (const property of expr.properties) {
+          if (ts.isSpreadAssignment(property)) {
+            const inherited = enabled(property.expression, seen);
+            if (inherited !== undefined) synthesis = inherited;
+          }
+          if (ts.isPropertyAssignment(property) && property.name.getText(file) === 'terminalSynthesis') {
+            synthesis = ts.isObjectLiteralExpression(property.initializer);
+          }
+        }
+        return synthesis;
+      };
+      return calls.filter(call => !enabled(call.arguments[0])).map(call => ({
+        line: file.getLineAndCharacterOfPosition(call.getStart(file)).line + 1,
+      }));
     },
   }],
   remediation: [

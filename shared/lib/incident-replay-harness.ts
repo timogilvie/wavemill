@@ -35,6 +35,7 @@ import { decideRecovery, type RecoveryActionKind, type RecoveryDecision, type Re
 import { createIncidentDraft, type IncidentLifecycle } from './wavemill-incident-model.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 import { reconcileIncidentCycle } from './incident-reconcile-cycle.ts';
+import { escalationMarkerPath, readEscalationMarker } from './operator-escalation.ts';
 import {
   loadIncidentFixture,
   type IncidentFixture,
@@ -218,9 +219,8 @@ export function detectConvergence(ctx: SandboxContext): ConvergenceEvidence {
   if (existsSync(mergedEvidence)) {
     return { outcome: 'merged', evidencePath: mergedEvidence };
   }
-  const needsAttention = join(ctx.featureDir, '.needs-attention');
   const needsEvidence = join(ctx.featureDir, '.needs-attention.evidence.json');
-  if (existsSync(needsAttention) && existsSync(needsEvidence)) {
+  if (readEscalationMarker(ctx.featureDir) !== null && existsSync(needsEvidence)) {
     return { outcome: 'escalated', evidencePath: needsEvidence };
   }
   return { outcome: 'pending' };
@@ -330,7 +330,7 @@ function syntheticStep(fixture: IncidentReplayFixture, stage: FailureStage, nowM
 }
 
 function writeEscalation(ctx: SandboxContext, fixture: IncidentReplayFixture, decision: RecoveryDecision): ConvergenceEvidence {
-  const needsAttention = join(ctx.featureDir, '.needs-attention');
+  const needsAttention = escalationMarkerPath(ctx.featureDir);
   writeFileSync(needsAttention, `reason=${decision.failureKind ?? fixture.fault}\n`);
   const evidence = join(ctx.featureDir, '.needs-attention.evidence.json');
   writeFileSync(evidence, JSON.stringify({

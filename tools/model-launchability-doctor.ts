@@ -1,5 +1,6 @@
 #!/usr/bin/env tsx
 import { buildLaunchabilityMatrix, LAUNCHABILITY_STAGES } from '../shared/lib/launchable-models.ts';
+import { exitOnHelp } from '../shared/lib/tool-runner.ts';
 
 function parseArgs(argv: string[]): { repoDir?: string; json: boolean; certificationRoot?: string } {
   const parsed: { repoDir?: string; json: boolean; certificationRoot?: string } = { json: false };
@@ -23,6 +24,10 @@ function parseArgs(argv: string[]): { repoDir?: string; json: boolean; certifica
   return parsed;
 }
 
+exitOnHelp(
+  'Usage: npx tsx tools/model-launchability-doctor.ts [--repo-dir DIR] [--certification-root DIR] [--json]\n'
+    + 'Shows which models each stage can launch, and why the others are blocked.',
+);
 const options = parseArgs(process.argv.slice(2));
 const matrix = buildLaunchabilityMatrix({
   repoDir: options.repoDir,

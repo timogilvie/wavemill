@@ -1,0 +1,2 @@
+# Allowlist for the review-report-boundary guard (HOK-3448).
+# Keep empty: the single boundary module is the only allowed source.

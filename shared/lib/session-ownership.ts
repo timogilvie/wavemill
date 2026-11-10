@@ -489,3 +489,47 @@ export function ownershipStageRole(row: SessionOwnershipRow | undefined): Execut
     evidence: `launch ${row.attemptId} at ${row.launchedAt}`,
   };
 }
+
+/** A time window during which an owned session was active. */
+export interface OwnedSessionWindow {
+  sessionRef: string;
+  kind: OwnershipKind;
+  harness: SessionHarness;
+  fromMs: number;
+  toMs: number;
+}
+
+const SESSION_WINDOW_FALLBACK_MAX_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * Derive owned-session activity windows from launch rows and session
+ * transcript files. Helper sessions are excluded because they never commit.
+ *
+ * Window start is `launchedAt`. Window end is the transcript's last
+ * timestamp (Claude Code `.jsonl`, archived native `.jsonl`, or Codex
+ * rollout). With no transcript, the end is the next row's launch, capped
+ * at 4h.
+ */
+export function ownedSessionWindows(
+  rows: readonly SessionOwnershipRow[],
+  transcriptEndMs: (row: SessionOwnershipRow) => number | undefined,
+): OwnedSessionWindow[] {
+  const sorted = [...rows]
+    .filter((row) => !row.kind.startsWith('helper:'))
+    .sort((a, b) => Date.parse(a.launchedAt) - Date.parse(b.launchedAt));
+  const windows: OwnedSessionWindow[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const row = sorted[i];
+    const fromMs = Date.parse(row.launchedAt);
+    const transcriptEnd = transcriptEndMs(row);
+    let toMs: number;
+    if (transcriptEnd !== undefined && Number.isFinite(transcriptEnd)) {
+      toMs = transcriptEnd;
+    } else {
+      const nextLaunch = sorted[i + 1] ? Date.parse(sorted[i + 1].launchedAt) : undefined;
+      toMs = Math.min(nextLaunch ?? fromMs + SESSION_WINDOW_FALLBACK_MAX_MS, fromMs + SESSION_WINDOW_FALLBACK_MAX_MS);
+    }
+    windows.push({ sessionRef: row.sessionRef, kind: row.kind, harness: row.harness, fromMs, toMs });
+  }
+  return windows;
+}

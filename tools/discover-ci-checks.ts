@@ -34,7 +34,8 @@ interface CLIOptions {
 function parseCLI(): CLIOptions | null {
   const args = process.argv.slice(2);
 
-  if (args.length === 0 || args[0] === '--help') {
+  const wantsHelp = args.includes('--help') || args.includes('-h');
+  if (args.length === 0 || wantsHelp) {
     console.log(`Usage: npx tsx tools/discover-ci-checks.ts <repo> [options]
 
 Arguments:
@@ -46,6 +47,7 @@ Options:
   --list-workflows  Also list available workflow jobs
   --help            Show this help message
 `);
+    if (wantsHelp) process.exit(0);
     return null;
   }
 
@@ -129,20 +131,6 @@ async function main(): Promise<void> {
         });
       }
 
-      console.log(`\nNext steps:`);
-      console.log(`  1. Add to .wavemill-config.json:`);
-      console.log(`     "prePrVerification": {`);
-      console.log(`       "enabled": true,`);
-      console.log(`       "required": true,`);
-      console.log(`       "source": "explicit",`);
-      console.log(`       "recipe": {`);
-      console.log(`         "commands": [`);
-      console.log(`           "npx tsx tools/check-pi-version.ts",`);
-      console.log(`           "npm test"`);
-      console.log(`         ]`);
-      console.log(`       }`);
-      console.log(`     }`);
-      console.log(`  2. Test locally: npx tsx tools/run-pre-pr-verification.ts`);
     }
   } catch (err) {
     if (!opts.json) {

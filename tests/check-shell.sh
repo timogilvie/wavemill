@@ -80,309 +80,19 @@ run_fixtures_parallel() {
 # ============================================================================
 echo "=== Syntax Check (bash -n) ==="
 
-for f in \
-  "$LIB_DIR"/wavemill-*.sh \
-  "$LIB_DIR"/bounded-retry.sh \
-  "$LIB_DIR"/mill-clock.sh \
-  "$LIB_DIR"/plan-packet-binding.sh \
-  "$LIB_DIR"/task-progress.sh \
-  "$LIB_DIR"/wavemill-reliability-refresh.sh \
-  "$LIB_DIR"/task-identity.sh \
-  "$LIB_DIR"/attempt-identity.sh \
-  "$LIB_DIR"/task-worktree-resolver.sh \
-  "$LIB_DIR"/session-ownership.sh \
-  "$LIB_DIR"/terminal-backend.sh \
-  "$LIB_DIR"/challenge-arms.sh \
-  "$LIB_DIR"/transient-marker.sh \
-  "$LIB_DIR"/monitor-async-jobs.sh \
-  "$LIB_DIR"/terminal-reconciler.sh \
-  "$LIB_DIR"/startup-terminal-preflight.sh \
-  "$LIB_DIR"/startup-progress.sh \
-  "$LIB_DIR"/agent-adapters.sh \
-  "$LIB_DIR"/deps-drift.sh \
-  "$LIB_DIR"/stage-teardown.sh \
-  "$REPO_DIR"/shared/hooks/*.sh \
-  "$REPO_DIR"/shared/agent-bin/tmux \
-  "$REPO_DIR"/tests/run-related.sh \
-  "$REPO_DIR"/tests/run-related.test.sh \
-  "$REPO_DIR"/tests/run-typecheck.test.sh \
-  "$REPO_DIR"/tests/ready-sync-github-head-lag.test.sh \
-  "$REPO_DIR"/tests/check-install-paths.test.sh \
-  "$REPO_DIR"/tests/check-common-guards.test.sh \
-  "$REPO_DIR"/tests/check-direct-ledger-access.test.sh \
-  "$REPO_DIR"/tests/eval-report-cost-availability.test.sh \
-  "$REPO_DIR"/tests/ledger-cli-shadow.test.sh \
-  "$REPO_DIR"/tests/ledger-hook-shadow.test.sh \
-  "$REPO_DIR"/tests/check-ledger-shadow-swallow.test.sh \
-  "$REPO_DIR"/tests/monitor-side-effect-detector-tick.test.sh \
-  "$REPO_DIR"/tests/monitor-canary-cohort-refresh-tick.test.sh \
-  "$REPO_DIR"/tests/deps-drift.test.sh \
-  "$REPO_DIR"/tests/check-marker-clear-sites.test.sh \
-  "$REPO_DIR"/tests/check-state-surface-writes.test.sh \
-  "$REPO_DIR"/tests/check-label-write-sites.test.sh \
-  "$REPO_DIR"/tests/check-no-submit-data-producer.test.sh \
-  "$REPO_DIR"/tests/merge-labels-real-state.test.sh \
-  "$REPO_DIR"/tests/state-fixtures.test.sh \
-  "$REPO_DIR"/tests/control-pane-recovery.test.sh \
-  "$REPO_DIR"/tests/dashboard-refresh.test.sh \
-  "$REPO_DIR"/tests/state-mutex.test.sh \
-  "$REPO_DIR"/tests/state-lock.test.sh \
-  "$REPO_DIR"/tests/state-mutate-task-record-validation.test.sh \
-  "$REPO_DIR"/tests/settled-attempt.test.sh \
-  "$REPO_DIR"/tests/task-id-log-prefix.test.sh \
-  "$REPO_DIR"/tests/log-hygiene.test.sh \
-  "$REPO_DIR"/tests/project-context-suggestion.test.sh \
-  "$REPO_DIR"/tests/wavemill-usage-tips.test.sh \
-  "$REPO_DIR"/tests/wavemill-dependent-launch.test.sh \
-  "$REPO_DIR"/tests/wavemill-monitor-executed-model.test.sh \
-  "$REPO_DIR"/tests/wavemill-guards.test.sh \
-  "$REPO_DIR"/tests/dashboard-incidents-section.test.sh \
-  "$REPO_DIR"/tests/review-scope-baseline-handoff.test.sh \
-  "$REPO_DIR"/tests/ready-failure-blocks-pr-label.test.sh \
-  "$REPO_DIR"/tests/base-ref-stale-local.test.sh \
-  "$REPO_DIR"/tests/wavemill-mill-advance.test.sh \
-  "$REPO_DIR"/tests/wavemill-backlog-budget.test.sh \
-  "$REPO_DIR"/tests/wavemill-dependency-queue-filter.test.sh \
-  "$REPO_DIR"/tests/wavemill-backlog-pane-no-flash.test.sh \
-  "$REPO_DIR"/tests/wavemill-mill-model-flags.test.sh \
-  "$REPO_DIR"/tests/wavemill-mill-config-preflight.test.sh \
-  "$REPO_DIR"/tests/wavemill-mill-router-fallback.test.sh \
-  "$REPO_DIR"/tests/backstage-tend-watchdog.test.sh \
-  "$REPO_DIR"/tests/backstage-observer-watchdog.test.sh \
-  "$REPO_DIR"/tests/observer-managed-filing.test.sh \
-  "$REPO_DIR"/tests/backstage-observer-pane-promotion.test.sh \
-  "$REPO_DIR"/tests/model-inheritance-chain.test.sh \
-  "$REPO_DIR"/tests/wavemill-background-jobs-cleanup.test.sh \
-  "$REPO_DIR"/tests/global-model-parity.test.sh \
-  "$REPO_DIR"/tests/queue-health.test.sh \
-  "$REPO_DIR"/tests/queue-inference-degraded-banner.test.sh \
-  "$REPO_DIR"/tests/merge-queue-live-ci.test.sh \
-  "$REPO_DIR"/tests/merge-queue-blocked-label.test.sh \
-  "$REPO_DIR"/tests/merge-lane-progress-artifacts.test.sh \
-  "$REPO_DIR"/tests/notification-waiting.test.sh \
-  "$REPO_DIR"/tests/hook-osc-emit.test.sh \
-  "$REPO_DIR"/tests/hook-write-context-guard.test.sh \
-  "$REPO_DIR"/tests/osc7501-status.test.sh \
-  "$REPO_DIR"/tests/claude-tmux-server-guard.test.sh \
-  "$REPO_DIR"/tests/agent-tmux-runtime-guard.test.sh \
-  "$REPO_DIR"/tests/terminal-reconciler.test.sh \
-  "$REPO_DIR"/tests/startup-terminal-preflight.test.sh \
-  "$REPO_DIR"/tests/fresh-launch-terminal-preflight.test.sh \
-  "$REPO_DIR"/tests/startup-cleanup-integration.test.sh \
-  "$REPO_DIR"/tests/startup-terminal-ownership.test.sh \
-  "$REPO_DIR"/tests/challenge-intent-roundtrip.test.sh \
-  "$REPO_DIR"/tests/challenge-varied-model-abort.test.sh \
-  "$REPO_DIR"/tests/challenge-record-decisive.test.sh \
-  "$REPO_DIR"/tests/native-terminal-failure.test.sh \
-  "$REPO_DIR"/tests/native-failure-classification.test.sh \
-  "$REPO_DIR"/tests/stage-failure-retry.test.sh \
-  "$REPO_DIR"/tests/coding-dirty-handoff.test.sh \
-  "$REPO_DIR"/tests/stage-teardown.test.sh \
-  "$REPO_DIR"/tests/agent-exit-record.test.sh \
-  "$REPO_DIR"/tests/ready-exhausted-challenge.test.sh \
-  "$REPO_DIR"/tests/review-gate-refused-challenge.test.sh \
-  "$REPO_DIR"/tests/monitor-late-completion.test.sh \
-  "$REPO_DIR"/tests/blocked-completion-redaction.test.sh \
-  "$REPO_DIR"/tests/plan-reapproval-late-coding-complete.test.sh \
-  "$REPO_DIR"/tests/monitor-terminal-cleanup-tick.test.sh \
-  "$REPO_DIR"/tests/monitor-reaped-task-no-window-recreation.test.sh \
-  "$REPO_DIR"/tests/monitor-window-recreate-bounded.test.sh \
-  "$REPO_DIR"/tests/persist-task-window-id-reaped.test.sh \
-  "$REPO_DIR"/tests/monitor-wake-resume.test.sh \
-  "$REPO_DIR"/tests/challenge-deferred-arm.test.sh \
-  "$REPO_DIR"/tests/parent-monitor-function-drift.test.sh \
-  "$REPO_DIR"/tests/linear-state-canonicalization.test.sh \
-  "$REPO_DIR"/tests/task-phase-canonicalization.test.sh \
-  "$REPO_DIR"/tests/pr-state-merge-canonicalization.test.sh \
-  "$REPO_DIR"/tests/with-timeout.test.sh \
-  "$REPO_DIR"/tests/aborted-challenge-cleanup.test.sh \
-  "$REPO_DIR"/tests/safe-branch-cleanup.test.sh \
-  "$REPO_DIR"/tests/preserved-branch-record-long-slug.test.sh \
-  "$REPO_DIR"/tests/challenge-primary-merge-cleanup.test.sh \
-  "$REPO_DIR"/tests/operator-abort-cleanup.test.sh \
-  "$REPO_DIR"/tests/transient-marker.test.sh \
-  "$REPO_DIR"/tests/startup-terminal-prune.test.sh \
-  "$REPO_DIR"/tests/archive-stage-artifacts.test.sh \
-  "$REPO_DIR"/tests/operator-touch-record.test.sh \
-  "$REPO_DIR"/tests/report-reliability-cli.test.sh \
-  "$REPO_DIR"/tests/reliability-dashboard-repo.test.sh \
-  "$REPO_DIR"/tests/completed-task-cleanup.test.sh \
-  "$REPO_DIR"/tests/native-agent-shell-operators.test.sh \
-  "$REPO_DIR"/tests/hokusai-test-registration.test.sh \
-  "$REPO_DIR"/tests/monitor-script-byte-identical.test.sh \
-  "$REPO_DIR"/tests/bounded-retry.test.sh \
-  "$REPO_DIR"/tests/operator-escalation.test.sh \
-  "$REPO_DIR"/tests/ready-first-failure-no-attention.test.sh \
-  "$REPO_DIR"/tests/ready-update-from-base.test.sh \
-  "$REPO_DIR"/tests/plan-packet-binding.test.sh \
-  "$REPO_DIR"/tests/task-inputs-gate.test.sh \
-  "$REPO_DIR"/tests/task-progress.test.sh \
-  "$REPO_DIR"/tests/task-identity.test.sh \
-  "$REPO_DIR"/tests/task-artifact-lookup.test.sh \
-  "$REPO_DIR"/tests/archive-naming.test.sh \
-  "$REPO_DIR"/tests/terminal-backend.test.sh \
-  "$REPO_DIR"/tests/handle-phase-launch-result.test.sh \
-  "$REPO_DIR"/tests/coding-launch-refusal.test.sh \
-  "$REPO_DIR"/tests/review-capacity-detection.test.sh \
-  "$REPO_DIR"/tests/review-missing-window-relaunch.test.sh \
-  "$REPO_DIR"/tests/re-review-no-pr.test.sh \
-  "$REPO_DIR"/tests/monitor-command-routing.test.sh \
-  "$REPO_DIR"/tests/condition-reconciler.test.sh \
-  "$REPO_DIR"/tests/condition-reconciler-realstate.test.sh \
-  "$REPO_DIR"/tests/wavemill-pr-cache.test.sh \
-  "$REPO_DIR"/tests/cross-pr-revert-job.test.sh \
-  "$REPO_DIR"/tests/async-in-flight-touch-set.test.sh \
-  "$REPO_DIR"/tests/pr-ci-status-job.test.sh \
-  "$REPO_DIR"/tests/ready-watchdog-job.test.sh \
-  "$REPO_DIR"/tests/ready-remediation-disposition.test.sh \
-  "$REPO_DIR"/tests/route-task-job.test.sh \
-  "$REPO_DIR"/tests/monitor-perf-smoke.test.sh \
-  "$REPO_DIR"/tests/fixtures/monitor-perf/async-harness.sh \
-  "$REPO_DIR"/tests/fixtures/monitor-perf/mock-gh.sh \
-  "$REPO_DIR"/tests/config-false-booleans.test.sh \
-  "$REPO_DIR"/tests/check-no-npx-in-monitor.sh \
-  "$REPO_DIR"/tests/monitor-pass-snapshot.test.sh \
-  "$REPO_DIR"/tests/monitor-pass-budget.test.sh \
-  "$REPO_DIR"/tests/agent-model-memo.test.sh \
-  "$REPO_DIR"/tests/monitor-state-size.test.sh \
-  "$REPO_DIR"/tests/hot-state-byte-cap.test.sh \
-  "$REPO_DIR"/tests/monitor-usr2-wakeup.test.sh \
-  "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
-  "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
-  "$REPO_DIR"/tests/eval-stub-slot-accounting.test.sh \
-  "$REPO_DIR"/tests/challenge-eval-invalid-challenge.test.sh \
-  "$REPO_DIR"/tests/challenge-provenance.test.sh \
-  "$REPO_DIR"/tests/quarantine-legacy-reviewer-forfeits.test.sh \
-  "$REPO_DIR"/tests/reviewer-stage-hok2939-shaped.test.sh \
-  "$REPO_DIR"/tests/reviewer-stage-hok2954-shaped.test.sh \
-  "$REPO_DIR"/tests/challenge-fork-materialisation.test.sh \
-  "$REPO_DIR"/tests/challenge-fork-restart.test.sh \
-  "$REPO_DIR"/tests/challenge-fork-pre-fork-collapse.test.sh \
-  "$REPO_DIR"/tests/challenge-fork-inherited-provenance.test.sh \
-  "$REPO_DIR"/tests/challenge-fork-non-forked-regression.test.sh \
-  "$REPO_DIR"/tests/challenge-fork-review-launch-refusal.test.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/deferred_challenger_materialises_after_coding.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/deferred_implementation_challenger_forks_at_plan_handoff.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/review_challenger_owns_its_route.sh \
-  "$REPO_DIR"/tests/run-shell-suite.sh \
-  "$REPO_DIR"/tests/run-unit-tests.sh \
-  "$REPO_DIR"/tests/run-custom-tests.sh \
-  "$REPO_DIR"/tests/run-custom-tests-shard.test.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/startup_launches_concurrently.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/startup_serializes_state_writes.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/worktree_collision.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/input_reader_translates_keystrokes.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/input_reader_pane_respawn.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/mill_dry_run_full_pipeline.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/monitor_consumes_command_file.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/parent_pr_triggers_child_launch.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/parent_branch_missing_fails_clearly.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_pr_cleanup.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_sibling_merged_marks_done.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/closed_challenger_sibling_merged_single_status.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_sibling_merged_single_status.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/closed_sibling_merged_restart_silence.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/coding_agent_exit_interrupted.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/integration_window_observer_only.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/ready_conflict_resolver_pushed_reruns_ready.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/ready_conflict_resolver_in_flight_holds.sh \
-  "$REPO_DIR"/tests/fixtures/lifecycle/ready_conflict_exhausted_holds_needs_user.sh \
-  "$REPO_DIR"/tests/incident-fixtures-terminal-panes.test.sh \
-  "$REPO_DIR"/tests/incident-fixtures-safety-controls.test.sh \
-  "$REPO_DIR"/tests/lib/incident-fixture-harness.sh \
-  "$REPO_DIR"/tests/fakes/lib.sh \
-  "$REPO_DIR"/tests/fakes/world-watcher.sh \
-  "$REPO_DIR"/tests/fakes/bin/gh \
-  "$REPO_DIR"/tests/fakes/bin/tmux \
-  "$REPO_DIR"/tests/fakes/bin/claude \
-  "$REPO_DIR"/tests/fakes/fakes-contract.test.sh \
-  "$REPO_DIR"/tests/tmux-wrapper-loop.test.sh \
-  "$REPO_DIR"/tests/world-lifetime-sigkill.test.sh \
-  "$REPO_DIR"/tests/world-lifetime-stale-reap.test.sh \
-  "$REPO_DIR"/tests/journeys/harness.sh \
-  "$REPO_DIR"/tests/journeys/run-journeys.sh \
-  "$REPO_DIR"/tests/journeys/picker-pending-touch-set.journey.sh \
-  "$REPO_DIR"/tests/journeys/defect-escalation.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/defect-escalation/bin/claude \
-  "$REPO_DIR"/tests/journeys/happy-path.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/happy-path/fake-agent/review \
-  "$REPO_DIR"/tests/journeys/head-move-publication.journey.sh \
-  "$REPO_DIR"/tests/journeys/gh-lag-after-push.journey.sh \
-  "$REPO_DIR"/tests/journeys/errored-with-pr.journey.sh \
-  "$REPO_DIR"/tests/journeys/inputs-ready-before-approval.journey.sh \
-  "$REPO_DIR"/tests/journeys/approve-plan-attention-item.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/hok-3220/fake-agent/planning \
-  "$REPO_DIR"/tests/journeys/mid-flight-base-conflict.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/hok-3273/fake-agent/review \
-  "$REPO_DIR"/tests/journeys/fixtures/hok-3273/fake-agent/coding \
-  "$REPO_DIR"/tests/journeys/tend-rebase-conflict-single-comment.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/hok-3316/fake-agent/review \
-  "$REPO_DIR"/tests/journeys/fixtures/hok-3316/fake-agent/coding \
-  "$REPO_DIR"/tests/journeys/incident-currentness.journey.sh \
-  "$REPO_DIR"/tests/journeys/eval-failure-exhaustion.journey.sh \
-  "$REPO_DIR"/tests/journeys/challenger-contract-recovery.journey.sh \
-  "$REPO_DIR"/tests/journeys/challenge-pair-eval.journey.sh \
-  "$REPO_DIR"/tests/journeys/native-arm-evidence.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/fake-agent/native-launcher.sh \
-  "$REPO_DIR"/tests/journeys/native-ownership-recovery.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/native-ownership/fake-agent/coding \
-  "$REPO_DIR"/tests/journeys/grounded-overlap.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/bin/claude \
-  "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/fake-agent/session-telemetry.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/fake-agent/planning \
-  "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/fake-agent/coding \
-  "$REPO_DIR"/tests/journeys/fixtures/challenge-pair-eval/fake-agent/review \
-  "$REPO_DIR"/tests/journeys/ready-fail-remediate.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/ready-fail-remediate/fake-agent/coding \
-  "$REPO_DIR"/tests/journeys/controller-writes-dont-reset-stall.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/controller-writes-dont-reset-stall/fake-agent/coding \
-  "$REPO_DIR"/tests/journeys/ready-remediation-same-head.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/ready-remediation-same-head/fake-agent/coding \
-  "$REPO_DIR"/tests/journeys/dirty-tree-coding-complete.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/dirty-tree-coding-complete/fake-agent/coding \
-  "$REPO_DIR"/tests/journeys/fixtures/dirty-tree-coding-complete/fake-agent/review \
-  "$REPO_DIR"/tests/journeys/post-merge-eval-reap.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/post-merge-eval-reap/bin/claude \
-  "$REPO_DIR"/tests/journeys/escalation-override-record.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/escalation-override-record/bin/claude \
-  "$REPO_DIR"/tests/journeys/agent-idle-background-job.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/agent-idle-background-job/agent-session.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/agent-idle-background-job/fake-agent/coding \
-  "$REPO_DIR"/tests/journeys/operator-abort-mid-coding.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/operator-abort-mid-coding/fake-agent/coding \
-  "$REPO_DIR"/tests/journeys/native-coder-budget-exhaustion.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/hok-3362/fake-agent/coding \
-  "$REPO_DIR"/tests/journeys/native-slow-verification.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/hok-3381/fake-agent/coding \
-  "$REPO_DIR"/tests/journeys/stage-silent-stall.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/stage-silent-stall/fake-agent/review \
-  "$REPO_DIR"/tests/journeys/agent-killed-mid-review.journey.sh \
-  "$REPO_DIR"/tests/journeys/fixtures/hok-3426/fake-agent/review \
-  "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
-  "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
-  "$REPO_DIR"/tests/lib/state-fixtures.sh \
-  "$REPO_DIR"/tests/lib/inline-ready-checks.sh \
-  "$REPO_DIR"/tests/tracked-tree-guard.test.sh \
-  "$REPO_DIR"/tests/terminal-lifecycle-cert-matrix.test.sh \
-  "$REPO_DIR"/tests/terminal-lifecycle-cert-restart.test.sh \
-  "$REPO_DIR"/tests/terminal-lifecycle-cert-budgets.test.sh \
-  "$REPO_DIR"/tests/terminal-lifecycle-flags.test.sh \
-  "$REPO_DIR"/tests/fixtures/terminal-lifecycle/merge_commit_delivery.sh \
-  "$REPO_DIR"/tests/fixtures/terminal-lifecycle/squash_delivery.sh \
-  "$REPO_DIR"/tests/fixtures/terminal-lifecycle/rebase_delivery.sh \
-  "$REPO_DIR"/tests/fixtures/terminal-lifecycle/changed_after_review_head.sh \
-  "$REPO_DIR"/tests/fixtures/terminal-lifecycle/merged_pr_plain.sh \
-  "$REPO_DIR"/tests/fixtures/incidents/hok2595_closed_non_challenge.sh \
-  "$REPO_DIR"/tests/fixtures/incidents/hok2913c_superseded_challenger.sh \
-  "$REPO_DIR"/tests/fixtures/incidents/squash_delivery_deleted_remote_head.sh \
-  "$REPO_DIR"/tests/fixtures/incidents/hok3056_terminal_dirty_worktree.sh \
-  "$REPO_DIR"/tests/fixtures/incidents/control_dirty_worktree.sh \
-  "$REPO_DIR"/tests/fixtures/incidents/control_local_head_changed.sh \
-  "$REPO_DIR"/tests/fixtures/incidents/control_divergent_local_ahead.sh \
-  "$REPO_DIR"/tests/fixtures/incidents/control_missing_network.sh \
-  "$REPO_DIR"/tests/fixtures/incidents/control_never_pushed.sh \
-  "$REPO_DIR/wavemill" \
-; do
+# Every shell script in the repo is checked: `*.sh` plus extensionless files
+# with a sh/bash shebang, discovered by shared/lib/test-discovery.ts
+# (HOK-3466). Nobody adds a script to a list here.
+if ! SHELL_SCRIPTS="$(cd "$REPO_DIR" && node tools/discover-tests.ts --shell-scripts)"; then
+  fail "shell script discovery failed"
+  SHELL_SCRIPTS=""
+fi
+if [[ -z "$SHELL_SCRIPTS" ]]; then
+  fail "shell script discovery returned no scripts"
+fi
+while IFS= read -r rel; do
+  [[ -z "$rel" ]] && continue
+  f="$REPO_DIR/$rel"
   if [[ ! -f "$f" ]]; then
     fail "File not found: $f"
     continue
@@ -392,7 +102,7 @@ for f in \
   else
     fail "$(basename "$f") has syntax errors"
   fi
-done
+done <<< "$SHELL_SCRIPTS"
 
 # ============================================================================
 # TEST 1A: Launcher attach shutdown handling
@@ -1513,13 +1223,13 @@ else
   fail "mill is missing tmux status refresh after attention changes"
 fi
 
-if [[ -f "$LIB_DIR/wavemill-mill.sh" ]] \
-  && grep -qE '^codex_has_pending_approval\(\) \{' "$LIB_DIR/wavemill-mill.sh" \
-  && grep -q 'sandbox_permissions.*require_escalated' "$LIB_DIR/wavemill-mill.sh" \
-  && grep -q 'function_call_output' "$LIB_DIR/wavemill-mill.sh"; then
-  pass "mill defines codex pending-approval detection from session call state"
+if [[ -f "$LIB_DIR/wavemill-monitor.sh" ]] \
+  && grep -qE '^codex_has_pending_approval\(\) \{' "$LIB_DIR/wavemill-monitor.sh" \
+  && grep -q 'sandbox_permissions.*require_escalated' "$LIB_DIR/wavemill-monitor.sh" \
+  && grep -q 'function_call_output' "$LIB_DIR/wavemill-monitor.sh"; then
+  pass "monitor defines codex pending-approval detection from session call state"
 else
-  fail "mill is missing codex pending-approval detection"
+  fail "monitor is missing codex pending-approval detection"
 fi
 
 if [[ -f "$LIB_DIR/wavemill-monitor.sh" ]] \

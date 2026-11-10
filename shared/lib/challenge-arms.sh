@@ -23,16 +23,6 @@
 # extension is a matter of appending records — no code rewrite from a
 # primary/challenger pair.
 
-# Return the JSON of every arm on a primary. Prints "[]" when the task has no
-# arms (unmaterialised, or the primary is not a challenge participant).
-challenge_arms_list() {
-  local primary_issue="$1"
-  [[ -n "$primary_issue" && -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]] || { echo "[]"; return 0; }
-  jq -c --arg issue "$primary_issue" \
-    '(.tasks[$issue].challengeArms // [])' \
-    "$STATE_FILE" 2>/dev/null || echo "[]"
-}
-
 # Return the JSON of arms in the awaiting_fork state.
 challenge_arms_list_pending() {
   local primary_issue="$1"
@@ -231,22 +221,6 @@ challenge_arms_set_state() {
     --arg expected "$expected" \
     --arg new "$new_state" \
     --argjson extra "$extra_object"
-}
-
-# Remove an arm record entirely. Used when the primary aborts pre-fork and
-# there is nothing worth tracking. Idempotent.
-challenge_arms_delete() {
-  local primary_issue="$1" arm_key="$2"
-  [[ -n "$primary_issue" && -n "$arm_key" ]] || return 1
-  [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]] || return 1
-
-  state_mutate "$STATE_FILE" \
-    '.tasks[$issue].challengeArms = (
-        (.tasks[$issue].challengeArms // []) | map(select(.key != $key))
-      )
-      | .tasks[$issue].updated = (now | todate)' \
-    --arg issue "$primary_issue" \
-    --arg key "$arm_key"
 }
 
 # Cancel every pending arm on a primary. Called when the primary terminally

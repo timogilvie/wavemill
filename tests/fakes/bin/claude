@@ -70,9 +70,56 @@ if [[ -z "${WAVEMILL_PHASE:-}" ]]; then
       printf '%s\n' '{"is_error":true,"error":"response exhausted max_tokens before producing review JSON"}'
       exit 1
     fi
-    jq -cn --rawfile result "$FAKE_JUDGE_VERDICT_FILE" --arg model "$FAKE_LAUNCH_MODEL" \
-      '{result:$result, usage:{input_tokens:10, cache_creation_input_tokens:0, cache_read_input_tokens:0, output_tokens:5}, total_cost_usd:0.01, modelUsage:{($model):{}}}'
+    # Detect --verbose so the adapter's single stdout parser receives the
+    # array form it asked for (HOK-3448).
+    verbose=0
+    for arg in "$@"; do
+      if [[ "$arg" == "--verbose" ]]; then verbose=1; break; fi
+    done
+    if (( verbose )); then
+      jq -cn --rawfile result "$FAKE_JUDGE_VERDICT_FILE" --arg sid "$FAKE_SESSION_ID" --arg model "$FAKE_LAUNCH_MODEL" \
+        '[{type:"result",session_id:$sid,result:$result,usage:{input_tokens:10,cache_creation_input_tokens:0,cache_read_input_tokens:0,output_tokens:5},total_cost_usd:0.01,modelUsage:{($model):{}}}]'
+    else
+      jq -cn --rawfile result "$FAKE_JUDGE_VERDICT_FILE" --arg model "$FAKE_LAUNCH_MODEL" \
+        '{result:$result, usage:{input_tokens:10, cache_creation_input_tokens:0, cache_read_input_tokens:0, output_tokens:5}, total_cost_usd:0.01, modelUsage:{($model):{}}}'
+    fi
     printf '%s judge verdict served\n' "$(date -u +%FT%TZ)" >> "${FAKE_AGENT_LOG:-/dev/null}"
+    exit 0
+  fi
+  # `claude -p` helper call carrying a tool-report verdict (HOK-3448). The
+  # file contains the `ReportFindings` `input`; the shim emits the verbose
+  # array form with the tool_use, matching tool_result, and final result, in
+  # the real CLI message shape (blocks under `message.content`).
+  if [[ "${1:-}" == "-p" && -n "${FAKE_JUDGE_TOOL_REPORT_FILE:-}" && -f "${FAKE_JUDGE_TOOL_REPORT_FILE}" ]]; then
+    cat >/dev/null
+    # Only the review adapter asks for the verbose array. A non-verbose
+    # `claude -p` here is the review path's CLI availability preflight
+    # (ensureClaudeAvailable): answer it like a healthy CLI, with no session
+    # and no tool report, so it is neither a review call nor a session.
+    tool_report_verbose=0
+    for arg in "$@"; do
+      if [[ "$arg" == "--verbose" ]]; then tool_report_verbose=1; break; fi
+    done
+    if (( ! tool_report_verbose )); then
+      printf '%s\n' '{"type":"result","result":"ok","usage":{"input_tokens":1,"output_tokens":1},"total_cost_usd":0}'
+      printf '%s judge preflight served\n' "$(date -u +%FT%TZ)" >> "${FAKE_AGENT_LOG:-/dev/null}"
+      exit 0
+    fi
+    record_fake_session "$@"
+    sleep "${FAKE_JUDGE_DELAY_SECONDS:-0}"
+    jq -cn --arg model "$FAKE_LAUNCH_MODEL" --arg cap "${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-}" \
+      '{model:$model, maxOutputTokens:$cap}' >> "${FAKE_ROOT}/logs/judge-calls.jsonl"
+    tool_report_input="$(cat "$FAKE_JUDGE_TOOL_REPORT_FILE")"
+    tool_use_id="${FAKE_SESSION_ID}-report"
+    final_text="verdict is ready"
+    jq -cn \
+      --arg sid "$FAKE_SESSION_ID" \
+      --arg model "$FAKE_LAUNCH_MODEL" \
+      --argjson input "$tool_report_input" \
+      --arg tid "$tool_use_id" \
+      --arg result "$final_text" \
+      '[{type:"assistant",session_id:$sid,parent_tool_use_id:null,message:{role:"assistant",model:$model,content:[{type:"tool_use",name:"ReportFindings",id:$tid,input:$input}]}},{type:"user",session_id:$sid,parent_tool_use_id:null,message:{role:"user",content:[{type:"tool_result",tool_use_id:$tid,content:"3 findings reported."}]}},{type:"result",session_id:$sid,result:$result,usage:{input_tokens:10,cache_creation_input_tokens:0,cache_read_input_tokens:0,output_tokens:5},total_cost_usd:0.01,modelUsage:{($model):{}}}]'
+    printf '%s judge tool-report served\n' "$(date -u +%FT%TZ)" >> "${FAKE_AGENT_LOG:-/dev/null}"
     exit 0
   fi
   # Not a phase launch (e.g. a `claude -p` helper call). Record it as an
@@ -98,7 +145,7 @@ run_tool() {
   (cd "$FAKE_AGENT_TOOLS_DIR/.." && node --import tsx "tools/$1" "${@:2}")
 }
 
-default_planning() {
+default_task_packet() {
   # A real planner first expands the issue (expand-issue.ts, an LLM call) into
   # the progressive-disclosure task packet; write that packet directly.
   cat > "$FEATURE_DIR/task-packet-header.md" <<PACKET
@@ -142,6 +189,10 @@ Revert the commit.
 journey
 PACKET
   cat "$FEATURE_DIR/task-packet-header.md" "$FEATURE_DIR/task-packet-details.md" > "$FEATURE_DIR/task-packet.md"
+}
+
+default_planning() {
+  default_task_packet
   cat > "$FEATURE_DIR/plan.md" <<PLAN
 # Plan: $WAVEMILL_ISSUE
 

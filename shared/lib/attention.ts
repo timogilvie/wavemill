@@ -17,6 +17,13 @@
  *   | `exhausted`                  | `.needs-attention` basis `exhausted:<bucket>` (HOK-3360)         |
  *   | `policy-terminal`            | `.needs-attention` basis `policy-terminal:<class>` (HOK-3360)    |
  *   | `incident`                   | `reconcileIncidentForFiling` → `confirmed_active` (HOK-3324)     |
+ *   | `queue-health`               | `queue-health.json` currentAlertProjection (HOK-3314)            |
+ *   | `backstage-health`           | `backstage-health.json` unhealthy service                        |
+ *   | `openrouter`                 | the cached OpenRouter balance warning                            |
+ *   | `malformed-challenge`        | challenge stubs with no slug (HOK-2926)                          |
+ *
+ * The last four are non-task `free items` (HOK-3424): no `taskId`, so the
+ * Observer's task-scoped push skips them while the inbox renders them.
  *
  * What never produces an item: a raw hook `error`/`blocked` state (the failure
  * policy owns it until the escalation step writes `.needs-attention`), a
@@ -52,7 +59,11 @@ import { getResultFilePath } from './stage-result.ts';
 import { isSettled } from './task-settlement.ts';
 import { termCapture } from './terminal-backend.ts';
 import type { MarkerCondition, MarkerPayload } from './transient-marker.ts';
-import { readWorkflowState, workflowTaskEntries, type TaskRecord } from './workflow-state.ts';
+import {
+  deriveQueueAlertProjection,
+  type QueueHealthStateLike,
+} from './queue-inference-status.ts';
+import { readWorkflowState, workflowTaskEntries, type TaskRecord, type WorkflowState } from './workflow-state.ts';
 
 export const ATTENTION_PROJECTION_SCHEMA_VERSION = 1 as const;
 export const ATTENTION_PROJECTION_FILE = 'attention.json';
@@ -64,11 +75,16 @@ export type AttentionKind =
   | 'operator-decision'
   | 'exhausted'
   | 'policy-terminal'
-  | 'incident';
+  | 'incident'
+  | 'queue-health'
+  | 'backstage-health'
+  | 'openrouter'
+  | 'malformed-challenge';
 
 /**
  * Fixed precedence: work blocked on a human answer first, then escalations,
- * then incidents. Ties break on age (oldest first), then id. No thresholds.
+ * then incidents, then non-task operational signals (HOK-3424). Ties break on
+ * age (oldest first), then id. No thresholds.
  */
 export const ATTENTION_KIND_RANK: Readonly<Record<AttentionKind, number>> = Object.freeze({
   'approve-plan': 0,
@@ -78,6 +94,10 @@ export const ATTENTION_KIND_RANK: Readonly<Record<AttentionKind, number>> = Obje
   exhausted: 4,
   'policy-terminal': 5,
   incident: 6,
+  'queue-health': 7,
+  'backstage-health': 8,
+  openrouter: 9,
+  'malformed-challenge': 10,
 });
 
 export interface AttentionCommand {
@@ -177,12 +197,36 @@ export interface AttentionIncidentInput {
   reconciliation: Pick<IncidentFilingReconciliation, 'outcome'>;
 }
 
+/**
+ * A non-task operational signal (HOK-3424): queue health, backstage health,
+ * the OpenRouter balance and malformed challenge state were dashboard header
+ * lines read from four private files. They are free items — no `taskId` — so
+ * the inbox renders them and the Observer's task-scoped push skips them.
+ */
+export type AttentionFreeKind = Extract<
+  AttentionKind,
+  'queue-health' | 'backstage-health' | 'openrouter' | 'malformed-challenge'
+>;
+
+export interface AttentionFreeItemInput {
+  kind: AttentionFreeKind;
+  /** Stable condition key, so the item id survives a repeated poll. */
+  key: string;
+  summary: string;
+  /** Epoch ms the condition was first observed, when the source records it. */
+  sinceMs?: number;
+  evidence: AttentionEvidence[];
+  /** Tasks the signal implicates, when known (never item ownership). */
+  affectedTaskIds?: string[];
+}
+
 export interface AttentionInputs {
   passStampMs: number;
   staleAfterMs: number;
   nowMs: number;
   tasks: AttentionTaskInput[];
   incidents: AttentionIncidentInput[];
+  freeItems?: AttentionFreeItemInput[];
 }
 
 // ── Pure derivation ────────────────────────────────────────────────────────
@@ -474,6 +518,20 @@ function incidentItems(incidents: readonly AttentionIncidentInput[], nowMs: numb
   return [...byFingerprint.values()];
 }
 
+function freeItems(inputs: readonly AttentionFreeItemInput[], nowMs: number): AttentionItem[] {
+  return inputs.map((input) => ({
+    id: `${input.kind}:${input.key}`,
+    kind: input.kind,
+    ...(input.affectedTaskIds && input.affectedTaskIds.length > 0
+      ? { affectedTaskIds: [...new Set(input.affectedTaskIds)].sort() }
+      : {}),
+    since: input.sinceMs ?? nowMs,
+    summary: input.summary,
+    evidence: input.evidence,
+    commands: [],
+  }));
+}
+
 /** Sort by the fixed kind precedence, then age, then id. */
 export function compareAttentionItems(a: AttentionItem, b: AttentionItem): number {
   return ATTENTION_KIND_RANK[a.kind] - ATTENTION_KIND_RANK[b.kind]
@@ -498,6 +556,7 @@ export function deriveAttentionItems(inputs: AttentionInputs): AttentionProjecti
     if (escalated) items.push(escalated);
   }
   items.push(...incidentItems(inputs.incidents, inputs.nowMs));
+  items.push(...freeItems(inputs.freeItems ?? [], inputs.nowMs));
   items.sort(compareAttentionItems);
   return {
     schemaVersion: ATTENTION_PROJECTION_SCHEMA_VERSION,
@@ -686,6 +745,138 @@ export function readTaskProgressForAttention(
   }
 }
 
+// ── Non-task signals (HOK-3424) ────────────────────────────────────────────
+//
+// The four dashboard header lines each read one file privately. They become
+// free attention items here so the inbox renders them and no reader re-derives
+// "does this need a human". None carries a taskId.
+
+function readQueueHealthFreeItem(stateDir: string): AttentionFreeItemInput | null {
+  const path = join(stateDir, 'queue-health.json');
+  const health = readJson<QueueHealthStateLike & { currentAlertProjection?: unknown }>(path);
+  if (!health || typeof health !== 'object') return null;
+  const stored = health.currentAlertProjection;
+  const projection = stored && typeof stored === 'object'
+    ? stored as { status?: unknown; summary?: unknown; nextAction?: unknown; episode?: { startedAt?: unknown } | null }
+    : deriveQueueAlertProjection({ queueHealth: health, nowMs: Date.now() });
+  const status = typeof projection.status === 'string' ? projection.status : 'unknown';
+  if (status === 'healthy') return null;
+  const summary = typeof projection.summary === 'string' && projection.summary.trim()
+    ? projection.summary.trim()
+    : `queue status: ${status}`;
+  const nextAction = typeof projection.nextAction === 'string' ? projection.nextAction : null;
+  const startedAt = projection.episode?.startedAt;
+  const sinceMs = typeof startedAt === 'string' ? Date.parse(startedAt) : NaN;
+  return {
+    kind: 'queue-health',
+    key: status,
+    summary,
+    ...(Number.isFinite(sinceMs) ? { sinceMs } : {}),
+    evidence: [{
+      source: 'queue-health.json',
+      path,
+      summary: nextAction ? `${status} (next: ${nextAction})` : status,
+    }],
+  };
+}
+
+/** Statuses that mean a service needs a look (mirrors the old header line). */
+function backstageServiceUnhealthy(status: string, progressState: string | null): boolean {
+  if (!status) return false;
+  if (progressState === 'stalled' && status === 'healthy') return true;
+  if (status === 'healthy' || status === 'disabled') return false;
+  return /^(degraded|needs-user|stalled|alive-|missing-|stale-|backstage-missing)/.test(status);
+}
+
+function readBackstageHealthFreeItem(stateDir: string): AttentionFreeItemInput | null {
+  const path = join(stateDir, 'backstage-health.json');
+  const health = readJson<{
+    status?: unknown;
+    services?: Record<string, { status?: unknown; progressState?: unknown } | undefined>;
+  }>(path);
+  if (!health || typeof health !== 'object') return null;
+  const lines: string[] = [];
+  for (const service of ['tend', 'observer'] as const) {
+    const entry = health.services?.[service];
+    const status = typeof entry?.status === 'string' ? entry.status : '';
+    const progressState = typeof entry?.progressState === 'string' ? entry.progressState : null;
+    if (backstageServiceUnhealthy(status, progressState)) {
+      lines.push(`${service}: ${status === 'healthy' && progressState === 'stalled' ? 'alive-not-progressing' : status}`);
+    }
+  }
+  if (lines.length === 0) return null;
+  return {
+    kind: 'backstage-health',
+    key: lines.map((line) => line.split(':')[0]).join(','),
+    summary: `backstage unhealthy — ${lines.join(' │ ')}`,
+    ...(mtimeMs(path) !== null ? { sinceMs: mtimeMs(path) as number } : {}),
+    evidence: [{ source: 'backstage-health.json', path, summary: lines.join(' │ ') }],
+  };
+}
+
+export function openRouterWarningCachePath(session: string): string {
+  return `/tmp/${session}-openrouter-warning.txt`;
+}
+
+function readOpenRouterFreeItem(session: string): AttentionFreeItemInput | null {
+  const path = openRouterWarningCachePath(session);
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf-8');
+  } catch {
+    return null;
+  }
+  const warning = raw.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0);
+  if (!warning) return null;
+  return {
+    kind: 'openrouter',
+    key: shortKey(warning),
+    summary: warning,
+    ...(mtimeMs(path) !== null ? { sinceMs: mtimeMs(path) as number } : {}),
+    evidence: [{ source: 'openrouter-warning-cache', path, summary: warning }],
+  };
+}
+
+function readMalformedChallengeFreeItem(state: WorkflowState, stateDir: string): AttentionFreeItemInput | null {
+  const keys = workflowTaskEntries(state)
+    // HOK-2926: a challenge stub with no slug is filtered out of the task list
+    // but may still have a live window. Diagnostic only; no state inference.
+    .filter(([, task]) => typeof task.challengePairId === 'string' && task.challengePairId !== '' && !task.slug)
+    .map(([taskId]) => taskId)
+    .sort();
+  if (keys.length === 0) return null;
+  const summary = keys.length === 1
+    ? `challenge pair entry ${keys[0]} has no slug: arm is hidden but may still be running; repair state (HOK-2926)`
+    : `${keys.length} challenge pair entries have no slug (${keys.join(', ')}): arms are hidden but may still be running; repair state (HOK-2926)`;
+  const statePath = join(stateDir, 'workflow-state.json');
+  return {
+    kind: 'malformed-challenge',
+    key: keys.join(','),
+    summary,
+    ...(mtimeMs(statePath) !== null ? { sinceMs: mtimeMs(statePath) as number } : {}),
+    evidence: [{ source: 'workflow-state.json', path: statePath, summary: `no-slug challenge entries: ${keys.join(', ')}` }],
+    affectedTaskIds: keys,
+  };
+}
+
+/** Read the four non-task signals from their existing files. Never throws. */
+export function readNonTaskAttentionInputs(opts: {
+  stateDir: string;
+  session: string;
+  state: WorkflowState;
+}): AttentionFreeItemInput[] {
+  const items: AttentionFreeItemInput[] = [];
+  const queue = readQueueHealthFreeItem(opts.stateDir);
+  if (queue) items.push(queue);
+  const backstage = readBackstageHealthFreeItem(opts.stateDir);
+  if (backstage) items.push(backstage);
+  const openrouter = readOpenRouterFreeItem(opts.session);
+  if (openrouter) items.push(openrouter);
+  const challenge = readMalformedChallengeFreeItem(opts.state, opts.stateDir);
+  if (challenge) items.push(challenge);
+  return items;
+}
+
 async function readConfirmedIncidents(repoDir: string, stateDir: string): Promise<AttentionIncidentInput[]> {
   const incidentsDir = join(stateDir, 'incidents');
   if (!existsSync(join(incidentsDir, 'index.json'))) return [];
@@ -722,11 +913,13 @@ export async function gatherAttentionInputs(opts: GatherAttentionOptions): Promi
   const incidents = opts.incidentsFor
     ? await opts.incidentsFor()
     : await readConfirmedIncidents(opts.repoDir, opts.stateDir);
+  const freeItems = readNonTaskAttentionInputs({ stateDir: opts.stateDir, session: opts.session, state });
   return {
     passStampMs: opts.passStampMs,
     staleAfterMs: opts.staleAfterMs,
     nowMs: opts.nowMs ?? Date.now(),
     tasks,
     incidents,
+    freeItems,
   };
 }

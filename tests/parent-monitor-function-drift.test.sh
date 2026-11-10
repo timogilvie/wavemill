@@ -38,6 +38,15 @@ MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 # expanded route, so the release-plan health helper is no longer needed in either
 # scope. This drops the duplicated/identical pair count from 37 to 36.
 # HOK-3255 drops it from 36 to 35.
+# HOK-3458: the mill-process-dead copies of clear_challenge_pair_state,
+# write_challenge_pair_state, challenge_pair_record_exists,
+# challenge_pair_records_file, challenge_pr_url_from_number,
+# write_manual_challenge_comparison_artifact, write_invalid_challenge_artifact,
+# mark_challenge_comparison_running, mark_challenge_eval_running,
+# check_routing_complete, codex_has_pending_approval,
+# challenge_pair_timed_out_sides_csv, and challenge_pair_timeout_reason are
+# deleted from wavemill-mill.sh (the monitor's copies are the live ones).
+# This drops the duplicated/identical pair count from 35 to 22.
 EXPECTED_DIVERGENT=""
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/wavemill-parent-monitor-drift.XXXXXX")"
@@ -80,8 +89,8 @@ identical_count="$(jq '.identical | length' "$baseline_json")"
 divergent_count="$(jq '.divergent | length' "$baseline_json")"
 divergent_names="$(jq -r '.divergent[].name' "$baseline_json" | sort)"
 
-assert_eq "$duplicated_count" "35" "duplicated parent/monitor function count changed"
-assert_eq "$identical_count" "35" "byte-identical parent/monitor function count changed"
+assert_eq "$duplicated_count" "22" "duplicated parent/monitor function count changed"
+assert_eq "$identical_count" "22" "byte-identical parent/monitor function count changed"
 assert_eq "$divergent_count" "0" "allowlisted divergent parent/monitor function count changed"
 assert_eq "$divergent_names" "$EXPECTED_DIVERGENT" "allowlisted divergent parent/monitor function names changed"
 
@@ -117,6 +126,6 @@ printf '%s' "$probe_function" >> "$new_duplicate_monitor"
 new_duplicate_json="$work_dir/new-duplicate.json"
 run_json "$new_duplicate_parent" "$new_duplicate_monitor" > "$new_duplicate_json"
 new_duplicate_count="$(jq '.duplicated | length' "$new_duplicate_json")"
-assert_eq "$new_duplicate_count" "36" "introducing a new duplicated function was not detected" "$new_duplicate_parent" "$new_duplicate_monitor"
+assert_eq "$new_duplicate_count" "23" "introducing a new duplicated function was not detected" "$new_duplicate_parent" "$new_duplicate_monitor"
 
 echo "parent-monitor-function-drift: ok"

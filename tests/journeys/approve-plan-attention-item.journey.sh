@@ -50,6 +50,12 @@ journey_render_dashboard() {
   ) 2>/dev/null || true
 }
 
+# Task-scoped items only. Session-wide free items (taskId null) are outside
+# this journey: the harness plays tend itself, so the monitor truthfully
+# reports the backstage window missing and the projection carries a
+# backstage-health item alongside the approval.
+TASK_ITEMS='[.items[] | select(.taskId != null)]'
+
 approve_plan_items() {
   jq -c --arg id "$ISSUE" '[.items[] | select(.kind == "approve-plan" and .taskId == $id)]' "$ATTENTION_FILE" 2>/dev/null || echo '[]'
 }
@@ -59,13 +65,14 @@ approve_plan_items() {
 observe_approval_request() {
   local fd="$1"
   [[ -f "$OBSERVED_FILE" ]] && return 0
-  jq -e --arg id "$ISSUE" '(.items | length) == 1 and .items[0].kind == "approve-plan" and .items[0].taskId == $id' \
+  jq -e --arg id "$ISSUE" "$TASK_ITEMS"' | length == 1 and .[0].kind == "approve-plan" and .[0].taskId == $id' \
     "$ATTENTION_FILE" >/dev/null 2>&1 || return 1
   journey_render_dashboard > "$DASHBOARD_AT_REQUEST"
-  grep -q "📥 INBOX (1)" "$DASHBOARD_AT_REQUEST" || return 1
+  grep -q "📥 INBOX (" "$DASHBOARD_AT_REQUEST" || return 1
+  grep -Eq "^$ISSUE +" "$DASHBOARD_AT_REQUEST" || return 1
   cp "$ATTENTION_FILE" "$OBSERVED_FILE"
-  journey_log "attention projection shows the approval request (tick $(journey_tick)); approving via $(jq -r '.items[0].commands[0].argv | join(" ")' "$OBSERVED_FILE")"
-  [[ "$(jq -r '.items[0].commands[0].argv[-1]' "$OBSERVED_FILE")" == "$fd/.plan-approved" ]] \
+  journey_log "attention projection shows the approval request (tick $(journey_tick)); approving via $(jq -r "$TASK_ITEMS"'[0].commands[0].argv | join(" ")' "$OBSERVED_FILE")"
+  [[ "$(jq -r "$TASK_ITEMS"'[0].commands[0].argv[-1]' "$OBSERVED_FILE")" == "$fd/.plan-approved" ]] \
     || journey_fail "approve-plan command does not name $fd/.plan-approved"
   return 0
 }
@@ -95,18 +102,18 @@ journey_wait_until "$ISSUE" 10 "coding launched"                         phase_i
 
 echo ""
 echo "assertions:"
-journey_assert "the projection held exactly one item, approve-plan for $ISSUE" \
-  journey_jq_true --arg id "$ISSUE" '(.items | length) == 1 and .items[0].kind == "approve-plan" and .items[0].taskId == $id' "$OBSERVED_FILE"
+journey_assert "the projection held exactly one task item, approve-plan for $ISSUE" \
+  journey_jq_true --arg id "$ISSUE" "$TASK_ITEMS"' | length == 1 and .[0].kind == "approve-plan" and .[0].taskId == $id' "$OBSERVED_FILE"
 journey_assert "the item is keyed on the bound packet and carries the approval text" \
-  journey_jq_true '.items[0].id | test(":approve-plan:[0-9a-f]{12}$")' "$OBSERVED_FILE"
-journey_assert "the dashboard inbox listed the task as its only row" \
+  journey_jq_true "$TASK_ITEMS"'[0].id | test(":approve-plan:[0-9a-f]{12}$")' "$OBSERVED_FILE"
+journey_assert "the dashboard inbox listed the task row" \
   grep -Eq "^$ISSUE +" "$DASHBOARD_AT_REQUEST"
 journey_assert "the dashboard row showed the approval request" \
   grep -q "Plan ready — waiting for approval" "$DASHBOARD_AT_REQUEST"
 journey_assert "the only operator action was the one approval" test "$(journey_approval_count)" = "1"
 journey_assert "a newer projection no longer holds the item" test "$(approve_plan_items)" = "[]"
 journey_assert "the dashboard inbox no longer lists the task after approval" \
-  bash -c '! grep -q "📥 INBOX (" "$1"' _ "$DASHBOARD_AFTER"
+  bash -c '! sed -n "/📥 INBOX (/,/^⚡ ACTIVE/p" "$1" | grep -Eq "^$2 +"' _ "$DASHBOARD_AFTER" "$ISSUE"
 journey_assert "the attention-projection job ran as a tracked job" \
   test -d "$STATE_DIR/async-jobs/attention-projection-$SESSION"
 

@@ -340,3 +340,18 @@ it('rejects private recovery identity and coding-to-planning fallback', () => {
       .some(finding => finding.pattern === 'private-recovery-contract'));
   }
 });
+
+// protects: a read-only launcher cannot omit or override the shared final synthesis option.
+it('requires terminal synthesis on planning/review loop calls and shared configurations', () => {
+  const file = 'shared/lib/native-agent/launch-planning.ts';
+  const findings = (source: string) => checkGuardSource(STAGE_EXIT_IDENTITY_GUARD, file, source)
+    .filter(finding => finding.pattern === 'missing-readonly-terminal-synthesis');
+  assert.equal(findings('runWavemillLoop({ model });').length, 1);
+  assert.equal(findings('const config = { model }; runWavemillLoop(config);').length, 1);
+  const shared = 'const config = { terminalSynthesis: { prompt: "Finish" } };';
+  assert.equal(findings(shared + 'runWavemillLoop(config); runWavemillLoop({ ...config, context });').length, 0);
+  assert.equal(findings(shared + 'runWavemillLoop({ ...config, terminalSynthesis: undefined });').length, 1);
+  assert.equal(findings(shared + 'const disabled = { terminalSynthesis: undefined }; runWavemillLoop({ ...config, ...disabled });').length, 1);
+  assert.equal(findings(shared + 'const other = { context }; runWavemillLoop({ ...config, ...other });').length, 0);
+  assert.equal(findings('nativeReviewDeps.runWavemillLoop({ terminalSynthesis: { prompt: "Finish" } });').length, 0);
+});
