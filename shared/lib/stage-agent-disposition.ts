@@ -100,7 +100,7 @@ export type StageAgentProgress = Pick<
   | 'agentRecord'
   | 'agentState'
   | 'agentIdle'
-  | 'agentProcessLive'
+  | 'agentExited'
   | 'agentBackgroundLive'
   | 'blockingPrompt'
   | 'stalled'
@@ -149,6 +149,24 @@ function isoToMs(iso: string | null | undefined): number | null {
   if (!iso) return null;
   const ms = Date.parse(iso);
   return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * HOK-3426: does a recorded exit fact refute a live agent record? A real agent
+ * killed mid-tool leaves `working` (from the PreToolUse it died in) as its last
+ * hook, so a live record may not outlive the exit written by the surface that
+ * observed the process end.
+ *
+ * Compared on whole seconds: hook record timestamps are epoch seconds while the
+ * exit fact is ISO, so the comparison is done in seconds. An exit in the same
+ * second as the record counts (`>=`) — the record cannot be newer than an exit
+ * in its own second.
+ */
+function exitFactBeatsRecord(exit: { at: string } | null, recordEpochSeconds: number): boolean {
+  if (!exit) return false;
+  const exitEpoch = isoToEpochSeconds(exit.at);
+  if (exitEpoch === null) return false;
+  return exitEpoch >= recordEpochSeconds;
 }
 
 /**
@@ -213,11 +231,18 @@ function waitingFromAgentState(state: HookState | null): StageAgentWaitingOn | n
  * 8. Background live → `in-flight` (`background-work`, low confidence).
  * 9. Agent record at/after launch:
  *    - live state → `in-flight` (`agent-<state>`); fresh `waiting`/
- *      `approval-needed` carry a `waitingOn`.
+ *      `approval-needed` carry a `waitingOn` — ENTIRELY skipped when a
+ *      recorded exit fact is at/after the record (HOK-3426): a killed agent's
+ *      last hook is `working` from the tool call it died in, so a live record
+ *      may not outlive the recorded exit.
  *    - settled state → `settled` (`agent-<state>-after-launch`, high).
  * 10. HOK-3386: owned-session idle (agent's own transcript stop event) at/
  *    after launch → `settled` (`agent-idle-after-launch`, high).
- * 11. Process exited → `settled` (`agent-exited`, high).
+ * 11. HOK-3426: a recorded exit fact (`agentExited` — the launcher's
+ *    `agent-exit` record, the task row's recorded window slot reporting dead, or a
+ *    controller-termination record) → `settled` (`agent-exited`, high). The
+ *    pane descendant count never settles a stage: with no exit fact the stage
+ *    falls through (`agent-stalled` once the stall clock fires).
  * 12. Stalled → `settled` (`agent-stalled`, high).
  * 13. Else → `in-flight` (`awaiting-agent-evidence`, unknown).
  */
@@ -293,10 +318,16 @@ export function decideStageAgentDisposition(input: StageAgentDispositionInput): 
   const launchedEpoch = isoToEpochSeconds(input.launch.launchedAt);
   if (record?.state && launchedEpoch !== null && record.timestamp >= launchedEpoch) {
     if (LIVE_AGENT_STATES.has(record.state)) {
-      return result('in-flight', `agent-${record.state}`, {
-        waitingOn: waitingFromAgentState(record.state),
-        evidenceConfidence: record.state === 'working' ? 'high' : 'low',
-      });
+      // HOK-3426: a recorded exit at/after this live record refutes it. This
+      // is the kill shape — the agent dies inside a tool call, so its last
+      // hook is `working` and only the recorded exit knows better. Without an
+      // exit fact the live record still holds (a long tool call is not an exit).
+      if (!exitFactBeatsRecord(input.progress.agentExited, record.timestamp)) {
+        return result('in-flight', `agent-${record.state}`, {
+          waitingOn: waitingFromAgentState(record.state),
+          evidenceConfidence: record.state === 'working' ? 'high' : 'low',
+        });
+      }
     }
     if (SETTLED_AGENT_STATES.has(record.state)) {
       return result('settled', `agent-${record.state}-after-launch`, { evidenceConfidence: 'high' });
@@ -313,7 +344,11 @@ export function decideStageAgentDisposition(input: StageAgentDispositionInput): 
     return result('settled', 'agent-idle-after-launch', { evidenceConfidence: 'high' });
   }
 
-  if (input.progress.agentProcessLive === false) {
+  // HOK-3426: settle on the ONE exit fact only. The pane descendant count
+  // (`agentProcessLive`) is a name-resolved-pane proxy — it can name a
+  // quarantined/recreated window or the right pane before its agent forked —
+  // and must never settle a stage; with no exit fact we fall through.
+  if (input.progress.agentExited) {
     return result('settled', 'agent-exited', { evidenceConfidence: 'high' });
   }
 
@@ -417,7 +452,16 @@ export function evaluateStageAgentDisposition(
   const withoutProgress = decideStageAgentDisposition(input);
   if (withoutProgress.reason !== 'progress-unavailable') return withoutProgress;
   try {
-    return decideStageAgentDisposition({ ...input, progress: opts.getProgress() });
+    const progress = opts.getProgress();
+    // Read the completion artifact again AFTER the progress gather. An agent
+    // writes its completion marker before it exits, and the gather is slow
+    // (ps, hooks, transcripts, a terminal probe). Reading the marker first
+    // let an agent that finished during the gather look like "exited with no
+    // result", which relaunched the stage over finished work. Evidence that
+    // the agent ended is only ever judged against a marker read after it.
+    const hasCompletionArtifactNow = hasCompletionArtifact
+      || stageHasCompletionArtifact(opts.stateDir, opts.stage, opts.stageResult, opts.completionMarkerPath);
+    return decideStageAgentDisposition({ ...input, hasCompletionArtifact: hasCompletionArtifactNow, progress });
   } catch {
     return withoutProgress;
   }
@@ -431,7 +475,7 @@ export interface GatherStageTaskProgressOptions {
   worktree: string;
   stateDir: string;
   stage: StageAgentStage;
-  task?: Pick<TaskRecord, 'updated' | 'branch' | 'slug' | 'worktree' | 'status' | 'phase' | 'lifecycle'>;
+  task?: Pick<TaskRecord, 'updated' | 'branch' | 'slug' | 'worktree' | 'status' | 'phase' | 'lifecycle' | 'windowId'>;
   stageResult: Pick<StageResult, 'startedAt' | 'finishedAt'> | null;
   paneText?: string;
   panePid?: number | null;
@@ -512,6 +556,17 @@ export function gatherStageTaskProgress(opts: GatherStageTaskProgressOptions): T
     launchAtOverride = undefined; // fall through to the primitive's stage-result read
   }
 
+  // HOK-3426: scope the recorded exit fact to THIS stage and THIS attempt. A
+  // record naming another phase (the coding pane's quarantine) or older than
+  // the launch (a previous attempt) is never this stage's exit. The phase is
+  // the stage name itself, which is the same name the launcher records (the
+  // session-ownership kind) and the `--phase` the controller passes to
+  // `stage_agent_teardown`; records with NO phase still count, because some
+  // teardown paths (terminal cleanup, pane release, challenge cancel) do not
+  // stamp one.
+  const exitPhase: string = opts.stage;
+  const exitSince = stageLaunch?.launchedAt ?? null;
+
   return getTaskProgress({
     issue: opts.issue,
     session: opts.session,
@@ -523,6 +578,8 @@ export function gatherStageTaskProgress(opts: GatherStageTaskProgressOptions): T
     ownershipStateDir: opts.stateDir,
     extraTransitionInputs: transitionInputs,
     ...(launchAtOverride !== undefined ? { launchAtOverride } : {}),
+    agentExitPhase: exitPhase,
+    agentExitSince: exitSince,
     paneText: opts.paneText,
     panePid: opts.panePid,
     now: opts.now,

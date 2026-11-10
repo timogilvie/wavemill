@@ -1,0 +1,30 @@
+# shellcheck shell=bash
+# Fake reviewer for the HOK-3426 replay (sourced by tests/fakes/bin/claude).
+#
+# The reported 2026-11-05 stall was attributed to a LIVE reviewer being
+# stamped `failed` (agent-exited) from a pane descendant count, which would
+# burn the stage-failure-review bucket. Production logs hold no record of that
+# incident (plan Step 0), so the attribution is a reproduction, not incident
+# evidence: against the base-branch rule a name-resolved pane whose shell has
+# no child settles a live review as agent-exited.
+#
+# This fixture is the opposite, honest case: the reviewer really is killed
+# mid-stage (SIGTERM, exit 143) before it writes the PR or a verdict. The pane
+# shell survives the kill, so no pane read can see it — only the launcher's
+# recorded `agent-exit` fact can settle the stage, which must happen once and
+# relaunch through the shared bucket with zero operator touches.
+if [[ -f "$FEATURE_DIR/review-kill-injected" ]]; then
+  default_review
+  return
+fi
+touch "$FEATURE_DIR/review-kill-injected"
+# The real kill shape: the reviewer dies inside a tool call, so its LAST hook
+# record is `working` (PreToolUse) and the harness never writes an idle/Stop
+# record. Without the recorded exit refuting this stale live record the stage
+# would hold forever (or wait out the 30-minute stall clock); with it the
+# stage must settle on the recorded exit.
+hook_file="/tmp/wavemill-${WAVEMILL_SESSION}-${WAVEMILL_ISSUE}.hook"
+printf '{"state":"working","event":"PreToolUse","detail":"Bash","agent":"claude","timestamp":%s,"writer":"agent"}\n' \
+  "$(date +%s)" > "$hook_file" 2>/dev/null || true
+printf 'reviewer stopping before the PR (simulated SIGTERM)\n'
+exit 143
