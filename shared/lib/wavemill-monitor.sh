@@ -21972,7 +21972,7 @@ monitor_issue_state() {
             esac
             pr_open_title=$(pass_task_field "$ISSUE" title)
             if open_task_pr "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$FEATURE_DIR" "$ISSUE" "$pr_open_title"; then
-              pr_number="$OPEN_TASK_PR_NUMBER"
+              pr_number="${OPEN_TASK_PR_NUMBER:-}"
               PR_BY_ISSUE["$ISSUE"]="$pr_number"
               save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$pr_number" "" "$current_agent"
               log "status" "$ISSUE → mill opened PR #$pr_number for $BRANCH (${OPEN_TASK_PR_OUTCOME:-created})"
