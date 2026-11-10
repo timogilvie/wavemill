@@ -276,11 +276,6 @@ export const OPERATOR_DECISIONS: readonly OperatorDecision[] = Object.freeze([
     testRef: 'failure-policy.test.ts:operator-decision:challenge-comparison-stale',
   },
   {
-    code: 'review-session-interrupted-pre-pr',
-    reason: 'review was interrupted before a PR existed; the operator runs /re-review, which is not a mill retry path',
-    testRef: 'failure-policy.test.ts:operator-decision:review-session-interrupted-pre-pr',
-  },
-  {
     code: 'operator-command-failed',
     reason: 'an operator-issued command (e.g. /re-review) failed to launch; the operator who issued it is the one waiting',
     testRef: 'failure-policy.test.ts:operator-decision:operator-command-failed',
