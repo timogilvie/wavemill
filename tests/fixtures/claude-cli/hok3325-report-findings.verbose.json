@@ -1,0 +1,81 @@
+[
+  {
+    "type": "system",
+    "subtype": "init",
+    "session_id": "01367a57-7b0a-439d-83a9-bc35579a7a33",
+    "tools": ["ReportFindings"]
+  },
+  {
+    "type": "assistant",
+    "session_id": "01367a57-7b0a-439d-83a9-bc35579a7a33",
+    "content": [
+      {
+        "type": "tool_use",
+        "name": "ReportFindings",
+        "id": "toolu_01HOK3325",
+        "input": {
+          "findings": [
+            {
+              "file": "src/review/engine.ts",
+              "line": 42,
+              "severity": "warning",
+              "category": "error_handling",
+              "short_summary": "Retry message loses the original error",
+              "summary": "The retry log line interpolates the original exception before it has been stringified, so circular payloads are dropped silently.",
+              "failure_scenario": "A provider transient error with a circular detail object causes the retry emitter to throw, aborting the review instead of retrying.",
+              "verdict": "CONFIRMED"
+            },
+            {
+              "file": "src/review/formatter.ts",
+              "line": 88,
+              "severity": "warning",
+              "category": "logging",
+              "short_summary": "Verbose block prints raw finding objects",
+              "summary": "The verbose formatter prints the internal finding object directly, including the artifactRefs array that may contain local paths.",
+              "failure_scenario": "An operator reading the verbose log may see absolute local paths from a CI runner leaked into the review artifact.",
+              "verdict": "PLAUSIBLE"
+            },
+            {
+              "file": "tests/review/engine.test.ts",
+              "line": 155,
+              "severity": "warning",
+              "category": "test_quality",
+              "short_summary": "Blocker dismissal test lacks a negative case",
+              "summary": "The existing dismissal parser test only asserts that a justified dismissal is kept; it does not assert that an unjustified dismissal is rejected.",
+              "failure_scenario": "A regression that always accepts dismissals would not be caught, allowing blockers to be waved through without justification.",
+              "verdict": "CONFIRMED"
+            }
+          ]
+        },
+        "parent_tool_use_id": null
+      }
+    ]
+  },
+  {
+    "type": "user",
+    "session_id": "01367a57-7b0a-439d-83a9-bc35579a7a33",
+    "content": [
+      {
+        "type": "tool_result",
+        "tool_use_id": "toolu_01HOK3325",
+        "is_error": false,
+        "content": "3 findings reported."
+      }
+    ]
+  },
+  {
+    "type": "result",
+    "session_id": "01367a57-7b0a-439d-83a9-bc35579a7a33",
+    "result": "verdict is ready",
+    "usage": {
+      "input_tokens": 100,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 3
+    },
+    "total_cost_usd": 0.01,
+    "modelUsage": {
+      "claude-sonnet-5": { "outputTokens": 3 }
+    }
+  }
+]

@@ -282,6 +282,7 @@ TESTS=(
   shared/lib/pr-task-lookup-checker.test.ts
   shared/lib/mill-clock.test.ts
   shared/lib/model-registry.test.ts
+  shared/lib/model-adapters/claude-cli-output.test.ts
   shared/lib/model-adapters/transport-adapter.test.ts
   shared/lib/model-registry-gpt55-inventory.test.ts
   shared/lib/model-registry-loader.test.ts
@@ -447,6 +448,7 @@ TESTS=(
   tools/lib/source-guard.test.ts
   tools/check-command-parse.test.ts
   tools/check-source-text-assertions.test.ts
+  tools/check-review-report-boundary.test.ts
   tools/check-openrouter-alias-audit-ci.test.ts
   tools/check-cross-pr-reverts.test.ts
   tools/hok2423-verify-native-provider-gate.test.ts
