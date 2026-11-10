@@ -17,6 +17,8 @@
 #
 # shellcheck source=../../shared/lib/process-identity.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../shared/lib/process-identity.sh"
+# shellcheck source=gh-state-lock.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-state-lock.sh"
 
 # The world: a bare origin repository at <root>/github.com/<owner>/<repo>.git
 # (so code that parses owner/repo out of the remote URL still works), a clone at

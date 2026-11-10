@@ -95,12 +95,22 @@ function releaseLock(lock) {
 }
 
 
+// Most commands end with process.exit() inside withLock, which skips the
+// `finally`. Release on exit too, or every such call leaves the lock behind
+// for the next caller to break.
+let lockHeld = false;
+process.on('exit', () => {
+  if (lockHeld) releaseLock(LOCK);
+});
+
 function withLock(fn) {
   acquireLock(LOCK);
+  lockHeld = true;
   try {
     return fn();
   } finally {
     releaseLock(LOCK);
+    lockHeld = false;
   }
 }
 
