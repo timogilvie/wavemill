@@ -13,6 +13,7 @@ import os from 'node:os';
 import { join } from 'node:path';
 import {
   decideStageAgentDisposition,
+  evaluateStageAgentDisposition,
   gatherStageTaskProgress,
   readStageAgentLaunch,
   type StageAgentDispositionInput,
@@ -692,6 +693,54 @@ test('HOK-3426: gatherStageTaskProgress scopes the exit fact to the stage and at
     assert.equal(dead.agentExited?.source, 'terminal-backend');
   } finally {
     setTerminalExecForTest(null);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// protects: an agent that writes its completion marker and exits while the
+// (slow) progress gather is running being read as "exited with no result" and
+// relaunched over finished work — the agent-idle-background-job CI failure.
+test('evaluateStageAgentDisposition judges the exit against a completion marker read after the gather', () => {
+  const dir = stateDir();
+  try {
+    appendOwnershipRow(dir, { sessionRef: 'coding-sess', harness: 'claude-code', kind: 'coding', model: 'm', launchedAt: LAUNCH_ISO });
+    const marker = join(dir, '.coding-complete');
+    const exitedProgress: StageAgentProgress = {
+      ...baseInput().progress!,
+      agentExited: { at: new Date(Date.parse(LAUNCH_ISO) + 60_000).toISOString(), source: 'launcher' },
+    };
+
+    // The agent finishes during the gather: marker first, then its exit.
+    const finishedDuringGather = evaluateStageAgentDisposition({
+      stateDir: dir,
+      stage: 'coding',
+      stageResult: { status: 'running', startedAt: LAUNCH_ISO, artifacts: {} },
+      currentHead: CURRENT,
+      launchHead: CURRENT,
+      completionMarkerPath: marker,
+      getProgress: () => {
+        writeFileSync(marker, '{}');
+        return exitedProgress;
+      },
+    });
+    assert.equal(finishedDuringGather.kind, 'settled');
+    assert.equal(finishedDuringGather.reason, 'agent-exited');
+    assert.equal(finishedDuringGather.hasCompletionArtifact, true);
+
+    // Control: an agent that exits without ever writing the marker has no result.
+    rmSync(marker);
+    const exitedWithoutResult = evaluateStageAgentDisposition({
+      stateDir: dir,
+      stage: 'coding',
+      stageResult: { status: 'running', startedAt: LAUNCH_ISO, artifacts: {} },
+      currentHead: CURRENT,
+      launchHead: CURRENT,
+      completionMarkerPath: marker,
+      getProgress: () => exitedProgress,
+    });
+    assert.equal(exitedWithoutResult.kind, 'settled');
+    assert.equal(exitedWithoutResult.hasCompletionArtifact, false);
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

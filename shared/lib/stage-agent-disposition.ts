@@ -452,7 +452,16 @@ export function evaluateStageAgentDisposition(
   const withoutProgress = decideStageAgentDisposition(input);
   if (withoutProgress.reason !== 'progress-unavailable') return withoutProgress;
   try {
-    return decideStageAgentDisposition({ ...input, progress: opts.getProgress() });
+    const progress = opts.getProgress();
+    // Read the completion artifact again AFTER the progress gather. An agent
+    // writes its completion marker before it exits, and the gather is slow
+    // (ps, hooks, transcripts, a terminal probe). Reading the marker first
+    // let an agent that finished during the gather look like "exited with no
+    // result", which relaunched the stage over finished work. Evidence that
+    // the agent ended is only ever judged against a marker read after it.
+    const hasCompletionArtifactNow = hasCompletionArtifact
+      || stageHasCompletionArtifact(opts.stateDir, opts.stage, opts.stageResult, opts.completionMarkerPath);
+    return decideStageAgentDisposition({ ...input, hasCompletionArtifact: hasCompletionArtifactNow, progress });
   } catch {
     return withoutProgress;
   }
