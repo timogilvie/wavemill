@@ -19,5 +19,5 @@ shared/lib/tend-controller.ts 1  # reads the handoff-claim bucket count for diag
 shared/lib/transient-marker.sh 1  # discovers exhausted sentinels to decide whether the reconciler must run; read-only
 shared/lib/wavemill-monitor.sh 6  # pre-guard sites: reconciliation fingerprint companion, review-recovery raw clear of the ready buckets, operator next-action text
 shared/lib/wavemill-startup-runner.sh 1  # removes the legacy `.review-infra-retries` file on fresh launch; no longer written
-tools/observer.ts 3  # observer detectors read bucket sentinels to report exhausted buckets; detection only
+tools/observer.ts 1  # observer auto-fix still reads an exhausted sentinel for diagnostics; task attention now comes from the HOK-3423 projection
 tools/state-invariants.ts 1  # HOK-3229 I7 detector: finds exhausted sentinels without a condition companion; detection only

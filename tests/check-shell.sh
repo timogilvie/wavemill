@@ -312,6 +312,8 @@ for f in \
   "$REPO_DIR"/tests/journeys/errored-with-pr.journey.sh \
   "$REPO_DIR"/tests/journeys/inputs-ready-before-approval.journey.sh \
   "$REPO_DIR"/tests/journeys/approve-plan-attention-item.journey.sh \
+  "$REPO_DIR"/tests/journeys/observer-attention-push.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/observer-attention-push/fake-agent/coding \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3220/fake-agent/planning \
   "$REPO_DIR"/tests/journeys/mid-flight-base-conflict.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/hok-3273/fake-agent/review \
@@ -366,6 +368,7 @@ for f in \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-restart.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-budgets.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-flags.test.sh \
+  "$REPO_DIR"/tests/deepseek-gh-wrapper.test.sh \
   "$REPO_DIR"/tests/fixtures/terminal-lifecycle/merge_commit_delivery.sh \
   "$REPO_DIR"/tests/fixtures/terminal-lifecycle/squash_delivery.sh \
   "$REPO_DIR"/tests/fixtures/terminal-lifecycle/rebase_delivery.sh \

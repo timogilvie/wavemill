@@ -197,6 +197,25 @@ fakes_spawn() {
   FAKES_LAST_SPAWN_PID="$pid"
 }
 
+# Start the fake push sink (HOK-3424): an ephemeral loopback HTTP server that
+# appends one JSON line per request to <capture> and writes its bound port to
+# <port-file>. Registered through fakes_spawn so world teardown kills it.
+# Args: capture file, port file. Prints the port once listening.
+fakes_start_push_sink() {
+  local capture="${1:?fakes_start_push_sink: capture file required}"
+  local port_file="${2:?fakes_start_push_sink: port file required}"
+  : > "$capture"
+  rm -f "$port_file"
+  fakes_spawn node "$FAKES_DIR/push-sink.mjs" "$capture" "$port_file" \
+    </dev/null >/dev/null 2>&1
+  local waited=0
+  while [[ ! -s "$port_file" ]]; do
+    (( waited++ < 100 )) || { echo "fakes_start_push_sink: sink did not start" >&2; return 1; }
+    sleep 0.05
+  done
+  cat "$port_file"
+}
+
 # Start the world's private tmux server. Its first window runs the owner
 # watcher (world-watcher.sh), which is both what keeps the server up and what
 # tears the world down when the owner dies untrapped: the server daemonizes,

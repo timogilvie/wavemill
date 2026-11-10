@@ -153,18 +153,18 @@ When a planner failure occurs:
 
 ## Dashboard Warning
 
-When queue-health status is `"degraded"`, the dashboard renders a single-line warning:
+When queue-health status is `"degraded"`, the inbox carries one **free** (non-task) `queue-health` item (HOK-3423/HOK-3424), rendered from the projection's `summary`/`nextAction`:
 
 ```
-├─ WARN: queue planning degraded: timeout; flat fallback active; retry in 14s
+[queue-health] queue planning degraded: timeout; flat fallback active; retry in 14s
 ```
 
-The warning is produced by `queue_health_dashboard_warning()` in `wavemill-status.sh` and deduplicates naturally by rendering current state (not by appending logs).
+The item is produced by `deriveAttentionItems()` in `shared/lib/attention.ts`, written to `.wavemill/attention.json` by the monitor's `attention-projection` job, and deduplicates naturally by rendering current state (not by appending logs). It has no `taskId`, so the Observer never pushes it to a phone or desktop.
 
-For `inference_unavailable` the backstage line reads `Queue: degraded (inference_unavailable: failed)` and the warning reads:
+For `inference_unavailable` the backstage line reads `Queue: degraded (inference_unavailable: failed)` and the inbox item reads:
 
 ```
-├─ WARN: queue inference unavailable (failed); planning with explicit edges only; last error: …
+[queue-health] queue inference unavailable (failed); planning with explicit edges only; last error: …
 ```
 
 When healthy with a report, the backstage line shows the edges in use: `Queue: healthy (inferred 3)`. The monitor also logs one `queue inference unavailable (<status>)` warning per status transition (deduplicated with `$STATE_DIR/.queue-inference-warn`).
@@ -228,22 +228,25 @@ queue_health_record_failure "$reason" "$step" "$pid" "$pgid" \
   "$stdout_excerpt" "$stderr_excerpt" "$input_snapshot"
 ```
 
-### TypeScript (observer.ts)
+### TypeScript (attention.ts)
 
-Queue-health is read from disk during repo analysis:
+Queue-health reaches the inbox only through the one attention decision:
 
 ```typescript
-if (repo.queueHealth && repo.queueHealth.status === 'degraded') {
-  // Create finding for degraded queue planning
-}
+// deriveAttentionItems: status !== 'healthy' → one free `queue-health` item
+const projection = deriveQueueAlertProjection({ queueHealth: health });
 ```
+
+The Observer no longer scans queue-health itself: its push reads
+`.wavemill/attention.json`, and free items (no `taskId`) are never pushed.
 
 ### Dashboard (wavemill-status.sh)
 
+The dashboard inbox renders only `$STATE_DIR/attention.json`, so there is no
+per-signal header warning to maintain:
+
 ```bash
-if queue_health_warning="$(queue_health_dashboard_warning "$STATE_FILE" 2>/dev/null)"; then
-  printf "${D}├─ WARN: %s${N}${EL}\n" "$queue_health_warning" >> "$FRAME"
-fi
+render_inbox_section
 ```
 
 ## Backward Compatibility

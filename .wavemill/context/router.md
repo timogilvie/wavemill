@@ -121,7 +121,7 @@ Use `wavemill doctor openrouter` to inspect whether configured OpenRouter/native
 
 - `wavemill doctor openrouter --json --repo-dir <dir>` emits the full machine-readable report.
 - `wavemill doctor openrouter --stage coder` limits the view to one workflow stage.
-- `wavemill mill` startup runs the same doctor in a guarded, fail-silent path and caches a one-line warning in `/tmp/${SESSION}-openrouter-warning.txt` for the dashboard header.
+- `wavemill mill` startup runs the same doctor in a guarded, fail-silent path and caches a one-line warning in `/tmp/${SESSION}-openrouter-warning.txt`, which `shared/lib/attention.ts` projects as the free (non-task) `openrouter` inbox item (HOK-3423/HOK-3424).
 
 ### Reason Taxonomy
 

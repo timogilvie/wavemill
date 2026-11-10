@@ -54,6 +54,7 @@ TESTS=(
   shared/lib/operator-intervention.test.ts
   shared/lib/intervention-detector.test.ts
   shared/lib/reliability-metrics.test.ts
+  shared/lib/stall-cause.test.ts
   shared/lib/label-write-ledger.test.ts
   shared/lib/pr-timeline.test.ts
   shared/lib/stage-result.test.ts
@@ -326,6 +327,7 @@ TESTS=(
   shared/lib/harness-diff.test.ts
   shared/lib/quota-state.test.ts
   shared/lib/template-curly-checker.test.ts
+  shared/lib/operator-tools-index.test.ts
   shared/lib/test-tracked-write-checker.test.ts
   shared/lib/task-identity-checker.test.ts
   shared/lib/task-record-shape-checker.test.ts
