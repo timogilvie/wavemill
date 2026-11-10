@@ -50,6 +50,27 @@ check "pr list --search head: finds the PR (batched PR cache shape)" \
   test "$(gh pr list --state all --search 'head:task/one head:task/other' --json number --jq 'length')" = 1
 check "pr list --label filters" test "$(gh pr list --label wm:ready --json number --jq 'length')" = 0
 
+echo "gh: state lock"
+# protects: a read that exits inside the lock leaving it behind, so shell
+# callers wait out their whole budget on a lock nobody holds
+gh pr view 1 --json number >/dev/null
+check "a read command releases the state lock when it exits" test ! -e "$FAKE_GH_STATE.lock"
+gh pr checks 1 >/dev/null 2>&1 || true
+check "pr checks releases the state lock when it exits" test ! -e "$FAKE_GH_STATE.lock"
+# protects: a shell caller going ahead without the lock, or stalling on a lock
+# whose owner was killed
+bash -c 'exit 0' & dead_pid=$!
+wait "$dead_pid"
+mkdir "$FAKE_GH_STATE.lock" && printf '%s' "$dead_pid" > "$FAKE_GH_STATE.lock/pid"
+check "a shell caller takes over a lock whose owner is dead" fakes_gh_state_lock
+check "the lock then names the caller" test "$(cat "$FAKE_GH_STATE.lock/pid" 2>/dev/null)" = "$$"
+(sleep 1; fakes_gh_state_unlock) &
+lock_waited_from=$SECONDS
+check "gh waits for a live shell owner instead of breaking its lock" gh pr view 1 --json number
+check "and it waited for the release" test "$((SECONDS - lock_waited_from))" -ge 1
+wait
+check "the lock is free afterwards" test ! -e "$FAKE_GH_STATE.lock"
+
 echo "gh: shapes match recorded real responses"
 fields="$(jq -r 'keys | join(",")' "$SCRIPT_DIR/recordings/pr-view.shape.json")"
 gh pr edit 1 --add-label wm:ready >/dev/null

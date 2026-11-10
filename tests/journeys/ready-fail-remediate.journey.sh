@@ -54,14 +54,10 @@ ci_verdict_for_head() {
 }
 
 ci_set_pr1() {
-  local conclusion="$1" lock="$FAKE_GH_STATE.lock" i
-  for i in $(seq 1 500); do
-    mkdir "$lock" 2>/dev/null && break
-    sleep 0.01
-  done
-  printf '%s' "$$" > "$lock/pid"
+  local conclusion="$1"
+  fakes_gh_state_lock
   fakes_gh_state '.checks.byPr["1"] = [{name: "unit-tests", conclusion: $c}]' --arg c "$conclusion"
-  rm -rf "$lock"
+  fakes_gh_state_unlock
 }
 
 CI_LAST=""
