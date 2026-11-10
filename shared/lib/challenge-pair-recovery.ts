@@ -410,8 +410,6 @@ export function assessChallengePair(
 
 /**
  * Inputs for building a superseding comparison record (HOK-2934/HOK-3321).
- * Shared by `challenge-recovery` and `recover-hok-3313` so there is exactly
- * one superseding-record shape.
  */
 export interface SupersedingComparisonInput {
   pairId: string;

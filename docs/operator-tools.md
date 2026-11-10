@@ -81,12 +81,3 @@ Each one repairs historical records once. Most were written for a specific past 
 | `tools/generate-claude-permissions.ts` | Generates Claude Code permission settings from wavemill config | A settings file (default path, or `--output`) |
 | `tools/generate-codex-permissions.ts` | Generates Codex permission settings from wavemill config | A settings file (default path, or `--output`) |
 
-## One-off incident tools (scheduled for deletion in HOK-3458)
-
-| Tool | What it does | Writes |
-| -- | -- | -- |
-| `tools/recover-hok-3313.ts` | Re-attests eval records wrongly invalidated by the HOK-3313 model comparison | Appends records with `--write` |
-| `tools/backfill-hok-3315.ts` | Backfills arm-termination records for HOK-3315 | Only with `--apply` |
-| `tools/hok2417-verify-native-expansion.ts` | HOK-2417 verifier: runs a real native expansion | Calls a model; writes to `/tmp/hok2417` |
-| `tools/hok2421-verify-native-patch-path.ts` | HOK-2421 verifier: native patch-path certification scenarios | A temporary repo |
-| `tools/hok2425-verify-native-workflow-certification.ts` | HOK-2425 verifier: workflow certification checks | Its evidence file in the repo |

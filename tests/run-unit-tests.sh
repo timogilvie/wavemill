@@ -434,7 +434,6 @@ TESTS=(
   tools/replay-native-request.test.ts
   tools/add-pr-label.test.ts
   tools/backfill-challenge-stage.test.ts
-  tools/recover-hok-3313.test.ts
   tools/backfill-stage-executed-model.test.ts
   tools/backfill-tool-decisions.test.ts
   tools/backfill-hokusai-submissions.test.ts
@@ -617,7 +616,6 @@ TESTS=(
   tools/check-journey-wall-clock-budget.test.ts
   tools/check-test-registration.test.ts
   tools/check-test-world-lifetime.test.ts
-  tools/hok2425-verify-native-workflow-certification.test.ts
   tools/launch-native-review.test.ts
   tools/launch-priority-audit.test.ts
   tools/openrouter-smoke.test.ts
