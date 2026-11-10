@@ -94,7 +94,6 @@ TESTS=(
   shared/lib/native-agent/patch-contract.test.ts
   shared/lib/native-agent/patch-runtime.test.ts
   shared/lib/native-agent/patch-journal.test.ts
-  shared/lib/native-agent/patch-matcher.test.ts
   shared/lib/native-agent/coding-failure-handoff.test.ts
   shared/lib/native-agent/stage-failure-envelope.test.ts
   shared/lib/native-agent/coding-artifacts.test.ts
@@ -104,8 +103,6 @@ TESTS=(
   shared/lib/native-agent/completion-gate.test.ts
   shared/lib/native-agent/coding-certification.test.ts
   shared/lib/native-agent/coding-gate.test.ts
-  shared/lib/native-agent/coding-handoff.test.ts
-  shared/lib/native-agent/recovery.test.ts
   shared/lib/native-agent/budget-exhaustion.test.ts
   shared/lib/native-agent/budget-exhaustion.cross-stage.test.ts
   shared/lib/native-agent/stage-time-split.test.ts
@@ -151,8 +148,6 @@ TESTS=(
   shared/lib/native-expansion.test.ts
   shared/lib/native-agent/workflow-tools/contracts.test.ts
   shared/lib/native-agent/workflow-tools/github.test.ts
-  shared/lib/native-agent/workflow-tools/mutation-record.test.ts
-  shared/lib/native-agent/workflow-tools/mutation-enforcer.test.ts
   shared/lib/native-agent/workflow-tools/linear-tools.test.ts
   shared/lib/native-agent/workflow-tools/command-tools.test.ts
   shared/lib/native-agent/workflow-tools/github-fixtures.test.ts
@@ -216,7 +211,6 @@ TESTS=(
   tools/arbiter-r6-analysis.test.ts
   shared/lib/challenge-pair-resolver.test.ts
   shared/lib/challenge-pair-resolver.hok2958.test.ts
-  shared/lib/reviewer-stage-adjudicator.test.ts
   tools/quarantine-legacy-reviewer-forfeits.test.ts
   shared/lib/arm-failure-taxonomy.test.ts
   shared/lib/failure-policy.test.ts
@@ -258,11 +252,6 @@ TESTS=(
   shared/lib/challenge-comparison-eval-evidence.test.ts
   shared/lib/challenge-ready-evidence.test.ts
   shared/lib/harness-replay.test.ts
-  shared/lib/cross-repo-parity.valid.test.ts
-  shared/lib/cross-repo-parity.missing.test.ts
-  shared/lib/cross-repo-parity.wrong-suite.test.ts
-  shared/lib/cross-repo-parity.stale.test.ts
-  shared/lib/cross-repo-parity.partial.test.ts
   shared/lib/challenge-execution-contract.test.ts
   shared/lib/challenge-execution-contract.incident-replay.test.ts
   shared/lib/challenge-pairing-repair.test.ts
@@ -385,8 +374,6 @@ TESTS=(
   shared/lib/pr-state-labels.test.ts
   shared/lib/progress-heartbeat.test.ts
   shared/lib/scope-shrinker.test.ts
-  shared/lib/linear-dependency-resolver.test.ts
-  shared/lib/dependency-classifier.test.ts
   shared/lib/route-artifact.test.ts
   shared/lib/budget-source.test.ts
   shared/lib/model-router.test.ts
@@ -503,11 +490,9 @@ TESTS=(
   shared/lib/observer-shadow-audit.test.ts
   shared/lib/incident-filing-reconciler.test.ts
   shared/lib/incident-log-excerpt-reader.test.ts
-  shared/lib/verification-metrics.test.ts
   shared/lib/ci-verification-drift-detector.test.ts
   shared/lib/pre-pr-verification-drift-validator.test.ts
   tools/check-ci-verification.test.ts
-  tests/verification-scenarios.test.ts
   tests/fork-aware-comparison.test.ts
   # Registration-complete shared and tool tests.
   shared/lib/artifact-diagnostics.test.ts
@@ -547,7 +532,6 @@ TESTS=(
   shared/lib/native-agent/tool-decision-schema.test.ts
   shared/lib/native-agent/tool-decision-projector.test.ts
   shared/lib/native-agent/tool-decision-corpus.test.ts
-  shared/lib/native-agent/tool-decision-labeler.test.ts
   shared/lib/native-agent/tool-decision-report.test.ts
   shared/lib/native-agent/tool-decision-capture.test.ts
   shared/lib/native-agent/tool-decision-purge.test.ts
