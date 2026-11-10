@@ -7,11 +7,12 @@ partitioner, and how to refresh or extend any of them.
 
 ## How a test gets assigned to a shard
 
-1. Suite membership comes from the runners' registration arrays — `TESTS` in
-   `tests/run-unit-tests.sh`, `CUSTOM_TS_TESTS`/`CUSTOM_SH_TESTS` in
-   `tests/run-custom-tests.sh`. These arrays remain the single source of truth;
-   there is no separate per-shard list to keep in sync.
-2. `tools/partition-tests.ts` reads the registered list (stdin), the weights
+1. Suite membership is discovered from the files themselves by
+   `shared/lib/test-discovery.ts` (HOK-3466): `*.test.ts` / `*.test.js` run in
+   the unit suite, `tests/**/*.test.sh` in the shell suite, and a
+   `wavemill-test-suite: <suite>` marker comment in a file's first lines
+   overrides that. There is no list to keep in sync.
+2. `tools/partition-tests.ts` reads the discovered list (stdin), the weights
    manifest (`tests/ci-test-weights.json`), and the shard spec (`--shard N/M`),
    computes the full deterministic partition, and prints shard N's files.
    Every matrix leg computes the identical partition and selects only its own
@@ -26,26 +27,17 @@ partitioner, and how to refresh or extend any of them.
    others would drop or duplicate tests across the run.
 
 `--shard 1/1` (the local default) short-circuits to the full list without
-invoking the partitioner, so plain `bash tests/run-unit-tests.sh` has no new
-dependencies.
+invoking the partitioner.
 
-## Unit/custom registration coverage
+## Suite membership
 
-Scoped TypeScript tests (`*.test.ts` under `shared/`, `tools/`, and `src/`) are
-covered by the union of the unit runner's `TESTS` array and the custom runner's
-`CUSTOM_TS_TESTS` array. Each scoped TypeScript test must appear in exactly one
-of those two arrays: unit for normal `node --test` execution, or custom for the
-separate-process TSX harness.
-
-`tools/check-test-registration.ts` enforces that union coverage during
-preflight. It reports missing registrations, stale paths, within-suite
-duplicates, and an explicit cross-suite overlap diagnostic naming any file that
-appears in both `TESTS` and `CUSTOM_TS_TESTS`.
-
-Shell tests follow the same exclusivity principle between the shell suite and
-custom shell registry. `tests/agent-resolve-from-model.test.sh` belongs to the
-shell suite only; `CUSTOM_SH_TESTS` remains checked for duplicate and missing
-files when populated.
+Every test file belongs to exactly one suite by construction, so there is no
+registration to check. A custom-harness test (separate-process TSX, or a shell
+test run by the custom runner) declares `wavemill-test-suite: custom`. A test
+that must stay out of the sharded runners declares `lifecycle` (run by
+`tests/run-lifecycle-tests.sh`), `standalone` (run by its own command) or
+`none`. `node tools/discover-tests.ts --suite <shell|unit|custom>` prints what
+a runner will execute.
 
 ## Timing artifacts
 
@@ -96,19 +88,15 @@ clamped to a minimum of 1ms; zero/negative values are rejected everywhere.
 
 Runs in `npm run test:preflight`. It reads the shard counts straight from
 `.github/workflows/ci.yml` (the matrix and the check cannot drift), the
-registered lists from the runners, and the manifest, then fails when:
+discovered suites, and the manifest, then fails when:
 
-- any registered test would be missing from or duplicated in the computed
+- any discovered test would be missing from or duplicated in the computed
   assignment (REQ-F1);
 - the manifest is malformed, has non-positive weights, or references tests
   that no longer exist (stale entries are named);
 - any shard's estimated total exceeds **130% of the median** shard estimate,
   unless a single named indivisible test alone exceeds the bound (REQ-F3) —
   that exception is printed and allowed.
-
-`tools/check-test-registration.ts` additionally enforces scoped TypeScript
-discovery-completeness across the unit/custom union and custom-harness hygiene
-(no duplicate entries, no entries whose files are missing).
 
 ## Shard-count decision rule
 

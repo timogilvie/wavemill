@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# wavemill-test-suite: none (ran in no suite before HOK-3466; run it or delete it)
 # Regression test for HOK-1377:
 # save_migration_reservation must be defined inside the monitor heredoc scope.
 set -euo pipefail

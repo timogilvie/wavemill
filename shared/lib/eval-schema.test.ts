@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Scenario validation tests for the eval scoring rubric and data schema.
  *

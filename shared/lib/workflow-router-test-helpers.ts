@@ -2,8 +2,7 @@
  * Shared harness and fixtures for the workflow-router split test files.
  *
  * This module intentionally does NOT use the `.test.ts` suffix so that
- * test discovery (`shared/**\/*.test.ts`) and the registration checks in
- * `tools/check-test-registration.ts` ignore it. It is imported by each
+ * test discovery (`shared/lib/test-discovery.ts`) ignores it. It is imported by each
  * `shared/lib/workflow-router-*.test.ts` file.
  *
  * The pass/fail counters live at module scope, which yields per-process

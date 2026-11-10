@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Tests for difficulty-analyzer module (HOK-777).
  */

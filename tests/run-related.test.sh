@@ -57,27 +57,8 @@ mylib_helper_fn "hello"
 EOF
 chmod +x "$FAKE_REPO/tests/lib.test.sh"
 
-# Minimal registration files so run-related.sh classifies the test runners.
-cat > "$FAKE_REPO/tests/run-unit-tests.sh" <<'EOF'
-#!/usr/bin/env bash
-TESTS=(
-  tests/a.test.ts
-)
-EOF
-cat > "$FAKE_REPO/tests/run-shell-suite.sh" <<'EOF'
-#!/usr/bin/env bash
-TESTS=(
-  lib.test.sh
-)
-EOF
-cat > "$FAKE_REPO/tests/run-custom-tests.sh" <<'EOF'
-#!/usr/bin/env bash
-CUSTOM_TS_TESTS=(
-)
-CUSTOM_SH_TESTS=(
-)
-EOF
-
+# No registration files: the selector discovers suite membership from the
+# test files themselves (shared/lib/test-discovery.ts, HOK-3466).
 # Install a minimal set of tooling the real selector will shell out to:
 # we invoke the real repo's `node tools/related-tests/select.ts`, but we
 # override the diff with positional files and WAVEMILL_RUN_RELATED_SCAN_ROOTS
@@ -85,6 +66,7 @@ EOF
 cp "$REPO_ROOT/tools/related-tests/select.ts" "$FAKE_REPO/tools/related-tests/"
 cp "$REPO_ROOT/tools/related-tests/select-core.ts" "$FAKE_REPO/tools/related-tests/"
 cp "$REPO_ROOT/tools/related-tests/build-ts-graph.ts" "$FAKE_REPO/tools/related-tests/"
+cp "$REPO_ROOT/shared/lib/test-discovery.ts" "$FAKE_REPO/shared/lib/"
 cp "$REPO_ROOT/tests/run-related.sh" "$FAKE_REPO/tests/"
 chmod +x "$FAKE_REPO/tests/run-related.sh"
 
@@ -200,21 +182,7 @@ else
 fi
 
 echo "=== --list output is deterministic and sorted ==="
-# Add a second test to the fake unit TESTS array and change multiple files.
-cat >> "$FAKE_REPO/tests/run-unit-tests.sh" <<'EOF'
-TESTS=(
-  tests/a.test.ts
-  tests/z.test.ts
-)
-EOF
-# Overwrite — only the last TESTS=() counts due to our shell parser.
-cat > "$FAKE_REPO/tests/run-unit-tests.sh" <<'EOF'
-#!/usr/bin/env bash
-TESTS=(
-  tests/a.test.ts
-  tests/z.test.ts
-)
-EOF
+# Add a second test file; discovery picks it up with no registration.
 cat > "$FAKE_REPO/tests/z.test.ts" <<'EOF'
 import assert from 'node:assert/strict';
 import { b } from '../shared/lib/b.ts';
@@ -242,6 +210,7 @@ echo "=== [FAIL] output truncates to first 20 lines ==="
 FAKE_REPO2="$TMP/repo2"
 mkdir -p "$FAKE_REPO2/shared/lib" "$FAKE_REPO2/tools/related-tests" "$FAKE_REPO2/tests"
 cp "$REPO_ROOT/tools/related-tests/"*.ts "$FAKE_REPO2/tools/related-tests/"
+cp "$REPO_ROOT/shared/lib/test-discovery.ts" "$FAKE_REPO2/shared/lib/"
 cp "$REPO_ROOT/tests/run-related.sh" "$FAKE_REPO2/tests/"
 chmod +x "$FAKE_REPO2/tests/run-related.sh"
 cat > "$FAKE_REPO2/shared/lib/subject.sh" <<'EOF'
@@ -257,21 +226,6 @@ for i in $(seq 1 100); do echo "LOUD-OUTPUT-LINE-$i"; done
 exit 1
 EOF
 chmod +x "$FAKE_REPO2/tests/loud.test.sh"
-cat > "$FAKE_REPO2/tests/run-unit-tests.sh" <<'EOF'
-#!/usr/bin/env bash
-TESTS=()
-EOF
-cat > "$FAKE_REPO2/tests/run-shell-suite.sh" <<'EOF'
-#!/usr/bin/env bash
-TESTS=(
-  loud.test.sh
-)
-EOF
-cat > "$FAKE_REPO2/tests/run-custom-tests.sh" <<'EOF'
-#!/usr/bin/env bash
-CUSTOM_TS_TESTS=()
-CUSTOM_SH_TESTS=()
-EOF
 OUT="$(
   cd "$FAKE_REPO2"
   WAVEMILL_RUN_RELATED_SCAN_ROOTS="$FAKE_REPO2/shared:$FAKE_REPO2/tests" \

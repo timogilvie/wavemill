@@ -484,7 +484,7 @@ describe('launchNativePlanning', () => {
     }
   });
 
-  it('records structured failure outcome when native planning hits turn_limit', async () => {
+  it('records structured failure when the planner ignores terminal synthesis', async () => {
     const { wtDir, featureDir } = setupWorktree();
     const api = uniqueApi('turn-limit');
     writeNativeConfig(wtDir, {
@@ -521,7 +521,7 @@ describe('launchNativePlanning', () => {
           loopModelOverride: scriptedModel(api),
           runTsxCommand: stubRunTsxCommand(),
         }),
-        /^Error: native-stage-timeout: native planning exhausted its turn budget \(1 of 1\)/,
+        /^Error: native-stage-timeout: native planning exhausted its turn budget \(2 of 1\)/,
       );
 
       const stageResult = JSON.parse(
@@ -532,7 +532,7 @@ describe('launchNativePlanning', () => {
       assert.equal(stageResult.failureReason, 'turn_limit');
       assert.deepEqual(
         [stageResult.budgetExhausted?.kind, stageResult.budgetExhausted?.limit, stageResult.budgetExhausted?.used],
-        ['turn', 1, 1],
+        ['turn', 1, 2],
       );
       assert.equal(stageResult.budgetExhausted?.progress?.toolCallsExecuted, 1);
       const envelope = JSON.parse(readFileSync(join(featureDir, '.planning-failure-envelope.json'), 'utf-8'));
@@ -541,7 +541,7 @@ describe('launchNativePlanning', () => {
       assert.equal(stageResult.artifacts?.planArtifactValid, false);
       assert.equal(stageResult.artifacts?.approvalReady, false);
       assert.equal(stageResult.artifacts?.bounds?.maxTurns, 1);
-      assert.equal(stageResult.artifacts?.usage?.turnsCompleted, 1);
+      assert.equal(stageResult.artifacts?.usage?.turnsCompleted, 2);
       assert.equal(stageResult.artifacts?.usage?.toolCallsExecuted, 1);
       assert.equal(typeof stageResult.artifacts?.usage?.wallClockMs, 'number');
       assert.equal(typeof stageResult.artifacts?.promptRef?.id, 'string');
@@ -1386,5 +1386,68 @@ describe('launchNativePlanning — prompt-cache hit rate', () => {
     } finally {
       cleanup(wtDir);
     }
+  });
+});
+
+// protects: HOK-3447 research reaches a final plan instead of dying at the analysis boundary.
+describe('native planning terminal synthesis (HOK-3465)', () => {
+  // allow-source-text-assertion: loads sanitized incident data from a JSON fixture, never implementation source.
+  const replay = JSON.parse(readFileSync(new URL('../../../tests/fixtures/native-planning/hok3447-synthesis.json', import.meta.url), 'utf8')).replay;
+  for (const boundary of ['turn', 'tool'] as const) {
+    it(`synthesizes from gathered evidence at the ${boundary} boundary`, async () => {
+      const { wtDir, featureDir } = setupWorktree();
+      const api = uniqueApi(`synthesis-${boundary}`);
+      const requests: ScriptedProviderContext[] = [];
+      writeNativeConfig(wtDir, { nativeAgent: { planning: {
+        maxTurns: boundary === 'turn' ? replay.maxTurns : 10,
+        maxToolCalls: boundary === 'tool' ? replay.maxToolCalls : 120,
+      } } });
+      try {
+        registerScriptedPiProvider({ api, turns: (ctx) => {
+          requests.push(ctx);
+          if (requests.length < 3) return {
+            content: [{ type: 'tool_call', id: `read-${requests.length}`, name: 'read_file', arguments: { path: replay.researchPaths[requests.length - 1] } }],
+            stopReason: 'tool_calls', usage: { input: 10, output: 5 },
+          };
+          assert.equal((ctx.rawContext as { tools?: unknown[] }).tools?.length ?? 0, 0);
+          assert.match(JSON.stringify(ctx.messages), /reserved terminal synthesis/);
+          assert.ok(JSON.stringify(ctx.messages).includes(replay.evidence));
+          return { content: [{ type: 'text', text: validPlan('Synthesized Plan') }], stopReason: 'stop', usage: { input: 20, output: 10 } };
+        } });
+        const result = await launchNativePlanning({ session: `synthesis-${boundary}`, issue: 'HOK-3465', slug: 'demo', wtDir, repoDir: wtDir, loopModelOverride: scriptedModel(api), runTsxCommand: stubRunTsxCommand() });
+        assert.equal(result.stopReason, 'stop');
+        assert.equal(requests.length, 3);
+        assert.match(readFileSync(join(featureDir, 'plan.md'), 'utf8'), /^# Synthesized Plan/);
+        assert.equal(existsSync(join(featureDir, '.plan-approved')), false);
+        const stage = JSON.parse(readFileSync(join(featureDir, '.planning-result.json'), 'utf8'));
+        assert.equal(stage.status, 'awaiting_user');
+        assert.equal(stage.artifacts.planArtifactValid, true);
+        assert.equal(stage.artifacts.usage.turnsCompleted, 3);
+        assert.equal(stage.artifacts.usage.toolCallsExecuted, 2);
+        assert.equal(stage.artifacts.usage.totalOutputTokens, 20);
+        assert.equal(stage.executedModel, `scripted:${api}`);
+        const ownership = readFileSync(join(featureDir, '.session-ownership.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        assert.equal(ownership.filter(row => row.harness === 'native' && row.stage === 'planning').length, 1);
+        const events = readFileSync(join(resolveSessionEventsDir(wtDir), `synthesis-${boundary}-planning-HOK-3465.jsonl`), 'utf8');
+        assert.match(events, /provider_tools/);
+        assert.match(events, /"toolCount":0/);
+      } finally { cleanup(wtDir); }
+    });
+  }
+
+  it('rejects an invalid synthesized artifact without approving it', async () => {
+    const { wtDir, featureDir } = setupWorktree();
+    const api = uniqueApi('invalid-synthesis');
+    writeNativeConfig(wtDir, { nativeAgent: { planning: { maxTurns: 2 } } });
+    let calls = 0;
+    try {
+      registerScriptedPiProvider({ api, turns: () => ++calls === 1
+        ? { content: [{ type: 'tool_call', id: 'read', name: 'read_file', arguments: { path: 'src.ts' } }], stopReason: 'tool_calls' }
+        : { content: [{ type: 'text', text: 'ok' }], stopReason: 'stop' } });
+      await assert.rejects(() => launchNativePlanning({ session: 'invalid-synthesis', issue: 'HOK-3465', slug: 'demo', wtDir, repoDir: wtDir, loopModelOverride: scriptedModel(api), runTsxCommand: stubRunTsxCommand() }), /too_short/);
+      assert.equal(calls, 2);
+      assert.equal(existsSync(join(featureDir, 'plan.md')), false);
+      assert.equal(existsSync(join(featureDir, '.plan-approved')), false);
+    } finally { cleanup(wtDir); }
   });
 });

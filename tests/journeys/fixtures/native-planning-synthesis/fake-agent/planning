@@ -1,0 +1,4 @@
+# shellcheck shell=bash
+# Seed inputs through the shared fake, then exercise the real native planner.
+default_task_packet
+(cd "$FAKE_AGENT_TOOLS_DIR/.." && node --import tsx tests/journeys/fixtures/native-planning-synthesis/planner.ts "$WT" "$SLUG" "$FAKE_LAUNCH_MODEL")

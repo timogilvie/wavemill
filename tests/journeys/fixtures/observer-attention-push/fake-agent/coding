@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # HOK-3424 journey: hold the coding commit until the operator releases it.
 #
 # The journey escalates while the coding agent is parked here, so the marker's

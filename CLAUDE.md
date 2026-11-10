@@ -156,18 +156,19 @@ Available in `~/.claude/commands/`:
 
 Use `wavemill native-agent certify --provider <provider> --model <model> --phase <phase>` for one model, or `wavemill native-agent certify --all --phase workflow` to publish the full current-suite matrix. Use `npx tsx tools/native-agent-certify.ts --refresh-canary-cohort` on the credentialed mill host to refresh live coding canaries for the bounded cohort configured under `nativeAgent.certification.canaryCohort` (HOK-3062); mill preflight runs the same refresh automatically with a one-attempt-per-episode guard, disabled via `canaryAutoRefresh: false`. The mill startup preflight auto-remediates deterministic current-suite gaps, identity drift, stale artifacts, and near-TTL renewal by default. Set `WAVEMILL_SKIP_CERTIFICATION_AUTO_REMEDIATE=1` to keep the guard active but require manual certification; set `WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD=1` only for a targeted operator override. Use `wavemill native-agent certifications prune` to report orphan artifacts and `--yes` to remove them.
 
-## Test Registration
+## Test Discovery
 
-Tests only run if they are registered. Adding a test file is not enough — register it in the right place:
+A test runs because it exists. There is no list to edit (HOK-3466); `shared/lib/test-discovery.ts` decides the suite from the file itself:
 
-| Test type | Register in |
-|-----------|-------------|
-| Bash test (`tests/*.test.sh`) | `TESTS=( ... )` array in `tests/run-shell-suite.sh` |
-| `node --test` unit test | `TESTS=( ... )` array in `tests/run-unit-tests.sh` |
-| Custom-harness test (`process.exit(1)` style) | `CUSTOM_TS_TESTS=( ... )` / `CUSTOM_SH_TESTS=( ... )` arrays in `tests/run-custom-tests.sh` (repo-relative paths) |
-| Any new `.sh` file | Also add to the syntax-check list in `tests/check-shell.sh` |
+| File | Suite |
+|------|-------|
+| `*.test.ts` / `*.test.js` anywhere | `unit` (`node --test`, `tests/run-unit-tests.sh`) |
+| `tests/**/*.test.sh` | `shell` (`tests/run-shell-suite.sh`) |
+| Any `.sh` file, or an extensionless script whose first line is a bash shebang or `# shellcheck shell=bash` | syntax-checked by `tests/check-shell.sh` |
 
-Shell and unit tests are **no longer listed in `package.json`**. All three suites delegate to sharding runners:
+A file overrides the default with a marker comment in its first lines: `// wavemill-test-suite: custom` (custom-harness `process.exit(1)` style, `tests/run-custom-tests.sh`), or `# wavemill-test-suite: lifecycle | standalone | none` to stay out of the sharded runners. An unknown suite name fails discovery. `node tools/discover-tests.ts --suite <shell|unit|custom>` prints a suite.
+
+All three suites delegate to sharding runners:
 
 ```bash
 bash tests/run-shell-suite.sh              # all shell tests
@@ -178,7 +179,7 @@ bash tests/run-unit-tests.sh --list        # print selection without running
 bash tests/run-custom-tests.sh --shard 2/3 # custom harness CI shard 2 of 3
 ```
 
-Shell, unit and custom shards all use **deterministic weighted partitioning**: `tools/partition-tests.ts` (LPT greedy over `shared/lib/test-partitioner.ts`) balances shards using measured per-test medians from the checked-in manifest `tests/ci-test-weights.json`. A newly added test has no manifest entry yet and receives the conservative `defaultMs` weight — adding it to the array is still all that is needed. `tools/check-shard-balance.ts` (preflight) enforces exactly-once assignment, manifest hygiene, and the 130%-of-median balance rule; refresh the manifest with `npx tsx tools/ci-test-timings.ts collect` from ≥3 CI timing artifacts (see `docs/ci-test-timings.md`).
+Shell, unit and custom shards all use **deterministic weighted partitioning**: `tools/partition-tests.ts` (LPT greedy over `shared/lib/test-partitioner.ts`) balances shards using measured per-test medians from the checked-in manifest `tests/ci-test-weights.json`. A newly added test has no manifest entry yet and receives the conservative `defaultMs` weight — creating the file is all that is needed. `tools/check-shard-balance.ts` (preflight) enforces exactly-once assignment, manifest hygiene, and the 130%-of-median balance rule; refresh the manifest with `npx tsx tools/ci-test-timings.ts collect` from ≥3 CI timing artifacts (see `docs/ci-test-timings.md`).
 
 **CI job layout** (`.github/workflows/ci.yml`): `preflight`, `shell` (×3 weighted shards), `unit` (×7 weighted shards), `custom` (×3 weighted shards), `smoke`, and `certification` run in parallel. The `shell-and-unit` job aggregates them into the single status check named **"Shell and Unit Tests"**, which is a required check on `main` — do not rename it without updating branch protection. The shell/unit/custom jobs all upload `timing-*` artifacts, and all three feed the weights manifest.
 

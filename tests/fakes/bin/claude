@@ -145,7 +145,7 @@ run_tool() {
   (cd "$FAKE_AGENT_TOOLS_DIR/.." && node --import tsx "tools/$1" "${@:2}")
 }
 
-default_planning() {
+default_task_packet() {
   # A real planner first expands the issue (expand-issue.ts, an LLM call) into
   # the progressive-disclosure task packet; write that packet directly.
   cat > "$FEATURE_DIR/task-packet-header.md" <<PACKET
@@ -189,6 +189,10 @@ Revert the commit.
 journey
 PACKET
   cat "$FEATURE_DIR/task-packet-header.md" "$FEATURE_DIR/task-packet-details.md" > "$FEATURE_DIR/task-packet.md"
+}
+
+default_planning() {
+  default_task_packet
   cat > "$FEATURE_DIR/plan.md" <<PLAN
 # Plan: $WAVEMILL_ISSUE
 

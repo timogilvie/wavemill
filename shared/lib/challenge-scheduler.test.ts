@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Tests for the challenge scheduler policy.
  */

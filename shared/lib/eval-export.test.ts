@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Unit tests for eval-export — flatten, redact, CSV, and JSONL output.
  */
