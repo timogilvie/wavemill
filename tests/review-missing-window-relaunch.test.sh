@@ -30,7 +30,9 @@ assert_contains() {
 }
 
 # Simulate the structural branch — mirrors the code around monitor_issue_state's
-# generic missing-window and no-PR fallthroughs for review phase.
+# generic missing-window fallthrough for review phase. A review that settles
+# with no usable verdict never reaches the no-PR tail (HOK-3463): the journey
+# review-no-usable-verdict covers that path against the real monitor.
 simulate_missing_window_branch() {
   local current_phase="$1"
   local feature_dir="$2"
@@ -94,25 +96,6 @@ simulate_missing_window_branch() {
     return 0
   fi
 
-  # No-PR fallthrough (HOK-3146 Phase 2 defense in depth)
-  local _review_status_no_pr
-  _review_status_no_pr="$(read_stage_status "$FEATURE_DIR" "review" 2>/dev/null || true)"
-  if [[ "$current_phase" == "review" ]] \
-    && [[ "$coding_complete" == "true" ]] \
-    && [[ "$_review_status_no_pr" != "completed" \
-       && "$_review_status_no_pr" != "aborted" ]]; then
-    wavemill_hook_write "waiting" "review_interrupted_no_pr" \
-      "Review interrupted on branch $BRANCH; coding commits preserved" \
-      "${current_agent:-unknown}" \
-      "run /re-review $ISSUE to relaunch the review (it will open the PR)" \
-      "monitor" || true
-    escalate_operator_attention "$FEATURE_DIR" operator-decision review-session-interrupted-pre-pr "Review interrupted on branch $BRANCH before PR creation; re-review available."
-    set_task_phase "$ISSUE" "review"
-    set_window_attention_state "$WIN" "needs-user"
-    echo "branch:no-pr-review-preserved" >> "$ACTIONS_LOG"
-    return 0
-  fi
-
   save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "" "error"
   set_task_phase "$ISSUE" "error"
   wavemill_hook_write "error" "NoPR" "Agent exited without creating PR on branch $BRANCH" "$current_agent" "" "monitor"
@@ -148,37 +131,6 @@ ACTIONS_LOG="$CASE_B/actions.log"
 simulate_missing_window_branch "coding" "$FD_B" "true" "false" "" "none"
 assert_contains "coding missing window → preserved legacy recreate path" \
   "$(cat "$ACTIONS_LOG")" "branch:recreate-empty"
-
-echo ""
-echo "=== HOK-3146 Phase 2: no PR + coding complete + review not finished = preserved ==="
-
-CASE_C="$TMP_DIR/case-c"
-FD_C="$CASE_C/features/slug-x"
-mkdir -p "$FD_C"
-touch "$FD_C/.coding-complete"
-printf '{"status":"running"}\n' > "$FD_C/.review-result.json"
-ACTIONS_LOG="$CASE_C/actions.log"
-: > "$ACTIONS_LOG"
-
-simulate_missing_window_branch "review" "$FD_C" "false" "true" "running" "none"
-log_c="$(cat "$ACTIONS_LOG")"
-assert_contains "no PR + review in-flight → preserved as review needs-user" "$log_c" "branch:no-pr-review-preserved"
-assert_contains "no PR + review in-flight → review_interrupted_no_pr hook" "$log_c" "hook:waiting:review_interrupted_no_pr"
-if grep -q "branch:no-pr-terminal-error" <<< "$log_c"; then
-  fail "review interruption must not terminalize as error"
-else
-  pass "review interruption not terminalized as error"
-fi
-if grep -q "hook:error:NoPR" <<< "$log_c"; then
-  fail "no NoPR hook written for review interruption"
-else
-  pass "no NoPR hook written for review interruption"
-fi
-if grep -q "set_task_phase:HOK-3146-WIN:error" <<< "$log_c"; then
-  fail "phase=error must not be set for review interruption"
-else
-  pass "phase=error not set for review interruption"
-fi
 
 echo ""
 echo "=== HOK-3146 Phase 2: planning crash with no commits still errors as before ==="

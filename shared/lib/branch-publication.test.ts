@@ -550,3 +550,55 @@ describe('resolveTaskPullRequestContent (HOK-3463)', () => {
     }
   });
 });
+
+describe('HOK-3424 incident replay (HOK-3463)', () => {
+  // The review result the incident left behind, rebuilt from the values the
+  // issue recorded (the original file was reaped with its worktree): the
+  // review finished, then the agent could not reach GitHub and recorded no PR
+  // description. The review-fix commit existed only locally.
+  const INCIDENT_REVIEW_RESULT = {
+    stage: 'review',
+    status: 'completed',
+    notes: 'PR creation blocked: gh CLI unauthenticated (no GitHub token in environment)',
+    artifacts: { type: 'review', verdict: 'error', exitCode: 2 },
+  };
+
+  // protects: finished review work stranded with no PR and an unpublished review-fix commit
+  it('opens the PR at the published head from the result the incident left behind', async () => {
+    const fixture = createFixture();
+    const stateDir = join(fixture.tmpDir, 'state');
+    mkdirSync(stateDir);
+    writeFileSync(join(stateDir, '.review-result.json'), JSON.stringify(INCIDENT_REVIEW_RESULT));
+    const reviewFixSha = writeAndCommit(fixture.repoDir, 'fix.txt', 'review fix\n', 'fix: Address self-review findings (iteration 1)');
+    const github = createFixtureBackedGithubDeps();
+
+    const content = await resolveTaskPullRequestContent({
+      stateDir,
+      issue: 'HOK-3424',
+      fallbackTitle: 'Observer push reads the attention projection',
+    });
+    const result = await openTaskPullRequest({
+      worktreeDir: fixture.repoDir,
+      branch: 'task/test',
+      base: 'auto/integration',
+      repo: 'acme/widgets',
+      stateDir,
+      issue: 'HOK-3424',
+      title: content.title,
+      body: content.body,
+      draft: content.draft,
+      githubDeps: github.deps,
+    });
+
+    assert.equal(content.source, 'fallback');
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.headSha, reviewFixSha);
+    assert.equal(remoteBranchSha(fixture.repoDir, 'task/test'), reviewFixSha);
+    assert.deepEqual(
+      github.state.pullRequests.map((pr) => [pr.head, pr.base, pr.title]),
+      [['task/test', 'auto/integration', 'HOK-3424: Observer push reads the attention projection']],
+    );
+    assert.deepEqual(readHeadMoves(stateDir).map((row) => [row.stage, row.kind]), [['review', 'review-fix']]);
+  });
+});

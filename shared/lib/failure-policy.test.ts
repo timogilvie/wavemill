@@ -56,7 +56,6 @@ for (const code of [
   'merged-before-ready',
   'cross-pr-revert-unacknowledged',
   'challenge-comparison-stale',
-  'review-session-interrupted-pre-pr',
   'operator-command-failed',
   'transition-code-failure',
   'merge-residue',
