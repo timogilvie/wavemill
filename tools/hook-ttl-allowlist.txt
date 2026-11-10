@@ -10,7 +10,6 @@
 #
 # Prefer a one-line `// allow-hook-ttl: <reason>` (`#` in shell) suppression over an
 # entry whenever only a line or two is involved.
-shared/lib/terminal-reconciler.sh 2  # fallback freshness check used only when wavemill_hook_read is not loaded (standalone callers)
 shared/lib/wavemill-monitor.sh 11  # pre-guard private TTL checks (stage-owner, divergence, pane-release paths); migrate to wavemill_hook_read --fresh and lower the count
 shared/lib/wavemill-next-done.sh 2  # standalone next-done helper sourced without task-progress.sh; shares the primitive's WAVEMILL_HOOK_TTL_SECONDS override
 shared/lib/wavemill-status.sh 4  # dashboard status fallback: TTL-checked hook read before pane-liveness fallback (documented 300s hook contract)

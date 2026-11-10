@@ -87,12 +87,3 @@ effective_task_base_branch() {
   effective_task_config_json "$issue" | jq -r '.baseBranch.value // "main"'
 }
 
-effective_task_require_confirm() {
-  local issue="$1"
-  effective_task_config_json "$issue" | jq -r 'if .requireConfirm.value == false then "false" else "true" end'
-}
-
-effective_task_config_source() {
-  local issue="$1" field="$2"
-  effective_task_config_json "$issue" | jq -r --arg field "$field" '.[$field].source // "default"'
-}

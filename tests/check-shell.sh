@@ -1515,13 +1515,13 @@ else
   fail "mill is missing tmux status refresh after attention changes"
 fi
 
-if [[ -f "$LIB_DIR/wavemill-mill.sh" ]] \
-  && grep -qE '^codex_has_pending_approval\(\) \{' "$LIB_DIR/wavemill-mill.sh" \
-  && grep -q 'sandbox_permissions.*require_escalated' "$LIB_DIR/wavemill-mill.sh" \
-  && grep -q 'function_call_output' "$LIB_DIR/wavemill-mill.sh"; then
-  pass "mill defines codex pending-approval detection from session call state"
+if [[ -f "$LIB_DIR/wavemill-monitor.sh" ]] \
+  && grep -qE '^codex_has_pending_approval\(\) \{' "$LIB_DIR/wavemill-monitor.sh" \
+  && grep -q 'sandbox_permissions.*require_escalated' "$LIB_DIR/wavemill-monitor.sh" \
+  && grep -q 'function_call_output' "$LIB_DIR/wavemill-monitor.sh"; then
+  pass "monitor defines codex pending-approval detection from session call state"
 else
-  fail "mill is missing codex pending-approval detection"
+  fail "monitor is missing codex pending-approval detection"
 fi
 
 if [[ -f "$LIB_DIR/wavemill-monitor.sh" ]] \
