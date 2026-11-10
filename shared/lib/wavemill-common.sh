@@ -250,6 +250,43 @@ publish_stage_head() {
   return $rc
 }
 
+# ── The one task-PR opener (HOK-3463) ───────────────────────────────────────
+# At review exit the mill publishes the head and opens the task PR. Agents
+# never run `gh pr create`: the review stage result carries the title and
+# body, and this seam does the rest with the mill's own credentials. Wraps
+# tools/open-task-pr.ts (publishStageHead + the idempotent githubCreatePr).
+#
+# Usage: open_task_pr <wt_dir> <branch> <base_branch> <state_dir> <issue> [fallback_title]
+# Sets:  OPEN_TASK_PR_NUMBER  (PR number; "" on failure)
+#        OPEN_TASK_PR_OUTCOME (created|reused; "" on failure)
+#        OPEN_TASK_PR_REASON  (typed failure reason; "" on success)
+#        OPEN_TASK_PR_DETAIL  (human-readable failure message)
+# Returns the CLI's exit code: 0 success; 10 remote-divergence; 11 local ref
+# missing; 13 publish or PR open failed (retryable harness fault); 1 other.
+open_task_pr() {
+  local wt_dir="$1" branch="$2" base_branch="$3" state_dir="$4" issue="$5" fallback_title="${6:-}"
+  local out rc=0 extra_args=()
+  OPEN_TASK_PR_NUMBER="" OPEN_TASK_PR_OUTCOME="" OPEN_TASK_PR_REASON="" OPEN_TASK_PR_DETAIL=""
+  [[ -n "$fallback_title" ]] && extra_args+=(--fallback-title "$fallback_title")
+  out=$(wavemill_run_tool "open-task-pr.ts" --worktree "$wt_dir" --branch "$branch" \
+    --base "$base_branch" --state-dir "$state_dir" --issue "$issue" \
+    "${extra_args[@]}" 2>/dev/null) || rc=$?
+  if [[ -n "$out" ]]; then
+    out=$(printf '%s\n' "$out" | tail -n 1)
+    OPEN_TASK_PR_NUMBER=$(printf '%s' "$out" | jq -r 'if .ok == true then (.number | tostring) else empty end' 2>/dev/null || true)
+    OPEN_TASK_PR_OUTCOME=$(printf '%s' "$out" | jq -r 'if .ok == true then .outcome // empty else empty end' 2>/dev/null || true)
+    OPEN_TASK_PR_REASON=$(printf '%s' "$out" | jq -r '.reason // empty' 2>/dev/null || true)
+    OPEN_TASK_PR_DETAIL=$(printf '%s' "$out" | jq -r '.message // empty' 2>/dev/null || true)
+  fi
+  if (( rc == 0 )) && [[ -z "$OPEN_TASK_PR_NUMBER" ]]; then
+    rc=1
+  fi
+  if (( rc != 0 )) && [[ -z "$OPEN_TASK_PR_DETAIL" ]]; then
+    OPEN_TASK_PR_DETAIL="open-task-pr failed (rc=$rc) with no JSON output"
+  fi
+  return $rc
+}
+
 # ── Head-freshness primitive bridge (HOK-3370) ──────────────────────────────
 # Evidence binds to the change, not the head SHA: a base merge or clean
 # rebase keeps review evidence fresh; a code-changing commit stales it.

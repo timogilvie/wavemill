@@ -1508,15 +1508,14 @@ This is a REQUIRED step — do not skip it or substitute your own review.
    - Commit fixes: git commit -m "fix: Address self-review findings (iteration N)"
    - Re-run the review tool (step 1)
 
-3. Create a PR using GitHub CLI with a descriptive title and body:
-   gh pr create --title "$issue: <concise summary>" --body "<PR body>"
+3. Write the PR title ("$issue: <concise summary>") and body, and record them
+   as prTitle and prBody in the review stage result. The mill opens the PR.
    The PR body MUST include:
    - A "## Summary" section with 2-4 bullet points describing what changed and why
    - A "## Changes" section listing the key files/modules modified
    - A "## Test plan" section describing how the changes were validated
    - A "## Self-review" section noting the review verdict and iterations run
-   Do NOT use --fill. Write the PR body as a HEREDOC if needed for formatting.
-4. Link the PR to $issue
+4. Name $issue in the PR title
 
 Success criteria:
 - [ ] Implementation matches plan and issue requirements
@@ -2046,7 +2045,7 @@ Required process:
 Do not push. The workflow automation publishes the branch for you (HOK-3370).
 
 Do not:
-- Create a new PR or run gh pr create
+- Create a new PR (never run gh pr create)
 - Create workflow markers
 - Run the self-review tool
 - Edit the task packet
@@ -2130,8 +2129,8 @@ coding_confidence=\$(jq -r '.confidence // empty' \"$feature_dir/.coding-complet
 \`\`\`
 
 If \`\$coding_confidence\` is \`low\`, or if the initial self-review run exits 1:
-- Create the PR as a draft by adding \`--draft\` to \`gh pr create\`.
-- Do not iterate through more than one review-fix cycle before opening the draft.
+- Ask the mill to open the PR as a draft: add \`prDraft: true\` to the review artifacts you record in step 4.
+- Do not iterate through more than one review-fix cycle before recording the result.
 - Note the low-confidence or failed-review reason in the PR description."
   fi
 
