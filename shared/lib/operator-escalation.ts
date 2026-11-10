@@ -79,6 +79,8 @@ export interface EscalationMarker {
   /** First line of the escalation message (JSON `reason`, else legacy text). */
   reason: string | null;
   headSha: string | null;
+  /** ISO write time (JSON markers only; HOK-3468 reporting evidence). */
+  writtenAt?: string;
   detail?: Record<string, unknown>;
   condition?: MarkerCondition;
   /** A pre-HOK-3360 plain-text body (no JSON `schemaVersion`). */
@@ -111,6 +113,7 @@ export function readEscalationMarker(stateDir: string): EscalationMarker | null 
       schemaVersion?: unknown;
       reason?: unknown;
       headSha?: unknown;
+      writtenAt?: unknown;
       detail?: unknown;
       condition?: unknown;
     };
@@ -118,6 +121,7 @@ export function readEscalationMarker(stateDir: string): EscalationMarker | null 
       return {
         reason: typeof parsed.reason === 'string' && parsed.reason.trim() ? parsed.reason.trim() : null,
         headSha: typeof parsed.headSha === 'string' && parsed.headSha ? parsed.headSha : null,
+        ...(typeof parsed.writtenAt === 'string' && parsed.writtenAt ? { writtenAt: parsed.writtenAt } : {}),
         ...(parsed.detail && typeof parsed.detail === 'object'
           ? { detail: parsed.detail as Record<string, unknown> }
           : {}),

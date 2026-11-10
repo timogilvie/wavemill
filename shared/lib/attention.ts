@@ -238,6 +238,15 @@ const DEFAULT_UNCOMMITTED_SUMMARY =
 const DEFAULT_UNCOMMITTED_ACTION = 'Commit the coding output, then retry review.';
 /** Agent-own hook states that mean "I am waiting on a human" (not a failure). */
 const AGENT_WAITING_STATES: ReadonlySet<HookState> = new Set<HookState>(['waiting', 'approval-needed']);
+
+/**
+ * The one "this agent is waiting on a person" predicate (HOK-3468). The inbox
+ * (`deriveAttentionItems`) and the reliability report's `operator-attention`
+ * gate both use it, so "needs a person" means the same thing in both.
+ */
+export function isAgentWaitingState(state: HookState | null | undefined): boolean {
+  return state != null && AGENT_WAITING_STATES.has(state);
+}
 /**
  * Ready-gate refusals written before the agent was relaunched (HOK-2915):
  * while the review/Ready agent is working again, the marker describes the

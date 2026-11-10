@@ -4,8 +4,17 @@
  *
  * Prints the unattended-rate, time-stuck p50/p90, per-class (O/L/S/R)
  * operator touch summary and median native prompt-cache hit rate per model
- * and provider route (HOK-3260) over a configurable window. Pure wrapper over
- * `shared/lib/reliability-metrics.ts`.
+ * and provider route (HOK-3260) over a configurable window.
+ *
+ * HOK-3468: the report also names the gate that held each stuck task
+ * (plan approval, an agent, a review park, Ready checks/remediation, the merge
+ * lane, operator attention), splits stuck hours by gate and stage, lists
+ * `unknown` stalls with the records that were missing, and reports the
+ * off-hours stuck time that ended with an operator action ("waited for a
+ * person"). Human touches are counted through `classifyOperatorTouch`; plan
+ * approvals and mill automation never count as a person having to act.
+ *
+ * Pure wrapper over `shared/lib/reliability-metrics.ts`.
  */
 
 import { runTool } from '../shared/lib/tool-runner.ts';

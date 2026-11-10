@@ -1,0 +1,3 @@
+{"schema":"head-move/v1","issue":"HOK-3423","to":"6377cc6c2d532440bc8ae443af95665592774d04","stage":"coding","actor":"mill","kind":"coding","publishedAt":"2026-11-05T21:03:58.867Z"}
+{"schema":"head-move/v1","issue":"HOK-3423","from":"6377cc6c2d532440bc8ae443af95665592774d04","to":"530c518b7f9da5c59ad37b1b48dc042782a1cc4d","stage":"ready","actor":"mill","kind":"conflict","publishedAt":"2026-11-06T15:55:50.213Z"}
+{"schema":"head-move/v1","issue":"HOK-3423","from":"530c518b7f9da5c59ad37b1b48dc042782a1cc4d","to":"2621b99257d72a13372932e1c0dec707d9c56099","stage":"ready","actor":"mill","kind":"conflict","publishedAt":"2026-11-06T19:02:10.486Z"}

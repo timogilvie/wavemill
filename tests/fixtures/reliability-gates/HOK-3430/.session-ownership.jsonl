@@ -1,0 +1,9 @@
+{"sessionRef":"c7308438-5d40-4608-8aca-0eafb0b6f060","harness":"claude-code","kind":"planning","stage":"planning","model":"claude-opus-4-7","launchedAt":"2026-11-05T18:32:02.000Z","attemptId":"planning@672c24c#1793903522"}
+{"sessionRef":"pending:57c0c867-a35c-4ed7-8967-95f56d2e5715","harness":"codex","kind":"coding","stage":"coding","model":"gpt-5.6-terra","launchedAt":"2026-11-05T19:05:56.000Z","attemptId":"coding@672c24c#1793905556"}
+{"sessionRef":"f3fbac13-6694-4d88-b732-0276be0ac230","harness":"claude-code","kind":"review","stage":"review","model":"claude-opus-4-7","launchedAt":"2026-11-05T20:43:20.000Z","attemptId":"review@430b890#1793911400"}
+{"sessionRef":"586d3820-4865-488a-97f2-c644faddd274","harness":"claude-code","kind":"helper:json-code-review","stage":"review","model":"claude-opus-4-7","launchedAt":"2026-11-05T20:45:32.301Z","attemptId":"helper:json-code-review@nohead#1793911532"}
+{"sessionRef":"pending:704860f4-c204-457c-b3ef-b6faf5916877","harness":"codex","kind":"ready-remediation","model":"gpt-5.6-terra","launchedAt":"2026-11-05T20:54:32.000Z","attemptId":"ready-remediation@430b890#1793912072"}
+{"sessionRef":"pending:a1566091-daa5-41e0-95c9-026d3607af5a","harness":"codex","kind":"ready-remediation","model":"gpt-5.6-terra","launchedAt":"2026-11-06T14:14:01.000Z","attemptId":"ready-remediation@eab698c#1793974441"}
+{"sessionRef":"01a1ad1a-8532-71a1-9e22-63eaa04cb338"}
+{"sessionRef":"01a1b127-e1b5-7173-86b3-597ce2ecd93f"}
+{"sessionRef":"01a1b135-a739-79e3-be7c-eb7ed8f41636"}

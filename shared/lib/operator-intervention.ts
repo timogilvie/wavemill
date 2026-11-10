@@ -418,6 +418,8 @@ export interface SessionMessageProvenance {
   originKind?: string;
   /** Prompt source, e.g. `system`, `sdk`, `typed`. */
   promptSource?: string;
+  /** Claude Code session entrypoint, e.g. `sdk-cli` for a headless `-p` run. */
+  entrypoint?: string;
 }
 
 export interface ClassifiableTouch {
@@ -431,6 +433,8 @@ export interface ClassifiableTouch {
   sessionKind?: string;
   /** For `session-redirect`: `true` if this is the first string message of an owned session. */
   firstInOwnedSession?: boolean;
+  /** For `session-redirect`: `true` if this is the first string message of its session file. */
+  firstInSession?: boolean;
   /** For `manual-push` / `eval-intervention`: commit attribution evidence. */
   commitAttribution?: CommitAttribution;
   /** For `external-merge`: `true` if tend wrote a merge receipt. */
@@ -524,11 +528,12 @@ function isApprovalMessage(touch: ClassifiableTouch): boolean {
 /**
  * Classify a `session-redirect` touch. Order (first match wins):
  * 1. Provenance says automated.
- * 2. Owned helper session.
- * 3. First message of an owned session.
- * 4. Text matches mill/harness table.
- * 5. Approval shape.
- * 6. Otherwise human.
+ * 2. The first message of a headless session is that session's launch prompt.
+ * 3. Owned helper session.
+ * 4. First message of an owned session.
+ * 5. Text matches mill/harness table.
+ * 6. Approval shape.
+ * 7. Otherwise human.
  */
 function classifySessionRedirect(touch: ClassifiableTouch): { attribution: OperatorTouchAttribution; class: InterventionClass } {
   const prov = touch.provenance ?? {};
@@ -536,6 +541,12 @@ function classifySessionRedirect(touch: ClassifiableTouch): { attribution: Opera
     return { attribution: 'automation', class: 'L' };
   }
   if (prov.originKind === 'task-notification' || prov.promptSource === 'system' || prov.promptSource === 'sdk') {
+    return { attribution: 'automation', class: 'L' };
+  }
+  // HOK-3468: a headless (`claude -p …`) session's first message is the caller's
+  // prompt, not a person redirecting the agent — e.g. the `claude -p test` auth
+  // probe from llm-cli.ts. Interactive unowned sessions keep counting as human.
+  if (touch.firstInSession && prov.entrypoint?.startsWith('sdk-')) {
     return { attribution: 'automation', class: 'L' };
   }
   if (touch.sessionKind?.startsWith('helper:')) {

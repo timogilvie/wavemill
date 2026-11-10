@@ -347,6 +347,37 @@
                         }
                     },
                     "additionalProperties": false
+                },
+                "workingHours": {
+                    "type": "object",
+                    "description": "Working hours used to split off-hours stall time (HOK-3468). An interval's off-hours part is the time outside these hours; the 'waited for a person' figure is the off-hours time of stalls that ended with an operator action. Defaults: Mon–Fri, 08:00–19:00 in the system timezone.",
+                    "properties": {
+                        "start": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 23,
+                            "default": 8,
+                            "description": "First working hour of the day (local to `timeZone`)."
+                        },
+                        "end": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 24,
+                            "default": 19,
+                            "description": "Exclusive end hour of the working day. `end` must be greater than `start`."
+                        },
+                        "days": {
+                            "type": "array",
+                            "items": { "type": "integer", "minimum": 1, "maximum": 7 },
+                            "default": [1, 2, 3, 4, 5],
+                            "description": "ISO-8601 weekdays that count as working days (1 = Monday … 7 = Sunday)."
+                        },
+                        "timeZone": {
+                            "type": "string",
+                            "description": "IANA timezone name (e.g. Europe/London). Default: the system timezone."
+                        }
+                    },
+                    "additionalProperties": false
                 }
             },
             "additionalProperties": false
