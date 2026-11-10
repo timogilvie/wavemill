@@ -5,7 +5,7 @@
  *
  * Each row drives the real stage producer (launchNativePlanning,
  * launchNativeCoding, runNativeReview) to a `turn_limit` stop after two turns
- * that each executed one tool call, then reads back the envelope the producer
+ * and two executed tool calls, then reads back the envelope the producer
  * wrote and runs it through the monitor's conversion and both classifiers.
  */
 import assert from 'node:assert/strict';
@@ -52,18 +52,20 @@ function gitRepo(prefix: string, files: Record<string, string>): string {
   return dir;
 }
 
-/** Two turns, each reading the same file: progress without a final answer. */
-function readTurns(path: string): ScriptedPiProviderTurn[] {
+/** Research without a final answer, including a planner that ignores terminal synthesis. */
+function readTurns(path: string, callsPerTurn: number): ScriptedPiProviderTurn[] {
   return Array.from({ length: TURNS + 2 }, (_, index) => ({
-    content: [{ type: 'tool_call' as const, id: `read-${index}`, name: 'read_file', arguments: { path } }],
+    content: Array.from({ length: callsPerTurn }, (_, call) => ({
+      type: 'tool_call' as const, id: `read-${index}-${call}`, name: 'read_file', arguments: { path },
+    })),
     usage: { input: 10, output: 5, totalTokens: 15 },
     stopReason: 'tool_calls' as const,
   }));
 }
 
-function scriptedModel(label: string, path: string) {
+function scriptedModel(label: string, path: string, callsPerTurn = 1) {
   const api = `budget-cross-stage-${label}-${process.pid}-${Date.now()}`;
-  registerScriptedPiProvider({ api, provider: 'scripted', turns: readTurns(path) });
+  registerScriptedPiProvider({ api, provider: 'scripted', turns: readTurns(path, callsPerTurn) });
   return { id: `scripted:${api}`, name: `scripted:${api}`, api, provider: 'scripted' } as const;
 }
 
@@ -81,7 +83,11 @@ async function runPlanning(): Promise<string> {
     slug: 'demo',
     wtDir,
     repoDir: wtDir,
-    loopModelOverride: scriptedModel('planning', 'src.ts'),
+    // Planning reserves its second turn for tool-free synthesis. Batch both
+    // research calls into the first turn so every stage still records exactly
+    // two turns / two executed tools; the scripted final turn deliberately
+    // violates the completion protocol and must still exhaust the budget.
+    loopModelOverride: scriptedModel('planning', 'src.ts', TURNS),
     runTsxCommand: (args) => {
       const outputIndex = args.indexOf('--output');
       if (outputIndex >= 0) {
