@@ -10,7 +10,6 @@ import {
   WORKFLOW_PHASES,
   WORKFLOW_MUTATION_ACTIONS,
   IDEMPOTENCY_OUTCOMES,
-  RECORDING_REQUIREMENTS,
 } from './contracts.ts';
 import {
   githubCreatePrKey,
@@ -366,53 +365,6 @@ describe('workflow-tools: mutation policy gates', () => {
     assert.equal(isMutationAllowed('ready', 'github_create_pr', 'update_pr').allowed, false);
     assert.equal(isMutationAllowed('ready', 'github_add_label', 'add_label').allowed, false);
     assert.equal(isMutationAllowed('ready', 'linear_comment', 'comment').allowed, false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Recording requirements
-// ---------------------------------------------------------------------------
-
-describe('workflow-tools: recording requirements', () => {
-  it('every mutating tool requires transcript and stage artifact recording', () => {
-    const mutatingTools = ['linear_comment', 'github_create_pr', 'github_add_label', 'write_stage_result'];
-    for (const tool of mutatingTools) {
-      const req = RECORDING_REQUIREMENTS.find(r => r.tool === tool);
-      assert.ok(req, `missing recording requirement for ${tool}`);
-      assert.equal(req.requiresTranscriptRecord, true, `${tool} must require transcript record`);
-      assert.equal(req.requiresStageArtifactRecord, true, `${tool} must require stage artifact record`);
-    }
-  });
-
-  it('required recorded fields include tool, phase, and idempotency fields for mutating tools', () => {
-    const mutatingTools = ['linear_comment', 'github_create_pr', 'github_add_label', 'write_stage_result'];
-    const requiredFields = ['tool', 'phase', 'idempotency.key', 'idempotency.outcome', 'idempotency.ref'];
-    for (const tool of mutatingTools) {
-      const req = RECORDING_REQUIREMENTS.find(r => r.tool === tool);
-      assert.ok(req);
-      for (const field of requiredFields) {
-        assert.ok(
-          req.requiredRecordedFields.includes(field),
-          `${tool} should require field ${field}`,
-        );
-      }
-    }
-  });
-
-  it('read-only tools do not require stage artifact recording', () => {
-    const readOnlyTools = ['linear_get_issue', 'review_changes', 'route_task', 'expand_issue'];
-    for (const tool of readOnlyTools) {
-      const req = RECORDING_REQUIREMENTS.find(r => r.tool === tool);
-      assert.ok(req, `missing recording requirement for ${tool}`);
-      assert.equal(req.requiresStageArtifactRecord, false, `${tool} should not require stage artifact record`);
-    }
-  });
-
-  it('all eight tools have recording requirements', () => {
-    const tools = new Set(RECORDING_REQUIREMENTS.map(r => r.tool));
-    for (const tool of WORKFLOW_TOOL_NAMES) {
-      assert.ok(tools.has(tool), `missing recording requirement entry for ${tool}`);
-    }
   });
 });
 

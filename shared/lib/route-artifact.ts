@@ -960,26 +960,3 @@ export function buildRouteLifecycleProvenance(
   };
 }
 
-export function hasValidPostExpansionRoute(routeDir: string): { ok: boolean; reason?: string } {
-  const routePath = join(routeDir, '.post-expansion-route.json');
-  if (!existsSync(routePath)) {
-    return { ok: false, reason: 'missing' };
-  }
-
-  let value: unknown;
-  try {
-    value = JSON.parse(readFileSync(routePath, 'utf-8'));
-  } catch {
-    return { ok: false, reason: 'invalid-json' };
-  }
-
-  const validation = validateExpandedRouteArtifact(value);
-  if (!validation.valid) {
-    const fields = validation.missing.length > 0
-      ? validation.missing.join(',')
-      : validation.invalid.join(',');
-    return { ok: false, reason: `missing-required-field:${fields}` };
-  }
-
-  return { ok: true };
-}

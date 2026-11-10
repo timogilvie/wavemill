@@ -2,10 +2,10 @@
 /**
  * HOK-3314: stamp the current {@link QueueAlertProjection} into
  * `.wavemill/queue-health.json` as `.currentAlertProjection` so shell renderers
- * (`queue_health_status_summary`, `queue_inference_degraded_banner`) and the
- * attention projection (`deriveAttentionItems`, HOK-3423 `queue-health` free
- * item) can read one jq field instead of each re-deriving status / severity /
- * wording from raw queue-health fields.
+ * (`queue_inference_degraded_banner`) and the attention projection
+ * (`deriveAttentionItems`, HOK-3423 `queue-health` free item) can read one
+ * jq field instead of each re-deriving status / severity / wording from raw
+ * queue-health fields.
  *
  * Called once per planner cycle by the shell writers in queue-health.sh.
  * Shell renderers never spawn this directly; they read the stamped block.

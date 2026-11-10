@@ -78,9 +78,10 @@ by the codex `--sandbox read-only` default). Default headless model is `gpt-5.5`
       translation, both providers via mock CLIs) and `resolveProviderForModel`
       coverage in `llm-cli`. All affected suites pass.
 
-**Note:** `shared/lib/dependency-classifier.ts:250` and `tools/plan-queue.ts:235`
-use `callLLM` with `taskType` and already route through the registry fallback
-ladder — they follow Codex once Phase 3 lands, with no per-file edit. Left as-is.
+**Note:** `tools/plan-queue.ts:235` uses `callLLM` with `taskType` and already
+routes through the registry fallback ladder — it follows Codex once Phase 3
+lands, with no per-file edit. Left as-is. (`shared/lib/dependency-classifier.ts`,
+mentioned here historically, was deleted as dead code in HOK-3458.)
 
 ---
 

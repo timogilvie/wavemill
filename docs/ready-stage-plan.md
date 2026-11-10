@@ -507,7 +507,7 @@ After HOK-1174 (PR `#208`) shipped and HOK-1176 (PR `#213`) merged, the revised 
 | Config schema (`ready.checks`, `ready.requiredChecks`) | Shipped | HOK-1174 |
 | Mill integration (`launch_ready_phase` shell function) | Shipped | HOK-1176 |
 | Controller-owned readiness check (`controllerCheckReadiness`) | Backfilled | HOK-1183 |
-| Legacy marker compatibility (`checkLegacyMarkers`) | Backfilled, deprecated for phase resolution | HOK-1183 |
+| Legacy marker compatibility (`checkLegacyMarkers`) | Backfilled, deprecated for phase resolution; deleted as dead code | HOK-1183, HOK-3458 |
 | Controller readiness CLI (`tools/controller-ready.ts`) | Backfilled | HOK-1183 |
 | Shell orchestrator stub (`check_ready_stage`) | Backfilled | HOK-1183 |
 | Monitor phase resolution refactor (`resolve_phase()`, controller-owned state priority) | Shipped | HOK-1194 |
@@ -538,7 +538,7 @@ Explicit deliverables and expectations for each issue in the ready-stage chain.
 
 **HOK-1183 delivers:**
 - `controllerCheckReadiness(featureDir)` — evaluates feature directory phase state without PR/GitHub context
-- `checkLegacyMarkers(featureDir)` — detects `.plan-approved`, `.coding-complete`, `.workflow-aborted` and maps to `ReadyCheck[]`
+- `checkLegacyMarkers(featureDir)` — detects `.plan-approved`, `.coding-complete`, `.workflow-aborted` and maps to `ReadyCheck[]` (deleted as dead code in HOK-3458; phase resolution reads stage result files exclusively)
 - `ControllerReadinessResult` and `LegacyMarkerResult` types
 - `tools/controller-ready.ts` — thin CLI wrapper
 - `check_ready_stage()` shell function stub in `wavemill-mill.sh`

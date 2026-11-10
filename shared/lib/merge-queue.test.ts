@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  computeConflictGroups,
   selectMergeCandidates,
   isCandidateStuck,
   demoteCandidate,
@@ -59,16 +58,6 @@ test('disjoint files can select two candidates', () => {
     config,
   });
   assert.deepEqual(selected.map((item) => item.issue), ['HOK-1', 'HOK-2']);
-});
-
-test('transitive conflict grouping works', () => {
-  const groups = computeConflictGroups([
-    pr({ issue: 'HOK-1', changedFiles: ['a.ts'] }),
-    pr({ issue: 'HOK-2', prNumber: 2, branch: 'task/two', changedFiles: ['a.ts', 'b.ts'] }),
-    pr({ issue: 'HOK-3', prNumber: 3, branch: 'task/three', changedFiles: ['b.ts'] }),
-  ]);
-  assert.equal(groups.length, 1);
-  assert.deepEqual(groups[0].map((item) => item.issue), ['HOK-1', 'HOK-3', 'HOK-2']);
 });
 
 test('maxConcurrentCandidates caps output', () => {

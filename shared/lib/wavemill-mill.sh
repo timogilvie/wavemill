@@ -354,15 +354,6 @@ replay_route_transparency_logs() {
   done < "$stderr_file"
 }
 
-# Future submission hook for Hokusai data export. This is intentionally kept
-# lightweight so the mill can gate outbound submission without duplicating the
-# consent/version logic that lives in TypeScript.
-hokusai_submission_allowed() {
-  local hokusai_tool="$SCRIPT_DIR/../../tools/hokusai-manage.ts"
-  [[ -f "$hokusai_tool" ]] || return 1
-  npx tsx "$hokusai_tool" check-consent >/dev/null 2>&1
-}
-
 # Kept local to this script because the generated monitor script below runs as a
 # standalone shell and must carry its own copy of any helpers it calls.
 render_prompt_template() {
@@ -895,159 +886,8 @@ init_state_ledger() {
 }
 
 
-mark_challenge_eval_running() {
-  local issue="$1" side="$2" pr="$3" phase="${4:-eval}"
-  # HOK-3125: refuse to persist a running marker for a reaped task; caller
-  # treats the non-zero return as "launch skipped, entry no longer present".
-  if ! task_state_entry_exists "$issue"; then
-    return 1
-  fi
-  task_state_mutate_existing "$issue" '
-    .evalRunning = {
-      issue: $issue,
-      side: $side,
-      pr: ($pr | tonumber),
-      phase: $phase,
-      startedAt: (now | todateiso8601)
-    } |
-    .updated = (now | todateiso8601)
-  ' \
-    --arg side "$side" \
-    --arg pr "$pr" \
-    --arg phase "$phase"
-}
-
-clear_challenge_eval_running() {
-  local issue="$1"
-  task_state_mutate_existing "$issue" 'del(.evalRunning) | .updated = (now | todateiso8601)'
-}
-
 # challenge_eval_hard_failure_max_retries() is provided by wavemill-common.sh
 # (HOK-2924); the retired challenge-eval-soft ceiling is gone (HOK-3255).
-
-clear_challenge_pair_state() {
-  local pair_id="$1"
-  state_mutate "$STATE_FILE" '
-    .tasks |= with_entries(
-      if (.value.challengePairId // "") == $pair then
-        .value |= (
-          del(
-            .comparisonState,
-            .comparisonBlockedReason,
-            .comparisonRetryCount,
-            .comparisonRetryMaxAttempts,
-            .comparisonRetryTargetIssue,
-            .comparisonTimedOutSides,
-            .manualComparisonArtifact
-          ) |
-          .updated = (now | todateiso8601)
-        )
-      else
-        .
-      end
-    )
-  ' --arg pair "$pair_id"
-}
-
-write_challenge_pair_state() {
-  local pair_id="$1" state="$2" reason="${3:-}" retry_count="${4:-0}" retry_max="${5:-0}" retry_target="${6:-}" timed_out_sides_csv="${7:-}" artifact_path="${8:-}"
-  state_mutate "$STATE_FILE" '
-    ($timedOutSidesCsv
-      | split(",")
-      | map(gsub("^\\s+|\\s+$"; ""))
-      | map(select(length > 0))) as $timedOutSides
-    | .tasks |= with_entries(
-        if (.value.challengePairId // "") == $pair then
-          .value.comparisonState = $state
-          | .value.comparisonRetryCount = $retryCount
-          | .value.comparisonRetryMaxAttempts = $retryMax
-          | .value |= del(.comparisonRunning)
-          | .value.updated = (now | todateiso8601)
-          | if $reason != "" then .value.comparisonBlockedReason = $reason else .value |= del(.comparisonBlockedReason) end
-          | if $retryTarget != "" then .value.comparisonRetryTargetIssue = $retryTarget else .value |= del(.comparisonRetryTargetIssue) end
-          | if ($timedOutSides | length) > 0 then .value.comparisonTimedOutSides = $timedOutSides else .value |= del(.comparisonTimedOutSides) end
-          | if $artifactPath != "" then .value.manualComparisonArtifact = $artifactPath else .value |= del(.manualComparisonArtifact) end
-        else
-          .
-        end
-      )
-  ' \
-    --arg pair "$pair_id" \
-    --arg state "$state" \
-    --arg reason "$reason" \
-    --arg retryTarget "$retry_target" \
-    --arg timedOutSidesCsv "$timed_out_sides_csv" \
-    --arg artifactPath "$artifact_path" \
-    --argjson retryCount "$retry_count" \
-    --argjson retryMax "$retry_max"
-}
-
-challenge_pair_timed_out_sides_csv() {
-  local issue="$1"
-  read_state_value "" --arg i "$issue" '.tasks[$i].comparisonTimedOutSides // [] | join(",")'
-}
-
-challenge_pair_timeout_reason() {
-  local timed_out_sides_csv="$1"
-  case ",$timed_out_sides_csv," in
-    *,primary,challenger,*|*,challenger,primary,*) printf 'both_eval_timed_out\n' ;;
-    *,primary,*) printf 'primary_eval_timed_out\n' ;;
-    *,challenger,*) printf 'challenger_eval_timed_out\n' ;;
-    *) printf 'eval_timed_out\n' ;;
-  esac
-}
-
-challenge_pair_records_file() {
-  local evals_dir="$REPO_DIR/.wavemill/evals"
-  mkdir -p "$evals_dir"
-  printf '%s/challenge-records.jsonl\n' "$evals_dir"
-}
-
-challenge_pr_url_from_number() {
-  local pr="$1"
-  local pr_url=""
-  if [[ -n "$pr" ]]; then
-    pr_url=$(gh pr view "$pr" --json url --jq .url 2>/dev/null || true)
-  fi
-  if [[ -n "$pr_url" ]]; then
-    printf '%s\n' "$pr_url"
-  else
-    printf 'https://github.com/unknown/unknown/pull/%s\n' "${pr:-0}"
-  fi
-}
-
-challenge_pair_record_exists() {
-  local pair_id="$1"
-  local records_file voids_file
-  records_file=$(challenge_pair_records_file)
-  [[ -f "$records_file" ]] || return 1
-  voids_file="${records_file%/*}/challenge-record-voids.jsonl"
-  [[ -f "$voids_file" ]] || voids_file="/dev/null"
-  jq -e --arg pair "$pair_id" --slurpfile voids "$voids_file" '
-    select(.challengePairId == $pair)
-    | select(
-        if (if has("primaryCompleted") then false
-            elif has("challengerCompleted") then false
-            else true end) then true
-        elif .comparisonOutcome == "forfeit" then
-          if .primaryCompleted == true then true
-          elif .challengerCompleted == true then true
-          elif ((.armFailures // []) | length) > 0 then true
-          else false end
-        elif .comparisonOutcome == "double-forfeit" then
-          if .primaryCompleted == true then true
-          elif .challengerCompleted == true then true
-          elif ((.armFailures // []) | length) > 0 then true
-          else false end
-        else true end
-      ) as $record
-    | select([
-        $voids[]?
-        | select(.challengePairId == $record.challengePairId)
-        | select(.recordTimestamp >= ($record.timestamp // ""))
-      ] | length == 0)
-  ' "$records_file" >/dev/null 2>&1
-}
 
 challenge_pair_manual_artifact_path() {
   local primary_key="$1"
@@ -1059,120 +899,6 @@ challenge_pair_manual_artifact_path() {
   printf '%s/features/%s/ready/challenge-comparison-needed.md\n' "$worktree" "$slug"
 }
 
-write_manual_challenge_comparison_artifact() {
-  local pair_id="$1" primary_key="$2" challenger_key="$3" timed_out_sides_csv="$4" retry_count="$5" retry_max="$6" cause="${7:-eval_timeout}"
-  local artifact_path primary_pr challenger_pr
-  artifact_path=$(challenge_pair_manual_artifact_path "$primary_key") || return 1
-  primary_pr=$(pass_task_field "$primary_key" pr)
-  challenger_pr=$(pass_task_field "$challenger_key" pr)
-  mkdir -p "$(dirname "$artifact_path")"
-  if [[ "$cause" == "stale_eval_evidence" ]]; then
-    cat > "$artifact_path" <<EOF
-# Challenge Comparison Needs Manual Action
-
-Pair ID: $pair_id
-Primary issue: $primary_key
-Challenger issue: $challenger_key
-Primary PR: ${primary_pr:-unknown}
-Challenger PR: ${challenger_pr:-unknown}
-Cause: eval evidence repeatedly refused as stale at the current PR head (relaunches exhausted)
-Retry count: $retry_count/$retry_max
-
-Next action:
-1. Inspect \`npx tsx $TOOLS_DIR/challenge-eval-evidence.ts --pair-id $pair_id --side <side> --pr <pr> --repo-dir .\` and re-run the eval manually if the refusal is transient.
-2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
-3. Close the losing PR and proceed with the winner.
-EOF
-  else
-    cat > "$artifact_path" <<EOF
-# Challenge Comparison Needs Manual Action
-
-Pair ID: $pair_id
-Primary issue: $primary_key
-Challenger issue: $challenger_key
-Primary PR: ${primary_pr:-unknown}
-Challenger PR: ${challenger_pr:-unknown}
-Timed out member(s): ${timed_out_sides_csv:-unknown}
-Retry count: $retry_count/$retry_max
-
-Next action:
-1. Re-run the timed-out eval job(s) manually when infrastructure is healthy.
-2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
-3. Close the losing PR and proceed with the winner.
-EOF
-  fi
-  printf '%s\n' "$artifact_path"
-}
-
-write_invalid_challenge_artifact() {
-  local pair_id="$1" primary_key="$2" challenger_key="$3" divergence_reason="$4" eval_ids_csv="$5"
-  local artifact_path primary_pr challenger_pr
-  artifact_path=$(challenge_pair_manual_artifact_path "$primary_key") || return 1
-  primary_pr=$(pass_task_field "$primary_key" pr)
-  challenger_pr=$(pass_task_field "$challenger_key" pr)
-  mkdir -p "$(dirname "$artifact_path")"
-  cat > "$artifact_path" <<EOF
-# Challenge Pair Invalid - Manual Action
-
-Pair ID: $pair_id
-Primary issue: $primary_key
-Challenger issue: $challenger_key
-Primary PR: ${primary_pr:-unknown}
-Challenger PR: ${challenger_pr:-unknown}
-Cause: invalid_challenge (${divergence_reason:-unknown})
-Eval ID(s): ${eval_ids_csv:-unknown}
-
-The eval ran at the current PR head. Its record is invalid. Re-running evals will reproduce this result - do not re-run them.
-
-Next action:
-1. Retire the invalid arm: close its PR, mark the arm aborted, then ship the surviving PR.
-2. Or assess/supersede the pair with \`npx tsx $TOOLS_DIR/challenge-pair-recovery.ts --pair $pair_id\`. Add \`--apply\` after reviewing the dry run.
-EOF
-  printf '%s\n' "$artifact_path"
-}
-
-mark_challenge_comparison_running() {
-  local pair_id="$1" primary_pr="$2" challenger_pr="$3"
-  state_mutate "$STATE_FILE" '
-    .tasks |= with_entries(
-      if (.value.challengePairId // "") == $pair then
-        .value.comparisonRunning = {
-          pairId: $pair,
-          primaryPr: ($primaryPr | tonumber),
-          challengerPr: ($challengerPr | tonumber),
-          startedAt: (now | todateiso8601)
-        } |
-        .value.comparisonState = "comparison_running" |
-        .value |= del(.comparisonBlockedReason, .comparisonRetryTargetIssue, .comparisonTimedOutSides, .manualComparisonArtifact) |
-        .value.updated = (now | todateiso8601)
-      else
-        .
-      end
-    )
-  ' \
-    --arg pair "$pair_id" \
-    --arg primaryPr "$primary_pr" \
-    --arg challengerPr "$challenger_pr"
-}
-
-clear_challenge_comparison_running() {
-  local pair_id="$1"
-  state_mutate "$STATE_FILE" '
-    .tasks |= with_entries(
-      if (.value.challengePairId // "") == $pair then
-        .value |= (del(.comparisonRunning) | .updated = (now | todateiso8601))
-      else
-        .
-      end
-    )
-  ' --arg pair "$pair_id"
-}
-
-
-get_task_state() {
-  local issue="$1"
-  jq -r --arg issue "$issue" '.tasks[$issue] // empty' "$STATE_FILE"
-}
 
 
 # Migration state helpers — persist reservations in the state ledger
@@ -1184,11 +910,6 @@ scan_highest_migration() {
   highest=$(git -C "$REPO_DIR" ls-tree --name-only "origin/$BASE_BRANCH" alembic/versions/ 2>/dev/null \
     | grep -oE '^[0-9]+' | sort -n | tail -1)
   echo "${highest:-0}"
-}
-
-get_next_migration_num() {
-  # Read from state file; returns empty if not yet set.
-  jq -r '.nextMigrationNum // empty' "$STATE_FILE" 2>/dev/null
 }
 
 save_migration_reservation() {
@@ -1222,14 +943,6 @@ set_task_phase() {
 # get_task_phase() is provided by wavemill-common.sh (HOK-2903); the canonical
 # copy falls back to "executing" on a missing/unreadable/malformed state file
 # instead of this scope's former silent empty string.
-
-check_routing_complete() {
-  local slug="$1"
-  local wt="${WORKTREE_ROOT}/${slug}"
-  [[ -f "$wt/features/$slug/.routing-complete" ]] && return 0
-  return 1
-}
-
 
 _resolve_window_attention_target() {
   local win="$1"
@@ -1265,59 +978,6 @@ set_window_attention_state() {
   tmux refresh-client -S >/dev/null 2>&1 || true
 }
 
-
-codex_has_pending_approval() {
-  local worktree="$1"
-  local codex_db="$HOME/.codex/state_5.sqlite"
-  [[ -n "$worktree" ]] || return 1
-  [[ -f "$codex_db" ]] || return 1
-
-  local escaped_worktree thread_row thread_id rollout_path
-  escaped_worktree=${worktree//\'/\'\'}
-  thread_row=$(sqlite3 "$codex_db" \
-    "SELECT id || '|' || rollout_path FROM threads WHERE cwd = '$escaped_worktree' ORDER BY updated_at DESC LIMIT 1;" \
-    2>/dev/null || true)
-  [[ -n "$thread_row" ]] || return 1
-
-  thread_id="${thread_row%%|*}"
-  rollout_path="${thread_row#*|}"
-  [[ -n "$thread_id" && -f "$rollout_path" ]] || return 1
-
-  declare -A pending_calls=()
-  local event_type call_id
-  while IFS=$'\t' read -r event_type call_id; do
-    [[ -n "$call_id" ]] || continue
-    case "$event_type" in
-      pending) pending_calls["$call_id"]=1 ;;
-      resolved) unset 'pending_calls[$call_id]' ;;
-    esac
-  done < <(
-    jq -r '
-      if .type == "response_item" and .payload.type == "function_call" then
-        ((.payload.arguments? // "{}") | try fromjson catch {}) as $args |
-        if ($args.sandbox_permissions // "") == "require_escalated" then
-          "pending\t\(.payload.call_id // "")"
-        else
-          empty
-        end
-      elif .type == "response_item" and .payload.type == "function_call_output" then
-        "resolved\t\(.payload.call_id // "")"
-      else
-        empty
-      end
-    ' "$rollout_path" 2>/dev/null
-  )
-
-  (( ${#pending_calls[@]} > 0 ))
-}
-
-
-check_plan_exists() {
-  local slug="$1"
-  local wt="${WORKTREE_ROOT}/${slug}"
-  [[ -f "$wt/features/$slug/plan.md" ]] && return 0
-  return 1
-}
 
 # ============================================================================
 # LINEAR API WITH RETRY
@@ -1389,26 +1049,6 @@ linear_get_issue() {
     rm -f "$stderr_file"
     return "$rc"
   fi
-}
-
-
-# Replace a task's Linear issue description from a file. $1 is the mill task
-# ID; linear_write_target (wavemill-common.sh, HOK-3115) resolves the Linear
-# issue and turns challenger/refused tasks into a no-op.
-linear_set_description() {
-  local task_id="$1"
-  local file="$2"
-  local issue
-
-  issue="$(linear_write_target "$task_id")" || return 0
-
-  if [[ "$DRY_RUN" == "true" ]]; then
-    log "[DRY-RUN] Would update $issue description from $file"
-    return 0
-  fi
-
-
-  retry npx tsx "$TOOLS_DIR/update-issue.ts" "$issue" --file "$file" >/dev/null 2>&1
 }
 
 

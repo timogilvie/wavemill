@@ -762,23 +762,6 @@ agent_is_native_cmd() {
   esac
 }
 
-agent_phase_from_role() {
-  case "${1:-}" in
-    planner|planning)
-      printf '%s\n' "planning"
-      ;;
-    reviewer|review|reviewing)
-      printf '%s\n' "review"
-      ;;
-    coder|coding)
-      printf '%s\n' "coding"
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 agent_role_from_phase() {
   case "${1:-}" in
     planning)
@@ -1235,32 +1218,6 @@ _agent_check_deepseek_api_key() {
   return 0
 }
 
-# Internal: validate OPENROUTER_API_KEY (or configured apiKeyEnv) for claude-openrouter.
-# Args: $1 = repo_dir
-# Returns: 0 if key present, 1 if missing
-_agent_check_openrouter_api_key() {
-  local repo_dir="${1:-$(pwd)}"
-  local provider_json api_key_env has_api_key
-
-  provider_json="$(agent_openrouter_config "$repo_dir" 2>/dev/null)" || {
-    if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
-      echo "Error: OPENROUTER_API_KEY is not set. Set it before launching a claude-openrouter agent." >&2
-      return 1
-    fi
-    return 0
-  }
-
-  api_key_env="$(agent_json_get "$provider_json" apiKeyEnv)"
-  api_key_env="${api_key_env:-OPENROUTER_API_KEY}"
-  has_api_key="$(agent_json_get "$provider_json" hasApiKey)"
-
-  if [[ "$has_api_key" != "true" ]]; then
-    echo "Error: ${api_key_env} is not set. Set it before launching a claude-openrouter agent." >&2
-    return 1
-  fi
-  return 0
-}
-
 # Check if agent is authenticated and ready to use.
 # Args: $1 = agent command name (e.g. "claude", "codex", "claude-deepseek")
 # Returns: 0 if authenticated, 1 if not authenticated
@@ -1399,13 +1356,6 @@ agent_check_auth() {
 # ============================================================================
 # Single source of truth for agent prompts. Used by both
 # wavemill-orchestrator.sh (initial batch) and launch_task() (monitor loop).
-
-agent_exit_followup_text() {
-  local agent_cmd="${1:-claude}"
-
-  # Agent-agnostic: the orchestrator detects session end via pane state (HOK-1177)
-  echo "Stop working. The orchestrator will handle cleanup."
-}
 
 agent_abort_feedback_text() {
   local agent_cmd="${1:-claude}" marker_path="$2"

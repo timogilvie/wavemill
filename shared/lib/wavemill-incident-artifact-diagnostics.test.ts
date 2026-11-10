@@ -5,7 +5,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  readJobState,
   readPlanningResult,
   redactIncidentData,
 } from './artifact-diagnostics.ts';
@@ -33,18 +32,6 @@ test('readPlanningResult returns structured terminal fields', () => {
       planFile: 'plan.md',
       transcriptFile: undefined,
     });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('artifact readers degrade malformed JSON to error fields', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'incident-malformed-'));
-  try {
-    const file = join(dir, 'job.json');
-    writeFileSync(file, '{not-json');
-    const job = readJobState(file);
-    assert.ok(job?.error);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

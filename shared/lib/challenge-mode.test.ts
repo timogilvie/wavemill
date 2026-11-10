@@ -16,7 +16,6 @@ import {
   filterDeepSeekChallengeModels,
   getChallengeModelPool,
   insufficientStagePoolReason,
-  pickChallengeWorkflowsWithContext,
   pickChallengeWorkflowsWithContextAndReason,
   pickChallengeModels,
   pickChallengeModelsWithReason,
@@ -63,6 +62,15 @@ function test(name: string, fn: () => void) {
     console.log(`  FAIL  ${name}`);
     console.log(`        ${(err as Error).message}`);
   }
+}
+
+// Test-local compatibility shim for the now-deleted `pickChallengeWorkflowsWithContext`
+// production wrapper, which just returned `.pair` from the still-live
+// `pickChallengeWorkflowsWithContextAndReason`.
+function pickChallengeWorkflowsWithContext(
+  ...args: Parameters<typeof pickChallengeWorkflowsWithContextAndReason>
+): ReturnType<typeof pickChallengeWorkflowsWithContextAndReason>['pair'] {
+  return pickChallengeWorkflowsWithContextAndReason(...args).pair;
 }
 
 console.log('\n--- Challenge Mode Tests ---\n');
