@@ -1,0 +1,4 @@
+# Files that legitimately mention multiple REQUIRED_PATHS entries for a purpose
+# other than redefining the review-scope required-files list (HOK-3456).
+shared/lib/conflict-scorer.ts  5  # Low-conflict-registry heuristic; semantically distinct from review-scope required paths (HOK-3456).
+tools/related-tests/select-core.ts  4  # Parses test-registration shell arrays; not a second required-files list (HOK-3456).

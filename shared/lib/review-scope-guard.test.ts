@@ -222,7 +222,7 @@ test('validateReviewScope blocks stale staged overwrites of integration-only fil
   }
 });
 
-test('validateReviewScope allows test and registration companions for scoped source files', () => {
+test('validateReviewScope allows test companions and required registration files without a companion trick', () => {
   const { repoDir, cleanup } = makeGitOnlyRepo();
   try {
     commitFile(repoDir, 'tests/run-unit-tests.sh', '#!/bin/bash\n# runner\n', 'test runner');
@@ -234,16 +234,16 @@ test('validateReviewScope allows test and registration companions for scoped sou
     const result = validateReviewScope({ repoDir, includeWorkingTree: true });
 
     assert.equal(result.status, 'pass');
-    assert.deepEqual(result.allowedCompanionPaths, [
-      'shared/lib/foo.test.ts',
-      'tests/run-unit-tests.sh',
-    ]);
+    // The test file is still a companion; the registration runner is now
+    // admitted via REQUIRED_PATHS, not the companion allowlist.
+    assert.deepEqual(result.allowedCompanionPaths, ['shared/lib/foo.test.ts']);
+    assert(!result.outOfScopePaths.includes('tests/run-unit-tests.sh'));
   } finally {
     cleanup();
   }
 });
 
-test('validateReviewScope rejects test and registration companions when the source is not in scope', () => {
+test('validateReviewScope rejects test companions when the source is not in scope, but still allows required registration files', () => {
   const { repoDir, cleanup } = makeGitOnlyRepo();
   try {
     commitFile(repoDir, 'tests/run-unit-tests.sh', '#!/bin/bash\n# runner\n', 'test runner');
@@ -255,10 +255,9 @@ test('validateReviewScope rejects test and registration companions when the sour
     const result = validateReviewScope({ repoDir, includeWorkingTree: true });
 
     assert.equal(result.status, 'fail');
-    assert.deepEqual(result.outOfScopePaths, [
-      'shared/lib/bar.test.ts',
-      'tests/run-unit-tests.sh',
-    ]);
+    // The test companion is rejected because bar.ts is out of scope, but the
+    // required registration file is admitted outright (HOK-3456).
+    assert.deepEqual(result.outOfScopePaths, ['shared/lib/bar.test.ts']);
   } finally {
     cleanup();
   }
@@ -905,6 +904,255 @@ test('ensureReviewScopeBaseline refresh rewrites an advanced baseline and keeps 
     // Already at the live merge base: a second refresh is a no-op.
     const again = ensureReviewScopeBaseline({ repoDir, featureDir, refresh: true });
     assert.equal(again.refreshed, false);
+  } finally {
+    cleanup();
+  }
+});
+
+// ────────────────────────────────────────────────────────────────
+// Required paths (HOK-3456)
+// ────────────────────────────────────────────────────────────────
+
+function writeCiYml(repoDir: string, journeyNames: string[]): void {
+  const matrix = journeyNames.map((name) => ` ${name}`).join(',');
+  // allow-template-curly: GitHub Actions matrix expression in test fixture.
+  const matrixExpr = '${{ matrix.journey }}';
+  const path = join(repoDir, '.github', 'workflows', 'ci.yml');
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(
+    path,
+    `name: CI\n\n` +
+    `on:\n  push:\n\n` +
+    `jobs:\n` +
+    `  journeys:\n` +
+    `    name: Golden Journey (${matrixExpr})\n` +
+    `    strategy:\n` +
+    `      matrix:\n` +
+    `        journey: [${matrix}]\n` +
+    `    steps:\n` +
+    `      - run: echo ${matrixExpr}\n`,
+    'utf-8',
+  );
+}
+
+/**
+ * Create a repo like {@link makeRepo} but with additional files committed on
+ * the integration branch before the task branch point, so the baseline can
+ * include them and structural diff checks have a base version to compare.
+ */
+function makeRepoWithBaseFiles(
+  extraFiles: Record<string, string> | ((repoDir: string) => void),
+): {
+  repoDir: string;
+  featureDir: string;
+  baseCommit: string;
+  cleanup: () => void;
+} {
+  const { repoDir, featureDir, cleanup } = makeRepo();
+  git(repoDir, 'checkout auto/integration');
+  if (typeof extraFiles === 'function') {
+    extraFiles(repoDir);
+  } else {
+    for (const [path, contents] of Object.entries(extraFiles)) {
+      const absPath = join(repoDir, path);
+      mkdirSync(dirname(absPath), { recursive: true });
+      writeFileSync(absPath, contents, 'utf-8');
+    }
+  }
+  git(repoDir, 'add -A');
+  git(repoDir, 'commit -m "base required files"');
+  const baseCommit = git(repoDir, 'rev-parse HEAD');
+  git(repoDir, `checkout -B task/scope-guard ${baseCommit}`);
+  writeFileSync(join(featureDir, 'selected-task.json'), JSON.stringify({
+    taskId: 'HOK-1',
+    featureName: 'scope-guard',
+    reviewBaseCommit: baseCommit,
+  }));
+  return { repoDir, featureDir, baseCommit, cleanup };
+}
+
+test('validateReviewScope allows required test-registration files without a test companion', () => {
+  const { repoDir, featureDir, baseCommit, cleanup } = makeRepo();
+  try {
+    commitFile(repoDir, 'src/app.ts', 'export const value = 1;\n', 'coding');
+    stageFile(repoDir, 'tests/run-unit-tests.sh', '#!/bin/bash\n# new test registration\n');
+
+    const result = validateReviewScope({
+      repoDir,
+      featureDir,
+      sinceCommit: baseCommit,
+      includeWorkingTree: true,
+      writeBaseline: true,
+    });
+
+    assert.equal(result.status, 'pass');
+    assert(!result.outOfScopePaths.includes('tests/run-unit-tests.sh'));
+  } finally {
+    cleanup();
+  }
+});
+
+test('validateReviewScope allows required journey and fixture paths without a companion', () => {
+  const { repoDir, featureDir, baseCommit, cleanup } = makeRepo();
+  try {
+    commitFile(repoDir, 'src/app.ts', 'export const value = 1;\n', 'coding');
+    stageFile(repoDir, 'tests/journeys/new-required.journey.sh', '#!/bin/bash\n');
+    stageFile(repoDir, 'tests/fakes/new-fake.sh', '#!/bin/bash\n');
+    stageFile(repoDir, 'tests/fixtures/incident-replay/real/new-required.json', '{}\n');
+
+    const result = validateReviewScope({
+      repoDir,
+      featureDir,
+      sinceCommit: baseCommit,
+      includeWorkingTree: true,
+      writeBaseline: true,
+    });
+
+    assert.equal(result.status, 'pass');
+    assert.deepEqual(result.outOfScopePaths, []);
+  } finally {
+    cleanup();
+  }
+});
+
+test('validateReviewScope still rejects unrelated files when required files are also changed', () => {
+  const { repoDir, featureDir, baseCommit, cleanup } = makeRepo();
+  try {
+    commitFile(repoDir, 'src/app.ts', 'export const value = 1;\n', 'coding');
+    stageFile(repoDir, 'tests/run-unit-tests.sh', '#!/bin/bash\n# new test registration\n');
+    stageFile(repoDir, 'src/unrelated.ts', 'export const nope = 1;\n');
+
+    const result = validateReviewScope({
+      repoDir,
+      featureDir,
+      sinceCommit: baseCommit,
+      includeWorkingTree: true,
+      writeBaseline: true,
+    });
+
+    assert.equal(result.status, 'fail');
+    assert.deepEqual(result.outOfScopePaths, ['src/unrelated.ts']);
+  } finally {
+    cleanup();
+  }
+});
+
+test('validateReviewScope allows ci.yml changes that only add journey matrix entries', () => {
+  const { repoDir, featureDir, baseCommit, cleanup } = makeRepoWithBaseFiles((repoDir) => {
+    writeCiYml(repoDir, ['happy-path']);
+  });
+  try {
+    commitFile(repoDir, 'src/app.ts', 'export const value = 1;\n', 'coding');
+    writeCiYml(repoDir, ['happy-path', 'required-files-review-scope']);
+    git(repoDir, 'add .github/workflows/ci.yml');
+    git(repoDir, 'commit -m "add journey to matrix"');
+
+    const result = validateReviewScope({
+      repoDir,
+      featureDir,
+      sinceCommit: baseCommit,
+      writeBaseline: true,
+    });
+
+    assert.equal(result.status, 'pass');
+    assert(!result.outOfScopePaths.includes('.github/workflows/ci.yml'));
+  } finally {
+    cleanup();
+  }
+});
+
+test('validateReviewScope rejects ci.yml edits outside the journey matrix', () => {
+  const { repoDir, featureDir, baseCommit, cleanup } = makeRepoWithBaseFiles({
+    '.github/workflows/ci.yml': '',
+  });
+  try {
+    writeCiYml(repoDir, ['happy-path']);
+    git(repoDir, 'add .github/workflows/ci.yml');
+    git(repoDir, 'commit -m "base ci.yml"');
+    commitFile(repoDir, 'src/app.ts', 'export const value = 1;\n', 'coding');
+    // allow-template-curly: GitHub Actions matrix expression in test fixture.
+    const matrixExpr = '${{ matrix.journey }}';
+    writeFileSync(
+      join(repoDir, '.github', 'workflows', 'ci.yml'),
+      `name: CI\n\n` +
+      `on:\n  push:\n  pull_request:\n\n` +
+      `jobs:\n` +
+      `  journeys:\n` +
+      `    name: Golden Journey (${matrixExpr})\n` +
+      `    strategy:\n` +
+      `      matrix:\n` +
+      `        journey: [ happy-path ]\n` +
+      `    steps:\n` +
+      `      - run: echo ${matrixExpr}\n`,
+      'utf-8',
+    );
+    git(repoDir, 'add .github/workflows/ci.yml');
+    git(repoDir, 'commit -m "edit ci.yml outside matrix"');
+
+    const result = validateReviewScope({
+      repoDir,
+      featureDir,
+      sinceCommit: baseCommit,
+      writeBaseline: true,
+    });
+
+    assert.equal(result.status, 'fail');
+    assert(result.findings.some((finding) => finding.path === '.github/workflows/ci.yml'));
+  } finally {
+    cleanup();
+  }
+});
+
+test('validateReviewScope rejects ci.yml journey matrix entry removals', () => {
+  const { repoDir, featureDir, baseCommit, cleanup } = makeRepoWithBaseFiles({
+    '.github/workflows/ci.yml': '',
+  });
+  try {
+    writeCiYml(repoDir, ['happy-path', 'old-journey']);
+    git(repoDir, 'add .github/workflows/ci.yml');
+    git(repoDir, 'commit -m "base ci.yml"');
+    commitFile(repoDir, 'src/app.ts', 'export const value = 1;\n', 'coding');
+    writeCiYml(repoDir, ['happy-path']);
+    git(repoDir, 'add .github/workflows/ci.yml');
+    git(repoDir, 'commit -m "drop journey from matrix"');
+
+    const result = validateReviewScope({
+      repoDir,
+      featureDir,
+      sinceCommit: baseCommit,
+      writeBaseline: true,
+    });
+
+    assert.equal(result.status, 'fail');
+    assert(result.findings.some((finding) => finding.path === '.github/workflows/ci.yml'));
+  } finally {
+    cleanup();
+  }
+});
+
+test('validateReviewScope still applies deletion budget to required files', () => {
+  const { repoDir, featureDir, baseCommit, cleanup } = makeRepoWithBaseFiles({
+    'tests/run-unit-tests.sh': '#!/bin/bash\n' + 'line\n'.repeat(60),
+  });
+  try {
+    commitFile(repoDir, 'src/app.ts', 'export const value = 1;\n', 'coding');
+    // tests/run-unit-tests.sh is required but not in the task baseline.
+    // Deleting 51 lines trips the +<1/-50 budget.
+    writeFileSync(join(repoDir, 'tests/run-unit-tests.sh'), '# empty\n');
+    git(repoDir, 'add tests/run-unit-tests.sh');
+    git(repoDir, 'commit -m "delete required file"');
+
+    const result = validateReviewScope({
+      repoDir,
+      featureDir,
+      sinceCommit: baseCommit,
+      writeBaseline: true,
+    });
+
+    assert.equal(result.status, 'fail');
+    assert(!result.outOfScopePaths.includes('tests/run-unit-tests.sh'));
+    assert(result.findings.some((finding) =>
+      finding.category === 'deletion-budget' && finding.path === 'tests/run-unit-tests.sh'));
   } finally {
     cleanup();
   }

@@ -447,6 +447,7 @@ TESTS=(
   tools/check-ci-concurrency.test.ts
   tools/lib/source-guard.test.ts
   tools/check-command-parse.test.ts
+  tools/check-required-files-list.test.ts
   tools/check-source-text-assertions.test.ts
   tools/check-review-report-boundary.test.ts
   tools/check-openrouter-alias-audit-ci.test.ts

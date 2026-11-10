@@ -1,0 +1,60 @@
+# shellcheck shell=bash
+# Fake coder for the required-files-review-scope journey (HOK-3456).
+
+# Main task deliverable (expected by journey_assert_landed).
+printf 'implemented %s\n' "$WAVEMILL_ISSUE" > journey-output.txt
+
+mkdir -p tests
+tee tests/required-files-review-scope.test.ts <<'TS'
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+test('required files are in review scope', () => {
+  assert.ok(true);
+});
+TS
+
+mkdir -p tests
+tee tests/run-unit-tests.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+node --test tests/required-files-review-scope.test.ts
+SH
+chmod +x tests/run-unit-tests.sh
+
+mkdir -p tests/journeys
+tee tests/journeys/required-files-review-scope-test.journey.sh <<'JOURNEY'
+#!/usr/bin/env bash
+# A journey added to prove required-files scope admission.
+set -euo pipefail
+echo 'required-files-review-scope-test journey ran'
+JOURNEY
+chmod +x tests/journeys/required-files-review-scope-test.journey.sh
+
+mkdir -p tests/fixtures/incident-replay/real
+tee tests/fixtures/incident-replay/real/required_files_review_scope.json <<'JSON'
+{"schemaVersion":"incident-fixture/1","chain":"required_files_review_scope"}
+JSON
+
+mkdir -p .github/workflows
+tee .github/workflows/ci.yml <<'YAML'
+name: CI
+on:
+  push:
+jobs:
+  journeys:
+    name: Golden Journey (${{ matrix.journey }})
+    strategy:
+      matrix:
+        journey: [happy-path, required-files-review-scope-test]
+    steps:
+      - run: echo ${{ matrix.journey }}
+YAML
+
+git add -A
+git -c user.name=fake-agent -c user.email=fake-agent@example.invalid commit -q -m "$WAVEMILL_ISSUE: add required files"
+
+commit_sha=$(git rev-parse HEAD)
+tee "$FEATURE_DIR/.coding-complete" <<EOF
+{"stage":"coding","confidence":"high","commit":"$commit_sha"}
+EOF
