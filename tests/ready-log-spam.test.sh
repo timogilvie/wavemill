@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# wavemill-test-suite: none (ran in no suite before HOK-3466; run it or delete it)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

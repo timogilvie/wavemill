@@ -14,7 +14,7 @@ set -euo pipefail
 # (tools/partition-tests.ts + tests/ci-test-weights.json, suite "shell") so
 # shard runtimes stay balanced; round-robin left one shard at ~2.5x the
 # others (HOK-3233). An unsharded run (the default) never invokes the
-# partitioner, so plain local runs have no extra dependency.
+# partitioner.
 #
 # Timing output (--timing-out or TIMING_OUTPUT env) is a single bounded JSON
 # document: one entry per executed test with id, elapsed ms, and result. It
@@ -23,203 +23,21 @@ set -euo pipefail
 # Fails fast on the first failing test, matching the previous && chain.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Note: tests/check-shell.sh is deliberately absent. It is a lint/syntax pass
+# Note: tests/check-shell.sh is not part of this suite. It is a lint/syntax pass
 # over every shell script, not a per-shard test, and runs once via `npm run lint`.
-TESTS=(
-  state-mutate-task-record-validation.test.sh
-  state-lock.test.sh
-  settled-attempt.test.sh
-  run-related.test.sh
-  run-typecheck.test.sh
-  check-direct-ledger-access.test.sh
-  ledger-cli-shadow.test.sh
-  ledger-hook-shadow.test.sh
-  check-ledger-shadow-swallow.test.sh
-  monitor-side-effect-detector-tick.test.sh
-  monitor-canary-cohort-refresh-tick.test.sh
-  deps-drift.test.sh
-  aborted-challenge-cleanup.test.sh
-  safe-branch-cleanup.test.sh
-  preserved-branch-record-long-slug.test.sh
-  challenge-primary-merge-cleanup.test.sh
-  operator-abort-cleanup.test.sh
-  agent-resolve-from-model.test.sh
-  terminal-reconciler.test.sh
-  startup-terminal-preflight.test.sh
-  fresh-launch-terminal-preflight.test.sh
-  startup-cleanup-integration.test.sh
-  startup-terminal-ownership.test.sh
-  monitor-env-completeness.test.sh
-  wavemill-expand-direct.test.sh
-  routing-complete-writes.test.sh
-  wavemill-monitor-executed-model.test.sh
-  apply-expanded-route.test.sh
-  challenge-intent-roundtrip.test.sh
-  challenge-varied-model-abort.test.sh
-  challenge-record-decisive.test.sh
-  native-terminal-failure.test.sh
-  native-failure-classification.test.sh
-  stage-failure-retry.test.sh
-  coding-dirty-handoff.test.sh
-  stage-teardown.test.sh
-  ready-exhausted-challenge.test.sh
-  review-gate-refused-challenge.test.sh
-  monitor-late-completion.test.sh
-  blocked-completion-redaction.test.sh
-  plan-reapproval-late-coding-complete.test.sh
-  monitor-terminal-cleanup-tick.test.sh
-  monitor-reaped-task-no-window-recreation.test.sh
-  monitor-window-recreate-bounded.test.sh
-  persist-task-window-id-reaped.test.sh
-  monitor-wake-resume.test.sh
-  parent-monitor-function-drift.test.sh
-  save-task-state-canonicalization.test.sh
-  linear-state-canonicalization.test.sh
-  task-phase-canonicalization.test.sh
-  pr-state-merge-canonicalization.test.sh
-  review-recovery.test.sh
-  recovery-contract-replay.test.sh
-  with-timeout.test.sh
-  native-agent-shell-operators.test.sh
-  native-coding-commit.test.sh
-  hook-write-context-guard.test.sh
-  osc7501-status.test.sh
-  claude-tmux-server-guard.test.sh
-  agent-tmux-runtime-guard.test.sh
-  expansion-handshake.test.sh
-  config-version-prompt.test.sh
-  monitor-ready-transition.test.sh
-  ready-remediation-disposition.test.sh
-  ready-failure-blocks-pr-label.test.sh
-  launch-ready-phase.test.sh
-  ready-sync-github-head-lag.test.sh
-  operator-escalation.test.sh
-  ready-first-failure-no-attention.test.sh
-  bounded-retry.test.sh
-  check-install-paths.test.sh
-  check-common-guards.test.sh
-  check-marker-clear-sites.test.sh
-  check-state-surface-writes.test.sh
-  check-label-write-sites.test.sh
-  check-no-submit-data-producer.test.sh
-  merge-labels-real-state.test.sh
-  state-fixtures.test.sh
-  ready-update-from-base.test.sh
-  ready-failure-classify-and-act.test.sh
-  plan-packet-binding.test.sh
-  task-inputs-gate.test.sh
-  task-progress.test.sh
-  task-identity.test.sh
-  task-artifact-lookup.test.sh
-  archive-naming.test.sh
-  terminal-backend.test.sh
-  tracked-tree-guard.test.sh
-  handle-phase-launch-result.test.sh
-  coding-launch-refusal.test.sh
-  launch-pane-liveness.test.sh
-  launch-failure-log-capture.test.sh
-  eval-stub-slot-accounting.test.sh
-  eval-report-cost-availability.test.sh
-  challenge-deferred-arm.test.sh
-  review-scope-baseline-handoff.test.sh
-  launch-native-planning-phase.test.sh
-  log-hygiene.test.sh
-  lifecycle-scenarios.test.sh
-  lifecycle-harness.test.sh
-  archive-stage-artifacts.test.sh
-  operator-touch-record.test.sh
-  report-reliability-cli.test.sh
-  reliability-dashboard-repo.test.sh
-  cleanup-branch.test.sh
-  cleanup-episodes.test.sh
-  completed-task-cleanup.test.sh
-  error-recovery.test.sh
-  deepseek-gh-wrapper.test.sh
-  startup-terminal-prune.test.sh
-  planning-validation.test.sh
-  wavemill-guards.test.sh
-  wavemill-status.test.sh
-  dashboard-incidents-section.test.sh
-  backstage-tend-watchdog.test.sh
-  backstage-observer-watchdog.test.sh
-  observer-managed-filing.test.sh
-  backstage-observer-pane-promotion.test.sh
-  control-layout.test.sh
-  control-pane-recovery.test.sh
-  challenge-comparison-state.test.sh
-  challenge-running-state.test.sh
-  challenge-eval-hard-failure.test.sh
-  challenge-eval-invalid-challenge.test.sh
-  challenge-planning-equivalence.test.sh
-  challenge-job-monitor-loop.test.sh
-  task-selection-renderer.test.sh
-  wavemill-backlog-pane-no-flash.test.sh
-  wavemill-expand-selection.test.sh
-  wavemill-mill-challenge.test.sh
-  wavemill-mill-model-flags.test.sh
-  wavemill-mill-config-preflight.test.sh
-  wavemill-mill-router-fallback.test.sh
-  model-inheritance-chain.test.sh
-  wavemill-monitor-command-draining.test.sh
-  wavemill-mill-session.test.sh
-  wavemill-input-reader.test.sh
-  merge-retry-marker.test.sh
-  queue-health.test.sh
-  queue-inference-degraded-banner.test.sh
-  merge-queue-live-ci.test.sh
-  merge-queue-blocked-label.test.sh
-  merge-lane-progress-artifacts.test.sh
-  queue-planner-stdin-policy.test.sh
-  openrouter-warning-surfaces.test.sh
-  hokusai-test-registration.test.sh
-  global-model-parity.test.sh
-  stage-state.test.sh
-  startup-handoff.test.sh
-  monitor-script-byte-identical.test.sh
-  transient-marker.test.sh
-  run-custom-tests-shard.test.sh
-  incident-fixtures-terminal-panes.test.sh
-  incident-fixtures-safety-controls.test.sh
-  terminal-lifecycle-flags.test.sh
-  challenge-provenance.test.sh
-  quarantine-legacy-reviewer-forfeits.test.sh
-  reviewer-stage-hok2939-shaped.test.sh
-  reviewer-stage-hok2954-shaped.test.sh
-  challenge-fork-materialisation.test.sh
-  challenge-fork-restart.test.sh
-  challenge-fork-pre-fork-collapse.test.sh
-  challenge-fork-inherited-provenance.test.sh
-  challenge-fork-non-forked-regression.test.sh
-  challenge-fork-review-launch-refusal.test.sh
-  base-ref-stale-local.test.sh
-  session-capabilities.test.sh
-  review-capacity-detection.test.sh
-  review-missing-window-relaunch.test.sh
-  re-review-no-pr.test.sh
-  monitor-command-routing.test.sh
-  condition-reconciler.test.sh
-  condition-reconciler-realstate.test.sh
-  wavemill-pr-cache.test.sh
-  cross-pr-revert-job.test.sh
-  async-in-flight-touch-set.test.sh
-  pr-ci-status-job.test.sh
-  ready-watchdog-job.test.sh
-  route-task-job.test.sh
-  monitor-perf-smoke.test.sh
-  config-false-booleans.test.sh
-  check-no-npx-in-monitor.sh
-  monitor-pass-snapshot.test.sh
-  monitor-pass-budget.test.sh
-  agent-model-memo.test.sh
-  monitor-state-size.test.sh
-  hot-state-byte-cap.test.sh
-  monitor-usr2-wakeup.test.sh
-  fakes/fakes-contract.test.sh
-  tmux-wrapper-loop.test.sh
-  world-lifetime-sigkill.test.sh
-  world-lifetime-stale-reap.test.sh
-)
+# Suite membership is discovered, never listed (HOK-3466): see
+# shared/lib/test-discovery.ts for the pattern and marker rules. A discovery
+# failure must fail the run loudly rather than run a partial suite.
+if ! DISCOVERED="$(cd "$REPO_DIR" && node tools/discover-tests.ts --suite shell)"; then
+  echo "run-shell-suite.sh: test discovery failed" >&2
+  exit 2
+fi
+TESTS=()
+while IFS= read -r line; do
+  [[ -n "$line" ]] && TESTS+=("$line")
+done <<< "$DISCOVERED"
 
 SHARD_INDEX=1
 SHARD_TOTAL=1

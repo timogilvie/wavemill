@@ -13,12 +13,14 @@ import os from 'node:os';
 import { join } from 'node:path';
 import {
   decideStageAgentDisposition,
+  evaluateStageAgentDisposition,
   gatherStageTaskProgress,
   readStageAgentLaunch,
   type StageAgentDispositionInput,
   type StageAgentProgress,
 } from './stage-agent-disposition.ts';
 import { appendOwnershipRow } from './session-ownership.ts';
+import { setTerminalExecForTest } from './terminal-backend.ts';
 import type { HookState } from './task-progress.ts';
 
 const LAUNCH_ISO = '2026-11-02T09:00:00.000Z';
@@ -33,7 +35,7 @@ function stateDir(): string {
  * A real git worktree with one commit at `commitIso` — exercises
  * `readLatestCommitAt` for real, unlike a bare `mkdtempSync` directory (where
  * `git log` fails and `latestCommitAt` is always null, silently skipping the
- * exact evidence path the 2026-11-05 incident bug lives in).
+ * exact evidence path the reported 2026-11-05 stall's bug lives in).
  */
 function worktreeWithCommit(commitIso: string): string {
   const dir = mkdtempSync(join(os.tmpdir(), 'stage-agent-disposition-wt-'));
@@ -71,7 +73,7 @@ function baseInput(overrides: Partial<StageAgentDispositionInput> = {}): StageAg
       agentRecord: null,
       agentState: null,
       agentIdle: false,
-      agentProcessLive: null,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: false,
@@ -136,7 +138,7 @@ test('decision: blockingPrompt → settled blocking-prompt:<id>', () => {
       agentRecord: null,
       agentState: null,
       agentIdle: false,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: { id: 'codex_daemon_version_mismatch', agent: 'codex', detail: 'cancel the menu' },
       stalled: false,
@@ -155,7 +157,7 @@ test('decision: agentBackgroundLive → in-flight background-work', () => {
       agentRecord: null,
       agentState: null,
       agentIdle: true,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: true,
       blockingPrompt: null,
       stalled: false,
@@ -175,7 +177,7 @@ test('decision: agent working at launch+30s → in-flight agent-working', () => 
       agentRecord: hookRecord('working', 30, now),
       agentState: 'working',
       agentIdle: false,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: false,
@@ -187,6 +189,91 @@ test('decision: agent working at launch+30s → in-flight agent-working', () => 
   assert.equal(d.evidenceConfidence, 'high');
 });
 
+// protects: HOK-3426 problem 1 — a real agent killed mid-tool leaves `working`
+// from the PreToolUse it died in as its last hook. A recorded exit at/after
+// that record must settle the stage, or a killed agent holds forever.
+test('HOK-3426: a recorded exit at/after a `working` record settles agent-exited', () => {
+  const now = Date.parse('2026-11-02T10:00:00.000Z');
+  const record = hookRecord('working', 30, now); // 2026-11-02T09:59:30Z
+  const d = decideStageAgentDisposition(baseInput({
+    progress: {
+      agentRecord: record,
+      agentState: 'working',
+      agentIdle: false,
+      agentExited: { at: '2026-11-02T09:59:45.000Z', source: 'launcher' },
+      agentBackgroundLive: null,
+      blockingPrompt: null,
+      stalled: false,
+      ownedSessionIdleAt: null,
+    },
+  }));
+  assert.equal(d.kind, 'settled');
+  assert.equal(d.reason, 'agent-exited');
+  assert.equal(d.evidenceConfidence, 'high');
+});
+
+// protects: a stale exit record ending a working agent — the record is newer
+// than the exit, so the live agent still holds.
+test('HOK-3426: a `working` record newer than the exit keeps in-flight agent-working', () => {
+  const now = Date.parse('2026-11-02T10:00:00.000Z');
+  const d = decideStageAgentDisposition(baseInput({
+    progress: {
+      agentRecord: hookRecord('working', 30, now), // 09:59:30, newer than the exit
+      agentState: 'working',
+      agentIdle: false,
+      agentExited: { at: '2026-11-02T09:59:15.000Z', source: 'launcher' },
+      agentBackgroundLive: null,
+      blockingPrompt: null,
+      stalled: false,
+      ownedSessionIdleAt: null,
+    },
+  }));
+  assert.equal(d.kind, 'in-flight');
+  assert.equal(d.reason, 'agent-working');
+});
+
+// protects: a hook record and an exit in the SAME second (hook timestamps are
+// epoch seconds) being read as "record is newer", which would hold a killed
+// agent until the stall clock.
+test('HOK-3426: an exit in the same second as the record still settles agent-exited', () => {
+  const now = Date.parse('2026-11-02T10:00:00.000Z');
+  const d = decideStageAgentDisposition(baseInput({
+    progress: {
+      agentRecord: hookRecord('working', 30, now), // epoch second of 09:59:30
+      agentState: 'working',
+      agentIdle: false,
+      agentExited: { at: '2026-11-02T09:59:30.900Z', source: 'launcher' },
+      agentBackgroundLive: null,
+      blockingPrompt: null,
+      stalled: false,
+      ownedSessionIdleAt: null,
+    },
+  }));
+  assert.equal(d.kind, 'settled');
+  assert.equal(d.reason, 'agent-exited');
+});
+
+// protects: a live `approval-needed` wait being settled by an exit fact that
+// predates it (the operator answered and the agent resumed).
+test('HOK-3426: an exit before a `approval-needed` record does not settle the wait', () => {
+  const now = Date.parse('2026-11-02T10:00:00.000Z');
+  const d = decideStageAgentDisposition(baseInput({
+    progress: {
+      agentRecord: hookRecord('approval-needed', 30, now),
+      agentState: 'approval-needed',
+      agentIdle: false,
+      agentExited: { at: '2026-11-02T09:59:00.000Z', source: 'controller-termination' },
+      agentBackgroundLive: null,
+      blockingPrompt: null,
+      stalled: false,
+      ownedSessionIdleAt: null,
+    },
+  }));
+  assert.equal(d.kind, 'in-flight');
+  assert.equal(d.reason, 'agent-approval-needed');
+  assert.deepEqual(d.waitingOn, { kind: 'approval', detail: 'approval-needed' });
+});
+
 // protects: an agent idle record being ignored so a review stage with no verdict holds forever.
 test('decision: agent idle after launch → settled agent-idle-after-launch', () => {
   const now = Date.parse('2026-11-02T10:00:00.000Z');
@@ -195,7 +282,7 @@ test('decision: agent idle after launch → settled agent-idle-after-launch', ()
       agentRecord: { state: 'idle', event: 'Stop', agent: 'claude', timestamp: Math.floor((now - 60 * 1000) / 1000) },
       agentState: null,
       agentIdle: true,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: false,
@@ -214,7 +301,7 @@ test('decision: owned-session idle after launch → settled agent-idle-after-lau
       agentRecord: null,
       agentState: null,
       agentIdle: true,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: false,
@@ -233,7 +320,7 @@ test('decision: owned-session idle BEFORE launch is ignored', () => {
       agentRecord: null,
       agentState: null,
       agentIdle: false,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: false,
@@ -251,7 +338,7 @@ test('decision: stalled → settled agent-stalled', () => {
       agentRecord: null,
       agentState: null,
       agentIdle: false,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: true,
@@ -263,14 +350,14 @@ test('decision: stalled → settled agent-stalled', () => {
   assert.equal(d.evidenceConfidence, 'high');
 });
 
-// protects: a dead agent process being held in-flight by the default fallthrough.
-test('decision: process exited → settled agent-exited', () => {
+// protects: a recorded exit fact being held in-flight by the default fallthrough.
+test('decision: agentExited (terminal-backend) → settled agent-exited', () => {
   const d = decideStageAgentDisposition(baseInput({
     progress: {
       agentRecord: null,
       agentState: null,
       agentIdle: false,
-      agentProcessLive: false,
+      agentExited: { at: '2026-11-02T09:30:00.000Z', source: 'terminal-backend' },
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: false,
@@ -279,6 +366,54 @@ test('decision: process exited → settled agent-exited', () => {
   }));
   assert.equal(d.kind, 'settled');
   assert.equal(d.reason, 'agent-exited');
+  assert.equal(d.evidenceConfidence, 'high');
+});
+
+// protects: HOK-3359 controller-termination exit facts settling a stage.
+test('decision: agentExited (controller-termination) → settled agent-exited', () => {
+  const d = decideStageAgentDisposition(baseInput({
+    progress: {
+      agentRecord: null,
+      agentState: null,
+      agentIdle: false,
+      agentExited: { at: '2026-11-02T09:30:00.000Z', source: 'controller-termination' },
+      agentBackgroundLive: null,
+      blockingPrompt: null,
+      stalled: false,
+      ownedSessionIdleAt: null,
+    },
+  }));
+  assert.equal(d.kind, 'settled');
+  assert.equal(d.reason, 'agent-exited');
+  assert.equal(d.evidenceConfidence, 'high');
+});
+
+// protects: the reported 2026-11-05 stall — a live reviewer whose pane
+// descendant count read false must never be settled as exited and relaunched
+// through stage-failure-review. No exit fact means no high-confidence settle.
+test('HOK-3426: pane descendant count false alone never settles agent-exited', () => {
+  const progress: StageAgentProgress = {
+    agentRecord: null,
+    agentState: null,
+    agentIdle: false,
+    agentExited: null,
+    agentBackgroundLive: null,
+    blockingPrompt: null,
+    stalled: false,
+    ownedSessionIdleAt: null,
+  };
+  // A fresh, still-live stage holds (no evidence yet) rather than settling.
+  const held = decideStageAgentDisposition(baseInput({ progress }));
+  assert.equal(held.kind, 'in-flight');
+  assert.equal(held.reason, 'awaiting-agent-evidence');
+
+  // Once the stall clock fires, the stage settles as STALLED — which routes
+  // through the failure policy — never as `agent-exited`.
+  const stalled = decideStageAgentDisposition(baseInput({
+    progress: { ...progress, stalled: true },
+  }));
+  assert.equal(stalled.kind, 'settled');
+  assert.equal(stalled.reason, 'agent-stalled');
 });
 
 // ── HOK-3277 inputs shape ──────────────────────────────────────────────────
@@ -306,7 +441,7 @@ test('HOK-3277: stopped-without-result exposes hasResultVerdict=false', () => {
       agentRecord: null,
       agentState: null,
       agentIdle: true,
-      agentProcessLive: false,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: false,
@@ -332,7 +467,7 @@ test('HOK-3277: long legitimate background work → in-flight waitingOn.backgrou
       agentRecord: null,
       agentState: null,
       agentIdle: true,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: true,
       blockingPrompt: null,
       stalled: false,
@@ -351,7 +486,7 @@ test('HOK-3277: approval-needed → in-flight waitingOn.approval', () => {
       agentRecord: { state: 'approval-needed', event: 'Notification', agent: 'claude', timestamp: Math.floor((now - 30 * 1000) / 1000) },
       agentState: 'approval-needed',
       agentIdle: false,
-      agentProcessLive: true,
+      agentExited: null,
       agentBackgroundLive: null,
       blockingPrompt: null,
       stalled: false,
@@ -489,6 +624,123 @@ test('HOK-3422: gatherStageTaskProgress — stale coding-phase commit in the rea
       'no launch row → no stall-clock anchor → never stalled, even with an old commit in the worktree');
   } finally {
     rmSync(wt, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── HOK-3426: the one agent-exited fact ────────────────────────────────────
+
+// protects: the coding pane's quarantine being read as the review stage's
+// exit (the reported 2026-11-05 stall class), and the task row's recorded slot
+// being the only terminal-backend source.
+test('HOK-3426: gatherStageTaskProgress scopes the exit fact to the stage and attempt', () => {
+  const dir = stateDir();
+  const terminateCalls: string[][] = [];
+  try {
+    const launchIso = '2026-11-05T12:03:00.000Z';
+    const now = new Date('2026-11-05T12:03:21.000Z');
+    appendOwnershipRow(dir, {
+      sessionRef: 'review-sess',
+      harness: 'claude-code',
+      kind: 'review',
+      model: 'claude-sonnet-5',
+      launchedAt: launchIso,
+      cwd: '/tmp/nonexistent-cwd',
+    });
+    // The coding pane was quarantined one minute BEFORE the review launch.
+    const codingTs = Math.floor(Date.parse('2026-11-05T12:02:00.000Z') / 1000);
+    writeFileSync(join(dir, '.terminal-history.jsonl'), JSON.stringify({
+      archivedAt: '2026-11-05T12:02:00.000Z', reason: 'completed-coding-pane-quarantine', session: 's', issue: 'HOK-TEST-3426',
+      payload: { state: 'idle', event: 'controller_termination', writer: 'controller', kind: 'controller-termination', phase: 'coding', timestamp: codingTs },
+    }) + '\n');
+    // The task row's recorded slot is alive (pane_dead=0).
+    setTerminalExecForTest({
+      sync(args) {
+        terminateCalls.push([...args]);
+        if (args[0] === 'list-panes') return { ok: true, stdout: '0\n' };
+        return { ok: false, stdout: '' };
+      },
+      async async(args) {
+        return this.sync(args);
+      },
+    });
+
+    const live = gatherStageTaskProgress({
+      issue: 'HOK-TEST-3426', session: 'wavemill', worktree: dir, stateDir: dir,
+      stage: 'review', stageResult: null, now,
+      task: { windowId: '@review-live' } as never,
+    });
+    assert.equal(live.agentExited, null,
+      'a coding-phase termination + a live review slot is not a review exit');
+    assert.ok(terminateCalls.some((args) => args.includes('@review-live')),
+      'the exit probe reads the task row window handle');
+
+    // The launched review slot itself reports dead → the one exit fact.
+    setTerminalExecForTest({
+      sync(args) {
+        if (args[0] === 'list-panes') return { ok: true, stdout: '1\n' };
+        return { ok: false, stdout: '' };
+      },
+      async async(args) {
+        return this.sync(args);
+      },
+    });
+    const dead = gatherStageTaskProgress({
+      issue: 'HOK-TEST-3426', session: 'wavemill', worktree: dir, stateDir: dir,
+      stage: 'review', stageResult: null, now,
+      task: { windowId: '@review-dead' } as never,
+    });
+    assert.equal(dead.agentExited?.source, 'terminal-backend');
+  } finally {
+    setTerminalExecForTest(null);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// protects: an agent that writes its completion marker and exits while the
+// (slow) progress gather is running being read as "exited with no result" and
+// relaunched over finished work — the agent-idle-background-job CI failure.
+test('evaluateStageAgentDisposition judges the exit against a completion marker read after the gather', () => {
+  const dir = stateDir();
+  try {
+    appendOwnershipRow(dir, { sessionRef: 'coding-sess', harness: 'claude-code', kind: 'coding', model: 'm', launchedAt: LAUNCH_ISO });
+    const marker = join(dir, '.coding-complete');
+    const exitedProgress: StageAgentProgress = {
+      ...baseInput().progress!,
+      agentExited: { at: new Date(Date.parse(LAUNCH_ISO) + 60_000).toISOString(), source: 'launcher' },
+    };
+
+    // The agent finishes during the gather: marker first, then its exit.
+    const finishedDuringGather = evaluateStageAgentDisposition({
+      stateDir: dir,
+      stage: 'coding',
+      stageResult: { status: 'running', startedAt: LAUNCH_ISO, artifacts: {} },
+      currentHead: CURRENT,
+      launchHead: CURRENT,
+      completionMarkerPath: marker,
+      getProgress: () => {
+        writeFileSync(marker, '{}');
+        return exitedProgress;
+      },
+    });
+    assert.equal(finishedDuringGather.kind, 'settled');
+    assert.equal(finishedDuringGather.reason, 'agent-exited');
+    assert.equal(finishedDuringGather.hasCompletionArtifact, true);
+
+    // Control: an agent that exits without ever writing the marker has no result.
+    rmSync(marker);
+    const exitedWithoutResult = evaluateStageAgentDisposition({
+      stateDir: dir,
+      stage: 'coding',
+      stageResult: { status: 'running', startedAt: LAUNCH_ISO, artifacts: {} },
+      currentHead: CURRENT,
+      launchHead: CURRENT,
+      completionMarkerPath: marker,
+      getProgress: () => exitedProgress,
+    });
+    assert.equal(exitedWithoutResult.kind, 'settled');
+    assert.equal(exitedWithoutResult.hasCompletionArtifact, false);
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

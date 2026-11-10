@@ -8,8 +8,6 @@ Implementation reference for the eight native workflow tools. Contracts are defi
 - `shared/lib/native-agent/workflow-tools/contracts.json` — JSON Schema mirror
 - `shared/lib/native-agent/workflow-tools/dedupe.ts` — Dedupe key helpers
 - `shared/lib/native-agent/workflow-tools/mutation-policy.ts` — Phase/tool/action policy matrix
-- `shared/lib/native-agent/workflow-tools/mutation-record.ts` — Structured mutation outcome records
-- `shared/lib/native-agent/workflow-tools/mutation-enforcer.ts` — Centralized policy + execution + recording chokepoint
 
 ---
 
@@ -378,61 +376,6 @@ Denied results expose a stable machine-readable `code` derived from the reason p
 
 ---
 
-## Centralized Mutation Enforcement
-
-Workflow mutations should execute through `enforceMutation(...)` in `mutation-enforcer.ts`, which combines:
-
-1. policy lookup
-2. short-circuit denial handling
-3. mutation execution
-4. mandatory outcome recording
-
-`enforceMutation(...)` returns one of these transcript/dashboard-safe shapes:
-
-```typescript
-type EnforceMutationResult<TResult> =
-  | {
-      allowed: false;
-      outcome: 'denied';
-      code: string;
-      reason: string;
-      tool: WorkflowToolName;
-      phase: WorkflowPhase;
-      action: WorkflowMutationAction;
-      target?: Record<string, unknown>;
-    }
-  | {
-      allowed: true;
-      outcome: 'executed';
-      tool: WorkflowToolName;
-      phase: WorkflowPhase;
-      action: WorkflowMutationAction;
-      result: TResult;
-      target?: Record<string, unknown>;
-    }
-  | {
-      allowed: true;
-      outcome: 'failed';
-      code: 'external_error';
-      reason: string;
-      error: { name: string; message: string };
-      tool: WorkflowToolName;
-      phase: WorkflowPhase;
-      action: WorkflowMutationAction;
-      target?: Record<string, unknown>;
-    };
-```
-
-Ordering guarantee:
-
-1. evaluate policy
-2. if denied, record `denied`
-3. return denial result without calling the executor
-4. if allowed, execute
-5. record `executed` on success or `failed` on execution error
-
----
-
 ## Review Flow Orchestration
 
 `shared/lib/native-agent/workflow-tools/review-flow.ts` composes the existing
@@ -572,25 +515,6 @@ Credentials and secret-bearing headers must never appear in recorded fields.
 - Transcript records must reference the existing `tool_started` and `tool_result` event types defined in `shared/lib/native-agent/transcript.ts`.
 - Stage artifact records must not include credentials, authorization headers, or secret-bearing fields.
 - `write_stage_result` is classified as recording (Wavemill-owned artifact) rather than external provider mutation, but still requires both transcript and stage artifact records for audit purposes.
-- `mutation-record.ts` emits a single structured record shape for all mutation outcomes:
-
-```typescript
-type MutationRecord<TResult> =
-  | { outcome: 'executed'; tool; phase; action; result: TResult; target?: Record<string, unknown> }
-  | { outcome: 'denied'; tool; phase; action; code: string; reason: string; target?: Record<string, unknown> }
-  | {
-      outcome: 'failed';
-      tool;
-      phase;
-      action;
-      code: 'external_error';
-      reason: string;
-      error: { name: string; message: string };
-      target?: Record<string, unknown>;
-    };
-```
-
-- Recorder sinks are injected for testability. If the sink throws, the recorder warns and continues rather than failing the mutation call itself.
 
 ---
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+// wavemill-test-suite: custom
 /**
  * Basic unit tests for task-packet-validator
  * Run with: npx tsx shared/lib/task-packet-validator.test.ts

@@ -12,7 +12,6 @@ import {
   POLICY_RESOLVER_VERSION,
   ROUTE_ARTIFACT_SCHEMA_VERSION,
   buildRouteProvenance,
-  hasValidPostExpansionRoute,
   readBothRouteArtifacts,
   readRouteLifecycleArtifacts,
   resolveRouterPolicyVersion,
@@ -797,52 +796,6 @@ test('buildRouteLifecycleProvenance includes active route and expanded cache met
     packetHash: 'd'.repeat(64),
     routeSource: 'cache',
   });
-});
-
-test('hasValidPostExpansionRoute returns missing when file is absent', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'route-artifact-'));
-  try {
-    assert.deepEqual(hasValidPostExpansionRoute(dir), { ok: false, reason: 'missing' });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('hasValidPostExpansionRoute returns invalid-json for malformed file', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'route-artifact-'));
-  try {
-    writeFileSync(join(dir, '.post-expansion-route.json'), '{');
-    assert.deepEqual(hasValidPostExpansionRoute(dir), { ok: false, reason: 'invalid-json' });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('hasValidPostExpansionRoute reports missing required fields', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'route-artifact-'));
-  try {
-    writeFileSync(join(dir, '.post-expansion-route.json'), JSON.stringify({ reviewer: 'claude' }));
-    const result = hasValidPostExpansionRoute(dir);
-    assert.equal(result.ok, false);
-    assert.match(result.reason || '', /^missing-required-field:/);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('hasValidPostExpansionRoute returns ok for valid artifact', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'route-artifact-'));
-  try {
-    writeFileSync(join(dir, '.post-expansion-route.json'), JSON.stringify({
-      coder: 'gpt-5.4',
-      codeDepth: 'medium',
-      reviewer: 'claude-sonnet-5',
-      reviewMode: 'llm',
-    }));
-    assert.deepEqual(hasValidPostExpansionRoute(dir), { ok: true });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 // ── HOK-3363: the per-stage route record on disk ────────────────────────────

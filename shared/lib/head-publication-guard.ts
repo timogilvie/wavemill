@@ -11,6 +11,9 @@
  *   outside the seam. Agents commit; **the mill publishes** at stage exit.
  *   The HOK-3361 incident needed three operator touches because agents were
  *   prompted to push and silently didn't.
+ * - a `gh pr create` instruction or call outside the seam (HOK-3463). The
+ *   mill opens the task PR at review exit; an agent whose environment could
+ *   not reach GitHub used to strand finished work as a terminal "no PR".
  * - a raw head-SHA freshness comparison (`!== currentHeadSha`-shaped TS,
  *   `"$review_head" != ...`-shaped shell) outside change-identity.ts.
  *   Evidence binds to the change identity; a base merge or clean rebase
@@ -28,6 +31,14 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
  * move) and is excluded by the lookahead.
  */
 const GIT_PUSH_INSTRUCTION = /\bgit\s+push\b(?!.*--delete)/;
+
+/**
+ * An instruction or call that opens a PR with the GitHub CLI (HOK-3463). A
+ * line that forbids it ("Do NOT run gh pr create", "never ...") is prose
+ * about the rule, not an instruction, and is skipped by the lookahead.
+ */
+const GH_PR_CREATE_INSTRUCTION =
+  /^(?!.*\b(?:[Nn][Oo][Tt]|[Nn]ever|[Dd]on't|[Ff][Oo][Rr][Bb][Ii][Dd][Dd][Ee][Nn])\b).*\bgh\s+pr\s+create\b/;
 
 /** Raw TS freshness comparison against the current head SHA. */
 const TS_RAW_HEAD_FRESHNESS = /!==?\s*(?:input\.)?currentHeadSha\b|\bcurrentHeadSha\s*!==?\s*/;
@@ -84,6 +95,13 @@ export const HEAD_PUBLICATION_GUARD: GuardSpec = {
       re: GIT_PUSH_INSTRUCTION,
     },
     {
+      name: 'pr-open-outside-seam',
+      description:
+        'task PR opened outside the one seam — the mill opens it at review exit through openTaskPullRequest (open_task_pr / tools/open-task-pr.ts); agents record prTitle/prBody and never run the GitHub CLI to create a PR',
+      lang: 'both',
+      re: GH_PR_CREATE_INSTRUCTION,
+    },
+    {
       name: 'raw-head-freshness-ts',
       description:
         'raw head-SHA freshness comparison — evidence freshness is decided by isEvidenceFresh (shared/lib/change-identity.ts), never by SHA equality',
@@ -102,6 +120,8 @@ export const HEAD_PUBLICATION_GUARD: GuardSpec = {
     'One head-move record (HOK-3370): every task-branch head move is published by the',
     'mill through publishStageHead (shared/lib/branch-publication.ts), which appends a',
     'head-move/v1 row and shadow-records the push. Agent prompts never instruct a push.',
+    'The task PR is opened by the mill through openTaskPullRequest (HOK-3463); prompts',
+    'ask for prTitle/prBody in the review result and never for a PR-create command.',
     'Evidence freshness is the change identity (shared/lib/change-identity.ts):',
     'isEvidenceFresh in TS, change_identity_fresh in shell — never a raw SHA compare.',
   ],

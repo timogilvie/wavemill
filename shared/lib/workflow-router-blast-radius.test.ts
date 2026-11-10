@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Tests for the blast-radius router floor (HOK-3238). A `high` radius forces a
  * stronger reviewer via `applyDifficultyFloor`; a `normal` radius leaves the

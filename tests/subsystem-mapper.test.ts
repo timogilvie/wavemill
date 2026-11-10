@@ -1,3 +1,4 @@
+// wavemill-test-suite: none (ran in no suite before HOK-3466; run it or delete it)
 /**
  * Unit tests for subsystem-mapper.ts
  *

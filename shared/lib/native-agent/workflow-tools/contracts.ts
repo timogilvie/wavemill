@@ -149,81 +149,6 @@ export type ToolSpecificErrorCode =
 export type WorkflowToolErrorCode = CommonErrorCode | ToolSpecificErrorCode;
 
 // ---------------------------------------------------------------------------
-// Recording requirements
-// ---------------------------------------------------------------------------
-
-/**
- * Describes the recording requirements for a workflow tool invocation.
- * External mutations must record to both the session transcript and the
- * stage artifact log. Credentials and secret-bearing headers must never appear
- * in recorded fields.
- */
-export interface RecordingRequirement {
-  tool: WorkflowToolName;
-  /** Whether this tool must produce a transcript tool_result event. */
-  requiresTranscriptRecord: boolean;
-  /** Whether this tool must produce a stage artifact mutation record. */
-  requiresStageArtifactRecord: boolean;
-  /**
-   * Fields that must appear in every recorded result.
-   * Applicable when requiresTranscriptRecord or requiresStageArtifactRecord is true.
-   */
-  requiredRecordedFields: readonly string[];
-}
-
-/** Recording requirements for all eight workflow tools. */
-export const RECORDING_REQUIREMENTS: readonly RecordingRequirement[] = [
-  {
-    tool: 'linear_get_issue',
-    requiresTranscriptRecord: true,
-    requiresStageArtifactRecord: false,
-    requiredRecordedFields: ['tool', 'phase'],
-  },
-  {
-    tool: 'linear_comment',
-    requiresTranscriptRecord: true,
-    requiresStageArtifactRecord: true,
-    requiredRecordedFields: ['tool', 'phase', 'idempotency.key', 'idempotency.outcome', 'idempotency.ref'],
-  },
-  {
-    tool: 'github_create_pr',
-    requiresTranscriptRecord: true,
-    requiresStageArtifactRecord: true,
-    requiredRecordedFields: ['tool', 'phase', 'idempotency.key', 'idempotency.outcome', 'idempotency.ref'],
-  },
-  {
-    tool: 'github_add_label',
-    requiresTranscriptRecord: true,
-    requiresStageArtifactRecord: true,
-    requiredRecordedFields: ['tool', 'phase', 'idempotency.key', 'idempotency.outcome', 'idempotency.ref'],
-  },
-  {
-    tool: 'review_changes',
-    requiresTranscriptRecord: true,
-    requiresStageArtifactRecord: false,
-    requiredRecordedFields: ['tool', 'phase'],
-  },
-  {
-    tool: 'route_task',
-    requiresTranscriptRecord: true,
-    requiresStageArtifactRecord: false,
-    requiredRecordedFields: ['tool', 'phase'],
-  },
-  {
-    tool: 'expand_issue',
-    requiresTranscriptRecord: true,
-    requiresStageArtifactRecord: false,
-    requiredRecordedFields: ['tool', 'phase'],
-  },
-  {
-    tool: 'write_stage_result',
-    requiresTranscriptRecord: true,
-    requiresStageArtifactRecord: true,
-    requiredRecordedFields: ['tool', 'phase', 'idempotency.key', 'idempotency.outcome', 'idempotency.ref'],
-  },
-] as const;
-
-// ---------------------------------------------------------------------------
 // Tool-specific external ref types
 // ---------------------------------------------------------------------------
 
@@ -355,6 +280,12 @@ export interface GitHubCreatePrRequest {
   body: string;
   /** Create as a draft PR. */
   draft?: boolean;
+  /**
+   * What to do when an open PR already exists for head->base. `update` (the
+   * default) rewrites its title and body; `reuse` leaves it untouched, for
+   * callers that must not overwrite a body the mill has since stamped.
+   */
+  ifExists?: 'update' | 'reuse';
 }
 
 export interface GitHubCreatePrSuccess extends WorkflowToolResultBase {

@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Unit tests for llm-router — artifact loading, prompt construction,
  * response parsing, and LLM-based recommendation.

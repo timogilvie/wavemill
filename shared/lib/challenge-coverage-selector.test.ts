@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 import assert from 'node:assert/strict';
 import type { ChallengeStage } from './challenge-scheduler.ts';
 import {

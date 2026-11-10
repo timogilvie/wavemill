@@ -7,7 +7,6 @@ import { describe, it, before, after } from 'node:test';
 import {
   diagnoseArtifacts,
   evalRecordMatchesTaskPair,
-  readEvalFallbackEventsDiagnostic,
   readPrIdentity,
   readQuotaSnapshotDiagnostic,
   readReadyResultDiagnostic,
@@ -606,10 +605,9 @@ describe('stalled lifecycle artifact readers', () => {
     assert.equal(readReviewResultDiagnostic(featureDir), null);
     assert.equal(readPrIdentity(9999, repoDir), null);
     assert.equal(readQuotaSnapshotDiagnostic(repoDir), null);
-    assert.deepEqual(readEvalFallbackEventsDiagnostic(repoDir), []);
   });
 
-  it('projects quota and all-exhausted provider fallback events', () => {
+  it('projects all-exhausted provider quota state', () => {
     const repoDir = makeTempRepo();
     tempDirs.push(repoDir);
     writeFileSync(join(repoDir, '.wavemill', 'quota-state.json'), JSON.stringify({
@@ -620,25 +618,11 @@ describe('stalled lifecycle artifact readers', () => {
         },
       },
     }));
-    writeEvalRecord(repoDir, {
-      issueId: 'HOK-1328',
-      challengePairId: 'HOK-1328-pair',
-      fallbackEvent: {
-        outcome: 'all_exhausted',
-        task_type: 'review',
-        fallback_chain: [{ model: 'openrouter/test-model', reason: 'quota' }],
-      },
-    });
 
     const quota = readQuotaSnapshotDiagnostic(repoDir);
     assert.ok(quota);
     assert.deepEqual(quota.exhaustedProviders, ['openrouter']);
     assert.equal(quota.exhaustedModels.length, 1);
-
-    const events = readEvalFallbackEventsDiagnostic(repoDir);
-    assert.equal(events.length, 1);
-    assert.equal(events[0].challengePairId, 'HOK-1328-pair');
-    assert.deepEqual(events[0].failedProviders, ['openrouter']);
   });
 });
 

@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 import assert from 'node:assert/strict';
 import type { EvalRecord, TaskDescriptor } from './eval-schema.ts';
 import { backfillTaskDescriptorRecord } from './task-descriptor-backfill.ts';

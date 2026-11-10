@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Unit tests for eval-persistence — append, read, and query functions.
  *

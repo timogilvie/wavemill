@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Tests for task-context-analyzer (HOK-774).
  */
