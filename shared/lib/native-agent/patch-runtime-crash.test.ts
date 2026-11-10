@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 import { strict as assert } from 'node:assert';
 import { spawn } from 'node:child_process';
 import fsPromises from 'node:fs/promises';

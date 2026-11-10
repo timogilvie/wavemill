@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Queue Events Writer Coverage Test
  *

@@ -1,3 +1,4 @@
+// wavemill-test-suite: custom
 /**
  * Tests for the workflow router — heuristic routing, provider-pool filtering,
  * prompt-file parsing, and summary output. See `workflow-router-test-helpers.ts`

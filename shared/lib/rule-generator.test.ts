@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+// wavemill-test-suite: custom
 /**
  * Tests for rule-generator
  * Run with: npx tsx shared/lib/rule-generator.test.ts

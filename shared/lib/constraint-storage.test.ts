@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+// wavemill-test-suite: custom
 /**
  * Tests for constraint-storage
  * Run with: npx tsx shared/lib/constraint-storage.test.ts

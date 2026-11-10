@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# wavemill-test-suite: shell
 # HOK-3190: forbid raw `npx tsx <TOOL>` invocations in the hot monitor path.
 #
 # The monitor loop runs hundreds of tool spawns per pass; using `npx tsx`

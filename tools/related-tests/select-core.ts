@@ -11,6 +11,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 import { loadOrBuildGraph, transitiveDependents } from './build-ts-graph.ts';
+import { discoverTestSuites } from '../../shared/lib/test-discovery.ts';
 
 export type FileKind = 'ts' | 'shell' | 'test' | 'prompt' | 'other';
 
@@ -152,36 +153,6 @@ function isShellTest(p: string): boolean {
   return /\.test\.sh$/.test(p);
 }
 
-/**
- * Extract the TESTS/CUSTOM_TS_TESTS/CUSTOM_SH_TESTS arrays from a shell file.
- * Returns the string entries verbatim; comments and empty lines are skipped.
- */
-export function parseShellArray(repoRoot: string, relPath: string, arrayName: string): string[] {
-  const abs = path.join(repoRoot, relPath);
-  if (!existsSync(abs)) return [];
-  const source = readFileSync(abs, 'utf8');
-  const re = new RegExp(`${arrayName}=\\(([^)]*)\\)`, 'm');
-  const match = re.exec(source);
-  if (!match) return [];
-  const inner = match[1]!;
-  const out: string[] = [];
-  for (const rawLine of inner.split('\n')) {
-    let line = rawLine.trim();
-    if (!line) continue;
-    const commentIdx = line.indexOf('#');
-    if (commentIdx === 0) continue;
-    if (commentIdx > 0) line = line.slice(0, commentIdx).trim();
-    if (!line) continue;
-    // Strip trailing continuation backslash
-    line = line.replace(/\\$/, '').trim();
-    // Strip quotes
-    line = line.replace(/^['"]|['"]$/g, '');
-    if (!line) continue;
-    out.push(line);
-  }
-  return out;
-}
-
 interface RegisteredTests {
   unit: Set<string>;
   customTs: Set<string>;
@@ -190,14 +161,13 @@ interface RegisteredTests {
 }
 
 function loadRegisteredTests(repoRoot: string): RegisteredTests {
+  // Suite membership comes from test discovery (HOK-3466), never a list.
+  const suites = discoverTestSuites(repoRoot);
   return {
-    unit: new Set(parseShellArray(repoRoot, 'tests/run-unit-tests.sh', 'TESTS')),
-    customTs: new Set(parseShellArray(repoRoot, 'tests/run-custom-tests.sh', 'CUSTOM_TS_TESTS')),
-    customSh: new Set(parseShellArray(repoRoot, 'tests/run-custom-tests.sh', 'CUSTOM_SH_TESTS')),
-    shell: new Set(
-      parseShellArray(repoRoot, 'tests/run-shell-suite.sh', 'TESTS')
-        .map((name) => (name.startsWith('tests/') ? name : `tests/${name}`)),
-    ),
+    unit: new Set(suites.unit),
+    customTs: new Set(suites.custom.filter((file) => !file.endsWith('.sh'))),
+    customSh: new Set(suites.custom.filter((file) => file.endsWith('.sh'))),
+    shell: new Set(suites.shell.map((name) => `tests/${name}`)),
   };
 }
 
