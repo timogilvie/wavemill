@@ -93,7 +93,7 @@ function buildSpec(repoDir: string): GuardSpec {
     allowlistFile: 'tools/required-files-list-allowlist.txt',
     invariantPaths: [
       'shared/lib/review-scope-guard.ts',
-      'tools/check-required-files-list.ts',
+      'tools/check-required-files-list.ts', // install-paths: allow source-guard invariant path, not an executable argv
     ],
     structuralChecks: [{
       name: 'required-files-list-duplicate',
