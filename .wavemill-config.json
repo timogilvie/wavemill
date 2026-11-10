@@ -400,6 +400,7 @@
       "Golden Journey (agent-killed-mid-stage)": "bash tests/journeys/run-journeys.sh agent-killed-mid-stage",
       "Golden Journey (picker-pending-touch-set)": "bash tests/journeys/run-journeys.sh picker-pending-touch-set",
       "Golden Journey (happy-path)": "bash tests/journeys/run-journeys.sh happy-path",
+      "Golden Journey (native-planning-synthesis)": "bash tests/journeys/run-journeys.sh native-planning-synthesis",
       "Golden Journey (review-tool-report)": "bash tests/journeys/run-journeys.sh review-tool-report",
       "Golden Journey (gh-lag-after-push)": "bash tests/journeys/run-journeys.sh gh-lag-after-push",
       "Golden Journey (errored-with-pr)": "bash tests/journeys/run-journeys.sh errored-with-pr",

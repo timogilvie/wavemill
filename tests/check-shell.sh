@@ -305,6 +305,8 @@ for f in \
   "$REPO_DIR"/tests/journeys/fixtures/defect-escalation/bin/claude \
   "$REPO_DIR"/tests/journeys/happy-path.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/happy-path/fake-agent/review \
+  "$REPO_DIR"/tests/journeys/native-planning-synthesis.journey.sh \
+  "$REPO_DIR"/tests/journeys/fixtures/native-planning-synthesis/fake-agent/planning \
   "$REPO_DIR"/tests/journeys/review-tool-report.journey.sh \
   "$REPO_DIR"/tests/journeys/fixtures/review-tool-report/fake-agent/review \
   "$REPO_DIR"/tests/journeys/head-move-publication.journey.sh \
