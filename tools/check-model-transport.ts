@@ -18,7 +18,7 @@ export const MODEL_TRANSPORT_GUARD: GuardSpec = {
   suppressionMarker: 'allow-model-transport',
   allowlistFile: 'tools/model-transport-allowlist.txt',
   // The guard itself necessarily spells every forbidden shape in its patterns.
-  invariantPaths: ['tools/check-model-transport.ts'],
+  invariantPaths: ['tools/check-model-transport.ts'], // install-paths: allow invariantPaths list, not an argv target
   // The adapters are the one home for transport code (HOK-3460).
   excludedPrefixes: [...DEFAULT_EXCLUDED_PREFIXES, 'shared/lib/model-adapters/'],
   patterns: [
