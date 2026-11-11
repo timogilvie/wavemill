@@ -1142,6 +1142,107 @@ test_fetch_queue_plan_warning_stays_quiet_without_debug() {
   assert_no_queue_plan_temp_files "non-debug temp files cleaned" "$tmp_dir"
 }
 
+
+# HOK-3469: an oversized task is shown in its own Held section, un-numbered,
+# and never enters GROUPED_SELECT_FROM.
+test_render_launch_set_holds_oversized_task() {
+  local output candidates queue_plan select_list
+  candidates=$'HOK-A|a-slug|Task A|core|90|0\nHOK-B|b-slug|Task B|core|85|0'
+  queue_plan='{"availableNow":["HOK-A","HOK-B"],"queuedAfterDependencies":[],"avoidRunningTogether":[],"needsTriage":[],"sizeHolds":{"HOK-A":{"reasons":["lines"],"addedLines":1500,"fileCount":2,"coreFiles":[],"slices":["Slice one","Slice two"]}}}'
+
+  output=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" CANDIDATES="$candidates" QUEUE_PLAN="$queue_plan" bash -lc '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$FUNCTIONS_FILE"
+    GROUPED_DISPLAY=""
+    GROUPED_SELECT_FROM=""
+    _with_timeout() { shift; "$@"; }
+    render_launch_set_picker "$QUEUE_PLAN" "$CANDIDATES" 2 "[]" 999 false false "" true
+    echo "$GROUPED_DISPLAY"
+    echo
+    echo "---SELECT---"
+    printf "%s\n" "$GROUPED_SELECT_FROM"
+  ')
+
+  select_list=$(awk '/---SELECT---/{flag=1; next} flag' <<<"$output")
+  check_contains "render prints split-first heading" "$output" "Held: split first"
+  check_contains "render explains the size hold" "$output" "holds: split first — ~1500 lines est., 2 files"
+  check_contains "render lists a proposed slice" "$output" "slice: Slice one"
+  check_contains "render offers split and override commands" "$output" "run: split HOK-A | override HOK-A"
+  check_contains "render marks the row not launchable" "$output" "[not launchable]"
+  check_not_contains "oversized task is not numbered" "$output" "1. HOK-A"
+  check_not_contains "oversized task is not selectable" "$select_list" "HOK-A|a-slug|Task A|core|90|0"
+  check_contains "remaining task keeps the first number" "$output" "1. HOK-B"
+  check_contains "remaining task stays selectable" "$select_list" "HOK-B|b-slug|Task B|core|85|0"
+}
+
+# HOK-3469: an accepted split parent shows what it became.
+test_render_launch_set_shows_accepted_split() {
+  local output candidates queue_plan
+  candidates=$'HOK-A|a-slug|Task A|core|90|0'
+  queue_plan='{"availableNow":["HOK-A"],"queuedAfterDependencies":[],"avoidRunningTogether":[],"needsTriage":[],"sizeHolds":{"HOK-A":{"reasons":[],"addedLines":200,"fileCount":1,"coreFiles":[],"slices":["Slice one"],"accepted":["HOK-31","HOK-32"]}}}'
+
+  output=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" CANDIDATES="$candidates" QUEUE_PLAN="$queue_plan" bash -lc '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$FUNCTIONS_FILE"
+    GROUPED_DISPLAY=""
+    GROUPED_SELECT_FROM=""
+    _with_timeout() { shift; "$@"; }
+    render_launch_set_picker "$QUEUE_PLAN" "$CANDIDATES" 2 "[]" 999 false false "" true
+    echo "$GROUPED_DISPLAY"
+  ')
+
+  check_contains "accepted split names its sub-issues" "$output" "split into: HOK-31, HOK-32"
+  check_not_contains "accepted split does not re-offer slices" "$output" "slice: Slice one"
+}
+
+# HOK-3469: with no recorded size holds the frame is unchanged.
+test_render_launch_set_without_size_holds_is_unchanged() {
+  local output candidates queue_plan
+  candidates=$'HOK-A|a-slug|Task A|core|90|0\nHOK-B|b-slug|Task B|core|85|0'
+  queue_plan='{"availableNow":["HOK-A","HOK-B"],"queuedAfterDependencies":[],"avoidRunningTogether":[],"needsTriage":[]}'
+
+  output=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" CANDIDATES="$candidates" QUEUE_PLAN="$queue_plan" bash -lc '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$FUNCTIONS_FILE"
+    GROUPED_DISPLAY=""
+    GROUPED_SELECT_FROM=""
+    _with_timeout() { shift; "$@"; }
+    render_launch_set_picker "$QUEUE_PLAN" "$CANDIDATES" 2 "[]" 999 false false "" true
+    echo "$GROUPED_DISPLAY"
+  ')
+
+  check_not_contains "no split-first section without size holds" "$output" "Held: split first"
+  check_contains "launchable task is numbered first" "$output" "1. HOK-A"
+  check_contains "second launchable task is numbered" "$output" "2. HOK-B"
+}
+
+# HOK-3469: the mill's flat-list fallback (no shared renderer) drops a
+# size-held task, so neither the numbered list nor bare Enter can launch it.
+test_mill_flat_list_excludes_size_held() {
+  local fns output candidates
+  fns="$TEST_TMP/mill-size-filter.sh"
+  extract_function "$MILL_SCRIPT" "exclude_size_held_candidates" > "$fns"
+  candidates=$'HOK-A|a-slug|Task A|core|90|0\nHOK-B|b-slug|Task B|core|85|0'
+
+  output=$(FNS="$fns" CANDIDATES="$candidates" bash -lc '
+    set -euo pipefail
+    source "$FNS"
+    exclude_size_held_candidates "$CANDIDATES" \
+      "{\"sizeHolds\":{\"HOK-A\":{\"addedLines\":1500,\"fileCount\":2}}}"
+  ')
+  check_eq "held candidate is dropped from the flat list" "HOK-B|b-slug|Task B|core|85|0" "$output"
+
+  output=$(FNS="$fns" CANDIDATES="$candidates" bash -lc '
+    set -euo pipefail
+    source "$FNS"
+    exclude_size_held_candidates "$CANDIDATES" ""
+  ')
+  check_eq "no queue plan keeps every candidate" "$candidates" "$output"
+}
+
 echo "=== Task Selection Renderer ==="
 test_fetch_queue_plan_transforms_linear_backlog
 test_backlog_refresh_persists_cache_in_parent_shell
@@ -1160,6 +1261,10 @@ test_render_launch_set_names_in_flight_pr
 test_render_launch_set_marks_touch_set_unknown
 test_render_launch_set_height_budget_drops_held_before_launch
 test_render_launch_set_header_emitted_once
+test_render_launch_set_holds_oversized_task
+test_render_launch_set_shows_accepted_split
+test_render_launch_set_without_size_holds_is_unchanged
+test_mill_flat_list_excludes_size_held
 test_scoring_boosts_focus_and_near_milestones
 test_grouped_render_deduplicates_and_keeps_one_item_per_line
 test_render_rejects_malformed_json

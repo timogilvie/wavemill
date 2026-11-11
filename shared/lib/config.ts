@@ -89,6 +89,20 @@ export interface TaskSelectionConfig {
   enterLaunchesWave?: boolean;
 }
 
+/**
+ * Limits for the task-size hold (HOK-3469). Expansion records a size estimate
+ * in packet §12; the picker re-evaluates it against these limits at pick time,
+ * so tuning a limit takes effect without re-expanding.
+ */
+export interface TaskSizeConfig {
+  enabled?: boolean;
+  maxAddedLines?: number;
+  maxFiles?: number;
+  coreFiles?: string[];
+  anchorCoreFile?: string;
+  maxCoreCompanions?: number;
+}
+
 export interface ProjectContextConfig {
   compactionThresholdKb?: number;
   recentWorkKeep?: number;
@@ -1193,6 +1207,7 @@ export interface WavemillConfig {
   agents?: AgentsConfig;
   dashboard?: DashboardConfig;
   taskSelection?: TaskSelectionConfig;
+  taskSize?: TaskSizeConfig;
   projectContext?: ProjectContextConfig;
   eval?: EvalConfig;
   evalContextUpdates?: EvalContextUpdatesConfig;
@@ -2896,6 +2911,32 @@ export function getIncidentConfig(repoDir?: string): Required<Pick<IncidentConfi
 
 export function getTaskSelectionConfig(repoDir?: string): TaskSelectionConfig {
   return loadWavemillConfig(repoDir).taskSelection || {};
+}
+
+/** Default core files for the task-size core-file rule (HOK-3469). */
+export const DEFAULT_TASK_SIZE_CORE_FILES = [
+  'shared/lib/wavemill-monitor.sh',
+  'shared/lib/wavemill-mill.sh',
+  'shared/lib/wavemill-common.sh',
+  'shared/lib/agent-adapters.sh',
+  'tools/tend.ts',
+];
+
+/** The anchor core file; touching it with enough companions is oversized. */
+export const DEFAULT_TASK_SIZE_ANCHOR = 'shared/lib/wavemill-monitor.sh';
+
+export function getTaskSizeConfig(repoDir?: string): Required<TaskSizeConfig> {
+  const config = loadWavemillConfig(repoDir).taskSize ?? {};
+  return {
+    enabled: config.enabled ?? true,
+    maxAddedLines: config.maxAddedLines ?? 800,
+    maxFiles: config.maxFiles ?? 12,
+    coreFiles: config.coreFiles && config.coreFiles.length > 0
+      ? config.coreFiles
+      : DEFAULT_TASK_SIZE_CORE_FILES,
+    anchorCoreFile: config.anchorCoreFile ?? DEFAULT_TASK_SIZE_ANCHOR,
+    maxCoreCompanions: config.maxCoreCompanions ?? 2,
+  };
 }
 
 export function getProjectContextConfig(repoDir?: string): Required<ProjectContextConfig> {

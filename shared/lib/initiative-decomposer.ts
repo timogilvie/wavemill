@@ -16,8 +16,6 @@ import {
   getInitiative,
   getProjects,
   getTeams,
-  createIssue,
-  createIssueRelation,
   getOrCreateProjectMilestone,
   getOrCreateLabel,
 } from './linear.ts';
@@ -28,6 +26,8 @@ import {
   decomposeWithClaude,
   runResearch,
   priorityToNumber,
+  createIssuesWithDependencies,
+  type IssueCreationSpec,
   type PlanOutput,
   type PlanIssue,
 } from './plan-decomposer.ts';
@@ -329,67 +329,44 @@ export async function decomposeInitiative(
 
   // Flatten all issues for global index tracking
   const allIssues = plan.milestones.flatMap((m) => m.issues);
-  const createdIssues: any[] = [];
 
-  for (const milestone of plan.milestones) {
-    // Create milestone
-    let milestoneId: string | undefined;
-    try {
-      console.log(`\nCreating milestone: "${milestone.name}"...`);
-      milestoneId = await getOrCreateProjectMilestone(
-        targetProject.id,
-        milestone.name
-      );
-      console.log(`  ✓ Milestone: ${milestone.name}`);
-    } catch (error) {
-      const errorMsg = errorMessage(error);
-      console.warn(`  ⚠ Could not create milestone: ${errorMsg}`);
-    }
-
-    // Create issues in this milestone
-    for (const issue of milestone.issues) {
-      const enhancedDescription =
+  // Describe every issue as data, then let the shared helper create the issues
+  // and their `blocks` relations in one place (HOK-3469).
+  const specs: IssueCreationSpec[] = plan.milestones.flatMap((milestone) =>
+    milestone.issues.map((issue) => ({
+      title: issue.title,
+      description:
         `${issue.user_story}\n\n${issue.description}\n\n---\n` +
         `**Initiative:** ${initiative.name}\n` +
         `**Milestone:** ${milestone.name}\n` +
-        `**Priority:** ${issue.priority}`;
+        `**Priority:** ${issue.priority}`,
+      priority: priorityToNumber(issue.priority),
+      milestone: milestone.name,
+      ...(initiativeLabelId ? { labelIds: [initiativeLabelId] } : {}),
+    })),
+  );
+  specs.forEach((spec, index) => {
+    const dependencies = allIssues[index]?.dependencies ?? [];
+    if (dependencies.length > 0) spec.blockedBy = dependencies;
+  });
 
-      console.log(`  Creating: ${issue.title}`);
-
-      const created = await createIssue({
-        title: issue.title,
-        description: enhancedDescription,
-        teamId: team.id,
-        projectId: targetProject.id,
-        projectMilestoneId: milestoneId,
-        priority: priorityToNumber(issue.priority),
-        labelIds: initiativeLabelId ? [initiativeLabelId] : undefined,
-      });
-
-      createdIssues.push(created);
-      console.log(`    ✓ ${created.identifier} - ${created.url}`);
-    }
-  }
-
-  // 10. Create dependency relationships
-  console.log('\nCreating dependency relationships...');
-  for (let i = 0; i < allIssues.length; i++) {
-    const issue = allIssues[i];
-    if (issue.dependencies && issue.dependencies.length > 0) {
-      for (const depIndex of issue.dependencies) {
-        if (depIndex >= 0 && depIndex < createdIssues.length && depIndex !== i) {
-          console.log(
-            `  ${createdIssues[i].identifier} blocked by ${createdIssues[depIndex].identifier}`
-          );
-          await createIssueRelation(
-            createdIssues[depIndex].id,
-            createdIssues[i].id,
-            'blocks'
-          );
-        }
+  const { created: createdIssues } = await createIssuesWithDependencies(specs, {
+    teamId: team.id,
+    projectId: targetProject.id,
+    resolveMilestoneId: async (name) => {
+      try {
+        console.log(`\nCreating milestone: "${name}"...`);
+        const milestoneId = await getOrCreateProjectMilestone(targetProject.id, name);
+        console.log(`  ✓ Milestone: ${name}`);
+        return milestoneId;
+      } catch (error) {
+        const errorMsg = errorMessage(error);
+        console.warn(`  ⚠ Could not create milestone: ${errorMsg}`);
+        return undefined;
       }
-    }
-  }
+    },
+    log: (message) => console.log(message),
+  });
 
   // 11. Summary
   console.log('\n' + '='.repeat(60));

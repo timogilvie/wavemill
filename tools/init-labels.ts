@@ -34,6 +34,8 @@ const LABEL_DEFINITIONS = {
   ],
   operator: [
     { name: 'wm:hold', color: '#9B9B9B', description: 'Operator hold: picker holds this task; manual launch still works.' },
+    { name: 'wm:split', color: '#F5A623', description: 'Parent of a task split into independently mergeable slices.' },
+    { name: 'wm:size-override', color: '#50E3C2', description: 'Operator released the task size hold for this task only.' },
   ],
 };
 

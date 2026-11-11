@@ -94,6 +94,19 @@ _picker_render_shared_file_reason() {
   fi
 }
 
+_picker_render_size_reason() {
+  # $1 = oversized_task detail JSON. Prints the "holds: ..." reason line.
+  local detail_json="$1"
+  local added file_count
+  added=$(jq -r '.addedLines // empty' <<<"$detail_json" 2>/dev/null || echo "")
+  file_count=$(jq -r '.fileCount // 0' <<<"$detail_json" 2>/dev/null || echo "0")
+  if [[ -n "$added" ]]; then
+    printf 'holds: split first — ~%s lines est., %s files' "$added" "$file_count"
+  else
+    printf 'holds: split first — %s files' "$file_count"
+  fi
+}
+
 render_launch_set_picker() {
   local queue_plan="$1" available="$2"
   local free_slots="${3:-1}" in_flight_json="${4:-[]}" budget="${5:-999}"
@@ -105,6 +118,8 @@ render_launch_set_picker() {
   local -a launch_entries=() launch_lines=() held_files_lines=() held_files_select=()
   local -a held_waiting_entries=() off_deck_queued=() unknown_lines=() unknown_select=()
   local -a triage_lines=() triage_select=()
+  local -a split_entries=() split_details=()
+  local split_section_lines=0 split_total=0
   declare -A id_to_record=()
   declare -A rendered_ids=()
   declare -A on_deck_set=()
@@ -186,6 +201,37 @@ render_launch_set_picker() {
       plan_warning_by_id["$task_key"]="⚠"
     fi
   done < <(jq -r '.[] | [.taskId, .kind, .message] | @tsv' <<<"$warnings_json" 2>/dev/null)
+
+  # ── Held: split first (HOK-3469) ──────────────────────────────────
+  # Un-numbered rows: they are never added to GROUPED_SELECT_FROM, so neither a
+  # number nor Enter (launchNext) can start them. Built before the dependency
+  # queue so an oversized task that is also named as a dependency waiter
+  # renders as "split first", never as a selectable row.
+  while IFS=$'\t' read -r hid hdetail; do
+    [[ -n "$hid" ]] || continue
+    task_key="$(printf '%s' "$hid" | tr '[:lower:]' '[:upper:]')"
+    [[ -n "${rendered_ids[$task_key]:-}" ]] && continue
+    local size_reason="${held_reason_by_id[$task_key]:-}"
+    if [[ "$size_reason" == "oversized_task" ]]; then
+      rec="${id_to_record[$hid]:-${id_to_record[$task_key]:-}}"
+      [[ -n "$rec" ]] || continue
+      split_entries+=("$rec")
+      split_details+=("$hdetail")
+      rendered_ids["$task_key"]=1
+      local slice_count accepted_count
+      slice_count=$(jq -r '(.slices // []) | length' <<<"$hdetail" 2>/dev/null || echo "0")
+      accepted_count=$(jq -r '(.accepted // []) | length' <<<"$hdetail" 2>/dev/null || echo "0")
+      if (( accepted_count > 0 )); then
+        split_section_lines=$((split_section_lines + 4))
+      else
+        split_section_lines=$((split_section_lines + 3 + slice_count))
+      fi
+    fi
+  done < <(jq -r '.[] | select(.reason == "oversized_task") | [.id, (.detail | tojson)] | @tsv' <<<"$held_json" 2>/dev/null)
+  if (( ${#split_entries[@]} > 0 )); then
+    split_section_lines=$((split_section_lines + 1))
+    split_total=${#split_entries[@]}
+  fi
 
   # ── Section 3: Held: waiting on (depends_on from plan + held depends_on + operator_hold)
   # Build the dependency queue list, matching the behaviour of the legacy
@@ -312,16 +358,27 @@ render_launch_set_picker() {
   if (( ${#unknown_entries[@]} > 0 )); then
     unknown_section_lines=$((1 + ${#unknown_entries[@]} * 2))
   fi
-  local total_lines=$((launch_section_lines + shares_section_lines + waiting_section_lines + unknown_section_lines))
+  local total_lines=$((launch_section_lines + shares_section_lines + waiting_section_lines + unknown_section_lines + split_section_lines))
 
-  # ── Height-budget tiers: drop Not-yet-analysed, then Held:waiting, then
-  #    Held:shares files, then truncate Launch next.
+  # ── Height-budget tiers: drop Not-yet-analysed, then Held: split first,
+  #    then Held:waiting, then Held:shares files, then truncate Launch next.
+  #    Tier numbering is monotonic so a frame without size holds takes the
+  #    same branch decisions (and logs the same first tier, 1) as before
+  #    HOK-3469; the split tier sits between Not-yet-analysed and waiting.
   if [[ "$expanded" != "true" ]] && (( total_lines > budget )); then
     if (( unknown_section_lines > 0 )); then
       hidden_count=$((hidden_count + ${#unknown_entries[@]}))
       unknown_entries=()
       unknown_section_lines=0
-      tier=1
+      tier=$((tier + 1))
+      total_lines=$((launch_section_lines + shares_section_lines + waiting_section_lines + split_section_lines))
+    fi
+    if (( total_lines > budget )) && (( split_section_lines > 0 )); then
+      hidden_count=$((hidden_count + ${#split_entries[@]}))
+      split_entries=()
+      split_details=()
+      split_section_lines=0
+      tier=$((tier + 1))
       total_lines=$((launch_section_lines + shares_section_lines + waiting_section_lines))
     fi
     if (( total_lines > budget )) && (( waiting_section_lines > 0 )); then
@@ -336,7 +393,7 @@ render_launch_set_picker() {
         queued_entries=()
         operator_entries=()
         waiting_section_lines=0
-        tier=2
+        tier=$((tier + 1))
       elif (( max_waiting < current_waiting )); then
         hidden_count=$((hidden_count + current_waiting - max_waiting))
         # Keep queued entries first; truncate operator_entries if the budget
@@ -352,7 +409,7 @@ render_launch_set_picker() {
         queued_entries=("${queued_entries[@]:0:kept_queued}")
         operator_entries=("${operator_entries[@]:0:kept_operator}")
         waiting_section_lines=$((1 + max_waiting * 2))
-        tier=2
+        tier=$((tier + 1))
       fi
       total_lines=$((launch_section_lines + shares_section_lines + waiting_section_lines))
     fi
@@ -366,17 +423,17 @@ render_launch_set_picker() {
         hidden_count=$((hidden_count + ${#shares_order[@]}))
         shares_order=()
         shares_section_lines=0
-        tier=3
+        tier=$((tier + 1))
       elif (( max_shares < ${#shares_order[@]} )); then
         hidden_count=$((hidden_count + ${#shares_order[@]} - max_shares))
         shares_order=("${shares_order[@]:0:max_shares}")
         shares_section_lines=$((1 + max_shares * 2))
-        tier=3
+        tier=$((tier + 1))
       fi
       total_lines=$((launch_section_lines + shares_section_lines))
     fi
     if (( launch_section_lines > budget )); then
-      tier=4
+      tier=$((tier + 1))
       local min_visible=$((budget - 1))
       (( min_visible < 10 )) && min_visible=10
       local available_limit=$min_visible
@@ -411,6 +468,31 @@ render_launch_set_picker() {
       warning_marker="${plan_warning_by_id[$task_key]:-}"
       output+="$(printf '  %s. %s%s - %s' "$counter" "$warning_marker" "$task_id" "$title")"$'\n'
       select_lines+="${rec}"$'\n'
+    done
+  fi
+
+  if (( ${#split_entries[@]} > 0 )); then
+    [[ -n "$output" ]] && output+=$'\n'
+    output+="Held: split first"$'\n'
+    local split_index=0 split_detail
+    for rec in "${split_entries[@]}"; do
+      IFS='|' read -r task_id _slug title _area _score _blocked <<<"$rec"
+      split_detail="${split_details[$split_index]:-}"
+      output+="$(printf '  %s - %s' "$task_id" "$title")"$'\n'
+      output+="$(printf '     %s' "$(_picker_render_size_reason "$split_detail")")"$'\n'
+      local accepted_ids
+      accepted_ids=$(jq -r '(.accepted // []) | join(", ")' <<<"$split_detail" 2>/dev/null || echo "")
+      if [[ -n "$accepted_ids" ]]; then
+        output+="$(printf '     split into: %s' "$accepted_ids")"$'\n'
+      else
+        local slice_title
+        while IFS= read -r slice_title; do
+          [[ -n "$slice_title" ]] || continue
+          output+="$(printf '     slice: %s' "$slice_title")"$'\n'
+        done < <(jq -r '.slices[]?' <<<"$split_detail" 2>/dev/null)
+      fi
+      output+="$(printf '     run: split %s | override %s   [not launchable]' "$task_id" "$task_id")"$'\n'
+      split_index=$((split_index + 1))
     done
   fi
 
@@ -500,7 +582,9 @@ render_launch_set_picker() {
     output+="(m to collapse)"$'\n'
   fi
 
-  (( counter > 0 )) || return 1
+  if (( counter == 0 && split_total == 0 )); then
+    return 1
+  fi
 
   if [[ "$tier" != "${BACKLOG_LAST_TIER:-}" ]] && declare -F log >/dev/null 2>&1; then
     local backlog_annotation=" (backlog.maxLines=${config_max:-auto})"

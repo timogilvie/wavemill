@@ -158,6 +158,12 @@ subsystems in the codebase.
 1. Step description — what to do and why
 2. ...
 
+*End this section with a single summary line estimating the size of the change:*
+
+`Estimated added lines: <n>`
+
+*Count the approximate net number of added lines across every file in Key Files, including tests. Use one plain integer (digits only, no range, no plus sign). This line is machine-read to hold oversized tasks before they launch; do not omit it.*
+
 ---
 
 ## 4. Success Criteria
