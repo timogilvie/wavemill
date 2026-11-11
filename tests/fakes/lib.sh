@@ -359,11 +359,23 @@ fakes_repo_commit() {
 }
 
 # Mutate the gh fake's state file with a jq program (args after the program
-# are passed through to jq, e.g. --arg).
+# are passed through to jq, e.g. --arg). Holds the fake's lock (see
+# gh-state-lock.sh) so a concurrent gh invocation cannot save the copy it
+# loaded before this write over the result — e.g. seeding operator labels on
+# the PR the moment it appears, while a `gh pr list` from the running monitor
+# is in flight.
 fakes_gh_state() {
   local program="$1"; shift
   local tmp="$FAKE_GH_STATE.tmp.$$"
-  jq "$@" "$program" "$FAKE_GH_STATE" > "$tmp" && mv "$tmp" "$FAKE_GH_STATE"
+  fakes_gh_state_lock
+  if jq "$@" "$program" "$FAKE_GH_STATE" > "$tmp"; then
+    mv "$tmp" "$FAKE_GH_STATE"
+    fakes_gh_state_unlock
+  else
+    rm -f "$tmp"
+    fakes_gh_state_unlock
+    return 1
+  fi
 }
 
 fakes_linear_add_issue() {

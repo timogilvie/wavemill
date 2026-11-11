@@ -498,11 +498,7 @@ describe('reconcileMergeLabelsForPr', () => {
     return {
       readTaskView: async () => baseTask,
       probeLiveState: async () => baseLiveState,
-      applyLabel: {
-        setReady: async () => {},
-        setBlocked: async () => {},
-        clear: async () => {},
-      },
+      writeMergeLabel: async () => {},
       logger: {
         info: () => {},
         warn: () => {},
@@ -525,11 +521,7 @@ describe('reconcileMergeLabelsForPr', () => {
   it('no-op when wm:ready label matches derived decision', async () => {
     let setReadyCalled = false;
     const deps = createMockDeps({
-      applyLabel: {
-        setReady: async () => { setReadyCalled = true; },
-        setBlocked: async () => {},
-        clear: async () => {},
-      },
+      writeMergeLabel: async (_pr, label) => { if (label === 'wm:ready') setReadyCalled = true; },
     });
     const pr = { number: 123, labels: ['wm:ready'], headSha: 'abc123' };
     const result = await reconcileMergeLabelsForPr(pr, deps);
@@ -541,11 +533,7 @@ describe('reconcileMergeLabelsForPr', () => {
   it('applies wm:ready when PR has wm:blocked but should be ready', async () => {
     let setReadyCalled = false;
     const deps = createMockDeps({
-      applyLabel: {
-        setReady: async () => { setReadyCalled = true; },
-        setBlocked: async () => {},
-        clear: async () => {},
-      },
+      writeMergeLabel: async (_pr, label) => { if (label === 'wm:ready') setReadyCalled = true; },
     });
     const pr = { number: 123, labels: ['wm:blocked'], headSha: 'abc123' };
     const result = await reconcileMergeLabelsForPr(pr, deps);
@@ -564,13 +552,11 @@ describe('reconcileMergeLabelsForPr', () => {
           { name: 'ci', conclusion: 'FAILURE', status: 'COMPLETED' },
         ],
       }),
-      applyLabel: {
-        setReady: async () => {},
-        setBlocked: async (_pr, reason) => {
+      writeMergeLabel: async (_pr, label, reason) => {
+        if (label === 'wm:blocked') {
           setBlockedCalled = true;
-          blockedReason = reason;
-        },
-        clear: async () => {},
+          blockedReason = reason ?? '';
+        }
       },
     });
     const pr = { number: 123, labels: ['wm:ready'], headSha: 'abc123' };
@@ -588,11 +574,7 @@ describe('reconcileMergeLabelsForPr', () => {
         ...baseLiveState,
         readyAtHead: undefined,
       }),
-      applyLabel: {
-        setReady: async () => {},
-        setBlocked: async () => {},
-        clear: async () => { clearCalled = true; },
-      },
+      writeMergeLabel: async (_pr, label) => { if (label === null) clearCalled = true; },
     });
     const pr = { number: 123, labels: ['wm:blocked'], headSha: 'abc123' };
     const result = await reconcileMergeLabelsForPr(pr, deps);
@@ -608,11 +590,7 @@ describe('reconcileMergeLabelsForPr', () => {
         ...baseLiveState,
         readyAtHead: undefined,
       }),
-      applyLabel: {
-        setReady: async () => {},
-        setBlocked: async () => {},
-        clear: async () => { clearCalled = true; },
-      },
+      writeMergeLabel: async (_pr, label) => { if (label === null) clearCalled = true; },
     });
     const pr = { number: 123, labels: [], headSha: 'abc123' };
     const result = await reconcileMergeLabelsForPr(pr, deps);
@@ -621,14 +599,50 @@ describe('reconcileMergeLabelsForPr', () => {
     assert.equal(clearCalled, false, 'clear should not be called when no labels present');
   });
 
+  it('makes no write for any decision while wm:merging is held (HOK-3449)', async () => {
+    const cases: Array<{
+      name: string;
+      labels: string[];
+      live: MergeLabelLiveState;
+    }> = [
+      {
+        name: 'wm:ready decision',
+        labels: ['wavemill', 'wm:risk-acknowledged', 'wm:approved', 'wm:merging'],
+        live: baseLiveState,
+      },
+      {
+        name: 'wm:blocked decision',
+        labels: ['wavemill', 'wm:risk-acknowledged', 'wm:approved', 'wm:ready', 'wm:merging'],
+        live: {
+          ...baseLiveState,
+          statusCheckRollup: [{ name: 'ci', conclusion: 'FAILURE', status: 'COMPLETED' }],
+        },
+      },
+      {
+        name: 'null decision',
+        labels: ['wavemill', 'wm:risk-acknowledged', 'wm:approved', 'wm:ready', 'wm:merging'],
+        live: { ...baseLiveState, readyAtHead: undefined },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const writes: Array<{ label: string | null; reason?: string }> = [];
+      const deps = createMockDeps({
+        probeLiveState: async () => testCase.live,
+        writeMergeLabel: async (_pr, label, reason) => { writes.push({ label, reason }); },
+      });
+      const pr = { number: 123, labels: testCase.labels, headSha: 'abc123' };
+      const result = await reconcileMergeLabelsForPr(pr, deps);
+      assert.notEqual(result.decision, null, `${testCase.name}: decision must still be returned`);
+      assert.deepEqual(writes, [], `${testCase.name}: a lane-locked PR must get no write`);
+      assert.deepEqual(result.updatedLabels, testCase.labels, `${testCase.name}: labels unchanged`);
+    }
+  });
+
   it('logs label changes', async () => {
     const logMessages: Array<{ msg: string; meta?: unknown }> = [];
     const deps = createMockDeps({
-      applyLabel: {
-        setReady: async () => {},
-        setBlocked: async () => {},
-        clear: async () => {},
-      },
+      writeMergeLabel: async () => {},
       logger: {
         info: (msg, meta) => logMessages.push({ msg, meta }),
         warn: () => {},
@@ -918,11 +932,7 @@ describe('reconcileMergeLabelsForPr: every null decision is logged with a reason
     const deps: ReconcileMergeLabelsDeps = {
       readTaskView: async () => baseTask,
       probeLiveState: async () => liveState,
-      applyLabel: {
-        setReady: async () => {},
-        setBlocked: async () => {},
-        clear: async () => {},
-      },
+      writeMergeLabel: async () => {},
       logger: {
         info: (msg, meta) => infos.push({ msg, meta }),
         warn: () => {},
