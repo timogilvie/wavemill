@@ -478,3 +478,22 @@ export function runGuardCli(spec: GuardSpec, repoDir: string): void {
   }
   console.log(message);
 }
+
+/**
+ * Run several guards from one wrapper (e.g. the merge-label invariants): each
+ * result is printed, and the process exits non-zero if any guard fails.
+ */
+export function runGuardsCli(specs: readonly GuardSpec[], repoDir: string): void {
+  let failed = false;
+  for (const spec of specs) {
+    const result = runSourceGuard(spec, repoDir);
+    const message = formatGuardResult(spec, result);
+    if (result.ok) {
+      console.log(message);
+    } else {
+      console.error(message);
+      failed = true;
+    }
+  }
+  if (failed) process.exit(1);
+}

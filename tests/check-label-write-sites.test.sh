@@ -40,14 +40,15 @@ check_label_write_sites() {
     [[ -d "$root/$dir" ]] && scan_dirs+=("$dir")
   done
   if (( ${#scan_dirs[@]} > 0 )); then
-    # Grep for setWavemillReady, setWavemillBlocked, clearWavemillState,
-    # gh pr edit --add-label/--remove-label wm:ready/wm:blocked, and (HOK-3316)
-    # tend's retired private block writer/clearer shapes: releaseToBlocked,
-    # writePrStateMarker, and a direct wm:blocked label removal.
+    # Grep for setWavemillReady, setWavemillBlocked, setMergeLabel (the
+    # reconciler's one writer, HOK-3449), gh pr edit --add-label/--remove-label
+    # wm:ready/wm:blocked, and (HOK-3316) tend's retired private block
+    # writer/clearer shapes: releaseToBlocked, writePrStateMarker, and a direct
+    # wm:blocked label removal.
     raw_matches=$(cd "$root" && grep -rn \
       -e 'setWavemillReady' \
       -e 'setWavemillBlocked' \
-      -e 'clearWavemillState' \
+      -e 'setMergeLabel' \
       -e 'releaseToBlocked' \
       -e 'writePrStateMarker' \
       -e 'removeLabelFromPullRequest([^)]*WM_LABELS\.blocked' \
@@ -61,8 +62,8 @@ check_label_write_sites() {
       | grep -v '\.test\.' \
       | grep -v '^[^:]*:[^:]*:\s*#\s*allow-label-write:' \
       | grep -v '^[^:]*:[^:]*:\s*//\s*allow-label-write:' \
-      | grep -v '^[^:]*:[^:]*\s*\(setWavemillReady\|setWavemillBlocked\|clearWavemillState\)\s*(' \
-      | grep -v '^[^:]*:[^:]*\s*export\s\+\(function\s\+\)\?\(setWavemillReady\|setWavemillBlocked\|clearWavemillState\)' \
+      | grep -v '^[^:]*:[^:]*\s*\(setWavemillReady\|setWavemillBlocked\)\s*(' \
+      | grep -v '^[^:]*:[^:]*\s*export\s\+\(function\s\+\)\?\(setWavemillReady\|setWavemillBlocked\)' \
       || true)
   else
     raw_matches=""

@@ -1,14 +1,20 @@
 /**
- * PR state label writers (HOK-3181)
+ * PR state label writers (HOK-3181, HOK-3449)
  *
  * Mechanical label mutation helpers. For wm:ready / wm:blocked writes, callers
  * MUST go through the reconciler in shared/lib/merge-labels.ts (see
  * docs/invariants/merge-labels.md for the merge label reconciler invariant). Direct writes of wm:ready /
  * wm:blocked are forbidden outside the reconciler.
  *
+ * The reconciler renders a merge decision through exactly one writer,
+ * {@link setMergeLabel}, which changes only `wm:ready` / `wm:blocked`
+ * (`MERGE_LABEL_WRITE_SCOPE`). It never strips `wavemill`, operator labels
+ * (`wm:risk-acknowledged`, `wm:approved`) or lane labels (HOK-3449).
+ *
  * Lane progression labels (wm:merging, wm:merged, wm:superseded) are OUT OF
  * SCOPE for the reconciler — they are synchronous tend lifecycle transitions,
- * not latched blockers.
+ * not latched blockers. While tend holds `wm:merging` the reconciler writes
+ * nothing ({@link holdsMergeLaneLock}); a stale lock is reclaimed by tend.
  */
 
 import { type PullRequest, addLabelsToPullRequest, getPullRequest, removeLabelFromPullRequest, resolveOwnerRepo } from './github.ts';
@@ -81,7 +87,27 @@ const WM_LABEL_DEFINITIONS: GithubLabelDefinition[] = [
 ];
 
 const ACTIVE_STATE_LABELS = [WM_LABELS.ready, WM_LABELS.blocked, WM_LABELS.merging];
-const ALL_WM_LABELS = WM_LABEL_DEFINITIONS.map((definition) => definition.name);
+
+/** The only labels a merge decision may change (HOK-3449). */
+export const MERGE_LABEL_WRITE_SCOPE = [WM_LABELS.ready, WM_LABELS.blocked] as const;
+
+export type MergeLabel = (typeof MERGE_LABEL_WRITE_SCOPE)[number];
+
+/** True when tend holds the merge-lane lock; the reconciler never writes then. */
+export function holdsMergeLaneLock(labels: Iterable<string>): boolean {
+  for (const label of labels) {
+    if (label === WM_LABELS.merging) return true;
+  }
+  return false;
+}
+
+export interface SetMergeLabelResult {
+  pr: PullRequest;
+  /** True when the PR's labels were changed. */
+  written: boolean;
+  /** Set when the write was refused because the merge lane is locked. */
+  skipped?: 'merge-lane-lock';
+}
 
 export const prStateLabelDeps = {
   getPullRequest,
@@ -122,15 +148,6 @@ export function setWavemillReady(
 ): PullRequest {
   const options = normalizeWriteOptions(argsOrOptions, maybeOptions);
   return transitionPullRequestLabels(prNumber, [WM_LABELS.ready], [WM_LABELS.blocked, WM_LABELS.merging], options);
-}
-
-export function setWavemillBlocked(
-  prNumber: number | string,
-  argsOrOptions: PrLabelWriteArgs | PrStateLabelOptions = {},
-  maybeOptions: PrStateLabelOptions = {},
-): PullRequest {
-  const options = normalizeWriteOptions(argsOrOptions, maybeOptions);
-  return transitionPullRequestLabels(prNumber, [WM_LABELS.blocked], [WM_LABELS.ready, WM_LABELS.merging], options);
 }
 
 export function setWavemillMerging(
@@ -176,8 +193,40 @@ export function addWavemillApproved(prNumber: number | string, options: PrStateL
   return transitionPullRequestLabels(prNumber, [WM_LABELS.approved], [], options);
 }
 
-export function clearWavemillState(prNumber: number | string, options: PrStateLabelOptions = {}): PullRequest {
-  return transitionPullRequestLabels(prNumber, [], ALL_WM_LABELS, options);
+/**
+ * Render one merge decision: ensure `label` (if any) and remove the other
+ * label in {@link MERGE_LABEL_WRITE_SCOPE}.
+ *
+ * This is the reconciler's only label writer (HOK-3449). It touches nothing
+ * outside `wm:ready` / `wm:blocked`, so `wavemill`, operator labels
+ * (`wm:risk-acknowledged`, `wm:approved`) and lane labels survive a decision
+ * flip. A PR holding `wm:merging` (tend's lane lock) is left untouched: the
+ * writer re-reads the PR and refuses with `skipped: 'merge-lane-lock'`, which
+ * closes the race where tend acquires the lock between the reconciler's
+ * listing and this write.
+ */
+export function setMergeLabel(
+  prNumber: number | string,
+  label: MergeLabel | null,
+  options: PrStateLabelOptions = {},
+): SetMergeLabelResult {
+  const pr = prStateLabelDeps.getPullRequest(prNumber, options);
+  const existingLabels = pr.labels.map((existing) => existing.name);
+
+  if (holdsMergeLaneLock(existingLabels)) {
+    return { pr, written: false, skipped: 'merge-lane-lock' };
+  }
+
+  const labelsToEnsure = label ? [label] : [];
+  const labelsToClear = MERGE_LABEL_WRITE_SCOPE.filter((scoped) => scoped !== label);
+  const changed = labelsToEnsure.some((ensure) => !existingLabels.includes(ensure))
+    || labelsToClear.some((clear) => existingLabels.includes(clear));
+
+  if (!changed) {
+    return { pr, written: false };
+  }
+
+  return { pr: transitionPullRequestLabels(prNumber, labelsToEnsure, labelsToClear, options), written: true };
 }
 
 function normalizeWriteOptions(
