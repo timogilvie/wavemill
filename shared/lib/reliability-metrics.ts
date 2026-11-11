@@ -1473,8 +1473,11 @@ export function readGateEvidence(
   // Stage results (planning/coding/review/ready), one file each.
   const stageResults: NonNullable<GateEvidence['stageResults']> = [];
   const resultByName = new Map<string, ReturnType<typeof readStageResultSync>>();
+  const stageResultPresent = new Set<string>();
   for (const stage of ['planning', 'coding', 'review', 'ready'] as const) {
-    const result = readStageResultSync(resolveTaskSource(task, `${stage}-result.json`) ?? '');
+    const resultPath = resolveTaskSource(task, `${stage}-result.json`);
+    if (resultPath) stageResultPresent.add(stage);
+    const result = readStageResultSync(resultPath ?? '');
     resultByName.set(stage, result);
     const startedAtMs = parseMs(result?.startedAt);
     if (result == null || startedAtMs === null) continue;
@@ -1558,7 +1561,9 @@ export function readGateEvidence(
     const value = missingRecord(task, name);
     if (value) missingRecords.push(value);
   };
-  absent('review-result.json');
+  // Reuse the stage-result lookup above rather than naming the file again, so
+  // this diagnostic label cannot drift into a second private lookup site.
+  if (!stageResultPresent.has('review')) missingRecords.push('no .review-result.json');
   absent('plan-packet-hash');
   absent('head-moves.jsonl');
   if (agentRecords.length === 0) missingRecords.push('no .terminal-history.jsonl');
