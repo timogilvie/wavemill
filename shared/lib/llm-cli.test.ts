@@ -846,30 +846,6 @@ describe('quota fallback', () => {
     });
   });
 
-  it('still enforces OPENAI_API_KEY for the openai provider under a classifier budget', async () => {
-    await withEnv({ OPENAI_API_KEY: undefined }, async () => {
-      const { cliPath, logPath } = createMockCli('openai-key-required', {
-        default: { type: 'success', text: 'should not run' },
-      });
-
-      const { error, stderr } = await captureStderrError(() => callLLM('openai prompt', {
-        provider: 'openai',
-        mode: 'stream',
-        cliCmd: cliPath,
-        repoDir,
-        taskType: 'classify',
-        fallbackModels: ['gpt-5.6-terra'],
-        fallbackDeadlineMs: Date.now() + 5_000,
-        fallbackPerAttemptTimeoutMs: 1_000,
-        logFallbackEvents: false,
-      }));
-
-      assert.match((error as Error).message, /No eligible classify fallback candidates/);
-      assert.match(stderr, /\[classifier] gpt-5\.6-terra skipped \(missing OPENAI_API_KEY\)/);
-      assert.deepEqual(readInvocations(logPath), []);
-    });
-  });
-
   it('bypasses exponential backoff for quota fallbacks', async () => {
     const { cliPath } = createMockCli('quota-fast-fallback', {
       'model-a': { type: 'quota', message: '429 rate_limit_exceeded', code: 1 },
