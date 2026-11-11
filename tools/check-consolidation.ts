@@ -10,8 +10,8 @@
  * deliberate exception is recorded in the PR body as
  * `Consolidation Exception: <reason>`; `tools/weekly-scorecard.ts` lists them.
  *
- * Exit codes: 0 pass (including no PR / no `gh`), 1 consolidation policy
- * failure, 2 the delta could not be computed for a PR (never a false green).
+ * Exit codes: 0 pass (including a genuine no-PR event), 1 consolidation policy
+ * failure, 2 the delta or PR read failed on a PR event (never a false green).
  */
 import { fileURLToPath } from 'node:url';
 import { escapeShellArg, execShellCommand } from '../shared/lib/shell-utils.ts';
@@ -105,7 +105,10 @@ export function evaluateConsolidation(
   pr: PrMeta | null,
   delta: ProductionDelta | null,
   deltaError?: string,
+  prReadFailed = false,
 ): ConsolidationVerdict {
+  // A failed gh read on a PR event must never read as "no PR" (false green).
+  if (!pr && prReadFailed) return { exitCode: 2, lines: ['error: PR_NUMBER is set but the PR could not be read (gh failure?)'] };
   if (!pr) return { exitCode: 0, lines: ['warn: no PR detected; skipping consolidation gate'] };
   if (!delta) return { exitCode: 2, lines: [`error: cannot compute production delta: ${deltaError ?? 'unknown error'}`] };
   const summary = `Production delta: +${delta.added} -${delta.removed}`;
@@ -138,7 +141,7 @@ function main(): void {
       deltaError = (error instanceof Error ? error.message : String(error)).split('\n')[0];
     }
   }
-  const verdict = evaluateConsolidation(pr, delta, deltaError);
+  const verdict = evaluateConsolidation(pr, delta, deltaError, !pr && Boolean(process.env.PR_NUMBER));
   const write = verdict.exitCode === 0 ? console.log : console.error;
   for (const line of verdict.lines) write(line);
   process.exit(verdict.exitCode);

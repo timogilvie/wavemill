@@ -5,7 +5,7 @@
  *
  * Production lines use the same predicate as the CI gate
  * (`isProductionFile` in `tools/check-consolidation.ts`), so the scorecard and
- * the gate can never disagree about what counts. The scorecard is on-demand;
+ * the gate always count the same set of files. The scorecard is on-demand;
  * nothing schedules it. Run it from the repository root:
  *
  *   npx tsx tools/weekly-scorecard.ts

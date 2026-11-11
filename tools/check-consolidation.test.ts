@@ -137,6 +137,13 @@ describe('evaluateConsolidation', () => {
     assert.match(verdict.lines[0], /Exception used: legacy support needs it/);
   });
 
+  it('exits 2 when the PR read failed on a PR event instead of passing silently', () => {
+    // protects: a broken or missing GH_TOKEN turns the consolidation gate into a no-op.
+    const verdict = evaluateConsolidation(null, null, undefined, true);
+    assert.equal(verdict.exitCode, 2);
+    assert.match(verdict.lines[0], /could not be read/);
+  });
+
   it('exits 2 when the delta could not be computed for a PR', () => {
     // protects: an uncomputable delta passes as green.
     const verdict = evaluateConsolidation(pr(['consolidation']), null, 'cannot diff production lines');
