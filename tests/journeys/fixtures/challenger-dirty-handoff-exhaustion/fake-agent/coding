@@ -1,0 +1,33 @@
+# shellcheck shell=bash
+# Fake coder for the challenger-dirty-handoff-exhaustion journey (HOK-3454).
+#
+# The primary codes normally. The challenger leaves an uncommitted output line
+# after its first `.coding-complete` and, when relaunched by the mill's
+# dirty-handoff recovery (HOK-3128), leaves the exact same path uncommitted
+# again at the same head — so the bounded-retry ceiling (1 attempt, keyed on
+# head) exhausts on the second detection instead of earning a further
+# relaunch. That is the real precondition for `coding_dirty_handoff_terminalize`
+# to quarantine the challenger via `cleanup_quarantined_no_pr_challenge_arm` →
+# `cleanup_aborted_challenge_arm` → `mark_task_aborted_for_cleanup`.
+source "$FAKE_AGENT_TOOLS_DIR/../shared/lib/task-identity.sh"
+
+if ! task_identity_is_challenger "$WAVEMILL_ISSUE"; then
+  default_coding
+else
+  runs_file="$FAKE_ROOT/challenger-coding-runs-$WAVEMILL_ISSUE"
+  run=$(( $(cat "$runs_file" 2>/dev/null || echo 0) + 1 ))
+  printf '%s\n' "$run" > "$runs_file"
+  if (( run == 1 )); then
+    default_coding
+    printf 'dirty %s: written after .coding-complete, never committed\n' "$WAVEMILL_ISSUE" >> journey-output.txt
+    printf '%s phase=coding issue=%s fault=dirty-tree-after-complete run=1\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+  else
+    # The dirty-handoff relaunch: re-declares done without touching the
+    # uncommitted path, so the head never advances and the ceiling-1 retry
+    # (keyed on head) exhausts on this second detection. The relaunch guard
+    # archives the prior `.coding-complete` before launching, so the agent
+    # must rewrite it to be seen as "done" (and so dirty) again.
+    jq -n --arg commit "$(git rev-parse HEAD)" '{stage:"coding",confidence:"high",commit:$commit}' > "$FEATURE_DIR/.coding-complete"
+    printf '%s phase=coding issue=%s role=dirty-handoff run=%s still-dirty\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" "$run" >> "$FAKE_AGENT_LOG"
+  fi
+fi
