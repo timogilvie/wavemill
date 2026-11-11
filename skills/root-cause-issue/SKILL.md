@@ -130,6 +130,7 @@ Prior fixes in this class (HOK-…), and which copy each one fixed.
 - [ ] Replay fixture built from this incident's evidence passes.
 - [ ] A golden journey (`tests/journeys/`, HOK-3228) covers the general case with zero operator touches, not only this incident.
 - [ ] <Named functions> are deleted. Net deletion is reported in the PR.
+- [ ] The consolidation gate (`tools/check-consolidation.ts`, HOK-3470) passes: net production lines under `shared/lib`, `shared/hooks` and `tools` decrease, or the PR body records `Consolidation Exception: <reason>`.
 ```
 
 Priority: High when the bug parks delivered work or needs an operator touch to make progress. Otherwise Medium.
@@ -141,6 +142,7 @@ Reject the draft and rewrite it if any of these is true:
 - The fix is keyed on incident-specific text: a model name, a pane-scrollback regex, an error substring, an issue ID.
 - It adds a terminal cause, marker, flag, env var, retry bucket or shadow switch without retiring one.
 - Nothing is named for deletion, or the "one decider" still leaves other sites deciding.
+- The fix leaves net production lines higher and no `Consolidation Exception: <reason>` is recorded on the PR (HOK-3470). Consolidation means the deletion lands in the same PR, not in a follow-up.
 - Acceptance only reproduces this incident. It needs the general journey too.
 - It re-derives something a documented primitive already provides.
 - It duplicates an open issue instead of adding evidence to it.
@@ -157,3 +159,5 @@ Reject the draft and rewrite it if any of these is true:
 ## Step 7 — Review, then file
 
 Show the user the draft(s): title, the duplication table, **the primitive lookup table from Step 3**, what gets deleted, the backlog placement and the sequencing. The reuse decisions are the part most likely to be wrong, so don't leave them out of the review. File after they approve, or straight away if they already asked you to file. Report the issue URL(s), any existing issues you added evidence or dependency notes to instead of filing, and any change to the plan document.
+
+Every issue this skill files is consolidation work, so label it at filing: `npx tsx tools/add-issue-label.ts <identifier> consolidation`. When the task's pull request is opened, carry the label onto the PR (`npx tsx tools/add-pr-label.ts <pr> consolidation`). The label is what turns the net-deletion target into a check: `tools/check-consolidation.ts` (HOK-3470) reads it and fails the PR when net production lines go up, unless the PR body records `Consolidation Exception: <reason>`.

@@ -41,16 +41,33 @@ jobs:
     name: Preflight Checks
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # HOK-3470: the consolidation gate reads the pull request's labels and body.
+    permissions:
+      contents: read
+      pull-requests: read
 
     steps:
+      # HOK-3470: full history, so `git merge-base <base> HEAD` can run for the
+      # consolidation delta. The default fetch-depth of 1 has no merge base.
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
 
       - name: Setup
         uses: ./.github/actions/setup
 
       - name: Shell lint and syntax check
         run: npm run lint
+
+      # HOK-3470: a `consolidation` PR must not add net production lines.
+      # Runs on every event; without a PR it warns and exits 0.
+      - name: Check Consolidation Delta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: npx tsx tools/check-consolidation.ts
 
       - name: Preflight checks (including test registration enforcement)
         run: npm run test:preflight
