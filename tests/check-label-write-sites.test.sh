@@ -127,6 +127,7 @@ check_label_write_sites() {
 echo "Checking label write sites in real repo..."
 if ! check_label_write_sites "$REPO_ROOT" "$ALLOWLIST"; then
   echo "FAIL: Label write site violations detected" >&2
+  echo "See docs/invariants/merge-labels.md" >&2
   exit 1
 fi
 

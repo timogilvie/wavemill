@@ -268,6 +268,18 @@ describe('runSourceGuard', () => {
     track('.');
     assert.deepEqual(runSourceGuard(SPEC, repo), { ok: true, scannedFiles: 1, findings: [] });
   });
+
+  it('fails when an invariant doc does not exist in the repo that defines the guard', () => {
+    write('shared/lib/clean.ts', 'ok();\n');
+    track('.');
+    // The doc is resolved against this checkout, not the scanned repo, so a
+    // fixture repo carries the offenders without carrying the documentation.
+    const withDocs = { ...SPEC, invariantDocs: ['docs/invariants/failure-policy.md'] };
+    assert.equal(runSourceGuard(withDocs, repo).ok, true);
+
+    const missing = { ...SPEC, invariantDocs: ['docs/invariants/gone.md'] };
+    assert.deepEqual(summary(missing), ['docs/invariants/gone.md:1:missing-invariant-doc']);
+  });
 });
 
 describe('formatGuardResult', () => {
@@ -286,6 +298,20 @@ describe('formatGuardResult', () => {
     assert.match(output, /Use the demo helper instead\./);
     assert.match(output, /tools\/demo-allowlist\.txt/);
     assert.match(output, /\/\/ allow-demo: <reason>/);
+    assert.doesNotMatch(output, /Full invariant:/, 'no pointer without invariantDocs');
+  });
+
+  it('sends the reader to the full invariant text when the spec names one', () => {
+    const output = formatGuardResult({ ...SPEC, invariantDocs: ['docs/invariants/demo.md'] }, {
+      ok: false,
+      scannedFiles: 1,
+      findings: [{ file: 'shared/lib/a.ts', line: 1, column: 1, pattern: 'ts-forbidden', description: 'forbidden() in TS', text: 'forbidden()' }],
+    });
+    assert.match(output, /Full invariant: docs\/invariants\/demo\.md/);
+    assert.ok(
+      output.indexOf('Full invariant:') < output.indexOf('Use the demo helper instead.'),
+      'the pointer precedes the remediation',
+    );
   });
 });
 

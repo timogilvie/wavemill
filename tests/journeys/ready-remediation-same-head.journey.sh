@@ -47,15 +47,6 @@ fakes_linear_add_issue "$ISSUE" "Change whose first CI run flakes" Todo
 # remediation agent takes for its rerun, and the rerun marker is read under
 # it: a verdict computed before the rerun can never overwrite the rerun's
 # SUCCESS.
-gh_state_lock() {
-  local i
-  for i in $(seq 1 500); do
-    mkdir "$FAKE_GH_STATE.lock" 2>/dev/null && break
-    sleep 0.01
-  done
-  printf '%s' "$$" > "$FAKE_GH_STATE.lock/pid"
-}
-gh_state_unlock() { rm -rf "$FAKE_GH_STATE.lock"; }
 
 ci_set_pr1() {
   fakes_gh_state '.checks.byPr["1"] = [{name: "unit-tests", conclusion: $c}]' --arg c "$1"
@@ -67,7 +58,7 @@ ci_tick() {
   head="$(jq -r '.prs["1"].headRefName // empty' "$FAKE_GH_STATE" 2>/dev/null)"
   [[ -n "$head" ]] || return 0
   head="$(git --git-dir "$FAKE_GH_ORIGIN" rev-parse -q --verify "refs/heads/$head" 2>/dev/null)" || return 0
-  gh_state_lock
+  fakes_gh_state_lock
   conclusion=FAILURE
   [[ -e "$FAKE_ROOT/ci-rerun-$head" ]] && conclusion=SUCCESS
   if [[ "$head/$conclusion" != "$CI_LAST" ]]; then
@@ -75,10 +66,10 @@ ci_tick() {
     CI_LAST="$head/$conclusion"
     journey_log "fake CI: ${head:0:7} → $conclusion"
   fi
-  gh_state_unlock
+  fakes_gh_state_unlock
 }
 
-gh_state_lock; ci_set_pr1 FAILURE; gh_state_unlock
+fakes_gh_state_lock; ci_set_pr1 FAILURE; fakes_gh_state_unlock
 
 # ── observation ────────────────────────────────────────────────────────────
 phase_is() { ci_tick; [[ "$(journey_task_field "$ISSUE" phase)" == "$1" ]]; }

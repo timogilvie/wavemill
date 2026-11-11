@@ -1,2 +1,2 @@
 # Legitimate exceptions (not defect escalation)
-shared/lib/initiative-decomposer.ts 1 # legitimate initiative planning issue creation, not defect escalation
+shared/lib/plan-decomposer.ts 1 # createIssuesWithDependencies: the one shared planning issue-creation path (HOK-3469), not defect escalation

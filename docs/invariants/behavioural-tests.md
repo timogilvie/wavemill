@@ -1,0 +1,7 @@
+---
+title: Behavioural tests
+---
+
+# Behavioural tests
+
+`source-text-assertions-guard.ts` `SOURCE_TEXT_ASSERTIONS_GUARD` / `tools/check-source-text-assertions.ts` - The behavioural-tests invariant (HOK-3237, enforced by HOK-3236): tests assert against *behaviour*, not against the source text of `shared/lib/**` or `tools/**`. The guard scans every tracked `*.test.*` file (except `tests/check-*` lint guards, which read source as their job) for shell `grep`/`cat`/`awk`/`sed`/`head`/`tail`/`wc`/`md5sum`/`shasum` against `$MILL_SCRIPT` / `$MONITOR_SCRIPT(_FILE)` or a literal `shared/lib/**` / `tools/**` path, and for TS `readFileSync(..., import.meta.url)` sibling-source reads, `readFileSync` of a `shared/lib/**` / `tools/**` source file, and `sha256|md5|createHash(readFileSync(...))` of source bytes. `tools/source-text-assertions-allowlist.txt` is a shrinking ratchet for pre-existing legacy tests. Suppress one line with `// allow-source-text-assertion: <reason>` (or `#` in shell). The guard runs in `test:preflight`. **Convention: each new `test(...)` / `test_*` gets a one-line `// protects: <failure scenario>` comment (or encodes the scenario in the test name) — if you cannot say what a test protects against, delete it.** New sites call the function, drive the entry point, and compare the observable result against an independent oracle (fixture, inline expected value, deterministic input); the review prompts (`tools/prompts/review-general*.md`) ask reviewers to flag any new test that cannot answer that question.

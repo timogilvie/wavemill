@@ -3,10 +3,20 @@ import assert from 'node:assert/strict';
 import {
   selectFirstWave,
   selectLaunchSet,
+  extractSizeHolds,
+  extractPlanWarnings,
+  type BacklogRecord,
   type QueuePlan,
   type ConflictEdge,
   type HeldTask,
 } from './plan-queue-utils.ts';
+import {
+  evaluateTaskSize,
+  renderSizeSection,
+  type TaskSizeEstimate,
+  type TaskSizeLimits,
+  type TaskSizeSlice,
+} from './task-size.ts';
 
 const basePlan: QueuePlan = {
   availableNow: ['HOK-4', 'HOK-2', 'HOK-3', 'HOK-1'],
@@ -391,5 +401,245 @@ describe('selectLaunchSet', () => {
     );
     assert.deepEqual(result.launchNext, ['HOK-2', 'HOK-3']);
     assert.deepEqual(result.slotsFull, ['HOK-1']);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// HOK-3469: oversized-task size holds
+// ────────────────────────────────────────────────────────────────
+
+const sizeLimits: TaskSizeLimits = {
+  enabled: true,
+  maxAddedLines: 800,
+  maxFiles: 12,
+  coreFiles: ['shared/lib/wavemill-monitor.sh'],
+  anchorCoreFile: 'shared/lib/wavemill-monitor.sh',
+  maxCoreCompanions: 2,
+};
+
+function packetDescription(
+  estimate: TaskSizeEstimate,
+  slices: TaskSizeSlice[] = [],
+  accepted: string[] = [],
+): string {
+  return renderSizeSection(estimate, evaluateTaskSize(estimate, sizeLimits), slices, {
+    ...(accepted.length > 0 ? { accepted } : {}),
+  });
+}
+
+const oversizedEstimate: TaskSizeEstimate = {
+  addedLines: 1500,
+  files: ['shared/lib/a.ts', 'shared/lib/b.ts'],
+  coreFiles: [],
+  linesSource: 'llm',
+};
+const smallEstimate: TaskSizeEstimate = {
+  addedLines: 200,
+  files: ['shared/lib/a.ts'],
+  coreFiles: [],
+  linesSource: 'llm',
+};
+const proposedSlices: TaskSizeSlice[] = [
+  { title: 'Slice A', scope: 'First half.', files: ['shared/lib/a.ts'], estimatedAddedLines: 700 },
+  { title: 'Slice B', scope: 'Second half.', files: ['shared/lib/b.ts'], estimatedAddedLines: 800 },
+];
+
+describe('extractSizeHolds', () => {
+  // protects: an oversized recorded estimate is the one source of a size hold
+  it('holds an oversized task and carries its reasons, slices and override state', () => {
+    const holds = extractSizeHolds(
+      [{ id: 'HOK-1', description: packetDescription(oversizedEstimate, proposedSlices) }],
+      sizeLimits,
+    );
+    assert.deepEqual(holds['HOK-1'], {
+      reasons: ['lines'],
+      addedLines: 1500,
+      fileCount: 2,
+      coreFiles: [],
+      slices: ['Slice A', 'Slice B'],
+    });
+  });
+
+  // protects: a task under the limits, or with no estimate, launches exactly as today
+  it('does not hold a within-limits task or a task with no estimate', () => {
+    const holds = extractSizeHolds(
+      [
+        { id: 'HOK-SMALL', description: packetDescription(smallEstimate) },
+        { id: 'HOK-PLAIN', description: 'No estimate here.' },
+      ],
+      sizeLimits,
+    );
+    assert.deepEqual(holds, {});
+  });
+
+  // protects: the operator override releases exactly one task
+  it('skips a task carrying the size-override label', () => {
+    const holds = extractSizeHolds(
+      [
+        {
+          id: 'HOK-1',
+          description: packetDescription(oversizedEstimate, proposedSlices),
+          labels: ['wm:size-override'],
+        },
+      ],
+      sizeLimits,
+    );
+    assert.deepEqual(holds, {});
+  });
+
+  // protects: a split parent never launches, even if the recorded numbers read small
+  it('always holds a wm:split parent and keeps the accepted slice IDs', () => {
+    const holds = extractSizeHolds(
+      [
+        {
+          id: 'HOK-2',
+          description: packetDescription(smallEstimate, proposedSlices, ['HOK-21', 'HOK-22']),
+          labels: ['wm:split'],
+        },
+      ],
+      sizeLimits,
+    );
+    assert.deepEqual(holds['HOK-2'].accepted, ['HOK-21', 'HOK-22']);
+    assert.deepEqual(holds['HOK-2'].reasons, []);
+  });
+
+  // protects: an override on an already-split parent relaunches work that
+  // became sub-issues, duplicating every slice.
+  it('keeps a split parent held even when it carries the override label', () => {
+    const holds = extractSizeHolds(
+      [
+        {
+          id: 'HOK-2',
+          description: packetDescription(smallEstimate, proposedSlices, ['HOK-21', 'HOK-22']),
+          labels: ['wm:split', 'wm:size-override'],
+        },
+      ],
+      sizeLimits,
+    );
+    assert.deepEqual(holds['HOK-2'].accepted, ['HOK-21', 'HOK-22']);
+  });
+
+  // protects: disabling the feature restores launch-as-today
+  it('holds nothing when the feature is disabled', () => {
+    const holds = extractSizeHolds(
+      [{ id: 'HOK-1', description: packetDescription(oversizedEstimate, proposedSlices) }],
+      { ...sizeLimits, enabled: false },
+    );
+    assert.deepEqual(holds, {});
+  });
+
+  // protects: a size-held task is not also reported as an unmet-precondition warning
+  it('suppresses plan warnings for size-held tasks', () => {
+    const warnings = extractPlanWarnings(
+      [{ id: 'HOK-1', description: 'Decide the removal criterion after 7 days.' }],
+      new Set(),
+      {},
+      { 'HOK-1': { reasons: ['lines'], addedLines: 1500, fileCount: 2, coreFiles: [], slices: [] } },
+    );
+    assert.deepEqual(warnings, []);
+  });
+});
+
+describe('selectLaunchSet size holds', () => {
+  // protects: an oversized task is never offered for launch and outranks touch-set uncertainty
+  it('holds an oversized task ahead of touch-set uncertainty', () => {
+    const plan: QueuePlan = {
+      availableNow: ['HOK-1', 'HOK-2'],
+      queuedAfterDependencies: [],
+      avoidRunningTogether: [],
+      sharedSurfaceConflicts: [],
+      needsTriage: [],
+      sizeHolds: {
+        'HOK-1': {
+          reasons: ['lines'],
+          addedLines: 1500,
+          fileCount: 2,
+          coreFiles: [],
+          slices: ['Slice A', 'Slice B'],
+        },
+      },
+    };
+    const result = selectLaunchSet(
+      plan,
+      [
+        { id: 'HOK-1', score: 90, touchSetKnown: false },
+        { id: 'HOK-2', score: 80, touchSetKnown: true },
+      ],
+      { freeSlots: 2 },
+    );
+    assert.deepEqual(result.launchNext, ['HOK-2']);
+    const hold = findHeld(result.held, 'HOK-1');
+    assert.equal(hold.reason, 'oversized_task');
+    assert.deepEqual(hold.detail, {
+      kind: 'oversized_task',
+      reasons: ['lines'],
+      addedLines: 1500,
+      fileCount: 2,
+      slices: ['Slice A', 'Slice B'],
+    });
+  });
+
+  // protects: an oversized task outranks a dependency hold it may also carry
+  it('holds an oversized task ahead of a dependency hold', () => {
+    const plan: QueuePlan = {
+      availableNow: ['HOK-1', 'HOK-2'],
+      queuedAfterDependencies: [{ taskId: 'HOK-1', ancestors: ['HOK-9'] }],
+      avoidRunningTogether: [],
+      sharedSurfaceConflicts: [],
+      needsTriage: [],
+      sizeHolds: {
+        'HOK-1': { reasons: ['files'], addedLines: null, fileCount: 20, coreFiles: [], slices: [], accepted: ['HOK-3'] },
+      },
+    };
+    const result = selectLaunchSet(plan, [{ id: 'HOK-1', score: 90 }, { id: 'HOK-2', score: 80 }], {
+      freeSlots: 2,
+    });
+    const hold = findHeld(result.held, 'HOK-1');
+    assert.equal(hold.reason, 'oversized_task');
+    assert.deepEqual(hold.detail, {
+      kind: 'oversized_task',
+      reasons: ['files'],
+      fileCount: 20,
+      slices: [],
+      accepted: ['HOK-3'],
+    });
+  });
+
+  // protects: a plan without size holds keeps today's launch selection exactly
+  it('leaves selection unchanged when no size holds are recorded', () => {
+    const plan: QueuePlan = {
+      availableNow: ['HOK-1', 'HOK-2', 'HOK-3'],
+      queuedAfterDependencies: [],
+      avoidRunningTogether: [],
+      sharedSurfaceConflicts: [],
+      needsTriage: [],
+    };
+    const tasks = [
+      { id: 'HOK-1', score: 90 },
+      { id: 'HOK-2', score: 80 },
+      { id: 'HOK-3', score: 70 },
+    ];
+    const withHolds = selectLaunchSet({ ...plan, sizeHolds: {} }, tasks, { freeSlots: 2 });
+    const withoutHolds = selectLaunchSet(plan, tasks, { freeSlots: 2 });
+    assert.deepEqual(withHolds, withoutHolds);
+    assert.equal(withHolds.held.some((held) => held.reason === 'oversized_task'), false);
+  });
+
+  // protects: the recommended (first-wave) launch path respects size holds too
+  it('holds an oversized task from the recommended first wave', () => {
+    const plan: QueuePlan = {
+      availableNow: ['HOK-1', 'HOK-2'],
+      queuedAfterDependencies: [],
+      avoidRunningTogether: [],
+      sharedSurfaceConflicts: [],
+      needsTriage: [],
+      sizeHolds: {
+        'HOK-1': { reasons: ['lines'], addedLines: 1500, fileCount: 2, coreFiles: [], slices: [] },
+      },
+    };
+    const result = selectFirstWave(plan, [{ id: 'HOK-1', score: 90 }, { id: 'HOK-2', score: 80 }], {
+      maxParallel: 2,
+    });
+    assert.deepEqual(result.wave, ['HOK-2']);
   });
 });

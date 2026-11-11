@@ -1,36 +1,12 @@
 import { callHeadlessLLM, type HeadlessLLMOptions } from './headless-llm.ts';
 import type { OperatingMode } from './operating-mode.ts';
+import { getTaskSizeConfig } from './config.ts';
+import { estimateTaskSize, type TaskSizeLimits } from './task-size.ts';
+import type { RepoProbe } from './touch-set-predictor.ts';
 
 const SURVIVAL_MAX_FILES = 5;
 const CONSTRAINED_MAX_FILES = 10;
 const LARGE_PACKET_LINE_THRESHOLD = 400;
-
-function extractKeyFilesSection(fullContent: string): string {
-  const headingMatch = fullContent.match(/^#{2,3}\s+Key Files\s*$/im);
-  if (!headingMatch || headingMatch.index === undefined) {
-    return '';
-  }
-
-  const sectionStart = headingMatch.index + headingMatch[0].length;
-  const remaining = fullContent.slice(sectionStart);
-  const nextHeadingMatch = remaining.match(/^#{2,3}\s+/m);
-
-  return nextHeadingMatch && nextHeadingMatch.index !== undefined
-    ? remaining.slice(0, nextHeadingMatch.index)
-    : remaining;
-}
-
-function countListedFiles(fullContent: string): number {
-  const keyFilesSection = extractKeyFilesSection(fullContent);
-  if (!keyFilesSection) {
-    return 0;
-  }
-
-  return keyFilesSection
-    .split('\n')
-    .filter(line => /^\s*[-*]\s+`?[^`\n]+`?\s*$/.test(line.trim()))
-    .length;
-}
 
 function countLines(fullContent: string): number {
   if (fullContent.length === 0) {
@@ -132,12 +108,31 @@ export function buildScopeConstraintContext(mode: OperatingMode): string {
   return lines.join('\n');
 }
 
-export function shouldSplitPacket(fullContent: string, mode: OperatingMode): boolean {
+export interface ShouldSplitOptions {
+  repoDir?: string;
+  probe?: RepoProbe | null;
+  /** Override the configured limits (tests). */
+  limits?: TaskSizeLimits;
+}
+
+export function shouldSplitPacket(
+  fullContent: string,
+  mode: OperatingMode,
+  options: ShouldSplitOptions = {},
+): boolean {
   if (mode === 'normal') {
     return false;
   }
 
-  const fileCount = countListedFiles(fullContent);
+  // The file count comes from the one task-size estimator (HOK-3469); there is
+  // no second file counter.
+  const limits = options.limits ?? getTaskSizeConfig(options.repoDir);
+  const estimate = estimateTaskSize(fullContent, {
+    repoDir: options.repoDir,
+    probe: options.probe,
+    limits,
+  });
+  const fileCount = estimate.files.length;
   const lineCount = countLines(fullContent);
 
   if (mode === 'survival') {

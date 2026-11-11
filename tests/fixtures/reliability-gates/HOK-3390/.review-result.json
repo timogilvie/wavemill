@@ -1,0 +1,9 @@
+{
+  "stage": "review",
+  "status": "completed",
+  "startedAt": "2026-11-05T20:49:09.244Z",
+  "finishedAt": "2026-11-05T21:01:23.985Z",
+  "artifacts": {
+    "verdict": "ready"
+  }
+}

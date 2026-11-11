@@ -1,0 +1,6 @@
+{"schema":"head-move/v1","issue":"HOK-3428","to":"f19b2fb8f32668e2065ee1783837089427167b14","stage":"coding","actor":"mill","kind":"coding","publishedAt":"2026-11-06T17:19:40.607Z"}
+{"schema":"head-move/v1","issue":"HOK-3428","from":"f19b2fb8f32668e2065ee1783837089427167b14","to":"3407dadb4618e4efbd0fab9530d05d3842141bcd","stage":"review","actor":"mill","kind":"review-fix","publishedAt":"2026-11-06T18:44:25.311Z"}
+{"schema":"head-move/v1","issue":"HOK-3428","from":"3407dadb4618e4efbd0fab9530d05d3842141bcd","to":"e70455e7cdbe967002b9009bdc85d8837b7af1cb","stage":"review","actor":"agent","kind":"review-fix","publishedAt":"2026-11-06T19:07:05.033Z"}
+{"schema":"head-move/v1","issue":"HOK-3428","from":"e70455e7cdbe967002b9009bdc85d8837b7af1cb","to":"d7146ccf97bd0aee4695e778fa813e4ef36bda76","stage":"review","actor":"agent","kind":"base-merge","publishedAt":"2026-11-06T19:24:38.964Z"}
+{"schema":"head-move/v1","issue":"HOK-3428","from":"d7146ccf97bd0aee4695e778fa813e4ef36bda76","to":"08320bf9f801aa224bf8bbd25954330d09aa6c63","stage":"review","actor":"agent","kind":"base-merge","publishedAt":"2026-11-06T20:15:37.997Z"}
+{"schema":"head-move/v1","issue":"HOK-3428","from":"08320bf9f801aa224bf8bbd25954330d09aa6c63","to":"b62e11238327b14cdb6305370ffbf155b452ce45","stage":"review","actor":"mill","kind":"review-fix","publishedAt":"2026-11-06T22:13:56.761Z"}

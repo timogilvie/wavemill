@@ -107,6 +107,7 @@ export function findNameMatchInsideDerive(sourceText: string): StructuralMatch[]
  */
 export const AGENT_BACKGROUND_WORK_GUARD: GuardSpec = {
   name: 'agent-background-work',
+  invariantDocs: ['docs/invariants/task-progress.md'],
   findingNoun: 'background-work decision site(s) outside the ownership rule',
   suppressionMarker: 'allow-agent-background-work',
   allowlistFile: 'tools/agent-background-work-allowlist.txt',

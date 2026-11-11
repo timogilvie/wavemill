@@ -13,6 +13,7 @@
 import { callClaude, type LLMCallResult } from './llm-cli.ts';
 import { fillPromptTemplate } from './prompt-utils.ts';
 import { startHeartbeat } from './progress-heartbeat.ts';
+import { createIssue, createIssueRelation } from './linear.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Constants
@@ -370,4 +371,111 @@ export async function runResearch(
   }
 
   return result.text;
+}
+
+// ────────────────────────────────────────────────────────────────
+// Issue Creation With Dependencies
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * One issue to create as part of a batch.
+ */
+export interface IssueCreationSpec {
+  /** Issue title. */
+  title: string;
+  /** Issue description (markdown). */
+  description: string;
+  /** Linear priority number (0-4). */
+  priority?: number;
+  /** Grouping name (for example a milestone) resolved by `resolveMilestoneId`. */
+  milestone?: string;
+  /** Team label ids applied to this issue only. */
+  labelIds?: string[];
+  /** Indexes, earlier in the same array, that block this issue. */
+  blockedBy?: number[];
+}
+
+/** An issue created by {@link createIssuesWithDependencies}. */
+export interface CreatedIssue {
+  id: string;
+  identifier: string;
+  title: string;
+  url?: string;
+}
+
+export interface CreateIssuesOptions {
+  /** Team the issues are created in. */
+  teamId: string;
+  /** Optional project for every created issue. */
+  projectId?: string;
+  /** Label ids applied to every created issue. */
+  labelIds?: string[];
+  /** Resolve a milestone name to a project milestone id. */
+  resolveMilestoneId?: (name: string) => Promise<string | undefined>;
+  /** Progress logger (defaults to silence). */
+  log?: (message: string) => void;
+}
+
+export interface CreateIssuesResult {
+  /** Created issues, in the same order as `specs`. */
+  created: CreatedIssue[];
+  specs: IssueCreationSpec[];
+}
+
+/**
+ * Create a batch of Linear issues and their `blocks` relations.
+ *
+ * Shared by plan decomposition and task splitting (HOK-3469): callers describe
+ * issues and their dependencies as data, and this function owns the ordering
+ * rules (create every issue first, then relations pointing at earlier indexes).
+ * Invalid dependency indexes (out of range, self-references) are skipped rather
+ * than failing the batch, matching the historical plan-decomposition behaviour.
+ */
+export async function createIssuesWithDependencies(
+  specs: IssueCreationSpec[],
+  options: CreateIssuesOptions,
+): Promise<CreateIssuesResult> {
+  const log = options.log ?? (() => {});
+  const milestoneCache = new Map<string, string | undefined>();
+  const created: CreatedIssue[] = [];
+
+  for (const spec of specs) {
+    let milestoneId: string | undefined;
+    if (spec.milestone && options.resolveMilestoneId) {
+      if (!milestoneCache.has(spec.milestone)) {
+        milestoneCache.set(spec.milestone, await options.resolveMilestoneId(spec.milestone));
+      }
+      milestoneId = milestoneCache.get(spec.milestone);
+    }
+    const labelIds = [...(options.labelIds ?? []), ...(spec.labelIds ?? [])];
+    log(`  Creating: ${spec.title}`);
+    const issue = await createIssue({
+      title: spec.title,
+      description: spec.description,
+      teamId: options.teamId,
+      ...(options.projectId ? { projectId: options.projectId } : {}),
+      ...(milestoneId ? { projectMilestoneId: milestoneId } : {}),
+      ...(spec.priority !== undefined ? { priority: spec.priority } : {}),
+      ...(labelIds.length > 0 ? { labelIds } : {}),
+    });
+    created.push({
+      id: issue.id,
+      identifier: issue.identifier,
+      title: issue.title ?? spec.title,
+      ...(issue.url ? { url: issue.url } : {}),
+    });
+    log(`    ✓ ${issue.identifier}${issue.url ? ` - ${issue.url}` : ''}`);
+  }
+
+  for (let i = 0; i < specs.length; i++) {
+    for (const depIndex of specs[i].blockedBy ?? []) {
+      if (!Number.isInteger(depIndex) || depIndex < 0 || depIndex >= created.length || depIndex === i) {
+        continue;
+      }
+      log(`  ${created[i].identifier} blocked by ${created[depIndex].identifier}`);
+      await createIssueRelation(created[depIndex].id, created[i].id, 'blocks');
+    }
+  }
+
+  return { created, specs };
 }

@@ -1,0 +1,4 @@
+{"schema":"head-move/v1","issue":"HOK-3422","to":"c8e02c37d329696f2f16010a82a4eed21cb279d4","stage":"coding","actor":"mill","kind":"coding","publishedAt":"2026-11-05T20:05:26.883Z"}
+{"schema":"head-move/v1","issue":"HOK-3422","from":"c8e02c37d329696f2f16010a82a4eed21cb279d4","to":"cdb305eb2dc79034737a0b0a8fd05b1731c48232","stage":"ready","actor":"mill","kind":"base-merge","publishedAt":"2026-11-05T22:29:40.761Z"}
+{"schema":"head-move/v1","issue":"HOK-3422","from":"cdb305eb2dc79034737a0b0a8fd05b1731c48232","to":"608e4176d154bdaf582142248472e3be79a4d168","stage":"coding","actor":"mill","kind":"remediation","publishedAt":"2026-11-06T16:32:15.059Z"}
+{"schema":"head-move/v1","issue":"HOK-3422","from":"608e4176d154bdaf582142248472e3be79a4d168","to":"4a196c477f0c6388fc4fdf16bc43f71effe7fdcb","stage":"ready","actor":"mill","kind":"remediation","publishedAt":"2026-11-06T19:02:13.461Z"}

@@ -89,6 +89,20 @@ export interface TaskSelectionConfig {
   enterLaunchesWave?: boolean;
 }
 
+/**
+ * Limits for the task-size hold (HOK-3469). Expansion records a size estimate
+ * in packet §12; the picker re-evaluates it against these limits at pick time,
+ * so tuning a limit takes effect without re-expanding.
+ */
+export interface TaskSizeConfig {
+  enabled?: boolean;
+  maxAddedLines?: number;
+  maxFiles?: number;
+  coreFiles?: string[];
+  anchorCoreFile?: string;
+  maxCoreCompanions?: number;
+}
+
 export interface ProjectContextConfig {
   compactionThresholdKb?: number;
   recentWorkKeep?: number;
@@ -1193,6 +1207,7 @@ export interface WavemillConfig {
   agents?: AgentsConfig;
   dashboard?: DashboardConfig;
   taskSelection?: TaskSelectionConfig;
+  taskSize?: TaskSizeConfig;
   projectContext?: ProjectContextConfig;
   eval?: EvalConfig;
   evalContextUpdates?: EvalContextUpdatesConfig;
@@ -2026,11 +2041,33 @@ export interface ReliabilityConfig {
   github?: boolean;
   /** HOK-3260: native prompt-cache hit-rate detection. */
   promptCache?: PromptCacheConfig;
+  /** HOK-3468: hours that count as "a person could have acted". */
+  workingHours?: WorkingHoursConfig;
 }
 
 export interface PromptCacheConfig {
   /** Hit rate (turns 2..n) below which a native run is flagged. Default 0.5. */
   minHitRate?: number;
+}
+
+/** HOK-3468: working-hours window used to split off-hours stall time. */
+export interface WorkingHoursConfig {
+  /** First working hour in the day, 0–23. Default 8. */
+  start?: number;
+  /** Exclusive end hour, 0–24. Default 19. */
+  end?: number;
+  /** ISO-8601 weekdays (1 = Monday … 7 = Sunday). Default Mon–Fri. */
+  days?: number[];
+  /** IANA timezone; default is the system timezone. */
+  timeZone?: string;
+}
+
+/** `WorkingHoursConfig` with defaults applied. */
+export interface ResolvedWorkingHoursConfig {
+  start: number;
+  end: number;
+  days: number[];
+  timeZone?: string;
 }
 
 /**
@@ -2041,8 +2078,9 @@ export interface PromptCacheConfig {
 export function getReliabilityConfig(
   repoDir?: string,
   env: NodeJS.ProcessEnv = process.env,
-): Required<Omit<ReliabilityConfig, 'promptCache'>> & {
+): Required<Omit<ReliabilityConfig, 'promptCache' | 'workingHours'>> & {
   promptCache: Required<PromptCacheConfig>;
+  workingHours: ResolvedWorkingHoursConfig;
 } {
   const config = loadWavemillConfig(repoDir).reliability ?? {};
   const envLogins = env.WAVEMILL_RELIABILITY_MILL_ACTOR_LOGINS;
@@ -2058,6 +2096,12 @@ export function getReliabilityConfig(
     github: config.github ?? true,
     promptCache: {
       minHitRate: config.promptCache?.minHitRate ?? 0.5,
+    },
+    workingHours: {
+      start: config.workingHours?.start ?? 8,
+      end: config.workingHours?.end ?? 19,
+      days: config.workingHours?.days ?? [1, 2, 3, 4, 5],
+      ...(config.workingHours?.timeZone ? { timeZone: config.workingHours.timeZone } : {}),
     },
   };
 }
@@ -2896,6 +2940,32 @@ export function getIncidentConfig(repoDir?: string): Required<Pick<IncidentConfi
 
 export function getTaskSelectionConfig(repoDir?: string): TaskSelectionConfig {
   return loadWavemillConfig(repoDir).taskSelection || {};
+}
+
+/** Default core files for the task-size core-file rule (HOK-3469). */
+export const DEFAULT_TASK_SIZE_CORE_FILES = [
+  'shared/lib/wavemill-monitor.sh',
+  'shared/lib/wavemill-mill.sh',
+  'shared/lib/wavemill-common.sh',
+  'shared/lib/agent-adapters.sh',
+  'tools/tend.ts', // install-paths: allow repo-relative core-file rule entry, not an argv target
+];
+
+/** The anchor core file; touching it with enough companions is oversized. */
+export const DEFAULT_TASK_SIZE_ANCHOR = 'shared/lib/wavemill-monitor.sh';
+
+export function getTaskSizeConfig(repoDir?: string): Required<TaskSizeConfig> {
+  const config = loadWavemillConfig(repoDir).taskSize ?? {};
+  return {
+    enabled: config.enabled ?? true,
+    maxAddedLines: config.maxAddedLines ?? 800,
+    maxFiles: config.maxFiles ?? 12,
+    coreFiles: config.coreFiles && config.coreFiles.length > 0
+      ? config.coreFiles
+      : DEFAULT_TASK_SIZE_CORE_FILES,
+    anchorCoreFile: config.anchorCoreFile ?? DEFAULT_TASK_SIZE_ANCHOR,
+    maxCoreCompanions: config.maxCoreCompanions ?? 2,
+  };
 }
 
 export function getProjectContextConfig(repoDir?: string): Required<ProjectContextConfig> {

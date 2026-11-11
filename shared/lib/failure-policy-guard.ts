@@ -80,6 +80,7 @@ function findUngatedProviderClassification(source: string): StructuralMatch[] {
 
 export const FAILURE_POLICY_GUARD: GuardSpec = {
   name: 'failure-policy',
+  invariantDocs: ['docs/invariants/failure-policy.md'],
   findingNoun: 'private parking classifier(s)',
   suppressionMarker: 'allow-failure-policy',
   allowlistFile: 'tools/failure-policy-allowlist.txt',

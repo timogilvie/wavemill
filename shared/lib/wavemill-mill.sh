@@ -1075,6 +1075,78 @@ pick_candidates() {
 }
 
 
+# Build the dependency/size queue plan the startup picker and the wave launch
+# read (HOK-3469). Renders from the on-disk cache plus explicit relations
+# (--no-infer) so the prompt never blocks on the classifier. Returns empty on
+# failure so callers fall back to the plain unblocked list.
+#
+# Named for the mill scope on purpose: the monitor has its own
+# health-instrumented `build_queue_plan_once`, and the parent/monitor drift
+# guard compares same-named functions across the two scopes. This quiet variant
+# never writes queue health, so it is a separate implementation, not a copy.
+build_mill_queue_plan_once() {
+  local backlog_json="${1:-}"
+  if [[ -z "$backlog_json" || "$backlog_json" == "[]" ]]; then
+    return 0
+  fi
+  local plan_input
+  plan_input=$(jq -c '
+    map({
+      id: .identifier,
+      title: .title,
+      description: .description,
+      labels: ((.labels.nodes // []) | map(.name) | sort),
+      priority: (.priority // null),
+      blocks: (
+        (.relations.nodes // [])
+        | map(select(.type == "blocks" and .relatedIssue.identifier != null and .relatedIssue.completedAt == null and .relatedIssue.canceledAt == null) | .relatedIssue.identifier)
+        | sort
+      ),
+      dependsOn: (
+        (.inverseRelations.nodes // [])
+        | map(select(.type == "blocks" and .issue.identifier != null and .issue.completedAt == null and .issue.canceledAt == null) | .issue.identifier)
+        | sort
+      )
+    })
+  ' <<<"$backlog_json" 2>/dev/null) || return 0
+  printf '%s' "$plan_input" | _with_timeout "${QUEUE_PICKER_TIMEOUT_SECS:-5}" \
+    wavemill_run_tool "plan-queue.ts" --stdin --json --no-infer \
+    --cache-key "${PROJECT_NAME:-default}" 2>/dev/null
+}
+
+
+# Remove tasks the queue plan holds for size (HOK-3469) from a candidate list,
+# so neither a bare Enter nor the wave fallback can launch an oversized task.
+exclude_size_held_candidates() {
+  local candidates="$1" plan_json="${2:-}"
+  [[ -n "$candidates" ]] || return 0
+  local held_ids
+  held_ids="$(jq -r '(.sizeHolds // {}) | keys[]' <<<"${plan_json}" 2>/dev/null || true)"
+  if [[ -z "$held_ids" ]]; then
+    printf '%s\n' "$candidates"
+    return 0
+  fi
+  awk -F'|' 'NR==FNR { held[$1]=1; next } !($1 in held)' \
+    <(printf '%s\n' "$held_ids") - <<<"$candidates"
+}
+
+
+# Re-fetch the backlog after an operator action (split/override) so the next
+# render reflects the new sub-issues and labels.
+refresh_startup_candidates() {
+  BACKLOG="$(linear_list_backlog 2>/dev/null)" || BACKLOG=""
+  if [[ -n "$BACKLOG" && "$BACKLOG" != "[]" ]]; then
+    BACKLOG="$(filter_parent_issues "$BACKLOG")"
+  fi
+  CANDIDATES="$(pick_candidates "$BACKLOG")"
+  UNBLOCKED=$(echo "$CANDIDATES" | awk -F'|' '$6 == 0 || $6 == ""')
+  BLOCKED=$(echo "$CANDIDATES" | awk -F'|' '$6 > 0')
+  BLOCKED_COUNT=0
+  [[ -n "$BLOCKED" ]] && BLOCKED_COUNT=$(echo "$BLOCKED" | grep -c .)
+  STARTUP_QUEUE_PLAN=""
+}
+
+
 # Smart selection that avoids area conflicts
 smart_select_from_candidates() {
   local candidates="$1"
@@ -1559,7 +1631,11 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
   BLOCKED_COUNT=0
   [[ -n "$BLOCKED" ]] && BLOCKED_COUNT=$(echo "$BLOCKED" | grep -c .)
   SHOW_BLOCKED_TASKS=false
+  STARTUP_QUEUE_PLAN=""
   while true; do
+    if [[ -z "$STARTUP_QUEUE_PLAN" ]]; then
+      STARTUP_QUEUE_PLAN="$(build_mill_queue_plan_once "$BACKLOG" 2>/dev/null)" || STARTUP_QUEUE_PLAN=""
+    fi
     DRIFT_SUBSYSTEMS=""
     if DRIFT_SUBSYSTEMS="$(check_subsystem_drift)"; then
       :
@@ -1567,6 +1643,9 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
 
     if [[ "$SHOW_BLOCKED_TASKS" == "true" ]]; then
       CANDIDATES=$(printf '%s\n%s' "$UNBLOCKED" "$BLOCKED" | grep .)
+      # Size-held tasks stay out of the flat all-tasks list too; the shared
+      # picker is the place they are offered for splitting/override (HOK-3469).
+      CANDIDATES="$(exclude_size_held_candidates "$CANDIDATES" "$STARTUP_QUEUE_PLAN")"
     else
       CANDIDATES="$UNBLOCKED"
     fi
@@ -1603,10 +1682,7 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
       GROUPED_DISPLAY=""
       GROUPED_SELECT_FROM=""
       if declare -F render_launch_set_picker >/dev/null 2>&1 && [[ -n "$UNBLOCKED" ]]; then
-        startup_queue_plan=""
-        if [[ -n "$BACKLOG" && "$BACKLOG" != "[]" ]]; then
-          startup_queue_plan="$(printf '%s' "$BACKLOG" | _with_timeout 10 wavemill_run_tool "plan-queue.ts" --backlog-json=- --json 2>/dev/null || true)"
-        fi
+        startup_queue_plan="$STARTUP_QUEUE_PLAN"
         if [[ -n "$startup_queue_plan" ]] && jq -e . >/dev/null 2>&1 <<<"$startup_queue_plan"; then
           render_launch_set_picker "$startup_queue_plan" "$UNBLOCKED" "${STARTUP_SLOT_LIMIT:-$MAX_PARALLEL}" "[]" 999 false false "" true 2>/dev/null || true
           if [[ -n "$GROUPED_DISPLAY" ]]; then
@@ -1614,12 +1690,22 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
             # already prints its own "Available tasks" status line above).
             printf '%s\n' "$GROUPED_DISPLAY" | sed -e '1{/^Next tasks:$/d;}' -e '1{/^Next tasks (slots full):$/d;}'
             startup_picker_rendered=true
+            # The picker numbers every selectable row; split-first rows are
+            # un-numbered and never appear in GROUPED_SELECT_FROM, so mapping
+            # selection to this list keeps held tasks unlaunchable by number.
+            CANDIDATES="$GROUPED_SELECT_FROM"
+            if [[ "$GROUPED_DISPLAY" == *"Held: split first"* ]]; then
+              echo "  Split first: type 'split <ID>' to create sub-issues, or 'override <ID> [reason]' to launch anyway."
+            fi
           fi
         fi
       fi
       if [[ "$startup_picker_rendered" != "true" ]]; then
-        if [[ -n "$UNBLOCKED" ]]; then
-          echo "$UNBLOCKED" | head -9 | awk -F'|' '{printf "  %s. %s - %s (score: %.0f)\n", NR, $1, $3, $5}'
+        # Without the shared renderer the flat list is all we have, so drop
+        # size-held tasks from it explicitly (HOK-3469).
+        CANDIDATES="$(exclude_size_held_candidates "$UNBLOCKED" "$STARTUP_QUEUE_PLAN")"
+        if [[ -n "$CANDIDATES" ]]; then
+          echo "$CANDIDATES" | head -9 | awk -F'|' '{printf "  %s. %s - %s (score: %.0f)\n", NR, $1, $3, $5}'
         else
           echo "  (no unblocked tasks)"
         fi
@@ -1703,6 +1789,37 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
       continue
     fi
 
+    # HOK-3469: `split <ID>` accepts the task's proposed slices as sub-issues;
+    # `override <ID> [reason]` records a one-task override so it may launch.
+    if [[ "$SELECTED" =~ ^[sS]plit[[:space:]]+([A-Za-z0-9_-]+)[[:space:]]*$ ]]; then
+      split_request="${BASH_REMATCH[1]}"
+      echo ""
+      log "info" "Splitting $split_request..."
+      if _with_timeout 120 wavemill_run_tool "task-size.ts" accept "$split_request"; then
+        log "info" "Split accepted. Re-fetching backlog..."
+      else
+        log_error "Failed to split $split_request"
+      fi
+      refresh_startup_candidates
+      echo ""
+      continue
+    fi
+
+    if [[ "$SELECTED" =~ ^[oO]verride[[:space:]]+([A-Za-z0-9_-]+)([[:space:]]+([^[:space:]].*))?[[:space:]]*$ ]]; then
+      override_request="${BASH_REMATCH[1]}"
+      override_reason="${BASH_REMATCH[3]:-operator override at startup picker}"
+      echo ""
+      log "info" "Overriding the size hold on $override_request..."
+      if _with_timeout 120 wavemill_run_tool "task-size.ts" override "$override_request" --reason "$override_reason"; then
+        log "info" "Override recorded. Re-fetching backlog..."
+      else
+        log_error "Failed to override $override_request"
+      fi
+      refresh_startup_candidates
+      echo ""
+      continue
+    fi
+
     if [[ "$SELECTED" =~ ^[qQ](uit)?$ ]]; then
       log "status" "Cancelled by user."
       exit 0
@@ -1724,7 +1841,7 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
     if [[ -z "$SELECTED" ]]; then
       if [[ "${ENTER_ACTION:-none}" == "wave" ]]; then
         WAVE_LAUNCH_USED=true
-        startup_queue_plan=$(build_queue_plan_once "$BACKLOG" 2>/dev/null) || startup_queue_plan=""
+        startup_queue_plan="$STARTUP_QUEUE_PLAN"
         LAUNCH_QUEUE_PLAN="$startup_queue_plan"
         if [[ -n "$startup_queue_plan" ]]; then
           wave_result=$(invoke_first_wave_helper "$startup_queue_plan" "$UNBLOCKED" "$STARTUP_SLOT_LIMIT" 2>/dev/null) || wave_result=""
@@ -1737,14 +1854,25 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
             [[ -n "$wline" ]] && WAVE_LAUNCH_LINES+="${wline}"$'\n'
           done <<<"$wave_ids"
           if [[ -z "$wave_ids" ]]; then
-            log "status" "No tasks currently available, waiting on dependencies."
+            if [[ -n "$UNBLOCKED" ]]; then
+              # A cold queue has no touch-set analysis yet, so the wave holds
+              # every candidate as touch_set_unknown. Launching nothing would
+              # stall a fresh mill, so fall back to the ranked flat list
+              # (size-held tasks still excluded) as startup did before the
+              # shared picker rendered here.
+              WAVE_LAUNCH_USED=false
+              CANDIDATES="$(exclude_size_held_candidates "$UNBLOCKED" "$STARTUP_QUEUE_PLAN")"
+              log "info" "[wave-launch] no runnable wave yet; using the ranked list."
+            else
+              log "status" "No tasks currently available, waiting on dependencies."
+            fi
           fi
         else
           WAVE_LAUNCH_USED=false
-          [[ -n "$UNBLOCKED" ]] && CANDIDATES="$UNBLOCKED"
+          [[ -n "$UNBLOCKED" ]] && CANDIDATES="$(exclude_size_held_candidates "$UNBLOCKED" "$STARTUP_QUEUE_PLAN")"
         fi
       elif [[ -n "$UNBLOCKED" ]]; then
-        CANDIDATES="$UNBLOCKED"
+        CANDIDATES="$(exclude_size_held_candidates "$UNBLOCKED" "$STARTUP_QUEUE_PLAN")"
       fi
     fi
 
@@ -2493,7 +2621,7 @@ LAUNCH_QUEUE_PLAN=""
 if [[ -n "${QUEUE_PLAN_CACHE:-}" ]]; then
   LAUNCH_QUEUE_PLAN="$QUEUE_PLAN_CACHE"
 elif [[ -n "${BACKLOG_JSON_CACHE:-}" ]]; then
-  LAUNCH_QUEUE_PLAN="$(build_queue_plan_once "$BACKLOG_JSON_CACHE" 2>/dev/null)" || LAUNCH_QUEUE_PLAN=""
+  LAUNCH_QUEUE_PLAN="$(build_mill_queue_plan_once "$BACKLOG_JSON_CACHE" 2>/dev/null)" || LAUNCH_QUEUE_PLAN=""
 fi
 write_launch_plan "$LAUNCH_PLAN_FILE" "$LAUNCH_QUEUE_PLAN"
 if ! jq empty "$LAUNCH_PLAN_FILE" >/dev/null 2>&1; then

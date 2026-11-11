@@ -32,6 +32,7 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export const COST_OWNERSHIP_GUARD: GuardSpec = {
   name: 'cost-ownership',
+  invariantDocs: ['docs/invariants/session-ownership-cost.md'],
   findingNoun: 'cost-ownership violation(s)',
   suppressionMarker: 'allow-cost-ownership',
   allowlistFile: 'tools/cost-ownership-allowlist.txt',

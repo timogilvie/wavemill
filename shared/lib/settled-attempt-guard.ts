@@ -33,6 +33,7 @@ const SH_TASK_PATH_VARS = '(?:wt_dir|WT_DIR|worktree|worktree_dir|wt|wt_path|tas
 
 export const SETTLED_ATTEMPT_GUARD: GuardSpec = {
   name: 'settled-attempt',
+  invariantDocs: ['docs/invariants/settled-attempt.md'],
   findingNoun: 'settled-attempt bypass(es)',
   suppressionMarker: 'allow-settled-attempt',
   allowlistFile: 'tools/settled-attempt-allowlist.txt',

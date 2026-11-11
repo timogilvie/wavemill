@@ -27,6 +27,7 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export const MERGE_BLOCK_WRITERS_GUARD: GuardSpec = {
   name: 'merge-block-writers',
+  invariantDocs: ['docs/invariants/merge-labels.md'],
   findingNoun: 'merge-block decision site(s) outside deriveMergeLabel',
   suppressionMarker: 'allow-merge-block-writer',
   allowlistFile: 'tools/merge-block-writers-allowlist.txt',

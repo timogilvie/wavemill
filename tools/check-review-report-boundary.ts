@@ -6,6 +6,7 @@ import { runGuardCli, type GuardSpec } from './lib/source-guard.ts';
 
 export const REVIEW_REPORT_BOUNDARY_GUARD: GuardSpec = {
   name: 'review-report-boundary',
+  invariantDocs: ['docs/invariants/review-result.md'],
   findingNoun: 'review-report boundary violation(s)',
   suppressionMarker: 'allow-review-report-boundary',
   allowlistFile: 'tools/review-report-boundary-allowlist.txt',

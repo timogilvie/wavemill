@@ -31,7 +31,7 @@ read time on the decision key.
 | `schema_version` | yes | The model-specific row schema |
 | decision key | yes | Natural key for the decision. Rework Risk: `(repo, merge_sha)`. Model Match: the route `correlationId`. |
 | `decision_point` | yes (may be implied by schema) | `merge`, `route`, `tool_call`, … |
-| `as_of` | yes | Information cutoff. Every payload feature must be computable from state at or before it. Rework Risk: the merge commit time (`merged_at`), with features computed from `merge_sha` and history up to it. |
+| `as_of` | yes | Information cutoff. Every payload feature must be computable from state at or before it. Rework Risk: `merged_at`, or the landing commit time when GitHub records no merge, with features computed from `base_sha`, `merge_sha` and history landed up to it. |
 | `recorded_at` | yes | When the row was written. It may be later than `as_of` (e.g. shadow scoring runs every 6h), but that must never change the features. |
 | policy identity | yes | Which model or scorer produced the output (`scorer_id` + `scorer_version`). |
 | output | yes | The score, plus threshold and flag where applicable. |
@@ -57,6 +57,9 @@ reference implementation:
 1. Decision records and outcome labels are separate append-only streams.
 2. `as_of` is declared per feature source and audited (HOK-3023). Any feature
    that could be computed after `as_of` is rejected, not warned about (HOK-2818).
+   For Rework Risk, the frozen manifest `rr-merge-features/1.0.0` and its
+   validator live in hokusai-sdk (`docs/arbiter/merge-time-feature-manifest.md`);
+   dataset assembly and experiment evaluation both call that validator.
 3. No raw content in either row type (diffs, messages, prompts, emails). This
    matches the existing SDK validators.
 4. Features that only exist for instrumented agent PRs (the candidate-feature
@@ -70,9 +73,9 @@ reference implementation:
 | Contract field | Rework Risk (today) | Model Match (today) |
 |---|---|---|
 | decision key | `(repo, merge_sha)` in `arbiter_shadow_score/v1` | `correlationId` (`OutcomeReport` only) |
-| `as_of` | `merged_at` | **missing** |
+| `as_of` | `merged_at`; backtest rows record `as_of_basis` (`github_merged_at` or the landing commit) | **missing** |
 | policy identity | `scorer_id`, `scorer_version` | **missing** |
-| payload | `features` = `candidate_features/v1` | flat `TechnicalTaskRouterRequest.inputs`, which **mixes in outcome fields** |
+| payload | Shadow scores: `features` = `candidate_features/v1`. Backtest arms: `rr-merge-features/1.0.0` rows, `feature.*` columns only; `segment.*` columns are reported separately (HOK-3023) | flat `TechnicalTaskRouterRequest.inputs`, which **mixes in outcome fields** |
 | options / recommended / taken / propensity | n/a (predictor) | options in `technical_task_router_row/v2`; recommended vs. taken in `OutcomeReport`; **no propensity** |
 | outcome label | S2 survival label v1.0.0 (+ `corrective_rework`, HOK-3020) | `completionStatus` snapshot, **no horizon or labeller version** |
 | link to the change | `prUrl`; wavemill PRs carry `executed_route` in `wavemill-meta` (HOK-2945) | `wavemill-meta` `route_schema: 2` carries `route_decision` (HOK-3098): `decision_id` (task `trace_id` when unused, else a UUID with `trace_id` alongside), `source` (`hokusai` \| `local` \| `fallback` + typed `fallback_reason`), `policy_version`, `recommended` planner/coder/reviewer before escalation or override, `decided_at`, and `supersedes` on a re-route. `executed_route` still records what ran. Minted at routing time in `features/<slug>/routing.jsonl`; read by the Arbiter scanner as `PrAttribution.routeDecision`. **No propensity yet.** |

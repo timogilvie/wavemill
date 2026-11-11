@@ -28,6 +28,7 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export const ATTENTION_GUARD: GuardSpec = {
   name: 'attention',
+  invariantDocs: ['docs/invariants/attention.md'],
   findingNoun: 'attention decision(s) outside the one projection',
   suppressionMarker: 'allow-attention',
   allowlistFile: 'tools/attention-allowlist.txt',

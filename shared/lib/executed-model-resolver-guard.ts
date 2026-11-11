@@ -21,6 +21,7 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export const EXECUTED_MODEL_RESOLVER_GUARD: GuardSpec = {
   name: 'executed-model-resolver',
+  invariantDocs: ['docs/invariants/executed-model-resolver.md'],
   findingNoun: 'executed-model resolver violation(s)',
   suppressionMarker: 'allow-executed-model-resolver',
   allowlistFile: 'tools/executed-model-resolver-allowlist.txt',

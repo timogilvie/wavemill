@@ -347,6 +347,37 @@
                         }
                     },
                     "additionalProperties": false
+                },
+                "workingHours": {
+                    "type": "object",
+                    "description": "Working hours used to split off-hours stall time (HOK-3468). An interval's off-hours part is the time outside these hours; the 'waited for a person' figure is the off-hours time of stalls that ended with an operator action. Defaults: Mon–Fri, 08:00–19:00 in the system timezone.",
+                    "properties": {
+                        "start": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 23,
+                            "default": 8,
+                            "description": "First working hour of the day (local to `timeZone`)."
+                        },
+                        "end": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 24,
+                            "default": 19,
+                            "description": "Exclusive end hour of the working day. `end` must be greater than `start`."
+                        },
+                        "days": {
+                            "type": "array",
+                            "items": { "type": "integer", "minimum": 1, "maximum": 7 },
+                            "default": [1, 2, 3, 4, 5],
+                            "description": "ISO-8601 weekdays that count as working days (1 = Monday … 7 = Sunday)."
+                        },
+                        "timeZone": {
+                            "type": "string",
+                            "description": "IANA timezone name (e.g. Europe/London). Default: the system timezone."
+                        }
+                    },
+                    "additionalProperties": false
                 }
             },
             "additionalProperties": false
@@ -790,6 +821,57 @@
                 "enterLaunchesWave": {
                     "type": "boolean",
                     "description": "Deprecated: use enterAction. Used only when enterAction is unset: true maps to 'wave', false to 'top-scored'. When neither key is set, Enter launches nothing."
+                }
+            },
+            "additionalProperties": false
+        },
+        "taskSize": {
+            "type": "object",
+            "description": "Holds an expanded task whose recorded size estimate exceeds these limits, so the operator splits it before it launches (HOK-3469).",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Hold oversized tasks at the picker. Set false to launch them exactly as before."
+                },
+                "maxAddedLines": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 800,
+                    "description": "An estimate over this many added lines is oversized."
+                },
+                "maxFiles": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 12,
+                    "description": "An estimate touching more than this many files is oversized."
+                },
+                "coreFiles": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "default": [
+                        "shared/lib/wavemill-monitor.sh",
+                        "shared/lib/wavemill-mill.sh",
+                        "shared/lib/wavemill-common.sh",
+                        "shared/lib/agent-adapters.sh",
+                        "tools/tend.ts"
+                    ],
+                    "description": "Repository paths treated as core files for the core-file size rule."
+                },
+                "anchorCoreFile": {
+                    "type": "string",
+                    "minLength": 1,
+                    "default": "shared/lib/wavemill-monitor.sh",
+                    "description": "The core file that makes a task oversized when it is touched alongside more than maxCoreCompanions other core files."
+                },
+                "maxCoreCompanions": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 2,
+                    "description": "Touching the anchor core file together with at least this many other core files is oversized (the default of 2 means the monitor plus two other core files trips the limit, while the monitor plus one does not)."
                 }
             },
             "additionalProperties": false
