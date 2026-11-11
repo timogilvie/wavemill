@@ -1,22 +1,22 @@
 /**
- * Shared LLM CLI integration
+ * `callLLM` policy layer (HOK-3460).
  *
- * Provides a unified interface for calling LLM CLIs (Claude, Codex, etc.) with:
- * - Multi-provider support (Claude CLI, Codex CLI, OpenAI API)
- * - Both sync (execSync) and stream (spawn) modes
- * - Temp file management for large prompts
- * - Configurable timeout, buffer limits, model
- * - JSON envelope unwrapping (data.result, usage extraction)
- * - Optional retry with exponential backoff
- * - Task-specific cross-model fallback for hard quota errors
- * - Tool-call/XML tag stripping
- * - Provider-specific env injection
+ * Owns the candidate ladder, credential-free quota state, retry and backoff,
+ * fallback events, the observer bridge, tool-call stripping and the
+ * `LLMCallResult` shape. The model transports themselves — spawn, argv, env,
+ * ownership, stdout/JSONL parse, error classification and vendor
+ * compatibility — live in `model-adapters/`; every attempt calls that
+ * transport's adapter (see `adapterForProvider`).
+ *
+ * - Both sync (execSync) and stream (spawn) modes are adapter runner modes.
+ * - Optional retry with exponential backoff.
+ * - Task-specific cross-model fallback for hard quota errors.
+ * - Provider availability/health probes.
  *
  * @module llm-cli
  */
 
-import { spawn, type SpawnOptions } from 'node:child_process';
-import { writeFileSync, unlinkSync, existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -26,34 +26,38 @@ import { resolveEvalsDir } from './evals-paths.ts';
 import { loadTraceContext, appendTraceEvent } from './trace-event.ts';
 import { SCHEMA_VERSION, getScoreBand, type DifficultyBand, type EvalRecord, type FallbackEventMetadata, type FallbackOutcome } from './eval-schema.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
-import { getEffectiveRegistry, getLadder, getModel, rankCandidates, type RegistryTaskType } from './model-registry.ts';
+import { getEffectiveRegistry, getLadder, rankCandidates, type RegistryTaskType } from './model-registry.ts';
 import { getModelStatus, markExhausted, readQuotaSnapshot, recordSuccess } from './quota-state.ts';
 import { filterDisabledModels } from './disabled-models.ts';
 import { fallbackLog } from './router-log.ts';
 import { buildTaskDescriptor } from './task-descriptor-builder.ts';
-import { resolveEnvValue } from './env-file.ts';
-import { DEEPSEEK_BASE_URL } from './deepseek-provider.ts';
+import { adapterForProvider } from './model-adapters/resolve-adapter.ts';
 import {
-  appendSessionRefResolution,
-  helperKind,
-  newSessionRef,
-  pendingSessionRef,
-  recordLaunch,
-} from './session-ownership.ts';
+  classifyCliMessage,
+  retryPolicyFor,
+  type RetryPolicy,
+} from './model-adapters/cli-error-classifier.ts';
 import {
-  claudeCliErrorFromStdout,
-  parseClaudeCliOutput,
-  reportedModelFromEnvelope,
-} from './model-adapters/claude-cli-output.ts';
+  claudeCliCommand,
+  claudeCliEnv,
+  claudeCliAvailabilityCommand,
+} from './model-adapters/claude-cli-adapter.ts';
+import {
+  codexCliCommand,
+  codexCliEnv,
+  codexCliAvailabilityCommand,
+} from './model-adapters/codex-cli-adapter.ts';
+import type { AdapterError } from './model-adapters/transport-adapter.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
 // ────────────────────────────────────────────────────────────────
 
 /**
- * Supported LLM providers
+ * Supported LLM CLI providers. Each maps to one transport in
+ * `model-adapters/` (HOK-3460).
  */
-export type LLMProvider = 'claude' | 'codex' | 'openai';
+export type LLMProvider = 'claude' | 'codex';
 
 export interface LLMCallOptions {
   /** LLM provider to use (default: 'claude') */
@@ -217,24 +221,27 @@ export class LLMQuotaError extends Error {
   }
 }
 
-type LLMErrorKind = 'quota' | 'auth' | 'timeout' | 'transient' | 'other';
+/** A thrown call error that carries the adapter's typed classification. */
+interface AdapterBackedError extends ObservedError {
+  adapterError?: AdapterError;
+}
 
-interface ClassifiedLLMError {
-  kind: LLMErrorKind;
-  reason: string;
-  resetAt: string | null;
-  retryable: boolean;
+/**
+ * The retry/fallback policy for a thrown call error. Adapter-produced errors
+ * carry their `AdapterError`; anything else (deadline, retry exhaustion) is
+ * classified by the shared message classifier, never a private copy.
+ */
+function retryPolicyForThrown(error: unknown): RetryPolicy {
+  const adapterError = (error as AdapterBackedError)?.adapterError;
+  if (adapterError) return retryPolicyFor(adapterError);
+  return retryPolicyFor(classifyCliMessage(error instanceof Error ? error.message : String(error)));
 }
 
 // ────────────────────────────────────────────────────────────────
 // Constants
 // ────────────────────────────────────────────────────────────────
 
-const DEFAULT_TIMEOUT = 120_000; // 2 minutes
-const DEFAULT_MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 const DEFAULT_MAX_RETRIES = 2;
-const SLOW_CALL_WARNING_MS = 30_000;
-const SLOW_CALL_REPEAT_MS = 15_000;
 const FALLBACK_DEFAULT_TASK_TYPE: RegistryTaskType = 'classify';
 const FALLBACK_EVENT_SCHEMA_VERSION = '1.0';
 const FALLBACK_MIN_ATTEMPT_TIMEOUT_MS = 500;
@@ -250,52 +257,6 @@ function getElapsed(error: unknown): number {
   return typeof (error as ObservedError)?.elapsedMs === 'number'
     ? (error as ObservedError).elapsedMs!
     : 0;
-}
-
-function extractResetAt(message: string): string | null {
-  const retryAfterMatch = message.match(/retry-after[:=]\s*(\d+)/i);
-  if (retryAfterMatch) {
-    const seconds = Number.parseInt(retryAfterMatch[1], 10);
-    if (Number.isFinite(seconds)) {
-      return new Date(Date.now() + seconds * 1000).toISOString();
-    }
-  }
-
-  const resetAtMatch = message.match(/(?:reset[_ -]?at|retry[_ -]?at)[:=]\s*([0-9TZ:.\-+]+)/i);
-  if (resetAtMatch) {
-    const parsed = Date.parse(resetAtMatch[1]);
-    if (!Number.isNaN(parsed)) {
-      return new Date(parsed).toISOString();
-    }
-  }
-
-  return null;
-}
-
-function classifyLLMError(error: unknown): ClassifiedLLMError {
-  const message = error instanceof Error ? error.message : String(error);
-  const lowered = message.toLowerCase();
-  const resetAt = extractResetAt(message);
-
-  if (
-    /\b(429|rate[_ -]?limit(?:[_ -]?(?:exceeded|error))?|quota|resource_exhausted|insufficient_quota|too many requests)\b/i.test(message)
-  ) {
-    return { kind: 'quota', reason: 'quota', resetAt, retryable: true };
-  }
-
-  if (/\b(401|403|authentication(?:_error)?|unauthorized|forbidden|invalid[_ ]api[_ ]key|permission denied)\b/i.test(lowered)) {
-    return { kind: 'auth', reason: 'auth', resetAt, retryable: false };
-  }
-
-  if (/\b(etimedout|timed out|timeout|inactivity)\b/i.test(lowered)) {
-    return { kind: 'timeout', reason: 'timeout', resetAt, retryable: true };
-  }
-
-  if (/\b(econnreset|econnrefused|enotfound|socket hang up|temporar(?:y|ily)|overloaded|unavailable|server_error|5\d\d)\b/i.test(lowered)) {
-    return { kind: 'transient', reason: 'transient', resetAt, retryable: true };
-  }
-
-  return { kind: 'other', reason: 'other', resetAt, retryable: true };
 }
 
 function repoDirForOptions(options: LLMCallOptions): string {
@@ -327,55 +288,6 @@ function uniqueModels(models: string[]): string[] {
 
 function hasFallbackDeadline(options: LLMCallOptions): boolean {
   return typeof options.fallbackDeadlineMs === 'number' && Number.isFinite(options.fallbackDeadlineMs);
-}
-
-function shouldEnforceClassifierProviderCredentials(options: LLMCallOptions): boolean {
-  return options.taskType === 'classify' && hasFallbackDeadline(options);
-}
-
-/**
- * Credential env var a fallback candidate needs before it is worth attempting
- * under a classifier budget.
- *
- * The `claude` provider spawns the Claude CLI, which owns its own auth (the
- * operator's subscription login or whatever key the CLI itself is configured
- * with). Requiring `ANTHROPIC_API_KEY` here skipped every Anthropic candidate
- * in the mill, where no such key exists (HOK-3130), so the claude transport
- * never gates on a credential. Transport/vendor mismatches are owned by the
- * per-transport adapters (HOK-3248).
- */
-function credentialEnvForCandidate(provider: LLMProvider): string | null {
-  if (provider === 'openai') {
-    return 'OPENAI_API_KEY';
-  }
-
-  return null;
-}
-
-function filterCandidatesWithCredentials(
-  candidates: string[],
-  provider: LLMProvider,
-  options: LLMCallOptions,
-  taskType: RegistryTaskType,
-): string[] {
-  if (!shouldEnforceClassifierProviderCredentials(options)) {
-    return candidates;
-  }
-
-  const repoDir = repoDirForOptions(options);
-  const eligible: string[] = [];
-
-  for (const candidate of candidates) {
-    const envVar = credentialEnvForCandidate(provider);
-    if (!envVar || resolveEnvValue([envVar], repoDir)) {
-      eligible.push(candidate);
-      continue;
-    }
-
-    console.warn(`[${fallbackLogLabel(taskType)}] ${candidate} skipped (missing ${envVar})`);
-  }
-
-  return eligible;
 }
 
 function fallbackLogLabel(taskType: RegistryTaskType): string {
@@ -547,10 +459,11 @@ function resolveCandidateModels(
 ): { taskType: RegistryTaskType; candidates: string[]; skipped: SkippedCandidate[] } {
   const repoDir = repoDirForOptions(options);
   const registry = getEffectiveRegistry(repoDir);
-  const servableVendor = provider === 'claude' ? claudeCliServableVendor() : null;
   const skipped: SkippedCandidate[] = [];
   const isServable = (modelId: string): boolean => {
-    const reason = transportIncompatibilityReason(provider, registry, modelId, servableVendor);
+    // The transport adapter owns vendor compatibility (HOK-3460).
+    const reason = adapterForProvider(provider, { model: modelId, repoDir, failClosed: false })
+      .incompatibilityReason(modelId);
     if (reason) {
       skipped.push({ model: modelId, reason });
       return false;
@@ -585,66 +498,6 @@ function resolveCandidateModels(
     candidates: available.length > 0 ? available : deduped,
     skipped,
   };
-}
-
-/** Transport label used in skip reasons (`transport claude-cli cannot serve vendor deepseek`). */
-function transportLabel(provider: LLMProvider): string {
-  return provider === 'claude' ? 'claude-cli' : `${provider}-cli`;
-}
-
-function normalizeBaseUrl(value: string | undefined): string {
-  return (value ?? '').trim().replace(/\/+$/, '');
-}
-
-/**
- * Which registry vendor the Claude CLI transport can actually serve from the
- * current environment.
- *
- * `llm-cli` spawns `claude -p` with the inherited env and injects no endpoint
- * of its own. By default that reaches Anthropic, so only `vendor: anthropic`
- * models answer; a DeepSeek id such as `deepseek-v4-flash` is rejected as an
- * unrecognized model and hangs until the attempt timeout (HOK-3130). Only
- * when the process already runs inside a claude-deepseek agent env
- * (`ANTHROPIC_BASE_URL` pointing at the DeepSeek Anthropic-compatible
- * endpoint) is the relationship inverted.
- */
-export function claudeCliServableVendor(env: NodeJS.ProcessEnv = process.env): 'anthropic' | 'deepseek' {
-  const baseUrl = normalizeBaseUrl(env.ANTHROPIC_BASE_URL);
-  return baseUrl !== '' && baseUrl === normalizeBaseUrl(DEEPSEEK_BASE_URL) ? 'deepseek' : 'anthropic';
-}
-
-/**
- * Explain why `provider`'s transport cannot serve `modelId`, or return `null`
- * when it can. Unknown ids and `vendor: custom` models are always permitted
- * (the operator opted into them explicitly). Internal to `llm-cli.ts`: the
- * per-transport adapter is the public home for transport-compatibility
- * decisions (HOK-3248).
- */
-function transportIncompatibilityReason(
-  provider: LLMProvider,
-  registry: ReturnType<typeof getEffectiveRegistry>,
-  modelId: string,
-  servableVendor: 'anthropic' | 'deepseek' | null,
-): string | null {
-  const model = getModel(registry, modelId);
-  if (!model || model.vendor === 'custom') {
-    return null;
-  }
-
-  if (provider === 'claude') {
-    const vendor = servableVendor ?? 'anthropic';
-    return model.vendor === vendor
-      ? null
-      : `transport ${transportLabel(provider)} cannot serve vendor ${model.vendor}`;
-  }
-
-  if (provider === 'codex' || provider === 'openai') {
-    return model.vendor === 'openai'
-      ? null
-      : `transport ${transportLabel(provider)} cannot serve vendor ${model.vendor}`;
-  }
-
-  return null;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -695,600 +548,9 @@ function stripToolCalls(text: string): string {
 // Re-exported for existing tests; the implementation lives in the single
 // claude-cli-output boundary (HOK-3448).
 export { reportedModelFromEnvelope } from './model-adapters/claude-cli-output.ts';
-
-/**
- * Unwrap Codex `codex exec --json` output.
- *
- * Codex emits a JSONL event stream (one JSON object per line), unlike Claude's
- * single JSON envelope. The shape (codex-cli 0.139.0):
- *   {"type":"thread.started","thread_id":"..."}
- *   {"type":"turn.started"}
- *   {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
- *   {"type":"turn.completed","usage":{"input_tokens":N,"cached_input_tokens":N,
- *                                     "output_tokens":N,"reasoning_output_tokens":N}}
- *
- * Extracts:
- * - text: concatenation of all `agent_message` item texts in order (final answer)
- * - usage: from the last `turn.completed` event (codex does not report cost)
- *
- * Falls back to the raw text if no agent_message events are present.
- */
-/** Codex thread id from the `codex exec --json` stream (`thread.started`). */
-export function codexThreadIdFromJsonl(raw: string): string | undefined {
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('{')) continue;
-    try {
-      const event = JSON.parse(trimmed);
-      if (event?.type === 'thread.started' && typeof event.thread_id === 'string' && event.thread_id) {
-        return event.thread_id;
-      }
-    } catch {
-      // Non-JSON line; keep looking.
-    }
-  }
-  return undefined;
-}
-
-/** CLI flags that already pin or resume a session; ownership never overrides them. */
-const SESSION_SELECTION_FLAGS = new Set(['--session-id', '--resume', '-r', '--continue', '-c', '--no-session-persistence']);
-
-interface HelperOwnership {
-  stateDir: string;
-  /** Minted claude `--session-id`; present for claude helper calls. */
-  sessionRef?: string;
-  pendingRef?: string;
-}
-
-/**
- * Record a helper call's session before it spawns (HOK-3328). Claude gets a
- * minted `--session-id`; Codex records `pending:<nonce>` and is resolved from
- * the `thread.started` event after the call. Calls outside a task, OpenAI
- * calls (no transcript) and calls whose flags already select or suppress a
- * session record nothing.
- */
-function recordHelperLaunch(
-  provider: LLMProvider,
-  options: LLMCallOptions,
-  cliArgs: string[],
-  cwd: string,
-): HelperOwnership | null {
-  if (!options.featureDir || provider === 'openai') return null;
-  if (cliArgs.some((arg) => SESSION_SELECTION_FLAGS.has(arg))) return null;
-  const kind = helperKind(options.helperPurpose ?? options.taskType ?? 'llm-call');
-  const base = { kind, model: options.model ?? '', cwd } as const;
-  if (provider === 'claude') {
-    const sessionRef = newSessionRef();
-    if (!recordLaunch(options.featureDir, { ...base, sessionRef, harness: 'claude-code' })) return null;
-    cliArgs.push('--session-id', sessionRef);
-    return { stateDir: options.featureDir, sessionRef };
-  }
-  const pendingRef = pendingSessionRef(newSessionRef());
-  if (!recordLaunch(options.featureDir, { ...base, sessionRef: pendingRef, harness: 'codex' })) return null;
-  return { stateDir: options.featureDir, pendingRef };
-}
-
-function resolveHelperOwnership(ownership: HelperOwnership | null, rawOutput: string): void {
-  if (!ownership?.pendingRef) return;
-  const threadId = codexThreadIdFromJsonl(rawOutput);
-  if (!threadId) return;
-  try {
-    appendSessionRefResolution(ownership.stateDir, ownership.pendingRef, threadId);
-  } catch (error) {
-    console.warn(`[session-ownership] codex thread id not recorded: ${(error as Error).message}`);
-  }
-}
-
-function unwrapCodexJsonl(raw: string): {
-  text: string;
-  usage?: LLMCallResult['usage'];
-  costUsd?: number;
-  reportedModel?: string;
-} {
-  const messages: string[] = [];
-  let usage: LLMCallResult['usage'] | undefined;
-
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      continue;
-    }
-    let event: any;
-    try {
-      event = JSON.parse(trimmed);
-    } catch {
-      // Non-JSON line (e.g. a stray log); skip it.
-      continue;
-    }
-
-    if (
-      event?.type === 'item.completed' &&
-      event.item?.type === 'agent_message' &&
-      typeof event.item.text === 'string'
-    ) {
-      messages.push(event.item.text);
-    } else if (event?.type === 'turn.completed' && event.usage) {
-      const u = event.usage;
-      // `input_tokens` already includes cached input; `cached_input_tokens` is a
-      // subset, so it is not added again. Reasoning tokens are billed as output.
-      const inputTokens = u.input_tokens || 0;
-      const outputTokens = (u.output_tokens || 0) + (u.reasoning_output_tokens || 0);
-      usage = {
-        inputTokens,
-        outputTokens,
-        totalTokens: inputTokens + outputTokens,
-      };
-    }
-  }
-
-  if (messages.length === 0) {
-    // No structured agent message found — fall back to raw output.
-    return { text: raw.trim(), usage };
-  }
-
-  return { text: messages.join('\n').trim(), usage };
-}
-
-// ────────────────────────────────────────────────────────────────
-// Provider Configuration
-// ────────────────────────────────────────────────────────────────
-
-interface ProviderConfig {
-  defaultCmd: string;
-  /** Env var to set (or unset if envVarValue is undefined) */
-  envVarName: string;
-  /** Value to set, or undefined to delete the var from the environment */
-  envVarValue: string | undefined;
-  defaultArgs: string[];
-}
-
-/**
- * Check if a classifier spawn should be isolated from the interactive agent harness.
- * Isolated spawns disable extended thinking, MCP tools, memory, and CLAUDE.md.
- */
-function shouldIsolateClassifierSpawn(provider: LLMProvider, taskType?: RegistryTaskType): boolean {
-  return provider === 'claude' && taskType === 'classify';
-}
-
-/** Build an env object from process.env with provider-specific overrides */
-function buildProviderEnv(config: ProviderConfig, options: LLMCallOptions = {}): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  if (config.envVarValue === undefined) {
-    delete env[config.envVarName];
-  } else {
-    env[config.envVarName] = config.envVarValue;
-  }
-  if (typeof options.maxOutputTokens === 'number' && Number.isFinite(options.maxOutputTokens) && options.maxOutputTokens > 0) {
-    // The Claude Code CLI reads this env knob; other providers currently
-    // ignore it (setting it is harmless there).
-    env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(Math.floor(options.maxOutputTokens));
-  }
-  // Disable extended thinking for isolated classifier spawns (HOK-3202)
-  if (shouldIsolateClassifierSpawn(options.provider || 'claude', options.taskType)) {
-    env.MAX_THINKING_TOKENS = '0';
-  }
-  return env;
-}
-
-const PROVIDER_CONFIGS: Record<LLMProvider, ProviderConfig> = {
-  claude: {
-    defaultCmd: 'claude',
-    envVarName: 'CLAUDECODE',
-    envVarValue: undefined,
-    defaultArgs: ['-p', '--output-format', 'json'],
-  },
-  codex: {
-    defaultCmd: 'codex',
-    // Unset any inherited CODEX_API_KEY-style recursion guard is unnecessary here;
-    // codex exec reads auth from its own config. We only ensure no stray output
-    // override leaks in from a parent codex process.
-    envVarName: 'CODEX_OUTPUT',
-    envVarValue: undefined,
-    // `codex exec --json` runs non-interactively and prints JSONL events to stdout.
-    // Prompt is read from stdin (we pipe it via `< tmpfile`). read-only sandbox
-    // keeps single-shot utility calls from executing model-generated commands.
-    defaultArgs: ['exec', '--json', '--sandbox', 'read-only'],
-  },
-  openai: {
-    defaultCmd: 'openai',
-    envVarName: 'OPENAI_OUTPUT',
-    envVarValue: 'json',
-    defaultArgs: ['--format', 'json'],
-  },
-};
-
-/**
- * Get provider configuration
- */
-function getProviderConfig(provider: LLMProvider): ProviderConfig {
-  return PROVIDER_CONFIGS[provider];
-}
-
-/**
- * Get CLI command for provider
- */
-function getCliCommand(provider: LLMProvider, options: LLMCallOptions): string {
-  if (options.cliCmd) {
-    return options.cliCmd;
-  }
-
-  const config = getProviderConfig(provider);
-  const envVarMap: Record<LLMProvider, string | undefined> = {
-    claude: process.env.CLAUDE_CMD,
-    codex: process.env.CODEX_CMD,
-    openai: process.env.OPENAI_CMD,
-  };
-
-  return envVarMap[provider] || config.defaultCmd;
-}
-
-// ────────────────────────────────────────────────────────────────
-// Execution Modes
-// ────────────────────────────────────────────────────────────────
-
-/**
- * Execute LLM CLI in synchronous mode using execSync.
- */
-function executeSync(
-  tmpFile: string,
-  cliArgs: string[],
-  options: LLMCallOptions,
-  provider: LLMProvider,
-  isolatedCwd?: string
-): string {
-  const timeout = options.timeout ?? DEFAULT_TIMEOUT;
-  const maxBuffer = options.maxBuffer ?? DEFAULT_MAX_BUFFER;
-  const cwd = isolatedCwd || options.cwd || process.cwd();
-
-  const cliCmd = getCliCommand(provider, options);
-  const command = `${escapeShellArg(cliCmd)} ${cliArgs.join(' ')} < ${escapeShellArg(tmpFile)}`;
-
-  const config = getProviderConfig(provider);
-  const env = buildProviderEnv(config, options);
-
-  try {
-    const raw = execShellCommand(command, {
-      encoding: 'utf-8',
-      timeout,
-      maxBuffer,
-      cwd,
-      env,
-    });
-
-    return raw;
-  } catch (error) {
-    // Enhanced error handling with specific diagnostics
-    const errorMsg = (error as Error).message;
-    const promptSize = existsSync(tmpFile) ? readFileSync(tmpFile, 'utf-8').length : 0;
-    const classified = classifyLLMError(error);
-
-    // ENOENT - command not found
-    if (errorMsg.includes('ENOENT') || errorMsg.includes('not found')) {
-      throw new Error(
-        `${provider} CLI command not found: ${cliCmd}\n\n` +
-        `Command attempted: ${command}\n` +
-        `Working directory: ${cwd}\n` +
-        `PATH: ${process.env.PATH}\n\n` +
-        `Troubleshooting:\n` +
-        `  - Install Claude CLI: npm install -g @anthropic-ai/claude-cli\n` +
-        `  - Verify installation: which ${cliCmd}\n` +
-        `  - Check PATH includes: $(npm bin -g)\n` +
-        `  - Run health check: npm run check:review\n`
-      );
-    }
-
-    // ETIMEDOUT or timeout in message - timeout error
-    if (classified.kind === 'timeout') {
-      throw new Error(
-        `${provider} CLI timed out after ${timeout}ms\n\n` +
-        `Command: ${command}\n` +
-        `Prompt size: ${promptSize} chars\n\n` +
-        `Possible causes:\n` +
-        `  - Network connectivity issues\n` +
-        `  - Prompt too large for processing\n` +
-        `  - Model overloaded or rate limited\n\n` +
-        `Troubleshooting:\n` +
-        `  - Increase timeout: REVIEW_TIMEOUT=300000 (5 min)\n` +
-        `  - Check network: curl -I https://api.anthropic.com\n` +
-        `  - Reduce diff size: review in smaller PRs\n` +
-        `  - Try again in a few minutes\n`
-      );
-    }
-
-    // 401 or authentication - auth failure
-    if (classified.kind === 'auth') {
-      throw new Error(
-        `${provider} CLI authentication failed\n\n` +
-        `Troubleshooting:\n` +
-        `  - Run: ${cliCmd} login\n` +
-        `  - Verify auth: echo "test" | ${cliCmd} -p --model claude-haiku-4-5-20251001\n` +
-        `  - Check API key: echo $ANTHROPIC_API_KEY\n` +
-        `  - Run health check: npm run check:review\n`
-      );
-    }
-
-    // Rate limit or quota exceeded
-    if (classified.kind === 'quota') {
-      throw new Error(
-        `${provider} CLI rate limit or quota exceeded\n\n` +
-        `Troubleshooting:\n` +
-        `  - Wait a few minutes and try again\n` +
-        `  - Check usage at: https://console.anthropic.com/settings/usage\n` +
-        `  - Contact support if issue persists\n`
-      );
-    }
-
-    // Buffer exceeded
-    if (errorMsg.includes('maxBuffer') || errorMsg.includes('stdout maxBuffer')) {
-      throw new Error(
-        `${provider} CLI output exceeded buffer limit (${maxBuffer} bytes)\n\n` +
-        `Possible causes:\n` +
-        `  - Diff is very large\n` +
-        `  - LLM returned excessive output\n\n` +
-        `Troubleshooting:\n` +
-        `  - Review diff in smaller PRs\n` +
-        `  - Increase buffer: REVIEW_MAX_BUFFER=${maxBuffer * 2}\n`
-      );
-    }
-
-    // Generic error with full context
-    throw new Error(
-      `${provider} CLI command failed\n\n` +
-      `Command: ${command}\n` +
-      `Working directory: ${cwd}\n` +
-      `Timeout: ${timeout}ms\n` +
-      `Max buffer: ${maxBuffer} bytes\n` +
-      `Model: ${options.model || '(default)'}\n` +
-      `Prompt size: ${promptSize} chars\n\n` +
-      `Error: ${errorMsg}\n\n` +
-      `Troubleshooting:\n` +
-      `  - Run health check: npm run check:review\n` +
-      `  - Enable verbose mode: npx tsx tools/review-changes.ts main --verbose\n` +
-      `  - Check system logs for more details\n`
-    );
-  }
-}
-
-/**
- * Execute LLM CLI in streaming mode using spawn.
- */
-async function executeStream(
-  tmpFile: string,
-  cliArgs: string[],
-  options: LLMCallOptions,
-  provider: LLMProvider,
-  attempt: number,
-  maxAttempts: number,
-  isolatedCwd?: string
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const startedAt = Date.now();
-    const timeout = options.timeout ?? DEFAULT_TIMEOUT;
-    const cwd = isolatedCwd || options.cwd || process.cwd();
-    const cliCmd = getCliCommand(provider, options);
-
-    if (options.signal?.aborted) {
-      reject(withElapsed(new Error('LLM call aborted'), 0));
-      return;
-    }
-
-    const config = getProviderConfig(provider);
-    const env = buildProviderEnv(config, options);
-
-    const spawnOptions: SpawnOptions = {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      cwd,
-      env,
-    };
-
-    const llmProcess = spawn(cliCmd, cliArgs, spawnOptions);
-
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    let lastActivityAt = startedAt; // Track last output activity for diagnostics
-
-    const cleanup = (
-      timeoutId?: NodeJS.Timeout,
-      slowInterval?: NodeJS.Timeout,
-      activityTimeoutId?: NodeJS.Timeout
-    ) => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-      if (slowInterval) {
-        clearInterval(slowInterval);
-      }
-      if (activityTimeoutId) {
-        clearTimeout(activityTimeoutId);
-      }
-      if (abortListener) {
-        options.signal?.removeEventListener('abort', abortListener);
-      }
-    };
-
-    const abortListener = () => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup(timeoutId, slowInterval, activityTimeoutId);
-      llmProcess.kill('SIGTERM');
-      reject(withElapsed(new Error('LLM call aborted'), Date.now() - startedAt));
-    };
-
-    void options.observer?.onAttemptStart?.({
-      provider,
-      model: options.model,
-      attempt,
-      maxAttempts,
-      elapsedMs: 0,
-    });
-
-    const slowInterval = setInterval(() => {
-      const elapsedMs = Date.now() - startedAt;
-      if (elapsedMs < SLOW_CALL_WARNING_MS) {
-        return;
-      }
-
-      void options.observer?.onAttemptSlow?.({
-        provider,
-        model: options.model,
-        attempt,
-        maxAttempts,
-        elapsedMs,
-      });
-    }, SLOW_CALL_REPEAT_MS);
-
-    // Hard timeout (wall-clock cap)
-    const timeoutId = setTimeout(() => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup(timeoutId, slowInterval, activityTimeoutId);
-      llmProcess.kill('SIGTERM');
-      const elapsedMs = Date.now() - startedAt;
-      const timeSinceLastActivity = Date.now() - lastActivityAt;
-      const stdoutBytes = Buffer.byteLength(stdout, 'utf-8');
-
-      reject(
-        withElapsed(new Error(
-          `${provider} CLI timed out after ${timeout}ms (hard wall-clock cap)\n\n` +
-          `Command: ${cliCmd} ${cliArgs.join(' ')}\n` +
-          `Working directory: ${cwd}\n` +
-          `Elapsed: ${elapsedMs}ms\n` +
-          `Stdout collected: ${stdoutBytes} bytes\n` +
-          `Last CLI output: ${timeSinceLastActivity}ms ago\n` +
-          `Output silence does not establish agent liveness; structured JSON may be buffered until completion.\n`
-        ), elapsedMs)
-      );
-    }, timeout);
-
-    // Activity-based timeout (resets on each output)
-    let activityTimeoutId: NodeJS.Timeout | undefined;
-    const activityTimeout = options.activityTimeout;
-
-    const resetActivityTimeout = () => {
-      if (!activityTimeout) {
-        return;
-      }
-      if (activityTimeoutId) {
-        clearTimeout(activityTimeoutId);
-      }
-      activityTimeoutId = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup(timeoutId, slowInterval, activityTimeoutId);
-        llmProcess.kill('SIGTERM');
-        const elapsedMs = Date.now() - startedAt;
-        const timeSinceLastActivity = Date.now() - lastActivityAt;
-        const stdoutBytes = Buffer.byteLength(stdout, 'utf-8');
-
-        reject(
-          withElapsed(new Error(
-            `${provider} CLI timed out due to inactivity (no output for ${activityTimeout}ms)\n\n` +
-            `Command: ${cliCmd} ${cliArgs.join(' ')}\n` +
-            `Working directory: ${cwd}\n` +
-            `Elapsed: ${elapsedMs}ms\n` +
-            `Stdout collected: ${stdoutBytes} bytes\n` +
-            `Last activity: ${timeSinceLastActivity}ms ago\n` +
-            `Hard timeout cap: ${timeout}ms\n`
-          ), elapsedMs)
-        );
-      }, activityTimeout);
-    };
-
-    // Start activity timeout if configured
-    if (activityTimeout) {
-      resetActivityTimeout();
-    }
-
-    options.signal?.addEventListener('abort', abortListener, { once: true });
-
-    llmProcess.stdout?.on('data', (data) => {
-      stdout += data.toString();
-      lastActivityAt = Date.now(); // Track activity for diagnostics
-      resetActivityTimeout(); // Reset activity timeout on output
-    });
-
-    llmProcess.stderr?.on('data', (data) => {
-      stderr += data.toString();
-      lastActivityAt = Date.now(); // Track activity for diagnostics
-      resetActivityTimeout(); // Reset activity timeout on output
-    });
-
-    llmProcess.on('close', (code) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup(timeoutId, slowInterval, activityTimeoutId);
-      const elapsedMs = Date.now() - startedAt;
-      if (code !== 0) {
-        // HOK-3248 / HOK-3448: the single claude CLI stdout interpreter
-        // extracts the real error from the envelope (object or verbose array).
-        // Fall back to raw stdout/stderr so the real text is never lost.
-        let stdoutDetail = '';
-        if (stdout) {
-          const envelopeError = claudeCliErrorFromStdout(stdout);
-          if (envelopeError) {
-            stdoutDetail = envelopeError;
-          } else {
-            stdoutDetail = stdout.slice(0, 2000);
-          }
-        }
-        const detail = [
-          stdoutDetail ? `stdout=${stdoutDetail}` : '',
-          stderr ? `stderr=${stderr}` : '',
-        ]
-          .filter(Boolean)
-          .join('; ');
-        reject(
-          withElapsed(
-            new Error(`${provider} CLI exited with code ${code}${detail ? `: ${detail}` : ''}`),
-            elapsedMs,
-          ),
-        );
-      } else {
-        void options.observer?.onAttemptComplete?.({
-          provider,
-          model: options.model,
-          attempt,
-          maxAttempts,
-          elapsedMs,
-        });
-        resolve(stdout);
-      }
-    });
-
-    llmProcess.on('error', (error) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup(timeoutId, slowInterval, activityTimeoutId);
-      const elapsedMs = Date.now() - startedAt;
-      reject(withElapsed(new Error(`Failed to spawn ${provider} CLI: ${error.message}`), elapsedMs));
-    });
-
-    // Read prompt from temp file and send to stdin
-    try {
-      const prompt = readFileSync(tmpFile, 'utf-8');
-      llmProcess.stdin?.write(prompt);
-      llmProcess.stdin?.end();
-    } catch (error) {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup(timeoutId, slowInterval, activityTimeoutId);
-      reject(withElapsed(new Error(`Failed to read temp file: ${(error as Error).message}`), Date.now() - startedAt));
-    }
-  });
-}
+// The codex JSONL event-stream reader lives in the codex adapter (HOK-3460).
+export { codexThreadIdFromJsonl } from './model-adapters/codex-cli-adapter.ts';
+export { claudeCliServableVendor } from './model-adapters/claude-cli-adapter.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Health Check
@@ -1320,25 +582,30 @@ async function executeStream(
 interface CliAvailabilitySpec {
   /** Human-facing label, e.g. "Claude" or "Codex" */
   label: string;
+  /** Resolve the CLI executable (`<PROVIDER>_CMD` → binary name). */
+  command: () => string;
+  /** Environment for the probe call, owned by the transport adapter. */
+  env: () => NodeJS.ProcessEnv;
   /** Build the headless test-call command (a single trivial round-trip). */
   buildTestCommand: (cliCmd: string, tmpFile: string) => string;
 }
 
+/**
+ * Per-transport probe knobs. The test command and env both come from the
+ * transport's adapter (HOK-3460), so a probe cannot drift from a real call.
+ */
 const CLI_AVAILABILITY_SPECS: Record<LLMProvider, CliAvailabilitySpec> = {
   claude: {
     label: 'Claude',
-    buildTestCommand: (cliCmd, tmpFile) =>
-      `${escapeShellArg(cliCmd)} -p --output-format json --model claude-haiku-4-5-20251001 < ${escapeShellArg(tmpFile)}`,
+    command: claudeCliCommand,
+    env: () => claudeCliEnv(),
+    buildTestCommand: claudeCliAvailabilityCommand,
   },
   codex: {
     label: 'Codex',
-    buildTestCommand: (cliCmd, tmpFile) =>
-      `${escapeShellArg(cliCmd)} exec --json --sandbox read-only --model gpt-5.6-terra < ${escapeShellArg(tmpFile)}`,
-  },
-  openai: {
-    label: 'OpenAI',
-    buildTestCommand: (cliCmd, tmpFile) =>
-      `${escapeShellArg(cliCmd)} --format json < ${escapeShellArg(tmpFile)}`,
+    command: codexCliCommand,
+    env: () => codexCliEnv(),
+    buildTestCommand: codexCliAvailabilityCommand,
   },
 };
 
@@ -1365,8 +632,8 @@ async function checkCliAvailability(
   options: { verbose?: boolean } = {}
 ): Promise<CliHealthCheck> {
   const verbose = options.verbose ?? false;
-  const cliCmd = getCliCommand(provider, {});
-  const { label, buildTestCommand } = CLI_AVAILABILITY_SPECS[provider];
+  const { label, command, env, buildTestCommand } = CLI_AVAILABILITY_SPECS[provider];
+  const cliCmd = command();
 
   if (verbose) {
     console.error(`Checking ${label} CLI availability (command: ${cliCmd})...`);
@@ -1439,7 +706,7 @@ async function checkCliAvailability(
         encoding: 'utf-8',
         timeout: resolveCliPreflightTimeoutMs(),
         maxBuffer: 1024 * 1024,
-        env: buildProviderEnv(getProviderConfig(provider)),
+        env: env(),
       });
 
       // If we got here, the test call succeeded
@@ -1537,11 +804,6 @@ const PREFLIGHT_TROUBLESHOOTING: Record<LLMProvider, string[]> = {
     '  3. Test: echo "hello" | codex exec --json --sandbox read-only',
     '  4. Check PATH: which codex',
   ],
-  openai: [
-    '  1. Install the OpenAI CLI',
-    '  2. Authenticate per provider instructions',
-    '  3. Check PATH: which openai',
-  ],
 };
 
 /**
@@ -1627,14 +889,12 @@ export async function ensureCodexAvailable(
  * Call LLM CLI with the given prompt.
  *
  * Features:
- * - Multi-provider support (Claude, Codex, OpenAI)
- * - Supports both sync (execSync) and stream (spawn) modes
- * - Temp file management for large prompts
+ * - Two CLI transports (Claude, Codex); spawn/argv/parse live in `model-adapters/`
+ * - Both sync (blocking) and stream (spawn) adapter modes
  * - Configurable timeout, buffer limits, model
- * - JSON envelope unwrapping (data.result, usage extraction)
  * - Optional retry with exponential backoff
+ * - Task-specific cross-model fallback on quota errors
  * - Tool-call/XML tag stripping
- * - Provider-specific env injection
  *
  * @param prompt - The prompt to send to the LLM
  * @param options - Configuration options
@@ -1703,6 +963,10 @@ export async function callClaude(
 
 /**
  * Internal: Single LLM CLI call without retry.
+ *
+ * The transport (argv, env, spawn, ownership, stdout parse, error classify)
+ * belongs to the provider's adapter; this function owns the policy around it —
+ * attempt observers, tool-call stripping and the `LLMCallResult` shape.
  */
 async function callLLMOnce(
   prompt: string,
@@ -1715,108 +979,100 @@ async function callLLMOnce(
   const stripCalls = options.stripToolCalls ?? true;
   const startedAt = Date.now();
 
-  // Create temp file for prompt
-  const tmpFile = join(tmpdir(), `wavemill-${provider}-${Date.now()}-${randomUUID()}.txt`);
+  // Isolate classifier spawns from the interactive agent harness (HOK-3202).
+  const isolate = provider === 'claude' && options.taskType === 'classify';
 
-  // Create temp cwd for isolated classifier spawns (HOK-3202)
-  let isolatedCwd: string | undefined;
-  const needsIsolation = shouldIsolateClassifierSpawn(provider, options.taskType);
-  if (needsIsolation && !options.cwd) {
-    isolatedCwd = mkdtempSync(join(tmpdir(), 'wavemill-llm-cli-'));
-  }
+  const adapter = adapterForProvider(provider, {
+    model: options.model ?? '',
+    repoDir: repoDirForOptions(options),
+  });
 
+  await options.observer?.onAttemptStart?.({
+    provider,
+    model: options.model,
+    attempt,
+    maxAttempts,
+    elapsedMs: 0,
+  });
+
+  let result;
   try {
-    writeFileSync(tmpFile, prompt, 'utf-8');
-
-    // Build CLI arguments
-    const config = getProviderConfig(provider);
-    const cliArgs = [...config.defaultArgs];
-
-    // Add isolation flags for classifier spawns (HOK-3202)
-    // These are inserted before user-supplied cliFlags so callers can override if needed
-    if (needsIsolation) {
-      cliArgs.push('--tools', '', '--strict-mcp-config', '--no-session-persistence', '--disable-slash-commands');
-    }
-
-    // Add model if specified
-    if (options.model) {
-      cliArgs.push('--model', options.model);
-    }
-
-    // Add custom CLI flags
-    if (options.cliFlags && options.cliFlags.length > 0) {
-      cliArgs.push(...options.cliFlags);
-    }
-
-    const ownership = recordHelperLaunch(provider, options, cliArgs, isolatedCwd || options.cwd || process.cwd());
-
-    // Execute based on mode
-    let rawOutput: string;
-    if (mode === 'sync') {
-      await options.observer?.onAttemptStart?.({
-        provider,
-        model: options.model,
-        attempt,
-        maxAttempts,
-        elapsedMs: 0,
-      });
-      rawOutput = executeSync(tmpFile, cliArgs, options, provider, isolatedCwd);
-      await options.observer?.onAttemptComplete?.({
-        provider,
-        model: options.model,
-        attempt,
-        maxAttempts,
-        elapsedMs: Date.now() - startedAt,
-      });
-    } else {
-      rawOutput = await executeStream(tmpFile, cliArgs, options, provider, attempt, maxAttempts, isolatedCwd);
-    }
-
-    resolveHelperOwnership(ownership, rawOutput);
-
-    // Unwrap provider output: Claude/OpenAI emit a single JSON envelope (or
-    // the verbose array form); Codex emits a JSONL event stream.
-    const parsedOutput =
-      provider === 'codex'
-        ? unwrapCodexJsonl(rawOutput)
-        : parseClaudeCliOutput(rawOutput, { expectedSessionId: ownership?.sessionRef });
-    if (parsedOutput.error) {
-      throw new Error(`claude CLI returned is_error: ${parsedOutput.error}`);
-    }
-
-    // Strip tool calls if enabled
-    const cleanedText = stripCalls ? stripToolCalls(parsedOutput.text) : parsedOutput.text;
-
-    return {
-      text: cleanedText,
-      usage: parsedOutput.usage,
-      costUsd: parsedOutput.costUsd,
-      rawOutput,
-      provider,
-      model: options.model || '(default)',
-      ...(parsedOutput.reportedModel ? { reportedModel: parsedOutput.reportedModel } : {}),
-      ...(ownership?.sessionRef ? { sessionRef: ownership.sessionRef } : {}),
-    };
+    result = await adapter.invoke(prompt, {
+      mode,
+      timeout: options.timeout,
+      maxOutputTokens: options.maxOutputTokens,
+      signal: options.signal,
+      cwd: options.cwd,
+      activityTimeout: options.activityTimeout,
+      maxBuffer: options.maxBuffer,
+      cliCmd: options.cliCmd,
+      cliFlags: options.cliFlags,
+      isolate,
+      // The ladder has never refused a call on token projection; preflight is
+      // the adapters' own (HOK-3460).
+      skipPreflight: true,
+      ownership: options.featureDir
+        ? {
+            featureDir: options.featureDir,
+            helperPurpose: options.helperPurpose ?? options.taskType ?? 'llm-call',
+          }
+        : undefined,
+      onSlow: (elapsedMs) => {
+        void options.observer?.onAttemptSlow?.({
+          provider,
+          model: options.model,
+          attempt,
+          maxAttempts,
+          elapsedMs,
+        });
+      },
+    });
   } catch (error) {
     throw withElapsed(error as Error, getElapsed(error) || Date.now() - startedAt);
-  } finally {
-    // Clean up temp file
-    if (existsSync(tmpFile)) {
-      try {
-        unlinkSync(tmpFile);
-      } catch {
-        // Best effort cleanup
-      }
-    }
-    // Clean up isolated cwd (HOK-3202)
-    if (isolatedCwd) {
-      try {
-        rmSync(isolatedCwd, { recursive: true, force: true });
-      } catch {
-        // Best effort cleanup
-      }
-    }
   }
+
+  const elapsedMs = Date.now() - startedAt;
+
+  if (result.error) {
+    throw withElapsed(
+      Object.assign(new Error(result.error.message), { adapterError: result.error }),
+      elapsedMs,
+    );
+  }
+
+  await options.observer?.onAttemptComplete?.({
+    provider,
+    model: options.model,
+    attempt,
+    maxAttempts,
+    elapsedMs,
+  });
+
+  // Strip tool calls if enabled
+  const cleanedText = stripCalls ? stripToolCalls(result.text) : result.text;
+
+  return {
+    text: cleanedText,
+    ...(result.usage
+      ? {
+          usage: {
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+            totalTokens: result.usage.totalTokens,
+          },
+        }
+      : {}),
+    ...((result.costUsd ?? result.usage?.costUsd) !== undefined
+      ? { costUsd: (result.costUsd ?? result.usage?.costUsd)! }
+      : {}),
+    rawOutput: result.rawOutput ?? '',
+    provider,
+    model: options.model || '(default)',
+    ...(result.reportedModel && result.reportedModel !== 'unverified'
+      ? { reportedModel: result.reportedModel }
+      : {}),
+    ...(result.sessionRef ? { sessionRef: result.sessionRef } : {}),
+  };
 }
 
 /**
@@ -1836,7 +1092,7 @@ async function callLLMWithRetry(
       return await callLLMOnce(prompt, options, provider, attempt + 1, totalAttempts);
     } catch (error) {
       lastError = error as Error;
-      const classified = classifyLLMError(lastError);
+      const classified = retryPolicyForThrown(lastError);
       const willRetry = attempt < maxRetries && (classified.kind === 'transient' || classified.kind === 'timeout');
       await options.observer?.onAttemptError?.({
         provider,
@@ -1901,13 +1157,16 @@ async function callLLMWithFallback(
       console.warn(`[${fallbackLogLabel(taskType)}] ${model} skipped (${reason})`);
     }
   }
-  const candidates = filterCandidatesWithCredentials(resolved.candidates, provider, options, taskType);
+  // Both CLI transports own their own auth; no candidate is gated on a
+  // credential env var (the legacy openai gate went with that provider).
+  const candidates = resolved.candidates;
   const retry = options.retry ?? false;
   const shouldLogFallbackEvents = options.logFallbackEvents !== false;
   const preferredModel = candidates[0] ?? options.model ?? '(unknown)';
 
   if (candidates.length === 0) {
-    if (shouldEnforceClassifierProviderCredentials(options) || hasFallbackDeadline(options)) {
+    // A budgeted call fails loudly rather than making one unbudgeted attempt.
+    if (hasFallbackDeadline(options)) {
       throw new Error(`No eligible ${taskType} fallback candidates remained within the configured classifier budget`);
     }
     return retry
@@ -1960,7 +1219,7 @@ async function callLLMWithFallback(
       };
     } catch (error) {
       lastError = error;
-      const classified = classifyLLMError(error);
+      const classified = retryPolicyForThrown(error);
       if (!classified.retryable) {
         if (fallbackChain.length > 0 && shouldLogFallbackEvents) {
           emitFallbackEvent({
