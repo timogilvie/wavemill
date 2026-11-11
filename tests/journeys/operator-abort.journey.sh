@@ -80,15 +80,21 @@ MODEL="anthropic/claude-sonnet-4"
 # Seed workflow-state with three tasks in a coding row. The row only needs
 # fields the recorder reads/writes; the HOK-3220 schema is validated at the
 # write seam by task-record-write-guard, but all written values here are
-# valid.
+# valid. `lifecycle.resourceDisposition: "allocated"` reproduces the real
+# pre-abort precondition (a running task already holds its launch slot) —
+# the exact precondition that produced the HOK-3454 retention-missing bug
+# when an operator abort flipped workflowOutcome to "aborted" without it.
 jq -n --arg a "$ISSUE_A" --arg b "$ISSUE_B" --arg c "$ISSUE_C" '
   {
     freeSlots: 1,
     # allow-task-literal: standalone journey jq seed; this file does not source tests/lib/state-fixtures.sh (HOK-3358)
     tasks: {
-      ($a): {slug: "scenario-a", status: "active", phase: "coding", challengeAborted: ""},
-      ($b): {slug: "scenario-b", status: "active", phase: "coding", challengeAborted: ""},
-      ($c): {slug: "scenario-c", status: "active", phase: "coding", challengeAborted: ""}
+      ($a): {slug: "scenario-a", status: "active", phase: "coding", challengeAborted: "",
+             lifecycle: {schemaVersion: 1, workflowOutcome: "active", resourceDisposition: "allocated"}},
+      ($b): {slug: "scenario-b", status: "active", phase: "coding", challengeAborted: "",
+             lifecycle: {schemaVersion: 1, workflowOutcome: "active", resourceDisposition: "allocated"}},
+      ($c): {slug: "scenario-c", status: "active", phase: "coding", challengeAborted: "",
+             lifecycle: {schemaVersion: 1, workflowOutcome: "active", resourceDisposition: "allocated"}}
     }
   }
 ' > "$STATE_FILE"
@@ -116,6 +122,19 @@ assert "A: task flipped to aborted/aborted" \
   test "$(jq -r '.phase + "/" + .status' <<<"$A_TASK")" = "aborted/aborted"
 assert "A: lifecycle.workflowOutcome = aborted" \
   test "$(jq -r '.lifecycle.workflowOutcome' <<<"$A_TASK")" = "aborted"
+# HOK-3454: the row entered this abort with resourceDisposition "allocated"
+# (its launch slot still held) — a terminal workflowOutcome paired with that
+# disposition and no retention block is the exact invalid-pair signature the
+# task-record write guard shadow-logged for HOK-3358_c. The recorder must
+# downgrade the disposition and stamp retention so the pair stays valid.
+assert "A: lifecycle.resourceDisposition downgraded to verification-required" \
+  test "$(jq -r '.lifecycle.resourceDisposition' <<<"$A_TASK")" = "verification-required"
+assert "A: lifecycle.retention.reason is stamped" \
+  test -n "$(jq -r '.lifecycle.retention.reason // empty' <<<"$A_TASK")"
+assert "A: lifecycle.retention.actor = operator-abort" \
+  test "$(jq -r '.lifecycle.retention.actor' <<<"$A_TASK")" = "operator-abort"
+assert "A: the task-record write guard logged no schema violations" \
+  bash -c '[[ ! -f "'"$STATE_DIR"'/state-schema-violations.jsonl" ]] || [[ ! -s "'"$STATE_DIR"'/state-schema-violations.jsonl" ]]'
 
 A_REL="$(grep -F "\"issueId\":\"$ISSUE_A\"" "$RELIABILITY_FILE" | tail -1)"
 [[ -n "$A_REL" ]] || fail "A: reliability record not written"

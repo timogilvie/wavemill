@@ -154,54 +154,12 @@ assert_eq "0" "$(log_lines "$state")" "write guard logged no violations"
 
 echo "test_hok3424_replay_fixture"
 # protects: the HOK-3424_c challenger row from the shadow log reaches a valid
-# lifecycle after a shell cleanup writer touches it.
+# lifecycle after a shell cleanup writer touches it. Loads the exact pre-fix
+# state from the fixture (the fixture builder would reject closed+allocated
+# without retention, but that is the exact signature that reached the writer).
+FIXTURE="$REPO_DIR/tests/fixtures/incidents/hok-3424-retention-missing.json"
 state="$(new_state hok3424)"
-repo="$(dirname "$(dirname "$state")")"
-mkdir -p "$repo/.wavemill"
-# The evidence JSON for the HOK-3424_c shadow-log signature is kept in the
-# feature task directory; the test reproduces the same invalid pre-fix state
-# directly below (the fixture builder would reject closed+allocated without
-# retention, but that is the exact signature that reached the writer).
-cat > "$state" <<'STATE'
-{
-  "tasks": {
-    "HOK-3424": {
-      "slug": "attention-22-observer-push-reads-the-attention-projection-delete",
-      "branch": "task/attention-22-observer-push-reads-the-attention-projection-delete",
-      "worktree": "/tmp/wt",
-      "pr": "",
-      "status": "closed",
-      "phase": "closed",
-      "lifecycle": {
-        "schemaVersion": 1,
-        "workflowOutcome": "closed",
-        "resourceDisposition": "verification-required",
-        "retention": {
-          "reason": "primary-terminal-closed",
-          "policy": "manual-verification-required",
-          "actor": "terminal-reconciler",
-          "timestamp": "2026-11-08T23:30:00.000Z"
-        }
-      }
-    },
-    "HOK-3424_c": {
-      "slug": "attention-22-observer-push-reads-the-attention-projection-delete",
-      "branch": "task/attention-22-observer-push-reads-the-attention-projection-delete-c",
-      "worktree": "/tmp/wt-c",
-      "pr": "",
-      "status": "closed",
-      "phase": "closed",
-      "challengeRole": "challenger",
-      "challengePairId": "HOK-3424",
-      "lifecycle": {
-        "schemaVersion": 1,
-        "workflowOutcome": "closed",
-        "resourceDisposition": "allocated"
-      }
-    }
-  }
-}
-STATE
+jq '.before' "$FIXTURE" > "$state"
 STATE_FILE="$state" set_task_lifecycle_disposition HOK-3424_c "" "allocated" "" "cleanup_completed_task"
 assert_has_retention "$state" "HOK-3424_c" "HOK-3424_c challenger now carries retention"
 assert_eq "0" "$(log_lines "$state")" "HOK-3424_c replay write guard logged no violations"

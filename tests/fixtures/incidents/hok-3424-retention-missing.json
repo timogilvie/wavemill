@@ -8,7 +8,7 @@
       "HOK-3424": {
         "slug": "attention-22-observer-push-reads-the-attention-projection-delete",
         "branch": "task/attention-22-observer-push-reads-the-attention-projection-delete",
-        "worktree": "/Users/timothyogilvie/Dropbox/wavemill/worktrees/one-ta[REDACTED:openai_key]",
+        "worktree": "/tmp/wt",
         "pr": "",
         "status": "closed",
         "phase": "closed",
@@ -27,7 +27,7 @@
       "HOK-3424_c": {
         "slug": "attention-22-observer-push-reads-the-attention-projection-delete",
         "branch": "task/attention-22-observer-push-reads-the-attention-projection-delete-c",
-        "worktree": "/Users/timothyogilvie/Dropbox/wavemill/worktrees/one-ta[REDACTED:openai_key]",
+        "worktree": "/tmp/wt-c",
         "pr": "",
         "status": "closed",
         "phase": "closed",
