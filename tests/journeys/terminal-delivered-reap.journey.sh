@@ -45,5 +45,14 @@ echo ""
 echo "assertions:"
 journey_assert_landed "$ISSUE"
 journey_assert_no_unhandled_fake_calls
+# HOK-3454: this reap runs the real cleanup_completed_task path —
+# cleanup_episode_record_outcome and set_task_lifecycle_disposition stamp the
+# row's terminal lifecycle on every tick on the way to reap. A writer that
+# flips workflowOutcome to a terminal value without retention while
+# resourceDisposition still requires it is the exact invalid-pair signature
+# the task-record write guard shadow-logs; this is a terminal task reaching
+# reap with zero operator touches and no such violation.
+journey_assert "the task-record write guard logged no schema violations during reap" \
+  bash -c '[[ ! -f "$1/state-schema-violations.jsonl" ]] || [[ ! -s "$1/state-schema-violations.jsonl" ]]' _ "$STATE_DIR"
 
 journey_finish
