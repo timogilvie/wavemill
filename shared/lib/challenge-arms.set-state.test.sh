@@ -8,6 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ARMS_SCRIPT="$REPO_DIR_ROOT/shared/lib/challenge-arms.sh"
+STATE_FIXTURES_SCRIPT="$REPO_DIR_ROOT/tests/lib/state-fixtures.sh"
 
 PASS=0
 FAIL=0
@@ -25,6 +26,10 @@ check_eq() {
     fail "$name"
   fi
 }
+
+# Schema-validated fixture builder (replaces hand-written `tasks: {...}` literals).
+# shellcheck source=../../tests/lib/state-fixtures.sh
+source "$STATE_FIXTURES_SCRIPT"
 
 # Stub state_mutate BEFORE sourcing challenge-arms.sh. Mirrors the real helper:
 # jq errors must not overwrite the state file.
@@ -44,7 +49,8 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 STATE_FILE="$TMP_ROOT/state.json"
 export STATE_FILE
-printf '%s\n' '{"session":"test","tasks":{"HOK-3451":{"slug":"setstate","challenge":true,"challengeRole":"primary","challengePairId":"HOK-3451","challengeStage":"review"}}}' > "$STATE_FILE"
+fixture_workflow_state "$STATE_FILE" --bare \
+  HOK-3451 challenge=true challengeRole=primary challengePairId=HOK-3451 challengeStage=review
 
 ARM_JSON="$(challenge_arm_json_build \
   "HOK-3451_c" "setstate-c" "task/setstate-c" \
