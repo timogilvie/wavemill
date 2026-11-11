@@ -38,11 +38,18 @@ out="$(cd "$repo" && node "$TOOL" --since 2026-10-01 --branches main --no-github
 [[ "$(jq -r '.tasks[] | select(.task.issue=="HOK-1") | .stuckCoverage' <<<"$out")" == "partial" ]] || fail "HOK-1 coverage"
 [[ "$(jq -r '[.tasks[] | select(.task.issue=="HOK-1") | .touches[].class] | all(. != null)' <<<"$out")" == "true" ]] || fail "touch rows carry a class"
 [[ "$(jq -r '.sources.githubEnabled' <<<"$out")" == "false" ]] || fail "github should be off"
+# HOK-3468: the JSON carries the same per-gate table the text shows.
+[[ "$(jq -r '.overall.stallGates | type' <<<"$out")" == "array" ]] || fail "stallGates missing: $(jq -c '.overall' <<<"$out")"
+[[ "$(jq -r '.overall.waitedForPerson | type' <<<"$out")" == "object" ]] || fail "waitedForPerson missing"
+[[ "$(jq -r '.overall.stallGates | map(.gate) | index("unknown") != null' <<<"$out")" == "true" ]] \
+  || fail "stallGates should name an unknown row: $(jq -c '.overall.stallGates' <<<"$out")"
 
 text="$(cd "$repo" && node "$TOOL" --since 2026-10-01 --branches main --no-github --repo-dir "$repo" 2>/dev/null)"
 grep -q "Unattended rate: *50.0% (1/2)" <<<"$text" || fail "missing unattended line: $text"
 grep -q "Touches by class: *O=1  L=0  S=0  R=2" <<<"$text" || fail "missing per-class line: $text"
 grep -q "P90 time stuck:" <<<"$text" || fail "missing p90 line"
+grep -q "Stuck time by gate" <<<"$text" || fail "missing gate table header: $text"
+grep -q "Waited for a person" <<<"$text" || fail "missing waited-for-a-person line"
 
 # HOK-3245: mill-only split (neither HOK-1's archive nor HOK-2 is enough for
 # HOK-2 to count as mill-run) and the human summary shows both scopes.

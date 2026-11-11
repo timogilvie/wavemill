@@ -186,6 +186,40 @@ describe('classifyOperatorTouch (HOK-3455)', () => {
     assert.equal(classifyOperatorTouch({ kind: 'session-redirect', text: 'keep going' }).attribution, 'human');
   });
 
+  it('does not count a headless session\'s first prompt as a human redirect', () => {
+    // protects: the `claude -p test` auth probe and other sdk-cli launches
+    // looked like operators redirecting the agent (HOK-3468).
+    assert.deepEqual(
+      classifyOperatorTouch({
+        kind: 'session-redirect',
+        text: 'test',
+        firstInSession: true,
+        provenance: { entrypoint: 'sdk-cli' },
+      }),
+      { attribution: 'automation', class: 'L' },
+    );
+    // Without the headless entrypoint a first message is still a person, and
+    // a later message inside a headless session is a redirect too.
+    assert.equal(
+      classifyOperatorTouch({
+        kind: 'session-redirect',
+        text: 'test',
+        firstInSession: true,
+        provenance: {},
+      }).attribution,
+      'human',
+    );
+    assert.equal(
+      classifyOperatorTouch({
+        kind: 'session-redirect',
+        text: 'keep going',
+        firstInSession: false,
+        provenance: { entrypoint: 'sdk-cli' },
+      }).attribution,
+      'human',
+    );
+  });
+
   it('external merge uses tend receipt and mill actor', () => {
     assert.equal(classifyOperatorTouch({ kind: 'external-merge', hasTendReceipt: true }).attribution, 'automation');
     assert.equal(classifyOperatorTouch({ kind: 'external-merge', millActor: true }).attribution, 'automation');
