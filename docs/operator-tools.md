@@ -30,6 +30,7 @@ To add a tool, add a row. A tool that the mill, a script, a prompt or another do
 | `tools/worktree-manager.ts` | Creates and manages git worktrees for parallel work | Git worktrees |
 | `tools/batch-pr-fetch.ts` | Fetches PR rows for task branches in one `gh` call and writes the session PR cache | Session PR cache |
 | `tools/get-issue-json.ts` | Prints a Linear issue as JSON | No |
+| `tools/task-size.ts` | Splits an oversized task into ordered sub-issues, records a one-task size override, or reports estimated vs actual merged size (`accept` / `override` / `report`) | Linear: creates sub-issues, labels, comments; appends `.wavemill/size-overrides.jsonl` |
 
 ## Evals and challenge data
 

@@ -1,10 +1,11 @@
 // wavemill-test-suite: custom
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
+  annotateTaskSize,
   appendAuthoredLinksFooter,
   buildIssueExpansionCallOptions,
   enforcePacketBudget,
@@ -12,6 +13,7 @@ import {
   extractAuthoredLinksFooter,
   parseIssueInput,
 } from './issue-expander.ts';
+import type { TaskSizeLimits, TaskSizeSlice } from './task-size.ts';
 import { NativeExpansionUnavailableError } from './native-expansion.ts';
 
 function makeRepo(config?: unknown): string {
@@ -402,6 +404,78 @@ describe('issue-expander', () => {
         }),
         /uncertified/,
       );
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('annotateTaskSize', () => {
+  const limits: TaskSizeLimits = {
+    enabled: true,
+    maxAddedLines: 800,
+    maxFiles: 2,
+    coreFiles: [],
+    anchorCoreFile: 'shared/lib/wavemill-monitor.sh',
+    maxCoreCompanions: 2,
+  };
+  const slice = (title: string): TaskSizeSlice => ({
+    title,
+    scope: `${title} scope`,
+    files: [],
+    estimatedAddedLines: 100,
+  });
+  const oversizedPacket = [
+    '## 2. Technical Context',
+    '',
+    '### Key Files',
+    '- `shared/lib/a.ts`',
+    '- `shared/lib/b.ts`',
+    '- `shared/lib/c.ts`',
+    '',
+    '## 3. Implementation Approach',
+    '',
+    'Estimated added lines: 1500',
+  ].join('\n');
+
+  // protects: an oversized packet loses its slice proposal before it reaches
+  // Linear, so the picker cannot offer the operator a split.
+  it('appends §12 with the proposed slices and records a report row', async () => {
+    const repoDir = makeRepo();
+    try {
+      const result = await annotateTaskSize(oversizedPacket, {
+        repoDir,
+        issueId: 'HOK-1',
+        limits,
+        probe: null,
+        proposeSlices: async () => [slice('Slice A'), slice('Slice B')],
+      });
+      assert.equal(result.oversized, true);
+      assert.deepEqual(result.slices.map((entry) => entry.title), ['Slice A', 'Slice B']);
+      assert.match(result.text, /## 12\. Size Estimate/);
+      assert.match(result.text, /Slice A/);
+      const log = readFileSync(join(repoDir, '.wavemill', 'task-size-estimates.jsonl'), 'utf8');
+      assert.match(log, /"issueId":"HOK-1"/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  // protects: a failed proposal turns the hold off instead of holding an
+  // oversized task with no split the operator can accept.
+  it('still holds when the slice proposal fails', async () => {
+    const repoDir = makeRepo();
+    try {
+      const result = await annotateTaskSize(oversizedPacket, {
+        repoDir,
+        limits,
+        probe: null,
+        proposeSlices: async () => null,
+      });
+      assert.equal(result.oversized, true);
+      assert.equal(result.slicesUnavailable, true);
+      assert.deepEqual(result.slices, []);
+      assert.match(result.text, /unavailable/);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }

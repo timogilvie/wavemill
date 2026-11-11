@@ -22,6 +22,7 @@ import {
   extractEdgesFromBacklog,
   extractProseEdges,
   extractOperatorHolds,
+  extractSizeHolds,
   extractPlanWarnings,
   buildQueuePlan,
   compareTaskIds,
@@ -29,6 +30,7 @@ import {
   type QueuePlan,
 } from '../shared/lib/plan-queue-utils.ts';
 import { toKebabCase } from '../shared/lib/string-utils.ts';
+import { getTaskSizeConfig } from '../shared/lib/config.ts';
 import type { GroundedPlanResult } from '../shared/lib/grounded-planner.ts';
 import {
   buildInferenceReport,
@@ -375,8 +377,13 @@ runTool({
     if (Object.keys(operatorHolds).length > 0) {
       queuePlan.operatorHolds = operatorHolds;
     }
+    // HOK-3469: hold an oversized task from its recorded packet §12.
+    const sizeHolds = extractSizeHolds(records, getTaskSizeConfig());
+    if (Object.keys(sizeHolds).length > 0) {
+      queuePlan.sizeHolds = sizeHolds;
+    }
     const blockedTaskIds = new Set(queuePlan.queuedAfterDependencies.map((entry) => entry.taskId));
-    const planWarnings = extractPlanWarnings(records, blockedTaskIds, operatorHolds);
+    const planWarnings = extractPlanWarnings(records, blockedTaskIds, operatorHolds, sizeHolds);
     if (planWarnings.length > 0) {
       queuePlan.planWarnings = planWarnings.concat(proseWarnings);
     } else if (proseWarnings.length > 0) {
@@ -404,6 +411,7 @@ runTool({
         const augmented = augmentPlanWithInFlight(queuePlan, inFlight, candidateTouchSets);
         // Preserve operatorHolds and planWarnings through augmentation
         augmented.operatorHolds = queuePlan.operatorHolds;
+        augmented.sizeHolds = queuePlan.sizeHolds;
         augmented.planWarnings = queuePlan.planWarnings;
         planToEmit = augmented;
       } catch (error) {

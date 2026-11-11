@@ -825,6 +825,57 @@
             },
             "additionalProperties": false
         },
+        "taskSize": {
+            "type": "object",
+            "description": "Holds an expanded task whose recorded size estimate exceeds these limits, so the operator splits it before it launches (HOK-3469).",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Hold oversized tasks at the picker. Set false to launch them exactly as before."
+                },
+                "maxAddedLines": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 800,
+                    "description": "An estimate over this many added lines is oversized."
+                },
+                "maxFiles": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 12,
+                    "description": "An estimate touching more than this many files is oversized."
+                },
+                "coreFiles": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "default": [
+                        "shared/lib/wavemill-monitor.sh",
+                        "shared/lib/wavemill-mill.sh",
+                        "shared/lib/wavemill-common.sh",
+                        "shared/lib/agent-adapters.sh",
+                        "tools/tend.ts"
+                    ],
+                    "description": "Repository paths treated as core files for the core-file size rule."
+                },
+                "anchorCoreFile": {
+                    "type": "string",
+                    "minLength": 1,
+                    "default": "shared/lib/wavemill-monitor.sh",
+                    "description": "The core file that makes a task oversized when it is touched alongside more than maxCoreCompanions other core files."
+                },
+                "maxCoreCompanions": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 2,
+                    "description": "Touching the anchor core file together with at least this many other core files is oversized (the default of 2 means the monitor plus two other core files trips the limit, while the monitor plus one does not)."
+                }
+            },
+            "additionalProperties": false
+        },
         "backlog": {
             "type": "object",
             "description": "Controls backlog rendering in the mill control pane.",

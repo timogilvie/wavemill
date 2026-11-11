@@ -17,6 +17,7 @@ import {
   checkSubsystemDrift,
   extractAuthoredLinksFooter,
   appendAuthoredLinksFooter,
+  annotateTaskSize,
 } from '../shared/lib/issue-expander.ts';
 import { autoLabelIssue } from '../shared/lib/issue-labeler.ts';
 import { gatherCodebaseContext } from '../shared/lib/codebase-context-gatherer.ts';
@@ -132,8 +133,24 @@ runTool({
       repoDir: repoPath,
       issueId: issue.identifier,
     });
+
+    // Record the size estimate in packet §12 before split, validation and the
+    // Linear update, so the picker holds an oversized task before it launches.
+    console.log('Estimating task size...');
+    const size = await annotateTaskSize(expansionResult.text, {
+      repoDir: repoPath,
+      issueId: issue.identifier,
+    });
+    console.log(
+      `Size: ${size.estimate.addedLines === null ? 'unknown' : `~${size.estimate.addedLines}`} lines, ` +
+      `${size.estimate.files.length} files` +
+      (size.oversized
+        ? ` — OVERSIZED (${size.verdict.reasons.join(', ')}); ${size.slices.length} slice(s) proposed`
+        : ' — within limits'),
+    );
+
     const expandedDescription = appendAuthoredLinksFooter(
-      expansionResult.text,
+      size.text,
       authoredLinksFooter.footer,
     );
     console.log('─'.repeat(80));
@@ -144,7 +161,7 @@ runTool({
     console.log(`Split task packet: header (${header.length} chars), details (${details.length} chars)\n`);
     let splitSubPackets: string[] = [];
 
-    if (shouldSplitPacket(fullContent, mode)) {
+    if (shouldSplitPacket(fullContent, mode, { repoDir: repoPath })) {
       splitSubPackets = await splitPacketIntoSubPackets(fullContent, mode, {
         repoDir: repoPath,
       });

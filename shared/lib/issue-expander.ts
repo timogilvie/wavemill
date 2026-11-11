@@ -12,7 +12,7 @@
  */
 
 import { linearIssueUrlRe, normalizeIssueId } from './task-identity.ts';
-import { existsSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { callClaude, type LLMCallOptions } from './llm-cli.ts';
 import { fillPromptTemplate } from './prompt-utils.ts';
@@ -24,8 +24,22 @@ import {
   getContextWindowFloorsConfig,
   getNativeContextManagementConfig,
   getNativeExpansionConfig,
+  getTaskSizeConfig,
 } from './config.ts';
 import { estimatePromptTokens } from './native-agent/context-window-guard.ts';
+import {
+  estimateTaskSize,
+  evaluateTaskSize,
+  parseSizeSection,
+  proposeTaskSlices,
+  renderSizeSection,
+  stripSizeSection,
+  type TaskSizeEstimate,
+  type TaskSizeLimits,
+  type TaskSizeSlice,
+  type TaskSizeVerdict,
+} from './task-size.ts';
+import type { RepoProbe } from './touch-set-predictor.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Public API
@@ -479,6 +493,134 @@ function truncateMarkdownToTokens(markdown: string, maxTokens: number): string {
     }
   }
   return markdown.slice(0, low);
+}
+
+/**
+ * Annotate an expanded packet with its `## 12. Size Estimate` section
+ * (HOK-3469).
+ *
+ * The estimate is deterministic (touch-set predictor over §2 Key Files plus
+ * the LLM's `Estimated added lines:` line); the slice proposal is an optional
+ * LLM call that never blocks expansion — a failure records
+ * `slices: unavailable` and the picker still holds the task. An existing §12
+ * is replaced, but an accepted slice list is preserved so re-expanding a split
+ * parent does not erase its record.
+ *
+ * One row per expansion is appended to `.wavemill/task-size-estimates.jsonl`
+ * for `tools/task-size.ts report`.
+ */
+export interface AnnotateTaskSizeOptions {
+  repoDir?: string;
+  issueId?: string;
+  probe?: RepoProbe | null;
+  limits?: TaskSizeLimits;
+  /** Injected for tests. */
+  proposeSlices?: (
+    packet: string,
+    estimate: TaskSizeEstimate,
+    limits: TaskSizeLimits,
+    options: { repoDir?: string },
+  ) => Promise<TaskSizeSlice[] | null>;
+  now?: () => Date;
+}
+
+export interface AnnotateTaskSizeResult {
+  text: string;
+  estimate: TaskSizeEstimate;
+  verdict: TaskSizeVerdict;
+  slices: TaskSizeSlice[];
+  oversized: boolean;
+  slicesUnavailable: boolean;
+}
+
+export async function annotateTaskSize(
+  text: string,
+  options: AnnotateTaskSizeOptions = {},
+): Promise<AnnotateTaskSizeResult> {
+  const limits = options.limits ?? getTaskSizeConfig(options.repoDir);
+  const existing = parseSizeSection(text);
+  const body = stripSizeSection(text);
+
+  const estimate = estimateTaskSize(body, {
+    repoDir: options.repoDir,
+    probe: options.probe,
+    limits,
+  });
+  const verdict = evaluateTaskSize(estimate, limits);
+
+  let slices: TaskSizeSlice[] = existing?.slices ?? [];
+  let slicesUnavailable = false;
+  const accepted = existing?.accepted ?? [];
+
+  if (verdict.oversized) {
+    if (accepted.length > 0 && slices.length > 0) {
+      // The operator already accepted these slices; keep them.
+      slicesUnavailable = false;
+    } else {
+      const propose = options.proposeSlices ?? proposeTaskSlices;
+      const proposed = await propose(body, estimate, limits, { repoDir: options.repoDir });
+      if (proposed && proposed.length > 0) {
+        slices = proposed;
+        slicesUnavailable = false;
+      } else {
+        slices = [];
+        slicesUnavailable = true;
+      }
+    }
+  } else {
+    slices = [];
+    slicesUnavailable = false;
+  }
+
+  const section = renderSizeSection(estimate, verdict, slices, {
+    accepted,
+    slicesUnavailable,
+  });
+  const annotated = `${body.trimEnd()}\n\n${section}`;
+
+  appendTaskSizeEstimateRow(options.repoDir, {
+    issueId: options.issueId,
+    at: (options.now ?? (() => new Date()))().toISOString(),
+    addedLines: estimate.addedLines,
+    files: estimate.files.length,
+    coreFiles: estimate.coreFiles,
+    oversized: verdict.oversized,
+    reasons: verdict.reasons,
+    slices: slices.length,
+  });
+
+  return {
+    text: annotated,
+    estimate,
+    verdict,
+    slices,
+    oversized: verdict.oversized,
+    slicesUnavailable,
+  };
+}
+
+export interface TaskSizeEstimateRow {
+  issueId?: string;
+  at: string;
+  addedLines: number | null;
+  files: number;
+  coreFiles: string[];
+  oversized: boolean;
+  reasons: string[];
+  slices: number;
+}
+
+function appendTaskSizeEstimateRow(repoDir: string | undefined, row: TaskSizeEstimateRow): void {
+  if (!repoDir) return;
+  try {
+    const dir = path.join(repoDir, '.wavemill');
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(path.join(dir, 'task-size-estimates.jsonl'), `${JSON.stringify(row)}\n`);
+  } catch (error) {
+    // The estimate already lives in the packet; a missing report row must not
+    // fail expansion.
+    console.warn(`⚠️  Could not record task-size estimate: ${errorMessage(error)}`);
+  }
 }
 
 /**

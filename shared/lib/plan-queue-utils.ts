@@ -1,5 +1,11 @@
 import type { DependencyEdge, PlanResult, TriageRecord } from './task-dependency-planner.ts';
 import { extractProseDependencies, parseTaskId } from './task-identity.ts';
+import {
+  evaluateRecordedTaskSize,
+  parseSizeSection,
+  type SizeReason,
+  type TaskSizeLimits,
+} from './task-size.ts';
 
 export type BacklogRecord = {
   id: string;
@@ -45,6 +51,12 @@ export type QueuePlan = {
   touchSetStatus?: Record<string, 'predicted' | 'empty-confirmed' | 'unknown'>;
   /** Operator holds from the `wm:hold` label. Maps task ID to optional hold note. */
   operatorHolds?: Record<string, { note?: string }>;
+  /**
+   * Size holds from packet §12 (HOK-3469). A task whose recorded estimate is
+   * over the current limits, or a `wm:split` parent, is held with
+   * `oversized_task` unless it carries `wm:size-override`.
+   */
+  sizeHolds?: Record<string, SizeHold>;
   /** Plan warnings for unmet preconditions or unresolved references. */
   planWarnings?: PlanWarning[];
 };
@@ -68,7 +80,20 @@ export type HoldReason =
   | 'conflicts_with_in_flight'
   | 'slots_full'
   | 'touch_set_unknown'
-  | 'operator_hold';
+  | 'operator_hold'
+  | 'oversized_task';
+
+/** A recorded size hold (HOK-3469): the numbers from packet §12 plus the proposal. */
+export type SizeHold = {
+  reasons: SizeReason[];
+  addedLines: number | null;
+  fileCount: number;
+  coreFiles: string[];
+  /** Proposed slice titles, in order. */
+  slices: string[];
+  /** Slice issue ids recorded after the operator accepted the proposal. */
+  accepted?: string[];
+};
 
 export type HeldTaskDetail =
   | { kind: 'depends_on'; blockedBy: string[] }
@@ -76,7 +101,16 @@ export type HeldTaskDetail =
   | { kind: 'conflicts_with_in_flight'; taskId: string; prNumber?: number; files: string[]; touchSetUnknown?: true }
   | { kind: 'slots_full' }
   | { kind: 'touch_set_unknown' }
-  | { kind: 'operator_hold'; note?: string };
+  | { kind: 'operator_hold'; note?: string }
+  | {
+    kind: 'oversized_task';
+    reasons: SizeReason[];
+    addedLines?: number;
+    fileCount: number;
+    coreFiles?: string[];
+    slices: string[];
+    accepted?: string[];
+  };
 
 export interface HeldTask {
   id: string;
@@ -345,11 +379,82 @@ export function extractOperatorHolds(records: BacklogRecord[]): Record<string, {
   return holds;
 }
 
+export const SIZE_OVERRIDE_LABEL = 'wm:size-override';
+export const SPLIT_LABEL = 'wm:split';
+
+function reasonsForHold(
+  parsed: ReturnType<typeof parseSizeSection>,
+  limits: TaskSizeLimits,
+): SizeReason[] {
+  if (!parsed) return [];
+  return evaluateRecordedTaskSize(
+    {
+      addedLines: parsed.addedLines,
+      fileCount: parsed.files.length,
+      coreFiles: parsed.coreFiles,
+    },
+    limits,
+  ).reasons;
+}
+
+/**
+ * Extract size holds from packet §12 (HOK-3469).
+ *
+ * A task is held when its recorded estimate is over the current limits, or
+ * when it is a `wm:split` parent (its work is already split and the parent
+ * must never launch). `wm:size-override` releases a single task's hold. This
+ * is the only size-hold derivation; the picker consumes the result.
+ */
+export function extractSizeHolds(
+  records: BacklogRecord[],
+  limits: TaskSizeLimits,
+): Record<string, SizeHold> {
+  const holds: Record<string, SizeHold> = {};
+  for (const record of records) {
+    const labels = record.labels ?? [];
+    const split = labels.includes(SPLIT_LABEL);
+    // The override releases an estimate-based hold only. A split parent is
+    // held because its work already became sub-issues, not because of its
+    // size, so it never launches.
+    if (!split && labels.includes(SIZE_OVERRIDE_LABEL)) continue;
+
+    const parsed = parseSizeSection(record.description ?? '');
+    if (!parsed && !split) continue;
+
+    const reasons = reasonsForHold(parsed, limits);
+    if (!split && reasons.length === 0) continue;
+
+    holds[record.id] = {
+      reasons,
+      addedLines: parsed?.addedLines ?? null,
+      fileCount: parsed?.files.length ?? 0,
+      coreFiles: parsed?.coreFiles ?? [],
+      slices: (parsed?.slices ?? []).map((slice) => slice.title),
+      ...(parsed?.accepted && parsed.accepted.length > 0 ? { accepted: [...parsed.accepted] } : {}),
+    };
+  }
+  return holds;
+}
+
+/** Build the structured `oversized_task` detail from a recorded hold. */
+export function sizeHoldDetail(hold: SizeHold): HeldTaskDetail {
+  return {
+    kind: 'oversized_task',
+    reasons: [...hold.reasons],
+    ...(hold.addedLines !== null ? { addedLines: hold.addedLines } : {}),
+    fileCount: hold.fileCount,
+    ...(hold.coreFiles.length > 0 ? { coreFiles: [...hold.coreFiles] } : {}),
+    slices: [...hold.slices],
+    ...(hold.accepted && hold.accepted.length > 0 ? { accepted: [...hold.accepted] } : {}),
+  };
+}
+
 /** Extract plan warnings for unmet preconditions when no blocker or hold is in place. */
 export function extractPlanWarnings(
   records: BacklogRecord[],
   blockedTaskIds: Set<string>,
   operatorHolds: Record<string, { note?: string }>,
+  sizeHolds: Record<string, SizeHold> = {},
 ): PlanWarning[] {
   const warnings: PlanWarning[] = [];
   const preconditionPatterns = [/\bremoval criterion\b/i, /\bdecide\b/i, /\bafter \d+ days?\b/i];
@@ -357,7 +462,7 @@ export function extractPlanWarnings(
   const seenTaskIds = new Set<string>();
 
   for (const record of records) {
-    if (blockedTaskIds.has(record.id) || operatorHolds[record.id]) {
+    if (blockedTaskIds.has(record.id) || operatorHolds[record.id] || sizeHolds[record.id]) {
       continue; // Task is already blocked or held
     }
 
@@ -530,6 +635,14 @@ export function selectLaunchSet(
           ? { kind: 'operator_hold', note: task.operatorHoldReason }
           : { kind: 'operator_hold' };
       held.push({ id: task.id, reason: 'operator_hold', detail });
+      continue;
+    }
+
+    // HOK-3469: a recorded size hold outranks touch-set uncertainty. Held rows
+    // are never offered for launch.
+    const sizeHold = plan.sizeHolds?.[task.id];
+    if (sizeHold) {
+      held.push({ id: task.id, reason: 'oversized_task', detail: sizeHoldDetail(sizeHold) });
       continue;
     }
 

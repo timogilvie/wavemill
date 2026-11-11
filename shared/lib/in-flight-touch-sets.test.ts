@@ -179,6 +179,25 @@ describe('augmentPlanWithInFlight', () => {
     assert.equal(augmented.sharedSurfaceConflicts?.[0]?.source, 'inferred');
   });
 
+  // protects: in-flight augmentation must not drop a size hold, or a task held
+  // for being oversized becomes launchable once a conflict edge is added.
+  it('preserves size holds through augmentation', () => {
+    const plan: QueuePlan = {
+      ...emptyPlan,
+      sizeHolds: {
+        'HOK-BIG': {
+          reasons: ['lines', 'files'],
+          addedLines: 1500,
+          fileCount: 14,
+          coreFiles: [],
+          slices: ['Slice A', 'Slice B'],
+        },
+      },
+    };
+    const augmented = augmentPlanWithInFlight(plan, [], new Map());
+    assert.deepEqual(augmented.sizeHolds, plan.sizeHolds);
+  });
+
   it('emits no edge when the overlap is entirely ignored', () => {
     const plan: QueuePlan = { ...emptyPlan, availableNow: ['HOK-A'] };
     const inFlight: InFlightTouchSet[] = [
