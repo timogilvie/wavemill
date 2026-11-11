@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import Ajv2020 from 'ajv/dist/2020.js';
 
 import {
+  ensureTerminalRetention,
   normalizeTaskLifecycle,
   validateTaskLifecycleState,
 } from './task-lifecycle.ts';
@@ -314,4 +315,51 @@ test('HOK-3125: live active row still consumes a slot', () => {
     status: 'active',
   });
   assert.equal(normalized.slotConsumes, true);
+});
+
+test('ensureTerminalRetention is a no-op for active workflows', () => {
+  const lifecycle = ensureTerminalRetention(
+    { schemaVersion: 1, workflowOutcome: 'active', resourceDisposition: 'allocated' },
+    { actor: 'test' },
+  );
+  assert.equal(lifecycle.workflowOutcome, 'active');
+  assert.equal(lifecycle.resourceDisposition, 'allocated');
+  assert.equal(lifecycle.retention, undefined);
+});
+
+test('ensureTerminalRetention stamps retention for terminal allocated without reason', () => {
+  const lifecycle = ensureTerminalRetention(
+    { schemaVersion: 1, workflowOutcome: 'closed', resourceDisposition: 'allocated' },
+    { actor: 'test-actor', reason: 'test-reason', evidence: { stage: 'ready' } },
+  );
+  assert.equal(lifecycle.workflowOutcome, 'closed');
+  assert.equal(lifecycle.resourceDisposition, 'verification-required');
+  assert.equal(lifecycle.retention?.reason, 'test-reason');
+  assert.equal(lifecycle.retention?.policy, 'manual-verification-required');
+  assert.equal(lifecycle.retention?.actor, 'test-actor');
+  assert.equal(typeof lifecycle.retention?.timestamp, 'string');
+  assert.deepEqual(lifecycle.retention?.evidence, { stage: 'ready' });
+});
+
+test('ensureTerminalRetention is a no-op when retention reason is present', () => {
+  const lifecycle = ensureTerminalRetention(
+    {
+      schemaVersion: 1,
+      workflowOutcome: 'merged',
+      resourceDisposition: 'retained',
+      retention: { reason: 'operator-preserved' },
+    },
+    { actor: 'test' },
+  );
+  assert.equal(lifecycle.resourceDisposition, 'retained');
+  assert.equal(lifecycle.retention?.reason, 'operator-preserved');
+});
+
+test('ensureTerminalRetention is a no-op for reaped disposition', () => {
+  const lifecycle = ensureTerminalRetention(
+    { schemaVersion: 1, workflowOutcome: 'aborted', resourceDisposition: 'reaped' },
+    { actor: 'test' },
+  );
+  assert.equal(lifecycle.resourceDisposition, 'reaped');
+  assert.equal(lifecycle.retention, undefined);
 });

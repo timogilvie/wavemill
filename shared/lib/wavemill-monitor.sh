@@ -16182,21 +16182,25 @@ cleanup_merged_primary_challenge_task() {
 
 mark_task_aborted_for_cleanup() {
   local issue="$1" reason="${2:-challenge arm cleanup}"
-  if ! state_mutate "$STATE_FILE" '
-    if .tasks[$issue] == null then
-      .
-    else
-      .tasks[$issue].status = "aborted"
-      | .tasks[$issue].phase = "aborted"
-      # HOK-3373 (D29): settle through the shared rule. The run is settled
-      # once lifecycle.workflowOutcome says so (task-settlement.ts), the same
-      # flip task-abort.ts makes; status/phase are its legacy mirrors.
-      | .tasks[$issue].lifecycle = ((.tasks[$issue].lifecycle // {}) + {schemaVersion: 1, workflowOutcome: "aborted"})
-      | .tasks[$issue].abortedCleanupReason = $reason
-      | .tasks[$issue].abortedCleanupAt = (now | todateiso8601)
-      | .tasks[$issue].updated = (now | todateiso8601)
-    end
-  ' --arg issue "$issue" --arg reason "$reason" >/dev/null; then
+  if ! state_mutate "$STATE_FILE" \
+    "$(task_lifecycle_jq_filter '
+      if .tasks[$issue] == null then
+        .
+      else
+        (.tasks[$issue]) as $task
+        | .tasks[$issue].status = "aborted"
+        | .tasks[$issue].phase = "aborted"
+        # HOK-3373 (D29): settle through the shared rule. The run is settled
+        # once lifecycle.workflowOutcome says so (task-settlement.ts), the same
+        # flip task-abort.ts makes; status/phase are its legacy mirrors.
+        | .tasks[$issue].lifecycle = ((.tasks[$issue].lifecycle // {}) + {schemaVersion: 1, workflowOutcome: "aborted"})
+        | .tasks[$issue].lifecycle |= wm_ensure_terminal_retention("mark_task_aborted_for_cleanup"; $task)
+        | .tasks[$issue].abortedCleanupReason = $reason
+        | .tasks[$issue].abortedCleanupAt = (now | todateiso8601)
+        | .tasks[$issue].updated = (now | todateiso8601)
+      end
+    ')" \
+    --arg issue "$issue" --arg reason "$reason" >/dev/null; then
     log_warn "mark_task_aborted_for_cleanup: failed to terminalize $issue"
     return 1
   fi
