@@ -33,6 +33,7 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export const SOURCE_TEXT_ASSERTIONS_GUARD: GuardSpec = {
   name: 'source-text-assertions',
+  invariantDocs: ['docs/invariants/behavioural-tests.md'],
   findingNoun: 'source-text assertion(s) in tests',
   suppressionMarker: 'allow-source-text-assertion',
   allowlistFile: 'tools/source-text-assertions-allowlist.txt',

@@ -1,0 +1,7 @@
+---
+title: Attention
+---
+
+# Attention
+
+`attention.ts` `deriveAttentionItems()` - The one attention decision (HOK-3423): "does this task need a human, and why?" is answered only here. The pure projector reads existing records (HOK-3253 plan binding for `approve-plan`, HOK-3101 task-progress `blockingPrompt`/agent-own `agentState` for `answer-agent`, blocked-completion artifacts, the HOK-3360 `.needs-attention` `escalationBasis` for `operator-decision`/`exhausted`/`policy-terminal`, HOK-3324 `confirmed_active` incidents grouped by fingerprint) and makes no liveness, failure-class or retry decision of its own; a raw hook `error`, a retryable first occurrence or a watchdog row without an escalation marker produce no item, and a marker the HOK-3172 reconciler expired is simply gone. Ordering is a fixed kind precedence, then age. The monitor writes `.wavemill/attention.json` as the `attention-projection` tracked job (`monitor_attention_projection_tick`, HOK-3206), stamped with its pass and a `staleAfterMs`; the dashboard inbox (`render_inbox_section`) renders only that file, as stale or pending rather than empty. **Never classify inbox membership in the dashboard, decide attention from a raw hook state, re-check retry exhaustion, or read `.needs-attention` outside the escalation module, the reconciler and `attention.ts`.** Enforced by `tools/check-attention.ts` (ratchet `tools/attention-allowlist.txt`, `allow-attention: <reason>`; the Observer readers move onto the projection in slice 2/2). Replay: `tests/journeys/approve-plan-attention-item.journey.sh`.

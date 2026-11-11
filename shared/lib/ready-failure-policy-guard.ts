@@ -28,6 +28,7 @@ const POLICY_CALL = /failure_policy_decide|classifyFailure|ready_failure_classif
 
 export const READY_FAILURE_POLICY_GUARD: GuardSpec = {
   name: 'ready-failure-policy',
+  invariantDocs: ['docs/invariants/failure-policy.md'],
   findingNoun: 'unclassified Ready-failure branch(es)',
   suppressionMarker: 'allow-ready-failure-policy',
   allowlistFile: 'tools/ready-failure-policy-allowlist.txt',

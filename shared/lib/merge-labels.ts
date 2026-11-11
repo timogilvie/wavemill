@@ -5,7 +5,7 @@
  * correct label every tick and reconciles it with the GitHub label, never
  * trusting the latched label.
  *
- * See CLAUDE.md for the full invariant.
+ * See docs/invariants/merge-labels.md for the full invariant.
  */
 
 import { readStageResult } from './stage-result.ts';

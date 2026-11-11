@@ -32,6 +32,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path, { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { formatInvariantDocPointer } from '../../tools/lib/source-guard.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const defaultRepoRoot = join(dirname(__filename), '..', '..');
@@ -228,6 +229,8 @@ export function formatTestTaskLiterals(result: TestTaskLiteralResult): string {
   return [
     `test-task-literals: found ${result.findings.length} problem(s):`,
     ...result.findings.map((f, i) => `${i + 1}. ${f.file}:${f.line}:${f.column} [${f.pattern}] ${f.description}\n   ${f.text}`),
+    '',
+    ...formatInvariantDocPointer(['docs/invariants/test-state-fixtures.md']),
     '',
     'Tests seed workflow-state task rows through the schema-validated builders',
     '(HOK-3223), never a hand-written `tasks: { ... }` literal:',

@@ -22,6 +22,7 @@ const ALLOWED_DEPS_DRIFT_IMPORTERS = [
 
 export const INSTALL_VERDICT_GUARD: GuardSpec = {
   name: 'install-verdict',
+  invariantDocs: ['docs/invariants/install-health-verdict.md'],
   findingNoun: 'private install-health/lock-comparison decision(s)',
   suppressionMarker: 'allow-install-verdict',
   allowlistFile: 'tools/install-verdict-allowlist.txt',

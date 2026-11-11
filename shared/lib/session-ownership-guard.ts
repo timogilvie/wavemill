@@ -22,6 +22,7 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export const SESSION_OWNERSHIP_GUARD: GuardSpec = {
   name: 'session-ownership',
+  invariantDocs: ['docs/invariants/session-ownership-cost.md'],
   findingNoun: 'session-ownership violation(s)',
   suppressionMarker: 'allow-session-ownership',
   allowlistFile: 'tools/session-ownership-allowlist.txt',

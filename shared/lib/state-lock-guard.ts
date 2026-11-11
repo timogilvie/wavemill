@@ -1,6 +1,7 @@
 import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 export const STATE_LOCK_GUARD: GuardSpec = {
   name: 'state-lock', findingNoun: 'private state-lock site(s)', suppressionMarker: 'allow-state-lock', allowlistFile: 'tools/state-lock-allowlist.txt',
+  invariantDocs: ['docs/invariants/state-lock.md'],
   invariantPaths: ['shared/lib/state-lock.ts', 'shared/lib/state-lock.sh', 'shared/lib/process-identity.ts', 'shared/lib/process-identity.sh', 'shared/lib/state-lock-guard.ts'],
   excludedPrefixes: ['features/', '.wavemill/', 'node_modules/', 'worktrees/', 'spike/', '.git/', 'tests/'],
   patterns: [

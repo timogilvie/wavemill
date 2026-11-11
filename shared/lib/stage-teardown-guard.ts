@@ -20,6 +20,7 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export const STAGE_TEARDOWN_GUARD: GuardSpec = {
   name: 'stage-teardown',
+  invariantDocs: ['docs/invariants/stage-teardown.md'],
   findingNoun: 'raw pane-kill / terminate call(s) outside stage_agent_teardown',
   suppressionMarker: 'allow-stage-teardown',
   allowlistFile: 'tools/stage-teardown-allowlist.txt',

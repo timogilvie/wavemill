@@ -2,7 +2,8 @@
  * Preflight guard (HOK-3235): every `WAVEMILL_*` env token in code must have
  * an entry in `docs/feature-flags.md` or in the seeded plumbing baseline
  * (`tools/feature-flags-baseline.txt`), and the open-shadow list is capped at
- * {@link MAX_OPEN_SHADOWS}. See CLAUDE.md and docs/feature-flags.md for the
+ * {@link MAX_OPEN_SHADOWS}. See docs/invariants/feature-flags.md and
+ * docs/feature-flags.md for the
  * policy and the `// allow-feature-flag:` suppression marker.
  */
 import { existsSync, readFileSync } from 'node:fs';
@@ -10,6 +11,7 @@ import path, { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveLinearIssueId } from './task-identity.ts';
+import { formatInvariantDocPointer } from '../../tools/lib/source-guard.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const defaultRepoRoot = join(dirname(__filename), '..', '..');
@@ -536,6 +538,8 @@ export function formatFeatureFlagResult(result: FeatureFlagResult): string {
     }),
     '',
     ...warnLines,
+    '',
+    ...formatInvariantDocPointer(['docs/invariants/feature-flags.md']),
     '',
     'Every WAVEMILL_* flag goes in docs/feature-flags.md (open-shadow or kill-switch table)',
     'or, when it is permanent plumbing (SESSION, ISSUE, *_LOADED, debug-only path), in',

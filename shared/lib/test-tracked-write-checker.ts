@@ -3,6 +3,7 @@ import path, { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
+import { formatInvariantDocPointer } from '../../tools/lib/source-guard.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const defaultRepoRoot = join(dirname(__filename), '..', '..');
@@ -146,6 +147,8 @@ export function formatTestTrackedWrites(result: TrackedWriteResult): string {
     ...result.findings.map((f, i) => (
       `${i + 1}. ${f.file}:${f.line}:${f.column} ${f.callee}('${f.path}')`
     )),
+    '',
+    ...formatInvariantDocPointer(['docs/invariants/test-tracked-writes.md']),
     '',
     'Tests must not write tracked repo files (HOK-3157): a killed run skips cleanup and',
     'leaves the worktree dirty, parking the coding handoff. Write to a mkdtemp dir and',

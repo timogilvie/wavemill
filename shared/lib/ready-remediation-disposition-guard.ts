@@ -15,6 +15,10 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
  */
 export const READY_REMEDIATION_DISPOSITION_GUARD: GuardSpec = {
   name: 'ready-remediation-disposition',
+  invariantDocs: [
+    'docs/invariants/ready-remediation-disposition.md',
+    'docs/invariants/stage-agent-disposition.md',
+  ],
   findingNoun: 'private stage-agent / Ready in-flight decision(s)',
   suppressionMarker: 'allow-ready-remediation-disposition',
   allowlistFile: 'tools/ready-remediation-disposition-allowlist.txt',
