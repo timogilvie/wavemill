@@ -1,15 +1,11 @@
 #!/usr/bin/env -S npx tsx
 /**
  * Consolidation gate (HOK-3470): a PR labelled `consolidation` must reduce net
- * production lines.
- *
- * Production = tracked `.ts`/`.sh` under `shared/lib`, `shared/hooks` and
- * `tools`, excluding tests, fixtures, allowlists and docs. One predicate
- * filters both sides, so excluded lines never count either way. The
- * declaration is read from one place: the GitHub PR (label + body). A
- * deliberate exception is recorded in the PR body as
+ * production lines (tracked `.ts`/`.sh` under `shared/lib`, `shared/hooks` and
+ * `tools`, excluding tests, fixtures, allowlists and docs; one predicate
+ * filters both sides). The declaration is read from one place: the GitHub PR
+ * (label + body). A deliberate exception is recorded in the PR body as
  * `Consolidation Exception: <reason>`; `tools/weekly-scorecard.ts` lists them.
- *
  * Exit codes: 0 pass (including a genuine no-PR event), 1 consolidation policy
  * failure, 2 the delta or PR read failed on a PR event (never a false green).
  */
@@ -94,7 +90,8 @@ function parsePrJson(json: string): PrMeta | null {
 }
 /** Read the PR label + body once; null when there is no PR (push/schedule). */
 export function readPrMeta(repoDir: string): PrMeta | null {
-  const prJson = tryRun(`gh pr view ${process.env.PR_NUMBER ?? ''} --json number,labels,body`, repoDir);
+  const prNumber = process.env.PR_NUMBER;
+  const prJson = tryRun(`gh pr view ${prNumber ? escapeShellArg(prNumber) : ''} --json number,labels,body`, repoDir);
   if (prJson) return parsePrJson(prJson);
   const branch = process.env.GITHUB_HEAD_REF ?? '';
   const issueJson = branch ? tryRun(`gh issue view ${escapeShellArg(branch)} --json number,labels,body`, repoDir) : null;
