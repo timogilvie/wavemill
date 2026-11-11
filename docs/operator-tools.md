@@ -72,6 +72,7 @@ Each one repairs historical records once. Most were written for a specific past 
 | `tools/collect-static-features.ts` | Collects static features (type and lint errors, build, complexity) from a checkout | No |
 | `tools/extract-candidate-features.ts` | Extracts Arbiter candidate features from a checkout and PR | No |
 | `tools/discover-ci-checks.ts` | Lists a GitHub repo's required checks | No |
+| `tools/weekly-scorecard.ts` | Weekly consolidation scorecard: total production lines, `wavemill-monitor.sh` lines, and exceptions used in the last 7 days (HOK-3470) | No |
 
 ## Setup
 
