@@ -7,7 +7,7 @@ description: Turn a wavemill bug (stuck task, Backstage item, wrong terminal sta
 
 Wavemill bugs mostly come from one source: **the same decision is made in more than one place, and the copies disagree.** A point fix patches one copy, the other copies keep failing, and the next incident arrives as a "new" bug. This skill writes issues that remove the duplication instead.
 
-The governing rules come from the reliability epics (HOK-3173, HOK-3178, HOK-3219) and the invariants documented in the repo's agent instructions file (for example `CLAUDE.md` or `AGENTS.md`, whichever your agent loads):
+The governing rules come from the reliability epics (HOK-3173, HOK-3178, HOK-3219) and the invariants indexed in the repo's agent instructions file (`CLAUDE.md` for Claude, `AGENTS.md` for Codex — whichever your agent loads). Each index line links the full rule under `docs/invariants/`: read that file before proposing a fix that touches it.
 - One primitive, applied everywhere, enforced by a CI guard.
 - A fix that only adds a terminal cause, marker, classifier string, flag or retry bucket gets pushed back. Fixes consolidate, with a net-deletion target.
 - Every incident becomes a replay fixture.

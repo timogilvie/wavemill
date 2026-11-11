@@ -20,6 +20,7 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export const WORLD_LIFETIME_GUARD: GuardSpec = {
   name: 'world-lifetime',
+  invariantDocs: ['docs/invariants/golden-journeys.md'],
   findingNoun: 'private test-world lifetime / tmux resolution site(s)',
   suppressionMarker: 'allow-world-lifetime',
   allowlistFile: 'tools/world-lifetime-allowlist.txt',

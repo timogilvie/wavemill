@@ -30,6 +30,7 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export const HOOK_TTL_GUARD: GuardSpec = {
   name: 'hook-ttl',
+  invariantDocs: ['docs/invariants/task-progress.md'],
   findingNoun: 'private hook-TTL liveness check(s)',
   suppressionMarker: 'allow-hook-ttl',
   allowlistFile: 'tools/hook-ttl-allowlist.txt',

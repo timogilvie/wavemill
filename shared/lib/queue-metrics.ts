@@ -79,7 +79,8 @@
  *
  * ## Cost-ledger join
  *
- * CLAUDE.md names `session-ownership.ts` + `sdk-task-cost/meter.ts` as the
+ * docs/invariants/session-ownership-cost.md names `session-ownership.ts` +
+ * `sdk-task-cost/meter.ts` as the
  * **one** cost engine — "Never add a second cost engine." The event schema
  * carries no durations or tokens, so cost/duration data is an **optional
  * injected join**, never read here. When provided, the module sums whatever

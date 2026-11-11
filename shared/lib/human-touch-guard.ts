@@ -1,13 +1,15 @@
 /**
  * HOK-3455 — preflight guard enforcing one classifier for operator touches.
  *
- * Built on `tools/lib/source-guard.ts`; the invariant lives in CLAUDE.md.
+ * Built on `tools/lib/source-guard.ts`; the invariant lives in
+ * `docs/invariants/operator-touch.md`.
  */
 
 import type { GuardSpec } from '../tools/lib/source-guard.ts';
 
 export const HUMAN_TOUCH_GUARD: GuardSpec = {
   name: 'human-touch',
+  invariantDocs: ['docs/invariants/operator-touch.md'],
   findingNoun: 'secondary human-touch filter(s)',
   suppressionMarker: 'allow-human-touch',
   allowlistFile: 'tools/human-touch-allowlist.txt',

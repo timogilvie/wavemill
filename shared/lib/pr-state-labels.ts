@@ -2,8 +2,8 @@
  * PR state label writers (HOK-3181)
  *
  * Mechanical label mutation helpers. For wm:ready / wm:blocked writes, callers
- * MUST go through the reconciler in shared/lib/merge-labels.ts (see CLAUDE.md
- * for the merge label reconciler invariant). Direct writes of wm:ready /
+ * MUST go through the reconciler in shared/lib/merge-labels.ts (see
+ * docs/invariants/merge-labels.md for the merge label reconciler invariant). Direct writes of wm:ready /
  * wm:blocked are forbidden outside the reconciler.
  *
  * Lane progression labels (wm:merging, wm:merged, wm:superseded) are OUT OF

@@ -1,13 +1,14 @@
 /**
  * Shared framework for preflight source guards (HOK-3236).
  *
- * Every "never do X" invariant in CLAUDE.md is enforced by a guard built on
- * this module: a {@link GuardSpec} names the forbidden shapes (line-oriented
- * regexes, plus optional structural checks for rules a single line cannot
- * express), the invariant source that is allowed to contain them, an inline
- * suppression marker, and a ratcheting allowlist. {@link runSourceGuard} scans
- * every tracked source file once and returns findings; {@link formatGuardResult}
- * renders them with the standard remediation footer.
+ * Every "never do X" invariant lives in a file under `docs/invariants/` and is
+ * enforced by a guard built on this module: a {@link GuardSpec} names the
+ * forbidden shapes (line-oriented regexes, plus optional structural checks for
+ * rules a single line cannot express), the invariant source that is allowed to
+ * contain them, an inline suppression marker, and a ratcheting allowlist.
+ * {@link runSourceGuard} scans every tracked source file once and returns
+ * findings; {@link formatGuardResult} renders them with the standard remediation
+ * footer, pointing at the full invariant text.
  *
  * Shared semantics (identical for every guard):
  *
@@ -29,8 +30,16 @@
  *   own line is reported and not honoured.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import path, { join } from 'node:path';
+import path, { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * The repo that defines the guards. `invariantDocs` is repo-relative to this
+ * checkout, not to whatever `repoDir` a test or fixture asks a guard to scan —
+ * a fixture repo carries the offenders, not the documentation.
+ */
+const guardRepoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 export type GuardLang = 'ts' | 'sh' | 'both';
 
@@ -87,6 +96,14 @@ export interface GuardSpec {
   allowlistFile: string;
   /** The invariant source and the guard's own spec file; never scanned. */
   invariantPaths: readonly string[];
+  /**
+   * Full invariant docs (`docs/invariants/<name>.md`), repo-relative to the
+   * checkout that defines the guard. Their paths are printed in failure output
+   * so an agent that trips the guard is sent to the full text, and each must
+   * exist there (a missing file is its own finding, independent of which repo
+   * a caller scans).
+   */
+  invariantDocs?: readonly string[];
   patterns: readonly GuardPattern[];
   structuralChecks?: readonly StructuralCheck[];
   /** Explanation lines printed before the standard allowlist/suppression footer. */
@@ -411,18 +428,37 @@ export function runSourceGuard(spec: GuardSpec, repoDir: string): GuardResult {
     }
   }
 
+  for (const doc of spec.invariantDocs ?? []) {
+    if (existsSync(join(guardRepoRoot, doc))) continue;
+    findings.push({
+      file: doc,
+      line: 1,
+      column: 1,
+      pattern: 'missing-invariant-doc',
+      description: `invariant doc ${doc} does not exist; update invariantDocs in the guard spec`,
+      text: doc,
+    });
+  }
+
   return { ok: findings.length === 0, scannedFiles, findings };
+}
+
+/** `Full invariant: <path>` lines naming the invariant docs, or an empty list. */
+export function formatInvariantDocPointer(docs: readonly string[] | undefined): string[] {
+  return (docs ?? []).map((doc) => `Full invariant: ${doc}`);
 }
 
 /** Render a result: one ok line, or the numbered findings plus the remediation footer. */
 export function formatGuardResult(spec: GuardSpec, result: GuardResult): string {
   if (result.ok) return `${spec.name}: ok (${result.scannedFiles} files scanned)`;
+  const docLines = formatInvariantDocPointer(spec.invariantDocs);
   return [
     `${spec.name}: found ${result.findings.length} ${spec.findingNoun}:`,
     ...result.findings.map((f, i) => (
       `${i + 1}. ${f.file}:${f.line}:${f.column} [${f.pattern}] ${f.description}\n   ${f.text}`
     )),
     '',
+    ...(docLines.length > 0 ? [...docLines, ''] : []),
     ...spec.remediation,
     `For a justified exception, add the path to ${spec.allowlistFile} with a "# reason",`,
     `or suppress one line with: // ${spec.suppressionMarker}: <reason>  (use # in shell).`,

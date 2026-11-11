@@ -16,6 +16,7 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export const PROVIDER_IDENTITY_GUARD: GuardSpec = {
   name: 'provider-identity',
+  invariantDocs: ['docs/invariants/provider-identity.md'],
   findingNoun: 'requested-model executedModel assignment(s)',
   suppressionMarker: 'allow-provider-identity',
   allowlistFile: 'tools/provider-identity-allowlist.txt',

@@ -50,6 +50,10 @@ const FUNCTION_DECL = /^(export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s
 
 interface TopLevelFunction {
   name: string;
+  invariantDocs: [
+    'docs/invariants/stage-launchability.md',
+    'docs/invariants/route-override-record.md',
+  ],
   exported: boolean;
   /** 1-indexed declaration line. */
   line: number;

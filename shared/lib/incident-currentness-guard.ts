@@ -3,6 +3,7 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export const INCIDENT_CURRENTNESS_GUARD: GuardSpec = {
   name: 'incident-currentness', findingNoun: 'private incident currentness decision(s)',
+  invariantDocs: ['docs/invariants/incident-currentness.md'],
   suppressionMarker: 'allow-incident-currentness', allowlistFile: 'tools/incident-currentness-allowlist.txt',
   invariantPaths: ['shared/lib/incident-filing-reconciler.ts', 'shared/lib/incident-currentness-guard.ts'],
   patterns: [

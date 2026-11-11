@@ -22,6 +22,7 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export const SIDE_EFFECT_LEDGER_GUARD: GuardSpec = {
   name: 'side-effect-ledger',
+  invariantDocs: ['docs/invariants/side-effect-ledger.md'],
   findingNoun: 'external side-effect site(s) outside the recorded budget',
   suppressionMarker: 'allow-side-effect-ledger',
   allowlistFile: 'tools/side-effect-ledger-allowlist.txt',

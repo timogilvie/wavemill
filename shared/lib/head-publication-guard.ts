@@ -58,6 +58,7 @@ const SHELL_RAW_HEAD_FRESHNESS =
  */
 export const HEAD_PUBLICATION_GUARD: GuardSpec = {
   name: 'head-publication',
+  invariantDocs: ['docs/invariants/head-publication.md'],
   findingNoun: 'head publication(s) or raw head-freshness comparison(s) outside the seam',
   suppressionMarker: 'allow-head-publication',
   allowlistFile: 'tools/head-publication-allowlist.txt',
