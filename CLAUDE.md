@@ -88,7 +88,7 @@ All business logic lives in `shared/lib/` for reusability across CLI tools, comm
 - **Native loop budget** — Native coding uses the shared loop budget; entire tool batches, including invalid calls, are admitted before dispatch. Guard: `tools/check-stage-exit-identity.ts`. → [docs/invariants/native-loop-budget.md](docs/invariants/native-loop-budget.md)
 - `prompt-utils.ts` - Prompt template filling
 - **Output reservation (HOK-3448)** — `AdapterLimits.reservedOutputTokens` is context space for input preflight, distinct from the explicit invocation cap `AdapterInvokeOptions.maxOutputTokens`. Guard: `tools/check-output-reservation.ts`. → [docs/invariants/output-reservation.md](docs/invariants/output-reservation.md)
-- **Review result (HOK-3448)** — One review result (HOK-3448). Guard: `tools/check-review-report-boundary.ts`. → [docs/invariants/review-result.md](docs/invariants/review-result.md)
+- **Review result (HOK-3448)** — `claude-cli-output.ts` is the only interpreter of Claude CLI stdout; `review-engine.ts` never decides review completion from text shape. Guard: `tools/check-review-report-boundary.ts`. → [docs/invariants/review-result.md](docs/invariants/review-result.md)
 - `llm-cli.ts` - Claude CLI integration
 - `string-utils.ts` - String manipulation (kebab-case, etc.)
 - `shell-utils.ts` - Safe shell command execution

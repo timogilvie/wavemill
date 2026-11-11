@@ -50,10 +50,6 @@ const FUNCTION_DECL = /^(export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s
 
 interface TopLevelFunction {
   name: string;
-  invariantDocs: [
-    'docs/invariants/stage-launchability.md',
-    'docs/invariants/route-override-record.md',
-  ],
   exported: boolean;
   /** 1-indexed declaration line. */
   line: number;
@@ -197,6 +193,10 @@ const PRIVATE_ROUTE_CHANGE_FLAG = new RegExp([
 
 export const STAGE_LAUNCHABILITY_GUARD: GuardSpec = {
   name: 'stage-launchability',
+  invariantDocs: [
+    'docs/invariants/stage-launchability.md',
+    'docs/invariants/route-override-record.md',
+  ],
   findingNoun: 'routing exit(s) that bypass finalizeDecision or the route record',
   suppressionMarker: 'allow-stage-launchability',
   allowlistFile: 'tools/stage-launchability-allowlist.txt',
