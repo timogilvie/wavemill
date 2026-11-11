@@ -1614,7 +1614,7 @@ render_pending_challenge_arms() {
   local issue="${1:-}"
   [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
   challenge_arms_list_all_pending "$issue" | jq -r '.[]
-    | "⏳ challenger \(.key) \(.challengeArmState) · \(.variedStage // "?") stage · \(.role // "challenger")"' \
+    | "⏳ challenger \(.key) \(.challengeArmState | gsub("_"; " ")) · \(.variedStage // "?") stage · \(.role // "challenger")"' \
     2>/dev/null || true
 }
 
