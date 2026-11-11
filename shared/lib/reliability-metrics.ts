@@ -48,7 +48,7 @@ import {
   type TransitionInput,
 } from './task-progress.ts';
 import { resolveEvalsDir } from './evals-paths.ts';
-import { getReliabilityConfig, loadWavemillConfig } from './config.ts';
+import { getReliabilityConfig, loadWavemillConfig, type ResolvedWorkingHoursConfig } from './config.ts';
 import { errorMessage } from './error-utils.ts';
 import {
   INTERVENTION_CLASSES,
@@ -68,6 +68,7 @@ import {
   deriveAgentActivityWindows,
   detectManualEdits,
   readOperatorHandoffIntervals,
+  readStageResultSync,
   detectSessionRedirects,
   type PrCommit,
 } from './intervention-detector.ts';
@@ -82,7 +83,24 @@ import { fetchPrTimeline, type GhRunner, type PrTimelineEvent } from './pr-timel
 import { readLaneProgress, mergeLaneStateDir } from './merge-queue.ts';
 import { resolveProjectsDirs } from './wavemill-session-paths.ts';
 import { parseTaskId } from './task-identity.ts';
-import { aggregateStallCauses, deriveStallCause, STALL_CAUSES, type CauseSpan, type StallCause } from './stall-cause.ts';
+import {
+  aggregateStallCauses,
+  aggregateStallGates,
+  deriveGateTimeline,
+  deriveStallGate,
+  STALL_CAUSES,
+  STALL_GATES,
+  STALL_STAGES,
+  type GateEvidence,
+  type StallCause,
+  type StallGate,
+  type StallGateAggregate,
+  type StallGateIntervalInput,
+  type StallStage,
+} from './stall-cause.ts';
+import { isAgentWaitingState } from './attention.ts';
+import { readEscalationMarker } from './operator-escalation.ts';
+import { locateHeadMoves } from './head-move-record.ts';
 
 export type { InterventionClass } from './operator-intervention.ts';
 
@@ -160,6 +178,32 @@ export interface StallInterval {
   cause?: StallCause;
   /** Supporting fact for the cause. */
   causeDetail?: string;
+  /** The gate that held the task for most of the interval (HOK-3468). */
+  gate?: StallGate;
+  /** The stage that gate belongs to. */
+  stage?: StallStage;
+  /** How the interval's duration divides across gates. */
+  gateSplit?: Array<{ gate: StallGate; stage: StallStage; ms: number; missing?: string[] }>;
+  /** Records that were looked for and not found, for `unknown` portions. */
+  missingEvidence?: string[];
+  /** A person acted in the window around the interval's end (HOK-3468). */
+  endedByPerson?: boolean;
+  /** The interval's duration outside working hours (HOK-3468). */
+  offHoursMs?: number;
+  /** The agent's own last HOK-3101 record state when the interval opened. */
+  agentLastState?: HookState | null;
+}
+
+/** One gate's totals in a bucket (HOK-3468). */
+export type StallGateRow = StallGateAggregate;
+
+/** `unknown` stuck time in a bucket, with the records that were missing. */
+export interface UnknownStallEvidence {
+  issue: string | null;
+  from: string;
+  to: string;
+  hours: number;
+  missing: string[];
 }
 
 export interface ReliabilityBucket {
@@ -191,6 +235,12 @@ export interface ReliabilityBucket {
   tasksWithUnattributedCommits: number;
   /** Stalls over 1h by cause. */
   stallCauses: Record<StallCause, { stalls: number; hours: number }>;
+  /** Stuck time split by the gate that held each task (HOK-3468), fixed order. */
+  stallGates: StallGateRow[];
+  /** Off-hours stuck time on intervals that ended with an operator action. */
+  waitedForPerson: { hours: number; stuckHours: number; share: number | null };
+  /** `unknown` portions of stalls, each naming the records that were missing. */
+  unknownEvidence: UnknownStallEvidence[];
   /** Mill-run tasks only (`TaskReliability.isMillTask`); the fields above cover every merged PR. */
   millMerged: number;
   millUnattended: number;
@@ -928,13 +978,19 @@ export function collectOperatorTouches(opts: CollectTouchesOptions): TouchEvent[
   };
   const raw: RawTouch[] = [];
 
+  // HOK-3468: transcripts carry the provenance flags the eval copies lack, so
+  // when they were readable they are the source of truth for session redirects
+  // and the eval copies of the same messages are dropped. Eval rows remain the
+  // fallback once the transcripts are gone (reaped archives).
+  const sessionRedirects = readSessionRedirectTouches(task, ctx);
+
   raw.push(...readOperatorEvents(resolveTaskSource(task, 'operator-events.jsonl')));
   raw.push(...readOperatorInterventionArtifacts(resolveTaskSource(task, 'operator-intervention.json')));
   raw.push(...readOperatorHandoffTouches(task, ctx));
   raw.push(...readPaneMessageTouches(resolveTaskSource(task, 'terminal-history.jsonl')));
-  raw.push(...readEvalInterventions(ctx.evals, task));
+  raw.push(...readEvalInterventions(ctx.evals, task, { dropSessionRedirects: sessionRedirects.transcriptsRead }));
   raw.push(...readTouchLog(ctx.touchLog, task));
-  raw.push(...readSessionRedirectTouches(task, ctx));
+  raw.push(...sessionRedirects.touches);
 
   const timeline = opts.timeline !== undefined ? opts.timeline : readTaskTimeline(task, ctx);
   if (timeline) {
@@ -1055,7 +1111,11 @@ function evalRowsForTask(evals: EvalsIndex | undefined, task: MergedTaskRef): Ev
   return [...rows];
 }
 
-function readEvalInterventions(evals: EvalsIndex | undefined, task: MergedTaskRef): RawTouch[] {
+function readEvalInterventions(
+  evals: EvalsIndex | undefined,
+  task: MergedTaskRef,
+  opts: { dropSessionRedirects?: boolean } = {},
+): RawTouch[] {
   const touches: RawTouch[] = [];
   for (const row of evalRowsForTask(evals, task)) {
     // Prefer per-event timestamps when available
@@ -1071,8 +1131,12 @@ function readEvalInterventions(evals: EvalsIndex | undefined, task: MergedTaskRe
         // dedupe correctly. Session-redirect eval rows dedupe with transcript
         // redirects; operator_recovery dedupes with operator-intervention artifacts.
         let kind: TouchKind;
-        if (detector === 'session_redirect') kind = 'session-redirect';
-        else if (detector === 'operator_recovery') kind = 'operator-intervention';
+        if (detector === 'session_redirect') {
+          // HOK-3468: the transcript source is better informed; when it was
+          // readable these rows are stale copies and must not outvote it.
+          if (opts.dropSessionRedirects) continue;
+          kind = 'session-redirect';
+        } else if (detector === 'operator_recovery') kind = 'operator-intervention';
         else if (detector === 'manual_edit') kind = 'manual-push';
         else kind = 'eval-intervention';
         const raw = (ev.note ?? '').replace(/^\[[a-z_]+\]\s*/, '');
@@ -1111,25 +1175,22 @@ function sessionKindForWindow(windows: import('./session-ownership.ts').OwnedSes
   return windows.find((w) => w.sessionRef === sessionId)?.kind;
 }
 
-function readSessionRedirectTouches(task: MergedTaskRef, ctx: ReliabilityContext): RawTouch[] {
-  if (!task.worktree || !task.branch) return [];
+function readSessionRedirectTouches(
+  task: MergedTaskRef,
+  ctx: ReliabilityContext,
+): { touches: RawTouch[]; transcriptsRead: boolean } {
+  if (!task.worktree || !task.branch) return { touches: [], transcriptsRead: false };
   const result = detectSessionRedirects(task.worktree, task.branch, task.issue, ctx.repoDir);
-  return result.messages.map((msg) => {
-    const byFile = new Map<string, number>();
-    // Recompute first-message index per file for this message.
-    // (Simpler: detectSessionRedirects already skipped first owned messages;
-    // remaining messages are never first in their session.)
-    const firstInOwnedSession = false;
-    return {
-      kind: 'session-redirect' as const,
-      at: msg.timestamp ?? task.mergedAt,
-      detail: msg.content.slice(0, 100),
-      text: msg.content,
-      provenance: msg.provenance,
-      sessionKind: sessionKindForWindow(result.ownedWindows, msg.sessionId),
-      firstInOwnedSession,
-    };
-  });
+  const touches = result.messages.map((msg) => ({
+    kind: 'session-redirect' as const,
+    at: msg.timestamp ?? task.mergedAt,
+    detail: msg.content.slice(0, 100),
+    text: msg.content,
+    provenance: msg.provenance,
+    sessionKind: sessionKindForWindow(result.ownedWindows, msg.sessionId),
+    firstInSession: msg.firstInSession === true,
+  }));
+  return { touches, transcriptsRead: result.transcriptsRead };
 }
 
 function readTaskTimeline(task: MergedTaskRef, ctx: ReliabilityContext): PrTimelineEvent[] | null {
@@ -1296,6 +1357,8 @@ export interface ComputeTimeStuckResult {
   stuckMs: number;
   coverage: MetricCoverage;
   stallIntervals: StallInterval[];
+  /** Facts naming each stall's gate (HOK-3468); absent when there was no evidence. */
+  gateEvidence?: GateEvidence;
 }
 
 /**
@@ -1349,72 +1412,387 @@ export function computeTimeStuck(opts: ComputeTimeStuckOptions): ComputeTimeStuc
   const live = evidence.filter((e) => e.atMs >= startMs);
   const stallIntervals = replayStallIntervals(live, { endMs, stallMinutes: opts.stallMinutes });
   const coverage: MetricCoverage = historyRecords >= 2 ? 'full' : 'partial';
-  return { stuckMs: sumStallMs(stallIntervals), coverage, stallIntervals };
+  const gateEvidence = opts.context ? readGateEvidence(task, opts.context, hookEvidence) : undefined;
+  return {
+    stuckMs: sumStallMs(stallIntervals),
+    coverage,
+    stallIntervals,
+    ...(gateEvidence ? { gateEvidence } : {}),
+  };
 }
 
-function deriveStageAgentSpans(task: MergedTaskRef): CauseSpan[] {
-  const dirs = {
+/** Task artifact locations, live first then the reap archive (HOK-2891). */
+function taskArtifactDirs(task: MergedTaskRef): Parameters<typeof readOperatorHandoffIntervals>[0] {
+  return {
     featureDirs: task.featureDir && existsSync(task.featureDir) ? [task.featureDir] : [],
     ...(task.archiveDir ? { archiveDir: task.archiveDir } : {}),
   };
-  return deriveAgentActivityWindows(dirs).map((w) => ({
-    cause: 'stage-agent' as StallCause,
-    fromMs: w.start,
-    toMs: w.end,
-    detail: `${w.stage} window`,
-  }));
 }
 
-function deriveOperatorAttentionSpans(task: MergedTaskRef): CauseSpan[] {
-  const dirs = {
-    featureDirs: task.featureDir && existsSync(task.featureDir) ? [task.featureDir] : [],
-    ...(task.archiveDir ? { archiveDir: task.archiveDir } : {}),
+/** The task's state dir (live feature dir, else the archive) for marker reads. */
+function taskStateDir(task: MergedTaskRef): string | null {
+  if (task.featureDir && existsSync(task.featureDir)) return task.featureDir;
+  if (task.archiveDir) return task.archiveDir;
+  return null;
+}
+
+/** Local evidence (`resolveTaskSource`) name missing, for the `missing` list. */
+function missingRecord(task: MergedTaskRef, name: string): string | null {
+  return resolveTaskSource(task, name) ? null : `no .${name}`;
+}
+
+/**
+ * Read every record the gate timeline needs (HOK-3468). Pure IO over existing
+ * artifacts: it makes no liveness, retry or failure decision — the timeline in
+ * `stall-cause.ts` turns these facts into gates.
+ */
+export function readGateEvidence(
+  task: MergedTaskRef,
+  ctx: ReliabilityContext,
+  hookEvidence: ProgressEvidence[] = [],
+): GateEvidence {
+  const launchRows = locateOwnershipRows({
+    repoDir: ctx.repoDir,
+    issueId: task.issue,
+    slug: task.slug,
+    worktreePath: task.worktree,
+  });
+  const launches = [];
+  const helperLaunches = [];
+  for (const row of launchRows.rows) {
+    const atMs = parseMs(row.launchedAt);
+    if (atMs === null) continue;
+    if (row.kind.startsWith('helper:')) {
+      helperLaunches.push({ atMs });
+    } else {
+      launches.push({ kind: row.kind, atMs, ...(row.stage ? { stage: row.stage } : {}) });
+    }
+  }
+  launches.sort((a, b) => a.atMs - b.atMs);
+
+  // Stage results (planning/coding/review/ready), one file each.
+  const stageResults: NonNullable<GateEvidence['stageResults']> = [];
+  const resultByName = new Map<string, ReturnType<typeof readStageResultSync>>();
+  const stageResultPresent = new Set<string>();
+  for (const stage of ['planning', 'coding', 'review', 'ready'] as const) {
+    const resultPath = resolveTaskSource(task, `${stage}-result.json`);
+    if (resultPath) stageResultPresent.add(stage);
+    const result = readStageResultSync(resultPath ?? '');
+    resultByName.set(stage, result);
+    const startedAtMs = parseMs(result?.startedAt);
+    if (result == null || startedAtMs === null) continue;
+    const finishedAtMs = parseMs(result.finishedAt);
+    const verdict = (result.artifacts as { verdict?: unknown } | undefined)?.verdict;
+    stageResults.push({
+      stage,
+      status: result.status,
+      startedAtMs,
+      finishedAtMs,
+      ...(typeof verdict === 'string' ? { verdict } : {}),
+    });
+  }
+
+  // Agent-own hook records (HOK-3101 invariant 2: only agent writes). This is
+  // evidence, not a liveness decision — the shared `isAgentWaitingState`
+  // predicate in `attention.ts` reads it.
+  const agentRecords = hookEvidence
+    .filter((e) => e.kind === 'hook' && e.hook && e.hook.event !== 'SessionActivity' && hookWriter(e.hook) === 'agent')
+    .map((e) => ({ atMs: e.atMs, state: String(e.hook?.state ?? '') }));
+  const reviewCompleteHookMs = firstHookEventMs(hookEvidence, 'review_complete');
+  const readyCompleteHookMs = firstHookEventMs(hookEvidence, 'ready_complete');
+
+  // Head moves: stage publication times.
+  const headMoves = locateHeadMoves({
+    repoDir: ctx.repoDir,
+    issueId: task.issue,
+    slug: task.slug,
+    worktreePath: task.worktree,
+  });
+  const headMoveMs = (stage: string): number | null => {
+    let best: number | null = null;
+    for (const row of headMoves) {
+      if (row.stage !== stage) continue;
+      const ms = parseMs(row.publishedAt);
+      if (ms === null) continue;
+      if (best === null || ms < best) best = ms;
+    }
+    return best;
   };
-  return readOperatorHandoffIntervals(dirs).map((interval) => ({
-    cause: 'operator-attention' as StallCause,
+
+  // Plan approval (HOK-3253 binding, else a completed planning result, else an
+  // `approve` operator event).
+  const planApprovalMs = readPlanApprovalMs(task, resultByName.get('planning'));
+
+  const reviewCompleteMs = earliestFinite([
+    completedFinishedMs(resultByName.get('review')),
+    headMoveMs('review'),
+    reviewCompleteHookMs,
+  ]);
+  const readyCompleteMs = earliestFinite([
+    completedFinishedMs(resultByName.get('ready')),
+    headMoveMs('ready'),
+    readyCompleteHookMs,
+  ]);
+  const laneEnteredMs = task.prNumber
+    ? parseMs(readLaneProgress(task.prNumber, ctx.repoDir)?.enteredLaneAt)
+    : null;
+
+  // Attention spans: resolved dirty-tree handoffs, plus a live escalation marker.
+  const attentionSpans = readOperatorHandoffIntervals(taskArtifactDirs(task)).map((interval) => ({
     fromMs: interval.detectedAt,
     toMs: interval.resolvedAt,
     detail: 'dirty-tree handoff',
   }));
+  const stateDir = taskStateDir(task);
+  const marker = stateDir ? readEscalationMarker(stateDir) : null;
+  const markerMs = parseMs(marker?.writtenAt);
+  if (markerMs !== null) {
+    const nextLaunch = launches.find((launch) => launch.atMs > markerMs)?.atMs;
+    const endMs = parseMs(task.mergedAt) ?? Date.now();
+    const toMs = Math.min(endMs, nextLaunch ?? endMs);
+    if (toMs > markerMs) {
+      attentionSpans.push({ fromMs: markerMs, toMs, detail: marker?.reason ?? 'operator escalation' });
+    }
+  }
+
+  const missingRecords: string[] = [];
+  if (launchRows.files.length === 0) missingRecords.push('no .session-ownership.jsonl');
+  const absent = (name: string) => {
+    const value = missingRecord(task, name);
+    if (value) missingRecords.push(value);
+  };
+  // Reuse the stage-result lookup above rather than naming the file again, so
+  // this diagnostic label cannot drift into a second private lookup site.
+  if (!stageResultPresent.has('review')) missingRecords.push('no .review-result.json');
+  absent('plan-packet-hash');
+  absent('head-moves.jsonl');
+  if (agentRecords.length === 0) missingRecords.push('no .terminal-history.jsonl');
+  if (task.prNumber && laneEnteredMs === null) {
+    missingRecords.push(`no tend lane receipt (.wavemill/merge-lane/${task.prNumber}/progress.json)`);
+  }
+
+  return {
+    launches,
+    helperLaunches,
+    stageResults,
+    agentRecords,
+    planApprovalMs,
+    reviewCompleteMs,
+    readyCompleteMs,
+    laneEnteredMs,
+    mergedMs: parseMs(task.mergedAt),
+    attentionSpans,
+    missingRecords,
+  };
 }
 
-function deriveMergeLaneSpans(task: MergedTaskRef, ctx: ReliabilityContext): CauseSpan[] {
-  if (!task.prNumber) return [];
-  const record = readLaneProgress(task.prNumber, ctx.repoDir);
-  if (!record) return [];
-  const entered = parseMs(record.enteredLaneAt);
-  const merged = parseMs(record.lastProgressAt);
-  if (entered === null) return [];
-  return [{
-    cause: 'merge-lane' as StallCause,
-    fromMs: entered,
-    toMs: merged ?? parseMs(task.mergedAt) ?? Date.now(),
-    detail: 'in merge lane',
-  }];
+function firstHookEventMs(evidence: ProgressEvidence[], event: string): number | null {
+  let best: number | null = null;
+  for (const e of evidence) {
+    if (e.kind !== 'hook' || e.hook?.event !== event) continue;
+    if (best === null || e.atMs < best) best = e.atMs;
+  }
+  return best;
 }
 
-function deriveHostDownSpans(_task: MergedTaskRef, _ctx: ReliabilityContext): CauseSpan[] {
-  // Tend poll gaps require repo-wide scan of the poll log; omitted in this
-  // slice (would need all tasks). Reported as unknown when not inferable.
-  return [];
+function completedFinishedMs(result: ReturnType<typeof readStageResultSync>): number | null {
+  if (!result || result.status !== 'completed') return null;
+  return parseMs(result.finishedAt);
 }
 
-function attachStallCauses(
+function earliestFinite(values: Array<number | null | undefined>): number | null {
+  let best: number | null = null;
+  for (const ms of values) {
+    if (ms === null || ms === undefined || !Number.isFinite(ms)) continue;
+    if (best === null || ms < best) best = ms;
+  }
+  return best;
+}
+
+/**
+ * When the plan was approved (HOK-3253). Prefers the plan-packet binding's
+ * `approvedAt`, then a `completed` planning result's `finishedAt` (what
+ * `approve_plan` writes), then the first `approve` operator event.
+ */
+function readPlanApprovalMs(
   task: MergedTaskRef,
-  intervals: StallInterval[],
+  planningResult: ReturnType<typeof readStageResultSync>,
+): number | null {
+  const bindingPath = resolveTaskSource(task, 'plan-packet-hash');
+  if (bindingPath) {
+    try {
+      const binding = JSON.parse(readFileSync(bindingPath, 'utf-8')) as { approvedAt?: unknown };
+      const ms = parseMs(typeof binding.approvedAt === 'string' ? binding.approvedAt : null);
+      if (ms !== null) return ms;
+    } catch (err) {
+      console.warn(`[reliability-metrics] Failed to read ${bindingPath}: ${errorMessage(err)}`);
+    }
+  }
+  const completed = completedFinishedMs(planningResult);
+  if (completed !== null) return completed;
+  const eventsPath = resolveTaskSource(task, 'operator-events.jsonl');
+  if (!eventsPath) return null;
+  try {
+    const approved = readJsonlFile<OperatorEventRecord>(eventsPath)
+      .filter((e) => (e.command ?? '').trim().toLowerCase() === 'approve')
+      .map((e) => parseMs(e.at ?? null))
+      .filter((ms): ms is number => ms !== null)
+      .sort((a, b) => a - b)[0];
+    return approved ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A person acted on the task in this window around a stall's end (HOK-3468).
+ * An approval counts: it is a person acting, even though it is not a touch for
+ * the unattended rate.
+ */
+export const ENDED_BY_PERSON_BEFORE_MS = 30 * 60_000;
+export const ENDED_BY_PERSON_AFTER_MS = 15 * 60_000;
+
+function personActedNear(touches: TouchEvent[], toMs: number): boolean {
+  const from = toMs - ENDED_BY_PERSON_BEFORE_MS;
+  const to = toMs + ENDED_BY_PERSON_AFTER_MS;
+  return touches.some((touch) => {
+    if (touch.attribution !== 'human' && touch.attribution !== 'approval') return false;
+    const ms = parseMs(touch.at);
+    return ms !== null && ms >= from && ms <= to;
+  });
+}
+
+/** Working hours as configured for the report. */
+export type { ResolvedWorkingHoursConfig } from './config.ts';
+
+const ZONE_FORMATTERS = new Map<string, Intl.DateTimeFormat>();
+
+function zoneFormatter(timeZone: string | undefined): Intl.DateTimeFormat {
+  const key = timeZone ?? 'system';
+  const existing = ZONE_FORMATTERS.get(key);
+  if (existing) return existing;
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    ...(timeZone ? { timeZone } : {}),
+    hourCycle: 'h23',
+    weekday: 'short',
+    hour: 'numeric',
+  });
+  ZONE_FORMATTERS.set(key, formatter);
+  return formatter;
+}
+
+const ISO_WEEKDAY: Record<string, number> = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
+
+/** `{weekday, hour}` at `ms` in the configured zone. */
+function localWeekdayHour(ms: number, timeZone: string | undefined): { weekday: number; hour: number } {
+  const parts = zoneFormatter(timeZone).formatToParts(new Date(ms));
+  let weekday = 0;
+  let hour = 0;
+  for (const part of parts) {
+    if (part.type === 'weekday') weekday = ISO_WEEKDAY[part.value] ?? 0;
+    else if (part.type === 'hour') hour = Number.parseInt(part.value, 10);
+  }
+  return { weekday, hour };
+}
+
+/** Whether `ms` falls inside the configured working hours. */
+export function isWorkingMoment(ms: number, hours: ResolvedWorkingHoursConfig): boolean {
+  if (hours.end <= hours.start) return false;
+  const { weekday, hour } = localWeekdayHour(ms, hours.timeZone);
+  return hours.days.includes(weekday) && hour >= hours.start && hour < hours.end;
+}
+
+/** Walking step for the off-hours split (aligned to the quarter hour). */
+const OFF_HOURS_STEP_MS = 15 * 60_000;
+
+/**
+ * The part of `[fromMs, toMs)` outside working hours (HOK-3468). Walks the
+ * interval in quarter-hour steps clipped to its ends, asking the configured
+ * zone for the local weekday and hour at each step, so DST and weekends are
+ * handled by the calendar rather than by fixed offsets.
+ */
+export function computeOffHoursMs(
+  fromMs: number,
+  toMs: number,
+  hours: ResolvedWorkingHoursConfig,
+): number {
+  if (toMs <= fromMs) return 0;
+  if (hours.end <= hours.start || hours.days.length === 0) return toMs - fromMs;
+  let cursor = fromMs;
+  let offMs = 0;
+  while (cursor < toMs) {
+    const aligned = Math.floor(cursor / OFF_HOURS_STEP_MS) * OFF_HOURS_STEP_MS + OFF_HOURS_STEP_MS;
+    const next = Math.min(toMs, aligned > cursor ? aligned : cursor + OFF_HOURS_STEP_MS);
+    if (!isWorkingMoment(cursor, hours)) offMs += next - cursor;
+    cursor = next;
+  }
+  return offMs;
+}
+
+/** Off-hours stuck time on intervals that ended with a person acting. */
+export function computeWaitedForPerson(intervals: StallInterval[]): {
+  hours: number;
+  stuckHours: number;
+  share: number | null;
+} {
+  let waitedMs = 0;
+  let stuckMs = 0;
+  for (const interval of intervals) {
+    stuckMs += interval.durationMs;
+    if (interval.endedByPerson) waitedMs += interval.offHoursMs ?? 0;
+  }
+  return {
+    hours: waitedMs / (60 * 60 * 1000),
+    stuckHours: stuckMs / (60 * 60 * 1000),
+    share: stuckMs > 0 ? waitedMs / stuckMs : null,
+  };
+}
+
+/**
+ * Attribute each stall interval to the gate that held the task (HOK-3468).
+ *
+ * The timeline is built once per task from `gateEvidence`; each interval is
+ * then split across the gates it overlaps. `cause` is derived from the primary
+ * gate through `GATE_TO_CAUSE`, so the coarse headline line and the gate table
+ * cannot disagree.
+ */
+export function attachStallGates(
+  task: MergedTaskRef,
+  stuck: ComputeTimeStuckResult,
   ctx: ReliabilityContext,
+  opts: { touches: TouchEvent[]; workingHours: ResolvedWorkingHoursConfig },
 ): StallInterval[] {
-  const spans: CauseSpan[] = [
-    ...deriveStageAgentSpans(task),
-    ...deriveOperatorAttentionSpans(task),
-    ...deriveMergeLaneSpans(task, ctx),
-    ...deriveHostDownSpans(task, ctx),
-  ];
-  return intervals.map((interval) => {
-    const fromMs = parseMs(interval.from) ?? 0;
-    const toMs = parseMs(interval.to) ?? fromMs;
-    const { cause, causeDetail } = deriveStallCause({ fromMs, toMs }, spans);
-    return { ...interval, cause, causeDetail };
+  const evidence = stuck.gateEvidence;
+  const endMs = parseMs(task.mergedAt);
+  if (!evidence || endMs === null) return stuck.stallIntervals;
+  const spans = deriveGateTimeline(evidence, { endMs });
+  const agentRecords = [...(evidence.agentRecords ?? [])].sort((a, b) => a.atMs - b.atMs);
+
+  return stuck.stallIntervals.map((interval) => {
+    const fromMs = parseMs(interval.from);
+    const toMs = parseMs(interval.to);
+    if (fromMs === null || toMs === null) return interval;
+    const decision = deriveStallGate({ fromMs, toMs }, spans);
+    const missing = [...new Set(
+      decision.gateSplit.flatMap((entry) => (entry.gate === 'unknown' ? entry.missing ?? [] : [])),
+    )];
+    let lastState: HookState | null = null;
+    for (const record of agentRecords) {
+      if (record.atMs > fromMs) break;
+      lastState = record.state as HookState;
+    }
+    return {
+      ...interval,
+      cause: decision.cause,
+      ...(decision.causeDetail ? { causeDetail: decision.causeDetail } : {}),
+      gate: decision.gate,
+      stage: decision.stage,
+      gateSplit: decision.gateSplit,
+      ...(missing.length > 0 ? { missingEvidence: missing } : {}),
+      endedByPerson: personActedNear(opts.touches, toMs),
+      offHoursMs: computeOffHoursMs(fromMs, toMs, opts.workingHours),
+      agentLastState: lastState,
+    };
   });
 }
 
@@ -1680,6 +2058,54 @@ function aggregateStallCausesForTasks(tasks: TaskReliability[]): Record<StallCau
   return aggregateStallCauses(tasks.flatMap((t) => t.stallIntervals));
 }
 
+/**
+ * Intervals as the gate aggregator sees them. An interval without a split
+ * (computed before HOK-3468, or without gate evidence) still contributes its
+ * whole duration to its primary gate, so per-gate hours always sum to total
+ * stuck hours.
+ */
+function buildGateIntervalInputs(tasks: TaskReliability[]): StallGateIntervalInput[] {
+  const inputs: StallGateIntervalInput[] = [];
+  for (const t of tasks) {
+    for (const interval of t.stallIntervals) {
+      const split = interval.gateSplit && interval.gateSplit.length > 0
+        ? interval.gateSplit
+        : [{ gate: interval.gate ?? 'unknown', stage: interval.stage ?? 'unknown', ms: interval.durationMs }];
+      inputs.push({
+        ...(t.task.issue ? { issue: t.task.issue } : {}),
+        durationMs: interval.durationMs,
+        gateSplit: split,
+        endedByPerson: interval.endedByPerson === true,
+        offHoursMs: interval.offHoursMs ?? 0,
+      });
+    }
+  }
+  return inputs;
+}
+
+function collectUnknownEvidence(tasks: TaskReliability[]): UnknownStallEvidence[] {
+  const rows: UnknownStallEvidence[] = [];
+  for (const t of tasks) {
+    for (const interval of t.stallIntervals) {
+      const unknownMs = (interval.gateSplit ?? [])
+        .filter((entry) => entry.gate === 'unknown')
+        .reduce((sum, entry) => sum + entry.ms, 0);
+      // No split: the whole interval is unknown unless it was attributed.
+      const wholeUnknown = !interval.gateSplit && (interval.gate ?? 'unknown') === 'unknown';
+      const ms = unknownMs > 0 ? unknownMs : wholeUnknown ? interval.durationMs : 0;
+      if (ms <= 0) continue;
+      rows.push({
+        issue: t.task.issue ?? (t.task.prNumber ? `#${t.task.prNumber}` : null),
+        from: interval.from,
+        to: interval.to,
+        hours: ms / (60 * 60 * 1000),
+        missing: interval.missingEvidence ?? [],
+      });
+    }
+  }
+  return rows.sort((a, b) => b.hours - a.hours);
+}
+
 function aggregateBucket(tasks: TaskReliability[], key: string, label: string): ReliabilityBucket {
   const all = unattendedAndStuck(tasks);
   const mill = unattendedAndStuck(tasks.filter((t) => t.isMillTask));
@@ -1705,6 +2131,9 @@ function aggregateBucket(tasks: TaskReliability[], key: string, label: string): 
     if (t.unattributedCommits > 0) tasksWithUnattributedCommits += 1;
   }
   const stallCauses = aggregateStallCausesForTasks(tasks);
+  const stallGates = aggregateStallGates(buildGateIntervalInputs(tasks));
+  const waitedForPerson = computeWaitedForPerson(tasks.flatMap((t) => t.stallIntervals));
+  const unknownEvidence = collectUnknownEvidence(tasks);
   return {
     key,
     label,
@@ -1717,6 +2146,9 @@ function aggregateBucket(tasks: TaskReliability[], key: string, label: string): 
     automationByKind,
     tasksWithUnattributedCommits,
     stallCauses,
+    stallGates,
+    waitedForPerson,
+    unknownEvidence,
     millMerged: mill.merged,
     millUnattended: mill.unattended,
     millUnattendedRate: mill.unattendedRate,
@@ -1779,6 +2211,7 @@ export function renderReliabilitySummary(summary: ReliabilitySummary, opts: Rend
   lines.push(`Tasks touched by class:       ${fmtClasses(o.touchedTasksByClass)}`);
   lines.push(`Approvals:                    ${o.approvals} (${o.tasksWithApprovals} tasks)`);
   lines.push(`Stall causes (>1h):           ${fmtStallCauses(o.stallCauses)}`);
+  lines.push(...renderGateSection(o));
   if (summary.sources) lines.push(renderSources(summary.sources));
   lines.push('');
 
@@ -1841,6 +2274,57 @@ function fmtStallCauses(causes: Record<StallCause, { stalls: number; hours: numb
   return parts.join('  ');
 }
 
+/** `MM-DD HH:MM` for the gate table's unknown-evidence rows. */
+function shortStamp(iso: string): string {
+  return iso.slice(5, 16).replace('T', ' ');
+}
+
+/**
+ * The gate table (HOK-3468): which gate held each task, for how long, how much
+ * of it a person ended, and how much of it was outside working hours. Prints
+ * exactly the rows and figures carried in `ReliabilityBucket.stallGates`,
+ * `waitedForPerson` and `unknownEvidence`.
+ */
+function renderGateSection(bucket: ReliabilityBucket): string[] {
+  const lines: string[] = [];
+  lines.push('Stuck time by gate (all stalls; hours sum to total stuck):');
+  lines.push(`  ${'gate'.padEnd(20)} ${'tasks'.padStart(5)} ${'stalls'.padStart(6)} ${'hours'.padStart(7)}  ${'ended-by-person'.padStart(15)}  ${'off-hours'.padStart(9)}`);
+  for (const row of bucket.stallGates) {
+    lines.push(
+      `  ${row.gate.padEnd(20)} ${String(row.tasks).padStart(5)} ${String(row.intervals).padStart(6)} ${row.hours.toFixed(1).padStart(7)}  ${String(row.endedByPerson).padStart(15)}  ${`${row.offHoursHours.toFixed(1)}h`.padStart(9)}`,
+    );
+  }
+  const stageHours = new Map<StallStage, number>();
+  for (const row of bucket.stallGates) {
+    for (const [stage, hours] of Object.entries(row.byStage)) {
+      stageHours.set(stage as StallStage, (stageHours.get(stage as StallStage) ?? 0) + (hours ?? 0));
+    }
+  }
+  const stages = STALL_STAGES
+    .filter((stage) => stage !== 'unknown')
+    .map((stage) => `${stage} ${(stageHours.get(stage) ?? 0).toFixed(1)}h`)
+    .join(' · ');
+  lines.push(`  By stage: ${stages}`);
+
+  const stuckHours = bucket.waitedForPerson.stuckHours;
+  lines.push(
+    `  Waited for a person (off-hours, ended by an operator action): ${bucket.waitedForPerson.hours.toFixed(1)}h of ${stuckHours.toFixed(1)}h (${fmtRate(bucket.waitedForPerson.share)})`,
+  );
+
+  const unknownHours = bucket.stallGates.find((row) => row.gate === 'unknown')?.hours ?? 0;
+  const unknownShare = stuckHours > 0 ? unknownHours / stuckHours : 0;
+  if (bucket.unknownEvidence.length === 0) {
+    lines.push(`  Unknown ${(unknownShare * 100).toFixed(1)}% of stuck hours`);
+  } else {
+    lines.push(`  Unknown ${(unknownShare * 100).toFixed(1)}% of stuck hours — missing evidence:`);
+    for (const row of bucket.unknownEvidence) {
+      const missing = row.missing.length > 0 ? row.missing.join(', ') : 'no record named';
+      lines.push(`    ${(row.issue ?? '?').padEnd(12)} ${shortStamp(row.from)}→${shortStamp(row.to)}  ${row.hours.toFixed(1)}h  ${missing}`);
+    }
+  }
+  return lines;
+}
+
 function renderSources(sources: SourceCoverage): string {
   const github = sources.githubEnabled
     ? `github timelines=${sources.githubTimelines}${sources.githubUnavailable ? ` (unavailable=${sources.githubUnavailable})` : ''}`
@@ -1850,10 +2334,25 @@ function renderSources(sources: SourceCoverage): string {
   return `Sources: ${github} · ${ledger} · ${lane} · archived tasks=${sources.archivedTasks}`;
 }
 
+/** Per-task gate hours, largest first, for `--include-tasks` (HOK-3468). */
+function taskGateSummary(t: TaskReliability): string {
+  const byGate = new Map<StallGate, number>();
+  for (const interval of t.stallIntervals) {
+    for (const entry of interval.gateSplit ?? []) {
+      byGate.set(entry.gate, (byGate.get(entry.gate) ?? 0) + entry.ms);
+    }
+  }
+  if (byGate.size === 0) return '';
+  const parts = [...byGate.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([gate, ms]) => `${gate} ${(ms / (60 * 60 * 1000)).toFixed(1)}h`);
+  return `  gates=${parts.join(' · ')}`;
+}
+
 function renderTaskLine(t: TaskReliability, includeClasses: boolean): string {
   const id = t.task.issue ?? (t.task.prNumber ? `#${t.task.prNumber}` : t.task.title.slice(0, 32));
   const classes = includeClasses ? `  ${fmtClasses(t.touchClasses)}` : '';
-  return `  ${t.task.mergedAt.slice(0, 10)}  ${id.padEnd(14)} touches=${t.touchCount}${classes}  stuck=${fmtMs(t.stuckMs)}  coverage=${t.stuckCoverage}`;
+  return `  ${t.task.mergedAt.slice(0, 10)}  ${id.padEnd(14)} touches=${t.touchCount}${classes}  stuck=${fmtMs(t.stuckMs)}  coverage=${t.stuckCoverage}${taskGateSummary(t)}`;
 }
 
 /**
@@ -1908,12 +2407,18 @@ export function computeTaskReliability(
     context: ctx,
     timeline,
   });
-  const stallIntervals = attachStallCauses(task, stuck.stallIntervals, ctx);
+  const stallIntervals = attachStallGates(task, stuck, ctx, {
+    touches: allTouches,
+    workingHours: getReliabilityConfig(ctx.repoDir).workingHours,
+  });
   return {
     task,
     touches: humanTouches,
     touchCount: humanTouches.length,
-    touchClasses: countTouchClasses(allTouches),
+    // HOK-3468: the class table counts human touches only. Approvals stay in
+    // `approvals` and mill automation in `automationCount`; neither is a person
+    // having to act.
+    touchClasses: countTouchClasses(humanTouches),
     approvals,
     automationCount: automation.length,
     unattributedCommits,

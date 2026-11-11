@@ -532,11 +532,18 @@ export interface SessionUserMessage {
   sessionId: string;
   /** Session file it came from (for grouping "first message per session"). */
   sessionFile: string;
+  /**
+   * `true` when this is the first string-content user message in its session
+   * file — the caller's prompt, not a redirect (HOK-3468).
+   */
+  firstInSession?: boolean;
   provenance?: {
     isMeta?: boolean; // allow-human-touch: one transcript reader feeds classifyOperatorTouch
     isCompactSummary?: boolean; // allow-human-touch: one transcript reader feeds classifyOperatorTouch
     originKind?: string;
     promptSource?: string; // allow-human-touch: one transcript reader feeds classifyOperatorTouch
+    /** Top-level Claude Code `entrypoint` (e.g. `sdk-cli`), carried for the classifier. */
+    entrypoint?: string; // allow-human-touch: one transcript reader feeds classifyOperatorTouch
   };
 }
 
@@ -552,13 +559,34 @@ export interface SessionRedirectResult {
   ownedWindows: OwnedSessionWindow[];
   /** Map from session file to whether it is an owned session. */
   ownedSessionFiles: Set<string>;
+  /**
+   * True when at least one session transcript for the worktree was readable
+   * (HOK-3468). Callers use it to prefer transcript facts over eval copies of
+   * the same messages.
+   */
+  transcriptsRead: boolean;
 }
 
-function readSessionUserMessages(worktreePath: string, branchName: string): SessionUserMessage[] {
+interface SessionTranscriptRead {
+  messages: SessionUserMessage[];
+  /** Transcript files successfully parsed (whether or not they held user messages). */
+  filesRead: number;
+}
+
+/**
+ * The one Claude Code transcript reader (HOK-3455 / HOK-3468).
+ *
+ * Provenance flags are read from the top level first, because that is where
+ * Claude Code writes `isMeta`, `isCompactSummary` and `entrypoint`; the nested
+ * `provenance.*` object is kept as a fallback for older/other writers.
+ */
+function readSessionUserMessages(worktreePath: string, branchName: string): SessionTranscriptRead {
   const messages: SessionUserMessage[] = [];
+  let filesRead = 0;
+  const seenFiles = new Set<string>();
   try {
     const projectsDirs = resolveProjectsDirs(worktreePath).filter((projectsDir) => existsSync(projectsDir));
-    if (projectsDirs.length === 0) return messages;
+    if (projectsDirs.length === 0) return { messages, filesRead };
 
     let sessionFiles: string[];
     try {
@@ -568,12 +596,14 @@ function readSessionUserMessages(worktreePath: string, branchName: string): Sess
           .map((f) => join(projectsDir, f))
       );
     } catch {
-      return messages;
+      return { messages, filesRead };
     }
 
     for (const filePath of sessionFiles) {
       try {
-        for (const entry of readJsonlFile<Record<string, unknown>>(filePath)) {
+        const entries = readJsonlFile<Record<string, unknown>>(filePath);
+        filesRead += 1;
+        for (const entry of entries) {
           if (entry.type !== 'user') continue;
           if (entry.gitBranch !== branchName) continue;
 
@@ -584,20 +614,24 @@ function readSessionUserMessages(worktreePath: string, branchName: string): Sess
           const timestamp = typeof entry.timestamp === 'string'
             ? entry.timestamp
             : new Date().toISOString();
-          const provenance = entry.provenance as Record<string, unknown> | undefined;
+          const nested = entry.provenance as Record<string, unknown> | undefined;
+          const flag = (key: string): unknown => (entry[key] !== undefined ? entry[key] : nested?.[key]);
+          const entrypoint = flag('entrypoint');
+          const firstInSession = !seenFiles.has(filePath);
+          seenFiles.add(filePath);
           messages.push({
             content: message.content as string,
             timestamp,
             sessionId: typeof entry.sessionId === 'string' ? entry.sessionId : filePath,
             sessionFile: filePath,
-            provenance: provenance
-              ? {
-                  isMeta: Boolean(provenance.isMeta), // allow-human-touch: one transcript reader feeds classifyOperatorTouch
-                  isCompactSummary: Boolean(provenance.isCompactSummary), // allow-human-touch: one transcript reader feeds classifyOperatorTouch
-                  originKind: typeof provenance.originKind === 'string' ? provenance.originKind : undefined,
-                  promptSource: typeof provenance.promptSource === 'string' ? provenance.promptSource : undefined, // allow-human-touch: one transcript reader feeds classifyOperatorTouch
-                }
-              : undefined,
+            firstInSession,
+            provenance: {
+              isMeta: Boolean(flag('isMeta')), // allow-human-touch: one transcript reader feeds classifyOperatorTouch
+              isCompactSummary: Boolean(flag('isCompactSummary')), // allow-human-touch: one transcript reader feeds classifyOperatorTouch
+              originKind: typeof flag('originKind') === 'string' ? (flag('originKind') as string) : undefined,
+              promptSource: typeof flag('promptSource') === 'string' ? (flag('promptSource') as string) : undefined, // allow-human-touch: one transcript reader feeds classifyOperatorTouch
+              entrypoint: typeof entrypoint === 'string' ? entrypoint : undefined, // allow-human-touch: one transcript reader feeds classifyOperatorTouch
+            },
           });
         }
       } catch {
@@ -607,7 +641,7 @@ function readSessionUserMessages(worktreePath: string, branchName: string): Sess
   } catch (err: unknown) {
     console.warn(`[intervention-detector] Failed to read session messages: ${errorMessage(err)}`);
   }
-  return messages;
+  return { messages, filesRead };
 }
 
 function findTranscriptEndMs(row: SessionOwnershipRow, worktreePath: string): number | undefined {
@@ -650,9 +684,11 @@ export function detectSessionRedirects(
     messages: [],
     ownedWindows: [],
     ownedSessionFiles: new Set(),
+    transcriptsRead: false,
   };
 
-  const messages = readSessionUserMessages(worktreePath, branchName);
+  const { messages, filesRead } = readSessionUserMessages(worktreePath, branchName);
+  result.transcriptsRead = filesRead > 0;
   if (messages.length === 0) return result;
 
   // Resolve ownership for this branch/worktree.
@@ -751,7 +787,8 @@ export function detectOperatorInterventions(dirs: ResolvedTaskArtifactDirs): Int
   return event;
 }
 
-function readStageResultSync(path: string): StageResult | undefined {
+/** Read one stage result file; `undefined` when absent/unparseable (tolerant). */
+export function readStageResultSync(path: string): StageResult | undefined {
   try {
     if (!existsSync(path)) return undefined;
     const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Partial<StageResult>;

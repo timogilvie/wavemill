@@ -13,14 +13,21 @@ import { execFileSync } from 'node:child_process';
 
 import {
   aggregateReliability,
+  attachStallGates,
   buildEvalsIndex,
   buildReliabilityContext,
   collectPromptCacheHitRates,
   collectOperatorTouches,
+  computeOffHoursMs,
   computeReliability,
+  computeTaskReliability,
   computeTimeStuck,
+  computeWaitedForPerson,
   dedupeTouches,
   deriveStallIntervals,
+  ENDED_BY_PERSON_AFTER_MS,
+  ENDED_BY_PERSON_BEFORE_MS,
+  isWorkingMoment,
   parseWindow,
   percentile,
   readExternalMergeTouches,
@@ -33,10 +40,12 @@ import {
   type MergedTaskRef,
   type ProgressEvidence,
   type ReliabilityContext,
+  type StallInterval,
   type TaskReliability,
   type TouchEvent,
 } from './reliability-metrics.ts';
 import { indexMillLabelWrites } from './label-write-ledger.ts';
+import { encodeProjectDir } from './wavemill-session-paths.ts';
 import type { PrTimelineEvent } from './pr-timeline.ts';
 import type { TaskProgressInputs } from './task-progress.ts';
 
@@ -809,7 +818,8 @@ describe('reliability-metrics', () => {
         for (const t of touches) touchClasses[t.class] += 1;
         return {
           task: { issue, title: issue, mergedAt: '2026-10-05T00:00:00Z' },
-          touches, touchCount: touches.length, touchClasses, stuckMs: 0, stuckCoverage: 'none', stallIntervals: [], isMillTask: true,
+          touches, touchCount: touches.length, touchClasses, approvals: 0, automationCount: 0, unattributedCommits: 0,
+          stuckMs: 0, stuckCoverage: 'none', stallIntervals: [], isMillTask: true,
         };
       };
       const summary = aggregateReliability(
@@ -1014,5 +1024,217 @@ describe('prompt-cache hit rate section', () => {
     });
     assert.match(text, /Prompt-cache hit rate \(median, turns 2\.\.n\):/);
     assert.match(text, /claude-sonnet-5-5\s+anthropic\s+80\.0%\s+\(5 runs\)/);
+  });
+
+  describe('gate report and operator touches (HOK-3468)', () => {
+    const UTC_HOURS = { start: 8, end: 19, days: [1, 2, 3, 4, 5], timeZone: 'UTC' };
+    const utc = (iso: string) => Date.parse(iso);
+
+    it('counts the part of an interval outside configured working hours', () => {
+      // protects: off-hours is calendar-derived (nights, weekends), not a
+      // fixed offset from the interval length.
+      assert.equal(isWorkingMoment(utc('2026-11-06T18:00:00Z'), UTC_HOURS), true);
+      assert.equal(isWorkingMoment(utc('2026-11-06T19:00:00Z'), UTC_HOURS), false);
+      assert.equal(isWorkingMoment(utc('2026-11-07T10:00:00Z'), UTC_HOURS), false);
+
+      // A Thursday entirely inside working hours carries no off-hours time.
+      assert.equal(computeOffHoursMs(utc('2026-11-05T09:00:00Z'), utc('2026-11-05T10:00:00Z'), UTC_HOURS), 0);
+      // Friday evening crosses the 19:00 end: an hour off.
+      assert.equal(computeOffHoursMs(utc('2026-11-06T18:00:00Z'), utc('2026-11-06T20:00:00Z'), UTC_HOURS), 3_600_000);
+      // Overnight Friday → Saturday morning is all off-hours.
+      assert.equal(computeOffHoursMs(utc('2026-11-06T22:00:00Z'), utc('2026-11-07T07:00:00Z'), UTC_HOURS), 9 * 3_600_000);
+      // Saturday → Sunday is a whole weekend day.
+      assert.equal(computeOffHoursMs(utc('2026-11-07T10:00:00Z'), utc('2026-11-08T10:00:00Z'), UTC_HOURS), 24 * 3_600_000);
+      // Monday before the start: two hours off.
+      assert.equal(computeOffHoursMs(utc('2026-11-02T06:00:00Z'), utc('2026-11-02T09:00:00Z'), UTC_HOURS), 2 * 3_600_000);
+      // A misconfigured window (end <= start) is all off-hours, never zero.
+      assert.equal(
+        computeOffHoursMs(utc('2026-11-05T09:00:00Z'), utc('2026-11-05T10:00:00Z'), { ...UTC_HOURS, start: 19, end: 8 }),
+        3_600_000,
+      );
+    });
+
+    it('sums the off-hours stuck time that ended with an operator action', () => {
+      // protects: "waited for a person" divides off-hours time on
+      // person-ended stalls by total stuck time.
+      const result = computeWaitedForPerson([
+        { from: '2026-11-05T22:00:00Z', to: '2026-11-06T00:00:00Z', durationMs: 2 * 3_600_000, endedByPerson: true, offHoursMs: 3_600_000 },
+        { from: '2026-11-06T00:00:00Z', to: '2026-11-06T02:00:00Z', durationMs: 2 * 3_600_000, endedByPerson: false, offHoursMs: 2 * 3_600_000 },
+      ]);
+      assert.equal(result.hours, 1);
+      assert.equal(result.stuckHours, 4);
+      assert.equal(result.share, 0.25);
+      assert.equal(computeWaitedForPerson([]).share, null);
+    });
+
+    it('marks an interval ended by a person only inside the window around its end', () => {
+      // protects: the ended-by-person window edges, and that an approval
+      // counts as a person acting while mill automation does not.
+      const T = utc('2026-11-05T10:00:00Z');
+      const to = T + 3_600_000;
+      const task = { title: 't', mergedAt: new Date(to + 3_600_000).toISOString() };
+      const stuck = {
+        stuckMs: 3_600_000,
+        coverage: 'full' as const,
+        stallIntervals: [{ from: new Date(T).toISOString(), to: new Date(to).toISOString(), durationMs: 3_600_000 }],
+        gateEvidence: {
+          launches: [{ kind: 'coding', stage: 'coding' as const, atMs: T - 3_600_000 }],
+          mergedMs: to + 3_600_000,
+        },
+      };
+      const touch = (atMs: number, attribution: 'human' | 'approval' | 'automation'): TouchEvent => ({
+        kind: 'operator-event',
+        at: new Date(atMs).toISOString(),
+        attribution,
+        class: 'R',
+        bucket: `${atMs}`,
+      });
+      const ended = (touches: TouchEvent[]) =>
+        attachStallGates(task, stuck, { repoDir: '/nonexistent' }, { touches, workingHours: UTC_HOURS })[0].endedByPerson;
+
+      assert.equal(ended([touch(to - ENDED_BY_PERSON_BEFORE_MS, 'human')]), true);
+      assert.equal(ended([touch(to - ENDED_BY_PERSON_BEFORE_MS - 1000, 'human')]), false);
+      assert.equal(ended([touch(to + ENDED_BY_PERSON_AFTER_MS, 'human')]), true);
+      assert.equal(ended([touch(to + ENDED_BY_PERSON_AFTER_MS + 1000, 'human')]), false);
+      assert.equal(ended([touch(to - 10 * 60_000, 'approval')]), true);
+      assert.equal(ended([touch(to, 'automation')]), false);
+    });
+
+    it('counts a plan approval as a person who acted, not as a human touch', () => {
+      // protects: an approval does not make a task attended; the mill's
+      // unattended rate counts people who had to act.
+      const repo = makeTmpDir();
+      try {
+        const archiveDir = join(repo, '.wavemill', 'evals', 'artifacts', 'HOK-9001');
+        mkdirSync(archiveDir, { recursive: true });
+        writeFixture(join(archiveDir, '.operator-events.jsonl'), [
+          { seq: 1, command: 'approve', issue: 'HOK-9001', at: '2026-11-05T10:00:00Z' },
+          { seq: 2, command: 're-review', issue: 'HOK-9001', at: '2026-11-05T12:00:00Z', head: 'abc1234' },
+        ]);
+        const approvedOnlyDir = join(repo, '.wavemill', 'evals', 'artifacts', 'HOK-9002');
+        mkdirSync(approvedOnlyDir, { recursive: true });
+        writeFixture(join(approvedOnlyDir, '.operator-events.jsonl'), [
+          { seq: 1, command: 'approve', issue: 'HOK-9002', at: '2026-11-05T10:00:00Z' },
+        ]);
+
+        const approvalOnly = computeTaskReliability(
+          { issue: 'HOK-9002', title: 'HOK-9002', mergedAt: '2026-11-06T10:00:00Z', archiveDir: approvedOnlyDir },
+          { repoDir: repo, github: { enabled: false } },
+        );
+        assert.equal(approvalOnly.approvals, 1);
+        assert.equal(approvalOnly.touchCount, 0);
+        assert.equal(approvalOnly.touchClasses.R, 0);
+
+        const touched = computeTaskReliability(
+          { issue: 'HOK-9001', title: 'HOK-9001', mergedAt: '2026-11-06T10:00:00Z', archiveDir },
+          { repoDir: repo, github: { enabled: false } },
+        );
+        assert.equal(touched.approvals, 1);
+        assert.equal(touched.touchCount, 1);
+        assert.equal(touched.touchClasses.R, 1);
+
+        const summary = aggregateReliability([approvalOnly, touched], {
+          sinceIso: '2026-11-01T00:00:00Z',
+          untilIso: '2026-11-08T00:00:00Z',
+          bucket: 'rolling7d',
+        });
+        assert.equal(summary.overall.merged, 2);
+        assert.equal(summary.overall.unattended, 1);
+        assert.equal(summary.overall.unattendedRate, 0.5);
+        assert.equal(summary.overall.approvals, 2);
+        assert.equal(summary.overall.tasksWithApprovals, 2);
+        assert.deepEqual(summary.overall.touchClasses, { O: 0, L: 0, S: 0, R: 1 });
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    it('drops eval session-redirect copies when the transcripts were readable', () => {
+      // protects: the transcript (with its provenance) is the source of truth;
+      // the eval copy would otherwise double-count the same message.
+      const repo = makeTmpDir();
+      try {
+        const worktree = join(repo, 'wt');
+        const branch = 'task/hok-9002';
+        const encoded = encodeProjectDir(worktree);
+        const projectsDir = join(
+          worktree, '.wavemill', 'runs', 'r1', 'providers', 'deepseek', 'home', '.claude', 'projects', encoded,
+        );
+        mkdirSync(projectsDir, { recursive: true });
+        writeFixture(join(projectsDir, 's1.jsonl'), [
+          { type: 'user', gitBranch: branch, sessionId: 's1', timestamp: '2026-11-05T10:00:00Z', message: { role: 'user', content: 'You are working on: Thing (HOK-9002)' } },
+          { type: 'user', gitBranch: branch, sessionId: 's1', timestamp: '2026-11-05T10:30:00Z', message: { role: 'user', content: 'change the title please' } },
+        ]);
+        const evalsPath = join(repo, '.wavemill', 'evals', 'evals.jsonl');
+        writeFixture(evalsPath, [{
+          issueId: 'HOK-9002',
+          prUrl: 'https://github.com/o/r/pull/9002',
+          timestamp: '2026-11-05T10:31:00Z',
+          interventionCount: 1,
+          interventions: [{ type: 'session_redirect', note: '[session_redirect] change the title please', timestamp: '2026-11-05T10:31:00Z' }],
+        }]);
+        const ctx: ReliabilityContext = { repoDir: repo, evals: buildEvalsIndex(evalsPath), github: { enabled: false } };
+        const task: MergedTaskRef = { issue: 'HOK-9002', title: 't', mergedAt: '2026-11-06T00:00:00Z', branch, worktree };
+
+        const withTranscripts = collectOperatorTouches({ repoDir: repo, task, context: ctx, timeline: null })
+          .filter((t) => t.kind === 'session-redirect');
+        assert.equal(withTranscripts.length, 1);
+        assert.equal(withTranscripts[0].at, '2026-11-05T10:30:00Z');
+
+        const fallback = collectOperatorTouches({ repoDir: repo, task: { ...task, worktree: undefined }, context: ctx, timeline: null })
+          .filter((t) => t.kind === 'session-redirect');
+        assert.equal(fallback.length, 1);
+        assert.equal(fallback[0].at, '2026-11-05T10:31:00Z');
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    it('renders the gate table, stage split and waited-for-a-person line', () => {
+      // protects: the CLI text carries the same gate data as the JSON.
+      const interval = (
+        gate: StallInterval['gate'],
+        stage: StallInterval['stage'],
+        hours: number,
+        extra: { endedByPerson?: boolean; offHoursMs?: number } = {},
+      ): StallInterval => ({
+        from: '2026-11-05T22:00:00Z',
+        to: '2026-11-06T00:00:00Z',
+        durationMs: hours * 3_600_000,
+        gate,
+        stage,
+        gateSplit: [{ gate: gate!, stage: stage!, ms: hours * 3_600_000 }],
+        endedByPerson: extra.endedByPerson ?? false,
+        offHoursMs: extra.offHoursMs ?? 0,
+      });
+      const task: TaskReliability = {
+        task: { issue: 'HOK-7', title: 'HOK-7', mergedAt: '2026-11-06T10:00:00Z' },
+        touches: [],
+        touchCount: 0,
+        touchClasses: { O: 0, L: 0, S: 0, R: 0 },
+        approvals: 0,
+        automationCount: 0,
+        unattributedCommits: 0,
+        stuckMs: 3 * 3_600_000,
+        stuckCoverage: 'full',
+        stallIntervals: [
+          interval('review-park', 'review', 2, { endedByPerson: true, offHoursMs: 3_600_000 }),
+          interval('ready-checks', 'ready', 1, { offHoursMs: 1_800_000 }),
+        ],
+        isMillTask: true,
+      };
+      const summary = aggregateReliability([task], {
+        sinceIso: '2026-11-01T00:00:00Z',
+        untilIso: '2026-11-08T00:00:00Z',
+        bucket: 'rolling7d',
+      });
+      const text = renderReliabilitySummary(summary);
+      assert.match(text, /Stuck time by gate \(all stalls; hours sum to total stuck\):/);
+      assert.match(text, /review-park\s+1\s+1\s+2\.0\s+1\s+1\.0h/);
+      assert.match(text, /ready-checks\s+1\s+1\s+1\.0\s+0\s+0\.5h/);
+      assert.match(text, /By stage: planning 0\.0h · coding 0\.0h · review 2\.0h · ready 1\.0h · merge 0\.0h/);
+      assert.match(text, /Waited for a person \(off-hours, ended by an operator action\): 1\.0h of 3\.0h \(33\.3%\)/);
+      assert.match(text, /Unknown 0\.0% of stuck hours/);
+    });
   });
 });

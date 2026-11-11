@@ -1,0 +1,7 @@
+{"sessionRef":"44fa7bd9-8775-454c-9ed2-30220f69b587","harness":"claude-code","kind":"planning","stage":"planning","model":"claude-opus-4-7","launchedAt":"2026-11-04T20:03:17.000Z","attemptId":"planning@2192e1b#1793822597"}
+{"sessionRef":"39826770-a874-4d08-861b-bf85f1940b6d","harness":"claude-code","kind":"coding","stage":"coding","model":"claude-opus-4-7","launchedAt":"2026-11-04T20:19:34.000Z","attemptId":"coding@2192e1b#1793823574"}
+{"sessionRef":"2459a05d-1bbb-47c6-b7af-44bbe67c0bca","harness":"claude-code","kind":"review","stage":"review","model":"claude-opus-4-7","launchedAt":"2026-11-04T22:17:25.000Z","attemptId":"review@efe006a#1793830645"}
+{"sessionRef":"c48b8d63-d409-4c12-adf9-8cc56814d189","harness":"claude-code","kind":"helper:json-code-review","model":"claude-opus-4-7","launchedAt":"2026-11-04T22:19:33.313Z","attemptId":"helper:json-code-review@nohead#1793830773"}
+{"sessionRef":"3861755e-e228-4d4b-83f9-87d13a46f4ec","harness":"claude-code","kind":"ready-remediation","model":"claude-opus-4-7","launchedAt":"2026-11-04T22:28:21.000Z","attemptId":"ready-remediation@efe006a#1793831301"}
+{"sessionRef":"404ef1f4-651e-4ba3-aea1-423814c6e809","harness":"claude-code","kind":"ready-remediation","model":"claude-opus-4-7","launchedAt":"2026-11-04T22:33:08.000Z","attemptId":"ready-remediation@efe006a#1793831588"}
+{"sessionRef":"750517c2-1818-49c4-b447-43b6189f2adf","harness":"claude-code","kind":"ready-remediation","model":"claude-opus-4-7","launchedAt":"2026-11-05T14:09:48.000Z","attemptId":"ready-remediation@efe006a#1793887788"}
