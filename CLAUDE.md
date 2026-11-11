@@ -130,7 +130,6 @@ When creating or refactoring tools:
 3. **Benefits**:
    - Business logic is reusable across tools, commands, and workflows
    - Easier to test (test modules, not CLI wrappers)
-   - Better separation of concerns
    - Self-documenting with JSDoc
 
 ## Commands
