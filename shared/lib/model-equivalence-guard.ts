@@ -68,6 +68,7 @@ const GUARDED_FILES = [
 
 export const MODEL_EQUIVALENCE_GUARD: GuardSpec = {
   name: 'model-equivalence',
+  invariantDocs: ['docs/invariants/model-equivalence.md'],
   findingNoun: 'raw model string comparison(s)',
   suppressionMarker: 'allow-model-equivalence',
   allowlistFile: 'tools/model-equivalence-allowlist.txt',

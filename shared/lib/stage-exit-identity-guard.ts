@@ -29,6 +29,7 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export const STAGE_EXIT_IDENTITY_GUARD: GuardSpec = {
   name: 'stage-exit-identity',
+  invariantDocs: ['docs/invariants/native-loop-budget.md'],
   findingNoun: 'stage-exit identity-sniffing or direct recovery_failure reconciliation(s)',
   suppressionMarker: 'allow-stage-exit-identity',
   allowlistFile: 'tools/stage-exit-identity-allowlist.txt',

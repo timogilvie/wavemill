@@ -1913,9 +1913,9 @@ test('current ready refusal logs surface a loop and prefer the attention project
     items,
   }));
   writeProjection([{
-    id: `HOK-2919:operator-decision:review-session-interrupted-pre-pr:${'a'.repeat(12)}`,
+    id: `HOK-2919:operator-decision:operator-command-failed:${'a'.repeat(12)}`,
     kind: 'operator-decision',
-    decisionCode: 'review-session-interrupted-pre-pr',
+    decisionCode: 'operator-command-failed',
     taskId: 'HOK-2919',
     since: Date.now() - 60_000,
     summary: 'Native review is still running after a provider timeout.',

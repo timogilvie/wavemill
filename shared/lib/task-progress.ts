@@ -634,6 +634,39 @@ export const INTERACTIVE_PROMPT_SIGNATURES: InteractivePromptSignature[] = [
     operatorAction:
       'Codex CLI cannot talk to the background daemon (version mismatch). Cancel the menu and relaunch with --no-daemon (#1508), or upgrade the CLI to match the desktop app.',
   },
+  // Claude Code first-run screens. A launch under a HOME with no first-run
+  // record (the per-run DeepSeek HOME) opens these before the agent reads its
+  // prompt: three coding agents sat on the theme chooser through four
+  // launches each on 2026-11-10 and were read as `agent-stalled`. The launcher
+  // seeds that HOME (`agent_claude_isolated_home_seed_snippet`); these catch a
+  // HOME the seed did not cover. The theme screen's own preview contains
+  // `function greet()`, so `function ` cannot be an exclusion token here.
+  {
+    id: 'claude_first_run_theme',
+    agent: 'claude',
+    requiredTokens: ['choose the text style that looks best with your terminal', 'to change this later, run /theme', 'dark mode'],
+    exclusionTokens: ['requiredTokens', 'const ', '@Test', 'describe('],
+    operatorAction:
+      'Claude Code is on its first-run theme chooser: its HOME has no onboarding record, so the agent has not started. Step through the first-run screens in the task pane, or relaunch after the HOME is seeded; the mill will not press keys on your behalf.',
+  },
+  {
+    id: 'claude_first_run_api_key',
+    agent: 'claude',
+    requiredTokens: ['detected a custom api key in your environment', 'do you want to use this api key', 'no (recommended)'],
+    exclusionTokens: ['requiredTokens', 'const ', '@Test', 'describe('],
+    choiceCount: 2,
+    operatorAction:
+      'Claude Code is asking whether to use the API key from its environment, so the agent has not started. Answer in the task pane; the mill will not press keys on your behalf.',
+  },
+  {
+    id: 'claude_first_run_folder_trust',
+    agent: 'claude',
+    requiredTokens: ['is this a project you created or one you trust', 'yes, i trust this folder', 'no, exit'],
+    exclusionTokens: ['requiredTokens', 'const ', '@Test', 'describe('],
+    choiceCount: 2,
+    operatorAction:
+      'Claude Code is on its folder-trust prompt for the task worktree, so the agent has not started. Decide in the task pane; the mill will not press keys on your behalf.',
+  },
 ];
 
 export function normalizeInteractivePromptText(input: string | undefined): string {

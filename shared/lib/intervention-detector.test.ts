@@ -31,13 +31,19 @@ import { encodeProjectDir } from './wavemill-session-paths.ts';
 
 // ── Helpers for session JSONL fixtures ──────────────────────────
 
-function userEntry(opts: { branch: string; content: string | unknown[]; sessionId?: string }): string {
+function userEntry(opts: {
+  branch: string;
+  content: string | unknown[];
+  sessionId?: string;
+  extra?: Record<string, unknown>;
+}): string {
   return JSON.stringify({
     type: 'user',
     userType: 'external',
     gitBranch: opts.branch,
     sessionId: opts.sessionId || 'test-session',
     message: { role: 'user', content: opts.content },
+    ...opts.extra,
   });
 }
 
@@ -483,6 +489,34 @@ describe('intervention-detector', () => {
 
         const event = detectSessionRedirects(worktreePath, 'task/foo');
         assert.equal(event.count, 0);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('carries top-level entrypoint, firstInSession and isMeta for the classifier', () => {
+      // protects: a headless session's first prompt must be recognisable as
+      // automation, and provenance written at the top level must survive the
+      // read (HOK-3468).
+      const { worktreePath, projectsDir, cleanup } = setupSessionDir();
+      try {
+        const branch = 'task/my-feature';
+        const lines = [
+          userEntry({ branch, content: 'probe the auth path', extra: { entrypoint: 'sdk-cli' } }),
+          assistantEntry({ branch }),
+          userEntry({ branch, content: 'second note', extra: { entrypoint: 'sdk-cli', isMeta: true } }),
+          assistantEntry({ branch }),
+        ];
+        writeFileSync(join(projectsDir, 'session1.jsonl'), lines.join('\n'));
+
+        const event = detectSessionRedirects(worktreePath, branch);
+        assert.equal(event.transcriptsRead, true);
+        assert.equal(event.messages.length, 2);
+        assert.equal(event.messages[0].firstInSession, true);
+        assert.equal(event.messages[0].provenance.entrypoint, 'sdk-cli');
+        assert.equal(event.messages[0].provenance.isMeta, false);
+        assert.equal(event.messages[1].firstInSession, false);
+        assert.equal(event.messages[1].provenance.isMeta, true);
       } finally {
         cleanup();
       }

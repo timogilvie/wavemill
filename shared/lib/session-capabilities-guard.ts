@@ -17,6 +17,7 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export const SESSION_CAPABILITIES_GUARD: GuardSpec = {
   name: 'session-capabilities',
+  invariantDocs: ['docs/invariants/session-capabilities.md'],
   findingNoun: 'session-capability re-derivation(s)',
   suppressionMarker: 'allow-session-capabilities',
   allowlistFile: 'tools/session-capabilities-allowlist.txt',

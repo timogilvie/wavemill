@@ -2041,11 +2041,33 @@ export interface ReliabilityConfig {
   github?: boolean;
   /** HOK-3260: native prompt-cache hit-rate detection. */
   promptCache?: PromptCacheConfig;
+  /** HOK-3468: hours that count as "a person could have acted". */
+  workingHours?: WorkingHoursConfig;
 }
 
 export interface PromptCacheConfig {
   /** Hit rate (turns 2..n) below which a native run is flagged. Default 0.5. */
   minHitRate?: number;
+}
+
+/** HOK-3468: working-hours window used to split off-hours stall time. */
+export interface WorkingHoursConfig {
+  /** First working hour in the day, 0–23. Default 8. */
+  start?: number;
+  /** Exclusive end hour, 0–24. Default 19. */
+  end?: number;
+  /** ISO-8601 weekdays (1 = Monday … 7 = Sunday). Default Mon–Fri. */
+  days?: number[];
+  /** IANA timezone; default is the system timezone. */
+  timeZone?: string;
+}
+
+/** `WorkingHoursConfig` with defaults applied. */
+export interface ResolvedWorkingHoursConfig {
+  start: number;
+  end: number;
+  days: number[];
+  timeZone?: string;
 }
 
 /**
@@ -2056,8 +2078,9 @@ export interface PromptCacheConfig {
 export function getReliabilityConfig(
   repoDir?: string,
   env: NodeJS.ProcessEnv = process.env,
-): Required<Omit<ReliabilityConfig, 'promptCache'>> & {
+): Required<Omit<ReliabilityConfig, 'promptCache' | 'workingHours'>> & {
   promptCache: Required<PromptCacheConfig>;
+  workingHours: ResolvedWorkingHoursConfig;
 } {
   const config = loadWavemillConfig(repoDir).reliability ?? {};
   const envLogins = env.WAVEMILL_RELIABILITY_MILL_ACTOR_LOGINS;
@@ -2073,6 +2096,12 @@ export function getReliabilityConfig(
     github: config.github ?? true,
     promptCache: {
       minHitRate: config.promptCache?.minHitRate ?? 0.5,
+    },
+    workingHours: {
+      start: config.workingHours?.start ?? 8,
+      end: config.workingHours?.end ?? 19,
+      days: config.workingHours?.days ?? [1, 2, 3, 4, 5],
+      ...(config.workingHours?.timeZone ? { timeZone: config.workingHours.timeZone } : {}),
     },
   };
 }

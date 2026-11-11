@@ -1,0 +1,7 @@
+---
+title: Inputs before approval
+---
+
+# Inputs before approval
+
+`ensure_task_inputs_ready` (`wavemill-monitor.sh`) / `plan-packet-binding.sh` - The inputs-before-approval invariant (HOK-3253): planning is never offered for approval (`awaiting_user`) until the local task packet exists, the expansion handshake passes, and `.plan-packet-hash` names the packet bytes the request shows (source `preparation`). An already-detailed issue is materialised locally without an LLM (`task_inputs_materialize_detailed`, mirroring native planning's `materializeTaskPacketFromSelectedTask`) at launch and at the gate; a raw issue is expanded by the tracked `prepare-task-inputs` job (bucket `expansion-recovery-job`, attempts counted at launch, exhaustion → needs-user `inputs_preparation_failed` with `wavemill expand <issue>`), never on the monitor hot path. A packet the controller regenerated after plan.md was written re-plans instead of being offered. Accepting an approval only annotates the binding (`plan_packet_record_approval`) and the plan→code handoff never touches it (`approve_plan … none`), so neither can re-bless a changed packet; the HOK-3099 handoff guard stays armed and a re-plan that voided an approval says so in the next request (`.plan-reapproval-reason`). Replay: `tests/journeys/inputs-ready-before-approval.journey.sh` (approval budget 1). **Never write planning `awaiting_user` without passing this gate.**

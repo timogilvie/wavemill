@@ -95,6 +95,7 @@ export type TaskIdentityResult = GuardResult;
 
 export const TASK_IDENTITY_GUARD: GuardSpec = {
   name: 'task-identity',
+  invariantDocs: ['docs/invariants/task-identity.md'],
   findingNoun: 'ad-hoc task-identity derivation(s)',
   suppressionMarker: 'allow-task-identity',
   allowlistFile: 'tools/task-identity-allowlist.txt',

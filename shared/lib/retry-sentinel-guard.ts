@@ -23,6 +23,7 @@ import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export const RETRY_SENTINEL_GUARD: GuardSpec = {
   name: 'retry-sentinel',
+  invariantDocs: ['docs/invariants/bounded-retry.md'],
   findingNoun: 'private retry-counter site(s)',
   suppressionMarker: 'allow-retry-sentinel',
   allowlistFile: 'tools/retry-sentinel-allowlist.txt',

@@ -1,0 +1,7 @@
+---
+title: Workflow-state shape
+---
+
+# Workflow-state shape
+
+`shared/lib/workflow-state.ts` `TaskRecord` / `WorkflowState` / `readWorkflowState()` / `mutateWorkflowState()` - The one workflow-state shape (HOK-3220): `shared/schemas/workflow-task.schema.json` (`.lifecycle` reuses `task-lifecycle-state.schema.json`) is derived from the **writers** (`save_task_state`, `state_mutate` / `task_state_mutate_existing` sites that set `.tasks[$id].*`, `mutateWorkflowState` callers), never the readers — HOK-3181 shipped reading `prNumber`/`headSha`, which no writer sets. `TaskRecord` has no index signature, so a guessed field name is a compile error. Reads never throw (missing/unparseable → `null`; schema violations are reported, value still returned); `mutateWorkflowState` validates the rows a write changed. `workflow-state.writer-coverage.test.ts` fails when the schema names a field no writer sets or a writer sets a field the schema lacks (extraction: `workflow-state-writers.ts`). The preflight guard `tools/check-task-record-shape.ts` forbids private `tasks?: Record<...>` / `.tasks as Record<...>` / `WorkflowState` / `TaskState` shapes outside the canonical module (allowlist `tools/task-record-shape-allowlist.txt` with a `# reason`, or `// allow-task-record-shape: <reason>`). **Narrow with `Pick<TaskRecord, ...>`; a new written field goes into the schema + `TaskRecord` + `npx tsx tools/generate-schema-validators.ts`.**

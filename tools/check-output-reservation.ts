@@ -6,6 +6,7 @@ import { runGuardCli, type GuardSpec } from './lib/source-guard.ts';
 
 export const OUTPUT_RESERVATION_GUARD: GuardSpec = {
   name: 'output-reservation',
+  invariantDocs: ['docs/invariants/output-reservation.md'],
   findingNoun: 'output reservation/cap conflation(s)',
   suppressionMarker: 'allow-output-reservation',
   allowlistFile: 'tools/output-reservation-allowlist.txt',

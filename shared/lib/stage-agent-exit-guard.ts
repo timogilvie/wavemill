@@ -37,6 +37,7 @@ const PROCESS_LIVE_SETTLE = /\bagentProcessLive\s*(?:===|==)\s*false\b/;
  */
 export const STAGE_AGENT_EXIT_GUARD: GuardSpec = {
   name: 'stage-agent-exit',
+  invariantDocs: ['docs/invariants/stage-agent-disposition.md'],
   findingNoun: 'stage settle decision(s) reading the pane descendant count',
   suppressionMarker: 'allow-stage-agent-exit',
   allowlistFile: 'tools/stage-agent-exit-allowlist.txt',

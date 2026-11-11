@@ -66,6 +66,7 @@ export type TaskRecordShapeResult = GuardResult;
 
 export const TASK_RECORD_SHAPE_GUARD: GuardSpec = {
   name: 'task-record-shape',
+  invariantDocs: ['docs/invariants/workflow-state-shape.md'],
   findingNoun: 'private workflow-state task shape(s)',
   suppressionMarker: 'allow-task-record-shape',
   allowlistFile: TASK_RECORD_SHAPE_ALLOWLIST_FILE,

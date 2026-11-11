@@ -69,8 +69,10 @@ flag to save expanded task packets.
 
 ## Repository invariants and tests
 
-Read the Utilities section of `CLAUDE.md` before changing shared mill behavior,
-and follow its Test Discovery and Testing Patterns sections for test changes.
+Read the invariant index in the Utilities section of `CLAUDE.md` — each line
+names one rule, its guard, and links the full text under `docs/invariants/` —
+before changing shared mill behavior, and follow its Test Discovery and Testing
+Patterns sections for test changes.
 Reuse the documented primitives for failure policy, bounded retries, condition
 reconciliation, task identity and state writes rather than implementing private
 variants. Use schema-validated fixtures and shared fakes; tests must not write

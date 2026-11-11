@@ -108,6 +108,7 @@ check_clear_sites() {
 
 # ── Real repo ─────────────────────────────────────────────────────────────
 if ! check_clear_sites "$REPO_ROOT" "$ALLOWLIST"; then
+  echo "See docs/invariants/condition-markers.md" >&2
   exit 1
 fi
 

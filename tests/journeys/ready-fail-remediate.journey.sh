@@ -54,17 +54,17 @@ ci_verdict_for_head() {
 }
 
 ci_set_pr1() {
-  local conclusion="$1" lock="$FAKE_GH_STATE.lock" i
-  for i in $(seq 1 500); do
-    mkdir "$lock" 2>/dev/null && break
-    sleep 0.01
-  done
-  printf '%s' "$$" > "$lock/pid"
+  local conclusion="$1"
+  fakes_gh_state_lock
   fakes_gh_state '.checks.byPr["1"] = [{name: "unit-tests", conclusion: $c}]' --arg c "$conclusion"
-  rm -rf "$lock"
+  fakes_gh_state_unlock
 }
 
 CI_LAST=""
+# The first head CI marked red. Recorded here, when the verdict is set: the
+# remediation agent can push its fix before the journey next looks, so the
+# head read after "remediation launched" may already be the green one.
+RED_HEAD=""
 ci_tick() {
   local head conclusion
   head="$(jq -r '.prs["1"].headRefName // empty' "$FAKE_GH_STATE" 2>/dev/null)"
@@ -74,6 +74,7 @@ ci_tick() {
   if [[ "$head/$conclusion" != "$CI_LAST" ]]; then
     ci_set_pr1 "$conclusion"
     CI_LAST="$head/$conclusion"
+    [[ "$conclusion" == "FAILURE" && -z "$RED_HEAD" ]] && RED_HEAD="$head"
     journey_log "fake CI: ${head:0:7} → $conclusion"
   fi
 }
@@ -105,7 +106,6 @@ journey_wait_until "$ISSUE" 5  "task launched into planning"          phase_is p
 journey_wait_until "$ISSUE" 8  "coding launched"                      phase_is coding
 journey_wait_until "$ISSUE" 8  "review launched"                      phase_is review
 journey_wait_until "$ISSUE" 10 "red CI made Ready launch remediation" remediation_launched
-RED_HEAD="${CI_LAST%%/*}"
 # HOK-3371: the failed-ready-recheck budget is retired — no legacy sentinel may
 # appear in the ready state dir (the feature dir itself, ready_state_dir) while
 # the mill drives a failed Ready phase.

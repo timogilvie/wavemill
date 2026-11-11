@@ -121,12 +121,12 @@ escalate_now() {
     const ok = escalateOperatorAttention({
       stateDir,
       headSha: head,
-      basis: { kind: "operator-decision", code: "review-session-interrupted-pre-pr" },
+      basis: { kind: "operator-decision", code: "operator-command-failed" },
       message,
       condition: { head, expiresOn: ["head", "operator-event"] },
     });
     if (!ok) process.exit(3);
-  ' "$fd" "$head" "$ISSUE was interrupted before a PR existed; run /re-review")
+  ' "$fd" "$head" "$ISSUE: could not launch the manual re-review")
 }
 
 # Persist clock seed: the projection item already outlived persistMinutes, so
@@ -167,7 +167,7 @@ SINK_AFTER_ONCE="$(sink_count)"
 FD="$(journey_feature_dir "$ISSUE")"
 HEAD_AT_ESCALATION="$(git -C "$FD" rev-parse HEAD)"
 escalate_now "$FD" "$HEAD_AT_ESCALATION"
-journey_log "escalated $ISSUE at $HEAD_AT_ESCALATION (operator-decision:review-session-interrupted-pre-pr)"
+journey_log "escalated $ISSUE at $HEAD_AT_ESCALATION (operator-decision:operator-command-failed)"
 
 journey_wait_until "$ISSUE" 10 "the projection shows the escalation" has_escalation_item
 cp "$ATTENTION_FILE" "$OBSERVED_AT_ESCALATION"
