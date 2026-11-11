@@ -189,16 +189,12 @@ function runSync(opts: CliProcessOptions, startedAt: number): CliProcessResult {
       );
     }
 
-    // A maxBuffer overflow kills the child with SIGTERM too; it must reach the
-    // buffer diagnostic below, not the timeout path.
-    const bufferExceeded =
-      failure.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
-      || errorMessage.includes('maxBuffer');
+    // Historic executeSync classified timeout from wording/ETIMEDOUT only. A
+    // bare SIGTERM (external kill, maxBuffer overflow) is not a timeout; a
+    // genuine execSync timeout always carries code ETIMEDOUT.
     const timedOut =
-      !bufferExceeded
-      && (failure.signal === 'SIGTERM'
-        || failure.code === 'ETIMEDOUT'
-        || /\b(etimedout|timed out|timeout)\b/i.test(errorMessage));
+      failure.code === 'ETIMEDOUT'
+      || /\b(etimedout|timed out|timeout)\b/i.test(errorMessage);
     if (timedOut) {
       throw new Error(
         `${opts.label} CLI timed out after ${timeout}ms\n\n` +
