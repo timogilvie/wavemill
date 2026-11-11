@@ -2948,7 +2948,7 @@ export const DEFAULT_TASK_SIZE_CORE_FILES = [
   'shared/lib/wavemill-mill.sh',
   'shared/lib/wavemill-common.sh',
   'shared/lib/agent-adapters.sh',
-  'tools/tend.ts',
+  'tools/tend.ts', // install-paths: allow repo-relative core-file rule entry, not an argv target
 ];
 
 /** The anchor core file; touching it with enough companions is oversized. */
