@@ -140,6 +140,10 @@ mkdir -p "$FEATURE_DIR"
 
 record_fake_session "$@"
 
+# Scripted phases that edit the gh fake's state take its lock through this.
+# shellcheck source=../gh-state-lock.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/gh-state-lock.sh"
+
 run_tool() {
   # tsx resolves from the wavemill install, not the milled worktree.
   (cd "$FAKE_AGENT_TOOLS_DIR/.." && node --import tsx "tools/$1" "${@:2}")

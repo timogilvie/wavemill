@@ -1085,6 +1085,56 @@ fi
 SNIPPET
 }
 
+# DeepSeek launches run Claude Code under a fresh per-run HOME. A fresh HOME
+# has no first-run record, so Claude Code opens its theme, API-key, security
+# and folder-trust screens and waits for a person; the agent never starts and
+# the stage burns its whole retry budget on the same screen (HOK-3467/3469/3470,
+# 2026-11-10). This prints launcher lines that record, in that HOME, what the
+# mill already grants every other Claude launch: onboarding done, the launch
+# key accepted, the worktree trusted (as `pretrust_directory` does for the
+# operator's HOME) and the bypass-permissions notice acknowledged (the launch
+# already passes --dangerously-skip-permissions).
+#
+# The lines must run AFTER the launcher redirects HOME and exports
+# ANTHROPIC_API_KEY. They never fail the launch: an unseeded HOME is caught by
+# the `claude_first_run_*` blocking-prompt signatures in task-progress.ts.
+agent_claude_isolated_home_seed_snippet() {
+  cat <<'SNIPPET'
+# Seed Claude Code's first-run state in the isolated HOME.
+if command -v jq >/dev/null 2>&1; then
+  wm_claude_json="$HOME/.claude.json"
+  wm_claude_settings="$HOME/.claude/settings.json"
+  wm_trust_root="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  wm_trust_root="${wm_trust_root%/.git}"
+  wm_key_tail="${ANTHROPIC_API_KEY:-}"
+  if (( ${#wm_key_tail} > 20 )); then wm_key_tail="${wm_key_tail: -20}"; fi
+  mkdir -p "$HOME/.claude" 2>/dev/null || true
+  [[ -s "$wm_claude_json" ]] || printf '{}\n' > "$wm_claude_json" 2>/dev/null || true
+  [[ -s "$wm_claude_settings" ]] || printf '{}\n' > "$wm_claude_settings" 2>/dev/null || true
+  if jq --arg cwd "$PWD" --arg root "$wm_trust_root" --arg key "$wm_key_tail" '
+      .hasCompletedOnboarding = true
+      | if $key == "" then . else
+          .customApiKeyResponses.approved = (((.customApiKeyResponses.approved // []) + [$key]) | unique)
+          | .customApiKeyResponses.rejected = ((.customApiKeyResponses.rejected // []) - [$key])
+        end
+      | reduce ([$cwd, $root] | map(select(length > 0)) | unique)[] as $p
+          (.; .projects[$p] = ((.projects[$p] // {}) + {hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true}))
+    ' "$wm_claude_json" > "$wm_claude_json.wm-seed" 2>/dev/null; then
+    mv "$wm_claude_json.wm-seed" "$wm_claude_json" 2>/dev/null || true
+    chmod 600 "$wm_claude_json" 2>/dev/null || true
+  else
+    rm -f "$wm_claude_json.wm-seed"
+  fi
+  if jq '.skipDangerousModePermissionPrompt = true | .theme //= "dark"' \
+      "$wm_claude_settings" > "$wm_claude_settings.wm-seed" 2>/dev/null; then
+    mv "$wm_claude_settings.wm-seed" "$wm_claude_settings" 2>/dev/null || true
+  else
+    rm -f "$wm_claude_settings.wm-seed"
+  fi
+fi
+SNIPPET
+}
+
 agent_deepseek_state_dir() {
   local repo_dir="$1"
   local session="$2"
@@ -2388,6 +2438,7 @@ elif [[ "\$launch_rc" -ne 0 ]]; then
 fi
 $(agent_deepseek_gh_wrapper_snippet "$deepseek_state_dir")
 eval "\$env_block"
+$(agent_claude_isolated_home_seed_snippet)
 $(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "${resolved_model:-$model}")
 cat '$instr_file' | claude${effective_model_flag} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions
 echo "[wavemill] Agent exited (\$?)"
@@ -2450,6 +2501,7 @@ export ANTHROPIC_DEFAULT_SONNET_MODEL='$model'
 export ANTHROPIC_DEFAULT_HAIKU_MODEL='$model'
 export CLAUDE_CODE_SUBAGENT_MODEL='$model'
 export CLAUDE_CODE_EFFORT_LEVEL='${effort_level:-medium}'
+$(agent_claude_isolated_home_seed_snippet)
 $(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "$model")
 cat '$instr_file' | claude${model_flag} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions
 echo "[wavemill] Agent exited (\$?)"
@@ -2922,6 +2974,7 @@ elif [[ "\$launch_rc" -ne 0 ]]; then
 fi
 $(agent_deepseek_gh_wrapper_snippet "$deepseek_state_dir")
 eval "\$env_block"
+$(agent_claude_isolated_home_seed_snippet)
 $(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "${resolved_model:-$model}")
 claude${effective_model_flag}${agent_flags} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions "\$(cat '$prompt_file')"
       echo "[wavemill] Agent exited (\$?)"
@@ -2976,6 +3029,7 @@ export ANTHROPIC_DEFAULT_SONNET_MODEL='$model'
 export ANTHROPIC_DEFAULT_HAIKU_MODEL='$model'
 export CLAUDE_CODE_SUBAGENT_MODEL='$model'
 export CLAUDE_CODE_EFFORT_LEVEL='${effort_level:-medium}'
+$(agent_claude_isolated_home_seed_snippet)
 $(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "$model")
 claude${model_flag}${agent_flags} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions "\$(cat '$prompt_file')"
 echo "[wavemill] Agent exited (\$?)"

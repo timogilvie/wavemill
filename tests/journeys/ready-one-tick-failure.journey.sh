@@ -41,10 +41,10 @@ ready_result_status() {
   jq -r '.status // empty' "$fd/.ready-result.json" 2>/dev/null || true
 }
 ci_set_pr1() {
-  local conclusion="$1" lock="$FAKE_GH_STATE.lock" i
-  for i in $(seq 1 500); do mkdir "$lock" 2>/dev/null && break; sleep 0.01; done
+  local conclusion="$1"
+  fakes_gh_state_lock
   fakes_gh_state '.checks.byPr["1"] = [{name: "flaky-tip-check", conclusion: $c}]' --arg c "$conclusion"
-  rm -rf "$lock"
+  fakes_gh_state_unlock
 }
 CI_LAST=""
 ci_tick() {

@@ -493,6 +493,66 @@ test('codex_model_retirement still matches', () => {
   assert.equal(sig!.id, 'codex_model_retirement');
 });
 
+// Pane text captured from Claude Code 2.1.322 launched under a fresh HOME.
+const CLAUDE_FIRST_RUN_THEME_PANE = [
+  'Welcome to Claude Code v2.1.322',
+  " Let's get started.",
+  ' Choose the text style that looks best with your terminal',
+  ' To change this later, run /theme',
+  '     Auto (match terminal)',
+  ' ❯ ✔ Dark mode',
+  '     Light mode',
+  '  1  function greet() {',
+  '  2 -  console.log("Hello, World!");',
+  '  2 +  console.log("Hello, Claude!");',
+  '  3  }',
+  '  Syntax theme: Monokai Extended (ctrl+t to disable)',
+].join('\n');
+
+// protects: an agent parked on the first-run theme chooser being read as agent-stalled and relaunched into the same screen
+test('claude_first_run_theme matches the first-run theme chooser, code preview included', () => {
+  const sig = matchInteractivePromptSignature(CLAUDE_FIRST_RUN_THEME_PANE);
+  assert.ok(sig, 'should match');
+  assert.equal(sig!.id, 'claude_first_run_theme');
+  assert.equal(sig!.agent, 'claude');
+});
+
+// protects: the API-key and folder-trust screens (reached once the theme is chosen) going unrecognised
+test('claude first-run API-key and folder-trust screens match their own signatures', () => {
+  const apiKey = [
+    '  Detected a custom API key in your environment',
+    '  ANTHROPIC_API_KEY: sk-ant-...0000000000000000',
+    '  Do you want to use this API key?',
+    '    Yes',
+    '  ❯ No (recommended)',
+    '  Enter to confirm · Esc to cancel',
+  ].join('\n');
+  const trust = [
+    ' Accessing workspace:',
+    ' /repo/worktrees/some-task',
+    ' Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source',
+    ' project, or work from your team).',
+    ' ❯ No, exit',
+    '   Yes, I trust this folder',
+    ' Enter to confirm · Esc to cancel',
+  ].join('\n');
+  assert.equal(matchInteractivePromptSignature(apiKey)?.id, 'claude_first_run_api_key');
+  assert.equal(matchInteractivePromptSignature(trust)?.id, 'claude_first_run_folder_trust');
+});
+
+// protects: a working agent being parked as blocked because its pane mentions a first-run phrase
+test('claude first-run signatures do not match a working pane or a partial mention', () => {
+  const working = [
+    '⏺ Bash(grep -n "theme" shared/lib/colors.ts)',
+    '  ⎿  36: * Bold text style',
+    '⏺ To change this later, run /theme. Dark mode is the default.',
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+  ].join('\n');
+  assert.equal(matchInteractivePromptSignature(working), undefined);
+  assert.equal(matchInteractivePromptSignature('Do you want to use this API key?'), undefined);
+  assert.equal(matchInteractivePromptSignature('Yes, I trust this folder'), undefined);
+});
+
 test('INTERACTIVE_PROMPT_SIGNATURES includes both signatures', () => {
   const ids = INTERACTIVE_PROMPT_SIGNATURES.map((s) => s.id);
   assert.ok(ids.includes('codex_model_retirement'));

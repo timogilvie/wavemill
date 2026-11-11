@@ -1,0 +1,17 @@
+# shellcheck shell=bash
+# HOK-3463 journey: the first review run exits leaving no usable verdict (its
+# stage result is gone, as when a write is clobbered). The relaunched run
+# records a normal verdict. Neither run pushes or calls gh.
+runs_file="$FEATURE_DIR/.journey-review-runs"
+runs="$(cat "$runs_file" 2>/dev/null || echo 0)"
+runs=$((runs + 1))
+printf '%s\n' "$runs" > "$runs_file"
+if (( runs == 1 )); then
+  rm -f "$FEATURE_DIR/.review-result.json"
+  exit 0
+fi
+artifacts="$(jq -cn --arg head "$(git rev-parse HEAD)" --arg title "$WAVEMILL_ISSUE: journey change after a lost verdict" \
+  --arg body "$(printf '## Summary\n- journey\n\n## Self-review\nready\n')" \
+  '{type:"review",prTitle:$title,prBody:$body,exitCode:0,verdict:"ready",iterations:1,blockerCount:0,warningCount:0,reviewHeadSha:$head}')"
+run_tool stage-result-cli.ts update "$FEATURE_DIR" review --status completed \
+  --notes "Review recorded on the relaunch" --artifacts "$artifacts"

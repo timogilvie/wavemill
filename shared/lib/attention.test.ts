@@ -118,7 +118,7 @@ function seedWorld(): void {
     summary: 'coding done; full verification blocked by Docker',
   });
   write(featureDir('review-escalated'), '.needs-attention',
-    marker('operator-decision:review-session-interrupted-pre-pr', 'Review was interrupted before a PR existed; run re-review'));
+    marker('operator-decision:operator-command-failed', 'Could not launch the manual re-review'));
   write(featureDir('ready-watchdog'), '.needs-attention',
     marker('operator-decision:merge-residue', 'Merge residue in the worktree'));
   write(featureDir('ready-exhausted'), '.needs-attention',

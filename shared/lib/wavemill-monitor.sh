@@ -4513,6 +4513,36 @@ stage_agent_disposition() {
   printf '%s\n' "$out"
 }
 
+# _stage_stamp_settled_without_result <issue> <feature_dir> <result_stage> <reason> <current_head> [fallback_agent]
+# Stamps a stage `failed` because its agent settled without a result, so the
+# next tick routes it through classifyFailure → maybe_retry_failed_stage
+# (`stage-failure-<stage>`). The one writer of this record: the HOK-3386
+# disposition and the review exit with no usable verdict (HOK-3463) share it.
+# The evidence says what was observed. `fallback_agent` covers a result file
+# that is missing or names no agent — a failed result without an agent reads
+# as a monitor terminalization and is never retried.
+_stage_stamp_settled_without_result() {
+  local issue="$1" feature_dir="$2" result_stage="$3" reason="$4" current_head="${5:-}" fallback_agent="${6:-}"
+  local agent model evidence_json detail artifacts_json
+  agent="$(stage_result_field "$feature_dir" "$result_stage" "agent")"
+  [[ -n "$agent" ]] || agent="$fallback_agent"
+  model="$(resolve_stage_result_model "$feature_dir" "$result_stage" "")"
+  if command -v jq >/dev/null 2>&1; then
+    evidence_json="$(jq -cn --arg reason "$reason" --arg stage "$result_stage" --arg currentHead "${current_head:-unknown}" \
+      '{reason:$reason, stage:$stage, observedHead:$currentHead, observedAt:(now|todate)}' 2>/dev/null || echo "{}")"
+  else
+    evidence_json="{}"
+  fi
+  detail="Interrupted: ${result_stage} agent settled without a result (${reason})"
+  artifacts_json="$(jq -cn \
+    --arg type "$result_stage" \
+    --argjson evidence "$evidence_json" \
+    '{type: $type, terminationClass: "interrupted", exitEvidence: $evidence, validationState: "unknown",
+      recoveryAction: "Relaunch the stage from the HOK-3176 stage-failure-<stage> bucket."}' 2>/dev/null || echo '{"type":"'"$result_stage"'"}')"
+  write_stage_result "$feature_dir" "$result_stage" "failed" "$agent" "$model" "$detail" "$artifacts_json"
+  log_warn "$issue → ${result_stage} agent settled without a result (${reason}) - routing to stage-failure-${result_stage}"
+}
+
 # HOK-3386: _stage_disposition_act <issue> <feature_dir> <wt_dir> <win_target> <win> <stage>
 # Reads the disposition and translates it into one of four monitor actions:
 #   rc 0  — in-flight, inactive (with a launch row) or advanced: evidence-
@@ -4532,7 +4562,7 @@ stage_agent_disposition() {
 _stage_disposition_act() {
   local issue="$1" feature_dir="$2" wt_dir="$3" win_target="$4" win="$5" stage="$6"
   local current_head disposition kind reason has_completion blocking_id blocking_detail
-  local state_dir="$feature_dir" result_stage started_at
+  local state_dir="$feature_dir" result_stage
 
   # ready-remediation and conflict-resolution are sub-activities of the Ready
   # stage, recorded in `.ready-result.json` — there is no separate
@@ -4580,29 +4610,7 @@ _stage_disposition_act() {
     return 2
   fi
 
-  # Settled without a result: stamp the stage failed so the next tick routes
-  # through classifyFailure → maybe_retry_failed_stage. Dynamic evidence from
-  # the disposition so the stamped `exitEvidence` says what actually happened.
-  started_at="$(jq -r '.startedAt // empty' "$feature_dir/.${result_stage}-result.json" 2>/dev/null || true)"
-  local agent model
-  agent="$(stage_result_field "$feature_dir" "$result_stage" "agent")"
-  model="$(resolve_stage_result_model "$feature_dir" "$result_stage" "")"
-  local evidence_json detail
-  if command -v jq >/dev/null 2>&1; then
-    evidence_json="$(jq -cn --arg reason "$reason" --arg stage "$result_stage" --arg currentHead "${current_head:-unknown}" \
-      '{reason:$reason, stage:$stage, observedHead:$currentHead, observedAt:(now|todate)}' 2>/dev/null || echo "{}")"
-  else
-    evidence_json="{}"
-  fi
-  detail="Interrupted: ${result_stage} agent settled without a result (${reason})"
-  local artifacts_json
-  artifacts_json="$(jq -cn \
-    --arg type "$result_stage" \
-    --argjson evidence "$evidence_json" \
-    '{type: $type, terminationClass: "interrupted", exitEvidence: $evidence, validationState: "unknown",
-      recoveryAction: "Relaunch the stage from the HOK-3176 stage-failure-<stage> bucket."}' 2>/dev/null || echo '{"type":"'"$result_stage"'"}')"
-  write_stage_result "$feature_dir" "$result_stage" "failed" "$agent" "$model" "$detail" "$artifacts_json"
-  log_warn "$issue → ${result_stage} agent settled without a result (${reason}) - routing to stage-failure-${result_stage}"
+  _stage_stamp_settled_without_result "$issue" "$feature_dir" "$result_stage" "$reason" "$current_head"
   return 1
 }
 
@@ -22077,7 +22085,21 @@ monitor_issue_state() {
             fi
             return 0
           fi
-          # No PR created or ready phase disabled - mark for attention
+          # HOK-3463: the mill opens the PR, so "no PR after review" means only
+          # "review did not produce a usable verdict" (its result is missing or
+          # carries a status that is not running, failed or completed). That is
+          # a settled stage without a result like any other: stamp it failed
+          # and let the next tick route it through classifyFailure →
+          # maybe_retry_failed_stage (`stage-failure-review`). It is never set
+          # to `error` and never pages on the first occurrence.
+          if [[ "$review_status" != "aborted" ]]; then
+            _stage_stamp_settled_without_result "$ISSUE" "$FEATURE_DIR" "review" \
+              "no-usable-verdict:${review_status:-missing}" \
+              "$(git -C "${WORKTREE_ROOT}/${SLUG}" rev-parse HEAD 2>/dev/null || true)" "$current_agent"
+            set_window_attention_state "$WIN" "clear"
+            active_count=$((active_count + 1))
+            return 0
+          fi
           needs_attention="true"
           ;;
 
@@ -22273,40 +22295,6 @@ monitor_issue_state() {
           active_count=$((active_count + 1))
           return 0
         fi
-      fi
-
-      # HOK-3146 defense in depth: a review-stage interruption with coding
-      # already complete is not a terminal "no PR" failure, even if Phase 2's
-      # window-missing branch above did not reach it. Preserve the review
-      # phase; operator recovery (/re-review or a window relaunch) can still
-      # pick it up. A genuine planning or coding failure without
-      # .coding-complete still falls through to the error path.
-      local _review_status_no_pr
-      _review_status_no_pr="$(read_stage_status "$FEATURE_DIR" "review" 2>/dev/null || true)"
-      if [[ "$current_phase" == "review" ]] \
-        && [[ -f "$FEATURE_DIR/.coding-complete" ]] \
-        && [[ "$_review_status_no_pr" != "completed" \
-           && "$_review_status_no_pr" != "aborted" ]]; then
-        local hook_protocol_review="$LIB_DIR/../hooks/wavemill-hook-protocol.sh"
-        if [[ -f "$hook_protocol_review" ]]; then
-          # shellcheck disable=SC1090
-          source "$hook_protocol_review" || true
-          if declare -F wavemill_hook_write >/dev/null 2>&1; then
-            WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$ISSUE" \
-              wavemill_hook_write "waiting" "review_interrupted_no_pr" \
-                "Review interrupted on branch $BRANCH; coding commits preserved" \
-                "${current_agent:-unknown}" \
-                "run /re-review $ISSUE to relaunch the review (it will open the PR)" \
-                "monitor" || true
-          fi
-        fi
-        escalate_operator_attention "$FEATURE_DIR" operator-decision review-session-interrupted-pre-pr \
-          "Review interrupted on branch $BRANCH before PR creation; coding commits preserved. Run /re-review $ISSUE to relaunch." || true
-        set_task_phase "$ISSUE" "review"
-        set_window_attention_state "$WIN" "needs-user"
-        active_count=$((active_count + 1))
-        log "status" "⚠ $ISSUE → Review interrupted before PR creation (worktree preserved; re-review available)"
-        return 0
       fi
 
       log_error "⚠ $ISSUE → Agent exited without creating PR on branch $BRANCH"
