@@ -47,3 +47,25 @@ test('preserves routes that do not require an explicit successor', () => {
 
   assert.equal(upgradeRouteModelSuccessors(original), original);
 });
+
+test('reads provider-form model IDs as the registry model the mill launches by', () => {
+  // Hokusai returns `qwen3-coder` for the candidate the mill sent as
+  // `qwen-3-coder`; unrecognised, launchability replaced it with another model.
+  const upgraded = upgradeRouteModelSuccessors(decision({
+    planner: 'qwen3-coder',
+    coder: 'claude-sonnet-5',
+    reviewer: 'qwen/qwen3-coder',
+  }));
+
+  assert.equal(upgraded.planner, 'qwen-3-coder');
+  assert.equal(upgraded.coder, 'claude-sonnet-5');
+  assert.equal(upgraded.reviewer, 'qwen-3-coder');
+  assert.match(upgraded.reasoning.join('\n'), /planner model qwen3-coder as registry model qwen-3-coder/);
+  assert.match(upgraded.reasoning.join('\n'), /reviewer model qwen\/qwen3-coder as registry model qwen-3-coder/);
+});
+
+test('leaves a model ID the registry does not know untouched', () => {
+  const original = decision({ planner: 'not-a-real-model', coder: 'claude-sonnet-5', reviewer: 'claude-sonnet-5' });
+
+  assert.equal(upgradeRouteModelSuccessors(original), original);
+});
