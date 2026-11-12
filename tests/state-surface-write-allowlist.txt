@@ -1,11 +1,11 @@
-# State-surface write allowlist (HOK-3187, Ledger H Phase 4)
+# State-surface write allowlist
 # Ratcheting: when a file's write count drops below its allowance, lower it.
 # Format: <repo-relative path> <max count>
 #
 # This allowlist shrinks over time as sites migrate off direct writes to:
-#   - workflow-state.json (render it from the ledger instead)
-#   - .retry-<bucket>-* sentinels (step row attempt + settled_reason)
-#   - .workflow-aborted (`tools/ledger.ts event abort --task <id>`)
-#   - condition sidecars (`tools/ledger.ts waiting-on-set`)
+#   - workflow-state.json (write through state_mutate / mutateJsonState)
+#   - .retry-<bucket>-* sentinels (bounded_retry_* attempt + settled_reason)
+#   - .workflow-aborted (the abort seam)
+#   - condition sidecars (marker_write / marker_clear)
 #
-# New writes should go through tools/ledger.ts, not add to this list.
+# New writes should go through the authoring seam, not add to this list.

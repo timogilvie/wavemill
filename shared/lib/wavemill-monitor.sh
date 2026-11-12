@@ -10323,26 +10323,6 @@ $issue_desc
 
   log_task "status" "$issue" "Launching review phase for $issue (model: $reviewer_model, mode: $review_mode, operating mode: $operating_mode)"
 
-  # HOK-3184: mirror the review launch as a shadow step row. The step row's
-  # identity is {head, base, prompt_identity}; its retry bucket is the shared
-  # review-infra-recovery bucket. The call is best-effort — a shadow failure
-  # never affects the agent launch.
-  if declare -F wavemill_ledger_step_upsert >/dev/null 2>&1; then
-    local _review_head _review_base _review_prompt_hash _review_state_dir
-    _review_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
-    _review_base="$(git -C "$wt_dir" merge-base HEAD "origin/$base_branch" 2>/dev/null || true)"
-    _review_prompt_hash=""
-    if [[ -r "$prompt_file" ]]; then
-      _review_prompt_hash="$(shasum -a 256 "$prompt_file" 2>/dev/null | awk '{print $1}' || true)"
-    fi
-    _review_state_dir="$wt_dir/features/$slug"
-    wavemill_ledger_step_upsert "$issue" review "$_review_state_dir" "review-infra-recovery" \
-      --head "$_review_head" --base "$_review_base" \
-      --prompt "${_review_prompt_hash:-$(printf 'review@%s' "$reviewer_model")}" \
-      --owner "$reviewer_agent" --next-action "awaiting review verdict" \
-      --max-attempts 2 >/dev/null 2>&1 || true
-  fi
-
   _launch_agent_in_pane "$win" "$reviewer_agent" "$reviewer_model" "$prompt_file" "$slug" "$issue" "review"
   return $?
 }
@@ -14062,21 +14042,6 @@ launch_ready_phase() {
   marker_clear "$state_dir/.needs-attention"
   log "$pending_log_level" "  $issue: Launching ready phase (PR #$pr_number)"
 
-  # HOK-3184: mirror the Ready launch as a shadow step row. The identity is
-  # {head, base, pr, prompt_identity}; the retry bucket is the shared
-  # ready-remediation bucket. The call is best-effort.
-  if declare -F wavemill_ledger_step_upsert >/dev/null 2>&1; then
-    local _ready_head _ready_base _ready_max_attempts
-    _ready_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
-    _ready_base="$(git -C "$wt_dir" merge-base HEAD "origin/$base_branch" 2>/dev/null || true)"
-    _ready_max_attempts=3
-    wavemill_ledger_step_upsert "$issue" ready "$state_dir" "ready-remediation" \
-      --head "$_ready_head" --base "$_ready_base" --pr "$pr_number" \
-      --prompt "ready@${current_agent:-mill}" \
-      --owner "$current_agent" --next-action "awaiting Ready verdict" \
-      --max-attempts "$_ready_max_attempts" >/dev/null 2>&1 || true
-  fi
-
   # HOK-3112: Ready checks the checkout and publishes the Tend handoff at the
   # head it checked, so the checkout must be the PR's GitHub head first. Tend
   # rebases in its own scratch worktree and never updates this one; running
@@ -15704,24 +15669,6 @@ maybe_run_challenge_eval() {
     return 1
   fi
 
-  # HOK-3184: mirror the eval launch as a shadow step row. The bucket name
-  # mirrors the pair/side so the retry sentinel is attributed to this arm.
-  # HOK-3255: it mirrors the one bounded-retry budget that owns all eval
-  # failures (challenge-eval-hard); the retired challenge-eval-soft ceiling
-  # no longer feeds this shadow call.
-  if declare -F wavemill_ledger_step_upsert >/dev/null 2>&1; then
-    local _eval_head _eval_state_dir _eval_bucket _eval_max_attempts
-    _eval_head="$(git -C "${WORKTREE_ROOT}/${slug}" rev-parse HEAD 2>/dev/null || true)"
-    _eval_state_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
-    _eval_bucket="challenge-eval-hard-${pair_id}-${side}"
-    _eval_max_attempts=$(challenge_eval_hard_failure_max_retries)
-    wavemill_ledger_step_upsert "$issue" eval "$_eval_state_dir" "$_eval_bucket" \
-      --head "$_eval_head" --pr "$pr" --pair "$pair_id" --side "$side" \
-      --prompt "run-eval-hook@${challenge_stage:-eval}" \
-      --owner "$eval_agent" --next-action "awaiting eval verdict" \
-      --max-attempts "$_eval_max_attempts" >/dev/null 2>&1 || true
-  fi
-
   wavemill_run_tool "run-eval-hook.ts" \
     --issue "$linear_issue" --pr "$pr" --branch "$branch" \
     --worktree "${WORKTREE_ROOT}/${slug}" \
@@ -16614,50 +16561,6 @@ monitor_terminal_cleanup_tick() {
   return 0
 }
 
-# ─── Side-effect duplicate detector (HOK-3183) ─────────────────────────────
-#
-# Ledger D Phase 1: every push / PR label / Linear transition / PR merge
-# shadow-writes a side_effect row. On a slow cadence the monitor runs
-# `tools/ledger-detect-duplicates.ts`, which logs each key applied twice and
-# each mill label write with no row as a `[side-effect-duplicate]` warn line
-# in the mill log. Detection only — it never changes a decision.
-# Kill switch: WAVEMILL_SIDE_EFFECT_DETECTOR_DISABLED=1 (or the ledger-wide
-# WAVEMILL_LEDGER_SHADOW_DISABLED=1).
-monitor_side_effect_detector_interval() {
-  local value="${SIDE_EFFECT_DETECTOR_INTERVAL_SECONDS:-300}"
-  [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]] || value=300
-  printf '%s\n' "$value"
-}
-
-monitor_side_effect_detector_tick() {
-  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
-  [[ "${WAVEMILL_SIDE_EFFECT_DETECTOR_DISABLED:-0}" == "1" ]] && return 0
-  [[ "${WAVEMILL_LEDGER_SHADOW_DISABLED:-0}" == "1" ]] && return 0
-  [[ -n "${STATE_DIR:-}" && -n "${REPO_DIR:-}" ]] || return 0
-  declare -F wavemill_run_tool >/dev/null 2>&1 || return 0
-
-  local interval last_at now stamp_file="$STATE_DIR/.side-effect-detector-last-at"
-  interval="$(monitor_side_effect_detector_interval)"
-  now="$(date +%s)"
-  if [[ -f "$stamp_file" ]]; then
-    last_at="$(cat "$stamp_file" 2>/dev/null || echo 0)"
-    [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
-    (( now - last_at < interval )) && return 0
-  fi
-  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
-  _monitor_terminal_cleanup_write "$stamp_file" "$now"
-
-  local log_file="${MILL_LOG_FILE:-/dev/null}"
-  # Background so a slow ledger open never stalls the monitor pass.
-  (
-    wavemill_run_tool ledger-detect-duplicates.ts --repo-dir "$REPO_DIR" --since 30m \
-      >>"$log_file" 2>&1 || true
-  ) >/dev/null 2>&1 &
-  disown 2>/dev/null || true
-  return 0
-}
-
-# ─── Ledger F recovery loop (HOK-3185) ──────────────────────────────────────
 # ─── Stale node_modules detector (HOK-3254) ─────────────────────────────────
 #
 # A slow-cadence check on REPO_DIR. Loads the HOK-3254 drift primitive from
@@ -24211,10 +24114,6 @@ while :; do
     reconcile_condition_markers_tick || true
   fi
   monitor_step_end conditionReconcile
-  # HOK-3183: report duplicate / unrecorded side effects (detection only).
-  monitor_step_begin sideEffectDuplicateDetector
-  monitor_side_effect_detector_tick || true
-  monitor_step_end sideEffectDuplicateDetector
   # HOK-3254: slow-cadence stale node_modules detector + auto-fix.
   monitor_step_begin depsDrift
   monitor_deps_drift_tick || true

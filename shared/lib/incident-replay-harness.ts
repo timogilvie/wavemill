@@ -7,11 +7,13 @@
  *   - a fault (one of six environmental classes),
  *   - a convergence contract (`mustMerge | mustEscalate`, tick budget).
  *
- * Every fixture is driven through `runWithRecoveryLoop`, which feeds the
- * stalled step to the real Ledger F `decideRecovery`. The fault model
- * (fixture-declared fault data) is the only fixture-specific knowledge; the recovery
- * outcome itself (failure policy, bounded retry, one escalation) is the
- * production loop. The `--mode=legacy` simulator was retired in HOK-3235.
+ * Every fixture is driven through `runWithRecoveryLoop`, which applies the
+ * live failure policy (`classifyFailure`) to the stalled step under a bounded
+ * retry budget. The fault model (fixture-declared fault data) is the only
+ * fixture-specific knowledge; the recovery outcome itself (failure policy,
+ * bounded retry, one escalation) is the production ladder. The `decideRecovery`
+ * dispatcher and the `--mode=legacy` simulator were retired in HOK-3235 /
+ * HOK-3274.
  *
  * The assertion is simply "converges within the budget" — one of:
  *   - `lifecycle.workflowOutcome ∈ {merged, aborted}` AND evidence file exists;
@@ -29,9 +31,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { DEFAULT_RETRY_ATTEMPTS, type FailureStage } from './failure-policy.ts';
-import type { TaskRow } from './ledger.ts';
-import { decideRecovery, type RecoveryActionKind, type RecoveryDecision, type RecoveryRetryBudget } from './ledger-recovery.ts';
+import { classifyFailure, DEFAULT_RETRY_ATTEMPTS, type FailureStage } from './failure-policy.ts';
 import { createIncidentDraft, type IncidentLifecycle } from './wavemill-incident-model.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 import { reconcileIncidentCycle } from './incident-reconcile-cycle.ts';
@@ -264,7 +264,43 @@ export function assertConverged(result: RunResult, fixture: IncidentReplayFixtur
   return { ok: true };
 }
 
-// ── recovery-loop (HOK-3185) ────────────────────────────────────────────────
+// ── recovery-loop (HOK-3176 failure policy) ─────────────────────────────────
+
+/**
+ * The recovery actions the replay loop can take on one tick. These mirror the
+ * live stage-recovery ladder: progress short-circuits (`skip`), an allowlisted
+ * terminal cause settles the arm, a recognised code failure spawns a
+ * remediation relaunch, and a retryable failure spends the bounded-retry
+ * budget (`bounded-relaunch`) until it is exhausted (`escalate-waiting-on`).
+ */
+export type RecoveryActionKind =
+  | 'skip'
+  | 'settle-aborted'
+  | 'spawn-remediation'
+  | 'bounded-relaunch'
+  | 'escalate-waiting-on';
+
+/** The one recovery decision the replay loop records and acts on each tick. */
+interface ReplayRecoveryDecision {
+  action: RecoveryActionKind;
+  rationale: string;
+  failureKind?: string;
+  nextAction?: string;
+  retryBucket?: string;
+}
+
+/** In-memory bounded-retry budget verdict (no backoff window in replay). */
+interface ReplayRetryVerdict {
+  decision: 'proceed' | 'exhausted';
+  attempts: number;
+  maxAttempts: number;
+}
+
+/** In-memory bounded-retry budget: one harness tick is one backoff window. */
+export interface ReplayRetryBudget {
+  peek(): ReplayRetryVerdict;
+  consume(): void;
+}
 
 /** What the stage reports for a fault, and how many relaunches the fault survives. */
 export interface FaultModel {
@@ -279,7 +315,7 @@ export interface FaultModel {
 /**
  * Translate a fixture's declared `failure` block (HOK-3231 D2) into the
  * failure evidence a real stage would report. This is the only fixture-
- * specific knowledge; the outcome itself comes from `decideRecovery`.
+ * specific knowledge; the outcome itself comes from `classifyFailure`.
  *
  * Fixtures with no `failure` block are the no-fault control; the agent is
  * reported as progressing and no retry is spent.
@@ -297,7 +333,7 @@ export function faultModelFromFixture(fixture: IncidentReplayFixture): FaultMode
 }
 
 /** In-memory bounded-retry budget (no backoff — one harness tick is one backoff window). */
-export function createMemoryRetryBudget(maxAttempts = DEFAULT_RETRY_ATTEMPTS): RecoveryRetryBudget {
+export function createMemoryRetryBudget(maxAttempts = DEFAULT_RETRY_ATTEMPTS): ReplayRetryBudget {
   let attempts = 0;
   return {
     peek: () => ({ decision: attempts >= maxAttempts ? 'exhausted' : 'proceed', attempts, maxAttempts }),
@@ -305,31 +341,7 @@ export function createMemoryRetryBudget(maxAttempts = DEFAULT_RETRY_ATTEMPTS): R
   };
 }
 
-function syntheticStep(fixture: IncidentReplayFixture, stage: FailureStage, nowMs: number, attempt: number): TaskRow {
-  const iso = new Date(nowMs).toISOString();
-  return {
-    id: `${fixture.initialState.task.issue}-${stage}-${attempt}`,
-    parent_id: fixture.initialState.task.issue,
-    kind: 'step',
-    slug: stage,
-    inputs_hash: `replay-${attempt}`,
-    state: 'running',
-    owner: null,
-    next_action: null,
-    // Harness time is compressed: each attempt reaches its deadline on the next tick.
-    deadline: iso,
-    background: 0,
-    replay: 'unsafe',
-    attempt,
-    max_attempts: null,
-    created_at: new Date(nowMs - 60_000).toISOString(),
-    settled_at: null,
-    settled_as: null,
-    settled_reason: null,
-  };
-}
-
-function writeEscalation(ctx: SandboxContext, fixture: IncidentReplayFixture, decision: RecoveryDecision): ConvergenceEvidence {
+function writeEscalation(ctx: SandboxContext, fixture: IncidentReplayFixture, decision: ReplayRecoveryDecision): ConvergenceEvidence {
   const needsAttention = escalationMarkerPath(ctx.featureDir);
   writeFileSync(needsAttention, `reason=${decision.failureKind ?? fixture.fault}\n`);
   const evidence = join(ctx.featureDir, '.needs-attention.evidence.json');
@@ -349,41 +361,72 @@ function writeMerged(ctx: SandboxContext): ConvergenceEvidence {
 }
 
 /**
- * Drive the fixture with the real recovery loop. Each tick the current
- * attempt's step reaches its deadline; if the fault has cleared (or the
- * agent is progressing) the task merges, otherwise `decideRecovery` chooses:
- * a relaunch spends the budget and starts a new attempt, an escalation or a
- * terminal settle converges as escalated.
+ * Apply the live failure policy to one replay tick. Mirrors the stage-recovery
+ * ladder (`classifyFailure` → bounded retry → one escalation) the mill runs,
+ * reading only the fixture's declared fault model. An allowlisted terminal
+ * cause settles the arm, a recognised code failure spawns a remediation
+ * relaunch, and anything else retries under the bounded budget until it is
+ * exhausted, then escalates once.
+ */
+function decideReplayRecovery(
+  stage: FailureStage,
+  model: FaultModel,
+  progressing: boolean,
+  retry: ReplayRetryBudget,
+): ReplayRecoveryDecision {
+  if (progressing) {
+    return { action: 'skip', rationale: 'agent progressing; stage completes' };
+  }
+  const failure = classifyFailure({
+    stage,
+    failureKind: model.failureKind ?? null,
+    detail: model.detail ?? '',
+  });
+  const base = { failureKind: failure.failureKind, nextAction: failure.nextAction };
+  if (failure.class === 'terminal') {
+    return { ...base, action: 'settle-aborted', rationale: failure.rationale };
+  }
+  if (failure.class === 'code-failure') {
+    return { ...base, action: 'spawn-remediation', rationale: failure.rationale };
+  }
+  const bucket = failure.retryBucket!;
+  const verdict = retry.peek();
+  if (verdict.decision === 'proceed') {
+    const attempt = verdict.attempts + 1;
+    const fresh = attempt >= verdict.maxAttempts;
+    return {
+      ...base,
+      action: 'bounded-relaunch',
+      retryBucket: bucket,
+      rationale: `${failure.rationale}; ${fresh ? 'fresh relaunch from row inputs' : 'bounded retry'} ${attempt}/${verdict.maxAttempts}`,
+    };
+  }
+  return {
+    ...base,
+    action: 'escalate-waiting-on',
+    retryBucket: bucket,
+    rationale: `${failure.rationale}; ${bucket} exhausted after ${verdict.attempts}/${verdict.maxAttempts} attempts`,
+  };
+}
+
+/**
+ * Drive the fixture with the real recovery ladder. Each tick, if the fault has
+ * cleared (or the agent is progressing) the task merges, otherwise
+ * `decideReplayRecovery` chooses: a relaunch spends the budget and starts a new
+ * attempt, an escalation or a terminal settle converges as escalated.
  */
 export function runWithRecoveryLoop(ctx: SandboxContext, fixture: IncidentReplayFixture): RunResult {
   const model = faultModelFromFixture(fixture);
   const retry = createMemoryRetryBudget();
   const actions: RecoveryActionKind[] = [];
   let relaunches = 0;
-  const stage = fixture.failure?.stage ?? fixture.initialState.task.phase;
-  let step = syntheticStep(fixture, stage, ctx.clock.nowMs, 0);
+  const stage: FailureStage = fixture.failure?.stage ?? fixture.initialState.task.phase;
 
   for (let i = 0; i < fixture.convergence.maxTickCount; i++) {
     ctx.clock.advance(fixture.convergence.tickIntervalSeconds * 1000);
-    const nowIso = new Date(ctx.clock.nowMs).toISOString();
     const recovered = relaunches > model.survivesRelaunches;
     const progressing = model.progressing === true || recovered;
-    const decision = decideRecovery({
-      step,
-      issueKey: fixture.initialState.task.issue,
-      now: new Date(ctx.clock.nowMs),
-      waitingOn: [],
-      evidence: [],
-      env: {
-        stateDir: ctx.featureDir,
-        head: 'feedface',
-        progress: () => (progressing
-          ? { agentIdle: false, stalled: false, lastProgressAt: nowIso }
-          : { agentIdle: true, stalled: true, lastProgressAt: null }),
-        failure: () => ({ stage, failureKind: model.failureKind ?? null, detail: model.detail ?? '' }),
-      },
-      retry,
-    });
+    const decision = decideReplayRecovery(stage, model, progressing, retry);
     actions.push(decision.action);
 
     switch (decision.action) {
@@ -395,9 +438,8 @@ export function runWithRecoveryLoop(ctx: SandboxContext, fixture: IncidentReplay
         break;
       case 'bounded-relaunch':
       case 'spawn-remediation':
-        retry.consume(decision.retryBucket ?? 'remediation', ctx.featureDir);
+        retry.consume();
         relaunches += 1;
-        step = syntheticStep(fixture, stage, ctx.clock.nowMs, relaunches);
         break;
       case 'escalate-waiting-on':
       case 'settle-aborted': {

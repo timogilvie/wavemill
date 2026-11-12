@@ -10,8 +10,8 @@
  *   later status, never appended.
  * - One write per condition `(pr, phase, head, base)` ({@link prCommentKey}):
  *   when the standing comment already records this condition the call is an
- *   observation — no GitHub write — and the side-effect ledger shadow row
- *   (HOK-3183) is recorded as an observation, never a duplicate attempt.
+ *   observation — no GitHub write — proven by reading the recorded condition
+ *   key back out of the standing comment body ({@link recordedConditionKey}).
  *
  * This is the only module allowed to run `gh pr comment` (enforced by
  * `tools/check-merge-block-writers.ts`).
@@ -20,7 +20,27 @@
  */
 
 import { escapeShellArg } from './shell-utils.ts';
-import { prCommentKey, shadowRecordSideEffect } from './side-effect-ledger.ts';
+
+const KEY_SEPARATOR = '|';
+
+/**
+ * `pr-comment` condition key: `(pr_number, phase, head_oid, base_oid)`
+ * (HOK-3316). One merge-status comment per tend failure condition; the same
+ * condition seen again is an observation, never a second comment.
+ */
+export function prCommentKey(
+  prNumber: number | string,
+  phase: string,
+  headOid: string | null | undefined,
+  baseOid: string | null | undefined,
+): string {
+  return [prNumber, phase, headOid ?? '', baseOid ?? '']
+    .map((value) => {
+      const text = String(value).trim();
+      return text === '' ? 'unknown' : text;
+    })
+    .join(KEY_SEPARATOR);
+}
 
 /** Hidden marker opening the standing comment's body. */
 export const MERGE_STATUS_COMMENT_MARKER = '<!-- wavemill-merge-status -->';
@@ -130,13 +150,6 @@ export function postMergeStatusComment(input: MergeStatusCommentInput): MergeSta
   const standing = findStandingComment(input);
 
   if (standing && recordedConditionKey(standing.body) === idempotencyKey) {
-    shadowRecordSideEffect({
-      kind: 'pr-comment',
-      idempotencyKey,
-      observation: true,
-      result: { action: 'observed', commentId: standing.id },
-      repoDir: input.repoDir,
-    });
     return { action: 'observed', idempotencyKey, commentId: standing.id };
   }
 
@@ -156,11 +169,5 @@ export function postMergeStatusComment(input: MergeStatusCommentInput): MergeSta
     result = { action: 'created', idempotencyKey };
   }
 
-  shadowRecordSideEffect({
-    kind: 'pr-comment',
-    idempotencyKey,
-    result: { action: result.action, commentId: result.commentId },
-    repoDir: input.repoDir,
-  });
   return result;
 }

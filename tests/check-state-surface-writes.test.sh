@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
-# Test: no direct writes to retired state surfaces (HOK-3187, Ledger H Phase 4)
+# Test: no direct writes to managed state surfaces
 #
-# The ledger (shared/lib/ledger.ts + tools/ledger.ts) is the sole authority for
-# task state. Legacy files remain only as a render view (workflow-state.json)
-# and as evidence feeders (hook files). Direct writes from new code to the
-# retired surfaces defeat the point of the ledger, so this guard greps for
+# Task state and its sentinels have one authoring seam each. Direct writes
+# from new code bypass the mutate lock, the schema/settlement gate and the
+# bounded-retry / condition-marker primitives, so this guard greps for
 # unauthorised writers and fails on new ones.
 #
-# Retired surfaces:
-#   - workflow-state.json  — rendered by `tools/ledger.ts view workflow-state`
-#   - .retry-<bucket>-*     — ledger step row's attempt + settled_reason
-#   - .workflow-aborted     — `tools/ledger.ts event abort --task <id>`
-#   - condition sidecars    — `tools/ledger.ts waiting-on-set`
+# Managed surfaces and their authoring seam:
+#   - workflow-state.json  — `state_mutate` / `mutateJsonState`
+#   - .retry-<bucket>-*     — `bounded_retry_*` (attempt + settled_reason)
+#   - .workflow-aborted     — the abort seam
+#   - condition sidecars    — `marker_write` / `marker_clear`
 #
-# Exempt files are the renderer itself, the state-mutate shim that writes the
-# render view, and the sentinel authoring helpers that are migrating in
-# follow-up PRs on this branch.
+# Exempt files are the authoring helpers themselves.
 
 set -euo pipefail
 
@@ -28,10 +25,8 @@ if [[ ! -f "$ALLOWLIST" ]]; then
   exit 1
 fi
 
-# Core sites allowed to touch the render view / sentinel helpers.
+# Core sites allowed to author the managed surfaces / sentinel helpers.
 EXEMPT_FILES=(
-  "tools/ledger.ts"
-  "shared/lib/view-workflow-state.ts"
   "shared/lib/bounded-retry.sh"
   "shared/lib/bounded-retry.ts"
   "shared/lib/condition-reconciler.sh"
@@ -90,14 +85,14 @@ check_surface_writes() {
     actual="${actual_counts[$file]}"
     if [[ -z "${allowed_counts[$file]:-}" ]]; then
       echo "FAIL: $file has $actual unauthorized writes to a retired state surface" >&2
-      echo "      Route writes through tools/ledger.ts, or add to allowlist if justified" >&2
+      echo "      Route writes through state_mutate / mutateJsonState, or add to allowlist if justified" >&2
       failed=true
       continue
     fi
     allowed="${allowed_counts[$file]}"
     if (( actual > allowed )); then
       echo "FAIL: $file has $actual retired-surface writes, allowed $allowed" >&2
-      echo "      Route new writes through the ledger CLI" >&2
+      echo "      Route new writes through the mutate seam" >&2
       failed=true
     elif (( actual < allowed )); then
       echo "FAIL: $file has $actual retired-surface writes, but allowlist says $allowed" >&2

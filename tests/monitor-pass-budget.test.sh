@@ -140,7 +140,7 @@ done
 # (per-task field reads), pipelineSanity (synthetic jq calls).
 #
 # Omitted steps that don't spawn: reconcile_condition_markers_tick,
-# monitor_side_effect_detector_tick, check_backstage_health,
+# check_backstage_health,
 # check_backstage_observer_health, wavemill_pr_cache_refresh,
 # refresh_ready_merge_queue_tick. These are omitted because they either
 # have negligible spawn counts or are not central to the pass-budget

@@ -1,5 +1,4 @@
 import { ISSUE_ID_RE, challengerTaskId } from './task-identity.ts';
-import { linearTransitionKey, shadowRecordSideEffect, synthesizeTriggerEventId } from './side-effect-ledger.ts';
 /**
  * Shared Linear API client used by both Claude and Codex tooling.
  *
@@ -694,28 +693,17 @@ export async function getBacklogForScoring(projectName?: string): Promise<Linear
   return issues?.nodes || [];
 }
 
-/** Optional trigger attribution for a Linear state transition (HOK-3183). */
+/**
+ * Optional trigger attribution for a Linear state transition. Retained for
+ * callers (the retry queue and write gate pass a trigger id); it is
+ * informational now that the side-effect ledger shadow (HOK-3183) is retired
+ * (HOK-3274).
+ */
 export interface LinearTransitionOptions {
-  /** Event that caused the transition; the side-effect key's `trigger_event_id`. */
+  /** Event that caused the transition. */
   triggerEventId?: string;
   /** Caller label used to synthesise a trigger id when none is passed. */
   triggerHint?: string;
-}
-
-/** Shadow-record one applied Linear transition in the side-effect ledger. */
-function shadowRecordLinearTransition(
-  identifier: string,
-  fromState: string | undefined,
-  toState: string,
-  stateId: string,
-  triggerEventId: string,
-): void {
-  shadowRecordSideEffect({
-    kind: 'linear-transition',
-    idempotencyKey: linearTransitionKey(identifier, fromState, toState, triggerEventId),
-    result: { stateId, outcome: 'applied' },
-    issueKey: identifier,
-  });
 }
 
 /**
@@ -723,7 +711,7 @@ function shadowRecordLinearTransition(
  *
  * @param identifier - Issue identifier (e.g., 'HOK-123')
  * @param stateName - State name (e.g., 'In Progress')
- * @param opts - Optional trigger attribution for the side-effect ledger
+ * @param opts - Optional trigger attribution (informational; see {@link LinearTransitionOptions})
  * @returns Update result
  */
 export async function setIssueState(
@@ -731,7 +719,7 @@ export async function setIssueState(
   stateName: string,
   opts: LinearTransitionOptions = {},
 ): Promise<{ success: boolean; issue: LinearIssue }> {
-  const triggerEventId = opts.triggerEventId ?? synthesizeTriggerEventId(opts.triggerHint, stateName);
+  void opts;
   const issue = await fetchIssueByIdentifier(identifier, `
     id
     state { name }
@@ -747,11 +735,7 @@ export async function setIssueState(
     throw new Error(`State "${stateName}" not found. Available: ${available}`);
   }
 
-  const result = await updateIssue(issue.id, { stateId: targetStateId });
-  if (result.success) {
-    shadowRecordLinearTransition(identifier, issue.state?.name, stateName, targetStateId, triggerEventId);
-  }
-  return result;
+  return updateIssue(issue.id, { stateId: targetStateId });
 }
 
 type LinearIssueUpdateResult = {
@@ -767,7 +751,7 @@ export async function setIssuesState(
   if (identifiers.length === 0) {
     return { updated: [], failed: [] };
   }
-  const triggerEventId = opts.triggerEventId ?? synthesizeTriggerEventId(opts.triggerHint, stateName);
+  void opts;
 
   const failed: LinearBatchFailure[] = [];
   const updated: string[] = [];
@@ -921,7 +905,6 @@ export async function setIssuesState(
     const issue = planned[i].issue;
     if (result.status === 'fulfilled' && result.value.success) {
       updated.push(issue.identifier);
-      shadowRecordLinearTransition(issue.identifier, issue.state?.name, stateName, planned[i].stateId, triggerEventId);
     } else if (result.status === 'fulfilled') {
       pushFailure(issue.identifier, {
         error: 'Failed to update issue state',

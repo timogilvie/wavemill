@@ -28,7 +28,7 @@ FAIL=0
 pass() { echo "  PASS  $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL  $1"; FAIL=$((FAIL + 1)); }
 
-# Brace-depth-aware extract (same pattern as monitor-side-effect-detector-tick.test.sh)
+# Brace-depth-aware extract of the monitor function under test
 extract_function() {
   local function_name="$1"
   awk -v name="$function_name" '
