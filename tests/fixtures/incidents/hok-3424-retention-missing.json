@@ -4,6 +4,7 @@
   "issue": "HOK-3424_c",
   "slug": "attention-22-observer-push-reads-the-attention-projection-delete",
   "before": {
+    "_note": "allow-task-literal: deliberately invalid pre-fix row from the shadow-log replay",
     "tasks": {
       "HOK-3424": {
         "slug": "attention-22-observer-push-reads-the-attention-projection-delete",

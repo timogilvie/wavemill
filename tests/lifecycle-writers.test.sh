@@ -105,21 +105,8 @@ echo "test_cleanup_episode_record_outcome_stamps_retention"
 # allocated row without retention. Reaped is exempt from the retention rule,
 # so the writer only needs to avoid making the pair worse.
 state="$(new_state episode)"
-cat > "$state" <<'STATE'
-{
-  "tasks": {
-    "HOK-5": {
-      "status": "closed",
-      "phase": "closed",
-      "lifecycle": {
-        "schemaVersion": 1,
-        "workflowOutcome": "closed",
-        "resourceDisposition": "allocated"
-      }
-    }
-  }
-}
-STATE
+# allow-task-literal: deliberately invalid pre-fix row (closed+allocated, no retention) that the fixture builder would reject
+jq -n '{tasks: {"HOK-5": {status: "closed", phase: "closed", lifecycle: {schemaVersion: 1, workflowOutcome: "closed", resourceDisposition: "allocated"}}}}' > "$state"
 candidate='{"fingerprint":"hok3454-test-fp","fingerprintInputs":{"branch":"task/hok-3454"}}'
 STATE_FILE="$state" cleanup_episode_record_outcome HOK-5 "reaped" "none" "cleanup-complete" "$candidate" "" 2>/dev/null
 assert_eq "closed" "$(jq -r '.tasks["HOK-5"].lifecycle.workflowOutcome' "$state")" "workflowOutcome is closed"
@@ -130,21 +117,8 @@ echo "test_cleanup_episode_record_outcome_stamps_retention_for_transient"
 # protects: a transient episode maps resourceDisposition to verification-required
 # but last_outcome="" leaves the terminal row without retention.
 state="$(new_state episode-transient)"
-cat > "$state" <<'STATE'
-{
-  "tasks": {
-    "HOK-6": {
-      "status": "closed",
-      "phase": "closed",
-      "lifecycle": {
-        "schemaVersion": 1,
-        "workflowOutcome": "closed",
-        "resourceDisposition": "allocated"
-      }
-    }
-  }
-}
-STATE
+# allow-task-literal: deliberately invalid pre-fix row (closed+allocated, no retention) that the fixture builder would reject
+jq -n '{tasks: {"HOK-6": {status: "closed", phase: "closed", lifecycle: {schemaVersion: 1, workflowOutcome: "closed", resourceDisposition: "allocated"}}}}' > "$state"
 candidate='{"fingerprint":"hok3454-transient-fp","fingerprintInputs":{"branch":"task/hok-3454"}}'
 STATE_FILE="$state" cleanup_episode_record_outcome HOK-6 "transient" "operational" "" "$candidate" "" 2>/dev/null
 assert_eq "closed" "$(jq -r '.tasks["HOK-6"].lifecycle.workflowOutcome' "$state")" "workflowOutcome is closed"

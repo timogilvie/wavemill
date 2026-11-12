@@ -21,6 +21,7 @@ function seedState(): void {
   // against the schema and would reject closed+allocated without retention,
   // but the shadow log shows this exact invalid state reached the writer.
   const state = {
+    // allow-task-literal: deliberately invalid pre-fix row from the shadow log
     tasks: {
       'HOK-3424_c': {
         slug: 'attention-22-observer-push-reads-the-attention-projection-delete',
