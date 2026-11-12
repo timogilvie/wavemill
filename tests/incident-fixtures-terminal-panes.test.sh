@@ -127,6 +127,25 @@ run_startup_preflight_replay() {
 }
 
 # ============================================================================
+# Harness guard: the controller's Linear writer cannot reach live Linear
+# ============================================================================
+# Runs the same spawn the controller uses for a Linear state write. The issue
+# ID does not exist, so a regression here costs one failed lookup and never a
+# write.
+echo ""
+echo "=== Harness guard: Linear writes are refused before any request ==="
+linear_guard_output="$(bash -c '
+  source "'"$INCIDENT_COMMON_SCRIPT"'"
+  wavemill_run_tool "set-issue-state.ts" "HOK-0" "Backlog"
+' 2>&1)" && linear_guard_rc=0 || linear_guard_rc=$?
+expect_true "Linear state write fails inside the harness" test "$linear_guard_rc" -ne 0
+if [[ "$linear_guard_output" == *"LINEAR_API_KEY is not set"* ]]; then
+  report_pass "Linear state write is refused for want of a key, before any request"
+else
+  report_fail "Linear state write was not refused for want of a key: ${linear_guard_output:0:300}"
+fi
+
+# ============================================================================
 # Scenario 1: HOK-2595-style closed non-challenge task, retained pane
 # ============================================================================
 echo ""
