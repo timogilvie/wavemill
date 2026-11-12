@@ -1286,6 +1286,67 @@ cleanup_terminal_missing_worktree_entries() {
   fi
 }
 
+# Run the failure eval for a PR that is being pruned because it closed
+# unmerged. A persisted eval records completion; a failed eval goes through the
+# one eval-failure path (eval_failure_disposition → mark_eval_failed) so it is
+# never recorded as completed (HOK-3452).
+#
+# Usage: run_pr_closed_eval <issue> <pr> <branch> <slug> <linear_issue>
+run_pr_closed_eval() {
+  local issue="$1" pr="$2" branch="$3" slug="$4" linear_issue="$5"
+  local eval_log="/tmp/${SESSION}-eval-${issue}.log"
+  local result_path
+  : >"$eval_log"
+  result_path="$(mktemp "${TMPDIR:-/tmp}/pr-closed-eval-${issue}.XXXXXX.json" 2>/dev/null || echo "/tmp/pr-closed-eval-${issue}.$$.json")"
+  rm -f "$result_path"
+  (
+    {
+      printf 'Launching pr-closed eval in background\n'
+      local rc=0 persisted="false"
+      if _with_timeout 120 wavemill_run_tool "run-eval-hook.ts" \
+        --issue "${linear_issue:-$issue}" --pr "$pr" --branch "$branch" \
+        --worktree "${WORKTREE_ROOT}/${slug}" \
+        --workflow-type mill --repo-dir "$REPO_DIR" \
+        --agent "$AGENT_CMD" \
+        --result-file "$result_path" \
+        --debug; then
+        rc=0
+      else
+        rc=$?
+      fi
+      printf 'Eval process exited with code %s\n' "$rc"
+      persisted=$(jq -r '.persisted // false' "$result_path" 2>/dev/null || echo "false")
+      rm -f "$result_path"
+      if [[ "$persisted" == "true" ]]; then
+        # HOK-3125: existing-entry guard so the async completion cannot
+        # recreate the task after the prune below has removed it as a
+        # phase/status-less stub that would count against mill slots.
+        task_state_mutate_existing "$issue" \
+          '.evalCompleted = true | .updated = (now | todate)' \
+          >/dev/null 2>&1 || true
+      else
+        # HOK-3452: a failed eval is not completion. Report the decision
+        # through the shared writer; for an already-pruned row it lands as the
+        # audit-only postReapEval.failed outcome in terminal history.
+        local reason="eval_not_persisted" tail_text decision_json
+        local decision_class decision_kind decision_attribution decision_next_action
+        [[ "$rc" == "124" ]] && reason="timed_out"
+        tail_text=$(tail -c 2000 "$eval_log" 2>/dev/null || echo "")
+        decision_json="$(eval_failure_disposition "$issue" "$reason" "$rc" "$tail_text" false)"
+        decision_class=$(jq -r '.class // "retryable"' <<<"$decision_json")
+        decision_kind=$(jq -r '.failureKind // "native-unclassified"' <<<"$decision_json")
+        decision_attribution=$(jq -r '.attribution // "unattributed"' <<<"$decision_json")
+        decision_next_action=$(jq -r '.nextAction // ""' <<<"$decision_json")
+        printf 'WARN: pr-closed eval not persisted for %s (rc=%s): kind=%s class=%s attribution=%s%s; setting evalFailed=true\n' \
+          "$issue" "$rc" "$decision_kind" "$decision_class" "$decision_attribution" \
+          "${decision_next_action:+; next: $decision_next_action}"
+        mark_eval_failed "$issue" "$decision_json"
+      fi
+    } >>"$eval_log" 2>&1
+  ) >/dev/null 2>&1 &
+  log "debug" "  ↳ Eval running in background; log: $eval_log"
+}
+
 # Prune stale tasks from previous runs
 # Check each task: if PR merged or branch deleted, clean up worktree + state
 cleanup_stale_tasks() {
@@ -1358,27 +1419,7 @@ cleanup_stale_tasks() {
         # Run failure eval before cleanup so closed PRs are scored
         if [[ "$AUTO_EVAL" == "true" && "$eval_completed" == "false" ]]; then
           log "  📊 Running failure eval for closed PR #$pr..."
-          local eval_log="/tmp/${SESSION}-eval-${issue}.log"
-          : >"$eval_log"
-          (
-            {
-              printf 'Launching pr-closed eval in background\n'
-              _with_timeout 120 npx tsx "$TOOLS_DIR/run-eval-hook.ts" \
-                --issue "${linear_issue:-$issue}" --pr "$pr" --branch "$branch" \
-                --worktree "${WORKTREE_ROOT}/${slug}" \
-                --workflow-type mill --repo-dir "$REPO_DIR" \
-                --agent "$AGENT_CMD" \
-                --debug
-              printf 'Eval process exited with code %s\n' "$?"
-            } >>"$eval_log" 2>&1 || true
-            # HOK-3125: existing-entry guard so the async completion cannot
-            # recreate the task after the prune below has removed it as a
-            # phase/status-less stub that would count against mill slots.
-            task_state_mutate_existing "$issue" \
-              '.evalCompleted = true | .updated = (now | todate)' \
-              >/dev/null 2>&1 || true
-          ) >/dev/null 2>&1 &
-    log "debug" "  ↳ Eval running in background; log: $eval_log"
+          run_pr_closed_eval "$issue" "$pr" "$branch" "$slug" "$linear_issue"
         fi
       fi
     fi

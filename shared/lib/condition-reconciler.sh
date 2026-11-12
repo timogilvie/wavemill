@@ -68,10 +68,15 @@ condition_reconcile_task() {
   local issue="$1"
   local wt_dir="$2"
   local state_dir="$3"
+  # HOK-3452: the eval-failure decision is a reconciled marker too. Standalone
+  # tests source this file without wavemill-common.sh, so fall back to the
+  # literal filename when the shared constant is not loaded.
+  local eval_decision_marker="${EVAL_FAILURE_DECISION_MARKER:-.eval-failure-decision.json}"
 
   # Fast path: return early if nothing to reconcile
   local needs_reconcile=false
   if [[ -f "$state_dir/.needs-attention" ]] || \
+     [[ -f "$state_dir/$eval_decision_marker" ]] || \
      [[ -f "$state_dir/.ready-waiting-on.json" ]] || \
      [[ -f "$state_dir/.cross-pr-guard-result.json" ]] || \
      [[ -f "$state_dir/.pr-ci-status-result.json" ]] || \
@@ -379,14 +384,15 @@ condition_reconcile_task() {
   fi
 
   # Reconcile async check results (HOK-3206), the in-flight conflict
-  # resolver record (HOK-3273) and tend's merge-attempt fact (HOK-3316).
+  # resolver record (HOK-3273), tend's merge-attempt fact (HOK-3316) and the
+  # eval-failure decision (HOK-3452).
   # Readers already refuse a result for another head; expiring it here keeps
   # the marker from outliving its condition (cross-PR guard: head; CI status:
   # remote PR head; expanded reroute: operator event; conflict remediation:
   # the resolver's push moves head and remote; tend attempt: remote PR head
   # or operator event — a moved base is checked by its readers).
   local async_marker
-  for async_marker in .cross-pr-guard-result.json .pr-ci-status-result.json .expanded-reroute-result.json .conflict-remediation.json .tend-attempt-result.json; do
+  for async_marker in "$eval_decision_marker" .cross-pr-guard-result.json .pr-ci-status-result.json .expanded-reroute-result.json .conflict-remediation.json .tend-attempt-result.json; do
     if [[ -f "$state_dir/$async_marker" ]]; then
       local reason
       if reason=$(_should_expire "$state_dir/$async_marker"); then
