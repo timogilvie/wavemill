@@ -59,4 +59,55 @@ describe('resolveProjectsDirs', () => {
       rmSync(base, { recursive: true, force: true });
     }
   });
+
+  // The launcher writes the DeepSeek home under the milled repo's
+  // .wavemill/runs, not the task worktree's. Looking only in the worktree
+  // found no transcript, so DeepSeek stages reported no cost and zero turns.
+  function mainCheckoutWithDeepSeekRun(base: string, worktreePath: string): string {
+    const providerProjectsDir = join(
+      base, 'repo', '.wavemill', 'runs', 'HOK-3449', 'providers', 'deepseek', 'home', '.claude', 'projects',
+      encodeProjectDir(worktreePath),
+    );
+    mkdirSync(providerProjectsDir, { recursive: true });
+    return providerProjectsDir;
+  }
+
+  it('finds the DeepSeek home under the main checkout through the worktree .git pointer', () => {
+    const base = mkdtempSync(join(tmpdir(), 'session-paths-'));
+    try {
+      // A worktree outside the repo's worktrees/ directory: only the pointer links them.
+      const worktreePath = join(base, 'elsewhere', 'task-a');
+      mkdirSync(worktreePath, { recursive: true });
+      writeFileSync(join(worktreePath, '.git'), `gitdir: ${join(base, 'repo', '.git', 'worktrees', 'task-a')}\n`);
+      const providerProjectsDir = mainCheckoutWithDeepSeekRun(base, worktreePath);
+
+      assert.deepEqual(resolveProjectsDirs(worktreePath), [resolveProjectsDir(worktreePath), providerProjectsDir]);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('still finds it after the worktree is reaped, from the <repo>/worktrees/<slug> layout', () => {
+    const base = mkdtempSync(join(tmpdir(), 'session-paths-'));
+    try {
+      const worktreePath = join(base, 'repo', 'worktrees', 'task-a'); // never created
+      const providerProjectsDir = mainCheckoutWithDeepSeekRun(base, worktreePath);
+
+      assert.deepEqual(resolveProjectsDirs(worktreePath), [resolveProjectsDir(worktreePath), providerProjectsDir]);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('does not pick up another worktree\'s DeepSeek sessions from the shared runs directory', () => {
+    const base = mkdtempSync(join(tmpdir(), 'session-paths-'));
+    try {
+      const mine = join(base, 'repo', 'worktrees', 'task-a');
+      mainCheckoutWithDeepSeekRun(base, join(base, 'repo', 'worktrees', 'task-b'));
+
+      assert.deepEqual(resolveProjectsDirs(mine), [resolveProjectsDir(mine)]);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
 });
