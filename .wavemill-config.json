@@ -439,6 +439,7 @@
       "Golden Journey (stage-silent-stall)": "bash tests/journeys/run-journeys.sh stage-silent-stall",
       "Golden Journey (observer-attention-push)": "bash tests/journeys/run-journeys.sh observer-attention-push",
       "Golden Journey (required-files-review-scope)": "bash tests/journeys/run-journeys.sh required-files-review-scope",
+      "Golden Journey (challenger-dirty-handoff-exhaustion)": "bash tests/journeys/run-journeys.sh challenger-dirty-handoff-exhaustion",
       "Golden Journeys": "bash tests/run-related.sh"
     },
     "postPrReconciliation": {

@@ -106,6 +106,12 @@ cleanup_file="$tmp/operator-abort-cleanup.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_scan"
   printf '\n'
+  # HOK-3454: mark_task_aborted_for_cleanup stamps terminal retention through
+  # the shared jq filter helper; extract its defs too.
+  extract_function "$COMMON_SCRIPT" "task_lifecycle_jq_defs"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "task_lifecycle_jq_filter"
+  printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "mark_task_aborted_for_cleanup"
   printf '\n'
   # HOK-3359: the window kill is one call into the shared teardown
@@ -113,6 +119,11 @@ cleanup_file="$tmp/operator-abort-cleanup.sh"
   extract_function "$STAGE_TEARDOWN_SCRIPT" "stage_agent_teardown"
   printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "cleanup_aborted_challenge_arm"
+  printf '\n'
+  # HOK-3451: cleanup_aborted_challenge_arm now delegates pending-arm checks
+  # to challenge-arms.sh helpers; source the whole module so the extracted
+  # function has its primitives available.
+  printf 'source %q\n' "$REPO_DIR/shared/lib/challenge-arms.sh"
 } > "$cleanup_file"
 
 run_operator_abort_case() {

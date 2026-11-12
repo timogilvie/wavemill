@@ -290,6 +290,45 @@ function isOrphanStub(task: Record<string, unknown>): boolean {
     && (lifecycle === undefined || lifecycle === null);
 }
 
+/**
+ * Ensure a terminal task lifecycle that requires resource retention carries a
+ * retention block. If `workflowOutcome` is not `active` and `resourceDisposition`
+ * is `allocated`, `retained`, or `verification-required` but `retention.reason`
+ * is absent or empty, stamp a fail-closed retention block and downgrade the
+ * disposition to `verification-required`.
+ *
+ * This is the one lifecycle helper for writers that set terminal outcomes:
+ * both `normalizeTaskLifecycle` and direct writers call it so the pair-validity
+ * decision lives in one place.
+ */
+export function ensureTerminalRetention(
+  lifecycle: TaskLifecycleState,
+  ctx: { actor: string; reason?: string; evidence?: unknown },
+): TaskLifecycleState {
+  if (lifecycle.workflowOutcome === 'active') return lifecycle;
+  if (
+    lifecycle.resourceDisposition !== 'allocated'
+    && lifecycle.resourceDisposition !== 'retained'
+    && lifecycle.resourceDisposition !== 'verification-required'
+  ) {
+    return lifecycle;
+  }
+  const retention = record(lifecycle.retention);
+  if (typeof retention.reason === 'string' && retention.reason.length > 0) return lifecycle;
+
+  return {
+    ...lifecycle,
+    resourceDisposition: 'verification-required',
+    retention: {
+      reason: ctx.reason ?? 'verification-required',
+      policy: 'manual-verification-required',
+      actor: ctx.actor,
+      timestamp: new Date().toISOString(),
+      ...(ctx.evidence !== undefined ? { evidence: ctx.evidence } : {}),
+    },
+  };
+}
+
 export function normalizeTaskLifecycle(taskInput: unknown): NormalizedTaskLifecycle {
   const task = record(taskInput);
   const existing = record(task.lifecycle);
@@ -335,20 +374,23 @@ export function normalizeTaskLifecycle(taskInput: unknown): NormalizedTaskLifecy
     }
     : undefined;
 
-  if (outcome !== 'active' && (disposition === 'allocated' || disposition === 'retained' || disposition === 'verification-required') && !normalizedRetention) {
-    disposition = 'verification-required';
-    reasons.push('terminal-resource-retention-unexplained');
-    normalizedRetention = {
-      reason: 'verification-required',
-      policy: 'manual-verification-required',
-      actor: 'task-lifecycle-normalizer',
-      evidence: {
-        status: task.status ?? null,
-        phase: task.phase ?? null,
-        paneState: task.paneState ?? null,
-        executionOwner: task.executionOwner ?? null,
+  if (!normalizedRetention && outcome !== 'active' && (disposition === 'allocated' || disposition === 'retained' || disposition === 'verification-required')) {
+    const ensured = ensureTerminalRetention(
+      { ...existing, schemaVersion: TASK_LIFECYCLE_SCHEMA_VERSION, workflowOutcome: outcome, resourceDisposition: disposition } as TaskLifecycleState,
+      {
+        actor: 'task-lifecycle-normalizer',
+        reason: 'verification-required',
+        evidence: {
+          status: task.status ?? null,
+          phase: task.phase ?? null,
+          paneState: task.paneState ?? null,
+          executionOwner: task.executionOwner ?? null,
+        },
       },
-    };
+    );
+    disposition = ensured.resourceDisposition;
+    reasons.push('terminal-resource-retention-unexplained');
+    normalizedRetention = ensured.retention;
   }
 
   const deliveryEvidence = record(existing.deliveryEvidence);
