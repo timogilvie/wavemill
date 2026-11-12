@@ -58,6 +58,7 @@ All business logic lives in `shared/lib/` for reusability across CLI tools, comm
 - **Install-health verdict (HOK-3315)** — Never compare lockfile bytes or hand-roll a `.packages` diff outside this file. Guard: `tools/check-install-verdict.ts`. → [docs/invariants/install-health-verdict.md](docs/invariants/install-health-verdict.md)
 - **Failure policy (HOK-3176)** — Never add a classifier branch that parks: add a fixture to `failure-policy.fixtures.test.ts`, and only extend the allowlist (with a reason and test) when retrying provably cannot change the outcome. Guard: `tools/check-failure-policy.ts`, `tools/check-ready-failure-policy.ts`. → [docs/invariants/failure-policy.md](docs/invariants/failure-policy.md)
 - **Merge labels (HOK-3181, HOK-3449)** — Never write or clear `wm:blocked`, call `setWavemillBlocked` / `releaseToBlocked`, or run `gh pr comment` outside those modules; `setMergeLabel` alone changes `wm:ready`/`wm:blocked`. Guard: `tests/check-label-write-sites.test.sh`, `tools/check-merge-block-writers.ts`. → [docs/invariants/merge-labels.md](docs/invariants/merge-labels.md)
+- **Handoff gate (HOK-3450)** — Never compare a handoff state outside its module. Guard: `tools/check-handoff-state.ts`. → [docs/invariants/handoff-gate.md](docs/invariants/handoff-gate.md)
 - **Head publication (HOK-3370)** — Never instruct an agent to push, publish a task-branch head outside the seam, instruct an agent to open a PR, or compare evidence head SHAs raw. Guard: `tools/check-head-publication.ts`. → [docs/invariants/head-publication.md](docs/invariants/head-publication.md)
 - **Challenge route (HOK-3156)** — New pair writers must assert through this check — never diff routes privately. Guard: `tools/check-challenge-route.ts`. → [docs/invariants/challenge-route.md](docs/invariants/challenge-route.md)
 - **Challenge arm state (HOK-3451)** — Use the declared predicate; write via `challenge_arms_set_state`. Guard: `tools/check-challenge-arm-state.ts`. → [docs/invariants/challenge-arm-state.md](docs/invariants/challenge-arm-state.md)
@@ -92,7 +93,7 @@ All business logic lives in `shared/lib/` for reusability across CLI tools, comm
 - **Review result (HOK-3448)** — `claude-cli-output.ts` is the only interpreter of Claude CLI stdout; `review-engine.ts` never decides review completion from text shape. Guard: `tools/check-review-report-boundary.ts`. → [docs/invariants/review-result.md](docs/invariants/review-result.md)
 - **Model transport (HOK-3460)** — Model CLI transport stays in `shared/lib/model-adapters/`. Guard: `tools/check-model-transport.ts`. → [docs/invariants/model-transport.md](docs/invariants/model-transport.md)
 - `llm-cli.ts` - `callLLM` policy (candidate ladder, retry/backoff, quota state, fallback events); transport runs through `model-adapters/`
-- `string-utils.ts` - String manipulation (kebab-case, etc.)
+- `string-utils.ts` - String manipulation
 - `shell-utils.ts` - Safe shell command execution
 - `linear.js` - Linear API client
 - `config.ts` - Centralized config loading
@@ -126,11 +127,6 @@ When creating or refactoring tools:
      },
    });
    ```
-
-3. **Benefits**:
-   - Business logic is reusable across tools, commands, and workflows
-   - Easier to test (test modules, not CLI wrappers)
-   - Self-documenting with JSDoc
 
 ## Commands
 

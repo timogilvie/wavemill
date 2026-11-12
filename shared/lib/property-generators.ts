@@ -12,6 +12,7 @@ import {
   type FailureStage,
   type FailureEvidence,
 } from './failure-policy.ts';
+import { READY_TEND_STATES, type ReadyTendState } from './ready-tend-handoff.ts';
 
 // ── 5a. Primitives ──────────────────────────────────────────────────────────
 
@@ -185,18 +186,13 @@ export function arbitraryReadyAtHead(headSha: string): fc.Arbitrary<
 }
 
 export function arbitraryHandoffAtHead(headSha: string, prNumber: number): fc.Arbitrary<
-  { state: 'checked' | 'ready-published' | 'tend-claimed' | 'terminal'; headSha: string; prNumber: number } | undefined
+  { state: ReadyTendState; headSha: string; prNumber: number } | undefined
 > {
   return fc.oneof(
     fc.constant(undefined),
     fc
       .tuple(
-        fc.constantFrom<'checked' | 'ready-published' | 'tend-claimed' | 'terminal'>(
-          'checked',
-          'ready-published',
-          'tend-claimed',
-          'terminal',
-        ),
+        fc.constantFrom<ReadyTendState>(...READY_TEND_STATES),
         fc.oneof(fc.constant(headSha), arbitraryHexSha(7)),
       )
       .map(([state, sha]) => ({ state, headSha: sha, prNumber })),

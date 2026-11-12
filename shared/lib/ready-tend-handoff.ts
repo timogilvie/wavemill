@@ -1,31 +1,34 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { redactWithStats } from './redaction-profiles.ts';
 import { mutateJsonState } from './state-mutex.ts';
 
 /**
  * The Ready → Tend protocol is a small, local compare-and-set record. GitHub
  * remains authoritative for `headSha`; callers must pass a freshly-read head.
  *
- * checked → ready-published → tend-claimed → terminal
+ * checked → ready-published → tend-claimed
+ *
+ * `handoffStateIsPublished` is the one test of "may Tend take this PR?"
+ * (HOK-3450): the merge-label derivation and the claim both read it. No other
+ * module compares a handoff state.
  *
  * The record is intentionally additive beside .ready-result.json. A retry for
  * the same PR/head receives the recorded result; a different head replaces the
  * old record and therefore cannot inherit its ownership or retry budget.
  */
 export const READY_TEND_HANDOFF_VERSION = 1;
-export type ReadyTendState = 'checked' | 'ready-published' | 'tend-claimed' | 'terminal';
-export type TransitionFailureStage = 'route-stamp' | 'ready-label' | 'ownership-changed' | 'github-api';
+export const READY_TEND_STATES = ['checked', 'ready-published', 'tend-claimed'] as const;
+export type ReadyTendState = (typeof READY_TEND_STATES)[number];
 
-export interface TransitionCommandDiagnostic {
-  stage: TransitionFailureStage;
-  command?: string;
-  exitCode?: number;
-  stdout?: string;
-  stderr?: string;
-  redacted: boolean;
-  truncated: boolean;
+/**
+ * True when Ready has published the handoff, so the PR is Tend's to take:
+ * `ready-published` (claimable) or `tend-claimed` (already taken). A `checked`
+ * record — Ready passed but the publish did not land — is not published, and
+ * neither is any value outside the declared states.
+ */
+export function handoffStateIsPublished(state: unknown): boolean {
+  return state === 'ready-published' || state === 'tend-claimed';
 }
 
 export interface ReadyTendHandoffRecord {
@@ -38,8 +41,6 @@ export interface ReadyTendHandoffRecord {
   readyPublishedAt?: string;
   tendOwner?: 'tend';
   tendClaimedAt?: string;
-  terminalAt?: string;
-  transitionFailure?: TransitionCommandDiagnostic;
 }
 
 export interface HandoffOutcome {
@@ -55,9 +56,9 @@ export interface HandoffOutcome {
  * - `unreadable`: the file exists but cannot be parsed as JSON.
  * - `head-mismatch`: version/PR/head/token do not match what was requested. A
  *   force-push has landed and the record is bound to a different head.
- * - `not-published`: the record matches but state is `checked` — Ready has not
- *   yet published. (An agent applied wm:ready without a handoff, HOK-3107.)
- * - `terminal`: the record is in the terminal state.
+ * - `not-published`: the record matches but its state is not a published one
+ *   (`checked`) — Ready has not yet published. (An agent applied wm:ready
+ *   without a handoff, HOK-3107.)
  * - `foreign-claim`: `tend-claimed` without `tendOwner==='tend'` — some other
  *   holder owns the claim.
  * - `no-matching-tend-claim`: rebind found no matching `tend-claimed` record at
@@ -68,7 +69,6 @@ export type HandoffRejectionReason =
   | 'unreadable'
   | 'head-mismatch'
   | 'not-published'
-  | 'terminal'
   | 'foreign-claim'
   | 'no-matching-tend-claim';
 
@@ -90,38 +90,6 @@ export function readyTendHandoffPath(featureDir: string): string {
 
 export function handoffToken(prNumber: number, headSha: string): string {
   return createHash('sha256').update(`ready-tend:${prNumber}:${headSha}`).digest('hex');
-}
-
-export function captureTransitionDiagnostic(input: {
-  stage: TransitionFailureStage;
-  command?: string;
-  exitCode?: number;
-  stdout?: string;
-  stderr?: string;
-  maxChars?: number;
-}): TransitionCommandDiagnostic {
-  const maxChars = input.maxChars ?? 2_000;
-  const stdout = boundRedacted(input.stdout, maxChars);
-  const stderr = boundRedacted(input.stderr, maxChars);
-  return {
-    stage: input.stage,
-    ...(input.command ? { command: input.command } : {}),
-    ...(typeof input.exitCode === 'number' ? { exitCode: input.exitCode } : {}),
-    ...(stdout.text ? { stdout: stdout.text } : {}),
-    ...(stderr.text ? { stderr: stderr.text } : {}),
-    redacted: stdout.redacted || stderr.redacted,
-    truncated: stdout.truncated || stderr.truncated,
-  };
-}
-
-function boundRedacted(value: string | undefined, maxChars: number): { text: string; redacted: boolean; truncated: boolean } {
-  const result = redactWithStats(value ?? '');
-  const normalized = result.text.split('\n').slice(0, 40).join('\n');
-  return {
-    text: normalized.slice(0, maxChars),
-    redacted: result.redacted,
-    truncated: normalized.length > maxChars || result.text.split('\n').length > 40,
-  };
 }
 
 function newRecord(prNumber: number, headSha: string, state: ReadyTendState = 'checked'): ReadyTendHandoffRecord {
@@ -166,13 +134,11 @@ export function classifyClaim(
 ): 'claimable' | 'already-claimed' | HandoffRejectionReason {
   if (record === null) return 'missing';
   if (!matches(record, prNumber, headSha)) return 'head-mismatch';
-  if (record.state === 'terminal') return 'terminal';
-  if (record.state === 'checked') return 'not-published';
+  if (!handoffStateIsPublished(record.state)) return 'not-published';
   if (record.state === 'tend-claimed') {
     return record.tendOwner === 'tend' ? 'already-claimed' : 'foreign-claim';
   }
-  if (record.state === 'ready-published') return 'claimable';
-  return 'head-mismatch';
+  return 'claimable';
 }
 
 /** Persist the successful Ready-check evidence before any external label write. */
@@ -203,11 +169,7 @@ export async function publishReadyHandoff(featureDir: string, prNumber: number, 
         outcome = 'already-published';
         return current;
       }
-      if (current.state === 'terminal') {
-        outcome = 'rejected';
-        return current;
-      }
-      return { ...current, state: 'ready-published', readyPublishedAt: new Date().toISOString(), transitionFailure: undefined };
+      return { ...current, state: 'ready-published', readyPublishedAt: new Date().toISOString() };
     },
     { createIfMissing: true, initial: newRecord(prNumber, headSha) },
   );
@@ -460,9 +422,7 @@ export function describeClaimRejection(
       return `Ready handoff is bound to head ${recordedHead}, live head is ${shortHead}`;
     }
     case 'not-published':
-      return `Ready handoff for PR #${prNumber} at head ${shortHead} is in state 'checked' (never published)`;
-    case 'terminal':
-      return `Ready handoff for PR #${prNumber} at head ${shortHead} is terminal`;
+      return `Ready handoff for PR #${prNumber} at head ${shortHead} is in state '${outcome.record?.state ?? 'checked'}' (never published)`;
     case 'foreign-claim':
       return `Ready handoff for PR #${prNumber} at head ${shortHead} is already tend-claimed by another owner`;
     case 'no-matching-tend-claim':

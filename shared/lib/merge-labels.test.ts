@@ -17,6 +17,11 @@ import {
   type MergeLabelDecision,
   type ReconcileMergeLabelsDeps,
 } from './merge-labels.ts';
+import {
+  claimReadyHandoff,
+  publishReadyHandoff,
+  recordReadyChecked,
+} from './ready-tend-handoff.ts';
 import { writeTendAttemptFact } from './tend-attempt-fact.ts';
 
 describe('deriveMergeLabel', () => {
@@ -352,6 +357,24 @@ describe('deriveMergeLabel', () => {
       };
       const result = deriveMergeLabel(baseTask, basePr, liveState);
       assert.deepEqual(result, { label: null, reason: 'no-handoff' });
+    });
+  });
+
+  describe('Rule 7: the handoff must be published (HOK-3450)', () => {
+    it('derives no label from a checked handoff at the PR head', () => {
+      const result = deriveMergeLabel(baseTask, basePr, {
+        ...baseLiveState,
+        handoffAtHead: { state: 'checked', headSha: 'abc123', prNumber: 123 },
+      });
+      assert.deepEqual(result, { label: null, reason: 'no-handoff' });
+    });
+
+    it('derives wm:ready from a tend-claimed handoff at the PR head', () => {
+      const result = deriveMergeLabel(baseTask, basePr, {
+        ...baseLiveState,
+        handoffAtHead: { state: 'tend-claimed', headSha: 'abc123', prNumber: 123 },
+      });
+      assert.deepEqual(result, { label: 'wm:ready' });
     });
   });
 
@@ -777,7 +800,6 @@ describe('readMergeLabelEvidence (real Ready artifacts)', () => {
         prNumber: 103,
         mergeConflict: 'CLEAN',
         readyHeadSha: head,
-        readyTendHandoff: 'ready-published',
       },
     }));
     writeFileSync(join(featureDir, '.ready-tend-handoff.json'), JSON.stringify({
@@ -1021,5 +1043,101 @@ describe('reconcileMergeLabels: ReconcileReport round-trip', () => {
       assert.deepEqual(decision, { label: null, reason: 'no-task-view' });
     }
     assert.deepEqual(report.noTaskViewPrs, [1, 2, 3]);
+  });
+});
+
+describe('one handoff gate: real handoff records (HOK-3450)', () => {
+  const head = '8c57e6e4a5e18f0aa1b5cf6b59eefa8ed4fb3301';
+  const prNumber = 3450;
+
+  function featureDirWithPassedReady(): string {
+    const featureDir = mkdtempSync(join(tmpdir(), 'merge-labels-handoff-gate-'));
+    writeFileSync(join(featureDir, '.ready-result.json'), JSON.stringify({
+      stage: 'ready',
+      status: 'completed',
+      startedAt: '2026-11-09T12:36:43.161Z',
+      finishedAt: '2026-11-09T13:25:25Z',
+      agent: 'claude',
+      model: '',
+      notes: 'verdict: pass',
+      artifacts: { type: 'ready', verdict: 'pass', prNumber, mergeConflict: 'CLEAN', readyHeadSha: head },
+    }));
+    return featureDir;
+  }
+
+  const task = (featureDir: string): MergeLabelTaskView => ({ prNumber, headSha: head, phase: 'ready', featureDir });
+
+  async function liveState(featureDir: string): Promise<MergeLabelLiveState> {
+    return {
+      prHeadSha: head,
+      mergeable: 'MERGEABLE',
+      mergeStateStatus: 'CLEAN',
+      statusCheckRollup: [{ name: 'ci', conclusion: 'SUCCESS', status: 'COMPLETED' }],
+      ...(await readMergeLabelEvidence(featureDir)),
+    };
+  }
+
+  it('checked earns no label; ready-published and tend-claimed earn wm:ready', async () => {
+    const featureDir = featureDirWithPassedReady();
+    try {
+      const pr = { number: prNumber, labels: [], headSha: head };
+
+      await recordReadyChecked(featureDir, prNumber, head);
+      assert.deepEqual(
+        deriveMergeLabel(task(featureDir), pr, await liveState(featureDir)),
+        { label: null, reason: 'no-handoff' },
+      );
+
+      await publishReadyHandoff(featureDir, prNumber, head);
+      assert.deepEqual(deriveMergeLabel(task(featureDir), pr, await liveState(featureDir)), { label: 'wm:ready' });
+
+      assert.equal((await claimReadyHandoff(featureDir, prNumber, head)).outcome, 'claimed');
+      assert.deepEqual(deriveMergeLabel(task(featureDir), pr, await liveState(featureDir)), { label: 'wm:ready' });
+    } finally {
+      rmSync(featureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a refused publish flips no label across reconcile passes, then one publish labels once', async () => {
+    const featureDir = featureDirWithPassedReady();
+    try {
+      // Ready recorded its evidence, then the publish was refused: the record
+      // stays `checked` at the PR head.
+      await recordReadyChecked(featureDir, prNumber, head);
+
+      let labels: string[] = [];
+      const writes: Array<string | null> = [];
+      const deps: ReconcileMergeLabelsDeps = {
+        readTaskView: async () => task(featureDir),
+        probeLiveState: async () => liveState(featureDir),
+        writeMergeLabel: async (_pr, label) => {
+          writes.push(label);
+          labels = label ? [label] : [];
+        },
+        logger: { info: () => {}, warn: () => {} },
+      };
+      // One tend poll: reconcile the label, then try to take the PR the way
+      // tend does. A refused claim strips wm:ready.
+      const poll = async () => {
+        await reconcileMergeLabelsForPr({ number: prNumber, labels, headSha: head }, deps);
+        if (!labels.includes('wm:ready')) return 'not-offered';
+        const claim = await claimReadyHandoff(featureDir, prNumber, head);
+        if (claim.outcome === 'rejected') labels = [];
+        return claim.outcome;
+      };
+
+      for (let pass = 0; pass < 5; pass += 1) {
+        assert.equal(await poll(), 'not-offered', `pass ${pass}: tend must not be offered a checked handoff`);
+      }
+      assert.deepEqual(writes, [], 'no label write while the publish is refused');
+
+      // The retry publishes; the label is written once and the claim holds.
+      await publishReadyHandoff(featureDir, prNumber, head);
+      assert.equal(await poll(), 'claimed');
+      assert.equal(await poll(), 'already-claimed');
+      assert.deepEqual(writes, ['wm:ready']);
+    } finally {
+      rmSync(featureDir, { recursive: true, force: true });
+    }
   });
 });
