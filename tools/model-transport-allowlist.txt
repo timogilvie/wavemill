@@ -1,0 +1,6 @@
+# model-transport guard allowlist (HOK-3460)
+# <repo-relative path> [<max findings>]  # <reason>
+#
+# The list only shrinks: every entry must name a reason and its count must
+# match the current findings.
+shared/lib/task-difficulty-classifier.ts 1  # sync `claude -p` classifier (callClassificationModelSync); migrate when a sync adapter caller exists

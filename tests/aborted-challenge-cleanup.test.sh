@@ -118,6 +118,11 @@ cleanup_file="$tmp/aborted-cleanup.sh"
   printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "cleanup_aborted_challenge_arm"
   printf '\n'
+  # HOK-3451: cleanup_aborted_challenge_arm now delegates pending-arm checks
+  # to challenge-arms.sh helpers; source the whole module so the extracted
+  # function has its primitives available.
+  printf 'source %q\n' "$REPO_DIR/shared/lib/challenge-arms.sh"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_base_compare_ref"
   printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "task_has_local_commit_evidence"

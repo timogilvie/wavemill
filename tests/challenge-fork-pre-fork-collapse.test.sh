@@ -49,7 +49,7 @@ check_contains() {
 state_mutate() {
   local state_path="$1" filter="$2"
   shift 2
-  jq "$@" "$filter" "$state_path" > "$state_path.tmp"
+  jq "$@" "$filter" "$state_path" > "$state_path.tmp" || { rm -f "$state_path.tmp"; return 1; }
   mv "$state_path.tmp" "$state_path"
 }
 export -f state_mutate
@@ -138,7 +138,7 @@ CLEANUP_BLOCK=$(awk '
 check_contains "cleanup helper calls challenge_arms_cancel_pending with typed reason" \
   "$CLEANUP_BLOCK" 'challenge_arms_cancel_pending "$issue" "pre_fork_primary_failure" "$reason"'
 check_contains "cleanup helper counts pending arms before cancel" \
-  "$CLEANUP_BLOCK" 'challengeArms // []) | map(select(.challengeArmState == "awaiting_fork"))'
+  "$CLEANUP_BLOCK" 'challenge_arms_any_pending "$issue"'
 
 echo ""
 echo "=== taxonomy: pre_fork_primary_failure is a registered no-comparison reason ==="

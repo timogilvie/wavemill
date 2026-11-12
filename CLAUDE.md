@@ -57,9 +57,10 @@ All business logic lives in `shared/lib/` for reusability across CLI tools, comm
 - **Bounded retry (HOK-2924)** — New relaunch paths must use this helper — never implement a private retry counter. Guard: `tools/check-retry-sentinel.ts`. → [docs/invariants/bounded-retry.md](docs/invariants/bounded-retry.md)
 - **Install-health verdict (HOK-3315)** — Never compare lockfile bytes or hand-roll a `.packages` diff outside this file. Guard: `tools/check-install-verdict.ts`. → [docs/invariants/install-health-verdict.md](docs/invariants/install-health-verdict.md)
 - **Failure policy (HOK-3176)** — Never add a classifier branch that parks: add a fixture to `failure-policy.fixtures.test.ts`, and only extend the allowlist (with a reason and test) when retrying provably cannot change the outcome. Guard: `tools/check-failure-policy.ts`, `tools/check-ready-failure-policy.ts`. → [docs/invariants/failure-policy.md](docs/invariants/failure-policy.md)
-- **Merge labels (HOK-3181)** — Never write or clear `wm:blocked`, call `setWavemillBlocked` / `releaseToBlocked`, or run `gh pr comment` outside those modules. Guard: `tests/check-label-write-sites.test.sh`, `tools/check-merge-block-writers.ts`. → [docs/invariants/merge-labels.md](docs/invariants/merge-labels.md)
+- **Merge labels (HOK-3181, HOK-3449)** — Never write or clear `wm:blocked`, call `setWavemillBlocked` / `releaseToBlocked`, or run `gh pr comment` outside those modules; `setMergeLabel` alone changes `wm:ready`/`wm:blocked`. Guard: `tests/check-label-write-sites.test.sh`, `tools/check-merge-block-writers.ts`. → [docs/invariants/merge-labels.md](docs/invariants/merge-labels.md)
 - **Head publication (HOK-3370)** — Never instruct an agent to push, publish a task-branch head outside the seam, instruct an agent to open a PR, or compare evidence head SHAs raw. Guard: `tools/check-head-publication.ts`. → [docs/invariants/head-publication.md](docs/invariants/head-publication.md)
 - **Challenge route (HOK-3156)** — New pair writers must assert through this check — never diff routes privately. Guard: `tools/check-challenge-route.ts`. → [docs/invariants/challenge-route.md](docs/invariants/challenge-route.md)
+- **Challenge arm state (HOK-3451)** — Use the declared predicate; write via `challenge_arms_set_state`. Guard: `tools/check-challenge-arm-state.ts`. → [docs/invariants/challenge-arm-state.md](docs/invariants/challenge-arm-state.md)
 - **Session capabilities (HOK-3102)** — Never re-derive from `integration.enabled` / `useMillSession` / `MERGE_QUEUE_ENABLED` / `observer.enabled` at a producer site. Guard: `tools/check-session-capabilities.ts`. → [docs/invariants/session-capabilities.md](docs/invariants/session-capabilities.md)
 - **Task progress / liveness (HOK-3101)** — New decision sites must go through the primitive — never re-derive liveness from a private TTL check. Guard: `tools/check-hook-ttl.ts`, `tools/check-agent-background-work.ts`. → [docs/invariants/task-progress.md](docs/invariants/task-progress.md)
 - **Stage-agent teardown (HOK-3359)** — Never kill a task window or send teardown keystrokes outside `stage_agent_teardown`. Guard: `tools/check-stage-teardown.ts`. → [docs/invariants/stage-teardown.md](docs/invariants/stage-teardown.md)
@@ -83,13 +84,14 @@ All business logic lives in `shared/lib/` for reusability across CLI tools, comm
 - **Operator touch (HOK-3455)** — Every decision about whether a person had to act is made by `classifyOperatorTouch` in `shared/lib/operator-intervention.ts`. Guard: `tools/check-human-touch.ts`. → [docs/invariants/operator-touch.md](docs/invariants/operator-touch.md)
 - **Settled attempt (HOK-3373)** — Never write `workflow-state.json` around the seam, write Linear state outside the renderer, or `git -C` / `mkdir -p` a task path outside the resolver. Guard: `tools/check-settled-attempt.ts`. → [docs/invariants/settled-attempt.md](docs/invariants/settled-attempt.md)
 - **Live-state invariants (HOK-3229)** — New structural invariants belong in this evaluator — never add a private detector. Guard: none (evaluator rule). → [docs/invariants/state-invariants.md](docs/invariants/state-invariants.md)
-- **Session ownership and cost (HOK-3077)** — Never add a second cost engine, a private per-token price formula, a cost-metering switch, a timestamp-window stage label, or a single-harness cost pick; a new launch path records its row through `recordLaunch` / `session_ownership_append`. Guard: `tools/check-cost-ownership.ts`, `tools/check-session-ownership.ts`. → [docs/invariants/session-ownership-cost.md](docs/invariants/session-ownership-cost.md)
+- **Session ownership and cost (HOK-3077)** — Record launch costs only through `recordLaunch` / `session_ownership_append`; never add a private cost engine. Guard: `tools/check-cost-ownership.ts`, `tools/check-session-ownership.ts`. → [docs/invariants/session-ownership-cost.md](docs/invariants/session-ownership-cost.md)
 - **Inputs before approval (HOK-3253)** — Never write planning `awaiting_user` without passing this gate. Guard: journey only. → [docs/invariants/inputs-before-approval.md](docs/invariants/inputs-before-approval.md)
 - **Native loop budget** — Native coding uses the shared loop budget; entire tool batches, including invalid calls, are admitted before dispatch. Guard: `tools/check-stage-exit-identity.ts`. → [docs/invariants/native-loop-budget.md](docs/invariants/native-loop-budget.md)
 - `prompt-utils.ts` - Prompt template filling
 - **Output reservation (HOK-3448)** — `AdapterLimits.reservedOutputTokens` is context space for input preflight, distinct from the explicit invocation cap `AdapterInvokeOptions.maxOutputTokens`. Guard: `tools/check-output-reservation.ts`. → [docs/invariants/output-reservation.md](docs/invariants/output-reservation.md)
 - **Review result (HOK-3448)** — `claude-cli-output.ts` is the only interpreter of Claude CLI stdout; `review-engine.ts` never decides review completion from text shape. Guard: `tools/check-review-report-boundary.ts`. → [docs/invariants/review-result.md](docs/invariants/review-result.md)
-- `llm-cli.ts` - Claude CLI integration
+- **Model transport (HOK-3460)** — Model CLI transport stays in `shared/lib/model-adapters/`. Guard: `tools/check-model-transport.ts`. → [docs/invariants/model-transport.md](docs/invariants/model-transport.md)
+- `llm-cli.ts` - `callLLM` policy (candidate ladder, retry/backoff, quota state, fallback events); transport runs through `model-adapters/`
 - `string-utils.ts` - String manipulation (kebab-case, etc.)
 - `shell-utils.ts` - Safe shell command execution
 - `linear.js` - Linear API client
@@ -128,7 +130,6 @@ When creating or refactoring tools:
 3. **Benefits**:
    - Business logic is reusable across tools, commands, and workflows
    - Easier to test (test modules, not CLI wrappers)
-   - Better separation of concerns
    - Self-documenting with JSDoc
 
 ## Commands

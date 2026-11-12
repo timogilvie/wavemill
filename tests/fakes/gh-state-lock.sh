@@ -11,13 +11,27 @@
 #
 # Sourced by tests/fakes/lib.sh and tests/fakes/bin/claude.
 
+# Re-entrancy depth for this shell process. A journey helper that locks for a
+# read-modify-write (e.g. to read a rerun marker and then update CI) may call
+# fakes_gh_state inside that section, and fakes_gh_state locks too; without a
+# depth the inner unlock would release the outer section's lock and a plain
+# nested acquire would deadlock on a lock the same process already holds.
+FAKES_GH_STATE_LOCK_DEPTH="${FAKES_GH_STATE_LOCK_DEPTH:-0}"
+
 fakes_gh_state_lock() {
   local lock="$FAKE_GH_STATE.lock" owner i
+  # Already held by this process: deepen the count, do not lock again.
+  if (( FAKES_GH_STATE_LOCK_DEPTH > 0 )) \
+    && [[ "$(cat "$lock/pid" 2>/dev/null || true)" == "$$" ]]; then
+    FAKES_GH_STATE_LOCK_DEPTH=$((FAKES_GH_STATE_LOCK_DEPTH + 1))
+    return 0
+  fi
   for ((i = 1; i <= 6000; i++)); do
     if mkdir "$lock" 2>/dev/null; then
       # A concurrent stale-lock takeover can remove the directory between
       # these two steps; that is a lost race, not an error.
       if printf '%s' "$$" > "$lock/pid" 2>/dev/null; then
+        FAKES_GH_STATE_LOCK_DEPTH=1
         return 0
       fi
       continue
@@ -38,5 +52,11 @@ fakes_gh_state_lock() {
 }
 
 fakes_gh_state_unlock() {
+  # Only the outermost unlock releases; a nested section's unlock just unwinds.
+  if (( FAKES_GH_STATE_LOCK_DEPTH > 1 )); then
+    FAKES_GH_STATE_LOCK_DEPTH=$((FAKES_GH_STATE_LOCK_DEPTH - 1))
+    return 0
+  fi
+  FAKES_GH_STATE_LOCK_DEPTH=0
   rm -rf "$FAKE_GH_STATE.lock"
 }

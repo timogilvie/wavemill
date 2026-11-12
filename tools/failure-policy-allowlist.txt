@@ -10,6 +10,5 @@
 #
 # Prefer a one-line `// allow-failure-policy: <reason>` (`#` in shell) suppression over an
 # entry whenever only a line or two is involved.
-shared/lib/llm-cli.ts 1  # claude CLI quota/auth error taxonomy for the CLI wrapper; stage parking is still decided by classifyFailure
 shared/lib/native-agent/provider-error-classifier.ts 1  # provider transport error taxonomy (retryable flag per provider error); feeds detectFailureKind, never parks a stage itself
 shared/lib/tend-loop.ts 1  # tend singleton/config misconfiguration exits (not a task failure); pre-HOK-3176 — move into TERMINAL_ALLOWLIST before adding more
