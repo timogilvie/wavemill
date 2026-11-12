@@ -4,13 +4,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
-  captureTransitionDiagnostic,
   claimReadyHandoff,
   clearTendPushedHead,
   describeClaimRejection,
+  handoffStateIsPublished,
   handoffToken,
   isMatchingTendClaim,
   publishReadyHandoff,
+  READY_TEND_STATES,
   readTendPushedHead,
   rebindTendHandoff,
   recordReadyChecked,
@@ -94,21 +95,33 @@ test('HOK-3108: claim on a record bound to another head rejects with head-mismat
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('HOK-3108: claim on a terminal record rejects with terminal', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'ready-tend-handoff-terminal-'));
+test('HOK-3450: a state outside the declared set is never published or claimable', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ready-tend-handoff-undeclared-'));
   try {
     await publishReadyHandoff(dir, 42, 'head-x');
-    // Poke the record into terminal state directly, mirroring how the ready
-    // engine marks records terminal after a failed transition.
+    // A record left on disk by an older build (the deleted `terminal` state).
     const path = readyTendHandoffPath(dir);
     const record = JSON.parse(readFileSync(path, 'utf-8'));
     record.state = 'terminal';
-    record.terminalAt = new Date().toISOString();
     writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`);
     const result = await claimReadyHandoff(dir, 42, 'head-x');
     assert.equal(result.outcome, 'rejected');
-    assert.equal(result.rejectionReason, 'terminal');
+    assert.equal(result.rejectionReason, 'not-published');
+    assert.match(describeClaimRejection(result, 42, 'head-x'), /state 'terminal' \(never published\)/);
+    // Ready republishing at the same head recovers it.
+    assert.equal((await publishReadyHandoff(dir, 42, 'head-x')).outcome, 'published');
+    assert.equal((await claimReadyHandoff(dir, 42, 'head-x')).outcome, 'claimed');
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('HOK-3450: handoffStateIsPublished is true only for ready-published and tend-claimed', () => {
+  assert.deepEqual(
+    READY_TEND_STATES.map((state) => [state, handoffStateIsPublished(state)]),
+    [['checked', false], ['ready-published', true], ['tend-claimed', true]],
+  );
+  for (const undeclared of ['terminal', 'merge-needed', '', undefined, null]) {
+    assert.equal(handoffStateIsPublished(undeclared), false);
+  }
 });
 
 test('HOK-3108: claim on an unreadable handoff rejects with unreadable', async () => {
@@ -176,25 +189,9 @@ test('HOK-3108: describeClaimRejection text names the head and PR', () => {
     /state 'checked'/,
   );
   assert.match(
-    describeClaimRejection({ outcome: 'rejected', record: null, rejectionReason: 'terminal' }, 42, `${shortA}56789`),
-    /is terminal/,
-  );
-  assert.match(
     describeClaimRejection({ outcome: 'rejected', record: null, rejectionReason: 'foreign-claim' }, 42, `${shortA}56789`),
     /tend-claimed by another owner/,
   );
-});
-
-test('transition diagnostics redact and bound command output', () => {
-  const diagnostic = captureTransitionDiagnostic({
-    stage: 'route-stamp',
-    stdout: `ghp_${'a'.repeat(36)}\n${'x'.repeat(3000)}`,
-    stderr: 'api_key=abcdefghijklmnopqrstuvwxyz',
-  });
-  assert.equal(diagnostic.stage, 'route-stamp');
-  assert.equal(diagnostic.redacted, true);
-  assert.equal(diagnostic.truncated, true);
-  assert.ok(!JSON.stringify(diagnostic).includes('ghp_'));
 });
 
 test('Tend pushed-head marker round-trips and clears (HOK-3112)', async () => {

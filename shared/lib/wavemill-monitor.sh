@@ -14502,9 +14502,7 @@ launch_ready_phase() {
       return 1
     fi
 
-    local handoff_outcome=""
     local merge_needed_executor=""
-    [[ "$label_output" == *'"outcome":"tend-owned"'* ]] && handoff_outcome="tend-owned"
     # HOK-3102: set_ready_pass_labels prints a merge-needed sentinel when the
     # session merge executor is not tend. Route to the merge-needed surface.
     if [[ "$label_output" == *'"outcome":"merge-needed"'* ]]; then
@@ -14526,7 +14524,6 @@ launch_ready_phase() {
       --arg ci_conclusion "$ci_conclusion" \
       --arg required_source "$required_source" \
       --argjson required_contexts "$required_contexts_json" \
-      --arg handoff_outcome "$handoff_outcome" \
       --arg merge_needed_executor "$merge_needed_executor" '
         {
           type:"ready",
@@ -14541,12 +14538,6 @@ launch_ready_phase() {
           ciConclusion:$ci_conclusion,
           requiredSource:$required_source,
           requiredContexts:$required_contexts,
-          readyTendHandoff: (
-            if $merge_needed_executor != "" then "merge-needed"
-            elif $handoff_outcome == "" then "ready-published"
-            else "tend-claimed"
-            end
-          ),
           mergeExecutor: (if $merge_needed_executor != "" then $merge_needed_executor else null end)
         } | with_entries(select(.value != "" and .value != null))
       ')

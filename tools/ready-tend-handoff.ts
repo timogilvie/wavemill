@@ -25,6 +25,10 @@ const config = {
         ? await claimReadyHandoff(args['feature-dir'], prNumber, args.head)
         : (() => { throw new Error('action must be checked, publish, or claim'); })();
     console.log(JSON.stringify(result));
+    // HOK-3450: a rejected transition is a failure. Exit non-zero so the
+    // monitor's existing transition-failure path sees it (the JSON line above
+    // stays on stdout as the evidence).
+    if (result.outcome === 'rejected') process.exitCode = 1;
   },
 } as const;
 if (isMainModule) runTool(config);

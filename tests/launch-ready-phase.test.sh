@@ -773,7 +773,7 @@ EOF
             return 0
             ;;
           tend_claims_during_ready_label)
-            printf "%s\n" "{\"outcome\":\"tend-owned\",\"record\":{\"state\":\"ready-published\",\"token\":\"test-token\"}}"
+            printf "%s\n" "{\"outcome\":\"already-claimed\",\"record\":{\"state\":\"tend-claimed\",\"token\":\"test-token\"}}"
             printf "1\n" >> "$HANDOFF_CLAIM_COUNT_FILE"
             return 0
             ;;
@@ -1446,7 +1446,6 @@ check_contains "operator merge-needed: nothing is published to GitHub" "$output"
 check_contains "operator merge-needed: surfaces one operator notification" "$output" "surface_merge_needed_calls=1"
 check_contains "operator merge-needed: notification carries the operator executor" "$output" "HOK-1300|304|operator|"
 check_contains "operator merge-needed: records readyLabelsUpdated false" "$output" "\"readyLabelsUpdated\":false"
-check_contains "operator merge-needed: records merge-needed handoff state" "$output" "\"readyTendHandoff\":\"merge-needed\""
 check_contains "operator merge-needed: records operator executor" "$output" "\"mergeExecutor\":\"operator\""
 check_contains "operator merge-needed: logs the status line" "$output" "ready, merge needed (operator)"
 
@@ -1576,7 +1575,6 @@ output="$(run_launch_case tend_claims_during_ready_label)"
 check_contains "Tend interleave returns Ready success" "$output" "rc=0"
 check_contains "Tend interleave completes Ready" "$output" "|ready|completed|"
 check_contains "Tend interleave retains one legal claim" "$output" "handoff_claims=1"
-check_contains "Tend interleave persists claimed handoff" "$output" "\"readyTendHandoff\":\"tend-claimed\""
 check_contains "Tend interleave does not charge Ready retry" "$output" "recheck_files=absent,absent,absent,absent"
 check_not_contains "Tend interleave has no false label failure" "$output" "failed to restore PR labels"
 

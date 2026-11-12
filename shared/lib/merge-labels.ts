@@ -10,7 +10,9 @@
 
 import { readStageResult } from './stage-result.ts';
 import {
+  handoffStateIsPublished,
   readReadyTendHandoff,
+  type ReadyTendState,
 } from './ready-tend-handoff.ts';
 import { probePrLiveState, type PrLiveState } from './pr-live-state.ts';
 import {
@@ -54,7 +56,7 @@ export interface MergeLabelLiveState {
     sha: string;
   };
   handoffAtHead?: {
-    state: 'checked' | 'ready-published' | 'tend-claimed' | 'terminal';
+    state: ReadyTendState;
     headSha: string;
     prNumber: number;
   };
@@ -190,11 +192,15 @@ export function deriveMergeLabel(
     return { label: null, reason: 'checks-pending' };
   }
 
-  // Rule 7: Ready is ready, all checks pass, mergeable, and handoff exists
+  // Rule 7: Ready is ready, all checks pass, mergeable, and the handoff is
+  // published at this head. HOK-3450: the state test is the handoff module's,
+  // the same one Tend's claim uses — a `checked` record (publish did not
+  // land) earns no label, so the label never promises a claim Tend refuses.
   if (
     liveState.mergeable === 'MERGEABLE' &&
     liveState.handoffAtHead &&
-    liveState.handoffAtHead.headSha === liveState.prHeadSha
+    liveState.handoffAtHead.headSha === liveState.prHeadSha &&
+    handoffStateIsPublished(liveState.handoffAtHead.state)
   ) {
     return { label: 'wm:ready' };
   }
