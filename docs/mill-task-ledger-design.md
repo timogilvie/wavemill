@@ -1,5 +1,85 @@
 # Mill task ledger — design (HOK-3152)
 
+> **Superseded 2026-11 (HOK-3274).** The storage choice in this document was
+> reversed: the ledger shadow was deleted rather than flipped to authoritative.
+> §1–§11 below are kept as the historical record that HOK-3277 / HOK-3370
+> reference for problem statements. The terminal decision and the
+> caller/deletion inventory are recorded in **§0** immediately below. Read §0
+> first; everything after it describes the design that was **not** shipped.
+
+## 0. Decision 2026-11 — the ledger is deleted (HOK-3274)
+
+The mill task ledger shadow (side-effect rows HOK-3183, step rows HOK-3184,
+pair/arm rows HOK-3186) ran in shadow for its settle window with no duplicates
+recorded and **no live consumer**: every reader was a shadow write, the opt-in
+renderer (HOK-3275), the HOK-3177 incident-replay harness, or the
+`ledger-consistency` detector. Per design §4b the choice was flip-or-delete;
+with no consumer, **option (b): delete**. HOK-3277 is retargeted off the
+shadow step tables and HOK-3370 picks its own publication primitive, so nothing
+is stranded.
+
+### 0.1 Authority per fact (what replaced the ledger)
+
+- **Task state** → `workflow-state.json`, written only through `state_mutate` /
+  `mutateJsonState` (HOK-3222 schema-validated, HOK-3373 settlement-gated). It
+  is authoritative, not a render view.
+- **Stage outcome, cost, executed model** → `stage-result.ts` records keyed by
+  HOK-3372 attempt identity.
+- **External-effect dedup** → each caller's own observed-state read: branch head
+  via `git ls-remote`, PR label / comment / merge via `gh pr view` (the
+  merge-status comment dedups on the condition key recorded in its own body),
+  Linear via the issue's current state. No cross-system exactly-once guarantee
+  is claimed; intent → apply → ack is "re-read authoritative external state
+  before repeating the uncertain effect", not a shared transaction.
+- **Claim ownership** → `shared/lib/state-lock.ts` + `process-identity.ts`
+  (HOK-3403). A state mutex protects a transaction, never an external
+  operation's lifetime; an expired deadline alone never proves death or permits
+  stealing from a live owner.
+- **Control vs. evidence writes** → `shared/lib/task-settlement.ts` enforces
+  HOK-3373: control writes against a settled or non-current attempt are refused
+  and logged to `.wavemill/mutator-rejections.jsonl`; late evidence writes are
+  accepted against their original attempt identity.
+- **Monitoring** → the HOK-3229 live-state invariants I9 (`I9-rejected-control-write`)
+  and I10 (`I10-settled-non-convergence`) replace the retired `ledger-consistency`
+  findings.
+
+### 0.2 Caller / deletion inventory for the shadow modules
+
+Deleted (`shared/lib`): `ledger.ts`, `ledger-sqlite.ts`, `ledger-shadow.ts`,
+`ledger-consistency.ts`, `ledger-pair-abort.ts`, `ledger-recovery.ts`,
+`side-effect-ledger.ts`, `side-effect-ledger-guard.ts`,
+`side-effect-duplicate-detector.ts`, `view-workflow-state.ts` (plus tests).
+Deleted (`tools`): `ledger.ts`, `ledger-check-consistency.ts`,
+`ledger-detect-duplicates.ts`, `check-side-effect-ledger.ts`,
+`side-effect-ledger-allowlist.txt`. Deleted (hook):
+`shared/hooks/wavemill-hook-ledger-shadow.sh`.
+
+Pruned call sites, with the behaviour that remains:
+
+| Module | What the ledger did | Behaviour after delete |
+|---|---|---|
+| `branch-publication.ts` | shadow `git-push` row per head move | head-move row (HOK-3370) is the only record; the push itself is unchanged |
+| `github.ts` | shadow `pr-label` row per label write | `recordMillLabelWrite` (HOK-3182 audit log) stays; label write unchanged |
+| `linear.ts` | shadow `linear-transition` row | transition unchanged; `LinearTransitionOptions` kept as informational attribution |
+| `tend-controller.ts` | shadow `pr-merge` / `git-push` rows | merge + rebase push unchanged; head-move row (HOK-3370) stays |
+| `merge-status-comment.ts` | shadow `pr-comment` row | dedup reads the condition key from the standing comment body (`prCommentKey` relocated here) |
+| `challenge-pair-resolver.ts` | settle ledger arms + pair abort walk | pair-arm abort runs through the workflow-state path (`stampStalledArm` + comparison record) |
+| `challenge-pairing-repair.ts` | mirror pair/arm structure into the ledger | workflow-state repair (`repairPairTasks`) is the only record |
+| `bounded-retry.sh` / `transient-marker.sh` | mirror step / waiting-on rows | the sentinel files + condition markers remain the authority |
+| `wavemill-monitor.sh` | step-upsert at stage launch + duplicate-detector tick | removed; bounded-retry + condition markers unchanged |
+| `wavemill-common.sh` / `state-mutex.ts` | opt-in render of `workflow-state.json` from the ledger | removed; `state_mutate` is the writer |
+| `incident-replay-harness.ts` | drove fixtures through `decideRecovery` (Ledger F) | ported to the live `classifyFailure` + bounded-retry ladder (§0.3) |
+
+### 0.3 Replay tests ported, not dropped
+
+`decideRecovery()` is deleted, but the HOK-3177 replay harness
+(`incident-replay-harness.ts`) keeps every fixture and convergence contract: its
+recovery loop now applies the live `classifyFailure` policy under a bounded
+retry budget (terminal → settle, code-failure → remediate, retryable → bounded
+relaunch then one escalation), the same ladder the mill runs via
+`classifyFailure` → `maybe_retry_failed_stage`. The assertions are independent
+of the deleted dispatcher.
+
 **Status:** design · prerequisite for HOK-3153 (reuse-vs-build decision) ·
 depends on spike results in HOK-3150 and HOK-3151 for the native-arm engine
 question only · the mill-wide ledger recommendation does not depend on the

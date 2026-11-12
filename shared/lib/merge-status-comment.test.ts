@@ -3,28 +3,22 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Ledger } from './ledger.ts';
-import { prCommentKey, setSideEffectLedgerForTesting } from './side-effect-ledger.ts';
 import {
   MERGE_STATUS_COMMENT_MARKER,
   postMergeStatusComment,
+  prCommentKey,
   recordedConditionKey,
   renderMergeStatusComment,
   type MergeStatusShellRunner,
 } from './merge-status-comment.ts';
 
 let dir: string;
-let ledger: Ledger;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'wavemill-merge-status-comment-'));
-  ledger = Ledger.open({ dbPath: join(dir, 'ledger.sqlite') });
-  setSideEffectLedgerForTesting(ledger);
 });
 
 afterEach(() => {
-  setSideEffectLedgerForTesting(null);
-  ledger.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -71,9 +65,6 @@ test('the first condition creates one standing comment and records a pr-comment 
   assert.equal(gh.comments.length, 1);
   assert.ok(gh.comments[0].body.startsWith(MERGE_STATUS_COMMENT_MARKER));
   assert.equal(recordedConditionKey(gh.comments[0].body), prCommentKey(7, 'rebase', 'h1', 'b1'));
-  const row = ledger.findSideEffect('pr-comment', prCommentKey(7, 'rebase', 'h1', 'b1'));
-  assert.ok(row);
-  assert.equal(row!.attempt, 0);
 });
 
 test('the same condition seen N times is an observation: no write, no duplicate attempt', () => {
@@ -83,7 +74,6 @@ test('the same condition seen N times is an observation: no write, no duplicate 
   }
   assert.equal(gh.comments.length, 1);
   assert.equal(gh.calls.filter((cmd) => cmd.startsWith('gh pr comment') || cmd.includes('PATCH')).length, 1);
-  assert.equal(ledger.findSideEffect('pr-comment', prCommentKey(7, 'rebase', 'h1', 'b1'))!.attempt, 0);
 });
 
 test('a new condition edits the standing comment in place instead of appending', () => {
@@ -94,7 +84,6 @@ test('a new condition edits the standing comment in place instead of appending',
   assert.equal(moved.commentId, '1000');
   assert.equal(gh.comments.length, 1);
   assert.equal(recordedConditionKey(gh.comments[0].body), prCommentKey(7, 'rebase', 'h1', 'b2'));
-  assert.ok(ledger.findSideEffect('pr-comment', prCommentKey(7, 'rebase', 'h1', 'b2')));
 });
 
 test('human comments are never edited; the oldest standing comment wins', () => {
@@ -118,5 +107,4 @@ test('a GitHub read failure throws without posting', () => {
   };
   assert.throws(() => postMergeStatusComment({ ...base, phase: 'rebase', headSha: 'h1', baseSha: 'b1', shellRunner: run }), /HTTP 502/);
   assert.equal(calls.length, 1);
-  assert.equal(ledger.listSideEffectsByKind('pr-comment').length, 0);
 });

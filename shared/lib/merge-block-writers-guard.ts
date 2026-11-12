@@ -11,8 +11,8 @@
  * `clearGuardBlockedLabel`) next to the reconciler; the two disagreed every
  * poll on PR #1697. A merge-blocking outcome is now recorded as a fact the
  * reconciler reads (`shared/lib/tend-attempt-fact.ts`), and its PR comment is
- * posted once per condition by the side-effect-ledger-backed
- * `shared/lib/merge-status-comment.ts`.
+ * posted once per condition by `shared/lib/merge-status-comment.ts` (the
+ * standing comment dedups on the condition key recorded in its own body).
  *
  * Forbidden outside the invariant source:
  *

@@ -48,11 +48,10 @@ STATE_FILE="$HARNESS_DIR/workflow-state.json"
 TOOLS_DIR="$HARNESS_REPO_DIR/tools"
 REPO_DIR="$HARNESS_DIR/repo"
 API_TIMEOUT=20
-WAVEMILL_LEDGER_SHADOW_DISABLED=1
 mkdir -p "$STATE_DIR" "$REPO_DIR"
 git -C "$REPO_DIR" init -q 2>/dev/null || true
 [[ -f "$STATE_FILE" ]] || printf '{"tasks":{}}\n' > "$STATE_FILE"
-export SESSION STATE_DIR STATE_FILE TOOLS_DIR REPO_DIR WAVEMILL_LEDGER_SHADOW_DISABLED
+export SESSION STATE_DIR STATE_FILE TOOLS_DIR REPO_DIR
 export MONITOR_PR_CACHE="$HARNESS_DIR/pr-cache.json"
 
 # ── Recorders ────────────────────────────────────────────────────────────────

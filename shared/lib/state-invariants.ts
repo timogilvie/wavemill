@@ -24,7 +24,6 @@
  *  - I10 A settled run has not converged: it still occupies a slot, is
  *        reappearing as active work after delivery, or owes Linear its
  *        rendered state, for ≥ N ticks (HOK-3373)
- *  - ledger-* side-effect ledger disagreements (routed through from CLI)
  *
  * The library is pure. All IO (progress CLI, filesystem reads, PR cache)
  * happens in the CLI wrapper (`tools/state-invariants.ts`); callers pass
@@ -64,8 +63,7 @@ export type InvariantId =
   | 'I7-missing-condition-companion'
   | 'I8-bake-gate-stall'
   | 'I9-rejected-control-write'
-  | 'I10-settled-non-convergence'
-  | `ledger-${string}`;
+  | 'I10-settled-non-convergence';
 
 export interface InvariantViolation {
   invariantId: InvariantId;

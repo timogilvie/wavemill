@@ -26,7 +26,6 @@ To add a tool, add a row. A tool that the mill, a script, a prompt or another do
 | `tools/check-parent-monitor-drift.ts` | Lists shell functions duplicated between `wavemill-mill.sh` and `wavemill-monitor.sh` | No |
 | `tools/replay-native-request.ts` | Resends a captured native model request through the same transport and prints the reply shape | Calls a model (costs money) |
 | `tools/view-trajectory.ts` | Renders a searchable HTML view of a native session | Writes the HTML file |
-| `tools/ledger-check-consistency.ts` | Compares a task's sentinel files with its ledger rows | No |
 | `tools/worktree-manager.ts` | Creates and manages git worktrees for parallel work | Git worktrees |
 | `tools/batch-pr-fetch.ts` | Fetches PR rows for task branches in one `gh` call and writes the session PR cache | Session PR cache |
 | `tools/get-issue-json.ts` | Prints a Linear issue as JSON | No |
