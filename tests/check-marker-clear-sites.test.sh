@@ -106,8 +106,47 @@ check_clear_sites() {
   [[ "$failed" == "false" ]]
 }
 
+# check_raw_marker_writes <root>
+# HOK-3452: the eval-failure decision is a reconciled marker. A raw write of
+# the filename bypasses marker_write's --expires-on and the head/runId
+# condition, so it is forbidden outside transient-marker.sh (which owns the
+# marker lifecycle) and test files.
+check_raw_marker_writes() {
+  local root="$1"
+  local -a scan_dirs=()
+  local dir match file
+  local failed=false
+  for dir in shared tools; do
+    [[ -d "$root/$dir" ]] && scan_dirs+=("$dir")
+  done
+  (( ${#scan_dirs[@]} > 0 )) || return 0
+
+  local violations
+  violations=$(cd "$root" && grep -rnF '.eval-failure-decision.json' \
+    "${scan_dirs[@]}" --include='*.sh' --include='*.ts' \
+    | grep -v '\.test\.' \
+    | grep -E '>>?|\btee\b|writeFileSync|cat[[:space:]]*>' \
+    | grep -vE ':[[:space:]]*(#|//)' \
+    || true)
+
+  while IFS= read -r match; do
+    [[ -z "$match" ]] && continue
+    file="${match%%:*}"
+    [[ "$file" == "shared/lib/transient-marker.sh" ]] && continue
+    echo "FAIL: $file writes .eval-failure-decision.json directly" >&2
+    echo "      Route it through marker_write (eval_failure_decision_record)" >&2
+    failed=true
+  done <<< "$violations"
+
+  [[ "$failed" == "false" ]]
+}
+
 # ── Real repo ─────────────────────────────────────────────────────────────
 if ! check_clear_sites "$REPO_ROOT" "$ALLOWLIST"; then
+  echo "See docs/invariants/condition-markers.md" >&2
+  exit 1
+fi
+if ! check_raw_marker_writes "$REPO_ROOT"; then
   echo "See docs/invariants/condition-markers.md" >&2
   exit 1
 fi
@@ -151,5 +190,33 @@ expect_check "under-count (ratchet)"    fail "$(make_fixture under 1 2)"
 expect_check "allowlisted file cleared" fail "$(make_fixture gone 0 2)"
 expect_check "exact allowance"          pass "$(make_fixture exact 2 2)"
 
+make_raw_fixture() {
+  local name="$1" body="$2"
+  local root="$FIXTURE/raw-$name"
+  mkdir -p "$root/shared/lib"
+  printf '#!/bin/bash\n%s\n' "$body" > "$root/shared/lib/gate.sh"
+  echo "$root"
+}
+
+expect_raw_check() {
+  local label="$1" expected="$2" root="$3"
+  local got
+  if check_raw_marker_writes "$root" 2>/dev/null; then got=pass; else got=fail; fi
+  if [[ "$got" != "$expected" ]]; then
+    echo "FAIL: self-test '$label' expected $expected, got $got" >&2
+    exit 1
+  fi
+}
+
+expect_raw_check "raw printf write of decision record" fail \
+  "$(make_raw_fixture write 'printf "%s" "$json" > "$fd/.eval-failure-decision.json"')"
+expect_raw_check "raw heredoc write of decision record" fail \
+  "$(make_raw_fixture heredoc 'tee "$fd/.eval-failure-decision.json" <<<"$json"')"
+expect_raw_check "marker_write through the constant"    pass \
+  "$(make_raw_fixture clean 'marker_write "$fd/$EVAL_FAILURE_DECISION_MARKER" --head "$head"')"
+expect_raw_check "whole-line comment naming record"     pass \
+  "$(make_raw_fixture comment '# never printf > .eval-failure-decision.json from a gate')"
+
 echo "PASS: marker_clear sites match allowlist (5 self-tests exercised)"
+echo "PASS: eval-failure decision record is written only through marker_write (4 self-tests exercised)"
 exit 0

@@ -87,8 +87,9 @@ extract_function() {
 # shellcheck source=../shared/lib/wavemill-common.sh
 source "$REPO_DIR/shared/lib/wavemill-common.sh"
 
-# Extract monitor writers under test.
-for fn in mark_eval_completed mark_eval_failed mark_challenge_eval_running; do
+# Extract monitor writers under test. mark_eval_failed now lives in
+# wavemill-common.sh (HOK-3452) and comes from the source above.
+for fn in mark_eval_completed mark_challenge_eval_running; do
   out="$TEST_TMP/$fn.sh"
   extract_function "$MONITOR_SCRIPT_FILE" "$fn" > "$out"
   if [[ ! -s "$out" ]]; then
