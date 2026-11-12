@@ -1077,6 +1077,12 @@ test('lifecycle states include the HOK-3065 awaiting_expanded_route pending stat
   assert.equal(isChallengeArmPendingState('materialized'), false);
 });
 
+test('materializing is a lifecycle state but not a pending state', () => {
+  assert.ok(CHALLENGE_ARM_LIFECYCLE_STATES.includes('materializing'));
+  assert.ok(!CHALLENGE_ARM_PENDING_STATES.includes('materializing'));
+  assert.equal(isChallengeArmPendingState('materializing'), false);
+});
+
 test('sealChallengeDecision extracts the immutable selection for a plan-stage intent', () => {
   const sealed = sealChallengeDecision(makeSealedPlanIntent());
   assert.ok(sealed);

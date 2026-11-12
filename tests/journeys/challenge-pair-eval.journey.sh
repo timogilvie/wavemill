@@ -127,14 +127,22 @@ pair_tick() {
     node --import tsx "$JOURNEY_INSTALL_DIR/tests/journeys/fixtures/incident-currentness-step.ts" observe "$REPO_DIR" "$JOURNEY_INCIDENT_OBSERVED"
   fi
   # Plan-stage pairs require a second, arm-local approval. Both replay
-  # wrappers exercise that production boundary; no approval is injected for
-  # the normal implementation-stage journey.
-  if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 || "${JOURNEY_NATIVE_ARM_EVIDENCE:-0}" == 1 ]]; then
+  # wrappers exercise that production boundary; the plain plan-stage journey
+  # (HOK-3451) also needs the challenger's plan approved so the expanded-route
+  # arm can materialise. No approval is injected for the normal
+  # implementation-stage journey.
+  if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 || "${JOURNEY_NATIVE_ARM_EVIDENCE:-0}" == 1 || "${JOURNEY_PAIR_STAGE:-implementation}" == "plan" ]]; then
     journey_operator_tick "$CHALLENGER"
   fi
   if [[ "$(arm_handoff_state "$CHALLENGER")" == "ready-published" \
         && "$(arm_handoff_state "$ISSUE")" != "ready-published" ]]; then
     journey_tend_tick
+  fi
+  # Sourcing journeys may install a per-tick observer to record intermediate
+  # state that is later reaped before final assertions (e.g. the materialised
+  # challenge arm state for HOK-3451).
+  if declare -F journey_pair_tick_hook >/dev/null 2>&1; then
+    journey_pair_tick_hook
   fi
 }
 challenger_launched() { pair_tick; [[ -n "$(field "$CHALLENGER" slug)" ]]; }
@@ -291,6 +299,10 @@ if [[ "${JOURNEY_NATIVE_ARM_EVIDENCE:-0}" == 1 ]]; then
       challenger_stage_field_is "$stage" '.modelAttributionIneligibleReason' ''
   done
 fi
+if declare -F journey_post_assertions >/dev/null 2>&1; then
+  journey_post_assertions
+fi
+
 journey_assert_no_unhandled_fake_calls
 
 journey_finish

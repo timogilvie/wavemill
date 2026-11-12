@@ -1475,24 +1475,26 @@ finalize_challenge_execution_intent_before_coding() {
   # is decided once, at selection, and is never re-sampled below.
   [[ -n "$pinned_stage" && "$pinned_stage" != "null" ]] || pinned_stage="$challenge_stage_meta"
 
-  if [[ -n "$existing_intent" ]] \
-    && echo "$existing_intent" | jq -e '(.pairId // "") != "" and (.primary // null) != null and (.challenger // null) != null' >/dev/null 2>&1; then
-    log "status" "  $issue: Preserving selected challenge arm through expanded routing"
-    return 0
-  fi
-
   # HOK-3065: a plan-stage arm sealed at launch in awaiting_expanded_route
   # materialises here — this is the plan→code handoff, the first point the
   # expanded route exists. Resolve the sealed decision against the expanded
   # route and fork the challenger at t=0. The selection is never re-sampled; an
   # ineligible sealed challenger collapses to single rather than being
   # substituted. Restart-safe and idempotent (checked-and-set + bounded retry).
+  # This must run *before* the existing-intent preservation short-circuit,
+  # because the sealed intent always has pairId/primary/challenger fields.
   local expanded_route_arm_count
   expanded_route_arm_count=$(challenge_arms_list_awaiting_expanded_route "$issue" | jq -r 'length' 2>/dev/null || echo "0")
   [[ "$expanded_route_arm_count" =~ ^[0-9]+$ ]] || expanded_route_arm_count=0
   if (( expanded_route_arm_count > 0 )); then
     log "status" "  $issue: Materialising sealed plan-stage challenger against the expanded route"
     challenge_maybe_materialize_expanded_route_arms "$issue" "$slug" "$feature_dir" "$wt_dir"
+    return 0
+  fi
+
+  if [[ -n "$existing_intent" ]] \
+    && echo "$existing_intent" | jq -e '(.pairId // "") != "" and (.primary // null) != null and (.challenger // null) != null' >/dev/null 2>&1; then
+    log "status" "  $issue: Preserving selected challenge arm through expanded routing"
     return 0
   fi
 
@@ -16235,18 +16237,17 @@ cleanup_aborted_challenge_arm() {
     return 1
   }
 
-  # HOK-2811/HOK-2813: if this primary has any pending (awaiting_fork)
-  # challenger arms, the primary is failing terminally before the fork could
-  # fire. Collapse the challenge to a single run under the typed
-  # pre_fork_primary_failure reason (the free-text cause is kept as detail)
-  # so pair accounting sees a deliberate no-comparison rather than a phantom
-  # one-armed pair. No worktree/branch/pane/PR exists for a pending arm, so
-  # there is nothing else to tear down — and nothing may be created: the
-  # surviving primary is never promoted to a solo pipeline relaunch.
-  local pending_arms_pre_cancel
-  pending_arms_pre_cancel=$(read_state_value "" --arg i "$issue" \
-    '((.tasks[$i].challengeArms // []) | map(select(.challengeArmState == "awaiting_fork")) | length)')
-  if [[ "$pending_arms_pre_cancel" =~ ^[0-9]+$ ]] && (( pending_arms_pre_cancel > 0 )); then
+  # HOK-2811/HOK-2813/HOK-3451: if this primary has any pending challenger
+  # arms (awaiting_fork or awaiting_expanded_route), the primary is failing
+  # terminally before the fork could fire. Collapse the challenge to a single
+  # run under the typed pre_fork_primary_failure reason (the free-text cause
+  # is kept as detail) so pair accounting sees a deliberate no-comparison
+  # rather than a phantom one-armed pair. No worktree/branch/pane/PR exists
+  # for a pending arm, so there is nothing else to tear down — and nothing
+  # may be created: the surviving primary is never promoted to a solo
+  # pipeline relaunch. The predicate helper keeps this check in lockstep with
+  # the TS source of truth.
+  if challenge_arms_any_pending "$issue"; then
     challenge_arms_cancel_pending "$issue" "pre_fork_primary_failure" "$reason" || true
   fi
 
