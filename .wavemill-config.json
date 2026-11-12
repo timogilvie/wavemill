@@ -401,6 +401,7 @@
       "Golden Journey (agent-killed-mid-review)": "bash tests/journeys/run-journeys.sh agent-killed-mid-review",
       "Golden Journey (picker-pending-touch-set)": "bash tests/journeys/run-journeys.sh picker-pending-touch-set",
       "Golden Journey (happy-path)": "bash tests/journeys/run-journeys.sh happy-path",
+      "Golden Journey (intent-apply-ack-fault)": "bash tests/journeys/run-journeys.sh intent-apply-ack-fault",
       "Golden Journey (mill-opens-task-pr)": "bash tests/journeys/run-journeys.sh mill-opens-task-pr",
       "Golden Journey (review-no-usable-verdict)": "bash tests/journeys/run-journeys.sh review-no-usable-verdict",
       "Golden Journey (native-planning-synthesis)": "bash tests/journeys/run-journeys.sh native-planning-synthesis",
