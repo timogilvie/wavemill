@@ -14,6 +14,7 @@ import {
 } from './review-context-gatherer.ts';
 import type { BlastRadius } from './blast-radius.ts';
 import {
+  callLLM,
   ensureClaudeAvailable,
   ensureCodexAvailable,
   parseJsonFromLLM,
@@ -30,7 +31,18 @@ import {
 } from './stage-result.ts';
 import { ClaudeCliAdapter, claudeCliReportedModelMatches } from './model-adapters/claude-cli-adapter.ts';
 import { CodexCliAdapter } from './model-adapters/codex-cli-adapter.ts';
-import type { AdapterError, ReviewToolReport, TransportAdapter } from './model-adapters/transport-adapter.ts';
+import { parseClaudeCliOutput } from './model-adapters/claude-cli-output.ts';
+import { classifyCliMessage } from './model-adapters/cli-error-classifier.ts';
+import type {
+  AdapterError,
+  AdapterInvokeOptions,
+  AdapterInvokeResult,
+  AdapterKind,
+  AdapterLimits,
+  AdapterUsage,
+  ReviewToolReport,
+  TransportAdapter,
+} from './model-adapters/transport-adapter.ts';
 import { estimateTokensDefault } from './model-adapters/token-estimator.ts';
 import {
   buildReviewInput,
@@ -640,15 +652,129 @@ function combineAnalysisIdentities(identities: ExecutedIdentity[]): ExecutedIden
  * Build the transport adapter for a CLI review call. The adapter owns the
  * context-window limit, the CLI-harness token overhead, and the preflight
  * refusal (HOK-3248). Review-engine never re-derives these.
+ *
+ * HOK-3460: the transport itself lives in `model-adapters/`, and the one
+ * review policy fact — whether a pinned reviewer may fall back across the
+ * review ladder — stays here, on top of `callLLM` (which owns ladders). The
+ * wrapper re-reads the raw stdout through the single Claude interpreter so
+ * the `ReportFindings` report still reaches the review (HOK-3448).
  */
+class ReviewCliAdapter implements TransportAdapter {
+  readonly kind: AdapterKind;
+  readonly model: string;
+  readonly limits: AdapterLimits;
+  private readonly provider: ReviewCliCall['provider'];
+  private readonly failClosed: boolean;
+  private readonly transport: TransportAdapter;
+
+  constructor(
+    provider: ReviewCliCall['provider'],
+    model: string,
+    repoDir: string,
+    failClosed: boolean,
+  ) {
+    this.provider = provider;
+    this.model = model;
+    this.failClosed = failClosed;
+    this.transport = provider === 'codex'
+      ? new CodexCliAdapter({ model, repoDir, failClosed })
+      : new ClaudeCliAdapter({ model, repoDir, failClosed });
+    this.kind = this.transport.kind;
+    this.limits = this.transport.limits;
+  }
+
+  countTokens(text: string): number {
+    return this.transport.countTokens(text);
+  }
+
+  preflight(prompt: string): AdapterError | undefined {
+    return this.transport.preflight(prompt);
+  }
+
+  parseResult(): never {
+    throw new Error(
+      'review CLI output is parsed by callLLM and claude-cli-output.ts, never by a second site',
+    );
+  }
+
+  async invoke(prompt: string, opts: AdapterInvokeOptions = {}): Promise<AdapterInvokeResult> {
+    try {
+      const result = await callLLM(prompt, {
+        provider: this.provider,
+        mode: 'stream',
+        model: this.model,
+        timeout: opts.timeout,
+        retry: (opts.maxRetries ?? 0) > 0,
+        maxRetries: opts.maxRetries,
+        signal: opts.signal,
+        // HOK-3448: ask the CLI for the verbose array so the single stdout
+        // interpreter can recover the ReportFindings tool report. Only the
+        // claude transport has that flag.
+        ...(this.provider === 'claude' ? { cliFlags: ['--verbose'] } : {}),
+        ...(opts.ownership
+          ? { featureDir: opts.ownership.featureDir, helperPurpose: opts.ownership.helperPurpose }
+          : {}),
+        // Fail-closed when a specific reviewer was requested; otherwise the
+        // review ladder, exactly as the pre-HOK-3460 adapter did.
+        ...(this.failClosed ? { fallbackModels: [] } : { taskType: 'review' as const }),
+      });
+      if (this.provider === 'claude') {
+        const parsed = parseClaudeCliOutput(result.rawOutput, {
+          expectedSessionId: result.sessionRef,
+        });
+        // HOK-3448: a result element bound to another session (or none) must
+        // not supply this invocation's identity, usage or cost — fail closed.
+        if (parsed.error) {
+          return {
+            text: '',
+            reportedModel: 'unverified',
+            error: classifyCliMessage(`claude CLI returned is_error: ${parsed.error}`),
+          };
+        }
+        return {
+          text: parsed.text,
+          reportedModel: parsed.reportedModel ?? result.reportedModel ?? 'unverified',
+          ...(parsed.usage
+            ? {
+                usage: {
+                  inputTokens: parsed.usage.inputTokens,
+                  outputTokens: parsed.usage.outputTokens,
+                  totalTokens: parsed.usage.totalTokens,
+                  ...(parsed.costUsd !== undefined ? { costUsd: parsed.costUsd } : {}),
+                } satisfies AdapterUsage,
+              }
+            : {}),
+          ...(parsed.costUsd !== undefined ? { costUsd: parsed.costUsd } : {}),
+          ...(parsed.toolReport ? { structuredReport: parsed.toolReport } : {}),
+          ...(parsed.toolReportError ? { structuredReportError: parsed.toolReportError } : {}),
+          ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
+        };
+      }
+      return {
+        text: result.text,
+        // Codex `exec --json` reports no model id — never trust the wire id.
+        reportedModel: 'unverified',
+        ...(result.usage ? { usage: result.usage } : {}),
+        ...(result.costUsd !== undefined ? { costUsd: result.costUsd } : {}),
+      };
+    } catch (error) {
+      const message = (error as Error)?.message ?? String(error);
+      return {
+        text: '',
+        reportedModel: 'unverified',
+        error: classifyCliMessage(message, { includeCharCap: this.provider === 'codex' }),
+      };
+    }
+  }
+}
+
 function buildCliReviewAdapter(
   provider: ReviewCliCall['provider'],
   model: string,
   repoDir: string,
   failClosed: boolean,
 ): TransportAdapter {
-  const common = { model, repoDir, failClosed };
-  return provider === 'codex' ? new CodexCliAdapter(common) : new ClaudeCliAdapter(common);
+  return new ReviewCliAdapter(provider, model, repoDir, failClosed);
 }
 
 class ReviewCliContextWindowExceededError extends Error {

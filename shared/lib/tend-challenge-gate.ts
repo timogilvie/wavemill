@@ -15,6 +15,7 @@ import { WM_LABELS } from './pr-state-labels.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
 import { resolveEffectiveChallengeRole } from './challenge-role-utils.ts';
 import { getTaskProgress, type TaskProgress, type TaskProgressGatherOptions } from './task-progress.ts';
+import { isChallengeArmPendingState } from './challenge-execution-contract.ts';
 
 export type ChallengeRole = 'primary' | 'challenger';
 export const UNRESOLVABLE_REASONS = [
@@ -380,10 +381,11 @@ export function loadWorkflowStateChallengeData(repoDir: string): WorkflowStateCh
 
 /**
  * True when a raw workflow-state task record carries a nested `challengeArms[]`
- * entry still in the `awaiting_fork` state (HOK-2813, deferred challenger
- * materialisation). Such an arm is planned work, not a task: it has no
- * `.tasks` entry, worktree, pane, or PR until the fork trigger fires, so every
- * missing-side/orphan classifier must treat the pair as intact-but-deferred.
+ * entry in a pending state (`awaiting_fork` or `awaiting_expanded_route`).
+ * Such an arm is planned work, not a task: it has no `.tasks` entry, worktree,
+ * pane, or PR until the fork trigger fires, so every missing-side/orphan
+ * classifier must treat the pair as intact-but-deferred. An arm in
+ * `materializing` is mid-fork and is deliberately *not* pending.
  */
 export function taskHasPendingChallengeArm(task: { challengeArms?: unknown }): boolean {
   const arms = task.challengeArms;
@@ -393,12 +395,13 @@ export function taskHasPendingChallengeArm(task: { challengeArms?: unknown }): b
   return arms.some((arm) =>
     typeof arm === 'object'
     && arm !== null
-    && (arm as { challengeArmState?: unknown }).challengeArmState === 'awaiting_fork');
+    && isChallengeArmPendingState((arm as { challengeArmState?: unknown }).challengeArmState));
 }
 
 /**
  * True when a pair's challenger side is legitimately absent because it is
- * still nested on the primary as an `awaiting_fork` arm.
+ * still nested on the primary as a pending arm (`awaiting_fork` or
+ * `awaiting_expanded_route`).
  */
 export function pairHasPendingChallengeArm(pairState: PairTaskState | undefined): boolean {
   return pairState?.primary?.hasPendingChallengeArm === true && !pairState.challenger;

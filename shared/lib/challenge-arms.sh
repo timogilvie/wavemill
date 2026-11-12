@@ -13,9 +13,14 @@
 #   awaiting_fork → materializing → materialized      (happy path)
 #                 → cancelled                         (primary aborted pre-fork)
 #                 → exhausted                         (materialisation retry ceiling)
+#   awaiting_expanded_route → materializing → materialized   (planner-stage arm)
 #   materializing → awaiting_fork                     (retryable failure; reset)
 #                 → materialized                      (success)
 #                 → exhausted                         (final failure)
+#
+# The two pending states are `awaiting_fork` and `awaiting_expanded_route`;
+# everything else (including `materializing`) is not pending. Use
+# `challenge_arm_state_is_pending` to test, never an inline string comparison.
 #
 # The array is stored under `.tasks[$primaryIssue].challengeArms` and mutated
 # via state_mutate so writes are serialised against other state updates. The
@@ -23,12 +28,80 @@
 # extension is a matter of appending records — no code rewrite from a
 # primary/challenger pair.
 
+# Guard against double-source (this file is pulled in by several launch paths
+# and declares readonly arrays).
+[[ -n "${CHALLENGE_ARMS_SH_LOADED:-}" ]] && return 0
+CHALLENGE_ARMS_SH_LOADED=1
+
+# Authoritative lifecycle list. Keep in sync with
+# CHALLENGE_ARM_LIFECYCLE_STATES in shared/lib/challenge-execution-contract.ts.
+readonly CHALLENGE_ARM_LIFECYCLE_STATES_BASH=(
+  awaiting_fork
+  awaiting_expanded_route
+  materializing
+  materialized
+  cancelled
+  exhausted
+)
+
+# Authoritative pending list. Keep in sync with
+# CHALLENGE_ARM_PENDING_STATES in shared/lib/challenge-execution-contract.ts.
+readonly CHALLENGE_ARM_PENDING_STATES_BASH=(
+  awaiting_fork
+  awaiting_expanded_route
+)
+
+# True when <state> is a valid challenge-arm lifecycle state.
+challenge_arm_state_is_valid() {
+  local state="${1:-}"
+  for allowed in "${CHALLENGE_ARM_LIFECYCLE_STATES_BASH[@]}"; do
+    [[ "$state" == "$allowed" ]] && return 0
+  done
+  return 1
+}
+
+# True when <state> is a pending challenge-arm state (awaiting_fork or
+# awaiting_expanded_route). `materializing` is deliberately not pending.
+challenge_arm_state_is_pending() {
+  local state="${1:-}"
+  for pending in "${CHALLENGE_ARM_PENDING_STATES_BASH[@]}"; do
+    [[ "$state" == "$pending" ]] && return 0
+  done
+  return 1
+}
+
 # Return the JSON of arms in the awaiting_fork state.
+# NOTE: this is the reviewer-stage fork trigger's work queue; it intentionally
+# returns only awaiting_fork arms, not every pending arm. Use
+# challenge_arm_state_is_pending to ask "is this arm pending?".
 challenge_arms_list_pending() {
   local primary_issue="$1"
   [[ -n "$primary_issue" && -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]] || { echo "[]"; return 0; }
   jq -c --arg issue "$primary_issue" \
     '(.tasks[$issue].challengeArms // []) | map(select(.challengeArmState == "awaiting_fork"))' \
+    "$STATE_FILE" 2>/dev/null || echo "[]"
+}
+
+# True when the primary has at least one pending challenge arm (either
+# awaiting_fork or awaiting_expanded_route).
+challenge_arms_any_pending() {
+  local primary_issue="$1"
+  [[ -n "$primary_issue" && -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]] || return 1
+  local count
+  count=$(jq -r --arg issue "$primary_issue" \
+    '(.tasks[$issue].challengeArms // []) | map(select(.challengeArmState == "awaiting_fork" or .challengeArmState == "awaiting_expanded_route")) | length' \
+    "$STATE_FILE" 2>/dev/null || echo 0)
+  [[ "$count" =~ ^[0-9]+$ ]] && (( count > 0 ))
+}
+
+# Return the JSON of arms in either pending state (awaiting_fork or
+# awaiting_expanded_route). This is the status/render helper; the fork trigger
+# and expanded-route trigger each use their own single-state list functions.
+challenge_arms_list_all_pending() {
+  local primary_issue="$1"
+  [[ -n "$primary_issue" && -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]] || { echo "[]"; return 0; }
+  jq -c --arg issue "$primary_issue" \
+    '(.tasks[$issue].challengeArms // []) | map(select(.challengeArmState == "awaiting_fork" or .challengeArmState == "awaiting_expanded_route"))' \
     "$STATE_FILE" 2>/dev/null || echo "[]"
 }
 
@@ -196,26 +269,30 @@ challenge_arms_set_state() {
   local extra_object="${5:-{\}}"
   [[ -n "$primary_issue" && -n "$arm_key" && -n "$expected" && -n "$new_state" ]] || return 1
   [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]] || return 1
+  # Reject unknown states before touching the lock.
+  challenge_arm_state_is_valid "$new_state" || return 1
+  challenge_arm_state_is_valid "$expected" || return 1
   # Fail closed on malformed extra_object rather than passing junk to jq.
   echo "$extra_object" | jq -e 'type == "object"' >/dev/null 2>&1 || return 1
 
-  local check
-  check=$(jq -r --arg issue "$primary_issue" --arg key "$arm_key" \
-    '(.tasks[$issue].challengeArms // []) | map(select(.key == $key)) | .[0].challengeArmState // ""' \
-    "$STATE_FILE" 2>/dev/null || echo "")
-  if [[ "$check" != "$expected" ]]; then
-    return 1
-  fi
-
+  # Compare-and-set is performed inside state_mutate's jq. If the arm is
+  # missing or its current state does not match $expected, jq errors and the
+  # lock is released with a non-zero rc.
   state_mutate "$STATE_FILE" \
-    '.tasks[$issue].challengeArms = (
-        (.tasks[$issue].challengeArms // []) | map(
-          if .key == $key and .challengeArmState == $expected then
-            . + {challengeArmState: $new} + $extra
-          else . end
-        )
-      )
-      | .tasks[$issue].updated = (now | todate)' \
+    '(.tasks[$issue].challengeArms // []) as $arms
+     | ($arms | map(select(.key == $key)) | .[0]) as $arm
+     | if $arm == null then
+         error("compare-and-set lost: arm \($key) not found")
+       elif $arm.challengeArmState != $expected then
+         error("compare-and-set lost: expected \($expected) actual \($arm.challengeArmState)")
+       else
+         .tasks[$issue].challengeArms = (
+           $arms | map(
+             if .key == $key then . + {challengeArmState: $new} + $extra else . end
+           )
+         )
+         | .tasks[$issue].updated = (now | todate)
+       end' \
     --arg issue "$primary_issue" \
     --arg key "$arm_key" \
     --arg expected "$expected" \

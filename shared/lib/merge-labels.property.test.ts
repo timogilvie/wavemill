@@ -181,10 +181,10 @@ function makeDeps(
   return {
     readTaskView: async () => task,
     probeLiveState: async () => liveState,
-    applyLabel: {
-      setReady: async (pr) => { calls.push(`setReady:${pr}`); },
-      setBlocked: async (pr, reason) => { calls.push(`setBlocked:${pr}:${reason}`); },
-      clear: async (pr) => { calls.push(`clear:${pr}`); },
+    writeMergeLabel: async (pr, label, reason) => {
+      calls.push(label === null
+        ? `clear:${pr}`
+        : label === 'wm:blocked' ? `setBlocked:${pr}:${reason}` : `setReady:${pr}`);
     },
     logger: {
       info: () => {},
@@ -206,6 +206,17 @@ test('P3: reconcileMergeLabelsForPr converges to deriveMergeLabel in one tick', 
         'reconciler must surface the derived decision verbatim',
       );
       const updatedSet = new Set(result.updatedLabels);
+      // HOK-3449: while tend holds the merge lane (`wm:merging`) the reconciler
+      // writes nothing and every label survives verbatim.
+      if (pr.labels.includes('wm:merging')) {
+        assert.deepEqual(deps.calls, [], `a lane-locked PR must get no write; got ${JSON.stringify(deps.calls)}`);
+        assert.deepEqual(
+          result.updatedLabels,
+          pr.labels,
+          `a lane-locked PR's labels must be untouched: ${JSON.stringify(result.updatedLabels)}`,
+        );
+        return;
+      }
       // Never both labels at once.
       assert.ok(
         !(updatedSet.has('wm:ready') && updatedSet.has('wm:blocked')),

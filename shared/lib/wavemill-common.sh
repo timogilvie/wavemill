@@ -1097,44 +1097,48 @@ cleanup_episode_record_outcome() {
       ;;
   esac
 
-  state_mutate "$STATE_FILE" '
-    (.tasks[$issue] // {}) as $existing
-    | ($existing.lifecycle // {}) as $l
-    | ($candidate.fingerprint // "") as $fp
-    | ($l.cleanupEpisode // {}) as $prior
-    | (if (($prior.fingerprint // "") == $fp) then (($prior.attemptCount // 0) + 1) else 1 end) as $attemptCount
-    | .tasks[$issue].lifecycle = ($l + {
-        schemaVersion: 1,
-        workflowOutcome: ($l.workflowOutcome // (if (($existing.status // "") == "merged") then "merged" elif (($existing.status // "") == "aborted") then "aborted" elif (($existing.status // "") == "error") then "error" else "closed" end)),
-        resourceDisposition: $resourceDisposition,
-        cleanupEpisode: {
+  state_mutate "$STATE_FILE" \
+    "$(task_lifecycle_jq_filter '
+      (.tasks[$issue] // {}) as $existing
+      | ($existing.lifecycle // {}) as $l
+      | ($candidate.fingerprint // "") as $fp
+      | ($l.cleanupEpisode // {}) as $prior
+      | (if (($prior.fingerprint // "") == $fp) then (($prior.attemptCount // 0) + 1) else 1 end) as $attemptCount
+      | .tasks[$issue].lifecycle = ($l + {
           schemaVersion: 1,
-          episodeId: ($issue + ":cleanup:" + $fp),
-          fingerprint: $fp,
-          fingerprintInputs: ($candidate.fingerprintInputs // {}),
-          disposition: $disposition,
-          failureClass: $failureClass,
-          firstAttemptAt: (if (($prior.fingerprint // "") == $fp and (($prior.firstAttemptAt // "") != "")) then $prior.firstAttemptAt else $nowIso end),
-          lastAttemptAt: $nowIso,
-          attemptCount: $attemptCount,
-          maxAttempts: $maxAttempts,
-          nextRetryAt: (if $nextRetryAt == "" then null else $nextRetryAt end),
-          requiredOperatorAction: $requiredAction,
-          lastOutcome: $lastOutcome,
-          updatedAt: $nowIso
-        }
-      })
-    | if $retentionReason != "" then
-        .tasks[$issue].lifecycle.retention = {
-          reason: $retentionReason,
-          policy: (if $disposition == "retained" then "cleanup-episode-retained" else "manual-verification-required" end),
-          actor: "cleanup_completed_task",
-          timestamp: $nowIso,
-          evidence: ($candidate.fingerprintInputs // {})
-        }
-      else .
-      end
-    | .tasks[$issue].updated = $nowIso' \
+          workflowOutcome: ($l.workflowOutcome // (if (($existing.status // "") == "merged") then "merged" elif (($existing.status // "") == "aborted") then "aborted" elif (($existing.status // "") == "error") then "error" else "closed" end)),
+          resourceDisposition: $resourceDisposition,
+          cleanupEpisode: {
+            schemaVersion: 1,
+            episodeId: ($issue + ":cleanup:" + $fp),
+            fingerprint: $fp,
+            fingerprintInputs: ($candidate.fingerprintInputs // {}),
+            disposition: $disposition,
+            failureClass: $failureClass,
+            firstAttemptAt: (if (($prior.fingerprint // "") == $fp and (($prior.firstAttemptAt // "") != "")) then $prior.firstAttemptAt else $nowIso end),
+            lastAttemptAt: $nowIso,
+            attemptCount: $attemptCount,
+            maxAttempts: $maxAttempts,
+            nextRetryAt: (if $nextRetryAt == "" then null else $nextRetryAt end),
+            requiredOperatorAction: $requiredAction,
+            lastOutcome: $lastOutcome,
+            updatedAt: $nowIso
+          }
+        })
+      | if $retentionReason != "" then
+          .tasks[$issue].lifecycle.retention = {
+            reason: $retentionReason,
+            policy: (if $disposition == "retained" then "cleanup-episode-retained" else "manual-verification-required" end),
+            actor: "cleanup_completed_task",
+            timestamp: $nowIso,
+            evidence: ($candidate.fingerprintInputs // {})
+          }
+        else .
+        end
+      | (.tasks[$issue]) as $task
+      | .tasks[$issue].lifecycle |= wm_ensure_terminal_retention("cleanup_episode_record_outcome"; $task)
+      | .tasks[$issue].updated = $nowIso
+    ')" \
     --arg issue "$issue" \
     --arg disposition "$disposition" \
     --arg failureClass "$failure_class" \
@@ -7715,6 +7719,39 @@ def wm_retention_required:
 def wm_has_retention:
   ((.lifecycle.retention.reason // "") | type == "string" and length > 0);
 
+def wm_lifecycle_retention_required:
+  ((.workflowOutcome // "active") != "active") and ((.resourceDisposition // "") | IN("allocated","retained","verification-required"));
+
+def wm_lifecycle_has_retention:
+  ((.retention.reason // "") | type == "string" and length > 0);
+
+# Ensure a terminal lifecycle object carries a retention block. Operates on the
+# lifecycle object; $task supplies the evidence fields (status/phase/paneState/
+# executionOwner). This is the one lifecycle helper for shell writers that set
+# terminal outcomes.
+def wm_ensure_terminal_retention($actor; $task):
+  . as $lifecycle
+  | if ($lifecycle | wm_lifecycle_retention_required) and ($lifecycle | wm_lifecycle_has_retention | not) then
+      .resourceDisposition = "verification-required"
+      | .retention = {
+          reason: "verification-required",
+          policy: "manual-verification-required",
+          actor: $actor,
+          timestamp: (now | todateiso8601),
+          evidence: {
+            status: ($task.status // null),
+            phase: ($task.phase // null),
+            paneState: ($task.paneState // null),
+            executionOwner: ($task.executionOwner // null)
+          }
+        }
+      | .verificationRequiredReason = "terminal-resource-retention-unexplained"
+    else .
+    end;
+
+def wm_ensure_terminal_retention($actor):
+  wm_ensure_terminal_retention($actor; .);
+
 def wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeExecutor; $mergeMethod; $remoteDeletionAllowed; $challengeRole; $challengePair; $session; $runEpoch; $windowId; $requireConfirm; $baseBranchSource; $requireConfirmSource; $mergeMethodSource; $actor):
   . as $task
   | ($task.lifecycle // {}) as $l
@@ -7752,23 +7789,7 @@ def wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeExecu
       launchContract: $contract,
       deliveryEvidence: $delivery
     })
-  | if $task | wm_retention_required and ($task | wm_has_retention | not) then
-      .resourceDisposition = "verification-required"
-      | .retention = {
-          reason: "verification-required",
-          policy: "manual-verification-required",
-          actor: $actor,
-          timestamp: (now | todateiso8601),
-          evidence: {
-            status: ($task.status // null),
-            phase: ($task.phase // null),
-            paneState: ($task.paneState // null),
-            executionOwner: ($task.executionOwner // null)
-          }
-        }
-      | .verificationRequiredReason = "terminal-resource-retention-unexplained"
-    else .
-    end;
+  | wm_ensure_terminal_retention($actor; $task);
 
 def wm_slot_consumes:
   (wm_resource_disposition | IN("allocated","reaping"));
@@ -7802,7 +7823,8 @@ set_task_lifecycle_disposition() {
   [[ -n "$issue" && -n "$resource_disposition" ]] || return 1
   [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
   task_state_mutate_existing "$issue" '
-    (.lifecycle // {}) as $l
+    . as $task
+    | (.lifecycle // {}) as $l
     | .lifecycle = ($l + {
         schemaVersion: 1,
         workflowOutcome: (if $workflowOutcome != "" then $workflowOutcome else ($l.workflowOutcome // "active") end),
@@ -7817,6 +7839,7 @@ set_task_lifecycle_disposition() {
         }
       else .
       end
+    | .lifecycle |= wm_ensure_terminal_retention("set_task_lifecycle_disposition"; $task)
     | .updated = (now | todateiso8601)' \
     --arg workflowOutcome "$workflow_outcome" \
     --arg resourceDisposition "$resource_disposition" \
@@ -7871,7 +7894,7 @@ task_state_mutate_existing() {
   [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
   local rc
   state_mutate "$STATE_FILE" \
-    "if .tasks[\$issue] then .tasks[\$issue] |= ($filter) else . end" \
+    "$(task_lifecycle_jq_filter "if .tasks[\$issue] then .tasks[\$issue] |= ($filter) else . end")" \
     --arg issue "$issue" "$@"
   rc=$?
   # HOK-3190: re-read this task's pass snapshot entries so reads later in the

@@ -42,7 +42,10 @@ check_contains() {
 state_mutate() {
   local state_path="$1" filter="$2"
   shift 2
-  jq "$@" "$filter" "$state_path" > "$state_path.tmp"
+  # HOK-3451: challenge_arms_set_state now performs compare-and-set inside the
+  # jq filter, so a failed CAS returns a non-zero jq rc. Do not leave an empty
+  # tmp file or overwrite the state when jq fails.
+  jq "$@" "$filter" "$state_path" > "$state_path.tmp" || { rm -f "$state_path.tmp"; return 1; }
   mv "$state_path.tmp" "$state_path"
 }
 export -f state_mutate

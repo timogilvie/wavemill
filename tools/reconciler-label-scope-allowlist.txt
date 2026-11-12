@@ -1,0 +1,8 @@
+# reconciler-label-scope-allowlist.txt — justified exceptions to the one-write-scope
+# merge-label guard (tools/check-merge-block-writers.ts, HOK-3449).
+#
+# The reconciler (shared/lib/merge-labels.ts) writes labels only through
+# setMergeLabel, which changes only wm:ready / wm:blocked. There are no
+# justified exceptions today; keep this list empty unless one is proven.
+#
+# Format (tools/lib/source-guard.ts): `<repo-relative path> [<count>]  # <reason>`.

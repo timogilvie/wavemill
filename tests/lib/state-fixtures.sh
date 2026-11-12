@@ -91,6 +91,8 @@ fixture_real_state_accessors() {
     "$common:_wavemill_validate_task_record_write" \
     "$common:state_mutate" \
     "$common:get_task_meta" \
+    "$common:task_lifecycle_jq_defs" \
+    "$common:task_lifecycle_jq_filter" \
     "$common:task_state_mutate_existing" \
     "$monitor:read_state_value"; do
     file="${spec%:*}"

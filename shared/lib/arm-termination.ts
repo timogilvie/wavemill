@@ -47,6 +47,7 @@ import { appendEvalRecord, readEvalRecords } from './eval-persistence.ts';
 import { SCHEMA_VERSION, type EvalRecord } from './eval-schema.ts';
 import { mutateWorkflowState } from './workflow-state.ts';
 import { challengerTaskKey, isChallengerTaskId, parseTaskId } from './task-identity.ts';
+import { ensureTerminalRetention, type TaskLifecycleState } from './task-lifecycle.ts';
 
 export type ArmTerminationActor = 'operator' | 'monitor' | 'pair-resolver';
 export type ArmTerminationScope = 'pair' | 'single';
@@ -285,7 +286,14 @@ export async function recordArmTermination(input: RecordArmTerminationInput): Pr
           const existingLifecycle = (task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle))
             ? task.lifecycle
             : {};
-          task.lifecycle = { ...existingLifecycle, schemaVersion: 1, workflowOutcome: 'aborted' };
+          task.lifecycle = ensureTerminalRetention(
+            { ...existingLifecycle, schemaVersion: 1, workflowOutcome: 'aborted' } as TaskLifecycleState,
+            {
+              actor: 'operator-abort',
+              reason: 'operator-abort',
+              evidence: { stage, scope, abortReason },
+            },
+          );
         }
       }
       return current;

@@ -66,6 +66,8 @@ export interface AdapterError {
   policyKind: ProviderErrorKind;
   /** The transport's own text excerpt the classifier matched against. */
   rawExcerpt?: string;
+  /** Parsed `retry-after`/`reset_at` from the transport message, when present (HOK-3460). */
+  resetAt?: string | null;
 }
 
 /** One finding emitted by the claude CLI's `ReportFindings` tool. */
@@ -96,6 +98,12 @@ export interface AdapterInvokeResult {
    */
   reportedModel: string;
   usage?: AdapterUsage;
+  /**
+   * Transport-reported cost, when it reports one independently of usage (the
+   * claude CLI envelope can carry `total_cost_usd` without a token block).
+   * Also mirrored on `usage.costUsd` when usage is present.
+   */
+  costUsd?: number;
   error?: AdapterError;
   /**
    * Validated `ReportFindings` report, when the claude CLI verbose output
@@ -109,9 +117,29 @@ export interface AdapterInvokeResult {
   structuredReportError?: string;
   /** Owned claude CLI session id, when one was minted for this call. */
   sessionId?: string;
+  /** Raw stdout of the CLI invocation (HOK-3460: `LLMCallResult.rawOutput`). */
+  rawOutput?: string;
+  /**
+   * Owned session reference for this invocation: the minted claude
+   * `--session-id` when ownership recorded one. Codex reports none.
+   */
+  sessionRef?: string;
 }
 
 export type AdapterParseResult = AdapterInvokeResult;
+
+/**
+ * CLI flags that already pin or resume a session. Helper ownership never
+ * overrides an explicit caller choice (HOK-3328).
+ */
+export const CLI_SESSION_SELECTION_FLAGS: ReadonlySet<string> = new Set([
+  '--session-id',
+  '--resume',
+  '-r',
+  '--continue',
+  '-c',
+  '--no-session-persistence',
+]);
 
 export interface AdapterObserverEvent {
   provider: AdapterKind;
@@ -142,6 +170,32 @@ export interface AdapterInvokeOptions {
   cwd?: string;
   /** Observer hooks for progress reporting. */
   observer?: AdapterObserver;
+  /**
+   * Slow-call notification from the CLI process runner (stream mode). The
+   * caller owns attempt counters, so it receives only the elapsed time.
+   */
+  onSlow?: (elapsedMs: number) => void;
+  /** Execution mode for CLI transports: blocking `execSync` or `spawn`. */
+  mode?: 'sync' | 'stream';
+  /** Inactivity timeout in ms (stream mode). */
+  activityTimeout?: number;
+  /** stdout/stderr buffer cap in bytes (sync mode). */
+  maxBuffer?: number;
+  /** Override CLI executable (defaults to `CLAUDE_CMD`/`CODEX_CMD`, then the binary name). */
+  cliCmd?: string;
+  /** Extra CLI flags supplied by the caller, appended before ownership flags. */
+  cliFlags?: string[];
+  /**
+   * Isolate the spawn from the interactive agent harness (HOK-3202):
+   * `--tools '' --strict-mcp-config --no-session-persistence
+   * --disable-slash-commands`, a temp cwd and `MAX_THINKING_TOKENS=0`.
+   */
+  isolate?: boolean;
+  /**
+   * Skip the adapter's input preflight. `callLLM` sets this: its ladder has
+   * never refused a call on token projection (HOK-3460).
+   */
+  skipPreflight?: boolean;
   /** Max retries on transient failures (default: 0 — fail-closed). */
   maxRetries?: number;
   /**
@@ -177,8 +231,28 @@ export interface TransportAdapter {
    * CLI adapters only: pure parse of (stdout, stderr, exitCode) → typed
    * result. Exposed for direct testing and for callers that need to re-parse
    * a captured CLI run. Native adapters throw.
+   *
+   * `expectedSessionId` (claude only) binds a verbose `ReportFindings` report
+   * to the session the invocation owns (HOK-3448).
    */
-  parseResult(stdout: string, stderr: string, exitCode: number): AdapterParseResult;
+  parseResult(
+    stdout: string,
+    stderr: string,
+    exitCode: number,
+    expectedSessionId?: string,
+  ): AdapterParseResult;
+}
+
+/**
+ * A transport that runs a model CLI. Beyond the shared executor contract, it
+ * owns which registry vendors its CLI can actually serve (HOK-3460).
+ */
+export interface CliTransportAdapter extends TransportAdapter {
+  /**
+   * Why this transport cannot serve `modelId`, or `null` when it can. Owns
+   * the `transport <kind> cannot serve vendor <vendor>` skip reason.
+   */
+  incompatibilityReason(modelId: string): string | null;
 }
 
 /**

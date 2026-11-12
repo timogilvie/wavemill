@@ -10,13 +10,15 @@
 
 import { readStageResult } from './stage-result.ts';
 import {
+  handoffStateIsPublished,
   readReadyTendHandoff,
+  type ReadyTendState,
 } from './ready-tend-handoff.ts';
 import { probePrLiveState, type PrLiveState } from './pr-live-state.ts';
 import {
-  setWavemillReady,
-  setWavemillBlocked,
-  clearWavemillState,
+  holdsMergeLaneLock,
+  setMergeLabel,
+  type MergeLabel,
 } from './pr-state-labels.ts';
 import { parseTaskId } from './task-identity.ts';
 import {
@@ -54,7 +56,7 @@ export interface MergeLabelLiveState {
     sha: string;
   };
   handoffAtHead?: {
-    state: 'checked' | 'ready-published' | 'tend-claimed' | 'terminal';
+    state: ReadyTendState;
     headSha: string;
     prNumber: number;
   };
@@ -190,11 +192,15 @@ export function deriveMergeLabel(
     return { label: null, reason: 'checks-pending' };
   }
 
-  // Rule 7: Ready is ready, all checks pass, mergeable, and handoff exists
+  // Rule 7: Ready is ready, all checks pass, mergeable, and the handoff is
+  // published at this head. HOK-3450: the state test is the handoff module's,
+  // the same one Tend's claim uses — a `checked` record (publish did not
+  // land) earns no label, so the label never promises a claim Tend refuses.
   if (
     liveState.mergeable === 'MERGEABLE' &&
     liveState.handoffAtHead &&
-    liveState.handoffAtHead.headSha === liveState.prHeadSha
+    liveState.handoffAtHead.headSha === liveState.prHeadSha &&
+    handoffStateIsPublished(liveState.handoffAtHead.state)
   ) {
     return { label: 'wm:ready' };
   }
@@ -210,11 +216,11 @@ export function deriveMergeLabel(
 export interface ReconcileMergeLabelsDeps {
   readTaskView(prNumber: number): Promise<MergeLabelTaskView | null>;
   probeLiveState(prNumber: number): Promise<MergeLabelLiveState>;
-  applyLabel: {
-    setReady(prNumber: number, reason?: string): Promise<void>;
-    setBlocked(prNumber: number, reason: string): Promise<void>;
-    clear(prNumber: number): Promise<void>;
-  };
+  /**
+   * Render the decision. The only writer is `setMergeLabel`, which changes
+   * only `wm:ready` / `wm:blocked` (HOK-3449).
+   */
+  writeMergeLabel(prNumber: number, label: MergeLabel | null, reason?: string): Promise<void>;
   logger: {
     info(msg: string, meta?: unknown): void;
     warn(msg: string, meta?: unknown): void;
@@ -240,6 +246,20 @@ export async function reconcileMergeLabelsForPr(
 
   const liveState = await deps.probeLiveState(pr.number);
   const decision = deriveMergeLabel(task, pr, liveState);
+  const decisionReason = 'reason' in decision ? decision.reason : undefined;
+
+  // HOK-3449: the merge lane is tend's. While it holds `wm:merging` the
+  // reconciler makes no write at all — not ready, not blocked, not a clear.
+  // The decision is still returned so tend can surface its reason; a stale
+  // lock stays tend's reclaim path (`setWavemillReady` / reclaim-stale-merging).
+  if (holdsMergeLaneLock(pr.labels)) {
+    deps.logger.info('Merge label held (wm:merging lane lock)', {
+      pr: pr.number,
+      decision: decision.label ?? 'none',
+      reason: decisionReason,
+    });
+    return { decision, updatedLabels: [...pr.labels] };
+  }
 
   const currentLabels = new Set(pr.labels);
   const hasReady = currentLabels.has('wm:ready');
@@ -259,7 +279,7 @@ export async function reconcileMergeLabelsForPr(
       before: hasBlocked ? 'wm:blocked' : hasReady ? 'wm:ready' : 'none',
       after: 'wm:ready',
     });
-    await deps.applyLabel.setReady(pr.number);
+    await deps.writeMergeLabel(pr.number, 'wm:ready');
     // Update in-memory labels
     updatedLabels = updatedLabels.filter(l => l !== 'wm:blocked');
     if (!hasReady) {
@@ -279,7 +299,7 @@ export async function reconcileMergeLabelsForPr(
       after: 'wm:blocked',
       reason: decision.reason,
     });
-    await deps.applyLabel.setBlocked(pr.number, decision.reason);
+    await deps.writeMergeLabel(pr.number, 'wm:blocked', decision.reason);
     // Update in-memory labels
     updatedLabels = updatedLabels.filter(l => l !== 'wm:ready');
     if (!hasBlocked) {
@@ -296,7 +316,9 @@ export async function reconcileMergeLabelsForPr(
       after: 'none',
       reason: decision.reason,
     });
-    await deps.applyLabel.clear(pr.number);
+    // HOK-3449: clear only wm:ready / wm:blocked. `wavemill`, operator labels
+    // and lane labels are not a merge decision's to change.
+    await deps.writeMergeLabel(pr.number, null, decision.reason);
     // Update in-memory labels
     updatedLabels = updatedLabels.filter(l => l !== 'wm:ready' && l !== 'wm:blocked');
   } else {
@@ -544,16 +566,13 @@ export function createDefaultReconcilerDeps(
         ...(crossPrGuard ? { crossPrGuard } : {}),
       };
     },
-    applyLabel: {
-      setReady: async (prNumber) => {
-        setWavemillReady(prNumber, { markerRoot: repoDir });
-      },
-      setBlocked: async (prNumber, reason) => {
-        setWavemillBlocked(prNumber, { reason }, { markerRoot: repoDir });
-      },
-      clear: async (prNumber) => {
-        clearWavemillState(prNumber, { markerRoot: repoDir });
-      },
+    writeMergeLabel: async (prNumber, label) => {
+      const result = setMergeLabel(prNumber, label, { markerRoot: repoDir });
+      if (result.skipped === 'merge-lane-lock') {
+        // The lock was acquired between the reconciler's listing and this
+        // write; the decision is re-derived next tick.
+        console.warn('Merge label write skipped (wm:merging lane lock)', { pr: prNumber });
+      }
     },
     logger: {
       info: (msg, meta) => console.log(msg, meta ? JSON.stringify(meta) : ''),
