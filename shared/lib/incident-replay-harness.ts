@@ -270,14 +270,16 @@ export function assertConverged(result: RunResult, fixture: IncidentReplayFixtur
 /**
  * The recovery actions the replay loop can take on one tick. These mirror the
  * live stage-recovery ladder: progress short-circuits (`skip`), an allowlisted
- * terminal cause settles the arm, a recognised code failure spawns a
- * retry budget (`bounded-relaunch`) until it is exhausted
+ * terminal cause settles the arm, a recognised code failure starts remediation
+ * from its recorded excerpt, and a retryable failure spends the retry budget
+ * (`bounded-relaunch`) until it is exhausted
  * (`escalate-waiting-on`). These are the same two live primitives that
  * `maybe_retry_failed_stage` uses: `classifyFailure` and `bounded-retry.sh`.
  */
 export type RecoveryActionKind =
   | 'skip'
   | 'settle-aborted'
+  | 'spawn-remediation'
   | 'bounded-relaunch'
   | 'escalate-waiting-on';
 
@@ -365,8 +367,11 @@ function decideLiveStageRecovery(
   if (failure.class === 'terminal') {
     return { ...base, action: 'settle-aborted', rationale: failure.rationale };
   }
-  // `maybe_retry_failed_stage` only excludes allowlisted terminal failures;
-  // code failures and retryable failures both consume its stage-failure bucket.
+  if (failure.class === 'code-failure') {
+    // Code failures do not have a retry bucket: the live policy hands their
+    // excerpt to remediation, which produces a new head before any retry.
+    return { ...base, action: 'spawn-remediation', rationale: failure.rationale };
+  }
   const bucket = failure.retryBucket!;
   const replayHead = 'deadbeef';
   const verdict = retry.gate(ctx.featureDir, replayHead);
@@ -426,6 +431,7 @@ export function runWithRecoveryLoop(ctx: SandboxContext, fixture: IncidentReplay
         }
         break;
       case 'bounded-relaunch':
+      case 'spawn-remediation':
         relaunches += 1;
         break;
       case 'escalate-waiting-on':
