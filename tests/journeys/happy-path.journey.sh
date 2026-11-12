@@ -53,8 +53,10 @@ journey_wait_until "$ISSUE" 8  "task reaped after merge"     journey_task_reaped
 echo ""
 echo "assertions:"
 journey_assert_landed "$ISSUE"
-journey_assert "the happy path used no retired ledger shadow surface" \
-  test ! -e "$REPO_DIR/.wavemill/side-effect-ledger.jsonl"
+journey_assert "the happy path creates no retired ledger database" \
+  test ! -e "$REPO_DIR/.wavemill/ledger.sqlite"
+journey_assert "the happy path creates no retired duplicate audit" \
+  test ! -e "$REPO_DIR/.wavemill/side-effect-duplicates.jsonl"
 journey_assert "post-merge eval completed without operator attention" \
   test "$JOURNEY_SAW_ATTENTION" = "0"
 journey_assert_session_ownership "$ISSUE" planning coding review helper:json-code-review
