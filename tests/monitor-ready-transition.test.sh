@@ -554,7 +554,7 @@ JSON
         QUEUE_STATE="merge-needed"
         SESSION_EXECUTOR_OVERRIDE="operator"
         cat > "$READY_DIR/.ready-result.json" <<JSON
-{"stage":"ready","status":"completed","artifacts":{"verdict":"pass","readyBaseSha":"old-main-sha","queueState":"merge-needed","mergeExecutor":"operator","readyTendHandoff":"merge-needed"}}
+{"stage":"ready","status":"completed","artifacts":{"verdict":"pass","readyBaseSha":"old-main-sha","queueState":"merge-needed","mergeExecutor":"operator"}}
 JSON
         ;;
       # HOK-3093: when capabilities later resolve to tend (integration gets

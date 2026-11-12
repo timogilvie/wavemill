@@ -1,0 +1,2 @@
+# Empty allowlist: no production code compares a Ready→Tend handoff state outside the handoff module.
+# Add entries with a per-file count and a "# reason" only for justified exceptions.

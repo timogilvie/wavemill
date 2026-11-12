@@ -423,6 +423,7 @@
       "Golden Journey (ready-fail-remediate)": "bash tests/journeys/run-journeys.sh ready-fail-remediate",
       "Golden Journey (ready-one-tick-failure)": "bash tests/journeys/run-journeys.sh ready-one-tick-failure",
       "Golden Journey (ready-failure-disposition)": "bash tests/journeys/run-journeys.sh ready-failure-disposition",
+      "Golden Journey (handoff-publish-refused)": "bash tests/journeys/run-journeys.sh handoff-publish-refused",
       "Golden Journey (controller-writes-dont-reset-stall)": "bash tests/journeys/run-journeys.sh controller-writes-dont-reset-stall",
       "Golden Journey (ready-remediation-same-head)": "bash tests/journeys/run-journeys.sh ready-remediation-same-head",
       "Golden Journey (dirty-tree-coding-complete)": "bash tests/journeys/run-journeys.sh dirty-tree-coding-complete",
@@ -439,6 +440,7 @@
       "Golden Journey (stage-silent-stall)": "bash tests/journeys/run-journeys.sh stage-silent-stall",
       "Golden Journey (observer-attention-push)": "bash tests/journeys/run-journeys.sh observer-attention-push",
       "Golden Journey (required-files-review-scope)": "bash tests/journeys/run-journeys.sh required-files-review-scope",
+      "Golden Journey (challenger-dirty-handoff-exhaustion)": "bash tests/journeys/run-journeys.sh challenger-dirty-handoff-exhaustion",
       "Golden Journeys": "bash tests/run-related.sh"
     },
     "postPrReconciliation": {

@@ -1479,8 +1479,7 @@ test_merge_queue_disabled_merge_needed_parks_needs_user() {
     "verdict": "pass",
     "readyBaseSha": "sha-current",
     "queueState": "merge-needed",
-    "mergeExecutor": "operator",
-    "readyTendHandoff": "merge-needed"
+    "mergeExecutor": "operator"
   }
 }
 EOF

@@ -1,0 +1,2 @@
+# Empty allowlist: the codebase currently contains no private challenge-arm state comparisons.
+# Add entries with a per-file count and a "# reason" only for justified exceptions.

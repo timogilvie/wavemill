@@ -120,7 +120,7 @@ check_eq "tick 1 raises no operator attention" "$([[ -f "$STATE_DIR/.needs-atten
 # (Modelled as a clean bucket + a completed result; the launcher clears the
 # bucket on a pass. The invariant is only that no attention was ever raised.)
 bounded_retry_clear "$STATE_DIR" "$BUCKET"
-printf '%s\n' '{"stage":"ready","status":"completed","agent":"claude","artifacts":{"type":"ready","verdict":"pass","prNumber":1743,"readyTendHandoff":"ready-published"}}' > "$STATE_DIR/.ready-result.json"
+printf '%s\n' '{"stage":"ready","status":"completed","agent":"claude","artifacts":{"type":"ready","verdict":"pass","prNumber":1743}}' > "$STATE_DIR/.ready-result.json"
 check_eq "tick 2 Ready completed" "$(jq -r .status "$STATE_DIR/.ready-result.json")" "completed"
 check_eq "no .needs-attention at any tick" "$([[ -f "$STATE_DIR/.needs-attention" ]] && echo present || echo absent)" "absent"
 

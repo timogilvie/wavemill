@@ -3,7 +3,10 @@ import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { checkGuardSource, formatGuardResult, runSourceGuard } from '../../tools/lib/source-guard.ts';
-import { MERGE_BLOCK_WRITERS_GUARD } from './merge-block-writers-guard.ts';
+import {
+  MERGE_BLOCK_WRITERS_GUARD,
+  RECONCILER_LABEL_SCOPE_GUARD,
+} from './merge-block-writers-guard.ts';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -50,6 +53,89 @@ describe('merge-block-writers guard — clean shapes', () => {
     for (const path of ['shared/lib/merge-labels.ts', 'shared/lib/pr-state-labels.ts', 'shared/lib/merge-status-comment.ts']) {
       assert.ok(MERGE_BLOCK_WRITERS_GUARD.invariantPaths.includes(path), path);
     }
+  });
+});
+
+describe('reconciler-label-scope guard — the reconciler writes only ready/blocked (HOK-3449)', () => {
+  const reconcilerPatterns = (source: string) =>
+    checkGuardSource(RECONCILER_LABEL_SCOPE_GUARD, 'shared/lib/merge-labels.ts', source)
+      .map((finding) => finding.pattern);
+
+  it('flags every label helper other than setMergeLabel', () => {
+    assert.deepEqual(reconcilerPatterns('clearWavemillState(7);\n'), ['reconciler-label-helper']);
+    assert.deepEqual(reconcilerPatterns('setWavemillReady(7);\n'), ['reconciler-label-helper']);
+    assert.deepEqual(reconcilerPatterns('addWavemillRisky(7);\n'), ['reconciler-label-helper']);
+  });
+
+  it('flags raw label writes and foreign labels', () => {
+    assert.deepEqual(reconcilerPatterns('removeLabelFromPullRequest(7, WM_LABELS.approved);\n'), [
+      'reconciler-raw-label-write',
+      'reconciler-foreign-label',
+    ]);
+    assert.deepEqual(reconcilerPatterns('const m = WM_LABELS.merging;\n'), ['reconciler-foreign-label']);
+    assert.deepEqual(reconcilerPatterns("labels.has('wavemill');\n"), ['reconciler-foreign-label']);
+  });
+
+  it('ignores the sanctioned writer and the two scope labels', () => {
+    assert.deepEqual(reconcilerPatterns('writeMergeLabel(7, null);\n'), []);
+    assert.deepEqual(reconcilerPatterns('setMergeLabel(7, WM_LABELS.ready);\n'), []);
+    assert.deepEqual(reconcilerPatterns("if (currentLabels.has('wm:blocked')) {}\n"), []);
+  });
+
+  it('does not fire the scoped patterns outside the reconciler', () => {
+    assert.deepEqual(
+      checkGuardSource(
+        RECONCILER_LABEL_SCOPE_GUARD,
+        'shared/lib/tend-controller.ts',
+        'setWavemillReady(pr);\nremoveLabelFromPullRequest(pr, WM_LABELS.approved);\n',
+      ),
+      [],
+    );
+  });
+
+  describe('merge-label-write-scope structural check', () => {
+    const scope = (body: string) => [
+      'export const MERGE_LABEL_WRITE_SCOPE = [WM_LABELS.ready, WM_LABELS.blocked] as const;',
+      '',
+      'export function setMergeLabel(prNumber: number, label: MergeLabel | null): SetMergeLabelResult {',
+      body,
+      '}',
+      '',
+    ].join('\n');
+
+    const scopeFindings = (source: string) =>
+      checkGuardSource(RECONCILER_LABEL_SCOPE_GUARD, 'shared/lib/pr-state-labels.ts', source)
+        .map((finding) => finding.pattern);
+
+    it('accepts the two-label scope and the lane-lock read', () => {
+      assert.deepEqual(
+        scopeFindings(scope([
+          "  const clear = MERGE_LABEL_WRITE_SCOPE.filter((s) => s !== label);",
+          "  if (holdsMergeLaneLock(pr.labels)) return { pr, written: false };",
+          "  return { pr: transitionPullRequestLabels(prNumber, label ? [label] : [], clear, options), written: true };",
+        ].join('\n'))),
+        [],
+      );
+    });
+
+    it('fails when the scope set widens', () => {
+      const widened = scope('  return { pr, written: false };')
+        .replace('WM_LABELS.blocked]', 'WM_LABELS.blocked, WM_LABELS.superseded]');
+      assert.deepEqual(scopeFindings(widened), ['merge-label-write-scope']);
+    });
+
+    it('fails when the setter body names another label', () => {
+      assert.deepEqual(
+        scopeFindings(scope("  labelsToRemove.push(WM_LABELS.approved);\n  return { pr, written: false };")),
+        ['merge-label-write-scope'],
+      );
+    });
+  });
+
+  it('passes the reconciler scope guard at HEAD', () => {
+    const result = runSourceGuard(RECONCILER_LABEL_SCOPE_GUARD, repoRoot);
+    assert.deepEqual(result.findings, [], formatGuardResult(RECONCILER_LABEL_SCOPE_GUARD, result));
+    assert.ok(result.scannedFiles > 0);
   });
 });
 

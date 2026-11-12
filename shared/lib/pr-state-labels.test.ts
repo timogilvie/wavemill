@@ -162,42 +162,110 @@ describe('setWavemillMerged', () => {
   });
 });
 
-describe('clearWavemillState', () => {
-  it('removes only labels that are present on the pull request', () => {
-    const getMock = mock.method(prStateLabels.prStateLabelDeps, 'getPullRequest', () =>
-      buildPullRequest([
-        prStateLabels.WM_LABELS.wavemill,
-        prStateLabels.WM_LABELS.approved,
-        prStateLabels.WM_LABELS.merged,
-        'external-label',
-      ]),
-    );
-    const addMock = mock.method(prStateLabels.prStateLabelDeps, 'addLabelsToPullRequest', () => {
-      throw new Error('should not add labels');
-    });
+describe('setMergeLabel (HOK-3449: the reconciler changes only wm:ready / wm:blocked)', () => {
+  function stubLabels(initial: string[]) {
+    const labels = [...initial];
     const removed: string[] = [];
-    const removeMock = mock.method(prStateLabels.prStateLabelDeps, 'removeLabelFromPullRequest', (_prNumber: number | string, label: string) => {
-      removed.push(label);
-      return buildPullRequest(['external-label']);
+    const added: string[][] = [];
+    const current = () => buildPullRequest(labels);
+    const getMock = mock.method(prStateLabels.prStateLabelDeps, 'getPullRequest', current);
+    const addMock = mock.method(prStateLabels.prStateLabelDeps, 'addLabelsToPullRequest', (
+      _prNumber: number | string,
+      names: string[],
+    ) => {
+      added.push(names);
+      labels.push(...names);
+      return current();
     });
+    const removeMock = mock.method(prStateLabels.prStateLabelDeps, 'removeLabelFromPullRequest', (
+      _prNumber: number | string,
+      label: string,
+    ) => {
+      removed.push(label);
+      labels.splice(labels.indexOf(label), 1);
+      return current();
+    });
+    return { labels, removed, added, getMock, addMock, removeMock };
+  }
+
+  it('a null decision removes only wm:ready, leaving wavemill and operator labels', () => {
+    const stub = stubLabels([
+      prStateLabels.WM_LABELS.wavemill,
+      prStateLabels.WM_LABELS.riskAcknowledged,
+      prStateLabels.WM_LABELS.approved,
+      prStateLabels.WM_LABELS.ready,
+    ]);
 
     try {
-      const result = prStateLabels.clearWavemillState(229);
-      assert.deepEqual(result.labels, [{ name: 'external-label' }]);
-      assert.equal(getMock.mock.callCount(), 1);
-      assert.equal(addMock.mock.callCount(), 0);
-      assert.deepEqual(removed, [
+      const result = prStateLabels.setMergeLabel(229, null);
+      assert.equal(result.written, true);
+      assert.deepEqual(stub.removed, [prStateLabels.WM_LABELS.ready]);
+      assert.deepEqual(stub.added, []);
+      assert.deepEqual(stub.labels, [
         prStateLabels.WM_LABELS.wavemill,
-        prStateLabels.WM_LABELS.merged,
+        prStateLabels.WM_LABELS.riskAcknowledged,
         prStateLabels.WM_LABELS.approved,
       ]);
-      assert.equal(removeMock.mock.callCount(), 3);
     } finally {
-      removeMock.mock.restore();
-      addMock.mock.restore();
-      getMock.mock.restore();
+      mock.restoreAll();
     }
   });
+
+  it('wm:blocked removes only wm:ready and adds wm:blocked', () => {
+    const stub = stubLabels([
+      prStateLabels.WM_LABELS.wavemill,
+      prStateLabels.WM_LABELS.risky,
+      prStateLabels.WM_LABELS.ready,
+    ]);
+
+    try {
+      const result = prStateLabels.setMergeLabel(229, prStateLabels.WM_LABELS.blocked);
+      assert.equal(result.written, true);
+      assert.deepEqual(stub.removed, [prStateLabels.WM_LABELS.ready]);
+      assert.deepEqual(stub.added, [[prStateLabels.WM_LABELS.blocked]]);
+      assert.deepEqual(stub.labels, [
+        prStateLabels.WM_LABELS.wavemill,
+        prStateLabels.WM_LABELS.risky,
+        prStateLabels.WM_LABELS.blocked,
+      ]);
+    } finally {
+      mock.restoreAll();
+    }
+  });
+
+  it('is a no-op when the PR already carries the decided label', () => {
+    const stub = stubLabels([prStateLabels.WM_LABELS.ready]);
+
+    try {
+      const result = prStateLabels.setMergeLabel(229, prStateLabels.WM_LABELS.ready);
+      assert.equal(result.written, false);
+      assert.deepEqual(stub.removed, []);
+      assert.deepEqual(stub.added, []);
+      assert.equal(stub.getMock.mock.callCount(), 1);
+    } finally {
+      mock.restoreAll();
+    }
+  });
+
+  for (const label of [prStateLabels.WM_LABELS.ready, prStateLabels.WM_LABELS.blocked, null] as const) {
+    it(`writes nothing while wm:merging is held (decision ${label ?? 'null'})`, () => {
+      const stub = stubLabels([
+        prStateLabels.WM_LABELS.wavemill,
+        prStateLabels.WM_LABELS.ready,
+        prStateLabels.WM_LABELS.merging,
+      ]);
+
+      try {
+        const result = prStateLabels.setMergeLabel(229, label);
+        assert.equal(result.written, false);
+        assert.equal(result.skipped, 'merge-lane-lock');
+        assert.deepEqual(stub.removed, []);
+        assert.deepEqual(stub.added, []);
+      } finally {
+        mock.restoreAll();
+      }
+    });
+  }
 });
 
 describe('no pr-label marker (HOK-3316)', () => {
@@ -207,7 +275,7 @@ describe('no pr-label marker (HOK-3316)', () => {
     mock.method(prStateLabels.prStateLabelDeps, 'addLabelsToPullRequest', () =>
       buildPullRequest([prStateLabels.WM_LABELS.blocked]));
     try {
-      const pr = prStateLabels.setWavemillBlocked(229, { headSha: 'head-explicit', reason: 'tend-rebase-failed' }, { markerRoot });
+      const { pr } = prStateLabels.setMergeLabel(229, prStateLabels.WM_LABELS.blocked, { markerRoot });
       assert.deepEqual(pr.labels, [{ name: prStateLabels.WM_LABELS.blocked }]);
       assert.equal(existsSync(join(markerRoot, '.wavemill', 'pr-state')), false);
       assert.equal('writePrStateMarker' in prStateLabels, false);

@@ -226,7 +226,11 @@ export const CHALLENGE_ARM_LIFECYCLE_STATES = [
 ] as const;
 export type ChallengeArmLifecycleState = typeof CHALLENGE_ARM_LIFECYCLE_STATES[number];
 
-/** The subset of lifecycle states that hold an un-materialised, pending arm. */
+/** The subset of lifecycle states that hold an un-materialised, pending arm.
+ *
+ * An arm in `materializing` is deliberately *not* pending: it is mid-fork and
+ * is considered absent from the task surface until materialisation completes.
+ */
 export const CHALLENGE_ARM_PENDING_STATES = ['awaiting_fork', 'awaiting_expanded_route'] as const;
 export type ChallengeArmPendingState = typeof CHALLENGE_ARM_PENDING_STATES[number];
 
@@ -235,6 +239,12 @@ export function isChallengeArmLifecycleState(value: unknown): value is Challenge
     && (CHALLENGE_ARM_LIFECYCLE_STATES as readonly string[]).includes(value);
 }
 
+/**
+ * True for the states that hold an un-materialised, pending arm.
+ *
+ * Returns `false` for `materializing`; an arm in that state is mid-fork and is
+ * treated as absent (not pending) by gate, recovery, and cancel logic.
+ */
 export function isChallengeArmPendingState(value: unknown): value is ChallengeArmPendingState {
   return typeof value === 'string'
     && (CHALLENGE_ARM_PENDING_STATES as readonly string[]).includes(value);
