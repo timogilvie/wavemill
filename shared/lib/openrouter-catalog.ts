@@ -259,6 +259,21 @@ function isNativeOpenRouterProviderId(openrouterId: string): boolean {
   );
 }
 
+/**
+ * A provider's own model name with the provider prefix dropped — `qwen3-coder`
+ * for `qwen/qwen3-coder`. Hokusai's router returns this form for a candidate
+ * the mill sent as `qwen-3-coder`, so it must name the same model here. Only
+ * an unambiguous name resolves: two providers serving one bare name is a miss.
+ */
+function findByBareProviderModel(
+  models: readonly LaunchPriorityModel[],
+  input: string,
+): LaunchPriorityModel | undefined {
+  if (input.includes('/')) return undefined;
+  const matches = models.filter((entry) => splitOpenRouterId(entry.openrouterId)?.providerModel === input);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 export function resolveOpenRouterModelIdentity(
   modelIdOrAlias: string | null | undefined,
   fixturePath?: string,
@@ -268,8 +283,9 @@ export function resolveOpenRouterModelIdentity(
   }
 
   const input = modelIdOrAlias.trim();
-  const model = loadLaunchPriorityList(fixturePath)
-    .find((entry) => entry.wavemillAlias === input || entry.openrouterId === input);
+  const models = loadLaunchPriorityList(fixturePath);
+  const model = models.find((entry) => entry.wavemillAlias === input || entry.openrouterId === input)
+    ?? findByBareProviderModel(models, input);
   if (!model) {
     return null;
   }
