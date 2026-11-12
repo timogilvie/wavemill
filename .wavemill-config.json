@@ -412,6 +412,7 @@
       "Golden Journey (mid-flight-base-conflict)": "bash tests/journeys/run-journeys.sh mid-flight-base-conflict",
       "Golden Journey (tend-rebase-conflict-single-comment)": "bash tests/journeys/run-journeys.sh tend-rebase-conflict-single-comment",
       "Golden Journey (eval-failure-exhaustion)": "bash tests/journeys/run-journeys.sh eval-failure-exhaustion",
+      "Golden Journey (eval-failure-stale-terminal)": "bash tests/journeys/run-journeys.sh eval-failure-stale-terminal",
       "Golden Journey (native-ownership-recovery)": "bash tests/journeys/run-journeys.sh native-ownership-recovery",
       "Golden Journey (native-arm-evidence)": "bash tests/journeys/run-journeys.sh native-arm-evidence",
       "Golden Journey (defect-escalation)": "bash tests/journeys/run-journeys.sh defect-escalation",

@@ -148,6 +148,114 @@ eval_failure_disposition() {
   return 0
 }
 
+# The one eval-failure decision record (HOK-3452). Every eval-failure path
+# settles through eval_failure_disposition and then mark_eval_failed, which
+# writes this condition-keyed marker: it records the worktree head at write
+# time and the attempt's runId (HOK-3373), and the condition reconciler
+# (HOK-3172) expires it on a new head or operator event. Readers go through
+# eval_failure_decision_current, which returns the decision only while both
+# its head and its runId still describe the current attempt; anything older is
+# retryable (the failure policy's default). Never write or read this file
+# directly — tools/check-condition-markers.ts enforces it.
+EVAL_FAILURE_DECISION_MARKER=".eval-failure-decision.json"
+
+# eval_failure_decision_record <issue> <decision_json> [run_id]
+# Writes the eval-failure decision for <issue> as a condition-keyed marker in
+# its feature dir. Best-effort: returns 0 and writes nothing when the live
+# marker helpers are not loaded (the mill process does not source
+# transient-marker.sh), or when the task has no slug/worktree/head (a reaped
+# task, whose record_post_reap_eval_outcome audit already captured the
+# decision). The runId defaults to the task row's current runId.
+eval_failure_decision_record() {
+  local issue="$1" decision_json="${2:-}" run_id="${3:-}"
+  [[ -n "$issue" && -n "$decision_json" ]] || return 0
+  declare -F marker_write >/dev/null 2>&1 || return 0
+  declare -F pass_task_field >/dev/null 2>&1 || return 0
+  local slug=""
+  slug="$(pass_task_field "$issue" slug 2>/dev/null || true)"
+  [[ -n "$slug" && -n "${WORKTREE_ROOT:-}" ]] || return 0
+  local wt_dir="${WORKTREE_ROOT}/${slug}"
+  # Only a registered worktree owns a head; a dead task path records nothing.
+  task_worktree_path_status "$wt_dir" >/dev/null 2>&1 || return 0
+  local head=""
+  # allow-settled-attempt: read-only rev-parse behind the resolver gate (HOK-3452)
+  head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+  [[ -n "$head" ]] || return 0
+  [[ -n "$run_id" ]] || run_id="$(task_run_id "$issue" 2>/dev/null || true)"
+  local detail_json decision_class decision_kind
+  detail_json="$(jq -c --arg runId "$run_id" '. + {runId: $runId}' <<<"$decision_json" 2>/dev/null || true)"
+  [[ -n "$detail_json" ]] || return 0
+  decision_class="$(jq -r '.class // "retryable"' <<<"$detail_json" 2>/dev/null || echo retryable)"
+  decision_kind="$(jq -r '.failureKind // "native-unclassified"' <<<"$detail_json" 2>/dev/null || echo native-unclassified)"
+  marker_write "${wt_dir}/features/${slug}/${EVAL_FAILURE_DECISION_MARKER}" \
+    --kind eval-failure-decision \
+    --head "$head" \
+    --expires-on head,operator-event \
+    --reason "eval failure ${decision_class}/${decision_kind}" \
+    --detail-json "$detail_json" >/dev/null 2>&1 || true
+  return 0
+}
+
+# eval_failure_decision_current <issue> <state_dir> <wt_dir>
+# Prints the recorded eval-failure decision JSON only while its condition
+# still holds for the current attempt: a schemaVersion-1 marker whose head
+# equals the worktree HEAD and whose detail.runId equals the task's current
+# runId. A legacy raw file (no schemaVersion) or any older head/run prints
+# nothing, so the caller treats the failure as retryable. Always returns 0.
+eval_failure_decision_current() {
+  local issue="$1" state_dir="$2" wt_dir="$3"
+  [[ -n "$issue" && -n "$state_dir" && -n "$wt_dir" ]] || return 0
+  declare -F marker_read >/dev/null 2>&1 || return 0
+  declare -F marker_is_stale >/dev/null 2>&1 || return 0
+  local path="${state_dir}/${EVAL_FAILURE_DECISION_MARKER}"
+  [[ -f "$path" ]] || return 0
+  local marker="" head="" stale_rc=0
+  marker="$(marker_read "$path" 2>/dev/null || true)"
+  [[ -n "$marker" ]] || return 0
+  # A dead task path has no current head, so no recorded decision applies.
+  task_worktree_path_status "$wt_dir" >/dev/null 2>&1 || return 0
+  # allow-settled-attempt: read-only rev-parse behind the resolver gate (HOK-3452)
+  head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+  [[ -n "$head" ]] || return 0
+  # 0 = stale, 1 = valid, 2 = legacy; only a valid marker applies.
+  marker_is_stale "$path" "$head" || stale_rc=$?
+  [[ "$stale_rc" -eq 1 ]] || return 0
+  local recorded_run_id current_run_id
+  recorded_run_id="$(jq -r '.detail.runId // ""' <<<"$marker" 2>/dev/null || true)"
+  current_run_id="$(task_run_id "$issue" 2>/dev/null || true)"
+  [[ "$recorded_run_id" == "$current_run_id" ]] || return 0
+  jq -c '.detail // empty' <<<"$marker" 2>/dev/null || true
+  return 0
+}
+
+# mark_eval_failed <issue> [decision_json] [run_id]
+# The single eval-failure writer (HOK-3452). For a live row it sets
+# `evalFailed` and records the decision through eval_failure_decision_record;
+# after a reap it writes nothing to .tasks and records the audit-only
+# postReapEval outcome instead (HOK-3125).
+mark_eval_failed() {
+  local issue="$1" decision_json="${2:-}" run_id="${3:-}"
+  if ! task_state_entry_exists "$issue"; then
+    record_post_reap_eval_outcome "$issue" failed "$decision_json"
+    if declare -F log >/dev/null 2>&1; then
+      log "debug" "eval failed for reaped task $issue; not recreating state entry"
+    fi
+    return 0
+  fi
+  if ! task_state_mutate_existing "$issue" \
+     '.evalFailed = true
+      | del(.evalRunning)
+      | .updated = (now | todateiso8601)'; then
+    if declare -F log_warn >/dev/null 2>&1; then
+      log_warn "mark_eval_failed: failed to update $issue"
+    fi
+  fi
+  if [[ -n "$decision_json" ]]; then
+    eval_failure_decision_record "$issue" "$decision_json" "$run_id"
+  fi
+  return 0
+}
+
 # Operator hint for a failure kind, from the same policy table.
 failure_policy_next_action() {
   _failure_policy_cli --next-action-only "--failure-kind=${1:-}" \
