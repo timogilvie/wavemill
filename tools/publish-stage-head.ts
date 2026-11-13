@@ -3,9 +3,9 @@
  * publish-stage-head — thin CLI over `publishStageHead` (HOK-3370).
  *
  * The one publication seam for task-branch head moves: verifies the local
- * ref, fast-forwards the remote (never force), appends a `head-move/v1` row
- * and shadow-records the push (HOK-3183). Called by the monitor at stage
- * exits (`publish_stage_head` in wavemill-common.sh).
+ * ref, fast-forwards the remote (never force), and appends a `head-move/v1`
+ * row. Called by the monitor at stage exits (`publish_stage_head` in
+ * wavemill-common.sh).
  *
  * Emits one JSON object on stdout and exits:
  *   0  — success (`outcome`: pushed | reused | remote-ahead)

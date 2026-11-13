@@ -120,7 +120,7 @@ export const HEAD_PUBLICATION_GUARD: GuardSpec = {
   remediation: [
     'One head-move record (HOK-3370): every task-branch head move is published by the',
     'mill through publishStageHead (shared/lib/branch-publication.ts), which appends a',
-    'head-move/v1 row and shadow-records the push. Agent prompts never instruct a push.',
+    'head-move/v1 row. Agent prompts never instruct a push.',
     'The task PR is opened by the mill through openTaskPullRequest (HOK-3463); prompts',
     'ask for prTitle/prBody in the review result and never for a PR-create command.',
     'Evidence freshness is the change identity (shared/lib/change-identity.ts):',
