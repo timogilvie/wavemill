@@ -1,6 +1,6 @@
 // Replay the HOK-3474 storage layout after the real journey has merged/reaped.
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { readOwnershipRows } from '../../../../shared/lib/session-ownership.ts';
 import { resolveClaudeProjectsDirsFor } from '../../../../shared/lib/session-adapters.ts';
@@ -35,3 +35,25 @@ assert.equal(identity.executedModel, coding.model);
 assert.equal(identity.evidenceStatus, 'direct');
 assert.equal(detectSessionRedirects(coding.cwd, branchName, issue, repoDir).transcriptsRead, true);
 console.log('PASS: reaped provider transcript feeds SDK cost, executed identity and intervention scanning');
+
+// HOK-3475: the canonical archive, rather than a surviving provider home,
+// must supply the same facts after every original owned transcript is gone.
+const redirects = detectSessionRedirects(coding.cwd, branchName, issue, repoDir);
+for (const row of ownership.filter(row => row.harness === 'claude-code')) {
+  for (const dir of resolveClaudeProjectsDirsFor([row.cwd || coding.cwd], repoDir)) {
+    const file = join(dir, `${row.sessionRef}.jsonl`);
+    if (existsSync(file)) rmSync(file);
+  }
+}
+rmSync(join(repoDir, '.wavemill', 'runs'), { recursive: true, force: true });
+assert.deepEqual((await meterWorkflowCost(input)).outcome, before.outcome, 'reaping original sources preserves SDK cost');
+const retainedIdentity = resolveStageExecutedModel({ repoDir, worktreePath: coding.cwd, branchName,
+  featureDir: archive, stage: 'coding', existing: null });
+assert.equal(retainedIdentity.executedModel, coding.model);
+assert.equal(retainedIdentity.evidenceStatus, 'direct');
+const retainedRedirects = detectSessionRedirects(coding.cwd, branchName, issue, repoDir);
+assert.equal(retainedRedirects.transcriptsRead, redirects.transcriptsRead);
+assert.equal(retainedRedirects.count, redirects.count);
+assert.deepEqual(retainedRedirects.details, redirects.details);
+assert.deepEqual(retainedRedirects.timestamps, redirects.timestamps);
+console.log('PASS: archive alone preserves SDK cost, executed identity and intervention facts');

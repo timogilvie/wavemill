@@ -1,4 +1,4 @@
-import { resolveTaskArtifactDirs } from './task-artifact-lookup.ts';
+import { archivedSessionRoots, resolveTaskArtifactDirs } from './task-artifact-lookup.ts';
 import { TASK_ID_EMBEDDED_GLOBAL_RE } from './task-identity.ts';
 /**
  * Session adapters — native runtime session parsing for workflow cost
@@ -15,8 +15,11 @@ import { TASK_ID_EMBEDDED_GLOBAL_RE } from './task-identity.ts';
  * @module session-adapters
  */
 
-import { existsSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+import { zstdDecompressSync } from 'node:zlib';
+import { codexSessionsRoot } from './codex-rollout-resolver.ts';
+import { isPendingSessionRef, type SessionOwnershipRow } from './session-ownership.ts';
 import { readJsonlFile } from './jsonl-utils.ts';
 import { piUsageToSessionModelUsage } from './native-agent/pi-usage-cost.ts';
 import type { TranscriptEvent } from './native-agent/transcript.ts';
@@ -30,8 +33,100 @@ import { resolveProjectsDirs } from './wavemill-session-paths.ts';
  * primitive outside session-discovery sites" check keeps every other module
  * out of `wavemill-session-paths.ts`.
  */
-export function resolveClaudeProjectsDirsFor(cwds: readonly string[], repoDir?: string): string[] {
-  return [...new Set(cwds.flatMap((cwd) => resolveProjectsDirs(cwd, repoDir)))];
+export function resolveClaudeProjectsDirsFor(cwds: readonly string[], repoDir?: string, issueId?: string, featureDir?: string): string[] {
+  return [...new Set([...cwds.flatMap((cwd) => resolveProjectsDirs(cwd, repoDir)),
+    ...retainedSessionRoots('claude-code', repoDir, issueId, featureDir)])];
+}
+
+function retainedSessionRoots(harness: SessionOwnershipRow['harness'], repoDir?: string, issueId?: string, featureDir?: string): string[] {
+  const archiveDir = issueId ? resolveTaskArtifactDirs({ issueId, repoDir }).archiveDir : null;
+  return [...new Set([featureDir, archiveDir].flatMap(dir => archivedSessionRoots(dir, harness)))];
+}
+
+export function resolveCodexSessionRoots(repoDir?: string, issueId?: string, featureDir?: string): string[] {
+  const sessions = codexSessionsRoot();
+  return [sessions, join(dirname(sessions), 'archived_sessions'), ...retainedSessionRoots('codex', repoDir, issueId, featureDir)];
+}
+
+/** One native-file discovery path for metering, identity and retention. */
+export function nativeSessionFiles(opts: { worktreePath?: string; repoDir?: string; issueId?: string; branchName?: string; featureDir?: string }): string[] {
+  const dirs = new Map<string, string | undefined>();
+  for (const root of [opts.worktreePath, opts.repoDir]) {
+    if (!root) continue;
+    const runs = join(root, '.wavemill', 'runs');
+    if (!existsSync(runs)) continue;
+    for (const entry of readdirSync(runs, { withFileTypes: true })) {
+      if (entry.isDirectory()) dirs.set(join(runs, entry.name, 'native-sessions'), entry.name);
+    }
+  }
+  const archive = opts.issueId ? resolveTaskArtifactDirs({ issueId: opts.issueId, repoDir: opts.repoDir }).archiveDir : null;
+  for (const dir of [opts.featureDir, archive]) if (dir) dirs.set(join(dir, 'native-sessions'), undefined);
+  for (const dir of retainedSessionRoots('native', opts.repoDir, opts.issueId, opts.featureDir)) dirs.set(dir, undefined);
+  const files = new Set<string>();
+  for (const [dir, run] of dirs) {
+    if (!existsSync(dir)) continue;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith('.jsonl') && matchesIssue(entry.name, opts.issueId, opts.branchName, run)) files.add(join(dir, entry.name));
+    }
+  }
+  return [...files];
+}
+
+export interface OwnedSessionFile {
+  source: string; data: Buffer; compressedData?: Buffer;
+}
+export interface OwnedSessionEvidence {
+  row: SessionOwnershipRow; status: 'archived' | 'missing' | 'pending' | 'foreign-cwd'; files: OwnedSessionFile[];
+}
+
+/** Exact ownership selection only; decoding is transport, usage remains SDK-owned. */
+export function discoverOwnedSessionEvidence(rows: readonly SessionOwnershipRow[], opts: { repoDir: string; worktreePath: string; issueId: string }): OwnedSessionEvidence[] {
+  const cache = new Map<string, string[]>();
+  const list = (root: string): string[] => {
+    if (cache.has(root)) return cache.get(root)!;
+    const files: string[] = [];
+    const visit = (dir: string, depth: number) => {
+      if (!existsSync(dir)) return;
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory() && depth < 6) visit(path, depth + 1);
+        else if (entry.isFile() && /\.jsonl(?:\.zst)?$/.test(entry.name)) files.push(path);
+      }
+    };
+    visit(root, 0); cache.set(root, files); return files;
+  };
+  const native = rows.some(r => r.harness === 'native') ? nativeSessionFiles(opts) : [];
+  const allowedCwd = (cwd: string) => resolve(cwd) === resolve(opts.repoDir)
+    || resolve(cwd) === resolve(opts.worktreePath) || resolve(cwd).startsWith(resolve(opts.worktreePath) + '/');
+  return rows.map(row => {
+    if (isPendingSessionRef(row.sessionRef)) return { row, status: 'pending', files: [] };
+    if (row.cwd && !allowedCwd(row.cwd)) return { row, status: 'foreign-cwd', files: [] };
+    const roots = row.harness === 'codex' ? resolveCodexSessionRoots(opts.repoDir, opts.issueId)
+      : row.harness === 'claude-code' ? resolveClaudeProjectsDirsFor([row.cwd || opts.worktreePath], opts.repoDir, opts.issueId) : [];
+    const candidates = row.harness === 'native' ? native : roots.flatMap(list).filter(path => {
+      const stem = basename(path).replace(/\.jsonl(?:\.zst)?$/, '');
+      return stem === row.sessionRef || stem.endsWith('-' + row.sessionRef);
+    });
+    const files: OwnedSessionFile[] = [];
+    for (const source of [...new Set(candidates)]) {
+      const bytes = readFileSync(source);
+      const compressed = source.endsWith('.zst');
+      const data = compressed ? zstdDecompressSync(bytes) : bytes;
+      let matches = false;
+      for (const line of data.toString('utf8').split('\n')) {
+        let r;
+        try { r = JSON.parse(line); } catch { continue; }
+        if (!r || typeof r !== 'object') continue;
+        const id = r.type === 'session_meta' ? r.payload?.id : r.sessionId;
+        if (id !== row.sessionRef) continue;
+        const cwd = r.type === 'session_meta' ? r.payload?.cwd : r.worktreePath ?? r.cwd;
+        if (typeof cwd === 'string' && !allowedCwd(cwd)) continue;
+        matches = true; break;
+      }
+      if (matches) files.push({ source, data, ...(compressed ? { compressedData: bytes } : {}) });
+    }
+    return { row, status: files.length ? 'archived' : 'missing', files };
+  });
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -171,47 +266,8 @@ export function matchesIssue(
 
 export class NativeSessionAdapter implements SessionAdapter {
   scan(opts: SessionScanOptions): SessionUsageResult | null {
-    // Check the repo root as well as the worktree: mill tasks run in a
-    // worktree but their transcripts are written under the main repo.
-    const runsDirs = [
-      join(resolve(opts.worktreePath), '.wavemill', 'runs'),
-      ...(opts.repoDir ? [join(resolve(opts.repoDir), '.wavemill', 'runs')] : []),
-    ].filter((dir, index, all) => all.indexOf(dir) === index && existsSync(dir));
-
-    let sessionFiles: string[] = [];
-    try {
-      for (const runsDir of runsDirs) {
-        for (const runEntry of readdirSync(runsDir, { withFileTypes: true })) {
-          if (!runEntry.isDirectory()) {
-            continue;
-          }
-          const nativeSessionsDir = join(runsDir, runEntry.name, 'native-sessions');
-          if (!existsSync(nativeSessionsDir)) {
-            continue;
-          }
-          sessionFiles.push(
-            ...readdirSync(nativeSessionsDir)
-              .filter((fileName) => fileName.endsWith('.jsonl'))
-              .filter((fileName) => matchesIssue(fileName, opts.issueId, opts.branchName, runEntry.name))
-              .map((fileName) => join(nativeSessionsDir, fileName)),
-          );
-        }
-      }
-    } catch {
-      return null;
-    }
-
-    // A terminal arm may already be reaped. The canonical artifact locator
-    // retains its owned native stream beside the archived stage results.
-    if (opts.issueId) {
-      const { archiveDir } = resolveTaskArtifactDirs({ issueId: opts.issueId, repoDir: opts.repoDir, worktreeDir: opts.worktreePath });
-      const nativeDir = archiveDir ? join(archiveDir, 'native-sessions') : null;
-      if (nativeDir && existsSync(nativeDir)) {
-        sessionFiles.push(...readdirSync(nativeDir)
-          .filter((name) => name.endsWith('.jsonl') && matchesIssue(name, opts.issueId, opts.branchName))
-          .map((name) => join(nativeDir, name)));
-      }
-    }
+    let sessionFiles: string[];
+    try { sessionFiles = nativeSessionFiles(opts); } catch { return null; }
 
     if (sessionFiles.length === 0) {
       return null;
@@ -394,54 +450,16 @@ export class NativeSessionAdapter implements SessionAdapter {
 export function getNativeProviderMetadata(
   worktreePath: string,
   repoDir?: string,
+  issueId?: string,
 ): { provider: string; endpoint?: string } | null {
-  // Same worktree-vs-repo mismatch NativeSessionAdapter.scan has: transcripts
-  // are written under the repo, so a worktree-only lookup returns null for
-  // every mill task and the eval record loses its provider metadata.
-  const runsDirs = [
-    join(resolve(worktreePath), '.wavemill', 'runs'),
-    ...(repoDir ? [join(resolve(repoDir), '.wavemill', 'runs')] : []),
-  ].filter((dir, index, all) => all.indexOf(dir) === index && existsSync(dir));
-
-  if (runsDirs.length === 0) {
-    return null;
+  let files: string[];
+  try { files = nativeSessionFiles({ worktreePath, repoDir, issueId }); } catch { return null; }
+  for (const filePath of files) {
+    try {
+      for (const entry of readJsonlFile<TranscriptEvent>(filePath)) {
+        if (entry.type === 'session_started') return { provider: entry.provider, ...(entry.api ? { endpoint: entry.api } : {}) };
+      }
+    } catch { /* A malformed stream contributes no provider fact. */ }
   }
-
-  try {
-    for (const runsDir of runsDirs) {
-    for (const runEntry of readdirSync(runsDir, { withFileTypes: true })) {
-      if (!runEntry.isDirectory()) {
-        continue;
-      }
-      const nativeSessionsDir = join(runsDir, runEntry.name, 'native-sessions');
-      if (!existsSync(nativeSessionsDir)) {
-        continue;
-      }
-
-      const sessionFiles = readdirSync(nativeSessionsDir)
-        .filter((fileName) => fileName.endsWith('.jsonl'))
-        .map((fileName) => join(nativeSessionsDir, fileName));
-
-      for (const filePath of sessionFiles) {
-        try {
-          for (const entry of readJsonlFile<TranscriptEvent>(filePath)) {
-            if (entry.type === 'session_started') {
-              return {
-                provider: entry.provider,
-                ...(entry.api ? { endpoint: entry.api } : {}),
-              };
-            }
-          }
-        } catch {
-          // Skip malformed session files
-          continue;
-        }
-      }
-    }
-    }
-  } catch {
-    return null;
-  }
-
   return null;
 }

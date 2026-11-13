@@ -11,7 +11,7 @@
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { resolveProjectsDirs } from './wavemill-session-paths.ts';
+import { resolveClaudeProjectsDirsFor } from './session-adapters.ts';
 import { loadWavemillConfig } from './config.ts';
 import { errorMessage } from './error-utils.ts';
 import { fetchPrReviews, resolveOwnerRepo } from './github.ts';
@@ -580,12 +580,13 @@ interface SessionTranscriptRead {
  * Claude Code writes `isMeta`, `isCompactSummary` and `entrypoint`; the nested
  * `provenance.*` object is kept as a fallback for older/other writers.
  */
-function readSessionUserMessages(worktreePath: string, branchName: string, repoDir?: string): SessionTranscriptRead {
+function readSessionUserMessages(worktreePath: string, branchName: string, repoDir?: string, issueId?: string): SessionTranscriptRead {
   const messages: SessionUserMessage[] = [];
   let filesRead = 0;
   const seenFiles = new Set<string>();
+  const seenMessages = new Set<string>();
   try {
-    const projectsDirs = resolveProjectsDirs(worktreePath, repoDir).filter((projectsDir) => existsSync(projectsDir));
+    const projectsDirs = resolveClaudeProjectsDirsFor([worktreePath], repoDir, issueId).filter((projectsDir) => existsSync(projectsDir));
     if (projectsDirs.length === 0) return { messages, filesRead };
 
     let sessionFiles: string[];
@@ -614,6 +615,9 @@ function readSessionUserMessages(worktreePath: string, branchName: string, repoD
           const timestamp = typeof entry.timestamp === 'string'
             ? entry.timestamp
             : new Date().toISOString();
+          const key = JSON.stringify([entry.sessionId, entry.uuid ?? timestamp, message.content]);
+          if (seenMessages.has(key)) continue;
+          seenMessages.add(key);
           const nested = entry.provenance as Record<string, unknown> | undefined;
           const flag = (key: string): unknown => (entry[key] !== undefined ? entry[key] : nested?.[key]);
           const entrypoint = flag('entrypoint');
@@ -644,8 +648,8 @@ function readSessionUserMessages(worktreePath: string, branchName: string, repoD
   return { messages, filesRead };
 }
 
-function findTranscriptEndMs(row: SessionOwnershipRow, worktreePath: string, repoDir?: string): number | undefined {
-  const dirs = resolveProjectsDirs(worktreePath, repoDir).filter((d) => existsSync(d));
+function findTranscriptEndMs(row: SessionOwnershipRow, worktreePath: string, repoDir?: string, issueId?: string): number | undefined {
+  const dirs = resolveClaudeProjectsDirsFor([worktreePath], repoDir, issueId).filter((d) => existsSync(d));
   for (const dir of dirs) {
     const file = join(dir, `${row.sessionRef}.jsonl`);
     if (!existsSync(file)) continue;
@@ -687,7 +691,7 @@ export function detectSessionRedirects(
     transcriptsRead: false,
   };
 
-  const { messages, filesRead } = readSessionUserMessages(worktreePath, branchName, repoDir);
+  const { messages, filesRead } = readSessionUserMessages(worktreePath, branchName, repoDir, issueId);
   result.transcriptsRead = filesRead > 0;
   if (messages.length === 0) return result;
 
@@ -711,7 +715,7 @@ export function detectSessionRedirects(
   }
 
   result.ownedWindows = ownedSessionWindows(ownership.rows, (row) =>
-    findTranscriptEndMs(row, worktreePath, repoDir),
+    findTranscriptEndMs(row, worktreePath, repoDir, issueId),
   );
 
   const redirections: SessionUserMessage[] = [];
@@ -1184,7 +1188,7 @@ export function detectManualEdits(opts: DetectOptions): ManualEditsResult {
     const exactRows = ownershipRead.rows.filter((row) => !row.kind.startsWith('helper:'));
     ownership = {
       rows: exactRows,
-      windows: ownedSessionWindows(exactRows, (row) => findTranscriptEndMs(row, opts.worktreePath ?? cwd, opts.repoDir)),
+      windows: ownedSessionWindows(exactRows, (row) => findTranscriptEndMs(row, opts.worktreePath ?? cwd, opts.repoDir, opts.issueId)),
       hasRows: exactRows.length > 0,
     };
   }

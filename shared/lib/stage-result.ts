@@ -20,7 +20,7 @@ import os from 'node:os';
 import type { CodingArtifacts } from './native-agent/coding-artifacts.ts';
 export type { CodingArtifacts } from './native-agent/coding-artifacts.ts';
 import { validateSeamArtifactValue } from './seam-artifacts.ts';
-import { resolveTaskArtifact } from './task-artifact-lookup.ts';
+import { resolveTaskArtifact, TASK_RESULT_STAGES } from './task-artifact-lookup.ts';
 import type { CleanupDecision, CleanupReport, TreeState } from './native-agent/cleanup.ts';
 import type { PiRuntimeVersions } from './native-agent/pi-runtime-version.ts';
 import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
@@ -39,7 +39,7 @@ import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
 export type StageStatus = 'running' | 'awaiting_user' | 'completed' | 'aborted' | 'failed';
 
 /** Stage names used in result file naming. */
-export type StageName = 'planning' | 'coding' | 'review' | 'ready';
+export type StageName = (typeof TASK_RESULT_STAGES)[number];
 
 /** How the orchestrator resolved execution identity for a stage result. */
 export type StageExecutionEvidenceStatus = 'direct' | 'missing' | 'contradicted' | 'inherited';
@@ -98,7 +98,7 @@ export interface StageExecutionEvidence {
 }
 
 /** Valid stage names for runtime validation. */
-const VALID_STAGES: readonly StageName[] = ['planning', 'coding', 'review', 'ready'] as const;
+const VALID_STAGES: readonly StageName[] = TASK_RESULT_STAGES;
 
 /** Valid status values for runtime validation. */
 const VALID_STATUSES: readonly StageStatus[] = ['running', 'awaiting_user', 'completed', 'aborted', 'failed'] as const;

@@ -16234,7 +16234,10 @@ cleanup_aborted_challenge_arm() {
     cleanup_candidate_json="$(cleanup_episode_candidate_json "$issue" "$slug" "" "$pr" 2>/dev/null || true)"
   fi
 
-  archive_stage_artifacts "$issue" "$slug"
+  if ! archive_stage_artifacts "$issue" "$slug"; then
+    log_warn "  $issue aborted cleanup could not archive stage artifacts; keeping task state"
+    return 1
+  fi
 
   # HOK-3312: archive-and-reap residue BEFORE any destructive step. The
   # archive carries the dirt and any unpublished commits for operator

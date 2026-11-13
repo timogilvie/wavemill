@@ -615,7 +615,7 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
   // 'native' before reaching this layer.
   let providerMetadata: { provider: string; endpoint?: string } | null = null;
   if (agentType === 'native' && worktreePath) {
-    providerMetadata = getNativeProviderMetadata(worktreePath, repoDir);
+    providerMetadata = getNativeProviderMetadata(worktreePath, repoDir, issueId);
   }
   if (!providerMetadata) {
     providerMetadata = getDeepSeekProviderMetadata(executionModel, repoDir);
