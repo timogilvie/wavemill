@@ -8468,6 +8468,23 @@ maybe_retry_failed_stage() {
   return 0
 }
 
+# HOK-3277: the one failed-stage recovery decision+dispatch for an agent stage.
+# The task-recovery controller's shell adapter: route a failed result through
+# the shared retry seam (maybe_retry_failed_stage, which composes classifyFailure
+# + bounded-retry + the execution-contract replay), and on a declined or
+# exhausted budget quarantine a challenge arm and raise the one needs-user
+# escalation. The planning, coding-publish and review `failed` branches share
+# this single path instead of each re-deriving the same ladder (net deletion).
+# The caller keeps the task active and returns.
+_monitor_recover_failed_stage() {
+  local issue="$1" feature_dir="$2" win="$3" stage="$4" rc=0
+  maybe_retry_failed_stage "$issue" "$feature_dir" "$stage" "$win" || rc=$?
+  (( rc == 0 || rc == 2 )) && return 0
+  emit_challenge_stage_failure_quarantine "$issue" "$feature_dir" "$stage" "$win" || true
+  set_window_attention_state "$win" "needs-user"
+  return 0
+}
+
 # HOK-3211: direct coding relaunch for a retryable coding stage failure.
 # Mirrors coding_dirty_handoff_relaunch's launch identity resolution (which
 # is itself the challenger-aware launcher pattern) so the planning overreach
@@ -21405,14 +21422,7 @@ monitor_issue_state() {
           fi
 
           if [[ "$planning_status" == "failed" ]]; then
-            local planning_retry_rc=0
-            maybe_retry_failed_stage "$ISSUE" "$FEATURE_DIR" "planning" "$WIN" || planning_retry_rc=$?
-            if [[ "$planning_retry_rc" -eq 0 || "$planning_retry_rc" -eq 2 ]]; then
-              active_count=$((active_count + 1))
-              return 0
-            fi
-            emit_challenge_stage_failure_quarantine "$ISSUE" "$FEATURE_DIR" "planning" "$WIN" || true
-            set_window_attention_state "$WIN" "needs-user"
+            _monitor_recover_failed_stage "$ISSUE" "$FEATURE_DIR" "$WIN" "planning"
             active_count=$((active_count + 1))
             return 0
           fi
@@ -21484,14 +21494,7 @@ monitor_issue_state() {
               write_stage_result "$FEATURE_DIR" "coding" "failed" "$current_agent" \
                 "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")" \
                 "Stage head publication failed: ${PUBLISH_STAGE_HEAD_DETAIL:-publish-stage-head rc=$coding_publish_rc}"
-              local coding_publish_retry_rc=0
-              maybe_retry_failed_stage "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" || coding_publish_retry_rc=$?
-              if [[ "$coding_publish_retry_rc" -eq 0 || "$coding_publish_retry_rc" -eq 2 ]]; then
-                active_count=$((active_count + 1))
-                return 0
-              fi
-              emit_challenge_stage_failure_quarantine "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" || true
-              set_window_attention_state "$WIN" "needs-user"
+              _monitor_recover_failed_stage "$ISSUE" "$FEATURE_DIR" "$WIN" "coding"
               active_count=$((active_count + 1))
               return 0
             fi
@@ -21826,14 +21829,7 @@ monitor_issue_state() {
           fi
 
           if [[ "$review_status" == "failed" ]]; then
-            local review_retry_rc=0
-            maybe_retry_failed_stage "$ISSUE" "$FEATURE_DIR" "review" "$WIN" || review_retry_rc=$?
-            if [[ "$review_retry_rc" -eq 0 || "$review_retry_rc" -eq 2 ]]; then
-              active_count=$((active_count + 1))
-              return 0
-            fi
-            emit_challenge_stage_failure_quarantine "$ISSUE" "$FEATURE_DIR" "review" "$WIN" || true
-            set_window_attention_state "$WIN" "needs-user"
+            _monitor_recover_failed_stage "$ISSUE" "$FEATURE_DIR" "$WIN" "review"
             active_count=$((active_count + 1))
             return 0
           fi
