@@ -472,9 +472,11 @@
     "shared/lib/intervention-detector.test.ts",
     "shared/lib/ready-remediation-disposition.test.ts",
     "shared/lib/reliability-metrics.test.ts",
+    "shared/lib/sdk-task-cost/meter.test.ts",
     "shared/lib/sdk-task-cost/price-overrides.test.ts",
     "shared/lib/sdk-task-cost/project.test.ts",
     "shared/lib/wavemill-session-paths.test.ts",
+    "tests/journeys/fixtures/happy-path/provider-transcript-replay.ts",
     "tools/backfill-stage-executed-model.test.ts"
   ],
   "indirectConsumers": [

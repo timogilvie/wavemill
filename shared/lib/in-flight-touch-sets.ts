@@ -51,7 +51,6 @@ export const DEFAULT_IGNORE_PATTERNS: readonly string[] = [
   '.wavemill/registry/',
   '.wavemill/evals/',
   '.wavemill/manifests/',
-  '.wavemill/side-effect-ledger.jsonl',
   '.wavemill/invariant-violations.jsonl',
   '.wavemill/state-schema-violations.jsonl',
   '.wavemill/condition-reconcile.jsonl',

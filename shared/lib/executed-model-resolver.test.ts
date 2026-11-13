@@ -341,6 +341,19 @@ function setupNativeStageFixture(opts: {
 }
 
 describe('resolveStageExecutedModel (HOK-3369)', () => {
+  it('resolves execution from a repo provider home when the worktree has been reaped', () => {
+    const repoDir = withTempHome('resolver-provider-');
+    const worktreePath = join(repoDir, 'worktrees', 'gone');
+    const featureDir = join(repoDir, '.wavemill', 'evals', 'artifacts', 'run');
+    const projects = join(repoDir, '.wavemill', 'runs', 'run', 'providers', 'deepseek', 'home', '.claude', 'projects', encodeProjectDir(worktreePath));
+    mkdirSync(projects, { recursive: true });
+    appendOwnershipRow(featureDir, { sessionRef: 'provider-coding', harness: 'claude-code', kind: 'coding',
+      model: 'deepseek-v4-flash', cwd: worktreePath, launchedAt: '2026-09-15T10:00:00Z' });
+    writeJsonl(join(projects, 'provider-coding.jsonl'), [claudeTurn({ sessionId: 'provider-coding', model: 'deepseek-v4-flash', timestamp: '2026-09-15T10:01:00Z' })]);
+    const result = resolveStageExecutedModel({ repoDir, worktreePath, featureDir, stage: 'coding', branchName: 'task/gone' });
+    assert.equal(result.executedModel, 'deepseek-v4-flash');
+    assert.equal(result.evidenceStatus, 'direct');
+  });
   // protects: the HOK-3322_c replay — 19 echoed-responseId turns on
   // moonshotai/kimi-k2-thinking produce direct/provider-response evidence.
   it('verifies a native echo stream and returns direct / provider-response', () => {

@@ -3,7 +3,7 @@
 # renderer / task-worktree resolver and lower its count in the same PR.
 # Seeded from the inventory of pre-existing sites when the guard landed.
 shared/hooks/wavemill-hook-protocol.sh 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
-shared/lib/bounded-retry.sh 3  # pre-HOK-3373 site (task-path-probe×3); migrate to the resolver
+shared/lib/bounded-retry.sh 2  # pre-HOK-3373 site (task-path-probe×2); migrate to the resolver
 shared/lib/condition-reconciler.sh 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
 shared/lib/incident-replay-harness.ts 1  # replay harness writes a synthetic state file in a temp dir
 shared/lib/linear.ts 1  # setIssueState definition (the API client), not a call site
@@ -20,7 +20,7 @@ shared/lib/terminal-reconciler.sh 2  # reconciler-derived Linear move for challe
 shared/lib/transient-marker.sh 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
 shared/lib/wavemill-common.sh 18  # pre-HOK-3373 task-path probes (cleanup classifier, lifecycle) ; migrate in batches
 shared/lib/wavemill-mill.sh 1  # initial empty state-file creation at mill start (no rows yet)
-shared/lib/wavemill-monitor.sh 102  # pre-HOK-3373 task-path probes and launch/PR-open/merge Linear writes; migrate in batches
+shared/lib/wavemill-monitor.sh 97  # pre-HOK-3373 task-path probes and launch/PR-open/merge Linear writes; migrate in batches
 shared/lib/wavemill-startup-runner.sh 4  # initial empty state-file creation + pre-HOK-3373 worktree probes
 shared/lib/wavemill-status.sh 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
 shared/lib/worktree-dirty-status.ts 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver

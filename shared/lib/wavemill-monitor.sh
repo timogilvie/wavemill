@@ -3789,21 +3789,9 @@ mark_eval_completed() {
   fi
 }
 
-mark_eval_failed() {
-  local issue="$1" decision_json="${2:-}"
-  # HOK-3125: guard against recreating a stub entry after reap.
-  if ! task_state_entry_exists "$issue"; then
-    record_post_reap_eval_outcome "$issue" failed "$decision_json"
-    log "debug" "eval failed for reaped task $issue; not recreating state entry"
-    return 0
-  fi
-  if ! task_state_mutate_existing "$issue" \
-     '.evalFailed = true
-      | del(.evalRunning)
-      | .updated = (now | todateiso8601)'; then
-    log_warn "mark_eval_failed: failed to update $issue"
-  fi
-}
+# mark_eval_failed lives in wavemill-common.sh (HOK-3452): the monitor and the
+# mill's pr-closed eval share one eval-failure writer so the decision record is
+# always written alongside `evalFailed`.
 
 # Duplicated intentionally: the pre-heredoc definitions do not enter the
 # generated monitor script, so challenge launchers need local monitor copies.
@@ -10323,26 +10311,6 @@ $issue_desc
 
   log_task "status" "$issue" "Launching review phase for $issue (model: $reviewer_model, mode: $review_mode, operating mode: $operating_mode)"
 
-  # HOK-3184: mirror the review launch as a shadow step row. The step row's
-  # identity is {head, base, prompt_identity}; its retry bucket is the shared
-  # review-infra-recovery bucket. The call is best-effort — a shadow failure
-  # never affects the agent launch.
-  if declare -F wavemill_ledger_step_upsert >/dev/null 2>&1; then
-    local _review_head _review_base _review_prompt_hash _review_state_dir
-    _review_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
-    _review_base="$(git -C "$wt_dir" merge-base HEAD "origin/$base_branch" 2>/dev/null || true)"
-    _review_prompt_hash=""
-    if [[ -r "$prompt_file" ]]; then
-      _review_prompt_hash="$(shasum -a 256 "$prompt_file" 2>/dev/null | awk '{print $1}' || true)"
-    fi
-    _review_state_dir="$wt_dir/features/$slug"
-    wavemill_ledger_step_upsert "$issue" review "$_review_state_dir" "review-infra-recovery" \
-      --head "$_review_head" --base "$_review_base" \
-      --prompt "${_review_prompt_hash:-$(printf 'review@%s' "$reviewer_model")}" \
-      --owner "$reviewer_agent" --next-action "awaiting review verdict" \
-      --max-attempts 2 >/dev/null 2>&1 || true
-  fi
-
   _launch_agent_in_pane "$win" "$reviewer_agent" "$reviewer_model" "$prompt_file" "$slug" "$issue" "review"
   return $?
 }
@@ -14062,21 +14030,6 @@ launch_ready_phase() {
   marker_clear "$state_dir/.needs-attention"
   log "$pending_log_level" "  $issue: Launching ready phase (PR #$pr_number)"
 
-  # HOK-3184: mirror the Ready launch as a shadow step row. The identity is
-  # {head, base, pr, prompt_identity}; the retry bucket is the shared
-  # ready-remediation bucket. The call is best-effort.
-  if declare -F wavemill_ledger_step_upsert >/dev/null 2>&1; then
-    local _ready_head _ready_base _ready_max_attempts
-    _ready_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
-    _ready_base="$(git -C "$wt_dir" merge-base HEAD "origin/$base_branch" 2>/dev/null || true)"
-    _ready_max_attempts=3
-    wavemill_ledger_step_upsert "$issue" ready "$state_dir" "ready-remediation" \
-      --head "$_ready_head" --base "$_ready_base" --pr "$pr_number" \
-      --prompt "ready@${current_agent:-mill}" \
-      --owner "$current_agent" --next-action "awaiting Ready verdict" \
-      --max-attempts "$_ready_max_attempts" >/dev/null 2>&1 || true
-  fi
-
   # HOK-3112: Ready checks the checkout and publishes the Tend handoff at the
   # head it checked, so the checkout must be the PR's GitHub head first. Tend
   # rebases in its own scratch worktree and never updates this one; running
@@ -15247,7 +15200,7 @@ poll_tracked_jobs() {
     # relaunch budget and any escalation are owned by the challenge-eval-hard
     # bucket inside maybe_run_challenge_eval.
     if [[ "$kind" == "eval" && "$status" != "succeeded" && -n "$issue_id" ]]; then
-      local pr_num job_exit_code issue_slug feature_dir decision_json
+      local pr_num job_exit_code decision_json
       local decision_class decision_kind decision_attribution decision_next_action
       pr_num=$(echo "$job_json" | jq -r '.prNumbers[0] // empty')
       job_exit_code=$(echo "$job_json" | jq -r '.exitCode // empty')
@@ -15262,19 +15215,17 @@ poll_tracked_jobs() {
         continue
       fi
       # evalFailed projection (job-tracker mark-settled), then one policy
-      # disposition cached for the relaunch site and operators.
+      # disposition. HOK-3452: mark_eval_failed is the single writer — it sets
+      # evalFailed and records the decision as a condition-keyed marker
+      # (worktree head + the job's runId). A record from an earlier head/run
+      # can never be acted on later.
       settle_tracked_job "$job_id"
       decision_json="$(eval_failure_disposition "$issue_id" "$reason" "$job_exit_code" "$excerpt" true)"
       decision_class=$(jq -r '.class // "retryable"' <<<"$decision_json")
       decision_kind=$(jq -r '.failureKind // "native-unclassified"' <<<"$decision_json")
       decision_attribution=$(jq -r '.attribution // "unattributed"' <<<"$decision_json")
       decision_next_action=$(jq -r '.nextAction // ""' <<<"$decision_json")
-      issue_slug=$(pass_task_field "$issue_id" slug)
-      if [[ -n "$issue_slug" && -n "${WORKTREE_ROOT:-}" ]]; then
-        feature_dir="${WORKTREE_ROOT}/${issue_slug}/features/${issue_slug}"
-        mkdir -p "$feature_dir" 2>/dev/null || true
-        printf '%s\n' "$decision_json" > "$feature_dir/.eval-failure-decision.json" 2>/dev/null || true
-      fi
+      mark_eval_failed "$issue_id" "$decision_json" "$job_run_id"
       log_warn "challenge eval failed for $issue_id (kind=$decision_kind class=$decision_class attribution=$decision_attribution; log: $log_path)${decision_next_action:+; next: $decision_next_action}"
       if [[ -n "$excerpt" ]]; then
         while IFS= read -r line; do
@@ -15567,24 +15518,26 @@ maybe_run_challenge_eval() {
   fi
   eval_failed=$(read_state_value "false" --arg i "$issue" '.tasks[$i].evalFailed // false')
   if [[ "$eval_failed" == "true" ]]; then
-    # HOK-3255: one eval-failure budget. The poll settles every failed eval
-    # job through eval_failure_disposition and caches the decision in
-    # .eval-failure-decision.json; this site consumes it. Only an allowlisted
-    # terminal decision stops the relaunch — every retryable/unattributed
-    # decision (timeouts included) goes through the existing
-    # challenge-eval-hard bounded-retry bucket (HOK-2924), whose default
-    # backoff applies (the old forced 0s base is gone). The
+    # HOK-3255/HOK-3452: one eval-failure budget. The poll settles every failed
+    # eval job through eval_failure_disposition and records the decision as a
+    # condition-keyed marker; this site consumes it only while the marker's
+    # head and runId still describe the current attempt. A decision from an
+    # earlier head or run is not returned, so the failure is classified on its
+    # own evidence (retryable by default) instead of aborting the pair. Only an
+    # allowlisted terminal decision stops the relaunch — every
+    # retryable/unattributed decision (timeouts included) goes through the
+    # existing challenge-eval-hard bounded-retry bucket (HOK-2924), whose
+    # default backoff applies (the old forced 0s base is gone). The
     # evalHardFailureRetryCount state field is a projection written FROM the
     # bucket; it is never read back into the budget. Exhaustion escalates to
     # the existing manual-comparison state — no pair resolution, no
     # comparison record, no forfeit.
     local hard_retry_state_dir hard_retry_head
-    local decision_path decision_json decision_class decision_kind decision_next_action
+    local decision_json decision_class decision_kind decision_next_action
     hard_retry_state_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
-    decision_path="$hard_retry_state_dir/.eval-failure-decision.json"
-    decision_json=""
-    if [[ -f "$decision_path" ]]; then
-      decision_json=$(cat "$decision_path" 2>/dev/null || echo "")
+    decision_json="$(eval_failure_decision_current "$issue" "$hard_retry_state_dir" "${WORKTREE_ROOT}/${slug}")"
+    decision_class="retryable"
+    if [[ -n "$decision_json" ]]; then
       decision_class=$(jq -r '.class // "retryable"' <<<"$decision_json" 2>/dev/null || echo "retryable")
     fi
     hard_retry_head=$(git -C "${WORKTREE_ROOT}/${slug}" rev-parse HEAD 2>/dev/null || echo "")
@@ -15702,24 +15655,6 @@ maybe_run_challenge_eval() {
   if ! mark_challenge_eval_running "$issue" "$side" "$pr" "eval" >/dev/null; then
     log_warn "challenge eval launch skipped for $issue: failed to persist running state"
     return 1
-  fi
-
-  # HOK-3184: mirror the eval launch as a shadow step row. The bucket name
-  # mirrors the pair/side so the retry sentinel is attributed to this arm.
-  # HOK-3255: it mirrors the one bounded-retry budget that owns all eval
-  # failures (challenge-eval-hard); the retired challenge-eval-soft ceiling
-  # no longer feeds this shadow call.
-  if declare -F wavemill_ledger_step_upsert >/dev/null 2>&1; then
-    local _eval_head _eval_state_dir _eval_bucket _eval_max_attempts
-    _eval_head="$(git -C "${WORKTREE_ROOT}/${slug}" rev-parse HEAD 2>/dev/null || true)"
-    _eval_state_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
-    _eval_bucket="challenge-eval-hard-${pair_id}-${side}"
-    _eval_max_attempts=$(challenge_eval_hard_failure_max_retries)
-    wavemill_ledger_step_upsert "$issue" eval "$_eval_state_dir" "$_eval_bucket" \
-      --head "$_eval_head" --pr "$pr" --pair "$pair_id" --side "$side" \
-      --prompt "run-eval-hook@${challenge_stage:-eval}" \
-      --owner "$eval_agent" --next-action "awaiting eval verdict" \
-      --max-attempts "$_eval_max_attempts" >/dev/null 2>&1 || true
   fi
 
   wavemill_run_tool "run-eval-hook.ts" \
@@ -16614,50 +16549,6 @@ monitor_terminal_cleanup_tick() {
   return 0
 }
 
-# ─── Side-effect duplicate detector (HOK-3183) ─────────────────────────────
-#
-# Ledger D Phase 1: every push / PR label / Linear transition / PR merge
-# shadow-writes a side_effect row. On a slow cadence the monitor runs
-# `tools/ledger-detect-duplicates.ts`, which logs each key applied twice and
-# each mill label write with no row as a `[side-effect-duplicate]` warn line
-# in the mill log. Detection only — it never changes a decision.
-# Kill switch: WAVEMILL_SIDE_EFFECT_DETECTOR_DISABLED=1 (or the ledger-wide
-# WAVEMILL_LEDGER_SHADOW_DISABLED=1).
-monitor_side_effect_detector_interval() {
-  local value="${SIDE_EFFECT_DETECTOR_INTERVAL_SECONDS:-300}"
-  [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]] || value=300
-  printf '%s\n' "$value"
-}
-
-monitor_side_effect_detector_tick() {
-  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
-  [[ "${WAVEMILL_SIDE_EFFECT_DETECTOR_DISABLED:-0}" == "1" ]] && return 0
-  [[ "${WAVEMILL_LEDGER_SHADOW_DISABLED:-0}" == "1" ]] && return 0
-  [[ -n "${STATE_DIR:-}" && -n "${REPO_DIR:-}" ]] || return 0
-  declare -F wavemill_run_tool >/dev/null 2>&1 || return 0
-
-  local interval last_at now stamp_file="$STATE_DIR/.side-effect-detector-last-at"
-  interval="$(monitor_side_effect_detector_interval)"
-  now="$(date +%s)"
-  if [[ -f "$stamp_file" ]]; then
-    last_at="$(cat "$stamp_file" 2>/dev/null || echo 0)"
-    [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
-    (( now - last_at < interval )) && return 0
-  fi
-  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
-  _monitor_terminal_cleanup_write "$stamp_file" "$now"
-
-  local log_file="${MILL_LOG_FILE:-/dev/null}"
-  # Background so a slow ledger open never stalls the monitor pass.
-  (
-    wavemill_run_tool ledger-detect-duplicates.ts --repo-dir "$REPO_DIR" --since 30m \
-      >>"$log_file" 2>&1 || true
-  ) >/dev/null 2>&1 &
-  disown 2>/dev/null || true
-  return 0
-}
-
-# ─── Ledger F recovery loop (HOK-3185) ──────────────────────────────────────
 # ─── Stale node_modules detector (HOK-3254) ─────────────────────────────────
 #
 # A slow-cadence check on REPO_DIR. Loads the HOK-3254 drift primitive from
@@ -24211,10 +24102,6 @@ while :; do
     reconcile_condition_markers_tick || true
   fi
   monitor_step_end conditionReconcile
-  # HOK-3183: report duplicate / unrecorded side effects (detection only).
-  monitor_step_begin sideEffectDuplicateDetector
-  monitor_side_effect_detector_tick || true
-  monitor_step_end sideEffectDuplicateDetector
   # HOK-3254: slow-cadence stale node_modules detector + auto-fix.
   monitor_step_begin depsDrift
   monitor_deps_drift_tick || true

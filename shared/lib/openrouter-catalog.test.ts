@@ -435,6 +435,43 @@ describe('OpenRouter alias mapping', () => {
   });
 });
 
+describe('bare provider model names', () => {
+  it('resolves a provider model name without its provider prefix to the same identity', () => {
+    // Hokusai's router returns `qwen3-coder` for the candidate sent as `qwen-3-coder`.
+    const bare = resolveOpenRouterModelIdentity('qwen3-coder');
+    assert.equal(bare?.wavemillAlias, 'qwen-3-coder');
+    assert.equal(bare?.openrouterId, 'qwen/qwen3-coder');
+    assert.equal(resolveWavemillAliasFromOpenRouterId('qwen3-coder'), 'qwen-3-coder');
+    assert.equal(resolveWavemillAliasFromOpenRouterId('qwen3-235b-a22b-2507'), 'qwen-3-235b');
+  });
+
+  it('leaves aliases, full ids and unknown names resolving as before', () => {
+    assert.equal(resolveWavemillAliasFromOpenRouterId('qwen-3-coder'), 'qwen-3-coder');
+    assert.equal(resolveWavemillAliasFromOpenRouterId('qwen/qwen3-coder'), 'qwen-3-coder');
+    assert.equal(resolveWavemillAliasFromOpenRouterId('qwen3-coder-does-not-exist'), null);
+    assert.equal(resolveWavemillAliasFromOpenRouterId('other/qwen3-coder'), null);
+  });
+
+  it('does not resolve a bare name that two providers serve', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'openrouter-catalog-bare-'));
+    try {
+      const fixture = join(dir, 'launch-priority.json');
+      const row = loadLaunchPriorityFixture(defaultLaunchPriorityFixturePath()).models
+        .find((model) => model.wavemillAlias === 'qwen-3-coder')!;
+      writeFileSync(fixture, JSON.stringify({
+        models: [
+          { ...row, wavemillAlias: 'shared-a', openrouterId: 'provider-a/shared-model' },
+          { ...row, wavemillAlias: 'shared-b', openrouterId: 'provider-b/shared-model' },
+        ],
+      }));
+      assert.equal(resolveOpenRouterModelIdentity('shared-model', fixture), null);
+      assert.equal(resolveOpenRouterModelIdentity('provider-a/shared-model', fixture)?.wavemillAlias, 'shared-a');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('resolveWavemillAliasFromOpenRouterId', () => {
   it('maps OpenRouter ids back to Wavemill aliases', () => {
     assert.equal(resolveWavemillAliasFromOpenRouterId('openai/gpt-5.5'), 'gpt-5.5');

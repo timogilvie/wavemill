@@ -4,6 +4,5 @@
 # publishStageHead, and new freshness checks through change-identity.ts.
 shared/lib/permission-patterns.ts 2  # 'git push*' and 'gh pr create*' are permission-pattern string literals, not a publication or a PR open
 shared/lib/promotion-controller.ts 1  # integration/promotion branches have no task state dir; task branches route through publishStageHead (headMoveContext)
-shared/lib/side-effect-ledger-guard.ts 2  # the HOK-3183 guard's own descriptions name the shape
 shared/lib/stale-task-branches.ts 1  # error-message string for a branch *deletion*, not a head move
 shared/lib/tend-controller.ts 1  # tend keeps its force-with-lease rebase push (HOK-3105 rebind); the head-move row is recorded beside its ledger record

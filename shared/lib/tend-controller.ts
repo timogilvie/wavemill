@@ -31,7 +31,6 @@ import { appendHeadMove } from './head-move-record.ts';
 import { millClockNowMs, millClockSleep } from './mill-clock.ts';
 import { readChallengeComparisons } from './challenge-comparison.ts';
 import { getPullRequest, removeLabelFromPullRequest } from './github.ts';
-import { gitPushKey, prMergeKey, shadowRecordSideEffect } from './side-effect-ledger.ts';
 import { postMergeStatusComment } from './merge-status-comment.ts';
 import { normalizeTendAttemptPhase, writeTendAttemptFact } from './tend-attempt-fact.ts';
 import { getIssueCompletionState } from './linear.ts';
@@ -1100,22 +1099,13 @@ export async function executeMerge(
             phase: 'merge',
             worktreePath,
           });
-          const mergeOutcome = await mergeWithTransientRetry(
+          await mergeWithTransientRetry(
             candidate.number,
             integrationConfig.mergeMethod,
             integrationConfig.requiredChecks,
             options.repoDir,
             deps,
           );
-          // HOK-3183 shadow: one pr-merge row per (PR, merged head). An
-          // already-merged exit is an observation, not a second merge.
-          shadowRecordSideEffect({
-            kind: 'pr-merge',
-            idempotencyKey: prMergeKey(candidate.number, pushedHeadSha ?? candidate.headSha ?? ''),
-            result: { outcome: mergeOutcome, source: 'tend-merge' },
-            observation: mergeOutcome === 'already-merged',
-            repoDir: options.repoDir,
-          });
         } catch (error) {
           const recovery = await attemptStrictBaseRecovery({
             candidate,
@@ -2219,14 +2209,7 @@ async function rebaseAndPush(
     `git push --force-with-lease=${escapeShellArg(prBranch)}:${escapeShellArg(prBranchSha)} origin HEAD:${escapeShellArg(prBranch)} 2>&1`,
     { encoding: 'utf-8', cwd: worktreePath, timeout: GIT_MUTATION_TIMEOUT_MS },
   )));
-  // HOK-3183 shadow: one git-push row per (remote, ref, oid).
-  shadowRecordSideEffect({
-    kind: 'git-push',
-    idempotencyKey: gitPushKey('origin', prBranch, rebasedHeadSha),
-    result: { outcome: 'pushed', source: 'tend-rebase' },
-    cwd: worktreePath,
-  });
-  // HOK-3370: one head-move row per rebase push, beside the ledger record.
+  // HOK-3370: one head-move row per rebase push.
   // Best-effort — the push already happened; a failed append must not fail
   // the merge attempt.
   if (hooks.headMoveRecord?.stateDir) {

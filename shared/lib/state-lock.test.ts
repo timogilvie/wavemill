@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
-import { acquireStateLockSync, isOwnerReclaimable, reclaimLegacyStateLock, releaseStateLock, StateLockTimeoutError } from './state-lock.ts';
+import { acquireStateLock, acquireStateLockSync, isOwnerReclaimable, reclaimLegacyStateLock, releaseStateLock, StateLockTimeoutError } from './state-lock.ts';
 import { processAlive, processStartTime } from './process-identity.ts';
 
 const dirs: string[] = [];
@@ -33,4 +33,23 @@ describe('state-lock', () => {
   });
   // protects: release only removes a lock still owned by this process identity.
   it('holds and releases an owned lock', () => { const state = join(temp(), 'state.json'); const lock = acquireStateLockSync(state, { timeoutMs: 0 }); releaseStateLock(lock); });
+  it('gives concurrent claimants exactly one current owner', async () => {
+    const state = join(temp(), 'state.json');
+    const attempts = await Promise.allSettled(Array.from({ length: 8 }, () => acquireStateLock(state, { timeoutMs: 25, purpose: 'concurrent-claim' })));
+    const winners = attempts.filter((attempt) => attempt.status === 'fulfilled');
+    assert.equal(winners.length, 1);
+    const winner = attempts.find((attempt) => attempt.status === 'fulfilled');
+    assert.ok(winner && winner.status === 'fulfilled');
+    releaseStateLock(winner.value);
+  });
+  it('does not reclaim an old lock while its stamped owner remains live', () => {
+    const state = join(temp(), 'state.json');
+    const owner = acquireStateLockSync(state, { timeoutMs: 0, purpose: 'slow-owner' });
+    const ownerPath = join(owner.lockPath, 'owner.json');
+    const old = JSON.parse(readFileSync(ownerPath, 'utf8')) as Record<string, string>;
+    old.acquiredAt = '2000-01-01T00:00:00.000Z';
+    writeFileSync(ownerPath, `${JSON.stringify(old)}\n`);
+    assert.throws(() => acquireStateLockSync(state, { timeoutMs: 20, purpose: 'replacement' }), StateLockTimeoutError);
+    releaseStateLock(owner);
+  });
 });

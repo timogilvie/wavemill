@@ -46,16 +46,14 @@ that date to be retired.
 
 | Shadow | Switch(es) | Owner issue | Added | Removal criterion | Removal issue | Remove by |
 |---|---|---|---|---|---|---|
-| `WAVEMILL_LEDGER_SHADOW_DISABLED`, `WAVEMILL_SIDE_EFFECT_DETECTOR_DISABLED`, `WAVEMILL_LEDGER_SHADOW_DEBUG` | These three switches control the same ledger shadow | HOK-3183 | 2026-10-20 | Ledger side-effect / step / pair rows settle for 7 days with no duplicates recorded. Flip the gate per design §4b and delete the shadow writers. | HOK-3274 | 2026-12-19 (extended from 2026-11-19, HOK-3274: flip, delete or split waits on the semantics decision and the HOK-3277 retarget) |
 | `WAVEMILL_HARNESS_RETENTION_SHADOW` | `WAVEMILL_HARNESS_RETENTION_SHADOW` | HOK-3235 | 2026-10-20 | Retention mode decided; shadow comparator deleted along with its sidecar artifact. | HOK-3276 | 2026-11-19 |
-| `WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE` | `WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE` | HOK-3187 | 2026-10-20 | Confirm renderer parity and retire the opt-in when ledger authority is live. | HOK-3275 | 2026-12-19 (extended from 2026-11-19, HOK-3275: renderer fate follows the HOK-3274 ledger decision) |
 | `WAVEMILL_TASK_RECORD_WRITE_VALIDATE_SHADOW` | `WAVEMILL_TASK_RECORD_WRITE_VALIDATE_SHADOW` (default `1` = shadow-log task-record write violations; `0` = operator kill switch, skip write validation) | HOK-3222 | 2026-10-31 | 7 days of mill traffic with no new lines in `.wavemill/state-schema-violations.jsonl`; then `state_mutate` / `mutateJsonState` refuse violating writes and the flag, shadow log and ignore entry are deleted. | HOK-3454 | 2026-11-30 |
 
 ## Kill switches, rollbacks, skips and legacy paths
 
 | Flag | Default | Purpose | Owner issue | Added | Removal criterion | Removal issue | Remove by |
 |---|---|---|---|---|---|---|---|
-| `WAVEMILL_DISABLE_SCHEMA_STAMP` | 0 | Debug: skip the ledger schema stamp. | HOK-3183 | 2026-10-20 | Delete alongside the ledger shadow writers. | HOK-3274 | 2026-12-19 (extended from 2026-11-19, HOK-3274: deleted alongside the ledger shadow, which was extended) |
+| `WAVEMILL_DISABLE_SCHEMA_STAMP` | 0 | Debug: force full schema validation, skipping the HOK-3205 Ajv validation-stamp cache (`shared/lib/schema-validators.ts`). Unrelated to the retired ledger, despite the historical HOK-3183 attribution. | HOK-3205 | 2026-10-20 | Remove when the validation-stamp cache is made unconditional. | HOK-3205 | 2026-12-19 (extended from 2026-11-19, HOK-3205: decoupled from the HOK-3274 ledger retirement; the stamp cache is still live) |
 | `WAVEMILL_OBSERVER_LINEAR_ENABLED` | 0 | Legacy env override for `observer.linear.enabled`. HOK-2846 landed the Linear writer and HOK-3243 moved filing to shadow mode: operators now set `observer.linear.mode: shadow` in `.wavemill-config.local.json` instead. | HOK-3243 | 2026-10-20 | Shadow trial clean for a release cycle and no operator uses the env override. | HOK-3278 | 2026-11-19 |
 | `WAVEMILL_SETTLEMENT_GATE_SHADOW` | 0 | `1` keeps the HOK-3373 settlement gate log-only: control writes against a settled or non-current run are still recorded in `.wavemill/mutator-rejections.jsonl` (and so I9) but are applied instead of reverted. | HOK-3373 | 2026-11-01 | 14 days of enforce mode with no I9 finding that names a legitimate writer; then delete the flag and the shadow branch in `task-settlement.ts`. | HOK-3373 | 2026-11-30 |
 
@@ -103,6 +101,27 @@ are listed here for historical traceability. The guard rejects any new use.
   retired. The harness now always runs through `runWithRecoveryLoop`.
 - `router.rubricAware.mode = "shadow"` — the dormant shadow tier of the
   rubric-aware router. Only `off` and `on` remain.
+
+## Retired in HOK-3274
+
+The mill task ledger shadow (side-effect, step and pair rows) had no live
+consumer and was deleted rather than flipped to authoritative (see
+`docs/mill-task-ledger-design.md` §8). The shadow writers, the SQLite core, the
+opt-in `workflow-state.json` renderer (HOK-3275, absorbed here), the duplicate
+detector and the consistency check went with it. `tools/check-side-effect-ledger.ts`
+is gone, so the guard no longer exists to reject new use; the tokens are listed
+here for historical traceability. Monitoring moved to the HOK-3229 live-state
+invariants I9 (refused control writes) and I10 (settled non-convergence).
+
+- `WAVEMILL_LEDGER_SHADOW_DISABLED` / `WAVEMILL_SIDE_EFFECT_DETECTOR_DISABLED` /
+  `WAVEMILL_LEDGER_SHADOW_DEBUG` — the three switches over the one ledger
+  shadow (side-effect / step / pair rows).
+- `WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE` / `WAVEMILL_LEDGER_SURFACES_SHIM` —
+  the opt-in ledger→`workflow-state.json` renderer and its kill switch
+  (HOK-3187 / HOK-3275). `workflow-state.json` is authoritative, written only
+  through `state_mutate` / `mutateJsonState`.
+- `WAVEMILL_LEDGER_STEP_TTL_MINUTES` (and the `WAVEMILL_LEDGER_STEP_TTL_*`
+  prefix) — the per-stage step-row TTL, gone with the step rows.
 
 ## Retired in HOK-3077
 
