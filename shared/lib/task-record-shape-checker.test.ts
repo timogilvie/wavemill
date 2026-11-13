@@ -83,7 +83,12 @@ describe('checkTaskRecordShapes', () => {
       writeFileSync(join(repo, 'shared/lib/bad.test.ts'), 'const tasks: Record<string, unknown> = {};\n');
       writeFileSync(join(repo, 'shared/lib/listed.ts'), 'interface WorkflowState {}\n');
       writeFileSync(join(repo, 'shared/lib/unexplained.ts'), 'interface TaskState {}\n');
-      writeFileSync(join(repo, TASK_RECORD_SHAPE_ALLOWLIST_FILE), 'shared/lib/listed.ts # reason\nshared/lib/unexplained.ts\n');
+      // shared/lib/gone.ts doesn't exist: protects a deleted file's exemption
+      // silently surviving its deletion, with the ratchet on (HOK-3275).
+      writeFileSync(
+        join(repo, TASK_RECORD_SHAPE_ALLOWLIST_FILE),
+        'shared/lib/listed.ts # reason\nshared/lib/unexplained.ts\nshared/lib/gone.ts # reason\n',
+      );
       execFileSync('git', ['add', '.'], { cwd: repo });
 
       const result = checkTaskRecordShapes(repo);
@@ -94,6 +99,7 @@ describe('checkTaskRecordShapes', () => {
           'shared/lib/bad.ts:tasks-record-annotation',
           'shared/lib/unexplained.ts:task-record-type',
           `${TASK_RECORD_SHAPE_ALLOWLIST_FILE}:allowlist-missing-reason`,
+          `${TASK_RECORD_SHAPE_ALLOWLIST_FILE}:allowlist-stale`,
         ].sort(),
       );
 
@@ -101,27 +107,6 @@ describe('checkTaskRecordShapes', () => {
       assert.equal(cli.status, 1);
       assert.match(cli.stderr, /shared\/lib\/bad\.ts:2:3 \[tasks-record-annotation\]/);
       assert.match(cli.stderr, /shared\/lib\/workflow-state\.ts/);
-    } finally {
-      rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  // protects: a deleted file's exemption silently surviving its deletion (HOK-3275)
-  it('flags an allowlist entry whose file no longer exists', () => {
-    const repo = mkdtempSync(join(tmpdir(), 'task-record-shape-'));
-    try {
-      execFileSync('git', ['init', '-q'], { cwd: repo });
-      mkdirSync(join(repo, 'shared', 'lib'), { recursive: true });
-      mkdirSync(join(repo, 'tools'), { recursive: true });
-      writeFileSync(join(repo, TASK_RECORD_SHAPE_ALLOWLIST_FILE), 'shared/lib/gone.ts # reason\n');
-      execFileSync('git', ['add', '.'], { cwd: repo });
-
-      const result = checkTaskRecordShapes(repo);
-      assert.equal(result.ok, false);
-      assert.deepEqual(
-        result.findings.map((finding) => `${finding.file}:${finding.pattern}`),
-        [`${TASK_RECORD_SHAPE_ALLOWLIST_FILE}:allowlist-stale`],
-      );
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

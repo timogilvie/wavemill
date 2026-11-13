@@ -1212,7 +1212,7 @@ export function updateBranchWithBase(
   }
 
   // HOK-3370: a task-branch head move publishes through the one seam so the
-  // move is recorded (`head-move/v1`, kind base-merge) and ledger-shadowed.
+  // move is recorded (`head-move/v1`, kind base-merge).
   if (headMoveContext) {
     const published = publishStageHead({
       worktreeDir: repoDir,
