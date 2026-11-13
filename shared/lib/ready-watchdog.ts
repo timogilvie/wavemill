@@ -492,7 +492,7 @@ const defaultDeps: ReadyWatchdogDeps = {
         maxBuffer: 1024 * 1024,
       });
       // HOK-3370: the mill publishes through the one seam so the conflict
-      // head move is recorded and ledger-shadowed, never a raw push.
+      // head move is recorded, never a raw push.
       const published = publishStageHead({
         worktreeDir: snapshot.worktree,
         branch: snapshot.branch,

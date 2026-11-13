@@ -1036,9 +1036,8 @@ function execExitStatus(error: unknown): number | null {
 /**
  * Head-move context for a task-branch update (HOK-3370). When provided, the
  * post-merge push routes through the one publication seam
- * (`publishStageHead`), which appends a `head-move/v1` row and shadow-records
- * the push. Integration/promotion branches (no task state dir) omit it and
- * keep the direct push.
+ * (`publishStageHead`), which appends a `head-move/v1` row. Integration/promotion
+ * branches (no task state dir) omit it and keep the direct push.
  */
 export interface BranchBaseUpdateHeadMoveContext {
   stateDir: string;
@@ -1213,7 +1212,7 @@ export function updateBranchWithBase(
   }
 
   // HOK-3370: a task-branch head move publishes through the one seam so the
-  // move is recorded (`head-move/v1`, kind base-merge) and ledger-shadowed.
+  // move is recorded (`head-move/v1`, kind base-merge).
   if (headMoveContext) {
     const published = publishStageHead({
       worktreeDir: repoDir,

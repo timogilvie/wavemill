@@ -8,4 +8,3 @@
 #
 # Prefer a one-line `// allow-task-record-shape: <reason>` suppression over a
 # whole-file entry whenever only a line or two is involved.
-shared/lib/view-workflow-state.ts  # Ledger H render view (RenderedWorkflowState, HOK-3187): a projection keyed off settledAs, deliberately separate from the writer shape

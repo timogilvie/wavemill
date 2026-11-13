@@ -154,7 +154,7 @@ export async function setTaskIssuesState(
   opts: Omit<LinearWriteGateOptions, 'meta'> & {
     setIssuesStateImpl?: typeof setIssuesState;
     log?: Pick<Console, 'error'>;
-    /** Trigger attribution forwarded to the side-effect ledger (HOK-3183). */
+    /** Trigger attribution, informational (see `LinearTransitionOptions`). */
     transition?: LinearTransitionOptions;
   } = {},
 ): Promise<GatedBatchResult> {

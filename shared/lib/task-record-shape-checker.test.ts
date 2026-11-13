@@ -83,7 +83,12 @@ describe('checkTaskRecordShapes', () => {
       writeFileSync(join(repo, 'shared/lib/bad.test.ts'), 'const tasks: Record<string, unknown> = {};\n');
       writeFileSync(join(repo, 'shared/lib/listed.ts'), 'interface WorkflowState {}\n');
       writeFileSync(join(repo, 'shared/lib/unexplained.ts'), 'interface TaskState {}\n');
-      writeFileSync(join(repo, TASK_RECORD_SHAPE_ALLOWLIST_FILE), 'shared/lib/listed.ts # reason\nshared/lib/unexplained.ts\n');
+      // shared/lib/gone.ts doesn't exist: protects a deleted file's exemption
+      // silently surviving its deletion, with the ratchet on (HOK-3275).
+      writeFileSync(
+        join(repo, TASK_RECORD_SHAPE_ALLOWLIST_FILE),
+        'shared/lib/listed.ts # reason\nshared/lib/unexplained.ts\nshared/lib/gone.ts # reason\n',
+      );
       execFileSync('git', ['add', '.'], { cwd: repo });
 
       const result = checkTaskRecordShapes(repo);
@@ -94,6 +99,7 @@ describe('checkTaskRecordShapes', () => {
           'shared/lib/bad.ts:tasks-record-annotation',
           'shared/lib/unexplained.ts:task-record-type',
           `${TASK_RECORD_SHAPE_ALLOWLIST_FILE}:allowlist-missing-reason`,
+          `${TASK_RECORD_SHAPE_ALLOWLIST_FILE}:allowlist-stale`,
         ].sort(),
       );
 
