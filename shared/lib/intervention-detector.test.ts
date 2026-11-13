@@ -482,6 +482,24 @@ describe('intervention-detector', () => {
       }
     });
 
+    it('reads redirects from a main-repo provider home after worktree removal', () => {
+      const { tmpHome: repoDir, worktreePath, cleanup } = setupSessionDir();
+      try {
+        const projects = join(repoDir, '.wavemill', 'runs', 'run', 'providers', 'deepseek', 'home', '.claude', 'projects', encodeProjectDir(worktreePath));
+        mkdirSync(projects, { recursive: true });
+        const branch = 'task/reaped';
+        writeFileSync(join(projects, 'provider.jsonl'), [
+          userEntry({ branch, content: 'You are working on: Reaped task (HOK-100)' }),
+          assistantEntry({ branch }),
+          userEntry({ branch, content: 'Please repair the failing test before continuing' }),
+        ].join('\n'));
+        const result = detectSessionRedirects(worktreePath, branch, undefined, repoDir);
+        assert.equal(result.transcriptsRead, true);
+        assert.equal(result.count, 1);
+        assert.match(result.details[0], /repair the failing test/);
+      } finally { cleanup(); }
+    });
+
     it('handles empty session files gracefully', () => {
       const { worktreePath, projectsDir, cleanup } = setupSessionDir();
       try {

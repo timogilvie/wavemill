@@ -60,5 +60,8 @@ journey_assert "the happy path creates no retired duplicate audit" \
 journey_assert "post-merge eval completed without operator attention" \
   test "$JOURNEY_SAW_ATTENTION" = "0"
 journey_assert_session_ownership "$ISSUE" planning coding review helper:json-code-review
+# HOK-3474: replay a repo-scoped provider home after reap. Every consumer must
+# recover the same owned coding evidence even though its cwd no longer exists.
+node --import tsx "$JOURNEY_INSTALL_DIR/tests/journeys/fixtures/happy-path/provider-transcript-replay.ts" "$REPO_DIR" "$ISSUE"
 
 journey_finish

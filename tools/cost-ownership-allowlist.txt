@@ -17,7 +17,7 @@
 
 # ── @hokusai/costs adapter (HOK-3328): Wavemill supplies rates and transcript locations, never prices ──
 shared/lib/sdk-task-cost/price-overrides.ts 1  # measurement: reshapes the registry rate table into @hokusai/costs priceOverrides (rates only, no arithmetic)
-shared/lib/sdk-task-cost/meter.ts 2  # measurement: takes the caller's rate table; locates Claude transcript dirs for owned session ids
+shared/lib/sdk-task-cost/meter.ts 1  # measurement: takes the caller's rate table; session discovery uses the shared adapter
 shared/lib/sdk-task-cost/fixtures.ts 1  # measurement: task-cost fixture loader (PricingTable type)
 shared/lib/workflow-cost.ts 1  # schema: persisted WorkflowCostResult names ModelPricing / ModelTokenUsage
 
