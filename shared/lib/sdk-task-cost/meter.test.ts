@@ -18,6 +18,7 @@ import {
   type SessionOwnershipRow,
 } from '../session-ownership.ts';
 import { meterWorkflowCost } from './meter.ts';
+import { encodeProjectDir } from '../wavemill-session-paths.ts';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -82,6 +83,21 @@ function hok3237(claudeDir: string): SessionOwnershipRow[] {
 }
 
 describe('meterWorkflowCost over owned sessions (HOK-3328)', () => {
+  it('meters an owned transcript in the repo provider home after the worktree is gone', async () => {
+    const repoDir = tempDir();
+    const worktreePath = join(repoDir, 'worktrees', 'reaped');
+    const projects = join(repoDir, '.wavemill', 'runs', 'run', 'providers', 'deepseek', 'home', '.claude', 'projects', encodeProjectDir(worktreePath));
+    writeClaudeSession(projects, 'owned-provider', 10_000);
+    writeClaudeSession(projects, 'unowned-provider', 900_000);
+    const metered = await meterWorkflowCost({
+      repoDir, worktreePath, branchName: 'task/reaped', issueId: 'HOK-1',
+      ownership: [{ ...row('owned-provider', 'claude-code', 'coding', 'coding'), cwd: worktreePath }],
+      pricingTable: PRICING, label: 'test', now: NOW, logger: silent,
+    });
+    assert.equal(metered.outcome.status, 'success');
+    assert.equal(metered.outcome.status === 'success' && metered.outcome.totalCostUsd, 0.75);
+    assert.equal(metered.outcome.status === 'success' && metered.outcome.byKind?.coding, 0.75);
+  });
   // protects: the HOK-3237 incident — workflowCost recorded $4.93 (native only) instead of $48.64
   it('HOK-3237 replay: workflowCost is the cross-harness @hokusai/costs total', async () => {
     const claudeDir = tempDir();

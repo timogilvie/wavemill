@@ -110,4 +110,48 @@ describe('resolveProjectsDirs', () => {
       rmSync(base, { recursive: true, force: true });
     }
   });
+  it('finds repo-scoped provider transcripts after reap without including a sibling project', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'session-paths-reaped-'));
+    try {
+      const worktree = join(repo, 'worktrees', 'gone');
+      const projects = join(repo, '.wavemill', 'runs', 'run', 'providers', 'deepseek', 'home', '.claude', 'projects');
+      const expected = join(projects, encodeProjectDir(worktree));
+      mkdirSync(expected, { recursive: true });
+      mkdirSync(join(projects, encodeProjectDir(`${worktree}-challenger`)), { recursive: true });
+      assert.deepEqual(resolveProjectsDirs(worktree, repo), [resolveProjectsDir(worktree), expected]);
+      assert.deepEqual(resolveProjectsDirs(repo, repo), [resolveProjectsDir(repo)]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('does not let an unreadable worktree runs path hide the repo provider home', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'session-paths-unreadable-'));
+    try {
+      const worktree = join(repo, 'worktree');
+      mkdirSync(join(worktree, '.wavemill'), { recursive: true });
+      writeFileSync(join(worktree, '.wavemill', 'runs'), 'not a directory');
+      const expected = join(repo, '.wavemill', 'runs', 'run', 'providers', 'deepseek', 'home', '.claude', 'projects', encodeProjectDir(worktree));
+      mkdirSync(expected, { recursive: true });
+      assert.deepEqual(resolveProjectsDirs(worktree, repo), [resolveProjectsDir(worktree), expected]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers an explicit repository root to an inferred checkout', () => {
+    const base = mkdtempSync(join(tmpdir(), 'session-paths-explicit-'));
+    try {
+      const worktree = join(base, 'elsewhere', 'task');
+      const repo = join(base, 'explicit-repo');
+      mkdirSync(worktree, { recursive: true });
+      writeFileSync(join(worktree, '.git'), `gitdir: ${join(base, 'repo', '.git', 'worktrees', 'task')}\n`);
+      mainCheckoutWithDeepSeekRun(base, worktree);
+      const expected = join(repo, '.wavemill', 'runs', 'run', 'providers', 'deepseek', 'home', '.claude', 'projects', encodeProjectDir(worktree));
+      mkdirSync(expected, { recursive: true });
+      assert.deepEqual(resolveProjectsDirs(worktree, repo), [resolveProjectsDir(worktree), expected]);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
 });

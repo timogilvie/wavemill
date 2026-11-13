@@ -37,7 +37,7 @@ import {
   type ExactPricingOptions,
 } from '../pricing/openrouter-exact-pricing.ts';
 import type { PricingTable } from '../pricing/model-pricing.ts';
-import { NativeSessionAdapter, type NativeSessionUsageRecord } from '../session-adapters.ts';
+import { NativeSessionAdapter, resolveClaudeProjectsDirsFor, type NativeSessionUsageRecord } from '../session-adapters.ts';
 import {
   appendSessionRefResolution,
   exactRows,
@@ -47,7 +47,6 @@ import {
   type ExecutionStage,
   type SessionOwnershipRow,
 } from '../session-ownership.ts';
-import { resolveProjectsDirs } from '../wavemill-session-paths.ts';
 import type { WorkflowCostFailure, WorkflowCostOutcome } from '../workflow-cost.ts';
 import type { TaskCostSummaryV1 } from './contract.ts';
 import type { MeasureOwnedSessionsInput } from './measure.ts';
@@ -132,12 +131,6 @@ const defaultLoadMeasure = async (): Promise<MeasureModule & PriceOverrideModule
   const [measure, overrides] = await Promise.all([import('./measure.ts'), import('./price-overrides.ts')]);
   return { ...measure, ...overrides };
 };
-
-/** Claude Code project dirs for every cwd an owned claude session ran in. */
-function claudeRoots(rows: readonly SessionOwnershipRow[], worktreePath: string): string[] {
-  const cwds = new Set(rows.filter((row) => row.harness === 'claude-code').map((row) => row.cwd || worktreePath));
-  return [...new Set([...cwds].flatMap((cwd) => resolveProjectsDirs(cwd)))];
-}
 
 /**
  * Resolve pending Codex refs from their rollouts and record each resolution
@@ -265,7 +258,9 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
     const startedAt = measured.map((row) => row.launchedAt).sort()[0];
     const base: Omit<MeasureOwnedSessionsInput, 'rows'> = {
       taskId: input.issueId ?? 'unknown-task',
-      claudeRoots: [...(input.roots?.claude ?? claudeRoots(measured, input.worktreePath))],
+      claudeRoots: [...(input.roots?.claude ?? resolveClaudeProjectsDirsFor(
+        measured.filter(row => row.harness === 'claude-code').map(row => row.cwd || input.worktreePath), input.repoDir,
+      ))],
       codexRoots,
       nativeSessions,
       priceOverrides: sdk.buildHostPriceOverrides(input.pricingTable),

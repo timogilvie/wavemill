@@ -232,7 +232,7 @@ export interface ResolveStageExecutedModelInput {
   worktreePath: string;
   /** Git branch for Claude Code / Codex session adapters. */
   branchName: string;
-  /** Repo root used to resolve native session streams. */
+  /** Repo root holding native streams and repo-scoped provider transcript homes. */
   repoDir?: string;
   /** The existing stage result, when the caller already has it. */
   existing?: StageResult | null;
@@ -325,6 +325,7 @@ export function resolveStageExecutedModel(
       stage: input.stage,
       harness,
       worktreePath: input.worktreePath,
+      repoDir: input.repoDir,
     });
     const resolved = resolveExecutedModelFromSessions({
       agent,
@@ -368,6 +369,7 @@ function buildExternalUsageRowsLookup(input: {
   stage: OwnershipStage;
   harness: 'claude-code' | 'codex';
   worktreePath: string;
+  repoDir?: string;
 }): (sessionRef: string) => readonly IngestUsageInput[] {
   const stageRows = rowsForStage(input.ownership, input.stage).filter(
     (row) => row.harness === input.harness,
@@ -376,7 +378,8 @@ function buildExternalUsageRowsLookup(input: {
     return () => [];
   }
 
-  const claudeRoots = input.harness === 'claude-code' ? claudeRootsForRows(stageRows, input.worktreePath) : [];
+  const claudeRoots = input.harness === 'claude-code'
+    ? resolveClaudeProjectsDirsFor(stageRows.map(row => row.cwd || input.worktreePath), input.repoDir) : [];
   const codexRoots = input.harness === 'codex' ? [codexSessionsRoot()] : [];
 
   let result: Map<string, readonly IngestUsageInput[]> | null = null;
@@ -403,11 +406,6 @@ function buildExternalUsageRowsLookup(input: {
     if (!result) result = build();
     return result.get(sessionRef) ?? [];
   };
-}
-
-function claudeRootsForRows(rows: readonly SessionOwnershipRow[], worktreePath: string): string[] {
-  const cwds = new Set(rows.map((row) => row.cwd || worktreePath));
-  return resolveClaudeProjectsDirsFor([...cwds]);
 }
 
 function codexSessionsRoot(): string {

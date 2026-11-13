@@ -88,10 +88,12 @@ function mainCheckoutOf(worktreePath: string): string | null {
  * alone never finds it. The main checkout is found three ways because the
  * worktree is often gone by the time cost is read (post-merge eval): its
  * `.git` pointer while it exists, the `<repo>/worktrees/<slug>` layout, and
- * the mill's own repo-dir environment.
+ * the mill's own repo-dir environment. An explicit repository root takes
+ * precedence over inference and keeps unrelated provider homes out.
  */
-function deepSeekRunRoots(worktreePath: string): string[] {
+function deepSeekRunRoots(worktreePath: string, repoDir?: string): string[] {
   const worktree = resolve(worktreePath);
+  if (repoDir) return [...new Set([worktree, resolve(repoDir)])];
   const roots = [
     worktree,
     mainCheckoutOf(worktree),
@@ -110,11 +112,11 @@ function deepSeekRunRoots(worktreePath: string): string[] {
  * {@link deepSeekRunRoots}. Every candidate is keyed by the worktree's own
  * encoded path, so a wider search cannot pick up another task's sessions.
  */
-export function resolveProjectsDirs(worktreePath: string): string[] {
+export function resolveProjectsDirs(worktreePath: string, repoDir?: string): string[] {
   const encoded = encodeProjectDir(worktreePath);
   const dirs = [resolveProjectsDir(worktreePath)];
 
-  for (const root of deepSeekRunRoots(worktreePath)) {
+  for (const root of deepSeekRunRoots(worktreePath, repoDir)) {
     const runsDir = join(root, '.wavemill', 'runs');
     if (!existsSync(runsDir)) continue;
 

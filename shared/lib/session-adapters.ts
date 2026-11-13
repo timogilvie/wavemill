@@ -26,12 +26,12 @@ import { resolveProjectsDirs } from './wavemill-session-paths.ts';
  * Claude transcript projects dirs for a set of working directories.
  *
  * This is the one session-discovery seam for Claude Code roots: it owns the
- * path primitive so the HOK-3077 cost-ownership guard's "session-path
+ * path primitive (including repo-scoped provider homes) so the HOK-3077 cost-ownership guard's "session-path
  * primitive outside session-discovery sites" check keeps every other module
  * out of `wavemill-session-paths.ts`.
  */
-export function resolveClaudeProjectsDirsFor(cwds: readonly string[]): string[] {
-  return [...new Set(cwds.flatMap((cwd) => resolveProjectsDirs(cwd)))];
+export function resolveClaudeProjectsDirsFor(cwds: readonly string[], repoDir?: string): string[] {
+  return [...new Set(cwds.flatMap((cwd) => resolveProjectsDirs(cwd, repoDir)))];
 }
 
 // ────────────────────────────────────────────────────────────────
