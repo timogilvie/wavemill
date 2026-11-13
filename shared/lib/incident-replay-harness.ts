@@ -7,13 +7,13 @@
  *   - a fault (one of six environmental classes),
  *   - a convergence contract (`mustMerge | mustEscalate`, tick budget).
  *
- * Every fixture is driven through `runWithRecoveryLoop`, which applies the
- * live failure policy (`classifyFailure`) to the stalled step under a bounded
- * retry budget. The fault model (fixture-declared fault data) is the only
- * fixture-specific knowledge; the recovery outcome itself (failure policy,
- * bounded retry, one escalation) is the production ladder. The `decideRecovery`
- * dispatcher and the `--mode=legacy` simulator were retired in HOK-3235 /
- * HOK-3274.
+ * Every fixture is driven through `runWithRecoveryLoop`, whose per-tick
+ * decision is the live task-recovery controller (`decideTaskRecovery`,
+ * HOK-3277) — the one named/versioned policy composing `classifyFailure` and
+ * the bounded-retry verdict. The fault model (fixture-declared fault data) is
+ * the only fixture-specific knowledge; the recovery decision itself is the
+ * production controller. The `decideRecovery` dispatcher and the
+ * `--mode=legacy` simulator were retired in HOK-3235 / HOK-3274.
  *
  * The assertion is simply "converges within the budget" — one of:
  *   - `lifecycle.workflowOutcome ∈ {merged, aborted}` AND evidence file exists;
@@ -33,6 +33,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { classifyFailure, DEFAULT_RETRY_ATTEMPTS, type FailureStage } from './failure-policy.ts';
 import { createStateDirRetry, type StateDirRetry } from './bounded-retry.ts';
+import { decideTaskRecovery } from './task-recovery-controller.ts';
 import { createIncidentDraft, type IncidentLifecycle } from './wavemill-incident-model.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 import { reconcileIncidentCycle } from './incident-reconcile-cycle.ts';
@@ -342,13 +343,19 @@ function writeMerged(ctx: SandboxContext): ConvergenceEvidence {
 }
 
 /**
- * Apply the monitor's live stage-recovery decision to one replay tick. This
- * intentionally does not reimplement a counter: `retry` is the production
- * `bounded-retry.sh` bridge, scoped to the fixture's temporary state dir. A
- * zero backoff keeps a replay tick deterministic while retaining the live
- * attempt and exhaustion semantics.
+ * Apply the live task-recovery controller's decision to one replay tick, then
+ * map it onto the harness's action vocabulary and perform the bounded-retry
+ * side effect the chosen action implies.
+ *
+ * The decision itself is the controller's ({@link decideTaskRecovery}, HOK-3277)
+ * — the single named/versioned policy that composes `classifyFailure` and the
+ * bounded-retry verdict. This function owns only the fixture-specific side of
+ * a replay: the `retry` bridge (the production `bounded-retry.sh`, scoped to the
+ * fixture's temp state dir, zero backoff for determinism) and the translation
+ * to the harness `RecoveryActionKind` the convergence oracle reads. It
+ * reimplements no counter and no ranking of its own.
  */
-function decideLiveStageRecovery(
+function replayRecoveryTick(
   ctx: SandboxContext,
   stage: FailureStage,
   model: FaultModel,
@@ -364,47 +371,63 @@ function decideLiveStageRecovery(
     detail: model.detail ?? '',
   });
   const base = { failureKind: failure.failureKind, nextAction: failure.nextAction };
-  if (failure.class === 'terminal') {
-    return { ...base, action: 'settle-aborted', rationale: failure.rationale };
-  }
-  if (failure.class === 'code-failure') {
-    // Code failures do not have a retry bucket: the live policy hands their
-    // excerpt to remediation, which produces a new head before any retry.
-    return { ...base, action: 'spawn-remediation', rationale: failure.rationale };
-  }
-  const bucket = failure.retryBucket!;
+  // The bounded-retry verdict is a pure read; only the chosen action mutates
+  // the bucket below. The controller ranks terminal / code-failure / retryable
+  // and, within retryable, proceed / backoff / exhausted.
   const replayHead = 'deadbeef';
   const verdict = retry.gate(ctx.featureDir, replayHead);
-  if (verdict === 'proceed') {
-    retry.increment(ctx.featureDir, replayHead);
-    const attempt = retry.count(ctx.featureDir);
-    const fresh = attempt >= DEFAULT_RETRY_ATTEMPTS;
-    return {
-      ...base,
-      action: 'bounded-relaunch',
-      retryBucket: bucket,
-      rationale: `${failure.rationale}; ${fresh ? 'fresh relaunch from row inputs' : 'bounded retry'} ${attempt}/${DEFAULT_RETRY_ATTEMPTS}`,
-    };
+  const decision = decideTaskRecovery({
+    issue: 'replay',
+    stage,
+    attempt: { currentRunId: null, controlRunId: null },
+    disposition: null,
+    stageResult: { kind: 'failed' },
+    contractAvailable: stage === 'coding' ? true : null,
+    outstandingEffect: null,
+    wait: null,
+    failure: { decision: failure, retry: verdict },
+  });
+  const bucket = decision.retryBucket ?? failure.retryBucket ?? `stage-failure-${stage}`;
+
+  switch (decision.action) {
+    case 'escalate':
+      if (decision.escalationBasis?.kind === 'policy-terminal') {
+        return { ...base, action: 'settle-aborted', rationale: decision.rationale };
+      }
+      if (verdict === 'exhausted') {
+        retry.markExhausted(ctx.featureDir, `replay stage failure exhausted: ${stage}:${failure.failureKind}`);
+      }
+      return { ...base, action: 'escalate-waiting-on', retryBucket: bucket, rationale: decision.rationale };
+    case 'remediate':
+      // Code failures carry no retry bucket: the live policy hands their
+      // excerpt to remediation, which produces a new head before any retry.
+      return { ...base, action: 'spawn-remediation', rationale: decision.rationale };
+    case 'retry-stage': {
+      retry.increment(ctx.featureDir, replayHead);
+      const attempt = retry.count(ctx.featureDir);
+      const fresh = attempt >= DEFAULT_RETRY_ATTEMPTS;
+      return {
+        ...base,
+        action: 'bounded-relaunch',
+        retryBucket: bucket,
+        rationale: `${decision.rationale}; ${fresh ? 'fresh relaunch from row inputs' : 'bounded retry'} ${attempt}/${DEFAULT_RETRY_ATTEMPTS}`,
+      };
+    }
+    case 'wait':
+      // The only wait a zero-backoff replay can produce is a backoff hold,
+      // which must not happen with backoff disabled.
+      throw new Error(`replay recovery unexpectedly waited (${decision.rationale})`);
+    default:
+      throw new Error(`replay recovery got a non-dispatchable controller action: ${decision.action}`);
   }
-  if (verdict === 'backoff') {
-    throw new Error('replay bounded retry unexpectedly backed off with zero backoff configured');
-  }
-  if (verdict === 'exhausted') {
-    retry.markExhausted(ctx.featureDir, `replay stage failure exhausted: ${stage}:${failure.failureKind}`);
-  }
-  return {
-    ...base,
-    action: 'escalate-waiting-on',
-    retryBucket: bucket,
-    rationale: `${failure.rationale}; ${bucket} exhausted after ${retry.count(ctx.featureDir)}/${DEFAULT_RETRY_ATTEMPTS} attempts`,
-  };
 }
 
 /**
  * Drive the fixture with the real recovery ladder. Each tick, if the fault has
  * cleared (or the agent is progressing) the task merges, otherwise
- * `decideLiveStageRecovery` chooses: a relaunch spends the live budget and starts a new
- * attempt, an escalation or a terminal settle converges as escalated.
+ * `replayRecoveryTick` runs the controller's `decideTaskRecovery` and maps its
+ * action: a relaunch spends the live budget and starts a new attempt, an
+ * escalation or a terminal settle converges as escalated.
  */
 export function runWithRecoveryLoop(ctx: SandboxContext, fixture: IncidentReplayFixture): RunResult {
   const model = faultModelFromFixture(fixture);
@@ -420,7 +443,7 @@ export function runWithRecoveryLoop(ctx: SandboxContext, fixture: IncidentReplay
     ctx.clock.advance(fixture.convergence.tickIntervalSeconds * 1000);
     const recovered = relaunches > model.survivesRelaunches;
     const progressing = model.progressing === true || recovered;
-    const decision = decideLiveStageRecovery(ctx, stage, model, progressing, retry);
+    const decision = replayRecoveryTick(ctx, stage, model, progressing, retry);
     actions.push(decision.action);
 
     switch (decision.action) {

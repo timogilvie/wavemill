@@ -50,6 +50,13 @@ journey_log "waiting for agent to exit and recovery to launch..."
 coding_relaunched() { [[ "$(journey_agent_launch_count "$ISSUE" coding)" -ge 2 ]]; }
 journey_wait_until "$ISSUE" 20 "coding relaunched after millisecond-timestamp agent exit" coding_relaunched
 
+# The live Monitor recovery path must select and claim one canonical action
+# before dispatching the existing retry executor; the later successful launch
+# must not replace that claim with another notification's evidence.
+RECOVERY_CLAIM="$WORKTREE_ROOT/$(journey_task_field "$ISSUE" slug)/features/$(journey_task_field "$ISSUE" slug)/.recovery-claim.json"
+journey_assert "Monitor claimed exactly one coding recovery action" \
+  jq -e '.claim.action == "retry-stage" and (.claim.runId | type == "string")' "$RECOVERY_CLAIM"
+
 # Once relaunched, the task should complete the workflow normally.
 journey_wait_until "$ISSUE" 8  "review launched"             phase_is review
 journey_wait_until "$ISSUE" 15 "PR merged by tend"           pr_merged
