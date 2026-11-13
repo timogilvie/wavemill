@@ -426,8 +426,15 @@ export function claimRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
         outcome = { claimed: false, reason: 'already-claimed', existing };
         return current;
       }
-      // Either no claim, a claim for a stale run, or a different action/evidence
-      // for the current run — this caller writes the claim for the current run.
+      // Only a newer attempt may supersede an existing claim.  Evidence is a
+      // notification identity, not a new unit of control: accepting a
+      // different evidence id for this same run would let two concurrent
+      // notifiers dispatch two recovery-bearing actions.
+      if (existing && (existing.runId ?? null) === (runId ?? null)) {
+        outcome = { claimed: false, reason: 'already-claimed', existing };
+        return current;
+      }
+      // There is no claim, or the claim belongs to a superseded run.
       const claim: RecoveryClaim = {
         policy: RECOVERY_POLICY_ID,
         action: dec.action,
@@ -486,3 +493,47 @@ export function recordRecoveryAction(
     // best-effort
   }
 }
+
+/**
+ * Shell-callable adapter for Monitor. The monitor provides the authoritative
+ * snapshot it already collected; this module selects, claims, and audits one
+ * action without probing or launching work in the state mutex.
+ */
+function runControllerCli(): void {
+  const flag = (name: string): string | undefined => {
+    const index = process.argv.indexOf(name);
+    return index >= 0 ? process.argv[index + 1] : undefined;
+  };
+  const stateDir = flag('--state-dir');
+  const evidenceId = flag('--evidence-id');
+  const snapshotPath = flag('--snapshot');
+  if (!stateDir || !evidenceId || !snapshotPath) {
+    process.stderr.write('task-recovery-controller: usage: --state-dir DIR --evidence-id ID --snapshot FILE\n');
+    process.exitCode = 2;
+    return;
+  }
+  let snapshot: RecoverySnapshot;
+  try {
+    snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8')) as RecoverySnapshot;
+  } catch (error) {
+    process.stderr.write(`task-recovery-controller: cannot read snapshot: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const selected = decideTaskRecovery(snapshot);
+  const claim = claimRecoveryAction({ stateDir, decision: selected, runId: snapshot.attempt.currentRunId, evidenceId });
+  if (claim.claimed) {
+    recordRecoveryAction(stateDir, {
+      at: claim.claim.claimedAt,
+      issue: snapshot.issue,
+      stage: snapshot.stage,
+      action: selected.action,
+      runId: snapshot.attempt.currentRunId,
+      evidenceId,
+      rationale: selected.rationale,
+    });
+  }
+  process.stdout.write(`${JSON.stringify({ decision: selected, claim })}\n`);
+}
+
+if (process.argv[1]?.endsWith('/task-recovery-controller.ts')) runControllerCli();

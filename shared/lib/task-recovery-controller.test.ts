@@ -3,6 +3,7 @@ import test from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
 
 import { classifyFailure, type FailureDecision } from './failure-policy.ts';
 import {
@@ -197,6 +198,29 @@ test('concurrent notifications for the same condition produce exactly one claim'
     assert.ok(persisted);
     assert.equal(persisted?.action, 'retry-stage');
     assert.equal(persisted?.runId, 'HOK-1:9:200');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('distinct notifications cannot replace a current attempt claim', () => {
+  const dir = freshDir();
+  try {
+    // Use the canonical schema fixture builder: this is the task-row run id
+    // the controller controls, rather than an ad-hoc workflow-state shape.
+    const state = buildWorkflowState({ 'HOK-1': { runId: 'HOK-1:9:200' } });
+    const runId = state.tasks['HOK-1']?.runId;
+    assert.equal(runId, 'HOK-1:9:200');
+    const d = decideTaskRecovery(snapshot({
+      attempt: { currentRunId: runId ?? null, controlRunId: runId ?? null },
+      stageResult: { kind: 'failed' },
+      failure: retryableFailure('proceed'),
+    }));
+    const first = claimRecoveryAction({ stateDir: dir, decision: d, runId: runId ?? null, evidenceId: 'monitor-event' });
+    const second = claimRecoveryAction({ stateDir: dir, decision: d, runId: runId ?? null, evidenceId: 'observer-event' });
+    assert.equal(first.claimed, true);
+    assert.equal(second.claimed, false);
+    assert.equal(readRecoveryClaim(dir)?.evidenceId, 'monitor-event');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

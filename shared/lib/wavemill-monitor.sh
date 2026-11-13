@@ -8468,16 +8468,77 @@ maybe_retry_failed_stage() {
   return 0
 }
 
-# HOK-3277: the one failed-stage recovery decision+dispatch for an agent stage.
-# The task-recovery controller's shell adapter: route a failed result through
-# the shared retry seam (maybe_retry_failed_stage, which composes classifyFailure
-# + bounded-retry + the execution-contract replay), and on a declined or
-# exhausted budget quarantine a challenge arm and raise the one needs-user
-# escalation. The planning, coding-publish and review `failed` branches share
-# this single path instead of each re-deriving the same ladder (net deletion).
-# The caller keeps the task active and returns.
+# Build and claim the controller snapshot before the existing stage executor
+# performs any mutation.  The shell remains the adapter for the established
+# bounded-retry and launch contracts; classification and retry verdict are
+# authoritative inputs, while action selection and the one-winner claim live
+# in task-recovery-controller.ts.
+_monitor_claim_failed_stage_action() {
+  local issue="$1" feature_dir="$2" stage="$3"
+  local decision_json head base retry_verdict run_id evidence_id snapshot_file result failure_class contract_available="null"
+  local limit="${WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS:-3}"
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=3
+
+  decision_json="$(stage_failure_decision "$issue" "$feature_dir" "$stage")"
+  failure_class="$(jq -r '.class // "retryable"' <<<"$decision_json" 2>/dev/null || echo retryable)"
+  head="$(phase_launch_head "$feature_dir")"
+  base="$(phase_launch_base "$feature_dir")"
+  retry_verdict="$(bounded_retry_gate "$feature_dir" "stage-failure-$stage" "$head" "$limit" "" "" "$base")"
+  run_id="$(task_run_id "$issue" 2>/dev/null || true)"
+  evidence_id="$(jq -r '.fingerprint // empty' <<<"$decision_json" 2>/dev/null || true)"
+  [[ -n "$evidence_id" ]] || evidence_id="${stage}:${head:-unknown}:${run_id:-legacy}"
+  if [[ "$stage" == "coding" ]]; then
+    if jq -e '.ok == true' <<<"$(recovery_contract_json "$issue" "$feature_dir" coding)" >/dev/null 2>&1; then
+      contract_available=true
+    else
+      contract_available=false
+    fi
+  fi
+
+  snapshot_file="$(mktemp "${TMPDIR:-/tmp}/wavemill-recovery.XXXXXX")" || return 1
+  jq -cn --arg issue "$issue" --arg stage "$stage" --arg runId "$run_id" \
+    --arg evidenceId "$evidence_id" --arg retry "$retry_verdict" --argjson failure "$decision_json" \
+    --argjson contractAvailable "$contract_available" '
+      {issue:$issue, stage:$stage,
+       attempt:{currentRunId:(if $runId == "" then null else $runId end), controlRunId:(if $runId == "" then null else $runId end)},
+       disposition:null, stageResult:{kind:"failed"}, contractAvailable:$contractAvailable,
+       outstandingEffect:null, wait:null, failure:{decision:$failure,retry:$retry}}' >"$snapshot_file" || {
+      rm -f "$snapshot_file"; return 1;
+    }
+  if node --experimental-strip-types --no-warnings -e ';' >/dev/null 2>&1; then
+    result="$(node --experimental-strip-types --no-warnings "$COMMON_LIB_DIR/task-recovery-controller.ts" \
+      --state-dir "$feature_dir" --evidence-id "$evidence_id" --snapshot "$snapshot_file" 2>/dev/null)"
+  else
+    result="$(npx tsx "$COMMON_LIB_DIR/task-recovery-controller.ts" \
+      --state-dir "$feature_dir" --evidence-id "$evidence_id" --snapshot "$snapshot_file" 2>/dev/null)"
+  fi
+  rm -f "$snapshot_file"
+  [[ -n "$result" ]] && jq -e . >/dev/null 2>&1 <<<"$result" || return 1
+  printf '%s\n' "$result"
+}
+
+# HOK-3277: the one failed-stage recovery decision+claim+dispatch for an agent
+# stage. The controller selects and atomically claims the action; this adapter
+# dispatches that persisted contract through the existing retry/remediation
+# executors. The planning, coding-publish and review `failed` branches share
+# this path instead of each re-deriving a recovery ladder.
 _monitor_recover_failed_stage() {
-  local issue="$1" feature_dir="$2" win="$3" stage="$4" rc=0
+  local issue="$1" feature_dir="$2" win="$3" stage="$4" rc=0 recovery action claimed
+  recovery="$(_monitor_claim_failed_stage_action "$issue" "$feature_dir" "$stage")" || return 0
+  action="$(jq -r '.decision.action // "wait"' <<<"$recovery")"
+  claimed="$(jq -r '.claim.claimed // false' <<<"$recovery")"
+  # A loser must not dispatch. Non-control actions are deliberately left to
+  # their owner; notably verify-effect never repeats an external effect.
+  [[ "$claimed" == "true" ]] || return 0
+  case "$action" in
+    retry-stage) ;;
+    remediate|escalate)
+      emit_challenge_stage_failure_quarantine "$issue" "$feature_dir" "$stage" "$win" || true
+      set_window_attention_state "$win" "needs-user"
+      return 0
+      ;;
+    *) return 0 ;;
+  esac
   maybe_retry_failed_stage "$issue" "$feature_dir" "$stage" "$win" || rc=$?
   (( rc == 0 || rc == 2 )) && return 0
   emit_challenge_stage_failure_quarantine "$issue" "$feature_dir" "$stage" "$win" || true
@@ -21709,14 +21770,7 @@ monitor_issue_state() {
               active_count=$((active_count + 1))
               return 0
             fi
-            local coding_retry_rc=0
-            maybe_retry_failed_stage "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" || coding_retry_rc=$?
-            if [[ "$coding_retry_rc" -eq 0 || "$coding_retry_rc" -eq 2 ]]; then
-              active_count=$((active_count + 1))
-              return 0
-            fi
-            emit_challenge_stage_failure_quarantine "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" || true
-            set_window_attention_state "$WIN" "needs-user"
+            _monitor_recover_failed_stage "$ISSUE" "$FEATURE_DIR" "$WIN" "coding"
             active_count=$((active_count + 1))
             return 0
           fi
