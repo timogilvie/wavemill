@@ -1,0 +1,873 @@
+{
+  "audit": "HOK-3478",
+  "snapshot_at": "2026-11-12T21:16:15.876320+00:00",
+  "sample_seed": "hok-3478-opentraces-audit-2025-01-09",
+  "sampling_method": "50 smallest SHA256(seed + trace_id) values across all parsed trace records; original seed intentionally preserved",
+  "total_candidate_records": 9380,
+  "selection_caveat": "Unstratified mixed-agent sample; 42 Lambda/Hermes rows dominate. No claim of 50 coding tasks or population label prevalence.",
+  "sources": [
+    {
+      "dataset_id": "OpenTraces/opentraces-devtime",
+      "revision": "22b0d09856d7f59d3de034682e8f5daac5780db8",
+      "lastModified": "2026-04-01T12:24:45.000Z",
+      "downloads": 89,
+      "downloadsLast30Days": null,
+      "license": "license:cc-by-4.0",
+      "tags": [
+        "task_categories:text-generation",
+        "language:en",
+        "license:cc-by-4.0",
+        "size_categories:n<1K",
+        "format:json",
+        "modality:text",
+        "library:datasets",
+        "library:dask",
+        "library:polars",
+        "library:mlcroissant",
+        "region:us",
+        "opentraces",
+        "agent-traces"
+      ],
+      "cardData": {
+        "license": "cc-by-4.0",
+        "tags": [
+          "opentraces",
+          "agent-traces"
+        ],
+        "task_categories": [
+          "text-generation"
+        ],
+        "language": [
+          "en"
+        ],
+        "size_categories": [
+          "n<1K"
+        ],
+        "configs": [
+          {
+            "config_name": "default",
+            "data_files": [
+              {
+                "split": "train",
+                "path": "data/traces_*.jsonl"
+              }
+            ]
+          }
+        ],
+        "conformance_score": 99.3,
+        "training_score": 56.7,
+        "rl_score": 99.6,
+        "analytics_score": 100,
+        "domain_score": 95.3,
+        "overall_quality": 90.2
+      },
+      "file_frame_size": 4,
+      "file_paths": [
+        "data/traces_20260401T000948Z_4bf5b2b2.jsonl",
+        "data/traces_20260401T095230Z_47a0ef88.jsonl",
+        "data/traces_20260401T095422Z_9c897106.jsonl",
+        "data/traces_20260401T122437Z_5746b57d.jsonl"
+      ],
+      "source_file_sha256s": [
+        {
+          "file_path": "data/traces_20260401T000948Z_4bf5b2b2.jsonl",
+          "sha256": "2fe07b78d0159e75eb8688182c935b55c5b60ee3d9c5d72c5f5289df6631a372"
+        },
+        {
+          "file_path": "data/traces_20260401T095230Z_47a0ef88.jsonl",
+          "sha256": "2e76604a3a45e71346456de8fed6f531633f689d8f08c66abd43fddc2bc4b893"
+        },
+        {
+          "file_path": "data/traces_20260401T095422Z_9c897106.jsonl",
+          "sha256": "0800152a9be6806b9a14c43e1739248bd3fd9f4a08c8baca902c6cd6045769cb"
+        },
+        {
+          "file_path": "data/traces_20260401T122437Z_5746b57d.jsonl",
+          "sha256": "512f2bb073fa84ac5f64b34b4b8c9083deb551efcafd833bdbf4b3f8e31fb740"
+        }
+      ]
+    },
+    {
+      "dataset_id": "OpenTraces/opentraces-runtime",
+      "revision": "778faed3c7d7a36089324f4f3f5bab66bf77f2ad",
+      "lastModified": "2026-04-01T00:36:53.000Z",
+      "downloads": 174,
+      "downloadsLast30Days": null,
+      "license": "license:cc-by-4.0",
+      "tags": [
+        "task_categories:text-generation",
+        "language:en",
+        "license:cc-by-4.0",
+        "size_categories:1K<n<10K",
+        "format:json",
+        "modality:text",
+        "library:datasets",
+        "library:dask",
+        "library:polars",
+        "library:mlcroissant",
+        "region:us",
+        "opentraces",
+        "agent-traces"
+      ],
+      "cardData": {
+        "license": "cc-by-4.0",
+        "tags": [
+          "opentraces",
+          "agent-traces"
+        ],
+        "task_categories": [
+          "text-generation"
+        ],
+        "language": [
+          "en"
+        ],
+        "size_categories": [
+          "10K<n<100K"
+        ],
+        "configs": [
+          {
+            "config_name": "default",
+            "data_files": [
+              {
+                "split": "train",
+                "path": "data/traces_*.jsonl"
+              }
+            ]
+          }
+        ],
+        "conformance_score": 88.4,
+        "training_score": 89,
+        "rl_score": 73.4,
+        "analytics_score": 55.7,
+        "domain_score": 84.1,
+        "overall_quality": 78.1
+      },
+      "file_frame_size": 4,
+      "file_paths": [
+        "data/traces_20260331T222719Z_1ed4f108.jsonl",
+        "data/traces_20260331T223309Z_5a420290.jsonl",
+        "data/traces_20260331T231804Z_82fbbd81.jsonl",
+        "data/traces_20260331T233242Z_6373acef.jsonl"
+      ],
+      "source_file_sha256s": [
+        {
+          "file_path": "data/traces_20260331T222719Z_1ed4f108.jsonl",
+          "sha256": "4716e94c30a5772c53e65f25be79229a9b58812508805a3271e366e3db5b1813"
+        },
+        {
+          "file_path": "data/traces_20260331T223309Z_5a420290.jsonl",
+          "sha256": "c6412b4b3218e75fe5fc7bdd57f4ad7c042cd71d1b6c691a3d61fe0e1debc63c"
+        },
+        {
+          "file_path": "data/traces_20260331T231804Z_82fbbd81.jsonl",
+          "sha256": "6bd80dd2adea26c0a6a9a4e464cc09a39ef181a173762396c0022b0072ec1783"
+        },
+        {
+          "file_path": "data/traces_20260331T233242Z_6373acef.jsonl",
+          "sha256": "e79f2def581b1bc81fcd531e3419230501065534c9e36e997d8215698b18ad3f"
+        }
+      ]
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "lastModified": "2026-04-02T22:26:20.000Z",
+      "downloads": 123,
+      "downloadsLast30Days": null,
+      "license": "license:cc-by-4.0",
+      "tags": [
+        "task_categories:text-generation",
+        "language:en",
+        "license:cc-by-4.0",
+        "size_categories:1K<n<10K",
+        "format:json",
+        "modality:text",
+        "library:datasets",
+        "library:dask",
+        "library:polars",
+        "library:mlcroissant",
+        "region:us",
+        "opentraces",
+        "agent-traces"
+      ],
+      "cardData": {
+        "license": "cc-by-4.0",
+        "tags": [
+          "opentraces",
+          "agent-traces"
+        ],
+        "task_categories": [
+          "text-generation"
+        ],
+        "language": [
+          "en"
+        ],
+        "size_categories": [
+          "10K<n<100K"
+        ],
+        "configs": [
+          {
+            "config_name": "default",
+            "data_files": [
+              {
+                "split": "train",
+                "path": "data/traces_*.jsonl"
+              }
+            ]
+          }
+        ],
+        "conformance_score": 86.6,
+        "training_score": 76.9,
+        "rl_score": 38.1,
+        "analytics_score": 55,
+        "domain_score": 86.2,
+        "overall_quality": 68.6
+      },
+      "file_frame_size": 2,
+      "file_paths": [
+        "data/traces_20260402T220336Z_fafbb81b.jsonl",
+        "data/traces_20260402T222437Z_f6e97f2d.jsonl"
+      ],
+      "source_file_sha256s": [
+        {
+          "file_path": "data/traces_20260402T220336Z_fafbb81b.jsonl",
+          "sha256": "f099079f9f9557380cb705217c793eba8e8d47a3324bb5e61166409de978eff8"
+        },
+        {
+          "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+          "sha256": "5c15c2861a1551ee0a79ce88e0addaf3eff81d01b5913acef7a6358687c205fa"
+        }
+      ]
+    }
+  ],
+  "file_frame": [
+    {
+      "dataset_id": "OpenTraces/opentraces-devtime",
+      "revision": "22b0d09856d7f59d3de034682e8f5daac5780db8",
+      "file_path": "data/traces_20260401T000948Z_4bf5b2b2.jsonl",
+      "source_file_sha256": "2fe07b78d0159e75eb8688182c935b55c5b60ee3d9c5d72c5f5289df6631a372"
+    },
+    {
+      "dataset_id": "OpenTraces/opentraces-devtime",
+      "revision": "22b0d09856d7f59d3de034682e8f5daac5780db8",
+      "file_path": "data/traces_20260401T095230Z_47a0ef88.jsonl",
+      "source_file_sha256": "2e76604a3a45e71346456de8fed6f531633f689d8f08c66abd43fddc2bc4b893"
+    },
+    {
+      "dataset_id": "OpenTraces/opentraces-devtime",
+      "revision": "22b0d09856d7f59d3de034682e8f5daac5780db8",
+      "file_path": "data/traces_20260401T095422Z_9c897106.jsonl",
+      "source_file_sha256": "0800152a9be6806b9a14c43e1739248bd3fd9f4a08c8baca902c6cd6045769cb"
+    },
+    {
+      "dataset_id": "OpenTraces/opentraces-devtime",
+      "revision": "22b0d09856d7f59d3de034682e8f5daac5780db8",
+      "file_path": "data/traces_20260401T122437Z_5746b57d.jsonl",
+      "source_file_sha256": "512f2bb073fa84ac5f64b34b4b8c9083deb551efcafd833bdbf4b3f8e31fb740"
+    },
+    {
+      "dataset_id": "OpenTraces/opentraces-runtime",
+      "revision": "778faed3c7d7a36089324f4f3f5bab66bf77f2ad",
+      "file_path": "data/traces_20260331T222719Z_1ed4f108.jsonl",
+      "source_file_sha256": "4716e94c30a5772c53e65f25be79229a9b58812508805a3271e366e3db5b1813"
+    },
+    {
+      "dataset_id": "OpenTraces/opentraces-runtime",
+      "revision": "778faed3c7d7a36089324f4f3f5bab66bf77f2ad",
+      "file_path": "data/traces_20260331T223309Z_5a420290.jsonl",
+      "source_file_sha256": "c6412b4b3218e75fe5fc7bdd57f4ad7c042cd71d1b6c691a3d61fe0e1debc63c"
+    },
+    {
+      "dataset_id": "OpenTraces/opentraces-runtime",
+      "revision": "778faed3c7d7a36089324f4f3f5bab66bf77f2ad",
+      "file_path": "data/traces_20260331T231804Z_82fbbd81.jsonl",
+      "source_file_sha256": "6bd80dd2adea26c0a6a9a4e464cc09a39ef181a173762396c0022b0072ec1783"
+    },
+    {
+      "dataset_id": "OpenTraces/opentraces-runtime",
+      "revision": "778faed3c7d7a36089324f4f3f5bab66bf77f2ad",
+      "file_path": "data/traces_20260331T233242Z_6373acef.jsonl",
+      "source_file_sha256": "e79f2def581b1bc81fcd531e3419230501065534c9e36e997d8215698b18ad3f"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "file_path": "data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "source_file_sha256": "f099079f9f9557380cb705217c793eba8e8d47a3324bb5e61166409de978eff8"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "source_file_sha256": "5c15c2861a1551ee0a79ce88e0addaf3eff81d01b5913acef7a6358687c205fa"
+    }
+  ],
+  "samples": [
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "79688c75-0701-460d-9575-b299c6bc689f",
+      "file_path": "data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "line_index": 54,
+      "local_name": "001-OpenTraces__lambda-hermes-agent-reasoning-opentraces-79688c75-0701-460d-9575-b299c6bc689f.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "record_sha256": "a8c5b09abbbb00fe536713eb4c1fa70a334f19720ea9f58e3b5cd62260be1a0c",
+      "original_container_sha256": "2b10f9fd849f73205d2167cff797b432652931dfadd5b1852627194ee850ffb5"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "c8d19fee-567f-4221-a839-611cb8b5f024",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 2884,
+      "local_name": "002-OpenTraces__lambda-hermes-agent-reasoning-opentraces-c8d19fee-567f-4221-a839-611cb8b5f024.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "9df1b3594a08e4ccce3971db53760dbce5a77e221afcbbda15b90c3eb563327f",
+      "original_container_sha256": "5e64391d0c136102800a8c8efa0e8f0f9e914a28ed9f72b891ef4ac20f63d87e"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "211edead-90f8-4107-8873-a4ded0a56b9b",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 74,
+      "local_name": "003-OpenTraces__lambda-hermes-agent-reasoning-opentraces-211edead-90f8-4107-8873-a4ded0a56b9b.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "139e89f8067cb94d413272ac8abeb8733502b09df00779a68eeb517f5d83889d",
+      "original_container_sha256": "5e8cabc63dc269a09d0f3dd7bc3cafe952662b379b911172d0028a7dd3a2b151"
+    },
+    {
+      "dataset_id": "OpenTraces/opentraces-runtime",
+      "trace_id": "aedca9e0-c568-4b08-9555-d334e3f2ed7a",
+      "file_path": "data/traces_20260331T222719Z_1ed4f108.jsonl",
+      "line_index": 61,
+      "local_name": "004-OpenTraces__opentraces-runtime-aedca9e0-c568-4b08-9555-d334e3f2ed7a.jsonl",
+      "revision": "778faed3c7d7a36089324f4f3f5bab66bf77f2ad",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/opentraces-runtime/resolve/778faed3c7d7a36089324f4f3f5bab66bf77f2ad/data/traces_20260331T222719Z_1ed4f108.jsonl",
+      "record_sha256": "56e728d776fa43c2baadb0a27c13228b52176c678da6ea5793d7b75722e54e96",
+      "original_container_sha256": "b49c4ca91c5a0cb9d20ae07545cc3642b354a2520d833bc45969fa2c767fcc91"
+    },
+    {
+      "dataset_id": "OpenTraces/opentraces-runtime",
+      "trace_id": "93dbaa70-e97e-4d5b-af2b-0bde8830da6d",
+      "file_path": "data/traces_20260331T223309Z_5a420290.jsonl",
+      "line_index": 701,
+      "local_name": "005-OpenTraces__opentraces-runtime-93dbaa70-e97e-4d5b-af2b-0bde8830da6d.jsonl",
+      "revision": "778faed3c7d7a36089324f4f3f5bab66bf77f2ad",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/opentraces-runtime/resolve/778faed3c7d7a36089324f4f3f5bab66bf77f2ad/data/traces_20260331T223309Z_5a420290.jsonl",
+      "record_sha256": "ed9ba0ef483c549d97b8d0329fa71fd28cfea40c27334fe7ff009f7cd81ce7de",
+      "original_container_sha256": "0183639926a4a9b9e67db7efb6a55c9e7b4ef6b72b5298b64a3f924409a89895"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "5d4b2521-6d42-4366-925c-0584c8b08c0e",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 282,
+      "local_name": "006-OpenTraces__lambda-hermes-agent-reasoning-opentraces-5d4b2521-6d42-4366-925c-0584c8b08c0e.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "1d07effc78cfba864b233503df18263b5ed00ae16b32005357686e1dac4344d5",
+      "original_container_sha256": "b8097e19a61facbd4f388a034db732b470b94b1e9799b5c0f8709146c293deae"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "3f28c8b0-9f11-4dc8-94a1-6caed84aec9d",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 4315,
+      "local_name": "007-OpenTraces__lambda-hermes-agent-reasoning-opentraces-3f28c8b0-9f11-4dc8-94a1-6caed84aec9d.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "71f085a5e65421f6c56ff8cedf42190b7fe1ecc4f17fce8c4902472671c2bc51",
+      "original_container_sha256": "3df38f45ec9998356b9308e8b3dd3b834a1c349d6f403fdae7b6762332b4e81a"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "ee5e1482-2772-466b-8de2-fe5bab58ee3d",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 2946,
+      "local_name": "008-OpenTraces__lambda-hermes-agent-reasoning-opentraces-ee5e1482-2772-466b-8de2-fe5bab58ee3d.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "ff9722f97f4e135cb71bae202e26ec9908c16e49345eb8ba7d0206bdc9966ab2",
+      "original_container_sha256": "b21aa7f2a5bdc42693c550dbac374faae2bc7b0465ae449c55e52d5708aeab41"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "db13210e-3f34-4ae4-8f3f-6662f8b34f3d",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 2181,
+      "local_name": "009-OpenTraces__lambda-hermes-agent-reasoning-opentraces-db13210e-3f34-4ae4-8f3f-6662f8b34f3d.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "2140c6f8be6f11fa524d4321d85fd041d783c1f2b8d9d1b0afad8a5e03f6ba03",
+      "original_container_sha256": "7326f66953eac733aec6702338beffdab4f6308c667af7820de5fead0888f64d"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "291be150-8b7d-444a-bdd7-7ccbd52c784a",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 2713,
+      "local_name": "010-OpenTraces__lambda-hermes-agent-reasoning-opentraces-291be150-8b7d-444a-bdd7-7ccbd52c784a.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "b4c395d9416f94e1574449b7a022c17ba8f426ddc2d25ae0a434a73eb2a02eca",
+      "original_container_sha256": "9ff6452b2660c8f874fe7c8b1f79c9aa2389ba260b10b8a6c61eb2e814ed91b9"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "a925d19a-e810-4141-b95e-97e3686e4b6b",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 93,
+      "local_name": "011-OpenTraces__lambda-hermes-agent-reasoning-opentraces-a925d19a-e810-4141-b95e-97e3686e4b6b.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "54117aca9e0bfa215731e3d89a9023cf84e3a337af83221ed09510cc26dbbabd",
+      "original_container_sha256": "413332d6c7de1b1ed2e8a550b3bffe2ad96aef6cacc062162c3b5e89f3439289"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "3aab0854-9fb5-47ef-9bcc-389aec77720f",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 2308,
+      "local_name": "012-OpenTraces__lambda-hermes-agent-reasoning-opentraces-3aab0854-9fb5-47ef-9bcc-389aec77720f.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "4dc8bfabb6b885f455e81e64e79e696251ee983e7401feafef834e7dc5a5054f",
+      "original_container_sha256": "ec0040493eb961e64d72800a619eee6f9004d2bd8c51eaec41bccf9f2d8aef30"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "65be2b30-06f9-45f4-a846-10f09336b3c5",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 3982,
+      "local_name": "013-OpenTraces__lambda-hermes-agent-reasoning-opentraces-65be2b30-06f9-45f4-a846-10f09336b3c5.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "41ee6e1f143812ed6b8911a699cabf8a4b28ea39b37837cb161de65d63e9865e",
+      "original_container_sha256": "d290412b85283005d6aa56d7446eb5b7fbc0b9886ef675b4c2f7fb0bd9033495"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "d49c7948-f13c-4d24-a25e-a5b0cc3bc0c7",
+      "file_path": "data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "line_index": 656,
+      "local_name": "014-OpenTraces__lambda-hermes-agent-reasoning-opentraces-d49c7948-f13c-4d24-a25e-a5b0cc3bc0c7.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "record_sha256": "db886adbf1a7010d6a505f19a0fe33c9cd69a06ab9413ec124144a77ae804cf6",
+      "original_container_sha256": "f42bc397221edd5913e733c3302d45400205d5726e449fd718e4f92ee2679a11"
+    },
+    {
+      "dataset_id": "OpenTraces/opentraces-runtime",
+      "trace_id": "5e0ad09b-ea2e-4ba6-9d22-8fcdf7383525",
+      "file_path": "data/traces_20260331T223309Z_5a420290.jsonl",
+      "line_index": 599,
+      "local_name": "015-OpenTraces__opentraces-runtime-5e0ad09b-ea2e-4ba6-9d22-8fcdf7383525.jsonl",
+      "revision": "778faed3c7d7a36089324f4f3f5bab66bf77f2ad",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/opentraces-runtime/resolve/778faed3c7d7a36089324f4f3f5bab66bf77f2ad/data/traces_20260331T223309Z_5a420290.jsonl",
+      "record_sha256": "2a24979b9f3377e92d156187728760b692da6a50de58947b8f43ffa7576b97a5",
+      "original_container_sha256": "83a8808e5f560d028158b009799be764853d792d90f249dbe2bdf24150cf2275"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "e640d165-bab0-445e-9d4a-677c6bee1f61",
+      "file_path": "data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "line_index": 756,
+      "local_name": "016-OpenTraces__lambda-hermes-agent-reasoning-opentraces-e640d165-bab0-445e-9d4a-677c6bee1f61.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "record_sha256": "24a0790e5cc41cc465f46ed0de41798ce2908cd5c0efedbb60d67bac80f959e6",
+      "original_container_sha256": "e648423b6409a10f011d6c9a1b0989ac91238ee14f7c6e2c786267c481a195b5"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "0020e632-5b68-4e70-bbd2-491937c12a79",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 3840,
+      "local_name": "017-OpenTraces__lambda-hermes-agent-reasoning-opentraces-0020e632-5b68-4e70-bbd2-491937c12a79.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "5c8df88583a00b4c1745b1a3b9dac35f055afd06bd03ba097d5582be5ba2bee0",
+      "original_container_sha256": "fcc96d3dbd818ba85b10748a3c610160a870049a5e9bc1adad20a0ef41057e61"
+    },
+    {
+      "dataset_id": "OpenTraces/opentraces-runtime",
+      "trace_id": "50b70b6e-ef6d-4d54-8222-b9a4989df556",
+      "file_path": "data/traces_20260331T223309Z_5a420290.jsonl",
+      "line_index": 608,
+      "local_name": "018-OpenTraces__opentraces-runtime-50b70b6e-ef6d-4d54-8222-b9a4989df556.jsonl",
+      "revision": "778faed3c7d7a36089324f4f3f5bab66bf77f2ad",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/opentraces-runtime/resolve/778faed3c7d7a36089324f4f3f5bab66bf77f2ad/data/traces_20260331T223309Z_5a420290.jsonl",
+      "record_sha256": "53b3d3bbddf0aeac7ec3a984645110872ef6cc1f28172485109d17c9187ef721",
+      "original_container_sha256": "fcc6bd84e2cdb88133b48123a600e0deb095742b80cc5a7a9c90339b211d1710"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "1935cdcc-60df-4717-b3a7-0c96f69928ae",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 1097,
+      "local_name": "019-OpenTraces__lambda-hermes-agent-reasoning-opentraces-1935cdcc-60df-4717-b3a7-0c96f69928ae.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "51c89e80f6052679f2ef02e132471d3ea676ce00d011cd241f55dc2a10270d95",
+      "original_container_sha256": "f09dbea64eeb0309e90c139553b36d861566e8f2aa55d2091b5013847fddbb16"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "efb7657c-248b-4be0-b410-7dd925a64d2f",
+      "file_path": "data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "line_index": 2027,
+      "local_name": "020-OpenTraces__lambda-hermes-agent-reasoning-opentraces-efb7657c-248b-4be0-b410-7dd925a64d2f.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "record_sha256": "8c1625f89ddc333611429e998a41834bae23793c97520ad78442e5a3d8b576c5",
+      "original_container_sha256": "8fac626091b6e307a8c504df4450df6183806946bf7b901669cc6e914f15fd40"
+    },
+    {
+      "dataset_id": "OpenTraces/opentraces-runtime",
+      "trace_id": "10cfef17-b0a5-454d-a593-ec4b77792f0e",
+      "file_path": "data/traces_20260331T223309Z_5a420290.jsonl",
+      "line_index": 727,
+      "local_name": "021-OpenTraces__opentraces-runtime-10cfef17-b0a5-454d-a593-ec4b77792f0e.jsonl",
+      "revision": "778faed3c7d7a36089324f4f3f5bab66bf77f2ad",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/opentraces-runtime/resolve/778faed3c7d7a36089324f4f3f5bab66bf77f2ad/data/traces_20260331T223309Z_5a420290.jsonl",
+      "record_sha256": "1fe78700cfa16c9a62a278cd67ad7625af3e8fe35150547678a91c7e01067a8b",
+      "original_container_sha256": "ca994049e1960f8c97c0ff086ff878e437ba0631200baa2a7cc8f15c30e71e60"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "a92fe098-c5eb-44c0-8eca-7b60adb178b3",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 936,
+      "local_name": "022-OpenTraces__lambda-hermes-agent-reasoning-opentraces-a92fe098-c5eb-44c0-8eca-7b60adb178b3.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "1129c56f5bcc7b4885988af0761fc8cc9b814ca0e3f0725f8fae316f73679bac",
+      "original_container_sha256": "86a0932a7017f224660f9503a30a5491821d5c1d483ce3322949f6a4869d4f32"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "9677362b-880c-4ea5-9e59-0baf8031b474",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 3567,
+      "local_name": "023-OpenTraces__lambda-hermes-agent-reasoning-opentraces-9677362b-880c-4ea5-9e59-0baf8031b474.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "638e4c82a5520b208fb747c6a747453c383e5c7accee74f10e47c9ceec086034",
+      "original_container_sha256": "ca0577afedce22f8d5a872a5f1a87d71e6d0dab9e31862df96f567df35617904"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "5a04e8cb-2924-4ac1-8400-7173137ed8d1",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 5169,
+      "local_name": "024-OpenTraces__lambda-hermes-agent-reasoning-opentraces-5a04e8cb-2924-4ac1-8400-7173137ed8d1.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "4d1ce8dad5826c0f096071ec5833af4a95825c0375c2758d0e7f83ca6874c85b",
+      "original_container_sha256": "7d4bc2a3e9d9b12c3409be804b93934dc833ca971b1d36ca9605e0c2ab4044dd"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "9598e6c9-226f-4eee-8b8c-8e7b3a3ca2a6",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 3055,
+      "local_name": "025-OpenTraces__lambda-hermes-agent-reasoning-opentraces-9598e6c9-226f-4eee-8b8c-8e7b3a3ca2a6.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "e56edfa78fc559afcb147a3501bc73ef4fa0dfb0df39757d942064df6bae9689",
+      "original_container_sha256": "4d79534ba904aef7e6670c19b5b2ba07e523e1cc9b8351ef7ae2d8057db372a0"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "bb71c0a9-ef29-4940-8300-141cf21f3494",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 5328,
+      "local_name": "026-OpenTraces__lambda-hermes-agent-reasoning-opentraces-bb71c0a9-ef29-4940-8300-141cf21f3494.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "bbf344e00808c17c705008895082edb95234142f547b60873541b25526413219",
+      "original_container_sha256": "8ef0981b6599d93356b4e026f690eea6bdfbce20baeb432ecc800c06b05ee6e0"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "656e5ac6-f537-45e4-b4e4-20af31cb46b1",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 198,
+      "local_name": "027-OpenTraces__lambda-hermes-agent-reasoning-opentraces-656e5ac6-f537-45e4-b4e4-20af31cb46b1.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "54e75f2504d04e949a67735cf329b88a438238b1def83928ec1ada82870db55f",
+      "original_container_sha256": "72f300754c45fb97211d5915abf7cbdb8c873e1b8b873797e1550827d255a3a2"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "70475289-f55c-4454-b189-3c9dfe6f8f17",
+      "file_path": "data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "line_index": 1747,
+      "local_name": "028-OpenTraces__lambda-hermes-agent-reasoning-opentraces-70475289-f55c-4454-b189-3c9dfe6f8f17.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "record_sha256": "037e78136083dddad566fa89a6ab9538709c77b582645338a694a6c2243706dd",
+      "original_container_sha256": "ec2acd9afe9c5831b809c6ba110963d7fe99f3f5a4a83ad79c7b7cd51a57e997"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "d7efc212-5446-4578-8a09-75aca33dd29c",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 3937,
+      "local_name": "029-OpenTraces__lambda-hermes-agent-reasoning-opentraces-d7efc212-5446-4578-8a09-75aca33dd29c.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "6e9c9eb94cc039373cba4791787472f4e15651fc61e39fac4692ca25a69be1b1",
+      "original_container_sha256": "253cb96920f6520c3b90f866bb54c8a36cd00e94edf7be3ae7508dea4ae91f44"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "689d8304-088a-4b12-b246-c5b9cfecd741",
+      "file_path": "data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "line_index": 974,
+      "local_name": "030-OpenTraces__lambda-hermes-agent-reasoning-opentraces-689d8304-088a-4b12-b246-c5b9cfecd741.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "record_sha256": "33f5569cdfbc263e5a0247de2058d428ff266739896859bdf49ee1994cbad3f9",
+      "original_container_sha256": "b60a64f1522d76576f05dfa9b13451b827f974da1476b194b2af27e373319ae8"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "73e52d26-1dcc-4101-8941-c32c0b78ae3f",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 2653,
+      "local_name": "031-OpenTraces__lambda-hermes-agent-reasoning-opentraces-73e52d26-1dcc-4101-8941-c32c0b78ae3f.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "c7445e7cba341100ebc6c163fcfc5da39fc935750b069d5872b4c71e802fe8a6",
+      "original_container_sha256": "6fde967e4b211beb7a3ecb28a78fdd2012832ed1bd80d2fc04411804f41a9ca2"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "b5577e1a-8159-4a0e-aca2-14330685a3cd",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 103,
+      "local_name": "032-OpenTraces__lambda-hermes-agent-reasoning-opentraces-b5577e1a-8159-4a0e-aca2-14330685a3cd.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "00c6b6600401dc2bd76adc1aa08988329154d7cd1f64ca9714ca5c8003f4457f",
+      "original_container_sha256": "c56abdbc5c0b6a695736288a53eb881778d330b27b0cf7be6cff9c6d734e196a"
+    },
+    {
+      "dataset_id": "OpenTraces/opentraces-devtime",
+      "trace_id": "85e7bc3d-40e5-4648-8632-5ea84d725092",
+      "file_path": "data/traces_20260401T000948Z_4bf5b2b2.jsonl",
+      "line_index": 50,
+      "local_name": "033-OpenTraces__opentraces-devtime-85e7bc3d-40e5-4648-8632-5ea84d725092.jsonl",
+      "revision": "22b0d09856d7f59d3de034682e8f5daac5780db8",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/opentraces-devtime/resolve/22b0d09856d7f59d3de034682e8f5daac5780db8/data/traces_20260401T000948Z_4bf5b2b2.jsonl",
+      "record_sha256": "6126ccfe3320553e3144eac41309d239e378f7e4f4ace61351d22406b264047d",
+      "original_container_sha256": "5885cf4c2e7046a687c16037c83fede3e1be6a08f623abf7e819da27ecebfa38"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "44e02484-6d6f-4390-bf86-abc0332de569",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 3072,
+      "local_name": "034-OpenTraces__lambda-hermes-agent-reasoning-opentraces-44e02484-6d6f-4390-bf86-abc0332de569.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "e645a14c867a0b9cc1d148aa95d1963e20a5aaeaa2d46a4858e8162c19b7188c",
+      "original_container_sha256": "02dd6a564db30306d82afe55ff6708996833516fbbd17c1c5a6007fa9a321956"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "5f2d0f0f-f1b6-4b51-9acc-d958a77e3695",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 3104,
+      "local_name": "035-OpenTraces__lambda-hermes-agent-reasoning-opentraces-5f2d0f0f-f1b6-4b51-9acc-d958a77e3695.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "1cdf756d4e87d94901024891a0e49bfb878608829674953fcf063dd9ec97baf9",
+      "original_container_sha256": "4c0f9b638a7390f2a76c14479ab4240ed2a3ca1e790e4919f86c31a80cbaba74"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "621636e4-15ec-4fed-b2e3-76d8aef20ecd",
+      "file_path": "data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "line_index": 1772,
+      "local_name": "036-OpenTraces__lambda-hermes-agent-reasoning-opentraces-621636e4-15ec-4fed-b2e3-76d8aef20ecd.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "record_sha256": "b3168ae207b0792c8810841d2ee346ecfd3568faabb06f73d5489eeddc12f827",
+      "original_container_sha256": "04390bdb153b671fbe0fa9366d1e6a5756c173e8436e05aabe797d39e8a31797"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "57256dbf-d061-459f-b7d5-e9ebf7711c90",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 1436,
+      "local_name": "037-OpenTraces__lambda-hermes-agent-reasoning-opentraces-57256dbf-d061-459f-b7d5-e9ebf7711c90.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "1971eacebe02345e0f8862286999e66d13d130a6867c3adbc49d213fe0f7829d",
+      "original_container_sha256": "353ce3d51fc0be4805ee85891ad2150373f0eed0fbf6a420d9989e787555e9be"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "65e40ee0-6b5c-43e4-9652-af94783fbd19",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 5200,
+      "local_name": "038-OpenTraces__lambda-hermes-agent-reasoning-opentraces-65e40ee0-6b5c-43e4-9652-af94783fbd19.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "77493cb824fa19042ec0f356afa98aa0565b80b32f2d717cd1cb54846e28b214",
+      "original_container_sha256": "4a6325e388b307b163930833d60263e22bb5e8fa01949815350d405885560817"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "268be31e-d145-41bf-b842-e80254b7311d",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 4168,
+      "local_name": "039-OpenTraces__lambda-hermes-agent-reasoning-opentraces-268be31e-d145-41bf-b842-e80254b7311d.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "e9cc5e38ca0f835ad93fc61b733a5e214afbef5bc22ba5a0c70f3874f701f4a0",
+      "original_container_sha256": "3e980608e761912df23c81cd584b29c2f32706b832db30c3b917ef78fa5017dd"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "bc4ccd95-7193-4249-abf1-153f6bfcc321",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 5240,
+      "local_name": "040-OpenTraces__lambda-hermes-agent-reasoning-opentraces-bc4ccd95-7193-4249-abf1-153f6bfcc321.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "5f190952b551216d5fbd16cc2eaa679ac376fa1a929ec0e822de0bf818869533",
+      "original_container_sha256": "7de05f50a56ab89207c959bfcaf5c1e4f671eaf85147c22196f96ecf5dcb757c"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "4a405bf7-9f3b-4de3-a42d-00d3d4aded42",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 2491,
+      "local_name": "041-OpenTraces__lambda-hermes-agent-reasoning-opentraces-4a405bf7-9f3b-4de3-a42d-00d3d4aded42.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "897eb8f3d18861233bdc3eb14d17a606f3155e10c446ea907fa476fe65f7765e",
+      "original_container_sha256": "bec15e37de073e131d6daaf853bf41ab0deb2009230dbcc010b0b45ae0f98910"
+    },
+    {
+      "dataset_id": "OpenTraces/opentraces-runtime",
+      "trace_id": "637cd9fb-e5e5-4456-9e14-0d6761ac2164",
+      "file_path": "data/traces_20260331T222719Z_1ed4f108.jsonl",
+      "line_index": 89,
+      "local_name": "042-OpenTraces__opentraces-runtime-637cd9fb-e5e5-4456-9e14-0d6761ac2164.jsonl",
+      "revision": "778faed3c7d7a36089324f4f3f5bab66bf77f2ad",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/opentraces-runtime/resolve/778faed3c7d7a36089324f4f3f5bab66bf77f2ad/data/traces_20260331T222719Z_1ed4f108.jsonl",
+      "record_sha256": "70ba5223dcdefa35945fcce19e92b60f94a664839be55c64de381313b6aef5d0",
+      "original_container_sha256": "f5c32971ca1f7e28a6dac700e18405eb590c8bfed5dc0284d2d90ada42b0f620"
+    },
+    {
+      "dataset_id": "OpenTraces/opentraces-runtime",
+      "trace_id": "0bfd4e96-0864-451e-876c-6bce0e541add",
+      "file_path": "data/traces_20260331T222719Z_1ed4f108.jsonl",
+      "line_index": 341,
+      "local_name": "043-OpenTraces__opentraces-runtime-0bfd4e96-0864-451e-876c-6bce0e541add.jsonl",
+      "revision": "778faed3c7d7a36089324f4f3f5bab66bf77f2ad",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/opentraces-runtime/resolve/778faed3c7d7a36089324f4f3f5bab66bf77f2ad/data/traces_20260331T222719Z_1ed4f108.jsonl",
+      "record_sha256": "15bb54da917a1b8ad6f5ed32bb5ad6f0597a18a8665f8d02f4767d6baacbf201",
+      "original_container_sha256": "6946d4e981bec908149a1871b9064b96345c302cdf92ff9bda0be0c9270ca563"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "96b40305-d910-4577-a676-872a37e93502",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 876,
+      "local_name": "044-OpenTraces__lambda-hermes-agent-reasoning-opentraces-96b40305-d910-4577-a676-872a37e93502.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "77c6d7e4088dae6fcc4fcd06927651bba459547ba8ab62b997b0d60afbc01aa7",
+      "original_container_sha256": "1c13f028ab6e5bb492af3d1e5ee444418426bdac7e8565b871e80d6e1d4d361e"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "22f9e03e-f736-4202-ac2c-76b6bae6be12",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 1251,
+      "local_name": "045-OpenTraces__lambda-hermes-agent-reasoning-opentraces-22f9e03e-f736-4202-ac2c-76b6bae6be12.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "9d2fbe95d6a36cecfd3a28a8592b08b7d6254529a601718667881df1ecec7d22",
+      "original_container_sha256": "17fa424ca48e67e1e489245c7010e7593ed695a57a8bc0ad46ff38b40e0fc7e2"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "188ac90b-32ff-4b65-9e7a-ff42dc6cb9b5",
+      "file_path": "data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "line_index": 16,
+      "local_name": "046-OpenTraces__lambda-hermes-agent-reasoning-opentraces-188ac90b-32ff-4b65-9e7a-ff42dc6cb9b5.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "record_sha256": "3c8df6fb3bb62e33ed34970bc6571ee4131049d50f418af1e150013139da10e6",
+      "original_container_sha256": "bb0adf4f3ac530ffc63f65611213064dbd0a47664f5592abed515f7712f73399"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "637fb8bf-bef7-4255-b8a5-bdd65ce65646",
+      "file_path": "data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "line_index": 2080,
+      "local_name": "047-OpenTraces__lambda-hermes-agent-reasoning-opentraces-637fb8bf-bef7-4255-b8a5-bdd65ce65646.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T220336Z_fafbb81b.jsonl",
+      "record_sha256": "4eb6183851969ab6944d9af93f1c05ff58836aedd7be73482cc2b1d9ee4fe098",
+      "original_container_sha256": "3cadb5ae3d058c1b431b632389e1740e1b04589ee33ba4c3e1c5e54705825810"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "2a5c2289-611f-4fe7-8a15-1471b25391fc",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 3747,
+      "local_name": "048-OpenTraces__lambda-hermes-agent-reasoning-opentraces-2a5c2289-611f-4fe7-8a15-1471b25391fc.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "8c53182f2741bdcf36557c7e2a04ddd5c388e08e9e14a0c7491b2ab7a19b270b",
+      "original_container_sha256": "858f16089a1aca4af37740e50b71785cd71faf6a27edcab211268e08a05627b8"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "c824e6f2-6ddf-4cf8-8444-2678a4a7303b",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 661,
+      "local_name": "049-OpenTraces__lambda-hermes-agent-reasoning-opentraces-c824e6f2-6ddf-4cf8-8444-2678a4a7303b.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "4a43ccd8c48fbee15fd8238b25e79e963de2710548864872bf53d1b0655f6903",
+      "original_container_sha256": "c848de1c8ff166fbee63e422607a2def273f0af2b93796b56f2df24b68b1df61"
+    },
+    {
+      "dataset_id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "trace_id": "74832ae9-055d-41e4-aac2-d4d23e0d899b",
+      "file_path": "data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "line_index": 4749,
+      "local_name": "050-OpenTraces__lambda-hermes-agent-reasoning-opentraces-74832ae9-055d-41e4-aac2-d4d23e0d899b.jsonl",
+      "revision": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "source_url": "https://huggingface.co/datasets/OpenTraces/lambda-hermes-agent-reasoning-opentraces/resolve/617a8e0c6942b392c017e5d7f4e05af83ec6b515/data/traces_20260402T222437Z_f6e97f2d.jsonl",
+      "record_sha256": "cc6247840999283036c3ab860007c54333ed2422e84463dba2a3319e8b63ba96",
+      "original_container_sha256": "199bf2e002ad32f0e791d5c5ed95cec19f6ff7027c9972e20c840d87dd927a46"
+    }
+  ],
+  "verification": {
+    "sample_count": 50,
+    "distinct_source_collections": 3,
+    "distinct_session_keys": 50,
+    "duplicate_session_keys": 0,
+    "duplicate_task_and_steps": 0,
+    "local_git_commit_comparison": "git rev-list --all from Wavemill checkout on 2026-11-13; exact 40-character hex matches only",
+    "local_git_commit_count": 5276,
+    "leakage_observations": [],
+    "limits": "No semantic task deduplication, inaccessible private data, hidden rescue, or Hokusai SDK full-history comparison claimed."
+  },
+  "source_record_counts": {
+    "OpenTraces/opentraces-devtime": 96,
+    "OpenTraces/opentraces-runtime": 1639,
+    "OpenTraces/lambda-hermes-agent-reasoning-opentraces": 7645
+  }
+}
