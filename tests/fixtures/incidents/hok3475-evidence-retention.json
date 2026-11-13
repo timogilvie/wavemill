@@ -1,0 +1,14 @@
+{
+  "incident": "HOK-3451",
+  "sanitized": true,
+  "description": "Ready completion was available live but omitted from the archive; earlier head publication must not become completion.",
+  "headPublishedAt": "2026-11-11T21:32:22Z",
+  "readyFinishedAt": "2026-11-12T00:14:37Z",
+  "reviewCompletionRace": {
+    "ciRun": 43526693791,
+    "stage": "review",
+    "startedAt": "2026-11-13T23:24:43Z",
+    "finishedAt": "2026-11-13T23:24:51Z",
+    "observedFailure": "completed JSON overwritten as agent-exited during liveness gather"
+  }
+}

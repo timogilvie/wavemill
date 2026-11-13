@@ -15,12 +15,13 @@
  */
 
 import fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { CodingArtifacts } from './native-agent/coding-artifacts.ts';
 export type { CodingArtifacts } from './native-agent/coding-artifacts.ts';
 import { validateSeamArtifactValue } from './seam-artifacts.ts';
-import { resolveTaskArtifact } from './task-artifact-lookup.ts';
+import { resolveTaskArtifact, TASK_RESULT_STAGES } from './task-artifact-lookup.ts';
 import type { CleanupDecision, CleanupReport, TreeState } from './native-agent/cleanup.ts';
 import type { PiRuntimeVersions } from './native-agent/pi-runtime-version.ts';
 import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
@@ -39,7 +40,7 @@ import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
 export type StageStatus = 'running' | 'awaiting_user' | 'completed' | 'aborted' | 'failed';
 
 /** Stage names used in result file naming. */
-export type StageName = 'planning' | 'coding' | 'review' | 'ready';
+export type StageName = (typeof TASK_RESULT_STAGES)[number];
 
 /** How the orchestrator resolved execution identity for a stage result. */
 export type StageExecutionEvidenceStatus = 'direct' | 'missing' | 'contradicted' | 'inherited';
@@ -98,7 +99,7 @@ export interface StageExecutionEvidence {
 }
 
 /** Valid stage names for runtime validation. */
-const VALID_STAGES: readonly StageName[] = ['planning', 'coding', 'review', 'ready'] as const;
+const VALID_STAGES: readonly StageName[] = TASK_RESULT_STAGES;
 
 /** Valid status values for runtime validation. */
 const VALID_STATUSES: readonly StageStatus[] = ['running', 'awaiting_user', 'completed', 'aborted', 'failed'] as const;
@@ -826,30 +827,48 @@ export async function readStageResult(
   }
   try {
     const content = await fs.readFile(resultPath, 'utf-8');
-    if (!content.trim()) {
-      process.stderr.write(`stage-result: empty file at ${resultPath}\n`);
-      return null;
-    }
-    const parsed = JSON.parse(content) as StageResult;
-    const validation = validateSeamArtifactValue<StageResult>('stage-result', parsed);
-    if (!validation.ok) {
-      process.stderr.write(
-        `stage-result: invalid ${resultPath}: ${formatSeamErrors(validation.errors)}\n`,
-      );
-      return null;
-    }
-    if (validation.value.stage !== stage) {
-      process.stderr.write(
-        `stage-result: invalid ${resultPath}: INVALID_STAGE at $.stage: expected '${stage}', got '${validation.value.stage}'\n`,
-      );
-      return null;
-    }
-    return validation.value;
+    return parseStageResultContent(content, resultPath, stage);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       return null;
     }
     process.stderr.write(`stage-result: failed to read ${resultPath}: ${err}\n`);
+    return null;
+  }
+}
+
+/** Shared validation for asynchronous reads and the post-liveness recheck. */
+function parseStageResultContent(content: string, resultPath: string, stage: StageName): StageResult | null {
+  if (!content.trim()) {
+    process.stderr.write(`stage-result: empty file at ${resultPath}\n`);
+    return null;
+  }
+  const parsed = JSON.parse(content) as StageResult;
+  const validation = validateSeamArtifactValue<StageResult>('stage-result', parsed);
+  if (!validation.ok) {
+    process.stderr.write(
+      `stage-result: invalid ${resultPath}: ${formatSeamErrors(validation.errors)}\n`,
+    );
+    return null;
+  }
+  if (validation.value.stage !== stage) {
+    process.stderr.write(
+      `stage-result: invalid ${resultPath}: INVALID_STAGE at $.stage: expected '${stage}', got '${validation.value.stage}'\n`,
+    );
+    return null;
+  }
+  return validation.value;
+}
+
+/** Re-read current stage evidence after a synchronous progress probe. */
+export function readStageResultSync(featureDir: string, stage: StageName): StageResult | null {
+  const resultPath = getResultFilePath(featureDir, stage);
+  try {
+    return parseStageResultContent(readFileSync(resultPath, 'utf8'), resultPath, stage);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      process.stderr.write(`stage-result: failed to read ${resultPath}: ${err}\n`);
+    }
     return null;
   }
 }

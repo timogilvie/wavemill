@@ -16,9 +16,7 @@
  * `provider-identity.ts` — the same rule the live loop uses.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import type { IngestUsageInput } from '@hokusai/costs';
 import { extractOwnedSessionUsageRows } from './sdk-task-cost/measure.ts';
 import {
@@ -38,7 +36,7 @@ import {
   type ProviderIdentitySummary,
 } from './native-agent/provider-identity.ts';
 import type { StageExecutionEvidence, StageResult } from './stage-result.ts';
-import { resolveClaudeProjectsDirsFor } from './session-adapters.ts';
+import { resolveClaudeProjectsDirsFor, resolveCodexSessionRoots, nativeSessionFiles } from './session-adapters.ts';
 
 export type ExecutedModelResolverAgent = 'claude' | 'codex';
 export type ExecutedModelEvidenceSource =
@@ -326,6 +324,7 @@ export function resolveStageExecutedModel(
       harness,
       worktreePath: input.worktreePath,
       repoDir: input.repoDir,
+      featureDir: input.featureDir,
     });
     const resolved = resolveExecutedModelFromSessions({
       agent,
@@ -368,6 +367,7 @@ function buildExternalUsageRowsLookup(input: {
   ownership: readonly SessionOwnershipRow[];
   stage: OwnershipStage;
   harness: 'claude-code' | 'codex';
+  featureDir?: string;
   worktreePath: string;
   repoDir?: string;
 }): (sessionRef: string) => readonly IngestUsageInput[] {
@@ -379,8 +379,8 @@ function buildExternalUsageRowsLookup(input: {
   }
 
   const claudeRoots = input.harness === 'claude-code'
-    ? resolveClaudeProjectsDirsFor(stageRows.map(row => row.cwd || input.worktreePath), input.repoDir) : [];
-  const codexRoots = input.harness === 'codex' ? [codexSessionsRoot()] : [];
+    ? resolveClaudeProjectsDirsFor(stageRows.map(row => row.cwd || input.worktreePath), input.repoDir, undefined, input.featureDir) : [];
+  const codexRoots = input.harness === 'codex' ? resolveCodexSessionRoots(input.repoDir, undefined, input.featureDir) : [];
 
   let result: Map<string, readonly IngestUsageInput[]> | null = null;
   const build = (): Map<string, readonly IngestUsageInput[]> => {
@@ -406,10 +406,6 @@ function buildExternalUsageRowsLookup(input: {
     if (!result) result = build();
     return result.get(sessionRef) ?? [];
   };
-}
-
-function codexSessionsRoot(): string {
-  return join(homedir(), '.codex', 'sessions');
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -451,35 +447,6 @@ function isSessionStartedEvent(event: NativeEvent): event is NativeSessionStarte
 
 function isAssistantMessageEvent(event: NativeEvent): event is NativeAssistantMessageEvent {
   return event.type === 'assistant_message';
-}
-
-/** Candidate native-stream file locations, deduplicated. */
-function nativeStreamCandidates(input: {
-  featureDir: string;
-  repoDir?: string;
-  worktreePath?: string;
-  stage: OwnershipStage;
-}): string[] {
-  const dirs = new Set<string>();
-  const addRunsDir = (root?: string) => {
-    if (!root) return;
-    try {
-      const runsRoot = join(root, '.wavemill', 'runs');
-      if (!existsSync(runsRoot)) return;
-      for (const session of readdirSync(runsRoot)) {
-        const sessionDir = join(runsRoot, session, 'native-sessions');
-        if (existsSync(sessionDir)) dirs.add(sessionDir);
-      }
-    } catch {
-      // Unreadable runs dir: skip, best-effort.
-    }
-  };
-  addRunsDir(input.worktreePath);
-  addRunsDir(input.repoDir);
-  // HOK-3369 D5 step 2: archive layout keeps native-sessions beside the state.
-  const archiveDir = join(input.featureDir, 'native-sessions');
-  if (existsSync(archiveDir)) dirs.add(archiveDir);
-  return [...dirs];
 }
 
 function readSessionEvents(filePath: string): NativeEvent[] {
@@ -590,31 +557,10 @@ function resolveNativeExecutedModel(input: ResolveStageExecutedModelInput & {
   const latestAttemptRows = ownedRows.filter((row) => row.attemptId === latestLaunch.attemptId);
   const ownedRefs = new Set(latestAttemptRows.map((row) => row.sessionRef));
   const latestLaunchMs = Math.max(...latestAttemptRows.map(launchMs));
-  const candidateDirs = nativeStreamCandidates({
-    featureDir: input.featureDir,
-    repoDir: input.repoDir,
-    worktreePath: input.worktreePath,
-    stage: input.stage,
-  });
-
-  const streamFiles: string[] = [];
-  for (const dir of candidateDirs) {
-    try {
-      for (const name of readdirSync(dir)) {
-        if (!name.endsWith('.jsonl')) continue;
-        if (!name.startsWith(`${input.stage}-`)) continue;
-        const file = join(dir, name);
-        try {
-          const stat = statSync(file);
-          if (stat.isFile()) streamFiles.push(file);
-        } catch {
-          // Skipped: readdir entry no longer resolvable.
-        }
-      }
-    } catch {
-      // Dir disappeared mid-scan.
-    }
-  }
+  let streamFiles: string[] = [];
+  try { streamFiles = nativeSessionFiles({
+    featureDir: input.featureDir, repoDir: input.repoDir, worktreePath: input.worktreePath,
+  }); } catch { /* Missing/unreadable evidence stays missing. */ }
   if (streamFiles.length === 0) {
     return {
       executedModel: null,
