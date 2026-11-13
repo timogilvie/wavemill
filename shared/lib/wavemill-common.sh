@@ -326,8 +326,7 @@ _failure_policy_cli() {
 # The one path that publishes a task branch's head at a stage exit. Agents
 # commit; the mill publishes. Wraps tools/publish-stage-head.ts, which
 # verifies the local ref, fast-forwards the remote (never force), appends a
-# head-move/v1 row to <state_dir>/.head-moves.jsonl, and shadow-records the
-# push through the side-effect ledger (HOK-3183).
+# head-move/v1 row to <state_dir>/.head-moves.jsonl.
 #
 # Usage: publish_stage_head <wt_dir> <branch> <state_dir> <issue> <stage> <kind> [expected_sha]
 #   stage: planning|coding|review|ready|tend
@@ -8026,15 +8025,6 @@ record_post_reap_eval_outcome() {
     --arg failureKind "$failure_kind" --arg decisionClass "$decision_class" \
     --arg decisionAttribution "$decision_attribution" --arg decisionNextAction "$decision_next_action" \
     >/dev/null 2>&1 || true
-
-  # Shadow write: attempt to settle the eval step in the ledger. The step
-  # should already be settled (the task was reaped), so this will throw
-  # TaskSettledError. The audit value is the evidence row the ledger logs
-  # on the attempt (HOK-3186 S9). The CLI's shadow wrapper swallows errors.
-  # Note: this requires finding the active eval step for the issue, which is
-  # non-trivial for a reaped task. The acceptance proof is the S7 #4 fixture
-  # (post-reap-eval-write.json) which directly tests the settled-write rejection.
-  # Full implementation deferred until step lookup by issue is needed elsewhere.
 
   return 0
 }
