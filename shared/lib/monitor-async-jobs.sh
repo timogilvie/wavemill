@@ -110,8 +110,6 @@ monitor_async_job_launch() {
   : > "$log_path"
 
   (
-    # The ledger shadow mirror is for waiting-on markers, not job results.
-    export WAVEMILL_LEDGER_SHADOW_DISABLED=1
     launch_tracked_job "$kind" "$job_id" "$issue" "" "" "$pr_numbers" "$BASHPID" "$timeout_s" "$log_path" "$result_path" \
       >>"$log_path" 2>&1 || true
     local rc=0

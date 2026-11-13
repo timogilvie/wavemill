@@ -1,0 +1,4 @@
+# Allowlist for the condition-markers guard (HOK-3172/HOK-3452).
+#
+# Format: <repo-relative path> [<max findings>]  # <reason>
+# The list only shrinks. An entry is a whole-file exemption without a count.

@@ -3,9 +3,8 @@
  *
  * Agents commit; **the mill publishes**. `publishStageHead` is the single
  * path that moves a task branch's remote head at a stage exit: it verifies
- * the local ref, fast-forwards the remote (never force), appends one
- * `head-move/v1` row (`head-move-record.ts`) and shadow-records the push
- * through the side-effect ledger (`gitPushKey`, HOK-3183). A stage whose
+ * the local ref, fast-forwards the remote (never force) and appends one
+ * `head-move/v1` row (`head-move-record.ts`). A stage whose
  * commits cannot be published fails typed through `failure-policy.ts`; it
  * never leaves a silent local head.
  *
@@ -25,7 +24,6 @@
 import { execFileSync } from 'node:child_process';
 import { readStageResult } from './stage-result.ts';
 import { githubCreatePr, type GitHubToolDeps } from './native-agent/workflow-tools/github.ts';
-import { gitPushKey, shadowRecordSideEffect } from './side-effect-ledger.ts';
 import {
   appendHeadMove,
   lastRecordedHead,
@@ -369,14 +367,7 @@ export function publishStageHead(request: StageHeadPublicationRequest): StageHea
 
   if (remoteSha === localSha) {
     // Already published (the agent pushed, or `gh pr create` did). An
-    // observation, never a duplicate push (HOK-3183).
-    shadowRecordSideEffect({
-      kind: 'git-push',
-      idempotencyKey: gitPushKey(remote, branch, localSha),
-      result: { outcome: 'reused', source: 'stage-head-publication', stage: request.stage, moveKind: request.kind },
-      observation: true,
-      cwd: request.worktreeDir,
-    });
+    // observation, never a duplicate push.
     // Record the move once per head: a stage exit where nothing moved (the
     // record already ends at this head) appends nothing.
     let headMove: HeadMoveRow | null = null;
@@ -451,12 +442,6 @@ export function publishStageHead(request: StageHeadPublicationRequest): StageHea
   } catch (error) {
     return fail('push-failed', `push of ${branch} to ${remote} failed: ${errorMessage(error)}`, { localSha });
   }
-  shadowRecordSideEffect({
-    kind: 'git-push',
-    idempotencyKey: gitPushKey(remote, branch, localSha),
-    result: { outcome: 'pushed', source: 'stage-head-publication', stage: request.stage, moveKind: request.kind },
-    cwd: request.worktreeDir,
-  });
 
   // Upstream tracking is a convenience, never a correctness requirement.
   try {

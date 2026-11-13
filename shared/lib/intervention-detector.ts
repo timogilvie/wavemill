@@ -580,12 +580,12 @@ interface SessionTranscriptRead {
  * Claude Code writes `isMeta`, `isCompactSummary` and `entrypoint`; the nested
  * `provenance.*` object is kept as a fallback for older/other writers.
  */
-function readSessionUserMessages(worktreePath: string, branchName: string): SessionTranscriptRead {
+function readSessionUserMessages(worktreePath: string, branchName: string, repoDir?: string): SessionTranscriptRead {
   const messages: SessionUserMessage[] = [];
   let filesRead = 0;
   const seenFiles = new Set<string>();
   try {
-    const projectsDirs = resolveProjectsDirs(worktreePath).filter((projectsDir) => existsSync(projectsDir));
+    const projectsDirs = resolveProjectsDirs(worktreePath, repoDir).filter((projectsDir) => existsSync(projectsDir));
     if (projectsDirs.length === 0) return { messages, filesRead };
 
     let sessionFiles: string[];
@@ -644,8 +644,8 @@ function readSessionUserMessages(worktreePath: string, branchName: string): Sess
   return { messages, filesRead };
 }
 
-function findTranscriptEndMs(row: SessionOwnershipRow, worktreePath: string): number | undefined {
-  const dirs = resolveProjectsDirs(worktreePath).filter((d) => existsSync(d));
+function findTranscriptEndMs(row: SessionOwnershipRow, worktreePath: string, repoDir?: string): number | undefined {
+  const dirs = resolveProjectsDirs(worktreePath, repoDir).filter((d) => existsSync(d));
   for (const dir of dirs) {
     const file = join(dir, `${row.sessionRef}.jsonl`);
     if (!existsSync(file)) continue;
@@ -687,7 +687,7 @@ export function detectSessionRedirects(
     transcriptsRead: false,
   };
 
-  const { messages, filesRead } = readSessionUserMessages(worktreePath, branchName);
+  const { messages, filesRead } = readSessionUserMessages(worktreePath, branchName, repoDir);
   result.transcriptsRead = filesRead > 0;
   if (messages.length === 0) return result;
 
@@ -711,7 +711,7 @@ export function detectSessionRedirects(
   }
 
   result.ownedWindows = ownedSessionWindows(ownership.rows, (row) =>
-    findTranscriptEndMs(row, worktreePath),
+    findTranscriptEndMs(row, worktreePath, repoDir),
   );
 
   const redirections: SessionUserMessage[] = [];
@@ -1184,7 +1184,7 @@ export function detectManualEdits(opts: DetectOptions): ManualEditsResult {
     const exactRows = ownershipRead.rows.filter((row) => !row.kind.startsWith('helper:'));
     ownership = {
       rows: exactRows,
-      windows: ownedSessionWindows(exactRows, (row) => findTranscriptEndMs(row, opts.worktreePath ?? cwd)),
+      windows: ownedSessionWindows(exactRows, (row) => findTranscriptEndMs(row, opts.worktreePath ?? cwd, opts.repoDir)),
       hasRows: exactRows.length > 0,
     };
   }

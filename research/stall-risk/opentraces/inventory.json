@@ -1,0 +1,65 @@
+{
+  "checked_at": "2026-11-13T16:08:26.809101+00:00",
+  "endpoints": {
+    "catalogue": {
+      "url": "https://huggingface.co/api/datasets?author=OpenTraces",
+      "sha256": "729a4462e410511137af30030e1bab192d0f6560e5530338422d152a6f5951c7",
+      "status": "fetched"
+    },
+    "github": {
+      "url": "https://api.github.com/repos/JayFarei/opentraces",
+      "sha256": "5ea48de32c4bc605a4d80ed9f2bf61cd9a20038fb985232d01b1a6123c56d28f",
+      "status": "fetched"
+    },
+    "license": {
+      "url": "https://api.github.com/repos/JayFarei/opentraces/license",
+      "sha256": "7d8f252d2a52755affebdb39adc97c78099307ebfb0e76b867f04fd04389f1f1",
+      "status": "fetched"
+    },
+    "schema": {
+      "url": "https://www.opentraces.ai/schema/latest",
+      "sha256": "eb3f8c3ebc755c17ef1e23fc72efec099d6ca3b2b94a440b00ddabba749aa42f",
+      "status": "fetched"
+    },
+    "outcomes": {
+      "url": "https://www.opentraces.ai/docs/schema/outcome-attribution",
+      "sha256": "0afcabbbc13a0f32305bb4b8faeae94e896fee2404294793f54d1d9b58c696c2",
+      "status": "fetched"
+    }
+  },
+  "public_datasets": [
+    {
+      "id": "OpenTraces/opentraces-runtime",
+      "sha": "778faed3c7d7a36089324f4f3f5bab66bf77f2ad",
+      "gated": false,
+      "private": false,
+      "lastModified": "2026-04-01T00:36:53.000Z",
+      "license": "cc-by-4.0"
+    },
+    {
+      "id": "OpenTraces/opentraces-devtime",
+      "sha": "22b0d09856d7f59d3de034682e8f5daac5780db8",
+      "gated": false,
+      "private": false,
+      "lastModified": "2026-04-01T12:24:45.000Z",
+      "license": "cc-by-4.0"
+    },
+    {
+      "id": "OpenTraces/lambda-hermes-agent-reasoning-opentraces",
+      "sha": "617a8e0c6942b392c017e5d7f4e05af83ec6b515",
+      "gated": false,
+      "private": false,
+      "lastModified": "2026-04-02T22:26:20.000Z",
+      "license": "cc-by-4.0"
+    }
+  ],
+  "github": {
+    "url": "https://github.com/JayFarei/opentraces",
+    "default_branch": "main",
+    "archived": false,
+    "pushed_at": "2026-10-28T14:39:53Z",
+    "license_spdx": "NOASSERTION",
+    "license_blob_sha": "d7ca6d6f24729ef54608d4c9fa85179ada7b0adc",
+    "license_url": "https://github.com/JayFarei/opentraces/blob/main/LICENSE"
+  }
+}

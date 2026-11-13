@@ -51,9 +51,6 @@ import { appendObserverFinding } from '../shared/lib/observer-findings.ts';
 import { mutatorRejectionsPath, type MutatorRejectionRecord } from '../shared/lib/task-settlement.ts';
 import { readEscalationMarker } from '../shared/lib/operator-escalation.ts';
 import type { TaskProgress } from '../shared/lib/task-progress.ts';
-import { Ledger } from '../shared/lib/ledger.ts';
-import { runConsistencyCheck } from '../shared/lib/ledger-consistency.ts';
-import { withShadowSuppressing } from '../shared/lib/ledger-shadow.ts';
 
 // ── Local helpers ────────────────────────────────────────────────────────────
 
@@ -474,10 +471,7 @@ async function runCheck(args: ToolArgs): Promise<void> {
 
   const { violations: structural, nextCache } = evaluateInvariants(inputs);
 
-  // Ledger-consistency findings: route each disagreement into a violation.
-  const ledgerViolations = runLedgerConsistency(repoDir, state, nowMs);
-
-  const allViolations = [...structural, ...ledgerViolations];
+  const allViolations = [...structural];
 
   // Append JSONL lines for NEW signatures only (dedup against previous cache).
   const newLines: string[] = [];
@@ -527,57 +521,6 @@ function formatFindingBody(v: InvariantViolation): string {
     lines.push(`${k}: ${truncated}`);
   }
   return lines.join('\n');
-}
-
-function runLedgerConsistency(repoDir: string, state: WorkflowState, nowMs: number): InvariantViolation[] {
-  const out: InvariantViolation[] = [];
-  const nowIso = new Date(nowMs).toISOString();
-  const impl = (): InvariantViolation[] => {
-    const ledger = Ledger.open({ repoDir });
-    try {
-      for (const [taskId, task] of workflowTaskEntries(state)) {
-        const stateDir = stateDirFor(task);
-        if (!stateDir) continue;
-        try {
-          const result = runConsistencyCheck({
-            stateDir,
-            issue: taskId,
-            ledger,
-            nowMs,
-          });
-          for (const d of result.disagreements) {
-            const sig = `ledger-${d.category}:task=${taskId}:${d.stepId ?? d.bucket ?? d.trigger ?? ''}`;
-            out.push({
-              invariantId: `ledger-${d.category}`,
-              taskId,
-              severity: 'urgent',
-              detectedAt: nowIso,
-              evidence: {
-                category: d.category,
-                severity: d.severity,
-                detail: d.detail,
-                stepId: d.stepId,
-                bucket: d.bucket,
-                trigger: d.trigger,
-              },
-              signature: sig,
-            });
-          }
-        } catch {
-          // best-effort per task
-        }
-      }
-      return out;
-    } finally {
-      try {
-        ledger.close();
-      } catch {
-        // best-effort
-      }
-    }
-  };
-  const result = withShadowSuppressing(impl);
-  return Array.isArray(result) ? result : out;
 }
 
 function writeResultMarker(path: string | undefined, payload: Record<string, unknown>): void {

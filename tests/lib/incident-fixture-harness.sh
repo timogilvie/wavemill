@@ -30,6 +30,14 @@ source "$INCIDENT_REPO_DIR/shared/lib/terminal-backend.sh"
 # schedule still override this (see tests/cleanup-episodes.test.sh).
 export WAVEMILL_CLEANUP_EPISODE_BACKOFF_BASE_SECONDS="${WAVEMILL_CLEANUP_EPISODE_BACKOFF_BASE_SECONDS:-86400}"
 
+# Fixtures replay real incidents under their real issue IDs and run the real
+# controller with DRY_RUN=false, so a Linear write from here lands on the live
+# issue. The npx shim below does not stop it: wavemill_run_tool spawns tools
+# with `node` directly and never calls npx. Dropping the key does, because
+# shared/lib/linear.ts refuses to send a request without one. That is the "no
+# network available" outcome the controller already tolerates.
+unset LINEAR_API_KEY
+
 INCIDENT_COMMON_SCRIPT="$INCIDENT_REPO_DIR/shared/lib/wavemill-common.sh"
 INCIDENT_MONITOR_SCRIPT="$INCIDENT_REPO_DIR/shared/lib/wavemill-monitor.sh"
 INCIDENT_MILL_SCRIPT="$INCIDENT_REPO_DIR/shared/lib/wavemill-mill.sh"
@@ -422,7 +430,9 @@ record_pr_deleted_branch() {
 # classifiers) is best-effort and already wrapped in `|| true` / `2>/dev/null`
 # by the production code, so a shim that simply fails for anything else is
 # both safe and faithful - it reproduces "no network available", which the
-# real helpers already tolerate.
+# real helpers already tolerate. Tools spawned through wavemill_run_tool do
+# not pass through this shim; Linear is closed off by the `unset
+# LINEAR_API_KEY` at the top of this file instead.
 incident_scenario_npx_shim() {
   cat > "$BIN_DIR/npx" <<SHIM
 #!/usr/bin/env bash

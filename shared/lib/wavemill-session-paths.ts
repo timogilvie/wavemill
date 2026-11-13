@@ -9,8 +9,8 @@
  * @module wavemill-session-paths
  */
 
-import { existsSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 
 /** Claude Code caps project directory names at this many characters. */
@@ -60,41 +60,86 @@ export function resolveProjectsDir(worktreePath: string): string {
 }
 
 /**
+ * The main checkout a linked worktree belongs to, read from the worktree's
+ * `.git` pointer file (`gitdir: <main>/.git/worktrees/<name>`). No git spawn:
+ * this runs on the monitor's hot pass. Null for a main checkout, a missing
+ * directory, or anything unreadable.
+ */
+function mainCheckoutOf(worktreePath: string): string | null {
+  try {
+    const pointer = readFileSync(join(worktreePath, '.git'), 'utf8');
+    const gitDir = /^gitdir:\s*(.+)$/m.exec(pointer)?.[1]?.trim();
+    if (!gitDir) return null;
+    const absolute = isAbsolute(gitDir) ? gitDir : resolve(worktreePath, gitDir);
+    const marker = `${join('.git', 'worktrees')}`;
+    const at = absolute.lastIndexOf(marker);
+    return at > 0 ? resolve(absolute.slice(0, at)) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Directories whose `.wavemill/runs/` may hold a DeepSeek-provider home for
+ * work done in `worktreePath`.
+ *
+ * The launcher (`agent_deepseek_state_dir`) writes the home under the milled
+ * repo — the main checkout — not under the task worktree, so the worktree
+ * alone never finds it. The main checkout is found three ways because the
+ * worktree is often gone by the time cost is read (post-merge eval): its
+ * `.git` pointer while it exists, the `<repo>/worktrees/<slug>` layout, and
+ * the mill's own repo-dir environment. An explicit repository root takes
+ * precedence over inference and keeps unrelated provider homes out.
+ */
+function deepSeekRunRoots(worktreePath: string, repoDir?: string): string[] {
+  const worktree = resolve(worktreePath);
+  if (repoDir) return [...new Set([worktree, resolve(repoDir)])];
+  const roots = [
+    worktree,
+    mainCheckoutOf(worktree),
+    dirname(worktree),
+    dirname(dirname(worktree)),
+    process.env.WAVEMILL_MILLED_REPO_DIR,
+    process.env.REPO_DIR,
+  ];
+  return [...new Set(roots.filter((root): root is string => Boolean(root)).map((root) => resolve(root)))];
+}
+
+/**
  * Every Claude projects directory that may hold sessions for a worktree: the
  * user's own, plus one per DeepSeek-provider run home under
- * `<worktree>/.wavemill/runs/<run>/providers/deepseek/home/`.
+ * `<root>/.wavemill/runs/<run>/providers/deepseek/home/`, for each root in
+ * {@link deepSeekRunRoots}. Every candidate is keyed by the worktree's own
+ * encoded path, so a wider search cannot pick up another task's sessions.
  */
-export function resolveProjectsDirs(worktreePath: string): string[] {
+export function resolveProjectsDirs(worktreePath: string, repoDir?: string): string[] {
   const encoded = encodeProjectDir(worktreePath);
   const dirs = [resolveProjectsDir(worktreePath)];
-  const runsDir = join(resolve(worktreePath), '.wavemill', 'runs');
 
-  if (!existsSync(runsDir)) {
-    return dirs;
-  }
+  for (const root of deepSeekRunRoots(worktreePath, repoDir)) {
+    const runsDir = join(root, '.wavemill', 'runs');
+    if (!existsSync(runsDir)) continue;
 
-  try {
-    for (const runEntry of readdirSync(runsDir, { withFileTypes: true })) {
-      if (!runEntry.isDirectory()) {
-        continue;
+    try {
+      for (const runEntry of readdirSync(runsDir, { withFileTypes: true })) {
+        if (!runEntry.isDirectory()) continue;
+        const providerProjectsDir = join(
+          runsDir,
+          runEntry.name,
+          'providers',
+          'deepseek',
+          'home',
+          '.claude',
+          'projects',
+          encoded,
+        );
+        if (existsSync(providerProjectsDir)) {
+          dirs.push(providerProjectsDir);
+        }
       }
-
-      const providerProjectsDir = join(
-        runsDir,
-        runEntry.name,
-        'providers',
-        'deepseek',
-        'home',
-        '.claude',
-        'projects',
-        encoded,
-      );
-      if (existsSync(providerProjectsDir)) {
-        dirs.push(providerProjectsDir);
-      }
+    } catch {
+      // An unreadable runs directory contributes nothing; keep the others.
     }
-  } catch {
-    return dirs;
   }
 
   return [...new Set(dirs)];

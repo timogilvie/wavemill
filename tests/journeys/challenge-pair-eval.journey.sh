@@ -98,8 +98,12 @@ if [[ "${JOURNEY_EVAL_EXHAUSTION:-0}" == 1 ]]; then printf 'WAVEMILL_EVAL_HARD_F
 export JOURNEY_WINNER_LINE="implemented $WINNER"
 export PATH="$FIXTURE_DIR/bin:$PATH"
 
-export JOURNEY_EVAL_FAULT="$JOURNEY_TMP/eval-fault"
-: > "$JOURNEY_EVAL_FAULT"
+# A sourcing variant may run the pair without an eval fault armed
+# (JOURNEY_EVAL_NO_FAULT=1), so the state it seeds is the only failure.
+if [[ "${JOURNEY_EVAL_NO_FAULT:-0}" != "1" ]]; then
+  export JOURNEY_EVAL_FAULT="$JOURNEY_TMP/eval-fault"
+  : > "$JOURNEY_EVAL_FAULT"
+fi
 journey_start_monitor
 # Two arms run the whole plan→ready chain, each eval'd, then compared — about
 # twice a single-task journey's waits. A sourcing variant may raise this by
@@ -186,7 +190,9 @@ PRIMARY_SLUG="$(field "$ISSUE" slug)"
 CHALLENGER_SLUG="$(field "$CHALLENGER" slug)"
 journey_wait_until "$ISSUE" 25 "both arms opened a PR"              both_prs_open
 eval_failure_observed() { pair_tick; grep -q 'challenge eval failed for' "$JOURNEY_TMP/logs/status.log"; }
-journey_wait_until "$ISSUE" 20 "eval harness fault detected" eval_failure_observed
+if [[ "${JOURNEY_EVAL_NO_FAULT:-0}" != "1" ]]; then
+  journey_wait_until "$ISSUE" 20 "eval harness fault detected" eval_failure_observed
+fi
 if [[ "${JOURNEY_EVAL_EXHAUSTION:-0}" == 1 ]]; then
   exhausted() { [[ "$(field "$ISSUE" comparisonState)" == manual_comparison_needed ]]; }
   journey_wait_until "$ISSUE" 30 "repeated harness fault exhausted its existing budget" exhausted
@@ -202,7 +208,7 @@ if [[ "${JOURNEY_EVAL_EXHAUSTION:-0}" == 1 ]]; then
   journey_finish
   exit 0
 fi
-rm -f "$JOURNEY_EVAL_FAULT"
+if [[ -n "${JOURNEY_EVAL_FAULT:-}" ]]; then rm -f "$JOURNEY_EVAL_FAULT"; fi
 journey_wait_until "$ISSUE" 25 "the mill compared the pair"         comparison_recorded
 WINNER_PR="$(arm_pr "$WINNER")"
 LOSER_PR="$(arm_pr "$LOSER")"
