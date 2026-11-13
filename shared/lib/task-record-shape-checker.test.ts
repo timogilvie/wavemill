@@ -105,4 +105,25 @@ describe('checkTaskRecordShapes', () => {
       rmSync(repo, { recursive: true, force: true });
     }
   });
+
+  // protects: a deleted file's exemption silently surviving its deletion (HOK-3275)
+  it('flags an allowlist entry whose file no longer exists', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'task-record-shape-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: repo });
+      mkdirSync(join(repo, 'shared', 'lib'), { recursive: true });
+      mkdirSync(join(repo, 'tools'), { recursive: true });
+      writeFileSync(join(repo, TASK_RECORD_SHAPE_ALLOWLIST_FILE), 'shared/lib/gone.ts # reason\n');
+      execFileSync('git', ['add', '.'], { cwd: repo });
+
+      const result = checkTaskRecordShapes(repo);
+      assert.equal(result.ok, false);
+      assert.deepEqual(
+        result.findings.map((finding) => `${finding.file}:${finding.pattern}`),
+        [`${TASK_RECORD_SHAPE_ALLOWLIST_FILE}:allowlist-stale`],
+      );
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
 });
