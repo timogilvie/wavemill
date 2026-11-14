@@ -23,6 +23,7 @@ test('retained 160-turn failed planning incident becomes a verified, costed v4 c
     if (!converted.ok) return;
     // Incident HOK-3471: route selectors use registry aliases while native
     // executions report provider IDs. Reuse observed identity at the boundary.
+    // allow-source-text-assertion: this reads recorded incident JSON, never implementation source.
     const incident = JSON.parse(readFileSync(new URL('../../tests/fixtures/incidents/hok3471-feedback-route.json', import.meta.url), 'utf8'));
     converted.submission.route_taken.planner_model = incident.routeModels.planner;
     const projection = buildHokusaiV4Projection(converted.submission, prepared.record, world.meteredCost, { repoDir, redactionSalt: 'test' });
