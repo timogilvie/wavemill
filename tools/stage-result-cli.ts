@@ -34,6 +34,10 @@ import type {
   StageArtifacts,
   StageExecutionEvidence,
 } from '../shared/lib/stage-result.ts';
+import { join } from 'node:path';
+import { readWorkflowState } from '../shared/lib/workflow-state.ts';
+import { resolveBranchTask } from '../shared/lib/pr-task-resolver.ts';
+import { parseExpectedRunIds } from '../shared/lib/task-settlement.ts';
 import { applyReviewAnalysisIdentity } from '../shared/lib/review-analysis-identity.ts';
 import {
   resolveStageExecutedModel,
@@ -104,6 +108,20 @@ function evidenceContext(featureDir: string, stage: StageName): {
     }
   }
   return { worktreePath, branchName, repoDir };
+}
+
+/** Stamp at launch; a late completion preserves its launch's identity. */
+function stageRunId(featureDir: string, stage: StageName, status: StageStatus, flags: Record<string,string>, existing: StageResult | null): string | null | undefined {
+  if (flags['run-id']) return flags['run-id'];
+  if (status !== 'running') return existing?.runId;
+  const ctx = evidenceContext(featureDir, stage);
+  if (!ctx.repoDir || !ctx.branchName) return undefined;
+  const state = readWorkflowState(join(ctx.repoDir, '.wavemill', 'workflow-state.json'));
+  if (!state) return undefined;
+  const resolved = resolveBranchTask(state, ctx.branchName, { site: 'stage-result.launch-run' });
+  if (!resolved.location || resolvePath(resolved.location.featureDir) !== resolvePath(featureDir)) return undefined;
+  return parseExpectedRunIds(process.env.WAVEMILL_EXPECTED_RUN_ID)?.[resolved.location.taskId]
+    ?? resolved.location.task.runId;
 }
 
 /**
@@ -227,6 +245,7 @@ Subcommands:
   update <feature_dir> <stage>           Update an existing stage result
 
 Options (write/update):
+  --run-id <id>             Task run captured by the launcher
   --agent <name>            Agent identifier
   --model <name>            Model identifier
   --notes <text>            Human-readable notes
@@ -358,6 +377,7 @@ async function main(): Promise<void> {
     const result: StageResult = {
       stage,
       status,
+      runId: stageRunId(featureDir, stage, status, writeFlags, existing),
       startedAt,
       finishedAt,
       agent: writeFlags['agent'] ?? existing?.agent ?? '',

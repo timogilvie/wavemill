@@ -43,7 +43,7 @@ assert.equal(invoke({...failed,failure:null,stageResult:{kind:'running'},disposi
 // CLI consumes the authoritative completion and cannot claim a second retry.
 const first = invoke(failed,'pre-effect');
 assert.equal(first.claim.claimed,true);
-writeFileSync(join(dir,'.coding-result.json'),JSON.stringify({stage:'coding',status:'completed',agent:'claude',
+writeFileSync(join(dir,'.coding-result.json'),JSON.stringify({stage:'coding',status:'completed',runId:'recovery-run',agent:'claude',
   startedAt:new Date().toISOString(),finishedAt:new Date(Date.now()+1000).toISOString()}));
 const recovered = invoke(failed,'post-effect');
 assert.equal(recovered.decision.action,'consume-advance');

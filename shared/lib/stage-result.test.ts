@@ -17,6 +17,7 @@ import {
   appendReviewIteration,
   existingReviewIterations,
   nextReviewIterationNumber,
+  stageResultRunIdentity,
   writeStageResult,
   writeStageResultWithHistory,
   readStageResult,
@@ -1473,5 +1474,42 @@ describe('executionTruthFields merge rule (HOK-3369)', () => {
       latestLaunchAt: null,
     });
     assert.equal(fields.executionEvidence?.status, 'direct');
+  });
+});
+
+// protects: a native completion preserves its launch stamp; a late writer
+// cannot adopt the stamp of a replacement result already owning the path.
+describe('stage result task-run identity', () => {
+  it('CLI preserves an explicit launch run when completing a stage', async () => {
+    const dir=await fs.mkdtemp(path.join(os.tmpdir(),'stage-run-cli-'));
+    try {
+      execFileSync(process.execPath,['tools/stage-result-cli.ts','write',dir,'coding','running','--run-id','original-run'],{cwd:process.cwd(),env:{...process.env,NODE_OPTIONS:'--experimental-strip-types --disable-warning=ExperimentalWarning'}});
+      execFileSync(process.execPath,['tools/stage-result-cli.ts','write',dir,'coding','completed'],{cwd:process.cwd(),env:{...process.env,NODE_OPTIONS:'--experimental-strip-types --disable-warning=ExperimentalWarning',WAVEMILL_EXPECTED_RUN_ID:'HOK-1=replacement-run'}});
+      assert.equal((await readStageResult(dir,'coding'))?.runId,'original-run');
+    } finally {await fs.rm(dir,{recursive:true,force:true});}
+  });
+
+  it('keeps the launch run on completion and never relabels a different launch', async () => {
+    const dir=await fs.mkdtemp(path.join(os.tmpdir(),'stage-run-'));
+    try {
+      const startedAt='2026-11-14T10:00:00Z';
+      const launch={stage:'coding' as const,status:'running' as const,runId:'original-run',startedAt,finishedAt:null,agent:'claude',model:'model',notes:''};
+      await writeStageResult(dir,launch);
+      const {runId,...completion}=launch;
+      await writeStageResult(dir,{...completion,status:'completed'});
+      assert.equal((await readStageResult(dir,'coding'))?.runId,'original-run');
+      await writeStageResult(dir,{...launch,runId:'replacement-run',startedAt:'2026-11-14T11:00:00Z'});
+      await writeStageResult(dir,{...completion,status:'completed'});
+      const late=await readStageResult(dir,'coding');
+      assert.equal(late?.runId,undefined);
+      assert.equal(stageResultRunIdentity(late!,'HOK-1:epoch:1794668400'),'stale');
+    } finally {await fs.rm(dir,{recursive:true,force:true});}
+  });
+  it('uses exact run stamps and treats missing legacy launch evidence as unknown', () => {
+    const run='HOK-1:epoch:1794600000';
+    assert.equal(stageResultRunIdentity({runId:run,startedAt:''},run),'current');
+    assert.equal(stageResultRunIdentity({runId:'old',startedAt:new Date().toISOString()},run),'stale');
+    assert.equal(stageResultRunIdentity({startedAt:''},run),'unverifiable');
+    assert.equal(stageResultRunIdentity({startedAt:''},null),'legacy');
   });
 });

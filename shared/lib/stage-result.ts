@@ -30,6 +30,7 @@ import type { ReadyRemediationDecision } from './native-agent/workflow-tools/rea
 export type { ReadyRemediationDecision } from './native-agent/workflow-tools/ready-remediation.ts';
 import type { ReviewExecutedIdentitySet } from './challenge-execution-contract.ts';
 export type { ReviewExecutedIdentitySet, ExecutedIdentity, ExecutedIdentityRole } from './challenge-execution-contract.ts';
+import { isSameRunId, runIdStartedAt } from './attempt-identity.ts';
 import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
 
 // ────────────────────────────────────────────────────────────────
@@ -475,6 +476,8 @@ export type StageArtifacts = (
  * compatibility with files created before HOK-1192.
  */
 export interface StageResult {
+  /** Task run captured at launch, when available. Never reassigned on completion. */
+  runId?: string | null;
   stage: StageName;
   status: StageStatus;
   startedAt: string;
@@ -520,7 +523,7 @@ export interface StageResult {
 
 export type StageResultHistoryEntry = Pick<
   StageResult,
-  'status' | 'agent' | 'model' | 'intendedModel' | 'executedModel' | 'startedAt' | 'finishedAt' | 'notes'
+  'runId' | 'status' | 'agent' | 'model' | 'intendedModel' | 'executedModel' | 'startedAt' | 'finishedAt' | 'notes'
 > & {
   error?: string;
   failureReason?: string | null;
@@ -1139,6 +1142,11 @@ export async function writeStageResult(
   result: StageResult,
 ): Promise<void> {
   await fs.mkdir(featureDir, { recursive: true });
+  if (result.runId === undefined && result.status !== 'running' && result.startedAt) {
+    const launched = await readStageResult({ featureDir, stage: result.stage });
+    // A different launch may already own the path. Never relabel late bytes.
+    if (launched?.runId && launched.startedAt === result.startedAt) result = { ...result, runId: launched.runId };
+  }
 
   const validation = validateSeamArtifactValue('stage-result', result);
   if (!validation.ok) {
@@ -1202,6 +1210,7 @@ export async function writeStageResultWithHistory(
   const historyEntry: StageResultHistoryEntry[] = shouldArchive && existing
     ? [{
       status: existing.status,
+      runId: existing.runId,
       agent: existing.agent,
       model: existing.model,
       startedAt: existing.startedAt,
@@ -1251,4 +1260,15 @@ export function isValidStatus(value: string): value is StageStatus {
 
 function formatSeamErrors(errors: readonly { code: string; path: string; message: string }[]): string {
   return errors.map((error) => `${error.code} at ${error.path}: ${error.message}`).join('; ');
+}
+
+/** Current-run completion gate. Older artifacts predate explicit run stamps;
+ * their launch timestamp must fall inside the canonical task-run boundary. */
+export function stageResultRunIdentity(result: Pick<StageResult, 'runId' | 'startedAt'>, currentRunId: string | null): 'current' | 'stale' | 'unverifiable' | 'legacy' {
+  if (!currentRunId) return 'legacy';
+  if (result.runId) return isSameRunId(result.runId, currentRunId) ? 'current' : 'stale';
+  const boundary = runIdStartedAt(currentRunId);
+  const started = Date.parse(result.startedAt);
+  if (boundary === null || !Number.isFinite(started)) return 'unverifiable';
+  return started < boundary ? 'stale' : 'current';
 }

@@ -11,7 +11,7 @@ import type { StageAgentDisposition } from './stage-agent-disposition.ts';
 import { mutateJsonStateSync } from './state-mutex.ts';
 import { acquireStateLockSync, releaseStateLock } from './state-lock.ts';
 import { readWorkflowState } from './workflow-state.ts';
-import { readStageResult, type StageResult } from './stage-result.ts';
+import { readStageResult, stageResultRunIdentity, type StageResult } from './stage-result.ts';
 import { readOwnershipRows } from './session-ownership.ts';
 import { archiveLateStageEvidence } from './task-evidence-archive.ts';
 import { isSettled } from './task-settlement.ts';
@@ -430,7 +430,7 @@ export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decisio
       if (snapshot.evidence?.stageResult && args.runId) {
         archiveLateStageEvidence({ issueId: snapshot.issue, slug: basename(args.stateDir),
           repoDir: dirname(dirname(args.stateFile)), worktreeDir: dirname(dirname(args.stateDir)),
-          runId: args.runId, result: snapshot.evidence.stageResult });
+          runId: snapshot.evidence.stageResult.runId ?? args.runId, result: snapshot.evidence.stageResult });
       }
       recordRecoveryAction(args.stateDir, { at: new Date().toISOString(), issue: snapshot.issue,
         stage: snapshot.stage, action: selected.action, runId: args.runId, evidenceId: args.evidenceId,
@@ -440,6 +440,18 @@ export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decisio
     const result = await readStageResult(args.stateDir, snapshot.stage);
     let claim = readRecoveryClaim(args.stateDir);
     if (result?.status === 'completed' || result?.status === 'awaiting_user') {
+      const identity = stageResultRunIdentity(result, snapshot.attempt.currentRunId);
+      if (identity === 'stale' || identity === 'unverifiable') {
+        if (identity === 'stale' && args.runId) {
+          archiveLateStageEvidence({ issueId: snapshot.issue, slug: basename(args.stateDir),
+            repoDir: dirname(dirname(args.stateFile)), worktreeDir: dirname(dirname(args.stateDir)),
+            runId: result.runId ?? `before:${args.runId}`, result });
+        }
+        return { decision: decision(snapshot.stage, identity === 'stale' ? 'reject-stale-control' : 'wait',
+          `stage result ${identity} for the current task run; retaining evidence without advancing`,
+          identity === 'unverifiable' ? {wait:{owner:'tool',wake:'stage-identity-resolved'}} : {}),
+          claim: { claimed: false, reason: 'stale-run' } };
+      }
       snapshot = { ...snapshot, stageResult: { kind: 'valid', status: result.status }, failure: null,
         wait: result.status === 'awaiting_user' ? { owner: 'human', wake: 'operator-release' } : snapshot.wait };
     } else if (result?.status === 'running') {
@@ -468,8 +480,8 @@ export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decisio
       // result; replay uses the same bounded retry, never another model.
     }
   }
-  const decision = decideTaskRecovery(snapshot);
-  return { decision, claim: claimRecoveryAction({ ...args, decision }) };
+  const selected = decideTaskRecovery(snapshot);
+  return { decision: selected, claim: claimRecoveryAction({ ...args, decision: selected }) };
 }
 
 export async function runControllerCli(): Promise<void> {

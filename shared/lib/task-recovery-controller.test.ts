@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import test from 'node:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -180,29 +181,45 @@ test('a settled agent at a recognised blocking prompt escalates once', () => {
 
 // ── claim seam ─────────────────────────────────────────────────────────────────
 
-test('concurrent notifications for the same condition produce exactly one claim', () => {
-  const dir = freshDir();
+test('simultaneous Monitor Tend and Observer processes produce exactly one claim', async () => {
+  const dir=freshDir();
+  const children: ReturnType<typeof spawn>[]=[];
   try {
-    const d = decideTaskRecovery(snapshot({
-      attempt: { currentRunId: 'HOK-1:9:200', controlRunId: 'HOK-1:9:200' },
-      stageResult: { kind: 'failed' },
-      failure: retryableFailure('proceed'),
-    }));
-    const args = { stateDir: dir, decision: d, runId: 'HOK-1:9:200', evidenceId: 'ev-abc' };
-    const first = claimRecoveryAction(args);
-    const second = claimRecoveryAction(args);
-    const third = claimRecoveryAction(args);
-    assert.equal(first.claimed, true);
-    assert.equal(second.claimed, false);
-    assert.equal(third.claimed, false);
-    if (!second.claimed) assert.equal(second.reason, 'already-claimed');
-    // The persisted claim is the one winner's.
-    const persisted = readRecoveryClaim(dir);
-    assert.ok(persisted);
-    assert.equal(persisted?.action, 'retry-stage');
-    assert.equal(persisted?.runId, 'HOK-1:9:200');
+    const stateFile=join(dir,'workflow-state.json');
+    const runId='HOK-1:epoch:1794600000';
+    writeFileSync(stateFile,JSON.stringify(buildWorkflowState({'HOK-1':{runId}})));
+    const selected=decideTaskRecovery(snapshot({stageResult:{kind:'failed'},failure:retryableFailure('proceed')}));
+    const args={stateDir:dir,stateFile,issue:'HOK-1',decision:selected,runId,evidenceId:'same-obligation',ownerPid:process.pid};
+    const script=`import {claimRecoveryAction} from ${JSON.stringify(new URL('./task-recovery-controller.ts',import.meta.url).href)};
+      process.stdout.write('ready\\n');
+      await new Promise(resolve=>process.stdin.once('data',resolve));
+      process.stdout.write(JSON.stringify(claimRecoveryAction(JSON.parse(process.argv[1])))+'\\n');`;
+    const launches=['Monitor','Tend','Observer'].map(() => {
+      const child=spawn(process.execPath,['--import','tsx','--input-type=module','-e',script,JSON.stringify(args)],{timeout:30000});
+      children.push(child);
+      let output='',errors='';
+      let markReady:()=>void;
+      let rejectReady:(error:Error)=>void;
+      const ready=new Promise<void>((resolve,reject)=>{markReady=resolve;rejectReady=reject;});
+      const done=new Promise<any>((resolve,reject)=>{
+        child.stdout!.on('data',data=>{output+=data; if(output.includes('ready\n')) markReady();});
+        child.stderr!.on('data',data=>{errors+=data;});
+        child.on('error',error=>{rejectReady(error);reject(error);});
+        child.on('exit',code=>{if(code!==0) {const error=new Error(errors||`child exit ${code}`);rejectReady(error);reject(error);}
+          else resolve(JSON.parse(output.trim().split('\n').at(-1)!));});
+      });
+      done.catch(()=>{});
+      return {child,ready,done};
+    });
+    await Promise.all(launches.map(p=>p.ready));
+    for(const p of launches) p.child.stdin!.end('go');
+    const outcomes=await Promise.all(launches.map(p=>p.done));
+    assert.equal(outcomes.filter(o=>o.claimed).length,1);
+    assert.equal(outcomes.filter(o=>o.reason==='already-claimed').length,2);
+    assert.equal(readRecoveryClaim(dir)?.runId,runId);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    for(const child of children) if(child.exitCode===null) child.kill();
+    rmSync(dir,{recursive:true,force:true});
   }
 });
 
@@ -327,7 +344,7 @@ test('a dead controller claim is reconciled from observed stage state before rep
     // Missing/running output is uncertain: verify instead of repeating a launch.
     assert.equal((await reconcileAndRecover(args)).decision.action, 'verify-effect');
     // A terminal result written after effect application is consumed, never rerun.
-    const result = { stage: 'coding', status: 'completed', agent: 'claude', startedAt: '2026-11-13T00:00:00Z', finishedAt: '2026-11-13T00:01:00Z' };
+    const result = { stage: 'coding', status: 'completed', runId: 'run', agent: 'claude', startedAt: '2026-11-13T00:00:00Z', finishedAt: '2026-11-13T00:01:00Z' };
     writeFileSync(join(dir, '.coding-result.json'), JSON.stringify(result));
     const recovered = await reconcileAndRecover(args);
     assert.equal(recovered.decision.action, 'consume-advance');
@@ -423,4 +440,25 @@ test('fresh live ownership acknowledges an applied launch without retrying it', 
     assert.equal(observed.claim.claimed,false);
     assert.ok(readRecoveryClaim(dir)?.acknowledgedAt);
   } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+// protects: a current notification cannot adopt completion bytes from an older launch.
+test('on-disk completions are checked independently against the current task run', async () => {
+  for(const stamped of [true,false]) {
+    const dir=freshDir();
+    try {
+      const fd=join(dir,'features','replaced'); mkdirSync(fd,{recursive:true});
+      const stateFile=join(dir,'.wavemill','workflow-state.json'); mkdirSync(dirname(stateFile),{recursive:true});
+      const current='HOK-1:epoch:1794690000';
+      writeFileSync(stateFile,JSON.stringify(buildWorkflowState({'HOK-1':{runId:current}})));
+      writeFileSync(join(fd,'.coding-result.json'),JSON.stringify({stage:'coding',status:'completed',
+        ...(stamped?{runId:'HOK-1:epoch:1794600000'}:{}),startedAt:'2026-11-13T00:00:00Z',agent:'claude',model:'provider',notes:'late'}));
+      const outcome=await reconcileAndRecover({stateDir:fd,stateFile,issue:'HOK-1',runId:current,evidenceId:'current-notifier',
+        snapshot:snapshot({attempt:{currentRunId:current,controlRunId:current},stageResult:{kind:'running'}})});
+      assert.equal(outcome.decision.action,'reject-stale-control');
+      assert.equal(outcome.claim.claimed,false);
+      assert.equal(readRecoveryClaim(fd),null);
+      assert.ok(existsSync(join(dir,'.wavemill','evals','artifacts','HOK-1','.evidence-inventory.json')));
+    } finally {rmSync(dir,{recursive:true,force:true});}
+  }
 });
