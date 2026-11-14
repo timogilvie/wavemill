@@ -41,7 +41,7 @@
  */
 
 import { basename, join } from 'node:path';
-import { statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { readOwnershipRows, type OwnershipKind, type OwnershipStage } from './session-ownership.ts';
 import { resolveTaskArtifact } from './task-artifact-lookup.ts';
 import {
@@ -416,6 +416,12 @@ function stageHasCompletionArtifact(
       // Not present; try the next candidate.
     }
   }
+  // Results can land while progress gathering runs; the original object is a snapshot.
+  try {
+    const resultStage = stage === 'ready-remediation' || stage === 'conflict-resolution' ? 'ready' : stage;
+    const current = JSON.parse(readFileSync(join(stateDir, `.${resultStage}-result.json`), 'utf8'));
+    if (current.status === 'completed' || current.status === 'awaiting_user') return true;
+  } catch { /* Absent or incomplete artifacts do not establish completion. */ }
   const terminalStatuses = new Set(['completed', 'failed', 'aborted', 'awaiting_user']);
   return !!stageResult?.status && terminalStatuses.has(stageResult.status);
 }
