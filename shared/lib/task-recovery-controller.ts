@@ -399,11 +399,17 @@ export function recordRecoveryAction(
   }
 }
 
-export async function reconcileAndRecover(args: ClaimRecoveryArgs & { snapshot: RecoverySnapshot }): Promise<{ decision: RecoveryDecision; claim: ClaimResult }> {
+export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decision'> & { snapshot: RecoverySnapshot }): Promise<{ decision: RecoveryDecision; claim: ClaimResult }> {
   let snapshot = args.snapshot;
   if (args.stateFile) {
     const result = await readStageResult(args.stateDir, snapshot.stage);
     const claim = readRecoveryClaim(args.stateDir);
+    if (result?.status === 'completed' || result?.status === 'awaiting_user') {
+      snapshot = { ...snapshot, stageResult: { kind: 'valid', status: result.status }, failure: null,
+        wait: result.status === 'awaiting_user' ? { owner: 'human', wake: 'operator-release' } : snapshot.wait };
+    } else if (result?.status === 'running') {
+      snapshot = { ...snapshot, stageResult: { kind: 'running' }, failure: null };
+    }
     if (claim && !claim.acknowledgedAt && result?.finishedAt
         && Date.parse(result.finishedAt) >= Date.parse(claim.claimedAt)) {
       acknowledgeRecoveryAction(args.stateDir, claim.claimId);
@@ -470,7 +476,7 @@ export async function runControllerCli(): Promise<void> {
     return;
   }
   const { decision: selected, claim } = await reconcileAndRecover({ stateDir, snapshot,
-    decision: decideTaskRecovery(snapshot), runId: snapshot.attempt.controlRunId, evidenceId,
+    runId: snapshot.attempt.controlRunId, evidenceId,
     stateFile: flag('--state-file'), issue: snapshot.issue, ownerPid: Number(flag('--owner-pid')) || process.ppid });
   if (claim.claimed) {
     recordRecoveryAction(stateDir, {
