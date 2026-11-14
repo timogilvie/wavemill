@@ -10,5 +10,11 @@
     "startedAt": "2026-11-13T23:24:43Z",
     "finishedAt": "2026-11-13T23:24:51Z",
     "observedFailure": "completed JSON overwritten as agent-exited during liveness gather"
+  },
+  "backgroundWakeupRace": {
+    "ciRun": 43605942488,
+    "observedInterruptedAt": "2026-11-14T14:41:59Z",
+    "observedRelaunchAt": "2026-11-14T14:42:04Z",
+    "description": "Idle/background protection was observed, then a stale idle hook was combined with a later liveness probe and coding relaunched."
   }
 }
