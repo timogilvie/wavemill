@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { execFileSync, spawn } from 'node:child_process';
 import {
   buildJobId,
   isCheckJobKind,
@@ -521,3 +522,25 @@ test('launchJob overwrites a settled check job with the same stable id', async (
     cleanup();
   }
 });
+
+
+// protects: existing async producers being rejected by the tracker's canonical kind registry.
+for (const kind of ['cleanup-decision', 'state-invariants'] as const) {
+  test(`${kind} launches through the real CLI and is supervised as a check job`, () => {
+    const { root, statePath, cleanup } = makeTempState();
+    try {
+      const id = `${kind}-test`;
+      execFileSync(process.execPath, [
+        '--experimental-strip-types', '--no-warnings', fileURLToPath(new URL('../../tools/job-tracker.ts', import.meta.url)),
+        'launch', '--state-file', statePath, '--kind', kind, '--job-id', id,
+        '--pid', String(process.pid), '--timeout-seconds', '30',
+        '--log-path', join(root, 'job.log'), '--result-path', join(root, 'job-result.json'),
+        '--session', 'test',
+      ], { encoding: 'utf8' });
+      const job = JSON.parse(readFileSync(statePath, 'utf8')).jobs[id];
+      assert.equal(job.kind, kind);
+      assert.equal(job.status, 'running');
+      assert.equal(isCheckJobKind(job.kind), true);
+    } finally { cleanup(); }
+  });
+}
