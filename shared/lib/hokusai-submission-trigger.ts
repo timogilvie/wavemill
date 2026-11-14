@@ -385,10 +385,13 @@ export function buildHokusaiV4Projection(
     taskDescriptor,
     allowedModels,
     availableModels,
+    // Model selection in the contribution is the executed route. The stage
+    // entries already carry the canonical resolver's evidence; route provenance
+    // separately retains Hokusai's recommendation and measured overrides.
     selectedModels: {
-      planner: submission.route_taken.planner_model,
-      coder: submission.route_taken.coder_model,
-      reviewer: submission.route_taken.reviewer_model,
+      planner: stageExecutions.filter(e => e.stage === 'planning').at(-1)?.executedModel ?? submission.route_taken.planner_model,
+      coder: stageExecutions.filter(e => e.stage === 'coding').at(-1)?.executedModel ?? submission.route_taken.coder_model,
+      reviewer: stageExecutions.filter(e => e.stage === 'review').at(-1)?.executedModel ?? submission.route_taken.reviewer_model,
     },
     stageExecutions,
     ...(routingOutcome.inferenceLogId

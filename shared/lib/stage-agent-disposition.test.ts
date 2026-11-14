@@ -744,3 +744,21 @@ test('evaluateStageAgentDisposition judges the exit against a completion marker 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+// protects: the 2026-11-13 defect-escalation CI race where review completed during the progress probe.
+test('review completion published during gathering beats the earlier running result snapshot', () => {
+  const dir = stateDir();
+  try {
+    appendOwnershipRow(dir, { sessionRef: 'review-sess', harness: 'claude-code', kind: 'review', model: 'm', launchedAt: LAUNCH_ISO });
+    const result = evaluateStageAgentDisposition({
+      stateDir: dir, stage: 'review', currentHead: 'head',
+      stageResult: { stage: 'review', status: 'running', startedAt: LAUNCH_ISO } as Parameters<typeof evaluateStageAgentDisposition>[0]['stageResult'],
+      getProgress: () => {
+        writeFileSync(join(dir, '.review-result.json'), JSON.stringify({ status: 'completed' }));
+        return { ...baseInput().progress!, agentExited: { at: new Date(Date.parse(LAUNCH_ISO) + 60_000).toISOString(), source: 'launcher' } };
+      },
+    });
+    assert.equal(result.hasCompletionArtifact, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
