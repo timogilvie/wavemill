@@ -12,6 +12,11 @@ a stuck or exited attempt — and the claim that dispatches it — is made only 
 - `claimRecoveryAction(...)` is the one atomic claim. Concurrent Monitor /
   Tend / Observer notifications that compute the same decision collapse to
   exactly one dispatch; a non-control-bearing action is never claimed.
+  Production claims validate the authoritative task run and settled outcome
+  under the shared workflow-state lock before writing the claim. Dispatch
+  carries that run through `WAVEMILL_EXPECTED_RUN_ID`. The executor acknowledges
+  its claim token on return; the next distinct obligation may then claim, while
+  duplicate evidence and late acknowledgements cannot replace another action.
 
 No file may author a second recovery decider or write the `.recovery-claim.json`
 seam directly.
@@ -44,6 +49,9 @@ async jobs; there is no separate stall daemon. The monitor's shell seams —
 `ready_failure_classify_and_act` (and the consolidated
 `_monitor_recover_failed_stage` helper) — are the controller's first adapters:
 they compose the same authorities and route a failed stage through one seam.
+`maybe_retry_failed_stage` routes every failed-stage caller, including Ready,
+through the controller before the existing executor. `_stage_disposition_act`
+also asks the same controller to consume completed results or respect waits.
 They are not a second retry or escalation policy. Tend executes integration
 actions and Observer supervises; neither gets a second task-retry or escalation
 decider. HOK-3406 migrates Observer's existing auto-fixes onto this interface.

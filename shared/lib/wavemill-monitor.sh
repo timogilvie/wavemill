@@ -4547,7 +4547,7 @@ _stage_stamp_settled_without_result() {
 #           all. A stage-specific legacy check (e.g. coding's
 #           coding_stage_owner_lost, for tasks predating session-ownership
 #           tracking) remains a necessary backstop here — it must NOT be
-#           consulted on rc 0, where the disposition already has evidence
+#           consulted on return 0, where the disposition already has evidence
 #           and a second, narrower check could contradict it.
 _stage_disposition_act() {
   local issue="$1" feature_dir="$2" wt_dir="$3" win_target="$4" win="$5" stage="$6"
@@ -4572,6 +4572,13 @@ _stage_disposition_act() {
   has_completion="$(printf '%s' "$disposition" | jq -r '.hasCompletionArtifact // false' 2>/dev/null)"
   blocking_id="$(printf '%s' "$disposition" | jq -r '.blockingPrompt.id // empty' 2>/dev/null)"
   blocking_detail="$(printf '%s' "$disposition" | jq -r '.blockingPrompt.detail // empty' 2>/dev/null)"
+
+  local recovery_action
+  recovery_action="$(wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" \
+    --state-file "$STATE_FILE" --issue "$issue" --stage "$result_stage" --disposition "$disposition" 2>/dev/null | jq -r '.decision.action // "no-action"')"
+  case "$recovery_action" in
+    consume-advance|verify-effect|reject-stale-control) return 0 ;;
+  esac
 
   if [[ "$kind" == "inactive" && "$reason" == "no-launch" ]]; then
     return 3
@@ -8357,7 +8364,7 @@ stage_failure_owned_by_bucket() {
 #
 # Returns 0 relaunched, 2 holding (backoff), 1 not applicable / terminal /
 # exhausted (caller escalates).
-maybe_retry_failed_stage() {
+_dispatch_failed_stage_recovery() {
   local issue="$1" feature_dir="$2" stage="$3" win="$4"
   local bucket="stage-failure-$stage" decision failure_class failure_kind detail next_action
   local head base limit disposition attempts retry_phase fresh="" artifact
@@ -8383,7 +8390,7 @@ maybe_retry_failed_stage() {
   [[ -n "$(stage_result_field "$feature_dir" "$stage" "agent")" ]] || return 1
   ! stage_failure_owned_by_bucket "$feature_dir" "$stage" || return 1
 
-  decision="$(stage_failure_decision "$issue" "$feature_dir" "$stage")"
+  decision="$5"
   failure_class="$(jq -r '.class' <<<"$decision")"
   [[ "$failure_class" != "terminal" ]] || return 1
   failure_kind="$(jq -r '.failureKind' <<<"$decision")"
@@ -8487,6 +8494,7 @@ _monitor_claim_failed_stage_action() {
   run_id="$(task_run_id "$issue" 2>/dev/null || true)"
   evidence_id="$(jq -r '.fingerprint // empty' <<<"$decision_json" 2>/dev/null || true)"
   [[ -n "$evidence_id" ]] || evidence_id="${stage}:${head:-unknown}:${run_id:-legacy}"
+  evidence_id+=":$(bounded_retry_count "$feature_dir" "stage-failure-$stage")"
   if [[ "$stage" == "coding" ]]; then
     if jq -e '.ok == true' <<<"$(recovery_contract_json "$issue" "$feature_dir" coding)" >/dev/null 2>&1; then
       contract_available=true
@@ -8505,16 +8513,11 @@ _monitor_claim_failed_stage_action() {
        outstandingEffect:null, wait:null, failure:{decision:$failure,retry:$retry}}' >"$snapshot_file" || {
       rm -f "$snapshot_file"; return 1;
     }
-  if node --experimental-strip-types --no-warnings -e ';' >/dev/null 2>&1; then
-    result="$(node --experimental-strip-types --no-warnings "$COMMON_LIB_DIR/task-recovery-controller.ts" \
-      --state-dir "$feature_dir" --evidence-id "$evidence_id" --snapshot "$snapshot_file" 2>/dev/null)"
-  else
-    result="$(npx tsx "$COMMON_LIB_DIR/task-recovery-controller.ts" \
-      --state-dir "$feature_dir" --evidence-id "$evidence_id" --snapshot "$snapshot_file" 2>/dev/null)"
-  fi
+  result="$(wavemill_run_tool task-recovery-controller.ts \
+    --state-dir "$feature_dir" --state-file "$STATE_FILE" --evidence-id "$evidence_id" --snapshot "$snapshot_file" 2>/dev/null)"
   rm -f "$snapshot_file"
   [[ -n "$result" ]] && jq -e . >/dev/null 2>&1 <<<"$result" || return 1
-  printf '%s\n' "$result"
+  jq --argjson failure "$decision_json" '. + {failure:$failure}' <<<"$result"
 }
 
 # HOK-3277: the one failed-stage recovery decision+claim+dispatch for an agent
@@ -8522,28 +8525,31 @@ _monitor_claim_failed_stage_action() {
 # dispatches that persisted contract through the existing retry/remediation
 # executors. The planning, coding-publish and review `failed` branches share
 # this path instead of each re-deriving a recovery ladder.
+# Every failed stage, including Ready, enters the same decision and fenced claim.
+maybe_retry_failed_stage() {
+  local issue="$1" feature_dir="$2" stage="$3" win="$4"
+  local recovery action claim_id failure rc=0
+  recovery="$(_monitor_claim_failed_stage_action "$issue" "$feature_dir" "$stage")" || return 2
+  action="$(jq -r '.decision.action' <<<"$recovery")"
+  if [[ "$(jq -r '.claim.claimed' <<<"$recovery")" != "true" ]]; then
+    [[ "$action" == "escalate" ]] && return 1
+    return 2
+  fi
+  claim_id="$(jq -r '.claim.claim.claimId' <<<"$recovery")"
+  failure="$(jq -c '.failure' <<<"$recovery")"
+  local -x WAVEMILL_EXPECTED_RUN_ID
+  WAVEMILL_EXPECTED_RUN_ID="$issue=$(jq -r '.claim.claim.runId // empty' <<<"$recovery")"
+  _dispatch_failed_stage_recovery "$issue" "$feature_dir" "$stage" "$win" "$failure" || rc=$?
+  wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" --ack "$claim_id" >/dev/null
+  return "$rc"
+}
+
 _monitor_recover_failed_stage() {
-  local issue="$1" feature_dir="$2" win="$3" stage="$4" rc=0 recovery action claimed
-  recovery="$(_monitor_claim_failed_stage_action "$issue" "$feature_dir" "$stage")" || return 0
-  action="$(jq -r '.decision.action // "wait"' <<<"$recovery")"
-  claimed="$(jq -r '.claim.claimed // false' <<<"$recovery")"
-  # A loser must not dispatch. Non-control actions are deliberately left to
-  # their owner; notably verify-effect never repeats an external effect.
-  [[ "$claimed" == "true" ]] || return 0
-  case "$action" in
-    retry-stage) ;;
-    remediate|escalate)
-      emit_challenge_stage_failure_quarantine "$issue" "$feature_dir" "$stage" "$win" || true
-      set_window_attention_state "$win" "needs-user"
-      return 0
-      ;;
-    *) return 0 ;;
-  esac
+  local issue="$1" feature_dir="$2" win="$3" stage="$4" rc=0
   maybe_retry_failed_stage "$issue" "$feature_dir" "$stage" "$win" || rc=$?
-  (( rc == 0 || rc == 2 )) && return 0
+  [[ "$rc" == "0" || "$rc" == "2" ]] && return 0
   emit_challenge_stage_failure_quarantine "$issue" "$feature_dir" "$stage" "$win" || true
   set_window_attention_state "$win" "needs-user"
-  return 0
 }
 
 # HOK-3211: direct coding relaunch for a retryable coding stage failure.
@@ -11273,7 +11279,7 @@ refresh_ready_merge_queue_tick() {
     wt_dir="${WORKTREE_ROOT}/${slug}"
     state_dir="$(ready_state_dir "$wt_dir" "$slug")"
     demote_merge_candidate "$issue" "$state_dir" "stuck merge candidate"
-    # HOK-3111: dedup per (PR, head); escalate after N cycles on the same head.
+    # HOK-3111: dedup per (PR, head), escalate after N cycles on the same head.
     pr_for_log="${PR_BY_ISSUE[$issue]:-}"
     stuck_head=$(ready_queue_field "$state_dir" "lastCiHeadSha")
     decision=$(merge_queue_transition_report "${pr_for_log:-$issue}" "$stuck_head" "demoted-stuck")
@@ -11301,7 +11307,7 @@ refresh_ready_merge_queue_tick() {
       ci_head=$(ready_queue_field "$state_dir" "lastCiHeadSha")
       ci_summary=$(ready_queue_field "$state_dir" "lastCiSummary")
       [[ -n "$ci_summary" ]] || ci_summary="pass"
-      # HOK-3111: dedup per (PR, head); escalate after N cycles on the same head.
+      # HOK-3111: dedup per (PR, head), escalate after N cycles on the same head.
       decision=$(merge_queue_transition_report "${pr_for_log:-$issue}" "$ci_head" "promoted")
       case "$decision" in
         log)

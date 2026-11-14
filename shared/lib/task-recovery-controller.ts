@@ -1,37 +1,3 @@
-/**
- * task-recovery-controller — the one task-recovery control path (HOK-3277).
- *
- * "This attempt is stuck / its stage exited / its result is waiting — what
- * happens next?" has one answer. Before this module the answer was composed
- * independently at every site: the monitor's per-stage `failed` branches each
- * wired `classifyFailure` → `bounded-retry` → quarantine/escalate by hand, the
- * incident-replay harness carried its own inline copy of that ladder, and the
- * Ready path had a third. Each copy could rank the same evidence differently.
- *
- * {@link decideTaskRecovery} is the single, pure, named-and-versioned decision.
- * It composes the existing authorities rather than re-deriving anything:
- *
- *   - attempt identity / settlement (`attempt-identity.ts`, `task-settlement.ts`)
- *     decide current-vs-stale control and late evidence;
- *   - `stage-agent-disposition.ts` decides in-flight / settled / advanced;
- *   - `failure-policy.ts` (`classifyFailure`) is the failure authority;
- *   - `bounded-retry.ts` owns the budget and backoff (the caller gates and
- *     passes the verdict in; the controller never counts attempts itself);
- *   - `execution-contract.ts` is replayed for a coding retry — the controller
- *     requires a persisted contract and never picks a different model;
- *   - `operator-escalation.ts` is the one escalation step.
- *
- * The controller owns only: snapshot ordering, deterministic action selection,
- * and the atomic claim ({@link claimRecoveryAction}) that makes concurrent
- * Monitor / Tend / Observer notifications collapse to exactly one dispatch. It
- * adds no new retry counter, fault class, terminal cause, deadline outcome, or
- * model-routing choice.
- *
- * Ownership boundary: `docs/invariants/task-recovery-ownership.md`, guarded by
- * `tools/check-task-recovery-ownership.ts`.
- *
- * @module task-recovery-controller
- */
 
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
@@ -42,45 +8,28 @@ import type { BoundedRetryDecision } from './bounded-retry.ts';
 import type { FailureDecision, FailureStage } from './failure-policy.ts';
 import type { StageAgentDisposition } from './stage-agent-disposition.ts';
 import { mutateJsonStateSync } from './state-mutex.ts';
+import { acquireStateLockSync, releaseStateLock } from './state-lock.ts';
+import { readWorkflowState } from './workflow-state.ts';
+import { readStageResult } from './stage-result.ts';
+import { isSettled } from './task-settlement.ts';
 
-/** The deterministic policy identity recorded on every decision and claim. */
 export const RECOVERY_POLICY = Object.freeze({ name: 'task-recovery-controller', version: 1 } as const);
 
-/** `task-recovery-controller@1` — the audited policy id. */
 export const RECOVERY_POLICY_ID = `${RECOVERY_POLICY.name}@${RECOVERY_POLICY.version}` as const;
 
 // ── Snapshot contract ────────────────────────────────────────────────────────
 
-/**
- * Who owns a legitimate wait and the event that ends it. A deadline is NOT a
- * termination, ownership theft, or model-fault attribution (HOK-3277 rule 5):
- * it only schedules reassessment. `human` holds survive restart/retry.
- */
 export interface RecoveryWait {
   owner: 'dependency' | 'ci' | 'tool' | 'backoff' | 'human';
-  /** The event this wait wakes on (e.g. `ci-complete`, `operator-release`). */
-  wake: string;
+    wake: string;
   detail?: string;
 }
 
-/**
- * Run identity of the attempt this decision is about. `currentRunId` is the
- * row's run id (`null` for legacy rows from before HOK-3373); `controlRunId`
- * is the run the triggering evidence/control was produced for (`null` when the
- * trigger carries no identity). The missing/unknown distinction is preserved:
- * both `null` is a legacy row (grandfathered), a known mismatch is stale
- * control, and a known current row with an unidentified trigger fails safe.
- */
 export interface RecoveryAttempt {
   currentRunId: string | null;
   controlRunId: string | null;
 }
 
-/**
- * The stage-result state. `missing` and `invalid` are kept distinct from a
- * clean `failed` verdict so missing/contradictory evidence is never read as
- * success (HOK-3277 rule 3 / acceptance).
- */
 export type RecoveryStageResult =
   | { kind: 'missing' }
   | { kind: 'running' }
@@ -88,29 +37,17 @@ export type RecoveryStageResult =
   | { kind: 'failed' }
   | { kind: 'invalid'; detail: string };
 
-/**
- * An external effect whose acknowledgement is uncertain after a restart
- * (HOK-3274 intent → apply → acknowledge). `acknowledged: false` means the
- * controller must verify observed state before doing anything else, so the
- * effect is reconciled, never duplicated.
- */
 export interface RecoveryOutstandingEffect {
   kind: string;
   acknowledged: boolean;
   detail?: string;
 }
 
-/**
- * A caller-supplied failure classification plus the bounded-retry verdict for
- * its bucket. The controller does not classify or count: `decision` comes from
- * `classifyFailure` and `retry` from `bounded_retry_gate`.
- */
 export interface RecoveryFailure {
   decision: FailureDecision;
   retry: BoundedRetryDecision;
 }
 
-/** Disposition fields the controller reads; the rest of the shape is irrelevant here. */
 export type RecoveryDisposition = Pick<
   StageAgentDisposition,
   'kind' | 'reason' | 'evidenceConfidence' | 'waitingOn' | 'blockingPrompt'
@@ -120,21 +57,12 @@ export interface RecoverySnapshot {
   issue: string;
   stage: FailureStage;
   attempt: RecoveryAttempt;
-  /** Live in-flight/settled evidence; `null` when no probe ran (unknown). */
-  disposition: RecoveryDisposition | null;
+    disposition: RecoveryDisposition | null;
   stageResult: RecoveryStageResult;
-  /**
-   * For a coding retry: whether the persisted execution contract is available
-   * for replay. `null` when the stage is not a model-replay stage (planning /
-   * review use their phase handoff, not a contract). `false` holds the retry —
-   * the controller never substitutes a different model (HOK-3277 rule 8).
-   */
-  contractAvailable: boolean | null;
+    contractAvailable: boolean | null;
   outstandingEffect: RecoveryOutstandingEffect | null;
-  /** A legitimate wait owner + wake condition, when one is known. */
-  wait: RecoveryWait | null;
-  /** Present once a failure has been classified and its retry bucket gated. */
-  failure: RecoveryFailure | null;
+    wait: RecoveryWait | null;
+    failure: RecoveryFailure | null;
 }
 
 // ── Decision ─────────────────────────────────────────────────────────────────
@@ -159,12 +87,7 @@ export interface RecoveryDecision {
   nextAction?: string;
   retryBucket?: string;
   escalationBasis?: EscalationBasis;
-  /**
-   * `true` when the action carries control over the current attempt (advance /
-   * retry / escalate / consume). A `claimRecoveryAction` is only meaningful for
-   * a control-bearing action.
-   */
-  controlBearing: boolean;
+    controlBearing: boolean;
 }
 
 const WAIT_ACTIONS: ReadonlySet<RecoveryActionKind> = new Set(['no-action', 'wait', 'verify-effect', 'reject-stale-control']);
@@ -180,30 +103,6 @@ function decision(stage: FailureStage, action: RecoveryActionKind, rationale: st
   };
 }
 
-/**
- * The one recovery decision. Pure and total: it never throws and never
- * fabricates success. Order (conservative first):
- *
- *  1. **Stale control** — the trigger names a run that differs from the row's
- *     current run: reject control, retain the late evidence/cost (never
- *     advance or abort the newer attempt).
- *  2. **Unverifiable identity** — the row has a current run but the trigger
- *     carries no identity: a control-bearing step would act on evidence that
- *     cannot be tied to the current attempt, so it holds (fail safe). Legacy
- *     rows (no current run id) are grandfathered and proceed.
- *  3. **Explicit human hold** — preserved across restart/retry; a deadline
- *     only reassesses.
- *  4. **In-flight / background / advanced / task-terminal** — healthy work and
- *     legitimate waits are left alone.
- *  5. **Legitimate wait condition** — dependency / CI / tool / backoff.
- *  6. **Valid current completion** — consumed through the normal transition;
- *     a completed stage is never rerun because its result was not consumed.
- *  7. **Uncertain external effect** — verify observed state before acting.
- *  8. **Classified failure** — delegated: terminal → escalate, code-failure →
- *     remediate, retryable → retry (proceed) / wait (backoff) / escalate
- *     (exhausted).
- *  9. **Missing / invalid / unclassified** — hold and reassess; never success.
- */
 export function decideTaskRecovery(snapshot: RecoverySnapshot): RecoveryDecision {
   const { stage, attempt } = snapshot;
 
@@ -225,6 +124,22 @@ export function decideTaskRecovery(snapshot: RecoverySnapshot): RecoveryDecision
   // 3. Explicit human hold survives restart/retry.
   if (snapshot.wait?.owner === 'human') {
     return decision(stage, 'wait', `explicit human hold (${snapshot.wait.wake})`, { wait: snapshot.wait });
+  }
+
+  // 6. A valid current completion is consumed, not rerun.
+  if (snapshot.stageResult.kind === 'valid') {
+    if (unverifiableIdentity) {
+      return decision(stage, 'wait', 'valid completion present but its attempt identity is unverifiable; holding for reassessment', {
+        wait: { owner: 'tool', wake: 'attempt-identity-resolved' },
+      });
+    }
+    return decision(stage, 'consume-advance', `consume the ${snapshot.stageResult.status} result through the normal transition (no rerun)`);
+  }
+
+  // 7. Uncertain external effect: verify, never duplicate.
+  if (snapshot.outstandingEffect && !snapshot.outstandingEffect.acknowledged) {
+    return decision(stage, 'verify-effect',
+      `effect ${snapshot.outstandingEffect.kind} applied but acknowledgement is uncertain; verify observed state before acting`);
   }
 
   // 4. Live disposition: healthy / in-flight / advanced / terminal.
@@ -261,22 +176,6 @@ export function decideTaskRecovery(snapshot: RecoverySnapshot): RecoveryDecision
   // 5. Legitimate non-human wait.
   if (snapshot.wait && snapshot.failure === null) {
     return decision(stage, 'wait', `legitimate wait owned by ${snapshot.wait.owner} (${snapshot.wait.wake})`, { wait: snapshot.wait });
-  }
-
-  // 6. A valid current completion is consumed, not rerun.
-  if (snapshot.stageResult.kind === 'valid') {
-    if (unverifiableIdentity) {
-      return decision(stage, 'wait', 'valid completion present but its attempt identity is unverifiable; holding for reassessment', {
-        wait: { owner: 'tool', wake: 'attempt-identity-resolved' },
-      });
-    }
-    return decision(stage, 'consume-advance', `consume the ${snapshot.stageResult.status} result through the normal transition (no rerun)`);
-  }
-
-  // 7. Uncertain external effect: verify, never duplicate.
-  if (snapshot.outstandingEffect && !snapshot.outstandingEffect.acknowledged) {
-    return decision(stage, 'verify-effect',
-      `effect ${snapshot.outstandingEffect.kind} applied but acknowledgement is uncertain; verify observed state before acting`);
   }
 
   // 8. Classified failure → delegate to the failure authorities.
@@ -354,18 +253,15 @@ function decideFromFailure(snapshot: RecoverySnapshot, failure: RecoveryFailure)
 
 // ── Claim seam ───────────────────────────────────────────────────────────────
 
-/** The on-disk recovery claim. One per task state dir; see {@link claimRecoveryAction}. */
 export interface RecoveryClaim {
   policy: typeof RECOVERY_POLICY_ID;
   action: RecoveryActionKind;
   stage: FailureStage;
-  /** The run the claim controls; `null` for a legacy row with no run id. */
-  runId: string | null;
-  /** Evidence identity so a replayed notification claims idempotently. */
-  evidenceId: string;
+    runId: string | null;
+    evidenceId: string;
   claimedAt: string;
-  /** A unique id for this claim instance (the winner's token). */
-  claimId: string;
+    claimId: string;
+  acknowledgedAt?: string;
 }
 
 export interface ClaimRecoveryArgs {
@@ -374,17 +270,16 @@ export interface ClaimRecoveryArgs {
   runId: string | null;
   evidenceId: string;
   now?: () => Date;
-  /** Override the claim file path (tests); defaults to `<stateDir>/.recovery-claim.json`. */
-  claimPath?: string;
+    claimPath?: string;
+    stateFile?: string;
+  issue?: string;
 }
 
 export type ClaimResult =
   | { claimed: true; claim: RecoveryClaim }
-  | { claimed: false; reason: 'already-claimed' | 'not-control-bearing'; existing?: RecoveryClaim };
+  | { claimed: false; reason: 'already-claimed' | 'not-control-bearing' | 'stale-run' | 'settled-attempt'; existing?: RecoveryClaim };
 
-/** Basename of the claim file written next to a task's state. */
 export const RECOVERY_CLAIM_BASENAME = '.recovery-claim.json';
-/** Basename of the recovery action audit log (one JSON line per claimed dispatch). */
 export const RECOVERY_ACTIONS_BASENAME = '.recovery-actions.jsonl';
 
 export function recoveryClaimPath(stateDir: string): string {
@@ -395,19 +290,20 @@ function sameClaimIdentity(a: RecoveryClaim, action: RecoveryActionKind, stage: 
   return a.action === action && a.stage === stage && a.evidenceId === evidenceId && (a.runId ?? null) === (runId ?? null);
 }
 
-/**
- * Atomically claim a control-bearing recovery action for the current attempt.
- *
- * Concurrent Monitor / Tend / Observer notifications that compute the same
- * decision collapse to exactly one claim: the `mutateJsonStateSync` lock
- * serialises them, the first writes the claim, and every later caller observing
- * an identical claim (same policy/action/stage/run/evidence) declines with
- * `already-claimed`. A claim for a stale run is superseded by one for the
- * current run (a newer attempt replaces it). A non-control-bearing action
- * (`no-action` / `wait` / `verify-effect` / `reject-stale-control`) is never
- * claimed.
- */
 export function claimRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
+  if (!args.stateFile) return claimCurrentRecoveryAction(args);
+  const lock = acquireStateLockSync(args.stateFile, { purpose: 'claim-task-recovery' });
+  try {
+    const task = readWorkflowState(args.stateFile)?.tasks?.[args.issue ?? ''];
+    if (!task || ((task.runId != null || args.runId != null) && !isSameRunId(task.runId, args.runId))) return { claimed: false, reason: 'stale-run' };
+    if (isSettled(task)) return { claimed: false, reason: 'settled-attempt' };
+    return claimCurrentRecoveryAction(args);
+  } finally {
+    releaseStateLock(lock);
+  }
+}
+
+function claimCurrentRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
   const { decision: dec, runId, evidenceId } = args;
   if (!dec.controlBearing) {
     return { claimed: false, reason: 'not-control-bearing' };
@@ -430,7 +326,7 @@ export function claimRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
       // notification identity, not a new unit of control: accepting a
       // different evidence id for this same run would let two concurrent
       // notifiers dispatch two recovery-bearing actions.
-      if (existing && (existing.runId ?? null) === (runId ?? null)) {
+      if (existing && !existing.acknowledgedAt && (existing.runId ?? null) === (runId ?? null)) {
         outcome = { claimed: false, reason: 'already-claimed', existing };
         return current;
       }
@@ -452,7 +348,16 @@ export function claimRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
   return outcome;
 }
 
-/** Read the current recovery claim, or `null` when none / unreadable. */
+export function acknowledgeRecoveryAction(stateDir: string, claimId: string, now = new Date()): boolean {
+  let acknowledged = false;
+  mutateJsonStateSync<{ claim?: RecoveryClaim }>(recoveryClaimPath(stateDir), current => {
+    if (current.claim?.claimId !== claimId) return current;
+    acknowledged = true;
+    return { ...current, claim: { ...current.claim, acknowledgedAt: now.toISOString() } };
+  }, { createIfMissing: true, initial: {} });
+  return acknowledged;
+}
+
 export function readRecoveryClaim(stateDir: string, claimPath?: string): RecoveryClaim | null {
   try {
     const parsed = JSON.parse(readFileSync(claimPath ?? recoveryClaimPath(stateDir), 'utf-8')) as { claim?: RecoveryClaim };
@@ -471,15 +376,9 @@ export interface RecoveryAuditEntry {
   runId: string | null;
   evidenceId: string;
   rationale: string;
-  /** Set when a `verify-effect` found the effect already applied (duplicate prevented). */
-  duplicateEffectPrevented?: boolean;
+    duplicateEffectPrevented?: boolean;
 }
 
-/**
- * Append one recovery action to the audit log for reporting (time stuck,
- * duplicate effects prevented, attribution coverage). Best-effort; never
- * throws. Cost stays SDK-owned — this records the action, not a price.
- */
 export function recordRecoveryAction(
   stateDir: string,
   entry: Omit<RecoveryAuditEntry, 'policy'>,
@@ -494,12 +393,7 @@ export function recordRecoveryAction(
   }
 }
 
-/**
- * Shell-callable adapter for Monitor. The monitor provides the authoritative
- * snapshot it already collected; this module selects, claims, and audits one
- * action without probing or launching work in the state mutex.
- */
-function runControllerCli(): void {
+export async function runControllerCli(): Promise<void> {
   const flag = (name: string): string | undefined => {
     const index = process.argv.indexOf(name);
     return index >= 0 ? process.argv[index + 1] : undefined;
@@ -507,11 +401,34 @@ function runControllerCli(): void {
   const stateDir = flag('--state-dir');
   const evidenceId = flag('--evidence-id');
   const snapshotPath = flag('--snapshot');
-  if (!stateDir || !evidenceId || !snapshotPath) {
+  if (!stateDir || (!flag('--ack') && !flag('--disposition') && (!evidenceId || !snapshotPath))) {
     process.stderr.write('task-recovery-controller: usage: --state-dir DIR --evidence-id ID --snapshot FILE\n');
     process.exitCode = 2;
     return;
   }
+  const dispositionJson = flag('--disposition');
+  if (dispositionJson) {
+    const issue = flag('--issue') ?? '';
+    const stage = flag('--stage') as FailureStage;
+    const state = readWorkflowState(flag('--state-file') ?? '');
+    const task = state?.tasks?.[issue];
+    const result = await readStageResult(stateDir, stage);
+    const snapshot: RecoverySnapshot = {
+      issue, stage, attempt: { currentRunId: task?.runId ?? null, controlRunId: task?.runId ?? null },
+      disposition: JSON.parse(dispositionJson),
+      stageResult: result?.status === 'completed' || result?.status === 'awaiting_user'
+        ? { kind: 'valid', status: result.status } : { kind: 'running' },
+      contractAvailable: null, outstandingEffect: null, wait: null, failure: null,
+    };
+    process.stdout.write(`${JSON.stringify({ decision: decideTaskRecovery(snapshot) })}\n`);
+    return;
+  }
+  const ack = flag('--ack');
+  if (ack) {
+    process.stdout.write(`${JSON.stringify({ acknowledged: acknowledgeRecoveryAction(stateDir, ack) })}\n`);
+    return;
+  }
+  if (!snapshotPath || !evidenceId) return;
   let snapshot: RecoverySnapshot;
   try {
     snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8')) as RecoverySnapshot;
@@ -521,7 +438,7 @@ function runControllerCli(): void {
     return;
   }
   const selected = decideTaskRecovery(snapshot);
-  const claim = claimRecoveryAction({ stateDir, decision: selected, runId: snapshot.attempt.currentRunId, evidenceId });
+  const claim = claimRecoveryAction({ stateDir, decision: selected, runId: snapshot.attempt.controlRunId, evidenceId, stateFile: flag('--state-file'), issue: snapshot.issue });
   if (claim.claimed) {
     recordRecoveryAction(stateDir, {
       at: claim.claim.claimedAt,
@@ -535,5 +452,3 @@ function runControllerCli(): void {
   }
   process.stdout.write(`${JSON.stringify({ decision: selected, claim })}\n`);
 }
-
-if (process.argv[1]?.endsWith('/task-recovery-controller.ts')) runControllerCli();

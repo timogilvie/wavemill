@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
@@ -8,6 +8,7 @@ import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
 import { classifyFailure, type FailureDecision } from './failure-policy.ts';
 import {
   RECOVERY_POLICY_ID,
+  acknowledgeRecoveryAction,
   claimRecoveryAction,
   decideTaskRecovery,
   readRecoveryClaim,
@@ -265,3 +266,44 @@ test('the claim path is under the task state dir', () => {
 // Keeps FailureDecision import meaningful even if a case above is removed.
 const _typecheck: FailureDecision['class'] = 'retryable';
 void _typecheck;
+
+
+test('claim fences the authoritative run and settled outcome at dispatch time', () => {
+  const dir = freshDir();
+  try {
+    const stateFile = join(dir, 'workflow-state.json');
+    const current = buildWorkflowState({ 'HOK-1': { runId: 'new-run' } });
+    writeFileSync(stateFile, JSON.stringify(current));
+    const dec = decideTaskRecovery(snapshot({ stageResult: { kind: 'failed' }, failure: retryableFailure('proceed') }));
+    const args = { stateDir: dir, decision: dec, issue: 'HOK-1', stateFile, runId: 'old-run', evidenceId: 'late' };
+    assert.deepEqual(claimRecoveryAction(args), { claimed: false, reason: 'stale-run' });
+    assert.equal(readRecoveryClaim(dir), null);
+    assert.equal(claimRecoveryAction({ ...args, runId: 'new-run' }).claimed, true);
+    const settled = buildWorkflowState({ 'HOK-1': { runId: 'new-run', lifecycle: { schemaVersion: 1, workflowOutcome: 'aborted', resourceDisposition: 'released' } } });
+    writeFileSync(stateFile, JSON.stringify(settled));
+    assert.deepEqual(claimRecoveryAction({ ...args, runId: 'new-run', evidenceId: 'after-abort' }), { claimed: false, reason: 'settled-attempt' });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('acknowledged actions allow the next obligation but not duplicate evidence or stale acknowledgements', () => {
+  const dir = freshDir();
+  try {
+    const dec = decideTaskRecovery(snapshot({ stageResult: { kind: 'failed' }, failure: retryableFailure('proceed') }));
+    const args = { stateDir: dir, decision: dec, runId: 'run', evidenceId: 'coding-1' };
+    const first = claimRecoveryAction(args);
+    assert.equal(first.claimed, true);
+    if (!first.claimed) return;
+    assert.equal(acknowledgeRecoveryAction(dir, first.claim.claimId), true);
+    assert.equal(claimRecoveryAction(args).claimed, false);
+    const next = claimRecoveryAction({ ...args, evidenceId: 'review-1', decision: { ...dec, stage: 'review' } });
+    assert.equal(next.claimed, true);
+    assert.equal(acknowledgeRecoveryAction(dir, first.claim.claimId), false);
+    assert.equal(claimRecoveryAction({ ...args, evidenceId: 'other-notification' }).claimed, false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('completed result and unacknowledged effects precede a stale live disposition', () => {
+  const disp: RecoveryDisposition = { kind: 'in-flight', reason: 'agent-working', evidenceConfidence: 'high', waitingOn: null, blockingPrompt: null };
+  assert.equal(decideTaskRecovery(snapshot({ disposition: disp, stageResult: { kind: 'valid', status: 'completed' } })).action, 'consume-advance');
+  assert.equal(decideTaskRecovery(snapshot({ disposition: disp, outstandingEffect: { kind: 'push', acknowledged: false } })).action, 'verify-effect');
+});
