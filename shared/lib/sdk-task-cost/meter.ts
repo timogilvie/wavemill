@@ -28,7 +28,7 @@
 
 import { dirname } from 'node:path';
 import type { IngestUsageInput } from '@hokusai/costs';
-import { resolveCodexLaunchNonces, codexSessionsRoot } from '../codex-rollout-resolver.ts';
+import { resolveCodexLaunchNonces } from '../codex-rollout-resolver.ts';
 import { errorMessage } from '../error-utils.ts';
 import { getEffectiveRegistry, resolveModelRegistryKey } from '../model-registry.ts';
 import {
@@ -37,7 +37,7 @@ import {
   type ExactPricingOptions,
 } from '../pricing/openrouter-exact-pricing.ts';
 import type { PricingTable } from '../pricing/model-pricing.ts';
-import { NativeSessionAdapter, resolveClaudeProjectsDirsFor, type NativeSessionUsageRecord } from '../session-adapters.ts';
+import { NativeSessionAdapter, resolveClaudeProjectsDirsFor, resolveCodexSessionRoots, type NativeSessionUsageRecord } from '../session-adapters.ts';
 import {
   appendSessionRefResolution,
   exactRows,
@@ -208,7 +208,7 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
 
   let owned: SessionOwnershipRow[];
   let recordFile: string | undefined;
-  const codexRoots = [...(input.roots?.codex ?? [codexSessionsRoot()])];
+  const codexRoots = [...(input.roots?.codex ?? resolveCodexSessionRoots(input.repoDir, input.issueId))];
   try {
     if (input.ownership) {
       owned = [...input.ownership];
@@ -259,7 +259,7 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
     const base: Omit<MeasureOwnedSessionsInput, 'rows'> = {
       taskId: input.issueId ?? 'unknown-task',
       claudeRoots: [...(input.roots?.claude ?? resolveClaudeProjectsDirsFor(
-        measured.filter(row => row.harness === 'claude-code').map(row => row.cwd || input.worktreePath), input.repoDir,
+        measured.filter(row => row.harness === 'claude-code').map(row => row.cwd || input.worktreePath), input.repoDir, input.issueId,
       ))],
       codexRoots,
       nativeSessions,

@@ -678,20 +678,6 @@ wavemill_cleanup_run() {
   fi
 }
 
-_wavemill_archive_copy() {
-  local src="$1" dest="$2"
-  [[ -f "$src" ]] || return 0
-  mkdir -p "$(dirname "$dest")" 2>/dev/null || {
-    log_warn "  Failed to create artifact archive directory: $(dirname "$dest")"
-    return 1
-  }
-  if cp "$src" "$dest" 2>/dev/null; then
-    return 0
-  fi
-  log_warn "  Failed to archive artifact: $src"
-  return 1
-}
-
 # HOK-2891: the shell twin of shared/lib/task-artifact-lookup.ts.
 # Writes the resolved absolute path to stdout, returns 0 on hit, 1 on miss.
 # Probe order:
@@ -737,136 +723,18 @@ resolve_stage_artifact_path() {
   resolve_task_artifact_path "$issue" "$slug" ".${stage}-result.json" "$worktree_dir"
 }
 
-_wavemill_archive_json_copy() {
-  local src="$1" dest="$2" label="${3:-artifact}"
-  [[ -f "$src" ]] || return 0
-  if jq -e . "$src" >/dev/null 2>&1; then
-    _wavemill_archive_copy "$src" "$dest"
-    return $?
-  fi
-  log_warn "  Skipping invalid ${label} archive: $src"
-  return 0
-}
-
-# Archive stage artifacts from worktree before cleanup.
-# Cleanup treats an archive copy failure as retryable and stops before removing
-# the window, worktree, branches, retry state, or task state.
+# HOK-3475: one typed inventory and verified copy path for all cleanup callers.
 archive_stage_artifacts() {
   local issue="$1" slug="$2"
   local wt_dir="${WORKTREE_ROOT}/${slug}"
-  local archive_dir="${REPO_DIR}/.wavemill/evals/artifacts/${issue}"
-  local feature_dir="" dir status=0
-
   [[ -d "$wt_dir" ]] || return 0
-  mkdir -p "$archive_dir" 2>/dev/null || {
-    log_warn "  Failed to create artifact archive directory: $archive_dir"
+  if ! wavemill_run_tool archive-task-evidence.ts --issue "$issue" --slug "$slug" \
+    --repo-dir "$REPO_DIR" --worktree "$wt_dir" >/dev/null; then
+    log_warn "  $issue cleanup could not archive task evidence; keeping resources"
     return 1
-  }
-
-  for dir in features bugs; do
-    if [[ -d "$wt_dir/$dir/$slug" ]]; then
-      feature_dir="$wt_dir/$dir/$slug"
-      break
-    fi
-  done
-
-  if [[ -n "$feature_dir" ]]; then
-    _wavemill_archive_copy "$feature_dir/plan.md" "$archive_dir/plan.md" || status=1
-    if [[ -f "$feature_dir/task-packet.md" ]]; then
-      _wavemill_archive_copy "$feature_dir/task-packet.md" "$archive_dir/task-packet.md" || status=1
-    elif [[ -f "$feature_dir/task-packet-header.md" ]]; then
-      _wavemill_archive_copy "$feature_dir/task-packet-header.md" "$archive_dir/task-packet-header.md" || status=1
-      _wavemill_archive_copy "$feature_dir/task-packet-details.md" "$archive_dir/task-packet-details.md" || status=1
-    fi
-
-    # HOK-2891: archive keeps the live basename so readers resolve one name.
-    _wavemill_archive_json_copy "$feature_dir/.routing-complete" "$archive_dir/.routing-complete" "route artifact" || status=1
-    _wavemill_archive_json_copy "$feature_dir/.initial-route.json" "$archive_dir/.initial-route.json" "route artifact" || status=1
-    _wavemill_archive_json_copy "$feature_dir/.post-expansion-route.json" "$archive_dir/.post-expansion-route.json" "route artifact" || status=1
-    _wavemill_archive_copy "$feature_dir/routing.jsonl" "$archive_dir/routing.jsonl" || status=1
-    _wavemill_archive_copy "$feature_dir/.coding-uncommitted-output.resolved.jsonl" "$archive_dir/.coding-uncommitted-output.resolved.jsonl" || status=1
-    _wavemill_archive_json_copy "$feature_dir/.operator-intervention.json" "$archive_dir/.operator-intervention.json" "operator intervention" || status=1
-    # HOK-3182: reliability-report evidence (time-stuck replay, operator touches).
-    _wavemill_archive_copy "$feature_dir/.terminal-history.jsonl" "$archive_dir/.terminal-history.jsonl" || status=1
-    _wavemill_archive_copy "$feature_dir/.operator-events.jsonl" "$archive_dir/.operator-events.jsonl" || status=1
-    # HOK-3328: the session-ownership record keeps its name in the archive, so
-    # post-reap evals read it exactly like live ones (locateOwnershipRows).
-    _wavemill_archive_copy "$feature_dir/.session-ownership.jsonl" "$archive_dir/.session-ownership.jsonl" || status=1
-    # HOK-3370: the head-move record keeps its name too, so the challenge
-    # comparison reads per-stage authorship after the reap (locateHeadMoves).
-    _wavemill_archive_copy "$feature_dir/.head-moves.jsonl" "$archive_dir/.head-moves.jsonl" || status=1
-
-    local stage result_file sidecar sidecar_name
-    for stage in planning coding review; do
-      result_file="$feature_dir/.${stage}-result.json"
-      # HOK-2891: archive keeps the live basename (leading dot).
-      _wavemill_archive_json_copy "$result_file" "$archive_dir/.${stage}-result.json" "stage result" || status=1
-
-      for sidecar in "$feature_dir/.${stage}-result.attempt-"*-failed.json; do
-        [[ -f "$sidecar" ]] || continue
-        sidecar_name="$(basename "$sidecar")"
-        _wavemill_archive_json_copy "$sidecar" "$archive_dir/$sidecar_name" "failed attempt" || status=1
-      done
-    done
-
-    local evidence_file evidence_name
-    for evidence_name in ".challenge-aborted.json" ".coding-failure-handoff.json"; do
-      evidence_file="$feature_dir/$evidence_name"
-      _wavemill_archive_json_copy "$evidence_file" "$archive_dir/$evidence_name" "failure evidence" || status=1
-    done
-
-    if [[ -d "$feature_dir/.stale-artifacts" ]]; then
-      local stale_file stale_rel stale_dest
-      while IFS= read -r stale_file; do
-        [[ -f "$stale_file" ]] || continue
-        stale_rel="${stale_file#$feature_dir/.stale-artifacts/}"
-        stale_dest="$archive_dir/stale-artifacts/$stale_rel"
-        _wavemill_archive_copy "$stale_file" "$stale_dest" || status=1
-      done < <(find "$feature_dir/.stale-artifacts" -type f \( -name '.challenge-aborted.json' -o -name '.coding-failure-handoff.json' -o -name '*.jsonl' \) 2>/dev/null)
-    fi
-
-    local json_file jsonl_ref jsonl_path jsonl_dest jsonl_base
-    while IFS= read -r json_file; do
-      [[ -f "$json_file" ]] || continue
-      while IFS= read -r jsonl_ref; do
-        [[ -n "$jsonl_ref" ]] || continue
-        jsonl_path=""
-        if [[ "$jsonl_ref" = /* && -f "$jsonl_ref" ]]; then
-          jsonl_path="$jsonl_ref"
-        elif [[ -f "$feature_dir/$jsonl_ref" ]]; then
-          jsonl_path="$feature_dir/$jsonl_ref"
-        elif [[ -f "$wt_dir/$jsonl_ref" ]]; then
-          jsonl_path="$wt_dir/$jsonl_ref"
-        fi
-        [[ -n "$jsonl_path" ]] || continue
-        jsonl_base="$(basename "$jsonl_path")"
-        jsonl_dest="$archive_dir/native-sessions/$jsonl_base"
-        _wavemill_archive_copy "$jsonl_path" "$jsonl_dest" || status=1
-      done < <(jq -r '.. | select(type == "string" and test("\\.jsonl$"))' "$json_file" 2>/dev/null || true)
-    done < <(find "$feature_dir" -maxdepth 3 -type f \( -name '*.json' -o -name '.*.json' \) 2>/dev/null)
-
-    _wavemill_archive_copy "$feature_dir/trace.jsonl" "$archive_dir/trace.jsonl" || status=1
-
-    local _tid _iid _sl
-    _tid=$(trace_read_id "$feature_dir" 2>/dev/null || true)
-    if [[ -n "$_tid" ]]; then
-      _iid=$(jq -r '.issueId // empty' "$feature_dir/.trace-context.json" 2>/dev/null || true)
-      _sl=$(jq -r '.slug // empty' "$feature_dir/.trace-context.json" 2>/dev/null || true)
-      if [[ -n "$_iid" && -n "$_sl" ]]; then
-        trace_append_event "$feature_dir" "$_tid" "$_iid" "$_sl" "cleanup" "cleanup_archived" "ok" "" "" \
-          "$(jq -cn --arg dir "$archive_dir" '{meta:{archiveDir:$dir}}' 2>/dev/null || echo '{}')" 2>/dev/null || true
-        _wavemill_archive_copy "$feature_dir/trace.jsonl" "$archive_dir/trace.jsonl" || status=1
-      fi
-    fi
   fi
-
-  local count
-  count=$(find "$archive_dir" -type f 2>/dev/null | wc -l | tr -d ' ')
-  if [[ "$count" -gt 0 ]]; then
-    log "debug" "Archived $count stage artifact(s) to .wavemill/evals/artifacts/$issue/"
-  fi
-  return "$status"
 }
+
 
 cleanup_remote_task_branch() {
   local issue="$1" task_branch="$2" pr="${3:-}"

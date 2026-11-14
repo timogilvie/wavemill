@@ -2,7 +2,7 @@
 
 ## Architecture
 
-This repository provides shared tooling for both Claude and Codex AI workflows:
+Shared tooling for Claude and Codex workflows:
 
 ### Directory Structure
 - **`shared/lib/`** - Shared JavaScript helpers (Linear API, Git, GitHub) used by both Claude and Codex
@@ -19,8 +19,8 @@ This repository provides shared tooling for both Claude and Codex AI workflows:
 2. **Config Schema**: Both `claude/config.json` and `codex/config.json` follow `claude/config.schema.json`; wavemill runtime config follows `wavemill-config.schema.json`
 3. **Shared Templates**: `tools/prompts/` templates are consumed by both toolchains
 4. **State Separation**: Claude uses `features/`, `bugs/`, `epics/`; Codex uses `.codex/state/`
-5. **Thin Tools Pattern**: Tools in `tools/` are thin wrappers (typically <150 lines) that call shared business logic modules in `shared/lib/`. Business logic is reusable, testable, and documented with comprehensive JSDoc.
-6. **Model selection belongs to Hokusai**: Hokusai decides which model runs each stage, including whether a cheaper model's risk is worth taking. A model failure is fixed by making it visible to Hokusai, with correct attribution, fault class, cost and outcome. It is never fixed by changing coder policy locally. See "Model selection belongs to Hokusai" in `AGENTS.md`.
+5. **Thin tools**: Keep `tools/` wrappers under 150 lines; put reusable, tested business logic in `shared/lib/`.
+6. **Model selection belongs to Hokusai**: Hokusai chooses each stage model and its cost/risk tradeoff. Report failures with attribution, fault class, cost and outcome; never change local coder policy to avoid them. See `AGENTS.md`.
 
 ### Shared Business Logic Modules
 
@@ -84,6 +84,7 @@ All business logic lives in `shared/lib/` for reusability across CLI tools, comm
 - **Operator touch (HOK-3455)** — Every decision about whether a person had to act is made by `classifyOperatorTouch` in `shared/lib/operator-intervention.ts`. Guard: `tools/check-human-touch.ts`. → [docs/invariants/operator-touch.md](docs/invariants/operator-touch.md)
 - **Settled attempt (HOK-3373)** — Never write `workflow-state.json` around the seam, write Linear state outside the renderer, or `git -C` / `mkdir -p` a task path outside the resolver. Guard: `tools/check-settled-attempt.ts`. → [docs/invariants/settled-attempt.md](docs/invariants/settled-attempt.md)
 - **Live-state invariants (HOK-3229)** — New structural invariants belong in this evaluator — never add a private detector. Guard: none (evaluator rule). → [docs/invariants/state-invariants.md](docs/invariants/state-invariants.md)
+- **Task evidence retention (HOK-3475)** — Use one typed inventory for cleanup and readers; archive owned transcripts and Ready results before resource release. Guard: `tools/check-task-evidence.ts`. → [docs/invariants/task-evidence.md](docs/invariants/task-evidence.md)
 - **Session ownership and cost (HOK-3077)** — Record launch costs only through `recordLaunch` / `session_ownership_append`; never add a private cost engine. Guard: `tools/check-cost-ownership.ts`, `tools/check-session-ownership.ts`. → [docs/invariants/session-ownership-cost.md](docs/invariants/session-ownership-cost.md)
 - **Inputs before approval (HOK-3253)** — Never write planning `awaiting_user` without passing this gate. Guard: journey only. → [docs/invariants/inputs-before-approval.md](docs/invariants/inputs-before-approval.md)
 - **Native loop budget** — Native coding uses the shared loop budget; entire tool batches, including invalid calls, are admitted before dispatch. Guard: `tools/check-stage-exit-identity.ts`. → [docs/invariants/native-loop-budget.md](docs/invariants/native-loop-budget.md)
