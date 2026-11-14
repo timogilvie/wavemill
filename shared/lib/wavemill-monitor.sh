@@ -4560,7 +4560,7 @@ _stage_disposition_act() {
   disposition="$(stage_agent_disposition "$issue" "$feature_dir" "$wt_dir" "$current_head" "$stage" 2>/dev/null || true)"
   # No launch record leaves the existing legacy-owner backstop responsible.
   [[ "$(jq -r '.reason // empty' <<<"$disposition")" != "no-launch" ]] || return 3
-  monitor_async_job_launch task-recovery "task-recovery-$issue-$stage" "$issue" "" "$ASYNC_JOB_MAX_RUNTIME_SECONDS" '{}' \
+  monitor_async_job_launch task-recovery "task-recovery-$issue-$stage" "$issue" "" "${ASYNC_JOB_MAX_RUNTIME_SECONDS:-3600}" '{}' \
     _task_recovery_job_run "$control_run_id" _stage_disposition_act_now "$@"
   return 0
 }
@@ -8575,7 +8575,7 @@ _monitor_claim_failed_stage_action() {
 maybe_retry_failed_stage() {
   local issue="$1" feature_dir="$2" stage="$3" run_id
   run_id="$(task_run_id "$issue" 2>/dev/null || true)"
-  monitor_async_job_launch task-recovery "task-recovery-$issue-$stage" "$issue" "" "$ASYNC_JOB_MAX_RUNTIME_SECONDS" '{}' \
+  monitor_async_job_launch task-recovery "task-recovery-$issue-$stage" "$issue" "" "${ASYNC_JOB_MAX_RUNTIME_SECONDS:-3600}" '{}' \
     _task_recovery_job_run "$run_id" _maybe_retry_failed_stage_now "$@"
   return 2
 }
