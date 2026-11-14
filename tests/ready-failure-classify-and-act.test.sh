@@ -7,7 +7,7 @@
 # deterministic code-failure goes to the operator with the excerpt and never
 # spends the retry budget; a terminal allowlist cause retires a challenge arm;
 # everything else relaunches through the shared stage-failure-ready bucket via
-# maybe_retry_failed_stage.
+# _maybe_retry_failed_stage_now.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,6 +19,7 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 # shellcheck source=../shared/lib/wavemill-common.sh
 source "$REPO_DIR/shared/lib/wavemill-common.sh"
+source "$REPO_DIR/tests/lib/inline-ready-checks.sh"
 
 PASS=0
 FAIL=0
@@ -76,7 +77,7 @@ for fn in \
   stage_failure_decision \
   phase_launch_head \
   phase_launch_base \
-  maybe_retry_failed_stage \
+  _maybe_retry_failed_stage_now \
   _monitor_claim_failed_stage_action \
   _dispatch_failed_stage_recovery \
   _execute_recovery_escalation \

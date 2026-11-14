@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # HOK-3176 acceptance: an unrecognised stage failure retries by default.
 #
-# maybe_retry_failed_stage owns the default path for a failed planning /
+# _maybe_retry_failed_stage_now owns the default path for a failed planning /
 # coding / review stage: bounded retry with backoff through bounded-retry.sh
 # (bucket stage-failure-<stage>, keyed on (head, merge-base) per HOK-3103),
 # then one fresh relaunch, then escalation to needs-user — never a terminal
@@ -56,7 +56,7 @@ for fn in \
   native_stage_failure_envelope_json \
   stage_failure_decision \
   stage_failure_owned_by_bucket \
-  maybe_retry_failed_stage \
+  _maybe_retry_failed_stage_now \
   _monitor_claim_failed_stage_action \
   _dispatch_failed_stage_recovery \
   _execute_recovery_escalation \
@@ -166,7 +166,7 @@ fd="$(new_worktree wt-unknown)"
 write_stage_result "$fd" coding failed native kimi-k2 "$unknown_detail"
 write_hook T-1 "$unknown_detail"
 printf '{"failureKind":"native-unclassified"}\n' > "$fd/.coding-failure-envelope.json"
-rc=0; maybe_retry_failed_stage T-1 "$fd" coding win-1 || rc=$?
+rc=0; _maybe_retry_failed_stage_now T-1 "$fd" coding win-1 || rc=$?
 if [[ "$rc" -eq 0 ]] \
   && [[ -f "$fd/.coding-result.json" ]] \
   && [[ ! -f "/tmp/wavemill-${SESSION}-T-1.hook" ]] \
@@ -180,7 +180,7 @@ else
 fi
 
 write_stage_result "$fd" coding failed native kimi-k2 "$unknown_detail"
-rc=0; maybe_retry_failed_stage T-1 "$fd" coding win-1 || rc=$?
+rc=0; _maybe_retry_failed_stage_now T-1 "$fd" coding win-1 || rc=$?
 if [[ "$rc" -eq 2 && -f "$fd/.coding-result.json" && "$(bounded_retry_count "$fd" "$bucket")" == "1" ]]; then
   pass "a repeat failure inside the backoff window holds without spending budget"
 else
@@ -188,13 +188,13 @@ else
 fi
 
 export WAVEMILL_RETRY_BACKOFF_STAGE_FAILURE_CODING_BASE_SECONDS=0
-rc=0; maybe_retry_failed_stage T-1 "$fd" coding win-1 || rc=$?
+rc=0; _maybe_retry_failed_stage_now T-1 "$fd" coding win-1 || rc=$?
 [[ "$rc" -eq 0 && "$(bounded_retry_count "$fd" "$bucket")" == "2" ]] \
   && pass "backoff elapsed → second relaunch" || fail "second relaunch missing (rc=$rc)"
 
 write_stage_result "$fd" coding failed native kimi-k2 "$unknown_detail"
 printf '{"failureKind":"native-unclassified"}\n' > "$fd/.coding-failure-envelope.json"
-rc=0; maybe_retry_failed_stage T-1 "$fd" coding win-1 || rc=$?
+rc=0; _maybe_retry_failed_stage_now T-1 "$fd" coding win-1 || rc=$?
 if [[ "$rc" -eq 0 ]] \
   && grep -q 'relaunch 3/3 (fresh relaunch)' "$STATUS_LOG" \
   && [[ ! -f "$fd/.coding-failure-envelope.json" && -f "$fd/.coding-failure-envelope.attempt-3.json" ]]; then
@@ -204,7 +204,7 @@ else
 fi
 
 write_stage_result "$fd" coding failed native kimi-k2 "$unknown_detail"
-rc=0; maybe_retry_failed_stage T-1 "$fd" coding win-1 || rc=$?
+rc=0; _maybe_retry_failed_stage_now T-1 "$fd" coding win-1 || rc=$?
 reason="$(bounded_retry_exhaustion_reason "$fd" "$bucket")"
 companion="$(bounded_retry_condition_path "$fd" "$bucket")"
 if [[ "$rc" -eq 1 ]] \
@@ -218,7 +218,7 @@ else
   fail "escalation incomplete (rc=$rc reason=$reason)"
 fi
 
-rc=0; maybe_retry_failed_stage T-1 "$fd" coding win-1 || rc=$?
+rc=0; _maybe_retry_failed_stage_now T-1 "$fd" coding win-1 || rc=$?
 [[ "$rc" -eq 1 ]] && pass "already-escalated stage holds quietly (exhausted-quiet)" || fail "exhausted-quiet rc=$rc"
 
 # ── Escalation never latches ──────────────────────────────────────────
@@ -230,7 +230,7 @@ if ! bounded_retry_is_exhausted "$fd" "$bucket" && [[ ! -f "$companion" ]]; then
 else
   fail "escalation latched across a new head"
 fi
-rc=0; maybe_retry_failed_stage T-1 "$fd" coding win-1 || rc=$?
+rc=0; _maybe_retry_failed_stage_now T-1 "$fd" coding win-1 || rc=$?
 [[ "$rc" -eq 0 && "$(bounded_retry_count "$fd" "$bucket")" == "1" ]] \
   && pass "a later failure at the new head gets a fresh budget" || fail "budget did not refill (rc=$rc)"
 
@@ -239,13 +239,13 @@ seed false
 fd="$(new_worktree wt-base)"
 wt="${fd%/features/*}"
 write_stage_result "$fd" coding failed native kimi-k2 "$unknown_detail"
-maybe_retry_failed_stage T-1 "$fd" coding win-b >/dev/null || true
+_maybe_retry_failed_stage_now T-1 "$fd" coding win-b >/dev/null || true
 write_stage_result "$fd" coding failed native kimi-k2 "$unknown_detail"
-maybe_retry_failed_stage T-1 "$fd" coding win-b >/dev/null || true
+_maybe_retry_failed_stage_now T-1 "$fd" coding win-b >/dev/null || true
 before="$(bounded_retry_count "$fd" "$bucket")"
 git -C "$wt" update-ref "refs/remotes/origin/$BASE_BRANCH" HEAD~2
 write_stage_result "$fd" coding failed native kimi-k2 "$unknown_detail"
-maybe_retry_failed_stage T-1 "$fd" coding win-b >/dev/null || true
+_maybe_retry_failed_stage_now T-1 "$fd" coding win-b >/dev/null || true
 if [[ "$before" == "2" && "$(bounded_retry_count "$fd" "$bucket")" == "1" \
   && "$(bounded_retry_base "$fd" "$bucket")" == "$(git -C "$wt" rev-parse HEAD~2)" ]]; then
   pass "(head, base) key: a new merge-base resets the budget"
@@ -257,7 +257,7 @@ fi
 seed false
 fd="$(new_worktree wt-terminal)"
 write_stage_result "$fd" coding failed native qwen "Native coding failed: 400 qwen-2.5-coder-32b is not a valid model ID"
-rc=0; maybe_retry_failed_stage T-1 "$fd" coding win-t || rc=$?
+rc=0; _maybe_retry_failed_stage_now T-1 "$fd" coding win-t || rc=$?
 if [[ "$rc" -eq 1 && "$(bounded_retry_count "$fd" "$bucket")" == "0" && ! -s "$PHASE_LOG" ]]; then
   pass "allowlisted terminal cause (provider-config-error) is not retried"
 else
@@ -268,12 +268,12 @@ fi
 seed false
 fd="$(new_worktree wt-owned)"
 write_stage_result "$fd" coding failed "" kimi-k2 "Coding launch refused (coder reroute budget of 3 exhausted)"
-rc=0; maybe_retry_failed_stage T-1 "$fd" coding win-o || rc=$?
+rc=0; _maybe_retry_failed_stage_now T-1 "$fd" coding win-o || rc=$?
 [[ "$rc" -eq 1 && ! -s "$PHASE_LOG" ]] \
   && pass "agentless failed result (monitor terminalization) is not retried" || fail "monitor terminalization retried"
 write_stage_result "$fd" coding failed native kimi-k2 "$unknown_detail"
 bounded_retry_mark_exhausted "$fd" coding-dirty-handoff "dirty handoff exhausted" || true
-rc=0; maybe_retry_failed_stage T-1 "$fd" coding win-o || rc=$?
+rc=0; _maybe_retry_failed_stage_now T-1 "$fd" coding win-o || rc=$?
 [[ "$rc" -eq 1 && ! -s "$PHASE_LOG" ]] \
   && pass "a stage whose own bucket is exhausted is not retried again" || fail "owned bucket retried"
 
@@ -282,11 +282,11 @@ seed true
 fd="$(new_worktree wt-challenger)"
 export WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS=1
 write_stage_result "$fd" coding failed native llama-4-scout "$unknown_detail"
-rc=0; maybe_retry_failed_stage T-1_c "$fd" coding win-c || rc=$?
+rc=0; _maybe_retry_failed_stage_now T-1_c "$fd" coding win-c || rc=$?
 [[ "$rc" -eq 0 && "$(get_task_meta T-1_c challengeAborted)" == "" ]] \
   && pass "unknown challenger failure relaunches instead of quarantining the pair" || fail "challenger not retried (rc=$rc)"
 write_stage_result "$fd" coding failed native llama-4-scout "$unknown_detail"
-rc=0; maybe_retry_failed_stage T-1_c "$fd" coding win-c || rc=$?
+rc=0; _maybe_retry_failed_stage_now T-1_c "$fd" coding win-c || rc=$?
 if [[ "$rc" -eq 1 ]] && emit_challenge_stage_failure_quarantine T-1_c "$fd" coding win-c \
   && [[ "$(get_task_meta T-1_c challengeAborted)" == "terminal_stage_failure:native-unclassified" ]] \
   && [[ -z "$(get_task_meta T-1 challengeAborted)" ]] \
@@ -300,7 +300,9 @@ unset WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS
 
 # Protects: uncertain dispatch schedules a supervised fresh probe carrying the
 # original run, and handing off a completion cannot strand its claim.
+eval "$(extract_function _stage_disposition_act_now)"
 eval "$(extract_function _stage_disposition_act)"
+ASYNC_JOB_MAX_RUNTIME_SECONDS=3600
 VERIFY_CALLS="$TMP_ROOT/verification-calls"
 ACK_CALLS="$TMP_ROOT/ack-calls"
 stage_agent_disposition() { printf '%s\n' '{"kind":"in-flight","reason":"agent-working"}'; }
@@ -311,14 +313,14 @@ wavemill_run_tool() {
 }
 monitor_async_job_launch() { printf '%s\n' "$*" >> "$VERIFY_CALLS"; }
 _stage_disposition_act T-1 "$fd" "$fd" pane win coding original-run
-if [[ "$(cat "$VERIFY_CALLS")" == recovery-verification* ]] \
-  && [[ "$(cat "$VERIFY_CALLS")" == *"_stage_disposition_act T-1 $fd $fd pane win coding original-run" ]]; then
+if [[ "$(cat "$VERIFY_CALLS")" == task-recovery* ]] \
+  && [[ "$(cat "$VERIFY_CALLS")" == *"_task_recovery_job_run original-run _stage_disposition_act_now T-1 $fd $fd pane win coding original-run" ]]; then
   pass "uncertain dispatch schedules tracked verification for the original run"
 else
   fail "uncertain dispatch did not schedule run-fenced verification"
 fi
 CONTROL_OUTCOME='{"decision":{"action":"consume-advance"},"claim":{"claimed":true,"claim":{"claimId":"completion-token"}}}'
-_stage_disposition_act T-1 "$fd" "$fd" pane win coding original-run
+_stage_disposition_act_now T-1 "$fd" "$fd" pane win coding original-run
 [[ "$(cat "$ACK_CALLS")" == completion-token ]] \
   && pass "completion handoff acknowledges its own claim" || fail "completion claim stranded"
 

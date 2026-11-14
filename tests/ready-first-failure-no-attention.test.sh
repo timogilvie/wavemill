@@ -2,7 +2,7 @@
 # HOK-3360 incident replay (CI run 41086521534): a first-occurrence
 # non-remediable Ready failure that recovers on the next tick must never page
 # an operator. It drives the real ready_failure_classify_and_act +
-# maybe_retry_failed_stage + the real escalation step (operator-escalation.sh),
+# _maybe_retry_failed_stage_now + the real escalation step (operator-escalation.sh),
 # so the "retryable first occurrence records evidence, only exhaustion pages"
 # contract is exercised end to end.
 #
@@ -15,6 +15,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 
 source "$REPO_DIR/shared/lib/wavemill-common.sh"
+source "$REPO_DIR/tests/lib/inline-ready-checks.sh"
 source "$REPO_DIR/tests/lib/state-fixtures.sh"
 TOOLS_DIR="$REPO_DIR/tools"
 
@@ -62,7 +63,7 @@ for fn in \
   stage_failure_decision \
   phase_launch_head \
   phase_launch_base \
-  maybe_retry_failed_stage \
+  _maybe_retry_failed_stage_now \
   _monitor_claim_failed_stage_action \
   _dispatch_failed_stage_recovery \
   _execute_recovery_escalation \

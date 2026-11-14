@@ -70,7 +70,7 @@ extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_exhausted_hold" >>
 extract_function "$MONITOR_SCRIPT_FILE" "clear_transient_mergeability_state" >> "$MONITOR_FUNC_FILE"
 # HOK-3371: the failed-ready-recheck wrappers are retired; the failed-status
 # block dispatches through ready_failure_classify_and_act →
-# maybe_retry_failed_stage (shared stage-failure-ready bucket).
+# _maybe_retry_failed_stage_now (shared stage-failure-ready bucket).
 extract_function "$MONITOR_SCRIPT_FILE" "ready_failure_reason" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ensure_ready_failure_blocks_pr" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_transition_redact" >> "$MONITOR_FUNC_FILE"
@@ -86,7 +86,7 @@ extract_function "$MONITOR_SCRIPT_FILE" "stage_failure_owned_by_bucket" >> "$MON
 extract_function "$MONITOR_SCRIPT_FILE" "stage_failure_decision" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "phase_launch_head" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "phase_launch_base" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "maybe_retry_failed_stage" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "_maybe_retry_failed_stage_now" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "_monitor_claim_failed_stage_action" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "_dispatch_failed_stage_recovery" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "_execute_recovery_escalation" >> "$MONITOR_FUNC_FILE"

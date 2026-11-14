@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
 
@@ -369,19 +369,22 @@ test('authoritative workflow lock remains held while creating a recovery claim',
 test('stale reconciliation retains original execution evidence and owned cost sessions', async () => {
   const dir=freshDir();
   try {
-    const stateFile=join(dir,'workflow-state.json');
+    const featureDir=join(dir,'features','late-evidence');
+    mkdirSync(featureDir,{recursive:true});
+    const stateFile=join(dir,'.wavemill','workflow-state.json');
+    mkdirSync(dirname(stateFile),{recursive:true});
     writeFileSync(stateFile,JSON.stringify(buildWorkflowState({'HOK-1':{runId:'new'}})));
     const original={stage:'coding' as const,status:'completed' as const,startedAt:'2026-11-13T00:00:00Z',finishedAt:'2026-11-13T00:01:00Z',agent:'claude',model:'intended',executedModel:'provider-model',notes:'late result'};
-    recordLaunch(dir,{sessionRef:'owned-late-session',harness:'claude-code',kind:'coding',model:'provider-model'});
+    recordLaunch(featureDir,{sessionRef:'owned-late-session',harness:'claude-code',kind:'coding',model:'provider-model'});
     const input=snapshot({attempt:{currentRunId:'old',controlRunId:'old'},stageResult:{kind:'valid',status:'completed'},evidence:{stageResult:original}});
-    const outcome=await reconcileAndRecover({stateDir:dir,stateFile,issue:'HOK-1',runId:'old',evidenceId:'late-completion',snapshot:input});
+    const outcome=await reconcileAndRecover({stateDir:featureDir,stateFile,issue:'HOK-1',runId:'old',evidenceId:'late-completion',snapshot:input});
     assert.equal(outcome.decision.action,'reject-stale-control');
     assert.equal(outcome.claim.claimed,false);
-    assert.equal(readRecoveryClaim(dir),null);
-    const retained=JSON.parse(readFileSync(join(dir,'.recovery-actions.jsonl'),'utf8'));
+    assert.equal(readRecoveryClaim(featureDir),null);
+    const retained=JSON.parse(readFileSync(join(featureDir,'.recovery-actions.jsonl'),'utf8'));
     assert.equal(retained.runId,'old');
     assert.deepEqual(retained.evidence.stageResult,original);
-    assert.deepEqual(retained.evidence.ownership,readOwnershipRows(dir));
+    assert.deepEqual(retained.evidence.ownership,readOwnershipRows(featureDir));
     assert.equal(retained.evidence.ownership[0].sessionRef,'owned-late-session');
     assert.equal(JSON.parse(readFileSync(stateFile,'utf8')).tasks['HOK-1'].runId,'new');
   } finally {rmSync(dir,{recursive:true,force:true});}
@@ -400,5 +403,24 @@ test('fresh settled disposition resolves a dead notifier with no published resul
       disposition:{kind:'settled',reason:'agent-exited',evidenceConfidence:'high',waitingOn:null,blockingPrompt:null}}});
     assert.equal(verified.decision.action,'retry-stage');
     assert.equal(verified.claim.claimed,true);
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+// protects: a lost notifier ack cannot leave a proven live launch uncertain forever.
+test('fresh live ownership acknowledges an applied launch without retrying it', async () => {
+  const dir=freshDir();
+  try {
+    const stateFile=join(dir,'workflow-state.json');
+    writeFileSync(stateFile,JSON.stringify(buildWorkflowState({'HOK-1':{runId:'run'}})));
+    const input=snapshot({attempt:{currentRunId:'run',controlRunId:'run'},stageResult:{kind:'failed'},failure:retryableFailure('proceed')});
+    const first=claimRecoveryAction({stateDir:dir,stateFile,issue:'HOK-1',runId:'run',evidenceId:'launch',decision:decideTaskRecovery(input)});
+    assert.equal(first.claimed,true); if(!first.claimed) return;
+    writeFileSync(recoveryClaimPath(dir),JSON.stringify({claim:{...first.claim,owner:{...first.claim.owner!,startTime:'dead-process'}}}));
+    writeFileSync(join(dir,'.coding-result.json'),JSON.stringify({stage:'coding',status:'running',agent:'claude'}));
+    const observed=await reconcileAndRecover({stateDir:dir,stateFile,issue:'HOK-1',runId:'run',evidenceId:'observed',snapshot:{...input,
+      disposition:{kind:'in-flight',reason:'agent-working',evidenceConfidence:'high',waitingOn:null,blockingPrompt:null}}});
+    assert.equal(observed.decision.action,'no-action');
+    assert.equal(observed.claim.claimed,false);
+    assert.ok(readRecoveryClaim(dir)?.acknowledgedAt);
   } finally {rmSync(dir,{recursive:true,force:true});}
 });

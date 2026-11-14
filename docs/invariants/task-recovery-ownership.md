@@ -44,7 +44,9 @@ Explicit human holds survive restart and retry.
 ## Live hosting
 
 The controller is hosted through Monitor's existing control loop and tracked
-async jobs; there is no separate stall daemon. The monitor's shell seams —
+`task-recovery` async jobs; claim locks and execution run in the supervised worker,
+not in the hot pass. Unit fixture hosts use the existing inline-check shim;
+golden journeys run the actual async adapters. There is no separate stall daemon. The monitor's shell seams —
 `maybe_retry_failed_stage`, `_stage_disposition_act`,
 `ready_failure_classify_and_act` (and the consolidated
 `_monitor_recover_failed_stage` helper) — are the controller's first adapters:

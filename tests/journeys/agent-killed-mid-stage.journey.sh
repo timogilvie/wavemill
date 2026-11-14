@@ -54,9 +54,9 @@ journey_wait_until "$ISSUE" 20 "coding relaunched after millisecond-timestamp ag
 # The live Monitor recovery path must select and claim one canonical action
 # before dispatching the existing retry executor; the later successful launch
 # must not replace that claim with another notification's evidence.
-RECOVERY_CLAIM="$WORKTREE_ROOT/$(journey_task_field "$ISSUE" slug)/features/$(journey_task_field "$ISSUE" slug)/.recovery-claim.json"
+RECOVERY_ACTIONS="$WORKTREE_ROOT/$(journey_task_field "$ISSUE" slug)/features/$(journey_task_field "$ISSUE" slug)/.recovery-actions.jsonl"
 journey_assert "Monitor claimed exactly one coding recovery action" \
-  jq -e '.claim.action == "retry-stage" and (.claim.runId | type == "string")' "$RECOVERY_CLAIM"
+  jq -s -e '[.[] | select(.action == "retry-stage" and .stage == "coding" and (.runId | type == "string"))] | length == 1' "$RECOVERY_ACTIONS"
 
 # Once relaunched, the task should complete the workflow normally.
 journey_wait_until "$ISSUE" 8  "review launched"             phase_is review

@@ -4549,10 +4549,40 @@ _stage_stamp_settled_without_result() {
 #           tracking) remains a necessary backstop here — it must NOT be
 #           consulted on return 0, where the disposition already has evidence
 #           and a second, narrower check could contradict it.
+# Recovery execution is hosted by the existing tracked-job supervisor. The
+# monitor only gathers its existing disposition and schedules work; no claim
+# lock or extra TypeScript process runs inline on the hot pass.
 _stage_disposition_act() {
   local issue="$1" feature_dir="$2" wt_dir="$3" win_target="$4" win="$5" stage="$6"
+  local control_run_id="${7:-}" current_head disposition
+  [[ -n "$control_run_id" ]] || control_run_id="$(task_run_id "$issue" 2>/dev/null || true)"
+  current_head="$(phase_launch_head "$feature_dir")"
+  disposition="$(stage_agent_disposition "$issue" "$feature_dir" "$wt_dir" "$current_head" "$stage" 2>/dev/null || true)"
+  # No launch record leaves the existing legacy-owner backstop responsible.
+  [[ "$(jq -r '.reason // empty' <<<"$disposition")" != "no-launch" ]] || return 3
+  monitor_async_job_launch task-recovery "task-recovery-$issue-$stage" "$issue" "" "$ASYNC_JOB_MAX_RUNTIME_SECONDS" '{}' \
+    _task_recovery_job_run "$control_run_id" _stage_disposition_act_now "$@"
+  return 0
+}
+
+_task_recovery_job_run() {
+  local recovery_control_run_id="$1" handler="$2" rc=0
+  shift 2
+  local -x WAVEMILL_EXPECTED_RUN_ID="$1=$recovery_control_run_id"
+  "$handler" "$@" || rc=$?
+  # Return codes describe handled recovery dispositions, not tool crashes.
+  # Non-Ready challenge retirement previously lived in the synchronous caller.
+  if [[ "$handler" == "_maybe_retry_failed_stage_now" && "$rc" == "1" && "$3" != "ready" ]]; then
+    emit_challenge_stage_failure_quarantine "$1" "$2" "$3" "$4" || true
+  fi
+  (( rc <= 3 )) || return "$rc"
+  return 0
+}
+
+_stage_disposition_act_now() {
+  local issue="$1" feature_dir="$2" wt_dir="$3" win_target="$4" win="$5" stage="$6"
   local current_head disposition kind reason has_completion blocking_id blocking_detail
-  local state_dir="$feature_dir" result_stage control_run_id="${7:-}"
+  local state_dir="$feature_dir" result_stage control_run_id="${recovery_control_run_id:-${7:-}}"
   [[ -n "$control_run_id" ]] || control_run_id="$(task_run_id "$issue" 2>/dev/null || true)"
 
   # ready-remediation and conflict-resolution are sub-activities of the Ready
@@ -4588,15 +4618,10 @@ _stage_disposition_act() {
           --ack "$(jq -r '.claim.claim.claimId' <<<"$recovery_outcome")" >/dev/null
       fi
       return 0 ;;
-    verify-effect)
-      # A supervised fresh probe reconciles dispatch effects after notifier
-      # death. It reuses this adapter and the existing settled-result writer.
-      local verify_meta
-      verify_meta="$(jq -cn --arg stateDir "$feature_dir" --arg head "$current_head" --arg bucket "stage-failure-$result_stage" \
-        '{stateDir:$stateDir,key:$head,bucket:$bucket}')"
-      monitor_async_job_launch recovery-verification "recovery-verification-$issue-$result_stage" "$issue" "" 30 "$verify_meta" \
-        _stage_disposition_act "$issue" "$feature_dir" "$wt_dir" "$win_target" "$win" "$stage" "$control_run_id"
-      return 0 ;;
+    # This adapter already runs in a tracked job. The controller reads the
+    # fresh disposition and result, acknowledging observed application; the
+    # next normal poll reassesses an agent that is still legitimately active.
+    verify-effect) return 0 ;;
     reject-stale-control) return 0 ;;
   esac
 
@@ -8509,7 +8534,7 @@ _monitor_claim_failed_stage_action() {
   head="$(phase_launch_head "$feature_dir")"
   base="$(phase_launch_base "$feature_dir")"
   retry_verdict="$(bounded_retry_gate "$feature_dir" "stage-failure-$stage" "$head" "$limit" "" "" "$base")"
-  run_id="$(task_run_id "$issue" 2>/dev/null || true)"
+  run_id="${recovery_control_run_id:-$(task_run_id "$issue" 2>/dev/null || true)}"
   evidence_id="$(jq -r '.fingerprint // empty' <<<"$decision_json" 2>/dev/null || true)"
   [[ -n "$evidence_id" ]] || evidence_id="${stage}:${head:-unknown}:${run_id:-legacy}"
   evidence_id+=":$(bounded_retry_count "$feature_dir" "stage-failure-$stage"):$(jq -r '.siblingGreen // false' <<<"$context")"
@@ -8548,6 +8573,14 @@ _monitor_claim_failed_stage_action() {
 # this path instead of each re-deriving a recovery ladder.
 # Every failed stage, including Ready, enters the same decision and fenced claim.
 maybe_retry_failed_stage() {
+  local issue="$1" feature_dir="$2" stage="$3" run_id
+  run_id="$(task_run_id "$issue" 2>/dev/null || true)"
+  monitor_async_job_launch task-recovery "task-recovery-$issue-$stage" "$issue" "" "$ASYNC_JOB_MAX_RUNTIME_SECONDS" '{}' \
+    _task_recovery_job_run "$run_id" _maybe_retry_failed_stage_now "$@"
+  return 2
+}
+
+_maybe_retry_failed_stage_now() {
   local issue="$1" feature_dir="$2" stage="$3" win="$4"
   local recovery action claim_id failure rc=0
   recovery="$(_monitor_claim_failed_stage_action "$issue" "$feature_dir" "$stage" "${5:-}")" || return 2

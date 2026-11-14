@@ -7,7 +7,7 @@
 #      matches HEAD, tree clean, HEAD ahead of base, seam-valid).
 #   2. archive_stale_coding_artifacts hardening — preserves a condition-valid
 #      .coding-complete at the launch gate.
-#   3. maybe_retry_failed_stage for stage=coding — relaunches coding directly
+#   3. _maybe_retry_failed_stage_now for stage=coding — relaunches coding directly
 #      instead of routing back through planning (which would then invoke the
 #      planning overreach guard on the coder's in-flight edits).
 set -euo pipefail
@@ -79,7 +79,7 @@ for fn in \
   native_stage_failure_envelope_json \
   stage_failure_decision \
   stage_failure_owned_by_bucket \
-  maybe_retry_failed_stage \
+  _maybe_retry_failed_stage_now \
   _monitor_claim_failed_stage_action \
   _dispatch_failed_stage_recovery \
   _execute_recovery_escalation \
@@ -189,7 +189,7 @@ write_stage_result() {
   fi
 }
 
-# Clear a stage result (used by maybe_retry_failed_stage before the direct
+# Clear a stage result (used by _maybe_retry_failed_stage_now before the direct
 # coding relaunch attempt).
 clear_stage_result() { rm -f "$1/.${2}-result.json"; }
 
@@ -367,7 +367,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────
-# F5 — maybe_retry_failed_stage for stage=coding relaunches coding
+# F5 — _maybe_retry_failed_stage_now for stage=coding relaunches coding
 # DIRECTLY (new behaviour); the planning overreach guard never fires.
 # ─────────────────────────────────────────────────────────────────────────
 fd="$(seed_worktree "f5-coding-retry")"
@@ -383,7 +383,7 @@ reset_state
 export WAVEMILL_RETRY_BACKOFF_STAGE_FAILURE_CODING_BASE_SECONDS=0
 fixture_workflow_state "$STATE_FILE" HOK-3211 status=active phase=coding slug=f5-direct-relaunch worktree="$wt"
 rc=0
-maybe_retry_failed_stage "HOK-3211" "$fd" "coding" "HOK-3211-F5-win" || rc=$?
+_maybe_retry_failed_stage_now "HOK-3211" "$fd" "coding" "HOK-3211-F5-win" || rc=$?
 if [[ "$rc" == "0" ]] \
   && [[ "$PLANNING_GUARD_CALLED" == "0" ]] \
   && grep -q "^HOK-3211=coding$" "$PHASE_LOG" \

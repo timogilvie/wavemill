@@ -28,7 +28,7 @@ const EVIDENCE_NAMES = [
   '.routing-complete', '.initial-route.json', '.post-expansion-route.json', 'routing.jsonl',
   '.coding-uncommitted-output.resolved.jsonl', '.operator-intervention.json',
   '.terminal-history.jsonl', '.operator-events.jsonl', '.session-ownership.jsonl',
-  '.head-moves.jsonl', '.challenge-aborted.json', '.coding-failure-handoff.json', 'trace.jsonl',
+  '.head-moves.jsonl', '.recovery-actions.jsonl', '.challenge-aborted.json', '.coding-failure-handoff.json', 'trace.jsonl',
   ...TASK_RESULT_STAGES.map(stage => `.${stage}-result.json`),
 ];
 

@@ -1,7 +1,7 @@
 
 import { processStartTime, processAlive, processHost } from './process-identity.ts';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { isSameRunId } from './attempt-identity.ts';
 import type { EscalationBasis } from './operator-escalation.ts';
@@ -13,6 +13,7 @@ import { acquireStateLockSync, releaseStateLock } from './state-lock.ts';
 import { readWorkflowState } from './workflow-state.ts';
 import { readStageResult, type StageResult } from './stage-result.ts';
 import { readOwnershipRows } from './session-ownership.ts';
+import { archiveLateStageEvidence } from './task-evidence-archive.ts';
 import { isSettled } from './task-settlement.ts';
 
 export const RECOVERY_POLICY = Object.freeze({ name: 'task-recovery-controller', version: 1 } as const);
@@ -426,13 +427,18 @@ export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decisio
       const selected = decideTaskRecovery(snapshot);
       // Keep the original provider/model/cost fields intact; this is evidence,
       // never another charge or a control write to the replacement task.
+      if (snapshot.evidence?.stageResult && args.runId) {
+        archiveLateStageEvidence({ issueId: snapshot.issue, slug: basename(args.stateDir),
+          repoDir: dirname(dirname(args.stateFile)), worktreeDir: dirname(dirname(args.stateDir)),
+          runId: args.runId, result: snapshot.evidence.stageResult });
+      }
       recordRecoveryAction(args.stateDir, { at: new Date().toISOString(), issue: snapshot.issue,
         stage: snapshot.stage, action: selected.action, runId: args.runId, evidenceId: args.evidenceId,
         rationale: selected.rationale, evidence: { snapshot, stageResult: snapshot.evidence?.stageResult ?? null, ownership: readOwnershipRows(args.stateDir) } });
       return { decision: selected, claim: { claimed: false, reason: 'stale-run' } };
     }
     const result = await readStageResult(args.stateDir, snapshot.stage);
-    const claim = readRecoveryClaim(args.stateDir);
+    let claim = readRecoveryClaim(args.stateDir);
     if (result?.status === 'completed' || result?.status === 'awaiting_user') {
       snapshot = { ...snapshot, stageResult: { kind: 'valid', status: result.status }, failure: null,
         wait: result.status === 'awaiting_user' ? { owner: 'human', wake: 'operator-release' } : snapshot.wait };
@@ -442,6 +448,13 @@ export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decisio
     if (claim && !claim.acknowledgedAt && result?.finishedAt
         && Date.parse(result.finishedAt) >= Date.parse(claim.claimedAt)) {
       acknowledgeRecoveryAction(args.stateDir, claim.claimId);
+    }
+    if (claim && !claim.acknowledgedAt && snapshot.disposition?.kind === 'in-flight'
+        && snapshot.disposition.evidenceConfidence === 'high') {
+      // Fresh ownership/liveness proves the dispatched launch took effect.
+      // A dead notifier is not a reason to repeat a live agent's work.
+      acknowledgeRecoveryAction(args.stateDir, claim.claimId);
+      claim = readRecoveryClaim(args.stateDir);
     }
     if (claim && !claim.acknowledgedAt && claim.owner && claim.owner.host === processHost()
         && !processAlive(claim.owner.pid, claim.owner.startTime)) {
@@ -511,9 +524,9 @@ export async function runControllerCli(): Promise<void> {
   const { decision: selected, claim } = await reconcileAndRecover({ stateDir, snapshot,
     runId: snapshot.attempt.controlRunId, evidenceId,
     stateFile: flag('--state-file'), issue: snapshot.issue, ownerPid: Number(flag('--owner-pid')) || process.ppid });
-  if (claim.claimed) {
+  if (claim.claimed || selected.action === 'verify-effect') {
     recordRecoveryAction(stateDir, {
-      at: claim.claim.claimedAt,
+      at: claim.claimed ? claim.claim.claimedAt : new Date().toISOString(),
       issue: snapshot.issue,
       stage: snapshot.stage,
       action: selected.action,
