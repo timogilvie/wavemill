@@ -4578,7 +4578,16 @@ _stage_disposition_act() {
     --state-file "$STATE_FILE" --owner-pid "$$" --issue "$issue" --stage "$result_stage" --disposition "$disposition" 2>/dev/null)"
   recovery_action="$(jq -r '.decision.action // "no-action"' <<<"$recovery_outcome")"
   case "$recovery_action" in
-    consume-advance|verify-effect|reject-stale-control) return 0 ;;
+    consume-advance)
+      # The caller consumes the durable result through its normal transition.
+      # Release this notifier's claim before handing control back; duplicate
+      # completion evidence remains deduplicated, later failures may claim.
+      if [[ "$(jq -r '.claim.claimed // false' <<<"$recovery_outcome")" == "true" ]]; then
+        wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" \
+          --ack "$(jq -r '.claim.claim.claimId' <<<"$recovery_outcome")" >/dev/null
+      fi
+      return 0 ;;
+    verify-effect|reject-stale-control) return 0 ;;
   esac
 
   if [[ "$kind" == "inactive" && "$reason" == "no-launch" ]]; then

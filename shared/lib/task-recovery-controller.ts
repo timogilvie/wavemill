@@ -310,6 +310,9 @@ export function claimRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
     const task = readWorkflowState(args.stateFile)?.tasks?.[args.issue ?? ''];
     if (!task || ((task.runId != null || args.runId != null) && !isSameRunId(task.runId, args.runId))) return { claimed: false, reason: 'stale-run' };
     if (isSettled(task)) return { claimed: false, reason: 'settled-attempt' };
+    // This synchronous call completes its claim-file mutation before finally
+    // releases the authoritative workflow lock. Task replacement/settlement
+    // writers use that same lock; no validation-to-claim gap exists.
     return claimCurrentRecoveryAction(args);
   } finally {
     releaseStateLock(lock);

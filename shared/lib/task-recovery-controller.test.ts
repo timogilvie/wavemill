@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
@@ -348,4 +348,18 @@ test('Ready transition code faults and base drift select claimed operator or upd
   const input = snapshot({stage:'ready',stageResult:{kind:'failed'},failure:{decision,retry:'proceed',source:'transition'}});
   assert.equal(decideTaskRecovery(input).escalationBasis?.kind, 'operator-decision');
   assert.equal(decideTaskRecovery({...input,baseDrift:true}).nextAction, 'update-base');
+});
+
+// protects: task replacement cannot interleave between run validation and claim creation.
+test('authoritative workflow lock remains held while creating a recovery claim', () => {
+  const dir = freshDir();
+  try {
+    const stateFile = join(dir, 'workflow-state.json');
+    writeFileSync(stateFile, JSON.stringify(buildWorkflowState({'HOK-1':{runId:'run'}})));
+    const selected = decideTaskRecovery(snapshot({stageResult:{kind:'failed'},failure:retryableFailure('proceed')}));
+    const result = claimRecoveryAction({stateDir:dir,stateFile,issue:'HOK-1',runId:'run',evidenceId:'locked',decision:selected,
+      now: () => { assert.equal(existsSync(`${stateFile}.lock`), true); return new Date(); }});
+    assert.equal(result.claimed, true);
+    assert.equal(existsSync(`${stateFile}.lock`), false);
+  } finally { rmSync(dir,{recursive:true,force:true}); }
 });
