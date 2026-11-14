@@ -14,6 +14,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 
+source "$REPO_DIR/shared/lib/wavemill-common.sh"
+source "$REPO_DIR/tests/lib/state-fixtures.sh"
+TOOLS_DIR="$REPO_DIR/tools"
+
 # Real helpers under test: marker writer, bounded retry, and the one escalation
 # step (no stub — this test proves the real escalation path).
 # shellcheck source=../shared/lib/transient-marker.sh
@@ -59,6 +63,10 @@ for fn in \
   phase_launch_head \
   phase_launch_base \
   maybe_retry_failed_stage \
+  _monitor_claim_failed_stage_action \
+  _dispatch_failed_stage_recovery \
+  _execute_recovery_escalation \
+  _ready_failure_update_base \
 ; do
   eval "$(extract_function "$fn")"
 done
@@ -91,6 +99,10 @@ git -C "$STATE_DIR" init -q
 git -C "$STATE_DIR" config user.email t@example.com
 git -C "$STATE_DIR" config user.name t
 git -C "$STATE_DIR" commit -q --allow-empty -m init
+STATE_FILE="$TEST_TMP/workflow-state.json"
+fixture_workflow_state "$STATE_FILE" HOK-3360 status=active phase=ready worktree="$STATE_DIR" slug=hok-3360
+fixture_real_state_accessors
+ready_exhausted_challenge_sibling_green() { return 1; }
 BUCKET="stage-failure-ready"
 export WAVEMILL_RETRY_BACKOFF_STAGE_FAILURE_READY_BASE_SECONDS=0
 

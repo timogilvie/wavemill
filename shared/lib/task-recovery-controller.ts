@@ -45,6 +45,7 @@ export interface RecoveryOutstandingEffect {
 }
 
 export interface RecoveryFailure {
+  source?: 'ci' | 'transition';
   decision: FailureDecision;
   retry: BoundedRetryDecision;
 }
@@ -55,6 +56,7 @@ export type RecoveryDisposition = Pick<
 >;
 
 export interface RecoverySnapshot {
+  baseDrift?: boolean;
   issue: string;
   stage: FailureStage;
   attempt: RecoveryAttempt;
@@ -210,15 +212,19 @@ function decideFromFailure(snapshot: RecoverySnapshot, failure: RecoveryFailure)
   const { decision: fd, retry } = failure;
   const base: Partial<RecoveryDecision> = { failureKind: fd.failureKind, nextAction: fd.nextAction };
 
+  if (snapshot.baseDrift) {
+    return decision(stage, 'remediate', 'update from the observed base before reevaluating Ready', { ...base, nextAction: 'update-base' });
+  }
+  if (stage === 'ready' && fd.class === 'code-failure' && failure.source === 'transition') {
+    return decision(stage, 'escalate', 'a transition-tool code failure requires operator repair', {
+      ...base, escalationBasis: { kind: 'operator-decision', code: 'transition-code-failure' },
+    });
+  }
   if (fd.class === 'terminal') {
     return decision(stage, 'escalate', `allowlisted terminal cause ${fd.failureKind}: ${fd.cause?.reason ?? fd.rationale}`, {
       ...base,
       escalationBasis: { kind: 'policy-terminal', decisionClass: 'terminal' },
     });
-  }
-
-  if (fd.class === 'code-failure') {
-    return decision(stage, 'remediate', `recognised code failure (${fd.failureKind}); hand the excerpt to remediation`, base);
   }
 
   // retryable
@@ -246,6 +252,10 @@ function decideFromFailure(snapshot: RecoverySnapshot, failure: RecoveryFailure)
       wait: { owner: 'tool', wake: 'execution-contract-available' },
     });
   }
+  if (fd.class === 'code-failure') {
+    return decision(stage, 'remediate', `recognised code failure (${fd.failureKind}); hand the excerpt to remediation`, base);
+  }
+
   return decision(stage, 'retry-stage', `${fd.failureKind} is retryable; relaunch ${stage} under ${bucket}`, {
     ...base,
     retryBucket: bucket,
@@ -458,7 +468,10 @@ export async function runControllerCli(): Promise<void> {
       contractAvailable: null, outstandingEffect: null,
       wait: result?.status === 'awaiting_user' ? { owner: 'human', wake: 'operator-release' } : null, failure: null,
     };
-    process.stdout.write(`${JSON.stringify({ decision: decideTaskRecovery(snapshot) })}\n`);
+    const outcome = await reconcileAndRecover({ stateDir, snapshot, issue, stateFile: flag('--state-file'),
+      runId: snapshot.attempt.controlRunId, ownerPid: Number(flag('--owner-pid')) || process.ppid,
+      evidenceId: `${stage}:${task?.runId ?? 'legacy'}:${result?.startedAt ?? 'unknown-launch'}:${JSON.stringify(snapshot.disposition?.blockingPrompt ?? snapshot.stageResult)}` });
+    process.stdout.write(`${JSON.stringify(outcome)}\n`);
     return;
   }
   const ack = flag('--ack');

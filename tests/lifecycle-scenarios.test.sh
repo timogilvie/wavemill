@@ -206,6 +206,8 @@ for fn in \
   stage_failure_owned_by_bucket \
   maybe_retry_failed_stage \
   _dispatch_failed_stage_recovery \
+  _execute_recovery_escalation \
+  _ready_failure_update_base \
   challenge_maybe_materialize_deferred_arms \
   _monitor_claim_failed_stage_action \
   _monitor_recover_failed_stage \

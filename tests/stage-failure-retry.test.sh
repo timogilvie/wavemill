@@ -25,6 +25,7 @@ source "$REPO_DIR/shared/lib/transient-marker.sh"
 # shellcheck source=../shared/lib/condition-reconciler.sh
 source "$REPO_DIR/shared/lib/condition-reconciler.sh"
 TOOLS_DIR="$REPO_DIR/tools"
+source "$REPO_DIR/tests/lib/state-fixtures.sh"
 
 PASS=0
 FAIL=0
@@ -56,6 +57,10 @@ for fn in \
   stage_failure_decision \
   stage_failure_owned_by_bucket \
   maybe_retry_failed_stage \
+  _monitor_claim_failed_stage_action \
+  _dispatch_failed_stage_recovery \
+  _execute_recovery_escalation \
+  _ready_failure_update_base \
   _stage_failure_coding_relaunch \
   recovery_contract_json \
   emit_challenge_stage_failure_quarantine \
@@ -131,10 +136,8 @@ new_worktree() {
 
 seed() {
   local challenge="${1:-false}"
-  jq -n --argjson c "$challenge" '{tasks:{
-      "T-1":   {challengePairId:"T-1", challengeRole:"primary",    challenge:$c},
-      "T-1_c": {challengePairId:"T-1", challengeRole:"challenger", challenge:$c}
-    }}' > "$STATE_FILE"
+  fixture_workflow_state "$STATE_FILE" T-1 challengePairId=T-1 challengeRole=primary challenge="$challenge" phase=coding \
+    -- T-1_c challengePairId=T-1 challengeRole=challenger challenge="$challenge" phase=coding
   : > "$ATTENTION_FILE"; : > "$STATUS_LOG"; : > "$PHASE_LOG"
   CLEANUP_CALLS=""
 }

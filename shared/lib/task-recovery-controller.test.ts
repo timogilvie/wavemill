@@ -333,3 +333,19 @@ test('a dead controller claim is reconciled from observed stage state before rep
     assert.equal(recovered.claim.claimed, true);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// protects: remediation shares the relaunch budget instead of bypassing exhaustion.
+test('code remediation respects backoff, exhaustion, and the persisted coding contract', () => {
+  const decision = classifyFailure({ stage: 'coding', detail: 'CONFLICT (content): merge conflict in foo.ts' });
+  for (const [retry, action] of [['backoff', 'wait'], ['exhausted', 'escalate'], ['exhausted-quiet', 'escalate']] as const) {
+    assert.equal(decideTaskRecovery(snapshot({stageResult:{kind:'failed'}, failure:{decision,retry}})).action, action);
+  }
+  assert.equal(decideTaskRecovery(snapshot({contractAvailable:false, stageResult:{kind:'failed'}, failure:{decision,retry:'proceed'}})).action, 'wait');
+});
+
+test('Ready transition code faults and base drift select claimed operator or update actions', () => {
+  const decision = classifyFailure({ stage: 'ready', detail: 'CONFLICT (content): merge conflict in foo.ts' });
+  const input = snapshot({stage:'ready',stageResult:{kind:'failed'},failure:{decision,retry:'proceed',source:'transition'}});
+  assert.equal(decideTaskRecovery(input).escalationBasis?.kind, 'operator-decision');
+  assert.equal(decideTaskRecovery({...input,baseDrift:true}).nextAction, 'update-base');
+});

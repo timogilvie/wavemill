@@ -48,6 +48,7 @@ extract_function() {
 
 # shellcheck source=../shared/lib/wavemill-common.sh
 source "$REPO_DIR/shared/lib/wavemill-common.sh"
+source "$REPO_DIR/tests/lib/state-fixtures.sh"
 # shellcheck source=../shared/lib/transient-marker.sh
 source "$REPO_DIR/shared/lib/transient-marker.sh"
 # shellcheck source=../shared/lib/condition-reconciler.sh
@@ -79,6 +80,10 @@ for fn in \
   stage_failure_decision \
   stage_failure_owned_by_bucket \
   maybe_retry_failed_stage \
+  _monitor_claim_failed_stage_action \
+  _dispatch_failed_stage_recovery \
+  _execute_recovery_escalation \
+  _ready_failure_update_base \
   _stage_failure_coding_relaunch \
   recovery_contract_json \
   _challenge_side_for_issue \
@@ -376,11 +381,12 @@ jq -n '{stage:"coding", status:"failed", startedAt:"2026-01-01T00:00:00Z", finis
 jq -n '{failureKind:"native-unclassified"}' > "$fd/.coding-failure-envelope.json"
 reset_state
 export WAVEMILL_RETRY_BACKOFF_STAGE_FAILURE_CODING_BASE_SECONDS=0
+fixture_workflow_state "$STATE_FILE" HOK-3211 status=active phase=coding slug=f5-direct-relaunch worktree="$wt"
 rc=0
-maybe_retry_failed_stage "HOK-3211-F5" "$fd" "coding" "HOK-3211-F5-win" || rc=$?
+maybe_retry_failed_stage "HOK-3211" "$fd" "coding" "HOK-3211-F5-win" || rc=$?
 if [[ "$rc" == "0" ]] \
   && [[ "$PLANNING_GUARD_CALLED" == "0" ]] \
-  && grep -q "^HOK-3211-F5=coding$" "$PHASE_LOG" \
+  && grep -q "^HOK-3211=coding$" "$PHASE_LOG" \
   && grep -q "^launch_coding_phase=" "$LAUNCH_SPY" \
   && grep -q "^prepare=" "$LAUNCH_SPY" \
   && grep -q "directly via coding" "$STATUS_LOG" \

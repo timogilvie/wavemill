@@ -77,6 +77,10 @@ for fn in \
   phase_launch_head \
   phase_launch_base \
   maybe_retry_failed_stage \
+  _monitor_claim_failed_stage_action \
+  _dispatch_failed_stage_recovery \
+  _execute_recovery_escalation \
+  _ready_failure_update_base \
 ; do
   eval "$(extract_function "$fn")"
 done
@@ -112,6 +116,11 @@ pass_task_field() {
 }
 effective_task_base_branch() { printf '%s\n' "$BASE_BRANCH"; }
 get_task_meta() { :; }
+source "$REPO_DIR/tests/lib/state-fixtures.sh"
+STATE_FILE="$TMP_ROOT/workflow-state.json"
+TOOLS_DIR="$REPO_DIR/tools"
+fixture_workflow_state "$STATE_FILE" HOK-3371 status=active phase=ready worktree="$WORKTREE" slug=hok-3371 pr=4041
+fixture_real_state_accessors
 check_stage_aborted() { return 1; }
 
 LAUNCH_CALLS_FILE="$TMP_ROOT/launch-calls"
@@ -133,6 +142,7 @@ try_update_branch_from_base() {
 TERMINALIZE_CALLS_FILE="$TMP_ROOT/terminalize-calls"
 : > "$TERMINALIZE_CALLS_FILE"
 TERMINALIZE_RC=1
+ready_exhausted_challenge_sibling_green() { [[ "$TERMINALIZE_RC" == "0" ]]; }
 ready_exhausted_challenge_terminalize() {
   printf 'terminalize: %s\n' "$*" >> "$TERMINALIZE_CALLS_FILE"
   return "$TERMINALIZE_RC"
@@ -151,7 +161,10 @@ _failure_policy_cli() {
 
 write_failed_result() {
   mkdir -p "$STATE_DIR"
-  printf '%s\n' "$1" > "$STATE_DIR/.ready-result.json"
+  rm -f "$STATE_DIR/.ready-failure-decision.json"
+  local policy="${FAILURE_POLICY_DECISION:-}"
+  [[ -n "$policy" ]] || policy='{}'
+  printf '%s\n' "$1" | jq --arg kind "$(jq -r '.failureKind // "observation"' <<<"$policy")" '. + {notes:(.notes // $kind)}' > "$STATE_DIR/.ready-result.json"
 }
 
 act() {
@@ -236,6 +249,7 @@ FAILURE_POLICY_DECISION=""
 rm -f "$STATE_DIR/.retry-$bucket-exhausted"*
 bounded_retry_clear "$STATE_DIR" "$bucket"
 READY_LAUNCH_RC=5
+write_failed_result '{"stage":"ready","status":"failed","agent":"claude","artifacts":{"verdict":"fail"}}'
 out="$(act)"
 check_eq "a typed launcher hold is handled" "$out" "rc=0"
 READY_LAUNCH_RC=0

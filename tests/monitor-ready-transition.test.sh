@@ -87,6 +87,11 @@ extract_function "$MONITOR_SCRIPT_FILE" "stage_failure_decision" >> "$MONITOR_FU
 extract_function "$MONITOR_SCRIPT_FILE" "phase_launch_head" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "phase_launch_base" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "maybe_retry_failed_stage" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "_monitor_claim_failed_stage_action" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "_dispatch_failed_stage_recovery" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "_execute_recovery_escalation" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "_ready_failure_update_base" >> "$MONITOR_FUNC_FILE"
+
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_passes_ready_gate" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_has_final_evidence" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_missing_final_evidence" >> "$MONITOR_FUNC_FILE"
@@ -114,6 +119,9 @@ run_monitor_case() {
     set -euo pipefail
     shopt -s expand_aliases
     source "$SOURCE_REPO_DIR/shared/lib/wavemill-common.sh"
+    source "$SOURCE_REPO_DIR/tests/lib/state-fixtures.sh"
+    LIB_DIR="$SOURCE_REPO_DIR/shared/lib"
+    TOOLS_DIR="$SOURCE_REPO_DIR/tools"
     source "$MONITOR_FUNC_FILE"
 
     declare -Ag BRANCH_BY_ISSUE=()
@@ -167,6 +175,7 @@ run_monitor_case() {
     mkdir -p "$WORKTREE_ROOT/$SLUG/features/$SLUG" "$REPO_DIR"
     FEATURE_DIR="$WORKTREE_ROOT/$SLUG/features/$SLUG"
     READY_DIR="$FEATURE_DIR/ready"
+    fixture_workflow_state "$STATE_FILE" "$ISSUE" status=active phase=ready slug="$SLUG" worktree="$WORKTREE_ROOT/$SLUG"
     mkdir -p "$READY_DIR"
     cat > "$FEATURE_DIR/.review-result.json" <<JSON
 {"stage":"review","status":"completed","artifacts":{"type":"review","prNumber":321,"exitCode":0,"verdict":"ready","iterations":1,"blockerCount":0}}
@@ -598,6 +607,11 @@ JSON
     # tests/ready-exhausted-challenge.test.sh; here it is a knob so the
     # failed-status dispatch cases pin their own side of the contract.
     ready_exhausted_challenge_terminalize() { return "${TERMINALIZE_RC:-1}"; }
+    ready_exhausted_challenge_sibling_green() { return 1; }
+    monitor_task_reap_reason() { return 1; }
+    codex_capacity_idle_confirmed() { return 1; }
+    tend_attempt_conflict_needs_ready() { return 1; }
+    review_gate_refusal_is_terminal() { return 1; }
     effective_task_base_branch() { printf "%s\n" "$BASE_BRANCH"; }
     read_state_value() { printf "%s\n" "${1-}"; }
     set_window_attention_state() { ATTENTION_STATE="$2"; }
@@ -618,7 +632,7 @@ JSON
     # the extracted helper is callable here without pulling in the real tool.
     # HOK-3322: the Ready remediation disposition is the real decision, not a stub.
     npx() {
-      [[ "${2:-}" == */ready-remediation-disposition.ts ]] || return 0
+      [[ "${2:-}" == */ready-remediation-disposition.ts || "${2:-}" == */task-recovery-controller.ts ]] || return 0
       command npx "$@"
     }
     is_challenge_task() { [[ "${CHALLENGE_TASK:-false}" == "true" ]]; }
