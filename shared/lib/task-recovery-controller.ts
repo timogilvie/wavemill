@@ -1,4 +1,5 @@
 
+import { processStartTime, processAlive, processHost } from './process-identity.ts';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
@@ -262,6 +263,7 @@ export interface RecoveryClaim {
   claimedAt: string;
     claimId: string;
   acknowledgedAt?: string;
+  owner?: { pid: number; startTime: string; host: string };
 }
 
 export interface ClaimRecoveryArgs {
@@ -273,6 +275,7 @@ export interface ClaimRecoveryArgs {
     claimPath?: string;
     stateFile?: string;
   issue?: string;
+  ownerPid?: number;
 }
 
 export type ClaimResult =
@@ -317,7 +320,9 @@ function claimCurrentRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
     claimPath,
     (current) => {
       const existing = current.claim;
-      if (existing && sameClaimIdentity(existing, dec.action, dec.stage, runId, evidenceId)) {
+      const abandoned = existing?.owner && existing.owner.host === processHost()
+        && !processAlive(existing.owner.pid, existing.owner.startTime);
+      if (existing && !abandoned && sameClaimIdentity(existing, dec.action, dec.stage, runId, evidenceId)) {
         // An identical claim already exists: another notifier won. Keep it.
         outcome = { claimed: false, reason: 'already-claimed', existing };
         return current;
@@ -326,7 +331,7 @@ function claimCurrentRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
       // notification identity, not a new unit of control: accepting a
       // different evidence id for this same run would let two concurrent
       // notifiers dispatch two recovery-bearing actions.
-      if (existing && !existing.acknowledgedAt && (existing.runId ?? null) === (runId ?? null)) {
+      if (existing && !abandoned && !existing.acknowledgedAt && (existing.runId ?? null) === (runId ?? null)) {
         outcome = { claimed: false, reason: 'already-claimed', existing };
         return current;
       }
@@ -339,6 +344,7 @@ function claimCurrentRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
         evidenceId,
         claimedAt: now.toISOString(),
         claimId,
+        owner: { pid: args.ownerPid ?? process.pid, startTime: processStartTime(args.ownerPid ?? process.pid), host: processHost() },
       };
       outcome = { claimed: true, claim };
       return { ...current, claim };
@@ -393,6 +399,31 @@ export function recordRecoveryAction(
   }
 }
 
+export async function reconcileAndRecover(args: ClaimRecoveryArgs & { snapshot: RecoverySnapshot }): Promise<{ decision: RecoveryDecision; claim: ClaimResult }> {
+  let snapshot = args.snapshot;
+  if (args.stateFile) {
+    const result = await readStageResult(args.stateDir, snapshot.stage);
+    const claim = readRecoveryClaim(args.stateDir);
+    if (claim && !claim.acknowledgedAt && result?.finishedAt
+        && Date.parse(result.finishedAt) >= Date.parse(claim.claimedAt)) {
+      acknowledgeRecoveryAction(args.stateDir, claim.claimId);
+    }
+    if (claim && !claim.acknowledgedAt && claim.owner && claim.owner.host === processHost()
+        && !processAlive(claim.owner.pid, claim.owner.startTime)) {
+      if (result?.status === 'completed' || result?.status === 'awaiting_user') {
+        snapshot = { ...snapshot, stageResult: { kind: 'valid', status: result.status }, failure: null };
+      } else if (result?.status === 'running' || !result) {
+        snapshot = { ...snapshot, stageResult: { kind: 'running' }, failure: null,
+          outstandingEffect: { kind: claim.action, acknowledged: false } };
+      }
+      // A still-failed result means the launch did not publish its running
+      // result; replay uses the same bounded retry, never another model.
+    }
+  }
+  const decision = decideTaskRecovery(snapshot);
+  return { decision, claim: claimRecoveryAction({ ...args, decision }) };
+}
+
 export async function runControllerCli(): Promise<void> {
   const flag = (name: string): string | undefined => {
     const index = process.argv.indexOf(name);
@@ -418,7 +449,8 @@ export async function runControllerCli(): Promise<void> {
       disposition: JSON.parse(dispositionJson),
       stageResult: result?.status === 'completed' || result?.status === 'awaiting_user'
         ? { kind: 'valid', status: result.status } : { kind: 'running' },
-      contractAvailable: null, outstandingEffect: null, wait: null, failure: null,
+      contractAvailable: null, outstandingEffect: null,
+      wait: result?.status === 'awaiting_user' ? { owner: 'human', wake: 'operator-release' } : null, failure: null,
     };
     process.stdout.write(`${JSON.stringify({ decision: decideTaskRecovery(snapshot) })}\n`);
     return;
@@ -437,8 +469,9 @@ export async function runControllerCli(): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  const selected = decideTaskRecovery(snapshot);
-  const claim = claimRecoveryAction({ stateDir, decision: selected, runId: snapshot.attempt.controlRunId, evidenceId, stateFile: flag('--state-file'), issue: snapshot.issue });
+  const { decision: selected, claim } = await reconcileAndRecover({ stateDir, snapshot,
+    decision: decideTaskRecovery(snapshot), runId: snapshot.attempt.controlRunId, evidenceId,
+    stateFile: flag('--state-file'), issue: snapshot.issue, ownerPid: Number(flag('--owner-pid')) || process.ppid });
   if (claim.claimed) {
     recordRecoveryAction(stateDir, {
       at: claim.claim.claimedAt,

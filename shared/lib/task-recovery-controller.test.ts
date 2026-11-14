@@ -9,6 +9,7 @@ import { classifyFailure, type FailureDecision } from './failure-policy.ts';
 import {
   RECOVERY_POLICY_ID,
   acknowledgeRecoveryAction,
+  reconcileAndRecover,
   claimRecoveryAction,
   decideTaskRecovery,
   readRecoveryClaim,
@@ -306,4 +307,29 @@ test('completed result and unacknowledged effects precede a stale live dispositi
   const disp: RecoveryDisposition = { kind: 'in-flight', reason: 'agent-working', evidenceConfidence: 'high', waitingOn: null, blockingPrompt: null };
   assert.equal(decideTaskRecovery(snapshot({ disposition: disp, stageResult: { kind: 'valid', status: 'completed' } })).action, 'consume-advance');
   assert.equal(decideTaskRecovery(snapshot({ disposition: disp, outstandingEffect: { kind: 'push', acknowledged: false } })).action, 'verify-effect');
+});
+
+
+test('a dead controller claim is reconciled from observed stage state before replay', async () => {
+  const dir = freshDir();
+  try {
+    const stateFile = join(dir, 'workflow-state.json');
+    writeFileSync(stateFile, JSON.stringify(buildWorkflowState({ 'HOK-1': { runId: 'run' } })));
+    const snap = snapshot({ attempt: { currentRunId: 'run', controlRunId: 'run' }, stageResult: { kind: 'failed' }, failure: retryableFailure('proceed') });
+    const args = { stateDir: dir, stateFile, issue: 'HOK-1', snapshot: snap, decision: decideTaskRecovery(snap), runId: 'run', evidenceId: 'before-dispatch' };
+    const first = claimRecoveryAction(args);
+    assert.equal(first.claimed, true);
+    if (!first.claimed) return;
+    const claimPath = recoveryClaimPath(dir);
+    const abandoned = { ...first.claim, owner: { ...first.claim.owner!, startTime: 'replaced-process-identity' } };
+    writeFileSync(claimPath, JSON.stringify({ claim: abandoned }));
+    // Missing/running output is uncertain: verify instead of repeating a launch.
+    assert.equal((await reconcileAndRecover(args)).decision.action, 'verify-effect');
+    // A terminal result written after effect application is consumed, never rerun.
+    const result = { stage: 'coding', status: 'completed', agent: 'claude', startedAt: '2026-11-13T00:00:00Z', finishedAt: '2026-11-13T00:01:00Z' };
+    writeFileSync(join(dir, '.coding-result.json'), JSON.stringify(result));
+    const recovered = await reconcileAndRecover(args);
+    assert.equal(recovered.decision.action, 'consume-advance');
+    assert.equal(recovered.claim.claimed, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -8514,7 +8514,7 @@ _monitor_claim_failed_stage_action() {
       rm -f "$snapshot_file"; return 1;
     }
   result="$(wavemill_run_tool task-recovery-controller.ts \
-    --state-dir "$feature_dir" --state-file "$STATE_FILE" --evidence-id "$evidence_id" --snapshot "$snapshot_file" 2>/dev/null)"
+    --state-dir "$feature_dir" --state-file "$STATE_FILE" --owner-pid "$$" --evidence-id "$evidence_id" --snapshot "$snapshot_file" 2>/dev/null)"
   rm -f "$snapshot_file"
   [[ -n "$result" ]] && jq -e . >/dev/null 2>&1 <<<"$result" || return 1
   jq --argjson failure "$decision_json" '. + {failure:$failure}' <<<"$result"
