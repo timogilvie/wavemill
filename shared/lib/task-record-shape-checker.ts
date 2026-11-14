@@ -11,7 +11,7 @@
  *
  * Test files are not scanned: fixtures deliberately build partial and
  * malformed state. Justified exceptions (a different file that happens to have
- * a `tasks` map, the ledger render view) go in
+ * a `tasks` map) go in
  * `tools/task-record-shape-allowlist.txt` with a reason, or on one line with
  * `// allow-task-record-shape: <reason>`. Built on tools/lib/source-guard.ts.
  */
@@ -84,7 +84,6 @@ export const TASK_RECORD_SHAPE_GUARD: GuardSpec = {
   ],
   tsExtensions: ['.ts', '.tsx', '.mts', '.cts'],
   shellExtensions: [],
-  ratchet: false,
 };
 
 /**

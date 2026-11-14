@@ -7,7 +7,7 @@ runTool({
   name: 'set-issue-state',
   description: 'Set the state of a Linear issue',
   options: {
-    'trigger-event': { type: 'string', description: 'Event id that triggered this transition (side-effect ledger key)' },
+    'trigger-event': { type: 'string', description: 'Event id that triggered this transition, for attribution' },
   },
   positional: {
     name: 'identifier stateName',
