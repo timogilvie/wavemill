@@ -502,7 +502,7 @@ else
       | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|completed|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$' \
       | grep -vE '^(capabilities|const|import|throw)$' \
       | grep -vE '^(ascii_upcase|first|it|num|retrying|sibling|floor|spawn)$' \
-      | grep -vE '^(decide|defaulting|investigate|remediation|unknown)$')
+      | grep -vE '^(decide|defaulting|escalating|investigate|remediation|unknown)$')
 
     # Check which called names look like they could be custom functions
     # and verify they're defined
