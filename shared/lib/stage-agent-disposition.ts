@@ -41,7 +41,7 @@
  */
 
 import { basename, join } from 'node:path';
-import { readFileSync, statSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { readOwnershipRows, type OwnershipKind, type OwnershipStage } from './session-ownership.ts';
 import { resolveTaskArtifact } from './task-artifact-lookup.ts';
 import {
@@ -52,7 +52,7 @@ import {
   type TaskProgress,
   type TransitionInput,
 } from './task-progress.ts';
-import { getResultFilePath, type StageName, type StageResult } from './stage-result.ts';
+import { getResultFilePath, readStageResultSync, type StageName, type StageResult } from './stage-result.ts';
 import type { TaskRecord } from './workflow-state.ts';
 
 export type { StageAgentStage };
@@ -416,12 +416,6 @@ function stageHasCompletionArtifact(
       // Not present; try the next candidate.
     }
   }
-  // Results can land while progress gathering runs; the original object is a snapshot.
-  try {
-    const resultStage = stage === 'ready-remediation' || stage === 'conflict-resolution' ? 'ready' : stage;
-    const current = JSON.parse(readFileSync(join(stateDir, `.${resultStage}-result.json`), 'utf8'));
-    if (current.status === 'completed' || current.status === 'awaiting_user') return true;
-  } catch { /* Absent or incomplete artifacts do not establish completion. */ }
   const terminalStatuses = new Set(['completed', 'failed', 'aborted', 'awaiting_user']);
   return !!stageResult?.status && terminalStatuses.has(stageResult.status);
 }
@@ -465,9 +459,15 @@ export function evaluateStageAgentDisposition(
     // let an agent that finished during the gather look like "exited with no
     // result", which relaunched the stage over finished work. Evidence that
     // the agent ended is only ever judged against a marker read after it.
+    // Review publishes JSON without a marker. Refresh it through the same
+    // schema-validating reader; the pre-probe snapshot can still say running
+    // after the agent has completed and exited.
+    const resultStage = opts.stage === 'ready-remediation' || opts.stage === 'conflict-resolution' ? 'ready' : opts.stage;
+    const currentResult = readStageResultSync(opts.stateDir, resultStage) ?? opts.stageResult;
     const hasCompletionArtifactNow = hasCompletionArtifact
-      || stageHasCompletionArtifact(opts.stateDir, opts.stage, opts.stageResult, opts.completionMarkerPath);
-    return decideStageAgentDisposition({ ...input, hasCompletionArtifact: hasCompletionArtifactNow, progress });
+      || stageHasCompletionArtifact(opts.stateDir, opts.stage, currentResult, opts.completionMarkerPath);
+    return decideStageAgentDisposition({ ...input, stageStatus: currentResult?.status ?? null,
+      hasResultVerdict: stageHasResultVerdict(currentResult), hasCompletionArtifact: hasCompletionArtifactNow, progress });
   } catch {
     return withoutProgress;
   }

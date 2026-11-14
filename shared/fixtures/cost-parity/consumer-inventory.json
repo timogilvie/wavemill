@@ -138,19 +138,6 @@
       "notes": "Judge-call cost computation (shared computeModelCost formula)"
     },
     {
-      "file": "shared/lib/intervention-detector.ts",
-      "symbols": [
-        {
-          "module": "shared/lib/wavemill-session-paths.ts",
-          "name": "resolveProjectsDirs",
-          "kind": "value"
-        }
-      ],
-      "class": "wavemill_only_join",
-      "production": true,
-      "notes": "Session file discovery for intervention detection"
-    },
-    {
       "file": "shared/lib/model-promotion.ts",
       "symbols": [
         {
@@ -475,6 +462,7 @@
     "shared/lib/sdk-task-cost/meter.test.ts",
     "shared/lib/sdk-task-cost/price-overrides.test.ts",
     "shared/lib/sdk-task-cost/project.test.ts",
+    "shared/lib/task-evidence-archive.test.ts",
     "shared/lib/wavemill-session-paths.test.ts",
     "tests/journeys/fixtures/happy-path/provider-transcript-replay.ts",
     "tools/backfill-stage-executed-model.test.ts"
