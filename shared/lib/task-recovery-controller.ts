@@ -11,7 +11,8 @@ import type { StageAgentDisposition } from './stage-agent-disposition.ts';
 import { mutateJsonStateSync } from './state-mutex.ts';
 import { acquireStateLockSync, releaseStateLock } from './state-lock.ts';
 import { readWorkflowState } from './workflow-state.ts';
-import { readStageResult } from './stage-result.ts';
+import { readStageResult, type StageResult } from './stage-result.ts';
+import { readOwnershipRows } from './session-ownership.ts';
 import { isSettled } from './task-settlement.ts';
 
 export const RECOVERY_POLICY = Object.freeze({ name: 'task-recovery-controller', version: 1 } as const);
@@ -56,6 +57,8 @@ export type RecoveryDisposition = Pick<
 >;
 
 export interface RecoverySnapshot {
+  /** Original notifier evidence, retained on stale control without re-metering. */
+  evidence?: { stageResult?: StageResult | null };
   baseDrift?: boolean;
   issue: string;
   stage: FailureStage;
@@ -396,6 +399,7 @@ export interface RecoveryAuditEntry {
   evidenceId: string;
   rationale: string;
     duplicateEffectPrevented?: boolean;
+  evidence?: { snapshot: RecoverySnapshot; stageResult: StageResult | null; ownership: ReturnType<typeof readOwnershipRows> };
 }
 
 export function recordRecoveryAction(
@@ -415,6 +419,18 @@ export function recordRecoveryAction(
 export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decision'> & { snapshot: RecoverySnapshot }): Promise<{ decision: RecoveryDecision; claim: ClaimResult }> {
   let snapshot = args.snapshot;
   if (args.stateFile) {
+    const current = readWorkflowState(args.stateFile)?.tasks?.[args.issue ?? snapshot.issue];
+    snapshot = { ...snapshot, attempt: { ...snapshot.attempt, currentRunId: current?.runId ?? null } };
+    if (snapshot.attempt.currentRunId && snapshot.attempt.controlRunId
+        && !isSameRunId(snapshot.attempt.currentRunId, snapshot.attempt.controlRunId)) {
+      const selected = decideTaskRecovery(snapshot);
+      // Keep the original provider/model/cost fields intact; this is evidence,
+      // never another charge or a control write to the replacement task.
+      recordRecoveryAction(args.stateDir, { at: new Date().toISOString(), issue: snapshot.issue,
+        stage: snapshot.stage, action: selected.action, runId: args.runId, evidenceId: args.evidenceId,
+        rationale: selected.rationale, evidence: { snapshot, stageResult: snapshot.evidence?.stageResult ?? null, ownership: readOwnershipRows(args.stateDir) } });
+      return { decision: selected, claim: { claimed: false, reason: 'stale-run' } };
+    }
     const result = await readStageResult(args.stateDir, snapshot.stage);
     const claim = readRecoveryClaim(args.stateDir);
     if (result?.status === 'completed' || result?.status === 'awaiting_user') {
@@ -431,7 +447,7 @@ export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decisio
         && !processAlive(claim.owner.pid, claim.owner.startTime)) {
       if (result?.status === 'completed' || result?.status === 'awaiting_user') {
         snapshot = { ...snapshot, stageResult: { kind: 'valid', status: result.status }, failure: null };
-      } else if (result?.status === 'running' || !result) {
+      } else if ((result?.status === 'running' || !result) && snapshot.disposition?.kind !== 'settled') {
         snapshot = { ...snapshot, stageResult: { kind: 'running' }, failure: null,
           outstandingEffect: { kind: claim.action, acknowledged: false } };
       }
@@ -464,7 +480,8 @@ export async function runControllerCli(): Promise<void> {
     const task = state?.tasks?.[issue];
     const result = await readStageResult(stateDir, stage);
     const snapshot: RecoverySnapshot = {
-      issue, stage, attempt: { currentRunId: task?.runId ?? null, controlRunId: task?.runId ?? null },
+      issue, stage, attempt: { currentRunId: task?.runId ?? null, controlRunId: flag('--run-id') ?? task?.runId ?? null },
+      evidence: { stageResult: result },
       disposition: JSON.parse(dispositionJson),
       stageResult: result?.status === 'completed' || result?.status === 'awaiting_user'
         ? { kind: 'valid', status: result.status } : { kind: 'running' },

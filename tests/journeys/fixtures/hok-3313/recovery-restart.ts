@@ -1,4 +1,6 @@
-/** Process-boundary checks run inside the killed-stage golden journey's fake world. */
+/** Provenance: hand-authored recovery cases for HOK-3277; the surrounding
+ * journey replays the HOK-3313 killed-agent incident.
+ * Process-boundary checks run inside the killed-stage golden journey's fake world. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';

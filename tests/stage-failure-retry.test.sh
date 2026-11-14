@@ -297,6 +297,31 @@ else
 fi
 unset WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS
 
+
+# Protects: uncertain dispatch schedules a supervised fresh probe carrying the
+# original run, and handing off a completion cannot strand its claim.
+eval "$(extract_function _stage_disposition_act)"
+VERIFY_CALLS="$TMP_ROOT/verification-calls"
+ACK_CALLS="$TMP_ROOT/ack-calls"
+stage_agent_disposition() { printf '%s\n' '{"kind":"in-flight","reason":"agent-working"}'; }
+CONTROL_OUTCOME='{"decision":{"action":"verify-effect"},"claim":{"claimed":false}}'
+wavemill_run_tool() {
+  if [[ "${4:-}" == "--ack" ]]; then printf '%s\n' "$5" >> "$ACK_CALLS"; return 0; fi
+  printf '%s\n' "$CONTROL_OUTCOME"
+}
+monitor_async_job_launch() { printf '%s\n' "$*" >> "$VERIFY_CALLS"; }
+_stage_disposition_act T-1 "$fd" "$fd" pane win coding original-run
+if [[ "$(cat "$VERIFY_CALLS")" == recovery-verification* ]] \
+  && [[ "$(cat "$VERIFY_CALLS")" == *"_stage_disposition_act T-1 $fd $fd pane win coding original-run" ]]; then
+  pass "uncertain dispatch schedules tracked verification for the original run"
+else
+  fail "uncertain dispatch did not schedule run-fenced verification"
+fi
+CONTROL_OUTCOME='{"decision":{"action":"consume-advance"},"claim":{"claimed":true,"claim":{"claimId":"completion-token"}}}'
+_stage_disposition_act T-1 "$fd" "$fd" pane win coding original-run
+[[ "$(cat "$ACK_CALLS")" == completion-token ]] \
+  && pass "completion handoff acknowledges its own claim" || fail "completion claim stranded"
+
 echo
 echo "--- Results: $PASS passed, $FAIL failed ---"
 [[ "$FAIL" -eq 0 ]]

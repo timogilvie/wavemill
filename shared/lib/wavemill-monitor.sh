@@ -4552,7 +4552,8 @@ _stage_stamp_settled_without_result() {
 _stage_disposition_act() {
   local issue="$1" feature_dir="$2" wt_dir="$3" win_target="$4" win="$5" stage="$6"
   local current_head disposition kind reason has_completion blocking_id blocking_detail
-  local state_dir="$feature_dir" result_stage
+  local state_dir="$feature_dir" result_stage control_run_id="${7:-}"
+  [[ -n "$control_run_id" ]] || control_run_id="$(task_run_id "$issue" 2>/dev/null || true)"
 
   # ready-remediation and conflict-resolution are sub-activities of the Ready
   # stage, recorded in `.ready-result.json` — there is no separate
@@ -4575,7 +4576,7 @@ _stage_disposition_act() {
 
   local recovery_action recovery_outcome recovery_claim
   recovery_outcome="$(wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" \
-    --state-file "$STATE_FILE" --owner-pid "$$" --issue "$issue" --stage "$result_stage" --disposition "$disposition" 2>/dev/null)"
+    --state-file "$STATE_FILE" --owner-pid "$$" --run-id "$control_run_id" --issue "$issue" --stage "$result_stage" --disposition "$disposition" 2>/dev/null)"
   recovery_action="$(jq -r '.decision.action // "no-action"' <<<"$recovery_outcome")"
   case "$recovery_action" in
     consume-advance)
@@ -4587,7 +4588,16 @@ _stage_disposition_act() {
           --ack "$(jq -r '.claim.claim.claimId' <<<"$recovery_outcome")" >/dev/null
       fi
       return 0 ;;
-    verify-effect|reject-stale-control) return 0 ;;
+    verify-effect)
+      # A supervised fresh probe reconciles dispatch effects after notifier
+      # death. It reuses this adapter and the existing settled-result writer.
+      local verify_meta
+      verify_meta="$(jq -cn --arg stateDir "$feature_dir" --arg head "$current_head" --arg bucket "stage-failure-$result_stage" \
+        '{stateDir:$stateDir,key:$head,bucket:$bucket}')"
+      monitor_async_job_launch recovery-verification "recovery-verification-$issue-$result_stage" "$issue" "" 30 "$verify_meta" \
+        _stage_disposition_act "$issue" "$feature_dir" "$wt_dir" "$win_target" "$win" "$stage" "$control_run_id"
+      return 0 ;;
+    reject-stale-control) return 0 ;;
   esac
 
   if [[ "$kind" == "inactive" && "$reason" == "no-launch" ]]; then
@@ -8489,7 +8499,7 @@ _dispatch_failed_stage_recovery() {
 _monitor_claim_failed_stage_action() {
   local issue="$1" feature_dir="$2" stage="$3" context="${4:-}"
   [[ -n "$context" ]] || context='{}'
-  local decision_json head base retry_verdict run_id evidence_id snapshot_file result failure_class contract_available="null"
+  local decision_json head base retry_verdict run_id evidence_id snapshot_file result original_result failure_class contract_available="null"
   local limit="${WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS:-3}"
   [[ "$limit" =~ ^[0-9]+$ ]] || limit=3
 
@@ -8511,11 +8521,14 @@ _monitor_claim_failed_stage_action() {
     fi
   fi
 
+  original_result="$(read_stage_result "$feature_dir" "$stage" 2>/dev/null || true)"
+  [[ -n "$original_result" ]] || original_result=null
   snapshot_file="$(mktemp "${TMPDIR:-/tmp}/wavemill-recovery.XXXXXX")" || return 1
   jq -cn --arg issue "$issue" --arg stage "$stage" --arg runId "$run_id" \
     --arg evidenceId "$evidence_id" --arg retry "$retry_verdict" --argjson failure "$decision_json" \
-    --argjson contractAvailable "$contract_available" --argjson context "$context" '
-      {issue:$issue, stage:$stage,
+    --argjson contractAvailable "$contract_available" --argjson context "$context" \
+    --argjson originalResult "$original_result" '
+      {issue:$issue, stage:$stage, evidence:{stageResult:$originalResult},
        attempt:{currentRunId:(if $runId == "" then null else $runId end), controlRunId:(if $runId == "" then null else $runId end)},
        disposition:null, stageResult:{kind:"failed"}, contractAvailable:$contractAvailable,
        outstandingEffect:null, wait:null, baseDrift:($context.baseDrift // false), failure:{decision:$failure,retry:$retry,source:($context.source // "ci")}}' >"$snapshot_file" || {
@@ -12010,9 +12023,9 @@ _execute_recovery_escalation() {
     bucket="$(jq -r '.decision.escalationBasis.bucket' <<<"$recovery")"
     message="unknown-failure-after-retries:${stage}:$(jq -r '.decision.failureKind' <<<"$recovery") after $(bounded_retry_count "$state_dir" "$bucket") relaunch(es) at head ${head:-unknown}: $message"
     bounded_retry_mark_exhausted "$state_dir" "$bucket" "$message" || true
-    escalate_operator_attention "$state_dir" exhausted "$bucket" "$message" --head "$head" || true
+    escalate_operator_attention "$state_dir" exhausted "$bucket" "$message" --head "$head" --expires-on head,operator-event || true
   else
-    escalate_operator_attention "$state_dir" "$kind" "$basis" "$message" --head "$head" || true
+    escalate_operator_attention "$state_dir" "$kind" "$basis" "$message" --head "$head" --expires-on head,operator-event || true
   fi
   log_warn "$issue → $message; escalating to needs-user"
   set_window_attention_state "$win" needs-user

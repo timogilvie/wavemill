@@ -525,7 +525,7 @@ test('launchJob overwrites a settled check job with the same stable id', async (
 
 
 // protects: existing async producers being rejected by the tracker's canonical kind registry.
-for (const kind of ['cleanup-decision', 'state-invariants'] as const) {
+for (const kind of ['cleanup-decision', 'state-invariants', 'recovery-verification'] as const) {
   test(`${kind} launches through the real CLI and is supervised as a check job`, () => {
     const { root, statePath, cleanup } = makeTempState();
     try {
