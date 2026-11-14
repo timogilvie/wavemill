@@ -4552,21 +4552,30 @@ _stage_stamp_settled_without_result() {
 # Recovery execution is hosted by the existing tracked-job supervisor. The
 # monitor only gathers its existing disposition and schedules work; no claim
 # lock or extra TypeScript process runs inline on the hot pass.
+# Identity names the run and observed stage result/head. A stale worker cannot
+# occupy the replacement run's supervisor slot.
+_task_recovery_job_id() {
+  local issue="$1" feature_dir="$2" stage="$3" run_id="$4" head="${5:-}" launch="${6:-}"
+  [[ -n "$head" ]] || head="$(phase_launch_head "$feature_dir")"
+  printf 'task-recovery-%s\n' "$(sanitize_job_token "$issue-$stage-$run_id-$head-$launch-$(stage_result_field "$feature_dir" "$stage" startedAt)-$(stage_result_field "$feature_dir" "$stage" finishedAt)")"
+}
+
 _stage_disposition_act() {
   local issue="$1" feature_dir="$2" wt_dir="$3" win_target="$4" win="$5" stage="$6"
-  local control_run_id="${7:-}" current_head disposition
+  local control_run_id="${7:-}" current_head disposition recovery_meta
   [[ -n "$control_run_id" ]] || control_run_id="$(task_run_id "$issue" 2>/dev/null || true)"
   current_head="$(phase_launch_head "$feature_dir")"
   disposition="$(stage_agent_disposition "$issue" "$feature_dir" "$wt_dir" "$current_head" "$stage" 2>/dev/null || true)"
   # No launch record leaves the existing legacy-owner backstop responsible.
   [[ "$(jq -r '.reason // empty' <<<"$disposition")" != "no-launch" ]] || return 3
-  monitor_async_job_launch task-recovery "task-recovery-$issue-$stage" "$issue" "" "${ASYNC_JOB_MAX_RUNTIME_SECONDS:-3600}" '{}' \
+  recovery_meta="$(jq -cn --arg runId "$control_run_id" '{runId:$runId}')"
+  monitor_async_job_launch task-recovery "$(_task_recovery_job_id "$issue" "$feature_dir" "$stage" "$control_run_id" "$current_head" "$(jq -r ' .launch.attemptId // empty' <<<"$disposition")")" "$issue" "" "${ASYNC_JOB_MAX_RUNTIME_SECONDS:-3600}" "$recovery_meta" \
     _task_recovery_job_run "$control_run_id" _stage_disposition_act_now "$@"
   return 0
 }
 
 _task_recovery_job_run() {
-  local recovery_control_run_id="$1" handler="$2" rc=0
+  local recovery_control_run_id="$1" handler="$2" rc=0 recovery_owner_pid="$BASHPID"
   shift 2
   local -x WAVEMILL_EXPECTED_RUN_ID="$1=$recovery_control_run_id"
   "$handler" "$@" || rc=$?
@@ -4606,7 +4615,7 @@ _stage_disposition_act_now() {
 
   local recovery_action recovery_outcome recovery_claim
   recovery_outcome="$(wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" \
-    --state-file "$STATE_FILE" --owner-pid "$$" --run-id "$control_run_id" --issue "$issue" --stage "$result_stage" --disposition "$disposition" 2>/dev/null)"
+    --state-file "$STATE_FILE" --owner-pid "${recovery_owner_pid:-$$}" --run-id "$control_run_id" --issue "$issue" --stage "$result_stage" --disposition "$disposition" 2>/dev/null)"
   recovery_action="$(jq -r '.decision.action // "no-action"' <<<"$recovery_outcome")"
   case "$recovery_action" in
     consume-advance)
@@ -8560,7 +8569,7 @@ _monitor_claim_failed_stage_action() {
       rm -f "$snapshot_file"; return 1;
     }
   result="$(wavemill_run_tool task-recovery-controller.ts \
-    --state-dir "$feature_dir" --state-file "$STATE_FILE" --owner-pid "$$" --evidence-id "$evidence_id" --snapshot "$snapshot_file" 2>/dev/null)"
+    --state-dir "$feature_dir" --state-file "$STATE_FILE" --owner-pid "${recovery_owner_pid:-$$}" --evidence-id "$evidence_id" --snapshot "$snapshot_file" 2>/dev/null)"
   rm -f "$snapshot_file"
   [[ -n "$result" ]] && jq -e . >/dev/null 2>&1 <<<"$result" || return 1
   jq --argjson failure "$decision_json" '. + {failure:$failure}' <<<"$result"
@@ -8573,9 +8582,10 @@ _monitor_claim_failed_stage_action() {
 # this path instead of each re-deriving a recovery ladder.
 # Every failed stage, including Ready, enters the same decision and fenced claim.
 maybe_retry_failed_stage() {
-  local issue="$1" feature_dir="$2" stage="$3" run_id
+  local issue="$1" feature_dir="$2" stage="$3" run_id recovery_meta
   run_id="$(task_run_id "$issue" 2>/dev/null || true)"
-  monitor_async_job_launch task-recovery "task-recovery-$issue-$stage" "$issue" "" "${ASYNC_JOB_MAX_RUNTIME_SECONDS:-3600}" '{}' \
+  recovery_meta="$(jq -cn --arg runId "$run_id" '{runId:$runId}')"
+  monitor_async_job_launch task-recovery "$(_task_recovery_job_id "$issue" "$feature_dir" "$stage" "$run_id")" "$issue" "" "${ASYNC_JOB_MAX_RUNTIME_SECONDS:-3600}" "$recovery_meta" \
     _task_recovery_job_run "$run_id" _maybe_retry_failed_stage_now "$@"
   return 2
 }
@@ -15068,8 +15078,8 @@ launch_tracked_job() {
   [[ -n "$pair_id" ]] && args+=(--pair-id "$pair_id")
   [[ -n "${SESSION:-}" ]] && args+=(--session "$SESSION")
   # HOK-3373: the job settles for the run it was launched for.
-  local run_id=""
-  [[ -n "$issue_id" ]] && run_id="$(task_run_id "$issue_id" 2>/dev/null || true)"
+  local run_id="${11:-}"
+  if [[ -z "$run_id" && -n "$issue_id" ]]; then run_id="$(task_run_id "$issue_id" 2>/dev/null || true)"; fi
   [[ -n "$run_id" ]] && args+=(--run-id "$run_id")
   wavemill_run_tool "job-tracker.ts" "${args[@]}" >/dev/null
 }

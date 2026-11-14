@@ -76,3 +76,9 @@ It fails on:
 For a justified exception, add the path to
 `tools/task-recovery-ownership-allowlist.txt` with a `# reason`, or suppress one
 line with `// allow-task-recovery-ownership: <reason>` (`#` in shell).
+
+The supervisor slot includes task run, observed head/result, and known launch
+identity. Registration carries the captured run; claims belong to the supervised
+worker process. An older worker cannot occupy the replacement run's slot.
+Stage completions use the shared stage-result run gate, with launch-stamped
+identity preserved by the writer and conservative boundaries for legacy files.

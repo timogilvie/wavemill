@@ -302,6 +302,8 @@ unset WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS
 # original run, and handing off a completion cannot strand its claim.
 eval "$(extract_function _stage_disposition_act_now)"
 eval "$(extract_function _stage_disposition_act)"
+eval "$(extract_function _task_recovery_job_id)"
+eval "$(extract_function sanitize_job_token)"
 ASYNC_JOB_MAX_RUNTIME_SECONDS=3600
 VERIFY_CALLS="$TMP_ROOT/verification-calls"
 ACK_CALLS="$TMP_ROOT/ack-calls"
@@ -319,6 +321,14 @@ if [[ "$(cat "$VERIFY_CALLS")" == task-recovery* ]] \
 else
   fail "uncertain dispatch did not schedule run-fenced verification"
 fi
+_stage_disposition_act T-1 "$fd" "$fd" pane win coding replacement-run
+[[ "$(awk '{print $2}' "$VERIFY_CALLS" | sort -u | wc -l | tr -d ' ')" == "2" ]] \
+  && pass "a replacement run gets a distinct supervisor slot" || fail "replacement recovery shares stale slot"
+jq '.finishedAt="2026-11-14T23:59:59Z"' "$fd/.coding-result.json" > "$TMP_ROOT/new-result.json"
+mv "$TMP_ROOT/new-result.json" "$fd/.coding-result.json"
+_stage_disposition_act T-1 "$fd" "$fd" pane win coding replacement-run
+[[ "$(awk '{print $2}' "$VERIFY_CALLS" | sort -u | wc -l | tr -d ' ')" == "3" ]] \
+  && pass "new result evidence gets a distinct supervisor slot" || fail "new evidence shares stale slot"
 CONTROL_OUTCOME='{"decision":{"action":"consume-advance"},"claim":{"claimed":true,"claim":{"claimId":"completion-token"}}}'
 _stage_disposition_act_now T-1 "$fd" "$fd" pane win coding original-run
 [[ "$(cat "$ACK_CALLS")" == completion-token ]] \

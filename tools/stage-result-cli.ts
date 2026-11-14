@@ -118,7 +118,7 @@ function stageRunId(featureDir: string, stage: StageName, status: StageStatus, f
   if (!ctx.repoDir || !ctx.branchName) return undefined;
   const state = readWorkflowState(join(ctx.repoDir, '.wavemill', 'workflow-state.json'));
   if (!state) return undefined;
-  const resolved = resolveBranchTask(state, ctx.branchName, { site: 'stage-result.launch-run' });
+  const resolved = resolveBranchTask(ctx.branchName, state, { site: 'stage-result.launch-run' });
   if (!resolved.location || resolvePath(resolved.location.featureDir) !== resolvePath(featureDir)) return undefined;
   return parseExpectedRunIds(process.env.WAVEMILL_EXPECTED_RUN_ID)?.[resolved.location.taskId]
     ?? resolved.location.task.runId;
