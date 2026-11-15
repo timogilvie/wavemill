@@ -22,6 +22,7 @@ import {
 import { appendOwnershipRow } from './session-ownership.ts';
 import { setTerminalExecForTest } from './terminal-backend.ts';
 import type { HookState } from './task-progress.ts';
+import replay from '../../tests/fixtures/incidents/hok3475-evidence-retention.json' with { type: 'json' };
 
 const LAUNCH_ISO = '2026-11-02T09:00:00.000Z';
 const CURRENT = 'c0ffee0000000000000000000000000000000001';
@@ -743,4 +744,29 @@ test('evaluateStageAgentDisposition judges the exit against a completion marker 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// protects: CI review writes a terminal JSON result during the liveness probe,
+// then exits; the stale running snapshot must not overwrite it as interrupted.
+test('rechecks validated review JSON after progress gathering before judging agent exit', () => {
+  const dir = stateDir();
+  try {
+    appendOwnershipRow(dir, { sessionRef: 'review-sess', harness: 'claude-code', kind: 'review', model: 'm', launchedAt: replay.reviewCompletionRace.startedAt });
+    for (const valid of [true, false]) {
+      const disposition = evaluateStageAgentDisposition({
+        stateDir: dir, stage: 'review', currentHead: CURRENT, launchHead: CURRENT,
+        stageResult: { status: 'running', startedAt: replay.reviewCompletionRace.startedAt, artifacts: {} },
+        getProgress: () => {
+          writeFileSync(join(dir, '.review-result.json'), JSON.stringify(valid ? {
+            stage: 'review', status: 'completed', startedAt: replay.reviewCompletionRace.startedAt,
+            finishedAt: replay.reviewCompletionRace.finishedAt, agent: 'claude', model: 'm', notes: 'ready',
+            artifacts: { type: 'review', verdict: 'ready', prNumber: 1 },
+          } : { stage: 'review', status: 'completed', startedAt: 42 }));
+          return { ...baseInput().progress!, agentExited: { at: replay.reviewCompletionRace.finishedAt, source: 'launcher' } };
+        },
+      });
+      assert.equal(disposition.hasCompletionArtifact, valid, 'only validated terminal results count');
+      assert.equal(disposition.kind, valid ? 'inactive' : 'settled');
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -41,7 +41,6 @@ tools/backfill-pricing-snapshot.ts 1  # backfill: pricing snapshot type
 
 # ── Session discovery (wavemill_only_join) ──
 shared/lib/session-adapters.ts 1  # wavemill_only_join: session file discovery for every adapter
-shared/lib/intervention-detector.ts 1  # wavemill_only_join: session discovery for intervention detection
 shared/lib/outcome-collectors.ts 1  # wavemill_only_join: session discovery for operator-touch counting
 shared/lib/reliability-metrics.ts 1  # wavemill_only_join: session discovery for operator-touch counting
 shared/lib/deepseek-smoke.ts 1  # wavemill_only_join: DeepSeek smoke test locates its transcript dir

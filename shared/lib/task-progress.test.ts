@@ -43,6 +43,7 @@ import {
 } from './task-progress.ts';
 import { appendOwnershipRow } from './session-ownership.ts';
 import { setTerminalExecForTest } from './terminal-backend.ts';
+import replay from '../../tests/fixtures/incidents/hok3475-evidence-retention.json' with { type: 'json' };
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -1715,6 +1716,35 @@ test('(HOK-3386) readOwnedStageTranscript: a launch with no transcript file retu
     });
     assert.equal(readOwnedStageTranscript(dir, 'review'), null);
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// protects: background work ends and the agent resumes while slow process /
+// terminal probes run; a pre-probe Stop must not cause a duplicate coding launch.
+test('gather reads agent hook state after slow liveness probes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'progress-wakeup-'));
+  const hookFilePath = join(dir, 'agent.hook');
+  const at = Date.parse(replay.backgroundWakeupRace.observedInterruptedAt) / 1000;
+  const writeHook = (state: string, event: string) => writeFileSync(hookFilePath, JSON.stringify({
+    state, event, agent: 'claude', timestamp: at, writer: 'agent',
+    agentRecord: { state, event, agent: 'claude', timestamp: at },
+  }));
+  try {
+    writeHook('idle', 'Stop');
+    setTerminalExecForTest({
+      sync() { writeHook('working', 'PreToolUse'); return { ok: true, stdout: '0\n' }; },
+      async async(args) { return this.sync(args); },
+    });
+    const inputs = gatherTaskProgressInputs({
+      issue: 'TEST-WAKEUP', session: 'sess', hookFilePath,
+      task: { windowId: '@7' } as never,
+      agentExitSince: new Date((at - 60) * 1000).toISOString(),
+    });
+    assert.equal(inputs.hookFile?.agentRecord?.state, 'working');
+    assert.equal(deriveTaskProgress(inputs, { now: new Date(at * 1000) }).agentState, 'working');
+  } finally {
+    setTerminalExecForTest(null);
     rmSync(dir, { recursive: true, force: true });
   }
 });

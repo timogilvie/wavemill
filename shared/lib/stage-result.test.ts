@@ -7,16 +7,19 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
 import { appendOwnershipRow } from './session-ownership.ts';
 
 import {
   appendReviewIteration,
   existingReviewIterations,
   nextReviewIterationNumber,
+  stageResultRunIdentity,
   writeStageResult,
   writeStageResultWithHistory,
   readStageResult,
@@ -174,6 +177,8 @@ describe('writeStageResult and readStageResult', () => {
       cwd: process.cwd(),
       encoding: 'utf-8',
     });
+    const relaunched = await readStageResult(testDir, 'coding');
+    assert.notEqual(relaunched?.startedAt, failed.startedAt, 'relaunch stamps a new launch identity');
     execFileSync(process.execPath, ['tools/stage-result-cli.ts', 'write', testDir, 'coding', 'completed', '--agent', 'native', '--model', 'glm-5.2'], {
       cwd: process.cwd(),
       encoding: 'utf-8',
@@ -181,6 +186,7 @@ describe('writeStageResult and readStageResult', () => {
 
     const read = await readStageResult(testDir, 'coding');
     assert.equal(read?.status, 'completed');
+    assert.equal(read?.startedAt, relaunched?.startedAt, 'completion preserves the new launch identity');
     assert.equal(read?.history?.length, 1);
     assert.equal(read?.history?.[0].status, 'failed');
   });
@@ -1473,5 +1479,81 @@ describe('executionTruthFields merge rule (HOK-3369)', () => {
       latestLaunchAt: null,
     });
     assert.equal(fields.executionEvidence?.status, 'direct');
+  });
+});
+
+// protects: a native completion preserves its launch stamp; a late writer
+// cannot adopt the stamp of a replacement result already owning the path.
+describe('stage result task-run identity', () => {
+  it('CLI launch resolves the registered branch through the canonical task resolver', async () => {
+    const repo=await fs.mkdtemp(path.join(os.tmpdir(),'stage-run-repo-'));
+    try {
+      const fd=path.join(repo,'features','run-stamp'); await fs.mkdir(fd,{recursive:true});
+      await fs.mkdir(path.join(repo,'.wavemill'),{recursive:true});
+      execFileSync('git',['init','-q','-b','task/run-stamp',repo]);
+      execFileSync('git',['-C',repo,'-c','user.name=test','-c','user.email=test@example.invalid','commit','-q','--allow-empty','-m','init']);
+      await fs.writeFile(path.join(repo,'.wavemill','workflow-state.json'),JSON.stringify(buildWorkflowState({'HOK-1':{runId:'HOK-1:epoch:1794600000',worktree:repo,slug:'run-stamp',branch:'task/run-stamp'}})));
+      execFileSync(process.execPath,['tools/stage-result-cli.ts','write',fd,'coding','running'],{cwd:process.cwd(),env:{...process.env,REPO_DIR:repo,WAVEMILL_MILLED_REPO_DIR:repo,NODE_OPTIONS:'--experimental-strip-types --disable-warning=ExperimentalWarning'}});
+      assert.equal((await readStageResult(fd,'coding'))?.runId,'HOK-1:epoch:1794600000');
+    } finally {await fs.rm(repo,{recursive:true,force:true});}
+  });
+
+  it('CLI preserves an explicit launch run when completing a stage', async () => {
+    const dir=await fs.mkdtemp(path.join(os.tmpdir(),'stage-run-cli-'));
+    try {
+      execFileSync(process.execPath,['tools/stage-result-cli.ts','write',dir,'coding','running','--run-id','original-run'],{cwd:process.cwd(),env:{...process.env,NODE_OPTIONS:'--experimental-strip-types --disable-warning=ExperimentalWarning'}});
+      execFileSync(process.execPath,['tools/stage-result-cli.ts','write',dir,'coding','completed'],{cwd:process.cwd(),env:{...process.env,NODE_OPTIONS:'--experimental-strip-types --disable-warning=ExperimentalWarning',WAVEMILL_EXPECTED_RUN_ID:'HOK-1=replacement-run'}});
+      assert.equal((await readStageResult(dir,'coding'))?.runId,'original-run');
+    } finally {await fs.rm(dir,{recursive:true,force:true});}
+  });
+
+  it('late CLI writes and updates keep the captured run after replacement launch', async () => {
+    const repo=await fs.mkdtemp(path.join(os.tmpdir(),'stage-late-cli-'));
+    const fd=path.join(repo,'features','run-stamp');
+    try {
+      await fs.mkdir(fd,{recursive:true});
+      await fs.mkdir(path.join(repo,'.wavemill'),{recursive:true});
+      execFileSync('git',['init','-q','-b','task/run-stamp',repo]);
+      execFileSync('git',['-C',repo,'-c','user.name=test','-c','user.email=test@example.invalid','commit','-q','--allow-empty','-m','init']);
+      await fs.writeFile(path.join(repo,'.wavemill','workflow-state.json'),JSON.stringify(buildWorkflowState({'HOK-1':{runId:'replacement-run',worktree:repo,slug:'run-stamp',branch:'task/run-stamp'}})));
+      const env={...process.env,REPO_DIR:repo,WAVEMILL_MILLED_REPO_DIR:repo,NODE_OPTIONS:'--experimental-strip-types --disable-warning=ExperimentalWarning'};
+      for (const command of ['write','update']) {
+        execFileSync(process.execPath,['tools/stage-result-cli.ts','write',fd,'coding','running','--run-id','replacement-run'],{cwd:process.cwd(),env});
+        const args=command==='write' ? ['write',fd,'coding','completed'] : ['update',fd,'coding','--status','completed'];
+        execFileSync(process.execPath,['tools/stage-result-cli.ts',...args],{cwd:process.cwd(),env:{...env,WAVEMILL_EXPECTED_RUN_ID:'HOK-1=original-run'}});
+        const late=await readStageResult(fd,'coding');
+        assert.equal(late?.runId,'replacement-run',command+' preserves replacement launch');
+        assert.equal(late?.status,'running');
+        const key=createHash('sha256').update('original-run').digest('hex');
+        const archived=JSON.parse(await fs.readFile(path.join(fd,'.stale-artifacts','late-results',key,'.coding-result.json'),'utf8'));
+        assert.equal(archived.runId,'original-run');
+        assert.equal(archived.status,'completed');
+        assert.equal(stageResultRunIdentity(archived,'replacement-run'),'stale');
+      }
+    } finally {await fs.rm(repo,{recursive:true,force:true});}
+  });
+
+  it('keeps the launch run on completion and never relabels a different launch', async () => {
+    const dir=await fs.mkdtemp(path.join(os.tmpdir(),'stage-run-'));
+    try {
+      const startedAt='2026-11-14T10:00:00Z';
+      const launch={stage:'coding' as const,status:'running' as const,runId:'original-run',startedAt,finishedAt:null,agent:'claude',model:'model',notes:''};
+      await writeStageResult(dir,launch);
+      const {runId,...completion}=launch;
+      await writeStageResult(dir,{...completion,status:'completed'});
+      assert.equal((await readStageResult(dir,'coding'))?.runId,'original-run');
+      await writeStageResult(dir,{...launch,runId:'replacement-run',startedAt:'2026-11-14T11:00:00Z'});
+      await writeStageResult(dir,{...completion,status:'completed'});
+      const late=await readStageResult(dir,'coding');
+      assert.equal(late?.runId,undefined);
+      assert.equal(stageResultRunIdentity(late!,'HOK-1:epoch:1794668400'),'stale');
+    } finally {await fs.rm(dir,{recursive:true,force:true});}
+  });
+  it('uses exact run stamps and treats missing legacy launch evidence as unknown', () => {
+    const run='HOK-1:epoch:1794600000';
+    assert.equal(stageResultRunIdentity({runId:run,startedAt:''},run),'current');
+    assert.equal(stageResultRunIdentity({runId:'old',startedAt:new Date().toISOString()},run),'stale');
+    assert.equal(stageResultRunIdentity({startedAt:''},run),'unverifiable');
+    assert.equal(stageResultRunIdentity({startedAt:''},null),'legacy');
   });
 });

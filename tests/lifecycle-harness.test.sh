@@ -263,7 +263,14 @@ harness_extract_real_functions() {
     native_stage_failure_envelope_json \
     stage_failure_decision \
     stage_failure_owned_by_bucket \
-    maybe_retry_failed_stage \
+    _recovery_continuation_current \
+  _maybe_retry_failed_stage_now \
+  _dispatch_failed_stage_recovery \
+  _execute_recovery_escalation \
+  _ready_failure_update_base \
+  _monitor_claim_failed_stage_action \
+  _monitor_recover_failed_stage \
+  monitor_task_reap_reason \
     _stage_failure_coding_relaunch \
   recovery_contract_json \
     clear_stage_result \

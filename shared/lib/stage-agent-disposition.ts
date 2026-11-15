@@ -52,7 +52,7 @@ import {
   type TaskProgress,
   type TransitionInput,
 } from './task-progress.ts';
-import { getResultFilePath, type StageName, type StageResult } from './stage-result.ts';
+import { getResultFilePath, readStageResultSync, type StageName, type StageResult } from './stage-result.ts';
 import type { TaskRecord } from './workflow-state.ts';
 
 export type { StageAgentStage };
@@ -459,9 +459,15 @@ export function evaluateStageAgentDisposition(
     // let an agent that finished during the gather look like "exited with no
     // result", which relaunched the stage over finished work. Evidence that
     // the agent ended is only ever judged against a marker read after it.
+    // Review publishes JSON without a marker. Refresh it through the same
+    // schema-validating reader; the pre-probe snapshot can still say running
+    // after the agent has completed and exited.
+    const resultStage = opts.stage === 'ready-remediation' || opts.stage === 'conflict-resolution' ? 'ready' : opts.stage;
+    const currentResult = readStageResultSync(opts.stateDir, resultStage) ?? opts.stageResult;
     const hasCompletionArtifactNow = hasCompletionArtifact
-      || stageHasCompletionArtifact(opts.stateDir, opts.stage, opts.stageResult, opts.completionMarkerPath);
-    return decideStageAgentDisposition({ ...input, hasCompletionArtifact: hasCompletionArtifactNow, progress });
+      || stageHasCompletionArtifact(opts.stateDir, opts.stage, currentResult, opts.completionMarkerPath);
+    return decideStageAgentDisposition({ ...input, stageStatus: currentResult?.status ?? null,
+      hasResultVerdict: stageHasResultVerdict(currentResult), hasCompletionArtifact: hasCompletionArtifactNow, progress });
   } catch {
     return withoutProgress;
   }

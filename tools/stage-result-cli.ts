@@ -26,6 +26,7 @@ import {
   isValidStage,
   isValidStatus,
   executionTruthFields,
+  withStageResultRunFence,
 } from '../shared/lib/stage-result.ts';
 import type {
   StageResult,
@@ -34,6 +35,10 @@ import type {
   StageArtifacts,
   StageExecutionEvidence,
 } from '../shared/lib/stage-result.ts';
+import { join } from 'node:path';
+import { readWorkflowState } from '../shared/lib/workflow-state.ts';
+import { resolveBranchTask } from '../shared/lib/pr-task-resolver.ts';
+import { parseExpectedRunIds } from '../shared/lib/task-settlement.ts';
 import { applyReviewAnalysisIdentity } from '../shared/lib/review-analysis-identity.ts';
 import {
   resolveStageExecutedModel,
@@ -104,6 +109,22 @@ function evidenceContext(featureDir: string, stage: StageName): {
     }
   }
   return { worktreePath, branchName, repoDir };
+}
+
+/** Stamp at launch; a late completion preserves its launch's identity. */
+function stageRunId(featureDir: string, stage: StageName, status: StageStatus, flags: Record<string,string>, existing: StageResult | null): string | null | undefined {
+  if (flags['run-id']) return flags['run-id'];
+  const fallback = status === 'running' ? undefined : existing?.runId;
+  const ctx = evidenceContext(featureDir, stage);
+  if (!ctx.repoDir || !ctx.branchName) return fallback;
+  const state = readWorkflowState(join(ctx.repoDir, '.wavemill', 'workflow-state.json'));
+  if (!state) return fallback;
+  const resolved = resolveBranchTask(ctx.branchName, state, { site: 'stage-result.launch-run' });
+  if (!resolved.location || resolvePath(resolved.location.featureDir) !== resolvePath(featureDir)) return fallback;
+  // A notifier's captured run wins over whatever replacement launch is now
+  // on disk. Unscoped/legacy writers still preserve the recorded launch.
+  const expected = parseExpectedRunIds(process.env.WAVEMILL_EXPECTED_RUN_ID)?.[resolved.location.taskId];
+  return expected ?? (status === 'running' ? resolved.location.task.runId : fallback);
 }
 
 /**
@@ -227,6 +248,7 @@ Subcommands:
   update <feature_dir> <stage>           Update an existing stage result
 
 Options (write/update):
+  --run-id <id>             Task run captured by the launcher
   --agent <name>            Agent identifier
   --model <name>            Model identifier
   --notes <text>            Human-readable notes
@@ -319,7 +341,7 @@ async function main(): Promise<void> {
 
     // Check if there's an existing file to preserve startedAt
     const existing = await readStageResult(featureDir, stage);
-    const startedAt = writeFlags['started-at'] ?? existing?.startedAt ?? now;
+    const startedAt = writeFlags['started-at'] ?? (subcommand === 'write-with-history' ? now : existing?.startedAt ?? now);
     const finishedAt = writeFlags['finished-at'] ?? (isTerminal ? now : null);
 
     let artifacts: StageArtifacts | undefined;
@@ -358,6 +380,7 @@ async function main(): Promise<void> {
     const result: StageResult = {
       stage,
       status,
+      runId: stageRunId(featureDir, stage, status, writeFlags, existing),
       startedAt,
       finishedAt,
       agent: writeFlags['agent'] ?? existing?.agent ?? '',
@@ -374,12 +397,14 @@ async function main(): Promise<void> {
       ...(existing?.history?.length ? { history: existing.history } : {}),
     };
 
-    if (subcommand === 'write-with-history') {
-      await writeStageResultWithHistory(featureDir, stage, result);
-    } else {
-      await writeStageResult(featureDir, result);
-    }
-    await mergeReviewIdentity(featureDir, stage);
+    await withStageResultRunFence({featureDir, result, ...ctx}, async () => {
+      if (subcommand === 'write-with-history') {
+        await writeStageResultWithHistory(featureDir, stage, result);
+      } else {
+        await writeStageResult(featureDir, result);
+      }
+      await mergeReviewIdentity(featureDir, stage);
+    });
     return;
   }
 
@@ -404,6 +429,8 @@ async function main(): Promise<void> {
 
     const existing = await readStageResult(featureDir, stage);
     const status = (patch.status ?? existing?.status ?? 'running') as StageStatus;
+    const runId = stageRunId(featureDir, stage, status, updateFlags, existing);
+    if (runId !== undefined) patch.runId = runId;
     const hasEvidenceFlag =
       updateFlags['intended-model'] !== undefined
       || updateFlags['executed-model'] !== undefined
@@ -453,8 +480,12 @@ async function main(): Promise<void> {
       patch.finishedAt = new Date().toISOString();
     }
 
-    await updateStageResult(featureDir, stage, patch);
-    await mergeReviewIdentity(featureDir, stage);
+    const ctx = evidenceContext(featureDir, stage);
+    const result = {...existing, ...patch, stage, status} as StageResult;
+    await withStageResultRunFence({featureDir, result, ...ctx}, async () => {
+      await updateStageResult(featureDir, stage, patch);
+      await mergeReviewIdentity(featureDir, stage);
+    });
     return;
   }
 

@@ -1740,7 +1740,6 @@ function readStageResult(featureDir: string | undefined, phase: string | undefin
 export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskProgressInputs {
   const session = opts.session ?? process.env.WAVEMILL_SESSION ?? 'wavemill';
   const hookPath = opts.hookFilePath ?? `/tmp/wavemill-${session}-${opts.issue}.hook`;
-  const hookFile = readHookFile(hookPath);
 
   const worktree = opts.worktree ?? opts.task?.worktree;
   const featureDir = opts.featureDir
@@ -1864,6 +1863,11 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
       : slotDead
         ? { at: new Date().toISOString(), source: 'terminal-backend' }
         : null;
+
+  // Sample agent state after the slow process/terminal probes. Background work
+  // can finish and wake the agent during them; an earlier Stop snapshot must
+  // not be paired with the later absence of its background child.
+  const hookFile = readHookFile(hookPath);
 
   return {
     issue: opts.issue,

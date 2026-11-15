@@ -75,7 +75,6 @@ tests/review-scope-baseline-handoff.test.sh  # seeded from HOK-3223; migrate to 
 tests/reviewer-stage-hok2939-shaped.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/reviewer-stage-hok2954-shaped.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/save-task-state-canonicalization.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
-tests/stage-failure-retry.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/startup-cleanup-integration.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/startup-handoff.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task
 tests/startup-terminal-ownership.test.sh  # seeded from HOK-3223; migrate to buildTask / fixture_task

@@ -26,6 +26,10 @@
         "failed"
       ]
     },
+    "runId": {
+      "type": ["string", "null"],
+      "description": "Task run captured at stage launch; preserved across completion writes."
+    },
     "startedAt": {
       "type": "string"
     },

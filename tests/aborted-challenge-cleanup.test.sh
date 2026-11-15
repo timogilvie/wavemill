@@ -182,6 +182,7 @@ EOF
     check_challenge_sibling_merged() { [[ "$TEST_CASE" == "sibling-merged-unpublished" ]]; }
     archive_stage_artifacts() {
       ORDER+="archive;"
+      [[ "$TEST_CASE" != "archive-failure" ]] || return 1
       mkdir -p "$REPO_DIR/.wavemill/evals/artifacts/$1"
       cp "$WORKTREE_ROOT/$2/features/$2/.challenge-aborted.json" "$REPO_DIR/.wavemill/evals/artifacts/$1/.challenge-aborted.json"
       cp "$WORKTREE_ROOT/$2/features/$2/.coding-failure-handoff.json" "$REPO_DIR/.wavemill/evals/artifacts/$1/.coding-failure-handoff.json"
@@ -273,6 +274,7 @@ EOF
     printf "skip_eval=%s\n" "$(should_skip_post_completion_eval "$ISSUE" "" "task/$SLUG" "$SLUG" && echo yes || echo no)"
     [[ -f "$REPO_DIR/.wavemill/evals/artifacts/$ISSUE/.challenge-aborted.json" ]] && printf "archived_abort=yes\n"
     [[ -f "$REPO_DIR/.wavemill/evals/artifacts/$ISSUE/.coding-failure-handoff.json" ]] && printf "archived_handoff=yes\n"
+    true
   '
 }
 
@@ -302,5 +304,8 @@ output="$(run_cleanup_case preserved-local-work)"
 output="$(run_cleanup_case sibling-merged-unpublished)"
 [[ "$output" == *"push:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:refs/archive/wavemill/HOK-2839_c;git-worktree;git-branch;"* ]] || { echo "$output"; echo "sibling-merged arm was not archived before removal" >&2; exit 1; }
 [[ "$output" == *"present=false"* ]] || { echo "$output"; echo "sibling-merged arm state was not removed" >&2; exit 1; }
+
+output="$(run_cleanup_case archive-failure)"
+[[ "$output" == *"present=true"* && "$output" != *"git-worktree"* && "$output" != *"tmux;"* ]] || { echo "$output"; echo "archive failure released resources" >&2; exit 1; }
 
 echo "aborted-challenge-cleanup test passed"

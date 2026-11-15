@@ -55,7 +55,7 @@ warnings="$tmp/warnings.log"
   trace_append_event() { :; }
   export REPO_DIR WORKTREE_ROOT warnings
   archive_stage_artifacts "HOK-2766" "demo"
-)
+) 2> "$warnings"
 
 # HOK-2891: archive keeps the live basename (leading dot) so readers resolve one name.
 [[ -f "$archive_dir/.operator-intervention.json" ]] || { echo "missing operator archive" >&2; exit 1; }
@@ -64,7 +64,8 @@ cmp -s "$feature_dir/.terminal-history.jsonl" "$archive_dir/.terminal-history.js
 cmp -s "$feature_dir/.operator-events.jsonl" "$archive_dir/.operator-events.jsonl" || { echo "missing operator events archive" >&2; exit 1; }
 [[ -f "$archive_dir/.planning-result.json" ]] || { echo "missing planning result archive" >&2; exit 1; }
 [[ -f "$archive_dir/.coding-result.attempt-1-failed.json" ]] || { echo "missing failed attempt archive" >&2; exit 1; }
-[[ ! -f "$archive_dir/.coding-result.json" ]] || { echo "malformed coding result was archived" >&2; exit 1; }
-grep -q "Skipping invalid stage result archive" "$warnings" || { echo "missing invalid JSON warning" >&2; exit 1; }
+cmp -s "$feature_dir/.coding-result.json" "$archive_dir/.coding-result.json" || { echo "malformed evidence lost" >&2; exit 1; }
+grep -q 'invalid-json' "$archive_dir/.evidence-inventory.json" || { echo "missing invalid evidence status" >&2; exit 1; }
+grep -q "Archived invalid stage result bytes" "$warnings" || { echo "missing invalid JSON warning" >&2; exit 1; }
 
 echo "archive-stage-artifacts test passed"
