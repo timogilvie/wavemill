@@ -1,0 +1,2 @@
+# Empty allowlist: every shell queueState write uses a value declared in shared/lib/merge-queue.ts MERGE_QUEUE_STATES.
+# Add entries with a per-file count and a "# reason" only for justified exceptions.

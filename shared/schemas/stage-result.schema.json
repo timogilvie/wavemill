@@ -157,6 +157,10 @@
         },
         "usage": {
           "$ref": "#/$defs/stageExecutionUsage"
+        },
+        "queueState": {
+          "description": "Ready merge-queue position, written only by the monitor. Values are declared once in shared/lib/merge-queue.ts MERGE_QUEUE_STATES (HOK-3453); absent means none was recorded.",
+          "enum": ["ready", "ready-stale", "merge-candidate", "merge-needed"]
         }
       }
     },
