@@ -366,5 +366,18 @@ _stage_disposition_act_now T-1 "$fd" "$fd" pane win coding original-run
   && pass "completion handoff acknowledges its own claim" || fail "completion claim stranded"
 
 echo
-echo "--- Results: $PASS passed, $FAIL failed ---"
+
+# After the two-argument shift, $3 is the stage. Ready must not acquire the
+# non-Ready challenge quarantine path when its controller returns rc=1.
+eval "$(extract_function _task_recovery_job_run)"
+_maybe_retry_failed_stage_now() { return 1; }
+QUARANTINE_CALLS="$TMP_ROOT/worker-quarantine"
+: > "$QUARANTINE_CALLS"
+emit_challenge_stage_failure_quarantine() { printf '%s\n' "$*" >> "$QUARANTINE_CALLS"; }
+_task_recovery_job_run original-run _maybe_retry_failed_stage_now T-1 "$fd" ready win
+[[ ! -s "$QUARANTINE_CALLS" ]] && pass "Ready worker does not quarantine an operator escalation" || fail "Ready worker incorrectly quarantined"
+_task_recovery_job_run original-run _maybe_retry_failed_stage_now T-1 "$fd" coding win
+grep -q "^T-1 $fd coding win$" "$QUARANTINE_CALLS" && pass "coding worker passes the shifted stage to quarantine" || fail "coding worker argument order wrong"
 [[ "$FAIL" -eq 0 ]]
+
+echo "--- Results: $PASS passed, $FAIL failed ---"

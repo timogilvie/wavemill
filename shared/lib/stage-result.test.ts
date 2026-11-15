@@ -1506,6 +1506,27 @@ describe('stage result task-run identity', () => {
     } finally {await fs.rm(dir,{recursive:true,force:true});}
   });
 
+  it('late CLI writes and updates keep the captured run after replacement launch', async () => {
+    const repo=await fs.mkdtemp(path.join(os.tmpdir(),'stage-late-cli-'));
+    const fd=path.join(repo,'features','run-stamp');
+    try {
+      await fs.mkdir(fd,{recursive:true});
+      await fs.mkdir(path.join(repo,'.wavemill'),{recursive:true});
+      execFileSync('git',['init','-q','-b','task/run-stamp',repo]);
+      execFileSync('git',['-C',repo,'-c','user.name=test','-c','user.email=test@example.invalid','commit','-q','--allow-empty','-m','init']);
+      await fs.writeFile(path.join(repo,'.wavemill','workflow-state.json'),JSON.stringify(buildWorkflowState({'HOK-1':{runId:'replacement-run',worktree:repo,slug:'run-stamp',branch:'task/run-stamp'}})));
+      const env={...process.env,REPO_DIR:repo,WAVEMILL_MILLED_REPO_DIR:repo,NODE_OPTIONS:'--experimental-strip-types --disable-warning=ExperimentalWarning'};
+      for (const command of ['write','update']) {
+        execFileSync(process.execPath,['tools/stage-result-cli.ts','write',fd,'coding','running','--run-id','replacement-run'],{cwd:process.cwd(),env});
+        const args=command==='write' ? ['write',fd,'coding','completed'] : ['update',fd,'coding','--status','completed'];
+        execFileSync(process.execPath,['tools/stage-result-cli.ts',...args],{cwd:process.cwd(),env:{...env,WAVEMILL_EXPECTED_RUN_ID:'HOK-1=original-run'}});
+        const late=await readStageResult(fd,'coding');
+        assert.equal(late?.runId,'original-run',command+' cannot relabel old completion with replacement identity');
+        assert.equal(stageResultRunIdentity(late!,'replacement-run'),'stale');
+      }
+    } finally {await fs.rm(repo,{recursive:true,force:true});}
+  });
+
   it('keeps the launch run on completion and never relabels a different launch', async () => {
     const dir=await fs.mkdtemp(path.join(os.tmpdir(),'stage-run-'));
     try {

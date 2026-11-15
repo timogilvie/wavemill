@@ -4588,6 +4588,7 @@ _recovery_continuation_current() {
 _task_recovery_job_run() {
   local recovery_control_run_id="$1" handler="$2" rc=0 recovery_owner_pid="$BASHPID"
   shift 2
+  # Handler arguments are now: $1 issue, $2 feature dir, $3 stage, $4 window.
   local -x WAVEMILL_EXPECTED_RUN_ID="$1=$recovery_control_run_id"
   "$handler" "$@" || rc=$?
   # Return codes describe handled recovery dispositions, not tool crashes.

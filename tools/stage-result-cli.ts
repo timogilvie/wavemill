@@ -113,15 +113,17 @@ function evidenceContext(featureDir: string, stage: StageName): {
 /** Stamp at launch; a late completion preserves its launch's identity. */
 function stageRunId(featureDir: string, stage: StageName, status: StageStatus, flags: Record<string,string>, existing: StageResult | null): string | null | undefined {
   if (flags['run-id']) return flags['run-id'];
-  if (status !== 'running') return existing?.runId;
+  const fallback = status === 'running' ? undefined : existing?.runId;
   const ctx = evidenceContext(featureDir, stage);
-  if (!ctx.repoDir || !ctx.branchName) return undefined;
+  if (!ctx.repoDir || !ctx.branchName) return fallback;
   const state = readWorkflowState(join(ctx.repoDir, '.wavemill', 'workflow-state.json'));
-  if (!state) return undefined;
+  if (!state) return fallback;
   const resolved = resolveBranchTask(ctx.branchName, state, { site: 'stage-result.launch-run' });
-  if (!resolved.location || resolvePath(resolved.location.featureDir) !== resolvePath(featureDir)) return undefined;
-  return parseExpectedRunIds(process.env.WAVEMILL_EXPECTED_RUN_ID)?.[resolved.location.taskId]
-    ?? resolved.location.task.runId;
+  if (!resolved.location || resolvePath(resolved.location.featureDir) !== resolvePath(featureDir)) return fallback;
+  // A notifier's captured run wins over whatever replacement launch is now
+  // on disk. Unscoped/legacy writers still preserve the recorded launch.
+  const expected = parseExpectedRunIds(process.env.WAVEMILL_EXPECTED_RUN_ID)?.[resolved.location.taskId];
+  return expected ?? (status === 'running' ? resolved.location.task.runId : fallback);
 }
 
 /**
@@ -424,6 +426,8 @@ async function main(): Promise<void> {
 
     const existing = await readStageResult(featureDir, stage);
     const status = (patch.status ?? existing?.status ?? 'running') as StageStatus;
+    const runId = stageRunId(featureDir, stage, status, updateFlags, existing);
+    if (runId !== undefined) patch.runId = runId;
     const hasEvidenceFlag =
       updateFlags['intended-model'] !== undefined
       || updateFlags['executed-model'] !== undefined
