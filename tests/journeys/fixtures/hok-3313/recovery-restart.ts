@@ -3,7 +3,7 @@
  * Process-boundary checks run inside the killed-stage golden journey's fake world. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { buildWorkflowState } from '../../../lib/task-builder.ts';
 import { createStateDirRetry } from '../../../../shared/lib/bounded-retry.ts';
@@ -69,7 +69,9 @@ console.log('PASS recovery across restarted CLI processes: human hold, backgroun
 writeFileSync(stateFile, JSON.stringify(buildWorkflowState({'JRN-1':{runId:'recovery-run',phase:'coding'}})));
 const delayed=invoke(failed,'delayed-stage-barrier');
 assert.equal(delayed.claim.claimed,true);
-writeFileSync(stateFile, JSON.stringify(buildWorkflowState({'JRN-1':{runId:'recovery-run',phase:'ready'}})));
+const incident = JSON.parse(readFileSync(join(root,'tests/fixtures/incident-replay/real/hok3277-delayed-recovery.json'),'utf8'));
+assert.equal(incident.incident.metadata.barrier.sameRun,true);
+writeFileSync(stateFile, JSON.stringify(buildWorkflowState({'JRN-1':{runId:'recovery-run',phase:incident.incident.metadata.barrier.toPhase}})));
 try {
   execFileSync(process.execPath,['--import','tsx',join(root,'tools/task-recovery-controller.ts'),
     '--state-dir',dir,'--state-file',stateFile,'--issue','JRN-1','--validate',delayed.claim.claim.claimId],{cwd:root,encoding:'utf8'});
