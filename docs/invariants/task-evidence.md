@@ -34,3 +34,8 @@ lineage and ownership dedup semantics belong to HOK-3447/HOK-3476.
 Guard: `tools/check-task-evidence.ts`, wired into `npm run test:preflight`.
 Replay: `task-evidence-archive.test.ts` and the happy-path golden journey remove
 original sources and verify retained SDK cost, model identity and intervention facts.
+
+Late recovery results use `archiveLateStageEvidence`: retain the original
+result beneath run-keyed stale history, then capture the same shared artifact
+and owned-session inventory. The replacement run keeps its current result;
+recovery audit rows are part of the canonical retained inventory.

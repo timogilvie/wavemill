@@ -83,6 +83,7 @@ All business logic lives in `shared/lib/` for reusability across CLI tools, comm
 - **Behavioural tests (HOK-3237)** — Tests assert against *behaviour*, not against the source text of `shared/lib/**` or `tools/**`. Guard: `tools/check-source-text-assertions.ts`. → [docs/invariants/behavioural-tests.md](docs/invariants/behavioural-tests.md)
 - **Operator touch (HOK-3455)** — Every decision about whether a person had to act is made by `classifyOperatorTouch` in `shared/lib/operator-intervention.ts`. Guard: `tools/check-human-touch.ts`. → [docs/invariants/operator-touch.md](docs/invariants/operator-touch.md)
 - **Settled attempt (HOK-3373)** — Never write `workflow-state.json` around the seam, write Linear state outside the renderer, or `git -C` / `mkdir -p` a task path outside the resolver. Guard: `tools/check-settled-attempt.ts`. → [docs/invariants/settled-attempt.md](docs/invariants/settled-attempt.md)
+- **Task recovery (HOK-3277)** — Use `task-recovery-controller.ts` for decisions and claims. Guard: `tools/check-task-recovery-ownership.ts`. → [docs/invariants/task-recovery-ownership.md](docs/invariants/task-recovery-ownership.md)
 - **Live-state invariants (HOK-3229)** — New structural invariants belong in this evaluator — never add a private detector. Guard: none (evaluator rule). → [docs/invariants/state-invariants.md](docs/invariants/state-invariants.md)
 - **Task evidence retention (HOK-3475)** — Use one typed inventory for cleanup and readers; archive owned transcripts and Ready results before resource release. Guard: `tools/check-task-evidence.ts`. → [docs/invariants/task-evidence.md](docs/invariants/task-evidence.md)
 - **Session ownership and cost (HOK-3077)** — Record launch costs only through `recordLaunch` / `session_ownership_append`; never add a private cost engine. Guard: `tools/check-cost-ownership.ts`, `tools/check-session-ownership.ts`. → [docs/invariants/session-ownership-cost.md](docs/invariants/session-ownership-cost.md)
@@ -102,31 +103,7 @@ All business logic lives in `shared/lib/` for reusability across CLI tools, comm
 
 ### Refactoring Pattern
 
-When creating or refactoring tools:
-
-1. **Extract business logic** to focused modules in `shared/lib/`:
-   ```typescript
-   // shared/lib/my-feature.ts
-   export async function doSomething(options: Options): Promise<Result> {
-     // Business logic here
-   }
-   ```
-
-2. **Keep tools thin** - just CLI argument parsing and orchestration:
-   ```typescript
-   // tools/my-tool.ts
-   import { runTool } from '../shared/lib/tool-runner.ts';
-   import { doSomething } from '../shared/lib/my-feature.ts';
-
-   runTool({
-     name: 'my-tool',
-     description: 'Does something useful',
-     async run({ args, positional }) {
-       const result = await doSomething({ ...args });
-       console.log(result);
-     },
-   });
-   ```
+Keep business logic in `shared/lib/`; CLI tools parse arguments and call it through `runTool`.
 
 ## Commands
 

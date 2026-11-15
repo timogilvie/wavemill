@@ -76,3 +76,7 @@ fi
 # Drop the async watchdog consumer so run_ready_watchdog_tick returns 0 without
 # touching the job infrastructure (the retired inline sweep is not restored here).
 unset -f ready_watchdog_tick_async 2>/dev/null || true
+
+# Recovery unit fixture hosts call workers inline; journeys use the real jobs.
+maybe_retry_failed_stage() { _maybe_retry_failed_stage_now "$@"; }
+_stage_disposition_act() { _stage_disposition_act_now "$@"; }

@@ -31,6 +31,7 @@ phase_is() { [[ "$(journey_task_field "$ISSUE" phase)" == "$1" ]]; }
 
 # Budgets are monitor ticks (passes), not seconds.
 journey_wait_until "$ISSUE" 5  "task launched into planning" phase_is planning
+TASK_RUN_ID="$(journey_task_field "$ISSUE" runId)"
 # HOK-3403: a workflow-state writer dies while its owner-stamped lock is held.
 # The real monitor must reclaim it on its next state write and finish the task.
 lock_ready="$JOURNEY_TMP/killed-state-writer.ready"
@@ -53,6 +54,11 @@ journey_wait_until "$ISSUE" 8  "task reaped after merge"     journey_task_reaped
 echo ""
 echo "assertions:"
 journey_assert_landed "$ISSUE"
+# Recovery's run fence must survive the complete normal path and cleanup.
+for stage in planning coding review ready; do
+  journey_assert "$stage completion retains the launched task run" \
+    jq -e --arg run "$TASK_RUN_ID" '.runId == $run' "$REPO_DIR/.wavemill/evals/artifacts/$ISSUE/.$stage-result.json"
+done
 journey_assert "the happy path creates no retired ledger database" \
   test ! -e "$REPO_DIR/.wavemill/ledger.sqlite"
 journey_assert "the happy path creates no retired duplicate audit" \

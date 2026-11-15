@@ -4547,12 +4547,64 @@ _stage_stamp_settled_without_result() {
 #           all. A stage-specific legacy check (e.g. coding's
 #           coding_stage_owner_lost, for tasks predating session-ownership
 #           tracking) remains a necessary backstop here — it must NOT be
-#           consulted on rc 0, where the disposition already has evidence
+#           consulted on return 0, where the disposition already has evidence
 #           and a second, narrower check could contradict it.
+# Recovery execution is hosted by the existing tracked-job supervisor. The
+# monitor only gathers its existing disposition and schedules work; no claim
+# lock or extra TypeScript process runs inline on the hot pass.
+# Identity names the run and observed stage result/head. A stale worker cannot
+# occupy the replacement run's supervisor slot.
+_task_recovery_job_id() {
+  local issue="$1" feature_dir="$2" stage="$3" run_id="$4" head="${5:-}" launch="${6:-}"
+  [[ -n "$head" ]] || head="$(phase_launch_head "$feature_dir")"
+  printf 'task-recovery-%s\n' "$(sanitize_job_token "$issue-$stage-$run_id-$head-$launch-$(stage_result_field "$feature_dir" "$stage" startedAt)-$(stage_result_field "$feature_dir" "$stage" finishedAt)")"
+}
+
 _stage_disposition_act() {
   local issue="$1" feature_dir="$2" wt_dir="$3" win_target="$4" win="$5" stage="$6"
+  local control_run_id="${7:-}" current_head disposition recovery_meta
+  [[ -n "$control_run_id" ]] || control_run_id="$(task_run_id "$issue" 2>/dev/null || true)"
+  current_head="$(phase_launch_head "$feature_dir")"
+  disposition="$(stage_agent_disposition "$issue" "$feature_dir" "$wt_dir" "$current_head" "$stage" 2>/dev/null || true)"
+  # No launch record leaves the existing legacy-owner backstop responsible.
+  [[ "$(jq -r '.reason // empty' <<<"$disposition")" != "no-launch" ]] || return 3
+  recovery_meta="$(jq -cn --arg runId "$control_run_id" '{runId:$runId}')"
+  monitor_async_job_launch task-recovery "$(_task_recovery_job_id "$issue" "$feature_dir" "$stage" "$control_run_id" "$current_head" "$(jq -r ' .launch.attemptId // empty' <<<"$disposition")")" "$issue" "" "${ASYNC_JOB_MAX_RUNTIME_SECONDS:-3600}" "$recovery_meta" \
+    _task_recovery_job_run "$control_run_id" _stage_disposition_act_now "$@"
+  return 0
+}
+
+# A recovery claim is rechecked after waits, using the controller's
+# authoritative state reader rather than the worker's cached pass snapshot.
+_recovery_continuation_current() {
+  [[ -n "${recovery_claim_id:-}" ]] || return 0
+  if ! wavemill_run_tool task-recovery-controller.ts --state-dir "$recovery_state_dir" \
+      --state-file "$STATE_FILE" --issue "$recovery_issue" --validate "$recovery_claim_id" "$@" >/dev/null; then
+    recovery_cancelled=true
+    return 1
+  fi
+}
+
+_task_recovery_job_run() {
+  local recovery_control_run_id="$1" handler="$2" rc=0 recovery_owner_pid="$BASHPID"
+  shift 2
+  # Handler arguments are now: $1 issue, $2 feature dir, $3 stage, $4 window.
+  local -x WAVEMILL_EXPECTED_RUN_ID="$1=$recovery_control_run_id"
+  "$handler" "$@" || rc=$?
+  # Return codes describe handled recovery dispositions, not tool crashes.
+  # Non-Ready challenge retirement previously lived in the synchronous caller.
+  if [[ "$handler" == "_maybe_retry_failed_stage_now" && "$rc" == "1" && "$3" != "ready" ]]; then
+    emit_challenge_stage_failure_quarantine "$1" "$2" "$3" "$4" || true
+  fi
+  (( rc <= 3 )) || return "$rc"
+  return 0
+}
+
+_stage_disposition_act_now() {
+  local issue="$1" feature_dir="$2" wt_dir="$3" win_target="$4" win="$5" stage="$6"
   local current_head disposition kind reason has_completion blocking_id blocking_detail
-  local state_dir="$feature_dir" result_stage
+  local state_dir="$feature_dir" result_stage control_run_id="${recovery_control_run_id:-${7:-}}"
+  [[ -n "$control_run_id" ]] || control_run_id="$(task_run_id "$issue" 2>/dev/null || true)"
 
   # ready-remediation and conflict-resolution are sub-activities of the Ready
   # stage, recorded in `.ready-result.json` — there is no separate
@@ -4573,6 +4625,27 @@ _stage_disposition_act() {
   blocking_id="$(printf '%s' "$disposition" | jq -r '.blockingPrompt.id // empty' 2>/dev/null)"
   blocking_detail="$(printf '%s' "$disposition" | jq -r '.blockingPrompt.detail // empty' 2>/dev/null)"
 
+  local recovery_action recovery_outcome recovery_claim
+  recovery_outcome="$(wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" \
+    --state-file "$STATE_FILE" --owner-pid "${recovery_owner_pid:-$$}" --run-id "$control_run_id" --issue "$issue" --stage "$result_stage" --disposition "$disposition" 2>/dev/null)"
+  recovery_action="$(jq -r '.decision.action // "no-action"' <<<"$recovery_outcome")"
+  case "$recovery_action" in
+    consume-advance)
+      # The caller consumes the durable result through its normal transition.
+      # Release this notifier's claim before handing control back; duplicate
+      # completion evidence remains deduplicated, later failures may claim.
+      if [[ "$(jq -r '.claim.claimed // false' <<<"$recovery_outcome")" == "true" ]]; then
+        wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" \
+          --ack "$(jq -r '.claim.claim.claimId' <<<"$recovery_outcome")" >/dev/null
+      fi
+      return 0 ;;
+    # This adapter already runs in a tracked job. The controller reads the
+    # fresh disposition and result, acknowledging observed application; the
+    # next normal poll reassesses an agent that is still legitimately active.
+    verify-effect) return 0 ;;
+    reject-stale-control) return 0 ;;
+  esac
+
   if [[ "$kind" == "inactive" && "$reason" == "no-launch" ]]; then
     return 3
   fi
@@ -4589,13 +4662,16 @@ _stage_disposition_act() {
   fi
 
   # Settled + recognised blocking prompt → one operator-decision escalation.
-  if [[ -n "$blocking_id" ]]; then
+  if [[ "$recovery_action" == "escalate" ]]; then
+    [[ "$(jq -r '.claim.claimed // false' <<<"$recovery_outcome")" == "true" ]] || return 2
+    recovery_claim="$(jq -r '.claim.claim.claimId' <<<"$recovery_outcome")"
     local escalation_message="Stage ${stage} agent parked at interactive prompt '${blocking_id}': ${blocking_detail}"
     if declare -F escalate_operator_attention >/dev/null 2>&1; then
       escalate_operator_attention "$state_dir" operator-decision "stage-blocking-prompt" "$escalation_message" \
         --head "$current_head" --expires-on head,operator-event >/dev/null 2>&1 || true
     fi
     set_window_attention_state "$win" "needs-user" >/dev/null 2>&1 || true
+    wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" --ack "$recovery_claim" >/dev/null
     log_warn "$issue → ${stage} agent parked at ${blocking_id}, raised one operator-decision escalation"
     return 2
   fi
@@ -8144,7 +8220,11 @@ stage_failure_decision() {
   local budget_exhausted=""
   local is_challenge cache fingerprint cached decision
 
-  detail="$(native_hook_terminal_failure_detail "$issue" 2>/dev/null || true)"
+  if [[ "$stage" == "ready" ]]; then
+    detail="$(ready_failure_evidence_detail "$feature_dir")"
+  else
+    detail="$(native_hook_terminal_failure_detail "$issue" 2>/dev/null || true)"
+  fi
   [[ -n "$detail" ]] || detail="$(stage_result_field "$feature_dir" "$stage" "notes")"
   [[ -n "$detail" ]] || detail="${stage} stage reported failed without detail"
   is_challenge="$(get_task_meta "$issue" "challenge" 2>/dev/null || true)"
@@ -8357,8 +8437,8 @@ stage_failure_owned_by_bucket() {
 #
 # Returns 0 relaunched, 2 holding (backoff), 1 not applicable / terminal /
 # exhausted (caller escalates).
-maybe_retry_failed_stage() {
-  local issue="$1" feature_dir="$2" stage="$3" win="$4"
+_dispatch_failed_stage_recovery() {
+  local issue="$1" feature_dir="$2" stage="$3" win="$4" action="${6:-retry-stage}"
   local bucket="stage-failure-$stage" decision failure_class failure_kind detail next_action
   local head base limit disposition attempts retry_phase fresh="" artifact
 
@@ -8383,9 +8463,9 @@ maybe_retry_failed_stage() {
   [[ -n "$(stage_result_field "$feature_dir" "$stage" "agent")" ]] || return 1
   ! stage_failure_owned_by_bucket "$feature_dir" "$stage" || return 1
 
-  decision="$(stage_failure_decision "$issue" "$feature_dir" "$stage")"
+  [[ -z "${recovery_claim_id:-}" ]] || _recovery_continuation_current || return 2
+  decision="$5"
   failure_class="$(jq -r '.class' <<<"$decision")"
-  [[ "$failure_class" != "terminal" ]] || return 1
   failure_kind="$(jq -r '.failureKind' <<<"$decision")"
   detail="$(jq -r '.detail' <<<"$decision")"
   next_action="$(jq -r '.nextAction' <<<"$decision")"
@@ -8394,25 +8474,6 @@ maybe_retry_failed_stage() {
   base="$(phase_launch_base "$feature_dir")"
   limit="${WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS:-3}"
   [[ "$limit" =~ ^[0-9]+$ ]] || limit=3
-  disposition="$(bounded_retry_gate "$feature_dir" "$bucket" "$head" "$limit" "" "" "$base")"
-  case "$disposition" in
-    backoff)
-      log "debug" "  $issue: holding ${stage} relaunch after ${failure_kind} (backoff)"
-      return 2
-      ;;
-    exhausted)
-      attempts="$(bounded_retry_count "$feature_dir" "$bucket")"
-      if bounded_retry_mark_exhausted "$feature_dir" "$bucket" \
-        "unknown-failure-after-retries:${stage}:${failure_kind} after ${attempts} relaunch(es) at head ${head:-unknown}: ${detail}"; then
-        log_warn "⛔ $issue → ${stage} still failing (${failure_kind}) after ${attempts} relaunch(es), escalating to needs-user. ${next_action}"
-      fi
-      return 1
-      ;;
-    exhausted-quiet)
-      return 1
-      ;;
-  esac
-
   attempts="$(bounded_retry_increment "$feature_dir" "$bucket" "$head" "$base")"
   if (( attempts >= limit )); then
     fresh=" (fresh relaunch)"
@@ -8429,14 +8490,24 @@ maybe_retry_failed_stage() {
   if [[ "$stage" != "ready" ]]; then
     rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
   fi
-  [[ "$stage" == "coding" || "$stage" == "ready" ]] || clear_stage_result "$feature_dir" "$stage"
+  [[ "$action" == "remediate" || "$stage" == "coding" || "$stage" == "ready" ]] || clear_stage_result "$feature_dir" "$stage"
+
+  if [[ "$action" == "remediate" && "$stage" != "ready" ]]; then
+    if _stage_failure_coding_relaunch "$issue" "$feature_dir" "$win" "$failure_kind" "$failure_class" "$attempts" "$limit" " (code remediation)"; then
+      agent_remediation_deliver "$feature_dir" "$issue" "$feature_dir/.${stage}-result.json" \
+        "Repair the recorded ${stage} code failure: $detail" "${stage}:${head}:${attempts}" --expires-on head,operator-event || true
+      return 0
+    fi
+    return 2
+  fi
 
   # Coding has already crossed plan approval. Replay its persisted contract;
   # failure to launch must never run the planning-overreach guard on its edits.
   if [[ "$stage" == "coding" ]]; then
-    if _stage_failure_coding_relaunch "$issue" "$feature_dir" "$win" "$failure_kind" "$failure_class" "$attempts" "$limit" "$fresh"; then
-      return 0
-    fi
+    local coding_rc=0
+    _stage_failure_coding_relaunch "$issue" "$feature_dir" "$win" "$failure_kind" "$failure_class" "$attempts" "$limit" "$fresh" || coding_rc=$?
+    [[ "$coding_rc" != 0 ]] || return 0
+    [[ "$coding_rc" != 2 ]] || return 2
     write_stage_result "$feature_dir" coding failed \
       "$(stage_result_field "$feature_dir" coding agent)" \
       "$(resolve_stage_result_model "$feature_dir" coding "")" "$detail"
@@ -8466,6 +8537,121 @@ maybe_retry_failed_stage() {
   set_window_attention_state "$win" "clear"
   log "status" "♻ $issue → ${stage} failed (${failure_kind}, ${failure_class}), relaunch ${attempts}/${limit}${fresh} via ${retry_phase}"
   return 0
+}
+
+# Build and claim the controller snapshot before the existing stage executor
+# performs any mutation.  The shell remains the adapter for the established
+# bounded-retry and launch contracts; classification and retry verdict are
+# authoritative inputs, while action selection and the one-winner claim live
+# in task-recovery-controller.ts.
+_monitor_claim_failed_stage_action() {
+  local issue="$1" feature_dir="$2" stage="$3" context="${4:-}"
+  [[ -n "$context" ]] || context='{}'
+  local decision_json head base retry_verdict run_id evidence_id snapshot_file result original_result failure_class contract_available="null"
+  local limit="${WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS:-3}"
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=3
+
+  decision_json="$(jq -c '.failure // empty' <<<"$context")"
+  [[ -n "$decision_json" ]] || decision_json="$(stage_failure_decision "$issue" "$feature_dir" "$stage")"
+  failure_class="$(jq -r '.class // "retryable"' <<<"$decision_json" 2>/dev/null || echo retryable)"
+  head="$(phase_launch_head "$feature_dir")"
+  base="$(phase_launch_base "$feature_dir")"
+  retry_verdict="$(bounded_retry_gate "$feature_dir" "stage-failure-$stage" "$head" "$limit" "" "" "$base")"
+  run_id="${recovery_control_run_id:-$(task_run_id "$issue" 2>/dev/null || true)}"
+  evidence_id="$(jq -r '.fingerprint // empty' <<<"$decision_json" 2>/dev/null || true)"
+  [[ -n "$evidence_id" ]] || evidence_id="${stage}:${head:-unknown}:${run_id:-legacy}"
+
+  if [[ "$stage" == "coding" ]]; then
+    if jq -e '.ok == true' <<<"$(recovery_contract_json "$issue" "$feature_dir" coding)" >/dev/null 2>&1; then
+      contract_available=true
+    else
+      contract_available=false
+    fi
+  fi
+
+  original_result="$(read_stage_result "$feature_dir" "$stage" 2>/dev/null || true)"
+  [[ -n "$original_result" ]] || original_result=null
+  evidence_id+=":$head:$base:$(jq -r '.startedAt // ""' <<<"$original_result"):$(jq -r '.finishedAt // ""' <<<"$original_result"):$(jq -c '{baseDrift:(.baseDrift // false),source:(.source // "ci"),siblingGreen:(.siblingGreen // false),baseUpdateOutcome}' <<<"$context")"
+  snapshot_file="$(mktemp "${TMPDIR:-/tmp}/wavemill-recovery.XXXXXX")" || return 1
+  jq -cn --arg issue "$issue" --arg stage "$stage" --arg runId "$run_id" \
+    --arg evidenceId "$evidence_id" --arg retry "$retry_verdict" --argjson failure "$decision_json" \
+    --argjson contractAvailable "$contract_available" --argjson context "$context" \
+    --argjson originalResult "$original_result" '
+      {issue:$issue, stage:$stage, evidence:{stageResult:$originalResult},
+       attempt:{currentRunId:(if $runId == "" then null else $runId end), controlRunId:(if $runId == "" then null else $runId end)},
+       disposition:null, stageResult:{kind:"failed"}, contractAvailable:$contractAvailable,
+       outstandingEffect:null, wait:null, baseDrift:($context.baseDrift // false), failure:{decision:$failure,retry:$retry,source:($context.source // "ci")}}' >"$snapshot_file" || {
+      rm -f "$snapshot_file"; return 1;
+    }
+  result="$(wavemill_run_tool task-recovery-controller.ts \
+    --state-dir "$feature_dir" --state-file "$STATE_FILE" --owner-pid "${recovery_owner_pid:-$$}" --evidence-id "$evidence_id" --snapshot "$snapshot_file" 2>/dev/null)"
+  rm -f "$snapshot_file"
+  [[ -n "$result" ]] && jq -e . >/dev/null 2>&1 <<<"$result" || return 1
+  jq --argjson failure "$decision_json" '. + {failure:$failure}' <<<"$result"
+}
+
+# HOK-3277: the one failed-stage recovery decision+claim+dispatch for an agent
+# stage. The controller selects and atomically claims the action; this adapter
+# dispatches that persisted contract through the existing retry/remediation
+# executors. The planning, coding-publish and review `failed` branches share
+# this path instead of each re-deriving a recovery ladder.
+# Every failed stage, including Ready, enters the same decision and fenced claim.
+maybe_retry_failed_stage() {
+  local issue="$1" feature_dir="$2" stage="$3" run_id recovery_meta
+  run_id="$(task_run_id "$issue" 2>/dev/null || true)"
+  recovery_meta="$(jq -cn --arg runId "$run_id" '{runId:$runId}')"
+  monitor_async_job_launch task-recovery "$(_task_recovery_job_id "$issue" "$feature_dir" "$stage" "$run_id")" "$issue" "" "${ASYNC_JOB_MAX_RUNTIME_SECONDS:-3600}" "$recovery_meta" \
+    _task_recovery_job_run "$run_id" _maybe_retry_failed_stage_now "$@"
+  return 2
+}
+
+_maybe_retry_failed_stage_now() {
+  local issue="$1" feature_dir="$2" stage="$3" win="$4"
+  local recovery action claim_id failure rc=0 recovery_claim_id recovery_state_dir="$feature_dir" recovery_issue="$issue" recovery_cancelled=false
+  local recovery_base_update_outcome=""
+  recovery="$(_monitor_claim_failed_stage_action "$issue" "$feature_dir" "$stage" "${5:-}")" || return 2
+  action="$(jq -r '.decision.action' <<<"$recovery")"
+  if [[ "$(jq -r '.claim.claimed' <<<"$recovery")" != "true" ]]; then
+    [[ "$action" == "escalate" ]] && return 1
+    return 2
+  fi
+  claim_id="$(jq -r '.claim.claim.claimId' <<<"$recovery")"
+  recovery_claim_id="$claim_id"
+  failure="$(jq -c '.failure' <<<"$recovery")"
+  local -x WAVEMILL_EXPECTED_RUN_ID
+  WAVEMILL_EXPECTED_RUN_ID="$issue=$(jq -r '.claim.claim.runId // empty' <<<"$recovery")"
+  case "$action" in
+    retry-stage) _dispatch_failed_stage_recovery "$issue" "$feature_dir" "$stage" "$win" "$failure" "$action" || rc=$? ;;
+    remediate)
+      if [[ "$(jq -r '.decision.nextAction' <<<"$recovery")" == "update-base" ]]; then
+        _ready_failure_update_base "$issue" "$feature_dir" "$win" || rc=$?
+        if [[ "$rc" == "3" ]]; then
+          wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" --ack "$claim_id" --outcome reassess >/dev/null
+          local fallback_context prior_context="${5:-}"
+          [[ -n "$prior_context" ]] || prior_context='{}'
+          fallback_context="$(jq -cn --argjson failure "$failure" --argjson prior "$prior_context" --arg observed "$recovery_base_update_outcome" '$prior + {failure:$failure,baseDrift:false,baseUpdateOutcome:$observed}')"
+          _maybe_retry_failed_stage_now "$issue" "$feature_dir" "$stage" "$win" "$fallback_context"
+          return $?
+        fi
+      else
+        _dispatch_failed_stage_recovery "$issue" "$feature_dir" "$stage" "$win" "$failure" "$action" || rc=$?
+      fi
+      ;;
+    escalate) _execute_recovery_escalation "$issue" "$feature_dir" "$stage" "$win" "$recovery" || rc=$? ;;
+    *) rc=2 ;;
+  esac
+  local outcome=applied
+  [[ ( "$rc" == "0" || "$action" == "escalate" ) && "$recovery_cancelled" != true ]] || outcome=reassess
+  wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" --ack "$claim_id" --outcome "$outcome" >/dev/null
+  return "$rc"
+}
+
+_monitor_recover_failed_stage() {
+  local issue="$1" feature_dir="$2" win="$3" stage="$4" rc=0
+  maybe_retry_failed_stage "$issue" "$feature_dir" "$stage" "$win" || rc=$?
+  [[ "$rc" == "0" || "$rc" == "2" ]] && return 0
+  emit_challenge_stage_failure_quarantine "$issue" "$feature_dir" "$stage" "$win" || true
+  set_window_attention_state "$win" "needs-user"
 }
 
 # HOK-3211: direct coding relaunch for a retryable coding stage failure.
@@ -8508,10 +8694,14 @@ _stage_failure_coding_relaunch() {
   [[ -n "$depth" ]] || depth="medium"
 
   if ! _prepare_recovery_phase_launch "$issue" "$slug" "coding" "$feature_dir" "$worktree" "$agent" "$model" "$contract_payload"; then
+    [[ "${recovery_cancelled:-false}" != true ]] || return 2
     return 1
   fi
+  [[ -z "${recovery_claim_id:-}" ]] || _recovery_continuation_current --bind-result --stage coding || return 2
   launch_coding_phase "$issue" "$slug" "$title" "$worktree" "$branch" "$BASE_BRANCH" \
     "$model" "$agent" "$depth" || rc=$?
+  [[ "$rc" != "2" ]] || return 2
+  [[ -z "${recovery_claim_id:-}" ]] || _recovery_continuation_current || return 2
   if [[ "$rc" -ne 0 ]]; then
     log_warn "$issue → coding stage-failure relaunch: launch failed (rc=$rc)"
     return 1
@@ -9809,6 +9999,7 @@ _prepare_recovery_phase_launch() {
   local agent="$6" model="$7" contract_payload="$8" lifecycle_phase="${9:-}"
   local result_write_mode="${10:-write-result}"
   local win contract_title resolved_window artifacts_json=""
+  [[ -z "${recovery_claim_id:-}" ]] || _recovery_continuation_current || return 2
 
   # Every coding recovery consumes the prior attempt's handoff artifacts.
   # Durable mutation provenance is deliberately outside that archive set.
@@ -9843,6 +10034,7 @@ _prepare_recovery_phase_launch() {
     fi
   fi
 
+  [[ -z "${recovery_claim_id:-}" ]] || _recovery_continuation_current --bind-result --stage "$phase" || return 2
   if ! configure_agent_hooks "$agent" "$wt_dir" "$REPO_DIR"; then
     log_warn "$issue → failed to configure hooks for recovered $phase stage"
     return 1
@@ -10152,6 +10344,7 @@ _launch_agent_in_pane() {
     return "$prepare_rc"
   fi
 
+  [[ -z "${recovery_claim_id:-}" ]] || _recovery_continuation_current || return 2
   tmux send-keys -t "$target" \
     "export WAVEMILL_SESSION='$esc_session' WAVEMILL_ISSUE='$esc_issue' WAVEMILL_LINEAR_ISSUE='$esc_linear_issue' WAVEMILL_SLUG='$esc_slug' WAVEMILL_FEATURE_SLUG='$esc_slug' WAVEMILL_FEATURE_DIR='$feature_dir' WAVEMILL_CHALLENGE_VARIED_STAGE='$esc_varied_stage' WAVEMILL_CHALLENGE_VARIED_MODEL='$esc_varied_model'" C-m
 
@@ -11195,7 +11388,7 @@ refresh_ready_merge_queue_tick() {
     wt_dir="${WORKTREE_ROOT}/${slug}"
     state_dir="$(ready_state_dir "$wt_dir" "$slug")"
     demote_merge_candidate "$issue" "$state_dir" "stuck merge candidate"
-    # HOK-3111: dedup per (PR, head); escalate after N cycles on the same head.
+    # HOK-3111: dedup per (PR, head), escalate after N cycles on the same head.
     pr_for_log="${PR_BY_ISSUE[$issue]:-}"
     stuck_head=$(ready_queue_field "$state_dir" "lastCiHeadSha")
     decision=$(merge_queue_transition_report "${pr_for_log:-$issue}" "$stuck_head" "demoted-stuck")
@@ -11223,7 +11416,7 @@ refresh_ready_merge_queue_tick() {
       ci_head=$(ready_queue_field "$state_dir" "lastCiHeadSha")
       ci_summary=$(ready_queue_field "$state_dir" "lastCiSummary")
       [[ -n "$ci_summary" ]] || ci_summary="pass"
-      # HOK-3111: dedup per (PR, head); escalate after N cycles on the same head.
+      # HOK-3111: dedup per (PR, head), escalate after N cycles on the same head.
       decision=$(merge_queue_transition_report "${pr_for_log:-$issue}" "$ci_head" "promoted")
       case "$decision" in
         log)
@@ -11841,19 +12034,13 @@ _stage_failure_ready_relaunch() {
 #                      maybe_retry_failed_stage.
 # Returns: 0 relaunched / in-flight / retired; 1 escalated (needs-user);
 # 2 holding (backoff).
-ready_failure_classify_and_act() {
-  local issue="$1" slug="$2" state_dir="$3" wt_dir="$4" branch="$5" base_branch="$6"
-  local pr="$7" win="${8:-}" current_head="${9:-}"
-  local result_file="$state_dir/.ready-result.json"
-  local detail decision failure_class failure_kind next_action evidence_source
-  local retry_rc upd_result upd_files upd_reason
-
-  detail="$(ready_failure_evidence_detail "$state_dir")"
-
-  # Base drift is handled before classification: merging origin/<base> is new
-  # information no classification can substitute for, and a retry at the old
-  # head would spend budget on a cause the merge already fixes (HOK-3092).
-  if [[ "$(ready_failure_base_drift "$state_dir" "$wt_dir" "$base_branch")" == "yes" ]]; then
+_ready_failure_update_base() {
+  local issue="$1" state_dir="$2" win="$3" wt_dir branch base_branch pr
+  local upd_result upd_files upd_reason
+  wt_dir="$(pass_task_field "$issue" worktree)"
+  branch="$(pass_task_field "$issue" branch)"
+  base_branch="$(effective_task_base_branch "$issue")"
+  pr="$(pass_task_field "$issue" pr)"
     upd_result="$(try_update_branch_from_base "$issue" "$wt_dir" "$branch" "$base_branch")"
     case "$upd_result" in
       updated)
@@ -11878,67 +12065,48 @@ ready_failure_classify_and_act() {
         return 1
         ;;
       not-behind|error:*)
-        # The drift precondition was wrong or the merge could not run; the
-        # recorded cause still needs its classification below.
+        recovery_base_update_outcome="$upd_result"
+        return 3
         ;;
     esac
+}
+
+ready_failure_classify_and_act() {
+  local issue="$1" slug="$2" state_dir="$3" wt_dir="$4" branch="$5" base_branch="$6"
+  local pr="$7" win="${8:-}" current_head="${9:-}" detail failure context source="ci" drift=false sibling_green=false
+  detail="$(ready_failure_evidence_detail "$state_dir")"
+  failure="$(stage_failure_decision "$issue" "$state_dir" ready)"
+  if jq -e '(.artifacts.transitionFailure | type) == "object"' "$state_dir/.ready-result.json" >/dev/null 2>&1; then
+    source="transition"
   fi
+  [[ "$(ready_failure_base_drift "$state_dir" "$wt_dir" "$base_branch")" != "yes" ]] || drift=true
+  ready_exhausted_challenge_sibling_green "$issue" && sibling_green=true
+  context="$(jq -cn --argjson failure "$failure" --arg source "$source" --argjson drift "$drift" --argjson siblingGreen "$sibling_green" '{failure:$failure,source:$source,baseDrift:$drift,siblingGreen:$siblingGreen}')"
+  maybe_retry_failed_stage "$issue" "$state_dir" ready "$win" "$context"
+}
 
-  # Where the evidence came from decides who can act on a code-failure: the
-  # mill cannot ask the coder to fix mill code, so a transition tool's
-  # deterministic error goes to the operator, never to remediation.
-  evidence_source="ci"
-  if jq -e '(.artifacts.transitionFailure | type) == "object"' "$result_file" >/dev/null 2>&1; then
-    evidence_source="transition"
+_execute_recovery_escalation() {
+  local issue="$1" state_dir="$2" stage="$3" win="$4" recovery="$5"
+  local kind basis bucket message head pr
+  kind="$(jq -r '.decision.escalationBasis.kind' <<<"$recovery")"
+  basis="$(jq -r '.decision.escalationBasis.code // .decision.escalationBasis.decisionClass // empty' <<<"$recovery")"
+  message="$(jq -r '.decision.rationale + ": " + (.failure.detail // "")' <<<"$recovery")"
+  head="$(phase_launch_head "$state_dir")"
+  if [[ "$stage" == "ready" && "$kind" != "operator-decision" ]]; then
+    pr="$(pass_task_field "$issue" pr)"
+    ready_exhausted_challenge_terminalize "$issue" "$pr" "$state_dir" "$win" && return 0
   fi
-
-  decision="$(failure_policy_decide "ready" "" "$detail")"
-  failure_class="$(jq -r '.class' <<<"$decision")"
-  failure_kind="$(jq -r '.failureKind' <<<"$decision")"
-  next_action="$(jq -r '.nextAction' <<<"$decision")"
-
-  case "$failure_class" in
-    terminal)
-      if ready_exhausted_challenge_terminalize "$issue" "$pr" "$state_dir" "$win"; then
-        return 0
-      fi
-      log_warn "$issue → Ready failed (${failure_kind}, terminal); ${next_action}. Detail: ${detail:0:400}"
-      return 1
-      ;;
-    code-failure)
-      if [[ "$evidence_source" == "transition" ]]; then
-        # A transition tool failed deterministically on mill code: the coder
-        # cannot be asked to fix mill code, so this is an operator decision,
-        # not a retry (HOK-3360).
-        escalate_operator_attention "$state_dir" operator-decision transition-code-failure \
-          "Ready transition failed for PR #$pr (${failure_kind}). ${next_action} Detail: ${detail:0:500}" || true
-        log_warn "$issue → Ready failed (${failure_kind}, code-failure from a transition tool); ${next_action}. Detail: ${detail:0:400}"
-        return 1
-      fi
-      ;&
-    retryable|*)
-      maybe_retry_failed_stage "$issue" "$state_dir" "ready" "$win"
-      retry_rc=$?
-      case "$retry_rc" in
-        0) return 0 ;;
-        2) return 2 ;;
-        *)
-          # The stage-failure-ready budget is spent: keep the recorded
-          # exhaustion reason on the attention record, retire a challenge arm
-          # with a green sibling (HOK-3147), else hold at needs-user.
-          local exhausted_reason
-          exhausted_reason="$(bounded_retry_exhaustion_reason "$state_dir" "stage-failure-ready")"
-          if [[ -n "$exhausted_reason" ]] && ! operator_escalation_has_marker "$state_dir"; then
-            escalate_operator_attention "$state_dir" exhausted stage-failure-ready "$exhausted_reason" || true
-          fi
-          if ready_exhausted_challenge_terminalize "$issue" "$pr" "$state_dir" "$win"; then
-            return 0
-          fi
-          return 1
-          ;;
-      esac
-      ;;
-  esac
+  if [[ "$kind" == "exhausted" ]]; then
+    bucket="$(jq -r '.decision.escalationBasis.bucket' <<<"$recovery")"
+    message="unknown-failure-after-retries:${stage}:$(jq -r '.decision.failureKind' <<<"$recovery") after $(bounded_retry_count "$state_dir" "$bucket") relaunch(es) at head ${head:-unknown}: $message"
+    bounded_retry_mark_exhausted "$state_dir" "$bucket" "$message" || true
+    escalate_operator_attention "$state_dir" exhausted "$bucket" "$message" --head "$head" --expires-on head,operator-event || true
+  else
+    escalate_operator_attention "$state_dir" "$kind" "$basis" "$message" --head "$head" --expires-on head,operator-event || true
+  fi
+  log_warn "$issue → $message; escalating to needs-user"
+  set_window_attention_state "$win" needs-user
+  return 1
 }
 
 # --- Ready-exhausted challenge arm retirement (HOK-3147) ---------------------
@@ -14944,8 +15112,8 @@ launch_tracked_job() {
   [[ -n "$pair_id" ]] && args+=(--pair-id "$pair_id")
   [[ -n "${SESSION:-}" ]] && args+=(--session "$SESSION")
   # HOK-3373: the job settles for the run it was launched for.
-  local run_id=""
-  [[ -n "$issue_id" ]] && run_id="$(task_run_id "$issue_id" 2>/dev/null || true)"
+  local run_id="${11:-}"
+  if [[ -z "$run_id" && -n "$issue_id" ]]; then run_id="$(task_run_id "$issue_id" 2>/dev/null || true)"; fi
   [[ -n "$run_id" ]] && args+=(--run-id "$run_id")
   wavemill_run_tool "job-tracker.ts" "${args[@]}" >/dev/null
 }
@@ -21408,14 +21576,7 @@ monitor_issue_state() {
           fi
 
           if [[ "$planning_status" == "failed" ]]; then
-            local planning_retry_rc=0
-            maybe_retry_failed_stage "$ISSUE" "$FEATURE_DIR" "planning" "$WIN" || planning_retry_rc=$?
-            if [[ "$planning_retry_rc" -eq 0 || "$planning_retry_rc" -eq 2 ]]; then
-              active_count=$((active_count + 1))
-              return 0
-            fi
-            emit_challenge_stage_failure_quarantine "$ISSUE" "$FEATURE_DIR" "planning" "$WIN" || true
-            set_window_attention_state "$WIN" "needs-user"
+            _monitor_recover_failed_stage "$ISSUE" "$FEATURE_DIR" "$WIN" "planning"
             active_count=$((active_count + 1))
             return 0
           fi
@@ -21487,14 +21648,7 @@ monitor_issue_state() {
               write_stage_result "$FEATURE_DIR" "coding" "failed" "$current_agent" \
                 "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")" \
                 "Stage head publication failed: ${PUBLISH_STAGE_HEAD_DETAIL:-publish-stage-head rc=$coding_publish_rc}"
-              local coding_publish_retry_rc=0
-              maybe_retry_failed_stage "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" || coding_publish_retry_rc=$?
-              if [[ "$coding_publish_retry_rc" -eq 0 || "$coding_publish_retry_rc" -eq 2 ]]; then
-                active_count=$((active_count + 1))
-                return 0
-              fi
-              emit_challenge_stage_failure_quarantine "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" || true
-              set_window_attention_state "$WIN" "needs-user"
+              _monitor_recover_failed_stage "$ISSUE" "$FEATURE_DIR" "$WIN" "coding"
               active_count=$((active_count + 1))
               return 0
             fi
@@ -21709,14 +21863,7 @@ monitor_issue_state() {
               active_count=$((active_count + 1))
               return 0
             fi
-            local coding_retry_rc=0
-            maybe_retry_failed_stage "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" || coding_retry_rc=$?
-            if [[ "$coding_retry_rc" -eq 0 || "$coding_retry_rc" -eq 2 ]]; then
-              active_count=$((active_count + 1))
-              return 0
-            fi
-            emit_challenge_stage_failure_quarantine "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" || true
-            set_window_attention_state "$WIN" "needs-user"
+            _monitor_recover_failed_stage "$ISSUE" "$FEATURE_DIR" "$WIN" "coding"
             active_count=$((active_count + 1))
             return 0
           fi
@@ -21829,14 +21976,7 @@ monitor_issue_state() {
           fi
 
           if [[ "$review_status" == "failed" ]]; then
-            local review_retry_rc=0
-            maybe_retry_failed_stage "$ISSUE" "$FEATURE_DIR" "review" "$WIN" || review_retry_rc=$?
-            if [[ "$review_retry_rc" -eq 0 || "$review_retry_rc" -eq 2 ]]; then
-              active_count=$((active_count + 1))
-              return 0
-            fi
-            emit_challenge_stage_failure_quarantine "$ISSUE" "$FEATURE_DIR" "review" "$WIN" || true
-            set_window_attention_state "$WIN" "needs-user"
+            _monitor_recover_failed_stage "$ISSUE" "$FEATURE_DIR" "$WIN" "review"
             active_count=$((active_count + 1))
             return 0
           fi

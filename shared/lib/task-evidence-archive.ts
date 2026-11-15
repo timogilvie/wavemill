@@ -2,6 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
+import type { StageResult } from './stage-result.ts';
 import { resolveRouteArtifactArchiveDir } from './evals-paths.ts';
 import {
   TASK_EVIDENCE_MANIFEST, taskEvidenceNames, resolveTaskArtifactDirs,
@@ -109,4 +110,15 @@ export function archiveTaskEvidence(input: ArchiveTaskEvidenceInput, logger: Pic
   // but do not publish a new claim that the whole inventory was preserved.
   capture(archiveDir, TASK_EVIDENCE_MANIFEST, resolve(featureDir), Buffer.from(JSON.stringify(inventory, null, 2) + '\n'));
   return inventory;
+}
+
+/** Preserve a late notifier's result as history, then use the shared inventory
+ * and owned-session capture. Current stage results remain current. */
+export function archiveLateStageEvidence(input: ArchiveTaskEvidenceInput & { runId: string; result: StageResult }): TaskEvidenceManifest {
+  const featureDir = resolveTaskArtifactDirs(input).liveFeatureDirs[0];
+  if (!featureDir) throw new Error('Late evidence requires its registered feature directory');
+  const runKey = sha256(Buffer.from(input.runId));
+  capture(featureDir, join('.stale-artifacts', 'late-results', runKey, `.${input.result.stage}-result.json`),
+    `late-run:${input.runId}`, Buffer.from(JSON.stringify(input.result) + '\n'));
+  return archiveTaskEvidence(input);
 }
