@@ -29,6 +29,7 @@ export type { CleanupDecision, CleanupReport, TreeState } from './native-agent/c
 import type { ReadyRemediationDecision } from './native-agent/workflow-tools/ready-remediation.ts';
 export type { ReadyRemediationDecision } from './native-agent/workflow-tools/ready-remediation.ts';
 import type { ReviewExecutedIdentitySet } from './challenge-execution-contract.ts';
+import type { MergeQueueState } from './merge-queue.ts';
 export type { ReviewExecutedIdentitySet, ExecutedIdentity, ExecutedIdentityRole } from './challenge-execution-contract.ts';
 import { isSameRunId, runIdStartedAt } from './attempt-identity.ts';
 import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
@@ -423,7 +424,10 @@ export interface ReadyArtifacts {
   ciConclusion?: string;
   requiredContexts?: string[];
   requiredSource?: string;
-  queueState?: 'ready' | 'ready-stale' | 'merge-candidate';
+  /** Declared once in merge-queue.ts (`MERGE_QUEUE_STATES`); written only by the monitor. */
+  queueState?: MergeQueueState;
+  /** Session merge executor recorded alongside `queueState: 'merge-needed'` (HOK-3102). */
+  mergeExecutor?: string;
   staleAt?: string;
   staleBaseSha?: string;
   targetBaseSha?: string;
