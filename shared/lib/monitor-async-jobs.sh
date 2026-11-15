@@ -110,8 +110,9 @@ monitor_async_job_launch() {
   : > "$log_path"
 
   (
-    local rc=0
-    launch_tracked_job "$kind" "$job_id" "$issue" "" "" "$pr_numbers" "$BASHPID" "$timeout_s" "$log_path" "$result_path" \
+    local rc=0 captured_run_id
+    captured_run_id="$(jq -r '.runId // empty' <<<"$meta_json")"
+    launch_tracked_job "$kind" "$job_id" "$issue" "" "" "$pr_numbers" "$BASHPID" "$timeout_s" "$log_path" "$result_path" "$captured_run_id" \
       >>"$log_path" 2>&1 || rc=$?
     if [[ "$rc" == "0" ]]; then
       _with_timeout "$timeout_s" "$runner" "$@" >>"$log_path" 2>&1 || rc=$?

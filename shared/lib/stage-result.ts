@@ -30,7 +30,12 @@ import type { ReadyRemediationDecision } from './native-agent/workflow-tools/rea
 export type { ReadyRemediationDecision } from './native-agent/workflow-tools/ready-remediation.ts';
 import type { ReviewExecutedIdentitySet } from './challenge-execution-contract.ts';
 export type { ReviewExecutedIdentitySet, ExecutedIdentity, ExecutedIdentityRole } from './challenge-execution-contract.ts';
+import { isSameRunId, runIdStartedAt } from './attempt-identity.ts';
 import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
+import { acquireStateLockSync, releaseStateLock } from './state-lock.ts';
+import { readWorkflowState } from './workflow-state.ts';
+import { resolveBranchTask } from './pr-task-resolver.ts';
+import { archiveLateStageEvidence } from './task-evidence-archive.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -475,6 +480,8 @@ export type StageArtifacts = (
  * compatibility with files created before HOK-1192.
  */
 export interface StageResult {
+  /** Task run captured at launch, when available. Never reassigned on completion. */
+  runId?: string | null;
   stage: StageName;
   status: StageStatus;
   startedAt: string;
@@ -520,7 +527,7 @@ export interface StageResult {
 
 export type StageResultHistoryEntry = Pick<
   StageResult,
-  'status' | 'agent' | 'model' | 'intendedModel' | 'executedModel' | 'startedAt' | 'finishedAt' | 'notes'
+  'runId' | 'status' | 'agent' | 'model' | 'intendedModel' | 'executedModel' | 'startedAt' | 'finishedAt' | 'notes'
 > & {
   error?: string;
   failureReason?: string | null;
@@ -1139,6 +1146,11 @@ export async function writeStageResult(
   result: StageResult,
 ): Promise<void> {
   await fs.mkdir(featureDir, { recursive: true });
+  if (result.runId === undefined && result.status !== 'running' && result.startedAt) {
+    const launched = await readStageResult({ featureDir, stage: result.stage });
+    // A different launch may already own the path. Never relabel late bytes.
+    if (launched?.runId && launched.startedAt === result.startedAt) result = { ...result, runId: launched.runId };
+  }
 
   const validation = validateSeamArtifactValue('stage-result', result);
   if (!validation.ok) {
@@ -1202,6 +1214,7 @@ export async function writeStageResultWithHistory(
   const historyEntry: StageResultHistoryEntry[] = shouldArchive && existing
     ? [{
       status: existing.status,
+      runId: existing.runId,
       agent: existing.agent,
       model: existing.model,
       startedAt: existing.startedAt,
@@ -1251,4 +1264,39 @@ export function isValidStatus(value: string): value is StageStatus {
 
 function formatSeamErrors(errors: readonly { code: string; path: string; message: string }[]): string {
   return errors.map((error) => `${error.code} at ${error.path}: ${error.message}`).join('; ');
+}
+
+/** Current-run completion gate. Older artifacts predate explicit run stamps;
+ * their launch timestamp must fall inside the canonical task-run boundary. */
+export function stageResultRunIdentity(result: Pick<StageResult, 'runId' | 'startedAt'>, currentRunId: string | null): 'current' | 'stale' | 'unverifiable' | 'legacy' {
+  if (!currentRunId) return 'legacy';
+  if (result.runId) return isSameRunId(result.runId, currentRunId) ? 'current' : 'stale';
+  const boundary = runIdStartedAt(currentRunId);
+  const started = Date.parse(result.startedAt);
+  if (boundary === null || !Number.isFinite(started)) return 'unverifiable';
+  return started < boundary ? 'stale' : 'current';
+}
+
+/** Serialize publication with task replacement. Stale evidence belongs to the
+ * archive, never the current result, even when the notifier captured an old run. */
+export async function withStageResultRunFence(input: {
+  featureDir: string; result: StageResult; repoDir?: string; branchName?: string | null;
+}, publish: () => Promise<void>): Promise<void> {
+  if (!input.repoDir || !input.branchName) { await publish(); return; }
+  const stateFile = path.join(input.repoDir, '.wavemill', 'workflow-state.json');
+  // Standalone artifact writers have no registered workflow identity.
+  if (!readWorkflowState(stateFile)) { await publish(); return; }
+  const lock = acquireStateLockSync(stateFile, {purpose:'publish-stage-result'});
+  try {
+    const state = readWorkflowState(stateFile);
+    const resolved = state && resolveBranchTask(input.branchName, state, {site:'stage-result.publish-run'});
+    const location = resolved?.location;
+    if (location && path.resolve(location.featureDir) === path.resolve(input.featureDir)
+        && input.result.runId && location.task.runId && !isSameRunId(input.result.runId,location.task.runId)) {
+      archiveLateStageEvidence({issueId:location.taskId,slug:location.slug,repoDir:input.repoDir,
+        worktreeDir:location.worktree,runId:input.result.runId,result:input.result});
+      return;
+    }
+    await publish();
+  } finally { releaseStateLock(lock); }
 }

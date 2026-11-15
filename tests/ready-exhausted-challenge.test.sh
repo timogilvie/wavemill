@@ -403,10 +403,13 @@ else
 fi
 
 # ── 9. Wiring: the failed-Ready branch classifies, and every terminal path ──
-# (base conflict, allowlisted terminal cause, spent budget) tries the
-# challenger retirement before holding (HOK-3147, HOK-3371).
+# tries the challenger retirement before holding (HOK-3147, HOK-3371). Since
+# the fenced-claim refactor (HOK-3277) the three terminal causes share two
+# call sites: the base conflict retires in `_ready_failure_update_base`, and
+# the allowlisted terminal cause and spent budget both escalate through
+# `_execute_recovery_escalation`, which retires once for the ready stage.
 if grep -q 'ready_failure_classify_and_act "$ISSUE" "$SLUG" "$ready_state_dir_path"' "$MONITOR_SCRIPT_FILE" \
-  && [[ "$(grep -c 'ready_exhausted_challenge_terminalize "\$issue" "\$pr" "\$state_dir" "\$win"' "$MONITOR_SCRIPT_FILE")" == "3" ]]; then
+  && [[ "$(grep -c 'ready_exhausted_challenge_terminalize "\$issue" "\$pr" "\$state_dir" "\$win"' "$MONITOR_SCRIPT_FILE")" == "2" ]]; then
   pass "the failed-Ready branch classifies and every terminal path tries the retirement first"
 else
   fail "failed-Ready branch wiring missing"
