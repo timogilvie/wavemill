@@ -615,7 +615,7 @@ describe('artifacts round-trip', () => {
       bounds: {
         maxTurns: 40,
         maxToolCalls: 120,
-        maxWallClockMs: 1200000,
+        maxModelTimeMs: 1200000,
       },
       usage: {
         turnsCompleted: 12,

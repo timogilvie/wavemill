@@ -157,6 +157,48 @@
         },
         "usage": {
           "$ref": "#/$defs/stageExecutionUsage"
+        },
+        "exitEvidence": {
+          "description": "Facts observed when an attempt ended without a usable result. HOK-3382: `harnessHold` names the open harness tool call that held the loop, which attributes the failure to the harness rather than the model.",
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "stage": {
+              "type": "string"
+            },
+            "observedHead": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "observedAt": {
+              "type": "string"
+            },
+            "harnessHold": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "toolName",
+                "toolCallId",
+                "startedAt"
+              ],
+              "properties": {
+                "toolName": {
+                  "type": "string"
+                },
+                "toolCallId": {
+                  "type": "string"
+                },
+                "startedAt": {
+                  "type": "string"
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -281,7 +323,9 @@
       "additionalProperties": false,
       "properties": {
         "kind": {
+          "description": "Which budget the run exhausted. `model_time` is model-attributable time (HOK-3382); `wall_clock` is the deprecated pre-rename spelling, still accepted for historical rows.",
           "enum": [
+            "model_time",
             "wall_clock",
             "turn",
             "tool_call",
@@ -291,6 +335,7 @@
         },
         "stopReason": {
           "enum": [
+            "model_time_limit",
             "wall_clock_limit",
             "turn_limit",
             "tool_call_limit",

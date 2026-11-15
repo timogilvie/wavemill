@@ -4170,7 +4170,7 @@ test('nativeAgent planning limits validate and are returned by the accessor', ()
           planning: {
             maxTurns: 12,
             maxToolCalls: 34,
-            maxWallClockMs: 56000,
+            maxModelTimeMs: 56000,
             toolStagnation: {
               maxRepeatedSignatureCalls: 5,
               maxNoNovelProgressCalls: 3,
@@ -4183,7 +4183,7 @@ test('nativeAgent planning limits validate and are returned by the accessor', ()
     assert.deepEqual(getNativeAgentConfig(tmp).planning, {
       maxTurns: 12,
       maxToolCalls: 34,
-      maxWallClockMs: 56000,
+      maxModelTimeMs: 56000,
       toolStagnation: {
         maxRepeatedSignatureCalls: 5,
         maxNoNovelProgressCalls: 3,

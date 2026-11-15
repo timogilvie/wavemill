@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Golden journey: a native coder that exhausts its wall-clock budget relaunches
+# Golden journey: a native coder that exhausts its model-time budget relaunches
 # through the existing bounded retry, and the records carry the one budget
 # fact (HOK-3362, replaying HOK-3329 attempt 2).
 #
@@ -54,7 +54,7 @@ FEATURE_DIR=""
 remember_feature_dir() { FEATURE_DIR="$(journey_feature_dir "$ISSUE" 2>/dev/null || true)"; [[ -n "$FEATURE_DIR" ]]; }
 budget_decision_recorded() {
   journey_jq_true '.failureKind == "native-stage-timeout" and .class == "retryable"
-    and .budgetExhausted.kind == "wall_clock" and .budgetExhausted.progress.toolCallsExecuted == 230' \
+    and .budgetExhausted.kind == "model_time" and .budgetExhausted.progress.toolCallsExecuted == 230' \
     "$FEATURE_DIR/.coding-failure-decision.json"
 }
 coding_relaunched() { [[ "$(journey_agent_launch_count "$ISSUE" coding)" -ge 2 ]]; }
@@ -86,9 +86,9 @@ journey_assert "exactly two coding launches (one budget stop, one bounded-retry 
 journey_assert "no provider_error / provider-unknown-error anywhere in the feature dir" \
   test "$NO_PROVIDER_ERROR_IN_FEATURE_DIR" = "1"
 journey_assert "the relaunch archived the failed attempt's budget fact in the coding history" \
-  test "$HISTORY_FACT_KIND" = "wall_clock"
-journey_assert "eval record carries budgetExhaustions[0] = coding wall_clock fact" \
-  bash -c 'printf %s "$1" | jq -e ".budgetExhaustions[0] | .stage == \"coding\" and .fact.kind == \"wall_clock\"
+  test "$HISTORY_FACT_KIND" = "model_time"
+journey_assert "eval record carries budgetExhaustions[0] = coding model_time fact" \
+  bash -c 'printf %s "$1" | jq -e ".budgetExhaustions[0] | .stage == \"coding\" and .fact.kind == \"model_time\"
     and .fact.progress.turnsCompleted == 145 and .fact.progress.toolCallsExecuted == 230" >/dev/null' _ "$(eval_record)"
 journey_assert "eval record derives model-fault from the nativeStageTimeSplit derivation, not hardcoded progress counts" \
   bash -c 'printf %s "$1" | jq -e ".budgetExhaustions[0].faultClass == \"model-fault\"" >/dev/null' _ "$(eval_record)"

@@ -1,0 +1,38 @@
+{
+  "chain": "native-harness-hang",
+  "incidents": [],
+  "initialState": {
+    "task": {
+      "issue": "HOK-REPLAY-3382",
+      "slug": "replay-native-harness-hang",
+      "phase": "coding",
+      "status": "working"
+    },
+    "hook": {
+      "state": "working",
+      "event": "PreToolUse",
+      "writer": "agent",
+      "timestamp": 1759900000
+    },
+    "worktreeFiles": {
+      "native-sessions/coding-HOK-REPLAY-3382.jsonl": "{\"seq\":0,\"sessionId\":\"replay\",\"timestamp\":1759900000000,\"type\":\"session_started\",\"model\":\"glm-5.3-flash\",\"api\":\"openrouter\",\"provider\":\"openrouter\"}\n{\"seq\":1,\"sessionId\":\"replay\",\"timestamp\":1759900001000,\"type\":\"turn_started\",\"turnIndex\":0}\n{\"seq\":2,\"sessionId\":\"replay\",\"timestamp\":1759900002000,\"type\":\"assistant_message\",\"model\":\"glm-5.3-flash\",\"stopReason\":\"toolUse\",\"rawContent\":[],\"replayContent\":[],\"redacted\":false}\n{\"seq\":3,\"sessionId\":\"replay\",\"timestamp\":1759900003000,\"type\":\"tool_started\",\"toolCallId\":\"call-hang-1\",\"toolName\":\"run_tests\",\"args\":{}}\n"
+    }
+  },
+  "fault": "native_harness_hang",
+  "failure": {
+    "stage": "coding",
+    "detail": "Interrupted: coding agent settled without a result (harness-hung)",
+    "survivesRelaunches": 0,
+    "harnessHold": {
+      "toolName": "run_tests",
+      "toolCallId": "call-hang-1",
+      "startedAt": "2026-11-15T00:10:00.000Z"
+    },
+    "lastProgressAt": "2026-11-15T00:10:00.000Z"
+  },
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 12,
+    "tickIntervalSeconds": 30
+  }
+}

@@ -97,7 +97,7 @@ interface PlanningOutcomeArtifacts {
   bounds: {
     maxTurns: number;
     maxToolCalls: number;
-    maxWallClockMs: number;
+    maxModelTimeMs: number;
   };
   usage: StageExecutionUsage;
   promptRef: {
@@ -463,7 +463,7 @@ function cleanupReasonForStopReason(stopReason: string): CleanupReason | null {
   if (stopReason === 'aborted') {
     return 'aborted';
   }
-  if (budgetKindForStopReason(stopReason) === 'wall_clock') {
+  if (budgetKindForStopReason(stopReason) === 'model_time') {
     return 'timeout';
   }
   return null;
@@ -512,7 +512,7 @@ function buildPlanningOutcomeArtifacts(input: {
     bounds: {
       maxTurns: input.planningLimits.maxTurns,
       maxToolCalls: input.planningLimits.maxToolCalls,
-      maxWallClockMs: input.planningLimits.maxWallClockMs,
+      maxModelTimeMs: input.planningLimits.maxModelTimeMs,
     },
     usage: buildStageExecutionUsage(input.result, input.providerRoute, { totalCostUsd }),
     promptRef: {

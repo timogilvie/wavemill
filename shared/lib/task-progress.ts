@@ -1428,7 +1428,7 @@ function readExitRecordAt(
  * `WAVEMILL_RUN_DIR/native-sessions/<phase>-<issue>.jsonl` when set, else
  * `<repoDir>/.wavemill/runs/<session>/native-sessions/<phase>-<issue>.jsonl`.
  */
-function resolveNativeSessionPath(opts: TaskProgressGatherOptions, session: string): string | null {
+export function resolveNativeSessionPath(opts: TaskProgressGatherOptions, session: string): string | null {
   if (opts.nativeSessionPath) return opts.nativeSessionPath;
   if (!opts.phase) return null;
   const safeIssue = opts.issue.replace(/[^A-Za-z0-9._-]+/g, '-');

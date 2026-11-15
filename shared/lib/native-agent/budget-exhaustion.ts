@@ -3,7 +3,7 @@
  *
  * "A native stage ran out of budget before finishing" used to reach the
  * records under four different causes depending on the stage and the budget
- * kind: the coding launcher read our own wall-clock abort (`"Request was
+ * kind: the coding launcher read our own model-time abort (`"Request was
  * aborted"`) as `provider_error`, a coding `turn_limit` became
  * `no_completion_artifact`, review mapped four of the five budget reasons to
  * `native-review-timeout` → provider-fault, and planning passed `turn_limit`
@@ -39,24 +39,53 @@ import type { LoopBudget, LoopResult, LoopStopReason } from './loop.ts';
 import type { AgentMessage } from './messages.ts';
 import { formatTimeSplit, type NativeStageTimeSplit } from './stage-time-split.ts';
 
-/** Which configured budget the run exhausted. */
-export type BudgetKind = 'wall_clock' | 'turn' | 'tool_call' | 'token' | 'cost';
+/**
+ * Which configured budget the run exhausted. `model_time` is
+ * model-attributable time only — the loop pauses its clock while a harness
+ * tool executes (HOK-3381/HOK-3382), so a wedged harness never lands here.
+ * `wall_clock` was the pre-rename spelling; `parseBudgetExhaustedFact`
+ * normalizes it on read so appending history stays valid.
+ */
+export type BudgetKind = 'model_time' | 'turn' | 'tool_call' | 'token' | 'cost';
 
-export const BUDGET_KINDS: readonly BudgetKind[] = Object.freeze(['wall_clock', 'turn', 'tool_call', 'token', 'cost']);
+export const BUDGET_KINDS: readonly BudgetKind[] = Object.freeze(['model_time', 'turn', 'tool_call', 'token', 'cost']);
 
 /** The loop stop reasons that mean "a configured runtime budget ran out". */
 export type BudgetStopReason = Extract<
   LoopStopReason,
-  'wall_clock_limit' | 'turn_limit' | 'tool_call_limit' | 'token_limit' | 'cost_limit'
+  'model_time_limit' | 'turn_limit' | 'tool_call_limit' | 'token_limit' | 'cost_limit'
 >;
 
 const KIND_BY_STOP_REASON: Readonly<Record<BudgetStopReason, BudgetKind>> = Object.freeze({
-  wall_clock_limit: 'wall_clock',
+  model_time_limit: 'model_time',
   turn_limit: 'turn',
   tool_call_limit: 'tool_call',
   token_limit: 'token',
   cost_limit: 'cost',
 });
+
+/**
+ * The only place the retired `wall_clock` spellings are accepted. Historical
+ * rows (and the certification artifacts, whose field names are identity-hashed)
+ * still carry them; every reader normalizes here so no other module needs the
+ * legacy names (HOK-3382).
+ */
+// allow-native-harness-deadline: the sole legacy `wall_clock` normalizer; history must keep parsing to `model_time`
+const LEGACY_BUDGET_KIND: Readonly<Record<string, BudgetKind>> = Object.freeze({ wall_clock: 'model_time' });
+// allow-native-harness-deadline: the sole legacy `wall_clock_limit` normalizer, paired with LEGACY_BUDGET_KIND above
+const LEGACY_BUDGET_STOP_REASON: Readonly<Record<string, BudgetStopReason>> = Object.freeze({ wall_clock_limit: 'model_time_limit' });
+
+function normalizeBudgetKind(kind: unknown): BudgetKind | null {
+  if (typeof kind !== 'string') return null;
+  if ((BUDGET_KINDS as readonly string[]).includes(kind)) return kind as BudgetKind;
+  return LEGACY_BUDGET_KIND[kind] ?? null;
+}
+
+function normalizeBudgetStopReason(reason: unknown): BudgetStopReason | null {
+  if (typeof reason !== 'string') return null;
+  if (reason in KIND_BY_STOP_REASON) return reason as BudgetStopReason;
+  return LEGACY_BUDGET_STOP_REASON[reason] ?? null;
+}
 
 /**
  * The one definition of a budget stop (moved here from `recovery.ts`, which
@@ -72,8 +101,14 @@ export function isBudgetStopReason(reason: string | null | undefined): reason is
   return typeof reason === 'string' && BUDGET_STOP_REASONS.has(reason as LoopStopReason);
 }
 
+/**
+ * The budget kind for a stop reason, normalizing the retired
+ * `wall_clock_limit` spelling so a historical row derives the same
+ * (`model_time`) kind as a current one.
+ */
 export function budgetKindForStopReason(reason: string | null | undefined): BudgetKind | null {
-  return isBudgetStopReason(reason) ? KIND_BY_STOP_REASON[reason] : null;
+  const normalized = normalizeBudgetStopReason(reason);
+  return normalized ? KIND_BY_STOP_REASON[normalized] : null;
 }
 
 /**
@@ -139,6 +174,7 @@ type LoopEvidence = Pick<
   | 'totalOutputTokens'
   | 'totalCostUsd'
   | 'wallClockMs'
+  | 'modelTimeMs'
   | 'startedAtMs'
 > & Partial<Pick<LoopResult, 'providerErrorRetries'>>;
 
@@ -165,8 +201,10 @@ function limitAndUsed(
   budget: LoopBudget | undefined,
 ): { limit: number | null; used: number } {
   switch (kind) {
-    case 'wall_clock':
-      return { limit: finiteOrNull(budget?.maxWallClockMs), used: result.wallClockMs };
+    case 'model_time':
+      // The `used` value is the charged model time, never the elapsed wall
+      // clock: a harness tool's time is not part of this budget (HOK-3382).
+      return { limit: finiteOrNull(budget?.maxModelTimeMs), used: result.modelTimeMs };
     case 'turn':
       return { limit: finiteOrNull(budget?.maxTurns), used: result.turnsCompleted };
     case 'tool_call':
@@ -206,8 +244,8 @@ function lastAssistantErrorMessage(messages: readonly AgentMessage[]): string {
  *
  * `extra.transcriptPath`, when given, becomes the fact's `sessionStream`
  * pointer (HOK-3380): `fromMs = result.startedAtMs`, `toMs = fromMs +
- * result.wallClockMs`, the same window the loop's own wall-clock budget
- * measured.
+ * result.wallClockMs`, the same window the loop's own model-time budget
+ * measured (the window is elapsed time; the charged budget is `modelTimeMs`).
  */
 export function budgetExhaustionFromLoop(
   result: LoopEvidence,
@@ -255,7 +293,7 @@ export function finalProviderErrorMessage(result: Pick<LoopResult, 'messages' | 
 }
 
 const KIND_LABEL: Readonly<Record<BudgetKind, string>> = Object.freeze({
-  wall_clock: 'wall-clock',
+  model_time: 'model time',
   turn: 'turn',
   tool_call: 'tool-call',
   token: 'token',
@@ -263,7 +301,7 @@ const KIND_LABEL: Readonly<Record<BudgetKind, string>> = Object.freeze({
 });
 
 function formatAmount(kind: BudgetKind, value: number): string {
-  if (kind === 'wall_clock') return `${Math.round(value / 1000)}s`;
+  if (kind === 'model_time') return `${Math.round(value / 1000)}s`;
   if (kind === 'cost') return `$${value.toFixed(2)}`;
   return String(value);
 }
@@ -323,13 +361,15 @@ export function validateBudgetExhaustedFact(value: unknown, prefix = 'budgetExha
     message: `${field ? `${prefix}.${field}` : prefix} ${message}`,
   });
   if (!isRecord(value)) return fail('', 'must be an object.');
-  if (typeof value.kind !== 'string' || !BUDGET_KINDS.includes(value.kind as BudgetKind)) {
-    return fail('kind', `must be one of: ${BUDGET_KINDS.join(', ')}.`);
-  }
-  if (!isBudgetStopReason(value.stopReason as string)) {
+  // Normalize the retired `wall_clock` / `wall_clock_limit` spellings once,
+  // here, so a historical fact validates and reads exactly like a current one.
+  const kind = normalizeBudgetKind(value.kind);
+  if (!kind) return fail('kind', `must be one of: ${BUDGET_KINDS.join(', ')}.`);
+  const stopReason = normalizeBudgetStopReason(value.stopReason);
+  if (!stopReason) {
     return fail('stopReason', `must be one of: ${[...BUDGET_STOP_REASONS].join(', ')}.`);
   }
-  if (KIND_BY_STOP_REASON[value.stopReason as BudgetStopReason] !== value.kind) {
+  if (KIND_BY_STOP_REASON[stopReason] !== kind) {
     return fail('kind', `does not match stopReason "${String(value.stopReason)}".`);
   }
   if (value.limit !== null && !isNonNegativeNumber(value.limit)) {
@@ -365,7 +405,8 @@ export function validateBudgetExhaustedFact(value: unknown, prefix = 'budgetExha
       return fail('sessionStream', 'must be an object with a non-empty path and non-negative fromMs/toMs when present.');
     }
   }
-  return { ok: true, value: value as unknown as BudgetExhaustedFact };
+  // Return the normalized (current-spelling) fact, never the raw legacy row.
+  return { ok: true, value: { ...(value as unknown as BudgetExhaustedFact), kind, stopReason } };
 }
 
 /** Parse a fact from untrusted input (CLI flag, abort artifact); `null` when absent or invalid. */

@@ -66,6 +66,7 @@ describe('failure-policy guard — one budget-exhaustion outcome (HOK-3362)', ()
   // protects: a stage re-growing its own budget→category switch (review's reviewFailureCategoryForStopReason)
   it('flags a private budget stop-reason switch', () => {
     assert.deepEqual(patternsOf('a.ts', "    case 'wall_clock_limit':\n"), ['private-budget-stop-switch']);
+    assert.deepEqual(patternsOf('a.ts', "    case 'model_time_limit':\n"), ['private-budget-stop-switch']);
     assert.deepEqual(patternsOf('a.ts', "if (stopReason === 'turn_limit') return 'x';\n"), ['private-budget-stop-switch']);
     assert.deepEqual(patternsOf('a.ts', "if ('cost_limit' !== reason) return;\n"), ['private-budget-stop-switch']);
     assert.deepEqual(patternsOf('a.ts', "const B = new Set<LoopStopReason>(['turn_limit', 'token_limit']);\n"), ['private-budget-stop-switch']);

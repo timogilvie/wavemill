@@ -29,6 +29,7 @@ function loopResult(overrides: Partial<LoopResult>): LoopResult {
     totalOutputTokens: 0,
     totalCostUsd: 0,
     wallClockMs: 0,
+    modelTimeMs: 0,
     startedAtMs: 1_000_000,
     promptCache: { turns: 0, inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, hitRate: null } as never,
     ...overrides,
@@ -48,9 +49,11 @@ describe('budget stop reasons', () => {
   it('is exactly the five configured-budget reasons, each with one kind', () => {
     assert.deepEqual(
       [...BUDGET_STOP_REASONS].sort(),
-      ['cost_limit', 'token_limit', 'tool_call_limit', 'turn_limit', 'wall_clock_limit'],
+      ['cost_limit', 'model_time_limit', 'token_limit', 'tool_call_limit', 'turn_limit'],
     );
-    assert.equal(budgetKindForStopReason('wall_clock_limit'), 'wall_clock');
+    assert.equal(budgetKindForStopReason('model_time_limit'), 'model_time');
+    // HOK-3382: the retired spelling still derives the one current kind.
+    assert.equal(budgetKindForStopReason('wall_clock_limit'), 'model_time');
     assert.equal(budgetKindForStopReason('turn_limit'), 'turn');
     assert.equal(budgetKindForStopReason('tool_call_limit'), 'tool_call');
     assert.equal(budgetKindForStopReason('token_limit'), 'token');
@@ -67,9 +70,9 @@ describe('budget stop reasons', () => {
 });
 
 describe('finalProviderErrorMessage', () => {
-  // protects: our own wall-clock abort ("Request was aborted") classified as provider-unknown-error (HOK-3329 attempt 2)
+  // protects: our own model-time abort ("Request was aborted") classified as provider-unknown-error (HOK-3329 attempt 2)
   it('returns empty on a budget stop even when the final turn carries an abort message', () => {
-    assert.equal(finalProviderErrorMessage({ messages: [abortedTurn], stopReason: 'wall_clock_limit' }), '');
+    assert.equal(finalProviderErrorMessage({ messages: [abortedTurn], stopReason: 'model_time_limit' }), '');
     assert.equal(finalProviderErrorMessage({ messages: [abortedTurn], stopReason: 'turn_limit' }), '');
   });
 
@@ -82,23 +85,24 @@ describe('finalProviderErrorMessage', () => {
 
 describe('budgetExhaustionFromLoop', () => {
   // protects: the HOK-3329 attempt-2 handoff losing turns/tool calls or the configured limit
-  it('records wall_clock with limit, used and progress for the HOK-3329 attempt-2 shape', () => {
+  it('records model_time with limit, used and progress for the HOK-3329 attempt-2 shape', () => {
     const fact = budgetExhaustionFromLoop(
       loopResult({
-        stopReason: 'wall_clock_limit',
+        stopReason: 'model_time_limit',
         turnsCompleted: 145,
         toolCallsExecuted: 230,
         wallClockMs: 3_600_000,
+        modelTimeMs: 3_600_000,
         startedAtMs: 1_000_000,
         providerErrorRetries: 0,
         messages: [abortedTurn],
       }),
-      { maxTurns: 200, maxToolCalls: 1200, maxWallClockMs: 3_600_000 },
+      { maxTurns: 200, maxToolCalls: 1200, maxModelTimeMs: 3_600_000 },
       { mutationFailures: 3 },
     );
     assert.deepEqual(fact, {
-      kind: 'wall_clock',
-      stopReason: 'wall_clock_limit',
+      kind: 'model_time',
+      stopReason: 'model_time_limit',
       limit: 3_600_000,
       used: 3_600_000,
       progress: {
@@ -116,8 +120,8 @@ describe('budgetExhaustionFromLoop', () => {
   // protects: HOK-3380 — the budget fact pointing at the wrong transcript window
   it('builds the sessionStream pointer from startedAtMs and wallClockMs when a transcript path is given', () => {
     const fact = budgetExhaustionFromLoop(
-      loopResult({ stopReason: 'wall_clock_limit', wallClockMs: 3_600_000, startedAtMs: 1_000_000 }),
-      { maxWallClockMs: 3_600_000 },
+      loopResult({ stopReason: 'model_time_limit', wallClockMs: 3_600_000, startedAtMs: 1_000_000 }),
+      { maxModelTimeMs: 3_600_000 },
       { transcriptPath: '/tmp/coding-HOK-0000.jsonl' },
     );
     assert.deepEqual(fact?.sessionStream, {
@@ -135,7 +139,7 @@ describe('budgetExhaustionFromLoop', () => {
 
   // protects: limit/used naming the wrong budget for each kind
   it('fills limit/used from the budget that tripped', () => {
-    const budget = { maxTurns: 200, maxToolCalls: 1200, maxWallClockMs: 60_000, maxOutputTokens: 500, maxCostUsd: 2 };
+    const budget = { maxTurns: 200, maxToolCalls: 1200, maxModelTimeMs: 60_000, maxOutputTokens: 500, maxCostUsd: 2 };
     const turn = budgetExhaustionFromLoop(loopResult({ stopReason: 'turn_limit', turnsCompleted: 200 }), budget);
     assert.deepEqual([turn?.kind, turn?.limit, turn?.used], ['turn', 200, 200]);
     const tools = budgetExhaustionFromLoop(loopResult({ stopReason: 'tool_call_limit', toolCallsExecuted: 1190 }), budget);
@@ -149,6 +153,19 @@ describe('budgetExhaustionFromLoop', () => {
     assert.deepEqual([cost?.kind, cost?.limit, cost?.used], ['cost', 2, 2.5]);
     const unbounded = budgetExhaustionFromLoop(loopResult({ stopReason: 'turn_limit', turnsCompleted: 5 }), undefined);
     assert.equal(unbounded?.limit, null);
+  });
+
+  // protects: HOK-3382 — the model-time fact contradicting its own kind by
+  // reporting elapsed (harness-inclusive) time as `used`
+  it('reports charged model time as used, not the elapsed wall clock', () => {
+    const fact = budgetExhaustionFromLoop(
+      loopResult({ stopReason: 'model_time_limit', wallClockMs: 5_000_000, modelTimeMs: 120_000 }),
+      { maxModelTimeMs: 120_000 },
+    );
+    assert.equal(fact?.kind, 'model_time');
+    assert.equal(fact?.used, 120_000);
+    // The progress measurement still records honest elapsed time.
+    assert.equal(fact?.progress.wallClockMs, 5_000_000);
   });
 
   // protects: a non-budget stop producing a budget fact
@@ -202,7 +219,7 @@ describe('validateBudgetExhaustedFact', () => {
     const cases: Array<[unknown, string]> = [
       [null, 'budgetExhausted'],
       [{ ...valid, kind: 'nope' }, 'budgetExhausted.kind'],
-      [{ ...valid, kind: 'wall_clock' }, 'budgetExhausted.kind'],
+      [{ ...valid, kind: 'model_time' }, 'budgetExhausted.kind'],
       [{ ...valid, stopReason: 'error' }, 'budgetExhausted.stopReason'],
       [{ ...valid, limit: -1 }, 'budgetExhausted.limit'],
       [{ ...valid, used: 'x' }, 'budgetExhausted.used'],
@@ -224,6 +241,14 @@ describe('validateBudgetExhaustedFact', () => {
     assert.equal(result.ok, true);
   });
 
+  // protects: HOK-3382 — a historical `wall_clock` fact failing to parse after
+  // the rename, silently dropping rows the fault rule would otherwise classify
+  it('normalizes the retired wall_clock spellings to model_time', () => {
+    const legacy = { ...valid, kind: 'wall_clock', stopReason: 'wall_clock_limit', limit: 3_600_000 };
+    const parsed = parseBudgetExhaustedFact(legacy);
+    assert.deepEqual(parsed, { ...legacy, kind: 'model_time', stopReason: 'model_time_limit' });
+  });
+
   // protects: HOK-3380 — the sessionStream pointer being accepted when well-formed
   it('accepts a well-formed sessionStream pointer', () => {
     const withPointer = { ...valid, sessionStream: { path: '/tmp/coding-X.jsonl', fromMs: 0, toMs: 1000 } };
@@ -241,8 +266,8 @@ describe('validateBudgetExhaustedFact', () => {
 
 describe('runWavemillLoop budget stop (HOK-3329 attempt-2 replay)', () => {
   for (const abortStopReason of ['aborted', 'error'] as const) {
-  // protects: LoopResult.providerError carrying our own wall-clock abort as provider-unknown-error
-  it(`stops on wall_clock_limit with no providerError when the budget aborts an in-flight request (transport stopReason=${abortStopReason})`, async () => {
+  // protects: LoopResult.providerError carrying our own model-time abort as provider-unknown-error
+  it(`stops on model_time_limit with no providerError when the budget aborts an in-flight request (transport stopReason=${abortStopReason})`, async () => {
     let calls = 0;
     const tool = {
       name: 'probe',
@@ -269,7 +294,7 @@ describe('runWavemillLoop budget stop (HOK-3329 attempt-2 replay)', () => {
         stream.push({ type: 'done', reason: 'toolUse', message } as AssistantMessageEvent);
         return stream;
       }
-      // The second request is still in flight when the wall clock fires; the
+      // The second request is still in flight when the model-time clock fires; the
       // provider transport reports the abort exactly as it did on HOK-3329.
       const aborted = { ...base, content: [], stopReason: abortStopReason, errorMessage: 'Request was aborted' } as AssistantMessage;
       stream.push({ type: 'start', partial: aborted });
@@ -284,18 +309,18 @@ describe('runWavemillLoop budget stop (HOK-3329 attempt-2 replay)', () => {
       context: { systemPrompt: 'test', messages: [{ role: 'user', content: 'Go.', timestamp: 0 }], tools: [tool] },
       convertToLlm: (messages) => messages as unknown as Message[],
       streamFn,
-      budget: { maxWallClockMs: 150, maxTurns: 200 },
+      budget: { maxModelTimeMs: 150, maxTurns: 200 },
       providerErrorRetry: { maxAttempts: 0 },
     });
 
-    assert.equal(result.stopReason, 'wall_clock_limit');
+    assert.equal(result.stopReason, 'model_time_limit');
     assert.equal(result.providerError, undefined);
     assert.equal(finalProviderErrorMessage(result), '');
     assert.equal(typeof result.startedAtMs, 'number');
     assert.ok(result.startedAtMs <= Date.now());
     assert.equal(result.providerErrorRetries, 0);
-    const fact = budgetExhaustionFromLoop(result, { maxWallClockMs: 150, maxTurns: 200 });
-    assert.equal(fact?.kind, 'wall_clock');
+    const fact = budgetExhaustionFromLoop(result, { maxModelTimeMs: 150, maxTurns: 200 });
+    assert.equal(fact?.kind, 'model_time');
     assert.equal(fact?.limit, 150);
     assert.equal(fact?.progress.toolCallsExecuted, 1);
   });
