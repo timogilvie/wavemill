@@ -489,7 +489,7 @@ function buildPlanningOutcomeArtifacts(input: {
   modelId: string;
   providerRoute: string;
   planningLimits: ReturnType<typeof resolveNativePlanningLimits>;
-  result: LoopUsageSource;
+  result: LoopUsageSource & { modelTimeMs?: number };
   promptRef: { id: string; version: string };
 }): PlanningOutcomeArtifacts {
   const cache = input.result.promptCache ?? EMPTY_PROMPT_CACHE_SUMMARY;
@@ -514,7 +514,12 @@ function buildPlanningOutcomeArtifacts(input: {
       maxToolCalls: input.planningLimits.maxToolCalls,
       maxModelTimeMs: input.planningLimits.maxModelTimeMs,
     },
-    usage: buildStageExecutionUsage(input.result, input.providerRoute, { totalCostUsd }),
+    usage: {
+      ...buildStageExecutionUsage(input.result, input.providerRoute, { totalCostUsd }),
+      ...(typeof input.result.modelTimeMs === 'number' && Number.isFinite(input.result.modelTimeMs)
+        ? { modelTimeMs: input.result.modelTimeMs }
+        : {}),
+    },
     promptRef: {
       id: input.promptRef.id,
       version: input.promptRef.version,

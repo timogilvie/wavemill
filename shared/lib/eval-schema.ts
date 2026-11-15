@@ -417,6 +417,8 @@ export interface PlanningExecutionUsage {
   turnsCompleted?: number;
   toolCallsExecuted?: number;
   wallClockMs?: number;
+  /** Model-attributable elapsed time, excluding paused harness tool execution. */
+  modelTimeMs?: number;
   totalInputTokens?: number;
   totalOutputTokens?: number;
   totalCostUsd?: number;

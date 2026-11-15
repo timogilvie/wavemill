@@ -115,6 +115,41 @@ describe('buildChallengeStageEval planning execution outcome evidence', () => {
       rmSync(repoDir, { recursive: true, force: true });
     }
   });
+
+  it('does not report model-time exhaustion from elapsed harness time', () => {
+    const slug = 'plan-harness-time';
+    const { repoDir } = setupPlanningResult(slug, {
+      stage: 'planning',
+      status: 'awaiting_user',
+      agent: 'native',
+      model: 'gpt-5.4',
+      artifacts: {
+        type: 'planning',
+        planArtifactValid: true,
+        approvalReady: true,
+        bounds: { maxModelTimeMs: 1_200 },
+        usage: { wallClockMs: 9_000, modelTimeMs: 1_100 },
+      },
+    });
+
+    try {
+      const evalStage = buildChallengeStageEval({
+        repoDir,
+        issueId: 'HOK-3382',
+        branchName: `task/${slug}`,
+        challengeStage: 'plan',
+        record: makeRecord(),
+        stageArtifacts: { planContent: '# Plan\n\n## Phase 1\n- Do the work.\n' },
+      });
+
+      const outcome = evalStage?.evidence.find((item) => item.label === 'planning_execution_outcome');
+      assert.ok(outcome);
+      assert.match(outcome.summary, /modelTimeMs=1100/);
+      assert.doesNotMatch(outcome.summary, /boundsExceeded=model_time/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('buildChallengeStageEval review dismissal evidence (HOK-2932)', () => {

@@ -554,6 +554,7 @@ function toPlanningExecutionOutcome(outcome: PlanningExecutionOutcome): Planning
         ...(isFiniteNonNegativeBudget(outcome.usage.turnsCompleted) ? { turnsCompleted: outcome.usage.turnsCompleted } : {}),
         ...(isFiniteNonNegativeBudget(outcome.usage.toolCallsExecuted) ? { toolCallsExecuted: outcome.usage.toolCallsExecuted } : {}),
         ...(isFiniteNonNegativeBudget(outcome.usage.wallClockMs) ? { wallClockMs: outcome.usage.wallClockMs } : {}),
+        ...(isFiniteNonNegativeBudget(outcome.usage.modelTimeMs) ? { modelTimeMs: outcome.usage.modelTimeMs } : {}),
         ...(isFiniteNonNegativeBudget(outcome.usage.totalInputTokens) ? { totalInputTokens: outcome.usage.totalInputTokens } : {}),
         ...(isFiniteNonNegativeBudget(outcome.usage.totalOutputTokens) ? { totalOutputTokens: outcome.usage.totalOutputTokens } : {}),
         ...(isFiniteNonNegativeBudget(outcome.usage.totalCostUsd) ? { totalCostUsd: outcome.usage.totalCostUsd } : {}),

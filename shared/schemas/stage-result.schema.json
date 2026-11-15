@@ -272,6 +272,11 @@
           "type": "number",
           "minimum": 0
         },
+        "modelTimeMs": {
+          "description": "Model-attributable elapsed time, excluding paused harness tool execution.",
+          "type": "number",
+          "minimum": 0
+        },
         "totalInputTokens": {
           "description": "Uncached input tokens (excludes cache reads and writes).",
           "type": "number",

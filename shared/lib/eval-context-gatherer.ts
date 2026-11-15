@@ -1170,6 +1170,7 @@ function parsePlanningExecutionOutcome(parsed: Record<string, unknown>): Plannin
     ...(isFiniteNonNegativePlanningNumber(usageInput.turnsCompleted) ? { turnsCompleted: usageInput.turnsCompleted } : {}),
     ...(isFiniteNonNegativePlanningNumber(usageInput.toolCallsExecuted) ? { toolCallsExecuted: usageInput.toolCallsExecuted } : {}),
     ...(isFiniteNonNegativePlanningNumber(usageInput.wallClockMs) ? { wallClockMs: usageInput.wallClockMs } : {}),
+    ...(isFiniteNonNegativePlanningNumber(usageInput.modelTimeMs) ? { modelTimeMs: usageInput.modelTimeMs } : {}),
     ...(isFiniteNonNegativePlanningNumber(usageInput.totalInputTokens) ? { totalInputTokens: usageInput.totalInputTokens } : {}),
     ...(isFiniteNonNegativePlanningNumber(usageInput.totalOutputTokens) ? { totalOutputTokens: usageInput.totalOutputTokens } : {}),
     ...(isFiniteNonNegativePlanningNumber(usageInput.totalCostUsd) ? { totalCostUsd: usageInput.totalCostUsd } : {}),

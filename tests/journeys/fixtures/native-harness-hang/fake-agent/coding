@@ -1,5 +1,7 @@
 # shellcheck shell=bash
 # Fake coder for the HOK-3382 golden journey (sourced by tests/fakes/bin/claude).
+# Hand-authored regression fixture; it models a harness hang and is not a
+# production incident replay.
 #
 # First coding launch: a native harness tool wedges. The fixture emulates the
 # native on-disk contract up to the hang — a transcript whose last event is an

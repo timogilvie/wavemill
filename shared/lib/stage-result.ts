@@ -133,6 +133,8 @@ export interface StageExecutionUsage {
   turnsCompleted?: number;
   toolCallsExecuted?: number;
   wallClockMs?: number;
+  /** Model-attributable elapsed time, excluding paused harness tool execution. */
+  modelTimeMs?: number;
   /** Uncached input tokens (excludes cache reads and writes). */
   totalInputTokens?: number;
   totalOutputTokens?: number;
