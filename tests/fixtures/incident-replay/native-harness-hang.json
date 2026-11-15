@@ -1,5 +1,6 @@
 {
   "chain": "native-harness-hang",
+  "provenance": "Hand-authored HOK-3382 regression fixture for a native coding harness hang; no production incident record was available.",
   "incidents": [],
   "initialState": {
     "task": {
