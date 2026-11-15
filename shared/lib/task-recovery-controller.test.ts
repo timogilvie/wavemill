@@ -496,3 +496,33 @@ test('continuations bind their launch and reject completion or stage advancement
     assert.equal(claimRecoveryAction(args).claimed,false,'applied action remains deduplicated');
   } finally { rmSync(dir,{recursive:true,force:true}); }
 });
+
+test('foreign ownership stays fenced until completion or explicit replacement run', async () => {
+  const dir=freshDir();
+  try {
+    const stateFile=join(dir,'workflow-state.json');
+    const state=(runId:string)=>writeFileSync(stateFile,JSON.stringify(buildWorkflowState({'HOK-1':{phase:'coding',runId}})));
+    state('run');
+    const snap=snapshot({attempt:{currentRunId:'run',controlRunId:'run'},stageResult:{kind:'failed'},failure:retryableFailure('proceed')});
+    const args={stateDir:dir,stateFile,issue:'HOK-1',runId:'run',evidenceId:'old-effect',snapshot:snap};
+    const first=await reconcileAndRecover(args);
+    assert.equal(first.claim.claimed,true);
+    if (!first.claim.claimed) throw new Error('missing claim');
+    const old=first.claim.claim;
+    writeFileSync(recoveryClaimPath(dir),JSON.stringify({claim:{...old,owner:{...old.owner!,host:'another-host',pid:process.pid}}}));
+    const held=await reconcileAndRecover({...args,evidenceId:'new-notifier'});
+    assert.equal(held.claim.claimed,false,'a local PID cannot prove foreign ownership dead');
+    writeFileSync(join(dir,'.coding-result.json'),JSON.stringify({stage:'coding',status:'completed',agent:'claude',runId:'run'}));
+    const completed=await reconcileAndRecover({...args,evidenceId:'completion'});
+    assert.equal(completed.decision.action,'consume-advance');
+    assert.equal(completed.claim.claimed,true,'observed completion reconciles the effect');
+    // Restore the uncertain old obligation, then transfer ownership through
+    // a new authoritative run, never a TTL or foreign-PID guess.
+    writeFileSync(recoveryClaimPath(dir),JSON.stringify({claim:{...old,owner:{...old.owner!,host:'another-host'}}}));
+    state('new-run');
+    writeFileSync(join(dir,'.coding-result.json'),JSON.stringify({stage:'coding',status:'failed',agent:'claude',runId:'new-run'}));
+    const next=await reconcileAndRecover({...args,runId:'new-run',snapshot:{...snap,attempt:{currentRunId:'new-run',controlRunId:'new-run'}}});
+    assert.equal(next.claim.claimed,true,'replacement run releases the foreign obligation');
+    assert.equal(await validateRecoveryAction({stateDir:dir,stateFile,issue:'HOK-1',claimId:old.claimId}),false);
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});

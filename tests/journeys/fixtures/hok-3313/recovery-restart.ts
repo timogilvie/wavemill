@@ -82,3 +82,11 @@ try {
   assert.equal(JSON.parse(String(failure.stdout)).valid,false);
 }
 console.log('PASS delayed coding continuation rejected after same-run stage advancement');
+
+// A host/operator handoff uses a new run, not age-based foreign PID reclaim.
+writeFileSync(stateFile,JSON.stringify(buildWorkflowState({'JRN-1':{runId:'replacement-run',phase:'coding'}})));
+writeFileSync(join(dir,'.coding-result.json'),JSON.stringify({stage:'coding',status:'failed',agent:'claude',runId:'replacement-run'}));
+const replacement=invoke({...failed,attempt:{currentRunId:'replacement-run',controlRunId:'replacement-run'}},'replacement-run');
+assert.equal(replacement.claim.claimed,true,'old unacknowledged owner cannot block a new task run');
+assert.equal(replacement.claim.claim.runId,'replacement-run');
+console.log('PASS replacement run supersedes the old unacknowledged recovery owner');

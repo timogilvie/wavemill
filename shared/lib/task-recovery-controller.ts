@@ -1,5 +1,5 @@
 
-import { processStartTime, processAlive, processHost } from './process-identity.ts';
+import { processStartTime, processHost } from './process-identity.ts';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
@@ -9,7 +9,7 @@ import type { BoundedRetryDecision } from './bounded-retry.ts';
 import type { FailureDecision, FailureStage } from './failure-policy.ts';
 import type { StageAgentDisposition } from './stage-agent-disposition.ts';
 import { mutateJsonStateSync } from './state-mutex.ts';
-import { acquireStateLockSync, releaseStateLock } from './state-lock.ts';
+import { acquireStateLockSync, releaseStateLock, isOwnerReclaimable } from './state-lock.ts';
 import { readWorkflowState } from './workflow-state.ts';
 import { readStageResult, stageResultRunIdentity, type StageResult } from './stage-result.ts';
 import { readOwnershipRows } from './session-ownership.ts';
@@ -327,6 +327,14 @@ export function claimRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
   }
 }
 
+// Claims use the same proof of dead ownership as workflow locks. A PID on
+// another host is unverifiable here; time alone never authorizes stealing it.
+function recoveryOwnerReclaimable(claim: RecoveryClaim): boolean {
+  const owner = claim.owner;
+  return isOwnerReclaimable(owner ? {pid:owner.pid,processStartTime:owner.startTime,host:owner.host,
+    acquiredAt:claim.claimedAt,purpose:'task-recovery'} : null);
+}
+
 function claimCurrentRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
   const { decision: dec, runId, evidenceId } = args;
   if (!dec.controlBearing) {
@@ -341,8 +349,7 @@ function claimCurrentRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
     claimPath,
     (current) => {
       const existing = current.claim;
-      const abandoned = existing?.owner && existing.owner.host === processHost()
-        && !processAlive(existing.owner.pid, existing.owner.startTime);
+      const abandoned = existing && recoveryOwnerReclaimable(existing);
       if (existing && !abandoned && existing.outcome !== 'reassess' && sameClaimIdentity(existing, dec.action, dec.stage, runId, evidenceId)) {
         // An identical claim already exists: another notifier won. Keep it.
         outcome = { claimed: false, reason: 'already-claimed', existing };
@@ -472,6 +479,10 @@ export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decisio
     }
     const result = await readStageResult(args.stateDir, snapshot.stage);
     let claim = readRecoveryClaim(args.stateDir);
+    // Only the current run's owner can block its reconciliation. The atomic
+    // claim writer supersedes an earlier run without stealing that run's PID.
+    if (claim && (claim.runId || snapshot.attempt.currentRunId)
+        && !isSameRunId(claim.runId, snapshot.attempt.currentRunId)) claim = null;
     if (result?.status === 'completed' || result?.status === 'awaiting_user') {
       const identity = stageResultRunIdentity(result, snapshot.attempt.currentRunId);
       if (identity === 'stale' || identity === 'unverifiable') {
@@ -495,18 +506,17 @@ export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decisio
     }
     if (claim && !claim.acknowledgedAt && snapshot.disposition?.kind === 'in-flight'
         && snapshot.disposition.evidenceConfidence === 'high' && claim.owner
-        && !processAlive(claim.owner.pid, claim.owner.startTime)) {
+        && recoveryOwnerReclaimable(claim)) {
       // Fresh ownership/liveness proves the dispatched launch took effect.
       // A dead notifier is not a reason to repeat a live agent's work.
       acknowledgeRecoveryAction(args.stateDir, claim.claimId);
       claim = readRecoveryClaim(args.stateDir);
     }
     if (claim && !claim.acknowledgedAt && claim.stage === snapshot.stage && claim.owner
-        && processAlive(claim.owner.pid, claim.owner.startTime) && result?.status !== 'completed' && result?.status !== 'awaiting_user') {
+        && !recoveryOwnerReclaimable(claim) && result?.status !== 'completed' && result?.status !== 'awaiting_user') {
       return { decision: decision(snapshot.stage, 'verify-effect', 'the current recovery executor still owns dispatch'), claim: { claimed: false, reason: 'already-claimed', existing: claim } };
     }
-    if (claim && !claim.acknowledgedAt && claim.owner && claim.owner.host === processHost()
-        && !processAlive(claim.owner.pid, claim.owner.startTime)) {
+    if (claim && !claim.acknowledgedAt && claim.owner && recoveryOwnerReclaimable(claim)) {
       if (result?.status === 'completed' || result?.status === 'awaiting_user') {
         snapshot = { ...snapshot, stageResult: { kind: 'valid', status: result.status }, failure: null };
       } else if ((result?.status === 'running' || !result) && snapshot.disposition?.kind !== 'settled') {

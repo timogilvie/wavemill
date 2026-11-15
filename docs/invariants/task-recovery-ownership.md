@@ -82,3 +82,14 @@ identity. Registration carries the captured run; claims belong to the supervised
 worker process. An older worker cannot occupy the replacement run's slot.
 Stage completions use the shared stage-result run gate, with launch-stamped
 identity preserved by the writer and conservative boundaries for legacy files.
+
+Recovery claims are ownership records, not condition markers or timed leases.
+Owner reclamation uses `state-lock.ts:isOwnerReclaimable`: only a matching
+local host plus dead PID/start-time identity authorizes replay within a run.
+A foreign host cannot be declared dead by inspecting its PID locally or by
+waiting out a timer. An explicit host handoff starts a new task run through
+the existing attempt identity primitive; that new run supersedes the old
+claim and fences its continuations. Fresh current completion still reconciles
+an unacknowledged effect independently of host. Tests cover the foreign-host
+hold, current completion and replacement-run release. No `--expires-on`
+marker can safely substitute for these ownership and run conditions.
