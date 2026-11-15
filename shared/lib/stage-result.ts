@@ -32,6 +32,10 @@ import type { ReviewExecutedIdentitySet } from './challenge-execution-contract.t
 export type { ReviewExecutedIdentitySet, ExecutedIdentity, ExecutedIdentityRole } from './challenge-execution-contract.ts';
 import { isSameRunId, runIdStartedAt } from './attempt-identity.ts';
 import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
+import { acquireStateLockSync, releaseStateLock } from './state-lock.ts';
+import { readWorkflowState } from './workflow-state.ts';
+import { resolveBranchTask } from './pr-task-resolver.ts';
+import { archiveLateStageEvidence } from './task-evidence-archive.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -1271,4 +1275,28 @@ export function stageResultRunIdentity(result: Pick<StageResult, 'runId' | 'star
   const started = Date.parse(result.startedAt);
   if (boundary === null || !Number.isFinite(started)) return 'unverifiable';
   return started < boundary ? 'stale' : 'current';
+}
+
+/** Serialize publication with task replacement. Stale evidence belongs to the
+ * archive, never the current result, even when the notifier captured an old run. */
+export async function withStageResultRunFence(input: {
+  featureDir: string; result: StageResult; repoDir?: string; branchName?: string | null;
+}, publish: () => Promise<void>): Promise<void> {
+  if (!input.repoDir || !input.branchName) { await publish(); return; }
+  const stateFile = path.join(input.repoDir, '.wavemill', 'workflow-state.json');
+  // Standalone artifact writers have no registered workflow identity.
+  if (!readWorkflowState(stateFile)) { await publish(); return; }
+  const lock = acquireStateLockSync(stateFile, {purpose:'publish-stage-result'});
+  try {
+    const state = readWorkflowState(stateFile);
+    const resolved = state && resolveBranchTask(input.branchName, state, {site:'stage-result.publish-run'});
+    const location = resolved?.location;
+    if (location && path.resolve(location.featureDir) === path.resolve(input.featureDir)
+        && input.result.runId && location.task.runId && !isSameRunId(input.result.runId,location.task.runId)) {
+      archiveLateStageEvidence({issueId:location.taskId,slug:location.slug,repoDir:input.repoDir,
+        worktreeDir:location.worktree,runId:input.result.runId,result:input.result});
+      return;
+    }
+    await publish();
+  } finally { releaseStateLock(lock); }
 }

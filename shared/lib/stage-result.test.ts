@@ -7,6 +7,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -1521,8 +1522,13 @@ describe('stage result task-run identity', () => {
         const args=command==='write' ? ['write',fd,'coding','completed'] : ['update',fd,'coding','--status','completed'];
         execFileSync(process.execPath,['tools/stage-result-cli.ts',...args],{cwd:process.cwd(),env:{...env,WAVEMILL_EXPECTED_RUN_ID:'HOK-1=original-run'}});
         const late=await readStageResult(fd,'coding');
-        assert.equal(late?.runId,'original-run',command+' cannot relabel old completion with replacement identity');
-        assert.equal(stageResultRunIdentity(late!,'replacement-run'),'stale');
+        assert.equal(late?.runId,'replacement-run',command+' preserves replacement launch');
+        assert.equal(late?.status,'running');
+        const key=createHash('sha256').update('original-run').digest('hex');
+        const archived=JSON.parse(await fs.readFile(path.join(fd,'.stale-artifacts','late-results',key,'.coding-result.json'),'utf8'));
+        assert.equal(archived.runId,'original-run');
+        assert.equal(archived.status,'completed');
+        assert.equal(stageResultRunIdentity(archived,'replacement-run'),'stale');
       }
     } finally {await fs.rm(repo,{recursive:true,force:true});}
   });

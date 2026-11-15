@@ -26,6 +26,7 @@ import {
   isValidStage,
   isValidStatus,
   executionTruthFields,
+  withStageResultRunFence,
 } from '../shared/lib/stage-result.ts';
 import type {
   StageResult,
@@ -396,12 +397,14 @@ async function main(): Promise<void> {
       ...(existing?.history?.length ? { history: existing.history } : {}),
     };
 
-    if (subcommand === 'write-with-history') {
-      await writeStageResultWithHistory(featureDir, stage, result);
-    } else {
-      await writeStageResult(featureDir, result);
-    }
-    await mergeReviewIdentity(featureDir, stage);
+    await withStageResultRunFence({featureDir, result, ...ctx}, async () => {
+      if (subcommand === 'write-with-history') {
+        await writeStageResultWithHistory(featureDir, stage, result);
+      } else {
+        await writeStageResult(featureDir, result);
+      }
+      await mergeReviewIdentity(featureDir, stage);
+    });
     return;
   }
 
@@ -477,8 +480,12 @@ async function main(): Promise<void> {
       patch.finishedAt = new Date().toISOString();
     }
 
-    await updateStageResult(featureDir, stage, patch);
-    await mergeReviewIdentity(featureDir, stage);
+    const ctx = evidenceContext(featureDir, stage);
+    const result = {...existing, ...patch, stage, status} as StageResult;
+    await withStageResultRunFence({featureDir, result, ...ctx}, async () => {
+      await updateStageResult(featureDir, stage, patch);
+      await mergeReviewIdentity(featureDir, stage);
+    });
     return;
   }
 
