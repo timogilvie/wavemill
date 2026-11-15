@@ -195,6 +195,14 @@ check_eq "the transition error spends no retry budget" "$(bounded_retry_count "$
 check_eq "the transition error never runs update-from-base" "$(wc -l < "$UPDATE_CALLS_FILE" | tr -d ' ')" "0"
 check_eq "the transition error launches nothing" "$(wc -l < "$LAUNCH_CALLS_FILE" | tr -d ' ')" "0"
 
+# A green sibling cannot convert an operator-repair obligation into retirement.
+TERMINALIZE_RC=0
+out="$(act)"
+check_eq "transition code failure still requires repair with a green sibling" "$out" "rc=1"
+check_eq "operator repair never calls challenge retirement" "$(wc -l < "$TERMINALIZE_CALLS_FILE" | tr -d ' ')" "0"
+check_contains "operator repair retains its typed escalation basis" "$(cat "$STATUS_LOG")" "$HOK_3361_DETAIL"
+TERMINALIZE_RC=1
+
 # ── Base drift runs update-from-base before anything else (HOK-3092) ────
 TRY_UPDATE_RESULT="updated"
 write_failed_result '{"stage":"ready","status":"failed","agent":"claude","artifacts":{"verdict":"fail","mergeConflict":"CONFLICTED"}}'

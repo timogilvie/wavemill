@@ -12091,7 +12091,7 @@ _execute_recovery_escalation() {
   basis="$(jq -r '.decision.escalationBasis.code // .decision.escalationBasis.decisionClass // empty' <<<"$recovery")"
   message="$(jq -r '.decision.rationale + ": " + (.failure.detail // "")' <<<"$recovery")"
   head="$(phase_launch_head "$state_dir")"
-  if [[ "$stage" == "ready" ]]; then
+  if [[ "$stage" == "ready" && "$kind" != "operator-decision" ]]; then
     pr="$(pass_task_field "$issue" pr)"
     ready_exhausted_challenge_terminalize "$issue" "$pr" "$state_dir" "$win" && return 0
   fi
