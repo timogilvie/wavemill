@@ -277,6 +277,8 @@ export interface RecoveryClaim {
   claimedAt: string;
     claimId: string;
   acknowledgedAt?: string;
+  outcome?: 'applied' | 'reassess';
+  condition?: { phase: string | null; startedAt: string | null; resultStage?: FailureStage };
   owner?: { pid: number; startTime: string; host: string };
 }
 
@@ -290,6 +292,7 @@ export interface ClaimRecoveryArgs {
     stateFile?: string;
   issue?: string;
   ownerPid?: number;
+  condition?: RecoveryClaim['condition'];
 }
 
 export type ClaimResult =
@@ -313,11 +316,12 @@ export function claimRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
   try {
     const task = readWorkflowState(args.stateFile)?.tasks?.[args.issue ?? ''];
     if (!task || ((task.runId != null || args.runId != null) && !isSameRunId(task.runId, args.runId))) return { claimed: false, reason: 'stale-run' };
+    if (args.condition?.phase && args.condition.phase !== task.phase) return { claimed: false, reason: 'stale-run' };
     if (isSettled(task)) return { claimed: false, reason: 'settled-attempt' };
     // This synchronous call completes its claim-file mutation before finally
     // releases the authoritative workflow lock. Task replacement/settlement
     // writers use that same lock; no validation-to-claim gap exists.
-    return claimCurrentRecoveryAction(args);
+    return claimCurrentRecoveryAction({ ...args, condition: args.condition ?? { phase: task.phase ?? null, startedAt: null } });
   } finally {
     releaseStateLock(lock);
   }
@@ -339,7 +343,7 @@ function claimCurrentRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
       const existing = current.claim;
       const abandoned = existing?.owner && existing.owner.host === processHost()
         && !processAlive(existing.owner.pid, existing.owner.startTime);
-      if (existing && !abandoned && sameClaimIdentity(existing, dec.action, dec.stage, runId, evidenceId)) {
+      if (existing && !abandoned && existing.outcome !== 'reassess' && sameClaimIdentity(existing, dec.action, dec.stage, runId, evidenceId)) {
         // An identical claim already exists: another notifier won. Keep it.
         outcome = { claimed: false, reason: 'already-claimed', existing };
         return current;
@@ -359,6 +363,7 @@ function claimCurrentRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
         stage: dec.stage,
         runId: runId ?? null,
         evidenceId,
+        ...(args.condition ? { condition: args.condition } : {}),
         claimedAt: now.toISOString(),
         claimId,
         owner: { pid: args.ownerPid ?? process.pid, startTime: processStartTime(args.ownerPid ?? process.pid), host: processHost() },
@@ -371,14 +376,37 @@ function claimCurrentRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
   return outcome;
 }
 
-export function acknowledgeRecoveryAction(stateDir: string, claimId: string, now = new Date()): boolean {
+export function acknowledgeRecoveryAction(stateDir: string, claimId: string, now = new Date(), outcome: 'applied' | 'reassess' = 'applied'): boolean {
   let acknowledged = false;
   mutateJsonStateSync<{ claim?: RecoveryClaim }>(recoveryClaimPath(stateDir), current => {
     if (current.claim?.claimId !== claimId) return current;
     acknowledged = true;
-    return { ...current, claim: { ...current.claim, acknowledgedAt: now.toISOString() } };
+    return { ...current, claim: { ...current.claim, acknowledgedAt: now.toISOString(), outcome } };
   }, { createIfMissing: true, initial: {} });
   return acknowledged;
+}
+
+/** Validate a continuation against authoritative stage state after any wait.
+ * Binding is restricted to the running result this claim just prepared. */
+export async function validateRecoveryAction(args: { stateDir: string; stateFile: string; issue: string; claimId: string; bindResult?: boolean; resultStage?: FailureStage }): Promise<boolean> {
+  const lock = acquireStateLockSync(args.stateFile, { purpose: 'validate-recovery-continuation' });
+  try {
+    const task = readWorkflowState(args.stateFile)?.tasks?.[args.issue];
+    const claim = readRecoveryClaim(args.stateDir);
+    if (!task || !claim || claim.claimId !== args.claimId || claim.acknowledgedAt || isSettled(task)) return false;
+    if ((task.runId || claim.runId) && !isSameRunId(task.runId, claim.runId)) return false;
+    if (claim.condition?.phase && task.phase !== claim.condition.phase) return false;
+    const result = await readStageResult(args.stateDir, args.resultStage ?? claim.condition?.resultStage ?? claim.stage);
+    if (result?.status === 'completed' || result?.status === 'awaiting_user') return false;
+    if (args.bindResult) {
+      if (result?.status !== 'running') return false;
+      mutateJsonStateSync<{claim?: RecoveryClaim}>(recoveryClaimPath(args.stateDir), state => {
+        if (state.claim?.claimId === args.claimId) state.claim.condition = { phase: task.phase ?? null, startedAt: result.startedAt ?? null, resultStage: args.resultStage ?? claim.stage };
+        return state;
+      });
+    } else if (claim.condition?.startedAt && result?.startedAt !== claim.condition.startedAt) return false;
+    return true;
+  } finally { releaseStateLock(lock); }
 }
 
 export function readRecoveryClaim(stateDir: string, claimPath?: string): RecoveryClaim | null {
@@ -419,8 +447,10 @@ export function recordRecoveryAction(
 
 export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decision'> & { snapshot: RecoverySnapshot }): Promise<{ decision: RecoveryDecision; claim: ClaimResult }> {
   let snapshot = args.snapshot;
+  let observedPhase: string | null = null;
   if (args.stateFile) {
     const current = readWorkflowState(args.stateFile)?.tasks?.[args.issue ?? snapshot.issue];
+    observedPhase = current?.phase ?? null;
     snapshot = { ...snapshot, attempt: { ...snapshot.attempt, currentRunId: current?.runId ?? null } };
     if (snapshot.attempt.currentRunId && snapshot.attempt.controlRunId
         && !isSameRunId(snapshot.attempt.currentRunId, snapshot.attempt.controlRunId)) {
@@ -436,6 +466,9 @@ export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decisio
         stage: snapshot.stage, action: selected.action, runId: args.runId, evidenceId: args.evidenceId,
         rationale: selected.rationale, evidence: { snapshot, stageResult: snapshot.evidence?.stageResult ?? null, ownership: readOwnershipRows(args.stateDir) } });
       return { decision: selected, claim: { claimed: false, reason: 'stale-run' } };
+    }
+    if (current?.phase && ['planning','coding','review','ready'].includes(current.phase) && current.phase !== snapshot.stage) {
+      return { decision: decision(snapshot.stage, 'reject-stale-control', 'task advanced beyond the notified stage'), claim: { claimed: false, reason: 'stale-run' } };
     }
     const result = await readStageResult(args.stateDir, snapshot.stage);
     let claim = readRecoveryClaim(args.stateDir);
@@ -457,16 +490,20 @@ export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decisio
     } else if (result?.status === 'running') {
       snapshot = { ...snapshot, stageResult: { kind: 'running' }, failure: null };
     }
-    if (claim && !claim.acknowledgedAt && result?.finishedAt
-        && Date.parse(result.finishedAt) >= Date.parse(claim.claimedAt)) {
+    if (claim && !claim.acknowledgedAt && result?.status === 'completed') {
       acknowledgeRecoveryAction(args.stateDir, claim.claimId);
     }
     if (claim && !claim.acknowledgedAt && snapshot.disposition?.kind === 'in-flight'
-        && snapshot.disposition.evidenceConfidence === 'high') {
+        && snapshot.disposition.evidenceConfidence === 'high' && claim.owner
+        && !processAlive(claim.owner.pid, claim.owner.startTime)) {
       // Fresh ownership/liveness proves the dispatched launch took effect.
       // A dead notifier is not a reason to repeat a live agent's work.
       acknowledgeRecoveryAction(args.stateDir, claim.claimId);
       claim = readRecoveryClaim(args.stateDir);
+    }
+    if (claim && !claim.acknowledgedAt && claim.stage === snapshot.stage && claim.owner
+        && processAlive(claim.owner.pid, claim.owner.startTime) && result?.status !== 'completed' && result?.status !== 'awaiting_user') {
+      return { decision: decision(snapshot.stage, 'verify-effect', 'the current recovery executor still owns dispatch'), claim: { claimed: false, reason: 'already-claimed', existing: claim } };
     }
     if (claim && !claim.acknowledgedAt && claim.owner && claim.owner.host === processHost()
         && !processAlive(claim.owner.pid, claim.owner.startTime)) {
@@ -481,7 +518,7 @@ export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decisio
     }
   }
   const selected = decideTaskRecovery(snapshot);
-  return { decision: selected, claim: claimRecoveryAction({ ...args, decision: selected }) };
+  return { decision: selected, claim: claimRecoveryAction({ ...args, decision: selected, condition: args.stateFile ? {phase: observedPhase, startedAt: snapshot.evidence?.stageResult?.startedAt ?? null} : args.condition }) };
 }
 
 export async function runControllerCli(): Promise<void> {
@@ -492,9 +529,15 @@ export async function runControllerCli(): Promise<void> {
   const stateDir = flag('--state-dir');
   const evidenceId = flag('--evidence-id');
   const snapshotPath = flag('--snapshot');
-  if (!stateDir || (!flag('--ack') && !flag('--disposition') && (!evidenceId || !snapshotPath))) {
+  if (!stateDir || (!flag('--ack') && !flag('--validate') && !flag('--disposition') && (!evidenceId || !snapshotPath))) {
     process.stderr.write('task-recovery-controller: usage: --state-dir DIR --evidence-id ID --snapshot FILE\n');
     process.exitCode = 2;
+    return;
+  }
+  if (flag('--validate')) {
+    const valid = await validateRecoveryAction({stateDir, stateFile: flag('--state-file') ?? '', issue: flag('--issue') ?? '', claimId: flag('--validate')!, bindResult: process.argv.includes('--bind-result'), resultStage: flag('--stage') as FailureStage | undefined});
+    process.stdout.write(`${JSON.stringify({valid})}\n`);
+    if (!valid) process.exitCode = 3;
     return;
   }
   const dispositionJson = flag('--disposition');
@@ -521,7 +564,7 @@ export async function runControllerCli(): Promise<void> {
   }
   const ack = flag('--ack');
   if (ack) {
-    process.stdout.write(`${JSON.stringify({ acknowledged: acknowledgeRecoveryAction(stateDir, ack) })}\n`);
+    process.stdout.write(`${JSON.stringify({ acknowledged: acknowledgeRecoveryAction(stateDir, ack, new Date(), flag('--outcome') === 'reassess' ? 'reassess' : 'applied') })}\n`);
     return;
   }
   if (!snapshotPath || !evidenceId) return;

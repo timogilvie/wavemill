@@ -204,6 +204,7 @@ for fn in \
   native_stage_failure_envelope_json \
   stage_failure_decision \
   stage_failure_owned_by_bucket \
+  _recovery_continuation_current \
   _maybe_retry_failed_stage_now \
   _dispatch_failed_stage_recovery \
   _execute_recovery_escalation \

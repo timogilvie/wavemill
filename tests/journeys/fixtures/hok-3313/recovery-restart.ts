@@ -63,3 +63,20 @@ assert.equal(escalation.claim.claimed,true);
 assert.equal(ack(escalation.claim.claim.claimId).acknowledged,true);
 assert.equal(invoke(exhausted,'spent-budget').claim.claimed,false);
 console.log('PASS recovery across restarted CLI processes: human hold, background work, Observer off, applied effect, true exhaustion');
+
+// Exact failure shape from CI 43647719528 at 26df9903: an old coding
+// continuation wakes after Ready, without a new task-run identity.
+writeFileSync(stateFile, JSON.stringify(buildWorkflowState({'JRN-1':{runId:'recovery-run',phase:'coding'}})));
+const delayed=invoke(failed,'delayed-stage-barrier');
+assert.equal(delayed.claim.claimed,true);
+writeFileSync(stateFile, JSON.stringify(buildWorkflowState({'JRN-1':{runId:'recovery-run',phase:'ready'}})));
+try {
+  execFileSync(process.execPath,['--import','tsx',join(root,'tools/task-recovery-controller.ts'),
+    '--state-dir',dir,'--state-file',stateFile,'--issue','JRN-1','--validate',delayed.claim.claim.claimId],{cwd:root,encoding:'utf8'});
+  assert.fail('stale continuation accepted');
+} catch (error) {
+  const failure=error as {status?:number;stdout?:string};
+  assert.equal(failure.status,3);
+  assert.equal(JSON.parse(String(failure.stdout)).valid,false);
+}
+console.log('PASS delayed coding continuation rejected after same-run stage advancement');

@@ -63,6 +63,7 @@ for fn in \
   stage_failure_decision \
   phase_launch_head \
   phase_launch_base \
+  _recovery_continuation_current \
   _maybe_retry_failed_stage_now \
   _monitor_claim_failed_stage_action \
   _dispatch_failed_stage_recovery \

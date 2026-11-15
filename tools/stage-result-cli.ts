@@ -338,7 +338,7 @@ async function main(): Promise<void> {
 
     // Check if there's an existing file to preserve startedAt
     const existing = await readStageResult(featureDir, stage);
-    const startedAt = writeFlags['started-at'] ?? existing?.startedAt ?? now;
+    const startedAt = writeFlags['started-at'] ?? (subcommand === 'write-with-history' ? now : existing?.startedAt ?? now);
     const finishedAt = writeFlags['finished-at'] ?? (isTerminal ? now : null);
 
     let artifacts: StageArtifacts | undefined;

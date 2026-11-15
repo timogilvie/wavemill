@@ -176,6 +176,8 @@ describe('writeStageResult and readStageResult', () => {
       cwd: process.cwd(),
       encoding: 'utf-8',
     });
+    const relaunched = await readStageResult(testDir, 'coding');
+    assert.notEqual(relaunched?.startedAt, failed.startedAt, 'relaunch stamps a new launch identity');
     execFileSync(process.execPath, ['tools/stage-result-cli.ts', 'write', testDir, 'coding', 'completed', '--agent', 'native', '--model', 'glm-5.2'], {
       cwd: process.cwd(),
       encoding: 'utf-8',
@@ -183,6 +185,7 @@ describe('writeStageResult and readStageResult', () => {
 
     const read = await readStageResult(testDir, 'coding');
     assert.equal(read?.status, 'completed');
+    assert.equal(read?.startedAt, relaunched?.startedAt, 'completion preserves the new launch identity');
     assert.equal(read?.history?.length, 1);
     assert.equal(read?.history?.[0].status, 'failed');
   });

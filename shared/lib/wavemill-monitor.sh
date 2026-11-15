@@ -4574,6 +4574,17 @@ _stage_disposition_act() {
   return 0
 }
 
+# A recovery claim is rechecked after waits, using the controller's
+# authoritative state reader rather than the worker's cached pass snapshot.
+_recovery_continuation_current() {
+  [[ -n "${recovery_claim_id:-}" ]] || return 0
+  if ! wavemill_run_tool task-recovery-controller.ts --state-dir "$recovery_state_dir" \
+      --state-file "$STATE_FILE" --issue "$recovery_issue" --validate "$recovery_claim_id" "$@" >/dev/null; then
+    recovery_cancelled=true
+    return 1
+  fi
+}
+
 _task_recovery_job_run() {
   local recovery_control_run_id="$1" handler="$2" rc=0 recovery_owner_pid="$BASHPID"
   shift 2
@@ -8451,6 +8462,7 @@ _dispatch_failed_stage_recovery() {
   [[ -n "$(stage_result_field "$feature_dir" "$stage" "agent")" ]] || return 1
   ! stage_failure_owned_by_bucket "$feature_dir" "$stage" || return 1
 
+  [[ -z "${recovery_claim_id:-}" ]] || _recovery_continuation_current || return 2
   decision="$5"
   failure_class="$(jq -r '.class' <<<"$decision")"
   failure_kind="$(jq -r '.failureKind' <<<"$decision")"
@@ -8491,9 +8503,10 @@ _dispatch_failed_stage_recovery() {
   # Coding has already crossed plan approval. Replay its persisted contract;
   # failure to launch must never run the planning-overreach guard on its edits.
   if [[ "$stage" == "coding" ]]; then
-    if _stage_failure_coding_relaunch "$issue" "$feature_dir" "$win" "$failure_kind" "$failure_class" "$attempts" "$limit" "$fresh"; then
-      return 0
-    fi
+    local coding_rc=0
+    _stage_failure_coding_relaunch "$issue" "$feature_dir" "$win" "$failure_kind" "$failure_class" "$attempts" "$limit" "$fresh" || coding_rc=$?
+    [[ "$coding_rc" != 0 ]] || return 0
+    [[ "$coding_rc" != 2 ]] || return 2
     write_stage_result "$feature_dir" coding failed \
       "$(stage_result_field "$feature_dir" coding agent)" \
       "$(resolve_stage_result_model "$feature_dir" coding "")" "$detail"
@@ -8546,7 +8559,7 @@ _monitor_claim_failed_stage_action() {
   run_id="${recovery_control_run_id:-$(task_run_id "$issue" 2>/dev/null || true)}"
   evidence_id="$(jq -r '.fingerprint // empty' <<<"$decision_json" 2>/dev/null || true)"
   [[ -n "$evidence_id" ]] || evidence_id="${stage}:${head:-unknown}:${run_id:-legacy}"
-  evidence_id+=":$(bounded_retry_count "$feature_dir" "stage-failure-$stage"):$(jq -r '.siblingGreen // false' <<<"$context")"
+
   if [[ "$stage" == "coding" ]]; then
     if jq -e '.ok == true' <<<"$(recovery_contract_json "$issue" "$feature_dir" coding)" >/dev/null 2>&1; then
       contract_available=true
@@ -8557,6 +8570,7 @@ _monitor_claim_failed_stage_action() {
 
   original_result="$(read_stage_result "$feature_dir" "$stage" 2>/dev/null || true)"
   [[ -n "$original_result" ]] || original_result=null
+  evidence_id+=":$head:$base:$(jq -r '.startedAt // ""' <<<"$original_result"):$(jq -r '.finishedAt // ""' <<<"$original_result"):$(jq -c '{baseDrift:(.baseDrift // false),source:(.source // "ci"),siblingGreen:(.siblingGreen // false),baseUpdateOutcome}' <<<"$context")"
   snapshot_file="$(mktemp "${TMPDIR:-/tmp}/wavemill-recovery.XXXXXX")" || return 1
   jq -cn --arg issue "$issue" --arg stage "$stage" --arg runId "$run_id" \
     --arg evidenceId "$evidence_id" --arg retry "$retry_verdict" --argjson failure "$decision_json" \
@@ -8592,7 +8606,8 @@ maybe_retry_failed_stage() {
 
 _maybe_retry_failed_stage_now() {
   local issue="$1" feature_dir="$2" stage="$3" win="$4"
-  local recovery action claim_id failure rc=0
+  local recovery action claim_id failure rc=0 recovery_claim_id recovery_state_dir="$feature_dir" recovery_issue="$issue" recovery_cancelled=false
+  local recovery_base_update_outcome=""
   recovery="$(_monitor_claim_failed_stage_action "$issue" "$feature_dir" "$stage" "${5:-}")" || return 2
   action="$(jq -r '.decision.action' <<<"$recovery")"
   if [[ "$(jq -r '.claim.claimed' <<<"$recovery")" != "true" ]]; then
@@ -8600,6 +8615,7 @@ _maybe_retry_failed_stage_now() {
     return 2
   fi
   claim_id="$(jq -r '.claim.claim.claimId' <<<"$recovery")"
+  recovery_claim_id="$claim_id"
   failure="$(jq -c '.failure' <<<"$recovery")"
   local -x WAVEMILL_EXPECTED_RUN_ID
   WAVEMILL_EXPECTED_RUN_ID="$issue=$(jq -r '.claim.claim.runId // empty' <<<"$recovery")"
@@ -8608,6 +8624,14 @@ _maybe_retry_failed_stage_now() {
     remediate)
       if [[ "$(jq -r '.decision.nextAction' <<<"$recovery")" == "update-base" ]]; then
         _ready_failure_update_base "$issue" "$feature_dir" "$win" || rc=$?
+        if [[ "$rc" == "3" ]]; then
+          wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" --ack "$claim_id" --outcome reassess >/dev/null
+          local fallback_context prior_context="${5:-}"
+          [[ -n "$prior_context" ]] || prior_context='{}'
+          fallback_context="$(jq -cn --argjson failure "$failure" --argjson prior "$prior_context" --arg observed "$recovery_base_update_outcome" '$prior + {failure:$failure,baseDrift:false,baseUpdateOutcome:$observed}')"
+          _maybe_retry_failed_stage_now "$issue" "$feature_dir" "$stage" "$win" "$fallback_context"
+          return $?
+        fi
       else
         _dispatch_failed_stage_recovery "$issue" "$feature_dir" "$stage" "$win" "$failure" "$action" || rc=$?
       fi
@@ -8615,7 +8639,9 @@ _maybe_retry_failed_stage_now() {
     escalate) _execute_recovery_escalation "$issue" "$feature_dir" "$stage" "$win" "$recovery" || rc=$? ;;
     *) rc=2 ;;
   esac
-  wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" --ack "$claim_id" >/dev/null
+  local outcome=applied
+  [[ "$rc" == "0" && "$recovery_cancelled" != true ]] || outcome=reassess
+  wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" --ack "$claim_id" --outcome "$outcome" >/dev/null
   return "$rc"
 }
 
@@ -8667,10 +8693,14 @@ _stage_failure_coding_relaunch() {
   [[ -n "$depth" ]] || depth="medium"
 
   if ! _prepare_recovery_phase_launch "$issue" "$slug" "coding" "$feature_dir" "$worktree" "$agent" "$model" "$contract_payload"; then
+    [[ "${recovery_cancelled:-false}" != true ]] || return 2
     return 1
   fi
+  [[ -z "${recovery_claim_id:-}" ]] || _recovery_continuation_current --bind-result --stage coding || return 2
   launch_coding_phase "$issue" "$slug" "$title" "$worktree" "$branch" "$BASE_BRANCH" \
     "$model" "$agent" "$depth" || rc=$?
+  [[ "$rc" != "2" ]] || return 2
+  [[ -z "${recovery_claim_id:-}" ]] || _recovery_continuation_current || return 2
   if [[ "$rc" -ne 0 ]]; then
     log_warn "$issue → coding stage-failure relaunch: launch failed (rc=$rc)"
     return 1
@@ -9968,6 +9998,7 @@ _prepare_recovery_phase_launch() {
   local agent="$6" model="$7" contract_payload="$8" lifecycle_phase="${9:-}"
   local result_write_mode="${10:-write-result}"
   local win contract_title resolved_window artifacts_json=""
+  [[ -z "${recovery_claim_id:-}" ]] || _recovery_continuation_current || return 2
 
   # Every coding recovery consumes the prior attempt's handoff artifacts.
   # Durable mutation provenance is deliberately outside that archive set.
@@ -10002,6 +10033,7 @@ _prepare_recovery_phase_launch() {
     fi
   fi
 
+  [[ -z "${recovery_claim_id:-}" ]] || _recovery_continuation_current --bind-result --stage "$phase" || return 2
   if ! configure_agent_hooks "$agent" "$wt_dir" "$REPO_DIR"; then
     log_warn "$issue → failed to configure hooks for recovered $phase stage"
     return 1
@@ -10311,6 +10343,7 @@ _launch_agent_in_pane() {
     return "$prepare_rc"
   fi
 
+  [[ -z "${recovery_claim_id:-}" ]] || _recovery_continuation_current || return 2
   tmux send-keys -t "$target" \
     "export WAVEMILL_SESSION='$esc_session' WAVEMILL_ISSUE='$esc_issue' WAVEMILL_LINEAR_ISSUE='$esc_linear_issue' WAVEMILL_SLUG='$esc_slug' WAVEMILL_FEATURE_SLUG='$esc_slug' WAVEMILL_FEATURE_DIR='$feature_dir' WAVEMILL_CHALLENGE_VARIED_STAGE='$esc_varied_stage' WAVEMILL_CHALLENGE_VARIED_MODEL='$esc_varied_model'" C-m
 
@@ -12031,8 +12064,8 @@ _ready_failure_update_base() {
         return 1
         ;;
       not-behind|error:*)
-        # The drift precondition was wrong or the merge could not run; the
-        # recorded cause still needs its classification below.
+        recovery_base_update_outcome="$upd_result"
+        return 3
         ;;
     esac
 }

@@ -49,6 +49,7 @@ extract_function() {
 }
 
 for fn in \
+  read_stage_result \
   phase_launch_head \
   phase_launch_base \
   native_hook_terminal_failure_detail \
@@ -56,6 +57,7 @@ for fn in \
   native_stage_failure_envelope_json \
   stage_failure_decision \
   stage_failure_owned_by_bucket \
+  _recovery_continuation_current \
   _maybe_retry_failed_stage_now \
   _monitor_claim_failed_stage_action \
   _dispatch_failed_stage_recovery \
@@ -106,11 +108,13 @@ cleanup_quarantined_no_pr_challenge_arm() { CLEANUP_CALLS+="$1|$3|$4"$'\n'; retu
 stage_result_field() {
   jq -r --arg f "$3" '.[$f] // empty' "$1/.${2}-result.json" 2>/dev/null || true
 }
+RESULT_SERIAL=0
 write_stage_result() {
   local feature_dir="$1" stage="$2" status="$3" agent="${4:-}" model="${5:-}" notes="${6:-}"
+  RESULT_SERIAL=$((RESULT_SERIAL + 1))
   mkdir -p "$feature_dir"
-  jq -n --arg stage "$stage" --arg status "$status" --arg agent "$agent" --arg model "$model" --arg notes "$notes" \
-    '{stage:$stage,status:$status,agent:$agent,model:$model,notes:$notes}' > "$feature_dir/.${stage}-result.json"
+  jq -n --arg startedAt "2026-11-15T00:00:$(printf "%02d" "$RESULT_SERIAL")Z" --arg stage "$stage" --arg status "$status" --arg agent "$agent" --arg model "$model" --arg notes "$notes" \
+    '{stage:$stage,status:$status,agent:$agent,model:$model,notes:$notes,startedAt:$startedAt}' > "$feature_dir/.${stage}-result.json"
 }
 write_hook() {
   jq -n --arg d "$2" '{state:"error",event:"process_exit",agent:"native",timestamp:1,detail:$d}' \
@@ -152,7 +156,7 @@ pass_task_field() {
 }
 read_phase_config() { printf ''; }
 resolve_stage_result_model() { stage_result_field "$1" "$2" model; }
-_prepare_recovery_phase_launch() { return 0; }
+_prepare_recovery_phase_launch() { write_stage_result "$4" "$3" running "$6" "$7"; }
 launch_coding_phase() { return 0; }
 
 unknown_detail="Native coding failed: zstd decoder mismatch on shard 7 (never seen before)"
@@ -297,6 +301,33 @@ else
 fi
 unset WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS
 
+
+# CI 43647719528: an old coding worker resumed after the same run reached Ready.
+# Advance state at the teardown barrier, then exercise the real launch guard.
+seed false
+fd="$(new_worktree wt-delayed)"
+write_stage_result "$fd" coding failed native kimi-k2 "$unknown_detail"
+eval "$(extract_function _launch_agent_in_pane)"
+WORKTREE_ROOT="$TMP_ROOT"
+LAUNCH_EFFECTS="$TMP_ROOT/delayed-launch-effects"
+: > "$LAUNCH_EFFECTS"
+agent_prepare_pane_for_launch() {
+  fixture_workflow_state "$STATE_FILE" T-1 phase=ready
+}
+task_identity_linear_id() { printf '%s\n' "$1"; }
+challenge_varied_stage_model() { :; }
+tmux() { printf 'tmux\n' >> "$LAUNCH_EFFECTS"; }
+agent_launch_interactive() { printf 'agent\n' >> "$LAUNCH_EFFECTS"; }
+launch_coding_phase() { _launch_agent_in_pane @fake claude claude-opus-4-7 "$TMP_ROOT/prompt" wt-delayed T-1 coding; }
+rc=0; _maybe_retry_failed_stage_now T-1 "$fd" coding win-delayed || rc=$?
+if [[ "$rc" == 2 && "$(jq -r '.tasks["T-1"].phase' "$STATE_FILE")" == ready \
+      && ! -s "$LAUNCH_EFFECTS" && ! -s "$PHASE_LOG" \
+      && "$(jq -r '.claim.outcome' "$fd/.recovery-claim.json")" == reassess ]]; then
+  pass "delayed worker cannot launch or regress phase after teardown advances to Ready"
+else
+  fail "delayed worker crossed its stage fence (rc=$rc)"
+fi
+launch_coding_phase() { return 0; }
 
 # Protects: uncertain dispatch schedules a supervised fresh probe carrying the
 # original run, and handing off a completion cannot strand its claim.

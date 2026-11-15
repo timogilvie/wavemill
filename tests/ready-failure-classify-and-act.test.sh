@@ -75,8 +75,10 @@ for fn in \
   native_stage_failure_envelope_json \
   stage_failure_owned_by_bucket \
   stage_failure_decision \
+  read_stage_result \
   phase_launch_head \
   phase_launch_base \
+  _recovery_continuation_current \
   _maybe_retry_failed_stage_now \
   _monitor_claim_failed_stage_action \
   _dispatch_failed_stage_recovery \
@@ -202,6 +204,22 @@ check_eq "a conflict signature updates from base and holds for the new head" "$o
 check_contains "update-from-base ran for the conflict" "$(cat "$UPDATE_CALLS_FILE")" "HOK-3371"
 check_eq "the conflict consumed no retry budget" "$(bounded_retry_count "$STATE_DIR" "$bucket")" "0"
 TRY_UPDATE_RESULT="not-behind"
+
+# Replay: stale conflict evidence must not strand a no-op/failed base update.
+for update_outcome in not-behind error:fetch-failed; do
+  bounded_retry_clear "$STATE_DIR" "$bucket"
+  TRY_UPDATE_RESULT="$update_outcome"
+  : > "$LAUNCH_CALLS_FILE"; : > "$UPDATE_CALLS_FILE"
+  write_failed_result '{"stage":"ready","status":"failed","agent":"claude","artifacts":{"verdict":"fail","mergeConflict":"CONFLICTED"}}'
+  out="$(act)"
+  check_eq "$update_outcome falls through to bounded Ready retry" "$out" "rc=0"
+  check_eq "$update_outcome launches exactly once" "$(wc -l < "$LAUNCH_CALLS_FILE" | tr -d ' ')" "1"
+  check_eq "$update_outcome charges the shared bucket" "$(bounded_retry_count "$STATE_DIR" "$bucket")" "1"
+  out="$(act)"
+  check_eq "$update_outcome repeated notification holds" "$out" "rc=2"
+done
+bounded_retry_clear "$STATE_DIR" "$bucket"
+TRY_UPDATE_RESULT=not-behind
 
 # ── Retryable: the shared stage-failure-ready bucket ────────────────────
 write_failed_result '{"stage":"ready","status":"failed","agent":"claude","artifacts":{"verdict":"fail"}}'

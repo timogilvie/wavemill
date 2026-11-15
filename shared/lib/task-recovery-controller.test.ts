@@ -15,6 +15,7 @@ import {
   claimRecoveryAction,
   decideTaskRecovery,
   readRecoveryClaim,
+  validateRecoveryAction,
   recoveryClaimPath,
   type RecoveryDisposition,
   type RecoveryFailure,
@@ -187,7 +188,7 @@ test('simultaneous Monitor Tend and Observer processes produce exactly one claim
   try {
     const stateFile=join(dir,'workflow-state.json');
     const runId='HOK-1:epoch:1794600000';
-    writeFileSync(stateFile,JSON.stringify(buildWorkflowState({'HOK-1':{runId}})));
+    writeFileSync(stateFile,JSON.stringify(buildWorkflowState({'HOK-1':{runId,phase:'coding'}})));
     const selected=decideTaskRecovery(snapshot({stageResult:{kind:'failed'},failure:retryableFailure('proceed')}));
     const args={stateDir:dir,stateFile,issue:'HOK-1',decision:selected,runId,evidenceId:'same-obligation',ownerPid:process.pid};
     const script=`import {claimRecoveryAction} from ${JSON.stringify(new URL('./task-recovery-controller.ts',import.meta.url).href)};
@@ -291,7 +292,7 @@ test('claim fences the authoritative run and settled outcome at dispatch time', 
   const dir = freshDir();
   try {
     const stateFile = join(dir, 'workflow-state.json');
-    const current = buildWorkflowState({ 'HOK-1': { runId: 'new-run' } });
+    const current = buildWorkflowState({ 'HOK-1': { runId: 'new-run',phase:'coding' } });
     writeFileSync(stateFile, JSON.stringify(current));
     const dec = decideTaskRecovery(snapshot({ stageResult: { kind: 'failed' }, failure: retryableFailure('proceed') }));
     const args = { stateDir: dir, decision: dec, issue: 'HOK-1', stateFile, runId: 'old-run', evidenceId: 'late' };
@@ -332,7 +333,7 @@ test('a dead controller claim is reconciled from observed stage state before rep
   const dir = freshDir();
   try {
     const stateFile = join(dir, 'workflow-state.json');
-    writeFileSync(stateFile, JSON.stringify(buildWorkflowState({ 'HOK-1': { runId: 'run' } })));
+    writeFileSync(stateFile, JSON.stringify(buildWorkflowState({ 'HOK-1': { runId: 'run', phase:'coding' } })));
     const snap = snapshot({ attempt: { currentRunId: 'run', controlRunId: 'run' }, stageResult: { kind: 'failed' }, failure: retryableFailure('proceed') });
     const args = { stateDir: dir, stateFile, issue: 'HOK-1', snapshot: snap, decision: decideTaskRecovery(snap), runId: 'run', evidenceId: 'before-dispatch' };
     const first = claimRecoveryAction(args);
@@ -373,7 +374,7 @@ test('authoritative workflow lock remains held while creating a recovery claim',
   const dir = freshDir();
   try {
     const stateFile = join(dir, 'workflow-state.json');
-    writeFileSync(stateFile, JSON.stringify(buildWorkflowState({'HOK-1':{runId:'run'}})));
+    writeFileSync(stateFile, JSON.stringify(buildWorkflowState({'HOK-1':{runId:'run',phase:'coding'}})));
     const selected = decideTaskRecovery(snapshot({stageResult:{kind:'failed'},failure:retryableFailure('proceed')}));
     const result = claimRecoveryAction({stateDir:dir,stateFile,issue:'HOK-1',runId:'run',evidenceId:'locked',decision:selected,
       now: () => { assert.equal(existsSync(`${stateFile}.lock`), true); return new Date(); }});
@@ -390,7 +391,7 @@ test('stale reconciliation retains original execution evidence and owned cost se
     mkdirSync(featureDir,{recursive:true});
     const stateFile=join(dir,'.wavemill','workflow-state.json');
     mkdirSync(dirname(stateFile),{recursive:true});
-    writeFileSync(stateFile,JSON.stringify(buildWorkflowState({'HOK-1':{runId:'new'}})));
+    writeFileSync(stateFile,JSON.stringify(buildWorkflowState({'HOK-1':{runId:'new',phase:'coding'}})));
     const original={stage:'coding' as const,status:'completed' as const,startedAt:'2026-11-13T00:00:00Z',finishedAt:'2026-11-13T00:01:00Z',agent:'claude',model:'intended',executedModel:'provider-model',notes:'late result'};
     recordLaunch(featureDir,{sessionRef:'owned-late-session',harness:'claude-code',kind:'coding',model:'provider-model'});
     const input=snapshot({attempt:{currentRunId:'old',controlRunId:'old'},stageResult:{kind:'valid',status:'completed'},evidence:{stageResult:original}});
@@ -411,7 +412,7 @@ test('fresh settled disposition resolves a dead notifier with no published resul
   const dir=freshDir();
   try {
     const stateFile=join(dir,'workflow-state.json');
-    writeFileSync(stateFile,JSON.stringify(buildWorkflowState({'HOK-1':{runId:'run'}})));
+    writeFileSync(stateFile,JSON.stringify(buildWorkflowState({'HOK-1':{runId:'run',phase:'coding'}})));
     const input=snapshot({attempt:{currentRunId:'run',controlRunId:'run'},stageResult:{kind:'failed'},failure:retryableFailure('proceed')});
     const first=claimRecoveryAction({stateDir:dir,stateFile,issue:'HOK-1',runId:'run',evidenceId:'old',decision:decideTaskRecovery(input)});
     assert.equal(first.claimed,true); if(!first.claimed) return;
@@ -428,7 +429,7 @@ test('fresh live ownership acknowledges an applied launch without retrying it', 
   const dir=freshDir();
   try {
     const stateFile=join(dir,'workflow-state.json');
-    writeFileSync(stateFile,JSON.stringify(buildWorkflowState({'HOK-1':{runId:'run'}})));
+    writeFileSync(stateFile,JSON.stringify(buildWorkflowState({'HOK-1':{runId:'run',phase:'coding'}})));
     const input=snapshot({attempt:{currentRunId:'run',controlRunId:'run'},stageResult:{kind:'failed'},failure:retryableFailure('proceed')});
     const first=claimRecoveryAction({stateDir:dir,stateFile,issue:'HOK-1',runId:'run',evidenceId:'launch',decision:decideTaskRecovery(input)});
     assert.equal(first.claimed,true); if(!first.claimed) return;
@@ -450,7 +451,7 @@ test('on-disk completions are checked independently against the current task run
       const fd=join(dir,'features','replaced'); mkdirSync(fd,{recursive:true});
       const stateFile=join(dir,'.wavemill','workflow-state.json'); mkdirSync(dirname(stateFile),{recursive:true});
       const current='HOK-1:epoch:1794690000';
-      writeFileSync(stateFile,JSON.stringify(buildWorkflowState({'HOK-1':{runId:current}})));
+      writeFileSync(stateFile,JSON.stringify(buildWorkflowState({'HOK-1':{runId:current,phase:'coding'}})));
       writeFileSync(join(fd,'.coding-result.json'),JSON.stringify({stage:'coding',status:'completed',
         ...(stamped?{runId:'HOK-1:epoch:1794600000'}:{}),startedAt:'2026-11-13T00:00:00Z',agent:'claude',model:'provider',notes:'late'}));
       const outcome=await reconcileAndRecover({stateDir:fd,stateFile,issue:'HOK-1',runId:current,evidenceId:'current-notifier',
@@ -461,4 +462,37 @@ test('on-disk completions are checked independently against the current task run
       assert.ok(existsSync(join(dir,'.wavemill','evals','artifacts','HOK-1','.evidence-inventory.json')));
     } finally {rmSync(dir,{recursive:true,force:true});}
   }
+});
+
+// Replay of CI 43647719528: same task run, newer stage while dispatch waits.
+test('continuations bind their launch and reject completion or stage advancement', async () => {
+  const dir = freshDir();
+  try {
+    const stateFile = join(dir, 'workflow-state.json');
+    const state = (phase: 'coding' | 'ready') => writeFileSync(stateFile, JSON.stringify(buildWorkflowState({'HOK-1': {phase, runId:'run'}})));
+    state('coding');
+    const result = (status: string, startedAt: string) => writeFileSync(join(dir,'.coding-result.json'), JSON.stringify({stage:'coding', status, agent:'claude', runId:'run', startedAt}));
+    result('failed','2026-11-15T00:00:00Z');
+    const args = {stateDir:dir, stateFile, issue:'HOK-1',runId:'run',evidenceId:'failure',condition:{phase:'coding',startedAt:'2026-11-15T00:00:00Z'},decision:decideTaskRecovery(snapshot({failure:retryableFailure('proceed'),stageResult:{kind:'failed'}}))};
+    const first = claimRecoveryAction(args);
+    assert.equal(first.claimed,true);
+    if (!first.claimed) throw new Error('missing claim');
+    const validate = {stateDir:dir,stateFile,issue:'HOK-1',claimId:first.claim.claimId};
+    assert.equal(await validateRecoveryAction(validate),true);
+    result('running','2026-11-15T00:01:00Z');
+    assert.equal(await validateRecoveryAction(validate),false);
+    assert.equal(await validateRecoveryAction({...validate,bindResult:true}),true);
+    result('completed','2026-11-15T00:01:00Z');
+    assert.equal(await validateRecoveryAction(validate),false);
+    result('running','2026-11-15T00:01:00Z');
+    state('ready');
+    assert.equal(await validateRecoveryAction(validate),false);
+    state('coding');
+    acknowledgeRecoveryAction(dir,first.claim.claimId,new Date(),'reassess');
+    const next=claimRecoveryAction(args);
+    assert.equal(next.claimed,true,'unapplied action can be reassessed on identical evidence');
+    if (!next.claimed) throw new Error('missing replacement claim');
+    acknowledgeRecoveryAction(dir,next.claim.claimId);
+    assert.equal(claimRecoveryAction(args).claimed,false,'applied action remains deduplicated');
+  } finally { rmSync(dir,{recursive:true,force:true}); }
 });
