@@ -1,0 +1,95 @@
+# Task-recovery ownership (HOK-3277)
+
+**Rule:** task recovery is one control path. The decision about what happens to
+a stuck or exited attempt — and the claim that dispatches it — is made only by
+`shared/lib/task-recovery-controller.ts`:
+
+- `decideTaskRecovery(snapshot)` is the single, pure, named-and-versioned
+  policy (`task-recovery-controller@1`). It ranks the snapshot and returns one
+  action from a closed vocabulary: `no-action`, `wait`, `consume-advance`,
+  `verify-effect`, `retry-stage`, `remediate`, `escalate`,
+  `reject-stale-control`.
+- `claimRecoveryAction(...)` is the one atomic claim. Concurrent Monitor /
+  Tend / Observer notifications that compute the same decision collapse to
+  exactly one dispatch; a non-control-bearing action is never claimed.
+  Production claims validate the authoritative task run and settled outcome
+  under the shared workflow-state lock before writing the claim. Dispatch
+  carries that run through `WAVEMILL_EXPECTED_RUN_ID`. The executor acknowledges
+  its claim token on return; the next distinct obligation may then claim, while
+  duplicate evidence and late acknowledgements cannot replace another action.
+
+No file may author a second recovery decider or write the `.recovery-claim.json`
+seam directly.
+
+## What the controller owns, and what it delegates
+
+The controller owns only snapshot ordering, deterministic action selection, and
+the atomic claim. Everything the decision is *made of* stays with its existing
+owner — the controller composes them, never re-derives them:
+
+| Concern | Owner |
+| --- | --- |
+| Is this attempt the current one? Is late evidence stale control? | `attempt-identity.ts`, `task-settlement.ts` |
+| Is the stage agent in-flight, settled, or advanced? | `stage-agent-disposition.ts` |
+| Is this failure terminal / code-failure / retryable? | `failure-policy.ts` (`classifyFailure`) |
+| How many retries are left; backoff? | `bounded-retry.*` (the caller gates; the controller reads the verdict) |
+| Which model/agent does a coding retry replay? | `execution-contract.ts` + `resolveModelAgent` (replayed, never re-chosen) |
+| Raising operator attention | `operator-escalation.*` (one step) |
+| Cost / attribution | SDK-owned; the controller records the action, not a price |
+
+A deadline, a missing acknowledgement, or an Observer outage is **not** a
+model/provider failure, does not steal ownership, and does not terminate work.
+Explicit human holds survive restart and retry.
+
+## Live hosting
+
+The controller is hosted through Monitor's existing control loop and tracked
+`task-recovery` async jobs; claim locks and execution run in the supervised worker,
+not in the hot pass. Unit fixture hosts use the existing inline-check shim;
+golden journeys run the actual async adapters. There is no separate stall daemon. The monitor's shell seams —
+`maybe_retry_failed_stage`, `_stage_disposition_act`,
+`ready_failure_classify_and_act` (and the consolidated
+`_monitor_recover_failed_stage` helper) — are the controller's first adapters:
+they compose the same authorities and route a failed stage through one seam.
+`maybe_retry_failed_stage` routes every failed-stage caller, including Ready,
+through the controller before the existing executor. `_stage_disposition_act`
+also asks the same controller to consume completed results or respect waits.
+They are not a second retry or escalation policy. Tend executes integration
+actions and Observer supervises; neither gets a second task-retry or escalation
+decider. HOK-3406 migrates Observer's existing auto-fixes onto this interface.
+
+The incident-replay harness (`incident-replay-harness.ts`) drives every
+recorded incident fixture through `decideTaskRecovery`, so the live decision
+path is exercised by CI with assertions independent of the policy internals.
+
+## Guard
+
+`tools/check-task-recovery-ownership.ts` (spec:
+`shared/lib/task-recovery-ownership-guard.ts`), wired into `test:preflight`.
+It fails on:
+
+1. `recovery-decider` — a TypeScript `decide<...>Recovery` declared outside the
+   controller.
+2. `recovery-claim-writer` — a `.recovery-claim.json` write outside the
+   controller.
+
+For a justified exception, add the path to
+`tools/task-recovery-ownership-allowlist.txt` with a `# reason`, or suppress one
+line with `// allow-task-recovery-ownership: <reason>` (`#` in shell).
+
+The supervisor slot includes task run, observed head/result, and known launch
+identity. Registration carries the captured run; claims belong to the supervised
+worker process. An older worker cannot occupy the replacement run's slot.
+Stage completions use the shared stage-result run gate, with launch-stamped
+identity preserved by the writer and conservative boundaries for legacy files.
+
+Recovery claims are ownership records, not condition markers or timed leases.
+Owner reclamation uses `state-lock.ts:isOwnerReclaimable`: only a matching
+local host plus dead PID/start-time identity authorizes replay within a run.
+A foreign host cannot be declared dead by inspecting its PID locally or by
+waiting out a timer. An explicit host handoff starts a new task run through
+the existing attempt identity primitive; that new run supersedes the old
+claim and fences its continuations. Fresh current completion still reconciles
+an unacknowledged effect independently of host. Tests cover the foreign-host
+hold, current completion and replacement-run release. No `--expires-on`
+marker can safely substitute for these ownership and run conditions.

@@ -1,0 +1,7 @@
+# task-recovery-ownership guard allowlist (HOK-3277).
+#
+# Entries are `<repo-relative path> [<max findings>]  # <reason>`. Only the
+# canonical controller may author a recovery decision or write the claim seam,
+# and it is auto-excluded (invariantPaths), so this list is empty: there is no
+# legacy TypeScript recovery decider to grandfather. The monitor's shell seams
+# compose the authorities but do not match either forbidden shape.

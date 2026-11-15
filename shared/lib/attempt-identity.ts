@@ -52,3 +52,10 @@ export function runIdIssue(runId: string | null | undefined): string | null {
   if (parts.length < 3 || !parts[0]) return null;
   return parts.slice(0, parts.length - 2).join(':');
 }
+
+/** Launch boundary of a canonical run id; legacy/malformed ids are unknown. */
+export function runIdStartedAt(runId: string | null | undefined): number | null {
+  if (!runIdIssue(runId)) return null;
+  const seconds = Number(runId!.split(':').at(-1));
+  return Number.isSafeInteger(seconds) && seconds >= 0 ? seconds * 1000 : null;
+}

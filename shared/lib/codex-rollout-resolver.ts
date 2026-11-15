@@ -15,7 +15,8 @@
  * @module codex-rollout-resolver
  */
 
-import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readSync, readFileSync, statSync } from 'node:fs';
+import { zstdDecompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pendingNonce, type SessionOwnershipRow } from './session-ownership.ts';
@@ -32,6 +33,7 @@ export function codexSessionsRoot(env: NodeJS.ProcessEnv = process.env): string 
 }
 
 function readHead(file: string): string {
+  if (file.endsWith('.zst')) return zstdDecompressSync(readFileSync(file)).subarray(0, HEAD_BYTES).toString('utf8');
   const fd = openSync(file, 'r');
   try {
     const buffer = Buffer.alloc(HEAD_BYTES);
@@ -54,7 +56,7 @@ function listRollouts(dir: string, minMtimeMs: number, depth = 0, out: string[] 
     const path = join(dir, entry.name);
     if (entry.isDirectory()) {
       listRollouts(path, minMtimeMs, depth + 1, out);
-    } else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
+    } else if (entry.isFile() && entry.name.startsWith('rollout-') && /\.jsonl(?:\.zst)?$/.test(entry.name)) {
       try {
         if (statSync(path).mtimeMs >= minMtimeMs) out.push(path);
       } catch {

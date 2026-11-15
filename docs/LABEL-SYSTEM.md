@@ -4,6 +4,10 @@ title: Labels
 
 Labels on Linear issues help identify which tasks can safely run in parallel in autonomous workflows.
 
+## Workflow labels
+
+For the draft `Workflow` label group definitions, decision order, and examples, see [Workflow definitions](workflow-definitions.md) (HOK-3485).
+
 ## Label Categories
 
 ### Risk Level (Required)

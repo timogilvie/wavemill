@@ -7,7 +7,7 @@
 # deterministic code-failure goes to the operator with the excerpt and never
 # spends the retry budget; a terminal allowlist cause retires a challenge arm;
 # everything else relaunches through the shared stage-failure-ready bucket via
-# maybe_retry_failed_stage.
+# _maybe_retry_failed_stage_now.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,6 +19,7 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 # shellcheck source=../shared/lib/wavemill-common.sh
 source "$REPO_DIR/shared/lib/wavemill-common.sh"
+source "$REPO_DIR/tests/lib/inline-ready-checks.sh"
 
 PASS=0
 FAIL=0
@@ -74,9 +75,15 @@ for fn in \
   native_stage_failure_envelope_json \
   stage_failure_owned_by_bucket \
   stage_failure_decision \
+  read_stage_result \
   phase_launch_head \
   phase_launch_base \
-  maybe_retry_failed_stage \
+  _recovery_continuation_current \
+  _maybe_retry_failed_stage_now \
+  _monitor_claim_failed_stage_action \
+  _dispatch_failed_stage_recovery \
+  _execute_recovery_escalation \
+  _ready_failure_update_base \
 ; do
   eval "$(extract_function "$fn")"
 done
@@ -112,6 +119,11 @@ pass_task_field() {
 }
 effective_task_base_branch() { printf '%s\n' "$BASE_BRANCH"; }
 get_task_meta() { :; }
+source "$REPO_DIR/tests/lib/state-fixtures.sh"
+STATE_FILE="$TMP_ROOT/workflow-state.json"
+TOOLS_DIR="$REPO_DIR/tools"
+fixture_workflow_state "$STATE_FILE" HOK-3371 status=active phase=ready worktree="$WORKTREE" slug=hok-3371 pr=4041
+fixture_real_state_accessors
 check_stage_aborted() { return 1; }
 
 LAUNCH_CALLS_FILE="$TMP_ROOT/launch-calls"
@@ -133,6 +145,7 @@ try_update_branch_from_base() {
 TERMINALIZE_CALLS_FILE="$TMP_ROOT/terminalize-calls"
 : > "$TERMINALIZE_CALLS_FILE"
 TERMINALIZE_RC=1
+ready_exhausted_challenge_sibling_green() { [[ "$TERMINALIZE_RC" == "0" ]]; }
 ready_exhausted_challenge_terminalize() {
   printf 'terminalize: %s\n' "$*" >> "$TERMINALIZE_CALLS_FILE"
   return "$TERMINALIZE_RC"
@@ -151,7 +164,10 @@ _failure_policy_cli() {
 
 write_failed_result() {
   mkdir -p "$STATE_DIR"
-  printf '%s\n' "$1" > "$STATE_DIR/.ready-result.json"
+  rm -f "$STATE_DIR/.ready-failure-decision.json"
+  local policy="${FAILURE_POLICY_DECISION:-}"
+  [[ -n "$policy" ]] || policy='{}'
+  printf '%s\n' "$1" | jq --arg kind "$(jq -r '.failureKind // "observation"' <<<"$policy")" '. + {notes:(.notes // $kind)}' > "$STATE_DIR/.ready-result.json"
 }
 
 act() {
@@ -179,6 +195,14 @@ check_eq "the transition error spends no retry budget" "$(bounded_retry_count "$
 check_eq "the transition error never runs update-from-base" "$(wc -l < "$UPDATE_CALLS_FILE" | tr -d ' ')" "0"
 check_eq "the transition error launches nothing" "$(wc -l < "$LAUNCH_CALLS_FILE" | tr -d ' ')" "0"
 
+# A green sibling cannot convert an operator-repair obligation into retirement.
+TERMINALIZE_RC=0
+out="$(act)"
+check_eq "transition code failure still requires repair with a green sibling" "$out" "rc=1"
+check_eq "operator repair never calls challenge retirement" "$(wc -l < "$TERMINALIZE_CALLS_FILE" | tr -d ' ')" "0"
+check_contains "operator repair retains its typed escalation basis" "$(cat "$STATUS_LOG")" "$HOK_3361_DETAIL"
+TERMINALIZE_RC=1
+
 # ── Base drift runs update-from-base before anything else (HOK-3092) ────
 TRY_UPDATE_RESULT="updated"
 write_failed_result '{"stage":"ready","status":"failed","agent":"claude","artifacts":{"verdict":"fail","mergeConflict":"CONFLICTED"}}'
@@ -188,6 +212,22 @@ check_eq "a conflict signature updates from base and holds for the new head" "$o
 check_contains "update-from-base ran for the conflict" "$(cat "$UPDATE_CALLS_FILE")" "HOK-3371"
 check_eq "the conflict consumed no retry budget" "$(bounded_retry_count "$STATE_DIR" "$bucket")" "0"
 TRY_UPDATE_RESULT="not-behind"
+
+# Replay: stale conflict evidence must not strand a no-op/failed base update.
+for update_outcome in not-behind error:fetch-failed; do
+  bounded_retry_clear "$STATE_DIR" "$bucket"
+  TRY_UPDATE_RESULT="$update_outcome"
+  : > "$LAUNCH_CALLS_FILE"; : > "$UPDATE_CALLS_FILE"
+  write_failed_result '{"stage":"ready","status":"failed","agent":"claude","artifacts":{"verdict":"fail","mergeConflict":"CONFLICTED"}}'
+  out="$(act)"
+  check_eq "$update_outcome falls through to bounded Ready retry" "$out" "rc=0"
+  check_eq "$update_outcome launches exactly once" "$(wc -l < "$LAUNCH_CALLS_FILE" | tr -d ' ')" "1"
+  check_eq "$update_outcome charges the shared bucket" "$(bounded_retry_count "$STATE_DIR" "$bucket")" "1"
+  out="$(act)"
+  check_eq "$update_outcome repeated notification holds" "$out" "rc=2"
+done
+bounded_retry_clear "$STATE_DIR" "$bucket"
+TRY_UPDATE_RESULT=not-behind
 
 # ── Retryable: the shared stage-failure-ready bucket ────────────────────
 write_failed_result '{"stage":"ready","status":"failed","agent":"claude","artifacts":{"verdict":"fail"}}'
@@ -236,6 +276,7 @@ FAILURE_POLICY_DECISION=""
 rm -f "$STATE_DIR/.retry-$bucket-exhausted"*
 bounded_retry_clear "$STATE_DIR" "$bucket"
 READY_LAUNCH_RC=5
+write_failed_result '{"stage":"ready","status":"failed","agent":"claude","artifacts":{"verdict":"fail"}}'
 out="$(act)"
 check_eq "a typed launcher hold is handled" "$out" "rc=0"
 READY_LAUNCH_RC=0

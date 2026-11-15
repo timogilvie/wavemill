@@ -1,0 +1,14 @@
+{
+  "incident": "2026-11-13-HOK-3471_c",
+  "failureKind": "native-stage-timeout",
+  "budgetKind": "turn",
+  "routeModels": {
+    "planner": "glm-5.3",
+    "coder": "kimi-k2.7-code"
+  },
+  "executedModels": {
+    "planning": "z-ai/glm-5.3",
+    "coding": "moonshotai/kimi-k2.7-code"
+  },
+  "rejection": "last stage executed_model must equal selected_models role"
+}

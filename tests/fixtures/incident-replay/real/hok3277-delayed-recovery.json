@@ -1,0 +1,96 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "hok3277_delayed_recovery",
+  "incidents": [
+    "5d7ce0955f4bcc47fc129a04985ab72ace7114960b4e2a841eb483a61b82388d"
+  ],
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-3277",
+      "slug": "incident-hok3277-delayed-recovery",
+      "phase": "coding",
+      "status": "working"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "stage_marker_not_advanced",
+    "severity": "high",
+    "confidence": "high",
+    "summary": "A recovery worker resumed after pane teardown when the same task run had already advanced to Ready, launched coding again and regressed the phase.",
+    "operatorAction": "Fence continuations by claim, task run, stage and launch timestamp after waits; reassess unapplied actions through the shared controller.",
+    "metadata": {
+      "stage": "coding",
+      "ciRunId": 43647719528,
+      "testedHead": "26df9903110af6081d82d356f5a121600ab39005",
+      "barrier": {
+        "fromPhase": "coding",
+        "toPhase": "ready",
+        "sameRun": true
+      }
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "github-actions:43647719528/job/132609151911",
+          "timestamp": "2026-11-14T22:24:19.482Z",
+          "redactedData": "First coding recovery launched; failure fingerprint unchanged.",
+          "key": "delayed-recovery:HOK-FIXTURE-3277"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "github-actions:43647719528/job/132609151911",
+          "timestamp": "2026-11-14T22:24:54Z",
+          "redactedData": "Same run reached Ready, then delayed coding worker relaunched at 22:24:55 and regressed phase.",
+          "key": "delayed-recovery:HOK-FIXTURE-3277"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "failure": {
+    "stage": "coding",
+    "failureKind": null,
+    "detail": "agent exited mid-stage; delayed duplicate coding continuation",
+    "survivesRelaunches": 1
+  },
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  },
+  "journey": "agent-killed-mid-stage",
+  "expected": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "stage_marker_not_advanced",
+    "occurrenceCount": 2,
+    "lifecycleWhilePresent": "observed",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  },
+  "source": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "stage_marker_not_advanced",
+    "severity": "high",
+    "confidence": "high",
+    "recordedLifecycle": "resolved",
+    "recordedResolution": "auto_resolved",
+    "occurrenceCount": 2,
+    "firstObservedAt": "2026-11-14T22:24:19.482Z",
+    "lastObservedAt": "2026-11-14T22:24:55Z",
+    "stateSnapshot": null,
+    "convertedBy": "HOK-3277 sanitised CI43647719528 evidence; deterministic teardown barrier in stage-failure-retry.test.sh and recovery-restart.ts",
+    "observationsTruncated": false
+  }
+}

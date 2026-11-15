@@ -110,10 +110,16 @@ monitor_async_job_launch() {
   : > "$log_path"
 
   (
-    launch_tracked_job "$kind" "$job_id" "$issue" "" "" "$pr_numbers" "$BASHPID" "$timeout_s" "$log_path" "$result_path" \
-      >>"$log_path" 2>&1 || true
-    local rc=0
-    _with_timeout "$timeout_s" "$runner" "$@" >>"$log_path" 2>&1 || rc=$?
+    local rc=0 captured_run_id
+    captured_run_id="$(jq -r '.runId // empty' <<<"$meta_json")"
+    launch_tracked_job "$kind" "$job_id" "$issue" "" "" "$pr_numbers" "$BASHPID" "$timeout_s" "$log_path" "$result_path" "$captured_run_id" \
+      >>"$log_path" 2>&1 || rc=$?
+    if [[ "$rc" == "0" ]]; then
+      _with_timeout "$timeout_s" "$runner" "$@" >>"$log_path" 2>&1 || rc=$?
+    else
+      handle_check_job_failure "$job_id" "$kind" failed job_failed "$result_path" \
+        "Tracked launch could not be persisted; runner was not started" >>"$log_path" 2>&1
+    fi
     jq -cn --argjson rc "$rc" --arg kind "$kind" \
       '{ok: ($rc == 0), exitCode: $rc, kind: $kind} + (if $rc == 0 then {} else {reason: (if $rc == 124 then "timed_out" else "job_failed" end)} end)' \
       > "${result_path}.tmp" 2>/dev/null && mv "${result_path}.tmp" "$result_path"

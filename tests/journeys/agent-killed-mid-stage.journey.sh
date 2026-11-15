@@ -22,6 +22,7 @@ ISSUE="JRN-1"
 # agent mid-stage with exit code 143.
 export FAKE_AGENT_SCRIPT_DIR="$FIXTURE_DIR/fake-agent"
 journey_init agent-killed-mid-stage
+node --import tsx "$FIXTURE_DIR/recovery-restart.ts" "$JOURNEY_TMP/recovery-restart"
 fakes_linear_add_issue "$ISSUE" "Test agent killed mid-stage" Todo
 
 export WAVEMILL_CODING_OWNER_GRACE_SECONDS=0
@@ -49,6 +50,13 @@ journey_wait_until "$ISSUE" 8  "coding launched"             phase_is coding
 journey_log "waiting for agent to exit and recovery to launch..."
 coding_relaunched() { [[ "$(journey_agent_launch_count "$ISSUE" coding)" -ge 2 ]]; }
 journey_wait_until "$ISSUE" 20 "coding relaunched after millisecond-timestamp agent exit" coding_relaunched
+
+# The live Monitor recovery path must select and claim one canonical action
+# before dispatching the existing retry executor; the later successful launch
+# must not replace that claim with another notification's evidence.
+RECOVERY_ACTIONS="$WORKTREE_ROOT/$(journey_task_field "$ISSUE" slug)/features/$(journey_task_field "$ISSUE" slug)/.recovery-actions.jsonl"
+journey_assert "Monitor claimed exactly one coding recovery action" \
+  jq -s -e '[.[] | select(.action == "retry-stage" and .stage == "coding" and (.runId | type == "string"))] | length == 1' "$RECOVERY_ACTIONS"
 
 # Once relaunched, the task should complete the workflow normally.
 journey_wait_until "$ISSUE" 8  "review launched"             phase_is review

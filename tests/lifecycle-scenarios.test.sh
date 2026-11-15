@@ -196,7 +196,7 @@ for fn in \
   stage_result_field \
   stage_launch_identity \
   stage_agent_disposition \
-  _stage_disposition_act \
+  _stage_disposition_act_now \
   native_hook_terminal_failure_detail \
   native_coding_failure_handoff_reason \
   native_terminal_failure_kind \
@@ -204,7 +204,15 @@ for fn in \
   native_stage_failure_envelope_json \
   stage_failure_decision \
   stage_failure_owned_by_bucket \
-  maybe_retry_failed_stage \
+  _recovery_continuation_current \
+  _maybe_retry_failed_stage_now \
+  _dispatch_failed_stage_recovery \
+  _execute_recovery_escalation \
+  _ready_failure_update_base \
+  challenge_maybe_materialize_deferred_arms \
+  _monitor_claim_failed_stage_action \
+  _monitor_recover_failed_stage \
+  monitor_task_reap_reason \
   _stage_failure_coding_relaunch \
   recovery_contract_json \
   clear_stage_result \
