@@ -3883,6 +3883,11 @@
           "type": "number",
           "minimum": 0
         },
+        "modelTimeMs": {
+          "description": "Model-attributable elapsed time, excluding paused harness tool execution.",
+          "type": "number",
+          "minimum": 0
+        },
         "totalInputTokens": {
           "type": "number",
           "minimum": 0
