@@ -1439,6 +1439,25 @@ function resolveNativeSessionPath(opts: TaskProgressGatherOptions, session: stri
 }
 
 /**
+ * The one native-transcript path rule (the launchers' `makeTranscriptPath`
+ * layout), exported for the recovery controller's hang-evidence read
+ * (HOK-3382): `WAVEMILL_RUN_DIR/native-sessions/<phase>-<issue>.jsonl` when
+ * set, else `<repoDir|cwd>/.wavemill/runs/<session>/native-sessions/<phase>-<issue>.jsonl`.
+ * The caller resolves the result through `resolveNativeTranscriptPath`
+ * (stage-time-split.ts), which adds the `<featureDir>/native-sessions/`
+ * archive fallback — never a second path rule.
+ */
+export function nativeSessionTranscriptPath(opts: {
+  phase: string;
+  issue: string;
+  session?: string;
+  repoDir?: string;
+}): string {
+  const session = opts.session ?? process.env.WAVEMILL_SESSION ?? 'wavemill';
+  return resolveNativeSessionPath({ phase: opts.phase, issue: opts.issue, repoDir: opts.repoDir }, session) as string;
+}
+
+/**
  * ISO time of the newest event in a native session stream, read from the
  * file's tail without loading the whole transcript. Returns `null` on any
  * failure: a missing or unparsable stream is simply absent evidence.

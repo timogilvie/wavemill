@@ -19,6 +19,8 @@ import {
   recoveryClaimPath,
   type RecoveryDisposition,
   type RecoveryFailure,
+  type RecoveryHarnessHold,
+  type RecoveryReassessment,
   type RecoverySnapshot,
 } from './task-recovery-controller.ts';
 
@@ -326,6 +328,133 @@ test('completed result and unacknowledged effects precede a stale live dispositi
   const disp: RecoveryDisposition = { kind: 'in-flight', reason: 'agent-working', evidenceConfidence: 'high', waitingOn: null, blockingPrompt: null };
   assert.equal(decideTaskRecovery(snapshot({ disposition: disp, stageResult: { kind: 'valid', status: 'completed' } })).action, 'consume-advance');
   assert.equal(decideTaskRecovery(snapshot({ disposition: disp, outstandingEffect: { kind: 'push', acknowledged: false } })).action, 'verify-effect');
+});
+
+// ── Rule 4a: reassessment of a hung harness (HOK-3382) ────────────────────────
+
+const HOLD = { toolName: 'run_tests', toolCallId: 'call-7', startedAt: '2026-11-13T00:10:00Z' };
+
+function inFlight(reason: string, waitingOn: RecoveryDisposition['waitingOn'] = null): RecoveryDisposition {
+  return { kind: 'in-flight', reason, evidenceConfidence: 'high', waitingOn, blockingPrompt: null };
+}
+
+function dueReassessment(hold: RecoveryHarnessHold | null): RecoveryReassessment {
+  return { due: true, basis: 'no-progress', lastProgressAt: '2026-11-13T00:10:00Z', harnessHold: hold };
+}
+
+test('in-flight (agent-working) + reassessment due + harness hold → claimed retry-stage through stage-failure-coding', () => {
+  const d = decideTaskRecovery(snapshot({
+    stageResult: { kind: 'running' },
+    disposition: inFlight('agent-working'),
+    reassessment: dueReassessment(HOLD),
+  }));
+  assert.equal(d.action, 'retry-stage');
+  assert.equal(d.controlBearing, true);
+  assert.equal(d.retryBucket, 'stage-failure-coding');
+  // The kind comes from the failure policy over the settled detail, not a literal.
+  assert.equal(d.failureKind, 'coding-exited-without-result');
+  assert.deepEqual(d.harnessHold, HOLD);
+  assert.match(d.rationale, /run_tests/);
+});
+
+test('in-flight (background-work) + reassessment due + harness hold → retry-stage, not a background wait', () => {
+  const d = decideTaskRecovery(snapshot({
+    stageResult: { kind: 'running' },
+    disposition: inFlight('background-work', { kind: 'background' }),
+    reassessment: dueReassessment(HOLD),
+  }));
+  assert.equal(d.action, 'retry-stage');
+  assert.equal(d.retryBucket, 'stage-failure-coding');
+});
+
+test('reassessment due without a hold is no-action: the model/provider holds the loop and the model-time budget owns it', () => {
+  const d = decideTaskRecovery(snapshot({
+    stageResult: { kind: 'running' },
+    disposition: inFlight('agent-working'),
+    reassessment: dueReassessment(null),
+  }));
+  assert.equal(d.action, 'no-action');
+  assert.equal(d.controlBearing, false);
+  assert.match(d.rationale, /model-time budget owns it/);
+});
+
+test('a long tool inside the stall window (not due) is left alone even with a hold', () => {
+  const d = decideTaskRecovery(snapshot({
+    stageResult: { kind: 'running' },
+    disposition: inFlight('agent-working'),
+    reassessment: { due: false, basis: 'no-progress', lastProgressAt: '2026-11-13T00:10:00Z', harnessHold: HOLD },
+  }));
+  assert.equal(d.action, 'no-action');
+});
+
+test('stale control, a human hold, a valid completion and an outstanding effect all outrank rule 4a', () => {
+  const base = {
+    stageResult: { kind: 'running' } as const,
+    disposition: inFlight('agent-working'),
+    reassessment: dueReassessment(HOLD),
+  };
+  assert.equal(decideTaskRecovery(snapshot({
+    ...base,
+    attempt: { currentRunId: 'HOK-1:9:200', controlRunId: 'HOK-1:9:100' },
+  })).action, 'reject-stale-control');
+  assert.equal(decideTaskRecovery(snapshot({
+    ...base,
+    wait: { owner: 'human', wake: 'operator-release' },
+  })).action, 'wait');
+  assert.equal(decideTaskRecovery(snapshot({
+    ...base,
+    stageResult: { kind: 'valid', status: 'completed' },
+  })).action, 'consume-advance');
+  assert.equal(decideTaskRecovery(snapshot({
+    ...base,
+    outstandingEffect: { kind: 'push', acknowledged: false },
+  })).action, 'verify-effect');
+});
+
+test('an unverifiable attempt identity holds a due reassessment instead of settling', () => {
+  const d = decideTaskRecovery(snapshot({
+    attempt: { currentRunId: 'HOK-1:9:200', controlRunId: null },
+    stageResult: { kind: 'running' },
+    disposition: inFlight('agent-working'),
+    reassessment: dueReassessment(HOLD),
+  }));
+  assert.equal(d.action, 'wait');
+  assert.equal(d.wait?.wake, 'attempt-identity-resolved');
+});
+
+test('planning and review reassess the same way, under their own stage-failure bucket and never a coding kind', () => {
+  for (const stage of ['planning', 'review'] as const) {
+    const d = decideTaskRecovery(snapshot({
+      stage,
+      stageResult: { kind: 'running' },
+      disposition: inFlight('agent-working'),
+      reassessment: dueReassessment(HOLD),
+    }));
+    assert.equal(d.action, 'retry-stage');
+    assert.equal(d.retryBucket, `stage-failure-${stage}`);
+    // Only coding's settled detail classifies as coding-exited-without-result;
+    // planning/review stay native-unclassified (unknown-fault at attribution).
+    assert.equal(d.failureKind, 'native-unclassified');
+    assert.deepEqual(d.harnessHold, HOLD);
+  }
+});
+
+test('concurrent notifiers with the same hang evidence produce exactly one claim', () => {
+  const dir = freshDir();
+  try {
+    const d = decideTaskRecovery(snapshot({
+      stageResult: { kind: 'running' },
+      disposition: inFlight('agent-working'),
+      reassessment: dueReassessment(HOLD),
+    }));
+    const args = { stateDir: dir, decision: d, runId: 'run', evidenceId: 'coding:run:launch:hung:call-7' };
+    const first = claimRecoveryAction(args);
+    const second = claimRecoveryAction(args);
+    assert.equal(first.claimed, true);
+    assert.equal(second.claimed, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 

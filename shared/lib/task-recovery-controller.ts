@@ -6,8 +6,10 @@ import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { isSameRunId } from './attempt-identity.ts';
 import type { EscalationBasis } from './operator-escalation.ts';
 import type { BoundedRetryDecision } from './bounded-retry.ts';
-import type { FailureDecision, FailureStage } from './failure-policy.ts';
+import { classifyFailure, retryBucketFor, type FailureDecision, type FailureStage } from './failure-policy.ts';
 import type { StageAgentDisposition } from './stage-agent-disposition.ts';
+import { nativeSessionTranscriptPath } from './task-progress.ts';
+import { openHarnessToolCall, readNativeTranscriptEvents, resolveNativeTranscriptPath } from './native-agent/stage-time-split.ts';
 import { mutateJsonStateSync } from './state-mutex.ts';
 import { acquireStateLockSync, releaseStateLock, isOwnerReclaimable } from './state-lock.ts';
 import { readWorkflowState } from './workflow-state.ts';
@@ -46,6 +48,33 @@ export interface RecoveryOutstandingEffect {
   detail?: string;
 }
 
+/**
+ * HOK-3382: the open harness tool call that holds the loop — the newest
+ * `tool_started` with no `tool_result` in the stage's native transcript
+ * (`openHarnessToolCall`, stage-time-split.ts). Only native transcripts
+ * produce one, so Claude/Codex stages never carry this evidence.
+ */
+export interface RecoveryHarnessHold {
+  toolName: string;
+  toolCallId: string;
+  /** ISO timestamp of the `tool_started` event. */
+  startedAt: string;
+}
+
+/**
+ * HOK-3382: the shared stall clock's verdict, handed to the controller by the
+ * monitor (the disposition CLI already gathered it — never re-derived here).
+ * `due` means *reassess*, not terminate (HOK-3277): with a `harnessHold` the
+ * hung harness is settled and routed through `stage-failure-<stage>`; without
+ * one the model/provider holds the loop and the model-time budget owns it.
+ */
+export interface RecoveryReassessment {
+  due: boolean;
+  basis: 'no-progress';
+  lastProgressAt: string | null;
+  harnessHold: RecoveryHarnessHold | null;
+}
+
 export interface RecoveryFailure {
   source?: 'ci' | 'transition';
   decision: FailureDecision;
@@ -70,6 +99,8 @@ export interface RecoverySnapshot {
   outstandingEffect: RecoveryOutstandingEffect | null;
     wait: RecoveryWait | null;
     failure: RecoveryFailure | null;
+  /** HOK-3382: optional shared-stall-clock reassessment evidence (the --disposition CLI fills it). */
+  reassessment?: RecoveryReassessment | null;
 }
 
 // ── Decision ─────────────────────────────────────────────────────────────────
@@ -95,6 +126,8 @@ export interface RecoveryDecision {
   retryBucket?: string;
   escalationBasis?: EscalationBasis;
     controlBearing: boolean;
+  /** HOK-3382: the open harness tool call behind a hung-harness `retry-stage`. */
+  harnessHold?: RecoveryHarnessHold;
 }
 
 const WAIT_ACTIONS: ReadonlySet<RecoveryActionKind> = new Set(['no-action', 'wait', 'verify-effect', 'reject-stale-control']);
@@ -108,6 +141,17 @@ function decision(stage: FailureStage, action: RecoveryActionKind, rationale: st
     controlBearing: !WAIT_ACTIONS.has(action),
     ...extra,
   };
+}
+
+/**
+ * The stage-result `notes` detail the monitor's `_stage_stamp_settled_without_result`
+ * writes (wavemill-monitor.sh). The controller pre-classifies that exact text
+ * through the one failure policy so the decision's `failureKind` matches the
+ * classification the failed-stage seam will re-derive next tick — a kind is
+ * never a string literal invented here.
+ */
+export function settledWithoutResultDetail(stage: string, reason: string): string {
+  return `Interrupted: ${stage} agent settled without a result (${reason})`;
 }
 
 export function decideTaskRecovery(snapshot: RecoverySnapshot): RecoveryDecision {
@@ -147,6 +191,34 @@ export function decideTaskRecovery(snapshot: RecoverySnapshot): RecoveryDecision
   if (snapshot.outstandingEffect && !snapshot.outstandingEffect.acknowledged) {
     return decision(stage, 'verify-effect',
       `effect ${snapshot.outstandingEffect.kind} applied but acknowledgement is uncertain; verify observed state before acting`);
+  }
+
+  // 4a. HOK-3382: reassessment due on a live in-flight disposition. The shared
+  //     stall clock (task-progress) fired; the hung-harness evidence decides:
+  //     an open harness tool call holds the loop → settle the stage and route
+  //     it through stage-failure-<stage>; otherwise the model/provider holds
+  //     the loop and the model-time budget owns it (no action). Stale control,
+  //     a human hold, a valid completion and an outstanding effect all rank
+  //     earlier; the disposition itself is never re-derived here (HOK-3386).
+  const reassessment = snapshot.reassessment;
+  if (snapshot.disposition?.kind === 'in-flight' && reassessment?.due === true) {
+    if (unverifiableIdentity) {
+      return decision(stage, 'wait', 'reassessment due but attempt identity is unverifiable; holding for reassessment', {
+        wait: { owner: 'tool', wake: 'attempt-identity-resolved' },
+      });
+    }
+    const hold = reassessment.harnessHold;
+    if (hold) {
+      // The kind is classified by the one failure policy from the same detail
+      // the monitor's settled-without-result stamp writes — never a literal here.
+      const fd = classifyFailure({ stage, detail: settledWithoutResultDetail(stage, 'harness-hung') });
+      const bucket = retryBucketFor(stage);
+      return decision(stage, 'retry-stage',
+        `reassessment due: no progress since ${reassessment.lastProgressAt ?? 'launch'}; harness tool ${hold.toolName} (${hold.toolCallId}) has held the loop since ${hold.startedAt}; settle and route through ${bucket}`,
+        { failureKind: fd.failureKind, nextAction: fd.nextAction, retryBucket: bucket, harnessHold: hold });
+    }
+    return decision(stage, 'no-action',
+      `reassessment due: no progress since ${reassessment.lastProgressAt ?? 'launch'}; the model/provider holds the loop — the model-time budget owns it`);
   }
 
   // 4. Live disposition: healthy / in-flight / advanced / terminal.
@@ -506,9 +578,13 @@ export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decisio
     }
     if (claim && !claim.acknowledgedAt && snapshot.disposition?.kind === 'in-flight'
         && snapshot.disposition.evidenceConfidence === 'high' && claim.owner
+        && snapshot.reassessment?.due !== true
         && recoveryOwnerReclaimable(claim)) {
       // Fresh ownership/liveness proves the dispatched launch took effect.
       // A dead notifier is not a reason to repeat a live agent's work.
+      // HOK-3382: except when the shared stall clock says reassess — a due
+      // reassessment over a live in-flight disposition is the very evidence
+      // that the claim's settle effect never landed, so it is never "applied".
       acknowledgeRecoveryAction(args.stateDir, claim.claimId);
       claim = readRecoveryClaim(args.stateDir);
     }
@@ -519,7 +595,12 @@ export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decisio
     if (claim && !claim.acknowledgedAt && claim.owner && recoveryOwnerReclaimable(claim)) {
       if (result?.status === 'completed' || result?.status === 'awaiting_user') {
         snapshot = { ...snapshot, stageResult: { kind: 'valid', status: result.status }, failure: null };
-      } else if ((result?.status === 'running' || !result) && snapshot.disposition?.kind !== 'settled') {
+      } else if ((result?.status === 'running' || !result) && snapshot.disposition?.kind !== 'settled'
+          && snapshot.reassessment?.due !== true) {
+        // HOK-3382: a due reassessment over a still-running stage proves a
+        // dead claim's settle never landed (the agent would be torn down);
+        // never read it as an outstanding effect — decide again below so the
+        // claim seam supersedes the abandoned claim.
         snapshot = { ...snapshot, stageResult: { kind: 'running' }, failure: null,
           outstandingEffect: { kind: claim.action, acknowledged: false } };
       }
@@ -557,18 +638,76 @@ export async function runControllerCli(): Promise<void> {
     const state = readWorkflowState(flag('--state-file') ?? '');
     const task = state?.tasks?.[issue];
     const result = await readStageResult(stateDir, stage);
+    const disposition = JSON.parse(dispositionJson) as RecoveryDisposition & {
+      launch?: { launchedAt?: string | null } | null;
+    };
+    // HOK-3382: the disposition CLI carries the shared stall clock's verdict
+    // (`progress.stalled`). When it is due and the stage is in-flight, resolve
+    // the stage transcript through the one path rule (task-progress's native
+    // session layout + the stage-time-split archive fallback) and read the
+    // harness-hold evidence off it. Fail-soft: no file or no open tool call
+    // leaves `harnessHold` null, and the due reassessment decides no-action.
+    let reassessment: RecoveryReassessment | null = null;
+    const progressJson = flag('--progress');
+    if (progressJson) {
+      try {
+        const progress = JSON.parse(progressJson) as { stalled?: unknown; lastProgressAt?: unknown } | null;
+        if (progress && typeof progress === 'object') {
+          reassessment = {
+            due: progress.stalled === true,
+            basis: 'no-progress',
+            lastProgressAt: typeof progress.lastProgressAt === 'string' ? progress.lastProgressAt : null,
+            harnessHold: null,
+          };
+        }
+      } catch {
+        reassessment = null; // a malformed progress payload is absent evidence
+      }
+    }
+    if (reassessment?.due === true && disposition?.kind === 'in-flight') {
+      const launchedAtMs = Date.parse(disposition?.launch?.launchedAt ?? '');
+      if (Number.isFinite(launchedAtMs)) {
+        const pointer = nativeSessionTranscriptPath({ phase: stage, issue });
+        const transcriptPath = resolveNativeTranscriptPath(pointer, { featureDir: stateDir, repoDir: process.cwd() });
+        if (transcriptPath) {
+          const hold = openHarnessToolCall(readNativeTranscriptEvents(transcriptPath), { fromMs: launchedAtMs, toMs: Date.now() });
+          if (hold) {
+            reassessment.harnessHold = {
+              toolName: hold.toolName,
+              toolCallId: hold.toolCallId,
+              startedAt: new Date(hold.startedAtMs).toISOString(),
+            };
+          }
+        }
+      }
+    }
     const snapshot: RecoverySnapshot = {
       issue, stage, attempt: { currentRunId: task?.runId ?? null, controlRunId: flag('--run-id') ?? task?.runId ?? null },
       evidence: { stageResult: result },
-      disposition: JSON.parse(dispositionJson),
+      disposition,
       stageResult: result?.status === 'completed' || result?.status === 'awaiting_user'
         ? { kind: 'valid', status: result.status } : { kind: 'running' },
       contractAvailable: null, outstandingEffect: null,
       wait: result?.status === 'awaiting_user' ? { owner: 'human', wake: 'operator-release' } : null, failure: null,
+      reassessment,
     };
+    // The hold joins the evidence id so one hang yields exactly one claim.
+    const evidenceId = `${stage}:${task?.runId ?? 'legacy'}:${result?.startedAt ?? 'unknown-launch'}:${JSON.stringify(snapshot.disposition?.blockingPrompt ?? snapshot.stageResult)}`
+      + (reassessment?.harnessHold ? `:hung:${reassessment.harnessHold.toolCallId}` : '');
     const outcome = await reconcileAndRecover({ stateDir, snapshot, issue, stateFile: flag('--state-file'),
       runId: snapshot.attempt.controlRunId, ownerPid: Number(flag('--owner-pid')) || process.ppid,
-      evidenceId: `${stage}:${task?.runId ?? 'legacy'}:${result?.startedAt ?? 'unknown-launch'}:${JSON.stringify(snapshot.disposition?.blockingPrompt ?? snapshot.stageResult)}` });
+      evidenceId });
+    if (outcome.claim.claimed) {
+      recordRecoveryAction(stateDir, {
+        at: outcome.claim.claim.claimedAt,
+        issue,
+        stage,
+        action: outcome.decision.action,
+        runId: snapshot.attempt.currentRunId,
+        evidenceId,
+        rationale: outcome.decision.rationale,
+      });
+    }
     process.stdout.write(`${JSON.stringify(outcome)}\n`);
     return;
   }

@@ -181,6 +181,51 @@ interface TaggedInterval {
   kind: 'model' | 'provider';
 }
 
+// ---------------------------------------------------------------------------
+// Open harness tool call (HOK-3382): the recovery controller's hang evidence
+// ---------------------------------------------------------------------------
+
+/**
+ * The harness-hold fact: the newest `tool_started` with no `tool_result`,
+ * naming the harness tool that currently holds the loop.
+ */
+export interface OpenHarnessToolCall {
+  toolName: string;
+  toolCallId: string;
+  /** Raw `Date.now()`-clock timestamp of the `tool_started` event. */
+  startedAtMs: number;
+}
+
+/**
+ * HOK-3382: is the loop currently held by a harness tool? Returns the newest
+ * unpaired `tool_started`, but only when no later `turn_started` or
+ * `assistant_message` exists — a later turn means the loop moved past that
+ * call (the model requested again), so an old unpaired call from a crashed
+ * batch never reads as a live hold. Reuses the one pairing pass
+ * (`pairToolCalls`); this module stays the only tool-interval pairing site.
+ *
+ * Pure: no I/O. `window` (raw timestamps, like the split) scopes the scan to
+ * the current attempt — callers pass `[launch.launchedAt, now]` so a previous
+ * attempt's events appended to the same transcript never produce a hold.
+ */
+export function openHarnessToolCall(
+  events: readonly TranscriptEvent[],
+  window?: NativeStageTimeSplitWindow,
+): OpenHarnessToolCall | null {
+  const scoped = window
+    ? events.filter((event) => event.timestamp >= window.fromMs && event.timestamp <= window.toMs)
+    : [...events];
+  const { unpaired } = pairToolCalls(scoped);
+  if (unpaired.length === 0) return null;
+  const newest = unpaired.reduce((a, b) => (b.timestamp >= a.timestamp ? b : a));
+  const movedPast = scoped.some(
+    (event) => event.timestamp > newest.timestamp
+      && (event.type === 'turn_started' || event.type === 'assistant_message'),
+  );
+  if (movedPast) return null;
+  return { toolName: newest.toolName, toolCallId: newest.toolCallId, startedAtMs: newest.timestamp };
+}
+
 /**
  * Zip `turn_started` with the `assistant_message` that follows it. A failed
  * request (`errorMessage`) is provider wait, and so is the backoff gap up to
@@ -316,6 +361,14 @@ function resolveTranscriptPath(pointerPath: string, dirs: ResolveNativeStageTime
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
+/**
+ * Public form of the pointer resolver (HOK-3382): the recovery controller
+ * resolves the stage transcript through this one rule, never a private path.
+ */
+export function resolveNativeTranscriptPath(pointerPath: string, dirs: ResolveNativeStageTimeSplitDirs = {}): string | null {
+  return resolveTranscriptPath(pointerPath, dirs);
+}
+
 /** Parse transcript JSONL tolerantly: malformed lines are skipped, never thrown. */
 function readTranscriptEventsTolerant(filePath: string): TranscriptEvent[] {
   let content: string;
@@ -335,6 +388,15 @@ function readTranscriptEventsTolerant(filePath: string): TranscriptEvent[] {
     }
   }
   return events;
+}
+
+/**
+ * Fail-soft transcript reader (HOK-3382): the events of a native transcript
+ * file, `[]` on any failure (missing file, unreadable, malformed lines).
+ * Reuses the same tolerant parse {@link resolveNativeStageTimeSplit} does.
+ */
+export function readNativeTranscriptEvents(filePath: string): TranscriptEvent[] {
+  return readTranscriptEventsTolerant(filePath);
 }
 
 /**

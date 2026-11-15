@@ -4503,7 +4503,7 @@ stage_agent_disposition() {
   printf '%s\n' "$out"
 }
 
-# _stage_stamp_settled_without_result <issue> <feature_dir> <result_stage> <reason> <current_head> [fallback_agent]
+# _stage_stamp_settled_without_result <issue> <feature_dir> <result_stage> <reason> <current_head> [fallback_agent] [harness_hold_json]
 # Stamps a stage `failed` because its agent settled without a result, so the
 # next tick routes it through classifyFailure → maybe_retry_failed_stage
 # (`stage-failure-<stage>`). The one writer of this record: the HOK-3386
@@ -4511,15 +4511,21 @@ stage_agent_disposition() {
 # The evidence says what was observed. `fallback_agent` covers a result file
 # that is missing or names no agent — a failed result without an agent reads
 # as a monitor terminalization and is never retried.
+# HOK-3382: `harness_hold_json` (optional) is the controller-derived open
+# harness tool call `{toolName, toolCallId, startedAt}` behind a `harness-hung`
+# stamp; it merges into `exitEvidence.harnessHold` so attribution reads the
+# typed evidence (harness-fault), never a detail substring.
 _stage_stamp_settled_without_result() {
-  local issue="$1" feature_dir="$2" result_stage="$3" reason="$4" current_head="${5:-}" fallback_agent="${6:-}"
+  local issue="$1" feature_dir="$2" result_stage="$3" reason="$4" current_head="${5:-}" fallback_agent="${6:-}" harness_hold="${7:-}"
   local agent model evidence_json detail artifacts_json
   agent="$(stage_result_field "$feature_dir" "$result_stage" "agent")"
   [[ -n "$agent" ]] || agent="$fallback_agent"
   model="$(resolve_stage_result_model "$feature_dir" "$result_stage" "")"
   if command -v jq >/dev/null 2>&1; then
     evidence_json="$(jq -cn --arg reason "$reason" --arg stage "$result_stage" --arg currentHead "${current_head:-unknown}" \
-      '{reason:$reason, stage:$stage, observedHead:$currentHead, observedAt:(now|todate)}' 2>/dev/null || echo "{}")"
+      --argjson hold "${harness_hold:-null}" \
+      '{reason:$reason, stage:$stage, observedHead:$currentHead, observedAt:(now|todate)}
+         + (if $hold == null then {} else {harnessHold: $hold} end)' 2>/dev/null || echo "{}")"
   else
     evidence_json="{}"
   fi
@@ -4627,7 +4633,8 @@ _stage_disposition_act_now() {
 
   local recovery_action recovery_outcome recovery_claim
   recovery_outcome="$(wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" \
-    --state-file "$STATE_FILE" --owner-pid "${recovery_owner_pid:-$$}" --run-id "$control_run_id" --issue "$issue" --stage "$result_stage" --disposition "$disposition" 2>/dev/null)"
+    --state-file "$STATE_FILE" --owner-pid "${recovery_owner_pid:-$$}" --run-id "$control_run_id" --issue "$issue" --stage "$result_stage" \
+    --disposition "$disposition" --progress "$(jq -c '.progress // null' <<<"$disposition" 2>/dev/null || printf 'null')" 2>/dev/null)"
   recovery_action="$(jq -r '.decision.action // "no-action"' <<<"$recovery_outcome")"
   case "$recovery_action" in
     consume-advance)
@@ -4638,6 +4645,42 @@ _stage_disposition_act_now() {
         wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" \
           --ack "$(jq -r '.claim.claim.claimId' <<<"$recovery_outcome")" >/dev/null
       fi
+      return 0 ;;
+    # HOK-3382: the controller's reassessment rule found a hung harness — the
+    # stage is stalled (shared stall clock) and its native transcript ends in
+    # an open tool call. Settle it through the one teardown seam and stamp the
+    # failure so the next tick routes through the stage-failure-<stage> seam.
+    retry-stage)
+      # Another notifier may already own this hang; only the claim holder acts.
+      [[ "$(jq -r '.claim.claimed // false' <<<"$recovery_outcome")" == "true" ]] || return 0
+      recovery_claim="$(jq -r '.claim.claim.claimId' <<<"$recovery_outcome")"
+      local hold_json hang_tool teardown_rc=0 stage_status_now
+      hold_json="$(jq -c '.decision.harnessHold // empty' <<<"$recovery_outcome" 2>/dev/null)"
+      hang_tool="$(jq -r '.decision.harnessHold.toolName // "unknown"' <<<"$recovery_outcome" 2>/dev/null)"
+      # Fence against a replaced run before any mutation (the controller's
+      # authoritative state reader, not this worker's cached pass snapshot).
+      local recovery_claim_id="$recovery_claim" recovery_state_dir="$feature_dir" recovery_issue="$issue"
+      if ! _recovery_continuation_current; then
+        wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" --ack "$recovery_claim" --outcome reassess >/dev/null
+        return 0
+      fi
+      # The teardown seam records the exit fact; --no-settle: the process is
+      # alive and we are not waiting for it to settle on its own.
+      stage_agent_teardown "$issue" "$feature_dir" "harness-hung" --phase "$stage" --worktree "$wt_dir" --no-settle || teardown_rc=$?
+      if [[ "$teardown_rc" -eq 0 ]]; then
+        # A completion that landed before the teardown is the normal
+        # transition's, never a settled-without-result failure.
+        stage_status_now="$(read_stage_status "$feature_dir" "$result_stage" 2>/dev/null || true)"
+        if [[ "$stage_status_now" == "completed" || "$stage_status_now" == "awaiting_user" || -e "$feature_dir/.${result_stage}-complete" ]]; then
+          wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" --ack "$recovery_claim" >/dev/null
+          return 0
+        fi
+        _stage_stamp_settled_without_result "$issue" "$feature_dir" "$result_stage" "harness-hung" "$current_head" "" "$hold_json"
+        wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" --ack "$recovery_claim" >/dev/null
+        log_warn "$issue → ${stage} harness hung in ${hang_tool} (no progress since $(jq -r '.progress.lastProgressAt // "launch"' <<<"$disposition" 2>/dev/null || printf 'launch')) - settled for stage-failure-${result_stage}"
+        return 1
+      fi
+      wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" --ack "$recovery_claim" --outcome reassess >/dev/null
       return 0 ;;
     # This adapter already runs in a tracked job. The controller reads the
     # fresh disposition and result, acknowledging observed application; the

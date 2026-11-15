@@ -155,6 +155,24 @@
         "failureCategory": {
           "type": "string"
         },
+        "exitEvidence": {
+          "description": "Factual evidence recorded when a stage settled without a result (HOK-3137, HOK-3386). HOK-3382: harnessHold names the open harness tool call that held the loop when the recovery controller settled a hung native stage; its presence makes the settled-without-result failure a harness fault, never model signal.",
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "harnessHold": {
+              "description": "HOK-3382: the newest unpaired tool_started in the stage's native transcript at reassessment time.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["toolName", "toolCallId", "startedAt"],
+              "properties": {
+                "toolName": { "type": "string" },
+                "toolCallId": { "type": "string" },
+                "startedAt": { "type": "string" }
+              }
+            }
+          }
+        },
         "usage": {
           "$ref": "#/$defs/stageExecutionUsage"
         }
@@ -281,7 +299,9 @@
       "additionalProperties": false,
       "properties": {
         "kind": {
+          "description": "HOK-3382: 'model_time' is the model-attributable-time budget (the clock pauses while a harness tool executes); 'wall_clock' is the deprecated pre-rename spelling, still accepted on append-only history.",
           "enum": [
+            "model_time",
             "wall_clock",
             "turn",
             "tool_call",
@@ -290,7 +310,9 @@
           ]
         },
         "stopReason": {
+          "description": "HOK-3382: 'model_time_limit' pairs with kind 'model_time'; 'wall_clock_limit' is the deprecated pre-rename spelling.",
           "enum": [
+            "model_time_limit",
             "wall_clock_limit",
             "turn_limit",
             "tool_call_limit",

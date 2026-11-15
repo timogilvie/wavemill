@@ -99,7 +99,20 @@ runTool({
         getProgress,
       });
       if (progressCache) writeProgressCache(session, issue, progressCache);
-      console.log(JSON.stringify(disposition));
+      // HOK-3382: carry the shared stall-clock facts so the recovery
+      // controller's reassessment rule reads them from this same evaluation
+      // instead of re-deriving progress (the gather already happened).
+      const output = progressCache
+        ? {
+          ...disposition,
+          progress: {
+            stalled: progressCache.stalled,
+            lastProgressAt: progressCache.lastProgressAt,
+            stallMinutes: progressCache.stallMinutes,
+          },
+        }
+        : disposition;
+      console.log(JSON.stringify(output));
     } catch {
       console.log(JSON.stringify({ kind: 'in-flight', reason: 'progress-unavailable', currentHead, stage: stageArg ?? null }));
     }

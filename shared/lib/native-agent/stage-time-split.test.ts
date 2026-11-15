@@ -8,6 +8,7 @@ import {
   NATIVE_STAGE_TIME_SPLIT_VERSION,
   formatTimeSplit,
   nativeStageTimeSplit,
+  openHarnessToolCall,
   resolveNativeStageTimeSplit,
   type NativeStageTimeSplitWindow,
 } from './stage-time-split.ts';
@@ -245,8 +246,107 @@ describe('nativeStageTimeSplit — synthetic scenarios', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Resolver
+// openHarnessToolCall (HOK-3382)
 // ---------------------------------------------------------------------------
+
+describe('openHarnessToolCall', () => {
+  // protects: the recovery controller settling a stage whose loop is held by a harness tool
+  it('returns the hold for a trailing unpaired tool_started', () => {
+    const events: TranscriptEvent[] = [
+      sessionStarted(0),
+      turnStarted(100, 0),
+      assistantMessage(200),
+      toolStarted(300, 'call-1'),
+    ];
+    const hold = openHarnessToolCall(events);
+    assert.deepEqual(hold, { toolName: 'run_tests', toolCallId: 'call-1', startedAtMs: 300 });
+  });
+
+  it('returns null once the tool_result lands', () => {
+    const events: TranscriptEvent[] = [
+      sessionStarted(0),
+      toolStarted(100, 'call-1'),
+      toolResult(200, 'call-1'),
+    ];
+    assert.equal(openHarnessToolCall(events), null);
+  });
+
+  it('returns null when a later turn_started moved the loop past the call', () => {
+    const events: TranscriptEvent[] = [
+      sessionStarted(0),
+      toolStarted(100, 'call-1'),
+      turnStarted(200, 1),
+    ];
+    assert.equal(openHarnessToolCall(events), null);
+  });
+
+  it('returns null when a later assistant_message moved the loop past the call', () => {
+    const events: TranscriptEvent[] = [
+      sessionStarted(0),
+      toolStarted(100, 'call-1'),
+      assistantMessage(200),
+    ];
+    assert.equal(openHarnessToolCall(events), null);
+  });
+
+  it('returns null for an empty stream', () => {
+    assert.equal(openHarnessToolCall([]), null);
+  });
+
+  // protects: an old crashed batch's unpaired call false-positiving as a live hold
+  it('ignores an old unpaired call the loop moved past with more turns', () => {
+    const events: TranscriptEvent[] = [
+      sessionStarted(0),
+      toolStarted(100, 'crashed-batch'),
+      turnStarted(200, 1),
+      assistantMessage(300),
+      toolStarted(400, 'paired'),
+      toolResult(500, 'paired'),
+      turnStarted(600, 2),
+      assistantMessage(700),
+    ];
+    assert.equal(openHarnessToolCall(events), null);
+  });
+
+  it('names the newest unpaired call when several are open', () => {
+    const events: TranscriptEvent[] = [
+      sessionStarted(0),
+      toolStarted(100, 'older', 'read_file'),
+      toolStarted(200, 'newer', 'run_tests'),
+    ];
+    const hold = openHarnessToolCall(events);
+    assert.equal(hold?.toolCallId, 'newer');
+    assert.equal(hold?.toolName, 'run_tests');
+  });
+
+  // protects: a previous attempt appended to the same transcript leaking into the current one
+  it('scopes the scan to the window: a prior attempt unpaired call never holds', () => {
+    const events: TranscriptEvent[] = [
+      sessionStarted(0),
+      toolStarted(100, 'prior-attempt-call'),
+      sessionEnded(200),
+      sessionStarted(1000),
+      turnStarted(1100, 0),
+      assistantMessage(1200),
+    ];
+    assert.equal(openHarnessToolCall(events, { fromMs: 1000, toMs: 2000 }), null);
+  });
+
+  it('finds the hold inside the window when a prior attempt also ran', () => {
+    const events: TranscriptEvent[] = [
+      sessionStarted(0),
+      toolStarted(100, 'prior-attempt-call'),
+      sessionEnded(200),
+      sessionStarted(1000),
+      turnStarted(1100, 0),
+      assistantMessage(1200),
+      toolStarted(1300, 'current-call'),
+    ];
+    const hold = openHarnessToolCall(events, { fromMs: 1000, toMs: 2000 });
+    assert.equal(hold?.toolCallId, 'current-call');
+    assert.equal(hold?.startedAtMs, 1300);
+  });
+});
 
 describe('resolveNativeStageTimeSplit', () => {
   // protects: a missing pointer or missing file silently producing a fabricated split
