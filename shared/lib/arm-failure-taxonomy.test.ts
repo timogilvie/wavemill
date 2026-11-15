@@ -454,3 +454,28 @@ test('a genuine upstream 5xx still classifies as provider-fault', () => {
     'provider-fault',
   );
 });
+
+// protects: HOK-3382 — a hung-harness settle being charged to the model
+test('coding-exited-without-result derives its class from the typed exit evidence (HOK-3382)', () => {
+  const hold = { toolName: 'run_tests', toolCallId: 'call-7', startedAt: '2026-11-13T00:10:00Z' };
+  // With the typed harnessHold the recovery controller settled the stage for a
+  // hung harness tool, so the stop was the harness's, never model signal.
+  assert.equal(
+    classifyArmFault({ failureKind: 'coding-exited-without-result', exitEvidence: { reason: 'harness-hung', harnessHold: hold } }),
+    'harness-fault',
+  );
+  assert.equal(
+    isModelQualitySignal(classifyArmFault({ failureKind: 'coding-exited-without-result', exitEvidence: { reason: 'harness-hung', harnessHold: hold } })),
+    false,
+  );
+  // Without it - or with a malformed hold - the historical model-fault reading is unchanged.
+  assert.equal(classifyArmFault({ failureKind: 'coding-exited-without-result' }), 'model-fault');
+  assert.equal(
+    classifyArmFault({ failureKind: 'coding-exited-without-result', exitEvidence: { reason: 'agent-stalled' } }),
+    'model-fault',
+  );
+  assert.equal(
+    classifyArmFault({ failureKind: 'coding-exited-without-result', exitEvidence: { reason: 'harness-hung', harnessHold: { toolName: 'run_tests' } } }),
+    'model-fault',
+  );
+});

@@ -11,6 +11,7 @@ import {
 } from './arm-failure-taxonomy.ts';
 import { parseBudgetExhaustedFact, type BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 import { resolveNativeStageTimeSplit, type NativeStageTimeSplit } from './native-agent/stage-time-split.ts';
+import { readStageResultSync, type StageName } from './stage-result.ts';
 
 const DEFAULT_EVALS_DIR = '.wavemill/evals';
 const RELIABILITY_RECORDS_FILENAME = 'reliability-records.jsonl';
@@ -76,11 +77,44 @@ export interface BuildArmReliabilityRecordInput {
  * harness diagnostics while keeping harness/selection/unknown faults out of
  * model-quality routing feedback.
  */
+/**
+ * HOK-3382: the settled-without-result stamp's typed exit evidence for the
+ * stage's latest attempt - the current result's `artifacts.exitEvidence`,
+ * falling back to the newest archived history entry that carried one.
+ * Fail-soft: absent or unreadable evidence yields `undefined`, which
+ * `classifyArmFault` reads as the unchanged model-fault fallback.
+ */
+export function readStageExitEvidence(
+  featureDir: string,
+  stage: StageName,
+): { reason?: string | null; harnessHold?: unknown } | undefined {
+  const result = readStageResultSync(featureDir, stage);
+  if (!result) return undefined;
+  const current = result.artifacts && typeof result.artifacts === 'object'
+    ? (result.artifacts as { exitEvidence?: unknown }).exitEvidence
+    : undefined;
+  if (current && typeof current === 'object') {
+    return current as { reason?: string | null; harnessHold?: unknown };
+  }
+  const history = Array.isArray(result.history) ? result.history : [];
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const entry = history[index]?.exitEvidence;
+    if (entry && typeof entry === 'object') {
+      return entry as { reason?: string | null; harnessHold?: unknown };
+    }
+  }
+  return undefined;
+}
+
 export function buildArmReliabilityRecord(input: BuildArmReliabilityRecordInput): ArmReliabilityRecord {
   const failureKind = parseAbortFailureKind(input.abortReason);
   const budgetExhausted = parseBudgetExhaustedFact(input.budgetExhausted ?? null);
   const timeSplit = resolveNativeStageTimeSplit(budgetExhausted, { featureDir: input.featureDir }) ?? undefined;
-  const faultClass = classifyArmFault({ failureKind, detail: input.detail, budgetExhausted, timeSplit });
+  // HOK-3382: a hung-harness settle is the harness's fault, not the model's.
+  const exitEvidence = input.featureDir && failureKind === 'coding-exited-without-result'
+    ? readStageExitEvidence(input.featureDir, 'coding')
+    : undefined;
+  const faultClass = classifyArmFault({ failureKind, detail: input.detail, budgetExhausted, timeSplit, exitEvidence });
   return {
     schemaVersion: '1.0.0',
     id: input.id ?? randomUUID(),

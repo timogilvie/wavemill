@@ -198,6 +198,30 @@ export function deriveBudgetExhaustionFaultClass(
  * Harness, selection, and unknown faults are intentionally excluded so routing
  * does not learn to avoid a model because of our configuration or scheduling.
  */
+/**
+ * HOK-3382: the settled-without-result stamp's typed exit evidence
+ * (`artifacts.exitEvidence` on the stage result). `harnessHold` names the
+ * open harness tool call the recovery controller found when it settled a
+ * hung native stage (rule 4a).
+ */
+export interface StageExitEvidence {
+  reason?: string | null;
+  harnessHold?: unknown;
+}
+
+/**
+ * A hold counts as evidence only when it names the call - the shape
+ * `artifacts.exitEvidence.harnessHold` carries (stage-result.schema.json).
+ * Anything else (a bare string, a partial object) is absent evidence.
+ */
+export function isHarnessHoldEvidence(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const hold = value as Record<string, unknown>;
+  return typeof hold.toolName === 'string' && hold.toolName.length > 0
+    && typeof hold.toolCallId === 'string' && hold.toolCallId.length > 0
+    && typeof hold.startedAt === 'string' && hold.startedAt.length > 0;
+}
+
 export function classifyArmFault(input: {
   failureKind?: string | null;
   detail?: string | null;
@@ -205,6 +229,8 @@ export function classifyArmFault(input: {
   budgetExhausted?: BudgetExhaustedFact | null;
   /** HOK-3380: the derived transcript time split for a budget-exhaustion failure. */
   timeSplit?: NativeStageTimeSplit | null;
+  /** HOK-3382: the settled-without-result stamp's typed exit evidence. */
+  exitEvidence?: StageExitEvidence | null;
 }): ArmFaultClass {
   const failureKind = input.failureKind ?? '';
   const detail = (input.detail ?? '').toLowerCase();
@@ -297,13 +323,20 @@ export function classifyArmFault(input: {
     case 'route-drift':
     case 'multiple-varied-roles':
       return 'harness-fault';
-    // HOK-3129: the reviewer finished without findings or a terminal verdict;
-    // the coding agent exited leaving a durable-commit-preserved interruption.
-    // Both are model-attributable (the provider delivered output; the model
-    // failed to produce usable content).
+    // HOK-3129: the reviewer finished without findings or a terminal verdict
+    // - model-attributable (the provider delivered output; the model failed
+    // to produce usable content).
     case 'review-no-output':
-    case 'coding-exited-without-result':
       return 'model-fault';
+    // HOK-3129: the coding agent exited leaving a durable-commit-preserved
+    // interruption - model-attributable. HOK-3382: with one evidence-derived
+    // exception, the same move HOK-3362 made for `native-stage-timeout`: when
+    // the stamp carries a typed `harnessHold`, the recovery controller settled
+    // the stage because our own harness tool held the loop (rule 4a), so the
+    // failure is the harness's, never model signal. Without that evidence the
+    // historical model-fault reading is unchanged.
+    case 'coding-exited-without-result':
+      return isHarnessHoldEvidence(input.exitEvidence?.harnessHold) ? 'harness-fault' : 'model-fault';
     // HOK-3129: the planning artifact failed structural validation (both the
     // base variant and the pre-suffix startsWith branch above). Model-fault
     // only reaches this arm when the suffixed form was not emitted.

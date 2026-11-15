@@ -5,6 +5,7 @@ import type { EvalRecord } from './eval-schema.ts';
 import { classifyArmFault, isModelQualitySignal, parseAbortFailureKind } from './arm-failure-taxonomy.ts';
 import { parseBudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 import { resolveNativeStageTimeSplit } from './native-agent/stage-time-split.ts';
+import { readStageExitEvidence } from './arm-reliability.ts';
 import { normalizeChallengeStage } from './challenge-route-check.ts';
 import { resolveTaskArtifact } from './task-artifact-lookup.ts';
 import { resolveStageExecutedModel } from './executed-model-resolver.ts';
@@ -48,8 +49,12 @@ export async function prepareTerminalArmFeedback(
     const budgetExhausted = parseBudgetExhaustedFact(termination.budgetExhausted);
     const failureKind = parseAbortFailureKind(termination.reason);
     if (!failureKind) return unchanged;
+    // HOK-3382: a hung-harness settle is the harness's fault, not the model's.
+    const exitEvidence = failureKind === 'coding-exited-without-result'
+      ? readStageExitEvidence(featureDir, 'coding')
+      : undefined;
     const faultClass = classifyArmFault({ failureKind, detail: termination.detail, budgetExhausted,
-      timeSplit: resolveNativeStageTimeSplit(budgetExhausted, { featureDir }) ?? undefined });
+      timeSplit: resolveNativeStageTimeSplit(budgetExhausted, { featureDir }) ?? undefined, exitEvidence });
     if (!isModelQualitySignal(faultClass)) return unchanged;
     const worktreePath = lookup.worktreeDir ?? options.repoDir;
     const branchName = options.branchName ?? '';

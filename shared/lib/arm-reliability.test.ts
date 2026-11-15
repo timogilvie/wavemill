@@ -163,3 +163,89 @@ test('resolves and records a timeSplit, and derives harness-fault, from an archi
     rmSync(repoDir, { recursive: true, force: true });
   }
 });
+
+// protects: HOK-3382 — a hung-harness coding arm being written as a model fault
+test('derives harness-fault from the coding stage exit evidence harnessHold (HOK-3382)', () => {
+  const featureDir = mkdtempSync(join(tmpdir(), 'arm-reliability-hold-'));
+  try {
+    writeFileSync(
+      join(featureDir, '.coding-result.json'),
+      JSON.stringify({
+        stage: 'coding',
+        status: 'failed',
+        startedAt: '2026-11-13T00:00:00Z',
+        finishedAt: '2026-11-13T00:30:00Z',
+        agent: 'native-openrouter',
+        model: 'glm-5.3-flash',
+        notes: 'Interrupted: coding agent settled without a result (harness-hung)',
+        artifacts: {
+          type: 'coding',
+          terminationClass: 'interrupted',
+          exitEvidence: {
+            reason: 'harness-hung',
+            harnessHold: { toolName: 'run_tests', toolCallId: 'call-7', startedAt: '2026-11-13T00:10:00Z' },
+          },
+        },
+      }),
+    );
+    const record = buildArmReliabilityRecord({
+      issueId: 'HOK-3382_c',
+      challengePairId: 'HOK-3382',
+      challengeRole: 'challenger',
+      stage: 'coding',
+      model: 'glm-5.3-flash',
+      abortReason: 'terminal_stage_failure:coding-exited-without-result',
+      featureDir,
+    });
+    assert.equal(record.failureKind, 'coding-exited-without-result');
+    assert.equal(record.faultClass, 'harness-fault');
+    assert.equal(record.qualitySignalEligible, false);
+  } finally {
+    rmSync(featureDir, { recursive: true, force: true });
+  }
+});
+
+// protects: HOK-3382 — the harnessHold surviving archival into history (the retry relaunches)
+test('reads the harnessHold from the newest archived history attempt (HOK-3382)', () => {
+  const featureDir = mkdtempSync(join(tmpdir(), 'arm-reliability-hold-history-'));
+  try {
+    writeFileSync(
+      join(featureDir, '.coding-result.json'),
+      JSON.stringify({
+        stage: 'coding',
+        status: 'running',
+        startedAt: '2026-11-13T01:00:00Z',
+        agent: 'native-openrouter',
+        model: 'glm-5.3-flash',
+        notes: 'Recovery replay of persisted execution contract',
+        history: [
+          {
+            status: 'failed',
+            agent: 'native-openrouter',
+            model: 'glm-5.3-flash',
+            startedAt: '2026-11-13T00:00:00Z',
+            finishedAt: '2026-11-13T00:30:00Z',
+            notes: 'Interrupted: coding agent settled without a result (harness-hung)',
+            exitEvidence: {
+              reason: 'harness-hung',
+              harnessHold: { toolName: 'run_tests', toolCallId: 'call-7', startedAt: '2026-11-13T00:10:00Z' },
+            },
+          },
+        ],
+      }),
+    );
+    const record = buildArmReliabilityRecord({
+      issueId: 'HOK-3382_c',
+      challengePairId: 'HOK-3382',
+      challengeRole: 'challenger',
+      stage: 'coding',
+      model: 'glm-5.3-flash',
+      abortReason: 'retry_exhausted:coding-exited-without-result',
+      featureDir,
+    });
+    assert.equal(record.faultClass, 'harness-fault');
+    assert.equal(record.qualitySignalEligible, false);
+  } finally {
+    rmSync(featureDir, { recursive: true, force: true });
+  }
+});

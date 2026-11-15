@@ -40,6 +40,7 @@ import {
 import { repairChallengePairingSync } from './challenge-pairing-repair.ts';
 import { parseBudgetExhaustedFact, type BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 import { resolveNativeStageTimeSplit, type NativeStageTimeSplit } from './native-agent/stage-time-split.ts';
+import { readStageExitEvidence } from './arm-reliability.ts';
 import {
   recordSelectionOutcome,
   releaseReservation,
@@ -965,17 +966,20 @@ function hasOtherOpenPrForPair(
 function readArchivedBudgetFact(
   evalsDir: string | undefined,
   issueId: string,
-): { fact: BudgetExhaustedFact | null; timeSplit: NativeStageTimeSplit | null } {
-  if (!evalsDir) return { fact: null, timeSplit: null };
+): { fact: BudgetExhaustedFact | null; timeSplit: NativeStageTimeSplit | null; exitEvidence: { reason?: string | null; harnessHold?: unknown } | undefined } {
+  if (!evalsDir) return { fact: null, timeSplit: null, exitEvidence: undefined };
   const artifactDir = join(evalsDir, 'artifacts', issueId);
   const artifactPath = join(artifactDir, '.challenge-aborted.json');
-  if (!existsSync(artifactPath)) return { fact: null, timeSplit: null };
+  // HOK-3382: the settled coding attempt's typed exit evidence rides the same
+  // archive (`<artifactDir>/.coding-result.json`); fail-soft when absent.
+  const exitEvidence = readStageExitEvidence(artifactDir, 'coding');
+  if (!existsSync(artifactPath)) return { fact: null, timeSplit: null, exitEvidence };
   try {
     const fact = parseBudgetExhaustedFact((JSON.parse(readFileSync(artifactPath, 'utf-8')) as { budgetExhausted?: unknown }).budgetExhausted);
     const timeSplit = resolveNativeStageTimeSplit(fact, { featureDir: artifactDir });
-    return { fact, timeSplit };
+    return { fact, timeSplit, exitEvidence };
   } catch {
-    return { fact: null, timeSplit: null };
+    return { fact: null, timeSplit: null, exitEvidence };
   }
 }
 
@@ -988,12 +992,13 @@ function buildArmFailures(
     .filter((task): task is TaskEvalState => Boolean(task?.challengeAborted))
     .map((task) => {
       const failureKind = parseAbortFailureKind(task.challengeAborted);
-      const { fact, timeSplit } = readArchivedBudgetFact(evalsDir, task.issueId);
+      const { fact, timeSplit, exitEvidence } = readArchivedBudgetFact(evalsDir, task.issueId);
       const faultClass = classifyArmFault({
         failureKind,
         detail: task.challengeAbortedDetail,
         budgetExhausted: fact,
         timeSplit,
+        exitEvidence,
       });
       return {
         side: task.role,

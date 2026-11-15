@@ -40,6 +40,7 @@ import { parseBudgetExhaustedFact, type BudgetExhaustedFact } from './native-age
 import { resolveNativeStageTimeSplit } from './native-agent/stage-time-split.ts';
 import {
   appendArmReliabilityRecord,
+  readStageExitEvidence,
   type ArmReliabilityRecord,
 } from './arm-reliability.ts';
 import { recordSelectionOutcome } from './challenge-selection-health.ts';
@@ -198,11 +199,16 @@ export async function recordArmTermination(input: RecordArmTerminationInput): Pr
   const budgetExhausted = parseBudgetExhaustedFact(input.budgetExhausted ?? null);
   const featureDir = input.featureDir;
   const timeSplit = resolveNativeStageTimeSplit(budgetExhausted, { featureDir }) ?? undefined;
+  // HOK-3382: a hung-harness settle is the harness's fault, not the model's.
+  const exitEvidence = kind === 'coding-exited-without-result' && featureDir
+    ? readStageExitEvidence(featureDir, 'coding')
+    : undefined;
   const faultClass = classifyArmFault({
     failureKind: kind,
     detail: input.detail,
     budgetExhausted,
     timeSplit,
+    exitEvidence,
   });
   const qualitySignalEligible = isModelQualitySignal(faultClass);
 

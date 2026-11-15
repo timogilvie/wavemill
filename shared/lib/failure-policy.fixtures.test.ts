@@ -130,6 +130,14 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     expectedKind: 'coding-exited-without-result',
   },
   {
+    // HOK-3382: the recovery controller's hung-harness stamp shares the
+    // settled-without-result wording; the kind is the same coding kind.
+    name: 'HOK-3382: coding settled without a result (harness-hung)',
+    evidence: { stage: 'coding', detail: 'Interrupted: coding agent settled without a result (harness-hung)' },
+    expectedClass: 'retryable',
+    expectedKind: 'coding-exited-without-result',
+  },
+  {
     name: 'HOK-3129: review produced no findings',
     evidence: { stage: 'review', detail: 'Native review flow failed after 0 findings' },
     expectedClass: 'retryable',
@@ -424,4 +432,13 @@ test('eval job evidence remains unattributed and genuine model faults require id
   assert.equal(classifyFailure(fault).attribution, 'unattributed');
   assert.equal(classifyFailure({ ...fault, executionEvidence: { source: 'provider-response', model: '' } }).attribution, 'unattributed');
   assert.equal(classifyFailure({ ...fault, executionEvidence: { source: 'provider-response', model: 'verified-model' } }).attribution, 'model');
+});
+
+// protects: HOK-3382 — the hung-harness settle retrying under stage-failure-coding, unattributed
+test('HOK-3382: harness-hung settled detail is retryable under stage-failure-coding, unattributed', () => {
+  const decision = classifyFailure({ stage: 'coding', detail: 'Interrupted: coding agent settled without a result (harness-hung)' });
+  assert.equal(decision.class, 'retryable');
+  assert.equal(decision.failureKind, 'coding-exited-without-result');
+  assert.equal(decision.retryBucket, 'stage-failure-coding');
+  assert.equal(decision.attribution, 'unattributed');
 });

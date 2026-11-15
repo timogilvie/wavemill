@@ -520,7 +520,7 @@ const NEXT_ACTIONS: Readonly<Record<string, string>> = {
   'coding-dirty-handoff': 'the coding agent exited after writing .coding-complete with uncommitted output and did not repair it when relaunched (completion-protocol failure); the challenger is forfeited so the primary proceeds',
   'planning-artifact-invalid': 'the plan artifact failed structural validation after one repair turn. Inspect the recorded validationError and relaunch on a stronger planner',
   'review-no-output': 'the review model finished without emitting findings or a terminal verdict. Relaunch the review phase on a stronger reviewer',
-  'coding-exited-without-result': 'the coding agent exited without recording a terminal result (durable commits preserved). Relaunch coding to resume from the last durable commit',
+  'coding-exited-without-result': 'the coding agent exited without recording a terminal result (durable commits preserved); when exitEvidence.harnessHold is present the harness held the loop (HOK-3382), so inspect the named tool before relaunching. Relaunch coding to resume from the last durable commit',
   'native-unclassified': 'unrecognised failure signature: the mill retries it with backoff and one fresh relaunch before escalating. Inspect the recorded detail if it escalates',
 };
 

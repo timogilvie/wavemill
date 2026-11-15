@@ -535,6 +535,8 @@ export type StageResultHistoryEntry = Pick<
   modelAttributionIneligibleReason?: ModelAttributionIneligibleReason;
   /** HOK-3362: carried from the archived attempt. */
   budgetExhausted?: BudgetExhaustedFact;
+  /** HOK-3382: the settled-without-result stamp's typed exit evidence, carried from the archived attempt's artifacts. */
+  exitEvidence?: Record<string, unknown>;
 };
 
 /** All stage result files found in a feature directory. */
@@ -1211,6 +1213,11 @@ export async function writeStageResultWithHistory(
   const now = new Date().toISOString();
   const existingHistory = existing?.history ?? [];
   const shouldArchive = existing?.status === 'failed' || existing?.status === 'aborted';
+  // HOK-3382: carry the settled-without-result stamp's typed exit evidence so
+  // attribution can still read it after the failed attempt is archived.
+  const existingExitEvidence = existing?.artifacts && typeof existing.artifacts === 'object'
+    ? (existing.artifacts as { exitEvidence?: Record<string, unknown> }).exitEvidence
+    : undefined;
   const historyEntry: StageResultHistoryEntry[] = shouldArchive && existing
     ? [{
       status: existing.status,
@@ -1226,6 +1233,7 @@ export async function writeStageResultWithHistory(
       modelAttributionIneligibleReason: existing.modelAttributionIneligibleReason,
       ...(existing.failureReason !== undefined ? { failureReason: existing.failureReason } : {}),
       ...(existing.budgetExhausted ? { budgetExhausted: existing.budgetExhausted } : {}),
+      ...(existingExitEvidence && typeof existingExitEvidence === 'object' ? { exitEvidence: existingExitEvidence } : {}),
     }]
     : [];
 
