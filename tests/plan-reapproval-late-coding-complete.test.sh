@@ -212,6 +212,7 @@ agent_resolve_from_model() {
 agent_validate_phase_launch() { return 0; }
 _prepare_recovery_phase_launch() {
   printf 'prepare=%s/%s/%s\n' "$1" "$3" "$6" >> "$LAUNCH_SPY"
+  write_stage_result "$4" "$3" running "$6" "$7"
   return 0
 }
 launch_coding_phase() {

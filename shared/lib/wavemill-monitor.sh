@@ -8640,7 +8640,7 @@ _maybe_retry_failed_stage_now() {
     *) rc=2 ;;
   esac
   local outcome=applied
-  [[ "$rc" == "0" && "$recovery_cancelled" != true ]] || outcome=reassess
+  [[ ( "$rc" == "0" || "$action" == "escalate" ) && "$recovery_cancelled" != true ]] || outcome=reassess
   wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" --ack "$claim_id" --outcome "$outcome" >/dev/null
   return "$rc"
 }
