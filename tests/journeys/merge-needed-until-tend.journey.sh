@@ -45,6 +45,11 @@ journey_wait_until "$ISSUE" 5  "task launched into planning"        phase_is pla
 journey_wait_until "$ISSUE" 15 "review launched"                    phase_is review
 journey_wait_until "$ISSUE" 15 "Ready parks the PR at merge-needed" ready_parked_merge_needed
 
+# The monitor finishes writing the parked result within the tick that parks
+# it; snapshot one tick later so a later change can only be a Ready re-run.
+settle_until=$(( $(journey_tick) + 1 ))
+parked_result_settled() { (( $(journey_tick) >= settle_until )); }
+journey_wait_until "$ISSUE" 3  "parked result settles"              parked_result_settled
 parked_finished_at="$(ready_result | jq -r '.finishedAt // empty')"
 parked_executor="$(ready_result | jq -r '.artifacts.mergeExecutor // empty')"
 # Hold for a few ticks: nothing may advance a merge-needed PR without tend.
