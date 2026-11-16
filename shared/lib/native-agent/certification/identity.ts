@@ -154,7 +154,7 @@ export function resolveCertificationSubject(input: {
   const compat = Object.entries(capabilities.nativeCapability?.compatFlags ?? {}).filter(([key]) => key !== 'openRouterRouting').sort(([a], [b]) => a.localeCompare(b));
   const endpointBaseHash = endpoint ? createHash('sha256').update(JSON.stringify({ baseCatalogHash, runtimeVersions,
     patchVersion: NATIVE_PATCH_VERSION, suiteVersion: capabilities.nativeCapability?.certification?.certificationSuiteVersion,
-    transport: capabilities.nativeCapability?.piTransportKind, compatibility: compat, contract: 'endpoint-qualification/v1' })).digest('hex') : baseCatalogHash;
+    transport: capabilities.nativeCapability?.piTransportKind, compatibility: compat, contract: 'endpoint-qualification/v2' })).digest('hex') : baseCatalogHash;
   const catalogHash = foldOpenRouterRoutingIntoCatalogHash(
     endpointBaseHash,
     (endpoint ? endpointRouting(endpoint) : getOpenRouterRouting(input.registry, registryKey)) as Record<string, unknown> | undefined,

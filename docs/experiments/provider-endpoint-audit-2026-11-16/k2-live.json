@@ -1,0 +1,1106 @@
+{
+  "schemaVersion": "endpoint-comparison-report/v1",
+  "plan": {
+    "schemaVersion": "endpoint-comparison-plan/v2",
+    "policy": {
+      "maxSpendUsd": 10,
+      "maxCompletionRegression": 0.05,
+      "confidence": 0.95,
+      "maxP95LatencyRatio": 2
+    },
+    "referenceTag": "moonshotai",
+    "subjects": [
+      {
+        "tag": "moonshotai",
+        "providerName": "Moonshot AI",
+        "quantization": "unknown",
+        "deploymentRevision": null
+      },
+      {
+        "tag": "coreweave/int4",
+        "providerName": "CoreWeave",
+        "quantization": "int4",
+        "deploymentRevision": null
+      }
+    ],
+    "requiredPairs": 73,
+    "profiles": [
+      "workflow",
+      "cache-heavy"
+    ],
+    "reservePerRunUsd": 1,
+    "admission": "sdk-accounted-spend-plus-next-run-reserve/v1",
+    "runs": [
+      {
+        "pair": -1,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": -1,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "coreweave/int4",
+          "providerName": "CoreWeave",
+          "quantization": "int4",
+          "deploymentRevision": null
+        }
+      }
+    ],
+    "schedule": "compatibility-first; pair-ascending; profile-order; endpoint-index=(index+pair)%subject-count",
+    "stoppingRules": [
+      "Missing accounting or an unaffordable next-run reserve stops the study.",
+      "A non-passing reference compatibility run stops paired testing.",
+      "A definitive candidate failure rejects it; subsequent candidate probes are skipped. All prior outcomes remain."
+    ],
+    "plannedRunCount": 294,
+    "qualificationScope": "exact requested tag with observed host; deployment/quantization not independently attested"
+  },
+  "runs": [
+    {
+      "pair": -1,
+      "profile": "standard",
+      "endpoint": {
+        "tag": "moonshotai",
+        "providerName": "Moonshot AI",
+        "quantization": "unknown",
+        "deploymentRevision": null
+      },
+      "result": {
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        },
+        "attemptEvidence": [
+          {
+            "attemptId": "1d2ee653-0472-4715-b207-9d0d9d7edb36",
+            "status": "inconclusive",
+            "reason": "identity_mismatch",
+            "contribution": {
+              "schema_version": "technical_task_router_row/v4",
+              "task_descriptor": {
+                "task_type": "bugfix",
+                "language": "typescript",
+                "complexity": 1
+              },
+              "allowed_models": [
+                "kimi-k2.7-code"
+              ],
+              "selected_models": {
+                "coder": "kimi-k2.7-code",
+                "reviewer": "kimi-k2.7-code"
+              },
+              "available_models": {
+                "planner_models": [],
+                "coder_models": [
+                  "kimi-k2.7-code"
+                ],
+                "reviewer_models": [
+                  "kimi-k2.7-code"
+                ]
+              },
+              "success_under_budget": false,
+              "completion_result": "failure",
+              "outcome_labels": {
+                "budget_label": "unknown",
+                "cost_label": "low",
+                "time_label": "fast",
+                "success_label": "failure"
+              },
+              "candidate_pool": {
+                "scenario_id": "unknown",
+                "scenario_kind": "unknown",
+                "pool_size": 1
+              },
+              "sparse_cell": {
+                "cell_id": "unknown",
+                "descriptor_signature": "unknown",
+                "observed_count": 0,
+                "is_sparse": false
+              },
+              "observed_at": "2026-11-16T21:17:03.742Z",
+              "actual_cost_usd": 0.003357,
+              "wall_clock_seconds": 5.013,
+              "task_id": "redacted-7120996eb795e0c6",
+              "harness": "wavemill-certification",
+              "stage_executions": [
+                {
+                  "provider_executions": [
+                    {
+                      "observationId": "redacted-601a3b12447461a6",
+                      "sessionRef": "redacted-7120996eb795e0c6",
+                      "ownershipAttemptIds": [
+                        "redacted-7120996eb795e0c6"
+                      ],
+                      "responseId": "redacted-1f8abf50c67f0aa3",
+                      "transport": "openrouter",
+                      "requestedModel": "kimi-k2.7-code",
+                      "requestedRouting": {
+                        "only": [
+                          "moonshotai"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.95,
+                        "outputCostPerMTok": 4,
+                        "cacheReadCostPerMTok": 0.19
+                      },
+                      "usage": {
+                        "input_tokens": 1922,
+                        "output_tokens": 185,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": null
+                    },
+                    {
+                      "observationId": "redacted-4b1d46f7abe35d5e",
+                      "sessionRef": "redacted-7120996eb795e0c6",
+                      "ownershipAttemptIds": [
+                        "redacted-7120996eb795e0c6"
+                      ],
+                      "responseId": "redacted-49d6ea0e7390a502",
+                      "transport": "openrouter",
+                      "requestedModel": "kimi-k2.7-code",
+                      "requestedRouting": {
+                        "only": [
+                          "moonshotai"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.95,
+                        "outputCostPerMTok": 4,
+                        "cacheReadCostPerMTok": 0.19
+                      },
+                      "usage": {
+                        "input_tokens": 369,
+                        "output_tokens": 25,
+                        "cache_read_tokens": 1792,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": null
+                    }
+                  ],
+                  "failure": {
+                    "fault_class": "unknown-fault"
+                  },
+                  "stage": "coding",
+                  "executed_model": "kimi-k2.7-code",
+                  "model_evidence": "requested_only",
+                  "harness": "native",
+                  "task_cost": {
+                    "schema_version": "task_cost_summary/v1",
+                    "task_id": "redacted-7120996eb795e0c6",
+                    "session_ids": [
+                      "redacted-7120996eb795e0c6"
+                    ],
+                    "harness": "native",
+                    "provider_contract_version": "native/1",
+                    "models": [
+                      "kimi-k2.7-code"
+                    ],
+                    "model_segments": [
+                      {
+                        "model": "kimi-k2.7-code",
+                        "turn_count": 2,
+                        "usage": {
+                          "input_tokens": 2291,
+                          "output_tokens": 210,
+                          "cache_read_tokens": 1792,
+                          "cache_write_tokens": 0,
+                          "reasoning_tokens": null
+                        },
+                        "actual_cost_usd": null,
+                        "estimated_cost_usd": 0.003357,
+                        "cost_source": "local_estimate"
+                      }
+                    ],
+                    "turn_count": 2,
+                    "turns_truncated": false,
+                    "usage": {
+                      "input_tokens": 2291,
+                      "output_tokens": 210,
+                      "cache_read_tokens": 1792,
+                      "cache_write_tokens": 0,
+                      "reasoning_tokens": null
+                    },
+                    "actual_cost_usd": null,
+                    "estimated_cost_usd": 0.003357,
+                    "total_cost_usd": 0.003357,
+                    "cost_source": "local_estimate",
+                    "cost_basis": "per_token_api",
+                    "coverage": "partial",
+                    "field_availability": {
+                      "usage": "partial",
+                      "actual_cost": "unavailable",
+                      "estimated_cost": "available",
+                      "pricing": "available"
+                    },
+                    "pricing_source": "local_estimate",
+                    "join_confidence": "unattributed",
+                    "collected_at": "2026-11-16T21:17:03.727Z",
+                    "event_count": 2,
+                    "event_ids": [
+                      "redacted-601a3b12447461a6",
+                      "redacted-4b1d46f7abe35d5e"
+                    ],
+                    "diagnostics": [
+                      "mixed_coverage"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "scenarioId": "live.coding.mutation-canary.v1",
+        "status": "inconclusive",
+        "isLive": true,
+        "phase": "coding",
+        "provider": "moonshotai",
+        "model": "kimi-k2.7-code",
+        "providerNativeId": "moonshotai/kimi-k2.7-code",
+        "identityFingerprint": "eb14fe716bdcd00dba03e203b44c9793620602ceca34bda2eba0c8987bd07c3c",
+        "catalogHash": "44c9e4bef0e5b972adc577b4c6bb53b735ee86f4d60c6ee0f3827b6375fd5850",
+        "suiteVersion": "v3",
+        "ranAt": "2026-11-16T21:17:03.756Z",
+        "limits": {
+          "maxWallClockMs": 240000,
+          "maxTurns": 6,
+          "maxToolCalls": 10,
+          "maxTotalTokens": 60000,
+          "maxCostUsd": 0.5
+        },
+        "usage": {
+          "turns": 2,
+          "toolCalls": 2,
+          "inputTokens": 2291,
+          "outputTokens": 210,
+          "wallClockMs": 5013,
+          "costUsd": 0.003357
+        },
+        "reason": "identity_mismatch",
+        "detail": "Requested endpoint host could not be corroborated; deployment and quantization remain unverified.",
+        "evidence": {
+          "failedMutationToolCalls": 0,
+          "structuredMutationToolCalls": 2,
+          "mutationToolNames": [
+            "apply_patch",
+            "create_marker"
+          ],
+          "expectedSentinelHash": "1770e9648d1d92bd2c9e3baca1cf29eee4596674794c37de6de2c54bf737f414",
+          "actualSentinelHash": "1770e9648d1d92bd2c9e3baca1cf29eee4596674794c37de6de2c54bf737f414",
+          "changedPaths": [
+            "features/live-canary/.coding-complete",
+            "src/canary.ts"
+          ],
+          "completionArtifactPresent": true,
+          "completionArtifactHash": "34706b4aa8118ebf1298c5b69b36a4f4927c795768c5ef27383ff3003ca1d55e"
+        },
+        "attempts": 1
+      }
+    },
+    {
+      "pair": -1,
+      "profile": "standard",
+      "endpoint": {
+        "tag": "coreweave/int4",
+        "providerName": "CoreWeave",
+        "quantization": "int4",
+        "deploymentRevision": null
+      },
+      "result": {
+        "endpoint": {
+          "tag": "coreweave/int4",
+          "providerName": "CoreWeave",
+          "quantization": "int4",
+          "deploymentRevision": null
+        },
+        "attemptEvidence": [
+          {
+            "attemptId": "b937788f-0e1f-4079-b056-6883bf294ee0",
+            "status": "inconclusive",
+            "reason": "identity_mismatch",
+            "contribution": {
+              "schema_version": "technical_task_router_row/v4",
+              "task_descriptor": {
+                "task_type": "bugfix",
+                "language": "typescript",
+                "complexity": 1
+              },
+              "allowed_models": [
+                "kimi-k2.7-code"
+              ],
+              "selected_models": {
+                "coder": "kimi-k2.7-code",
+                "reviewer": "kimi-k2.7-code"
+              },
+              "available_models": {
+                "planner_models": [],
+                "coder_models": [
+                  "kimi-k2.7-code"
+                ],
+                "reviewer_models": [
+                  "kimi-k2.7-code"
+                ]
+              },
+              "success_under_budget": false,
+              "completion_result": "failure",
+              "outcome_labels": {
+                "budget_label": "unknown",
+                "cost_label": "low",
+                "time_label": "fast",
+                "success_label": "failure"
+              },
+              "candidate_pool": {
+                "scenario_id": "unknown",
+                "scenario_kind": "unknown",
+                "pool_size": 1
+              },
+              "sparse_cell": {
+                "cell_id": "unknown",
+                "descriptor_signature": "unknown",
+                "observed_count": 0,
+                "is_sparse": false
+              },
+              "observed_at": "2026-11-16T21:17:14.105Z",
+              "actual_cost_usd": 0.0038482,
+              "wall_clock_seconds": 3.37,
+              "task_id": "redacted-6fbc8b07ab11476c",
+              "harness": "wavemill-certification",
+              "stage_executions": [
+                {
+                  "provider_executions": [
+                    {
+                      "observationId": "redacted-88d3783e7fde6c8c",
+                      "sessionRef": "redacted-6fbc8b07ab11476c",
+                      "ownershipAttemptIds": [
+                        "redacted-6fbc8b07ab11476c"
+                      ],
+                      "responseId": "redacted-ea37528f39b5d79a",
+                      "transport": "openrouter",
+                      "requestedModel": "kimi-k2.7-code",
+                      "requestedRouting": {
+                        "only": [
+                          "coreweave/int4"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.6,
+                        "outputCostPerMTok": 3,
+                        "cacheReadCostPerMTok": 0.12
+                      },
+                      "usage": {
+                        "input_tokens": 2417,
+                        "output_tokens": 197,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.0020412,
+                        "providerName": "CoreWeave",
+                        "modelPermaslug": "moonshotai/kimi-k2.7-code-20260612",
+                        "nativeTokensPrompt": 2417,
+                        "nativeTokensCached": 0,
+                        "nativeTokensCompletion": 197
+                      }
+                    },
+                    {
+                      "observationId": "redacted-e154d6e7545dd61c",
+                      "sessionRef": "redacted-6fbc8b07ab11476c",
+                      "ownershipAttemptIds": [
+                        "redacted-6fbc8b07ab11476c"
+                      ],
+                      "responseId": "redacted-5e442d6f86444211",
+                      "transport": "openrouter",
+                      "requestedModel": "kimi-k2.7-code",
+                      "requestedRouting": {
+                        "only": [
+                          "coreweave/int4"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.6,
+                        "outputCostPerMTok": 3,
+                        "cacheReadCostPerMTok": 0.12
+                      },
+                      "usage": {
+                        "input_tokens": 2682,
+                        "output_tokens": 66,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": null
+                    }
+                  ],
+                  "failure": {
+                    "fault_class": "unknown-fault"
+                  },
+                  "stage": "coding",
+                  "executed_model": "kimi-k2.7-code",
+                  "model_evidence": "requested_only",
+                  "harness": "native",
+                  "task_cost": {
+                    "schema_version": "task_cost_summary/v1",
+                    "task_id": "redacted-6fbc8b07ab11476c",
+                    "session_ids": [
+                      "redacted-6fbc8b07ab11476c"
+                    ],
+                    "harness": "native",
+                    "provider_contract_version": "native/1",
+                    "models": [
+                      "kimi-k2.7-code"
+                    ],
+                    "model_segments": [
+                      {
+                        "model": "kimi-k2.7-code",
+                        "turn_count": 2,
+                        "usage": {
+                          "input_tokens": 5099,
+                          "output_tokens": 263,
+                          "cache_read_tokens": 0,
+                          "cache_write_tokens": 0,
+                          "reasoning_tokens": null
+                        },
+                        "actual_cost_usd": 0.0020412,
+                        "estimated_cost_usd": 0.003848,
+                        "cost_source": "mixed"
+                      }
+                    ],
+                    "turn_count": 2,
+                    "turns_truncated": false,
+                    "usage": {
+                      "input_tokens": 5099,
+                      "output_tokens": 263,
+                      "cache_read_tokens": 0,
+                      "cache_write_tokens": 0,
+                      "reasoning_tokens": null
+                    },
+                    "actual_cost_usd": 0.0020412,
+                    "estimated_cost_usd": 0.003848,
+                    "total_cost_usd": 0.0038482,
+                    "cost_source": "mixed",
+                    "cost_basis": "per_token_api",
+                    "coverage": "partial",
+                    "field_availability": {
+                      "usage": "partial",
+                      "actual_cost": "partial",
+                      "estimated_cost": "available",
+                      "pricing": "available"
+                    },
+                    "pricing_source": "local_estimate",
+                    "join_confidence": "unattributed",
+                    "collected_at": "2026-11-16T21:17:14.095Z",
+                    "event_count": 2,
+                    "event_ids": [
+                      "redacted-88d3783e7fde6c8c",
+                      "redacted-e154d6e7545dd61c"
+                    ],
+                    "diagnostics": [
+                      "mixed_coverage",
+                      "provider_reported_cost"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "scenarioId": "live.coding.mutation-canary.v1",
+        "status": "inconclusive",
+        "isLive": true,
+        "phase": "coding",
+        "provider": "moonshotai",
+        "model": "kimi-k2.7-code",
+        "providerNativeId": "moonshotai/kimi-k2.7-code",
+        "identityFingerprint": "eb14fe716bdcd00dba03e203b44c9793620602ceca34bda2eba0c8987bd07c3c",
+        "catalogHash": "39da8d984f3a3e9e4e46bfd67ec58a84b3f311ca7f714cdba9440f32786df5da",
+        "suiteVersion": "v3",
+        "ranAt": "2026-11-16T21:17:14.114Z",
+        "limits": {
+          "maxWallClockMs": 240000,
+          "maxTurns": 6,
+          "maxToolCalls": 10,
+          "maxTotalTokens": 60000,
+          "maxCostUsd": 0.5
+        },
+        "usage": {
+          "turns": 2,
+          "toolCalls": 2,
+          "inputTokens": 5099,
+          "outputTokens": 263,
+          "wallClockMs": 3370,
+          "costUsd": 0.003848
+        },
+        "reason": "identity_mismatch",
+        "detail": "Requested endpoint host could not be corroborated; deployment and quantization remain unverified.",
+        "evidence": {
+          "failedMutationToolCalls": 0,
+          "structuredMutationToolCalls": 2,
+          "mutationToolNames": [
+            "apply_patch",
+            "create_marker"
+          ],
+          "expectedSentinelHash": "1770e9648d1d92bd2c9e3baca1cf29eee4596674794c37de6de2c54bf737f414",
+          "actualSentinelHash": "1770e9648d1d92bd2c9e3baca1cf29eee4596674794c37de6de2c54bf737f414",
+          "changedPaths": [
+            "features/live-canary/.coding-complete",
+            "src/canary.ts"
+          ],
+          "completionArtifactPresent": true,
+          "completionArtifactHash": "34706b4aa8118ebf1298c5b69b36a4f4927c795768c5ef27383ff3003ca1d55e"
+        },
+        "attempts": 1
+      }
+    }
+  ],
+  "economics": {
+    "sdkReport": {
+      "taskId": "endpoint-comparison",
+      "totalUsd": 0.0053982,
+      "actualUsd": 0.0020412,
+      "estimatedUsd": 0.007205,
+      "byModel": {
+        "kimi-k2.7-code": {
+          "totalUsd": 0.0053982,
+          "actualUsd": 0.0020412,
+          "estimatedUsd": 0.007205,
+          "usage": {
+            "inputTokens": 7390,
+            "outputTokens": 473,
+            "cacheReadTokens": 1792,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": null
+          },
+          "eventCount": 2,
+          "turnCount": 2,
+          "costSource": "mixed",
+          "coverage": "partial"
+        }
+      },
+      "byHarness": {
+        "native": {
+          "totalUsd": 0.0053982,
+          "actualUsd": 0.0020412,
+          "estimatedUsd": 0.007205,
+          "usage": {
+            "inputTokens": 7390,
+            "outputTokens": 473,
+            "cacheReadTokens": 1792,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": null
+          },
+          "eventCount": 2,
+          "turnCount": 2,
+          "costSource": "mixed",
+          "coverage": "partial"
+        }
+      },
+      "usage": {
+        "inputTokens": 7390,
+        "outputTokens": 473,
+        "cacheReadTokens": 1792,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": null
+      },
+      "eventCount": 2,
+      "turnCount": 2,
+      "source": {
+        "cost": "mixed",
+        "basis": "per_token_api",
+        "capture": [
+          "manual"
+        ],
+        "sessionFileCount": 0
+      },
+      "pricing": {
+        "source": "local_estimate",
+        "revision": null,
+        "effectiveDate": "2026-11-04",
+        "revisions": [],
+        "priceTables": [
+          "external"
+        ],
+        "builtInTableAsOf": "2026-11-04",
+        "overrideCount": 0,
+        "currency": "USD"
+      },
+      "coverage": {
+        "status": "partial",
+        "pricedEvents": 2,
+        "unpricedEvents": 0,
+        "unknownModels": []
+      },
+      "diagnostics": [
+        {
+          "code": "mixed_coverage",
+          "level": "warn",
+          "message": "coverage is partial: some events are missing cost or usage",
+          "count": 1
+        },
+        {
+          "code": "provider_reported_cost",
+          "level": "info",
+          "message": "at least one event carries a provider-reported charge",
+          "count": 1
+        }
+      ],
+      "summaries": [
+        {
+          "schema_version": "task_cost_summary/v1",
+          "task_id": "endpoint-comparison",
+          "session_ids": [
+            "redacted-6fbc8b07ab11476c",
+            "redacted-7120996eb795e0c6"
+          ],
+          "harness": "native",
+          "provider_contract_version": "native/1",
+          "models": [
+            "kimi-k2.7-code"
+          ],
+          "model_segments": [
+            {
+              "model": "kimi-k2.7-code",
+              "turn_count": 2,
+              "usage": {
+                "input_tokens": 7390,
+                "output_tokens": 473,
+                "cache_read_tokens": 1792,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": null
+              },
+              "actual_cost_usd": 0.0020412,
+              "estimated_cost_usd": 0.007205,
+              "cost_source": "mixed"
+            }
+          ],
+          "turn_count": 2,
+          "turns_truncated": false,
+          "usage": {
+            "input_tokens": 7390,
+            "output_tokens": 473,
+            "cache_read_tokens": 1792,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": null
+          },
+          "actual_cost_usd": 0.0020412,
+          "estimated_cost_usd": 0.007205,
+          "total_cost_usd": 0.0053982,
+          "cost_source": "mixed",
+          "cost_basis": "per_token_api",
+          "coverage": "partial",
+          "field_availability": {
+            "usage": "partial",
+            "actual_cost": "partial",
+            "estimated_cost": "available",
+            "pricing": "available"
+          },
+          "pricing_source": "local_estimate",
+          "join_confidence": "unattributed",
+          "collected_at": "2026-11-16T21:17:14.095Z",
+          "event_count": 2,
+          "event_ids": [
+            "native.0.0",
+            "native.1.0"
+          ],
+          "diagnostics": [
+            "mixed_coverage",
+            "provider_reported_cost"
+          ]
+        }
+      ]
+    },
+    "accountedAttempts": 2,
+    "attempts": 2
+  },
+  "subjects": [
+    {
+      "endpoint": {
+        "tag": "moonshotai",
+        "providerName": "Moonshot AI",
+        "quantization": "unknown",
+        "deploymentRevision": null
+      },
+      "compatibility": "inconclusive",
+      "pairedSamples": 0,
+      "losses": 0,
+      "lossInterval": {
+        "p": null,
+        "lo": null,
+        "hi": null
+      },
+      "p95LatencyMs": 5013,
+      "referenceP95LatencyMs": 5013,
+      "sdkReport": {
+        "taskId": "endpoint-comparison",
+        "totalUsd": 0.003357,
+        "actualUsd": null,
+        "estimatedUsd": 0.003357,
+        "byModel": {
+          "kimi-k2.7-code": {
+            "totalUsd": 0.003357,
+            "actualUsd": null,
+            "estimatedUsd": 0.003357,
+            "usage": {
+              "inputTokens": 2291,
+              "outputTokens": 210,
+              "cacheReadTokens": 1792,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 1,
+            "turnCount": 1,
+            "costSource": "local_estimate",
+            "coverage": "partial"
+          }
+        },
+        "byHarness": {
+          "native": {
+            "totalUsd": 0.003357,
+            "actualUsd": null,
+            "estimatedUsd": 0.003357,
+            "usage": {
+              "inputTokens": 2291,
+              "outputTokens": 210,
+              "cacheReadTokens": 1792,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 1,
+            "turnCount": 1,
+            "costSource": "local_estimate",
+            "coverage": "partial"
+          }
+        },
+        "usage": {
+          "inputTokens": 2291,
+          "outputTokens": 210,
+          "cacheReadTokens": 1792,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 1,
+        "turnCount": 1,
+        "source": {
+          "cost": "local_estimate",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "partial",
+          "pricedEvents": 1,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [
+          {
+            "code": "mixed_coverage",
+            "level": "warn",
+            "message": "coverage is partial: some events are missing cost or usage",
+            "count": 1
+          }
+        ],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-comparison",
+            "session_ids": [
+              "redacted-7120996eb795e0c6"
+            ],
+            "harness": "native",
+            "provider_contract_version": "native/1",
+            "models": [
+              "kimi-k2.7-code"
+            ],
+            "model_segments": [
+              {
+                "model": "kimi-k2.7-code",
+                "turn_count": 1,
+                "usage": {
+                  "input_tokens": 2291,
+                  "output_tokens": 210,
+                  "cache_read_tokens": 1792,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": null
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": 0.003357,
+                "cost_source": "local_estimate"
+              }
+            ],
+            "turn_count": 1,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 2291,
+              "output_tokens": 210,
+              "cache_read_tokens": 1792,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": 0.003357,
+            "total_cost_usd": 0.003357,
+            "cost_source": "local_estimate",
+            "cost_basis": "per_token_api",
+            "coverage": "partial",
+            "field_availability": {
+              "usage": "partial",
+              "actual_cost": "unavailable",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-16T21:17:03.727Z",
+            "event_count": 1,
+            "event_ids": [
+              "native.0.0"
+            ],
+            "diagnostics": [
+              "mixed_coverage"
+            ]
+          }
+        ]
+      },
+      "spendPerSuccessfulRunUsd": null,
+      "exactChargeCoverage": 0,
+      "cacheMix": [
+        {
+          "input": 1922,
+          "cacheRead": 0,
+          "output": 185
+        },
+        {
+          "input": 369,
+          "cacheRead": 1792,
+          "output": 25
+        }
+      ],
+      "promotionVerdict": "insufficient-evidence"
+    },
+    {
+      "endpoint": {
+        "tag": "coreweave/int4",
+        "providerName": "CoreWeave",
+        "quantization": "int4",
+        "deploymentRevision": null
+      },
+      "compatibility": "inconclusive",
+      "pairedSamples": 0,
+      "losses": 0,
+      "lossInterval": {
+        "p": null,
+        "lo": null,
+        "hi": null
+      },
+      "p95LatencyMs": 3370,
+      "referenceP95LatencyMs": 5013,
+      "sdkReport": {
+        "taskId": "endpoint-comparison",
+        "totalUsd": 0.0020412,
+        "actualUsd": 0.0020412,
+        "estimatedUsd": 0.003848,
+        "byModel": {
+          "kimi-k2.7-code": {
+            "totalUsd": 0.0020412,
+            "actualUsd": 0.0020412,
+            "estimatedUsd": 0.003848,
+            "usage": {
+              "inputTokens": 5099,
+              "outputTokens": 263,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 1,
+            "turnCount": 1,
+            "costSource": "provider_reported",
+            "coverage": "partial"
+          }
+        },
+        "byHarness": {
+          "native": {
+            "totalUsd": 0.0020412,
+            "actualUsd": 0.0020412,
+            "estimatedUsd": 0.003848,
+            "usage": {
+              "inputTokens": 5099,
+              "outputTokens": 263,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 1,
+            "turnCount": 1,
+            "costSource": "provider_reported",
+            "coverage": "partial"
+          }
+        },
+        "usage": {
+          "inputTokens": 5099,
+          "outputTokens": 263,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 1,
+        "turnCount": 1,
+        "source": {
+          "cost": "provider_reported",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "partial",
+          "pricedEvents": 1,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [
+          {
+            "code": "mixed_coverage",
+            "level": "warn",
+            "message": "coverage is partial: some events are missing cost or usage",
+            "count": 1
+          },
+          {
+            "code": "provider_reported_cost",
+            "level": "info",
+            "message": "at least one event carries a provider-reported charge",
+            "count": 1
+          }
+        ],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-comparison",
+            "session_ids": [
+              "redacted-6fbc8b07ab11476c"
+            ],
+            "harness": "native",
+            "provider_contract_version": "native/1",
+            "models": [
+              "kimi-k2.7-code"
+            ],
+            "model_segments": [
+              {
+                "model": "kimi-k2.7-code",
+                "turn_count": 1,
+                "usage": {
+                  "input_tokens": 5099,
+                  "output_tokens": 263,
+                  "cache_read_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": null
+                },
+                "actual_cost_usd": 0.0020412,
+                "estimated_cost_usd": 0.003848,
+                "cost_source": "provider_reported"
+              }
+            ],
+            "turn_count": 1,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 5099,
+              "output_tokens": 263,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.0020412,
+            "estimated_cost_usd": 0.003848,
+            "total_cost_usd": 0.0020412,
+            "cost_source": "provider_reported",
+            "cost_basis": "per_token_api",
+            "coverage": "partial",
+            "field_availability": {
+              "usage": "partial",
+              "actual_cost": "available",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-16T21:17:14.095Z",
+            "event_count": 1,
+            "event_ids": [
+              "native.0.0"
+            ],
+            "diagnostics": [
+              "mixed_coverage",
+              "provider_reported_cost"
+            ]
+          }
+        ]
+      },
+      "spendPerSuccessfulRunUsd": null,
+      "exactChargeCoverage": 0.5,
+      "cacheMix": [
+        {
+          "input": 2417,
+          "cacheRead": 0,
+          "output": 197
+        },
+        {
+          "input": 2682,
+          "cacheRead": 0,
+          "output": 66
+        }
+      ],
+      "promotionVerdict": "insufficient-evidence"
+    }
+  ]
+}
