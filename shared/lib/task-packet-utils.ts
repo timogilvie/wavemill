@@ -29,19 +29,42 @@ export interface TaskPacketParts {
   fullContent: string;
 }
 
+/** Required fields of the `## Release Readiness` section, in gate order (HOK-3499). */
+export const RELEASE_READINESS_FIELDS = [
+  'database_change_risk',
+  'env_changes',
+  'config_changes',
+  'manual_steps',
+] as const;
+
+export type ReleaseReadinessField = (typeof RELEASE_READINESS_FIELDS)[number];
+
 /**
  * Structured release-readiness metadata extracted from a task packet.
  * Used by the ready-stage engine to compare implementation against planning expectations.
  */
 export interface ReleaseReadiness {
-  /** Whether the task is expected to involve database schema changes */
-  databaseChangeRisk: 'none' | 'possible' | 'required';
+  /**
+   * Whether the task is expected to involve database schema changes.
+   * `undefined` when the plan omits the field — a missing declaration is
+   * reported through {@link ParsedReleaseReadiness.missingFields}, never
+   * invented as `none`.
+   */
+  databaseChangeRisk?: 'none' | 'possible' | 'required';
   /** Environment variables that must be added or changed for deployment */
   envChanges: string[];
   /** Configuration file changes required for deployment */
   configChanges: string[];
   /** Manual steps required before or after merge */
   manualSteps: string[];
+}
+
+/** The single parse of a `## Release Readiness` section (HOK-3499). */
+export interface ParsedReleaseReadiness extends ReleaseReadiness {
+  /** Required fields the section does not declare (or declares empty). */
+  missingFields: ReleaseReadinessField[];
+  /** Values as written, before enum/list normalization. For diagnostics. */
+  rawFields: Partial<Record<ReleaseReadinessField, string>>;
 }
 
 export interface TaskPacketArtifactPaths {
@@ -204,70 +227,114 @@ export async function writeTaskPacketArtifacts(
 const VALID_DB_RISK_VALUES = ['none', 'possible', 'required'] as const;
 
 /**
+ * The one Release Readiness grammar (HOK-3499). The planning gate, the
+ * task-packet validator and the ready-stage consumer all parse through
+ * {@link extractReleaseReadiness}; `tools/check-release-readiness-grammar.ts`
+ * fails preflight on a second one.
+ *
+ * Heading: `##`/`###`, an optional numeric prefix, and an optional suffix
+ * after `Release Readiness` (`## Release Readiness (v2)`).
+ *
+ * Field bullet: optional `-`/`*` marker, bold name with the colon either
+ * inside or outside the bold (`**field**: value` and `**field:** value`).
+ */
+const RELEASE_READINESS_HEADING = /^#{2,3}\s+(?:\d+\.\s*)?Release Readiness\b/im;
+const RELEASE_READINESS_FIELD =
+  /^[ \t]*(?:[-*][ \t]+)?\*\*[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*:?[ \t]*\*\*[ \t]*:?[ \t]*(.*)$/gm;
+
+/** Blank out fenced code blocks while preserving line breaks and indices. */
+function maskFencedCode(text: string): string {
+  return text.replace(/```[\s\S]*?```/g, (block) => block.replace(/[^\n]/g, ' '));
+}
+
+/**
  * Parse a comma-separated list field value into an array of trimmed strings.
- * Returns an empty array for `none` or empty/missing values.
+ * Returns an empty array for `none`, an empty value, or a value whose first
+ * word is `none` (plans often annotate it: `none (no env var remains)`).
  */
 function parseListField(value: string | undefined): string[] {
-  if (!value || value.trim().toLowerCase() === 'none' || value.trim() === '') {
-    return [];
-  }
-  return value.split(',').map(s => s.trim()).filter(Boolean);
+  if (!value) return [];
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  if (/^none\b/i.test(trimmed)) return [];
+  return trimmed.split(',').map(s => s.trim()).filter(Boolean);
 }
 
 /**
  * Extract structured release-readiness metadata from a task packet.
  *
- * Looks for a `## Release Readiness` section and parses the bold-label
- * key-value format used by the issue-writer prompt template.
+ * This is the only Release Readiness parser: the planning gate
+ * (`validateFinalPlanningArtifact`), the task-packet validator
+ * (`validateReleaseReadiness`) and the ready-stage consumer all read the
+ * section through it, so a plan the gate accepts is always a plan the
+ * consumer can parse.
  *
- * Returns `null` if the section is not present (backward compatibility
- * with existing task packets).
+ * Accepts both bold spellings (`**field**:` and `**field:**`), an optional
+ * `-`/`*` bullet marker, and a `(v2)`-style heading suffix.
+ *
+ * Returns `null` if the section is not present (backward compatibility with
+ * existing task packets). When the section is present, fields it does not
+ * declare are listed in `missingFields`; a missing `database_change_risk`
+ * stays `undefined` rather than being invented as `none`.
  *
  * @param markdown - Task packet markdown content
- * @returns Parsed release readiness metadata, or null if section absent
+ * @returns Parsed release readiness metadata and missing fields, or null
  *
  * @example
  * ```typescript
  * const readiness = extractReleaseReadiness(taskPacketMarkdown);
  * if (readiness) {
- *   console.log(readiness.databaseChangeRisk); // 'none' | 'possible' | 'required'
+ *   console.log(readiness.databaseChangeRisk); // 'none' | 'possible' | 'required' | undefined
  *   console.log(readiness.envChanges);          // ['NEW_API_KEY', 'FEATURE_FLAG_X']
+ *   console.log(readiness.missingFields);       // [] when every required field is present
  * }
  * ```
  */
-export function extractReleaseReadiness(markdown: string): ReleaseReadiness | null {
-  // Find the ## Release Readiness section
-  const sectionMatch = markdown.match(/^##\s+Release Readiness\s*$/im);
-  if (!sectionMatch || sectionMatch.index === undefined) {
+export function extractReleaseReadiness(markdown: string): ParsedReleaseReadiness | null {
+  const masked = maskFencedCode(markdown);
+  const heading = RELEASE_READINESS_HEADING.exec(masked);
+  if (!heading || heading.index === undefined) {
     return null;
   }
 
-  // Extract section content up to the next ## heading
-  const sectionStart = sectionMatch.index + sectionMatch[0].length;
-  const rest = markdown.substring(sectionStart);
-  const nextHeadingMatch = rest.match(/^##\s+/m);
-  const sectionContent = nextHeadingMatch && nextHeadingMatch.index !== undefined
-    ? rest.substring(0, nextHeadingMatch.index)
-    : rest;
+  // Section runs to the next `##` heading; masked code fences cannot end it.
+  const sectionStart = heading.index + heading[0].length;
+  const rest = masked.substring(sectionStart);
+  const nextHeading = /^##\s+\S/m.exec(rest);
+  const sectionEnd = nextHeading && nextHeading.index !== undefined
+    ? sectionStart + nextHeading.index
+    : markdown.length;
+  const sectionContent = markdown.substring(sectionStart, sectionEnd);
 
-  // Parse bold-label key-value pairs: - **field_name**: value
-  const fieldPattern = /[-*]\s+\*\*(\w+)\*\*:\s*(.+)/g;
-  const fields = new Map<string, string>();
-  let match;
-  while ((match = fieldPattern.exec(sectionContent)) !== null) {
-    fields.set(match[1].toLowerCase(), match[2].trim());
+  const rawFields: Partial<Record<ReleaseReadinessField, string>> = {};
+  RELEASE_READINESS_FIELD.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = RELEASE_READINESS_FIELD.exec(sectionContent)) !== null) {
+    const name = match[1].toLowerCase() as ReleaseReadinessField;
+    if (!(RELEASE_READINESS_FIELDS as readonly string[]).includes(name)) continue;
+    // First declaration wins; later duplicates are ignored.
+    if (rawFields[name] === undefined) rawFields[name] = match[2].trim();
   }
 
-  // Extract database_change_risk — take only the first word to match the enum
-  const rawDbRisk = fields.get('database_change_risk')?.split(/\s/)[0];
-  const dbRisk = rawDbRisk && VALID_DB_RISK_VALUES.includes(rawDbRisk as any)
+  const missingFields = RELEASE_READINESS_FIELDS.filter(
+    (field) => !rawFields[field],
+  );
+
+  // Take only the first word to match the enum; an unrecognized value stays
+  // readable through `rawFields` for the validator's diagnostic.
+  const rawDbRisk = rawFields.database_change_risk?.split(/\s/)[0];
+  const databaseChangeRisk = rawDbRisk && (VALID_DB_RISK_VALUES as readonly string[]).includes(rawDbRisk)
     ? (rawDbRisk as ReleaseReadiness['databaseChangeRisk'])
-    : 'none';
+    : rawDbRisk
+      ? 'none'
+      : undefined;
 
   return {
-    databaseChangeRisk: dbRisk,
-    envChanges: parseListField(fields.get('env_changes')),
-    configChanges: parseListField(fields.get('config_changes')),
-    manualSteps: parseListField(fields.get('manual_steps')),
+    ...(databaseChangeRisk ? { databaseChangeRisk } : {}),
+    envChanges: parseListField(rawFields.env_changes),
+    configChanges: parseListField(rawFields.config_changes),
+    manualSteps: parseListField(rawFields.manual_steps),
+    missingFields,
+    rawFields,
   };
 }

@@ -95,6 +95,7 @@ All business logic lives in `shared/lib/` for reusability across CLI tools, comm
 - **Output reservation (HOK-3448)** — `AdapterLimits.reservedOutputTokens` is input-preflight context space, distinct from the explicit invocation cap `AdapterInvokeOptions.maxOutputTokens`. Guard: `tools/check-output-reservation.ts`. → [docs/invariants/output-reservation.md](docs/invariants/output-reservation.md)
 - **Model input (HOK-3493)** — Never call `gh pr diff` outside `fetchPrDiff` or add a prompt byte cap; changes enter prompts through `buildBudgetedChangeInput`. Guard: `tools/check-model-input.ts`. → [docs/invariants/model-input.md](docs/invariants/model-input.md)
 - **Review result (HOK-3448)** — `claude-cli-output.ts` is the only interpreter of Claude CLI stdout; `review-engine.ts` never decides review completion from text shape. Guard: `tools/check-review-report-boundary.ts`. → [docs/invariants/review-result.md](docs/invariants/review-result.md)
+- **Release Readiness grammar (HOK-3499)** — `extractReleaseReadiness` in `task-packet-utils.ts` is the only parser; the plan gate, validator and consumer all read it, and a missing field is reported, never defaulted. Guard: `tools/check-release-readiness-grammar.ts`. → [docs/invariants/release-readiness-grammar.md](docs/invariants/release-readiness-grammar.md)
 - **Model transport (HOK-3460)** — Model CLI transport stays in `shared/lib/model-adapters/`. Guard: `tools/check-model-transport.ts`. → [docs/invariants/model-transport.md](docs/invariants/model-transport.md)
 - `llm-cli.ts` - `callLLM` policy (candidate ladder, retry/backoff, quota state, fallback events); transport runs through `model-adapters/`
 - `string-utils.ts` - String manipulation
@@ -117,7 +118,7 @@ npx tsx tools/get-backlog.ts "Project Name"
 ```
 
 ### Operator Tools
-Tools the mill never calls, used by hand or by agents during recoveries, are listed in `docs/operator-tools.md` with what each does and whether it writes. Check it before writing a one-off recovery script. `tools/check-operator-tools.ts` (preflight) fails when an unreferenced tool is missing from the list or a listed tool doesn't run with `--help`; tools that parse their own arguments call `exitOnHelp` from `shared/lib/tool-runner.ts` first.
+Tools the mill never calls, used by hand or during recoveries, are listed in `docs/operator-tools.md` with what each does and whether it writes — check it before writing a one-off recovery script. `tools/check-operator-tools.ts` (preflight) fails when an unreferenced tool is missing from the list or a listed tool doesn't run with `--help`; self-parsing tools call `exitOnHelp` from `shared/lib/tool-runner.ts` first.
 
 ### Workflow Commands
 Available in `~/.claude/commands/`:
@@ -131,7 +132,7 @@ Available in `~/.claude/commands/`:
 ### Native Certification CLI
 `wavemill native-agent certifications` subcommands: `list`, `inspect`, `verify`, `report`, `certify`, `re-certify`, `reidentify`, `invalidate`, `migrate`, `prune`.
 
-Use `wavemill native-agent certify --provider <provider> --model <model> --phase <phase>` for one model, or `wavemill native-agent certify --all --phase workflow` to publish the full current-suite matrix. Use `npx tsx tools/native-agent-certify.ts --refresh-canary-cohort` on the credentialed mill host to refresh live coding canaries for the bounded cohort configured under `nativeAgent.certification.canaryCohort` (HOK-3062); mill preflight runs the same refresh automatically with a one-attempt-per-episode guard, disabled via `canaryAutoRefresh: false`. The mill startup preflight auto-remediates deterministic current-suite gaps, identity drift, stale artifacts, and near-TTL renewal by default. Set `WAVEMILL_SKIP_CERTIFICATION_AUTO_REMEDIATE=1` to keep the guard active but require manual certification; set `WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD=1` only for a targeted operator override. Use `wavemill native-agent certifications prune` to report orphan artifacts and `--yes` to remove them.
+Use `wavemill native-agent certify --provider <provider> --model <model> --phase <phase>` for one model, or `--all --phase workflow` for the full current-suite matrix. On the credentialed mill host, `npx tsx tools/native-agent-certify.ts --refresh-canary-cohort` refreshes live coding canaries for the `nativeAgent.certification.canaryCohort` cohort (HOK-3062); mill preflight does this automatically, one attempt per episode, disabled via `canaryAutoRefresh: false`. Startup preflight also auto-remediates current-suite gaps, identity drift, stale artifacts and near-TTL renewal. Set `WAVEMILL_SKIP_CERTIFICATION_AUTO_REMEDIATE=1` to require manual certification; set `WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD=1` only for a targeted operator override. `wavemill native-agent certifications prune` reports orphan artifacts; `--yes` removes them.
 
 ## Test Discovery
 
@@ -143,7 +144,7 @@ A test runs because it exists. There is no list to edit (HOK-3466); `shared/lib/
 | `tests/**/*.test.sh` | `shell` (`tests/run-shell-suite.sh`) |
 | Any `.sh` file, or an extensionless script whose first line is a bash shebang or `# shellcheck shell=bash` | syntax-checked by `tests/check-shell.sh` |
 
-A file overrides the default with a marker comment in its first lines: `// wavemill-test-suite: custom` (custom-harness `process.exit(1)` style, `tests/run-custom-tests.sh`), or `# wavemill-test-suite: lifecycle | standalone | none` to stay out of the sharded runners. An unknown suite name fails discovery. `node tools/discover-tests.ts --suite <shell|unit|custom>` prints a suite.
+A file overrides the default with a marker comment in its first lines: `// wavemill-test-suite: custom` (custom-harness `process.exit(1)` style, `tests/run-custom-tests.sh`), or `# wavemill-test-suite: lifecycle | standalone | none` to stay out of the sharded runners. An unknown suite name fails discovery; `node tools/discover-tests.ts --suite <shell|unit|custom>` prints a suite.
 
 All three suites delegate to sharding runners:
 
@@ -156,9 +157,9 @@ bash tests/run-unit-tests.sh --list        # print selection without running
 bash tests/run-custom-tests.sh --shard 2/3 # custom harness CI shard 2 of 3
 ```
 
-Shell, unit and custom shards all use **deterministic weighted partitioning**: `tools/partition-tests.ts` (LPT greedy over `shared/lib/test-partitioner.ts`) balances shards using measured per-test medians from the checked-in manifest `tests/ci-test-weights.json`. A newly added test has no manifest entry yet and receives the conservative `defaultMs` weight — creating the file is all that is needed. `tools/check-shard-balance.ts` (preflight) enforces exactly-once assignment, manifest hygiene, and the 130%-of-median balance rule; refresh the manifest with `npx tsx tools/ci-test-timings.ts collect` from ≥3 CI timing artifacts (see `docs/ci-test-timings.md`).
+Shell, unit and custom shards use **deterministic weighted partitioning**: `tools/partition-tests.ts` (LPT greedy over `shared/lib/test-partitioner.ts`) balances them by measured per-test medians from `tests/ci-test-weights.json`. A new test has no entry yet and gets the conservative `defaultMs` weight — creating the file is all that is needed. `tools/check-shard-balance.ts` (preflight) enforces exactly-once assignment, manifest hygiene and the 130%-of-median rule; refresh via `npx tsx tools/ci-test-timings.ts collect` from ≥3 CI timing artifacts (`docs/ci-test-timings.md`).
 
-**CI job layout** (`.github/workflows/ci.yml`): `preflight`, `shell` (×3 weighted shards), `unit` (×7 weighted shards), `custom` (×3 weighted shards), `smoke`, and `certification` run in parallel. The `shell-and-unit` job aggregates them into the single status check named **"Shell and Unit Tests"**, which is a required check on `main` — do not rename it without updating branch protection. The shell/unit/custom jobs all upload `timing-*` artifacts, and all three feed the weights manifest.
+**CI job layout** (`.github/workflows/ci.yml`): `preflight`, `shell` (×3 weighted shards), `unit` (×7 weighted shards), `custom` (×3 weighted shards), `smoke`, and `certification` run in parallel. The `shell-and-unit` job aggregates them into the single required `main` status check **"Shell and Unit Tests"** — do not rename it without updating branch protection. The shell/unit/custom jobs upload `timing-*` artifacts, which feed the weights manifest.
 
 - **Golden journeys and shared fakes (HOK-3226)** — Never start a test tmux server, `set -m` launch or placeholder outside `tests/fakes/lib.sh`, or resolve tmux privately. Guard: `tools/check-test-world-lifetime.ts`. → [docs/invariants/golden-journeys.md](docs/invariants/golden-journeys.md)
 
@@ -172,7 +173,7 @@ Use [docs/prompt-locations.md](docs/prompt-locations.md) as the canonical regist
 
 ## Hook-Based Status Tracking
 
-Wavemill tracks agent lifecycle through a JSON status file contract at `/tmp/wavemill-${SESSION}-${ISSUE}.hook`. See [docs/hook-status-tracking.md](docs/hook-status-tracking.md) for the protocol, adapters, JSON format, dashboard refresh, OSC 7501 mirror and dependency notes.
+Wavemill tracks agent lifecycle through a JSON status file contract at `/tmp/wavemill-${SESSION}-${ISSUE}.hook`. See [docs/hook-status-tracking.md](docs/hook-status-tracking.md) for the protocol, adapters, JSON format and dashboard refresh.
 
 ## State Mutation
 
@@ -186,7 +187,7 @@ Template usage is logged to `.wavemill/evals/prompt-registry.jsonl` for GEPA att
 
 ## Project Context
 
-`.wavemill/project-context.md` (hot memory) and `.wavemill/context/` (cold memory) hold living project documentation. See [docs/project-context-system.md](docs/project-context-system.md) for initialisation, updates, drift detection and concept pages.
+`.wavemill/project-context.md` (hot memory) and `.wavemill/context/` (cold memory) hold living documentation. See [docs/project-context-system.md](docs/project-context-system.md) for initialisation, updates and drift detection.
 
 ## Task Packet Structure (Progressive Disclosure)
 
