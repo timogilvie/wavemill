@@ -3981,6 +3981,7 @@ challenge_pair_manual_artifact_path() {
 
 write_manual_challenge_comparison_artifact() {
   local pair_id="$1" primary_key="$2" challenger_key="$3" timed_out_sides_csv="$4" retry_count="$5" retry_max="$6" cause="${7:-eval_timeout}"
+  local failure_kind="${8:-}" next_action="${9:-}"
   local artifact_path primary_pr challenger_pr
   artifact_path=$(challenge_pair_manual_artifact_path "$primary_key") || return 1
   primary_pr=$(pass_task_field "$primary_key" pr)
@@ -4001,6 +4002,24 @@ Retry count: $retry_count/$retry_max
 Next action:
 1. Inspect \`npx tsx $TOOLS_DIR/challenge-eval-evidence.ts --pair-id $pair_id --side <side> --pr <pr> --repo-dir .\` and re-run the eval manually if the refusal is transient.
 2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
+3. Close the losing PR and proceed with the winner.
+EOF
+  elif [[ "$cause" == "comparison_terminal" ]]; then
+    cat > "$artifact_path" <<EOF
+# Challenge Comparison Needs Manual Action
+
+Pair ID: $pair_id
+Primary issue: $primary_key
+Challenger issue: $challenger_key
+Primary PR: ${primary_pr:-unknown}
+Challenger PR: ${challenger_pr:-unknown}
+Cause: the comparison judge refused the change input terminally (${failure_kind:-unknown})
+
+The judge could not be asked to compare: the change input does not fit its context window (or the transport refused it for the same deterministic reason). Re-running the comparison reproduces the result.
+
+Next action:
+${next_action:-1. Inspect the comparison job log.}
+2. Compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually, or reduce the change size (for example by keeping a large generated file out of the PR) and re-run the comparison.
 3. Close the losing PR and proceed with the winner.
 EOF
   else
@@ -15437,6 +15456,34 @@ poll_tracked_jobs() {
       continue
     fi
 
+    # HOK-3493: a failed comparison goes through the same one eval-failure
+    # disposition. A retryable decision keeps the historical behaviour (a log
+    # line; the launch path owns any relaunch). A terminal decision — the
+    # judge's typed refusal because the change cannot fit its budget — parks
+    # the pair in the visible manual-comparison state instead of failing
+    # silently. The branch decides on .class, never on a reason string.
+    if [[ "$kind" == "comparison" && "$status" != "succeeded" && -n "$pair_id" ]]; then
+      local cmp_exit cmp_decision cmp_class cmp_kind cmp_next cmp_artifact cmp_slug
+      cmp_exit=$(echo "$job_json" | jq -r '.exitCode // empty')
+      cmp_decision="$(eval_failure_disposition "$pair_id" "$reason" "$cmp_exit" "$excerpt" true)"
+      cmp_class=$(jq -r '.class // "retryable"' <<<"$cmp_decision")
+      if [[ "$cmp_class" == "terminal" ]]; then
+        cmp_kind=$(jq -r '.failureKind // "native-unclassified"' <<<"$cmp_decision")
+        cmp_next=$(jq -r '.nextAction // ""' <<<"$cmp_decision")
+        primary_key="$pair_id"
+        challenger_key="$(task_identity_challenger_key "$pair_id")"
+        cmp_artifact=$(write_manual_challenge_comparison_artifact "$pair_id" "$primary_key" "$challenger_key" "" \
+          "0" "0" "comparison_terminal" "$cmp_kind" "$cmp_next" || true)
+        write_challenge_pair_state "$pair_id" "manual_comparison_needed" "comparison_terminal:${cmp_kind}" \
+          "0" "0" "" "" "$cmp_artifact" >/dev/null || true
+        cmp_slug=$(pass_task_field "$pair_id" slug 2>/dev/null || true)
+        [[ -n "$cmp_slug" ]] && set_window_attention_state "${pair_id}-${cmp_slug}" "needs-user" 2>/dev/null || true
+        log_warn "challenge comparison for $pair_id refused terminally (kind=$cmp_kind) - manual comparison needed${cmp_next:+; next: $cmp_next}"
+        settle_tracked_job "$job_id"
+        continue
+      fi
+    fi
+
     if [[ "$kind" == "eval" ]]; then
       log_warn "challenge eval failed for $issue_id (${reason:-$status}); log: $log_path"
     else
@@ -15947,6 +15994,10 @@ launch_background_post_merge_eval() {
       fi
       printf 'Eval process exited with code %s\n' "$rc"
       persisted=$(jq -r '.persisted // false' "$result_path" 2>/dev/null || echo "false")
+      # HOK-3493: the hook records the failure kind (an adapter's typed
+      # `context-window-exceeded` for a change that cannot fit the judge), so
+      # read it before removing the result file.
+      _result_reason=$(jq -r '.reason // ""' "$result_path" 2>/dev/null || echo "")
       rm -f "$result_path"
       if [[ "$persisted" == "true" ]]; then
         mark_eval_completed "$issue"
@@ -15958,6 +16009,7 @@ launch_background_post_merge_eval() {
         # eval log and the post-reap audit instead of relaunching anything.
         local _reason="eval_not_persisted" _tail decision_json
         local decision_class decision_kind decision_attribution decision_next_action
+        [[ -n "$_result_reason" ]] && _reason="$_result_reason"
         [[ "$rc" == "124" ]] && _reason="timed_out"
         _tail=$(tail -c 2000 "$eval_log" 2>/dev/null || echo "")
         decision_json="$(eval_failure_disposition "$issue" "$_reason" "$rc" "$_tail" false)"

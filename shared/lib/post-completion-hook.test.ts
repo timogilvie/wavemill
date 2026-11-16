@@ -685,7 +685,7 @@ await test('runPostCompletionEval persists the @hokusai/costs cross-harness tota
   assert.equal(record?.workflowCostAttribution?.source, 'multi');
   assert.deepEqual(record?.taskCostSummary?.map((summary) => summary.harness).sort(), ['claude-code', 'native']);
   // The post-completion hook never fetches OpenRouter exact charges.
-  assert.equal(meterInput?.exactPricing, undefined);
+  assert.deepEqual(meterInput?.exactPricing, {}, 'ordinary completion uses the same best-effort generation enrichment as terminal feedback');
   assert.equal(meterInput?.issueId, 'HOK-3237');
 });
 
@@ -1528,6 +1528,53 @@ await test('runPostCompletionEval returns false when judge times out before pers
 
     assert.equal(existsSync(join(repoDir, '.wavemill', 'evals', 'evals.jsonl')), false);
     assert.deepEqual(readWarningLines(repoDir), []);
+  } finally {
+    clearConfigCache(repoDir);
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+// protects: a change that cannot fit the judge is a typed refusal, not a
+// swallowed generic failure — the wrapper must see it to record its policy kind.
+await test('runPostCompletionEval rethrows a ChangeInputRefusedError (HOK-3493)', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'post-completion-change-refused-'));
+  makeContextUpdateRepo(repoDir, 'change-refused', 'HOK-3493');
+  clearConfigCache(repoDir);
+  const { ChangeInputRefusedError } = await import('./review-input-budget.ts');
+
+  try {
+    await withMockedPostCompletionDeps(async () => {
+      stubBaseEvalDeps();
+      postCompletionHookDeps.evaluateTask = async () => {
+        throw new ChangeInputRefusedError({
+          kind: 'context-exceeded',
+          message: 'change does not fit the judge',
+          policyKind: 'context-window-exceeded',
+        });
+      };
+      postCompletionHookDeps.runContextUpdateWork = async () => {
+        throw new Error('should not reach context updates');
+      };
+
+      await assert.rejects(
+        runPostCompletionEval({
+          issueId: 'HOK-3493',
+          prNumber: '3493',
+          workflowType: 'mill',
+          repoDir,
+          branchName: 'task/change-refused',
+          worktreePath: repoDir,
+          agentType: 'claude',
+        }),
+        (error) => {
+          assert.equal(error.name, 'ChangeInputRefusedError');
+          assert.equal(error.adapterError.policyKind, 'context-window-exceeded');
+          return true;
+        },
+      );
+    });
+
+    assert.equal(existsSync(join(repoDir, '.wavemill', 'evals', 'evals.jsonl')), false);
   } finally {
     clearConfigCache(repoDir);
     rmSync(repoDir, { recursive: true, force: true });

@@ -245,6 +245,23 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     expectedClass: 'code-failure',
   },
   {
+    // CI run 43936781766: the abbreviated SHA's leading "502" matched the
+    // HTTP-status transient override, so the conflict retried as transient.
+    name: 'tend rebase conflict whose commit SHA starts with 502',
+    evidence: { stage: 'tend', detail: 'CONFLICT (content): Merge conflict in generated.txt\nerror: could not apply 502f14d... JRN-4: regenerate generated.txt' },
+    expectedClass: 'code-failure',
+  },
+  {
+    name: 'tend rebase conflict whose commit SHA starts with 504',
+    evidence: { stage: 'tend', failureKind: 'rebase-conflict', detail: 'error: could not apply 504abcd... HOK-1: change' },
+    expectedClass: 'code-failure',
+  },
+  {
+    name: 'tend push hit an HTTP 503',
+    evidence: { stage: 'tend', failureKind: 'rebase-conflict', detail: 'error: RPC failed; HTTP 503 curl 22 The requested URL returned error: 503' },
+    expectedClass: 'retryable',
+  },
+  {
     name: 'tend force-with-lease rejected (someone pushed)',
     evidence: { stage: 'tend', detail: ' ! [rejected]        HEAD -> task/x (stale info)\nerror: failed to push some refs' },
     expectedClass: 'retryable',
@@ -442,4 +459,21 @@ test('eval job evidence remains unattributed and genuine model faults require id
   assert.equal(classifyFailure(fault).attribution, 'unattributed');
   assert.equal(classifyFailure({ ...fault, executionEvidence: { source: 'provider-response', model: '' } }).attribution, 'unattributed');
   assert.equal(classifyFailure({ ...fault, executionEvidence: { source: 'provider-response', model: 'verified-model' } }).attribution, 'model');
+});
+
+// protects: HOK-3493 — an eval change that cannot fit the judge is a typed,
+// terminal refusal; retrying the same oversize prompt cannot change the outcome.
+test('HOK-3493: an eval job refused for an oversize change classifies terminal, not retryable', () => {
+  const refused = classifyFailure({
+    stage: 'eval',
+    challengeArm: true,
+    job: { reason: 'context-window-exceeded', exitCode: 1, excerpt: 'Model input refused: prompt exceeds window' },
+  });
+  assert.equal(refused.failureKind, 'context-window-exceeded');
+  assert.equal(refused.class, 'terminal');
+  // The old generic reason keeps retrying; this fix must not have moved the seam.
+  assert.equal(
+    classifyFailure({ stage: 'eval', challengeArm: true, job: { reason: 'eval_not_persisted', exitCode: 1, excerpt: '' } }).class,
+    'retryable',
+  );
 });

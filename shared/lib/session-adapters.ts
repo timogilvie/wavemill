@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { archivedSessionRoots, resolveTaskArtifactDirs } from './task-artifact-lookup.ts';
 import { TASK_ID_EMBEDDED_GLOBAL_RE } from './task-identity.ts';
 /**
@@ -23,6 +24,7 @@ import { isPendingSessionRef, type SessionOwnershipRow } from './session-ownersh
 import { readJsonlFile } from './jsonl-utils.ts';
 import { piUsageToSessionModelUsage } from './native-agent/pi-usage-cost.ts';
 import type { TranscriptEvent } from './native-agent/transcript.ts';
+import type { NativeProviderExecution, TaskCostTokenUsage } from '@hokusai/core';
 import { resolveProjectsDirs } from './wavemill-session-paths.ts';
 
 /**
@@ -49,7 +51,8 @@ export function resolveCodexSessionRoots(repoDir?: string, issueId?: string, fea
 }
 
 /** One native-file discovery path for metering, identity and retention. */
-export function nativeSessionFiles(opts: { worktreePath?: string; repoDir?: string; issueId?: string; branchName?: string; featureDir?: string }): string[] {
+export function nativeSessionFiles(opts: { worktreePath?: string; repoDir?: string; issueId?: string; branchName?: string; featureDir?: string; sessionRefs?: readonly string[] }): string[] {
+  if (opts.sessionRefs?.length === 0) return [];
   const dirs = new Map<string, string | undefined>();
   for (const root of [opts.worktreePath, opts.repoDir]) {
     if (!root) continue;
@@ -66,7 +69,7 @@ export function nativeSessionFiles(opts: { worktreePath?: string; repoDir?: stri
   for (const [dir, run] of dirs) {
     if (!existsSync(dir)) continue;
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.isFile() && entry.name.endsWith('.jsonl') && matchesIssue(entry.name, opts.issueId, opts.branchName, run)) files.add(join(dir, entry.name));
+      if (entry.isFile() && entry.name.endsWith('.jsonl') && (opts.sessionRefs !== undefined || matchesIssue(entry.name, opts.issueId, opts.branchName, run))) files.add(join(dir, entry.name));
     }
   }
   return [...files];
@@ -95,7 +98,8 @@ export function discoverOwnedSessionEvidence(rows: readonly SessionOwnershipRow[
     };
     visit(root, 0); cache.set(root, files); return files;
   };
-  const native = rows.some(r => r.harness === 'native') ? nativeSessionFiles(opts) : [];
+  const nativeRefs = rows.filter(row => row.harness === 'native').map(row => row.sessionRef);
+  const native = nativeSessionFiles({ ...opts, sessionRefs: nativeRefs });
   const allowedCwd = (cwd: string) => resolve(cwd) === resolve(opts.repoDir)
     || resolve(cwd) === resolve(opts.worktreePath) || resolve(cwd).startsWith(resolve(opts.worktreePath) + '/');
   return rows.map(row => {
@@ -146,10 +150,13 @@ export interface NativeSessionUsageRecord {
   filePath: string;
   provider: string;
   modelId: string;
+  requestedModel?: string;
   turnCount: number;
   responseIds: string[];
   turns: Array<{
+    providerRequest?: Pick<NativeProviderExecution, 'requestedRouting' | 'pricingSnapshot'>;
     responseId?: string;
+    responseModel?: string;
     inputTokens?: number;
     cacheCreationTokens?: number;
     cacheReadTokens?: number;
@@ -167,6 +174,28 @@ export interface NativeSessionUsageRecord {
   providerReportedCostUsd?: number;
   usageAvailable: boolean;
   invalidUsage: boolean;
+}
+
+/** Shared observation identity for billing and provider evidence, including archived copies. */
+export function nativeSessionObservations(sessions: readonly NativeSessionUsageRecord[]) {
+  const seen = new Set<string>();
+  return sessions.flatMap(session => {
+    const turns: NativeSessionUsageRecord['turns'] = session.turns.length ? session.turns : [session];
+    return turns.flatMap((turn, index) => {
+      const identity = turn.responseId ?? [basename(session.filePath), session.modelId, index];
+      const key = JSON.stringify([session.sessionId, session.provider, identity]);
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [{ session, turn, index, observationId: createHash('sha256').update(key).digest('hex') }];
+    });
+  });
+}
+
+export function nativeTurnUsage(turn: NativeSessionUsageRecord['turns'][number]): TaskCostTokenUsage {
+  const usable = turn.usageAvailable && !turn.invalidUsage ? turn : {};
+  return { input_tokens: usable.inputTokens ?? null, output_tokens: usable.outputTokens ?? null,
+    cache_read_tokens: usable.cacheReadTokens ?? null, cache_write_tokens: usable.cacheCreationTokens ?? null,
+    reasoning_tokens: null };
 }
 
 /** Result of scanning sessions for a given agent. */
@@ -200,6 +229,9 @@ export interface SessionScanOptions {
    * this every task's usage is summed into whichever task is being costed.
    */
   issueId?: string;
+  featureDir?: string;
+  /** Exact ownership overrides filename hints, which may carry a canonical issue rather than the arm. */
+  sessionRefs?: readonly string[];
 }
 
 /** A session adapter knows how to scan an agent's session files. */
@@ -293,6 +325,7 @@ export class NativeSessionAdapter implements SessionAdapter {
       try {
         for (const entry of readJsonlFile<TranscriptEvent>(filePath)) {
           sessionId ||= entry.sessionId || filePath;
+          if (opts.sessionRefs && !opts.sessionRefs.includes(sessionId)) break;
           if (entry.type === 'session_started') {
             sessionModel = entry.model || sessionModel;
             sessionProvider = entry.provider || sessionProvider;
@@ -312,6 +345,7 @@ export class NativeSessionAdapter implements SessionAdapter {
               filePath,
               provider: sessionProvider,
               modelId,
+              ...(sessionModel !== 'unknown' ? { requestedModel: sessionModel } : {}),
               turnCount: 0,
               responseIds: [],
               turns: [],
@@ -323,7 +357,9 @@ export class NativeSessionAdapter implements SessionAdapter {
 
           nativeRecord.turnCount++;
           const turnRecord: NativeSessionUsageRecord['turns'][number] = {
+            ...(entry.providerRequest ? { providerRequest: entry.providerRequest } : {}),
             ...(entry.responseId ? { responseId: entry.responseId } : {}),
+            ...(entry.responseModel ? { responseModel: entry.responseModel } : {}),
             usageAvailable: false,
             invalidUsage: false,
           };

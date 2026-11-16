@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { fetchOpenRouterExactCosts, isExactPricingEnabled } from './openrouter-exact-pricing.ts';
+import { fetchOpenRouterGenerationEvidence, isExactPricingEnabled } from './openrouter-exact-pricing.ts';
 
 describe('isExactPricingEnabled', () => {
   let saved: string | undefined;
@@ -27,23 +27,23 @@ describe('isExactPricingEnabled', () => {
   });
 });
 
-describe('fetchOpenRouterExactCosts', () => {
+describe('fetchOpenRouterGenerationEvidence', () => {
   it('returns undefined without fetching when disabled or there is nothing to look up', async () => {
     let calls = 0;
     const fetchGenerationCost = async () => {
       calls++;
       return { totalCostUsd: 1 };
     };
-    assert.equal(await fetchOpenRouterExactCosts(['gen-1'], { enabled: false, fetchGenerationCost }), undefined);
-    assert.equal(await fetchOpenRouterExactCosts([], { enabled: true, fetchGenerationCost }), undefined);
-    assert.equal(await fetchOpenRouterExactCosts([''], { enabled: true, fetchGenerationCost }), undefined);
+    assert.equal(await fetchOpenRouterGenerationEvidence(['gen-1'], { enabled: false, fetchGenerationCost }), undefined);
+    assert.equal(await fetchOpenRouterGenerationEvidence([], { enabled: true, fetchGenerationCost }), undefined);
+    assert.equal(await fetchOpenRouterGenerationEvidence([''], { enabled: true, fetchGenerationCost }), undefined);
     assert.equal(calls, 0);
   });
 
   it('fetches each unique id once and keeps only resolved charges', async () => {
     const seen: string[] = [];
     const warnings: string[] = [];
-    const exact = await fetchOpenRouterExactCosts(['gen-1', 'gen-2', 'gen-1', 'gen-3', 'gen-4'], {
+    const exact = await fetchOpenRouterGenerationEvidence(['gen-1', 'gen-2', 'gen-1', 'gen-3', 'gen-4'], {
       enabled: true,
       concurrency: 2,
       logger: { warn: (message) => warnings.push(String(message)) },
@@ -56,15 +56,21 @@ describe('fetchOpenRouterExactCosts', () => {
       },
     });
     assert.deepEqual([...seen].sort(), ['gen-1', 'gen-2', 'gen-3', 'gen-4']);
-    assert.deepEqual(exact, new Map([['gen-1', 0.25]]));
+    assert.deepEqual(exact, new Map([['gen-1', { totalCostUsd: 0.25 }], ['gen-4', { totalCostUsd: null }]]));
     assert.deepEqual(warnings, ['[COST] OpenRouter exact cost unavailable for 3 generation(s); using local pricing fallback']);
   });
 
   it('keeps a billed zero', async () => {
-    const exact = await fetchOpenRouterExactCosts(['gen-free'], {
+    const exact = await fetchOpenRouterGenerationEvidence(['gen-free'], {
       enabled: true,
       fetchGenerationCost: async () => ({ totalCostUsd: 0 }),
     });
-    assert.deepEqual(exact, new Map([['gen-free', 0]]));
+    assert.deepEqual(exact, new Map([['gen-free', { totalCostUsd: 0 }]]));
   });
+});
+
+// A credential resolved through native provider config must reach the canonical enrichment client.
+it('explicit provider credentials enable exact enrichment without process-global mutation', () => {
+  assert.equal(isExactPricingEnabled({ apiKey: 'test-provider-config' }), true);
+  assert.equal(isExactPricingEnabled({ apiKey: 'test-provider-config', enabled: false }), false);
 });

@@ -52,6 +52,7 @@ export interface NativeGateInput {
   apiKeyEnv: string;
   now?: Date;
   certificationRoot?: string;
+  endpoint?: import('./schema.ts').CertificationEndpoint;
 }
 
 export interface NativeGateReady {
@@ -137,12 +138,13 @@ export function evaluateNativeProviderGate(input: NativeGateInput): NativeGateDe
     provider: nativeProvider,
     model: input.modelId,
     registry: input.registry,
+    endpoint: input.endpoint,
   });
   const artifactPath = buildGlobalCertificationPath(
     subject.storageIdentity.provider,
     subject.storageIdentity.model,
     requiredSuiteVersion,
-    { root: input.certificationRoot },
+    { root: input.certificationRoot, endpoint: input.endpoint },
   );
   const eligibility = checkGlobalCertificationEligibility(
     subject.storageIdentity.provider,
@@ -150,7 +152,7 @@ export function evaluateNativeProviderGate(input: NativeGateInput): NativeGateDe
     requiredSuiteVersion,
     input.requiredPhase,
     input.now,
-    { root: input.certificationRoot },
+    { root: input.certificationRoot, endpoint: input.endpoint },
     subject.subject,
   );
 
@@ -178,7 +180,7 @@ export function evaluateNativeProviderGate(input: NativeGateInput): NativeGateDe
   // Deterministic certification alone is necessary but not sufficient for
   // coding: a coding launch additionally requires a fresh, live,
   // identity-matching structured-mutation canary pass (HOK-2943).
-  if (isCodingLaunch(input)) {
+  if (isCodingLaunch(input) && !subject.subject.endpoint) {
     const canaryEligibility = evaluateLiveCodingCanaryEligibility(
       eligibility.artifact,
       requiredSuiteVersion,

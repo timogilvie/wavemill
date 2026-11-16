@@ -1,0 +1,6 @@
+# release-readiness-grammar guard allowlist (HOK-3499)
+# <repo-relative path> [<max findings>]  # <reason>
+#
+# The list only shrinks: every entry must name a reason and its count must
+# match the current findings. There are no exceptions today: the only field
+# grammar lives in shared/lib/task-packet-utils.ts.

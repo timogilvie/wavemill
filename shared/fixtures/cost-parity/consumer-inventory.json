@@ -462,6 +462,7 @@
     "shared/lib/sdk-task-cost/meter.test.ts",
     "shared/lib/sdk-task-cost/price-overrides.test.ts",
     "shared/lib/sdk-task-cost/project.test.ts",
+    "shared/lib/sdk-task-cost/provider-evidence.test.ts",
     "shared/lib/task-evidence-archive.test.ts",
     "shared/lib/wavemill-session-paths.test.ts",
     "tests/journeys/fixtures/happy-path/provider-transcript-replay.ts",

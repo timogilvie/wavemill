@@ -238,12 +238,11 @@ More content`;
 
     const result = extractReleaseReadiness(markdown);
 
-    expect(result).toEqual({
-      databaseChangeRisk: 'required',
-      envChanges: ['NEW_API_KEY', 'FEATURE_FLAG_X'],
-      configChanges: ['config/production.json'],
-      manualSteps: ['Run migration script', 'Update CDN cache rules'],
-    });
+    expect(result!.databaseChangeRisk).toBe('required');
+    expect(result!.envChanges).toEqual(['NEW_API_KEY', 'FEATURE_FLAG_X']);
+    expect(result!.configChanges).toEqual(['config/production.json']);
+    expect(result!.manualSteps).toEqual(['Run migration script', 'Update CDN cache rules']);
+    expect(result!.missingFields).toEqual([]);
   });
 
   test('returns null when section is absent', () => {
@@ -279,12 +278,11 @@ Some content`;
 
     const result = extractReleaseReadiness(markdown);
 
-    expect(result).toEqual({
-      databaseChangeRisk: 'none',
-      envChanges: [],
-      configChanges: [],
-      manualSteps: [],
-    });
+    expect(result!.databaseChangeRisk).toBe('none');
+    expect(result!.envChanges).toEqual([]);
+    expect(result!.configChanges).toEqual([]);
+    expect(result!.manualSteps).toEqual([]);
+    expect(result!.missingFields).toEqual([]);
   });
 
   test('handles single-item lists', () => {
@@ -296,12 +294,11 @@ Some content`;
 
     const result = extractReleaseReadiness(markdown);
 
-    expect(result).toEqual({
-      databaseChangeRisk: 'possible',
-      envChanges: ['API_KEY'],
-      configChanges: [],
-      manualSteps: [],
-    });
+    expect(result!.databaseChangeRisk).toBe('possible');
+    expect(result!.envChanges).toEqual(['API_KEY']);
+    expect(result!.configChanges).toEqual([]);
+    expect(result!.manualSteps).toEqual([]);
+    expect(result!.missingFields).toEqual([]);
   });
 
   test('defaults database_change_risk to none for invalid value', () => {
@@ -344,5 +341,109 @@ Build something
 
     expect(result).not.toBeNull();
     expect(result!.databaseChangeRisk).toBe('required');
+  });
+
+  // HOK-3499: the incident spelling — the colon sits inside the bold markers.
+  test('accepts the colon inside the bold markers', () => {
+    const markdown = `## Release Readiness
+
+- **database_change_risk:** none
+- **env_changes:** none
+- **config_changes:** config/app.json
+- **manual_steps:** none`;
+
+    const result = extractReleaseReadiness(markdown);
+
+    expect(result!.databaseChangeRisk).toBe('none');
+    expect(result!.envChanges).toEqual([]);
+    expect(result!.configChanges).toEqual(['config/app.json']);
+    expect(result!.manualSteps).toEqual([]);
+    expect(result!.missingFields).toEqual([]);
+  });
+
+  test('accepts * bullets', () => {
+    const markdown = `## Release Readiness
+* **database_change_risk**: possible
+* **env_changes**: API_KEY
+* **config_changes**: none
+* **manual_steps**: none`;
+
+    const result = extractReleaseReadiness(markdown);
+
+    expect(result!.databaseChangeRisk).toBe('possible');
+    expect(result!.envChanges).toEqual(['API_KEY']);
+    expect(result!.missingFields).toEqual([]);
+  });
+
+  test('accepts a heading suffix after Release Readiness', () => {
+    const markdown = `## Release Readiness (v2)
+- **database_change_risk**: none
+- **env_changes**: none
+- **config_changes**: none
+- **manual_steps**: none`;
+
+    const result = extractReleaseReadiness(markdown);
+
+    expect(result).not.toBeNull();
+    expect(result!.missingFields).toEqual([]);
+  });
+
+  test('reports a missing database_change_risk instead of inventing none', () => {
+    const markdown = `## Release Readiness
+- **env_changes**: none
+- **config_changes**: none
+- **manual_steps**: none`;
+
+    const result = extractReleaseReadiness(markdown);
+
+    expect(result).not.toBeNull();
+    expect(result!.databaseChangeRisk).toBeUndefined();
+    expect(result!.missingFields).toEqual(['database_change_risk']);
+  });
+
+  test('reports every missing required field', () => {
+    expect(extractReleaseReadiness('## Release Readiness')!.missingFields).toEqual([
+      'database_change_risk',
+      'env_changes',
+      'config_changes',
+      'manual_steps',
+    ]);
+  });
+
+  test('treats "none" with an annotation as an empty list', () => {
+    const markdown = `## Release Readiness
+- **database_change_risk:** none
+- **env_changes:** none (kill-switch removed; no env var remains)
+- **config_changes:** none
+- **manual_steps:** none (no migration needed)`;
+
+    const result = extractReleaseReadiness(markdown);
+
+    expect(result!.databaseChangeRisk).toBe('none');
+    expect(result!.envChanges).toEqual([]);
+    expect(result!.manualSteps).toEqual([]);
+    expect(result!.missingFields).toEqual([]);
+  });
+
+  test('ignores a Release Readiness example inside a fenced code block', () => {
+    const markdown = `# Plan
+
+The expected shape is:
+
+\`\`\`markdown
+## Release Readiness
+- **database_change_risk**: none
+\`\`\`
+
+## Release Readiness
+- **database_change_risk:** possible
+- **env_changes:** none
+- **config_changes:** none
+- **manual_steps:** none`;
+
+    const result = extractReleaseReadiness(markdown);
+
+    expect(result!.databaseChangeRisk).toBe('possible');
+    expect(result!.missingFields).toEqual([]);
   });
 });

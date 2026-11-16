@@ -2550,3 +2550,21 @@ for (const limit of ['token', 'cost'] as const) {
     assert.equal(requests, 1);
   });
 }
+
+// protects: requested restrictions and rates remain request facts, never inferred actual endpoint identity.
+it('captures the actual requested provider restriction and reference rates on the assistant event', async () => {
+  const api = uniqueApi('provider-request-facts');
+  registerScriptedPiProvider({ api, turns: [{ content: [{ type: 'text', text: 'done' }], stopReason: 'stop' }] });
+  const config = baseConfig(api);
+  const routing = { only: ['host-a/fp4'], allow_fallbacks: false };
+  const facts: any[] = [];
+  await runWavemillLoop({ ...config,
+    model: { ...config.model, contextWindow: 128000, provider: 'openrouter', compat: { openRouterRouting: routing } } as any,
+    modelPricing: { inputCostPerMTok: 0.2, outputCostPerMTok: 1, cacheReadCostPerMTok: 0.01 },
+    onEvent(event) { if (event.type === 'message_end' && event.message.role === 'assistant') facts.push((event.message as any).providerRequest); },
+  });
+  assert.equal(facts.length, 1);
+  assert.deepEqual(facts[0], { requestedRouting: routing,
+    pricingSnapshot: { scope: 'model', inputCostPerMTok: 0.2, outputCostPerMTok: 1, cacheReadCostPerMTok: 0.01 } });
+  assert.notEqual(facts[0].requestedRouting, routing);
+});

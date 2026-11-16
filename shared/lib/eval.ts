@@ -28,23 +28,23 @@ import {
 } from './eval-schema.ts';
 import { parseJsonFromLLM } from './llm-cli.ts';
 import { fillPromptSlots } from './prompt-utils.ts';
-import { callHeadlessLLM } from './headless-llm.ts';
+import { callHeadlessLLM, headlessProviderForModel } from './headless-llm.ts';
 import { getEvalConfig } from './config.ts';
+import { adapterForProvider } from './model-adapters/resolve-adapter.ts';
+import { estimateTokensDefault } from './model-adapters/token-estimator.ts';
+import type { TransportAdapter } from './model-adapters/transport-adapter.ts';
+import {
+  buildBudgetedChangeInput,
+  ChangeInputRefusedError,
+  reviewInputBudgetFromAdapter,
+} from './review-input-budget.ts';
 import { loadPricingTable, type PricingTable } from './pricing/model-pricing.ts';
 import { priceUsageUsd } from './sdk-task-cost/price-overrides.ts';
 import { createPromptArtifact, type PromptArtifact } from './prompt-hash.ts';
 import { errorMessage } from './error-utils.ts';
 import { getLatestSession } from './session.ts';
 import { attachEligibility, attachManifestRef } from './eval-record-builder.ts';
-import { attachPromptSizeDiagnostic } from './eval-record-builder.ts';
 import { parseAndRepairJsonFromLlm } from './json-repair.ts';
-import {
-  applyEvalPromptSizeEnv,
-  enforcePromptSizeLimit,
-  resolveEvalPromptSizeConfig,
-  type EvalOversizePolicy,
-  type PromptComponents,
-} from './eval-prompt-size.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -208,8 +208,11 @@ function normalizeTimeSeconds(value: number | null | undefined): number | null {
 export interface EvaluateTaskOptions {
   /** Override for the LLM call function (testing) */
   _callFn?: (prompt: string, model: string) => Promise<LLMCallResult>;
-  /** Override prompt size guard config (testing) */
-  _promptSizeConfig?: { maxPromptBytes?: number; oversizePolicy?: EvalOversizePolicy };
+  /**
+   * Override the judge's transport adapter (testing). The default is the
+   * adapter for the judge model's headless provider.
+   */
+  _judgeAdapter?: TransportAdapter | null;
 }
 
 export async function buildUnscoredEvalRecord(
@@ -341,8 +344,22 @@ function buildInterventionText(
   return 'No interventions recorded.';
 }
 
+/** The slots of the eval judge prompt, filled from the eval input. */
+interface JudgePromptComponents {
+  taskPrompt: string;
+  prReviewOutput: string;
+  interventionMetadata: string;
+  taskPacket: string;
+  planContent: string;
+  selfReviewSummary: string;
+}
+
+/**
+ * Fill the judge prompt's slots. `prReviewOutput` is the change slot: eval
+ * passes the budgeted change text (HOK-3493), or `''` while reserving the
+ * prompt's size before the change is built.
+ */
 function buildPromptComponents(
-  template: string,
   input: {
     taskPrompt: string;
     prReviewOutput: string;
@@ -351,8 +368,8 @@ function buildPromptComponents(
     planContent?: string;
     selfReviewSummary?: string;
   },
-): PromptComponents {
-  const insertedComponents: PromptComponents = {
+): JudgePromptComponents {
+  return {
     taskPrompt: input.taskPrompt,
     prReviewOutput: input.prReviewOutput,
     interventionMetadata: input.interventionText,
@@ -360,22 +377,9 @@ function buildPromptComponents(
     planContent: input.planContent || 'Not available for this workflow.',
     selfReviewSummary: input.selfReviewSummary || 'Not available for this workflow.',
   };
-  const templateScaffold = fillJudgePrompt(template, {
-    taskPrompt: '',
-    prReviewOutput: '',
-    interventionMetadata: '',
-    taskPacket: '',
-    planContent: '',
-    selfReviewSummary: '',
-  });
-
-  return {
-    ...insertedComponents,
-    templateScaffold,
-  };
 }
 
-function fillJudgePrompt(template: string, components: PromptComponents): string {
+function fillJudgePrompt(template: string, components: JudgePromptComponents): string {
   return fillPromptSlots(template, {
     TASK_PROMPT: components.taskPrompt ?? '',
     PR_REVIEW_OUTPUT: components.prReviewOutput ?? '',
@@ -384,6 +388,16 @@ function fillJudgePrompt(template: string, components: PromptComponents): string
     PLAN_CONTENT: components.planContent ?? '',
     SELF_REVIEW_SUMMARY: components.selfReviewSummary ?? '',
   });
+}
+
+/**
+ * The judge's adapter (HOK-3493): the transport that `callLLM` will reach for
+ * this model. `TransportAdapter.limits` is the only source of "how much fits
+ * this model" — eval reads it through the shared change-input builder instead
+ * of enforcing its own byte cap.
+ */
+function judgeAdapterFor(model: string): TransportAdapter {
+  return adapterForProvider(headlessProviderForModel(model), { model });
 }
 
 async function callJudgeLLM(prompt: string, model: string): Promise<LLMCallResult> {
@@ -803,7 +817,7 @@ export async function evaluateTask(
   outcomes: Outcomes | undefined = undefined,
   options: EvaluateTaskOptions = {}
 ): Promise<EvalRecord> {
-  const { _callFn, _promptSizeConfig } = options;
+  const { _callFn, _judgeAdapter } = options;
   const {
     taskPrompt,
     prReviewOutput,
@@ -837,7 +851,7 @@ export async function evaluateTask(
 
   const template = await loadPromptTemplate();
   const finalInterventionText = buildInterventionText(interventions, interventionText);
-  const rawComponents = buildPromptComponents(template, {
+  const components = buildPromptComponents({
     taskPrompt,
     prReviewOutput,
     interventionText: finalInterventionText,
@@ -845,25 +859,39 @@ export async function evaluateTask(
     planContent,
     selfReviewSummary,
   });
-  const promptSizeConfig = applyEvalPromptSizeEnv(_promptSizeConfig ?? getEvalConfig(), process.env);
-  const { limitBytes, policy } = resolveEvalPromptSizeConfig(promptSizeConfig);
-  const enforcement = enforcePromptSizeLimit({
-    components: rawComponents,
-    limitBytes,
-    policy,
+
+  // HOK-3493: the change enters the prompt through the one builder, inside the
+  // judge adapter's budget. A generated validator marked `-diff` therefore
+  // arrives as a summary (or git's binary line) instead of megabytes of text.
+  const reservedPrompt = fillJudgePrompt(template, { ...components, prReviewOutput: '' });
+  const adapter = _judgeAdapter === undefined ? judgeAdapterFor(model) : _judgeAdapter;
+  const change = buildBudgetedChangeInput({
+    diff: prReviewOutput,
+    adapter,
+    reservedPrompt,
   });
-  let prompt = fillJudgePrompt(template, enforcement.components);
-  const finalPromptBytes = Buffer.byteLength(prompt, 'utf8');
-  if (finalPromptBytes !== enforcement.diagnostic.totalBytes) {
-    enforcement.diagnostic.totalBytes = finalPromptBytes;
-  }
-  if (finalPromptBytes > limitBytes) {
-    enforcement.diagnostic.action = 'rejected';
-    enforcement.action = 'rejected';
-  }
-  console[enforcement.action === 'pass' ? 'log' : 'warn'](
-    `[eval] prompt_size ${JSON.stringify(enforcement.diagnostic)}`,
+  const prompt = fillJudgePrompt(template, { ...components, prReviewOutput: change.text });
+
+  const changeBudget = adapter ? reviewInputBudgetFromAdapter(adapter, reservedPrompt) : undefined;
+  const promptTokens = adapter ? adapter.countTokens(prompt) : estimateTokensDefault(prompt);
+  console.log(
+    `[eval] change_input ${JSON.stringify({
+      files: change.files.length,
+      summarised: change.summarisedCount,
+      withinBudget: change.withinBudget,
+      promptTokens,
+      maxTokens: changeBudget?.maxTokens,
+    })}`,
   );
+
+  // A change whose source and tests alone cannot fit is refused with the
+  // adapter's typed error (HOK-3493), which the failure policy treats as
+  // terminal — a deterministic oversize is never retried. When the whole
+  // prompt still passes the adapter's preflight nothing was cut, so it is sent.
+  if (!change.withinBudget) {
+    const refusal = adapter?.preflight(prompt);
+    if (refusal) throw new ChangeInputRefusedError(refusal);
+  }
 
   // Capture prompt artifact for GEPA training (HOK-1003)
   // Gracefully handle missing template file - this is metadata and should not block evals
@@ -874,22 +902,6 @@ export async function evaluateTask(
     promptArtifacts = [promptArtifact];
   } catch (err) {
     console.warn(`[eval] Failed to capture prompt artifact: ${errorMessage(err)}`);
-  }
-
-  if (enforcement.action === 'rejected') {
-    const record = await buildUnscoredEvalRecord(
-      input,
-      {
-        failureReason: 'eval_prompt_too_large',
-        rationale: `Eval prompt exceeded configured byte limit before judge invocation (${enforcement.diagnostic.totalBytes} > ${limitBytes}).`,
-        promptArtifacts,
-      },
-      outcomes,
-    );
-    attachPromptSizeDiagnostic(record, enforcement.diagnostic);
-    attachEligibility(record);
-    record.trainingEligible = false;
-    return record;
   }
 
   const activeSessionId = process.env.WAVEMILL_SESSION || (await getLatestSession())?.sessionId;
@@ -969,7 +981,6 @@ export async function evaluateTask(
       ...(planCritique && { planCritique }),
     },
   };
-  attachPromptSizeDiagnostic(record, enforcement.diagnostic);
   attachManifestRef(record, activeSessionId);
   attachEligibility(record);
   return record;

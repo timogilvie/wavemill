@@ -219,7 +219,11 @@ journey_wait_until "$ISSUE" 10 "winner reaped, loser retired"       pair_settled
 
 echo ""
 echo "assertions:"
-journey_assert "eval harness retried without operator recovery" grep -q 'challenge eval retrying for' "$JOURNEY_TMP/logs/status.log"
+# A sourcing variant that arms no eval fault (JOURNEY_EVAL_NO_FAULT=1) has no
+# retry to see; its own wrapper asserts what it did seed.
+if [[ "${JOURNEY_EVAL_NO_FAULT:-0}" != "1" ]]; then
+  journey_assert "eval harness retried without operator recovery" grep -q 'challenge eval retrying for' "$JOURNEY_TMP/logs/status.log"
+fi
 journey_assert "the pair was rolled as a challenge (role recorded on both arms)" \
   test "$(grep -c "phase=coding issue=" "$FAKE_AGENT_LOG")" -ge 2
 journey_assert "both arms were evaluated before the comparison" \

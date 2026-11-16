@@ -13,6 +13,7 @@ import { dirname } from "node:path";
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { buildUnscoredEvalRecord, evaluateTask, isJudgeResponseRecoveryError } from './eval.ts';
+import { isChangeInputRefusedError } from './review-input-budget.ts';
 import { appendEvalRecord } from './eval-persistence.ts';
 import { resolveEvalsDir, resolveRouteArtifactArchiveDir } from './evals-paths.ts';
 import { execShellCommand } from './shell-utils.ts';
@@ -986,6 +987,7 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
         slug: stageArtifacts.featureSlug,
         pricingTable,
         label: 'Post-completion eval',
+        exactPricing: {},
       });
 
       // Normalized execution-economics collection (HOK-2958): fail-soft,
@@ -1130,6 +1132,10 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
     printEvalSummary(record);
     return true;
   } catch (error: unknown) {
+    // HOK-3493: a change that cannot fit the judge is a typed refusal, not a
+    // generic eval failure. Let it through so the hook wrapper can record the
+    // adapter's `policyKind`, which the failure policy treats as terminal.
+    if (isChangeInputRefusedError(error)) throw error;
     let message = errorMessage(error);
     if (isJudgeResponseRecoveryError(error)) {
       try {

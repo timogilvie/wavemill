@@ -1,3 +1,5 @@
+import { endpointIdentity, validateCertificationEndpoint } from './identity.ts';
+import type { CertificationEndpoint } from './schema.ts';
 /**
  * Bounded live-coding-canary cohort (HOK-3062).
  *
@@ -80,6 +82,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // ---------------------------------------------------------------------------
 
 export interface CanaryCohortMember {
+  endpoint?: CertificationEndpoint;
   provider: NativeProviderName;
   model: string;
 }
@@ -121,7 +124,11 @@ export function resolveCanaryCohort(options: ResolveCanaryCohortOptions): Resolv
   const seen = new Set<string>();
 
   for (const entry of configured) {
-    const key = `${entry.provider}/${entry.model}`;
+    if (entry.endpoint) {
+      try { validateCertificationEndpoint(entry.endpoint); } catch { invalid.push({ ...entry, reason: 'invalid endpoint subject' }); continue; }
+      if (entry.provider !== 'openrouter') { invalid.push({ ...entry, reason: 'endpoint subjects require OpenRouter' }); continue; }
+    }
+    const key = memberKey(entry);
     if (seen.has(key)) {
       invalid.push({ ...entry, reason: 'duplicate cohort entry' });
       continue;
@@ -133,7 +140,7 @@ export function resolveCanaryCohort(options: ResolveCanaryCohortOptions): Resolv
       invalid.push({ ...entry, reason });
       continue;
     }
-    members.push({ provider: entry.provider, model: entry.model });
+    members.push({ provider: entry.provider, model: entry.model, ...(entry.endpoint ? { endpoint: entry.endpoint } : {}) });
   }
 
   return {
@@ -304,13 +311,14 @@ function evaluateMemberStatus(input: {
   certificationRoot?: string;
 }): CohortMemberStatus {
   const { member, registry, suiteVersion, now } = input;
-  const base = { provider: member.provider, model: member.model };
+  const base = { provider: member.provider, model: member.model, ...(member.endpoint ? { endpoint: member.endpoint } : {}) };
 
   let subject: ReturnType<typeof resolveCertificationSubject>;
   try {
     subject = resolveCertificationSubject({
       provider: member.provider,
       model: member.model,
+      endpoint: member.endpoint,
       registry,
     });
   } catch (error) {
@@ -326,7 +334,7 @@ function evaluateMemberStatus(input: {
     subject.storageIdentity.provider,
     subject.storageIdentity.model,
     suiteVersion,
-    input.certificationRoot ? { root: input.certificationRoot } : {},
+    { root: input.certificationRoot, endpoint: member.endpoint },
   );
   if (!loaded.ok || !isRevisionAwareArtifact(loaded.artifact)) {
     return { ...base, state: 'missing', codingEligible: false };
@@ -418,7 +426,7 @@ function resolveAttemptCachePath(options: {
 }
 
 function memberKey(member: CanaryCohortMember): string {
-  return `${member.provider}/${member.model}`;
+  return `${member.provider}/${member.model}${member.endpoint ? `@${endpointIdentity(member.endpoint)}` : ''}`;
 }
 
 /**
@@ -520,6 +528,8 @@ export type CohortCertifyFn = (opts: {
   phase: 'workflow';
   repoDir: string;
   liveCodingCanary: true;
+  endpoint?: CertificationEndpoint;
+  certificationRoot?: string;
   registry?: ModelRegistry;
   canaryLimits?: Partial<LiveCodingCanaryLimits>;
   loadPreviousArtifactFn?: (provider: string, model: string, suiteVersion: string) => NativeCertificationArtifact | undefined;
@@ -615,7 +625,7 @@ export async function refreshCanaryCohort(
   let attempted = 0;
 
   for (const status of healthBefore.members) {
-    const member: CanaryCohortMember = { provider: status.provider, model: status.model };
+    const member: CanaryCohortMember = { provider: status.provider, model: status.model, ...(status.endpoint ? { endpoint: status.endpoint } : {}) };
     const base = {
       provider: member.provider,
       model: member.model,
@@ -644,6 +654,7 @@ export async function refreshCanaryCohort(
     const subject = resolveCertificationSubject({
       provider: member.provider,
       model: member.model,
+      endpoint: member.endpoint,
       registry,
     });
     const episodeKey = buildEpisodeKey({
@@ -672,9 +683,11 @@ export async function refreshCanaryCohort(
         phase: 'workflow',
         repoDir: options.repoDir,
         liveCodingCanary: true,
+        endpoint: member.endpoint,
+        certificationRoot: options.certificationRoot,
         registry,
         ...(options.canaryLimits ? { canaryLimits: options.canaryLimits } : {}),
-        ...(options.certificationRoot ? storeOverrides(options.certificationRoot) : {}),
+        ...(options.certificationRoot ? storeOverrides(options.certificationRoot, member.endpoint) : {}),
         env,
         now,
       });
@@ -737,13 +750,13 @@ function resolveApiKeyEnv(provider: NativeProviderName, repoDir: string): string
  * Route certify-pipeline reads and writes at an explicit store root, so a
  * refresh against a non-default root never splits evidence across stores.
  */
-function storeOverrides(root: string): {
+function storeOverrides(root: string, endpoint?: CertificationEndpoint): {
   loadPreviousArtifactFn: (provider: string, model: string, suiteVersion: string) => NativeCertificationArtifact | undefined;
   writeCertificationFn: (record: NativeCertificationArtifact) => string;
 } {
   return {
     loadPreviousArtifactFn: (provider, model, suiteVersion) => {
-      const loaded = loadGlobalCertification(provider, model, suiteVersion, { root });
+      const loaded = loadGlobalCertification(provider, model, suiteVersion, { root, endpoint });
       return loaded.ok && isRevisionAwareArtifact(loaded.artifact) ? loaded.artifact : undefined;
     },
     writeCertificationFn: (record) => writeGlobalCertification(record, { root }),

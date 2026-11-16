@@ -1,8 +1,13 @@
 /**
- * Budgeted review input (HOK-3249).
+ * Budgeted model input for any prompt that carries a change (HOK-3249, HOK-3493).
  *
- * The review prompt is built to fit the reviewer instead of sending the whole
- * diff and recovering after an overflow. The budget comes from the reviewer's
+ * Review, eval and challenge comparison all put a PR diff into a model prompt.
+ * They build that text here, through {@link buildBudgetedChangeInput}, so the
+ * same diff and the same reviewer budget produce byte-identical input for all
+ * three and no caller has to invent a prompt byte cap.
+ *
+ * The prompt is built to fit the model instead of sending the whole diff and
+ * recovering after an overflow. The budget comes from the model's
  * `TransportAdapter` (HOK-3248): context window, hard character cap, reserved
  * output, harness overhead and the transport-calibrated token count.
  *
@@ -27,8 +32,9 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import Ajv2020 from 'ajv/dist/2020.js';
-import type { TransportAdapter } from './model-adapters/transport-adapter.ts';
+import type { AdapterError, TransportAdapter } from './model-adapters/transport-adapter.ts';
 import { CONTEXT_WINDOW_SAFETY_MARGIN } from './native-agent/context-window-guard.ts';
+import { estimateTokensDefault } from './model-adapters/token-estimator.ts';
 
 /** 1 source, 2 tests, 3 docs/config, 4 data/fixture/generated. */
 export type ReviewInputTier = 1 | 2 | 3 | 4;
@@ -353,6 +359,108 @@ export function worktreeFileReader(repoDir: string): (path: string) => string | 
       return null;
     }
   };
+}
+
+/**
+ * Divide one budget evenly across `parts` changes that share a prompt
+ * (comparison: shared pre-fork context, primary and challenger diffs).
+ * Shares are floored so every part fits; `countTokens` is the transport's own
+ * and is carried through unchanged.
+ *
+ * Even shares are deliberate: a proportional or greedy split would let one
+ * arm's rendering depend on the other arm's size, which breaks blind fairness
+ * and lets the A/B presentation order change the input (HOK-3156 route
+ * invariant).
+ */
+export function splitInputBudget(budget: ReviewInputBudget, parts: number): ReviewInputBudget {
+  const shares = Number.isFinite(parts) ? Math.floor(parts) : 1;
+  if (shares <= 1) return budget;
+  return {
+    countTokens: budget.countTokens,
+    ...(budget.maxTokens !== undefined ? { maxTokens: Math.floor(budget.maxTokens / shares) } : {}),
+    ...(budget.maxChars !== undefined ? { maxChars: Math.floor(budget.maxChars / shares) } : {}),
+  };
+}
+
+// ── One builder for every prompt that carries a change ──────────────────────
+
+/** Input to {@link buildBudgetedChangeInput}. */
+export interface BuildBudgetedChangeInput {
+  /** The unified diff this prompt carries. */
+  diff: string;
+  /** The model's adapter; null when the model cannot be placed in the registry. */
+  adapter: TransportAdapter | null;
+  /**
+   * The filled prompt with every change slot empty. Its size is the budget's
+   * reservation, exactly as the adapter's preflight would size it.
+   */
+  reservedPrompt: string;
+  /** Extra tokens the transport adds on top (native system prompt, tool turns). */
+  reservedTokens?: number;
+  /**
+   * How many changes share this prompt. >1 splits the budget evenly
+   * ({@link splitInputBudget}); comparison passes the count of its non-empty
+   * diffs. Defaults to 1.
+   */
+  parts?: number;
+  /**
+   * Post-change file content for modified files. Review reads its worktree;
+   * eval and comparison run in the mill's base checkout, which is not at the
+   * PR head, so they pass none and rely on the diff alone.
+   */
+  readFile?: (path: string) => string | null;
+  thresholdBytes?: number;
+}
+
+/**
+ * The one way a PR change enters a model prompt (HOK-3493).
+ *
+ * Review, eval and comparison all call this with their model's adapter and the
+ * prompt template filled with empty change slots. Same diff, same budget and
+ * same `readFile` answers → byte-identical output, so a challenge's two arms
+ * cannot see different input for the same change.
+ *
+ * The result's `withinBudget` is false only when source and test files alone
+ * cannot fit; the caller then asks `adapter.preflight(prompt)` for the typed
+ * refusal rather than cutting the change.
+ */
+export function buildBudgetedChangeInput(input: BuildBudgetedChangeInput): ReviewInputResult {
+  const budget = input.adapter
+    ? reviewInputBudgetFromAdapter(input.adapter, input.reservedPrompt, input.reservedTokens)
+    : { countTokens: estimateTokensDefault };
+  return buildReviewInput(input.diff, splitInputBudget(budget, input.parts ?? 1), {
+    ...(input.readFile ? { readFile: input.readFile } : {}),
+    ...(input.thresholdBytes !== undefined ? { thresholdBytes: input.thresholdBytes } : {}),
+  });
+}
+
+/**
+ * A change that cannot fit the model's budget (HOK-3493).
+ *
+ * Carries the adapter's typed refusal so a caller records
+ * `adapterError.policyKind` on its failure record instead of inventing a
+ * reason. `context-window-exceeded` is terminal in the failure policy
+ * (HOK-3176), so a deterministic oversize is never retried. Defined once, in
+ * the builder, so eval, comparison and the swap test all throw and recognise
+ * the same error.
+ */
+export class ChangeInputRefusedError extends Error {
+  readonly adapterError: AdapterError;
+
+  constructor(adapterError: AdapterError) {
+    super(`Model input refused: ${adapterError.message}`);
+    this.name = 'ChangeInputRefusedError';
+    this.adapterError = adapterError;
+  }
+}
+
+/** Recognise a {@link ChangeInputRefusedError} across module instances. */
+export function isChangeInputRefusedError(error: unknown): error is ChangeInputRefusedError {
+  if (error instanceof ChangeInputRefusedError) return true;
+  if (!(error instanceof Error) || error.name !== 'ChangeInputRefusedError') return false;
+  const candidate = error as Error & { adapterError?: Partial<AdapterError> | undefined };
+  return typeof candidate.adapterError?.kind === 'string'
+    && typeof candidate.adapterError?.policyKind === 'string';
 }
 
 // ── Builder ─────────────────────────────────────────────────────────────────

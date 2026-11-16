@@ -2,14 +2,19 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
+  buildBudgetedChangeInput,
   buildReviewInput,
+  ChangeInputRefusedError,
   classifyTier,
+  isChangeInputRefusedError,
   reviewInputBudgetFromAdapter,
   splitDiffByFile,
+  splitInputBudget,
   type ReviewInputBudget,
 } from './review-input-budget.ts';
 import { ClaudeCliAdapter } from './model-adapters/claude-cli-adapter.ts';
 import { CodexCliAdapter } from './model-adapters/codex-cli-adapter.ts';
+import { estimateTokensDefault } from './model-adapters/token-estimator.ts';
 
 /** A `git diff` chunk adding `path` with `content`. */
 function added(path: string, content: string): string {
@@ -247,5 +252,115 @@ describe('reviewInputBudgetFromAdapter (HOK-3249)', () => {
   it('is unbounded in tokens when the registry has no context window', () => {
     const budget = reviewInputBudgetFromAdapter(new ClaudeCliAdapter({ model: 'not-a-registered-model' }), '');
     assert.equal(budget.maxTokens, undefined);
+  });
+});
+
+describe('splitInputBudget (HOK-3493)', () => {
+  it('floors even shares and keeps the transport token count', () => {
+    const countTokens = (text: string) => text.length;
+    const split = splitInputBudget({ countTokens, maxTokens: 100, maxChars: 1_001 }, 3);
+    assert.equal(split.maxTokens, 33);
+    assert.equal(split.maxChars, 333);
+    assert.equal(split.countTokens, countTokens);
+  });
+
+  it('returns the same budget for one part and for no limit at all', () => {
+    const budget: ReviewInputBudget = { countTokens: bytes };
+    assert.equal(splitInputBudget(budget, 1), budget);
+    assert.equal(splitInputBudget(budget, 0), budget);
+  });
+
+  it('omits an absent limit rather than inventing one', () => {
+    const split = splitInputBudget({ countTokens: bytes, maxChars: 10 }, 2);
+    assert.equal(split.maxTokens, undefined);
+    assert.equal(split.maxChars, 5);
+  });
+});
+
+describe('buildBudgetedChangeInput (HOK-3493)', () => {
+  it('with no adapter equals a build with the default estimator', () => {
+    const diff = hok2804Diff();
+    const viaBuilder = buildBudgetedChangeInput({ diff, adapter: null, reservedPrompt: 'template' });
+    const direct = buildReviewInput(diff, { countTokens: estimateTokensDefault });
+    assert.equal(viaBuilder.text, direct.text);
+    assert.deepEqual(viaBuilder.files, direct.files);
+    assert.equal(viaBuilder.withinBudget, direct.withinBudget);
+  });
+
+  it('with an adapter equals a build with that adapter\'s budget', () => {
+    const diff = hok2804Diff();
+    const reserved = 'x'.repeat(4_000);
+    const adapter = new ClaudeCliAdapter({ model: 'claude-opus-5-5' });
+    const viaBuilder = buildBudgetedChangeInput({ diff, adapter, reservedPrompt: reserved });
+    const direct = buildReviewInput(diff, reviewInputBudgetFromAdapter(adapter, reserved));
+    assert.equal(viaBuilder.text, direct.text);
+    assert.deepEqual(viaBuilder.files, direct.files);
+  });
+
+  it('splits one budget evenly across parts and is byte-identical per part', () => {
+    const reserved = 'x'.repeat(1_000);
+    const adapter = new ClaudeCliAdapter({ model: 'claude-opus-5-5' });
+    const primary = added('src/a.ts', 'export const a = 1;\n');
+    const whole = buildBudgetedChangeInput({ diff: primary, adapter, reservedPrompt: reserved });
+    const split = buildBudgetedChangeInput({ diff: primary, adapter, reservedPrompt: reserved, parts: 3 });
+    const share = splitInputBudget(reviewInputBudgetFromAdapter(adapter, reserved), 3);
+    const direct = buildReviewInput(primary, share);
+    // A split part renders exactly as a build against its own even share.
+    assert.equal(split.text, direct.text);
+    // A split budget is never larger than the whole.
+    assert.ok(split.text.length <= whole.text.length);
+    // Same diff and same budget → byte-identical, whatever the other parts are.
+    const splitAgain = buildBudgetedChangeInput({ diff: primary, adapter, reservedPrompt: reserved, parts: 3 });
+    assert.equal(split.text, splitAgain.text);
+  });
+
+  it('never reads the filesystem without a readFile', () => {
+    const diff = modified('tests/fixtures/state.json', '{"a": 1}', '{"a": 2}');
+    const result = buildBudgetedChangeInput({ diff, adapter: null, reservedPrompt: '', thresholdBytes: 0 });
+    assert.match(result.text, /modified; diff \d+ B; patch sha256 [0-9a-f]{64}/);
+  });
+
+  it('gives eval and comparison byte-identical change input for the same diff and budget', () => {
+    // Eval fills PR_REVIEW_OUTPUT from one change; comparison's primary arm is
+    // the only change when there is no challenger diff or shared prefix. Both
+    // are one part against the same adapter and reservation.
+    const diff = hok2804Diff();
+    const reservedPrompt = 'x'.repeat(3_000);
+    const adapter = new CodexCliAdapter({ model: 'gpt-5.5' });
+    const evalSlot = buildBudgetedChangeInput({ diff, adapter, reservedPrompt, parts: 1 });
+    const comparisonSlot = buildBudgetedChangeInput({ diff, adapter, reservedPrompt, parts: 1 });
+    assert.equal(evalSlot.text, comparisonSlot.text);
+    assert.deepEqual(evalSlot.files, comparisonSlot.files);
+
+    // With no adapter the text depends only on the diff, never the template.
+    assert.equal(
+      buildBudgetedChangeInput({ diff, adapter: null, reservedPrompt: 'eval template' }).text,
+      buildBudgetedChangeInput({ diff, adapter: null, reservedPrompt: 'arbiter template' }).text,
+    );
+  });
+});
+
+describe('ChangeInputRefusedError (HOK-3493)', () => {
+  const refusal = {
+    kind: 'context-exceeded' as const,
+    message: 'prompt exceeds the context window',
+    policyKind: 'context-window-exceeded' as const,
+  };
+
+  it('carries the adapter error', () => {
+    const error = new ChangeInputRefusedError(refusal);
+    assert.equal(error.adapterError, refusal);
+    assert.match(error.message, /exceeds the context window/);
+  });
+
+  it('is recognised by the guard function, including across module instances', () => {
+    assert.equal(isChangeInputRefusedError(new ChangeInputRefusedError(refusal)), true);
+    const lookalike = Object.assign(new Error('refused'), {
+      name: 'ChangeInputRefusedError',
+      adapterError: refusal,
+    });
+    assert.equal(isChangeInputRefusedError(lookalike), true);
+    assert.equal(isChangeInputRefusedError(new Error('ordinary')), false);
+    assert.equal(isChangeInputRefusedError(undefined), false);
   });
 });

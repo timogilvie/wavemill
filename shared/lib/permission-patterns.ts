@@ -88,6 +88,7 @@ export const GITHUB_CLI_READ: PatternCategory = {
     'gh pr list*',
     'gh pr status*',
     'gh pr checks*',
+    // allow-model-input: an agent allow-rule, not a diff reader (HOK-3493)
     'gh pr diff*',
     'gh issue view*',
     'gh issue list*',

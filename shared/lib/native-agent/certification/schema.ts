@@ -1,3 +1,5 @@
+import type { PiRuntimeVersions } from '../pi-runtime-version.ts';
+import type { NativeProviderExecution, TechnicalTaskRouterContributionRowV4 } from '@hokusai/core';
 /**
  * Native agent certification contract.
  *
@@ -145,7 +147,17 @@ export interface LiveCodingCanaryAttemptNote {
  * eligibility gate requires `status === 'pass'`, `isLive === true`, freshness,
  * and a full identity match — anything else fails closed.
  */
+export interface CanaryAttemptEvidence {
+  attemptId: string;
+  status: LiveCodingCanaryStatus;
+  reason?: LiveCodingCanaryFailureReason;
+  /** Canonical, redacted contribution: includes observed provider facts and SDK costs. */
+  contribution?: TechnicalTaskRouterContributionRowV4;
+}
+
 export interface LiveCodingCanaryResult {
+  endpoint?: CertificationEndpoint;
+  attemptEvidence?: CanaryAttemptEvidence[];
   scenarioId: string;
   status: LiveCodingCanaryStatus;
   /**
@@ -215,7 +227,26 @@ export interface ScenarioResult {
   failureClass?: FailureClass;
 }
 
+/** Catalog identity excludes prices; observed deployment details remain unknown unless attested. */
+export interface CertificationEndpoint {
+  tag: string;
+  providerName: string;
+  quantization: string | null;
+  deploymentRevision: string | null;
+}
+
+export function certificationEndpointKey(endpoint?: CertificationEndpoint): string {
+  return JSON.stringify(endpoint ? [endpoint.tag, endpoint.providerName, endpoint.quantization, endpoint.deploymentRevision] : null);
+}
+
+/** Host corroboration does not attest a quantization, regional or deployment variant. */
+export function endpointObservationsMatch(endpoint: CertificationEndpoint, observations: readonly NativeProviderExecution[]): boolean {
+  return observations.length > 0 && observations.every(row => row.generation?.providerName?.trim().toLowerCase() === endpoint.providerName.trim().toLowerCase());
+}
+
 export interface CertificationSubject {
+  endpoint?: CertificationEndpoint;
+  runtimeVersions?: PiRuntimeVersions;
   /** Stable registry key that owns this certification */
   registryKey: string;
   /** Native provider used by the Pi/native transport */
@@ -448,7 +479,8 @@ export function liveCodingCanaryMatchesSubject(
   expectedSubject: CertificationSubject,
   suiteVersion: string,
 ): boolean {
-  return canary.phase === 'coding'
+  return certificationEndpointKey(canary.endpoint) === certificationEndpointKey(expectedSubject.endpoint)
+    && canary.phase === 'coding'
     && canary.suiteVersion === suiteVersion
     && canary.provider === expectedSubject.providerId
     && canary.model === expectedSubject.providerModelId
@@ -503,6 +535,12 @@ export function evaluateLiveCodingCanaryEligibility(
     || canary.model !== artifact.model
   ) {
     return { eligible: false, reason: 'identity-mismatch', canary };
+  }
+
+  if (subject.endpoint) {
+    const last = canary.attemptEvidence?.at(-1);
+    const current = last?.contribution?.stage_executions.flatMap(stage => stage.provider_executions ?? []) ?? [];
+    if (!endpointObservationsMatch(subject.endpoint, current)) return { eligible: false, reason: 'identity-mismatch', canary };
   }
 
   if (canary.isLive !== true) {

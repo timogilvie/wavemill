@@ -32,9 +32,11 @@ export interface AgentContext extends PiAgentContext {
   systemPrompt?: string;
 }
 export type { AgentMessage } from '@earendil-works/pi-agent-core';
-import type { ModelPricing } from '../pricing/model-pricing.ts';
+import { loadPricingTable, type ModelPricing } from '../pricing/model-pricing.ts';
 import { priceUsageUsd } from '../sdk-task-cost/price-overrides.ts';
-import type { ModelRegistry } from '../model-registry.ts';
+import { resolveModelRegistryKey, type ModelRegistry } from '../model-registry.ts';
+import { getEffectiveRegistry } from '../model-registry.ts';
+import type { NativeProviderExecution } from '@hokusai/core';
 import { appendPromptSizeSample, type PromptSizeSample } from './prompt-size-log.ts';
 import { EMPTY_PROMPT_CACHE_SUMMARY, summarizePromptCache, type PromptCacheSummary, type TurnCacheUsage } from './prompt-cache.ts';
 import { assertToolCompat } from './tool-compat-validator.ts';
@@ -300,6 +302,7 @@ export interface WavemillLoopConfig {
   contextManagement?: NativeContextManagementConfig;
   /** Required when `budget.maxCostUsd` is set; used to compute turn cost. */
   modelPricing?: ModelPricing;
+  modelPricingScope?: 'model' | 'endpoint';
   /** Optional registry override for tool compatibility validation. */
   compatRegistry?: ModelRegistry;
   temperature?: number;
@@ -740,7 +743,16 @@ function composeAbortSignal(callerSignal: AbortSignal | undefined): ComposedSign
  * heartbeat emission, and deterministic fail-fast batch semantics.
  */
 export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopResult> {
-  const { context, convertToLlm, budget, signal: callerSignal, onHeartbeat, modelPricing, temperature } = config;
+  const { context, convertToLlm, budget, signal: callerSignal, onHeartbeat, temperature } = config;
+  const pricingRepo = config.sessionStreamConfig?.repoDir;
+  const modelKey = resolveModelRegistryKey(config.compatRegistry ?? getEffectiveRegistry(pricingRepo), config.model.name ?? config.model.id);
+  const modelPricing = config.modelPricing ?? loadPricingTable(pricingRepo)[modelKey];
+  const requestFacts = (): Pick<NativeProviderExecution, 'requestedRouting' | 'pricingSnapshot'> => ({
+    requestedRouting: config.model.provider === 'openrouter'
+      ? structuredClone((config.model.compat as { openRouterRouting?: NativeProviderExecution['requestedRouting'] } | undefined)?.openRouterRouting ?? null) : null,
+    pricingSnapshot: modelPricing ? { scope: config.modelPricingScope ?? 'model', ...modelPricing } : null,
+  });
+  let providerRequest = requestFacts();
   const payloadRing = config.payloadCapture ? new PayloadRingBuffer(config.payloadCapture) : undefined;
   const streamFn = payloadRing
     ? wrapStreamFnWithPayloadCapture(resolveStreamFn(config), payloadRing)
@@ -1466,8 +1478,10 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   let loopError: unknown;
 
   const handleAgentEvent = (event: AgentEvent, exposeToCaller = true) => {
+    if (event.type === 'turn_start') providerRequest = requestFacts();
     if (exposeToCaller) {
-      config.onEvent?.(event);
+      config.onEvent?.(event.type === 'message_end' && event.message.role === 'assistant'
+        ? { ...event, message: { ...event.message, providerRequest } } as AgentEvent : event);
     }
     switch (event.type) {
       case 'turn_start': {
@@ -1549,6 +1563,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
               config: {
                 temperature,
                 maxTokens: currentMaxTokens,
+                ...providerRequest,
               },
               contextDigest: computeArgsFingerprint(context),
               promptRefs: config.sessionStreamConfig?.promptRefs ?? [],

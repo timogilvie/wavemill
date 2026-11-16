@@ -1,3 +1,7 @@
+import { resolvePiRuntimeVersions } from '../pi-runtime-version.ts';
+import { NATIVE_PATCH_VERSION } from '../patch-contract.ts';
+import { certificationEndpointKey } from './schema.ts';
+import { createHash } from 'node:crypto';
 import {
   foldOpenRouterRoutingIntoCatalogHash,
   hashLaunchPriorityModelRow,
@@ -13,6 +17,7 @@ import {
 } from '../../model-registry.ts';
 import type {
   CertificationSubject,
+  CertificationEndpoint,
   LiveSmokeEvidence,
   ResolvedCertificationTarget,
 } from './schema.ts';
@@ -100,6 +105,7 @@ export function resolveCertificationSubject(input: {
   model: string;
   registry: ModelRegistry;
   launchPriorityFixturePath?: string;
+  endpoint?: CertificationEndpoint;
 }): ResolvedCertificationSubject {
   const nativeProvider = normalizeStorageSegment(input.provider);
   const registryKey = resolveModelRegistryKey(input.registry, input.model);
@@ -141,9 +147,17 @@ export function resolveCertificationSubject(input: {
     ?? (nativeProvider === 'openrouter'
       ? resolveOpenRouterCatalogHash(registryKey, providerNativeId, input.launchPriorityFixturePath)
       : 'registry');
+  if (input.endpoint && nativeProvider !== 'openrouter') throw new Error('Endpoint qualification requires OpenRouter');
+  const endpoint = input.endpoint ? validateCertificationEndpoint(input.endpoint) : undefined;
+  const runtimeVersions = endpoint ? resolvePiRuntimeVersions() : undefined;
+  if (endpoint && (!runtimeVersions?.['pi-ai'] || !runtimeVersions?.['pi-agent-core'])) throw new Error('Endpoint qualification requires resolvable installed Pi runtime versions');
+  const compat = Object.entries(capabilities.nativeCapability?.compatFlags ?? {}).filter(([key]) => key !== 'openRouterRouting').sort(([a], [b]) => a.localeCompare(b));
+  const endpointBaseHash = endpoint ? createHash('sha256').update(JSON.stringify({ baseCatalogHash, runtimeVersions,
+    patchVersion: NATIVE_PATCH_VERSION, suiteVersion: capabilities.nativeCapability?.certification?.certificationSuiteVersion,
+    transport: capabilities.nativeCapability?.piTransportKind, compatibility: compat, contract: 'endpoint-qualification/v1' })).digest('hex') : baseCatalogHash;
   const catalogHash = foldOpenRouterRoutingIntoCatalogHash(
-    baseCatalogHash,
-    getOpenRouterRouting(input.registry, registryKey) as Record<string, unknown> | undefined,
+    endpointBaseHash,
+    (endpoint ? endpointRouting(endpoint) : getOpenRouterRouting(input.registry, registryKey)) as Record<string, unknown> | undefined,
   );
   const storageIdentity = resolveCertificationStorageIdentity(nativeProvider, providerNativeId);
 
@@ -151,6 +165,7 @@ export function resolveCertificationSubject(input: {
     storageIdentity,
     ...(catalogHash !== baseCatalogHash ? { unpinnedCatalogHash: baseCatalogHash } : {}),
     subject: {
+      ...(endpoint ? { endpoint, runtimeVersions } : {}),
       registryKey,
       nativeProvider,
       providerId: split.providerId,
@@ -189,7 +204,8 @@ function resolveOpenRouterCatalogHash(
 }
 
 export function subjectsEqual(a: CertificationSubject, b: CertificationSubject): boolean {
-  return a.registryKey === b.registryKey
+  return endpointIdentity(a.endpoint) === endpointIdentity(b.endpoint)
+    && a.registryKey === b.registryKey
     && a.nativeProvider === b.nativeProvider
     && a.providerId === b.providerId
     && a.providerModelId === b.providerModelId
@@ -247,4 +263,22 @@ export function resolveAliasTargetFromSmoke(input: {
     observedAt: input.now().toISOString(),
     source: 'provider-response',
   };
+}
+
+/** One endpoint request restriction, shared by certification smoke and live canaries. */
+export function endpointRouting(endpoint: CertificationEndpoint) {
+  return { only: [validateCertificationEndpoint(endpoint).tag], allow_fallbacks: false };
+}
+
+export function validateCertificationEndpoint(value: CertificationEndpoint): CertificationEndpoint {
+  if (!value || typeof value !== 'object' || Object.keys(value).some(key => !['tag', 'providerName', 'quantization', 'deploymentRevision'].includes(key))) throw new Error('Invalid endpoint qualification subject');
+  if (typeof value.tag !== 'string' || value.tag.length > 256 || !/^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/i.test(value.tag)) throw new Error('Invalid endpoint tag');
+  if (typeof value.providerName !== 'string' || !value.providerName.trim() || value.providerName.length > 256) throw new Error('Invalid endpoint provider name');
+  for (const key of ['quantization', 'deploymentRevision'] as const) if (value[key] !== null && (typeof value[key] !== 'string' || !value[key]!.trim() || value[key]!.length > 256)) throw new Error(`Invalid endpoint ${key}`);
+  return { tag: value.tag, providerName: value.providerName, quantization: value.quantization, deploymentRevision: value.deploymentRevision };
+}
+
+/** Stable material identity; price/catalog ordering changes do not invalidate compatibility. */
+export function endpointIdentity(endpoint?: CertificationEndpoint): string {
+  return endpoint ? createHash('sha256').update(certificationEndpointKey(validateCertificationEndpoint(endpoint))).digest('hex') : '';
 }

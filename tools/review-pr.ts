@@ -1,7 +1,8 @@
 #!/usr/bin/env -S npx tsx
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { errorMessage } from '../shared/lib/error-utils.ts';
-import { getPullRequest, getPullRequestDiff } from '../shared/lib/github.js';
+import { getPullRequest } from '../shared/lib/github.js';
+import { fetchPrDiff } from '../shared/lib/pr-diff-provider.ts';
 import { findTaskPacket, findPlan, gatherDesignContext, analyzeDiffMetadata, type ReviewContext } from '../shared/lib/review-context-gatherer.ts';
 import { runReview, type ReviewResult, type ReviewFinding, type ReviewerPersona } from '../shared/lib/review-engine.ts';
 import { CYAN, GREEN, YELLOW, RED, BOLD, DIM, NC } from '../shared/lib/colors.ts';
@@ -215,7 +216,11 @@ The review focuses on major issues:
       console.log('');
 
       console.log('📄 Fetching PR diff...');
-      const { diff } = getPullRequestDiff(prNumber, { repo: args.repo as string | undefined });
+      const diffResult = fetchPrDiff(prNumber, repoDir, { repo: args.repo as string | undefined });
+      if (diffResult.kind === 'unavailable') {
+        throw new Error(`Failed to get diff for pull request #${prNumber}: ${diffResult.reason} — ${diffResult.detail}`);
+      }
+      const { text: diff } = diffResult;
       console.log(`   ${diff.split('\n').length} lines\n`);
 
       console.log('📋 Gathering context...');

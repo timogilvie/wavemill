@@ -41,7 +41,8 @@ export interface SwapTestSummary {
     hydrationFailed: number;
     calls: number;
     costUsd: number;
-    truncatedPrompts: number;
+    /** Dry runs whose change input was summarised to fit the judge instead of shown verbatim. */
+    summarisedPrompts: number;
     tokens: number;
   };
   overall: FlipCell;
@@ -194,7 +195,7 @@ export function writeSwapTestReport(evalsDir: string, runId: string, pairIds: re
       hydrationFailed: pairs.filter((pair) => pair.status === 'hydration_failed').length,
       calls: rows.filter((row) => row.status !== 'dry_run').length,
       costUsd: rows.reduce((sum, row) => sum + (row.costUsd ?? 0), 0),
-      truncatedPrompts: rows.filter((row) => row.truncated).length,
+      summarisedPrompts: rows.filter((row) => (row.summarisedFiles ?? 0) > 0).length,
       tokens: rows.reduce((sum, row) => sum + (row.usage?.totalTokens ?? 0), 0),
     },
     overall: cell(usable),

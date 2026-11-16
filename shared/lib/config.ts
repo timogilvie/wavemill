@@ -199,8 +199,6 @@ export interface EvalConfig {
   successThreshold?: number;
   postMergeTimeoutSeconds?: number;
   mintEligibility?: MintEligibilityConfig;
-  maxPromptBytes?: number;
-  oversizePolicy?: 'fail' | 'truncate';
 }
 
 export interface EvalContextUpdatesConfig {
@@ -474,6 +472,7 @@ export interface NativePatchCodingConfig {
 }
 
 export interface CanaryCohortMemberConfig {
+  endpoint?: import('./native-agent/certification/schema.ts').CertificationEndpoint;
   provider: 'openai' | 'openrouter';
   model: string;
 }

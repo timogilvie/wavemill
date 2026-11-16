@@ -4,8 +4,8 @@
  * OpenRouter's `/generation` endpoint reports the billed charge of a
  * completed request. When a native transcript recorded the response id of a
  * turn, that charge is more exact than a local estimate. This module turns a
- * set of response ids into a `responseId → USD` map; the SDK bridge
- * (`sdk-task-cost/events-from-session.ts`) emits those turns as
+ * set of response ids into a metadata map, retaining observed host/model and
+ * billing evidence together. The SDK bridge (`sdk-task-cost/measure.ts`) emits turns as
  * provider-reported `actual_cost_usd`, so the exact figure flows through the
  * one SDK reducer instead of patching a computed total afterwards.
  *
@@ -20,7 +20,11 @@ import {
   type OpenRouterGenerationCost,
 } from '../openrouter-generation-api.ts';
 
+export type { OpenRouterGenerationCost } from '../openrouter-generation-api.ts';
+
 export interface ExactPricingOptions {
+  /** Credential resolved by the existing native provider configuration; never persisted. */
+  apiKey?: string;
   /** Injected per-id lookup (tests); defaults to the OpenRouter client. */
   fetchGenerationCost?: (id: string) => Promise<OpenRouterGenerationCost | null>;
   concurrency?: number;
@@ -33,7 +37,7 @@ const DEFAULT_CONCURRENCY = 6;
 
 /** True when exact lookups should run for these options. */
 export function isExactPricingEnabled(opts: ExactPricingOptions = {}): boolean {
-  return opts.enabled ?? !!process.env.OPENROUTER_API_KEY;
+  return opts.enabled ?? !!(opts.apiKey || process.env.OPENROUTER_API_KEY);
 }
 
 async function fetchWithInjectedCost(
@@ -59,30 +63,33 @@ async function fetchWithInjectedCost(
 }
 
 /**
- * Fetch the billed USD charge for each response id.
+ * Fetch observed upstream metadata and the billed charge for each response id.
  *
  * Returns `undefined` when exact pricing is disabled (no API key, or
  * `enabled: false`) or there is nothing to look up, so callers can skip the
- * exact path entirely. Otherwise returns only the ids whose charge resolved;
- * failures are logged once through `opts.logger` and left out.
+ * exact path entirely. Missing lookups are omitted; metadata with an unknown
+ * charge is retained with null cost. Billing gaps are logged once.
  */
-export async function fetchOpenRouterExactCosts(
+export async function fetchOpenRouterGenerationEvidence(
   responseIds: readonly string[],
   opts: ExactPricingOptions = {},
-): Promise<Map<string, number> | undefined> {
+): Promise<Map<string, OpenRouterGenerationCost> | undefined> {
   if (!isExactPricingEnabled(opts)) return undefined;
   const ids = [...new Set(responseIds.filter((id) => id.length > 0))];
   if (ids.length === 0) return undefined;
 
   const fetched = opts.fetchGenerationCost
     ? await fetchWithInjectedCost(ids, opts.fetchGenerationCost, opts.concurrency)
-    : await fetchGenerationCostsBatched(ids, { concurrency: opts.concurrency });
+    : await fetchGenerationCostsBatched(ids, { concurrency: opts.concurrency, ...(opts.apiKey ? { apiKey: opts.apiKey } : {}) });
 
-  const exact = new Map<string, number>();
+  const exact = new Map<string, OpenRouterGenerationCost>();
   let failedCount = 0;
   for (const [id, cost] of fetched) {
-    if (cost && Number.isFinite(cost.totalCostUsd) && cost.totalCostUsd >= 0) {
-      exact.set(id, cost.totalCostUsd);
+    if (cost) {
+      const charge = typeof cost.totalCostUsd === 'number' && Number.isFinite(cost.totalCostUsd) && cost.totalCostUsd >= 0
+        ? cost.totalCostUsd : null;
+      exact.set(id, { ...cost, totalCostUsd: charge });
+      if (charge === null) failedCount++;
     } else {
       failedCount++;
     }

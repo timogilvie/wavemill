@@ -791,7 +791,7 @@ function validPromptSizeDiagnostic() {
 
 test('SCHEMA_VERSION is bumped for eval schema updates', () => {
   // HOK-3390 bumped to 1.59.0; HOK-3382 bumped to 1.60.0 for the model-time budget kind.
-  assert.equal(SCHEMA_VERSION, '1.60.0');
+  assert.equal(SCHEMA_VERSION, '1.61.0');
 });
 
 function validReviewIdentitySet() {
@@ -1181,13 +1181,13 @@ test('Record without prompt size fields still validates', () => {
   assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
 });
 
-test('Record with eval_prompt_too_large failureReason validates', () => {
+test('the retired eval_prompt_too_large failureReason no longer validates (HOK-3493)', () => {
   const record = {
     ...scenarios[0].record,
     failureReason: 'eval_prompt_too_large',
   } as unknown as Record<string, unknown>;
   const result = validateAgainstSchema(record);
-  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+  assert.ok(!result.valid, 'the eval byte limit is gone; no record may name its failure');
 });
 
 test('Record with pr_diff_unavailable failureReason validates', () => {
@@ -2493,9 +2493,9 @@ test('Wavemill router fields validate and schema stays in parity', () => {
   assert.equal(properties.wavemill_router_scoring?.$ref, '#/$defs/WavemillRouterScoringMetadata');
 });
 
-test('Schema version constant is 1.60.0', () => {
+test('Schema version constant is 1.61.0', () => {
   // HOK-3390 bumped to 1.59.0; HOK-3382 bumped to 1.60.0 for the model-time budget kind.
-  assert.equal(SCHEMA_VERSION, '1.60.0');
+  assert.equal(SCHEMA_VERSION, '1.61.0');
 });
 
 test('correctionProvenance validates when present and is rejected when malformed (HOK-3321)', () => {

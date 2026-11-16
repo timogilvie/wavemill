@@ -1,3 +1,5 @@
+import type { NativeProviderExecution } from '@hokusai/core';
+import type { TaskCostSummaryV1 } from './sdk-task-cost/contract.ts';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -19,6 +21,8 @@ const RELIABILITY_RECORDS_FILENAME = 'reliability-records.jsonl';
 
 export interface ArmReliabilityRecord {
   schemaVersion: '1.0.0';
+  nativeProviderExecutions?: NativeProviderExecution[];
+  taskCostSummary?: TaskCostSummaryV1[];
   id: string;
   timestamp: string;
   issueId: string;
@@ -52,6 +56,8 @@ export interface ArmReliabilityRecord {
 }
 
 export interface BuildArmReliabilityRecordInput {
+  nativeProviderExecutions?: NativeProviderExecution[];
+  taskCostSummary?: TaskCostSummaryV1[];
   issueId: string;
   challengePairId: string;
   challengeRole: ChallengeArmSide;
@@ -104,6 +110,8 @@ export function buildArmReliabilityRecord(input: BuildArmReliabilityRecordInput)
   const faultClass = classifyArmFault({ failureKind, detail: input.detail, budgetExhausted, timeSplit, exitEvidence });
   return {
     schemaVersion: '1.0.0',
+    ...(input.nativeProviderExecutions?.length ? { nativeProviderExecutions: structuredClone(input.nativeProviderExecutions) } : {}),
+    ...(input.taskCostSummary?.length ? { taskCostSummary: structuredClone(input.taskCostSummary) } : {}),
     id: input.id ?? randomUUID(),
     timestamp: input.timestamp ?? new Date().toISOString(),
     issueId: input.issueId,
@@ -131,16 +139,15 @@ export function appendArmReliabilityRecord(
   const record = buildArmReliabilityRecord(input);
   const filePath = resolveReliabilityRecordsFile(dirOrRepo);
   const existing = existsSync(filePath) ? readArmReliabilityRecords(dirOrRepo) : [];
-  const duplicate = existing.some((candidate) =>
+  const duplicate = existing.find((candidate) =>
     candidate.issueId === record.issueId
     && candidate.challengePairId === record.challengePairId
     && candidate.challengeRole === record.challengeRole
     && candidate.abortReason === record.abortReason
     && candidate.stage === record.stage
   );
-  if (!duplicate) {
-    appendJsonlRecord(filePath, record);
-  }
+  if (duplicate) return duplicate;
+  appendJsonlRecord(filePath, record);
   return record;
 }
 

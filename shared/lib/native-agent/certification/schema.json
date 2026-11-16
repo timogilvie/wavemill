@@ -43,7 +43,11 @@
         },
         "phase": {
           "type": "string",
-          "enum": ["read-only", "patch", "workflow"]
+          "enum": [
+            "read-only",
+            "patch",
+            "workflow"
+          ]
         },
         "suiteVersion": {
           "type": "string",
@@ -114,7 +118,11 @@
         },
         "phase": {
           "type": "string",
-          "enum": ["read-only", "patch", "workflow"]
+          "enum": [
+            "read-only",
+            "patch",
+            "workflow"
+          ]
         },
         "suiteVersion": {
           "type": "string",
@@ -191,12 +199,37 @@
         "catalogHash": {
           "type": "string",
           "minLength": 1
+        },
+        "endpoint": {
+          "$ref": "#/$defs/CertificationEndpoint"
+        },
+        "runtimeVersions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "pi-ai",
+            "pi-agent-core"
+          ],
+          "properties": {
+            "pi-ai": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pi-agent-core": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         }
       }
     },
     "LiveSmokeEvidence": {
       "type": "object",
-      "required": ["requestedWireId", "catalogHash", "succeededAt"],
+      "required": [
+        "requestedWireId",
+        "catalogHash",
+        "succeededAt"
+      ],
       "additionalProperties": false,
       "properties": {
         "requestedWireId": {
@@ -241,7 +274,12 @@
         },
         "status": {
           "type": "string",
-          "enum": ["pass", "fail", "inconclusive", "skipped"]
+          "enum": [
+            "pass",
+            "fail",
+            "inconclusive",
+            "skipped"
+          ]
         },
         "isLive": {
           "type": "boolean"
@@ -309,7 +347,13 @@
         },
         "limitExceeded": {
           "type": "string",
-          "enum": ["wall_clock", "turns", "tool_calls", "tokens", "cost"]
+          "enum": [
+            "wall_clock",
+            "turns",
+            "tool_calls",
+            "tokens",
+            "cost"
+          ]
         },
         "detail": {
           "type": "string"
@@ -323,7 +367,11 @@
         },
         "lastInconclusiveAttempt": {
           "type": "object",
-          "required": ["ranAt", "status", "reason"],
+          "required": [
+            "ranAt",
+            "status",
+            "reason"
+          ],
           "additionalProperties": false,
           "properties": {
             "ranAt": {
@@ -353,12 +401,50 @@
               "type": "string"
             }
           }
+        },
+        "endpoint": {
+          "$ref": "#/$defs/CertificationEndpoint"
+        },
+        "attemptEvidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "attemptId",
+              "status"
+            ],
+            "properties": {
+              "attemptId": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "pass",
+                  "fail",
+                  "inconclusive",
+                  "skipped"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              },
+              "contribution": {
+                "type": "object"
+              }
+            }
+          }
         }
       }
     },
     "LiveCodingCanaryLimits": {
       "type": "object",
-      "required": ["maxWallClockMs", "maxTurns", "maxToolCalls", "maxTotalTokens"],
+      "required": [
+        "maxWallClockMs",
+        "maxTurns",
+        "maxToolCalls",
+        "maxTotalTokens"
+      ],
       "additionalProperties": false,
       "properties": {
         "maxWallClockMs": {
@@ -385,7 +471,13 @@
     },
     "LiveCodingCanaryUsage": {
       "type": "object",
-      "required": ["turns", "toolCalls", "inputTokens", "outputTokens", "wallClockMs"],
+      "required": [
+        "turns",
+        "toolCalls",
+        "inputTokens",
+        "outputTokens",
+        "wallClockMs"
+      ],
       "additionalProperties": false,
       "properties": {
         "turns": {
@@ -462,7 +554,12 @@
     },
     "ResolvedCertificationTarget": {
       "type": "object",
-      "required": ["requestedWireId", "model", "observedAt", "source"],
+      "required": [
+        "requestedWireId",
+        "model",
+        "observedAt",
+        "source"
+      ],
       "additionalProperties": false,
       "properties": {
         "requestedWireId": {
@@ -521,7 +618,10 @@
         },
         "source": {
           "type": "string",
-          "enum": ["runtime", "certification"]
+          "enum": [
+            "runtime",
+            "certification"
+          ]
         },
         "phase": {
           "type": "string"
@@ -536,7 +636,10 @@
     },
     "ScenarioResult": {
       "type": "object",
-      "required": ["scenarioId", "passed"],
+      "required": [
+        "scenarioId",
+        "passed"
+      ],
       "additionalProperties": false,
       "properties": {
         "scenarioId": {
@@ -559,11 +662,55 @@
         },
         "finalAttemptStatus": {
           "type": "string",
-          "enum": ["pass", "fail", "unsupported", "provider-flake"]
+          "enum": [
+            "pass",
+            "fail",
+            "unsupported",
+            "provider-flake"
+          ]
         },
         "failureClass": {
           "type": "string",
-          "enum": ["deterministic_failure", "provider_flake", "unsupported_capability"]
+          "enum": [
+            "deterministic_failure",
+            "provider_flake",
+            "unsupported_capability"
+          ]
+        }
+      }
+    },
+    "CertificationEndpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "providerName",
+        "quantization",
+        "deploymentRevision"
+      ],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*(/[a-zA-Z0-9][a-zA-Z0-9._-]*)*$"
+        },
+        "providerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "quantization": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deploymentRevision": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     }

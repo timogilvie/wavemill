@@ -8,7 +8,7 @@ import {
   ARBITER_JUDGE_PROMPT_TEMPLATE_PATH,
   buildDiffIdentity,
   buildChallengeCommentBody,
-  buildCappedComparisonPrompt,
+  buildBudgetedComparisonPrompt,
   buildComparisonPrompt,
   fetchForkAwareDiffs,
   formatRoutingSummary,
@@ -24,6 +24,7 @@ import {
 } from './pr-comparison.ts';
 import { loadPromptTemplate } from './prompt-utils.ts';
 import { hashString } from './prompt-hash.ts';
+import { ChangeInputRefusedError } from './review-input-budget.ts';
 
 function criterionRationales(prefix = 'because') {
   return {
@@ -340,20 +341,148 @@ test('buildComparisonPrompt omits direct stage evidence when fallback inference 
   assert.doesNotMatch(prompt, /Direct Stage Evidence/);
 });
 
-test('buildCappedComparisonPrompt truncates oversized diff bodies', () => {
-  const result = buildCappedComparisonPrompt({
-    issuePrompt: 'Issue context',
-    primaryDiff: 'p'.repeat(4000),
-    challengerDiff: 'c'.repeat(4000),
-    presentationOrder: 'challenger-first',
-  }, 3000);
+/** A stub judge adapter (HOK-3493): fixed window, preflight either strict or permissive. */
+function stubJudgeAdapter(contextWindowTokens: number, preflightFromLimits = true) {
+  return {
+    kind: 'claude-cli' as const,
+    model: 'judge-model',
+    limits: { contextWindowTokens, reservedOutputTokens: 0, cliHarnessOverheadTokens: 0 },
+    countTokens: (text: string) => Buffer.byteLength(text, 'utf8'),
+    preflight: (prompt: string) =>
+      preflightFromLimits && Buffer.byteLength(prompt, 'utf8') > contextWindowTokens
+        ? { kind: 'context-exceeded' as const, message: 'too large', policyKind: 'context-window-exceeded' as const }
+        : undefined,
+    invoke: async () => ({ text: '', reportedModel: 'unverified' }),
+    parseResult: () => ({ text: '', reportedModel: 'unverified' }),
+  };
+}
 
-  assert.equal(result.truncated, true);
-  assert.ok(result.finalBytes <= 3000);
-  assert.match(result.prompt, /TRUNCATED candidate A diff/);
-  assert.match(result.prompt, /TRUNCATED candidate B diff/);
-  assert.doesNotMatch(result.prompt, /TRUNCATED primary diff/);
-  assert.doesNotMatch(result.prompt, /TRUNCATED challenger diff/);
+function diffAdding(path: string, lines: number): string {
+  return [
+    `diff --git a/${path} b/${path}`,
+    'new file mode 100644',
+    'index 0000000..1111111',
+    '--- /dev/null',
+    `+++ b/${path}`,
+    `@@ -0,0 +1,${lines} @@`,
+    ...Array.from({ length: lines }, (_, i) => `+export const v${i} = ${i};`),
+    '',
+  ].join('\n');
+}
+
+test('buildBudgetedComparisonPrompt keeps both arms verbatim inside the judge budget', () => {
+  const built = buildBudgetedComparisonPrompt({
+    issuePrompt: 'Issue context',
+    primaryDiff: diffAdding('src/primary.ts', 40),
+    challengerDiff: diffAdding('src/challenger.ts', 40),
+    presentationOrder: 'primary-first',
+  }, stubJudgeAdapter(50_000));
+
+  assert.equal(built.withinBudget, true);
+  assert.match(built.prompt, /src\/primary\.ts/);
+  assert.match(built.prompt, /src\/challenger\.ts/);
+  assert.equal(built.inputs.primary.summarisedCount, 0);
+  assert.equal(built.inputs.challenger.summarisedCount, 0);
+});
+
+test('buildBudgetedComparisonPrompt gives each arm the same even share, independent of order', () => {
+  const input = {
+    issuePrompt: 'Issue context',
+    primaryDiff: diffAdding('src/primary.ts', 200),
+    challengerDiff: diffAdding('src/challenger.ts', 40),
+    promptTemplate: '{{ISSUE_PROMPT}}\n{{CANDIDATE_A_DIFF}}\n{{CANDIDATE_B_DIFF}}\n{{RUBRIC}}\n{{WORKFLOW_CONTEXT}}\n{{STAGE_EVIDENCE_CONTEXT}}',
+  };
+  const adapter = stubJudgeAdapter(6_000);
+  const primaryFirst = buildBudgetedComparisonPrompt({ ...input, presentationOrder: 'primary-first' }, adapter);
+  const challengerFirst = buildBudgetedComparisonPrompt({ ...input, presentationOrder: 'challenger-first' }, adapter);
+
+  // Each arm's own input is the same whatever order it is presented in: the
+  // share depends only on the count of parts, never on the other arm's size.
+  assert.equal(primaryFirst.inputs.primary.text, challengerFirst.inputs.primary.text);
+  assert.equal(primaryFirst.inputs.challenger.text, challengerFirst.inputs.challenger.text);
+  // The larger arm does not starve the smaller one out of the prompt.
+  assert.ok(
+    primaryFirst.inputs.challenger.text.length <= 2_000,
+    'each arm is bounded by its even share',
+  );
+});
+
+test('buildBudgetedComparisonPrompt leaves the non-fork baseline byte-identical', () => {
+  const input = {
+    issuePrompt: 'Issue context',
+    primaryDiff: diffAdding('src/primary.ts', 3),
+    challengerDiff: diffAdding('src/challenger.ts', 3),
+    presentationOrder: 'primary-first' as const,
+  };
+  const built = buildBudgetedComparisonPrompt(input, null);
+  assert.equal(built.inputs.shared, null);
+  assert.equal(built.prompt, buildComparisonPrompt(input));
+  // A blank prefix is no prefix: the budget split and the render agree.
+  const blank = buildBudgetedComparisonPrompt({ ...input, sharedContext: '  \n' }, null);
+  assert.equal(blank.inputs.shared, null);
+  assert.equal(blank.prompt, buildComparisonPrompt(input));
+});
+
+test('buildBudgetedComparisonPrompt budgets a shared pre-fork prefix like an arm', () => {
+  const built = buildBudgetedComparisonPrompt({
+    issuePrompt: 'Issue context',
+    primaryDiff: diffAdding('src/primary.ts', 10),
+    challengerDiff: diffAdding('src/challenger.ts', 10),
+    presentationOrder: 'primary-first',
+    sharedContext: diffAdding('src/shared.ts', 500),
+  }, stubJudgeAdapter(4_000));
+
+  assert.ok(built.inputs.shared);
+  assert.match(built.prompt, /Shared Pre-Fork Context\n/);
+  // A prefix that cannot fit is reported over budget rather than silently
+  // crowding both arms out of the prompt.
+  assert.equal(built.withinBudget, false);
+});
+
+test('runBlindJudge refuses a change that cannot fit before calling the judge (HOK-3493)', async () => {
+  let called = false;
+  await assert.rejects(
+    runBlindJudge({
+      issuePrompt: 'Issue',
+      primaryDiff: diffAdding('src/primary.ts', 2_000),
+      challengerDiff: diffAdding('src/challenger.ts', 2_000),
+      presentationOrder: 'primary-first',
+      promptTemplate: '{{ISSUE_PROMPT}}\n{{CANDIDATE_A_DIFF}}\n{{CANDIDATE_B_DIFF}}\n{{RUBRIC}}\n{{WORKFLOW_CONTEXT}}\n{{STAGE_EVIDENCE_CONTEXT}}',
+      model: 'judge-model',
+      deps: {
+        adapter: stubJudgeAdapter(3_000),
+        async callLlm() {
+          called = true;
+          return { text: blindVerdictJson('A'), rawOutput: blindVerdictJson('A'), provider: 'claude', model: 'judge-model' };
+        },
+      },
+    }),
+    (error) => {
+      assert.ok(error instanceof ChangeInputRefusedError);
+      assert.equal(error.adapterError.policyKind, 'context-window-exceeded');
+      return true;
+    },
+  );
+  assert.equal(called, false);
+});
+
+test('runBlindJudge sends when the change is over its share but the prompt passes preflight', async () => {
+  const outcome = await runBlindJudge({
+    issuePrompt: 'Issue',
+    primaryDiff: diffAdding('src/primary.ts', 2_000),
+    challengerDiff: diffAdding('src/challenger.ts', 2_000),
+    presentationOrder: 'primary-first',
+    promptTemplate: '{{ISSUE_PROMPT}}\n{{CANDIDATE_A_DIFF}}\n{{CANDIDATE_B_DIFF}}\n{{RUBRIC}}\n{{WORKFLOW_CONTEXT}}\n{{STAGE_EVIDENCE_CONTEXT}}',
+    model: 'judge-model',
+    deps: {
+      adapter: stubJudgeAdapter(3_000, false),
+      async callLlm() {
+        return { text: blindVerdictJson('A'), rawOutput: blindVerdictJson('A'), provider: 'claude', model: 'judge-model' };
+      },
+    },
+  });
+  assert.equal(outcome.verdict.winner, 'primary');
+  assert.ok(outcome.promptBytes > 0);
 });
 
 test('judge template resolves inside the wavemill install, independent of cwd', () => {
@@ -839,7 +968,6 @@ test('runBlindJudge maps blind verdicts, hashes the successful prompt, and passe
     presentationOrder: 'challenger-first',
     promptTemplate: '{{ISSUE_PROMPT}}\n{{CANDIDATE_A_DIFF}}\n{{CANDIDATE_B_DIFF}}\n{{RUBRIC}}\n{{WORKFLOW_CONTEXT}}\n{{STAGE_EVIDENCE_CONTEXT}}',
     model: 'judge-model',
-    maxPromptBytes: 100000,
     deps: {
       async callLlm(prompt, options) {
         assert.equal(options?.model, 'judge-model');
@@ -872,7 +1000,6 @@ test('runBlindJudge retries JavaScript-syntax responses once with stricter JSON 
     presentationOrder: 'primary-first',
     promptTemplate: '{{ISSUE_PROMPT}}\n{{CANDIDATE_A_DIFF}}\n{{CANDIDATE_B_DIFF}}\n{{RUBRIC}}\n{{WORKFLOW_CONTEXT}}\n{{STAGE_EVIDENCE_CONTEXT}}',
     model: 'judge-model',
-    maxPromptBytes: 100000,
     deps: {
       async callLlm(prompt, options) {
         prompts.push(prompt);
@@ -1141,26 +1268,4 @@ test('fetchForkAwareDiffs computes shared prefix and each arm delta', () => {
   assert.equal(diffs.primaryDelta, 'primary delta diff');
   assert.equal(diffs.challengerDelta, 'challenger delta diff');
   assert.ok(gitCommands.some((cmd) => cmd.join(' ') === 'merge-base refs/remotes/origin/main fork-sha'));
-});
-
-test('buildCappedComparisonPrompt accounts for sharedContext in byte budgeting', () => {
-  const sharedContext = 'x'.repeat(1000);
-  const primaryDiff = 'p'.repeat(1500);
-  const challengerDiff = 'c'.repeat(1500);
-
-  const result = buildCappedComparisonPrompt({
-    issuePrompt: 'Issue context',
-    primaryDiff,
-    challengerDiff,
-    presentationOrder: 'primary-first',
-    sharedContext,
-  }, 3500);
-
-  // Total would be: ~500 scaffold + 1000 shared + 1500 primary + 1500 challenger = 4500
-  // With a 3500 byte budget, both diffs should be truncated to make room for shared context
-  assert.equal(result.truncated, true);
-  assert.ok(result.finalBytes <= 3500);
-  // Shared context should be preserved in the prompt
-  assert.match(result.prompt, /Shared Pre-Fork Context/);
-  assert.ok(result.prompt.includes(sharedContext));
 });
