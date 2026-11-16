@@ -154,10 +154,15 @@ check_eq "exhaustion wrote exactly one attention marker" "$([[ -f "$STATE_DIR/.n
 basis="$(jq -r '.detail.escalationBasis // empty' "$STATE_DIR/.needs-attention" 2>/dev/null || true)"
 check_eq "the attention basis records exhausted:stage-failure-ready" "$basis" "exhausted:stage-failure-ready"
 
+# GNU stat first: on GNU, `stat -f` means --file-system and would dump the
+# whole filesystem report, making this comparison depend on volatile free-space
+# counters instead of the marker's mtime.
+file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+
 # A later classify at the same head must not rewrite the marker (idempotent).
-mtime_before="$(stat -f %m "$STATE_DIR/.needs-attention" 2>/dev/null || stat -c %Y "$STATE_DIR/.needs-attention")"
+mtime_before="$(file_mtime "$STATE_DIR/.needs-attention")"
 out="$(act)"
-mtime_after="$(stat -f %m "$STATE_DIR/.needs-attention" 2>/dev/null || stat -c %Y "$STATE_DIR/.needs-attention")"
+mtime_after="$(file_mtime "$STATE_DIR/.needs-attention")"
 check_eq "a later tick does not rewrite the attention marker" "$mtime_after" "$mtime_before"
 
 echo ""
