@@ -53,15 +53,13 @@ test('retained 160-turn failed planning incident becomes a verified, costed v4 c
 });
 
 // protects: completing the failure-feedback path must not turn infrastructure failures or intent into model observations.
-for (const scenario of ['harness-fault', 'unknown-fault', 'missing-identity', 'wrong-model', 'missing-cost'] as const) {
+for (const scenario of ['missing-identity', 'wrong-model', 'missing-cost'] as const) {
   test(`terminal feedback retains the hold for ${scenario}`, async () => {
     const repoDir = mkdtempSync(join(tmpdir(), 'terminal-feedback-hold-'));
     try {
       const world = await createTerminalFeedbackReplay(repoDir);
       const path = join(world.featureDir, '.challenge-aborted.json');
       const termination = JSON.parse(readFileSync(path, 'utf8'));
-      if (scenario === 'harness-fault') termination.reason = 'terminal_stage_failure:cancelled';
-      if (scenario === 'unknown-fault') { termination.reason = 'terminal_stage_failure:native-stage-timeout'; delete termination.budgetExhausted; }
       writeFileSync(path, JSON.stringify(termination));
       if (scenario === 'missing-identity') rmSync(join(world.featureDir, 'native-sessions'), { recursive: true });
       if (scenario === 'wrong-model') world.record.modelId = 'deepseek-v4-pro';
@@ -84,5 +82,45 @@ test('live terminal feedback resolves the supplied feature directory before reap
     const prepared = await prepareTerminalArmFeedback(world.record, { repoDir, featureDir, meteredCost: world.meteredCost });
     assert.equal(toHokusaiSubmission(prepared.record).ok, true);
     assert.equal(prepared.featureDir, featureDir);
+  } finally { rmSync(repoDir, { recursive: true, force: true }); }
+});
+
+// protects: provider/harness failures retain economics without becoming negative model-quality labels.
+for (const [kind, fault] of [['cancelled', 'harness-fault'], ['provider-rate-limited', 'provider-fault'], ['native-stage-timeout', 'unknown-fault']] as const) {
+  test(`terminal ${fault} contributes a neutral failure with its costs and decision link`, async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'terminal-feedback-neutral-'));
+    try {
+      const world = await createTerminalFeedbackReplay(repoDir);
+      const path = join(world.featureDir, '.challenge-aborted.json');
+      const termination = JSON.parse(readFileSync(path, 'utf8'));
+      termination.reason = `terminal_stage_failure:${kind}`;
+      delete termination.budgetExhausted;
+      writeFileSync(path, JSON.stringify(termination));
+      const prepared = await prepareTerminalArmFeedback(world.record, { repoDir, meteredCost: world.meteredCost });
+      const converted = toHokusaiSubmission(prepared.record);
+      assert.ok(converted.ok);
+      if (!converted.ok) return;
+      const projection = buildHokusaiV4Projection(converted.submission, prepared.record, world.meteredCost, { repoDir, redactionSalt: 'test' });
+      assert.ok(projection);
+      const row = buildTechnicalTaskRouterRowV4(projection);
+      assert.deepEqual(row.stage_executions[0].failure, { fault_class: fault });
+      assert.equal(row.actual_cost_usd, 1.6);
+      assert.equal(row.inference_log_id, 'replay-routing-decision');
+      assert.equal(world.record.trainingEligible, false);
+    } finally { rmSync(repoDir, { recursive: true, force: true }); }
+  });
+}
+
+// protects: a canonical Linear ID on a challenger eval cannot erase its archived ownership and costs.
+test('submission replay resolves the challenger task identity when the eval stores the shared Linear ID', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'terminal-feedback-identity-'));
+  try {
+    const world = await createTerminalFeedbackReplay(repoDir, 2);
+    world.record.issueId = 'REPLAY-1';
+    world.record.challengeSide = 'challenger';
+    const prepared = await prepareTerminalArmFeedback(world.record, { repoDir });
+    const converted = toHokusaiSubmission(prepared.record);
+    assert.equal(converted.ok, true);
+    assert.equal(prepared.meteredCost?.owned.length, 1);
   } finally { rmSync(repoDir, { recursive: true, force: true }); }
 });

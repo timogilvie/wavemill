@@ -32,22 +32,24 @@ import { resolveCodexLaunchNonces } from '../codex-rollout-resolver.ts';
 import { errorMessage } from '../error-utils.ts';
 import { getEffectiveRegistry, resolveModelRegistryKey } from '../model-registry.ts';
 import {
-  fetchOpenRouterExactCosts,
+  fetchOpenRouterGenerationEvidence,
   isExactPricingEnabled,
   type ExactPricingOptions,
 } from '../pricing/openrouter-exact-pricing.ts';
 import type { PricingTable } from '../pricing/model-pricing.ts';
-import { NativeSessionAdapter, resolveClaudeProjectsDirsFor, resolveCodexSessionRoots, type NativeSessionUsageRecord } from '../session-adapters.ts';
+import type { OpenRouterGenerationCost } from '../pricing/openrouter-exact-pricing.ts';
+import { NativeSessionAdapter, nativeSessionObservations, nativeTurnUsage, resolveClaudeProjectsDirsFor, resolveCodexSessionRoots, type NativeSessionUsageRecord } from '../session-adapters.ts';
 import {
   appendSessionRefResolution,
   exactRows,
   groupByExecutionStage,
   groupByKind,
-  locateOwnershipRows,
+  locateLaunchHistory,
+  getSdkMeteringProjection,
   type ExecutionStage,
   type SessionOwnershipRow,
 } from '../session-ownership.ts';
-import type { WorkflowCostFailure, WorkflowCostOutcome } from '../workflow-cost.ts';
+import type { NativeProviderExecution, WorkflowCostFailure, WorkflowCostOutcome } from '../workflow-cost.ts';
 import type { TaskCostSummaryV1 } from './contract.ts';
 import type { MeasureOwnedSessionsInput } from './measure.ts';
 import { projectReportToWorkflowCost, reportCostUsd } from './project.ts';
@@ -65,6 +67,7 @@ export type WorkflowCostMeterReason =
 
 export interface MeterWorkflowCostInput {
   worktreePath: string;
+  featureDir?: string;
   branchName: string;
   repoDir?: string;
   issueId?: string;
@@ -156,7 +159,7 @@ function resolvePendingRefs(
   return rows.map((row) => resolved.has(row.sessionRef) ? { ...row, sessionRef: resolved.get(row.sessionRef)! } : row);
 }
 
-function ownedNativeSessions(input: MeterWorkflowCostInput, rows: readonly SessionOwnershipRow[]): NativeSessionUsageRecord[] {
+function ownedNativeSessions(input: MeterWorkflowCostInput, rows: readonly SessionOwnershipRow[], recordFile?: string): NativeSessionUsageRecord[] {
   const refs = new Set(rows.filter((row) => row.harness === 'native').map((row) => row.sessionRef));
   if (refs.size === 0) return [];
   const sessions = input.nativeSessions ?? new NativeSessionAdapter().scan({
@@ -164,23 +167,47 @@ function ownedNativeSessions(input: MeterWorkflowCostInput, rows: readonly Sessi
     branchName: input.branchName,
     repoDir: input.repoDir,
     issueId: input.issueId,
+    ...((input.featureDir || recordFile) ? { featureDir: input.featureDir ?? dirname(recordFile!) } : {}),
+    sessionRefs: [...refs],
   })?.nativeSessions ?? [];
   return sessions.filter((session) => refs.has(session.sessionId));
 }
 
-async function resolveExactGenerationCosts(
+async function resolveExactGenerations(
   nativeSessions: readonly NativeSessionUsageRecord[],
   options: ExactPricingOptions | undefined,
   label: string,
   logger: Pick<Console, 'log' | 'warn'>,
-): Promise<Map<string, number> | undefined> {
+): Promise<Map<string, OpenRouterGenerationCost> | undefined> {
   if (!options || !isExactPricingEnabled(options) || nativeSessions.length === 0) return undefined;
   try {
-    return await fetchOpenRouterExactCosts(nativeSessions.flatMap((session) => session.responseIds), { logger, ...options });
+    return await fetchOpenRouterGenerationEvidence(nativeSessions
+      .filter(session => session.provider === 'openrouter')
+      .flatMap(session => session.responseIds), { logger, ...options });
   } catch (error) {
     logger.warn(`${label}: OpenRouter exact pricing skipped — ${errorMessage(error)}`);
     return undefined;
   }
+}
+
+/** One observation per owned response; no allocation across reused session refs. */
+function providerExecutions(
+  sessions: readonly NativeSessionUsageRecord[],
+  owned: readonly SessionOwnershipRow[],
+  generations: ReadonlyMap<string, OpenRouterGenerationCost> | undefined,
+): NativeProviderExecution[] {
+  return nativeSessionObservations(sessions).map(({ session, turn, observationId }) => ({
+    observationId,
+    sessionRef: session.sessionId,
+    ownershipAttemptIds: [...new Set(owned.filter(row => row.harness === 'native' && row.sessionRef === session.sessionId).map(row => row.attemptId))],
+    responseId: turn.responseId ?? null,
+    transport: session.provider,
+    requestedModel: session.requestedModel ?? null,
+    ...turn.providerRequest,
+    usage: nativeTurnUsage(turn),
+    responseModel: turn.responseModel ?? null,
+    generation: session.provider === 'openrouter' && turn.responseId ? generations?.get(turn.responseId) ?? null : null,
+  }));
 }
 
 function failure(
@@ -213,7 +240,7 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
     if (input.ownership) {
       owned = [...input.ownership];
     } else {
-      const located = locateOwnershipRows({
+      const located = locateLaunchHistory({
         repoDir: input.repoDir,
         issueId: input.issueId,
         slug: input.slug,
@@ -232,8 +259,8 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
     return { ...empty, owned: [], outcome: failure('adapter_error', `Session ownership unreadable: ${message}`, input), reason: 'collection_failed' };
   }
 
-  const measured = exactRows(owned);
-  const pending = owned.length - measured.length;
+  const measured = exactRows(getSdkMeteringProjection(owned));
+  const pending = owned.length - exactRows(owned).length;
   if (pending > 0) {
     logger.warn(`${input.label}: ${pending} owned Codex session(s) never resolved to a thread id; not costed`);
   }
@@ -251,8 +278,8 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
 
   try {
     const sdk = await (input.loadMeasure ?? defaultLoadMeasure)();
-    const nativeSessions = ownedNativeSessions(input, measured);
-    const exactGenerationCosts = await resolveExactGenerationCosts(nativeSessions, input.exactPricing, input.label, logger);
+    const nativeSessions = ownedNativeSessions(input, measured, recordFile);
+    const exactGenerations = await resolveExactGenerations(nativeSessions, input.exactPricing, input.label, logger);
     const registry = getEffectiveRegistry(input.repoDir);
     const endedAt = (input.now?.() ?? new Date()).toISOString();
     const startedAt = measured.map((row) => row.launchedAt).sort()[0];
@@ -265,7 +292,7 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
       nativeSessions,
       priceOverrides: sdk.buildHostPriceOverrides(input.pricingTable),
       window: { startedAt, endedAt },
-      ...(exactGenerationCosts && exactGenerationCosts.size > 0 ? { exactGenerationCosts } : {}),
+      ...(exactGenerations && exactGenerations.size > 0 ? { exactGenerations } : {}),
       registryLookup: (modelId) => resolveModelRegistryKey(registry, modelId),
     };
 
@@ -304,7 +331,9 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
       });
     }
 
-    const outcome = { ...projectReportToWorkflowCost(report, sdk.pricingUsedFor(report, input.pricingTable)), byKind };
+    const nativeProviderExecutions = providerExecutions(nativeSessions, owned, exactGenerations);
+    const outcome = { ...projectReportToWorkflowCost(report, sdk.pricingUsedFor(report, input.pricingTable)), byKind,
+      ...(nativeProviderExecutions.length ? { nativeProviderExecutions } : {}) };
     const harnesses = Object.entries(outcome.byHarness ?? {})
       .map(([harness, usd]) => `${harness}: ${usd === null ? 'unresolved' : `$${usd.toFixed(4)}`}`)
       .join('; ');

@@ -75,6 +75,7 @@ import { projectChallengeIntentForPersistence, sealChallengeDecision } from './c
 import { applyChallengeOverride } from './route-override-record.ts';
 import {
   reportableWorkflowCostUsd,
+  mergeNativeProviderExecutions,
   type WorkflowCostOutcome,
   type WorkflowCostResult,
   type WorkflowCostFailure,
@@ -914,6 +915,9 @@ export function attachWorkflowCostMetadata(
     }
     record.workflowTokenUsage = success.models;
     record.workflowCostStatus = 'success';
+    if (success.nativeProviderExecutions?.length) {
+      record.nativeProviderExecutions = mergeNativeProviderExecutions(record.nativeProviderExecutions, success.nativeProviderExecutions);
+    }
     record.pricingSnapshot = success.pricingUsed;
     if (success.attribution) {
       record.workflowCostAttribution = success.attribution;

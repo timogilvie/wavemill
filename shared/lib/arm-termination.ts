@@ -30,16 +30,15 @@ import { join, dirname, resolve, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ChallengeStage } from './challenge-scheduler.ts';
 import {
-  classifyArmFault,
   isModelQualitySignal,
   type ArmFailureKind,
   type ArmFaultClass,
   type ChallengeArmSide,
 } from './arm-failure-taxonomy.ts';
 import { parseBudgetExhaustedFact, type BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
-import { resolveNativeStageTimeSplit } from './native-agent/stage-time-split.ts';
 import {
   appendArmReliabilityRecord,
+  buildArmReliabilityRecord,
   type ArmReliabilityRecord,
 } from './arm-reliability.ts';
 import { recordSelectionOutcome } from './challenge-selection-health.ts';
@@ -47,6 +46,10 @@ import { appendEvalRecord, readEvalRecords } from './eval-persistence.ts';
 import { SCHEMA_VERSION, type EvalRecord } from './eval-schema.ts';
 import { mutateWorkflowState } from './workflow-state.ts';
 import { challengerTaskKey, isChallengerTaskId, parseTaskId } from './task-identity.ts';
+import { meterWorkflowCost, type MeteredWorkflowCost } from './sdk-task-cost/meter.ts';
+import { readLaunchHistory, SESSION_OWNERSHIP_FILE } from './session-ownership.ts';
+import { attachWorkflowCostMetadata, attachTaskCostSummaries } from './eval-record-builder.ts';
+import { basename } from 'node:path';
 import { ensureTerminalRetention, type TaskLifecycleState } from './task-lifecycle.ts';
 
 export type ArmTerminationActor = 'operator' | 'monitor' | 'pair-resolver';
@@ -197,14 +200,22 @@ export async function recordArmTermination(input: RecordArmTerminationInput): Pr
   const timestamp = nowFn().toISOString();
   const budgetExhausted = parseBudgetExhaustedFact(input.budgetExhausted ?? null);
   const featureDir = input.featureDir;
-  const timeSplit = resolveNativeStageTimeSplit(budgetExhausted, { featureDir }) ?? undefined;
-  const faultClass = classifyArmFault({
-    failureKind: kind,
+  const reliabilityInput = {
+    issueId: input.issueId,
+    challengePairId: resolvePairId(input.issueId),
+    challengeRole: (isChallengerTaskId(input.issueId) ? 'challenger' : 'primary') as ChallengeArmSide,
+    stage: (input.stage ?? '').trim() || 'coding',
+    model: input.model || 'unknown',
+    abortReason: `${TERMINAL_PREFIX}${kind}`,
     detail: input.detail,
+    nextAction: input.nextAction,
     budgetExhausted,
-    timeSplit,
-  });
-  const qualitySignalEligible = isModelQualitySignal(faultClass);
+    featureDir,
+    timestamp,
+    source: actorToSource(input.actor),
+  };
+  // Use the reliability owner's full attribution, including typed exit evidence.
+  const { faultClass, qualitySignalEligible } = buildArmReliabilityRecord(reliabilityInput);
 
   // Evidence enforcement: only the operator path is required to show an
   // artifact — monitor-/resolver-side kinds already have `.coding-result.json`,
@@ -333,24 +344,20 @@ export async function recordArmTermination(input: RecordArmTerminationInput): Pr
 
   // ── 3. Append reliability record ─────────────────────────────────────────
   const pairId = resolvePairId(input.issueId);
-  const challengeRole: ChallengeArmSide = isChallengerTaskId(input.issueId) ? 'challenger' : 'primary';
-  const reliability = appendArmReliabilityRecord(
-    {
-      issueId: input.issueId,
-      challengePairId: pairId,
-      challengeRole,
-      stage: stage || 'coding',
-      model: input.model || 'unknown',
-      abortReason,
-      detail: input.detail,
-      nextAction: input.nextAction,
-      budgetExhausted: input.budgetExhausted ?? null,
-      featureDir,
-      timestamp,
-      source: actorToSource(input.actor),
-    },
-    repoDir,
-  );
+  // Meter once even when contribution submission is disabled. Both local
+  // failure corpora and the normal submission trigger consume the same report.
+  const launchHistory = featureDir ? readLaunchHistory([join(featureDir, SESSION_OWNERSHIP_FILE)]).rows : undefined;
+  const meteredCost = await meterWorkflowCost({
+    repoDir, issueId: input.issueId, featureDir,
+    slug: featureDir ? basename(featureDir) : undefined,
+    worktreePath: launchHistory?.find(row => row.cwd)?.cwd ?? repoDir,
+    branchName: '', ownership: launchHistory, label: 'Arm termination', exactPricing: {},
+  });
+  const reliability = appendArmReliabilityRecord({
+    ...reliabilityInput,
+    ...(meteredCost.outcome.status === 'success' ? { nativeProviderExecutions: meteredCost.outcome.nativeProviderExecutions } : {}),
+    ...(meteredCost.summaries ? { taskCostSummary: meteredCost.summaries } : {}),
+  }, repoDir);
 
   // ── 4. Append failure eval record ─────────────────────────────────────────
   //
@@ -369,6 +376,7 @@ export async function recordArmTermination(input: RecordArmTerminationInput): Pr
     timestamp,
     repoDir,
     reliabilityId: reliability.id,
+    meteredCost,
   });
 
   // ── 5. Trip provider circuit (model-fault / provider-fault only) ─────────
@@ -450,6 +458,7 @@ interface AppendEvalInput {
   timestamp: string;
   repoDir: string;
   reliabilityId: string;
+  meteredCost: MeteredWorkflowCost;
 }
 
 async function maybeAppendFailureEvalRecord(args: AppendEvalInput): Promise<string | null> {
@@ -537,9 +546,11 @@ async function maybeAppendFailureEvalRecord(args: AppendEvalInput): Promise<stri
     },
   };
 
+  attachWorkflowCostMetadata(record, args.meteredCost.outcome);
+  attachTaskCostSummaries(record, args.meteredCost.summaries);
   try {
     appendEvalRecord(record, { repoDir, dir: join(repoDir, '.wavemill', 'evals') });
-    await triggerHokusaiSubmission(record, { repoDir, featureDir: input.featureDir });
+    await triggerHokusaiSubmission(record, { repoDir, featureDir: input.featureDir, meteredCost: args.meteredCost });
   } catch {
     // Validation refused the record. Reliability record remains the
     // authoritative termination row.

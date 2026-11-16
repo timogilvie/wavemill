@@ -34,6 +34,7 @@ import { dirname } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
+import type { NativeProviderExecution } from '@hokusai/core';
 import type { ReplayCompactionEvent } from './compaction.ts';
 import type { CommandTranscriptEventData } from './command-transcript.ts';
 import { writeCleanupSummaryEvent, type CleanupDecision, type CleanupReason, type CleanupReport, type TreeState } from './cleanup.ts';
@@ -100,6 +101,7 @@ export interface TranscriptUsage {
 }
 
 export interface TranscriptAssistantMessage extends TranscriptEventBase {
+  providerRequest?: Pick<NativeProviderExecution, 'requestedRouting' | 'pricingSnapshot'>;
   type: 'assistant_message';
   model: string;
   responseModel?: string;
@@ -439,6 +441,7 @@ export class TranscriptWriter {
           replayContent,
           redacted: true,
           ...(usage !== undefined && { usage }),
+          ...('providerRequest' in assistantMsg ? { providerRequest: structuredClone(assistantMsg.providerRequest) as TranscriptAssistantMessage['providerRequest'] } : {}),
         };
         if (assistantMsg.responseModel !== undefined) result.responseModel = assistantMsg.responseModel;
         if (assistantMsg.responseId !== undefined) result.responseId = assistantMsg.responseId;

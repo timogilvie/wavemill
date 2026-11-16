@@ -11,6 +11,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { recordArmTermination } from './arm-termination.ts';
+import { createTerminalFeedbackReplay } from '../../tests/fixtures/terminal-arm-feedback/replay.ts';
+import { readEvalRecords } from './eval-persistence.ts';
 import type { WorkflowState } from './workflow-state.ts';
 
 let repoDir: string;
@@ -94,4 +96,22 @@ describe('operator abort lifecycle write', () => {
     });
     assert.deepEqual(violationsLog(), [], 'the write guard must log no violations');
   });
+});
+
+// protects: terminal economics survive locally even with Hokusai submission disabled.
+it('records cost and provider facts in reliability and failure evals before submission or cleanup', async () => {
+  const world = await createTerminalFeedbackReplay(repoDir, 2);
+  const input = { repoDir, featureDir: world.featureDir, issueId: 'REPLAY-1_c', kind: 'cancelled' as const,
+    actor: 'monitor' as const, stage: 'planning', model: 'z-ai/glm-5.3', skipStateMutation: true };
+  const result = await recordArmTermination(input);
+  assert.equal(result.faultClass, 'harness-fault');
+  assert.equal(result.reliability.nativeProviderExecutions?.length, 2);
+  assert.ok(result.reliability.taskCostSummary?.length);
+  const record = readEvalRecords({ repoDir }).find(row => row.id === result.evalRecordId);
+  assert.ok(record);
+  assert.equal(record.nativeProviderExecutions?.length, 2);
+  assert.ok(record.taskCostSummary?.length);
+  const repeated = await recordArmTermination(input);
+  assert.equal(repeated.reliability.id, result.reliability.id);
+  assert.equal(repeated.evalRecordId, result.evalRecordId);
 });

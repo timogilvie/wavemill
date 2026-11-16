@@ -10,7 +10,7 @@
  *   `sources/node-fs`) under the same explicit boundary, fed as events —
  *   `measureTask` takes one `sessionFiles` harness per run.
  * - Native: one `recordUsage` per transcript turn; OpenRouter's billed charge
- *   (`exactGenerationCosts`) or a trustworthy provider-reported charge is the
+ *   (`exactGenerations`) or a trustworthy provider-reported charge is the
  *   event's `providerCostUsd`.
  * - Rates: Wavemill's registry table as `priceOverrides`.
  *
@@ -20,32 +20,18 @@
  * @module sdk-task-cost/measure
  */
 
-import { createHash } from 'node:crypto';
 import { measureTask, type HostPriceOverride, type IngestUsageInput, type TaskCostReport, type TaskUsageRecord } from '@hokusai/costs';
 import { extractClaudeCodeUsage } from '@hokusai/costs/sources/claude-code';
 import { extractCodexUsage } from '@hokusai/costs/sources/codex';
 import { readSessionFiles, type TaskCostSourceDiagnostics } from '@hokusai/costs/sources/node-fs';
 import { normalizeModelId, resolveModelPrice } from '@hokusai/core';
-import type { NativeSessionUsageRecord } from '../session-adapters.ts';
+import { nativeSessionObservations, nativeTurnUsage, type NativeSessionUsageRecord } from '../session-adapters.ts';
+import type { OpenRouterGenerationCost } from '../pricing/openrouter-exact-pricing.ts';
 import type { SessionOwnershipRow } from '../session-ownership.ts';
 import type { WorkflowCostResult } from '../workflow-cost.ts';
 
-// The SDK contract's id pattern (validators); ids that do not satisfy it are
-// pseudonymized so a native session id with `_` or a path never reaches the
-// ledger raw.
-const SDK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-
-/** Map a raw id onto the SDK contract's id alphabet (stable across runs). */
-export function toSdkId(raw: string | null | undefined, fallback = 'unknown'): string {
-  const value = typeof raw === 'string' ? raw.trim() : '';
-  if (value === '') return fallback;
-  if (SDK_ID_PATTERN.test(value)) return value;
-  if (!/[\\/]/.test(value)) {
-    const slug = value.replace(/[^A-Za-z0-9._:-]+/g, '-').replace(/^[^A-Za-z0-9]+/, '');
-    if (SDK_ID_PATTERN.test(slug)) return slug;
-  }
-  return `h-${createHash('sha256').update(value).digest('hex').slice(0, 32)}`;
-}
+export { toSdkId } from './ids.ts';
+import { toSdkId } from './ids.ts';
 
 export interface MeasureOwnedSessionsInput {
   /** Wavemill task / issue id (mapped onto the SDK id alphabet). */
@@ -61,8 +47,8 @@ export interface MeasureOwnedSessionsInput {
   priceOverrides: readonly HostPriceOverride[];
   /** Inclusive attribution window: the task's lifetime. */
   window: { startedAt: string; endedAt: string };
-  /** OpenRouter billed charge per native response id. */
-  exactGenerationCosts?: ReadonlyMap<string, number>;
+  /** OpenRouter observed metadata and billed charge per native response id. */
+  exactGenerations?: ReadonlyMap<string, OpenRouterGenerationCost>;
   /** Canonical registry id for a native model id (identity when unknown). */
   registryLookup?: (modelId: string) => string;
 }
@@ -81,8 +67,10 @@ function nativeProviderCost(
   turn: { responseId?: string; providerReportedCostUsd?: number; usageAvailable: boolean },
   model: string,
   input: MeasureOwnedSessionsInput,
+  transport: string,
 ): number | undefined {
-  const exact = turn.responseId ? finiteNonNegative(input.exactGenerationCosts?.get(turn.responseId)) : null;
+  const exact = transport === 'openrouter' && turn.responseId
+    ? finiteNonNegative(input.exactGenerations?.get(turn.responseId)?.totalCostUsd) : null;
   if (exact !== null) return exact;
   const reported = finiteNonNegative(turn.providerReportedCostUsd);
   if (reported === null) return undefined;
@@ -100,33 +88,23 @@ function nativeProviderCost(
 export function nativeUsageRecords(input: MeasureOwnedSessionsInput): TaskUsageRecord[] {
   const measured = new Set(sessionIdsFor(input.rows, 'native'));
   const records: TaskUsageRecord[] = [];
-  for (const session of input.nativeSessions) {
-    if (!measured.has(session.sessionId)) continue;
+  for (const { session, turn, observationId } of nativeSessionObservations(input.nativeSessions.filter(session => measured.has(session.sessionId)))) {
     const model = toSdkId(input.registryLookup?.(session.modelId) ?? session.modelId, 'unknown');
     const sessionId = toSdkId(session.sessionId);
-    const observations = session.turns.length > 0 ? session.turns : [session];
-    observations.forEach((turn, index) => {
-      const usable = turn.usageAvailable && !turn.invalidUsage;
-      const providerCostUsd = nativeProviderCost(turn, model, input);
-      const responseId = 'responseId' in turn ? turn.responseId : undefined;
-      records.push({
-        harness: 'native',
-        model,
-        usage: usable
-          ? {
-            inputTokens: turn.inputTokens ?? null,
-            outputTokens: turn.outputTokens ?? null,
-            cacheReadTokens: turn.cacheReadTokens ?? null,
-            cacheWriteTokens: turn.cacheCreationTokens ?? null,
-            reasoningTokens: null,
-          }
-          : {},
-        ...(providerCostUsd !== undefined ? { providerCostUsd } : {}),
-        costBasis: 'per_token_api',
-        sessionId,
-        eventId: toSdkId(`${session.sessionId}:${session.provider}:${session.modelId}:${index}`),
-        ...(responseId ? { turnId: toSdkId(responseId) } : {}),
-      });
+    const responseId = turn.responseId;
+    const usage = nativeTurnUsage(turn);
+    const providerCostUsd = nativeProviderCost(turn, model, input, session.provider);
+    records.push({
+      harness: 'native',
+      model,
+      usage: { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens,
+        cacheReadTokens: usage.cache_read_tokens, cacheWriteTokens: usage.cache_write_tokens,
+        reasoningTokens: usage.reasoning_tokens },
+      ...(providerCostUsd !== undefined ? { providerCostUsd } : {}),
+      costBasis: 'per_token_api',
+      sessionId,
+      eventId: observationId,
+      ...(responseId ? { turnId: toSdkId(responseId) } : {}),
     });
   }
   return records;
