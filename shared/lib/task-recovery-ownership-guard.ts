@@ -82,7 +82,7 @@ export const TASK_RECOVERY_OWNERSHIP_GUARD: GuardSpec = {
         'tools/observer.ts may not call a repair executor directly (HOK-3406) — emit evidence / request reconciliation and let the recovery controller execute',
       lang: 'ts',
       re: /\b(?:updateBranchWithBase|abortTaskInState|recordArmTermination|createStateDirRetry|runObserverAutoFixes)\s*\(/,
-      scopedPaths: ['tools/observer.ts'],
+      scopedPaths: ['tools/observer.ts'], // install-paths: allow guard scope, not an argv target
     },
     {
       name: 'observer-autofix-surface',
@@ -90,7 +90,7 @@ export const TASK_RECOVERY_OWNERSHIP_GUARD: GuardSpec = {
         'the removed observer.autoFix configuration and --autofix-dry-run flag surface cannot return (HOK-3406)',
       lang: 'ts',
       re: /autoFixDryRun|getObserverAutoFixConfig|ObserverAutoFixConfig/,
-      scopedPaths: ['tools/observer.ts'],
+      scopedPaths: ['tools/observer.ts'], // install-paths: allow guard scope, not an argv target
     },
   ],
   remediation: [
