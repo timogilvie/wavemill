@@ -1,3 +1,5 @@
+import { evalTaskStateKey } from './eval-skip-guard.ts';
+import { toSdkId } from './sdk-task-cost/ids.ts';
 import { prepareTerminalArmFeedback } from './terminal-arm-feedback.ts';
 import { getHokusaiSubmissionConfig, getHokusaiSubmissionEnableSources } from './config.ts';
 import {
@@ -22,6 +24,7 @@ import {
   redactPairId,
   redactSessionIds,
   redactStageTaskCost,
+  redactProviderExecutions,
 } from './hokusai-redaction.ts';
 import {
   toHokusaiInput,
@@ -33,6 +36,8 @@ import {
 import { appendTriggerLogEntry } from './hokusai-trigger-log.ts';
 import { errorMessage } from './error-utils.ts';
 import type { EvalRecord, EvalRecordChallengeStage } from './eval-schema.ts';
+import { normalizeChallengeStage } from './challenge-route-check.ts';
+import type { StageFailureEvidence } from '@hokusai/core';
 import {
   routingOutcomeForProjection,
   type StageRouteOverride,
@@ -342,7 +347,14 @@ export function buildHokusaiV4Projection(
       repoDir: options.repoDir,
     });
     for (const entry of entries) {
+      const sessionIds = new Set(entry.summaries.flatMap(summary => summary.session_ids));
+      const providers = record.nativeProviderExecutions?.filter(execution => sessionIds.has(toSdkId(execution.sessionRef))) ?? [];
+      const termination = record.metadata?.arm_termination as { faultClass?: StageFailureEvidence['fault_class']; qualitySignalEligible?: boolean } | undefined;
+      const failure = termination?.faultClass && normalizeChallengeStage(entry.stage) === record.challengeStage
+        ? { fault_class: termination.faultClass } : undefined;
       stageExecutions.push({
+        ...(providers.length ? { providerExecutions: redactProviderExecutions(providers, { salt }) } : {}),
+        ...(failure ? { failure } : {}),
         stage: entry.stage,
         executedModel: entry.executedModel,
         modelEvidence: entry.modelEvidence,
@@ -501,7 +513,7 @@ function resolveFeatureDir(
   if (meteredCost && record.issueId) {
     const located = hokusaiSubmissionTriggerDeps.locateOwnershipRows({
       repoDir: options.repoDir,
-      issueId: record.issueId,
+      issueId: evalTaskStateKey(record.issueId, record.challengeSide),
     });
     const file = located.files[0];
     if (file) {
@@ -620,7 +632,7 @@ async function meterForSubmission(
       worktreePath: options.worktreePath ?? options.repoDir,
       branchName: options.branchName ?? '',
       repoDir: options.repoDir,
-      issueId: record.issueId,
+      issueId: evalTaskStateKey(record.issueId, record.challengeSide),
       label: 'Hokusai submission',
     });
   } catch (error) {

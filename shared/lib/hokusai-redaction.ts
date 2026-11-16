@@ -10,6 +10,19 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import { loadUserConfig, saveUserConfig, type HokusaiUserConfig } from './hokusai-consent.ts';
 import type { HokusaiSubmission } from './hokusai-schema.ts';
+import { toSdkId } from './sdk-task-cost/ids.ts';
+import type { NativeProviderExecution } from '@hokusai/core';
+
+/** Provider facts use the same pseudonyms as the corresponding SDK stage cost. */
+export function redactProviderExecutions(rows: readonly NativeProviderExecution[], options: RedactionOptions = {}): NativeProviderExecution[] {
+  const salt = options.salt ?? getOrCreateRedactionSalt(options.configDir);
+  return rows.map(row => ({ ...structuredClone(row),
+    ...(row.observationId ? { observationId: hashIdentifier(row.observationId, salt) } : {}),
+    sessionRef: hashIdentifier(toSdkId(row.sessionRef), salt),
+    ownershipAttemptIds: row.ownershipAttemptIds.map(id => hashIdentifier(id, salt)),
+    responseId: row.responseId === null ? null : hashIdentifier(row.responseId, salt),
+  }));
+}
 
 export interface RedactionOptions {
   salt?: string;

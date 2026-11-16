@@ -1,0 +1,8 @@
+{
+  "provenance": "Reconstructed regression fixture for HOK-3495; not captured provider responses or a measured provider comparison.",
+  "generations": {
+    "gen-failed": { "totalCostUsd": 1.25, "providerName": "Host A", "modelPermaslug": "moonshotai/kimi-k3", "nativeTokensPrompt": 1000, "nativeTokensCached": 900, "nativeTokensCompletion": 10 },
+    "gen-success": { "totalCostUsd": 0.25, "providerName": "Host B", "modelPermaslug": "moonshotai/kimi-k3", "nativeTokensPrompt": 1000, "nativeTokensCached": 900, "nativeTokensCompletion": 10 },
+    "gen-pending": { "totalCostUsd": null, "providerName": "Host B" }
+  }
+}

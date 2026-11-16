@@ -238,6 +238,7 @@
  *   (`request | issue-override | repo-config | default`), so training can
  *   treat a defaulted budget as missing instead of a real constraint.
  *   Additive; legacy records without the field still validate.
+ * - **1.61.0**: HOK-3495 — retain observed OpenRouter host/billing evidence per owned native turn.
  * - **1.60.0**: HOK-3382 — the model-time budget is named for what it
  *   measures. `budgetExhausted.kind` gains `model_time` and `stopReason`
  *   gains `model_time_limit` (the `wall_clock*` spellings stay accepted for
@@ -298,7 +299,7 @@ export interface EvalBudgetExhaustion {
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.60.0';
+export const SCHEMA_VERSION = '1.61.0';
 
 /**
  * Machine-readable exploration source for an eval row.
@@ -2280,6 +2281,8 @@ export interface EvalRecord {
 
   /** Native workflow-cost attribution and coverage metadata. */
   workflowCostAttribution?: WorkflowCostAttribution;
+  /** Owned native turn evidence; upstream host observations are distinct from launch intent. */
+  nativeProviderExecutions?: import('./workflow-cost.ts').NativeProviderExecution[];
 
   /**
    * Normalized external-harness execution-economics records, one entry per

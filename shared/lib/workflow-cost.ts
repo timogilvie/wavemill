@@ -4,7 +4,7 @@
  * Eval records carry `workflowCost`, `workflowTokenUsage`,
  * `workflowCostAttribution` and `workflowCostStatus` in this shape, and a
  * dozen readers (aggregator, exports, reports) depend on it, so it stays here
- * unchanged. This module computes nothing: the one cost engine is
+ * unchanged. This module computes no cost: the one cost engine is
  * `@hokusai/costs`, measured over the task's owned sessions by
  * `sdk-task-cost/meter.ts` (whose projection produces a `WorkflowCostResult`).
  * Wavemill supplies only rates (`pricing/model-pricing.ts`) and ownership
@@ -15,6 +15,36 @@
  */
 
 import type { ModelPricing, ModelTokenUsage } from './pricing/model-pricing.ts';
+import type { NativeProviderExecution } from '@hokusai/core';
+export type { NativeProviderExecution } from '@hokusai/core';
+
+/** Re-enrichment may fill gaps, but a failed lookup cannot erase observations. */
+export function mergeNativeProviderExecutions(
+  previous: readonly NativeProviderExecution[] = [],
+  incoming: readonly NativeProviderExecution[] = [],
+): NativeProviderExecution[] {
+  const entries = new Map<string, NativeProviderExecution>();
+  for (const next of [...previous, ...incoming]) {
+    // Without a response id two turns cannot safely be identified as the same.
+    const key = next.responseId === null ? (next.observationId ?? `anonymous:${entries.size}`)
+      : JSON.stringify([next.sessionRef, next.transport, next.responseId]);
+    const old = entries.get(key);
+    entries.set(key, old ? {
+      ...old, ...next,
+      ...((next.requestedRouting ?? old.requestedRouting) !== undefined ? { requestedRouting: next.requestedRouting ?? old.requestedRouting } : {}),
+      ...((next.pricingSnapshot ?? old.pricingSnapshot) !== undefined ? { pricingSnapshot: next.pricingSnapshot ?? old.pricingSnapshot } : {}),
+      ...(next.usage && old.usage ? { usage: Object.fromEntries(Object.entries(next.usage).map(([key, value]) => [key, value ?? old.usage![key as keyof typeof old.usage]])) as NativeProviderExecution['usage'] } : {}),
+      requestedModel: next.requestedModel ?? old.requestedModel,
+      responseModel: next.responseModel ?? old.responseModel,
+      ownershipAttemptIds: [...new Set([...old.ownershipAttemptIds, ...next.ownershipAttemptIds])],
+      generation: next.generation ? {
+        ...old.generation, ...next.generation,
+        totalCostUsd: next.generation.totalCostUsd ?? old.generation?.totalCostUsd ?? null,
+      } : old.generation,
+    } : next);
+  }
+  return [...entries.values()];
+}
 
 export type WorkflowCostAttributionCoverage = 'complete' | 'partial' | 'unavailable' | 'known_zero';
 export type WorkflowCostAttributionReason =
@@ -63,6 +93,7 @@ export type WorkflowCostByHarness = Record<string, number | null>;
 
 /** Result from scanning workflow sessions. */
 export interface WorkflowCostResult {
+  nativeProviderExecutions?: NativeProviderExecution[];
   /** Total estimated cost in USD across all models and sessions. */
   totalCostUsd: number;
   /** Per-model token usage breakdown. */

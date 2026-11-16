@@ -685,7 +685,7 @@ await test('runPostCompletionEval persists the @hokusai/costs cross-harness tota
   assert.equal(record?.workflowCostAttribution?.source, 'multi');
   assert.deepEqual(record?.taskCostSummary?.map((summary) => summary.harness).sort(), ['claude-code', 'native']);
   // The post-completion hook never fetches OpenRouter exact charges.
-  assert.equal(meterInput?.exactPricing, undefined);
+  assert.deepEqual(meterInput?.exactPricing, {}, 'ordinary completion uses the same best-effort generation enrichment as terminal feedback');
   assert.equal(meterInput?.issueId, 'HOK-3237');
 });
 

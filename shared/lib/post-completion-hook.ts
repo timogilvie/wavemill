@@ -987,6 +987,7 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
         slug: stageArtifacts.featureSlug,
         pricingTable,
         label: 'Post-completion eval',
+        exactPricing: {},
       });
 
       // Normalized execution-economics collection (HOK-2958): fail-soft,

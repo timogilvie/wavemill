@@ -66,7 +66,9 @@ fake_native_session_stream() {
       --arg rid "gen-${issue}-${i}" '{
       seq: $seq, sessionId: $sessionId, timestamp: $ts,
       type: "assistant_message", model: $model, stopReason: "end_turn",
-      rawContent: [], replayContent: [], redacted: true, responseId: $rid
+      rawContent: [], replayContent: [], redacted: true, responseId: $rid,
+      usage: {input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110,
+        cost: {input: 0.001, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.001}}
     }' >> "$stream_file"
   done
 }
