@@ -1032,7 +1032,12 @@ export interface FeatureOutcomeDiagnostics {
   conflictingFields?: string[];
 }
 
-export type EvalFailureReason = 'eval_prompt_too_large' | 'pr_diff_unavailable';
+/**
+ * `eval_prompt_too_large` is retired (HOK-3493): the eval's own byte limit is
+ * gone, and an oversize change is now refused by the judge adapter's typed
+ * `context-window-exceeded`. No recorded eval ever carried the old value.
+ */
+export type EvalFailureReason = 'pr_diff_unavailable';
 
 export type EvalPromptComponentName =
   | 'taskPrompt'

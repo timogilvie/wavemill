@@ -27,6 +27,24 @@ if [[ "$prompt" != *"Candidate B diff:"* && -n "${JOURNEY_EVAL_FAULT:-}" && -f "
   else echo 'scripted eval harness unavailable' >&2; fi
   exit 1
 fi
+# HOK-3493: record what each judge call actually received. The incident was a
+# judge prompt carrying a regenerated validator's full text (3.8 MB), which the
+# CLI failed on with an empty-message is_error. Reproduce that failure if the
+# sentinel ever reaches a judge prompt; the journey asserts it never does.
+if [[ "${JOURNEY_LARGE_GENERATED_FILE:-0}" == 1 ]]; then
+  kind="other"
+  if [[ "$prompt" == *"### PR Review Output"* ]]; then kind="eval"
+  elif [[ "$prompt" == *"Candidate B diff:"* ]]; then kind="compare"
+  fi
+  sentinel=0
+  grep -qF 'JOURNEY_GENERATED_SENTINEL' <<<"$prompt" && sentinel=1
+  bytes=$(printf '%s' "$prompt" | wc -c | tr -d ' ')
+  printf '%s judge_call bytes=%s sentinel=%s kind=%s\n' "$(date -u +%FT%TZ)" "$bytes" "$sentinel" "$kind" \
+    >> "${FAKE_AGENT_LOG:-/dev/null}"
+  if [[ "$sentinel" == 1 ]]; then
+    exit 1
+  fi
+fi
 letter="A"
 if [[ "$prompt" == *"Candidate B diff:"* ]]; then
   candidate_b="${prompt##*Candidate B diff:}"

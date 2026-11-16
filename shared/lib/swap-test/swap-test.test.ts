@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { selectAdjudicatedPairs } from './pair-selection.ts';
 import { deriveChallengeType, deriveDifficultyBucket } from './strata.ts';
-import { hydrateCorpus } from './corpus.ts';
+import { hydrateCorpus, defaultFetchDiff } from './corpus.ts';
 import { runSwapTest } from './runner.ts';
 import { writeSwapTestReport } from './report.ts';
 import { wilsonInterval } from '../stats-utils.ts';
@@ -198,7 +198,6 @@ test('hydrateCorpus is idempotent and runner/report measure flips', async () => 
       pairIds: pairs.map((pair) => pair.pairId),
       judgeModel: 'judge',
       promptTemplate,
-      maxPromptBytes: 100000,
       dryRun: true,
     });
     const realAfterDryRun = await runSwapTest({
@@ -207,7 +206,6 @@ test('hydrateCorpus is idempotent and runner/report measure flips', async () => 
       pairIds: pairs.map((pair) => pair.pairId),
       judgeModel: 'judge',
       promptTemplate,
-      maxPromptBytes: 100000,
       deps: {
         async callLlm() {
           return {
@@ -228,7 +226,6 @@ test('hydrateCorpus is idempotent and runner/report measure flips', async () => 
       pairIds: pairs.map((pair) => pair.pairId),
       judgeModel: 'judge',
       promptTemplate,
-      maxPromptBytes: 100000,
       concurrency: 2,
       deps: {
         async callLlm(prompt) {
@@ -253,7 +250,6 @@ test('hydrateCorpus is idempotent and runner/report measure flips', async () => 
       pairIds: pairs.map((pair) => pair.pairId),
       judgeModel: 'judge',
       promptTemplate,
-      maxPromptBytes: 100000,
       deps: {
         async callLlm() {
           throw new Error('should skip existing rows');
@@ -272,8 +268,55 @@ test('hydrateCorpus is idempotent and runner/report measure flips', async () => 
   }
 });
 
-test('wilsonInterval handles empty and known proportions', () => {
-  assert.deepEqual(wilsonInterval(0, 0), { p: null, lo: null, hi: null });
+test('corpus diff hydration maps the one PR-diff reader onto the ledger (HOK-3493)', () => {
+  const tooLarge = Object.assign(
+    new Error(`HTTP 406: Sorry, the diff exceeded the maximum number of files (300).\nPullRequest.diff too_large`),
+    { stderr: 'PullRequest.diff too_large' },
+  );
+  const fetchDiff = defaultFetchDiff('/repo', 1_000, {
+    runGh: (args) => {
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return JSON.stringify({
+          url: 'https://github.com/org/repo/pull/1',
+          headRefName: 'feature',
+          baseRefName: 'main',
+          headRefOid: 'head-sha',
+        });
+      }
+      if (args[0] === 'pr' && args[1] === 'diff') throw tooLarge;
+      throw new Error(`unexpected gh ${args.join(' ')}`);
+    },
+    runGit: () => {
+      throw new Error('fetch failed');
+    },
+  });
+
+  // An unavailable diff that is too large is the ledger's `too_large`, not an error.
+  assert.equal(fetchDiff('https://github.com/org/repo/pull/1'), 'too_large');
+
+  // A readable local diff is the reader's text, as a Buffer.
+  const local = defaultFetchDiff('/repo', 1_000, {
+    runGh: () =>
+      JSON.stringify({
+        url: 'https://github.com/org/repo/pull/1',
+        headRefName: 'feature',
+        baseRefName: 'main',
+        headRefOid: 'head-sha',
+      }),
+    runGit: (args) => {
+      if (args[0] === 'fetch') return '';
+      if (args[0] === 'cat-file') return '';
+      if (args[0] === 'merge-base') return 'base-sha';
+      if (args[0] === 'diff') return 'diff --git a/a.ts b/a.ts\n+x\n';
+      throw new Error(`unexpected git ${args.join(' ')}`);
+    },
+  });
+  const buffer = local('https://github.com/org/repo/pull/1');
+  assert.ok(Buffer.isBuffer(buffer));
+  assert.match(buffer.toString('utf8'), /\+x/);
+});
+
+test('wilsonInterval handles empty and known proportions', () => {  assert.deepEqual(wilsonInterval(0, 0), { p: null, lo: null, hi: null });
   const interval = wilsonInterval(5, 10);
   assert.equal(interval.p, 0.5);
   assert.ok(interval.lo! > 0.23 && interval.lo! < 0.24);

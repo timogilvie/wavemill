@@ -443,3 +443,20 @@ test('eval job evidence remains unattributed and genuine model faults require id
   assert.equal(classifyFailure({ ...fault, executionEvidence: { source: 'provider-response', model: '' } }).attribution, 'unattributed');
   assert.equal(classifyFailure({ ...fault, executionEvidence: { source: 'provider-response', model: 'verified-model' } }).attribution, 'model');
 });
+
+// protects: HOK-3493 — an eval change that cannot fit the judge is a typed,
+// terminal refusal; retrying the same oversize prompt cannot change the outcome.
+test('HOK-3493: an eval job refused for an oversize change classifies terminal, not retryable', () => {
+  const refused = classifyFailure({
+    stage: 'eval',
+    challengeArm: true,
+    job: { reason: 'context-window-exceeded', exitCode: 1, excerpt: 'Model input refused: prompt exceeds window' },
+  });
+  assert.equal(refused.failureKind, 'context-window-exceeded');
+  assert.equal(refused.class, 'terminal');
+  // The old generic reason keeps retrying; this fix must not have moved the seam.
+  assert.equal(
+    classifyFailure({ stage: 'eval', challengeArm: true, job: { reason: 'eval_not_persisted', exitCode: 1, excerpt: '' } }).class,
+    'retryable',
+  );
+});

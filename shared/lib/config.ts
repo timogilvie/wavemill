@@ -199,8 +199,6 @@ export interface EvalConfig {
   successThreshold?: number;
   postMergeTimeoutSeconds?: number;
   mintEligibility?: MintEligibilityConfig;
-  maxPromptBytes?: number;
-  oversizePolicy?: 'fail' | 'truncate';
 }
 
 export interface EvalContextUpdatesConfig {

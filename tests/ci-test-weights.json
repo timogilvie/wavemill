@@ -577,7 +577,6 @@
       "shared/lib/eval-corpus-migrator.test.ts": 395,
       "shared/lib/eval-deduplication.test.ts": 146,
       "shared/lib/eval-orchestrator.test.ts": 5138,
-      "shared/lib/eval-prompt-size.test.ts": 155,
       "shared/lib/eval-record-builder.test.ts": 927,
       "shared/lib/eval-rejected-store.test.ts": 248,
       "shared/lib/eval-skip-guard.test.ts": 145,

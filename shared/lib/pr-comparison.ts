@@ -19,6 +19,13 @@ import { errorMessage } from './error-utils.ts';
 import { fillPromptTemplate } from './prompt-utils.ts';
 import { callClaude, parseJsonFromLLM, type LLMCallOptions, type LLMCallResult } from './llm-cli.ts';
 import { hashString } from './prompt-hash.ts';
+import { adapterForProvider } from './model-adapters/resolve-adapter.ts';
+import type { TransportAdapter } from './model-adapters/transport-adapter.ts';
+import {
+  buildBudgetedChangeInput,
+  ChangeInputRefusedError,
+  type ReviewInputResult,
+} from './review-input-budget.ts';
 
 export type PresentationOrder = 'primary-first' | 'challenger-first';
 
@@ -710,115 +717,56 @@ function sideView(
       };
 }
 
-function byteLength(value: string): number {
-  return Buffer.byteLength(value, 'utf8');
-}
-
-function prefixWithinByteBudget(text: string, maxBytes: number): string {
-  if (maxBytes <= 0) return '';
-  if (byteLength(text) <= maxBytes) return text;
-
-  let low = 0;
-  let high = text.length;
-  let best = '';
-  while (low <= high) {
-    const mid = Math.floor((low + high) / 2);
-    const candidate = text.slice(0, mid);
-    if (byteLength(candidate) <= maxBytes) {
-      best = candidate;
-      low = mid + 1;
-    } else {
-      high = mid - 1;
-    }
-  }
-  return best;
-}
-
-function truncateDiffForPrompt(text: string, label: string, maxBytes: number): string {
-  if (byteLength(text) <= maxBytes) return text;
-
-  let kept = prefixWithinByteBudget(text, maxBytes);
-  for (let i = 0; i < 8; i++) {
-    const marker = `\n[... TRUNCATED ${label} diff from ${byteLength(text)} bytes to fit comparison prompt ...]\n`;
-    const remainingForContent = maxBytes - byteLength(marker);
-    const nextKept = prefixWithinByteBudget(text, remainingForContent);
-    if (nextKept === kept) {
-      return `${kept}${marker}`;
-    }
-    kept = nextKept;
-  }
-
-  return kept;
-}
-
-export function buildCappedComparisonPrompt(
-  input: Parameters<typeof buildComparisonPrompt>[0],
-  maxPromptBytes: number,
-): { prompt: string; truncated: boolean; originalBytes: number; finalBytes: number } {
-  const originalPrompt = buildComparisonPrompt(input);
-  const originalBytes = byteLength(originalPrompt);
-  if (!Number.isFinite(maxPromptBytes) || maxPromptBytes <= 0 || originalBytes <= maxPromptBytes) {
-    return { prompt: originalPrompt, truncated: false, originalBytes, finalBytes: originalBytes };
-  }
-
-  // Account for shared context in the scaffold calculation so diffs cannot be
-  // crowded out. The scaffold includes workflow context, stage evidence, and now
-  // the shared pre-fork prefix when present.
-  const sharedContextBytes = byteLength(input.sharedContext ?? '');
-  const scaffoldBytes = byteLength(buildComparisonPrompt({
+/**
+ * Build the comparison judge prompt with every change budgeted to the judge
+ * (HOK-3493).
+ *
+ * A comparison prompt carries up to three changes: the shared pre-fork
+ * context, and the primary and challenger diffs. They go through the one
+ * change-input builder with the judge adapter's budget, split evenly across
+ * the non-empty ones ({@link splitInputBudget}). Even shares are deliberate:
+ * a proportional split would let one arm's rendering depend on the other
+ * arm's size, which breaks blind fairness and lets the A/B presentation order
+ * change an arm's input (HOK-3156 route invariant).
+ *
+ * Comparison runs in the mill's base checkout, which is not at either PR head,
+ * so no `readFile` is passed: the input depends only on the diff and the
+ * budget, never on I/O.
+ */
+export function buildBudgetedComparisonPrompt(
+  input: ComparisonPromptInput,
+  adapter: TransportAdapter | null,
+): {
+  prompt: string;
+  inputs: { primary: ReviewInputResult; challenger: ReviewInputResult; shared: ReviewInputResult | null };
+  withinBudget: boolean;
+} {
+  const reservedPrompt = buildComparisonPrompt({
     ...input,
     primaryDiff: '',
     challengerDiff: '',
-  }));
-  let availableDiffBytes = Math.max(0, maxPromptBytes - scaffoldBytes - sharedContextBytes);
-  const primaryBytes = byteLength(input.primaryDiff);
-  const challengerBytes = byteLength(input.challengerDiff);
-  const totalDiffBytes = primaryBytes + challengerBytes;
-  const primaryBudget = totalDiffBytes > 0
-    ? Math.floor(availableDiffBytes * (primaryBytes / totalDiffBytes))
-    : 0;
-  const challengerBudget = Math.max(0, availableDiffBytes - primaryBudget);
-
-  let prompt = buildComparisonPrompt({
-    ...input,
-    primaryDiff: truncateDiffForPrompt(
-      input.primaryDiff,
-      input.presentationOrder === 'primary-first' ? 'candidate A' : 'candidate B',
-      primaryBudget,
-    ),
-    challengerDiff: truncateDiffForPrompt(
-      input.challengerDiff,
-      input.presentationOrder === 'primary-first' ? 'candidate B' : 'candidate A',
-      challengerBudget,
-    ),
+    sharedContext: '',
   });
+  const sharedDiff = input.sharedContext ?? '';
+  const parts =
+    (input.primaryDiff ? 1 : 0) + (input.challengerDiff ? 1 : 0) + (sharedDiff ? 1 : 0);
+  const build = (diff: string) => buildBudgetedChangeInput({ diff, adapter, reservedPrompt, parts });
+  const primary = build(input.primaryDiff);
+  const challenger = build(input.challengerDiff);
+  const shared = sharedDiff ? build(sharedDiff) : null;
 
-  while (byteLength(prompt) > maxPromptBytes && availableDiffBytes > 0) {
-    availableDiffBytes = Math.floor(availableDiffBytes * 0.9);
-    const nextPrimaryBudget = totalDiffBytes > 0
-      ? Math.floor(availableDiffBytes * (primaryBytes / totalDiffBytes))
-      : 0;
-    const nextChallengerBudget = Math.max(0, availableDiffBytes - nextPrimaryBudget);
-    prompt = buildComparisonPrompt({
-      ...input,
-      primaryDiff: truncateDiffForPrompt(
-        input.primaryDiff,
-        input.presentationOrder === 'primary-first' ? 'candidate A' : 'candidate B',
-        nextPrimaryBudget,
-      ),
-      challengerDiff: truncateDiffForPrompt(
-        input.challengerDiff,
-        input.presentationOrder === 'primary-first' ? 'candidate B' : 'candidate A',
-        nextChallengerBudget,
-      ),
-    });
-  }
+  const prompt = buildComparisonPrompt({
+    ...input,
+    primaryDiff: primary.text,
+    challengerDiff: challenger.text,
+    sharedContext: shared ? shared.text : '',
+  });
 
   return {
     prompt,
-    truncated: true,
-    originalBytes,
-    finalBytes: byteLength(prompt),
+    inputs: { primary, challenger, shared },
+    withinBudget:
+      primary.withinBudget && challenger.withinBudget && (shared ? shared.withinBudget : true),
   };
 }
 
@@ -832,9 +780,13 @@ export type BlindJudgeCall = (
 export interface BlindJudgeInput extends ComparisonPromptInput {
   promptTemplate: string;
   model: string;
-  maxPromptBytes: number;
   deps?: {
     callLlm?: BlindJudgeCall;
+    /**
+     * The judge's transport adapter (HOK-3493). Defaults to the Claude CLI
+     * adapter for `model`; injectable so replay tests pin the budget.
+     */
+    adapter?: TransportAdapter | null;
   };
 }
 
@@ -845,11 +797,10 @@ export interface BlindJudgeOutcome {
   judgeModel: string;
   costUsd: number | null;
   usage?: LLMCallResult['usage'];
-  truncated: boolean;
-  promptBytes: {
-    original: number;
-    final: number;
-  };
+  /** Judge prompt size in bytes. */
+  promptBytes: number;
+  /** How many change files were summarised rather than shown verbatim. */
+  summarisedFiles: number;
   retriedStricterJson: boolean;
 }
 
@@ -865,16 +816,25 @@ Return a raw JSON object with no code fences, no comments, and no JavaScript syn
  * Run the production blind PR comparison judge.
  *
  * This is extracted from tools/compare-prs.ts so replay harnesses measure the
- * same prompt, cap, model call, validation, side mapping, and stricter-JSON
- * retry path as the production adjudicator.
+ * same prompt builder, model call, validation, side mapping, and stricter-JSON
+ * retry path as the production adjudicator. The change input is built through
+ * {@link buildBudgetedComparisonPrompt}; a change that cannot fit is refused
+ * with the adapter's typed error (HOK-3493) and the judge is never called.
  */
 export async function runBlindJudge(input: BlindJudgeInput): Promise<BlindJudgeOutcome> {
-  const cappedPrompt = buildCappedComparisonPrompt(input, input.maxPromptBytes);
+  const adapter = input.deps?.adapter === undefined
+    ? adapterForProvider('claude', { model: input.model })
+    : input.deps.adapter;
+  const built = buildBudgetedComparisonPrompt(input, adapter);
+  if (!built.withinBudget) {
+    const refusal = adapter?.preflight(built.prompt);
+    if (refusal) throw new ChangeInputRefusedError(refusal);
+  }
   const callLlm = input.deps?.callLlm ?? callClaude;
-  let successfulJudgePrompt = cappedPrompt.prompt;
+  let successfulJudgePrompt = built.prompt;
   let retriedStricterJson = false;
 
-  let response = await callLlm(cappedPrompt.prompt, {
+  let response = await callLlm(built.prompt, {
     mode: 'sync',
     model: input.model,
     timeout: 180_000,
@@ -894,7 +854,7 @@ export async function runBlindJudge(input: BlindJudgeInput): Promise<BlindJudgeO
     }
 
     retriedStricterJson = true;
-    const stricterPrompt = `${cappedPrompt.prompt}\n\n${STRICTER_JSON_RETRY_SUFFIX}`;
+    const stricterPrompt = `${built.prompt}\n\n${STRICTER_JSON_RETRY_SUFFIX}`;
     response = await callLlm(stricterPrompt, {
       mode: 'sync',
       model: input.model,
@@ -915,11 +875,10 @@ export async function runBlindJudge(input: BlindJudgeInput): Promise<BlindJudgeO
     judgeModel: input.model,
     costUsd: response.costUsd ?? null,
     usage: response.usage,
-    truncated: cappedPrompt.truncated,
-    promptBytes: {
-      original: cappedPrompt.originalBytes,
-      final: cappedPrompt.finalBytes,
-    },
+    promptBytes: Buffer.byteLength(successfulJudgePrompt, 'utf8'),
+    summarisedFiles:
+      built.inputs.primary.summarisedCount + built.inputs.challenger.summarisedCount
+      + (built.inputs.shared?.summarisedCount ?? 0),
     retriedStricterJson,
   };
 }

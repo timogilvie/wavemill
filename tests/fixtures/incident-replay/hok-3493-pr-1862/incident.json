@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "incident-evidence/1",
+  "issue": "HOK-3493",
+  "pr": 1862,
+  "prTitle": "HOK-3382: Recover hung native harnesses through the controller",
+  "capturedAt": "2026-11-15T19:52:00Z",
+  "summary": "A green, wm:ready PR did not merge until an operator ran its eval by hand and edited task state: the eval judge prompt was 3,810,241 bytes (3,728,528 of them the gh pr diff), all three judge candidates failed with an empty is_error, and the mill retried the identical prompt without a typed failure.",
+  "evalPromptSize": {
+    "line": "[eval] prompt_size {\"totalBytes\":3810241,\"limitBytes\":9437184,\"perComponentBytes\":{\"taskPrompt\":7042,\"prReviewOutput\":3728528,\"interventionMetadata\":112,\"taskPacket\":64231,\"planContent\":10562,\"selfReviewSummary\":6314,\"templateScaffold\":3452},\"policy\":\"fail\",\"action\":\"pass\"}",
+    "totalBytes": 3810241,
+    "limitBytes": 9437184,
+    "prReviewOutputBytes": 3728528,
+    "action": "pass"
+  },
+  "evalJob": {
+    "reason": "eval_not_persisted",
+    "classification": "retryable",
+    "attribution": "unattributed",
+    "attempts": 3,
+    "attemptTimes": ["2026-11-15T19:52:00Z", "2026-11-15T19:54:00Z", "2026-11-15T19:56:00Z"],
+    "candidateFailure": "claude CLI returned is_error with no message",
+    "afterExhaustion": "challenge pair parked as manual comparison needed"
+  },
+  "diffSources": {
+    "evalAskedGitHub": {
+      "command": "gh pr diff 1862",
+      "bytes": 3728528,
+      "note": "GitHub ignores .gitattributes -diff and returns the full text of both regenerated validators."
+    },
+    "localGit": {
+      "command": "git diff 6468dba3^ 6468dba3",
+      "bytes": 216200,
+      "file": "local-git.diff",
+      "binaryFiles": [
+        "shared/validators/eval-record.validator.cjs",
+        "shared/validators/wavemill-config.validator.cjs"
+      ],
+      "note": "Local git honours .gitattributes -diff, so each regenerated validator is one `Binary files ... differ` line."
+    }
+  },
+  "operatorUnstick": {
+    "action": "re-run tools/run-eval-hook.ts with WAVEMILL_PR_DIFF_MAX_BYTES=1500000 (forces the local-git fallback), then set evalCompleted on the task row and clear the challenge-eval-hard retry bucket"
+  }
+}

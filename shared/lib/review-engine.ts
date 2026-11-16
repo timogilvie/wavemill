@@ -43,10 +43,8 @@ import type {
   ReviewToolReport,
   TransportAdapter,
 } from './model-adapters/transport-adapter.ts';
-import { estimateTokensDefault } from './model-adapters/token-estimator.ts';
 import {
-  buildReviewInput,
-  reviewInputBudgetFromAdapter,
+  buildBudgetedChangeInput,
   worktreeFileReader,
   type ReviewInputResult,
 } from './review-input-budget.ts';
@@ -481,14 +479,16 @@ export function fillReviewPromptTemplate(
 /**
  * Fill a review template with the diff budgeted to the reviewer (HOK-3249).
  *
- * The budget is what the reviewer's adapter leaves after the template, plan,
- * task packet and guidance (the prompt filled with an empty diff) plus
- * `reservedTokens` the transport adds on top (the native system prompt and
- * tool turns). Data/fixture/generated files that do not fit are summarised
- * deterministically; source and tests stay verbatim. With no adapter (a model
- * the registry cannot place) the diff is unbounded, but oversized data files
- * are still summarised. A diff whose code alone cannot fit is returned over
- * budget for the adapter's preflight to refuse as `context-exceeded`.
+ * Delegates to {@link buildBudgetedChangeInput} (HOK-3493), so review, eval and
+ * comparison share one change-input builder. The budget is what the reviewer's
+ * adapter leaves after the template, plan, task packet and guidance (the prompt
+ * filled with an empty diff) plus `reservedTokens` the transport adds on top
+ * (the native system prompt and tool turns). Data/fixture/generated files that
+ * do not fit are summarised deterministically; source and tests stay verbatim.
+ * With no adapter (a model the registry cannot place) the diff is unbounded,
+ * but oversized data files are still summarised. A diff whose code alone cannot
+ * fit is returned over budget for the adapter's preflight to refuse as
+ * `context-exceeded`.
  */
 export function buildBudgetedReviewPrompt(input: {
   template: string;
@@ -500,10 +500,13 @@ export function buildBudgetedReviewPrompt(input: {
 }): { prompt: string; reviewInput: ReviewInputResult } {
   const { template, context, skipDesignContext, adapter } = input;
   const reservedPrompt = fillReviewPromptTemplate(template, { ...context, diff: '' }, skipDesignContext);
-  const budget = adapter
-    ? reviewInputBudgetFromAdapter(adapter, reservedPrompt, input.reservedTokens)
-    : { countTokens: estimateTokensDefault };
-  const reviewInput = buildReviewInput(context.diff ?? '', budget, { readFile: worktreeFileReader(input.repoDir) });
+  const reviewInput = buildBudgetedChangeInput({
+    diff: context.diff ?? '',
+    adapter,
+    reservedPrompt,
+    reservedTokens: input.reservedTokens,
+    readFile: worktreeFileReader(input.repoDir),
+  });
   return {
     prompt: fillReviewPromptTemplate(template, { ...context, diff: reviewInput.text }, skipDesignContext),
     reviewInput,

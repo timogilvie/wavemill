@@ -1316,6 +1316,10 @@ run_pr_closed_eval() {
       fi
       printf 'Eval process exited with code %s\n' "$rc"
       persisted=$(jq -r '.persisted // false' "$result_path" 2>/dev/null || echo "false")
+      # HOK-3493: the hook records the failure kind (an adapter's typed
+      # `context-window-exceeded` for a change that cannot fit the judge), so
+      # read it before removing the result file.
+      result_reason=$(jq -r '.reason // ""' "$result_path" 2>/dev/null || echo "")
       rm -f "$result_path"
       if [[ "$persisted" == "true" ]]; then
         # HOK-3125: existing-entry guard so the async completion cannot
@@ -1330,6 +1334,7 @@ run_pr_closed_eval() {
         # audit-only postReapEval.failed outcome in terminal history.
         local reason="eval_not_persisted" tail_text decision_json
         local decision_class decision_kind decision_attribution decision_next_action
+        [[ -n "$result_reason" ]] && reason="$result_reason"
         [[ "$rc" == "124" ]] && reason="timed_out"
         tail_text=$(tail -c 2000 "$eval_log" 2>/dev/null || echo "")
         decision_json="$(eval_failure_disposition "$issue" "$reason" "$rc" "$tail_text" false)"

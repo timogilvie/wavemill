@@ -1110,21 +1110,6 @@
                     "default": 600,
                     "description": "Wall-clock timeout in seconds for detached post-merge eval hook processes. Defaults to 600 when omitted."
                 },
-                "maxPromptBytes": {
-                    "type": "integer",
-                    "minimum": 1024,
-                    "default": 9437184,
-                    "description": "Maximum UTF-8 byte size for an eval judge prompt before failing fast or truncating."
-                },
-                "oversizePolicy": {
-                    "type": "string",
-                    "enum": [
-                        "fail",
-                        "truncate"
-                    ],
-                    "default": "fail",
-                    "description": "How eval handles prompts larger than maxPromptBytes."
-                },
                 "mintEligibility": {
                     "type": "object",
                     "description": "Coverage gates for minting Wavemill router benchmark results into downstream eligibility-sensitive flows.",

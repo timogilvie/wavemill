@@ -42,7 +42,7 @@ The tool resolves workflow context in priority order:
 
 It then fetches:
 - Linear issue details (identifier, title, description)
-- PR diff via `gh pr diff`, falling back to a local `git diff` when GitHub refuses an oversized PR diff
+- PR diff via a local `git diff` against the PR head (which honours `.gitattributes -diff`, so generated files arrive as git's binary line), falling back to `gh pr diff` only when the local objects cannot be fetched
 - Review comments from GitHub API
 
 ### 2) Intervention Detection

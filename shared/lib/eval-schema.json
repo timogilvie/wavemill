@@ -621,7 +621,6 @@
     "failureReason": {
       "type": "string",
       "enum": [
-        "eval_prompt_too_large",
         "pr_diff_unavailable"
       ],
       "description": "Stable machine-readable eval failure reason for fast-fail records."

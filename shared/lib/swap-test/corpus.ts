@@ -1,8 +1,9 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import type { StoredChallengeComparison } from '../challenge-comparison.ts';
 import { LOSER_PATCH_MAX_BYTES } from '../pr-comparison.ts';
+import { fetchPrDiff, type PrDiffFetchDeps } from '../pr-diff-provider.ts';
 import { errorMessage } from '../error-utils.ts';
 import { selectChallengeEvalScore } from '../challenge-score-selector.ts';
 import type { EvalRecord } from '../eval-schema.ts';
@@ -99,31 +100,20 @@ function contextPath(evalsDir: string, pairId: string): string {
   return join(artifactDir(evalsDir, pairId), 'swap-test-context.json');
 }
 
-function defaultFetchDiff(repoDir: string, maxBytes: number): (prUrl: string) => Buffer | 'too_large' {
+/**
+ * The corpus' diff reader: a thin adapter over the one PR-diff reader
+ * (HOK-3493). `deps` exists so the mapping is testable; production passes none.
+ */
+export function defaultFetchDiff(
+  repoDir: string,
+  maxBytes: number,
+  deps?: PrDiffFetchDeps,
+): (prUrl: string) => Buffer | 'too_large' {
   return (prUrl) => {
-    const result = spawnSync('gh', ['pr', 'diff', prUrl], {
-      cwd: repoDir,
-      encoding: 'buffer',
-      maxBuffer: maxBytes + 1,
-      timeout: 120_000,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const spawnErrorCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
-    if (result.error && (result.error.message.includes('maxBuffer') || spawnErrorCode === 'ENOBUFS')) {
-      return 'too_large';
-    }
-    if (result.error) {
-      throw new Error(result.error.message);
-    }
-    if (result.signal === 'SIGTERM') {
-      throw new Error('gh pr diff timed out after 120000ms');
-    }
-    if (result.status !== 0) {
-      const stderr = Buffer.isBuffer(result.stderr) ? result.stderr.toString('utf-8').trim() : '';
-      throw new Error(stderr || `gh pr diff exited ${result.status}`);
-    }
-    const stdout = Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.from(result.stdout ?? '');
-    return stdout.length > maxBytes ? 'too_large' : stdout;
+    const result = fetchPrDiff(prUrl, repoDir, { maxBytes, ...deps });
+    if (result.kind === 'diff') return Buffer.from(result.text, 'utf8');
+    if (result.reason === 'gh_too_large' || result.reason === 'buffer_overrun') return 'too_large';
+    throw new Error(result.detail);
   };
 }
 
