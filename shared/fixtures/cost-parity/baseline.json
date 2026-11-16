@@ -543,6 +543,19 @@
             "outputTokens": 20000
           }
         },
+        "nativeProviderExecutions": [
+          {
+            "generation": null,
+            "ownershipAttemptIds": [
+              "coding@nohead#1735689600"
+            ],
+            "requestedModel": "qwen-3-coder",
+            "responseId": "gen-3237",
+            "responseModel": null,
+            "sessionRef": "wm-coding-HOK-3237",
+            "transport": "openrouter"
+          }
+        ],
         "pricingUsed": {
           "claude-opus-4-7": {
             "inputCostPerMTok": 15,
@@ -615,6 +628,19 @@
             "outputTokens": 100
           }
         },
+        "nativeProviderExecutions": [
+          {
+            "generation": null,
+            "ownershipAttemptIds": [
+              "coding@nohead#1735689600"
+            ],
+            "requestedModel": "test-model",
+            "responseId": "resp-4",
+            "responseModel": null,
+            "sessionRef": "native-4",
+            "transport": "test"
+          }
+        ],
         "pricingUsed": {
           "test-model": {
             "inputCostPerMTok": 0,
@@ -671,6 +697,19 @@
             "outputTokens": 100
           }
         },
+        "nativeProviderExecutions": [
+          {
+            "generation": null,
+            "ownershipAttemptIds": [
+              "coding@nohead#1735689600"
+            ],
+            "requestedModel": "gpt-4o",
+            "responseId": "resp-2",
+            "responseModel": null,
+            "sessionRef": "native-2",
+            "transport": "openai"
+          }
+        ],
         "pricingUsed": {
           "gpt-4o": {
             "inputCostPerMTok": 5,
@@ -728,6 +767,19 @@
             "outputTokens": 100
           }
         },
+        "nativeProviderExecutions": [
+          {
+            "generation": null,
+            "ownershipAttemptIds": [
+              "coding@nohead#1735689600"
+            ],
+            "requestedModel": "gpt-4o",
+            "responseId": "resp-1",
+            "responseModel": null,
+            "sessionRef": "native-1",
+            "transport": "openai"
+          }
+        ],
         "pricingUsed": {
           "gpt-4o": {
             "inputCostPerMTok": 5,
@@ -785,6 +837,19 @@
             "outputTokens": 100
           }
         },
+        "nativeProviderExecutions": [
+          {
+            "generation": null,
+            "ownershipAttemptIds": [
+              "coding@nohead#1735689600"
+            ],
+            "requestedModel": "gpt-4o",
+            "responseId": "resp-5",
+            "responseModel": null,
+            "sessionRef": "native-5",
+            "transport": "openai"
+          }
+        ],
         "pricingUsed": {
           "gpt-4o": {
             "inputCostPerMTok": 5,
@@ -839,6 +904,19 @@
             "outputTokens": 100
           }
         },
+        "nativeProviderExecutions": [
+          {
+            "generation": null,
+            "ownershipAttemptIds": [
+              "coding@nohead#1735689600"
+            ],
+            "requestedModel": "gpt-4o",
+            "responseId": "resp-5",
+            "responseModel": null,
+            "sessionRef": "native-5",
+            "transport": "openai"
+          }
+        ],
         "pricingUsed": {
           "gpt-4o": {
             "inputCostPerMTok": 5,
@@ -894,6 +972,19 @@
             "outputTokens": 100
           }
         },
+        "nativeProviderExecutions": [
+          {
+            "generation": null,
+            "ownershipAttemptIds": [
+              "coding@nohead#1735689600"
+            ],
+            "requestedModel": "unknown-model",
+            "responseId": "resp-3",
+            "responseModel": null,
+            "sessionRef": "native-3",
+            "transport": "anthropic"
+          }
+        ],
         "pricingUsed": {},
         "sessionCount": 1,
         "status": "success",

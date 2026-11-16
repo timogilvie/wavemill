@@ -326,8 +326,9 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
       });
     }
 
+    const nativeProviderExecutions = providerExecutions(nativeSessions, owned, exactGenerations);
     const outcome = { ...projectReportToWorkflowCost(report, sdk.pricingUsedFor(report, input.pricingTable)), byKind,
-      nativeProviderExecutions: providerExecutions(nativeSessions, owned, exactGenerations) };
+      ...(nativeProviderExecutions.length ? { nativeProviderExecutions } : {}) };
     const harnesses = Object.entries(outcome.byHarness ?? {})
       .map(([harness, usd]) => `${harness}: ${usd === null ? 'unresolved' : `$${usd.toFixed(4)}`}`)
       .join('; ');
