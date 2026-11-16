@@ -94,6 +94,7 @@ All business logic lives in `shared/lib/` for reusability across CLI tools, comm
 - `prompt-utils.ts` - Prompt template filling
 - **Output reservation (HOK-3448)** — `AdapterLimits.reservedOutputTokens` is context space for input preflight, distinct from the explicit invocation cap `AdapterInvokeOptions.maxOutputTokens`. Guard: `tools/check-output-reservation.ts`. → [docs/invariants/output-reservation.md](docs/invariants/output-reservation.md)
 - **Review result (HOK-3448)** — `claude-cli-output.ts` is the only interpreter of Claude CLI stdout; `review-engine.ts` never decides review completion from text shape. Guard: `tools/check-review-report-boundary.ts`. → [docs/invariants/review-result.md](docs/invariants/review-result.md)
+- **Release Readiness grammar (HOK-3499)** — `extractReleaseReadiness` in `task-packet-utils.ts` is the only parser; the plan gate, validator and consumer all read it, and a missing field is reported, never defaulted. Guard: `tools/check-release-readiness-grammar.ts`. → [docs/invariants/release-readiness-grammar.md](docs/invariants/release-readiness-grammar.md)
 - **Model transport (HOK-3460)** — Model CLI transport stays in `shared/lib/model-adapters/`. Guard: `tools/check-model-transport.ts`. → [docs/invariants/model-transport.md](docs/invariants/model-transport.md)
 - `llm-cli.ts` - `callLLM` policy (candidate ladder, retry/backoff, quota state, fallback events); transport runs through `model-adapters/`
 - `string-utils.ts` - String manipulation
