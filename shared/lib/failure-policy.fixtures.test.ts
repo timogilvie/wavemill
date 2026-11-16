@@ -245,6 +245,23 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     expectedClass: 'code-failure',
   },
   {
+    // CI run 43936781766: the abbreviated SHA's leading "502" matched the
+    // HTTP-status transient override, so the conflict retried as transient.
+    name: 'tend rebase conflict whose commit SHA starts with 502',
+    evidence: { stage: 'tend', detail: 'CONFLICT (content): Merge conflict in generated.txt\nerror: could not apply 502f14d... JRN-4: regenerate generated.txt' },
+    expectedClass: 'code-failure',
+  },
+  {
+    name: 'tend rebase conflict whose commit SHA starts with 504',
+    evidence: { stage: 'tend', failureKind: 'rebase-conflict', detail: 'error: could not apply 504abcd... HOK-1: change' },
+    expectedClass: 'code-failure',
+  },
+  {
+    name: 'tend push hit an HTTP 503',
+    evidence: { stage: 'tend', failureKind: 'rebase-conflict', detail: 'error: RPC failed; HTTP 503 curl 22 The requested URL returned error: 503' },
+    expectedClass: 'retryable',
+  },
+  {
     name: 'tend force-with-lease rejected (someone pushed)',
     evidence: { stage: 'tend', detail: ' ! [rejected]        HEAD -> task/x (stale info)\nerror: failed to push some refs' },
     expectedClass: 'retryable',
