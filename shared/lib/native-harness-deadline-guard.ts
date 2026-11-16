@@ -27,7 +27,7 @@ export const NATIVE_HARNESS_DEADLINE_GUARD: GuardSpec = {
   allowlistFile: 'tools/native-harness-deadline-allowlist.txt',
   invariantPaths: [
     'shared/lib/native-harness-deadline-guard.ts',
-    'tools/check-native-harness-deadlines.ts',
+    'tools/check-native-harness-deadlines.ts', // install-paths: allow invariantPaths list, not an argv target
   ],
   patterns: [
     {
