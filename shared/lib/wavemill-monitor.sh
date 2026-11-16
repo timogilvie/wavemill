@@ -4685,7 +4685,7 @@ _stage_disposition_act_now() {
         # permitting a concurrent relaunch.
         wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" \
           --ack "$recovery_claim" --outcome reassess >/dev/null
-        log_warn "$issue → ${stage} harness hung in ${hold_tool}, but teardown is incomplete; retaining running result for reassessment"
+        log_warn "$issue → ${stage} harness hung in ${hold_tool}, but teardown is incomplete — retaining running result for reassessment"
         return 0
       fi
       _stage_stamp_settled_without_result "$issue" "$feature_dir" "$result_stage" "harness-hung" \
