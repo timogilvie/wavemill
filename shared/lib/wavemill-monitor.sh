@@ -4678,13 +4678,21 @@ _stage_disposition_act_now() {
       # now through the one teardown seam (it also records the exit fact).
       stage_agent_teardown "$issue" "$feature_dir" "harness-hung" \
         --phase "$stage" --worktree "$wt_dir" --no-settle || teardown_rc=$?
-      if (( teardown_rc != 0 )); then ack_outcome=reassess; fi
+      if (( teardown_rc != 0 )); then
+        # The old attempt may still own the window.  Do not make its running
+        # result retryable until the one teardown seam has proved it stopped:
+        # releasing the claim for reassessment preserves the fence without
+        # permitting a concurrent relaunch.
+        wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" \
+          --ack "$recovery_claim" --outcome reassess >/dev/null
+        log_warn "$issue → ${stage} harness hung in ${hold_tool}, but teardown is incomplete; retaining running result for reassessment"
+        return 0
+      fi
       _stage_stamp_settled_without_result "$issue" "$feature_dir" "$result_stage" "harness-hung" \
         "$current_head" "" "$hold_json"
       wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" \
-        --ack "$recovery_claim" --outcome "$ack_outcome" >/dev/null
+        --ack "$recovery_claim" --outcome applied >/dev/null
       log_warn "$issue → ${stage} harness hung in ${hold_tool} (no progress since $(jq -r '.reassessment.lastProgressAt // "launch"' <<<"$recovery_outcome" 2>/dev/null || echo launch)) - settled for stage-failure-${stage}"
-      (( teardown_rc == 0 )) || return 0
       return 1 ;;
   esac
 
