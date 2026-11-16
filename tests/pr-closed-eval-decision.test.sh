@@ -79,6 +79,11 @@ wavemill_run_tool() {
       printf '{"persisted": true}\n' > "$result_file"
       return 0
     fi
+    if [[ "$FAKE_EVAL_MODE" == "refused" ]]; then
+      # HOK-3493: the hook records the adapter's typed policy kind.
+      printf '{"persisted": false, "reason": "context-window-exceeded", "error": "Model input refused"}\n' > "$result_file"
+      return 1
+    fi
     return 1
   fi
   real_wavemill_run_tool "$tool" "$@"
@@ -139,6 +144,18 @@ assert_eq "failed: record carries a failureKind" "true" \
   "$(jq -e '.detail.failureKind | type == "string" and length > 0' "$MARKER" >/dev/null 2>&1 && echo true || echo false)"
 assert_eq "failed: record carries the runId" "run-pr-closed" \
   "$(jq -r '.detail.runId // ""' "$MARKER")"
+
+# --- A typed refusal is recorded as the terminal kind it is ------------------
+new_fixture
+FAKE_EVAL_MODE="refused"
+run_and_wait
+
+assert_eq "refused: evalFailed true" "true" \
+  "$(jq -r --arg i "$ISSUE" '.tasks[$i].evalFailed // "null"' "$STATE_FILE")"
+assert_eq "refused: decision carries the typed kind, not eval_not_persisted" "context-window-exceeded" \
+  "$(jq -r '.detail.failureKind // ""' "$MARKER")"
+assert_eq "refused: the decision is terminal" "terminal" \
+  "$(jq -r '.detail.class // ""' "$MARKER")"
 
 # --- Failed eval after reap stays audit-only --------------------------------
 new_fixture
