@@ -126,8 +126,9 @@ fetches GitHub state.
 `swap-test-context.json` records prompt provenance, challenge type and
 difficulty strata, head identity, original verdict metadata, and degenerate
 flags such as empty diffs or tied original dimensions. Raw result rows include
-judge model, prompt hash, template hash, usage, cost, truncation state, and
-duration for each pair/order call.
+judge model, prompt hash, template hash, usage, cost, prompt size, summarised-file
+count, and duration for each pair/order call (rows written before HOK-3493 carry
+`truncated` and a `promptBytes.{original,final}` object instead).
 
 These files are runtime artifacts and remain gitignored. The committed
 write-up material is limited to aggregate Markdown summaries, with no diffs,
