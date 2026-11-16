@@ -73,7 +73,7 @@ export async function runEndpointQualificationCommand(argv = process.argv.slice(
       }) : [];
       const report = endpointComparisonReport(plan, runs);
       writeFileSync(output, JSON.stringify(report, null, 2) + '\n', { flag: 'wx' });
-      console.log(JSON.stringify({ output, live: args.live === true, requiredPairs: plan.requiredPairs, scheduledRuns: plan.runs.length,
+      console.log(JSON.stringify({ output, live: args.live === true, requiredPairs: plan.requiredPairs, scheduledRuns: plan.plannedRunCount,
         subjects: report.subjects.map(subject => ({ tag: subject.endpoint.tag, compatibility: subject.compatibility, verdict: subject.promotionVerdict })) }, null, 2));
     },
   }, argv);

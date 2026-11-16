@@ -509,5 +509,22 @@ it('attributes count budgets through the shared rule before an abort provider er
       providerError: { kind: 'provider-transient-error', retryable: true, attempts: 1, errorMessage: 'Request aborted', turnsAtFailure: 6 } });
   }), provider: 'openrouter', exactPricing: { enabled: true, fetchGenerationCost: async () => ({ totalCostUsd: .05, providerName: 'Moonshot AI' }) } });
   assert.equal(result.status, 'fail');
+  assert.ok(result.evidence, 'budget failure retains mutation/completion evidence before cleanup');
   assert.equal(result.attemptEvidence?.[0].contribution?.stage_executions[0].failure?.fault_class, 'model-fault');
+});
+
+
+it('workflow prompt orders edits and tests before completion, and budget failures retain rejected mutations', async () => {
+  const result = await runLiveCodingCanary({ ...baseOptions(async config => {
+    const task = String(config.context.messages[0].content);
+    assert.ok(task.indexOf('2. Update src/payload.ts') < task.indexOf('3. Run'));
+    assert.ok(task.indexOf('3. Run') < task.indexOf('4. Use the create_marker'));
+    assert.ok(!task.includes('exactly these two steps'));
+    emitToolEnd(config, 'apply_patch', true);
+    return loopResult({ stopReason: 'turn_limit' });
+  }), profile: 'workflow' });
+  assert.equal(result.status, 'fail');
+  assert.equal(result.evidence?.failedMutationToolCalls, 1);
+  assert.equal(result.evidence?.structuredMutationToolCalls, 0);
+  assert.equal(result.evidence?.completionArtifactPresent, false);
 });

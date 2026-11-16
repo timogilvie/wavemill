@@ -116,6 +116,8 @@ export interface LiveCodingCanaryUsage {
  * transcripts, file contents, or provider credentials.
  */
 export interface LiveCodingCanaryEvidence {
+  /** Failed mutation tool events, including rejected structured calls. Unknown in legacy evidence. */
+  failedMutationToolCalls?: number;
   /** Count of successful structured mutation tool invocations (tool events, not prose). */
   structuredMutationToolCalls: number;
   /** Distinct mutation tool names observed as structured tool events. */

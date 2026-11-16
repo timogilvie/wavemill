@@ -64,15 +64,23 @@ export function comparisonPlan(entries: OpenRouterEndpoint[], referenceTag: stri
   const profiles = ['workflow', 'cache-heavy'] as const;
   const planned: Array<{ pair: number; profile: EndpointComparisonRun['profile']; endpoint: CertificationEndpoint }> = subjects.map(endpoint => ({ pair: -1, profile: 'standard', endpoint }));
   const reservePerRunUsd = DEFAULT_CANARY_LIMITS.maxCostUsd! * DEFAULT_CANARY_MAX_ATTEMPTS;
-  const maxRuns = Math.floor(policy.maxSpendUsd / reservePerRunUsd);
-  for (let pair = 0; pair < requiredPairs && planned.length < maxRuns; pair++) for (const profile of profiles) {
-    for (let index = 0; index < subjects.length && planned.length < maxRuns; index++) planned.push({ pair, profile, endpoint: subjects[(index + pair) % subjects.length]! });
-  }
+  // Preregister the full order. Admission uses the SDK's accounted spend and
+  // reserves the next bounded run, rather than treating every past run as $1.
   // Reserve every allowed outer canary attempt at the existing per-attempt cap.
   // This is experiment admission, not a new task-wide spend/retry mechanism.
-  return { schemaVersion: 'endpoint-comparison-plan/v1', policy, referenceTag, subjects, requiredPairs, profiles,
-    reservePerRunUsd, runs: planned.slice(0, maxRuns), plannedRunCount: subjects.length + requiredPairs * profiles.length * subjects.length,
+  return { schemaVersion: 'endpoint-comparison-plan/v2', policy, referenceTag, subjects, requiredPairs, profiles,
+    reservePerRunUsd, admission: 'sdk-accounted-spend-plus-next-run-reserve/v1', runs: planned,
+    schedule: 'compatibility-first; pair-ascending; profile-order; endpoint-index=(index+pair)%subject-count',
+    stoppingRules: ['Missing accounting or an unaffordable next-run reserve stops the study.', 'A non-passing reference compatibility run stops paired testing.', 'A definitive candidate failure rejects it; subsequent candidate probes are skipped. All prior outcomes remain.'],
+    plannedRunCount: subjects.length + requiredPairs * profiles.length * subjects.length,
     qualificationScope: 'exact requested tag with observed host; deployment/quantization not independently attested' };
+}
+/** Lazy expansion of the immutable order: even a stringent margin cannot allocate an enormous plan. */
+export function* comparisonSchedule(plan: ReturnType<typeof comparisonPlan>) {
+  yield* plan.runs;
+  for (let pair = 0; pair < plan.requiredPairs; pair++) for (const profile of plan.profiles) {
+    for (let index = 0; index < plan.subjects.length; index++) yield { pair, profile, endpoint: plan.subjects[(index + pair) % plan.subjects.length]! };
+  }
 }
 export async function runEndpointComparison(options: {
   repoDir: string; model: string; registry: ModelRegistry; entries: OpenRouterEndpoint[];
@@ -87,10 +95,16 @@ export async function runEndpointComparison(options: {
     transport: 'openai-completions', registry: options.registry, scenarios: getDefaultScenarios(true), dryRun: true });
   if (!conformance.harnessPassed) throw new Error('Deterministic conformance failed; live comparison refused');
   const results: EndpointComparisonRun[] = [];
-  for (const scheduled of plan.runs) {
+  for (const scheduled of comparisonSchedule(plan)) {
+    const accounted = economics(results);
+    if (results.length && (accounted.attempts !== accounted.accountedAttempts || accounted.report.totalUsd === null)) break;
+    if ((accounted.report.totalUsd ?? 0) + plan.reservePerRunUsd > plan.policy.maxSpendUsd) break;
     if (scheduled.profile !== 'standard') {
       if (results.some(run => run.profile === 'standard' && run.endpoint.tag === plan.referenceTag && run.result.status !== 'pass')) break;
+      if (plan.subjects.filter(endpoint => endpoint.tag !== plan.referenceTag).every(endpoint =>
+        results.some(run => run.endpoint.tag === endpoint.tag && ((run.profile === 'standard' && run.result.status !== 'pass') || run.result.status === 'fail')))) break;
       if (results.some(run => run.profile === 'standard' && run.endpoint.tag === scheduled.endpoint.tag && run.result.status !== 'pass')) continue;
+      if (scheduled.endpoint.tag !== plan.referenceTag && results.some(run => run.endpoint.tag === scheduled.endpoint.tag && run.result.status === 'fail')) continue;
     }
     const entry = options.entries.find(candidate => candidate.tag === scheduled.endpoint.tag)!;
     const subject = resolveCertificationSubject({ provider: 'openrouter', model: options.model, registry: options.registry, endpoint: scheduled.endpoint }).subject;
