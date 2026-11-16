@@ -1,3 +1,5 @@
+import { budgetExhaustionFromLoop } from '../budget-exhaustion.ts';
+import { resolveNativeStageTimeSplit } from '../stage-time-split.ts';
 import { ProviderIdentityMismatchError } from '../provider-identity.ts';
 import { createRunTestsTool } from '../tools/command-tools.ts';
 import { recordLaunch } from '../../session-ownership.ts';
@@ -363,7 +365,6 @@ async function runSingleCanaryAttempt(input: {
         };
       }
 
-      if (result.providerError) faultClass = classifyArmFault({ failureKind: result.providerError.kind });
       const usage: LiveCodingCanaryResult['usage'] = {
         turns: result.turnsCompleted,
         toolCalls: result.toolCallsExecuted,
@@ -377,9 +378,12 @@ async function runSingleCanaryAttempt(input: {
       // budget outcome, never the abort message our own budget left behind.
       const budgetOutcome = classifyBudgetOutcome(result.stopReason);
       if (budgetOutcome) {
+        const fact = budgetExhaustionFromLoop(result, { maxTurns: limits.maxTurns, maxToolCalls: limits.maxToolCalls, maxModelTimeMs: limits.maxWallClockMs, maxTotalTokens: limits.maxTotalTokens, maxCostUsd: limits.maxCostUsd }, { transcriptPath: join(evidenceDir, 'native-sessions', `${sessionId}.jsonl`) });
+        faultClass = classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact, timeSplit: resolveNativeStageTimeSplit(fact) });
         return { ...budgetOutcome, usage };
       }
 
+      if (result.providerError) faultClass = classifyArmFault({ failureKind: result.providerError.kind });
       const providerOutcome = classifyProviderOutcome(result);
       if (providerOutcome) {
         return { ...providerOutcome, detail: sanitizeDetail(providerOutcome.detail, tmpRoot), usage };

@@ -497,3 +497,17 @@ it('paired workflow verifies escaped multi-file edits through the real focused-t
   assert.equal(result.status, 'pass', result.detail);
   assert.equal(result.isLive, false);
 });
+
+
+it('attributes count budgets through the shared rule before an abort provider error', async () => {
+  const result = await runLiveCodingCanary({ ...baseOptions(async config => {
+    config.onEvent!({ type: 'agent_start' } as never);
+    config.onEvent!({ type: 'message_end', message: { role: 'assistant', model: 'kimi-k3', api: 'openai-completions', provider: 'openrouter',
+      responseModel: 'moonshotai/kimi-k3', responseId: 'reconstructed-budget', content: [{ type: 'text', text: 'work' }], timestamp: 0, stopReason: 'stop',
+      usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } } as never);
+    return loopResult({ stopReason: 'turn_limit', turnsCompleted: 6, toolCallsExecuted: 6,
+      providerError: { kind: 'provider-transient-error', retryable: true, attempts: 1, errorMessage: 'Request aborted', turnsAtFailure: 6 } });
+  }), provider: 'openrouter', exactPricing: { enabled: true, fetchGenerationCost: async () => ({ totalCostUsd: .05, providerName: 'Moonshot AI' }) } });
+  assert.equal(result.status, 'fail');
+  assert.equal(result.attemptEvidence?.[0].contribution?.stage_executions[0].failure?.fault_class, 'model-fault');
+});
